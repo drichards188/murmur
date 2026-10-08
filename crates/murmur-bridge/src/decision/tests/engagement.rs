@@ -1998,6 +1998,86 @@ async fn a_contact_seen_again_by_its_ais_is_a_claim_an_operator_confirms() {
     assert_eq!((rep.lost_contacts, rep.lost_claims, rep.lost_confirmed), (1, 1, 1));
 }
 
+/// Rules 16, the review of the merged branch: a claim's confirmation takes its picture under the
+/// decision lock. Here the confirmation starts while the lock is held (as a tick would hold it),
+/// and while it waits a new contact is sensed and a decision logs a picture with it; the
+/// confirmation's picture, taken once it has the lock, holds that contact too, so the log
+/// replays (taken before the lock, it lacked the contact: a track gone without a drop).
+#[tokio::test(start_paused = true)]
+async fn a_claims_confirmation_takes_its_picture_under_the_decision_lock() {
+    let e = engage_rig();
+    e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+    sleep(Duration::from_millis(500)).await;
+    e.picture().await;
+    let boat = |id: &str, north_m: f64, ais: Option<crate::tracks::truth::Ais>| ContactTruth {
+        id: id.into(),
+        name: id.into(),
+        affiliation: TruthAffiliation::Neutral,
+        domain: TDomain::Surface,
+        kind: "ferry".into(),
+        lat: TARGET.0 + north_m / 111_320.0,
+        lon: TARGET.1,
+        alt_m: 0.0,
+        speed_mps: 0.0,
+        course_deg: 0.0,
+        emits: false,
+        signature: 1.0,
+        ais,
+    };
+    let tour = boat(
+        "tour",
+        1_500.0,
+        Some(crate::tracks::truth::Ais {
+            mmsi: "366999501".into(),
+            name: "MV BAY TOUR".into(),
+            ship_type: "passenger".into(),
+            spoofed: false,
+        }),
+    );
+    // seen 20 s, dropped, seen again: a claim (T-0003 claims to be T-0002)
+    for _ in 0..20 {
+        e.r.clock.advance_ms(1000);
+        e.sense_at_with(e.now_s(), true, std::slice::from_ref(&tour));
+        e.r.d.tick();
+        sleep(Duration::from_secs(1)).await;
+    }
+    for _ in 0..185 {
+        e.tick(true).await;
+    }
+    for _ in 0..5 {
+        e.r.clock.advance_ms(1000);
+        e.sense_at_with(e.now_s(), true, std::slice::from_ref(&tour));
+        e.r.d.tick();
+        sleep(Duration::from_secs(1)).await;
+    }
+    assert_eq!(e.r.events("lost.claimed"), 1);
+    // the lock held; the confirmation starts on another thread and waits for it
+    let guard = e.r.d.lock();
+    let d = e.r.d.clone();
+    let confirm = std::thread::spawn(move || d.confirm_lost_claim(&op("op-1"), "T-0002", "T-0003"));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    // meanwhile a new contact, and a decision whose picture holds it (an orbit, under op-1)
+    let mut guard = guard;
+    let core = &mut *guard;
+    e.sense_at_with(e.now_s(), true, &[tour.clone(), boat("newcomer", -2_000.0, None)]);
+    let world = e.r.d.snapshot();
+    assert!(world.tracks.contains_key("T-0004"), "the newcomer is a track: {:?}", world.tracks.keys());
+    let session = Decision::session(&mut core.engine, &mut core.sessions, &core.logins, &op("op-1"), &e.r.d.engage_operators, e.r.d.auth)
+        .expect("session");
+    let proposal = crate::decision::proposal(&orbit(1)).expect("orbit");
+    core.engine
+        .submit(session.authority(), proposal, &world, &e.r.d.terrain.oracle())
+        .expect("submitted");
+    drop(guard);
+    let v = confirm.join().expect("thread").expect("confirmed");
+    assert_eq!(v["confirmed"]["track"], "T-0003", "{v}");
+    let log = e.r.log.text();
+    let rep = replay::replay_str(&log).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    let reacquired = log.lines().find(|l| l.contains("\"type\":\"track.reacquired\"")).expect("confirmed");
+    assert!(reacquired.contains("\"T-0004\":{"), "the confirmation's picture holds the newcomer");
+}
+
 // ---- rules 15 ---------------------------------------------------------------------------
 
 /// The console's API on a rig, as the bridge serves it.

@@ -110,13 +110,17 @@ fn nomination() -> Proposal {
     )
 }
 
+/// The bridge tracker's default drop age, which these runs log as the bridge does.
+const DROP_S: f64 = 180.0;
+
 fn engine_on(clock: &ManualClock, version: Option<u32>) -> (Engine, MemorySink) {
     let log = MemorySink::new();
     let mut p = policy();
     if let Some(v) = version {
         p.rules.rules_version = v;
     }
-    let mut e = Engine::with_areas(p, Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let carry = StartCarry { track_drop_s: Some(DROP_S), ..StartCarry::default() };
+    let mut e = Engine::start(p, Some(areas()), roster(), carry, Box::new(clock.clone()), Box::new(log.clone())).unwrap();
     declare_shown(&mut e, &world(clock.now(), &[]));
     (e, log)
 }
@@ -289,8 +293,9 @@ fn a_confirmation_is_void_once_its_claimant_turns_suspect_is_declared_or_is_drop
         e.step_lost(&w).unwrap();
         e.confirm_lost_claim(op1.authority(), "T-0002", "T-0009", &w).unwrap();
         assert!(e.lost_contacts().is_empty());
-        // the claimant then turns: the next decision reads the lost contact on its own picture
-        let now = back.plus_ms(5_000);
+        // the claimant then turns (or, unseen the drop age, is dropped): the next decision reads
+        // the lost contact on its own picture
+        let now = back.plus_ms(if how == "dropped" { 180_000 } else { 5_000 });
         clock.set(now);
         let mut w2 = world(now, &[("T-0009", claimant.clone())]);
         w2.track_ais.insert("T-0009".into(), ais("366999501").unwrap());
@@ -827,4 +832,112 @@ fn a_drop_sooner_than_the_trackers_drop_age_is_caught() {
 
 fn whats_of(r: &replay::ReplayReport) -> Vec<String> {
     r.mismatches.iter().map(|m| m.what.clone()).collect()
+}
+
+/// The review of the merged branch, second pass (N1): the drop age was read from `last_seen_t`
+/// while the keep-out and the newer-fix check read the fix's own time, and nothing tied the two.
+/// A drop of a track last seen at T0 carrying a fix dated 179 s (or 174.5 s, within a second of
+/// a picture at 175 s) on, 10 km north, passed both and let a nomination through. A drop's fix
+/// can be no later than when the tracker last saw the track.
+#[test]
+fn a_drop_with_a_fix_after_its_last_sighting_is_caught() {
+    for fix_ms in [179_000, 174_500] {
+        let clock = ManualClock::new(T0);
+        let (mut e, log) = engine_on(&clock, None);
+        let op1 = e.open_operator_session_with(OperatorId::new("op-1"), Grants { engage: true }).unwrap();
+        let ferry = contact(T0, toward(TARGET_AT, 0.0, 400.0), Affiliation::Neutral);
+        let t175 = T0.plus_ms(175_000);
+        clock.set(t175);
+        e.submit(op1.authority(), nomination(), &world(t175, &[("T-0002", ferry)]), &terrain()).unwrap();
+        // last seen at T0 (the drop age holds from there), its fix dated later and 10 km north
+        let mut forged = contact(T0.plus_ms(fix_ms), toward(TARGET_AT, 0.0, 10_000.0), Affiliation::Neutral);
+        forged.last_seen_t = T0;
+        forged.pos_sigma_m = 190.0;
+        clock.set(T0.plus_ms(180_000));
+        e.record_track_drops(vec![("T-0002".into(), forged, None)]).unwrap();
+        let t185 = T0.plus_ms(185_000);
+        clock.set(t185);
+        let id = e.submit(op1.authority(), nomination(), &world(t185, &[]), &terrain()).unwrap().id();
+        assert_eq!(e.intent(id).unwrap().state(), State::PendingApproval, "{fix_ms}: the forged fix is far from the target");
+        let w = whats_of(&replay_str(&log.text()).unwrap());
+        assert!(w.iter().any(|m| m.contains("a track dropped with a fix after it was last seen")), "{fix_ms}: {w:?}");
+    }
+}
+
+/// The review of the merged branch, second pass (N2): a v16 log with a drop must log the
+/// tracker's drop age, or stripping the field from `run.started` would turn the check off.
+#[test]
+fn a_drop_in_a_run_that_does_not_log_the_drop_age_is_caught() {
+    let clock = ManualClock::new(T0);
+    let (mut e, log) = engine_on(&clock, None);
+    drop_ferry(&mut e, &clock, T0, T0.plus_ms(180_000), None);
+    let text = log.text();
+    assert!(replay_str(&text).unwrap().ok());
+    let stripped = rechain(&text.replacen(",\"track_drop_s\":180.0", "", 1));
+    assert!(!stripped.contains("track_drop_s"));
+    let w = whats_of(&replay_str(&stripped).unwrap());
+    assert!(w.iter().any(|m| m.contains("does not log the tracker's drop age")), "{w:?}");
+}
+
+/// The review of the merged branch, second pass (N3): a `drop_track` step waits for the
+/// tracker's drop age by the run's clock; one still waiting at the end (a track that never went
+/// silent, or not long enough before the end) fails the run, naming its step.
+#[test]
+fn a_drop_that_never_comes_fails_the_scenario() {
+    let toml = |silent_at: Option<u32>| {
+        let silent = silent_at
+            .map(|s| format!("[[step]]\nat_s = {s}\naction = \"track\"\nid = \"T-0002\"\nsilent = true\n\n"))
+            .unwrap_or_default();
+        format!(
+            r#"
+title = "a drop that never comes"
+invariant = "keep_out_tracks"
+attack = "none"
+expect = "pending_approval"
+end_s = 200
+
+[[operator]]
+id = "op-1"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0002"
+at = [-122.4950, 37.8156]
+affiliation = "neutral"
+identity = "fishing_vessel"
+identity_confidence = 0.8
+sources = ["3:radar"]
+
+{silent}[[step]]
+at_s = 150
+action = "drop_track"
+track = "T-0002"
+"#
+        )
+    };
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let run = |text: String| {
+        let mut sc: scenario::Scenario = toml::from_str(&text).unwrap();
+        sc.expect = "none".into();
+        scenario::run(&sc, "drop", &root, &scenario::RunOptions::default()).unwrap()
+    };
+    // never silent, or silent too late: the drop never comes, and the run says which step
+    for silent in [None, Some(100)] {
+        let r = run(toml(silent));
+        assert!(
+            r.failures.iter().any(|f| f.starts_with("t=150: drop_track T-0002 never came")),
+            "{silent:?}: {:?}",
+            r.failures
+        );
+        assert!(!r.log.contains("\"type\":\"track.dropped\""), "{silent:?}");
+    }
+    // silent from the start: due at 181 s, so it comes then, after its step at 150 s
+    let r = run(toml(Some(1)));
+    assert!(!r.failures.iter().any(|f| f.contains("never came")), "{:?}", r.failures);
+    assert_eq!(r.log.matches("\"type\":\"track.dropped\"").count(), 1);
 }
