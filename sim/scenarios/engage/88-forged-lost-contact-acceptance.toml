@@ -1,11 +1,12 @@
-# Rules 16: op-1 nominates while a fishing boat 1.5 km north of the target is out of view but
-# not yet dropped; once the tracker drops it, op-1 (engagement authority) accepts the lost
-# contact while the nomination waits with no signature (`engage.accepted` naming it, since its
-# last fix); op-2 and op-3 are shown the acceptance and sign; the effect is released.
-# Afterwards the acceptance is forged to name a fix a minute later than the contact's last (a
-# smaller region accepted) everywhere it appears: the acceptance, every decision's inputs,
-# every picture token. Replay catches it: the contact was not lost since that fix, and the
-# checks on the forged inputs no longer give the logged results.
+# Rules 16: op-1 nominates a second after a fishing boat 1.5 km north of the target went out
+# of view (still in view: unseen under 10 s); once the tracker drops it, op-1 (engagement
+# authority) accepts the lost contact while the nomination waits with no signature
+# (`engage.accepted` naming it, since its last fix); op-2 and op-3 are shown the acceptance
+# and sign; the effect is released. Afterwards the acceptance is forged to name a fix a minute
+# later than the contact's last (a smaller region accepted) everywhere it appears: the
+# acceptance, every decision's inputs, every picture token. Replay catches it: the contact was
+# not lost since that fix, and the checks on the forged inputs no longer give the logged
+# results.
 title = "A forged acceptance of a lost contact is caught"
 invariant = "keep_out_tracks"
 attack = "the acceptance of a lost contact re-dated to a later fix everywhere in the log"
