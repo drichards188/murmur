@@ -1169,24 +1169,45 @@ group. Dates are 2026.
   with the same fleet (stand-ins respawned under the same identity, or SITL, whose parameters
   persist), a spent munition stays spent until an operator un-spends it; the evaluation starts
   each run fresh (it removes `.last-run`), so it is not affected.
-- **An operator with engagement authority may un-spend a platform heard since its effect**
-  (10-07, murmur-imu (2); rules 15; decided by the main thread on the user's behalf). A platform
-  marked spent that an operator believes survived (a miss) had no way back. Now an operator with
-  engagement authority un-spends it, under their own session, with a note, only once the
-  platform was heard after the effect (its heartbeat, position or navigation status reported
-  after this run's mark, or in this run for a carried one): `platform.unspent`, logged with the
-  vehicle facts it was judged on and the values the mark closed. Un-spending reopens what it
+- **An operator with engagement authority may un-spend a platform whose engagement ended and
+  that is heard since** (10-07, murmur-imu (2); rules 15; decided by the main thread on the
+  user's behalf). A platform marked spent that an operator believes survived (a miss) had no way
+  back. Now an operator with engagement authority un-spends it, under their own session, with a
+  note: `platform.unspent`, logged with the vehicle facts it was judged on, the bridge's identity
+  of the vehicle under the uid, and the values the mark closed. Un-spending reopens what it
   owes: the engagement's fallback is still its lost-link action, so its own values are owed back
   again (a mark of this run as that engagement's, holding missions as rules 7 does; a carried one
   as values carried over, for the vehicle they were preloaded on), a mission waits for the
-  restore, and the bridge puts them back when the platform answers. No step-up: like a
-  write-off it authorizes nothing (the platform's orders and nominations are decided as any
-  other's). Never an agent's (no `AgentPort` method, no MCP tool). Replay binds it: the
-  operator's own session with engagement authority, the note, the mark named exactly, heard
-  after the effect on the logged facts. The console shows a SPENT, STILL HEARD alert, only when
-  an un-spend would be taken, with Un-spend (`POST /api/restores/unspend`). Not taken: requiring
-  the platform's own values verified before the un-spend; that verification is the restore the
+  restore, and the bridge puts them back when the platform answers. Never an agent's (no
+  `AgentPort` method, no MCP tool). The console shows a SPENT, STILL HEARD alert, only when an
+  un-spend would be taken, with Un-spend (`POST /api/restores/unspend`). Not taken: requiring the
+  platform's own values verified before the un-spend; that verification is the restore the
   un-spend makes due, and a mission waits for it.
+  After the review (item 1): "heard after the effect" (a report after this run's mark) was met by
+  the munition's own reports in its last seconds: a switchblade silent 2 s after its release was
+  un-spent at 170 s on facts from 108 s, and one un-spent at 110 s while its engagement was still
+  observing stayed un-spent when it was assessed "ceased" at 122 s; the alert compared last-seen
+  times, which never clear, so it showed about a second after every release and stayed after the
+  munition went silent. Now, one judgement for the engine, replay and the alert alike
+  (`SpentMark::refusal`): the engagement that spent the platform has ended (its terminal
+  transition; a carried mark's ended with its run, so it counts from this run's start), the
+  platform was heard after that end (its heartbeat, position or navigation status), and it is
+  not silent now (heard within the link-aware fact age limit the checks use). And (item 7) the
+  vehicle under the uid is the one spent: platform, callsign and system id each known and the
+  same where the spent one's identity knows them, never the home (it is set again at every
+  arming); before, a carried mark's values could be reopened for another vehicle under the uid.
+  Stricter than a carried hold's rule (unknown fields hold a mission there), because an un-spend
+  reopens values for a vehicle, so it waits until that vehicle is known to be the one.
+  A step-up (decided, not from the review): un-spending makes an armed platform taskable again,
+  so in a credentials run it re-enters the credential, like accepting a lost friendly: the
+  password or a passkey per the policy's `step_up_factor`, a passkey's challenge derived from the
+  act (`StepUpFor::Unspend`: the platform, the engagement, the log of a carried mark). Always in a
+  credentials run, not by `step_up_acts`: a new word there would change the policy schema, and
+  the un-spend is consequential whatever a policy lists, as an engagement signature is. The API
+  takes `password` or `passkey` (401 without a valid one; 403 first without engagement
+  authority); replay checks the step-up quoted. The write-off stays as it is (it authorizes
+  nothing). Replay binds it all: the operator's own session with engagement authority, the
+  step-up, the note, the mark named exactly, and the judgement on the logged facts and identity.
 - **A nomination on a platform a failed carry may owe is refused until that log is read or
   written off** (10-07, murmur-imu (1); rules 15). Rules 12 held a mission for an armed platform
   of a failed carry's fleet but took a nomination, whose preload would read what the platform
@@ -1202,6 +1223,13 @@ group. Dates are 2026.
   the file when it is at hand (`--prev` by name or beside the log) and the armed list with every
   platform fact the log's decisions read (murmur-zq3 (6)). Residual, stated: without the file at
   hand, `may_owe` is bound by the start anchor only.
+  After the review (item 5): replay compared the file only when the start recorded one, so a
+  forged start that dropped both `fleet_read` and `may_owe` (and the decisions' may-owe facts)
+  replayed clean with the file passed in. Now a file at hand is compared whatever was recorded:
+  one that reads, where the start recorded none, is a mismatch (the start claimed it could not
+  be read). And (item 8) a pending log tried again whose fleet file is gone too keeps the list
+  the log that named it pending recorded (its vehicles stay held, instead of none); replay
+  compares it with that log when it is at hand.
 - **A pointer that can't be read falls back to the station's newest log that checks** (10-07,
   murmur-zq3 (2), (3), (4); rules 15). A corrupted pointer was recorded unknown and dropped the
   chain behind it (nothing held until written off). Decided: fall back only to a log whose hash
@@ -1218,6 +1246,26 @@ group. Dates are 2026.
   of a run that names its pointer, and that the log given names the same pointer. A pointer of
   the same line twice names that log (two different lines: unknown, as before). The pointer's
   directory is synced after the rename, so the rename itself survives a power loss.
+  After the review (items 3, 4, 6): the newest was ordered by the start's wall-clock time and
+  name (either can invert under this host's clock steps), and only logs naming the pointer were
+  candidates, so a newer log of the same station from an older build (naming no pointer, the one
+  the pointer named, still owing values) was passed over silently for the log before it; and a
+  fallback that did not check recorded the pointer with nothing held (no `may_owe`), dropping
+  that log's own pending carries. Now the station's logs are those naming its pointer and, by
+  the carry chain, every log that carried from one of them (a start carries only from its own
+  pointer's log, so such a log is the station's whatever its build); the newest is the one no
+  log carried from (two such: the later start, refused if they started within 10 s of each
+  other). It is carried from only if it names the pointer, its chain and anchors check, and no
+  other log in the directory that names no pointer, or whose first line does not parse, started
+  (or was last written) after it less 10 s: that log may be the one the pointer named.
+  Otherwise the newest is recorded as a failed carry under its own name, with its armed
+  platforms (`may_owe`, `fleet_read`) and why the pointer failed (`pointer_failed`): missions
+  and nominations on them are held (fail closed), and it stays pending, so the next start reads
+  it and the chain behind it. Replay takes such an entry as the start's refusal, not a dropped
+  debt (the log stays pending). Without any log of the station the pointer is a failed carry,
+  as before. A directory that can't be synced after the rename is a warning, no longer a failed
+  pointer: the rename is done, and the next run finds the log (a power loss before the system
+  flushes the directory could bring back the old pointer).
 - **A void that says it was superseded names an order the log has** (10-07, murmur-zq3 (5);
   rules 15). Rules 12 accepted any void reason beginning "superseded" in place of a refusal.
   Replay now reads the order and vehicle the engine's and the bridge's reasons name: the order
@@ -1226,6 +1274,10 @@ group. Dates are 2026.
   voided a newer pending order when an older engagement was dispatched, unlike the bridge (a
   newer order is never voided by an older one's dispatch); the runner now does as the bridge
   (scenario 22's log changed, its outcome did not).
+  After the review (item 7): the order named must also be in the state the reason says: one a
+  dispatch voided for was dispatched, one a queueing voided for is queued, and a dequeue's newer
+  order stands (approved, queued, dispatched, or a person's waiting for approval), as the
+  engine's own test of it reads.
 
 - **The bridge keeps one clock that never steps, steered to within about 2 s of the wall
   clock; the wall clock itself only dates what another clock reads** (10-05, murmur-dup;

@@ -34,10 +34,12 @@
 //!   still owed exactly what was carried. A log whose carry failed is reported, and stays
 //!   owed until a later start reads it or an operator writes it off. Restores closed without a
 //!   restore (a platform expended by its own effect, a write-off) are listed (`CLOSED:`).
-//! - Rules 15: what each log carried from had spent is checked the same way; a failed carry's
-//!   fleet file (`<log stem>.fleet.json`, `--prev` by name or beside the log) is compared with
-//!   what the start recorded (its hash, the platforms it may owe values to); a log carried from
-//!   in place of a pointer that could not be read must name this station's pointer; platforms
+//! - Rules 15: what each log carried from had spent is checked the same way, and the carry line
+//!   names the spent marks it carried; a failed carry's fleet file (`<log stem>.fleet.json`,
+//!   `--prev` by name or beside the log) is compared with what the start recorded (its hash, the
+//!   platforms it may owe values to), or, recorded as unreadable, must not read; a log carried
+//!   from in place of a pointer that could not be read must name this station's pointer, and one
+//!   the start found there but would not carry from is reported as a failed carry; platforms
 //!   un-spent by an operator are listed (`UNSPENT:`).
 //! - Either carry-over whose earlier log is not given or found is a mismatch;
 //!   `--trust-resumed` accepts both without their logs (trusting their origin), and the
