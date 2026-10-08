@@ -538,3 +538,122 @@ fn the_out_of_view_region_is_not_doubled() {
     f.velocity_mps = None;
     assert_eq!(kinds(&f), [engage::ReachKind::NoVelocity]);
 }
+
+/// Rules 15 and 16 together: a failed carry at the start may owe the armed USV its own lost-link
+/// values (rules 15, `fallback_preload`), and a fishing boat by the target is dropped by the
+/// tracker (rules 16, `keep_out_tracks`). A nomination on the USV is refused naming both, each
+/// with what clears it, and replay holds the refused decision to both facts; with the log
+/// written off, the lost contact alone still refuses it; with it accepted as well, the
+/// nomination goes to its signers. Every log replays.
+#[test]
+fn a_failed_carry_and_a_lost_contact_each_refuse_a_nomination_and_say_so() {
+    const HEAD: &str = r#"
+title = "a nomination a failed carry may owe, a lost contact by the target"
+invariant = "fallback_preload"
+attack = "both at once"
+expect = "rejected"
+end_s = 200
+
+[[carried]]
+log = "20261006T120000Z-4242.jsonl"
+error = "Permission denied (os error 13)"
+may_owe = ["viper-1"]
+
+[[operator]]
+id = "op-1"
+engage = true
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "viper-1"
+platform = "magura"
+at = [-122.4700, 37.8160]
+lost_link_s = 30
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[track]]
+id = "T-0002"
+at = [-122.4950, 37.8156]
+affiliation = "neutral"
+identity = "fishing_vessel"
+identity_confidence = 0.8
+sources = ["3:radar"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "track"
+id = "T-0002"
+silent = true
+
+[[step]]
+at_s = 181
+action = "drop_track"
+track = "T-0002"
+"#;
+    const NOMINATE: &str = r#"
+action = "nominate"
+by = "op-1"
+platform = "viper-1"
+track = "T-0001"
+radius_m = 75
+fallback = "loiter"
+window_s = 600
+"#;
+    const WRITE_OFF: &str = r#"
+[[step]]
+at_s = 185
+action = "write_off"
+by = "op-1"
+log = "20261006T120000Z-4242.jsonl"
+note = "the USV's own failsafe values were read off it on the bench"
+"#;
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let run = |more: &str, expect: &str| {
+        let mut sc: scenario::Scenario = toml::from_str(&format!("{HEAD}{more}")).unwrap();
+        sc.expect = expect.into();
+        let r = scenario::run(&sc, "carry and lost", &root, &scenario::RunOptions::default()).unwrap();
+        assert!(r.ok && r.replay_ok, "{:?} {:?}", r.failures, r.replay_mismatches);
+        r
+    };
+    // both: refused, each check failing and saying what would clear it
+    let both = run(&format!("[[step]]\nat_s = 186\n{NOMINATE}"), "rejected");
+    let mut failed = both.failed_rules.clone();
+    failed.sort();
+    assert_eq!(failed, ["fallback_preload", "keep_out_tracks"]);
+    let why = both.final_reason.clone().unwrap_or_default();
+    assert!(why.contains("lost contact T-0002") && why.contains("may accept it for this engagement"), "{why}");
+    assert!(why.contains("may owe this platform its own lost-link values") && why.contains("an operator writes it off"), "{why}");
+    // replay holds the refused decision to both facts: either one cut from it is caught
+    for kind in ["drop_may_owe_fact", "hide_lost_contact"] {
+        let scenario::Tampered::Forged(forged) = scenario::tamper(&both.log, kind).unwrap() else {
+            panic!("{kind}: nothing to edit");
+        };
+        let r = replay_str(&forged).unwrap();
+        assert!(!r.ok(), "{kind}: not caught");
+    }
+    // the log written off: the lost contact alone
+    let lost_only = run(&format!("{WRITE_OFF}[[step]]\nat_s = 186\n{NOMINATE}"), "rejected");
+    assert_eq!(lost_only.failed_rules, ["keep_out_tracks"]);
+    // and accepted with the nomination: it waits for its signers
+    let clear = run(&format!("{WRITE_OFF}[[step]]\nat_s = 186\n{NOMINATE}accept_lost = [\"T-0002\"]\n"), "pending_approval");
+    assert!(clear.failed_rules.is_empty(), "{:?}", clear.failed_rules);
+}
