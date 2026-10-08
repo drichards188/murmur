@@ -509,9 +509,10 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
     each drop with the track's facts then and the AIS identity it carried
     (`Engine::record_track_drops`, logged `track.dropped`; the tracker keeps the track in the
     decision facts until the engine has it, and one the log could not take goes back to it for
-    the next tick); an id is dropped once (a second drop is refused, replay flags one, and a
-    drop's last fix must not be older than, or differ from, the one decisions had seen). Every
-    engagement's keep-out on tracks counts it as a lost contact (`WorldSnapshot::lost_contacts`,
+    the next tick); an id is dropped once (a second drop is refused and replay flags one; replay
+    also holds a drop's fix to the pictures and the drop to the run's tracker drop age, see the
+    changelog's 16). Every engagement's keep-out on tracks counts it as a lost contact, whether
+    or not its id is in the picture (the tracker never reuses an id) (`WorldSnapshot::lost_contacts`,
     filled by the engine and logged with the decision): anywhere it could have reached since
     its last fix (`engage::lost_reach`): by the regions a live track gets from those facts
     (`engage::track_reach`) and, since nothing sees it turn or speed up, anywhere at its
@@ -1635,13 +1636,24 @@ Rules versions:
   engagement authority, at the nomination or before a first signature, the contact lost since
   exactly that fix, its facts the ledger's); each claim and confirmation, recomputed from its
   own picture (an operator's session, nothing contradicting it), each picture read like a
-  decision's; each reinstatement's reason; that no id is dropped twice and no drop carries an
-  older or another fix than the decisions had seen; and that no track leaves a picture without
-  a `track.dropped` (a track that vanished would have stopped protecting with nothing in the
-  log). The keep-out explanation's grid margin and words (murmur-dr6 and its review) change no
-  decision. Markers (a log claiming rules 15 or older can't carry them): `track.dropped`,
-  `track.reacquired`, `lost.claimed`, `lost.reinstated`, `lost_contacts`, `lost_accepted`,
-  `track_ais`, an acceptance's `contact`, a lost contact's `ais`. Scenarios 86 to 94 (84 and 85
+  decision's; each reinstatement's reason; that no id is dropped twice; that a drop's fix is no
+  older than the newest the decisions had seen, the same fix when its time is the same, and not
+  newer than one a picture taken at least 1 s after it still showed (`DROP_FIX_SKEW_MS`); that a
+  drop comes no sooner after the track was last seen than the run's tracker drops one
+  (`run.started`'s `track_drop_s`, when the run logged it); that a dropped id is back in no
+  picture with another fix than its drop's; and that no track leaves a picture without a
+  `track.dropped` (a track that vanished would have stopped protecting with nothing in the log).
+  After the review of the merged branch (10-08): a lost contact is judged whether or not its id
+  is in the picture (the tracker never reuses an id; before, a track under the dropped id hid
+  it); every decision's checks and every dry run of one (an agent's preview, which read no lost
+  contacts, the nomination form's options, the console's live checks of a waiting engagement)
+  fill the engine's facts with one function (`Engine::fill_engine_facts`); a revocation's
+  bystanders are judged with their pictures' lost contacts refilled too; the bridge takes a
+  claim's confirmation picture under the decision lock. The keep-out explanation's grid margin
+  and words (murmur-dr6 and its review) change no decision. Markers (a log claiming rules 15 or
+  older can't carry them): `track.dropped`, `track.reacquired`, `lost.claimed`,
+  `lost.reinstated`, `lost_contacts`, `lost_accepted`, `track_ais`, an acceptance's `contact`, a
+  lost contact's `ais`, `run.started`'s `track_drop_s`. Scenarios 86 to 94 (84 and 85
   are rules 15's). Fixtures (a clean build of `b7f9719`, rules 15 merged):
   `tests/data/audit/v16-engagement-scenario-01.jsonl` and scenarios 86 to 88, 90 and 93
   (`v16-lost-contact-*`), and a live log with its anchors (`v16-lost-contacts-live.jsonl`,

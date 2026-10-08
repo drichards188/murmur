@@ -10,7 +10,7 @@
 # counts anywhere it reaches since its last fix at its domain's top speed (25 m/s on the water,
 # what a track without a velocity counts at), and the nomination is rejected on that region
 # (keep_out_tracks: "anywhere it reaches at 25.0 m/s"). A track in view is not counted this way
-# (the tracker sees it turn); `--rules 14`: the dropped track is simply gone and the nomination
+# (the tracker sees it turn); `--rules 15`: the dropped track is simply gone and the nomination
 # waits for its signers. Afterwards the drop is logged twice, the second a minute later and
 # 6 km on; replay catches it (an id is dropped once).
 title = "A lost contact last seen steaming away still blocks: it may have turned"

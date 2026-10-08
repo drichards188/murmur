@@ -169,9 +169,11 @@ M_PER_DEG = 111_320.0
 #: how far into the future and past the motions are laid out (s)
 HORIZON_S = 900.0
 
-#: the rules versions the out-of-view variants compare: the newest before lost contacts (a
-#: dropped track no longer counts) and the lost contacts' (`LOST_CONTACT_SINCE`; 15 is another
-#: branch's, so 14 is the one before on this one)
+#: the rules versions the out-of-view variants compare: one before lost contacts (a dropped
+#: track no longer counts) and the lost contacts' (`LOST_CONTACT_SINCE`). 14, not 15 (the
+#: version just before): rules 15 changes no keep-out (the carries' follow-ups only; 360 of
+#: 360 out-of-view evaluations judged alike by 14 and 15 when checked, 10-08), and the
+#: published "Out of view" tables in METRICS.md were measured against 14
 OOV_BEFORE = 14
 OOV_LOST = 16
 #: rules 16 (murmur-533): in the out-of-view variants each contact goes out of sensor view with

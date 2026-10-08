@@ -1,8 +1,8 @@
 # Rules 16 (the review of murmur-533): 91's harbor ferry, 600 m north-west of the target and
 # last seen steaming away at 5 m/s on a steady course, goes out of sensor view; this time the
-# nomination comes at 170 s, before the tracker drops it (180 s). Under rules 14 the stale track
+# nomination comes at 170 s, before the tracker drops it (180 s). Before rules 16 the stale track
 # counted by its course alone, as a track in view does: its course puts it 1.4 km on by the
-# effect, and the nomination waited for its signers (`--rules 14`); 12 s later, dropped, the
+# effect, and the nomination waited for its signers (`--rules 15`); 12 s later, dropped, the
 # same ferry blocked. Nothing had checked that it kept its course: the tracker sees a turn only
 # in detections. From rules 16 a track unseen 10 s (`engage::OUT_OF_VIEW_S`, the tracker's
 # stale age) counts anywhere it could have got to since its last fix at its domain's top speed

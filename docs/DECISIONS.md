@@ -291,8 +291,8 @@ group. Dates are 2026.
   the target had it inside the keep-out line (none in the circle); the design had said its region
   grows at its plausible speed, and the disc took that to 0 of 647 for 3 points of blocks in the
   general traffic (87 to 90%), passes that the review showed were all with the contact not yet
-  dropped (no evidence about the disc). Not carried over a bridge restart
-  (a new run starts a new tracker; scheduled after the rules 12 carry follow-ups merge).
+  dropped (no evidence about the disc). Not carried over a bridge restart (a new run starts a
+  new tracker): murmur-7qq, open now that rules 15's carry follow-ups are merged.
   Regressions: scenarios 86 to 91.
 - **After the review: out of view at the top speed, AIS a claim, the replay gaps closed** (10-07,
   murmur-533's review; rules 16 still, before it merged; the main thread's decisions). An
@@ -348,7 +348,8 @@ group. Dates are 2026.
     request now carries the password or passkey; the console's card offers it.
   - *Replay gaps.* A second `track.dropped` for an id already lost replayed (the review moved the
     ferry 6 km with a fresh fix): the engine refuses a second drop of an id and replay flags one,
-    and a drop's last fix must be no older than, and the same as, the one the decisions had seen.
+    and a drop's last fix must be no older than the newest the decisions had seen, and the same
+    fix when its time is the same (a newer fix was not checked until the next review, below).
     A claimant seen only in a reacquisition's picture was never held to the rest of the log: claim
     and confirmation pictures are now read like a decision's (a track in them cannot vanish
     without a drop).
@@ -364,6 +365,40 @@ group. Dates are 2026.
   rate in dense traffic; at those numbers a per-contact acceptance is no longer a judgement, and a
   way to retire lost contacts soundly in bulk (evidence of where they are) is the open question
   (follow-up).
+- **After the review of the merged branch: a drop held to the pictures and the tracker's age, a
+  dropped id never hides its contact** (10-08, rules 16 still, unmerged; the main thread's
+  decisions). An independent review of the branch merged with rules 15 found five gaps in the
+  lost contacts' own logic:
+  - *A drop with a newer fix than a later picture showed replayed.* A ferry last seen at T0 was in
+    a picture at T0+175; a drop at T0+180 claiming a fix at T0+170, 10 km away, which that later
+    picture never showed, let a nomination through and replayed. Replay now records the world
+    time of the latest picture that showed each track and flags a drop whose fix is newer than
+    the decisions' when a picture taken at least 1 s after that fix still showed the older one
+    (the tracker dates a fix when it takes the detection, and a snapshot reads its time and its
+    tracks a moment apart: within that second a picture may honestly lag). The other side, a drop
+    too soon: `run.started` logs the tracker's drop age (`track_drop_s`, the run's
+    `MURMUR_TRACK_DROP_S`, the same for every domain; v16 only, absent in older logs and in tests
+    without a tracker) and replay requires each drop at least that long after the track was last
+    seen. The scenario runner logs the bridge's default 180 s and, on a clock that steps back,
+    holds a `drop_track` step until the age has passed by its own clock, as the tracker would.
+  - *A dropped id back in a picture with a fresh fix hid the lost contact.* The keep-out skipped
+    a lost contact whose id was in the picture, so a fix 30 km away under the dropped id let a
+    nomination through. The tracker never reuses an id within a run, so such a track never stands
+    for the contact: the engine judges the lost contact whatever the picture holds (fail closed;
+    the honest race, a snapshot taken before the drop was handed over, holds exactly the drop's
+    facts and judges the same disc twice), the explanation mirrors it, and replay flags a dropped
+    id back in a picture with another fix than its drop's.
+  - *An agent's preview read no lost contacts* (MCP `preview_intent`), so it said a nomination
+    would wait for signers when its proposal would be rejected. Every decision's checks and every
+    dry run of one (the preview, the nomination form's options, the console's live checks of a
+    waiting engagement, which also lacked rules 7, 12 and 15's facts) now fill the engine's facts
+    with one function.
+  - *A claim's confirmation took its picture before the decision lock*, so a tick in between could
+    log a newer picture and the confirmation's would read as a track gone without a drop: it is
+    taken under the lock, as a nomination's is.
+  - *Revoking a dropped hostile's declaration listed no bystander*: the revocation refilled only
+    the live tracks of each engagement's last picture; it refills the lost contacts too, so an
+    engagement whose keep-out the declaration exempted stops at the revocation, not a tick later.
 - **A HIGH_LATENCY2 report without its GPS failure flag is a 3D fix** (10-04, fourth
   review). HIGH_LATENCY2 carries no fix type, so a platform on that link alone never had a
   fresh fix and could never release. The bridge now counts each one without
