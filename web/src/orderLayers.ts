@@ -48,10 +48,13 @@ interface Label {
   uid?: number
 }
 
-/** ids of the layers here whose positions follow a vehicle's glide: MapView re-triggers them on
- *  every animation frame without rebuilding the rest */
+/** Ids of the layers here whose positions follow a vehicle's glide (display smoothing, drawn.ts).
+ *  The contract: a layer listed here reads its positions from drawn.ts per item (by uid), and
+ *  MapView re-triggers its `getPosition` on every animation frame by cloning it with a new
+ *  `updateTriggers.getPosition`, reusing the rest of the extension layers as they were. A layer
+ *  added here must accept that clone (positions through the accessor, nothing baked into data).
+ *  Layers not listed keep the positions they were built with until the next full rebuild. */
 export const GLIDE_LAYER_IDS = ['order-labels']
-
 
 /** The intent's path: an orbit's ring, a patrol's closed route; none for a mode. */
 function pathOf(i: Intent): LngLat[] | null {

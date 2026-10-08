@@ -56,11 +56,13 @@ function withAges(s: BridgeState): BridgeState {
   }
 }
 
-/** Counts socket connections: the map draws vehicles as reported (no glide) on the first state
- *  after a reconnect, when positions may have moved a long way (drawn.ts). */
-let epoch = 0
-export function bridgeEpoch() {
-  return epoch
+/** The vehicle lists that came from a whole `state` message (the first after a connect, so
+ *  also after a reconnect) rather than a delta. The map draws those as reported, with no
+ *  glide: positions may have moved a long way since the last data (drawn.ts). Tied to the
+ *  data itself, so the snap cannot be used up by an unrelated render. */
+const wholeStates = new WeakSet<object>()
+export function isWholeState(vehicles: object): boolean {
+  return wholeStates.has(vehicles)
 }
 
 export type BridgeStatus = 'connecting' | 'live' | 'down'
@@ -87,7 +89,6 @@ export function useBridge() {
       ws = new WebSocket(`${proto}://${location.host}/ws?lod=1`)
       socket.current = ws
       ws.onopen = () => {
-        epoch++
         retry.current = 0
         setStatus('live')
         if (view.current) ws?.send(JSON.stringify({ type: 'view', ...view.current }))
@@ -96,6 +97,7 @@ export function useBridge() {
         const msg = JSON.parse(ev.data)
         if (msg.type === 'state') {
           current = withAges(msg as BridgeState)
+          wholeStates.add(current.vehicles)
           setState(current)
         } else if (msg.type === 'decisions') {
           setDecisions({ inbox: msg.inbox, intents: msg.intents, space: msg.space, operators: msg.operators })

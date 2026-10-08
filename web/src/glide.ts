@@ -41,6 +41,12 @@ export interface Context {
   domain: Domain
   /** reported ground or air speed, m/s, when known */
   speed?: number | null
+  /** The longest the vehicle may have been out of touch before it counts as lost (its stale
+   *  threshold, ms). Bounds the time the plausibility allowance grows over, so a vehicle that
+   *  sat parked and kept reporting the same position does not earn a long allowance. */
+  maxGapMs?: number
+  /** draw the reported heading at once (a tracker's beam is drawn from raw yaw: keep them together) */
+  snapHeading?: boolean
 }
 
 /** shortest signed turn from a to b, degrees in (-180, 180] */
@@ -62,10 +68,14 @@ export function hopM(a: Report, b: Report): number {
   return Math.hypot(dLat, dLon, dAlt)
 }
 
-/** glide time for a measured interval between reports */
+/** Glide time for a measured interval between reports: a little longer than the interval, so
+ *  that a report arriving a bit late (jitter) finds the symbol still moving rather than
+ *  stopped; capped, so the symbol is never more than MAX_GLIDE_MS behind the last report. */
+export const GLIDE_SLACK = 1.2
+
 export function glideMs(intervalMs: number | null): number {
   if (intervalMs == null || !(intervalMs > 0)) return DEFAULT_GLIDE_MS
-  return Math.min(MAX_GLIDE_MS, Math.max(MIN_GLIDE_MS, intervalMs))
+  return Math.min(MAX_GLIDE_MS, Math.max(MIN_GLIDE_MS, GLIDE_SLACK * intervalMs))
 }
 
 /** Is a hop from the last report to this one beyond what the vehicle could have flown in the
@@ -167,7 +177,7 @@ export class Glider {
       return
     }
     if (moved) {
-      const elapsed = now - t.lastAt
+      const elapsed = Math.min(now - t.lastAt, ctx.maxGapMs ?? 60_000)
       if (implausibleHop(hopM(t.to, rep), elapsed, ctx.domain, ctx.speed)) {
         t.lastAt = now
         t.gap = null
@@ -185,7 +195,7 @@ export class Glider {
       t.gliding = true
     }
     if (turned) {
-      if (t.hTo == null || rep.hdg == null) {
+      if (t.hTo == null || rep.hdg == null || ctx.snapHeading) {
         t.hFrom = t.hTo = rep.hdg
         t.hDur = 0
         t.cur.hdg = rep.hdg
@@ -292,9 +302,11 @@ export function trailHeadPath(tail: Pt[], report: Pt, drawn: Pt): Pt[] {
   const k = Math.cos((drawn[1] * Math.PI) / 180)
   const px = drawn[0] * k
   const py = drawn[1]
-  let best = -1
-  let bestD = Infinity
-  for (let i = 0; i + 1 < pts.length; i++) {
+  const n = pts.length - 1
+  if (n < 1) return [drawn]
+  const dist: number[] = []
+  let min = Infinity
+  for (let i = 0; i < n; i++) {
     const ax = pts[i][0] * k
     const ay = pts[i][1]
     const dx = pts[i + 1][0] * k - ax
@@ -302,12 +314,22 @@ export function trailHeadPath(tail: Pt[], report: Pt, drawn: Pt): Pt[] {
     const len2 = dx * dx + dy * dy
     const f = len2 > 0 ? Math.min(1, Math.max(0, ((px - ax) * dx + (py - ay) * dy) / len2)) : 0
     const d = Math.hypot(px - (ax + dx * f), py - (ay + dy * f))
-    // later segments win ties: a symbol at rest on the report is on the last one
-    if (d <= bestD + 1e-12) {
-      bestD = d
+    dist.push(d)
+    if (d < min) min = d
+  }
+  // The newest segment within a few metres of the nearest one: after a U-turn the return leg
+  // can lie within a metre of the outbound leg (or GPS noise can put it either side), and the
+  // symbol is on the return leg, so scanning from the end keeps the turn.
+  const tol = TRAIL_CUT_TOLERANCE_M / 111_320
+  let best = 0
+  for (let i = n - 1; i >= 0; i--) {
+    if (dist[i] <= min + tol) {
       best = i
+      break
     }
   }
-  if (best < 0) return [drawn]
   return [...pts.slice(0, best + 1), drawn]
 }
+
+/** how close to the nearest trail segment another, newer one must be to be taken instead */
+export const TRAIL_CUT_TOLERANCE_M = 3

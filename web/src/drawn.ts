@@ -8,7 +8,7 @@
 // reported numbers.
 import { type Context, Glider, type Pose } from './glide'
 import type { LngLat, Vehicle } from './types'
-import { domainOf, isStale } from './types'
+import { domainOf, isStale, staleMs } from './types'
 
 const glider = new Glider()
 let enabled = true
@@ -40,6 +40,9 @@ function contextOf(v: Vehicle): Context {
     hold: isStale(v) || v.nav_source === 'dead_reckoning' || v.lod === 'lite',
     domain: domainOf(v),
     speed,
+    maxGapMs: staleMs(v),
+    // the antenna tracker's beam is drawn from its raw yaw: its arrow must not lag behind it
+    snapHeading: v.kind === 'tracker',
   }
 }
 
@@ -80,6 +83,29 @@ export function isGliding(uid: number): boolean {
 /** the glide's current pose for a vehicle, or undefined when smoothing is off or it has none */
 function poseOf(uid: number): Pose | undefined {
   return enabled ? glider.pose(uid) : undefined
+}
+
+/** Forget every glide (a MapView mounted: its predecessor's poses are of no use). */
+export function resetDrawn() {
+  glider.clear()
+  tick++
+}
+
+/** The glide's pose for a vehicle (reused, not copied: do not keep it), undefined when smoothing
+ *  is off or the vehicle has none. Allocation-free, for per-frame accessors. */
+export function drawnPose(v: Vehicle): Pose | undefined {
+  return poseOf(v.uid)
+}
+
+/** [lon, lat, alt x altScale] to draw, written into deck.gl's `target` array when it gives one
+ *  (no allocation per vehicle per frame); altScale 0 for ground level. */
+export function drawnXYZ(v: Vehicle, target: number[] | undefined, altScale: number): number[] {
+  const out = target ?? [0, 0, 0]
+  const p = poseOf(v.uid)
+  out[0] = p ? p.lon : v.position![0]
+  out[1] = p ? p.lat : v.position![1]
+  out[2] = altScale === 0 ? 0 : (p ? p.alt : (v.alt_msl ?? 0)) * altScale
+  return out
 }
 
 /** [lon, lat] to draw: the glide's position, else the report */

@@ -6,12 +6,14 @@ import { MapboxOverlay } from '@deck.gl/mapbox'
 import { useEffect, useRef, useState } from 'react'
 import { circle, distanceM } from './geo'
 import { BRIDGE_FILTER, liftBridges, type LiftedBridge } from './bridges'
-import { build3dLayers, drawnHeight, DEM_TILES, HEIGHT_EXAGGERATION } from './map3d'
+import { build3dGlide, build3dStatic, drawnHeight, DEM_TILES, HEIGHT_EXAGGERATION } from './map3d'
 import { declutter } from './declutter'
-import { advanceDrawn, drawnAlt, drawnPosition, drawnPositionOf, drawnTick, glidingCount, isGliding, observeVehicles, setSmoothing, snapAllDrawn } from './drawn'
+import { advanceDrawn, drawnAlt, drawnPosition, drawnPositionOf, drawnTick, glidingCount, isGliding, observeVehicles, resetDrawn, setSmoothing, snapAllDrawn } from './drawn'
 import { GLIDE_LAYER_IDS } from './orderLayers'
 import { buildTrailLayers } from './trailLayers'
-import { bridgeEpoch } from './useBridge'
+import { perfWatchDeck } from './perf'
+import { reducedMotion } from './reveal'
+import { isWholeState } from './useBridge'
 import type { SpaceOverlay } from './space'
 import { EMPTY_OVERLAY } from './space'
 import { linkStubs, spaceFeatures, spaceLinkLayers } from './spaceLayers'
@@ -181,6 +183,8 @@ const ORBIT_YAW = 0.35
 const ORBIT_TILT = 0.25
 const VIEW_KEY = 'murmur.view'
 const SMOOTH_KEY = 'murmur.smooth'
+/** above this many vehicles gliding at once the glide animation runs at 30 Hz instead of 60 */
+const GLIDE_MANY = 200
 
 /** display smoothing (drawn.ts) is on unless the operator turned it off */
 function savedSmooth(): boolean {
@@ -313,8 +317,8 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
   const smoothRef = useRef(smooth)
   const frameId = useRef(0)
   // the layers that do not move with a glide, kept between animation frames
-  const staticLayers = useRef<{ space: LayersList; ext: LayersList; clusters: LayersList } | null>(null)
-  const seenEpoch = useRef(bridgeEpoch())
+  const staticLayers = useRef<{ three: LayersList; space: LayersList; ext: LayersList; clusters: LayersList } | null>(null)
+  const lastGlideFrame = useRef(0)
   const previewGliding = useRef(false)
   const overlay = useRef<MapboxOverlay | null>(null)
   const bridges = useRef<LiftedBridge[]>([])
@@ -363,16 +367,20 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     const { vehicles: vs, selected: sel, bare, clusters: cl } = latest.current
     if (!frame || !staticLayers.current) {
       staticLayers.current = {
+        three: build3dStatic(vs, is3d, bridges.current),
         space: spaceLinkLayers(spaceRef.current.links, is3d),
         ext: layersRef.current?.(is3d ? '3d' : '2d') ?? [],
         clusters: buildClusterLayers(cl),
       }
     }
-    const { space, ext, clusters: clusterLayers } = staticLayers.current
+    const { three, space, ext, clusters: clusterLayers } = staticLayers.current
     const tick = drawnTick()
+    // 2D trails draw where the MapLibre trails layer sat (under the taskings), not on top of everything
+    const trailsBefore = !is3d && ready.current && map.current?.getLayer('taskings-intent') ? 'taskings-intent' : undefined
     return [
-      ...build3dLayers(vs, is3d, bridges.current),
-      ...(smoothRef.current ? buildTrailLayers(vs, is3d) : []),
+      ...three,
+      ...build3dGlide(vs, is3d),
+      ...(smoothRef.current ? buildTrailLayers(vs, is3d, trailsBefore) : []),
       ...space,
       // the extension layers that sit at a vehicle follow its glide: re-trigger just those
       ...(frame ? ext.map((l) => (l instanceof Layer && GLIDE_LAYER_IDS.includes(l.id) ? l.clone({ updateTriggers: { ...l.props.updateTriggers, getPosition: tick } } as never) : l)) : ext),
@@ -397,11 +405,22 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     }
   }
 
-  // One animation frame per display frame while some vehicle is gliding, none otherwise
-  // (the loop ends when the last glide has; the next changed report starts it again).
+  // Animation frames while some vehicle is gliding, none otherwise (the loop ends when the last
+  // glide has; the next changed report starts it again). Capped at 60 Hz so that 120 and 144 Hz
+  // displays do not double the work, and at 30 Hz while more than GLIDE_MANY vehicles glide at
+  // once: each frame recomputes every vehicle's position in each attached layer (deck.gl cannot
+  // update only the rows that moved) and repaints the whole map, so the cost grows with the
+  // fleet, and 30 Hz is still smooth for glides of 150 ms to a second.
   const glideFrame = (t: number) => {
     frameId.current = 0
     if (!smoothRef.current || lostRef.current || !overlay.current) return
+    const every = glidingCount() > GLIDE_MANY ? 1000 / 30 : 1000 / 60
+    if (t - lastGlideFrame.current < every - 2) {
+      // too soon: wait for the next display frame (the glide may have ended meanwhile; the next real frame then draws its end)
+      frameId.current = requestAnimationFrame(glideFrame)
+      return
+    }
+    lastGlideFrame.current = t
     const t0 = performance.now()
     const n = advanceDrawn(t)
     overlay.current.setProps({ layers: deckLayers(viewRef.current === '3d', true) })
@@ -456,6 +475,8 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       const deck = new MapboxOverlay({ interleaved: true, layers: [], onHover })
       m.addControl(deck)
       overlay.current = deck
+      // ?perf: deck.gl's own attribute-update time, which is where a glide's cost lands
+      perfWatchDeck(() => (deck as unknown as { _deck?: { stats: never } })._deck?.stats ?? null)
     }
     attachDeck()
     m.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'bottom-right')
@@ -708,7 +729,19 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     }
     m.on('move', reportViewSoon)
     m.on('moveend', refreshBridges)
-    m.on('moveend', () => {
+    m.on('moveend', (e: { follow?: boolean }) => {
+      if (e.follow) {
+        // the follow camera ends a move every frame: report and redo the declutter at the
+        // timer's pace (4 Hz), not per frame, or App renders and every layer is rebuilt each frame
+        if (!viewTimer) {
+          viewTimer = window.setTimeout(() => {
+            viewTimer = undefined
+            reportView()
+            setMoved((n) => n + 1)
+          }, 250)
+        }
+        return
+      }
       window.clearTimeout(viewTimer)
       viewTimer = undefined
       reportView()
@@ -749,6 +782,8 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
   // the smooth toggle: remembered, and every vehicle is drawn as reported until its next report
   useEffect(() => {
     smoothRef.current = smooth
+    // also on mount: a remounted map (the error boundary's Retry) must not glide from its predecessor's poses
+    resetDrawn()
     setSmoothing(smooth)
     try {
       localStorage.setItem(SMOOTH_KEY, smooth ? 'on' : 'off')
@@ -780,22 +815,20 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     }
   }, [])
 
-  // Vehicles: deck.gl layers rebuilt here only (a new state from the bridge, a selection, the
-  // view, a move that changes what is in it or the declutter), never per frame. Only the
+  // Vehicles: deck.gl layers rebuilt here (a new state from the bridge, a selection, the view, a
+  // move that changes what is in it or the declutter); while a vehicle glides, only the layers
+  // attached to a vehicle are rebuilt per animation frame (glideFrame), reusing these arrays. Only the
   // vehicles in (or near) the view are drawn, the set the bridge sends in full (viewport.ts);
   // in cluster mode the lite ones are the markers' numbers, not symbols.
   useEffect(() => {
     const m = map.current
     if (!m) return
     if (smoothRef.current) {
-      // report changes start glides; after a reconnect or while the tab is hidden, draw as reported
+      // report changes start glides; a whole `state` message (the first after a connect, so after
+      // a reconnect too) or a hidden tab: draw as reported
       const now = performance.now()
       observeVehicles(vehicles, now)
-      const epoch = bridgeEpoch()
-      if (epoch !== seenEpoch.current || document.visibilityState === 'hidden') {
-        seenEpoch.current = epoch
-        snapAllDrawn(now)
-      }
+      if (isWholeState(vehicles) || document.visibilityState === 'hidden') snapAllDrawn(now)
     }
     const clustered = !!clusters?.cells.length
     const drawn = visibleVehicles(vehicles, viewport.current, clustered)
@@ -898,18 +931,24 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
         const smooth = smoothRef.current
         if (smooth) advanceDrawn(now)
         const at = smooth ? drawnPosition(v) : v.position
-        const k = 1 - Math.exp(-dt / (smooth ? 0.08 : 0.25))
+        // tight only while the vehicle is gliding (the target moves smoothly); a snap, a resting
+        // vehicle and reduced-motion users get the slow approach as before
+        const k = 1 - Math.exp(-dt / (smooth && isGliding(uid) && !reducedMotion() ? 0.08 : 0.25))
         const c = m.getCenter()
         const elev = viewRef.current === '3d' ? (smooth ? drawnAlt(v) * HEIGHT_EXAGGERATION : drawnHeight(v)) : 0
         m.setCenterClampedToGround(false)
         const z = m.getZoom()
         const zoom = f.zoom == null ? z : z + (f.zoom - z) * k
         if (f.zoom != null && Math.abs(f.zoom - zoom) < 0.01) f.zoom = null
-        m.jumpTo({
-          center: [c.lng + (at[0] - c.lng) * k, c.lat + (at[1] - c.lat) * k],
-          elevation: m.getCenterElevation() + (elev - m.getCenterElevation()) * k,
-          zoom,
-        })
+        // `follow` marks the moveend this fires every frame (see the moveend handler)
+        m.jumpTo(
+          {
+            center: [c.lng + (at[0] - c.lng) * k, c.lat + (at[1] - c.lat) * k],
+            elevation: m.getCenterElevation() + (elev - m.getCenterElevation()) * k,
+            zoom,
+          },
+          { follow: true },
+        )
       }
       requestAnimationFrame(step)
     }

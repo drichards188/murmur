@@ -1,6 +1,6 @@
 import { LineLayer, PathLayer, ScatterplotLayer, SolidPolygonLayer } from '@deck.gl/layers'
 import type { LiftedBridge } from './bridges'
-import { drawnAlt, drawnPosition, drawnTick, smoothing } from './drawn'
+import { drawnTick, drawnXYZ, smoothing } from './drawn'
 import type { Vehicle } from './types'
 import { domainOf } from './types'
 
@@ -51,32 +51,19 @@ function seaSurface(vehicles: Vehicle[]) {
   return [{ polygon }]
 }
 
-// The vehicles that are placed, and the sea plane around them, are rebuilt only when the
-// vehicles change: animation frames of a glide (drawn.ts) reuse them, so deck.gl keeps its
-// attributes and recomputes only the positions.
-let memo: { vehicles: Vehicle[]; visible: boolean; placed: Vehicle[]; sea: { polygon: XYZ[] }[]; trailed: Vehicle[]; trailKey: string } | null = null
-
-function placedOf(vehicles: Vehicle[], visible: boolean) {
-  if (memo && memo.vehicles === vehicles && memo.visible === visible) return memo
-  // nothing to compute while 2D is shown: the layers stay (hidden), their data is empty
-  const placed = visible ? vehicles.filter((v) => v.position && v.alt_msl != null) : []
-  memo = { vehicles, visible, placed, sea: seaSurface(placed), trailed: placed.filter((v) => v.trail.length > 1), trailKey: placed.map((v) => v.trail.length).join() }
-  return memo
-}
-
 /** The 3D scene around the vehicles: bridge decks, sea surface, trails, height stems and
  *  sea-level shadows. The vehicles themselves (both views) are in vehicleLayers.ts.
  *  visible=false keeps the layers (and their GPU resources) alive while the 2D view is shown. */
 export function build3dLayers(vehicles: Vehicle[], visible = true, bridges: LiftedBridge[] = []) {
-  const { placed, sea, trailed, trailKey } = placedOf(vehicles, visible)
-  const smooth = smoothing()
-  // with smoothing on the stem, shadow and trail end follow the drawn position (drawn.ts); the
-  // trail itself is drawn by trailLayers.ts, which ends at that position
-  const pos = smooth ? (v: Vehicle) => drawnPosition(v) : (v: Vehicle) => v.position!
-  const alt = smooth ? (v: Vehicle) => drawnAlt(v) : (v: Vehicle) => v.alt_msl
-  const at = (v: Vehicle): XYZ => [pos(v)[0], pos(v)[1], z(alt(v))]
-  const tick = smooth ? drawnTick() : 0
-  const posTrigger = smooth ? { getSourcePosition: tick, getTargetPosition: tick, getPosition: tick } : {}
+  return [...build3dStatic(vehicles, visible, bridges), ...build3dGlide(vehicles, visible)]
+}
+
+/** Bridge decks, sea surface and trails: nothing here moves with a glide (display smoothing,
+ *  drawn.ts), so MapView builds them when the data changes and reuses them between frames. */
+export function build3dStatic(vehicles: Vehicle[], visible = true, bridges: LiftedBridge[] = []) {
+  // nothing to compute while 2D is shown: the layers stay (hidden), their data is empty
+  const placed = visible ? vehicles.filter((v) => v.position && v.alt_msl != null) : []
+  const at = (v: Vehicle): XYZ => [v.position![0], v.position![1], z(v.alt_msl)]
   return [
     // bridge decks at estimated height (see bridges.ts); drawn before the sea surface
     new PathLayer<LiftedBridge>({
@@ -94,7 +81,7 @@ export function build3dLayers(vehicles: Vehicle[], visible = true, bridges: Lift
     new SolidPolygonLayer({
       id: 'sea-surface',
       visible,
-      data: sea,
+      data: seaSurface(placed),
       getPolygon: (d: { polygon: XYZ[] }) => d.polygon,
       getFillColor: [40, 110, 160, 70],
       parameters: { depthWriteEnabled: false },
@@ -102,35 +89,57 @@ export function build3dLayers(vehicles: Vehicle[], visible = true, bridges: Lift
     new PathLayer<Vehicle>({
       id: 'trails-3d',
       visible,
-      // with smoothing on, trailLayers.ts draws the trails (body and a head that ends at the icon)
-      data: smooth ? [] : trailed,
+      // with smoothing on, trailLayers.ts draws the trails (they end at the drawn position)
+      data: smoothing() ? [] : placed.filter((v) => v.trail.length > 1),
       getPath: (v) => [...v.trail.map(([lon, lat, alt]): XYZ => [lon, lat, z(alt)]), at(v)],
       getColor: (v) => colour(v, 140),
       getWidth: 2,
       widthUnits: 'pixels',
-      updateTriggers: { getPath: trailKey },
+      updateTriggers: { getPath: placed.map((v) => v.trail.length).join() },
     }),
+  ]
+}
+
+// the vehicles placed in 3D, kept while the vehicles are the same (animation frames of a glide)
+let memo: { vehicles: Vehicle[]; visible: boolean; placed: Vehicle[] } | null = null
+
+/** Stems and sea-level shadows: they follow a vehicle's drawn position (display smoothing,
+ *  drawn.ts), so MapView rebuilds just these on an animation frame. */
+export function build3dGlide(vehicles: Vehicle[], visible = true) {
+  if (!memo || memo.vehicles !== vehicles || memo.visible !== visible) {
+    memo = { vehicles, visible, placed: visible ? vehicles.filter((v) => v.position && v.alt_msl != null) : [] }
+  }
+  const { placed } = memo
+  const smooth = smoothing()
+  const at = smooth
+    ? (v: Vehicle, info?: { target?: number[] }) => drawnXYZ(v, info?.target, HEIGHT_EXAGGERATION) as XYZ
+    : (v: Vehicle): XYZ => [v.position![0], v.position![1], z(v.alt_msl)]
+  const ground = smooth
+    ? (v: Vehicle, info?: { target?: number[] }) => drawnXYZ(v, info?.target, 0) as XYZ
+    : (v: Vehicle): XYZ => [v.position![0], v.position![1], 0]
+  const triggers = smooth ? { getSourcePosition: drawnTick(), getTargetPosition: drawnTick(), getPosition: drawnTick() } : {}
+  return [
     // stem from sea level to the vehicle: shows height (or depth) at a glance
     new LineLayer<Vehicle>({
       id: 'stems',
       visible,
       data: placed,
-      getSourcePosition: (v) => [pos(v)[0], pos(v)[1], 0],
+      getSourcePosition: ground,
       getTargetPosition: at,
       getColor: (v) => colour(v, 160),
       getWidth: 1.5,
       widthUnits: 'pixels',
-      updateTriggers: posTrigger,
+      updateTriggers: triggers,
     }),
     new ScatterplotLayer<Vehicle>({
       id: 'sea-level-shadow',
       visible,
       data: placed,
-      getPosition: (v) => [pos(v)[0], pos(v)[1], 0],
+      getPosition: ground,
       getRadius: 4,
       radiusUnits: 'pixels',
       getFillColor: [0, 0, 0, 110],
-      updateTriggers: posTrigger,
+      updateTriggers: triggers,
     }),
   ]
 }
