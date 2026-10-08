@@ -8,7 +8,7 @@
 //   latency     from the message to the end of those effects, including any wait in the
 //               event loop behind other work (frames, other messages)
 //   frame       interval between animation frames (fps on a real GPU)
-//   glide       deck.gl's own attribute update per render (its "Update Attributes" stat), which
+//   glide       deck.gl's own attribute updates per frame, summed over layers (its "Update Attributes" stat), which
 //               is where the cost of display smoothing lands: every glide frame recomputes the
 //               positions of every vehicle in the attached layers. Not visible in the JS the
 //               glide loop itself runs (advance and setProps), which deck.gl defers to its render
@@ -96,26 +96,26 @@ try {
 // deck.gl's stats, sampled every animation frame (MapView registers where to find them)
 interface StatLike {
   lastTiming: number
-  count: number
+  /** accumulated ms since deck.gl last reset its stats (every 60 frames) */
+  time: number
 }
 let deckStats: (() => { get(name: string): StatLike } | null) | null = null
 export function perfWatchDeck(get: () => { get(name: string): StatLike } | null) {
   deckStats = get
 }
-let lastAttr = ''
+let attrTime = 0
 let lastCpu = ''
 function sampleDeck() {
   try {
     const st = deckStats?.()
     if (!st) return
+    // attribute updates add up over the layers of a frame: the sum since the last sample
     const a = st.get('Update Attributes')
-    const key = `${a.count}:${a.lastTiming}`
-    if (key !== lastAttr) {
-      lastAttr = key
-      if (a.lastTiming > 0) rings.glide.push(a.lastTiming)
-    }
+    if (a.time < attrTime) attrTime = 0 // deck.gl reset its stats
+    if (a.time > attrTime) rings.glide.push(a.time - attrTime)
+    attrTime = a.time
     const c = st.get('CPU Time')
-    const ck = `${c.count}:${c.lastTiming}`
+    const ck = `${c.time}:${c.lastTiming}`
     if (ck !== lastCpu) {
       lastCpu = ck
       if (c.lastTiming > 0) rings.deckCpu.push(c.lastTiming)

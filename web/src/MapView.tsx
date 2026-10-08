@@ -847,6 +847,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       const w = window as unknown as { murmurPerf: Record<string, number[]> }
       w.murmurPerf ??= {}
       const a = (w.murmurPerf.vehicleLayers ??= [])
+      ;(w.murmurPerf as unknown as Record<string, number>).drawnCount = drawn.length
       a.push(performance.now() - t1)
       if (a.length > 200) a.splice(0, a.length - 200)
     }
