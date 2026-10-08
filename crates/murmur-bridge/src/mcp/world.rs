@@ -207,19 +207,72 @@ fn vehicles(mcp: &Mcp, only: Option<&[u64]>) -> (f64, Vec<Value>) {
     (now_wall, out)
 }
 
-/// `get_fleet`.
-pub fn fleet(mcp: &Mcp, only: Option<&[u64]>) -> Value {
-    let (t, vehicles) = vehicles(mcp, only);
+/// The facts a vehicle's view dates, by key: `stale` in the compact view names these.
+const DATED: [&str; 5] = ["autopilot", "position", "nav", "battery", "home"];
+
+/// A vehicle as `get_fleet` with `compact` shows it: what changes and what a supervisor
+/// picks a vehicle by, taken from the full view so the two never disagree. The platform's
+/// limits, home, link figures, status texts and the silent-link estimate are left to
+/// `get_vehicle` or `get_fleet` without `compact`.
+fn compact_vehicle(v: &Value) -> Value {
+    let stale: Vec<&str> = DATED
+        .into_iter()
+        .filter(|k| v[*k]["stale"].as_bool().unwrap_or(true))
+        .collect();
+    let op = &v["current_op"];
+    json!({
+        "uid": v["uid"],
+        "callsign": v["callsign"],
+        "platform": v["platform"]["id"],
+        "domain": v["platform"]["domain"],
+        "armed": v["platform"]["armed"],
+        "mode": v["autopilot"]["mode"],
+        "lon": v["position"]["lon"],
+        "lat": v["position"]["lat"],
+        "alt_rel_m": v["position"]["alt_rel_m"],
+        "position_age_s": v["position"]["age_s"],
+        "nav_ready": v["nav"]["ready"],
+        "nav_source": v["nav"]["source"],
+        "gps_glitch": v["nav"]["gps_glitch"]["value"],
+        "battery_pct": v["battery"]["pct"],
+        "link_lost": v["link"]["lost"],
+        "link_age_s": v["link"]["age_s"],
+        "task": if op.is_null() {
+            Value::Null
+        } else {
+            json!({ "intent_id": op["intent_id"], "task": op["task"], "state": op["state"] })
+        },
+        "stale": stale,
+    })
+}
+
+/// `get_fleet`: every vehicle's full view, or with `compact` one short entry each.
+pub fn fleet(mcp: &Mcp, only: Option<&[u64]>, compact: bool) -> Value {
+    let (t, mut vehicles) = vehicles(mcp, only);
+    if compact {
+        vehicles = vehicles.iter().map(compact_vehicle).collect();
+    }
     let rules = mcp.decision.rules();
+    let note = if compact {
+        format!(
+            "{STALE_NOTE} compact: one entry per vehicle; stale names its facts older than \
+             the vehicle's freshness limit (or not known), which the rules refuse; \
+             get_vehicle (or get_fleet without compact, with uids) has the full facts and \
+             each one's age"
+        )
+    } else {
+        STALE_NOTE.to_string()
+    };
     json!({
         "t": t,
         "count": vehicles.len(),
+        "compact": compact,
         "freshness": {
             "max_fact_age_s": rules.max_fact_age_s,
             "fact_age_intervals": rules.fact_age_intervals,
             "note": "a vehicle's freshness limit is max_fact_age_s, or fact_age_intervals times its link's expected report interval if larger (an acoustic link reports every 20 s)",
         },
-        "note": STALE_NOTE,
+        "note": note,
         "vehicles": vehicles,
     })
 }

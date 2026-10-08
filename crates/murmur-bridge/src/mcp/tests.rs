@@ -624,9 +624,32 @@ async fn fleet_facts_carry_age_and_staleness() {
     assert!(v["position"]["age_s"].as_f64().is_some_and(|a| a >= 59.0));
     assert_eq!(v["nav"]["stale"], false, "the nav report is still fresh");
 
+    // the compact view: the same facts, one short entry, the stale ones named
+    let full = r.ok(&planner(), "get_fleet", json!({ "uids": [1] })).await;
+    let small = r.ok(&planner(), "get_fleet", json!({ "uids": [1], "compact": true })).await;
+    assert_eq!((small["count"].as_u64(), small["compact"].as_bool()), (Some(1), Some(true)));
+    let (f, c) = (&full["vehicles"][0], &small["vehicles"][0]);
+    assert_eq!(
+        (&c["uid"], &c["callsign"], &c["platform"], &c["armed"], &c["lon"], &c["lat"]),
+        (&f["uid"], &f["callsign"], &f["platform"]["id"], &f["platform"]["armed"], &f["position"]["lon"], &f["position"]["lat"]),
+        "{c}"
+    );
+    assert_eq!((&c["nav_ready"], &c["link_lost"]), (&json!(true), &json!(false)));
+    assert!(c["stale"].as_array().is_some_and(|s| s.contains(&json!("position"))), "{c}");
+    assert!(!c["stale"].as_array().is_some_and(|s| s.contains(&json!("nav"))), "{c}");
+    assert!(small["note"].as_str().is_some_and(|n| n.contains("get_vehicle")));
+    let size = |v: &Value| v["vehicles"][0].to_string().len();
+    assert!(size(&small) * 3 < size(&full), "{} against {}", size(&small), size(&full));
+    // the default is the full view, and uids filters either
+    r.vehicle(2, Firmware::Copter, "x10", (LAT, LON + 0.001));
+    sleep(Duration::from_millis(500)).await;
+    let both = r.ok(&planner(), "get_fleet", json!({ "compact": true })).await;
+    assert_eq!(both["count"], 2);
+    assert_eq!(r.ok(&planner(), "get_fleet", json!({})).await["compact"], false);
+
     // the same views as resources
     let fleet = read(&r.mcp, &planner(), "murmur://fleet").await.expect("resource");
-    assert_eq!(fleet["count"], 1);
+    assert_eq!(fleet["count"], 2);
     let one = read(&r.mcp, &planner(), "murmur://fleet/1").await.expect("resource");
     assert_eq!(one["vehicle"]["uid"], 1);
     assert!(read(&r.mcp, &planner(), "murmur://fleet/9").await.is_err());
@@ -865,6 +888,28 @@ async fn get_changes_reports_what_changed_since_a_cursor() {
     let rej = change(&v, "intent.new").expect("the second, already decided");
     assert_eq!((rej["intent"].as_u64(), rej["state"].as_str()), (Some(id2), Some("rejected")));
     assert_eq!(rej["operator_note"], json!({ "by": "op-1", "note": "not now: the shore radar has it" }));
+    let c4 = v["cursor"].clone();
+    // another agent sees the same change, but not the operator's words to this one
+    let theirs = r.ok(&planner(), "get_changes", json!({ "since": c3 })).await;
+    let rej = change(&theirs, "intent.new").expect("intent.new for the planner");
+    assert_eq!((rej["mine"].as_bool(), rej.get("operator_note")), (Some(false), None), "{theirs}");
+    // a note is a reason, not a document: kept to REJECTION_NOTE_CHARS
+    let id3 = r
+        .ok(&watch(), "propose_intent", orbit(2, "watch the south tower"))
+        .await["id"]
+        .as_u64()
+        .expect("id");
+    r.d.reject(&op("op-1"), id3, Some("x".repeat(5000)))
+        .expect("rejected");
+    tick().await;
+    let v = r.ok(&watch(), "get_changes", json!({ "since": c4 })).await;
+    let long = change(&v, "intent.new").expect("the third, already decided");
+    let note = long["operator_note"]["note"].as_str().expect("a note");
+    assert_eq!(
+        note.chars().count(),
+        crate::decision::agent::REJECTION_NOTE_CHARS + 3,
+        "cut, with ..."
+    );
     let c4 = v["cursor"].clone();
 
     // a cursor ahead of the feed: start again, nothing to report
@@ -1296,7 +1341,8 @@ async fn the_endpoint_takes_the_agent_header_over_http() {
 /// can be quiet that long, and rmcp's own five-minute limit dropped the session of an agent
 /// that connected once and waited (the situation framework's storyline agent, live). A
 /// session idle past the limit is still dropped, and the limit is the bridge's setting
-/// (`MURMUR_MCP_IDLE_S`).
+/// (`MURMUR_MCP_IDLE_S`). One agent holds at most `SESSIONS_PER_AGENT`: past that the one it
+/// used least recently is closed.
 #[tokio::test(start_paused = true)]
 async fn an_agent_session_survives_a_quiet_spell_and_the_idle_limit_is_set_by_the_bridge() {
     let r = rig();
@@ -1352,7 +1398,7 @@ async fn an_agent_session_survives_a_quiet_spell_and_the_idle_limit_is_set_by_th
         (status, v)
     }
     // the bridge's default: ten quiet minutes, then a call on the same session
-    assert!(IDLE_LIMIT >= Duration::from_secs(1800), "{IDLE_LIMIT:?}");
+    assert!(IDLE_LIMIT > Duration::from_secs(600), "{IDLE_LIMIT:?}");
     let router = mount(IDLE_LIMIT);
     let session = open(&router).await;
     sleep(Duration::from_secs(600)).await;
@@ -1370,6 +1416,48 @@ async fn an_agent_session_survives_a_quiet_spell_and_the_idle_limit_is_set_by_th
     assert_eq!(fleet(&short, &session).await.0, StatusCode::OK);
     sleep(Duration::from_secs(30)).await;
     assert_ne!(fleet(&short, &session).await.0, StatusCode::OK);
+    // one agent past its cap of sessions: the one it used least recently is closed (a client
+    // that opens sessions and never closes them holds SESSIONS_PER_AGENT, not one per retry)
+    let capped = mount(IDLE_LIMIT);
+    let mut held = Vec::new();
+    for _ in 0..=SESSIONS_PER_AGENT {
+        let s = open(&capped).await;
+        assert_eq!(fleet(&capped, &s).await.0, StatusCode::OK);
+        held.push(s);
+        sleep(Duration::from_secs(1)).await;
+    }
+    sleep(Duration::from_millis(50)).await; // the close runs on its own task
+    assert_ne!(fleet(&capped, &held[0]).await.0, StatusCode::OK, "the oldest was closed");
+    for s in &held[1..] {
+        assert_eq!(fleet(&capped, s).await.0, StatusCode::OK, "the others are kept");
+    }
+    // sessions their client closed do not count: a quiet one is kept however many others
+    // come and go (the storyline agent opens and closes one per proposal)
+    async fn close(router: &Router, session: &str) -> StatusCode {
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/mcp")
+            .header(header::HOST, "127.0.0.1")
+            .header(AGENT_HEADER, "agent-planner")
+            .header("mcp-session-id", session)
+            .header("mcp-protocol-version", "2025-11-25")
+            .body(Body::empty())
+            .expect("request");
+        router.clone().oneshot(req).await.expect("response").status()
+    }
+    let tidy = mount(IDLE_LIMIT);
+    let quiet = open(&tidy).await;
+    assert_eq!(fleet(&tidy, &quiet).await.0, StatusCode::OK);
+    for _ in 0..2 * SESSIONS_PER_AGENT {
+        sleep(Duration::from_secs(1)).await;
+        let s = open(&tidy).await;
+        assert_eq!(fleet(&tidy, &s).await.0, StatusCode::OK);
+        let closed = close(&tidy, &s).await;
+        assert!(closed.is_success(), "{closed}");
+        assert_ne!(fleet(&tidy, &s).await.0, StatusCode::OK, "closed");
+    }
+    sleep(Duration::from_millis(50)).await;
+    assert_eq!(fleet(&tidy, &quiet).await.0, StatusCode::OK, "the quiet one is kept");
 }
 
 /// `POST /api/operator/view` over HTTP (Phase G): an operator's display event is logged under

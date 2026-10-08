@@ -36,6 +36,10 @@ pub struct NoParams {}
 pub struct FleetParams {
     /// Only these fleet uids (default: every vehicle).
     pub uids: Option<Vec<u64>>,
+    /// One short entry per vehicle (identity, mode, position and its age, navigation, GPS
+    /// glitch, battery, link, current task, and which facts are stale) instead of the full
+    /// facts: about a quarter of the size. Default false.
+    pub compact: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -279,8 +283,15 @@ impl IntentParams {
 /// (`_meta["anthropic/maxResultSizeChars"]`, which Claude Code reads). Claude Code 2.1.294
 /// otherwise saved answers over about 50 000 characters to a file and gave the model a
 /// preview, which a model with no file tools cannot read (live: the nomination dry run on a
-/// hostile track, 61 KB with three armed platforms; a fleet of 22 is about as large).
-pub const RESULT_MAX_CHARS: u64 = 400_000;
+/// hostile track, 61 KB with three armed platforms). Set from full reads at the scale the
+/// testbed is built for, measured on 100 stand-ins (`scripts/scale_fleet.py 100`, 23 armed,
+/// 14 tracks; 10-08): `get_fleet` 131 650 characters (32 494 with `compact`), `get_tracks`
+/// 38 945, `get_nomination_options` 213 557 for every armed platform and 4 980 for two. A
+/// full fleet read at 100 comes whole, with room for some growth; an answer much larger (the
+/// dry run over every armed platform of a large fleet) does not land whole in a model's
+/// context, where it would stay for the rest of a session: the tools say to narrow it with
+/// `uids` or `compact`.
+pub const RESULT_MAX_CHARS: u64 = 150_000;
 
 fn tool<T: JsonSchema + 'static>(name: &'static str, description: String, read_only: bool) -> Tool {
     let mut t = Tool::new(name, description, schema_for_type::<T>());
@@ -306,7 +317,9 @@ pub fn tools() -> Vec<Tool> {
                  platform's limits and the tasks its kind can do, position, navigation \
                  readiness and source, battery, home, link health and the task it is on. \
                  {STALE_NOTE} A vehicle whose link is lost or whose position is stale is not \
-                 taskable: the readiness check will refuse it. {ESTIMATE_NOTE}"
+                 taskable: the readiness check will refuse it. With many vehicles, read \
+                 compact (one short entry each) and pass uids for the full facts of the few \
+                 you act on. {ESTIMATE_NOTE}"
             ),
             true,
         ),
@@ -491,7 +504,9 @@ pub fn tools() -> Vec<Tool> {
                  (move_within: the effect times, and for a holding target the distances, at \
                  which every keep-out holds on the picture now) or a later nomination if \
                  everything keeps behaving as now (the assumptions are stated). At most one \
-                 call a second per agent. It is an \
+                 call a second per agent. With many armed vehicles, pass uids (a few \
+                 candidates): the answer for every armed platform of a large fleet is too \
+                 large to read whole. It is an \
                  explanation, not a decision and not a recommendation: options are listed by \
                  uid, unranked; the checks decide and no keep-out is relaxed; only human \
                  operators with engagement authority decide a nomination. {STALE_NOTE}"
@@ -582,7 +597,7 @@ pub async fn call(
     let out: Result<Value, DecisionError> = match name {
         "get_fleet" => {
             let p = params!(FleetParams);
-            Ok(world::fleet(mcp, p.uids.as_deref()))
+            Ok(world::fleet(mcp, p.uids.as_deref(), p.compact.unwrap_or(false)))
         }
         "get_vehicle" => {
             let p = params!(VehicleParams);

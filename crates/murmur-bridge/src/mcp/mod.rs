@@ -121,9 +121,20 @@ pub struct Settings {
 }
 
 /// An MCP session idle this long is dropped (a client whose connection vanished leaves no
-/// session behind). An hour: an agent that wakes on events can be quiet for minutes, and
-/// rmcp's own five minutes dropped the sessions of agents that connect once and wait.
-pub const IDLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(3600);
+/// session behind). Fifteen minutes: only clients on a protocol before 2026-07-28 hold a
+/// session (Claude Code 2.1.294 holds none); the watch officer's own reads come every 2 s and
+/// the situation storyline connects once per proposal, so no known client is quiet longer
+/// than the watch's heartbeat ceiling (5 minutes) between calls. Three times that leaves
+/// room, where rmcp's own five minutes dropped an agent that connected once and waited, and
+/// a leaked session lives a quarter of an hour, not an hour.
+pub const IDLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// The sessions one agent id may hold; past this the one it used least recently is closed.
+/// Eight: the watch officer holds one (its reads) plus one per Codex turn in flight, the
+/// situation storyline one per proposal, closed after; eight leaves room for a few clients
+/// sharing an id while a client that opens sessions and never closes them holds eight at
+/// most, not one per retry for the idle limit.
+pub const SESSIONS_PER_AGENT: usize = 8;
 
 impl Settings {
     pub fn from_env() -> Settings {
@@ -166,6 +177,10 @@ pub struct Mcp {
     dry_runs: Mutex<std::collections::BTreeMap<AgentId, tokio::time::Instant>>,
     /// `get_changes`: what changed between reads, numbered for a cursor (read-only).
     pub(crate) changes: changes::Feed,
+    /// Each agent's MCP sessions and when each was last used ([`SESSIONS_PER_AGENT`]).
+    sessions: Mutex<std::collections::BTreeMap<AgentId, Vec<(String, tokio::time::Instant)>>>,
+    /// The session manager, to close a session past the cap (set by [`service`]).
+    manager: std::sync::OnceLock<Arc<LocalSessionManager>>,
 }
 
 /// The least time between two of one agent's nomination dry runs.
@@ -187,6 +202,8 @@ impl Mcp {
             seen: Mutex::new(BTreeSet::new()),
             dry_runs: Mutex::new(std::collections::BTreeMap::new()),
             changes: changes::Feed::default(),
+            sessions: Mutex::new(std::collections::BTreeMap::new()),
+            manager: std::sync::OnceLock::new(),
         })
     }
 
@@ -236,6 +253,7 @@ impl Mcp {
             }
             let via = format!("API key {key_id}");
             self.connected(&agent, &via, ctx.peer.peer_info().as_deref());
+            self.note_session(&agent, parts);
             return Ok(agent);
         }
         let header = parts
@@ -259,7 +277,66 @@ impl Mcp {
         })?;
         let agent = self.resolve(&id)?;
         self.connected(&agent, via, client.as_deref());
+        self.note_session(&agent, parts);
         Ok(agent)
+    }
+
+    /// Record that `agent` used the session the request names (`Mcp-Session-Id`; a client on
+    /// protocol 2026-07-28 or later names none: it holds no session). Past
+    /// [`SESSIONS_PER_AGENT`], the agent's session used least recently is closed.
+    fn note_session(&self, agent: &AgentId, parts: Option<&axum::http::request::Parts>) {
+        let Some(id) = parts
+            .and_then(|p| p.headers.get("mcp-session-id"))
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+        else {
+            return;
+        };
+        let now = tokio::time::Instant::now();
+        let evict = {
+            let mut all = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let mine = all.entry(agent.clone()).or_default();
+            // a session the manager no longer holds (closed by its client, which DELETE does
+            // without reaching this handler, or idle past the limit) does not count
+            if let Some(manager) = self.manager.get()
+                && let Ok(live) = manager.sessions.try_read()
+            {
+                mine.retain(|(s, _)| *s == id || live.contains_key(s.as_str()));
+            }
+            match mine.iter_mut().find(|(s, _)| *s == id) {
+                Some(entry) => entry.1 = now,
+                None => mine.push((id.clone(), now)),
+            }
+            let mut out = Vec::new();
+            while mine.len() > SESSIONS_PER_AGENT {
+                let oldest = mine
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (s, _))| *s != id)
+                    .min_by_key(|(_, (_, t))| *t)
+                    .map(|(i, _)| i);
+                match oldest {
+                    Some(i) => out.push(mine.remove(i).0),
+                    None => break,
+                }
+            }
+            out
+        };
+        if evict.is_empty() {
+            return;
+        }
+        if let Some(manager) = self.manager.get().cloned() {
+            tokio::spawn(async move {
+                for id in evict {
+                    let id: rmcp::transport::common::server_side_http::SessionId = id.into();
+                    let _ = rmcp::transport::streamable_http_server::session::SessionManager::close_session(
+                        manager.as_ref(),
+                        &id,
+                    )
+                    .await;
+                }
+            });
+        }
     }
 
     /// A claimed id against the configured list.
@@ -359,10 +436,12 @@ pub fn service(
 ) -> StreamableHttpService<Handler, LocalSessionManager> {
     let mut sessions = LocalSessionManager::default();
     sessions.session_config.keep_alive = Some(settings.idle);
+    let sessions = Arc::new(sessions);
     let shared = Mcp::new(settings, world, decision, api);
+    let _ = shared.manager.set(sessions.clone());
     StreamableHttpService::new(
         move || Ok(Handler(shared.clone())),
-        Arc::new(sessions),
+        sessions,
         StreamableHttpServerConfig::default(),
     )
 }
@@ -530,7 +609,7 @@ async fn read(mcp: &Mcp, agent: &AgentId, uri: &str) -> Result<Value, ErrorData>
     let api_err = |e: DecisionError| ErrorData::internal_error(e.detail, None);
     let path = uri.strip_prefix("murmur://").ok_or_else(not_found)?;
     Ok(match path {
-        "fleet" => world::fleet(mcp, None),
+        "fleet" => world::fleet(mcp, None, false),
         "platforms" => world::platforms(mcp).await.map_err(api_err)?,
         "areas" => world::areas(mcp),
         "policy" => world::policy(mcp),

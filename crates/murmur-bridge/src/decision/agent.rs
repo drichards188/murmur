@@ -26,6 +26,10 @@ const RECENT_EVENTS: usize = 500;
 /// A vehicle event the audit log recorded (`vehicle.event`), kept for `get_recent_events`.
 #[derive(Clone, Debug, Serialize)]
 pub struct RecentEvent {
+    /// Its number in the ring, from 1 (events logged together share `t`; this tells them
+    /// apart, so a reader that read up to one of them misses none of the rest).
+    #[serde(skip)]
+    pub seq: u64,
     /// When the bridge logged it (the bridge's clock, s).
     pub t: f64,
     pub uid: Uid,
@@ -41,10 +45,13 @@ pub struct RecentEvents(Mutex<VecDeque<RecentEvent>>);
 
 /// Rejection notes kept for agents: this many, the newest.
 const REJECTION_NOTES: usize = 2000;
+/// The most of one note kept, in characters.
+pub const REJECTION_NOTE_CHARS: usize = 1000;
 
 /// What an operator wrote when they rejected an intent (the audit log's `approval.rejected`
-/// note; the engine keeps no note on the intent), for agents to read with the intent:
-/// intent id to (operator, note). Display only.
+/// note; the engine keeps no note on the intent), for the agent that proposed it to read with
+/// the intent: intent id to (operator, note). Display only: never an input to a decision,
+/// written only after `approval.rejected` is logged, empty after a restart.
 #[derive(Default)]
 pub struct RejectionNotes(Mutex<BTreeMap<u64, (String, String)>>);
 
@@ -238,13 +245,13 @@ impl Decision {
 
     /// Every intent of the run, lean (see [`IntentBrief`]), oldest first.
     pub fn intent_briefs(&self) -> Vec<IntentBrief> {
+        // the core first, then the notes: the order `reject` takes them in
+        let core = self.lock();
         let notes = self
             .rejection_notes
             .0
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        let core = self.lock();
+            .unwrap_or_else(|e| e.into_inner());
         core.engine
             .intents()
             .map(|i| {
@@ -293,8 +300,13 @@ impl Decision {
         let Some(note) = note.map(str::trim).filter(|n| !n.is_empty()) else {
             return;
         };
+        // a note is a reason, not a document: cut at REJECTION_NOTE_CHARS
+        let mut kept: String = note.chars().take(REJECTION_NOTE_CHARS).collect();
+        if kept.len() < note.len() {
+            kept.push_str("...");
+        }
         let mut notes = self.rejection_notes.0.lock().unwrap_or_else(|e| e.into_inner());
-        notes.insert(id, (by.as_str().to_string(), note.to_string()));
+        notes.insert(id, (by.as_str().to_string(), kept));
         while notes.len() > REJECTION_NOTES {
             notes.pop_first();
         }
@@ -314,10 +326,13 @@ impl Decision {
         let t = clock::wall();
         let mut ring = self.recent.0.lock().unwrap_or_else(|e| e.into_inner());
         for e in events {
+            // the ring never empties once filled, so the newest holds the last number
+            let seq = ring.back().map_or(1, |l| l.seq + 1);
             if ring.len() == RECENT_EVENTS {
                 ring.pop_front();
             }
             ring.push_back(RecentEvent {
+                seq,
                 t,
                 uid: cell.uid,
                 callsign: callsign.clone(),
