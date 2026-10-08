@@ -41,6 +41,9 @@ async fn run(path: &str) -> Result<(), String> {
     // a scenario rate needs a scenario start, as in the bridge (murmur-drd)
     conditions::check_scenario_env()?;
     let fleet = Fleet::load(path)?;
+    for w in fleet.endurance_warnings() {
+        eprintln!("murmur-standins: {w}");
+    }
     let tidewater = conditions::Config::from_env();
     let host = fleet.bridge_host.clone();
     let homes: Vec<(f64, f64)> = fleet

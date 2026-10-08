@@ -36,6 +36,11 @@ pub struct VehicleConfig {
     pub params: BTreeMap<String, f64>,
 }
 
+/// What a stand-in simulates for a platform with no `endurance_h` in `sim/platforms.toml`. The
+/// C2 has no figure for it then, so it treats reserves as unverified: the two disagree, which
+/// the stand-ins say at start.
+pub const DEFAULT_ENDURANCE_H: f64 = 10.0;
+
 /// The platform entry from `sim/platforms.toml`. Only what the kinematics use.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Spec {
@@ -62,8 +67,10 @@ impl Spec {
         self.climb_mps.unwrap_or(0.0)
     }
 
+    /// The catalog's endurance, or [`DEFAULT_ENDURANCE_H`] for a platform without one (said at
+    /// start: [`Fleet::endurance_warnings`]).
     pub fn endurance_h(&self) -> f64 {
-        self.endurance_h.unwrap_or(10.0)
+        self.endurance_h.unwrap_or(DEFAULT_ENDURANCE_H)
     }
 
     /// Cruise speed over turn rate: the tightest circle it can fly at cruise (0 if unknown).
@@ -99,6 +106,27 @@ impl Fleet {
         }
         Ok(fleet)
     }
+
+    /// One warning per platform without an endurance figure in the catalog, naming its
+    /// vehicles: the stand-in simulates [`DEFAULT_ENDURANCE_H`] while the C2, with no figure,
+    /// treats reserves as unverified (any task on it needs a person's decision).
+    pub fn endurance_warnings(&self) -> Vec<String> {
+        let mut by: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for v in &self.vehicles {
+            if v.spec.endurance_h.is_none() {
+                by.entry(v.spec.name.as_str()).or_default().push(v.callsign.as_str());
+            }
+        }
+        by.into_iter()
+            .map(|(name, callsigns)| {
+                format!(
+                    "warning: {name} ({}) has no endurance_h in sim/platforms.toml: simulating {DEFAULT_ENDURANCE_H} h; \
+                     the C2 will treat reserves as unverified",
+                    callsigns.join(", ")
+                )
+            })
+            .collect()
+    }
 }
 
 impl VehicleConfig {
@@ -108,5 +136,32 @@ impl VehicleConfig {
 
     pub fn uid(&self) -> u32 {
         self.uid.unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_platform_without_an_endurance_figure_is_said_once() {
+        let unit = |callsign: &str, name: &str, endurance: Option<f64>| {
+            serde_json::json!({
+                "sysid": 1, "callsign": callsign, "port": 1, "home": [0.0, 0.0, 0.0, 0.0],
+                "spec": { "name": name, "behavior": "boat", "cruise_mps": 1.0, "endurance_h": endurance }
+            })
+        };
+        let fleet: Fleet = serde_json::from_value(serde_json::json!({ "vehicles": [
+            unit("MARLIN 1", "Corsair-class", None),
+            unit("MARLIN 2", "Corsair-class", None),
+            unit("HUNTER 1", "Sea Hunter-class", Some(1000.0)),
+        ]}))
+        .expect("fleet");
+        let w = fleet.endurance_warnings();
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("Corsair-class (MARLIN 1, MARLIN 2)") && w[0].contains("simulating 10 h"), "{}", w[0]);
+        assert!(w[0].contains("reserves as unverified"));
+        assert_eq!(fleet.vehicles[0].spec.endurance_h(), DEFAULT_ENDURANCE_H);
+        assert_eq!(fleet.vehicles[2].spec.endurance_h(), 1000.0);
     }
 }
