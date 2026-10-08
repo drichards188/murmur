@@ -2,9 +2,10 @@
 //! forgotten. The engine logs each drop (`track.dropped`) and holds the contact as lost; every
 //! engagement's keep-out counts it anywhere it could have reached since its last fix; an
 //! operator with engagement authority may accept it for one engagement (`engage.accepted`
-//! naming the contact); a new track with the same AIS identity, unambiguously, retires it
-//! (`track.reacquired`); replay rebuilds all of it from the log, and flags a track that left
-//! the picture without a drop. The scenarios (86 to 91) play the same end to end.
+//! naming the contact); a live track carrying its AIS identity is a claim an operator confirms
+//! (`lost.claimed`, `track.reacquired`), void once the claimant turns suspect, is declared or
+//! drops (`lost.reinstated`); replay rebuilds all of it from the log, and flags a track that
+//! left the picture without a drop. The scenarios (86 to 94) play the same end to end.
 #![allow(clippy::unwrap_used)]
 
 mod common;
@@ -374,17 +375,17 @@ fn a_track_that_leaves_the_picture_without_a_drop_is_flagged() {
 }
 
 #[test]
-fn a_rules_16_log_claiming_rules_14_is_caught_by_its_markers() {
+fn a_rules_16_log_claiming_rules_15_is_caught_by_its_markers() {
     let clock = ManualClock::new(T0);
     let (mut e, log) = engine_on(&clock, None);
     drop_ferry(&mut e, &clock, T0, T0.plus_ms(180_000), Some("366999501"));
     let text = log.text().replacen(
         &format!("\"rules_version\":{LOST_CONTACT_SINCE},"),
-        &format!("\"rules_version\":{AIRCRAFT_REACH_SINCE},"),
+        &format!("\"rules_version\":{CARRY_FOLLOWUPS_SINCE},"),
         1,
     );
     let out = rechain(&text);
-    let r = replay_str_with(&out, &replay::ReplayOptions { rules: RulesAccepted::Exactly(AIRCRAFT_REACH_SINCE), ..Default::default() }).unwrap();
+    let r = replay_str_with(&out, &replay::ReplayOptions { rules: RulesAccepted::Exactly(CARRY_FOLLOWUPS_SINCE), ..Default::default() }).unwrap();
     assert!(r.mismatches.iter().any(|m| m.what.contains("a track the tracker dropped")), "{:?}", r.mismatches);
 }
 
@@ -656,4 +657,174 @@ note = "the USV's own failsafe values were read off it on the bench"
     // and accepted with the nomination: it waits for its signers
     let clear = run(&format!("{WRITE_OFF}[[step]]\nat_s = 186\n{NOMINATE}accept_lost = [\"T-0002\"]\n"), "pending_approval");
     assert!(clear.failed_rules.is_empty(), "{:?}", clear.failed_rules);
+}
+
+/// The review of the merged branch, finding 1: a drop must carry the fix the pictures showed.
+/// A ferry 400 m from the target, last seen at T0, is in a nomination's picture at T0+175 (that
+/// fix, out of view: rejected); a drop at T0+180 claiming a fix at T0+170, 10 km north, which the
+/// T0+175 picture never showed though it was taken after it, would have let a nomination at
+/// T0+185 through. Replay catches the drop.
+#[test]
+fn a_drop_with_a_fix_a_later_picture_did_not_show_is_caught() {
+    let clock = ManualClock::new(T0);
+    let (mut e, log) = engine_on(&clock, None);
+    let op1 = e.open_operator_session_with(OperatorId::new("op-1"), Grants { engage: true }).unwrap();
+    let ferry = contact(T0, toward(TARGET_AT, 0.0, 400.0), Affiliation::Neutral);
+    let t175 = T0.plus_ms(175_000);
+    clock.set(t175);
+    let id = e.submit(op1.authority(), nomination(), &world(t175, &[("T-0002", ferry)]), &terrain()).unwrap().id();
+    assert_eq!(e.intent(id).unwrap().state(), State::Rejected);
+    // the forged drop: a fix 5 s older than that picture, 10 km north
+    let mut forged = contact(T0.plus_ms(170_000), toward(TARGET_AT, 0.0, 10_000.0), Affiliation::Neutral);
+    forged.pos_sigma_m = 190.0;
+    clock.set(T0.plus_ms(180_000));
+    assert_eq!(e.record_track_drops(vec![("T-0002".into(), forged, None)]).unwrap(), 1);
+    let t185 = T0.plus_ms(185_000);
+    clock.set(t185);
+    let id = e.submit(op1.authority(), nomination(), &world(t185, &[]), &terrain()).unwrap().id();
+    assert_eq!(e.intent(id).unwrap().state(), State::PendingApproval, "the forged fix is far from the target");
+    let r = replay_str(&log.text()).unwrap();
+    assert!(
+        r.mismatches.iter().any(|m| m.what.contains("a track dropped with a fix newer than a later picture showed")),
+        "{:?}",
+        r.mismatches
+    );
+}
+
+/// The review of the merged branch, finding 2: the tracker never reuses an id, so a dropped id
+/// back in a picture with a fresh fix (30 km away) is no live track that stands for the lost
+/// contact: the lost contact still counts (fail closed) and replay flags the picture. A picture
+/// that still holds the track with exactly its drop's facts (a snapshot taken before the drop
+/// was handed over) judges the same disc twice and replays.
+#[test]
+fn a_dropped_id_back_in_a_picture_does_not_hide_its_lost_contact() {
+    let t185 = T0.plus_ms(185_000);
+    // a fresh fix 30 km away under the dropped id
+    let clock = ManualClock::new(T0);
+    let (mut e, log) = engine_on(&clock, None);
+    let op1 = e.open_operator_session_with(OperatorId::new("op-1"), Grants { engage: true }).unwrap();
+    drop_ferry(&mut e, &clock, T0, T0.plus_ms(180_000), None);
+    clock.set(t185);
+    let far = contact(t185, toward(TARGET_AT, 0.0, 30_000.0), Affiliation::Neutral);
+    let id = e.submit(op1.authority(), nomination(), &world(t185, &[("T-0002", far)]), &terrain()).unwrap().id();
+    let i = e.intent(id).unwrap();
+    assert_eq!(i.state(), State::Rejected, "{}", keep_out_tracks(i).detail);
+    assert!(keep_out_tracks(i).detail.contains("lost contact T-0002"), "{}", keep_out_tracks(i).detail);
+    let r = replay_str(&log.text()).unwrap();
+    assert!(
+        r.mismatches.iter().any(|m| m.what.contains("a dropped track back in a picture with another fix")),
+        "{:?}",
+        r.mismatches
+    );
+    // the honest race: the drop's own facts still in the picture
+    let clock = ManualClock::new(T0);
+    let (mut e, log) = engine_on(&clock, None);
+    let op1 = e.open_operator_session_with(OperatorId::new("op-1"), Grants { engage: true }).unwrap();
+    let f = drop_ferry(&mut e, &clock, T0, T0.plus_ms(180_000), None);
+    clock.set(t185);
+    let id = e.submit(op1.authority(), nomination(), &world(t185, &[("T-0002", f)]), &terrain()).unwrap().id();
+    let i = e.intent(id).unwrap();
+    assert_eq!(i.state(), State::Rejected);
+    // the live track's disc and the lost contact's are one (it names the first)
+    assert!(keep_out_tracks(i).detail.starts_with("track T-0002 (neutral, ferry) out of view"), "{}", keep_out_tracks(i).detail);
+    let r = replay_str(&log.text()).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+}
+
+/// The review of the merged branch, finding 3: an agent's preview is what its proposal would
+/// meet, lost contacts included.
+#[test]
+fn an_agents_preview_meets_the_lost_contacts_its_proposal_would() {
+    let clock = ManualClock::new(T0);
+    let (mut e, log) = engine_on(&clock, None);
+    drop_ferry(&mut e, &clock, T0, T0.plus_ms(180_000), None);
+    let t185 = T0.plus_ms(185_000);
+    clock.set(t185);
+    let w = world(t185, &[]);
+    let mut port = e.agent_port(AgentId::new("agent-planner"));
+    let p = port.preview(nomination(), &w, &terrain()).unwrap();
+    let failed: Vec<RuleId> = p.checks.iter().filter(|c| c.outcome != Outcome::Pass).map(|c| c.rule).collect();
+    assert_eq!(p.would_reach, State::Rejected, "{failed:?}");
+    assert!(failed.contains(&RuleId::KeepOutTracks), "{failed:?}");
+    let i = port
+        .propose(nomination(), Rationale::new("the declared fast boat west of the bridge").unwrap(), &w, &terrain())
+        .unwrap();
+    assert_eq!(i.state(), p.would_reach);
+    let proposed: Vec<RuleId> = i.checks().iter().filter(|c| c.outcome != Outcome::Pass).map(|c| c.rule).collect();
+    assert_eq!(proposed, failed, "the preview's failures are the proposal's");
+    let r = replay_str(&log.text()).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+}
+
+/// The review of the merged branch, finding 5: a declared hostile the tracker dropped is exempt
+/// from an engagement's keep-out as a lost contact, as it was live; revoking its declaration
+/// stops that engagement in the revocation's own step (listed as a bystander), not a tick later.
+#[test]
+fn revoking_a_dropped_hostiles_declaration_stops_a_bystander_engagement_at_once() {
+    let clock = ManualClock::new(T0);
+    let (mut e, log) = engine_on(&clock, None);
+    let op1 = e.open_operator_session_with(OperatorId::new("op-1"), Grants { engage: true }).unwrap();
+    let op2 = e.open_operator_session_with(OperatorId::new("op-2"), Grants { engage: true }).unwrap();
+    let op3 = e.open_operator_session_with(OperatorId::new("op-3"), Grants { engage: true }).unwrap();
+    // a second boat 400 m north of the target, declared hostile while in view, then dropped
+    let boat = contact(T0, toward(TARGET_AT, 0.0, 400.0), Affiliation::Neutral);
+    e.declare_track(op1.authority(), None, "T-0002", Affiliation::Hostile, Some("a second fast boat".into()), None, &world(T0, &[("T-0002", boat.clone())]))
+        .unwrap();
+    clock.set(T0.plus_ms(180_000));
+    assert_eq!(e.record_track_drops(vec![("T-0002".into(), boat, None)]).unwrap(), 1);
+    let t185 = T0.plus_ms(185_000);
+    clock.set(t185);
+    let w = world(t185, &[]);
+    // exempt as a declared hostile: the engagement on T-0001 is signed
+    let id = e.submit(op1.authority(), nomination(), &w, &terrain()).unwrap().id();
+    assert_eq!(e.intent(id).unwrap().state(), State::PendingApproval, "{}", keep_out_tracks(e.intent(id).unwrap()).detail);
+    for op in [&op2, &op3] {
+        let tok = e.issue_picture(id, op.engagement_authority().unwrap(), &w).unwrap().id;
+        e.approve_engagement(id, op.engagement_authority().unwrap(), None, tok, &w, &terrain()).unwrap();
+    }
+    assert_eq!(e.intent(id).unwrap().state(), State::Approved);
+    // the revocation lists it and stops it in its own step
+    clock.set(T0.plus_ms(186_000));
+    let out = e.revoke_declaration(op1.authority(), "T-0002", Some("a fishing boat after all".into())).unwrap();
+    assert_eq!(out.voided, [id], "{out:?}");
+    assert_eq!(e.intent(id).unwrap().state(), State::Voided);
+    let text = log.text();
+    let revoked = text.lines().find(|l| l.contains("\"type\":\"ident.revoked\"") && l.contains("\"track\":\"T-0002\"")).unwrap();
+    assert!(revoked.contains(&format!("\"engagements\":[{}]", id.0)), "{revoked}");
+    let r = replay_str(&text).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+}
+
+/// The review of the merged branch, finding 1 (the other side): the run logs the tracker's drop
+/// age (`run.started`'s `track_drop_s`, rules 16 only) and replay holds every drop to it: a drop
+/// 100 s after the track was last seen, where the tracker drops at 180 s, is caught; one at
+/// 180 s is not.
+#[test]
+fn a_drop_sooner_than_the_trackers_drop_age_is_caught() {
+    let start = |clock: &ManualClock, version: u32| {
+        let log = MemorySink::new();
+        let mut p = policy();
+        p.rules.rules_version = version;
+        let carry = StartCarry { track_drop_s: Some(180.0), ..StartCarry::default() };
+        let e = Engine::start(p, Some(areas()), roster(), carry, Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+        (e, log)
+    };
+    let early = |at_s: i64| {
+        let clock = ManualClock::new(T0);
+        let (mut e, log) = start(&clock, LOST_CONTACT_SINCE);
+        drop_ferry(&mut e, &clock, T0, T0.plus_ms(at_s * 1000), None);
+        assert!(log.text().lines().next().unwrap().contains("\"track_drop_s\":180"));
+        whats_of(&replay_str(&log.text()).unwrap())
+    };
+    let w = early(100);
+    assert!(w.iter().any(|m| m.contains("a track dropped sooner than the tracker's drop age")), "{w:?}");
+    assert!(early(180).is_empty(), "{:?}", early(180));
+    // older rules never logged it
+    let clock = ManualClock::new(T0);
+    let (_, log) = start(&clock, CARRY_FOLLOWUPS_SINCE);
+    assert!(!log.text().contains("track_drop_s"));
+}
+
+fn whats_of(r: &replay::ReplayReport) -> Vec<String> {
+    r.mismatches.iter().map(|m| m.what.clone()).collect()
 }
