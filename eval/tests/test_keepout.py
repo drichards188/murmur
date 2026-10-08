@@ -529,3 +529,26 @@ def test_out_of_view_contacts_are_tracked_first_then_dropped_and_held(probe):
     order = [html.find(f">{p}</td>") for p in K.LOST_POLICIES]
     assert all(i > 0 for i in order) and order == sorted(order), order
     assert "<th>60 s</th>" in R.lost_grid({"lost": s})
+
+
+def test_the_lost_contacts_of_a_run_pile_up_and_each_needs_an_acceptance(probe):
+    """Rules 16, the review's item 7d (eval/lost_burden.py): the lost contacts in force grow with
+    the time into the run and the loss rate; with no live track but the target, a nomination
+    blocked on tracks passes with every lost contact accepted, and needs each one that reaches
+    the keep-out accepted."""
+    from eval import lost_burden as B
+
+    cruise = K.cruise_speeds()
+    early = B.situation(1, 0.3, 1.2, 15, 0, cruise)
+    late = B.situation(1, 0.3, 1.2, 120, 0, cruise)
+    assert len(late["lost"]) > len(early["lost"]) > 0
+    for f in late["lost"].values():
+        assert f["facts"]["position"]["t"] <= K.T0_MS - int(K.DROP_S * 1000) and f["dropped_t"] <= K.T0_MS
+    s = B.run([1], 1, probe)
+    assert s["errors"] == 0 and s["rows"]
+    for r in s["rows"]:
+        assert r["mismatches"] == 0
+        assert r["accepted_passes"]["k"] == r["n"], r
+    late_rows = [r for r in s["rows"] if r["at_min"] == 120 and r["rate"] == 1.2 and r["density"] == 0.3]
+    assert late_rows and late_rows[0]["blocked"]["k"] == late_rows[0]["n"] and late_rows[0]["to_accept_mean"] > 50
+    assert "Lost contacts over a run" in B.table(s)

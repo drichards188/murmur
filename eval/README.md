@@ -272,9 +272,13 @@ murmur-oho), and the live run's question under every
 tracker (`live`, `live-all`, `live-ais`, `live-model`, and `live2*` with the circling boat
 within 2 km), and (rules 16, murmur-533) contacts going out of sensor view, `oov`, `oov-all`
 and `oov-near` (rules 14 against 16: a contact masked from a time before the nomination, its
-track dropped by the bridge's tracker after 180 s unseen; each evaluation also decided with the
-lost contacts accepted, held 600 s, counted only near the effect point, or counted by a live
-track's regions alone (`heading`); `keepout.lost_summary`, the report's "Out of view" tables).
+track dropped by the bridge's tracker after 180 s unseen, a quarter of those speeding up after
+the drop; each evaluation also decided with the lost contacts accepted, held 600 s, counted
+only near the effect point, at their own speed bound (`own_speed`), by a live track's regions
+alone (`heading`), or with the live tracks out of view by their course (`stale_course`);
+`keepout.lost_summary`, the report's "Out of view" tables). What the lost contacts of a run ask
+of an operator (how many in force, how many to accept per nomination, over two hours, by loss
+rate and density) is `python -m eval.lost_burden` (a model on the same field and probe).
 `eval.run keepout` builds the probe (`cargo build --release
 -p murmur-keepout-probe`, a no-op when current), runs each variant on half the CPUs into
 `keepout/<variant>/` (`records.jsonl.gz`, one line per evaluation, and `summary.json`), writes
