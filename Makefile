@@ -37,8 +37,8 @@ eval: build ## evaluation batch on isolated stacks (eval/README.md): SCENARIOS=,
 	.venv/bin/python -m eval.run batch --scenarios $(or $(SCENARIOS),misclassified-neutral spoofed-gnss link-cut approval-flood stale-track plausible-wrong heldout-friend-alongside heldout-early-unknown heldout-dark-ferry) \
 	  --arms $(or $(ARMS),rules-only rules-only-reject human-proxy agent+human-proxy) --seeds $(or $(SEEDS),1 2 3) $(if $(PARALLEL),--parallel $(PARALLEL))
 
-check:   ## typecheck + lint + Rust lint and tests + evaluation unit tests
-	cd web && npx tsc -b && npx oxlint src
+check:   ## typecheck + lint + glide checks (node 22.18+: it runs the .ts directly) + Rust lint and tests + evaluation unit tests
+	cd web && npx tsc -b && npx oxlint src && node src/glide.check.ts
 	.venv/bin/python -m py_compile sim/swarm.py sim/tests/*.py scripts/*.py agents/*.py eval/*.py eval/tests/*.py
 	.venv/bin/python -m pytest -q eval/tests
 	$(CARGO) clippy --workspace --all-targets -- -D warnings

@@ -8,6 +8,11 @@
 //   latency     from the message to the end of those effects, including any wait in the
 //               event loop behind other work (frames, other messages)
 //   frame       interval between animation frames (fps on a real GPU)
+//   attrs       deck.gl's own attribute updates per frame, summed over layers (its "Update Attributes" stat), which
+//               is where the cost of display smoothing lands: every glide frame recomputes the
+//               positions of every vehicle in the attached layers. Not visible in the JS the
+//               glide loop itself runs (advance and setProps), which deck.gl defers to its render
+//   deckCpu     deck.gl's CPU time per frame ("CPU Time" stat from luma.gl)
 //
 // window.murmurPerfStats() returns a snapshot; the ?perf overlay shows the same numbers.
 
@@ -34,7 +39,7 @@ class Ring {
   }
 }
 
-const rings = { applyDelta: new Ring(), render: new Ring(), latency: new Ring(), frame: new Ring() }
+const rings = { applyDelta: new Ring(), render: new Ring(), latency: new Ring(), frame: new Ring(), attrs: new Ring(), deckCpu: new Ring() }
 export type PerfName = keyof typeof rings
 
 export function perfPush(name: PerfName, ms: number) {
@@ -88,6 +93,38 @@ try {
   // not supported (Firefox, Safari): the overlay shows "n/a"
 }
 
+// deck.gl's stats, sampled every animation frame (MapView registers where to find them)
+interface StatLike {
+  lastTiming: number
+  /** accumulated ms since deck.gl last reset its stats (every 60 frames) */
+  time: number
+}
+let deckStats: (() => { get(name: string): StatLike } | null) | null = null
+export function perfWatchDeck(get: () => { get(name: string): StatLike } | null) {
+  deckStats = get
+}
+let attrTime = 0
+let lastCpu = ''
+function sampleDeck() {
+  try {
+    const st = deckStats?.()
+    if (!st) return
+    // attribute updates add up over the layers of a frame: the sum since the last sample
+    const a = st.get('Update Attributes')
+    if (a.time < attrTime) attrTime = 0 // deck.gl reset its stats
+    if (a.time > attrTime) rings.attrs.push(a.time - attrTime)
+    attrTime = a.time
+    const c = st.get('CPU Time')
+    const ck = `${c.time}:${c.lastTiming}`
+    if (ck !== lastCpu) {
+      lastCpu = ck
+      if (c.lastTiming > 0) rings.deckCpu.push(c.lastTiming)
+    }
+  } catch {
+    // stats not there in this deck.gl: the overlay shows zeros
+  }
+}
+
 let rafStarted = false
 function startFrames() {
   if (rafStarted) return
@@ -95,6 +132,7 @@ function startFrames() {
   let last = performance.now()
   const tick = (t: number) => {
     rings.frame.push(t - last)
+    sampleDeck()
     last = t
     requestAnimationFrame(tick)
   }
@@ -114,6 +152,8 @@ export function perfStats() {
     applyDelta: rings.applyDelta.stats(),
     render: rings.render.stats(),
     latency: rings.latency.stats(),
+    attrs: rings.attrs.stats(),
+    deckCpu: rings.deckCpu.stats(),
     longTaskMsPerS: secs > 0 ? longMs / secs : 0,
     longTasks: longCount,
     windowS: secs,

@@ -2,6 +2,7 @@ import { PathLayer, TextLayer } from '@deck.gl/layers'
 import type { Intent } from './decisions'
 import { fmtDuration } from './decisions'
 import { leadingAt } from './estimate'
+import { drawnPositionOf, drawnTick } from './drawn'
 import { circle, distanceM } from './geo'
 import type { ViewMode } from './MapView'
 import type { LngLat, Tasking, Vehicle } from './types'
@@ -43,7 +44,17 @@ interface Label {
   color: RGBA
   /** under a vehicle symbol rather than beside a path */
   badge?: boolean
+  /** the vehicle it is drawn at, if any: follows the vehicle's drawn position (display smoothing) */
+  uid?: number
 }
+
+/** Ids of the layers here whose positions follow a vehicle's glide (display smoothing, drawn.ts).
+ *  The contract: a layer listed here reads its positions from drawn.ts per item (by uid), and
+ *  MapView re-triggers its `getPosition` on every animation frame by cloning it with a new
+ *  `updateTriggers.getPosition`, reusing the rest of the extension layers as they were. A layer
+ *  added here must accept that clone (positions through the accessor, nothing baked into data).
+ *  Layers not listed keep the positions they were built with until the next full rebuild. */
+export const GLIDE_LAYER_IDS = ['order-labels']
 
 /** The intent's path: an orbit's ring, a patrol's closed route; none for a mode. */
 function pathOf(i: Intent): LngLat[] | null {
@@ -96,19 +107,19 @@ function dashes(path: LngLat[]): LngLat[][] {
 
 /** Where a label for the intent goes: its orbit's center, its patrol's first point, or the
  *  first vehicle (a mode). */
-function anchorOf(i: Intent, vehicles: Vehicle[]): LngLat | null {
+function anchorOf(i: Intent, vehicles: Vehicle[]): { at: LngLat; uid?: number } | null {
   const p = i.params
-  if (i.kind === 'orbit' && p.center) return p.center
-  if (i.kind === 'patrol' && p.route?.length) return p.route[0]
+  if (i.kind === 'orbit' && p.center) return { at: p.center }
+  if (i.kind === 'patrol' && p.route?.length) return { at: p.route[0] }
   const v = vehicles.find((x) => i.uids.includes(String(x.uid)))
-  return v?.position ?? null
+  return v?.position ? { at: v.position, uid: v.uid } : null
 }
 
 /** Where a vehicle is drawn now: its estimate's leading position while it is silent and the
  *  bridge sent a motion model, else its last report. */
-function shownAt(v: Vehicle, nowMs: number): LngLat | null {
-  if (v.estimate && v.position && isStale(v)) return leadingAt(v.estimate, nowMs).at.position
-  return v.position ?? null
+function shownAt(v: Vehicle, nowMs: number): { at: LngLat; uid?: number } | null {
+  if (v.estimate && v.position && isStale(v)) return { at: leadingAt(v.estimate, nowMs).at.position }
+  return v.position ? { at: v.position, uid: v.uid } : null
 }
 
 /** An op state in words for a label (the op's own "queued" is a wait for a position fix,
@@ -146,18 +157,18 @@ export function buildOrderLayers(input: OrderInput, _view: ViewMode) {
     if (path) for (const d of dashes(path)) dashed.push({ path: d, color: QUEUED })
     const left = i.queue ? fmtDuration((i.queue.expires_t - input.nowMs) / 1000) : '?'
     const at = anchorOf(i, input.vehicles)
-    if (at) labels.push({ at, text: `QUEUED i${i.id} ${i.kind} · ${shortReason(i)} · ${left} left`, color: QUEUED })
+    if (at) labels.push({ ...at, text: `QUEUED i${i.id} ${i.kind} · ${shortReason(i)} · ${left} left`, color: QUEUED })
     for (const u of i.uids) badged.add(u)
   }
   for (const v of input.vehicles) {
     const at = badged.has(String(v.uid)) ? shownAt(v, input.nowMs) : null
-    if (at) labels.push({ at, text: 'QUEUED', color: QUEUED, badge: true })
+    if (at) labels.push({ ...at, text: 'QUEUED', color: QUEUED, badge: true })
   }
   // resumed under way after a bridge restart: followed once its vehicles connect
   for (const i of input.intents) {
     if (!i.follow_pending) continue
     const at = anchorOf(i, input.vehicles)
-    if (at) labels.push({ at, text: `RESUMED i${i.id} ${i.kind} · waiting for the vehicle; followed, not sent again`, color: ORDERED })
+    if (at) labels.push({ ...at, text: `RESUMED i${i.id} ${i.kind} · waiting for the vehicle; followed, not sent again`, color: ORDERED })
   }
   // sent, not yet confirmed by telemetry: the tasking's ops still sent or acked
   const byId = new Map(input.taskings.map((t) => [t.id, t]))
@@ -172,7 +183,7 @@ export function buildOrderLayers(input: OrderInput, _view: ViewMode) {
     const states = [...new Set(waiting.map((o) => OP_WORDS[o.state] ?? o.state))].join(', ')
     const lost = waiting.some((o) => o.detail.startsWith('link lost'))
     labels.push({
-      at,
+      ...at,
       text: `ORDERED i${i.id} ${i.kind} · not yet confirmed (${lost ? 'link lost, waiting' : states})`,
       color: ORDERED,
     })
@@ -184,7 +195,7 @@ export function buildOrderLayers(input: OrderInput, _view: ViewMode) {
     const t = byId.get(i.tasking_id)
     if (!t || !t.ops.some((o) => o.state === 'unconfirmed' && !o.detail.includes('does not run it now'))) continue
     const at = anchorOf(i, input.vehicles)
-    if (at) labels.push({ at, text: `MAY BE RUNNING i${i.id} ${i.kind} · its start went out unconfirmed (${i.state})`, color: MAYBE })
+    if (at) labels.push({ ...at, text: `MAY BE RUNNING i${i.id} ${i.kind} · its start went out unconfirmed (${i.state})`, color: MAYBE })
   }
   const tick = Math.floor(input.nowMs / 1000)
   return [
@@ -201,7 +212,7 @@ export function buildOrderLayers(input: OrderInput, _view: ViewMode) {
     new TextLayer<Label>({
       id: 'order-labels',
       data: labels,
-      getPosition: (l) => l.at,
+      getPosition: (l) => (l.uid == null ? l.at : (drawnPositionOf(l.uid, l.at) ?? l.at)),
       getText: (l) => l.text,
       getSize: (l) => (l.badge ? 10 : 11),
       getColor: (l) => l.color ?? TEXT,
@@ -214,7 +225,7 @@ export function buildOrderLayers(input: OrderInput, _view: ViewMode) {
       outlineColor: OUTLINE,
       fontSettings: { sdf: true, fontSize: 48, buffer: 6 },
       characterSet: 'auto',
-      updateTriggers: { getText: tick },
+      updateTriggers: { getText: tick, getPosition: drawnTick() },
       parameters: onTop,
     }),
   ]

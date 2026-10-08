@@ -1,7 +1,8 @@
 // Vehicles on the map as deck.gl layers, in 2D and 3D (murmur-ica). Replaces one DOM marker
 // per vehicle (about 7 elements each, re-laid out by MapLibre on every frame) with a few GPU
 // layers whose attributes are rebuilt only when the vehicles, the selection or the declutter
-// change, never per frame:
+// change (a vehicle's glide, drawn.ts, recomputes only positions and heading, per animation
+// frame, never the other attributes):
 //
 //   vehicle-heading   heading arrow (2D, labelled vehicles), one rotated icon for every heading
 //   vehicle-ring*     selection ring around selected vehicles
@@ -13,6 +14,7 @@
 //
 // Picking ('vehicles', 'vehicle-callsigns') drives click to select and right click to deselect.
 import { IconLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
+import { drawnHeading, drawnTick, drawnXYZ, smoothing } from './drawn'
 import { HEIGHT_EXAGGERATION } from './map3d'
 import { ARROW_ICON, frameIcon, typeLabel } from './symbols'
 import type { Vehicle } from './types'
@@ -43,26 +45,48 @@ export interface VehicleLayerInput {
   is3d: boolean
 }
 
-export function buildVehicleLayers({ vehicles, selected, bare, is3d }: VehicleLayerInput) {
-  const placed: Vehicle[] = []
-  const labelled: Vehicle[] = []
-  const ringed: Vehicle[] = []
-  const lost: Vehicle[] = []
-  const headed: Vehicle[] = []
+interface Parts {
+  placed: Vehicle[]
+  labelled: Vehicle[]
+  ringed: Vehicle[]
+  lost: Vehicle[]
+  headed: Vehicle[]
+}
+
+// The partition is rebuilt only when its inputs change, so that the animation frames of a
+// glide (same vehicles, new drawn positions) hand deck.gl the same data arrays and only
+// getPosition and getAngle are recomputed, not every attribute.
+let memo: { vehicles: Vehicle[]; selected: Set<number>; bare: Set<number>; is3d: boolean; parts: Parts } | null = null
+
+function partition({ vehicles, selected, bare, is3d }: VehicleLayerInput): Parts {
+  if (memo && memo.vehicles === vehicles && memo.selected === selected && memo.bare === bare && memo.is3d === is3d) return memo.parts
+  const parts: Parts = { placed: [], labelled: [], ringed: [], lost: [], headed: [] }
   for (const v of vehicles) {
     if (!v.position || (is3d && v.alt_msl == null)) continue
-    placed.push(v)
+    parts.placed.push(v)
     const stale = isStale(v)
-    if (stale) lost.push(v)
-    if (selected.has(v.uid)) ringed.push(v)
+    if (stale) parts.lost.push(v)
+    if (selected.has(v.uid)) parts.ringed.push(v)
     if (!bare.has(v.uid)) {
-      labelled.push(v)
-      if (!is3d && v.heading != null) headed.push(v)
+      parts.labelled.push(v)
+      if (!is3d && v.heading != null) parts.headed.push(v)
     }
   }
-  const at = (v: Vehicle): XYZ => [v.position![0], v.position![1], is3d ? (v.alt_msl ?? 0) * HEIGHT_EXAGGERATION : 0]
+  memo = { vehicles, selected, bare, is3d, parts }
+  return parts
+}
+
+export function buildVehicleLayers(input: VehicleLayerInput) {
+  const { is3d } = input
+  const { placed, labelled, ringed, lost, headed } = partition(input)
+  // where each vehicle is drawn: its glide (drawn.ts) or, with smoothing off, its report
+  const smooth = smoothing()
+  const at = smooth
+    ? (v: Vehicle, info?: { target?: number[] }): XYZ => drawnXYZ(v, info?.target, is3d ? HEIGHT_EXAGGERATION : 0) as XYZ
+    : (v: Vehicle): XYZ => [v.position![0], v.position![1], is3d ? (v.alt_msl ?? 0) * HEIGHT_EXAGGERATION : 0]
+  const angle = (v: Vehicle) => -((smooth ? drawnHeading(v) : v.heading) ?? 0)
   const tint = (v: Vehicle) => (isStale(v) ? TEXT_STALE : TEXT)
-  const posTrigger = { getPosition: is3d }
+  const posTrigger = { getPosition: smooth ? `${is3d}:${drawnTick()}` : is3d }
   // symbols and labels are screen-space overlays: never cut by terrain or the sea surface
   // (a buoy's symbol is centred at sea level, so half of it would be under the water)
   const onTop = { depthCompare: 'always' as const, depthWriteEnabled: false }
@@ -77,9 +101,9 @@ export function buildVehicleLayers({ vehicles, selected, bare, is3d }: VehicleLa
       sizeUnits: 'pixels',
       // flat on the map, so the arrow turns with the map's bearing
       billboard: false,
-      getAngle: (v) => -(v.heading ?? 0),
+      getAngle: angle,
       getColor: (v) => (isStale(v) ? FADED : OPAQUE),
-      updateTriggers: posTrigger,
+      updateTriggers: smooth ? { ...posTrigger, getAngle: drawnTick() } : posTrigger,
       parameters: onTop,
     }),
     new ScatterplotLayer<Vehicle>({
