@@ -30,6 +30,7 @@
 .ix-id { font: 12px var(--mono); color: var(--muted); }
 .ix-src { font: 600 10.5px var(--mono); padding: 1px 6px; border-radius: 3px; border: 1px solid var(--line); color: #aab6c3; }
 .ix-src.agent { color: var(--violet); border-color: #4b3a66; }
+.ix-src.scripted { color: #f0d7b0; border-color: #6b5530; border-style: dashed; }
 
 .ix-card { background: var(--panel-2); border: 1px solid var(--line); border-left: 3px solid var(--violet); border-radius: 4px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; outline: none; cursor: pointer; }
 .ix-card:hover { border-color: #33475d; border-left-color: var(--violet); }

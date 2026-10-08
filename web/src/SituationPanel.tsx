@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Decisions, Intent } from './decisions'
+import { setScriptedBadges } from './situationIds'
 import { usePoll } from './space'
 import './situation.css'
 
@@ -65,6 +66,8 @@ export interface SituationStatus {
   run: { id: string; audit_log: string; situation_log: string }
   /** what went wrong in the runner itself */
   problems?: string[]
+  /** every scripted id of the run and its badge (the Inbox shows it on their cards) */
+  scripted?: Record<string, string>
 }
 
 interface Envelope {
@@ -80,7 +83,7 @@ const STALE_S = 10
 const DECIDES: Record<string, string> = {
   autoplay: 'autoplay: not people',
   cosigner: 'cosign only, never first',
-  setup: 'setup and timeline: they never decide',
+  setup: 'live: setup and timeline only, they never decide',
 }
 
 /** m:ss of situation time */
@@ -119,6 +122,9 @@ export function SituationPanel({ decisions }: { decisions: Decisions | null }) {
     return () => window.clearInterval(id)
   }, [])
   const s = data?.situation
+  // the Inbox badges a scripted id's card (kept outside React: a few ids, display only)
+  const badges = s?.scripted
+  useEffect(() => setScriptedBadges(badges), [badges])
   const posts = data?.posts ?? 0
   const postedElapsed = s?.clock.elapsed_s ?? null
   // anchored on when this console received each new post (as useScenarioNow does), never on
