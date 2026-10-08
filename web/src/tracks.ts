@@ -72,11 +72,41 @@ export interface TrackDeclared {
   basis?: string
 }
 
+/** Rules 16 (murmur-533): a contact the tracker dropped (no detection for 180 s) that every
+ *  engagement's keep-out still counts, from its last fix (`position` at `since_t`), until an
+ *  operator confirms a track carrying its AIS as it (a claim in the review list) or an
+ *  operator with engagement authority accepts it for one engagement. `regions`: where the keep-out counts it now (refreshed every
+ *  second; they only grow). Times are engine ms. */
+export interface LostContact {
+  id: string
+  position: LngLat
+  since_t: number
+  dropped_t: number
+  out_of_view_s: number
+  domain: TrackDomain
+  identity: string | null
+  affiliation: Affiliation
+  declared_by: string | null
+  velocity_mps: [number, number] | null
+  ais: { mmsi: string; name: string; ship_type?: string } | null
+  regions: { kind: string; center: LngLat; radius_m: number }[]
+}
+
 export interface TracksMessage {
   type: 'tracks'
   t: number
   stale_after_s: number
   tracks: Track[]
+  /** rules 16: the engine's lost contacts */
+  lost?: LostContact[]
+}
+
+/** Rules 16: a lost contact's map symbol: its affiliation and domain, anticipated (dashed),
+ *  no function (what it is, it was). */
+export function lostSidc(l: LostContact): string {
+  const aff = { unknown: 'U', suspect: 'S', hostile: 'H', neutral: 'N', assumed_friend: 'A' }[l.affiliation] ?? 'U'
+  const dim = { air: 'A', surface: 'S', subsurface: 'U', ground: 'G' }[l.domain] ?? 'S'
+  return `S${aff}${dim}A-----------`
 }
 
 export const AFFILIATION_LABEL: Record<Affiliation, string> = {
@@ -244,6 +274,11 @@ const frames = new Map<string, TrackFrameIcon>()
 
 export function trackFrameIcon(t: Track, stale: boolean): TrackFrameIcon {
   const sidc = stale ? t.sidc.slice(0, 3) + 'A' + t.sidc.slice(4) : t.sidc.slice(0, 3) + 'P' + t.sidc.slice(4)
+  return sidcFrameIcon(sidc)
+}
+
+/** The atlas icon for a 15-character SIDC (shared, built once per code). */
+export function sidcFrameIcon(sidc: string): TrackFrameIcon {
   const hit = frames.get(sidc)
   if (hit) return hit
   const sym = new ms.Symbol(sidc, { size: ICON_PX * ICON_SCALE, outlineColor: '#0b0f14', outlineWidth: 3 * ICON_SCALE } as Record<string, unknown>)

@@ -32,7 +32,7 @@ use crate::space::{
 };
 use crate::terrain::{NoTerrain, TerrainOracle};
 use crate::time::{Clock, Time};
-use crate::world::{LoggedInputs, SpaceInputs, WorldSnapshot};
+use crate::world::{AisIdentity, LoggedInputs, SpaceInputs, TrackFacts, WorldSnapshot};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -99,6 +99,10 @@ pub enum EngineError {
     /// nothing was logged.
     #[error("vehicle {uid}: {why}")]
     NotAccepted { uid: Uid, why: String },
+    /// Rules 16: an acceptance of a lost contact the engine does not take (not lost since that
+    /// fix, not an engagement, after a signature): nothing was logged.
+    #[error("lost contact {track}: {why}")]
+    NotAcceptedContact { track: String, why: String },
     /// Rules 8: a session or step-up the run's authentication does not allow (an asserted
     /// session in a credentials run, a step-up in a dev run, a step-up for another session
     /// or too old): nothing was logged.
@@ -133,17 +137,21 @@ pub enum EngineError {
 
 /// Rules 12: what a start carries over from earlier runs' logs ([`Engine::start`]): the entries of
 /// `run.started`'s `carried_from`, and (rules 15) the station's `.last-run` pointer, by its file
-/// name, logged as `run.started`'s `pointer`. A list of entries alone is a carry without a
+/// name, logged as `run.started`'s `pointer`; and what else the start records of the bridge it
+/// runs in (rules 16: its tracker's drop age). A list of entries alone is a carry without a
 /// pointer (a test).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StartCarry {
     pub pointer: Option<String>,
     pub from: Vec<crate::replay::CarriedFrom>,
+    /// Rules 16: the bridge's tracker's drop age (s), logged as `run.started`'s
+    /// `track_drop_s`; none without a tracker that drops (a test).
+    pub track_drop_s: Option<f64>,
 }
 
 impl From<Vec<crate::replay::CarriedFrom>> for StartCarry {
     fn from(from: Vec<crate::replay::CarriedFrom>) -> Self {
-        StartCarry { pointer: None, from }
+        StartCarry { pointer: None, from, track_drop_s: None }
     }
 }
 
@@ -540,6 +548,9 @@ pub struct Engine {
     passkeys: BTreeMap<String, KeySeen>,
     /// Rules 10: the nonce of every passkey use logged: each challenge is answered once.
     used_nonces: BTreeSet<String>,
+    /// Rules 16: the contacts the tracker dropped that the engine holds as lost
+    /// (`track.dropped`, less `track.reacquired`): every engagement's keep-out counts them.
+    lost: crate::lost::LostLedger,
 }
 
 /// Rules 10: a passkey as the engine follows it: whose, its public key, the last counter
@@ -604,7 +615,10 @@ impl Engine {
         let StartCarry {
             pointer,
             from: mut carried_from,
+            track_drop_s,
         } = carry.into();
+        // rules 16: the tracker's drop age (no build of older rules logged it)
+        let track_drop_s = track_drop_s.filter(|_| policy.rules.lost_contacts());
         // rules 15: the station's pointer, the spent platforms carried, a failed carry's fleet
         // file and a fallback from a pointer that could not be read (no build of older rules
         // logged them)
@@ -705,6 +719,7 @@ impl Engine {
             run_hash: String::new(),
             passkeys: BTreeMap::new(),
             used_nonces: BTreeSet::new(),
+            lost: crate::lost::LostLedger::default(),
         };
         let policy = e.policy.clone();
         let keys = roster.passkeys.as_ref().map(|p| p.keys.clone()).unwrap_or_default();
@@ -718,6 +733,7 @@ impl Engine {
             areas: areas.clone(),
             carried_from: carried_from.clone(),
             pointer,
+            track_drop_s,
         })?;
         // rules 12: what earlier runs still owed, owed back from here on (rules 15: and the
         // platforms they had spent stay spent)
@@ -1569,6 +1585,39 @@ impl Engine {
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
     ) -> Result<&Intent, EngineError> {
+        self.submit_accepting_lost_inner(by, step, proposal, accept, &[], world, terrain)
+    }
+
+    /// Rules 16: [`Engine::submit_accepting`] that also accepts lost contacts, each `(track,
+    /// since)` naming a contact the tracker dropped and the last fix it is out of view since,
+    /// as the keep-out check names it (see [`Engine::accept_lost_contact`]). Logged as
+    /// `engage.accepted` naming the contact, before the checks. Refused, nothing logged, for a
+    /// contact that is not lost since exactly that fix.
+    #[allow(clippy::too_many_arguments)]
+    pub fn submit_accepting_lost(
+        &mut self,
+        by: &EngagementAuthority,
+        step: Option<StepUp>,
+        proposal: Proposal,
+        vehicles: &[(Uid, Option<Time>)],
+        contacts: &[(String, Time)],
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Result<&Intent, EngineError> {
+        self.submit_accepting_lost_inner(by, step, proposal, vehicles, contacts, world, terrain)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn submit_accepting_lost_inner(
+        &mut self,
+        by: &EngagementAuthority,
+        step: Option<StepUp>,
+        proposal: Proposal,
+        accept: &[(Uid, Option<Time>)],
+        contacts: &[(String, Time)],
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Result<&Intent, EngineError> {
         if let Some((uid, _)) = accept.first()
             && !matches!(proposal.task, Task::Engage { .. })
         {
@@ -1577,14 +1626,25 @@ impl Engine {
                 why: "an acceptance of a lost vehicle is for an engagement's keep-out only".into(),
             });
         }
+        if let Some((track, _)) = contacts.first()
+            && !matches!(proposal.task, Task::Engage { .. })
+        {
+            return Err(EngineError::NotAcceptedContact {
+                track: track.clone(),
+                why: "an acceptance of a lost contact is for an engagement's keep-out only".into(),
+            });
+        }
         for (uid, since) in accept {
             self.acceptable(uid, *since, world)?;
         }
+        for (track, since) in contacts {
+            self.acceptable_contact(track, *since)?;
+        }
         // rules 8: accepting a lost vehicle may be marked consequential
-        let step_up = if accept.is_empty() {
+        let step_up = if accept.is_empty() && contacts.is_empty() {
             None
         } else {
-            let expected = crate::passkey::StepUpFor::accepting(None, accept);
+            let expected = crate::passkey::StepUpFor::accepting_lost(None, accept, contacts);
             self.act_step_up(policy::StepUpAct::AcceptUnknown, by.operator(), by.session(), step, &expected)?
         };
         let source = Source::Human {
@@ -1594,6 +1654,7 @@ impl Engine {
             by: by.operator(),
             session: by.session(),
             list: accept,
+            contacts,
             step_up,
         };
         let human = by.human();
@@ -1667,12 +1728,14 @@ impl Engine {
         let vehicle = Box::new(world.vehicles.get(&uid).cloned().unwrap_or_default());
         self.emit(EventBody::EngageAccepted {
             intent: id,
-            uid: uid.clone(),
+            uid: Some(uid.clone()),
+            contact: None,
             since,
             by: by.operator().clone(),
             session: by.session(),
             world_t: world.t,
-            vehicle,
+            vehicle: Some(vehicle),
+            lost: None,
             step_up,
         })?;
         self.get_mut(id)?.engagement_mut().accepted.insert(
@@ -1711,12 +1774,340 @@ impl Engine {
         }
         self.emit(EventBody::EngageAcceptanceRevoked {
             intent: id,
-            uid: uid.clone(),
+            uid: Some(uid.clone()),
+            contact: None,
             by: by.operator().clone(),
             session: by.session(),
         })?;
         self.get_mut(id)?.engagement_mut().accepted.remove(&uid);
         self.get(id)
+    }
+
+    /// Rules 16: an operator with engagement authority accepts, for engagement `id` while it
+    /// waits with no signature yet, that lost contact `track` (a track the tracker dropped,
+    /// [`crate::lost`]) is out of view since its last fix at `since`, as the keep-out check
+    /// names it: the keep-out on tracks of this engagement then leaves that contact out while it
+    /// is lost since exactly then. As [`Engine::accept_unknown_friendly`]: logged as
+    /// `engage.accepted` naming the contact, with its facts and the world's time; every check of
+    /// the engagement reads it, every signer's picture token carries it (a token from before is
+    /// refused), a reset of the signatures clears it, any operator may revoke it. Refused,
+    /// nothing logged, after a signature, before rules 16, or for a contact that is not lost since
+    /// exactly that fix (seen again, or another loss).
+    pub fn accept_lost_contact(
+        &mut self,
+        id: IntentId,
+        by: &EngagementAuthority,
+        step: Option<StepUp>,
+        track: &str,
+        since: Time,
+        world: &WorldSnapshot,
+    ) -> Result<&Intent, EngineError> {
+        let no = |why: String| EngineError::NotAcceptedContact {
+            track: track.to_string(),
+            why,
+        };
+        let intent = self.get(id)?;
+        if intent.spec().kind() != TaskKind::Engage {
+            return Err(EngineError::NotAnEngagement(id));
+        }
+        if intent.state() != State::PendingApproval {
+            return Err(no(format!(
+                "{id} is not waiting for signatures: nominate it again to accept a lost contact"
+            )));
+        }
+        if !intent.concurrences().is_empty() {
+            return Err(no(format!(
+                "{id} already has signatures on a plan made without this acceptance: they must be dropped first"
+            )));
+        }
+        self.acceptable_contact(track, since)?;
+        let expected = crate::passkey::StepUpFor::accepting_lost(Some(id), &[], &[(track.to_string(), since)]);
+        let step_up = self.act_step_up(policy::StepUpAct::AcceptUnknown, by.operator(), by.session(), step, &expected)?;
+        let lost = self.lost_filled().remove(track).map(Box::new);
+        self.emit(EventBody::EngageAccepted {
+            intent: id,
+            uid: None,
+            contact: Some(track.to_string()),
+            since: Some(since),
+            by: by.operator().clone(),
+            session: by.session(),
+            world_t: world.t,
+            vehicle: None,
+            lost,
+            step_up,
+        })?;
+        self.get_mut(id)?.engagement_mut().accepted_lost.insert(
+            track.to_string(),
+            engage::AcceptedUnknown {
+                since: Some(since),
+                by: by.operator().clone(),
+            },
+        );
+        self.get(id)
+    }
+
+    /// Rules 16: any operator withdraws an acceptance of a lost contact for engagement `id`
+    /// (pending, approved or under way: it only restricts). Logged as
+    /// `engage.acceptance_revoked` naming the contact; the keep-out counts it again (which stops
+    /// an engagement it now blocks).
+    pub fn revoke_lost_contact(
+        &mut self,
+        id: IntentId,
+        by: &HumanAuthority,
+        track: &str,
+    ) -> Result<&Intent, EngineError> {
+        let intent = self.get(id)?;
+        if intent.spec().kind() != TaskKind::Engage {
+            return Err(EngineError::NotAnEngagement(id));
+        }
+        if !matches!(
+            intent.state(),
+            State::PendingApproval | State::Approved | State::Dispatched
+        ) || !intent.engagement().is_some_and(|e| e.accepted_lost.contains_key(track))
+        {
+            return Err(EngineError::NotAcceptedContact {
+                track: track.to_string(),
+                why: format!("no acceptance of it is in force on {id}"),
+            });
+        }
+        self.emit(EventBody::EngageAcceptanceRevoked {
+            intent: id,
+            uid: None,
+            contact: Some(track.to_string()),
+            by: by.operator().clone(),
+            session: by.session(),
+        })?;
+        self.get_mut(id)?.engagement_mut().accepted_lost.remove(track);
+        self.get(id)
+    }
+
+    /// Rules 16: whether `track` is a lost contact since exactly `since`.
+    fn acceptable_contact(&self, track: &str, since: Time) -> Result<(), EngineError> {
+        let no = |why: String| EngineError::NotAcceptedContact {
+            track: track.to_string(),
+            why,
+        };
+        if !self.policy.rules.lost_contacts() {
+            return Err(no("these decision rules have no lost contacts".into()));
+        }
+        engage::contact_lost_since(track, self.lost.get(track), Some(since)).map_err(no)
+    }
+
+    // ---- lost contacts (rules 16) -----------------------------------------------------
+
+    /// Rules 16: the bridge's tracker dropped these tracks (each with its facts at the drop, as
+    /// it hands them to decisions: the estimate, never a declaration, and the AIS identity it
+    /// carried). Each is logged as `track.dropped` and held from here on as a lost contact
+    /// ([`crate::lost`]), which every engagement's keep-out on tracks counts anywhere it could
+    /// have reached since its last fix, until an operator confirms a track as it again
+    /// ([`Engine::confirm_lost_claim`]). A drop of a track a confirmed lost contact was
+    /// confirmed as voids that confirmation (`lost.reinstated`). The bridge keeps a dropped track
+    /// in its picture until this returns, so no decision falls between the two. Before rules 16
+    /// nothing is logged (a dropped track is simply gone, as then). A track id the ledger holds
+    /// already is refused (the tracker drops an id once), and so is everything after it: on an
+    /// error, the drops from the first not recorded on were not. Returns how many were recorded.
+    pub fn record_track_drops(
+        &mut self,
+        drops: Vec<(String, TrackFacts, Option<AisIdentity>)>,
+    ) -> Result<usize, EngineError> {
+        if !self.policy.rules.lost_contacts() {
+            return Ok(0);
+        }
+        let mut n = 0;
+        for (track, mut facts, ais) in drops {
+            if self.lost.holds(&track) {
+                return Err(EngineError::NotAcceptedContact {
+                    track,
+                    why: "dropped already: the tracker drops a track id once".into(),
+                });
+            }
+            // the estimate only: the ledger fills the identification for every decision
+            facts.declared_by = None;
+            facts.declaration = None;
+            facts.review_flags = Vec::new();
+            let t = self.emit(EventBody::TrackDropped {
+                track: track.clone(),
+                facts: Box::new(facts.clone()),
+                ais: ais.clone(),
+            })?;
+            self.lost
+                .record(&track, facts, ais, t)
+                .map_err(|why| EngineError::NotAcceptedContact { track: track.clone(), why })?;
+            n += 1;
+            // a lost contact confirmed as this track counts again
+            let voided: Vec<String> = self
+                .lost
+                .confirmed()
+                .iter()
+                .filter(|(_, c)| c.by_track == track)
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in voided {
+                self.reinstate_lost(&id, format!("{track} is no longer in the picture (dropped)"), t, None)?;
+            }
+        }
+        Ok(n)
+    }
+
+    /// Rules 16, every second (the bridge's loop; the scenario runner's): on `world`, its
+    /// identification filled, void every confirmation the picture no longer bears out (the
+    /// claimant gone, suspect or declared: `lost.reinstated`, the lost contact counting again
+    /// for good), then raise every new claim, a live track carrying a lost contact's AIS
+    /// identity (`lost.claimed`, once per pair, with the picture and the evidence; it changes
+    /// nothing until an operator confirms it). Never retires anything.
+    pub fn step_lost(&mut self, world: &WorldSnapshot) -> Result<LostStep, EngineError> {
+        let mut out = LostStep::default();
+        if !self.policy.rules.lost_contacts() || self.lost.is_empty() {
+            return Ok(out);
+        }
+        let mut tracks = world.tracks.clone();
+        if self.policy.rules.rule_id() {
+            self.ident.fill(&mut tracks);
+        }
+        for (id, by_track, why) in self.lost.void_in(&tracks) {
+            let facts = tracks.get(&by_track).cloned().map(Box::new);
+            self.reinstate_lost(&id, why.clone(), world.t, facts)?;
+            out.reinstated.push((id, by_track, why));
+        }
+        let ec = self.policy.rules.engage_rules();
+        for c in crate::lost::claims(&self.lost, &tracks, &world.track_ais, &ec) {
+            if self.lost.claimed(&c.lost, &c.track) {
+                continue;
+            }
+            self.emit(EventBody::LostClaimed {
+                track: c.lost.clone(),
+                by_track: c.track.clone(),
+                world_t: world.t,
+                tracks: tracks.clone(),
+                track_ais: world.track_ais.clone(),
+                evidence: c.evidence.clone(),
+                blockers: c.blockers.clone(),
+            })?;
+            self.lost.claim(&c.lost, &c.track);
+            out.claimed.push(c);
+        }
+        Ok(out)
+    }
+
+    fn reinstate_lost(&mut self, id: &str, reason: String, world_t: Time, facts: Option<Box<TrackFacts>>) -> Result<(), EngineError> {
+        let Some(by_track) = self.lost.confirmed().get(id).map(|c| c.by_track.clone()) else {
+            return Ok(());
+        };
+        self.emit(EventBody::LostReinstated {
+            track: id.to_string(),
+            by_track,
+            reason,
+            world_t,
+            facts,
+        })?;
+        self.lost.reinstate(id);
+        Ok(())
+    }
+
+    /// Rules 16: an operator (any, under their own session; an agent's port has no such
+    /// method) confirms the claim of live track `by_track` of `world` to be lost contact `track`
+    /// ([`crate::lost::claim_of`] on the picture with its identification filled): taken only
+    /// while nothing contradicts it (its blockers empty: the only track carrying the MMSI,
+    /// undeclared, not suspect, the same domain, first seen after the lost contact's last fix,
+    /// where it could have reached). Logged as `track.reacquired` with the picture and the
+    /// evidence; the lost contact is retired from the keep-outs while `by_track` stands. Refused,
+    /// nothing logged, otherwise.
+    pub fn confirm_lost_claim(
+        &mut self,
+        by: &HumanAuthority,
+        track: &str,
+        by_track: &str,
+        world: &WorldSnapshot,
+    ) -> Result<crate::lost::Claim, EngineError> {
+        let no = |why: String| EngineError::NotAcceptedContact {
+            track: track.to_string(),
+            why,
+        };
+        if !self.policy.rules.lost_contacts() {
+            return Err(no("these decision rules have no lost contacts".into()));
+        }
+        let Some(lost) = self.lost.get(track).cloned() else {
+            return Err(no(match self.lost.confirmed().get(track) {
+                Some(c) => format!("already confirmed as {} by {}", c.by_track, c.by),
+                None => format!("{track} is not a lost contact"),
+            }));
+        };
+        if lost.ais.is_none() {
+            return Err(no(format!("{track} carried no AIS identity: no track can claim to be it")));
+        }
+        let mut tracks = world.tracks.clone();
+        if self.policy.rules.rule_id() {
+            self.ident.fill(&mut tracks);
+        }
+        let ec = self.policy.rules.engage_rules();
+        let Some(claim) = crate::lost::claim_of(track, &lost, &self.lost, by_track, &tracks, &world.track_ais, &ec) else {
+            return Err(no(format!("{by_track} is not in the picture carrying {track}'s MMSI")));
+        };
+        if !claim.confirmable() {
+            return Err(no(format!("{by_track} may not be confirmed as {track}: {}", claim.blockers.join("; "))));
+        }
+        let t = self.emit(EventBody::TrackReacquired {
+            track: track.to_string(),
+            by_track: by_track.to_string(),
+            by: by.operator().clone(),
+            session: by.session(),
+            world_t: world.t,
+            tracks,
+            track_ais: world.track_ais.clone(),
+            evidence: claim.evidence.clone(),
+        })?;
+        self.lost.claim(track, by_track);
+        self.lost.confirm(track, by_track, by.operator(), t).map_err(no)?;
+        Ok(claim)
+    }
+
+    /// Rules 16: the claims on the lost contacts in force on `world` now (for review): each live
+    /// track carrying a lost contact's MMSI, with the evidence and what keeps it from being
+    /// confirmed ([`crate::lost::claims`]).
+    pub fn lost_claims(&self, world: &WorldSnapshot) -> Vec<crate::lost::Claim> {
+        if !self.policy.rules.lost_contacts() {
+            return Vec::new();
+        }
+        let mut tracks = world.tracks.clone();
+        if self.policy.rules.rule_id() {
+            self.ident.fill(&mut tracks);
+        }
+        crate::lost::claims(&self.lost, &tracks, &world.track_ais, &self.policy.rules.engage_rules())
+    }
+
+    /// Rules 16: the lost contacts in force, as decisions read them (identification filled).
+    pub fn lost_contacts(&self) -> BTreeMap<String, crate::lost::LostContact> {
+        self.lost_filled()
+    }
+
+    /// Rules 16: the lost contacts an operator confirmed as a live track (retired while it
+    /// stands).
+    pub fn lost_confirmed(&self) -> &BTreeMap<String, crate::lost::Confirmed> {
+        self.lost.confirmed()
+    }
+
+    fn lost_filled(&self) -> BTreeMap<String, crate::lost::LostContact> {
+        self.lost.filled(&self.ident, self.policy.rules.rule_id())
+    }
+
+    /// Rules 16: an engagement decision's lost contacts and the acceptances of them for it,
+    /// filled into its inputs (nothing for another kind, or before rules 16): those in force
+    /// and those whose confirmation its picture (`w.tracks`, identification filled) voids.
+    fn fill_lost(&self, spec: &IntentSpec, w: &mut WorldSnapshot) {
+        if spec.kind() != TaskKind::Engage || !self.policy.rules.lost_contacts() {
+            return;
+        }
+        w.lost_contacts = self.lost.in_force_for(&w.tracks, &self.ident, self.policy.rules.rule_id());
+        w.lost_accepted = self.accepted_lost_for(spec.id);
+    }
+
+    /// Rules 16: the lost contacts an operator accepted for engagement `id`.
+    fn accepted_lost_for(&self, id: IntentId) -> BTreeMap<String, engage::AcceptedUnknown> {
+        self.intents
+            .get(&id)
+            .and_then(Intent::engagement)
+            .map(|e| e.accepted_lost.clone())
+            .unwrap_or_default()
     }
 
     /// Whether `uid` is lost since exactly `since` on `world` (rules 6 acceptances).
@@ -2226,6 +2617,7 @@ impl Engine {
         let track_id = engage::params(&spec).map(|p| p.0.to_string()).unwrap_or_default();
         let mut inputs = world.subset_for(&spec);
         self.identify(&mut inputs);
+        self.fill_lost(&spec, &mut inputs);
         let plan = match &frozen {
             Some(p) => p.preview.clone(),
             None => engage::preview(&spec, &inputs, &self.policy.rules)
@@ -2248,6 +2640,7 @@ impl Engine {
             frozen: frozen.is_some(),
             track: TrackIdentity::of(&track_id, track),
             unknown_accepted: self.accepted_for(id),
+            lost_accepted: self.accepted_lost_for(id),
         };
         let logged = self.log_inputs(&inputs)?;
         self.emit(EventBody::PictureIssued {
@@ -2539,6 +2932,7 @@ impl Engine {
             }
         };
         let accepted = self.accepted_for(id);
+        let accepted_lost = self.accepted_lost_for(id);
         if let Err(why) = engage::check_token(
             &shown,
             id,
@@ -2548,6 +2942,7 @@ impl Engine {
             world.tracks.get(&track_id),
             frozen.as_ref(),
             &accepted,
+            &accepted_lost,
         ) {
             self.refuse(by, session, id, &why)?;
             return Err(EngineError::StalePicture { id, why });
@@ -2602,7 +2997,7 @@ impl Engine {
         let self_accepted = self
             .get(id)?
             .engagement()
-            .is_some_and(|e| e.accepted.values().any(|a| &a.by == by));
+            .is_some_and(|e| e.accepted.values().chain(e.accepted_lost.values()).any(|a| &a.by == by));
         let n = u32::try_from(self.get(id)?.concurrences().len()).unwrap_or(u32::MAX) + 1;
         if n < of {
             let t = self.emit(EventBody::ApprovalConcurred {
@@ -2720,8 +3115,9 @@ impl Engine {
         e.signed.clear();
         e.plan = None;
         // rules 6: the acceptances go with the plan they were given for (given again, on the
-        // new picture)
+        // new picture); rules 16: of lost contacts too
         e.accepted.clear();
+        e.accepted_lost.clear();
         e.reset = Some(engage::ResetRecord { t, dropped, reason });
         Ok(())
     }
@@ -3216,6 +3612,7 @@ impl Engine {
             let mut inputs = world.for_intent_plan(&spec, terrain, &self.policy.rules, Some(&plan));
             self.identify(&mut inputs);
             inputs.unknown_accepted = eng.accepted.clone();
+            self.fill_lost(&spec, &mut inputs);
             let results = engage::evaluate(&spec, &inputs, &self.policy.rules);
             if results.iter().any(|c| c.outcome != Outcome::Pass) {
                 let logged = self.log_inputs(&inputs)?;
@@ -3227,6 +3624,7 @@ impl Engine {
         let mut inputs = world.subset_for(&spec);
         self.identify(&mut inputs);
         inputs.unknown_accepted = eng.accepted.clone();
+        self.fill_lost(&spec, &mut inputs);
         let Some(snap) = eng.snapshot.clone() else {
             return Ok(None);
         };
@@ -3528,7 +3926,7 @@ impl Engine {
         let plan = intent.engagement().and_then(|e| e.plan.as_ref());
         let mut inputs = world.for_intent_plan(spec, terrain, &self.policy.rules, plan);
         self.identify(&mut inputs);
-        inputs.unknown_accepted = self.accepted_for(id);
+        self.fill_engine_facts(spec, &mut inputs);
         let checks = rules::evaluate(spec, &inputs, &self.policy.rules);
         let pv = match plan {
             Some(p) => Some(p.preview.clone()),
@@ -3563,6 +3961,10 @@ impl Engine {
                 t.velocity_sigma_mps = None;
             }
         }
+        // rules 16: a track's AIS identity is a fact only rules 16 read
+        if !self.policy.rules.lost_contacts() {
+            w.track_ais.clear();
+        }
     }
 
     /// The world as decisions read it (rules 9: its identification filled from the ledger),
@@ -3575,20 +3977,37 @@ impl Engine {
     }
 
     /// The inputs a decision on `spec` would read on `world` now, filled as the engine fills
-    /// them before its checks (rules 9 identification; the engagements in play and the
-    /// queued orders on its vehicles; their lost-link values still owed; rules 12 spent
-    /// platforms), for a dry run that is not a decision (the nomination form's,
-    /// `POST /api/engage/options`, and agents' `get_nomination_options`): nothing is logged
-    /// or changed. A space task's answer is not asked for.
+    /// them before its checks (rules 9 identification, then [`Engine::fill_engine_facts`]), for
+    /// a dry run that is not a decision (the nomination form's, `POST /api/engage/options`, and
+    /// agents' `get_nomination_options`): nothing is logged or changed. A space task's answer is
+    /// not asked for.
     pub fn dry_run_inputs(&self, spec: &IntentSpec, world: &WorldSnapshot, terrain: &dyn TerrainOracle) -> WorldSnapshot {
         let mut inputs = world.for_intent_with(spec, terrain, &self.policy.rules);
         self.identify(&mut inputs);
+        // (a new nomination has no acceptances yet)
+        self.fill_engine_facts(spec, &mut inputs);
+        inputs
+    }
+
+    /// What the engine fills into a decision's inputs from its own state, after the world's part,
+    /// the identification and a space task's answer: the engagements in play and the approved
+    /// orders waiting on its vehicles, their own lost-link values still owed back (rules 7 and
+    /// 12), the platforms spent by their own effect (rules 12) and carried over as spent (rules
+    /// 15), an engagement's acceptances of lost vehicles (rules 6) and its lost contacts with the
+    /// acceptances of them (rules 16). Every decision's checks read them so, and so does every dry
+    /// run that says what a decision would do (an agent's preview, the nomination form's options,
+    /// the console's live checks of a waiting engagement): one fill, so none drifts from the
+    /// decision (the review of the merged branch: the agent's preview had no lost contacts).
+    fn fill_engine_facts(&self, spec: &IntentSpec, inputs: &mut WorldSnapshot) {
         inputs.engaged = self.engaged_for(spec);
         inputs.waiting = self.waiting_for(spec);
         inputs.restore_owed = self.restore_owed_for(spec, &inputs.identities);
         inputs.expended = self.restores.expended_for(spec, &self.policy.rules);
         inputs.spent_carried = self.restores.spent_carried_for(spec, &self.policy.rules, &inputs.identities);
-        inputs
+        if spec.kind() == TaskKind::Engage {
+            inputs.unknown_accepted = self.accepted_for(spec.id);
+        }
+        self.fill_lost(spec, inputs);
     }
 
     /// Rules 9: the identification ledger (declarations in force, flags, acts seen).
@@ -5132,14 +5551,7 @@ impl Engine {
         if spec.task.is_space() {
             inputs.space = self.ask_space(&spec.task, inputs.t, phase)?;
         }
-        inputs.engaged = self.engaged_for(spec);
-        inputs.waiting = self.waiting_for(spec);
-        inputs.restore_owed = self.restore_owed_for(spec, &inputs.identities);
-        inputs.expended = self.restores.expended_for(spec, &self.policy.rules);
-        inputs.spent_carried = self.restores.spent_carried_for(spec, &self.policy.rules, &inputs.identities);
-        if spec.kind() == TaskKind::Engage {
-            inputs.unknown_accepted = self.accepted_for(spec.id);
-        }
+        self.fill_engine_facts(spec, &mut inputs);
         let results = rules::evaluate(spec, &inputs, &self.policy.rules);
         let passed = rules::passed(&results, spec.kind());
         let preview = (spec.kind() == TaskKind::Engage)
@@ -5334,18 +5746,43 @@ impl Engine {
             for (uid, since) in a.list {
                 self.emit(EventBody::EngageAccepted {
                     intent: id,
-                    uid: uid.clone(),
+                    uid: Some(uid.clone()),
+                    contact: None,
                     since: *since,
                     by: a.by.clone(),
                     session: a.session,
                     world_t: world.t,
-                    vehicle: Box::new(world.vehicles.get(uid).cloned().unwrap_or_default()),
+                    vehicle: Some(Box::new(world.vehicles.get(uid).cloned().unwrap_or_default())),
+                    lost: None,
                     step_up: a.step_up,
                 })?;
                 self.get_mut(id)?.engagement_mut().accepted.insert(
                     uid.clone(),
                     engage::AcceptedUnknown {
                         since: *since,
+                        by: a.by.clone(),
+                    },
+                );
+            }
+            // rules 16: and the lost contacts it accepts
+            let filled = if a.contacts.is_empty() { BTreeMap::new() } else { self.lost_filled() };
+            for (track, since) in a.contacts {
+                self.emit(EventBody::EngageAccepted {
+                    intent: id,
+                    uid: None,
+                    contact: Some(track.clone()),
+                    since: Some(*since),
+                    by: a.by.clone(),
+                    session: a.session,
+                    world_t: world.t,
+                    vehicle: None,
+                    lost: filled.get(track).cloned().map(Box::new),
+                    step_up: a.step_up,
+                })?;
+                self.get_mut(id)?.engagement_mut().accepted_lost.insert(
+                    track.clone(),
+                    engage::AcceptedUnknown {
+                        since: Some(*since),
                         by: a.by.clone(),
                     },
                 );
@@ -5651,10 +6088,20 @@ pub(crate) fn op_state_owner(spec: &IntentSpec, uid: &Uid) -> Result<(), String>
 }
 
 /// Rules 6: who accepts lost vehicles at a nomination, and which.
+/// Rules 16: what [`Engine::step_lost`] did: the claims it raised and the confirmations it
+/// voided (lost contact, claimant, why).
+#[derive(Clone, Debug, Default)]
+pub struct LostStep {
+    pub claimed: Vec<crate::lost::Claim>,
+    pub reinstated: Vec<(String, String, String)>,
+}
+
 struct Acceptor<'a> {
     by: &'a OperatorId,
     session: SessionId,
     list: &'a [(Uid, Option<Time>)],
+    /// Rules 16: the lost contacts accepted, each since its last fix.
+    contacts: &'a [(String, Time)],
     /// Rules 8: the step-up the acceptances quote (`[approval] step_up_acts`).
     step_up: Option<StepUpRef>,
 }
@@ -6135,14 +6582,8 @@ impl AgentPort<'_> {
         if spec.task.is_space() {
             inputs.space = self.engine.ask_space(&spec.task, inputs.t, CheckPhase::Submit)?;
         }
-        inputs.engaged = self.engine.engaged_for(&spec);
-        inputs.waiting = self.engine.waiting_for(&spec);
-        inputs.restore_owed = self.engine.restore_owed_for(&spec, &inputs.identities);
-        inputs.expended = self.engine.restores.expended_for(&spec, &self.engine.policy.rules);
-        inputs.spent_carried = self
-            .engine
-            .restores
-            .spent_carried_for(&spec, &self.engine.policy.rules, &inputs.identities);
+        // what the proposal's decision would read, lost contacts included (rules 16)
+        self.engine.fill_engine_facts(&spec, &mut inputs);
         let checks = rules::evaluate(&spec, &inputs, &self.engine.policy.rules);
         let passed = rules::passed(&checks, spec.kind());
         let policy = passed.then(|| policy::decide(&spec, &inputs, &self.engine.policy));

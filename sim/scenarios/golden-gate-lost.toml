@@ -1,0 +1,68 @@
+# Golden Gate traffic for the lost-contact demo (rules 16, murmur-533): the suspect fast boat of
+# the engagement demo comes in under the bridge and holds west of it, inside the engagement
+# zone; a fishing boat drifting 400 m north of where it holds goes out of our sensors' view at
+# 4 minutes (in this truth it leaves the scenario: nothing detects it again), and the bridge's
+# tracker drops its track 180 s later; a harbor tour boat on AIS goes out of view at the same
+# time and comes back into view at 9 minutes, 300 m from where it was last seen, under the same
+# AIS identity (the tracker starts a new track for it, a claim to be the lost contact, which an
+# operator confirms from the review list; until then the lost contact counts beside it).
+# Truth only: the C2 sees what our sensors make of it. With the stand-in engage demo fleet:
+#   MURMUR_CONTACTS=sim/scenarios/golden-gate-lost.toml make up FLEET=engage-demo
+#   (MURMUR_OPERATORS=op-1,op-2,op-3 MURMUR_ENGAGE_OPERATORS=op-1,op-2,op-3)
+# The effect is an abstract event (a point, a radius, a time); see docs/PLAN.md, Phase E.
+title = "Golden Gate traffic, lost-contact demo"
+seed = 13
+
+[sensing]
+misclassification_rate = 0.0     # deterministic identities for the demo
+
+# ---------------------------------------------------------------- the suspect
+[[contact]]
+id = "fastboat-richardson"
+name = "Fast boat out of Richardson Bay with a spoofed fishing-vessel AIS"
+affiliation = "hostile"
+domain = "surface"
+kind = "small_fast_boat"
+speed_mps = 15
+motion = "route"
+route = [[-122.4760, 37.8560], [-122.4740, 37.8360], [-122.4790, 37.8230], [-122.4950, 37.8120]]
+reverse = true
+dwell_s = 2400                   # 40 minutes holding west of the bridge
+ais = { mmsi = "366999302", name = "F/V PACIFIC DAWN", ship_type = "fishing", spoofed = true }
+
+# ---------------------------------------------------------------- the contact that goes out of view
+[[contact]]
+id = "fisher-drifting"
+name = "Fishing boat drifting north of the holding point (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+speed_mps = 0
+motion = "station"
+at = [-122.4950, 37.8156]
+end_s = 240                      # out of view from 4 minutes on
+
+# ---------------------------------------------------------------- the one that comes back (AIS)
+[[contact]]
+id = "tour-boat"
+name = "Harbor tour boat (AIS), out of view from 4 minutes"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 0
+motion = "station"
+at = [-122.5000, 37.8200]
+end_s = 240
+ais = { mmsi = "366999104", name = "MV BAY EXPLORER", ship_type = "passenger" }
+
+[[contact]]
+id = "tour-boat-again"
+name = "The same tour boat, back in view at 9 minutes 300 m on"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 0
+motion = "station"
+at = [-122.5034, 37.8200]
+start_s = 540
+ais = { mmsi = "366999104", name = "MV BAY EXPLORER", ship_type = "passenger" }

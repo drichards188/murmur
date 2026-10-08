@@ -189,6 +189,11 @@ impl Erig {
     }
 
     pub(super) fn sense_at(&self, now_s: f64, with_target: bool) {
+        self.sense_at_with(now_s, with_target, &[]);
+    }
+
+    /// [`Erig::sense_at`] with other contacts in the truth too.
+    pub(super) fn sense_at_with(&self, now_s: f64, with_target: bool, others: &[ContactTruth]) {
         let observer = Observer {
             uid: 9,
             lat: TARGET.0,
@@ -199,9 +204,11 @@ impl Erig {
             sensors: vec![
                 SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true, height: false },
                 SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true, height: false },
+                // hears only contacts that broadcast (none but a test's own AIS contacts)
+                SensorSpec { kind: SensorType::Ais, range_m: 20_000.0, guess: true, height: false },
             ],
         };
-        let contacts = if with_target {
+        let mut contacts = if with_target {
             vec![ContactTruth {
                 id: "fastboat".into(),
                 name: "fast boat".into(),
@@ -220,6 +227,7 @@ impl Erig {
         } else {
             Vec::new()
         };
+        contacts.extend(others.iter().cloned());
         let msg = TruthMessage {
             t: now_s,
             s: now_s,
@@ -267,6 +275,7 @@ impl Erig {
                 window_s: Some(300),
                 fallback: Some(fallback.into()),
                 accept_unknown: Vec::new(),
+                accept_lost: Vec::new(),
             },
             constraints: Constraints::default(),
             rationale: None,
@@ -871,6 +880,7 @@ fn carrying_rig_anchored(
         murmur_decide::StartCarry {
             pointer: name.filter(|_| rules15),
             from,
+            ..Default::default()
         },
     );
     e.r.d.seed_carried(Some(pointer));
@@ -1835,6 +1845,237 @@ async fn a_platform_left_on_a_superseded_intercept_says_so_in_its_restore_alert(
     assert!(e.tracks.take_effects().is_empty(), "nothing released");
     let rep = replay::replay_str(&e.r.log.text()).expect("parses");
     assert!(rep.ok(), "{:?}", rep.mismatches);
+}
+
+/// Rules 16 (murmur-533): a contact the tracker drops goes to the engine at the next tick
+/// (`track.dropped`; until then it stays in the decision facts) and still counts in the
+/// keep-out; the console is shown it; an operator with engagement authority accepts it for a
+/// nomination as the check names it (its last fix), and the log replays.
+#[tokio::test(start_paused = true)]
+async fn a_dropped_contact_still_blocks_until_an_operator_accepts_it() {
+    let e = engage_rig();
+    e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+    sleep(Duration::from_millis(500)).await;
+    e.picture().await;
+    // a fishing boat 400 m north of the target, seen for 20 s, then out of view
+    let boat = ContactTruth {
+        id: "fisher".into(),
+        name: "fishing boat".into(),
+        affiliation: TruthAffiliation::Neutral,
+        domain: TDomain::Surface,
+        kind: "fishing_vessel".into(),
+        lat: TARGET.0 + 400.0 / 111_320.0,
+        lon: TARGET.1,
+        alt_m: 0.0,
+        speed_mps: 0.0,
+        course_deg: 0.0,
+        emits: false,
+        signature: 1.0,
+        ais: None,
+    };
+    for _ in 0..20 {
+        e.r.clock.advance_ms(1000);
+        e.sense_at_with(e.now_s(), true, std::slice::from_ref(&boat));
+        e.r.d.tick();
+        sleep(Duration::from_secs(1)).await;
+    }
+    assert!(e.tracks.tracks_json(e.now_s()).iter().any(|t| t["id"] == "T-0002"));
+    for _ in 0..185 {
+        e.tick(true).await;
+    }
+    assert_eq!(e.r.events("track.dropped"), 1);
+    assert!(e.tracks.tracks_json(e.now_s()).iter().all(|t| t["id"] != "T-0002"));
+    // the run logged the tracker's drop age, which replay holds the drop to
+    assert!(e.r.log.lines()[0].contains(&format!("\"track_drop_s\":{}", e.tracks.drop_s())), "{}", e.r.log.lines()[0]);
+    // the console sees it, out of view since its last fix, with the regions counted now
+    let lost = e.tracks.lost_json();
+    assert_eq!(lost.len(), 1, "{lost:?}");
+    assert_eq!(lost[0]["id"], "T-0002");
+    assert!(lost[0]["out_of_view_s"].as_f64().expect("s") > 180.0, "{lost:?}");
+    assert!(!lost[0]["regions"].as_array().expect("regions").is_empty(), "{lost:?}");
+    let since = lost[0]["since_t"].as_i64().expect("since");
+    // nominated without an acceptance: rejected on the lost contact
+    let out = e.r.d.submit(&op("op-2"), e.nomination("return")).await.expect("nominated");
+    assert_eq!(out.state, State::Rejected, "{}", out.intent);
+    assert!(out.intent.to_string().contains("lost contact T-0002"), "{}", out.intent);
+    // an agent can't accept it; op-1 (no engagement authority) neither
+    let mut req = e.nomination("return");
+    req.engage.accept_lost = vec![engage::AcceptLost { track: "T-0002".into(), since }];
+    req.rationale = Some("the declared fast boat west of the bridge".into());
+    let err = e.r.d.agent_propose(&AgentId::new("agent-planner"), req.clone()).await.expect_err("agent");
+    assert_eq!(err.status, 403, "{}", err.detail);
+    let err = e.r.d.submit(&op("op-1"), req.clone()).await.expect_err("no authority");
+    assert_eq!(err.status, 403, "{}", err.detail);
+    // op-2 accepts it with the nomination: it waits for its signers, the card shows it
+    let out = e.r.d.submit(&op("op-2"), req).await.expect("nominated");
+    assert_eq!(out.state, State::PendingApproval, "{}", out.intent);
+    let msg: Value = serde_json::from_str(&e.r.d.message()).expect("json");
+    let mine = msg["inbox"]["pending"].as_array().expect("pending").iter().find(|i| i["id"] == out.id.0).cloned().expect("intent");
+    assert_eq!(mine["engage"]["accepted_lost"][0]["track"], "T-0002", "{mine}");
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    assert_eq!(rep.lost_contacts, 1);
+}
+
+/// Rules 16 (the review of murmur-533): a contact seen again carrying a lost contact's AIS is a
+/// claim, never a retirement: the tick raises it (`lost.claimed`), the review list shows it with
+/// its evidence and a confirm action, the lost contact keeps counting until an operator
+/// confirms it (`POST /api/review/lost/{track}/confirm`, any operator, under their session:
+/// `track.reacquired`), and the log replays.
+#[tokio::test(start_paused = true)]
+async fn a_contact_seen_again_by_its_ais_is_a_claim_an_operator_confirms() {
+    let e = engage_rig();
+    e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+    sleep(Duration::from_millis(500)).await;
+    e.picture().await;
+    // a tour boat on AIS 1.5 km north of the target, seen 20 s, out of view, then seen again
+    let boat = ContactTruth {
+        id: "tour".into(),
+        name: "tour boat".into(),
+        affiliation: TruthAffiliation::Neutral,
+        domain: TDomain::Surface,
+        kind: "ferry".into(),
+        lat: TARGET.0 + 1_500.0 / 111_320.0,
+        lon: TARGET.1,
+        alt_m: 0.0,
+        speed_mps: 0.0,
+        course_deg: 0.0,
+        emits: false,
+        signature: 1.0,
+        ais: Some(crate::tracks::truth::Ais {
+            mmsi: "366999501".into(),
+            name: "MV BAY TOUR".into(),
+            ship_type: "passenger".into(),
+            spoofed: false,
+        }),
+    };
+    for _ in 0..20 {
+        e.r.clock.advance_ms(1000);
+        e.sense_at_with(e.now_s(), true, std::slice::from_ref(&boat));
+        e.r.d.tick();
+        sleep(Duration::from_secs(1)).await;
+    }
+    for _ in 0..185 {
+        e.tick(true).await;
+    }
+    assert_eq!(e.r.events("track.dropped"), 1);
+    let log = e.r.log.text();
+    let dropped = log.lines().find(|l| l.contains("\"type\":\"track.dropped\"")).expect("dropped");
+    assert!(dropped.contains("\"mmsi\":\"366999501\""), "its AIS with the drop: {dropped}");
+    // seen again: a new track carrying its MMSI, and a claim, not a retirement
+    for _ in 0..5 {
+        e.r.clock.advance_ms(1000);
+        e.sense_at_with(e.now_s(), true, std::slice::from_ref(&boat));
+        e.r.d.tick();
+        sleep(Duration::from_secs(1)).await;
+    }
+    assert_eq!(e.r.events("lost.claimed"), 1);
+    assert_eq!(e.r.events("track.reacquired"), 0, "never retired by the match itself");
+    assert_eq!(e.tracks.lost_json().len(), 1, "still counted");
+    let review = e.r.d.review_json();
+    let claim = &review["lost_claims"][0];
+    assert_eq!((claim["lost"].clone(), claim["track"].clone()), (json!("T-0002"), json!("T-0003")), "{review}");
+    assert!(claim["evidence"].as_str().unwrap_or("").contains("name MV BAY TOUR (the same)"), "{claim}");
+    assert_eq!(claim["actions"], json!(["confirm"]), "{claim}");
+    assert_eq!(review["counts"]["lost_claims"], 1, "{review}");
+    // nominated now: the lost contact still blocks
+    let out = e.r.d.submit(&op("op-2"), e.nomination("return")).await.expect("nominated");
+    assert_eq!(out.state, State::Rejected, "{}", out.intent);
+    assert!(out.intent.to_string().contains("lost contact T-0002"), "{}", out.intent);
+    // any operator confirms it (op-1 has no engagement authority); a wrong claimant is refused
+    let err = e.r.d.confirm_lost_claim(&op("op-1"), "T-0002", "T-0001").expect_err("not a claimant");
+    assert_eq!(err.status, 409, "{}", err.detail);
+    let v = e.r.d.confirm_lost_claim(&op("op-1"), "T-0002", "T-0003").expect("confirmed");
+    assert_eq!(v["confirmed"]["track"], "T-0003", "{v}");
+    assert!(e.tracks.lost_json().is_empty(), "retired while T-0003 stands");
+    let review = e.r.d.review_json();
+    assert_eq!(review["lost_confirmed"][0]["track"], "T-0003", "{review}");
+    let log = e.r.log.text();
+    let confirmed = log.lines().find(|l| l.contains("\"type\":\"track.reacquired\"")).expect("confirmed");
+    assert!(confirmed.contains("\"by\":\"op-1\",\"session\":"), "{confirmed}");
+    let rep = replay::replay_str(&log).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    assert_eq!((rep.lost_contacts, rep.lost_claims, rep.lost_confirmed), (1, 1, 1));
+}
+
+/// Rules 16, the review of the merged branch: a claim's confirmation takes its picture under the
+/// decision lock. Here the confirmation starts while the lock is held (as a tick would hold it),
+/// and while it waits a new contact is sensed and a decision logs a picture with it; the
+/// confirmation's picture, taken once it has the lock, holds that contact too, so the log
+/// replays (taken before the lock, it lacked the contact: a track gone without a drop).
+#[tokio::test(start_paused = true)]
+async fn a_claims_confirmation_takes_its_picture_under_the_decision_lock() {
+    let e = engage_rig();
+    e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+    sleep(Duration::from_millis(500)).await;
+    e.picture().await;
+    let boat = |id: &str, north_m: f64, ais: Option<crate::tracks::truth::Ais>| ContactTruth {
+        id: id.into(),
+        name: id.into(),
+        affiliation: TruthAffiliation::Neutral,
+        domain: TDomain::Surface,
+        kind: "ferry".into(),
+        lat: TARGET.0 + north_m / 111_320.0,
+        lon: TARGET.1,
+        alt_m: 0.0,
+        speed_mps: 0.0,
+        course_deg: 0.0,
+        emits: false,
+        signature: 1.0,
+        ais,
+    };
+    let tour = boat(
+        "tour",
+        1_500.0,
+        Some(crate::tracks::truth::Ais {
+            mmsi: "366999501".into(),
+            name: "MV BAY TOUR".into(),
+            ship_type: "passenger".into(),
+            spoofed: false,
+        }),
+    );
+    // seen 20 s, dropped, seen again: a claim (T-0003 claims to be T-0002)
+    for _ in 0..20 {
+        e.r.clock.advance_ms(1000);
+        e.sense_at_with(e.now_s(), true, std::slice::from_ref(&tour));
+        e.r.d.tick();
+        sleep(Duration::from_secs(1)).await;
+    }
+    for _ in 0..185 {
+        e.tick(true).await;
+    }
+    for _ in 0..5 {
+        e.r.clock.advance_ms(1000);
+        e.sense_at_with(e.now_s(), true, std::slice::from_ref(&tour));
+        e.r.d.tick();
+        sleep(Duration::from_secs(1)).await;
+    }
+    assert_eq!(e.r.events("lost.claimed"), 1);
+    // the lock held; the confirmation starts on another thread and waits for it
+    let guard = e.r.d.lock();
+    let d = e.r.d.clone();
+    let confirm = std::thread::spawn(move || d.confirm_lost_claim(&op("op-1"), "T-0002", "T-0003"));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    // meanwhile a new contact, and a decision whose picture holds it (an orbit, under op-1)
+    let mut guard = guard;
+    let core = &mut *guard;
+    e.sense_at_with(e.now_s(), true, &[tour.clone(), boat("newcomer", -2_000.0, None)]);
+    let world = e.r.d.snapshot();
+    assert!(world.tracks.contains_key("T-0004"), "the newcomer is a track: {:?}", world.tracks.keys());
+    let session = Decision::session(&mut core.engine, &mut core.sessions, &core.logins, &op("op-1"), &e.r.d.engage_operators, e.r.d.auth)
+        .expect("session");
+    let proposal = crate::decision::proposal(&orbit(1)).expect("orbit");
+    core.engine
+        .submit(session.authority(), proposal, &world, &e.r.d.terrain.oracle())
+        .expect("submitted");
+    drop(guard);
+    let v = confirm.join().expect("thread").expect("confirmed");
+    assert_eq!(v["confirmed"]["track"], "T-0003", "{v}");
+    let log = e.r.log.text();
+    let rep = replay::replay_str(&log).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    let reacquired = log.lines().find(|l| l.contains("\"type\":\"track.reacquired\"")).expect("confirmed");
+    assert!(reacquired.contains("\"T-0004\":{"), "the confirmation's picture holds the newcomer");
 }
 
 // ---- rules 15 ---------------------------------------------------------------------------

@@ -1456,6 +1456,18 @@ impl Track {
             velocity_sigma_mps: self.vel.map(|_| (self.vel_sigma_mps() * 100.0).round() / 100.0),
         }
     }
+
+    /// Rules 16: the AIS identity it broadcasts, as heard, for the decision layer
+    /// (`WorldSnapshot::track_ais`: a lost contact is matched again by it; the engine of older
+    /// rules drops it). Kept apart from [`Self::facts`], whose shape the tracker's comparison
+    /// copies fix.
+    pub fn ais_identity(&self) -> Option<murmur_decide::AisIdentity> {
+        self.ais.as_ref().map(|a| murmur_decide::AisIdentity {
+            mmsi: a.mmsi.clone(),
+            name: a.name.clone(),
+            ship_type: a.ship_type.clone(),
+        })
+    }
 }
 
 #[cfg(test)]

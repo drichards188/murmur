@@ -1,0 +1,146 @@
+# Rules 16 (the review of murmur-533's AIS retirement): a tour boat broadcasting AIS goes out of
+# view 400 m north of the target and is dropped. Ten minutes on, a track carrying its MMSI
+# appears 1.9 km north of the target, inside where the boat could have got to; the tracker calls
+# it neutral (EO/IR has not yet looked long enough to find that it does not fit its AIS). The
+# first version retired the lost contact at once on that match, and nothing reinstated it when
+# the claimant turned suspect a minute later. Now the match is only a claim (`lost.claimed`,
+# shown for review with the evidence); the lost contact keeps blocking: the first nomination is
+# rejected (keep_out_tracks: the lost contact). An agent cannot confirm a claim (its port has no
+# such method). op-2 confirms it (`track.reacquired`); the nomination is made again, signed and
+# dispatched. Then the claimant turns suspect: the confirmation is void and the lost contact
+# counts again (`lost.reinstated`), and the engagement aborts before its effect
+# (keep_out_tracks) with its fallback. Afterwards the reinstatement is cut from the log and the
+# lost contact from every decision after the confirmation, as if the claimant still stood;
+# replay catches it (the picture voids the confirmation, the decisions read no lost contact).
+title = "A claim on a lost contact by a spoofed AIS is confirmed, then void"
+invariant = "keep_out_tracks"
+attack = "a track carrying a lost contact's AIS appears inside its reach; an operator confirms it; it turns suspect after dispatch; the reinstatement cut from the log"
+expect = "aborted"
+expect_rule = "keep_out_tracks"
+expect_claimed = ["T-0009 claims to be T-0002"]
+expect_reacquired = ["T-0002 is T-0009 again, confirmed by op-2"]
+expect_reinstated = ["T-0002 counts again: T-0009 is suspect"]
+tamper = "hide_reinstatement"
+end_s = 700
+
+[[operator]]
+id = "op-1"
+engage = true
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, 28 m/s: the effect about 100 s after the nomination
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[track]]
+id = "T-0002"
+at = [-122.4950, 37.8156]   # 400 m north of the target
+affiliation = "neutral"
+identity = "ferry"
+identity_confidence = 0.9
+sources = ["3:radar", "3:ais"]
+ais = { mmsi = "366999501", name = "MV BAY TOUR", ship_type = "passenger" }
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "track"            # out of sensor view
+id = "T-0002"
+silent = true
+
+[[step]]
+at_s = 181
+action = "drop_track"       # 180 s unseen: a lost contact
+track = "T-0002"
+
+[[step]]
+at_s = 600
+action = "track"            # a track carrying its MMSI, 1.9 km north of the target
+id = "T-0009"
+at = [-122.4950, 37.8291]
+affiliation = "neutral"
+identity = "ferry"
+identity_confidence = 0.85
+sources = ["3:radar", "3:ais"]
+tracked_s = 120             # followed for two minutes: it has an average velocity
+ais = { mmsi = "366999501", name = "MV BAY TOUR", ship_type = "passenger" }
+
+[[step]]
+at_s = 603
+action = "nominate"         # the claim is not confirmed: the lost contact still blocks
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 604
+action = "expect"
+state = "rejected"
+rule = "keep_out_tracks"
+
+[[step]]
+at_s = 605
+action = "agent_confirm"    # no such method on an agent's port
+agent = "agent-planner"
+track = "T-0002"
+
+[[step]]
+at_s = 606
+action = "confirm_claim"
+by = "op-2"
+track = "T-0002"
+by_track = "T-0009"
+
+[[step]]
+at_s = 608
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 610
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 612
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 613
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 630
+action = "track"            # EO/IR finds it does not fit its AIS
+id = "T-0009"
+affiliation = "suspect"

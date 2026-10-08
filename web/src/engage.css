@@ -358,6 +358,19 @@
 .ko-at {
   color: #7d8b9a;
 }
+/* rules 16: accept a lost contact with the nomination */
+.ko-accept {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  margin-top: 6px;
+  font-size: 11px;
+  color: #ffd39a;
+  cursor: pointer;
+}
+.ko-accept input {
+  margin-top: 2px;
+}
 .ko-near summary {
   cursor: pointer;
   font-size: 11px;

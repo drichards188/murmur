@@ -178,7 +178,7 @@ export function buildKeepOutLayers(ex: KeepOutExplanation, platformName: string)
       marks.push({ at: i.now, color })
       const kind = r ? KEEP_OUT_KIND_LABEL[r.kind] : 'cannot be placed'
       const num = i.short_m == null ? '' : i.blocks ? ` · short ${fmtDist(i.short_m)}` : ` · clear by ${fmtDist(-i.short_m)}`
-      const who = i.subject === 'vehicle' ? i.label : i.id
+      const who = i.subject === 'vehicle' ? i.label : i.subject === 'lost_contact' ? `${i.id} (lost)` : i.id
       labels.push({ at: i.now, text: `${who} ${kind}${num}`, color: i.blocks ? [255, 211, 154, 255] : [200, 208, 216, 255] })
     }
   }

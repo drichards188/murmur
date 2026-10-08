@@ -199,7 +199,13 @@ impl Decision {
     /// latest resolved ones.
     pub fn review_json(&self) -> Value {
         let core = self.lock();
-        review_of(core.engine.identification())
+        let mut review = review_of(core.engine.identification());
+        // rules 16: claims on lost contacts (confirm), and those confirmed
+        let (claims, confirmed) = self.lost_review(&core);
+        review["counts"]["lost_claims"] = json!(claims.len());
+        review["lost_claims"] = json!(claims);
+        review["lost_confirmed"] = json!(confirmed);
+        review
     }
 }
 

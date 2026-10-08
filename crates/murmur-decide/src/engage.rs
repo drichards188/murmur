@@ -339,6 +339,13 @@ impl EngageRules {
         self.rules_version >= crate::rules::AIRCRAFT_REACH_SINCE
     }
 
+    /// The decisions of rules 16 on ([`crate::rules::LOST_CONTACT_SINCE`]): a contact the
+    /// tracker dropped counts in the keep-out as a lost contact ([`crate::lost`]), and a track
+    /// out of view, lost or live, counts anywhere at its domain's top speed ([`out_of_view`]).
+    pub fn lost(&self) -> bool {
+        self.rules_version >= crate::rules::LOST_CONTACT_SINCE
+    }
+
     /// The optional keys this section sets, each with the policy schema that introduced it
     /// (or, for an old name, the first schema whose builds read it): a log claiming an
     /// older schema can't carry them (replay checks).
@@ -674,6 +681,11 @@ pub struct PictureToken {
     /// refused.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unknown_accepted: BTreeMap<Uid, AcceptedUnknown>,
+    /// Rules 16: the lost contacts accepted for it when it was shown, by track id (every signer
+    /// sees them; a signature quoting a token whose set differs from the engagement's now is
+    /// refused).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lost_accepted: BTreeMap<String, AcceptedUnknown>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -799,6 +811,10 @@ pub struct Engagement {
     /// Rules 6: our vehicles an operator accepted as lost for this engagement.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub accepted: BTreeMap<Uid, AcceptedUnknown>,
+    /// Rules 16: the lost contacts an operator accepted for this engagement, by the track id
+    /// each was dropped under (`since`: its last fix).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub accepted_lost: BTreeMap<String, AcceptedUnknown>,
 }
 
 /// Rules 6: an operator's explicit acceptance that one of our vehicles is lost (its
@@ -840,6 +856,23 @@ pub fn lost_since_report(
         return Err(format!(
             "lost since {}, not {}: accept what the check shows",
             last.map_or("none".to_string(), |t| t.0.to_string()),
+            since.map_or("none".to_string(), |t| t.0.to_string())
+        ));
+    }
+    Ok(())
+}
+
+/// Rules 16: whether lost contact `id` is in force (`lost`, the engine's ledger's) since
+/// exactly its last fix at `since`. The engine refuses an acceptance otherwise; replay checks it
+/// against its own ledger and the contact's facts logged with `engage.accepted`.
+pub fn contact_lost_since(id: &str, lost: Option<&crate::lost::LostContact>, since: Option<Time>) -> Result<(), String> {
+    let Some(l) = lost else {
+        return Err(format!("{id} is not a lost contact (the tracker has not dropped it, or it was seen again)"));
+    };
+    if since != Some(l.since()) {
+        return Err(format!(
+            "{id} is out of view since {}, not {}: accept what the check shows",
+            l.since().0,
             since.map_or("none".to_string(), |t| t.0.to_string())
         ));
     }
@@ -2685,6 +2718,9 @@ pub enum ReachKind {
     Young,
     /// Rules 14: an aircraft: anywhere it reaches from its own speed, speeding up to its top.
     Aircraft,
+    /// Rules 16: out of view (a lost contact, or a live track unseen [`OUT_OF_VIEW_S`]):
+    /// anywhere it reaches at its domain's top speed since its last fix ([`lost_reach`]).
+    OutOfView,
 }
 
 impl ReachKind {
@@ -2696,6 +2732,7 @@ impl ReachKind {
             ReachKind::Manoeuvre => "manoeuvre",
             ReachKind::Young => "young",
             ReachKind::Aircraft => "aircraft",
+            ReachKind::OutOfView => "out_of_view",
         }
     }
 }
@@ -2728,6 +2765,109 @@ pub fn track_reach(t: &TrackFacts, effect_t: Time, ec: &EngageRules) -> Vec<Trac
 /// many effect times ([`crate::keepout`]).
 pub fn track_regions(t: &TrackFacts, effect_t: Time, ec: &EngageRules) -> Vec<TrackReach> {
     reach(t, effect_t, ec, false)
+}
+
+/// Rules 16: a track is out of view after this long without a detection, s, and from then on
+/// a keep-out counts it anywhere it could have got to since its last fix ([`out_of_view`]).
+/// The bridge's tracker calls a track stale at the same age (`tracks::model::STALE_S`: the
+/// console fades it) and drops it at 180 s (then a lost contact, [`crate::lost`]). Why 10 s:
+/// the sensing model draws a detection every second for every sensor in reach, with a
+/// probability of at least 0.47 within a sensor's nominal range and 0.94 within half of it, so
+/// ten misses in a row (at most 0.16%, and 10^-12 at half range) mean the sensors are not
+/// seeing the contact, not a gap between fixes; an AIS report comes every 2 to 10 s underway.
+/// Below it a contact that turned back unseen is at most about twice its speed times the gap
+/// off its course (100 m at 5 m/s), which the regions along its course already allow for
+/// (their acceleration-noise term is that size 40 s ahead); above it nothing bounds where it
+/// went but its speed. Until the drop the track is in the picture and the tracker would say
+/// nothing of a turn it has not seen (the review of murmur-533: a ferry steaming away, unseen
+/// 170 s, let a nomination through that the same ferry unseen 182 s, lost, blocked).
+pub const OUT_OF_VIEW_S: f64 = 10.0;
+
+/// Rules 16: whether a track is out of view at `now`: no detection for [`OUT_OF_VIEW_S`]
+/// (never before rules 16).
+pub fn out_of_view(t: &TrackFacts, now: Time, ec: &EngageRules) -> bool {
+    ec.lost() && secs(now.ms_since(t.last_seen_t)) >= OUT_OF_VIEW_S
+}
+
+/// Rules 16: how fast a track out of view may be going since its last fix, m/s, and how far
+/// beyond its estimate the tracker may lag, m: its domain's top speed ([`top_speed_mps`], what
+/// a track without a velocity counts at: 25 m/s on the surface, 100 in the air), or its own
+/// bound when that is faster (its speed and `keep_out_sigma` of its velocity's error, the
+/// tracker's or the policy's whichever is larger, or the fastest it went when the tracker saw
+/// it manoeuvre); for an aircraft (rules 14) also [`AIRCRAFT_LAG_M`].
+pub fn out_of_view_speed(t: &TrackFacts, ec: &EngageRules) -> (f64, f64) {
+    let k = ec.keep_out_sigma;
+    let own = t.velocity_mps.map_or(0.0, |[e, n]| {
+        e.hypot(n) + k * t.velocity_sigma_mps.unwrap_or(0.0).max(ec.track_velocity_sigma())
+    });
+    let own = t.manoeuvre.filter(|_| ec.v9()).map_or(own, |m| m.speed_mps.max(own));
+    let lag = if ec.aircraft_reach() && t.domain == Domain::Air { AIRCRAFT_LAG_M } else { 0.0 };
+    (top_speed_mps(t.domain).max(own), lag)
+}
+
+/// Rules 16: where a lost contact may be at `effect_t`, from its facts at the drop: the regions
+/// a live track gets from them ([`track_reach`]) and anywhere it reaches since its last fix at
+/// its domain's top speed, or its own bound if faster ([`out_of_view_speed`]), whichever way it
+/// turned and however it sped up. No cap: fail closed. The first version counted only the
+/// regions along its course (a prediction for a contact that keeps its course), the second
+/// also anywhere at its own speed bound (a prediction for one that keeps its speed): nothing
+/// checks either of a contact nobody sees, so neither is a bound (murmur-533's measurement and
+/// its review, `eval/METRICS.md` "Out of view"). The precedents count the same way: a track
+/// without a velocity at its domain's top speed, a lost vehicle of ours at its class's speed.
+/// A live track out of view counts the same disc ([`track_standing`], [`OUT_OF_VIEW_S`]). A
+/// region already counted at the last fix at least as far (no velocity, young) stands for it.
+pub fn lost_reach(t: &TrackFacts, effect_t: Time, ec: &EngageRules) -> Vec<TrackReach> {
+    regions_at(t, effect_t, ec, true, true)
+}
+
+/// [`lost_reach`] without the words (each `how` empty).
+pub fn lost_regions(t: &TrackFacts, effect_t: Time, ec: &EngageRules) -> Vec<TrackReach> {
+    regions_at(t, effect_t, ec, false, true)
+}
+
+/// Rules 16: the regions a keep-out counts a live track in at `effect_t`, judged at `now`:
+/// those of [`track_reach`] and, when it is out of view then ([`out_of_view`]), anywhere at its
+/// domain's top speed since its last fix, as a lost contact ([`lost_reach`]). Anything that
+/// judges or draws a live track's keep-out regions reads this (or [`track_standing`]), never
+/// [`track_reach`] alone.
+pub fn track_reach_at(t: &TrackFacts, now: Time, effect_t: Time, ec: &EngageRules) -> Vec<TrackReach> {
+    regions_at(t, effect_t, ec, true, out_of_view(t, now, ec))
+}
+
+/// [`track_reach_at`] without the words (each `how` empty).
+pub fn track_regions_at(t: &TrackFacts, now: Time, effect_t: Time, ec: &EngageRules) -> Vec<TrackReach> {
+    regions_at(t, effect_t, ec, false, out_of_view(t, now, ec))
+}
+
+/// The regions of [`track_reach`] and, with `unseen` (rules 16), the out-of-view disc.
+fn regions_at(t: &TrackFacts, effect_t: Time, ec: &EngageRules, words: bool, unseen: bool) -> Vec<TrackReach> {
+    let mut out = reach(t, effect_t, ec, words);
+    if !(unseen && ec.lost()) {
+        return out;
+    }
+    let span = secs(effect_t.ms_since(t.position.t)).max(0.0);
+    let k = ec.keep_out_sigma;
+    let (speed, lag) = out_of_view_speed(t, ec);
+    let radius_m = k * t.pos_sigma_m + lag + speed * span;
+    let covered = out.iter().any(|r| {
+        matches!(r.kind, ReachKind::NoVelocity | ReachKind::Young) && r.center == t.position.value && r.radius_m >= radius_m
+    });
+    if !covered {
+        out.push(TrackReach {
+            center: t.position.value,
+            radius_m,
+            how: if words {
+                let lag = if lag > 0.0 { format!(" and the tracker's lag ({lag:.0} m)") } else { String::new() };
+                format!(
+                    "out of view, so whichever way it turned or sped up since its last fix: anywhere it reaches at {speed:.1} m/s in {span:.0} s, {radius_m:.0} m with its {k:.0}-sigma{lag}"
+                )
+            } else {
+                String::new()
+            },
+            kind: ReachKind::OutOfView,
+        });
+    }
+    out
 }
 
 /// The regions of [`track_reach`]; `words`: with each region's `how`.
@@ -2994,7 +3134,8 @@ pub fn track_exempt(id: &str, t: &TrackFacts, target: &str, ec: &EngageRules) ->
 /// nearest the point (the first of equals), and, when that edge is inside the keep-out,
 /// whether it is clear by altitude (where the effect's altitude, `alt`, and its own recent
 /// ranged altitude at `now` are both known). None when it has no region (never: every track
-/// has at least one).
+/// has at least one). Rules 16: a track out of view at `now` ([`out_of_view`]) also counts
+/// anywhere at its domain's top speed since its last fix ([`track_reach_at`]).
 #[allow(clippy::too_many_arguments)]
 pub fn track_standing(
     t: &TrackFacts,
@@ -3006,7 +3147,37 @@ pub fn track_standing(
     alt: Option<EffectAlt>,
     words: bool,
 ) -> Option<TrackStanding> {
-    let regions = reach(t, effect_t, ec, words);
+    standing(t, regions_at(t, effect_t, ec, words, out_of_view(t, now, ec)), point, effect_t, keep_out_m, now, ec, alt)
+}
+
+/// Rules 16: [`track_standing`] for a lost contact, by its regions as one ([`lost_reach`]):
+/// always out of view.
+#[allow(clippy::too_many_arguments)]
+pub fn lost_track_standing(
+    t: &TrackFacts,
+    point: LonLat,
+    effect_t: Time,
+    keep_out_m: f64,
+    now: Time,
+    ec: &EngageRules,
+    alt: Option<EffectAlt>,
+    words: bool,
+) -> Option<TrackStanding> {
+    standing(t, regions_at(t, effect_t, ec, words, true), point, effect_t, keep_out_m, now, ec, alt)
+}
+
+/// How a track stands by `regions` (see [`track_standing`]).
+#[allow(clippy::too_many_arguments)]
+fn standing(
+    t: &TrackFacts,
+    regions: Vec<TrackReach>,
+    point: LonLat,
+    effect_t: Time,
+    keep_out_m: f64,
+    now: Time,
+    ec: &EngageRules,
+    alt: Option<EffectAlt>,
+) -> Option<TrackStanding> {
     let (nearest, edge, d) = regions
         .iter()
         .enumerate()
@@ -3132,19 +3303,63 @@ pub fn keep_out_tracks(
                 continue;
             }
             let (d, how) = (s.d, &s.regions[s.nearest].how);
-            return check(
-                r,
-                None,
-                Outcome::Fail,
+            // rules 16: a track out of view says so, and for how long
+            let detail = if s.regions[s.nearest].kind == ReachKind::OutOfView {
+                format!(
+                    "track {} out of view (no detection for {:.0} s) could be {d:.0} m from the effect point at the effect time ({how}); keep-out {keep_out_m:.0} m{}",
+                    describe_track(id, t),
+                    secs(world.t.ms_since(t.last_seen_t)).max(0.0),
+                    vertical_note(alt, s.alt_known)
+                )
+            } else {
                 format!(
                     "track {} predicted {d:.0} m from the effect point at the effect time ({how}); keep-out {keep_out_m:.0} m{}",
                     describe_track(id, t),
                     vertical_note(alt, s.alt_known)
-                ),
-            );
+                )
+            };
+            return check(r, None, Outcome::Fail, detail);
         }
         if nearest.is_none_or(|(n, _)| edge < n) {
             nearest = Some((edge, id));
+        }
+    }
+    // rules 16: the contacts the tracker dropped, anywhere they could have reached since their
+    // last fix, unless an operator accepted exactly that loss for this engagement
+    let mut lost_count = 0;
+    let mut accepted: Vec<String> = Vec::new();
+    if ec.lost() {
+        for (id, l) in &world.lost_contacts {
+            match lost_standing(id, l, point, effect_t, keep_out_m, target, world, ec, alt, true) {
+                LostStanding::Exempt => {}
+                LostStanding::Accepted { note } => accepted.push(note),
+                LostStanding::Judged(s) => {
+                    lost_count += 1;
+                    if s.edge < keep_out_m {
+                        if let Some((a, c, m)) = s.by_alt {
+                            by_alt.push(format!(
+                                "{id} at {a:.0} m ({c:.0} m outside the vertical keep-out with {m:.0} m of altitude uncertainty)"
+                            ));
+                            continue;
+                        }
+                        let (d, how) = (s.d, &s.regions[s.nearest].how);
+                        return check(
+                            r,
+                            None,
+                            Outcome::Fail,
+                            format!(
+                                "lost contact {} could be {d:.0} m from the effect point at the effect time ({how}); keep-out {keep_out_m:.0} m{}: {}",
+                                describe_track(id, &l.facts),
+                                vertical_note(alt, s.alt_known),
+                                lost_note(id, l, world.t)
+                            ),
+                        );
+                    }
+                    if nearest.is_none_or(|(n, _)| s.edge < n) {
+                        nearest = Some((s.edge, id));
+                    }
+                }
+            }
         }
     }
     let near = nearest.map_or(String::new(), |(d, id)| format!("; nearest {id} at {d:.0} m"));
@@ -3153,12 +3368,91 @@ pub fn keep_out_tracks(
     } else {
         format!("; clear by altitude: {}", by_alt.join(", "))
     };
+    let lost = if lost_count > 0 {
+        format!(" and {lost_count} lost contact(s)")
+    } else {
+        String::new()
+    };
+    let accepted = if accepted.is_empty() {
+        String::new()
+    } else {
+        format!("; lost contacts accepted for it: {}", accepted.join(", "))
+    };
     check(
         r,
         None,
         Outcome::Pass,
-        format!("{count} protected track(s) clear of the {keep_out_m:.0} m keep-out at the effect time{near}{by_alt}"),
+        format!("{count} protected track(s){lost} clear of the {keep_out_m:.0} m keep-out at the effect time{near}{by_alt}{accepted}"),
     )
+}
+
+/// Rules 16: how a lost contact is out of view, for a check's detail and an operator to accept:
+/// "T-0003 out of view since t=1781000010000 (300 s), dropped by the tracker at
+/// t=1781000190000; an operator with engagement authority may accept it for this engagement".
+pub fn lost_note(id: &str, l: &crate::lost::LostContact, now: Time) -> String {
+    format!(
+        "{id} out of view since t={} ({:.0} s), dropped by the tracker at t={}; an operator with engagement authority may accept it for this engagement",
+        l.since().0,
+        secs(now.ms_since(l.since())).max(0.0),
+        l.dropped_t.0
+    )
+}
+
+/// Rules 16: how one lost contact stands against a keep-out (see [`lost_standing`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum LostStanding {
+    /// Exempt as a live track with its identification would be (the target, a declared
+    /// hostile).
+    Exempt,
+    /// Lost since exactly the fix an operator accepted for this engagement: left out.
+    Accepted { note: String },
+    /// Judged by its regions as a track ([`track_standing`] on its facts at the drop).
+    Judged(TrackStanding),
+}
+
+/// Rules 16: lost contact `id` (`l`) against a keep-out reaching `keep_out_m` from `point` at
+/// `effect_t`, as [`keep_out_tracks`] reads it: left out when it is exempt (the target, a
+/// declared hostile) or an operator accepted exactly this loss for the engagement
+/// (`world.lost_accepted`); else its regions from its facts at the drop, growing from its last
+/// fix ([`lost_reach`]: also anywhere at its domain's top speed; no cap). Judged even when its
+/// id is in the picture: the bridge's tracker never reuses an id (`T-NNNN`, numbered up), so a
+/// track under a dropped id is either a snapshot taken before the drop was handed to the engine,
+/// with exactly the drop's facts (the same disc judged twice), or not the tracker's; it never
+/// stands for the lost contact (the review of the merged branch: a fresh fix 30 km away under
+/// the id hid it).
+#[allow(clippy::too_many_arguments)]
+pub fn lost_standing(
+    id: &str,
+    l: &crate::lost::LostContact,
+    point: LonLat,
+    effect_t: Time,
+    keep_out_m: f64,
+    target: &str,
+    world: &WorldSnapshot,
+    ec: &EngageRules,
+    alt: Option<EffectAlt>,
+    words: bool,
+) -> LostStanding {
+    if track_exempt(id, &l.facts, target, ec) {
+        return LostStanding::Exempt;
+    }
+    if let Some(a) = world.lost_accepted.get(id)
+        && a.since == Some(l.since())
+    {
+        return LostStanding::Accepted {
+            note: format!(
+                "{id}: out of view since t={} ({:.0} s), accepted by {}",
+                l.since().0,
+                secs(world.t.ms_since(l.since())).max(0.0),
+                a.by
+            ),
+        };
+    }
+    match lost_track_standing(&l.facts, point, effect_t, keep_out_m, world.t, ec, alt, words) {
+        Some(s) => LostStanding::Judged(s),
+        // never: every track has a region
+        None => LostStanding::Exempt,
+    }
 }
 
 fn armed_check(uid: Option<&Uid>, world: &WorldSnapshot) -> CheckResult {
@@ -3642,6 +3936,7 @@ pub fn check_token(
     track_now: Option<&TrackFacts>,
     plan: Option<&FrozenPlan>,
     accepted: &BTreeMap<Uid, AcceptedUnknown>,
+    lost_accepted: &BTreeMap<String, AcceptedUnknown>,
 ) -> Result<(), String> {
     if token.intent != intent || token.by != *by || token.session != session {
         return Err(format!(
@@ -3673,6 +3968,10 @@ pub fn check_token(
         return Err(
             "the lost vehicles accepted for it changed since you looked: look again".into(),
         );
+    }
+    // rules 16: and the lost contacts
+    if token.lost_accepted != *lost_accepted {
+        return Err("the lost contacts accepted for it changed since you looked: look again".into());
     }
     let Some(t) = track_now else {
         return Err(format!("{} is no longer in the picture", token.track.id));

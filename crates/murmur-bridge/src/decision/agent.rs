@@ -234,6 +234,13 @@ impl Decision {
                     "an agent can't accept a lost vehicle's unknown position: only an operator can (engage.accepted)",
                 ));
             }
+            // rules 16: nor a lost contact
+            if !req.engage.accept_lost.is_empty() {
+                return Err(DecisionError::new(
+                    403,
+                    "an agent can't accept a lost contact: only an operator with engagement authority can (engage.accepted)",
+                ));
+            }
             self.check_vehicles(&req.uids)?;
             return engage::proposal(req, self.clock.now());
         }

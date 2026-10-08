@@ -434,6 +434,8 @@ struct Core {
     fleet_looked: Option<f64>,
     /// rules 9: the latest observed acts and what the engine made of them (display)
     acts: Vec<Value>,
+    /// rules 16: the claims on lost contacts as of the last tick (the review list)
+    lost_claims: Vec<Value>,
 }
 
 /// `operator.view` events an operator may log: a burst of this many, refilled at
@@ -747,6 +749,13 @@ impl Decision {
             murmur_decide::StartCarry {
                 pointer: p.pointer,
                 from: p.carried_from,
+                // rules 16: the tracker's drop age (the injected tracker's, else this process's
+                // settings, which the store `tracks::init` makes later reads too)
+                track_drop_s: Some(
+                    p.tracks
+                        .as_ref()
+                        .map_or_else(|| crate::tracks::Settings::from_env().drop_s, |t| t.drop_s()),
+                ),
             },
             Box::new(clock.clone()),
             p.sink,
@@ -782,6 +791,7 @@ impl Decision {
                 fleet_written: None,
                 fleet_looked: None,
                 acts: Vec::new(),
+                lost_claims: Vec::new(),
             }),
             updates: watch::channel(Arc::new(String::new())).0,
             recent: agent::RecentEvents::default(),
@@ -1141,10 +1151,17 @@ impl Decision {
         self.lock().engine.confirm_purpose(track).map_err(engine_err)
     }
 
-    /// What a passkey acceptance of lost vehicles is for (`intent` None: with a nomination).
-    pub fn accept_purpose(&self, intent: Option<u64>, list: &[engage::AcceptUnknown]) -> murmur_decide::StepUpFor {
+    /// What a passkey acceptance of lost vehicles (rules 16: and lost contacts) is for
+    /// (`intent` None: with a nomination).
+    pub fn accept_purpose(
+        &self,
+        intent: Option<u64>,
+        list: &[engage::AcceptUnknown],
+        lost: &[engage::AcceptLost],
+    ) -> murmur_decide::StepUpFor {
         let v: Vec<(DUid, Option<Time>)> = list.iter().map(engage::AcceptUnknown::engine).collect();
-        murmur_decide::StepUpFor::accepting(intent.map(IntentId), &v)
+        let c: Vec<(String, Time)> = lost.iter().map(engage::AcceptLost::engine).collect();
+        murmur_decide::StepUpFor::accepting_lost(intent.map(IntentId), &v, &c)
     }
 
     /// Credentials run, rules 10: open the engine session for a login whose passkey
@@ -1379,32 +1396,33 @@ impl Decision {
             let session =
                 Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
             // rules 6: the operator's acceptances of lost vehicles, as the check showed them
-            // (only with engagement authority: 403 otherwise)
+            // (only with engagement authority: 403 otherwise); rules 16: and of lost contacts
             let accept: Vec<(DUid, Option<Time>)> =
                 req.engage.accept_unknown.iter().map(engage::AcceptUnknown::engine).collect();
-            let submitted = if accept.is_empty() {
+            let contacts: Vec<(String, Time)> = req.engage.accept_lost.iter().map(engage::AcceptLost::engine).collect();
+            let submitted = if accept.is_empty() && contacts.is_empty() {
                 core.engine
                     .submit(session.authority(), proposal, &world, &self.terrain.oracle())
             } else {
                 let Some(auth) = session.engagement_authority() else {
                     return Err(DecisionError::new(
                         403,
-                        format!("{by} has no engagement authority: only an operator with it accepts a lost vehicle"),
+                        format!(
+                            "{by} has no engagement authority: only an operator with it accepts a lost {}",
+                            if contacts.is_empty() { "vehicle" } else { "vehicle or contact" }
+                        ),
                     ));
                 };
-                match Self::mint_step(&mut core.engine, session, by, step)? {
-                    Some(s) => core.engine.submit_accepting_stepped(
-                        auth,
-                        s,
-                        proposal,
-                        &accept,
-                        &world,
-                        &self.terrain.oracle(),
-                    ),
-                    None => core
-                        .engine
-                        .submit_accepting(auth, proposal, &accept, &world, &self.terrain.oracle()),
-                }
+                let step = Self::mint_step(&mut core.engine, session, by, step)?;
+                core.engine.submit_accepting_lost(
+                    auth,
+                    step,
+                    proposal,
+                    &accept,
+                    &contacts,
+                    &world,
+                    &self.terrain.oracle(),
+                )
             };
             let id = submitted.map_err(engine_err)?.id();
             self.after_decision(core, id)
@@ -2066,6 +2084,9 @@ impl Decision {
         {
             let mut guard = self.lock();
             let core = &mut *guard;
+            // rules 16: the tracker's drops first: no decision of this tick reads a picture
+            // without them
+            self.step_lost(core);
             if let Err(e) = core.engine.expire_due() {
                 eprintln!("decision: expire: {e}");
             }
@@ -2438,10 +2459,17 @@ impl Decision {
         // declaration off: an operator declares)
         let (review, acts) = {
             let core = self.lock();
-            (ident::review_of(core.engine.identification()), self.recorded_acts(&core))
+            let mut review = ident::review_of(core.engine.identification());
+            // rules 16: claims on lost contacts, and those confirmed
+            let (claims, confirmed) = self.lost_review(&core);
+            review["counts"]["lost_claims"] = json!(claims.len());
+            review["lost_claims"] = json!(claims);
+            review["lost_confirmed"] = json!(confirmed);
+            (review, self.recorded_acts(&core))
         };
         let n_review = review["counts"]["declarations"].as_u64().unwrap_or(0)
-            + review["counts"]["flags"].as_u64().unwrap_or(0);
+            + review["counts"]["flags"].as_u64().unwrap_or(0)
+            + review["counts"]["lost_claims"].as_u64().unwrap_or(0);
         json!({
             "pending": pending,
             "alerts": alerts,

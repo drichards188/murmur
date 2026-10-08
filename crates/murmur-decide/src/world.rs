@@ -272,6 +272,15 @@ pub struct TrackFacts {
     pub velocity_sigma_mps: Option<f64>,
 }
 
+/// Rules 16: an AIS identity as received (see [`WorldSnapshot::track_ais`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AisIdentity {
+    pub mmsi: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ship_type: String,
+}
+
 /// Rules 9: a manoeuvre the tracker saw (see [`TrackFacts::manoeuvre`]).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Manoeuvre {
@@ -432,6 +441,13 @@ pub struct WorldSnapshot {
     /// only. Empty (and absent in the log) when there are none or in logs from before.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tracks: BTreeMap<String, TrackFacts>,
+    /// Rules 16: the AIS identity each track's contact broadcasts, as our receivers last heard
+    /// it, by track id (what it says it is: never verified, a contact may broadcast another's).
+    /// A track that carries a lost contact's AIS is matched to it ([`crate::lost`]). Kept apart
+    /// from [`TrackFacts`], whose shape the tracker's comparison copies fix. Absent when none
+    /// (and in logs before rules 16).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub track_ais: BTreeMap<String, AisIdentity>,
     /// Engine-filled: the intent's vehicles that have an engagement in play (pending,
     /// approved or dispatched), by the engagement's id. An agent's order on one of them
     /// always goes to a human. Absent when empty.
@@ -476,6 +492,18 @@ pub struct WorldSnapshot {
     /// where the caller gives none (scenarios, tests): carried values then hold.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub identities: BTreeMap<Uid, crate::engage::VehicleIdentity>,
+    /// Engine-filled for an engagement's checks (rules 16, [`crate::lost`]): the contacts the
+    /// tracker dropped that the engine still holds as lost (`track.dropped`, not retired by
+    /// `track.reacquired`), by the track id they were dropped under, each with its facts at the
+    /// drop (its identification filled from the ledger as a live track's). The keep-out on
+    /// tracks counts each anywhere it could have reached since its last fix. Absent when none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lost_contacts: BTreeMap<String, crate::lost::LostContact>,
+    /// Engine-filled for an engagement's checks (rules 16): the lost contacts an operator
+    /// accepted for it (`engage.accepted` naming a contact), each since the last fix it names.
+    /// The keep-out leaves out a contact lost since exactly then. Absent when none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lost_accepted: BTreeMap<String, crate::engage::AcceptedUnknown>,
 }
 
 /// A decision's inputs as logged: the [`WorldSnapshot`] with the area set replaced by its
@@ -495,6 +523,9 @@ pub struct LoggedInputs {
     /// The track picture the decision was taken against (absent when empty).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tracks: BTreeMap<String, TrackFacts>,
+    /// The AIS identities heard for its tracks (rules 16; absent when none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub track_ais: BTreeMap<String, AisIdentity>,
     /// The intent's vehicles with an engagement in play (absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub engaged: BTreeMap<Uid, IntentId>,
@@ -520,6 +551,12 @@ pub struct LoggedInputs {
     /// none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub spent_carried: BTreeMap<Uid, crate::queue::CarriedSpent>,
+    /// An engagement's lost contacts (rules 16; absent when none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lost_contacts: BTreeMap<String, crate::lost::LostContact>,
+    /// The lost contacts accepted for this engagement (rules 16; absent when none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lost_accepted: BTreeMap<String, crate::engage::AcceptedUnknown>,
 }
 
 impl LoggedInputs {
@@ -543,6 +580,7 @@ impl LoggedInputs {
                 },
             },
             tracks: world.tracks.clone(),
+            track_ais: world.track_ais.clone(),
             engaged: world.engaged.clone(),
             waiting: world.waiting.clone(),
             plan: world.plan.clone(),
@@ -550,6 +588,8 @@ impl LoggedInputs {
             restore_owed: world.restore_owed.clone(),
             expended: world.expended.clone(),
             spent_carried: world.spent_carried.clone(),
+            lost_contacts: world.lost_contacts.clone(),
+            lost_accepted: world.lost_accepted.clone(),
         }
     }
 
@@ -589,6 +629,7 @@ impl LoggedInputs {
             terrain: self.terrain.clone(),
             space,
             tracks: self.tracks.clone(),
+            track_ais: self.track_ais.clone(),
             engaged: self.engaged.clone(),
             waiting: self.waiting.clone(),
             plan: self.plan.clone(),
@@ -597,6 +638,8 @@ impl LoggedInputs {
             expended: self.expended.clone(),
             spent_carried: self.spent_carried.clone(),
             identities: BTreeMap::new(),
+            lost_contacts: self.lost_contacts.clone(),
+            lost_accepted: self.lost_accepted.clone(),
         }
     }
 }
@@ -636,6 +679,7 @@ impl WorldSnapshot {
             // The whole track picture: few tracks, and an engagement decision (Phase E)
             // must be replayable against exactly the picture it saw.
             tracks: self.tracks.clone(),
+            track_ais: self.track_ais.clone(),
             // engine-owned: filled from its own intents
             engaged: BTreeMap::new(),
             waiting: BTreeMap::new(),
@@ -651,6 +695,9 @@ impl WorldSnapshot {
                 .iter()
                 .filter_map(|u| self.identities.get(u).map(|i| (u.clone(), i.clone())))
                 .collect(),
+            // engine-owned (rules 16): filled from its ledger of lost contacts
+            lost_contacts: BTreeMap::new(),
+            lost_accepted: BTreeMap::new(),
         }
     }
 

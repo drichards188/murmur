@@ -83,6 +83,25 @@ pub struct EngageParams {
     /// An operator's only.
     #[serde(default)]
     pub accept_unknown: Vec<AcceptUnknown>,
+    /// Rules 16: the lost contacts (tracks the tracker dropped) the nominating operator
+    /// accepts, each since the last fix the check names. An operator's only.
+    #[serde(default)]
+    pub accept_lost: Vec<AcceptLost>,
+}
+
+/// Rules 16: "lost contact `track`, out of view since `since`: accept".
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptLost {
+    pub track: String,
+    /// Its last fix, engine ms, as the keep-out check and the explanation name it.
+    pub since: i64,
+}
+
+impl AcceptLost {
+    pub(super) fn engine(&self) -> (String, Time) {
+        (self.track.clone(), Time(self.since))
+    }
 }
 
 /// Rules 6: "vehicle `uid`, position unknown since `since`: accept".
@@ -2013,6 +2032,199 @@ impl Decision {
         out
     }
 
+    /// `POST /api/intents/{id}/accept_unknown` with `{"track", "since"}` (rules 16): an
+    /// operator with engagement authority accepts, for a nomination waiting with no signature
+    /// yet, a lost contact (a track the tracker dropped) out of view since the last fix the
+    /// check names. Logged as `engage.accepted` naming the contact; as for a lost vehicle
+    /// otherwise.
+    pub fn accept_lost(
+        &self,
+        by: &super::Actor,
+        id: u64,
+        accept: &AcceptLost,
+        step: Option<crate::auth::StepUpChecked>,
+    ) -> Result<super::Outcome, DecisionError> {
+        let id = IntentId(id);
+        let world = self.snapshot();
+        let out = {
+            let mut guard = self.lock();
+            let core = &mut *guard;
+            let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
+            let Some(auth) = session.engagement_authority() else {
+                return Err(DecisionError::new(
+                    403,
+                    format!("{by} has no engagement authority: only an operator with it accepts a lost contact"),
+                ));
+            };
+            let (track, since) = accept.engine();
+            let step = Self::mint_step(&mut core.engine, session, by, step)?;
+            match core.engine.accept_lost_contact(id, auth, step, &track, since, &world) {
+                Ok(_) => Ok(self.outcome(core, id)),
+                Err(e) => Err(self.with_intent(core, id, engine_err(e))),
+            }
+        };
+        self.publish();
+        out
+    }
+
+    /// `POST /api/intents/{id}/revoke_unknown` with `{"track"}` (rules 16): any operator
+    /// withdraws an acceptance of a lost contact.
+    pub fn revoke_lost(&self, by: &super::Actor, id: u64, track: &str) -> Result<super::Outcome, DecisionError> {
+        let id = IntentId(id);
+        let out = {
+            let mut guard = self.lock();
+            let core = &mut *guard;
+            let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
+            match core.engine.revoke_lost_contact(id, session.authority(), track) {
+                Ok(_) => Ok(self.outcome(core, id)),
+                Err(e) => Err(self.with_intent(core, id, engine_err(e))),
+            }
+        };
+        self.publish();
+        out
+    }
+
+    /// Rules 16: the tracks the tracker dropped since the last tick go to the engine (logged as
+    /// `track.dropped`; until now they stayed in the decision facts), each on its own: one the
+    /// log could not take goes back to the tracker with those after it, to be handed over at the
+    /// next tick (it stays in the decision facts meanwhile), never lost; one the engine refuses
+    /// (an id it holds already) is left out. Then the claims on lost contacts are raised and the
+    /// confirmations the picture voids reinstated (`Engine::step_lost`), and the console is
+    /// shown the lost contacts and the claims. The tick does this first, under the decision
+    /// lock, before anything decides.
+    pub(super) fn step_lost(&self, core: &mut Core) {
+        let Some(tracks) = self.tracks() else { return };
+        let mut drops = tracks.take_drops().into_iter();
+        while let Some(d) = drops.next() {
+            let id = d.0.clone();
+            match core.engine.record_track_drops(vec![d.clone()]) {
+                Ok(n) if n > 0 => println!("tracks: dropped {id} (still counted as a lost contact)"),
+                Ok(_) => {}
+                Err(murmur_decide::EngineError::Audit(e)) => {
+                    eprintln!("decision: track drop {id} not logged, kept for the next tick: {e}");
+                    tracks.restore_drops(std::iter::once(d).chain(drops).collect());
+                    break;
+                }
+                Err(e) => eprintln!("decision: track drop {id}: {e}"),
+            }
+        }
+        if !core.engine.lost_contacts().is_empty() || !core.engine.lost_confirmed().is_empty() {
+            let world = self.snapshot();
+            match core.engine.step_lost(&world) {
+                Ok(step) => {
+                    for c in step.claimed {
+                        println!(
+                            "tracks: {} claims to be lost contact {} (MMSI {}){}: for review",
+                            c.track,
+                            c.lost,
+                            c.mmsi,
+                            if c.blockers.is_empty() { String::new() } else { format!(", blocked: {}", c.blockers.join("; ")) }
+                        );
+                    }
+                    for (lost, by, why) in step.reinstated {
+                        println!("tracks: lost contact {lost} counts again ({by}'s confirmation void: {why})");
+                    }
+                }
+                Err(e) => eprintln!("decision: lost contacts: {e}"),
+            }
+            core.lost_claims = core.engine.lost_claims(&world).iter().map(claim_json).collect();
+        } else {
+            core.lost_claims.clear();
+        }
+        tracks.mirror_lost(self.lost_json(core));
+    }
+
+    /// `POST /api/review/lost/{track}/confirm` with `{"by_track"}` (rules 16): any operator
+    /// confirms, under their own session, that live track `by_track` is lost contact `track`
+    /// again (a claim, its AIS identity: `track.reacquired`); refused (409, nothing logged) while
+    /// anything contradicts it. Agents have no such route or tool. The picture is taken under
+    /// the decision lock, as a nomination's is: one taken before it could miss a track a tick
+    /// logged in between, and the confirmation's picture would then read as a track gone
+    /// without a drop (the review of the merged branch).
+    pub fn confirm_lost_claim(&self, by: &super::Actor, track: &str, by_track: &str) -> Result<Value, DecisionError> {
+        let out = {
+            let mut guard = self.lock();
+            let core = &mut *guard;
+            let world = self.snapshot();
+            let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
+            let claim = core
+                .engine
+                .confirm_lost_claim(session.authority(), track, by_track, &world)
+                .map_err(|e| match e {
+                    murmur_decide::EngineError::NotAcceptedContact { why, .. } => DecisionError::new(409, why),
+                    e => super::engine_err(e),
+                })?;
+            core.lost_claims = core.engine.lost_claims(&world).iter().map(claim_json).collect();
+            if let Some(t) = self.tracks() {
+                t.mirror_lost(self.lost_json(core));
+            }
+            json!({ "confirmed": claim_json(&claim) })
+        };
+        self.publish();
+        Ok(out)
+    }
+
+    /// Rules 16: the review items the lost contacts raise (`GET /api/review`, the inbox's
+    /// review): the claims on lost contacts in force (as of the last tick), each with its
+    /// evidence and what keeps it from being confirmed; and the lost contacts confirmed as a
+    /// live track, retired while it stands.
+    pub(super) fn lost_review(&self, core: &Core) -> (Vec<Value>, Vec<Value>) {
+        let confirmed = core
+            .engine
+            .lost_confirmed()
+            .iter()
+            .map(|(id, c)| {
+                json!({
+                    "lost": id,
+                    "track": c.by_track,
+                    "by": c.by,
+                    "t": c.t.0 as f64 / 1000.0,
+                    "ais": c.contact.ais,
+                })
+            })
+            .collect();
+        (core.lost_claims.clone(), confirmed)
+    }
+
+    /// Rules 16: the engine's lost contacts for the console: where each was last seen, since
+    /// when, its identity, and the regions the keep-out counts it in now (as
+    /// `engage::lost_regions` gives them at the engine's time now).
+    pub(super) fn lost_json(&self, core: &Core) -> Vec<Value> {
+        let now = self.clock.now();
+        let ec = self.rules.engage_rules();
+        core.engine
+            .lost_contacts()
+            .into_iter()
+            .map(|(id, l)| {
+                let f = &l.facts;
+                let regions: Vec<Value> = engage::lost_regions(f, now, &ec)
+                    .iter()
+                    .map(|r| {
+                        json!({
+                            "kind": r.kind.as_str(),
+                            "center": [r.center.lon, r.center.lat],
+                            "radius_m": r.radius_m.round(),
+                        })
+                    })
+                    .collect();
+                json!({
+                    "id": id,
+                    "position": [f.position.value.lon, f.position.value.lat],
+                    "since_t": l.since().0,
+                    "dropped_t": l.dropped_t.0,
+                    "out_of_view_s": (now.ms_since(l.since()) as f64 / 1000.0).round(),
+                    "domain": f.domain,
+                    "identity": f.identity,
+                    "affiliation": f.affiliation.value,
+                    "declared_by": f.declared_by,
+                    "velocity_mps": f.velocity_mps,
+                    "ais": l.ais,
+                    "regions": regions,
+                })
+            })
+            .collect()
+    }
+
     /// `POST /api/intents/{id}/revoke_unknown` (rules 6): any operator withdraws an
     /// acceptance of a lost vehicle (`engage.acceptance_revoked`); the checks count it again,
     /// which stops an engagement it now blocks.
@@ -2097,6 +2309,37 @@ impl Decision {
                     .collect()
             })
             .unwrap_or_default();
+        // rules 16: the lost contacts accepted for it, shown to every signer
+        let accepted_lost: Vec<Value> = record
+            .map(|e| {
+                e.accepted_lost
+                    .iter()
+                    .map(|(track, a)| json!({ "track": track, "since": a.since, "by": a.by }))
+                    .collect()
+            })
+            .unwrap_or_default();
+        // rules 16: while it waits with no signature, the lost contacts in force not accepted
+        // for it (an operator with engagement authority may accept one here, as the check
+        // names it: since its last fix)
+        let lost_open: Vec<Value> = if i.state() == State::PendingApproval && i.concurrences().is_empty() {
+            let taken = record.map(|e| e.accepted_lost.clone()).unwrap_or_default();
+            core.engine
+                .lost_contacts()
+                .into_iter()
+                .filter(|(id, _)| !taken.contains_key(id))
+                .map(|(id, l)| {
+                    json!({
+                        "track": id,
+                        "since": l.since().0,
+                        "identity": l.facts.identity,
+                        "affiliation": l.facts.affiliation.value,
+                        "ais": l.ais.as_ref().map(|a| format!("{} ({})", a.mmsi, a.name)),
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let eligible: Vec<String> = self
             .engage_operators
             .iter()
@@ -2114,6 +2357,8 @@ impl Decision {
             "signatures": signatures,
             "reset": reset,
             "accepted": accepted,
+            "accepted_lost": accepted_lost,
+            "lost_open": lost_open,
             "token_ttl_s": self.rules.engage_rules().token_ttl(),
             "max_signing_s": self.rules.engage_rules().max_signing_s,
             // the plan the first signature froze: every later signer signs it exactly
@@ -2366,4 +2611,20 @@ fn changes(then: &[CheckResult], now: &[CheckResult]) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+/// Rules 16: a claim on a lost contact as the review list shows it.
+fn claim_json(c: &murmur_decide::Claim) -> Value {
+    json!({
+        "kind": "lost_claim",
+        "id": format!("{}~{}", c.lost, c.track),
+        "lost": c.lost,
+        "track": c.track,
+        "mmsi": c.mmsi,
+        "distance_m": c.distance_m.round(),
+        "reach_m": c.reach_m.round(),
+        "evidence": c.evidence,
+        "blockers": c.blockers,
+        "actions": if c.confirmable() { vec!["confirm"] } else { Vec::new() },
+    })
 }

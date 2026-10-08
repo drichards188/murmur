@@ -253,6 +253,9 @@ fn ais_gives_identity_and_only_for_cooperative_ships() {
     // AIS carries course and speed over ground: the track has them at once (5 m/s east)
     let (e, n) = t.vel.expect("velocity from AIS");
     assert!((e - 5.0).abs() < 0.8 && n.abs() < 0.8, "{e} {n}");
+    // rules 16: the decision layer is given the AIS identity it broadcasts
+    let ais = t.ais_identity().expect("ais for the decision layer");
+    assert_eq!((ais.mmsi.as_str(), ais.name.as_str()), (heard.mmsi.as_str(), "MV TEST"));
 }
 
 #[test]
@@ -353,6 +356,20 @@ fn uncertainty_and_staleness_grow_with_age_and_tracks_drop() {
         .on_truth_with(truth(400.0, vec![]), std::slice::from_ref(&o), T0 + 400.0)
         .expect("ok");
     assert!(tracks.tracks_json(T0 + 400.0).is_empty());
+    // rules 16: the decision facts keep it, as it was at the drop, until the engine takes it
+    let facts = tracks.facts(T0 + 400.0);
+    assert!(facts.contains_key("T-0001"), "{facts:?}");
+    let drops = tracks.take_drops();
+    assert_eq!(drops.len(), 1);
+    assert_eq!(drops[0].0, "T-0001");
+    assert_eq!(drops[0].1.last_seen_t, facts["T-0001"].last_seen_t);
+    assert!(drops[0].1.declaration.is_none() && drops[0].1.declared_by.is_none());
+    assert!(tracks.facts(T0 + 400.0).is_empty() && tracks.take_drops().is_empty());
+    // one the engine could not log goes back, whole, and stays in the decision facts
+    tracks.restore_drops(drops.clone());
+    assert!(tracks.facts(T0 + 400.0).contains_key("T-0001"));
+    let again = tracks.take_drops();
+    assert_eq!((again.len(), again[0].1.last_seen_t), (1, drops[0].1.last_seen_t));
     tracks
         .on_truth_with(truth(401.0, vec![ferry]), &[o], T0 + 401.0)
         .expect("ok");
@@ -688,3 +705,11 @@ fn the_simulation_channel_takes_only_its_stacks_token() {
 
 // The tracker's uncertainty against truth, and a keep-out's hold a minute ahead, old filter
 // against new: `tests/calib.rs`.
+
+/// Rules 16: the tracker's stale age is the engine's out-of-view age (a track the console fades
+/// is the one a keep-out counts at its domain's top speed), and the explanation's default.
+#[test]
+fn stale_is_out_of_view() {
+    assert_eq!(super::model::STALE_S, murmur_decide::engage::OUT_OF_VIEW_S);
+    assert_eq!(murmur_decide::keepout::TrackerMemory::default().stale_after_s, murmur_decide::engage::OUT_OF_VIEW_S);
+}

@@ -244,6 +244,14 @@ pub struct ReplayReport {
     pub revocations: usize,
     pub flags: usize,
     pub flags_resolved: usize,
+    /// Rules 16: tracks the tracker dropped (lost contacts recorded).
+    pub lost_contacts: usize,
+    /// Rules 16: claims raised on lost contacts (`lost.claimed`).
+    pub lost_claims: usize,
+    /// Rules 16: lost contacts an operator confirmed as a live track (`track.reacquired`).
+    pub lost_confirmed: usize,
+    /// Rules 16: confirmations void, lost contacts counting again (`lost.reinstated`).
+    pub lost_reinstated: usize,
     /// One past the highest intent id the log holds (a restarted bridge numbers on from it).
     pub next_intent: u64,
     /// The last event's seq.
@@ -1521,6 +1529,8 @@ struct Tracked {
     preload_stop_due: Option<(u64, &'static str)>,
     /// Engage, rules 6: our vehicles operators accepted as lost for it (`engage.accepted`).
     accepted: BTreeMap<Uid, engage::AcceptedUnknown>,
+    /// Engage, rules 16: the lost contacts operators accepted for it.
+    accepted_lost: BTreeMap<String, engage::AcceptedUnknown>,
     /// Collect and cover: the order it was dispatched with (what a cancel's and a re-check's
     /// reports are recomputed against).
     space_order: Option<SpaceOrder>,
@@ -1655,6 +1665,7 @@ impl Tracked {
             preload_read: None,
             preload_stop_due: None,
             accepted: BTreeMap::new(),
+            accepted_lost: BTreeMap::new(),
             space_order: None,
             cancel_due: None,
             cancel_reported: false,
@@ -1896,6 +1907,16 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (rules::CARRY_FOLLOWUPS_SINCE, "\"fleet_read\":{", "the fleet file a failed carry read"),
     (rules::CARRY_FOLLOWUPS_SINCE, "\"pointer_failed\":", "a carry that fell back from a pointer that could not be read"),
     (rules::CARRY_FOLLOWUPS_SINCE, "\"pointer\":\"", "the station's .last-run pointer in run.started"),
+    (rules::LOST_CONTACT_SINCE, "\"type\":\"track.dropped\"", "a track the tracker dropped (a lost contact)"),
+    (rules::LOST_CONTACT_SINCE, "\"type\":\"track.reacquired\"", "a lost contact confirmed as a live track"),
+    (rules::LOST_CONTACT_SINCE, "\"type\":\"lost.claimed\"", "a claim on a lost contact"),
+    (rules::LOST_CONTACT_SINCE, "\"type\":\"lost.reinstated\"", "a lost contact counting again"),
+    (rules::LOST_CONTACT_SINCE, "\"track_ais\":{", "the AIS identities heard for tracks"),
+    (rules::LOST_CONTACT_SINCE, "\"lost_contacts\":{", "lost contacts in decision inputs"),
+    (rules::LOST_CONTACT_SINCE, "\"lost_accepted\":{", "an accepted lost contact (decision inputs, a picture token)"),
+    (rules::LOST_CONTACT_SINCE, "\"contact\":\"", "an acceptance of a lost contact"),
+    (rules::LOST_CONTACT_SINCE, "\"ais\":{", "a lost contact's AIS identity"),
+    (rules::LOST_CONTACT_SINCE, "\"track_drop_s\":", "the tracker's drop age in run.started"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -2210,6 +2231,15 @@ fn replay_inner<S: AsRef<str>>(
         run_hash: hashes.first().cloned().unwrap_or_default(),
         ..PasskeysSeen::default()
     };
+    // rules 16: the lost contacts as the log builds them, and the track ids decisions have read
+    // and the tracker has dropped (a track leaves the picture only by a drop)
+    let mut lost = crate::lost::LostLedger::default();
+    let mut pictured = Pictured::default();
+    // rules 16: the tracker's drop age the run logged (none: not checked)
+    let track_drop_s: Option<f64> = events.first().and_then(|e| match &e.body {
+        EventBody::RunStarted { track_drop_s, .. } => *track_drop_s,
+        _ => None,
+    });
 
     for (i, e) in events.iter().enumerate() {
         let want_prev = if i == 0 {
@@ -2509,6 +2539,7 @@ fn replay_inner<S: AsRef<str>>(
                 check_engaged(&mut r, e, *intent, &inputs.engaged, &intents);
                 check_accepted(&mut r, e, *intent, &inputs.unknown_accepted, &intents);
                 check_ident_inputs(&mut r, e, Some(*intent), &inputs.tracks, &ident, policy.as_ref());
+                check_lost_inputs(&mut r, e, *intent, inputs, &lost, &ident, &intents, &mut pictured, policy.as_ref());
                 check_waiting(&mut r, e, *intent, &inputs.waiting, &intents);
                 check_restore_owed(&mut r, e, *intent, &inputs.restore_owed, &intents, &restores, policy.as_ref());
                 check_expended(&mut r, e, *intent, &inputs.expended, &intents, &restores, policy.as_ref());
@@ -2645,6 +2676,7 @@ fn replay_inner<S: AsRef<str>>(
                 check_engaged(&mut r, e, *intent, &inputs.engaged, &intents);
                 check_accepted(&mut r, e, *intent, &inputs.unknown_accepted, &intents);
                 check_ident_inputs(&mut r, e, Some(*intent), &inputs.tracks, &ident, policy.as_ref());
+                check_lost_inputs(&mut r, e, *intent, inputs, &lost, &ident, &intents, &mut pictured, policy.as_ref());
                 check_waiting(&mut r, e, *intent, &inputs.waiting, &intents);
                 check_restore_owed(&mut r, e, *intent, &inputs.restore_owed, &intents, &restores, policy.as_ref());
                 check_expended(&mut r, e, *intent, &inputs.expended, &intents, &restores, policy.as_ref());
@@ -2798,6 +2830,7 @@ fn replay_inner<S: AsRef<str>>(
             }
             EventBody::PictureIssued { token, inputs } => {
                 check_ident_inputs(&mut r, e, Some(token.intent), &inputs.tracks, &ident, policy.as_ref());
+                check_lost_inputs(&mut r, e, token.intent, inputs, &lost, &ident, &intents, &mut pictured, policy.as_ref());
                 check_issued(&mut r, e, token, inputs, &intents, &sessions, &areas, &answers, policy.as_ref());
                 if issued.insert(token.id, (**token).clone()).is_some() {
                     bad(&mut r, e, Some(token.intent), "picture token issued twice", token.id.to_string(), String::new());
@@ -2812,6 +2845,7 @@ fn replay_inner<S: AsRef<str>>(
                 if let Some(i) = inputs {
                     check_accepted(&mut r, e, *intent, &i.unknown_accepted, &intents);
                     check_ident_inputs(&mut r, e, Some(*intent), &i.tracks, &ident, policy.as_ref());
+                    check_lost_inputs(&mut r, e, *intent, i, &lost, &ident, &intents, &mut pictured, policy.as_ref());
                 }
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
@@ -2866,8 +2900,10 @@ fn replay_inner<S: AsRef<str>>(
                 }
                 tr.signers.clear();
                 tr.plan = None;
-                // rules 6: the acceptances go with the plan (given again, on the new picture)
+                // rules 6: the acceptances go with the plan (given again, on the new picture);
+                // rules 16: of lost contacts too
                 tr.accepted.clear();
+                tr.accepted_lost.clear();
             }
             EventBody::ApprovalGranted {
                 intent,
@@ -3432,6 +3468,7 @@ fn replay_inner<S: AsRef<str>>(
                     check_expended(&mut r, e, *intent, &inputs.expended, &intents, &restores, policy.as_ref());
                     check_spent_carried(&mut r, e, *intent, &inputs.spent_carried, &intents, &restores, policy.as_ref());
                     check_ident_inputs(&mut r, e, Some(*intent), &inputs.tracks, &ident, policy.as_ref());
+                    check_lost_inputs(&mut r, e, *intent, inputs, &lost, &ident, &intents, &mut pictured, policy.as_ref());
                 }
                 // rules 7: never a mission to a vehicle still owed its own lost-link values,
                 // whether its kind is queued or not (a queued one's reach says so too); rules
@@ -3948,6 +3985,7 @@ fn replay_inner<S: AsRef<str>>(
             } => {
                 check_accepted(&mut r, e, *intent, &inputs.unknown_accepted, &intents);
                 check_ident_inputs(&mut r, e, Some(*intent), &inputs.tracks, &ident, policy.as_ref());
+                check_lost_inputs(&mut r, e, *intent, inputs, &lost, &ident, &intents, &mut pictured, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(
                         &mut r,
@@ -4356,6 +4394,7 @@ fn replay_inner<S: AsRef<str>>(
             } => {
                 check_accepted(&mut r, e, *intent, &inputs.unknown_accepted, &intents);
                 check_ident_inputs(&mut r, e, Some(*intent), &inputs.tracks, &ident, policy.as_ref());
+                check_lost_inputs(&mut r, e, *intent, inputs, &lost, &ident, &intents, &mut pictured, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
                     continue;
@@ -4428,16 +4467,49 @@ fn replay_inner<S: AsRef<str>>(
             EventBody::EngageAccepted {
                 intent,
                 uid,
+                contact,
                 since,
                 by,
                 session,
                 world_t,
                 vehicle,
+                lost: lost_logged,
                 step_up,
             } => {
+                // a vehicle of ours (rules 6) or a lost contact (rules 16), exactly one, with its
+                // facts
+                let subject = match (uid, contact, vehicle, lost_logged) {
+                    (Some(u), None, Some(v), None) => Some(Accepting::Vehicle(u, v)),
+                    (None, Some(c), None, l) => Some(Accepting::Contact(c, l.as_deref())),
+                    _ => None,
+                };
+                let Some(subject) = subject else {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "an acceptance names neither one vehicle with its facts nor one lost contact",
+                        json(&(uid, contact)),
+                        String::new(),
+                    );
+                    continue;
+                };
                 // rules 8: the operator's credential re-entered for it, when the policy lists
                 // the act (a nomination's acceptances share one step-up)
                 let needed = policy.as_ref().is_some_and(|p| p.steps_up(policy::StepUpAct::AcceptUnknown));
+                let expected = match &subject {
+                    Accepting::Vehicle(u, _) => Expected::Acceptance {
+                        intent: *intent,
+                        vehicle: crate::passkey::AcceptedVehicle { uid: (*u).clone(), since: *since },
+                    },
+                    Accepting::Contact(c, _) => Expected::ContactAcceptance {
+                        intent: *intent,
+                        contact: crate::passkey::AcceptedContact {
+                            track: (*c).clone(),
+                            since: since.unwrap_or(Time(i64::MIN)),
+                        },
+                    },
+                };
                 check_step_up(
                     &mut r,
                     e,
@@ -4448,15 +4520,17 @@ fn replay_inner<S: AsRef<str>>(
                     *step_up,
                     &mut step_ups,
                     StepUse::Acceptances { intent: *intent, last_seq: e.seq },
-                    &Expected::Acceptance {
-                        intent: *intent,
-                        vehicle: crate::passkey::AcceptedVehicle { uid: uid.clone(), since: *since },
-                    },
+                    &expected,
                     policy.as_ref(),
                 );
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(&mut r, e, Some(*intent), "acceptance for an unknown intent", String::new(), String::new());
                     continue;
+                };
+                // what it accepts, for the words (rules 16: a lost contact)
+                let what = match &subject {
+                    Accepting::Vehicle(..) => "vehicle",
+                    Accepting::Contact(..) => "contact",
                 };
                 // an operator's own session, with engagement authority: an agent has none
                 match sessions.get(session) {
@@ -4465,7 +4539,7 @@ fn replay_inner<S: AsRef<str>>(
                         &mut r,
                         e,
                         Some(*intent),
-                        "acceptance of a lost vehicle without engagement authority",
+                        &format!("acceptance of a lost {what} without engagement authority"),
                         by.to_string(),
                         "a session opened with grants.engage".into(),
                     ),
@@ -4473,7 +4547,7 @@ fn replay_inner<S: AsRef<str>>(
                         &mut r,
                         e,
                         Some(*intent),
-                        "acceptance of a lost vehicle under a session that is not the operator's",
+                        &format!("acceptance of a lost {what} under a session that is not the operator's"),
                         by.to_string(),
                         json(&other.map(|o| &o.0)),
                     ),
@@ -4489,17 +4563,50 @@ fn replay_inner<S: AsRef<str>>(
                         json(&e.t),
                     );
                 }
-                if let Some(pol) = &policy
-                    && let Err(why) = engage::lost_since_report(Some(vehicle), *since, *world_t, &pol.rules)
-                {
-                    bad(
-                        &mut r,
-                        e,
-                        Some(*intent),
-                        "acceptance of a vehicle that was not lost since that report",
-                        json(&(since, vehicle.position.as_ref().map(|p| p.t))),
-                        why,
-                    );
+                match &subject {
+                    Accepting::Vehicle(_, vehicle) => {
+                        if let Some(pol) = &policy
+                            && let Err(why) = engage::lost_since_report(Some(vehicle), *since, *world_t, &pol.rules)
+                        {
+                            bad(
+                                &mut r,
+                                e,
+                                Some(*intent),
+                                "acceptance of a vehicle that was not lost since that report",
+                                json(&(since, vehicle.position.as_ref().map(|p| p.t))),
+                                why,
+                            );
+                        }
+                    }
+                    // rules 16: a contact the log holds as lost, since exactly that fix, with the
+                    // facts the ledger holds
+                    Accepting::Contact(c, logged_facts) => {
+                        if !policy.as_ref().is_some_and(|p| p.rules.lost_contacts()) {
+                            bad(&mut r, e, Some(*intent), "an acceptance of a lost contact before rules 16", (*c).clone(), String::new());
+                        }
+                        if let Err(why) = engage::contact_lost_since(c, lost.get(c), *since) {
+                            bad(
+                                &mut r,
+                                e,
+                                Some(*intent),
+                                "acceptance of a contact that was not lost since that fix",
+                                json(since),
+                                why,
+                            );
+                        }
+                        let rule_id = policy.as_ref().is_some_and(|p| p.rules.rule_id());
+                        let want = lost.filled(&ident, rule_id).remove(c.as_str());
+                        if *logged_facts != want.as_ref() {
+                            bad(
+                                &mut r,
+                                e,
+                                Some(*intent),
+                                "an acceptance's lost contact differs from the drop the log holds",
+                                json(logged_facts),
+                                json(&want),
+                            );
+                        }
+                    }
                 }
                 // at the nomination by its own (human) submitter, or while it waits with no
                 // signature
@@ -4511,22 +4618,28 @@ fn replay_inner<S: AsRef<str>>(
                         &mut r,
                         e,
                         Some(*intent),
-                        "acceptance of a lost vehicle outside an engagement's nomination or its wait for a first signature",
+                        &format!("acceptance of a lost {what} outside an engagement's nomination or its wait for a first signature"),
                         json(&(tr.state, &tr.spec.source, tr.signers.len())),
                         "its submitter's nomination, or pending without signatures".into(),
                     );
                 }
-                tr.accepted.insert(
-                    uid.clone(),
-                    engage::AcceptedUnknown {
-                        since: *since,
-                        by: by.clone(),
-                    },
-                );
+                let accepted = engage::AcceptedUnknown {
+                    since: *since,
+                    by: by.clone(),
+                };
+                match subject {
+                    Accepting::Vehicle(u, _) => {
+                        tr.accepted.insert(u.clone(), accepted);
+                    }
+                    Accepting::Contact(c, _) => {
+                        tr.accepted_lost.insert(c.clone(), accepted);
+                    }
+                }
             }
             EventBody::EngageAcceptanceRevoked {
                 intent,
                 uid,
+                contact,
                 by,
                 session,
             } => {
@@ -4535,7 +4648,12 @@ fn replay_inner<S: AsRef<str>>(
                     bad(&mut r, e, Some(*intent), "revocation for an unknown intent", String::new(), String::new());
                     continue;
                 };
-                if tr.accepted.remove(uid).is_none()
+                let removed = match (uid, contact) {
+                    (Some(u), None) => tr.accepted.remove(u).is_some(),
+                    (None, Some(c)) => tr.accepted_lost.remove(c).is_some(),
+                    _ => false,
+                };
+                if !removed
                     || !matches!(tr.state, State::PendingApproval | State::Approved | State::Dispatched)
                 {
                     bad(
@@ -4543,10 +4661,218 @@ fn replay_inner<S: AsRef<str>>(
                         e,
                         Some(*intent),
                         "revocation of an acceptance that is not in force",
-                        json(&(uid, tr.state)),
+                        json(&(uid, contact, tr.state)),
                         "an acceptance of it, the engagement pending or under way".into(),
                     );
                 }
+            }
+            EventBody::TrackDropped { track, facts, ais } => {
+                if !policy.as_ref().is_some_and(|p| p.rules.lost_contacts()) {
+                    // the marker check flags it under older rules
+                    continue;
+                }
+                // the tracker's estimate only: the identification is the ledger's
+                if facts.declared_by.is_some() || facts.declaration.is_some() || !facts.review_flags.is_empty() {
+                    bad(
+                        &mut r,
+                        e,
+                        None,
+                        "a dropped track's facts carry an identification (the ledger fills it)",
+                        track.clone(),
+                        String::new(),
+                    );
+                }
+                if facts.position.t > e.t {
+                    bad(&mut r, e, None, "a track dropped with a fix from after the drop", json(&facts.position.t), json(&e.t));
+                }
+                // the tracker dates its last fix when it last saw the track (`last_seen_t`): a fix
+                // after that is no fix the tracker had (the review of the merged branch's second
+                // pass: a fix at 179 s on a track last seen at 0 s passed the drop age, and the
+                // keep-out reads the fix)
+                if facts.position.t > facts.last_seen_t {
+                    bad(
+                        &mut r,
+                        e,
+                        None,
+                        "a track dropped with a fix after it was last seen",
+                        json(&facts.position.t),
+                        json(&facts.last_seen_t),
+                    );
+                }
+                // an id is dropped once (the tracker never reuses one)
+                if lost.holds(track) {
+                    bad(&mut r, e, None, "a track dropped twice (the tracker drops an id once)", track.clone(), String::new());
+                }
+                // no older fix, and the same fix, as the decisions last saw it; and no newer fix
+                // that a picture taken after it did not show
+                if let Some((fix, vel)) = pictured.last.get(track) {
+                    let shown_t = pictured.shown_t.get(track).copied();
+                    if facts.position.t > fix.t
+                        && shown_t.is_some_and(|w| w.ms_since(facts.position.t) >= DROP_FIX_SKEW_MS)
+                    {
+                        bad(
+                            &mut r,
+                            e,
+                            None,
+                            "a track dropped with a fix newer than a later picture showed",
+                            json(&facts.position),
+                            json(&(fix, shown_t)),
+                        );
+                    }
+                    if facts.position.t < fix.t {
+                        bad(
+                            &mut r,
+                            e,
+                            None,
+                            "a track dropped with an older fix than the decisions had seen",
+                            json(&facts.position),
+                            json(fix),
+                        );
+                    } else if facts.position.t == fix.t && (facts.position.value != fix.value || facts.velocity_mps != *vel) {
+                        bad(
+                            &mut r,
+                            e,
+                            None,
+                            "a track dropped with its last fix changed from the one the decisions had seen",
+                            json(&(&facts.position, facts.velocity_mps)),
+                            json(&(fix, vel)),
+                        );
+                    }
+                }
+                // rules 16: no sooner than the tracker drops a track (the run's drop age), counted
+                // from the later of its last sighting and its fix; a run with drops logs the age
+                let seen = facts.last_seen_t.max(facts.position.t);
+                match track_drop_s {
+                    Some(drop_s) if (e.t.ms_since(seen) as f64) < drop_s * 1000.0 - 1.0 => bad(
+                        &mut r,
+                        e,
+                        None,
+                        "a track dropped sooner than the tracker's drop age after it was last seen",
+                        json(&(e.t.ms_since(seen) as f64 / 1000.0)),
+                        json(&drop_s),
+                    ),
+                    Some(_) => {}
+                    None => bad(
+                        &mut r,
+                        e,
+                        None,
+                        "a track dropped in a run whose run.started does not log the tracker's drop age (track_drop_s)",
+                        track.clone(),
+                        String::new(),
+                    ),
+                }
+                let _ = lost.record(track, (**facts).clone(), ais.clone(), e.t);
+                pictured.dropped.insert(track.clone(), (facts.position.clone(), facts.velocity_mps));
+                r.lost_contacts += 1;
+            }
+            EventBody::LostClaimed {
+                track,
+                by_track,
+                world_t,
+                tracks,
+                track_ais,
+                evidence,
+                blockers,
+            } => {
+                let Some(pol) = policy.as_ref().filter(|p| p.rules.lost_contacts()) else {
+                    continue;
+                };
+                check_lost_picture(&mut r, e, "a claim", *world_t, tracks, &ident, &mut pictured);
+                if lost.claimed(track, by_track) {
+                    bad(&mut r, e, None, "a claim raised twice", format!("{track} by {by_track}"), String::new());
+                }
+                let again = lost
+                    .get(track)
+                    .and_then(|l| crate::lost::claim_of(track, l, &lost, by_track, tracks, track_ais, &pol.rules.engage_rules()));
+                match again {
+                    Some(c) if &c.evidence == evidence && &c.blockers == blockers => {}
+                    other => bad(
+                        &mut r,
+                        e,
+                        None,
+                        "a claim on a lost contact differs from its recomputation",
+                        json(&(evidence, blockers)),
+                        json(&other.map(|c| (c.evidence, c.blockers))),
+                    ),
+                }
+                lost.claim(track, by_track);
+                r.lost_claims += 1;
+            }
+            EventBody::TrackReacquired {
+                track,
+                by_track,
+                by,
+                session,
+                world_t,
+                tracks,
+                track_ais,
+                evidence,
+            } => {
+                let Some(pol) = policy.as_ref().filter(|p| p.rules.lost_contacts()) else {
+                    continue;
+                };
+                // an operator's act, under their own session (never an agent's)
+                check_operator(&mut r, e, by, *session, &sessions, "a confirmation of a lost contact");
+                check_lost_picture(&mut r, e, "a confirmation", *world_t, tracks, &ident, &mut pictured);
+                let again = match lost.get(track) {
+                    Some(l) => crate::lost::claim_of(track, l, &lost, by_track, tracks, track_ais, &pol.rules.engage_rules())
+                        .ok_or_else(|| format!("{by_track} does not carry {track}'s MMSI in this picture")),
+                    None => Err(format!("{track} is not a lost contact in force")),
+                };
+                match again {
+                    Ok(c) if c.confirmable() && &c.evidence == evidence => {}
+                    other => bad(
+                        &mut r,
+                        e,
+                        None,
+                        "a lost contact confirmed on a claim that does not hold",
+                        json(&(by_track, evidence)),
+                        json(&other),
+                    ),
+                }
+                lost.claim(track, by_track);
+                let _ = lost.confirm(track, by_track, by, e.t);
+                r.lost_confirmed += 1;
+            }
+            EventBody::LostReinstated {
+                track,
+                by_track,
+                reason,
+                world_t,
+                facts,
+            } => {
+                if !policy.as_ref().is_some_and(|p| p.rules.lost_contacts()) {
+                    continue;
+                }
+                match lost.confirmed().get(track) {
+                    Some(c) if &c.by_track == by_track => {}
+                    other => bad(
+                        &mut r,
+                        e,
+                        None,
+                        "a reinstatement of a lost contact not confirmed as that track",
+                        format!("{track} as {by_track}"),
+                        json(&other.map(|c| &c.by_track)),
+                    ),
+                }
+                if (e.t.0 - world_t.0).abs() > engage::ACCEPT_WORLD_SKEW_MS {
+                    bad(&mut r, e, None, "a reinstatement's picture is not the one at the reinstatement", json(world_t), json(&e.t));
+                }
+                // why, from the claimant's facts then (none: it left the picture, by a drop)
+                let picture: BTreeMap<String, crate::world::TrackFacts> =
+                    facts.iter().map(|f| (by_track.clone(), (**f).clone())).collect();
+                if let Err(why) = ident.check_facts(&picture) {
+                    bad(&mut r, e, None, "a reinstatement's facts differ from the identification the log holds", why, String::new());
+                }
+                if facts.is_none() && !pictured.dropped.contains_key(by_track) {
+                    bad(&mut r, e, None, "a reinstatement for a claimant that was never dropped", by_track.clone(), String::new());
+                }
+                let want = crate::lost::void_reason(by_track, &picture);
+                if want.as_ref() != Some(reason) {
+                    bad(&mut r, e, None, "a reinstatement's reason does not hold", reason.clone(), json(&want));
+                }
+                lost.reinstate(track);
+                r.lost_reinstated += 1;
             }
             EventBody::PlatformRestore { .. } => {
                 let followups = policy.as_ref().is_some_and(|p| p.rules.followups());
@@ -4735,6 +5061,7 @@ fn replay_inner<S: AsRef<str>>(
                 check_expended(&mut r, e, *intent, &inputs.expended, &intents, &restores, policy.as_ref());
                 check_spent_carried(&mut r, e, *intent, &inputs.spent_carried, &intents, &restores, policy.as_ref());
                 check_ident_inputs(&mut r, e, Some(*intent), &inputs.tracks, &ident, policy.as_ref());
+                check_lost_inputs(&mut r, e, *intent, inputs, &lost, &ident, &intents, &mut pictured, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(&mut r, e, Some(*intent), "queued without run.started or intent.created", String::new(), String::new());
                     continue;
@@ -6910,7 +7237,7 @@ fn check_carried_restores(r: &mut ReplayReport, events: &[Event], opts: &ReplayO
 /// Rules 6: a signature's `self_accepted`: the signer accepted one of the engagement's lost
 /// vehicles in force.
 fn check_self_accepted(r: &mut ReplayReport, e: &Event, id: IntentId, tr: &Tracked, by: &OperatorId, logged: bool) {
-    let want = tr.accepted.values().any(|a| &a.by == by);
+    let want = tr.accepted.values().chain(tr.accepted_lost.values()).any(|a| &a.by == by);
     if logged != want {
         bad(r, e, Some(id), "self_accepted flag differs", logged.to_string(), want.to_string());
     }
@@ -6940,6 +7267,8 @@ fn acting_session(body: &EventBody) -> Option<SessionId> {
         EventBody::IdentConfirmed { session, .. }
         | EventBody::IdentRevoked { session, .. }
         | EventBody::IdentFlagResolved { session, .. } => Some(*session),
+        // rules 16: a lost contact confirmed as a live track
+        EventBody::TrackReacquired { session, .. } => Some(*session),
         EventBody::IdentDeclared { declaration } => match &declaration.by {
             crate::ident::Declarer::Operator { session, .. } => Some(*session),
             crate::ident::Declarer::Rule { .. } => None,
@@ -6998,6 +7327,11 @@ enum Expected {
         intent: IntentId,
         vehicle: crate::passkey::AcceptedVehicle,
     },
+    /// Rules 16: an acceptance of lost contact `contact` for `intent`, as for a vehicle.
+    ContactAcceptance {
+        intent: IntentId,
+        contact: crate::passkey::AcceptedContact,
+    },
     /// A passkey registration: it re-enters the password, whatever the step-up factor.
     Registration,
     /// An act no passkey assertion is made for (rules 8's `track.declare`, a declaration that
@@ -7025,8 +7359,13 @@ impl Expected {
                 Expected::Is(want) => want == made,
                 Expected::Acceptance { intent, vehicle } => matches!(
                     made,
-                    StepUpFor::AcceptUnknown { intent: i, vehicles }
+                    StepUpFor::AcceptUnknown { intent: i, vehicles, .. }
                         if (i.is_none() || *i == Some(*intent)) && vehicles.contains(vehicle)
+                ),
+                Expected::ContactAcceptance { intent, contact } => matches!(
+                    made,
+                    StepUpFor::AcceptUnknown { intent: i, contacts, .. }
+                        if (i.is_none() || *i == Some(*intent)) && contacts.contains(contact)
                 ),
                 Expected::Registration | Expected::Unbound => false,
             };
@@ -8008,6 +8347,160 @@ fn check_accepted(
     }
 }
 
+/// Rules 16: what an `engage.accepted` names.
+enum Accepting<'a> {
+    Vehicle(&'a Uid, &'a crate::world::VehicleFacts),
+    Contact(&'a String, Option<&'a crate::lost::LostContact>),
+}
+
+/// Rules 16: the track ids decisions (and claims and confirmations) have read in their
+/// pictures, each with the last fix and velocity they read and the world time of the latest
+/// picture that showed it, and those the tracker dropped (`track.dropped`) with the fix each
+/// drop carried: a track leaves the picture only by a drop, a drop carries no older fix than the
+/// pictures had and no newer one that a picture taken after it did not show, and a dropped id is
+/// never back with another fix (the bridge's tracker never reuses an id; a picture snapshotted
+/// before the drop was handed over still holds the drop's own fix).
+#[derive(Default)]
+struct Pictured {
+    seen: BTreeSet<String>,
+    dropped: BTreeMap<String, (crate::world::Fact<crate::geo::LonLat>, Option<[f64; 2]>)>,
+    last: BTreeMap<String, (crate::world::Fact<crate::geo::LonLat>, Option<[f64; 2]>)>,
+    shown_t: BTreeMap<String, Time>,
+}
+
+/// Rules 16: how much later than a fix a picture must have been taken before replay holds that
+/// it should have shown the fix (ms). The tracker dates a fix by its own clock when it takes the
+/// detection (`last_seen_t`), and a snapshot reads its world time and its tracks a moment apart,
+/// so a picture taken within this of a fix may honestly still show the one before.
+const DROP_FIX_SKEW_MS: i64 = 1_000;
+
+impl Pictured {
+    /// The tracks of a picture taken at `world_t` and read at `e`: flagged if one read before is
+    /// missing without a drop, or a dropped one is back with another fix than its drop's; then
+    /// remembered.
+    fn read(
+        &mut self,
+        r: &mut ReplayReport,
+        e: &Event,
+        id: Option<IntentId>,
+        world_t: Time,
+        tracks: &BTreeMap<String, crate::world::TrackFacts>,
+    ) {
+        let gone: Vec<&String> = self
+            .seen
+            .iter()
+            .filter(|t| !tracks.contains_key(*t) && !self.dropped.contains_key(*t))
+            .collect();
+        if !gone.is_empty() {
+            bad(
+                r,
+                e,
+                id,
+                "a track left the picture without a drop (track.dropped)",
+                json(&gone),
+                String::new(),
+            );
+        }
+        for (k, t) in tracks {
+            if let Some((fix, vel)) = self.dropped.get(k)
+                && (t.position != *fix || t.velocity_mps != *vel)
+            {
+                bad(
+                    r,
+                    e,
+                    id,
+                    "a dropped track back in a picture with another fix than its drop's (the tracker never reuses an id)",
+                    json(&(k, &t.position, t.velocity_mps)),
+                    json(&(fix, vel)),
+                );
+            }
+            self.seen.insert(k.clone());
+            let newer = self.last.get(k).is_none_or(|(fix, _)| t.position.t >= fix.t);
+            if newer {
+                self.last.insert(k.clone(), (t.position.clone(), t.velocity_mps));
+            }
+            let shown = self.shown_t.entry(k.clone()).or_insert(world_t);
+            *shown = (*shown).max(world_t);
+        }
+    }
+}
+
+/// Rules 16: the picture a claim or a confirmation logged: its identification as the ledger
+/// holds it, taken at the event (within the acceptance skew), and read as a decision's is
+/// ([`Pictured::read`]).
+fn check_lost_picture(
+    r: &mut ReplayReport,
+    e: &Event,
+    what: &str,
+    world_t: Time,
+    tracks: &BTreeMap<String, crate::world::TrackFacts>,
+    ident: &crate::ident::Ledger,
+    pictured: &mut Pictured,
+) {
+    if let Err(why) = ident.check_facts(tracks) {
+        bad(r, e, None, &format!("{what}'s picture differs from the identification the log holds"), why, String::new());
+    }
+    if (e.t.0 - world_t.0).abs() > engage::ACCEPT_WORLD_SKEW_MS {
+        bad(r, e, None, &format!("{what}'s picture is not the one at the event"), json(&world_t), json(&e.t));
+    }
+    pictured.read(r, e, None, world_t, tracks);
+}
+
+/// Rules 16: a decision's lost contacts and the acceptances of them against the log: an
+/// engagement's are exactly the contacts the log holds as lost (`track.dropped`, less those
+/// confirmed as a live track by `track.reacquired` while this picture bears the confirmation
+/// out, their identification filled from the ledger) and the acceptances logged for it; any
+/// other decision reads none. And no track the decisions read before is missing from this
+/// picture without a drop.
+#[allow(clippy::too_many_arguments)]
+fn check_lost_inputs(
+    r: &mut ReplayReport,
+    e: &Event,
+    id: IntentId,
+    inputs: &LoggedInputs,
+    lost: &crate::lost::LostLedger,
+    ident: &crate::ident::Ledger,
+    intents: &BTreeMap<IntentId, Tracked>,
+    pictured: &mut Pictured,
+    policy: Option<&Policy>,
+) {
+    let Some(pol) = policy.filter(|p| p.rules.lost_contacts()) else {
+        return;
+    };
+    pictured.read(r, e, Some(id), inputs.t, &inputs.tracks);
+    let engage = intents.get(&id).is_some_and(|tr| tr.spec.kind() == TaskKind::Engage);
+    let (want, want_accepted) = if engage {
+        (
+            // in force, and those whose confirmation this picture voids (the claimant gone,
+            // suspect or declared in it), logged as reinstated yet or not
+            lost.in_force_for(&inputs.tracks, ident, pol.rules.rule_id()),
+            intents.get(&id).map(|tr| tr.accepted_lost.clone()).unwrap_or_default(),
+        )
+    } else {
+        (BTreeMap::new(), BTreeMap::new())
+    };
+    if inputs.lost_contacts != want {
+        bad(
+            r,
+            e,
+            Some(id),
+            "a decision's lost contacts differ from the drops the log holds",
+            json(&inputs.lost_contacts.keys().collect::<Vec<_>>()),
+            json(&want.keys().collect::<Vec<_>>()),
+        );
+    }
+    if inputs.lost_accepted != want_accepted {
+        bad(
+            r,
+            e,
+            Some(id),
+            "a decision's accepted lost contacts differ from the acceptances logged for it",
+            json(&inputs.lost_accepted),
+            json(&want_accepted),
+        );
+    }
+}
+
 /// A signature's evidence. An engagement's: it quotes a picture token that was issued to this
 /// session and not used, unexpired, showing the track as the re-check saw it and the plan in
 /// force (the frozen one, or the one this first signature froze), and its snapshot is the
@@ -8096,6 +8589,17 @@ fn check_signed(
             "signature on a picture token whose accepted lost vehicles have changed since",
             json(&tok.unknown_accepted),
             json(&tr.accepted),
+        );
+    }
+    // rules 16: and of lost contacts
+    if tok.lost_accepted != tr.accepted_lost {
+        bad(
+            r,
+            e,
+            Some(id),
+            "signature on a picture token whose accepted lost contacts have changed since",
+            json(&tok.lost_accepted),
+            json(&tr.accepted_lost),
         );
     }
     if tok.intent != id || tok.by != *by || tok.session != session {
@@ -8280,6 +8784,17 @@ fn check_issued(
             "picture token's accepted lost vehicles differ from the acceptances logged for it",
             json(&tok.unknown_accepted),
             json(&tr.accepted),
+        );
+    }
+    // rules 16: and the lost contacts
+    if tok.lost_accepted != tr.accepted_lost {
+        bad(
+            r,
+            e,
+            Some(id),
+            "picture token's accepted lost contacts differ from the acceptances logged for it",
+            json(&tok.lost_accepted),
+            json(&tr.accepted_lost),
         );
     }
     match &tr.plan {

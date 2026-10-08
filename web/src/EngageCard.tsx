@@ -6,12 +6,14 @@ import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
 import {
   abortEngagement,
+  acceptLostFor,
   engageParams,
   FALLBACK_LABEL,
   fmtRel,
   isEngage,
   previewOf,
   requestPicture,
+  revokeLost,
   revokeUnknown,
   RUNNING,
   STATE_LABEL,
@@ -21,6 +23,7 @@ import {
 import './engage.css'
 import { distanceM } from './geo'
 import { declarationBasis, unconfirmedRule } from './ident'
+import { stepsUpAct } from './auth'
 import type { Vehicle } from './types'
 import { callsign } from './types'
 
@@ -68,7 +71,18 @@ function nameOf(vehicles: Vehicle[], uid: string | number) {
 function Acceptances({ intent: i, vehicles, now, onDone, signing }: Pick<CardProps, 'intent' | 'vehicles' | 'now' | 'onDone'> & { signing?: boolean }) {
   const [error, setError] = useState<string | null>(null)
   const accepted = i.engage?.accepted ?? []
-  if (!accepted.length) return null
+  // rules 16: lost contacts accepted for it
+  const lost = i.engage?.accepted_lost ?? []
+  if (!accepted.length && !lost.length) return null
+  const withdrawLost = async (track: string) => {
+    setError(null)
+    try {
+      await revokeLost(i.id, track)
+      onDone(`i${i.id}: acceptance of lost contact ${track} withdrawn by ${getOperator()}`, 'ok')
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
   const withdraw = async (uid: number) => {
     setError(null)
     try {
@@ -92,8 +106,84 @@ function Acceptances({ intent: i, vehicles, now, onDone, signing }: Pick<CardPro
           )}
         </p>
       ))}
+      {lost.map((a) => (
+        <p key={`lost-${a.track}`} className="eg-alarm" role="status">
+          Accepted as a lost contact by {a.by}: {a.track}, dropped by the tracker, out of view {a.since == null ? '' : `since ${fmtRel(a.since - now())}`}. The keep-out
+          on tracks leaves it out while it stays lost since then (a track an operator confirms as it counts as any track in its place)
+          {signing ? '; your signature covers this acceptance.' : '.'}{' '}
+          <button type="button" className="ghost mini" onClick={(ev) => { ev.stopPropagation(); void withdrawLost(a.track) }}>
+            Withdraw
+          </button>
+        </p>
+      ))}
       {error && <p className="error ix-error">{error}</p>}
     </>
+  )
+}
+
+/** Rules 16: while the nomination waits with no signature, an operator with engagement
+ *  authority may accept a lost contact for it (as the check names it, since its last fix),
+ *  with the step-up when the policy lists `accept_unknown`. Logged under their session, shown
+ *  to every signer, cleared by a reset. */
+function AcceptLostHere({ intent: i, now, onDone }: Pick<CardProps, 'intent' | 'now' | 'onDone'>) {
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [step, setStep] = useStepUp()
+  const [bad, setBad] = useState(false)
+  const [operator] = useOperator()
+  const ops = useOperators()
+  const open = i.engage?.lost_open ?? []
+  const hasAuthority = (i.engage?.engage_operators ?? ops.engage).includes(operator)
+  if (!open.length || !hasAuthority) return null
+  const stepUp = stepsUpAct('accept_unknown')
+  const accept = async (l: { track: string; since: number }) => {
+    setBusy(l.track)
+    setError(null)
+    setBad(false)
+    try {
+      const proof = stepUp ? await stepUpProof(step, { act: 'accept_unknown', intent: i.id, accept_lost: [{ track: l.track, since: l.since }] }) : undefined
+      await acceptLostFor(i.id, l, proof)
+      setStep({ password: '' })
+      onDone(`i${i.id}: lost contact ${l.track} accepted for this engagement by ${operator}`, 'ok')
+    } catch (err) {
+      if (err instanceof StepUpNeeded) setBad(true)
+      setError((err as Error).message)
+    }
+    setBusy(null)
+  }
+  return (
+    <div className="eg-accept-lost-here">
+      {open.map((l) => (
+        <p key={l.track} className="muted">
+          Lost contact {l.track} ({l.identity ?? 'unclassified'}, {l.affiliation}
+          {l.ais ? `, AIS ${l.ais}` : ''}), out of view since {fmtRel(l.since - now())}: the keep-out counts it anywhere it could have got to since.{' '}
+          <button
+            type="button"
+            className="ghost mini"
+            disabled={busy != null || (stepUp && !stepUpReady(step))}
+            onClick={(ev) => {
+              ev.stopPropagation()
+              void accept(l)
+            }}
+            title="Accept its unknown position for this engagement: logged under your session, shown to every signer, cleared if the signatures are dropped"
+          >
+            Accept for this engagement
+          </button>
+        </p>
+      ))}
+      {stepUp && (
+        <StepUpField
+          passwordLabel="Consequential: your password to accept a lost contact"
+          purpose="to accept this lost contact for this engagement"
+          ariaLabel="password to accept a lost contact"
+          value={step}
+          onChange={(s) => setStep(s)}
+          busy={busy != null}
+          bad={bad}
+        />
+      )}
+      {error && <p className="error ix-error">{error}</p>}
+    </div>
   )
 }
 
@@ -384,6 +474,7 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
           </p>
         )}
         <Acceptances intent={i} vehicles={vehicles} now={now} onDone={onDone} signing />
+        {signed.length === 0 && <AcceptLostHere intent={i} now={now} onDone={onDone} />}
         {plan && (
           <p className="eg-plan">
             Plan frozen by {plan.by}&apos;s signature {fmtRel(plan.t - now())}: effect at {ll(plan.effect_point)} {fmtRel(plan.effect_t - now())}, radius {Math.round(plan.effect_radius_m)} m, on {plan.track.id} ({plan.track.identity ?? 'unclassified'}, {declarationBasis(plan.track.declaration, plan.track.declared_by)}). Every signature is on this exact plan; if it stops holding, the signatures are dropped.
@@ -436,6 +527,12 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
               <span key={uid} className="eg-alarm">
                 It covers {nameOf(vehicles, uid)} accepted as lost by {a.by}
                 {a.since == null ? ' (it never reported a position)' : ` (position unknown since ${fmtRel(a.since - now())})`}.{' '}
+              </span>
+            ))}
+            {Object.entries(shown.lost_accepted ?? {}).map(([track, a]) => (
+              <span key={`lost-${track}`} className="eg-alarm">
+                It covers lost contact {track} accepted by {a.by}
+                {a.since == null ? '' : ` (out of view since ${fmtRel(a.since - now())})`}.{' '}
               </span>
             ))}
             {shownLeft > 0 ? `Valid ${Math.ceil(shownLeft)} s.` : 'Expired: look again.'}{' '}

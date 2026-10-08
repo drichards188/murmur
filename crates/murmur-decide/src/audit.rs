@@ -126,6 +126,13 @@ pub enum EventBody {
         /// without a pointer (a scenario, a test) and before rules 15.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pointer: Option<String>,
+        /// Rules 16 ([`crate::rules::LOST_CONTACT_SINCE`]): how long the bridge's tracker keeps a
+        /// track without a detection before it drops it (s; the run's `MURMUR_TRACK_DROP_S`, the
+        /// same for every domain): replay requires each `track.dropped` at least this long after
+        /// the track was last seen. Absent without a tracker that drops (a test) and before
+        /// rules 16.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        track_drop_s: Option<f64>,
     },
 
     /// A new area set is in force (the first one, if none was given at start, or a
@@ -571,10 +578,18 @@ pub enum EventBody {
     /// signature; never automatic, never an agent's (replay checks the session is the
     /// operator's, with grants.engage). Every signer's picture token carries the acceptances;
     /// a reset of the signatures clears them.
+    ///
+    /// Rules 16: or a lost contact (`contact`, the track id it was dropped under, instead of
+    /// `uid`; `since` its last fix; `lost` the contact as the engine's ledger held it, instead
+    /// of `vehicle`): its keep-out on tracks leaves that contact out while it is lost since
+    /// exactly then. Everything else as for a vehicle.
     #[serde(rename = "engage.accepted")]
     EngageAccepted {
         intent: IntentId,
-        uid: Uid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uid: Option<Uid>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        contact: Option<String>,
         #[serde(default)]
         since: Option<Time>,
         by: OperatorId,
@@ -582,7 +597,12 @@ pub enum EventBody {
         /// The world it was accepted on: the vehicle's facts then and the world's time (replay
         /// checks it was lost since exactly `since`, by the link-aware freshness rule).
         world_t: Time,
-        vehicle: Box<crate::world::VehicleFacts>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vehicle: Option<Box<crate::world::VehicleFacts>>,
+        /// Rules 16: the lost contact as the engine held it (replay checks it against its own
+        /// ledger: in force, lost since exactly `since`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lost: Option<Box<crate::lost::LostContact>>,
         /// Rules 8: the step-up the acceptance quoted (`[approval] step_up_acts` lists
         /// `accept_unknown`); every acceptance of one nomination may quote the same one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -591,12 +611,86 @@ pub enum EventBody {
 
     /// Engage, rules 6: an operator withdrew an acceptance of a lost vehicle for this
     /// engagement (any operator may: it only restricts). Its checks count the vehicle again.
+    /// Rules 16: or of a lost contact (`contact` instead of `uid`).
     #[serde(rename = "engage.acceptance_revoked")]
     EngageAcceptanceRevoked {
         intent: IntentId,
-        uid: Uid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uid: Option<Uid>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        contact: Option<String>,
         by: OperatorId,
         session: SessionId,
+    },
+
+    /// Rules 16 ([`crate::lost`]): the bridge's tracker dropped `track` (no detection for its
+    /// drop time); its facts then, as the tracker handed them (the estimate, never a
+    /// declaration). From here on the engine holds it as a lost contact, which every
+    /// engagement's keep-out on tracks counts anywhere it could have reached since its last
+    /// fix, until an operator confirms a track as it again (`track.reacquired`). Replay rebuilds
+    /// the ledger from these and checks every decision's `lost_contacts` against it, that no
+    /// track left a decision's picture without one, that no id is dropped twice and that a drop
+    /// carries no older fix than the decisions had seen.
+    #[serde(rename = "track.dropped")]
+    TrackDropped {
+        track: String,
+        facts: Box<crate::world::TrackFacts>,
+        /// The AIS identity its track carried then, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ais: Option<crate::world::AisIdentity>,
+    },
+
+    /// Rules 16: live track `by_track` carries lost contact `track`'s AIS identity: a claim to be
+    /// it, raised once for review ([`crate::lost::claims`]), on the picture logged here
+    /// (`tracks`, its identification filled, and `track_ais`, at `world_t`), with the evidence
+    /// and what keeps it from being confirmed now (`blockers`). It changes nothing: the lost
+    /// contact counts until an operator confirms the claim. Replay recomputes it.
+    #[serde(rename = "lost.claimed")]
+    LostClaimed {
+        track: String,
+        by_track: String,
+        world_t: Time,
+        tracks: BTreeMap<String, crate::world::TrackFacts>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        track_ais: BTreeMap<String, crate::world::AisIdentity>,
+        evidence: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        blockers: Vec<String>,
+    },
+
+    /// Rules 16: an operator (`by`, under `session`; never an agent) confirmed that lost contact
+    /// `track` is live track `by_track` again, on the picture logged here (`tracks` at `world_t`,
+    /// its identification filled, and `track_ais`), with the evidence shown
+    /// ([`crate::lost::claim_of`]: nothing may contradict it): it is retired from the keep-outs
+    /// while `by_track` stands, the live track counting in its place. Replay recomputes the claim
+    /// from this picture and its own ledger, and checks the session.
+    #[serde(rename = "track.reacquired")]
+    TrackReacquired {
+        track: String,
+        by_track: String,
+        by: OperatorId,
+        session: SessionId,
+        world_t: Time,
+        tracks: BTreeMap<String, crate::world::TrackFacts>,
+        /// The AIS identities heard for that picture's tracks.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        track_ais: BTreeMap<String, crate::world::AisIdentity>,
+        evidence: String,
+    },
+
+    /// Rules 16: the confirmation of lost contact `track` as `by_track` is void
+    /// ([`crate::lost::void_reason`]: the claimant left the picture, turned suspect or hostile,
+    /// or was declared), seen at `world_t` with the claimant's facts then (none when it left
+    /// the picture): the lost contact counts again, for good. Every decision on a picture that
+    /// voids it already counted it; replay checks both.
+    #[serde(rename = "lost.reinstated")]
+    LostReinstated {
+        track: String,
+        by_track: String,
+        reason: String,
+        world_t: Time,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        facts: Option<Box<crate::world::TrackFacts>>,
     },
 
     /// Rules 6: a platform's own lost-link values owed back outside an engagement's own

@@ -94,13 +94,33 @@ export interface ReviewRevocation {
   notify: string | null
 }
 
+/** Rules 16: a live track carrying a lost contact's AIS identity: a claim to be it, which any
+ *  operator may confirm (logged under their session) only while nothing contradicts it
+ *  (`blockers` empty: then `actions` has `confirm`). Until then the lost contact keeps
+ *  counting in every keep-out. */
+export interface ReviewLostClaim {
+  kind: 'lost_claim'
+  id: string
+  lost: string
+  track: string
+  mmsi: string
+  distance_m: number
+  reach_m: number
+  evidence: string
+  blockers: string[]
+  actions: 'confirm'[]
+}
+
 export interface Review {
   declarations: ReviewDeclaration[]
   flags: ReviewFlag[]
   resolved: ReviewFlag[]
   confirmed: { id: string; track: string; basis: string }[]
   revocations?: ReviewRevocation[]
-  counts: { declarations: number; flags: number }
+  /** rules 16: claims on lost contacts, and the lost contacts confirmed as a live track */
+  lost_claims?: ReviewLostClaim[]
+  lost_confirmed?: { lost: string; track: string; by: string; t: number }[]
+  counts: { declarations: number; flags: number; lost_claims?: number }
 }
 
 export interface Candidate {
@@ -178,6 +198,12 @@ export function confirmDeclaration(track: string, proof: { password?: string; pa
  *  stop first, with their fallbacks. */
 export function revokeDeclaration(track: string, note?: string) {
   return post(`/api/tracks/${encodeURIComponent(track)}/revoke`, { note: note?.trim() || null })
+}
+
+/** Rules 16: confirm that live track `byTrack` is lost contact `lost` again (its claim, an AIS
+ *  identity; any operator, logged under their session). Refused while anything contradicts it. */
+export function confirmLostClaim(lost: string, byTrack: string) {
+  return post(`/api/review/lost/${encodeURIComponent(lost)}/confirm`, { by_track: byTrack })
 }
 
 /** Confirm (the concern stands) or dismiss a review flag. */

@@ -176,6 +176,15 @@ pub struct IntentParams {
     /// reads it in the inbox and it goes to the audit log); optional for preview_intent.
     /// Name the facts you relied on and any that were stale.
     pub rationale: Option<String>,
+    /// Not an agent's to give (not in the schema): accepting a lost vehicle or a lost contact
+    /// for an engagement is an operator's decision. Given, the request is refused (403), as
+    /// the REST path refuses it, rather than decided without it (rules 16 review).
+    #[serde(default)]
+    #[schemars(skip)]
+    pub accept_unknown: Option<Value>,
+    #[serde(default)]
+    #[schemars(skip)]
+    pub accept_lost: Option<Value>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -250,6 +259,9 @@ impl IntentParams {
             })),
         );
         put("rationale", self.rationale.map(Value::String));
+        // refused by the agent path (403), never dropped
+        put("accept_unknown", self.accept_unknown);
+        put("accept_lost", self.accept_lost);
         serde_json::from_value(Value::Object(body)).map_err(|e| format!("bad arguments: {e}"))
     }
 }
@@ -428,9 +440,12 @@ pub fn tools() -> Vec<Tool> {
                  preview, and keep_outs, an explanation of the keep-outs: for each track, or \
                  vehicle of ours, that blocks the keep-out or nearly does, the region that \
                  blocks (its course, its average course, the reach of a manoeuvre the tracker \
-                 saw, a young track's reach, no velocity yet, a lost vehicle of ours, no \
-                 altitude ceiling) with the numbers (that region at the effect time, the \
-                 clearance needed, the shortfall), and what would clear it: another effect time \
+                 saw, a young track's reach, no velocity yet, a lost vehicle of ours, a lost \
+                 contact (a track the tracker dropped, still counted from its last fix, with \
+                 since when; only an operator with engagement authority may accept one for an \
+                 engagement, never an agent), no altitude ceiling) with the numbers (that \
+                 region at the effect time, the clearance needed, the shortfall), and what \
+                 would clear it: another effect time \
                  (move_within: the effect times, and for a holding target the distances, at \
                  which every keep-out holds on the picture now) or a later nomination if \
                  everything keeps behaving as now (the assumptions are stated). At most one \

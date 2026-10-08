@@ -17,6 +17,13 @@
 //! was dropped (no detection for `MURMUR_TRACK_DROP_S`, default 180 s) and whose contact is
 //! seen again starts a new track with a new id, as a real tracker would.
 //!
+//! **Drops** (rules 16, murmur-533): a dropped track is handed to the decision engine with
+//! its facts at the drop ([`Tracks::take_drops`], logged there as `track.dropped`; the engine
+//! keeps it as a lost contact that every engagement's keep-out still counts). Until the engine
+//! has taken it, it stays in the decision facts ([`Tracks::facts`]), so no decision falls
+//! between the drop and the record. The console is shown the engine's lost contacts
+//! ([`Tracks::mirror_lost`], `lost` in `GET /api/tracks` and the tracks message).
+//!
 //! Deterministic: every draw is a hash of (seed, scenario second, vehicle, contact, sensor),
 //! so the same scenario, seed and fleet positions give the same detections. The seed and
 //! misclassification rate come from the scenario (in the truth message); `MURMUR_SENSE_SEED`
@@ -53,7 +60,7 @@ use axum::extract::{Path as AxPath, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use murmur_decide::{Affiliation, LonLat, Time, TrackFacts};
+use murmur_decide::{Affiliation, AisIdentity, LonLat, Time, TrackFacts};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::watch;
@@ -123,6 +130,11 @@ struct Inner {
     acts: Vec<murmur_decide::ActReport>,
     acts_seen: std::collections::BTreeSet<String>,
     act_records: Vec<Value>,
+    /// rules 16: tracks dropped and not yet taken by the decision engine, each with its facts
+    /// at the drop (still in the decision facts until taken)
+    dropped: BTreeMap<String, (TrackFacts, Option<AisIdentity>)>,
+    /// rules 16: the engine's lost contacts, for display ([`Tracks::mirror_lost`])
+    lost: Vec<Value>,
 }
 
 pub struct Tracks {
@@ -152,6 +164,8 @@ impl Tracks {
                 acts: Vec::new(),
                 acts_seen: std::collections::BTreeSet::new(),
                 act_records: Vec::new(),
+                dropped: BTreeMap::new(),
+                lost: Vec::new(),
             }),
             updates: watch::channel(Arc::new(String::new())).0,
         };
@@ -167,6 +181,12 @@ impl Tracks {
 
     pub fn eval_truth_enabled(&self) -> bool {
         self.settings.eval_truth
+    }
+
+    /// Rules 16: how long a track goes without a detection before it is dropped (s, the run's
+    /// `MURMUR_TRACK_DROP_S`, every domain alike), logged in `run.started` for replay.
+    pub fn drop_s(&self) -> f64 {
+        self.settings.drop_s
     }
 
     /// The tracker's memories for the keep-out explanation, this run's drop time included.
@@ -403,6 +423,9 @@ impl Tracks {
                     }
                 }
                 None => {
+                    // rules 16: an id is never reused within a run (numbered up from 1, never
+                    // reset), so the engine judges a lost contact even with its id in a picture
+                    // (`engage::lost_standing`) and replay flags a dropped id back with another fix
                     let no = inner.next_no;
                     inner.next_no += 1;
                     let id = format!("T-{no:04}");
@@ -424,8 +447,47 @@ impl Tracks {
             .map(|t| t.id.clone())
             .collect();
         for id in gone {
-            inner.tracks.remove(&id);
+            // rules 16: its facts at the drop, for the decision engine (the estimate only: the
+            // engine fills the identification from its ledger)
+            if let Some(t) = inner.tracks.remove(&id) {
+                inner.dropped.insert(id.clone(), (t.facts(now), t.ais_identity()));
+            }
             inner.by_contact.retain(|_, v| *v != id);
+        }
+    }
+
+    /// Rules 16: the tracks dropped since the last call, each with its facts at the drop, for
+    /// the decision engine (`Engine::record_track_drops`); from now on they are the engine's
+    /// lost contacts and leave the decision facts. The caller holds the decision lock across
+    /// this and the record, so no decision reads a picture without them in either.
+    pub fn take_drops(&self) -> Vec<(String, TrackFacts, Option<AisIdentity>)> {
+        std::mem::take(&mut lock(&self.inner).dropped)
+            .into_iter()
+            .map(|(id, (f, ais))| (id, f, ais))
+            .collect()
+    }
+
+    /// Rules 16: drops the decision engine could not log (`Tracks::take_drops` handed them
+    /// over), back for the next tick; they stay in the decision facts meanwhile.
+    pub fn restore_drops(&self, drops: Vec<(String, TrackFacts, Option<AisIdentity>)>) {
+        let mut inner = lock(&self.inner);
+        for (id, f, ais) in drops {
+            inner.dropped.entry(id).or_insert((f, ais));
+        }
+    }
+
+    /// Rules 16: show the engine's lost contacts (the console's map and tracks list); each
+    /// entry as [`crate::decision::Decision::lost_json`] builds it. Republishes if they
+    /// changed.
+    pub fn mirror_lost(&self, lost: Vec<Value>) {
+        let changed = {
+            let mut inner = lock(&self.inner);
+            let changed = inner.lost != lost;
+            inner.lost = lost;
+            changed
+        };
+        if changed {
+            self.publish(clock::wall());
         }
     }
 
@@ -458,6 +520,11 @@ impl Tracks {
             .collect()
     }
 
+    /// Rules 16: the engine's lost contacts as last mirrored.
+    pub fn lost_json(&self) -> Vec<Value> {
+        lock(&self.inner).lost.clone()
+    }
+
     /// `GET /api/tracks`.
     pub fn api_json(&self, now: f64) -> Value {
         let tracks = self.tracks_json(now);
@@ -467,6 +534,8 @@ impl Tracks {
             "stale_after_s": model::STALE_S,
             "drop_after_s": self.settings.drop_s,
             "tracks": tracks,
+            // rules 16: contacts the tracker dropped that the keep-outs still count
+            "lost": self.lost_json(),
         })
     }
 
@@ -477,6 +546,7 @@ impl Tracks {
             "t": round(now, 2),
             "stale_after_s": model::STALE_S,
             "tracks": self.tracks_json(now),
+            "lost": self.lost_json(),
         })
         .to_string()
     }
@@ -511,12 +581,27 @@ impl Tracks {
             .collect()
     }
 
-    /// The decision layer's track facts at wall time `now`.
+    /// The decision layer's track facts at wall time `now`: every track, and (rules 16) every
+    /// track dropped that the engine has not taken yet, as it was at its drop.
     pub fn facts(&self, now: f64) -> BTreeMap<String, TrackFacts> {
-        lock(&self.inner)
+        let inner = lock(&self.inner);
+        inner
             .tracks
             .values()
             .map(|t| (t.id.clone(), t.facts(now)))
+            .chain(inner.dropped.iter().map(|(id, (f, _))| (id.clone(), f.clone())))
+            .collect()
+    }
+
+    /// Rules 16: the AIS identity heard for each track of [`Self::facts`] (a dropped one's as
+    /// at its drop), for `WorldSnapshot::track_ais`.
+    pub fn ais(&self) -> BTreeMap<String, AisIdentity> {
+        let inner = lock(&self.inner);
+        inner
+            .tracks
+            .values()
+            .filter_map(|t| t.ais_identity().map(|a| (t.id.clone(), a)))
+            .chain(inner.dropped.iter().filter_map(|(id, (_, a))| a.clone().map(|a| (id.clone(), a))))
             .collect()
     }
 
@@ -667,6 +752,7 @@ pub fn router<S: Clone + Send + Sync + 'static>(
         .route("/api/tracks/{id}/revoke", post(revoke))
         .route("/api/review", get(review))
         .route("/api/review/{flag}/resolve", post(resolve))
+        .route("/api/review/lost/{track}/confirm", post(confirm_lost))
         .route("/api/sim/contacts", post(sim_contacts))
         .route("/api/sim/truth", get(sim_truth))
         .with_state(Api {
@@ -841,6 +927,35 @@ async fn resolve(
         Err(e) => return error(StatusCode::from_u16(e.status).unwrap_or(StatusCode::FORBIDDEN), e.detail),
     };
     match api.decision.resolve_flag(&op, flag, body.resolution, body.note) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => error(StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), e.detail),
+    }
+}
+
+#[derive(Deserialize)]
+struct ConfirmLostBody {
+    by_track: String,
+}
+
+/// Rules 16: `POST /api/review/lost/{track}/confirm` `{by_track}`: any operator confirms, under
+/// their own session, that live track `by_track` is lost contact `track` again (its claim, an
+/// AIS identity: `track.reacquired`); 409 while anything contradicts it. Agents have no route
+/// here and no MCP tool for it.
+async fn confirm_lost(
+    State(api): State<Api>,
+    AxPath(track): AxPath<String>,
+    headers: HeaderMap,
+    body: Result<Json<ConfirmLostBody>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, e.body_text()),
+    };
+    let op = match api.auth.actor(&headers, true) {
+        Ok(op) => op,
+        Err(e) => return error(StatusCode::from_u16(e.status).unwrap_or(StatusCode::FORBIDDEN), e.detail),
+    };
+    match api.decision.confirm_lost_claim(&op, &track, &body.by_track) {
         Ok(v) => Json(v).into_response(),
         Err(e) => error(StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), e.detail),
     }

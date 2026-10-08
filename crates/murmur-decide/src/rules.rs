@@ -222,8 +222,9 @@ pub enum UnknownEndurance {
 /// computed is logged and bound, a re-check is stamped at its guard's instant, and the pin
 /// never changes mid-log. Version 14 ([`AIRCRAFT_REACH_SINCE`]): an aircraft counts in a
 /// keep-out anywhere it could turn or speed up to. Version 15 ([`CARRY_FOLLOWUPS_SINCE`]): the
-/// follow-ups of rules 12's carries.
-pub const RULES_VERSION: u32 = CARRY_FOLLOWUPS_SINCE;
+/// follow-ups of rules 12's carries. Version 16 ([`LOST_CONTACT_SINCE`]): a protected contact
+/// the tracker drops stays in the keep-out as a lost contact ([`crate::lost`]).
+pub const RULES_VERSION: u32 = LOST_CONTACT_SINCE;
 
 /// The rules version from which the follow-ups of rules 12's carries decide (murmur-zq3,
 /// murmur-imu): a platform spent by its own effect stays spent across a restart (`run.started`'s
@@ -241,6 +242,19 @@ pub const RULES_VERSION: u32 = CARRY_FOLLOWUPS_SINCE;
 /// finds, in the state the reason says. Every gate of that change reads this constant, never a
 /// literal: another change taking 15 first renumbers it in this one line.
 pub const CARRY_FOLLOWUPS_SINCE: u32 = 15;
+
+/// The rules version from which a contact the tracker drops is not forgotten (murmur-533,
+/// [`crate::lost`]): the bridge hands the engine each track it drops with its last facts
+/// (`track.dropped`); the engine keeps it as a lost contact, which every engagement keep-out
+/// counts anywhere it could have reached since its last fix ([`crate::engage::lost_reach`]: a
+/// live track's regions and anywhere at its domain's top speed; no cap) unless it is exempt
+/// as a live track would be; an operator with engagement authority may accept one for one
+/// engagement (`engage.accepted` naming the contact), every signer is shown it and replay
+/// checks it; a live track carrying its AIS identity is a claim an operator confirms
+/// (`lost.claimed`, `track.reacquired`), void once the claimant turns suspect, is declared or
+/// drops (`lost.reinstated`). Every gate of that change reads this constant, never a literal:
+/// another change taking 16 first renumbers it in this one line.
+pub const LOST_CONTACT_SINCE: u32 = 16;
 
 /// The rules version from which an aircraft with a velocity also counts in a keep-out anywhere
 /// it reaches from its own speed bound, speeding up to its domain's top speed, whether or not the
@@ -456,6 +470,11 @@ impl RulesConfig {
     /// Rules 15 ([`CARRY_FOLLOWUPS_SINCE`]): the follow-ups of rules 12's carries.
     pub fn carry_followups(&self) -> bool {
         self.rules_version >= CARRY_FOLLOWUPS_SINCE
+    }
+
+    /// Rules 16 ([`LOST_CONTACT_SINCE`]): a dropped track stays a lost contact.
+    pub fn lost_contacts(&self) -> bool {
+        self.rules_version >= LOST_CONTACT_SINCE
     }
 
     /// `[rules.engage]`, or its defaults.

@@ -1,0 +1,82 @@
+# Rules 16: a harbor ferry 600 m north-west of the target, last seen steaming away from it at
+# 5 m/s on a steady course, goes out of sensor view; 180 s later the tracker drops its track.
+# By the effect, about 280 s after its last fix, its course would put it 1.4 km further on,
+# clear of the keep-out: the regions along its course and its average course alone let this
+# nomination through (as the first version of the lost contacts did). But nothing sees a lost
+# contact turn or speed up: it may have come back. murmur-533's measurement found a contact
+# last seen steady and turning after its last fix inside the keep-out line in 3 of 716 passes
+# near the target; its review found the second version's bound, the contact's own speed (its
+# speed and 2-sigma of its velocity error, 7 m/s here), a prediction too. So a lost contact
+# counts anywhere it reaches since its last fix at its domain's top speed (25 m/s on the water,
+# what a track without a velocity counts at), and the nomination is rejected on that region
+# (keep_out_tracks: "anywhere it reaches at 25.0 m/s"). A track in view is not counted this way
+# (the tracker sees it turn); `--rules 15`: the dropped track is simply gone and the nomination
+# waits for its signers. Afterwards the drop is logged twice, the second a minute later and
+# 6 km on; replay catches it (an id is dropped once).
+title = "A lost contact last seen steaming away still blocks: it may have turned"
+invariant = "keep_out_tracks"
+attack = "a ferry last seen leaving the target on a steady course goes out of view and is dropped; its course alone clears the keep-out"
+expect = "rejected"
+expect_rule = "keep_out_tracks"
+tamper = "redrop"
+end_s = 200
+
+[[operator]]
+id = "op-1"
+engage = true
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, 28 m/s: the effect about 100 s after the nomination
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[track]]
+id = "T-0002"
+at = [-122.49983, 37.81581] # 600 m north-west of the target
+velocity = [-3.536, 3.536]  # 5 m/s north-west, away from it, steady
+affiliation = "neutral"
+identity = "ferry"
+identity_confidence = 0.8
+sources = ["3:radar"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "track"            # out of sensor view: no more detections
+id = "T-0002"
+silent = true
+
+[[step]]
+at_s = 181
+action = "drop_track"       # the tracker drops it, 180 s unseen
+track = "T-0002"
+
+[[step]]
+at_s = 185
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600

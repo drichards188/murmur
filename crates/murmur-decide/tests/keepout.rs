@@ -14,9 +14,12 @@
 //!   comes one step later, it does not;
 //! - the windows of effect times (and, for a holding target, of distances) that pass: the
 //!   platform placed so the effect lands exactly at a time inside one passes, at a time on the
-//!   scan's grid outside every one (up to the latest listed) fails; "no position clears it"
-//!   fails at every time tried. A moving target's effect time is set exactly by placing the
-//!   platform ahead of it on its course.
+//!   scan's grid outside every one (up to the latest listed) fails with the clearance raised by
+//!   the grid's margin (murmur-dr6: a grid point counts as clear only by that margin);
+//!   "no position clears it" fails so at every time tried. A moving target's effect time is set
+//!   exactly by placing the platform ahead of it on its course.
+//! - rules 16: a lost contact (a track the tracker dropped) is listed when the check fails on
+//!   it, never with a wait, and an acceptance of it for the engagement takes it out.
 #![allow(clippy::unwrap_used)]
 
 mod common;
@@ -24,7 +27,7 @@ mod common;
 use common::*;
 use murmur_decide::engage::{self, EngageWindow, Fallback};
 use murmur_decide::keepout::{
-    self, EffectWindow, Explanation, Item, MAX_WINDOWS, Options, SPAN_STEP_MS, Subject, WAIT_STEP_MS,
+    self, EffectWindow, Explanation, Item, MAX_WINDOWS, Options, SPAN_STEP_MS, Subject, WAIT_STEP_MS, grid_margin_m,
 };
 use murmur_decide::world::NavSource;
 use murmur_decide::*;
@@ -153,6 +156,17 @@ fn cfg() -> RulesConfig {
     policy().rules
 }
 
+/// The policy with its keep-out raised by the explanation's grid margin (murmur-dr6): what a
+/// grid point of its scan must clear to count as clear (`margin`: the one the scan used, sized
+/// for the picture's fastest relative motion; at least the default's).
+fn strict_cfg(margin: f64) -> RulesConfig {
+    let mut c = cfg();
+    let mut e = c.engage.clone().unwrap_or_default();
+    e.keep_out_m += margin.max(grid_margin_m(75.0 + e.keep_out_m));
+    c.engage = Some(e);
+    c
+}
+
 fn opts() -> Options {
     Options::default()
 }
@@ -223,6 +237,25 @@ fn random_world(rng: &mut Rng) -> (WorldSnapshot, IntentSpec) {
         }
         w.tracks.insert(id, t);
     }
+    // rules 16: now and then a contact the tracker dropped, out of view 3 to 6 min
+    if rng.chance(0.3) {
+        let at = toward(TARGET_AT, rng.range(0.0, 360.0), rng.range(300.0, 5000.0));
+        let seen = Time(T0.0 - secs(rng.range(181.0, 360.0)));
+        let vel = rng.chance(0.8).then(|| velocity(rng.range(0.0, 8.0), rng.range(0.0, 360.0)));
+        let mut t = contact(seen, at, vel, Affiliation::Neutral, Domain::Surface);
+        t.pos_sigma_m = rng.range(60.0, 250.0);
+        let dropped_t = Time(seen.0 + 180_000);
+        w.lost_contacts.insert("T-0099".into(), LostContact { dropped_t, facts: t, ais: None });
+        if rng.chance(0.2) {
+            w.lost_accepted.insert(
+                "T-0099".into(),
+                AcceptedUnknown {
+                    since: Some(seen),
+                    by: OperatorId::new("op-1"),
+                },
+            );
+        }
+    }
     for (i, kind) in ["x10", "seahunter", "x10"].iter().enumerate().take((rng.next() % 4) as usize) {
         let at = toward(TARGET_AT, rng.range(0.0, 360.0), rng.range(500.0, 6000.0));
         let mut v = ours(kind, at, T0);
@@ -265,7 +298,11 @@ fn outcome(checks: &[CheckResult], rule: RuleId) -> &CheckResult {
 
 /// The dry run's keep-out checks for `spec` on `w`: (friendly, tracks).
 fn dry(spec: &IntentSpec, w: &WorldSnapshot) -> (CheckResult, CheckResult) {
-    let checks = rules::evaluate(spec, w, &cfg());
+    dry_with(spec, w, &cfg())
+}
+
+fn dry_with(spec: &IntentSpec, w: &WorldSnapshot, cfg: &RulesConfig) -> (CheckResult, CheckResult) {
+    let checks = rules::evaluate(spec, w, cfg);
     (
         outcome(&checks, RuleId::KeepOutFriendly).clone(),
         outcome(&checks, RuleId::KeepOutTracks).clone(),
@@ -283,17 +320,29 @@ fn both_pass(spec: &IntentSpec, w: &WorldSnapshot) -> bool {
 }
 
 /// The picture with only `item` among the tracks (and the target), or among ours (and the
-/// platform), and whether its keep-out check passes there.
+/// platform), or among the lost contacts (and the target), and whether its keep-out check
+/// passes there.
 fn item_passes(spec: &IntentSpec, w: &WorldSnapshot, item: &Item) -> bool {
+    item_passes_with(spec, w, item, &cfg())
+}
+
+fn item_passes_with(spec: &IntentSpec, w: &WorldSnapshot, item: &Item, cfg: &RulesConfig) -> bool {
     let mut w = w.clone();
     let platform = spec.uids[0].clone();
     match item.subject {
-        Subject::Track => w.tracks.retain(|id, _| id == TARGET || *id == item.id),
+        Subject::Track => {
+            w.tracks.retain(|id, _| id == TARGET || *id == item.id);
+            w.lost_contacts.clear();
+        }
         Subject::Vehicle => w.vehicles.retain(|u, _| *u == platform || u.to_string() == item.id),
+        Subject::LostContact => {
+            w.tracks.retain(|id, _| id == TARGET);
+            w.lost_contacts.retain(|id, _| *id == item.id);
+        }
     }
-    let (f, t) = dry(spec, &w);
+    let (f, t) = dry_with(spec, &w, cfg);
     passes(match item.subject {
-        Subject::Track => &t,
+        Subject::Track | Subject::LostContact => &t,
         Subject::Vehicle => &f,
     })
 }
@@ -377,12 +426,22 @@ fn check_windows(
     windows: &[EffectWindow],
     earliest: Time,
     latest: Time,
+    margin: f64,
     rng: &mut Rng,
     n: &mut Counts,
 ) {
     let ok = |moved: &WorldSnapshot| match item {
         Some(i) => item_passes(spec, moved, i),
         None => both_pass(spec, moved),
+    };
+    // outside the windows a grid point fails with the clearance raised by the grid's margin
+    let strict = strict_cfg(margin);
+    let ok_strict = |moved: &WorldSnapshot| match item {
+        Some(i) => item_passes_with(spec, moved, i, &strict),
+        None => {
+            let (f, t) = dry_with(spec, moved, &strict);
+            passes(&f) && passes(&t)
+        }
     };
     let what = item.map_or("every keep-out".to_string(), |i| i.id.clone());
     for win in windows {
@@ -413,7 +472,7 @@ fn check_windows(
         }
         if let Some(moved) = platform_for(spec, w, at, rng.range(0.0, 360.0)) {
             n.window_fails += 1;
-            assert!(!ok(&moved), "{what}: an effect at {at:?} is outside {windows:?}");
+            assert!(!ok_strict(&moved), "{what}: an effect at {at:?} is outside {windows:?}");
         }
     }
 }
@@ -431,9 +490,12 @@ fn check_claims(spec: &IntentSpec, w: &WorldSnapshot, ex: &Explanation, rng: &mu
         b.first().copied()
     };
     if ex.omitted == 0 {
-        match first(Subject::Track) {
-            Some(i) => assert!(kt.detail.starts_with(&format!("track {} ", i.label)), "{} / {}", kt.detail, i.label),
-            None => assert!(passes(&kt), "{}", kt.detail),
+        // the check names the first live track in id order, then (rules 16) the first lost
+        // contact
+        match (first(Subject::Track), first(Subject::LostContact)) {
+            (Some(i), _) => assert!(kt.detail.starts_with(&format!("track {} ", i.label)), "{} / {}", kt.detail, i.label),
+            (None, Some(i)) => assert!(kt.detail.starts_with(&format!("{} ", i.label)), "{} / {}", kt.detail, i.label),
+            (None, None) => assert!(passes(&kt), "{}", kt.detail),
         }
         match first(Subject::Vehicle) {
             Some(i) => assert_eq!(kf.uid.as_ref().map(|u| u.to_string()), Some(i.id.clone()), "{}", kf.detail),
@@ -449,6 +511,11 @@ fn check_claims(spec: &IntentSpec, w: &WorldSnapshot, ex: &Explanation, rng: &mu
             let listed = ex.items.iter().find(|i| i.subject == Subject::Vehicle && i.id == u.to_string());
             let probe = listed.cloned().unwrap_or_else(|| Item { subject: Subject::Vehicle, id: u.to_string(), ..ex_item() });
             assert_eq!(!item_passes(spec, w, &probe), listed.is_some_and(|i| i.blocks), "{u}");
+        }
+        for id in w.lost_contacts.keys() {
+            let listed = ex.items.iter().find(|i| i.subject == Subject::LostContact && i.id == *id);
+            let probe = listed.cloned().unwrap_or_else(|| Item { subject: Subject::LostContact, id: id.clone(), ..ex_item() });
+            assert_eq!(!item_passes(spec, w, &probe), listed.is_some_and(|i| i.blocks), "{id}");
         }
     }
     let pv = engage::preview(spec, w, &cfg).unwrap();
@@ -490,13 +557,13 @@ fn check_claims(spec: &IntentSpec, w: &WorldSnapshot, ex: &Explanation, rng: &mu
                     && let Some(moved) = platform_for(spec, w, by.plus_ms(SPAN_STEP_MS), rng.range(0.0, 360.0))
                 {
                     n.vice_versa += 1;
-                    assert!(!item_passes(spec, &moved, item), "{}: one step later", item.id);
+                    assert!(!item_passes_with(spec, &moved, item, &strict_cfg(mw.grid_margin_m)), "{}: one step later", item.id);
                 }
             }
             None if item.clear_windows.is_empty() => n.item_no_window += 1,
             None => n.item_later_windows += 1,
         }
-        check_windows(spec, w, Some(item), &item.clear_windows, mw.earliest_t, mw.latest_t, rng, n);
+        check_windows(spec, w, Some(item), &item.clear_windows, mw.earliest_t, mw.latest_t, mw.grid_margin_m, rng, n);
     }
     if !ex.blocked {
         assert!(ex.move_within.is_none() && ex.wait.is_none());
@@ -519,9 +586,10 @@ fn check_claims(spec: &IntentSpec, w: &WorldSnapshot, ex: &Explanation, rng: &mu
         assert!(mw.windows[0].from_t > mw.earliest_t && mw.why.contains("No closer position"), "{mw:?}");
     } else {
         n.no_moves += 1;
-        assert!(mw.why.contains("No position"), "{}", mw.why);
+        // murmur-dr6: said of the scan's grid, not of every instant
+        assert!(mw.why.contains("No position") && mw.why.contains("on a 0.25 s grid"), "{}", mw.why);
     }
-    check_windows(spec, w, None, &mw.windows, mw.earliest_t, mw.latest_t, rng, n);
+    check_windows(spec, w, None, &mw.windows, mw.earliest_t, mw.latest_t, mw.grid_margin_m, rng, n);
     match &ex.wait {
         Some(wait) => {
             n.waits += 1;
@@ -563,6 +631,7 @@ fn ex_item() -> Item {
         wait: None,
         not_by_waiting: None,
         other: None,
+        lost: None,
     }
 }
 
@@ -873,8 +942,9 @@ fn a_window_opening_later_starts_the_windows_at_its_opening() {
 }
 
 /// L2: a track out of view: no wait hint; what happens is said plainly (the tracker drops a
-/// track unseen for 180 s, and a dropped track no longer counts). A track that flickered
-/// (unseen for 7 s, under the tracker's 10 s stale limit) is still carried forward.
+/// track unseen for 180 s; from rules 16 it then stays in the keep-out as a lost contact). A
+/// track that flickered (unseen for 7 s, under the tracker's 10 s stale limit) is still carried
+/// forward.
 #[test]
 fn a_track_out_of_view_says_when_the_tracker_drops_it_and_a_flicker_is_carried_forward() {
     let mut w = WorldSnapshot::new(T0);
@@ -890,7 +960,10 @@ fn a_track_out_of_view_says_when_the_tracker_drops_it_and_a_flicker_is_carried_f
     let out = ex.items.iter().find(|i| i.id == "T-0005").unwrap();
     assert!(out.blocks && out.wait.is_none());
     let said = out.not_by_waiting.as_deref().unwrap();
-    assert!(said.contains("Not seen for 40 s") && said.contains("drops a track unseen for 180 s") && said.contains("no longer counts"), "{said}");
+    assert!(
+        said.contains("Not seen for 40 s") && said.contains("drops a track unseen for 180 s") && said.contains("stays in the keep-out as a lost contact"),
+        "{said}"
+    );
     assert!(!said.contains("does not clear"), "{said}");
     assert!(ex.wait.is_none() && ex.wait_none.as_deref().unwrap().contains("T-0005"), "{:?}", ex.wait_none);
     if let Some(f) = ex.items.iter().find(|i| i.id == "T-0006" && i.blocks) {
@@ -932,4 +1005,149 @@ fn a_vehicle_is_carried_forward_as_the_check_predicts_it() {
     let moved = |u: &str| murmur_decide::geo::haversine_m(at, then.vehicles[&uid(u)].position.as_ref().unwrap().value);
     assert!((moved("off-1") - 300.0).abs() < 1.0, "{}", moved("off-1"));
     assert!(moved("on-1") < 1.0, "{}", moved("on-1"));
+}
+
+// ---- rules 16: lost contacts (murmur-533) ----------------------------------------------------
+
+/// The engagement picture with a fishing boat the tracker dropped 400 m north of the target:
+/// out of view since 190 s before now, dropped 10 s ago.
+fn lost_boat_world() -> (WorldSnapshot, IntentSpec) {
+    let mut w = WorldSnapshot::new(T0);
+    w.areas = Some(areas());
+    w.tracks.insert(TARGET.into(), target(TARGET_AT, [0.0, 0.0]));
+    w.vehicles.insert(uid("viper-1"), ours("magura", toward(TARGET_AT, 180.0, 900.0), T0));
+    let seen = Time(T0.0 - 190_000);
+    let mut boat = contact(seen, toward(TARGET_AT, 0.0, 400.0), Some([0.0, 0.0]), Affiliation::Neutral, Domain::Surface);
+    boat.identity = Some("fishing_vessel".into());
+    boat.pos_sigma_m = 195.0;
+    w.lost_contacts.insert(
+        "T-0002".into(),
+        LostContact {
+            dropped_t: Time(T0.0 - 10_000),
+            facts: boat,
+            ais: None,
+        },
+    );
+    (w, nomination("viper-1"))
+}
+
+#[test]
+fn a_lost_contact_is_explained_with_since_when_and_what_to_accept() {
+    let (w, spec) = lost_boat_world();
+    let ex = keepout::explain(&spec, &w, &cfg(), &opts()).unwrap();
+    assert!(ex.blocked);
+    let item = ex.items.iter().find(|i| i.id == "T-0002").unwrap();
+    assert!(item.blocks && item.subject == Subject::LostContact, "{item:?}");
+    assert!(item.label.starts_with("lost contact T-0002"), "{}", item.label);
+    assert!(
+        item.reason.contains("Out of view since 3 min 10 s ago") && item.reason.contains("dropped it 10 s ago"),
+        "{}",
+        item.reason
+    );
+    let lost = item.lost.as_ref().unwrap();
+    assert_eq!((lost.track.as_str(), lost.since), ("T-0002", Time(T0.0 - 190_000)));
+    // waiting never clears it; an acceptance would, and it broadcast no AIS
+    assert!(item.wait.is_none() && item.not_by_waiting.as_deref().unwrap().contains("only grows"));
+    let other = item.other.as_deref().unwrap();
+    assert!(other.contains("engagement authority accepting it") && other.contains("no AIS"), "{other}");
+    assert!(ex.wait.is_none() && ex.wait_none.is_some());
+    // the check names it, and says the same
+    assert!(ex.checks[1].detail.starts_with("lost contact T-0002"), "{}", ex.checks[1].detail);
+    assert!(ex.checks[1].detail.contains("may accept it"), "{}", ex.checks[1].detail);
+    let mut n = Counts::default();
+    check_claims(&spec, &w, &ex, &mut Rng(31), &mut n);
+    // accepted for this engagement, since exactly that fix: left out, the keep-out holds
+    let mut accepted = w.clone();
+    accepted.lost_accepted.insert(
+        "T-0002".into(),
+        AcceptedUnknown {
+            since: Some(lost.since),
+            by: OperatorId::new("op-1"),
+        },
+    );
+    let (_, t) = dry(&spec, &accepted);
+    assert!(passes(&t) && t.detail.contains("accepted by op-1"), "{}", t.detail);
+    let ex = keepout::explain(&spec, &accepted, &cfg(), &opts()).unwrap();
+    assert!(!ex.items.iter().any(|i| i.id == "T-0002"), "{:?}", ex.items);
+    // an acceptance of another loss (another fix) covers nothing
+    let mut other_fix = accepted.clone();
+    other_fix.lost_accepted.get_mut("T-0002").unwrap().since = Some(T0);
+    assert!(!passes(&dry(&spec, &other_fix).1));
+    // under rules 12 the dropped contact did not count at all (murmur-533)
+    let mut old = cfg();
+    old.rules_version = REVIEW_FOLLOWUPS_SINCE;
+    assert!(passes(&dry_with(&spec, &w, &old).1));
+}
+
+#[test]
+fn an_out_of_view_track_is_said_to_stay_after_its_drop() {
+    let mut w = WorldSnapshot::new(T0);
+    w.areas = Some(areas());
+    w.tracks.insert(TARGET.into(), target(TARGET_AT, [0.0, 0.0]));
+    w.vehicles.insert(uid("viper-1"), ours("magura", toward(TARGET_AT, 180.0, 900.0), T0));
+    let seen = Time(T0.0 - 60_000);
+    let mut boat = contact(seen, toward(TARGET_AT, 0.0, 400.0), Some([0.0, 0.0]), Affiliation::Neutral, Domain::Surface);
+    boat.pos_sigma_m = 70.0;
+    w.tracks.insert("T-0002".into(), boat);
+    let spec = nomination("viper-1");
+    let ex = keepout::explain(&spec, &w, &cfg(), &opts()).unwrap();
+    let item = ex.items.iter().find(|i| i.id == "T-0002").unwrap();
+    let said = item.not_by_waiting.as_deref().unwrap();
+    assert!(said.contains("stays in the keep-out as a lost contact"), "{said}");
+    assert!(!said.contains("no longer counts"), "{said}");
+}
+
+/// murmur-dr6: the grid's margin bounds how far a region's edge can dip between two grid
+/// points of the effect-time scan for anything passing at up to 100 m/s: the worst case is a
+/// straight pass whose closest approach falls midway between them.
+#[test]
+fn the_grid_margin_covers_a_dip_between_grid_points() {
+    let h = SPAN_STEP_MS as f64 / 1000.0;
+    for c in [51.0, 100.0, 275.0, 1000.0, 5200.0] {
+        for v in [10.0, 50.0, 80.0, 100.0] {
+            let at_grid = (c * c + (v * h / 2.0).powi(2)).sqrt();
+            let dip = at_grid - c;
+            assert!(dip <= grid_margin_m(c), "{c} m at {v} m/s: dip {dip}, margin {}", grid_margin_m(c));
+        }
+    }
+    // the review's case: an 80 m/s aircraft grazing a 275 m clearance between grid points
+    // (274.98 m against 275.05 m at the grid points): the margin covers it
+    assert!((grid_margin_m(275.0) - 0.3).abs() < 1e-12);
+    // faster than 100 m/s (an aircraft's reach growing at its top speed head-on to a moving
+    // target): the margin for the speed covers it, where the 100 m/s one would not
+    let h = SPAN_STEP_MS as f64 / 1000.0;
+    for (c, v) in [(51.0, 150.0), (275.0, 200.0), (275.0, 400.0)] {
+        let dip = (c * c + (v * h / 2.0_f64).powi(2)).sqrt() - c;
+        assert!(dip <= keepout::grid_margin_for(c, v), "{c} m at {v} m/s");
+        assert!(dip > grid_margin_m(c) || v <= 150.0, "{c} m at {v} m/s: the fixed margin would not cover it");
+    }
+}
+
+/// The review of murmur-dr6: the scan sizes its margin from the picture's fastest relative
+/// motion and says so; with an aircraft about, more than 100 m/s.
+#[test]
+fn the_grid_margin_is_sized_for_the_picture() {
+    let mut w = WorldSnapshot::new(T0);
+    w.areas = Some(areas());
+    w.tracks.insert(TARGET.into(), target(TARGET_AT, [0.0, 0.0]));
+    w.vehicles.insert(uid("viper-1"), ours("magura", toward(TARGET_AT, 180.0, 900.0), T0));
+    let spec = nomination("viper-1");
+    // a boat in view near the target: surface speeds only
+    w.tracks.insert(
+        "T-0002".into(),
+        contact(T0, toward(TARGET_AT, 0.0, 300.0), Some([0.0, 0.0]), Affiliation::Neutral, Domain::Surface),
+    );
+    let ex = keepout::explain(&spec, &w, &cfg(), &opts()).unwrap();
+    let mw = ex.move_within.as_ref().expect("blocked");
+    assert!(mw.grid_speed_mps < 100.0 && mw.grid_margin_m >= 0.3, "{} m/s, {} m", mw.grid_speed_mps, mw.grid_margin_m);
+    // and an aircraft: its reach grows at 100 m/s and more
+    w.tracks.insert(
+        "T-0003".into(),
+        contact(T0, toward(TARGET_AT, 90.0, 3_000.0), Some([-50.0, 0.0]), Affiliation::Neutral, Domain::Air),
+    );
+    let ex = keepout::explain(&spec, &w, &cfg(), &opts()).unwrap();
+    let mw = ex.move_within.as_ref().expect("blocked");
+    assert!(mw.grid_speed_mps > 100.0, "{} m/s", mw.grid_speed_mps);
+    assert!((mw.grid_margin_m - keepout::grid_margin_for(ex.clearance_m, mw.grid_speed_mps)).abs() < 0.01);
+    assert!(ex.assumptions.contains(&format!("up to {:.0} m/s relative to the effect point", mw.grid_speed_mps)), "{}", ex.assumptions);
 }

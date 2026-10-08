@@ -270,7 +270,16 @@ pessimistic sensor case, with the full tables) and `all` (every sensor it carrie
 measures no height, it is plotted at its slant range and the tracker reads the bearing line:
 murmur-oho), and the live run's question under every
 tracker (`live`, `live-all`, `live-ais`, `live-model`, and `live2*` with the circling boat
-within 2 km). `eval.run keepout` builds the probe (`cargo build --release
+within 2 km), and (rules 16, murmur-533) contacts going out of sensor view, `oov`, `oov-all`
+and `oov-near` (rules 14 against 16: a contact masked from a time before the nomination, its
+track dropped by the bridge's tracker after 180 s unseen, a quarter of those speeding up after
+the drop; each evaluation also decided with the lost contacts accepted, held 600 s, counted
+only near the effect point, at their own speed bound (`own_speed`), by a live track's regions
+alone (`heading`), or with the live tracks out of view by their course (`stale_course`);
+`keepout.lost_summary`, the report's "Out of view" tables). What the lost contacts of a run ask
+of an operator (how many in force, how many to accept per nomination, over two hours, by loss
+rate and density) is `python -m eval.lost_burden` (a model on the same field and probe).
+`eval.run keepout` builds the probe (`cargo build --release
 -p murmur-keepout-probe`, a no-op when current), runs each variant on half the CPUs into
 `keepout/<variant>/` (`records.jsonl.gz`, one line per evaluation, and `summary.json`), writes
 the combined `keepout/summary.json` with the sensitivity table, and builds the report. Every
@@ -280,6 +289,7 @@ batch runs `radar` and `model` small (`--keepout-seeds`, `--keepout-situations`,
 ```
 .venv/bin/python -m eval.run keepout --seeds 1 2 3 4 5 6 7 8 9 10 --situations 100   # every variant, about 16 minutes
 .venv/bin/python -m eval.run keepout --variants radar model --densities 0.1 --behaviours circling mixed --tte-s 60 120 180
+.venv/bin/python -m eval.run keepout --variants oov oov-all oov-near --situations 300            # out of view, about a minute
 ```
 
 Model results from simulated geometry, never human or field data: the densities, behaviours,

@@ -95,6 +95,15 @@ pub struct AcceptedVehicle {
     pub since: Option<Time>,
 }
 
+/// Rules 16: a lost contact an acceptance names (as `engage.accepted` does): the track id it
+/// was dropped under and its last fix.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptedContact {
+    pub track: String,
+    pub since: Time,
+}
+
 /// What a passkey assertion authorizes: hashed into its challenge, logged with it, and
 /// compared by the engine (and replay) with the act that quotes the step-up.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,6 +127,9 @@ pub enum StepUpFor {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         intent: Option<IntentId>,
         vehicles: Vec<AcceptedVehicle>,
+        /// Rules 16: and lost contacts (absent when none).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        contacts: Vec<AcceptedContact>,
     },
     /// Declaring a track hostile.
     DeclareHostile { track: String },
@@ -137,13 +149,25 @@ impl StepUpFor {
     /// An acceptance of lost vehicles (`intent` None: with its nomination), the vehicles in
     /// order.
     pub fn accepting(intent: Option<IntentId>, vehicles: &[(Uid, Option<Time>)]) -> StepUpFor {
+        Self::accepting_lost(intent, vehicles, &[])
+    }
+
+    /// Rules 16: an acceptance of lost vehicles and lost contacts (`(track, since)`), each in
+    /// order.
+    pub fn accepting_lost(intent: Option<IntentId>, vehicles: &[(Uid, Option<Time>)], contacts: &[(String, Time)]) -> StepUpFor {
         let mut v: Vec<AcceptedVehicle> = vehicles
             .iter()
             .map(|(uid, since)| AcceptedVehicle { uid: uid.clone(), since: *since })
             .collect();
         v.sort();
         v.dedup();
-        StepUpFor::AcceptUnknown { intent, vehicles: v }
+        let mut c: Vec<AcceptedContact> = contacts
+            .iter()
+            .map(|(track, since)| AcceptedContact { track: track.clone(), since: *since })
+            .collect();
+        c.sort();
+        c.dedup();
+        StepUpFor::AcceptUnknown { intent, vehicles: v, contacts: c }
     }
 
     /// A short description for messages.
@@ -152,6 +176,20 @@ impl StepUpFor {
             StepUpFor::Login => "a login".into(),
             StepUpFor::Sign { intent, token: Some(t), .. } => format!("a signature on {intent} (picture token {t})"),
             StepUpFor::Sign { intent, .. } => format!("a signature on {intent}"),
+            // rules 16: naming the lost contacts and the fix each is accepted since (two such
+            // acceptances differ only there)
+            StepUpFor::AcceptUnknown { intent, vehicles, contacts } if !contacts.is_empty() => {
+                let names: Vec<String> = contacts.iter().map(|c| format!("{} since t={}", c.track, c.since.0)).collect();
+                let what = if vehicles.is_empty() {
+                    format!("lost contacts {}", names.join(", "))
+                } else {
+                    format!("lost vehicles and lost contacts {}", names.join(", "))
+                };
+                match intent {
+                    Some(i) => format!("an acceptance of {what} for {i}"),
+                    None => format!("an acceptance of {what} with a nomination"),
+                }
+            }
             StepUpFor::AcceptUnknown { intent: Some(i), .. } => format!("an acceptance of lost vehicles for {i}"),
             StepUpFor::AcceptUnknown { .. } => "an acceptance of lost vehicles with a nomination".into(),
             StepUpFor::DeclareHostile { track } => format!("declaring {track} hostile"),

@@ -1446,9 +1446,9 @@ async fn login_passkey_options(State(auth): State<Arc<Auth>>, body: Bytes) -> Re
 /// to step up by passkey for one act, its challenge derived from it: `{"act": "sign",
 /// "intent": n, "token": t}` (an engagement's signature quotes its picture token), `{"act":
 /// "declare_hostile", "track": id}`, `{"act": "confirm_declaration", "track": id}`, `{"act":
-/// "accept_unknown", "intent": n or null, "accept_unknown": [{"uid", "since"}]}`, `{"act":
-/// "unspend", "uid": n}` (rules 15). The act's request then carries the assertion as
-/// `"passkey"`.
+/// "accept_unknown", "intent": n or null, "accept_unknown": [{"uid", "since"}], "accept_lost":
+/// [{"track", "since"}]}` (lost contacts, rules 16), `{"act": "unspend", "uid": n}` (rules 15).
+/// The act's request then carries the assertion as `"passkey"`.
 async fn step_up_options(State(auth): State<Arc<Auth>>, headers: HeaderMap, body: Bytes) -> Response {
     #[derive(Deserialize)]
     struct B {
@@ -1461,6 +1461,9 @@ async fn step_up_options(State(auth): State<Arc<Auth>>, headers: HeaderMap, body
         track: Option<String>,
         #[serde(default)]
         accept_unknown: Vec<crate::decision::engage::AcceptUnknown>,
+        /// rules 16: lost contacts accepted with it
+        #[serde(default)]
+        accept_lost: Vec<crate::decision::engage::AcceptLost>,
         #[serde(default)]
         uid: Option<crate::vehicle::Uid>,
     }
@@ -1483,14 +1486,16 @@ async fn step_up_options(State(auth): State<Arc<Auth>>, headers: HeaderMap, body
         },
         "declare_hostile" => track().map(|track| murmur_decide::StepUpFor::DeclareHostile { track }),
         "confirm_declaration" => track().and_then(|t| auth.decision.confirm_purpose(&t)),
-        "accept_unknown" if !b.accept_unknown.is_empty() => Ok(auth.decision.accept_purpose(b.intent, &b.accept_unknown)),
+        "accept_unknown" if !b.accept_unknown.is_empty() || !b.accept_lost.is_empty() => {
+            Ok(auth.decision.accept_purpose(b.intent, &b.accept_unknown, &b.accept_lost))
+        }
         "unspend" => match b.uid {
             Some(u) => auth.decision.unspend_purpose(u),
             None => Err(DecisionError::new(422, "an un-spend names its vehicle (uid)")),
         },
         other => Err(DecisionError::new(
             422,
-            format!("act {other:?}: sign, declare_hostile, confirm_declaration, accept_unknown (with its vehicles) or unspend (with its uid)"),
+            format!("act {other:?}: sign, declare_hostile, confirm_declaration, accept_unknown (with its vehicles or contacts) or unspend (with its uid)"),
         )),
     };
     match purpose.and_then(|p| auth.issue(actor.operator(), Some(session), p)) {

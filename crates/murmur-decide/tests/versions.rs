@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 45] = [
+const LOGS: [(&str, u32); 52] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -143,13 +143,27 @@ const LOGS: [(&str, u32); 45] = [
     ("v15-engagement-scenario-01.jsonl", CARRY_FOLLOWUPS_SINCE),
     ("v15-spent-munition-unspent-scenario-84.jsonl", CARRY_FOLLOWUPS_SINCE),
     ("v15-nomination-refused-while-a-carry-may-owe-scenario-85.jsonl", CARRY_FOLLOWUPS_SINCE),
+    // rules 16 (lost contacts, murmur-533 and its reviews; the table names the constant; a clean
+    // build of 75c505b, rules 15 merged): the same scenario; scenario 86, a fishing boat dropped by the tracker by
+    // the target, still blocking; 87, accepted at the nomination; 88, an accepted tour boat seen
+    // again by its AIS under a new track id, its claim confirmed, the live track aborting the
+    // engagement; 90, accepted while the nomination waits; 93, a spoofed AIS's claim confirmed,
+    // then void
+    ("v16-engagement-scenario-01.jsonl", LOST_CONTACT_SINCE),
+    ("v16-lost-contact-blocks-scenario-86.jsonl", LOST_CONTACT_SINCE),
+    ("v16-lost-contact-accepted-scenario-87.jsonl", LOST_CONTACT_SINCE),
+    ("v16-lost-contact-reappears-scenario-88.jsonl", LOST_CONTACT_SINCE),
+    ("v16-lost-contact-accepted-waiting-scenario-90.jsonl", LOST_CONTACT_SINCE),
+    ("v16-lost-contact-claimed-by-a-spoof-scenario-93.jsonl", LOST_CONTACT_SINCE),
+    // and a live run with its anchors (see the test below)
+    ("v16-lost-contacts-live.jsonl", LOST_CONTACT_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v15-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v16-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -1281,9 +1295,11 @@ const L15_CRASH_2: (&str, &str) = ("v15-carry-live-crash-2.jsonl", "20261008T012
 const L15_CLEAN: (&str, &str) = ("v15-carry-live-clean.jsonl", "20261008T013234Z-2069100.jsonl");
 const L15_FALLBACK: &str = "v15-carry-live-fallback.jsonl";
 
-/// Replay options carrying `logs` (each earlier log's name as the start recorded it, its text).
+/// Replay options carrying `logs` (each earlier log's name as the start recorded it, its text),
+/// accepting rules 15 (the live logs' own).
 fn carrying<'a>(logs: &'a [(&'a str, &'a str)]) -> ReplayOptions<'a> {
     ReplayOptions {
+        rules: RulesAccepted::Exactly(CARRY_FOLLOWUPS_SINCE),
         carried_logs: logs,
         ..ReplayOptions::default()
     }
@@ -1303,7 +1319,7 @@ fn the_rules_15_live_logs_carry_a_spent_mark_an_unspend_and_a_fallback() {
         assert!(a.ok() && a.shutdown, "{name}: {:?}", a.problems);
     }
     // each replays against the one it carried from, every build clean
-    let r1 = replay_str(&c1).unwrap();
+    let r1 = with(&c1, RulesAccepted::Exactly(CARRY_FOLLOWUPS_SINCE));
     assert!(r1.ok(), "{:?}", r1.mismatches);
     assert_eq!(r1.build.as_ref().map(|b| b.dirty), Some(Some(false)));
     let spent1 = murmur_decide::replay::owed_debts(&c1).spent;
@@ -1395,6 +1411,7 @@ fn the_rules_15_live_logs_carry_a_spent_mark_an_unspend_and_a_fallback() {
     let r = replay_str_with(
         &fb,
         &ReplayOptions {
+            rules: RulesAccepted::Exactly(CARRY_FOLLOWUPS_SINCE),
             carried_logs: &logs_other,
             trust_resumed: true,
             ..ReplayOptions::default()
@@ -1635,4 +1652,83 @@ fn a_rules_13_log_claiming_rules_12_still_carries_its_answers_times() {
         w.iter().any(|m| m.contains("when a space answer was computed") && m.contains(&format!("only builds of rules {now}"))),
         "{w:?}"
     );
+}
+
+/// Rules 16: the committed logs carry the lost contacts as the engine kept them: a drop, an
+/// acceptance naming the contact, a claim on its AIS and an operator's confirmation of it, a
+/// confirmation void; and claimed as rules 15 (the version before), a log with any of them is
+/// caught by its markers.
+#[test]
+fn the_rules_16_logs_carry_lost_contacts_and_cannot_claim_rules_15() {
+    let blocks = fixture("v16-lost-contact-blocks-scenario-86.jsonl");
+    assert!(blocks.contains("\"type\":\"track.dropped\",\"track\":\"T-0002\""));
+    assert!(blocks.contains("lost contact T-0002 (neutral, fishing_vessel) could be"), "the check names it");
+    let r = replay_str(&blocks).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!(r.lost_contacts, 1);
+    let accepted = fixture("v16-lost-contact-accepted-scenario-87.jsonl");
+    assert!(accepted.contains("\"type\":\"engage.accepted\",\"intent\":1,\"contact\":\"T-0002\""));
+    assert!(accepted.contains("\"lost_accepted\":{\"T-0002\""));
+    let back = fixture("v16-lost-contact-reappears-scenario-88.jsonl");
+    assert!(back.contains("\"type\":\"lost.claimed\",\"track\":\"T-0002\",\"by_track\":\"T-0005\""));
+    assert!(back.contains("\"type\":\"track.reacquired\",\"track\":\"T-0002\",\"by_track\":\"T-0005\",\"by\":\"op-2\""));
+    let spoof = fixture("v16-lost-contact-claimed-by-a-spoof-scenario-93.jsonl");
+    assert!(spoof.contains("\"type\":\"lost.reinstated\",\"track\":\"T-0002\",\"by_track\":\"T-0009\""));
+    let r = replay_str(&spoof).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!((r.lost_claims, r.lost_confirmed, r.lost_reinstated), (1, 1, 1));
+    for (name, text) in [("86", &blocks), ("87", &accepted), ("88", &back), ("93", &spoof)] {
+        let mut ls = lines(text);
+        let now = format!("\"rules_version\":{LOST_CONTACT_SINCE},");
+        assert!(ls[0].contains(&now), "{name}");
+        ls[0] = ls[0].replacen(&now, &format!("\"rules_version\":{CARRY_FOLLOWUPS_SINCE},"), 1);
+        let r = with(&rechain(&ls), RulesAccepted::Exactly(CARRY_FOLLOWUPS_SINCE));
+        assert!(
+            whats(&r).iter().any(|w| w.contains("a track the tracker dropped") || w.contains("lost contacts in decision inputs")),
+            "{name}: {:?}",
+            whats(&r)
+        );
+    }
+}
+
+/// Rules 16, live (a clean build of 75c505b, rules 15 merged; stand-ins of the engage demo at the
+/// Gate, `sim/scenarios/golden-gate-lost.toml`, a dev run on a fresh station), anchored as it ran:
+/// a fishing boat 400 m north of where the fast boat holds and a tour boat on AIS go out of view
+/// at 4 minutes. Unseen 100 s and not yet dropped, they block op-1's nomination by their
+/// out-of-view reach (the review's item 4: "out of view (no detection for 100 s)"); the tracker
+/// drops both 180 s after their last fix (`track.dropped`, the tour boat's with its AIS); op-1's
+/// nomination is rejected on a lost contact, then nominated again accepting both
+/// (`engage.accepted` naming each), shown to op-2 and op-3 on their picture tokens, signed and
+/// dispatched; the tour boat comes back into view under its AIS as a new track, 300 m from its
+/// last fix and about 1 km from the effect point, a claim for review (`lost.claimed`, nothing
+/// against it); the effect is released (the new track clear of the keep-out, the lost tour boat
+/// accepted for this engagement) and the assessment ends it `done`. Then, with the switchblade
+/// spent and still heard (rules 15's SPENT, STILL HEARD alert) beside the open claim in the
+/// inbox, op-1 confirms the claim (`track.reacquired` under op-1's session), the fishing boat
+/// still lost. A clean stop. The start names the station's pointer (rules 15's `pointer`) and the
+/// tracker's drop age (`track_drop_s`), which every drop is held to.
+#[test]
+fn the_rules_16_live_log_holds_lost_contacts_until_accepted_or_confirmed() {
+    let name = "v16-lost-contacts-live.jsonl";
+    let text = fixture(name);
+    let a = anchor::verify(&text, &anchors_of(name));
+    assert!(a.ok() && a.shutdown, "{:?}", a.problems);
+    let r = replay_str(&text).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
+    assert_eq!((r.lost_contacts, r.lost_claims, r.lost_confirmed), (2, 1, 1));
+    assert_eq!(text.matches("\"type\":\"track.dropped\"").count(), 2);
+    assert!(text.contains("out of view (no detection for"), "a nomination blocked before the drop");
+    assert!(text.contains("could be") && text.contains("lost contact T-"), "rejected on a lost contact");
+    assert_eq!(text.matches("\"type\":\"engage.accepted\"").count(), 2);
+    assert!(text.contains("\"type\":\"lost.claimed\""));
+    assert!(text.contains("\"type\":\"track.reacquired\"") && text.contains("\"by\":\"op-1\",\"session\":"));
+    assert!(text.contains("\"type\":\"engage.effect\"") && text.contains("assessed ceased"), "released and assessed");
+    let claimed = text.find("\"type\":\"lost.claimed\"").unwrap();
+    let confirmed = text.find("\"type\":\"track.reacquired\"").unwrap();
+    let assessed = text.find("\"type\":\"engage.assessed\"").unwrap();
+    assert!(claimed < assessed && assessed < confirmed, "claimed, assessed, then confirmed");
+    // a v16 log carries rules 15's too: the station's pointer in its first line; and the drop age
+    assert!(lines(&text)[0].contains("\"pointer\":\".last-run-"), "rules 15's pointer");
+    assert!(lines(&text)[0].contains("\"track_drop_s\":180"), "the tracker's drop age");
 }

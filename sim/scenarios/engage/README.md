@@ -68,6 +68,18 @@ The effect is an abstract event: a point, a radius, a time. Nothing here models 
   sign it. Result fields: `ident_reports`
   (one line per identification event), `ident` (each with the truth behind it: the track's
   `truth`, the act's real author), as `eval/ident.py` reads them.
+- Rules 16: a `drop_track` step is the tracker's drop (as the bridge's after 180 s without a
+  detection; the run logs that age, `run.started`'s `track_drop_s`, and on a clock that steps
+  back a step that comes sooner by the run's clock waits until it has passed; one still
+  waiting at the end, a track that never went silent or not long enough, fails the run): the engine is
+  handed the track's facts then and its AIS (`track.dropped`) and the runner stops carrying it; every second the runner also calls `Engine::step_lost` (a
+  track carrying a lost contact's MMSI raises a claim, `lost.claimed`; a confirmation the
+  picture no longer bears out is reinstated, `lost.reinstated`), as the bridge's loop does; a
+  `confirm_claim` step is an operator's confirmation (`track.reacquired`). A track whose
+  `silent` step is 10 s or more old counts at its domain's top speed from its last fix
+  (`engage::OUT_OF_VIEW_S`). Result fields: `claimed` (`t=<s> T-0005 claims to be T-0002`,
+  with what blocks it), `reacquired` (`t=<s> T-0002 is T-0005 again, confirmed by op-2`),
+  `reinstated` (`t=<s> T-0002 counts again: why`).
 
 ## Format
 
@@ -96,7 +108,10 @@ tamper = "suppress_void"         # optional log attack replay must catch: propos
                                  # confirm_in_inputs,
                                  # and rules 12: drop_first_seen, drop_expended_fact,
                                  # drop_standing_clause, write_off_by_another,
-                                 # and rules 15: unspend_without_authority, drop_may_owe_fact
+                                 # and rules 15: unspend_without_authority, drop_may_owe_fact,
+                                 # and rules 16: hide_lost_contact, drop_track_dropped,
+                                 # forge_lost_acceptance, hide_reinstatement,
+                                 # confirm_by_agent, move_drop, redrop
                                  # (one with nothing to edit in a run's log reports "not
                                  # applicable")
 end_s = 120                      # seconds to run (default: the last step + 10)
@@ -122,6 +137,11 @@ expect_closed = ["expended by its own effect"]   # rules 12, optional: debts clo
 expect_nothing_owed = true       # rules 12, optional: nothing owed back when the log ends
 expect_unspent = ["un-spent by op-2"]   # rules 15, optional: platforms un-spent that replay
                                  # lists (`unspent`), in order
+expect_reacquired = ["T-0002 is T-0005 again"]   # rules 16, optional: lost contacts an
+                                 # operator confirmed as a live track, in order
+                                 # (expect_none_reacquired = true: none)
+expect_claimed = ["T-0005 claims to be T-0002"]  # rules 16, optional: claims raised, in order
+expect_reinstated = ["T-0002 counts again"]      # rules 16, optional: confirmations void
 # policy, catalog, areas = "path"  # optional, relative to the repo (defaults: sim/...)
 
 [[carried]]                      # rules 15, optional: an earlier log whose carry failed at
@@ -171,6 +191,8 @@ no_velocity_estimate = false     # rules 6: the tracker has no velocity for it y
 alt_age_s = 0                    # rules 6: its altitude was last ranged this long before the
                                  # start and never again (the radar lost it; the others keep
                                  # its position fresh); sources radar and ais are the ranging ones
+ais = { mmsi = "366999501", name = "MV BAY TOUR", ship_type = "passenger" }   # rules 16,
+                                 # optional: the AIS identity its contact broadcasts
 tracked_s = 600                  # rules 12, optional: the tracker started it this long before
                                  # the start (`first_seen_t`); it has an average velocity once
                                  # tracked 45 s with a velocity, and until then it is young
@@ -195,9 +217,12 @@ Actions (each `[[step]]` has `at_s` and `action`):
 | `revoke_declaration` | `by`, `track`, `note` | rules 9: an operator revokes the declaration in force; the engagements on the track stop first |
 | `resolve_flag` | `by`, `track`, `flag` (optional: its number; default the newest on the track), `resolution` (`confirmed`, `dismissed`) | rules 9: an operator resolves a review flag |
 | `agent_declare` | `agent`, `track` | rules 9: an agent "tries" to declare: its port has no such method; recorded, nothing may change |
-| `nominate` | `by` or `agent` (+ `rationale`), `platform`, `track`, `radius_m`, `fallback` (`abort`, `return`, `loiter`), `window_s`, `accept` (rules 6: vehicles the operator accepts as lost, each since its last report) | a nomination; becomes "the last nomination" the other steps act on |
-| `accept` | `by`, `uid`, `since_s` (optional: another report than the last, which the engine refuses) | rules 6: an operator with engagement authority accepts a lost vehicle for the last nomination while it waits with no signature (without it: refused) |
-| `revoke` | `by`, `uid` | rules 6: any operator withdraws an acceptance from the last nomination (pending or under way) |
+| `nominate` | `by` or `agent` (+ `rationale`), `platform`, `track`, `radius_m`, `fallback` (`abort`, `return`, `loiter`), `window_s`, `accept` (rules 6: vehicles the operator accepts as lost, each since its last report), `accept_lost` (rules 16: lost contacts the operator accepts, each since its last fix) | a nomination; becomes "the last nomination" the other steps act on |
+| `accept` | `by`, `uid` or (rules 16) `track`, `since_s` (optional: another report or fix than the last, which the engine refuses) | rules 6: an operator with engagement authority accepts a lost vehicle (rules 16: a lost contact) for the last nomination while it waits with no signature (without it: refused) |
+| `revoke` | `by`, `uid` or (rules 16) `track` | rules 6: any operator withdraws an acceptance from the last nomination (pending or under way) |
+| `drop_track` | `track` | rules 16: the tracker drops it (its facts and AIS now go to the engine, `track.dropped`); from then on it is a lost contact |
+| `confirm_claim` | `by`, `track` (the lost contact), `by_track` (the live track claiming to be it) | rules 16: an operator confirms a claim on a lost contact (refused while anything contradicts it) |
+| `agent_confirm` | `agent`, `track` | rules 16: an agent "tries" to confirm a claim: its port has no such method; recorded, nothing may move |
 | `agent_accept` | `agent`, `uid` | an agent "tries" to accept a lost vehicle: its port has no such method; recorded, nothing may move |
 | `look` | `by` | an operator with engagement authority asks for the picture (a picture token: the plan and the track now); their next `approve` quotes it |
 | `approve` | `by` | a signature: through `approve_engagement` if the session has engagement authority (quoting the token from their last `look`, or one asked for now), else `approve` (which the engine refuses for an engagement) |
@@ -207,7 +232,7 @@ Actions (each `[[step]]` has `at_s` and `action`):
 | `reject` | `by` | an operator rejects it |
 | `abort` | `by` | any operator stops it; the fallback is commanded |
 | `agent_approve` | `agent` | an agent "tries" to approve: there is no such method on its port, so it is recorded and the intent must not move |
-| `track` | `id` and any of `at`, `velocity`, `affiliation`, `declared_by`, `undeclare`, `identity`, `identity_confidence`, `sigma_m`, `domain`, `silent`, `velocity_error`, `alt_m`, `tracked_s` | a track changes (or appears); `velocity` is how the contact really moves, `velocity_error` how far the tracker's estimate is off it; `tracked_s` (rules 12) when one this step makes was started (0: a new track) |
+| `track` | `id` and any of `at`, `velocity`, `affiliation`, `declared_by`, `undeclare`, `identity`, `identity_confidence`, `sigma_m`, `domain`, `silent`, `velocity_error`, `alt_m`, `tracked_s`, `ais` (rules 16) | a track changes (or appears); `velocity` is how the contact really moves, `velocity_error` how far the tracker's estimate is off it; `tracked_s` (rules 12) when one this step makes was started (0: a new track) |
 | `write_off` | `by`, `uid` or `log`, `note` | rules 12: an operator writes off the lost-link values owed back to one of our vehicles, saying why (`restore.closed`); rules 15: or an earlier log whose carry failed (`log`) |
 | `unspend` | `by`, `uid`, `note` | rules 15: an operator with engagement authority un-spends a platform spent by its own effect, saying why (`platform.unspent`), once the engagement that spent it ended and it was heard after that and is not silent; without engagement authority it is refused (a scenario has no credentials: no step-up) |
 | `vehicle` | `uid` and any of `at`, `velocity`, `silent`, `report_interval_ms`, `nav` (`gnss`, `dead_reckoning`), `gps_fix` (3: a 3D fix), `gps_glitch`, `circling`, `reported_circle`, `alt_m` | one of ours changes; `silent` cuts its link (both ways: it hears no GCS either) |
@@ -305,3 +330,12 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess).
 | 83-aircraft-may-turn-back | keep_out_tracks | rules 14 (murmur-oho): a light aircraft 2 km north of the effect point, flying north at 50 m/s on a steady course (an average velocity, no manoeuvre seen), its height not ranged | rejected (keep_out_tracks: an aircraft may turn or speed up at any moment), then, 12 km out, the same nomination waits for its signers; rules 13 let the first through (`--rules 13`) |
 | 84-spent-munition-unspent | restore_owed | rules 15: 80, then op-1 (no engagement authority) asks to un-spend the switchblade, op-2 un-spends it saying why, its engagement ended (assessed) and the munition still reporting; the un-spend credited to op-1's session in the log | done (ceased); the first orbit rejected (spent), op-1's un-spend refused, op-2's taken: its own values owed again, the next orbit queued for the restore and sent when it confirms, nothing owed at the end; tamper caught |
 | 85-nomination-refused-while-a-carry-may-owe | fallback_preload | rules 15: a failed carry at the start whose fleet named the USV; a nomination on it; the fact dropped from the refused decision in the log | rejected (fallback_preload: the log may owe it its values) until op-1 writes the log off, then the same nomination signed, dispatched and aborted, its values restored; tamper caught |
+| 86-lost-contact-blocks | keep_out_tracks | rules 16: a fishing boat 400 m from the target goes out of view and is dropped by the tracker before the nomination; the lost contact cut from every decision in the log | rejected (keep_out_tracks: the lost contact, since when, may be accepted; `--rules 15`, the version before, waits for its signers); tamper caught |
+| 87-lost-contact-accepted | keep_out_tracks | rules 16: the nominating operator accepts 86's lost contact for the engagement; the tracker's drop cut from the log | done (ceased); tamper caught |
+| 88-accepted-lost-contact-reappears | keep_out_tracks | rules 16: an accepted lost tour boat (AIS) is seen again 150 m from the effect point under a new track id; its claim confirmed by op-2; the acceptance credited to an agent in the log | claimed (`T-0005 claims to be T-0002`), confirmed, aborted (keep_out_tracks: the live track, confirmed or not), fallback; tamper caught |
+| 89-lost-contact-acceptance-needs-authority | keep_out_tracks | rules 16: op-4 (no engagement authority) accepts a lost contact for a waiting nomination, and nominates accepting it; the drop's last fix moved 6 km in the log | both refused; voided at the next signature (keep_out_tracks: the lost contact's grown reach); tamper caught (the drop's fix differs from the one the nomination had seen) |
+| 90-forged-lost-contact-acceptance | keep_out_tracks | rules 16: an acceptance given while the nomination waits, then re-dated in the log to name a fix a minute later than the contact's last, everywhere it appears | done (ceased); tamper caught (not lost since that fix; the checks no longer follow) |
+| 91-lost-contact-turns | keep_out_tracks | rules 16: a ferry 600 m from the target, last seen steaming away at 5 m/s, goes out of view and is dropped; its course alone clears the keep-out by the effect; the drop logged twice | rejected (keep_out_tracks: anywhere at 25 m/s, its domain's top speed: it may have turned back or sped up; `--rules 15` waits for its signers); tamper caught (an id dropped twice) |
+| 92-out-of-view-before-the-drop | keep_out_tracks | rules 16, the review's case: 91's ferry, nominated 5 s and 170 s after it went out of view, before the tracker drops it | the first waits for its signers (in view: its course), the second rejected (keep_out_tracks: out of view, no detection for 169 s, anywhere at 25 m/s); `--rules 15` waits for its signers |
+| 93-claimed-by-a-spoof | keep_out_tracks | rules 16, the review's spoof probe: a track carrying a lost tour boat's MMSI appears 1.9 km from the target 10 min on; an agent tries to confirm it; op-2 confirms it; it turns suspect after dispatch; the reinstatement cut from the log | the first nomination rejected (the claim unconfirmed), the agent's attempt recorded, confirmed, signed and dispatched, then reinstated (`T-0002 counts again: T-0009 is suspect`) and aborted (keep_out_tracks: the lost contact), fallback; tamper caught |
+| 94-claim-confirmed-by-an-operator | keep_out_tracks | rules 16: a claim on a lost contact confirmed by op-3 after an agent's attempt; the confirmation credited to an agent in the log | done (ceased); tamper caught (not the operator's session) |

@@ -288,6 +288,7 @@ pub mod ident;
 pub mod ids;
 pub mod intent;
 pub mod keepout;
+pub mod lost;
 pub mod passkey;
 pub mod policy;
 pub mod queue;
@@ -320,7 +321,7 @@ pub use engage::{
     StopRecord, TrackIdentity, VehicleIdentity,
 };
 pub use engine::{
-    ActOutcome, AgentPort, Dequeued, DispatchOrder, Engine, EngineError, IdentOutcome, Order,
+    ActOutcome, AgentPort, Dequeued, DispatchOrder, Engine, EngineError, IdentOutcome, LostStep, Order,
     PREPARED_SPACE_MAX_AGE_MS, PlatformRestoreReport, PreloadReport, PreparedSpace, Preview,
     Routed, SpaceRecheck, StartCarry, StepOutcome, TaskOutcome, WriteOff, prepare_space,
     prepare_space_at,
@@ -331,6 +332,7 @@ pub use ident::{
     FlagKind, FlagResolution, FlagStatus, IdentConfig, IdentInputs, RuleEvidence,
 };
 pub use ids::{AgentId, IntentId, OperatorId, SessionId, Uid};
+pub use lost::{Claim, Confirmed, LostContact, LostLedger};
 pub use intent::{
     Constraints, IllegalTransition, Intent, IntentSpec, Proposal, ProposalError, Rationale, Source,
     State, Targets, Task, TaskKind, Transition, next_state,
@@ -349,7 +351,7 @@ pub use queue::{
 };
 pub use route::{LegKind, Route, Segment};
 pub use rules::{
-    AIRCRAFT_REACH_SINCE, CARRY_FOLLOWUPS_SINCE, CheckResult, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
+    AIRCRAFT_REACH_SINCE, CARRY_FOLLOWUPS_SINCE, CheckResult, LOST_CONTACT_SINCE, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
     QUEUE_FOLLOWUPS_SINCE, REVIEW_FOLLOWUPS_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_VERSION,
     RuleId, RulesConfig, SPACE_FOLLOWUPS_SINCE, SPACE_REPLAY_SINCE, STEP_UP_SCHEMA_SINCE, UnknownEndurance,
 };
@@ -361,6 +363,6 @@ pub use space::{
 pub use terrain::{NearSample, NoTerrain, PolygonTerrain, Surface, TerrainOracle};
 pub use time::{Clock, ManualClock, SystemClock, Time};
 pub use world::{
-    Affiliation, Circle, CircleSource, Fact, GpsFixFrom, LoggedInputs, Manoeuvre, LoggedSpace, SpaceInputs, TerrainInputs, TrackFacts,
+    AisIdentity, Affiliation, Circle, CircleSource, Fact, GpsFixFrom, LoggedInputs, Manoeuvre, LoggedSpace, SpaceInputs, TerrainInputs, TrackFacts,
     VehicleFacts, WorldSnapshot,
 };

@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
+import { stepsUpAct } from './auth'
 import type { Check } from './decisions'
-import { useOperator } from './decisions'
-import { engageOptions, FALLBACK_LABEL, fmtDist, fmtRel, KEEP_OUT_KIND_LABEL, nominate, type EngageOption, type EngagePreview, type Fallback, type KeepOutExplanation } from './engage'
+import { StepUpNeeded, useOperator } from './decisions'
+import { acceptLostBody, engageOptions, FALLBACK_LABEL, fmtDist, fmtRel, KEEP_OUT_KIND_LABEL, nominate, type EngageOption, type EngagePreview, type Fallback, type KeepOutExplanation, type KeepOutLost } from './engage'
 import './engage.css'
 import { KeepOutExplain } from './KeepOutExplain'
+import { StepUpField } from './StepUp'
+import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
 import type { TracksMessage } from './tracks'
 import { kindLabel } from './tracks'
 import type { Vehicle } from './types'
@@ -67,7 +70,29 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
   const [rationale, setRationale] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // why the bridge refused the nomination itself (kept until the next try: the dry run's
+  // refresh clears only its own error)
+  const [refused, setRefused] = useState<string | null>(null)
   const [tick, setTick] = useState(0)
+  // rules 16: the lost contacts the operator accepts with the nomination (by track id)
+  const [acceptLost, setAcceptLost] = useState<Record<string, KeepOutLost>>({})
+  const onAcceptLost = (l: KeepOutLost, on: boolean) =>
+    setAcceptLost((cur) => {
+      const next = { ...cur }
+      if (on) next[l.track] = l
+      else delete next[l.track]
+      return next
+    })
+  // what was accepted goes with the target and the platform it was shown for: a new choice
+  // starts with none ticked
+  useEffect(() => setAcceptLost({}), [track, uid])
+  // rules 8 and 10: in a credentials run whose policy lists accept_unknown, accepting a lost
+  // contact takes the operator's step-up (the password again, or their passkey), as accepting a
+  // lost vehicle of ours does; the bridge refuses the nomination without it
+  const accepting = Object.keys(acceptLost).length > 0
+  const stepUp = accepting && stepsUpAct('accept_unknown')
+  const [step, setStep] = useStepUp()
+  const [stepBad, setStepBad] = useState(false)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
@@ -119,14 +144,23 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
 
   const submit = async () => {
     if (!track || uid == null) return
+    if (stepUp && !stepUpReady(step)) {
+      setStepBad(true)
+      return
+    }
     setBusy(true)
-    setError(null)
+    setRefused(null)
     try {
-      const i = await nominate({ track, uid, radius, windowS, fallback, rationale })
+      const list = Object.values(acceptLost)
+      const proof = stepUp ? await stepUpProof(step, { act: 'accept_unknown', intent: null, accept_lost: acceptLostBody(list) }) : undefined
+      const i = await nominate({ track, uid, radius, windowS, fallback, rationale, acceptLost: list, proof })
+      setStepBad(false)
       onNominated(i.id)
     } catch (e) {
-      setError((e as Error).message)
+      setStepBad(e instanceof StepUpNeeded)
+      setRefused((e as Error).message)
     }
+    setStep({ password: '' })
     setBusy(false)
   }
 
@@ -224,7 +258,33 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
           </div>
         </section>
       )}
-      {chosen?.keep_outs && <KeepOutExplain ex={chosen.keep_outs} name={nameOf(chosen.uid)} now={now} />}
+      {chosen?.keep_outs && (
+        <KeepOutExplain ex={chosen.keep_outs} name={nameOf(chosen.uid)} now={now} acceptLost={acceptLost} onAcceptLost={onAcceptLost} />
+      )}
+      {Object.keys(acceptLost).length > 0 && (
+        <p className="eg-alarm" role="status">
+          You accept {Object.keys(acceptLost).join(', ')} as lost for this engagement: logged under your session with the nomination, shown to every signer, and
+          the checks leave {Object.keys(acceptLost).length > 1 ? 'them' : 'it'} out while out of view since that fix (the dry run above does not).
+        </p>
+      )}
+      {stepUp && (
+        <div className="tk-stepup eg-stepup">
+          <StepUpField
+            passwordLabel={`Consequential: your password to accept ${Object.keys(acceptLost).join(', ')} as lost`}
+            purpose={`to accept ${Object.keys(acceptLost).join(', ')} as lost for this engagement`}
+            ariaLabel="Your password, to accept the lost contacts"
+            value={step}
+            onChange={(s) => {
+              setStep(s)
+              setStepBad(false)
+              setRefused(null)
+            }}
+            busy={busy}
+            bad={stepBad}
+            onEnter={() => void submit()}
+          />
+        </div>
+      )}
 
       <label className="eg-rationale">
         Rationale (optional for an operator; shown to the approvers)
@@ -234,10 +294,11 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
         <button className="ghost" onClick={onClose}>
           Cancel
         </button>
-        <button className="eg-nominate" disabled={busy || !track || uid == null} onClick={submit} title="Creates a nomination in the inbox; nothing moves until two approvers sign">
+        <button className="eg-nominate" disabled={busy || !track || uid == null || (stepUp && !stepUpReady(step))} onClick={submit} title="Creates a nomination in the inbox; nothing moves until two approvers sign">
           Nominate
         </button>
       </footer>
+      {refused && <p className="error ix-error">Not nominated: {refused}</p>}
       {error && <p className="error ix-error">{error}</p>}
     </aside>
   )

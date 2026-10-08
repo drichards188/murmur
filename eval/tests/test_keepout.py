@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from eval import keepout as K
+from eval import keepout_report as R
 
 ORIGIN = (-122.5, 37.81)
 
@@ -315,6 +316,8 @@ def test_the_probe_moves_contacts_as_the_generator_does(probe):
     the generator's does, before, at and after the nomination."""
     rng = random.Random(11)
     ms = [K.motion(k, (rng.uniform(-3000, 3000), rng.uniform(-3000, 3000)), rng)[0] for k in ("stationary", "transiting", "circling", "manoeuvring", "manoeuvring", "manoeuvring", "new")]
+    # rules 16: one that speeds up after it went out of view
+    ms.append(K.Then(ms[2], 100.0, (12.0, -20.0)))
     times = [-950.0, -600.0, -123.4, -0.5, 0.0, 61.0, 299.9, 950.0]
     got = K.motion_check(ms, times, probe)
     for m, row in zip(ms, got):
@@ -475,3 +478,77 @@ def test_a_small_run_is_deterministic_and_versions_only_add_regions(probe, tmp_p
 
     html = build(tmp_path / "a").read_text()
     assert "Keep-outs against engagements" in html and "Model results from simulated geometry" in html and "Perfect knowledge" in html
+
+
+# ---- rules 16: contacts that go out of view (murmur-533) ----------------------------------------
+
+
+def test_out_of_view_contacts_are_tracked_first_then_dropped_and_held(probe):
+    """The oov variants send some contacts out of view (from a time 30 to 900 s before the
+    nomination, tracked a while before), the others' draws as in a variant without; the bridge's
+    tracker drops those unseen 180 s, rules 14 forgets them and rules 16 keeps them; every
+    policy's verdict comes with the evaluation, held blocks at least as often as today and as
+    the course regions alone, and accepting every lost contact gives back today's verdicts."""
+    cruise = K.cruise_speeds()
+    params = K.variant_params("oov", {"tte_s": [60, 180], "dist_m": []})
+    sits = [K.situation(2, 0.3, i, "mixed", params, cruise) for i in range(4)]
+    masked = [(cid, t) for s in sits for cid, t in s["truth"].items() if "masked_from_s" in t]
+    assert masked, "some contacts go out of view"
+    # some speed up after their drop: the truth turns and goes 12 to 25 m/s from then
+    sped = [(cid, t) for cid, t in masked if "speedup" in t]
+    assert sped, "some speed up"
+    for cid, t in sped:
+        su = t["speedup"]
+        assert su["from_s"] >= t["masked_from_s"] + K.DROP_S and 12.0 <= su["mps"] <= 25.0, (cid, t)
+        m = t["motion"]
+        assert math.hypot(*m.vel(su["from_s"] + 1.0)) == pytest.approx(su["mps"], abs=1e-3), (cid, t)
+    for cid, t in masked:
+        assert -900.0 <= t["masked_from_s"] <= -30.0 and t["tracked_s"] >= -t["masked_from_s"] + 60.0, (cid, t)
+    res = K.run_probe([s["probe"] for s in sits], params["rules"], probe)
+    lost = [x for r in res if "tracker" in r for x in r["tracker"]["lost"]]
+    dropped = {cid for cid, t in masked if t["masked_from_s"] <= -(K.DROP_S + 1.0)}
+    assert dropped and dropped <= set(lost), (dropped, lost)
+    by_id = {s["id"]: s for s in sits}
+    for r in res:
+        if "eval" not in r:
+            continue
+        rec = K.record(by_id[r["id"]], r, params)
+        pol = K.lost_policy_blocks(rec)
+        assert pol is not None and not any(x.get("mismatch") for x in rec["rules"].values()), rec
+        assert pol["held"] >= pol["today"] and pol["held"] >= pol["held600"] >= pol["accepted"]
+        # the top speed holds more than the own-speed bound, which holds more than the course
+        assert pol["held"] >= pol["stale_course"] >= pol["own_speed"] >= pol["heading"]
+        # with every lost contact accepted, what is left is the live tracks: out of view ones
+        # held at the top speed, so at least as much as today's
+        assert pol["held"] >= pol["accepted"] >= pol["today"], rec
+    s = K.lost_summary([K.record(by_id[r["id"]], r, params) for r in res if "eval" in r])
+    assert s["counts"]["with_lost"] > 0 and set(s["pooled"]) == set(K.LOST_POLICIES)
+    assert "Out of view" in K.table_lost(s)
+    # the HTML report's table: every policy, in the text's order, and its grid
+    html = R.lost_table({"oov": {"lost": s}})
+    order = [html.find(f">{p}</td>") for p in K.LOST_POLICIES]
+    assert all(i > 0 for i in order) and order == sorted(order), order
+    assert "<th>60 s</th>" in R.lost_grid({"lost": s})
+
+
+def test_the_lost_contacts_of_a_run_pile_up_and_each_needs_an_acceptance(probe):
+    """Rules 16, the review's item 7d (eval/lost_burden.py): the lost contacts in force grow with
+    the time into the run and the loss rate; with no live track but the target, a nomination
+    blocked on tracks passes with every lost contact accepted, and needs each one that reaches
+    the keep-out accepted."""
+    from eval import lost_burden as B
+
+    cruise = K.cruise_speeds()
+    early = B.situation(1, 0.3, 1.2, 15, 0, cruise)
+    late = B.situation(1, 0.3, 1.2, 120, 0, cruise)
+    assert len(late["lost"]) > len(early["lost"]) > 0
+    for f in late["lost"].values():
+        assert f["facts"]["position"]["t"] <= K.T0_MS - int(K.DROP_S * 1000) and f["dropped_t"] <= K.T0_MS
+    s = B.run([1], 1, probe)
+    assert s["errors"] == 0 and s["rows"]
+    for r in s["rows"]:
+        assert r["mismatches"] == 0
+        assert r["accepted_passes"]["k"] == r["n"], r
+    late_rows = [r for r in s["rows"] if r["at_min"] == 120 and r["rate"] == 1.2 and r["density"] == 0.3]
+    assert late_rows and late_rows[0]["blocked"]["k"] == late_rows[0]["n"] and late_rows[0]["to_accept_mean"] > 50
+    assert "Lost contacts over a run" in B.table(s)

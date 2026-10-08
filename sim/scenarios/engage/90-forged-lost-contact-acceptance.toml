@@ -1,0 +1,96 @@
+# Rules 16: op-1 nominates a second after a fishing boat 1.5 km north of the target went out
+# of view (still in view: unseen under 10 s); once the tracker drops it, op-1 (engagement
+# authority) accepts the lost contact while the nomination waits with no signature
+# (`engage.accepted` naming it, since its last fix); op-2 and op-3 are shown the acceptance
+# and sign; the effect is released. Afterwards the acceptance is forged to name a fix a minute
+# later than the contact's last (a smaller region accepted) everywhere it appears: the
+# acceptance, every decision's inputs, every picture token. Replay catches it: the contact was
+# not lost since that fix, and the checks on the forged inputs no longer give the logged
+# results.
+title = "A forged acceptance of a lost contact is caught"
+invariant = "keep_out_tracks"
+attack = "the acceptance of a lost contact re-dated to a later fix everywhere in the log"
+expect = "done"
+expect_assessment = "ceased"
+tamper = "forge_lost_acceptance"
+end_s = 400
+
+[[operator]]
+id = "op-1"
+engage = true
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[track]]
+id = "T-0002"
+at = [-122.4950, 37.8255]   # 1.5 km north of the target
+affiliation = "neutral"
+identity = "fishing_vessel"
+identity_confidence = 0.8
+sources = ["3:radar"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "track"
+id = "T-0002"
+silent = true
+
+[[step]]
+at_s = 2
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 181
+action = "drop_track"
+track = "T-0002"
+
+[[step]]
+at_s = 185
+action = "accept"
+by = "op-1"
+track = "T-0002"
+
+[[step]]
+at_s = 189
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 192
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 193
+action = "expect"
+state = "dispatched"

@@ -202,6 +202,93 @@ impl H {
         assert_eq!(s, StatusCode::OK, "{v}");
     }
 
+    /// Rules 16: [`H::picture`] with a fishing boat 400 m north of the target seen for its first
+    /// 100 s of 400, then out of view: the tracker drops it 180 s later, the decision tick hands
+    /// the drop to the engine (`track.dropped`). Its last fix (engine ms), as an acceptance
+    /// names it.
+    pub(super) async fn picture_with_lost(&self, op1: &str) -> i64 {
+        self.e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+        sleep(Duration::from_millis(500)).await;
+        self.e.r.clock.set(snapshot::ms(clock::wall()));
+        let now = self.e.now_s();
+        let boat = crate::tracks::truth::ContactTruth {
+            id: "fisher".into(),
+            name: "fishing boat".into(),
+            affiliation: crate::tracks::truth::TruthAffiliation::Neutral,
+            domain: crate::tracks::truth::Domain::Surface,
+            kind: "fishing_vessel".into(),
+            lat: TARGET.0 + 400.0 / 111_320.0,
+            lon: TARGET.1,
+            alt_m: 0.0,
+            speed_mps: 0.0,
+            course_deg: 0.0,
+            emits: false,
+            signature: 1.0,
+            ais: None,
+        };
+        for s in 0..400 {
+            let seen: &[crate::tracks::truth::ContactTruth] = if s < 100 { std::slice::from_ref(&boat) } else { &[] };
+            self.e.sense_at_with(now - 400.0 + f64::from(s), true, seen);
+        }
+        self.e.sense_at(now, true);
+        self.e.r.d.tick();
+        assert_eq!(self.e.r.events("track.dropped"), 1, "the boat dropped");
+        let (s, v) = self
+            .post(op1, "/api/tracks/T-0001/declare", json!({ "affiliation": "hostile" }))
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let lost = self.e.tracks.lost_json();
+        assert_eq!(lost.len(), 1, "{lost:?}");
+        lost[0]["since_t"].as_i64().expect("since")
+    }
+
+    /// Rules 16: a nomination waiting for its signers while a fishing boat 1.5 km north of the
+    /// target is in view, then the boat out of view for 185 s: the tracker drops it and the
+    /// decision tick hands the drop to the engine. The nomination (by `op1`) and the boat's
+    /// last fix (engine ms), as an acceptance names it.
+    pub(super) async fn waiting_then_lost(&self, op1: &str) -> (u64, i64) {
+        self.e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+        sleep(Duration::from_millis(500)).await;
+        self.e.r.clock.set(snapshot::ms(clock::wall()));
+        let boat = crate::tracks::truth::ContactTruth {
+            id: "fisher".into(),
+            name: "fishing boat".into(),
+            affiliation: crate::tracks::truth::TruthAffiliation::Neutral,
+            domain: crate::tracks::truth::Domain::Surface,
+            kind: "fishing_vessel".into(),
+            lat: TARGET.0 + 1_500.0 / 111_320.0,
+            lon: TARGET.1,
+            alt_m: 0.0,
+            speed_mps: 0.0,
+            course_deg: 0.0,
+            emits: false,
+            signature: 1.0,
+            ais: None,
+        };
+        let now = self.e.now_s();
+        for s in 0..90 {
+            self.e.sense_at_with(now - 90.0 + f64::from(s), true, std::slice::from_ref(&boat));
+        }
+        self.e.sense_at_with(now, true, std::slice::from_ref(&boat));
+        let (s, v) = self
+            .post(op1, "/api/tracks/T-0001/declare", json!({ "affiliation": "hostile" }))
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let id = self.nominate(op1).await;
+        // out of view from now on: dropped 180 s later, handed over at the tick
+        for _ in 0..185 {
+            self.e.r.clock.advance_ms(1000);
+            self.e.sense(true);
+        }
+        // the platform's heartbeats at the new time (it has not gone quiet)
+        sleep(Duration::from_millis(500)).await;
+        self.e.r.d.tick();
+        assert_eq!(self.e.r.events("track.dropped"), 1, "the boat dropped");
+        let lost = self.e.tracks.lost_json();
+        assert_eq!(lost.len(), 1, "{lost:?}");
+        (id, lost[0]["since_t"].as_i64().expect("since"))
+    }
+
     /// A nomination on the boat by whoever's cookie this is.
     pub(super) async fn nominate(&self, cookie: &str) -> u64 {
         let body = json!({
@@ -840,6 +927,95 @@ async fn a_listed_act_steps_up_through_the_api() {
     h.no_secret_logged(&[&op1]);
 }
 
+/// Rules 16 with rules 8's step-up: with `accept_unknown` in `[approval] step_up_acts`,
+/// accepting a lost contact takes the same step-up as accepting a lost vehicle of ours, through
+/// the API whatever the console does: a nomination accepting one without the password, or with
+/// a wrong one, is refused (401, the console asked for it) and nothing is accepted or
+/// nominated; with it, the nomination waits for its signers and `engage.accepted` names the
+/// contact and quotes the step-up. An acceptance for a waiting nomination is refused the same.
+#[tokio::test]
+async fn accepting_a_lost_contact_steps_up_through_the_api() {
+    let h = harness_with(Duration::from_secs(1800), &[], |p| {
+        p.approval.step_up_acts = Some(vec![murmur_decide::StepUpAct::AcceptUnknown]);
+    });
+    let op1 = h.login("op-1", PW1).await;
+    let op2 = h.login("op-2", PW2).await;
+    let (_, _, me) = h.call("GET", "/api/auth/session", None, &[("cookie", &op2)]).await;
+    assert_eq!(me["step_up_acts"], json!(["accept_unknown"]), "{me}");
+    let since = h.picture_with_lost(&op1).await;
+    let body = |extra: Value| {
+        let mut b = json!({
+            "task": "engage", "uids": [1], "track": "T-0001",
+            "effect_radius_m": 100, "window_s": 300, "fallback": "return",
+            "accept_lost": [{ "track": "T-0002", "since": since }],
+        });
+        for (k, v) in extra.as_object().expect("object") {
+            b[k] = v.clone();
+        }
+        b
+    };
+    let nominated = |h: &H| h.e.r.events("intent.created");
+    let before = nominated(&h);
+    // no step-up: refused, the console told to ask for it; nothing accepted or nominated
+    let (s, v) = h.post(&op2, "/api/intents", body(json!({}))).await;
+    assert_eq!((s, v["step_up"].clone(), v["factor"].clone()), (StatusCode::UNAUTHORIZED, json!(true), json!("password")), "{v}");
+    // a wrong password: refused too
+    let (s, v) = h.post(&op2, "/api/intents", body(json!({ "password": "not op two's password" }))).await;
+    assert_eq!((s, v["step_up"].clone()), (StatusCode::UNAUTHORIZED, json!(true)), "{v}");
+    assert_eq!(nominated(&h), before, "nothing nominated");
+    assert_eq!(h.e.r.events("engage.accepted"), 0, "nothing accepted");
+    // the password again: accepted with the nomination, which waits for its signers
+    let (s, v) = h.post(&op2, "/api/intents", body(json!({ "password": PW2 }))).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["intent"]["state"], "pending_approval", "{v}");
+    assert_eq!(nominated(&h), before + 1);
+    let id = v["intent"]["id"].as_u64().expect("id");
+    let log = h.log();
+    let accepted = log.lines().find(|l| l.contains("\"type\":\"engage.accepted\"")).expect("accepted").to_string();
+    assert!(accepted.contains("\"contact\":\"T-0002\"") && accepted.contains("\"by\":\"op-2\",\"session\":"), "{accepted}");
+    assert!(accepted.contains("\"step_up\":"), "the step-up quoted: {accepted}");
+    assert!(log.contains("\"action\":\"step_up.refused\",\"detail\":\"accept_unknown: no password given\""), "{log}");
+    assert!(log.contains("\"action\":\"step_up.refused\",\"detail\":\"accept_unknown: wrong password\""), "{log}");
+    // the acceptance for a waiting nomination is stepped up the same (refused before the engine)
+    let (s, v) = h.post(&op2, &format!("/api/intents/{id}/accept_unknown"), json!({ "track": "T-0002", "since": since })).await;
+    assert_eq!((s, v["step_up"].clone()), (StatusCode::UNAUTHORIZED, json!(true)), "{v}");
+    assert!(h.log().contains(&format!("\"detail\":\"i{id} accept_unknown: no password given\"")), "{}", h.log());
+    let r = h.replays_authenticated();
+    assert_eq!(r.lost_contacts, 1);
+    h.no_secret_logged(&[&op1, &op2]);
+}
+
+/// Rules 16 with rules 8's step-up, a nomination already waiting: `POST
+/// /api/intents/{id}/accept_unknown` with `{"track", "since", "password"}` takes the password with
+/// the contact (the review found it refused as an unknown field, so the acceptance could never
+/// be made where the policy steps it up): without it 401, with it the acceptance is logged under
+/// the operator's session quoting the step-up.
+#[tokio::test]
+async fn accepting_a_lost_contact_for_a_waiting_nomination_takes_the_password() {
+    let h = harness_with(Duration::from_secs(1800), &[], |p| {
+        p.approval.step_up_acts = Some(vec![murmur_decide::StepUpAct::AcceptUnknown]);
+    });
+    let op1 = h.login("op-1", PW1).await;
+    let op2 = h.login("op-2", PW2).await;
+    let (id, since) = h.waiting_then_lost(&op1).await;
+    let path = format!("/api/intents/{id}/accept_unknown");
+    let (s, v) = h.post(&op2, &path, json!({ "track": "T-0002", "since": since })).await;
+    assert_eq!((s, v["step_up"].clone()), (StatusCode::UNAUTHORIZED, json!(true)), "{v}");
+    // anything else beside the contact and the step-up is still refused
+    let (s, v) = h.post(&op2, &path, json!({ "track": "T-0002", "since": since, "password": PW2, "extra": 1 })).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert_eq!(h.e.r.events("engage.accepted"), 0, "nothing accepted");
+    let (s, v) = h.post(&op2, &path, json!({ "track": "T-0002", "since": since, "password": PW2 })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let log = h.log();
+    let accepted = log.lines().find(|l| l.contains("\"type\":\"engage.accepted\"")).expect("accepted").to_string();
+    assert!(accepted.contains(&format!("\"intent\":{id},\"contact\":\"T-0002\"")), "{accepted}");
+    assert!(accepted.contains("\"by\":\"op-2\",\"session\":") && accepted.contains("\"step_up\":"), "{accepted}");
+    let r = h.replays_authenticated();
+    assert_eq!(r.lost_contacts, 1);
+    h.no_secret_logged(&[&op1, &op2]);
+}
+
 /// Rules 9 in a credentials run: the engine's rule declaration carries no session; an
 /// operator's confirmation, a flag's resolution and a revocation each go through the signed-in
 /// session (no cookie, another origin or an agent's key: refused, nothing logged). With
@@ -975,6 +1151,7 @@ async fn an_unspend_steps_up_through_the_api() {
     let carry = murmur_decide::StartCarry {
         pointer: None,
         from: vec![super::engagement::carry_of("run-1.jsonl", &first)],
+        ..Default::default()
     };
     let h = harness_on(Duration::from_secs(1800), &[], |_| {}, None, carry);
     assert!(h.log().lines().next().unwrap_or_default().contains("\"spent\":[{\"uid\":\"1\""), "carried");
