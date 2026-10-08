@@ -134,19 +134,22 @@ impl Terrain {
             return;
         }
         let result = client.sample(&missing).await;
-        let mut err = self.last_error.lock().unwrap_or_else(|e| e.into_inner());
+        // one of this store's locks at a time, never one under another: the oracle reads the
+        // cache and then the last error, under the decision lock
         match result {
             Ok(surfaces) => {
-                let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-                for (p, surface) in missing.iter().zip(surfaces) {
-                    cache.insert(p.e7(), Cached { surface, at: now });
+                {
+                    let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+                    for (p, surface) in missing.iter().zip(surfaces) {
+                        cache.insert(p.e7(), Cached { surface, at: now });
+                    }
                 }
-                *err = None;
+                *self.last_error.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 *self.failed_at.lock().unwrap_or_else(|e| e.into_inner()) = None;
             }
             Err(e) => {
                 eprintln!("terrain: {e}");
-                *err = Some(e);
+                *self.last_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(e);
                 *self.failed_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(clock::wall());
             }
         }
@@ -169,12 +172,15 @@ impl TerrainOracle for CacheOracle<'_> {
         }
         let _ = at; // tidewater is asked at scenario time when prefetching
         t.source()?;
-        let cache = t.cache.lock().unwrap_or_else(|e| e.into_inner());
-        points
-            .iter()
-            .map(|p| cache.get(&p.e7()).map(|c| c.surface.clone()))
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| t.not_answered("every waypoint"))
+        // the cache guard is dropped before `not_answered` takes the last error
+        let found = {
+            let cache = t.cache.lock().unwrap_or_else(|e| e.into_inner());
+            points
+                .iter()
+                .map(|p| cache.get(&p.e7()).map(|c| c.surface.clone()))
+                .collect::<Option<Vec<_>>>()
+        };
+        found.ok_or_else(|| t.not_answered("every waypoint"))
     }
 
     fn sample_near(&self, at: Time, p: LonLat, within_m: f64) -> Result<NearSample, String> {
@@ -189,16 +195,20 @@ impl TerrainOracle for CacheOracle<'_> {
         }
         let _ = at;
         t.source()?;
-        let cache = t.cache.lock().unwrap_or_else(|e| e.into_inner());
-        let near: Vec<(f64, LonLat, &Surface)> = cache
-            .iter()
-            .map(|(k, c)| {
-                let q = LonLat::new(k.0 as f64 / 1e7, k.1 as f64 / 1e7);
-                (murmur_decide::geo::haversine_m(p, q), q, &c.surface)
-            })
-            .filter(|(d, _, _)| *d <= within_m)
-            .collect();
-        nearest_agreeing(&near, within_m).ok_or_else(|| t.not_answered("the effect point"))?
+        // the cache guard is dropped before `not_answered` takes the last error
+        let found = {
+            let cache = t.cache.lock().unwrap_or_else(|e| e.into_inner());
+            let near: Vec<(f64, LonLat, &Surface)> = cache
+                .iter()
+                .map(|(k, c)| {
+                    let q = LonLat::new(k.0 as f64 / 1e7, k.1 as f64 / 1e7);
+                    (murmur_decide::geo::haversine_m(p, q), q, &c.surface)
+                })
+                .filter(|(d, _, _)| *d <= within_m)
+                .collect();
+            nearest_agreeing(&near, within_m)
+        };
+        found.ok_or_else(|| t.not_answered("the effect point"))?
     }
 }
 
@@ -462,6 +472,50 @@ fn parse_response(raw: &[u8]) -> Result<(u16, Vec<u8>), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review B1: the oracle (under the decision lock) never holds the cache while it takes
+    /// the last error. A writer that holds the last error and then wants the cache (as
+    /// `fetch` once did) deadlocked against a lookup that missed; now the lookup lets the
+    /// cache go first, for both kinds of query.
+    #[test]
+    fn the_oracle_never_holds_the_cache_while_taking_the_last_error() {
+        use std::sync::Arc;
+        use std::sync::mpsc::channel;
+        let t = Arc::new(Terrain::new(Some("http://127.0.0.1:9")));
+        assert!(t.configured());
+        for near in [false, true] {
+            let (held_tx, held_rx) = channel();
+            let writer = {
+                let t = t.clone();
+                std::thread::spawn(move || {
+                    let _err = t.last_error.lock().unwrap_or_else(|e| e.into_inner());
+                    held_tx.send(()).ok();
+                    std::thread::sleep(Duration::from_millis(300));
+                    let _cache = t.cache.lock().unwrap_or_else(|e| e.into_inner());
+                })
+            };
+            held_rx.recv().expect("the writer holds the last error");
+            let (done_tx, done_rx) = channel();
+            let reader = {
+                let t = t.clone();
+                std::thread::spawn(move || {
+                    let p = LonLat::new(-122.49, 37.81);
+                    let r = if near {
+                        t.oracle().sample_near(Time(0), p, 50.0).map(|_| ())
+                    } else {
+                        t.oracle().sample(Time(0), &[p]).map(|_| ())
+                    };
+                    done_tx.send(r.is_err()).ok();
+                })
+            };
+            let missed = done_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("no deadlock: the oracle held the cache while taking the last error");
+            assert!(missed, "nothing cached: the lookup says so");
+            writer.join().expect("writer");
+            reader.join().expect("reader");
+        }
+    }
 
     #[test]
     fn water_from_samples() {
