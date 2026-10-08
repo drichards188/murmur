@@ -1641,9 +1641,10 @@ Rules versions:
   log). The keep-out explanation's grid margin and words (murmur-dr6 and its review) change no
   decision. Markers (a log claiming rules 15 or older can't carry them): `track.dropped`,
   `track.reacquired`, `lost.claimed`, `lost.reinstated`, `lost_contacts`, `lost_accepted`,
-  `track_ais`, an acceptance's `contact`, a lost contact's `ais`. Fixtures (a clean build of the
-  branch head): `tests/data/audit/v16-engagement-scenario-01.jsonl` and scenarios 84 to 86 and
-  88 (`v16-lost-contact-*`), and a live log with its anchors (`v16-lost-contacts-live.jsonl`,
+  `track_ais`, an acceptance's `contact`, a lost contact's `ais`. Scenarios 86 to 94 (84 and 85
+  are rules 15's). Fixtures (a clean build of the branch head):
+  `tests/data/audit/v16-engagement-scenario-01.jsonl` and scenarios 86 to 88, 90 and 93
+  (`v16-lost-contact-*`), and a live log with its anchors (`v16-lost-contacts-live.jsonl`,
   stand-ins at the Gate on `sim/scenarios/golden-gate-lost.toml`; see `tests/versions.rs`).
   The measurement of what it costs is in `eval/METRICS.md` ("Out of view").
 

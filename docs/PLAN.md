@@ -409,7 +409,7 @@ estimate, friendlies and an aircraft track above the effect with their altitudes
 not, ranged or passive, recent or stale, a ground target, a lost friendly with and without
 an operator's acceptance, an acceptance without engagement authority, a token from before
 an acceptance, a reset that clears one, a revoked one, an acceptor who signs, an agent
-trying to accept one, an accepted one reporting again); from rules 16, 84 to 92: a protected
+trying to accept one, an accepted one reporting again); from rules 16, 86 to 94: a protected
 contact dropped by the tracker near the target, then a nomination; an acceptance of it; an
 acceptance then the contact seen again under a new track id (its claim confirmed); an
 acceptance by an operator without engagement authority (and the drop's fix moved in the log); a
@@ -424,8 +424,8 @@ noise independent around the truth each step (`--noise`), and a velocity-estimat
 correlated over about 10 s (`--vnoise`). Seeds 1 to 10 and 42 pass every scenario at 0, 3,
 10 and 20 m with 0, 0.3 and 0.5 m/s (4,320 runs); at 1 m/s per axis some long-lead releases
 on moving targets abort late (the plan's point is off by the velocity error times the
-lead): the chain fails safe, never releasing off the plan. Rules 16's scenarios 84 to 92 pass
-the same batch (1,188 runs) but six: 85 and 88 at seed 7 with 0.5 m/s (3, 10 and 20 m), where
+lead): the chain fails safe, never releasing off the plan. Rules 16's scenarios 86 to 94 pass
+the same batch (1,188 runs) but six: 87 and 90 at seed 7 with 0.5 m/s (3, 10 and 20 m), where
 the velocity estimate crossed the 1.5 m/s holding speed at the first signature, so the plan
 put the holding target about 170 m on and the release, never aligned, aborted late (fail
 safe; the same effect, not the lost contacts). (Over the whole set, 12,144 runs, rules 9's

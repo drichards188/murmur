@@ -293,7 +293,7 @@ group. Dates are 2026.
   general traffic (87 to 90%), passes that the review showed were all with the contact not yet
   dropped (no evidence about the disc). Not carried over a bridge restart
   (a new run starts a new tracker; scheduled after the rules 12 carry follow-ups merge).
-  Regressions: scenarios 84 to 89.
+  Regressions: scenarios 86 to 91.
 - **After the review: out of view at the top speed, AIS a claim, the replay gaps closed** (10-07,
   murmur-533's review; rules 16 still, before it merged; the main thread's decisions). An
   independent review found the lost contacts short of their own design in five places:
@@ -325,7 +325,7 @@ group. Dates are 2026.
     ahead. A shorter threshold would count a track between two radar sweeps; a longer one leaves
     the review's window open. Cost: 1 point of blocks in `oov` (94 to 95%), and those blocks no
     acceptance clears (a live track is not acceptable: it is seen again, or dropped and then
-    accepted). Scenario 90.
+    accepted). Scenario 92.
   - *An AIS match is a claim an operator confirms, never automatic.* The review's probe: a ferry
     with MMSI X dropped 400 m from the target; ten minutes on a "neutral" track carrying X
     appeared 1.9 km away, inside the reach; the match retired the ferry on the first tick, and
@@ -341,7 +341,7 @@ group. Dates are 2026.
     suspect or hostile, is declared or drops, the confirmation is void and the lost contact counts
     again: every decision reads it so on its own picture (no race with the loop) and the loop logs
     `lost.reinstated`, for good. No step-up (the review said under their own session; a step-up
-    act for it would be a policy schema change: a follow-up). Scenarios 91 (the probe) and 92.
+    act for it would be a policy schema change: a follow-up). Scenarios 93 (the probe) and 94.
   - *Accepting a lost contact on a waiting nomination took no step-up through the API.* `{track,
     since, password}` was refused as an unknown field and without the password the bridge
     answered 401, so in a run whose policy steps up `accept_unknown` it could never be done: the

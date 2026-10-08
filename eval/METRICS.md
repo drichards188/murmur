@@ -748,7 +748,7 @@ target (the course is uniform, so few do: the own-speed miss is one in thousands
 rate set by that assumption); how often operators would accept or confirm, or how carefully;
 anything about the release's own check (a lost contact's region keeps growing to the release,
 which these do not run); or the AIS claims (no contact here comes back into view; the claims are
-tested in scenarios 86, 91 and 92 and the bridge's tests, not measured).
+tested in scenarios 88, 93 and 94 and the bridge's tests, not measured).
 
 ### The air tracker against truth (10-07, murmur-oho; model results, unreviewed)
 

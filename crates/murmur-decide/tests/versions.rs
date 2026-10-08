@@ -144,17 +144,17 @@ const LOGS: [(&str, u32); 52] = [
     ("v15-spent-munition-unspent-scenario-84.jsonl", CARRY_FOLLOWUPS_SINCE),
     ("v15-nomination-refused-while-a-carry-may-owe-scenario-85.jsonl", CARRY_FOLLOWUPS_SINCE),
     // rules 16 (lost contacts, murmur-533 and its review; the table names the constant; a clean
-    // build of 15f17ff): the same
-    // scenario; scenario 84, a fishing boat dropped by the tracker by the target, still
-    // blocking; 85, accepted at the nomination; 86, an accepted tour boat seen again by its AIS
-    // under a new track id, its claim confirmed, the live track aborting the engagement; 88,
-    // accepted while the nomination waits; 91, a spoofed AIS's claim confirmed, then void
+    // build of 15f17ff): the same scenario; scenario 86, a fishing boat dropped by the tracker by
+    // the target, still blocking; 87, accepted at the nomination; 88, an accepted tour boat seen
+    // again by its AIS under a new track id, its claim confirmed, the live track aborting the
+    // engagement; 90, accepted while the nomination waits; 93, a spoofed AIS's claim confirmed,
+    // then void
     ("v16-engagement-scenario-01.jsonl", LOST_CONTACT_SINCE),
-    ("v16-lost-contact-blocks-scenario-84.jsonl", LOST_CONTACT_SINCE),
-    ("v16-lost-contact-accepted-scenario-85.jsonl", LOST_CONTACT_SINCE),
-    ("v16-lost-contact-reappears-scenario-86.jsonl", LOST_CONTACT_SINCE),
-    ("v16-lost-contact-accepted-waiting-scenario-88.jsonl", LOST_CONTACT_SINCE),
-    ("v16-lost-contact-claimed-by-a-spoof-scenario-91.jsonl", LOST_CONTACT_SINCE),
+    ("v16-lost-contact-blocks-scenario-86.jsonl", LOST_CONTACT_SINCE),
+    ("v16-lost-contact-accepted-scenario-87.jsonl", LOST_CONTACT_SINCE),
+    ("v16-lost-contact-reappears-scenario-88.jsonl", LOST_CONTACT_SINCE),
+    ("v16-lost-contact-accepted-waiting-scenario-90.jsonl", LOST_CONTACT_SINCE),
+    ("v16-lost-contact-claimed-by-a-spoof-scenario-93.jsonl", LOST_CONTACT_SINCE),
     // and a live run with its anchors (see the test below)
     ("v16-lost-contacts-live.jsonl", LOST_CONTACT_SINCE),
 ];
@@ -1660,24 +1660,24 @@ fn a_rules_13_log_claiming_rules_12_still_carries_its_answers_times() {
 /// caught by its markers.
 #[test]
 fn the_rules_16_logs_carry_lost_contacts_and_cannot_claim_rules_15() {
-    let blocks = fixture("v16-lost-contact-blocks-scenario-84.jsonl");
+    let blocks = fixture("v16-lost-contact-blocks-scenario-86.jsonl");
     assert!(blocks.contains("\"type\":\"track.dropped\",\"track\":\"T-0002\""));
     assert!(blocks.contains("lost contact T-0002 (neutral, fishing_vessel) could be"), "the check names it");
     let r = replay_str(&blocks).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
     assert_eq!(r.lost_contacts, 1);
-    let accepted = fixture("v16-lost-contact-accepted-scenario-85.jsonl");
+    let accepted = fixture("v16-lost-contact-accepted-scenario-87.jsonl");
     assert!(accepted.contains("\"type\":\"engage.accepted\",\"intent\":1,\"contact\":\"T-0002\""));
     assert!(accepted.contains("\"lost_accepted\":{\"T-0002\""));
-    let back = fixture("v16-lost-contact-reappears-scenario-86.jsonl");
+    let back = fixture("v16-lost-contact-reappears-scenario-88.jsonl");
     assert!(back.contains("\"type\":\"lost.claimed\",\"track\":\"T-0002\",\"by_track\":\"T-0005\""));
     assert!(back.contains("\"type\":\"track.reacquired\",\"track\":\"T-0002\",\"by_track\":\"T-0005\",\"by\":\"op-2\""));
-    let spoof = fixture("v16-lost-contact-claimed-by-a-spoof-scenario-91.jsonl");
+    let spoof = fixture("v16-lost-contact-claimed-by-a-spoof-scenario-93.jsonl");
     assert!(spoof.contains("\"type\":\"lost.reinstated\",\"track\":\"T-0002\",\"by_track\":\"T-0009\""));
     let r = replay_str(&spoof).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
     assert_eq!((r.lost_claims, r.lost_confirmed, r.lost_reinstated), (1, 1, 1));
-    for (name, text) in [("84", &blocks), ("85", &accepted), ("86", &back), ("91", &spoof)] {
+    for (name, text) in [("86", &blocks), ("87", &accepted), ("88", &back), ("93", &spoof)] {
         let mut ls = lines(text);
         let now = format!("\"rules_version\":{LOST_CONTACT_SINCE},");
         assert!(ls[0].contains(&now), "{name}");

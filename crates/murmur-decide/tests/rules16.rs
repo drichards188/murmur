@@ -4,7 +4,7 @@
 //! operator with engagement authority may accept it for one engagement (`engage.accepted`
 //! naming the contact); a new track with the same AIS identity, unambiguously, retires it
 //! (`track.reacquired`); replay rebuilds all of it from the log, and flags a track that left
-//! the picture without a drop. The scenarios (84 to 89) play the same end to end.
+//! the picture without a drop. The scenarios (86 to 91) play the same end to end.
 #![allow(clippy::unwrap_used)]
 
 mod common;
@@ -442,7 +442,7 @@ fn only_engagement_authority_accepts_a_lost_contact_and_any_operator_revokes_it(
 /// 5 m/s, dropped 180 s later: by the effect, about 280 s after its last fix, its course puts it
 /// 1.4 km further on, clear of the keep-out, and its own bound (7 m/s) reaches the target too,
 /// but the check names 25 m/s, the surface top speed. A track in view with the same facts keeps
-/// its course regions alone (the tracker would see it turn). Scenario 89 plays it.
+/// its course regions alone (the tracker would see it turn). Scenario 91 plays it.
 #[test]
 fn a_lost_contact_counts_anywhere_at_its_domains_top_speed() {
     let clock = ManualClock::new(T0);
