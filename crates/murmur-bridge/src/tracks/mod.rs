@@ -222,6 +222,11 @@ impl Tracks {
     /// Our vehicles as sensor carriers: those with a position and a live link.
     fn observers(&self, world: &World) -> Vec<Observer> {
         let mono = clock::mono();
+        // a link's last packet is on the bridge's wall clock (`LinkSnapshot::last_rx_t`), as
+        // the console and the estimate read it: a vehicle silent past its stale age senses
+        // nothing (before review B2 this compared it with the monotonic clock, so every
+        // vehicle ever heard kept sensing from its last position)
+        let wall = clock::wall();
         world
             .vehicles()
             .into_iter()
@@ -229,7 +234,7 @@ impl Tracks {
                 let link = cell.link_snapshot(mono);
                 let fresh = link
                     .last_rx_t
-                    .is_some_and(|t| mono - t <= link.stale_after_s());
+                    .is_some_and(|t| wall - t <= link.stale_after_s());
                 if !fresh {
                     return None;
                 }

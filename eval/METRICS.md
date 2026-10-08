@@ -906,6 +906,14 @@ the fleet was not ready by the origin, no contact truth arrived), timed out, or 
   model across seeds. A claim about human judgment needs participants (study mode).
 - A picture-wrong case measures the picture, not the decider. The report keeps the two
   categories apart rather than averaging them away.
+- Runs on code before the review fix of 10-08 (B2, `Tracks::observers`) had a sensing bug in
+  every link-loss case: a vehicle counted as a sensor whatever its link (its last packet's
+  wall-clock time was compared with the monotonic clock), so a vehicle whose link was cut kept
+  detecting from its last reported position. In `link-cut` (and any run with a link event, a
+  jammer or a terrain shadow) the tracks the C2 showed were fresher and more complete than our
+  live sensors could have made them; the batch of 10-04 (`docs/eval/`, PLAN.md Phase G) ran
+  with it. Its decisions on the cut aircraft's own tasking (voids, approvals inside a cut) do
+  not depend on sensing; what it showed about the tracks near a cut vehicle does.
 - The agent arm's runs are replicates, not scenarios: its proposer ignores the storyline, so
   every scenario sharing a picture gives it the same tracks at the same times. The report
   shows it per situation, with the target's affiliation confidence at proposal and at the

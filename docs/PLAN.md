@@ -830,7 +830,8 @@ numbers further down come from the re-run.
   Link cut, labelled at the decision: of 10 should-void cards the C2 voided 6, the geofence
   stopped 1, and 3 were approved inside a cut and dispatched to an aircraft that could not hear
   them (one 3.3 s into the cut, before the bridge's 11 s heartbeat limit; two clean orbits
-  whose decisions fell inside the second cut). The agent arm ignores the storyline, so its 45
+  whose decisions fell inside the second cut). These runs had the sensing bug fixed on 10-08
+  (a cut vehicle kept sensing; METRICS.md, "What these numbers are not"). The agent arm ignores the storyline, so its 45
   runs are replicates of two situations (the development picture in six scenarios, the
   held-out picture in three), not nine scenarios; the report shows it that way. Its 43 wrong
   orbits the C2 showed something against were all shown at an affiliation confidence of
