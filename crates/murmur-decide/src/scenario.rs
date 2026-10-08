@@ -1940,6 +1940,17 @@ fn snapshot(
                 booted_t: None,
             },
         );
+        // who it is, as the bridge would say (rules 12: a carried hold; rules 15: an un-spend),
+        // the same as its preload's write-ahead names it
+        w.identities.insert(
+            Uid::new(uid),
+            crate::engage::VehicleIdentity {
+                platform: Some(v.def.platform.clone()),
+                callsign: Some(uid.clone()),
+                sysid: None,
+                home: Some(v.home),
+            },
+        );
     }
     for (id, tr) in tracks {
         let mut f = tr.facts.clone();
@@ -2160,7 +2171,7 @@ fn act(
                 return refusals.push(format!("{by}: un-spending a platform needs engagement authority"));
             };
             let w = world(tracks, vehicles);
-            if let Err(e) = engine.unspend_platform(auth, Uid::new(uid), note, &w) {
+            if let Err(e) = engine.unspend_platform(auth, Uid::new(uid), note, &w, None) {
                 refusals.push(e.to_string());
             }
         }

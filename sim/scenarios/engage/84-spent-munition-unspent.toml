@@ -3,10 +3,10 @@
 # nomination while still flying the engagement's preloaded lost-link action. As 80: the
 # switchblade's engagement is released and its closure marks it spent; an orbit for it is
 # refused. op-1 (no engagement authority) asks to un-spend it: refused. op-2, with engagement
-# authority, un-spends it, saying why, once it has been heard since the effect
-# (`platform.unspent`): its own lost-link values, which the closure had closed, are owed back
-# again, since the engagement's fallback is still its lost-link action. An orbit for it then
-# waits in the queue for the restore and goes the second it confirms. Then the log is forged to
+# authority, un-spends it, saying why, once its engagement ended (assessed) and it has been heard
+# since and still is (`platform.unspent`): its own lost-link values, which the closure had
+# closed, are owed back again, since the engagement's fallback is still its lost-link action.
+# An orbit for it then waits in the queue for the restore and goes the second it confirms. Then the log is forged to
 # credit the un-spend to op-1's session (no engagement authority); replay must catch it.
 title = "A munition spent by its effect is un-spent by an operator with engagement authority"
 invariant = "restore_owed"
@@ -103,7 +103,7 @@ uid = "blade-1"
 note = "it is still reporting: the effect missed"
 
 [[step]]
-at_s = 170                  # with it, the munition heard since the effect
+at_s = 170                  # with it, the engagement over and the munition still reporting
 action = "unspend"
 by = "op-2"
 uid = "blade-1"

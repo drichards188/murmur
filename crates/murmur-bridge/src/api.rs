@@ -432,16 +432,23 @@ async fn write_off(State(app): State<App>, headers: HeaderMap, body: Bytes) -> R
 
 /// `POST /api/restores/unspend` (rules 15): an operator with engagement authority un-spends a
 /// platform spent by its own effect that they believe survived (`{"uid": n, "note": "..."}`),
-/// once it was heard after the effect. Logged as `platform.unspent` under the operator's own
-/// session; the note is required. Its own lost-link values are owed back again (a mission waits
-/// for the restore). 403 without engagement authority, 409 for a platform not spent or not heard
-/// since its effect.
+/// once the engagement that spent it ended and the platform was heard since and is heard now.
+/// Logged as `platform.unspent` under the operator's own session; the note is required. Its
+/// own lost-link values are owed back again (a mission waits for the restore). In a credentials
+/// run it makes an armed platform taskable again, so it re-enters the credential (`"password"`,
+/// or `"passkey"`: an assertion made for this un-spend, `/api/auth/step_up {"act": "unspend",
+/// "uid": n}`), checked and dropped here, never logged or echoed. 401 without a valid step-up,
+/// 403 without engagement authority, 409 for a platform not spent or one the rules refuse now.
 async fn unspend(State(app): State<App>, headers: HeaderMap, body: Bytes) -> Response {
     #[derive(Deserialize)]
     struct Unspend {
         uid: crate::vehicle::Uid,
         #[serde(default)]
         note: String,
+        #[serde(default)]
+        password: Option<String>,
+        #[serde(default)]
+        passkey: Option<Value>,
     }
     let req = match serde_json::from_slice::<Unspend>(&body) {
         Ok(r) => r,
@@ -456,7 +463,19 @@ async fn unspend(State(app): State<App>, headers: HeaderMap, body: Bytes) -> Res
         Ok(op) => op,
         Err(e) => return decision_error(e),
     };
-    match app.decision.unspend(&op, req.uid, &req.note) {
+    // only engagement authority un-spends: said before any credential is asked for
+    if let Err(e) = app.decision.may_unspend(&op) {
+        return decision_error(e);
+    }
+    let proof = crate::auth::Proof {
+        password: req.password,
+        passkey: req.passkey.filter(|p| !p.is_null()),
+    };
+    let step = match app.auth.step_up(&op, &format!("unspend vehicle {}", req.uid), proof, true).await {
+        Ok(s) => s,
+        Err(r) => return *r,
+    };
+    match app.decision.unspend(&op, req.uid, &req.note, step) {
         Ok(v) => Json(v).into_response(),
         Err(e) => decision_error(e),
     }

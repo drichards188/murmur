@@ -525,8 +525,14 @@ impl Earlier {
                     Some(false) => "; its fleet file NOT checked (not given with --prev or found beside this log)",
                     None => "",
                 };
+                // rules 15: a log found in place of the pointer that the start would not carry from
+                let found = c
+                    .pointer_failed
+                    .as_deref()
+                    .map(|p| format!(" (found in place of the station's pointer, which could not be read: {p})"))
+                    .unwrap_or_default();
                 println!(
-                    "carried-over log {from}: its carry FAILED at the start ({why}): what it still owed is unknown, owed until a later start reads it or an operator writes it off{fleet}"
+                    "carried-over log {from}{found}: its carry FAILED at the start ({why}): what it still owed is unknown, owed until a later start reads it or an operator writes it off{fleet}"
                 );
                 continue;
             }
@@ -535,6 +541,12 @@ impl Earlier {
                     "carried-over log {from}: found in place of the station's pointer, which could not be read ({why})"
                 );
             }
+            // rules 15: the platforms it had spent, still spent here
+            let spent = if c.spent.is_empty() {
+                String::new()
+            } else {
+                format!(" and {} spent mark(s) (vehicle {})", c.spent.len(), c.spent.join(", vehicle "))
+            };
             if let Some((_, p, t)) = self.carried.iter().find(|(n, _, _)| n == from).filter(|_| c.checked) {
                 let same = match &self.intents {
                     Some((_, u)) if u == t => ", the carried-over intents' log too",
@@ -542,7 +554,7 @@ impl Earlier {
                 };
                 let head = c.head.as_deref().unwrap_or("none: it can't be read");
                 println!(
-                    "carried over at start (run.started): {} platform(s)' lost-link values from {from}, checked against what {p} still owed{same} (its head {head}, as read at the start: compare with its anchors)",
+                    "carried over at start (run.started): {} platform(s)' lost-link values{spent} from {from}, checked against what {p} still owed{same} (its head {head}, as read at the start: compare with its anchors)",
                     c.restores
                 );
                 continue;
@@ -560,11 +572,11 @@ impl Earlier {
                     );
                 }
                 _ if trusted => println!(
-                    "UNCHECKED: {} platform(s)' carried lost-link values from {from}: trusted (--trust-resumed); that log was not given (--prev) or found beside this one",
+                    "UNCHECKED: {} platform(s)' carried lost-link values{spent} from {from}: trusted (--trust-resumed); that log was not given (--prev) or found beside this one",
                     c.restores
                 ),
                 _ => println!(
-                    "carried lost-link values: {} platform(s) from {from}, NOT checked: that log was not given (--prev) or found beside this one",
+                    "carried lost-link values: {} platform(s){spent} from {from}, NOT checked: that log was not given (--prev) or found beside this one",
                     c.restores
                 ),
             }

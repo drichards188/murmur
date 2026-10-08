@@ -1989,21 +1989,26 @@ impl Engine {
 
     /// Rules 15 (murmur-imu): an operator with engagement authority un-spends a platform spent by
     /// its own effect (this run's mark, or one carried over from an earlier run) that they
-    /// believe survived (a miss), under their own session, saying why. Only once the platform was
-    /// heard after the effect (its facts on `world`: after the mark of this run; in this run for a
-    /// carried one). Logged as `platform.unspent` with the vehicle's facts and the values the spent
-    /// mark closed: they are owed back again from here on (the engagement's fallback is still the
-    /// platform's lost-link action), so a mission waits for the restore as under rules 7, and the
-    /// bridge puts them back when it is heard. Refused, nothing logged, before rules 15, without a
-    /// note, for a platform that is not spent, and for one not heard since its effect. An agent
-    /// can't ([`AgentPort`] has no such method); it needs no step-up (it authorizes nothing: the
-    /// platform's orders and nominations are decided as any other's).
+    /// believe survived (a miss), under their own session, saying why. Only once the engagement
+    /// that spent it ended, the platform was heard after that and is not silent now, and the
+    /// vehicle under the uid is the one spent (platform, callsign and system id; never the
+    /// home): [`Engine::unspend_refusal`] on `world`. Logged as `platform.unspent` with the
+    /// vehicle's facts, its identity and the values the spent mark closed: they are owed back
+    /// again from here on (the engagement's fallback is still the platform's lost-link action),
+    /// so a mission waits for the restore as under rules 7, and the bridge puts them back when
+    /// it is heard. In a credentials run it quotes a step-up (`step`; a passkey's made for this
+    /// un-spend, [`Engine::unspend_purpose`], password or passkey per the policy's
+    /// `step_up_factor`): it makes an armed platform taskable again. Refused, nothing logged,
+    /// before rules 15, without a note, for a platform not spent, one the rules refuse, and
+    /// without the step-up a credentials run asks for. An agent can't ([`AgentPort`] has no such
+    /// method).
     pub fn unspend_platform(
         &mut self,
         by: &EngagementAuthority,
         uid: Uid,
         note: &str,
         world: &WorldSnapshot,
+        step: Option<StepUp>,
     ) -> Result<(), EngineError> {
         let refuse = |why: String| Err(EngineError::NotUnspent(why));
         if !self.policy.rules.carry_followups() {
@@ -2016,13 +2021,27 @@ impl Engine {
         let Some(mark) = self.restores.spent_mark(&uid) else {
             return refuse(format!("vehicle {uid} is not spent by its own effect"));
         };
-        let vehicle = world.vehicles.get(&uid).cloned().unwrap_or_default();
-        if !mark.heard_after(vehicle.heard_t()) {
-            return refuse(format!(
-                "vehicle {uid} has not been heard since the effect that spent it (engagement {}): un-spend it once it answers",
-                mark.by
-            ));
+        if let Some(why) = self.unspend_refusal(&uid, world.vehicles.get(&uid), world.identities.get(&uid), world.t) {
+            return refuse(format!("vehicle {uid}: {why}"));
         }
+        // rules 15: a credentials run re-enters the credential for it (a passkey's made for it)
+        let needed = self.auth == Some(AuthMode::Credentials);
+        let step_up = match step {
+            None if needed => {
+                return Err(EngineError::NotAuthenticated {
+                    operator: by.operator().clone(),
+                    why: "an un-spend makes an armed platform taskable again: re-enter your credential (a step-up)".into(),
+                });
+            }
+            None => None,
+            Some(s) => Some(
+                self.valid_step(by.operator(), by.session(), &s, Some(&mark.purpose(&uid)))
+                    .map_err(|why| EngineError::NotAuthenticated {
+                        operator: by.operator().clone(),
+                        why,
+                    })?,
+            ),
+        };
         let body = EventBody::PlatformUnspent {
             uid: uid.clone(),
             spent_by: mark.by,
@@ -2032,18 +2051,47 @@ impl Engine {
             session: by.session(),
             note: note.to_string(),
             world_t: world.t,
-            vehicle: Box::new(vehicle),
+            vehicle: Box::new(world.vehicles.get(&uid).cloned().unwrap_or_default()),
+            identity: world.identities.get(&uid).cloned(),
+            step_up,
         };
         self.emit(body.clone())?;
         self.restores.step_body(&body);
         Ok(())
     }
 
-    /// Rules 15: whether a platform spent by its own effect was heard since (last heard at
-    /// `heard`, engine time), as [`Engine::unspend_platform`] judges it: after this run's mark,
-    /// or in this run for a carried one. False for a platform not spent.
-    pub fn spent_heard_since(&self, uid: &Uid, heard: Option<Time>) -> bool {
-        self.restores.spent_mark(uid).is_some_and(|m| m.heard_after(heard))
+    /// Rules 15: why `uid` can't be un-spent now, if it can't, on its facts `v` as the world read
+    /// them at `t` and the bridge's identity `now` of the vehicle under the uid: not spent; the
+    /// engagement that spent it not ended (this run's mark: its terminal transition); not heard
+    /// after that engagement's end (a carried mark: since this run started); its link silent
+    /// now (not heard within the link-aware fact age limit); or not shown to be the vehicle that
+    /// was spent ([`crate::VehicleIdentity::same_vehicle`]). None: an un-spend would be taken (the
+    /// bridge's SPENT, STILL HEARD alert offers it then, and only then).
+    pub fn unspend_refusal(
+        &self,
+        uid: &Uid,
+        v: Option<&crate::world::VehicleFacts>,
+        now: Option<&crate::engage::VehicleIdentity>,
+        t: Time,
+    ) -> Option<String> {
+        let Some(mark) = self.restores.spent_mark(uid) else {
+            return Some("not spent by its own effect".into());
+        };
+        let ended = (mark.from.is_none())
+            .then(|| self.intents.get(&mark.by))
+            .flatten()
+            .filter(|i| i.state().is_terminal())
+            .and_then(|i| i.history().last().map(|h| h.t));
+        mark.refusal(ended, v, now, t, &self.policy.rules)
+    }
+
+    /// Rules 15: what a passkey step-up for un-spending `uid` is for (its challenge binds the
+    /// platform, the engagement that spent it and the log of a carried mark).
+    pub fn unspend_purpose(&self, uid: &Uid) -> Result<crate::passkey::StepUpFor, EngineError> {
+        self.restores
+            .spent_mark(uid)
+            .map(|m| m.purpose(uid))
+            .ok_or_else(|| EngineError::NotUnspent(format!("vehicle {uid} is not spent by its own effect")))
     }
 
     /// Rules 12 and 15: the platforms spent by their own effect, this run's (`from` none) and

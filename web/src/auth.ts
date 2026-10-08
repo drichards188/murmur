@@ -181,6 +181,7 @@ export type StepUpAct =
   | { act: 'sign'; intent: number; token?: number }
   | { act: 'declare_hostile'; track: string }
   | { act: 'confirm_declaration'; track: string }
+  | { act: 'unspend'; uid: number }
 
 async function postJson(path: string, body: unknown): Promise<Record<string, unknown>> {
   const res = await operatorFetch(path, {

@@ -268,23 +268,44 @@ fn an_operator_with_engagement_authority_unspends_a_platform_heard_since_its_eff
     clock.advance_ms(5_000);
     let auth = op2.engagement_authority().unwrap();
     assert!(op1.engagement_authority().is_none(), "an operator without it can't even express it");
-    // refused: no note, a platform not spent, one not heard since the effect (its facts from
-    // before this run started); nothing logged
+    // refused: no note, a platform not spent, one not heard since its engagement ended (a
+    // carried mark: its facts from before this run started), one heard since but silent now
+    // (beyond the link-aware fact age limit, 10 s here), one whose identity under the uid is
+    // another vehicle's or not known yet; nothing logged
     let n = log.lines().len();
     let w = world_at(clock.now(), Some(blade()));
-    assert!(matches!(e.unspend_platform(auth, uid("blade-1"), "  ", &w), Err(EngineError::NotUnspent(_))));
-    assert!(matches!(e.unspend_platform(auth, uid("sky-1"), "fine", &w), Err(EngineError::NotUnspent(_))));
-    let silent = world_heard(clock.now(), started.plus_ms(-1_000), Some(blade()));
-    let err = e.unspend_platform(auth, uid("blade-1"), "it survived", &silent).unwrap_err();
-    assert!(err.to_string().contains("has not been heard since the effect"), "{err}");
+    let refused = |e: &mut Engine, w: &WorldSnapshot, note: &str, who: &str| match e.unspend_platform(auth, uid(who), note, w, None) {
+        Err(EngineError::NotUnspent(why)) => why,
+        other => panic!("{other:?}"),
+    };
+    refused(&mut e, &w, "  ", "blade-1");
+    refused(&mut e, &w, "fine", "sky-1");
+    let before = world_heard(clock.now(), started.plus_ms(-1_000), Some(blade()));
+    let why = refused(&mut e, &before, "it survived", "blade-1");
+    assert!(why.contains("has not been heard since engagement i1 ended"), "{why}");
+    clock.advance_ms(30_000);
+    let silent = world_heard(clock.now(), started.plus_ms(2_000), Some(blade()));
+    let why = refused(&mut e, &silent, "it survived", "blade-1");
+    assert!(why.contains("its link is silent: last heard 33.0 s ago (limit 10 s)"), "{why}");
+    let mut nine = blade();
+    nine.callsign = Some("blade-9".into());
+    let why = refused(&mut e, &world_at(clock.now(), Some(nine)), "it survived", "blade-1");
+    assert!(why.contains("not shown to be the one spent: its callsign is \"blade-9\""), "{why}");
+    let why = refused(&mut e, &world_at(clock.now(), None), "it survived", "blade-1");
+    assert!(why.contains("its platform is not known yet"), "{why}");
+    // the home alone never tells a vehicle apart (ArduPilot sets it again at every arming)
+    let mut moved = blade();
+    moved.home = Some(LonLat::new(-122.40, 37.80));
+    assert!(e.unspend_refusal(&uid("blade-1"), world_at(clock.now(), None).vehicles.get(&uid("blade-1")), Some(&moved), clock.now()).is_none());
     assert_eq!(log.lines().len(), n, "nothing logged");
-    // heard in this run: un-spent, its own values owed back again
-    e.unspend_platform(auth, uid("blade-1"), "still reporting and flying its return: the effect missed", &w).unwrap();
+    // heard in this run, now: un-spent, its own values owed back again
+    let w = world_at(clock.now(), Some(blade()));
+    e.unspend_platform(auth, uid("blade-1"), "still reporting and flying its return: the effect missed", &w, None).unwrap();
     assert_eq!(log.lines().len(), n + 1);
     let owed = e.owed_to(&uid("blade-1")).unwrap();
     assert_eq!(owed.values, values);
     assert_eq!(owed.vehicle.as_ref(), Some(&blade()));
-    assert!(e.unspend_platform(auth, uid("blade-1"), "again", &w).is_err(), "not spent any more");
+    assert!(e.unspend_platform(auth, uid("blade-1"), "again", &w, None).is_err(), "not spent any more");
     // an orbit now: taken, but it waits for the restore of the values carried over
     let o = e.submit(op1.authority(), orbit_near(&["blade-1"]), &w, &terrain()).unwrap().id();
     let Routed::Queued { reach, .. } = e.dispatch_or_queue(o, &w).unwrap() else {
@@ -363,7 +384,38 @@ fn an_operator_with_engagement_authority_unspends_a_platform_heard_since_its_eff
                     }
                 }
             }),
-            "an un-spend of a platform not heard after the effect that spent it",
+            "an un-spend the rules refuse on the facts it logs",
+        ),
+        (
+            // heard after the run started, but silent at the un-spend
+            unspent(&|b| {
+                if let EventBody::PlatformUnspent { vehicle, .. } = b {
+                    for f in [&mut vehicle.autopilot.as_mut().map(|f| &mut f.t), &mut vehicle.position.as_mut().map(|f| &mut f.t), &mut vehicle.nav_ready.as_mut().map(|f| &mut f.t)].into_iter().flatten() {
+                        **f = started.plus_ms(2_000);
+                    }
+                }
+            }),
+            "an un-spend the rules refuse on the facts it logs",
+        ),
+        (
+            // another vehicle under the uid
+            unspent(&|b| {
+                if let EventBody::PlatformUnspent { identity, .. } = b
+                    && let Some(i) = identity.as_mut()
+                {
+                    i.callsign = Some("blade-9".into());
+                }
+            }),
+            "an un-spend the rules refuse on the facts it logs",
+        ),
+        (
+            // the identity it was judged on left out
+            unspent(&|b| {
+                if let EventBody::PlatformUnspent { identity, .. } = b {
+                    *identity = None;
+                }
+            }),
+            "an un-spend the rules refuse on the facts it logs",
         ),
         (
             unspent(&|b| {
@@ -382,35 +434,256 @@ fn an_operator_with_engagement_authority_unspends_a_platform_heard_since_its_eff
     let op2 = e12.open_operator_session_with(OperatorId::new("op-2"), Grants { engage: true }).unwrap();
     let w = world_at(clock.now(), Some(blade()));
     assert!(matches!(
-        e12.unspend_platform(op2.engagement_authority().unwrap(), uid("blade-1"), "it survived", &w),
+        e12.unspend_platform(op2.engagement_authority().unwrap(), uid("blade-1"), "it survived", &w, None),
         Err(EngineError::NotUnspent(_))
     ));
 }
 
-/// Scenario 83's un-spend of a platform spent in the same run: heard strictly after the mark.
+/// Scenario 84 up to its effect (the switchblade released, the engagement still observing), then
+/// `steps` (TOML), run now without the expectations the original run checks after that point,
+/// the engagement expected to end `expect`.
+fn scenario_84_then(steps: &str, expect: &str) -> scenario::ScenarioResult {
+    let path = root().join("sim/scenarios/engage/84-spent-munition-unspent.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let head = &text[..text.find("[[step]]\nat_s = 150").unwrap()];
+    let mut sc: scenario::Scenario = toml::from_str(&format!("{head}{steps}")).unwrap();
+    sc.expect_unspent.clear();
+    sc.expect_refusals.clear();
+    sc.expect_preload.clear();
+    sc.expect_nothing_owed = false;
+    sc.restore_after_s = None;
+    sc.tamper = None;
+    sc.end_s = Some(200);
+    sc.expect = expect.into();
+    scenario::run(&sc, "84 cut", &root(), &RunOptions::default()).unwrap()
+}
+
+/// Scenario 84's un-spend of a platform spent in the same run, and the review's two probes
+/// (rules 15): "heard since the effect" was satisfied by the munition's own reports in its last
+/// seconds, and an un-spend could come before the assessment. Now the engagement that spent it
+/// must have ended, the platform heard after that end and not silent at the un-spend.
 #[test]
-fn an_unspend_in_the_run_that_spent_it_needs_a_report_after_the_effect() {
+fn an_unspend_in_the_run_that_spent_it_waits_for_the_engagement_to_end_and_a_live_report() {
     let text = scenario_log("84-spent-munition-unspent.toml");
     let r = replay_str(&text).unwrap();
     assert!(r.ok(), "{:?}", r.mismatches);
     assert_eq!(r.unspent.len(), 1, "{:?}", r.unspent);
-    let closed_t = parse_log(&text)
-        .unwrap()
+    let events = parse_log(&text).unwrap();
+    let closed_t = events.iter().find(|e| matches!(e.body, EventBody::RestoreClosed { .. })).map(|e| e.t).unwrap();
+    let done_t = events
         .iter()
-        .find(|e| matches!(e.body, EventBody::RestoreClosed { .. }))
+        .find(|e| matches!(&e.body, EventBody::IntentState { intent, to: State::Done, .. } if *intent == IntentId(1)))
         .map(|e| e.t)
         .unwrap();
-    // forged: the facts it was judged on dated at the closure (not after it): caught
-    let at_effect = forge(&text, |ev| {
-        for e in ev.iter_mut() {
-            if let EventBody::PlatformUnspent { vehicle, .. } = &mut e.body {
-                for f in [vehicle.autopilot.as_mut().map(|f| &mut f.t), vehicle.position.as_mut().map(|f| &mut f.t), vehicle.nav_ready.as_mut().map(|f| &mut f.t)].into_iter().flatten() {
-                    *f = closed_t;
+    assert!(closed_t < done_t);
+    let dated = |t: Time, world: Option<Time>| {
+        forge(&text, |ev| {
+            for e in ev.iter_mut() {
+                if let EventBody::PlatformUnspent { vehicle, world_t, .. } = &mut e.body {
+                    for f in [vehicle.autopilot.as_mut().map(|f| &mut f.t), vehicle.position.as_mut().map(|f| &mut f.t), vehicle.nav_ready.as_mut().map(|f| &mut f.t)].into_iter().flatten() {
+                        *f = t;
+                    }
+                    if let Some(w) = world {
+                        *world_t = w;
+                        e.t = w;
+                    }
                 }
+            }
+        })
+    };
+    // forged: the facts it was judged on dated at the closure (the munition's last reports,
+    // before its engagement ended): caught
+    let w = whats(&replay_str(&dated(closed_t, None)).unwrap());
+    assert!(has(&w, "an un-spend the rules refuse on the facts it logs"), "{w:?}");
+    // forged: heard after the end, but long before the un-spend (silent since): caught
+    let w = whats(&replay_str(&dated(done_t.plus_ms(1_000), None)).unwrap());
+    assert!(has(&w, "an un-spend the rules refuse on the facts it logs"), "{w:?}");
+    // forged: the un-spend moved before the engagement ended (its facts then fresh): caught
+    let early = forge(&text, |ev| {
+        let i = ev.iter().position(|e| matches!(e.body, EventBody::PlatformUnspent { .. })).unwrap();
+        let mut u = ev.remove(i);
+        let at = ev.iter().position(|e| matches!(e.body, EventBody::RestoreClosed { .. })).unwrap() + 1;
+        let t = closed_t.plus_ms(500);
+        u.t = t;
+        if let EventBody::PlatformUnspent { vehicle, world_t, .. } = &mut u.body {
+            *world_t = t;
+            for f in [vehicle.autopilot.as_mut().map(|f| &mut f.t), vehicle.position.as_mut().map(|f| &mut f.t), vehicle.nav_ready.as_mut().map(|f| &mut f.t)].into_iter().flatten() {
+                *f = t;
+            }
+        }
+        ev.insert(at, u);
+    });
+    let w = replay_str(&early).unwrap().mismatches;
+    assert!(w.iter().any(|m| m.what.contains("an un-spend the rules refuse") && m.logged.contains("has not ended")), "{w:?}");
+    // probe B: op-2 asks at 110 s, the engagement still observing (assessed at 122 s): refused,
+    // and the munition stays spent
+    let b = scenario_84_then(
+        "[[step]]\nat_s = 110\naction = \"unspend\"\nby = \"op-2\"\nuid = \"blade-1\"\nnote = \"still reporting after the effect\"\n",
+        "done",
+    );
+    assert!(b.ok, "{:?}", b.failures);
+    assert!(b.refusals.iter().any(|r| r.contains("engagement i1 that spent it has not ended")), "{:?}", b.refusals);
+    assert!(!b.log.contains("\"type\":\"platform.unspent\""));
+    assert_eq!(owed_debts(&b.log).spent.len(), 1, "still spent");
+    // probe A: the munition silent from 108 s (2 s after its release; nothing observes the
+    // effect here, so the engagement is not assessed); op-2 asks at 170 s on its last reports:
+    // refused
+    let a = scenario_84_then(
+        "[[step]]\nat_s = 108\naction = \"vehicle\"\nuid = \"blade-1\"\nsilent = true\n\n[[step]]\nat_s = 170\naction = \"unspend\"\nby = \"op-2\"\nuid = \"blade-1\"\nnote = \"it survived\"\n",
+        "effected",
+    );
+    assert!(a.ok, "{:?}", a.failures);
+    assert!(a.refusals.iter().any(|r| r.contains("has not ended")), "{:?}", a.refusals);
+    assert!(!a.log.contains("\"type\":\"platform.unspent\""));
+    // and silent from 125 s, after its engagement ended (assessed at 122 s): heard after the
+    // end, but not now: refused at 170 s
+    let a = scenario_84_then(
+        "[[step]]\nat_s = 125\naction = \"vehicle\"\nuid = \"blade-1\"\nsilent = true\n\n[[step]]\nat_s = 170\naction = \"unspend\"\nby = \"op-2\"\nuid = \"blade-1\"\nnote = \"it survived\"\n",
+        "done",
+    );
+    assert!(a.ok, "{:?}", a.failures);
+    assert!(a.refusals.iter().any(|r| r.contains("its link is silent")), "{:?}", a.refusals);
+    assert!(!a.log.contains("\"type\":\"platform.unspent\""));
+}
+
+// ---- (2) an un-spend steps up in a credentials run -------------------------------------------
+
+/// A credentials run carrying scenario 80's spent switchblade (`a`): op-1 and op-2 (engagement
+/// authority), op-2's passkey `k2`, the policy asking for `factor` at a step-up.
+fn credentials_start(
+    a: &str,
+    k2: &murmur_decide::passkey::soft::SoftAuthenticator,
+    factor: murmur_decide::policy::StepUpFactor,
+    clock: &ManualClock,
+) -> (Engine, MemorySink) {
+    let roster = Roster::new(["op-1", "op-2"].map(OperatorId::new).to_vec(), vec![OperatorId::new("op-2")])
+        .unwrap()
+        .with_auth(AuthMode::Credentials)
+        .with_passkeys(PasskeyRoster {
+            rp_id: "localhost".into(),
+            origins: vec!["http://localhost:5173".into()],
+            keys: vec![PasskeyKey {
+                operator: OperatorId::new("op-2"),
+                id: k2.credential_id(),
+                public_key: k2.public_key(),
+                counter: 0,
+            }],
+        });
+    let mut p = policy();
+    p.approval.step_up_factor = Some(factor);
+    let log = MemorySink::new();
+    let e = Engine::start(p, None, roster, vec![carry_of("a.jsonl", a)], Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    (e, log)
+}
+
+/// What the browser and the bridge do for a passkey step-up: the engine issues the challenge for
+/// `purpose`, the authenticator signs it, the engine verifies and logs it.
+fn passkey_step(
+    e: &mut Engine,
+    k: &mut murmur_decide::passkey::soft::SoftAuthenticator,
+    s: &OperatorSession,
+    purpose: murmur_decide::passkey::StepUpFor,
+    nonce: &str,
+) -> StepUp {
+    let issued = e.passkey_challenge(s.operator(), Some(s), purpose, nonce.into()).unwrap();
+    let assertion = k.assert("localhost", "http://localhost:5173", &issued.challenge);
+    let proof = murmur_decide::PasskeyUse {
+        credential: k.credential_id(),
+        counter: k.counter,
+        purpose: issued.purpose,
+        nonce: issued.nonce,
+        issued_t: issued.issued_t,
+        assertion,
+    };
+    e.step_up_passkey(s, proof).unwrap()
+}
+
+/// Rules 15 (decided): an un-spend makes an armed platform taskable again, so in a credentials
+/// run it re-enters the credential, as accepting a lost friendly does: the password or a passkey
+/// per the policy's `step_up_factor`, a passkey's challenge derived from the un-spend (the
+/// platform, the engagement, the log of a carried mark). Refused without one, with one made for
+/// another act, and with a password where the policy asks for a passkey; replay verifies it.
+#[test]
+fn an_unspend_in_a_credentials_run_steps_up_for_it() {
+    use murmur_decide::passkey::StepUpFor;
+    use murmur_decide::passkey::soft::SoftAuthenticator;
+    use murmur_decide::policy::StepUpFactor;
+    let a = scenario_log("80-expended-munition-owes-nothing.toml");
+    let logs = [("a.jsonl", a.as_str())];
+    let note = "still reporting after its engagement ended: the effect missed";
+    // the password, where the policy takes it
+    let clock = ManualClock::new(T0.plus_ms(600_000));
+    let mut k2 = SoftAuthenticator::new("op-2 laptop");
+    let (mut e, log) = credentials_start(&a, &k2, StepUpFactor::Password, &clock);
+    let op2 = e.open_authenticated_session(OperatorId::new("op-2"), Grants { engage: true }, AuthMethod::Password).unwrap();
+    clock.advance_ms(5_000);
+    let w = world_at(clock.now(), Some(blade()));
+    let auth = op2.engagement_authority().unwrap();
+    let err = e.unspend_platform(auth, uid("blade-1"), note, &w, None).unwrap_err();
+    assert!(matches!(&err, EngineError::NotAuthenticated { why, .. } if why.contains("re-enter your credential")), "{err}");
+    // a passkey made for another act: refused
+    let other = passkey_step(&mut e, &mut k2, &op2, StepUpFor::DeclareHostile { track: "T-0001".into() }, "n1");
+    let err = e.unspend_platform(auth, uid("blade-1"), note, &w, Some(other)).unwrap_err();
+    assert!(err.to_string().contains("made for declaring T-0001 hostile"), "{err}");
+    let s = e.step_up(&op2).unwrap();
+    e.unspend_platform(auth, uid("blade-1"), note, &w, Some(s)).unwrap();
+    let text = log.text();
+    assert!(text.contains("\"type\":\"platform.unspent\"") && text.contains("\"step_up\":{\"seq\":"), "{text}");
+    let r = replay_str_with(&text, &with(&logs)).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!(r.stepped_acts, 1);
+    // forged: the step-up taken out: caught
+    let bare = forge(&text, |ev| {
+        for e in ev.iter_mut() {
+            if let EventBody::PlatformUnspent { step_up, .. } = &mut e.body {
+                *step_up = None;
             }
         }
     });
-    assert!(has(&whats(&replay_str(&at_effect).unwrap()), "not heard after the effect"));
+    assert!(has(&whats(&replay_str_with(&bare, &with(&logs)).unwrap()), "an un-spend without a step-up"));
+    // a passkey, where the policy asks for one: the password refused, a passkey made for this
+    // un-spend taken (its challenge names the platform, the engagement and a.jsonl)
+    let clock = ManualClock::new(T0.plus_ms(600_000));
+    let mut k2 = SoftAuthenticator::new("op-2 laptop");
+    let (mut e, log) = credentials_start(&a, &k2, StepUpFactor::Passkey, &clock);
+    let op2 = e.open_authenticated_session(OperatorId::new("op-2"), Grants { engage: true }, AuthMethod::Password).unwrap();
+    clock.advance_ms(5_000);
+    let w = world_at(clock.now(), Some(blade()));
+    let auth = op2.engagement_authority().unwrap();
+    let s = e.step_up(&op2).unwrap();
+    let err = e.unspend_platform(auth, uid("blade-1"), note, &w, Some(s)).unwrap_err();
+    assert!(err.to_string().contains("asks for your passkey"), "{err}");
+    let purpose = e.unspend_purpose(&uid("blade-1")).unwrap();
+    assert_eq!(
+        purpose,
+        StepUpFor::Unspend {
+            uid: uid("blade-1"),
+            spent_by: IntentId(1),
+            from: Some("a.jsonl".into())
+        }
+    );
+    let s = passkey_step(&mut e, &mut k2, &op2, purpose, "n2");
+    e.unspend_platform(auth, uid("blade-1"), note, &w, Some(s)).unwrap();
+    let text = log.text();
+    let r = replay_str_with(&text, &with(&logs)).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    // forged: the un-spend credited to the password step-up refused before (the policy asks for
+    // a passkey): caught
+    let pw = forge(&text, |ev| {
+        let first = ev
+            .iter()
+            .find_map(|e| match &e.body {
+                EventBody::OperatorAction { action, auth: Some(AuthMethod::Password), .. } if action == "step_up" => Some(e.seq),
+                _ => None,
+            })
+            .unwrap();
+        for e in ev.iter_mut() {
+            if let EventBody::PlatformUnspent { step_up: Some(r), .. } = &mut e.body {
+                r.seq = first;
+            }
+        }
+    });
+    assert!(has(&whats(&replay_str_with(&pw, &with(&logs)).unwrap()), "where the policy requires a passkey"));
 }
 
 // ---- imu (1): a nomination on a platform a failed carry may owe is refused ----------------
@@ -583,6 +856,83 @@ fn a_failed_carrys_fleet_file_is_compared_when_at_hand() {
         }
     });
     assert!(has(&whats(&replay_str(&unarmed).unwrap()), "differ from the catalog's as this log's decisions read it"));
+    // forged (review): the record of the file read and what the carry may owe both dropped, the
+    // decisions' may-owe facts with them: caught when the file is at hand (the start claimed it
+    // could not be read)
+    let none = forge(&text, |ev| {
+        if let EventBody::RunStarted { carried_from, .. } = &mut ev[0].body {
+            carried_from[0].fleet_read = None;
+            carried_from[0].may_owe.clear();
+        }
+        for e in ev.iter_mut() {
+            if let EventBody::CheckResult { inputs, .. } = &mut e.body {
+                inputs.restore_owed.clear();
+            }
+        }
+    });
+    assert!(replay_str(&none).unwrap().ok(), "without the file: bound by the start anchor only");
+    assert!(has(&whats(&at_hand(&none, &fleets)), "recorded no fleet file read, though its fleet file is given and reads"));
+}
+
+/// Rules 15: a pending log tried again whose fleet file is gone too keeps the may-owe list the log
+/// that named it pending recorded (its vehicles stay held); replay compares it with that log.
+#[test]
+fn a_retried_failed_carry_without_its_fleet_file_keeps_the_list_recorded_before() {
+    let may_owe = vec![OwedRestore {
+        uid: uid("blade-1"),
+        values: BTreeMap::new(),
+        by: Vec::new(),
+        vehicle: Some(blade()),
+    }];
+    let failed = CarriedFrom {
+        log: "gone.jsonl".into(),
+        may_owe: may_owe.clone(),
+        error: Some("Permission denied (os error 13)".into()),
+        fleet_read: Some(FleetRead {
+            sha256: "0".repeat(64),
+            armed: catalog().platforms.iter().filter(|(_, p)| p.armed).map(|(id, _)| id.clone()).collect(),
+        }),
+        ..Default::default()
+    };
+    let clock = ManualClock::new(T0.plus_ms(600_000));
+    let (_, log) = start(RULES_VERSION, vec![failed], &clock);
+    let b = log.text();
+    assert_eq!(owed_debts(&b).pending_may_owe.get("gone.jsonl"), Some(&may_owe));
+    // the next start reads b.jsonl, tries gone.jsonl again (still unreadable, its fleet file
+    // gone): the list b recorded, no fleet file
+    let retried = CarriedFrom {
+        log: "gone.jsonl".into(),
+        may_owe: may_owe.clone(),
+        error: Some("No such file or directory (os error 2)".into()),
+        ..Default::default()
+    };
+    let (_, log) = start(RULES_VERSION, vec![carry_of("b.jsonl", &b), retried], &clock);
+    let c = log.text();
+    let logs = [("b.jsonl", b.as_str())];
+    let r = replay_str_with(&c, &with(&logs)).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    // forged: the list shortened: caught against b.jsonl
+    let fewer = forge(&c, |ev| {
+        if let EventBody::RunStarted { carried_from, .. } = &mut ev[0].body {
+            carried_from[1].may_owe.clear();
+            carried_from[1].may_owe.push(OwedRestore {
+                uid: uid("sky-1"),
+                values: BTreeMap::new(),
+                by: Vec::new(),
+                vehicle: None,
+            });
+        }
+    });
+    assert!(has(&whats(&replay_str_with(&fewer, &with(&logs)).unwrap()), "differs from what the log that named it pending recorded"));
+    // the first entry can't inherit: it needs the fleet file it read
+    let first = CarriedFrom {
+        log: "gone.jsonl".into(),
+        may_owe,
+        error: Some("No such file or directory (os error 2)".into()),
+        ..Default::default()
+    };
+    let (_, log) = start(RULES_VERSION, vec![first], &clock);
+    assert!(has(&whats(&replay_str(&log.text()).unwrap()), "may owe values without the fleet file it read"));
 }
 
 // ---- zq3 (5): a void that says it was superseded names an order the log has ----------------
@@ -597,6 +947,9 @@ fn a_void_that_says_superseded_names_an_order_the_log_has() {
     // the older one, saying so
     let older = e.submit(op.authority(), orbit_near(&["sky-1"]), &w, &terrain()).unwrap().id();
     let newer = e.submit(op.authority(), orbit_near(&["sky-1"]), &w, &terrain()).unwrap().id();
+    // a third order, newer still, approved and not dispatched: it stands, but was neither
+    // dispatched nor queued
+    let third = e.submit(op.authority(), orbit_near(&["sky-1"]), &w, &terrain()).unwrap().id();
     assert!(matches!(e.dispatch_or_queue(newer, &w).unwrap(), Routed::Dispatched(_)));
     e.void(older, &format!("superseded: {newer} was dispatched to vehicle sky-1")).unwrap();
     let text = log.text();
@@ -611,7 +964,11 @@ fn a_void_that_says_superseded_names_an_order_the_log_has() {
             }
         })
     };
+    let standing = reason(format!("system: superseded: {third} is a newer order for vehicle sky-1 (the newest order stands)"));
+    assert!(replay_str(&standing).unwrap().ok(), "a standing order may be named by a dequeue's void");
     for (to, what) in [
+        (format!("system: superseded: {newer} was queued for vehicle sky-1 (the newest order stands)"), "not in the state its reason says"),
+        (format!("system: superseded: {third} was dispatched to vehicle sky-1"), "not in the state its reason says"),
         ("system: superseded: i99 was dispatched to vehicle sky-1".to_string(), "an order the log does not have"),
         (format!("system: superseded: {older} was dispatched to vehicle sky-1"), "not newer"),
         (format!("system: superseded: {newer} was dispatched to vehicle mule-1"), "not on that vehicle"),

@@ -645,11 +645,15 @@ pub enum EventBody {
     /// Rules 15 ([`crate::rules::CARRY_FOLLOWUPS_SINCE`], murmur-imu): an operator with
     /// engagement authority un-spends a platform spent by its own effect (`spent_by`, the
     /// engagement that released it; `from`, the earlier log it is in when the mark was carried
-    /// over), under their own session, saying why (they believe it survived: a miss), once the
-    /// platform was heard after the effect (`vehicle`: its facts as the world read them at
-    /// `world_t`). It takes orders and nominations again, and its own lost-link values (`values`,
-    /// what the spent mark closed) are owed back again from here on: the engagement's fallback
-    /// is still its lost-link action, so a mission waits for the restore.
+    /// over), under their own session, saying why (they believe it survived: a miss), once that
+    /// engagement ended, the platform was heard after its end and is not silent now (`vehicle`:
+    /// its facts as the world read them at `world_t`), and the vehicle under the uid now is the
+    /// one that was spent (`identity`: the bridge's identity of it then; platform, callsign and
+    /// system id, never the home). It takes orders and nominations again, and its own lost-link
+    /// values (`values`, what the spent mark closed) are owed back again from here on: the
+    /// engagement's fallback is still its lost-link action, so a mission waits for the restore.
+    /// In a credentials run it quotes a step-up made for it (`step_up`; a passkey's challenge
+    /// binds the platform, the engagement and the log of a carried mark).
     #[serde(rename = "platform.unspent")]
     PlatformUnspent {
         uid: Uid,
@@ -663,6 +667,10 @@ pub enum EventBody {
         note: String,
         world_t: Time,
         vehicle: Box<crate::world::VehicleFacts>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        identity: Option<crate::engage::VehicleIdentity>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step_up: Option<StepUpRef>,
     },
 
     /// Engage, rules 6: the platform's own lost-link values read and logged before anything is

@@ -912,6 +912,30 @@ impl VehicleIdentity {
             .or_else(|| other("callsign", &self.callsign, &now.callsign))
             .or_else(|| other("system id", &self.sysid, &now.sysid))
     }
+
+    /// Rules 15 (an un-spend): why `now` (the vehicle under the uid now, if known) is not shown
+    /// to be this vehicle, if it is not: every one of the platform, the callsign and the system
+    /// id this identity knows must be known and the same now (the home never counts: it is set
+    /// again at every arming), and it must know at least one of them. Stricter than
+    /// [`Self::differs`], which holds a mission until a vehicle is known to be another: an
+    /// un-spend reopens values for a vehicle, so it waits until that vehicle is known to be the
+    /// one (fail closed).
+    pub fn same_vehicle(&self, now: Option<&VehicleIdentity>) -> Result<(), String> {
+        fn same<T: PartialEq + std::fmt::Debug>(what: &str, was: &Option<T>, is: Option<&Option<T>>) -> Result<(), String> {
+            match (was, is) {
+                (None, _) => Ok(()),
+                (Some(a), Some(Some(b))) if a == b => Ok(()),
+                (Some(a), Some(Some(b))) => Err(format!("its {what} is {b:?}, not {a:?}")),
+                (Some(a), _) => Err(format!("its {what} is not known yet (the spent one's was {a:?})")),
+            }
+        }
+        if self.platform.is_none() && self.callsign.is_none() && self.sysid.is_none() {
+            return Err("the vehicle that was spent is not known by platform, callsign or system id".into());
+        }
+        same("platform", &self.platform, now.map(|n| &n.platform))?;
+        same("callsign", &self.callsign, now.map(|n| &n.callsign))?;
+        same("system id", &self.sysid, now.map(|n| &n.sysid))
+    }
 }
 
 /// Rules 6: one parameter a lost-link preload sets, and its value.
