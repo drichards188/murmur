@@ -114,7 +114,16 @@ pub struct Settings {
     pub agents: Vec<AgentId>,
     /// Credentials run: the credential file's agent keys (`Authorization: Bearer <key>`).
     pub keys: Option<Arc<crate::auth::Auth>>,
+    /// How long an MCP session may be idle before it is dropped ([`IDLE_LIMIT`];
+    /// `MURMUR_MCP_IDLE_S`). Only clients on a protocol version before 2026-07-28 hold a
+    /// session: from that version requests are served statelessly.
+    pub idle: std::time::Duration,
 }
+
+/// An MCP session idle this long is dropped (a client whose connection vanished leaves no
+/// session behind). An hour: an agent that wakes on events can be quiet for minutes, and
+/// rmcp's own five minutes dropped the sessions of agents that connect once and wait.
+pub const IDLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(3600);
 
 impl Settings {
     pub fn from_env() -> Settings {
@@ -122,6 +131,11 @@ impl Settings {
             .ok()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| "agent-planner,agent-watch".into());
+        let idle = std::env::var("MURMUR_MCP_IDLE_S")
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .filter(|s| *s > 0)
+            .map_or(IDLE_LIMIT, std::time::Duration::from_secs);
         Settings {
             agents: list
                 .split(',')
@@ -130,6 +144,7 @@ impl Settings {
                 .map(AgentId::new)
                 .collect(),
             keys: None,
+            idle,
         }
     }
 }
@@ -342,10 +357,12 @@ pub fn service(
     decision: Arc<Decision>,
     api: Router,
 ) -> StreamableHttpService<Handler, LocalSessionManager> {
+    let mut sessions = LocalSessionManager::default();
+    sessions.session_config.keep_alive = Some(settings.idle);
     let shared = Mcp::new(settings, world, decision, api);
     StreamableHttpService::new(
         move || Ok(Handler(shared.clone())),
-        Arc::new(LocalSessionManager::default()),
+        Arc::new(sessions),
         StreamableHttpServerConfig::default(),
     )
 }

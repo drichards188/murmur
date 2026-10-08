@@ -470,6 +470,7 @@ async fn the_dry_run_sees_a_platform_spent_by_its_effect() {
         crate::mcp::Settings {
             agents: vec![agent.clone()],
             keys: None,
+            idle: crate::mcp::IDLE_LIMIT,
         },
         e.r.world.clone(),
         e.r.d.clone(),

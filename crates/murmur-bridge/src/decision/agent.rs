@@ -39,6 +39,48 @@ pub struct RecentEvent {
 #[derive(Default)]
 pub struct RecentEvents(Mutex<VecDeque<RecentEvent>>);
 
+/// Rejection notes kept for agents: this many, the newest.
+const REJECTION_NOTES: usize = 2000;
+
+/// What an operator wrote when they rejected an intent (the audit log's `approval.rejected`
+/// note; the engine keeps no note on the intent), for agents to read with the intent:
+/// intent id to (operator, note). Display only.
+#[derive(Default)]
+pub struct RejectionNotes(Mutex<BTreeMap<u64, (String, String)>>);
+
+/// One intent as the agents' change feed compares it (`crate::mcp` `get_changes`): what can
+/// change and what identifies it, taken briefly under the lock, not the whole intent with
+/// its checks and policy decision.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IntentBrief {
+    pub id: u64,
+    pub state: Value,
+    /// `{"kind": "agent"|"human", "id": ...}`
+    pub source: Value,
+    /// The proposing agent, when an agent proposed it.
+    pub agent: Option<String>,
+    pub task: &'static str,
+    pub uids: Value,
+    /// An engagement's track.
+    pub track: Option<String>,
+    /// The last state change's reason.
+    pub reason: Option<String>,
+    /// A rejection's note and who wrote it.
+    pub rejected_note: Option<(String, String)>,
+}
+
+/// One review flag as the change feed compares it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlagBrief {
+    /// `F-<n>`
+    pub id: String,
+    pub kind: &'static str,
+    pub status: &'static str,
+    pub tracks: Vec<String>,
+    pub evidence: String,
+    pub raises_suspect: bool,
+}
+
 impl Decision {
     /// An agent's proposal: [`Decision::submit`]'s path through an `AgentPort`. The
     /// rationale is required (400 without one). Malformed requests (unknown task or
@@ -192,6 +234,70 @@ impl Decision {
             .take(limit)
             .cloned()
             .collect()
+    }
+
+    /// Every intent of the run, lean (see [`IntentBrief`]), oldest first.
+    pub fn intent_briefs(&self) -> Vec<IntentBrief> {
+        let notes = self
+            .rejection_notes
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let core = self.lock();
+        core.engine
+            .intents()
+            .map(|i| {
+                let spec = i.spec();
+                let id = spec.id.0;
+                IntentBrief {
+                    id,
+                    state: serde_json::to_value(i.state()).unwrap_or(Value::Null),
+                    source: serde_json::to_value(&spec.source).unwrap_or(Value::Null),
+                    agent: match &spec.source {
+                        murmur_decide::Source::Agent { id } => Some(id.as_str().to_string()),
+                        murmur_decide::Source::Human { .. } => None,
+                    },
+                    task: spec.kind().as_str(),
+                    uids: serde_json::to_value(&spec.uids).unwrap_or(Value::Null),
+                    track: match &spec.task {
+                        Task::Engage { track, .. } => Some(track.clone()),
+                        _ => None,
+                    },
+                    reason: i.history().last().map(|h| h.reason.clone()),
+                    rejected_note: notes.get(&id).cloned(),
+                }
+            })
+            .collect()
+    }
+
+    /// Every review flag of the run (in force and resolved), lean (see [`FlagBrief`]).
+    pub fn flag_briefs(&self) -> Vec<FlagBrief> {
+        let core = self.lock();
+        core.engine
+            .identification()
+            .flags()
+            .map(|(f, s)| FlagBrief {
+                id: format!("F-{}", f.id),
+                kind: f.kind.as_str(),
+                status: s.name(),
+                tracks: f.tracks.clone(),
+                evidence: f.evidence.clone(),
+                raises_suspect: f.kind.raises_suspect(),
+            })
+            .collect()
+    }
+
+    /// Keep an operator's rejection note for agents (display only; the audit log has it).
+    pub(super) fn remember_rejection(&self, id: u64, by: &OperatorId, note: Option<&str>) {
+        let Some(note) = note.map(str::trim).filter(|n| !n.is_empty()) else {
+            return;
+        };
+        let mut notes = self.rejection_notes.0.lock().unwrap_or_else(|e| e.into_inner());
+        notes.insert(id, (by.as_str().to_string(), note.to_string()));
+        while notes.len() > REJECTION_NOTES {
+            notes.pop_first();
+        }
     }
 
     /// Keep what the loop just wrote to the audit log as `vehicle.event`.

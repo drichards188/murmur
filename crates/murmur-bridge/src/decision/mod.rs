@@ -60,7 +60,7 @@
 //! (superseded: approving it later would silently undo the newer order).
 
 pub mod agent;
-mod alerts;
+pub(crate) mod alerts;
 mod civil;
 pub mod engage;
 mod failsafe;
@@ -463,6 +463,8 @@ pub struct Decision {
     updates: watch::Sender<Arc<String>>,
     /// Vehicle events the loop logged, for agents (`agent::RecentEvents`).
     recent: agent::RecentEvents,
+    /// Operators' rejection notes, for agents to read with the intent (display only).
+    rejection_notes: agent::RejectionNotes,
     /// The space segment the engine has, shared: collect and cover queries are answered
     /// with it before the decision lock is taken ([`Decision::prepare_space`]).
     space: std::sync::RwLock<Option<Arc<SpaceSegment>>>,
@@ -795,6 +797,7 @@ impl Decision {
             }),
             updates: watch::channel(Arc::new(String::new())).0,
             recent: agent::RecentEvents::default(),
+            rejection_notes: agent::RejectionNotes::default(),
             space: std::sync::RwLock::new(None),
             queue_cfg,
             pointer: std::sync::OnceLock::new(),
@@ -1643,8 +1646,13 @@ impl Decision {
             let mut guard = self.lock();
             let core = &mut *guard;
             let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
+            let kept = note.clone();
             match core.engine.reject(id, session.authority(), note) {
-                Ok(_) => Ok(self.outcome(core, id)),
+                Ok(_) => {
+                    // display only, for agents: the engine keeps no note on the intent
+                    self.remember_rejection(id.0, by.operator(), kept.as_deref());
+                    Ok(self.outcome(core, id))
+                }
                 Err(e) => Err(self.with_intent(core, id, engine_err(e))),
             }
         };
@@ -2409,6 +2417,29 @@ impl Decision {
         Some(self.rules.space_rules().collect_match_tolerance_s)
     }
 
+    /// The inbox's alerts now, most severe first, then oldest first (the inbox and the
+    /// agents' change feed read the same list).
+    pub fn current_alerts(&self) -> Vec<alerts::Alert> {
+        let mut alerts = alerts::alerts(
+            &self.world.vehicles(),
+            &self.world.tasks.current_ops(),
+            clock::wall(),
+        );
+        // rules 6: platforms whose own lost-link failsafe has not been confirmed back;
+        // rules 11: space tasks a re-check lost or could not judge; rules 12: earlier logs
+        // whose carry failed, still owed
+        {
+            let core = self.lock();
+            alerts.extend(self.restore_alerts(&core, clock::wall()));
+            alerts.extend(self.carry_alert(&core, clock::wall()));
+            alerts.extend(self.pending_carry_alerts(&core, clock::wall()));
+            alerts.extend(self.spent_alerts(&core, clock::wall()));
+            alerts.extend(self.space_alerts(&core, clock::wall()));
+        }
+        alerts.sort_by(|a, b| a.severity.cmp(&b.severity).then(a.since_t.total_cmp(&b.since_t)));
+        alerts
+    }
+
     /// `GET /api/inbox`: pending approvals (soonest expiry first, with why each needs a
     /// human) and alerts (most severe first).
     pub fn inbox_json(&self) -> Value {
@@ -2432,23 +2463,7 @@ impl Decision {
                 })
                 .collect()
         };
-        let mut alerts = alerts::alerts(
-            &self.world.vehicles(),
-            &self.world.tasks.current_ops(),
-            clock::wall(),
-        );
-        // rules 6: platforms whose own lost-link failsafe has not been confirmed back;
-        // rules 11: space tasks a re-check lost or could not judge; rules 12: earlier logs
-        // whose carry failed, still owed
-        {
-            let core = self.lock();
-            alerts.extend(self.restore_alerts(&core, clock::wall()));
-            alerts.extend(self.carry_alert(&core, clock::wall()));
-            alerts.extend(self.pending_carry_alerts(&core, clock::wall()));
-            alerts.extend(self.spent_alerts(&core, clock::wall()));
-            alerts.extend(self.space_alerts(&core, clock::wall()));
-        }
-        alerts.sort_by(|a, b| a.severity.cmp(&b.severity).then(a.since_t.total_cmp(&b.since_t)));
+        let alerts = self.current_alerts();
         // rules 5: orders held for vehicles the link can't carry them to now
         let queued = {
             let core = self.lock();
