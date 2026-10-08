@@ -32,23 +32,65 @@ export function drawnHeight(v: Vehicle) {
   return z(v.alt_msl)
 }
 
+/** Depth bias of the sea plane against the terrain and seabed under it. The plane sits at 0 m
+ *  over MapLibre terrain whose bathymetry is exaggerated: in shallow water the seabed is within
+ *  depth-buffer precision of the plane, and which of the two wins flips from frame to frame
+ *  (the blue flashing). A small negative bias (luma.gl `depthBias` and `depthBiasSlopeScale`,
+ *  polygon offset units) settles it for the plane. The units depend on the GPU's depth buffer:
+ *  confirm the value on a real GPU, trying `?seabias=<n>` in the URL (read once at load; -4 also
+ *  holds but paints more low land blue). */
+export const SEA_BIAS = (() => {
+  try {
+    const q = new URLSearchParams(location.search).get('seabias')
+    if (q != null && q.trim() !== '' && Number.isFinite(Number(q))) return Number(q)
+  } catch {
+    // no location (not a browser): the default
+  }
+  return -1
+})()
+
+/** the outline snaps outward to this grid, degrees (~25 km) */
+const SEA_GRID = 0.25
+let seaBox: { w: number; e: number; s: number; n: number } | null = null
+let seaData: { polygon: XYZ[] }[] = []
+
 /** A translucent sea-level plane around the swarm. Land above 0 m shows through it;
- *  the seabed and anything submerged are seen through the water. */
+ *  the seabed and anything submerged are seen through the water.
+ *  The outline is stable: it snaps outward to a coarse grid around the vehicles (and the pad),
+ *  and the same data object is returned until a vehicle leaves the box, which then grows. It
+ *  never shrinks during a page's life, so a polygon rebuilt every update cannot reshuffle the
+ *  depth results (also flashing). Reads reported positions, not drawn ones: it does not change
+ *  per glide frame. */
 function seaSurface(vehicles: Vehicle[]) {
   const pts = vehicles.flatMap((v) => (v.position ? [v.position] : []))
-  if (!pts.length) return []
+  if (!pts.length) return seaData.length ? seaData : []
   const pad = 0.25 // degrees, ~25 km
-  const w = Math.min(...pts.map((p) => p[0])) - pad
-  const e = Math.max(...pts.map((p) => p[0])) + pad
-  const s = Math.min(...pts.map((p) => p[1])) - pad
-  const n = Math.max(...pts.map((p) => p[1])) + pad
+  let w = Infinity
+  let e = -Infinity
+  let s = Infinity
+  let n = -Infinity
+  for (const p of pts) {
+    w = Math.min(w, p[0])
+    e = Math.max(e, p[0])
+    s = Math.min(s, p[1])
+    n = Math.max(n, p[1])
+  }
+  w = Math.floor((w - pad) / SEA_GRID) * SEA_GRID
+  e = Math.ceil((e + pad) / SEA_GRID) * SEA_GRID
+  s = Math.floor((s - pad) / SEA_GRID) * SEA_GRID
+  n = Math.ceil((n + pad) / SEA_GRID) * SEA_GRID
+  const b = seaBox
+  if (b && w >= b.w && e <= b.e && s >= b.s && n <= b.n) return seaData
+  seaBox = { w: Math.min(w, b?.w ?? w), e: Math.max(e, b?.e ?? e), s: Math.min(s, b?.s ?? s), n: Math.max(n, b?.n ?? n) }
+  const { w: bw, e: be, s: bs, n: bn } = seaBox
   const polygon: XYZ[] = [
-    [w, s, 0],
-    [e, s, 0],
-    [e, n, 0],
-    [w, n, 0],
+    [bw, bs, 0],
+    [be, bs, 0],
+    [be, bn, 0],
+    [bw, bn, 0],
   ]
-  return [{ polygon }]
+  seaData = [{ polygon }]
+  return seaData
 }
 
 /** The 3D scene around the vehicles: bridge decks, sea surface, trails, height stems and
@@ -84,7 +126,7 @@ export function build3dStatic(vehicles: Vehicle[], visible = true, bridges: Lift
       data: seaSurface(placed),
       getPolygon: (d: { polygon: XYZ[] }) => d.polygon,
       getFillColor: [40, 110, 160, 70],
-      parameters: { depthWriteEnabled: false },
+      parameters: { depthWriteEnabled: false, depthBias: SEA_BIAS, depthBiasSlopeScale: SEA_BIAS },
     }),
     new PathLayer<Vehicle>({
       id: 'trails-3d',
