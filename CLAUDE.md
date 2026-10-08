@@ -192,12 +192,19 @@ meaningful. Decision and command, not weapons.
   METRICS.md "Out of view".
 - Rules 16 (`LOST_CONTACT_SINCE`; 15 is the restart follow-ups'): a track the tracker drops (180 s
   unseen) stays in every engagement keep-out as a lost contact (`track.dropped`) until an
-  operator with engagement authority accepts it (nomination form, `accept_lost`) or a new track
-  matches its AIS unambiguously (`track.reacquired`); without AIS it never retires within a run.
-  A lost contact's regions are `engage::lost_reach` (a live track's plus anywhere at its own
-  plausible speed), never `track_reach`: anything that judges or draws one uses it. Replay flags
-  a track that leaves a decision's picture without a `track.dropped`: a test or driver that
-  drops a track hands it to `Engine::record_track_drops` first (scenarios: `drop_track`).
+  operator with engagement authority accepts it for one engagement (nomination form or the
+  card, `accept_lost`, the `accept_unknown` step-up) or an operator confirms a claimant carrying
+  its AIS (`lost.claimed`, review list, `POST /api/review/lost/{track}/confirm`,
+  `track.reacquired`; void, `lost.reinstated`, once the claimant turns suspect, is declared or
+  drops). A track out of view (unseen `engage::OUT_OF_VIEW_S`, 10 s, live or lost) counts anywhere
+  at its domain's top speed from its last fix: anything that judges or draws one uses
+  `engage::lost_reach` / `track_standing` / `track_reach_at` with the decision's time, never
+  `track_reach` alone. A track's AIS is `WorldSnapshot::track_ais`, not a `TrackFacts` field: a
+  new `TrackFacts` field breaks `tracks/tests/before_oho`, which builds one as it was and is
+  never edited. Replay
+  flags a track that leaves a picture without a `track.dropped`: a test or driver that drops a
+  track hands it to `Engine::record_track_drops` first (scenarios: `drop_track`); an id is
+  dropped once. Burden model: `python -m eval.lost_burden`.
 - The tracker is a two-model IMM; changes must pass `tracks::tests::calib`. Its held-out seeds
   (66-95) are not for tuning: write a new held-out set if you tune on them. Aircraft have their
   own calibration (`tracks::tests::calib_air`: held-out seeds 221-250, run once, its two misses

@@ -409,22 +409,28 @@ estimate, friendlies and an aircraft track above the effect with their altitudes
 not, ranged or passive, recent or stale, a ground target, a lost friendly with and without
 an operator's acceptance, an acceptance without engagement authority, a token from before
 an acceptance, a reset that clears one, a revoked one, an acceptor who signs, an agent
-trying to accept one, an accepted one reporting again); from rules 16, 84 to 89: a protected
+trying to accept one, an accepted one reporting again); from rules 16, 84 to 92: a protected
 contact dropped by the tracker near the target, then a nomination; an acceptance of it; an
-acceptance then the contact seen again under a new track id; an acceptance by an operator
-without engagement authority; a forged acceptance; a contact last seen steaming away (its
-course clear of the keep-out) that may have turned back.
+acceptance then the contact seen again under a new track id (its claim confirmed); an
+acceptance by an operator without engagement authority (and the drop's fix moved in the log); a
+forged acceptance; a contact last seen steaming away (its course clear of the keep-out) that may
+have turned back or sped up (and its drop logged twice); the same contact out of view but not
+yet dropped; a spoofed AIS claiming a lost contact, confirmed, then suspect (and the
+reinstatement cut); a confirmation by an operator after an agent's attempt (and credited to an
+agent).
 Each ends in reject, void or abort as designed and replays; the tampered logs (including a
 loosened logged policy) are caught. Seeded noise turns each into a batch (Phase G): position
 noise independent around the truth each step (`--noise`), and a velocity-estimate error
 correlated over about 10 s (`--vnoise`). Seeds 1 to 10 and 42 pass every scenario at 0, 3,
 10 and 20 m with 0, 0.3 and 0.5 m/s (4,320 runs); at 1 m/s per axis some long-lead releases
 on moving targets abort late (the plan's point is off by the velocity error times the
-lead): the chain fails safe, never releasing off the plan. Rules 16's scenarios 84 to 89 pass
-the same batch (792 runs) but six: 85 and 88 (then 84 and 87) at seed 7 with 0.5 m/s (3, 10 and 20 m), where
+lead): the chain fails safe, never releasing off the plan. Rules 16's scenarios 84 to 92 pass
+the same batch (1,188 runs) but six: 85 and 88 at seed 7 with 0.5 m/s (3, 10 and 20 m), where
 the velocity estimate crossed the 1.5 m/s holding speed at the first signature, so the plan
 put the holding target about 170 m on and the release, never aligned, aborted late (fail
-safe; the same effect, not the lost contacts).
+safe; the same effect, not the lost contacts). (Over the whole set, 12,144 runs, rules 9's
+scenario 73 also misses its expected order of candidates at 10 and 20 m, 26 runs, under rules
+14 alike: the noise reorders an ambiguous attribution's candidates; a follow-up.)
 
 Live demo: `sim/fleets/engage-demo.toml` (stand-in switchblade, magura, ugv_armed, corsair,
 x10) with `sim/scenarios/golden-gate-engage.toml` (the fast boat holding west of the bridge,
@@ -532,34 +538,49 @@ same vehicle); a refused mission names the older orders still queued on its vehi
 Scenarios 79 to 82; live logs across two crashes with anchors in
 `crates/murmur-decide/tests/data/audit/`.
 
-Rules 16, lost contacts (murmur-533; `LOST_CONTACT_SINCE`, 15 being the restart follow-ups', policy schema 7 unchanged;
-`crates/murmur-decide/src/lost.rs`, bridge `tracks/mod.rs` and `decision/engage.rs`, console
-`trackLayers.ts`, `KeepOutExplain.tsx`; DECISIONS.md "A dropped protected contact stays in the
-keep-out until accepted"): the tracker drops a track after 180 s without a detection, and the
-keep-out used to stop counting it then, so a civilian boat that went out of view near a target
-stopped protecting anything. Now the drop is a logged fact (`track.dropped`, the tracker's facts
-at the drop; the bridge keeps the track in the decision facts until the engine has it) and the
-engine holds the contact as lost: every engagement's keep-out on tracks counts it anywhere it
-could have reached since its last fix, by the reach model a live track gets from those facts
-and, since nothing sees it turn, anywhere at its own plausible speed (its speed and 2-sigma of
-its velocity error, or the fastest it went: `engage::lost_reach`; added after the measurement
-found the course regions alone a prediction, not a bound), with no cap, exempt only where a
-live track would be. An operator with engagement authority may accept one for one engagement,
-as a lost vehicle of ours (`engage.accepted` naming the contact: at the nomination or before a
-first signature, under their session, with the same step-up when the policy lists
-`accept_unknown`, every signer shown it, cleared by a reset, revocable by any operator, never
-an agent's). A track the tracker starts
-again for it retires it only when its AIS identity matches unambiguously (`track.reacquired`,
-with the picture judged); without AIS it stays lost beside its new track. Replay rebuilds the
-lost contacts from the log, checks every engagement decision's against them, recomputes each
-retirement, and flags a track that leaves a decision's picture without a drop. Shown: on the map
-(a faded, anticipated symbol at the last fix, the region counted now, "T-0002 LOST 4 min"), in
-the tracks drawer, in the nomination form's keep-out explanation (which lost contact blocks,
-since when, and an Accept for this engagement), on the engagement card; agents read them
-(`get_tracks`, `get_nomination_options`) and cannot accept. The cost, measured on generated
-situations (`eval/METRICS.md` "Out of view"): see there; the explanation's effect-time windows
-also count a grid point clear only by a margin that covers the dip between points (murmur-dr6).
-Live demo: `MURMUR_CONTACTS=sim/scenarios/golden-gate-lost.toml make up FLEET=engage-demo` (with
+Rules 16, lost contacts (murmur-533 and its review; `LOST_CONTACT_SINCE`, 15 being the restart
+follow-ups', policy schema 7 unchanged; `crates/murmur-decide/src/lost.rs`, bridge `tracks/mod.rs`
+and `decision/engage.rs`, console `trackLayers.ts`, `KeepOutExplain.tsx`, `ReviewSection.tsx`;
+DECISIONS.md "A dropped protected contact stays in the keep-out until an operator accepts it" and
+"After the review"): the tracker drops a track after 180 s without a detection, and the keep-out
+used to stop counting it then, so a civilian boat that went out of view near a target stopped
+protecting anything. Now the drop is a logged fact (`track.dropped`, the tracker's facts at the
+drop and the AIS it carried; the bridge keeps the track in the decision facts until the engine
+has it, and a drop the log could not take goes back to it) and the engine holds the contact as
+lost: every engagement's keep-out on tracks counts it anywhere it could have reached since its
+last fix, by the regions a live track gets from those facts and, since nothing sees it turn or
+speed up, anywhere at its domain's top speed (25 m/s on the water, 100 in the air with the
+tracker's lag, or its own bound if faster: `engage::lost_reach`), with no cap, exempt only where
+a live track would be. A live track unseen 10 s (`engage::OUT_OF_VIEW_S`, the tracker's stale
+age) counts the same disc from its last fix: before the review, the stale track 10 to 180 s
+unseen counted by its course alone, and the lost contact at its own plausible speed (each a
+prediction, not a bound). An operator with engagement authority may accept a lost contact for
+one engagement, as a lost vehicle of ours (`engage.accepted` naming the contact: at the
+nomination or before a first signature, under their session, with the same step-up when the
+policy lists `accept_unknown`, the password or passkey carried on the waiting nomination's path
+too, every signer shown it, cleared by a reset, revocable by any operator, never an agent's). A
+track carrying a lost contact's AIS identity is a claim, never a retirement (`lost.claimed`, the
+review list with the evidence: names and ship types compared, distance against reach, what our
+sensors say of its kind, and what blocks it): any operator confirms it under their own session
+(`track.reacquired`), only while nothing contradicts it, and the confirmation is void, the
+contact counting again, once the claimant turns suspect, is declared or drops (`lost.reinstated`;
+every decision reads it so on its own picture). Replay rebuilds the lost contacts from the log,
+checks every engagement decision's against them, recomputes each claim and confirmation,
+checks each reinstatement, refuses a second drop of an id or a drop with another fix than the
+decisions had seen, and flags a track that leaves a picture without a drop. Shown: on the map (a
+faded, anticipated symbol at the last fix, the region counted now, "T-0002 LOST 4 min"), in the
+tracks drawer, in the review list (claims, confirm), in the nomination form's keep-out
+explanation (which lost contact blocks, since when, and an Accept for this engagement), on the
+engagement card (an Accept while it waits with no signature); agents read them (`get_tracks`,
+`get_nomination_options`), cannot accept or confirm, and a proposal carrying an acceptance is
+refused. The cost, measured on generated situations (`eval/METRICS.md` "Out of view"): blocks
+95% in traffic where 30% of contacts go out of view (51% before), every nomination with one out
+of view within 1 km, 30% of all needing an acceptance; over a run the lost contacts pile up and
+every nomination needs each accepted (`eval/lost_burden.py`: two hours in, 4 to 46 at 0.1 per
+km^2 depending on the loss rate). The explanation's effect-time windows also count a grid point
+clear only by a margin that covers the dip between points, sized for the picture's fastest
+relative motion (murmur-dr6 and its review). Live demo:
+`MURMUR_CONTACTS=sim/scenarios/golden-gate-lost.toml make up FLEET=engage-demo` (with
 `MURMUR_OPERATORS` and `MURMUR_ENGAGE_OPERATORS`); live log with anchors:
 `crates/murmur-decide/tests/data/audit/v16-lost-contacts-live.jsonl`.
 
@@ -624,9 +645,11 @@ areas but the platform's own path only against no-go areas, the assessment trust
 model's coverage figures, the signers authenticate with a password only (no second factor;
 rules 8, below), ground targets have no terrain-referenced altitude (2D), an engagement
 does not survive a bridge restart (only the platform's own failsafe values are put back),
-nor do the lost contacts (rules 16: a new run starts a new tracker), a lost contact's
-plausible speed is its own (one that goes faster after its last fix than it showed is outside
-its region), only an AIS identity retires a lost contact, and another declared
+nor do the lost contacts (rules 16: a new run starts a new tracker), a contact out of view
+counts at its domain's top speed (one faster than that, unseen, is outside its region), only an
+operator's confirmation of an AIS claim retires a lost contact, a live track out of view blocks
+and cannot be accepted until it is dropped, the lost contacts of a run are never retired in
+bulk (each is accepted per engagement), and another declared
 hostile inside the keep-out is exempt like the target (an open design question,
 DECISIONS.md).
 
