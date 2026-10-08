@@ -31,6 +31,7 @@ class FakeAgentSession:
     def __init__(self, feed: list[dict], run: str = "run-a", tools=TOOLS, options=None, fleet=None):
         self.feed = feed  # get_changes answers, in order
         self.fleet = FLEET if fleet is None else fleet
+        self.policy = {"policy": {"rules": {}}}  # no engagement section: the 900 s default
         self.run = run
         self.tools = list(tools)
         self.options = options or []  # get_nomination_options answers, in order
@@ -49,6 +50,8 @@ class FakeAgentSession:
             return {"cursor": 10, "run": self.run, "changes": []}
         if name == "get_platforms":
             return PLATFORMS
+        if name == "get_policy":
+            return self.policy
         if name == "get_fleet":
             return {"compact": args.get("compact"), "vehicles": self.fleet}
         return self.feed.pop(0)
@@ -144,6 +147,24 @@ def test_the_poll_asks_only_about_platforms_that_could_pass():
     s.fleet = [veh(3, "magura", dx_km=40)]
     assert run(p.nominations(now=116)) == [{"kind": "nomination.closed", "t": 116, "track": "T-0001"}]
     assert len([n for n, _ in s.calls if n == "get_nomination_options"]) == 1
+    assert [a for n, a in s.calls if n == "get_policy"] == [{}], "read once a session"
+
+
+def test_the_reach_follows_the_policys_longest_transit():
+    """Final review, B: the filter hard-coded 900 s; a policy with a longer max_transit_s let a
+    platform pass that the driver never asked about, so nomination.possible never fired."""
+    from watch.picture import max_transit_s
+
+    assert max_transit_s({"policy": {"rules": {"engage": {"max_transit_s": 3600}}}}) == 3600.0
+    assert max_transit_s({"policy": {"rules": {}}}) == 900.0 and max_transit_s({}) == 900.0
+    far = [veh(3, "magura", dx_km=40)]  # beyond (12 + 5) x 900 s, within (12 + 5) x 3600 s
+    s = FakeAgentSession([], options=[{"options": [{"uid": 3, "callsign": "MAGURA 3", "passed": True}]}], fleet=far)
+    s.policy = {"policy": {"rules": {"engage": {"max_transit_s": 3600}}}}
+    p = Poller(lambda: s, nomination_every_s=15)
+    run(p.open())
+    got = run(p.nominations(now=100))
+    assert got and got[0]["kind"] == "nomination.possible", got
+    assert [a["uids"] for n, a in s.calls if n == "get_nomination_options"] == [[3]]
 
 
 def test_nomination_dry_runs_are_one_a_poll_and_never_stall_it():

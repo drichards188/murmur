@@ -594,12 +594,14 @@ def test_held_repeats_are_one_per_subject_and_the_newest_is_told():
             told.append((now, x))
     assert worst <= 40, worst  # a few polls between wakes, not one per repeat
     assert len(told) >= 10
+    counts = []
     for now, x in told:
         ts = [c["t"] for c in x.changes if c.get("kind") in ("track.affiliation", "vehicle.event")]
-        assert ts and min(ts) >= now - 6, (now, sorted(ts)[:3])
-        assert all("held back over the last" in y and "the latest is shown" in y for y in x.why), x.why
-        held = [c["held_back"] for c in x.changes if "held_back" in c]
-        assert held and all(h["repeats"] > 50 for h in held), held
+        # the burst of the update's own coalescing window (up to coalesce_max_s), never older
+        assert ts and min(ts) >= now - 12, (now, sorted(ts)[:3])
+        counts += [c["held_back"]["repeats"] for c in x.changes if "held_back" in c]
+    assert counts and max(counts) > 50, counts
+    assert any("held back over the last" in y and "the latest is shown" in y for _, x in told for y in x.why)
 
 
 def test_a_held_raise_that_clears_is_a_note():
@@ -658,3 +660,124 @@ def test_a_condition_coming_and_going_slower_than_the_flap_window_keeps_its_cool
         assert len([t for t in esc if t < 3600]) <= 3, (raise_, esc)
         assert hostile and hostile[1] and hostile[0] <= 3616, (raise_, hostile, esc)
         assert wakes >= 11, "each raise after a clear still wakes the model"
+
+
+def test_a_held_repeat_is_never_told_once_its_item_has_moved_on():
+    """Final review, A (wake_probe7): a repeat held back stayed held when a newer change of the
+    same item came under another instance or did not wake, and was told as a trigger minutes
+    later: navigation off GNSS at 10, back at 20, off at 30 (held), back at 40 for good woke
+    the model at 318 s with "lost GNSS", though it was told at 74 s that GNSS was back."""
+    nav = lambda src, t: {"kind": "vehicle.nav", "uid": 4, "domain": "air", "t": t,  # noqa: E731
+                          "to": {"ready": True, "source": src}}
+    aff = lambda frm, to, t: {"kind": "track.affiliation", "track": "T-9", "from": frm, "to": to, "t": t}  # noqa: E731
+    for script, back in (
+            ([(10, [nav("dead_reckoning", 10)]), (20, [nav("gnss", 20)]), (30, [nav("dead_reckoning", 30)]),
+              (40, [nav("gnss", 40)])], ("vehicle.nav", 40)),
+            ([(10, [aff("unknown", "suspect", 10)]), (20, [aff("suspect", "unknown", 20)]),
+              (30, [aff("unknown", "suspect", 30)]), (40, [aff("suspect", "neutral", 40)])], ("track.affiliation", 40))):
+        for hb in (60.0, 0.0):
+            w = Waker(Budgets(heartbeat_s=hb))
+            w.due(0)
+            wakes = []
+            for t in range(0, 700, 2):
+                for at, chs in script:
+                    if at == t:
+                        w.add(chs, t)
+                x = w.due(t)
+                if x and x.reason != "start":
+                    wakes.append(x)
+            assert not [x for x in wakes if x.t > 60 and x.why], (hb, [(x.t, x.why) for x in wakes])
+            assert w.holding == {}, "nothing held"
+            # the held repeat (t=30) is told once, as a note before the change that superseded
+            # it, with the next update (navigation back on GNSS wakes nobody: with the
+            # heartbeat off its notes wait for the next trigger)
+            told30 = [(x.t, c) for x in wakes for c in x.changes if c.get("t") == 30]
+            if told30:
+                assert len(told30) == 1 and told30[0][1].get("superseded"), (hb, told30)
+                x = next(x for x in wakes if any(c.get("t") == 30 for c in x.changes))
+                ts = [c.get("t") for c in x.changes]
+            else:
+                assert not hb and back[0] == "vehicle.nav", hb
+                ts = [c.get("t") for c in w.pending]
+                assert any(c.get("t") == 30 and c.get("superseded") for c in w.pending), w.pending
+            assert ts.index(30) < ts.index(back[1]), ts
+
+
+def test_slow_cyclers_cannot_spend_the_escalations_a_hostile_declaration_needs():
+    """Final review, C (wake_probe8): one contact whose conflict comes and goes every 320 s
+    escalated every 30 minutes (all six of a 3-hour run), and three of them spent all six by
+    414 s, after which a hostile declaration went to the routine model. Now one subject
+    escalates at most twice a run, and two of the six are kept for the engagement chain."""
+    def run_cyclers(tracks, seconds, hostile_at=None):
+        w = Waker(Budgets())
+        w.due(0)
+        esc, hostile = [], None
+        for i in range(int(seconds / 2)):
+            now = 10 + 2 * i
+            chs = []
+            for k, tr in enumerate(tracks):
+                since = now - 10 - 40 * k
+                if since < 0:
+                    continue
+                if since % 320 == 0:
+                    chs.append({"kind": "track.identity_conflict", "track": tr, "conflict": "x"})
+                elif since % 320 == 160:
+                    chs.append({"kind": "track.identity_cleared", "track": tr})
+            if hostile_at == now:
+                chs.append({"kind": "track.declared", "track": "T-99", "declared": "hostile", "declaration": "D-9"})
+            if chs:
+                w.add(chs, now)
+            x = w.due(now)
+            if x and x.escalate:
+                esc.append(now)
+            if x and hostile is None and any(c.get("track") == "T-99" for c in x.changes):
+                hostile = (now, x.escalate)
+        return w, esc, hostile
+
+    w, esc, _ = run_cyclers(["T-1"], 3 * 3600)
+    assert len(esc) == 2, esc
+    w, esc, hostile = run_cyclers(["T-1", "T-2", "T-3"], 3700, hostile_at=3610)
+    side = [t for t in esc if t < 3610]
+    assert len(side) == 4 and w.side_escalations == 4, esc
+    assert hostile and hostile[1], (hostile, esc)
+    # a second hostile declaration still has the last of the reserve
+    w.add([{"kind": "track.declared", "track": "T-98", "declared": "hostile", "declaration": "D-10"}], 3700)
+    x = None
+    t = 3700.0
+    while x is None and t < 3730:
+        t += 1
+        x = w.due(t)
+    assert x is not None and x.escalate and w.escalations == 6
+    # an armed platform's lost link escalates from the reserve only with an engagement in play
+    from watch.wake import chain
+
+    assert chain({"kind": "vehicle.link_lost", "armed": True, "engaging": True})
+    assert not chain({"kind": "vehicle.link_lost", "armed": True, "engaging": False})
+    assert not chain({"kind": "track.identity_conflict"})
+
+
+def test_a_returned_escalation_gives_back_its_share():
+    w = Waker(quiet())
+    w.due(0)
+    w.add([{"kind": "vehicle.gps_glitch", "uid": 4, "glitch": True}], 20)
+    x = w.due(24)
+    assert x.escalate and x.side and w.side_escalations == 1 and w.escalated_runs
+    w.unescalate(x)
+    assert w.side_escalations == 0 and not any(w.escalated_runs.values())
+
+
+def test_bounding_the_notes_drops_a_condition_that_came_and_went_whole():
+    """Final review, nit 3: the bound could drop a clear and keep its raise (a link lost that
+    reads as never restored)."""
+    from watch.wake import MAX_PENDING
+
+    w = Waker(quiet())
+    w.due(0)
+    w.add([{"kind": "vehicle.link_lost", "uid": 6}, {"kind": "vehicle.link_restored", "uid": 6}], 10)
+    for i in range(MAX_PENDING - 2):
+        w.add([{"kind": "vehicle.event", "uid": 2, "event_kind": "mode", "text": f"mode {i}"}], 11 + i)
+    assert len(w.pending) == MAX_PENDING
+    w.add([{"kind": "vehicle.event", "uid": 2, "event_kind": "mode", "text": "one more"}], 2000)
+    kinds = [c["kind"] for c in w.pending]
+    assert "vehicle.link_lost" not in kinds and "vehicle.link_restored" not in kinds, "both went"
+    assert w.notes_dropped == 2 and len(w.pending) == MAX_PENDING - 1

@@ -1018,7 +1018,21 @@ group. Dates are 2026.
   refusal phrasings count as refused (the bare `<tool_use_error>` tag also wraps a tool that
   ran and failed); the routine model and the consult back off separately, so a failing
   routine model never holds an escalation back; the driver's own nomination poll asks about
-  the armed platforms within reach only, and only whether each passes.
+  the armed platforms within reach only (the policy's `max_transit_s`, read from
+  `get_policy`), and only whether each passes. After the final review (10-08): a repeat is
+  held per item, not per subject, and any newer change of the item that is not held back
+  (another value, or one that does not wake) turns it into a note told just before that
+  change, since a repeat held as a trigger was told minutes after the item had moved on
+  (navigation "lost GNSS" at 318 s, GNSS back since 40 s); two of the run's six escalations
+  are kept for the engagement chain (hostile declarations, a nomination becoming possible,
+  an armed platform's lost link with an engagement in play: the change feed now says
+  `engaging`) and one subject escalates at most twice a run, since one contact cycling
+  slower than the flap window still escalated every 30 minutes and three spent all six in
+  seven minutes (the cooldown alone bounds a rate, not a run); the Codex backend disables
+  every feature that runs commands or model-written code or reads files, confirms them off
+  with `codex features list` before any turn and refuses to start otherwise, because a
+  read-only sandbox does not stop reads and a breach seen in the event stream comes after
+  the command ran.
 - **`get_changes` is a digest compared between reads, not an event log** (10-08). The bridge
   keeps no history of an affiliation estimate or an alert clearing, so a cursor over the
   timestamps it does keep would miss exactly those; the MCP layer compares a digest of the

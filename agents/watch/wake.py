@@ -29,11 +29,21 @@ note: it rides along with the next update.
   a condition that keeps coming and going slower than `flap_window_s` (an armed boat at the
   edge of radio range, or an adversary choosing the period) escalates at most once per
   cooldown and cannot spend the run's escalations either.
-- A repeat inside its subject's interval is held back: one per subject, the newest, with a
-  count (`holding`), never used as filler by another wake. When the interval ends it is a
-  trigger of its own, delivered with how many repeats were held back; a newer change of the
-  subject that may wake supersedes it; a clear of its condition turns it into a note. So a
-  contact whose estimate wobbles every poll holds one change, not thousands.
+- A repeat inside its subject's interval is held back: one per item (the kind and its track,
+  vehicle, alert, flag or intent), the newest whatever its instance, with a count
+  (`holding`), never used as filler by another wake. When the interval ends it is a trigger
+  of its own, delivered with how many repeats were held back. Any newer change of the item
+  that is not itself held back (waking or not: navigation back on GNSS, an estimate gone to
+  neutral) supersedes it: a newer one of the same subject that may wake is delivered with
+  the count, anything else after the held one, which becomes a note; a clear of its
+  condition makes it a note too. So a held repeat is never told as a trigger once the item
+  has moved on, and a contact whose estimate wobbles every poll holds one change, not
+  thousands.
+- The run's escalations: `escalation_reserve` of them are kept for the engagement chain (a
+  hostile declaration, a nomination becoming possible, a lost link on an armed platform with
+  an engagement in play), and one subject escalates at most `max_escalations_per_subject`
+  times a run, so spoof and link triggers (slow cyclers included) cannot spend the budget a
+  hostile declaration needs.
 - The heartbeat backs off (doubling up to `heartbeat_max_s`) while nothing new arrives:
   autopilot chatter, vehicles joining and repeats of a subject just reported are not news.
   Heartbeats never take the last quarter of the hour's wakes: those are kept for triggers.
@@ -210,6 +220,22 @@ def _pair(c: Change) -> tuple[tuple, bool] | None:
     return None
 
 
+def come_go_pairs(changes: list[Change]) -> list[tuple[int, int]]:
+    """(raise, clear) index pairs of conditions raised and cleared again within the batch."""
+    open_: dict[tuple, int] = {}
+    pairs: list[tuple[int, int]] = []
+    for i, c in enumerate(changes):
+        p = _pair(c)
+        if p is None:
+            continue
+        key, raises = p
+        if raises:
+            open_[key] = i
+        elif key in open_:
+            pairs.append((open_.pop(key), i))
+    return pairs
+
+
 def came_and_went(changes: list[Change]) -> set[int]:
     """Indices of changes whose condition was raised and cleared again within the batch (a
     2-second acoustic link flap, an alert that cleared itself): notes, not a reason to wake."""
@@ -247,6 +273,10 @@ class Budgets:
     per_subject_s: float = 300.0  # one subject wakes the model at most this often
     escalate_cooldown_s: float = 1800.0  # and escalates at most this often
     flap_window_s: float = 300.0  # a second come-and-go within this is flapping
+    # escalations only the engagement chain may use (`max_escalations` minus this is what the
+    # other escalating triggers share: spoofs, glitches, links, flapping)
+    escalation_reserve: int = 2
+    max_escalations_per_subject: int = 2  # a run's escalations for one subject
 
 
 @dataclass
@@ -266,11 +296,31 @@ class Wake:
     escalated_subjects: list = field(default_factory=list)
     # older notes not kept since the last update (MAX_PENDING)
     notes_dropped: int = 0
+    # it escalated for triggers outside the engagement chain only (the shared part of the budget)
+    side: bool = False
+
+
+def item_of(c: Change) -> tuple:
+    """A change's kind and item (its subject without the instance)."""
+    return subject(c)[:-1]
+
+
+def chain(c: Change) -> bool:
+    """A change of the engagement chain: a hostile declaration, a nomination becoming
+    possible, a lost link on an armed platform with an engagement in play."""
+    k = c.get("kind")
+    return (k == "nomination.possible" or (k == "track.declared" and c.get("declared") == "hostile")
+            or (k == "vehicle.link_lost" and _armed(c) and c.get("engaging") is True))
+
+
+def _superseded(c: Change) -> Change:
+    """A held repeat the item has moved on from: a note (it never wakes)."""
+    return {**c, "superseded": True}
 
 
 @dataclass
 class HeldRepeat:
-    """One subject's repeats held back inside its interval: the newest, and how many."""
+    """One item's repeats held back inside its interval: the newest, and how many."""
 
     change: Change
     count: int
@@ -326,8 +376,10 @@ class Waker:
     clears: dict = field(default_factory=dict)  # come-and-go key -> its clears in the cooldown
     flapped: dict = field(default_factory=dict)  # come-and-go key -> when flapping was said
     dropped: list = field(default_factory=list)  # (change, error) that could not be judged
-    holding: dict = field(default_factory=dict)  # subject -> HeldRepeat
+    holding: dict = field(default_factory=dict)  # item (item_of) -> HeldRepeat
     notes_dropped: int = 0  # notes not kept since the last wake (MAX_PENDING)
+    escalated_runs: dict = field(default_factory=dict)  # subject -> escalations this run
+    side_escalations: int = 0  # escalations outside the engagement chain
 
     # ---- judging one change ---------------------------------------------------------------
 
@@ -338,14 +390,17 @@ class Waker:
 
     def judge(self, c: Change, now: float) -> Judged:
         wakes, esc, why = classify(c)
-        if not wakes or self._covered(c, now):
+        if not wakes or c.get("superseded") or self._covered(c, now):
             return Judged(False, False, None, NEVER, False)
         subj = subject(c)
         last = self.woke.get(subj)
         since = NEVER if last is None else last + self.budgets.per_subject_s
         if now < since:
             return Judged(False, False, why, since, True)
-        esc_now = esc and now - self.escalated.get(subj, NEVER) >= self.budgets.escalate_cooldown_s
+        b = self.budgets
+        esc_now = (esc and now - self.escalated.get(subj, NEVER) >= b.escalate_cooldown_s
+                   and self.escalated_runs.get(subj, 0) < b.max_escalations_per_subject
+                   and (chain(c) or self.side_escalations < b.max_escalations - b.escalation_reserve))
         return Judged(True, esc_now, why, since, False)
 
     def wakes_now(self, c: Change, now: float) -> bool:
@@ -384,7 +439,7 @@ class Waker:
         if first is None:
             return []
         subj = subject(first)
-        self._unhold(subj)  # a raise held back that has since cleared: a note
+        self._unhold(item_of(first))  # a raise held back that has since cleared: a note
         window = self.budgets.flap_window_s
         q = self.cycles.setdefault(key, deque())
         q.append(now)
@@ -423,39 +478,46 @@ class Waker:
             return False
 
     def _hold(self, c: Change, at: float) -> None:
-        """Keep a repeat inside its subject's interval: the newest only, counted."""
-        subj = subject(c)
-        h = self.holding.get(subj)
+        """Keep a repeat inside its subject's interval: one per item, the newest, counted."""
+        key = item_of(c)
+        h = self.holding.get(key)
         if h is None:
-            self.holding[subj] = HeldRepeat(c, 1, at, at)
+            self.holding[key] = HeldRepeat(c, 1, at, at)
             return
         h.count += 1
         h.first_t = min(h.first_t, at)
         if at >= h.last_t:
             h.change, h.last_t = c, at
 
-    def _unhold(self, subj) -> None:
+    def _unhold(self, key) -> None:
         """A held raise whose condition cleared: back with the notes, before the clear (so
         the two read as came and went)."""
-        h = self.holding.pop(subj, None)
+        h = self.holding.pop(key, None)
         if h is not None:
-            self.pending.append(h.change)
+            self.pending.append(_superseded(h.change))
             self.arrived.append(h.last_t)
 
     def _bound(self, now: float) -> None:
-        """Past MAX_PENDING, the oldest notes go (counted); a waking change is always kept."""
+        """Past MAX_PENDING, the oldest notes go (counted); a waking change is always kept, and
+        a condition that came and went goes with both its raise and its clear."""
         excess = len(self.pending) - MAX_PENDING
         if excess <= 0:
             return
-        keep_c, keep_t = [], []
-        for c, t in zip(self.pending, self.arrived):
-            if excess > 0 and not self.wakes_now(c, now):
-                excess -= 1
-                self.notes_dropped += 1
+        partner: dict[int, int] = {}
+        for a, b in come_go_pairs(self.pending):
+            partner[a], partner[b] = b, a
+        drop: set[int] = set()
+        for i, c in enumerate(self.pending):
+            if excess <= 0:
+                break
+            if i in drop or (i not in partner and self.wakes_now(c, now)):
                 continue
-            keep_c.append(c)
-            keep_t.append(t)
-        self.pending, self.arrived = keep_c, keep_t
+            both = {i, partner[i]} if i in partner else {i}
+            drop |= both
+            excess -= len(both)
+        self.notes_dropped += len(drop)
+        keep = [(c, t) for i, (c, t) in enumerate(zip(self.pending, self.arrived)) if i not in drop]
+        self.pending, self.arrived = [c for c, _ in keep], [t for _, t in keep]
 
     def add(self, changes: list[Change], now: float) -> None:
         if not changes:
@@ -474,9 +536,15 @@ class Waker:
             if j.held:
                 self._hold(c, now)  # not news, and not a change for coalescing
             else:
-                if j.wakes and subj in self.holding:
-                    # a newer change of a subject with repeats held back supersedes them
-                    c = _with_held(c, self.holding.pop(subj))
+                h = self.holding.pop(item_of(c), None)
+                if h is not None:
+                    # a newer change of an item with a repeat held back supersedes it: one that
+                    # wakes is told with the count; one of another instance, or one that does
+                    # not wake (the item moved on), comes after the held one, a note
+                    if subject(h.change) != subj or not j.wakes:
+                        accepted.append(_superseded(h.change))
+                    if j.wakes:
+                        c = _with_held(c, h)
                 accepted.append(c)
             accepted.extend(extra)
         if not accepted:
@@ -576,21 +644,35 @@ class Waker:
         items: list[tuple[float, Change, Judged | None]] = []
         for i, (c, at) in enumerate(zip(self.pending, self.arrived)):
             items.append((at, c, self.judge(c, now) if i in live_i else None))
-        for subj, h in list(self.holding.items()):
+        for key, h in list(self.holding.items()):
             j = self.judge(h.change, now)
             if j.held:
                 continue  # its interval goes on: it stays held
-            del self.holding[subj]
+            del self.holding[key]
             items.append((h.last_t, _with_held(h.change, h), j))
         items.sort(key=lambda x: x[0])  # oldest first (stable: pending in arrival order)
+        # each item's newest change told in this update: a repeat of it held back before that
+        # is no longer the item's state (a note), one after it is
+        told: dict[tuple, float] = {}
+        for at, c, j in items:
+            if j is None or not j.held:
+                told[item_of(c)] = max(at, told.get(item_of(c), NEVER))
+        on_chain = False
+        notes_of_told: list[Change] = []  # waking kinds told as notes (superseded)
         for at, c, j in items:
             if j is None:
                 deliver.append(c)  # came and went: a note
                 continue
             if j.held:
-                self._hold(c, at)  # a repeat inside its interval: held, a trigger later
+                if told.get(item_of(c), NEVER) >= at:
+                    deliver.append(_superseded(c))
+                    notes_of_told.append(c)
+                else:
+                    self._hold(c, at)  # a repeat inside its interval: held, a trigger later
                 continue
             deliver.append(c)
+            if c.get("superseded") and classify(c)[0]:
+                notes_of_told.append(c)
             if not j.wakes:
                 continue
             text = (j.why or "") + _held_text(c, now)
@@ -599,11 +681,21 @@ class Waker:
             subj = subject(c)
             if escalates and j.escalates:
                 self.escalated[subj] = now
-                esc_s.append(subj)
+                if subj not in esc_s:  # once a wake per subject
+                    self.escalated_runs[subj] = self.escalated_runs.get(subj, 0) + 1
+                    esc_s.append(subj)
+                on_chain = on_chain or chain(c)
                 if j.why and j.why not in esc_why:
                     esc_why.append(j.why)
             self.woke[subj] = now
             woke_s.append(subj)
+        # a superseded repeat told as a note beside a trigger of its item: told too (its next
+        # repeat is held), so an estimate flipping between two values wakes once an interval
+        trig_items = {item_of(c) for c in deliver if c.get("held_back") is not None or subject(c) in woke_s}
+        for c in notes_of_told:
+            if item_of(c) in trig_items:
+                self.woke[subject(c)] = now
+                woke_s.append(subject(c))
         counts: dict[str, int] = {}
         for h in self.holding.values():
             k = classify(h.change)[2] or str(h.change.get("kind"))
@@ -615,10 +707,13 @@ class Waker:
         self.recent.append(now)
         self.wakes += 1
         self.deferred = False
+        side = escalates and not on_chain
         if escalates:
             self.escalations += 1
+            self.side_escalations += side
         dropped, self.notes_dropped = self.notes_dropped, 0
-        return Wake(self.wakes, reason, deliver, why, escalates, esc_why, now, held, woke_s, esc_s, dropped)
+        return Wake(self.wakes, reason, deliver, why, escalates, esc_why, now, held, woke_s, esc_s, dropped,
+                    side)
 
     def give_back(self, wake: Wake, now: float) -> None:
         """A wake whose turn failed: its changes come back (to be told again), its subjects
@@ -640,9 +735,14 @@ class Waker:
         stronger model was limited): its escalation and the subjects' cooldowns come back."""
         for s in wake.escalated_subjects:
             self.escalated.pop(s, None)
+            if self.escalated_runs.get(s):
+                self.escalated_runs[s] -= 1
         if wake.escalate:
             self.escalations = max(0, self.escalations - 1)
+            if wake.side:
+                self.side_escalations = max(0, self.side_escalations - 1)
         wake.escalate = False
+        wake.side = False
         wake.escalated_subjects = []
 
     def take_dropped(self) -> list:

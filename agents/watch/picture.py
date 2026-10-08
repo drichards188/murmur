@@ -23,12 +23,19 @@ class NoChangesTool(RuntimeError):
 
 
 # Which armed platforms the driver asks about for a hostile track. The checks refuse an
-# intercept longer than the policy's `max_transit_s` (900 s in sim/policy.toml; the rules
-# configuration is not readable over MCP, hence the constant), so a platform farther than its
-# cruise speed plus the track's speed times that is out of reach. A platform with no cruise
-# figure in the catalog is asked about within FALLBACK_REACH_M.
+# intercept longer than the policy's `max_transit_s` (`get_policy`: policy.rules.engage, 10 to
+# 7200 s; read once a session, TRANSIT_S when the policy has no engagement section), so a
+# platform farther than its cruise speed plus the track's speed times that is out of reach. A
+# platform with no cruise figure in the catalog is asked about within FALLBACK_REACH_M.
 TRANSIT_S = 900.0
 FALLBACK_REACH_M = 30_000.0
+
+
+def max_transit_s(policy: dict) -> float:
+    """The policy's longest intercept (`get_policy`), else TRANSIT_S."""
+    rules = ((policy.get("policy") or {}).get("rules") or {}) if isinstance(policy, dict) else {}
+    v = (rules.get("engage") or {}).get("max_transit_s")
+    return float(v) if isinstance(v, (int, float)) and v > 0 else TRANSIT_S
 
 
 def distance_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
@@ -38,10 +45,10 @@ def distance_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
     return 2 * 6371000.0 * math.asin(math.sqrt(a))
 
 
-def candidates(vehicles: list[dict], track: dict, cruise: dict) -> list[int]:
+def candidates(vehicles: list[dict], track: dict, cruise: dict, transit_s: float = TRANSIT_S) -> list[int]:
     """The armed platforms that could pass on `track`, nearest first: armed, link up,
     navigation ready, a position, and within reach (`get_fleet` compact entries; `cruise` maps
-    a platform id to its catalog cruise speed)."""
+    a platform id to its catalog cruise speed; `transit_s` is the policy's longest intercept)."""
     pos = track.get("position")
     if not (isinstance(pos, (list, tuple)) and len(pos) == 2):
         return []
@@ -53,7 +60,7 @@ def candidates(vehicles: list[dict], track: dict, cruise: dict) -> list[int]:
         if not all(isinstance(v.get(k), (int, float)) for k in ("lon", "lat")):
             continue
         c = cruise.get(v.get("platform"))
-        reach = (c + speed) * TRANSIT_S if isinstance(c, (int, float)) and c > 0 else FALLBACK_REACH_M
+        reach = (c + speed) * transit_s if isinstance(c, (int, float)) and c > 0 else FALLBACK_REACH_M
         d = distance_m(v["lon"], v["lat"], pos[0], pos[1])
         if d <= reach:
             out.append((d, v["uid"]))
@@ -73,6 +80,7 @@ class Poller:
         self.checked: dict[str, float] = {}
         self.nomination_every_s = nomination_every_s
         self.cruise: dict | None = None  # platform id -> catalog cruise speed (read once a session)
+        self.transit_s: float | None = None  # the policy's max_transit_s (read once a session)
 
     async def open(self) -> dict:
         if self.session is not None:
@@ -81,6 +89,7 @@ class Poller:
         await s.__aenter__()
         self.session = s
         self.cruise = None
+        self.transit_s = None
         if "get_changes" not in s.tools:
             await self.close()
             raise NoChangesTool(
@@ -146,6 +155,8 @@ class Poller:
             if self.cruise is None:
                 catalog = await s.call("get_platforms")
                 self.cruise = {p.get("id"): p.get("cruise_mps") for p in catalog.get("platforms") or []}
+            if self.transit_s is None:
+                self.transit_s = max_transit_s(await s.call("get_policy"))
             fleet = await s.call("get_fleet", compact=True)
             hostile = await s.tracks(affiliation="hostile")
         except Exception:  # noqa: BLE001 (the next poll tries again)
@@ -153,7 +164,7 @@ class Poller:
         t = next((x for x in hostile if x.get("id") == track), None)
         if t is None:
             return []  # gone, or no longer estimated hostile: the change feed says which
-        uids = candidates(fleet.get("vehicles") or [], t, self.cruise)
+        uids = candidates(fleet.get("vehicles") or [], t, self.cruise, self.transit_s)
         passing: list[dict] = []
         if uids:
             result = await s.session.call_tool("get_nomination_options",

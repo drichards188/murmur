@@ -14,7 +14,14 @@ becomes the child's CODEX_HOME: a home of its own keeps the user's global AGENTS
 (log in there once: `CODEX_HOME=<dir> codex login`); without it the user's normal home is
 used and its global AGENTS.md is read.
 
-Locked down by configuration on the command line (`--ignore-user-config`, `--ignore-rules`,
+Before any turn the backend asks the CLI which features it has (`codex features list`, the
+effective state with this run's configuration), disables every one that runs commands or
+model-written code, reads or writes files, or reaches beyond the bridge (`--disable <name>`
+on every exec), and refuses to start unless the list then shows each of them off and shows
+the shell features at all: a read-only sandbox blocks writes and the network, not reads, so
+a shell left on could read the whole disk, and stopping the run on a command item comes
+after the command ran. Everything else is locked down by configuration on the command line
+(`--ignore-user-config`, `--ignore-rules`,
 `--strict-config` so a renamed key fails loudly, read-only sandbox, shell, web search, apps,
 plugins, sub-agents, browser, memories, hooks and skills off, no project docs) with the
 bridge as the only MCP server, its tools approved and exposed directly
@@ -34,6 +41,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import signal
 import time
 from dataclasses import dataclass
@@ -72,6 +80,31 @@ def toml_str(s: str) -> str:
 # be wrong. `--strict-config` turns a wrong key name into a refusal to start (loud), never a
 # silently weaker lockdown: if Codex refuses one, correct its name here.
 #
+# Features to disable: any `codex features list` shows whose name says it runs commands or
+# model-written code, reads or writes files, or reaches beyond the bridge. Matched by name, so
+# a feature a later Codex adds under such a name is disabled too; disabling one too many costs
+# nothing the watch officer uses. On 0.116 (installed here) it matches 32 of 52, all of which
+# `--disable` accepted and the list then showed off; what it left on (collaboration_modes,
+# enable_request_compression, fast_mode, personality, sqlite, steer) runs nothing. Not
+# matched on purpose: the sandbox's own features (disabling one could weaken the sandbox).
+RISKY_FEATURES = re.compile(r"shell|exec|repl|code_mode|patch|agent|apps|plugin|browser|computer|hook|skill|"
+                            r"memor|image|artifact|git|undo|fanout|permission|tool_suggest|search|realtime|voice|"
+                            r"goal")
+# These must be in the list and off, or the backend does not start (a renamed shell feature
+# cannot be confirmed off).
+REQUIRED_OFF = ("shell_tool", "unified_exec")
+
+
+def parse_features(text: str) -> dict[str, bool]:
+    """`codex features list`: one feature a line, `<name> <stage...> <true|false>`."""
+    out: dict[str, bool] = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[-1] in ("true", "false") and re.fullmatch(r"[a-z0-9_]+", parts[0]):
+            out[parts[0]] = parts[-1] == "true"
+    return out
+
+
 # Everything off that the watch officer does not need (`-c key=value`, TOML values).
 LOCKDOWN: tuple[tuple[str, str], ...] = (
     ("features.shell_tool", "false"),  # brief
@@ -147,6 +180,8 @@ class CodexBackend:
         # the bridge's tool names, when the driver knows them: a call whose server field is
         # missing passes only when it names one of these
         self.murmur_tools: set[str] | None = None
+        # the features disabled on every exec, once confirmed off (None: not yet checked)
+        self.disabled: list[str] | None = None
 
     def judge_item(self, item: dict) -> str:
         """'ok', 'breach', 'unknown' (a type the user let through with --codex-allow-item:
@@ -183,7 +218,10 @@ class CodexBackend:
             ("mcp_servers.murmur.http_headers", "{" + f'"X-Murmur-Agent"={toml_str(self.agent)}' + "}"),  # brief
             ("mcp_servers.murmur.required", "true"),  # brief
             ("mcp_servers.murmur.default_tools_approval_mode", '"approve"'),  # brief
-            ("features.code_mode.direct_only_tool_namespaces", '["mcp__murmur"]'),  # brief
+            # not `features.code_mode.direct_only_tool_namespaces` (brief): code mode runs
+            # model-written code, so it is disabled (RISKY_FEATURES), and with it off the
+            # bridge's tools are offered directly (as before code mode existed; unverified
+            # on 0.161)
         ]
         if self.key:  # the key stays in the environment; the config names the variable
             cfg.append(("mcp_servers.murmur.bearer_token_env_var", toml_str(KEY_ENV)))  # inferred
@@ -194,16 +232,54 @@ class CodexBackend:
             out += ["-c", f"{k}={v}"]
         return out
 
+    def disable_args(self) -> list[str]:
+        """`--disable <feature>` for each confirmed off (the spelling `codex exec --help` and
+        `codex exec resume --help` give on 0.116)."""
+        return [a for name in self.disabled or () for a in ("--disable", name)]
+
     def argv_new(self, model: str, effort: str) -> list[str]:
         return [self.cfg.bin, "exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
                 "--ignore-rules", "--strict-config", "-C", str(self.run_dir), "-s", "read-only",
-                "-m", model, *self.config_args(model, effort), "-"]
+                "-m", model, *self.disable_args(), *self.config_args(model, effort), "-"]
 
     def argv_resume(self, thread: str, model: str, effort: str) -> list[str]:
         # resume takes no -C or -s: the sandbox by configuration, the directory as cwd
         return [self.cfg.bin, "exec", "resume", thread, "--json", "--skip-git-repo-check",
                 "--ignore-user-config", "--ignore-rules", "--strict-config", "-m", model,
-                *self.config_args(model, effort), "-c", 'sandbox_mode="read-only"', "-"]
+                *self.disable_args(), *self.config_args(model, effort), "-c", 'sandbox_mode="read-only"', "-"]
+
+    async def _features(self, extra: list[str]) -> dict[str, bool]:
+        argv = [self.cfg.bin, *extra, *self.config_args(self.cfg.model, self.cfg.effort), "features", "list"]
+        code, out, err = await run_quick(argv, self.env(), cwd=str(self.run_dir), timeout=60)
+        listed = parse_features(out)
+        if code != 0 or not listed:
+            last = (err.strip().splitlines() or ["no output"])[-1]
+            raise PreflightError(
+                f"`codex features list` failed ({code}: {last}), so the shell and exec features cannot be "
+                "confirmed off; the watch officer does not run with them possibly on",
+                "check that this Codex has the features command (codex features list), " + FALLBACK_HINT)
+        return listed
+
+    async def confirm_features(self) -> dict:
+        """Disable every risky feature the CLI lists and confirm it off, or refuse to start."""
+        listed = await self._features([])
+        missing = [n for n in REQUIRED_OFF if n not in listed]
+        if missing:
+            raise PreflightError(
+                f"`codex features list` does not list {', '.join(missing)}, so they cannot be confirmed off "
+                "(renamed in this Codex?)",
+                "add the new names to REQUIRED_OFF and RISKY_FEATURES in agents/watch/codex.py after checking "
+                "them, " + FALLBACK_HINT)
+        risky = sorted(n for n in listed if RISKY_FEATURES.search(n))
+        after = await self._features([a for n in risky for a in ("--disable", n)])
+        still = [n for n in risky if after.get(n, True)]
+        if still:
+            raise PreflightError(
+                f"Codex still shows {', '.join(still)} on after --disable: the watch officer does not run with "
+                "a feature that runs commands or reads files on",
+                "check `codex --disable <name> features list`, " + FALLBACK_HINT)
+        self.disabled = risky
+        return {"features_disabled": risky, "features_on": sorted(n for n, on in after.items() if on)}
 
     async def preflight(self) -> dict:
         env = self.env()
@@ -226,8 +302,9 @@ class CodexBackend:
             home = f"CODEX_HOME={self.cfg.home} " if self.cfg.home else ""
             raise PreflightError(f"Codex is not logged in with ChatGPT ({said or 'no answer'})",
                                  f"run `{home}codex login` with your ChatGPT account, " + FALLBACK_HINT)
+        features = await self.confirm_features()
         return {"cli": self.cfg.bin, "version": self.version, "login": said, "codex_home": self.cfg.home,
-                "api_key_env_removed": self.removed_env}
+                "api_key_env_removed": self.removed_env, **features}
 
     async def start(self, resume: str | None = None) -> dict:
         """Nothing runs between wakes; a later run resumes a recorded thread."""
@@ -244,6 +321,8 @@ class CodexBackend:
             self.thread_path.write_text(json.dumps({"thread_id": tid, "t": time.time()}))
 
     async def turn(self, text: str, deadline: float) -> Turn:
+        if self.disabled is None:
+            await self.confirm_features()  # never a turn with the shell possibly on
         if self.thread_id:
             argv = self.argv_resume(self.thread_id, self.cfg.model, self.cfg.effort)
         else:
@@ -255,6 +334,8 @@ class CodexBackend:
         update only, not the routine thread. Resuming the routine thread on the stronger
         model would send that whole thread, uncached, at every escalation; a fresh thread
         pays for its own reads, and the routine thread is told what it did."""
+        if self.disabled is None:
+            await self.confirm_features()
         return await self._run(self.argv_new(self.cfg.strong_model, self.cfg.strong_effort), text, deadline,
                                self.cfg.strong_model, routine=False)
 
@@ -386,4 +467,6 @@ class CodexBackend:
                 "strong_model": self.cfg.strong_model, "strong_effort": self.cfg.strong_effort,
                 "codex_home": self.cfg.home or os.environ.get("CODEX_HOME") or "~/.codex (the user's own)",
                 "allow_items": list(self.cfg.allow_items),
+                # None until `codex features list` confirmed them off (the preflight does)
+                "features_disabled": self.disabled,
                 "max_turns_per_wake": self.max_turns, "argv": redacted}

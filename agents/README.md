@@ -193,7 +193,25 @@ reason the default is a temporary directory: if your `TMPDIR` is under such a ho
   tag), interrupts the turn and stops the run (`lockdown.breach`).
   Routine model `sonnet` at effort `medium`.
 - **Codex**: one `codex exec --json` per wake, then `codex exec resume <thread id>`, the
-  update on stdin. Locked down by `-c` configuration: `--ignore-user-config --ignore-rules
+  update on stdin. A read-only sandbox blocks writes and the network, not reads: a shell
+  left on could read the whole disk, and a breach found in the event stream comes after the
+  command ran. So before any turn the backend runs `codex features list` (the effective
+  feature states with this run's configuration; no model call), disables every listed
+  feature whose name says it runs commands or model-written code, reads or writes files, or
+  reaches beyond the bridge (`shell_tool`, `unified_exec`, `js_repl`, `code_mode`, the patch,
+  apps, plugins, agents, hooks, skills, memories, image, search and others: 32 of the 52 that
+  0.116 lists) with `--disable <name>` on every exec, and refuses to start unless the list
+  then shows each of them off and lists `shell_tool` and `unified_exec` at all (a renamed
+  shell feature cannot be confirmed off). Confirmed on the installed 0.116.0 without a model
+  or a login: the `codex features list` output and its effective state; `--disable
+  <FEATURE>` (and `-c features.<name>=false`, its documented equivalent) on `codex`, `codex
+  exec` and `codex exec resume`, each disabled feature then listed false; an unknown name
+  refused (`Unknown feature flag`). Needing 0.161: `--ignore-user-config`, `--ignore-rules`
+  and `--strict-config` (not in 0.116's `codex exec --help`), the other `-c` keys below
+  (0.116 rejects `agents.enabled`, so its feature check refuses to start, as it should), and
+  whether the bridge's tools are offered directly with code mode off (the backend no longer
+  sets `features.code_mode.direct_only_tool_namespaces`: code mode runs model-written code,
+  so it is disabled). Locked down further by `-c` configuration: `--ignore-user-config --ignore-rules
   --strict-config`, read-only sandbox, `approval_policy="never"`, the bridge as the only MCP
   server (required, its tools approved and exposed directly), shell, web search, apps,
   plugins, sub-agents, browser and computer use, image generation and viewing, the patch
@@ -241,8 +259,9 @@ The driver polls `get_changes` every 2 s. While a track is declared hostile it a
 agent one such dry run a second, shared with the model), for the armed platforms that could
 pass only and asking only whether each passes (`passed_only`): armed, link up, navigation
 ready, and within reach, which is the platform's catalog cruise speed plus the track's speed
-over 900 s, the longest transit the shipped policy allows (30 km for a platform with no
-cruise figure). The full answer for all 23 armed platforms of 100 stand-ins was 213 557
+over the policy's longest transit (`max_transit_s`, read from `get_policy` once a session;
+900 s when the policy has no engagement section), or 30 km for a platform with no cruise
+figure. The full answer for all 23 armed platforms of 100 stand-ins was 213 557
 characters. The table is `TRIGGERS` in `agents/watch/wake.py`:
 
 | change | wakes | stronger model |
@@ -271,16 +290,22 @@ its intents in one state) wakes the model at most once in 5 minutes and escalate
 once in 30, so one contact cannot spend the run's escalations or the hour's wakes. A subject
 is the item and its instance: a declaration by its number (a re-declaration is new), an
 affiliation by the value it moved to. A repeat inside the 5 minutes is held back: one per
-subject, the newest, with a count, listed in the update as held back. When the interval
-ends it wakes the model by itself, shown as the latest of N repeats; a newer change of the
-subject supersedes it, and a clear of its condition makes it a note. A subject that clears
-(a link back, an alert cleared, a declaration revoked) is released, so its next raise wakes
-at once, unless it is flapping; it escalates again only if that was its first come-and-go
-in the 30 minutes, so a condition coming and going slower than the flap window (an armed
-boat at the edge of radio range) cannot spend the run's escalations either. Notes kept for
-the next update are bounded (1000; the oldest go first and the update says how many). A
-change the driver cannot judge (malformed) is set aside and logged (`change.dropped`); the
-watch goes on. A
+item (the kind and its track, vehicle, alert, flag or intent), the newest, with a count,
+listed in the update as held back. When the interval ends it wakes the model by itself,
+shown as the latest of N repeats. Any newer change of the item that is not held back
+supersedes it, whatever its value and whether or not it wakes (navigation back on GNSS, an
+estimate gone to neutral): the held one is then told as a note just before it, never later
+as a trigger, and a clear of its condition makes it a note too. A subject that clears (a
+link back, an alert cleared, a declaration revoked) is released, so its next raise wakes at
+once, unless it is flapping; it escalates again only if that was its first come-and-go in
+the 30 minutes. Of the run's escalations, two are kept for the engagement chain (a hostile
+declaration, a nomination becoming possible, a lost link on an armed platform with an
+engagement in play); the others share the rest, and one subject escalates at most twice a
+run, so spoofs, glitches and links coming and going (an armed boat at the edge of radio
+range, or an adversary choosing the period) cannot spend what a hostile declaration needs.
+Notes kept for the next update are bounded (1000; the oldest go first, a condition that came
+and went with both its halves, and the update says how many). A change the driver cannot
+judge (malformed) is set aside and logged (`change.dropped`); the watch goes on. A
 heartbeat wakes it every 60 s without a trigger, doubling up to 300 s while nothing new
 arrives (autopilot chatter, vehicles joining and repeats are not news), and never takes the
 last quarter of the hour's wakes, which stay for triggers; a heartbeat that finds a waking
@@ -289,7 +314,8 @@ change still coalescing wakes for that change, escalated if it escalates.
 ### Budgets and limits
 
 `--max-wakes-per-hour` (60; an escalation is not held back by it), `--max-turns-per-wake`
-(12 tool turns), `--max-escalations` (6 a run), `--max-wakes` (400 a run), and for Claude
+(12 tool turns), `--max-escalations` (6 a run: two kept for the engagement chain, at most two
+for one subject), `--max-wakes` (400 a run), and for Claude
 `--max-budget-usd` (the CLI's own cost estimate, summed across restarts; on a subscription it
 is an estimate, not a bill). `--turn-timeout-s` (300) interrupts a turn that runs long. A
 turn that fails (a crash, or an error result such as an overloaded API after the CLI's own
@@ -367,7 +393,9 @@ between wakes cost nothing. Clients on an older protocol version (the Python SDK
 rmcp's default; `MURMUR_MCP_IDLE_S`; the driver's own reads come every 2 s), and one agent
 id holds at most eight, counted from each session's initialize (the one used least recently
 with no request in flight is closed; sessions their client closed do not count, and with
-every one busy the cap waits rather than cut a request off). Claude Code saved tool answers over about 50 000 characters to a file
+every one busy the cap waits rather than cut a request off; sessions opened by a claimant
+that names no listed agent share one capped bucket, and an opening request over 1 MB is
+refused with 413). Claude Code saved tool answers over about 50 000 characters to a file
 and gave the model a preview, which a model with no file tools cannot read (the nomination
 dry run on a hostile track, 61 KB): the bridge's tools now declare
 `anthropic/maxResultSizeChars` and the backend sets `MAX_MCP_OUTPUT_TOKENS`, and the whole

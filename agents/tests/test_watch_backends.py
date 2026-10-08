@@ -331,7 +331,7 @@ def test_codex_command_line_is_locked_down(fake_codex, run_dir):
     assert keys["mcp_servers.murmur.http_headers"] == '{"X-Murmur-Agent"="agent-watch"}'
     assert keys["mcp_servers.murmur.required"] == "true"
     assert keys["mcp_servers.murmur.default_tools_approval_mode"] == '"approve"'
-    assert keys["features.code_mode.direct_only_tool_namespaces"] == '["mcp__murmur"]'
+    assert "features.code_mode.direct_only_tool_namespaces" not in keys, "code mode is disabled instead"
     assert keys["mcp_servers.murmur.bearer_token_env_var"] == '"MURMUR_AGENT_KEY"'
     for off in ("features.shell_tool", "features.unified_exec", "features.apps", "features.plugins",
                 "agents.enabled", "features.multi_agent", "features.browser_use", "features.computer_use",
@@ -348,6 +348,52 @@ def test_codex_command_line_is_locked_down(fake_codex, run_dir):
     assert 'sandbox_mode="read-only"' in r
     with pytest.raises(ValueError, match="ultra"):
         codex(fake_codex, run_dir, strong_effort="ultra")
+
+
+def disabled_in(argv):
+    return [argv[i + 1] for i in range(len(argv)) if argv[i] == "--disable"]
+
+
+def test_codex_disables_every_feature_that_runs_commands_and_confirms_it(fake_codex, run_dir, tmp_path):
+    """Final review, D: a read-only sandbox blocks writes and the network, not reads, so a shell
+    left on could read the whole disk, and a breach on a command item comes after it ran. The
+    backend disables each risky feature `codex features list` shows (`--disable <name>`, the
+    spelling 0.116's help gives for exec and exec resume) and starts only when the list then
+    shows them off."""
+    b = codex(fake_codex, run_dir)
+    assert disabled_in(b.argv_new("m", "high")) == [], "nothing confirmed yet"
+    out = run(b.confirm_features())
+    want = ["apply_patch_freeform", "apps", "code_mode", "js_repl", "multi_agent", "shell_snapshot", "shell_tool",
+            "skill_mcp_dependency_install", "unified_exec", "web_search_request"]
+    assert out["features_disabled"] == want
+    assert out["features_on"] == ["fast_mode", "personality"], "what is left on runs nothing"
+    assert disabled_in(b.argv_new("m", "high")) == want and disabled_in(b.argv_resume("t", "m", "high")) == want
+    lists = [c["argv"] for c in calls(tmp_path) if c["argv"][-2:] == ["features", "list"]]
+    assert len(lists) == 2 and disabled_in(lists[1]) == want
+    assert b.describe()["features_disabled"] == want
+    # a turn without a preflight checks first
+    b2 = codex(fake_codex, run_dir)
+    t = run(b2.turn("Watch update 1.", time.time() + 30))
+    execs = [c["argv"] for c in calls(tmp_path) if c["argv"][:1] == ["exec"]]
+    assert t.stop == "success" and disabled_in(execs[-1]) == want
+
+
+@pytest.mark.parametrize("env, says", [
+    ({"FAKE_FEATURE_STUCK": "unified_exec"}, "still shows unified_exec on"),
+    ({"FAKE_FEATURE_GONE": "shell_tool"}, "does not list shell_tool"),
+    ({"FAKE_FEATURES_FAIL": "1"}, "`codex features list` failed"),
+])
+def test_codex_refuses_to_start_when_a_shell_feature_cannot_be_confirmed_off(fake_codex, run_dir, tmp_path,
+                                                                           monkeypatch, env, says):
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    with pytest.raises(PreflightError, match=says) as e:
+        run(codex(fake_codex, run_dir).preflight())
+    assert FALLBACK_HINT in e.value.fix
+    b = codex(fake_codex, run_dir)
+    with pytest.raises(PreflightError):
+        run(b.turn("Watch update 1.", time.time() + 30))
+    assert not [c for c in calls(tmp_path) if c["argv"][:1] == ["exec"]], "no turn ran"
 
 
 def test_codex_turns_start_a_thread_then_resume_it(fake_codex, run_dir, tmp_path):

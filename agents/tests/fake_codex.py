@@ -8,6 +8,7 @@ Behaviour by environment:
                           (unknown: an item of a type the backend does not know, then ok)
     FAKE_VERSION          what --version prints (default codex-cli 0.161.0)
     FAKE_LOGGED_OUT       set: `login status` says not logged in
+    FAKE_FEATURE_STUCK, FAKE_FEATURE_GONE, FAKE_FEATURES_FAIL   `features list` (see features_list)
 """
 
 import json
@@ -39,6 +40,38 @@ def emit(obj) -> None:
     sys.stdout.flush()
 
 
+# what `codex features list` shows on 0.116 (a subset), name -> on by default
+FEATURES = {"apply_patch_freeform": False, "apps": False, "code_mode": False, "fast_mode": True,
+            "js_repl": False, "multi_agent": True, "personality": True, "shell_snapshot": True,
+            "shell_tool": True, "skill_mcp_dependency_install": True, "unified_exec": True,
+            "web_search_request": False}
+
+
+def features_list() -> int:
+    """`[--disable X]... [-c k=v]... features list`. FAKE_FEATURE_STUCK: one that stays on;
+    FAKE_FEATURE_GONE: one not listed; FAKE_FEATURES_FAIL: the command fails."""
+    if os.environ.get("FAKE_FEATURES_FAIL"):
+        print("error: unrecognized subcommand 'features'", file=sys.stderr)
+        return 2
+    on = dict(FEATURES)
+    for i, a in enumerate(argv):
+        if a == "--disable" and i + 1 < len(argv):
+            if argv[i + 1] not in on:
+                print(f"Error: Unknown feature flag: {argv[i + 1]}", file=sys.stderr)
+                return 1
+            on[argv[i + 1]] = False
+    stuck = os.environ.get("FAKE_FEATURE_STUCK")
+    if stuck:
+        on[stuck] = True
+    on.pop(os.environ.get("FAKE_FEATURE_GONE", ""), None)
+    for name, v in sorted(on.items()):
+        print(f"{name:<33}stable             {'true' if v else 'false'}")
+    return 0
+
+
+if argv[-2:] == ["features", "list"]:
+    record()
+    sys.exit(features_list())
 if argv[:1] == ["--version"]:
     print(os.environ.get("FAKE_VERSION", "codex-cli 0.161.0"))
     sys.exit(0)
