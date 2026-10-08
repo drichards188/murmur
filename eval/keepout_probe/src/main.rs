@@ -305,15 +305,67 @@ pub const NEAR_LOST_M: f64 = 3000.0;
 /// How long after its drop the `held600` variant still counts a lost contact, ms.
 pub const HELD_MS: i64 = 600_000;
 
-/// The `heading` variant: the lost contacts counted by the regions a live track gets from the
-/// same facts ([`engage::track_reach`], along its course; not anywhere at its own plausible
-/// speed): the engine reads each as a live track, under its id, with its facts at the drop.
-fn as_live_tracks(w: &WorldSnapshot) -> WorldSnapshot {
+/// The live tracks out of view judged by their course alone, as before the review of
+/// murmur-533 (rules 16 counts one unseen [`engage::OUT_OF_VIEW_S`] at its domain's top speed):
+/// the engine reads each as seen now, its facts otherwise as they are.
+fn stale_in_view(w: &WorldSnapshot) -> WorldSnapshot {
     let mut w = w.clone();
-    for (id, l) in std::mem::take(&mut w.lost_contacts) {
+    let now = w.t;
+    for t in w.tracks.values_mut() {
+        t.last_seen_t = t.last_seen_t.max(now);
+    }
+    w
+}
+
+/// The `heading` variant (the first version of the lost contacts): the lost contacts counted by
+/// the regions a live track in view gets from the same facts ([`engage::track_reach`], along
+/// its course): the engine reads each as a live track seen now, under its id, with its facts at
+/// the drop; and the live tracks out of view by their course too ([`stale_in_view`]).
+fn as_live_tracks(w: &WorldSnapshot) -> WorldSnapshot {
+    let mut w = stale_in_view(w);
+    let now = w.t;
+    for (id, mut l) in std::mem::take(&mut w.lost_contacts) {
+        l.facts.last_seen_t = now;
         w.tracks.entry(id).or_insert(l.facts);
     }
     w
+}
+
+/// The `own_speed` variant (the second version, before the review): as [`as_live_tracks`], and
+/// each lost contact also anywhere at its own speed bound since its last fix (its speed and
+/// `keep_out_sigma` of the policy's velocity error, or the fastest it went): the engine reads
+/// that as a manoeuvre's reach from its last fix at that speed.
+fn at_own_speed(w: &WorldSnapshot, ec: &engage::EngageRules) -> WorldSnapshot {
+    let mut w = stale_in_view(w);
+    let now = w.t;
+    for (id, mut l) in std::mem::take(&mut w.lost_contacts) {
+        if let Some([e, n]) = l.facts.velocity_mps {
+            let bound = e.hypot(n) + ec.keep_out_sigma * ec.track_velocity_sigma();
+            let speed = l.facts.manoeuvre.map_or(bound, |m| m.speed_mps.max(bound));
+            l.facts.manoeuvre = Some(murmur_decide::Manoeuvre {
+                t: l.facts.position.t,
+                change_mps: 0.0,
+                speed_mps: speed,
+            });
+        }
+        l.facts.last_seen_t = now;
+        w.tracks.entry(id).or_insert(l.facts);
+    }
+    w
+}
+
+/// A region's component label: what it is (rules 16: `out_of_view` for a live track unseen
+/// [`engage::OUT_OF_VIEW_S`], counted anywhere at its domain's top speed).
+fn label_of(kind: engage::ReachKind) -> &'static str {
+    match kind {
+        engage::ReachKind::Velocity => "current",
+        engage::ReachKind::MeanVelocity => "mean",
+        engage::ReachKind::Manoeuvre => "manoeuvre",
+        engage::ReachKind::Young => "young",
+        engage::ReachKind::NoVelocity => "no_velocity",
+        engage::ReachKind::Aircraft => "aircraft",
+        engage::ReachKind::OutOfView => "out_of_view",
+    }
 }
 
 /// Rules 16: the keep-out on tracks of `spec` on `w` with the lost contacts `keep` keeps.
@@ -373,14 +425,15 @@ pub fn evaluate(env: &Env, s: &Situation, base: &WorldSnapshot, version: u32) ->
         if id == &s.target {
             continue;
         }
-        let regions = engage::track_reach(t, p.effect_t, &ec);
+        // as the keep-out reads it at the decision's time (rules 16: out of view too)
+        let regions = engage::track_reach_at(t, w.t, p.effect_t, &ec);
         let labels = components(t, &ec);
-        if labels.len() != regions.len() {
+        if labels.len() != regions.iter().filter(|r| r.kind != engage::ReachKind::OutOfView).count() {
             mismatch.push(format!("{id}: {} regions, {} components", regions.len(), labels.len()));
         }
         let mut this_in = false;
-        for (i, r) in regions.iter().enumerate() {
-            let label = labels.get(i).copied().unwrap_or("unknown");
+        for r in &regions {
+            let label = label_of(r.kind);
             let edge = haversine_m(r.center, p.effect_point) - r.radius_m;
             let margin = edge - p.keep_out_m;
             let e = comp.entry(label).or_insert(f64::INFINITY);
@@ -433,6 +486,16 @@ pub fn evaluate(env: &Env, s: &Situation, base: &WorldSnapshot, version: u32) ->
             "held600": kot_with(&spec, &w, cfg, |l| now.ms_since(l.dropped_t) <= HELD_MS),
             "near3km": kot_with(&spec, &w, cfg, |l| haversine_m(l.facts.position.value, point) <= NEAR_LOST_M),
             "heading": heading,
+            "own_speed": kot_with(&spec, &at_own_speed(&w, &ec), cfg, |_| true),
+            "stale_course": kot_with(&spec, &stale_in_view(&w), cfg, |_| true),
+        });
+    } else if cfg.lost_contacts() {
+        // no lost contact: the variants differ only in how a live track out of view counts
+        let course = kot_with(&spec, &stale_in_view(&w), cfg, |_| true);
+        out["lost_variants"] = json!({
+            "heading": course,
+            "own_speed": course,
+            "stale_course": course,
         });
     }
     // the regions together give the engine's verdict (2D: the generated tracks carry no
@@ -858,11 +921,57 @@ mod tests {
         assert_eq!(r["16"]["lost_variants"]["heading"], "fail");
     }
 
-    /// murmur-533's finding: a contact last seen steaming away, its course regions clear of the
-    /// keep-out, blocks by its plausible-speed region from rules 16; read as a live track (the
-    /// `heading` variant) it would pass.
+    /// The review of murmur-533: a lost contact 3 km east, last seen leaving at 3 m/s 200 s ago:
+    /// its own speed bound (5 m/s) keeps it clear of the keep-out by the effect (the `own_speed`
+    /// variant passes), its domain's top speed (25 m/s, shipped) does not; a live track out of
+    /// view as long counts the same, and by its course alone (`stale_course`) it passes. The
+    /// probe's motion for a contact that speeds up after it went out of view is the generator's.
     #[test]
-    fn a_lost_contact_last_seen_leaving_blocks_by_its_plausible_speed() {
+    fn a_lost_contact_counts_at_the_top_speed_and_the_variants_say_what_less_would_do() {
+        let now = T0;
+        let env = Env::load(&root(), &[14, 16]).expect("env");
+        let mut f = track(east(3_000.0), Some([3.0, 0.0]), Time(now.0 - 200_000));
+        f.mean_velocity_mps = Some([3.0, 0.0]);
+        let mut s = situation(Vec::new(), 1200.0);
+        s.lost.insert(
+            "C-0001".into(),
+            LostContact {
+                dropped_t: Time(now.0 - 20_000),
+                facts: f.clone(),
+                ais: None,
+            },
+        );
+        let lines = run_situation(&env, &s);
+        let r = &lines[0]["rules"];
+        assert_eq!((r["14"]["kot"].clone(), r["16"]["kot"].clone()), (json!("pass"), json!("fail")), "{r}");
+        assert!(r["16"].get("mismatch").is_none(), "{r}");
+        assert_eq!(r["16"]["lost_variants"]["own_speed"], "pass", "{r}");
+        assert_eq!(r["16"]["lost_variants"]["heading"], "pass", "{r}");
+        // live, unseen 200 s (as the generator's stale contacts before their drop)
+        let mut s = situation(vec![("C-0001", f)], 1200.0);
+        s.lost.clear();
+        let lines = run_situation(&env, &s);
+        let r = &lines[0]["rules"];
+        assert_eq!((r["14"]["kot"].clone(), r["16"]["kot"].clone()), (json!("pass"), json!("fail")), "{r}");
+        assert!(r["16"].get("mismatch").is_none(), "{r}");
+        assert_eq!(r["16"]["intr"][0][1], "out_of_view", "{r}");
+        assert_eq!(r["16"]["lost_variants"]["stale_course"], "pass", "{r}");
+        let then = realtrack::Motion::Then {
+            base: Box::new(realtrack::Motion::Line { p: [0.0, 0.0], v: [3.0, 0.0] }),
+            from_s: 100.0,
+            p: [300.0, 0.0],
+            v: [0.0, -20.0],
+        };
+        assert_eq!(then.pos(50.0), [150.0, 0.0]);
+        assert_eq!(then.pos(110.0), [300.0, -200.0]);
+        assert_eq!(then.vel(110.0), [0.0, -20.0]);
+    }
+
+    /// murmur-533's finding: a contact last seen steaming away, its course regions clear of the
+    /// keep-out, blocks from rules 16; read as a live track in view (the `heading` variant) it
+    /// would pass.
+    #[test]
+    fn a_lost_contact_last_seen_leaving_blocks() {
         let now = T0;
         let env = Env::load(&root(), &[16]).expect("env");
         let mut s = situation(Vec::new(), 1200.0);

@@ -182,12 +182,23 @@ OOV_FROM_S = (30.0, 900.0)
 #: the bridge's drop time (MURMUR_TRACK_DROP_S): a contact out of view this long (and a second)
 #: before the nomination has been dropped
 DROP_S = 180.0
+#: rules 16, the review: in the out-of-view variants this share of the contacts that go out of
+#: view (`oov_speedup_share`) also speed up after the tracker drops them, from a uniform time
+#: up to `OOV_SPEEDUP_AFTER_S` after the drop, to a uniform speed in `OOV_SPEEDUP_MPS` (from the
+#: fastest the behaviours go to the surface top speed the shipped region assumes) on a uniform
+#: course: what the measurement had no case of (every behaviour but sprint-and-stop keeps one
+#: speed for good), so the own-speed variant's exposure is measured, not assumed away
+OOV_SPEEDUP_SHARE = 0.25
+OOV_SPEEDUP_AFTER_S = 240.0
+OOV_SPEEDUP_MPS = (12.0, 25.0)
 #: what each out-of-view policy does with a contact the tracker dropped (the probe's
 #: `lost_variants` under rules 16; `today` is rules 14)
 LOST_POLICIES = {
-    "today": "rules 14: a dropped track no longer counts in the keep-out",
-    "held": "rules 16 as shipped: a lost contact counts from its last fix, no cap, until an operator accepts it: by a live track's regions and also anywhere at its own plausible speed (its speed and 2-sigma of its velocity error, or the fastest it went; without a velocity, its domain's top speed)",
-    "heading": "held by a live track's regions alone (along its course and average course; anywhere only if it manoeuvred, was young or had no velocity): the first version of the lost contacts",
+    "today": "rules 14: a dropped track no longer counts in the keep-out, and a track out of view but not yet dropped counts by its course",
+    "held": "rules 16 as shipped: a contact out of view (unseen 10 s, live or lost) counts from its last fix anywhere at its domain's top speed (25 m/s on the water) or its own bound if faster, besides a live track's regions; a lost contact with no cap until an operator accepts it",
+    "stale_course": "held for lost contacts, but a live track out of view counts by its course alone (rules 16 before the review's item 4)",
+    "own_speed": "a lost contact counts by a live track's regions and anywhere at its own speed bound (its speed and 2-sigma of its velocity error, or the fastest it went), a live track out of view by its course: the second version, before the review",
+    "heading": "a lost contact counts by a live track's regions alone (along its course and average course; anywhere only if it manoeuvred, was young or had no velocity), a live track out of view by its course: the first version of the lost contacts",
     "held600": "a lost contact counts only until 600 s after its drop",
     "near3km": "a lost contact counts only with its last fix within 3 km of the effect point",
     "accepted": "every lost contact accepted (or cleared by any rule: every one here is within the observer's nominal sensor coverage, so clearing covered water clears them all)",
@@ -247,15 +258,17 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "behaviours": ["mixed"],
         "densities": [0.03, 0.1, 0.3],
         "oov_share": OOV_SHARE,
+        "oov_speedup_share": OOV_SPEEDUP_SHARE,
         "rules": [OOV_BEFORE, OOV_LOST],
         "max_history_s": 1500.0,
-        "about": "radar tracker, mixed traffic; 30% of the contacts go out of sensor view 30 to 900 s before the nomination (most dropped by then)",
+        "about": "radar tracker, mixed traffic; 30% of the contacts go out of sensor view 30 to 900 s before the nomination (most dropped by then), a quarter of those speeding up after their drop",
     },
     "oov-all": {
         "tracker": "all",
         "behaviours": ["mixed"],
         "densities": [0.03, 0.1, 0.3],
         "oov_share": OOV_SHARE,
+        "oov_speedup_share": OOV_SPEEDUP_SHARE,
         "rules": [OOV_BEFORE, OOV_LOST],
         "max_history_s": 1500.0,
         "about": "as oov, the all-sensors tracker",
@@ -265,9 +278,10 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "behaviours": ["mixed"],
         "densities": [0.03, 0.1],
         "near_oov_km": 1.0,
+        "oov_speedup_share": OOV_SPEEDUP_SHARE,
         "rules": [OOV_BEFORE, OOV_LOST],
         "max_history_s": 1500.0,
-        "about": "the review's case: one contact within 1 km of the target (mixed behaviour) goes out of sensor view 30 to 900 s before the nomination; mixed traffic around, all in view; radar tracker",
+        "about": "the review's case: one contact within 1 km of the target (mixed behaviour) goes out of sensor view 30 to 900 s before the nomination, a quarter of the time speeding up after its drop; mixed traffic around, all in view; radar tracker",
     },
 }
 PRIMARY = "radar"
@@ -391,6 +405,28 @@ class Circle:
 
     def spec(self) -> dict[str, Any]:
         return {"kind": "circle", "c": list(self.c), "r": self.r, "w": self.w, "phase": self.phase}
+
+
+class Then:
+    """Rules 16: `base` until `from_s`, then straight on at `v` from where `base` was then: a
+    contact that turns and speeds up after it went out of view."""
+
+    def __init__(self, base: Any, from_s: float, v: tuple[float, float]):
+        self.base, self.from_s, self.v = base, from_s, v
+        self.p = base.pos(from_s)
+        self.vmax = max(base.vmax, math.hypot(*v))
+        self.steady = False
+
+    def pos(self, t: float) -> tuple[float, float]:
+        if t < self.from_s:
+            return self.base.pos(t)
+        return (self.p[0] + self.v[0] * (t - self.from_s), self.p[1] + self.v[1] * (t - self.from_s))
+
+    def vel(self, t: float) -> tuple[float, float]:
+        return self.base.vel(t) if t < self.from_s else self.v
+
+    def spec(self) -> dict[str, Any]:
+        return {"kind": "then", "base": self.base.spec(), "from_s": self.from_s, "p": list(self.p), "v": list(self.v)}
 
 
 class Legs:
@@ -637,12 +673,19 @@ def situation(seed: int, density: float, index: int, behaviour: str, params: dic
     motions: dict[str, Any] = {}
 
     oov_share = float(params.get("oov_share") or 0.0)
+    speedup_share = float(params.get("oov_speedup_share") or 0.0)
 
     def add(cid: str, kind: str, m: Any, tracked: float, sigma: float, aff: str, aff_c: float, alt_m: float | None = None, masked: float | None = None) -> None:
         kinds[kind] += 1
+        speedup = None
         if masked is not None:
             # rules 16: tracked a while before it went out of view
             tracked = max(tracked, -masked + move.uniform(60.0, 600.0))
+            # the review: some speed up after their drop, any way
+            if speedup_share > 0.0 and move.random() < speedup_share:
+                at = masked + DROP_S + move.uniform(0.0, OOV_SPEEDUP_AFTER_S)
+                speedup = (at, move.uniform(*OOV_SPEEDUP_MPS))
+                m = Then(m, at, _vec(speedup[1], _course(move)))
         f = facts(m, tracked, sigma, vel_sigma, move, origin, aff, aff_c, "air" if alt_m is not None else "surface")
         if tracker == "model":
             tracks[cid] = f
@@ -657,6 +700,8 @@ def situation(seed: int, density: float, index: int, behaviour: str, params: dic
             truth[cid]["alt_m"] = alt_m
         if masked is not None:
             truth[cid]["masked_from_s"] = masked
+        if speedup is not None:
+            truth[cid]["speedup"] = {"from_s": round(speedup[0], 3), "mps": round(speedup[1], 3)}
 
     def out_of_view() -> float | None:
         """Rules 16: when this contact goes out of view (s, negative), in the oov variants."""
@@ -945,9 +990,18 @@ def record(sit: dict[str, Any], res: dict[str, Any], params: dict[str, Any]) -> 
         m = sit["truth"][c].get("masked_from_s")
         return m is not None and m <= -(DROP_S + 1.0)
 
+    def stale(c: str) -> bool:
+        m = sit["truth"][c].get("masked_from_s")
+        return m is not None and m > -(DROP_S + 1.0)
+
     if any("masked_from_s" in t for t in sit["truth"].values()):
         for k in ("near", "danger", "near_late", "danger_late"):
             out[k + "_dropped"] = sum(1 for c in truth[k] if dropped(c))
+        # the review: out of view and not dropped yet (a live track then), and those that
+        # sped up after their drop
+        out["near_stale"] = sum(1 for c in truth["near"] if stale(c))
+        for k in ("near", "danger"):
+            out[k + "_speedup"] = sum(1 for c in truth[k] if "speedup" in sit["truth"][c])
     if res.get("preview_differs"):
         out["preview_differs"] = True
     rules: dict[str, Any] = {}
@@ -1115,7 +1169,7 @@ def read_records(path: Path) -> Iterator[dict[str, Any]]:
 
 # ---- summaries ---------------------------------------------------------------------------------------
 
-COMPONENTS = ("current", "mean", "manoeuvre", "young", "aircraft", "no_velocity")
+COMPONENTS = ("current", "mean", "manoeuvre", "young", "aircraft", "no_velocity", "out_of_view")
 
 
 def would_pass_without(comp: dict[str, float], drop: str | Iterable[str]) -> bool:
@@ -1467,7 +1521,7 @@ def lost_policy_blocks(r: dict[str, Any]) -> dict[str, int] | None:
         return None
     lv = b.get("lost") or {}
     out = {"today": a["kot"], "held": b["kot"]}
-    for k in ("heading", "held600", "near3km", "accepted"):
+    for k in ("stale_course", "own_speed", "heading", "held600", "near3km", "accepted"):
         out[k] = int(lv[k] != "pass") if k in lv else b["kot"]
     return out
 
@@ -1503,12 +1557,15 @@ def lost_summary(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
             "near_dropped": r.get("near_dropped", 0) > 0,
             "danger_dropped": r.get("danger_dropped", 0) > 0,
             "danger_late_dropped": r.get("danger_late_dropped", 0) > 0,
+            "near_stale": r.get("near_stale", 0) > 0,
+            "near_speedup": r.get("near_speedup", 0) > 0,
+            "danger_speedup": r.get("danger_speedup", 0) > 0,
         }
         for p, blocked in pol.items():
             for c in (cells[(r["density"], r["nominal"], p)], pooled[p]):
                 c["n"] += 1
                 c["blocked"] += blocked
-                c["needs_acceptance"] += int(bool(blocked) and p in ("held", "heading", "held600", "near3km") and not pol["accepted"])
+                c["needs_acceptance"] += int(bool(blocked) and p not in ("today", "accepted") and not pol["accepted"])
                 c["perfect"] += int(truth["near"])
                 if not blocked:
                     c["passes"] += 1
@@ -1523,7 +1580,7 @@ def lost_summary(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
             "perfect": _rate(c["perfect"], c["n"]),
             "passes": c["passes"],
         }
-        for k in ("near", "danger", "near_late", "danger_late", "near_dropped", "danger_dropped", "danger_late_dropped"):
+        for k in ("near", "danger", "near_late", "danger_late", "near_dropped", "danger_dropped", "danger_late_dropped", "near_stale", "near_speedup", "danger_speedup"):
             out["missed_" + k] = {"k": c["missed_" + k], "n": c["passes"], "upper95": upper_bound_zero(c["passes"]) if c["missed_" + k] == 0 else None}
         return out
 
@@ -1540,14 +1597,18 @@ def table_lost(s: dict[str, Any]) -> str:
     lines = ["Out of view (rules 16): each policy on the same evaluations; blocked on tracks %, needs an acceptance %, misses (passes with someone truly inside):"]
     c = s["counts"]
     lines.append(f"  {c['evaluations']} evaluations, {c['with_lost']} with a lost contact ({c['lost_contacts']} lost contacts counted)")
-    lines.append(f"  {'policy':<10}{'blocked':>14}{'needs acc.':>14}{'passes':>8}{'missed line':>13}{'circle':>8}{'win. circle':>12}{'line, dropped':>15}{'circle, dropped':>17}{'win., dropped':>15}")
+    lines.append(
+        f"  {'policy':<13}{'blocked':>14}{'needs acc.':>14}{'passes':>8}{'missed line':>13}{'circle':>8}{'win. circle':>12}{'line, dropped':>15}{'circle, dropped':>17}{'win., dropped':>15}"
+        f"{'line, stale':>13}{'line, sped up':>15}{'circle, sped up':>17}"
+    )
     for p in LOST_POLICIES:
         r = s["pooled"].get(p)
         if not r:
             continue
         lines.append(
-            f"  {p:<10}{_pct(r['blocked']):>14}{_pct(r['needs_acceptance']):>14}{r['passes']:>8}{r['missed_near']['k']:>13}{r['missed_danger']['k']:>8}"
+            f"  {p:<13}{_pct(r['blocked']):>14}{_pct(r['needs_acceptance']):>14}{r['passes']:>8}{r['missed_near']['k']:>13}{r['missed_danger']['k']:>8}"
             f"{r['missed_danger_late']['k']:>12}{r['missed_near_dropped']['k']:>15}{r['missed_danger_dropped']['k']:>17}{r['missed_danger_late_dropped']['k']:>15}"
+            f"{r['missed_near_stale']['k']:>13}{r['missed_near_speedup']['k']:>15}{r['missed_danger_speedup']['k']:>17}"
         )
     tte = sorted({x["tte_s"] for x in s["cells"]})
     dens = sorted({x["density"] for x in s["cells"]})

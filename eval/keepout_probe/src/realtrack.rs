@@ -60,6 +60,14 @@ pub enum Motion {
         v: Vec<[f64; 2]>,
         at: Vec<[f64; 2]>,
     },
+    /// Rules 16, the out-of-view variants: `base` until `from_s`, then from `p` (where `base`
+    /// was then) at `v`: a contact that turns and speeds up after it went out of view.
+    Then {
+        base: Box<Motion>,
+        from_s: f64,
+        p: [f64; 2],
+        v: [f64; 2],
+    },
 }
 
 impl Motion {
@@ -80,6 +88,13 @@ impl Motion {
                 let (s, vk, a) = (starts.get(k).copied().unwrap_or(0.0), v.get(k).copied().unwrap_or([0.0; 2]), at.get(k).copied().unwrap_or([0.0; 2]));
                 [a[0] + vk[0] * (t - s), a[1] + vk[1] * (t - s)]
             }
+            Motion::Then { base, from_s, p, v } => {
+                if t < *from_s {
+                    base.pos(t)
+                } else {
+                    [p[0] + v[0] * (t - from_s), p[1] + v[1] * (t - from_s)]
+                }
+            }
         }
     }
 
@@ -92,6 +107,13 @@ impl Motion {
                 [r * w * a.cos(), -r * w * a.sin()]
             }
             Motion::Legs { starts, v, .. } => v.get(Self::leg(starts, t)).copied().unwrap_or([0.0; 2]),
+            Motion::Then { base, from_s, v, .. } => {
+                if t < *from_s {
+                    base.vel(t)
+                } else {
+                    *v
+                }
+            }
         }
     }
 }

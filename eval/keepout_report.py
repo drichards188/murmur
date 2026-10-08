@@ -318,7 +318,8 @@ def lost_table(variants: dict[str, Any]) -> str:
         return ""
     head = (
         "<tr><th>variant</th><th>policy</th><th>blocked</th><th>needs an acceptance</th><th>passes</th>"
-        "<th>missed at the line</th><th>in the circle</th><th>in the circle over the window</th></tr>"
+        "<th>missed at the line</th><th>in the circle</th><th>in the circle over the window</th>"
+        "<th>at the line, out of view not dropped</th><th>at the line, sped up after the drop</th></tr>"
     )
 
     def k(r: dict[str, Any], key: str) -> str:
@@ -336,13 +337,14 @@ def lost_table(variants: dict[str, Any]) -> str:
             trs.append(
                 f"<tr><td>{esc(name) if first else ''}</td><td title='{esc(LOST_POLICIES[pol])}'>{esc(pol)}</td>"
                 f"{heat(r['blocked'])}<td class='n'>{pct(r['needs_acceptance'])}</td><td class='n'>{r['passes']:,}</td>"
-                f"<td class='n'>{k(r, 'near')}</td><td class='n'>{k(r, 'danger')}</td><td class='n'>{k(r, 'danger_late')}</td></tr>"
+                f"<td class='n'>{k(r, 'near')}</td><td class='n'>{k(r, 'danger')}</td><td class='n'>{k(r, 'danger_late')}</td>"
+                f"<td class='n'>{r.get('missed_near_stale', {}).get('k', 0):,}</td><td class='n'>{r.get('missed_near_speedup', {}).get('k', 0):,}</td></tr>"
             )
             first = False
     return table(head, trs)
 
 
-def lost_grid(s: dict[str, Any], policies: tuple[str, ...] = ("today", "held", "heading")) -> str:
+def lost_grid(s: dict[str, Any], policies: tuple[str, ...] = ("today", "held", "own_speed")) -> str:
     """Rules 16: blocked on tracks by density and time to effect, for `policies`."""
     lost = s.get("lost") or {}
     cells = {(c["density"], c["tte_s"], c["policy"]): c for c in lost.get("cells") or []}
@@ -467,16 +469,19 @@ def keepout_section(c: dict[str, Any]) -> str:
         oov_name, oov = next(((n, s) for n, s in with_lost if n == "oov"), with_lost[0])
         out.append(
             "<h3>Out of view (rules 16)</h3><p>A share of the contacts goes out of sensor view (from a uniform time 30 to 900 s before the "
-            "nomination nothing detects them, whatever the range) while they keep moving; the bridge's tracker drops a track unseen for 180 s. "
-            "Each policy for a dropped contact on the same evaluations: <strong>today</strong>, rules 14 (a dropped track no longer counts); "
-            "<strong>held</strong>, rules 16 as shipped (a lost contact counts from its last fix, no cap, by a live track's regions and anywhere "
-            "at its own plausible speed, until an operator accepts it); <strong>heading</strong>, the same by a live track's regions alone (along "
-            "its course: the first version of the lost contacts); <strong>held600</strong>, counted only until 600 s after its drop; <strong>near3km</strong>, "
+            "nomination nothing detects them, whatever the range) while they keep moving, a quarter of them speeding up after their drop (12 to 25 m/s, "
+            "any course); the bridge's tracker drops a track unseen for 180 s. "
+            "Each policy on the same evaluations: <strong>today</strong>, rules 14 (a dropped track no longer counts, one not yet dropped by its course); "
+            "<strong>held</strong>, rules 16 as shipped (a contact unseen 10 s, live or lost, counts from its last fix anywhere at its domain's top "
+            "speed, a lost one with no cap until an operator accepts it); <strong>stale_course</strong>, held but a live track out of view by its course; "
+            "<strong>own_speed</strong>, a lost contact anywhere at its own speed bound (the second version); <strong>heading</strong>, by a live "
+            "track's regions alone (the first version); <strong>held600</strong>, counted only until 600 s after its drop; <strong>near3km</strong>, "
             "only with its last fix within 3 km of the effect point; <strong>accepted</strong>, every lost contact accepted, or cleared by any rule "
             "(every one here is within the observer's nominal coverage). Blocked and needing an acceptance: percent of nominations (Wilson 95%); "
             "misses: passes with a protected contact truly inside the keep-out line or the effect circle at the effect time, then in the circle "
-            "within the 60 s release window; in brackets, those by a contact out of view and dropped.</p>" + lt
-            + f"<p>Blocked on tracks by density and time to effect, {esc(oov_name)}: today / held / heading.</p>" + lost_grid(oov)
+            "within the 60 s release window; in brackets, those by a contact out of view and dropped; then at the line by one out of view but not yet "
+            "dropped, and by one that sped up after its drop.</p>" + lt
+            + f"<p>Blocked on tracks by density and time to effect, {esc(oov_name)}: today / held / own_speed.</p>" + lost_grid(oov)
         )
     out.append(variant_block(prim, f"{prim_name}: the pessimistic sensor case"))
     for name, s in variants.items():
