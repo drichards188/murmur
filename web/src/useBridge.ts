@@ -47,22 +47,24 @@ function applyDelta(prev: BridgeState, d: Delta): BridgeState {
  *  bridge's clock (in each message), not this browser's. A lite snapshot says only whether
  *  the link is lost, and when the last packet came once it is. */
 function withAges(s: BridgeState): BridgeState {
-  return {
-    ...s,
-    vehicles: s.vehicles.map((v) => ({
-      ...v,
-      link: { ...v.link, since_last_ms: v.link.last_rx_t == null ? null : Math.max(0, (s.t - v.link.last_rx_t) * 1000) },
-    })),
-  }
+  const vehicles = s.vehicles.map((v) => ({
+    ...v,
+    link: { ...v.link, since_last_ms: v.link.last_rx_t == null ? null : Math.max(0, (s.t - v.link.last_rx_t) * 1000) },
+  }))
+  generations.set(vehicles, generation)
+  return { ...s, vehicles }
 }
 
-/** The vehicle lists that came from a whole `state` message (the first after a connect, so
- *  also after a reconnect) rather than a delta. The map draws those as reported, with no
- *  glide: positions may have moved a long way since the last data (drawn.ts). Tied to the
- *  data itself, so the snap cannot be used up by an unrelated render. */
-const wholeStates = new WeakSet<object>()
-export function isWholeState(vehicles: object): boolean {
-  return wholeStates.has(vehicles)
+/** A generation that carries through deltas: it moves on every whole `state` message (the first
+ *  after a connect, so after a reconnect too), and every vehicle list built, from a state or a
+ *  delta, records the generation current when it was built. The map draws vehicles as reported,
+ *  with no glide, when it sees a list of a new generation: positions may have moved a long way
+ *  since the last data (drawn.ts). Tied to the data, so neither React batching (a delta that
+ *  follows the state at once, rendered alone) nor an unrelated render can lose or use up the snap. */
+let generation = 0
+const generations = new WeakMap<object, number>()
+export function vehiclesGeneration(vehicles: object): number | undefined {
+  return generations.get(vehicles)
 }
 
 export type BridgeStatus = 'connecting' | 'live' | 'down'
@@ -96,8 +98,8 @@ export function useBridge() {
       ws.onmessage = (ev) => {
         const msg = JSON.parse(ev.data)
         if (msg.type === 'state') {
+          generation++
           current = withAges(msg as BridgeState)
-          wholeStates.add(current.vehicles)
           setState(current)
         } else if (msg.type === 'decisions') {
           setDecisions({ inbox: msg.inbox, intents: msg.intents, space: msg.space, operators: msg.operators })

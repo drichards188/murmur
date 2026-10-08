@@ -8,7 +8,7 @@
 //   latency     from the message to the end of those effects, including any wait in the
 //               event loop behind other work (frames, other messages)
 //   frame       interval between animation frames (fps on a real GPU)
-//   glide       deck.gl's own attribute updates per frame, summed over layers (its "Update Attributes" stat), which
+//   attrs       deck.gl's own attribute updates per frame, summed over layers (its "Update Attributes" stat), which
 //               is where the cost of display smoothing lands: every glide frame recomputes the
 //               positions of every vehicle in the attached layers. Not visible in the JS the
 //               glide loop itself runs (advance and setProps), which deck.gl defers to its render
@@ -39,7 +39,7 @@ class Ring {
   }
 }
 
-const rings = { applyDelta: new Ring(), render: new Ring(), latency: new Ring(), frame: new Ring(), glide: new Ring(), deckCpu: new Ring() }
+const rings = { applyDelta: new Ring(), render: new Ring(), latency: new Ring(), frame: new Ring(), attrs: new Ring(), deckCpu: new Ring() }
 export type PerfName = keyof typeof rings
 
 export function perfPush(name: PerfName, ms: number) {
@@ -112,7 +112,7 @@ function sampleDeck() {
     // attribute updates add up over the layers of a frame: the sum since the last sample
     const a = st.get('Update Attributes')
     if (a.time < attrTime) attrTime = 0 // deck.gl reset its stats
-    if (a.time > attrTime) rings.glide.push(a.time - attrTime)
+    if (a.time > attrTime) rings.attrs.push(a.time - attrTime)
     attrTime = a.time
     const c = st.get('CPU Time')
     const ck = `${c.time}:${c.lastTiming}`
@@ -152,7 +152,7 @@ export function perfStats() {
     applyDelta: rings.applyDelta.stats(),
     render: rings.render.stats(),
     latency: rings.latency.stats(),
-    glide: rings.glide.stats(),
+    attrs: rings.attrs.stats(),
     deckCpu: rings.deckCpu.stats(),
     longTaskMsPerS: secs > 0 ? longMs / secs : 0,
     longTasks: longCount,

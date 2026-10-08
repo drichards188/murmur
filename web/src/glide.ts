@@ -8,6 +8,12 @@
 // last report, and a vehicle that goes silent stays at its last reported position. Numbers
 // (lists, details, API, logs) are never touched; only drawing reads this.
 //
+// Known limit: the 1 s bound on how far behind the last report the symbol may be leaves no slack
+// for a vehicle reporting about once a second. Under jitter (reports 750 to 1250 ms apart) the
+// glide, capped at 1 s, finishes before a late report arrives and the symbol stands still for
+// the rest of the gap (about 7% of frames at +-250 ms). Gliding longer than a second would end
+// behind the last report by more than the bound, so this is accepted.
+//
 // Snap (draw the report at once, no glide) on: a first fix, a jump implausible for the
 // vehicle, a vehicle whose position is not a plain fresh fix (lost link, dead reckoning, a
 // coarse out-of-view snapshot) and its first fix after that, and `snapAll` (tab was hidden,
@@ -305,25 +311,35 @@ export function trailHeadPath(tail: Pt[], report: Pt, drawn: Pt): Pt[] {
   const n = pts.length - 1
   if (n < 1) return [drawn]
   const dist: number[] = []
+  const along: boolean[] = []
   let min = Infinity
+  let nearest = 0
   for (let i = 0; i < n; i++) {
     const ax = pts[i][0] * k
     const ay = pts[i][1]
     const dx = pts[i + 1][0] * k - ax
     const dy = pts[i + 1][1] - ay
     const len2 = dx * dx + dy * dy
-    const f = len2 > 0 ? Math.min(1, Math.max(0, ((px - ax) * dx + (py - ay) * dy) / len2)) : 0
+    const raw = len2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0
+    const f = Math.min(1, Math.max(0, raw))
     const d = Math.hypot(px - (ax + dx * f), py - (ay + dy * f))
     dist.push(d)
-    if (d < min) min = d
+    along.push(raw >= 0 && raw <= 1)
+    // the nearest segment; the newest of equally near ones
+    if (d <= min + 1e-12) {
+      min = d
+      nearest = i
+    }
   }
-  // The newest segment within a few metres of the nearest one: after a U-turn the return leg
-  // can lie within a metre of the outbound leg (or GPS noise can put it either side), and the
-  // symbol is on the return leg, so scanning from the end keeps the turn.
+  // After a U-turn the return leg can lie within a metre of the outbound leg (or GPS noise can
+  // put it either side), and the symbol is on the return leg: take the newest segment that is
+  // within a few metres of the nearest AND that the symbol lies alongside (its projection falls
+  // on the segment). Without the second test a slow vehicle, with trail points closer together
+  // than the tolerance, would keep points ahead of the symbol.
   const tol = TRAIL_CUT_TOLERANCE_M / 111_320
-  let best = 0
+  let best = nearest
   for (let i = n - 1; i >= 0; i--) {
-    if (dist[i] <= min + tol) {
+    if (dist[i] <= min + tol && along[i]) {
       best = i
       break
     }

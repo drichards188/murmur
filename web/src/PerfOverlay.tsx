@@ -20,7 +20,7 @@ export function PerfOverlay() {
       update: merge <b>{f1(s.applyDelta.mean)}</b> ms · render <b>{f1(s.render.mean)}</b> ms{' '}
       <span className="muted">(p95 {f1(s.render.p95)}, latency {Math.round(s.latency.mean)})</span>
       <br />
-      glide: deck attrs <b>{f1(s.glide.mean)}</b> ms <span className="muted">(p95 {f1(s.glide.p95)}, n {s.glide.n})</span> · deck cpu <b>{f1(s.deckCpu.mean)}</b> ms
+      deck: attrs <b>{f1(s.attrs.mean)}</b> ms <span className="muted">(p95 {f1(s.attrs.p95)}, n {s.attrs.n}; glide frames and 4 Hz updates)</span> · cpu <b>{f1(s.deckCpu.mean)}</b> ms
       <br />
       long tasks <b>{Math.round(s.longTaskMsPerS)}</b> ms/s
     </div>

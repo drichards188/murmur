@@ -6,14 +6,14 @@ import { MapboxOverlay } from '@deck.gl/mapbox'
 import { useEffect, useRef, useState } from 'react'
 import { circle, distanceM } from './geo'
 import { BRIDGE_FILTER, liftBridges, type LiftedBridge } from './bridges'
-import { build3dGlide, build3dStatic, drawnHeight, DEM_TILES, HEIGHT_EXAGGERATION } from './map3d'
+import { build3dGlide, build3dStatic, drawnHeight, resetSeaBox, DEM_TILES, HEIGHT_EXAGGERATION } from './map3d'
 import { declutter } from './declutter'
 import { advanceDrawn, drawnAlt, drawnPosition, drawnPositionOf, drawnTick, glidingCount, isGliding, observeVehicles, resetDrawn, setSmoothing, snapAllDrawn } from './drawn'
 import { GLIDE_LAYER_IDS } from './orderLayers'
 import { buildTrailLayers } from './trailLayers'
 import { perfWatchDeck } from './perf'
 import { reducedMotion } from './reveal'
-import { isWholeState } from './useBridge'
+import { vehiclesGeneration } from './useBridge'
 import type { SpaceOverlay } from './space'
 import { EMPTY_OVERLAY } from './space'
 import { linkStubs, spaceFeatures, spaceLinkLayers } from './spaceLayers'
@@ -183,8 +183,20 @@ const ORBIT_YAW = 0.35
 const ORBIT_TILT = 0.25
 const VIEW_KEY = 'murmur.view'
 const SMOOTH_KEY = 'murmur.smooth'
-/** above this many vehicles gliding at once the glide animation runs at 30 Hz instead of 60 */
-const GLIDE_MANY = 200
+/** Above this many vehicles drawn the glide animation runs at 30 Hz instead of 60. The cost of a
+ *  glide frame scales with the vehicles drawn, not those gliding: every vehicle's position is
+ *  recomputed in each attached layer whenever anything glides. */
+const GLIDE_MANY = 300
+
+// prefers-reduced-motion, kept current by a listener (not asked of the browser every frame)
+let reducedNow = reducedMotion()
+try {
+  window.matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', (e) => {
+    reducedNow = e.matches
+  })
+} catch {
+  // no matchMedia: motion stays as it was read
+}
 
 /** display smoothing (drawn.ts) is on unless the operator turned it off */
 function savedSmooth(): boolean {
@@ -319,6 +331,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
   // the layers that do not move with a glide, kept between animation frames
   const staticLayers = useRef<{ three: LayersList; space: LayersList; ext: LayersList; clusters: LayersList } | null>(null)
   const lastGlideFrame = useRef(0)
+  const lastGeneration = useRef<number | undefined>(undefined)
   const previewGliding = useRef(false)
   const overlay = useRef<MapboxOverlay | null>(null)
   const bridges = useRef<LiftedBridge[]>([])
@@ -407,15 +420,17 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
 
   // Animation frames while some vehicle is gliding, none otherwise (the loop ends when the last
   // glide has; the next changed report starts it again). Capped at 60 Hz so that 120 and 144 Hz
-  // displays do not double the work, and at 30 Hz while more than GLIDE_MANY vehicles glide at
-  // once: each frame recomputes every vehicle's position in each attached layer (deck.gl cannot
+  // displays do not double the work, and at 30 Hz while more than GLIDE_MANY vehicles are drawn:
+  // each frame recomputes every drawn vehicle's position in each attached layer (deck.gl cannot
   // update only the rows that moved) and repaints the whole map, so the cost grows with the
-  // fleet, and 30 Hz is still smooth for glides of 150 ms to a second.
+  // fleet, and 30 Hz is still smooth for glides of 150 ms to a second. Not throttled while the
+  // camera follows a vehicle: the camera aims at the pose of every display frame, and deck.gl
+  // must draw that same pose or the followed symbol shakes against the view.
   const glideFrame = (t: number) => {
     frameId.current = 0
     if (!smoothRef.current || lostRef.current || !overlay.current) return
-    const every = glidingCount() > GLIDE_MANY ? 1000 / 30 : 1000 / 60
-    if (t - lastGlideFrame.current < every - 2) {
+    const every = latest.current.vehicles.length > GLIDE_MANY ? 1000 / 30 : 1000 / 60
+    if (!following.current && t - lastGlideFrame.current < every - 2) {
       // too soon: wait for the next display frame (the glide may have ended meanwhile; the next real frame then draws its end)
       frameId.current = requestAnimationFrame(glideFrame)
       return
@@ -725,21 +740,22 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       viewTimer = window.setTimeout(() => {
         viewTimer = undefined
         reportView()
+        // the follow camera's moves also redo the declutter, at this pace
+        if (followMoved) {
+          followMoved = false
+          setMoved((n) => n + 1)
+        }
       }, 250)
     }
+    let followMoved = false
     m.on('move', reportViewSoon)
     m.on('moveend', refreshBridges)
     m.on('moveend', (e: { follow?: boolean }) => {
       if (e.follow) {
         // the follow camera ends a move every frame: report and redo the declutter at the
         // timer's pace (4 Hz), not per frame, or App renders and every layer is rebuilt each frame
-        if (!viewTimer) {
-          viewTimer = window.setTimeout(() => {
-            viewTimer = undefined
-            reportView()
-            setMoved((n) => n + 1)
-          }, 250)
-        }
+        followMoved = true
+        reportViewSoon()
         return
       }
       window.clearTimeout(viewTimer)
@@ -823,12 +839,20 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
   useEffect(() => {
     const m = map.current
     if (!m) return
+    // a new data generation (the first state after a connect, so after a reconnect too): the sea
+    // plane's box starts over, and the vehicles are drawn as reported
+    const gen = vehiclesGeneration(vehicles)
+    const newGeneration = gen !== lastGeneration.current
+    lastGeneration.current = gen
+    if (newGeneration) {
+      resetSeaBox()
+      if (import.meta.env.DEV) console.debug('[murmur] new data generation', gen, ': vehicles drawn as reported')
+    }
     if (smoothRef.current) {
-      // report changes start glides; a whole `state` message (the first after a connect, so after
-      // a reconnect too) or a hidden tab: draw as reported
+      // report changes start glides; a new generation or a hidden tab: draw as reported
       const now = performance.now()
       observeVehicles(vehicles, now)
-      if (isWholeState(vehicles) || document.visibilityState === 'hidden') snapAllDrawn(now)
+      if (newGeneration || document.visibilityState === 'hidden') snapAllDrawn(now)
     }
     const clustered = !!clusters?.cells.length
     const drawn = visibleVehicles(vehicles, viewport.current, clustered)
@@ -847,7 +871,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       const w = window as unknown as { murmurPerf: Record<string, number[]> }
       w.murmurPerf ??= {}
       const a = (w.murmurPerf.vehicleLayers ??= [])
-      ;(w.murmurPerf as unknown as Record<string, number>).drawnCount = drawn.length
+      ;(window as unknown as { murmurDrawn: number }).murmurDrawn = drawn.length
       a.push(performance.now() - t1)
       if (a.length > 200) a.splice(0, a.length - 200)
     }
@@ -934,7 +958,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
         const at = smooth ? drawnPosition(v) : v.position
         // tight only while the vehicle is gliding (the target moves smoothly); a snap, a resting
         // vehicle and reduced-motion users get the slow approach as before
-        const k = 1 - Math.exp(-dt / (smooth && isGliding(uid) && !reducedMotion() ? 0.08 : 0.25))
+        const k = 1 - Math.exp(-dt / (smooth && isGliding(uid) && !reducedNow ? 0.08 : 0.25))
         const c = m.getCenter()
         const elev = viewRef.current === '3d' ? (smooth ? drawnAlt(v) * HEIGHT_EXAGGERATION : drawnHeight(v)) : 0
         m.setCenterClampedToGround(false)

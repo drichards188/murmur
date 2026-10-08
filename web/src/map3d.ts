@@ -54,13 +54,22 @@ const SEA_GRID = 0.25
 let seaBox: { w: number; e: number; s: number; n: number } | null = null
 let seaData: { polygon: XYZ[] }[] = []
 
+/** The fleet changed wholesale (a new run, a reconnect, a new fleet manifest): the box starts
+ *  over from the vehicles now there, so it does not grow forever across runs in one session. */
+export function resetSeaBox() {
+  seaBox = null
+  seaData = []
+}
+
 /** A translucent sea-level plane around the swarm. Land above 0 m shows through it;
  *  the seabed and anything submerged are seen through the water.
  *  The outline is stable: it snaps outward to a coarse grid around the vehicles (and the pad),
  *  and the same data object is returned until a vehicle leaves the box, which then grows. It
  *  never shrinks during a page's life, so a polygon rebuilt every update cannot reshuffle the
  *  depth results (also flashing). Reads reported positions, not drawn ones: it does not change
- *  per glide frame. */
+ *  per glide frame.
+ *  This deliberately differs from master (a polygon rebuilt from the vehicle bounds on every
+ *  update) even with smoothing off: the rebuilt polygon was part of the flashing. */
 function seaSurface(vehicles: Vehicle[]) {
   const pts = vehicles.flatMap((v) => (v.position ? [v.position] : []))
   if (!pts.length) return seaData.length ? seaData : []
@@ -93,12 +102,10 @@ function seaSurface(vehicles: Vehicle[]) {
   return seaData
 }
 
-/** The 3D scene around the vehicles: bridge decks, sea surface, trails, height stems and
- *  sea-level shadows. The vehicles themselves (both views) are in vehicleLayers.ts.
- *  visible=false keeps the layers (and their GPU resources) alive while the 2D view is shown. */
-export function build3dLayers(vehicles: Vehicle[], visible = true, bridges: LiftedBridge[] = []) {
-  return [...build3dStatic(vehicles, visible, bridges), ...build3dGlide(vehicles, visible)]
-}
+/** The 3D scene around the vehicles is built in two parts: build3dStatic (bridge decks, sea
+ *  surface, trails) and build3dGlide (height stems and sea-level shadows). The vehicles
+ *  themselves (both views) are in vehicleLayers.ts. visible=false keeps the layers (and their
+ *  GPU resources) alive while the 2D view is shown. */
 
 /** Bridge decks, sea surface and trails: nothing here moves with a glide (display smoothing,
  *  drawn.ts), so MapView builds them when the data changes and reuses them between frames. */
