@@ -143,8 +143,8 @@ const LOGS: [(&str, u32); 52] = [
     ("v15-engagement-scenario-01.jsonl", CARRY_FOLLOWUPS_SINCE),
     ("v15-spent-munition-unspent-scenario-84.jsonl", CARRY_FOLLOWUPS_SINCE),
     ("v15-nomination-refused-while-a-carry-may-owe-scenario-85.jsonl", CARRY_FOLLOWUPS_SINCE),
-    // rules 16 (lost contacts, murmur-533 and its review; the table names the constant; a clean
-    // build of b7f9719, rules 15 merged): the same scenario; scenario 86, a fishing boat dropped by the tracker by
+    // rules 16 (lost contacts, murmur-533 and its reviews; the table names the constant; a clean
+    // build of 75c505b, rules 15 merged): the same scenario; scenario 86, a fishing boat dropped by the tracker by
     // the target, still blocking; 87, accepted at the nomination; 88, an accepted tour boat seen
     // again by its AIS under a new track id, its claim confirmed, the live track aborting the
     // engagement; 90, accepted while the nomination waits; 93, a spoofed AIS's claim confirmed,
@@ -1691,7 +1691,7 @@ fn the_rules_16_logs_carry_lost_contacts_and_cannot_claim_rules_15() {
     }
 }
 
-/// Rules 16, live (a clean build of b7f9719, rules 15 merged; stand-ins of the engage demo at the
+/// Rules 16, live (a clean build of 75c505b, rules 15 merged; stand-ins of the engage demo at the
 /// Gate, `sim/scenarios/golden-gate-lost.toml`, a dev run on a fresh station), anchored as it ran:
 /// a fishing boat 400 m north of where the fast boat holds and a tour boat on AIS go out of view
 /// at 4 minutes. Unseen 100 s and not yet dropped, they block op-1's nomination by their
@@ -1705,7 +1705,8 @@ fn the_rules_16_logs_carry_lost_contacts_and_cannot_claim_rules_15() {
 /// accepted for this engagement) and the assessment ends it `done`. Then, with the switchblade
 /// spent and still heard (rules 15's SPENT, STILL HEARD alert) beside the open claim in the
 /// inbox, op-1 confirms the claim (`track.reacquired` under op-1's session), the fishing boat
-/// still lost. A clean stop. The start names the station's pointer (rules 15's `pointer`).
+/// still lost. A clean stop. The start names the station's pointer (rules 15's `pointer`) and the
+/// tracker's drop age (`track_drop_s`), which every drop is held to.
 #[test]
 fn the_rules_16_live_log_holds_lost_contacts_until_accepted_or_confirmed() {
     let name = "v16-lost-contacts-live.jsonl";
@@ -1727,6 +1728,7 @@ fn the_rules_16_live_log_holds_lost_contacts_until_accepted_or_confirmed() {
     let confirmed = text.find("\"type\":\"track.reacquired\"").unwrap();
     let assessed = text.find("\"type\":\"engage.assessed\"").unwrap();
     assert!(claimed < assessed && assessed < confirmed, "claimed, assessed, then confirmed");
-    // a v16 log carries rules 15's too: the station's pointer in its first line
+    // a v16 log carries rules 15's too: the station's pointer in its first line; and the drop age
     assert!(lines(&text)[0].contains("\"pointer\":\".last-run-"), "rules 15's pointer");
+    assert!(lines(&text)[0].contains("\"track_drop_s\":180"), "the tracker's drop age");
 }

@@ -1654,7 +1654,7 @@ Rules versions:
   older can't carry them): `track.dropped`, `track.reacquired`, `lost.claimed`,
   `lost.reinstated`, `lost_contacts`, `lost_accepted`, `track_ais`, an acceptance's `contact`, a
   lost contact's `ais`, `run.started`'s `track_drop_s`. Scenarios 86 to 94 (84 and 85
-  are rules 15's). Fixtures (a clean build of `b7f9719`, rules 15 merged):
+  are rules 15's). Fixtures (a clean build of `75c505b`, rules 15 merged, after the second review):
   `tests/data/audit/v16-engagement-scenario-01.jsonl` and scenarios 86 to 88, 90 and 93
   (`v16-lost-contact-*`), and a live log with its anchors (`v16-lost-contacts-live.jsonl`,
   stand-ins at the Gate on `sim/scenarios/golden-gate-lost.toml`: two contacts out of view block
