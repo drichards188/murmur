@@ -149,8 +149,13 @@ officer runs its model with the bridge's MCP tools and nothing else, from that e
   /mcp as server "murmur", with the X-Murmur-Agent header> --tools "" --allowedTools
   "mcp__murmur__*" --setting-sources project`, run with that directory as its working
   directory (no built-in tools, no other MCP server, no user or repository settings).
-- Codex: `codex exec` with the read-only sandbox (`--sandbox read-only`) and the approval
-  policy `never`, only the bridge's MCP server configured, in that directory.
+- Codex: `codex exec` in that directory with every feature that runs a shell, executes a command
+  or reads a file turned off (on the installed CLI today `shell_tool` and `unified_exec`, which
+  `codex features list` shows stable and on: `--disable shell_tool --disable unified_exec`, or
+  the `-c features.<name>=false` form; any later feature of that kind too), and only the
+  Murmur MCP server configured. The read-only sandbox (`--sandbox read-only`) and the approval
+  policy `never` stay on as a second fence, but they are not MCP-only on their own: with a shell
+  the model can still run commands that read the disk.
 
 A watch officer that cannot hold to this does not start. What it must hold to besides: agents
 propose and never approve (no approve tool exists, and the watch policy sends its tasking to the

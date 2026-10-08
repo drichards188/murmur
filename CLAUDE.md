@@ -110,14 +110,15 @@ meaningful. Decision and command, not weapons.
   ports from its base). A bridge that finds a port taken drops it for good.
 - Keep fixed port bases (vehicle, bridge) below the ephemeral range: stand-ins and clients draw
   from it, and a fixed base inside it collides at random. It can change between boots: check
-  `sysctl net.ipv4.ip_local_port_range` (37795-41890 as of 2026-10-04; was 39160-43255).
+  `sysctl net.ipv4.ip_local_port_range` (39160-43255 as of 2026-10-08; was 37795-41890 on 10-04).
 - Eval stacks own UDP 35000-36999 and HTTP 10600-10699 (`eval/ports.py`, fixed): keep other
   live stacks off them. Each eval run starts as a fresh station (`eval/stack.py` removes the
   bridge's `.last-run-<port>` before and after; `run.json` `restore_carry`, murmur-kvb).
 - Situations (`sim/situations/README.md`): `op-1` is the person, never a script; scripted ids
-  are `op-setup`, `op-auto`, `op-2`, `op-3`, `op-planner`, `agent-setup`, `agent-scripted`. An
-  opening order op-setup's submission would authorize (dry run `POST /api/intents/preview`) goes
-  through agent-setup to the inbox; the AI starts in an empty temp dir, MCP tools only.
+  are `op-setup`, `op-auto`, `op-2`, `op-3`, `op-planner`, `agent-setup`, `agent-scripted`.
+  op-setup submits only what its dry run (`POST /api/intents/preview`) says is auto or waits for
+  someone else; the rest goes through agent-setup to the inbox. The AI starts in an empty temp
+  dir, MCP tools only.
 - Rules 5 queue: an order for a vehicle the link can't carry it to now waits in the Queue
   (console button; `GET /api/inbox` `queued`), it is not an error; one whose link drops
   before the vehicle started it comes back there (`intent.requeued`). A human's approval is

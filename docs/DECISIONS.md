@@ -848,10 +848,12 @@ group. Dates are 2026.
   chain is what the engine decided on; a display aid is not that, so the runner keeps its own
   record (`logs/situations/<run>/situation.jsonl`). The token, because only the stack's own
   runner should write what the console presents as the situation. Blinding is the bridge's, not
-  only the runner's (10-08 review, B3): unless the document says `reveal: true` the bridge strips
-  `director`, `timeline.upcoming`, `watch_upcoming` and every entry marked `director = true`
-  before it stores it, whatever the runner sent; watch items without that mark appear as they
-  come due, so they say what to look at, never what it is. `GET /api/situation` is open on the
+  only the runner's (10-08 review, B3): unless the document says `reveal: true` (exactly) the
+  bridge keeps only the top-level keys a blinded panel shows (an allowlist, round two), of the
+  timeline only what is done, and no timeline entry or watch item whose `director` is anything
+  but `false`, whatever the runner sent; `phase_detail` and `problems` stay as strings and carry
+  only the runner's fixed messages. Watch items without that mark appear as they come due, so
+  they say what to look at, never what it is. `GET /api/situation` is open on the
   local port like every other read, so the AI is kept from it, and from the checkout, by how it
   runs: MCP tools only (Claude `--strict-mcp-config`, `--tools ""`, `--allowedTools
   "mcp__murmur__*"`, `--setting-sources project`; Codex a read-only sandbox, approvals never),
@@ -886,13 +888,22 @@ group. Dates are 2026.
   it is a script's. Within the current rules a human source's submission in a human tier with
   `submitter_authorizes` is its own approval (replay flags anything else), so the runner asks
   first: an operator's dry run (`Engine::dry_run_for_operator`; read-only, not logged, vehicle
-  tasks only) says whether op-setup's submission would authorize the order; if it would, the
-  scripted agent `agent-setup` proposes it instead, and it waits for the person (live) or
-  `op-auto` (autoplay). An opening order for an armed platform is refused at load. Live, the
-  timeline's operator proposer refuses a proposal its own submission would authorize, the same
-  way. Considered: a policy key making a scripted id's submission wait (a rules change for a
-  harness concern; the agent route uses what the engine already guarantees, that an agent's
-  proposal in a human tier waits for a human).
+  tasks only). A scripted operator id submits only what the dry run says can't be its own
+  approval (`auto_approved`, or `pending_approval` in a tier whose submitter does not
+  authorize); anything else, a `rejected` dry run too (round two: a check failing on a flaky
+  terrain fetch or a fact's age may pass a moment later in a human tier), is proposed by the
+  scripted agent `agent-setup`, and waits for the person (live) or `op-auto` (autoplay). The dry
+  run and the submission are two moments, so every scripted submission's answer is checked: an
+  approval at submission by a scripted id is a loud problem and is cancelled if it has not gone
+  out. An opening order for an armed platform is refused at load. The timeline's operator
+  proposer follows the same rule in both modes, and a `declare` step is refused in live mode (a
+  script's declaration decides; the person declares). Considered: a policy key making a scripted
+  id's submission wait (a rules change for a harness concern; the agent route uses what the
+  engine already guarantees, that an agent's proposal in a human tier waits for a human).
+  Harbor watch opens in a verified state: its fleet is platforms with an endurance figure
+  (`seahunter`, `mq9b`, two `puma`), so its opening orders go out by policy; adding figures for
+  `corsair` and `fvr90` is the user's call, and until then the stand-ins say at start that they
+  simulate 10 h for a platform without one while the C2 treats its reserves as unverified.
 - **Murmur never handles anyone's model credentials; a situation runs the user's own CLI**
   (10-08, user direction: Murmur is open source and people run it with their own Claude or
   ChatGPT subscription). A situation's AI is `claude` (the default), `codex`, `playbook` (the

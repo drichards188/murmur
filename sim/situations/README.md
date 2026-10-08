@@ -24,14 +24,18 @@ range: vehicles UDP 33000+, bridge UDP 34000+, bridge 9265, link emulator 9266, 
 tidewater 9270, SITL instances from 160 (`SITUATION_PORTS` in `eval/situation.py`). Each
 `scripts/up.sh` port variable (`MURMUR_BASE_PORT`, `MURMUR_HTTP_PORT` and the rest) overrides its
 port; an exported `MURMUR_TIDEWATER_URL` is not passed on (the situation's tidewater runs on its
-own port). The runner prints the console's address (`http://127.0.0.1:5673` by default); the
+own port). Each UDP range holds up to the gap between the two bases (1000 vehicles in the
+block): a larger fleet, or a range reaching into the evaluation's block, is refused. The fresh
+station deletes only pointers that name a situation's log (`situation-*`): if the HTTP port's
+`.last-run-<port>` or `.resume-<port>.json` names any other log (an exported `MURMUR_HTTP_PORT`
+that is another stack's), the runner refuses to start and says so. The runner prints the console's address (`http://127.0.0.1:5673` by default); the
 Situation panel is over the map's top left.
 
 ## Situations
 
 | file | status | what |
 | --- | --- | --- |
-| `harbor-watch.toml` | runs | Four of ours on station at the Golden Gate, normal traffic, and an unknown fast boat without AIS that comes in from the west and holds near the bridge. The AI should notice it and propose a sensor orbit; the watch policy puts that in front of the operator. Two opening orders wait for your decision at the start (the C2 does not know those vehicles' endurance). 12 minutes at rate 1. |
+| `harbor-watch.toml` | runs | Four of ours on station at the Golden Gate, normal traffic, and an unknown fast boat without AIS that comes in from the west and holds near the bridge. The AI should notice it and propose a sensor orbit; the watch policy puts that in front of the operator. Every platform has an endurance figure, so the three opening orders go out by policy. 12 minutes at rate 1. |
 | `comms-cut-gnss-spoof.toml` | stub (TODO) | Title and brief only. |
 | `hostile-act-engagement.toml` | stub (TODO) | Title and brief only. |
 | `approval-flood.toml` | stub (TODO) | Title and brief only. |
@@ -90,7 +94,7 @@ Who is who in a situation's run:
 | `agent-setup` | the setup script as an agent: proposes an opening order that would otherwise be authorized by op-setup's own submission (below) |
 | `op-auto` | the autoplay operator (autoplay only) |
 | `op-2`, `op-3` | the scripted engagement signers (autoplay), or the scripted cosigner (live, `cosigner = "scripted"`) |
-| `op-planner` | the timeline's second station (`declare` steps; proposals with `[storyline] proposer = "operator"`) |
+| `op-planner` | the timeline's second station (`declare` steps, autoplay only; proposals with `[storyline] proposer = "operator"`) |
 | `agent-scripted` | the timeline's proposals (MCP) |
 | `agent-watch`, `agent-planner` | the AI: Claude or Codex, or the playbook |
 
@@ -101,13 +105,22 @@ lists the scripted ids it used in `situation.jsonl`, the panel and the summary.
 
 **A script never authorizes a human tier.** Each opening order is first an operator's dry run as
 `op-setup` (`POST /api/intents/preview`: the checks and the policy decision now, nothing created,
-nothing logged). Where op-setup's submission would be its own approval (a human tier whose
-`submitter_authorizes` is true: an armed platform, leaving the approved area, an endurance the
-C2 does not know), the order is proposed by `agent-setup` instead, and it waits in the Inbox for
-you (live) or `op-auto` (autoplay); otherwise `op-setup` submits it and the policy routes it as
-any order. An opening order for an armed platform is refused when the file is read. In live
-mode the timeline's operator proposer (`op-planner`) refuses, the same way, a proposal its
-submission would authorize.
+nothing logged). `op-setup` submits it only where its submission can't be the approval: the
+policy sends it out (`auto_approved`), or it waits for someone else (`pending_approval` in a tier
+whose submitter does not authorize). Anything else is proposed by `agent-setup` instead (an agent
+never approves): `approved` (a human tier whose `submitter_authorizes` is true: an armed platform,
+leaving the approved area, an endurance the C2 does not know) and `rejected` too (a check failing
+now, a terrain fetch or a fact's age, may pass a moment later in a human tier). It then waits in
+the Inbox for you (live) or `op-auto` (autoplay), and expires after the policy's wait (120 s in
+the watch policy) if no one decides it. The answer to every scripted submission is checked all
+the same: one approved at submission by a scripted id (a fact changed between the dry run and the
+submission) is a loud problem in `situation.jsonl`, the panel and the summary, and is cancelled
+if it has not gone out. An opening order for an armed platform is refused when the file is read.
+The timeline's operator proposer (`op-planner`) follows the same rule in both modes, refusing
+what it may not submit, and a `declare` step (a script's declaration) is refused in live mode:
+the person declares, and a hostile act is the engine's rule declaration from an observed act.
+In the Inbox, a card from a scripted id carries its badge ("situation setup (scripted)",
+"situation timeline (scripted)"), from the status document's `scripted`.
 
 Situations run as dev runs for now (operator ids asserted by header, logged `auth: dev`,
 excluded from any human-control claim); the runner refuses `MURMUR_AUTH=credentials`. In a dev
@@ -168,7 +181,11 @@ in memory and nowhere else; it never reaches the decision engine, the world snap
 the MCP tools or the audit log. With `reveal = false` (a blinded run) it carries no director's
 notes, nothing of the timeline still to come and no step or watch item marked `director = true`,
 and the bridge strips the same again from whatever it is sent (`reveal` not true: no
-`director`, no `timeline.upcoming`, no `watch_upcoming`, no entry marked `director`). Watch
+`director`, no `timeline.upcoming`, no `watch_upcoming`, no entry marked `director`: it keeps
+only the top-level keys a blinded panel shows, and any `director` value but `false` counts as
+the director's). `phase_detail` and `problems` carry only the runner's own fixed messages (an
+exception's type, a status code), never a step's or the director's text; the details are in
+`situation.jsonl`. Watch
 items without `director` are shown as they come due whatever `reveal` says, so keep them free of
 answers (what to look at, not what it is) or mark them `director = true`.
 
@@ -207,7 +224,7 @@ reveal = false                                # director's notes and what is to 
                                               # (never for an armed platform; see above)
 id = "gate-patrol"
 task = "patrol"                               # orbit | patrol | hold | rtl | track
-vehicles = { callsign = "MARLIN 1" }          # {callsign}, {platform (, index, all)}, {uids = [..]}
+vehicles = { callsign = "HUNTER 1" }          # {callsign}, {platform (, index, all)}, {uids = [..]}
 route = [[-122.4720, 37.8135], [-122.4720, 37.8250]]   # orbit: center = [lon, lat], radius_m
 note = "Patrol the channel east of the bridge"          # the order's rationale in the log
 
