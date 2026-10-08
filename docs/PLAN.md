@@ -588,8 +588,9 @@ every decision reads it so on its own picture). Replay rebuilds the lost contact
 checks every engagement decision's against them, recomputes each claim and confirmation,
 checks each reinstatement, flags a second drop of an id, a drop with an older fix than the
 decisions had seen (or another at the same time, or a newer one that a picture taken a second or
-more after it did not show), a drop sooner after the track was last seen than the run's tracker
-drops one (`run.started`'s `track_drop_s`) and a dropped id back in a picture with another fix,
+more after it did not show, or one later than its last sighting), a drop sooner after the track
+was last seen than the run's tracker drops one (`run.started`'s `track_drop_s`, which a log with
+drops must carry) and a dropped id back in a picture with another fix,
 and flags a track that leaves a picture without a drop; a lost contact counts whether or not its
 id is in the picture (the tracker never reuses one). Shown: on the map (a
 faded, anticipated symbol at the last fix, the region counted now, "T-0002 LOST 4 min"), in the

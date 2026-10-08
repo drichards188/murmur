@@ -381,6 +381,13 @@ group. Dates are 2026.
     without a tracker) and replay requires each drop at least that long after the track was last
     seen. The scenario runner logs the bridge's default 180 s and, on a clock that steps back,
     holds a `drop_track` step until the age has passed by its own clock, as the tracker would.
+    The review's second pass closed what was left: the age was counted from `last_seen_t` while
+    the keep-out reads the fix's own time, and nothing tied them (a fix dated 179 s after a last
+    sighting at 0 s, 10 km away, passed); a drop's fix may now be no later than its last sighting
+    (the tracker dates it then; none of the 2,704 track facts in the v12 to v16 fixtures has one
+    later, and the 7 drops have the two equal) and the age counts from the later of the two. A
+    v16 log with drops must log the age (stripped, the check would be off), and a `drop_track`
+    step still waiting at the end of a scenario fails the run, naming the step.
   - *A dropped id back in a picture with a fresh fix hid the lost contact.* The keep-out skipped
     a lost contact whose id was in the picture, so a fix 30 km away under the dropped id let a
     nomination through. The tracker never reuses an id within a run, so such a track never stands

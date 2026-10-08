@@ -636,7 +636,13 @@ our sensors covered with no detection" clears them all; live tracks out of view 
 shipped). Commit e4f58af, clean, about four minutes; `python -m eval.run keepout --variants oov
 oov-all oov-near --seeds 1 2 3 4 5 6 7 8 9 10 --situations 300`. The `own_speed` rows reproduce
 the first measurement's `held` (commit bd51261: 90% blocked in `oov`, 99% in `oov-near`) on the
-new traffic.
+new traffic. Run again at commit 25b466f (clean, 10-08) after the review of the merged branch:
+the engine now judges a lost contact even when its id is in the picture (the tracker never
+reuses one), and the probe no longer skips a lost contact whose contact is tracked again under
+the same key, so an earlier drop of a contact back in view now counts as well. Every number in
+the two tables below came out the same (the pooled rows of all three variants and the blocked
+percentages by time to effect), 0 mismatches and 0 errors: in these variants a masked contact
+never comes back into view, and no contact that came back after a drop changed a verdict.
 
 Pooled over densities and times to effect (blocked and needing an acceptance: percent of
 nominations, Wilson 95%; misses: passes with a protected contact truly inside the keep-out line or

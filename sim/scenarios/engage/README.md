@@ -70,7 +70,8 @@ The effect is an abstract event: a point, a radius, a time. Nothing here models 
   `truth`, the act's real author), as `eval/ident.py` reads them.
 - Rules 16: a `drop_track` step is the tracker's drop (as the bridge's after 180 s without a
   detection; the run logs that age, `run.started`'s `track_drop_s`, and on a clock that steps
-  back a step that comes sooner by the run's clock waits until it has passed): the engine is
+  back a step that comes sooner by the run's clock waits until it has passed; one still
+  waiting at the end, a track that never went silent or not long enough, fails the run): the engine is
   handed the track's facts then and its AIS (`track.dropped`) and the runner stops carrying it; every second the runner also calls `Engine::step_lost` (a
   track carrying a lost contact's MMSI raises a claim, `lost.claimed`; a confirmation the
   picture no longer bears out is reinstated, `lost.reinstated`), as the bridge's loop does; a

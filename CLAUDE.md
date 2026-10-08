@@ -220,8 +220,9 @@ meaningful. Decision and command, not weapons.
   flags a track that leaves a picture without a `track.dropped`: a test or driver that drops a
   track hands it to `Engine::record_track_drops` first (scenarios: `drop_track`); an id is
   dropped once, and never back in a picture with another fix (a lost contact counts whatever the
-  picture holds). A run that logs `track_drop_s` (the bridge, the scenario runner: 180) has each
-  drop held to it after the track was last seen; engine tests that start without it are not.
+  picture holds). A v16 run with drops must log `track_drop_s` in `run.started` (the bridge and
+  the scenario runner do: 180; an engine test passes it in `StartCarry`) and each drop comes that
+  long after the track was last seen, its fix no later than that sighting; replay flags either.
   Burden model: `python -m eval.lost_burden`.
 - The tracker is a two-model IMM; changes must pass `tracks::tests::calib`. Its held-out seeds
   (66-95) are not for tuning: write a new held-out set if you tune on them. Aircraft have their

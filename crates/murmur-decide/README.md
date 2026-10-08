@@ -1638,9 +1638,10 @@ Rules versions:
   own picture (an operator's session, nothing contradicting it), each picture read like a
   decision's; each reinstatement's reason; that no id is dropped twice; that a drop's fix is no
   older than the newest the decisions had seen, the same fix when its time is the same, and not
-  newer than one a picture taken at least 1 s after it still showed (`DROP_FIX_SKEW_MS`); that a
-  drop comes no sooner after the track was last seen than the run's tracker drops one
-  (`run.started`'s `track_drop_s`, when the run logged it); that a dropped id is back in no
+  newer than one a picture taken at least 1 s after it still showed (`DROP_FIX_SKEW_MS`), nor
+  later than when the tracker last saw the track (`last_seen_t`); that a drop comes no sooner
+  after the later of the two than the run's tracker drops one (`run.started`'s `track_drop_s`,
+  which a v16 log with a drop must carry); that a dropped id is back in no
   picture with another fix than its drop's; and that no track leaves a picture without a
   `track.dropped` (a track that vanished would have stopped protecting with nothing in the log).
   After the review of the merged branch (10-08): a lost contact is judged whether or not its id
