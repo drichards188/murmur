@@ -176,16 +176,19 @@ meaningful. Decision and command, not weapons.
   (`EngineError::SpaceSegment`) and replay flags either changing between two `space.loaded`.
 - Rules 15 (`CARRY_FOLLOWUPS_SINCE`): a spent platform stays spent across restarts, a full
   restack with the same fleet included (`carried_from`'s `spent`; same vehicle only): an
-  engagement-authority operator un-spends it with a note once the engagement that spent it
-  ended, it was heard after that and is heard now, and the vehicle under the uid is the one spent
-  (platform, callsign, sysid; `POST /api/restores/unspend`, the console's Un-spend on its SPENT,
-  STILL HEARD alert, shown only then; a credentials run re-enters the password or passkey), and
-  its own values are then owed back (missions wait for the restore). A nomination on an armed
+  engagement-authority operator un-spends it with a note once the engagement that spent it is
+  over (a mark carried from a log where it had not ended: once its assessment window from the
+  spend is past), it was heard after that and is heard now, and the vehicle under the uid is the
+  one spent (platform, callsign, sysid; `POST /api/restores/unspend`, the console's Un-spend on
+  its SPENT, STILL HEARD alert, shown only then; a credentials run re-enters the password or
+  passkey, asked for only after the 403 and 409 checks), and its own values are then owed back
+  (missions wait for the restore). A nomination on an armed
   platform a failed carry may owe is refused (`fallback_preload`) until that log is read or
   written off. A pointer that can't be read falls back to this station's newest log by the carry
   chain (`pointer_failed`) when its chain and anchors check and no newer log naming no pointer,
-  or not parsing, could be the one named; else that log is a failed carry under its own name
-  (its armed platforms held) and the next start reads it. A failed carry records the fleet file
+  or not parsing, and no fleet or anchors file of a deleted log, could be the one named; else
+  that log and every such log is a failed carry under its own name (its fleet's armed platforms
+  and what it owed or had spent held) and the next start reads them. A failed carry records the fleet file
   it read (`fleet_read`); `murmur-replay` compares `<log stem>.fleet.json` when at hand.
 - Keep-out explanation (murmur-12e; read-only, not logged, no rules change): the nomination
   form and `POST /api/engage/options` (`keep_outs`) say which track or vehicle blocks, which

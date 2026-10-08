@@ -1479,7 +1479,9 @@ Rules versions:
   - *An un-spend* (imu (2) and the review): `Engine::unspend_platform` (an
     `EngagementAuthority`, a note, the world, a step-up): only for a platform spent (this run's
     mark or a carried one) whose engagement ended (its terminal transition; a carried mark counts
-    from the run's start), heard after that end (`VehicleFacts::heard_t`) and not silent now
+    from the run's start if its engagement ended in its log, `SpentPlatform::ended`, else from
+    when it was spent, `spent_t`, plus `assess_window_s` if later), heard after that end
+    (`VehicleFacts::heard_t`) and not silent now
     (the link-aware fact age limit), the vehicle under the uid the one spent
     (`VehicleIdentity::same_vehicle`: platform, callsign and system id, never the home): one
     judgement, `SpentMark::refusal`, which `Engine::unspend_refusal` gives the bridge's alert.
@@ -1512,12 +1514,15 @@ Rules versions:
     station's newest log by the carry chain (the logs naming the pointer and those that carried
     from one; the newest is the one nobody carried from), carries from it when it names the
     pointer, its chain (`replay::chain_problem`) and anchors check and no log that names no
-    pointer or does not parse could be newer (`pointer_failed` on that entry); else records it
-    as a failed carry under its own name with its armed platforms and `pointer_failed` (pending:
-    the next start reads it); with no log of the station, the pointer as a failed carry as
-    before. Replay checks a fallback is the first entry of a run naming its pointer and that the
-    log given names the same pointer (`replay::station_pointer`), and takes a refused fallback
-    as the start's refusal, not a dropped debt. (The bridge also accepts a pointer of the same
+    pointer or does not parse could be newer, and no fleet or anchors file of a log that is gone
+    is as new (`pointer_failed` on that entry); else records it, and every such log, as failed
+    carries under their own names with `pointer_failed`, each holding its fleet's armed
+    platforms and what it owed, had spent or held (`refused_holds`; pending: the next start
+    reads them); with no log of the station, the pointer as a failed carry as before. Replay
+    checks a fallback is the first entry of a run naming its pointer (or the failed entries
+    found in its place come first) and that the log given names the same pointer
+    (`replay::station_pointer`), takes a refused fallback as the start's refusal, not a dropped
+    debt, and requires it to hold what its log owed or had spent when the log is at hand. (The bridge also accepts a pointer of the same
     line twice and syncs the pointer's directory after the rename, warning when only that sync
     fails: no rules change.)
   - *A superseded void names its order* (zq3 (5) and the review): replay reads the order,

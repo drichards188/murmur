@@ -1204,10 +1204,22 @@ group. Dates are 2026.
   act (`StepUpFor::Unspend`: the platform, the engagement, the log of a carried mark). Always in a
   credentials run, not by `step_up_acts`: a new word there would change the policy schema, and
   the un-spend is consequential whatever a policy lists, as an engagement signature is. The API
-  takes `password` or `passkey` (401 without a valid one; 403 first without engagement
-  authority); replay checks the step-up quoted. The write-off stays as it is (it authorizes
+  takes `password` or `passkey` and answers in order: 403 without engagement authority, 409 when
+  the rules refuse the un-spend now (a dry check, nothing logged), then 401 without a valid
+  step-up, so a refused un-spend never takes a password, nor counts a wrong one toward the
+  session's lock; replay checks the step-up quoted. The write-off stays as it is (it authorizes
   nothing). Replay binds it all: the operator's own session with engagement authority, the
   step-up, the note, the mark named exactly, and the judgement on the logged facts and identity.
+  After the second review (item 1): a carried mark counted from the new run's start whatever its
+  engagement had reached, so a crash or a restack inside the assessment window (released, still
+  observing) skipped the wait for the engagement to be over: carried 3 s after the cut and 4 s
+  into the new run, the un-spend was taken and the alert showed at once. A mark now records when
+  it was spent (its expended closure, right after the release) and whether its engagement ended
+  in the log it was spent in (`spent_t`, `ended` in `carried_from`'s `spent`, checked against
+  that log). One that ended counts from this run's start, as before; one that did not counts
+  from the latest it would have ended, as unknown: when it was spent plus `assess_window_s`, if
+  that is later than the start. Not taken: carrying the engagement itself over (engagements never
+  carry: the plan, the picture and the signatures are the run's).
 - **A nomination on a platform a failed carry may owe is refused until that log is read or
   written off** (10-07, murmur-imu (1); rules 15). Rules 12 held a mission for an armed platform
   of a failed carry's fleet but took a nomination, whose preload would read what the platform
@@ -1262,7 +1274,20 @@ group. Dates are 2026.
   platforms (`may_owe`, `fleet_read`) and why the pointer failed (`pointer_failed`): missions
   and nominations on them are held (fail closed), and it stays pending, so the next start reads
   it and the chain behind it. Replay takes such an entry as the start's refusal, not a dropped
-  debt (the log stays pending). Without any log of the station the pointer is a failed carry,
+  debt (the log stays pending).
+  After the second review (items 2 to 4): a refused log held only its fleet file's armed
+  platforms, so without a fleet file (every fallback is refused when anchors are off, and a
+  bridge that ends before its first tick, a busy port, writes none) it held nothing: an orbit
+  for a munition that log had spent was approved, and replay, which no longer flags a readable
+  failed carry here, said ok. Now it holds also every platform the log owed values to, had spent
+  or held for a failed carry of its own (read from it), and replay requires that when the log is
+  at hand. And only the newest was recorded, so a competing log the refusal named ("it may be
+  the log the pointer named") dropped at the next start: now every such log is a failed carry
+  too, in the pointer's place: another end of the chain started within 10 s, a newer log that
+  names no pointer or does not parse, and a log that is gone while its fleet or anchors file, as
+  new, is still here (deleting the newest log otherwise left its predecessor as the chain's end,
+  carried from silently). Each stays pending until read or written off; one that may be another
+  station's is held all the same (fail closed), and an operator writes it off. Without any log of the station the pointer is a failed carry,
   as before. A directory that can't be synced after the rename is a warning, no longer a failed
   pointer: the rename is done, and the next run finds the log (a power loss before the system
   flushes the directory could bring back the old pointer).
