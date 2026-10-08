@@ -137,17 +137,21 @@ pub enum EngineError {
 
 /// Rules 12: what a start carries over from earlier runs' logs ([`Engine::start`]): the entries of
 /// `run.started`'s `carried_from`, and (rules 15) the station's `.last-run` pointer, by its file
-/// name, logged as `run.started`'s `pointer`. A list of entries alone is a carry without a
+/// name, logged as `run.started`'s `pointer`; and what else the start records of the bridge it
+/// runs in (rules 16: its tracker's drop age). A list of entries alone is a carry without a
 /// pointer (a test).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StartCarry {
     pub pointer: Option<String>,
     pub from: Vec<crate::replay::CarriedFrom>,
+    /// Rules 16: the bridge's tracker's drop age (s), logged as `run.started`'s
+    /// `track_drop_s`; none without a tracker that drops (a test).
+    pub track_drop_s: Option<f64>,
 }
 
 impl From<Vec<crate::replay::CarriedFrom>> for StartCarry {
     fn from(from: Vec<crate::replay::CarriedFrom>) -> Self {
-        StartCarry { pointer: None, from }
+        StartCarry { pointer: None, from, track_drop_s: None }
     }
 }
 
@@ -611,7 +615,10 @@ impl Engine {
         let StartCarry {
             pointer,
             from: mut carried_from,
+            track_drop_s,
         } = carry.into();
+        // rules 16: the tracker's drop age (no build of older rules logged it)
+        let track_drop_s = track_drop_s.filter(|_| policy.rules.lost_contacts());
         // rules 15: the station's pointer, the spent platforms carried, a failed carry's fleet
         // file and a fallback from a pointer that could not be read (no build of older rules
         // logged them)
@@ -726,6 +733,7 @@ impl Engine {
             areas: areas.clone(),
             carried_from: carried_from.clone(),
             pointer,
+            track_drop_s,
         })?;
         // rules 12: what earlier runs still owed, owed back from here on (rules 15: and the
         // platforms they had spent stay spent)
@@ -3918,8 +3926,7 @@ impl Engine {
         let plan = intent.engagement().and_then(|e| e.plan.as_ref());
         let mut inputs = world.for_intent_plan(spec, terrain, &self.policy.rules, plan);
         self.identify(&mut inputs);
-        inputs.unknown_accepted = self.accepted_for(id);
-        self.fill_lost(spec, &mut inputs);
+        self.fill_engine_facts(spec, &mut inputs);
         let checks = rules::evaluate(spec, &inputs, &self.policy.rules);
         let pv = match plan {
             Some(p) => Some(p.preview.clone()),
@@ -3970,22 +3977,37 @@ impl Engine {
     }
 
     /// The inputs a decision on `spec` would read on `world` now, filled as the engine fills
-    /// them before its checks (rules 9 identification; the engagements in play and the
-    /// queued orders on its vehicles; their lost-link values still owed; rules 12 spent
-    /// platforms, rules 15 ones carried; rules 16 lost contacts), for a dry run that is not a decision (the nomination form's,
-    /// `POST /api/engage/options`, and agents' `get_nomination_options`): nothing is logged
-    /// or changed. A space task's answer is not asked for.
+    /// them before its checks (rules 9 identification, then [`Engine::fill_engine_facts`]), for
+    /// a dry run that is not a decision (the nomination form's, `POST /api/engage/options`, and
+    /// agents' `get_nomination_options`): nothing is logged or changed. A space task's answer is
+    /// not asked for.
     pub fn dry_run_inputs(&self, spec: &IntentSpec, world: &WorldSnapshot, terrain: &dyn TerrainOracle) -> WorldSnapshot {
         let mut inputs = world.for_intent_with(spec, terrain, &self.policy.rules);
         self.identify(&mut inputs);
+        // (a new nomination has no acceptances yet)
+        self.fill_engine_facts(spec, &mut inputs);
+        inputs
+    }
+
+    /// What the engine fills into a decision's inputs from its own state, after the world's part,
+    /// the identification and a space task's answer: the engagements in play and the approved
+    /// orders waiting on its vehicles, their own lost-link values still owed back (rules 7 and
+    /// 12), the platforms spent by their own effect (rules 12) and carried over as spent (rules
+    /// 15), an engagement's acceptances of lost vehicles (rules 6) and its lost contacts with the
+    /// acceptances of them (rules 16). Every decision's checks read them so, and so does every dry
+    /// run that says what a decision would do (an agent's preview, the nomination form's options,
+    /// the console's live checks of a waiting engagement): one fill, so none drifts from the
+    /// decision (the review of the merged branch: the agent's preview had no lost contacts).
+    fn fill_engine_facts(&self, spec: &IntentSpec, inputs: &mut WorldSnapshot) {
         inputs.engaged = self.engaged_for(spec);
         inputs.waiting = self.waiting_for(spec);
         inputs.restore_owed = self.restore_owed_for(spec, &inputs.identities);
         inputs.expended = self.restores.expended_for(spec, &self.policy.rules);
         inputs.spent_carried = self.restores.spent_carried_for(spec, &self.policy.rules, &inputs.identities);
-        // rules 16: the lost contacts (a new nomination has no acceptances yet)
-        self.fill_lost(spec, &mut inputs);
-        inputs
+        if spec.kind() == TaskKind::Engage {
+            inputs.unknown_accepted = self.accepted_for(spec.id);
+        }
+        self.fill_lost(spec, inputs);
     }
 
     /// Rules 9: the identification ledger (declarations in force, flags, acts seen).
@@ -5529,15 +5551,7 @@ impl Engine {
         if spec.task.is_space() {
             inputs.space = self.ask_space(&spec.task, inputs.t, phase)?;
         }
-        inputs.engaged = self.engaged_for(spec);
-        inputs.waiting = self.waiting_for(spec);
-        inputs.restore_owed = self.restore_owed_for(spec, &inputs.identities);
-        inputs.expended = self.restores.expended_for(spec, &self.policy.rules);
-        inputs.spent_carried = self.restores.spent_carried_for(spec, &self.policy.rules, &inputs.identities);
-        if spec.kind() == TaskKind::Engage {
-            inputs.unknown_accepted = self.accepted_for(spec.id);
-        }
-        self.fill_lost(spec, &mut inputs);
+        self.fill_engine_facts(spec, &mut inputs);
         let results = rules::evaluate(spec, &inputs, &self.policy.rules);
         let passed = rules::passed(&results, spec.kind());
         let preview = (spec.kind() == TaskKind::Engage)
@@ -6568,14 +6582,8 @@ impl AgentPort<'_> {
         if spec.task.is_space() {
             inputs.space = self.engine.ask_space(&spec.task, inputs.t, CheckPhase::Submit)?;
         }
-        inputs.engaged = self.engine.engaged_for(&spec);
-        inputs.waiting = self.engine.waiting_for(&spec);
-        inputs.restore_owed = self.engine.restore_owed_for(&spec, &inputs.identities);
-        inputs.expended = self.engine.restores.expended_for(&spec, &self.engine.policy.rules);
-        inputs.spent_carried = self
-            .engine
-            .restores
-            .spent_carried_for(&spec, &self.engine.policy.rules, &inputs.identities);
+        // what the proposal's decision would read, lost contacts included (rules 16)
+        self.engine.fill_engine_facts(&spec, &mut inputs);
         let checks = rules::evaluate(&spec, &inputs, &self.engine.policy.rules);
         let passed = rules::passed(&checks, spec.kind());
         let policy = passed.then(|| policy::decide(&spec, &inputs, &self.engine.policy));

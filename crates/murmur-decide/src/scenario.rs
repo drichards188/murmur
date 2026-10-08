@@ -955,6 +955,10 @@ pub enum ScenarioError {
     Setup(String, String),
 }
 
+/// Rules 16: the drop age a scenario's run logs (`run.started`'s `track_drop_s`): the bridge
+/// tracker's default (`MURMUR_TRACK_DROP_S` unset), which a `drop_track` step stands for.
+pub const TRACK_DROP_S: f64 = 180.0;
+
 /// Load one scenario file.
 pub fn load(path: &Path) -> Result<Scenario, ScenarioError> {
     let name = path.display().to_string();
@@ -1175,7 +1179,12 @@ pub fn run(
         policy,
         Some(areas.clone()),
         roster,
-        carried,
+        // rules 16: a `drop_track` step is the bridge tracker's drop, at its default age
+        crate::engine::StartCarry {
+            pointer: None,
+            from: carried,
+            track_drop_s: Some(TRACK_DROP_S),
+        },
         Box::new(clock.clone()),
         Box::new(log.clone()),
     )
@@ -1365,10 +1374,12 @@ pub fn run(
                 v.last_t = now;
             }
         }
-        // the timeline
-        for step in sc.steps.iter().filter(|st| st.at_s == s) {
+        // the timeline: first the drops that were not yet due (each comes once the tracker's
+        // drop age has passed by the run's clock, as the tracker's own would), then the steps
+        let due: Vec<Action> = std::mem::take(&mut extra.drops_due).into_iter().map(|track| Action::DropTrack { track }).collect();
+        for action in due.iter().chain(sc.steps.iter().filter(|st| st.at_s == s).map(|st| &st.action)) {
             act(
-                &step.action,
+                action,
                 &mut engine,
                 &sessions,
                 &mut tracks,
@@ -2564,6 +2575,11 @@ fn act(
             let Some(facts) = w.tracks.get(track).cloned() else {
                 return failures.push(format!("t={s}: drop_track: unknown track {track}"));
             };
+            // the tracker drops a track once it has gone its drop age without a detection by its
+            // own clock: a step sooner than that (a clock that steps back) waits until it has
+            if engine.policy().rules.lost_contacts() && (now.ms_since(facts.last_seen_t) as f64) < TRACK_DROP_S * 1000.0 {
+                return extra.drops_due.push(track.clone());
+            }
             let ais = w.track_ais.get(track).cloned();
             tracks.remove(track);
             if let Err(e) = engine.record_track_drops(vec![(track.clone(), facts, ais)]) {
@@ -2921,6 +2937,9 @@ struct Extra {
     reacquired: Vec<String>,
     claimed: Vec<String>,
     reinstated: Vec<String>,
+    /// Rules 16: the tracks a `drop_track` step asked to drop before the tracker's drop age had
+    /// passed by the run's clock (a clock that steps back), dropped once it has.
+    drops_due: Vec<String>,
 }
 
 impl Extra {

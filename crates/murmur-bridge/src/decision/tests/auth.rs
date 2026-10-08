@@ -1151,6 +1151,7 @@ async fn an_unspend_steps_up_through_the_api() {
     let carry = murmur_decide::StartCarry {
         pointer: None,
         from: vec![super::engagement::carry_of("run-1.jsonl", &first)],
+        ..Default::default()
     };
     let h = harness_on(Duration::from_secs(1800), &[], |_| {}, None, carry);
     assert!(h.log().lines().next().unwrap_or_default().contains("\"spent\":[{\"uid\":\"1\""), "carried");

@@ -212,8 +212,8 @@ pub struct LostInfo {
     pub track: String,
     pub since: Time,
     pub dropped_t: Time,
-    /// Its AIS identity, when it broadcast one (seen again with it, unambiguously, it is
-    /// retired).
+    /// Its AIS identity, when it broadcast one (a live track carrying it is a claim, which an
+    /// operator may confirm as this contact).
     pub ais: Option<String>,
 }
 
@@ -552,7 +552,8 @@ impl Probe<'_> {
 }
 
 /// Rules 16: the lost contacts of `world` the keep-out on tracks judges by their regions (not
-/// live again, exempt or accepted for this engagement), as [`engage::lost_standing`] decides.
+/// exempt or accepted for this engagement, whether or not their id is in the picture), as
+/// [`engage::lost_standing`] decides.
 fn judged_lost<'w>(world: &'w WorldSnapshot, target: &str, ec: &EngageRules) -> Vec<(&'w str, &'w crate::lost::LostContact)> {
     if !ec.lost() {
         return Vec::new();
@@ -561,8 +562,7 @@ fn judged_lost<'w>(world: &'w WorldSnapshot, target: &str, ec: &EngageRules) -> 
         .lost_contacts
         .iter()
         .filter(|(id, l)| {
-            !world.tracks.contains_key(id.as_str())
-                && !engage::track_exempt(id, &l.facts, target, ec)
+            !engage::track_exempt(id, &l.facts, target, ec)
                 && !world.lost_accepted.get(id.as_str()).is_some_and(|a| a.since == Some(l.since()))
         })
         .map(|(id, l)| (id.as_str(), l))
@@ -833,7 +833,7 @@ fn agrees(ctx: &Ctx, checks: &[CheckResult], items: &[(Item, Probe)], alt: Optio
     }
     // rules 16: each lost contact judged alone (the live tracks and the acceptances as they are)
     for (id, l) in &world.lost_contacts {
-        if world.tracks.contains_key(id) || !ec.lost() {
+        if !ec.lost() {
             continue;
         }
         let mut alone = WorldSnapshot::new(world.t);

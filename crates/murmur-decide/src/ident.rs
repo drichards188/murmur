@@ -1164,13 +1164,18 @@ impl Ledger {
     /// sent for the declaration fields is replaced: the ledger is the record.
     pub fn fill(&self, tracks: &mut BTreeMap<String, TrackFacts>) {
         for (id, t) in tracks.iter_mut() {
-            let (declared_by, declaration, affiliation, confidence) = self.expected(id, t);
-            t.declared_by = declared_by;
-            t.declaration = declaration;
-            t.affiliation = affiliation;
-            t.affiliation_confidence = confidence;
-            t.review_flags = self.flags_on(id);
+            self.fill_one(id, t);
         }
+    }
+
+    /// [`Self::fill`] for one track's facts (rules 16: a lost contact's, at its drop).
+    pub fn fill_one(&self, id: &str, t: &mut TrackFacts) {
+        let (declared_by, declaration, affiliation, confidence) = self.expected(id, t);
+        t.declared_by = declared_by;
+        t.declaration = declaration;
+        t.affiliation = affiliation;
+        t.affiliation_confidence = confidence;
+        t.review_flags = self.flags_on(id);
     }
 
     /// What [`Self::fill`] puts in a track's identification fields.
@@ -1233,7 +1238,8 @@ impl Ledger {
 /// of tracks and would fail it without the declaration (`before`: the ledger before the
 /// revocation, `after`: after it), each with its approval snapshot and that picture's world
 /// as logged. What a revocation of a bystander's declaration stops, besides the engagements
-/// on the track itself.
+/// on the track itself. Rules 16: the picture's lost contacts are refilled too, so a declared
+/// hostile the tracker dropped (exempt as it was live) is a bystander as well.
 pub fn revocation_bystanders<'a>(
     in_play: impl Iterator<
         Item = (
@@ -1251,10 +1257,15 @@ pub fn revocation_bystanders<'a>(
     let mut out: Vec<IntentId> = in_play
         .filter(|(_, target, _, _)| *target != track)
         .filter(|(_, _, snap, w)| {
-            let mut pre = (*w).clone();
-            before.fill(&mut pre.tracks);
-            let mut post = (*w).clone();
-            after.fill(&mut post.tracks);
+            let refill = |l: &Ledger| {
+                let mut w = (*w).clone();
+                l.fill(&mut w.tracks);
+                for (id, c) in w.lost_contacts.iter_mut() {
+                    l.fill_one(id, &mut c.facts);
+                }
+                w
+            };
+            let (pre, post) = (refill(before), refill(after));
             let pass = |w: &crate::world::WorldSnapshot| {
                 crate::engage::picture_keep_out_tracks(snap, w, cfg).outcome == crate::rules::Outcome::Pass
             };

@@ -31,7 +31,7 @@
 //! Rules 16 (murmur-533): the contacts the tracker dropped (`lost`, from the real tracker's
 //! drops) are the engine's lost contacts under rules 16 and absent before (as the bridge's
 //! picture had them): their regions ([`engage::lost_reach`]: a live track's, and anywhere at
-//! its own plausible speed) are component `lost`. Under rules 16 each evaluation with lost
+//! its domain's top speed) are component `lost`. Under rules 16 each evaluation with lost
 //! contacts also says how the keep-out on tracks would have gone with them all accepted
 //! (`accepted`: what an acceptance, or any rule clearing them all, gives), held only until
 //! 600 s after their drop (`held600`), or counted only with their last fix within 3 km of the
@@ -455,9 +455,6 @@ pub fn evaluate(env: &Env, s: &Situation, base: &WorldSnapshot, version: u32) ->
     // rules 16: the lost contacts' regions (component `lost`), as the keep-out reads them
     let mut lost_in = 0;
     for (id, l) in &w.lost_contacts {
-        if w.tracks.contains_key(id) {
-            continue;
-        }
         for r in engage::lost_reach(&l.facts, p.effect_t, &ec) {
             let edge = haversine_m(r.center, p.effect_point) - r.radius_m;
             let margin = edge - p.keep_out_m;

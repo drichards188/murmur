@@ -880,6 +880,7 @@ fn carrying_rig_anchored(
         murmur_decide::StartCarry {
             pointer: name.filter(|_| rules15),
             from,
+            ..Default::default()
         },
     );
     e.r.d.seed_carried(Some(pointer));
@@ -1884,6 +1885,8 @@ async fn a_dropped_contact_still_blocks_until_an_operator_accepts_it() {
     }
     assert_eq!(e.r.events("track.dropped"), 1);
     assert!(e.tracks.tracks_json(e.now_s()).iter().all(|t| t["id"] != "T-0002"));
+    // the run logged the tracker's drop age, which replay holds the drop to
+    assert!(e.r.log.lines()[0].contains(&format!("\"track_drop_s\":{}", e.tracks.drop_s())), "{}", e.r.log.lines()[0]);
     // the console sees it, out of view since its last fix, with the regions counted now
     let lost = e.tracks.lost_json();
     assert_eq!(lost.len(), 1, "{lost:?}");

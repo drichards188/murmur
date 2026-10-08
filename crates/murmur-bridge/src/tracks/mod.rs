@@ -183,6 +183,12 @@ impl Tracks {
         self.settings.eval_truth
     }
 
+    /// Rules 16: how long a track goes without a detection before it is dropped (s, the run's
+    /// `MURMUR_TRACK_DROP_S`, every domain alike), logged in `run.started` for replay.
+    pub fn drop_s(&self) -> f64 {
+        self.settings.drop_s
+    }
+
     /// The tracker's memories for the keep-out explanation, this run's drop time included.
     pub fn memory(&self) -> murmur_decide::keepout::TrackerMemory {
         model::memory(self.settings.drop_s)
@@ -417,6 +423,9 @@ impl Tracks {
                     }
                 }
                 None => {
+                    // rules 16: an id is never reused within a run (numbered up from 1, never
+                    // reset), so the engine judges a lost contact even with its id in a picture
+                    // (`engage::lost_standing`) and replay flags a dropped id back with another fix
                     let no = inner.next_no;
                     inner.next_no += 1;
                     let id = format!("T-{no:04}");

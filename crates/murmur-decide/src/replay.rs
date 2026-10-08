@@ -1916,6 +1916,7 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (rules::LOST_CONTACT_SINCE, "\"lost_accepted\":{", "an accepted lost contact (decision inputs, a picture token)"),
     (rules::LOST_CONTACT_SINCE, "\"contact\":\"", "an acceptance of a lost contact"),
     (rules::LOST_CONTACT_SINCE, "\"ais\":{", "a lost contact's AIS identity"),
+    (rules::LOST_CONTACT_SINCE, "\"track_drop_s\":", "the tracker's drop age in run.started"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -2234,6 +2235,11 @@ fn replay_inner<S: AsRef<str>>(
     // and the tracker has dropped (a track leaves the picture only by a drop)
     let mut lost = crate::lost::LostLedger::default();
     let mut pictured = Pictured::default();
+    // rules 16: the tracker's drop age the run logged (none: not checked)
+    let track_drop_s: Option<f64> = events.first().and_then(|e| match &e.body {
+        EventBody::RunStarted { track_drop_s, .. } => *track_drop_s,
+        _ => None,
+    });
 
     for (i, e) in events.iter().enumerate() {
         let want_prev = if i == 0 {
@@ -4683,8 +4689,22 @@ fn replay_inner<S: AsRef<str>>(
                 if lost.holds(track) {
                     bad(&mut r, e, None, "a track dropped twice (the tracker drops an id once)", track.clone(), String::new());
                 }
-                // no older fix, and the same fix, as the decisions last saw it
+                // no older fix, and the same fix, as the decisions last saw it; and no newer fix
+                // that a picture taken after it did not show
                 if let Some((fix, vel)) = pictured.last.get(track) {
+                    let shown_t = pictured.shown_t.get(track).copied();
+                    if facts.position.t > fix.t
+                        && shown_t.is_some_and(|w| w.ms_since(facts.position.t) >= DROP_FIX_SKEW_MS)
+                    {
+                        bad(
+                            &mut r,
+                            e,
+                            None,
+                            "a track dropped with a fix newer than a later picture showed",
+                            json(&facts.position),
+                            json(&(fix, shown_t)),
+                        );
+                    }
                     if facts.position.t < fix.t {
                         bad(
                             &mut r,
@@ -4705,8 +4725,21 @@ fn replay_inner<S: AsRef<str>>(
                         );
                     }
                 }
+                // rules 16: no sooner than the tracker drops a track (the run's drop age)
+                if let Some(drop_s) = track_drop_s
+                    && (e.t.ms_since(facts.last_seen_t) as f64) < drop_s * 1000.0 - 1.0
+                {
+                    bad(
+                        &mut r,
+                        e,
+                        None,
+                        "a track dropped sooner than the tracker's drop age after it was last seen",
+                        json(&(e.t.ms_since(facts.last_seen_t) as f64 / 1000.0)),
+                        json(&drop_s),
+                    );
+                }
                 let _ = lost.record(track, (**facts).clone(), ais.clone(), e.t);
-                pictured.dropped.insert(track.clone());
+                pictured.dropped.insert(track.clone(), (facts.position.clone(), facts.velocity_mps));
                 r.lost_contacts += 1;
             }
             EventBody::LostClaimed {
@@ -4808,7 +4841,7 @@ fn replay_inner<S: AsRef<str>>(
                 if let Err(why) = ident.check_facts(&picture) {
                     bad(&mut r, e, None, "a reinstatement's facts differ from the identification the log holds", why, String::new());
                 }
-                if facts.is_none() && !pictured.dropped.contains(by_track) {
+                if facts.is_none() && !pictured.dropped.contains_key(by_track) {
                     bad(&mut r, e, None, "a reinstatement for a claimant that was never dropped", by_track.clone(), String::new());
                 }
                 let want = crate::lost::void_reason(by_track, &picture);
@@ -8298,24 +8331,42 @@ enum Accepting<'a> {
 }
 
 /// Rules 16: the track ids decisions (and claims and confirmations) have read in their
-/// pictures, each with the last fix and velocity they read, and those the tracker dropped
-/// (`track.dropped`): a track leaves the picture only by a drop, and a drop carries no older
-/// fix than the pictures had.
+/// pictures, each with the last fix and velocity they read and the world time of the latest
+/// picture that showed it, and those the tracker dropped (`track.dropped`) with the fix each
+/// drop carried: a track leaves the picture only by a drop, a drop carries no older fix than the
+/// pictures had and no newer one that a picture taken after it did not show, and a dropped id is
+/// never back with another fix (the bridge's tracker never reuses an id; a picture snapshotted
+/// before the drop was handed over still holds the drop's own fix).
 #[derive(Default)]
 struct Pictured {
     seen: BTreeSet<String>,
-    dropped: BTreeSet<String>,
+    dropped: BTreeMap<String, (crate::world::Fact<crate::geo::LonLat>, Option<[f64; 2]>)>,
     last: BTreeMap<String, (crate::world::Fact<crate::geo::LonLat>, Option<[f64; 2]>)>,
+    shown_t: BTreeMap<String, Time>,
 }
 
+/// Rules 16: how much later than a fix a picture must have been taken before replay holds that
+/// it should have shown the fix (ms). The tracker dates a fix by its own clock when it takes the
+/// detection (`last_seen_t`), and a snapshot reads its world time and its tracks a moment apart,
+/// so a picture taken within this of a fix may honestly still show the one before.
+const DROP_FIX_SKEW_MS: i64 = 1_000;
+
 impl Pictured {
-    /// The tracks of a picture read at `e`: flagged if one read before is missing without a
-    /// drop, then remembered.
-    fn read(&mut self, r: &mut ReplayReport, e: &Event, id: Option<IntentId>, tracks: &BTreeMap<String, crate::world::TrackFacts>) {
+    /// The tracks of a picture taken at `world_t` and read at `e`: flagged if one read before is
+    /// missing without a drop, or a dropped one is back with another fix than its drop's; then
+    /// remembered.
+    fn read(
+        &mut self,
+        r: &mut ReplayReport,
+        e: &Event,
+        id: Option<IntentId>,
+        world_t: Time,
+        tracks: &BTreeMap<String, crate::world::TrackFacts>,
+    ) {
         let gone: Vec<&String> = self
             .seen
             .iter()
-            .filter(|t| !tracks.contains_key(*t) && !self.dropped.contains(*t))
+            .filter(|t| !tracks.contains_key(*t) && !self.dropped.contains_key(*t))
             .collect();
         if !gone.is_empty() {
             bad(
@@ -8328,11 +8379,25 @@ impl Pictured {
             );
         }
         for (k, t) in tracks {
+            if let Some((fix, vel)) = self.dropped.get(k)
+                && (t.position != *fix || t.velocity_mps != *vel)
+            {
+                bad(
+                    r,
+                    e,
+                    id,
+                    "a dropped track back in a picture with another fix than its drop's (the tracker never reuses an id)",
+                    json(&(k, &t.position, t.velocity_mps)),
+                    json(&(fix, vel)),
+                );
+            }
             self.seen.insert(k.clone());
             let newer = self.last.get(k).is_none_or(|(fix, _)| t.position.t >= fix.t);
             if newer {
                 self.last.insert(k.clone(), (t.position.clone(), t.velocity_mps));
             }
+            let shown = self.shown_t.entry(k.clone()).or_insert(world_t);
+            *shown = (*shown).max(world_t);
         }
     }
 }
@@ -8355,7 +8420,7 @@ fn check_lost_picture(
     if (e.t.0 - world_t.0).abs() > engage::ACCEPT_WORLD_SKEW_MS {
         bad(r, e, None, &format!("{what}'s picture is not the one at the event"), json(&world_t), json(&e.t));
     }
-    pictured.read(r, e, None, tracks);
+    pictured.read(r, e, None, world_t, tracks);
 }
 
 /// Rules 16: a decision's lost contacts and the acceptances of them against the log: an
@@ -8379,7 +8444,7 @@ fn check_lost_inputs(
     let Some(pol) = policy.filter(|p| p.rules.lost_contacts()) else {
         return;
     };
-    pictured.read(r, e, Some(id), &inputs.tracks);
+    pictured.read(r, e, Some(id), inputs.t, &inputs.tracks);
     let engage = intents.get(&id).is_some_and(|tr| tr.spec.kind() == TaskKind::Engage);
     let (want, want_accepted) = if engage {
         (

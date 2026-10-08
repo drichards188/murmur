@@ -2137,12 +2137,15 @@ impl Decision {
     /// `POST /api/review/lost/{track}/confirm` with `{"by_track"}` (rules 16): any operator
     /// confirms, under their own session, that live track `by_track` is lost contact `track`
     /// again (a claim, its AIS identity: `track.reacquired`); refused (409, nothing logged) while
-    /// anything contradicts it. Agents have no such route or tool.
+    /// anything contradicts it. Agents have no such route or tool. The picture is taken under
+    /// the decision lock, as a nomination's is: one taken before it could miss a track a tick
+    /// logged in between, and the confirmation's picture would then read as a track gone
+    /// without a drop (the review of the merged branch).
     pub fn confirm_lost_claim(&self, by: &super::Actor, track: &str, by_track: &str) -> Result<Value, DecisionError> {
-        let world = self.snapshot();
         let out = {
             let mut guard = self.lock();
             let core = &mut *guard;
+            let world = self.snapshot();
             let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
             let claim = core
                 .engine

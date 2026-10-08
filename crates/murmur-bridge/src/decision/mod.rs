@@ -749,6 +749,13 @@ impl Decision {
             murmur_decide::StartCarry {
                 pointer: p.pointer,
                 from: p.carried_from,
+                // rules 16: the tracker's drop age (the injected tracker's, else this process's
+                // settings, which the store `tracks::init` makes later reads too)
+                track_drop_s: Some(
+                    p.tracks
+                        .as_ref()
+                        .map_or_else(|| crate::tracks::Settings::from_env().drop_s, |t| t.drop_s()),
+                ),
             },
             Box::new(clock.clone()),
             p.sink,

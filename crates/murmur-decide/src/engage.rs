@@ -3331,7 +3331,7 @@ pub fn keep_out_tracks(
     if ec.lost() {
         for (id, l) in &world.lost_contacts {
             match lost_standing(id, l, point, effect_t, keep_out_m, target, world, ec, alt, true) {
-                LostStanding::Live | LostStanding::Exempt => {}
+                LostStanding::Exempt => {}
                 LostStanding::Accepted { note } => accepted.push(note),
                 LostStanding::Judged(s) => {
                     lost_count += 1;
@@ -3401,8 +3401,6 @@ pub fn lost_note(id: &str, l: &crate::lost::LostContact, now: Time) -> String {
 /// Rules 16: how one lost contact stands against a keep-out (see [`lost_standing`]).
 #[derive(Clone, Debug, PartialEq)]
 pub enum LostStanding {
-    /// Its id is in the picture again (the live track counts, not this).
-    Live,
     /// Exempt as a live track with its identification would be (the target, a declared
     /// hostile).
     Exempt,
@@ -3413,10 +3411,15 @@ pub enum LostStanding {
 }
 
 /// Rules 16: lost contact `id` (`l`) against a keep-out reaching `keep_out_m` from `point` at
-/// `effect_t`, as [`keep_out_tracks`] reads it: left out when its id is a live track again, it
-/// is exempt (the target, a declared hostile) or an operator accepted exactly this loss for the
-/// engagement (`world.lost_accepted`); else its regions from its facts at the drop, growing
-/// from its last fix ([`lost_reach`]: also anywhere at its own plausible speed; no cap).
+/// `effect_t`, as [`keep_out_tracks`] reads it: left out when it is exempt (the target, a
+/// declared hostile) or an operator accepted exactly this loss for the engagement
+/// (`world.lost_accepted`); else its regions from its facts at the drop, growing from its last
+/// fix ([`lost_reach`]: also anywhere at its domain's top speed; no cap). Judged even when its
+/// id is in the picture: the bridge's tracker never reuses an id (`T-NNNN`, numbered up), so a
+/// track under a dropped id is either a snapshot taken before the drop was handed to the engine,
+/// with exactly the drop's facts (the same disc judged twice), or not the tracker's; it never
+/// stands for the lost contact (the review of the merged branch: a fresh fix 30 km away under
+/// the id hid it).
 #[allow(clippy::too_many_arguments)]
 pub fn lost_standing(
     id: &str,
@@ -3430,9 +3433,6 @@ pub fn lost_standing(
     alt: Option<EffectAlt>,
     words: bool,
 ) -> LostStanding {
-    if world.tracks.contains_key(id) {
-        return LostStanding::Live;
-    }
     if track_exempt(id, &l.facts, target, ec) {
         return LostStanding::Exempt;
     }

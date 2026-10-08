@@ -126,6 +126,13 @@ pub enum EventBody {
         /// without a pointer (a scenario, a test) and before rules 15.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pointer: Option<String>,
+        /// Rules 16 ([`crate::rules::LOST_CONTACT_SINCE`]): how long the bridge's tracker keeps a
+        /// track without a detection before it drops it (s; the run's `MURMUR_TRACK_DROP_S`, the
+        /// same for every domain): replay requires each `track.dropped` at least this long after
+        /// the track was last seen. Absent without a tracker that drops (a test) and before
+        /// rules 16.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        track_drop_s: Option<f64>,
     },
 
     /// A new area set is in force (the first one, if none was given at start, or a

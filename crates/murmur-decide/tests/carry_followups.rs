@@ -644,7 +644,7 @@ fn a_refused_fallback_holds_what_its_log_owed_or_had_spent() {
     let logs = [("a.jsonl", a.as_str())];
     let clock = ManualClock::new(T0.plus_ms(600_000));
     let log = MemorySink::new();
-    let mut e = Engine::start(policy_on(RULES_VERSION), None, roster(), StartCarry { pointer: Some(".last-run-0".into()), from: vec![refused(held)] }, Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let mut e = Engine::start(policy_on(RULES_VERSION), None, roster(), StartCarry { pointer: Some(".last-run-0".into()), from: vec![refused(held)], ..Default::default() }, Box::new(clock.clone()), Box::new(log.clone())).unwrap();
     let op = e.open_operator_session(OperatorId::new("op-1")).unwrap();
     let w = world_at(clock.now(), Some(blade()));
     let o = e.submit(op.authority(), orbit_near(&["blade-1"]), &w, &terrain()).unwrap().id();
@@ -653,7 +653,7 @@ fn a_refused_fallback_holds_what_its_log_owed_or_had_spent() {
     assert!(r.ok(), "{:?}", r.mismatches);
     // a start that held nothing (the probe: no fleet file, nothing held): caught with the log
     let log = MemorySink::new();
-    Engine::start(policy_on(RULES_VERSION), None, roster(), StartCarry { pointer: Some(".last-run-0".into()), from: vec![refused(Vec::new())] }, Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    Engine::start(policy_on(RULES_VERSION), None, roster(), StartCarry { pointer: Some(".last-run-0".into()), from: vec![refused(Vec::new())], ..Default::default() }, Box::new(clock.clone()), Box::new(log.clone())).unwrap();
     let w2 = whats(&replay_str_with(&log.text(), &with(&logs)).unwrap());
     assert!(has(&w2, "was found in place of the pointer and not carried from, yet does not hold every platform"), "{w2:?}");
 }
