@@ -116,7 +116,7 @@ text = "After the decision: who approved it (you, or the scripted operator on au
 
 [[watch]]
 at_s = 420
-text = "A drone whose orbit dips south of the strait west of the bridge goes behind the Presidio bluffs as seen from the ground station at Crissy Field: its link may drop, and after 5 s its own lost-link failsafe sends it home. The inbox alerts, and the map shows where it probably is while it is silent."
+text = "Our small drones' radio links have a 5 s lost-link timer: a short dropout (a burst of loss, or an orbit dipping behind the Presidio bluffs as seen from the ground station at Crissy Field) sends one home on its own failsafe (RTL). The inbox alerts, the fleet list shows RTL, and the map shows where a silent one probably is."
 
 [[watch]]
 at_s = 600
