@@ -978,6 +978,20 @@ group. Dates are 2026.
 
 ## Engineering
 
+- **Nothing reads a vehicle under the task manager's lock or the water tracks' lock** (10-08,
+  found live by a situation run; no rules change). A silent vehicle's estimate
+  (`crate::estimate`, for the console feed and MCP `get_fleet`) holds that vehicle's lock while
+  it asks the task manager what the vehicle was ordered (`FrameContext::ordered`) and reads its
+  drift track (`water_track`). `TaskManager::orbit_of` (the decision snapshot, every second and
+  every decision) and `TaskManager::dispatch` read vehicles under the task manager's lock, and the
+  water sampler read vehicles under the water tracks' lock: two lock-order inversions. With a
+  drone in a terrain shadow (silent, so estimated four times a second) the bridge deadlocked
+  within two minutes: every HTTP worker blocked, the console and agents frozen, TERM ignored.
+  Now the task manager and the sampler read vehicles before or after their own lock, never
+  under it, so the order is always the vehicle first; the values read are the same.
+  `tasks::tests::the_task_manager_never_reads_a_vehicle_under_its_lock` deadlocks on the code
+  before (a reader holding the vehicle asks the task manager while `orbit_of` and a dispatch
+  read it) and passes after.
 - **A space answer is held to when it was computed; a re-check to the instant it judged; the
   pin to the run** (10-07, murmur-der.4, murmur-lsj; rules 13 `SPACE_REPLAY_SINCE`). The
   engine took a collect's answer prepared outside its lock only within 5 s of the check, but

@@ -828,37 +828,44 @@ pub async fn water_sampler(world: Arc<World>) {
         interval.tick().await;
         let wall = clock::wall();
         let cfg = config(&world);
-        let mut rows: Vec<(Uid, bool, LngLat)> = Vec::new();
-        {
-            let tracks = water_tracks();
-            for cell in world.vehicles() {
-                let link = cell.link_snapshot(clock::mono());
-                let stale = link
-                    .last_rx_t
-                    .is_some_and(|t| wall - t > link.stale_after_s());
-                let (pos, platform, kind) = cell.read(|v| {
-                    (
-                        v.pos,
-                        v.identity.as_ref().and_then(|i| i.str("platform").map(str::to_string)),
-                        v.kind,
-                    )
-                });
-                let domain = platform
-                    .as_deref()
-                    .and_then(|p| cfg.limits.platforms.get(p))
-                    .map(|l| l.domain.clone())
-                    .unwrap_or_else(|| kind_defaults(kind).domain);
-                if domain != "surface" && domain != "subsurface" {
-                    continue;
-                }
-                let Some((lat, lon)) = pos else { continue };
-                let at = match (stale, tracks.get(&cell.uid)) {
-                    (true, Some(t)) => t.pos,
-                    _ => [lon, lat],
-                };
-                rows.push((cell.uid, stale, at));
+        // the vehicles first, then the tracks' lock: never a vehicle read under it (a silent
+        // vehicle's estimate holds its vehicle and then reads its track, `water_track`)
+        let mut seen: Vec<(Uid, bool, f64, f64)> = Vec::new();
+        for cell in world.vehicles() {
+            let link = cell.link_snapshot(clock::mono());
+            let stale = link
+                .last_rx_t
+                .is_some_and(|t| wall - t > link.stale_after_s());
+            let (pos, platform, kind) = cell.read(|v| {
+                (
+                    v.pos,
+                    v.identity.as_ref().and_then(|i| i.str("platform").map(str::to_string)),
+                    v.kind,
+                )
+            });
+            let domain = platform
+                .as_deref()
+                .and_then(|p| cfg.limits.platforms.get(p))
+                .map(|l| l.domain.clone())
+                .unwrap_or_else(|| kind_defaults(kind).domain);
+            if domain != "surface" && domain != "subsurface" {
+                continue;
             }
+            let Some((lat, lon)) = pos else { continue };
+            seen.push((cell.uid, stale, lat, lon));
         }
+        let rows: Vec<(Uid, bool, LngLat)> = {
+            let tracks = water_tracks();
+            seen.into_iter()
+                .map(|(uid, stale, lat, lon)| {
+                    let at = match (stale, tracks.get(&uid)) {
+                        (true, Some(t)) => t.pos,
+                        _ => [lon, lat],
+                    };
+                    (uid, stale, at)
+                })
+                .collect()
+        };
         if rows.is_empty() {
             continue;
         }

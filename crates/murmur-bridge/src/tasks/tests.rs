@@ -789,6 +789,70 @@ async fn copter_orbit_walks_the_whole_lifecycle() {
     );
 }
 
+/// The task manager never reads a vehicle under its own lock: a reader that holds a vehicle
+/// and then asks the task manager (a silent vehicle's estimate in the console feed and in
+/// `get_fleet`, `crate::estimate`) must not deadlock against `orbit_of` (the decision
+/// snapshot) or `dispatch`, both of which read that vehicle. Found live: a situation run with a
+/// drone in a terrain shadow hung the whole bridge.
+#[tokio::test(start_paused = true)]
+async fn the_task_manager_never_reads_a_vehicle_under_its_lock() {
+    let copter = spawn_fake(1, Firmware::Copter, LAT, LON, quick());
+    sleep(Duration::from_millis(500)).await;
+    let tm = Arc::new(TaskManager::default());
+    let params = TaskParams {
+        center: Some([LON + 0.004, LAT]),
+        radius: Some(200.0),
+        ..TaskParams::default()
+    };
+    let order = TaskOrder::new(request("orbit", &[1], params), &fleet(&[&copter]));
+    let tasking = tm.dispatch_unchecked(order.unwrap_or_else(|e| panic!("{e}")));
+    settle(&tasking.ops[0], 300).await;
+    assert!(tm.orbit_of(&copter).is_some(), "on station");
+    // a reader holds the vehicle, then asks the task manager, while orbit_of and a dispatch
+    // read the same vehicle
+    let (held_tx, held_rx) = std::sync::mpsc::channel();
+    let reader = {
+        let (c, tm) = (copter.clone(), tm.clone());
+        std::thread::spawn(move || {
+            c.read(|_| {
+                held_tx.send(()).ok();
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                tm.snapshot().len()
+            })
+        })
+    };
+    held_rx.recv().expect("the reader holds the vehicle");
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let orbit = {
+        let (c, tm, tx) = (copter.clone(), tm.clone(), done_tx.clone());
+        std::thread::spawn(move || {
+            let on = tm.orbit_of(&c).is_some();
+            tx.send("orbit_of").ok();
+            on
+        })
+    };
+    let hold = TaskOrder::new(request("hold", &[1], TaskParams::default()), &fleet(&[&copter]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let dispatch = {
+        let (tm, tx, rt) = (tm.clone(), done_tx, tokio::runtime::Handle::current());
+        std::thread::spawn(move || {
+            let _rt = rt.enter();
+            tm.dispatch_unchecked(hold);
+            tx.send("dispatch").ok();
+        })
+    };
+    // the reader gets the task manager's lock and lets the vehicle go within its 300 ms; a
+    // deadlock leaves both waiting (and the threads stuck: the test fails, it does not hang)
+    for _ in 0..2 {
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("no deadlock: the task manager read a vehicle under its lock");
+    }
+    assert!(reader.join().expect("the reader") >= 1);
+    orbit.join().expect("orbit_of");
+    dispatch.join().expect("dispatch");
+}
+
 #[tokio::test(start_paused = true)]
 async fn boat_patrol_completes_a_lap() {
     let boat = spawn_fake(2, Firmware::Rover, LAT, LON, quick());
