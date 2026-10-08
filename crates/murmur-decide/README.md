@@ -1642,10 +1642,13 @@ Rules versions:
   decision. Markers (a log claiming rules 15 or older can't carry them): `track.dropped`,
   `track.reacquired`, `lost.claimed`, `lost.reinstated`, `lost_contacts`, `lost_accepted`,
   `track_ais`, an acceptance's `contact`, a lost contact's `ais`. Scenarios 86 to 94 (84 and 85
-  are rules 15's). Fixtures (a clean build of the branch head):
+  are rules 15's). Fixtures (a clean build of `b7f9719`, rules 15 merged):
   `tests/data/audit/v16-engagement-scenario-01.jsonl` and scenarios 86 to 88, 90 and 93
   (`v16-lost-contact-*`), and a live log with its anchors (`v16-lost-contacts-live.jsonl`,
-  stand-ins at the Gate on `sim/scenarios/golden-gate-lost.toml`; see `tests/versions.rs`).
+  stand-ins at the Gate on `sim/scenarios/golden-gate-lost.toml`: two contacts out of view block
+  a nomination before their drop and one after it, both accepted with a third that two signers
+  approve, the tour boat back as a claim, the effect released and assessed, then op-1 confirms
+  the claim while the spent switchblade's alert stands beside it; see `tests/versions.rs`).
   The measurement of what it costs is in `eval/METRICS.md` ("Out of view").
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,

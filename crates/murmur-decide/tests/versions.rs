@@ -144,7 +144,7 @@ const LOGS: [(&str, u32); 52] = [
     ("v15-spent-munition-unspent-scenario-84.jsonl", CARRY_FOLLOWUPS_SINCE),
     ("v15-nomination-refused-while-a-carry-may-owe-scenario-85.jsonl", CARRY_FOLLOWUPS_SINCE),
     // rules 16 (lost contacts, murmur-533 and its review; the table names the constant; a clean
-    // build of 15f17ff): the same scenario; scenario 86, a fishing boat dropped by the tracker by
+    // build of b7f9719, rules 15 merged): the same scenario; scenario 86, a fishing boat dropped by the tracker by
     // the target, still blocking; 87, accepted at the nomination; 88, an accepted tour boat seen
     // again by its AIS under a new track id, its claim confirmed, the live track aborting the
     // engagement; 90, accepted while the nomination waits; 93, a spoofed AIS's claim confirmed,
@@ -1691,19 +1691,21 @@ fn the_rules_16_logs_carry_lost_contacts_and_cannot_claim_rules_15() {
     }
 }
 
-/// Rules 16, live (a clean build of 15f17ff; stand-ins of the engage demo at the Gate,
-/// `sim/scenarios/golden-gate-lost.toml`, a dev run), anchored as it ran: a fishing boat 400 m
-/// north of where the fast boat holds and a tour boat on AIS go out of view at 4 minutes. Unseen
-/// 101 s and not yet dropped, they block op-1's nomination by their out-of-view reach (the
-/// review's item 4: "out of view (no detection for 101 s)"); the tracker drops both 180 s after
-/// their last fix (`track.dropped`, the tour boat's with its AIS); op-1's nomination is rejected
-/// on a lost contact, then nominated again accepting both (`engage.accepted` naming each), shown
-/// to op-2 and op-3 on their picture tokens, signed and dispatched; the tour boat comes back into
-/// view under its AIS as a new track, 300 m from its last fix and about 1 km from the effect
-/// point, a claim for review (`lost.claimed`, nothing against it); the effect is released (the
-/// new track clear of the keep-out, the lost tour boat accepted for this engagement), op-1
-/// confirms the claim (`track.reacquired` under op-1's session) and the assessment ends it
-/// `done`, the fishing boat still lost. A clean stop.
+/// Rules 16, live (a clean build of b7f9719, rules 15 merged; stand-ins of the engage demo at the
+/// Gate, `sim/scenarios/golden-gate-lost.toml`, a dev run on a fresh station), anchored as it ran:
+/// a fishing boat 400 m north of where the fast boat holds and a tour boat on AIS go out of view
+/// at 4 minutes. Unseen 100 s and not yet dropped, they block op-1's nomination by their
+/// out-of-view reach (the review's item 4: "out of view (no detection for 100 s)"); the tracker
+/// drops both 180 s after their last fix (`track.dropped`, the tour boat's with its AIS); op-1's
+/// nomination is rejected on a lost contact, then nominated again accepting both
+/// (`engage.accepted` naming each), shown to op-2 and op-3 on their picture tokens, signed and
+/// dispatched; the tour boat comes back into view under its AIS as a new track, 300 m from its
+/// last fix and about 1 km from the effect point, a claim for review (`lost.claimed`, nothing
+/// against it); the effect is released (the new track clear of the keep-out, the lost tour boat
+/// accepted for this engagement) and the assessment ends it `done`. Then, with the switchblade
+/// spent and still heard (rules 15's SPENT, STILL HEARD alert) beside the open claim in the
+/// inbox, op-1 confirms the claim (`track.reacquired` under op-1's session), the fishing boat
+/// still lost. A clean stop. The start names the station's pointer (rules 15's `pointer`).
 #[test]
 fn the_rules_16_live_log_holds_lost_contacts_until_accepted_or_confirmed() {
     let name = "v16-lost-contacts-live.jsonl";
@@ -1723,5 +1725,8 @@ fn the_rules_16_live_log_holds_lost_contacts_until_accepted_or_confirmed() {
     assert!(text.contains("\"type\":\"engage.effect\"") && text.contains("assessed ceased"), "released and assessed");
     let claimed = text.find("\"type\":\"lost.claimed\"").unwrap();
     let confirmed = text.find("\"type\":\"track.reacquired\"").unwrap();
-    assert!(claimed < confirmed);
+    let assessed = text.find("\"type\":\"engage.assessed\"").unwrap();
+    assert!(claimed < assessed && assessed < confirmed, "claimed, assessed, then confirmed");
+    // a v16 log carries rules 15's too: the station's pointer in its first line
+    assert!(lines(&text)[0].contains("\"pointer\":\".last-run-"), "rules 15's pointer");
 }
