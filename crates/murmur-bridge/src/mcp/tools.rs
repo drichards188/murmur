@@ -212,6 +212,9 @@ pub struct NominationOptionsParams {
     pub fallback: Option<String>,
     /// Only these fleet uids (default: every armed vehicle).
     pub uids: Option<Vec<u64>>,
+    /// Only whether each passes (uid, callsign, passed), without the checks, preview and
+    /// keep-out explanation: small and quick, for watching whether one passes. Default false.
+    pub passed_only: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -647,6 +650,7 @@ pub async fn call(
                     window_s: p.window_s,
                     fallback: p.fallback,
                     uids: p.uids,
+                    passed_only: p.passed_only.unwrap_or(false),
                 })
                 .await
         }

@@ -2441,6 +2441,10 @@ pub struct OptionsRequest {
     /// Only these vehicles (default: every armed vehicle in the fleet).
     #[serde(default)]
     pub uids: Option<Vec<crate::vehicle::Uid>>,
+    /// Only whether each passes (uid, callsign, passed): no checks, preview or keep-out
+    /// explanation, which is the costly part (a watcher that wakes someone when one passes).
+    #[serde(default)]
+    pub passed_only: bool,
 }
 
 impl Decision {
@@ -2527,6 +2531,18 @@ impl Decision {
             };
             let checks = murmur_decide::rules::evaluate(&spec, &inputs, &self.rules);
             let passed = murmur_decide::rules::passed(&checks, murmur_decide::TaskKind::Engage);
+            let callsign = fleet.get(&uid).and_then(|c| {
+                c.read(|v| {
+                    v.identity
+                        .as_ref()
+                        .and_then(|i| i.str("callsign"))
+                        .map(str::to_string)
+                })
+            });
+            if req.passed_only {
+                out.push(json!({ "uid": uid, "callsign": callsign, "passed": passed }));
+                continue;
+            }
             let preview = engage::preview(&spec, &inputs, &self.rules).ok();
             // murmur-12e: why the keep-outs block, on the same inputs, off the async runtime
             // (it scans effect and nomination times); shown only when its checks are the ones
@@ -2540,14 +2556,6 @@ impl Decision {
                 Ok(Err(e)) => (None, Some(e)),
                 Err(e) => (None, Some(format!("the explanation failed: {e}"))),
             };
-            let callsign = fleet.get(&uid).and_then(|c| {
-                c.read(|v| {
-                    v.identity
-                        .as_ref()
-                        .and_then(|i| i.str("callsign"))
-                        .map(str::to_string)
-                })
-            });
             out.push(json!({
                 "uid": uid,
                 "callsign": callsign,

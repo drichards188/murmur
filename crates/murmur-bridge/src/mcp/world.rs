@@ -207,7 +207,8 @@ fn vehicles(mcp: &Mcp, only: Option<&[u64]>) -> (f64, Vec<Value>) {
     (now_wall, out)
 }
 
-/// The facts a vehicle's view dates, by key: `stale` in the compact view names these.
+/// The facts a vehicle's view dates, by key: `stale` in the compact view names these (and
+/// `gps_glitch`, the navigation filter's flag).
 const DATED: [&str; 5] = ["autopilot", "position", "nav", "battery", "home"];
 
 /// A vehicle as `get_fleet` with `compact` shows it: what changes and what a supervisor
@@ -215,10 +216,15 @@ const DATED: [&str; 5] = ["autopilot", "position", "nav", "battery", "home"];
 /// limits, home, link figures, status texts and the silent-link estimate are left to
 /// `get_vehicle` or `get_fleet` without `compact`.
 fn compact_vehicle(v: &Value) -> Value {
-    let stale: Vec<&str> = DATED
+    let mut stale: Vec<&str> = DATED
         .into_iter()
         .filter(|k| v[*k]["stale"].as_bool().unwrap_or(true))
         .collect();
+    // the GPS glitch flag is a fact of its own, with its own age (an engagement's release
+    // reads it): a stale flag says nothing about the fix now
+    if v["nav"]["gps_glitch"]["stale"].as_bool().unwrap_or(true) {
+        stale.push("gps_glitch");
+    }
     let op = &v["current_op"];
     json!({
         "uid": v["uid"],

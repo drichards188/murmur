@@ -637,6 +637,12 @@ async fn fleet_facts_carry_age_and_staleness() {
     assert_eq!((&c["nav_ready"], &c["link_lost"]), (&json!(true), &json!(false)));
     assert!(c["stale"].as_array().is_some_and(|s| s.contains(&json!("position"))), "{c}");
     assert!(!c["stale"].as_array().is_some_and(|s| s.contains(&json!("nav"))), "{c}");
+    let glitch_stale = f["nav"]["gps_glitch"]["stale"].as_bool().unwrap_or(true);
+    assert_eq!(
+        c["stale"].as_array().is_some_and(|s| s.contains(&json!("gps_glitch"))),
+        glitch_stale,
+        "the glitch flag's own staleness: {c}"
+    );
     assert!(small["note"].as_str().is_some_and(|n| n.contains("get_vehicle")));
     let size = |v: &Value| v["vehicles"][0].to_string().len();
     assert!(size(&small) * 3 < size(&full), "{} against {}", size(&small), size(&full));
@@ -1458,6 +1464,51 @@ async fn an_agent_session_survives_a_quiet_spell_and_the_idle_limit_is_set_by_th
     }
     sleep(Duration::from_millis(50)).await;
     assert_eq!(fleet(&tidy, &quiet).await.0, StatusCode::OK, "the quiet one is kept");
+    // a session counts from its initialize: sessions that never call a tool are capped too
+    let silent = mount(IDLE_LIMIT);
+    let mut opened = Vec::new();
+    for _ in 0..=SESSIONS_PER_AGENT {
+        opened.push(open(&silent).await);
+        sleep(Duration::from_secs(1)).await;
+    }
+    sleep(Duration::from_millis(50)).await;
+    assert_ne!(fleet(&silent, &opened[0]).await.0, StatusCode::OK, "the oldest was closed");
+    for s in &opened[1..] {
+        assert_eq!(fleet(&silent, s).await.0, StatusCode::OK, "the others are kept");
+    }
+}
+
+/// Third review, item 5: the cap closed the session used least recently even with a request
+/// in flight on it (a long proposal or dry run lost its answer, and a client that retries
+/// may propose twice). A session with a request in flight is never closed: the next idle one
+/// goes, and with none idle the cap waits.
+#[tokio::test(start_paused = true)]
+async fn the_session_cap_never_closes_a_session_with_a_request_in_flight() {
+    let r = rig();
+    let a = planner();
+    r.mcp.note_session_id(&a, "s0");
+    let busy = r.mcp.busy(&a, Some("s0".into())).expect("s0 is held");
+    for i in 1..=SESSIONS_PER_AGENT {
+        sleep(Duration::from_secs(1)).await;
+        r.mcp.note_session_id(&a, &format!("s{i}"));
+    }
+    let held = |r: &Rig| -> Vec<String> { r.mcp.sessions_of(&a).into_iter().map(|(s, _)| s).collect() };
+    assert!(held(&r).contains(&"s0".to_string()), "in flight: kept {:?}", held(&r));
+    assert!(!held(&r).contains(&"s1".to_string()), "the oldest idle one went instead");
+    assert_eq!(held(&r).len(), SESSIONS_PER_AGENT);
+    // every one busy: the cap waits rather than cut a request off
+    let all: Vec<_> = held(&r)
+        .into_iter()
+        .filter_map(|s| r.mcp.busy(&a, Some(s)))
+        .collect();
+    r.mcp.note_session_id(&a, "s99");
+    assert_eq!(held(&r).len(), SESSIONS_PER_AGENT + 1, "none closed while all are busy");
+    drop(all);
+    drop(busy);
+    assert!(r.mcp.sessions_of(&a).iter().all(|(_, n)| *n == 0), "the guards ended");
+    sleep(Duration::from_secs(1)).await;
+    r.mcp.note_session_id(&a, "s100");
+    assert_eq!(held(&r).len(), SESSIONS_PER_AGENT, "and then it closes the oldest idle ones");
 }
 
 /// `POST /api/operator/view` over HTTP (Phase G): an operator's display event is logged under
@@ -1877,6 +1928,22 @@ async fn the_dry_run_sees_an_engagement_already_in_play_on_the_platform() {
     let _ = r.ok(&planner(), "get_nomination_options", args.clone()).await;
     sleep(Duration::from_secs(1)).await;
     let _ = r.ok(&watch(), "get_nomination_options", args).await;
+    // passed_only: whether each passes, and nothing else (the watch officer's own poll)
+    sleep(Duration::from_secs(1)).await;
+    let small = r
+        .ok(
+            &watch(),
+            "get_nomination_options",
+            json!({ "track_id": "T-0001", "effect_radius_m": 100.0, "uids": [2], "passed_only": true }),
+        )
+        .await;
+    let o = &small["options"][0];
+    assert_eq!(
+        (o["uid"].as_u64(), o["passed"].as_bool(), o["callsign"].is_string()),
+        (Some(2), Some(false), true),
+        "{small}"
+    );
+    assert_eq!(o.as_object().map(|m| m.len()), Some(3), "uid, callsign, passed: {o}");
     assert_eq!(r.state(id), State::PendingApproval);
     r.replays();
 }

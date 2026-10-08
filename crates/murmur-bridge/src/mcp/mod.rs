@@ -129,7 +129,8 @@ pub struct Settings {
 /// a leaked session lives a quarter of an hour, not an hour.
 pub const IDLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(900);
 
-/// The sessions one agent id may hold; past this the one it used least recently is closed.
+/// The sessions one agent id may hold, counted from each one's initialize; past this the one
+/// it used least recently with no request in flight is closed (all busy: the cap waits).
 /// Eight: the watch officer holds one (its reads) plus one per Codex turn in flight, the
 /// situation storyline one per proposal, closed after; eight leaves room for a few clients
 /// sharing an id while a client that opens sessions and never closes them holds eight at
@@ -177,10 +178,51 @@ pub struct Mcp {
     dry_runs: Mutex<std::collections::BTreeMap<AgentId, tokio::time::Instant>>,
     /// `get_changes`: what changed between reads, numbered for a cursor (read-only).
     pub(crate) changes: changes::Feed,
-    /// Each agent's MCP sessions and when each was last used ([`SESSIONS_PER_AGENT`]).
-    sessions: Mutex<std::collections::BTreeMap<AgentId, Vec<(String, tokio::time::Instant)>>>,
+    /// Each agent's MCP sessions: when each was last used and its requests in flight
+    /// ([`SESSIONS_PER_AGENT`]).
+    sessions: Mutex<std::collections::BTreeMap<AgentId, Vec<Sess>>>,
     /// The session manager, to close a session past the cap (set by [`service`]).
     manager: std::sync::OnceLock<Arc<LocalSessionManager>>,
+}
+
+/// One MCP session of an agent, for the cap.
+struct Sess {
+    id: String,
+    /// When a request on it last began or ended.
+    used: tokio::time::Instant,
+    /// Its requests in flight: the cap never closes a session while one runs (a proposal
+    /// whose answer is lost would be made again by a client that retries).
+    busy: usize,
+}
+
+/// A request in flight on a session (see [`Sess::busy`]); ends when dropped.
+pub(crate) struct Busy {
+    mcp: Arc<Mcp>,
+    agent: AgentId,
+    id: String,
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        let mut all = self.mcp.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(s) = all
+            .get_mut(&self.agent)
+            .and_then(|v| v.iter_mut().find(|s| s.id == self.id))
+        {
+            s.busy = s.busy.saturating_sub(1);
+            s.used = tokio::time::Instant::now();
+        }
+    }
+}
+
+/// The session a request names (`Mcp-Session-Id`; none from a client on protocol 2026-07-28
+/// or later: it holds no session).
+fn session_of(ctx: &RequestContext<RoleServer>) -> Option<String> {
+    ctx.extensions
+        .get::<axum::http::request::Parts>()
+        .and_then(|p| p.headers.get("mcp-session-id"))
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
 }
 
 /// The least time between two of one agent's nomination dry runs.
@@ -282,16 +324,21 @@ impl Mcp {
     }
 
     /// Record that `agent` used the session the request names (`Mcp-Session-Id`; a client on
-    /// protocol 2026-07-28 or later names none: it holds no session). Past
-    /// [`SESSIONS_PER_AGENT`], the agent's session used least recently is closed.
+    /// protocol 2026-07-28 or later names none: it holds no session).
     fn note_session(&self, agent: &AgentId, parts: Option<&axum::http::request::Parts>) {
-        let Some(id) = parts
+        if let Some(id) = parts
             .and_then(|p| p.headers.get("mcp-session-id"))
             .and_then(|v| v.to_str().ok())
-            .map(str::to_string)
-        else {
-            return;
-        };
+        {
+            self.note_session_id(agent, id);
+        }
+    }
+
+    /// Record that `agent` holds or used session `id` (at its initialize, and at each call).
+    /// Past [`SESSIONS_PER_AGENT`], the agent's session used least recently with no request
+    /// in flight is closed (none idle: the cap waits for one).
+    fn note_session_id(&self, agent: &AgentId, id: &str) {
+        let id = id.to_string();
         let now = tokio::time::Instant::now();
         let evict = {
             let mut all = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
@@ -301,22 +348,26 @@ impl Mcp {
             if let Some(manager) = self.manager.get()
                 && let Ok(live) = manager.sessions.try_read()
             {
-                mine.retain(|(s, _)| *s == id || live.contains_key(s.as_str()));
+                mine.retain(|s| s.id == id || s.busy > 0 || live.contains_key(s.id.as_str()));
             }
-            match mine.iter_mut().find(|(s, _)| *s == id) {
-                Some(entry) => entry.1 = now,
-                None => mine.push((id.clone(), now)),
+            match mine.iter_mut().find(|s| s.id == id) {
+                Some(s) => s.used = now,
+                None => mine.push(Sess {
+                    id: id.clone(),
+                    used: now,
+                    busy: 0,
+                }),
             }
             let mut out = Vec::new();
             while mine.len() > SESSIONS_PER_AGENT {
                 let oldest = mine
                     .iter()
                     .enumerate()
-                    .filter(|(_, (s, _))| *s != id)
-                    .min_by_key(|(_, (_, t))| *t)
+                    .filter(|(_, s)| s.id != id && s.busy == 0)
+                    .min_by_key(|(_, s)| s.used)
                     .map(|(i, _)| i);
                 match oldest {
-                    Some(i) => out.push(mine.remove(i).0),
+                    Some(i) => out.push(mine.remove(i).id),
                     None => break,
                 }
             }
@@ -337,6 +388,51 @@ impl Mcp {
                 }
             });
         }
+    }
+
+    /// A request in flight on `agent`'s session `id` (the guard ends it); none without one.
+    pub(crate) fn busy(self: &Arc<Self>, agent: &AgentId, id: Option<String>) -> Option<Busy> {
+        let id = id?;
+        let mut all = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let s = all.get_mut(agent)?.iter_mut().find(|s| s.id == id)?;
+        s.busy += 1;
+        Some(Busy {
+            mcp: self.clone(),
+            agent: agent.clone(),
+            id,
+        })
+    }
+
+    /// Each session `agent` holds, oldest use first, with its requests in flight (tests).
+    #[cfg(test)]
+    pub(crate) fn sessions_of(&self, agent: &AgentId) -> Vec<(String, usize)> {
+        let all = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let mut v: Vec<&Sess> = all.get(agent).map(|v| v.iter().collect()).unwrap_or_default();
+        v.sort_by_key(|s| s.used);
+        v.into_iter().map(|s| (s.id.clone(), s.busy)).collect()
+    }
+
+    /// The agent a session's opening request names, resolved as [`Mcp::agent`] resolves it:
+    /// the key's agent in a credentials run; else the header, or the initialize request's
+    /// `clientInfo.name`, listed in `MURMUR_AGENTS`.
+    fn claimant(&self, headers: &axum::http::HeaderMap, body: &[u8]) -> Option<AgentId> {
+        if let Some(keys) = &self.keys {
+            return crate::auth::bearer(headers)
+                .and_then(|k| keys.agent_for_key(k))
+                .map(|(a, _)| a);
+        }
+        let named = headers
+            .get(AGENT_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                serde_json::from_slice::<Value>(body)
+                    .ok()
+                    .and_then(|v| v["params"]["clientInfo"]["name"].as_str().map(str::to_string))
+            })?;
+        self.resolve(&named).ok()
     }
 
     /// A claimed id against the configured list.
@@ -427,23 +523,71 @@ impl Mcp {
 #[derive(Clone)]
 pub struct Handler(pub(crate) Arc<Mcp>);
 
+type Inner = StreamableHttpService<Handler, LocalSessionManager>;
+type InnerResponse = <Inner as tower::Service<Request<Body>>>::Response;
+
+/// The MCP service at `/mcp`: rmcp's, with each new session recorded for its agent as it is
+/// made (a session that initializes and never calls a tool counts against the cap too). The
+/// handler cannot do it: rmcp makes the session id after the handler is built, and the
+/// initialize request names none.
+#[derive(Clone)]
+pub struct McpService {
+    inner: Inner,
+    shared: Arc<Mcp>,
+}
+
+impl tower::Service<Request<Body>> for McpService {
+    type Response = InnerResponse;
+    type Error = std::convert::Infallible;
+    type Future = std::pin::Pin<Box<dyn std::future::Future<Output = Result<InnerResponse, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: Request<Body>) -> Self::Future {
+        let mut inner = self.inner.clone();
+        let shared = self.shared.clone();
+        Box::pin(async move {
+            // a POST that names no session opens one (initialize); any other request passes
+            if req.method() != Method::POST || req.headers().contains_key("mcp-session-id") {
+                return inner.call(req).await;
+            }
+            let (parts, body) = req.into_parts();
+            let bytes = axum::body::to_bytes(body, OPENING_BODY_LIMIT)
+                .await
+                .unwrap_or_default();
+            let agent = shared.claimant(&parts.headers, &bytes);
+            let resp = inner.call(Request::from_parts(parts, Body::from(bytes))).await?;
+            if let Some(agent) = agent
+                && let Some(id) = resp.headers().get("mcp-session-id").and_then(|v| v.to_str().ok())
+            {
+                shared.note_session_id(&agent, id);
+            }
+            Ok(resp)
+        })
+    }
+}
+
+/// The largest opening request read whole (an initialize is a few hundred bytes).
+const OPENING_BODY_LIMIT: usize = 1 << 20;
+
 /// The service to mount at `/mcp`. `api` is the bridge's router without `/mcp`.
-pub fn service(
-    settings: Settings,
-    world: Arc<World>,
-    decision: Arc<Decision>,
-    api: Router,
-) -> StreamableHttpService<Handler, LocalSessionManager> {
+pub fn service(settings: Settings, world: Arc<World>, decision: Arc<Decision>, api: Router) -> McpService {
     let mut sessions = LocalSessionManager::default();
     sessions.session_config.keep_alive = Some(settings.idle);
     let sessions = Arc::new(sessions);
     let shared = Mcp::new(settings, world, decision, api);
     let _ = shared.manager.set(sessions.clone());
-    StreamableHttpService::new(
-        move || Ok(Handler(shared.clone())),
-        sessions,
-        StreamableHttpServerConfig::default(),
-    )
+    let handler = shared.clone();
+    McpService {
+        inner: StreamableHttpService::new(
+            move || Ok(Handler(handler.clone())),
+            sessions,
+            StreamableHttpServerConfig::default(),
+        ),
+        shared,
+    }
 }
 
 impl ServerHandler for Handler {
@@ -475,6 +619,7 @@ impl ServerHandler for Handler {
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let agent = self.0.agent(&ctx)?;
+        let _busy = self.0.busy(&agent, session_of(&ctx));
         let args = request.arguments.unwrap_or_default();
         tools::call(&self.0, &agent, &request.name, args)
             .await
@@ -507,6 +652,7 @@ impl ServerHandler for Handler {
         ctx: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, ErrorData> {
         let agent = self.0.agent(&ctx)?;
+        let _busy = self.0.busy(&agent, session_of(&ctx));
         let value = read(&self.0, &agent, &request.uri).await?;
         Ok(ReadResourceResult::new(vec![
             ResourceContents::text(value.to_string(), request.uri).with_mime_type(JSON),
