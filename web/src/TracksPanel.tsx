@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import './tracks.css'
+import { type Reveal, scrollSpanIntoView, useFlash } from './reveal'
 import {
   AFFILIATION_LABEL,
   type Affiliation,
@@ -24,11 +25,11 @@ import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
 import { FLAG_LABEL, confirmDeclaration, resolveFlag, revokeDeclaration } from './ident'
 
-/** The tracks drawer (Phase C2): every contact our sensors hold, ranked hostile, suspect,
+/** The tracks section, pinned above the task panel (Phase C2): every contact our sensors hold, ranked hostile, suspect,
  *  unknown first; click a row for what the estimate rests on (sources, confidence, age,
  *  identity and its conflicts) and to declare an affiliation. Everything shown is
  *  perception: the bridge never tells the console what a contact really is. Rules 9: a
- *  declaration may be the engine's (its hostile-act rule, on an observed act); the drawer
+ *  declaration may be the engine's (its hostile-act rule, on an observed act); the panel
  *  says so, with its evidence, and any operator confirms or revokes it here or in the
  *  inbox's Review. */
 
@@ -41,12 +42,17 @@ interface Props {
   onSelect: (id: string | null) => void
   /** fly the map to a track */
   onFocus: (t: Track) => void
-  onClose: () => void
+  /** collapsed to its header, so tasking gets the room */
+  collapsed: boolean
+  onCollapse: () => void
+  /** a track just selected from outside the list (map, inbox): scroll to it and mark it */
+  reveal?: Reveal | null
   /** open the engagement nomination form for a declared-hostile track (Phase E) */
   onEngage?: (trackId: string) => void
 }
 
-export function TracksButton({ tracks, open, now, onClick }: { tracks: TracksMessage | null; open: boolean; now: () => number; onClick: () => void }) {
+/** hot, unknown and other counts of the live tracks, as badges */
+export function TrackBadges({ tracks, now }: { tracks: TracksMessage | null; now: () => number }) {
   const list = tracks?.tracks ?? []
   const nowMs = now()
   const live = list.filter((t) => !isTrackStale(t, nowMs, tracks?.stale_after_s))
@@ -55,12 +61,11 @@ export function TracksButton({ tracks, open, now, onClick }: { tracks: TracksMes
   const rest = live.length - hot - unk
   const title = `${list.length} track${list.length === 1 ? '' : 's'}: ${hot} hostile or suspect, ${unk} unknown, ${rest} neutral or friendly`
   return (
-    <button className={`ghost platforms-btn ix-btn ${open ? 'on' : ''}`} onClick={onClick} title={title} aria-label={`Tracks: ${title}`}>
-      Tracks
+    <span className="tk-badges" title={title} aria-label={title}>
       {hot > 0 && <span className="tk-badge hot">{hot}</span>}
       {unk > 0 && <span className="tk-badge unk">{unk}</span>}
       {rest > 0 && <span className="tk-badge n">{rest}</span>}
-    </button>
+    </span>
   )
 }
 
@@ -381,42 +386,53 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
   )
 }
 
-export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus, onClose, onEngage }: Props) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus, collapsed, onCollapse, reveal = null, onEngage }: Props) {
   const nowMs = now()
   const staleAfterS = tracks?.stale_after_s ?? 10
   const list = sortTracks(tracks?.tracks ?? [])
   const stale = list.filter((t) => isTrackStale(t, nowMs, staleAfterS)).length
+  const box = useRef<HTMLDivElement>(null)
+  const flash = useFlash(reveal, (ids) => ids[0] ?? null)
+  useEffect(() => {
+    if (!reveal || collapsed) return
+    const el = box.current
+    const item = el?.querySelector(`[data-track-id="${CSS.escape(reveal.ids[0] ?? '')}"]`)
+    if (!el || !item) return
+    // the row and its expanded detail if they fit, else the row at the top
+    const at = el.getBoundingClientRect().top - el.scrollTop
+    const top = item.getBoundingClientRect().top - at
+    scrollSpanIntoView(el, top, Math.min(item.getBoundingClientRect().height, el.clientHeight))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reveal, collapsed])
   return (
-    <aside className="tk" aria-label="Tracks">
+    <aside className={`tk ${collapsed ? 'collapsed' : ''}`} aria-label="Tracks">
       <header className="tk-top">
         <h2>Tracks</h2>
+        <TrackBadges tracks={tracks} now={now} />
         <span className="muted">
-          {list.length} held{stale ? `, ${stale} stale` : ''} · from our sensors only
+          {list.length} held{stale ? `, ${stale} stale` : ''}
         </span>
-        <button className="ghost mini close" onClick={onClose} aria-label="Close tracks">
-          ✕
+        <button className="ghost mini close" onClick={onCollapse} aria-expanded={!collapsed} aria-label={collapsed ? 'Expand tracks' : 'Collapse tracks'} title={collapsed ? 'Expand tracks' : 'Collapse tracks'}>
+          {collapsed ? '▾' : '▴'}
         </button>
       </header>
-      <div className="tk-scroll">
+      {!collapsed && (
+      <div className="tk-scroll" ref={box}>
         {list.length === 0 ? (
           <p className="empty">
             No tracks. Contacts appear here as our platforms' sensors detect them (radar, EO/IR, AIS, sonar, ESM per <code>sim/platforms.toml</code>); start a scenario with <code>MURMUR_CONTACTS=sim/scenarios/golden-gate.toml</code>.
           </p>
         ) : (
-          <p className="tk-note">Symbols fade and their uncertainty ring grows with time since the last detection. Hostile takes a declaration: an operator&apos;s, or the engine&apos;s rule on a hostile act our sensors observed (marked BY RULE until an operator confirms it). Proximity alone never declares.</p>
+          <p className="tk-note">Symbols fade and their uncertainty ring grows with time since the last detection. Hostile takes a declaration: an operator&apos;s, or the engine&apos;s rule on a hostile act our sensors observed (marked BY RULE until an operator confirms it). Proximity alone never declares. From our sensors only.</p>
         )}
         {list.map((t) => (
-          <div key={t.id}>
+          <div key={t.id} data-track-id={t.id} className={flash === t.id ? 'tk-flash' : undefined}>
             <Row t={t} nowMs={nowMs} staleAfterS={staleAfterS} sel={selected === t.id} onClick={() => onSelect(selected === t.id ? null : t.id)} />
             {selected === t.id && <Detail t={t} nowMs={nowMs} vehicles={vehicles} onFocus={() => onFocus(t)} onEngage={onEngage ? () => onEngage(t.id) : undefined} />}
           </div>
         ))}
       </div>
+      )}
     </aside>
   )
 }

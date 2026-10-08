@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useBridgeClock, useHiddenAlerts, type Intent } from './decisions'
 import { FleetPanel } from './FleetPanel'
 import { GlobeInset } from './GlobeInset'
@@ -12,7 +12,8 @@ import { SpacePanel, type SpaceSelection } from './SpacePanel'
 import { fmtZ } from './decisions'
 import { TaskPanel } from './TaskPanel'
 import { buildTrackLayers } from './trackLayers'
-import { TracksButton, TracksPanel } from './TracksPanel'
+import { TracksPanel } from './TracksPanel'
+import type { Reveal } from './reveal'
 import { type Track, trackPredicted } from './tracks'
 import { VehicleDetails } from './VehicleDetails'
 import type { LngLat, Vehicle } from './types'
@@ -74,9 +75,17 @@ export default function App() {
   }, [status])
   perfRenderBegin()
   const clock = useUtcClock()
-  const [showTracks, setShowTracks] = useState(false)
+  // the tracks section in the right column: collapsed to its header, or open
+  const [tracksCollapsed, setTracksCollapsed] = useState(false)
+  // rows to scroll to and mark in the fleet list and the tracks list (selected outside them)
+  const [revealVeh, setRevealVeh] = useState<Reveal | null>(null)
+  const [revealTrack, setRevealTrack] = useState<Reveal | null>(null)
   const [selectedTrack, setSelectedTrack] = useState<string | null>(null)
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  /** vehicles selected outside the fleet list: scroll the list to the first and mark it */
+  const revealVehicles = useCallback((uids: number[]) => {
+    if (uids.length) setRevealVeh({ ids: uids.map(String) })
+  }, [])
   const [detailsUid, setDetailsUid] = useState<number | null>(null)
   const [following, setFollowing] = useState(true)
   const [showPlatforms, setShowPlatforms] = useState(false)
@@ -152,10 +161,21 @@ export default function App() {
   // ages advance with the bridge clock (useBridgeClock re-renders twice a second), so the
   // callback's identity changes every tick while there are tracks: rings grow, symbols fade
   const trackTick = tracks?.tracks.length ? Math.floor(now() / 500) : 0
-  const onTrackClick = useCallback((id: string) => {
-    setSelectedTrack((cur) => (cur === id ? null : id))
-    setShowTracks(true)
+  const selectedTrackRef = useRef(selectedTrack)
+  selectedTrackRef.current = selectedTrack
+  /** a track selected outside the tracks list: open its section, scroll to the row, mark it */
+  const revealTrackId = useCallback((id: string) => {
+    setSelectedTrack(id)
+    setTracksCollapsed(false)
+    setRevealTrack({ ids: [id] })
   }, [])
+  const onTrackClick = useCallback(
+    (id: string) => {
+      if (selectedTrackRef.current === id) setSelectedTrack(null)
+      else revealTrackId(id)
+    },
+    [revealTrackId],
+  )
   const trackLayers = useCallback<MapLayers>(
     (view) =>
       buildTrackLayers(
@@ -266,11 +286,12 @@ export default function App() {
     (sel: InboxSelection, uids: number[], intent: Intent | null) => {
       setInboxSel(sel)
       setSelected(new Set(uids))
+      revealVehicles(uids)
       const vs = state?.vehicles ?? []
       const pts: LngLat[] = intent ? intentPoints(intent, vs) : uids.map((u) => vs.find((v) => v.uid === u)?.position).filter((p): p is LngLat => p != null)
       if (pts.length) setFit((f) => ({ points: pts, n: (f?.n ?? 0) + 1, padRight: 430 }))
     },
-    [state?.vehicles],
+    [state?.vehicles, revealVehicles],
   )
   /** the task panel's link: the pending intent in the inbox, or a finished one in Decisions */
   const openIntent = useCallback(
@@ -293,6 +314,17 @@ export default function App() {
       return next
     })
   }, [])
+
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
+  /** a click on a vehicle in the map or its details: reveal it in the list when this selects it */
+  const toggleOutside = useCallback(
+    (uid: number) => {
+      if (!selectedRef.current.has(uid)) revealVehicles([uid])
+      toggle(uid)
+    },
+    [revealVehicles, toggle],
+  )
 
   // right click: deselect one vehicle, or everything (uid null)
   const deselect = useCallback((uid: number | null) => {
@@ -351,7 +383,6 @@ export default function App() {
         <span className={`pill ${status}`}>{status === 'live' ? 'BRIDGE LIVE' : status === 'down' ? 'BRIDGE DOWN' : 'CONNECTING'}</span>
         <InboxButton decisions={decisions} open={showInbox} hiddenAlerts={hiddenAlerts} onClick={() => setShowInbox((v) => !v)} />
         <QueueButton decisions={decisions} open={showQueue} onClick={() => setShowQueue((v) => !v)} />
-        <TracksButton tracks={tracks} open={showTracks} now={now} onClick={() => setShowTracks((v) => !v)} />
         <button className={`ghost platforms-btn ${showSpace ? 'on' : ''}`} onClick={() => setShowSpace((v) => !v)} title="Space timeline: imaging access, SATCOM, GNSS">
           Space
         </button>
@@ -377,6 +408,7 @@ export default function App() {
           }
         }}
         onSelect={(ids) => setSelected(new Set(ids))}
+        reveal={revealVeh}
       />
       </ErrorBoundary>
       <main className={`mapwrap ${showSpace ? 'space-open' : ''}`}>
@@ -391,7 +423,7 @@ export default function App() {
           onFollowing={setFollowing}
           preview={preview}
           fit={fit}
-          onToggle={toggle}
+          onToggle={toggleOutside}
           onDeselect={deselect}
           onMapClick={onMapClick}
           space={overlay}
@@ -400,23 +432,6 @@ export default function App() {
           clusters={state?.clusters ?? null}
         />
         </ErrorBoundary>
-        {showTracks && (
-          <ErrorBoundary name="Tracks" className="floating">
-          <TracksPanel
-            tracks={tracks}
-            vehicles={vehicles}
-            now={now}
-            selected={selectedTrack}
-            onSelect={setSelectedTrack}
-            onFocus={focusTrack}
-            onClose={() => setShowTracks(false)}
-            onEngage={(track) => {
-              setEngageForm({ track })
-              setShowTracks(false)
-            }}
-          />
-          </ErrorBoundary>
-        )}
         {showGlobe && (
           <ErrorBoundary name="Globe" className="floating">
           <GlobeInset
@@ -464,10 +479,8 @@ export default function App() {
             mem={alertMem}
             hidden={hiddenAlerts}
             onTrack={(id) => {
-              // the tracks drawer opens where the inbox is
               setShowInbox(false)
-              setSelectedTrack(id)
-              setShowTracks(true)
+              revealTrackId(id)
               const t = tracks?.tracks.find((x) => x.id === id)
               if (t) focusTrack(t)
             }}
@@ -482,6 +495,7 @@ export default function App() {
             now={now}
             onFocus={(uids) => {
               setSelected(new Set(uids))
+              revealVehicles(uids)
               const pts = uids.map((u) => vehicles.find((v) => v.uid === u)?.position).filter((p): p is LngLat => p != null)
               if (pts.length) setFit((f) => ({ points: pts, n: (f?.n ?? 0) + 1, padRight: 430 }))
             }}
@@ -521,7 +535,7 @@ export default function App() {
             taskings={taskings}
             now={now}
             selected={selected.has(detailsUid)}
-            onToggleSelect={() => toggle(detailsUid)}
+            onToggleSelect={() => toggleOutside(detailsUid)}
             onClose={() => setDetailsUid(null)}
             following={following}
             onFollow={() => {
@@ -539,6 +553,7 @@ export default function App() {
             onClose={() => setShowPlatforms(false)}
             onFocus={(uid) => {
               setSelected(new Set([uid]))
+              revealVehicles([uid])
               setFocus((f) => ({ uid, n: (f?.n ?? 0) + 1 }))
               setShowPlatforms(false)
             }}
@@ -550,9 +565,27 @@ export default function App() {
         )}
         {PERF_ON && <PerfOverlay />}
       </main>
-      <ErrorBoundary name="Task panel" className="slot tasking">
-      <TaskPanel vehicles={vehicles} selected={selected} draft={draft} setDraft={setDraft} taskings={taskings} pendingIds={pendingIds} onInbox={openIntent} space={spaceRuns} now={now} />
-      </ErrorBoundary>
+      <div className="rail">
+        <div className="tk-slot">
+          <ErrorBoundary name="Tracks" className="slot">
+          <TracksPanel
+            tracks={tracks}
+            vehicles={vehicles}
+            now={now}
+            selected={selectedTrack}
+            onSelect={setSelectedTrack}
+            onFocus={focusTrack}
+            collapsed={tracksCollapsed}
+            onCollapse={() => setTracksCollapsed((v) => !v)}
+            reveal={revealTrack}
+            onEngage={(track) => setEngageForm({ track })}
+          />
+          </ErrorBoundary>
+        </div>
+        <ErrorBoundary name="Task panel" className="slot tasking">
+        <TaskPanel vehicles={vehicles} selected={selected} draft={draft} setDraft={setDraft} taskings={taskings} pendingIds={pendingIds} onInbox={openIntent} space={spaceRuns} now={now} />
+        </ErrorBoundary>
+      </div>
     </div>
   )
 }
