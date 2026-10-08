@@ -16,8 +16,10 @@ export function previewFeatures(pending: Intent[], vehicles: Vehicle[], selected
   for (const i of pending) {
     const sel = i.id === selectedId
     const props = { sel, label: `${i.kind.toUpperCase()} i${i.id}` }
-    const line = (coordinates: LngLat[], part: string) =>
-      features.push({ type: 'Feature', properties: { ...props, part }, geometry: { type: 'LineString', coordinates } })
+    // `uid` on a transit line: it starts at that vehicle (MapView moves the start with the
+    // vehicle's drawn position while display smoothing glides it)
+    const line = (coordinates: LngLat[], part: string, uid?: number) =>
+      features.push({ type: 'Feature', properties: uid == null ? { ...props, part } : { ...props, part, uid }, geometry: { type: 'LineString', coordinates } })
     const point = (p: LngLat, n: string) =>
       features.push({ type: 'Feature', properties: { ...props, part: 'point', n }, geometry: { type: 'Point', coordinates: p } })
     let first: LngLat | null = null
@@ -41,14 +43,14 @@ export function previewFeatures(pending: Intent[], vehicles: Vehicle[], selected
       // the way home is the whole task
       for (const u of i.uids) {
         const v = byUid.get(u)
-        if (v?.position && v.home) line([v.position, v.home], 'transit')
+        if (v?.position && v.home) line([v.position, v.home], 'transit', v.uid)
       }
       continue
     }
     if (first) {
       for (const u of i.uids) {
-        const pos = byUid.get(u)?.position
-        if (pos) line([pos, first], 'transit')
+        const v = byUid.get(u)
+        if (v?.position) line([v.position, first], 'transit', v.uid)
       }
     }
   }

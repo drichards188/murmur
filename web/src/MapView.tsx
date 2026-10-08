@@ -1,13 +1,17 @@
 /// <reference types="geojson" />
 import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import type { LayersList, PickingInfo } from '@deck.gl/core'
+import { Layer, type LayersList, type PickingInfo } from '@deck.gl/core'
 import { MapboxOverlay } from '@deck.gl/mapbox'
 import { useEffect, useRef, useState } from 'react'
 import { circle, distanceM } from './geo'
 import { BRIDGE_FILTER, liftBridges, type LiftedBridge } from './bridges'
 import { build3dLayers, drawnHeight, DEM_TILES, HEIGHT_EXAGGERATION } from './map3d'
 import { declutter } from './declutter'
+import { advanceDrawn, drawnAlt, drawnPosition, drawnPositionOf, drawnTick, glidingCount, isGliding, observeVehicles, setSmoothing, snapAllDrawn } from './drawn'
+import { GLIDE_LAYER_IDS } from './orderLayers'
+import { buildTrailLayers } from './trailLayers'
+import { bridgeEpoch } from './useBridge'
 import type { SpaceOverlay } from './space'
 import { EMPTY_OVERLAY } from './space'
 import { linkStubs, spaceFeatures, spaceLinkLayers } from './spaceLayers'
@@ -176,6 +180,16 @@ const MAX_PITCH = 85
 const ORBIT_YAW = 0.35
 const ORBIT_TILT = 0.25
 const VIEW_KEY = 'murmur.view'
+const SMOOTH_KEY = 'murmur.smooth'
+
+/** display smoothing (drawn.ts) is on unless the operator turned it off */
+function savedSmooth(): boolean {
+  try {
+    return localStorage.getItem(SMOOTH_KEY) !== 'off'
+  } catch {
+    return true
+  }
+}
 
 function savedView(): ViewMode {
   try {
@@ -294,6 +308,14 @@ const FOLLOW_PAD_LEFT = 350
 export function MapView({ vehicles, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null }: Props) {
   const [view, setView] = useState<ViewMode>(savedView)
   const viewRef = useRef(view)
+  // display smoothing of our vehicles' motion (glide.ts, drawn.ts): the choice is remembered
+  const [smooth, setSmooth] = useState(savedSmooth)
+  const smoothRef = useRef(smooth)
+  const frameId = useRef(0)
+  // the layers that do not move with a glide, kept between animation frames
+  const staticLayers = useRef<{ space: LayersList; ext: LayersList; clusters: LayersList } | null>(null)
+  const seenEpoch = useRef(bridgeEpoch())
+  const previewGliding = useRef(false)
   const overlay = useRef<MapboxOverlay | null>(null)
   const bridges = useRef<LiftedBridge[]>([])
   const latest = useRef({ vehicles, selected, bare: new Set<number>(), clusters })
@@ -335,18 +357,74 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
   }, [onMapClick, onToggle, onDeselect, onView])
 
   /** everything deck.gl draws: the 3D scene (hidden in 2D), SATCOM links, extension layers
-   *  (the `layers` prop), then the vehicles on top */
-  const deckLayers = (is3d: boolean): LayersList => {
+   *  (the `layers` prop), then the vehicles on top. `frame`: an animation frame of a glide, which
+   *  rebuilds only what is attached to a vehicle and reuses the rest as it was. */
+  const deckLayers = (is3d: boolean, frame = false): LayersList => {
     const { vehicles: vs, selected: sel, bare, clusters: cl } = latest.current
+    if (!frame || !staticLayers.current) {
+      staticLayers.current = {
+        space: spaceLinkLayers(spaceRef.current.links, is3d),
+        ext: layersRef.current?.(is3d ? '3d' : '2d') ?? [],
+        clusters: buildClusterLayers(cl),
+      }
+    }
+    const { space, ext, clusters: clusterLayers } = staticLayers.current
+    const tick = drawnTick()
     return [
       ...build3dLayers(vs, is3d, bridges.current),
-      ...spaceLinkLayers(spaceRef.current.links, is3d),
-      ...(layersRef.current?.(is3d ? '3d' : '2d') ?? []),
-      ...buildClusterLayers(cl),
+      ...(smoothRef.current ? buildTrailLayers(vs, is3d) : []),
+      ...space,
+      // the extension layers that sit at a vehicle follow its glide: re-trigger just those
+      ...(frame ? ext.map((l) => (l instanceof Layer && GLIDE_LAYER_IDS.includes(l.id) ? l.clone({ updateTriggers: { ...l.props.updateTriggers, getPosition: tick } } as never) : l)) : ext),
+      ...clusterLayers,
       ...buildVehicleLayers({ vehicles: vs, selected: sel, bare, is3d }),
     ]
   }
   const pushLayers = () => overlay.current?.setProps({ layers: deckLayers(viewRef.current === '3d') })
+
+  /** the inbox preview's transit lines start at a vehicle: that end follows the drawn position */
+  const previewData = (): FC => {
+    const base = previewRef.current
+    if (!smoothRef.current) return base
+    return {
+      ...base,
+      features: base.features.map((f) => {
+        const uid = f.properties?.uid
+        if (uid == null || f.geometry.type !== 'LineString') return f
+        const at = drawnPositionOf(uid, null)
+        return at ? { ...f, geometry: { ...f.geometry, coordinates: [at, ...f.geometry.coordinates.slice(1)] } } : f
+      }),
+    }
+  }
+
+  // One animation frame per display frame while some vehicle is gliding, none otherwise
+  // (the loop ends when the last glide has; the next changed report starts it again).
+  const glideFrame = (t: number) => {
+    frameId.current = 0
+    if (!smoothRef.current || lostRef.current || !overlay.current) return
+    const t0 = performance.now()
+    const n = advanceDrawn(t)
+    overlay.current.setProps({ layers: deckLayers(viewRef.current === '3d', true) })
+    if (import.meta.env.DEV) {
+      const w = window as unknown as { murmurPerf: Record<string, number[]> }
+      w.murmurPerf ??= {}
+      const a = (w.murmurPerf.glideFrame ??= [])
+      a.push(performance.now() - t0)
+      if (a.length > 600) a.splice(0, a.length - 600)
+    }
+    // the preview is a MapLibre source: rewritten only while one of its vehicles glides (and once more as it ends)
+    const m = map.current
+    if (m && ready.current) {
+      const uids = previewRef.current.features.flatMap((f) => (f.properties?.uid == null ? [] : [f.properties.uid as number]))
+      const now = uids.some(isGliding)
+      if (now || previewGliding.current) (m.getSource('inbox-preview') as maplibregl.GeoJSONSource | undefined)?.setData(previewData())
+      previewGliding.current = now
+    }
+    if (n > 0) frameId.current = requestAnimationFrame(glideFrame)
+  }
+  const wakeGlide = () => {
+    if (!frameId.current && smoothRef.current && glidingCount() > 0 && document.visibilityState === 'visible') frameId.current = requestAnimationFrame(glideFrame)
+  }
 
   useEffect(() => {
     const cam = camera.current
@@ -668,6 +746,40 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapGen])
 
+  // the smooth toggle: remembered, and every vehicle is drawn as reported until its next report
+  useEffect(() => {
+    smoothRef.current = smooth
+    setSmoothing(smooth)
+    try {
+      localStorage.setItem(SMOOTH_KEY, smooth ? 'on' : 'off')
+    } catch {
+      // storage unavailable: the toggle still works for this session
+    }
+    if (!smooth && frameId.current) {
+      cancelAnimationFrame(frameId.current)
+      frameId.current = 0
+    }
+    if (ready.current) (map.current?.getSource('inbox-preview') as maplibregl.GeoJSONSource | undefined)?.setData(previewData())
+    // previewData reads refs only
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [smooth])
+
+  // a hidden tab draws vehicles as reported (no animation frames run there anyway)
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState !== 'hidden') return
+      snapAllDrawn(performance.now())
+      if (frameId.current) cancelAnimationFrame(frameId.current)
+      frameId.current = 0
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      if (frameId.current) cancelAnimationFrame(frameId.current)
+      frameId.current = 0
+    }
+  }, [])
+
   // Vehicles: deck.gl layers rebuilt here only (a new state from the bridge, a selection, the
   // view, a move that changes what is in it or the declutter), never per frame. Only the
   // vehicles in (or near) the view are drawn, the set the bridge sends in full (viewport.ts);
@@ -675,6 +787,16 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
   useEffect(() => {
     const m = map.current
     if (!m) return
+    if (smoothRef.current) {
+      // report changes start glides; after a reconnect or while the tab is hidden, draw as reported
+      const now = performance.now()
+      observeVehicles(vehicles, now)
+      const epoch = bridgeEpoch()
+      if (epoch !== seenEpoch.current || document.visibilityState === 'hidden') {
+        seenEpoch.current = epoch
+        snapAllDrawn(now)
+      }
+    }
     const clustered = !!clusters?.cells.length
     const drawn = visibleVehicles(vehicles, viewport.current, clustered)
     // murmur-02g: where symbols bunch up (planes on a runway), only one keeps its labels;
@@ -687,6 +809,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     latest.current = { vehicles: drawn, selected, bare, clusters: clustered ? clusters : null }
     const t1 = performance.now()
     pushLayers()
+    wakeGlide()
     if (import.meta.env.DEV) {
       const w = window as unknown as { murmurPerf: Record<string, number[]> }
       w.murmurPerf ??= {}
@@ -697,7 +820,8 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
 
     if (ready.current) {
       // the 2D trails layer is hidden in 3D: skip rebuilding it there
-      if (view === '2d') (m.getSource('trails') as maplibregl.GeoJSONSource).setData(trailFeatures(drawn))
+      // (with smoothing on, trailLayers.ts draws them, ending at the drawn position)
+      if (view === '2d') (m.getSource('trails') as maplibregl.GeoJSONSource).setData(smooth ? empty : trailFeatures(drawn))
       ;(m.getSource('beams') as maplibregl.GeoJSONSource).setData(beamFeatures(drawn))
     }
 
@@ -713,7 +837,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     }
     // pushLayers reads refs; moved re-runs this after a move, styleGen after a (re)load
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vehicles, selected, view, moved, styleGen, clusters])
+  }, [vehicles, selected, view, moved, styleGen, clusters, smooth])
 
   useEffect(() => {
     spaceRef.current = space
@@ -769,15 +893,20 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       }
       const v = vehiclesRef.current.find((x) => x.uid === uid)
       if (v?.position && !lostRef.current && !m.isZooming() && !m.isRotating()) {
-        const k = 1 - Math.exp(-dt / 0.25)
+        // smoothing on: aim at where the symbol is drawn (so the symbol stays put in the view
+        // instead of stepping ahead of the glide and drifting back), with a tighter glide
+        const smooth = smoothRef.current
+        if (smooth) advanceDrawn(now)
+        const at = smooth ? drawnPosition(v) : v.position
+        const k = 1 - Math.exp(-dt / (smooth ? 0.08 : 0.25))
         const c = m.getCenter()
-        const elev = viewRef.current === '3d' ? drawnHeight(v) : 0
+        const elev = viewRef.current === '3d' ? (smooth ? drawnAlt(v) * HEIGHT_EXAGGERATION : drawnHeight(v)) : 0
         m.setCenterClampedToGround(false)
         const z = m.getZoom()
         const zoom = f.zoom == null ? z : z + (f.zoom - z) * k
         if (f.zoom != null && Math.abs(f.zoom - zoom) < 0.01) f.zoom = null
         m.jumpTo({
-          center: [c.lng + (v.position[0] - c.lng) * k, c.lat + (v.position[1] - c.lat) * k],
+          center: [c.lng + (at[0] - c.lng) * k, c.lat + (at[1] - c.lat) * k],
           elevation: m.getCenterElevation() + (elev - m.getCenterElevation()) * k,
           zoom,
         })
@@ -832,7 +961,9 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
 
   useEffect(() => {
     previewRef.current = preview
-    if (ready.current) (map.current?.getSource('inbox-preview') as maplibregl.GeoJSONSource | undefined)?.setData(preview)
+    if (ready.current) (map.current?.getSource('inbox-preview') as maplibregl.GeoJSONSource | undefined)?.setData(previewData())
+    // previewData reads refs only
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preview, styleGen])
 
   useEffect(() => {
@@ -867,6 +998,14 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
         </button>
         <button className={view === '3d' ? 'on' : ''} onClick={() => setView('3d')}>
           3D
+        </button>
+        <button
+          className={`smoothbtn${smooth ? ' on' : ''}`}
+          aria-pressed={smooth}
+          title="Smooth the motion of vehicles on the map between position reports. Numbers always show the reports; a vehicle never moves past its last report."
+          onClick={() => setSmooth((s) => !s)}
+        >
+          smooth
         </button>
         {view === '3d' && <span className="viewnote">heights ×{HEIGHT_EXAGGERATION} · middle-drag: spin + tilt</span>}
       </div>

@@ -1,5 +1,6 @@
 import { LineLayer, PathLayer, ScatterplotLayer, SolidPolygonLayer } from '@deck.gl/layers'
 import type { LiftedBridge } from './bridges'
+import { drawnAlt, drawnPosition, drawnTick, smoothing } from './drawn'
 import type { Vehicle } from './types'
 import { domainOf } from './types'
 
@@ -17,12 +18,12 @@ const AIR: RGBA = [127, 184, 255, 255]
 const SEA: RGBA = [111, 224, 196, 255]
 const GROUND: RGBA = [214, 196, 140, 255]
 
-function colour(v: Vehicle, alpha = 255): RGBA {
+export function colour(v: Vehicle, alpha = 255): RGBA {
   const c = domainOf(v) === 'air' ? AIR : domainOf(v) === 'ground' ? GROUND : SEA
   return [c[0], c[1], c[2], alpha]
 }
 
-function z(metresMsl: number | null) {
+export function z(metresMsl: number | null) {
   return (metresMsl ?? 0) * HEIGHT_EXAGGERATION
 }
 
@@ -50,13 +51,32 @@ function seaSurface(vehicles: Vehicle[]) {
   return [{ polygon }]
 }
 
+// The vehicles that are placed, and the sea plane around them, are rebuilt only when the
+// vehicles change: animation frames of a glide (drawn.ts) reuse them, so deck.gl keeps its
+// attributes and recomputes only the positions.
+let memo: { vehicles: Vehicle[]; visible: boolean; placed: Vehicle[]; sea: { polygon: XYZ[] }[]; trailed: Vehicle[]; trailKey: string } | null = null
+
+function placedOf(vehicles: Vehicle[], visible: boolean) {
+  if (memo && memo.vehicles === vehicles && memo.visible === visible) return memo
+  // nothing to compute while 2D is shown: the layers stay (hidden), their data is empty
+  const placed = visible ? vehicles.filter((v) => v.position && v.alt_msl != null) : []
+  memo = { vehicles, visible, placed, sea: seaSurface(placed), trailed: placed.filter((v) => v.trail.length > 1), trailKey: placed.map((v) => v.trail.length).join() }
+  return memo
+}
+
 /** The 3D scene around the vehicles: bridge decks, sea surface, trails, height stems and
  *  sea-level shadows. The vehicles themselves (both views) are in vehicleLayers.ts.
  *  visible=false keeps the layers (and their GPU resources) alive while the 2D view is shown. */
 export function build3dLayers(vehicles: Vehicle[], visible = true, bridges: LiftedBridge[] = []) {
-  // nothing to compute while 2D is shown: the layers stay (hidden), their data is empty
-  const placed = visible ? vehicles.filter((v) => v.position && v.alt_msl != null) : []
-  const at = (v: Vehicle): XYZ => [v.position![0], v.position![1], z(v.alt_msl)]
+  const { placed, sea, trailed, trailKey } = placedOf(vehicles, visible)
+  const smooth = smoothing()
+  // with smoothing on the stem, shadow and trail end follow the drawn position (drawn.ts); the
+  // trail itself is drawn by trailLayers.ts, which ends at that position
+  const pos = smooth ? (v: Vehicle) => drawnPosition(v) : (v: Vehicle) => v.position!
+  const alt = smooth ? (v: Vehicle) => drawnAlt(v) : (v: Vehicle) => v.alt_msl
+  const at = (v: Vehicle): XYZ => [pos(v)[0], pos(v)[1], z(alt(v))]
+  const tick = smooth ? drawnTick() : 0
+  const posTrigger = smooth ? { getSourcePosition: tick, getTargetPosition: tick, getPosition: tick } : {}
   return [
     // bridge decks at estimated height (see bridges.ts); drawn before the sea surface
     new PathLayer<LiftedBridge>({
@@ -74,7 +94,7 @@ export function build3dLayers(vehicles: Vehicle[], visible = true, bridges: Lift
     new SolidPolygonLayer({
       id: 'sea-surface',
       visible,
-      data: seaSurface(placed),
+      data: sea,
       getPolygon: (d: { polygon: XYZ[] }) => d.polygon,
       getFillColor: [40, 110, 160, 70],
       parameters: { depthWriteEnabled: false },
@@ -82,32 +102,35 @@ export function build3dLayers(vehicles: Vehicle[], visible = true, bridges: Lift
     new PathLayer<Vehicle>({
       id: 'trails-3d',
       visible,
-      data: placed.filter((v) => v.trail.length > 1),
+      // with smoothing on, trailLayers.ts draws the trails (body and a head that ends at the icon)
+      data: smooth ? [] : trailed,
       getPath: (v) => [...v.trail.map(([lon, lat, alt]): XYZ => [lon, lat, z(alt)]), at(v)],
       getColor: (v) => colour(v, 140),
       getWidth: 2,
       widthUnits: 'pixels',
-      updateTriggers: { getPath: placed.map((v) => v.trail.length).join() },
+      updateTriggers: { getPath: trailKey },
     }),
     // stem from sea level to the vehicle: shows height (or depth) at a glance
     new LineLayer<Vehicle>({
       id: 'stems',
       visible,
       data: placed,
-      getSourcePosition: (v) => [v.position![0], v.position![1], 0],
+      getSourcePosition: (v) => [pos(v)[0], pos(v)[1], 0],
       getTargetPosition: at,
       getColor: (v) => colour(v, 160),
       getWidth: 1.5,
       widthUnits: 'pixels',
+      updateTriggers: posTrigger,
     }),
     new ScatterplotLayer<Vehicle>({
       id: 'sea-level-shadow',
       visible,
       data: placed,
-      getPosition: (v) => [v.position![0], v.position![1], 0],
+      getPosition: (v) => [pos(v)[0], pos(v)[1], 0],
       getRadius: 4,
       radiusUnits: 'pixels',
       getFillColor: [0, 0, 0, 110],
+      updateTriggers: posTrigger,
     }),
   ]
 }

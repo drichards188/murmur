@@ -56,6 +56,13 @@ function withAges(s: BridgeState): BridgeState {
   }
 }
 
+/** Counts socket connections: the map draws vehicles as reported (no glide) on the first state
+ *  after a reconnect, when positions may have moved a long way (drawn.ts). */
+let epoch = 0
+export function bridgeEpoch() {
+  return epoch
+}
+
 export type BridgeStatus = 'connecting' | 'live' | 'down'
 
 export function useBridge() {
@@ -80,6 +87,7 @@ export function useBridge() {
       ws = new WebSocket(`${proto}://${location.host}/ws?lod=1`)
       socket.current = ws
       ws.onopen = () => {
+        epoch++
         retry.current = 0
         setStatus('live')
         if (view.current) ws?.send(JSON.stringify({ type: 'view', ...view.current }))
