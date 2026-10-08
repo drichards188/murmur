@@ -91,7 +91,7 @@ def test_nominations_open_and_close():
     none = {"options": [{"uid": 2, "callsign": "FPV 2", "passed": False}]}
     s = FakeAgentSession([], options=[passing, passing, none])
     p = Poller(lambda: s, nomination_every_s=15)
-    p.nomination_gap_s = 0
+
     run(p.open())
     got = run(p.nominations(now=100))
     assert got == [{"kind": "nomination.possible", "t": 100, "track": "T-0001",
@@ -100,6 +100,23 @@ def test_nominations_open_and_close():
     assert run(p.nominations(now=116)) == [], "still possible: nothing new"
     assert run(p.nominations(now=132)) == [{"kind": "nomination.closed", "t": 132, "track": "T-0001"}]
     assert [a for n, a in s.calls if n == "get_nomination_options"] == [{"track_id": "T-0001"}] * 3
+
+
+def test_nomination_dry_runs_are_one_a_poll_and_never_stall_it():
+    """Finding 19: the driver read every hostile track in one poll with a 1.05 s sleep after
+    each, stalling change polling (and using the model's one-a-second allowance in a burst)."""
+    passing = {"options": [{"uid": 2, "callsign": "FPV 2", "passed": True}]}
+    s = FakeAgentSession([], options=[passing] * 3)
+    p = Poller(lambda: s, nomination_every_s=15)
+    run(p.open())
+    p.hostile = {"T-0001", "T-0002", "T-0003"}
+    import time as _t
+
+    start = _t.monotonic()
+    got = [run(p.nominations(now=100 + i)) for i in range(4)]
+    assert _t.monotonic() - start < 0.5, "no sleeping"
+    assert [[c["track"] for c in g] for g in got] == [["T-0001"], ["T-0002"], ["T-0003"], []]
+    assert len([n for n, _ in s.calls if n == "get_nomination_options"]) == 3, "one a call"
 
 
 def test_a_bridge_without_get_changes_is_refused():

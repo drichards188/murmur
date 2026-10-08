@@ -10,7 +10,7 @@ import time
 import pytest
 from conftest import calls
 
-from watch.backend import BackendCrashed, LimitReached, PreflightError
+from watch.backend import FALLBACK_HINT, BackendCrashed, LimitReached, LockdownBreach, PreflightError
 from watch.claude import ClaudeBackend, ClaudeConfig
 from watch.codex import CodexBackend, CodexConfig
 
@@ -47,7 +47,8 @@ def test_claude_preflight_and_its_refusals(fake_claude, run_dir, monkeypatch, tm
     monkeypatch.setenv("FAKE_LOGGED_OUT", "1")
     with pytest.raises(PreflightError) as e:
         run(claude(fake_claude, run_dir).preflight())
-    assert "/login" in e.value.fix and "AI=playbook" in e.value.fix
+    assert "/login" in e.value.fix and e.value.fix.endswith(FALLBACK_HINT)
+    assert "agents/policy_agent.py" in FALLBACK_HINT
     monkeypatch.delenv("FAKE_LOGGED_OUT")
     monkeypatch.setenv("FAKE_VERSION", "2.0.9 (Claude Code)")
     with pytest.raises(PreflightError, match="older than 2.1.294"):
@@ -124,6 +125,37 @@ def test_claude_limit_is_reported_with_the_exact_reset(fake_claude, run_dir, mon
     assert hit.kind == "session" and "hit your session limit" in hit.text
     assert abs(hit.reset_at - (time.time() + 90)) < 10, "the stream's resetsAt, not the text's 3:45pm"
     assert e.value.turn.stop == "limit"
+
+
+def test_claude_an_error_turn_whose_prose_mentions_a_limit_is_not_a_limit(fake_claude, run_dir, monkeypatch):
+    """Finding 12: the model's own text was read for limit messages, so an error turn that
+    said "limit reached" slept the watch."""
+    monkeypatch.setenv("FAKE_SCENARIO", "error_prose")
+
+    async def go():
+        b = claude(fake_claude, run_dir)
+        await b.start()
+        t = await b.turn("Watch update 1.", time.time() + 30)
+        await b.stop()
+        return t
+
+    t = run(go())
+    assert t.stop == "error" and "limit reached" in t.text
+
+
+def test_claude_an_overloaded_turn_is_an_error_and_the_process_lives(fake_claude, run_dir, monkeypatch):
+    monkeypatch.setenv("FAKE_SCENARIO", "error_once")
+
+    async def go():
+        b = claude(fake_claude, run_dir)
+        await b.start()
+        t1 = await b.turn("Watch update 1.", time.time() + 30)
+        t2 = await b.turn("Watch update 1 again.", time.time() + 30)
+        await b.stop()
+        return t1, t2
+
+    t1, t2 = run(go())
+    assert (t1.stop, t1.error) == ("error", "API Error: 529 Overloaded") and t2.stop == "success"
 
 
 def test_claude_crash_then_resume(fake_claude, run_dir, tmp_path, monkeypatch):
@@ -254,6 +286,9 @@ def test_codex_command_line_is_locked_down(fake_codex, run_dir):
                 "features.memories", "features.hooks", "skills.bundled.enabled"):
         assert keys[off] == "false", off
     assert keys["web_search"] == '"disabled"' and keys["project_doc_max_bytes"] == "0"
+    # finding 13: nothing waits for an approval nobody answers; the image and patch tools off
+    assert keys["approval_policy"] == '"never"'
+    assert keys["tools.view_image"] == keys["include_apply_patch_tool"] == "false"
     assert json.loads(keys["developer_instructions"]).startswith("You are the watch officer.\nSay \"no action\"")
     assert "mma_k" not in " ".join(a), "the key stays in the environment"
     r = b.argv_resume("thread-1", "gpt-6-luna", "high")
@@ -284,6 +319,15 @@ def test_codex_turns_start_a_thread_then_resume_it(fake_codex, run_dir, tmp_path
     assert "resume" not in runs[2]["argv"], "the consult is a fresh thread"
     assert runs[0]["prompt"] == "Watch update 1." and runs[0]["cwd"] == str(run_dir)
     assert runs[0]["agent_key"] == "mma_k"
+
+
+def test_codex_a_tool_outside_the_lockdown_stops_the_run(fake_codex, run_dir, monkeypatch):
+    """Finding 13: the event stream lists no tools, so the backend checks what the model used:
+    a command, or a call to another MCP server, is a breach."""
+    monkeypatch.setenv("FAKE_SCENARIO", "foreign")
+    with pytest.raises(LockdownBreach) as e:
+        run(codex(fake_codex, run_dir).turn("Watch update 1.", time.time() + 30))
+    assert "command_execution" in str(e.value) and "mcp_tool_call (other)" in str(e.value)
 
 
 def test_codex_limit_and_crash(fake_codex, run_dir, monkeypatch):

@@ -27,6 +27,15 @@ from typing import Any
 from .limits import LimitHit
 
 
+# What a preflight failure suggests besides fixing the CLI: one place, so it changes in one
+# line when the situation framework's `ai = playbook` setting lands.
+FALLBACK_HINT = "or use the rule-based agent (agents/policy_agent.py)"
+
+
+class LockdownBreach(RuntimeError):
+    """The model used a tool other than the bridge's: the run stops."""
+
+
 class PreflightError(RuntimeError):
     """The CLI can't run as the watch officer; `fix` says what the user can do."""
 

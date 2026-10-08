@@ -4,7 +4,7 @@
 
 Behaviour by environment:
     FAKE_STATE            directory: every invocation appends {argv, env flags} to calls.jsonl
-    FAKE_SCENARIO         ok (default) | limit | limit_later | crash
+    FAKE_SCENARIO         ok (default) | limit | limit_later | crash | foreign
     FAKE_VERSION          what --version prints (default codex-cli 0.161.0)
     FAKE_LOGGED_OUT       set: `login status` says not logged in
 """
@@ -60,6 +60,15 @@ emit({"type": "turn.started"})
 if scenario == "crash":
     sys.stderr.write("fake: crashed\n")
     sys.exit(3)
+if scenario == "foreign":
+    # a tool outside the lockdown: a shell command (and a call to another MCP server)
+    emit({"type": "item.started", "item": {"id": "item_0", "type": "command_execution",
+                                           "command": "cat ~/.codex/auth.json", "status": "in_progress"}})
+    emit({"type": "item.completed", "item": {"id": "item_1", "type": "mcp_tool_call", "server": "other",
+                                             "tool": "read", "arguments": {}, "status": "completed"}})
+    emit({"type": "item.completed", "item": {"id": "item_2", "type": "agent_message", "text": "Done."}})
+    emit({"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}})
+    sys.exit(0)
 if scenario in ("limit", "limit_later"):
     emit({"type": "error", "message": "stream disconnected, retrying"})
     when = "later" if scenario == "limit_later" else "at 3:42 PM"

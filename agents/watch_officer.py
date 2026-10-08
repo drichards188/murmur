@@ -39,7 +39,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from watch.backend import BackendCrashed, LimitReached, PreflightError  # noqa: E402
+from watch.backend import BackendCrashed, LimitReached, LockdownBreach, PreflightError  # noqa: E402
 from watch.claude import ClaudeBackend, ClaudeConfig  # noqa: E402
 from watch.codex import CodexBackend, CodexConfig  # noqa: E402
 from watch.limits import LimitHit  # noqa: E402
@@ -72,25 +72,53 @@ def build_prompt(brief: str | None) -> str:
     return base.rstrip() + "\n\n## Situation brief\n\n" + ((brief or "").strip() or "(no brief given)") + "\n"
 
 
-def make_run_dir(given: Path | None) -> Path:
-    """An empty directory outside any repository: nothing there for the CLI to read."""
-    if given:
-        given.mkdir(parents=True, exist_ok=True)
-        d = given
-    else:
-        d = Path(tempfile.mkdtemp(prefix="murmur-watch-"))
-    os.chmod(d, 0o700)
-    return d
+class RunDirError(ValueError):
+    pass
 
 
-def instruction_files_above(d: Path) -> list[str]:
-    """CLAUDE.md or AGENTS.md in the run directory or above it (a CLI might read them)."""
+# What may not be in the run directory or above it: instructions a CLI reads by walking up
+# (CLAUDE.md, AGENTS.md), project settings with their hooks (.claude), a repository root
+# (.git). The user's own ~/.claude is their configuration directory, which
+# `--setting-sources project` keeps out, so it is allowed above a run directory.
+FORBIDDEN_ABOVE = ("CLAUDE.md", "AGENTS.md", ".claude", ".git")
+
+
+def run_dir_problems(d: Path) -> list[str]:
+    home = Path.home().resolve()
     found = []
     for p in [d, *d.parents]:
-        for name in ("CLAUDE.md", "AGENTS.md"):
-            if (p / name).is_file():
+        for name in FORBIDDEN_ABOVE:
+            if name == ".claude" and p == home:
+                continue
+            if (p / name).exists():
                 found.append(str(p / name))
     return found
+
+
+def make_run_dir(given: Path | None) -> Path:
+    """An empty directory with nothing at or above it that a CLI would read. A directory the
+    driver creates is made private (0700); one given that already exists must be empty, and
+    is left as it is."""
+    if given is None:
+        d = Path(tempfile.mkdtemp(prefix="murmur-watch-"))  # 0700, new, empty
+        problems = run_dir_problems(d)
+        if problems:
+            d.rmdir()
+            raise RunDirError(f"the temporary directory {d.parent} has {', '.join(problems)} at or above it: "
+                              "pass --run-dir somewhere clear of them (or set TMPDIR)")
+        return d
+    d = given.expanduser().resolve()
+    problems = run_dir_problems(d)
+    if problems:
+        raise RunDirError(f"--run-dir {d} has {', '.join(problems)} at or above it: the CLI would read "
+                          "them; pick a directory outside any repository or project")
+    if d.exists():
+        if not d.is_dir() or any(d.iterdir()):
+            raise RunDirError(f"--run-dir {d} must be a new or empty directory")
+        return d
+    d.mkdir(parents=True)
+    os.chmod(d, 0o700)
+    return d
 
 
 class Officer:
@@ -113,6 +141,8 @@ class Officer:
         self.turns = 0
         self.proposed: list[int] = []
         self._deferred_logged = False
+        self.bridge_restarted = False
+        self.limits: list[float] = []  # usage limits hit in the last hour
 
     def signal(self, name: str) -> None:
         if not self.stop.is_set():
@@ -165,6 +195,8 @@ class Officer:
                 changes = await self.poller.poll()
                 changes += await self.poller.nominations()
                 self.poll_errors = 0
+                if any(c.get("kind") == "feed.reset" for c in changes):
+                    self.bridge_restarted = True
                 if changes:
                     self.waker.add(changes, time.time())
             except Exception as e:  # noqa: BLE001 (keep polling; reconnect after a few misses)
@@ -177,6 +209,7 @@ class Officer:
                         self.log.write("bridge.reconnected", cursor=info["cursor"], bridge_run=info["run"],
                                        reset=info["reset"])
                         if info.get("reset"):
+                            self.bridge_restarted = True
                             self.waker.add([{"kind": "feed.reset", "t": time.time(), "run": info.get("run")}],
                                            time.time())
                     except Exception:  # noqa: BLE001
@@ -242,11 +275,24 @@ class Officer:
                 f"hour); you have up to {b.max_turns_per_wake} tool turns for this update; "
                 f"{left} escalations to the senior model left.")
 
+    def failed(self, now: float) -> bool:
+        """Count a failed turn (a crash, an error result); True when there were too many."""
+        self.crashes = [t for t in self.crashes if now - t < 600] + [now]
+        return len(self.crashes) > 3
+
     async def do_wake(self, wake: Wake) -> str | None:
         now = time.time()
+        if self.bridge_restarted:
+            # the bridge restarted: a long-lived CLI holds a dead MCP session; a new process
+            # (the same conversation) connects afresh, and its MCP status is checked again
+            self.bridge_restarted = False
+            info = await self.backend.restart()
+            self.init_logged = False
+            self.log.write("backend.restart", why="the bridge restarted", resume=info.get("resume"))
         escalate = wake.escalate and now >= self.strong_blocked_until
         if wake.escalate and not escalate:
             self.waker.escalations -= 1  # the stronger model is limited: the routine one takes it
+            wake.escalate = False
         try:
             mine = render_mine(await self.poller.mine(), now)
         except Exception:  # noqa: BLE001 (the update goes out without the list)
@@ -262,7 +308,7 @@ class Officer:
         effort = cfg.strong_effort if escalate else cfg.effort
         self.log.write("wake", n=wake.n, reason=wake.reason, why=wake.why, escalated=escalate,
                        escalate_why=wake.escalate_why if escalate else [], model=model, effort=effort,
-                       text=text, changes=wake.changes, cursor=self.poller.cursor)
+                       update=text, changes=wake.changes, cursor=self.poller.cursor)
         deadline = min(now + self.args.turn_timeout_s, self.until)
         try:
             if escalate:
@@ -273,21 +319,31 @@ class Officer:
             if e.turn is not None:
                 self.log.write("turn", n=wake.n, escalated=escalate, **e.turn.as_dict())
             return await self.on_limit(e.hit, escalate, wake)
+        except LockdownBreach as e:
+            self.log.write("error", n=wake.n, error=f"lockdown breach: {e}; the run stops")
+            return "error"
         except BackendCrashed as e:
             self.log.write("backend.crashed", n=wake.n, escalated=escalate, error=str(e), code=e.code,
                            stderr=e.stderr[-2000:])
-            self.crashes = [t for t in self.crashes if now - t < 600] + [now]
-            if len(self.crashes) > 3:
-                self.log.write("error", error="the backend crashed more than three times in ten minutes")
+            if self.failed(now):
+                self.log.write("error", error="more than three failed turns in ten minutes")
                 return "error"
             if not escalate:
                 info = await self.backend.restart()
-                self.log.write("backend.restart", resume=info.get("resume"))
-            self.waker.add(wake.changes, time.time())  # the next wake tells it again
+                self.log.write("backend.restart", why="crashed", resume=info.get("resume"))
+            self.waker.give_back(wake, time.time())  # the next wake tells it again
             return None
         self.turns += 1
         self.proposed += turn.proposals()
         self.log.write("turn", n=wake.n, escalated=escalate, **turn.as_dict())
+        if turn.stop == "error":
+            # an error turn (overloaded after the CLI's retries, say): what it was told
+            # comes back for the next wake, an escalation it spent is returned
+            self.waker.give_back(wake, time.time())
+            if self.failed(now):
+                self.log.write("error", error="more than three failed turns in ten minutes")
+                return "error"
+            return None
         if not escalate and not self.init_logged and getattr(self.backend, "init", None):
             self.init_logged = True
             self.log.write("backend.init", **self.backend.init)
@@ -323,15 +379,24 @@ class Officer:
         tools = init.get("tools") or []
         return servers.get("murmur") == "connected" and any(t.startswith("mcp__murmur__") for t in tools)
 
+    def retry_at(self, hit: LimitHit, now: float) -> float:
+        """When to try again after a limit: its reset (plus the margin), or the retry time when
+        it gives none, never sooner than a floor that doubles with each limit in the last hour
+        (60 s, 120 s, ... 30 min): a reset already past cannot loop restart, turn, limit."""
+        self.limits = [t for t in self.limits if now - t < 3600] + [now]
+        floor = now + min(self.args.limit_floor_s * 2 ** (len(self.limits) - 1), 1800.0)
+        wanted = hit.reset_at + self.args.limit_margin_s if hit.reset_at else now + self.args.limit_retry_s
+        return max(wanted, floor)
+
     async def on_limit(self, hit: LimitHit, escalated: bool, wake: Wake) -> str | None:
         now = time.time()
-        retry = hit.reset_at + self.args.limit_margin_s if hit.reset_at else now + self.args.limit_retry_s
+        retry = self.retry_at(hit, now)
         if escalated:
             # the stronger model's limit: the routine one carries on, told what it missed
             self.strong_blocked_until = retry
             self.log.write("limit.hit", **hit.as_dict(), escalated=True, action="routine model only",
                            until=retry)
-            self.waker.add(wake.changes, now)
+            self.waker.give_back(wake, now)
             return None
         if self.args.on_limit == "wait" and retry < self.until:
             self.log.write("limit.hit", **hit.as_dict(), action="wait", resume_at=retry)
@@ -341,7 +406,7 @@ class Officer:
                 return self.stop_reason or "signal"
             info = await self.backend.restart()
             self.log.write("limit.resume", resume=info.get("resume"))
-            self.waker.add(wake.changes, time.time())
+            self.waker.give_back(wake, time.time())
             return None
         self.log.write("limit.hit", **hit.as_dict(), action="stop",
                        why="--on-limit stop" if self.args.on_limit == "stop" else "the reset comes after --until")
@@ -381,7 +446,12 @@ async def main_async(args) -> int:
     until = args.until if args.until else time.time() + args.minutes * 60
     brief = args.brief.read_text() if args.brief else None
     prompt_text = build_prompt(brief)
-    run_dir = make_run_dir(args.run_dir)
+    try:
+        run_dir = make_run_dir(args.run_dir)
+    except RunDirError as e:
+        log.write("error", error=str(e))
+        print(f"watch officer: {e}", file=sys.stderr)
+        return 2
     prompt_path = run_dir / "system-prompt.md"
     prompt_path.write_text(prompt_text)
     try:
@@ -421,14 +491,12 @@ async def main_async(args) -> int:
 
         near = tuple(float(x) for x in args.shadow_near.split(","))
         shadow = PolicyShadow((near[0], near[1]), args.shadow_radius_km)
-    above = instruction_files_above(run_dir)
     log.write("run.start", pid=os.getpid(), backend=backend.describe(), budgets=asdict(budgets), until=until,
               until_iso=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(until)), url=args.url, agent=args.agent,
               auth="agent key" if key else "dev header", run_dir=str(run_dir),
               brief=str(args.brief) if args.brief else None, brief_sha256=sha256(brief) if brief else None,
               prompt_sha256=sha256(prompt_text), escalation=not args.no_escalation,
-              on_limit=args.on_limit, shadow=shadow.name if shadow else None,
-              instruction_files_above_run_dir=above)
+              on_limit=args.on_limit, shadow=shadow.name if shadow else None)
     officer = Officer(args, backend, log, waker, poller, shadow, until)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -474,6 +542,8 @@ def parse_args(argv: list[str] | None = None):
                    help="on a usage limit: wait for the reset if it comes before --until, or stop")
     g.add_argument("--limit-retry-s", type=float, default=900.0, help="a limit with no reset time: retry after this")
     g.add_argument("--limit-margin-s", type=float, default=60.0, help="resume this long after a limit's reset")
+    g.add_argument("--limit-floor-s", type=float, default=60.0,
+                   help="never retry sooner than this after a limit; doubles with each limit in the last hour")
     m = ap.add_argument_group("models")
     m.add_argument("--model", help="routine model (claude: sonnet; codex: gpt-6-luna)")
     m.add_argument("--effort", help="routine effort (claude: medium; codex: high)")
@@ -487,7 +557,9 @@ def parse_args(argv: list[str] | None = None):
                    help="CODEX_HOME for codex (default MURMUR_CODEX_HOME; unset: your normal home)")
     c.add_argument("--allow-other-auth", action="store_true",
                    help="claude: accept a login other than a Claude subscription (it may bill an API account)")
-    c.add_argument("--run-dir", type=Path, help="the CLI's working directory (default: a fresh temporary one)")
+    c.add_argument("--run-dir", type=Path,
+                   help="the CLI's working directory: new or empty, with no CLAUDE.md, AGENTS.md, .claude or "
+                        ".git at or above it (default: a fresh temporary one)")
     c.add_argument("--preflight", action="store_true", help="check the CLI and its login, then exit")
     c.add_argument("--print-command", action="store_true", help="print the backend's command lines and exit")
     s = ap.add_argument_group("shadow")

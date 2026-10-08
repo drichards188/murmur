@@ -4,8 +4,11 @@
 
 Behaviour by environment:
     FAKE_STATE          directory: every invocation appends {argv, env flags} to calls.jsonl
-    FAKE_SCENARIO       ok (default) | limit | limit_once | crash_once | slow | max_turns
+    FAKE_SCENARIO       ok (default) | limit | limit_once | crash_once | slow | max_turns |
+                        error_once | error_prose
     FAKE_RESET_IN       a limit's resetsAt, seconds from now (default 90)
+    FAKE_LIMIT_AT       limit_once: the message (of a process) that hits the limit (default 1)
+    FAKE_ERROR_MODEL    error_once: only a process run with this --model errors
     FAKE_AUTH_METHOD    authMethod in `auth status` (default claude.ai)
     FAKE_LOGGED_OUT     set: `auth status` says not logged in
     FAKE_VERSION        what --version prints (default 2.1.294 (Claude Code))
@@ -97,14 +100,32 @@ for line in sys.stdin:
         sys.stderr.write("fake: crashed\n")
         sys.exit(3)
     limited = state / "limited"
-    if scenario == "limit" or (scenario == "limit_once" and not limited.exists()):
+    limit_at = int(os.environ.get("FAKE_LIMIT_AT", "1"))  # limit_once: on this message
+    if scenario == "limit" or (scenario == "limit_once" and not limited.exists() and n >= limit_at):
         limited.write_text("1")
-        emit({"type": "assistant", "message": {"model": model, "content": [
+        # the CLI's own message for an API error comes as a "<synthetic>" assistant message
+        emit({"type": "assistant", "message": {"model": "<synthetic>", "content": [
             {"type": "text", "text": "You've hit your session limit · resets 3:45pm"}]}})
-        emit({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": time.time() + float(os.environ.get("FAKE_RESET_IN", "90")),
+        reset_in = float(os.environ.get("FAKE_RESET_IN", "90"))
+        emit({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": time.time() + reset_in,
                                                               "rateLimitType": "five_hour"}})
         result("success", True, "You've hit your session limit · resets 3:45pm", 1)
         sys.exit(1)
+    errored = state / "errored"
+    error_model = os.environ.get("FAKE_ERROR_MODEL")  # error_once: only on this --model
+    if scenario == "error_once" and not errored.exists() and error_model in (None, opt("--model")):
+        # an API error after the CLI's own retries (overloaded): the turn ends, the process lives
+        errored.write_text("1")
+        emit({"type": "assistant", "message": {"model": "<synthetic>", "content": [
+            {"type": "text", "text": "API Error: 529 Overloaded"}]}})
+        result("success", True, "API Error: 529 Overloaded", 1)
+        continue
+    if scenario == "error_prose":
+        # the model's own text mentions a limit; the turn then fails for another reason
+        emit({"type": "assistant", "message": {"model": model, "content": [
+            {"type": "text", "text": "Tool call limit reached for this update; the battery reserve limit reached 20%."}]}})
+        result("error_during_execution", True, None, 2)
+        continue
     emit({"type": "assistant", "message": {"model": model, "content": [
         {"type": "tool_use", "id": f"tu_{n}_1", "name": "mcp__murmur__get_fleet", "input": {}}]}})
     if scenario == "slow":

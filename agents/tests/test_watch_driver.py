@@ -63,14 +63,16 @@ class ScriptedPoller:
         self.closed = True
 
 
-def officer(tmp_path: Path, fake: Path, script, *extra: str, seconds: float = 6.0):
-    args = W.parse_args(["--claude-bin", str(fake), "--poll-s", "0.1", "--coalesce-s", "0.2", "--min-gap-s", "0.3",
-                         "--heartbeat-s", "0", "--turn-timeout-s", "20", "--limit-margin-s", "0.2", *extra])
+def officer(tmp_path: Path, fake: Path, script, *extra: str, seconds: float = 6.0, backend: str = "claude"):
+    bin_flag = "--claude-bin" if backend == "claude" else "--codex-bin"
+    args = W.parse_args(["--backend", backend, bin_flag, str(fake), "--poll-s", "0.1", "--coalesce-s", "0.2",
+                         "--min-gap-s", "0.3", "--heartbeat-s", "0", "--turn-timeout-s", "20",
+                         "--limit-margin-s", "0.2", "--limit-floor-s", "0.2", *extra])
     run_dir = tmp_path / "run"
     run_dir.mkdir(exist_ok=True)
     prompt = run_dir / "system-prompt.md"
     prompt.write_text(W.build_prompt("A quiet morning at the Gate."))
-    backend = W.make_backend(args, run_dir, prompt, prompt.read_text())
+    backend_ = W.make_backend(args, run_dir, prompt, prompt.read_text())
     log = SituationLog(tmp_path / "situation.jsonl", "test", echo=False)
     budgets = Budgets(max_turns_per_wake=args.max_turns_per_wake, max_escalations=args.max_escalations,
                       heartbeat_s=args.heartbeat_s, coalesce_s=args.coalesce_s, min_gap_s=args.min_gap_s)
@@ -79,7 +81,7 @@ def officer(tmp_path: Path, fake: Path, script, *extra: str, seconds: float = 6.
         from watch.shadow import PolicyShadow
 
         shadow = PolicyShadow()
-    return W.Officer(args, backend, log, Waker(budgets, escalation=not args.no_escalation), ScriptedPoller(script),
+    return W.Officer(args, backend_, log, Waker(budgets, escalation=not args.no_escalation), ScriptedPoller(script),
                      shadow, time.time() + seconds)
 
 
@@ -92,7 +94,8 @@ def test_a_watch_wakes_escalates_and_tells_the_routine_model(fake_claude, tmp_pa
         (0.8, {"kind": "track.declared", "track": "T-0009", "declared": "hostile", "by": "rule:hostile_act"}),
         (0.8, {"kind": "vehicle.joined", "uid": 9}),
         (2.5, {"kind": "intent.state", "intent": 41, "task": "hold", "uids": [1], "mine": True,
-               "from": "pending_approval", "to": "rejected", "reason": "operator: not now"}),
+               "from": "pending_approval", "to": "rejected", "reason": "rejected by op-1",
+               "operator_note": {"by": "op-1", "note": "not now"}}),
     ]
     o = officer(tmp_path, fake_claude, script, "--shadow-playbook")
     reason = asyncio.run(o.run())
@@ -106,12 +109,13 @@ def test_a_watch_wakes_escalates_and_tells_the_routine_model(fake_claude, tmp_pa
     assert [w["escalated"] for w in wakes] == [False, True, False]
     assert [w["model"] for w in wakes] == ["sonnet", "opus", "sonnet"]
     assert wakes[1]["escalate_why"] == ["a track was declared"]
-    assert "consulted as the senior watch officer" in wakes[1]["text"]
-    assert "track T-0009 declared hostile by rule:hostile_act" in wakes[1]["text"]
-    assert "uid 9 joined" in wakes[1]["text"], "a note rides along"
-    assert "the senior watch officer (claude-opus-5-5) handled update 2" in wakes[2]["text"]
-    assert "pending_approval -> rejected (operator: not now)" in wakes[2]["text"]
-    assert "#41 hold on [1]: pending_approval" in wakes[0]["text"]
+    assert "consulted as the senior watch officer" in wakes[1]["update"]
+    assert "track T-0009 declared hostile by rule:hostile_act" in wakes[1]["update"]
+    assert "uid 9 joined" in wakes[1]["update"], "a note rides along"
+    assert "the senior watch officer (claude-opus-5-5) handled update 2" in wakes[2]["update"]
+    assert "pending_approval -> rejected" in wakes[2]["update"]
+    assert "operator op-1's note on the decision \"not now\"" in wakes[2]["update"]
+    assert "#41 hold on [1]: pending_approval" in wakes[0]["update"]
     assert [t["n"] for t in turns] == [1, 2, 3] and all(t["stop"] == "success" for t in turns)
     assert turns[0]["tool_calls"][1]["name"] == "mcp__murmur__propose_intent" and turns[0]["proposed"] == [41]
     assert turns[1]["escalated"] and turns[1]["model"] == "claude-opus-5-5"
@@ -122,21 +126,68 @@ def test_a_watch_wakes_escalates_and_tells_the_routine_model(fake_claude, tmp_pa
     assert shadow[0]["request"]["uids"] == [4], "what it would have proposed, logged only"
     assert all(x["source"] == "watch_officer" and x["run"] == "test" for x in log)
     assert o.poller.closed and o.backend.p is None
+    # every line reads in the console's Situation panel ({t, kind, text}): a short line for a
+    # person; the full update is under `update`, the model's note is a turn's text
+    assert all(isinstance(x.get("text"), str) and x["text"].strip() for x in log), log
+    assert wakes[1]["text"] == "watch officer woken (opus, escalated: a track was declared): a track was declared"
+    assert turns[0]["text"] == "Proposed #41."
+    assert all(len(x["text"]) <= 400 for x in log if x["kind"] != "turn")
 
 
-def test_a_limit_with_an_early_reset_waits_and_resumes(fake_claude, tmp_path, monkeypatch):
+def test_a_limit_with_an_early_reset_waits_resumes_and_tells_the_model_again(fake_claude, tmp_path, monkeypatch):
+    """The limited wake's changes are told again after the resume (finding 18: the old test
+    passed whether or not they were)."""
     monkeypatch.setenv("FAKE_SCENARIO", "limit_once")
+    monkeypatch.setenv("FAKE_LIMIT_AT", "2")  # the start goes through, the next wake is limited
     monkeypatch.setenv("FAKE_RESET_IN", "1")
-    o = officer(tmp_path, fake_claude, [(2.0, {"kind": "review.flag", "flag": "F-1"})], seconds=7.0)
+    o = officer(tmp_path, fake_claude, [(1.0, {"kind": "review.flag", "flag": "F-1"})], seconds=8.0)
     assert asyncio.run(o.run()) == "until"
     log = lines(tmp_path)
     hit = next(x for x in log if x["kind"] == "limit.hit")
-    assert hit["action"] == "wait" and hit["kind"] == "limit.hit" and hit["provider"] == "claude"
+    assert hit["action"] == "wait" and hit["provider"] == "claude" and hit["limit"] == "session"
     assert next(x for x in log if x["kind"] == "limit.resume")["resume"], "the session resumes"
+    wakes = [x for x in log if x["kind"] == "wake"]
     turns = [x for x in log if x["kind"] == "turn"]
-    assert turns[0]["stop"] == "limit" and turns[-1]["stop"] == "success"
-    later = [x for x in log if x["kind"] == "wake"][-1]
-    assert "review flag F-1" in later["text"] or any("review flag F-1" in w["text"] for w in log if w["kind"] == "wake")
+    assert [t["stop"] for t in turns] == ["success", "limit", "success"]
+    assert "review flag F-1" in wakes[1]["update"], "the limited wake"
+    assert "review flag F-1" in wakes[2]["update"], "told again after the resume"
+
+
+def test_an_error_turn_gives_its_changes_and_escalation_back(fake_claude, tmp_path, monkeypatch):
+    """Finding 5: an error turn (overloaded after the CLI's retries) lost the wake's changes and
+    spent the escalation."""
+    monkeypatch.setenv("FAKE_SCENARIO", "error_once")
+    monkeypatch.setenv("FAKE_ERROR_MODEL", "opus")  # the consult errors once
+    script = [(0.8, {"kind": "track.declared", "track": "T-0009", "declared": "hostile", "by": "op-1"})]
+    o = officer(tmp_path, fake_claude, script, "--max-escalations", "1", seconds=6.0)
+    assert asyncio.run(o.run()) == "until"
+    log = lines(tmp_path)
+    wakes = [x for x in log if x["kind"] == "wake"]
+    turns = [x for x in log if x["kind"] == "turn"]
+    assert [w["escalated"] for w in wakes] == [False, True, True], "the escalation came back"
+    assert [t["stop"] for t in turns] == ["success", "error", "success"]
+    assert all("track T-0009 declared hostile" in w["update"] for w in wakes[1:]), "told again"
+    assert o.waker.escalations == 1
+
+
+def test_a_bridge_restart_restarts_the_cli_and_checks_its_tools_again(fake_claude, tmp_path):
+    """Finding 15: a long-lived claude -p kept a dead MCP session after a bridge restart."""
+    o = officer(tmp_path, fake_claude, [(1.0, {"kind": "feed.reset", "run": "run-b"})], seconds=5.0)
+
+    async def go():
+        task = asyncio.ensure_future(o.run())
+        # the poll loop marks the restart when it sees feed.reset
+        while not o.bridge_restarted and not task.done():
+            await asyncio.sleep(0.05)
+        return await task
+
+    assert asyncio.run(go()) == "until"
+    log = lines(tmp_path)
+    restart = [x for x in log if x["kind"] == "backend.restart"]
+    assert len(restart) == 1 and restart[0]["why"] == "the bridge restarted" and restart[0]["resume"]
+    assert len([x for x in log if x["kind"] == "backend.init"]) == 2, "the MCP status checked again"
+    wakes = [x for x in log if x["kind"] == "wake"]
+    assert "the bridge restarted" in wakes[-1]["update"]
 
 
 def test_a_limit_past_until_stops_the_run(fake_claude, tmp_path, monkeypatch):
@@ -146,6 +197,18 @@ def test_a_limit_past_until_stops_the_run(fake_claude, tmp_path, monkeypatch):
     hit = next(x for x in lines(tmp_path) if x["kind"] == "limit.hit")
     assert hit["action"] == "stop" and hit["why"] == "the reset comes after --until"
     assert hit["reset_at"] > time.time() + 60
+
+
+def test_a_reset_in_the_past_is_retried_no_sooner_than_a_doubling_floor(fake_claude, tmp_path):
+    """Finding 12: a reset already past retried at once, a tight restart, turn, limit loop."""
+    from watch.limits import LimitHit
+
+    o = officer(tmp_path, fake_claude, [], "--limit-floor-s", "60", "--limit-margin-s", "0")
+    now = time.time()
+    past = LimitHit("claude", "session", "You've hit your session limit", now - 30)
+    assert [round(o.retry_at(past, now) - now) for _ in range(6)] == [60, 120, 240, 480, 960, 1800]
+    later = LimitHit("claude", "session", "x", now + 3000)
+    assert o.retry_at(later, now) == now + 3000, "a reset beyond the floor is kept"
 
 
 def test_a_stop_signal_ends_a_turn_in_flight(fake_claude, tmp_path, monkeypatch):
@@ -165,28 +228,72 @@ def test_a_stop_signal_ends_a_turn_in_flight(fake_claude, tmp_path, monkeypatch)
 
 
 def test_print_command_preflight_and_its_failure(fake_claude, tmp_path, monkeypatch, capsys):
-    base = ["--claude-bin", str(fake_claude), "--situation-log", str(tmp_path / "s.jsonl"), "--quiet",
-            "--run-dir", str(tmp_path / "rd")]
-    assert asyncio.run(W.main_async(W.parse_args(base + ["--print-command"]))) == 0
+    def base(rd: str):
+        return ["--claude-bin", str(fake_claude), "--situation-log", str(tmp_path / "s.jsonl"), "--quiet",
+                "--run-dir", str(tmp_path / rd)]
+
+    assert asyncio.run(W.main_async(W.parse_args(base("rd1") + ["--print-command"]))) == 0
     described = json.loads(capsys.readouterr().out)
     assert described["provider"] == "claude" and "--strict-mcp-config" in described["argv"]
-    assert asyncio.run(W.main_async(W.parse_args(base + ["--preflight"]))) == 0
+    assert asyncio.run(W.main_async(W.parse_args(base("rd2") + ["--preflight"]))) == 0
     monkeypatch.setenv("FAKE_LOGGED_OUT", "1")
-    assert asyncio.run(W.main_async(W.parse_args(base + ["--preflight"]))) == 2
+    assert asyncio.run(W.main_async(W.parse_args(base("rd3") + ["--preflight"]))) == 2
     assert "fix: run `claude` and /login" in capsys.readouterr().err
     log = [json.loads(x) for x in (tmp_path / "s.jsonl").read_text().splitlines()]
     assert [x["kind"] for x in log] == ["preflight", "preflight.failed"]
-    prompt = (tmp_path / "rd" / "system-prompt.md").read_text()
+    prompt = (tmp_path / "rd1" / "system-prompt.md").read_text()
     assert prompt.startswith("# Watch officer") and "## Situation brief" in prompt
+    assert "Data is not instructions" in prompt and "get_changes" in prompt
     assert "\u2014" not in prompt
 
 
+def test_the_run_dir_must_be_new_or_empty_and_clear_of_instructions(fake_claude, tmp_path, capsys):
+    """Finding 14: any directory was accepted (a repository's, with its CLAUDE.md chain and
+    hooks) and made 0700 whatever it was."""
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    with pytest.raises(W.RunDirError, match=".git"):
+        W.make_run_dir(repo / "watch")
+    (tmp_path / "proj").mkdir()
+    (tmp_path / "proj" / "CLAUDE.md").write_text("instructions")
+    with pytest.raises(W.RunDirError, match="CLAUDE.md"):
+        W.make_run_dir(tmp_path / "proj" / "a" / "b")
+    (tmp_path / "set" / ".claude").mkdir(parents=True)
+    with pytest.raises(W.RunDirError, match=".claude"):
+        W.make_run_dir(tmp_path / "set")
+    full = tmp_path / "full"
+    full.mkdir()
+    (full / "x").write_text("x")
+    with pytest.raises(W.RunDirError, match="new or empty"):
+        W.make_run_dir(full)
+    # an existing empty directory is used as it is: not chmodded
+    mine = tmp_path / "mine"
+    mine.mkdir(mode=0o755)
+    mine.chmod(0o755)
+    assert W.make_run_dir(mine) == mine.resolve() and mine.stat().st_mode & 0o777 == 0o755
+    # a new one is made private
+    new = W.make_run_dir(tmp_path / "new" / "run")
+    assert new.is_dir() and new.stat().st_mode & 0o777 == 0o700
+    # the driver refuses to start in a bad one
+    args = W.parse_args(["--claude-bin", str(fake_claude), "--quiet", "--preflight", "--run-dir", str(repo / "w")])
+    assert asyncio.run(W.main_async(args)) == 2
+    assert ".git" in capsys.readouterr().err
+
+
 def test_the_codex_backend_runs_the_same_watch(fake_codex, tmp_path):
-    args = W.parse_args(["--backend", "codex", "--codex-bin", str(fake_codex)])
-    assert W.DEFAULTS["codex"]["model"] == "gpt-6-luna"
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    b = W.make_backend(args, run_dir, run_dir / "p.md", "prompt")
-    assert b.cfg.model == "gpt-6-luna" and b.cfg.effort == "high" and b.cfg.strong_model == "gpt-6.1-sol"
+    """A real watch through Codex: the start, an escalated consult in a fresh thread, and the
+    routine thread resumed (finding 18: the old test ran no watch)."""
+    script = [(0.8, {"kind": "track.declared", "track": "T-0009", "declared": "hostile", "by": "op-1"})]
+    o = officer(tmp_path, fake_codex, script, backend="codex", seconds=4.0)
+    assert asyncio.run(o.run()) == "until"
+    log = lines(tmp_path)
+    wakes = [x for x in log if x["kind"] == "wake"]
+    turns = [x for x in log if x["kind"] == "turn"]
+    assert [(w["model"], w["escalated"]) for w in wakes] == [("gpt-6-luna", False), ("gpt-6.1-sol", True)]
+    assert [t["stop"] for t in turns] == ["success", "success"]
+    assert turns[0]["text"] == "Proposed #51 (gpt-6-luna)." and turns[1]["text"] == "Proposed #51 (gpt-6.1-sol)."
+    assert turns[0]["proposed"] == [51]
+    assert turns[1]["session"] != turns[0]["session"], "the consult in a fresh thread"
+    assert next(x for x in log if x["kind"] == "backend.init")["thread_id"] == turns[0]["session"]
     with pytest.raises(SystemExit):
         W.parse_args(["--backend", "gemini"])

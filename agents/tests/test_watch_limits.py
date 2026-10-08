@@ -60,6 +60,22 @@ def test_not_a_limit():
     assert parse_codex("You hit the limit of the approved area.", NOW) is None
 
 
+def test_only_the_clis_own_phrasings_count():
+    """Finding 12: a generic "limit reached" in a model's prose (an error turn narrating its
+    own battery or turn limit) slept the watch for 15 minutes."""
+    for prose in ("The battery reserve limit reached 20% on SKY 1, so I did not propose an orbit.",
+                  "Tool call limit reached for this update; no action.",
+                  "Note: the endurance limit reached its floor.",
+                  "I think we've hit your inbox limit, so no new proposal."):
+        assert parse_claude(prose, NOW) is None, prose
+    for cli in ("You've hit your session limit · resets 3:45pm",
+                "You’ve hit your weekly limit · resets Oct 13, 3pm",
+                "5-hour limit reached ∙ resets 4pm",
+                "Claude AI usage limit reached|1791500000",
+                "API Error: 429\nYou've hit your Opus limit · resets 7pm"):
+        assert parse_claude(cli, NOW) is not None, cli
+
+
 def test_rate_limit_event():
     assert from_rate_limit_event({"status": "allowed", "resetsAt": 1}) is None
     hit = from_rate_limit_event({"status": "rejected", "resetsAt": 1791502200, "rateLimitType": "five_hour"})

@@ -8,7 +8,6 @@ become possible (a `nomination.possible` change). Nothing it reads is logged by 
 
 from __future__ import annotations
 
-import asyncio
 import datetime as dt
 import time
 from typing import Any, Callable
@@ -27,13 +26,12 @@ class Poller:
     def __init__(self, connect: Callable[[], Any], nomination_every_s: float = 15.0):
         self.connect = connect  # () -> an AgentSession (not yet entered)
         self.session = None
-        self.cursor: int | None = None
+        self.cursor: str | int | None = None  # the feed's cursor, "<feed>:<n>"
         self.run: str | None = None
         self.hostile: set[str] = set()
         self.passing: dict[str, list] = {}
         self.checked: dict[str, float] = {}
         self.nomination_every_s = nomination_every_s
-        self.nomination_gap_s = 1.05  # the bridge allows one dry run a second per agent
 
     async def open(self) -> dict:
         if self.session is not None:
@@ -89,29 +87,29 @@ class Poller:
 
     async def nominations(self, now: float | None = None) -> list[dict]:
         """`nomination.possible` when a hostile track gets an armed platform that passes every
-        check, `nomination.closed` when it loses the last one (read-only dry run, at most
-        one call a second per agent on the bridge; we read each track every
-        `nomination_every_s`)."""
+        check, `nomination.closed` when it loses the last one. A read-only dry run, which the
+        bridge allows an agent once a second (the model shares that allowance): one track per
+        call, the one read longest ago, each track at most every `nomination_every_s`, so a
+        poll never waits on it."""
         now = time.time() if now is None else now
-        out = []
-        for track in sorted(self.hostile):
-            if now - self.checked.get(track, 0.0) < self.nomination_every_s:
-                continue
-            self.checked[track] = now
-            result = await self.session.session.call_tool("get_nomination_options", {"track_id": track})
-            body = _content(result)
-            if getattr(result, "is_error", None) or getattr(result, "isError", None):
-                continue  # rate limited, or the track is gone: try again later
-            passing = [{"uid": o.get("uid"), "callsign": o.get("callsign")}
-                       for o in body.get("options") or [] if o.get("passed")]
-            had = self.passing.get(track) or []
-            if passing and not had:
-                out.append({"kind": "nomination.possible", "t": now, "track": track, "platforms": passing})
-            elif had and not passing:
-                out.append({"kind": "nomination.closed", "t": now, "track": track})
-            self.passing[track] = passing
-            await asyncio.sleep(self.nomination_gap_s)
-        return out
+        due = [t for t in self.hostile if now - self.checked.get(t, 0.0) >= self.nomination_every_s]
+        if not due:
+            return []
+        track = min(due, key=lambda t: (self.checked.get(t, 0.0), t))
+        self.checked[track] = now
+        result = await self.session.session.call_tool("get_nomination_options", {"track_id": track})
+        body = _content(result)
+        if getattr(result, "is_error", None) or getattr(result, "isError", None):
+            return []  # rate limited (the model read one this second), or the track is gone
+        passing = [{"uid": o.get("uid"), "callsign": o.get("callsign")}
+                   for o in body.get("options") or [] if o.get("passed")]
+        had = self.passing.get(track) or []
+        self.passing[track] = passing
+        if passing and not had:
+            return [{"kind": "nomination.possible", "t": now, "track": track, "platforms": passing}]
+        if had and not passing:
+            return [{"kind": "nomination.closed", "t": now, "track": track}]
+        return []
 
     async def mine(self) -> list[dict]:
         return await self.session.intents(mine=True)
@@ -133,6 +131,23 @@ def _content(result) -> dict:
 
 
 # ---- telling the model ---------------------------------------------------------------------
+#
+# Everything in an update is data. Free text that comes from outside the driver (a contact's
+# AIS broadcast, an autopilot's status text, an alert's detail, the engine's evidence, a
+# reason or an operator's note) is shown quoted, on one line, cut to QUOTE_MAX characters and
+# labelled with where it comes from, so it reads as a quotation, never as an instruction
+# (the prompt says so too: agents/watch/prompt.md).
+
+QUOTE_MAX = 160
+
+
+def quote(text: Any, n: int = QUOTE_MAX) -> str:
+    """Free text as a quotation: one line, double quotes inside made single, cut to `n`."""
+    s = " ".join(str(text).split()).replace('"', "'")
+    if len(s) > n:
+        s = s[:n].rstrip() + "..."
+    return f'"{s}"'
+
 
 def hms(t: Any) -> str:
     try:
@@ -155,6 +170,25 @@ def _pos(p: Any) -> str:
     return "?"
 
 
+def _ais(c: dict) -> str:
+    a = c.get("ais")
+    if not isinstance(a, dict):
+        return ""
+    return (f"; it broadcasts AIS (its own claim, unverified) name {quote(a.get('name', ''), 40)}, "
+            f"type {quote(a.get('ship_type', ''), 40)}")
+
+
+def _why(c: dict) -> str:
+    """An intent's last reason and, for a rejection, the operator's note, each labelled."""
+    out = ""
+    if c.get("reason"):
+        out += f"; recorded reason {quote(c['reason'])}"
+    note = c.get("operator_note")
+    if isinstance(note, dict) and note.get("note"):
+        out += f"; operator {note.get('by')}'s note on the decision {quote(note['note'])}"
+    return out
+
+
 def render(c: dict) -> str:
     """One line for one change."""
     k = c.get("kind", "?")
@@ -162,34 +196,39 @@ def render(c: dict) -> str:
     tr = c.get("track")
     if k == "intent.new":
         by = "you" if c.get("mine") else (c.get("source") or {}).get("id", "?")
-        return f"{t} intent #{c.get('intent')} {c.get('task')} on {c.get('uids')} by {by}: {c.get('state')}"
+        return f"{t} intent #{c.get('intent')} {c.get('task')} on {c.get('uids')} by {by}: {c.get('state')}{_why(c)}"
     if k == "intent.state":
         whose = "yours" if c.get("mine") else (c.get("source") or {}).get("id", "?")
-        why = f" ({c['reason']})" if c.get("reason") else ""
-        return f"{t} intent #{c.get('intent')} {c.get('task')} on {c.get('uids')} ({whose}): {c.get('from')} -> {c.get('to')}{why}"
+        return (f"{t} intent #{c.get('intent')} {c.get('task')} on {c.get('uids')} ({whose}): "
+                f"{c.get('from')} -> {c.get('to')}{_why(c)}")
     if k == "track.new":
         src = ", ".join(f"uid {s.get('uid')} {s.get('sensor')}" for s in c.get("sources") or [])
         conf = c.get("affiliation_confidence")
         conf_s = f" {conf:.2f}" if isinstance(conf, (int, float)) else ""
         return (f"{t} new track {tr}: {c.get('domain')} {c.get('identity') or 'unclassified'}, "
                 f"estimated {c.get('affiliation')}{conf_s}, at {_pos(c.get('position'))}, "
-                f"{c.get('speed_mps')} m/s course {c.get('course_deg')}, seen by {src or '?'}")
+                f"{c.get('speed_mps')} m/s course {c.get('course_deg')}, seen by {src or '?'}{_ais(c)}")
     if k == "track.affiliation":
         return f"{t} track {tr} affiliation estimate {c.get('from')} -> {c.get('to')}"
     if k == "track.declared":
-        return f"{t} track {tr} declared {c.get('declared')} by {c.get('by')}"
+        was = f" (was declared {c['from']})" if c.get("from") else ""
+        return f"{t} track {tr} declared {c.get('declared')} by {c.get('by')}{was}"
     if k == "track.declaration_confirmed":
         return f"{t} track {tr}: the declaration was confirmed by {c.get('confirmed_by')}"
     if k == "track.declaration_revoked":
-        return f"{t} track {tr}: its declaration was revoked"
+        return f"{t} track {tr}: its declaration ({c.get('was')}) was revoked"
     if k == "track.identity_conflict":
-        return f"{t} track {tr} identity conflict: {c.get('conflict')}"
+        return (f"{t} track {tr} identity conflict, the tracker's note (it quotes what the contact "
+                f"broadcasts, unverified) {quote(c.get('conflict', ''))}")
+    if k == "track.identity_cleared":
+        return f"{t} track {tr}: its identity conflict cleared"
     if k in ("track.stale", "track.active"):
         return f"{t} track {tr} is {k.split('.')[1]}"
     if k == "track.dropped":
         return f"{t} track {tr} dropped by the tracker{' (still counted as a lost contact)' if c.get('lost') else ''}"
     if k == "review.flag":
-        return f"{t} review flag {c.get('flag')} ({c.get('flag_kind')}) on {c.get('tracks')}: {c.get('evidence')}"
+        return (f"{t} review flag {c.get('flag')} ({c.get('flag_kind')}) on {c.get('tracks')}, the engine's "
+                f"evidence {quote(c.get('evidence', ''))}")
     if k == "review.flag_status":
         return f"{t} review flag {c.get('flag')}: {c.get('from')} -> {c.get('to')}"
     if k == "vehicle.joined":
@@ -204,11 +243,22 @@ def render(c: dict) -> str:
     if k == "vehicle.gps_glitch":
         return f"{t} {_who(c)} GPS glitch {'FLAGGED by its navigation filter' if c.get('glitch') else 'cleared'}"
     if k == "vehicle.event":
-        return f"{t} {_who(c)} {c.get('event_kind')}: {c.get('text')}"
-    if k == "alert.raised":
-        return f"{t} alert {c.get('alert_kind')} ({c.get('severity')}) {_who(c)}: {c.get('detail')}"
+        return f"{t} {_who(c)} {c.get('event_kind')}, its autopilot's text {quote(c.get('text', ''))}"
+    if k == "vehicle.events_truncated":
+        return f"{t} more vehicle events than shown (get_recent_events has them)"
+    if k in ("alert.raised", "alert.changed"):
+        was = ""
+        if k == "alert.changed":
+            f = c.get("from") or {}
+            was = f" (was {f.get('alert_kind')} {f.get('severity')})"
+        return (f"{t} alert {c.get('alert_kind')} ({c.get('severity')}){was} {_who(c)}, the bridge's detail "
+                f"{quote(c.get('detail', ''))}")
     if k == "alert.cleared":
         return f"{t} alert cleared: {c.get('alert_kind')} {_who(c)}"
+    if k == "condition.flapping":
+        about = f"track {tr}" if tr else (f"alert {c.get('alert')}" if c.get("alert") else _who(c))
+        return (f"{t} {about}: {c.get('condition')} came and went {c.get('cycles')} times within "
+                f"{c.get('window_s', 0):.0f} s")
     if k == "nomination.possible":
         ps = ", ".join(f"uid {p.get('uid')} {p.get('callsign') or ''}".strip() for p in c.get("platforms") or [])
         return f"{t} track {tr}: armed platforms that pass every nomination check now: {ps}"
@@ -232,7 +282,7 @@ def render_mine(intents: list[dict], now: float) -> list[str]:
         recent = last_t is not None and now - last_t < 600
         if state in OPEN or (state in TERMINAL and recent):
             exp = f", expires in {i['expires_in_s']:.0f} s" if isinstance(i.get("expires_in_s"), (int, float)) and state == "pending_approval" else ""
-            reason = f" ({hist[-1].get('reason')})" if hist and state in TERMINAL else ""
+            reason = f", recorded reason {quote(hist[-1].get('reason', ''))}" if hist and state in TERMINAL else ""
             lines.append(f"#{i.get('id')} {i.get('kind')} on {i.get('uids')}: {state}{exp}{reason}")
     return lines
 

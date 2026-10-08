@@ -36,7 +36,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from .backend import (STREAM_LIMIT, BackendCrashed, LimitReached, PreflightError, StderrTail,
+from .backend import (FALLBACK_HINT, STREAM_LIMIT, BackendCrashed, LimitReached, PreflightError, StderrTail,
                       ToolCall, Turn, child_env, end_process, excerpt, run_quick, version_tuple)
 from .limits import from_rate_limit_event, parse_claude
 
@@ -153,7 +153,9 @@ class ClaudeBackend:
     # ---- setup -----------------------------------------------------------------------------
 
     def env(self) -> dict[str, str]:
-        extra = {"CLAUDE_CODE_MAX_RETRIES": "2"}
+        # the bridge marks its tools' answers as up to 400 000 characters
+        # (`anthropic/maxResultSizeChars`); this lets that many tokens through untruncated
+        extra = {"CLAUDE_CODE_MAX_RETRIES": "2", "MAX_MCP_OUTPUT_TOKENS": "120000"}
         if not self.cfg.tool_search:
             extra["ENABLE_TOOL_SEARCH"] = "false"
         if self.key:
@@ -194,13 +196,13 @@ class ClaudeBackend:
         if code == 127:
             raise PreflightError(f"{self.cfg.bin} is not installed or not on PATH",
                                  "install Claude Code (https://code.claude.com), run `claude` once and /login "
-                                 "with your Claude account, or use AI=playbook")
+                                 "with your Claude account, " + FALLBACK_HINT)
         self.version = (out or err).strip()
         v = version_tuple(self.version)
         if v is None or v < MIN_VERSION:
             raise PreflightError(f"claude {self.version or '?'} is older than {'.'.join(map(str, MIN_VERSION))}, "
                                  "the version the watch officer was tested with",
-                                 "update Claude Code (`claude update`), or use AI=playbook")
+                                 "update Claude Code (`claude update`), " + FALLBACK_HINT)
         code, out, err = await run_quick([self.cfg.bin, "auth", "status"], env)
         try:
             status = json.loads(out)
@@ -208,7 +210,7 @@ class ClaudeBackend:
             status = {}
         if code != 0 or not status.get("loggedIn"):
             raise PreflightError("Claude Code is not logged in",
-                                 "run `claude` and /login with your Claude account, or use AI=playbook")
+                                 "run `claude` and /login with your Claude account, " + FALLBACK_HINT)
         method = status.get("authMethod")
         if method != "claude.ai" and not self.cfg.allow_other_auth:
             raise PreflightError(
@@ -252,7 +254,12 @@ class ClaudeBackend:
             raise BackendCrashed("the claude process is not running",
                                  self.p.proc.returncode if self.p else None,
                                  self.p.stderr.text() if self.p else "")
-        turn = await self._turn(self.p, text, deadline, self.cfg.model, routine=True)
+        try:
+            turn = await self._turn(self.p, text, deadline, self.cfg.model, routine=True)
+        except LimitReached as e:
+            if e.turn is not None and e.turn.cost_usd is not None:
+                self.proc_cost = e.turn.cost_usd
+            raise
         if turn.cost_usd is not None:
             self.proc_cost = turn.cost_usd
         return turn
@@ -275,6 +282,11 @@ class ClaudeBackend:
             if turn.cost_usd is not None:
                 self.consult_cost_usd += turn.cost_usd
             return turn
+        except LimitReached as e:
+            # a consult that ended on a limit still cost what it reported
+            if e.turn is not None and e.turn.cost_usd is not None:
+                self.consult_cost_usd += e.turn.cost_usd
+            raise
         finally:
             await p.close()
 
@@ -301,6 +313,9 @@ class ClaudeBackend:
         interrupted: str | None = None
         grace_until: float | None = None
         last_text = ""
+        # text the CLI wrote itself (an API error such as a usage limit comes as an assistant
+        # message whose model is "<synthetic>"): the only assistant text read for limits
+        cli_text = ""
         await p.write(user_message(text))
         while True:
             wait = (grace_until or deadline) - time.time()
@@ -318,7 +333,7 @@ class ClaudeBackend:
             if ev is None:
                 code = await p.proc.wait()
                 err = p.stderr.text()
-                hit = parse_claude(err) or parse_claude(last_text) or from_rate_limit_event(turn.rate_limit)
+                hit = parse_claude(err) or parse_claude(cli_text) or from_rate_limit_event(turn.rate_limit)
                 if hit:
                     turn.stop, turn.error = "limit", hit.text
                     raise LimitReached(hit, turn)
@@ -342,6 +357,8 @@ class ClaudeBackend:
                         turn.tool_calls.append(c)
                     elif block.get("type") == "text" and block.get("text"):
                         last_text = block["text"]
+                        if msg.get("model") == "<synthetic>":
+                            cli_text = block["text"]
             elif kind == "user":
                 content = (ev.get("message") or {}).get("content")
                 if isinstance(content, list):
@@ -354,10 +371,10 @@ class ClaudeBackend:
             elif kind == "rate_limit_event":
                 turn.rate_limit = ev.get("rate_limit_info")
             elif kind == "result":
-                return self._finish(turn, ev, last_text, interrupted, t0, routine)
+                return self._finish(turn, ev, last_text, cli_text, interrupted, t0, routine)
 
-    def _finish(self, turn: Turn, ev: dict, last_text: str, interrupted: str | None, t0: float,
-                routine: bool) -> Turn:
+    def _finish(self, turn: Turn, ev: dict, last_text: str, cli_text: str, interrupted: str | None,
+                t0: float, routine: bool) -> Turn:
         turn.text = ev.get("result") or last_text
         turn.usage = ev.get("usage") or {}
         if ev.get("modelUsage"):
@@ -383,7 +400,10 @@ class ClaudeBackend:
         turn.duration_s = time.monotonic() - t0
         rejected = (turn.rate_limit or {}).get("status") == "rejected"
         if turn.stop not in ("max_turns", "budget") and (ev.get("is_error") or rejected):
-            hit = parse_claude(turn.text or "") or parse_claude(last_text) or from_rate_limit_event(turn.rate_limit)
+            # the CLI's own words only: its result and its synthetic messages, never the
+            # model's prose (a model narrating "limit reached" is not a limit)
+            hit = (parse_claude(ev.get("result") or "") or parse_claude(cli_text)
+                   or from_rate_limit_event(turn.rate_limit))
             if hit:
                 exact = (turn.rate_limit or {}).get("resetsAt")
                 if isinstance(exact, (int, float)) and (turn.rate_limit or {}).get("status") == "rejected":

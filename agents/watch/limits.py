@@ -126,7 +126,15 @@ def _now(now: dt.datetime | None, tz: dt.tzinfo | None) -> dt.datetime:
     return now.astimezone(tz) if tz else now
 
 
-_CLAUDE_HIT = re.compile(r"(you['’]ve hit your|limit reached|usage limit reached|you've reached your)", re.I)
+# Only the CLI's own phrasings, at the start of a line: "You've hit your session limit ·
+# resets 3:45pm" (any limit), the older "Claude AI usage limit reached|<epoch>", and
+# "5-hour limit reached ∙ resets 4pm". Never prose that merely mentions a limit: the
+# callers apply this to the CLI's result and stderr only, not to the model's text.
+_CLAUDE_HIT = re.compile(
+    r"^\s*(?:you['’]ve hit your\b[^\n]*\blimit\b"
+    r"|claude(?: ai)? usage limit reached\s*\|\s*\d{9,11}"
+    r"|[\w -]{0,24}\blimit reached\s*[·∙•|.-]\s*resets\b)",
+    re.I | re.M)
 _CLAUDE_KIND = re.compile(r"\b(session|weekly|opus|sonnet|fable|5-hour|five[- ]hour|daily|usage)\s+limit", re.I)
 _RESETS = re.compile(
     r"\breset(?:s|ting)?\b(?:\s+at)?\s+(?P<when>[^()·∙|\n]+?)\s*(?:\((?P<tz>[A-Za-z_]+(?:/[A-Za-z0-9_+\-]+)*)\))?\s*\.?\s*$",
@@ -143,7 +151,8 @@ def _kind(text: str) -> str:
 
 
 def parse_claude(text: str, now: dt.datetime | None = None) -> LimitHit | None:
-    """Claude Code's limit message, or None when `text` is not one."""
+    """Claude Code's limit message, or None when `text` is not one. For the CLI's own
+    output (a result's text, stderr), never the model's prose."""
     if not text or "limit" not in text.lower() or not _CLAUDE_HIT.search(text):
         return None
     e = _EPOCH.search(text)

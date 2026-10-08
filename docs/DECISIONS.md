@@ -992,7 +992,14 @@ group. Dates are 2026.
   every escalation; the consult reads the picture itself and the routine model is told what
   it did. Claude is kept to the bridge's tools by `--setting-sources project` in an empty
   directory, not `--safe-mode`, which also drops the `--mcp-config` server (checked, 2.1.294).
-  The stream-json interrupt ends a turn and keeps the process (SIGINT ends both).
+  The stream-json interrupt ends a turn and keeps the process (SIGINT ends both). After
+  review (10-08): a condition that comes and goes a second time within 5 minutes is flapping
+  and wakes (escalating for a GPS glitch, a conflict, an armed platform's link), since
+  intermittent glitching is what jamming and spoofing look like; one subject wakes at most
+  once in 5 minutes and escalates at most once in 30 (one jittering contact spent every
+  escalation in the reviewer's probe); free text from outside the driver reaches the model
+  quoted and labelled, and the prompt says it is data, since auto-tier proposals run without
+  a human; a failed turn gives its wake back.
 - **`get_changes` is a digest compared between reads, not an event log** (10-08). The bridge
   keeps no history of an affiliation estimate or an alert clearing, so a cursor over the
   timestamps it does keep would miss exactly those; the MCP layer compares a digest of the
@@ -1001,6 +1008,28 @@ group. Dates are 2026.
   the engine; a condition that came and went between two reads is not reported, and the
   audit log stays the record. `get_fleet` carries the GPS glitch fact the engagement checks
   read (`nav.gps_glitch`). The review queue needed no tool: `get_inbox` already carries it.
+  After review (10-08): the digest is lean (`Decision::intent_briefs`, `flag_briefs`,
+  `current_alerts`, the world snapshot's facts, the track store; never the full intent or
+  fleet JSON, which held the core lock for every intent of the run), at most one new digest a
+  second shared by all readers rather than a per-agent refusal (any number of agents then
+  costs one digest a second, and nobody is turned away); a declaration is compared by its
+  number (an operator's re-declaration revokes and declares in one step, so comparing
+  affiliations missed it), an identity conflict by its presence (its text quotes the live
+  speed), an alert by its kind and severity too; a cursor names its feed, so a cursor of an
+  earlier bridge answers `reset` even where the new feed has passed its number. Operators'
+  rejection notes are kept beside the engine (display only, the audit log has them) so an
+  agent can read the reason it was refused.
+- **An agent's MCP session idles an hour; tools say how large an answer may be** (10-08).
+  rmcp drops a session idle for five minutes by default; clients before protocol 2026-07-28
+  hold one (the Python SDK negotiates 2025-11-25), and an agent that connected once and
+  waited lost it (the situation framework's storyline agent, live). The bridge now keeps
+  them an hour (`mcp::IDLE_LIMIT`, `MURMUR_MCP_IDLE_S`): a few sessions linger longer when
+  a client vanishes, which costs little. Claude Code 2.1.294 negotiates 2026-07-28, served
+  without a session (checked live with a 20 s limit and a 35 s gap), so the watch officer's
+  quiet spells never cost it its tools and its heartbeat needs no cap. Each tool carries
+  `_meta["anthropic/maxResultSizeChars"]` (400 000): Claude Code saved larger answers than
+  about 50 000 characters to a file a model with no file tools cannot read (the nomination
+  dry run, 61 KB, live), so the model saw a preview; other clients ignore the key.
 - **MCP list results carry `ttlMs` and `cacheScope`** (10-08). Protocol 2026-07-28 requires
   them; `rmcp` 3.5 leaves them out unless set, and Claude Code 2.1.294 then refused the tool
   list and showed the model no Murmur tool at all (connected, zero tools). Set to five

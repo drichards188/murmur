@@ -22,7 +22,10 @@ bridge as the only MCP server, its tools approved and exposed directly
 Tested minimum: 0.161.0 (older versions lack some of these keys and are refused).
 
 Not run live here (the installed codex is older than 0.161.0): the flags follow the 0.161.0
-documentation and source; the event handling is tested against a stand-in CLI.
+documentation and source as the research handed to this work read them, each key marked
+with its source below (some are inferred); the event handling is tested against a stand-in
+CLI. The event stream lists no tools, so a turn that used anything but the Murmur server
+(ALLOWED_ITEMS) raises LockdownBreach and the driver stops the run.
 """
 
 from __future__ import annotations
@@ -35,7 +38,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .backend import (STREAM_LIMIT, BackendCrashed, LimitReached, PreflightError, StderrTail,
+from .backend import (FALLBACK_HINT, STREAM_LIMIT, BackendCrashed, LimitReached, LockdownBreach, PreflightError, StderrTail,
                       ToolCall, Turn, child_env, end_process, excerpt, run_quick, version_tuple)
 from .limits import parse_codex
 
@@ -59,30 +62,49 @@ def toml_str(s: str) -> str:
     return json.dumps(s, ensure_ascii=False)
 
 
+# Where each configuration key comes from, since none could be run here (the installed codex
+# is 0.116.0): "brief" is the research handed to this work (Codex docs and source at tag
+# rust-v0.161.0), "inferred" is this module's own reading of the Codex configuration and may
+# be wrong. `--strict-config` turns a wrong key name into a refusal to start (loud), never a
+# silently weaker lockdown: if Codex refuses one, correct its name here.
+#
 # Everything off that the watch officer does not need (`-c key=value`, TOML values).
 LOCKDOWN: tuple[tuple[str, str], ...] = (
-    ("features.shell_tool", "false"),
-    ("features.unified_exec", "false"),
-    ("web_search", '"disabled"'),
-    ("features.apps", "false"),
-    ("features.plugins", "false"),
-    ("agents.enabled", "false"),
-    ("features.multi_agent", "false"),
-    ("features.browser_use", "false"),
-    ("features.computer_use", "false"),
-    ("features.image_generation", "false"),
-    ("features.goals", "false"),
-    ("features.memories", "false"),
-    ("features.hooks", "false"),
-    ("features.tool_suggest", "false"),
-    ("skills.include_instructions", "false"),
-    ("skills.bundled.enabled", "false"),
-    ("project_doc_max_bytes", "0"),
-    ("include_environment_context", "false"),
-    ("include_permissions_instructions", "false"),
-    ("include_collaboration_mode_instructions", "false"),
-    ("include_apps_instructions", "false"),
+    ("features.shell_tool", "false"),  # brief
+    ("features.unified_exec", "false"),  # brief
+    ("web_search", '"disabled"'),  # brief
+    ("features.apps", "false"),  # brief
+    ("features.plugins", "false"),  # brief
+    ("agents.enabled", "false"),  # brief
+    ("features.multi_agent", "false"),  # brief
+    ("features.browser_use", "false"),  # brief
+    ("features.computer_use", "false"),  # brief
+    ("features.image_generation", "false"),  # brief
+    ("features.goals", "false"),  # brief
+    ("features.memories", "false"),  # brief
+    ("features.hooks", "false"),  # brief
+    ("features.tool_suggest", "false"),  # brief
+    ("skills.include_instructions", "false"),  # brief
+    ("skills.bundled.enabled", "false"),  # brief
+    ("project_doc_max_bytes", "0"),  # brief
+    ("include_environment_context", "false"),  # brief
+    ("include_permissions_instructions", "false"),  # brief
+    ("include_collaboration_mode_instructions", "false"),  # brief
+    ("include_apps_instructions", "false"),  # brief
+    # nothing may wait for an approval prompt nobody answers; the Murmur tools are approved
+    # by their own server setting
+    ("approval_policy", '"never"'),  # inferred (the long-standing approval key)
+    # the image viewer and the patch tool: a read-only sandbox blocks writes, not reads
+    ("tools.view_image", "false"),  # inferred
+    ("include_apply_patch_tool", "false"),  # inferred
+    ("features.apply_patch_freeform", "false"),  # inferred
 )
+# What a turn may contain: the model's messages and reasoning, a plan, errors, and calls to
+# the Murmur server. Anything else (a command, a file change, a web search, a tool this
+# module does not know) means the lockdown failed: the run stops. The event stream carries
+# no list of the tools a session offers, so this checks what the model used, after the
+# fact; it cannot see a tool that was offered and not used.
+ALLOWED_ITEMS = ("agent_message", "reasoning", "todo_list", "error")
 # Never: `ultra` effort spawns sub-agents.
 REFUSED_EFFORTS = ("ultra",)
 
@@ -119,15 +141,15 @@ class CodexBackend:
 
     def config_args(self, model: str, effort: str) -> list[str]:
         cfg = [
-            ("model_reasoning_effort", toml_str(effort)),
-            ("mcp_servers.murmur.url", toml_str(self.url)),
-            ("mcp_servers.murmur.http_headers", "{" + f'"X-Murmur-Agent"={toml_str(self.agent)}' + "}"),
-            ("mcp_servers.murmur.required", "true"),
-            ("mcp_servers.murmur.default_tools_approval_mode", '"approve"'),
-            ("features.code_mode.direct_only_tool_namespaces", '["mcp__murmur"]'),
+            ("model_reasoning_effort", toml_str(effort)),  # brief
+            ("mcp_servers.murmur.url", toml_str(self.url)),  # brief
+            ("mcp_servers.murmur.http_headers", "{" + f'"X-Murmur-Agent"={toml_str(self.agent)}' + "}"),  # brief
+            ("mcp_servers.murmur.required", "true"),  # brief
+            ("mcp_servers.murmur.default_tools_approval_mode", '"approve"'),  # brief
+            ("features.code_mode.direct_only_tool_namespaces", '["mcp__murmur"]'),  # brief
         ]
         if self.key:  # the key stays in the environment; the config names the variable
-            cfg.append(("mcp_servers.murmur.bearer_token_env_var", toml_str(KEY_ENV)))
+            cfg.append(("mcp_servers.murmur.bearer_token_env_var", toml_str(KEY_ENV)))  # inferred
         cfg += list(LOCKDOWN)
         cfg.append(("developer_instructions", toml_str(self.instructions)))
         out: list[str] = []
@@ -152,7 +174,7 @@ class CodexBackend:
         if code == 127:
             raise PreflightError(f"{self.cfg.bin} is not installed or not on PATH",
                                  "install the Codex CLI (npm install -g @openai/codex), run `codex login` "
-                                 "with your ChatGPT account, or use AI=playbook")
+                                 "with your ChatGPT account, " + FALLBACK_HINT)
         self.version = (out or err).strip()
         v = version_tuple(self.version)
         if v is None or v < MIN_VERSION:
@@ -160,13 +182,13 @@ class CodexBackend:
                 f"codex {self.version or '?'} is older than {'.'.join(map(str, MIN_VERSION))}, the tested minimum "
                 "(older versions lack configuration keys the watch officer's lockdown needs)",
                 "update the Codex CLI (npm install -g @openai/codex@latest, or your package manager), "
-                "or use AI=playbook")
+                + FALLBACK_HINT)
         code, out, err = await run_quick([self.cfg.bin, "login", "status"], env)
         said = (out + err).strip()
         if code != 0 or "Logged in using ChatGPT" not in said:
             home = f"CODEX_HOME={self.cfg.home} " if self.cfg.home else ""
             raise PreflightError(f"Codex is not logged in with ChatGPT ({said or 'no answer'})",
-                                 f"run `{home}codex login` with your ChatGPT account, or use AI=playbook")
+                                 f"run `{home}codex login` with your ChatGPT account, " + FALLBACK_HINT)
         return {"cli": self.cfg.bin, "version": self.version, "login": said, "codex_home": self.cfg.home,
                 "api_key_env_removed": self.removed_env}
 
@@ -211,6 +233,7 @@ class CodexBackend:
         failed: str | None = None
         stopped: str | None = None
         last_error: str | None = None
+        foreign: list[str] = []  # items outside the lockdown (see ALLOWED_ITEMS)
         proc = await asyncio.create_subprocess_exec(
             *argv, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, env=self.env(), cwd=str(self.run_dir), limit=STREAM_LIMIT,
@@ -245,6 +268,15 @@ class CodexBackend:
                 elif kind in ("item.started", "item.completed"):
                     item = ev.get("item") or {}
                     itype = item.get("type")
+                    murmur_call = itype == "mcp_tool_call" and item.get("server") == "murmur"
+                    if not murmur_call and itype not in ALLOWED_ITEMS:
+                        what = f"{itype}" + (f" ({item.get('server')})" if itype == "mcp_tool_call" else "")
+                        if what not in foreign:
+                            foreign.append(what)
+                        if stopped is None:
+                            stopped = "lockdown"
+                            proc.send_signal(signal.SIGINT)
+                        continue
                     if itype == "mcp_tool_call":
                         iid = item.get("id") or str(len(calls))
                         c = calls.get(iid)
@@ -274,6 +306,9 @@ class CodexBackend:
         finally:
             self.current = None
         turn.duration_s = time.monotonic() - t0
+        if foreign:
+            turn.stop, turn.error = "lockdown", f"the model used tools outside the Murmur server: {', '.join(foreign)}"
+            raise LockdownBreach(turn.error)
         if failed:
             hit = parse_codex(failed)
             turn.stop, turn.error = ("limit" if hit else "error"), failed
