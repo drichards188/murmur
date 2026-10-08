@@ -833,6 +833,29 @@ group. Dates are 2026.
 
 ## Evaluation (Phase G)
 
+- **Situation status is display only: outside the decision engine and the audit chain** (10-08,
+  situations v1; `crates/murmur-bridge/src/situation.rs`, `sim/situations/README.md`). A
+  situation (`make situation NAME=<name>`) is a pre-built run to watch: a stack, opening orders,
+  an AI, a timeline. Its runner posts one status document to `POST /api/sim/situation` (the
+  stack's own simulation token, the same guard as `/api/sim/contacts`, checked before the body
+  is read) and the console shows it from `GET /api/situation`. The bridge keeps it in memory and
+  nowhere else: no reference to it from the decision engine, the world snapshot, the tracks or
+  the MCP tools, and nothing of it in the audit log (a test posts one and finds the log, the
+  intents, the state, the tracks and the inbox unchanged). Why: the document may carry truth (the
+  director's notes, the timeline still to come, a step that says what a contact really is), and
+  truth must not leak into a decision: a decision made on what the sensors never gave could not
+  be replayed as the engine's, and an agent that read it would be reading the answer. The audit
+  chain is what the engine decided on; a display aid is not that, so the runner keeps its own
+  record (`logs/situations/<run>/situation.jsonl`). The token, because only the stack's own
+  runner should write what the console presents as the situation. What a person sees is the
+  runner's choice: `reveal = false` (a blinded run) leaves out the director's notes, the timeline
+  still to come and any step marked `director = true`; watch items appear as they come due
+  whatever `reveal` says, so a blinded study keeps them free of truth or leaves them out. The AI
+  is given the title and brief only, and no `MURMUR_*` variable. Stated: `GET /api/situation` is
+  open on the local port like every other read, and the launch contract tells the watch officer
+  to read only its MCP tools; an AI with a shell could still fetch it, and on a blinded run would
+  find the brief, the modes, what has happened and the watch items already due.
+
 - **Rule against manual identification is measured on generated situations, and what it
   can and cannot say is stated** (10-05, rules 9; rebuilt after the first review found the
   first comparison circular, and its wording corrected after the second). `python -m eval.run

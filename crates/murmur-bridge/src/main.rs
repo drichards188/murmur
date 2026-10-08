@@ -27,6 +27,8 @@
 //! 127.0.0.1); MURMUR_STUDY=<participant> (a study run: the participant's passkey at every
 //! step-up; the bridge refuses to start without one) and MURMUR_STUDY_PASSWORD_STEP_UP=<why>
 //! (the explicit override that allows a password, logged; never evidence).
+//! Situations (`sim/situations/`): `POST /api/sim/situation` (the simulation channel's token,
+//! MURMUR_SIM_TOKEN) stores the runner's status document for `GET /api/situation`, display only.
 //! Link emulator: MURMUR_LINKEMU_URL (murmur-linkemu's stats endpoint, polled for
 //! `/api/links` and each link's `emu` state; unset: no emulator view). Behind the emulator
 //! MURMUR_BASE_PORT is the bridge-side base and MURMUR_FLEET_MANIFEST its rewritten manifest.
@@ -45,6 +47,7 @@ mod mav;
 mod mcp;
 mod platforms;
 mod push;
+mod situation;
 mod space;
 mod tasks;
 mod telemetry;
@@ -326,7 +329,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         lod,
         auth: auth.clone(),
     })
-    .merge(emu::router(emu));
+    .merge(emu::router(emu))
+    // a situation runner's status for the console: display only, never a decision input
+    // and not in the audit log (`situation`)
+    .merge(situation::router(situation::Situation::from_env()));
     // the MCP server for agents: in-process AgentPorts, read-only reuse of the API above
     let mut agents = mcp::Settings::from_env();
     match auth.mode() {

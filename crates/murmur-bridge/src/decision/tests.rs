@@ -677,3 +677,6 @@ mod identification;
 
 /// A wall clock that steps, through the bridge (`tests/clock_steps.rs`, murmur-dup).
 mod clock_steps;
+
+/// A situation runner's status through the bridge: display only (`tests/situation.rs`).
+mod situation;

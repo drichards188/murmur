@@ -111,6 +111,25 @@ impl Settings {
 /// The header the contacts process sends its token in.
 pub const SIM_TOKEN_HEADER: &str = "x-murmur-sim-token";
 
+/// Whether a request on the simulation channel carries the stack's token `want` (compared as
+/// digests, in constant time). Without a token configured the channel is closed. Every route
+/// of the channel uses this one check: `POST /api/sim/contacts` here, `POST
+/// /api/sim/situation` (`crate::situation`).
+pub fn sim_token_check(want: Option<&str>, headers: &HeaderMap) -> Result<(), &'static str> {
+    let Some(want) = want.filter(|t| !t.is_empty()) else {
+        return Err("the simulation channel is closed: no MURMUR_SIM_TOKEN was set for this bridge");
+    };
+    let given = headers
+        .get(SIM_TOKEN_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .ok_or("the simulation channel takes the stack's token (X-Murmur-Sim-Token)")?;
+    if murmur_auth::keys::ct_eq(&murmur_auth::keys::digest(given.trim()), &murmur_auth::keys::digest(want)) {
+        Ok(())
+    } else {
+        Err("wrong simulation token")
+    }
+}
+
 struct Inner {
     /// (wall seconds received, the message): truth, for the sensing model and the eval hook
     truth: Option<(f64, TruthMessage)>,
@@ -197,18 +216,7 @@ impl Tracks {
     /// Whether a request on the simulation channel carries this stack's token (compared as
     /// digests, in constant time). Without a token configured the channel is closed.
     pub fn sim_token_ok(&self, headers: &HeaderMap) -> Result<(), &'static str> {
-        let Some(want) = self.settings.sim_token.as_deref().filter(|t| !t.is_empty()) else {
-            return Err("the simulation channel is closed: no MURMUR_SIM_TOKEN was set for this bridge");
-        };
-        let given = headers
-            .get(SIM_TOKEN_HEADER)
-            .and_then(|v| v.to_str().ok())
-            .ok_or("the simulation channel takes the stack's token (X-Murmur-Sim-Token)")?;
-        if murmur_auth::keys::ct_eq(&murmur_auth::keys::digest(given.trim()), &murmur_auth::keys::digest(want)) {
-            Ok(())
-        } else {
-            Err("wrong simulation token")
-        }
+        sim_token_check(self.settings.sim_token.as_deref(), headers)
     }
 
     /// Our vehicles as sensor carriers: those with a position and a live link.
