@@ -107,6 +107,10 @@ export interface EngageView {
    *  engagement, each out of view since `since` (engine ms): its keep-out on tracks leaves
    *  them out while they stay lost since then. Every signer's picture carries them. */
   accepted_lost?: { track: string; since: number | null; by: string }[]
+  /** rules 16: while it waits with no signature, the lost contacts in force not accepted for
+   *  it, each out of view since `since` (engine ms, its last fix): an operator with engagement
+   *  authority may accept one for this engagement */
+  lost_open?: { track: string; since: number; identity: string | null; affiliation: string; ais: string | null }[]
   /** how long a picture token is good for, and the most the signatures on one plan may take */
   token_ttl_s?: number
   max_signing_s?: number
@@ -255,7 +259,7 @@ export interface KeepOutExplanation {
   note: string
 }
 
-export type KeepOutKind = 'velocity' | 'mean_velocity' | 'manoeuvre' | 'young' | 'no_velocity' | 'aircraft' | 'plausible_speed' | 'circling' | 'cruise_reach' | 'lost'
+export type KeepOutKind = 'velocity' | 'mean_velocity' | 'manoeuvre' | 'young' | 'no_velocity' | 'aircraft' | 'out_of_view' | 'circling' | 'cruise_reach' | 'lost'
 
 export interface KeepOutRegion {
   kind: KeepOutKind
@@ -347,7 +351,7 @@ export const KEEP_OUT_KIND_LABEL: Record<KeepOutKind, string> = {
   young: 'young track reach',
   no_velocity: 'no velocity yet',
   aircraft: 'aircraft reach',
-  plausible_speed: 'plausible speed',
+  out_of_view: 'out of view: top speed',
   circling: 'circling',
   cruise_reach: 'cruise reach',
   lost: 'lost: cruise reach',
@@ -397,6 +401,15 @@ export async function nominate(req: {
  *  challenge both carry them (`{track, since}`, since its last fix in engine ms). */
 export function acceptLostBody(list: KeepOutLost[]): { track: string; since: number }[] {
   return list.map((l) => ({ track: l.track, since: l.since }))
+}
+
+/** Rules 16: an operator with engagement authority accepts, for a nomination waiting with no
+ *  signature, a lost contact out of view since its last fix as the check names it
+ *  (`engage.accepted`); `proof`: the step-up with it, when the policy marks an acceptance
+ *  consequential (its passkey made for this intent and contact). */
+export async function acceptLostFor(id: number, l: { track: string; since: number }, proof?: { password?: string; passkey?: Record<string, unknown> }): Promise<Intent> {
+  const b = await post(`/api/intents/${id}/accept_unknown`, { track: l.track, since: l.since, ...(proof ?? {}) })
+  return b.intent as Intent
 }
 
 /** Rules 16: any operator withdraws an acceptance of a lost contact (pending or under way):

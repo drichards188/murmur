@@ -83,6 +83,9 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
       else delete next[l.track]
       return next
     })
+  // what was accepted goes with the target and the platform it was shown for: a new choice
+  // starts with none ticked
+  useEffect(() => setAcceptLost({}), [track, uid])
   // rules 8 and 10: in a credentials run whose policy lists accept_unknown, accepting a lost
   // contact takes the operator's step-up (the password again, or their passkey), as accepting a
   // lost vehicle of ours does; the bridge refuses the nomination without it

@@ -3,7 +3,7 @@ import { stepsUpAct } from './auth'
 import { fmtDuration, StepUpNeeded, useOperator } from './decisions'
 import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
-import { type Against, type ObservedAct, type Review, type ReviewDeclaration, type ReviewFlag, FLAG_LABEL, confirmDeclaration, resolveFlag, revokeDeclaration } from './ident'
+import { type Against, type ObservedAct, type Review, type ReviewDeclaration, type ReviewFlag, type ReviewLostClaim, FLAG_LABEL, confirmDeclaration, confirmLostClaim, resolveFlag, revokeDeclaration } from './ident'
 
 /** The inbox's Review (rules 9): what the identification asks of a human, none of it
  *  blocking. A rule declaration is the engine's (an observed hostile act attributed to the
@@ -163,6 +163,61 @@ function DeclarationItem({ d, now, onDone, onTrack }: { d: ReviewDeclaration; no
   )
 }
 
+/** Rules 16: a claim on a lost contact: the evidence (names and ship types compared, how far
+ *  it is against how far the lost contact could have got, what our sensors say of its kind),
+ *  what keeps it from being confirmed, and a deliberate Confirm when nothing does. */
+function LostClaimItem({ c, onDone, onTrack }: { c: ReviewLostClaim; onDone: Props['onDone']; onTrack?: Props['onTrack'] }) {
+  const [busy, setBusy] = useState(false)
+  const [sure, setSure] = useState(false)
+  const confirm = async () => {
+    setBusy(true)
+    try {
+      await confirmLostClaim(c.lost, c.track)
+      onDone(`${c.lost} confirmed as ${c.track}: retired from the keep-outs while ${c.track} stands`, 'ok')
+    } catch (e) {
+      onDone(`${c.lost} as ${c.track} refused: ${(e as Error).message}`, 'bad')
+    } finally {
+      setBusy(false)
+      setSure(false)
+    }
+  }
+  return (
+    <article className="ix-card rv-card rv-claim" aria-label={`Claim of ${c.track} to be lost contact ${c.lost}`}>
+      <header>
+        <b>{c.track}</b> <span className="rv-tag flag">claims to be lost contact {c.lost}</span> <span className="muted">MMSI {c.mmsi}</span>
+      </header>
+      <p className="rv-basis">{c.evidence}.</p>
+      {c.blockers.length > 0 && <p className="eg-alarm">Not confirmable: {c.blockers.join('; ')}.</p>}
+      <p className="muted rv-hint">
+        An AIS identity is what a contact says it is: one may broadcast another&apos;s. Until confirmed, {c.lost} counts in every keep-out beside {c.track}; confirmed, it
+        is retired while {c.track} stands (void if {c.track} turns suspect, is declared or is dropped).{' '}
+        <button className="ghost mini" onClick={() => onTrack?.(c.track)} disabled={!onTrack}>
+          {c.track}
+        </button>
+      </p>
+      {c.actions.includes('confirm') && (
+        <div className="rv-actions">
+          {!sure ? (
+            <button className="ghost mini" disabled={busy} onClick={() => setSure(true)} title="Look at the evidence first">
+              confirm…
+            </button>
+          ) : (
+            <>
+              <span className="muted">{c.track} is {c.lost}: logged under your session.</span>
+              <button className="ghost mini" disabled={busy} onClick={() => void confirm()}>
+                confirm
+              </button>
+              <button className="ghost mini" disabled={busy} onClick={() => setSure(false)}>
+                cancel
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </article>
+  )
+}
+
 function FlagItem({ f, now, onDone, onTrack }: { f: ReviewFlag; now: () => number; onDone: Props['onDone']; onTrack?: Props['onTrack'] }) {
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState('')
@@ -229,9 +284,11 @@ export function ReviewSection({ review, acts, now, onDone, onTrack }: Props) {
   const [operator] = useOperator()
   const decls = review?.declarations ?? []
   const flags = review?.flags ?? []
+  // rules 16: claims on lost contacts
+  const claims = review?.lost_claims ?? []
   // a declarer's notice: their declaration revoked by someone else
   const notices = (review?.revocations ?? []).filter((r) => r.notify && r.notify === operator).slice(0, 5)
-  const n = decls.length + flags.length
+  const n = decls.length + flags.length + claims.length
   return (
     <>
       <h3 className="ix-h">
@@ -250,6 +307,9 @@ export function ReviewSection({ review, acts, now, onDone, onTrack }: Props) {
       ))}
       {flags.map((f) => (
         <FlagItem key={f.id} f={f} now={now} onDone={onDone} onTrack={onTrack} />
+      ))}
+      {claims.map((c) => (
+        <LostClaimItem key={c.id} c={c} onDone={onDone} onTrack={onTrack} />
       ))}
       {(acts?.length ?? 0) > 0 && (
         <>

@@ -73,9 +73,9 @@ export interface TrackDeclared {
 }
 
 /** Rules 16 (murmur-533): a contact the tracker dropped (no detection for 180 s) that every
- *  engagement's keep-out still counts, from its last fix (`position` at `since_t`), until a
- *  track is unambiguously it again (its AIS) or an operator with engagement authority
- *  accepts it for one engagement. `regions`: where the keep-out counts it now (refreshed every
+ *  engagement's keep-out still counts, from its last fix (`position` at `since_t`), until an
+ *  operator confirms a track carrying its AIS as it (a claim in the review list) or an
+ *  operator with engagement authority accepts it for one engagement. `regions`: where the keep-out counts it now (refreshed every
  *  second; they only grow). Times are engine ms. */
 export interface LostContact {
   id: string
