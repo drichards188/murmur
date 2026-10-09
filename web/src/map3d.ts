@@ -1,8 +1,10 @@
+import type { UpdateParameters } from '@deck.gl/core'
 import { LineLayer, PathLayer, ScatterplotLayer, SolidPolygonLayer } from '@deck.gl/layers'
 import type * as maplibregl from 'maplibre-gl'
 import type { LiftedBridge } from './bridges'
 import { drawnTick, drawnXYZ, smoothing } from './drawn'
-import { assembleSea, outermost, polygonOffset, polygonsOf, tileKey, type SeaPolygon, type TileWater } from './sea'
+import { perfSeaTess } from './perf'
+import { assembleSea, byTile, isSeaWater, outermost, polygonOffset, polygonsOf, tilesKey, type SeaPolygon, type TileWater } from './sea'
 import type { Vehicle } from './types'
 import { domainOf } from './types'
 
@@ -77,50 +79,51 @@ if (import.meta.env.DEV && typeof window !== 'undefined') {
   ;(window as unknown as { murmurSeaOffset: (o: Partial<typeof seaOffset>) => typeof seaOffset }).murmurSeaOffset = (o) => Object.assign(seaOffset, o)
 }
 
-// the basemap's water (OpenMapTiles `water`), as the style's own water layer draws it; swimming
-// pools left out (on land, under the terrain anyway, and many)
-const WATER_FILTER = [
-  'all',
-  ['match', ['geometry-type'], ['Polygon', 'MultiPolygon'], true, false],
-  ['!=', ['coalesce', ['get', 'brunnel'], ''], 'tunnel'],
-  ['!=', ['coalesce', ['get', 'class'], ''], 'swimming_pool'],
-] as maplibregl.FilterSpecification
-
 // the water tiles the sea surface was last built from, and the polygons
 let seaKey = ''
 let seaData: SeaPolygon[] = []
+let warnedIds = false
 
 /** Re-reads the water of the vector tiles MapLibre has for the view and, if that set of tiles
  *  changed, rebuilds the sea surface from it; true when it did (the layers need pushing again).
- *  Cheap when nothing changed: the query reads tile ids, not geometry (MapLibre's features
- *  convert their geometry lazily). The same data object is kept until the tile set changes, so
- *  deck.gl does not tessellate the sea again on every update, and the depth results do not
- *  reshuffle with a still camera (a polygon rebuilt per update was part of the flashing).
+ *  A check that finds nothing changed costs one unfiltered querySourceFeatures over the water
+ *  layer of the renderable tiles: MapLibre builds a light feature object for each (pools
+ *  included) and converts no geometry until it is read; the water is filtered here, and only
+ *  on a rebuild (measured over a tilted South Bay view of about 300 water features: 0.2 ms a
+ *  check; a rebuild 3.6 ms here plus 10.6 ms of deck.gl tessellation for 21,000 to 23,000
+ *  vertices, both in ?perf). The same data object is kept until the tile set changes, so deck.gl does not
+ *  tessellate the sea again on every update, and the depth results do not reshuffle with a
+ *  still camera (a polygon rebuilt per update was part of the flashing).
  *  Until water tiles have loaded there is no sea at all: a stand-in rectangle would paint the
  *  land under it, which is the bug this replaced. Inland water above sea level is drawn too, at
  *  0 m, where the terrain over it hides it: reservoirs tens of metres up stayed clear at every
  *  view tried, though a lake only a few metres up (Lake Merced) can show tinted from far off at
  *  a grazing angle, where the slope offset reaches that high. */
 export function refreshSea(m: maplibregl.Map): boolean {
-  const feats = m.querySourceFeatures('openmaptiles', { sourceLayer: 'water', filter: WATER_FILTER })
-  const byTile = new Map<string, { z: number; x: number; y: number; feats: typeof feats }>()
-  for (const f of feats) {
-    const id = { z: f._z, x: f._x, y: f._y }
-    const k = tileKey(id)
-    const t = byTile.get(k)
-    if (t) t.feats.push(f)
-    else byTile.set(k, { ...id, feats: [f] })
+  const { groups, missing } = byTile(m.querySourceFeatures('openmaptiles', { sourceLayer: 'water' }))
+  if (missing && !warnedIds) {
+    warnedIds = true
+    console.warn(`[murmur] the sea: ${missing} water features came without their tile (_z, _x, _y): a MapLibre change? They are left out of the 3D sea surface.`)
   }
-  const key = [...byTile.entries()]
-    .map(([k, t]) => `${k}:${t.feats.length}`)
-    .sort()
-    .join(' ')
+  const key = tilesKey(groups)
   if (key === seaKey) return false
   seaKey = key
-  // geometry only for the tiles drawn (not a child under a kept parent)
-  const tiles: TileWater[] = outermost([...byTile.values()]).map((t) => ({ z: t.z, x: t.x, y: t.y, polygons: t.feats.flatMap((f) => polygonsOf(f.geometry)) }))
+  // geometry only for the water of the tiles drawn (not a child under a kept parent)
+  const tiles: TileWater[] = outermost([...groups.values()]).map((t) => ({
+    z: t.z,
+    x: t.x,
+    y: t.y,
+    polygons: t.feats.filter(isSeaWater).flatMap((f) => polygonsOf(f.geometry)),
+  }))
   seaData = assembleSea(tiles)
   return true
+}
+
+/** Seen through the water: a submarine's trail and stem (the subsurface domain), and anything
+ *  more than a metre under the surface. A surface vessel's GPS altitude wanders around 0, and
+ *  the margin keeps its trail from flipping between tinted and not. */
+export function underWater(v: Vehicle) {
+  return domainOf(v) === 'subsurface' || (v.alt_msl != null && v.alt_msl < -1)
 }
 
 /** The 3D scene around the vehicles is built in two parts: build3dStatic (trails, sea surface,
@@ -130,72 +133,119 @@ export function refreshSea(m: maplibregl.Map): boolean {
  *
  *  Draw order around the sea surface (MapView.deckLayers): the sea tests depth but never writes
  *  it, so whatever is drawn before it and lies below 0 m is seen through the water (tinted),
- *  and whatever is drawn after it is never tinted. Before it: the terrain and seabed (MapLibre),
- *  trails and stems (a submarine's are under water). After it: bridge decks (above the water by
- *  construction, so no depth offset of the sea can reach them), sea-level shadows (on the water
- *  surface, which they would otherwise fight), and the screen-space overlays. */
+ *  and whatever is drawn after it is never tinted, whatever the sea's depth offset. Before it:
+ *  the terrain and seabed (MapLibre), and the trails and stems of what is under water
+ *  (underWater). After it: bridge decks (above the water by construction), the trails and stems
+ *  of everything else (surface vessels at 0 m, aircraft), sea-level shadows (on the surface,
+ *  which they would otherwise fight), and the screen-space overlays. A stem runs from sea level
+ *  to its vehicle, so it lies wholly on one side of the surface. */
+
+// The sea in two passes of one layer, so that each pixel is tinted once however many water
+// polygons cover it: OSM's water areas overlap (a salt pond over its pond complex, a lagoon
+// inside the coastline's water), and a translucent fill blends twice where they do. Bit 0 of
+// the stencil marks a tinted pixel. The first pass clears it under the sea's outline and draws
+// nothing: with terrain on, MapLibre renders fill and line layers to textures, but it still
+// writes tile clipping masks (tile ids) into the screen's stencil for those of them hidden at the
+// current zoom, so the stencil is not 0 when deck.gl draws (left uncleared, only about a third of
+// the sea came out tinted). The second pass tints where the bit is clear and sets it, so a second
+// polygon over the same pixel fails. Only bit 0, because luma.gl 9.4's WebGL render pass forces
+// the stencil write mask to 1 before each draw (a wider mask would work the same); its stencil
+// reference is always 0, and a compare of 'always' turns the test off, so the first pass uses
+// not-equal (sea.check.ts pins these three). Both passes run in one draw() with nothing between
+// them, and luma.gl pushes and pops the GL state around each model draw. Nothing of MapLibre's
+// draws after the sea: in 3D the deck.gl layers have no beforeId, so they share the one group
+// deck.gl keeps as the style's last layer (it moves it back to the end whenever its layers are
+// set; MapView warns in a dev build if a frame is ever drawn otherwise). MapLibre clears the
+// stencil at the start of every frame.
+const SEA_CLEAR = {
+  // everywhere under the sea's outline, hidden or not, and no colour (blending keeps dst)
+  depthCompare: 'always',
+  depthWriteEnabled: false,
+  blend: true,
+  blendColorOperation: 'add',
+  blendColorSrcFactor: 'zero',
+  blendColorDstFactor: 'one',
+  blendAlphaOperation: 'add',
+  blendAlphaSrcFactor: 'zero',
+  blendAlphaDstFactor: 'one',
+  stencilReadMask: 1,
+  stencilWriteMask: 1,
+  stencilCompare: 'not-equal',
+  stencilPassOperation: 'zero',
+  stencilFailOperation: 'keep',
+  stencilDepthFailOperation: 'zero',
+} as const
+const seaTint = () =>
+  ({
+    depthWriteEnabled: false,
+    ...polygonOffset(seaOffset.slope, seaOffset.bias),
+    // tint where bit 0 is clear, and set it
+    stencilReadMask: 1,
+    stencilWriteMask: 1,
+    stencilCompare: 'equal',
+    stencilPassOperation: 'invert',
+    stencilFailOperation: 'keep',
+    stencilDepthFailOperation: 'keep',
+  }) as const
+
+type ModelLike = { setParameters(p: object): void }
+
+/** One SolidPolygonLayer, one tessellation, drawn twice: the stencil-clearing pass, then the
+ *  tint (see above). Also times deck.gl's tessellation of new data for ?perf. */
+class SeaLayer extends SolidPolygonLayer<SeaPolygon> {
+  static layerName = 'SeaLayer'
+  private tessStart = 0
+
+  draw(opts: { uniforms: unknown; parameters?: object }) {
+    const base = opts.parameters ?? {}
+    const models = this.getModels() as unknown as ModelLike[]
+    for (const m of models) m.setParameters({ ...base, ...SEA_CLEAR })
+    super.draw(opts)
+    const tint = { ...base, ...seaTint() }
+    for (const m of models) m.setParameters(tint)
+    super.draw(opts)
+  }
+
+  updateState(params: UpdateParameters<this>) {
+    if (params.changeFlags.dataChanged) this.tessStart = performance.now()
+    super.updateState(params)
+  }
+
+  protected _updateAttributes() {
+    super._updateAttributes()
+    if (this.tessStart) {
+      perfSeaTess(performance.now() - this.tessStart)
+      this.tessStart = 0
+    }
+  }
+}
 
 /** Trails, sea surface and bridge decks: nothing here moves with a glide (display smoothing,
  *  drawn.ts), so MapView builds them when the data changes and reuses them between frames.
- *  `under` goes before the stems and the sea surface, `surface` after the stems. */
+ *  `under` goes before the stems under water and the sea, `surface` after them, `over` after
+ *  that. While 2D is shown the layers stay (hidden): the trails' data is then empty, and the sea
+ *  keeps the polygons of the last 3D view (refreshSea runs only in 3D), so it is not tessellated
+ *  again on the way back. */
 export function build3dStatic(vehicles: Vehicle[], visible = true, bridges: LiftedBridge[] = []) {
-  // nothing to compute while 2D is shown: the layers stay (hidden), their data is empty
   const placed = visible ? vehicles.filter((v) => v.position && v.alt_msl != null) : []
   const at = (v: Vehicle): XYZ => [v.position![0], v.position![1], z(v.alt_msl)]
+  // with smoothing on, trailLayers.ts draws the trails (they end at the drawn position)
+  const trailed = smoothing() ? [] : placed.filter((v) => v.trail.length > 1)
+  const trails = (id: string, data: Vehicle[]) =>
+    new PathLayer<Vehicle>({
+      id,
+      visible,
+      data,
+      getPath: (v) => [...v.trail.map(([lon, lat, alt]): XYZ => [lon, lat, z(alt)]), at(v)],
+      getColor: (v) => colour(v, 140),
+      getWidth: 2,
+      widthUnits: 'pixels',
+      updateTriggers: { getPath: data.map((v) => v.trail.length).join() },
+    })
   return {
-    under: [
-      new PathLayer<Vehicle>({
-        id: 'trails-3d',
-        visible,
-        // with smoothing on, trailLayers.ts draws the trails (they end at the drawn position)
-        data: smoothing() ? [] : placed.filter((v) => v.trail.length > 1),
-        getPath: (v) => [...v.trail.map(([lon, lat, alt]): XYZ => [lon, lat, z(alt)]), at(v)],
-        getColor: (v) => colour(v, 140),
-        getWidth: 2,
-        widthUnits: 'pixels',
-        updateTriggers: { getPath: placed.map((v) => v.trail.length).join() },
-      }),
-    ],
-    // The sea is drawn in two passes so that each pixel is tinted once, however many water
-    // polygons cover it: OSM's water areas overlap (a salt pond over its pond complex, a lagoon
-    // inside the coastline's water), and a translucent fill blends twice where they do. Bit 0
-    // of the stencil marks a tinted pixel: the first pass clears it under the sea's outline
-    // (MapLibre's tile clipping masks leave tile ids in the stencil) without drawing anything;
-    // the second tints where it is clear and sets it, so a second polygon over the same pixel
-    // fails. Only bit 0, because luma.gl 9.4's WebGL render pass sets the stencil write mask to
-    // 1 before each draw (a wider mask would work the same) and compares against reference 0;
-    // luma.gl restores the rest of the state after each draw, and nothing draws between the two
-    // passes (consecutive layers of one deck.gl group). MapLibre clears the stencil at the
-    // start of every frame.
+    under: [trails('trails-3d-under', trailed.filter(underWater))],
     surface: [
-      new SolidPolygonLayer<SeaPolygon>({
-        id: 'sea-stencil',
-        visible,
-        data: seaData,
-        getPolygon: (d) => d.polygon,
-        positionFormat: 'XY',
-        getFillColor: [0, 0, 0, 255],
-        parameters: {
-          // everywhere under the sea's outline, hidden or not, and no colour (blend keeps dst)
-          depthCompare: 'always',
-          depthWriteEnabled: false,
-          blend: true,
-          blendColorOperation: 'add',
-          blendColorSrcFactor: 'zero',
-          blendColorDstFactor: 'one',
-          blendAlphaOperation: 'add',
-          blendAlphaSrcFactor: 'zero',
-          blendAlphaDstFactor: 'one',
-          // 'always' would switch the stencil test (and its writes) off: where set, clear it
-          stencilReadMask: 1,
-          stencilWriteMask: 1,
-          stencilCompare: 'not-equal',
-          stencilPassOperation: 'zero',
-          stencilFailOperation: 'keep',
-          stencilDepthFailOperation: 'zero',
-        },
-      }),
-      new SolidPolygonLayer<SeaPolygon>({
+      new SeaLayer({
         id: 'sea-surface',
         visible,
         // the basemap's water, at 0 m (refreshSea); the same array until the water tiles change
@@ -203,17 +253,6 @@ export function build3dStatic(vehicles: Vehicle[], visible = true, bridges: Lift
         getPolygon: (d) => d.polygon,
         positionFormat: 'XY',
         getFillColor: [40, 110, 160, 70],
-        parameters: {
-          depthWriteEnabled: false,
-          ...polygonOffset(seaOffset.slope, seaOffset.bias),
-          // tint where bit 0 is clear, and set it
-          stencilReadMask: 1,
-          stencilWriteMask: 1,
-          stencilCompare: 'equal',
-          stencilPassOperation: 'invert',
-          stencilFailOperation: 'keep',
-          stencilDepthFailOperation: 'keep',
-        },
       }),
       // bridge decks at estimated height (see bridges.ts), after the sea surface: never tinted
       new PathLayer<LiftedBridge>({
@@ -229,21 +268,22 @@ export function build3dStatic(vehicles: Vehicle[], visible = true, bridges: Lift
         jointRounded: true,
       }),
     ],
+    over: [trails('trails-3d', trailed.filter((v) => !underWater(v)))],
   }
 }
 
 // the vehicles placed in 3D, kept while the vehicles are the same (animation frames of a glide)
-let memo: { vehicles: Vehicle[]; visible: boolean; placed: Vehicle[] } | null = null
+let memo: { vehicles: Vehicle[]; visible: boolean; placed: Vehicle[]; under: Vehicle[]; over: Vehicle[] } | null = null
 
 /** Stems and sea-level shadows: they follow a vehicle's drawn position (display smoothing,
- *  drawn.ts), so MapView rebuilds just these on an animation frame. The stems go before the sea
- *  surface (a submerged one is seen through the water), the shadows after it (they mark the
- *  surface). */
+ *  drawn.ts), so MapView rebuilds just these on an animation frame. The stems of what is under
+ *  water go before the sea surface (seen through it), the other stems and the shadows after it. */
 export function build3dGlide(vehicles: Vehicle[], visible = true) {
   if (!memo || memo.vehicles !== vehicles || memo.visible !== visible) {
-    memo = { vehicles, visible, placed: visible ? vehicles.filter((v) => v.position && v.alt_msl != null) : [] }
+    const placed = visible ? vehicles.filter((v) => v.position && v.alt_msl != null) : []
+    memo = { vehicles, visible, placed, under: placed.filter(underWater), over: placed.filter((v) => !underWater(v)) }
   }
-  const { placed } = memo
+  const { placed, under, over } = memo
   const smooth = smoothing()
   const at = smooth
     ? (v: Vehicle, info?: { target?: number[] }) => drawnXYZ(v, info?.target, HEIGHT_EXAGGERATION) as XYZ
@@ -252,19 +292,22 @@ export function build3dGlide(vehicles: Vehicle[], visible = true) {
     ? (v: Vehicle, info?: { target?: number[] }) => drawnXYZ(v, info?.target, 0) as XYZ
     : (v: Vehicle): XYZ => [v.position![0], v.position![1], 0]
   const triggers = smooth ? { getSourcePosition: drawnTick(), getTargetPosition: drawnTick(), getPosition: drawnTick() } : {}
-  return {
-    // stem from sea level to the vehicle: shows height (or depth) at a glance
-    stems: new LineLayer<Vehicle>({
-      id: 'stems',
+  // stem from sea level to the vehicle: shows height (or depth) at a glance
+  const stems = (id: string, data: Vehicle[]) =>
+    new LineLayer<Vehicle>({
+      id,
       visible,
-      data: placed,
+      data,
       getSourcePosition: ground,
       getTargetPosition: at,
       getColor: (v) => colour(v, 160),
       getWidth: 1.5,
       widthUnits: 'pixels',
       updateTriggers: triggers,
-    }),
+    })
+  return {
+    stemsUnder: stems('stems-under', under),
+    stems: stems('stems', over),
     shadows: new ScatterplotLayer<Vehicle>({
       id: 'sea-level-shadow',
       visible,

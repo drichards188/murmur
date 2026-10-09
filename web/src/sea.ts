@@ -1,10 +1,12 @@
 // The 3D sea surface's outline, from the basemap's own water polygons (murmur-5xl follow-up).
 // MapLibre hands the water of each loaded vector tile clipped to the tile plus a buffer, so
 // neighbouring tiles overlap by the buffer, and while children load it keeps their parent as a
-// placeholder (the same water twice, at two zooms). Drawn as they come, a translucent fill
-// would blend twice on every overlap: darker seams along tile edges, darker squares where a
-// parent and a child are both kept. So each tile's water is cut to the tile's own square, and a
-// tile under another tile in the set is left out (the coarser one covers its area).
+// placeholder (the same water twice, at two zooms). OSM's water areas overlap among themselves
+// too (a salt pond over its pond complex). The sea layer tints each pixel once whatever covers it
+// (a stencil pass, map3d.ts), so the polygons go to it as MapLibre gives them, buffers and all:
+// cutting each tile's water to its own square was tried, cost the same and left a few
+// untinted pixels along tile borders where the cuts of two tiles met at different points. A tile
+// under another tile in the set is still left out, which only saves drawing the same water twice.
 // Pure functions (no MapLibre at run time): checked by sea.check.ts.
 
 /** longitude, latitude */
@@ -24,16 +26,63 @@ export interface TileWater extends TileId {
   polygons: Polygon[]
 }
 
-/** one sea polygon for deck.gl's SolidPolygonLayer (outer ring, then holes; open rings) */
+/** one sea polygon for deck.gl's SolidPolygonLayer (outer ring, then holes) */
 export interface SeaPolygon {
   polygon: Pt[][]
 }
 
 export const tileKey = (t: TileId) => `${t.z}/${t.x}/${t.y}`
 
+/** A feature as MapLibre's querySourceFeatures returns it: the tile it came from (`_z`, `_x`,
+ *  `_y`, declared in maplibre-gl's types) and its decoded vector tile feature (`type`: 3 for a
+ *  polygon) and properties. Its geometry is converted only when read. */
+export interface TileFeature {
+  _z: number
+  _x: number
+  _y: number
+  _vectorTileFeature: { type: number }
+  properties: Record<string, unknown>
+}
+
+/** Query results grouped by the tile they came from. Features without tile coordinates (a
+ *  MapLibre that stopped setting them) are skipped and counted in `missing`. */
+export function byTile<F extends TileFeature>(features: F[]) {
+  const groups = new Map<string, TileId & { feats: F[] }>()
+  let missing = 0
+  for (const f of features) {
+    if (!Number.isInteger(f._z) || !Number.isInteger(f._x) || !Number.isInteger(f._y)) {
+      missing++
+      continue
+    }
+    const id = { z: f._z, x: f._x, y: f._y }
+    const k = tileKey(id)
+    const g = groups.get(k)
+    if (g) g.feats.push(f)
+    else groups.set(k, { ...id, feats: [f] })
+  }
+  return { groups, missing }
+}
+
+/** What the sea was built from: each tile and how many water features it holds, in a fixed
+ *  order. Equal keys, same sea: no rebuild. */
+export function tilesKey(groups: Map<string, { feats: unknown[] }>) {
+  return [...groups.entries()]
+    .map(([k, g]) => `${k}:${g.feats.length}`)
+    .sort()
+    .join(' ')
+}
+
+export const seaKey = (features: TileFeature[]) => tilesKey(byTile(features).groups)
+
+/** The water the sea is drawn over, as the style's own water layer draws it: polygons, not in
+ *  a tunnel; swimming pools left out (on land, under the terrain anyway, and many). */
+export function isSeaWater(f: Pick<TileFeature, '_vectorTileFeature' | 'properties'>) {
+  return f._vectorTileFeature.type === 3 && f.properties.brunnel !== 'tunnel' && f.properties.class !== 'swimming_pool'
+}
+
 /** The tiles to draw: duplicates collapse, and a tile with an ancestor in the set (a child
- *  loaded while MapLibre still keeps its parent) is left out, so no area is drawn twice and the
- *  ancestor keeps all of it covered. Tiles at different zooms side by side (a tilted view:
+ *  loaded while MapLibre still keeps its parent) is left out: the ancestor covers its area, and
+ *  drawing both would only cost vertices. Tiles at different zooms side by side (a tilted view:
  *  finer near the camera) are all kept. Order is kept. */
 export function outermost<T extends TileId>(tiles: T[]): T[] {
   const keys = new Set(tiles.map(tileKey))
@@ -50,90 +99,15 @@ export function outermost<T extends TileId>(tiles: T[]): T[] {
   })
 }
 
-// Web Mercator in [0, 1] (x east, y south), as MapLibre's tiles are laid out. Tile edges are
-// straight lines there, and a feature's edges are straight lines there too, so cutting in
-// these coordinates is exact.
-const mercX = (lon: number) => (lon + 180) / 360
-const mercY = (lat: number) => {
-  const s = Math.sin((lat * Math.PI) / 180)
-  return 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)
-}
-const lonOf = (x: number) => x * 360 - 180
-const latOf = (y: number) => (360 / Math.PI) * Math.atan(Math.exp((1 - 2 * y) * Math.PI)) - 90
-
-interface Box {
-  x0: number
-  y0: number
-  x1: number
-  y1: number
-}
-
-/** a tile's square in Web Mercator [0, 1] */
-export function tileBox(t: TileId): Box {
-  const n = 2 ** t.z
-  return { x0: t.x / n, y0: t.y / n, x1: (t.x + 1) / n, y1: (t.y + 1) / n }
-}
-
-type XY = [number, number]
-
-/** One Sutherland-Hodgman pass against the half plane `axis >= at` (keep 1) or `<= at` (-1).
- *  The cut points lie exactly on the line, so two tiles sharing an edge agree on it. */
-function cutHalf(pts: XY[], axis: 0 | 1, at: number, keep: 1 | -1): XY[] {
-  const out: XY[] = []
-  const n = pts.length
-  if (!n) return out
-  const inside = (p: XY) => (keep === 1 ? p[axis] >= at : p[axis] <= at)
-  let s = pts[n - 1]
-  let sIn = inside(s)
-  for (const e of pts) {
-    const eIn = inside(e)
-    if (eIn !== sIn) {
-      const t = (at - s[axis]) / (e[axis] - s[axis])
-      const o = 1 - axis
-      const p: XY = [0, 0]
-      p[axis] = at
-      p[o] = s[o] + t * (e[o] - s[o])
-      out.push(p)
-    }
-    if (eIn) out.push(e)
-    s = e
-    sIn = eIn
-  }
-  return out
-}
-
-/** A ring cut to a box (Web Mercator), back in longitude and latitude; open (no repeated first
- *  point). A concave ring that leaves and re-enters the box keeps a zero-width seam along the
- *  edge: it adds no area, so a fill draws the same. Fewer than 3 points: nothing left. */
-export function clipRing(ring: Ring, box: Box): Pt[] {
-  let pts: XY[] = ring.map(([lon, lat]) => [mercX(lon), mercY(lat)])
-  if (pts.length > 1 && pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1]) pts.pop()
-  // entirely inside (most rings): nothing to cut
-  if (pts.every(([x, y]) => x >= box.x0 && x <= box.x1 && y >= box.y0 && y <= box.y1)) return ring.slice(0, pts.length)
-  pts = cutHalf(pts, 0, box.x0, 1)
-  pts = cutHalf(pts, 0, box.x1, -1)
-  pts = cutHalf(pts, 1, box.y0, 1)
-  pts = cutHalf(pts, 1, box.y1, -1)
-  if (pts.length < 3) return []
-  return pts.map(([x, y]) => [lonOf(x), latOf(y)])
-}
-
-/** The sea surface: every kept tile's water, cut to its square. A polygon whose outer ring
- *  falls outside its tile is dropped with its holes; a hole that does is dropped alone. (Water
- *  areas of one tile can still overlap each other, as OSM maps them: the layer draws each pixel
- *  once with a stencil test, map3d.ts.) */
+/** The sea surface: the water of every kept tile (outermost), polygons as they come, outer ring
+ *  then holes. Rings with fewer than 3 points are dropped, and a polygon goes with its outer
+ *  ring. */
 export function assembleSea(tiles: TileWater[]): SeaPolygon[] {
   const out: SeaPolygon[] = []
   for (const t of outermost(tiles)) {
-    const box = tileBox(t)
     for (const poly of t.polygons) {
-      const rings: Pt[][] = []
-      for (let i = 0; i < poly.length; i++) {
-        const r = clipRing(poly[i], box)
-        if (r.length >= 3) rings.push(r)
-        else if (i === 0) break
-      }
-      if (rings.length) out.push({ polygon: rings })
+      if (!poly.length || poly[0].length < 3) continue
+      out.push({ polygon: poly.filter((r) => r.length >= 3) })
     }
   }
   return out

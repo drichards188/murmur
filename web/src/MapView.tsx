@@ -11,7 +11,7 @@ import { declutter } from './declutter'
 import { advanceDrawn, drawnAlt, drawnPosition, drawnPositionOf, drawnTick, glidingCount, isGliding, observeVehicles, resetDrawn, setSmoothing, snapAllDrawn } from './drawn'
 import { GLIDE_LAYER_IDS } from './orderLayers'
 import { buildTrailLayers } from './trailLayers'
-import { perfSea, perfWatchDeck } from './perf'
+import { perfSeaCheck, perfWatchDeck } from './perf'
 import { reducedMotion } from './reveal'
 import { vehiclesGeneration } from './useBridge'
 import type { SpaceOverlay } from './space'
@@ -376,8 +376,8 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
   /** everything deck.gl draws: the 3D scene (hidden in 2D), SATCOM links, extension layers
    *  (the `layers` prop), then the vehicles on top. `frame`: an animation frame of a glide, which
    *  rebuilds only what is attached to a vehicle and reuses the rest as it was. Around the sea
-   *  surface the order is what decides the tint (map3d.ts): what may be under water before it,
-   *  bridge decks and sea-level shadows after it. */
+   *  surface the order is what decides the tint (map3d.ts): what is under water before it,
+   *  everything else after it. */
   const deckLayers = (is3d: boolean, frame = false): LayersList => {
     const { vehicles: vs, selected: sel, bare, clusters: cl } = latest.current
     if (!frame || !staticLayers.current) {
@@ -393,14 +393,18 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     // 2D trails draw where the MapLibre trails layer sat (under the taskings), not on top of everything
     const trailsBefore = !is3d && ready.current && map.current?.getLayer('taskings-intent') ? 'taskings-intent' : undefined
     const glide = build3dGlide(vs, is3d)
-    return [
-      // under the sea surface, seen through the water where below 0 m: trails, stems
+    const trails = smoothRef.current ? buildTrailLayers(vs, is3d, trailsBefore) : { under: [], over: [] }
+    const layers: LayersList = [
+      // seen through the water: the trails and stems of what is under it
       ...three.under,
-      ...(smoothRef.current ? buildTrailLayers(vs, is3d, trailsBefore) : []),
-      glide.stems,
-      // the sea surface, then the bridge decks over it (never tinted)
+      ...trails.under,
+      glide.stemsUnder,
+      // the sea surface, then what is above or on it (never tinted): bridge decks, the other
+      // trails and stems, sea-level shadows
       ...three.surface,
-      // on the water surface
+      ...three.over,
+      ...trails.over,
+      glide.stems,
       glide.shadows,
       ...space,
       // the extension layers that sit at a vehicle follow its glide: re-trigger just those
@@ -408,7 +412,21 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       ...clusterLayers,
       ...buildVehicleLayers({ vehicles: vs, selected: sel, bare, is3d }),
     ]
+    if (import.meta.env.DEV && is3d && !frame && !seaOrderWarned.current.before) {
+      const before = layers.find((l) => l instanceof Layer && l.props.visible && (l.props as { beforeId?: string }).beforeId)
+      if (before) {
+        seaOrderWarned.current.before = true
+        console.warn(`[murmur] 3D layer ${(before as Layer).id} has a beforeId: it draws in another group, out of the sea's order (map3d.ts)`)
+      }
+    }
+    return layers
   }
+  /** Dev only: the sea's stencil passes and depth order assume nothing of MapLibre's draws after
+   *  it in 3D: every 3D deck.gl layer in the group with no beforeId (checked as the layers are
+   *  built), and that group the style's last layer (checked after a frame, with the sea's check;
+   *  deck.gl moves its group back to the end on every setProps, so this catches a frame drawn with
+   *  a MapLibre layer added after it). Each warns once. */
+  const seaOrderWarned = useRef({ before: false, last: false })
   const pushLayers = () => overlay.current?.setProps({ layers: deckLayers(viewRef.current === '3d') })
 
   /** the inbox preview's transit lines start at a vehicle: that end follows the drawn position */
@@ -733,10 +751,11 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       }, 400)
     }
     // The 3D sea surface follows the basemap's water tiles (map3d.ts refreshSea): checked after a
-    // frame, at most 4 times a second, and rebuilt only when the set of water tiles changed (the
-    // check reads tile ids, not geometry: a fraction of a millisecond). After a frame, not on
-    // moves or tile events: tiles MapLibre takes back from its cache become renderable on a later
-    // frame with no event of their own, and a check 250 ms after a jump can run before that frame.
+    // frame, at most 4 times a second, and rebuilt only when the set of water tiles changed (a
+    // check reads which tiles hold how many water features, not their geometry). After a frame,
+    // not on moves or tile events: tiles MapLibre takes back from its cache become renderable on
+    // a later frame with no event of their own, and a check 250 ms after a jump can run before
+    // that frame.
     let seaTimer: number | undefined
     const refreshSeaSoon = () => {
       if (seaTimer) return
@@ -745,8 +764,16 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
         if (!ready.current || lostRef.current || viewRef.current !== '3d') return
         const t0 = performance.now()
         const changed = refreshSea(m)
-        perfSea(changed ? performance.now() - t0 : null)
+        perfSeaCheck(performance.now() - t0, changed)
         if (changed) pushLayers()
+        if (import.meta.env.DEV && !seaOrderWarned.current.last) {
+          const order = m.getLayersOrder()
+          const last = order[order.length - 1]
+          if (order.includes('deck-layer-group-last') && last !== 'deck-layer-group-last') {
+            seaOrderWarned.current.last = true
+            console.warn(`[murmur] a frame drew MapLibre's ${last} after the deck.gl group, so after the sea (map3d.ts)`)
+          }
+        }
       }, 250)
     }
     const reportView = () => {
