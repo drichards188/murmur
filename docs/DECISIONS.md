@@ -907,7 +907,8 @@ group. Dates are 2026.
 - **Murmur never handles anyone's model credentials; a situation runs the user's own CLI**
   (10-08, user direction: Murmur is open source and people run it with their own Claude or
   ChatGPT subscription). A situation's AI is `claude` (the default), `codex`, `playbook` (the
-  deterministic `agents/policy_agent.py`) or `none`. For `claude` and `codex` the runner only
+  deterministic playbook engine, `agents/playbook_agent.py` since 10-09; it was `agents/policy_agent.py`
+  before) or `none`. For `claude` and `codex` the runner only
   invokes the CLI the user installed and logged into (`agents/watch_officer.py --backend
   claude|codex`): it never stores, reads, proxies or prompts for a credential.
   Before the stack starts it asks that CLI whether it is logged in (`claude auth status`, its

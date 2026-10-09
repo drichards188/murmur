@@ -174,6 +174,20 @@ past the policy's approval wait as `shadow.lapsed` (then cooling as expired), an
 status as `shadow.status`. Its would-be cards claim their vehicles and count against the budget
 as human-tier cards, so the shadow's discipline is the live engine's.
 
+**Checked live** (stand-ins, 10-09, on a port block of their own; every audit log replayed exactly
+with its anchors, every proposal's text faithful to its record by `agents/playbook/fidelity.py`):
+Harbor watch on autoplay three times (the look on the fast boat proposed 177 to 179 s in, the
+tick that first saw it closing on the bridge, then a recentre about 33 s later; the connect line in
+the audit log reads `client agent-playbook playbook-1 config harbor-watch#6ddb1a6035e3`); Harbor
+watch live twice, op-1 rejecting the first card with a note over the operator API (the first run
+re-proposed 4 s later on a closest approach that had wandered from 192 m to 79 m, which is why
+the closest approach is now material only when it halves by half the alert; the second held its
+cooldown to the end of the run, previewing nothing more on that track); and a scratch variant
+with scripted link cuts (PUMA 2 cut: `link.cover_gap` proposed PUMA 1 on PUMA 2's station orbit
+7 s after the cut; PUMA 1 cut while that card waited: `link.withdraw_pending` withdrew it 4 s
+after). Compute per tick about 0.3 ms at 4 vehicles live and 4 ms at 100 (synthetic read), against
+the 50 ms target. What each run found and changed is in CRITERIA.md's dated section.
+
 Not seen by any play yet, said so: fewer than six satellites (the compact fleet read has no
 satellite count) and a spoof that keeps every navigation flag good (no navigation-integrity fact
 exists; PLAN.md). The engagement plays, `ident.review_support` and `isr.reacquire_lost` are step 3.
@@ -254,9 +268,9 @@ make goldengate                      # or any stack; a dev run here
 `--backend codex` for Codex; `--minutes N` instead of `--until`; `--key` or
 `MURMUR_AGENT_KEY` in a credentials run (the key goes to the CLI in its environment only,
 never in a file or on its command line). It stops at `--until`, on SIGTERM or SIGINT, when a
-budget is spent, or on a usage limit (below). `--shadow-playbook` also logs what the
-deterministic policy agent (`agents/policy_agent.py`'s rule) would have proposed at each
-wake, without proposing it.
+budget is spent, or on a usage limit (below). `--shadow-playbook` also runs the playbook
+engine beside the model, reading only, and logs what it would have proposed (`--shadow-config`:
+its config, a situation's `[playbook]` table; "The playbook engine", shadow mode).
 
 The CLI runs in a run directory: by default a fresh private temporary one. `--run-dir` takes
 a new or empty directory only, with no `CLAUDE.md`, `AGENTS.md`, `.claude` or `.git` in it or
@@ -289,7 +303,7 @@ on without an AI and the panel says so.
 ```
 .venv/bin/python agents/watch_officer.py --backend claude|codex --url <bridge>/mcp \
     --agent agent-watch --brief <brief file> --situation-log <path> --until <unix time> \
-    --shadow-playbook --shadow-near=<lon>,<lat> --shadow-radius-km <r> [--shadow-platform <id>] \
+    --shadow-playbook --shadow-config <playbook.json> --shadow-config-name <situation> \
     [--codex-home <dir>]
 ```
 
@@ -301,11 +315,12 @@ on without an AI and the panel says so.
 | `--brief` | a Markdown file with the situation's title and brief: what a watch officer is told (appended to its system prompt). Never the director's notes, the timeline or the watch items |
 | `--situation-log` | the watch officer's own JSON-lines log ("The situation log", below): every line has `t` (unix s), `kind` and `text`, one short line for a person. The runner tails it (read-only) and shows the lines meant for a person in the panel as the AI's notes: the model's note after each turn (`turn`, shown as "note"), why it was woken (`wake`, "woken"), and its errors, waits and stop; the plumbing (`bridge.connected`, `backend.start` and the like) stays in the file, which the runner keeps with the run |
 | `--until` | unix time at which to stop on its own (the situation's end) |
-| `--shadow-*` | log what the deterministic playbook (the situation's `[playbook]` table) would have proposed at each wake, never proposing it (`shadow` lines; not shown in the panel) |
+| `--shadow-*` | run the playbook engine beside the model on the situation's `[playbook]` table (`playbook.json` in the AI's directory), reading only, and log what it would have proposed and withdrawn (`shadow`, `shadow.withdraw`, `shadow.lapsed`, `shadow.status` lines; not shown in the panel) |
 | `--codex-home` | passed only when the user's environment sets `MURMUR_CODEX_HOME` (Setup, Codex step 3), since the runner strips every `MURMUR_*` variable from the AI's environment |
 
 The runner starts it in an empty directory of its own for this run, outside the repository and
-outside the run directory (`/tmp/murmur-<run id>-ai-*`), holding only `brief.md`;
+outside the run directory (`/tmp/murmur-<run id>-ai-*`), holding only `brief.md` and
+`playbook.json` (the situation's `[playbook]` table, for the shadow);
 `--situation-log` names a file in that directory, and the runner keeps a copy with the run and
 removes the directory at the end. The watch officer's CLI then runs in a run directory of its
 own, another fresh private temporary directory, which passes the check above. Its environment
@@ -347,10 +362,12 @@ model AI is marked "not evidence about the AI (truth was served on the bridge)" 
 `situation.jsonl`, the panel and the summary. What it did is in the audit log (`agent.action`,
 then its intents' own events), which the panel reads too.
 
-`AI=playbook`: `agents/policy_agent.py --url <bridge>/mcp --agent agent-planner --watch <seconds
-to the end> --near=<lon>,<lat> --radius-km <r> --every <s> [--platform <id>]` from the
-situation's `[playbook]` table (deterministic, no model, no account; shown as "Playbook
-(deterministic)"). `AI=none`: no AI ("None").
+`AI=playbook`: `agents/playbook_agent.py --url <bridge>/mcp --agent agent-playbook --situation-log
+<path> --until <unix time> --config <playbook.json> --config-name <situation>`, the playbook engine
+on the situation's `[playbook]` table (deterministic, no model, no account; shown as "Playbook
+(deterministic)"; "The playbook engine" above). In the same directory, with the same situation
+log contract: its play statuses, proposals, withdrawals and decisions are the lines the panel
+shows. `AI=none`: no AI ("None").
 
 ### How it runs each backend
 
