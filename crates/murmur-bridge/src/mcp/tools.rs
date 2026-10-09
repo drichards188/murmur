@@ -238,6 +238,11 @@ pub struct WithdrawParams {
     pub id: u64,
     /// Why it is withdrawn (goes to the audit log).
     pub reason: String,
+    /// Withdraw only if the intent is in this state at the moment of the withdrawal (for
+    /// example pending_approval: never one an operator approved meanwhile), checked with the
+    /// withdrawal itself; otherwise refused (409), saying the state it is in, and nothing is
+    /// withdrawn or logged.
+    pub if_state: Option<String>,
 }
 
 impl IntentParams {
@@ -530,7 +535,9 @@ pub fn tools() -> Vec<Tool> {
             "withdraw_intent",
             "Withdraw an intent you proposed, while it waits (pending or approved but not \
              yet dispatched). Another agent's or a human's intent is refused, and so is one \
-             already dispatched or ended. The withdrawal and your reason go to the audit log."
+             already dispatched or ended. With if_state (for example pending_approval), only \
+             if it is in that state at that moment: an operator's approval that came after you \
+             read it is never undone. The withdrawal and your reason go to the audit log."
                 .into(),
             false,
         ),
@@ -745,7 +752,7 @@ pub async fn call(
         "withdraw_intent" => {
             let p = params!(WithdrawParams);
             mcp.decision
-                .agent_withdraw(agent, p.id, &p.reason)
+                .agent_withdraw(agent, p.id, &p.reason, p.if_state.as_deref())
                 .map(|o| {
                     json!({
                         "id": o.id.0,

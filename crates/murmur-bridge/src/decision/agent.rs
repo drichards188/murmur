@@ -154,17 +154,48 @@ impl Decision {
     }
 
     /// Withdraw one of the agent's own intents before dispatch. Another agent's or a
-    /// human's intent is refused (403); so is one already dispatched or ended (409).
+    /// human's intent is refused (403); so is one already dispatched or ended (409). With
+    /// `if_state` (`withdraw_intent`'s), the intent's state is read under the same lock as the
+    /// withdrawal and a mismatch is refused (409) before the engine is asked: nothing is
+    /// withdrawn or logged, so the audit log and replay are as without the precondition (an
+    /// agent that read pending_approval cannot void an approval that came meanwhile).
     pub fn agent_withdraw(
         &self,
         agent: &AgentId,
         id: u64,
         reason: &str,
+        if_state: Option<&str>,
     ) -> Result<Outcome, DecisionError> {
         let id = IntentId(id);
         let out = {
             let mut guard = self.lock();
             let core = &mut *guard;
+            if let Some(want) = if_state {
+                let now = core.engine.intent(id).map(|i| {
+                    serde_json::to_value(i.state())
+                        .ok()
+                        .and_then(|v| v.as_str().map(str::to_string))
+                });
+                match now {
+                    Some(Some(s)) if s == want => {}
+                    Some(s) => {
+                        let s = s.unwrap_or_else(|| "?".into());
+                        let e = DecisionError {
+                            status: 409,
+                            detail: format!("{id} is {s}, not {want}: not withdrawn (if_state)"),
+                            intent: None,
+                        };
+                        return Err(self.with_intent(core, id, e));
+                    }
+                    None => {
+                        return Err(DecisionError {
+                            status: 404,
+                            detail: format!("unknown intent {id}"),
+                            intent: None,
+                        });
+                    }
+                }
+            }
             match core.engine.agent_port(agent.clone()).withdraw(id, reason) {
                 Ok(_) => Ok(self.outcome(core, id)),
                 Err(e) => Err(self.with_intent(core, id, engine_err(e))),

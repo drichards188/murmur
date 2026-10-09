@@ -549,6 +549,53 @@ async fn an_agent_withdraws_only_its_own_intents() {
     r.replays();
 }
 
+/// `if_state`: a withdrawal only from the state the agent read, checked with the withdrawal
+/// (the playbook reads pending_approval at a tick's start and withdraws at its end; an
+/// operator's approval in between must not be undone). A mismatch is refused and logs nothing.
+#[tokio::test(start_paused = true)]
+async fn a_withdrawal_with_if_state_happens_only_from_that_state() {
+    let r = rig();
+    r.vehicle(2, Firmware::Copter, "switchblade", (LAT, LON));
+    sleep(Duration::from_millis(500)).await;
+    let id = r.ok(&planner(), "propose_intent", orbit(2, "watch the strait")).await["id"]
+        .as_u64()
+        .expect("id");
+    assert_eq!(r.state(id), State::PendingApproval);
+    let (err, v) = r
+        .call(
+            &planner(),
+            "withdraw_intent",
+            json!({ "id": id, "reason": "premise gone", "if_state": "approved" }),
+        )
+        .await;
+    assert!(err, "{v}");
+    assert_eq!(v["status"], 409);
+    assert!(
+        v["error"].to_string().contains("is pending_approval, not approved"),
+        "{v}"
+    );
+    assert_eq!(r.state(id), State::PendingApproval, "nothing withdrawn");
+    assert_eq!(r.actions("intent.withdraw"), 0, "nothing logged");
+    let (err, v) = r
+        .call(
+            &planner(),
+            "withdraw_intent",
+            json!({ "id": 999, "reason": "x", "if_state": "pending_approval" }),
+        )
+        .await;
+    assert!(err && v["status"] == 404, "{v}");
+    let v = r
+        .ok(
+            &planner(),
+            "withdraw_intent",
+            json!({ "id": id, "reason": "premise gone", "if_state": "pending_approval" }),
+        )
+        .await;
+    assert_eq!(v["state"], "voided");
+    assert_eq!(r.actions("intent.withdraw"), 1);
+    r.replays();
+}
+
 #[tokio::test(start_paused = true)]
 async fn preview_runs_the_checks_without_creating_an_intent() {
     let r = rig();
