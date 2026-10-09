@@ -492,7 +492,12 @@ run over every armed platform of a large fleet does not, and the tool says to pa
 Live smoke runs: the model
 read the picture and proposed with rationales, a killed CLI was resumed, a SIGTERM stopped it
 cleanly, an operator's rejection woke it without a re-proposal, and a hostile declaration
-woke it.
+woke it. In a situation (Harbor watch, `OPERATOR=autoplay AI=claude`, Claude Code 2.1.295,
+the full 720 s): 14 wakes and one consult on the stronger model, two orbit proposals (a close
+look at the cutter whose sonar class disagreed with its AIS, and one on the fast boat 3.7 km
+out and closing) that op-auto approved, the compact fleet and filtered tracks read, the notes
+in the Situation panel, about $0.75 by the CLI's estimate, and the audit log replayed exactly
+with its anchors.
 
 Not verified: Codex, entirely (the CLI installed here is 0.116.0): the configuration keys
 marked inferred in `agents/watch/codex.py`, the order of `exec resume`'s arguments, SIGINT

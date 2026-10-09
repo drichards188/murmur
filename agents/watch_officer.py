@@ -654,7 +654,20 @@ def parse_args(argv: list[str] | None = None):
     return ap.parse_args(argv)
 
 
+def _quiet_session_close() -> None:
+    """The MCP client warns "Session termination failed: 202" when the bridge (rmcp) accepts a
+    session's close with 202: not a failure, so not said in the agent's output."""
+    import logging
+
+    class Accepted(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            return record.getMessage() != "Session termination failed: 202"
+
+    logging.getLogger("mcp.client.streamable_http").addFilter(Accepted())
+
+
 def main() -> None:
+    _quiet_session_close()
     sys.exit(asyncio.run(main_async(parse_args())))
 
 
