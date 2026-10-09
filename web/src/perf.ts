@@ -13,6 +13,9 @@
 //               positions of every vehicle in the attached layers. Not visible in the JS the
 //               glide loop itself runs (advance and setProps), which deck.gl defers to its render
 //   deckCpu     deck.gl's CPU time per frame ("CPU Time" stat from luma.gl)
+//   sea         rebuilding the 3D sea surface from the basemap's water tiles (map3d.ts
+//               refreshSea), which happens only when the set of water tiles changes; also
+//               counted against the checks (after a frame, at most 4 a second, in 3D)
 //
 // window.murmurPerfStats() returns a snapshot; the ?perf overlay shows the same numbers.
 
@@ -39,11 +42,22 @@ class Ring {
   }
 }
 
-const rings = { applyDelta: new Ring(), render: new Ring(), latency: new Ring(), frame: new Ring(), attrs: new Ring(), deckCpu: new Ring() }
+const rings = { applyDelta: new Ring(), render: new Ring(), latency: new Ring(), frame: new Ring(), attrs: new Ring(), deckCpu: new Ring(), sea: new Ring() }
 export type PerfName = keyof typeof rings
 
 export function perfPush(name: PerfName, ms: number) {
   rings[name].push(ms)
+}
+
+// the 3D sea surface: checks for a changed set of water tiles, and the rebuilds they caused
+let seaChecks = 0
+let seaRebuilds = 0
+/** one sea check: `ms` is the rebuild's time, null when nothing had changed */
+export function perfSea(ms: number | null) {
+  seaChecks++
+  if (ms == null) return
+  seaRebuilds++
+  rings.sea.push(ms)
 }
 
 // the update in flight: set when a message changes state, closed by App's last effect
@@ -154,6 +168,9 @@ export function perfStats() {
     latency: rings.latency.stats(),
     attrs: rings.attrs.stats(),
     deckCpu: rings.deckCpu.stats(),
+    sea: rings.sea.stats(),
+    seaChecks,
+    seaRebuilds,
     longTaskMsPerS: secs > 0 ? longMs / secs : 0,
     longTasks: longCount,
     windowS: secs,
@@ -162,6 +179,8 @@ export function perfStats() {
 
 export function perfReset() {
   for (const r of Object.values(rings)) r.reset()
+  seaChecks = 0
+  seaRebuilds = 0
   longMs = 0
   longCount = 0
   since.t = performance.now()
