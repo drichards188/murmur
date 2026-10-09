@@ -6,12 +6,12 @@ import { MapboxOverlay } from '@deck.gl/mapbox'
 import { useEffect, useRef, useState } from 'react'
 import { circle, distanceM } from './geo'
 import { BRIDGE_FILTER, liftBridges, type LiftedBridge } from './bridges'
-import { build3dGlide, build3dStatic, drawnHeight, refreshSea, DEM_TILES, HEIGHT_EXAGGERATION } from './map3d'
+import { build3dGlide, build3dStatic, drawnHeight, DEM_TILES, HEIGHT_EXAGGERATION } from './map3d'
 import { declutter } from './declutter'
 import { advanceDrawn, drawnAlt, drawnPosition, drawnPositionOf, drawnTick, glidingCount, isGliding, observeVehicles, resetDrawn, setSmoothing, snapAllDrawn } from './drawn'
 import { GLIDE_LAYER_IDS } from './orderLayers'
 import { buildTrailLayers } from './trailLayers'
-import { perfSeaCheck, perfWatchDeck } from './perf'
+import { perfWatchDeck } from './perf'
 import { reducedMotion } from './reveal'
 import { drapedWater } from './sea'
 import { vehiclesGeneration } from './useBridge'
@@ -239,32 +239,30 @@ function setDrapedBridges(m: maplibregl.Map, show: boolean) {
   }
 }
 
-// the style's own water fill (colour, sort key) per water layer, so 2D can restore it
-const waterFills = new WeakMap<maplibregl.Map, { id: string; color: unknown; sortKey: unknown }[]>()
+// the style's own water colour per water fill layer, so 2D can restore it
+const waterFills = new WeakMap<maplibregl.Map, { id: string; color: unknown }[]>()
 let warnedWater = false
 
-/** In 3D the sea surface (map3d.ts) tints only the sea, at 0 m; every other water polygon
- *  (lakes, reservoirs, ponds, rivers) is tinted by the style's own water fill, draped on the
- *  terrain, in the colour the surface gives the sea (sea.ts drapedWater), with the sea's
- *  polygons drawn last so a lake inside the coastline is tinted once. 2D restores the style's
- *  own fill. Changing either relays out the water's tiles, as the road filters do. */
+/** In 3D the water is tinted by the style's own water fill, draped on the terrain (sea.ts
+ *  drapedWater): the sea, lakes, ponds and rivers alike, at whatever height the terrain has
+ *  them. 2D restores the style's own colour. Changing it relays out the water's tiles, as the
+ *  road filters do. */
 function setDrapedWater(m: maplibregl.Map, is3d: boolean) {
   let saved = waterFills.get(m)
   if (!saved) {
     saved = m
       .getStyle()
       .layers.filter((l) => l.type === 'fill' && 'source-layer' in l && l['source-layer'] === 'water')
-      .map((l) => ({ id: l.id, color: m.getPaintProperty(l.id, 'fill-color'), sortKey: m.getLayoutProperty(l.id, 'fill-sort-key') }))
+      .map((l) => ({ id: l.id, color: m.getPaintProperty(l.id, 'fill-color') }))
     waterFills.set(m, saved)
   }
-  for (const { id, color, sortKey } of saved) {
+  for (const { id, color } of saved) {
     const draped = is3d ? drapedWater(color) : null
     if (is3d && !draped && !warnedWater) {
       warnedWater = true
-      console.warn(`[murmur] the style's water colour (${id}) is not a plain colour: lakes and rivers are left untinted in 3D (sea.ts drapedWater)`)
+      console.warn(`[murmur] the style's water colour (${id}) is not a plain colour: the water is left untinted in 3D (sea.ts drapedWater)`)
     }
     m.setPaintProperty(id, 'fill-color', (draped?.color ?? color) as maplibregl.ExpressionSpecification)
-    m.setLayoutProperty(id, 'fill-sort-key', (draped?.sortKey ?? sortKey) as maplibregl.ExpressionSpecification)
   }
 }
 
@@ -406,9 +404,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
 
   /** everything deck.gl draws: the 3D scene (hidden in 2D), SATCOM links, extension layers
    *  (the `layers` prop), then the vehicles on top. `frame`: an animation frame of a glide, which
-   *  rebuilds only what is attached to a vehicle and reuses the rest as it was. Around the sea
-   *  surface the order is what decides the tint (map3d.ts): what is under water before it,
-   *  everything else after it. */
+   *  rebuilds only what is attached to a vehicle and reuses the rest as it was. */
   const deckLayers = (is3d: boolean, frame = false): LayersList => {
     const { vehicles: vs, selected: sel, bare, clusters: cl } = latest.current
     if (!frame || !staticLayers.current) {
@@ -426,13 +422,12 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     const glide = build3dGlide(vs, is3d)
     const trails = smoothRef.current ? buildTrailLayers(vs, is3d, trailsBefore) : { under: [], over: [] }
     const layers: LayersList = [
-      // seen through the water: the trails and stems of what is under it
+      // seen through the water (map3d.ts): the trails and stems of what is under it
       ...three.under,
       ...trails.under,
       glide.stemsUnder,
-      // the sea surface, then what is above or on it (never tinted): bridge decks, the other
-      // trails and stems, sea-level shadows
-      ...three.surface,
+      // what is above or on the water: bridge decks, the other trails and stems, sea-level shadows
+      ...three.decks,
       ...three.over,
       ...trails.over,
       glide.stems,
@@ -443,20 +438,8 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       ...clusterLayers,
       ...buildVehicleLayers({ vehicles: vs, selected: sel, bare, is3d }),
     ]
-    if (import.meta.env.DEV && is3d && !frame && !seaOrderWarned.current.before) {
-      const before = layers.find((l) => l instanceof Layer && l.props.visible && (l.props as { beforeId?: string }).beforeId)
-      if (before) {
-        seaOrderWarned.current.before = true
-        console.warn(`[murmur] 3D layer ${(before as Layer).id} has a beforeId: it draws in another group, out of the sea's order (map3d.ts)`)
-      }
-    }
     return layers
   }
-  /** Dev only: the sea's stencil passes and depth order assume nothing of MapLibre's draws after
-   *  it in 3D: every 3D deck.gl layer in the group with no beforeId (checked here as the layers
-   *  are built), and that group the style's last layer (checked after every frame, in the map's
-   *  render handler). Each warns once. */
-  const seaOrderWarned = useRef({ before: false })
   const pushLayers = () => overlay.current?.setProps({ layers: deckLayers(viewRef.current === '3d') })
 
   /** the inbox preview's transit lines start at a vehicle: that end follows the drawn position */
@@ -780,24 +763,6 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
         pushLayers()
       }, 400)
     }
-    // The 3D sea surface follows the basemap's water tiles (map3d.ts refreshSea): checked after a
-    // frame, at most 4 times a second, and rebuilt only when the set of water tiles changed (a
-    // check reads which tiles hold how many water features, not their geometry). After a frame,
-    // not on moves or tile events: tiles MapLibre takes back from its cache become renderable on
-    // a later frame with no event of their own, and a check 250 ms after a jump can run before
-    // that frame.
-    let seaTimer: number | undefined
-    const refreshSeaSoon = () => {
-      if (seaTimer) return
-      seaTimer = window.setTimeout(() => {
-        seaTimer = undefined
-        if (!ready.current || lostRef.current || viewRef.current !== '3d') return
-        const t0 = performance.now()
-        const changed = refreshSea(m)
-        perfSeaCheck(performance.now() - t0, changed)
-        if (changed) pushLayers()
-      }, 250)
-    }
     const reportView = () => {
       if (!ready.current) return
       const c = m.getCenter()
@@ -823,22 +788,6 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     }
     let followMoved = false
     m.on('move', reportViewSoon)
-    m.on('render', refreshSeaSoon)
-    if (import.meta.env.DEV) {
-      // after every frame in 3D: was a MapLibre layer drawn after the deck.gl group, so after the
-      // sea? (deck.gl moves its group back to the end whenever its layers are set, so this would
-      // be a layer added since.) Warns once, then stops looking.
-      const checkSeaLast = () => {
-        if (viewRef.current !== '3d' || !ready.current) return
-        const order = m.getLayersOrder()
-        const last = order[order.length - 1]
-        if (order.includes('deck-layer-group-last') && last !== 'deck-layer-group-last') {
-          m.off('render', checkSeaLast)
-          console.warn(`[murmur] a frame drew MapLibre's ${last} after the deck.gl group, so after the sea (map3d.ts)`)
-        }
-      }
-      m.on('render', checkSeaLast)
-    }
     m.on('moveend', refreshBridges)
     m.on('moveend', (e: { follow?: boolean }) => {
       if (e.follow) {
@@ -867,7 +816,6 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       window.removeEventListener('mouseup', onUp)
       window.clearTimeout(bridgeTimer)
       window.clearTimeout(viewTimer)
-      window.clearTimeout(seaTimer)
       if (map.current === m) map.current = null
       if (following.current) {
         following.current = null

@@ -87,8 +87,7 @@ meaningful. Decision and command, not weapons.
 - The Playwright browser renders WebGL in **software** (SwiftShader): 3D fps there is
   meaningless (use `?perf` on a real GPU). After many reloads it loses the WebGL context:
   `browser_close` and reopen.
-- Dev-only globals for debugging the console: `window.murmurMap`, `murmurBridges`, `murmurPerf`,
-  `murmurSeaOffset({ bias, slope })` (the 3D sea's depth offset, live; `?seabias=` / `?seaslope=` at load).
+- Dev-only globals for debugging the console: `window.murmurMap`, `murmurBridges`, `murmurPerf`.
 - MapLibre is pinned to **v5** (deck.gl 9.4 breaks on v6). Don't upgrade.
 - After changing SITL code or its param table, rebuild all firmwares:
   `cd ~/ardupilot && PATH=~/murmur/.venv/bin:$PATH ./waf plane copter rover sub blimp antennatracker`.

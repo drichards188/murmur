@@ -76,7 +76,7 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
   // ages advance every clock tick: positions, rings, opacities and the stale state follow
   const tick = Math.floor(nowMs / 500)
   const triggers = { getPosition: tick, getRadius: tick, getFillColor: tick, getLineColor: tick, getColor: tick, getIcon: tick, getSize: tick, getText: tick, getPixelOffset: tick }
-  // screen-space overlays: never cut by terrain or the sea surface
+  // screen-space overlays: never cut by terrain
   const onTop = { depthCompare: 'always' as const, depthWriteEnabled: false }
   const pick = (info: PickingInfo<Track>) => {
     if (info.object && onClick) onClick(info.object.id)

@@ -87,8 +87,8 @@ export function buildVehicleLayers(input: VehicleLayerInput) {
   const angle = (v: Vehicle) => -((smooth ? drawnHeading(v) : v.heading) ?? 0)
   const tint = (v: Vehicle) => (isStale(v) ? TEXT_STALE : TEXT)
   const posTrigger = { getPosition: smooth ? `${is3d}:${drawnTick()}` : is3d }
-  // symbols and labels are screen-space overlays: never cut by terrain or the sea surface
-  // (a buoy's symbol is centred at sea level, so half of it would be under the water)
+  // symbols and labels are screen-space overlays: never cut by terrain (a buoy's symbol is
+  // centred at sea level, so over a shore higher than 0 m half of it would be under the ground)
   const onTop = { depthCompare: 'always' as const, depthWriteEnabled: false }
   return [
     new IconLayer<Vehicle>({
