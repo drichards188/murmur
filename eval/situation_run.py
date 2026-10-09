@@ -238,9 +238,12 @@ PANEL_KINDS = {
     "limit.hit": "limit", "limit.resume": "resumed", "backoff": "waiting", "budget.exhausted": "budget",
     "budget.deferred": "budget", "run.start": "started", "run.stop": "stopped",
     "tool": "tool", "proposal": "proposal",
-    # the playbook engine's (AI=playbook): a play's status when it changes, its withdrawals, and
-    # how the operator answered its cards
-    "play.status": "play", "withdrawal": "withdrew", "decision": "answer",
+    # the playbook engine's (AI=playbook): a play's status when it changes, its withdrawals, how
+    # the operator answered its cards, what an engagement kept it from doing, an approved card of
+    # its own whose premise went (left as it is), a withdrawal the bridge refused because the card
+    # was decided meanwhile, and a ledger of another bridge run set aside
+    "play.status": "play", "withdrawal": "withdrew", "decision": "answer", "withheld": "withheld",
+    "left": "left", "withdraw.refused": "kept", "ledger.reset": "note",
 }
 
 
@@ -909,7 +912,9 @@ class Runner:
         if d is None:
             return
         # the AI's notes, and the playbook engine's ledgers (AI=playbook, or its shadow)
-        for name in ("agent.jsonl", "playbook-ledger.json", "playbook-shadow-ledger.json"):
+        # (a ledger of another bridge run, set aside beside it, too: playbook-ledger.<run>.json)
+        kept = sorted(f.name for f in d.glob("playbook*-ledger.*.json"))
+        for name in ("agent.jsonl", "playbook-ledger.json", "playbook-shadow-ledger.json", *kept):
             f = d / name
             try:
                 # a plain file only: a link is not followed

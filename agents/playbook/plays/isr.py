@@ -40,12 +40,15 @@ from __future__ import annotations
 from typing import Any
 
 from .. import rationale as R
-from ..beliefs import (NOT_RUNNING, PROTECTED, RETURNING_MODES, Beliefs, Track, Vehicle, closing_alert, eta_s,
-                       haversine_m, orbit_radius, seen_by)
+from ..beliefs import (CLASSIFYING, NOT_RUNNING, PROTECTED, RECOVERING_MODES, Beliefs, Track, Vehicle, closing_alert,
+                       enu, eta_s, haversine_m, orbit_radius, seen_by)
 from ..ledger import Ledger
-from . import P2, Candidate, Play, Result, register
+from . import P2, PLAYS, Candidate, Play, Result, register
 
 LOOK_PLAYS = ("isr.investigate", "isr.recentre")  # an orbit of ours on a track
+# an orbit of ours on a track that isr.release lets go when its premise is gone
+RELEASED_PLAYS = LOOK_PLAYS + ("isr.armed_overwatch",)
+SUSPICION = {"neutral": 0, "assumed_friend": 0, "unknown": 1, "suspect": 2, "hostile": 3}
 # a look offers the arbiter its first few choices of vehicle, each a little lower in score, so a
 # vehicle another look took this tick falls to the next free one rather than holding the look back
 CHOICES = 3
@@ -70,7 +73,7 @@ def runs(e: dict[str, Any], b: Beliefs) -> bool:
     v = b.vehicles.get(e.get("uid")) if e.get("uid") is not None else None
     if v is None or v.task_intent != int(e["intent"]):
         return False
-    return (v.task or {}).get("state") not in NOT_RUNNING and (v.mode or "").upper() not in RETURNING_MODES
+    return (v.task or {}).get("state") not in NOT_RUNNING and (v.mode or "").upper() not in RECOVERING_MODES
 
 
 def silent(v: Vehicle | None, b: Beliefs) -> bool:
@@ -127,7 +130,12 @@ def look_reasons(tr: Track, b: Beliefs) -> tuple[list[str], str | None]:
         return [], "outside the watch"
     worth = []
     if tr.kind_conf < th["classification_settled"]:
-        worth.append(f"classification {tr.kind_conf:.2f} under {th['classification_settled']:.2f}")
+        # only while none of our classifying sensors holds it: one that does raises the
+        # classification with dwell anyway (DECISIONS.md, "The playbook engine": coverage)
+        held = sorted({s for _, s, last in tr.sources if s in CLASSIFYING and b.t - last <= th["classifier_fresh_s"]})
+        if not held:
+            worth.append(f"classification {tr.kind_conf:.2f} under {th['classification_settled']:.2f}, "
+                         "no EO/IR or sonar of ours on it")
     if tr.speed is not None and tr.speed > th["fast_mps"]:
         worth.append(f"fast: {tr.speed:.1f} m/s over {th['fast_mps']:.0f}")
     if tr.conflict:
@@ -156,9 +164,32 @@ def still_watched(tr: Track, b: Beliefs) -> bool:
     for a in cfg["watch_area"]:
         if "center" in a and haversine_m(tr.where, a["center"]) <= th["leave_area_factor"] * a["radius_m"]:
             return True
+        if "polygon" in a and polygon_edge_m(tr.where, a["polygon"]) <= (th["leave_area_factor"] - 1.0) * polygon_radius_m(a["polygon"]):
+            return True
     reach, horizon = th["leave_cpa_factor"] * th["cpa_alert_m"], th["leave_tcpa_factor"] * th["tcpa_max_s"]
     return any(a.cpa_m <= reach and (a.distance_m <= reach or (a.tcpa_s is not None and a.tcpa_s <= horizon))
                for a in i.approaches)
+
+
+def polygon_radius_m(ring: list[list[float]]) -> float:
+    """The radius of the circle of the polygon's area (the shoelace formula in a local plane)."""
+    ref = ring[0]
+    pts = [enu(p, ref) for p in ring]
+    area = abs(sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2) in zip(pts, pts[1:] + pts[:1]))) / 2.0
+    return (area / 3.141592653589793) ** 0.5
+
+
+def polygon_edge_m(p: tuple[float, float], ring: list[list[float]]) -> float:
+    """The distance from a point outside the polygon to its nearest edge, metres."""
+    x, y = enu(p, ring[0])
+    pts = [enu(q, ring[0]) for q in ring]
+    best = float("inf")
+    for (x1, y1), (x2, y2) in zip(pts, pts[1:] + pts[:1]):
+        dx, dy = x2 - x1, y2 - y1
+        L = dx * dx + dy * dy
+        u = 0.0 if L == 0 else max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / L))
+        best = min(best, ((x - x1 - u * dx) ** 2 + (y - y1 - u * dy) ** 2) ** 0.5)
+    return best
 
 
 def look_withdraw_if(b: Beliefs) -> list[str]:
@@ -175,8 +206,8 @@ def sensor_unfit(uid: int | None, b: Beliefs) -> str | None:
         return f"{v.callsign}'s navigation is suspect ({b.nav_suspect[uid]})"
     if v.battery_pct is not None and v.battery_pct < b.free_battery_pct:
         return f"{v.callsign}'s battery is {v.battery_pct:.0f}%, under {b.free_battery_pct:.0f}%"
-    if (v.mode or "").upper() in RETURNING_MODES:
-        return f"{v.callsign} is returning ({v.mode})"
+    if (v.mode or "").upper() in RECOVERING_MODES:
+        return f"{v.callsign} is recovering on its own ({v.mode})"
     return None
 
 
@@ -199,13 +230,17 @@ def premise_gone(target: str, uid: int | None, b: Beliefs) -> str | None:
 
 def isr_material_change(then: dict[str, Any], now: dict[str, Any], b: Beliefs) -> str | None:
     th, m = b.cfg.t, b.cfg.material
-    if then.get("affiliation") != now.get("affiliation"):
-        return f"the affiliation shown went from {then.get('affiliation')} to {now.get('affiliation')}"
+    # only a rise in suspicion (unknown to suspect to hostile): the tracker flips suspect and
+    # unknown at classification 0.3, and a fall to neutral or friend ends the premise anyway
+    a0, a1 = SUSPICION.get(str(then.get("affiliation")), -1), SUSPICION.get(str(now.get("affiliation")), -1)
+    if a0 >= 0 and a1 > a0:
+        return f"the affiliation shown rose from {then.get('affiliation')} to {now.get('affiliation')}"
+    # the same suspicious affiliation held with more confidence, across the gate (a fall is not news)
     a, c = then.get("aff_conf"), now.get("aff_conf")
-    if isinstance(a, (int, float)) and isinstance(c, (int, float)):
+    if (a0 == a1 and a1 >= SUSPICION["suspect"] and isinstance(a, (int, float)) and isinstance(c, (int, float))):
         gate = th["affiliation_min"]
-        if abs(c - a) >= m["confidence_step"] and (a < gate) != (c < gate):
-            return f"the affiliation confidence went from {a:.2f} to {c:.2f}, across {gate:.1f}"
+        if c - a >= m["confidence_step"] and a < gate <= c:
+            return f"the affiliation confidence rose from {a:.2f} to {c:.2f}, across {gate:.1f}"
     if then.get("declared") != now.get("declared") and now.get("declared") is not None:
         return f"a new declaration ({now.get('declared')})"
     # the closest approach halved, and by at least half the CPA alert: at a few hundred metres the
@@ -332,8 +367,11 @@ def track_text(record: dict[str, Any]) -> str:
     ais = f"AIS {R.quote(ident['ais'], 40)}" if ident.get("ais") else "no AIS"
     conflict = f", identity conflict {R.quote(ident['conflict'])}" if ident.get("conflict") else ""
     sb = ", ".join(f"{s['callsign']}'s {s['sensor']} {s['age_s']:.0f} s ago" for s in seen[:2]) or "no sensor of ours"
-    spd = kin.get("speed_mps")
-    motion = f"{spd:.1f} m/s course {kin.get('course_deg') or 0:03.0f}" if spd is not None else "no velocity estimate"
+    spd, crs = kin.get("speed_mps"), kin.get("course_deg")
+    if spd is None:
+        motion = "velocity unknown"
+    else:
+        motion = f"{spd:.1f} m/s" + (f" course {crs:03.0f}" if crs is not None else ", course unknown")
     return (f"{tid}: {kind}, {ais}{conflict}, shown {aff.get('value')} {aff.get('conf'):.2f} "
             f"({R.quote(aff.get('reason') or '')}); {motion}; {where_text(record['derived'])}; seen by {sb}")
 
@@ -469,24 +507,17 @@ class Release(Play):
     def evaluate(self, b: Beliefs, led: Ledger) -> Result:
         res = Result()
         for _, e in sorted(led.entries.items(), key=lambda kv: int(kv[0])):
-            if e["play"] not in LOOK_PLAYS or not runs(e, b):
+            if e["play"] not in RELEASED_PLAYS or not runs(e, b):
                 continue
             tid, uid = e["target"], e.get("uid")
-            why = premise_gone(tid, uid, b)
+            why = PLAYS[e["play"]].withdraw_reason(e, b)
             v = b.vehicles.get(uid)
             if why is None or v is None:
                 continue
             if any(x["play"] == self.name and x["target"] == tid and x.get("uid") == uid and live(x, b)
                    for _, x in sorted(led.entries.items())):
                 continue
-            prior = e.get("prior_task") or {}
-            prior_entry = led.entry(int(prior["intent_id"])) if prior.get("intent_id") is not None else None
-            if prior_entry is not None and prior_entry.get("request"):
-                request = dict(prior_entry["request"])
-                action = f"back to its order before ours (i{prior['intent_id']} {prior_entry['task']})"
-            else:
-                request = {"task": "hold", "uids": [uid]}
-                action = "hold where it is"
+            request, action = self.after(e, uid, b, led)
             res.candidates.append(Candidate(
                 play=self.name, version=self.version, klass=self.klass, score=0.5, target=tid, uid=uid,
                 task=str(request["task"]), request=request,
@@ -498,10 +529,21 @@ class Release(Play):
             ))
         return res
 
+    @staticmethod
+    def after(e: dict[str, Any], uid: int, b: Beliefs, led: Ledger) -> tuple[dict[str, Any], str]:
+        """What the vehicle does after our orbit: the order of ours it was flying when ours
+        superseded it (recorded only then, never a failed one), if that order's premise still
+        holds; else a hold."""
+        prior = e.get("prior_task") or {}
+        pe = led.entry(int(prior["intent_id"])) if prior.get("running") and prior.get("intent_id") is not None else None
+        if pe is not None and pe.get("request") and pe["play"] in PLAYS and PLAYS[pe["play"]].withdraw_reason({**pe, "uid": uid}, b) is None:
+            return dict(pe["request"]), f"It goes back to its order before ours (our i{pe['intent']}, {pe['task']} on {pe['target']}), whose premise still holds"
+        return {"task": "hold", "uids": [uid]}, "It holds where it is"
+
     def render(self, record: dict[str, Any]) -> str:
         d = record["derived"]
         return (f"{R.head(record)} Release {record['vehicle']['callsign']} from our orbit i{d['running']} on "
-                f"{record['target']}: {d['why']}. It is to {d['action']}. {R.tail(record)}")
+                f"{record['target']}: {d['why']}. {d['action']}. {R.tail(record)}")
 
 
 class ArmedOverwatch(Play):

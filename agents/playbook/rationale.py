@@ -111,13 +111,18 @@ def tail(record: dict[str, Any]) -> str:
     mc = record.get("material_change")
     if mc:
         parts.append(f"Proposed again inside a cooldown ({mc['cooldown']}): material change: {mc['change']}.")
+    af = record.get("after_failure")
+    if af:
+        parts.append(f"Again after our i{af['intent']} ({af['play']} on {af['target']}) failed: {quote(af['failure'], 120)}.")
     rb = record.get("rulebook_v2")
     if rb is not None:
         parts.append("Rule book v2: " + ("; ".join(rb) if rb else "nothing against") + ".")
     pv = record.get("preview")
     if pv:
         if pv.get("shadow"):
-            parts.append("Shadow: not previewed, not proposed.")
+            est = f" Tier {pv['tier_estimate']} by the policy, estimated ({pv.get('rule_estimate') or 'no tier matched'})." \
+                if pv.get("tier_estimate") else ""
+            parts.append("Shadow: not previewed, not proposed." + est)
         else:
             parts.append(f"Preview: {pv.get('checks')}; tier {pv.get('tier')} ({pv.get('rule')}).")
     return " ".join(parts)

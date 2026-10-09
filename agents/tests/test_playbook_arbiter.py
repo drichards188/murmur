@@ -69,12 +69,32 @@ def test_a_claim_by_a_card_of_ours_holds_except_for_its_successor_and_p0():
     assert len(sel) == 1, "a P0 command is never held back by a card of ours"
 
 
-def test_an_engagement_in_play_blocks_every_play_but_hold_and_rtl():
+def test_an_engagement_in_play_blocks_every_order_a_hold_and_an_rtl_included():
+    """Fix round 1: a platform with a nomination pending, approved, under way or in its
+    assessment gets no order of any kind from the playbook (a dispatched one supersedes the
+    engagement, rules 7). The engine says in the panel what it would have done."""
     pending = [{"id": 40, "kind": "engage", "uids": ["4"], "state": "pending_approval"}]
     b, led = beliefs(pending=pending)
-    sel, held = arbitrate([cand("isr.investigate", 2, 0.9, "T-1", 4), cand("isr.release", 2, 0.5, "T-1", 4, task="hold")], b, led)
-    assert [(c.play, c.task) for c in sel] == [("isr.release", "hold")]
-    assert held[0].reason == "uid 4: nomination i40 pending (only hold and rtl)"
+    cands = [cand("isr.investigate", 2, 0.9, "T-1", 4), cand("isr.release", 2, 0.5, "T-1", 4, task="hold"),
+             cand("safety.stuck", 0, 0.5, "alert:op:9", 4, task="hold"), cand("safety.low_reserve", 0, 0.5, "battery:4", 4, task="rtl")]
+    sel, held = arbitrate(cands, b, led)
+    assert sel == []
+    assert {h.reason for h in held} == {"engagement in play on uid 4 (nomination i40 pending): the playbook gives it no order"}
+    for state in ("approved", "dispatched", "effected"):
+        led = Ledger()
+        led.note_changes([{"kind": "intent.state", "intent": 41, "task": "engage", "uids": ["4"], "to": state}])
+        b, _ = beliefs(led)
+        sel, held = arbitrate([cand("safety.low_reserve", 0, 0.5, "battery:4", 4, task="rtl")], b, led)
+        assert sel == [] and held[0].reason.startswith("engagement in play on uid 4"), state
+
+
+def test_another_proposers_waiting_card_claims_its_vehicle_but_not_against_p0():
+    pending = [{"id": 50, "kind": "orbit", "uids": ["4"], "state": "pending_approval", "source": {"kind": "agent", "id": "agent-watch"}}]
+    b, led = beliefs(pending=pending)
+    sel, held = arbitrate([cand("isr.investigate", 2, 0.9, "T-1", 4)], b, led)
+    assert sel == [] and held[0].reason == "uid 4 is pending i50 from agent agent-watch"
+    sel, _ = arbitrate([cand("safety.low_reserve", 0, 0.5, "battery:4", 4, task="rtl")], b, led)
+    assert len(sel) == 1, "a waiting card is not a decision: a P0 command passes it"
 
 
 def test_a_busy_inbox_lets_only_p0_and_p1_through():
@@ -94,6 +114,7 @@ PUMAS = [vehicle(u, f"PUMA {u}", "puma", offset(-1000 - 100 * u, 300)) for u in 
 
 def run(ticks, previews=None, cfg=None, intents=None):
     s = FakeSession(ticks, previews, intents)
+    s.areas = {"areas": []}
     e = Engine(cfg or config())
 
     async def go():
@@ -107,7 +128,10 @@ def test_the_budget_takes_a_burst_of_two_then_one_card_per_30_s():
     ticks = [reads(t=T0 + dt, vehicles=PUMAS, tracks=THREE) for dt in (0, 2, 4, 31)]
     s, e, reps = run(ticks)
     assert [len(r.proposed) for r in reps] == [2, 0, 0, 0], "a burst of two, and at most two of ours pending"
-    assert s.writers() == ["preview_intent", "propose_intent", "preview_intent", "propose_intent"]
+    # preview first: the third track's card is previewed each tick (the preview says its tier),
+    # and held by the budget because the preview said human
+    assert [r.previews for r in reps] == [3, 1, 1, 1]
+    assert s.writers()[:5] == ["preview_intent", "propose_intent", "preview_intent", "propose_intent", "preview_intent"]
     assert reps[1].statuses["isr.investigate"].startswith("active")
     # the operator decides one of them: a card per 30 s again, the third track gets its turn
     ticks = [reads(t=T0 + dt, vehicles=PUMAS, tracks=THREE) for dt in (0, 2, 31, 33)]
@@ -117,10 +141,45 @@ def test_the_budget_takes_a_burst_of_two_then_one_card_per_30_s():
     assert held, reps[1].statuses
 
 
-def test_no_preview_is_spent_on_a_card_the_budget_cannot_take():
-    ticks = [reads(t=T0 + dt, vehicles=PUMAS, tracks=THREE) for dt in (0, 2, 4, 6)]
-    s, _, _ = run(ticks)
-    assert sum(1 for n in s.writers() if n == "preview_intent") == 2, "only the two it could propose"
+def test_the_preview_says_the_tier_and_only_a_human_tier_card_spends_the_budget():
+    """Fix round 1, item 11: no tier is assumed from a task kind or remembered per key. Three
+    looks the policy sends at once (auto tier) all go, budget or no budget; with two human-tier
+    ones and one auto-tier one, the auto one goes too."""
+    auto = passing("auto_approved", "auto", "agent-auto")
+    ticks = [reads(t=T0, vehicles=PUMAS, tracks=THREE)]
+    s, e, reps = run(ticks, previews=auto)
+    assert len(reps[0].proposed) == 3 and e.led.bucket == {}, "no token taken for an auto-tier card"
+    tier = {"T-1": passing(), "T-2": passing(), "T-3": auto}
+
+    def by_target(req):
+        near = {(round(t["position"][0], 4), round(t["position"][1], 4)): t["id"] for t in THREE}
+        c = req.get("center") or [0, 0]
+        return tier[min(near.items(), key=lambda kv: abs(kv[0][0] - c[0]) + abs(kv[0][1] - c[1]))[1]]
+
+    led_ticks = [reads(t=T0 + dt, vehicles=PUMAS, tracks=THREE) for dt in (0, 2)]
+    s, e, reps = run(led_ticks, previews=by_target)
+    assert [len(r.proposed) for r in reps] == [3, 0] and e.led.tokens(T0, e.cfg) == 0.0
+
+
+def test_p0_is_exempt_from_the_budget_by_class_not_by_task_kind():
+    """A policy that makes a hold human-tier: safety.stuck's hold (P0) still goes when the budget
+    is spent; isr.release's hold (P2) waits for the budget like any other human-tier card."""
+    from playbook.ledger import Ledger as L
+
+    stuck = [{"id": "op:9", "kind": "not_moving", "uid": 3, "detail": "NOT MOVING for 12s"}]
+    fleet = [vehicle(3, "PUMA 1", "puma", offset(-1000, 300), mode="AUTO", task={"intent_id": 1, "task": "orbit", "state": "active"})]
+    led = L(run="test")
+    led.see_alerts(stuck, T0 - 60)
+    led.bucket = {"tokens": 0.0, "t": T0}
+    s = FakeSession([reads(t=T0, vehicles=fleet, alerts=stuck)], passing())
+    e = Engine(config(), led)
+
+    async def go():
+        await e.start(s)
+        return await e.tick(s)
+
+    rep = asyncio.run(go())
+    assert [(p["play"], p["request"]["task"]) for p in rep.proposed] == [("safety.stuck", "hold")]
 
 
 def test_at_most_three_previews_a_tick():

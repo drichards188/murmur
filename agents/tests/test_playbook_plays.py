@@ -35,7 +35,9 @@ def test_investigate_fires_on_the_recorded_fast_boat_closing_on_the_bridge():
     assert [(c.target, c.uid, c.request["radius_m"]) for c in res.candidates] == [("T-0008", 3, 1000.0)]
     c = res.candidates[0]
     assert c.request["task"] == "orbit" and c.claims == (3,)
-    assert c.trigger == ["closing on the Golden Gate Bridge", "classification 0.51 under 0.60", "fast: 8.4 m/s over 8"]
+    # classification 0.51 is no reason of its own here: HUNTER 1's and REAPER 1's EO/IR have it
+    # (sensor coverage, murmur-t8m fix round 1); fast and closing on the bridge are
+    assert c.trigger == ["closing on the Golden Gate Bridge", "fast: 8.4 m/s over 8"]
     assert c.derived["closing"] and c.derived["cpa_m"] < 457 and c.derived["tcpa_s"] < 600
     assert [a["callsign"] for a in c.alternatives] == ["REAPER 1", "PUMA 2"], "busy, with why"
     assert all("not_free" in a for a in c.alternatives)
@@ -49,7 +51,28 @@ def test_investigate_takes_an_unknown_with_no_classification_inside_the_area():
     t = track("T-1", "unknown", 0.0, pos=offset(-1500, 0), vel=(0.0, 0.0), kind=None, kind_conf=0.0)
     res, _ = look(reads(vehicles=FLEET, tracks=[t]))
     assert [c.target for c in res.candidates] == ["T-1"]
-    assert res.candidates[0].trigger == ["inside the Golden Gate approaches", "classification 0.00 under 0.60"]
+    assert res.candidates[0].trigger == ["inside the Golden Gate approaches",
+                                         "classification 0.00 under 0.60, no EO/IR or sonar of ours on it"]
+
+
+def test_investigate_does_not_look_for_classification_at_a_track_our_eo_ir_already_has():
+    """Sensor coverage (fix round 1, item 13): a slow unknown inside the area that an EO/IR or a
+    sonar of ours detected in the last 10 s is being classified already; one seen only by radar,
+    or by EO/IR longer ago, is not. Fast and closing are reasons whatever sees the track."""
+    def unknown(sources):
+        return track("T-1", "unknown", 0.0, pos=offset(-1500, 0), vel=(0.0, 0.0), kind=None, kind_conf=0.0, sources=sources)
+
+    eo_now = [{"uid": 1, "sensor": "eo_ir", "hits": 12, "last_t": T0 - 3.0}]
+    eo_old = [{"uid": 1, "sensor": "eo_ir", "hits": 12, "last_t": T0 - 30.0}]
+    sonar_now = [{"uid": 1, "sensor": "sonar", "hits": 2, "last_t": T0 - 1.0}]
+    radar = [{"uid": 1, "sensor": "radar", "hits": 40, "last_t": T0 - 1.0}]
+    assert look(reads(vehicles=FLEET, tracks=[unknown(eo_now)]))[0].candidates == []
+    assert look(reads(vehicles=FLEET, tracks=[unknown(sonar_now)]))[0].candidates == []
+    for src in (eo_old, radar):
+        assert [c.target for c in look(reads(vehicles=FLEET, tracks=[unknown(src)]))[0].candidates] == ["T-1"]
+    fast = track("T-1", "suspect", 0.7, pos=offset(-1500, 0), vel=(9.0, 0.0), sources=eo_now)
+    c = look(reads(vehicles=FLEET, tracks=[fast]))[0].candidates
+    assert c and "fast: 9.0 m/s over 8" in c[0].trigger
 
 
 @pytest.mark.parametrize("case,t", [
@@ -71,7 +94,7 @@ def test_investigate_says_what_blocks_it_when_no_sensor_is_free():
     busy[1] = vehicle(3, "PUMA 1", "puma", offset(-1200, 200), mode="RTL")
     res, _ = look(reads(vehicles=busy, tracks=[track("T-1", "suspect", 0.7)]))
     assert res.candidates == []
-    assert res.blocked == [("T-1", "no free sensor aircraft (PUMA 1: returning (RTL); PUMA 2: on orbit i3 (done))")]
+    assert res.blocked == [("T-1", "no free sensor aircraft (PUMA 1: recovering on its own (RTL); PUMA 2: on orbit i3 (done))")]
 
 
 def test_investigate_prefers_the_configured_platform_then_eta_battery_uid():
@@ -215,7 +238,7 @@ def test_cover_gap_says_so_when_no_vehicle_can_fill():
     r, led, _ = gap_world(30.0)
     r.fleet["vehicles"][1]["mode"] = "RTL"
     res, _ = look(r, led=led, play="link.cover_gap")
-    assert res.candidates == [] and "no free capable vehicle (PUMA 1: returning (RTL))" in res.blocked[0][1]
+    assert res.candidates == [] and "no free capable vehicle (PUMA 1: recovering on its own (RTL))" in res.blocked[0][1]
 
 
 def test_withdraw_pending_and_nav_suspect_exclude():
@@ -275,17 +298,46 @@ def test_low_reserve_returns_a_vehicle_under_the_line_once():
         assert look(reads(vehicles=[v]), play="safety.low_reserve")[0].candidates == []
 
 
-def test_stuck_holds_after_30_s_of_not_moving_but_never_a_vehicle_on_its_failsafe_return():
-    def world(age, **over):
-        a = [{"id": "op:9", "kind": "not_moving", "uid": 4, "since_t": T0 - age, "detail": "NOT MOVING for 30 s"}]
-        kw = {"mode": "AUTO", **over}
-        return reads(vehicles=[vehicle(4, "PUMA 2", task={"intent_id": 3, "task": "orbit", "state": "active"}, **kw)], alerts=a)
+def stuck_world(seen_s, since_age=900.0, **over):
+    """A not_moving alert the playbook first saw `seen_s` ago; its since_t is its order's last
+    state change (`since_age` ago), which says nothing about when the vehicle stopped."""
+    a = [{"id": "op:9", "kind": "not_moving", "uid": 4, "since_t": T0 - since_age,
+          "detail": "NOT MOVING for 12s (aground or stuck?) · orbit"}]
+    kw = {"mode": "AUTO", **over}
+    led = Ledger()
+    led.see_alerts(a, T0 - seen_s)
+    return reads(vehicles=[vehicle(4, "PUMA 2", task={"intent_id": 3, "task": "orbit", "state": "active"}, **kw)], alerts=a), led
 
-    res, _ = look(world(31.0), play="safety.stuck")
+
+def test_stuck_holds_after_30_s_in_our_reads_but_never_a_vehicle_on_its_failsafe_return():
+    r, led = stuck_world(31.0)
+    res, _ = look(r, led=led, play="safety.stuck")
     assert [(c.task, c.uid, c.target) for c in res.candidates] == [("hold", 4, "alert:op:9")]
-    assert look(world(20.0), play="safety.stuck")[0].candidates == []
-    assert look(world(40.0, mode="RTL"), play="safety.stuck")[0].candidates == []
-    assert look(world(40.0, mode="LOITER"), play="safety.stuck")[0].candidates == []
+    text = PLAYS["safety.stuck"].render(res.candidates[0].record("test", T0))
+    assert "active in our reads for 31 s (its detail \"NOT MOVING for 12s (aground or stuck?) · orbit\")" in text
+    r, led = stuck_world(20.0)
+    assert look(r, led=led, play="safety.stuck")[0].candidates == []
+    for mode in ("RTL", "LOITER"):
+        r, led = stuck_world(40.0, mode=mode)
+        assert look(r, led=led, play="safety.stuck")[0].candidates == [], mode
+
+
+def test_stuck_counts_from_the_first_read_that_showed_the_alert_not_from_since_t():
+    """Fix round 1, item 4: since_t is when the stuck order last changed state (minutes before,
+    for an order that ran a while). A hold on the first read would undercut the 30 s rule."""
+    r, led = stuck_world(0.0, since_age=900.0)
+    assert look(r, led=led, play="safety.stuck")[0].candidates == [], "first seen now: not yet"
+    r, led = stuck_world(29.0, since_age=900.0)
+    assert look(r, led=led, play="safety.stuck")[0].candidates == []
+    r, led = stuck_world(30.0, since_age=30.0)
+    assert len(look(r, led=led, play="safety.stuck")[0].candidates) == 1
+    # an alert that goes away and comes back counts again from its return
+    led = Ledger()
+    a = [{"id": "op:9", "kind": "not_moving", "uid": 4}]
+    led.see_alerts(a, T0 - 100)
+    led.see_alerts([], T0 - 50)
+    led.see_alerts(a, T0 - 10)
+    assert led.alert_seen == {"op:9|not_moving": T0 - 10}
 
 
 def test_stuck_acts_once_per_alert_while_its_hold_is_live():

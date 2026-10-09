@@ -64,6 +64,8 @@ class FakeSession:
             return CATALOG
         if name == "get_policy":
             return {"policy": {"rules": {"reserve_pct": 20}, "approval": {"expire_s": 120}}}
+        if name == "get_areas":
+            return {"t": now, "areas": []}
         raise AssertionError(f"unexpected read {name}")
 
     async def propose(self, *a, **k):
@@ -165,11 +167,11 @@ def test_a_watch_wakes_escalates_and_tells_the_routine_model(fake_claude, tmp_pa
     shadow = [x for x in log if x["kind"] == "shadow"]
     assert len(shadow) == 1 and shadow[0]["track"] == "T-0009" and shadow[0]["request"]["task"] == "orbit"
     assert shadow[0]["request"]["uids"] == [4], "what it would have proposed, logged only"
-    assert shadow[0]["record"]["play"] == "isr.investigate@1" and shadow[0]["record"]["preview"] == {"shadow": True}
+    assert shadow[0]["record"]["play"] == "isr.investigate@1" and shadow[0]["record"]["preview"]["shadow"] is True
     assert "Shadow: not previewed, not proposed." in shadow[0]["rationale"]
     calls = o.poller.session.calls
     assert calls and not set(calls) & set(WRITERS), "the shadow reads only"
-    assert any(x["kind"] == "shadow.status" and x["play"] == "isr.investigate" for x in log)
+    assert not any(x["kind"] == "play.status" for x in log), "the shadow's statuses are shadow.status (debounced)"
     assert all(x["source"] == "watch_officer" and x["run"] == "test" for x in log)
     assert o.poller.closed and o.backend.p is None
     # every line reads in the console's Situation panel ({t, kind, text}): a short line for a

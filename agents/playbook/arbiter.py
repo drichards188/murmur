@@ -5,16 +5,25 @@ engagement chain, the picture, links and navigation, hygiene; within a class the
 ties broken by name, target and uid, so the same candidates always come out the same way.
 Walking that order, a candidate is held back (with the reason, for the play's status) when:
 
+- an engagement is in play on a vehicle it needs (a nomination pending, approved, under way or
+  in its assessment): the playbook gives such a platform no order of any kind, a hold or an rtl
+  included (a dispatched one would supersede the engagement, rules 7); the engine says in the
+  panel what it would have done (`withheld`), and the bridge's own alerts reach the signers;
 - the inbox holds `inbox_busy` (6) or more pending cards and it is not P0 or P1;
 - a cooldown is in force on its key and its play finds no material change since;
-- its key is backing off after a failing preview or a rule-book veto;
-- a vehicle it needs is claimed: by a higher candidate this tick (one claim per vehicle), or by
-  a card or order of ours it does not supersede;
-- an engagement is in play on a vehicle it needs and it is not a hold or an rtl;
+- its key, or its vehicle, is backing off after a failing preview, a rule-book veto, a refusal
+  at submission or an order of ours that failed;
+- it would send a vehicle back to the task `safety.stuck` stopped it on (until the alert has
+  cleared and `stuck_retry_s` more);
+- a vehicle it needs is claimed: by a higher candidate this tick (one claim per vehicle), by a
+  card or order of ours it does not supersede, or by another proposer's card waiting in the
+  inbox (a P0 command passes those: a waiting card is not a decision);
 - a higher candidate of the same play already took its target (one card per play and target).
 
-The inbox budget and the cap of three previews a tick are the engine's, applied in this order
-as it previews (a preview says the tier, and only a human-tier card spends the budget).
+A selected candidate whose key or vehicle saw an order of ours fail in the last 10 minutes
+carries that failure (`after_failure`), and its rationale names it. The inbox budget and the cap
+of three previews a tick are the engine's, applied in this order as it previews (a preview says
+the tier, and only a human-tier card spends the budget).
 """
 
 from __future__ import annotations
@@ -24,8 +33,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from .beliefs import Beliefs
-from .ledger import Ledger
-from .plays import P1, PLAYS, SAFETY_TASKS, Candidate
+from .ledger import Ledger, vehicle_key
+from .plays import P1, PLAYS, Candidate
+
+ENGAGED = "engagement in play"  # the start of every hold-back an engagement causes (engine: `withheld`)
 
 
 @dataclass
@@ -51,6 +62,11 @@ def arbitrate(cands: list[Candidate], b: Beliefs, led: Ledger) -> tuple[list[Can
     passed: dict[tuple[str, str], list[str]] = {}
     busy = len(b.pending) >= int(b.cfg.budget["inbox_busy"])
     for c in order(cands):
+        engaged = [u for u in c.claims if u in b.engaging]
+        if engaged:
+            u = engaged[0]
+            held.append(Held(c, f"{ENGAGED} on uid {u} ({b.engaging[u]}): the playbook gives it no order"))
+            continue
         if busy and c.klass > P1:
             held.append(Held(c, f"the inbox holds {len(b.pending)} pending cards: only P0 and P1 propose"))
             continue
@@ -64,9 +80,15 @@ def arbitrate(cands: list[Candidate], b: Beliefs, led: Ledger) -> tuple[list[Can
                 continue
             c.material_change = {"cooldown": f"i{cd['intent']} {cd['why']}{' by ' + cd['by'] if cd.get('by') else ''} at "
                                               f"{hms(cd['set_t'])}", "change": change}
-        bo = led.backoff_for(c.key, b.t)
+        bo = led.backoff_for(c.key, b.t) or next(
+            (led.backoff_for(vehicle_key(u), b.t) for u in c.claims if led.backoff_for(vehicle_key(u), b.t)), None)
         if bo is not None:
             held.append(Held(c, f"backing off until {hms(bo['until_t'])}: {bo['why']}"))
+            continue
+        sb = led.stuck_block(c.play, c.target, c.uid, b.t)
+        if sb is not None:
+            when = "the alert clears" if sb.get("until_t") is None else hms(sb["until_t"])
+            held.append(Held(c, f"uid {c.uid} was stuck on this task (alert {sb['alert'].split('|')[0]}): not before {when}"))
             continue
         clash = None
         for u in c.claims:
@@ -78,9 +100,6 @@ def arbitrate(cands: list[Candidate], b: Beliefs, led: Ledger) -> tuple[list[Can
             if u in b.claims and not supersedes(c, b.claims[u], led):
                 clash = f"uid {u} is {b.claims[u]}"
                 break
-            if u in b.engaging and c.task not in SAFETY_TASKS:
-                clash = f"uid {u}: {b.engaging[u]} (only hold and rtl)"
-                break
         if clash:
             held.append(Held(c, clash))
             continue
@@ -89,6 +108,7 @@ def arbitrate(cands: list[Candidate], b: Beliefs, led: Ledger) -> tuple[list[Can
             continue
         if (c.play, c.target) in passed:
             c.derived = {**c.derived, "passed_over": list(passed[(c.play, c.target)])}
+        c.after_failure = led.last_failure(c.play, c.target, c.uid, b.t)
         selected.append(c)
         pairs.add((c.play, c.target))
         for u in c.claims:
@@ -105,6 +125,8 @@ def supersedes(c: Candidate, claim: str, led: Ledger) -> bool:
     vehicle; it never replaces another safety command, its own included)."""
     if c.supersedes is not None and claim.startswith(f"our i{c.supersedes} "):
         return True
+    if c.klass == 0 and claim.startswith("pending i"):
+        return True  # another proposer's card waiting: not a decision yet
     if c.klass != 0 or not claim.startswith("our i"):
         return False
     try:

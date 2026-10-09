@@ -111,9 +111,12 @@ def recorded_reads(doc: dict[str, Any], i: int, intents: list[dict] | None = Non
 
 class FakeSession:
     """Serves one Reads per tick (in order), answers previews from `previews` (a callable of the
-    request, or a dict), gives proposals ids from 101, and records every call with its args."""
+    request, or a dict; by default a hold or an rtl previews auto tier, anything else human),
+    gives proposals ids from 101 (refused at submission where `refuse` names a reason), and
+    records every call with its args."""
 
-    def __init__(self, ticks: list[Reads], previews: Any = None, intents: Any = None):
+    def __init__(self, ticks: list[Reads], previews: Any = None, intents: Any = None, *, refuse: Any = None,
+                 run: str = "test", areas: dict | None = None):
         self.ticks = list(ticks)
         self.i = -1
         self.calls: list[tuple[str, dict[str, Any]]] = []
@@ -122,6 +125,15 @@ class FakeSession:
         self.proposed: list[dict[str, Any]] = []
         self.withdrawn: list[dict[str, Any]] = []
         self.intent_states = intents or {}  # tick index -> {intent id: state}
+        self.refuse = refuse  # request -> a refusal's summary, or None
+        self.run = run
+        self.areas = areas or {"areas": []}
+        self.truncate_at: set[int] = set()  # ticks whose change feed says truncated
+        self.nominations: list[dict[str, Any]] = []
+        self.explained: dict[int, dict[str, Any]] = {}  # id -> intent for explain_intent
+        self.reasons: dict[int, str] = {}  # id -> the reason of its last history entry
+        self.decided_meanwhile: dict[int, str] = {}  # id -> the state a withdraw finds (a race)
+        self.page: dict[int, set[int]] = {}  # tick -> the ids get_intents shows (the newest page)
 
     def advance(self) -> Reads:
         self.i += 1
@@ -129,13 +141,19 @@ class FakeSession:
 
     def own_intents(self, t: float) -> dict[str, Any]:
         states = self.intent_states.get(self.i, {})
+        if self.i in self.page:
+            return {"t": t, "intents": [x for x in self._own(t, states) if x["id"] in self.page[self.i]]}
+        return {"t": t, "intents": self._own(t, states)}
+
+    def _own(self, t: float, states: dict[int, str]) -> list[dict[str, Any]]:
         out = []
         for p in self.proposed:
             st = states.get(p["id"], p["state"])
             out.append(intent(p["id"], p["request"]["task"], p["request"]["uids"], state=st, rationale=p["rationale"],
                               params={k: v for k, v in p["request"].items() if k in ("center", "radius_m", "route")},
-                              approval=({"by": "op-1", "note": "not now"} if st == "rejected" else None)))
-        return {"t": t, "intents": out}
+                              approval=({"by": "op-1", "note": "not now"} if st == "rejected" else None),
+                              history=[{"state": st, "t": t * 1000, "reason": self.reasons.get(p["id"], st)}]))
+        return out
 
     async def call(self, name: str, **args: Any) -> dict[str, Any]:
         self.calls.append((name, dict(args)))
@@ -152,33 +170,59 @@ class FakeSession:
         if name == "get_intents":
             return self.own_intents(r.fleet["t"]) if self.proposed or self.intent_states else (r.intents or {"t": r.fleet["t"], "intents": []})
         if name == "get_changes":
-            return {"t": r.changes_t or r.fleet["t"], "run": "test", "cursor": f"f:{self.i}", "more": False,
+            return {"t": r.changes_t or r.fleet["t"], "run": self.run, "cursor": f"f:{self.i}", "more": False,
+                    "reset": False, "truncated": bool(args.get("since")) and self.i in self.truncate_at,
                     "changes": r.changes if args.get("since") else []}
+        if name == "get_areas":
+            return self.areas
+        if name == "get_nominations":
+            return {"nominations": self.nominations}
         if name == "get_platforms":
             return r.platforms
         if name == "get_policy":
             return r.policy
+        if name == "explain_intent" and int(args["id"]) in self.explained:
+            return {"intent": self.explained[int(args["id"])]}
+        if name == "explain_intent" and any(p["id"] == int(args["id"]) for p in self.proposed):
+            return {"intent": next(x for x in self._own(r.fleet["t"], self.intent_states.get(self.i, {}))
+                                   if x["id"] == int(args["id"]))}
         if name == "explain_intent":
             return {"intent": {"kind": "orbit", "params": {"center": offset(500, 900), "radius_m": 300.0},
                                "source": {"kind": "human", "id": "op-setup"}}}
         if name == "preview_intent":
-            pv = self.previews(args) if callable(self.previews) else (self.previews or passing())
+            if self.previews is None:
+                pv = passing("auto_approved", "auto", "safety-commands") if args.get("task") in ("hold", "rtl") else passing()
+            else:
+                pv = self.previews(args) if callable(self.previews) else self.previews
             return copy.deepcopy(pv)
         if name == "withdraw_intent":
+            # the bridge voids a withdrawn intent (there is no `withdrawn` state); with if_state,
+            # only from that state, else 409 and nothing withdrawn
+            p = next((p for p in self.proposed if p["id"] == args["id"]), None)
+            st = self.intent_states.get(self.i, {}).get(args["id"], p["state"]) if p else None
+            st = self.decided_meanwhile.get(args["id"], st)
+            if args.get("if_state") and st != args["if_state"]:
+                raise RuntimeError(f"409: {args['id']} is {st}, not {args['if_state']}: not withdrawn (if_state)")
             self.withdrawn.append(dict(args))
-            for p in self.proposed:
-                if p["id"] == args["id"]:
-                    p["state"] = "withdrawn"
-            return {"id": args["id"], "state": "withdrawn"}
+            if p is not None:
+                p["state"] = "voided"
+            for states in self.intent_states.values():
+                if states.get(args["id"]) == "pending_approval":
+                    states[args["id"]] = "voided"
+            return {"id": args["id"], "state": "voided"}
         raise AssertionError(f"unexpected call {name}")
 
     async def propose(self, rationale: str, **req: Any) -> dict[str, Any]:
         self.calls.append(("propose_intent", {"rationale": rationale, **req}))
         iid = self.next_id
         self.next_id += 1
-        state = "auto_approved" if req["task"] in ("hold", "rtl") else "pending_approval"
+        refused = self.refuse(req) if self.refuse else None
+        state = "rejected" if refused else ("auto_approved" if req["task"] in ("hold", "rtl") else "pending_approval")
         self.proposed.append({"id": iid, "request": dict(req), "rationale": rationale, "state": state})
-        return {"id": iid, "state": state, "dispatched": state == "auto_approved"}
+        out = {"id": iid, "state": state, "dispatched": state == "auto_approved"}
+        if refused:
+            out["refused"] = refused  # as policy_agent.AgentSession.propose passes the bridge's error
+        return out
 
     def writers(self) -> list[str]:
         return [n for n, _ in self.calls if n in ("preview_intent", "propose_intent", "withdraw_intent")]

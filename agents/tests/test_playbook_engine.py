@@ -54,7 +54,7 @@ def test_a_tick_previews_vetoes_and_proposes_with_the_record_after_the_delimiter
     assert f"{rec['derived']['cpa_m']:.0f} m to the Golden Gate Bridge" in text
     assert e.led.entries["101"]["play"] == "isr.investigate" and e.led.entries["101"]["state"] == "pending_approval"
     kinds = [x["kind"] for x in lines]
-    assert kinds.count("proposal") == 1 and "play.status" in kinds
+    assert kinds.count("proposal") == 1
 
 
 def test_the_rule_book_vetoes_what_a_passing_preview_lets_through():
@@ -66,15 +66,24 @@ def test_the_rule_book_vetoes_what_a_passing_preview_lets_through():
     assert "rule book v2: check reserves:3 unverified" in reps[0].statuses["isr.investigate"]
 
 
-def test_statuses_go_to_the_log_only_when_they_change():
+def test_a_status_goes_to_the_log_once_it_has_held_three_ticks():
+    """Debounced (fix round 1): a status is logged when it has held `status_hold_ticks` (3)
+    ticks running and differs from the last one logged; the one-tick "proposed" line between
+    ready and waiting is never news, and a flicker shorter than three ticks is not logged."""
     tr = track("T-1", "suspect", 0.7)
-    ticks = [reads(t=T0 + dt, vehicles=FLEET, tracks=trs) for dt, trs in ((0, []), (2, []), (4, [tr]), (6, [tr]), (8, [tr]))]
+    ticks = [reads(t=T0 + dt, vehicles=FLEET, tracks=trs) for dt, trs in
+             ((0, []), (2, []), (4, [tr]), (6, [tr]), (8, [tr]), (10, [tr]))]
     _, _, reps, lines = run(ticks)
     status = [(x["play"], x["status"]) for x in lines if x["kind"] == "play.status"]
-    # every play starts ready (not news); then the look becomes active, once, and stays so
     assert all(v == "ready" for v in reps[0].statuses.values())
-    assert status == [("isr.investigate", "active: proposed i101 orbit PUMA 1 on T-1 (pending_approval)"),
-                      ("isr.investigate", "active: T-1 by uid 3 (i101 pending_approval)")]
+    assert reps[2].statuses["isr.investigate"] == "active: proposed i101 orbit PUMA 1 on T-1 (pending_approval)"
+    assert status == [("isr.investigate", "active: T-1 by uid 3 (i101 pending_approval)")]
+    # a status that flickers (two ticks blocked, back to ready) is not logged
+    busy = [FLEET[0], vehicle(3, "PUMA 1", "puma", offset(-1200, 200), mode="RTL")]
+    ticks = [reads(t=T0 + dt, vehicles=v, tracks=[tr]) for dt, v in ((0, busy), (2, busy), (4, [FLEET[0]]), (6, [FLEET[0]]))]
+    _, _, reps, lines = run(ticks)
+    assert reps[0].statuses["isr.investigate"].startswith("not ready")
+    assert [x for x in lines if x["kind"] == "play.status"] == []
 
 
 def test_stale_and_link_lost_cards_are_withdrawn_within_a_tick_with_the_reason():
@@ -117,11 +126,18 @@ def test_shadow_mode_reads_only_and_logs_what_it_would_propose_and_withdraw():
     assert not any(n == "get_intents" for n, _ in s.calls), "it holds no intents of its own"
     would = [x for x in lines if x["kind"] == "shadow"]
     assert len(would) == 1 and would[0]["track"] == "T-1" and would[0]["request"]["uids"] == [3]
-    assert would[0]["record"]["preview"] == {"shadow": True}
-    assert "Shadow: not previewed, not proposed." in would[0]["rationale"]
+    assert would[0]["record"]["preview"] == {"shadow": True, "tier_estimate": "human", "rule_estimate": None}
+    assert "Shadow: not previewed, not proposed. Tier human by the policy, estimated (no tier matched)." in would[0]["rationale"]
     w = [x for x in lines if x["kind"] == "shadow.withdraw"]
     assert len(w) == 1 and w[0]["reason"] == "isr.investigate: T-1 is shown neutral at 0.80"
-    assert all(x["kind"] != "play.status" for x in lines) and any(x["kind"] == "shadow.status" for x in lines)
+    assert all(x["kind"] != "play.status" for x in lines)
+
+
+def test_shadow_statuses_go_to_the_log_as_shadow_status_once_held_three_ticks():
+    ticks = [reads(t=T0 + dt, vehicles=[], tracks=[track("T-1", "suspect", 0.7)]) for dt in (0, 2, 4, 6)]
+    _, _, reps, lines = run(ticks, shadow=True)
+    st = [(x["play"], x["status"]) for x in lines if x["kind"] == "shadow.status"]
+    assert st == [("isr.investigate", "not ready: T-1: no free sensor aircraft (none in the fleet)")]
 
 
 def test_a_would_be_card_lapses_after_the_policys_approval_wait():
@@ -298,7 +314,8 @@ def test_the_fidelity_check_passes_a_proposal_and_catches_a_tampered_text(tmp_pa
     rationale = s.proposed[0]["rationale"]
     assert fidelity.check(rationale) == []
     assert fidelity.check(rationale.replace("battery 90%", "battery 99%")) == [
-        "the text is not what the template renders from the record"]
+        "the text is not what the template renders from the record",
+        "the number 99% in the text traces to no field of the record"]
     assert fidelity.check("an operator's own words") == ["no evidence record after the delimiter"]
     log = tmp_path / "audit.jsonl"
     created = {"type": "intent.created", "intent": {"id": 101, "source": {"kind": "agent", "id": "agent-playbook"},

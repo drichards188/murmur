@@ -30,6 +30,10 @@ affiliation_min = 0.5
 # the engagement rules' min_identity_confidence: the identity confidence the engine treats as
 # settled; below it a look can still classify the contact
 classification_settled = 0.6
+# an unsettled classification is a reason to look only while no classifying sensor of ours (EO/IR,
+# sonar: they raise a classification with dwell; radar and ESM give a class only) has detected the
+# track this recently: the tracker's stale age, the same freshness every live track already has
+classifier_fresh_s = 10.0
 # 15.5 kn: faster than a displacement hull under 10 m can go (hull speed about 1.34 x
 # sqrt(waterline ft) kn, 7.3 kn at 30 ft), so a small contact this fast is planing
 fast_mps = 8.0
@@ -46,6 +50,8 @@ holding_mps = 0.5
 leave_area_factor = 1.1
 leave_cpa_factor = 2.0
 leave_tcpa_factor = 1.5
+# (a polygon watch area gets the same 10 % as a buffer: (leave_area_factor - 1) x the radius of
+# the circle of its area, around its edge)
 # the tracker's existence-confidence decay constant (confidence_decay_s): unseen this long, the
 # confidence has fallen to 1/e
 unseen_s = 60.0
@@ -70,8 +76,19 @@ low_reserve_margin_pct = 5.0
 free_battery_margin_pct = 10.0
 # a not_moving or task_failed alert this long is a stuck vehicle
 stuck_s = 30.0
+# a vehicle our hold stopped because it was stuck on a task is not given that task (play and
+# target) again until the alert has cleared and this long after: the alert clears when our hold
+# replaces the order, not when the cause (aground, fouled, a current it cannot stem, an upload a
+# lossy link keeps failing) is gone, and 5 minutes is a third of the policy's assumed task length
+# (task_duration_s 900), long enough for a transient to pass and short enough to try again within
+# a task's worth of time. Other tasks may have it at once
+stuck_retry_s = 300.0
 # a vehicle whose navigation was suspect counts as suspect until it has been good this long
 nav_clear_s = 60.0
+# a play's status goes to the situation log once it has held this many ticks (6 s at the 2 s tick):
+# a trigger that comes and goes on alternate reads (a young track's velocity) does not flood the
+# panel; proposals, withdrawals and decisions are logged at once, whatever the status
+status_hold_ticks = 3.0
 
 [budget]
 # the research report's inbox budget (C.2.5), provisional until the console's measured card
@@ -89,7 +106,9 @@ expired_s = 120.0
 expired_score_factor = 0.5
 voided_s = 30.0
 withdrawn_s = 30.0
-# a failing preview is retried, never dropped for good
+# a failing preview, a rule-book veto, a refusal at submission, or an order of ours that failed
+# (then for its key and its vehicle) backs off 10 s, doubling to 160 s: retried, never dropped
+# for good, and never every tick
 preview_backoff_s = 10.0
 preview_backoff_max_s = 160.0
 

@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from ..ledger import Ledger
 
 P0, P1, P2, P3, P4 = 0, 1, 2, 3, 4
-SAFETY_TASKS = ("hold", "rtl")  # what an engagement in play still allows on its vehicle
+SAFETY_TASKS = ("hold", "rtl")
 
 
 @dataclass
@@ -51,6 +51,7 @@ class Candidate:
     prior_task: dict[str, Any] | None = None
     material_change: dict[str, Any] | None = None
     vehicle: dict[str, Any] | None = None  # the tasked vehicle as the record names it
+    after_failure: dict[str, Any] | None = None  # an order of ours that failed on this key or vehicle
 
     @property
     def key(self) -> str:
@@ -82,6 +83,8 @@ class Candidate:
             "basis": self.basis,
             "score": round(self.score, 4),
             "material_change": self.material_change,
+            "after_failure": self.after_failure,
+            "armed": self.armed,
         }
 
 

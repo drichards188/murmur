@@ -201,6 +201,8 @@ class NavSuspect(Play):
     def withdrawals(self, b: Beliefs, led: Ledger, waiting: list[dict[str, Any]]) -> list[Withdrawal]:
         out = []
         for e in waiting:
+            if e.get("state") not in ("pending_approval", None):
+                continue  # approved or queued: the bridge's readiness re-check at dispatch is the guard
             uid = e.get("uid")
             if uid in b.nav_suspect and e.get("armed"):
                 out.append(Withdrawal(intent=int(e["intent"]), key=str(e.get("key") or ""), play=self.name,

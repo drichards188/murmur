@@ -10,7 +10,8 @@ previews and proposes what the arbiter lets through, withdraws its cards whose p
 and writes what it did to the situation log (the watch officer's `{t, kind, text}` lines, source
 "playbook"): each play's status when it changes, each proposal, withdrawal and decision. Its
 ledger (every card and how it fared, the cooldowns) is JSON beside the log, so a restart within
-the run picks up where it left off. The config (agents/playbook/defaults.toml under a
+the same bridge run picks up where it left off; a ledger of another run, or of none it names, is
+set aside beside it (playbook-ledger.<run>.json) and a fresh one started. The config (agents/playbook/defaults.toml under a
 situation's [playbook] table) is hashed, and the hash goes to the bridge as the MCP client's
 version at connect: the audit log's `agent.action session.connected` names it.
 

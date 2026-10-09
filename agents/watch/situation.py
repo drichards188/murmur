@@ -93,7 +93,9 @@ def panel(rec: dict) -> str:
     if k == "shadow":
         req = rec.get("request") or {}
         what = f"{req.get('task')} on {req.get('uids')}" if req else "nothing (no sensor)"
-        return f"the playbook would propose {what} for {rec.get('track')} (not proposed)"
+        tier = (rec.get("tier_estimate") or {}).get("tier")
+        return (f"the playbook would propose {what} for {rec.get('track')} "
+                f"({f'{tier} tier by its estimate; ' if tier else ''}not proposed)")
     if k == "limit.hit":
         when = _hm(rec.get("resume_at") or rec.get("until") or rec.get("reset_at"))
         return f"usage limit ({rec.get('provider')} {rec.get('limit')}): {rec.get('action')}, until {when}"

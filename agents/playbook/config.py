@@ -167,6 +167,30 @@ def merge(table: dict[str, Any] | None) -> dict[str, Any]:
             raise ConfigError(f"thresholds.{k} must be in (0, 1]")
     if b["previews_per_tick"] < 1 or b["own_pending_max"] < 0 or b["human_burst"] < 1:
         raise ConfigError("budget: previews_per_tick and human_burst at least 1, own_pending_max at least 0")
+    # a value something divides by, or multiplies a distance or a time by, must be positive
+    positive = {
+        "thresholds": ("fast_mps", "cpa_alert_m", "tcpa_max_s", "unseen_s", "orbit_turn_margin", "default_min_turn_m",
+                       "link_gap_factor", "classifier_fresh_s", "status_hold_ticks"),
+        "budget": ("human_every_s", "inbox_busy"),
+        "cooldown": ("preview_backoff_s", "preview_backoff_max_s"),
+        "material": ("cpa_factor", "confidence_step"),
+    }
+    for sec, keys in positive.items():
+        for k in keys:
+            if not cfg[sec][k] > 0:
+                raise ConfigError(f"{sec}.{k} must be > 0, not {cfg[sec][k]!r}")
+    nonneg = {
+        "thresholds": ("holding_mps", "recentre_min_gap_s", "low_reserve_margin_pct", "free_battery_margin_pct",
+                       "stuck_s", "nav_clear_s", "stuck_retry_s"),
+        "cooldown": ("rejected_s", "expired_s", "voided_s", "withdrawn_s", "expired_score_factor"),
+    }
+    for sec, keys in nonneg.items():
+        for k in keys:
+            if cfg[sec][k] < 0:
+                raise ConfigError(f"{sec}.{k} must be >= 0, not {cfg[sec][k]!r}")
+    for k in ("leave_area_factor", "leave_cpa_factor", "leave_tcpa_factor"):
+        if t[k] < 1:
+            raise ConfigError(f"thresholds.{k} must be >= 1 (hysteresis loosens, never tightens)")
     return cfg
 
 

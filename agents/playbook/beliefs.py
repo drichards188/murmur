@@ -18,14 +18,22 @@ protected points in the config's order). What each belief means:
   no satellite count, so fewer than six satellites is not seen).
 - **Free** (`free_reason`; None when free): a vehicle is free for a task when its health is
   good, its battery is at least the low-reserve line plus `free_battery_margin_pct`, no card or
-  order of ours claims it, no engagement is in play on it, it is not returning (mode RTL, LAND,
-  QRTL or SMART_RTL), and it is idle: no current order, or one that is not flying (failed,
-  superseded, back in the queue). An order
+  order of ours, no other proposer's card waiting in the inbox and no engagement claims it, it is
+  not recovering on its own (returning, landing or surfacing: `RECOVERING_MODES`, every such mode
+  of ArduPilot's vehicle types and of the stand-ins' failsafes), and it is idle: no current
+  order, or one that is not flying (failed, superseded, back in the queue). An order
   that is running (an orbit or a patrol reports `done` once established, and keeps flying) is
   never taken: a vehicle on someone's order is that someone's.
 - **Inbox pressure** (`pressure`): pending cards in the inbox, own pending cards, alerts.
 - **Engagements in play** (`engaging`): vehicles with an engagement pending in the inbox or, as
-  the change feed reported it, approved or under way.
+  the change feed reported it, approved, under way or effected (its assessment open). The
+  playbook gives such a platform no order of any kind (DECISIONS.md, "The playbook engine").
+- **Velocity**: a track whose velocity the tracker does not know (`velocity_mps` null; the
+  bridge then sends a speed of 0.0 and no course) has no speed or course here, not zero.
+
+The get_fleet read carries no "failsafe acting" field (its full view has the mode, the recent
+status texts and, for a silent vehicle, a display estimate of what its failsafe would do), so a
+vehicle recovering on its own is known by its mode.
 """
 
 from __future__ import annotations
@@ -37,7 +45,17 @@ from typing import Any
 from .config import Config
 from .reads import Reads
 
-RETURNING_MODES = ("RTL", "LAND", "QRTL", "SMART_RTL", "AUTO_RTL")
+# a vehicle in one of these modes is recovering on its own (its lost-link, battery or EKF
+# failsafe, or an operator, sent it home, down or up): crates/murmur-bridge/src/mav.rs names every
+# ArduPilot mode by vehicle type, and the stand-ins' failsafes (crates/murmur-standins/src/
+# failsafe.rs) use RTL, LAND, QLAND, SURFACE and HOLD. Returning: RTL (plane, copter, rover,
+# blimp), QRTL (quadplane), SMART_RTL and AUTO_RTL (copter, rover), DOCK (rover). Landing or
+# surfacing: LAND (copter, blimp), QLAND, LOITERALTQLAND and AUTOLAND (plane), AUTOROTATE
+# (helicopter), SURFACE (sub). A failsafe's HOLD, LOITER or ALT_HOLD is not here: an operator
+# holds a vehicle the same way, and nothing tells the two apart.
+RETURNING_MODES = ("RTL", "QRTL", "SMART_RTL", "AUTO_RTL", "DOCK")
+LANDING_MODES = ("LAND", "QLAND", "LOITERALTQLAND", "AUTOLAND", "AUTOROTATE", "SURFACE")
+RECOVERING_MODES = RETURNING_MODES + LANDING_MODES
 # a vehicle's current order in one of these task-layer states is not flying (it failed, another
 # order replaced it, or it went back to the queue when the link dropped before it started); an
 # orbit or a patrol reports `done` once established and keeps flying, so `done` is not here
@@ -46,8 +64,11 @@ NOT_RUNNING = ("failed", "superseded", "requeued")
 # it carries no mission of ours
 IDLE_PLAYS = ("isr.release", "safety.stuck")
 IMAGING = ("eo_ir",)
+# the sensors that raise a classification with dwell (PLAN.md C2: EO/IR and sonar classify, radar
+# and ESM give a class only)
+CLASSIFYING = ("eo_ir", "sonar")
 OPEN_STATES = ("proposed", "checked", "auto_approved", "pending_approval", "approved", "queued", "dispatched")
-ENGAGE_IN_PLAY = ("proposed", "checked", "auto_approved", "pending_approval", "approved", "dispatched")
+ENGAGE_IN_PLAY = ("proposed", "checked", "auto_approved", "pending_approval", "approved", "dispatched", "effected")
 PROTECTED = ("neutral", "assumed_friend")
 EARTH_R = 6371000.0
 M_PER_DEG = 111_320.0  # the bridge's own figure for carrying a track along its velocity
@@ -222,6 +243,7 @@ def tracks_of(reads: Reads) -> dict[str, Track]:
         ident = t.get("identity") or {}
         ais = ident.get("ais") if isinstance(ident.get("ais"), dict) else None
         vel = t.get("velocity_mps")
+        known = isinstance(vel, list) and len(vel) == 2
         out[str(t["id"])] = Track(
             id=str(t["id"]), domain=t.get("domain"), affiliation=str(t.get("affiliation") or "unknown"),
             aff_conf=_f(t.get("affiliation_confidence")) or 0.0, aff_reason=str(t.get("affiliation_reason") or ""),
@@ -230,8 +252,9 @@ def tracks_of(reads: Reads) -> dict[str, Track]:
             conflict=(str(ident["conflict"]) if ident.get("conflict") else None),
             position=tuple(t["position"]) if isinstance(t.get("position"), list) and len(t["position"]) == 2 else None,
             predicted=tuple(t["predicted"]) if isinstance(t.get("predicted"), list) and len(t["predicted"]) == 2 else None,
-            velocity=tuple(vel) if isinstance(vel, list) and len(vel) == 2 else None,
-            speed=_f(t.get("speed_mps")), course=_f(t.get("course_deg")),
+            velocity=tuple(vel) if known else None,
+            # no velocity: no speed or course (the bridge sends speed 0.0 then)
+            speed=_f(t.get("speed_mps")) if known else None, course=_f(t.get("course_deg")) if known else None,
             age_s=_f(t.get("age_s")) or 0.0, stale=bool(t.get("stale")),
             existence=_f(t.get("confidence_now")) or 0.0, sigma_now=_f(t.get("pos_sigma_now_m")),
             declared=t.get("declared") if isinstance(t.get("declared"), dict) else None,
@@ -359,8 +382,8 @@ class Beliefs:
             return f"claimed by {self.claims[v.uid]}"
         if v.uid in self.engaging:
             return f"engagement in play ({self.engaging[v.uid]})"
-        if (v.mode or "").upper() in RETURNING_MODES:
-            return f"returning ({v.mode})"
+        if (v.mode or "").upper() in RECOVERING_MODES:
+            return f"recovering on its own ({v.mode})"
         task = v.task or {}
         if task and task.get("state") not in NOT_RUNNING and v.task_intent not in self.own_idle:
             return f"on {task.get('task')} i{task.get('intent_id')} ({task.get('state')})"
@@ -375,6 +398,11 @@ def _uid(v: Any) -> int | None:
         return int(v)
     except (TypeError, ValueError):
         return None
+
+
+def _or_default(v: Any, default: float) -> float:
+    """A policy number, or the default only when it is absent (an explicit 0 stays 0)."""
+    return default if v is None else v
 
 
 def policy_value(policy: dict[str, Any], *path: str, default: Any = None) -> Any:
@@ -453,12 +481,22 @@ def build(reads: Reads, cfg: Config, ledger: Any) -> Beliefs:
     own_open = [own[k] for k in sorted(own) if own[k].get("state") in OPEN_STATES]
     own_pending = sum(1 for i in own_open if i.get("state") == "pending_approval")
     claims = ledger.claims(own, vehicles)
+    # another proposer's card waiting in the inbox claims its vehicles too (the operator is
+    # about to decide something for them): ours never doubles it
+    mine = set(own) | {int(k) for k in ledger.entries}
+    for i in pending:
+        if int(i.get("id", 0)) in mine or i.get("kind") == "engage":
+            continue
+        src = i.get("source") or {}
+        for u in i.get("uids") or []:
+            if _uid(u) is not None:
+                claims.setdefault(_uid(u), f"pending i{i.get('id')} from {src.get('kind')} {src.get('id')}")  # type: ignore[arg-type]
     return Beliefs(
         t=t, cfg=cfg, vehicles=vehicles, tracks=tracks, health=hl, nav_suspect=nav_suspect, engaging=engaging,
         claims=claims, interest={tid: interest_of(tr, cfg) for tid, tr in tracks.items()},
         pending=pending, alerts=alerts, own_open=own_open, own_pending=own_pending,
-        reserve_pct=float(policy_value(reads.policy, "rules", "reserve_pct", default=20.0) or 20.0),
-        expire_s=float(policy_value(reads.policy, "approval", "expire_s", default=120.0) or 120.0),
+        reserve_pct=float(_or_default(policy_value(reads.policy, "rules", "reserve_pct"), 20.0)),
+        expire_s=float(_or_default(policy_value(reads.policy, "approval", "expire_s"), 120.0)),
         intents=own, lost_full=dict(sorted(reads.lost_full.items())),
         own_idle={int(e["intent"]) for e in ledger.entries.values() if e.get("play") in IDLE_PLAYS},
     )

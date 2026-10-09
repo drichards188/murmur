@@ -70,9 +70,29 @@ def test_inside_a_cooldown_only_a_material_change_lets_it_propose_and_the_ration
     text, rec = eng.finish(sel[0], b, None, [])
     assert "Proposed again inside a cooldown (i101 rejected by op-1 at 14:38:25Z): material change: the closest approach" in text
     assert rec["material_change"] == mc
-    # an affiliation category change is material too
-    (sel, _), _ = candidates(led, T0 + 20, track("T-1", "unknown", 0.2, pos=offset(-2000, -300), vel=(12.0, 0.0), kind_conf=0.2))
-    assert sel and sel[0].material_change["change"] == "the affiliation shown went from suspect to unknown"
+
+
+
+def test_only_a_rise_in_suspicion_is_a_material_change():
+    """Suspect to unknown (the tracker flips them at classification 0.3) is a fall: not news to
+    the operator who said no. Unknown to suspect, or a suspect held with confidence that rose
+    across 0.5, is."""
+    def rejected(aff, conf):
+        led = Ledger()
+        proposed(led)
+        led.entries["101"]["basis"].update({"affiliation": aff, "aff_conf": conf})
+        led.sync({101: intent(101, "orbit", [3], "rejected", approval={"by": "op-1", "note": "not now"})}, T0 + 5, config())
+        return led
+
+    fell = track("T-1", "unknown", 0.2, pos=offset(-2000, -300), vel=(12.0, 0.0), kind_conf=0.2)
+    (sel, held), _ = candidates(rejected("suspect", 0.7), T0 + 20, fell)
+    assert sel == [], "suspect to unknown at 0.20: a fall, not material"
+    (sel, _), _ = candidates(rejected("suspect", 0.7), T0 + 20, boat(conf=0.3))
+    assert sel == [], "a suspect's confidence falling across 0.5: not material"
+    (sel, _), _ = candidates(rejected("unknown", 0.4), T0 + 20, boat(conf=0.7))
+    assert sel and sel[0].material_change["change"] == "the affiliation shown rose from unknown to suspect"
+    (sel, _), _ = candidates(rejected("suspect", 0.4), T0 + 20, boat(conf=0.7))
+    assert sel and sel[0].material_change["change"] == "the affiliation confidence rose from 0.40 to 0.70, across 0.5"
 
 
 def test_an_expiry_cools_for_2_minutes_and_halves_the_score_a_void_cools_only_its_key():
@@ -91,13 +111,19 @@ def test_an_expiry_cools_for_2_minutes_and_halves_the_score_a_void_cools_only_it
     assert [c.uid for c in sel] == [5], "a void cools its key: another vehicle may go at once"
 
 
-def test_a_withdrawal_of_ours_cools_its_key_for_30_s():
+def test_a_withdrawal_of_ours_cools_its_play_and_target_for_30_s_on_every_vehicle():
+    """The bridge voids a withdrawn intent (it has no `withdrawn` state): the ledger knows the
+    void was its own and cools (play, target) for every vehicle, as a rejection does; a void by
+    the system cools only its key."""
     led = Ledger()
     proposed(led)
-    led.sync({101: intent(101, "orbit", [3], "withdrawn")}, T0 + 10, config())
+    led.entries["101"]["withdrawn_by"] = "hygiene.withdraw_stale"
+    led.sync({101: intent(101, "orbit", [3], "voided")}, T0 + 10, config())
     assert led.cooldown_for("isr.investigate", "T-1", 3, T0 + 39)["why"] == "withdrawn"
-    assert led.cooldown_for("isr.investigate", "T-1", 3, T0 + 41) is None
-    assert led.cooldown_for("isr.investigate", "T-1", 5, T0 + 20) is None
+    assert led.cooldown_for("isr.investigate", "T-1", 5, T0 + 20)["why"] == "withdrawn", "PUMA 3 too, not only PUMA 1"
+    assert led.cooldown_for("isr.investigate", "T-1", 5, T0 + 41) is None
+    (sel, held), _ = candidates(led, T0 + 15)
+    assert sel == [] and all(h.reason.startswith("cooling down until 14:39:00Z: i101 withdrawn") for h in held), held
 
 
 def test_a_restart_adopts_its_cards_from_their_evidence_records():
