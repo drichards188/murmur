@@ -1,7 +1,8 @@
 """Whole episodes on the real `murmur-headless` binary (built here if stale: target/release).
 
 - the golden: Harbor watch, seed 1, byte-identical to the committed digest (the record without
-  its `perf` timings, the change feed's per-process nonce masked; the audit log itself), and a
+  its `perf` timings, the change feed's per-process nonce masked; the audit log itself, but for
+  the commit the binary was built from and the hash chain that carries it), and a
   second run identical to the first in everything but the feed id (each run's one feed id put in
   place of the other's, the whole record compared); seed 2 differs;
 - the audit log replays exactly with its anchors (`murmur-replay --anchors`);
@@ -44,13 +45,25 @@ def binary() -> Path:
 
 
 FEED = re.compile(r'"cursor": "[0-9a-f]+:')
+# the commit the binary was built from (`run.started`'s `build`, murmur-decide/build.rs) and the
+# hash chain that carries it into every later line's `prev`: the golden holds the episode, not
+# the build; the chain itself is checked by the replay below
+BUILD = re.compile(r'"build":\{[^}]*\}')
+PREV = re.compile(r'"prev":"[0-9a-f]{64}"')
+
+
+def audit_without_build(text: str) -> str:
+    return PREV.sub('"prev":"<chain>"', BUILD.sub('"build":<build>', text))
 
 
 def normalized(rec: dict[str, Any]) -> str:
     """The record as the golden holds it: no `perf` (computer time), the change feed's nonce (a
     fresh value per bridge process by design, `mcp/changes.rs`; it is only ever compared for
-    equality) masked. Everything else, the audit log included, must be byte-identical."""
+    equality) masked, the audit log without the commit it was built from. Everything else must be
+    byte-identical."""
     r = {k: v for k, v in rec.items() if k not in ("perf", "provenance")}
+    if "audit_text" in r:
+        r["audit_text"] = audit_without_build(r["audit_text"])
     return FEED.sub('"cursor": "<feed>:', json.dumps(r, sort_keys=True))
 
 
@@ -81,7 +94,7 @@ def digest(rec: dict[str, Any]) -> dict[str, Any]:
     m = episode_metrics(rec)
     return {
         "record_sha256": hashlib.sha256(normalized(rec).encode()).hexdigest(),
-        "audit_sha256": hashlib.sha256(rec["audit_text"].encode()).hexdigest(),
+        "audit_sha256": hashlib.sha256(audit_without_build(rec["audit_text"]).encode()).hexdigest(),
         "audit_events": rec["audit"]["events"],
         "calibration": rec["clock"]["calibration"],
         "proposals": [[p["t"], p["play"], p["target"], p["truth_target"], p["uid"], p["state"]] for p in m["proposals"]],
