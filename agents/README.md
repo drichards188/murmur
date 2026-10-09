@@ -264,6 +264,14 @@ fishing boat in the keep-out), so no engagement was in play and the playbook's f
 out by policy. That behaviour rests on its tests and the bridge's own (mcp tests, "engagement in
 play").
 
+**Checked live after fix round 3 and the merge of master** (10-09,
+`situation-harbor-watch-20261009T200944Z`, autoplay; replayed exactly with anchors, both proposals
+faithful): the look at 178.9 s and the recentre at 210.5 s as before. This time PUMA 1's link
+dropped with the recentre approved: it waited in the bridge's queue (said once, `left`, while
+PUMA 1 went home on its own failsafe), came back to the inbox after the queue's hold, and the
+playbook then withdrew it from pending approval, the sensor being the reason ("PUMA 1 is
+recovering on its own"), so the cooldown it left is PUMA 1's on T-0008 alone, not the pair's.
+
 Not seen by any play yet, said so: fewer than six satellites (the compact fleet read has no
 satellite count) and a spoof that keeps every navigation flag good (no navigation-integrity fact
 exists; PLAN.md). The engagement plays, `ident.review_support` and `isr.reacquire_lost` are step 3.
