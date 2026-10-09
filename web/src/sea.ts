@@ -1,16 +1,42 @@
 // The 3D sea surface's outline, from the basemap's own water polygons (murmur-5xl follow-up).
+// Only the sea is a surface at 0 m: OpenMapTiles' `ocean` class, the water inside the coastline
+// (the Pacific, the bay, Richardson Bay, the tidal sloughs the coastline takes in). Every other
+// water polygon (lakes, reservoirs, ponds, salt ponds, rivers, docks) lies at its own height, a
+// metre or more above 0 m for most of them, where a plane at 0 m loses to the terrain over it
+// seen from above and wins once tilted, so its tint depended on the view. That water is tinted
+// by the style's own water fill instead, draped on the terrain in 3D (drapedWater, MapView).
 // MapLibre hands the water of each loaded vector tile clipped to the tile plus a buffer, so
 // neighbouring tiles overlap by the buffer, and while children load it keeps their parent as a
-// placeholder (the same water twice, at two zooms). OSM's water areas overlap among themselves
-// too (a salt pond over its pond complex). The sea layer tints each pixel once whatever covers it
-// (a stencil pass, map3d.ts), so the polygons go to it as MapLibre gives them, buffers and all:
-// cutting each tile's water to its own square was tried, cost the same and left a few
+// placeholder (the same water twice, at two zooms). The sea layer tints each pixel once whatever
+// covers it (a stencil pass, map3d.ts), so the polygons go to it as MapLibre gives them, buffers
+// and all: cutting each tile's water to its own square was tried, cost the same and left a few
 // untinted pixels along tile borders where the cuts of two tiles met at different points. A tile
 // under another tile in the set is still left out, which only saves drawing the same water twice.
 // Also which vehicles' trails and stems draw under the surface. Pure functions (no MapLibre or
 // deck.gl at run time): checked by sea.check.ts.
 
 import { domainOf, type Vehicle } from './types.ts'
+
+type RGBA = [number, number, number, number]
+
+/** The sea surface's colour (map3d.ts), and the tint the draped water is given to match it. */
+export const SEA_TINT: RGBA = [40, 110, 160, 70]
+
+/** The water class drawn as the sea surface at 0 m. Measured against the console's own
+ *  elevation tiles (Terrarium, the 3D terrain) under the basemap's water around the whole bay
+ *  and the Golden Gate (2026-10-09): `ocean` is 93 % below 0 m (98 % around the Golden Gate,
+ *  median -19 m); lakes and reservoirs 2 % (median +1.8 m, reservoirs to +150 m); ponds and salt
+ *  ponds 6 % (median +1.1 m); rivers 42 % (the North Bay's tidal rivers and sloughs reach -6 m,
+ *  the South Bay's creeks sit near +1 m), so a river's polygon does not say which; docks are a
+ *  dozen basins, most inside the ocean polygon. Only `ocean` is water at sea level by class.
+ *  Not all of it, though: in the far South Bay its tidal flats, marsh and sloughs read up to
+ *  +1.3 m (in the Mountain View tiles 53 % of the ocean is above 0 m, 24 % above +0.5 m), and
+ *  there the surface still loses to the terrain seen from above and wins once tilted. */
+export const SEA_CLASS = 'ocean'
+
+/** Water the draped fill leaves at the style's own colour in 3D: the sea (the surface tints it,
+ *  and a second tint would double it) and swimming pools (many, in cities, never tinted before). */
+export const UNTINTED_CLASSES = [SEA_CLASS, 'swimming_pool']
 
 /** longitude, latitude */
 export type Pt = [number, number]
@@ -48,9 +74,9 @@ export interface TileFeature {
 }
 
 /** The sea's water among the query results, grouped by the tile it came from: only what
- *  isSeaWater keeps counts, so a tile of nothing but pools neither enters the rebuild key nor,
- *  as a parent, hides a child's water from outermost. Features without tile coordinates (a
- *  MapLibre that stopped setting them) are skipped and counted in `missing`. */
+ *  isSeaWater keeps counts, so a tile of nothing but lakes or pools neither enters the rebuild
+ *  key nor, as a parent, hides a child's sea from outermost. Features without tile coordinates
+ *  (a MapLibre that stopped setting them) are skipped and counted in `missing`. */
 export function byTile<F extends TileFeature>(features: F[]) {
   const groups = new Map<string, TileId & { feats: F[] }>()
   let missing = 0
@@ -80,10 +106,37 @@ export function tilesKey(groups: Map<string, { feats: unknown[] }>) {
 
 export const seaKey = (features: TileFeature[]) => tilesKey(byTile(features).groups)
 
-/** The water the sea is drawn over, as the style's own water layer draws it: polygons, not in
- *  a tunnel; swimming pools left out (on land, under the terrain anyway, and many). */
+/** The water the sea surface is drawn over: the sea's polygons (SEA_CLASS), not in a tunnel. */
 export function isSeaWater(f: Pick<TileFeature, '_vectorTileFeature' | 'properties'>) {
-  return f._vectorTileFeature?.type === 3 && f.properties?.brunnel !== 'tunnel' && f.properties?.class !== 'swimming_pool'
+  return f._vectorTileFeature?.type === 3 && f.properties?.brunnel !== 'tunnel' && f.properties?.class === SEA_CLASS
+}
+
+/** The style's water fill in 3D, for a layer whose colour is `base` (2D keeps the style's own).
+ *  `color`: the sea and pools keep `base`; every other water polygon gets SEA_TINT composited over
+ *  `base`, which is what the sea surface makes of the same fill where it draws (the surface tests
+ *  depth but never writes it, so it blends over the draped water as a translucent fill does), and
+ *  the two meet without a seam. Draped, the tint follows the terrain: it shows at any height and
+ *  view angle, needs no depth offset and costs nothing per frame. `sortKey` draws the sea's
+ *  polygons last within the layer, over any other water polygon inside the coastline (Mission
+ *  Creek, Islais Creek Channel, Richmond's Santa Fe and Harbor Channels, the Pier 70 docks and a
+ *  salt pond by Alviso are both): there the draped tint is covered, and the surface alone tints
+ *  it, once, as it tints the sea around it. The composite is left to MapLibre (`to-rgba`), so it
+ *  holds for whatever colour the style gives its water; a `base` that is not a plain colour string
+ *  (an expression or a zoom function, none in the style now) cannot be nested in a match, and
+ *  gives null: the caller leaves the layer as it is. */
+export function drapedWater(base: unknown, tint: RGBA = SEA_TINT) {
+  if (typeof base !== 'string') return null
+  const a = tint[3] / 255
+  const over = [
+    'let',
+    'water',
+    ['to-rgba', ['to-color', base]],
+    ['rgba', ...[0, 1, 2].map((k) => ['+', ['*', ['at', k, ['var', 'water']], 1 - a], tint[k] * a]), ['at', 3, ['var', 'water']]],
+  ]
+  return {
+    color: ['match', ['get', 'class'], UNTINTED_CLASSES, base, over] as unknown[],
+    sortKey: ['match', ['get', 'class'], SEA_CLASS, 1, 0] as unknown[],
+  }
 }
 
 // --- what draws under the sea surface (map3d.ts, trailLayers.ts) -------------------------------

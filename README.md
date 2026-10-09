@@ -116,7 +116,8 @@ earlier, and autopilots refuse AUTO until the EKF is ready). `make down` stops a
 The **2D / 3D** toggle on the map switches views; the choice is remembered. 3D tilts the
 camera over real terrain and seabed (Terrarium elevation tiles, which include bathymetry) and
 draws every vehicle at its true altitude or depth with a stem to sea level, 3D trails and a
-translucent sea surface, so submerged vehicles show through the water. Heights are exaggerated
+translucent sea surface, so submerged vehicles show through the water (lakes, reservoirs, ponds
+and rivers lie above sea level and get the same tint laid on the terrain). Heights are exaggerated
 ×2 (terrain and vehicles alike) so 80 m altitudes read at bay scale. Right-drag to orbit the
 camera. Tasking works the same in both views; in 3D, clicking a vehicle selects it.
 

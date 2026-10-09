@@ -2,7 +2,8 @@
 // strips the types itself (make check does this):
 //   node web/src/sea.check.ts
 // Throws on the first failure, prints "sea: ok" otherwise. Not part of the bundle.
-import { assembleSea, belowOf, byTile, isSeaWater, outermost, polygonOffset, polygonsOf, seaKey, splitUnder, tileKey, tilesKey, underWater, type Polygon, type Pt, type TileFeature, type TileWater } from './sea.ts'
+import { createPropertyExpression, latest, type StylePropertySpecification } from '@maplibre/maplibre-gl-style-spec'
+import { assembleSea, belowOf, byTile, drapedWater, isSeaWater, outermost, polygonOffset, polygonsOf, SEA_CLASS, SEA_TINT, seaKey, splitUnder, tileKey, tilesKey, underWater, type Polygon, type Pt, type TileFeature, type TileWater } from './sea.ts'
 import type { Identity, Kind, Vehicle } from './types.ts'
 
 // node's own fs, without @types/node in this (browser) project
@@ -31,32 +32,69 @@ const feat = (z: number, x: number, y: number, type = 3, props: Record<string, u
   _vectorTileFeature: { type },
   properties: props,
 })
-const fs = [feat(10, 163, 395), feat(10, 164, 395), feat(10, 163, 395, 3, { class: 'lake' }), feat(9, 81, 197)]
+const fs = [feat(10, 163, 395), feat(10, 164, 395), feat(10, 163, 395), feat(9, 81, 197)]
 const { groups, missing } = byTile(fs)
 check(groups.size === 3 && groups.get('10/163/395')!.feats.length === 2 && missing === 0, 'grouped by tile')
 check(seaKey(fs) === seaKey([fs[3], fs[1], fs[2], fs[0]]), 'the key does not depend on the order MapLibre returns features in')
 check(seaKey(fs) !== seaKey(fs.slice(0, 3)), 'a tile gone changes the key')
-check(seaKey(fs) !== seaKey([...fs, feat(10, 164, 395, 3, { class: 'pond' })]), 'a feature more in a tile changes the key (a reloaded tile)')
+check(seaKey(fs) !== seaKey([...fs, feat(10, 164, 395)]), 'a sea feature more in a tile changes the key (a reloaded tile)')
 check(seaKey([]) === '' && tilesKey(new Map()) === '', 'no water tiles: the empty key, the sea before any tile loads')
 const noIds = { ...feat(10, 1, 1), _z: undefined } as unknown as TileFeature
 const withMissing = byTile([...fs, noIds])
 check(withMissing.missing === 1 && withMissing.groups.size === 3, 'a feature without its tile is counted, not grouped (map3d.ts warns)')
-// only the sea's water counts: pools, lines and tunnels neither make a tile nor change its count
+// only the sea counts: other water, pools, lines and tunnels neither make a tile nor change its
+// count (a lake's tile loading is no reason to tessellate the sea again)
 const pool = (z: number, x: number, y: number) => feat(z, x, y, 3, { class: 'swimming_pool' })
+const lake = (z: number, x: number, y: number) => feat(z, x, y, 3, { class: 'lake' })
 check(seaKey([...fs, pool(10, 165, 395), pool(10, 165, 395)]) === seaKey(fs), 'a tile of nothing but pools leaves the key alone (no rebuild that changes nothing)')
-check(seaKey([...fs, pool(10, 163, 395)]) === seaKey(fs), 'a pool more in a water tile leaves the key alone')
-check(seaKey([...fs, feat(10, 163, 395, 2, { class: 'river' }), feat(10, 163, 395, 3, { class: 'lake', brunnel: 'tunnel' })]) === seaKey(fs), 'nor do lines or water in a tunnel')
-check(byTile([pool(9, 81, 197)]).groups.size === 0 && seaKey([pool(9, 81, 197)]) === '', 'pools alone: no tiles, the empty key')
-// a parent holding only pools must not hide its child's water from outermost
-const keptKids = outermost([...byTile([pool(9, 81, 197), feat(10, 163, 395)]).groups.values()])
-check(keptKids.length === 1 && tileKey(keptKids[0]) === '10/163/395', "a pools-only parent does not drop its child's water")
+check(seaKey([...fs, lake(10, 165, 395), feat(10, 165, 395, 3, { class: 'pond', intermittent: 1 })]) === seaKey(fs), 'nor does a tile of nothing but lakes and ponds')
+check(seaKey([...fs, pool(10, 163, 395), lake(10, 163, 395), feat(10, 163, 395, 3, { class: 'river' })]) === seaKey(fs), 'a pool, lake or river more in a sea tile leaves the key alone')
+check(seaKey([...fs, feat(10, 163, 395, 2, { class: 'ocean' }), feat(10, 163, 395, 3, { class: 'ocean', brunnel: 'tunnel' })]) === seaKey(fs), 'nor do lines or water in a tunnel')
+check(byTile([pool(9, 81, 197), lake(9, 81, 197)]).groups.size === 0 && seaKey([pool(9, 81, 197), lake(9, 81, 197)]) === '', 'lakes and pools alone: no tiles, the empty key')
+// a parent holding only lakes or pools must not hide its child's sea from outermost
+const keptKids = outermost([...byTile([pool(9, 81, 197), lake(9, 81, 197), feat(10, 163, 395)]).groups.values()])
+check(keptKids.length === 1 && tileKey(keptKids[0]) === '10/163/395', "a parent of lakes and pools does not drop its child's sea")
 
-// --- which water ------------------------------------------------------------------------------
-check(isSeaWater(feat(10, 1, 1)), 'ocean polygon')
-check(isSeaWater(feat(10, 1, 1, 3, { class: 'lake', intermittent: 1 })), 'a lake, even intermittent (salt ponds)')
-check(!isSeaWater(feat(10, 1, 1, 2, { class: 'river' })), 'not a line')
-check(!isSeaWater(feat(10, 1, 1, 3, { class: 'river', brunnel: 'tunnel' })), 'not water in a tunnel')
-check(!isSeaWater(feat(10, 1, 1, 3, { class: 'swimming_pool' })), 'not a swimming pool')
+// --- which water: the sea surface takes the sea, the draped fill the rest -------------------------
+check(SEA_CLASS === 'ocean' && isSeaWater(feat(10, 1, 1)), 'an ocean polygon is the sea')
+for (const cls of ['lake', 'pond', 'river', 'dock', 'swimming_pool', 'something_new']) {
+  check(!isSeaWater(feat(10, 1, 1, 3, { class: cls })), `a ${cls} polygon is not on the sea surface (it lies at its own height)`)
+}
+check(!isSeaWater(feat(10, 1, 1, 3, { class: 'lake', intermittent: 1 })), 'nor a salt pond (an intermittent lake or pond)')
+check(!isSeaWater(feat(10, 1, 1, 3, {})), 'nor water with no class')
+check(!isSeaWater(feat(10, 1, 1, 2, { class: 'ocean' })), 'not a line')
+check(!isSeaWater(feat(10, 1, 1, 3, { class: 'ocean', brunnel: 'tunnel' })), 'not water in a tunnel')
+
+// The draped fill (MapView.setDrapedWater), evaluated by MapLibre's own expression engine (the
+// style spec maplibre-gl itself depends on): every water polygon but the sea and pools comes out
+// as the sea surface's tint composited over the style's water colour, the colour the surface
+// gives the sea where it draws over that same fill, so the two meet without a seam.
+const STYLE_WATER = 'rgb(27 ,27 ,29)' // OpenFreeMap dark's `water` fill-color
+const draped = drapedWater(STYLE_WATER)!
+const colourExpr = createPropertyExpression(draped.color, latest.paint_fill['fill-color'] as StylePropertySpecification)
+const sortExpr = createPropertyExpression(draped.sortKey, latest.layout_fill['fill-sort-key'] as StylePropertySpecification)
+check(colourExpr.result === 'success' && sortExpr.result === 'success', `the draped fill parses as a style expression (${JSON.stringify(colourExpr.value)})`)
+const evalAs = <T>(e: typeof colourExpr, props: Record<string, unknown>) =>
+  (e.value as unknown as { evaluate(g: { zoom: number }, f: { type: string; properties: Record<string, unknown> }): T }).evaluate({ zoom: 13 }, { type: 'Polygon', properties: props })
+const rgb255 = (c: { r: number; g: number; b: number; a: number }) => [c.r, c.g, c.b].map((v) => (v / c.a) * 255)
+const near = (a: number[], b: number[], eps: number) => a.every((v, k) => Math.abs(v - b[k]) <= eps)
+// the surface's blend (deck.gl's default: src alpha, one minus src alpha) over the style's water
+const a = SEA_TINT[3] / 255
+const surfaceOverWater = [27, 27, 29].map((w, k) => SEA_TINT[k] * a + w * (1 - a))
+for (const cls of ['lake', 'pond', 'river', 'dock', 'something_new']) {
+  const c = evalAs<{ r: number; g: number; b: number; a: number }>(colourExpr, { class: cls, intermittent: 1 })
+  check(c.a === 1 && near(rgb255(c), surfaceOverWater, 0.01), `a ${cls} is draped in the tint the surface gives the sea (${rgb255(c).map((v) => v.toFixed(2))} against ${surfaceOverWater.map((v) => v.toFixed(2))})`)
+}
+check(near(rgb255(evalAs(colourExpr, {})), surfaceOverWater, 0.01), 'water with no class too')
+for (const cls of ['ocean', 'swimming_pool']) {
+  const c = evalAs<{ r: number; g: number; b: number; a: number }>(colourExpr, { class: cls })
+  check(near(rgb255(c), [27, 27, 29], 0.01), `the ${cls} keeps the style's own colour (the surface tints the sea; pools stay as they were)`)
+}
+check(evalAs<number>(sortExpr, { class: 'ocean' }) > evalAs<number>(sortExpr, { class: 'lake' }) && evalAs<number>(sortExpr, { class: 'lake' }) === evalAs<number>(sortExpr, { class: 'river' }), 'the sea draws last, over a lake or river inside the coastline (tinted once, by the surface)')
+// another style colour: the composite follows it (MapLibre does the arithmetic)
+const other = evalAs<{ r: number; g: number; b: number; a: number }>(createPropertyExpression(drapedWater('#102030')!.color, latest.paint_fill['fill-color'] as StylePropertySpecification), { class: 'lake' })
+check(near(rgb255(other), [0x10, 0x20, 0x30].map((w, k) => SEA_TINT[k] * a + w * (1 - a)), 0.01), 'the composite follows the style colour')
+check(drapedWater(['interpolate', ['linear'], ['zoom'], 5, '#000', 10, '#111']) === null && drapedWater({ stops: [[5, '#000']] }) === null && drapedWater(undefined) === null, 'a colour that is not a plain string: null (the layer is left as it is)')
 
 // --- the polygons: as MapLibre gives them -------------------------------------------------------
 // lon/lat of a point given in the tile's own coordinates (0..1 across, buffer outside)

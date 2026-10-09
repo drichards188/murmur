@@ -13,6 +13,7 @@ import { GLIDE_LAYER_IDS } from './orderLayers'
 import { buildTrailLayers } from './trailLayers'
 import { perfSeaCheck, perfWatchDeck } from './perf'
 import { reducedMotion } from './reveal'
+import { drapedWater } from './sea'
 import { vehiclesGeneration } from './useBridge'
 import type { SpaceOverlay } from './space'
 import { EMPTY_OVERLAY } from './space'
@@ -238,9 +239,39 @@ function setDrapedBridges(m: maplibregl.Map, show: boolean) {
   }
 }
 
+// the style's own water fill (colour, sort key) per water layer, so 2D can restore it
+const waterFills = new WeakMap<maplibregl.Map, { id: string; color: unknown; sortKey: unknown }[]>()
+let warnedWater = false
+
+/** In 3D the sea surface (map3d.ts) tints only the sea, at 0 m; every other water polygon
+ *  (lakes, reservoirs, ponds, rivers) is tinted by the style's own water fill, draped on the
+ *  terrain, in the colour the surface gives the sea (sea.ts drapedWater), with the sea's
+ *  polygons drawn last so a lake inside the coastline is tinted once. 2D restores the style's
+ *  own fill. Changing either relays out the water's tiles, as the road filters do. */
+function setDrapedWater(m: maplibregl.Map, is3d: boolean) {
+  let saved = waterFills.get(m)
+  if (!saved) {
+    saved = m
+      .getStyle()
+      .layers.filter((l) => l.type === 'fill' && 'source-layer' in l && l['source-layer'] === 'water')
+      .map((l) => ({ id: l.id, color: m.getPaintProperty(l.id, 'fill-color'), sortKey: m.getLayoutProperty(l.id, 'fill-sort-key') }))
+    waterFills.set(m, saved)
+  }
+  for (const { id, color, sortKey } of saved) {
+    const draped = is3d ? drapedWater(color) : null
+    if (is3d && !draped && !warnedWater) {
+      warnedWater = true
+      console.warn(`[murmur] the style's water colour (${id}) is not a plain colour: lakes and rivers are left untinted in 3D (sea.ts drapedWater)`)
+    }
+    m.setPaintProperty(id, 'fill-color', (draped?.color ?? color) as maplibregl.ExpressionSpecification)
+    m.setLayoutProperty(id, 'fill-sort-key', (draped?.sortKey ?? sortKey) as maplibregl.ExpressionSpecification)
+  }
+}
+
 /** `animate`: tilt the camera into the view (a toggle); false keeps it (restoring a lost context) */
 function applyView(m: maplibregl.Map, view: ViewMode, animate = true) {
   setDrapedBridges(m, view === '2d')
+  setDrapedWater(m, view === '3d')
   if (view === '3d') {
     m.setTerrain({ source: 'dem', exaggeration: HEIGHT_EXAGGERATION })
     m.setLayoutProperty('hillshade', 'visibility', 'visible')

@@ -4,7 +4,7 @@ import type * as maplibregl from 'maplibre-gl'
 import type { LiftedBridge } from './bridges'
 import { drawnTick, drawnXYZ, smoothing } from './drawn'
 import { perfSeaTess } from './perf'
-import { assembleSea, byTile, outermost, polygonOffset, polygonsOf, tilesKey, underWater, type SeaPolygon, type TileWater } from './sea'
+import { assembleSea, byTile, outermost, polygonOffset, polygonsOf, SEA_TINT, tilesKey, underWater, type SeaPolygon, type TileWater } from './sea'
 import type { Vehicle } from './types'
 import { domainOf } from './types'
 
@@ -60,9 +60,9 @@ function urlNumber(name: string, fallback: number) {
  *  `slope` (`?seaslope=<n>`) scales with the plane's own depth slope, about one pixel's worth of
  *  how far the plane recedes per pixel: at a far, oblique view a hundred metres or more. That
  *  term is what let the first fix (both -1) paint hills, cities and bridge decks tens of metres
- *  up when the plane was a rectangle over land. Now that the plane is cut to the basemap's water
+ *  up when the plane was a rectangle over land. Now that the plane is cut to the basemap's sea
  *  (sea.ts, refreshSea) and the bridge decks draw after it, it can only reach what lies inside
- *  the water polygons: shores, tidal flats and salt pond levees. And a constant alone is not
+ *  the sea's polygons: shores, tidal flats and marsh. And a constant alone is not
  *  enough: in software rendering (the Playwright browser, 24-bit depth) at zoom 10.6 and pitch
  *  55 over the bay off SFO, a bias of -4 tinted 41,000 pixels with no slope, 95,000 with
  *  -0.25, 155,000 with -0.5, 179,000 with -1, 181,000 with -2 and 187,000 with an offset nothing
@@ -84,21 +84,21 @@ let seaKey = ''
 let seaData: SeaPolygon[] = []
 let warnedIds = false
 
-/** Re-reads the water of the vector tiles MapLibre has for the view and, if that set of tiles
+/** Re-reads the sea of the vector tiles MapLibre has for the view and, if that set of tiles
  *  changed, rebuilds the sea surface from it; true when it did (the layers need pushing again).
  *  A check that finds nothing changed costs one unfiltered querySourceFeatures over the water
- *  layer of the renderable tiles: MapLibre builds a light feature object for each (pools
- *  included) and converts no geometry until it is read; the water is filtered here, and only
- *  on a rebuild (measured over a tilted South Bay view of about 300 water features: 0.2 ms a
- *  check; a rebuild 3.6 ms here plus 10.6 ms of deck.gl tessellation for 21,000 to 23,000
- *  vertices, both in ?perf). The same data object is kept until the tile set changes, so deck.gl does not
- *  tessellate the sea again on every update, and the depth results do not reshuffle with a
- *  still camera (a polygon rebuilt per update was part of the flashing).
+ *  layer of the renderable tiles: MapLibre builds a light feature object for each (lakes and
+ *  pools included) and converts no geometry until it is read; the sea is filtered here, and
+ *  only on a rebuild (?perf; over the probes of murmur-5xl's class split, a check 0.2 ms, a
+ *  rebuild 3.3 ms here plus 3.6 ms of deck.gl tessellation, about half what it cost while every
+ *  water polygon was part of the sea). The same data object is kept until the tile set
+ *  changes, so deck.gl does not tessellate the sea again on every update, and the depth results
+ *  do not reshuffle with a still camera (a polygon rebuilt per update was part of the flashing).
  *  Until water tiles have loaded there is no sea at all: a stand-in rectangle would paint the
- *  land under it, which is the bug this replaced. Inland water above sea level is drawn too, at
- *  0 m, where the terrain over it hides it: reservoirs tens of metres up stayed clear at every
- *  view tried, though a lake only a few metres up (Lake Merced) can show tinted from far off at
- *  a grazing angle, where the slope offset reaches that high. */
+ *  land under it, which is the bug this replaced. Only the sea (sea.ts isSeaWater) is drawn:
+ *  lakes, reservoirs, ponds and rivers lie at their own height, mostly above 0 m, where a plane
+ *  at 0 m was hidden by the terrain seen from above and showed once tilted. The style's water
+ *  fill tints them in 3D instead, draped on the terrain (sea.ts drapedWater, MapView). */
 export function refreshSea(m: maplibregl.Map): boolean {
   const { groups, missing } = byTile(m.querySourceFeatures('openmaptiles', { sourceLayer: 'water' }))
   if (missing && !warnedIds) {
@@ -133,24 +133,23 @@ export function refreshSea(m: maplibregl.Map): boolean {
  *  which they would otherwise fight), and the screen-space overlays. A stem runs from sea level
  *  to its vehicle, so it lies wholly on one side of the surface. */
 
-// The sea in two passes of one layer, so that each pixel is tinted once however many water
-// polygons cover it: OSM's water areas overlap (a salt pond over its pond complex, a lagoon
-// inside the coastline's water), and a translucent fill blends twice where they do. Bit 0 of
-// the stencil marks a tinted pixel. The first pass clears it under the sea's outline and draws
-// nothing: with terrain on, MapLibre renders fill and line layers to textures, but it still
-// writes tile clipping masks (tile ids) into the screen's stencil for those of them hidden at the
-// current zoom, so the stencil is not 0 when deck.gl draws (left uncleared, only about a third of
-// the sea came out tinted). The second pass tints where the bit is clear and sets it, so a second
-// polygon over the same pixel fails. Only bit 0, because luma.gl 9.4's WebGL render pass forces
-// the stencil write mask to 1 before each draw (a wider mask would work the same); its stencil
-// reference is always 0, and a compare of 'always' turns the test off, so the first pass uses
-// not-equal (sea.check.ts pins these three). Each pass is its own model with fixed parameters,
-// both drawn from the layer's one tessellation, back to back in one draw() with nothing between
-// them, and luma.gl pushes and pops the GL state around each model draw. Nothing of MapLibre's
-// draws after the sea: in 3D the deck.gl layers have no beforeId, so they share the one group
-// deck.gl keeps as the style's last layer (it moves it back to the end whenever its layers are
-// set; MapView warns in a dev build if a frame is ever drawn otherwise). MapLibre clears the
-// stencil at the start of every frame.
+// The sea in two passes of one layer, so that each pixel is tinted once however many sea polygons
+// cover it: neighbouring tiles' water overlaps by the tiles' buffers (sea.ts), and a translucent
+// fill blends twice where it does. Bit 0 of the stencil marks a tinted pixel. The first pass
+// clears it under the sea's outline and draws nothing: with terrain on, MapLibre renders fill and
+// line layers to textures, but it still writes tile clipping masks (tile ids) into the screen's
+// stencil for those of them hidden at the current zoom, so the stencil is not 0 when deck.gl draws
+// (left uncleared, only about a third of the sea came out tinted). The second pass tints where the
+// bit is clear and sets it, so a second polygon over the same pixel fails. Only bit 0, because
+// luma.gl 9.4's WebGL render pass forces the stencil write mask to 1 before each draw (a wider
+// mask would work the same); its stencil reference is always 0, and a compare of 'always' turns
+// the test off, so the first pass uses not-equal (sea.check.ts pins these three). Each pass is its
+// own model with fixed parameters, both drawn from the layer's one tessellation, back to back in
+// one draw() with nothing between them, and luma.gl pushes and pops the GL state around each model
+// draw. Nothing of MapLibre's draws after the sea: in 3D the deck.gl layers have no beforeId, so
+// they share the one group deck.gl keeps as the style's last layer (it moves it back to the end
+// whenever its layers are set; MapView warns in a dev build if a frame is ever drawn otherwise).
+// MapLibre clears the stencil at the start of every frame.
 const SEA_CLEAR = {
   // everywhere under the sea's outline, hidden or not, and no colour (blending keeps dst)
   depthCompare: 'always',
@@ -268,11 +267,11 @@ export function build3dStatic(vehicles: Vehicle[], visible = true, bridges: Lift
       new SeaLayer({
         id: 'sea-surface',
         visible,
-        // the basemap's water, at 0 m (refreshSea); the same array until the water tiles change
+        // the basemap's sea, at 0 m (refreshSea); the same array until the sea's tiles change
         data: seaData,
         getPolygon: (d) => d.polygon,
         positionFormat: 'XY',
-        getFillColor: [40, 110, 160, 70],
+        getFillColor: SEA_TINT,
       }),
       // bridge decks at estimated height (see bridges.ts), after the sea surface: never tinted
       new PathLayer<LiftedBridge>({
