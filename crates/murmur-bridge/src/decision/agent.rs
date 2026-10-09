@@ -155,10 +155,12 @@ impl Decision {
 
     /// Withdraw one of the agent's own intents before dispatch. Another agent's or a
     /// human's intent is refused (403); so is one already dispatched or ended (409). With
-    /// `if_state` (`withdraw_intent`'s), the intent's state is read under the same lock as the
-    /// withdrawal and a mismatch is refused (409) before the engine is asked: nothing is
-    /// withdrawn or logged, so the audit log and replay are as without the precondition (an
-    /// agent that read pending_approval cannot void an approval that came meanwhile).
+    /// `if_state` (`withdraw_intent`'s), a state name (an unknown one is 400), the intent's
+    /// owner and then its state are read under the same lock as the withdrawal: another's
+    /// intent is 403 before its state is said, and a mismatch is 409, both before the engine is
+    /// asked, so nothing is withdrawn or logged and the audit log and replay are as without the
+    /// precondition (an agent that read pending_approval cannot void an approval that came
+    /// meanwhile).
     pub fn agent_withdraw(
         &self,
         agent: &AgentId,
@@ -171,29 +173,42 @@ impl Decision {
             let mut guard = self.lock();
             let core = &mut *guard;
             if let Some(want) = if_state {
-                let now = core.engine.intent(id).map(|i| {
-                    serde_json::to_value(i.state())
+                let Ok(state) = serde_json::from_value::<State>(json!(want)) else {
+                    return Err(DecisionError {
+                        status: 400,
+                        detail: format!("if_state {want:?} is not an intent state"),
+                        intent: None,
+                    });
+                };
+                let Some(i) = core.engine.intent(id) else {
+                    return Err(DecisionError {
+                        status: 404,
+                        detail: format!("unknown intent {id}"),
+                        intent: None,
+                    });
+                };
+                // the owner first: another's intent is refused before its state is said
+                let mine = matches!(
+                    &i.spec().source,
+                    murmur_decide::Source::Agent { id: a } if a == agent
+                );
+                if !mine {
+                    return Err(engine_err(EngineError::NotOwner {
+                        agent: agent.clone(),
+                        id,
+                    }));
+                }
+                if i.state() != state {
+                    let now = serde_json::to_value(i.state())
                         .ok()
                         .and_then(|v| v.as_str().map(str::to_string))
-                });
-                match now {
-                    Some(Some(s)) if s == want => {}
-                    Some(s) => {
-                        let s = s.unwrap_or_else(|| "?".into());
-                        let e = DecisionError {
-                            status: 409,
-                            detail: format!("{id} is {s}, not {want}: not withdrawn (if_state)"),
-                            intent: None,
-                        };
-                        return Err(self.with_intent(core, id, e));
-                    }
-                    None => {
-                        return Err(DecisionError {
-                            status: 404,
-                            detail: format!("unknown intent {id}"),
-                            intent: None,
-                        });
-                    }
+                        .unwrap_or_else(|| "?".into());
+                    let e = DecisionError {
+                        status: 409,
+                        detail: format!("{id} is {now}, not {want}: not withdrawn (if_state)"),
+                        intent: None,
+                    };
+                    return Err(self.with_intent(core, id, e));
                 }
             }
             match core.engine.agent_port(agent.clone()).withdraw(id, reason) {

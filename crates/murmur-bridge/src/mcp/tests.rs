@@ -596,6 +596,40 @@ async fn a_withdrawal_with_if_state_happens_only_from_that_state() {
     r.replays();
 }
 
+/// `if_state` checks the owner before the state (another agent's intent is 403 whatever state
+/// it names, so its state is not said), and refuses a value that is no intent state (400).
+#[tokio::test(start_paused = true)]
+async fn if_state_checks_the_owner_first_and_knows_the_states() {
+    let r = rig();
+    r.vehicle(2, Firmware::Copter, "switchblade", (LAT, LON));
+    sleep(Duration::from_millis(500)).await;
+    let id = r.ok(&planner(), "propose_intent", orbit(2, "watch the strait")).await["id"]
+        .as_u64()
+        .expect("id");
+    for want in ["approved", "pending_approval"] {
+        let (err, v) = r
+            .call(
+                &watch(),
+                "withdraw_intent",
+                json!({ "id": id, "reason": "not mine", "if_state": want }),
+            )
+            .await;
+        assert!(err && v["status"] == 403, "{want}: {v}");
+        assert!(!v["error"].to_string().contains("pending_approval, not"), "{v}");
+    }
+    let (err, v) = r
+        .call(
+            &planner(),
+            "withdraw_intent",
+            json!({ "id": id, "reason": "x", "if_state": "pending" }),
+        )
+        .await;
+    assert!(err && v["status"] == 400, "{v}");
+    assert_eq!(r.state(id), State::PendingApproval, "nothing withdrawn");
+    assert_eq!(r.actions("intent.withdraw"), 0, "nothing logged");
+    r.replays();
+}
+
 #[tokio::test(start_paused = true)]
 async fn preview_runs_the_checks_without_creating_an_intent() {
     let r = rig();

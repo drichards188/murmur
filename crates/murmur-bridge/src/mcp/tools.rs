@@ -241,7 +241,9 @@ pub struct WithdrawParams {
     /// Withdraw only if the intent is in this state at the moment of the withdrawal (for
     /// example pending_approval: never one an operator approved meanwhile), checked with the
     /// withdrawal itself; otherwise refused (409), saying the state it is in, and nothing is
-    /// withdrawn or logged.
+    /// withdrawn or logged. An intent state name (proposed, pending_approval, approved, queued,
+    /// ...; another value is refused, 400). Another's intent is refused (403) before its state
+    /// is read.
     pub if_state: Option<String>,
 }
 
