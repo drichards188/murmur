@@ -125,7 +125,7 @@ a declaration, an alert). Then, a pure function of the reads, the config and the
    | `isr.release` | P2 | an orbit of ours whose premise is gone | a hold (or our earlier order on the vehicle) | |
    | `isr.armed_overwatch` | P2, human | off unless a situation enables it: a suspect at affiliation confidence 0.5 or more closing on a protected point, no track shown neutral or assumed friend within the radius | an armed orbit by a free armed platform whose navigation is not suspect | confidence under 0.5; a protected track inside the radius; stale |
    | `link.cover_gap` | P3 | a vehicle on an orbit or patrol silent for 2 x its `lost_after_s` | the nearest free capable vehicle takes over the route or centre | the link back (a waiting filler withdrawn; a running one kept) |
-   | `link.withdraw_pending` | P3 | a card of ours waiting for a vehicle whose link is lost | withdraw: "link lost at <time>" | |
+   | `link.withdraw_pending` | P3 | a card of ours waiting for the operator (pending approval) for a vehicle whose link is lost (one approved and queued for the link is the queue's) | withdraw: "link lost at <time>" | |
    | `nav.suspect_exclude` | P3 | navigation not ready, off GNSS or a GPS glitch flagged (now or within 60 s) | the vehicle excluded from tasking; an armed card of ours on it withdrawn | |
    | `safety.low_reserve` | P0 | battery under the policy's reserve plus 5 points, link up, not returning | rtl | |
    | `safety.stuck` | P0 | a `not_moving` or `task_failed` alert for 30 s, link up, not on its failsafe's return, not holding | hold | |

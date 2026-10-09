@@ -33,7 +33,7 @@ from typing import Any, Callable
 from . import ENGINE_VERSION
 from . import rationale as R
 from . import rulebook
-from .arbiter import Held, arbitrate, hms, statuses
+from .arbiter import Held, arbitrate, cooling, hms, statuses
 from .beliefs import Beliefs, build
 from .config import Config
 from .ledger import WAITING, Decision, Ledger, key_of
@@ -361,7 +361,8 @@ class Engine:
                 self.log("withdrawal", intent=w.intent, play=w.play, reason=w.reason, state=state,
                          text=f"withdrew i{w.intent} ({w.play}): {w.reason}")
                 rep.withdrawn.append({"intent": w.intent, "play": w.play, "reason": w.reason, "state": state})
-        rep.statuses = {k: v for k, v in statuses(plan.results, held, outcomes, cfg["plays"]).items() if k in cfg["plays"]}
+        sts = statuses(plan.results, held, outcomes, cfg["plays"], cooling(led, b.t))
+        rep.statuses = {k: v for k, v in sts.items() if k in cfg["plays"]}
         self.log_statuses(rep.statuses)
         led.prune(b.t)
         rep.compute_ms = round(compute, 3)

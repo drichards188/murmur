@@ -114,12 +114,31 @@ def supersedes(c: Candidate, claim: str, led: Ledger) -> bool:
     return e is None or PLAYS.get(e["play"]) is None or PLAYS[e["play"]].klass != 0
 
 
-def statuses(results: dict[str, Any], held: list[Held], outcomes: dict[str, str], enabled: list[str]) -> dict[str, str]:
+def cooling(led: Ledger, t: float) -> dict[str, list[str]]:
+    """Per play, the operator's answers it is cooling down after (a rejection, an expiry), for
+    its status: stated while they last, whether or not the trigger holds at the moment, so the
+    status does not flip with a trigger that comes and goes."""
+    out: dict[str, list[str]] = {}
+    for c in sorted(led.cooldowns, key=lambda c: (c["scope"], c["until_t"])):
+        if c["until_t"] <= t or c["why"] not in ("rejected", "expired"):
+            continue
+        play, target = c["scope"].split("|")[:2]
+        who = f" by {c['by']}" if c.get("by") else ""
+        out.setdefault(play, []).append(f"{target} until {hms(c['until_t'])} (i{c['intent']} {c['why']}{who})")
+    return out
+
+
+def statuses(results: dict[str, Any], held: list[Held], outcomes: dict[str, str], enabled: list[str],
+             cools: dict[str, list[str]] | None = None) -> dict[str, str]:
     """One status line per play: active (something of its own is live), ready (on, nothing to
-    do), not ready (the blocking constraint), or off."""
+    do), not ready (the blocking constraint), or off; and the cooldowns after an operator's
+    answer, while they last."""
     out: dict[str, str] = {}
     held_by: dict[str, list[Held]] = {}
+    cools = cools or {}
     for h in held:
+        if h.reason.startswith("cooling down") and h.candidate.play in cools:
+            continue  # said once, steadily, below
         held_by.setdefault(h.candidate.play, []).append(h)
     for name in sorted(PLAYS):
         if name not in enabled:
@@ -139,5 +158,9 @@ def statuses(results: dict[str, Any], held: list[Held], outcomes: dict[str, str]
         elif r is not None and r.blocked:
             t, why = r.blocked[0]
             parts.append(f"not ready: {t}: {why}" if t != "-" else f"not ready: {why}")
-        out[name] = " | ".join(parts) if parts else "ready"
+        if name in cools:
+            parts.append("cooling down: " + "; ".join(cools[name][:3]))
+        if not parts or (len(parts) == 1 and name in cools):
+            parts.insert(0, "ready")
+        out[name] = " | ".join(parts)
     return out

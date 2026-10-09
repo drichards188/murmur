@@ -100,7 +100,8 @@ def test_a_rejection_with_a_note_is_logged_and_the_play_cools_down():
     assert [len(r.proposed) for r in reps] == [1, 0, 0, 0], "no re-proposal without a material change"
     d = [x for x in lines if x["kind"] == "decision"]
     assert d and d[0]["text"].startswith("i101 rejected by op-1 (note \"not now\"); isr.investigate on T-1 cools down until")
-    assert "cooling down until" in reps[3].statuses["isr.investigate"]
+    # stated steadily while it lasts, whether or not the trigger holds at the moment
+    assert {r.statuses["isr.investigate"] for r in reps[1:]} == {"ready | cooling down: T-1 until 14:48:22Z (i101 rejected by op-1)"}
 
 
 # ---- shadow mode ------------------------------------------------------------------------------------------
