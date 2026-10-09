@@ -95,6 +95,36 @@ def wilson(k: int, n: int) -> tuple[float, float] | None:
     return wi(k, n) if n else None
 
 
+def perf_breakdown(rs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Where an episode's wall time goes, mean seconds per episode: the process start (spawn and
+    assembly), the simulator serving requests (`server_s`, the sum of its `call.*` slots: the
+    bridge's tasks, the stand-ins, contacts and the emulator run inside them, broken down under
+    `tasks`), the pipe and JSON on both ends (`ipc_s`: the driver's wait minus the server's own
+    time), and the driver (`python_s`, the playbook's decide calls `playbook_s` among it)."""
+    if not rs:
+        return {}
+
+    def mean(xs: list[float]) -> float:
+        return round(statistics.fmean(xs), 4) if xs else 0.0
+
+    perfs = [r["perf"] for r in rs if r.get("perf")]
+    rust = [p.get("rust") or {} for p in perfs]
+    names = sorted({k for x in rust for k in x})
+    server = [sum(v["s"] for k, v in x.items() if k.startswith("call.")) for x in rust]
+    return {
+        "episodes": len(perfs),
+        "wall_s": mean([r["wall_s"] for r in rs]),
+        "start_s": mean([p["start_s"] for p in perfs]),
+        "server_s": mean(server),
+        "ipc_s": mean([p["sim_wait_s"] - s for p, s in zip(perfs, server)]),
+        "python_s": mean([p["python_s"] for p in perfs]),
+        "playbook_s": mean([p.get("playbook_s", 0.0) for p in perfs]),
+        "calls": mean([float(p["calls"]) for p in perfs]),
+        "ticks": mean([float(p["ticks"]) for p in perfs]),
+        "tasks": {k: mean([x.get(k, {}).get("s", 0.0) for x in rust]) for k in names},
+    }
+
+
 def aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
     groups: dict[str, list[dict[str, Any]]] = {}
     for r in results:
@@ -123,6 +153,7 @@ def aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
             "unfaithful": sum(x["unfaithful"] for x in m),
             "objected": sum(x["objected"] for x in m),
             "reproposals_after_rejection": sum(x["reproposals_after_rejection"] for x in m),
+            "perf": perf_breakdown(rs),
         }
     return out
 
@@ -182,7 +213,8 @@ def main(argv: list[str] | None = None) -> int:
     (out / "aggregate.json").write_text(json.dumps(agg, indent=1, sort_keys=True))
     print(json.dumps({k: agg[k] for k in ("jobs", "done", "workers", "wall_s", "speed")}, indent=1))
     for k, v in agg["groups"].items():
-        print(k, json.dumps(v))
+        print(k, json.dumps({x: y for x, y in v.items() if x != "perf"}))
+        print("  perf", json.dumps(v["perf"]))
     if agg["failed"]:
         print(f"{len(agg['failed'])} failed:", [f["failed"] for f in agg["failed"]][:5], file=sys.stderr)
     print(out)

@@ -241,9 +241,15 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("run", type=Path)
     args = ap.parse_args(argv)
     if args.cmd == "run":
+        failed = []
         for s in args.seeds:
-            run_one(s, args.out if args.out.is_absolute() else REPO / args.out)
-        return 0
+            try:
+                run_one(s, args.out if args.out.is_absolute() else REPO / args.out)
+            except SystemExit as e:  # one seed's failure is listed; the next seed still runs
+                say(f"seed {s}: FAILED: {e}")
+                failed.append(s)
+        say(f"done; failed seeds: {failed or 'none'}")
+        return 1 if failed else 0
     rec = record(args.run)
     rec.pop("audit_text", None)
     print(json.dumps(rec, indent=1)[:4000])

@@ -287,6 +287,8 @@ class Episode:
             self.loop.run(self.e.duration_s)
             for a in sim.truth(association=True).get("association") or []:
                 self.association.setdefault(a["track_id"], a["contact_id"])
+            # where the simulator's computer time went (diagnostics; not part of the episode)
+            rust_perf = sim.rpc({"op": "perf"}).get("tasks") or {}
             end = sim.end()
         except BaseException:
             sim.kill()
@@ -305,6 +307,11 @@ class Episode:
             "ticks": self.agent.ticks if self.agent else 0,
             "compute_ms_mean": (round(sum(self.agent.engine.compute) / len(self.agent.engine.compute), 3)
                                 if self.agent and self.agent.engine.compute else None),
+            "playbook_s": (round(sum(self.agent.engine.compute) / 1000.0, 3)
+                           if self.agent and self.agent.engine.compute else 0.0),
+            # per task or request kind: seconds and polls, timed in the simulator (perf.rs); the
+            # tasks run inside `call.*` requests, so they are parts of those, not added to them
+            "rust": {k: {"s": round(v["s"], 4), "polls": v["polls"]} for k, v in sorted(rust_perf.items())},
         }
         if self.opts.keep is not None:
             self.opts.keep.mkdir(parents=True, exist_ok=True)
