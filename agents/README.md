@@ -212,6 +212,22 @@ with scripted link cuts (PUMA 2 cut: `link.cover_gap` proposed PUMA 1 on PUMA 2'
 after). Compute per tick about 0.3 ms at 4 vehicles live and 4 ms at 100 (synthetic read), against
 the 50 ms target. What each run found and changed is in CRITERIA.md's dated section.
 
+**Checked live after fix round 1** (10-09; both audit logs replayed exactly with their anchors,
+every proposal faithful): Harbor watch on autoplay (`situation-harbor-watch-20261009T175910Z`):
+the look on the fast boat at 177.6 s, as before (its trigger now "closing on the Golden Gate
+Bridge; fast", REAPER 1's EO/IR having the boat), a recentre at 210.8 s, 2 previews for 2
+proposals and 11 status lines in 12 minutes; the recentre's upload failed on PUMA 1's lossy link
+("mission upload unconfirmed") and the ledger backed off its key and PUMA 1 (10 s), the look it
+superseded read as ours, no back-off; both Pumas then went home on their own failsafes, which the
+look's status names. And a scratch variant with the low-reserve line raised to 99 %
+(`situation-harbor-retask-20261009T181358Z`, operator live): rtl for both Pumas at 93 s; op-1
+sent PUMA 1 back on station over the operator API (i6) at 128 s, and for the remaining 410 s,
+its battery falling from 98 % to 95 %, under the line throughout, the playbook sent it nothing
+("i6, someone else's order after our rtl i4: not sent again while it stands"). In the same run a
+scratch client (agent-scripted) withdrew with `if_state: pending_approval` an intent op-1 had just
+approved (refused, 409, nothing logged; the audit log holds only the other withdrawal) and one
+still waiting (voided).
+
 Not seen by any play yet, said so: fewer than six satellites (the compact fleet read has no
 satellite count) and a spoof that keeps every navigation flag good (no navigation-integrity fact
 exists; PLAN.md). The engagement plays, `ident.review_support` and `isr.reacquire_lost` are step 3.
