@@ -82,6 +82,7 @@ from .situation import (
     ai_preflight,
     brief_text,
     load_situation,
+    playbook_json,
     merge_events,
     pointer_names_situation,
     pointer_problems,
@@ -237,6 +238,9 @@ PANEL_KINDS = {
     "limit.hit": "limit", "limit.resume": "resumed", "backoff": "waiting", "budget.exhausted": "budget",
     "budget.deferred": "budget", "run.start": "started", "run.stop": "stopped",
     "tool": "tool", "proposal": "proposal",
+    # the playbook engine's (AI=playbook): a play's status when it changes, its withdrawals, and
+    # how the operator answered its cards
+    "play.status": "play", "withdrawal": "withdrew", "decision": "answer",
 }
 
 
@@ -810,6 +814,10 @@ class Runner:
         self.ai_dir = ai_workdir(self.run_id, [REPO, self.out])
         brief = self.ai_dir / "brief.md"
         brief.write_text(brief_text(self.sit))
+        # the playbook engine's config (the situation's [playbook] table, nothing else of the
+        # file): for AI=playbook, and for the shadow beside a model
+        playbook = self.ai_dir / "playbook.json"
+        playbook.write_text(playbook_json(self.sit))
         notes = self.ai_dir / "agent.jsonl"
         self.notes_tail = AuditTail(notes)
         cmd = ai_command(
@@ -822,6 +830,7 @@ class Runner:
             until=until,
             seconds=until - time.time(),
             codex_home=(os.environ.get("MURMUR_CODEX_HOME") or "").strip() or None,
+            playbook_file=playbook,
         )
         assert cmd is not None
         with open(self.out / "agent.log", "w") as f:
@@ -899,13 +908,15 @@ class Runner:
         d = self.ai_dir
         if d is None:
             return
-        notes = d / "agent.jsonl"
-        try:
-            # a plain file only: a link is not followed
-            if notes.is_file() and not notes.is_symlink():
-                shutil.copyfile(notes, self.out / "agent.jsonl", follow_symlinks=False)
-        except OSError as e:
-            self.record("warning", text=f"could not keep the AI's notes: {e}")
+        # the AI's notes, and the playbook engine's ledgers (AI=playbook, or its shadow)
+        for name in ("agent.jsonl", "playbook-ledger.json", "playbook-shadow-ledger.json"):
+            f = d / name
+            try:
+                # a plain file only: a link is not followed
+                if f.is_file() and not f.is_symlink():
+                    shutil.copyfile(f, self.out / name, follow_symlinks=False)
+            except OSError as e:
+                self.record("warning", text=f"could not keep the AI's {name}: {e}")
         shutil.rmtree(d, ignore_errors=True)
         self.record("ai_dir_removed", dir=str(d))
         self.ai_dir = None

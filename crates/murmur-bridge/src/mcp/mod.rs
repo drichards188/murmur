@@ -20,7 +20,7 @@
 //!   before any MCP session exists). In a dev run (`MURMUR_AUTH=dev`) it is the
 //!   `X-Murmur-Agent` header (or, within an MCP session, the `clientInfo.name` sent with
 //!   `initialize`), checked against `MURMUR_AGENTS` (comma-separated; default
-//!   `agent-planner,agent-watch`): anyone who can reach the port can claim a listed id, and
+//!   `agent-planner,agent-watch,agent-playbook`): anyone who can reach the port can claim a listed id, and
 //!   the run is logged as dev. Each id gets its own `AgentPort`: its proposals carry it as their
 //!   `source`, the console's inbox shows it with the rationale, and the audit log records
 //!   `agent.action` events for `session.connected`, `intent.preview`, `intent.propose` and
@@ -142,7 +142,7 @@ impl Settings {
         let list = std::env::var("MURMUR_AGENTS")
             .ok()
             .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| "agent-planner,agent-watch".into());
+            .unwrap_or_else(|| "agent-planner,agent-watch,agent-playbook".into());
         let idle = std::env::var("MURMUR_MCP_IDLE_S")
             .ok()
             .and_then(|s| s.trim().parse::<u64>().ok())

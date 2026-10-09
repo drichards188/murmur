@@ -23,12 +23,51 @@ TRACKS = [{"id": "T-0009", "affiliation": "suspect", "affiliation_confidence": 0
            "position": [-122.479, 37.817], "identity": {"kind": "small_fast_boat"}, "age_s": 2.0, "stale": False}]
 
 
+COMPACT = {"t": 0.0, "vehicles": [{
+    "uid": 4, "callsign": "HAWK 4", "platform": "skywatch", "domain": "air", "armed": False, "mode": "LOITER",
+    "lon": -122.47, "lat": 37.81, "position_age_s": 1.0, "nav_ready": True, "nav_source": "gnss", "gps_glitch": False,
+    "battery_pct": 90.0, "link_lost": False, "link_age_s": 0.2, "task": None, "stale": []}]}
+CATALOG = {"platforms": [{"id": "skywatch", "cruise_mps": 25, "min_turn_radius_m": 80.0, "tasks": ["hold", "orbit"],
+                          "sensors": [{"type": "eo_ir", "range_m": 4000}]}]}
+# the playbook's config for the shadow: a watch area around the Gate
+SHADOW_CONFIG = {"watch_area": [{"name": "the Gate", "center": [-122.478, 37.818], "radius_m": 3000}]}
+WRITERS = ("preview_intent", "propose_intent", "withdraw_intent")
+
+
 class FakeSession:
+    """The driver's MCP session as the shadow reads it (and every call it makes, recorded)."""
+
+    def __init__(self):
+        self.calls: list[str] = []
+
     async def fleet(self):
         return FLEET
 
     async def tracks(self, **_):
         return TRACKS
+
+    async def call(self, name, **args):
+        self.calls.append(name)
+        assert name not in WRITERS, f"the shadow called {name}"
+        now = time.time()
+        if name == "get_fleet":
+            return {**COMPACT, "t": now}
+        if name == "get_tracks":
+            return {"t": now, "tracks": [{**t, "confidence_now": 0.95, "velocity_mps": [8.0, 1.0], "speed_mps": 8.1,
+                                          "predicted": t["position"], "sources": [{"uid": 4, "sensor": "eo_ir", "last_t": now - 2}]}
+                                         for t in TRACKS]}
+        if name == "get_inbox":
+            return {"t": now, "pending": [], "alerts": []}
+        if name == "get_changes":
+            return {"t": now, "run": "test-run", "cursor": "f:1", "changes": [], "more": False}
+        if name == "get_platforms":
+            return CATALOG
+        if name == "get_policy":
+            return {"policy": {"rules": {"reserve_pct": 20}, "approval": {"expire_s": 120}}}
+        raise AssertionError(f"unexpected read {name}")
+
+    async def propose(self, *a, **k):
+        raise AssertionError("the shadow proposed")
 
 
 class ScriptedPoller:
@@ -79,9 +118,10 @@ def officer(tmp_path: Path, fake: Path, script, *extra: str, seconds: float = 6.
                       heartbeat_s=args.heartbeat_s, coalesce_s=args.coalesce_s, min_gap_s=args.min_gap_s)
     shadow = None
     if args.shadow_playbook:
-        from watch.shadow import PolicyShadow
+        from playbook.config import make
+        from watch.shadow import PlaybookShadow
 
-        shadow = PolicyShadow()
+        shadow = PlaybookShadow(make(SHADOW_CONFIG, "test"), log.write)
     return W.Officer(args, backend_, log, Waker(budgets, escalation=not args.no_escalation), ScriptedPoller(script),
                      shadow, time.time() + seconds)
 
@@ -125,6 +165,11 @@ def test_a_watch_wakes_escalates_and_tells_the_routine_model(fake_claude, tmp_pa
     shadow = [x for x in log if x["kind"] == "shadow"]
     assert len(shadow) == 1 and shadow[0]["track"] == "T-0009" and shadow[0]["request"]["task"] == "orbit"
     assert shadow[0]["request"]["uids"] == [4], "what it would have proposed, logged only"
+    assert shadow[0]["record"]["play"] == "isr.investigate@1" and shadow[0]["record"]["preview"] == {"shadow": True}
+    assert "Shadow: not previewed, not proposed." in shadow[0]["rationale"]
+    calls = o.poller.session.calls
+    assert calls and not set(calls) & set(WRITERS), "the shadow reads only"
+    assert any(x["kind"] == "shadow.status" and x["play"] == "isr.investigate" for x in log)
     assert all(x["source"] == "watch_officer" and x["run"] == "test" for x in log)
     assert o.poller.closed and o.backend.p is None
     # every line reads in the console's Situation panel ({t, kind, text}): a short line for a

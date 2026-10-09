@@ -1,61 +1,55 @@
-"""The shadow: a deterministic agent run beside the model, whose would-be proposals are logged
-for comparison and never proposed.
-
-The interface is one method, so a future playbook engine can replace today's stand-in:
+"""The shadow: the playbook engine run beside the model watch officer, reading only, its would-be
+proposals logged for comparison and never proposed.
 
     class Shadow(Protocol):
         name: str
-        def observe(self, fleet: dict, tracks: list[dict]) -> list[dict]
+        tick_s: float
+        async def tick(self, session) -> list[dict]
 
-`observe` gets the picture the driver read at a wake (`get_fleet`, `get_tracks`) and returns
-what it would propose now: `{"track", "request", "rationale"}` each. It must not call the
-bridge: a preview would be logged under the model's agent id, and a proposal is out of the
-question.
-
-Today's stand-in is `agents/policy_agent.py`'s rule (one sensor orbit per new suspect or
-unknown track within a radius of a point, once per track), in a no-propose mode.
+`tick` gets the driver's MCP session (the model's agent id) and reads the picture through it
+(`get_fleet` compact, `get_tracks`, `get_inbox`, `get_changes` on a cursor of its own; reads
+are not logged by the bridge). It never previews (a preview is logged under the model's agent
+id), never proposes and never withdraws. What it would propose, with its rationale and evidence
+record, goes to the watch officer's situation log as a `shadow` line; what it would withdraw as
+`shadow.withdraw`; a would-be card past the policy's approval wait as `shadow.lapsed`; each
+play's status, when it changes, as `shadow.status`. The driver ticks it on its own clock (the
+engine's 2 s), not at the model's wakes, so the two can be compared on timeliness as well as on
+what they propose (agents/playbook/engine.py, "shadow").
 """
 
 from __future__ import annotations
 
-from typing import Protocol
+import sys
+from pathlib import Path
+from typing import Any, Callable, Protocol
 
-from policy_agent import SUSPICION, haversine_m, orbit_over, pick_sensor, rationale_for
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from playbook.config import Config  # noqa: E402
+from playbook.engine import Engine  # noqa: E402
+from playbook.ledger import Ledger  # noqa: E402
 
 
 class Shadow(Protocol):
     name: str
+    tick_s: float
 
-    def observe(self, fleet: dict, tracks: list[dict]) -> list[dict]: ...
+    async def tick(self, session: Any) -> list[dict]: ...
 
 
-class PolicyShadow:
-    name = "policy_agent"
+class PlaybookShadow:
+    name = "playbook"
 
-    def __init__(self, near: tuple[float, float] = (-122.4780, 37.8180), radius_km: float = 4.0,
-                 platform: str | None = None):
-        self.near = near
-        self.radius_km = radius_km
-        self.platform = platform
-        self.done: set[str] = set()
+    def __init__(self, cfg: Config, log: Callable[..., Any], ledger_path: Path | None = None):
+        self.cfg = cfg
+        self.tick_s = float(cfg["tick_s"])
+        self.engine = Engine(cfg, Ledger(), shadow=True, log=log, ledger_path=ledger_path)
+        self.session: Any = None
 
-    def observe(self, fleet: dict, tracks: list[dict]) -> list[dict]:
-        sensor = pick_sensor(fleet.get("vehicles") or [], self.platform)
-        candidates = []
-        for t in tracks:
-            if t.get("stale") or t["id"] in self.done or SUSPICION.get(t.get("affiliation"), 0) < 2:
-                continue
-            d = haversine_m(t["position"][0], t["position"][1], self.near[0], self.near[1])
-            if d <= self.radius_km * 1000:
-                candidates.append((SUSPICION[t["affiliation"]], -d, t, d))
-        candidates.sort(key=lambda c: (c[0], c[1]), reverse=True)
-        out = []
-        for _, _, t, d in candidates[:1]:  # one a look, as policy_agent proposes
-            self.done.add(t["id"])
-            if sensor is None:
-                out.append({"track": t["id"], "request": None,
-                            "rationale": "no unarmed, navigation-ready aircraft to put on it"})
-                continue
-            out.append({"track": t["id"], "request": orbit_over(t, sensor),
-                        "rationale": rationale_for(t, sensor, self.near, d)})
-        return out
+    async def tick(self, session: Any) -> list[dict]:
+        if session is not self.session:
+            # a new session (the driver reconnected): the catalog, the policy and a cursor again
+            await self.engine.start(session)
+            self.session = session
+        rep = await self.engine.tick(session)
+        return rep.would

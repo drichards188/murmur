@@ -29,7 +29,7 @@ Source: `crates/murmur-bridge/src/mcp/` (the server), `crates/murmur-bridge/src/
   human-control claim): the
   `X-Murmur-Agent` header, or within an MCP session the `clientInfo.name` sent with
   `initialize`, names the agent, which must be listed in `MURMUR_AGENTS` (comma-separated;
-  default `agent-planner,agent-watch`). Anyone who can reach the port can claim a listed id.
+  default `agent-planner,agent-watch,agent-playbook`). Anyone who can reach the port can claim a listed id.
 
 ### The scripted agent (no model)
 

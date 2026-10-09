@@ -38,8 +38,9 @@ SOURCE = "watch_officer"
 
 
 class SituationLog:
-    def __init__(self, path: Path | None, run: str, echo: bool = True):
+    def __init__(self, path: Path | None, run: str, echo: bool = True, source: str = SOURCE):
         self.path = path
+        self.source = source  # the playbook engine writes the same lines as "playbook"
         self.run = run
         self.echo = echo
         self.fd: int | None = None
@@ -50,7 +51,7 @@ class SituationLog:
     def write(self, kind: str, **fields: Any) -> dict:
         t = time.time()
         rec = {"t": round(t, 3), "iso": dt.datetime.fromtimestamp(t, dt.timezone.utc).isoformat(timespec="milliseconds"),
-               "source": SOURCE, "run": self.run, "kind": kind}
+               "source": self.source, "run": self.run, "kind": kind}
         for k, v in fields.items():
             rec[f"field_{k}" if k in rec else k] = v  # a line's own keys are never overwritten
         if not isinstance(rec.get("text"), str) or not rec["text"].strip():
@@ -59,7 +60,8 @@ class SituationLog:
         if self.fd is not None:
             os.write(self.fd, line.encode())  # one write per line: O_APPEND keeps lines whole
         if self.echo:
-            print(f"[watch] {kind} {summary(rec)}", file=sys.stderr, flush=True)
+            tag = "watch" if self.source == SOURCE else self.source
+            print(f"[{tag}] {kind} {summary(rec)}", file=sys.stderr, flush=True)
         return rec
 
     def close(self) -> None:

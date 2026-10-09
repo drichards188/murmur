@@ -52,11 +52,15 @@ def haversine_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
 class AgentSession:
     """An MCP session as one agent id. Use as `async with AgentSession(url, agent) as a:`."""
 
-    def __init__(self, url: str = "http://127.0.0.1:8765/mcp", agent: str = "agent-planner", key: str | None = None):
+    def __init__(self, url: str = "http://127.0.0.1:8765/mcp", agent: str = "agent-planner", key: str | None = None,
+                 client_version: str = "0.1"):
         self.url = url
         self.agent = agent
         # the agent's API key on a bridge that authenticates (MURMUR_AGENT_KEY by default)
         self.key = key
+        # the MCP clientInfo.version sent at initialize: the bridge logs it in `agent.action
+        # session.connected` (the playbook engine sends its config hash there)
+        self.client_version = client_version
         self.session: ClientSession | None = None
         self.tools: list[str] = []
         self._stack: list = []
@@ -69,7 +73,7 @@ class AgentSession:
             transport = streamable_http_client(self.url, http_client=http)
             read, write = await transport.__aenter__()
             self._stack.append(transport)
-            session = ClientSession(read, write, client_info=types.Implementation(name=self.agent, version="0.1"))
+            session = ClientSession(read, write, client_info=types.Implementation(name=self.agent, version=self.client_version))
             await session.__aenter__()
             self._stack.append(session)
             await session.initialize()

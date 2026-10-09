@@ -22,6 +22,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,8 +48,8 @@ STORYLINE_PROPOSERS = ("agent", "operator")
 # mode, and never a script. Every scripted id is its own: op-setup issues the opening orders,
 # op-auto decides in autoplay (the proxy model), op-2 and op-3 sign engagements (autoplay, or
 # cosign live), op-planner is the timeline's second station. op-1, op-2 and op-3 hold
-# engagement authority. The AI is agent-watch (Claude or Codex) or agent-planner (the
-# playbook); the timeline's MCP proposals come from agent-scripted, and an opening order that
+# engagement authority. The AI is agent-watch (Claude or Codex) or agent-playbook (the
+# playbook engine); the timeline's MCP proposals come from agent-scripted, and an opening order that
 # would be authorized by its own submission is proposed by agent-setup so a person (or op-auto)
 # decides it.
 CONSOLE_OPERATOR = "op-1"
@@ -59,7 +60,7 @@ STORYLINE_OPERATOR = "op-planner"
 OPERATORS = [CONSOLE_OPERATOR, *SCRIPTED_SIGNERS, AUTOPLAY_OPERATOR, SETUP_OPERATOR, STORYLINE_OPERATOR]
 ENGAGE_OPERATORS = [CONSOLE_OPERATOR, *SCRIPTED_SIGNERS]
 WATCH_AGENT = "agent-watch"
-PLAYBOOK_AGENT = "agent-planner"
+PLAYBOOK_AGENT = "agent-playbook"
 STORYLINE_AGENT = "agent-scripted"
 SETUP_AGENT = "agent-setup"
 AGENTS = [WATCH_AGENT, PLAYBOOK_AGENT, STORYLINE_AGENT, SETUP_AGENT]
@@ -113,7 +114,6 @@ STEP_KEYS = {
     "engage": {"track", "vehicles", "effect_radius_m", "window_s", "fallback", "rationale", "label", "reason", "retry_s"},
 }
 WATCH_KEYS = {"at_s", "text", "director"}
-PLAYBOOK_KEYS = {"near", "radius_km", "every_s", "platform"}
 TIDEWATER_HOME = Path(os.environ.get("TIDEWATER_HOME", Path.home() / "tidewater"))
 
 
@@ -395,15 +395,7 @@ def load_situation(path_or_name: str | Path) -> Situation:
             raise SituationError(f"{path}: watch {i + 1}: director is true or false")
         sit.watch.append(Watch(at_s=at_s, text=str(w["text"]).strip(), director=bool(w.get("director", False))))
     sit.watch.sort(key=lambda w: w.at_s)
-    pb = _table(raw.get("playbook"), "[playbook]", path)
-    if set(pb) - PLAYBOOK_KEYS:
-        raise SituationError(f"{path}: playbook keys are {sorted(PLAYBOOK_KEYS)}")
-    if "near" in pb and not _lonlat(pb["near"]):
-        raise SituationError(f"{path}: playbook near is [lon, lat]")
-    for k in ("radius_km", "every_s"):
-        if k in pb and not _num(pb[k], f"playbook {k}", path) > 0:
-            raise SituationError(f"{path}: playbook {k} must be > 0")
-    sit.playbook = pb
+    sit.playbook = _playbook(raw.get("playbook"), path)
     story = _table(raw.get("storyline"), "[storyline]", path)
     sit.storyline_proposer = str(story.get("proposer", "agent"))
     if sit.storyline_proposer not in STORYLINE_PROPOSERS or set(story) - {"proposer"}:
@@ -416,6 +408,28 @@ def load_situation(path_or_name: str | Path) -> Situation:
     except (TypeError, ValueError) as e:
         raise SituationError(f"{path}: [autoplay]: {e}") from None
     return sit
+
+
+def _playbook(raw: Any, sit: Path) -> dict[str, Any]:
+    """The `[playbook]` table, checked by the playbook engine's own config (agents/playbook/
+    config.py: the shipped defaults under this table, every key known, every value typed), so a
+    situation the engine would refuse is refused at load."""
+    pb = _table(raw, "[playbook]", sit)
+    if str(REPO / "agents") not in sys.path:
+        sys.path.insert(0, str(REPO / "agents"))  # as eval/agent.py does
+    from playbook.config import ConfigError, merge
+
+    try:
+        merge(pb)
+    except ConfigError as e:
+        raise SituationError(f"{sit}: [playbook]: {e}") from None
+    return pb
+
+
+def playbook_json(sit: Situation) -> str:
+    """What the playbook engine is given (AI=playbook, or the shadow beside a model): the
+    situation's `[playbook]` table, nothing else of the file."""
+    return json.dumps(sit.playbook, sort_keys=True, indent=1) + "\n"
 
 
 def _planned_fleet(fleet: Path) -> list[dict[str, Any]]:
@@ -712,13 +726,13 @@ def ai_command(
     until: float,
     seconds: float,
     codex_home: str | None = None,
+    playbook_file: Path | None = None,
 ) -> list[str] | None:
     """The AI's command line (the launch contract in agents/README.md), or None for none.
     `codex_home`: the user's MURMUR_CODEX_HOME (the AI's environment has no MURMUR_*
-    variable, so it goes on the command line)."""
+    variable, so it goes on the command line). `playbook_file`: the situation's `[playbook]`
+    table as JSON (`playbook_json`), in the AI's own directory."""
     if ai in ("claude", "codex"):
-        pb = sit.playbook
-        near = pb.get("near", [-122.4783, 37.8199])
         cmd = [
             python, str(REPO / "agents" / "watch_officer.py"),
             "--backend", ai,
@@ -727,31 +741,25 @@ def ai_command(
             "--brief", str(brief_file),
             "--situation-log", str(agent_log),
             "--until", f"{until:.0f}",
-            # what the playbook would have proposed at each wake, logged beside the model's
-            # turns and never proposed
+            # the playbook engine beside the model, reading only: what it would have proposed,
+            # logged beside the model's turns and never proposed
             "--shadow-playbook",
-            f"--shadow-near={near[0]},{near[1]}",  # one token: a longitude starts with a minus
-            "--shadow-radius-km", f"{float(pb.get('radius_km', 4.0)):g}",
         ]
-        if pb.get("platform"):
-            cmd += ["--shadow-platform", str(pb["platform"])]
+        if playbook_file is not None:
+            cmd += ["--shadow-config", str(playbook_file), "--shadow-config-name", sit.name]
         if ai == "codex" and codex_home:
             cmd += ["--codex-home", codex_home]
         return cmd
     if ai == "playbook":
-        pb = sit.playbook
-        near = pb.get("near", [-122.4783, 37.8199])
         cmd = [
-            python, str(REPO / "agents" / "policy_agent.py"),
+            python, str(REPO / "agents" / "playbook_agent.py"),
             "--url", mcp_url,
             "--agent", PLAYBOOK_AGENT,
-            "--watch", f"{max(1.0, seconds):.0f}",
-            f"--near={near[0]},{near[1]}",  # one token: a longitude starts with a minus
-            "--radius-km", f"{float(pb.get('radius_km', 4.0)):g}",
-            "--every", f"{float(pb.get('every_s', 10.0)):g}",
+            "--situation-log", str(agent_log),
+            "--until", f"{until:.0f}",
         ]
-        if pb.get("platform"):
-            cmd += ["--platform", str(pb["platform"])]
+        if playbook_file is not None:
+            cmd += ["--config", str(playbook_file), "--config-name", sit.name]
         return cmd
     return None
 

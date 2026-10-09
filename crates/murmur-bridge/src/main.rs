@@ -16,7 +16,7 @@
 //! MURMUR_OPERATORS (ids accepted in X-Murmur-Operator, comma-separated; default op-1),
 //! MURMUR_ENGAGE_OPERATORS (those with engagement authority; one not in MURMUR_OPERATORS stops
 //! the bridge), MURMUR_AGENTS (X-Murmur-Agent or the MCP clientInfo.name; default
-//! agent-planner,agent-watch). `credentials`: operators log in with their own password and
+//! agent-planner,agent-watch,agent-playbook). `credentials`: operators log in with their own password and
 //! agents present their own key, from the credential file MURMUR_CREDENTIALS, else
 //! ~/.config/murmur/credentials.json, managed with `murmur-auth`; the file's operators are the
 //! run's roster); MURMUR_SESSION_IDLE_S (1800),

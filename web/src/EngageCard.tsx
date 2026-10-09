@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ApproveExtra, Check, Intent } from './decisions'
 import { fmtDuration, getOperator, intentAction, StepUpNeeded, stepsUp, useOperator, useOperators } from './decisions'
 import { reportView } from './operatorView'
+import { RationaleText } from './Rationale'
 import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
 import {
@@ -419,7 +420,7 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
       {i.rationale && (
         <blockquote className="ix-rationale">
           <span className="ix-label">{i.source.kind === 'agent' ? 'Agent rationale' : 'Rationale'}</span>
-          {i.rationale}
+          <RationaleText rationale={i.rationale} />
         </blockquote>
       )}
 

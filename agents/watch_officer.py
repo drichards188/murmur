@@ -252,6 +252,7 @@ class Officer:
         started = await self.backend.start()
         self.log.write("backend.start", **{k: v for k, v in started.items() if k != "argv"})
         poller = asyncio.ensure_future(self.poll_loop())
+        shadow = asyncio.ensure_future(self.shadow_loop()) if self.shadow is not None else None
         try:
             while True:
                 if self.stop.is_set():
@@ -294,11 +295,14 @@ class Officer:
                 if outcome:
                     return outcome
         finally:
-            poller.cancel()
-            try:
-                await poller
-            except BaseException:  # noqa: BLE001
-                pass
+            for task in (poller, shadow):
+                if task is None:
+                    continue
+                task.cancel()
+                try:
+                    await task
+                except BaseException:  # noqa: BLE001
+                    pass
             await self.backend.stop()
             await self.poller.close()
 
@@ -359,8 +363,6 @@ class Officer:
         text = compose(wake, mine, self.budget_line(wake), notes, now, first=wake.reason == "start")
         if escalate:
             text = CONSULT_HEAD.format(why="; ".join(wake.escalate_why), agent=self.args.agent) + text
-        if self.shadow is not None:
-            await self.run_shadow(wake)
         cfg = self.backend.cfg
         model = cfg.strong_model if escalate else cfg.model
         effort = cfg.strong_effort if escalate else cfg.effort
@@ -485,14 +487,21 @@ class Officer:
                        why="--on-limit stop" if self.args.on_limit == "stop" else "the reset comes after --until")
         return "limit"
 
-    async def run_shadow(self, wake: Wake) -> None:
-        try:
-            fleet = await self.poller.session.fleet()
-            tracks = await self.poller.session.tracks(include_stale=False)
-            for s in self.shadow.observe(fleet, tracks):
-                self.log.write("shadow", n=wake.n, playbook=self.shadow.name, **s)
-        except Exception as e:  # noqa: BLE001 (the shadow never stops the watch)
-            self.log.write("shadow.error", n=wake.n, error=f"{type(e).__name__}: {e}")
+    async def shadow_loop(self) -> None:
+        """The playbook engine beside the model, on its own clock (agents/watch/shadow.py): it reads
+        through the driver's session and logs what it would propose; it never proposes."""
+        errors = 0
+        while not self.stop.is_set():
+            session = self.poller.session
+            if session is not None:
+                try:
+                    await self.shadow.tick(session)
+                    errors = 0
+                except Exception as e:  # noqa: BLE001 (the shadow never stops the watch)
+                    errors += 1
+                    if errors in (1, 5) or errors % 30 == 0:
+                        self.log.write("shadow.error", error=f"{type(e).__name__}: {e}", errors=errors)
+            await self.sleep(self.shadow.tick_s)
 
 
 def make_backend(args, run_dir: Path, prompt_path: Path, prompt_text: str):
@@ -560,17 +569,26 @@ async def main_async(args) -> int:
 
     poller = Poller(connect)
     shadow = None
+    shadow_cfg = None
     if args.shadow_playbook:
-        from watch.shadow import PolicyShadow
+        from playbook.config import ConfigError, load_file, make
+        from watch.shadow import PlaybookShadow
 
-        near = tuple(float(x) for x in args.shadow_near.split(","))
-        shadow = PolicyShadow((near[0], near[1]), args.shadow_radius_km, args.shadow_platform)
+        try:
+            shadow_cfg = (load_file(args.shadow_config, args.shadow_config_name) if args.shadow_config
+                          else make(None, args.shadow_config_name or "defaults"))
+        except (ConfigError, OSError) as e:
+            log.write("error", error=f"the shadow's playbook config: {e}")
+            return 2
+        ledger = args.situation_log.parent / "playbook-shadow-ledger.json" if args.situation_log else None
+        shadow = PlaybookShadow(shadow_cfg, log.write, ledger)
     log.write("run.start", pid=os.getpid(), backend=backend.describe(), budgets=asdict(budgets), until=until,
               until_iso=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(until)), url=args.url, agent=args.agent,
               auth="agent key" if key else "dev header", run_dir=str(run_dir),
               brief=str(args.brief) if args.brief else None, brief_sha256=sha256(brief) if brief else None,
               prompt_sha256=sha256(prompt_text), escalation=not args.no_escalation,
-              on_limit=args.on_limit, shadow=shadow.name if shadow else None)
+              on_limit=args.on_limit, shadow=shadow.name if shadow else None,
+              shadow_config=shadow_cfg.label if shadow_cfg else None)
     officer = Officer(args, backend, log, waker, poller, shadow, until)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -646,10 +664,11 @@ def parse_args(argv: list[str] | None = None):
     c.add_argument("--print-command", action="store_true", help="print the backend's command lines and exit")
     s = ap.add_argument_group("shadow")
     s.add_argument("--shadow-playbook", action="store_true",
-                   help="log what the deterministic policy agent would propose at each wake (never proposes)")
-    s.add_argument("--shadow-near", default="-122.4780,37.8180", help="its watch point, lon,lat")
-    s.add_argument("--shadow-radius-km", type=float, default=4.0)
-    s.add_argument("--shadow-platform", help="its sensor platform id (default: any unarmed aircraft)")
+                   help="run the playbook engine beside the model, reading only, and log what it would propose "
+                        "(agents/watch/shadow.py; it never previews, proposes or withdraws)")
+    s.add_argument("--shadow-config", type=Path,
+                   help="the playbook's config: a situation's [playbook] table as JSON or TOML (default: the shipped defaults)")
+    s.add_argument("--shadow-config-name", help="the config's name in its label (default: the file's stem)")
     ap.add_argument("--quiet", action="store_true", help="no lines on stderr")
     return ap.parse_args(argv)
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Decisions, Intent } from './decisions'
+import { RationaleText } from './Rationale'
 import { setScriptedBadges } from './situationIds'
 import { usePoll } from './space'
 import './situation.css'
@@ -242,7 +243,11 @@ export function SituationPanel({ decisions }: { decisions: Decisions | null }) {
                   <span className={`sit-state ${STATE_TONE[i.state] ?? ''}`}>{i.state.replace(/_/g, ' ')}</span>
                   <small>{who(i)}{i.approval && scripted.has(i.approval.by) ? ' (scripted)' : ''}</small>
                 </div>
-                {i.rationale && <p>{i.rationale}</p>}
+                {i.rationale && (
+                  <div className="sit-rationale">
+                    <RationaleText rationale={i.rationale} />
+                  </div>
+                )}
               </li>
             ))}
           </ul>

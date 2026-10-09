@@ -16,6 +16,7 @@ import {
   unspendTarget,
 } from './decisions'
 import { EngageCard, EngagementsSection } from './EngageCard'
+import { RationaleText } from './Rationale'
 import { ReviewSection } from './ReviewSection'
 import { isEngage } from './engage'
 import { distanceM } from './geo'
@@ -275,7 +276,7 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, eng
       {i.rationale && (
         <blockquote className="ix-rationale">
           <span className="ix-label">{i.source.kind === 'agent' ? 'Agent rationale' : 'Rationale'}</span>
-          {i.rationale}
+          <RationaleText rationale={i.rationale} />
         </blockquote>
       )}
 
@@ -583,7 +584,11 @@ function DecisionRow({ intent: i, vehicles, now }: { intent: Intent; vehicles: V
       </button>
       {open && (
         <div className="ix-dec-body">
-          {i.rationale && <p className="ix-rationale">{i.rationale}</p>}
+          {i.rationale && (
+            <div className="ix-rationale">
+              <RationaleText rationale={i.rationale} />
+            </div>
+          )}
           <ol className="ix-trail">
             {i.history.map((h, k) => (
               <li key={k}>

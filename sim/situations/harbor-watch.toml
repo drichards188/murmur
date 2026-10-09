@@ -133,12 +133,20 @@ text = "Our small drones' radio links have a 5 s lost-link timer: a short dropou
 at_s = 600
 text = "Two minutes left. The audit log holds every order, proposal and decision; the runner prints the replay command at the end."
 
-# ---- the playbook AI (AI=playbook): agents/policy_agent.py --watch
+# ---- the playbook engine (AI=playbook, and the shadow beside a model): agents/playbook/. Only
+# where to watch, what to protect and which sensor to prefer; every threshold is the engine's
+# shipped default (agents/playbook/defaults.toml), none set for this situation.
 [playbook]
-near = [-122.4783, 37.8199]                   # the Golden Gate Bridge, mid-span
-radius_km = 3
-every_s = 10
-platform = "puma"                             # the first ready Puma: PUMA 1, the reserve
+sensor_platform = "puma"                      # a free Puma before any other sensor aircraft
+
+[[playbook.watch_area]]
+name = "the Golden Gate approaches"
+center = [-122.4783, 37.8199]                 # the Golden Gate Bridge, mid-span
+radius_m = 3000
+
+[[playbook.protected]]
+name = "the Golden Gate Bridge"
+point = [-122.4783, 37.8199]                  # mid-span
 
 # ---- the scripted operator on autoplay: eval/proxy.py's model, as in the evaluation
 [autoplay]

@@ -1,0 +1,100 @@
+# The playbook engine's shipped defaults (agents/playbook/, murmur-t8m). Every threshold here
+# has its reason beside it and in CRITERIA.md ("Where the thresholds come from"); none was set
+# from a situation. A situation's [playbook] table overrides what it names
+# (sim/situations/README.md, "The playbook"); the merged config is hashed and the hash goes to
+# the bridge as the MCP client's version at connect, so the audit log's
+# `agent.action session.connected` names the config every proposal was made under.
+
+# One read of the world and one decision pass this often, or sooner when the change feed shows
+# a change that wakes it (an intent of ours decided, a link lost, a new track).
+tick_s = 2.0
+
+# The plays on by default. isr.armed_overwatch (an armed orbit: a human decision every time) is
+# on only where a situation enables it.
+plays = [
+  "isr.investigate", "isr.recentre", "isr.release",
+  "link.cover_gap", "link.withdraw_pending", "nav.suspect_exclude",
+  "safety.low_reserve", "safety.stuck", "hygiene.withdraw_stale",
+]
+
+# A preferred sensor platform id ("" for none): free aircraft of this platform rank before the
+# others for a sensor task (then by ETA, battery, uid).
+sensor_platform = ""
+
+[thresholds]
+# more likely than not that the contact is there (the same 0.5 as the rule book's C_MIN)
+existence_min = 0.5
+# the rule book's C_MIN: below it the picture does not support an armed task; at or above it a
+# neutral or assumed-friend estimate retires a look
+affiliation_min = 0.5
+# the engagement rules' min_identity_confidence: the identity confidence the engine treats as
+# settled; below it a look can still classify the contact
+classification_settled = 0.6
+# 15.5 kn: faster than a displacement hull under 10 m can go (hull speed about 1.34 x
+# sqrt(waterline ft) kn, 7.3 kn at 30 ft), so a small contact this fast is planing
+fast_mps = 8.0
+# the 500-yard naval vessel protection zone of 33 CFR 165 subpart G
+cpa_alert_m = 457.0
+# inside the policy's assumed task length (task_duration_s 900): a look proposed now is still on
+# station at the closest approach
+tcpa_max_s = 600.0
+# a contact slower than this has no closest approach to compute: its distance now counts
+holding_mps = 0.5
+# hysteresis on leaving the watch (a look's card withdrawn, its orbit released): beyond this many
+# times a watch area's radius, and no closest approach inside this many times the CPA alert within
+# this many times the TCPA horizon, so a track at the edge does not flip a card in and out
+leave_area_factor = 1.1
+leave_cpa_factor = 2.0
+leave_tcpa_factor = 1.5
+# the tracker's existence-confidence decay constant (confidence_decay_s): unseen this long, the
+# confidence has fallen to 1/e
+unseen_s = 60.0
+# the rules' orbit_radius_margin, and the rules' fixed-wing default loiter radius when the
+# catalog has no turn figure
+orbit_turn_margin = 1.1
+default_min_turn_m = 60.0
+# the sensing model detects with probability 0.5 at a sensor's nominal range and better inside:
+# a quarter of it keeps the whole orbit well inside
+orbit_range_fraction = 0.25
+# the research design's hysteresis: recentre when the target is more than this share of the
+# radius from the centre, at most once per vehicle in this long
+recentre_fraction = 0.5
+recentre_min_gap_s = 60.0
+# a link lost this many times its lost_after_s is a gap (a shorter flap is not)
+link_gap_factor = 2.0
+# low reserve: under the policy's reserve_pct plus this many points (the return starts before the
+# rules' reserve refuses tasks)
+low_reserve_margin_pct = 5.0
+# a free vehicle has at least the low-reserve line plus this many points: a task can start
+# without tripping low_reserve within the policy's 15-minute task on a 2.5 h airframe
+free_battery_margin_pct = 10.0
+# a not_moving or task_failed alert this long is a stuck vehicle
+stuck_s = 30.0
+# a vehicle whose navigation was suspect counts as suspect until it has been good this long
+nav_clear_s = 60.0
+
+[budget]
+# the research report's inbox budget (C.2.5), provisional until the console's measured card
+# times (operator.view) give the interaction time per card
+human_every_s = 30.0
+human_burst = 2
+own_pending_max = 2
+inbox_busy = 6
+previews_per_tick = 3
+
+[cooldown]
+# the research report's cooldowns (C.2.5); a re-proposal inside one needs a material change
+rejected_s = 600.0
+expired_s = 120.0
+expired_score_factor = 0.5
+voided_s = 30.0
+withdrawn_s = 30.0
+# a failing preview is retried, never dropped for good
+preview_backoff_s = 10.0
+preview_backoff_max_s = 160.0
+
+[material]
+# a material change (research report C.2.5): an affiliation category changed, a confidence moved
+# this much across a gate, a new declaration, the closest approach halved
+confidence_step = 0.15
+cpa_factor = 0.5

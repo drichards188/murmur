@@ -37,7 +37,7 @@
 .sit-ai li div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
 .sit-ai b { font: 600 12px var(--mono); }
 .sit-ai small { font-size: 11.5px; color: var(--muted); }
-.sit-ai p { margin: 4px 0 0; font-size: 12px; color: #d8cdea; }
+.sit-ai p, .sit-ai .sit-rationale { display: block; margin: 4px 0 0; font-size: 12px; color: #d8cdea; }
 .sit-state { font: 600 10px var(--mono); text-transform: uppercase; padding: 1px 5px; border-radius: 3px; border: 1px solid var(--line); color: #aab6c3; }
 .sit-state.ok { color: var(--ok); border-color: #2c5a40; }
 .sit-state.wait { color: var(--violet); border-color: #4b3a66; }

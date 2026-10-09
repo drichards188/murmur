@@ -57,7 +57,10 @@ def test_every_situation_loads():
     assert "hold or a return home (rtl)" in hw.brief and "waits for you in the Inbox" in hw.brief
     assert "expires after 120 s" in " ".join(hw.brief.split())
     assert all(s.params.get("director") for s in hw.steps), "the truth notes are the director's"
-    assert hw.playbook["platform"] == "puma" and len(hw.playbook["near"]) == 2
+    # the playbook's table says where to watch and what to protect; no threshold is the situation's
+    assert hw.playbook["sensor_platform"] == "puma" and hw.playbook["watch_area"][0]["radius_m"] == 3000
+    assert [p["name"] for p in hw.playbook["protected"]] == ["the Golden Gate Bridge"]
+    assert not {"thresholds", "budget", "cooldown", "material"} & set(hw.playbook)
     # the brief is what the AI is told: never the director's notes
     assert "15 m/s" in hw.director and "15 m/s" not in S.brief_text(hw)
 
@@ -178,7 +181,7 @@ def test_resolve_modes_and_who_is_scripted(tmp_path: Path):
     assert m["scripted_operators"] == ["op-setup"] and m["console_operator"] == "op-1"
     assert m["autoplay_operator"] is None and m["evidence_note"] is None
     m = S.resolve_modes(hw, operator="autoplay", ai="playbook")
-    assert m["scripted_operators"] == ["op-setup", "op-auto", "op-2", "op-3"] and m["agent"] == "agent-planner"
+    assert m["scripted_operators"] == ["op-setup", "op-auto", "op-2", "op-3"] and m["agent"] == "agent-playbook"
     assert m["autoplay_operator"] == "op-auto" and m["ai_label"] == "Playbook (deterministic)"
     m = S.resolve_modes(hw, ai="codex", cosigner="scripted")
     assert m["ai_label"] == "ChatGPT (Codex)" and m["agent"] == "agent-watch"
@@ -214,7 +217,7 @@ def test_resolve_modes_and_who_is_scripted(tmp_path: Path):
     assert m["scripted_badges"]["agent-setup"] == m["scripted_badges"]["op-setup"] == "situation setup (scripted)"
     assert "op-1" not in m["scripted_badges"] and set(m["scripted_operators"]) <= set(m["scripted_badges"])
     assert S.ENGAGE_OPERATORS == ["op-1", "op-2", "op-3"]
-    assert {"agent-watch", "agent-planner", "agent-scripted", "agent-setup"} == set(S.AGENTS)
+    assert {"agent-watch", "agent-playbook", "agent-scripted", "agent-setup"} == set(S.AGENTS)
 
 
 # ---- the status document -------------------------------------------------------------------------
@@ -299,7 +302,8 @@ def watch_officer():
 def test_the_ai_launch_contract():
     W = watch_officer()
     hw = S.load_situation("harbor-watch")
-    kw = dict(python="py", mcp_url="http://127.0.0.1:9/mcp", brief_file=Path("/b.md"), agent_log=Path("/a.jsonl"), until=1234.4, seconds=300)
+    kw = dict(python="py", mcp_url="http://127.0.0.1:9/mcp", brief_file=Path("/b.md"), agent_log=Path("/a.jsonl"), until=1234.4,
+              seconds=300, playbook_file=Path("/p.json"))
     for backend in ("claude", "codex"):
         cmd = S.ai_command(backend, hw, **kw)
         assert cmd[1].endswith("agents/watch_officer.py")
@@ -307,18 +311,23 @@ def test_the_ai_launch_contract():
         a = W.parse_args(cmd[2:])
         assert (a.backend, a.url, a.agent, a.brief, a.situation_log, a.until) == (
             backend, "http://127.0.0.1:9/mcp", "agent-watch", Path("/b.md"), Path("/a.jsonl"), 1234.0)
-        # the playbook's would-be proposals logged beside the model's, from the [playbook] table
-        assert a.shadow_playbook and a.shadow_near == "-122.4783,37.8199" and a.shadow_platform == "puma"
+        # the playbook engine beside the model, reading only, on the situation's [playbook] table
+        assert a.shadow_playbook and a.shadow_config == Path("/p.json") and a.shadow_config_name == "harbor-watch"
         assert "--codex-home" not in cmd
     # MURMUR_CODEX_HOME is stripped from the AI's environment: the runner passes it as a flag
     cx = S.ai_command("codex", hw, codex_home="/home/u/.codex-murmur", **kw)
     assert W.parse_args(cx[2:]).codex_home == "/home/u/.codex-murmur"
     assert "--codex-home" not in S.ai_command("claude", hw, codex_home="/home/u/.codex-murmur", **kw)
     pb = S.ai_command("playbook", hw, **kw)
-    assert pb[1].endswith("agents/policy_agent.py")
-    assert "--near=-122.4783,37.8199" in pb, "a negative longitude goes in one token"
-    assert pb[pb.index("--agent") + 1] == "agent-planner" and pb[pb.index("--watch") + 1] == "300"
-    assert pb[pb.index("--platform") + 1] == "puma"
+    assert pb[1].endswith("agents/playbook_agent.py")
+    import playbook_agent
+
+    a = playbook_agent.parse_args(pb[2:])
+    assert (a.url, a.agent, a.config, a.config_name, a.situation_log, a.until) == (
+        "http://127.0.0.1:9/mcp", "agent-playbook", Path("/p.json"), "harbor-watch", Path("/a.jsonl"), 1234.0)
+    # what it is given is the [playbook] table, nothing else of the file (no director's notes)
+    given = json.loads(S.playbook_json(hw))
+    assert given == hw.playbook and "15 m/s" not in S.playbook_json(hw)
     assert S.ai_command("none", hw, **kw) is None
 
 
@@ -351,8 +360,12 @@ def test_the_panel_shows_the_watch_officers_lines_for_a_person():
     assert R.panel_kind({"kind": "turn", "text": ""}) is None, "a turn with no note"
     assert R.panel_kind({"kind": "wake", "text": "watch officer woken"}) == "woken"
     assert R.panel_kind({"kind": "lockdown.breach", "text": "x"}) == "error"
-    for plumbing in ("bridge.connected", "backend.start", "backend.init", "preflight", "shadow", "change.dropped"):
+    for plumbing in ("bridge.connected", "backend.start", "backend.init", "preflight", "shadow", "change.dropped",
+                     "shadow.status", "shadow.withdraw", "tick.slow"):
         assert R.panel_kind({"kind": plumbing, "text": "x"}) is None, plumbing
+    # the playbook engine's lines for a person
+    assert [R.panel_kind({"kind": k, "text": "x"}) for k in ("play.status", "proposal", "withdrawal", "decision")] == [
+        "play", "proposal", "withdrew", "answer"]
     assert R.panel_kind({"kind": "note", "text": "x"}) == "note", "the contract's own kinds pass"
 
 
@@ -777,7 +790,7 @@ def test_the_runner_makes_a_fresh_station_and_a_dev_roster(tmp_path: Path, monke
     e = runner.stack_env()
     assert e["MURMUR_AUTH"] == "dev" and e["MURMUR_RESUME"] == "0" and e["MURMUR_RUN_ID"] == runner.run_id
     assert e["MURMUR_OPERATORS"] == "op-1,op-2,op-3,op-auto,op-setup,op-planner" and e["MURMUR_ENGAGE_OPERATORS"] == "op-1,op-2,op-3"
-    assert e["MURMUR_AGENTS"] == "agent-watch,agent-planner,agent-scripted,agent-setup"
+    assert e["MURMUR_AGENTS"] == "agent-watch,agent-playbook,agent-scripted,agent-setup"
     # its own block's ports where none is set, and its own tidewater (not another stack's)
     assert e["MURMUR_HTTP_PORT"] == "9065" and e["MURMUR_WEB_PORT"] == "5673" and e["MURMUR_TIDEWATER_PORT"] == "9270"
     assert "MURMUR_TIDEWATER_URL" not in e
@@ -1063,7 +1076,8 @@ def test_the_ai_starts_in_an_empty_directory_of_its_own(tmp_path: Path, monkeypa
     runner.start_ai()
     cwd = Path(seen["cwd"]).resolve()
     assert not cwd.is_relative_to(REPO.resolve()) and not cwd.is_relative_to(runner.out.resolve())
-    assert seen["files"] == ["brief.md"]
+    assert seen["files"] == ["brief.md", "playbook.json"], "the brief and the [playbook] table only"
+    assert json.loads((Path(seen["cwd"]) / "playbook.json").read_text()) == runner.sit.playbook
     brief = (cwd / "brief.md").read_text()
     assert "Harbor watch" in brief and "15 m/s" not in brief
     assert not [k for k in seen["env"] if k.startswith("MURMUR_")] and seen["env"]["PATH"]

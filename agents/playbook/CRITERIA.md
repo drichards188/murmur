@@ -68,3 +68,19 @@ platform.
   Harbor watch with autoplay; a rejection with a note and the cooldown holding; a link loss
   exercising `link.cover_gap` and `link.withdraw_pending`. Every audit log replayed with its
   anchors.
+
+## Additions, 2026-10-09, before the first live run
+
+Found while writing the engine against recorded reads of a live Harbor watch run (no engine
+running in it; `agents/tests/fixtures/playbook/harbor-watch-reads.json`), and frozen with the
+rest before the engine's first live run. None changes a target above.
+
+| addition | value | reason |
+|---|---|---|
+| leaving the watch | beyond 1.1 x a watch area's radius, and no closest approach inside 2 x the CPA alert within 1.5 x the TCPA horizon; a track whose velocity is not known never counts as gone | hysteresis: in the recorded reads the tracker's velocity for the young fast boat alternated between a value and none on every read (165 to 191 s), so a look proposed on one tick was withdrawn on the next. An unknown motion is not a motion away |
+| holding | under 0.5 m/s a contact has no closest approach ahead: its distance now counts | a velocity that small is within the tracker's noise |
+| withdrawn by the engine | the key cools 30 s, like a void | a premise that comes back at once is not proposed again in the same breath |
+| choices of vehicle | a look offers its first three free vehicles, each 0.001 lower in score | one claim per vehicle then falls to the next free vehicle, instead of holding a second look back; the rationale says which vehicle went first and to what |
+| identity conflict | a reason to look, beside an unsettled classification and speed | the tracker's own anomaly flag (an AIS identity that does not fit what was seen): what a close look settles |
+| the 0.5 gate on a look | the track's existence confidence now | the look exists to classify: gating it on affiliation confidence would keep it off every unknown (0.0 until a sensor classifies it). Affiliation confidence 0.5 gates the armed play |
+| navigation suspect | excludes a vehicle from every tasking play, not only armed ones (hold and rtl still go) | a sensor whose own position is in doubt places what it sees in the wrong place; a filler flies the wrong route |
