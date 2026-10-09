@@ -245,7 +245,7 @@ export function SituationPanel({ decisions }: { decisions: Decisions | null }) {
                 </div>
                 {i.rationale && (
                   <div className="sit-rationale">
-                    <RationaleText rationale={i.rationale} />
+                    <RationaleText rationale={i.rationale} source={i.source} />
                   </div>
                 )}
               </li>

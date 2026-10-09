@@ -420,7 +420,7 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
       {i.rationale && (
         <blockquote className="ix-rationale">
           <span className="ix-label">{i.source.kind === 'agent' ? 'Agent rationale' : 'Rationale'}</span>
-          <RationaleText rationale={i.rationale} />
+          <RationaleText rationale={i.rationale} source={i.source} />
         </blockquote>
       )}
 

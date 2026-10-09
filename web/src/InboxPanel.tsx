@@ -276,7 +276,7 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, eng
       {i.rationale && (
         <blockquote className="ix-rationale">
           <span className="ix-label">{i.source.kind === 'agent' ? 'Agent rationale' : 'Rationale'}</span>
-          <RationaleText rationale={i.rationale} />
+          <RationaleText rationale={i.rationale} source={i.source} />
         </blockquote>
       )}
 
@@ -586,7 +586,7 @@ function DecisionRow({ intent: i, vehicles, now }: { intent: Intent; vehicles: V
         <div className="ix-dec-body">
           {i.rationale && (
             <div className="ix-rationale">
-              <RationaleText rationale={i.rationale} />
+              <RationaleText rationale={i.rationale} source={i.source} />
             </div>
           )}
           <ol className="ix-trail">
