@@ -1,0 +1,51 @@
+[package]
+name = "murmur-headless"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+description = "Evaluation only (docs/HEADLESS.md): one episode of the bridge's own code, compiled by path, with the stand-ins, the link emulator and the contacts as libraries, on a paused clock with every socket in memory"
+
+# The bridge's source files are compiled here by path (src/lib.rs). Its own unit tests are not
+# compiled a second time: the library is never built as a test (`test = false`) and the
+# by-path modules are `#[cfg(not(test))]`; this crate's tests are integration tests (tests/).
+[lib]
+test = false
+doctest = false
+
+[[bin]]
+name = "murmur-headless"
+path = "src/main.rs"
+test = false
+
+# The bridge's dependencies, as crates/murmur-bridge/Cargo.toml has them (build.rs fails, naming
+# the difference, if they drift), then the simulator's own.
+[dependencies]
+axum = { version = "0.8.9", features = ["ws"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+murmur-space = { path = "../murmur-space" }
+murmur-decide = { path = "../murmur-decide" }
+murmur-auth = { path = "../murmur-auth" }
+mavlink = { version = "0.18", default-features = false, features = ["std", "dialect-ardupilotmega", "mav2-message-extensions"] }
+serde = { version = "1.0.229", features = ["derive", "rc"] }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+tokio = { version = "1.53.1", features = ["full", "test-util"] }
+toml = { version = "1.1.6", features = ["preserve_order"] }
+quick-xml = "0.42.0"
+socket2 = { version = "0.6.5", features = ["all"] }
+rmcp = { version = "3.5", features = ["transport-streamable-http-server"] }
+schemars = "1"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1.5"
+# the simulator's own: the stand-ins, the link emulator and the contacts, as libraries; the
+# paused clock (tokio test-util, on top of the bridge's features)
+murmur-standins = { path = "../murmur-standins" }
+murmur-linkemu = { path = "../murmur-linkemu" }
+murmur-contacts = { path = "../murmur-contacts" }
+flate2 = "1"
+sha2 = "0.10"
+
+[build-dependencies]
+toml = "1"
+
+[lints]
+workspace = true

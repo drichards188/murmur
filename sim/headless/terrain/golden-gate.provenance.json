@@ -1,0 +1,40 @@
+{
+ "baked": "2026-10-09",
+ "box": {
+  "lat_max": 37.9,
+  "lat_min": 37.74,
+  "lon_max": -122.36,
+  "lon_min": -122.62
+ },
+ "command": ".venv/bin/python -m eval.headless.bake_terrain --url http://127.0.0.1:9570 --name golden-gate --scenario golden-gate-2026-06 --spacing-m 20",
+ "dims": {
+  "nlat": 892,
+  "nlon": 1145
+ },
+ "file": "golden-gate.grid.gz",
+ "nodata_points": 535844,
+ "sampled_at": "2026-06-14T10:00:00Z",
+ "scenario": "golden-gate-2026-06",
+ "sha256": "9153e1a4a0a28f7ef1d6fc887571719661cd317599bccab13caa844d95e91af7",
+ "spacing_m": 20.0,
+ "tidewater": {
+  "commit": "3a531c9e90dd5ad288f431ecd48b65e0e06ee2ef",
+  "info": {
+   "bounds": {
+    "east": -122.38,
+    "north": 37.88,
+    "south": 37.77,
+    "west": -122.56
+   },
+   "name": "golden-gate-2026-06",
+   "time_range": {
+    "end": "2026-06-16T00:00:00+00:00",
+    "end_unix": 1781568000.0,
+    "start": "2026-06-13T00:00:00+00:00",
+    "start_unix": 1781308800.0
+   },
+   "title": "Golden Gate, spring tides, 13-16 June 2026"
+  }
+ },
+ "what": "surface height (max of elevation and water level), metres x 10, as tidewater's /v1/sample answers the link emulator"
+}

@@ -203,6 +203,20 @@ fn ms(d: Duration) -> f64 {
     clock::round(d.as_secs_f64() * 1000.0, 1)
 }
 
+/// Round `k`: the heartbeat `msg` to every link whose vehicle has spoken and whose period
+/// divides `k`. Returns how many went out. The thread calls it once a second; so does the
+/// headless simulator, on its own clock (docs/HEADLESS.md).
+pub fn send_round(world: &World, k: u64, msg: &MavMessage) -> u64 {
+    let mut sent = 0;
+    for link in world.links() {
+        if link.vehicle.get().is_some() && k.is_multiple_of(link.gcs_heartbeat_s()) {
+            link.send(msg);
+            sent += 1;
+        }
+    }
+    sent
+}
+
 fn run(world: &World, stats: &Stats) {
     let msg = gcs_heartbeat();
     let start = Instant::now();
@@ -217,13 +231,7 @@ fn run(world: &World, stats: &Stats) {
         let (round, missed) = catch_up(start, k, Instant::now());
         k = round;
         let began = Instant::now();
-        let mut sent = 0;
-        for link in world.links() {
-            if link.vehicle.get().is_some() && k.is_multiple_of(link.gcs_heartbeat_s()) {
-                link.send(&msg);
-                sent += 1;
-            }
-        }
+        let sent = send_round(world, k, &msg);
         let done = Instant::now();
         let r = Round {
             wall: clock::wall(),

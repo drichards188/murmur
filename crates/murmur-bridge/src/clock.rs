@@ -53,6 +53,10 @@ pub fn utc() -> f64 {
     if let Some(t) = test_clock::utc() {
         return t;
     }
+    #[cfg(murmur_headless)]
+    if let Some(t) = sim_clock::now() {
+        return t;
+    }
     let t = os_utc();
     #[cfg(test)]
     let t = t + test_clock::utc_offset();
@@ -105,6 +109,10 @@ pub fn wall() -> f64 {
     if let Some(t) = test_clock::wall() {
         return t;
     }
+    #[cfg(murmur_headless)]
+    if let Some(t) = sim_clock::now() {
+        return t;
+    }
     static STEER: OnceLock<Mutex<Steer>> = OnceLock::new();
     let s = STEER.get_or_init(|| Mutex::new(Steer::new(mono(), os_utc())));
     let mut s = s.lock().unwrap_or_else(|e| e.into_inner());
@@ -115,6 +123,10 @@ pub fn wall() -> f64 {
 /// so tests can pause and advance it; the margin keeps a paused test runtime, whose clock
 /// starts when the runtime does, from reading before the origin.
 pub fn mono() -> f64 {
+    #[cfg(murmur_headless)]
+    if let Some(m) = sim_clock::mono() {
+        return m;
+    }
     static ORIGIN: OnceLock<std::time::Instant> = OnceLock::new();
     let origin = *ORIGIN.get_or_init(|| {
         let now = std::time::Instant::now();
@@ -157,6 +169,52 @@ pub fn round(x: f64, digits: usize) -> f64 {
 /// Python's round(x) with no digits: an integer.
 pub fn round_int(x: f64) -> i64 {
     round(x, 0) as i64
+}
+
+/// The headless simulator's clock (crates/murmur-headless, docs/HEADLESS.md): compiled only
+/// where the `murmur_headless` cfg is set, which only that crate's build script does, so the
+/// bridge's own build never has it. Once a simulation sets its epoch (inside its paused tokio
+/// runtime), [`mono`] reads 3600 s plus tokio's time since, and [`wall`] and [`utc`] the epoch
+/// plus tokio's time since: every clock of the bridge runs exactly on simulated time, from a
+/// fixed origin (no real instant leaks into a fractional second), with no steering and no step.
+#[cfg(murmur_headless)]
+pub mod sim_clock {
+    use std::sync::Mutex;
+
+    use tokio::time::Instant;
+
+    /// Where [`super::mono`] stands when the simulation starts (as the bridge's own origin
+    /// puts it an hour before its start).
+    pub const MONO_AT_START_S: f64 = 3600.0;
+
+    /// (epoch, tokio's instant when it was set)
+    static START: Mutex<Option<(f64, Instant)>> = Mutex::new(None);
+
+    /// From now on the bridge's clock reads `epoch_s` plus tokio's time since this call.
+    pub fn set_epoch(epoch_s: f64) {
+        *START.lock().unwrap_or_else(|e| e.into_inner()) = Some((epoch_s, Instant::now()));
+    }
+
+    fn since() -> Option<(f64, f64)> {
+        let s = *START.lock().unwrap_or_else(|e| e.into_inner());
+        s.map(|(epoch, t0)| {
+            // outside the simulation's runtime tokio's clock is the real one: a read there
+            // would leak real time into the simulation, so it is a bug in the simulator
+            assert!(
+                tokio::runtime::Handle::try_current().is_ok(),
+                "the simulated clock was read outside the simulation's runtime"
+            );
+            (epoch, Instant::now().saturating_duration_since(t0).as_secs_f64())
+        })
+    }
+
+    pub(super) fn now() -> Option<f64> {
+        since().map(|(epoch, d)| epoch + d)
+    }
+
+    pub(super) fn mono() -> Option<f64> {
+        since().map(|(_, d)| MONO_AT_START_S + d)
+    }
 }
 
 /// Tests: a wall clock that steps or drifts, and the bridge's clock put where a test wants
@@ -283,6 +341,15 @@ pub mod test_clock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The headless simulator's seams (`murmur_headless`: its clock here, the in-memory link,
+    /// `World::attach_link`) exist only where crates/murmur-headless compiles these files by
+    /// path; the bridge's own build, of which this test is a part, never sets the cfg (no build
+    /// script in this crate does, and none may: eval/headless/tests checks that too).
+    #[test]
+    fn the_bridge_build_has_no_headless_seams() {
+        const { assert!(!cfg!(murmur_headless)) };
+    }
 
     #[test]
     fn rounds_like_python() {

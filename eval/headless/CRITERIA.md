@@ -134,3 +134,21 @@ Rules:
   again on seeds 11 to 20, reported with the first run.
 - **G1b fails**: the report gives the profile, and the speed-ups of HEADLESS.md section 13 are
   tried in that order.
+
+## Calibration, 2026-10-09 (before the first gate run)
+
+The three offsets, measured on the full-stack calibration runs with `seed` = 101, 102 and 103
+(`python -m eval.headless.fullstack run --seeds 101 102 103`, then `python -m
+eval.headless.calibrate`), each the median of the three, in `eval/headless/calibration.toml`:
+
+| offset | 101 | 102 | 103 | median |
+|---|---|---|---|---|
+| `contacts_start_s` | 0.838 | 0.823 | 0.821 | **0.823** |
+| `standins_start_s` | 20.588 | 0.973 | 1.001 | **1.001** |
+| `ai_first_tick_s` | 1.590 | 0.923 | 1.031 | **1.031** |
+
+Run 101's stand-ins started 20.6 s late because a `cargo build` of the simulator held cargo's lock
+while `sim/swarm.py` asked cargo for the stand-in engine; the median leaves it out. From here on no
+build runs beside a full-stack run. With these values the simulator agreed with the three
+calibration runs on 9 of 9 proposals (an agreement of 1.0 by this file's definition); that is
+in-sample, the gate is not.

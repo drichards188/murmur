@@ -7,6 +7,9 @@ edition = "2024"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+# `murmur_headless` is set only by crates/murmur-headless's build script, which compiles the
+# bridge's files by path (docs/HEADLESS.md): the bridge's own build never has it.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(murmur_headless)'] }
 
 [workspace.lints.clippy]
 unwrap_used = "warn"

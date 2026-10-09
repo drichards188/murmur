@@ -439,7 +439,15 @@ pub struct Link {
     /// Seconds between GCS heartbeats on this link (the telemetry plan's `gcs_heartbeat_s`),
     /// read by the heartbeat thread without taking the stats lock.
     gcs_heartbeat_s: AtomicU64,
+    /// The headless simulator's link (docs/HEADLESS.md): what this link sends goes here
+    /// instead of the socket. Compiled only into crates/murmur-headless.
+    #[cfg(murmur_headless)]
+    mem_out: Option<MemOut>,
 }
+
+/// Where an in-memory link's frames go (the headless simulator's link emulator).
+#[cfg(murmur_headless)]
+pub type MemOut = Box<dyn Fn(&[u8]) + Send + Sync>;
 
 impl Link {
     pub async fn bind(port: u16) -> std::io::Result<Arc<Link>> {
@@ -452,6 +460,28 @@ impl Link {
             stats: Arc::default(),
             vehicle: OnceLock::new(),
             gcs_heartbeat_s: AtomicU64::new(1),
+            #[cfg(murmur_headless)]
+            mem_out: None,
+        }))
+    }
+
+    /// The headless simulator's link for `port`: no socket carries anything (the field holds
+    /// an unbound one, which takes no port); frames come in through [`Link::receive`] and go
+    /// out to `out`. Inside a tokio runtime.
+    #[cfg(murmur_headless)]
+    pub fn in_memory(port: u16, out: MemOut) -> std::io::Result<Arc<Link>> {
+        let raw = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None)?;
+        raw.set_nonblocking(true)?;
+        let socket = UdpSocket::from_std(raw.into())?;
+        Ok(Arc::new(Link {
+            port,
+            socket,
+            remote: Mutex::new(None),
+            seq: AtomicU8::new(0),
+            stats: Arc::default(),
+            vehicle: OnceLock::new(),
+            gcs_heartbeat_s: AtomicU64::new(1),
+            mem_out: Some(out),
         }))
     }
 
@@ -491,38 +521,45 @@ impl Link {
                 // e.g. ICMP port unreachable surfacing as an error on Linux: not fatal
                 Err(_) => continue,
             };
-            *self.remote.lock().unwrap_or_else(|e| e.into_inner()) = Some(addr);
-            let frames = mav::decode(&buf[..n]);
-            if frames.is_empty() {
-                continue;
-            }
-            let (now, wall) = (clock::mono(), clock::wall());
-            {
-                let mut stats = self.stats();
-                for f in &frames {
-                    if f.compid == mav::AUTOPILOT_COMPID {
-                        stats.on_packet(f.seq, now, wall);
-                        stats.on_message(&f.msg, now);
-                    }
-                    *stats.by_type.entry(f.msg.message_name()).or_default() += 1;
+            self.receive(&world, &buf[..n], addr);
+        }
+    }
+
+    /// One datagram from `from`, which becomes the address replies go to: link stats for every
+    /// autopilot packet, then the packet to its vehicle. The first autopilot HEARTBEAT binds the
+    /// link to a vehicle (resolved by the world).
+    pub fn receive(self: &Arc<Self>, world: &World, datagram: &[u8], from: SocketAddr) {
+        *self.remote.lock().unwrap_or_else(|e| e.into_inner()) = Some(from);
+        let frames = mav::decode(datagram);
+        if frames.is_empty() {
+            return;
+        }
+        let (now, wall) = (clock::mono(), clock::wall());
+        {
+            let mut stats = self.stats();
+            for f in &frames {
+                if f.compid == mav::AUTOPILOT_COMPID {
+                    stats.on_packet(f.seq, now, wall);
+                    stats.on_message(&f.msg, now);
                 }
+                *stats.by_type.entry(f.msg.message_name()).or_default() += 1;
             }
-            for f in frames {
-                let vehicle = match self.vehicle.get() {
-                    Some(v) => v,
-                    None => {
-                        if !matches!(f.msg, MavMessage::HEARTBEAT(_))
-                            || f.compid != mav::AUTOPILOT_COMPID
-                        {
-                            continue;
-                        }
-                        let v = world.on_new_vehicle(&self, f.sysid);
-                        self.vehicle.get_or_init(|| v)
+        }
+        for f in frames {
+            let vehicle = match self.vehicle.get() {
+                Some(v) => v,
+                None => {
+                    if !matches!(f.msg, MavMessage::HEARTBEAT(_))
+                        || f.compid != mav::AUTOPILOT_COMPID
+                    {
+                        continue;
                     }
-                };
-                if f.sysid == vehicle.sysid {
-                    vehicle.handle(&f.msg, &f.raw, now);
+                    let v = world.on_new_vehicle(self, f.sysid);
+                    self.vehicle.get_or_init(|| v)
                 }
+            };
+            if f.sysid == vehicle.sysid {
+                vehicle.handle(&f.msg, &f.raw, now);
             }
         }
     }
@@ -533,6 +570,12 @@ impl Transmit for Link {
         let Some(remote) = self.remote() else { return };
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
         let buf = mav::encode(msg, seq);
+        #[cfg(murmur_headless)]
+        if let Some(out) = &self.mem_out {
+            out(&buf);
+            self.stats().tx_total += 1;
+            return;
+        }
         if self.socket.try_send_to(&buf, remote).is_ok() {
             self.stats().tx_total += 1;
         }
@@ -540,6 +583,12 @@ impl Transmit for Link {
 
     fn send_raw(&self, frame: &[u8]) {
         let Some(remote) = self.remote() else { return };
+        #[cfg(murmur_headless)]
+        if let Some(out) = &self.mem_out {
+            out(frame);
+            self.stats().tx_total += 1;
+            return;
+        }
         if self.socket.try_send_to(frame, remote).is_ok() {
             self.stats().tx_total += 1;
         }

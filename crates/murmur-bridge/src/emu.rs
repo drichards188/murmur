@@ -282,7 +282,7 @@ impl Emu {
     }
 
     /// Takes one `/stats` answer: history, views, and the briefs to hand to the vehicles.
-    fn ingest(&self, stats: &Value, now: f64) -> HashMap<Uid, (EmuBrief, crate::link::EmuLink)> {
+    pub(crate) fn ingest(&self, stats: &Value, now: f64) -> HashMap<Uid, (EmuBrief, crate::link::EmuLink)> {
         let mut briefs = HashMap::new();
         self.write(|s| {
             let mut summary = stats.clone();

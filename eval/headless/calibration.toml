@@ -1,0 +1,5 @@
+# CRITERIA.md calibration: medians over seed-101, seed-102, seed-103 (logs/headless-g1/calibration)
+contacts_start_s = 0.823
+standins_start_s = 1.001
+ai_first_tick_s = 1.031
+source = "full-stack calibration runs seed-101, seed-102, seed-103, medians"

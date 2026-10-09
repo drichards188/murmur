@@ -1,0 +1,51 @@
+{
+ "record_sha256": "0efae39992806d2e16af454a89b659c09fcbc97188b26242b37c6a5d8523b32a",
+ "audit_sha256": "a494732d9816ac80c4a13e4adde23a47ee0cf80c1fce9428ddab9b32abf2f166",
+ "audit_events": 116,
+ "calibration": {
+  "contacts_start_s": 0.823,
+  "standins_start_s": 1.001,
+  "ai_first_tick_s": 1.031,
+  "source": "full-stack calibration runs seed-101, seed-102, seed-103, medians"
+ },
+ "proposals": [
+  [
+   178.03,
+   "isr.investigate",
+   "T-0008",
+   "fastboat-west",
+   3,
+   "pending_approval"
+  ],
+  [
+   211.03,
+   "isr.recentre",
+   "T-0008",
+   "fastboat-west",
+   3,
+   "pending_approval"
+  ],
+  [
+   272.03,
+   "isr.recentre",
+   "T-0008",
+   "fastboat-west",
+   3,
+   "pending_approval"
+  ]
+ ],
+ "operator": [
+  [
+   182.825,
+   4,
+   "approve",
+   "dispatched"
+  ],
+  [
+   248.407,
+   5,
+   "approve",
+   "dispatched"
+  ]
+ ]
+}

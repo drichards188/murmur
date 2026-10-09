@@ -23,10 +23,10 @@ pub struct Options {
     pub vehicle_base: u16,
 }
 
-struct Pending {
-    at_ns: u64,
-    seq: u64,
-    data: Box<[u8]>,
+pub struct Pending {
+    pub at_ns: u64,
+    pub seq: u64,
+    pub data: Box<[u8]>,
 }
 
 impl PartialEq for Pending {
@@ -48,10 +48,10 @@ impl Ord for Pending {
 }
 
 #[derive(Default)]
-struct Delay {
-    heap: BinaryHeap<Pending>,
-    bytes: u64,
-    seq: u64,
+pub struct Delay {
+    pub heap: BinaryHeap<Pending>,
+    pub bytes: u64,
+    pub seq: u64,
 }
 
 /// The bridge-side port of a vehicle: `bridge_base + (port - vehicle_base)`.
@@ -258,37 +258,44 @@ async fn run_link(
         }
         if now.saturating_sub(last_gauge) > 250_000_000 {
             last_gauge = now;
-            for dir in [Dir::Up, Dir::Down] {
-                let d = stats.d(dir);
-                d.queued_pkts
-                    .store(delay[dir.idx()].heap.len() as u64, Relaxed);
-                d.queued_bytes.store(delay[dir.idx()].bytes, Relaxed);
-            }
-            stats.depth_state.store(
-                link.submerged().map_or(0, |s| if s { 2 } else { 1 }),
-                Relaxed,
-            );
-            let b = link.blocked_now(now).map_or(0, |c| c.idx() as u64 + 1);
-            stats.blocked.store(b, Relaxed);
-            stats.set_events(link.active_events(now));
-            stats.on_gated.store(
-                u64::from(link.active_profile() != link.meta.profile),
-                Relaxed,
-            );
-            let (los, obs) = match link.los_state() {
-                LosState::Off => (0, f64::NAN),
-                LosState::Unknown => (1, f64::NAN),
-                LosState::Clear(m) => (2, -m),
-                LosState::Obstructed(m) => (3, m),
-            };
-            stats.los_state.store(los, Relaxed);
-            stats.los_obstruction.store(obs.to_bits(), Relaxed);
-            stats.terrain_unknown.store(link.los_unknown_pkts, Relaxed);
+            gauge(&mut link, &stats, &delay, now);
         }
     }
 }
 
-fn admit(link: &mut Link, stats: &LinkStats, dl: &mut Delay, dir: Dir, data: &[u8], now: u64) {
+/// The link's gauges for `/stats` (queues, depth, blocking cause, events, gate, line of
+/// sight), refreshed every 250 ms by the link task. Public for the headless simulator's
+/// in-memory proxy (crates/murmur-headless), which queues with [`admit`] and [`Delay`] too.
+pub fn gauge(link: &mut Link, stats: &LinkStats, delay: &[Delay; 2], now: u64) {
+    for dir in [Dir::Up, Dir::Down] {
+        let d = stats.d(dir);
+        d.queued_pkts
+            .store(delay[dir.idx()].heap.len() as u64, Relaxed);
+        d.queued_bytes.store(delay[dir.idx()].bytes, Relaxed);
+    }
+    stats.depth_state.store(
+        link.submerged().map_or(0, |s| if s { 2 } else { 1 }),
+        Relaxed,
+    );
+    let b = link.blocked_now(now).map_or(0, |c| c.idx() as u64 + 1);
+    stats.blocked.store(b, Relaxed);
+    stats.set_events(link.active_events(now));
+    stats.on_gated.store(
+        u64::from(link.active_profile() != link.meta.profile),
+        Relaxed,
+    );
+    let (los, obs) = match link.los_state() {
+        LosState::Off => (0, f64::NAN),
+        LosState::Unknown => (1, f64::NAN),
+        LosState::Clear(m) => (2, -m),
+        LosState::Obstructed(m) => (3, m),
+    };
+    stats.los_state.store(los, Relaxed);
+    stats.los_obstruction.store(obs.to_bits(), Relaxed);
+    stats.terrain_unknown.store(link.los_unknown_pkts, Relaxed);
+}
+
+pub fn admit(link: &mut Link, stats: &LinkStats, dl: &mut Delay, dir: Dir, data: &[u8], now: u64) {
     let d = stats.d(dir);
     d.in_pkts.fetch_add(1, Relaxed);
     d.in_bytes.fetch_add(data.len() as u64, Relaxed);

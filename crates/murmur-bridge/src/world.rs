@@ -265,6 +265,15 @@ impl World {
         }
     }
 
+    /// The headless simulator (docs/HEADLESS.md): a link it made in memory, where
+    /// [`World::ensure_ports`] would put a bound one, so the housekeeping and the heartbeat
+    /// round serve it as any other. Compiled only into crates/murmur-headless.
+    #[cfg(murmur_headless)]
+    pub fn attach_link(&self, link: Arc<Link>) {
+        lock(&self.wanted_ports).insert(link.port);
+        lock(&self.links).insert(link.port, link);
+    }
+
     /// Every UDP link, in port order.
     pub fn links(&self) -> Vec<Arc<Link>> {
         lock(&self.links).values().cloned().collect()

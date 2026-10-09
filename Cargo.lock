@@ -1468,6 +1468,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "murmur-headless"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "flate2",
+ "http-body-util",
+ "mavlink",
+ "murmur-auth",
+ "murmur-contacts",
+ "murmur-decide",
+ "murmur-linkemu",
+ "murmur-space",
+ "murmur-standins",
+ "quick-xml 0.42.0",
+ "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "socket2",
+ "tokio",
+ "toml",
+ "tower",
+]
+
+[[package]]
 name = "murmur-keepout-probe"
 version = "0.1.0"
 dependencies = [

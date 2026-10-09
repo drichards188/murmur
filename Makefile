@@ -1,4 +1,4 @@
-.PHONY: setup build up goldengate situation down sim bridge web eval check
+.PHONY: setup build up goldengate situation down sim bridge web eval headless check
 
 FLEET ?= sandiego   # any sim/fleets/*.toml: sandiego, canaveral, golden-gate, ...
 CARGO ?= $(shell command -v cargo || echo $(HOME)/.cargo/bin/cargo)
@@ -40,10 +40,16 @@ eval: build ## evaluation batch on isolated stacks (eval/README.md): SCENARIOS=,
 	.venv/bin/python -m eval.run batch --scenarios $(or $(SCENARIOS),misclassified-neutral spoofed-gnss link-cut approval-flood stale-track plausible-wrong heldout-friend-alongside heldout-early-unknown heldout-dark-ferry) \
 	  --arms $(or $(ARMS),rules-only rules-only-reject human-proxy agent+human-proxy) --seeds $(or $(SEEDS),1 2 3) $(if $(PARALLEL),--parallel $(PARALLEL))
 
+headless: ## headless simulator batch (docs/HEADLESS.md): SITUATION=harbor-watch or FAMILIES="fast-unknown decoy", SEEDS=1-10, WORKERS=
+	$(CARGO) build --release -p murmur-headless
+	.venv/bin/python -m eval.headless.batch --no-build $(if $(FAMILIES),--families $(FAMILIES),--situation $(or $(SITUATION),harbor-watch)) --seeds $(or $(SEEDS),1-10) $(if $(WORKERS),--workers $(WORKERS))
+
 check:   ## typecheck + lint + glide and sea checks (node 22.18+: it runs the .ts directly) + Rust lint and tests + evaluation and watch officer unit tests (stand-in CLIs, no model)
 	cd web && npx tsc -b && npx oxlint src && node src/glide.check.ts && node src/sea.check.ts
-	.venv/bin/python -m py_compile sim/swarm.py sim/tests/*.py scripts/*.py agents/*.py agents/watch/*.py agents/playbook/*.py agents/playbook/plays/*.py agents/tests/*.py eval/*.py eval/tests/*.py
+	.venv/bin/python -m py_compile sim/swarm.py sim/tests/*.py scripts/*.py agents/*.py agents/watch/*.py agents/playbook/*.py agents/playbook/plays/*.py agents/tests/*.py eval/*.py eval/tests/*.py eval/headless/*.py eval/headless/tests/*.py
 	.venv/bin/python -m pytest -q eval/tests
 	.venv/bin/python -m pytest -q agents/tests
 	$(CARGO) clippy --workspace --all-targets -- -D warnings
 	$(CARGO) test --workspace
+	$(CARGO) build --release -p murmur-headless -p murmur-decide
+	.venv/bin/python -m pytest -q eval/headless/tests
