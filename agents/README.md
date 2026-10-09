@@ -82,6 +82,104 @@ naming the facts and their ages:
 The evaluation's real-model arm (`eval/model_agent.py`, opt-in and cost-capped; see
 `eval/README.md`) relays these same tools to a Claude model through the Anthropic API.
 
+### The playbook engine (no model; the free option, the baseline, the shadow)
+
+`agents/playbook/` is Murmur's deterministic AI agent (murmur-t8m, step 1): a library of named,
+versioned **plays** (a trigger read from facts, a few checks, one proposal, its withdraw
+condition, its material change, its rationale template) run on a 2 s tick against one read of
+the world, with an **arbiter** that guards the operator's inbox and a **ledger** that remembers
+every card and how the operator answered it. It is what `AI=playbook` runs in a situation (as
+`agent-playbook`), the baseline a model is to be measured against (the evaluation's arm moves
+to it in step 2; `policy_agent.py` and `eval/agent.py`'s `AgentPolicy` are unchanged), and the
+shadow beside the model watch officer. What "useful" means, frozen before its first live run,
+is `agents/playbook/CRITERIA.md`; the design and where it departs from the research is in
+`docs/DECISIONS.md` ("The playbook engine").
+
+```
+make goldengate        # or any stack (agent-playbook is in the bridge's default MURMUR_AGENTS)
+.venv/bin/python agents/playbook_agent.py --url http://127.0.0.1:8765/mcp --config playbook.toml \
+    --situation-log logs/playbook.jsonl --minutes 30
+```
+
+**Each tick** reads `get_fleet` (compact), `get_tracks`, `get_inbox`, `get_intents` (mine) and
+`get_changes` since its cursor (the platform catalog and the policy once a session; while a link
+is lost, that vehicle's full facts for its `lost_after_s`, and `explain_intent` once for an order
+of someone else's a gap filler would take over). None of these is logged. The tick's time is the
+oldest `t` among them. Between ticks it reads the change feed every 0.5 s and ticks at once on a
+change that wakes it (one of its cards decided, a link lost or back, a new track, an affiliation,
+a declaration, an alert). Then, a pure function of the reads, the config and the ledger:
+
+1. **beliefs**: contacts of interest (inside a watch area, or a closest approach to a protected
+   point), CPA and TCPA along the track's velocity, which of our sensors see each track, vehicle
+   health (link, navigation, GPS glitch, position, battery), free vehicles, inbox pressure,
+   engagements in play. A vehicle is **free** when healthy, its navigation not suspect, its
+   battery at least the low-reserve line plus 10 points, idle (no order, or a failed one: a
+   vehicle on someone's running order is theirs), not returning, and nothing of ours or an
+   engagement claims it.
+2. **plays** (each threshold's reason in `defaults.toml` and CRITERIA.md):
+
+   | play | class | trigger | action | ends or withdraws |
+   |---|---|---|---|---|
+   | `isr.investigate` | P2 | a track shown unknown or suspect (not declared), not stale, existence confidence at least 0.5, inside a watch area or closing on a protected point (CPA within 457 m inside 10 min), and its classification under 0.6, faster than 8 m/s, or an identity conflict | an orbit by the free unarmed sensor aircraft (preferred platform first, then ETA, battery, uid) on the track carried to now, radius max(1.1 x min turn, a quarter of its imaging range) | shown neutral or assumed friend at 0.5 or more; unseen 60 s; out of the watch (with hysteresis); its sensor unfit |
+   | `isr.recentre` | P2 | an orbit of ours on a track, the track more than half the radius off centre | the same vehicle, a new orbit on the track; once per vehicle per 60 s | as investigate |
+   | `isr.release` | P2 | an orbit of ours whose premise is gone | a hold (or our earlier order on the vehicle) | |
+   | `isr.armed_overwatch` | P2, human | off unless a situation enables it: a suspect at affiliation confidence 0.5 or more closing on a protected point, no track shown neutral or assumed friend within the radius | an armed orbit by a free armed platform whose navigation is not suspect | confidence under 0.5; a protected track inside the radius; stale |
+   | `link.cover_gap` | P3 | a vehicle on an orbit or patrol silent for 2 x its `lost_after_s` | the nearest free capable vehicle takes over the route or centre | the link back (a waiting filler withdrawn; a running one kept) |
+   | `link.withdraw_pending` | P3 | a card of ours waiting for a vehicle whose link is lost | withdraw: "link lost at <time>" | |
+   | `nav.suspect_exclude` | P3 | navigation not ready, off GNSS or a GPS glitch flagged (now or within 60 s) | the vehicle excluded from tasking; an armed card of ours on it withdrawn | |
+   | `safety.low_reserve` | P0 | battery under the policy's reserve plus 5 points, link up, not returning | rtl | |
+   | `safety.stuck` | P0 | a `not_moving` or `task_failed` alert for 30 s, link up, not on its failsafe's return, not holding | hold | |
+   | `hygiene.withdraw_stale` | P4 | a card of ours waiting whose play's withdraw condition holds | withdraw, with the reason | |
+
+3. **arbiter**: one total order (class, minus score, play, target, uid); a cooldown in force holds a
+   candidate unless its play finds a material change; a back-off holds it after a failing preview
+   or a rule-book veto (10 s, doubling to 160 s: retried, never dropped); one claim per vehicle (a
+   look offers its first three free vehicles, so a taken one falls to the next); an engagement in
+   play on a vehicle allows only hold and rtl; at 6 or more pending cards in the inbox only P0 and
+   P1 propose.
+4. **preview** (at most 3 a tick), with the **inbox budget**: a human-tier card needs a token (one
+   per 30 s, burst 2) and fewer than 2 of ours pending; a card the budget cannot take is not even
+   previewed (a preview is logged) unless its key's last preview said auto.
+5. **the rule book's veto**: `eval/evidence.py` (v2, frozen) on the preview's checks and, for an
+   armed task, the tracks as read: anything it objects to is never proposed.
+6. **propose** with the rationale.
+7. **follow up**: its waiting cards whose premise is gone are withdrawn, with the reason.
+
+**Rationales** are rendered by a fixed template per play from an **evidence record** built only
+from values the tick read (each fact with its age, the derived CPA, TCPA and ETA, the thresholds,
+the alternatives considered, the rule book's verdict, the preview's tier, the withdraw condition,
+and inside a cooldown the material change), named by play and version. The record rides after the
+line `--- evidence record (playbook, JSON) ---` (`playbook/rationale.py` composes and parses it);
+the console shows the text and folds the record behind a toggle. **The ledger** (JSON beside the
+log, `playbook-ledger.json`) keeps every card by (play, target, vehicle): a rejection cools that
+play on that target for 10 minutes whatever the vehicle (the operator's note is the only reason
+channel, so the conservative reading), an expiry 2 minutes and halves the play's score for it, a
+void 30 s for the key, a withdrawal of ours 30 s. A restart adopts its cards from their records.
+**The config** is the shipped `defaults.toml` under a situation's `[playbook]` table
+(`sim/situations/README.md`); its hash goes to the bridge as the MCP client's version at connect,
+so the audit log's `agent.action session.connected` reads `client agent-playbook playbook-1 config
+harbor-watch#6ddb1a6035e3`, and `run.start` in its log carries the whole config.
+
+Its situation log (`--situation-log`, the watch officer's `{t, kind, text}` lines, `"source":
+"playbook"`): `run.start` (the config and its hash), `play.status` (a play's status when it
+changes: active, ready, or not ready with the blocking constraint), `proposal`, `withdrawal`,
+`decision` (how the operator answered a card, and the cooldown it set), `error`, `run.stop` (ticks
+and compute per tick). The panel shows the status, proposal, withdrawal and decision lines.
+
+**Shadow mode** (`watch_officer.py --shadow-playbook --shadow-config <file>`): the same engine
+beside the model, through the driver's session, on its own 2 s clock: it reads only (no preview,
+no proposal, no withdrawal; it reads no intents of its own), logs what it would propose as `shadow`
+lines with the rationale and record, what it would withdraw as `shadow.withdraw`, a would-be card
+past the policy's approval wait as `shadow.lapsed` (then cooling as expired), and each play's
+status as `shadow.status`. Its would-be cards claim their vehicles and count against the budget
+as human-tier cards, so the shadow's discipline is the live engine's.
+
+Not seen by any play yet, said so: fewer than six satellites (the compact fleet read has no
+satellite count) and a spoof that keeps every navigation flag good (no navigation-integrity fact
+exists; PLAN.md). The engagement plays, `ident.review_support` and `isr.reacquire_lost` are step 3.
+Tests: `agents/tests/test_playbook_*.py` (recorded and synthetic reads, a fake session; no bridge,
+no model).
+
 ### A real model
 
 Any MCP client that speaks streamable HTTP and can set a header works (the key from

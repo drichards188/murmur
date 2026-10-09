@@ -407,8 +407,9 @@ class Engine:
 
     def log_statuses(self, sts: dict[str, str]) -> None:
         kind = "shadow.status" if self.shadow else "play.status"
+        # a play starts ready (run.start lists them): only a change from that is news
         for name in sorted(sts):
-            if self.led.status.get(name) != sts[name]:
+            if self.led.status.get(name, "ready") != sts[name]:
                 self.led.status[name] = sts[name]
                 self.log(kind, play=name, status=sts[name], text=f"{name}: {sts[name]}")
 

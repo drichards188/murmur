@@ -39,8 +39,8 @@ from __future__ import annotations
 from typing import Any
 
 from .. import rationale as R
-from ..beliefs import (PROTECTED, RETURNING_MODES, Beliefs, Track, Vehicle, closing_alert, eta_s, haversine_m,
-                       orbit_radius, seen_by)
+from ..beliefs import (NOT_RUNNING, PROTECTED, RETURNING_MODES, Beliefs, Track, Vehicle, closing_alert, eta_s,
+                       haversine_m, orbit_radius, seen_by)
 from ..ledger import Ledger
 from . import P2, Candidate, Play, Result, register
 
@@ -69,7 +69,7 @@ def runs(e: dict[str, Any], b: Beliefs) -> bool:
     v = b.vehicles.get(e.get("uid")) if e.get("uid") is not None else None
     if v is None or v.task_intent != int(e["intent"]):
         return False
-    return (v.task or {}).get("state") != "failed" and (v.mode or "").upper() not in RETURNING_MODES
+    return (v.task or {}).get("state") not in NOT_RUNNING and (v.mode or "").upper() not in RETURNING_MODES
 
 
 def silent(v: Vehicle | None, b: Beliefs) -> bool:
@@ -84,7 +84,9 @@ def silent(v: Vehicle | None, b: Beliefs) -> bool:
 
 
 def live(e: dict[str, Any], b: Beliefs) -> bool:
-    return e.get("state") in LIVE_WAITING or runs(e, b)
+    """A card of ours waiting, an order of ours gone out (until it ends: done once established,
+    failed when superseded), or one its vehicle flies now."""
+    return e.get("state") in LIVE_WAITING or e.get("state") == "dispatched" or runs(e, b)
 
 
 def holding(play_names: tuple[str, ...], target: str, b: Beliefs, led: Ledger) -> dict[str, Any] | None:

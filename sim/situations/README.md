@@ -35,7 +35,7 @@ Situation panel is over the map's top left.
 
 | file | status | what |
 | --- | --- | --- |
-| `harbor-watch.toml` | runs | Four of ours on station at the Golden Gate, normal traffic, and an unknown fast boat without AIS that comes in from the west and holds near the bridge. The AI should notice it and propose a sensor orbit; the watch policy puts that in front of the operator. Every platform has an endurance figure, so the three opening orders go out by policy. 12 minutes at rate 1. |
+| `harbor-watch.toml` | runs | Four of ours on station at the Golden Gate, normal traffic, and an unknown fast boat without AIS that comes in from the west and holds near the bridge. The AI should notice it and propose a sensor orbit; the watch policy puts that in front of the operator. Every platform has an endurance figure, so the three opening orders go out by policy. 12 minutes at rate 1. Its `[playbook]`: a 3 km watch area and the bridge as the protected point, Pumas preferred. |
 | `comms-cut-gnss-spoof.toml` | stub (TODO) | Title and brief only. |
 | `hostile-act-engagement.toml` | stub (TODO) | Title and brief only. |
 | `approval-flood.toml` | stub (TODO) | Title and brief only. |
@@ -46,8 +46,11 @@ The runner refuses a stub (`todo = true`).
 
 `AI=claude` runs the Claude watch officer (`agents/watch_officer.py --backend claude`) through
 your own Claude Code CLI (`claude -p`); `AI=codex` runs it through your own Codex CLI (shown as
-"ChatGPT (Codex)"); `AI=playbook` runs the deterministic `agents/policy_agent.py --watch`
-(no model, no account); `AI=none` runs no AI. The watch officer wakes its model when something
+"ChatGPT (Codex)"); `AI=playbook` runs the playbook engine (`agents/playbook_agent.py`, no model,
+no account: plays on a 2 s tick, an inbox budget, cooldowns after a rejection, rationales from the
+facts it read; `agents/README.md`, "The playbook engine"); `AI=none` runs no AI. Beside Claude or
+Codex the playbook engine also runs as a shadow, reading only, its would-be proposals in the watch
+officer's log (`shadow` lines) for comparison. The watch officer wakes its model when something
 worth a look changes (a table, not the model's choice), keeps it to the bridge's MCP tools, and
 writes what it was told and what it said to its own log, whose lines for a person the panel
 shows as the AI's notes (`agents/README.md`, "The watch officer"). If its own preflight fails
@@ -62,10 +65,12 @@ of login, never an account, an email or a key. If the CLI is missing or not logg
 stops before anything starts and says how to fix it (`claude`, then `/login`; or `codex
 login`), and that `AI=playbook` is the free option. It never falls back silently.
 
-The AI gets the situation's title and brief (a file), the bridge's MCP endpoint and its agent id
-(`agent-watch` for Claude and Codex, `agent-planner` for the playbook), and nothing else: not the
-director's notes, not the timeline, not the watch items, no `MURMUR_*` variable. It starts in an
-empty directory of its own outside the repository (only `brief.md` in it), and the watch officer
+The AI gets the situation's title and brief (a file), the situation's `[playbook]` table (a file,
+`playbook.json`: the playbook engine's config, for `AI=playbook` and the shadow), the bridge's MCP
+endpoint and its agent id (`agent-watch` for Claude and Codex, `agent-playbook` for the playbook),
+and nothing else: not the director's notes, not the timeline, not the watch items, no `MURMUR_*`
+variable. It starts in an empty directory of its own outside the repository (only `brief.md` and
+`playbook.json` in it), and the watch officer
 runs its model with the bridge's MCP tools only (no shell, no file tools, no other settings), so
 it cannot read what the situation hides from the checkout. Agents propose; they never approve
 (no approve tool exists). The launch contract is in `agents/README.md`. A run with `REVEAL=1`
@@ -99,7 +104,7 @@ Who is who in a situation's run:
 | `op-2`, `op-3` | the scripted engagement signers (autoplay), or the scripted cosigner (live, `cosigner = "scripted"`) |
 | `op-planner` | the timeline's second station (`declare` steps, autoplay only; proposals with `[storyline] proposer = "operator"`) |
 | `agent-scripted` | the timeline's proposals (MCP) |
-| `agent-watch`, `agent-planner` | the AI: Claude or Codex, or the playbook |
+| `agent-watch`, `agent-playbook` | the AI: Claude or Codex, or the playbook engine |
 
 Every scripted act says so in the audit log: an opening order's rationale begins "situation
 setup (scripted, not a person)", a timeline proposal's or declaration's "situation timeline
@@ -143,7 +148,7 @@ run the bridge has no mark for a scripted operator: which ids the runner drove i
    situation's fleet, contacts, events (merged into one file, `events.toml` in the run directory),
    policy, tidewater scenario and scenario clock; a roster of
    `op-1,op-2,op-3,op-auto,op-setup,op-planner` (`MURMUR_OPERATORS`), engagement authority for
-   `op-1,op-2,op-3`, agents `agent-watch,agent-planner,agent-scripted,agent-setup`; this run's id
+   `op-1,op-2,op-3`, agents `agent-watch,agent-playbook,agent-scripted,agent-setup`; this run's id
    (`MURMUR_RUN_ID=situation-<name>-<UTC time>`) and its own simulation-channel token. No truth
    endpoint (`MURMUR_EVAL_TRUTH` is off).
 4. Waits for the stack, takes the situation clock's zero, waits until every vehicle is
@@ -164,8 +169,9 @@ Everything it did goes to `logs/situations/<run id>/situation.jsonl` (one JSON o
 `start`, `fresh_station`, `stack`, `zero`, `phase`, `ready`, `order` (with its dry run and who
 issued it), `ai_start`, `ai_action`, `ai_note`, `autoplay`, `step`, `timeline`, `problem`,
 `end`), beside `events.toml`, `up.log` (the stack's output), `agent.log` (the AI's output),
-`agent.jsonl` (the watch officer's own notes, copied from its directory at the end) and
-`summary.txt`. The audit log is the bridge's, as for any run.
+`agent.jsonl` (the watch officer's or the playbook's own notes, copied from its directory at the
+end), the playbook engine's ledger (`playbook-ledger.json`, or `playbook-shadow-ledger.json` for
+the shadow) and `summary.txt`. The audit log is the bridge's, as for any run.
 
 ## The panel and the status document
 
@@ -243,11 +249,18 @@ at_s = 240
 text = "How the C2 labels a contact without AIS."   # what to look at, never the answer
 director = false                              # true: shown only when revealed
 
-[playbook]                                    # AI=playbook: agents/policy_agent.py --watch
-near = [-122.4783, 37.8199]                   # the watch point
-radius_km = 3
-every_s = 10
-platform = "puma"                             # the sensor platform it tasks (default: any unarmed aircraft)
+[playbook]                                    # the playbook engine (AI=playbook, and the shadow)
+sensor_platform = "puma"                      # a preferred sensor platform (free ones of it go first)
+# plays = [...] / enable = ["isr.armed_overwatch"] / disable = [...]   (default: agents/playbook/defaults.toml)
+[[playbook.watch_area]]                       # where to look: center = [lon, lat] and radius_m, or polygon
+name = "the Golden Gate approaches"
+center = [-122.4783, 37.8199]
+radius_m = 3000
+[[playbook.protected]]                        # what to protect: a closest approach to it is watched
+name = "the Golden Gate Bridge"
+point = [-122.4783, 37.8199]
+# [playbook.thresholds], [playbook.budget], [playbook.cooldown], [playbook.material]: any key of
+# the defaults' tables (a situation should leave them alone: the defaults carry their reasons)
 
 [autoplay]                                    # the scripted operator: eval/proxy.py presets and keys
 preset = "default"
@@ -275,6 +288,15 @@ signed by the scripted signers in autoplay, or by you live. `text` and `director
 situation's own. Each kind takes its own keys only (a `declare` step never names its operator:
 it is op-planner's), every `at_s` is before `duration_s`, and a value of the wrong type is
 refused with the key named.
+
+**The playbook.** `[playbook]` is the playbook engine's config on top of its shipped defaults
+(`agents/playbook/defaults.toml`, every threshold with its reason; `agents/README.md`, "The
+playbook engine"): where to watch and what to protect, which plays are on, a preferred sensor
+platform. It is checked when the file is read (by the engine's own `playbook/config.py`), hashed,
+and the hash goes to the bridge at connect (the audit log's `agent.action session.connected`).
+The keys of before still work: `near` with `radius_km` (a watch area), `platform` (the preferred
+sensor platform), `every_s` (the tick). Only the table goes to the AI's directory, as
+`playbook.json`, never the rest of the file.
 
 **Policies.** `policies/watch.toml` is `sim/policy.toml` with one tier before the default,
 `agent-tasking`: an AI's orbit, patrol or track waits for the operator, however routine

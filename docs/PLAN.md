@@ -875,6 +875,14 @@ Exit: results published, including what went wrong.
   example; Comms cut and GNSS spoof, Hostile act to engagement and Approval flood are stubs. The
   watch officer (`agents/watch_officer.py`, on the user's own Claude Code or Codex) is the AI for
   `AI=claude|codex`.
+- **The playbook engine** (murmur-t8m; step 1 built 10-09, `agents/playbook/`, DECISIONS.md "The
+  playbook engine"): the deterministic AI (no model) for `AI=playbook` (as `agent-playbook`) and the
+  shadow beside the watch officer; ten plays, an arbiter with an inbox budget, a ledger with
+  cooldowns, rationales from an evidence record; criteria frozen before its first live run
+  (`agents/playbook/CRITERIA.md`). Step 2: the evaluation's baseline arm (in place of
+  `eval/agent.py`'s `AgentPolicy`), autonomous and in step mode. Step 3: the engagement plays,
+  `ident.review_support`, `isr.reacquire_lost`. Bridge follow-ups: structured reject reasons, a
+  structured evidence field on proposals, a per-agent cap on pending human-tier cards.
 - TAK/CoT export (murmur-dg2): after C2, when there are tracks worth sharing.
 - Tidewater: SFBOFS currents (tw-ln7), wind bias correction, upstream the ArduPilot patch.
 - Bugs: antenna tracker stall (murmur-9bf), ArduPlane extra streams.

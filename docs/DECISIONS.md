@@ -1129,6 +1129,76 @@ group. Dates are 2026.
   with `codex features list` before any turn and refuses to start otherwise, because a
   read-only sandbox does not stop reads and a breach seen in the event stream comes after
   the command ran.
+- **The playbook engine: one deterministic agent as the free option, the baseline and the
+  shadow** (10-09, murmur-t8m, step 1; `agents/playbook/`, `agents/playbook_agent.py`,
+  `agents/README.md` "The playbook engine"; the design is the research report's Part C). A
+  library of named, versioned plays, not a behaviour tree or a planner: each play is a trigger
+  read from facts, a few checks, one proposal, its withdraw condition, its material change and a
+  rationale template, which is what a delegation interface (Playbook, IMPACT) and doctrine-based
+  automation (Aegis doctrine statements) look like, and the control flow is shallow (the
+  autopilots and the task layer run the actions). One tick (2 s, or sooner on a waking change)
+  reads `get_fleet` compact, `get_tracks`, `get_inbox`, `get_intents` mine and `get_changes`
+  since its cursor; beliefs, plays, the arbiter, the rule book's veto and the rationale are a
+  pure function of the reads, the preview answers, the config and the ledger (every collection
+  sorted, floats rounded at fixed precision, the tick's time the oldest `t` among its reads), so
+  a fixture of recorded reads gives byte-identical proposals and rationales. The arbiter orders
+  every candidate by (class, minus score, play, target, uid) with classes P0 safety, P1
+  engagement chain, P2 picture, P3 links and navigation, P4 hygiene; holds back on a cooldown
+  without a material change, a back-off, a claimed vehicle (one per vehicle), an engagement in
+  play (hold and rtl excepted), a busy inbox (6 pending: only P0 and P1); and the engine spends
+  at most 3 previews a tick and a token bucket of human-tier cards (1 per 30 s, burst 2, at most 2
+  of its own pending). Every proposal passes `preview_intent` (a failing one backs off, doubling
+  from 10 s to 160 s, never dropped for good) and the evaluation's frozen rule book (imported
+  from `eval/evidence.py`, so one rule book serves the engine, the proxy and the metrics; it is
+  pure and importing it reads no file of the evaluation's). Rationales are rendered by a fixed
+  template from an evidence record built only from values the tick read, and the record rides in
+  the rationale after a delimiter line until the bridge takes a structured field; the console
+  folds it behind a toggle. The ledger (JSON per run) keeps every card by (play, target,
+  vehicle) with its state from the bridge, the cooldowns, the back-offs, the budget's bucket and
+  each play's last status, and a restart adopts its cards from their records. The config (the
+  shipped `defaults.toml`, each threshold with its reason, under a situation's `[playbook]`) is
+  hashed and sent as the MCP client's version, so `agent.action session.connected` names it
+  (`AgentSession` gained a `client_version`; `policy_agent.py` is otherwise as it was, and the
+  evaluation's `AgentPolicy` arm moves to the engine in step 2). `AI=playbook` runs it as its own
+  agent id, `agent-playbook` (in the situation roster in place of `agent-planner`, and in the
+  bridge's default `MURMUR_AGENTS`), writing the watch officer's `{t, kind, text}` lines with its
+  status per play when it changes; beside Claude or Codex it is the shadow, reading through the
+  driver's session on its own clock, never previewing, proposing or withdrawing, and logging what
+  it would have done. The criteria (`agents/playbook/CRITERIA.md`, the research's C.1 table with
+  targets) were committed before its first live run and frozen; additions found against recorded
+  reads before that run are a dated section there.
+- **Where the playbook departs from the research design, and why** (10-09, murmur-t8m).
+  (1) The bridge's `get_changes` and `get_inbox`'s review list stand in for the proposed
+  `get_events` and `get_review` (both built since the report). (2) A rejection cools the play on
+  that target for every vehicle, not only the rejected key, and so does an expiry: without
+  structured reject reasons the operator's note is the only channel, and "not this play on this
+  target" never sends them the same card with another vehicle on it; a void and a withdrawal of
+  ours cool only the key. (3) The look's 0.5 gate is the track's existence confidence (the
+  report's C.2.3); the rule book's 0.5 on affiliation confidence gates the armed play. Gating the
+  look on affiliation would keep it off every unknown, 0.0 until a sensor classifies it, which is
+  what the look is for. (4) An identity conflict is a reason to look beside an unsettled
+  classification and speed: it is the tracker's own anomaly flag and what a close look settles.
+  (5) A vehicle whose navigation is suspect is excluded from every tasking play, not only armed
+  ones (hold and rtl still go): a sensor whose own position is in doubt places what it sees in
+  the wrong place. (6) "Free" means idle (no order, or a failed one): a vehicle on anyone's
+  running order is not taken, so `isr.release` is a hold in practice; resuming an earlier order
+  of ours is there for when one exists. (7) `link.cover_gap` leaves a silent sensor's orbit on a
+  track to `isr.investigate`, which takes the track with another sensor at its position now,
+  rather than sending a filler to the old centre. (8) Leaving the watch has hysteresis (1.1 x a
+  watch area's radius, 2 x the CPA alert, 1.5 x the TCPA horizon) and a track whose velocity is
+  not known never counts as gone: in recorded Harbor watch reads the tracker's velocity for the
+  young fast boat alternated between a value and none on every read, so a look was proposed and
+  withdrawn on alternate ticks without it. (9) A look offers the arbiter its first three free
+  vehicles (0.001 lower in score each), so one claim per vehicle falls to the next free vehicle
+  rather than holding a second look back; the rationale names the vehicle that went first.
+  (10) A card the budget cannot take is not previewed (previews are logged) unless its key's last
+  preview said auto. (11) The shadow holds its would-be cards as if pending for the policy's
+  approval wait (then as expired unread), claiming their vehicles and counted by the budget as
+  human-tier: a model of an operator who never answers, stated in its log. (12) Not built:
+  the bridge additions C.2.6 proposes beyond those that exist (structured reject reasons, a
+  structured evidence field on `propose_intent`, a per-agent cap on pending human-tier cards);
+  they are follow-ups. The compact fleet read has no satellite count, so fewer than six
+  satellites is not seen.
 - **`get_changes` is a digest compared between reads, not an event log** (10-08). The bridge
   keeps no history of an affiliation estimate or an alert clearing, so a cursor over the
   timestamps it does keep would miss exactly those; the MCP layer compares a digest of the

@@ -9,8 +9,10 @@
   card or from `explain_intent` (read once per order). Score: 1. It ends when the link is back:
   a filler still waiting is withdrawn; one that runs is kept (no churn: the operator decides).
   Material change: a new loss (the link came back and went again).
-- `link.withdraw_pending`: a card of ours waiting for a vehicle whose link is lost: withdrawn,
-  "link lost at <time>".
+- `link.withdraw_pending`: a card of ours waiting for the operator (pending approval) for a vehicle
+  whose link is lost: withdrawn, "link lost at <time>". One the operator already approved is left
+  to the bridge's queue (rules 5: it goes when the vehicle can be reached, a human's approval back
+  to the inbox after 120 s): withdrawing it would undo a person's decision over a link.
 - `nav.suspect_exclude`: a vehicle whose navigation is not ready, off GNSS or whose GPS glitch is
   flagged (now, or within 60 s: the flags must clear for that long) is excluded from every
   tasking play (the free-vehicle definition) and from armed ones by name; a card of ours on an
@@ -26,7 +28,7 @@ import datetime as dt
 from typing import Any
 
 from .. import rationale as R
-from ..beliefs import Beliefs, Vehicle, eta_s, haversine_m
+from ..beliefs import NOT_RUNNING, Beliefs, Vehicle, eta_s, haversine_m
 from ..ledger import Ledger
 from . import P3, Candidate, Play, Result, Withdrawal, register
 from .isr import CHOICES, LOOK_PLAYS, RANK_STEP, holding, ranked, sensor_unfit, vehicle_facts, vehicle_ref
@@ -70,7 +72,7 @@ class CoverGap(Play):
         out = []
         for uid, v in sorted(b.vehicles.items()):
             task = v.task or {}
-            if not v.link_lost or task.get("task") not in GAP_TASKS or task.get("state") == "failed":
+            if not v.link_lost or task.get("task") not in GAP_TASKS or task.get("state") in NOT_RUNNING:
                 continue
             out.append((v, v.link_age_s or 0.0, lost_after(b, uid)))
         return out
@@ -123,23 +125,23 @@ class CoverGap(Play):
         else:
             request = {"task": "patrol", "uids": [f.uid], "route": [R.ll(q) for q in p["route"]]}
         res.candidates.append(Candidate(
-                play=self.name, version=self.version, klass=self.klass, score=1.0 - RANK_STEP * rank, target=target, uid=f.uid, task=kind,
-                request=request,
-                facts=[{"ref": f"vehicle:{v.uid}.link", "lost": True, "age_s": R.r1(lost_s), "lost_after_s": R.r1(after),
-                        "since_t": R.r1(since)},
-                       {"ref": f"vehicle:{v.uid}.task", "value": v.task, "params": p, "source": params.get("source")}]
-                + vehicle_facts(f),
-                derived={"lost": vehicle_ref(v), "eta_s": R.r0(eta_s(f, (anchor[0], anchor[1]))), "rank": rank,
-                         "distance_m": R.r0(haversine_m(f.pos, anchor)) if f.pos else None},
-                thresholds={"link_gap_factor": factor},
-                withdraw_if=[f"{v.callsign}'s link is back (a filler already running is kept)",
-                             f"{f.callsign} is no longer fit for the task"],
-                basis={"since_t": R.r0(since)},
-                trigger=[f"{v.callsign} silent {lost_s:.0f} s, over {factor:.0f} x its {after:.0f} s lost-link limit"],
-                alternatives=[{"uid": c.uid, "callsign": c.callsign, "eta_s": R.r0(eta_s(c, (anchor[0], anchor[1])))} for c in free[1:4]]
-                + [{"uid": c.uid, "callsign": c.callsign, "not_free": why} for c, why in busy[:3]],
-                claims=(f.uid,), vehicle=vehicle_ref(f),
-            ))
+            play=self.name, version=self.version, klass=self.klass, score=1.0 - RANK_STEP * rank, target=target, uid=f.uid, task=kind,
+            request=request,
+            facts=[{"ref": f"vehicle:{v.uid}.link", "lost": True, "age_s": R.r1(lost_s), "lost_after_s": R.r1(after),
+                    "since_t": R.r1(since)},
+                   {"ref": f"vehicle:{v.uid}.task", "value": v.task, "params": p, "source": params.get("source")}]
+            + vehicle_facts(f),
+            derived={"lost": vehicle_ref(v), "eta_s": R.r0(eta_s(f, (anchor[0], anchor[1]))), "rank": rank,
+                     "distance_m": R.r0(haversine_m(f.pos, anchor)) if f.pos else None},
+            thresholds={"link_gap_factor": factor},
+            withdraw_if=[f"{v.callsign}'s link is back (a filler already running is kept)",
+                         f"{f.callsign} is no longer fit for the task"],
+            basis={"since_t": R.r0(since)},
+            trigger=[f"{v.callsign} silent {lost_s:.0f} s, over {factor:.0f} x its {after:.0f} s lost-link limit"],
+            alternatives=[{"uid": c.uid, "callsign": c.callsign, "eta_s": R.r0(eta_s(c, (anchor[0], anchor[1])))} for c in free[1:4]]
+            + [{"uid": c.uid, "callsign": c.callsign, "not_free": why} for c, why in busy[:3]],
+            claims=(f.uid,), vehicle=vehicle_ref(f),
+        ))
 
     def withdraw_reason(self, entry: dict[str, Any], b: Beliefs) -> str | None:
         uid = int(str(entry["target"]).split(":", 1)[1])
@@ -158,14 +160,16 @@ class CoverGap(Play):
         d = record["derived"]
         link = record["facts"][0]
         task = record["facts"][1]
+        passed = d.get("passed_over") or []
+        after = f" after {', '.join(passed)}" if passed else ""
         what = (f"its orbit ({record['request']['radius_m']:.0f} m radius) at {record['request']['center'][0]:.4f},"
                 f"{record['request']['center'][1]:.4f}" if record["task"] == "orbit" else
                 f"its patrol ({len(record['request']['route'])} points)")
         return (f"{R.head(record)} Cover {d['lost']['callsign']}'s gap: {record['vehicle']['callsign']} takes over {what}. "
                 f"{d['lost']['callsign']} has been silent {link['age_s']:.0f} s (its lost-link limit {link['lost_after_s']:.0f} s), "
                 f"on {task['value'].get('task')} i{task['value'].get('intent_id')} ({task.get('source')}). "
-                f"{record['vehicle']['callsign']} is the free capable vehicle nearest by time ({R.mins(d.get('eta_s'))} away; "
-                f"battery {record['vehicle']['battery_pct']:.0f}%). {R.tail(record)}")
+                f"{record['vehicle']['callsign']} is the free capable vehicle nearest by time{after} "
+                f"({R.mins(d.get('eta_s'))} away; battery {record['vehicle']['battery_pct']:.0f}%). {R.tail(record)}")
 
 
 class WithdrawPending(Play):
@@ -174,6 +178,8 @@ class WithdrawPending(Play):
     def withdrawals(self, b: Beliefs, led: Ledger, waiting: list[dict[str, Any]]) -> list[Withdrawal]:
         out = []
         for e in waiting:
+            if e.get("state") not in ("pending_approval", None):
+                continue  # approved or queued: the bridge's queue holds it for the link
             v = b.vehicles.get(e.get("uid")) if e.get("uid") is not None else None
             if v is not None and v.link_lost:
                 since = gap_since(v, b)

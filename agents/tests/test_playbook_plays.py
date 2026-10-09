@@ -233,6 +233,19 @@ def test_withdraw_pending_and_nav_suspect_exclude():
     n = PLAYS["nav.suspect_exclude"].withdrawals(b, led, waiting)
     assert [(x.intent, x.reason) for x in n] == [(12, "BLADE 1's navigation is suspect (navigation on dead_reckoning): excluded from armed tasks")]
     assert b.free_reason(b.vehicles[9]).startswith("navigation on dead_reckoning")
+    # a card the operator already approved, queued for the link (rules 5), is the queue's: left
+    led.entries["11"]["state"] = "queued"
+    assert PLAYS["link.withdraw_pending"].withdrawals(b, led, led.open_entries()) == []
+
+
+def test_an_order_back_in_the_queue_is_not_flying_and_claims_nothing():
+    """Live, Harbor watch: our recentre went out, PUMA 1's link dropped before it started, the
+    bridge put it back in the queue; PUMA 1's current order then read `requeued`."""
+    led = Ledger()
+    running(led, 5, "T-1", 3, offset(-2000, 0), play="isr.recentre")
+    fleet = [vehicle(3, "PUMA 1", "puma", offset(-2000, 900), mode="LOITER", task={"intent_id": 5, "task": "orbit", "state": "requeued"})]
+    b = build(reads(vehicles=fleet, tracks=[track("T-1")]), config(), led)
+    assert b.claims == {} and b.free_reason(b.vehicles[3]) is None
 
 
 def test_nav_suspect_clears_only_after_60_s_of_good_navigation():
@@ -300,3 +313,20 @@ def test_every_play_of_step_one_is_registered_with_its_class():
     assert {n: p.klass for n, p in PLAYS.items()} == want
     assert intent(1, "orbit", [3])["uids"] == ["3"], "the bridge serves an intent's uids as strings"
     assert GATE == (-122.4783, 37.8199)
+
+
+def test_every_play_renders_its_rationale_from_its_record():
+    """Each proposing play's template on a real candidate: the play and version named, the
+    numbers the record holds, the record after the delimiter."""
+    from playbook import rationale as R
+    from playbook.engine import Engine
+
+    r, led, _ = gap_world(7.0)
+    res, b = look(r, led=led, play="link.cover_gap")
+    text, rec = Engine(config()).finish(res.candidates[0], b, None, [])
+    assert text.startswith("[link.cover_gap v1] Cover PUMA 2's gap: PUMA 1 takes over its orbit (300 m radius)")
+    assert "PUMA 2 has been silent 7 s (its lost-link limit 3 s), on orbit i3 (human op-setup)" in text
+    assert R.parse_record(text) == rec
+    res, b = look(reads(vehicles=[vehicle(3, "PUMA 1", battery_pct=22.0)]), play="safety.low_reserve")
+    text, _ = Engine(config()).finish(res.candidates[0], b, None, [])
+    assert R.split(text)[0].startswith("[safety.low_reserve v1] Return PUMA 1 home: battery 22%, under 25%")

@@ -38,6 +38,8 @@ from typing import Any
 
 from . import rationale as R
 
+NOT_RUNNING = ("failed", "superseded", "requeued")  # beliefs.NOT_RUNNING (no import cycle)
+
 OPEN = ("proposed", "checked", "auto_approved", "pending_approval", "approved", "queued", "dispatched")
 WAITING = ("pending_approval", "approved", "queued")  # withdrawable (approved: until it goes out)
 ENDED_UNRUN = ("rejected", "expired", "voided", "withdrawn")
@@ -275,7 +277,7 @@ class Ledger:
         mine = {int(k) for k, e in self.entries.items() if e.get("play") != "isr.release"}
         mine |= {iid for iid in own if (self.entries.get(str(iid)) or {}).get("play") != "isr.release"}
         for uid, v in sorted(vehicles.items()):
-            if v.task_intent is not None and v.task_intent in mine and (v.task or {}).get("state") != "failed":
+            if v.task_intent is not None and v.task_intent in mine and (v.task or {}).get("state") not in NOT_RUNNING:
                 out.setdefault(uid, f"our i{v.task_intent} (running)")
         for _, s in sorted(self.shadow.items()):
             if s.get("uid") is not None:

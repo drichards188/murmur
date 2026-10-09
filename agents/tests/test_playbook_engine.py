@@ -67,11 +67,14 @@ def test_the_rule_book_vetoes_what_a_passing_preview_lets_through():
 
 
 def test_statuses_go_to_the_log_only_when_they_change():
-    ticks = [reads(t=T0 + dt, vehicles=FLEET, tracks=[]) for dt in (0, 2, 4)]
-    _, _, _, lines = run(ticks)
-    status = [x for x in lines if x["kind"] == "play.status"]
-    assert len(status) == len(config()["plays"]), "once each at the start, then nothing new"
-    assert {x["play"] for x in status} == set(config()["plays"])
+    tr = track("T-1", "suspect", 0.7)
+    ticks = [reads(t=T0 + dt, vehicles=FLEET, tracks=trs) for dt, trs in ((0, []), (2, []), (4, [tr]), (6, [tr]), (8, [tr]))]
+    _, _, reps, lines = run(ticks)
+    status = [(x["play"], x["status"]) for x in lines if x["kind"] == "play.status"]
+    # every play starts ready (not news); then the look becomes active, once, and stays so
+    assert all(v == "ready" for v in reps[0].statuses.values())
+    assert status == [("isr.investigate", "active: proposed i101 orbit PUMA 1 on T-1 (pending_approval)"),
+                      ("isr.investigate", "active: T-1 by uid 3 (i101 pending_approval)")]
 
 
 def test_stale_and_link_lost_cards_are_withdrawn_within_a_tick_with_the_reason():
@@ -285,3 +288,20 @@ def test_the_ledger_is_saved_each_tick(tmp_path: Path):
     back = Ledger.load(p)
     assert back.entries["101"]["target"] == "T-1" and back.cursor == "f:0"
     assert intent(1, "hold", [1])["state"] == "pending_approval"
+
+
+def test_the_fidelity_check_passes_a_proposal_and_catches_a_tampered_text(tmp_path: Path):
+    from playbook import fidelity
+
+    s, e, reps, _ = run([reads(vehicles=FLEET, tracks=[track("T-1", "suspect", 0.7)])])
+    rationale = s.proposed[0]["rationale"]
+    assert fidelity.check(rationale) == []
+    assert fidelity.check(rationale.replace("battery 90%", "battery 99%")) == [
+        "the text is not what the template renders from the record"]
+    assert fidelity.check("an operator's own words") == ["no evidence record after the delimiter"]
+    log = tmp_path / "audit.jsonl"
+    created = {"type": "intent.created", "intent": {"id": 101, "source": {"kind": "agent", "id": "agent-playbook"},
+                                                    "rationale": rationale}}
+    other = {"type": "intent.created", "intent": {"id": 102, "source": {"kind": "agent", "id": "agent-watch"}, "rationale": "x"}}
+    log.write_text(json.dumps(created) + "\n" + json.dumps(other) + "\n")
+    assert fidelity.main([str(log)]) == 0

@@ -19,7 +19,8 @@ protected points in the config's order). What each belief means:
 - **Free** (`free_reason`; None when free): a vehicle is free for a task when its health is
   good, its battery is at least the low-reserve line plus `free_battery_margin_pct`, no card or
   order of ours claims it, no engagement is in play on it, it is not returning (mode RTL, LAND,
-  QRTL or SMART_RTL), and it is idle: no current order, or its current order failed. An order
+  QRTL or SMART_RTL), and it is idle: no current order, or one that is not flying (failed,
+  superseded, back in the queue). An order
   that is running (an orbit or a patrol reports `done` once established, and keeps flying) is
   never taken: a vehicle on someone's order is that someone's.
 - **Inbox pressure** (`pressure`): pending cards in the inbox, own pending cards, alerts.
@@ -37,6 +38,10 @@ from .config import Config
 from .reads import Reads
 
 RETURNING_MODES = ("RTL", "LAND", "QRTL", "SMART_RTL", "AUTO_RTL")
+# a vehicle's current order in one of these task-layer states is not flying (it failed, another
+# order replaced it, or it went back to the queue when the link dropped before it started); an
+# orbit or a patrol reports `done` once established and keeps flying, so `done` is not here
+NOT_RUNNING = ("failed", "superseded", "requeued")
 IMAGING = ("eo_ir",)
 OPEN_STATES = ("proposed", "checked", "auto_approved", "pending_approval", "approved", "queued", "dispatched")
 ENGAGE_IN_PLAY = ("proposed", "checked", "auto_approved", "pending_approval", "approved", "dispatched")
@@ -354,7 +359,7 @@ class Beliefs:
         if (v.mode or "").upper() in RETURNING_MODES:
             return f"returning ({v.mode})"
         task = v.task or {}
-        if task and task.get("state") != "failed" and v.task_intent not in self.own_idle:
+        if task and task.get("state") not in NOT_RUNNING and v.task_intent not in self.own_idle:
             return f"on {task.get('task')} i{task.get('intent_id')} ({task.get('state')})"
         return None
 
