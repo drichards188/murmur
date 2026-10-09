@@ -16,7 +16,10 @@
 - `nav.suspect_exclude`: a vehicle whose navigation is not ready, off GNSS or whose GPS glitch is
   flagged (now, or within 60 s: the flags must clear for that long) is excluded from every
   tasking play (the free-vehicle definition) and from armed ones by name; a card of ours on an
-  armed task waiting for such a vehicle is withdrawn. The compact fleet read has no satellite
+  armed task waiting for such a vehicle is withdrawn. Until murmur-su0 lands (the bridge's
+  readiness re-check at dispatch does not read the GPS glitch flag), an approved or queued armed
+  card of ours on such a vehicle is withdrawn too, with that state as the precondition, and the
+  line says so: "withdrawn (armed, nav suspect, murmur-su0)". An unarmed approved card is left. The compact fleet read has no satellite
   count, so fewer than six satellites is not seen; no navigation-integrity fact exists yet
   (PLAN.md: a cross-check that can catch a spoofed position), so a spoof that keeps every flag
   good is not seen either, by this play or by anyone.
@@ -200,15 +203,24 @@ class NavSuspect(Play):
 
     def withdrawals(self, b: Beliefs, led: Ledger, waiting: list[dict[str, Any]]) -> list[Withdrawal]:
         out = []
-        for e in waiting:
-            if e.get("state") not in ("pending_approval", None):
-                continue  # approved or queued: the bridge's readiness re-check at dispatch is the guard
+        # interim, until murmur-su0: the bridge's re-check at dispatch does not read the GPS glitch
+        # flag, so an approved or queued armed card of ours is withdrawn too (from that state only)
+        approved = [e for e in led.open_entries() if e.get("state") in INTERIM_STATES and e.get("armed")]
+        for e in list(waiting) + approved:
+            state = e.get("state")
+            if state not in ("pending_approval", None) + INTERIM_STATES:
+                continue
             uid = e.get("uid")
             if uid in b.nav_suspect and e.get("armed"):
-                out.append(Withdrawal(intent=int(e["intent"]), key=str(e.get("key") or ""), play=self.name,
-                                      reason=f"{b.vehicles[uid].callsign}'s navigation is suspect ({b.nav_suspect[uid]}): "
-                                             "excluded from armed tasks"))
+                why = f"{b.vehicles[uid].callsign}'s navigation is suspect ({b.nav_suspect[uid]}): excluded from armed tasks"
+                if state in INTERIM_STATES:
+                    why += "; withdrawn (armed, nav suspect, murmur-su0)"
+                out.append(Withdrawal(intent=int(e["intent"]), key=str(e.get("key") or ""), play=self.name, reason=why,
+                                      if_state=state or "pending_approval"))
         return out
+
+
+INTERIM_STATES = ("approved", "queued")  # murmur-su0: remove with it
 
 
 for _p in (CoverGap(), WithdrawPending(), NavSuspect()):

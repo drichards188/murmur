@@ -94,6 +94,7 @@ class Withdrawal:
     play: str  # the play that withdraws it (link.withdraw_pending, nav.suspect_exclude, hygiene.withdraw_stale)
     reason: str
     key: str = ""
+    if_state: str = "pending_approval"  # withdraw_intent's precondition: the state the card is read in
 
 
 @dataclass

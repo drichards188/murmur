@@ -34,6 +34,18 @@ classification_settled = 0.6
 # sonar: they raise a classification with dwell; radar and ESM give a class only) has detected the
 # track this recently: the tracker's stale age, the same freshness every live track already has
 classifier_fresh_s = 10.0
+# ...and only while that sensor is actually raising it: the identity confidence rose by at least
+# classify_rise_min within classify_rise_s. The tracker classifies with dwell, 1 - exp(-dwell/tau):
+# EO/IR to 0.95 with tau 45 s, sonar to 0.8 with tau 120 s, and a detection adds at most 2 s of
+# dwell (tracks/model.rs). Near 0.3, a sonar detection adds about 0.008, so 0.02 in 30 s needs a
+# detection every 10 s or so; a slower, intermittent contact is not settling the classification
+# (to 0.6 on sonar alone is 166 s of dwell: 14 minutes at one detection per 10 s)
+classify_rise_s = 30.0
+classify_rise_min = 0.02
+# ...and for at most this long per track from when a classifying sensor of ours first held it
+# unsettled: one sonar dwell time constant. A sensor of ours gets two minutes to settle it; after
+# that an unsettled classification is a reason to look again, whatever is on the track
+classify_wait_max_s = 120.0
 # 15.5 kn: faster than a displacement hull under 10 m can go (hull speed about 1.34 x
 # sqrt(waterline ft) kn, 7.3 kn at 30 ft), so a small contact this fast is planing
 fast_mps = 8.0

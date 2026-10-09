@@ -170,7 +170,8 @@ def merge(table: dict[str, Any] | None) -> dict[str, Any]:
     # a value something divides by, or multiplies a distance or a time by, must be positive
     positive = {
         "thresholds": ("fast_mps", "cpa_alert_m", "tcpa_max_s", "unseen_s", "orbit_turn_margin", "default_min_turn_m",
-                       "link_gap_factor", "classifier_fresh_s", "status_hold_ticks"),
+                       "link_gap_factor", "classifier_fresh_s", "status_hold_ticks", "classify_rise_s",
+                       "classify_rise_min", "classify_wait_max_s"),
         "budget": ("human_every_s", "inbox_busy"),
         "cooldown": ("preview_backoff_s", "preview_backoff_max_s"),
         "material": ("cpa_factor", "confidence_step"),

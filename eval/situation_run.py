@@ -241,9 +241,9 @@ PANEL_KINDS = {
     # the playbook engine's (AI=playbook): a play's status when it changes, its withdrawals, how
     # the operator answered its cards, what an engagement kept it from doing, an approved card of
     # its own whose premise went (left as it is), a withdrawal the bridge refused because the card
-    # was decided meanwhile, and a ledger of another bridge run set aside
+    # was decided meanwhile, and what checking the ledger against the bridge dropped
     "play.status": "play", "withdrawal": "withdrew", "decision": "answer", "withheld": "withheld",
-    "left": "left", "withdraw.refused": "kept", "ledger.reset": "note",
+    "left": "left", "withdraw.refused": "kept", "ledger.verified": "note",
 }
 
 

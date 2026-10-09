@@ -8,9 +8,11 @@
     2. beliefs (beliefs.py)
     3. plays: each returns candidates, what blocks it, what of its own is live
     4. arbiter: engagements in play, the total order, cooldowns and material change, back-offs,
-       stuck blocks, claims
+       keys the budget held, stuck blocks, claims
     5. preview_intent, at most 3 a tick: a failing one backs off; the preview says the tier, and
-       only a human-tier result spends the inbox budget (P0 commands are exempt by class)
+       only a human-tier result spends the inbox budget (P0 commands are exempt by class); a
+       human-tier card the budget holds is not previewed again until the next token is due or a
+       card of ours waiting then is decided
     6. the rule book's veto (eval/evidence.py v2)
     7. propose_intent with the rationale and its evidence record (a refusal at submission backs
        off and is logged with its reason)
@@ -18,11 +20,18 @@
        holds (link lost, navigation suspect on an armed card, the play's own condition), with
        the reason and `if_state: pending_approval`, so an approval that came meanwhile is never
        undone; a card a person approved whose premise is gone is left, and said so in the panel
+       (until murmur-su0, an approved or queued armed card on a vehicle whose navigation is
+       suspect is withdrawn, from that state only)
 
 Steps 2 to 7 are a pure function of the reads, the preview answers, the config and the ledger:
 every collection is sorted, floats are rounded at fixed precision, and the tick's time is the
-oldest `t` among its reads. A ledger of another bridge run (or of no known run) is set aside,
-renamed beside the new one, and a fresh one started.
+oldest `t` among its reads. At every start and change-feed reset the ledger is verified against
+the bridge, whatever `run` says (`verify`): a card is kept only if `explain_intent` shows the same
+intent, ours, with the same task and vehicles (a resumed run keeps its ids; a restarted one under
+a fixed run id does not); memory kept per vehicle only if the same platform and callsign are under
+the uid; and memory kept per track is dropped across a bridge restart (live track ids follow
+detection order: a new run's T-0008 is another contact). What it drops is said in the panel, and
+the ledger as it was is kept renamed beside.
 
 In **shadow** mode (beside the model watch officer) the engine reads only: no preview, no
 proposal, no withdrawal. What it would propose, and what it would withdraw or release, go to
@@ -35,6 +44,7 @@ premise is gone (then a would-be release).
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,11 +56,28 @@ from . import rulebook, tier
 from .arbiter import ENGAGED, Held, arbitrate, cooling, hms, statuses
 from .beliefs import NOT_RUNNING, RECOVERING_MODES, Beliefs, build, catalog
 from .config import Config
-from .ledger import APPROVED, OPEN, WAITING, Decision, Ledger, key_of
+from .beliefs import CLASSIFYING
+from .ledger import APPROVED, OPEN, WAITING, Decision, Ledger, key_of, pair_of
 from .plays import P0, PLAYS, Candidate, Result, Withdrawal
 from .reads import Reads
 
 WITHDRAW_PLAYS = ("link.withdraw_pending", "nav.suspect_exclude", "hygiene.withdraw_stale")
+NOT_TRACKS = ("battery:", "alert:", "gap:", "-")  # targets that are not a track id
+
+
+def is_track_target(target: str) -> bool:
+    return not any(str(target).startswith(p) for p in NOT_TRACKS)
+
+
+def scope_target(scope: str) -> str:
+    """The target of a cooldown or back-off scope (play|target or play|target|uid)."""
+    parts = str(scope).split("|")
+    return parts[1] if len(parts) > 1 else ""
+
+
+def feed_of(cursor: Any) -> str | None:
+    """The change feed's id in a cursor ("<feed>:<n>"): a new one with every bridge process."""
+    return str(cursor).split(":")[0] if cursor else None
 INTENTS_PAGE = 50
 # changes that wake a tick before its time (agents/watch/wake.py's table, cut to what the plays read)
 WAKING = ("intent.new", "intent.state", "track.new", "track.affiliation", "track.declared", "track.declaration_revoked",
@@ -107,32 +134,106 @@ class Engine:
         self.pending_changes: list[dict[str, Any]] = []
         self.changes_t: float | None = None
         self.truncated = False
+        self.reread_engaging = False  # after a verification that dropped the engagements it knew
         self.compute: list[float] = []
 
-    # ---- the bridge run ---------------------------------------------------------------------------
+    # ---- verifying the ledger against the bridge ---------------------------------------------------
 
-    def bind_run(self, run: str | None) -> None:
-        """This ledger is the bridge run's, or it is set aside (renamed beside the new one) and a
-        fresh one started: an intent id of an earlier run names another order in this one."""
-        if run is not None and self.led.run == run:
-            return
-        old = self.led
-        if old.run is not None or old.entries or old.cursor:
-            if self.ledger_path is not None and self.ledger_path.exists():
-                stem = (old.run or "no-run").replace("/", "_")
-                dest = self.ledger_path.with_name(f"{self.ledger_path.stem}.{stem}{self.ledger_path.suffix}")
-                n = 1
-                while dest.exists():
-                    dest = self.ledger_path.with_name(f"{self.ledger_path.stem}.{stem}.{n}{self.ledger_path.suffix}")
-                    n += 1
-                self.ledger_path.rename(dest)
-                kept = str(dest)
-            else:
-                kept = None
-            self.log("ledger.reset", was=old.run, run=run, kept=kept,
-                     text=f"a new bridge run ({run}): the ledger of {old.run or 'no known run'} is set aside"
-                          + (f" as {Path(kept).name}" if kept else ""))
-        self.led = Ledger(run=run)
+    def keep_copy(self, before: dict[str, Any]) -> str | None:
+        """The ledger as it was before a verification dropped something, beside the live one."""
+        if self.ledger_path is None:
+            return None
+        stem = str(before.get("run") or "no-run").replace("/", "_")
+        dest = self.ledger_path.with_name(f"{self.ledger_path.stem}.{stem}{self.ledger_path.suffix}")
+        n = 1
+        while dest.exists():
+            dest = self.ledger_path.with_name(f"{self.ledger_path.stem}.{stem}.{n}{self.ledger_path.suffix}")
+            n += 1
+        Ledger.from_json(before).save(dest)
+        return str(dest)
+
+    async def verify(self, session: Any, run: str | None, cursor: Any) -> dict[str, Any]:
+        """Check what the ledger remembers against the bridge (at a start and a feed reset),
+        whatever `run` says: with MURMUR_RESUME intent ids stay unique across carried logs, and a
+        fixed run id over a restart without resume keeps `run` while the ids start again."""
+        led = self.led
+        out: dict[str, Any] = {"cards": [], "vehicles": [], "tracks": 0, "restart": False}
+        if not led.entries and led.cursor is None:
+            led.run = run  # a fresh ledger: nothing in it came from a bridge
+            return out
+        restart = feed_of(led.cursor) != feed_of(cursor) or led.run != run
+        out["restart"] = restart
+        before = json.loads(json.dumps(led.to_json()))  # a copy: what follows edits the ledger
+        agent = getattr(session, "agent", None)
+        # cards: the same intent, ours, the same task and vehicles
+        for k in sorted(led.entries, key=int):
+            e = led.entries[k]
+            try:
+                i = (await session.call("explain_intent", id=int(k))).get("intent") or {}
+            except Exception:  # noqa: BLE001 (unknown here: not ours)
+                i = {}
+            src = i.get("source") or {}
+            want = sorted(str(u) for u in ((e.get("request") or {}).get("uids") or
+                                           ([e["uid"]] if e.get("uid") is not None else [])))
+            ok = (src.get("kind") == "agent" and (agent is None or src.get("id") == agent)
+                  and str(i.get("kind")) == str(e.get("task")) and sorted(str(u) for u in i.get("uids") or []) == want)
+            if not ok:
+                out["cards"].append(int(k))
+                del led.entries[k]
+                led.notes.pop(k, None)
+        gone = set(out["cards"])
+        led.cooldowns = [c for c in led.cooldowns if int(c.get("intent", -1)) not in gone]
+        # memory per vehicle: the same platform and callsign under the uid (read only when there
+        # is such memory to check)
+        fleet = await session.call("get_fleet", compact=True) if led.vehicles else {"vehicles": []}
+        now = {str(v["uid"]): {"platform": v.get("platform"), "callsign": v.get("callsign")}
+               for v in fleet.get("vehicles") or [] if v.get("uid") is not None}
+        for u in sorted(u for u, w in led.vehicles.items() if now.get(u) != w):
+            out["vehicles"].append(u)
+            for k in [k for k in led.backoff if k == f"vehicle:{u}" or k.endswith(f"|{u}")]:
+                del led.backoff[k]
+            led.stuck_blocks = [s for s in led.stuck_blocks if str(s.get("uid")) != u]
+            led.recentred.pop(u, None)
+            led.nav_bad_t.pop(u, None)
+            for k in [k for k, e in led.entries.items() if str(e.get("uid")) == u]:
+                out["cards"].append(int(k))
+                del led.entries[k]
+            led.cooldowns = [c for c in led.cooldowns if not str(c["scope"]).endswith(f"|{u}")
+                             and scope_target(c["scope"]) != f"battery:{u}"]
+        if led.vehicles:
+            led.vehicles = now
+        if restart:
+            # live track ids follow detection order: a new bridge's T-0008 is another contact
+            n = sum(1 for c in led.cooldowns if is_track_target(scope_target(c["scope"])))
+            led.cooldowns = [c for c in led.cooldowns if not is_track_target(scope_target(c["scope"]))]
+            for k in [k for k in led.backoff if is_track_target(scope_target(k)) and not k.startswith("vehicle:")]:
+                del led.backoff[k]
+                n += 1
+            for k in [k for k in led.score_factor if is_track_target(scope_target(k))]:
+                del led.score_factor[k]
+                n += 1
+            led.stuck_blocks = [s for s in led.stuck_blocks if not is_track_target(s.get("target", ""))]
+            out["tracks"] = n
+            # per run: alert ids, engagements, others' orders, the shadow's would-be cards
+            led.alert_seen, led.engaging, led.params, led.origins = {}, {}, {}, {}
+            led.shadow, led.classify, led.budget_wait, led.noted = {}, {}, {}, {}
+            self.reread_engaging = True  # read the engagements again at the next tick
+        led.run = run
+        if out["cards"] or out["vehicles"] or out["tracks"]:
+            kept = self.keep_copy(before)
+            bits = []
+            if out["cards"]:
+                bits.append(f"{len(out['cards'])} card(s) no longer ours under their ids "
+                            f"({', '.join(f'i{i}' for i in sorted(set(out['cards'])))}) dropped")
+            if out["vehicles"]:
+                bits.append(f"memory of uid {', '.join(out['vehicles'])} dropped (another vehicle under the uid)")
+            if out["tracks"]:
+                bits.append(f"{out['tracks']} track cooldown(s) and back-off(s) dropped (live track ids follow detection "
+                            "order: this run's T-0008 is another contact)")
+            self.log("ledger.verified", run=run, restart=restart, dropped=out, kept=kept,
+                     text=f"the ledger checked against the bridge{' after a restart' if restart else ''}: "
+                          + "; ".join(bits) + (f"; as it was: {Path(kept).name}" if kept else ""))
+        return out
 
     # ---- reading ----------------------------------------------------------------------------------
 
@@ -145,8 +246,8 @@ class Engine:
             self.areas = await session.call("get_areas")
         probe = await session.call("get_changes")
         run = probe.get("run")
-        self.bind_run(run)
-        reset = self.led.cursor is None
+        await self.verify(session, run, probe.get("cursor"))
+        reset = self.led.cursor is None or feed_of(self.led.cursor) != feed_of(probe.get("cursor"))
         if reset:
             self.led.cursor = probe.get("cursor")
         else:
@@ -167,8 +268,7 @@ class Engine:
             r = await session.call("get_changes", since=self.led.cursor, limit=500)
             if r.get("reset"):
                 new.append({"kind": "feed.reset", "run": r.get("run")})
-                if r.get("run") != self.run:
-                    self.bind_run(r.get("run"))
+                await self.verify(session, r.get("run"), r.get("cursor"))
                 self.run = r.get("run")
                 self.platforms = None  # a new bridge: the catalog and the policy again
             if r.get("truncated"):
@@ -199,6 +299,25 @@ class Engine:
                 extra.append({**ex["intent"], "id": ex["intent"].get("id", e["intent"])})
         return {**page, "intents": list(page.get("intents") or []) + extra}
 
+    async def read_origins(self, session: Any, fleet: dict[str, Any]) -> None:
+        """Who gave someone else's order now on a vehicle we sent home (`safety.low_reserve`
+        words a later decision by its origin): read once per order by explain_intent."""
+        for v in sorted(fleet.get("vehicles") or [], key=lambda v: int(v["uid"])):
+            task = v.get("task") if isinstance(v.get("task"), dict) else {}
+            iid = task.get("intent_id")
+            if iid is None or self.led.entry(int(iid)) is not None or str(iid) in self.led.origins:
+                continue
+            if not self.led.entries_for("safety.low_reserve", f"battery:{v['uid']}"):
+                continue
+            try:
+                i = (await session.call("explain_intent", id=int(iid))).get("intent") or {}
+            except Exception:  # noqa: BLE001 (tried again next tick)
+                continue
+            src, ap, pol = i.get("source") or {}, i.get("approval") or {}, i.get("policy") or {}
+            self.led.origins[str(iid)] = {"kind": src.get("kind"), "id": src.get("id"),
+                                          "by": ap.get("by") if isinstance(ap, dict) else None,
+                                          "tier": pol.get("tier") if isinstance(pol, dict) else None}
+
     async def read(self, session: Any) -> Reads:
         if self.platforms is None or self.policy is None:
             self.platforms = await session.call("get_platforms")
@@ -211,16 +330,18 @@ class Engine:
         intents = None if self.shadow else await self.read_intents(session)
         await self.poll_changes(session)
         changes, self.pending_changes = self.pending_changes, []
-        if self.truncated:
-            # older changes were dropped from the feed: what it would have said that the other
-            # reads do not (the engagements; the inbox is read every tick)
-            self.truncated = False
+        if self.truncated or self.reread_engaging:
+            # older changes were dropped from the feed (or a restart dropped what it said): what it
+            # would have said that the other reads do not (the engagements; the inbox is read every tick)
             try:
                 noms = await session.call("get_nominations")
                 self.led.set_engaging(list(noms.get("nominations") or []))
             except Exception:  # noqa: BLE001
                 pass
-            self.log("feed.truncated", text="older changes were dropped from the change feed: the engagements read again")
+            if self.truncated:
+                self.log("feed.truncated", text="older changes were dropped from the change feed: the engagements read again")
+            self.truncated = self.reread_engaging = False
+        await self.read_origins(session, fleet)
         lost = sorted(int(v["uid"]) for v in fleet.get("vehicles") or [] if v.get("link_lost"))
         lost_full: dict[int, dict[str, Any]] = {}
         if lost:
@@ -250,6 +371,8 @@ class Engine:
         led, cfg = self.led, self.cfg
         t = reads.tick_t
         led.note_changes(reads.changes)
+        led.see_vehicles(list(reads.fleet.get("vehicles") or []))
+        led.see_classification(list(reads.tracks.get("tracks") or []), t, cfg, CLASSIFYING)
         alerts = list(reads.inbox.get("alerts") or [])
         led.see_alerts(alerts, t)
         led.update_stuck(alerts, t, cfg)
@@ -287,8 +410,9 @@ class Engine:
                     withdrawals.append(w)
         left = []
         if not self.shadow:
+            withdrawing = {w.intent for w in withdrawals}
             for e in led.open_entries():
-                if e.get("state") in APPROVED and e["play"] in PLAYS:
+                if e.get("state") in APPROVED and e["play"] in PLAYS and int(e["intent"]) not in withdrawing:
                     why = PLAYS[e["play"]].withdraw_reason(e, b)
                     if why:
                         left.append((e, why))
@@ -383,6 +507,11 @@ class Engine:
             if reach == "pending_approval":
                 block = self.budget_block(c, b, extra_pending)
                 if block:
+                    # not previewed again until the next token or a decision on a card of ours
+                    full = b.own_pending + extra_pending >= int(cfg.budget["own_pending_max"])
+                    waiting_now = [int(e["intent"]) for e in led.open_entries() if e.get("state") in WAITING]
+                    led.set_budget_wait(pair_of(c.play, c.target), b.t, None if full else led.next_token_t(b.t, cfg),
+                                        waiting_now)
                     held.append(Held(c, block))
                     continue
             veto = rulebook.veto(self.armed(c, b), pv, c.request, reads.tracks.get("tracks") or [])
@@ -423,7 +552,8 @@ class Engine:
                 continue
             led.clear_backoff(c.key)
             if reach == "pending_approval":
-                led.take_token(b.t, cfg)
+                if c.klass != P0:  # P0 is exempt from the budget: neither held nor charged
+                    led.take_token(b.t, cfg)
                 extra_pending += 1
             if c.play == "isr.recentre" and c.uid is not None:
                 led.recentred[str(c.uid)] = round(b.t, 3)
@@ -447,7 +577,7 @@ class Engine:
             for w in plan.withdrawals:
                 try:
                     out = await session.call("withdraw_intent", id=w.intent, reason=f"{w.play}: {w.reason}",
-                                             if_state="pending_approval")
+                                             if_state=w.if_state)
                     state = out.get("state")
                 except Exception as e:  # noqa: BLE001 (decided meanwhile, or gone out: the next sync says)
                     self.log("withdraw.refused", intent=w.intent, play=w.play, reason=w.reason, error=str(e)[:200],
@@ -490,7 +620,8 @@ class Engine:
         cat = catalog(reads.platforms)
         est = tier.estimate(c.request, armed=self.armed(c, b),
                             endurance_known=bool(v and (cat.get(v.platform) or {}).get("endurance_h")),
-                            vehicle_pos=v.pos if v else None, policy=reads.policy, areas=self.areas or {})
+                            vehicle_pos=v.pos if v else None, policy=reads.policy, areas=self.areas or {},
+                            engaged=b.engaging.keys(), waiting=tier.waiting_uids(reads.inbox))
         if est["tier"] == "human":
             block = self.budget_block(c, b, 0)
             if block:
@@ -528,7 +659,7 @@ class Engine:
             s = led.shadow.pop(w.key, None)
             if s is None:
                 continue
-            led._cool({**s, "intent": -1, "withdrawn_by": "shadow"}, "voided", b.t, self.cfg, None, None)
+            led._cool({**s, "intent": -1, "withdrawn_by": w.play}, "voided", b.t, self.cfg, None, None)
             what = "release" if s.get("tier") == "auto" else "withdraw"
             self.log("shadow.withdraw", play=s["play"], target=s["target"], uid=s.get("uid"), reason=w.reason,
                      text=f"the playbook would {what} its {s['play']} on {s['target']}: {w.reason}")

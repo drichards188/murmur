@@ -6,13 +6,21 @@ ties broken by name, target and uid, so the same candidates always come out the 
 Walking that order, a candidate is held back (with the reason, for the play's status) when:
 
 - an engagement is in play on a vehicle it needs (a nomination pending, approved, under way or
-  in its assessment): the playbook gives such a platform no order of any kind, a hold or an rtl
-  included (a dispatched one would supersede the engagement, rules 7); the engine says in the
-  panel what it would have done (`withheld`), and the bridge's own alerts reach the signers;
+  in its assessment) and it is not P0: an ISR re-task of a platform mid-engagement is noise to
+  the signers, and the engine says in the panel what it would have done (`withheld`). A P0
+  command (`safety.low_reserve`, `safety.stuck`) goes on: the bridge sends any agent's order on
+  such a platform to a person, who must acknowledge that it stops the engagement
+  (murmur-decide policy.rs, "engagement in play"), and the bridge raises no battery alert of its
+  own, so a withheld rtl would reach nobody. Its rationale names the engagement;
 - the inbox holds `inbox_busy` (6) or more pending cards and it is not P0 or P1;
 - a cooldown is in force on its key and its play finds no material change since;
-- its key, or its vehicle, is backing off after a failing preview, a rule-book veto, a refusal
-  at submission or an order of ours that failed;
+- its key is backing off after a failing preview, a rule-book veto, a refusal at submission or
+  an order of ours that failed, or its vehicle is backing off after an order of ours on it
+  failed and it is not P0 (a P0 command's own key still backs off if that command fails);
+- the last preview for its play and target said human tier and the inbox budget held it: not
+  previewed again, on any vehicle, until the next token is due or a card of ours waiting then is
+  decided, whichever comes first (a held card would otherwise be previewed every tick, on each of
+  its choices of vehicle, and fill the cap of three ahead of cards that could go);
 - it would send a vehicle back to the task `safety.stuck` stopped it on (until the alert has
   cleared and `stuck_retry_s` more);
 - a vehicle it needs is claimed: by a higher candidate this tick (one claim per vehicle), by a
@@ -33,8 +41,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from .beliefs import Beliefs
-from .ledger import Ledger, vehicle_key
-from .plays import P1, PLAYS, Candidate
+from .ledger import WAITING, Ledger, pair_of, vehicle_key
+from .plays import P0, P1, PLAYS, Candidate
 
 ENGAGED = "engagement in play"  # the start of every hold-back an engagement causes (engine: `withheld`)
 
@@ -61,12 +69,16 @@ def arbitrate(cands: list[Candidate], b: Beliefs, led: Ledger) -> tuple[list[Can
     # a look's better choices of vehicle that another candidate took this tick (said in its rationale)
     passed: dict[tuple[str, str], list[str]] = {}
     busy = len(b.pending) >= int(b.cfg.budget["inbox_busy"])
+    waiting = {int(e["intent"]) for e in led.open_entries() if e.get("state") in WAITING}
     for c in order(cands):
         engaged = [u for u in c.claims if u in b.engaging]
-        if engaged:
+        if engaged and c.klass != P0:
             u = engaged[0]
-            held.append(Held(c, f"{ENGAGED} on uid {u} ({b.engaging[u]}): the playbook gives it no order"))
+            held.append(Held(c, f"{ENGAGED} on uid {u} ({b.engaging[u]}): the playbook gives it no ISR, link or "
+                                "hygiene order"))
             continue
+        if engaged:
+            c.derived = {**c.derived, "engagement": "; ".join(f"uid {u}: {b.engaging[u]}" for u in engaged)}
         if busy and c.klass > P1:
             held.append(Held(c, f"the inbox holds {len(b.pending)} pending cards: only P0 and P1 propose"))
             continue
@@ -80,10 +92,17 @@ def arbitrate(cands: list[Candidate], b: Beliefs, led: Ledger) -> tuple[list[Can
                 continue
             c.material_change = {"cooldown": f"i{cd['intent']} {cd['why']}{' by ' + cd['by'] if cd.get('by') else ''} at "
                                               f"{hms(cd['set_t'])}", "change": change}
-        bo = led.backoff_for(c.key, b.t) or next(
-            (led.backoff_for(vehicle_key(u), b.t) for u in c.claims if led.backoff_for(vehicle_key(u), b.t)), None)
+        bo = led.backoff_for(c.key, b.t)
+        if bo is None and c.klass != P0:
+            bo = next((led.backoff_for(vehicle_key(u), b.t) for u in c.claims if led.backoff_for(vehicle_key(u), b.t)), None)
         if bo is not None:
             held.append(Held(c, f"backing off until {hms(bo['until_t'])}: {bo['why']}"))
+            continue
+        bw = led.budget_wait_for(pair_of(c.play, c.target), b.t, waiting)
+        if bw is not None:
+            again = ([f"at {hms(bw['until_t'])}"] if bw.get("until_t") is not None else []) + (
+                ["when " + " or ".join(f"i{i}" for i in bw["pending"]) + " is decided"] if bw.get("pending") else [])
+            held.append(Held(c, f"inbox budget: its last preview said human tier; previewed again {' or '.join(again)}"))
             continue
         sb = led.stuck_block(c.play, c.target, c.uid, b.t)
         if sb is not None:

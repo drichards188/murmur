@@ -20,7 +20,7 @@ from playbook.config import ConfigError
 from playbook.engine import Engine
 from playbook.ledger import Ledger, vehicle_key
 from playbook.plays import PLAYS
-from playbook_world import (FakeSession, T0, config, intent, offset, passing, reads, track, vehicle)
+from playbook_world import (PLATFORMS, FakeSession, T0, config, intent, offset, passing, reads, track, vehicle)
 
 ROOT = Path(__file__).resolve().parents[2]
 AUTO = passing("auto_approved", "auto", "agent-auto")
@@ -76,17 +76,19 @@ def test_1_low_reserve_leaves_an_operators_retasking_alone_and_raises_once_under
              reads(t=T0 + 64, vehicles=[sea(19.0, op_again)])]
     s = FakeSession(ticks, intents=states(6, t1={101: "failed"}, t4={102: "failed"}))
     s.reasons = {101: "vehicle 5: superseded (replaced by patrol #2)", 102: "vehicle 5: superseded (replaced by patrol #3)"}
+    s.explained = {201: {"id": 201, "kind": "patrol", "uids": ["5"], "source": {"kind": "human", "id": "op-1"}},
+                   202: {"id": 202, "kind": "patrol", "uids": ["5"], "source": {"kind": "human", "id": "op-1"}}}
     s, e, reps, lines = run(ticks, session=s)
     assert [len(r.proposed) for r in reps] == [1, 0, 0, 1, 0, 0]
     assert e.led.entries["101"]["superseded_by"] == 201, "the order that superseded ours, by the vehicle's current order"
     assert reps[1].statuses["safety.low_reserve"] == (
-        "active: SEA 1: i201, someone else's order after our rtl i101: not sent again while it stands "
+        "active: SEA 1: i201, an operator's order (op-1), given after our rtl i101: not sent again while it stands "
         "(once more if it falls under the policy's reserve 20%)")
     raised = text(reps[3].proposed[0]["rationale"])
-    assert "Raised again: i201, someone else's order after our rtl i101, still stands, and the battery is now under the " \
-           "policy's own reserve 20%: raised once more." in raised
+    assert "Raised again: i201, an operator's order (op-1), given after our rtl i101, still stands, and the battery is now " \
+           "under the policy's own reserve 20%: raised once more." in raised
     assert reps[5].statuses["safety.low_reserve"] == (
-        "active: SEA 1: i202, someone else's order after our rtl i102: not sent again while it stands")
+        "active: SEA 1: i202, an operator's order (op-1), given after our rtl i102: not sent again while it stands")
     d = [x["text"] for x in lines if x["kind"] == "decision"]
     assert d[0].startswith("i101 failed (superseded by i201, someone else's order)")
 
@@ -100,16 +102,26 @@ def test_1_low_reserve_raises_again_only_once_the_superseding_order_no_longer_st
              reads(t=T0 + 4, vehicles=[sea({"intent_id": 201, "task": "patrol", "state": "failed"})])]
     s = FakeSession(ticks, intents=states(3, t1={101: "failed"}))
     s.reasons = {101: "vehicle 5: superseded (replaced by patrol #2)"}
+    s.explained = {201: {"id": 201, "kind": "patrol", "uids": ["5"], "source": {"kind": "agent", "id": "agent-watch"},
+                         "approval": {"by": "op-1"}}}
     s, e, reps, _ = run(ticks, session=s)
     assert [len(r.proposed) for r in reps] == [1, 0, 1]
-    assert ("Raised again: i201, the order that superseded our rtl i101, no longer stands and no later order of anyone "
-            "else's runs on it.") in text(reps[2].proposed[0]["rationale"])
+    raised = text(reps[2].proposed[0]["rationale"])
+    assert ("Raised again: i201 (another agent's order (agent-watch), approved by op-1), the order that superseded our rtl "
+            "i101, no longer stands and no later order of anyone else's runs on it.") in raised
+    assert "failed" not in raised, "a supersession is not a failure (fix round 2)"
 
 
 # ---- 2 (blocker): every landing, surfacing and return mode -------------------------------------------------
 
 
-@pytest.mark.parametrize("mode", RECOVERING_MODES)
+# written out, not RECOVERING_MODES: a test that iterates the constant it checks proves nothing
+# about that constant (review of fix round 1); the mav.rs scan below is the test of the list
+EVERY_RECOVERING_MODE = ("RTL", "QRTL", "SMART_RTL", "AUTO_RTL", "DOCK", "LAND", "QLAND", "LOITERALTQLAND", "AUTOLAND",
+                         "AUTOROTATE", "SURFACE")
+
+
+@pytest.mark.parametrize("mode", EVERY_RECOVERING_MODE)
 def test_2_a_vehicle_recovering_on_its_own_is_left_alone_in_every_mode(mode):
     """QLAND, LOITERALTQLAND, AUTOLAND (plane), SURFACE (sub) were missing: the safety plays then
     commanded over a vehicle's own failsafe, and the looks counted it free."""
@@ -142,9 +154,10 @@ def test_2_every_landing_return_and_surfacing_mode_the_bridge_names_is_covered()
 # ---- 3: a ledger survives a new bridge run -------------------------------------------------------------------
 
 
-def test_3_a_ledger_of_another_bridge_run_is_set_aside_and_a_fresh_one_started(tmp_path):
+def test_3_a_card_another_run_reused_the_id_of_is_dropped_and_the_old_ledger_kept_beside(tmp_path):
     """The reviewer's sim E: the ledger of an earlier run held our orbit i5; in the new run i5 is
-    op-setup's patrol on the same vehicle. Before the fix the playbook took it for its own."""
+    op-setup's patrol on the same vehicle. Before the fix the playbook took it for its own. Since
+    round 2 the ledger is verified card by card (explain_intent), not discarded by its run."""
     p = tmp_path / "playbook-ledger.json"
     old = Ledger(run="20261009T100000-1")
     old.record(5, play="isr.investigate", version="1", target="T-0008", uid=3, task="orbit",
@@ -154,7 +167,8 @@ def test_3_a_ledger_of_another_bridge_run_is_set_aside_and_a_fresh_one_started(t
     old.save(p)
     v3 = vehicle(3, "PUMA 1", "puma", offset(-1200, 200), mode="AUTO", task={"intent_id": 5, "task": "patrol", "state": "active"})
     ticks = [reads(t=T0, vehicles=[v3], tracks=[])]
-    s = FakeSession(ticks, run="20261009T120000-2")
+    s = FakeSession(ticks, run="20261009T120000-2", feed="newfeed")
+    s.explained = {5: {"id": 5, "kind": "patrol", "uids": ["3"], "source": {"kind": "human", "id": "op-setup"}}}
     e = Engine(config(), Ledger.load(p), ledger_path=p, log=lambda kind, **f: lines.append({"kind": kind, **f}))
     lines: list[dict] = []
 
@@ -167,22 +181,8 @@ def test_3_a_ledger_of_another_bridge_run_is_set_aside_and_a_fresh_one_started(t
     kept = tmp_path / "playbook-ledger.20261009T100000-1.json"
     assert kept.exists() and Ledger.load(kept).entries["5"]["target"] == "T-0008", "kept beside, renamed"
     assert Ledger.load(p).run == "20261009T120000-2"
-    assert [x["kind"] for x in lines if x["kind"] == "ledger.reset"] == ["ledger.reset"]
-
-
-def test_3_a_ledger_with_no_run_is_not_trusted_and_the_same_run_is_kept(tmp_path):
-    p = tmp_path / "playbook-ledger.json"
-    old = Ledger()
-    old.record(5, play="isr.investigate", version="1", target="T-1", uid=3, task="orbit", request={}, t=T0, state="dispatched",
-               basis={}, withdraw_if=[])
-    old.save(p)
-    e = Engine(config(), Ledger.load(p), ledger_path=p)
-    e.bind_run("run-2")
-    assert e.led.entries == {} and (tmp_path / "playbook-ledger.no-run.json").exists()
-    e.led.record(7, play="isr.investigate", version="1", target="T-1", uid=3, task="orbit", request={}, t=T0, state="dispatched",
-                 basis={}, withdraw_if=[])
-    e.bind_run("run-2")
-    assert "7" in e.led.entries, "the same run: the ledger is kept"
+    v = [x["text"] for x in lines if x["kind"] == "ledger.verified"]
+    assert len(v) == 1 and "1 card(s) no longer ours under their ids (i5) dropped" in v[0]
 
 
 # ---- 4: safety.stuck and since_t -----------------------------------------------------------------------------
@@ -392,7 +392,11 @@ def test_10a_every_withdrawal_asks_for_pending_approval_and_an_approval_that_cam
                     "Left as it is: the playbook withdraws only what still waits for approval")
 
 
-def test_10b_an_approved_or_queued_card_is_never_withdrawn_by_hygiene_or_nav_suspect():
+def test_10b_an_approved_or_queued_card_is_never_withdrawn_by_hygiene_and_only_armed_by_nav_suspect():
+    """Round 1 left every approved or queued card alone. Round 2: until murmur-su0 lands (the
+    bridge's re-check at dispatch does not read the GPS glitch flag), nav.suspect_exclude still
+    withdraws an approved or queued armed card of ours on a vehicle whose navigation is suspect,
+    with that card's state as the precondition. Unarmed approved cards stay alone."""
     led = Ledger()
     led.record(21, play="isr.investigate", version="1", target="T-1", uid=3, task="orbit", request={}, t=T0, state="queued",
                basis={}, withdraw_if=[])
@@ -400,8 +404,13 @@ def test_10b_an_approved_or_queued_card_is_never_withdrawn_by_hygiene_or_nav_sus
                state="approved", basis={}, withdraw_if=[], armed=True)
     fleet = [vehicle(3, "PUMA 1", battery_pct=30.0), vehicle(9, "BLADE 1", "switchblade", nav_source="dead_reckoning")]
     b = build(reads(vehicles=fleet, tracks=[track("T-1", "neutral", 0.8, kind="fishing_vessel")]), config(), led)
-    for name in ("hygiene.withdraw_stale", "nav.suspect_exclude", "link.withdraw_pending"):
+    for name in ("hygiene.withdraw_stale", "link.withdraw_pending"):
         assert PLAYS[name].withdrawals(b, led, led.open_entries()) == [], name
+    w = PLAYS["nav.suspect_exclude"].withdrawals(b, led, [e for e in led.open_entries() if e["state"] == "pending_approval"])
+    assert [(x.intent, x.if_state) for x in w] == [(22, "approved")]
+    assert w[0].reason.endswith("withdrawn (armed, nav suspect, murmur-su0)")
+    led.entries["22"]["armed"] = False
+    assert PLAYS["nav.suspect_exclude"].withdrawals(b, led, []) == [], "an unarmed approved card stays alone"
 
 
 # ---- 11 is in test_playbook_arbiter.py (preview first; P0 by class); the shadow's tier estimate here ------------
@@ -417,6 +426,7 @@ def test_11_the_shadow_estimates_each_would_be_cards_tier_from_the_policy_and_bu
                                                                         offset(6000, 6000), offset(-6000, 6000)]}]}]}
     fleet = [vehicle(3, "PUMA 1", "puma", offset(-1200, 200))]
     ticks = [reads(t=T0, vehicles=fleet, tracks=[track("T-1", "suspect", 0.7)], policy=policy)]
+    ticks[0].platforms = {**PLATFORMS, "platforms": [{**p, "endurance_h": 2.5} for p in PLATFORMS["platforms"]]}
     s = FakeSession(ticks, areas=inside)
     s, e, reps, lines = run(ticks, session=s, shadow=True)
     would = [x for x in lines if x["kind"] == "shadow"]
@@ -516,30 +526,45 @@ def test_an_adopted_armed_card_keeps_its_armed_flag_and_nav_suspect_withdraws_it
     assert [w.intent for w in PLAYS["nav.suspect_exclude"].withdrawals(b, led, led.open_entries())] == [12]
 
 
-def test_an_engagement_in_play_withholds_every_order_and_says_so_once():
-    """The reviewer's sim H: safety.stuck held a platform with a nomination pending (a hold
-    supersedes the engagement, rules 7). Now nothing, and one panel line."""
-    eng = [intent(50, "engage", [7], source={"kind": "agent", "id": "agent-watch"})]
-    v7 = vehicle(7, "BLADE 1", "switchblade", offset(100, 100), mode="AUTO", task={"intent_id": 40, "task": "patrol", "state": "active"})
-    alerts = [{"id": "op:9", "kind": "not_moving", "uid": 7, "since_t": T0 - 400, "detail": "NOT MOVING for 10s"}]
-    ticks = [reads(t=T0 + dt, vehicles=[v7], pending=eng, alerts=alerts) for dt in (0, 31, 33)]
-    s, e, reps, lines = run(ticks, AUTO)
-    assert s.writers() == []
+def test_an_engagement_in_play_withholds_isr_and_lets_a_p0_card_go_to_a_person():
+    """The reviewer's sim H, decided again in round 2: a P0 command on a platform with a
+    nomination pending goes on, and the bridge makes it a human card (an agent's order there
+    needs a person, who acknowledges it stops the engagement); its rationale says so. Our
+    release of the same platform (P2) stays withheld, said once in the panel."""
+    eng = [intent(50, "engage", [4], source={"kind": "agent", "id": "agent-watch"})]
+    led = Ledger()
+    led.record(7, play="isr.investigate", version="1", target="T-1", uid=4, task="orbit",
+               request={"task": "orbit", "uids": [4], "center": offset(-2000, -300), "radius_m": 1000.0}, t=T0 - 100,
+               state="dispatched", basis={}, withdraw_if=[])
+    led.cursor = "f:-1"  # this bridge's feed: a restart of the playbook, not of the bridge
+    v4 = vehicle(4, "PUMA 2", "puma", offset(-1200, 200), mode="AUTO", task={"intent_id": 7, "task": "orbit", "state": "done"})
+    alerts = [{"id": "op:9", "kind": "not_moving", "uid": 4, "since_t": T0 - 400, "detail": "NOT MOVING for 10s"}]
+    neutral = track("T-1", "neutral", 0.85, kind="fishing_vessel")
+    human = passing("pending_approval", "human", "(engagement in play)")
+    ticks = [reads(t=T0 + dt, vehicles=[v4], pending=eng, alerts=alerts, tracks=[neutral]) for dt in (0, 31, 33)]
+    s = FakeSession(ticks, human)
+    s.explained = {7: {"id": 7, "kind": "orbit", "uids": ["4"], "source": {"kind": "agent", "id": "agent-playbook"}}}
+    s, e, reps, lines = run(ticks, ledger=led, session=s)
+    assert [(p["request"]["task"], p["request"]["uids"]) for p in s.proposed] == [("hold", [4])]
+    t = text(s.proposed[0]["rationale"])
+    assert t.startswith("[safety.stuck v1]")
+    assert "An engagement is in play on this platform (uid 4: nomination i50 pending): the bridge sends this card to a " \
+           "person, and approving it stops that engagement." in t
     w = [x["text"] for x in lines if x["kind"] == "withheld"]
-    assert w == ["would hold BLADE 1 for alert:op:9 (safety.stuck), not sent: engagement in play on uid 7 "
-                 "(nomination i50 pending): the playbook gives it no order"]
+    assert w == ["would hold PUMA 2 for T-1 (isr.release), not sent: engagement in play on uid 4 (nomination i50 "
+                 "pending): the playbook gives it no ISR, link or hygiene order"]
 
 
 def test_a_truncated_change_feed_reads_the_engagements_again():
-    v7 = vehicle(7, "BLADE 1", "switchblade", offset(100, 100), battery_pct=10.0, mode="AUTO")
-    ticks = [reads(t=T0 + dt, vehicles=[v7]) for dt in (0, 2)]
-    s = FakeSession(ticks, AUTO)
+    v3 = vehicle(3, "PUMA 1", "puma", offset(-1200, 200))
+    ticks = [reads(t=T0 + dt, vehicles=[v3], tracks=[track("T-1", "suspect", 0.7)]) for dt in (0, 2)]
+    s = FakeSession(ticks)
     s.truncate_at = {0}
-    s.nominations = [{"id": 61, "uids": ["7"], "state": "approved"}]
+    s.nominations = [{"id": 61, "uids": ["3"], "state": "approved"}]
     s, e, reps, lines = run(ticks, session=s)
-    assert ("get_nominations", {}) in s.calls and e.led.engaging["61"] == {"uids": [7], "state": "approved"}
+    assert ("get_nominations", {}) in s.calls and e.led.engaging["61"] == {"uids": [3], "state": "approved"}
     assert any(x["kind"] == "feed.truncated" for x in lines)
-    assert s.writers() == [], "the engagement the feed dropped still keeps the playbook off BLADE 1"
+    assert s.writers() == [], "the engagement the feed dropped still keeps the look off PUMA 1"
 
 
 def test_an_open_card_of_ours_older_than_the_newest_page_is_read_by_explain_intent():

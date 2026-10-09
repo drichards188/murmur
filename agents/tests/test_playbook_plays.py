@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from playbook.beliefs import build
+from playbook.beliefs import CLASSIFYING, build
 from playbook.ledger import Ledger
 from playbook.plays import PLAYS
 from playbook_world import (GATE, T0, config, intent, offset, reads, recorded, recorded_reads, track, vehicle)
@@ -31,12 +31,17 @@ def test_investigate_fires_on_the_recorded_fast_boat_closing_on_the_bridge():
     """The live Harbor watch read at the reader's 176 s: the unknown boat, now suspect at 0.51,
     8.4 m/s toward the bridge (CPA 124 m in 9.4 min). PUMA 1, the free Puma, takes it."""
     doc = recorded()
-    res, _ = look(recorded_reads(doc, 1))
+    led, cfg = Ledger(), config()
+    for i in (0, 1):  # the engine keeps each track's recent classification (ledger.see_classification)
+        r = recorded_reads(doc, i)
+        led.see_classification(r.tracks["tracks"], r.tick_t, cfg, CLASSIFYING)
+    res, _ = look(recorded_reads(doc, 1), led=led)
     assert [(c.target, c.uid, c.request["radius_m"]) for c in res.candidates] == [("T-0008", 3, 1000.0)]
     c = res.candidates[0]
     assert c.request["task"] == "orbit" and c.claims == (3,)
-    # classification 0.51 is no reason of its own here: HUNTER 1's and REAPER 1's EO/IR have it
-    # (sensor coverage, murmur-t8m fix round 1); fast and closing on the bridge are
+    # classification 0.51 is no reason of its own here: REAPER 1's EO/IR and HUNTER 1's sonar have
+    # it and it rose from 0.44 five seconds before (sensor coverage, murmur-t8m fix rounds 1 and
+    # 2); fast and closing on the bridge are
     assert c.trigger == ["closing on the Golden Gate Bridge", "fast: 8.4 m/s over 8"]
     assert c.derived["closing"] and c.derived["cpa_m"] < 457 and c.derived["tcpa_s"] < 600
     assert [a["callsign"] for a in c.alternatives] == ["REAPER 1", "PUMA 2"], "busy, with why"
@@ -59,19 +64,25 @@ def test_investigate_does_not_look_for_classification_at_a_track_our_eo_ir_alrea
     """Sensor coverage (fix round 1, item 13): a slow unknown inside the area that an EO/IR or a
     sonar of ours detected in the last 10 s is being classified already; one seen only by radar,
     or by EO/IR longer ago, is not. Fast and closing are reasons whatever sees the track."""
-    def unknown(sources):
-        return track("T-1", "unknown", 0.0, pos=offset(-1500, 0), vel=(0.0, 0.0), kind=None, kind_conf=0.0, sources=sources)
+    def unknown(sources, conf=0.05):
+        return track("T-1", "unknown", 0.0, pos=offset(-1500, 0), vel=(0.0, 0.0), kind=None, kind_conf=conf, sources=sources)
+
+    def candidates(sources, fast=False):
+        led, cfg = Ledger(), config()
+        led.see_classification([unknown(sources, 0.0)], T0 - 10, cfg, CLASSIFYING)  # rising: 0.0, then 0.05
+        tr = track("T-1", "suspect", 0.7, pos=offset(-1500, 0), vel=(9.0, 0.0), sources=sources) if fast else unknown(sources)
+        led.see_classification([tr], T0, cfg, CLASSIFYING)
+        return look(reads(vehicles=FLEET, tracks=[tr]), led=led)[0].candidates
 
     eo_now = [{"uid": 1, "sensor": "eo_ir", "hits": 12, "last_t": T0 - 3.0}]
     eo_old = [{"uid": 1, "sensor": "eo_ir", "hits": 12, "last_t": T0 - 30.0}]
     sonar_now = [{"uid": 1, "sensor": "sonar", "hits": 2, "last_t": T0 - 1.0}]
     radar = [{"uid": 1, "sensor": "radar", "hits": 40, "last_t": T0 - 1.0}]
-    assert look(reads(vehicles=FLEET, tracks=[unknown(eo_now)]))[0].candidates == []
-    assert look(reads(vehicles=FLEET, tracks=[unknown(sonar_now)]))[0].candidates == []
+    assert candidates(eo_now) == []
+    assert candidates(sonar_now) == []
     for src in (eo_old, radar):
-        assert [c.target for c in look(reads(vehicles=FLEET, tracks=[unknown(src)]))[0].candidates] == ["T-1"]
-    fast = track("T-1", "suspect", 0.7, pos=offset(-1500, 0), vel=(9.0, 0.0), sources=eo_now)
-    c = look(reads(vehicles=FLEET, tracks=[fast]))[0].candidates
+        assert [c.target for c in candidates(src)] == ["T-1"]
+    c = candidates(eo_now, fast=True)
     assert c and "fast: 9.0 m/s over 8" in c[0].trigger
 
 

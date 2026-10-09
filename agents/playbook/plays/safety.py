@@ -7,11 +7,16 @@ platform with an engagement in play (the arbiter: no order of any kind there).
 
 - `safety.low_reserve`: battery under the policy's `reserve_pct` plus 5 points, link up, not
   recovering on its own and not on an rtl order: rtl. Score: how far under the line, over the
-  line. **A person's later decision wins**: while someone else's order newer than our last rtl
-  runs on the vehicle (it superseded our rtl, or came after it), the play does not send rtl
-  again. It raises it once more if the battery then falls under the policy's own reserve (the
-  hard line, not the reserve plus 5), saying so; and again only on a cause it can name: the
-  order that superseded ours no longer stands and no later order of anyone else's runs on it.
+  line. **A later decision wins**: while someone else's order newer than our last rtl runs on
+  the vehicle (it superseded our rtl, or came after it), the play does not send rtl again,
+  whoever gave it: an operator, or another agent whose order the policy or a person approved (two
+  agents trading rtl against an orbit would be worse); the rationale says which, from
+  `explain_intent`. It raises it once more if the battery then falls under the policy's own
+  reserve (the hard line, not the reserve plus 5), saying so; and again only on a cause it can
+  name, read definitely: the order that superseded ours no longer stands (it failed, was
+  superseded or went back to the queue) and no later order of anyone else's runs on it. A
+  vehicle whose order reads null or unreadable after our rtl is unknown, not idle: the play
+  waits for a definite read.
 - `safety.stuck`: a `not_moving` or `task_failed` alert on a vehicle active in our reads for
   30 s (counted from the first read in which the playbook saw it, keyed by the alert's id and
   kind: the alert's `since_t` is its order's last state change, not when it stopped moving),
@@ -39,6 +44,21 @@ STUCK_KINDS = ("not_moving", "task_failed")
 PARKS = ("isr.release", "safety.stuck")
 
 
+def origin_text(led: Ledger, iid: int) -> str:
+    """Who gave someone else's order, as `explain_intent` said (engine.read caches it)."""
+    o = led.origins.get(str(iid)) or {}
+    who = o.get("id") or "?"
+    if o.get("kind") == "human":
+        return f"an operator's order ({who})"
+    if o.get("kind") == "agent":
+        if o.get("by"):
+            return f"another agent's order ({who}), approved by {o['by']}"
+        if o.get("tier") == "auto":
+            return f"another agent's order ({who}), approved by the policy"
+        return f"another agent's order ({who})"
+    return "someone else's order"
+
+
 class LowReserve(Play):
     name, klass = "safety.low_reserve", P0
 
@@ -61,6 +81,11 @@ class LowReserve(Play):
             mine = led.entries_for(self.name, target)
             last = mine[-1] if mine else None
             cause, cause_text = "line", None
+            if last is not None and not isinstance(v.task, dict):
+                # after our rtl, a null or unreadable order is unknown, not idle: no re-raise on it
+                res.active.append(f"{v.callsign}: its order reads null after our rtl i{last['intent']}: not raised again "
+                                  "until a definite read")
+                continue
             # a person's later decision: someone else's order, newer than our last rtl, running on it
             cur = v.task_intent
             later = (last is not None and cur is not None and led.entry(cur) is None
@@ -68,19 +93,21 @@ class LowReserve(Play):
                      and (v.task or {}).get("state") not in NOT_RUNNING)
             if later:
                 hard_used = any((e.get("basis") or {}).get("cause") == "hard" for e in mine)
+                who = origin_text(led, cur)
                 if v.battery_pct < hard and not hard_used:
                     cause = "hard"
-                    cause_text = (f"i{cur}, someone else's order after our rtl i{last['intent']}, still stands, and the battery "
+                    cause_text = (f"i{cur}, {who}, given after our rtl i{last['intent']}, still stands, and the battery "
                                   f"is now under the policy's own reserve {hard:.0f}%: raised once more")
                 else:
                     more = "" if hard_used else f" (once more if it falls under the policy's reserve {hard:.0f}%)"
-                    res.active.append(f"{v.callsign}: i{cur}, someone else's order after our rtl i{last['intent']}: "
+                    res.active.append(f"{v.callsign}: i{cur}, {who}, given after our rtl i{last['intent']}: "
                                       f"not sent again while it stands{more}")
                     continue
             elif last is not None and last.get("superseded_by") is not None:
                 cause = "superseder_ended"
-                cause_text = (f"i{last['superseded_by']}, the order that superseded our rtl i{last['intent']}, no longer stands "
-                              f"and no later order of anyone else's runs on it")
+                cause_text = (f"i{last['superseded_by']} ({origin_text(led, int(last['superseded_by']))}), the order that "
+                              f"superseded our rtl i{last['intent']}, no longer stands and no later order of anyone else's "
+                              f"runs on it")
             trigger = [f"battery {v.battery_pct:.0f}% under {line:.0f}%"] + ([cause_text] if cause_text else [])
             res.candidates.append(Candidate(
                 play=self.name, version=self.version, klass=self.klass, score=(line - v.battery_pct) / line,

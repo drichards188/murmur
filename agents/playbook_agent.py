@@ -9,9 +9,11 @@ the change feed shows one of its cards decided, a link lost, a new track), runs 
 previews and proposes what the arbiter lets through, withdraws its cards whose premise is gone,
 and writes what it did to the situation log (the watch officer's `{t, kind, text}` lines, source
 "playbook"): each play's status when it changes, each proposal, withdrawal and decision. Its
-ledger (every card and how it fared, the cooldowns) is JSON beside the log, so a restart within
-the same bridge run picks up where it left off; a ledger of another run, or of none it names, is
-set aside beside it (playbook-ledger.<run>.json) and a fresh one started. The config (agents/playbook/defaults.toml under a
+ledger (every card and how it fared, the cooldowns) is JSON beside the log, so a restart picks up
+where it left off: at every start the ledger is checked against the bridge (a card kept only if
+explain_intent shows it is still ours, memory per vehicle only for the same vehicle, memory per
+track dropped across a bridge restart), and the ledger as it was is kept beside it when anything
+is dropped (playbook-ledger.<run>.json). The config (agents/playbook/defaults.toml under a
 situation's [playbook] table) is hashed, and the hash goes to the bridge as the MCP client's
 version at connect: the audit log's `agent.action session.connected` names it.
 

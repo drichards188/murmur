@@ -3,8 +3,10 @@
 - `isr.investigate`: a track shown unknown or suspect (not declared), not stale, existence
   confidence now at least 0.5, inside a watch area or closing on a protected point (CPA within
   457 m inside 10 min, or already inside 457 m), and still worth a look: its classification
-  below 0.6, or faster than 8 m/s, or an identity conflict (what was seen does not fit its AIS:
-  the tracker's own anomaly flag). Action: an orbit by the free unarmed sensor aircraft (an
+  below 0.6 (unless a sensor of ours is settling it: an EO/IR or sonar detection within 10 s,
+  the classification up by 0.02 within 30 s, and for at most 120 s per track), or faster than
+  8 m/s, or an identity conflict (what was seen does not fit its AIS, or the sensors' labels
+  disagree: the tracker's own anomaly flag). Action: an orbit by the free unarmed sensor aircraft (an
   imaging sensor in its catalog) that is the preferred platform if one is configured, then
   nearest by ETA at its cruise speed, then most battery, then lowest uid; centred on the
   track's position carried to now; radius max(1.1 x its minimum turn, a quarter of its imaging
@@ -14,9 +16,11 @@
 - `isr.recentre`: an orbit of ours on a track is running and the track is more than half the
   radius from the centre: the same vehicle, a new orbit on the track now; at most once per
   vehicle per 60 s. Score: the offset over the radius.
-- `isr.release`: an orbit of ours is running and its premise is gone (below): a hold (or the
-  vehicle's prior order of ours again, when we took it from one: never under the free-vehicle
-  definition, which takes idle vehicles only). Score 0.5.
+- `isr.release`: an orbit of ours (a look or an armed overwatch) is running and its premise is
+  gone (below): a hold, or the vehicle's prior order of ours again when ours superseded it while
+  it ran, if the premise of the play that first made that order still holds (followed back
+  through a release that resumed it; never under the free-vehicle definition, which takes idle
+  vehicles only). Score 0.5.
 - `isr.armed_overwatch` (off unless a situation enables it; a human decision every time): a
   track shown suspect at affiliation confidence 0.5 or more (the rule book's C_MIN), not
   declared, not stale, closing on a protected point, and no track shown neutral or assumed
@@ -108,6 +112,29 @@ def holding(play_names: tuple[str, ...], target: str, b: Beliefs, led: Ledger) -
     return None
 
 
+def classify_reason(tr: Track, b: Beliefs) -> str | None:
+    """An unsettled classification as a reason to look, or None while a classifying sensor of
+    ours is settling it: one (EO/IR, sonar) detected the track within `classifier_fresh_s`, the
+    identity confidence rose by `classify_rise_min` within `classify_rise_s`, and for no more than
+    `classify_wait_max_s` since a sensor of ours first held it unsettled (DECISIONS.md, the
+    playbook's fix rounds: sensor coverage). An identity conflict is a reason of its own, apart."""
+    th = b.cfg.t
+    head = f"classification {tr.kind_conf:.2f} under {th['classification_settled']:.2f}"
+    held = sorted({s for _, s, last in tr.sources if s in CLASSIFYING and b.t - last <= th["classifier_fresh_s"]})
+    if not held:
+        return f"{head}, no EO/IR or sonar of ours on it"
+    c = b.classify.get(tr.id) or {}
+    hist = [h for h in c.get("hist") or [] if b.t - h[0] <= th["classify_rise_s"]]
+    rose = len(hist) >= 2 and hist[-1][1] - min(h[1] for h in hist) >= th["classify_rise_min"]
+    since = c.get("since")
+    on = " and ".join(held)
+    if not rose:
+        return f"{head}: our {on} on it, not raising it within {th['classify_rise_s']:.0f} s"
+    if since is not None and b.t - since >= th["classify_wait_max_s"]:
+        return f"{head}: our {on} on it {b.t - since:.0f} s without settling it"
+    return None
+
+
 def look_reasons(tr: Track, b: Beliefs) -> tuple[list[str], str | None]:
     """(why the track is worth a look, why not): investigate's trigger."""
     th = b.cfg.t
@@ -130,12 +157,9 @@ def look_reasons(tr: Track, b: Beliefs) -> tuple[list[str], str | None]:
         return [], "outside the watch"
     worth = []
     if tr.kind_conf < th["classification_settled"]:
-        # only while none of our classifying sensors holds it: one that does raises the
-        # classification with dwell anyway (DECISIONS.md, "The playbook engine": coverage)
-        held = sorted({s for _, s, last in tr.sources if s in CLASSIFYING and b.t - last <= th["classifier_fresh_s"]})
-        if not held:
-            worth.append(f"classification {tr.kind_conf:.2f} under {th['classification_settled']:.2f}, "
-                         "no EO/IR or sonar of ours on it")
+        why = classify_reason(tr, b)
+        if why:
+            worth.append(why)
     if tr.speed is not None and tr.speed > th["fast_mps"]:
         worth.append(f"fast: {tr.speed:.1f} m/s over {th['fast_mps']:.0f}")
     if tr.conflict:
@@ -517,28 +541,51 @@ class Release(Play):
             if any(x["play"] == self.name and x["target"] == tid and x.get("uid") == uid and live(x, b)
                    for _, x in sorted(led.entries.items())):
                 continue
-            request, action = self.after(e, uid, b, led)
+            request, action, origin = self.after(e, uid, b, led)
             res.candidates.append(Candidate(
                 play=self.name, version=self.version, klass=self.klass, score=0.5, target=tid, uid=uid,
                 task=str(request["task"]), request=request,
                 facts=(track_facts(b.tracks[tid], b) if tid in b.tracks else []) + vehicle_facts(v),
                 derived={"running": e["intent"], "action": action, "why": why},
                 thresholds={k: b.cfg.t[k] for k in ("affiliation_min", "unseen_s", "cpa_alert_m", "tcpa_max_s")},
-                withdraw_if=[], basis={"running": e["intent"]}, trigger=[why], claims=(uid,), supersedes=int(e["intent"]),
+                withdraw_if=[], basis={"running": e["intent"], "resumed": origin}, trigger=[why], claims=(uid,),
+                supersedes=int(e["intent"]),
                 vehicle=vehicle_ref(v),
             ))
         return res
 
     @staticmethod
-    def after(e: dict[str, Any], uid: int, b: Beliefs, led: Ledger) -> tuple[dict[str, Any], str]:
+    def origin(pe: dict[str, Any] | None, led: Ledger) -> dict[str, Any] | None:
+        """The card of ours that first created an order: a release that resumed an order carries
+        its origin (`basis.resumed`), followed back to the play that made it; a release without
+        one (a hold) is no order to resume."""
+        seen = set()
+        while pe is not None and pe["play"] == Release.name:
+            r = (pe.get("basis") or {}).get("resumed") or {}
+            if r.get("intent") is None or int(r["intent"]) in seen:
+                return None
+            seen.add(int(r["intent"]))
+            pe = led.entry(int(r["intent"]))
+        return pe
+
+    @staticmethod
+    def after(e: dict[str, Any], uid: int, b: Beliefs,
+              led: Ledger) -> tuple[dict[str, Any], str, dict[str, Any] | None]:
         """What the vehicle does after our orbit: the order of ours it was flying when ours
-        superseded it (recorded only then, never a failed one), if that order's premise still
-        holds; else a hold."""
+        superseded it (recorded only then, never a failed one), if the premise of the play that
+        first created that order still holds (an order an earlier release resumed inherits it);
+        else a hold. Also the origin, for the record."""
         prior = e.get("prior_task") or {}
         pe = led.entry(int(prior["intent_id"])) if prior.get("running") and prior.get("intent_id") is not None else None
-        if pe is not None and pe.get("request") and pe["play"] in PLAYS and PLAYS[pe["play"]].withdraw_reason({**pe, "uid": uid}, b) is None:
-            return dict(pe["request"]), f"It goes back to its order before ours (our i{pe['intent']}, {pe['task']} on {pe['target']}), whose premise still holds"
-        return {"task": "hold", "uids": [uid]}, "It holds where it is"
+        og = Release.origin(pe, led)
+        if (pe is not None and pe.get("request") and og is not None and og["play"] in PLAYS
+                and PLAYS[og["play"]].withdraw_reason({**og, "uid": uid}, b) is None):
+            via = "" if og is pe else f", first {og['play']}'s i{og['intent']}"
+            return (dict(pe["request"]),
+                    f"It goes back to its order before ours (our i{pe['intent']}, {pe['task']} on {og['target']}{via}), "
+                    f"whose premise still holds",
+                    {"intent": og["intent"], "play": og["play"], "target": og["target"]})
+        return {"task": "hold", "uids": [uid]}, "It holds where it is", None
 
     def render(self, record: dict[str, Any]) -> str:
         d = record["derived"]

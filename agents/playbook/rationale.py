@@ -111,6 +111,10 @@ def tail(record: dict[str, Any]) -> str:
     mc = record.get("material_change")
     if mc:
         parts.append(f"Proposed again inside a cooldown ({mc['cooldown']}): material change: {mc['change']}.")
+    eg = (record.get("derived") or {}).get("engagement")
+    if eg:
+        parts.append(f"An engagement is in play on this platform ({eg}): the bridge sends this card to a person, "
+                     "and approving it stops that engagement.")
     af = record.get("after_failure")
     if af:
         parts.append(f"Again after our i{af['intent']} ({af['play']} on {af['target']}) failed: {quote(af['failure'], 120)}.")

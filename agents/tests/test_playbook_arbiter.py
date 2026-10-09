@@ -69,23 +69,26 @@ def test_a_claim_by_a_card_of_ours_holds_except_for_its_successor_and_p0():
     assert len(sel) == 1, "a P0 command is never held back by a card of ours"
 
 
-def test_an_engagement_in_play_blocks_every_order_a_hold_and_an_rtl_included():
-    """Fix round 1: a platform with a nomination pending, approved, under way or in its
-    assessment gets no order of any kind from the playbook (a dispatched one supersedes the
-    engagement, rules 7). The engine says in the panel what it would have done."""
+def test_an_engagement_in_play_withholds_isr_but_lets_p0_through_to_a_person():
+    """Fix round 2 (reversing round 1): on a platform with a nomination pending, approved, under
+    way or in its assessment, a P0 command goes on: the bridge sends any agent's order there to a
+    person, who must acknowledge it stops the engagement, and raises no battery alert of its own.
+    ISR, link and hygiene orders stay withheld (noise to the signers), said in the panel."""
     pending = [{"id": 40, "kind": "engage", "uids": ["4"], "state": "pending_approval"}]
     b, led = beliefs(pending=pending)
     cands = [cand("isr.investigate", 2, 0.9, "T-1", 4), cand("isr.release", 2, 0.5, "T-1", 4, task="hold"),
-             cand("safety.stuck", 0, 0.5, "alert:op:9", 4, task="hold"), cand("safety.low_reserve", 0, 0.5, "battery:4", 4, task="rtl")]
+             cand("safety.low_reserve", 0, 0.5, "battery:4", 4, task="rtl")]
     sel, held = arbitrate(cands, b, led)
-    assert sel == []
-    assert {h.reason for h in held} == {"engagement in play on uid 4 (nomination i40 pending): the playbook gives it no order"}
+    assert [(c.play, c.derived.get("engagement")) for c in sel] == [("safety.low_reserve", "uid 4: nomination i40 pending")]
+    assert {h.reason for h in held} == {"engagement in play on uid 4 (nomination i40 pending): the playbook gives it no ISR, "
+                                        "link or hygiene order"}
     for state in ("approved", "dispatched", "effected"):
         led = Ledger()
         led.note_changes([{"kind": "intent.state", "intent": 41, "task": "engage", "uids": ["4"], "to": state}])
         b, _ = beliefs(led)
-        sel, held = arbitrate([cand("safety.low_reserve", 0, 0.5, "battery:4", 4, task="rtl")], b, led)
-        assert sel == [] and held[0].reason.startswith("engagement in play on uid 4"), state
+        sel, held = arbitrate([cand("safety.stuck", 0, 0.5, "alert:op:9", 4, task="hold"),
+                               cand("isr.investigate", 2, 0.9, "T-1", 4)], b, led)
+        assert [c.play for c in sel] == ["safety.stuck"] and held[0].reason.startswith("engagement in play on uid 4"), state
 
 
 def test_another_proposers_waiting_card_claims_its_vehicle_but_not_against_p0():
@@ -128,15 +131,17 @@ def test_the_budget_takes_a_burst_of_two_then_one_card_per_30_s():
     ticks = [reads(t=T0 + dt, vehicles=PUMAS, tracks=THREE) for dt in (0, 2, 4, 31)]
     s, e, reps = run(ticks)
     assert [len(r.proposed) for r in reps] == [2, 0, 0, 0], "a burst of two, and at most two of ours pending"
-    # preview first: the third track's card is previewed each tick (the preview says its tier),
-    # and held by the budget because the preview said human
-    assert [r.previews for r in reps] == [3, 1, 1, 1]
+    # preview first: the third track's card is previewed once (the preview says its tier) and,
+    # held by the budget because it said human, not again until a card of ours is decided
+    assert [r.previews for r in reps] == [3, 0, 0, 0]
     assert s.writers()[:5] == ["preview_intent", "propose_intent", "preview_intent", "propose_intent", "preview_intent"]
     assert reps[1].statuses["isr.investigate"].startswith("active")
     # the operator decides one of them: a card per 30 s again, the third track gets its turn
     ticks = [reads(t=T0 + dt, vehicles=PUMAS, tracks=THREE) for dt in (0, 2, 31, 33)]
     s, e, reps = run(ticks, intents={2: {101: "approved"}, 3: {101: "approved"}})
     assert [len(r.proposed) for r in reps] == [2, 0, 1, 0]
+    assert [r.previews for r in reps] == [3, 0, 1, 0], "previewed again once i101 was decided"
+
     held = [h for h in reps[1].statuses.values() if "inbox budget" in h]
     assert held, reps[1].statuses
 

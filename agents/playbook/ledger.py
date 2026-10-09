@@ -14,18 +14,24 @@ fails, is an answer, not a blank: each sets something the next proposal must get
 - **expired** unread: 2 minutes for (play, target), and the play's score for that pair halves
   (the operator had no time: do not resend into the same queue).
 - **voided** by the system: 30 seconds for the key (another vehicle may be tried at once).
-- **withdrawn** by the engine (a void it asked for): 30 seconds for (play, target), every
-  vehicle, as a rejection is: a premise that just went is not proposed again on the next
-  vehicle in the same breath.
+- **withdrawn** by the engine (a void it asked for): 30 seconds. Its scope follows why: when
+  the premise went (`hygiene.withdraw_stale`), (play, target) on every vehicle, as a rejection
+  is: a premise that just went is not proposed again on the next vehicle in the same breath;
+  when it was for the vehicle's sake (`link.withdraw_pending`, `nav.suspect_exclude`), only
+  that vehicle for that target: another vehicle may take the target at once.
 - **failed**: a back-off for the key and for the vehicle (10 s, doubling to 160 s), and the
   rationale of any retry names the failure. An order superseded by another of ours (a recentre,
-  a release) is not a failure of ours. One superseded by someone else's order records that
-  order (`superseded_by`): the vehicle is that order's while it stands, and `safety.low_reserve`
-  reads it (it does not undo a person's re-tasking).
+  a release) is not a failure of ours, nor is one superseded by someone else's order, which
+  records that order (`superseded_by`): the vehicle is that order's while it stands, and
+  `safety.low_reserve` reads it (it does not undo a person's re-tasking).
 
-It also keeps what the reads alone do not say: the bridge run it belongs to (`run`: a ledger of
-another run, or of no known run, is set aside and a fresh one started), the back-offs, the
-inbox budget's token bucket, each vehicle's last recentre and last suspect navigation, the
+It also keeps what the reads alone do not say: the bridge run it was last verified against
+(`run`, and the change feed's cursor, whose feed id changes with every bridge process: the
+engine verifies the ledger against the bridge at every start and feed reset, `Engine.verify`),
+the vehicle each uid was (platform and callsign, to verify memory kept per vehicle), the
+back-offs, the keys the inbox budget held after a human-tier preview, the inbox budget's token
+bucket, the origin of others' orders that followed ours (an operator's, or an agent's approved
+by the policy or by a person), each track's recent classification (for sensor coverage), each vehicle's last recentre and last suspect navigation, the
 parameters of others' orders a gap filler took over (`explain_intent`), the engagements the
 change feed reported, when the playbook first saw each alert (`safety.stuck` counts from
 there), the vehicles parked by `safety.stuck` and the task they were stuck on, the change feed's
@@ -55,6 +61,7 @@ WAITING = ("pending_approval",)  # what the playbook withdraws: cards still wait
 APPROVED = ("approved", "queued")  # a person approved it: never withdrawn by the playbook
 ENDED_UNRUN = ("rejected", "expired", "voided")
 ENGAGE_KEEP = 200  # engagements remembered from the change feed (the newest)
+PREMISE_WITHDRAWALS = ("hygiene.withdraw_stale", "shadow")  # a withdrawal because the premise went
 FAILURE_MEMORY_S = 600.0  # a failure is named in a retry's rationale this long after it
 
 
@@ -105,14 +112,19 @@ class Ledger:
     alert_seen: dict[str, float] = field(default_factory=dict)  # "<alert id>|<kind>" -> first tick seen
     stuck_blocks: list[dict[str, Any]] = field(default_factory=list)  # {play, target, uid, alert, until_t}
     noted: dict[str, str] = field(default_factory=dict)  # panel lines said once: ident -> text
+    budget_wait: dict[str, dict[str, Any]] = field(default_factory=dict)  # key -> {until_t, pending, t}
+    vehicles: dict[str, dict[str, Any]] = field(default_factory=dict)  # uid -> {platform, callsign}
+    origins: dict[str, dict[str, Any]] = field(default_factory=dict)  # others' intent id -> its origin
+    classify: dict[str, dict[str, Any]] = field(default_factory=dict)  # track -> {hist, since}
 
     # ---- persistence ---------------------------------------------------------------------------
 
     FIELDS = ("entries", "backoff", "score_factor", "recentred", "params", "engaging", "nav_bad_t", "status",
-              "status_seen", "bucket", "shadow", "notes", "alert_seen", "noted")
+              "status_seen", "bucket", "shadow", "notes", "alert_seen", "noted", "budget_wait", "vehicles", "origins",
+              "classify")
 
     def to_json(self) -> dict[str, Any]:
-        out: dict[str, Any] = {"schema": 2, "run": self.run, "cursor": self.cursor, "cooldowns": self.cooldowns,
+        out: dict[str, Any] = {"schema": 3, "run": self.run, "cursor": self.cursor, "cooldowns": self.cooldowns,
                                "stuck_blocks": self.stuck_blocks}
         for k in self.FIELDS:
             out[k] = getattr(self, k)
@@ -272,8 +284,7 @@ class Ledger:
                 return f"superseded by our i{by}"
             if by is not None:
                 e["superseded_by"] = by
-                e["failure"] = f"superseded by i{by}, someone else's order"
-                return e["failure"]
+                return f"superseded by i{by}, someone else's order"
         e["failure"] = reason or "failed"
         self.set_backoff(key_of(e["play"], e["target"], uid), t, f"i{e['intent']} failed: {e['failure'][:120]}", cfg)
         if uid is not None:
@@ -294,7 +305,9 @@ class Ledger:
             self.score_factor[pair] = round(self.score_factor.get(pair, 1.0) * cd["expired_score_factor"], 6)
         elif e.get("withdrawn_by"):
             why = "withdrawn"
-            scope, until = pair_of(play, target), t + cd["withdrawn_s"]
+            # the premise went: the pair; for the vehicle's sake (its link, its navigation): the key
+            pair = e["withdrawn_by"] in PREMISE_WITHDRAWALS
+            scope, until = (pair_of(play, target) if pair else key_of(play, target, uid)), t + cd["withdrawn_s"]
         else:
             scope, until = key_of(play, target, uid), t + cd["voided_s"]
         self.cooldowns.append({"scope": scope, "until_t": round(until, 3), "why": why, "set_t": round(t, 3),
@@ -320,6 +333,8 @@ class Ledger:
 
     def prune(self, t: float) -> None:
         self.cooldowns = [c for c in self.cooldowns if c["until_t"] > t - 3600]
+        for k in [k for k, c in self.classify.items() if t - float(c.get("t") or t) > 600]:
+            del self.classify[k]
         for k in [k for k, b in self.backoff.items() if b["until_t"] < t - 3600]:
             del self.backoff[k]
         self.stuck_blocks = [s for s in self.stuck_blocks if s.get("until_t") is None or s["until_t"] > t]
@@ -349,6 +364,55 @@ class Ledger:
 
     def take_token(self, t: float, cfg: Any) -> None:
         self.bucket = {"tokens": round(self.tokens(t, cfg) - 1.0, 6), "t": round(t, 3)}
+
+    def next_token_t(self, t: float, cfg: Any) -> float:
+        """When the bucket next holds a whole token (now, if it does)."""
+        have = self.tokens(t, cfg)
+        return t if have >= 1.0 else t + (1.0 - have) * cfg.budget["human_every_s"]
+
+    def set_budget_wait(self, key: str, t: float, until_t: float | None, pending: list[int]) -> None:
+        """A key whose preview said human tier and the budget held: not previewed again until
+        `until_t` (the next token; None when the cap on our pending cards held it) or until one of
+        `pending` (our cards waiting then) is no longer waiting, whichever comes first."""
+        self.budget_wait[key] = {"until_t": None if until_t is None else round(until_t, 3), "pending": sorted(pending),
+                                 "t": round(t, 3)}
+
+    def budget_wait_for(self, key: str, t: float, waiting: set[int]) -> dict[str, Any] | None:
+        w = self.budget_wait.get(key)
+        if w is None:
+            return None
+        if (w.get("until_t") is not None and t >= w["until_t"]) or any(i not in waiting for i in w["pending"]) \
+                or (w.get("until_t") is None and not w["pending"]):
+            del self.budget_wait[key]
+            return None
+        return w
+
+    # ---- the vehicles under each uid, and each track's classification -------------------------------------
+
+    def see_vehicles(self, vehicles: list[dict[str, Any]]) -> None:
+        for v in vehicles:
+            if v.get("uid") is not None:
+                self.vehicles[str(v["uid"])] = {"platform": v.get("platform"), "callsign": v.get("callsign")}
+
+    def see_classification(self, tracks: list[dict[str, Any]], t: float, cfg: Any, classifying: tuple[str, ...]) -> None:
+        """Each track's identity confidence over the last `classify_rise_s`, and since when a
+        classifying sensor of ours (EO/IR, sonar) has held it while unsettled (`since`): the
+        sensor-coverage suppression of a look runs only while that classification rises, and
+        `classify_wait_max_s` at most from `since` (isr.look_reasons)."""
+        th = cfg.t
+        for tr in tracks:
+            tid = str(tr.get("id"))
+            ident = tr.get("identity") if isinstance(tr.get("identity"), dict) else {}
+            conf = ident.get("confidence")
+            if not isinstance(conf, (int, float)):
+                continue
+            c = self.classify.setdefault(tid, {"hist": [], "since": None})
+            c["hist"] = [h for h in c["hist"] if t - h[0] <= th["classify_rise_s"]] + [[round(t, 3), round(float(conf), 4)]]
+            c["t"] = round(t, 3)
+            held = any(s.get("sensor") in classifying and isinstance(s.get("last_t"), (int, float))
+                       and t - float(s["last_t"]) <= th["classifier_fresh_s"] for s in tr.get("sources") or [])
+            if held and float(conf) < th["classification_settled"] and c.get("since") is None:
+                c["since"] = round(t, 3)
 
     # ---- alerts and stuck vehicles ---------------------------------------------------------------------
 

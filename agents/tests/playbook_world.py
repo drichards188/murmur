@@ -115,8 +115,10 @@ class FakeSession:
     gives proposals ids from 101 (refused at submission where `refuse` names a reason), and
     records every call with its args."""
 
+    agent = "agent-playbook"
+
     def __init__(self, ticks: list[Reads], previews: Any = None, intents: Any = None, *, refuse: Any = None,
-                 run: str = "test", areas: dict | None = None):
+                 run: str = "test", areas: dict | None = None, feed: str = "f"):
         self.ticks = list(ticks)
         self.i = -1
         self.calls: list[tuple[str, dict[str, Any]]] = []
@@ -127,6 +129,7 @@ class FakeSession:
         self.intent_states = intents or {}  # tick index -> {intent id: state}
         self.refuse = refuse  # request -> a refusal's summary, or None
         self.run = run
+        self.feed = feed  # the change feed's id: a new one with every bridge process
         self.areas = areas or {"areas": []}
         self.truncate_at: set[int] = set()  # ticks whose change feed says truncated
         self.nominations: list[dict[str, Any]] = []
@@ -170,7 +173,7 @@ class FakeSession:
         if name == "get_intents":
             return self.own_intents(r.fleet["t"]) if self.proposed or self.intent_states else (r.intents or {"t": r.fleet["t"], "intents": []})
         if name == "get_changes":
-            return {"t": r.changes_t or r.fleet["t"], "run": self.run, "cursor": f"f:{self.i}", "more": False,
+            return {"t": r.changes_t or r.fleet["t"], "run": self.run, "cursor": f"{self.feed}:{self.i}", "more": False,
                     "reset": False, "truncated": bool(args.get("since")) and self.i in self.truncate_at,
                     "changes": r.changes if args.get("since") else []}
         if name == "get_areas":

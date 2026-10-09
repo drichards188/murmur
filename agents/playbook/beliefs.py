@@ -356,6 +356,9 @@ class Beliefs:
     lost_full: dict[int, dict[str, Any]] = field(default_factory=dict)
     # our own holds that park a vehicle (isr.release, safety.stuck): a vehicle on one is idle
     own_idle: set[int] = field(default_factory=set)
+    # each track's recent identity confidence and since when a classifying sensor of ours held it
+    # (ledger.see_classification; isr.look_reasons reads it for sensor coverage)
+    classify: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def pressure(self) -> dict[str, int]:
@@ -499,4 +502,5 @@ def build(reads: Reads, cfg: Config, ledger: Any) -> Beliefs:
         expire_s=float(_or_default(policy_value(reads.policy, "approval", "expire_s"), 120.0)),
         intents=own, lost_full=dict(sorted(reads.lost_full.items())),
         own_idle={int(e["intent"]) for e in ledger.entries.values() if e.get("play") in IDLE_PLAYS},
+        classify=ledger.classify,
     )
