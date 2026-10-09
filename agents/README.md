@@ -106,9 +106,14 @@ newest 50, and `explain_intent` for any older card of ours the ledger still hold
 `get_changes` since its cursor (the platform catalog and the policy once a session; while a link
 is lost, that vehicle's full facts for its `lost_after_s`, and `explain_intent` once for an order
 of someone else's a gap filler would take over; after a truncated change feed, `get_nominations`
-for the engagements it would have reported). None of these is logged. The ledger belongs to one
-bridge run (`get_changes`' `run`): another run's ledger, or one with no run, is set aside renamed
-beside it (`playbook-ledger.<run>.json`) and a fresh one started. The tick's time is the
+for the engagements it would have reported). None of these is logged. At every start and
+change-feed reset the ledger is checked against the bridge, whatever `run` says (a resumed run
+keeps its intent ids; a fixed run id over a restart does not): a card is kept only if
+`explain_intent` shows the same intent, ours, with the same task and vehicles; memory per vehicle
+only if the same platform and callsign are under the uid; memory per track is dropped across a
+bridge restart (live track ids follow detection order). What is dropped is said in the panel
+(`ledger.verified`), and the ledger as it was is kept beside (`playbook-ledger.<run>.json`).
+The tick's time is the
 oldest `t` among them. Between ticks it reads the change feed every 0.5 s and ticks at once on a
 change that wakes it (one of its cards decided, a link lost or back, a new track, an affiliation,
 a declaration, an alert). Then, a pure function of the reads, the config and the ledger:
@@ -126,50 +131,58 @@ a declaration, an alert). Then, a pure function of the reads, the config and the
 
    | play | class | trigger | action | ends or withdraws |
    |---|---|---|---|---|
-   | `isr.investigate` | P2 | a track shown unknown or suspect (not declared), not stale, existence confidence at least 0.5, inside a watch area or closing on a protected point (CPA within 457 m inside 10 min), and its classification under 0.6 with no EO/IR or sonar of ours on it in the last 10 s, faster than 8 m/s, or an identity conflict | an orbit by the free unarmed sensor aircraft (preferred platform first, then ETA, battery, uid) on the track carried to now, radius max(1.1 x min turn, a quarter of its imaging range) | shown neutral or assumed friend at 0.5 or more; unseen 60 s; out of the watch (with hysteresis); its sensor unfit |
+   | `isr.investigate` | P2 | a track shown unknown or suspect (not declared), not stale, existence confidence at least 0.5, inside a watch area or closing on a protected point (CPA within 457 m inside 10 min), and its classification under 0.6 (unless an EO/IR or sonar of ours detected it in the last 10 s and the classification rose by 0.02 in the last 30 s, for at most 120 s per track), faster than 8 m/s, or an identity conflict | an orbit by the free unarmed sensor aircraft (preferred platform first, then ETA, battery, uid) on the track carried to now, radius max(1.1 x min turn, a quarter of its imaging range) | shown neutral or assumed friend at 0.5 or more; unseen 60 s; out of the watch (with hysteresis); its sensor unfit |
    | `isr.recentre` | P2 | an orbit of ours on a track, the track more than half the radius off centre | the same vehicle, a new orbit on the track; once per vehicle per 60 s | as investigate |
-   | `isr.release` | P2 | an orbit of ours (a look or an armed overwatch) running whose premise is gone | a hold, or the order of ours the vehicle was flying when ours superseded it, if that order's premise still holds | |
+   | `isr.release` | P2 | an orbit of ours (a look or an armed overwatch) running whose premise is gone | a hold, or the order of ours the vehicle was flying when ours superseded it, if the premise of the play that first made that order still holds | |
    | `isr.armed_overwatch` | P2, human | off unless a situation enables it: a suspect at affiliation confidence 0.5 or more closing on a protected point, no track shown neutral or assumed friend within the radius | an armed orbit by a free armed platform whose navigation is not suspect | confidence under 0.5; a protected track inside the radius; stale |
    | `link.cover_gap` | P3 | a vehicle on an orbit or patrol silent for 2 x its `lost_after_s` | the nearest free capable vehicle takes over the route or centre | the link back (a waiting filler withdrawn; a running one kept) |
    | `link.withdraw_pending` | P3 | a card of ours waiting for the operator (pending approval) for a vehicle whose link is lost (one approved and queued for the link is the queue's) | withdraw: "link lost at <time>" | |
-   | `nav.suspect_exclude` | P3 | navigation not ready, off GNSS or a GPS glitch flagged (now or within 60 s) | the vehicle excluded from tasking; an armed card of ours on it still pending approval withdrawn | |
-   | `safety.low_reserve` | P0 | battery under the policy's reserve plus 5 points, link up, not recovering on its own | rtl | not sent again while someone else's order newer than our rtl runs on the vehicle (a person's later decision wins); once more if the battery falls under the policy's own reserve, said so |
+   | `nav.suspect_exclude` | P3 | navigation not ready, off GNSS or a GPS glitch flagged (now or within 60 s) | the vehicle excluded from tasking; an armed card of ours on it pending approval withdrawn, and until murmur-su0 lands an approved or queued one too, from that state only | |
+   | `safety.low_reserve` | P0 | battery under the policy's reserve plus 5 points, link up, not recovering on its own | rtl | not sent again while someone else's order newer than our rtl runs on the vehicle (an operator's, or another agent's the policy or a person approved; the rationale says which), nor while its order reads null after our rtl; once more if the battery falls under the policy's own reserve, said so |
    | `safety.stuck` | P0 | a `not_moving` or `task_failed` alert in our reads for 30 s (from the first read that showed it), link up, not recovering on its own, not holding | hold, quoting the bridge's detail | the vehicle not given the task it was stuck on again until the alert clears and 300 s more |
    | `hygiene.withdraw_stale` | P4 | a card of ours pending approval whose play's withdraw condition holds | withdraw, with the reason | |
 
 3. **arbiter**: one total order (class, minus score, play, target, uid); an engagement in play on a
-   vehicle (a nomination pending, approved, under way or in its assessment) holds every order for
-   it, a hold and an rtl included, and the panel says what the playbook would have done
-   (`withheld`); a cooldown in force holds a candidate unless its play finds a material change (a
-   rise in suspicion, a new declaration, a closest approach halved by half the alert); a back-off
-   holds its key, or its vehicle, after a failing preview, a rule-book veto, a refusal at
-   submission or an order of ours that failed (10 s, doubling to 160 s: retried, never dropped,
-   never every tick; a retry names the failure); one claim per vehicle (a look offers its first
-   three free vehicles, so a taken one falls to the next); at 6 or more pending cards in the inbox
-   only P0 and P1 propose.
+   vehicle (a nomination pending, approved, under way or in its assessment) holds every ISR, link
+   and hygiene order for it, and the panel says what the playbook would have done (`withheld`),
+   while a P0 command goes on: the bridge makes it a human card that stops the engagement if
+   approved, and the rationale says so; a cooldown in force holds a candidate unless its play
+   finds a material change (a rise in suspicion, a new declaration, a closest approach halved by
+   half the alert); a back-off holds its key after a failing preview, a rule-book veto, a refusal
+   at submission or an order of ours that failed, and its vehicle after a failed order unless it is
+   P0 (10 s, doubling to 160 s: retried, never dropped, never every tick; a retry names the
+   failure); a play and target the budget held after a human-tier preview waits for the next
+   token or a decision on a card of ours; one claim per vehicle (a look offers its first three
+   free vehicles, so a taken one falls to the next); at 6 or more pending cards in the inbox only
+   P0 and P1 propose.
 4. **preview** first (at most 3 a tick), then the **inbox budget**: the preview says the tier, and
    only a human-tier answer needs a token (one per 30 s, burst 2) and fewer than 2 of ours
-   pending; P0 is exempt by class. A card the budget holds is previewed again on later ticks (each
-   preview is logged).
+   pending; P0 is exempt by class, neither held nor charged. A card the budget holds is not
+   previewed again until the next token is due or a card of ours waiting then is decided.
 5. **the rule book's veto**: `eval/evidence.py` (v2, frozen) on the preview's checks and, for an
    armed task, the tracks as read: anything it objects to is never proposed.
 6. **propose** with the rationale.
 7. **follow up**: its cards still pending approval whose premise is gone are withdrawn, with the
    reason and `if_state: pending_approval`, so an approval that came meanwhile stands (the bridge
    refuses the withdrawal, `withdraw.refused`); a card a person approved (approved, queued) whose
-   premise went is said once in the panel (`left`) and left to the operator.
+   premise went is said once in the panel (`left`) and left to the operator, except, until
+   murmur-su0 lands, an armed one on a vehicle whose navigation is suspect: withdrawn from its state
+   only, "withdrawn (armed, nav suspect, murmur-su0)".
 
 **Rationales** are rendered by a fixed template per play from an **evidence record** built only
 from values the tick read (each fact with its age, the derived CPA, TCPA and ETA, the thresholds,
 the alternatives considered, the rule book's verdict, the preview's tier, the withdraw condition,
 and inside a cooldown the material change), named by play and version. The record rides after the
 line `--- evidence record (playbook, JSON) ---` (`playbook/rationale.py` composes and parses it);
-the console shows the text and folds the record behind a toggle. **The ledger** (JSON beside the
+the console shows the text and folds the record behind a toggle, on a card proposed by an agent
+id it knows runs the playbook (`agent-playbook`) only, so no other proposer can hide text under
+the fold. **The ledger** (JSON beside the
 log, `playbook-ledger.json`) keeps every card by (play, target, vehicle): a rejection cools that
 play on that target for 10 minutes whatever the vehicle (the operator's note is the only reason
 channel, so the conservative reading), an expiry 2 minutes and halves the play's score for it, a
-void 30 s for the key, a withdrawal of ours 30 s for that play on that target whatever the
-vehicle. An order of ours that failed backs off its key and its vehicle; one superseded by
+void 30 s for the key, a withdrawal of ours 30 s: for that play on that target whatever the
+vehicle when the premise went, for that vehicle alone when it was for the vehicle's sake (its
+link, its navigation). An order of ours that failed backs off its key and its vehicle; one superseded by
 someone else's order records that order (`safety.low_reserve` reads it); a refusal at submission
 backs off and is logged with the bridge's reason, never cooled (no person answered it). A restart
 adopts its cards from their records, the armed flag included.
@@ -184,7 +197,8 @@ held 3 ticks and differs from the last one logged: active, ready, or not ready w
 constraint), `proposal` (a refusal at submission with its reason), `withdrawal`,
 `withdraw.refused`, `decision` (how the operator answered a card, and the cooldown it set),
 `withheld` (what an engagement in play kept it from doing), `left` (an approved card of ours whose
-premise went), `ledger.reset`, `feed.truncated`, `error`, `run.stop` (ticks and compute per
+premise went), `ledger.verified` (what checking the ledger against the bridge dropped),
+`feed.truncated`, `error`, `run.stop` (ticks and compute per
 tick). The panel shows the status, proposal, withdrawal, withheld, left and decision lines.
 
 **Shadow mode** (`watch_officer.py --shadow-playbook --shadow-config <file>`): the same engine
@@ -196,7 +210,11 @@ status as `shadow.status`. It never previews (a preview would be logged under th
 id), so it estimates each would-be card's tier from `get_policy` and `get_areas`
 (`playbook/tier.py`, said in every line): a human-tier one is held as pending, claims its vehicle
 and spends the budget as the live engine's would; an auto-tier one is held as running until its
-premise goes. The estimate cannot see a check that would fail or the leg home.
+premise goes. The estimate walks the policy's tiers and applies the bridge's floors (an
+unverified check, an engagement in play, a human-approved order waiting in the queue: human); it
+does not model a check that would fail, the leg home and the transit (the compact read carries no
+home), unverified outcomes other than reserves without an endurance figure, or the rules version
+gates (`playbook/tier.py` lists them).
 
 **Checked live** (stand-ins, 10-09, on a port block of their own; every audit log replayed exactly
 with its anchors, every proposal's text faithful to its record by `agents/playbook/fidelity.py`):

@@ -1130,22 +1130,63 @@ group. Dates are 2026.
   with `codex features list` before any turn and refuses to start otherwise, because a
   read-only sandbox does not stop reads and a breach seen in the event stream comes after
   the command ran.
+- **The playbook's fix round 2: what round 1 broke, and the ledger verified, not discarded**
+  (10-09, murmur-t8m second review; `agents/playbook/CRITERIA.md` "Fix round 2", one test per
+  item in `agents/tests/test_playbook_review2.py`). (1) A P0 command (`safety.low_reserve`,
+  `safety.stuck`) goes on to a platform with an engagement in play: the bridge sends any agent's
+  order there to a person, who must acknowledge that it stops the engagement (murmur-decide
+  policy.rs, "engagement in play"; mcp tests), and it raises no battery alert of its own
+  (decision/alerts.rs), so a withheld rtl reached nobody. The rationale names the engagement.
+  ISR, link and hygiene orders stay withheld (`withheld`): a re-task of a platform mid-engagement
+  is noise to the signers. (2) A play and target whose preview said human while the budget held
+  it waits for the next token or a decision on a card of ours waiting then (round 1, (9), below). (3) A
+  failed order's back-off on its vehicle does not hold back P0; a P0 command's own key still backs
+  off when it fails. (4) A withdrawal for the vehicle's sake (`link.withdraw_pending`,
+  `nav.suspect_exclude`) cools that vehicle for that target; one because the premise went
+  (`hygiene.withdraw_stale`) cools the pair. (5) The ledger is verified against the bridge at every
+  start and feed reset, whatever `run` says: with MURMUR_RESUME intent ids stay unique across
+  carried logs (murmur-decide engine.rs), so a resumed run's cards are still ours, while a fixed
+  run id over a restart without resume keeps `run` and starts the ids again. A card is kept only if
+  `explain_intent` shows the same intent, ours, the same task and vehicles; memory per vehicle
+  (`safety.low_reserve`'s cards, stuck blocks, back-offs) only if the same platform and callsign are
+  under the uid; memory per track (cooldowns, back-offs, score factors) is dropped across a bridge
+  restart (a new feed id, or a new run), since live track ids follow detection order and a new
+  run's T-0008 is another contact. What is dropped is said in the panel (`ledger.verified`), and the
+  ledger as it was is kept beside. (6) `safety.low_reserve` words a later order by its origin
+  (`explain_intent`: an operator's, or another agent's approved by the policy or by a person), and
+  still respects any of them; after our rtl a null or unreadable order is unknown, so it waits for
+  a definite read; a supersession is not called a failure. (7) Sensor coverage holds a look back
+  only while the classification actually rises (0.02 within 30 s) and for at most 120 s per track,
+  one sonar dwell time constant: under intermittent sonar (2 s of dwell a detection, tau 120 s,
+  at most 0.8) round 1 could hold it back for many minutes. An identity conflict, sensors'
+  labels included, is always a reason. (8) A resumed order inherits the premise of the play that
+  first made it: `isr.release` follows a release that resumed an order back to that play
+  (`basis.resumed`) and checks its premise; a release with no origin resumes nothing. (9) Until
+  murmur-su0 lands, `nav.suspect_exclude` withdraws an approved or queued armed card of ours on a
+  vehicle whose navigation is suspect, from that state only (`if_state`), logged "withdrawn
+  (armed, nav suspect, murmur-su0)"; the issue carries a note to remove it. Nits: the shadow's
+  tier estimate applies the bridge's floors (an unverified check, an engagement in play, a
+  human-approved order waiting in the queue: human); the console folds an evidence record only on
+  a card proposed by an agent id it knows runs the playbook (`agent-playbook`); `withdraw_intent`
+  checks the owner before the state (403 before 409, so another's intent state is not said) and
+  refuses an unknown state name (400).
 - **The playbook's fix round 1: a person's later decision wins, and nothing repeats without a
   cause it can name** (10-09, murmur-t8m review; `agents/playbook/CRITERIA.md` "Fix round 1",
   one test per finding in `agents/tests/test_playbook_review.py`). An order of ours that ended
   failed, was superseded by a human's, or was refused at submission is an answer, not a blank.
   (1) `safety.low_reserve` sends no rtl while someone else's order newer than our last rtl runs
-  on the vehicle (intent ids are sequential in a run, so newer is later): that order is a person's
-  decision about that vehicle and its battery. It raises once more when the battery falls under
-  the policy's own reserve, the line under which the rules refuse new tasks, saying so in the
-  rationale; after that only when that order no longer stands and none later runs. (2) The order
+  on the vehicle (intent ids are sequential in a run, so newer is later), whoever gave it: an
+  operator, or another agent whose order the policy or a person approved (two agents trading rtl
+  against an orbit would be worse), and the rationale says which (fix round 2). A null or
+  unreadable order after our rtl is unknown, never "no longer stands". It raises once more when
+  the battery falls under the policy's own reserve, the line under which the rules refuse new
+  tasks, saying so in the rationale; after that only when that order no longer stands and none later runs. (2) The order
   that superseded ours is the vehicle's current order at the tick the failure is read (the compact
   fleet's `task.intent_id`): the task layer names a superseder by its tasking number ("replaced by
   patrol #3"), not its intent. (3) `get_fleet` has no failsafe field, so a vehicle recovering on
   its own is known by its mode: every return, landing, docking and surfacing mode of the bridge's
-  mode tables, guarded by a test that scans `mav.rs`. (4) The ledger is bound to its bridge run
-  (`get_changes`' `run`, the audit log's name): an intent id of another run names another order,
-  so another run's ledger, or one with no run, is set aside renamed beside the new one. (5) An
+  mode tables, guarded by a test that scans `mav.rs`. (4) The ledger was bound to its bridge
+  run; fix round 2 replaced that with verification against the bridge (above). (5) An
   order of ours that failed backs off its key and its vehicle (10 s doubling to 160 s) and a retry
   names the failure; a refusal at submission backs off the same way and is never cooled, since no
   person answered it. (6) A vehicle `safety.stuck` held on our task is not given that task again
@@ -1153,20 +1194,28 @@ group. Dates are 2026.
   replaces the order, not when the cause is gone, and 300 s is a third of the policy's assumed
   task length, long enough for a transient to pass and short enough to retry within a task's
   worth of time; other tasks may have the vehicle at once. (7) `isr.release` resumes an order of
-  ours only if it was running when ours superseded it and its own premise still holds, else a
-  hold; and it releases a running armed overwatch too. (8) A withdrawal of ours cools (play,
-  target) on every vehicle, as a rejection does; the playbook withdraws only a card still pending
+  ours only if it was running when ours superseded it and the premise of the play that first made
+  it still holds (fix round 2: through a release that resumed it), else a hold; and it releases a
+  running armed overwatch too. (8) A withdrawal of ours because the premise went cools (play,
+  target) on every vehicle, as a rejection does; one for the vehicle's sake (its link, its
+  navigation) cools that vehicle for that target (fix round 2). The playbook withdraws only a card still pending
   approval, and only if it is still pending at that moment (`withdraw_intent` `if_state`, checked
   under the engine's lock; a refusal logs nothing, so the decision log and replay are unchanged);
   an approved or queued card whose premise went is said in the panel and left to the operator.
   The bridge's readiness re-check at dispatch catches navigation not ready and dead reckoning on
-  an armed platform, not a GPS glitch flag (murmur-su0, filed, not fixed here). (9) Every selected
+  an armed platform, not a GPS glitch flag (murmur-su0, filed, not fixed here; until it is, an
+  approved or queued armed card on such a vehicle is withdrawn, fix round 2). (9) Every selected
   candidate is previewed first (at most 3 a tick) and only a human-tier answer spends the inbox
-  budget; P0 is exempt by class, not by task kind. The per-key tier memory is gone: it held an
-  auto-tier card to the budget for five minutes after one human-tier preview, and exempted a hold
-  or an rtl by kind even under a policy that made it human-tier. The cost: a card the budget
-  holds is previewed again each tick, each preview an `agent.action intent.preview` line in the
-  audit log. (10) The shadow does not preview (its previews would be logged under the model's
+  budget; P0 is exempt by class, not by task kind (neither held nor charged a token). The per-key
+  tier memory is gone: it held an auto-tier card to the budget for five minutes after one
+  human-tier preview, and exempted a hold or an rtl by kind even under a policy that made it
+  human-tier. Round 1 then previewed a card the budget held again every tick, which filled the
+  cap of three and starved cards that could go (about 1,800 audit lines an hour per held card).
+  Since fix round 2 a play and target whose preview said human while the budget held it is not
+  previewed again, on any vehicle, until the next token is due or a card of ours waiting then is
+  decided. Both costs, stated: one preview per held target per token period or decision (each an
+  `agent.action intent.preview` line), and a card whose tier would have turned auto in the
+  meantime waits up to one token period (30 s) or until a decision before it is previewed again. (10) The shadow does not preview (its previews would be logged under the model's
   agent id, and the audit log must stay about the run): it estimates each would-be card's tier
   from `get_policy` and `get_areas` (`agents/playbook/tier.py`; it cannot see a check that would
   fail or the leg home) and budgets only the human-tier ones, held as pending until the approval
@@ -1178,12 +1227,12 @@ group. Dates are 2026.
   seconds while its classification rose 0.44, 0.51, 0.57 over ten seconds; the sensors that
   classify were already on it, so the look the playbook proposed rested on its speed and its
   closing on the bridge, not on its classification. Harbor watch's look still goes at the same
-  tick, its trigger now "closing on the Golden Gate Bridge; fast". (12) A platform with an
-  engagement in play (a nomination pending, approved, under way or in its assessment) gets no
-  order of any kind from the playbook, a hold or an rtl included: a dispatched order supersedes
-  the engagement with no fallback (rules 7), and while it is pending a hold changes what the
-  signers are judging; the panel says what the playbook would have done (`withheld`), and the
-  bridge's own alerts reach the signers. (13) A play's status is logged once it has held 3 ticks
+  tick, its trigger now "closing on the Golden Gate Bridge; fast". Fix round 2 narrowed it: the
+  suppression holds only while that classification rose by 0.02 within 30 s, and for at most
+  120 s per track. (12) Reversed in fix round 2 (above): round 1 gave a platform with an
+  engagement in play no order of any kind, P0 included, saying "the bridge's own alerts reach the
+  signers"; that was false for a battery (the bridge raises no battery alert), and the bridge
+  already sends an agent's order there to a person. (13) A play's status is logged once it has held 3 ticks
   (a debounce, not a rate limit: a rate limit would still log a flicker, only later). (14) A
   polygon watch area keeps the circle's hysteresis: a track has left it only beyond (leave factor
   minus 1) x the radius of the polygon's equal-area circle past its edge. (15) Older open cards of

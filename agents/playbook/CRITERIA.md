@@ -154,3 +154,27 @@ them.
 | an engagement in play | a hold or an rtl still went to the platform | no order of any kind (a dispatched one supersedes the engagement, rules 7); the panel says what the playbook would have done |
 | a status line | logged on every change | logged once it has held 3 ticks |
 | the stuck threshold (table above) | an alert for 30 s | an alert in our reads for 30 s |
+
+## Fix round 2, 2026-10-09 (a second review; the targets above unchanged)
+
+A second review confirmed every round-1 fix (reverting each one failed its test) and found side
+effects of round 1. Each item has a test in `agents/tests/test_playbook_review2.py` that failed
+before its fix.
+
+**Correction to round 1's table** (the "an engagement in play" row): round 1 gave a platform with
+an engagement in play no order of any kind, P0 included. That was wrong. The bridge already sends
+any agent's order on such a platform to a person, who must acknowledge that it stops the
+engagement, and it raises no battery alert of its own, so a withheld rtl reached nobody. A P0
+command (`safety.low_reserve`, `safety.stuck`) now goes on and becomes a human card, its rationale
+naming the engagement. ISR, link and hygiene orders stay withheld, with the `withheld` line.
+
+| change | before (round 1) | after |
+|---|---|---|
+| a card the inbox budget holds | previewed again every tick; held cards filled the cap of three and an auto-tier filler starved (about 1,800 audit lines an hour per held card) | after a human-tier preview the budget held, that play and target is not previewed again until the next token is due or a card of ours waiting then is decided |
+| a failed order's vehicle back-off | held back P0 commands on that vehicle | P0 exempt; a P0 command's own key still backs off when it fails |
+| a withdrawal for the vehicle's sake | cooled (play, target) on every vehicle | cools that vehicle for that target; only a withdrawal because the premise went cools the pair |
+| the ledger after a crash and resume | set aside because `run` changed | verified at every start and feed reset, whatever `run` says: a card kept only if `explain_intent` shows it still ours with the same task and vehicles; memory per vehicle only for the same platform and callsign under the uid; memory per track dropped across a bridge restart (a new run's T-0008 is another contact), said in the panel |
+| a later order after our rtl | "someone else's order", a null task read as none | worded by origin (an operator's; another agent's, approved by the policy or by a person), any of them respected; a null or unreadable task is unknown and never re-raises; a supersession is not called a failure |
+| a look under sensor coverage | suppressed while an EO/IR or sonar detection was 10 s fresh | suppressed only while the classification rose by 0.02 within 30 s, and at most 120 s per track; an identity conflict always counts |
+| a release resuming an order an earlier release copied | the copy's premise always held (a release has none) | the premise of the play that first made the order is checked, through the chain of releases; none known, a hold |
+| an approved or queued armed card on a suspect vehicle | left with a `left` line | until murmur-su0 lands, withdrawn from that state only, "withdrawn (armed, nav suspect, murmur-su0)" |
