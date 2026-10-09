@@ -31,7 +31,8 @@ overwatch's also when the affiliation confidence falls below 0.5, a protected tr
 radius, or the track goes stale.
 
 Material change (a re-proposal inside a cooldown): the affiliation shown changed; its
-confidence moved by 0.15 or more across 0.5; a new declaration; the closest approach halved.
+confidence moved by 0.15 or more across 0.5; a new declaration; the closest approach halved, and
+by at least half the CPA alert (229 m).
 """
 
 from __future__ import annotations
@@ -207,8 +208,12 @@ def isr_material_change(then: dict[str, Any], now: dict[str, Any], b: Beliefs) -
             return f"the affiliation confidence went from {a:.2f} to {c:.2f}, across {gate:.1f}"
     if then.get("declared") != now.get("declared") and now.get("declared") is not None:
         return f"a new declaration ({now.get('declared')})"
+    # the closest approach halved, and by at least half the CPA alert: at a few hundred metres the
+    # estimate wanders by half with a few degrees of course (live: 192 m to 79 m four seconds after
+    # a rejection, the boat on the same heading), which is not news to the operator who rejected
     p, q = then.get("cpa_m"), now.get("cpa_m")
-    if isinstance(p, (int, float)) and isinstance(q, (int, float)) and q <= m["cpa_factor"] * p:
+    if (isinstance(p, (int, float)) and isinstance(q, (int, float)) and q <= m["cpa_factor"] * p
+            and p - q >= m["cpa_factor"] * th["cpa_alert_m"]):
         return f"the closest approach went from {p:.0f} m to {q:.0f} m"
     return None
 

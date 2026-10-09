@@ -1194,7 +1194,14 @@ group. Dates are 2026.
   (10) A card the budget cannot take is not previewed (previews are logged) unless its key's last
   preview said auto. (11) The shadow holds its would-be cards as if pending for the policy's
   approval wait (then as expired unread), claiming their vehicles and counted by the budget as
-  human-tier: a model of an operator who never answers, stated in its log. (12) Not built:
+  human-tier: a model of an operator who never answers, stated in its log. (12) After the first
+  live runs (CRITERIA.md, the dated section): `link.withdraw_pending` withdraws only a card still
+  waiting for the operator, never one approved and held by the bridge's queue for the link (that
+  would undo a person's decision over a link; the queue already re-checks it and sends a human's
+  approval back after 120 s); and the closest approach is a material change only when it halved
+  by at least half the CPA alert, since the estimate of a boat a few hundred metres from its
+  closest approach wanders by half with a few degrees of course (a re-proposal came 4 s after a
+  rejection, citing 192 m to 79 m on the same heading). (13) Not built:
   the bridge additions C.2.6 proposes beyond those that exist (structured reject reasons, a
   structured evidence field on `propose_intent`, a per-agent cap on pending human-tier cards);
   they are follow-ups. The compact fleet read has no satellite count, so fewer than six

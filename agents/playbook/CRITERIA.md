@@ -84,3 +84,17 @@ rest before the engine's first live run. None changes a target above.
 | identity conflict | a reason to look, beside an unsettled classification and speed | the tracker's own anomaly flag (an AIS identity that does not fit what was seen): what a close look settles |
 | the 0.5 gate on a look | the track's existence confidence now | the look exists to classify: gating it on affiliation confidence would keep it off every unknown (0.0 until a sensor classifies it). Affiliation confidence 0.5 gates the armed play |
 | navigation suspect | excludes a vehicle from every tasking play, not only armed ones (hold and rtl still go) | a sensor whose own position is in doubt places what it sees in the wrong place; a filler flies the wrong route |
+
+## Changes after the first live runs, 2026-10-09 (the targets above unchanged)
+
+The first live runs (Harbor watch on stand-ins; agents/README.md, "The playbook engine") found
+behaviour the fixtures had not. Each was fixed and a fixture test added; the targets above
+stand as frozen, and the results are judged against them.
+
+| change | before | after | found |
+|---|---|---|---|
+| material change on the closest approach | the CPA halved | the CPA halved and by at least half the CPA alert (229 m) | a rejection at 192 m, then a re-proposal 4 s later citing 79 m, the boat on the same heading: estimate noise, not news |
+| `link.withdraw_pending` | any card of ours waiting | a card waiting for the operator (pending approval) only | it withdrew an order the operator had approved and the bridge's queue held for the link (rules 5) |
+| an order not flying | an order that failed | failed, superseded, or back in the queue | a requeued order still claimed its vehicle |
+| an order of ours gone out | held its track only once its vehicle flew it | holds its track until it ends | a look read as not holding in the second between dispatch and the vehicle's report |
+| a safety command | a P0 command took a vehicle from any card of ours | never from another safety command; once per alert or battery while its own command is live | a stuck vehicle got two holds a second apart (the first queued for the link) |

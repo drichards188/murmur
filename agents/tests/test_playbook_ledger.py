@@ -28,10 +28,10 @@ def candidates(led, t=T0, tr=None):
     return arbitrate(PLAYS["isr.investigate"].evaluate(b, led).candidates, b, led), b
 
 
-def proposed(led, iid=101, uid=3, state="pending_approval"):
+def proposed(led, iid=101, uid=3, state="pending_approval", cpa=300.0):
     led.record(iid, play="isr.investigate", version="1", target="T-1", uid=uid, task="orbit",
                request={"task": "orbit", "uids": [uid], "center": [0, 0], "radius_m": 1000.0}, t=T0, state=state,
-               basis={"affiliation": "suspect", "aff_conf": 0.7, "declared": None, "cpa_m": 300.0}, withdraw_if=[])
+               basis={"affiliation": "suspect", "aff_conf": 0.7, "declared": None, "cpa_m": cpa}, withdraw_if=[])
 
 
 def test_a_rejection_cools_the_play_on_that_target_for_10_minutes_whatever_the_vehicle():
@@ -54,11 +54,18 @@ def test_inside_a_cooldown_only_a_material_change_lets_it_propose_and_the_ration
     # the confidence moved by 0.15 but stayed on the same side of 0.5: not material
     (sel, _), _ = candidates(led, T0 + 20, boat(conf=0.86))
     assert sel == []
-    # its closest approach halved: material
+    # its closest approach went from 300 m to about 100 m: halved, but by less than half the alert
+    # (the live case: 192 m to 79 m, the same heading): not material
+    (sel, _), b = candidates(led, T0 + 20, boat(pos=offset(-2000, -100)))
+    assert sel == []
+    # from 700 m (outside the alert) to about 100 m: material
+    led = Ledger()
+    proposed(led, cpa=700.0)
+    led.sync({101: intent(101, "orbit", [3], "rejected", approval={"by": "op-1", "note": "not now"})}, T0 + 5, config())
     (sel, _), b = candidates(led, T0 + 20, boat(pos=offset(-2000, -100)))
     assert len(sel) == 1
     mc = sel[0].material_change
-    assert mc["cooldown"] == "i101 rejected by op-1 at 14:38:25Z" and mc["change"].startswith("the closest approach went from 300 m to")
+    assert mc["cooldown"] == "i101 rejected by op-1 at 14:38:25Z" and mc["change"].startswith("the closest approach went from 700 m to")
     eng = Engine(config())
     text, rec = eng.finish(sel[0], b, None, [])
     assert "Proposed again inside a cooldown (i101 rejected by op-1 at 14:38:25Z): material change: the closest approach" in text
