@@ -288,6 +288,27 @@ def test_stuck_holds_after_30_s_of_not_moving_but_never_a_vehicle_on_its_failsaf
     assert look(world(40.0, mode="LOITER"), play="safety.stuck")[0].candidates == []
 
 
+def test_stuck_acts_once_per_alert_while_its_hold_is_live():
+    """Live, Harbor watch: PUMA 1's orbit upload failed on a lossy link, the hold went to the
+    queue for the link, and the next tick proposed a second hold (a P0 command took the vehicle
+    from our own queued hold). Now the play holds back while its own hold is live."""
+    from playbook.arbiter import arbitrate
+
+    led = Ledger()
+    led.record(6, play="safety.stuck", version="1", target="alert:op:9", uid=4, task="hold", request={"task": "hold", "uids": [4]},
+               t=T0, state="queued", basis={}, withdraw_if=[])
+    alerts = [{"id": "op:9", "kind": "task_failed", "uid": 4, "since_t": T0 - 40, "detail": "mission upload unconfirmed"}]
+    r = reads(vehicles=[vehicle(4, "PUMA 2", mode="AUTO", task={"intent_id": 3, "task": "orbit", "state": "failed"})], alerts=alerts,
+              intents=[intent(6, "hold", [4], "queued")])
+    res, b = look(r, led=led, play="safety.stuck")
+    assert res.candidates == [] and res.active == ["PUMA 2: our hold"]
+    # and a P0 command never takes a vehicle from another safety command of ours
+    low = PLAYS["safety.low_reserve"].evaluate(build(reads(vehicles=[vehicle(4, "PUMA 2", battery_pct=20.0)], alerts=alerts,
+                                                           intents=[intent(6, "hold", [4], "queued")]), config(), led), led)
+    sel, held = arbitrate(low.candidates, b, led)
+    assert sel == [] and held[0].reason == "uid 4 is our i6 (queued)"
+
+
 # ---- hygiene --------------------------------------------------------------------------------------------------
 
 

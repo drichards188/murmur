@@ -75,7 +75,7 @@ def arbitrate(cands: list[Candidate], b: Beliefs, led: Ledger) -> tuple[list[Can
                 v = b.vehicles.get(u)
                 passed.setdefault((c.play, c.target), []).append(f"{v.callsign if v else u} (taken for {taken[u].split(' on ')[-1]})")
                 break
-            if u in b.claims and not supersedes(c, b.claims[u]):
+            if u in b.claims and not supersedes(c, b.claims[u], led):
                 clash = f"uid {u} is {b.claims[u]}"
                 break
             if u in b.engaging and c.task not in SAFETY_TASKS:
@@ -98,13 +98,20 @@ def arbitrate(cands: list[Candidate], b: Beliefs, led: Ledger) -> tuple[list[Can
     return selected, held
 
 
-def supersedes(c: Candidate, claim: str) -> bool:
+def supersedes(c: Candidate, claim: str, led: Ledger) -> bool:
     """Whether `c` may take a vehicle from the claim on it: its own predecessor (a recentre or
-    a release of our running order), or any claim for a P0 command (a hold or an rtl reduces
-    risk whatever else of ours waits on the vehicle)."""
+    a release of our running order), or, for a P0 command, a card or order of ours that is not
+    itself a P0 command (a hold or an rtl reduces risk whatever else of ours waits on the
+    vehicle; it never replaces another safety command, its own included)."""
     if c.supersedes is not None and claim.startswith(f"our i{c.supersedes} "):
         return True
-    return c.klass == 0 and claim.startswith("our i")
+    if c.klass != 0 or not claim.startswith("our i"):
+        return False
+    try:
+        e = led.entry(int(claim.split()[1][1:]))
+    except (IndexError, ValueError):
+        return False
+    return e is None or PLAYS.get(e["play"]) is None or PLAYS[e["play"]].klass != 0
 
 
 def statuses(results: dict[str, Any], held: list[Held], outcomes: dict[str, str], enabled: list[str]) -> dict[str, str]:

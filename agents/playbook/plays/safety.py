@@ -8,7 +8,12 @@ and each acts once per instance of its condition.
 - `safety.stuck`: a `not_moving` or `task_failed` alert on a vehicle for 30 s, link up, not on
   its failsafe's return (a vehicle the lost-link failsafe sent home is not stuck, and a hold
   would fight it) and not already holding: hold. A `left_task` alert is not stuck either: the
-  autopilot left the task on its own (a failsafe, a mode switch), and the operator decides.
+  autopilot left the task on its own (a failsafe, a mode switch), and the operator decides. Once
+  our hold runs the vehicle counts as idle (free again when healthy): the hold parks it.
+
+Either acts once per instance: while its own command for that alert or battery is live (waiting,
+queued for the link, gone out), it proposes nothing more there, and a P0 command never takes a
+vehicle from another safety command.
   Score: the alert's age over 300 s, at most 1.
 """
 
@@ -20,7 +25,7 @@ from .. import rationale as R
 from ..beliefs import RETURNING_MODES, Beliefs
 from ..ledger import Ledger
 from . import P0, Candidate, Play, Result, register
-from .isr import vehicle_facts, vehicle_ref
+from .isr import holding, vehicle_facts, vehicle_ref
 
 HOLDING_MODES = ("HOLD", "LOITER", "BRAKE", "POSHOLD")
 STUCK_KINDS = ("not_moving", "task_failed")
@@ -36,6 +41,9 @@ class LowReserve(Play):
             if v.battery_pct is None or v.battery_pct >= line:
                 continue
             target = f"battery:{uid}"
+            if holding((self.name,), target, b, led) is not None:
+                res.active.append(f"{v.callsign}: our rtl")
+                continue
             if v.link_lost:
                 res.blocked.append((target, f"{v.callsign} is under the line: its link is lost"))
                 continue
@@ -77,6 +85,9 @@ class Stuck(Play):
             if v is None or not isinstance(since, (int, float)):
                 continue
             target = f"alert:{a.get('id')}"
+            if holding((self.name,), target, b, led) is not None:
+                res.active.append(f"{v.callsign}: our hold")
+                continue
             age = b.t - float(since)
             if age < need:
                 continue

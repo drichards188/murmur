@@ -42,6 +42,9 @@ RETURNING_MODES = ("RTL", "LAND", "QRTL", "SMART_RTL", "AUTO_RTL")
 # order replaced it, or it went back to the queue when the link dropped before it started); an
 # orbit or a patrol reports `done` once established and keeps flying, so `done` is not here
 NOT_RUNNING = ("failed", "superseded", "requeued")
+# a hold of ours that parks a vehicle (letting it go, or stopping a stuck one) leaves it free:
+# it carries no mission of ours
+IDLE_PLAYS = ("isr.release", "safety.stuck")
 IMAGING = ("eo_ir",)
 OPEN_STATES = ("proposed", "checked", "auto_approved", "pending_approval", "approved", "queued", "dispatched")
 ENGAGE_IN_PLAY = ("proposed", "checked", "auto_approved", "pending_approval", "approved", "dispatched")
@@ -328,7 +331,7 @@ class Beliefs:
     expire_s: float
     intents: dict[int, dict[str, Any]]  # own intents by id
     lost_full: dict[int, dict[str, Any]] = field(default_factory=dict)
-    # our own holds that let a vehicle go (isr.release): a vehicle on one is idle
+    # our own holds that park a vehicle (isr.release, safety.stuck): a vehicle on one is idle
     own_idle: set[int] = field(default_factory=set)
 
     @property
@@ -457,5 +460,5 @@ def build(reads: Reads, cfg: Config, ledger: Any) -> Beliefs:
         reserve_pct=float(policy_value(reads.policy, "rules", "reserve_pct", default=20.0) or 20.0),
         expire_s=float(policy_value(reads.policy, "approval", "expire_s", default=120.0) or 120.0),
         intents=own, lost_full=dict(sorted(reads.lost_full.items())),
-        own_idle={int(e["intent"]) for e in ledger.entries.values() if e.get("play") == "isr.release"},
+        own_idle={int(e["intent"]) for e in ledger.entries.values() if e.get("play") in IDLE_PLAYS},
     )

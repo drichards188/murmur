@@ -273,9 +273,10 @@ class Ledger:
             if i.get("state") in OPEN:
                 for u in i.get("uids") or []:
                     out.setdefault(int(u), f"our i{iid} ({i.get('state')})")
-        # a hold of ours that let a vehicle go (isr.release) leaves it free
-        mine = {int(k) for k, e in self.entries.items() if e.get("play") != "isr.release"}
-        mine |= {iid for iid in own if (self.entries.get(str(iid)) or {}).get("play") != "isr.release"}
+        # a hold of ours that parks a vehicle (isr.release, safety.stuck) leaves it free once it runs
+        parks = ("isr.release", "safety.stuck")
+        mine = {int(k) for k, e in self.entries.items() if e.get("play") not in parks}
+        mine |= {iid for iid in own if (self.entries.get(str(iid)) or {}).get("play") not in parks}
         for uid, v in sorted(vehicles.items()):
             if v.task_intent is not None and v.task_intent in mine and (v.task or {}).get("state") not in NOT_RUNNING:
                 out.setdefault(uid, f"our i{v.task_intent} (running)")
