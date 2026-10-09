@@ -22,6 +22,11 @@ export function PerfOverlay() {
       <br />
       deck: attrs <b>{f1(s.attrs.mean)}</b> ms <span className="muted">(p95 {f1(s.attrs.p95)}, n {s.attrs.n}; glide frames and 4 Hz updates)</span> · cpu <b>{f1(s.deckCpu.mean)}</b> ms
       <br />
+      sea: <b>{s.seaRebuilds}</b> rebuilds of {s.seaChecks} checks · rebuild <b>{f1(s.seaBuild.mean + s.seaTess.mean)}</b> ms{' '}
+      <span className="muted">
+        ({f1(s.seaBuild.mean)} polygons + {f1(s.seaTess.mean)} tessellation, max {f1(s.seaBuild.max)} + {f1(s.seaTess.max)}) · check {f1(s.seaCheck.mean)} ms
+      </span>
+      <br />
       long tasks <b>{Math.round(s.longTaskMsPerS)}</b> ms/s
     </div>
   )

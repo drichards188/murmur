@@ -6,12 +6,12 @@ import { MapboxOverlay } from '@deck.gl/mapbox'
 import { useEffect, useRef, useState } from 'react'
 import { circle, distanceM } from './geo'
 import { BRIDGE_FILTER, liftBridges, type LiftedBridge } from './bridges'
-import { build3dGlide, build3dStatic, drawnHeight, resetSeaBox, DEM_TILES, HEIGHT_EXAGGERATION } from './map3d'
+import { build3dGlide, build3dStatic, drawnHeight, refreshSea, DEM_TILES, HEIGHT_EXAGGERATION } from './map3d'
 import { declutter } from './declutter'
 import { advanceDrawn, drawnAlt, drawnPosition, drawnPositionOf, drawnTick, glidingCount, isGliding, observeVehicles, resetDrawn, setSmoothing, snapAllDrawn } from './drawn'
 import { GLIDE_LAYER_IDS } from './orderLayers'
 import { buildTrailLayers } from './trailLayers'
-import { perfWatchDeck } from './perf'
+import { perfSeaCheck, perfWatchDeck } from './perf'
 import { reducedMotion } from './reveal'
 import { vehiclesGeneration } from './useBridge'
 import type { SpaceOverlay } from './space'
@@ -329,7 +329,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
   const smoothRef = useRef(smooth)
   const frameId = useRef(0)
   // the layers that do not move with a glide, kept between animation frames
-  const staticLayers = useRef<{ three: LayersList; space: LayersList; ext: LayersList; clusters: LayersList } | null>(null)
+  const staticLayers = useRef<{ three: ReturnType<typeof build3dStatic>; space: LayersList; ext: LayersList; clusters: LayersList } | null>(null)
   const lastGlideFrame = useRef(0)
   const lastGeneration = useRef<number | undefined>(undefined)
   const previewGliding = useRef(false)
@@ -375,7 +375,9 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
 
   /** everything deck.gl draws: the 3D scene (hidden in 2D), SATCOM links, extension layers
    *  (the `layers` prop), then the vehicles on top. `frame`: an animation frame of a glide, which
-   *  rebuilds only what is attached to a vehicle and reuses the rest as it was. */
+   *  rebuilds only what is attached to a vehicle and reuses the rest as it was. Around the sea
+   *  surface the order is what decides the tint (map3d.ts): what is under water before it,
+   *  everything else after it. */
   const deckLayers = (is3d: boolean, frame = false): LayersList => {
     const { vehicles: vs, selected: sel, bare, clusters: cl } = latest.current
     if (!frame || !staticLayers.current) {
@@ -390,17 +392,40 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     const tick = drawnTick()
     // 2D trails draw where the MapLibre trails layer sat (under the taskings), not on top of everything
     const trailsBefore = !is3d && ready.current && map.current?.getLayer('taskings-intent') ? 'taskings-intent' : undefined
-    return [
-      ...three,
-      ...build3dGlide(vs, is3d),
-      ...(smoothRef.current ? buildTrailLayers(vs, is3d, trailsBefore) : []),
+    const glide = build3dGlide(vs, is3d)
+    const trails = smoothRef.current ? buildTrailLayers(vs, is3d, trailsBefore) : { under: [], over: [] }
+    const layers: LayersList = [
+      // seen through the water: the trails and stems of what is under it
+      ...three.under,
+      ...trails.under,
+      glide.stemsUnder,
+      // the sea surface, then what is above or on it (never tinted): bridge decks, the other
+      // trails and stems, sea-level shadows
+      ...three.surface,
+      ...three.over,
+      ...trails.over,
+      glide.stems,
+      glide.shadows,
       ...space,
       // the extension layers that sit at a vehicle follow its glide: re-trigger just those
       ...(frame ? ext.map((l) => (l instanceof Layer && GLIDE_LAYER_IDS.includes(l.id) ? l.clone({ updateTriggers: { ...l.props.updateTriggers, getPosition: tick } } as never) : l)) : ext),
       ...clusterLayers,
       ...buildVehicleLayers({ vehicles: vs, selected: sel, bare, is3d }),
     ]
+    if (import.meta.env.DEV && is3d && !frame && !seaOrderWarned.current.before) {
+      const before = layers.find((l) => l instanceof Layer && l.props.visible && (l.props as { beforeId?: string }).beforeId)
+      if (before) {
+        seaOrderWarned.current.before = true
+        console.warn(`[murmur] 3D layer ${(before as Layer).id} has a beforeId: it draws in another group, out of the sea's order (map3d.ts)`)
+      }
+    }
+    return layers
   }
+  /** Dev only: the sea's stencil passes and depth order assume nothing of MapLibre's draws after
+   *  it in 3D: every 3D deck.gl layer in the group with no beforeId (checked here as the layers
+   *  are built), and that group the style's last layer (checked after every frame, in the map's
+   *  render handler). Each warns once. */
+  const seaOrderWarned = useRef({ before: false })
   const pushLayers = () => overlay.current?.setProps({ layers: deckLayers(viewRef.current === '3d') })
 
   /** the inbox preview's transit lines start at a vehicle: that end follows the drawn position */
@@ -724,6 +749,24 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
         pushLayers()
       }, 400)
     }
+    // The 3D sea surface follows the basemap's water tiles (map3d.ts refreshSea): checked after a
+    // frame, at most 4 times a second, and rebuilt only when the set of water tiles changed (a
+    // check reads which tiles hold how many water features, not their geometry). After a frame,
+    // not on moves or tile events: tiles MapLibre takes back from its cache become renderable on
+    // a later frame with no event of their own, and a check 250 ms after a jump can run before
+    // that frame.
+    let seaTimer: number | undefined
+    const refreshSeaSoon = () => {
+      if (seaTimer) return
+      seaTimer = window.setTimeout(() => {
+        seaTimer = undefined
+        if (!ready.current || lostRef.current || viewRef.current !== '3d') return
+        const t0 = performance.now()
+        const changed = refreshSea(m)
+        perfSeaCheck(performance.now() - t0, changed)
+        if (changed) pushLayers()
+      }, 250)
+    }
     const reportView = () => {
       if (!ready.current) return
       const c = m.getCenter()
@@ -749,6 +792,22 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     }
     let followMoved = false
     m.on('move', reportViewSoon)
+    m.on('render', refreshSeaSoon)
+    if (import.meta.env.DEV) {
+      // after every frame in 3D: was a MapLibre layer drawn after the deck.gl group, so after the
+      // sea? (deck.gl moves its group back to the end whenever its layers are set, so this would
+      // be a layer added since.) Warns once, then stops looking.
+      const checkSeaLast = () => {
+        if (viewRef.current !== '3d' || !ready.current) return
+        const order = m.getLayersOrder()
+        const last = order[order.length - 1]
+        if (order.includes('deck-layer-group-last') && last !== 'deck-layer-group-last') {
+          m.off('render', checkSeaLast)
+          console.warn(`[murmur] a frame drew MapLibre's ${last} after the deck.gl group, so after the sea (map3d.ts)`)
+        }
+      }
+      m.on('render', checkSeaLast)
+    }
     m.on('moveend', refreshBridges)
     m.on('moveend', (e: { follow?: boolean }) => {
       if (e.follow) {
@@ -777,6 +836,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       window.removeEventListener('mouseup', onUp)
       window.clearTimeout(bridgeTimer)
       window.clearTimeout(viewTimer)
+      window.clearTimeout(seaTimer)
       if (map.current === m) map.current = null
       if (following.current) {
         following.current = null
@@ -839,13 +899,12 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
   useEffect(() => {
     const m = map.current
     if (!m) return
-    // a new data generation (the first state after a connect, so after a reconnect too): the sea
-    // plane's box starts over, and the vehicles are drawn as reported
+    // a new data generation (the first state after a connect, so after a reconnect too): the
+    // vehicles are drawn as reported
     const gen = vehiclesGeneration(vehicles)
     const newGeneration = gen !== lastGeneration.current
     lastGeneration.current = gen
     if (newGeneration) {
-      resetSeaBox()
       if (import.meta.env.DEV) console.debug('[murmur] new data generation', gen, ': vehicles drawn as reported')
     }
     if (smoothRef.current) {

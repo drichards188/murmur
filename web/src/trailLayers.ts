@@ -1,17 +1,20 @@
 // Trails of our vehicles while display smoothing is on (drawn.ts), in 2D and 3D. The symbol is
 // drawn up to a second behind the vehicle's last report, so a trail that ends at the report
-// would run past it. Two deck.gl layers: the body (the trail but its newest few points) and the
+// would run past it. Two deck.gl layers (each twice in 3D: what is under water, drawn before the
+// sea surface, and the rest): the body (the trail but its newest few points) and the
 // head (those few points cut at the segment the symbol is on, ending at the symbol; recomputed
 // on every glide frame). They meet at one shared point; the paths' caps are flat (capRounded
 // off), so nothing overlaps there.
 // The body's data array is kept while no trail changed (keyed on the trail arrays, which the
 // console replaces only when a point is added), so a bridge update that only moved vehicles
 // does not tessellate every trail again.
-// With smoothing off the trails are the MapLibre line (2D) and trails-3d (map3d.ts), as before.
+// With smoothing off the trails are the MapLibre line (2D) and trails-3d and trails-3d-under
+// (map3d.ts), split the same way.
 import { PathLayer } from '@deck.gl/layers'
 import { drawnPose, drawnTick } from './drawn'
 import { trailHeadPath, type Pt } from './glide'
 import { colour, z } from './map3d'
+import { belowOf, splitUnder, type UnderSplit } from './sea'
 import type { Vehicle } from './types'
 import { AIR_KINDS } from './types'
 
@@ -39,7 +42,17 @@ function trailedOf(vehicles: Vehicle[], is3d: boolean) {
   return memo!
 }
 
-/** `beforeId`: 2D only, the MapLibre layer these draw under (where the MapLibre trails were:
+// the body and the head split into what is under water (3D) and the rest, each kept while its
+// list and the split are the same (sea.ts splitUnder): a bridge update that only moved vehicles
+// keeps the body's arrays, and a glide frame keeps the head's (deck.gl redoes a layer whose data
+// array changes)
+let bodySplit: UnderSplit<Vehicle> | null = null
+let headSplit: UnderSplit<Vehicle> | null = null
+
+/** Trails as deck.gl layers: `under` the trails seen through the water in 3D (map3d.ts
+ *  sea.ts underWater: they go before the sea surface), `over` the rest (after it; everything in
+ *  2D).
+ *  `beforeId`: 2D only, the MapLibre layer these draw under (where the MapLibre trails were:
  *  below the taskings, the draft, labels and overlays); undefined draws them on top. */
 export function buildTrailLayers(vehicles: Vehicle[], is3d: boolean, beforeId?: string) {
   const { head, body, key } = trailedOf(vehicles, is3d)
@@ -48,10 +61,14 @@ export function buildTrailLayers(vehicles: Vehicle[], is3d: boolean, beforeId?: 
   const width = is3d ? 2 : 1.5
   const point = ([lon, lat, alt]: [number, number, number]): Pt => [lon, lat, zOf(alt)]
   const where = is3d || !beforeId ? {} : { beforeId }
-  return [
+  // judged on the latest reports (head); the body's vehicles can be older objects
+  const { below, sig } = belowOf(is3d ? head : [])
+  bodySplit = splitUnder(bodySplit, body, below, sig)
+  headSplit = splitUnder(headSplit, head, below, sig)
+  const layers = (suffix: string, bodyData: Vehicle[], headData: Vehicle[]) => [
     new PathLayer<Vehicle>({
-      id: 'trail-body',
-      data: body,
+      id: `trail-body${suffix}`,
+      data: bodyData,
       getPath: (v) => v.trail.slice(0, 1 - HEAD_POINTS).map(point),
       getColor: colorOf,
       getWidth: width,
@@ -60,8 +77,8 @@ export function buildTrailLayers(vehicles: Vehicle[], is3d: boolean, beforeId?: 
       ...where,
     }),
     new PathLayer<Vehicle>({
-      id: 'trail-head',
-      data: head,
+      id: `trail-head${suffix}`,
+      data: headData,
       getPath: (v) => {
         const p = drawnPose(v)
         const tail = v.trail.slice(-HEAD_POINTS).map(point)
@@ -75,4 +92,5 @@ export function buildTrailLayers(vehicles: Vehicle[], is3d: boolean, beforeId?: 
       ...where,
     }),
   ]
+  return { under: layers('-under', bodySplit.under, headSplit.under), over: layers('', bodySplit.over, headSplit.over) }
 }
