@@ -98,3 +98,59 @@ stand as frozen, and the results are judged against them.
 | an order not flying | an order that failed | failed, superseded, or back in the queue | a requeued order still claimed its vehicle |
 | an order of ours gone out | held its track only once its vehicle flew it | holds its track until it ends | a look read as not holding in the second between dispatch and the vehicle's report |
 | a safety command | a P0 command took a vehicle from any card of ours | never from another safety command; once per alert or battery while its own command is live | a stuck vehicle got two holds a second apart (the first queued for the link) |
+
+## Fix round 1, 2026-10-09 (a review of step 1; the targets above unchanged)
+
+A review ran the engine against scripted worlds and found it repeating itself without a cause
+it could name, and overriding people. The principle the fixes follow: **a person's later
+decision wins over the playbook, and nothing the playbook does repeats without a cause it can
+name.** An order of ours that ended failed, was superseded by a human's, or was refused at
+submission is an answer, not a blank. Each finding has a test in
+`agents/tests/test_playbook_review.py` that failed before its fix.
+
+**Corrections to the definitions above** (the definitions were wrong, not the targets):
+
+- **Timeliness of `safety.stuck`.** The table measures it from "an alert's `since_t` plus
+  30 s". That is wrong: a `not_moving` alert's `since_t` is the last state change of the order
+  it is about (minutes before, for an order that ran a while), not when the vehicle stopped, and
+  the bridge says how long it has not moved only in the alert's detail ("NOT MOVING for 12s").
+  Measured from now on as: from the first read in which the playbook saw the alert (keyed by the
+  alert's id and kind) plus 30 s, to the proposal. The play debounces the same way, and its
+  rationale quotes the bridge's detail instead of computing a duration. The bridge's alert
+  semantics are unchanged (murmur-9kn proposes a structured stall start on the alert).
+- **What rationale fidelity proves.** The check (`agents/playbook/fidelity.py`) proves that a
+  rationale's text is exactly what its play's template renders from the evidence record riding
+  with it, and, since this round, that every number in the text is shown by a non-null field of
+  that record at the text's precision and unit (m/s from a speed, % from a battery or a reserve,
+  m from a distance, s and min from a duration, a course from `course_deg`, a time from a
+  timestamp); quoted text and the record's own strings are taken as they are. It does not prove
+  that the record holds what the bridge served (the record is the engine's own reading; nothing
+  compares it with the audit log's state at that moment), that a template picked the right field
+  for its word (a number shown by another field of the same unit passes), or that a quoted reason
+  is true. It is internal consistency, text against record, and no number from nowhere: the
+  reviewer's "0.0 m/s course 000" for a track with no velocity now fails it.
+
+**Methodology.** Harbor watch is a **tuning set** for the hysteresis of leaving the watch
+(`leave_area_factor` 1.1, `leave_cpa_factor` 2, `leave_tcpa_factor` 1.5, the additions above)
+and for the materiality of a closest approach (half the CPA alert, the changes above): those
+values were set from what Harbor watch's recordings and first runs showed. Harbor watch results
+on those behaviours are in-sample, and a situation the values were not set on is needed to judge
+them.
+
+| change | before | after |
+|---|---|---|
+| a person re-tasks a vehicle we sent home | `safety.low_reserve` sent rtl again the next tick | not again while someone else's order newer than our rtl runs on it; once more if the battery falls under the policy's own reserve (not the reserve plus 5), saying so; then only when that order no longer stands and no later one runs |
+| recovering on its own | RTL, QRTL, LAND, SMART_RTL, AUTO_RTL | every return, landing, docking and surfacing mode of the bridge's mode tables (QLAND, LOITERALTQLAND, AUTOLAND, AUTOROTATE, DOCK, SURFACE added); a test scans `mav.rs` |
+| the ledger | kept across bridge runs | bound to its bridge run (`get_changes`' `run`): another run's ledger, or one with no run, is set aside renamed beside the new one, and a fresh one started |
+| an order of ours that failed | proposed again at once | backs off its key and its vehicle (10 s doubling to 160 s); a retry within 10 minutes names the failure |
+| refused at submission | neither cooled nor backed off | backs off like a failing preview, never cleared by the refusal, logged with the bridge's reason |
+| a vehicle `safety.stuck` held on our task | given the same task the next tick | not that play and target until the alert has cleared and `stuck_retry_s` (300 s) more; free for other tasks |
+| `isr.release` | resumed the vehicle's previous order, failed or not | resumes an order of ours only if it was running when ours superseded it and its premise still holds; else a hold |
+| withdrawn by the engine | the key cooled 30 s (the addition above) | (play, target) cools 30 s on every vehicle, as a rejection does |
+| withdrawals | any card of ours waiting (pending, approved, queued) | only a card still pending approval, and only if it still is at that moment (`withdraw_intent`'s `if_state`, checked under the engine's lock); an approved or queued card whose premise went is said in the panel and left |
+| the inbox budget | applied before the preview, by task kind and a remembered tier | applied after it: the preview says the tier, only a human-tier result spends the budget, P0 exempt by class |
+| a look for classification | whenever the classification was unsettled | only while no EO/IR or sonar of ours detected the track in the last 10 s (fast and closing still count); Harbor watch's look now fires on fast and closing alone |
+| a running armed overwatch | never released | released like a look |
+| an engagement in play | a hold or an rtl still went to the platform | no order of any kind (a dispatched one supersedes the engagement, rules 7); the panel says what the playbook would have done |
+| a status line | logged on every change | logged once it has held 3 ticks |
+| the stuck threshold (table above) | an alert for 30 s | an alert in our reads for 30 s |

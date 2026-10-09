@@ -1130,6 +1130,65 @@ group. Dates are 2026.
   with `codex features list` before any turn and refuses to start otherwise, because a
   read-only sandbox does not stop reads and a breach seen in the event stream comes after
   the command ran.
+- **The playbook's fix round 1: a person's later decision wins, and nothing repeats without a
+  cause it can name** (10-09, murmur-t8m review; `agents/playbook/CRITERIA.md` "Fix round 1",
+  one test per finding in `agents/tests/test_playbook_review.py`). An order of ours that ended
+  failed, was superseded by a human's, or was refused at submission is an answer, not a blank.
+  (1) `safety.low_reserve` sends no rtl while someone else's order newer than our last rtl runs
+  on the vehicle (intent ids are sequential in a run, so newer is later): that order is a person's
+  decision about that vehicle and its battery. It raises once more when the battery falls under
+  the policy's own reserve, the line under which the rules refuse new tasks, saying so in the
+  rationale; after that only when that order no longer stands and none later runs. (2) The order
+  that superseded ours is the vehicle's current order at the tick the failure is read (the compact
+  fleet's `task.intent_id`): the task layer names a superseder by its tasking number ("replaced by
+  patrol #3"), not its intent. (3) `get_fleet` has no failsafe field, so a vehicle recovering on
+  its own is known by its mode: every return, landing, docking and surfacing mode of the bridge's
+  mode tables, guarded by a test that scans `mav.rs`. (4) The ledger is bound to its bridge run
+  (`get_changes`' `run`, the audit log's name): an intent id of another run names another order,
+  so another run's ledger, or one with no run, is set aside renamed beside the new one. (5) An
+  order of ours that failed backs off its key and its vehicle (10 s doubling to 160 s) and a retry
+  names the failure; a refusal at submission backs off the same way and is never cooled, since no
+  person answered it. (6) A vehicle `safety.stuck` held on our task is not given that task again
+  until the alert has cleared and `stuck_retry_s` (300 s) more: the alert clears when our hold
+  replaces the order, not when the cause is gone, and 300 s is a third of the policy's assumed
+  task length, long enough for a transient to pass and short enough to retry within a task's
+  worth of time; other tasks may have the vehicle at once. (7) `isr.release` resumes an order of
+  ours only if it was running when ours superseded it and its own premise still holds, else a
+  hold; and it releases a running armed overwatch too. (8) A withdrawal of ours cools (play,
+  target) on every vehicle, as a rejection does; the playbook withdraws only a card still pending
+  approval, and only if it is still pending at that moment (`withdraw_intent` `if_state`, checked
+  under the engine's lock; a refusal logs nothing, so the decision log and replay are unchanged);
+  an approved or queued card whose premise went is said in the panel and left to the operator.
+  The bridge's readiness re-check at dispatch catches navigation not ready and dead reckoning on
+  an armed platform, not a GPS glitch flag (murmur-su0, filed, not fixed here). (9) Every selected
+  candidate is previewed first (at most 3 a tick) and only a human-tier answer spends the inbox
+  budget; P0 is exempt by class, not by task kind. The per-key tier memory is gone: it held an
+  auto-tier card to the budget for five minutes after one human-tier preview, and exempted a hold
+  or an rtl by kind even under a policy that made it human-tier. The cost: a card the budget
+  holds is previewed again each tick, each preview an `agent.action intent.preview` line in the
+  audit log. (10) The shadow does not preview (its previews would be logged under the model's
+  agent id, and the audit log must stay about the run): it estimates each would-be card's tier
+  from `get_policy` and `get_areas` (`agents/playbook/tier.py`; it cannot see a check that would
+  fail or the leg home) and budgets only the human-tier ones, held as pending until the approval
+  wait; an auto-tier one is held as running until its premise goes. Every shadow line says the
+  tier is an estimate. (11) Sensor coverage: an unsettled classification is a reason to look only
+  while no EO/IR or sonar of ours has detected the track in the last 10 s (the tracker's stale
+  age); fast, closing and an identity conflict count whatever sees it. The evidence: in Harbor
+  watch's recorded reads REAPER 1's EO/IR and HUNTER 1's sonar detected the fast boat every few
+  seconds while its classification rose 0.44, 0.51, 0.57 over ten seconds; the sensors that
+  classify were already on it, so the look the playbook proposed rested on its speed and its
+  closing on the bridge, not on its classification. Harbor watch's look still goes at the same
+  tick, its trigger now "closing on the Golden Gate Bridge; fast". (12) A platform with an
+  engagement in play (a nomination pending, approved, under way or in its assessment) gets no
+  order of any kind from the playbook, a hold or an rtl included: a dispatched order supersedes
+  the engagement with no fallback (rules 7), and while it is pending a hold changes what the
+  signers are judging; the panel says what the playbook would have done (`withheld`), and the
+  bridge's own alerts reach the signers. (13) A play's status is logged once it has held 3 ticks
+  (a debounce, not a rate limit: a rate limit would still log a flicker, only later). (14) A
+  polygon watch area keeps the circle's hysteresis: a track has left it only beyond (leave factor
+  minus 1) x the radius of the polygon's equal-area circle past its edge. (15) Older open cards of
+  ours are read by `explain_intent` beside the newest page of `get_intents` (50), not by a larger
+  page; a truncated change feed re-reads the engagements (`get_nominations`).
 - **The playbook engine: one deterministic agent as the free option, the baseline and the
   shadow** (10-09, murmur-t8m, step 1; `agents/playbook/`, `agents/playbook_agent.py`,
   `agents/README.md` "The playbook engine"; the design is the research report's Part C). A
@@ -1146,7 +1205,7 @@ group. Dates are 2026.
   every candidate by (class, minus score, play, target, uid) with classes P0 safety, P1
   engagement chain, P2 picture, P3 links and navigation, P4 hygiene; holds back on a cooldown
   without a material change, a back-off, a claimed vehicle (one per vehicle), an engagement in
-  play (hold and rtl excepted), a busy inbox (6 pending: only P0 and P1); and the engine spends
+  play (no order at all since fix round 1, above), a busy inbox (6 pending: only P0 and P1); and the engine spends
   at most 3 previews a tick and a token bucket of human-tier cards (1 per 30 s, burst 2, at most 2
   of its own pending). Every proposal passes `preview_intent` (a failing one backs off, doubling
   from 10 s to 160 s, never dropped for good) and the evaluation's frozen rule book (imported
@@ -1173,8 +1232,8 @@ group. Dates are 2026.
   `get_events` and `get_review` (both built since the report). (2) A rejection cools the play on
   that target for every vehicle, not only the rejected key, and so does an expiry: without
   structured reject reasons the operator's note is the only channel, and "not this play on this
-  target" never sends them the same card with another vehicle on it; a void and a withdrawal of
-  ours cool only the key. (3) The look's 0.5 gate is the track's existence confidence (the
+  target" never sends them the same card with another vehicle on it; a void cools only the key
+  (a withdrawal of ours cools the pair since fix round 1). (3) The look's 0.5 gate is the track's existence confidence (the
   report's C.2.3); the rule book's 0.5 on affiliation confidence gates the armed play. Gating the
   look on affiliation would keep it off every unknown, 0.0 until a sensor classifies it, which is
   what the look is for. (4) An identity conflict is a reason to look beside an unsettled
@@ -1183,7 +1242,8 @@ group. Dates are 2026.
   ones (hold and rtl still go): a sensor whose own position is in doubt places what it sees in
   the wrong place. (6) "Free" means idle (no order, or a failed one): a vehicle on anyone's
   running order is not taken, so `isr.release` is a hold in practice; resuming an earlier order
-  of ours is there for when one exists. (7) `link.cover_gap` leaves a silent sensor's orbit on a
+  of ours is there for when one was running when ours superseded it and its premise holds (fix
+  round 1). (7) `link.cover_gap` leaves a silent sensor's orbit on a
   track to `isr.investigate`, which takes the track with another sensor at its position now,
   rather than sending a filler to the old centre. (8) Leaving the watch has hysteresis (1.1 x a
   watch area's radius, 2 x the CPA alert, 1.5 x the TCPA horizon) and a track whose velocity is
@@ -1192,10 +1252,11 @@ group. Dates are 2026.
   withdrawn on alternate ticks without it. (9) A look offers the arbiter its first three free
   vehicles (0.001 lower in score each), so one claim per vehicle falls to the next free vehicle
   rather than holding a second look back; the rationale names the vehicle that went first.
-  (10) A card the budget cannot take is not previewed (previews are logged) unless its key's last
-  preview said auto. (11) The shadow holds its would-be cards as if pending for the policy's
-  approval wait (then as expired unread), claiming their vehicles and counted by the budget as
-  human-tier: a model of an operator who never answers, stated in its log. (12) After the first
+  (10) Replaced in fix round 1 (above): every selected card is previewed first and only a
+  human-tier answer spends the budget. (11) The shadow holds its human-tier would-be cards (by its
+  estimate of the tier since fix round 1) as if pending for the policy's approval wait (then as
+  expired unread), claiming their vehicles and counted by the budget: a model of an operator who
+  never answers, stated in its log. (12) After the first
   live runs (CRITERIA.md, the dated section): `link.withdraw_pending` withdraws only a card still
   waiting for the operator, never one approved and held by the bridge's queue for the link (that
   would undo a person's decision over a link; the queue already re-checks it and sends a human's
