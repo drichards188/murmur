@@ -246,6 +246,18 @@ scratch client (agent-scripted) withdrew with `if_state: pending_approval` an in
 approved (refused, 409, nothing logged; the audit log holds only the other withdrawal) and one
 still waiting (voided).
 
+**Checked live after fix round 2** (10-09; replayed exactly with anchors, every proposal
+faithful): Harbor watch on autoplay (`situation-harbor-watch-20261009T192358Z`), the same story as
+after round 1: the look at 177.4 s (trigger "closing; fast", the classification rising under
+REAPER 1's EO/IR), a recentre at 210.5 s whose upload failed on PUMA 1's lossy link, 2 previews
+for 2 proposals. A live check of a P0 card on an engaging platform was tried on a scratch
+situation (`situation-harbor-engage-20261009T193718Z`: the engagement demo fleet, op-1 declaring
+the fast boat hostile, a scratch agent to nominate): no armed platform passed the nomination
+checks in its 400 s (identity under 0.60, the effect point outside the engagement zone, a neutral
+fishing boat in the keep-out), so no engagement was in play and the playbook's five rtls went
+out by policy. That behaviour rests on its tests and the bridge's own (mcp tests, "engagement in
+play").
+
 Not seen by any play yet, said so: fewer than six satellites (the compact fleet read has no
 satellite count) and a spoof that keeps every navigation flag good (no navigation-integrity fact
 exists; PLAN.md). The engagement plays, `ident.review_support` and `isr.reacquire_lost` are step 3.
