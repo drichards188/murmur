@@ -1,0 +1,56 @@
+# The families of generated situations for the headless simulator (murmur-8ak), split into
+# tuning and held-out BY FAMILY. Committed 2026-10-09, before any headless episode, gate run or
+# result existed. Frozen: a change is a dated addendum in eval/headless/CRITERIA.md (a new
+# family version, reported apart), never an edit of this file.
+#
+# What each family draws and how its truth is labelled: docs/HEADLESS.md, section 8 (and the
+# generator's docstring, eval/headless/families.py, once built). Why this split: Harbor watch's
+# kind (fast-unknown) is where the playbook's hysteresis and materiality were set
+# (agents/playbook/CRITERIA.md, fix round 1), so it is tuning by necessity; each of the three
+# kinds of challenge keeps one family held out: the picture (two-at-once), vehicle and link
+# faults (stuck-vehicle), the operator's load (approval-flood).
+
+version = 1
+frozen = "2026-10-09"
+
+[[family]]
+name = "fast-unknown"
+split = "tuning"
+kind = "picture"
+what = "an unknown fast boat without AIS closing on the bridge (Harbor watch's kind)"
+
+[[family]]
+name = "decoy"
+split = "tuning"
+kind = "picture"
+what = "a neutral small craft without AIS, inside or outside the watch area; a fast unknown as well half the time"
+
+[[family]]
+name = "two-at-once"
+split = "held-out"
+kind = "picture"
+what = "two fast unknowns within a minute of each other, one free sensor"
+
+[[family]]
+name = "link-cut-mid-look"
+split = "tuning"
+kind = "faults"
+what = "the link of the vehicle flying our first look cut a few seconds to a minute and a half into it"
+
+[[family]]
+name = "stuck-vehicle"
+split = "held-out"
+kind = "faults"
+what = "HUNTER 1 stops making way on its patrol"
+
+[[family]]
+name = "low-battery"
+split = "tuning"
+kind = "faults"
+what = "one vehicle crosses the low-reserve line during the watch"
+
+[[family]]
+name = "approval-flood"
+split = "held-out"
+kind = "load"
+what = "6 to 12 routine human-tier proposals from another proposer within a minute, while a fast unknown arrives"
