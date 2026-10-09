@@ -48,7 +48,7 @@ def test_claude_preflight_and_its_refusals(fake_claude, run_dir, monkeypatch, tm
     with pytest.raises(PreflightError) as e:
         run(claude(fake_claude, run_dir).preflight())
     assert "/login" in e.value.fix and e.value.fix.endswith(FALLBACK_HINT)
-    assert "agents/policy_agent.py" in FALLBACK_HINT
+    assert FALLBACK_HINT == "or use AI=playbook"
     monkeypatch.delenv("FAKE_LOGGED_OUT")
     monkeypatch.setenv("FAKE_VERSION", "2.0.9 (Claude Code)")
     with pytest.raises(PreflightError, match="older than 2.1.294"):

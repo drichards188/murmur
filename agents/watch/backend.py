@@ -27,9 +27,9 @@ from typing import Any
 from .limits import LimitHit
 
 
-# What a preflight failure suggests besides fixing the CLI: one place, so it changes in one
-# line when the situation framework's `ai = playbook` setting lands.
-FALLBACK_HINT = "or use the rule-based agent (agents/policy_agent.py)"
+# What a preflight failure suggests besides fixing the CLI: the situation runner's free option
+# (the deterministic agents/policy_agent.py, no model and no account).
+FALLBACK_HINT = "or use AI=playbook"
 
 
 class LockdownBreach(RuntimeError):

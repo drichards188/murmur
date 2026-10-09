@@ -22,7 +22,7 @@
    agent agent-setup, so it waits for the person (live) or the autoplay operator (op-auto).
    A script never authorizes a human tier, and op-1 is never a script.
 5. Starts the AI in an empty directory of its own outside the repository (only `brief.md`;
-   agents/README.md, "Situations: the launch contract"), the autoplay operator
+   agents/README.md, "In a situation: the launch contract"), the autoplay operator
    (`eval/proxy.py`'s `ProxyOperator` as op-auto with `EngagementSigners` op-2 and op-3, all
    scripted) or the scripted cosigner, and the timeline (`eval/storyline.py`; its proposals
    and declarations say they are a script's).
@@ -228,6 +228,26 @@ def session_members(pgid: int, started: int | None) -> list[int]:
     return out
 
 
+# The watch officer's log lines a person reads in the panel, by its kind, and the word shown
+# (agents/README.md, "The situation log"); its other lines (connecting, starting the CLI, the
+# playbook's shadow, a change it set aside) stay in its own log, kept with the run.
+PANEL_KINDS = {
+    "note": "note", "turn": "note", "wake": "woken", "error": "error", "lockdown.breach": "error",
+    "preflight.failed": "error", "backend.crashed": "error", "lockdown.refused": "refused",
+    "limit.hit": "limit", "limit.resume": "resumed", "backoff": "waiting", "budget.exhausted": "budget",
+    "budget.deferred": "budget", "run.start": "started", "run.stop": "stopped",
+    "tool": "tool", "proposal": "proposal",
+}
+
+
+def panel_kind(line: dict[str, Any]) -> str | None:
+    """The word the panel shows for one of the AI's log lines, or None to leave it out."""
+    kind = str(line.get("kind", "note"))
+    if kind == "turn" and not str(line.get("text") or "").strip():
+        return None
+    return PANEL_KINDS.get(kind)
+
+
 def ai_env(env: dict[str, str]) -> dict[str, str]:
     """The AI's environment: the runner's minus every `MURMUR_*` variable (no simulation
     token, no agent key from elsewhere, no other stack's ports), so the user's own CLI login
@@ -252,7 +272,7 @@ def ai_workdir(run_id: str, forbidden: list[Path]) -> Path:
 class FreshAgentProposer(AgentProposer):
     """A scripted agent (the timeline's `agent-scripted`, the opening orders' `agent-setup`),
     connected for each proposal or withdrawal in a session of its own: a situation's steps can
-    be minutes apart and the bridge's MCP server (rmcp) closes a session idle for 300 s, and
+    be minutes apart and the bridge's MCP server closes a session idle for 15 minutes, and
     two steps due together must neither share nor close each other's session. Every rationale
     begins with `label`, so the audit log says it is a script's."""
 
@@ -552,11 +572,14 @@ class Runner:
         self.activity.extend(new)
         notes_ok = self.notes_tail is not None and not self.notes_tail.path.is_symlink()
         for n in self.notes_tail.read() if notes_ok and self.notes_tail is not None else []:
+            kind = panel_kind(n)
+            if kind is None:
+                continue  # the watch officer's plumbing: in its own log, kept with the run
             t = n.get("t") if isinstance(n.get("t"), (int, float)) else None
             note = {
                 "t": t,
                 "t_s": round(t - self.zero, 1) if t is not None and self.zero is not None else None,
-                "kind": str(n.get("kind", "note")),
+                "kind": kind,
                 "text": str(n.get("text", ""))[:400],
             }
             self.ai_notes.append(note)
@@ -798,6 +821,7 @@ class Runner:
             agent_log=notes,
             until=until,
             seconds=until - time.time(),
+            codex_home=(os.environ.get("MURMUR_CODEX_HOME") or "").strip() or None,
         )
         assert cmd is not None
         with open(self.out / "agent.log", "w") as f:

@@ -47,9 +47,12 @@ The runner refuses a stub (`todo = true`).
 `AI=claude` runs the Claude watch officer (`agents/watch_officer.py --backend claude`) through
 your own Claude Code CLI (`claude -p`); `AI=codex` runs it through your own Codex CLI (shown as
 "ChatGPT (Codex)"); `AI=playbook` runs the deterministic `agents/policy_agent.py --watch`
-(no model, no account); `AI=none` runs no AI. The watch officer itself is built separately: until
-it lands, `agents/watch_officer.py` is a placeholder that says so and exits, and the situation
-goes on without an AI.
+(no model, no account); `AI=none` runs no AI. The watch officer wakes its model when something
+worth a look changes (a table, not the model's choice), keeps it to the bridge's MCP tools, and
+writes what it was told and what it said to its own log, whose lines for a person the panel
+shows as the AI's notes (`agents/README.md`, "The watch officer"). If its own preflight fails
+(the CLI too old, not logged in, or for Codex a shell feature it cannot confirm off) it says so
+in the panel and exits, and the situation goes on without an AI.
 
 **Murmur never stores, reads, proxies or prompts for anyone's model credentials.** It only
 invokes the CLI you installed and logged into yourself, with your own subscription or key.

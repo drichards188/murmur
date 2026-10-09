@@ -564,7 +564,7 @@ async def main_async(args) -> int:
         from watch.shadow import PolicyShadow
 
         near = tuple(float(x) for x in args.shadow_near.split(","))
-        shadow = PolicyShadow((near[0], near[1]), args.shadow_radius_km)
+        shadow = PolicyShadow((near[0], near[1]), args.shadow_radius_km, args.shadow_platform)
     log.write("run.start", pid=os.getpid(), backend=backend.describe(), budgets=asdict(budgets), until=until,
               until_iso=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(until)), url=args.url, agent=args.agent,
               auth="agent key" if key else "dev header", run_dir=str(run_dir),
@@ -649,6 +649,7 @@ def parse_args(argv: list[str] | None = None):
                    help="log what the deterministic policy agent would propose at each wake (never proposes)")
     s.add_argument("--shadow-near", default="-122.4780,37.8180", help="its watch point, lon,lat")
     s.add_argument("--shadow-radius-km", type=float, default=4.0)
+    s.add_argument("--shadow-platform", help="its sensor platform id (default: any unarmed aircraft)")
     ap.add_argument("--quiet", action="store_true", help="no lines on stderr")
     return ap.parse_args(argv)
 

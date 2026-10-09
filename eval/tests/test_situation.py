@@ -287,21 +287,33 @@ def test_step_text():
 # ---- the AI: the launch contract and the preflight -----------------------------------------------
 
 
+def watch_officer():
+    """agents/watch_officer.py as a module (its parser is the contract's other side)."""
+    import importlib
+
+    if str(REPO / "agents") not in sys.path:
+        sys.path.insert(0, str(REPO / "agents"))
+    return importlib.import_module("watch_officer")
+
+
 def test_the_ai_launch_contract():
+    W = watch_officer()
     hw = S.load_situation("harbor-watch")
     kw = dict(python="py", mcp_url="http://127.0.0.1:9/mcp", brief_file=Path("/b.md"), agent_log=Path("/a.jsonl"), until=1234.4, seconds=300)
     for backend in ("claude", "codex"):
         cmd = S.ai_command(backend, hw, **kw)
         assert cmd[1].endswith("agents/watch_officer.py")
-        args = dict(zip(cmd[2::2], cmd[3::2]))
-        assert args == {
-            "--backend": backend,
-            "--url": "http://127.0.0.1:9/mcp",
-            "--agent": "agent-watch",
-            "--brief": "/b.md",
-            "--situation-log": "/a.jsonl",
-            "--until": "1234",
-        }
+        # the watch officer takes every argument the runner passes
+        a = W.parse_args(cmd[2:])
+        assert (a.backend, a.url, a.agent, a.brief, a.situation_log, a.until) == (
+            backend, "http://127.0.0.1:9/mcp", "agent-watch", Path("/b.md"), Path("/a.jsonl"), 1234.0)
+        # the playbook's would-be proposals logged beside the model's, from the [playbook] table
+        assert a.shadow_playbook and a.shadow_near == "-122.4783,37.8199" and a.shadow_platform == "puma"
+        assert "--codex-home" not in cmd
+    # MURMUR_CODEX_HOME is stripped from the AI's environment: the runner passes it as a flag
+    cx = S.ai_command("codex", hw, codex_home="/home/u/.codex-murmur", **kw)
+    assert W.parse_args(cx[2:]).codex_home == "/home/u/.codex-murmur"
+    assert "--codex-home" not in S.ai_command("claude", hw, codex_home="/home/u/.codex-murmur", **kw)
     pb = S.ai_command("playbook", hw, **kw)
     assert pb[1].endswith("agents/policy_agent.py")
     assert "--near=-122.4783,37.8199" in pb, "a negative longitude goes in one token"
@@ -310,18 +322,38 @@ def test_the_ai_launch_contract():
     assert S.ai_command("none", hw, **kw) is None
 
 
-def test_the_watch_officer_placeholder_keeps_the_contract(tmp_path: Path):
+def test_the_watch_officer_without_its_cli_says_so_in_the_panel(tmp_path: Path):
+    """Launched as the runner launches it (no MURMUR_* variable), with no CLI to run: it exits 2
+    and its log says why, in a line the panel shows as an error naming the fix."""
+    from eval import situation_run as R
+
     log = tmp_path / "agent.jsonl"
+    (tmp_path / "b.md").write_text("# Harbor watch\n")
+    env = R.ai_env(dict(os.environ))
     for backend in ("claude", "codex"):
         r = subprocess.run(
             [sys.executable, str(REPO / "agents" / "watch_officer.py"), "--backend", backend, "--url", "http://127.0.0.1:9/mcp",
-             "--agent", "agent-watch", "--brief", str(tmp_path / "b.md"), "--situation-log", str(log), "--until", "123"],
-            capture_output=True, text=True, timeout=30,
+             "--agent", "agent-watch", "--brief", str(tmp_path / "b.md"), "--situation-log", str(log), "--until", "123",
+             f"--{backend}-bin", str(tmp_path / "no-such-cli"), "--quiet"],
+            capture_output=True, text=True, timeout=60, env=env, cwd=str(tmp_path),
         )
-        assert r.returncode == 0, r.stderr
-        assert "not built yet" in r.stdout
-    notes = [json.loads(line) for line in log.read_text().splitlines()]
-    assert len(notes) == 2 and all(n["kind"] == "note" for n in notes)
+        assert r.returncode == 2, r.stderr
+    lines = [json.loads(line) for line in log.read_text().splitlines()]
+    assert [x["kind"] for x in lines] == ["preflight.failed", "preflight.failed"]
+    assert all(isinstance(x["t"], float) and "AI=playbook" in x["text"] for x in lines), lines
+    assert [R.panel_kind(x) for x in lines] == ["error", "error"]
+
+
+def test_the_panel_shows_the_watch_officers_lines_for_a_person():
+    from eval import situation_run as R
+
+    assert R.panel_kind({"kind": "turn", "text": "Proposed #41."}) == "note"
+    assert R.panel_kind({"kind": "turn", "text": ""}) is None, "a turn with no note"
+    assert R.panel_kind({"kind": "wake", "text": "watch officer woken"}) == "woken"
+    assert R.panel_kind({"kind": "lockdown.breach", "text": "x"}) == "error"
+    for plumbing in ("bridge.connected", "backend.start", "backend.init", "preflight", "shadow", "change.dropped"):
+        assert R.panel_kind({"kind": plumbing, "text": "x"}) is None, plumbing
+    assert R.panel_kind({"kind": "note", "text": "x"}) == "note", "the contract's own kinds pass"
 
 
 class FakeRun:

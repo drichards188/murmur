@@ -711,10 +711,15 @@ def ai_command(
     agent_log: Path,
     until: float,
     seconds: float,
+    codex_home: str | None = None,
 ) -> list[str] | None:
-    """The AI's command line (the launch contract in agents/README.md), or None for none."""
+    """The AI's command line (the launch contract in agents/README.md), or None for none.
+    `codex_home`: the user's MURMUR_CODEX_HOME (the AI's environment has no MURMUR_*
+    variable, so it goes on the command line)."""
     if ai in ("claude", "codex"):
-        return [
+        pb = sit.playbook
+        near = pb.get("near", [-122.4783, 37.8199])
+        cmd = [
             python, str(REPO / "agents" / "watch_officer.py"),
             "--backend", ai,
             "--url", mcp_url,
@@ -722,7 +727,17 @@ def ai_command(
             "--brief", str(brief_file),
             "--situation-log", str(agent_log),
             "--until", f"{until:.0f}",
+            # what the playbook would have proposed at each wake, logged beside the model's
+            # turns and never proposed
+            "--shadow-playbook",
+            f"--shadow-near={near[0]},{near[1]}",  # one token: a longitude starts with a minus
+            "--shadow-radius-km", f"{float(pb.get('radius_km', 4.0)):g}",
         ]
+        if pb.get("platform"):
+            cmd += ["--shadow-platform", str(pb["platform"])]
+        if ai == "codex" and codex_home:
+            cmd += ["--codex-home", codex_home]
+        return cmd
     if ai == "playbook":
         pb = sit.playbook
         near = pb.get("near", [-122.4783, 37.8199])
