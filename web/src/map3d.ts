@@ -4,7 +4,7 @@ import type * as maplibregl from 'maplibre-gl'
 import type { LiftedBridge } from './bridges'
 import { drawnTick, drawnXYZ, smoothing } from './drawn'
 import { perfSeaTess } from './perf'
-import { assembleSea, byTile, isSeaWater, outermost, polygonOffset, polygonsOf, tilesKey, type SeaPolygon, type TileWater } from './sea'
+import { assembleSea, byTile, outermost, polygonOffset, polygonsOf, tilesKey, underWater, type SeaPolygon, type TileWater } from './sea'
 import type { Vehicle } from './types'
 import { domainOf } from './types'
 
@@ -113,17 +113,10 @@ export function refreshSea(m: maplibregl.Map): boolean {
     z: t.z,
     x: t.x,
     y: t.y,
-    polygons: t.feats.filter(isSeaWater).flatMap((f) => polygonsOf(f.geometry)),
+    polygons: t.feats.flatMap((f) => polygonsOf(f.geometry)),
   }))
   seaData = assembleSea(tiles)
   return true
-}
-
-/** Seen through the water: a submarine's trail and stem (the subsurface domain), and anything
- *  more than a metre under the surface. A surface vessel's GPS altitude wanders around 0, and
- *  the margin keeps its trail from flipping between tinted and not. */
-export function underWater(v: Vehicle) {
-  return domainOf(v) === 'subsurface' || (v.alt_msl != null && v.alt_msl < -1)
 }
 
 /** The 3D scene around the vehicles is built in two parts: build3dStatic (trails, sea surface,
@@ -151,7 +144,8 @@ export function underWater(v: Vehicle) {
 // polygon over the same pixel fails. Only bit 0, because luma.gl 9.4's WebGL render pass forces
 // the stencil write mask to 1 before each draw (a wider mask would work the same); its stencil
 // reference is always 0, and a compare of 'always' turns the test off, so the first pass uses
-// not-equal (sea.check.ts pins these three). Both passes run in one draw() with nothing between
+// not-equal (sea.check.ts pins these three). Each pass is its own model with fixed parameters,
+// both drawn from the layer's one tessellation, back to back in one draw() with nothing between
 // them, and luma.gl pushes and pops the GL state around each model draw. Nothing of MapLibre's
 // draws after the sea: in 3D the deck.gl layers have no beforeId, so they share the one group
 // deck.gl keeps as the style's last layer (it moves it back to the end whenever its layers are
@@ -188,22 +182,48 @@ const seaTint = () =>
     stencilDepthFailOperation: 'keep',
   }) as const
 
-type ModelLike = { setParameters(p: object): void }
+type ModelLike = {
+  setParameters(p: object): void
+  setVertexCount(n: number): void
+  shaderInputs: { setProps(p: object): void }
+  draw(renderPass: unknown): boolean
+}
 
-/** One SolidPolygonLayer, one tessellation, drawn twice: the stencil-clearing pass, then the
- *  tint (see above). Also times deck.gl's tessellation of new data for ?perf. */
+/** Keeps a model's parameters its pass's whatever deck.gl hands it: deck.gl sets the layer's
+ *  parameters on every model before each draw, and luma.gl rebuilds a model's pipeline when its
+ *  parameters change (taking a new reference to the cached one each time, never releasing the
+ *  old). Merged, they come out equal every frame and nothing is rebuilt. */
+function pinPass(model: ModelLike, pass: () => object) {
+  const set = model.setParameters.bind(model)
+  model.setParameters = (p) => set({ ...p, ...pass() })
+  model.setParameters({})
+}
+
+/** One SolidPolygonLayer, one tessellation, two top models: the stencil-clearing pass and the
+ *  tint (see above), each with its parameters fixed. deck.gl gives the attribute buffers to every
+ *  model the layer returns, so both draw the same triangles. Also times deck.gl's tessellation of
+ *  new data for ?perf. */
 class SeaLayer extends SolidPolygonLayer<SeaPolygon> {
   static layerName = 'SeaLayer'
   private tessStart = 0
 
-  draw(opts: { uniforms: unknown; parameters?: object }) {
-    const base = opts.parameters ?? {}
-    const models = this.getModels() as unknown as ModelLike[]
-    for (const m of models) m.setParameters({ ...base, ...SEA_CLEAR })
+  protected _getModels() {
+    const clear = super._getModels()
+    // a second top model: the same shaders and buffer layout
+    const tint = super._getModels().topModel as ModelLike
+    pinPass(clear.topModel as ModelLike, () => SEA_CLEAR)
+    pinPass(tint, seaTint)
+    return { ...clear, models: [...clear.models, tint], tintModel: tint }
+  }
+
+  draw(opts: { uniforms: unknown }) {
+    // the clearing pass (SolidPolygonLayer draws its top model), then at once the tint
     super.draw(opts)
-    const tint = { ...base, ...seaTint() }
-    for (const m of models) m.setParameters(tint)
-    super.draw(opts)
+    const { tintModel, polygonTesselator } = this.state as { tintModel?: ModelLike; polygonTesselator: { vertexCount: number } }
+    if (!tintModel || !this.props.filled) return
+    tintModel.setVertexCount(polygonTesselator.vertexCount)
+    tintModel.shaderInputs.setProps({ solidPolygon: { extruded: false, elevationScale: this.props.elevationScale, isWireframe: false } })
+    tintModel.draw(this.context.renderPass)
   }
 
   updateState(params: UpdateParameters<this>) {

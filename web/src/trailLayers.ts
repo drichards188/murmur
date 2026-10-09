@@ -13,7 +13,8 @@
 import { PathLayer } from '@deck.gl/layers'
 import { drawnPose, drawnTick } from './drawn'
 import { trailHeadPath, type Pt } from './glide'
-import { colour, underWater, z } from './map3d'
+import { colour, z } from './map3d'
+import { belowOf, splitUnder, type UnderSplit } from './sea'
 import type { Vehicle } from './types'
 import { AIR_KINDS } from './types'
 
@@ -42,19 +43,15 @@ function trailedOf(vehicles: Vehicle[], is3d: boolean) {
 }
 
 // the body and the head split into what is under water (3D) and the rest, each kept while its
-// list and the split are the same: a bridge update that only moved vehicles keeps the body's
-// arrays, and a glide frame keeps the head's (deck.gl redoes a layer whose data array changes)
-type Split = { list: Vehicle[]; sig: string; under: Vehicle[]; over: Vehicle[] }
-let bodySplit: Split | null = null
-let headSplit: Split | null = null
-function splitOf(prev: Split | null, list: Vehicle[], below: Set<number>, sig: string): Split {
-  if (prev && prev.list === list && prev.sig === sig) return prev
-  if (!below.size) return { list, sig, under: [], over: list }
-  return { list, sig, under: list.filter((v) => below.has(v.uid)), over: list.filter((v) => !below.has(v.uid)) }
-}
+// list and the split are the same (sea.ts splitUnder): a bridge update that only moved vehicles
+// keeps the body's arrays, and a glide frame keeps the head's (deck.gl redoes a layer whose data
+// array changes)
+let bodySplit: UnderSplit<Vehicle> | null = null
+let headSplit: UnderSplit<Vehicle> | null = null
 
 /** Trails as deck.gl layers: `under` the trails seen through the water in 3D (map3d.ts
- *  underWater: they go before the sea surface), `over` the rest (after it; everything in 2D).
+ *  sea.ts underWater: they go before the sea surface), `over` the rest (after it; everything in
+ *  2D).
  *  `beforeId`: 2D only, the MapLibre layer these draw under (where the MapLibre trails were:
  *  below the taskings, the draft, labels and overlays); undefined draws them on top. */
 export function buildTrailLayers(vehicles: Vehicle[], is3d: boolean, beforeId?: string) {
@@ -65,10 +62,9 @@ export function buildTrailLayers(vehicles: Vehicle[], is3d: boolean, beforeId?: 
   const point = ([lon, lat, alt]: [number, number, number]): Pt => [lon, lat, zOf(alt)]
   const where = is3d || !beforeId ? {} : { beforeId }
   // judged on the latest reports (head); the body's vehicles can be older objects
-  const below = new Set(is3d ? head.filter(underWater).map((v) => v.uid) : [])
-  const sig = [...below].join()
-  bodySplit = splitOf(bodySplit, body, below, sig)
-  headSplit = splitOf(headSplit, head, below, sig)
+  const { below, sig } = belowOf(is3d ? head : [])
+  bodySplit = splitUnder(bodySplit, body, below, sig)
+  headSplit = splitUnder(headSplit, head, below, sig)
   const layers = (suffix: string, bodyData: Vehicle[], headData: Vehicle[]) => [
     new PathLayer<Vehicle>({
       id: `trail-body${suffix}`,

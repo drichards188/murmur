@@ -422,11 +422,10 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     return layers
   }
   /** Dev only: the sea's stencil passes and depth order assume nothing of MapLibre's draws after
-   *  it in 3D: every 3D deck.gl layer in the group with no beforeId (checked as the layers are
-   *  built), and that group the style's last layer (checked after a frame, with the sea's check;
-   *  deck.gl moves its group back to the end on every setProps, so this catches a frame drawn with
-   *  a MapLibre layer added after it). Each warns once. */
-  const seaOrderWarned = useRef({ before: false, last: false })
+   *  it in 3D: every 3D deck.gl layer in the group with no beforeId (checked here as the layers
+   *  are built), and that group the style's last layer (checked after every frame, in the map's
+   *  render handler). Each warns once. */
+  const seaOrderWarned = useRef({ before: false })
   const pushLayers = () => overlay.current?.setProps({ layers: deckLayers(viewRef.current === '3d') })
 
   /** the inbox preview's transit lines start at a vehicle: that end follows the drawn position */
@@ -766,14 +765,6 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
         const changed = refreshSea(m)
         perfSeaCheck(performance.now() - t0, changed)
         if (changed) pushLayers()
-        if (import.meta.env.DEV && !seaOrderWarned.current.last) {
-          const order = m.getLayersOrder()
-          const last = order[order.length - 1]
-          if (order.includes('deck-layer-group-last') && last !== 'deck-layer-group-last') {
-            seaOrderWarned.current.last = true
-            console.warn(`[murmur] a frame drew MapLibre's ${last} after the deck.gl group, so after the sea (map3d.ts)`)
-          }
-        }
       }, 250)
     }
     const reportView = () => {
@@ -802,6 +793,21 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     let followMoved = false
     m.on('move', reportViewSoon)
     m.on('render', refreshSeaSoon)
+    if (import.meta.env.DEV) {
+      // after every frame in 3D: was a MapLibre layer drawn after the deck.gl group, so after the
+      // sea? (deck.gl moves its group back to the end whenever its layers are set, so this would
+      // be a layer added since.) Warns once, then stops looking.
+      const checkSeaLast = () => {
+        if (viewRef.current !== '3d' || !ready.current) return
+        const order = m.getLayersOrder()
+        const last = order[order.length - 1]
+        if (order.includes('deck-layer-group-last') && last !== 'deck-layer-group-last') {
+          m.off('render', checkSeaLast)
+          console.warn(`[murmur] a frame drew MapLibre's ${last} after the deck.gl group, so after the sea (map3d.ts)`)
+        }
+      }
+      m.on('render', checkSeaLast)
+    }
     m.on('moveend', refreshBridges)
     m.on('moveend', (e: { follow?: boolean }) => {
       if (e.follow) {

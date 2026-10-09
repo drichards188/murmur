@@ -7,7 +7,10 @@
 // cutting each tile's water to its own square was tried, cost the same and left a few
 // untinted pixels along tile borders where the cuts of two tiles met at different points. A tile
 // under another tile in the set is still left out, which only saves drawing the same water twice.
-// Pure functions (no MapLibre at run time): checked by sea.check.ts.
+// Also which vehicles' trails and stems draw under the surface. Pure functions (no MapLibre or
+// deck.gl at run time): checked by sea.check.ts.
+
+import { domainOf, type Vehicle } from './types.ts'
 
 /** longitude, latitude */
 export type Pt = [number, number]
@@ -44,12 +47,15 @@ export interface TileFeature {
   properties: Record<string, unknown>
 }
 
-/** Query results grouped by the tile they came from. Features without tile coordinates (a
+/** The sea's water among the query results, grouped by the tile it came from: only what
+ *  isSeaWater keeps counts, so a tile of nothing but pools neither enters the rebuild key nor,
+ *  as a parent, hides a child's water from outermost. Features without tile coordinates (a
  *  MapLibre that stopped setting them) are skipped and counted in `missing`. */
 export function byTile<F extends TileFeature>(features: F[]) {
   const groups = new Map<string, TileId & { feats: F[] }>()
   let missing = 0
   for (const f of features) {
+    if (!isSeaWater(f)) continue
     if (!Number.isInteger(f._z) || !Number.isInteger(f._x) || !Number.isInteger(f._y)) {
       missing++
       continue
@@ -63,8 +69,8 @@ export function byTile<F extends TileFeature>(features: F[]) {
   return { groups, missing }
 }
 
-/** What the sea was built from: each tile and how many water features it holds, in a fixed
- *  order. Equal keys, same sea: no rebuild. */
+/** What the sea was built from: each tile and how many of the sea's water features it holds, in
+ *  a fixed order. Equal keys, same sea: no rebuild. */
 export function tilesKey(groups: Map<string, { feats: unknown[] }>) {
   return [...groups.entries()]
     .map(([k, g]) => `${k}:${g.feats.length}`)
@@ -77,7 +83,40 @@ export const seaKey = (features: TileFeature[]) => tilesKey(byTile(features).gro
 /** The water the sea is drawn over, as the style's own water layer draws it: polygons, not in
  *  a tunnel; swimming pools left out (on land, under the terrain anyway, and many). */
 export function isSeaWater(f: Pick<TileFeature, '_vectorTileFeature' | 'properties'>) {
-  return f._vectorTileFeature.type === 3 && f.properties.brunnel !== 'tunnel' && f.properties.class !== 'swimming_pool'
+  return f._vectorTileFeature?.type === 3 && f.properties?.brunnel !== 'tunnel' && f.properties?.class !== 'swimming_pool'
+}
+
+// --- what draws under the sea surface (map3d.ts, trailLayers.ts) -------------------------------
+
+/** Seen through the water: a submarine's trail and stem (the subsurface domain), and anything
+ *  more than a metre under the surface. A surface vessel's GPS altitude wanders around 0, and
+ *  the margin keeps its trail from flipping between tinted and not. A surfaced submarine counts
+ *  as under water on purpose: its trail (mostly a dive) does not move between layers each time
+ *  it comes up. */
+export function underWater(v: Pick<Vehicle, 'kind' | 'identity' | 'alt_msl'>) {
+  return domainOf(v) === 'subsurface' || (v.alt_msl != null && v.alt_msl < -1)
+}
+
+/** The uids of the vehicles under water, and a signature that changes only when that set does. */
+export function belowOf(vehicles: Pick<Vehicle, 'uid' | 'kind' | 'identity' | 'alt_msl'>[]) {
+  const below = new Set(vehicles.filter(underWater).map((v) => v.uid))
+  return { below, sig: [...below].join() }
+}
+
+export interface UnderSplit<T> {
+  list: T[]
+  sig: string
+  under: T[]
+  over: T[]
+}
+
+/** A list split into what is under water (`below`) and the rest. The previous split comes back
+ *  as it was while the list and the signature are the same, so deck.gl gets the same data arrays
+ *  and does not redo the layers; with nothing under water `over` is the list itself. */
+export function splitUnder<T extends { uid: number }>(prev: UnderSplit<T> | null, list: T[], below: Set<number>, sig: string): UnderSplit<T> {
+  if (prev && prev.list === list && prev.sig === sig) return prev
+  if (!below.size) return { list, sig, under: [], over: list }
+  return { list, sig, under: list.filter((v) => below.has(v.uid)), over: list.filter((v) => !below.has(v.uid)) }
 }
 
 /** The tiles to draw: duplicates collapse, and a tile with an ancestor in the set (a child

@@ -2,7 +2,8 @@
 // strips the types itself (make check does this):
 //   node web/src/sea.check.ts
 // Throws on the first failure, prints "sea: ok" otherwise. Not part of the bundle.
-import { assembleSea, byTile, isSeaWater, outermost, polygonOffset, polygonsOf, seaKey, tileKey, tilesKey, type Polygon, type Pt, type TileFeature, type TileWater } from './sea.ts'
+import { assembleSea, belowOf, byTile, isSeaWater, outermost, polygonOffset, polygonsOf, seaKey, splitUnder, tileKey, tilesKey, underWater, type Polygon, type Pt, type TileFeature, type TileWater } from './sea.ts'
+import type { Identity, Kind, Vehicle } from './types.ts'
 
 // node's own fs, without @types/node in this (browser) project
 declare const process: { getBuiltinModule(id: string): unknown }
@@ -40,6 +41,15 @@ check(seaKey([]) === '' && tilesKey(new Map()) === '', 'no water tiles: the empt
 const noIds = { ...feat(10, 1, 1), _z: undefined } as unknown as TileFeature
 const withMissing = byTile([...fs, noIds])
 check(withMissing.missing === 1 && withMissing.groups.size === 3, 'a feature without its tile is counted, not grouped (map3d.ts warns)')
+// only the sea's water counts: pools, lines and tunnels neither make a tile nor change its count
+const pool = (z: number, x: number, y: number) => feat(z, x, y, 3, { class: 'swimming_pool' })
+check(seaKey([...fs, pool(10, 165, 395), pool(10, 165, 395)]) === seaKey(fs), 'a tile of nothing but pools leaves the key alone (no rebuild that changes nothing)')
+check(seaKey([...fs, pool(10, 163, 395)]) === seaKey(fs), 'a pool more in a water tile leaves the key alone')
+check(seaKey([...fs, feat(10, 163, 395, 2, { class: 'river' }), feat(10, 163, 395, 3, { class: 'lake', brunnel: 'tunnel' })]) === seaKey(fs), 'nor do lines or water in a tunnel')
+check(byTile([pool(9, 81, 197)]).groups.size === 0 && seaKey([pool(9, 81, 197)]) === '', 'pools alone: no tiles, the empty key')
+// a parent holding only pools must not hide its child's water from outermost
+const keptKids = outermost([...byTile([pool(9, 81, 197), feat(10, 163, 395)]).groups.values()])
+check(keptKids.length === 1 && tileKey(keptKids[0]) === '10/163/395', "a pools-only parent does not drop its child's water")
 
 // --- which water ------------------------------------------------------------------------------
 check(isSeaWater(feat(10, 1, 1)), 'ocean polygon')
@@ -83,6 +93,33 @@ check(assembleSea([]).length === 0 && assembleSea([{ ...T, polygons: [] }]).leng
 check(polygonsOf({ type: 'Polygon', coordinates: polys[1] }).length === 1, 'a Polygon')
 check(polygonsOf({ type: 'MultiPolygon', coordinates: polys }).length === 3, 'a MultiPolygon')
 check(polygonsOf({ type: 'LineString', coordinates: [] }).length === 0, 'not a polygon')
+
+// --- what draws under the sea surface -----------------------------------------------------------
+const veh = (uid: number, kind: Kind, alt: number | null, domain?: Identity['domain']) =>
+  ({ uid, kind, alt_msl: alt, identity: domain ? ({ domain } as Identity) : null }) as Pick<Vehicle, 'uid' | 'kind' | 'identity' | 'alt_msl'>
+check(underWater(veh(1, 'sub', -20)) && underWater(veh(1, 'sub', 0)), 'a submarine, dived or surfaced (its trail stays in one layer)')
+check(!underWater(veh(2, 'boat', 0)) && !underWater(veh(2, 'boat', -0.8)), 'a boat at the surface, GPS wobble and all')
+check(underWater(veh(2, 'boat', -1.5)), 'anything more than a metre down')
+check(!underWater(veh(3, 'plane', 120)) && !underWater(veh(4, 'boat', null)), 'an aircraft; a boat with no altitude')
+check(underWater(veh(5, 'unknown', 0, 'subsurface')) && !underWater(veh(6, 'sub', 0, 'surface')), "the fleet manifest's domain wins over the kind")
+// the trails' split keeps its arrays while nothing changed, so deck.gl does not redo the layers
+const boat = veh(2, 'boat', 0)
+const sub = veh(1, 'sub', -20)
+const list = [boat, sub, veh(3, 'plane', 120)]
+const b1 = belowOf(list)
+const s1 = splitUnder(null, list, b1.below, b1.sig)
+check(s1.under.length === 1 && s1.under[0] === sub && s1.over.length === 2, 'split: the submarine under, the rest over')
+const b2 = belowOf(list)
+check(b2.sig === b1.sig && splitUnder(s1, list, b2.below, b2.sig) === s1, 'the same list and signature: the same arrays')
+const dived = list.map((v) => (v === boat ? { ...boat, alt_msl: -1.5 } : v))
+const b3 = belowOf(dived)
+check(b3.sig !== b1.sig, 'a vehicle crossing -1 m changes the signature')
+const s3 = splitUnder(s1, list, b3.below, b3.sig)
+check(s3 !== s1 && s3.under !== s1.under && s3.under.length === 2 && s3.over.length === 1, 'and the same list then gives new arrays, the boat under')
+check(splitUnder(s3, dived, b3.below, b3.sig) !== s3, 'a new list gives new arrays too')
+const none = belowOf([boat])
+const s4 = splitUnder(null, [boat], none.below, none.sig)
+check(s4.under.length === 0 && s4.over === s4.list, 'nothing under water: over is the list itself')
 
 // --- what map3d.ts relies on in luma.gl 9.4's WebGL adapter -----------------------------------
 const po = polygonOffset(-1, -4)
