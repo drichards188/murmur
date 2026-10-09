@@ -137,6 +137,7 @@ class FakeSession:
         self.reasons: dict[int, str] = {}  # id -> the reason of its last history entry
         self.decided_meanwhile: dict[int, str] = {}  # id -> the state a withdraw finds (a race)
         self.page: dict[int, set[int]] = {}  # tick -> the ids get_intents shows (the newest page)
+        self.explain_raise: dict[int, BaseException] = {}  # id -> what explain_intent raises (once each)
 
     def advance(self) -> Reads:
         self.i += 1
@@ -184,6 +185,8 @@ class FakeSession:
             return r.platforms
         if name == "get_policy":
             return r.policy
+        if name == "explain_intent" and int(args["id"]) in self.explain_raise:
+            raise self.explain_raise.pop(int(args["id"]))
         if name == "explain_intent" and int(args["id"]) in self.explained:
             return {"intent": self.explained[int(args["id"])]}
         if name == "explain_intent" and any(p["id"] == int(args["id"]) for p in self.proposed):

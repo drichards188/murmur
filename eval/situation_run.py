@@ -243,7 +243,7 @@ PANEL_KINDS = {
     # its own whose premise went (left as it is), a withdrawal the bridge refused because the card
     # was decided meanwhile, and what checking the ledger against the bridge dropped
     "play.status": "play", "withdrawal": "withdrew", "decision": "answer", "withheld": "withheld",
-    "left": "left", "withdraw.refused": "kept", "ledger.verified": "note",
+    "left": "left", "withdraw.refused": "kept", "ledger.verified": "note", "ledger.unverified": "waiting",
 }
 
 

@@ -19,8 +19,9 @@ Walking that order, a candidate is held back (with the reason, for the play's st
   failed and it is not P0 (a P0 command's own key still backs off if that command fails);
 - the last preview for its play and target said human tier and the inbox budget held it: not
   previewed again, on any vehicle, until the next token is due or a card of ours waiting then is
-  decided, whichever comes first (a held card would otherwise be previewed every tick, on each of
-  its choices of vehicle, and fill the cap of three ahead of cards that could go);
+  decided, whichever comes first, and at most the policy's approval wait plus 30 s (a held card
+  would otherwise be previewed every tick, on each of its choices of vehicle, and fill the cap of
+  three ahead of cards that could go);
 - it would send a vehicle back to the task `safety.stuck` stopped it on (until the alert has
   cleared and `stuck_retry_s` more);
 - a vehicle it needs is claimed: by a higher candidate this tick (one claim per vehicle), by a
@@ -44,6 +45,7 @@ from .beliefs import Beliefs
 from .ledger import WAITING, Ledger, pair_of, vehicle_key
 from .plays import P0, P1, PLAYS, Candidate
 
+BUDGET_WAIT_MARGIN_S = 30.0  # a budget wait ends at most this long after the policy's approval wait
 ENGAGED = "engagement in play"  # the start of every hold-back an engagement causes (engine: `withheld`)
 
 
@@ -98,7 +100,7 @@ def arbitrate(cands: list[Candidate], b: Beliefs, led: Ledger) -> tuple[list[Can
         if bo is not None:
             held.append(Held(c, f"backing off until {hms(bo['until_t'])}: {bo['why']}"))
             continue
-        bw = led.budget_wait_for(pair_of(c.play, c.target), b.t, waiting)
+        bw = led.budget_wait_for(pair_of(c.play, c.target), b.t, waiting, b.expire_s + BUDGET_WAIT_MARGIN_S)
         if bw is not None:
             again = ([f"at {hms(bw['until_t'])}"] if bw.get("until_t") is not None else []) + (
                 ["when " + " or ".join(f"i{i}" for i in bw["pending"]) + " is decided"] if bw.get("pending") else [])

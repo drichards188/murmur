@@ -1130,6 +1130,30 @@ group. Dates are 2026.
   with `codex features list` before any turn and refuses to start otherwise, because a
   read-only sandbox does not stop reads and a breach seen in the event stream comes after
   the command ran.
+- **The playbook's fix round 3: an error is not an answer** (10-09, murmur-t8m third review;
+  `agents/playbook/CRITERIA.md` "Fix round 3", tests in `agents/tests/test_playbook_review3.py`).
+  (1) Checking the ledger against the bridge drops a card only on an answer about it: the bridge
+  knows no such intent ("unknown intent"), or it is not ours, or not the same task and vehicles. Any
+  other error (a timeout, a dropped session) aborts the check: the checks prune a copy that is
+  swapped in only when the whole check has finished, so the ledger stays as it was in memory and on
+  disk, the panel says why (`ledger.unverified`), and the engine acts on nothing until a check
+  completes, tried again at the next tick or start (a ledger after a restart is not trusted
+  unchecked). (2) A hygiene withdrawal whose reason is the sensor (battery, navigation, recovering)
+  cools that vehicle for that target; the pair only when the premise about the target went. (3)
+  Ended cards are checked only across a bridge restart: on the same bridge an id cannot have moved,
+  and across a restart without resume an ended card's id can name someone else's running order,
+  which the claims would take for ours. They are pruned once ended over 10 minutes (a retry names
+  a failure that long), no cooldown or back-off in force refers to them, no vehicle flies them (an
+  orbit stays `done` while flown), no open card would resume them (`prior_task`, a release's
+  `resumed`), and they are not `safety.low_reserve`'s (its memory of our rtl; one card per rtl).
+  (4) A budget wait ends at most the policy's approval wait plus 30 s after it began, and an own
+  card without an evidence record is adopted (play `adopted`, judged by no play) when the pending
+  counts disagree. (5) A card carried over a bridge restart whose target is a track id has an
+  unknown target: pending, it is withdrawn ("track ids restarted with the bridge", no cooldown);
+  running, it is left to end by its own course or a person, never recentred or released against the
+  new tracker's track of that name. Left for later: murmur-no8 (a P0 card on an engaging platform
+  back every 240 s while the signers let it expire), murmur-7xz (the console's playbook agent ids
+  hard-coded).
 - **The playbook's fix round 2: what round 1 broke, and the ledger verified, not discarded**
   (10-09, murmur-t8m second review; `agents/playbook/CRITERIA.md` "Fix round 2", one test per
   item in `agents/tests/test_playbook_review2.py`). (1) A P0 command (`safety.low_reserve`,

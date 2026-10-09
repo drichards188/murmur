@@ -178,3 +178,15 @@ naming the engagement. ISR, link and hygiene orders stay withheld, with the `wit
 | a look under sensor coverage | suppressed while an EO/IR or sonar detection was 10 s fresh | suppressed only while the classification rose by 0.02 within 30 s, and at most 120 s per track; an identity conflict always counts |
 | a release resuming an order an earlier release copied | the copy's premise always held (a release has none) | the premise of the play that first made the order is checked, through the chain of releases; none known, a hold |
 | an approved or queued armed card on a suspect vehicle | left with a `left` line | until murmur-su0 lands, withdrawn from that state only, "withdrawn (armed, nav suspect, murmur-su0)" |
+
+## Fix round 3, 2026-10-09 (a third review; the targets above unchanged)
+
+Each item has a test in `agents/tests/test_playbook_review3.py` that failed before its fix.
+
+| change | before (round 2) | after |
+|---|---|---|
+| an error while checking the ledger against the bridge | taken for "not ours": a timeout dropped the card and its cooldown (a rejected look came straight back) and the panel said "no longer ours"; a session dropped mid-check emptied the ledger | a card is dropped only when the bridge knows no such intent, or it is not ours, or not the same task and vehicles; any other error aborts the check, leaves the ledger as it was in memory and on disk, says why (`ledger.unverified`), and the engine acts on nothing until a check completes (at the next tick or start); the checks prune a copy, swapped in at the end |
+| a hygiene withdrawal whose reason is the sensor | cooled the pair | cools that vehicle for that target; the pair only when the premise about the target went |
+| ended cards | each checked by `explain_intent` at every start, never pruned | checked only across a bridge restart (on the same bridge an id cannot have moved); pruned once ended over 10 minutes, no cooldown or back-off in force refers to them, no vehicle flies them, no open card would resume them, and they are not `safety.low_reserve`'s |
+| a budget wait | could end at once (an own card not adopted) or never (a stale state) | ends at most the policy's approval wait plus 30 s after it began; an own card without an evidence record is adopted when the pending counts disagree |
+| a card carried over a bridge restart whose target is a track id | judged against the new tracker's track of that name | its target is unknown: pending, withdrawn ("track ids restarted with the bridge", no cooldown); running, left to end by its own course or a person, never recentred or released |

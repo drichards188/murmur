@@ -111,8 +111,13 @@ change-feed reset the ledger is checked against the bridge, whatever `run` says 
 keeps its intent ids; a fixed run id over a restart does not): a card is kept only if
 `explain_intent` shows the same intent, ours, with the same task and vehicles; memory per vehicle
 only if the same platform and callsign are under the uid; memory per track is dropped across a
-bridge restart (live track ids follow detection order). What is dropped is said in the panel
-(`ledger.verified`), and the ledger as it was is kept beside (`playbook-ledger.<run>.json`).
+bridge restart (live track ids follow detection order), and a card carried over it whose target
+is a track id has an unknown target (pending, it is withdrawn, "track ids restarted with the
+bridge"; running, it is left alone). What is dropped is said in the panel (`ledger.verified`),
+and the ledger as it was is kept beside (`playbook-ledger.<run>.json`). Only an answer drops a
+card ("unknown intent", or not ours): a timeout or a dropped session aborts the check, leaves the
+ledger as it was, says so (`ledger.unverified`), and the engine acts on nothing until a check
+completes. Ended cards are checked only across a restart, and pruned once nothing can use them.
 The tick's time is the
 oldest `t` among them. Between ticks it reads the change feed every 0.5 s and ticks at once on a
 change that wakes it (one of its cards decided, a link lost or back, a new track, an affiliation,
@@ -152,7 +157,7 @@ a declaration, an alert). Then, a pure function of the reads, the config and the
    at submission or an order of ours that failed, and its vehicle after a failed order unless it is
    P0 (10 s, doubling to 160 s: retried, never dropped, never every tick; a retry names the
    failure); a play and target the budget held after a human-tier preview waits for the next
-   token or a decision on a card of ours; one claim per vehicle (a look offers its first three
+   token or a decision on a card of ours (at most the approval wait plus 30 s); one claim per vehicle (a look offers its first three
    free vehicles, so a taken one falls to the next); at 6 or more pending cards in the inbox only
    P0 and P1 propose.
 4. **preview** first (at most 3 a tick), then the **inbox budget**: the preview says the tier, and
@@ -181,8 +186,8 @@ log, `playbook-ledger.json`) keeps every card by (play, target, vehicle): a reje
 play on that target for 10 minutes whatever the vehicle (the operator's note is the only reason
 channel, so the conservative reading), an expiry 2 minutes and halves the play's score for it, a
 void 30 s for the key, a withdrawal of ours 30 s: for that play on that target whatever the
-vehicle when the premise went, for that vehicle alone when it was for the vehicle's sake (its
-link, its navigation). An order of ours that failed backs off its key and its vehicle; one superseded by
+vehicle when the premise about the target went, for that vehicle alone when it was for the
+vehicle's sake (its link, its navigation, its battery, recovering). An order of ours that failed backs off its key and its vehicle; one superseded by
 someone else's order records that order (`safety.low_reserve` reads it); a refusal at submission
 backs off and is logged with the bridge's reason, never cooled (no person answered it). A restart
 adopts its cards from their records, the armed flag included.
@@ -198,6 +203,7 @@ constraint), `proposal` (a refusal at submission with its reason), `withdrawal`,
 `withdraw.refused`, `decision` (how the operator answered a card, and the cooldown it set),
 `withheld` (what an engagement in play kept it from doing), `left` (an approved card of ours whose
 premise went), `ledger.verified` (what checking the ledger against the bridge dropped),
+`ledger.unverified` (a check that did not finish, and why),
 `feed.truncated`, `error`, `run.stop` (ticks and compute per
 tick). The panel shows the status, proposal, withdrawal, withheld, left and decision lines.
 

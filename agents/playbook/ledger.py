@@ -15,10 +15,13 @@ fails, is an answer, not a blank: each sets something the next proposal must get
   (the operator had no time: do not resend into the same queue).
 - **voided** by the system: 30 seconds for the key (another vehicle may be tried at once).
 - **withdrawn** by the engine (a void it asked for): 30 seconds. Its scope follows why: when
-  the premise went (`hygiene.withdraw_stale`), (play, target) on every vehicle, as a rejection
-  is: a premise that just went is not proposed again on the next vehicle in the same breath;
-  when it was for the vehicle's sake (`link.withdraw_pending`, `nav.suspect_exclude`), only
-  that vehicle for that target: another vehicle may take the target at once.
+  the premise about the target went (`hygiene.withdraw_stale`: the track turned neutral, went
+  unseen, left the watch; a gap closed), (play, target) on every vehicle, as a rejection is: a
+  premise that just went is not proposed again on the next vehicle in the same breath; when it
+  was for the vehicle's sake (`link.withdraw_pending`, `nav.suspect_exclude`, or a hygiene
+  withdrawal whose reason is the sensor: battery, navigation, recovering), only that vehicle for
+  that target: another vehicle may take the target at once. A card withdrawn because the track
+  ids restarted with the bridge sets no cooldown (no premise was judged).
 - **failed**: a back-off for the key and for the vehicle (10 s, doubling to 160 s), and the
   rationale of any retry names the failure. An order superseded by another of ours (a recentre,
   a release) is not a failure of ours, nor is one superseded by someone else's order, which
@@ -62,6 +65,9 @@ APPROVED = ("approved", "queued")  # a person approved it: never withdrawn by th
 ENDED_UNRUN = ("rejected", "expired", "voided")
 ENGAGE_KEEP = 200  # engagements remembered from the change feed (the newest)
 PREMISE_WITHDRAWALS = ("hygiene.withdraw_stale", "shadow")  # a withdrawal because the premise went
+ENDED = ("rejected", "expired", "voided", "failed", "done", "aborted", "effected")  # nothing more happens to it
+RESTART_WITHDRAWAL = "restart"  # withdrawn because the track ids restarted with the bridge
+ADOPTED = "adopted"  # the play of an own intent adopted without an evidence record
 FAILURE_MEMORY_S = 600.0  # a failure is named in a retry's rationale this long after it
 
 
@@ -204,6 +210,18 @@ class Ledger:
         e["adopted"] = True
         return e
 
+    def adopt_bare(self, intent: dict[str, Any], t: float) -> dict[str, Any]:
+        """An intent of ours with no evidence record we can read (proposed under our agent id by
+        an older engine, or by hand): known by its id, task and vehicles only, so the inbox budget
+        counts it as ours waiting. No play judges it (play `adopted`)."""
+        uids = [int(u) for u in intent.get("uids") or [] if str(u).isdigit()]
+        self.record(int(intent["id"]), play=ADOPTED, version="0", target=f"i{intent['id']}", uid=uids[0] if uids else None,
+                    task=str(intent.get("kind")), request={"task": intent.get("kind"), "uids": uids}, t=t,
+                    state=str(intent.get("state")), basis={}, withdraw_if=[])
+        e = self.entries[str(intent["id"])]
+        e["adopted"] = True
+        return e
+
     def note_changes(self, changes: list[dict[str, Any]]) -> None:
         """What only the change feed says: an operator's note on a rejection of ours, and the
         engagements in play (any proposer's)."""
@@ -243,9 +261,14 @@ class Ledger:
         ours. Returns what changed (for the situation log), in intent order."""
         out: list[Decision] = []
         tasks = tasks or {}
+        pending = {iid for iid, i in intents.items() if i.get("state") in WAITING}
+        known = {int(k) for k, e in self.entries.items() if e.get("state") in WAITING}
+        disagree = pending != known
         for iid in sorted(intents):
             i = intents[iid]
             e = self.entries.get(str(iid)) or self.adopt(i, t)
+            if e is None and disagree and i.get("state") in WAITING:
+                e = self.adopt_bare(i, t)
             if e is None:
                 continue
             state = str(i.get("state"))
@@ -286,9 +309,11 @@ class Ledger:
                 e["superseded_by"] = by
                 return f"superseded by i{by}, someone else's order"
         e["failure"] = reason or "failed"
-        self.set_backoff(key_of(e["play"], e["target"], uid), t, f"i{e['intent']} failed: {e['failure'][:120]}", cfg)
+        self.set_backoff(key_of(e["play"], e["target"], uid), t, f"i{e['intent']} failed: {e['failure'][:120]}", cfg,
+                         intent=int(e["intent"]))
         if uid is not None:
-            self.set_backoff(vehicle_key(int(uid)), t, f"i{e['intent']} failed: {e['failure'][:120]}", cfg)
+            self.set_backoff(vehicle_key(int(uid)), t, f"i{e['intent']} failed: {e['failure'][:120]}", cfg,
+                             intent=int(e["intent"]))
         return e["failure"]
 
     def _cool(self, e: dict[str, Any], state: str, t: float, cfg: Any, by: str | None, note: str | None) -> float | None:
@@ -303,10 +328,13 @@ class Ledger:
             scope, until = pair_of(play, target), t + cd["expired_s"]
             pair = pair_of(play, target)
             self.score_factor[pair] = round(self.score_factor.get(pair, 1.0) * cd["expired_score_factor"], 6)
+        elif e.get("withdrawn_by") == RESTART_WITHDRAWAL:
+            return None  # its target's id names another contact now: nothing to cool
         elif e.get("withdrawn_by"):
             why = "withdrawn"
-            # the premise went: the pair; for the vehicle's sake (its link, its navigation): the key
-            pair = e["withdrawn_by"] in PREMISE_WITHDRAWALS
+            # the premise about the target went: the pair; for the vehicle's sake (its link, its
+            # navigation, its battery, recovering): that vehicle for that target
+            pair = e["withdrawn_by"] in PREMISE_WITHDRAWALS and e.get("withdraw_cause", "premise") == "premise"
             scope, until = (pair_of(play, target) if pair else key_of(play, target, uid)), t + cd["withdrawn_s"]
         else:
             scope, until = key_of(play, target, uid), t + cd["voided_s"]
@@ -331,21 +359,54 @@ class Ledger:
         return {"intent": e["intent"], "play": e["play"], "target": e["target"], "failure": e["failure"],
                 "t": e["state_t"]}
 
-    def prune(self, t: float) -> None:
+    def prune(self, t: float, running: set[int] | None = None) -> None:
         self.cooldowns = [c for c in self.cooldowns if c["until_t"] > t - 3600]
         for k in [k for k, c in self.classify.items() if t - float(c.get("t") or t) > 600]:
             del self.classify[k]
         for k in [k for k, b in self.backoff.items() if b["until_t"] < t - 3600]:
             del self.backoff[k]
         self.stuck_blocks = [s for s in self.stuck_blocks if s.get("until_t") is None or s["until_t"] > t]
+        if running is not None:
+            for k in self.prunable(t, running):
+                del self.entries[k]
+                self.notes.pop(k, None)
+
+    def prunable(self, t: float, running: set[int]) -> list[str]:
+        """The ended cards nothing can use any more: ended over `FAILURE_MEMORY_S` ago (a retry
+        names a failure that long), no cooldown or back-off in force refers to it, no vehicle runs
+        it now (an orbit stays `done` while the vehicle flies it), it is not the order a card still
+        open would resume or the origin a release followed (`prior_task`, `basis.resumed`), and it
+        is not `safety.low_reserve`'s (its memory of our rtl: whose later order runs, whether the
+        hard line was used; one card per rtl, few)."""
+        live_cd = {int(c.get("intent", -1)) for c in self.cooldowns if c["until_t"] > t}
+        live_bo = {int(b["intent"]) for b in self.backoff.values() if b.get("intent") is not None and b["until_t"] > t}
+        keep: set[int] = set()
+        for e in self.entries.values():
+            if e.get("state") not in ENDED or int(e["intent"]) in running:
+                p = (e.get("prior_task") or {}).get("intent_id")
+                r = ((e.get("basis") or {}).get("resumed") or {}).get("intent")
+                keep |= {int(x) for x in (p, r) if x is not None}
+        for e in [e for e in self.entries.values() if e.get("play") == "isr.release"]:
+            r = ((e.get("basis") or {}).get("resumed") or {}).get("intent")
+            if r is not None and int(e["intent"]) in keep:
+                keep.add(int(r))
+        out = []
+        for k, e in self.entries.items():
+            i = int(k)
+            if (e.get("state") in ENDED and t - float(e.get("state_t") or t) > FAILURE_MEMORY_S and i not in live_cd
+                    and i not in live_bo and i not in running and i not in keep and e.get("play") != "safety.low_reserve"):
+                out.append(k)
+        return sorted(out, key=int)
 
     # ---- back-offs, the budget ------------------------------------------------------------------------
 
-    def set_backoff(self, key: str, t: float, why: str, cfg: Any) -> float:
+    def set_backoff(self, key: str, t: float, why: str, cfg: Any, intent: int | None = None) -> float:
         b = self.backoff.get(key) or {"fails": 0}
         fails = int(b.get("fails", 0)) + 1
         wait = min(cfg.cooldown["preview_backoff_s"] * 2 ** (fails - 1), cfg.cooldown["preview_backoff_max_s"])
         self.backoff[key] = {"fails": fails, "until_t": round(t + wait, 3), "why": why}
+        if intent is not None:
+            self.backoff[key]["intent"] = intent  # the card it is about (kept while this runs)
         return t + wait
 
     def backoff_for(self, key: str, t: float) -> dict[str, Any] | None:
@@ -377,12 +438,15 @@ class Ledger:
         self.budget_wait[key] = {"until_t": None if until_t is None else round(until_t, 3), "pending": sorted(pending),
                                  "t": round(t, 3)}
 
-    def budget_wait_for(self, key: str, t: float, waiting: set[int]) -> dict[str, Any] | None:
+    def budget_wait_for(self, key: str, t: float, waiting: set[int], max_s: float) -> dict[str, Any] | None:
+        """The wait in force on `key`, or None. A backstop ends it `max_s` after it began (the
+        policy's approval wait and a margin: by then every card waiting when it began was decided,
+        expired or is stale in our reads)."""
         w = self.budget_wait.get(key)
         if w is None:
             return None
         if (w.get("until_t") is not None and t >= w["until_t"]) or any(i not in waiting for i in w["pending"]) \
-                or (w.get("until_t") is None and not w["pending"]):
+                or (w.get("until_t") is None and not w["pending"]) or t - float(w.get("t") or t) >= max_s:
             del self.budget_wait[key]
             return None
         return w

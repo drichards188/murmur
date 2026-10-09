@@ -101,7 +101,7 @@ def holding(play_names: tuple[str, ...], target: str, b: Beliefs, led: Ledger) -
     """A card or order of ours on this track that still holds it (a running orbit whose vehicle
     went silent past a gap does not: another sensor may take the track)."""
     for _, e in sorted(led.entries.items(), key=lambda kv: int(kv[0])):
-        if e["play"] in play_names and e["target"] == target and live(e, b):
+        if e["play"] in play_names and e["target"] == target and live(e, b) and not e.get("stale_target"):
             v = b.vehicles.get(e.get("uid"))
             if runs(e, b) and silent(v, b):
                 continue
@@ -476,7 +476,7 @@ class Recentre(Play):
         res = Result()
         th = b.cfg.t
         for _, e in sorted(led.entries.items(), key=lambda kv: int(kv[0])):
-            if e["play"] not in LOOK_PLAYS or not runs(e, b):
+            if e["play"] not in LOOK_PLAYS or not runs(e, b) or e.get("stale_target"):
                 continue
             tid, uid = e["target"], e.get("uid")
             tr, v = b.tracks.get(tid), b.vehicles.get(uid)
@@ -531,7 +531,9 @@ class Release(Play):
     def evaluate(self, b: Beliefs, led: Ledger) -> Result:
         res = Result()
         for _, e in sorted(led.entries.items(), key=lambda kv: int(kv[0])):
-            if e["play"] not in RELEASED_PLAYS or not runs(e, b):
+            # a card carried over a bridge restart whose track id may name another contact now is
+            # never judged against the new tracker's track of that name: it ends by its own course
+            if e["play"] not in RELEASED_PLAYS or not runs(e, b) or e.get("stale_target"):
                 continue
             tid, uid = e["target"], e.get("uid")
             why = PLAYS[e["play"]].withdraw_reason(e, b)

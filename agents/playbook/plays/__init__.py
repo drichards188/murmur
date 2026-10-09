@@ -95,6 +95,9 @@ class Withdrawal:
     reason: str
     key: str = ""
     if_state: str = "pending_approval"  # withdraw_intent's precondition: the state the card is read in
+    # why, for the cooldown it leaves: "premise" (about the target), "vehicle" (the sensor's
+    # battery, navigation, link, recovering), "restart" (the track ids restarted with the bridge)
+    cause: str = "premise"
 
 
 @dataclass

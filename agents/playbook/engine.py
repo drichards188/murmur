@@ -31,7 +31,9 @@ intent, ours, with the same task and vehicles (a resumed run keeps its ids; a re
 a fixed run id does not); memory kept per vehicle only if the same platform and callsign are under
 the uid; and memory kept per track is dropped across a bridge restart (live track ids follow
 detection order: a new run's T-0008 is another contact). What it drops is said in the panel, and
-the ledger as it was is kept renamed beside.
+the ledger as it was is kept renamed beside. Only an answer drops a card: a timeout or a dropped
+session aborts the check with the ledger untouched, and the engine acts on nothing until a check
+completes.
 
 In **shadow** mode (beside the model watch officer) the engine reads only: no preview, no
 proposal, no withdrawal. What it would propose, and what it would withdraw or release, go to
@@ -57,7 +59,7 @@ from .arbiter import ENGAGED, Held, arbitrate, cooling, hms, statuses
 from .beliefs import NOT_RUNNING, RECOVERING_MODES, Beliefs, build, catalog
 from .config import Config
 from .beliefs import CLASSIFYING
-from .ledger import APPROVED, OPEN, WAITING, Decision, Ledger, key_of, pair_of
+from .ledger import APPROVED, OPEN, RESTART_WITHDRAWAL, WAITING, Decision, Ledger, key_of, pair_of
 from .plays import P0, PLAYS, Candidate, Result, Withdrawal
 from .reads import Reads
 
@@ -135,6 +137,7 @@ class Engine:
         self.changes_t: float | None = None
         self.truncated = False
         self.reread_engaging = False  # after a verification that dropped the engagements it knew
+        self.verified = False  # the ledger checked against this bridge (verify): no tick before
         self.compute: list[float] = []
 
     # ---- verifying the ledger against the bridge ---------------------------------------------------
@@ -152,74 +155,102 @@ class Engine:
         Ledger.from_json(before).save(dest)
         return str(dest)
 
-    async def verify(self, session: Any, run: str | None, cursor: Any) -> dict[str, Any]:
+    async def verify(self, session: Any, run: str | None, cursor: Any) -> bool:
         """Check what the ledger remembers against the bridge (at a start and a feed reset),
         whatever `run` says: with MURMUR_RESUME intent ids stay unique across carried logs, and a
-        fixed run id over a restart without resume keeps `run` while the ids start again."""
+        fixed run id over a restart without resume keeps `run` while the ids start again. The
+        checks prune a copy, swapped in only when the whole verification has finished. A card is
+        dropped only when the bridge knows no such intent, or it is not ours, or not the same task
+        and vehicles; any other error (a timeout, a dropped session) aborts the verification, leaves
+        the ledger as it was in memory and on disk, says why, and the engine does not tick until a
+        verification completes (`settle`, at the next tick or start). False when aborted."""
         led = self.led
-        out: dict[str, Any] = {"cards": [], "vehicles": [], "tracks": 0, "restart": False}
         if not led.entries and led.cursor is None:
             led.run = run  # a fresh ledger: nothing in it came from a bridge
-            return out
+            self.verified = True
+            return True
         restart = feed_of(led.cursor) != feed_of(cursor) or led.run != run
-        out["restart"] = restart
-        before = json.loads(json.dumps(led.to_json()))  # a copy: what follows edits the ledger
+        out: dict[str, Any] = {"cards": [], "vehicles": [], "tracks": 0, "restart": restart, "stale": []}
+        before = json.loads(json.dumps(led.to_json()))
+        new = Ledger.from_json(json.loads(json.dumps(before)))
         agent = getattr(session, "agent", None)
-        # cards: the same intent, ours, the same task and vehicles
-        for k in sorted(led.entries, key=int):
-            e = led.entries[k]
-            try:
-                i = (await session.call("explain_intent", id=int(k))).get("intent") or {}
-            except Exception:  # noqa: BLE001 (unknown here: not ours)
-                i = {}
-            src = i.get("source") or {}
-            want = sorted(str(u) for u in ((e.get("request") or {}).get("uids") or
-                                           ([e["uid"]] if e.get("uid") is not None else [])))
-            ok = (src.get("kind") == "agent" and (agent is None or src.get("id") == agent)
-                  and str(i.get("kind")) == str(e.get("task")) and sorted(str(u) for u in i.get("uids") or []) == want)
-            if not ok:
-                out["cards"].append(int(k))
-                del led.entries[k]
-                led.notes.pop(k, None)
+        try:
+            # cards: the same intent, ours, the same task and vehicles. An ended card is checked
+            # only across a bridge restart (on the same bridge its id cannot have moved)
+            for k in sorted(new.entries, key=int):
+                e = new.entries[k]
+                if e.get("state") not in OPEN and not restart:
+                    continue
+                try:
+                    i = (await session.call("explain_intent", id=int(k))).get("intent") or {}
+                except Exception as ex:  # noqa: BLE001
+                    if "unknown intent" not in str(ex):
+                        raise  # not an answer about the card: abort, keep everything
+                    i = {}
+                src = i.get("source") or {}
+                want = sorted(str(u) for u in ((e.get("request") or {}).get("uids") or
+                                               ([e["uid"]] if e.get("uid") is not None else [])))
+                ok = (src.get("kind") == "agent" and (agent is None or src.get("id") == agent)
+                      and str(i.get("kind")) == str(e.get("task")) and sorted(str(u) for u in i.get("uids") or []) == want)
+                if not ok:
+                    out["cards"].append(int(k))
+                    del new.entries[k]
+                    new.notes.pop(k, None)
+            # memory per vehicle: the same platform and callsign under the uid (read only when
+            # there is such memory to check)
+            fleet = await session.call("get_fleet", compact=True) if new.vehicles else {"vehicles": []}
+        except Exception as ex:  # noqa: BLE001
+            self.verified = False
+            self.log("ledger.unverified", run=run, error=f"{type(ex).__name__}: {str(ex)[:200]}",
+                     text=f"the ledger could not be checked against the bridge ({type(ex).__name__}: {str(ex)[:120]}): "
+                          "kept as it was; the playbook waits and checks again before it acts")
+            return False
         gone = set(out["cards"])
-        led.cooldowns = [c for c in led.cooldowns if int(c.get("intent", -1)) not in gone]
-        # memory per vehicle: the same platform and callsign under the uid (read only when there
-        # is such memory to check)
-        fleet = await session.call("get_fleet", compact=True) if led.vehicles else {"vehicles": []}
+        new.cooldowns = [c for c in new.cooldowns if int(c.get("intent", -1)) not in gone]
         now = {str(v["uid"]): {"platform": v.get("platform"), "callsign": v.get("callsign")}
                for v in fleet.get("vehicles") or [] if v.get("uid") is not None}
-        for u in sorted(u for u, w in led.vehicles.items() if now.get(u) != w):
+        for u in sorted(u for u, w in new.vehicles.items() if now.get(u) != w):
             out["vehicles"].append(u)
-            for k in [k for k in led.backoff if k == f"vehicle:{u}" or k.endswith(f"|{u}")]:
-                del led.backoff[k]
-            led.stuck_blocks = [s for s in led.stuck_blocks if str(s.get("uid")) != u]
-            led.recentred.pop(u, None)
-            led.nav_bad_t.pop(u, None)
-            for k in [k for k, e in led.entries.items() if str(e.get("uid")) == u]:
+            for k in [k for k in new.backoff if k == f"vehicle:{u}" or k.endswith(f"|{u}")]:
+                del new.backoff[k]
+            new.stuck_blocks = [s for s in new.stuck_blocks if str(s.get("uid")) != u]
+            new.recentred.pop(u, None)
+            new.nav_bad_t.pop(u, None)
+            for k in [k for k, e in new.entries.items() if str(e.get("uid")) == u]:
                 out["cards"].append(int(k))
-                del led.entries[k]
-            led.cooldowns = [c for c in led.cooldowns if not str(c["scope"]).endswith(f"|{u}")
+                del new.entries[k]
+            new.cooldowns = [c for c in new.cooldowns if not str(c["scope"]).endswith(f"|{u}")
                              and scope_target(c["scope"]) != f"battery:{u}"]
-        if led.vehicles:
-            led.vehicles = now
+        if new.vehicles:
+            new.vehicles = now
         if restart:
             # live track ids follow detection order: a new bridge's T-0008 is another contact
-            n = sum(1 for c in led.cooldowns if is_track_target(scope_target(c["scope"])))
-            led.cooldowns = [c for c in led.cooldowns if not is_track_target(scope_target(c["scope"]))]
-            for k in [k for k in led.backoff if is_track_target(scope_target(k)) and not k.startswith("vehicle:")]:
-                del led.backoff[k]
+            n = sum(1 for c in new.cooldowns if is_track_target(scope_target(c["scope"])))
+            new.cooldowns = [c for c in new.cooldowns if not is_track_target(scope_target(c["scope"]))]
+            for k in [k for k in new.backoff if is_track_target(scope_target(k)) and not k.startswith("vehicle:")]:
+                del new.backoff[k]
                 n += 1
-            for k in [k for k in led.score_factor if is_track_target(scope_target(k))]:
-                del led.score_factor[k]
+            for k in [k for k in new.score_factor if is_track_target(scope_target(k))]:
+                del new.score_factor[k]
                 n += 1
-            led.stuck_blocks = [s for s in led.stuck_blocks if not is_track_target(s.get("target", ""))]
+            new.stuck_blocks = [s for s in new.stuck_blocks if not is_track_target(s.get("target", ""))]
             out["tracks"] = n
+            # a card carried over it whose target is a track id: that id may name another contact
+            # now. Pending, it is withdrawn ("track ids restarted with the bridge"); running, it is
+            # left to end by its own course or a person, never recentred or released against the
+            # new tracker's track of that name
+            for k, e in sorted(new.entries.items(), key=lambda kv: int(kv[0])):
+                if e.get("state") in OPEN and is_track_target(e.get("target", "")):
+                    e["stale_target"] = True
+                    out["stale"].append(int(k))
             # per run: alert ids, engagements, others' orders, the shadow's would-be cards
-            led.alert_seen, led.engaging, led.params, led.origins = {}, {}, {}, {}
-            led.shadow, led.classify, led.budget_wait, led.noted = {}, {}, {}, {}
+            new.alert_seen, new.engaging, new.params, new.origins = {}, {}, {}, {}
+            new.shadow, new.classify, new.budget_wait, new.noted = {}, {}, {}, {}
             self.reread_engaging = True  # read the engagements again at the next tick
-        led.run = run
-        if out["cards"] or out["vehicles"] or out["tracks"]:
+        new.run = run
+        self.led = new
+        self.verified = True
+        if out["cards"] or out["vehicles"] or out["tracks"] or out["stale"]:
             kept = self.keep_copy(before)
             bits = []
             if out["cards"]:
@@ -230,23 +261,34 @@ class Engine:
             if out["tracks"]:
                 bits.append(f"{out['tracks']} track cooldown(s) and back-off(s) dropped (live track ids follow detection "
                             "order: this run's T-0008 is another contact)")
+            if out["stale"]:
+                bits.append(f"card(s) {', '.join(f'i{i}' for i in out['stale'])} kept with an unknown target (track ids "
+                            "restarted with the bridge)")
             self.log("ledger.verified", run=run, restart=restart, dropped=out, kept=kept,
                      text=f"the ledger checked against the bridge{' after a restart' if restart else ''}: "
                           + "; ".join(bits) + (f"; as it was: {Path(kept).name}" if kept else ""))
-        return out
+            if self.ledger_path is not None:
+                new.save(self.ledger_path)
+        return True
 
     # ---- reading ----------------------------------------------------------------------------------
 
     async def start(self, session: Any) -> dict[str, Any]:
-        """A new session: the catalog and the policy, the run, and the change feed's cursor (kept
-        when the same bridge run answers again after a dropped session)."""
+        """A new session: the catalog and the policy, then `settle`."""
         self.platforms = await session.call("get_platforms")
         self.policy = await session.call("get_policy")
         if self.shadow:
             self.areas = await session.call("get_areas")
+        return await self.settle(session)
+
+    async def settle(self, session: Any) -> dict[str, Any]:
+        """The run, the ledger verified against it, and the change feed's cursor (kept when the
+        same bridge answers again after a dropped session). Until a verification completes the
+        cursor is left as it was, so the next try still sees a restart as one."""
         probe = await session.call("get_changes")
         run = probe.get("run")
-        await self.verify(session, run, probe.get("cursor"))
+        if not await self.verify(session, run, probe.get("cursor")):
+            return {"run": run, "cursor": self.led.cursor, "reset": False, "verified": False}
         reset = self.led.cursor is None or feed_of(self.led.cursor) != feed_of(probe.get("cursor"))
         if reset:
             self.led.cursor = probe.get("cursor")
@@ -259,16 +301,20 @@ class Engine:
                 self.pending_changes += [c for c in r.get("changes") or [] if isinstance(c, dict)]
                 self.led.cursor = r.get("cursor", self.led.cursor)
         self.run = run
-        return {"run": self.run, "cursor": self.led.cursor, "reset": reset}
+        return {"run": self.run, "cursor": self.led.cursor, "reset": reset, "verified": True}
 
     async def poll_changes(self, session: Any) -> list[dict[str, Any]]:
-        """Changes since the cursor, kept for the next tick; returns the new ones."""
+        """Changes since the cursor, kept for the next tick; returns the new ones. Nothing while
+        the ledger is unverified (the next tick settles it first)."""
         new: list[dict[str, Any]] = []
+        if not self.verified:
+            return new
         while True:
             r = await session.call("get_changes", since=self.led.cursor, limit=500)
             if r.get("reset"):
                 new.append({"kind": "feed.reset", "run": r.get("run")})
-                await self.verify(session, r.get("run"), r.get("cursor"))
+                if not await self.verify(session, r.get("run"), r.get("cursor")):
+                    break  # the cursor stays on the old feed, so the next try sees the restart
                 self.run = r.get("run")
                 self.platforms = None  # a new bridge: the catalog and the policy again
             if r.get("truncated"):
@@ -412,7 +458,8 @@ class Engine:
         if not self.shadow:
             withdrawing = {w.intent for w in withdrawals}
             for e in led.open_entries():
-                if e.get("state") in APPROVED and e["play"] in PLAYS and int(e["intent"]) not in withdrawing:
+                if (e.get("state") in APPROVED and e["play"] in PLAYS and int(e["intent"]) not in withdrawing
+                        and not e.get("stale_target")):
                     why = PLAYS[e["play"]].withdraw_reason(e, b)
                     if why:
                         left.append((e, why))
@@ -466,6 +513,11 @@ class Engine:
     # ---- one tick ------------------------------------------------------------------------------------
 
     async def tick(self, session: Any) -> TickReport:
+        if not self.verified:
+            # a verification that did not finish: try again, and act on nothing until it has
+            await self.settle(session)
+            if not self.verified:
+                return TickReport(t=time.time())
         reads = await self.read(session)
         t0 = time.perf_counter()
         plan = self.plan(reads)
@@ -585,7 +637,8 @@ class Engine:
                     continue
                 e = led.entry(w.intent)
                 if e is not None:
-                    e["withdrawn_by"], e["withdraw_reason"] = w.play, w.reason
+                    e["withdrawn_by"] = RESTART_WITHDRAWAL if w.cause == "restart" else w.play
+                    e["withdraw_reason"], e["withdraw_cause"] = w.reason, w.cause
                 self.log("withdrawal", intent=w.intent, play=w.play, reason=w.reason, state=state,
                          text=f"withdrew i{w.intent} ({w.play}): {w.reason}")
                 rep.withdrawn.append({"intent": w.intent, "play": w.play, "reason": w.reason, "state": state})
@@ -597,7 +650,7 @@ class Engine:
         sts = statuses(plan.results, held, outcomes, cfg["plays"], cooling(led, b.t))
         rep.statuses = {k: v for k, v in sts.items() if k in cfg["plays"]}
         self.log_statuses(rep.statuses)
-        led.prune(b.t)
+        led.prune(b.t, {v.task_intent for v in b.vehicles.values() if v.task_intent is not None})
         rep.compute_ms = round(compute, 3)
         self.compute.append(compute)
         if self.ledger_path is not None:
@@ -659,7 +712,8 @@ class Engine:
             s = led.shadow.pop(w.key, None)
             if s is None:
                 continue
-            led._cool({**s, "intent": -1, "withdrawn_by": w.play}, "voided", b.t, self.cfg, None, None)
+            led._cool({**s, "intent": -1, "withdrawn_by": w.play, "withdraw_cause": w.cause}, "voided", b.t, self.cfg,
+                      None, None)
             what = "release" if s.get("tier") == "auto" else "withdraw"
             self.log("shadow.withdraw", play=s["play"], target=s["target"], uid=s.get("uid"), reason=w.reason,
                      text=f"the playbook would {what} its {s['play']} on {s['target']}: {w.reason}")
