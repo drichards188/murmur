@@ -172,4 +172,23 @@ def episode_metrics(rec: dict[str, Any]) -> dict[str, Any]:
         "timeliness_s": timely,
         "association_agreement": {"agree": sum(agree), "n": len(agree)},
         "n_proposals": len(props),
+        "faults": fault_summary(rec),
     }
+
+
+def fault_summary(rec: dict[str, Any]) -> dict[str, int]:
+    """What the scripted link cuts did (script.py's log): cuts of a look in progress, episodes
+    with no look to cut, and cuts of a vehicle already going home on its own failsafe."""
+    out = {"link_cuts": 0, "look_in_progress_cut": 0, "no_look_to_cut": 0, "recovering_before_cut": 0}
+    for s in rec.get("script") or []:
+        if s.get("kind") != "link_cut":
+            continue
+        if s.get("skipped"):
+            out["no_look_to_cut"] += 1
+            continue
+        out["link_cuts"] += 1
+        if s.get("already_recovering"):
+            out["recovering_before_cut"] += 1
+        elif s.get("trigger"):
+            out["look_in_progress_cut"] += 1
+    return out

@@ -153,6 +153,9 @@ def aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
             "unfaithful": sum(x["unfaithful"] for x in m),
             "objected": sum(x["objected"] for x in m),
             "reproposals_after_rejection": sum(x["reproposals_after_rejection"] for x in m),
+            # scripted link cuts (link-cut-mid-look): what each cut fell on, episodes counted
+            "faults": {k: sum((x.get("faults") or {}).get(k, 0) for x in m)
+                       for k in ("link_cuts", "look_in_progress_cut", "no_look_to_cut", "recovering_before_cut")},
             "perf": perf_breakdown(rs),
         }
     return out

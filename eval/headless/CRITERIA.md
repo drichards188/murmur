@@ -232,3 +232,13 @@ matching emulator seeds) on 9 of 9 proposals: that says the fit took, nothing mo
 - **G1b at W = 8 workers**, stated now, before measuring: Harbor watch, seeds 1 to 200, the
   default operator, measured when the host is quiet (its load stated with the result); at least
   1,000 episodes per core-hour.
+
+## Fix round 2, 2026-10-10 (no gate re-run asked)
+
+The emulator's seed is the **episode** seed, not the situation file's (`situations.emulator_seed`):
+fix round 1's rule put every episode of a Harbor watch batch on seed 1 (its file's), the same
+draws every time (G1b's 200 episodes: PUMA 2 failed safe at 318 s in all). Anything compared with
+the full stack passes the same seed to it as `MURMUR_LINKEMU_SEED`. G1's copies set `seed` = k and
+run as episode k on both sides, so the value G1 used is unchanged and the seeds 11 to 20 records
+stand. `link-cut-mid-look`'s aggregate counts the cuts that fell on a vehicle already going home
+on its own failsafe (no look in progress cut) beside the episodes with no look to cut.

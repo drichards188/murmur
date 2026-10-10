@@ -48,33 +48,45 @@ def copy_with_seed(tmp: Path, k: int) -> Path:
 
 # ---- 1. the emulator's seed ------------------------------------------------------------------
 
-def test_both_sides_run_the_emulator_on_the_situation_seed(tmp_path: Path):
+def test_both_sides_run_the_emulator_on_the_episode_seed(tmp_path: Path):
     from eval.headless.fullstack import stack_env
 
     links_seed = tomllib.loads(links_file().read_text()).get("seed", 1)
     for k in (1, 7, 13):
-        copy = copy_with_seed(tmp_path, k)
-        env = stack_env(copy)
+        copy = copy_with_seed(tmp_path, k)  # G1: the copy's `seed` and the episode seed are k
+        env = stack_env(k)
         full = int(env.get("MURMUR_LINKEMU_SEED") or links_seed)  # unset: the links file's seed
         spec, _ = process_spec(from_situation(copy), k, tmp_path / f"w{k}", Calibration())
         assert spec.get("linkemu_seed") == full == k
     # up.sh hands it to the emulator, and leaves the links file's seed alone without it
     up = (REPO / "scripts" / "up.sh").read_text()
     assert '[ -n "${MURMUR_LINKEMU_SEED:-}" ] && emu_args+=(--seed "$MURMUR_LINKEMU_SEED")' in up
-    # a plain Harbor watch (seed 1) and a family episode: the situation's seed
+    # Harbor watch's own file (seed 1) in a batch: the episode seed, not the file's
     spec, _ = process_spec(from_situation("harbor-watch"), 5, tmp_path / "hw", Calibration())
-    assert spec["linkemu_seed"] == 1
+    assert spec["linkemu_seed"] == 5
     e, contacts = generate("fast-unknown", 9, tmp_path)
     spec, _ = process_spec(e, 9, tmp_path / "fam", Calibration(), contacts_path=contacts)
     assert spec["linkemu_seed"] == 9
 
 
+def test_two_harbor_watch_episodes_meet_different_link_draws(tmp_path: Path):
+    """Fix round 2: a batch of Harbor watch (its file's seed 1) ran every episode on emulator
+    seed 1, so PUMA 2 failed safe at 318 s in all 200 of G1b's episodes."""
+    e = from_situation("harbor-watch")
+    seeds = {process_spec(e, k, tmp_path / f"e{k}", Calibration())[0]["linkemu_seed"] for k in (2, 3, 4)}
+    assert len(seeds) == 3
+
+
 # ---- 3. the link cut waits for a look ---------------------------------------------------------
 
 class FakeSim:
-    def __init__(self, intents: list[dict[str, Any]]):
+    def __init__(self, intents: list[dict[str, Any]], mode: str = "AUTO"):
         self.intents = intents
+        self.mode = mode
         self.faults: list[dict[str, Any]] = []
+
+    def truth(self, association: bool = True) -> dict[str, Any]:
+        return {"ours": [{"uid": 3, "mode": self.mode}, {"uid": 4, "mode": "AUTO"}]}
 
     def api(self, method: str, path: str, body: Any = None, operator: str | None = None) -> tuple[int, Any]:
         assert (method, path) == ("GET", "/api/intents")
@@ -119,6 +131,36 @@ def test_the_link_cut_waits_for_a_look_and_never_falls_back(tmp_path: Path):
     assert [f["event"]["uid"] for f in sim.faults] == [3]
     assert sim.faults[0]["event"]["at_s"] == pytest.approx(230.0, abs=1.0)
     assert not any("skipped" in r for r in s.log)
+
+
+def test_a_cut_says_what_it_fell_on_and_the_family_counts_it():
+    """Fix round 2: a cut of a vehicle already going home on its own failsafe cut no look; the
+    record says so and the family aggregate counts it beside the episodes with no look to cut."""
+    from eval.headless.batch import aggregate
+    from eval.headless.metrics import fault_summary
+
+    item = {"kind": "link_cut", "after_first_look": [5, 90], "delay_s": 30.0, "duration_s": 20.0,
+            "deadline_s": LINK_CUT_DEADLINE_S}
+    look = {"id": 4, "kind": "orbit", "uids": [3], "source": {"kind": "agent", "id": "agent-playbook"},
+            "history": [{"state": "dispatched", "t": (1_000_000.0 + 200.0) * 1000.0}]}
+    logs = {}
+    for name, sim in (("look", FakeSim([look])), ("recovering", FakeSim([look], mode="RTL")), ("none", FakeSim([]))):
+        s = Script(FakeEp(sim), [item])
+        drive(s, 720.0)
+        logs[name] = s.log
+    (cut,) = logs["recovering"]
+    assert cut["mode_at_cut"] == "RTL" and cut["already_recovering"] is True
+    assert logs["look"][0]["already_recovering"] is False
+    sums = [fault_summary({"script": logs[k]}) for k in ("look", "recovering", "none")]
+    assert sums[0] == {"link_cuts": 1, "look_in_progress_cut": 1, "no_look_to_cut": 0, "recovering_before_cut": 0}
+    assert sums[1] == {"link_cuts": 1, "look_in_progress_cut": 0, "no_look_to_cut": 0, "recovering_before_cut": 1}
+    assert sums[2] == {"link_cuts": 0, "look_in_progress_cut": 0, "no_look_to_cut": 1, "recovering_before_cut": 0}
+    base = {"look_covered": True, "time_to_look": {}, "false_looks": 0, "precision": {"legit": 0, "n": 0},
+            "human_cards": 0, "unfaithful": 0, "objected": 0, "reproposals_after_rejection": 0}
+    results = [{"situation": {"name": "x", "family": "link-cut-mid-look", "split": "tuning"}, "wall_s": 1.0,
+                "perf": None, "metrics": {**base, "faults": f}} for f in sums]
+    agg = aggregate(results)["link-cut-mid-look (tuning)"]["faults"]
+    assert agg == {"link_cuts": 2, "look_in_progress_cut": 1, "no_look_to_cut": 1, "recovering_before_cut": 1}
 
 
 # ---- 4 and 9. the agent loop ------------------------------------------------------------------
@@ -316,7 +358,7 @@ def test_a_full_stack_run_records_its_binaries_and_inputs(tmp_path: Path):
     from eval.headless.fullstack import stack_env, stack_provenance
     from eval.headless.provenance import STACK_BINARIES
 
-    prov = stack_provenance(stack_env(copy_with_seed(tmp_path, 11)))
+    prov = stack_provenance(stack_env(11))
     assert set(prov["binaries"]) == set(STACK_BINARIES)
     assert prov["binaries"]["murmur-bridge"]  # built (make check builds it)
     assert prov["emulator_seed"] == 11 and prov["commit"] and "dirty" in prov

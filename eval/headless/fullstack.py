@@ -95,14 +95,15 @@ def proc_starts(http_port: str) -> dict[str, float]:
     return out
 
 
-def stack_env(copy: Path) -> dict[str, str]:
-    """The environment `make situation` runs a copy with: this block's ports, and the link
-    emulator's seed the simulator gives the same situation (situations.emulator_seed)."""
-    from .situations import emulator_seed, from_situation
+def stack_env(seed: int) -> dict[str, str]:
+    """The environment `make situation` runs a G1 copy with: this block's ports, and the link
+    emulator's seed the simulator gives the episode of the same seed (situations.emulator_seed;
+    a copy has `seed = k` and its episode seed is k)."""
+    from .situations import emulator_seed
 
     env = {**os.environ, **PORTS}
     env.pop("MURMUR_TIDEWATER_URL", None)
-    env["MURMUR_LINKEMU_SEED"] = str(emulator_seed(from_situation(copy)))
+    env["MURMUR_LINKEMU_SEED"] = str(emulator_seed(seed))
     return env
 
 
@@ -130,7 +131,7 @@ def run_one(seed: int, out_root: Path) -> Path:
     if n != 1:
         raise SystemExit("harbor-watch.toml: no single `seed = ` line")
     copy.write_text(new)
-    env = stack_env(copy)
+    env = stack_env(seed)
     prov = stack_provenance(env)
     say(f"seed {seed}: make situation (about 13 minutes; emulator seed {env['MURMUR_LINKEMU_SEED']})")
     t0 = time.time()

@@ -78,12 +78,13 @@ class Calibration:
         return {k: getattr(self, k) for k in self.KEYS}
 
 
-def emulator_seed(e: "EpisodeSpec") -> int:
-    """The link emulator's seed for an episode: the situation's own `seed`, on both sides of G1
-    (eval/headless/fullstack.py passes it to the full stack's emulator as MURMUR_LINKEMU_SEED;
-    process_spec gives it to the simulator's), so each meets the same draws. A plain `make
-    situation NAME=harbor-watch` runs the links file's seed, 1, which is Harbor watch's `seed`."""
-    return int(e.seed)
+def emulator_seed(seed: int) -> int:
+    """The link emulator's seed for an episode: the episode seed, so every episode of a batch
+    meets its own draws (fix round 2: a Harbor watch batch had them all on the situation file's
+    seed 1, the same draws every time). Anything compared with the full stack passes the same
+    value to it as MURMUR_LINKEMU_SEED (eval/headless/fullstack.py `stack_env`); G1's copies set
+    the situation's `seed` to the episode seed k, and the full stack runs them with k too."""
+    return int(seed)
 
 
 def links_file() -> Path:
@@ -200,7 +201,7 @@ def process_spec(e: EpisodeSpec, seed: int, workdir: Path, calib: Calibration,
         "fleet": vehicles,
         "standins": standins,
         "links": str(links_file()),
-        "linkemu_seed": emulator_seed(e),
+        "linkemu_seed": emulator_seed(seed),
         "events": e.events,
         "terrain_grid": str(TERRAIN_GRID) if terrain and TERRAIN_GRID.exists() else None,
         "space": space,

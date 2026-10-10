@@ -149,11 +149,14 @@ Times are the situation's clock (seconds from the stack's start).
 - **Stepping.** `step_to(t)` sleeps the runtime to `t` (every timer up to `t` fires in order), then
   yields 64 times so every task woken at `t` runs before the next request. A request between steps
   runs at the current instant, and the server fails the episode if the clock moved during it.
-- **Draws.** The stand-ins `Vehicle::seeded(.., k)`; the emulator's seed the situation's own
-  `seed` (`situations.emulator_seed`), which the full-stack runner gives the full stack's emulator
-  for the same situation (`MURMUR_LINKEMU_SEED`), so both sides meet the same link draws (until
-  fix round 1 the full stack always ran the links file's seed 1 and the simulator the episode
-  seed: section 11.2); the operator `random.Random(seed * 7919 + 17)` (eval/proxy.py's, the
+- **Draws.** The stand-ins `Vehicle::seeded(.., k)`; the emulator's seed `k`, the episode seed
+  (`situations.emulator_seed`). Anything compared with the full stack passes that same seed to the
+  full stack's emulator as `MURMUR_LINKEMU_SEED` (the full-stack runner does it for G1, whose
+  copies set the situation's `seed` to k and run as episode k), so both sides meet the same link
+  draws. Until fix round 1 the full stack always ran the links file's seed 1 and the simulator the
+  episode seed (section 11.2); from fix round 1 to fix round 2 the simulator took the situation
+  file's `seed`, which for G1's copies is k (so G1's records hold) but put every episode of a
+  Harbor watch batch on seed 1 (section 11.3). The operator `random.Random(seed * 7919 + 17)` (eval/proxy.py's, the
   situation's `seed`); the playbook's first tick `random.Random("ai-first-tick:<k>")`; the
   contacts' motion and the sensing model the contacts scenario's own `seed`. **For G1, Harbor watch keeps its contacts scenario's seed 11 in
   every episode, as every full-stack Harbor watch run does; the families draw a contacts seed per
@@ -264,10 +267,11 @@ operator-facing parameters (budget, cooldowns, materiality) against it.
 ## 8. Situations: Harbor watch, the families, the split
 
 **Harbor watch** runs from its own file, unchanged, with the playbook config from its
-`[playbook]` table: the G1 reference. Its operator and its link emulator draw from the file's
-`seed` (1), as `make situation NAME=harbor-watch` does every time; a batch's episode seed varies
-the stand-ins (and the playbook's first tick). G1's copies set the file's `seed` to the episode
-seed, so there all of them vary, on both sides alike.
+`[playbook]` table: the G1 reference. Its operator draws from the file's `seed` (1), as `make
+situation NAME=harbor-watch` does every time; a batch's episode seed varies the stand-ins, the
+link emulator and the playbook's first tick. G1's copies set the file's `seed` to the episode seed
+k, and the full stack runs them with `MURMUR_LINKEMU_SEED` = k, so there everything varies, on
+both sides alike.
 
 **The families** (`families.py`; `generate(family, seed, workdir)` draws from
 `random.Random(f"{family}:{seed}")`) keep Harbor watch's base: its four vehicles and three opening
@@ -487,7 +491,11 @@ using about 5 threads and the user's 22-vehicle stack about 2), 24.5 just after:
 fix round 1, the same measure gave 1,235 at 8 workers, 998 at 16 and 1,585 at 1. Every part of an
 episode (the bridge's tasks, the playbook's unchanged Python, the pipe) took about 15 % longer on
 2026-10-10 alike, which points at the host, not the fix round's code. CRITERIA.md lets W be stated;
-the 16-worker miss stays reported so the pass is not read as more than it is. The design's
+the 16-worker miss stays reported so the pass is not read as more than it is. Fix round 2 found
+that these 200 episodes all ran the link emulator on seed 1 (the situation file's; PUMA 2 failed
+safe at 318 s and the fleet was ready at 3 s in every one), the correlation fix round 1 removed
+from G1 now inside a batch; a Harbor watch batch now runs each episode on its own seed. G1b was not
+re-run for it (the speed does not depend on which draws fall where). The design's
 estimate (1 to 1.5 s an episode, 2,400 to 3,600 per core-hour) was optimistic by about half.
 
 Where an episode's time goes (2026-10-09, Harbor watch, one worker, mean seconds per episode of
@@ -546,8 +554,12 @@ episode. **Tuning and held-out are never pooled.**
 
 One proposal in all 210 episodes was unjudged (a `link.cover_gap` in a `decoy` episode).
 
-`link-cut-mid-look` version 2 cut a look under way in **all 30** episodes and recorded "no look
-to cut" in none; all 30 were covered. Version 1 (2026-10-09, reported apart) cut a look in only
+`link-cut-mid-look` version 2 cut the vehicle flying the first look in all 30 episodes and
+recorded "no look to cut" in none, and all 30 were covered; but in 3 (seeds 14, 18, 28) PUMA 1 was
+already going home on its own lost-link failsafe when the cut came (by 25, 4 and 11 s on the 2 s
+samples of our vehicles), so **27 of 30 cut a look in progress**. The family aggregate now counts
+both cases (`faults`: `look_in_progress_cut` 27, `recovering_before_cut` 3, `no_look_to_cut` 0;
+`logs/headless-families/round2-link-cut/`). Version 1 (2026-10-09, reported apart) cut a look in only
 11 of 30 and PUMA 1 regardless in the other 19, and covered 20 of 30: its 10 misses were all among
 those 19.
 

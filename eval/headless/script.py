@@ -7,7 +7,9 @@ Each item is `{"at_s": t, "kind": ...}` or waits for a trigger:
   event, as the storyline's `link` step appends one to the run's events file). With
   `after_first_look`, the vehicle is the one flying the first look of the playbook's to be
   dispatched, cut `delay_s` (drawn by the generator) after its dispatch; if none is dispatched by
-  `deadline_s`, nothing is cut and the log says "no look to cut".
+  `deadline_s`, nothing is cut and the log says "no look to cut". The log records the vehicle's
+  mode at the cut (truth) and whether it was already going home on its own failsafe
+  (`already_recovering`, since when), in which case no look in progress was cut.
 - `stop` `{uid}`: the stand-in stops making way (its cruise and top speed set to zero, as a
   fouled propeller would; nothing goes through the bridge).
 - `flood` `{proposals: [{task, uids, center, radius_m | route}], window_s}`: a scripted proposer
@@ -19,13 +21,18 @@ Everything it did goes to `log` (the record's `script`), with truth's view of it
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 from eval.agent import _mcp_args
 from eval.situation import SCRIPTED_TIMELINE, STORYLINE_AGENT
 from eval.situation_run import labelled
 
+from . import REPO
 from .sim import HeadlessSession
+
+sys.path.insert(0, str(REPO / "agents"))
+from playbook.beliefs import RECOVERING_MODES  # noqa: E402
 
 
 class Script:
@@ -101,6 +108,17 @@ class Script:
             self._push(max(at, now), {"kind": "link_cut", "uid": uids[0], "duration_s": it["duration_s"],
                                       "trigger": {"intent": iid, "dispatched_s": round(t_disp - epoch, 3), "delay_s": delay}})
 
+    def _recovering_since(self, uid: int, now: float) -> float | None:
+        """Since when (the episode's samples of our vehicles, every 2 s) `uid` has been in a
+        recovering mode without a break, up to `now`."""
+        since = None
+        for s in getattr(self.ep, "ours_samples", None) or []:
+            if s["t"] > now:
+                break
+            mode = next((o[3] for o in s["ours"] if o[0] == uid), None)
+            since = (since if since is not None else s["t"]) if str(mode or "").upper() in RECOVERING_MODES else None
+        return since
+
     def _do(self, now: float, it: dict[str, Any]) -> None:
         sim = self.ep.sim
         kind = it.get("kind")
@@ -112,11 +130,17 @@ class Script:
                 rec.update(skipped=f"no look to cut: none dispatched by {float(it['deadline_s']):g} s")
             elif kind == "link_cut":
                 uid = int(it["uid"])
+                # what the vehicle was doing when its link was cut, by truth: a look in progress,
+                # or already going home on its own failsafe (then no look is being cut)
+                mode = next((o.get("mode") for o in (sim.truth(association=False).get("ours") or [])
+                             if int(o.get("uid", -1)) == uid), None)
+                recovering = str(mode or "").upper() in RECOVERING_MODES
                 ev = {"name": f"headless cut uid {uid}", "at_s": round(now, 3), "duration_s": float(it["duration_s"]),
                       "uid": uid, "cut": True}
                 sim.fault("link_event", event=ev)
                 rec.update(uid=uid, duration_s=float(it["duration_s"]), until_s=round(now + float(it["duration_s"]), 3),
-                           trigger=it.get("trigger"))
+                           trigger=it.get("trigger"), mode_at_cut=mode, already_recovering=recovering,
+                           recovering_since_s=self._recovering_since(uid, now) if recovering else None)
             elif kind == "stop":
                 sim.fault("stop", uid=int(it["uid"]))
                 rec.update(uid=int(it["uid"]))
