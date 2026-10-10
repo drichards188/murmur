@@ -114,7 +114,7 @@ def stack_provenance(env: dict[str, str]) -> dict[str, Any]:
 
     links = Path(env.get("MURMUR_LINKS") or REPO / "sim" / "links.toml")
     return {**git_state(), "binaries": stack_binaries(), "emulator_seed": int(env["MURMUR_LINKEMU_SEED"]),
-            **inputs(links)}
+            **inputs(links), "load_avg_at_start": [round(x, 2) for x in os.getloadavg()]}
 
 
 def run_one(seed: int, out_root: Path) -> Path:
