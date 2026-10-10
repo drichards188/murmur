@@ -1,6 +1,7 @@
 # The headless simulator (murmur-8ak)
 
-Status: **built** (phase 2, 2026-10-09); gates run, results in section 11. The design was
+Status: **built** (phase 2, 2026-10-09; review fix round 1, 2026-10-10); gates run, results in
+section 11 (G1 re-run on seeds 11 to 20 after the fix round, the first run beside it). The design was
 reviewed before any code (commit 89c8bed); this file now describes what was built, and says
 where that differs from the design. The gates and the split of the situation families were
 frozen separately, before any result, in [`eval/headless/CRITERIA.md`](../eval/headless/CRITERIA.md)
@@ -94,7 +95,7 @@ replayed with its anchors.
 
 | path | what |
 |---|---|
-| `sim.py` | the `murmur-headless` process client; `HeadlessSession`, the session adapter (`AgentSession`'s surface and error semantics: a tool error raises `RuntimeError("<tool>: <error>")`, a refused proposal comes back with `refused`) |
+| `sim.py` | the `murmur-headless` process client; `HeadlessSession`, the session adapter (`AgentSession`'s surface and error semantics: a tool error raises `RuntimeError("<tool>: <error>")`, a refused proposal comes back with `refused`, a result that is not JSON reads as `{"text": ...}`) |
 | `episode.py` | one episode: a discrete-event loop (the situation runner's steps, the operator, the playbook's tick loop, a truth sampler) on simulated time, and the record |
 | `script.py` | the situation runner's steps (wait for the fleet, the opening orders as `op-setup` after its dry run or by `agent-setup`, faults, scripted proposers) |
 | `operator.py` | the operator on simulated time (section 7) |
@@ -106,6 +107,7 @@ replayed with its anchors.
 | `calibrate.py` | the three start offsets from the calibration runs |
 | `batch.py` | `python -m eval.headless.batch`: episodes on a process pool, a record each, the aggregate, the speed and where the time went |
 | `gate.py` | G1 as CRITERIA.md defines it |
+| `provenance.py` | the commit and dirty flag, the binaries' hashes, the untracked inputs (links file, space cache) |
 | `bake_terrain.py` | the terrain grid, sampled once from `tidewater serve` |
 | `calibration.toml`, `split.toml`, `CRITERIA.md` | the offsets; the frozen split; the frozen gates |
 | `tests/` | section 6 and 5's tests, the operator against `eval/proxy.py`, the session, labels and families |
@@ -345,36 +347,103 @@ pipe, the driver and the playbook).
 
 ### 11.1 Calibration (in-sample, not a gate)
 
-The three start offsets were set from three full-stack runs with `seed` = 101, 102, 103 (CRITERIA.md
-"Calibration"): `contacts_start_s` 0.823, `standins_start_s` 1.001, `ai_first_tick_s` 1.031. With
-them the simulator agreed with those three runs on 9 of 9 proposals. **That is in-sample**: the
-offsets were fitted on those runs, so they say only that the fit took; they are not part of G1,
-whose ten seeds were never used for anything before the gate.
+The first calibration (CRITERIA.md "Calibration") set three start offsets from full-stack runs
+with `seed` = 101, 102, 103: contacts 0.823 s, stand-ins 1.001 s, the playbook's first tick 1.031
+s; the simulator then agreed with those runs on 9 of 9 proposals. Fix round 1 (CRITERIA.md,
+2026-10-10) refitted on 101 to 106 (104 to 106 run for it, with the emulator on each run's seed):
+the contacts at 0.821 s, the stand-ins at 0.966 s, the bridge up at 1.024 s (medians), and the
+playbook's first tick drawn per episode seed from 0.711 to 1.590 s (the six runs' range). With
+these the simulator agrees with runs 104 to 106 on 9 of 9 proposals. **Both are in-sample**: the
+values were fitted on those runs, so they say only that the fit took; neither is part of G1.
+
+An observation for a later calibration, not used here (no calibration is fitted on gate seeds): in
+19 of the 20 gate runs the playbook's first tick came 1.28 to 1.41 s after `ai_start_s` (0.46 and
+0.52 s in the other two), a narrower spread than the six calibration runs showed.
 
 ### 11.2 G1: fidelity on Harbor watch
 
-Run 2026-10-09 as CRITERIA.md froze it: ten full-stack runs (`make situation` with Harbor watch
-copies `seed` = 1 to 10, one at a time on the assigned port block, all ten good at the first
-attempt, every audit log replayed with its anchors: "every decision reproduced exactly"), then
-`python -m eval.headless.gate g1` (headless episodes of the same copies, seeds 1 to 10). The
-binaries: the full stack's seed 1 built at 28e2fa7, seeds 2 to 10 rebuilt by `up.sh` at 23a950a
-(a commit of the test's normalisation; no Rust changed between them), the simulator built at
-28e2fa7. Records: `logs/headless-g1/gate/` (full stack), `logs/headless-g1/gate-headless/`
-(headless, with audit logs), `logs/headless-g1/g1.json` (not committed).
+G1 has run twice. The first run (seeds 1 to 10) stays on record as run; the second (seeds 11 to
+20) follows fix round 1, under CRITERIA.md as amended on 2026-10-10 before it.
 
-**G1 passes, on the line**: agreement **0.800** (24 pairs; 29 headless and 25 full-stack
-proposals; 24 / (29 + 25 - 24)), against the 0.80 required, and every metric inside the other
-side's interval both ways:
+#### The re-run, seeds 11 to 20 (2026-10-10)
+
+Ten full-stack runs (`make situation` with Harbor watch copies `seed` = k and
+`MURMUR_LINKEMU_SEED` = k, one at a time on the assigned port block, all ten good at the first
+attempt, each replayed with its anchors: "every decision reproduced exactly"), then `python -m
+eval.headless.gate g1 --seeds 11-20`. Everything at commit 0887dca, clean on both sides (the full
+stack's `provenance.json`, the simulator's records). The host was shared: its load average at the
+runs' starts was 1.5 to 17.4 (a browser and the user's 22-vehicle stack). Records:
+`logs/headless-g1/gate2/` (full stack), `logs/headless-g1/gate2-headless/` (headless, with audit
+logs), `logs/headless-g1/g1-rerun.json` (not committed).
+
+**G1 passes**: agreement **0.857** (24 pairs; 26 headless and 26 full-stack proposals;
+24 / (26 + 26 - 24)), and every metric inside the other side's interval both ways:
 
 | metric | headless | full stack | pass |
 |---|---|---|---|
 | `look_covered` | 10/10 [0.72, 1.00] | 10/10 [0.72, 1.00] | yes |
-| `time_to_look` | -114.65 s (floor interval +-2 s) | -114.50 s [-115.00, -114.00] | yes |
+| `time_to_look` | -114.45 s (floor interval +-2 s) | -115.12 s (floor interval +-2 s) | yes |
 | `false_looks` | 0.0 | 0.0 | yes |
-| `precision` | 29/29 [0.88, 1.00] | 25/25 [0.87, 1.00] | yes |
+| `precision` | 25/25 [0.87, 1.00] | 26/26 [0.87, 1.00] | yes |
 
-Proposals side by side (time on the situation's clock; every target is `fastboat-west` by truth,
-every vehicle PUMA 1):
+Proposals side by side (situation's clock; every target `fastboat-west` by truth, every vehicle
+PUMA 1):
+
+| seed | headless | full stack | pairs |
+|---|---|---|---|
+| 11 | investigate 178.5, recentre 211.5 | investigate 178.3, recentre 210.4, recentre 270.5 | 2 |
+| 12 | investigate 177.9, recentre 211.9, recentre 271.9 | investigate 177.1, recentre 209.2, recentre 269.4 | 3 |
+| 13 | investigate 178.3, recentre 210.3, recentre 270.3 | investigate 177.1, recentre 209.2, recentre 270.9 | 3 |
+| 14 | investigate 178.4, recentre 213.4, recentre 273.4 | investigate 178.1, recentre 213.3, recentre 273.4 | 3 |
+| 15 | investigate 178.5, recentre 210.5 | investigate 177.2, recentre 210.3 | 2 |
+| 16 | investigate 178.8, recentre 211.8 | investigate 177.1, recentre 210.2 | 2 |
+| 17 | investigate 178.3, recentre 210.3 | investigate 178.2, recentre 210.3 | 2 |
+| 18 | investigate 178.7, recentre 210.7 | investigate 178.6, recentre 210.7, recentre 275.9 | 2 |
+| 19 | investigate 178.3, recentre 211.3, stuck hold 305.3, investigate 311.3 | investigate 177.1, recentre 210.7 | 2 |
+| 20 | investigate 178.0, recentre 223.0, recentre 284.0 | investigate 178.1, recentre 223.3, recentre 283.9 | 3 |
+
+**Every unpaired proposal, and why:**
+
+- **Seed 11, the full stack's recentre at 270.5 s.** The headless PUMA 1 went home on its
+  lost-link failsafe at 258 s in the terrain shadow west of the bridge (below), the full stack's
+  not until 301.5 s. The same seed gives both emulators the same streams of draws, but a draw falls
+  on whichever packet comes next, so the two loss patterns line up only while the two packet
+  sequences do; here they had not.
+- **Seed 18, the full stack's recentre at 275.9 s.** Both sides withdrew the waiting recentre when
+  PUMA 1's link dropped (274.7 and 274.9 s), and on the next tick both selected it again. The full
+  stack proposed it (and withdrew it a second later, the link still lost); the headless's preview
+  failed the reserves check: PUMA 1's last battery report was 10.6 s old against a 10 s limit.
+  Where that report fell in the second decided it, on either side.
+- **Seed 19, the headless's stuck hold at 305.3 s and its investigate at 311.3 s.** The full
+  stack's PUMA 1 went home on its failsafe at 240.4 s. The headless's link held long enough for
+  the recentre's upload to start and fail ("mission upload unconfirmed", 266 s) and was then lost;
+  the bridge raised a stuck alert on the failed task, the playbook held PUMA 1 and, the hold done,
+  looked again. The full stack's Puma was home by then. Same cause as seed 11, the other way.
+
+**The early return** (PUMA 1's first RTL after 230 s coming before 272 s, which in 94 % of 200
+headless episodes decides whether the second recentre is made): the full stack 4 of 10 gate runs
+(seeds 15, 16, 17, 19) and 0 of 3 calibration runs (104 to 106), 4 of 13; the simulator 4 of 10 on
+the same seeds (11, 15, 16, 17) and **44 of 200 (22 %)** over G1-style episodes of seeds 21 to 220
+(copies with `seed` = k, the emulator on k); 4 of 13 against 44 of 200, Fisher two-sided p 0.50:
+no difference shows. The two sides put a seed in the same class (early or
+late) in 8 of 10 seeds, and the RTL within 1.5 s in 4. The reviewer's diagnostic for the first run
+(the simulator with the emulator on seed 1, as the full stack had it): 24.5 % over 200 episodes.
+
+Reported beside the gate (not gated): human-tier cards per episode 2.5 headless and 2.6 full
+stack; approvals 20 and 21, voided at approval 5 and 5; approval latency median 28.3 s headless
+and 19.9 s full stack (means 27.0 and 23.0). Each full-stack run's own offsets: contacts 0.809 to
+0.837 s, stand-ins 0.918 to 0.977 s, the bridge up at 1.016 to 1.045 s, the playbook's first tick
+1.285 to 1.408 s (seed 11: 0.459 s); the simulator drew 0.719 to 1.547 s for the same seeds.
+Fleet readiness: the full stack 2.8 to 3.9 s, the simulator 3 s in all ten.
+
+#### The first run, seeds 1 to 10 (2026-10-09), on record
+
+As CRITERIA.md first froze it: agreement **0.800** (24 pairs; 29 headless and 25 full-stack
+proposals), every metric inside both ways (`look_covered` 10/10 and 10/10, `time_to_look` -114.65
+and -114.50 s, `false_looks` 0 and 0, `precision` 29/29 and 25/25). Binaries: the full stack's
+seed 1 at 28e2fa7, seeds 2 to 10 rebuilt by `up.sh` at 23a950a (no Rust changed between them),
+the simulator at 28e2fa7. Records: `logs/headless-g1/gate/`, `logs/headless-g1/gate-headless/`,
+`logs/headless-g1/g1.json`.
 
 | seed | headless | full stack | pairs |
 |---|---|---|---|
@@ -389,70 +458,40 @@ every vehicle PUMA 1):
 | 9 | investigate 178.0, recentre 210.0, recentre 270.0 | investigate 178.1, recentre 210.2, recentre 271.4 | 3 |
 | 10 | investigate 178.0, recentre 211.0, recentre 271.0 | investigate 178.6, recentre 210.2 | 2 |
 
-**Where the two sides diverge, and why.** The look and the first recentre agree in every seed,
-within 1.3 s but for seed 2's recentre (7.4 s). **Every divergence is one proposal: the second
-recentre at about 271 s**, made in 9 of 10 headless episodes and 5 of 10 full-stack runs. In every
-seed, on both sides, that proposal is made exactly when PUMA 1 has not yet gone home on its
-lost-link failsafe by then: it flies the boat's orbit through a terrain shadow west of the bridge
-(the emulator's line of sight from the ground station clears by 11 m until about 225 s, then is
-obstructed by 3, 7 and 11 m, losing 17 to 56 % of packets on the `ramp` model), and the Puma's
-GCS failsafe sends it home after 5 s without a GCS heartbeat. That early return came in 5 of 10
-full-stack runs (at 243.5, 256.4, 256.4, 259.4 and 271.4 s; none in the three calibration runs)
-and in 1 of 10 headless episodes (257 s, seed 2; none in the calibration seeds). Checked to be the
-same on both sides: the obstruction along the Puma's path (the baked grid against tidewater's own
-samples on the same profile: within 0.15 m; the live emulator's view polled during the seed 9 run
-against the headless one: the same cells and depths, the path within tens of metres), the
-downlink's packet counts (seed 10: 464 and 461 packets by 200 s, the same 2 a second after), and
-the loss model (the same code; terrain loss is an independent draw per packet). Not the same,
-by design: the random draws (the full stack's emulator uses `sim/links.toml`'s seed 1 in every
-run, the simulator the episode seed). At these counts the difference (5 of 13 against 1 of 13
-with the calibration runs) is not significant (Fisher's exact test, two-sided p about 0.16), but
-it leans one way, and it is what decides the gate: if the full stack's early returns are not
-chance, the simulator under-produces lost-link failsafes on a degraded link, and the second
-recentre is over-produced. Measuring it needs many runs of one degraded-link case on both sides
-(cheap headless; about 12 minutes a full-stack run); not done here, since nothing may be tuned on
-the gate's seeds.
-
-Reported beside the gate (not gated):
-
-| | headless | full stack |
-|---|---|---|
-| human-tier cards per episode | 2.9 | 2.5 |
-| approvals; voided at approval | 22; 7 | 22; 3 |
-| approval latency, median (mean) | 20.5 s (21.4) | 24.8 s (24.3) |
-
-The extra voided cards are the second recentres, refused at approval because PUMA 1's navigation
-status was too old by then (its link in the shadow). Each full-stack run's own start offsets
-(`python -m eval.headless.calibrate`'s measure; the simulator uses 0.823, 1.001 and 1.031): the
-contacts 0.809 to 0.818 s, the stand-ins 0.915 to 0.967 s, the playbook's first tick 1.28 to
-1.40 s (seed 2: 0.52 s). Fleet readiness: the full stack 2.8 to 4.0 s; the simulator 3 s in eight
-seeds, 4 s and 8 s in seeds 9 and 10, and 31 s in seed 2 (the emulator's draws lost 4 of the
-first 16 bridge-to-vehicle packets to PUMA 1, and its GPS fix first showed at 31 s, which looks
-like a lost request repeated later; not traced further). Over 200 headless Harbor watch episodes
-the fleet was ready at 3 s in 90 %, at up to 31 s in the rest; the full stack's runs draw their
-own such delays (the calibration's seed 101 was 22 s late for another reason: CRITERIA.md's
-calibration section).
+Every divergence was the second recentre at about 271 s (9 of 10 headless, 5 of 10 full stack),
+made exactly when PUMA 1 had not gone home on its lost-link failsafe by then. PUMA 1 flies the
+boat's orbit through a terrain shadow west of the bridge. There the emulator's line of sight from
+the ground station clears by 11 m until about 225 s, then is obstructed by 3, 7 and 11 m, losing 17
+to 56 % of packets on the `ramp` model. The Puma's GCS failsafe sends it home after 5 s without a
+heartbeat. Early returns came in 5 of 10 full-stack runs and 1 of 10 headless episodes. The
+terrain (the baked grid within 0.15 m of tidewater's own samples on the same profiles), the
+Puma's path, the downlink's packet counts and the loss code were checked to be the same on both
+sides. The difference was the draws, which **fix round 1 found and removed**: every full-stack run
+had the links file's seed 1, and so the same draws (PUMA 2 failed safe at 317 s in all ten), while
+each headless episode had its own (CRITERIA.md, 2026-10-10). Its fleet readiness, offsets and
+inbox numbers are in the git history of this file (commit bbf894c).
 
 ### 11.3 G1b: speed
 
-Harbor watch, the default operator, seeds 1 to 200, measured 2026-10-09 on this machine (Intel
-i7-14700K: 8 performance cores with two threads each and 12 efficiency cores, 28 threads; the
-user's 22-vehicle stack running beside it, about 2 threads busy):
+**At the stated W = 8** (CRITERIA.md, 2026-10-10), Harbor watch, the default operator, seeds 1 to
+200, measured 2026-10-10 after the gate runs, with this worktree's stacks down. The host was
+shared, not idle: load average 14.7 just before, about 77 % of its 28 threads idle (a browser
+using about 5 threads and the user's 22-vehicle stack about 2), 24.5 just after:
 
-| workers | episodes | wall | episodes per core-hour | episode wall mean | 95th percentile |
-|---|---|---|---|---|---|
-| 1 | 40 | 91 s | 1,585 | 2.27 s | 2.40 s |
-| 8 | 200 | 73 s | **1,235** | 2.89 s | 3.31 s |
-| 16 | 200 | 45 s | 998 | 3.48 s | 3.74 s |
+| workers | episodes | episodes per core-hour | episode wall mean | 95th percentile |
+|---|---|---|---|---|
+| **8** | 200 | **1,074** | 3.33 s | 3.54 s |
+| 1 | 30 | 1,361 | 2.65 s | 2.72 s |
 
-**G1b passes at 8 workers (1,235) and misses by a hair at 16 (998).** An episode costs 2.27 s
-alone and slows as workers are added (beyond eight they share performance cores' threads or land
-on efficiency cores), so the rate per worker falls. CRITERIA.md lets W be stated; both are
-reported so the pass is not read as more than it is. The design's estimate (1 to 1.5 s an episode,
-2,400 to 3,600 per core-hour) was optimistic by about half.
+**G1b passes at W = 8: 1,074 episodes per core-hour.** On 2026-10-09, on a quieter host and before
+fix round 1, the same measure gave 1,235 at 8 workers, 998 at 16 and 1,585 at 1. Every part of an
+episode (the bridge's tasks, the playbook's unchanged Python, the pipe) took about 15 % longer on
+2026-10-10 alike, which points at the host, not the fix round's code. CRITERIA.md lets W be stated;
+the 16-worker miss stays reported so the pass is not read as more than it is. The design's
+estimate (1 to 1.5 s an episode, 2,400 to 3,600 per core-hour) was optimistic by about half.
 
-Where an episode's time goes (Harbor watch, one worker, mean seconds per episode of 720 s
-simulated; the simulator's tasks run inside its `call.*` requests, so they are parts of
+Where an episode's time goes (2026-10-09, Harbor watch, one worker, mean seconds per episode of
+720 s simulated; the simulator's tasks run inside its `call.*` requests, so they are parts of
 `server`, not added to it):
 
 | part | s | per unit |
@@ -472,12 +511,12 @@ simulated; the simulator's tasks run inside its `call.*` requests, so they are p
 
 At 8 workers the same parts take about 25 % longer each (contention, not a different profile).
 
-On the families (8 workers, 30 seeds each; not G1b, which is Harbor watch, but the cost the
-research's step 3 will pay): the tuning families 1,290 per core-hour (2.7 to 2.8 s an episode);
-the held-out families 1,008 (`two-at-once` 2.95 s, `stuck-vehicle` 3.37 s, `approval-flood`
-3.97 s: its flood of orders moves HUNTER 1 and REAPER 1 to new places, whose SATCOM looks are not
-yet in the look cache (0.40 s computing them) and the decision loop about 1.6 times the work
-(0.72 s)).
+On the families (8 workers, 30 seeds each, 2026-10-09; not G1b, which is Harbor watch, but the
+cost the research's step 3 will pay): the tuning families 1,290 per core-hour (2.7 to 2.8 s an
+episode); the held-out families 1,008 (`two-at-once` 2.95 s, `stuck-vehicle` 3.37 s,
+`approval-flood` 3.97 s: its flood of orders moves HUNTER 1 and REAPER 1 to new places, whose
+SATCOM looks are not yet in the look cache (0.40 s computing them) and the decision loop about 1.6
+times the work (0.72 s)).
 
 If more speed is wanted, in the design's order: fewer JSON round trips (a tick's reads in one
 request, which would save part of the pipe's 0.24 s, not the read tools' own 0.55 s); the session
@@ -486,38 +525,43 @@ code and stays as it is.
 
 ### 11.4 The families (model results, seeds 1 to 30 each)
 
-The playbook as committed, the default operator, 2026-10-09
-(`logs/headless-families/{tuning,held-out}/`, not committed). Coverage is per episode (every
-must-look contact covered), with its Wilson interval; time to look is from the contact's first
-crossing within 3 km of the bridge to the first look proposed on it, so a negative time is a look
-before the crossing; false looks are `isr.*` proposals on contacts that need none, per episode;
-precision is pooled over the playbook's human-tier proposals; cards are the playbook's
-human-tier cards per episode. **Tuning and held-out are never pooled.**
+The playbook as committed, the default operator, after fix round 1 (2026-10-10,
+`logs/headless-families/rerun-{tuning,held-out}/`, not committed; the metrics as CRITERIA.md
+writes them, `link-cut-mid-look` version 2). Coverage is per episode (every must-look contact
+covered), with its Wilson interval; time to look is from the contact's first crossing within 3 km
+of the bridge to the first look proposed on it, so a negative time is a look before the
+crossing; false looks are `isr.*` proposals on contacts that need none, per episode; precision is
+pooled over the human-tier proposals it judges; cards are the playbook's human-tier cards per
+episode. **Tuning and held-out are never pooled.**
 
 | family | split | look covered | time to look, mean s | false looks | precision | cards |
 |---|---|---|---|---|---|---|
-| `fast-unknown` | tuning | 30/30 [0.89, 1.00] | -57.6 (30) | 0.0 | 94/94 | 3.13 |
-| `decoy` | tuning | 15/15 [0.80, 1.00] | -93.9 (15) | 0.7 | 52/67 | 2.23 |
-| `link-cut-mid-look` | tuning | 20/30 [0.49, 0.81] | -100.2 (20) | 0.0 | 41/41 | 1.37 |
-| `low-battery` | tuning | 20/30 [0.49, 0.81] | -65.4 (20) | 0.0 | 60/60 | 2.00 |
-| `two-at-once` | held-out | 4/30 [0.05, 0.30] | -99.5 (34 of 60 boats) | 0.0 | 95/95 | 3.17 |
-| `stuck-vehicle` | held-out | 30/30 [0.89, 1.00] | -90.7 (30) | 0.0 | 98/98 | 3.27 |
-| `approval-flood` | held-out | 30/30 [0.89, 1.00] | -89.0 (30) | 0.0 | 101/101 | 3.40 |
+| `fast-unknown` | tuning | 30/30 [0.89, 1.00] | -57.8 (30) | 0.0 | 91/91 | 3.03 |
+| `decoy` | tuning | 15/15 [0.80, 1.00] | -95.3 (15) | 0.73 | 49/64 | 2.17 |
+| `link-cut-mid-look` (version 2) | tuning | 30/30 [0.89, 1.00] | -70.5 (30) | 0.0 | 78/78 | 2.60 |
+| `low-battery` | tuning | 20/30 [0.49, 0.81] | -65.7 (20) | 0.0 | 59/59 | 1.97 |
+| `two-at-once` | held-out | 4/30 [0.05, 0.30] | -93.5 (35 of 60 boats) | 0.0 | 94/94 | 3.13 |
+| `stuck-vehicle` | held-out | 30/30 [0.89, 1.00] | -90.9 (30) | 0.0 | 96/96 | 3.20 |
+| `approval-flood` | held-out | 30/30 [0.89, 1.00] | -84.4 (30) | 0.0 | 103/103 | 3.43 |
+
+One proposal in all 210 episodes was unjudged (a `link.cover_gap` in a `decoy` episode).
+
+`link-cut-mid-look` version 2 cut a look under way in **all 30** episodes and recorded "no look
+to cut" in none; all 30 were covered. Version 1 (2026-10-09, reported apart) cut a look in only
+11 of 30 and PUMA 1 regardless in the other 19, and covered 20 of 30: its 10 misses were all among
+those 19.
 
 What the misses are (from the records and the playbook's own status lines):
 
 - `low-battery`: all 10 misses are the episodes whose low vehicle is PUMA 1, the one free sensor.
   The playbook sends it home (`safety.low_reserve`, in every episode) and, as the family's label
   asks, does not choose it for a look; it then proposes no look with any other vehicle.
-- `link-cut-mid-look`: all 10 misses are fallback cuts (no look had gone out by the cut, the boat
-  arriving late): PUMA 1 went home on its own lost-link failsafe, and when the boat came the
-  playbook's status was "no free sensor aircraft (... PUMA 1: recovering on its own (RTL) ...)".
-  Every episode whose cut fell on a look under way (11) was covered, and 9 of the 19 fallback cuts.
 - `two-at-once`: one free sensor for two boats: 26 episodes covered one boat, 4 both. Every look
   was flown by PUMA 1; the second boat waited on "recentred within the last 60 s" or "no free
   sensor".
-- `decoy`: 13 looks on the decoy, each while the picture showed it `unknown`; 6 releases of it once
-  shown `neutral`; 2 proposals on an inbound cargo ship shown `suspect`.
+- `decoy`: looks on the decoy while the picture showed it `unknown`, releases of it once shown
+  `neutral` (an `isr.*` play, so a false look by CRITERIA.md), and a few on a cargo ship shown
+  `suspect` (2026-10-09: 13, 6 and 2 of the 21).
 
 These are findings about the playbook on a model, for the research's step 2 and 3, not changes
 made here; nothing was tuned on them.
@@ -526,8 +570,8 @@ made here; nothing was tuned on them.
 
 | difference | where it shows | effect measured or expected |
 |---|---|---|
-| process start offsets are medians from the calibration runs, not each run's own | when the first look comes | the gate runs' own offsets were within 0.1 s of the calibrated ones for contacts and stand-ins, and the playbook's first tick about 0.27 s later than calibrated (section 11.2); the look agreed within 1.3 s in every seed |
-| the emulator's random draws: the episode seed in the simulator, `sim/links.toml`'s seed 1 in every full-stack run | packet loss on a degraded link, and so whether a lost-link failsafe fires | the one divergence G1 found (section 11.2): lost-link returns through PUMA 1's terrain shadow in 5 of 10 full-stack runs and 1 of 10 headless episodes; not significant at these counts, not yet explained |
+| process start offsets are medians from the calibration runs, the playbook's first tick a uniform draw over their range, not each run's own | when the first look comes, and the phase of every tick | the re-run's own offsets were within 0.05 s of the calibrated medians; the look agreed within 1.7 s in every seed (section 11.2) |
+| the emulator's draws fall on packets in arrival order, the same streams on both sides for a situation (fix round 1) but not always the same packets | packet loss on a degraded link, and so whether a lost-link failsafe fires | the re-run's three unpaired cases (section 11.2); the early-return rate 4 of 13 full stack, 22 % of 200 headless episodes |
 | no tidewater currents or winds (the stand-ins run without conditions; drifting contacts do not drift) | HUNTER 1's patrol track; the Mile Rock boat | none seen on the playbook's proposals |
 | the emulator's terrain line of sight from a baked surface-height grid (`sim/headless/terrain/golden-gate.grid.gz`, 20 m spacing, tidewater's `max(elevation, water level)` at the scenario's start; provenance beside it, its hash tested) instead of tidewater's samples; a cell's first answer at once instead of up to a second later | the Pumas' terrain shadows behind the Presidio | the grid is finer than the emulator's 250 m cells |
 | SATCOM looks at the terminal's position rounded to 0.001 deg (about 100 m) and 100 m of altitude, cached between episodes; the 30-minute outlook (display only) off | Reaper's SATCOM link | under a tenth of a degree of elevation to a satellite 550 km up; the outlook is not read by any tool |
@@ -542,8 +586,13 @@ made here; nothing was tuned on them.
 crate (`tests/pieces.rs`) and the bridge's unchanged suite with its no-seams test; py_compile and
 `pytest eval/headless/tests` (the operator against `eval/proxy.py`, the session adapter, labels,
 the association rule, the split, the families' determinism and variation, boats on water, the
-production build's cfg, the grid's provenance, G1's pairing and intervals, the golden with its
-feed-id check and replay, the two view-path tests, two processes, the live reads' schema).
+production build's cfg, the grid's provenance, G1's pairing and intervals with the 10 s window
+pinned, the golden with its feed-id check and replay, the two view-path tests, two processes, the
+live reads' schema, and `test_fixes.py`: one test per finding of the fix round, each shown to fail
+with its fix undone: the same emulator seed on both sides, the link cut waiting for a look, no
+computer time in the record, the provenance and the bridge's links file, CRITERIA.md's metrics,
+the per-step truth, the drawn first tick, the bridge's start, the full stack's binary hashes, the
+reconnect delays).
 
 ## 14. Step 2: how it plugs in
 
@@ -567,8 +616,9 @@ feed-id check and replay, the two view-path tests, two processes, the live reads
 
     # G1: the full-stack runs (about 13 minutes each, one at a time, on the assigned port block),
     # then the gate against fresh headless episodes of the same seeds
-    .venv/bin/python -m eval.headless.fullstack run --seeds 1 2 3 4 5 6 7 8 9 10 --out logs/headless-g1/gate
-    .venv/bin/python -m eval.headless.gate g1 --full logs/headless-g1/gate --seeds 1-10 --out logs/headless-g1/g1.json
+    # (each run with MURMUR_LINKEMU_SEED = its seed, set by the runner; the calibration: seeds 101-106)
+    .venv/bin/python -m eval.headless.fullstack run --seeds 11 12 13 14 15 16 17 18 19 20 --out logs/headless-g1/gate2
+    .venv/bin/python -m eval.headless.gate g1 --full logs/headless-g1/gate2 --seeds 11-20 --out logs/headless-g1/g1-rerun.json --keep logs/headless-g1/gate2-headless
 
 Records go to `eval/results/headless/<batch>/` unless `--out` says otherwise; the SATCOM look
 cache to `logs/headless/space-cache/` (one file per set of element sets and link profiles).
