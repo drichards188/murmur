@@ -1,16 +1,18 @@
 {
- "record_sha256": "1421fa87305d8cc562d08f841f7c1ee6253824149859a0e420e7a77a9ad61a62",
- "audit_sha256": "d9ec0339014e8db54f65d9529d33fd9c96e62c95a7ca9b48a67b28efc0184b19",
- "audit_events": 116,
+ "record_sha256": "6001d2c118bd317136cb8f8e46f9db309b7f767de029d4e04e896c5b0d2bf354",
+ "audit_sha256": "27cec8c95d57c01ec49b0ef2d691e0cacc21bde5afc329daa6d0fb96e13d7d4f",
+ "audit_events": 117,
  "calibration": {
   "contacts_start_s": 0.823,
   "standins_start_s": 1.001,
-  "ai_first_tick_s": 1.031,
-  "source": "full-stack calibration runs seed-101, seed-102, seed-103, medians"
+  "bridge_start_s": 1.026,
+  "ai_first_tick_lo_s": 0.923,
+  "ai_first_tick_hi_s": 1.59,
+  "source": "full-stack calibration runs seed-101, seed-102, seed-103: medians, first-tick range"
  },
  "proposals": [
   [
-   178.03,
+   178.32,
    "isr.investigate",
    "T-0008",
    "fastboat-west",
@@ -18,7 +20,7 @@
    "pending_approval"
   ],
   [
-   211.03,
+   211.32,
    "isr.recentre",
    "T-0008",
    "fastboat-west",
@@ -26,7 +28,7 @@
    "pending_approval"
   ],
   [
-   272.03,
+   271.32,
    "isr.recentre",
    "T-0008",
    "fastboat-west",

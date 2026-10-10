@@ -168,13 +168,7 @@ impl Episode {
         match out {
             Ok(result) => {
                 let v = serde_json::to_value(&result).map_err(err("result"))?;
-                let structured = match v.get("structuredContent") {
-                    Some(s) => s.clone(),
-                    None => v["content"][0]["text"]
-                        .as_str()
-                        .and_then(|t| serde_json::from_str(t).ok())
-                        .unwrap_or(Value::Null),
-                };
+                let structured = tool_result_json(&v);
                 Ok(json!({
                     "is_error": v.get("isError").and_then(Value::as_bool).unwrap_or(false),
                     "structured": structured,
@@ -230,7 +224,7 @@ impl Episode {
         let res = &v["result"];
         Ok(json!({
             "is_error": res.get("isError").and_then(Value::as_bool).unwrap_or(false),
-            "structured": res.get("structuredContent").cloned().unwrap_or(Value::Null),
+            "structured": tool_result_json(res),
         }))
     }
 
@@ -269,8 +263,10 @@ impl Episode {
 
     /// Truth now, for labels (evaluation only; nothing here is reachable from the bridge's API
     /// or the MCP tools): the contacts, our vehicles as the stand-ins really are, each link's
-    /// blocking cause, and the tracker's own association of tracks to contacts.
-    pub fn truth(&mut self, association: bool) -> Result<Value, String> {
+    /// blocking cause, and the tracker's own association of tracks to contacts; with
+    /// `log_from`, the contacts' truth log from that line on (one line per contacts step, as
+    /// the contacts process writes contacts-truth.jsonl).
+    pub fn truth(&mut self, association: bool, log_from: Option<usize>) -> Result<Value, String> {
         let _g = self.rt.enter();
         let now = crate::clock::wall();
         let ours: Vec<Value> = (0..self.fleet.len())
@@ -299,6 +295,9 @@ impl Episode {
             "contacts": self.contacts.as_ref().map(|c| c.truth()),
             "ours": ours,
             "association": eval["association"],
+            "contacts_start_s": self.spec.contacts.as_ref().map(|c| c.start_s),
+            "bridge_start_s": self.spec.bridge_start_s,
+            "log": log_from.and_then(|i| self.contacts.as_ref().map(|c| c.log_from(i))),
         }))
     }
 
@@ -456,40 +455,47 @@ async fn assemble(spec: &Spec) -> Result<Parts, String> {
         return Err(format!("{} stand-ins for {} vehicles: every vehicle must be a stand-in", cfgs.len(), vspecs.len()));
     }
     let fleet = Arc::new(Fleet::new(cfgs, spec.seed, &spec.battery_pct)?);
-    emu.connect(bridge_links, world.clone(), fleet.clone());
+    // the bridge is up at `bridge_start_s` (the full stack's first anchor): before, a frame from
+    // the emulator or a contacts message reaches no one
+    let bridge_up = zero + Duration::from_secs_f64(spec.bridge_start_s.max(0.0));
+    emu.connect(bridge_links, world.clone(), fleet.clone(), bridge_up);
 
-    // the loops, in main.rs's order
-    tokio::spawn(perf::timed("bridge.housekeeping", world.clone().housekeeping()));
-    tokio::spawn(perf::timed("bridge.decision", decision.clone().run()));
-    tokio::spawn(perf::timed("bridge.tracks", tracks.clone().run()));
-    {
-        let world = world.clone();
-        tokio::spawn(perf::timed("bridge.heartbeat", async move {
-            let msg = crate::heartbeat::gcs_heartbeat();
-            let mut every = tokio::time::interval(crate::heartbeat::PERIOD);
-            let mut k: u64 = 0;
-            loop {
-                every.tick().await;
-                crate::heartbeat::send_round(&world, k, &msg);
-                k += 1;
-            }
-        }));
-    }
+    // the loops, in main.rs's order, from the bridge's start
     let emu_view = crate::emu::Emu::from_env();
     {
-        let (emu_view, world, e) = (emu_view.clone(), world.clone(), emu.clone());
-        tokio::spawn(perf::timed("bridge.emu", async move {
-            // emu.rs's poll: every 2 s, the /stats answer to the vehicles' links
-            let mut every = tokio::time::interval(Duration::from_secs(2));
-            loop {
-                every.tick().await;
-                let briefs = emu_view.ingest(&e.stats_json(), crate::clock::mono());
-                for cell in world.vehicles() {
-                    let (b, f) = briefs.get(&cell.uid).cloned().unzip();
-                    cell.set_emu(b, f);
-                }
+        let (world, decision, tracks, emu_view, e) =
+            (world.clone(), decision.clone(), tracks.clone(), emu_view.clone(), emu.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep_until(bridge_up).await;
+            tokio::spawn(perf::timed("bridge.housekeeping", world.clone().housekeeping()));
+            tokio::spawn(perf::timed("bridge.decision", decision.run()));
+            tokio::spawn(perf::timed("bridge.tracks", tracks.run()));
+            {
+                let world = world.clone();
+                tokio::spawn(perf::timed("bridge.heartbeat", async move {
+                    let msg = crate::heartbeat::gcs_heartbeat();
+                    let mut every = tokio::time::interval(crate::heartbeat::PERIOD);
+                    let mut k: u64 = 0;
+                    loop {
+                        every.tick().await;
+                        crate::heartbeat::send_round(&world, k, &msg);
+                        k += 1;
+                    }
+                }));
             }
-        }));
+            tokio::spawn(perf::timed("bridge.emu", async move {
+                // emu.rs's poll: every 2 s, the /stats answer to the vehicles' links
+                let mut every = tokio::time::interval(Duration::from_secs(2));
+                loop {
+                    every.tick().await;
+                    let briefs = emu_view.ingest(&e.stats_json(), crate::clock::mono());
+                    for cell in world.vehicles() {
+                        let (b, f) = briefs.get(&cell.uid).cloned().unzip();
+                        cell.set_emu(b, f);
+                    }
+                }
+            }));
+        });
     }
     tokio::spawn(perf::timed("emulator", emu.clone().run()));
     tokio::spawn(perf::timed("emulator.terrain", emu.clone().run_terrain()));
@@ -526,12 +532,29 @@ async fn assemble(spec: &Spec) -> Result<Parts, String> {
                 api.clone(),
                 token,
                 zero + Duration::from_secs_f64(c.start_s.max(0.0)),
+                bridge_up,
             )));
             Some(ct)
         }
         None => None,
     };
     Ok((zero, world, decision, tracks, api, mcp, emu, fleet, contacts, settings.audit.clone()))
+}
+
+/// A tool result's JSON as the live session reads it (agents/scripted_agent.py `content`): the
+/// structured content, else the first text block parsed, or `{"text": ...}` when it is not JSON,
+/// else `{}`.
+pub fn tool_result_json(v: &Value) -> Value {
+    if let Some(s) = v.get("structuredContent").filter(|s| !s.is_null()) {
+        return s.clone();
+    }
+    for block in v["content"].as_array().map(Vec::as_slice).unwrap_or_default() {
+        if block["type"].as_str() == Some("text") {
+            let text = block["text"].as_str().unwrap_or_default();
+            return serde_json::from_str(text).unwrap_or_else(|_| json!({ "text": text }));
+        }
+    }
+    json!({})
 }
 
 /// One JSON-RPC exchange with an `/mcp` endpoint: (the session id it named, the answer); the

@@ -11,7 +11,8 @@
 //! - `mcp` `{agent, client: [name, version], tool, args}`: answers `{is_error, structured}`, or
 //!   `{protocol_error}` (an unknown tool or bad parameters, which an MCP client raises).
 //! - `api` `{method, path, body, operator}`: answers `{status, body}`.
-//! - `truth` `{association}`: the truth now (evaluation only).
+//! - `truth` `{association, log_from}`: the truth now, and the contacts' truth log from a line on
+//!   (evaluation only).
 //! - `fault` `{kind, ...}`: a scripted fault (`link_event` with `event`, or `stop` with `uid`).
 //! - `tools`: the MCP tool names. `now`: the clock. `perf`: where the computer time went.
 //! - `end`: answers `{audit}` (the log's path), then anchors and closes the log and exits.
@@ -78,7 +79,10 @@ fn handle(ep: &mut Episode, req: &Value) -> Result<Value, String> {
             (!req["body"].is_null()).then(|| req["body"].clone()),
             req["operator"].as_str(),
         ),
-        Some("truth") => ep.truth(req["association"].as_bool().unwrap_or(true)),
+        Some("truth") => ep.truth(
+            req["association"].as_bool().unwrap_or(true),
+            req["log_from"].as_u64().map(|i| i as usize),
+        ),
         Some("fault") => ep.fault(req),
         Some("tools") => Ok(json!({ "tools": ep.tools() })),
         Some("now") => Ok(json!({ "t": ep.now_s() })),

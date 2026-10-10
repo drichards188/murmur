@@ -13,7 +13,8 @@ use serde_json::Value;
 #[serde(deny_unknown_fields)]
 pub struct Spec {
     /// The episode seed: the stand-ins' draws (`Vehicle::seeded`) and, unless `linkemu_seed`
-    /// says otherwise, the link emulator's.
+    /// says otherwise, the link emulator's (the driver always says: the situation's seed, the
+    /// one the full stack's emulator gets for the same situation, MURMUR_LINKEMU_SEED).
     pub seed: u64,
     /// The bridge's clock at t = 0, unix seconds: the situation's `at`.
     pub epoch: f64,
@@ -62,6 +63,11 @@ pub struct Spec {
     /// When the stand-in engine starts, situation seconds.
     #[serde(default)]
     pub standins_start_s: f64,
+    /// When the bridge is up, situation seconds (the full stack's first anchor: its decision
+    /// layer started, its loops running, its sockets answering): its loops start then, and a
+    /// frame or a contacts message that reaches it before is lost, as on a port nobody holds.
+    #[serde(default)]
+    pub bridge_start_s: f64,
     /// A stand-in that starts with less than a full battery: uid -> charge, %.
     #[serde(default)]
     pub battery_pct: BTreeMap<u32, f64>,

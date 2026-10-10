@@ -26,6 +26,8 @@ pub struct Contacts {
     pub movers: Mutex<Vec<Mover>>,
     /// The last message's scenario second (None before the first).
     pub s: Mutex<Option<f64>>,
+    /// Every step's truth (`log_step`).
+    log: Mutex<Vec<Value>>,
 }
 
 impl Contacts {
@@ -47,11 +49,32 @@ impl Contacts {
             t0_unix,
             movers: Mutex::new(movers),
             s: Mutex::new(None),
+            log: Mutex::new(Vec::new()),
         })
     }
 
     pub fn movers(&self) -> MutexGuard<'_, Vec<Mover>> {
         self.movers.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The truth log, as the contacts process writes `contacts-truth.jsonl`: one line per step,
+    /// its scenario second `s` and every contact `[id, lon, lat, speed, exists]` (evaluation only).
+    fn log_step(&self, s: f64) {
+        let line = {
+            let movers = self.movers();
+            json!({
+                "s": s,
+                "contacts": movers.iter().map(|m| json!([
+                    m.contact.id, m.st.lon, m.st.lat, m.st.speed_mps, m.st.exists,
+                ])).collect::<Vec<_>>(),
+            })
+        };
+        self.log.lock().unwrap_or_else(|e| e.into_inner()).push(line);
+    }
+
+    /// The truth log's lines from index `from` on.
+    pub fn log_from(&self, from: usize) -> Vec<Value> {
+        self.log.lock().unwrap_or_else(|e| e.into_inner()).iter().skip(from).cloned().collect()
     }
 
     /// Truth now: every contact as the movers have it (evaluation only: never reachable from
@@ -81,8 +104,9 @@ impl Contacts {
     }
 }
 
-/// The process's loop from `start`: a message every second, the first at once.
-pub async fn run(c: Arc<Contacts>, api: axum::Router, token: Option<String>, start: Instant) {
+/// The process's loop from `start`: a message every second, the first at once. A message before
+/// `bridge_up` is lost (no bridge answers yet: the live process logs the error and goes on).
+pub async fn run(c: Arc<Contacts>, api: axum::Router, token: Option<String>, start: Instant, bridge_up: Instant) {
     let period = Duration::from_secs(1);
     tokio::time::sleep_until(start).await;
     let mut every = tokio::time::interval(period);
@@ -116,8 +140,12 @@ pub async fn run(c: Arc<Contacts>, api: axum::Router, token: Option<String>, sta
             msg
         };
         *c.s.lock().unwrap_or_else(|e| e.into_inner()) = Some(s);
+        c.log_step(s);
         msg.effects = std::mem::take(&mut applied);
         prev_s = s;
+        if now < bridge_up {
+            continue;
+        }
         let Ok(body) = serde_json::to_string(&msg) else {
             continue;
         };

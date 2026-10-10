@@ -105,6 +105,18 @@ def test_the_terrain_grid_is_the_one_its_provenance_names():
         assert prov.get(k), k
 
 
+def test_g1_pairs_within_ten_seconds_exactly():
+    """CRITERIA.md: within 10 s pairs, beyond it does not (the default window, not a narrower one)."""
+    def one(t: float) -> list[dict]:
+        return [{"t": t, "play": "isr.recentre", "truth_target": "boat", "uid": 3}]
+
+    assert match(one(200.0), one(209.9)) == [(0, 0)]
+    assert match(one(209.9), one(200.0)) == [(0, 0)]
+    assert match(one(200.0), one(210.1)) == []
+    assert match(one(210.1), one(200.0)) == []
+    assert match(one(200.0), one(206.0)) == [(0, 0)]
+
+
 def test_g1_pairs_and_intervals():
     h = [{"t": 177.0, "play": "isr.investigate", "truth_target": "boat", "uid": 3},
          {"t": 213.0, "play": "isr.recentre", "truth_target": "boat", "uid": 3},

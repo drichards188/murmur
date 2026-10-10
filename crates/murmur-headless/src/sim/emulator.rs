@@ -50,6 +50,8 @@ pub struct Emulator {
     notify: Notify,
     events: Mutex<Vec<EventCfg>>,
     bridge: OnceLock<Vec<Arc<Link>>>,
+    /// When the bridge is up (`Spec::bridge_start_s`): a frame for it before then is lost.
+    bridge_up: OnceLock<Instant>,
     world: OnceLock<Arc<World>>,
     fleet: OnceLock<Arc<Fleet>>,
     terrain: Option<(Arc<TidewaterTerrain>, BakedSampler)>,
@@ -202,6 +204,7 @@ impl Emulator {
             notify: Notify::new(),
             events: Mutex::new(cfg.event.clone()),
             bridge: OnceLock::new(),
+            bridge_up: OnceLock::new(),
             world: OnceLock::new(),
             fleet: OnceLock::new(),
             terrain,
@@ -214,8 +217,9 @@ impl Emulator {
     }
 
     /// Wire the two ends: the bridge's in-memory links (by vehicle index) and the stand-ins.
-    pub fn connect(&self, bridge: Vec<Arc<Link>>, world: Arc<World>, fleet: Arc<Fleet>) {
+    pub fn connect(&self, bridge: Vec<Arc<Link>>, world: Arc<World>, fleet: Arc<Fleet>, bridge_up: Instant) {
         let _ = self.bridge.set(bridge);
+        let _ = self.bridge_up.set(bridge_up);
         let _ = self.world.set(world);
         let _ = self.fleet.set(fleet);
     }
@@ -337,6 +341,10 @@ impl Emulator {
         d.out_bytes.fetch_add(data.len() as u64, Relaxed);
         match dir {
             Dir::Up => {
+                // sent, as the emulator sends it, to a bridge port nobody holds yet: lost
+                if self.bridge_up.get().is_some_and(|up| Instant::now() < *up) {
+                    return;
+                }
                 if let (Some(bridge), Some(world)) = (self.bridge.get(), self.world.get()) {
                     let port = self.vehicle_port(i);
                     let from = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port));

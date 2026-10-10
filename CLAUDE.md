@@ -63,7 +63,11 @@ meaningful. Decision and command, not weapons.
 - Links go through `crates/murmur-linkemu` by default (`MURMUR_LINKEMU=0` bypasses):
   profiles `sim/links.toml`, events `make goldengate EVENTS=sim/link-events/golden-gate.toml`,
   log `logs/linkemu.log`, PID `logs/linkemu.pid`; the bridge reads `sim/run/bridge-fleet.json`
-  and serves the emulator's view at `/api/links[/{uid}]`.
+  and serves the emulator's view at `/api/links[/{uid}]`. Its random draws (each vehicle and
+  direction its own stream) come from the links file's `seed` (1), so every run of a situation
+  meets the same draws unless `MURMUR_LINKEMU_SEED=<n>` says otherwise (`up.sh` passes it as
+  `--seed`); `eval/headless/fullstack.py` sets it to the situation's seed, the headless simulator
+  uses the same seed for the same situation (`docs/HEADLESS.md`).
 - Ports: vehicles UDP 14560+i -> linkemu -> bridge UDP 15560+i (`MURMUR_BRIDGE_BASE_PORT`,
   default base + 1000); linkemu stats HTTP :8766 (`MURMUR_LINKEMU_PORT`); bridge :8765; console
   :5173; tidewater serve :8770; SITL SERIAL1 TCP 5762+10*instance (tidewater driver). A second

@@ -6,7 +6,9 @@ record built from their files, so one metrics function scores both sides.
 
 `run`: for each seed, a copy of `sim/situations/harbor-watch.toml` with only `seed = k` changed
 (the autoplay operator's draws), then `make situation NAME=<copy> AI=playbook OPERATOR=autoplay`
-on the assigned port block (CRITERIA.md), one run at a time: the ports checked free first; after
+on the assigned port block (CRITERIA.md) with `MURMUR_LINKEMU_SEED` = k (the link emulator's
+draws, as the simulator's for that copy: `stack_env`), one run at a time: the commit, the
+binaries' hashes and the untracked inputs recorded (`provenance.json`), the ports checked free first; after
 the run, while the stack is still up, the start time of each of its processes (from /proc) and
 the contacts' truth log are kept with the run; then `make down`, and the audit log replayed with
 its anchors (`murmur-replay --anchors`).
@@ -93,6 +95,28 @@ def proc_starts(http_port: str) -> dict[str, float]:
     return out
 
 
+def stack_env(copy: Path) -> dict[str, str]:
+    """The environment `make situation` runs a copy with: this block's ports, and the link
+    emulator's seed the simulator gives the same situation (situations.emulator_seed)."""
+    from .situations import emulator_seed, from_situation
+
+    env = {**os.environ, **PORTS}
+    env.pop("MURMUR_TIDEWATER_URL", None)
+    env["MURMUR_LINKEMU_SEED"] = str(emulator_seed(from_situation(copy)))
+    return env
+
+
+def stack_provenance(env: dict[str, str]) -> dict[str, Any]:
+    """What a full-stack run was made from: the commit (and whether the tree differed), the
+    binaries `make situation` runs (scripts/up.sh builds them first; hashed before it starts, so
+    a rebuild would show), the emulator's seed, and the untracked inputs."""
+    from .provenance import git_state, inputs, stack_binaries
+
+    links = Path(env.get("MURMUR_LINKS") or REPO / "sim" / "links.toml")
+    return {**git_state(), "binaries": stack_binaries(), "emulator_seed": int(env["MURMUR_LINKEMU_SEED"]),
+            **inputs(links)}
+
+
 def run_one(seed: int, out_root: Path) -> Path:
     out_root.mkdir(parents=True, exist_ok=True)
     busy = listening()
@@ -106,9 +130,9 @@ def run_one(seed: int, out_root: Path) -> Path:
     if n != 1:
         raise SystemExit("harbor-watch.toml: no single `seed = ` line")
     copy.write_text(new)
-    env = {**os.environ, **PORTS}
-    env.pop("MURMUR_TIDEWATER_URL", None)
-    say(f"seed {seed}: make situation (about 13 minutes)")
+    env = stack_env(copy)
+    prov = stack_provenance(env)
+    say(f"seed {seed}: make situation (about 13 minutes; emulator seed {env['MURMUR_LINKEMU_SEED']})")
     t0 = time.time()
     with open(out_root / f"seed-{seed}.make.log", "w") as log:
         code = subprocess.run(["make", "situation", f"NAME={copy}", "AI=playbook", "OPERATOR=autoplay"],
@@ -127,6 +151,7 @@ def run_one(seed: int, out_root: Path) -> Path:
     shutil.copyfile(REPO / "logs" / "contacts-truth.jsonl", dest / "contacts-truth.jsonl")
     (dest / "proc-starts.json").write_text(json.dumps({"starts": starts, "make_exit": code,
                                                        "wall_s": round(time.time() - t0, 1)}, indent=1))
+    (dest / "provenance.json").write_text(json.dumps(prov, indent=1))
     run_id = run_dir.name
     say(f"seed {seed}: {run_id}, make exit {code}; make down")
     subprocess.run(["make", "down"], cwd=REPO, env=env, stdout=subprocess.DEVNULL)
@@ -214,10 +239,12 @@ def record(run: Path) -> dict[str, Any]:
             decisions.append(r)
     orders = [r for r in sit_lines if r.get("event") == "order"]
     ready = next((r for r in sit_lines if r.get("event") == "ready"), None)
+    prov = run / "provenance.json"
     return {
         "schema": "murmur-headless-episode/1",
         "side": "full stack",
         "run": run.name,
+        "provenance": json.loads(prov.read_text()) if prov.exists() else None,
         "situation": {"name": "harbor-watch", "family": None, "split": None},
         "seed": int(re.search(r"seed-(\d+)$", run.name).group(1)) if re.search(r"seed-(\d+)$", run.name) else None,
         "clock": {"zero_unix": zero, "bridge_to_utc_s": round(offset, 3), "process_starts":

@@ -13,6 +13,9 @@
 # MURMUR_LINK_EVENTS (or MURMUR_EVENTS)=<file> adds scripted [[event]]s for comms and GNSS
 # (e.g. sim/link-events/golden-gate.toml, sim/events/golden-gate-gnss.toml);
 # MURMUR_LINKS=<file> replaces sim/links.toml (profiles). Emulator log: logs/linkemu.log.
+# MURMUR_LINKEMU_SEED=<n> overrides the links file's seed (its random draws per vehicle and
+# direction); unset, the file's seed (1) as before. eval/headless/fullstack.py sets it to the
+# situation's seed so a run meets the draws the headless simulator gives that seed.
 #
 # Ports (env), so a second stack can run beside the default one:
 #   MURMUR_BASE_PORT         14560  vehicle i sends UDP to base + i (the emulator listens there)
@@ -157,6 +160,7 @@ if [ "$linkemu" = 1 ]; then
             --bridge-base "$bridge_base" --manifest-out sim/run/bridge-fleet.json
             --http "127.0.0.1:$emu_port" --log-interval 10)
   [ -n "${MURMUR_LINK_EVENTS:-}" ] && emu_args+=(--scenario "$MURMUR_LINK_EVENTS")
+  [ -n "${MURMUR_LINKEMU_SEED:-}" ] && emu_args+=(--seed "$MURMUR_LINKEMU_SEED")
   # terrain line of sight needs tidewater (MURMUR_TIDEWATER_URL, set above with a scenario);
   # SATCOM follows real satellites when sim/space/cache exists, else static numbers
   [ -d sim/space/cache ] || echo "linkemu: no sim/space/cache (murmur-space fetch): SATCOM uses static numbers"

@@ -2,12 +2,12 @@
 
 Each item is `{"at_s": t, "kind": ...}` or waits for a trigger:
 
-- `link_cut` `{uid, duration_s}` at `at_s`, or `{after_first_look: [lo, hi] s, duration_s,
-  fallback_uid, fallback_at_s}`: a cut of both directions of a vehicle's link (the emulator's own
-  `cut` event, as the storyline's `link` step appends one to the run's events file). With
+- `link_cut` `{uid, duration_s}` at `at_s`, or `{after_first_look: [lo, hi] s, delay_s,
+  duration_s, deadline_s}`: a cut of both directions of a vehicle's link (the emulator's own `cut`
+  event, as the storyline's `link` step appends one to the run's events file). With
   `after_first_look`, the vehicle is the one flying the first look of the playbook's to be
-  dispatched, cut a drawn delay after its dispatch (the delay drawn by the generator); none by
-  `fallback_at_s`: `fallback_uid` then.
+  dispatched, cut `delay_s` (drawn by the generator) after its dispatch; if none is dispatched by
+  `deadline_s`, nothing is cut and the log says "no look to cut".
 - `stop` `{uid}`: the stand-in stops making way (its cruise and top speed set to zero, as a
   fouled propeller would; nothing goes through the bridge).
 - `flood` `{proposals: [{task, uids, center, radius_m | route}], window_s}`: a scripted proposer
@@ -39,7 +39,7 @@ class Script:
         for it in self.items:
             if it.get("kind") == "link_cut" and it.get("after_first_look"):
                 self.watch.append(it)
-                self._push(float(it["fallback_at_s"]), {**it, "fallback": True})
+                self._push(float(it["deadline_s"]), {**it, "deadline": True})
             elif it.get("kind") == "flood":
                 props = list(it["proposals"])
                 step = float(it.get("window_s", 0.0)) / max(1, len(props))
@@ -97,7 +97,7 @@ class Script:
             lo, hi = it["after_first_look"]
             delay = float(it.get("delay_s", lo))
             at = (t_disp - epoch) + delay
-            self.queue = [q for q in self.queue if not (q[2].get("fallback") and q[2].get("after_first_look") == it.get("after_first_look"))]
+            self.queue = [q for q in self.queue if not (q[2].get("deadline") and q[2].get("after_first_look") == it.get("after_first_look"))]
             self._push(max(at, now), {"kind": "link_cut", "uid": uids[0], "duration_s": it["duration_s"],
                                       "trigger": {"intent": iid, "dispatched_s": round(t_disp - epoch, 3), "delay_s": delay}})
 
@@ -106,15 +106,17 @@ class Script:
         kind = it.get("kind")
         rec: dict[str, Any] = {"t": round(now, 3), "kind": kind}
         try:
-            if kind == "link_cut":
-                if it.get("fallback"):
-                    self.watch = []  # no look went out by then: the fallback vehicle instead
-                uid = int(it["fallback_uid"] if it.get("fallback") else it["uid"])
+            if kind == "link_cut" and it.get("deadline"):
+                # no look dispatched by the deadline: nothing to cut
+                self.watch = [w for w in self.watch if w.get("after_first_look") != it.get("after_first_look")]
+                rec.update(skipped=f"no look to cut: none dispatched by {float(it['deadline_s']):g} s")
+            elif kind == "link_cut":
+                uid = int(it["uid"])
                 ev = {"name": f"headless cut uid {uid}", "at_s": round(now, 3), "duration_s": float(it["duration_s"]),
                       "uid": uid, "cut": True}
                 sim.fault("link_event", event=ev)
                 rec.update(uid=uid, duration_s=float(it["duration_s"]), until_s=round(now + float(it["duration_s"]), 3),
-                           trigger=it.get("trigger"), fallback=bool(it.get("fallback")))
+                           trigger=it.get("trigger"))
             elif kind == "stop":
                 sim.fault("stop", uid=int(it["uid"]))
                 rec.update(uid=int(it["uid"]))

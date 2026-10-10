@@ -15,6 +15,20 @@ fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+/// A tool result reads as the live session reads it (agents/scripted_agent.py `content`).
+#[test]
+fn a_tool_result_reads_as_the_live_session_reads_it() {
+    use murmur_headless::sim::tool_result_json;
+    use serde_json::json;
+    let structured = json!({"structuredContent": {"a": 1}, "content": [{"type": "text", "text": "{\"b\": 2}"}]});
+    assert_eq!(tool_result_json(&structured), json!({"a": 1}));
+    let text_json = json!({"content": [{"type": "text", "text": "{\"b\": 2}"}]});
+    assert_eq!(tool_result_json(&text_json), json!({"b": 2}));
+    let text = json!({"content": [{"type": "image", "data": ""}, {"type": "text", "text": "not json"}]});
+    assert_eq!(tool_result_json(&text), json!({"text": "not json"}));
+    assert_eq!(tool_result_json(&json!({"content": []})), json!({}));
+}
+
 #[test]
 fn the_grid_has_the_presidio_and_the_strait() {
     let g = Grid::load(&repo().join("sim/headless/terrain/golden-gate.grid.gz")).expect("grid");

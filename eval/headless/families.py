@@ -22,9 +22,11 @@ stated below (uniform unless stated; distances from the Golden Gate Bridge, bear
   west at least 15 deg apart (bearings 240 to 275 deg; p 0.5) or from inside the bay, 4 to 5 km
   out on a bearing of 75 to 100 deg, holding 0.8 to 2.4 km east of the bridge (p 0.5). One free
   sensor: PUMA 1 (PUMA 2 stays on its station order).
-- **link-cut-mid-look** (tuning): a fast unknown; both directions of the link of the vehicle
-  flying the first look of the playbook's to be dispatched cut 5 to 90 s after its dispatch, for
-  8 to 120 s; if no look has gone out by a drawn 200 to 400 s, PUMA 1 is cut then.
+- **link-cut-mid-look** (tuning; version 2, 2026-10-10): a fast unknown; both directions of the
+  link of the vehicle flying the first look of the playbook's to be dispatched cut 5 to 90 s after
+  its dispatch, for 8 to 120 s. If no look is dispatched by `LINK_CUT_DEADLINE_S` (600 s), nothing
+  is cut and the episode records "no look to cut" (version 1 cut PUMA 1 at a drawn 200 to 400 s
+  instead, whatever the look did: most of its episodes cut no look).
 - **stuck-vehicle** (held-out): a fast unknown; HUNTER 1 stops making way at 120 to 500 s for
   the rest of the run (its stand-in's cruise and top speed set to zero, a vehicle-side fault).
 - **low-battery** (tuning): a fast unknown; one vehicle (PUMA 2 p 0.5, PUMA 1 p 0.3, REAPER 1
@@ -55,6 +57,8 @@ from . import HERE, REPO
 from .situations import TERRAIN_GRID, EpisodeSpec, from_situation
 
 GATE = (-122.4783, 37.8199)
+#: link-cut-mid-look: no look dispatched by then, no cut (the cut and its window still fit in 720 s)
+LINK_CUT_DEADLINE_S = 600.0
 MOUTH = (-122.5050, 37.8100)  # the strait's mouth, west of the bridge
 BAY_AXIS = (-122.4500, 37.8250)  # east of the bridge, mid-channel
 BASE_CONTACTS = REPO / "sim" / "scenarios" / "harbor-watch.toml"
@@ -289,10 +293,10 @@ def generate(family: str, seed: int, workdir: Path) -> tuple[EpisodeSpec, Path]:
     elif family == "link-cut-mid-look":
         boat()
         item = {"kind": "link_cut", "after_first_look": [5, 90], "delay_s": round(rng.uniform(5, 90), 1),
-                "duration_s": round(rng.uniform(8, 120), 1), "fallback_uid": 3,
-                "fallback_at_s": round(rng.uniform(200, 400), 1)}
+                "duration_s": round(rng.uniform(8, 120), 1), "deadline_s": LINK_CUT_DEADLINE_S}
         script.append(item)
         stated["link_cut"] = item
+        stated["family_version"] = 2
     elif family == "stuck-vehicle":
         boat()
         item = {"kind": "stop", "uid": 1, "at_s": round(rng.uniform(120, 500), 1)}

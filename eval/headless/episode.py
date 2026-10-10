@@ -11,7 +11,8 @@ clock, over one `murmur-headless` process.
   every 0.5 s until 2 s after the tick began, ticking at once on a waking change.
 - **the operator** (operator.py).
 - **the script**: the situation's faults and scripted proposers (families.py).
-- **the truth sampler**: truth every second, for the labels (never given to the AI).
+- **the truth sampler**: our vehicles every `sample_s` and the tracker's association every 10 s;
+  the contacts' truth is their own per-step log, read at the end (never given to the AI).
 
 Simultaneous events run in a fixed order (runner, script, operator, AI, sampler) and each
 process's actions happen at one simulated instant, so an episode is a function of (situation,
@@ -160,6 +161,11 @@ class PlaybookAgent:
         self.misses = 0
         self.ticks = 0
         self.errors = 0
+        # playbook_agent.py's reconnect delay: 2 s, doubling to 30 s, back to 2 s on a connect
+        self.retry_s = 2.0
+        # ticks over 50 ms of compute (the live agent's `tick.slow`): computer time, so counted
+        # in `perf`, never written into the record
+        self.slow_ticks = 0
         self.plans: list[dict[str, Any]] = []
         # what each tick's pure part decided (wrapped from outside, the engine unchanged): for
         # CRITERIA.md's timeliness, the first tick whose plan held a play's candidate
@@ -185,11 +191,12 @@ class PlaybookAgent:
         try:
             info = self.ep.run_async(self.engine.start(self.session))
         except Exception as e:  # noqa: BLE001
-            self.write("bridge.error", error=f"{type(e).__name__}: {e}")
+            self.write("bridge.error", error=f"{type(e).__name__}: {e}", retry_in_s=self.retry_s)
             return False
         self.write("bridge.connected", bridge_run=info["run"], cursor=info["cursor"], reset=info["reset"],
                    client_version=self.cfg.client_version, tools=list(self.session.tools))
         self.started = True
+        self.retry_s = 2.0
         return True
 
     def _tick(self, now: float) -> None:
@@ -198,7 +205,7 @@ class PlaybookAgent:
             self.ticks += 1
             self.misses = 0
             if rep.compute_ms > 50.0:
-                self.write("tick.slow", compute_ms=rep.compute_ms)
+                self.slow_ticks += 1
         except Exception as e:  # noqa: BLE001 (three in a row: a new session, as the agent does)
             self.misses += 1
             self.errors += 1
@@ -210,8 +217,11 @@ class PlaybookAgent:
     def wake(self, now: float) -> float | None:
         if not self.started:
             if not self._start(now):
-                return now + 2.0
+                delay, self.retry_s = self.retry_s, min(self.retry_s * 2.0, 30.0)
+                return now + delay
             self._tick(now)
+            if not self.started:  # three misses in a row: a new session at once, as live
+                return now
             return min(now + POLL_S, self.next_at or now)
         assert self.next_at is not None
         try:
@@ -219,9 +229,13 @@ class PlaybookAgent:
         except Exception:  # noqa: BLE001 (the tick reads again)
             new = []
             self._tick(now)
+            if not self.started:
+                return now
             return min(now + POLL_S, self.next_at)
         if waking(new) or now >= self.next_at - 1e-9:
             self._tick(now)
+            if not self.started:  # three misses in a row: a new session at once, as live
+                return now
         return now + min(POLL_S, self.next_at - now)
 
 
@@ -239,8 +253,12 @@ class Episode:
         self.agent: PlaybookAgent | None = None
         self.script: Any = None
         self.truth_samples: list[dict[str, Any]] = []
+        self.ours_samples: list[dict[str, Any]] = []
         self.contacts_meta: list[dict[str, Any]] = []
         self.association: dict[str, str] = {}
+        self.ai_first_tick_s: float | None = None
+        self.contacts_start_s: float | None = None
+        self.bridge_start_s: float | None = None
 
     def run_async(self, coro: Any) -> Any:
         return self.aloop.run_until_complete(coro)
@@ -275,7 +293,8 @@ class Episode:
             if self.opts.agent == "playbook":
                 self.agent = PlaybookAgent(self, cfg)
                 self.loop.handlers["agent"] = self.agent.wake
-                self.loop.at(self.e.ai_start_s + self.opts.calibration.ai_first_tick_s, "agent")
+                self.ai_first_tick_s = self.opts.calibration.ai_first_tick(self.seed)
+                self.loop.at(self.e.ai_start_s + self.ai_first_tick_s, "agent")
             from .script import Script
 
             self.script = Script(self, self.e.script)
@@ -285,8 +304,10 @@ class Episode:
             self.loop.at(0.0, "sampler")
             self.loop.at(1.0, "runner")
             self.loop.run(self.e.duration_s)
-            for a in sim.truth(association=True).get("association") or []:
+            final = sim.rpc({"op": "truth", "association": True, "log_from": 0})
+            for a in final.get("association") or []:
                 self.association.setdefault(a["track_id"], a["contact_id"])
+            self.truth_log(final)
             # where the simulator's computer time went (diagnostics; not part of the episode)
             rust_perf = sim.rpc({"op": "perf"}).get("tasks") or {}
             end = sim.end()
@@ -309,6 +330,7 @@ class Episode:
                                 if self.agent and self.agent.engine.compute else None),
             "playbook_s": (round(sum(self.agent.engine.compute) / 1000.0, 3)
                            if self.agent and self.agent.engine.compute else 0.0),
+            "slow_ticks": self.agent.slow_ticks if self.agent else 0,
             # per task or request kind: seconds and polls, timed in the simulator (perf.rs); the
             # tasks run inside `call.*` requests, so they are parts of those, not added to them
             "rust": {k: {"s": round(v["s"], 4), "polls": v["polls"]} for k, v in sorted(rust_perf.items())},
@@ -328,10 +350,10 @@ class Episode:
         if c and not self.contacts_meta:
             self.contacts_meta = [{k: x.get(k) for k in ("id", "name", "affiliation", "domain", "kind", "ais", "start_s")}
                                   for x in c.get("contacts", [])]
-        self.truth_samples.append({
+        # our vehicles as the stand-ins really are (diagnostics, and the truth of a P0 command's
+        # fault); the contacts' truth is their own per-step log (truth_log)
+        self.ours_samples.append({
             "t": round(tr["t"], 3),
-            "contacts": [[x["id"], round(x["lon"], 7), round(x["lat"], 7), round(x["speed_mps"], 2), x["exists"]]
-                         for x in c.get("contacts", [])] if c else [],
             "ours": [[o["uid"], round(o["lon"], 7), round(o["lat"], 7), o["mode"], o["link_blocked"],
                       round(100.0 * (1.0 - o["battery_consumed_mah"] / o["battery_capacity_mah"]), 2)
                       if o.get("battery_capacity_mah") else None]
@@ -340,6 +362,19 @@ class Episode:
         for a in tr.get("association") or []:
             self.association.setdefault(a["track_id"], a["contact_id"])
         return now + self.opts.sample_s
+
+    def truth_log(self, final: dict[str, Any]) -> None:
+        """The contacts' truth, one sample per contacts step on the situation's clock (the
+        process's start plus its scenario second), as fullstack.py reads contacts-truth.jsonl."""
+        self.contacts_start_s = final.get("contacts_start_s")
+        self.bridge_start_s = final.get("bridge_start_s")
+        c0 = float(self.contacts_start_s or 0.0)
+        self.truth_samples = [
+            {"t": round(c0 + float(ln["s"]), 3),
+             "contacts": [[x[0], round(x[1], 7), round(x[2], 7), round(x[3], 2), x[4]] for x in ln["contacts"]],
+             "ours": []}
+            for ln in final.get("log") or []
+        ]
 
     def record(self, spec: dict[str, Any], runner: Runner, audit_text: str, cfg: Any) -> dict[str, Any]:
         lines = self.agent.lines if self.agent else []
@@ -355,14 +390,16 @@ class Episode:
             "operator": self.operator.describe() if self.operator else None,
             "clock": {"epoch": spec["epoch"], "at": self.e.at, "duration_s": self.e.duration_s,
                       "ai_start_s": self.e.ai_start_s, "calibration": self.opts.calibration.as_dict(),
+                      "ai_first_tick_s": self.ai_first_tick_s, "contacts_start_s": self.contacts_start_s,
+                      "bridge_start_s": self.bridge_start_s, "emulator_seed": spec.get("linkemu_seed"),
                       "ready_t": runner.ready_t},
             "orders": runner.orders,
             "agent_log": lines,
             "plans": self.agent.plans if self.agent else [],
             "operator_decisions": self.operator.decisions if self.operator else [],
             "script": self.script.log if self.script else [],
-            "truth": {"contacts": meta, "samples": self.truth_samples, "association": self.association,
-                      "stated": self.e.truth},
+            "truth": {"contacts": meta, "samples": self.truth_samples, "ours": self.ours_samples,
+                      "association": self.association, "stated": self.e.truth},
             "audit": audit_summary(audit_text),
             "audit_text": audit_text,
         }
@@ -383,17 +420,15 @@ _PROV: dict[str, Any] | None = None
 
 
 def provenance(binary: Path | None) -> dict[str, Any]:
+    """The commit, whether the tree differed from it, the simulator's binary and its hash, and
+    the untracked inputs it read (the link profiles, the satellite element sets)."""
     global _PROV
     if _PROV is None:
+        from .provenance import git_state, inputs, sha256_file
         from .sim import BINARY
+        from .situations import links_file
 
         b = Path(binary or BINARY)
-        try:
-            commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True).stdout.strip()
-            dirty = bool(subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=REPO,
-                                        capture_output=True, text=True).stdout.strip())
-        except OSError:
-            commit, dirty = None, None
-        _PROV = {"commit": commit, "dirty": dirty, "binary": str(b),
-                 "binary_sha256": hashlib.sha256(b.read_bytes()).hexdigest() if b.exists() else None}
+        _PROV = {**git_state(), "binary": str(b), "binary_sha256": sha256_file(b) if b.exists() else None,
+                 **inputs(links_file())}
     return _PROV

@@ -6,12 +6,14 @@ by when. The rule (Harbor watch's director's notes, stated once for every family
 whose truth affiliation is unknown, suspect or hostile needs a look by the time it first comes
 within `LOOK_RADIUS_M` (3 km) of the protected point (the Golden Gate Bridge), plus
 `LOOK_GRACE_S` (60 s); every other contact (neutral, assumed friend, friend), or one that never
-comes that close, needs none. The crossing time is interpolated between truth samples.
+comes that close, needs none. The crossing time is the first truth sample within the radius.
 
 **A proposal's target**: a live track id follows detection order, so it is matched by truth: the
 contact nearest the track's `predicted` position in the evidence record at its `tick_t`, if
 within `ASSOC_M` (500 m) and no other contact is within `AMBIGUOUS_RATIO` (1.5) times that
-distance; else `ambiguous`. Truth positions are interpolated to `tick_t`.
+distance; else `ambiguous`. Truth is the truth log's sample at the scenario second nearest
+`tick_t` (CRITERIA.md), on both sides: the full stack's contacts-truth.jsonl, the simulator's own
+per-step log of the same process.
 """
 
 from __future__ import annotations
@@ -41,51 +43,47 @@ def dist_m(a: tuple[float, float], b: tuple[float, float]) -> float:
 
 
 class Truth:
-    """Contact positions over time from a record's truth samples."""
+    """Contact positions over time from a record's truth samples: one per contacts step (the
+    contacts process's truth log, its scenario seconds placed on the situation's clock by the
+    process's start), the same on both sides."""
 
     def __init__(self, rec: dict[str, Any]):
         tr = rec.get("truth") or {}
         self.meta = {c["id"]: c for c in tr.get("contacts") or []}
         self.samples = sorted(tr.get("samples") or [], key=lambda s: s["t"])
         self.times = [s["t"] for s in self.samples]
+        self.where: list[dict[str, tuple[float, float]]] = []
         self.series: dict[str, list[tuple[float, float, float]]] = {}
         for s in self.samples:
+            here = {}
             for c in s.get("contacts") or []:
                 cid, lon, lat, exists = c[0], c[1], c[2], c[4] if len(c) > 4 else True
                 if exists:
+                    here[cid] = (lon, lat)
                     self.series.setdefault(cid, []).append((s["t"], lon, lat))
+            self.where.append(here)
+
+    def nearest(self, t: float) -> int | None:
+        """The sample at the scenario second nearest `t` (the earlier of two equally near), if
+        one is within a step and a half."""
+        if not self.times:
+            return None
+        i = bisect.bisect_left(self.times, t)
+        cands = [j for j in (i - 1, i) if 0 <= j < len(self.times)]
+        j = min(cands, key=lambda k: (abs(self.times[k] - t), k))
+        return j if abs(self.times[j] - t) <= 1.5 else None
 
     def at(self, cid: str, t: float) -> tuple[float, float] | None:
-        """Where contact `cid` was at `t` (linear between samples; None outside its span)."""
-        ser = self.series.get(cid)
-        if not ser:
-            return None
-        ts = [x[0] for x in ser]
-        i = bisect.bisect_left(ts, t)
-        if i < len(ser) and abs(ser[i][0] - t) < 1e-9:
-            return (ser[i][1], ser[i][2])
-        if i == 0 or i >= len(ser):
-            # within one sample interval of the ends: the end sample
-            j = 0 if i == 0 else len(ser) - 1
-            return (ser[j][1], ser[j][2]) if abs(ser[j][0] - t) <= 2.5 else None
-        (t0, lo0, la0), (t1, lo1, la1) = ser[i - 1], ser[i]
-        if t1 - t0 > 5.0:
-            return None
-        f = (t - t0) / (t1 - t0)
-        return (lo0 + f * (lo1 - lo0), la0 + f * (la1 - la0))
+        """Where contact `cid` was at the scenario second nearest `t` (None if it did not exist
+        then, or no sample is near)."""
+        j = self.nearest(t)
+        return None if j is None else self.where[j].get(cid)
 
     def first_within(self, cid: str, point: tuple[float, float], radius_m: float) -> float | None:
-        ser = self.series.get(cid) or []
-        prev = None
-        for t, lon, lat in ser:
-            d = dist_m((lon, lat), point)
-            if d <= radius_m:
-                if prev is None:
-                    return t
-                tp, dp = prev
-                f = (dp - radius_m) / (dp - d) if dp != d else 1.0
-                return tp + f * (t - tp)
-            prev = (t, d)
+        """The first sample's time with the contact within `radius_m` of `point`."""
+        for t, lon, lat in self.series.get(cid) or []:
+            if dist_m((lon, lat), point) <= radius_m:
+                return t
         return None
 
 
@@ -112,7 +110,8 @@ def associate(truth: Truth, predicted: list[float] | None, t: float) -> str | No
         return None
     p = (float(predicted[0]), float(predicted[1]))
     ds = []
-    for cid in truth.series:
+    j = truth.nearest(t)
+    for cid in (truth.where[j] if j is not None else {}):
         q = truth.at(cid, t)
         if q is not None:
             ds.append((dist_m(p, q), cid))

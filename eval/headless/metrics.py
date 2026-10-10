@@ -18,7 +18,14 @@ sys.path.insert(0, str(REPO / "agents"))
 from playbook import fidelity  # noqa: E402
 from playbook.rationale import parse_record  # noqa: E402
 
-LOOK_PLAYS = ("isr.investigate", "isr.armed_overwatch")
+#: CRITERIA.md: a look is `isr.investigate`
+LOOK_PLAYS = ("isr.investigate",)
+#: plays whose legitimacy CRITERIA.md's precision judges: a look or recentre by its target's
+#: label, a P0 command by whether its fault is real by truth
+TARGET_PLAYS = ("isr.investigate", "isr.recentre")
+P0_PLAYS = ("safety.low_reserve", "safety.stuck")
+#: the low-reserve line of the shipped watch policy (reserve 20 % plus 5, safety.py)
+LOW_RESERVE_PCT = 25.0
 FINAL = ("rejected", "expired", "voided", "done", "failed", "dispatched", "approved", "queued", "pending_approval")
 
 
@@ -56,6 +63,27 @@ def audit_intents(rec: dict[str, Any], to_s: Any) -> dict[int, dict[str, Any]]:
     return out
 
 
+def p0_fault_real(rec: dict[str, Any], p: dict[str, Any]) -> bool | None:
+    """Whether the fault a P0 command answers was real by truth when it was proposed: a stuck
+    vehicle had been stopped by the script (the only way the simulator stops one); a low
+    reserve, the vehicle's true charge at the nearest sample of our vehicles was under the line.
+    None when the record holds no truth of our vehicles (the full stack's records)."""
+    uid, t = p.get("uid"), p.get("t")
+    if uid is None or t is None:
+        return None
+    if p["play"] == "safety.stuck":
+        stops = [s for s in rec.get("script") or [] if s.get("kind") == "stop" and s.get("uid") == uid]
+        if stops:
+            return any(float(s["t"]) <= float(t) for s in stops)
+        return False if (rec.get("truth") or {}).get("ours") else None
+    ours = (rec.get("truth") or {}).get("ours") or []
+    if not ours:
+        return None
+    near = min(ours, key=lambda s: abs(float(s["t"]) - float(t)))
+    pct = next((o[5] for o in near["ours"] if o[0] == uid), None)
+    return None if pct is None else pct < LOW_RESERVE_PCT
+
+
 def mean(xs: list[float]) -> float | None:
     return round(statistics.fmean(xs), 3) if xs else None
 
@@ -77,10 +105,14 @@ def episode_metrics(rec: dict[str, Any]) -> dict[str, Any]:
     false_looks = [p for p in props if str(p["play"]).startswith("isr.")
                    and p["truth_target"] in labels and not labels[p["truth_target"]]["needs_look"]]
     human = [p for p in props if p["tier"] == "human" or p["state"] == "pending_approval"]
-    legit = []
+    legit, unjudged = [], []
     for p in human:
-        if str(p["play"]).startswith("isr."):
+        if p["play"] in TARGET_PLAYS:
             legit.append(p["truth_target"] in must)
+        elif p["play"] in P0_PLAYS and (real := p0_fault_real(rec, p)) is not None:
+            legit.append(real)
+        else:
+            unjudged.append(p["play"])
     outcomes: dict[str, int] = {}
     latencies = []
     for p in human:
@@ -129,7 +161,7 @@ def episode_metrics(rec: dict[str, Any]) -> dict[str, Any]:
         "time_to_look": times,
         "time_to_look_first": next(iter(times.values()), None) if len(times) == 1 else None,
         "false_looks": len(false_looks),
-        "precision": {"legit": sum(legit), "n": len(legit)},
+        "precision": {"legit": sum(legit), "n": len(legit), "unjudged": sorted(unjudged)},
         "human_cards": len(human),
         "human_cards_per_operator_min": round(len(human) / max(1e-9, (dur - ai_start) / 60.0), 4),
         "outcomes": outcomes,

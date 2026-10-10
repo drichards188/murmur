@@ -41,13 +41,22 @@ BRIDGE_BASE = 30000
 @dataclass
 class Calibration:
     """Process start offsets on the situation's clock, the only simulator parameters set from
-    full-stack measurements, and only from calibration seeds (CRITERIA.md). Defaults before
-    calibration: what scripts/up.sh's order of starts suggests."""
+    full-stack measurements, and only from calibration seeds (CRITERIA.md): the contacts
+    process's and the stand-in engine's starts, the bridge's (its decision layer and loops, the
+    first anchor), each a median; the playbook's first tick after `ai_start_s`, a range: each
+    episode draws its own from the seed (`ai_first_tick`), as the full stack's agent process
+    starts and connects in a time that varies run to run. Defaults before calibration: what
+    scripts/up.sh's order of starts suggests."""
 
     contacts_start_s: float = 3.0
     standins_start_s: float = 3.0
-    ai_first_tick_s: float = 2.0
+    bridge_start_s: float = 0.0
+    ai_first_tick_lo_s: float = 2.0
+    ai_first_tick_hi_s: float = 2.0
     source: str = "defaults (not calibrated)"
+
+    KEYS = ("contacts_start_s", "standins_start_s", "bridge_start_s", "ai_first_tick_lo_s", "ai_first_tick_hi_s",
+            "source")
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Calibration":
@@ -55,11 +64,31 @@ class Calibration:
         if not path.exists():
             return cls()
         raw = tomllib.loads(path.read_text())
-        return cls(**{k: raw[k] for k in ("contacts_start_s", "standins_start_s", "ai_first_tick_s", "source") if k in raw})
+        return cls(**{k: raw[k] for k in cls.KEYS if k in raw})
+
+    def ai_first_tick(self, seed: int) -> float:
+        """The playbook's first tick after `ai_start_s` for an episode seed: uniform over the
+        calibrated range, from a generator of its own (nothing else draws from it)."""
+        import random
+
+        lo, hi = self.ai_first_tick_lo_s, self.ai_first_tick_hi_s
+        return round(lo + (hi - lo) * random.Random(f"ai-first-tick:{int(seed)}").random(), 3)
 
     def as_dict(self) -> dict[str, Any]:
-        return {"contacts_start_s": self.contacts_start_s, "standins_start_s": self.standins_start_s,
-                "ai_first_tick_s": self.ai_first_tick_s, "source": self.source}
+        return {k: getattr(self, k) for k in self.KEYS}
+
+
+def emulator_seed(e: "EpisodeSpec") -> int:
+    """The link emulator's seed for an episode: the situation's own `seed`, on both sides of G1
+    (eval/headless/fullstack.py passes it to the full stack's emulator as MURMUR_LINKEMU_SEED;
+    process_spec gives it to the simulator's), so each meets the same draws. A plain `make
+    situation NAME=harbor-watch` runs the links file's seed, 1, which is Harbor watch's `seed`."""
+    return int(e.seed)
+
+
+def links_file() -> Path:
+    """The link profiles both the emulator and the bridge read (MURMUR_LINKS, else sim/links.toml)."""
+    return Path(os.environ.get("MURMUR_LINKS") or REPO / "sim" / "links.toml")
 
 
 @dataclass
@@ -145,7 +174,7 @@ def space_cache_file() -> Path:
     """Where SATCOM looks are kept between episodes (crates/murmur-headless space_cache.rs):
     one file per set of element sets and link profiles, so a new fetch or new profiles start a
     new one."""
-    links = Path(os.environ.get("MURMUR_LINKS") or REPO / "sim" / "links.toml")
+    links = links_file()
     h = hashlib.sha256(links.read_bytes())
     cache = REPO / "sim" / "space" / "cache"
     if cache.is_dir():
@@ -170,7 +199,8 @@ def process_spec(e: EpisodeSpec, seed: int, workdir: Path, calib: Calibration,
         "bridge_base": BRIDGE_BASE,
         "fleet": vehicles,
         "standins": standins,
-        "links": str(Path(os.environ.get("MURMUR_LINKS") or REPO / "sim" / "links.toml")),
+        "links": str(links_file()),
+        "linkemu_seed": emulator_seed(e),
         "events": e.events,
         "terrain_grid": str(TERRAIN_GRID) if terrain and TERRAIN_GRID.exists() else None,
         "space": space,
@@ -178,6 +208,7 @@ def process_spec(e: EpisodeSpec, seed: int, workdir: Path, calib: Calibration,
         "contacts":({"scenario": str(contacts), "start_s": calib.contacts_start_s, "seed": e.contacts_seed}
                      if contacts else None),
         "standins_start_s": calib.standins_start_s,
+        "bridge_start_s": calib.bridge_start_s,
         "battery_pct": {str(k): v for k, v in e.battery_pct.items()},
     }
     run_id = f"headless-{e.name}-s{seed}"
@@ -201,6 +232,8 @@ def process_spec(e: EpisodeSpec, seed: int, workdir: Path, calib: Calibration,
         "MURMUR_ROOT": str(workdir / "no-space-root"),
         # the bridge serves the emulator's view (/api/links) as with an emulator; nothing polls
         "MURMUR_LINKEMU_URL": "http://headless.invalid:1",
+        # the bridge's lost-link timers (estimate.rs) from the same profiles as the emulator's
+        "MURMUR_LINKS": str(links_file()),
     }
     if not anchors:
         env["MURMUR_ANCHORS"] = "0"
