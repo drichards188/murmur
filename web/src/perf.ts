@@ -13,11 +13,6 @@
 //               positions of every vehicle in the attached layers. Not visible in the JS the
 //               glide loop itself runs (advance and setProps), which deck.gl defers to its render
 //   deckCpu     deck.gl's CPU time per frame ("CPU Time" stat from luma.gl)
-//   seaCheck    a check of the 3D sea surface that found the water tiles unchanged (map3d.ts
-//               refreshSea: after a frame, at most 4 a second, in 3D)
-//   seaBuild    a check that rebuilt the sea's polygons (the set of water tiles changed)
-//   seaTess     deck.gl tessellating those polygons and filling the layer's buffers, on the
-//               next update after a rebuild; a rebuild costs seaBuild + seaTess
 //
 // window.murmurPerfStats() returns a snapshot; the ?perf overlay shows the same numbers.
 
@@ -44,25 +39,11 @@ class Ring {
   }
 }
 
-const rings = { applyDelta: new Ring(), render: new Ring(), latency: new Ring(), frame: new Ring(), attrs: new Ring(), deckCpu: new Ring(), seaCheck: new Ring(), seaBuild: new Ring(), seaTess: new Ring() }
+const rings = { applyDelta: new Ring(), render: new Ring(), latency: new Ring(), frame: new Ring(), attrs: new Ring(), deckCpu: new Ring() }
 export type PerfName = keyof typeof rings
 
 export function perfPush(name: PerfName, ms: number) {
   rings[name].push(ms)
-}
-
-// the 3D sea surface: checks for a changed set of water tiles, and the rebuilds they caused
-let seaChecks = 0
-let seaRebuilds = 0
-/** one sea check and its time; `rebuilt` when it built new polygons */
-export function perfSeaCheck(ms: number, rebuilt: boolean) {
-  seaChecks++
-  if (rebuilt) seaRebuilds++
-  rings[rebuilt ? 'seaBuild' : 'seaCheck'].push(ms)
-}
-/** deck.gl's tessellation of a rebuilt sea (map3d.ts SeaLayer) */
-export function perfSeaTess(ms: number) {
-  rings.seaTess.push(ms)
 }
 
 // the update in flight: set when a message changes state, closed by App's last effect
@@ -173,11 +154,6 @@ export function perfStats() {
     latency: rings.latency.stats(),
     attrs: rings.attrs.stats(),
     deckCpu: rings.deckCpu.stats(),
-    seaCheck: rings.seaCheck.stats(),
-    seaBuild: rings.seaBuild.stats(),
-    seaTess: rings.seaTess.stats(),
-    seaChecks,
-    seaRebuilds,
     longTaskMsPerS: secs > 0 ? longMs / secs : 0,
     longTasks: longCount,
     windowS: secs,
@@ -186,8 +162,6 @@ export function perfStats() {
 
 export function perfReset() {
   for (const r of Object.values(rings)) r.reset()
-  seaChecks = 0
-  seaRebuilds = 0
   longMs = 0
   longCount = 0
   since.t = performance.now()

@@ -1,7 +1,7 @@
 // Trails of our vehicles while display smoothing is on (drawn.ts), in 2D and 3D. The symbol is
 // drawn up to a second behind the vehicle's last report, so a trail that ends at the report
-// would run past it. Two deck.gl layers (each twice in 3D: what is under water, drawn before the
-// sea surface, and the rest): the body (the trail but its newest few points) and the
+// would run past it. Two deck.gl layers (each twice in 3D: what is under water, drawn seen
+// through the water's tint, and the rest): the body (the trail but its newest few points) and the
 // head (those few points cut at the segment the symbol is on, ending at the symbol; recomputed
 // on every glide frame). They meet at one shared point; the paths' caps are flat (capRounded
 // off), so nothing overlaps there.
@@ -14,7 +14,7 @@ import { PathLayer } from '@deck.gl/layers'
 import { drawnPose, drawnTick } from './drawn'
 import { trailHeadPath, type Pt } from './glide'
 import { colour, z } from './map3d'
-import { belowOf, splitUnder, type UnderSplit } from './sea'
+import { belowOf, seenThroughWater, splitUnder, type UnderSplit } from './sea'
 import type { Vehicle } from './types'
 import { AIR_KINDS } from './types'
 
@@ -49,9 +49,8 @@ function trailedOf(vehicles: Vehicle[], is3d: boolean) {
 let bodySplit: UnderSplit<Vehicle> | null = null
 let headSplit: UnderSplit<Vehicle> | null = null
 
-/** Trails as deck.gl layers: `under` the trails seen through the water in 3D (map3d.ts
- *  sea.ts underWater: they go before the sea surface), `over` the rest (after it; everything in
- *  2D).
+/** Trails as deck.gl layers: `under` the trails seen through the water in 3D (sea.ts
+ *  underWater, drawn in sea.ts seenThroughWater's colour), `over` the rest (everything in 2D).
  *  `beforeId`: 2D only, the MapLibre layer these draw under (where the MapLibre trails were:
  *  below the taskings, the draft, labels and overlays); undefined draws them on top. */
 export function buildTrailLayers(vehicles: Vehicle[], is3d: boolean, beforeId?: string) {
@@ -65,12 +64,13 @@ export function buildTrailLayers(vehicles: Vehicle[], is3d: boolean, beforeId?: 
   const { below, sig } = belowOf(is3d ? head : [])
   bodySplit = splitUnder(bodySplit, body, below, sig)
   headSplit = splitUnder(headSplit, head, below, sig)
-  const layers = (suffix: string, bodyData: Vehicle[], headData: Vehicle[]) => [
+  const seen = (v: Vehicle) => seenThroughWater(colorOf(v))
+  const layers = (suffix: string, bodyData: Vehicle[], headData: Vehicle[], getColor = colorOf) => [
     new PathLayer<Vehicle>({
       id: `trail-body${suffix}`,
       data: bodyData,
       getPath: (v) => v.trail.slice(0, 1 - HEAD_POINTS).map(point),
-      getColor: colorOf,
+      getColor,
       getWidth: width,
       widthUnits: 'pixels',
       updateTriggers: { getPath: key },
@@ -85,12 +85,12 @@ export function buildTrailLayers(vehicles: Vehicle[], is3d: boolean, beforeId?: 
         const drawn: Pt = p ? [p.lon, p.lat, zOf(p.alt)] : [v.position![0], v.position![1], zOf(v.alt_msl)]
         return trailHeadPath(tail, [v.position![0], v.position![1], zOf(v.alt_msl)], drawn)
       },
-      getColor: colorOf,
+      getColor,
       getWidth: width,
       widthUnits: 'pixels',
       updateTriggers: { getPath: `${key}:${drawnTick()}` },
       ...where,
     }),
   ]
-  return { under: layers('-under', bodySplit.under, headSplit.under), over: layers('', bodySplit.over, headSplit.over) }
+  return { under: layers('-under', bodySplit.under, headSplit.under, seen), over: layers('', bodySplit.over, headSplit.over) }
 }
