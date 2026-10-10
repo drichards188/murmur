@@ -1,90 +1,74 @@
-# The headless simulator (murmur-8ak): design
+# The headless simulator (murmur-8ak)
 
-Status: **design, for review** (2026-10-09). Nothing below is built yet. The gates and the
-split of the situation families are frozen separately, before any result, in
-[`eval/headless/CRITERIA.md`](../eval/headless/CRITERIA.md) and
-[`eval/headless/split.toml`](../eval/headless/split.toml).
+Status: **built** (phase 2, 2026-10-09); gates run, results in section 11. The design was
+reviewed before any code (commit 89c8bed); this file now describes what was built, and says
+where that differs from the design. The gates and the split of the situation families were
+frozen separately, before any result, in [`eval/headless/CRITERIA.md`](../eval/headless/CRITERIA.md)
+and [`eval/headless/split.toml`](../eval/headless/split.toml).
+
+**What its numbers are.** Every result from it is a model result: a scripted operator on scripted
+or generated situations. The operator (section 7) is a load and regression model, not a model of
+human judgment, and anything optimized through it learns to flood the inbox.
 
 ## 1. What it is for
 
-The playbook engine (`agents/playbook/`) has been checked on a handful of live Harbor watch runs,
+The playbook engine (`agents/playbook/`) had been checked on a handful of live Harbor watch runs,
 about 47 episodes an hour on the whole machine at best. The research report on trained AI
 (section 6, step 1) asks for a simulator that runs it over thousands of generated situations,
 deterministic given (situation, seed), with the same tools and the same JSON the bridge's MCP
 server answers, checked against the full stack (gate G1) and fast enough to matter (gate G1b:
-at least 1,000 Harbor-class episodes per core-hour). Step 2 of that report (a truth objective,
-an oracle, a random agent, the headroom above the playbook) is not in this job, but it plugs into
-the same episode record (section 14).
+at least 1,000 Harbor-class episodes per core-hour). Step 2 (a truth objective, an oracle, a
+random agent, the headroom above the playbook) is not in this job; it plugs into the same
+episode record (section 14).
 
-## 2. The decision: the bridge's own code, in process, on a simulated clock
-
-### 2.1 Chosen
+## 2. The bridge's own code, in process, on a simulated clock
 
 **One process per episode runs the bridge's own code, the stand-ins' own code, the link
 emulator's own model and the contacts' own motion, on tokio's paused clock, with every socket
-replaced by an in-memory port.** Concretely, a new workspace crate `crates/murmur-headless`
-compiles the bridge's 21 source modules (all of `crates/murmur-bridge/src/` except `main.rs`) by
-path, as `eval/keepout_probe` already does for three of them, and links the libraries
-`murmur-standins`, `murmur-linkemu` and `murmur-contacts`. What answers the playbook is then not
+replaced by an in-memory port.** The crate `crates/murmur-headless` compiles the bridge's 21
+source modules (all of `crates/murmur-bridge/src/` except `main.rs`) by path and links the
+libraries `murmur-standins`, `murmur-linkemu`, `murmur-contacts`. What answers the playbook is not
 a model of the bridge but the bridge:
 
 | what the playbook sees | where it comes from in the simulator |
 |---|---|
-| every MCP tool answer (`get_fleet`, `get_tracks`, `get_changes`, `preview_intent`, `propose_intent`, `withdraw_intent` with `if_state`, ...) | the bridge's `mcp::tools::call`, the function its MCP handler calls after resolving the agent, on the bridge's own `Mcp` |
-| the decision path: checks, tiers, the inbox, approvals, expiry, the queue, alerts, the audit log | the bridge's `Decision` (murmur-decide inside), built with `Decision::from_parts` as the bridge's tests build it, its 1 s loop running |
-| vehicle facts, link health, telemetry plan, TIMESYNC round trips, task-layer timeouts, mission uploads and their failures | the bridge's `World`, `Link`, `LinkStats`, `TaskManager` and `housekeeping`, fed MAVLink frames by the real stand-ins |
-| tracks | the bridge's sensing model and IMM tracker, fed truth on its own simulation channel route (`POST /api/sim/contacts`, through the bridge's router in process) |
-| the operator's REST answers (what the proxy operator reads and does) | the bridge's own axum router, called in process (`tower::ServiceExt::oneshot`), headers as a dev run asserts them |
-| our vehicles | `murmur_standins::vehicle::Vehicle::seeded`, `step` at 10 Hz and `on_datagram`, frames taken with `Link::capture` (how the stand-ins' own tests step them without a socket) |
-| loss, latency, jitter, bandwidth and queues, range, terrain line of sight, SATCOM visibility, scripted link cuts | `murmur_linkemu::link::Link::decide`, its `TidewaterTerrain` cache, `sat::refresh`, its event schedule, seeded |
-| contacts (truth) | `murmur_contacts::motion::Mover::step` and `truth::TruthMessage::build`, stepped at the contacts process's 1 Hz |
+| every MCP tool answer | the bridge's `mcp::tools::call` on the bridge's own `Mcp` (`mcp::Mcp::new`), after logging `session.connected` as the MCP handler does on an agent's first call |
+| the decision path: checks, tiers, the inbox, approvals, expiry, the queue, alerts, the audit log and its anchors | the bridge's `Decision`, built with the production constructor `Decision::load` (audit log and anchors in the episode's directory), its loop running |
+| vehicle facts, link health, telemetry plan, TIMESYNC, task-layer timeouts, mission uploads | the bridge's `World`, `Link`, `LinkStats`, `TaskManager` and `housekeeping`, fed MAVLink frames by the real stand-ins |
+| tracks | the bridge's sensing model and IMM tracker (`tracks::init`), fed truth on its own simulation route (`POST /api/sim/contacts` through the bridge's router, with the stack's simulation token) |
+| the operator's REST answers | the bridge's own axum router (`api::router`, with `emu` and `situation` merged as `main.rs` merges them), called in process (`tower::ServiceExt::oneshot`) |
+| our vehicles | `murmur_standins::vehicle::Vehicle::seeded` stepped at its 10 Hz, frames handed to `on_datagram` and taken back from its link |
+| loss, latency, jitter, bandwidth and queues, range, terrain line of sight, SATCOM visibility, scripted link cuts | murmur-linkemu's own model per vehicle: `Link::decide`, the proxy's `admit`, `Delay` and `gauge`, its `TidewaterTerrain` cache, `sat::refresh`, its event schedule, `LinkStats` and `summary_json` |
+| contacts (truth) | `murmur_contacts::motion::Mover::step` and `truth::TruthMessage::build`, at the contacts process's 1 Hz |
 
-The playbook itself runs **unchanged** in Python: `agents/playbook/engine.py`'s `Engine` is
-handed a session adapter with `AgentSession`'s surface (`agent`, `tools`, `call(name, **args)`,
-`propose(rationale, **req)`), whose answers are those of `mcp::tools::call` passed over a pipe.
-Nothing in `agents/playbook/` changes.
+The playbook runs **unchanged** in Python: `agents/playbook/engine.py`'s `Engine` is handed a
+session adapter with `AgentSession`'s surface. Nothing in `agents/playbook/` changed.
 
-**Feasibility, checked before writing this**: a scratch crate declaring the bridge's 21 modules
-by path (no source change) passed `cargo check` in 29 s and `cargo clippy --all-targets -D
-warnings` with dead code allowed, once the by-path modules were declared `#[cfg(not(test))]` (so
-a test build of the new crate does not compile the bridge's own unit tests a second time). The
-scratch crate was deleted; nothing of it is committed.
+### 2.1 What changed in existing code (the seams)
 
-### 2.2 Rejected, and why
-
-| option | why not |
-|---|---|
-| **(a) Assemble components by path and re-create the MCP views** (the research's sketch) | The views are not a thin layer: `mcp/world.rs` reads `World` (vehicle state built from MAVLink, link statistics, the task layer's ops) and `Decision` (inbox, queue, alerts, intents with their history, the change feed). Re-creating them means re-implementing about 17,000 lines of `decision/`, `tasks/`, `link.rs`, `vehicle.rs` and `mcp/`, and doing it again after every rules change (16 rules versions in eight days). View fidelity is what G1 measures; a re-creation would fail it in ways nobody could enumerate in advance. |
-| **(a-lite) Simple kinematics and statistical stand-ins for uploads and lost links**, drawn per link class | Unnecessary once the real stand-ins and the real task layer run over the real link model, which costs well under a second per episode (section 13). Kept as the fallback if G1b fails, with its own fidelity gate. |
-| **(c1) A library target in `murmur-bridge` behind a cargo feature** | The same code, but it restructures the production entry point (`main.rs` into a library), and cargo unifies features across a workspace build, so a `cargo build --workspace` would compile the simulator's seams into the production bridge. The by-path build keeps them out by construction (section 2.3). |
-| **(c2) The real bridge process on a virtual clock**, driven over its HTTP and UDP ports | Lockstep across processes and sockets is slow, and tokio's paused clock auto-advances while I/O is pending, so the bridge's timers would fire before packets arrive: neither fast nor deterministic. |
-| **(c3) A virtual-time asyncio loop running `playbook_agent.py` and `eval/proxy.py` unchanged** | Both read the wall clock directly (`time.time()` for the tick schedule and the stop time, `time.monotonic()`, `asyncio.to_thread`). The engine runs unchanged; its 200-line process wrapper and the proxy's sequencing are re-expressed on simulated time (sections 4 and 7), each with a test that holds it to the original. |
-
-### 2.3 What changes in existing code (the seams)
-
-The bridge's files are compiled twice: by the bridge (unchanged behaviour) and by
-`murmur-headless`. Every seam that only the simulator needs is behind `#[cfg(murmur_headless)]`,
-a cfg that only `murmur-headless`'s build script sets: **the production bridge binary cannot
-contain them.** The rest are pure refactors (a loop body moved into a function the loop calls)
-or visibility bumps, covered by the bridge's existing tests.
+Every seam only the simulator needs is behind `#[cfg(murmur_headless)]`, a cfg that only
+`crates/murmur-headless/build.rs` sets, so the production bridge binary cannot contain them. Two
+checks hold that: a test in the bridge's own suite (`clock.rs`,
+`the_bridge_build_has_no_headless_seams`, `const { assert!(!cfg!(murmur_headless)) }`), and
+`eval/headless/tests/test_labels_families.py`, which fails if the bridge gains a build script or
+a `rustc-cfg`. The rest are a refactor and visibility changes, covered by the bridge's existing
+tests, which pass unchanged.
 
 | file | change | kind |
 |---|---|---|
-| `crates/murmur-bridge/src/clock.rs` | `wall()` and `utc()` read the simulation's epoch plus tokio's (paused) monotonic clock: the bridge's clock runs exactly on simulated time, no steering (as the `cfg(test)` clock already does) | `cfg(murmur_headless)` |
-| `crates/murmur-bridge/src/link.rs` | the receive loop's body moved into `Link::receive(world, datagram, from)`, which `run` calls; an in-memory `Link` whose sends go to a function (the emulator) instead of the socket; its socket field holds an unbound UDP socket that never carries a packet | refactor + `cfg(murmur_headless)` |
-| `crates/murmur-bridge/src/world.rs` | `attach_link`: put an in-memory link where `ensure_ports` would put a bound one, so `housekeeping` (TIMESYNC, telemetry plan, parameter reads, home requests) runs unchanged over it | `cfg(murmur_headless)` |
-| `crates/murmur-bridge/src/heartbeat.rs` | one GCS heartbeat round (every link with a vehicle whose period divides the round number) moved into `send_round(world, k)`, which the heartbeat thread calls and the simulator calls once per simulated second | refactor |
+| `crates/murmur-bridge/src/clock.rs` | `sim_clock`: once the simulation sets its epoch, `wall()` and `utc()` read the epoch plus tokio's (paused) time since, and `mono()` 3600 s plus that; a read outside the simulation's runtime panics (it would leak real time) | `cfg(murmur_headless)` |
+| `crates/murmur-bridge/src/link.rs` | the receive loop's body moved into `Link::receive(world, datagram, from)`, which `run` calls; `Link::in_memory` and `mem_out` (sends go to a function, the emulator, instead of the socket) | refactor + `cfg(murmur_headless)` |
+| `crates/murmur-bridge/src/world.rs` | `attach_link`: an in-memory link where `ensure_ports` would put a bound one, so `housekeeping` runs unchanged over it | `cfg(murmur_headless)` |
+| `crates/murmur-bridge/src/heartbeat.rs` | one GCS heartbeat round moved into `send_round(world, k, msg)`, which the heartbeat thread calls and the simulator calls once a simulated second | refactor |
 | `crates/murmur-bridge/src/emu.rs` | `Emu::ingest` made `pub(crate)`: the simulator hands it the in-memory emulator's `/stats` JSON every 2 s, as the poll hands it the HTTP answer | visibility |
-| `crates/murmur-linkemu/src/proxy.rs` | `Delay`, `Pending`, `admit` and the 250 ms gauge update made `pub`, so the in-memory proxy queues packets with the emulator's own code (no behaviour change) | visibility + refactor |
+| `crates/murmur-linkemu/src/proxy.rs` | `Pending`, `Delay`, `admit` made `pub`; the 250 ms link gauge update moved into `pub fn gauge`, which the proxy calls | visibility + refactor |
 | `Cargo.toml` (workspace) | `unexpected_cfgs` check-cfg for `murmur_headless` | lint config |
 
 Not changed: `agents/playbook/`, the tracker and sensing model, murmur-decide, the stand-ins, the
-contacts. Considered and left for later: the decision engine's terrain for the domain rule (land
-or water under a surface or ground vehicle's waypoints) comes from `tidewater serve` over HTTP;
-the simulator runs it as a bridge without `MURMUR_TIDEWATER_URL` does ("not evaluated", which
-does not block a vehicle task). Air vehicles are unaffected ("no surface constraint for this
-domain"). If a family turns out to task surface vehicles, a baked land and water oracle goes in
-through the existing `Terrain::fixed` (today `cfg(test)`, widened to the simulator).
+contacts, the engine's behaviour. The stuck-vehicle fault needed no hook in `murmur-standins`
+(the design's fallback): the stand-in's own configuration stops it (section 8). The live bridge
+built from the refactored files ran the three calibration runs and the ten gate runs below, each
+replayed with its anchors.
 
 ## 3. Modules
 
@@ -92,304 +76,472 @@ through the existing `Terrain::fixed` (today `cfg(test)`, widened to the simulat
 
 | path | what |
 |---|---|
-| `Cargo.toml`, `build.rs` | the bridge's dependencies (the build script fails, naming the difference, if they drift from `crates/murmur-bridge/Cargo.toml`) plus `murmur-standins`, `murmur-linkemu`, `murmur-contacts`; sets `cfg(murmur_headless)`; the library is `test = false`, the tests are integration tests |
+| `Cargo.toml`, `build.rs` | the bridge's dependencies (the build script fails, naming the difference, if they drift from `crates/murmur-bridge/Cargo.toml`) plus `murmur-standins`, `murmur-linkemu`, `murmur-contacts`; sets `cfg(murmur_headless)`; the library is `test = false` |
 | `src/lib.rs` | the 21 bridge modules by path, `#[cfg(not(test))]`, dead code allowed; `pub mod sim` |
-| `src/sim/episode.rs` | one episode: the runtime (current thread, paused), the bridge assembled as `main.rs` assembles it minus sockets, threads and HTTP clients (no console push, no CoT, no tidewater water sampler), the stand-ins, the emulator, the contacts, `step_to(t)` |
-| `src/sim/ports.rs` | in-memory bridge links, one per vehicle, attached to `World` |
-| `src/sim/emulator.rs` | murmur-linkemu per vehicle: its `Link` built by `build_links` from `sim/links.toml`, packets queued by its `admit`, delivered on the simulated clock; `/stats` JSON from its `LinkStats` for the bridge's `emu`; SATCOM by `sat::refresh` every `interval_s`; terrain line of sight by its `TidewaterTerrain` cache over a baked surface-height grid (`src/sim/terrain.rs`) |
-| `src/sim/fleet.rs` | the stand-ins: the fleet manifest and stand-in configs as `sim/swarm.py` writes them (computed by the Python side with swarm.py's own functions), `Vehicle::seeded`, a 10 Hz task per vehicle with the stand-in engine's phase offsets |
-| `src/sim/contacts.rs` | the contacts loop of `murmur-contacts`'s `main.rs` on the simulated clock (same steps, same message, through the bridge's router with the stack's simulation token) |
-| `src/sim/faults.rs` | scripted faults, outside the bridge: link cuts (the emulator's own `[[event]]` schedule, reloaded as the storyline's `link` step reloads the events file), a vehicle that stops making way, a battery that starts low (section 8) |
-| `src/sim/truth.rs` | truth for labels, never reachable from the MCP or REST surface: contacts as the movers have them, our vehicles' true positions, link cut windows, the tracker's own track-to-contact association (`Tracks::eval_json`) |
-| `src/main.rs` | `murmur-headless`: the episode spec on its first stdin line, then one JSON request per line, one answer per line (section 5) |
-| `tests/` | determinism (two runs, byte-identical), view identity against the bridge's own HTTP MCP path (section 6), faults, the in-memory proxy against linkemu's on a scripted packet sequence |
+| `src/main.rs` | `murmur-headless --reply-fd N`: the episode spec on stdin's first line, then one JSON request per line on stdin, one answer per line on descriptor N |
+| `src/sim/mod.rs` | `Episode`: the runtime (current thread, paused), the bridge assembled in `main.rs`'s order minus sockets, threads and HTTP clients, the timed tasks; `step_to`, `mcp_call`, `api_call`, `truth` (contacts, our vehicles, the tracker's association), `fault`, `mcp_over_http` (the bridge's own `/mcp` service on the same `Mcp`, for the view test), `finish` |
+| `src/sim/server.rs` | the request loop: `step`, `mcp`, `api`, `truth`, `fault`, `tools`, `now`, `perf`, `mcp_http`, `end`; a request may carry `at` (step first); every other request is checked not to move the clock |
+| `src/sim/spec.rs` | the episode spec (seed, epoch, fleet, stand-in configs, links, events, terrain grid, SATCOM, contacts, start offsets, battery) |
+| `src/sim/emulator.rs` | murmur-linkemu per vehicle: both lanes queued by its `admit`, delivered on the simulated clock; terrain and SATCOM rounds; `/stats` for the bridge's `emu`; link events (cuts) |
+| `src/sim/fleet.rs` | the stand-ins: `Vehicle::seeded` from the episode seed, a 10 Hz task each with the stand-in engine's phase offsets, a stop fault (cruise and maximum speed to zero) |
+| `src/sim/contacts.rs` | the contacts loop of `murmur-contacts` on the simulated clock |
+| `src/sim/terrain.rs` | the baked surface-height grid as the emulator's terrain sampler (section 12) |
+| `src/sim/space_cache.rs` | the SATCOM look cache (section 12) |
+| `src/sim/perf.rs` | computer time per task and per request kind (diagnostics only) |
+| `tests/pieces.rs` | the grid answers tidewater's heights; a cached SATCOM look equals the look it would have computed |
 
 ### 3.2 Python: `eval/headless/`
 
 | path | what |
 |---|---|
 | `sim.py` | the `murmur-headless` process client; `HeadlessSession`, the session adapter (`AgentSession`'s surface and error semantics: a tool error raises `RuntimeError("<tool>: <error>")`, a refused proposal comes back with `refused`) |
-| `episode.py` | one episode: the situation runner's steps (wait for the fleet, the opening orders as `op-setup` after its dry run or by `agent-setup`, the AI at `ai_start_s`), the playbook's loop on simulated time, the proxy operator, faults and scripted proposers, the record |
-| `operator.py` | the proxy operator on simulated time (section 7) |
-| `situations.py` | a situation as an episode spec: Harbor watch from `sim/situations/harbor-watch.toml` with `eval/situation.py`'s own parser, and generated ones |
-| `families.py` | the family generator (section 8), seeded, distributions stated in its docstring |
-| `labels.py` | truth labels per contact and fault; the target association (section 9) |
-| `metrics.py` | the metrics of section 9, from an episode record |
-| `fullstack.py` | the same record built from a full-stack situation run's files (`situation.jsonl`, `agent.jsonl`, the audit log, the contacts' truth log, process start times), so one metrics function serves both sides |
-| `batch.py` | `python -m eval.headless.batch`: N episodes across cores, a JSON record per episode, the aggregate, episodes per core-hour |
-| `gate.py` | G1 and G1b as `CRITERIA.md` defines them |
-| `bake_terrain.py` | the surface-height grid for line of sight, sampled once from `tidewater serve` |
-| `tests/` | the adapter, the operator against `eval/proxy.py`, the generator, the labels, a golden episode (byte-identical), the read schema against the recorded live reads |
+| `episode.py` | one episode: a discrete-event loop (the situation runner's steps, the operator, the playbook's tick loop, a truth sampler) on simulated time, and the record |
+| `script.py` | the situation runner's steps (wait for the fleet, the opening orders as `op-setup` after its dry run or by `agent-setup`, faults, scripted proposers) |
+| `operator.py` | the operator on simulated time (section 7) |
+| `situations.py` | a situation file as an episode spec, the `murmur-headless` spec and environment, the calibration |
+| `families.py` | the family generator (section 8) |
+| `labels.py` | truth labels per contact; the target association; what the picture showed at each proposal |
+| `metrics.py` | CRITERIA.md's metrics and the reported ones, from an episode record |
+| `fullstack.py` | full-stack Harbor watch runs on the assigned port block, and the same record built from their files |
+| `calibrate.py` | the three start offsets from the calibration runs |
+| `batch.py` | `python -m eval.headless.batch`: episodes on a process pool, a record each, the aggregate, the speed and where the time went |
+| `gate.py` | G1 as CRITERIA.md defines it |
+| `bake_terrain.py` | the terrain grid, sampled once from `tidewater serve` |
+| `calibration.toml`, `split.toml`, `CRITERIA.md` | the offsets; the frozen split; the frozen gates |
+| `tests/` | section 6 and 5's tests, the operator against `eval/proxy.py`, the session, labels and families |
 
 ## 4. One episode, step by step
 
-Times are the situation's clock (seconds from the stack's start, the link emulator's in the full
-stack). The process start offsets marked *calibrated* are the only simulator parameters set from
-full-stack measurements, and only from the calibration seeds (CRITERIA.md).
+Times are the situation's clock (seconds from the stack's start).
 
-1. **Spec** (Python): the situation (fleet, contacts, policy, `[playbook]`, orders, faults,
-   scripted proposers, duration, `ai_start_s`), the seed, the operator model; the fleet manifest
-   and stand-in configs from `sim/swarm.py`'s `plan` and `lost_link_params`. The `murmur-headless`
-   process starts with the stack's `MURMUR_*` variables as `scripts/up.sh` and
-   `eval/situation_run.py` set them (operators, agents, policy, run id, simulation token), so the
-   bridge reads its configuration with its own `from_env` functions.
+1. **Spec** (Python): the situation, the seed, the operator model; the fleet manifest and stand-in
+   configs from `sim/swarm.py`'s own functions. `murmur-headless` starts with the stack's
+   `MURMUR_*` variables as `scripts/up.sh` and `eval/situation_run.py` set them, so the bridge
+   reads its configuration with its own `from_env` functions.
 2. **t = 0**: the bridge (World, Decision, Tracks, the router, Mcp) and the emulator. Contacts
-   start at `c0` (*calibrated*: the contacts process starts with the bridge, a few seconds after
-   the emulator); the stand-ins at `s0` (*calibrated*). Vehicles connect on their first heartbeat
-   and the bridge's housekeeping picks their telemetry plan, as live.
-3. **Readiness**: every second (the runner's `wait_for` period) the driver reads `/api/state`;
-   once every vehicle is navigation-ready with a position, the opening orders go out as the runner
-   issues them (an `op-setup` dry run, then `op-setup`'s submission or `agent-setup`'s proposal).
-   The autoplay operator starts then.
-4. **The AI** comes on at `ai_start_s` plus `a0` (*calibrated*: the agent process's start-up and
-   connect): `Engine.start`, then the tick loop of `playbook_agent.py` on simulated time: a tick,
-   then `get_changes` every 0.5 s until 2 s after the tick began, ticking at once on a waking
-   change (`engine.waking`, unchanged). Each tick's reads happen at one simulated instant.
-5. **Between events** the driver asks `murmur-headless` to `step_to` the next event's time:
-   the playbook's next tick or poll, the operator's next look or decision, a scripted step, the
-   end. The runtime runs every bridge loop, vehicle, link and contact up to that time.
-6. **End** at `duration_s`: the record (section 10), the audit log, the process exits.
+   start at `c0` and the stand-ins at `s0` (calibrated, section 11.1); vehicles connect on their
+   first heartbeat and the bridge's housekeeping picks their telemetry plan, as live.
+3. **Readiness**: every second the runner reads `/api/state`; once every vehicle is ready, the
+   opening orders go out as the runner issues them, and the autoplay operator starts.
+4. **The AI** comes on at `ai_start_s` plus `a0` (calibrated): `Engine.start`, then
+   `playbook_agent.py`'s tick loop on simulated time (a tick, then `get_changes` every 0.5 s until
+   2 s after the tick began, ticking at once on a waking change).
+5. **Between events** the driver asks for the next event's time (a request's `at`); the runtime
+   runs every bridge loop, vehicle, link and contact up to it.
+6. **End** at `duration_s`: the tracker's association, the record, the audit log; the process
+   saves its new SATCOM looks and exits through the decision layer's own shutdown.
 
 ## 5. Clock and determinism
 
-- **One clock.** `murmur-headless` runs one current-thread tokio runtime with its clock paused.
-  Monotonic time (`clock::mono`) is tokio's; the bridge's clock (`clock::wall`, the engine's
-  `BridgeClock`, every time in the audit log and every `t` an agent reads) is the epoch plus that,
-  with the epoch the situation's `at` (Harbor watch: 2026-06-14T10:00:00Z), so the bridge's clock
-  and the scenario clock coincide at rate 1. The emulator's clock is nanoseconds since t = 0; the
-  stand-ins count their own physics ticks; the contacts their scenario seconds. Nothing reads the
-  wall clock except the stand-ins' `messages::unix_usec` (the time fields of SYSTEM_TIME and
-  GPS_RAW_INT), which the bridge does not read; the golden test would show it if it ever did.
-- **Stepping.** `step_to(t)` is `block_on(sleep_until(t))`: every timer up to `t` fires in order,
-  every task runs, then the call returns at exactly `t`. A request between steps (a tool call, a
-  REST call) runs at the current instant; the server checks that the clock did not move during
-  it and fails the episode if it did (tokio already holds auto-advance while a blocking task runs,
-  which `get_platforms` uses).
-- **Draws.** Every random draw is seeded from the episode seed `k` or the situation: stand-ins
-  `Vehicle::seeded(.., k)` (their own uid mixing), the emulator's `Env` seed `k`, the proxy
-  operator `random.Random(k * 7919 + 17)` (eval/proxy.py's), the contacts' motion and the sensing
-  model the contacts scenario's own `seed` (as the full stack, where every Harbor watch run has
-  seed 11). In the full stack the emulator keeps `sim/links.toml`'s seed 1 in every run, but its
-  draws fall on packets in arrival order, which the stack's timing reshuffles; headless timing is
-  fixed, so the seed must vary to give runs their spread.
-- **Python.** The driver orders simultaneous events by a fixed priority (situation steps, the
-  operator, the playbook); the playbook is a pure function of its reads; its ledger stays in
-  memory.
-- **What proves it.** The golden episode (Harbor watch, seed 1) is run twice in `make check`:
-  the record (minus its `perf` timings) and the audit log must be byte-identical to the committed
-  golden. Changing a seed must change the record.
-- **Known risk.** A `HashMap` iterated into an output would vary between processes (std's
-  random hasher). The golden test catches it; if it is in the bridge, it is a bridge finding and
-  goes to bd, not a silent sort in the simulator.
+- **One clock.** One current-thread tokio runtime with its clock paused. The bridge's clocks
+  (`clock::mono`, `clock::wall`, the engine's `BridgeClock`, every time in the audit log and every
+  `t` an agent reads) are tokio's time from fixed origins (section 2.1), the epoch being the
+  situation's `at` (Harbor watch 2026-06-14T10:00:00Z). The emulator's clock is the same tokio time;
+  the stand-ins count their physics ticks; the contacts their scenario seconds.
+- **Stepping.** `step_to(t)` sleeps the runtime to `t` (every timer up to `t` fires in order), then
+  yields 64 times so every task woken at `t` runs before the next request. A request between steps
+  runs at the current instant, and the server fails the episode if the clock moved during it.
+- **Draws.** The stand-ins `Vehicle::seeded(.., k)`; the emulator's seed `k`; the operator
+  `random.Random(k * 7919 + 17)` (eval/proxy.py's); the contacts' motion and the sensing model the
+  contacts scenario's own `seed`. **For G1, Harbor watch keeps its contacts scenario's seed 11 in
+  every episode, as every full-stack Harbor watch run does; the families draw a contacts seed per
+  situation, so the traffic's motion varies with the episode seed** (tested:
+  `test_a_family_seed_is_one_situation_and_seeds_vary_it`).
 
-## 6. The JSON views are the bridge's: how a test proves it
+### 5.1 The determinism audit
 
-The simulator does not have views of its own: every answer is the bridge's `mcp::tools::call` on
-the bridge's own state, serialized by `serde_json` as rmcp serializes it. What could differ is the
-path, so the test compares paths on one state:
+Every place where the by-path bridge code, or a library the simulator links, could escape the
+paused clock or the seed, and how each is handled. Found by reading the sources
+(`thread::spawn`, `spawn_blocking`, `std::time::Instant` and `SystemTime` outside `clock.rs`,
+blocking sleeps, rayon, unseeded random draws, `HashMap`/`HashSet` iteration), then checked
+empirically by the tests below. No bridge-side nondeterminism was found that reaches an output,
+so nothing went to bd and nothing is sorted in the simulator.
 
-1. **Rust (`tests/views.rs`)**: an episode run to 200 s (the look is pending by then), then every
-   tool the playbook calls, with the arguments it uses (`get_fleet` compact and with `uids`,
-   `get_tracks`, `get_inbox`, `get_intents` mine with `limit`, `get_changes` with and without
-   `since`, `explain_intent`, `get_policy`, `get_platforms`, `get_areas`, `get_nominations`,
-   `preview_intent`), answered twice from the same `Mcp`: directly, and through the bridge's own
-   `/mcp` service (rmcp's streamable HTTP server, driven in process with JSON-RPC requests the way
-   `mcp/tests.rs` drives it: `initialize`, `tools/call`). The `structuredContent` must be
-   byte-identical. The writers (`propose_intent`, `withdraw_intent` with and without `if_state`)
-   run on two identical episodes, one per path; answers and audit logs must be identical.
-2. **Python (`tests/test_reads.py`)**: the adapter's answers parse to the same objects as
-   `scripted_agent.content()` gives for the same bytes, errors included; and every key path and
-   JSON type in the recorded live reads (`agents/tests/fixtures/playbook/harbor-watch-reads.json`)
-   is present, with the same type, in a headless episode's reads at a comparable moment, and no
-   key is extra.
+| site | what it is | handled |
+|---|---|---|
+| `space.rs` `router`: `std::thread::spawn` loader, then a 30 s `thread::sleep` poll | loads the space segment (element sets) on a real thread and hands it to the decision layer | the episode's `MURMUR_ROOT` is an empty directory: the load fails at once ("no element sets", one stderr line), the segment never reaches the engine (no `space.loaded`, no collect or cover; no family uses them) and the poll finds nothing, ever. The live Harbor watch run has the segment; the playbook never uses it |
+| `heartbeat.rs`: the GCS heartbeat thread, its `Instant` and `thread::sleep` | 1 Hz heartbeats on a real thread | not started; `send_round` on a simulated 1 s interval |
+| `decision/terrain.rs`, `estimate.rs`, `heartbeat.rs` thread spawns and sleeps further down | test code | inside `#[cfg(test)]` modules, not compiled |
+| `spawn_blocking`: `platforms::catalog` (`get_platforms`, `/api/platforms`), `Decision::prepare_space` (space tasks), `keepout::explain` (engagement options), auth (password checks) | work on tokio's blocking pool, a real thread | tokio's paused clock does not auto-advance while a blocking task is in flight, so its result lands at the simulated instant it was asked; `at_once` checks a request did not move the clock. Only `get_platforms` runs in the families; the others never (no space, no engagements, dev auth) |
+| `tasks/exec.rs`, `decision/preload.rs`, `mcp/mod.rs`, `mcp/changes.rs` (`taken`) `Instant` | timeouts, patience, session use, digest age | these are `tokio::time::Instant`: the paused clock |
+| `mcp/changes.rs` `Feed::default`: `SystemTime::now`, pid, counter | the change feed's nonce, so a cursor from an earlier bridge is told to reset | real by design and only ever compared for equality. Two runs of one seed had different nonces and came out identical in everything else, which shows nothing decides on its value; the golden test enforces it: each run has exactly one feed id, the two differ, and with one put in place of the other everywhere the whole record and audit log are byte-identical (`only_the_feed_id_differs`) |
+| `space.rs` `Instant` (load timing, answer cache age) | space answers | the space segment is off (above) |
+| `auth.rs` `Instant`, `SystemTime` | login rate limits, credential file times | a dev run: no logins |
+| `world.rs` `SystemTime` | the fleet manifest's modification time, printed with its age | stderr only |
+| `emu.rs` summary from the emulator's `/stats` | the emulator's terrain request and SATCOM round milliseconds (computer time) | display only (`/api/links` `summary`, as live); no tool reads it; the two-process test leaves it out |
+| murmur-linkemu `terrain.rs`, `sat.rs` `Instant` | request and round timing stats | the same stats, display only. linkemu's own SATCOM loop (`sat::start`, `spawn_blocking` on the wall clock) is not used: the emulator calls `sat::refresh` itself on simulated time; its `Timeline` is built from the epoch, not `SystemTime` |
+| murmur-linkemu `terrain.rs` `HashMap`/`HashSet` | the line-of-sight cache and the queued set | lookups and membership only; the work queue is a `VecDeque` in insertion order |
+| murmur-space rayon (`par_iter` in `link_at`, windows, passes) | the SATCOM look's propagation | every parallel step is a map, filter or flat map collected into a `Vec`, which rayon keeps in input order; no parallel float reduction. The look cache answers the same with or without a cached look (`tests/pieces.rs`) |
+| murmur-standins `messages::unix_usec`, `vehicle::wall_nanos` (`SystemTime`) | SYSTEM_TIME and GPS time fields; `Vehicle::new`'s seed | the bridge reads `time_boot_ms` (the stand-in's tick count), never the Unix fields; the simulator calls `Vehicle::seeded` with the episode seed |
+| murmur-standins `Vehicle::started` (`Instant`) | TIMESYNC's `tc1` in the stand-in's reply | the bridge checks only `tc1 != 0` and times the round trip on its own (simulated) clock |
+| murmur-standins `gnss.rs`, `conditions.rs` (threads, sleeps, `Instant`) | GNSS jamming and tidewater conditions pollers | not started (no tidewater in the simulator, section 12) |
+| murmur-decide `anchor.rs` hook thread, `time.rs` `SystemClock` | an anchor hook command; the engine's default clock | no hook is configured; the bridge gives the engine `BridgeClock` |
+| `HashMap`/`HashSet` in the bridge (`estimate.rs`, `decision/{mod,queue,engage,terrain}.rs`, `tasks/mod.rs`, `emu.rs`, `world.rs`, `link.rs`, `tracks/{mod,sensing}.rs`, `mcp/world.rs`) | per-uid and per-op state | every use is a lookup, an insert, a `retain`, an order-free `any`/`find` on a unique key, or a collection sorted before use (`TaskManager::current_ops` sorts by uid; the engagement lanes' platforms are sorted). `push.rs` and `cot.rs` (also maps) are not started |
+| unseeded random draws | none found in the by-path modules or the linked libraries' used paths | |
 
-Neither test says the simulated state evolves like the full stack's. That is G1.
+**What proves it, empirically** (all in `make check`):
 
-## 7. The proxy operator
+- the golden episode (Harbor watch, seed 1, `eval/headless/tests/golden-harbor-watch-s1.json`) is
+  run twice: the whole record and audit log the same but for the feed id (above), and its digest
+  equal to the committed one; seed 2 differs. The digest leaves out `perf` (computer time), the
+  feed id, and the build commit in the audit log's `run.started` with what carries it on (the
+  hash chain's `prev` in every later line, the record's own hash of the log): the golden holds
+  the episode, not the build, and the chain is checked by the replay in the same test;
+- the golden's audit log replays with its anchors: `murmur-replay --anchors`, "every decision
+  reproduced exactly";
+- the same feed-id check on two family episodes run twice each (`link-cut-mid-look`, a cut timed
+  from a dispatch; `approval-flood`, a scripted proposer), the paths Harbor watch does not take;
+- `test_two_processes_serve_the_same_views`: two processes on one seed answer every read tool and
+  `/api/links` byte for byte at three instants (std's map hasher is seeded per process, so a map
+  iterated into a view would differ here).
+
+## 6. The JSON views are the bridge's: how the tests prove it
+
+The simulator has no views of its own: every answer is the bridge's `mcp::tools::call` on the
+bridge's own state. What could differ is the path, so `eval/headless/tests/test_episode.py`
+compares paths on one state (the design put this in a Rust test; it is in Python, driving the
+binary, because the session adapter is part of the path):
+
+1. `test_the_views_are_the_bridge_mcp_endpoints`: an episode run to 200 s, then every tool the
+   playbook calls with the arguments it uses (`get_fleet` compact, with `uids` and plain,
+   `get_tracks`, `get_inbox`, `get_intents` mine with `limit` and plain, `get_policy`,
+   `get_platforms`, `get_areas`, `get_nominations`, `explain_intent` of a real and a missing id,
+   `get_vehicle`, `get_recent_events`, `preview_intent` twice, an unknown tool) and `get_changes`
+   with a cursor, answered from the same `Mcp` directly and through the bridge's own `/mcp`
+   service (rmcp's streamable HTTP server, in process, JSON-RPC `initialize` then `tools/call`
+   with the agent's header): byte-identical.
+2. `test_the_writers_answer_the_same_on_both_paths`: `propose_intent`, `withdraw_intent` with
+   `if_state` matching and not, a proposal for a vehicle that does not exist and one missing its
+   arguments, on two identical episodes, one per path: identical answers.
+3. `test_the_reads_have_the_live_reads_schema`: every key path and JSON type of the recorded live
+   reads (`agents/tests/fixtures/playbook/harbor-watch-reads.json`) is in what the playbook reads
+   over a whole headless Harbor watch episode. Keys the headless reads have and the fixture lacks
+   are printed, not failed: the fixture predates fields the bridge has since gained.
+
+Neither says the simulated state evolves like the full stack's. That is G1.
+
+## 7. The operator
 
 **A model for load and regression testing, not a model of human judgment.** Its default is what
 the full stack's autoplay operator is: `op-auto` in `make situation ... OPERATOR=autoplay`, which
 is `eval/proxy.py`'s `ProxyOperator` with the situation's `[autoplay]` preset (Harbor watch:
-`default`) and the situation's `seed`. The simulator re-expresses its sequence on simulated time:
+`default`) and the situation's `seed`, re-expressed on simulated time with the same parameters,
+rule book, card view, notes and draws in the same order from the same generator.
+`tests/test_operator.py` runs eval/proxy.py's own class against a fake bridge with its sleeps
+recorded and checks both make the same decisions after the same delays, across presets and
+seeds.
 
-| step | what it does (eval/proxy.py, unchanged parameters) |
-|---|---|
-| look | every `attend_s` seconds, lognormal (median 20 s, sigma 0.4), it reads the inbox (`/api/inbox`), pending cards soonest expiry first, engagements left to the scripted signers |
-| per card | posts `operator.view open`; reads it with probability `diligence x 2^(-(queue - 1) / fatigue_queue) x trust` (0.8 at a queue of 1, `fatigue_queue` 6, `trust_agent` 1.0), spending `read_s + read_per_check_s x checks` (6 s + 1.5 s a check, lognormal sigma 0.3), else skims for `skim_s` (2 s); both shortened by `hurry` (0.5) under load |
-| judgment | read: the rule book v2 (`eval/evidence.py` through `judge`) on the card and `/api/tracks` now: reject if anything the C2 shows speaks against it, else approve; skimmed: approve |
-| answer | `operator.view decide`, then approve or reject as `op-auto` with the same note text |
+Parameters, as recorded in each episode record (the `default` preset):
 
-The same draws come from the same generator in the same order, so seed `k` here and situation
-`seed = k` on the full stack give the same sequence of looks and reads for the same cards. A test
-runs `eval/proxy.py`'s own `ProxyOperator` against a fake bridge with its sleeps recorded and
-checks that the simulated one makes the same decisions after the same delays.
-
-Parameters (every one recorded in each episode record):
-
-| parameter | default (= op-auto) | meaning |
+| parameter | default | meaning |
 |---|---|---|
-| `mode` | `proxy` | `proxy` (above); `approve-all`, `reject-all` (eval/proxy.py's `AutoApprover`, a look every 1 s); `never` (no answer: every human-tier card expires, the shadow's model of an absent operator); `rates` (below) |
-| `attend_s`, `attend_sigma` | 20 s, 0.4 | the look interval (lognormal): with the reading time, the approval latency distribution (median about 25 s for a 6-check card) |
-| `read_s`, `read_per_check_s`, `read_sigma`, `skim_s`, `hurry` | 6 s, 1.5 s, 0.3, 2 s, 0.5 | reading and skimming times |
-| `diligence`, `fatigue_queue`, `trust_agent` | 0.8, 6, 1.0 | whether it reads a card |
+| `mode` | `proxy` | `proxy`; `approve-all`, `reject-all` (a look every 1 s); `never` (every human-tier card expires); `rates` |
+| `attend_s`, `attend_sigma` | 20 s, 0.4 | the look interval (lognormal) |
+| `read_s`, `read_per_check_s`, `read_sigma`, `skim_s`, `hurry` | 6 s, 1.5 s, 0.3, 2 s, 0.5 | reading and skimming times, shortened under load |
+| `diligence`, `fatigue_queue`, `trust_agent` | 0.8, 6, 1.0 | whether it reads a card: `diligence x 2^(-(queue - 1) / fatigue_queue) x trust` |
 | `c_min` | 0.5 | the rule book's affiliation threshold |
-| `rates` mode: `approve`, `reject`, `ignore`, `latency_median_s`, `latency_sigma`, `reads` | none | a fixed operator: approve, reject or leave a card to expire with these probabilities after a lognormal latency; with `reads`, a card the rule book objects to is rejected before the draw |
+| `rates` mode: `approve`, `reject`, `latency_median_s`, `latency_sigma`, `reads` | none | a fixed operator |
 
 **What it rewards, and why that matters.** It approves every card it does not read, and it reads
 less as the queue grows. Anything optimized through it, directly or through what an approved card
-brings, learns that a longer queue gets more approved unread: a policy of flooding the inbox, the
-behaviour Murmur exists to detect (the research's section 7). Step 2 and any tuning must take
-their reward from truth only, charge each human-tier card a fixed cost, train with `approve-all`,
-and never tune the operator-facing parameters (budget, cooldowns, materiality) against it. Its
-numbers are outputs of a model with stated parameters, never human data.
+brings, learns that a longer queue gets more approved unread: **a policy of flooding the inbox**,
+the behaviour Murmur exists to detect. Step 2 and any tuning must take their reward from truth
+only, charge each human-tier card a fixed cost, train with `approve-all`, and never tune the
+operator-facing parameters (budget, cooldowns, materiality) against it.
 
 ## 8. Situations: Harbor watch, the families, the split
 
 **Harbor watch** runs from its own file, unchanged, with the playbook config from its
-`[playbook]` table: the G1 reference.
+`[playbook]` table: the G1 reference. Its operator draws from the file's `seed` (1), as `make
+situation NAME=harbor-watch` does every time; a batch's episode seed varies the stand-ins and the
+emulator. G1's copies set the file's `seed` to the episode seed, so there both vary.
 
-**The families** are generated from stated distributions in the pattern of `eval/ident.py` and
-`eval/keepout.py`: a seed gives one situation; the generator writes the situation and its truth
-labels (never given to the AI). Every family keeps Harbor watch's base: its four vehicles and
-their three opening orders, its watch policy, its `[playbook]` table (a 3 km watch area on the
-bridge, the bridge protected, Pumas preferred), 720 s, the AI at 45 s, and its ordinary traffic
-(ferries, the shipping lane, the trawler, the cutter, the Mile Rock fishing boat) with a contacts
-seed drawn per situation. The family adds its element:
+**The families** (`families.py`; `generate(family, seed, workdir)` draws from
+`random.Random(f"{family}:{seed}")`) keep Harbor watch's base: its four vehicles and three opening
+orders, its policy and `[playbook]` table, 720 s, the AI at 45 s, its ordinary traffic under a
+contacts seed drawn per situation. The family adds its element, drawn as the design's table
+said (unchanged since): `fast-unknown`, `decoy`, `link-cut-mid-look`, `low-battery` (tuning);
+`two-at-once`, `stuck-vehicle`, `approval-flood` (held out). As built:
 
-| family | split | what is drawn (uniform unless stated) | truth labels |
-|---|---|---|---|
-| `fast-unknown` (Harbor watch's kind) | tuning | one small fast boat, no AIS, truth unknown: enters at 100 to 300 s from 5 to 6 km out on a bearing of 250 to 290 deg from the bridge, 10 to 20 m/s; holds 0.8 to 2.5 km from the bridge (p 0.7) or passes under it into the bay (p 0.3) | it needs a look by the time it first comes within 3 km of the bridge plus 60 s; every other contact needs none |
-| `decoy` | tuning | a small craft without AIS, truth neutral (sport fishing boat, pleasure craft): inside the watch area 0.5 to 2.8 km from the bridge (p 0.5) or outside it 3.5 to 6 km (p 0.5); drifting (p 0.5), slow transit at 1 to 5 m/s on a drawn course (p 0.3) or loitering (p 0.2); from 0 to 200 s. With p 0.5 a fast unknown as above as well | the decoy needs no look; a look on it is a false alarm, reported split by what the C2 showed it as at proposal (unknown or suspect against neutral) |
-| `two-at-once` | **held-out** | two fast unknowns as above, the second 0 to 60 s after the first, from the west at least 15 deg apart (p 0.5) or from inside the bay, 5 to 6 km east on a bearing of 60 to 120 deg (p 0.5); one free sensor (PUMA 1; PUMA 2 stays on its station order) | both need a look, each by its own deadline |
-| `link-cut-mid-look` | tuning | a fast unknown as above; a cut of both directions (the emulator's `cut` event) on the vehicle flying the first look of ours to go out, 5 to 90 s after its dispatch, lasting 8 to 120 s (longer than the Puma's 5 s lost-link timer: it goes home on its own failsafe); if no look has gone out by 400 s, PUMA 1 is cut at 200 to 400 s | the cut window; cards for the cut vehicle decided inside it should be voided (METRICS.md `should_void`); its pending cards of ours should be withdrawn; the boat still needs a look while it is uncovered |
-| `stuck-vehicle` | **held-out** | a fast unknown as above; HUNTER 1 stops making way at 120 to 500 s for the rest of the run (a vehicle-side fault: the simulator sets its stand-in's cruise speed to zero, as a fouled propeller would; nothing goes through the bridge) | it needs a hold by its first `not_moving` alert plus 30 s plus a tick; its stuck task should not be given to it again within 300 s after the alert clears |
-| `low-battery` | tuning | a fast unknown as above; one vehicle (PUMA 2 p 0.5, PUMA 1 p 0.3, REAPER 1 p 0.2) starts with the charge that, at its cruise drain, crosses the low-reserve line (the policy's reserve 20 % plus 5) at 100 to 600 s | it needs an rtl by the crossing plus a tick; below the free line (reserve plus 15) it should not be chosen for a look |
-| `approval-flood` | **held-out** | a fast unknown as above; from 60 to 400 s, a scripted proposer (`agent-scripted`, over MCP, as the storyline's `flood` step) puts 6 to 12 routine human-tier proposals (orbits and patrols for HUNTER 1 and REAPER 1 inside the approved area) in the inbox within 10 to 60 s | the flood's cards are legitimate; the boat needs its look by its deadline (the playbook proposes only P0 and P1 while 6 or more cards wait) |
+- the stuck fault sets the stand-in's cruise and maximum speed to zero at the drawn time (it stops
+  making way; nothing goes through the bridge); no hook in `murmur-standins` was needed;
+- the link cut is the emulator's own `cut` event, scheduled from the dispatch of the first look of
+  ours (the record's `script` keeps the trigger), or the fallback cut on PUMA 1 when no look has
+  gone out;
+- the low battery is the stand-in's starting charge.
 
-**The split is by family and committed before any result** (`eval/headless/split.toml`):
-tuning `fast-unknown`, `decoy`, `link-cut-mid-look`, `low-battery`; held out `two-at-once`,
-`stuck-vehicle`, `approval-flood`. Why this split: Harbor watch's kind is where the playbook's
-hysteresis and materiality were set (CRITERIA.md, fix round 1: "Harbor watch is a tuning set"),
-so it cannot be held out; each of the three kinds of challenge (the picture, vehicle and link
-faults, the operator's load) keeps one family held out. No simulator parameter and no playbook
-parameter is ever set on a held-out family; a held-out family's generator is frozen when it is
-first committed, before its first result.
+The split is by family and committed before any result (`split.toml`). Family reports use seeds
+1 to 30 per family and never pool tuning and held-out families.
 
 ## 9. Truth labels and metrics
 
-**Labels per contact**: what it really is (affiliation, kind, AIS or not, from the scenario),
-whether it needs a look, and by when (the family's rule above; for Harbor watch, the director's
-notes: the fast boat within a minute of coming within 3 km of the bridge, nothing on the Mile
-Rock boat or the AIS traffic). **Per fault**: the window and what it calls for.
+**Labels per contact** (`labels.py`): what it is (affiliation, kind, AIS, from the scenario) and
+whether it needs a look and by when: unknown, suspect or hostile within 3 km of the bridge
+(-122.4783, 37.8199) by truth needs a look by its first crossing plus 60 s; no other contact needs
+one. Fault windows are in the record's `script`.
 
-**Which contact a proposal targets.** A target is a live track id, which follows detection order,
-so it is matched by truth identity. The rule, the same on both sides of G1: the truth contact
-nearest to the track's `predicted` position in the proposal's evidence record (`facts`,
-`track:<id>.kinematics`) at its `tick_t`, if within 500 m and no other contact is within 1.5
-times that distance; else `ambiguous`. In the simulator the tracker's own association
-(`Tracks::eval_json`) is recorded too, and their agreement is reported as a check on the rule.
+**The target of a proposal** is matched by truth identity, the same rule on both sides of G1: the
+truth contact nearest the track's `predicted` position in the proposal's evidence record at its
+`tick_t`, within 500 m and with no other contact within 1.5 times that distance; else
+`ambiguous`. The record also holds the tracker's own association and their agreement, and **what
+the picture showed at each proposal** (the track's affiliation and identity with their
+confidences, `picture`), so a false look can be split by what the C2 showed. Recording it changed
+nothing in G1's inputs.
 
-**Metrics** (CRITERIA.md's playbook criteria, those computable without people):
-
-| metric | definition |
-|---|---|
-| coverage | per must-look contact: a look (`isr.investigate`, or `isr.armed_overwatch` where enabled) proposed on it by its deadline; per episode: all of them covered |
-| silence | proposals on contacts that need no look (false alarms), split by what the C2 showed at proposal (the rule book's two categories) |
-| time to look | from the contact first meeting its truth rule (within 3 km of the bridge) to the first look on it, s |
-| timeliness (CRITERIA.md's) | from the first tick whose plan had the play's candidate for that target (recorded by wrapping `Engine.plan` from outside, not editing it) to the proposal, s |
-| precision | legitimate share of human-tier proposals by truth labels |
-| self-consistency | proposals whose evidence record shows a rule-book objection or whose preview failed: must be zero |
-| behaviour under refusal | re-proposals of a (play, target) after a rejection without a material change named in the record; own pending cards left after their withdraw condition held for more than a tick |
-| fault handling | the response each fault calls for, by its deadline |
-| inbox load | human-tier cards per operator-minute, own pending at once (max), expired-unread share, override rate, goodput (METRICS.md) |
-| rationale fidelity | every proposal passes `agents/playbook/fidelity.py` |
-| compute | the engine's compute per tick (its own `compute_ms`) |
+**Metrics** per episode (`metrics.py`): CRITERIA.md's four (`look_covered`, `time_to_look`,
+`false_looks`, `precision`), and reported beside them: proposals and their outcomes, human-tier
+cards (total and per operator-minute), approval latency, timeliness, objections, unfaithful
+rationales, re-proposals after a rejection, the association agreement. The fault-handling
+metrics of the design (a hold by the stuck alert plus 30 s, an rtl by the battery crossing, voided
+cards inside a cut) are not computed yet: the record has what they need (the fault in `script`,
+the proposals, the audit log), and step 2 should add them as functions of the record.
 
 ## 10. The episode record and the batch
 
-One JSON record per episode: the situation (name, family, split, seed, hash), the commit and a
-dirty flag, the `murmur-headless` binary's hash, the playbook config's hash and label, the
-operator's parameters, the clock (epoch, duration, offsets), the playbook's own log lines (the
-`agent.jsonl` lines a live run writes, `t` on the simulated clock: statuses, proposals,
-withdrawals, decisions), every proposal (time, play, version, target track, target truth, vehicle,
-task, tier, state at submission, the rationale's hash, fidelity), every operator answer (time,
-card, read or skimmed, queue, latency, approve or reject, the rule that fired), our intents' final
-states, the truth labels, the metrics, the audit log's event count and head hash (the log itself
-on request, and replayed with `murmur-replay` for every G1 episode and a stated sample of a batch),
-and `perf` (wall time, the Rust and Python shares, ticks, calls).
+One JSON record per episode: the situation (name, family, split, seed), the provenance (commit,
+dirty flag, the binary's hash), the playbook config and its label, the operator's parameters, the
+clock (epoch, duration, offsets, when the fleet was ready), the playbook's own log lines on the
+simulated clock, the plans, every proposal (time, play, version, target track, truth target,
+tracker target, the picture, vehicle, task, tier, state at submission, refusal), every operator
+decision, our intents, the truth (contacts, labels, association), the metrics, the audit log's
+event count, head and hash (the log itself on request), and `perf`.
 
-`python -m eval.headless.batch --families fast-unknown decoy --seeds 1-30 --workers 20` runs the
-episodes on a process pool (one `murmur-headless` process per episode), writes the records under
-`eval/results/headless/<batch>/`, and an aggregate per family and split: each metric's mean with a
-Student t 95 % interval clustered by seed and, for proportions, the pooled Wilson interval
-(eval/stats.py), as METRICS.md does. It reports episodes per core-hour: episodes divided by wall
-time times workers, beside the single-worker rate.
+`python -m eval.headless.batch` (or `make headless`) runs episodes on a process pool, one
+`murmur-headless` process each, writes the records and an aggregate per situation or family:
+each metric's mean with a Student t 95 % interval and, for proportions, the pooled Wilson
+interval (eval/stats.py); the speed (episodes per core-hour = episodes / (wall hours x workers),
+the single-worker rate, the 95th percentile of an episode's wall time); and where an episode's
+time went (`perf`: process start, the simulator's own time per task and per request kind, the
+pipe, the driver and the playbook).
 
-## 11. Gates
+## 11. Results
 
-Frozen in [`eval/headless/CRITERIA.md`](../eval/headless/CRITERIA.md) before any gate run: G1
-(fidelity on Harbor watch, 10 seeds, against `make situation NAME=harbor-watch AI=playbook
-OPERATOR=autoplay`, proposals matched by play, truth target, vehicle and time within 10 s, at
-least 80 %; every truth-labelled metric inside the other side's 95 % interval, both ways) and G1b
-(at least 1,000 Harbor-class episodes per core-hour). Harbor watch's seed knob is its `seed`, the
-autoplay operator's draws: run `k` of the full stack is a copy of the file with `seed = k`.
+### 11.1 Calibration (in-sample, not a gate)
 
-## 12. What the simulator leaves out, known before any run
+The three start offsets were set from three full-stack runs with `seed` = 101, 102, 103 (CRITERIA.md
+"Calibration"): `contacts_start_s` 0.823, `standins_start_s` 1.001, `ai_first_tick_s` 1.031. With
+them the simulator agreed with those three runs on 9 of 9 proposals. **That is in-sample**: the
+offsets were fitted on those runs, so they say only that the fit took; they are not part of G1,
+whose ten seeds were never used for anything before the gate.
 
-| difference | where it could show | expected effect on Harbor watch |
+### 11.2 G1: fidelity on Harbor watch
+
+Run 2026-10-09 as CRITERIA.md froze it: ten full-stack runs (`make situation` with Harbor watch
+copies `seed` = 1 to 10, one at a time on the assigned port block, all ten good at the first
+attempt, every audit log replayed with its anchors: "every decision reproduced exactly"), then
+`python -m eval.headless.gate g1` (headless episodes of the same copies, seeds 1 to 10). The
+binaries: the full stack's seed 1 built at 28e2fa7, seeds 2 to 10 rebuilt by `up.sh` at 23a950a
+(a commit of the test's normalisation; no Rust changed between them), the simulator built at
+28e2fa7. Records: `logs/headless-g1/gate/` (full stack), `logs/headless-g1/gate-headless/`
+(headless, with audit logs), `logs/headless-g1/g1.json` (not committed).
+
+**G1 passes, on the line**: agreement **0.800** (24 pairs; 29 headless and 25 full-stack
+proposals; 24 / (29 + 25 - 24)), against the 0.80 required, and every metric inside the other
+side's interval both ways:
+
+| metric | headless | full stack | pass |
+|---|---|---|---|
+| `look_covered` | 10/10 [0.72, 1.00] | 10/10 [0.72, 1.00] | yes |
+| `time_to_look` | -114.65 s (floor interval +-2 s) | -114.50 s [-115.00, -114.00] | yes |
+| `false_looks` | 0.0 | 0.0 | yes |
+| `precision` | 29/29 [0.88, 1.00] | 25/25 [0.87, 1.00] | yes |
+
+Proposals side by side (time on the situation's clock; every target is `fastboat-west` by truth,
+every vehicle PUMA 1):
+
+| seed | headless | full stack | pairs |
+|---|---|---|---|
+| 1 | investigate 178.0, recentre 211.0, recentre 272.0 | investigate 178.7, recentre 210.3, recentre 271.4 | 3 |
+| 2 | investigate 178.0, recentre 210.0 | investigate 178.8, recentre 217.4, recentre 279.0 | 2 |
+| 3 | investigate 178.0, recentre 210.0, recentre 270.0 | investigate 177.1, recentre 210.2 | 2 |
+| 4 | investigate 178.0, recentre 210.0, recentre 271.0 | investigate 178.1, recentre 210.2, recentre 271.8 | 3 |
+| 5 | investigate 178.0, recentre 211.0, recentre 271.0 | investigate 177.1, recentre 209.1, recentre 270.3 | 3 |
+| 6 | investigate 178.0, recentre 210.0, recentre 271.0 | investigate 178.1, recentre 210.2 | 2 |
+| 7 | investigate 178.0, recentre 211.0, recentre 271.0 | investigate 177.1, recentre 209.2 | 2 |
+| 8 | investigate 178.0, recentre 211.0, recentre 272.0 | investigate 178.6, recentre 210.7 | 2 |
+| 9 | investigate 178.0, recentre 210.0, recentre 270.0 | investigate 178.1, recentre 210.2, recentre 271.4 | 3 |
+| 10 | investigate 178.0, recentre 211.0, recentre 271.0 | investigate 178.6, recentre 210.2 | 2 |
+
+**Where the two sides diverge, and why.** The look and the first recentre agree in every seed,
+within 1.3 s but for seed 2's recentre (7.4 s). **Every divergence is one proposal: the second
+recentre at about 271 s**, made in 9 of 10 headless episodes and 5 of 10 full-stack runs. In every
+seed, on both sides, that proposal is made exactly when PUMA 1 has not yet gone home on its
+lost-link failsafe by then: it flies the boat's orbit through a terrain shadow west of the bridge
+(the emulator's line of sight from the ground station clears by 11 m until about 225 s, then is
+obstructed by 3, 7 and 11 m, losing 17 to 56 % of packets on the `ramp` model), and the Puma's
+GCS failsafe sends it home after 5 s without a GCS heartbeat. That early return came in 5 of 10
+full-stack runs (at 243.5, 256.4, 256.4, 259.4 and 271.4 s; none in the three calibration runs)
+and in 1 of 10 headless episodes (257 s, seed 2; none in the calibration seeds). Checked to be the
+same on both sides: the obstruction along the Puma's path (the baked grid against tidewater's own
+samples on the same profile: within 0.15 m; the live emulator's view polled during the seed 9 run
+against the headless one: the same cells and depths, the path within tens of metres), the
+downlink's packet counts (seed 10: 464 and 461 packets by 200 s, the same 2 a second after), and
+the loss model (the same code; terrain loss is an independent draw per packet). Not the same,
+by design: the random draws (the full stack's emulator uses `sim/links.toml`'s seed 1 in every
+run, the simulator the episode seed). At these counts the difference (5 of 13 against 1 of 13
+with the calibration runs) is not significant (Fisher's exact test, two-sided p about 0.16), but
+it leans one way, and it is what decides the gate: if the full stack's early returns are not
+chance, the simulator under-produces lost-link failsafes on a degraded link, and the second
+recentre is over-produced. Measuring it needs many runs of one degraded-link case on both sides
+(cheap headless; about 12 minutes a full-stack run); not done here, since nothing may be tuned on
+the gate's seeds.
+
+Reported beside the gate (not gated):
+
+| | headless | full stack |
 |---|---|---|
-| no tidewater currents (stand-ins and drifting contacts) | HUNTER 1's patrol track; the Mile Rock boat stays where it is instead of drifting | small; the Mile Rock boat is 5 km out either way |
-| line of sight from a baked surface-height grid instead of tidewater's samples; a cell's first answer comes at once instead of up to 1 s later | the Pumas' terrain shadows behind the Presidio bluffs | small; the grid is finer than the emulator's 250 m cells |
-| the domain rule "not evaluated" for surface and ground vehicles (no tidewater) | the checks shown on HUNTER 1's orders | none on the playbook's air tasks |
-| no concurrency: a tick's reads at one instant, not over tens of ms; zero time per call | timing within a tick | under the 10 s matching window |
-| process start offsets are medians from calibration runs, not each run's own | when the first look comes | the 10 s window, and G1's interval test on time to look |
-| the bridge's clock starts at the scenario date, not today's | nothing reads the difference | none |
-| no console push, CoT export, situation panel, anchors | display and export only | none |
+| human-tier cards per episode | 2.9 | 2.5 |
+| approvals; voided at approval | 22; 7 | 22; 3 |
+| approval latency, median (mean) | 20.5 s (21.4) | 24.8 s (24.3) |
 
-## 13. Effort and speed
+The extra voided cards are the second recentres, refused at approval because PUMA 1's navigation
+status was too old by then (its link in the shadow). Each full-stack run's own start offsets
+(`python -m eval.headless.calibrate`'s measure; the simulator uses 0.823, 1.001 and 1.031): the
+contacts 0.809 to 0.818 s, the stand-ins 0.915 to 0.967 s, the playbook's first tick 1.28 to
+1.40 s (seed 2: 0.52 s). Fleet readiness: the full stack 2.8 to 4.0 s; the simulator 3 s in eight
+seeds, 4 s and 8 s in seeds 9 and 10, and 31 s in seed 2 (the emulator's draws lost 4 of the
+first 16 bridge-to-vehicle packets to PUMA 1, and its GPS fix first showed at 31 s, which looks
+like a lost request repeated later; not traced further). Over 200 headless Harbor watch episodes
+the fleet was ready at 3 s in 90 %, at up to 31 s in the rest; the full stack's runs draw their
+own such delays (the calibration's seed 101 was 22 s late for another reason: CRITERIA.md's
+calibration section).
 
-**Effort for phase 2**, one maintainer's working days: the Rust crate and seams 3; the Python
-driver, adapter and operator 2; generator, labels and metrics 2; batch, gates and the full-stack
-adapter 1; tests (golden, views, operator parity, schema) 1 to 2; the full-stack runs about 3 h of
-machine time (3 calibration and 10 gate runs of about 14 minutes each, one at a time on the
-assigned port block). **About 9 to 10 days.**
+### 11.3 G1b: speed
 
-**Episodes per core-hour, estimated** from the repository's own measurements (docs/load-test.md:
-a stand-in step with its sends about 8 microseconds, the bridge about 11 to 16 microseconds per
-received message; the research's section 3.3: the tracker 490,000 contact-observer-seconds a
-second, the playbook 0.21 ms a tick): for one Harbor-class episode (4 vehicles, 8 contacts, 765
-simulated seconds) the stand-ins 0.25 s, the bridge's packets about 0.3 s, the emulator 0.06 s,
-tracking 0.06 s, timers 0.06 s; on the Python side about 3,000 calls (ticks and polls) at 0.1 to
-0.2 ms each, 0.3 to 0.5 s, the playbook 0.07 s; process start 0.05 s. **About 1 to 1.5 s an
-episode: 2,400 to 3,600 episodes per core-hour, 1,500 to 5,000 allowing for the estimate's
-spread**, against G1b's 1,000. If it falls short, in order: profile; fewer JSON round trips
-(batch a tick's reads in one request, a change that keeps the playbook unchanged); the session in
-process (PyO3) instead of a pipe; last, (a-lite) for vehicles and links with its own gate.
+Harbor watch, the default operator, seeds 1 to 200, measured 2026-10-09 on this machine (Intel
+i7-14700K: 8 performance cores with two threads each and 12 efficiency cores, 28 threads; the
+user's 22-vehicle stack running beside it, about 2 threads busy):
+
+| workers | episodes | wall | episodes per core-hour | episode wall mean | 95th percentile |
+|---|---|---|---|---|---|
+| 1 | 40 | 91 s | 1,585 | 2.27 s | 2.40 s |
+| 8 | 200 | 73 s | **1,235** | 2.89 s | 3.31 s |
+| 16 | 200 | 45 s | 998 | 3.48 s | 3.74 s |
+
+**G1b passes at 8 workers (1,235) and misses by a hair at 16 (998).** An episode costs 2.27 s
+alone and slows as workers are added (beyond eight they share performance cores' threads or land
+on efficiency cores), so the rate per worker falls. CRITERIA.md lets W be stated; both are
+reported so the pass is not read as more than it is. The design's estimate (1 to 1.5 s an episode,
+2,400 to 3,600 per core-hour) was optimistic by about half.
+
+Where an episode's time goes (Harbor watch, one worker, mean seconds per episode of 720 s
+simulated; the simulator's tasks run inside its `call.*` requests, so they are parts of
+`server`, not added to it):
+
+| part | s | per unit |
+|---|---|---|
+| process start (spawn, assembly) | 0.10 | |
+| simulator serving requests (`server`) | 1.71 | |
+|   bridge decision loop | 0.35 | 0.48 ms a 1 s tick (721 ticks) |
+|   contacts (motion, truth message, the bridge's sensing on its route) | 0.21 | 0.29 ms a second |
+|   bridge tracker loop | 0.13 | 0.18 ms a tick |
+|   stand-ins (4 vehicles, 10 Hz) | 0.07 | 2 us a step |
+|   emulator, the bridge's link and emu, housekeeping | 0.12 | |
+|   read tools (`get_tracks` 0.19, `get_changes` 0.18, `get_intents` 0.08, `get_fleet` 0.08, `get_inbox` 0.02) | 0.55 | `get_tracks` 0.55 ms a call |
+|   REST (`/api/state`, the operator), truth reads | 0.08 | |
+| pipe and JSON, both ends (`ipc`) | 0.24 | 0.07 ms a round trip, 3,500 a run |
+| driver (Python) | 0.18 | |
+|   the playbook's own decisions | 0.07 | 0.20 ms a tick |
+
+At 8 workers the same parts take about 25 % longer each (contention, not a different profile).
+
+On the families (8 workers, 30 seeds each; not G1b, which is Harbor watch, but the cost the
+research's step 3 will pay): the tuning families 1,290 per core-hour (2.7 to 2.8 s an episode);
+the held-out families 1,008 (`two-at-once` 2.95 s, `stuck-vehicle` 3.37 s, `approval-flood`
+3.97 s: its flood of orders moves HUNTER 1 and REAPER 1 to new places, whose SATCOM looks are not
+yet in the look cache (0.40 s computing them) and the decision loop about 1.6 times the work
+(0.72 s)).
+
+If more speed is wanted, in the design's order: fewer JSON round trips (a tick's reads in one
+request, which would save part of the pipe's 0.24 s, not the read tools' own 0.55 s); the session
+in process (PyO3). The bridge's decision tick is the largest single part; it is the bridge's own
+code and stays as it is.
+
+### 11.4 The families (model results, seeds 1 to 30 each)
+
+The playbook as committed, the default operator, 2026-10-09
+(`logs/headless-families/{tuning,held-out}/`, not committed). Coverage is per episode (every
+must-look contact covered), with its Wilson interval; time to look is from the contact's first
+crossing within 3 km of the bridge to the first look proposed on it, so a negative time is a look
+before the crossing; false looks are `isr.*` proposals on contacts that need none, per episode;
+precision is pooled over the playbook's human-tier proposals; cards are the playbook's
+human-tier cards per episode. **Tuning and held-out are never pooled.**
+
+| family | split | look covered | time to look, mean s | false looks | precision | cards |
+|---|---|---|---|---|---|---|
+| `fast-unknown` | tuning | 30/30 [0.89, 1.00] | -57.6 (30) | 0.0 | 94/94 | 3.13 |
+| `decoy` | tuning | 15/15 [0.80, 1.00] | -93.9 (15) | 0.7 | 52/67 | 2.23 |
+| `link-cut-mid-look` | tuning | 20/30 [0.49, 0.81] | -100.2 (20) | 0.0 | 41/41 | 1.37 |
+| `low-battery` | tuning | 20/30 [0.49, 0.81] | -65.4 (20) | 0.0 | 60/60 | 2.00 |
+| `two-at-once` | held-out | 4/30 [0.05, 0.30] | -99.5 (34 of 60 boats) | 0.0 | 95/95 | 3.17 |
+| `stuck-vehicle` | held-out | 30/30 [0.89, 1.00] | -90.7 (30) | 0.0 | 98/98 | 3.27 |
+| `approval-flood` | held-out | 30/30 [0.89, 1.00] | -89.0 (30) | 0.0 | 101/101 | 3.40 |
+
+What the misses are (from the records and the playbook's own status lines):
+
+- `low-battery`: all 10 misses are the episodes whose low vehicle is PUMA 1, the one free sensor.
+  The playbook sends it home (`safety.low_reserve`, in every episode) and, as the family's label
+  asks, does not choose it for a look; it then proposes no look with any other vehicle.
+- `link-cut-mid-look`: all 10 misses are fallback cuts (no look had gone out by the cut, the boat
+  arriving late): PUMA 1 went home on its own lost-link failsafe, and when the boat came the
+  playbook's status was "no free sensor aircraft (... PUMA 1: recovering on its own (RTL) ...)".
+  Every episode whose cut fell on a look under way (11) was covered, and 9 of the 19 fallback cuts.
+- `two-at-once`: one free sensor for two boats: 26 episodes covered one boat, 4 both. Every look
+  was flown by PUMA 1; the second boat waited on "recentred within the last 60 s" or "no free
+  sensor".
+- `decoy`: 13 looks on the decoy, each while the picture showed it `unknown`; 6 releases of it once
+  shown `neutral`; 2 proposals on an inbound cargo ship shown `suspect`.
+
+These are findings about the playbook on a model, for the research's step 2 and 3, not changes
+made here; nothing was tuned on them.
+
+## 12. What the simulator leaves out, as found
+
+| difference | where it shows | effect measured or expected |
+|---|---|---|
+| process start offsets are medians from the calibration runs, not each run's own | when the first look comes | the gate runs' own offsets were within 0.1 s of the calibrated ones for contacts and stand-ins, and the playbook's first tick about 0.27 s later than calibrated (section 11.2); the look agreed within 1.3 s in every seed |
+| the emulator's random draws: the episode seed in the simulator, `sim/links.toml`'s seed 1 in every full-stack run | packet loss on a degraded link, and so whether a lost-link failsafe fires | the one divergence G1 found (section 11.2): lost-link returns through PUMA 1's terrain shadow in 5 of 10 full-stack runs and 1 of 10 headless episodes; not significant at these counts, not yet explained |
+| no tidewater currents or winds (the stand-ins run without conditions; drifting contacts do not drift) | HUNTER 1's patrol track; the Mile Rock boat | none seen on the playbook's proposals |
+| the emulator's terrain line of sight from a baked surface-height grid (`sim/headless/terrain/golden-gate.grid.gz`, 20 m spacing, tidewater's `max(elevation, water level)` at the scenario's start; provenance beside it, its hash tested) instead of tidewater's samples; a cell's first answer at once instead of up to a second later | the Pumas' terrain shadows behind the Presidio | the grid is finer than the emulator's 250 m cells |
+| SATCOM looks at the terminal's position rounded to 0.001 deg (about 100 m) and 100 m of altitude, cached between episodes; the 30-minute outlook (display only) off | Reaper's SATCOM link | under a tenth of a degree of elevation to a satellite 550 km up; the outlook is not read by any tool |
+| the bridge's space segment off (section 5.1) | collect and cover tasks; the audit log has no `space.loaded` | none on the playbook (no space plays) |
+| the domain rule "not evaluated" for surface vehicles (no tidewater for the decision layer's terrain) | the checks shown on HUNTER 1's orders | none on the playbook's air tasks |
+| no concurrency: a tick's reads at one instant, zero time per call | timing within a tick | under the 10 s matching window |
+| no console push, CoT export, situation panel | display and export | none |
+
+## 13. Tests and checks
+
+`make check` runs, beside everything it ran before: `cargo clippy` and `cargo test` for the new
+crate (`tests/pieces.rs`) and the bridge's unchanged suite with its no-seams test; py_compile and
+`pytest eval/headless/tests` (the operator against `eval/proxy.py`, the session adapter, labels,
+the association rule, the split, the families' determinism and variation, boats on water, the
+production build's cfg, the grid's provenance, G1's pairing and intervals, the golden with its
+feed-id check and replay, the two view-path tests, two processes, the live reads' schema).
 
 ## 14. Step 2: how it plugs in
 
-- **The truth objective** is a function of the episode record (labels, proposals, answers, fault
-  responses); nothing in the simulator changes.
-- **Agents** are interchangeable in the driver: `playbook` (default), `none`, and later `oracle`
-  (handed the truth labels explicitly, recorded as such) and `random-valid` (uniform over the
-  actions whose preview passes). Each gets only a session (the MCP tools), except the oracle's
-  stated truth handle.
-- **Operators**: train and tune with `approve-all`, evaluate with `proxy` and its presets
-  (section 7).
-- **Families and seeds**: held-out families report separately and are never tuned on.
-- **The fidelity gate repeats** for each new family once a full-stack situation of its kind
-  exists (the research asks for the three stub situations too).
+- **The truth objective** is a function of the episode record; nothing in the simulator changes.
+  Add the fault-handling metrics (section 9) the same way.
+- **Agents** are interchangeable in the driver (`Options.agent`): `playbook` (default) and `none`
+  today; an `oracle` (handed the truth labels explicitly, recorded as such) and `random-valid`
+  (uniform over actions whose preview passes) each get only a session.
+- **Operators**: train and tune with `approve-all`; evaluate with `proxy` and its presets.
+- **Families and seeds**: held-out families report separately and are never tuned on; tuning
+  work uses seeds 1000 and up on tuning families only (CRITERIA.md).
+- **The fidelity gate repeats** for each new family once a full-stack situation of its kind exists.
 
-## 15. Questions for review
+## 15. How to run
 
-1. The seams of section 2.3 (in particular the `Link` receive refactor and the in-memory send),
-   or would you rather the simulator copy those bodies and leave the bridge's files untouched?
-2. The baked surface-height grid for line of sight (about 1 MB from `tidewater serve`): committed
-   under `sim/headless/` so `make check` needs no tidewater, or baked on first use?
-3. The split (section 8), and whether `decoy`'s look on an unclassified neutral inside the watch
-   area should count as a false alarm (as written) or be reported only.
-4. The stuck fault: if the stand-ins' cruise parameter does not stop a boat cleanly, a fault hook
-   in `murmur-standins` (off by default) is the fallback. Acceptable?
-5. The full-stack runs need this worktree's `.venv`, `web/node_modules` and `sim/space/cache`:
-   symlinks to the main checkout's (read only), which also gives the emulator's SATCOM its
-   satellites, as in your runs.
+    make build && cargo build --release -p murmur-headless
+    .venv/bin/python -m eval.headless.batch --situation harbor-watch --seeds 1-200 --workers 8 --speed
+    .venv/bin/python -m eval.headless.batch --families fast-unknown decoy link-cut-mid-look low-battery --seeds 1-30 --workers 8
+    .venv/bin/python -m eval.headless.batch --families two-at-once stuck-vehicle approval-flood --seeds 1-30 --workers 8
+    make headless FAMILIES="fast-unknown decoy" SEEDS=1-30 WORKERS=8
+
+    # G1: the full-stack runs (about 13 minutes each, one at a time, on the assigned port block),
+    # then the gate against fresh headless episodes of the same seeds
+    .venv/bin/python -m eval.headless.fullstack run --seeds 1 2 3 4 5 6 7 8 9 10 --out logs/headless-g1/gate
+    .venv/bin/python -m eval.headless.gate g1 --full logs/headless-g1/gate --seeds 1-10 --out logs/headless-g1/g1.json
+
+Records go to `eval/results/headless/<batch>/` unless `--out` says otherwise; the SATCOM look
+cache to `logs/headless/space-cache/` (one file per set of element sets and link profiles).

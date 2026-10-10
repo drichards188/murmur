@@ -2,7 +2,7 @@
 
 - the golden: Harbor watch, seed 1, byte-identical to the committed digest (the record without
   its `perf` timings, the change feed's per-process nonce masked; the audit log itself, but for
-  the commit the binary was built from and the hash chain that carries it), and a
+  the commit the binary was built from and the hashes that carry it), and a
   second run identical to the first in everything but the feed id (each run's one feed id put in
   place of the other's, the whole record compared); seed 2 differs;
 - the audit log replays exactly with its anchors (`murmur-replay --anchors`);
@@ -64,6 +64,9 @@ def normalized(rec: dict[str, Any]) -> str:
     r = {k: v for k, v in rec.items() if k not in ("perf", "provenance")}
     if "audit_text" in r:
         r["audit_text"] = audit_without_build(r["audit_text"])
+    if isinstance(r.get("audit"), dict):
+        # the log's head and hash are of the log with its build; the digest hashes it without
+        r["audit"] = {k: v for k, v in r["audit"].items() if k not in ("head", "sha256")}
     return FEED.sub('"cursor": "<feed>:', json.dumps(r, sort_keys=True))
 
 
@@ -130,6 +133,23 @@ def test_the_golden_episode_is_byte_identical(tmp_path: Path):
                          capture_output=True, text=True)
     assert rep.returncode == 0, rep.stdout + rep.stderr
     assert "every decision reproduced exactly" in rep.stdout + rep.stderr
+
+
+def run_family(family: str, seed: int) -> dict[str, Any]:
+    from eval.headless.families import generate
+
+    with tempfile.TemporaryDirectory(prefix="family-") as td:
+        spec, contacts = generate(family, seed, Path(td))
+        return Episode(spec, seed, Path(td), Options(calibration=Calibration.load()), contacts_path=contacts).run()
+
+
+@pytest.mark.parametrize("family", ["link-cut-mid-look", "approval-flood"])
+def test_a_family_episode_differs_only_in_the_feed_id(family: str):
+    """The golden's check on the paths Harbor watch does not take: a link cut timed from a
+    dispatch, a scripted proposer's flood."""
+    a, b = run_family(family, 1), run_family(family, 1)
+    assert a["script"], "the family's fault or proposer is in the episode"
+    only_the_feed_id_differs(a, b)
 
 
 def _sim(td: Path) -> Sim:
