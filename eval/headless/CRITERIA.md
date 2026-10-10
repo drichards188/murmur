@@ -152,3 +152,83 @@ while `sim/swarm.py` asked cargo for the stand-in engine; the median leaves it o
 build runs beside a full-stack run. With these values the simulator agreed with the three
 calibration runs on 9 of 9 proposals (an agreement of 1.0 by this file's definition); that is
 in-sample, the gate is not.
+
+## Fix round 1, 2026-10-10 (written before the second gate run)
+
+**Why.** An independent review of the first gate run (seeds 1 to 10, agreement 0.800, every
+metric inside: on record, reported beside the re-run, never replaced) found that G1 compared
+unlike link randomness. The full stack's link emulator ran `sim/links.toml`'s seed 1 in every run
+(scripts/up.sh passed no `--seed`), while the simulator's ran the episode seed; the emulator gives
+each vehicle and direction its own stream of draws, so every full-stack Harbor watch run met the
+same draws (PUMA 2 failed safe at 317 s in all ten) and every headless episode other ones. The
+reviewer's diagnostic, a simulator change not run under this file's rules and so not a gate
+result: with the headless emulator on seed 1 as well, seeds 1 to 10 agree 25/26 = 0.962.
+
+**What changed in the simulator and the runner** (all committed before the re-run):
+
+1. **The emulator's seed** is the situation's own `seed` on both sides:
+   `eval/headless/fullstack.py` passes it to the full stack as `MURMUR_LINKEMU_SEED` (up.sh hands
+   it to linkemu as `--seed`; unset, the links file's seed as before), and the simulator uses the
+   same (`situations.emulator_seed`). Harbor watch's own file has `seed = 1`, so a plain `make
+   situation NAME=harbor-watch` and a headless batch of it keep seed 1; G1's copies (`seed = k`)
+   run seed k on both sides.
+2. **Timing.** The contacts' truth comes from their own per-step log on both sides (the simulator
+   sampled it every 2 s, about 0.15 s late). The bridge is up at `bridge_start_s` (the full
+   stack's first anchor: its decision layer and loops start about 1.02 s after the emulator; the
+   simulator had them at 0). The playbook's first tick after `ai_start_s` is drawn for each
+   episode seed, uniformly over the range measured on the full stack (it had one fixed value).
+3. **link-cut-mid-look** is version 2: the cut follows the first look's dispatch, and an episode
+   with no look dispatched by 600 s records "no look to cut" instead of cutting PUMA 1 anyway.
+   Version 1's results are reported apart.
+4. No computer-time line in the record; the agent reconnects after 2 s doubling to 30 s and opens
+   a new session at once after three missed ticks, as the live agent; a tool result that is not
+   JSON reads as `{"text": ...}`, as the live session reads it.
+5. Provenance: every record holds the links file's path and hash and the space cache's content
+   hash; the bridge reads the links file the emulator reads; each full-stack run records its
+   binaries' hashes, its emulator seed and the host's load average at its start.
+
+**The code now matches this file's definitions, and three places this file left open are fixed
+here:**
+
+- `look_covered` and `time_to_look` count `isr.investigate` only, as written above (the code had
+  also counted `isr.armed_overwatch`).
+- `precision`: over the playbook's human-tier proposals, a look (`isr.investigate`) or recentre
+  (`isr.recentre`) is legitimate when its truth target needs a look and not otherwise (ambiguous
+  included); a P0 command (`safety.low_reserve`, `safety.stuck`) is legitimate when its fault was
+  real by truth: the vehicle's true charge under the low-reserve line (25 %) at the nearest sample
+  of our vehicles, or a scripted stop of that vehicle before the proposal. **Left open above, fixed
+  here:** a human-tier proposal of any other play (`isr.release`, `isr.armed_overwatch`, `link.*`),
+  and a P0 command in a record without the truth of our vehicles (every full-stack record), has no
+  rule in this file; it is listed as unjudged and left out of the proportion (the code had judged
+  every `isr.*` play by its target and no P0 command).
+- **Truth, changed here:** this file said "headless: the simulator's truth at `tick_t`". Both
+  sides now take the truth log's sample at the scenario second nearest `tick_t` (the simulator's
+  contacts write the same per-step log as the full stack's), one rule on both sides; the code had
+  interpolated between samples on both. **Left open above, fixed here:** a contact's crossing
+  within 3 km of the bridge is the first truth sample within it (the code had interpolated).
+
+**Calibration**, fitted on the calibration seeds only (101 to 103 as before, and 104 to 106 run
+2026-10-09 for this round with the new runner, `MURMUR_LINKEMU_SEED` = the seed), in
+`eval/headless/calibration.toml` (`python -m eval.headless.calibrate`):
+
+| offset | 101 | 102 | 103 | 104 | 105 | 106 | used |
+|---|---|---|---|---|---|---|---|
+| `contacts_start_s` | 0.838 | 0.823 | 0.821 | 0.820 | 0.812 | 0.821 | median **0.821** |
+| `standins_start_s` | 20.588 | 0.973 | 1.001 | 0.960 | 0.922 | 0.921 | median **0.966** |
+| `bridge_start_s` (first anchor) | 1.048 | 1.026 | 1.025 | 1.023 | 1.016 | 1.022 | median **1.024** |
+| `ai_first_tick_s` | 1.590 | 0.923 | 1.031 | 1.572 | 0.711 | 1.332 | range **0.711 to 1.590**, drawn per seed |
+
+Run 101's stand-ins were late for a cargo build (calibration section above); the median leaves
+it out. In-sample, with these values, the simulator agrees with runs 104 to 106 (run on the
+matching emulator seeds) on 9 of 9 proposals: that says the fit took, nothing more.
+
+**The re-run**, under this file's rules as amended here:
+
+- **G1 on seeds 11 to 20**, fresh (never used for anything): ten full-stack runs of Harbor watch
+  copies with `seed` = k and `MURMUR_LINKEMU_SEED` = k, one at a time on the assigned port block,
+  each replayed with its anchors; then headless episodes of the same copies; agreement at least
+  0.80 and every metric inside the other side's interval both ways, as above. A failed run is
+  re-run once; fewer than 8 good seeds fail the gate. The seeds 1 to 10 run is reported beside it.
+- **G1b at W = 8 workers**, stated now, before measuring: Harbor watch, seeds 1 to 200, the
+  default operator, measured when the host is quiet (its load stated with the result); at least
+  1,000 episodes per core-hour.

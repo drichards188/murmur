@@ -118,14 +118,20 @@ Times are the situation's clock (seconds from the stack's start).
    configs from `sim/swarm.py`'s own functions. `murmur-headless` starts with the stack's
    `MURMUR_*` variables as `scripts/up.sh` and `eval/situation_run.py` set them, so the bridge
    reads its configuration with its own `from_env` functions.
-2. **t = 0**: the bridge (World, Decision, Tracks, the router, Mcp) and the emulator. Contacts
-   start at `c0` and the stand-ins at `s0` (calibrated, section 11.1); vehicles connect on their
-   first heartbeat and the bridge's housekeeping picks their telemetry plan, as live.
+2. **t = 0**: the emulator, and the bridge's parts (World, Decision, Tracks, the router, Mcp).
+   Contacts start at `c0`, the stand-ins at `s0` and the bridge is up at `b0` (its loops start
+   then; a frame or a contacts message that reaches it earlier is lost, as on the full stack where
+   the bridge's decision layer starts about 1 s after the emulator); all three calibrated
+   (CRITERIA.md, 2026-10-10). Vehicles connect on their first heartbeat the bridge hears and its
+   housekeeping picks their telemetry plan, as live.
 3. **Readiness**: every second the runner reads `/api/state`; once every vehicle is ready, the
    opening orders go out as the runner issues them, and the autoplay operator starts.
-4. **The AI** comes on at `ai_start_s` plus `a0` (calibrated): `Engine.start`, then
-   `playbook_agent.py`'s tick loop on simulated time (a tick, then `get_changes` every 0.5 s until
-   2 s after the tick began, ticking at once on a waking change).
+4. **The AI** comes on at `ai_start_s` plus `a0`, drawn for each episode seed uniformly over the
+   calibrated range (the full stack's agent starts and connects in a time that varies run to
+   run, and that sets the phase of every later tick): `Engine.start`, then `playbook_agent.py`'s
+   tick loop on simulated time (a tick, then `get_changes` every 0.5 s until 2 s after the tick
+   began, ticking at once on a waking change; a failed connect again after 2 s doubling to 30 s,
+   three missed ticks a new session at once, as the live agent).
 5. **Between events** the driver asks for the next event's time (a request's `at`); the runtime
    runs every bridge loop, vehicle, link and contact up to it.
 6. **End** at `duration_s`: the tracker's association, the record, the audit log; the process
@@ -141,9 +147,13 @@ Times are the situation's clock (seconds from the stack's start).
 - **Stepping.** `step_to(t)` sleeps the runtime to `t` (every timer up to `t` fires in order), then
   yields 64 times so every task woken at `t` runs before the next request. A request between steps
   runs at the current instant, and the server fails the episode if the clock moved during it.
-- **Draws.** The stand-ins `Vehicle::seeded(.., k)`; the emulator's seed `k`; the operator
-  `random.Random(k * 7919 + 17)` (eval/proxy.py's); the contacts' motion and the sensing model the
-  contacts scenario's own `seed`. **For G1, Harbor watch keeps its contacts scenario's seed 11 in
+- **Draws.** The stand-ins `Vehicle::seeded(.., k)`; the emulator's seed the situation's own
+  `seed` (`situations.emulator_seed`), which the full-stack runner gives the full stack's emulator
+  for the same situation (`MURMUR_LINKEMU_SEED`), so both sides meet the same link draws (until
+  fix round 1 the full stack always ran the links file's seed 1 and the simulator the episode
+  seed: section 11.2); the operator `random.Random(seed * 7919 + 17)` (eval/proxy.py's, the
+  situation's `seed`); the playbook's first tick `random.Random("ai-first-tick:<k>")`; the
+  contacts' motion and the sensing model the contacts scenario's own `seed`. **For G1, Harbor watch keeps its contacts scenario's seed 11 in
   every episode, as every full-stack Harbor watch run does; the families draw a contacts seed per
   situation, so the traffic's motion varies with the episode seed** (tested:
   `test_a_family_seed_is_one_situation_and_seeds_vary_it`).
@@ -252,9 +262,10 @@ operator-facing parameters (budget, cooldowns, materiality) against it.
 ## 8. Situations: Harbor watch, the families, the split
 
 **Harbor watch** runs from its own file, unchanged, with the playbook config from its
-`[playbook]` table: the G1 reference. Its operator draws from the file's `seed` (1), as `make
-situation NAME=harbor-watch` does every time; a batch's episode seed varies the stand-ins and the
-emulator. G1's copies set the file's `seed` to the episode seed, so there both vary.
+`[playbook]` table: the G1 reference. Its operator and its link emulator draw from the file's
+`seed` (1), as `make situation NAME=harbor-watch` does every time; a batch's episode seed varies
+the stand-ins (and the playbook's first tick). G1's copies set the file's `seed` to the episode
+seed, so there all of them vary, on both sides alike.
 
 **The families** (`families.py`; `generate(family, seed, workdir)` draws from
 `random.Random(f"{family}:{seed}")`) keep Harbor watch's base: its four vehicles and three opening
@@ -266,8 +277,10 @@ said (unchanged since): `fast-unknown`, `decoy`, `link-cut-mid-look`, `low-batte
 - the stuck fault sets the stand-in's cruise and maximum speed to zero at the drawn time (it stops
   making way; nothing goes through the bridge); no hook in `murmur-standins` was needed;
 - the link cut is the emulator's own `cut` event, scheduled from the dispatch of the first look of
-  ours (the record's `script` keeps the trigger), or the fallback cut on PUMA 1 when no look has
-  gone out;
+  ours (the record's `script` keeps the trigger). Version 2 (2026-10-10): no look dispatched by
+  600 s, no cut, and the script records "no look to cut". Version 1 cut PUMA 1 at a drawn 200 to
+  400 s whenever no look had gone out by then, which 19 of its 30 episodes did, so most of them
+  cut no look; its results are reported apart from version 2's;
 - the low battery is the stand-in's starting charge.
 
 The split is by family and committed before any result (`split.toml`). Family reports use seeds
@@ -275,21 +288,30 @@ The split is by family and committed before any result (`split.toml`). Family re
 
 ## 9. Truth labels and metrics
 
+**Truth** on both sides is the contacts process's own log, one sample per step (its scenario
+second placed on the situation's clock by the process's start): the full stack's
+`contacts-truth.jsonl`, and the simulator's contacts writing the same lines (`truth` with
+`log_from`), so neither side samples it from outside.
+
 **Labels per contact** (`labels.py`): what it is (affiliation, kind, AIS, from the scenario) and
 whether it needs a look and by when: unknown, suspect or hostile within 3 km of the bridge
-(-122.4783, 37.8199) by truth needs a look by its first crossing plus 60 s; no other contact needs
-one. Fault windows are in the record's `script`.
+(-122.4783, 37.8199) by truth needs a look by its first crossing (the first truth sample within
+3 km) plus 60 s; no other contact needs one. Fault windows are in the record's `script`.
 
 **The target of a proposal** is matched by truth identity, the same rule on both sides of G1: the
 truth contact nearest the track's `predicted` position in the proposal's evidence record at its
-`tick_t`, within 500 m and with no other contact within 1.5 times that distance; else
-`ambiguous`. The record also holds the tracker's own association and their agreement, and **what
+`tick_t` (the truth sample at the scenario second nearest it, not interpolated), within 500 m
+and with no other contact within 1.5 times that distance; else `ambiguous`. The record also holds the tracker's own association and their agreement, and **what
 the picture showed at each proposal** (the track's affiliation and identity with their
 confidences, `picture`), so a false look can be split by what the C2 showed. Recording it changed
 nothing in G1's inputs.
 
-**Metrics** per episode (`metrics.py`): CRITERIA.md's four (`look_covered`, `time_to_look`,
-`false_looks`, `precision`), and reported beside them: proposals and their outcomes, human-tier
+**Metrics** per episode (`metrics.py`): CRITERIA.md's four as it writes them (`look_covered`
+and `time_to_look` count `isr.investigate` only; `false_looks` any `isr.*` play on a contact that
+needs none; `precision` over the human-tier proposals it can judge: a look or recentre by its
+target's label, a P0 command by whether its fault was real by truth, where the record has the
+truth of our vehicles, which a full-stack record does not; other plays are listed as unjudged),
+and reported beside them: proposals and their outcomes, human-tier
 cards (total and per operator-minute), approval latency, timeliness, objections, unfaithful
 rationales, re-proposals after a rejection, the association agreement. The fault-handling
 metrics of the design (a hold by the stuck alert plus 30 s, an rtl by the battery crossing, voided
@@ -299,12 +321,17 @@ the proposals, the audit log), and step 2 should add them as functions of the re
 ## 10. The episode record and the batch
 
 One JSON record per episode: the situation (name, family, split, seed), the provenance (commit,
-dirty flag, the binary's hash), the playbook config and its label, the operator's parameters, the
-clock (epoch, duration, offsets, when the fleet was ready), the playbook's own log lines on the
+dirty flag, the binary's hash, the links file's path and hash, the space cache's content hash),
+the playbook config and its label, the operator's parameters, the clock (epoch, duration, the
+calibration, the drawn first tick, the emulator's seed, when the fleet was ready), the playbook's own log lines on the
 simulated clock, the plans, every proposal (time, play, version, target track, truth target,
 tracker target, the picture, vehicle, task, tier, state at submission, refusal), every operator
-decision, our intents, the truth (contacts, labels, association), the metrics, the audit log's
-event count, head and hash (the log itself on request), and `perf`.
+decision, our intents, the truth (the contacts' per-step log, our vehicles every 2 s, the
+tracker's association, what a family states), the metrics, the audit log's event count, head and
+hash (the log itself on request), and `perf` (computer time, never compared: the slow ticks the
+live agent logs as `tick.slow` are counted there, not written into the record). A full-stack run's
+record carries its `provenance.json`: the commit, the binaries' hashes, the emulator's seed, the
+same untracked inputs and the host's load average at its start.
 
 `python -m eval.headless.batch` (or `make headless`) runs episodes on a process pool, one
 `murmur-headless` process each, writes the records and an aggregate per situation or family:

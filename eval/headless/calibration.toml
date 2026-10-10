@@ -1,8 +1,8 @@
 # CRITERIA.md calibration (2026-10-10 section): medians of the process starts, the range of the
-# playbook's first tick, over seed-101, seed-102, seed-103 (logs/headless-g1/calibration)
-contacts_start_s = 0.823
-standins_start_s = 1.001
-bridge_start_s = 1.026
-ai_first_tick_lo_s = 0.923
+# playbook's first tick, over seed-101, seed-102, seed-103, seed-104, seed-105, seed-106 (logs/headless-g1/calibration)
+contacts_start_s = 0.821
+standins_start_s = 0.966
+bridge_start_s = 1.024
+ai_first_tick_lo_s = 0.711
 ai_first_tick_hi_s = 1.59
-source = "full-stack calibration runs seed-101, seed-102, seed-103: medians, first-tick range"
+source = "full-stack calibration runs seed-101, seed-102, seed-103, seed-104, seed-105, seed-106: medians, first-tick range"
