@@ -833,6 +833,26 @@ group. Dates are 2026.
 
 ## Evaluation (Phase G)
 
+- **A situation's autoplay may grant every AI request and confirm rule declarations; neither is
+  a policy change** (10-12, user direction: "i want a situation where a hostile is engaged", then
+  "have all watch agent requests granted"; `sim/situations/hostile-act-engagement.toml`,
+  `eval/proxy.py`). Two `[autoplay]` settings of the scripted operator, off unless a situation
+  sets them: `grant_agents` (op-auto reads and approves every card from these agent ids, whatever
+  its rule book alone would say; the note says it was granted and what the rule book would have
+  done) and `confirm_rule_declarations` (op-auto confirms each rule declaration in the review
+  list, read first; flags are left alone). Granting is the scripted operators saying yes on what
+  reaches the inbox, never an auto tier: the checks run first, the policy's tiers and
+  `nominate_unconfirmed = false` stay the shipped ones, an approval the engine refuses stays
+  refused, and an engagement is only ever two signers' (op-2, op-3). Considered: making agent
+  proposals auto in that situation's policy (rejected: it would change what the engine decides,
+  and the run would no longer show the human tier), and `nominate_unconfirmed = true` so the AI
+  could nominate on the rule's declaration alone (rejected: a safeguard, and live the person
+  confirms). There is no separate release to script: the two signatures on the frozen plan
+  authorize the effect, which the engine releases only when the platform is at the point and the
+  picture holds. The timeline's fallback nomination (`unless_nominated`, `wait_s`) only nominates
+  when no nomination stands and the form's dry run passes, so a demo always reaches an engagement
+  without a script ever deciding one. A confirmation carries no note (the engine takes none), so a
+  scripted one is told by its id, which the runner lists.
 - **Situation status is display only: outside the decision engine and the audit chain** (10-08,
   situations v1; `crates/murmur-bridge/src/situation.rs`, `sim/situations/README.md`). A
   situation (`make situation NAME=<name>`) is a pre-built run to watch: a stack, opening orders,

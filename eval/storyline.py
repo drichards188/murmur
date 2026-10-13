@@ -27,7 +27,9 @@ Steps (`[[step]]` in a spec; `at_s` counts from the moment the fleet is ready):
                                 appended to the run's events file for the link emulator
     kind = "note"               a marker in the storyline log
     kind = "engage"             Phase E: nominate an armed platform against a track through
-                                eval/engage.py; logged as skipped until the proxy can sign
+                                eval/engage.py (a situation's, with signers; logged as skipped
+                                in the evaluation's arms, which do not sign yet); a situation's
+                                may say unless_nominated = true and wait_s (eval/engage.py)
 
 Track selectors `{track = {...}}` and `declare.track`:
     {id = "T-0001"} | {contact = "id"} (through the evaluation-only association) |
@@ -715,7 +717,8 @@ class Storyline:
             return
         rec = await adapter.run_step(self, step)
         self.log.write(rec)
-        self.injected.append(rec)
+        if rec.get("kind") == "propose":
+            self.injected.append(rec)
 
 class TruthSampler:
     """Every `every_s`, truth and perception side by side (evaluation hook) to `truth.jsonl`.

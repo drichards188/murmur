@@ -47,6 +47,8 @@
 .sit-log small { color: var(--muted); }
 .sit-tl li { font-size: 12px; color: #c8d0d9; }
 .sit-tl li.sit-director { color: #f0d7b0; }
+/* the engagement chain from the audit log: acts, declarations, nominations, signatures, the effect */
+.sit-tl li.sit-k-engagement { color: #f2b8b5; }
 .sit-tl.upcoming li { color: var(--muted); }
 .sit-more { margin-left: auto; background: none; border: 0; color: var(--muted); font-size: 11px; text-decoration: underline; padding: 0; }
 .sit-warn { margin: 4px 0 0; font-size: 12px; color: var(--bad); }

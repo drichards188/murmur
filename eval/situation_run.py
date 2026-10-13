@@ -63,6 +63,7 @@ from .proxy import EngagementSigners, ProxyOperator, proxy_params
 from .situation import (
     AGENTS,
     AI_LABEL,
+    EngagementChain,
     AUTOPLAY_OPERATOR,
     CONSOLE_OPERATOR,
     ENGAGE_OPERATORS,
@@ -81,6 +82,7 @@ from .situation import (
     ai_command,
     ai_preflight,
     brief_text,
+    decision_text,
     load_situation,
     playbook_json,
     merge_events,
@@ -458,6 +460,10 @@ class Runner:
         self.activity: list[dict[str, Any]] = []
         self.ai_notes: list[dict[str, Any]] = []
         self.audit_tail = AuditTail(self.audit)
+        # the engagement chain as the audit log has it (acts, declarations, nominations,
+        # signatures, the effect, the assessment), for the panel, situation.jsonl and the summary
+        planned, _ = plan_counts(sit.fleet) if sit.fleet else ([], 0)
+        self.chain = EngagementChain({str(v["uid"]): v["callsign"] for v in planned})
         self.publish_errors = 0
         self.stop = asyncio.Event()
         self.interrupted = False
@@ -530,7 +536,13 @@ class Runner:
                 "mode": mode,
                 "scripted": True,
                 "note": "scripted ids, not people: a model or a script (eval/), never evidence",
-                "decisions": [{k: d.get(k) for k in ("t", "intent_id", "action", "by", "reason", "result")} for d in self.autoplay_log[-10:]],
+                "decisions": [
+                    {
+                        **{k: d.get(k) for k in ("t", "intent_id", "action", "by", "reason", "result")},
+                        **{k: d[k] for k in ("declaration", "track", "granted") if k in d},
+                    }
+                    for d in self.autoplay_log[-10:]
+                ],
             }
         return status_doc(
             self.sit,
@@ -577,6 +589,11 @@ class Runner:
             a["t_s"] = round(a["t"] - self.zero, 1) if self.zero is not None else None
             self.record("ai_action", **a)
         self.activity.extend(new)
+        for c in self.chain.feed(events):
+            # on the situation's clock, for the panel
+            c["t_s"] = round(c["t"] - self.zero, 1) if self.zero is not None else None
+            self.record("engagement", **c)
+            self.entry("engagement", c["text"], what=c["what"], intent=c.get("intent"))
         notes_ok = self.notes_tail is not None and not self.notes_tail.path.is_symlink()
         for n in self.notes_tail.read() if notes_ok and self.notes_tail is not None else []:
             kind = panel_kind(n)
@@ -601,11 +618,15 @@ class Runner:
             if failed:
                 # the bridge's status code only; its words and the reason are in situation.jsonl
                 code = str(d.get("result") or "").split(":", 1)[0] if str(d.get("result") or "").startswith("error") else "an error"
-                self.problem(f"{d.get('by')} (scripted): {d.get('action')} on intent {d.get('intent_id')} failed ({code}); see situation.jsonl")
+                what = f"{d.get('declaration')} on {d.get('track')}" if d.get("action") == "confirm" else f"intent {d.get('intent_id')}"
+                self.problem(f"{d.get('by')} (scripted): {d.get('action')} on {what} failed ({code}); see situation.jsonl")
                 continue
-            verb = {"approve": "approved", "reject": "rejected", "sign": "signed"}.get(str(d.get("action")))
-            if verb:
-                self.entry("autoplay", f"{d.get('by')} (scripted) {verb} intent {d.get('intent_id')}: {d.get('result')}")
+            verb = {"approve": "approved", "reject": "rejected", "sign": "signed", "confirm": "confirmed"}.get(str(d.get("action")))
+            if verb == "confirmed":
+                self.entry("autoplay", f"{d.get('by')} (scripted) confirmed the rule declaration {d.get('declaration')} on {d.get('track')}: {d.get('result')}")
+            elif verb:
+                grant = " (it grants every request of the AI)" if d.get("granted") else ""
+                self.entry("autoplay", f"{d.get('by')} (scripted) {verb} intent {d.get('intent_id')}{grant}: {d.get('result')}")
         if self.ai_proc is not None and self.ai_status.get("status") == "running":
             code = self.ai_proc.poll()
             if code is not None:
@@ -1123,24 +1144,29 @@ class Runner:
             if i.get("rationale"):
                 lines.append(f"      rationale: {str(i['rationale'])[:220]}")
         if self.modes["operator"] == "autoplay" or self.modes["cosigner"] == "scripted":
-            ok = [
-                d
-                for d in self.autoplay_log
-                if d.get("action") in ("approve", "reject", "sign") and not str(d.get("result") or "").startswith("error")
-            ]
-            failed = [d for d in self.autoplay_log if d not in ok and d.get("action") in ("approve", "reject", "sign", "sign_failed", "error")]
+            acts = ("approve", "reject", "sign", "confirm")
+            ok = [d for d in self.autoplay_log if d.get("action") in acts and not str(d.get("result") or "").startswith("error")]
+            failed = [d for d in self.autoplay_log if d not in ok and d.get("action") in (*acts, "sign_failed", "error")]
             lines.append(f"  scripted decisions: {len(ok)}" + (f" (and {len(failed)} failed attempts)" if failed else ""))
-            for d in ok[-8:]:
+            for d in ok[-12:]:
                 why = f" ({str(d['reason'])[:120]})" if d.get("reason") else ""
-                lines.append(f"    {d.get('by')} {d.get('action')} intent {d.get('intent_id')}: {d.get('result')}{why}")
+                lines.append(f"    {decision_text(d)}{why}")
         # everything else: the storyline's proposals, an operator's own orders at the console
         known = {o.get("intent_id") for o in self.orders} | {i["id"] for i in mine}
         others = [i for i in intents.values() if i["id"] not in known]
         for i in sorted(others, key=lambda i: i["id"]):
             src = i.get("source") or {}
             lines.append(f"  intent {i['id']} {i.get('kind')} for vehicles {','.join(str(u) for u in i.get('uids') or [])} from {src.get('kind')} {src.get('id')}: {i.get('state')}")
+        chain = self.chain.summary_lines()
+        if chain:
+            lines.append("  the engagement chain (audit log):")
+            lines += ["  " + c for c in chain]
         steps = [e for e in self.entries if e["kind"] == "step"]
         lines.append(f"  timeline: {len(steps)} step records, {len(self.done_steps)} of {len(self.sit.steps)} steps run")
+        for e in steps:
+            s = self.steps.get(str(e.get("step")))
+            if s is not None and s.kind == "engage":
+                lines.append(f"    step {s.id} at {e['t_s']:.0f} s: {e['text'][:300]}")
         alarms = [p for p in self.problems if p.startswith("SCRIPT AUTHORIZED")]
         if alarms:
             lines.insert(3, f"!!! {len(alarms)} order(s) authorized by a script's own submission: see the problems below and situation.jsonl")

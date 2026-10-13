@@ -111,7 +111,10 @@ STEP_KEYS = {
     "flood": {"count", "interval_s", "templates", "label"},
     "declare": {"affiliation", "track", "note"},
     "link": {"vehicles", "cut", "loss", "extra_latency_ms", "duration_s", "delay_s"},
-    "engage": {"track", "vehicles", "effect_radius_m", "window_s", "fallback", "rationale", "label", "reason", "retry_s"},
+    # unless_nominated: skipped while a nomination on the track stands, whoever made it;
+    # wait_s: wait this long for the platform to pass every nomination check (the form's dry run)
+    "engage": {"track", "vehicles", "effect_radius_m", "window_s", "fallback", "rationale", "label", "reason", "retry_s",
+               "unless_nominated", "wait_s"},
 }
 WATCH_KEYS = {"at_s", "text", "director"}
 TIDEWATER_HOME = Path(os.environ.get("TIDEWATER_HOME", Path.home() / "tidewater"))
@@ -271,6 +274,12 @@ def _steps(raw: list[Any], sit: Path, duration_s: float) -> list[Step]:
             raise SituationError(f"{sit}: step {sid!r}: at_s {at_s:g} is outside the situation (0 to {duration_s:g} s)")
         if "director" in s and not isinstance(s["director"], bool):
             raise SituationError(f"{sit}: step {sid!r}: director is true or false")
+        if "unless_nominated" in s and not isinstance(s["unless_nominated"], bool):
+            raise SituationError(f"{sit}: step {sid!r}: unless_nominated is true or false")
+        if "wait_s" in s and not 0 <= _num(s["wait_s"], f"step {sid!r}: wait_s", sit) <= duration_s:
+            raise SituationError(f"{sit}: step {sid!r}: wait_s is from 0 to the situation's duration")
+        if kind == "engage" and s.get("fallback", "abort") not in ("abort", "return", "loiter"):
+            raise SituationError(f"{sit}: step {sid!r}: fallback is abort, return or loiter")
         if kind == "flood":
             for k, t in enumerate(s.get("templates") or []):
                 if not isinstance(t, dict):
@@ -955,6 +964,173 @@ def agent_activity(events: list[dict[str, Any]], agent: str | None) -> list[dict
             continue
         out.append({"t": round(float(e.get("t", 0)) / 1000.0, 3), "seq": e.get("seq"), "action": e.get("action"), "detail": str(e.get("detail", ""))[:400]})
     return out
+
+
+def _rule_basis(by: dict[str, Any]) -> str:
+    ev = by.get("evidence") or {}
+    against = ev.get("against") or {}
+    victim = f"vehicle {against.get('uid')}" if against.get("kind") == "vehicle" else str(against.get("track") or "?")
+    att = ev.get("attribution")
+    return f"act {ev.get('act', '?')} against {victim}" + (f", attribution {att:.2f}" if isinstance(att, (int, float)) else "")
+
+
+class EngagementChain:
+    """The engagement decision chain as the audit log has it (read-only), for the panel's
+    timeline, `situation.jsonl` and the summary: the hostile acts our sensors observed, what the
+    engine made of each (a rule declaration, or a flag for review), who confirmed a rule
+    declaration, every engagement nomination and who made it, each signature, the dispatch, the
+    released effect, the assessment, and any stop, reset or refusal. Only what the C2 itself
+    logged: nothing of the truth. `callsigns` names our vehicles by uid (strings)."""
+
+    def __init__(self, callsigns: dict[str, str] | None = None):
+        self.callsigns = {str(k): v for k, v in (callsigns or {}).items()}
+        # intent id -> what happened to that nomination
+        self.engagements: dict[int, dict[str, Any]] = {}
+        # declaration id -> {track, by, confirmed_by}
+        self.declarations: dict[int, dict[str, Any]] = {}
+
+    def _who(self, uid: Any) -> str:
+        cs = self.callsigns.get(str(uid))
+        return f"{cs} (uid {uid})" if cs else f"vehicle {uid}"
+
+    def feed(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """New audit events in; one line per chain moment out: `{t, what, text, intent?}` (t in
+        unix seconds, the bridge's clock)."""
+        out: list[dict[str, Any]] = []
+
+        def line(e: dict[str, Any], what: str, text: str, **extra: Any) -> None:
+            out.append({"t": round(float(e.get("t", 0)) / 1000.0, 3), "what": what, "text": text, **extra})
+
+        for e in events:
+            kind = e.get("type")
+            if kind == "ident.act":
+                a = e.get("act") or {}
+                against = a.get("against") or {}
+                victim = self._who(against.get("uid")) if against.get("kind") == "vehicle" else f"track {against.get('track')}"
+                line(e, "act", f"our sensors observed a hostile act ({a.get('act')}) against {victim}: seen by {', '.join(a.get('sensors') or [])}")
+            elif kind == "ident.declared":
+                d = e.get("declaration") or {}
+                by = d.get("by") or {}
+                self.declarations[int(d.get("id", 0))] = {"track": d.get("track"), "affiliation": d.get("affiliation"), "by": by, "confirmed_by": None}
+                if by.get("kind") == "rule":
+                    line(e, "declared", f"the engine declared {d.get('track')} {d.get('affiliation')} by rule ({_rule_basis(by)}): an operator confirms or revokes it")
+                else:
+                    line(e, "declared", f"{by.get('operator')} declared {d.get('track')} {d.get('affiliation')}")
+            elif kind == "ident.flagged":
+                f = e.get("flag") or {}
+                line(e, "flagged", f"the engine flagged {', '.join(f.get('tracks') or []) or 'an act'} for review ({f.get('kind')}, act {f.get('act')}): not declared")
+            elif kind == "ident.confirmed":
+                d = self.declarations.get(int(e.get("declaration", 0)))
+                if d is not None:
+                    d["confirmed_by"] = e.get("by")
+                line(e, "confirmed", f"{e.get('by')} confirmed the rule declaration D-{e.get('declaration')} on {e.get('track')}")
+            elif kind == "ident.revoked":
+                line(e, "revoked", f"{e.get('by')} revoked the declaration D-{e.get('declaration')} on {e.get('track')}")
+            elif kind == "intent.created":
+                i = e.get("intent") or {}
+                if i.get("kind") != "engage":
+                    continue
+                src = i.get("source") or {}
+                p = i.get("params") or {}
+                uids = [str(u) for u in i.get("uids") or []]
+                rec = {
+                    "intent": i.get("id"),
+                    "t": round(float(e.get("t", 0)) / 1000.0, 3),
+                    "by": f"{src.get('kind')} {src.get('id')}",
+                    "source": src,
+                    "track": p.get("track"),
+                    "platform": ", ".join(self._who(u) for u in uids),
+                    "effect_radius_m": p.get("effect_radius_m"),
+                    "fallback": p.get("fallback"),
+                    "signed": [],
+                    "state": "proposed",
+                }
+                self.engagements[int(i.get("id", 0))] = rec
+                line(
+                    e, "nominated",
+                    f"engagement nominated by {src.get('kind')} {src.get('id')}: intent {i.get('id')}, {rec['platform']} on {p.get('track')}, "
+                    f"effect radius {p.get('effect_radius_m')} m, fallback {p.get('fallback')}",
+                    intent=i.get("id"),
+                )
+            elif kind in ("approval.concurred", "approval.granted"):
+                rec = self.engagements.get(int(e.get("intent", 0)))
+                if rec is None:
+                    continue
+                rec["signed"].append(e.get("by"))
+                n = len(rec["signed"])
+                done = ": approved" if kind == "approval.granted" else ""
+                line(e, "signed", f"{e.get('by')} signed intent {e.get('intent')} ({n} of {e.get('of') or n}){done}", intent=e.get("intent"))
+            elif kind == "approval.reset":
+                rec = self.engagements.get(int(e.get("intent", 0)))
+                if rec is None:
+                    continue
+                rec["signed"] = []
+                rec.setdefault("resets", []).append(str(e.get("reason", ""))[:200])
+                line(e, "reset", f"the signatures on intent {e.get('intent')} were dropped: {str(e.get('reason', ''))[:200]}", intent=e.get("intent"))
+            elif kind == "intent.dispatched":
+                rec = self.engagements.get(int(e.get("intent", 0)))
+                if rec is None:
+                    continue
+                eng = e.get("engage") or {}
+                rec["dispatched_t"] = round(float(e.get("t", 0)) / 1000.0, 3)
+                line(e, "dispatched", f"intent {e.get('intent')} dispatched: {self._who(eng.get('uid'))} to the effect point", intent=e.get("intent"))
+            elif kind == "engage.effect":
+                rec = self.engagements.get(int(e.get("intent", 0)))
+                if rec is not None:
+                    rec["effect_t"] = round(float(e.get("t", 0)) / 1000.0, 3)
+                    rec["effect_point"] = e.get("point")
+                pt = e.get("point") or [None, None]
+                where = f"[{pt[0]:.5f}, {pt[1]:.5f}]" if all(isinstance(x, (int, float)) for x in pt) else "?"
+                line(e, "effect", f"effect released by intent {e.get('intent')} (an abstract event): {where}, radius {e.get('radius_m')} m", intent=e.get("intent"))
+            elif kind == "engage.assessed":
+                rec = self.engagements.get(int(e.get("intent", 0)))
+                if rec is not None:
+                    rec["assessed"] = e.get("result")
+                    rec["evidence"] = e.get("evidence")
+                line(e, "assessed", f"intent {e.get('intent')} assessed: {e.get('result')} ({str(e.get('evidence', ''))[:240]})", intent=e.get("intent"))
+            elif kind == "engage.stopped":
+                rec = self.engagements.get(int(e.get("intent", 0)))
+                if rec is not None:
+                    rec["stopped"] = str(e.get("reason", ""))[:300]
+                line(e, "stopped", f"intent {e.get('intent')} stopped (fallback {e.get('fallback')}): {str(e.get('reason', ''))[:240]}", intent=e.get("intent"))
+            elif kind == "intent.state":
+                rec = self.engagements.get(int(e.get("intent", 0)))
+                if rec is None:
+                    continue
+                rec["state"] = e.get("to")
+                if e.get("to") in ("rejected", "expired", "voided", "failed"):
+                    line(e, "ended", f"intent {e.get('intent')} {e.get('to')}: {str(e.get('reason', ''))[:240]}", intent=e.get("intent"))
+        return out
+
+    def summary_lines(self) -> list[str]:
+        """The summary's engagements: each nomination, who made it, who signed, the dispatch,
+        the effect and the assessment (or what stopped it)."""
+        lines: list[str] = []
+        for d in self.declarations.values():
+            by = d["by"]
+            how = f"by rule ({_rule_basis(by)})" if by.get("kind") == "rule" else f"by {by.get('operator')}"
+            conf = f", confirmed by {d['confirmed_by']}" if d.get("confirmed_by") else (", not confirmed" if by.get("kind") == "rule" else "")
+            lines.append(f"  declared {d['track']} {d['affiliation']} {how}{conf}")
+        for iid, r in sorted(self.engagements.items()):
+            lines.append(f"  engagement intent {iid}: nominated by {r['by']} ({r['platform']} on {r['track']}, radius {r['effect_radius_m']} m, fallback {r['fallback']}): {r['state']}")
+            lines.append(f"    signed by: {', '.join(str(s) for s in r['signed']) or 'nobody'}")
+            if r.get("dispatched_t") is not None:
+                lines.append("    dispatched: yes")
+            if r.get("effect_t") is not None:
+                lines.append(f"    effect released: yes, at {r.get('effect_point')}")
+            if r.get("assessed"):
+                lines.append(f"    assessed: {r['assessed']} ({str(r.get('evidence') or '')[:200]})")
+            if r.get("stopped"):
+                lines.append(f"    stopped: {r['stopped'][:200]}")
+        return lines
+
+
+def decision_text(d: dict[str, Any]) -> str:
+    """One scripted decision in words: an intent's approval, rejection or signature, or a rule
+    declaration's confirmation."""
+    if d.get("action") == "confirm":
+        return f"{d.get('by')} confirm {d.get('declaration')} on {d.get('track')}: {d.get('result')}"
+    return f"{d.get('by')} {d.get('action')} intent {d.get('intent_id')}: {d.get('result')}"
 
 
 def merge_events(files: list[Path]) -> str:

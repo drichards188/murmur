@@ -28,7 +28,8 @@ with engagement authority (`MURMUR_ENGAGE_OPERATORS`), each asking for a picture
 /api/intents/{id}/picture`) and approving with it (`{"token": id}`). `eval/proxy.py`
 `EngagementSigners` does that as two scripted operators; a situation (`sim/situations/`)
 runs them in autoplay, or a person signs at the console, and its `EngageAdapter` says so
-(`signers_ready`). The evaluation's arms do not sign yet (the proxy's rule book and the
+(`signers_ready`); a situation's step may be a fallback (`unless_nominated`, `wait_s`: see
+`EngageAdapter`, and `sim/situations/hostile-act-engagement.toml`). The evaluation's arms do not sign yet (the proxy's rule book and the
 metrics have no engagement case), so there `available()` stays false, live engage steps are
 skipped, and the four specs in `eval/scenarios/engagement/` stay placeholders (`requires =
 ["engage"]`).
@@ -36,6 +37,7 @@ skipped, and the four specs in `eval/scenarios/engagement/` stay placeholders (`
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import time
@@ -197,16 +199,62 @@ def load_suite(batch: Path) -> dict[str, Any] | None:
 # ---- live engagement steps -------------------------------------------------------------------
 
 
+# an engagement nomination that stands: not refused, expired, voided, aborted or failed
+STANDING = ("proposed", "checked", "pending_approval", "approved", "queued", "dispatched", "effected", "done")
+
+
+def intent_track(i: dict[str, Any]) -> Any:
+    """The track an engagement intent names, as `GET /api/intents` serves it."""
+    return (i.get("params") or {}).get("track") or ((i.get("task") or {}).get("params") or {}).get("track")
+
+
+def standing_nomination(intents: list[dict[str, Any]], track: Any) -> dict[str, Any] | None:
+    """The newest engagement nomination on `track` that stands, whoever made it, or None."""
+    found = [i for i in intents if i.get("kind") == "engage" and intent_track(i) == track and i.get("state") in STANDING]
+    return max(found, key=lambda i: int(i.get("id") or 0)) if found else None
+
+
+def failing_checks(option: dict[str, Any] | None) -> list[str]:
+    """What keeps a platform from passing, from its option in the nomination form's dry run."""
+    if option is None:
+        return ["the platform is not among the armed vehicles the form lists"]
+    failing = [f"{c.get('rule')}: {str(c.get('detail') or c.get('outcome'))[:160]}" for c in option.get("checks") or [] if c.get("outcome") != "pass"]
+    if option.get("passed") is False and not failing:
+        failing = ["the form says it does not pass"]
+    return failing
+
+
 class EngageAdapter:
     """Live `engage` storyline steps: the nomination, through the run's proposer. Someone must
     be able to sign it: `signers_ready` says so (a situation's scripted signers,
     `eval/proxy.py` `EngagementSigners`, or a person at its console). The evaluation's arms
     leave it false, so their engage steps stay skipped placeholders (see the module
-    docstring)."""
+    docstring).
 
-    def __init__(self, bridge: Bridge, signers_ready: bool = False):
+    A situation's step may also say `unless_nominated = true` (a fallback: the step is skipped
+    while a nomination on the track stands, whoever made it, an AI's included) and `wait_s`
+    (wait up to this long for the platform to pass every nomination check, by the nomination
+    form's dry run, `POST /api/engage/options`, read-only and not logged, before nominating; one
+    that never passes is skipped, saying which checks failed, rather than nominated to be
+    refused). Neither relaxes anything: the nomination still goes through every check and
+    waits for two signers."""
+
+    def __init__(self, bridge: Bridge, signers_ready: bool = False, poll_s: float = 3.0):
         self.bridge = bridge
         self.signers_ready = signers_ready
+        self.poll_s = poll_s
+
+    async def standing(self, story: Any, track: Any) -> dict[str, Any] | None:
+        out = await asyncio.to_thread(story.bridge.try_get, "/api/intents")
+        return standing_nomination((out or {}).get("intents", []), track)
+
+    async def option(self, story: Any, req: dict[str, Any]) -> dict[str, Any] | None:
+        """The platform's option in the nomination form's dry run now (its checks)."""
+        x = req["extra"]
+        body = {"track": x["track"], "effect_radius_m": x["effect_radius_m"], "window_s": x["window_s"], "fallback": x["fallback"], "uids": req["uids"]}
+        out = await asyncio.to_thread(story.bridge.post, "/api/engage/options", body)
+        want = {str(u) for u in req["uids"]}
+        return next((o for o in (out or {}).get("options", []) if str(o.get("uid")) in want), None)
 
     async def available(self) -> bool:
         """The bridge takes engagements (Phase E); a nomination is worth making only where two
@@ -230,10 +278,41 @@ class EngageAdapter:
     async def run_step(self, story: Any, step: Step) -> dict[str, Any]:
         p = dict(step.params)
         sel = {"task": "engage", "vehicles": p["vehicles"], "center": {"track": p["track"]}, "rationale": p.get("rationale", "")}
-        _, rationale, target, lead = await story.prepare_with_retry(step.id, {**p, **sel})
-        vehicles = await story.world.vehicles()
-        uids = [int(v["uid"]) for v in select_vehicles(p["vehicles"], vehicles)]
-        req = self.request(p, uids, target)
+        deadline = time.monotonic() + float(p.get("wait_s", 0))
+        said = None
+        while True:
+            _, rationale, target, lead = await story.prepare_with_retry(step.id, {**p, **sel})
+            vehicles = await story.world.vehicles()
+            uids = [int(v["uid"]) for v in select_vehicles(p["vehicles"], vehicles)]
+            req = self.request(p, uids, target)
+            if p.get("unless_nominated"):
+                there = await self.standing(story, target.get("track_id"))
+                if there is not None:
+                    src = there.get("source") or {}
+                    return {
+                        "kind": "skipped",
+                        "step": step.id,
+                        "t_rel": story.t_rel(),
+                        "reason": f"a nomination on {target.get('track_id')} stands: intent {there.get('id')} by {src.get('kind')} {src.get('id')} ({there.get('state')})",
+                        "nomination": {"intent_id": there.get("id"), "source": src, "state": there.get("state")},
+                    }
+            if "wait_s" not in p:
+                break
+            failing = failing_checks(await self.option(story, req))
+            if not failing:
+                break
+            if time.monotonic() >= deadline:
+                return {
+                    "kind": "skipped",
+                    "step": step.id,
+                    "t_rel": story.t_rel(),
+                    "reason": f"{(lead.get('identity') or {}).get('callsign') or uids} did not pass the nomination checks within {float(p['wait_s']):g} s: {'; '.join(failing)}"[:600],
+                    "failing": failing,
+                }
+            if failing != said:
+                said = failing
+                story.log.write({"kind": "retry", "step": step.id, "t_rel": story.t_rel(), "error": f"waiting for the nomination checks: {'; '.join(failing)}"[:600]})
+            await asyncio.sleep(self.poll_s)
         label = p.get("label", "derived")
         rec: dict[str, Any] = {
             "kind": "propose",

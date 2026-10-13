@@ -1,0 +1,151 @@
+# Hostile act to engagement traffic (sim/situations/hostile-act-engagement.toml): ordinary
+# traffic at the Golden Gate and one fast boat that fires on one of ours. Run by
+# crates/murmur-contacts; format in crates/murmur-contacts/src/scenario.rs. Points are [lon, lat].
+# Routes and identities as in sim/scenarios/harbor-watch.toml (fictional names and MMSIs).
+# Everything here is truth: the console and the AI only ever see what our sensors make of it.
+#
+# Times (`start_s`, an act's `at_s`) count from the contacts process's start, which
+# scripts/up.sh starts with the bridge, a few seconds after the link emulator: a situation's
+# clock counts from the emulator's start, so each comes a few seconds after the same number on
+# the situation's clock. uids are the fleet's (sim/fleets/hostile-act-engagement.toml): 1 is
+# HUNTER 1.
+#
+# An act is an abstract event: a time, an author and a victim. Nothing models a weapon or
+# damage. The engine learns of it only through our sensors (the bridge's sensing model decides
+# which of ours observe it and where they place its author) and declares its author hostile by
+# rule when the act is attributed to one track at the policy's threshold (0.9) or more.
+title = "Hostile act to engagement traffic"
+seed = 17
+
+[sensing]
+misclassification_rate = 0.0     # deterministic identities: the situation is about the chain
+
+# ---------------------------------------------------------------- the hostile
+# Runs in from the sea at 15 m/s (29 kn), no AIS, and holds mid-strait 1.5 km west of the bridge,
+# inside the engagement zone (sim/areas: ez-gate-west), from about 3:03. Then it fires on HUNTER
+# 1, patrolling 2 km east of it, and fires again a minute later, and again: each act is observed
+# by whichever of ours see the boat (HUNTER 1's EO/IR places it within a few tens of metres), so
+# if one is attributed below the threshold (a loose fix: flagged for review, not declared) the
+# next is another chance; once the boat is declared, the engine only records the rest.
+[[contact]]
+id = "fastboat-raider"
+name = "Fast boat without AIS, in from the sea, holding mid-strait west of the bridge"
+affiliation = "hostile"
+domain = "surface"
+kind = "small_fast_boat"
+speed_mps = 15
+motion = "transit"
+route = [[-122.5250, 37.8080], [-122.4950, 37.8120]]
+start_s = 5
+
+[[act]]
+id = "act-1"
+at_s = 205
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on the sensor ship (HUNTER 1)"
+
+[[act]]
+id = "act-2"
+at_s = 265
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 again"
+
+[[act]]
+id = "act-3"
+at_s = 325
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 a third time"
+
+# ---------------------------------------------------------------- ferries (AIS, neutral)
+[[contact]]
+id = "ferry-sausalito"
+name = "Sausalito ferry (Ferry Building to Sausalito)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 10
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.4120, 37.8130], [-122.4400, 37.8220], [-122.4620, 37.8390], [-122.4770, 37.8560]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999101", name = "MV GOLDEN BEAR", ship_type = "passenger" }
+
+[[contact]]
+id = "ferry-larkspur"
+name = "Larkspur ferry (Ferry Building to Larkspur via Raccoon Strait)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 12
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.4120, 37.8180], [-122.4170, 37.8380], [-122.4500, 37.8600], [-122.4480, 37.8740], [-122.4700, 37.8880], [-122.4950, 37.9300], [-122.5070, 37.9440]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999102", name = "MV MARIN CREST", ship_type = "passenger" }
+
+# ---------------------------------------------------------------- shipping lane (AIS, neutral)
+# The inbound container ship comes up the lane from the sea toward the holding area at 7 m/s:
+# about 3 km from it at 7:30 and 2 km at 10:00, closing. The keep-out counts it along its
+# course with its uncertainty; it reaches the holding area only after the watch (about 14:20).
+[[contact]]
+id = "cargo-inbound"
+name = "Container ship inbound to Oakland"
+affiliation = "neutral"
+domain = "surface"
+kind = "cargo_ship"
+speed_mps = 7
+motion = "transit"
+route = [[-122.5600, 37.7900], [-122.5100, 37.8060], [-122.4790, 37.8180], [-122.4300, 37.8360], [-122.4000, 37.8220], [-122.3830, 37.8030], [-122.3550, 37.8080], [-122.3420, 37.8100]]
+ais = { mmsi = "366999201", name = "MSC AURELIA", ship_type = "cargo" }
+
+# The outbound bulk carrier comes down from Angel Island toward the Gate at 6 m/s (at the
+# bridge after the watch, about 16 minutes in).
+[[contact]]
+id = "cargo-outbound"
+name = "Bulk carrier outbound from Richmond"
+affiliation = "neutral"
+domain = "surface"
+kind = "cargo_ship"
+speed_mps = 6
+motion = "transit"
+route = [[-122.4200, 37.8450], [-122.4600, 37.8260], [-122.4790, 37.8170], [-122.5500, 37.7950], [-122.6800, 37.7500]]
+ais = { mmsi = "366999202", name = "PACIFIC HARVESTER", ship_type = "cargo" }
+
+# ---------------------------------------------------------------- fishing and leisure
+[[contact]]
+id = "fishing-wharf"
+name = "Trawler from Fisherman's Wharf to the grounds (AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+speed_mps = 5
+motion = "route"
+route = [[-122.4150, 37.8120], [-122.4600, 37.8230], [-122.4790, 37.8190], [-122.5500, 37.7800]]
+reverse = true
+dwell_s = 900
+ais = { mmsi = "366999301", name = "F/V ANNA MARIE", ship_type = "fishing" }
+
+[[contact]]
+id = "fishing-milerock"
+name = "Sport fishing boat drifting off Mile Rock (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+motion = "drift"
+at = [-122.5200, 37.7850]
+
+# A sailing yacht tacking off Lands End, about 1.4 km south-southwest of the holding area at
+# its nearest: inside the picture every keep-out reads, and clear of an engagement there.
+[[contact]]
+id = "yacht-landsend"
+name = "Sailing yacht tacking off Lands End (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "sailboat"
+speed_mps = 3
+motion = "loiter"
+center = [-122.5060, 37.8000]
+radius_m = 250

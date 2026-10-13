@@ -62,7 +62,19 @@ export interface SituationStatus {
   autoplay: null | {
     operators: string[]
     mode: 'autoplay' | 'cosigner' | 'setup'
-    decisions: { t: number; intent_id: number; action: string; by?: string; reason?: string; result?: string }[]
+    /** an intent's approval, rejection or signature; or (`declaration`, `track`) a rule
+     * declaration's confirmation; `granted`: an approval by the setting that grants every AI request */
+    decisions: {
+      t: number
+      intent_id: number | null
+      action: string
+      by?: string
+      reason?: string
+      result?: string
+      declaration?: string
+      track?: string
+      granted?: boolean
+    }[]
   }
   run: { id: string; audit_log: string; situation_log: string }
   /** what went wrong in the runner itself */
@@ -290,7 +302,8 @@ export function SituationPanel({ decisions }: { decisions: Decisions | null }) {
                 .slice(0, 5)
                 .map((d, k) => (
                   <li key={k}>
-                    <b>{d.by ?? '?'}</b> {d.action} i{d.intent_id}: {d.result}
+                    <b>{d.by ?? '?'}</b> {d.action} {d.declaration ? `${d.declaration} on ${d.track ?? '?'}` : `i${d.intent_id}`}
+                    {d.granted ? ' (granted)' : ''}: {d.result}
                     {d.reason && <small> {d.reason}</small>}
                   </li>
                 ))}
