@@ -496,8 +496,12 @@ def test_a_busy_port_or_a_running_stack_is_reported(tmp_path: Path):
         listener.close()
         udp.close()
     (tmp_path / "logs" / "up.pid").write_text("999999999")
-    free = {k: _free_tcp() for k in ("bridge_base", "http", "web", "linkemu", "tidewater")}
-    free.update(vehicle_base=_free_tcp(), sitl_instance_base=0)
+    free = {"sitl_instance_base": 0}
+    for key in ("vehicle_base", "bridge_base", "http", "web", "linkemu", "tidewater"):
+        port = _free_tcp()
+        while port in free.values():
+            port = _free_tcp()
+        free[key] = port
     assert S.port_problems(free, 1, 0, root=tmp_path) == []
 
 
