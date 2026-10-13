@@ -14,8 +14,7 @@
 // branch ("RTL if it lost us too · 12 s"): a second hypothesis, not a second vehicle.
 import { IconLayer, LineLayer, PathLayer, PolygonLayer, TextLayer } from '@deck.gl/layers'
 import { bandPath, BASIS_LABEL, estimateAt, FAILSAFE_LABEL, failsafeAt, regionRings, type Evaluated } from './estimate'
-import { HEIGHT_EXAGGERATION } from './map3d'
-import type { ViewMode } from './MapView'
+import { drawnHeight } from './map3d'
 import { frameIcon } from './symbols'
 import type { LngLat, Vehicle } from './types'
 
@@ -61,8 +60,7 @@ function fmtS(s: number) {
   return n < 60 ? `${n} s` : `${Math.floor(n / 60)} m ${String(n % 60).padStart(2, '0')} s`
 }
 
-export function buildEstimateLayers({ vehicles, nowMs, focus }: EstimateLayerInput, view: ViewMode) {
-  const is3d = view === '3d'
+export function buildEstimateLayers({ vehicles, nowMs, focus }: EstimateLayerInput) {
   const drawn: Drawn[] = []
   for (const v of vehicles) {
     const e = v.estimate
@@ -100,7 +98,8 @@ export function buildEstimateLayers({ vehicles, nowMs, focus }: EstimateLayerInp
       })
     }
   }
-  const z = (d: Drawn) => (is3d ? (d.v.alt_msl ?? 0) * HEIGHT_EXAGGERATION : 0)
+  // at the height it last reported (the estimate is a plan position)
+  const z = (d: Drawn) => drawnHeight(d.v)
   const at = (d: Drawn): XYZ => [d.at.position[0], d.at.position[1], z(d)]
   const color = (d: Drawn) => (d.branch ? BRANCH : OURS)
   const dim = (d: Drawn) => (d.lead ? (d.focus ? 1 : 0.75) : 0.35)

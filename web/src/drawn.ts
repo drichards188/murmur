@@ -1,8 +1,9 @@
 // Where our own vehicles are drawn on the map (display smoothing, glide.ts). One shared
 // glider, because everything drawn attached to a vehicle must read the same position: the
 // symbol, rings, labels, drop line, trail end, order badges, the follow camera. Layers call
-// drawnPosition / drawnAlt / drawnHeading instead of reading `v.position` and friends; with
-// smoothing off these return the reported values, exactly as before.
+// drawnPosition / drawnAlt instead of reading `v.position` and friends; with smoothing off
+// these return the reported values, exactly as before. A vehicle with no altitude now is drawn
+// at the last one it reported (shownAlt), never left off the map.
 //
 // Only map drawing reads this. Lists, the details card, the API and the logs show the
 // reported numbers.
@@ -13,6 +14,26 @@ import { domainOf, isStale, staleMs } from './types'
 const glider = new Glider()
 let enabled = true
 let tick = 0
+// the last altitude each vehicle reported, for drawing one that has none now (shownAlt)
+const lastAlt = new Map<number, number>()
+
+/** Keep each vehicle's last reported altitude (every vehicle, on every state update). */
+export function noteAltitudes(vehicles: Vehicle[]) {
+  for (const v of vehicles) if (v.alt_msl != null) lastAlt.set(v.uid, v.alt_msl)
+}
+
+/** The altitude a vehicle without one now last reported (kept by noteAltitudes, else its
+ *  trail's newest point), metres above mean sea level; null when it never reported one. */
+export function lastKnownAlt(v: Pick<Vehicle, 'uid' | 'trail'>): number | null {
+  return lastAlt.get(v.uid) ?? v.trail[v.trail.length - 1]?.[2] ?? null
+}
+
+/** Metres above mean sea level a vehicle is drawn at: its report; with none now, the last one
+ *  it reported; with none ever, the sea surface (0). A vehicle is never left off the map for
+ *  want of an altitude: its label says when this is not a report (vehicleLayers.ts heightLabel). */
+export function shownAlt(v: Pick<Vehicle, 'uid' | 'trail' | 'alt_msl'>): number {
+  return v.alt_msl ?? lastKnownAlt(v) ?? 0
+}
 
 /** Smoothing on or off (MapView's toggle). Either way every glide is forgotten: the next
  *  report of each vehicle is drawn as it is. */
@@ -41,8 +62,6 @@ function contextOf(v: Vehicle): Context {
     domain: domainOf(v),
     speed,
     maxGapMs: staleMs(v),
-    // the antenna tracker's beam is drawn from its raw yaw: its arrow must not lag behind it
-    snapHeading: v.kind === 'tracker',
   }
 }
 
@@ -53,7 +72,7 @@ export function observeVehicles(vehicles: Vehicle[], now: number) {
   for (const v of vehicles) {
     live.add(v.uid)
     if (!v.position) continue
-    glider.observe(v.uid, { lon: v.position[0], lat: v.position[1], alt: v.alt_msl ?? 0, hdg: v.heading }, contextOf(v), now)
+    glider.observe(v.uid, { lon: v.position[0], lat: v.position[1], alt: shownAlt(v), hdg: v.heading }, contextOf(v), now)
   }
   glider.prune(live)
 }
@@ -104,7 +123,7 @@ export function drawnXYZ(v: Vehicle, target: number[] | undefined, altScale: num
   const p = poseOf(v.uid)
   out[0] = p ? p.lon : v.position![0]
   out[1] = p ? p.lat : v.position![1]
-  out[2] = altScale === 0 ? 0 : (p ? p.alt : (v.alt_msl ?? 0)) * altScale
+  out[2] = altScale === 0 ? 0 : (p ? p.alt : shownAlt(v)) * altScale
   return out
 }
 
@@ -122,11 +141,5 @@ export function drawnPositionOf(uid: number, fallback: LngLat | null): LngLat | 
 
 /** metres above mean sea level to draw */
 export function drawnAlt(v: Vehicle): number {
-  return poseOf(v.uid)?.alt ?? v.alt_msl ?? 0
-}
-
-/** degrees clockwise from north to draw (the shorter arc between reports) */
-export function drawnHeading(v: Vehicle): number | null {
-  const p = poseOf(v.uid)
-  return p ? p.hdg : v.heading
+  return poseOf(v.uid)?.alt ?? shownAlt(v)
 }

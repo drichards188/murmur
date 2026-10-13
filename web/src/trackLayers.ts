@@ -1,27 +1,44 @@
 import { IconLayer, LineLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import type { PickingInfo } from '@deck.gl/core'
+import { NO_SCREEN, type MapScreen } from './aloft'
 import { HEIGHT_EXAGGERATION } from './map3d'
-import type { ViewMode } from './MapView'
-import type { LostContact, Track } from './tracks'
+import type { LostContact, Track, TrackDomain } from './tracks'
 import { isTrackStale, kindShort, lostSidc, sidcFrameIcon, trackConfidence, trackFrameIcon, trackOpacity, trackPredicted, trackSigma } from './tracks'
+import type { LngLat } from './types'
 
-/** Tracks on the map (Phase C2), as deck.gl layers through MapView's `layers` prop, in 2D at
- *  ground level and in 3D at the estimated height. Like vehicleLayers.ts: one shared atlas
- *  icon per symbol code and stale state, labels as text layers, attributes rebuilt only
- *  when the data (or the clock tick that ages the tracks) changes. Per track:
+/** Tracks on the map (Phase C2), as deck.gl layers through MapView's `layers` prop, at their
+ *  estimated height or depth. Like vehicleLayers.ts: one shared atlas icon per symbol code and
+ *  stale state, labels as text layers, attributes rebuilt only when the data (or the clock
+ *  tick that ages the tracks) changes. Per track:
  *
  *   tracks-uncertainty  the 1-sigma ring, in metres, growing with age
+ *   tracks-stems        an air or subsurface track with a height or depth: sea level to it
+ *   tracks-columns      one without (unranged): a dashed column through its plan position
  *   tracks-leaders      stale: a line from the last fix to the dead-reckoned position
  *   tracks-selection    ring around the selected track
  *   tracks              the 2525 frame with the estimated affiliation (pickable: onClick)
- *   tracks-ids          T-0001 right of the frame, tracks-kinds the estimated kind left of it
+ *   tracks-ids          "T-0001 · 450 m" right of the frame (its height or depth, or "alt ?"),
+ *                       tracks-kinds the estimated kind left of it
+ *   tracks-aloft        "▲ T-0001 · 9500 m" at the foot of the stem of one drawn above the view
+ *                       (aloft.ts)
  *
  *  Symbols fade with age and with falling existence confidence.
+ *
+ *  The tracker never invents an altitude (DECISIONS.md, 10-07: a 2D radar or a passive sensor
+ *  gives none, and sonar no depth), so an aircraft we cannot range is never drawn as a point at
+ *  sea level, where it would read as a boat: it is a dashed column from the surface up, fading
+ *  as it rises (nothing bounds its height), its symbol on the column at a drawing height
+ *  (UNKNOWN_DRAW_M) and its label "alt ?". A subsurface track with no depth the same, down to
+ *  the seabed (the terrain hides the column below it), "depth ?". The drawing heights are not
+ *  estimates: they keep the symbol off the water and on screen. Its uncertainty ring lies on
+ *  the surface, the column's footprint. Surface tracks are at sea level; ground tracks too (no
+ *  terrain-referenced altitude yet).
  *
  *  Rules 16 (murmur-533), the lost contacts (tracks the tracker dropped that every engagement
  *  keep-out still counts):
  *
  *   lost-regions        where the keep-out counts each now, growing from its last fix (faint)
+ *   lost-columns        an air or subsurface one: its column (it carries no altitude)
  *   lost                its last-known symbol, anticipated and faded, at its last fix
  *   lost-labels         "T-0002 LOST 4 min": out of view since its last fix */
 
@@ -34,6 +51,8 @@ export interface TrackLayerInput {
   selected: string | null
   staleAfterS: number
   onClick?: (id: string) => void
+  /** what the camera cannot show at its height (aloft.ts) */
+  screen?: MapScreen
 }
 
 type RGBA = [number, number, number, number]
@@ -52,6 +71,14 @@ const ACCENT: RGBA = [255, 179, 71, 255]
 const FONT = 'IBM Plex Mono, ui-monospace, monospace'
 const FONT_SETTINGS = { sdf: true, fontSize: 48, buffer: 6 }
 
+/** Where a track with no height or depth is drawn on its column, metres from sea level (a
+ *  drawing height, not an estimate: see above). */
+export const UNKNOWN_DRAW_M: Partial<Record<TrackDomain, number>> = { air: 300, subsurface: -20 }
+/** How far its column is drawn from sea level, metres, in DASHES dashes fading away from the
+ *  surface: not a ceiling (an unranged aircraft can be anywhere above), where the drawing stops. */
+const COLUMN_END_M: Partial<Record<TrackDomain, number>> = { air: 3000, subsurface: -300 }
+const DASHES = 15
+
 function rgba(c: RGBA, alpha: number): RGBA {
   return [c[0], c[1], c[2], Math.round(c[3] * alpha)]
 }
@@ -61,9 +88,42 @@ function outOfView(s: number) {
   return s < 120 ? `${Math.round(s)} s` : `${Math.floor(s / 60)} min`
 }
 
-export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfterS, onClick }: TrackLayerInput, view: ViewMode) {
-  const is3d = view === '3d'
-  const z = (t: Track) => (is3d && t.alt_m != null ? t.alt_m * HEIGHT_EXAGGERATION : 0)
+/** Whether a track is drawn on a column: an air or subsurface one without an altitude. */
+function unranged(domain: TrackDomain, alt: number | null) {
+  return alt == null && UNKNOWN_DRAW_M[domain] != null
+}
+
+/** A track's height or depth for its map label, as the track's details give it (TracksPanel):
+ *  "450 m", "40 m depth"; "alt ?" or "depth ?" when it has none; nothing on the surface or the
+ *  ground. */
+export function trackHeightLabel(domain: TrackDomain, alt: number | null): string | null {
+  if (domain === 'air') return alt == null ? 'alt ?' : `${alt.toFixed(0)} m`
+  if (domain === 'subsurface') return alt == null ? 'depth ?' : `${Math.max(0, -alt).toFixed(0)} m depth`
+  return null
+}
+
+interface Dash {
+  from: XYZ
+  to: XYZ
+  color: RGBA
+}
+
+/** A column's dashes at `at`, from sea level to the domain's COLUMN_END_M, fading away from the
+ *  surface. */
+function columnDashes(at: LngLat, domain: TrackDomain, color: RGBA, alpha: number, out: Dash[]) {
+  const end = COLUMN_END_M[domain]
+  if (end == null) return
+  const step = (end * HEIGHT_EXAGGERATION) / DASHES
+  for (let k = 0; k < DASHES; k++) {
+    const fade = 1 - k / DASHES
+    out.push({ from: [at[0], at[1], k * step], to: [at[0], at[1], (k + 0.6) * step], color: rgba(color, alpha * (0.15 + 0.7 * fade)) })
+  }
+}
+
+export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfterS, onClick, screen = NO_SCREEN }: TrackLayerInput) {
+  /** the symbol's height, rendered metres: its altitude, else its column's drawing height */
+  const symZ = (domain: TrackDomain, alt: number | null) => (alt ?? UNKNOWN_DRAW_M[domain] ?? 0) * HEIGHT_EXAGGERATION
+  const z = (t: Track) => symZ(t.domain, t.alt_m)
   const at = (t: Track): XYZ => {
     const [lon, lat] = trackPredicted(t, nowMs)
     return [lon, lat, z(t)]
@@ -86,6 +146,34 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
   type LostRegion = { aff: Track['affiliation']; center: [number, number]; radius_m: number }
   const lostRegions: LostRegion[] = lost.flatMap((l) => l.regions.map((r) => ({ aff: l.affiliation, center: r.center, radius_m: r.radius_m })))
   const lostIcon = (l: LostContact) => sidcFrameIcon(lostSidc(l))
+  const lostAt = (l: LostContact): XYZ => [l.position[0], l.position[1], symZ(l.domain, null)]
+  // columns and stems, rebuilt each tick (the tracks move along their velocity)
+  const columns: Dash[] = []
+  const stems: Dash[] = []
+  for (const t of tracks) {
+    const p = trackPredicted(t, nowMs)
+    if (unranged(t.domain, t.alt_m)) columnDashes(p, t.domain, RING[t.affiliation], trackOpacity(t, nowMs), columns)
+    else if (t.alt_m != null && (t.domain === 'air' || t.domain === 'subsurface'))
+      stems.push({ from: [p[0], p[1], 0], to: [p[0], p[1], z(t)], color: rgba(RING[t.affiliation], 0.6 * trackOpacity(t, nowMs)) })
+  }
+  // drawn above the view: labelled at the foot of their stem
+  const aloft = tracks.filter((t) => {
+    const [lon, lat] = trackPredicted(t, nowMs)
+    return screen.aloft(lon, lat, z(t))
+  })
+  const lostColumns: Dash[] = []
+  for (const l of lost) if (unranged(l.domain, null)) columnDashes(l.position, l.domain, RING[l.affiliation], 0.45, lostColumns)
+  // a column, a stem: lines in the scene (the terrain and the seabed hide what is behind or below them)
+  const lines = (id: string, data: Dash[], width: number) =>
+    new LineLayer<Dash>({
+      id,
+      data,
+      getSourcePosition: (d) => d.from,
+      getTargetPosition: (d) => d.to,
+      getColor: (d) => d.color,
+      getWidth: width,
+      widthUnits: 'pixels',
+    })
   return [
     new ScatterplotLayer<LostRegion>({
       id: 'lost-regions',
@@ -101,11 +189,12 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
       lineWidthUnits: 'pixels',
       parameters: onTop,
     }),
+    lines('lost-columns', lostColumns, 1.5),
     new IconLayer<LostContact>({
       id: 'lost',
       data: lost,
       billboard: true,
-      getPosition: (l) => [l.position[0], l.position[1], 0],
+      getPosition: lostAt,
       getIcon: lostIcon,
       getSize: (l) => lostIcon(l).size,
       sizeUnits: 'pixels',
@@ -115,8 +204,11 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
     new TextLayer<LostContact>({
       id: 'lost-labels',
       data: lost,
-      getPosition: (l) => [l.position[0], l.position[1], 0],
-      getText: (l) => `${l.id} LOST ${outOfView(l.out_of_view_s)}`,
+      getPosition: lostAt,
+      getText: (l) => {
+        const h = trackHeightLabel(l.domain, null)
+        return `${l.id} LOST ${outOfView(l.out_of_view_s)}${h ? ` · ${h}` : ''}`
+      },
       getSize: 10,
       getColor: rgba(TEXT, 0.6),
       getTextAnchor: 'start',
@@ -132,7 +224,11 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
     new ScatterplotLayer<Track>({
       id: 'tracks-uncertainty',
       data: tracks,
-      getPosition: at,
+      // on the surface for a track on a column (its footprint), else around the symbol
+      getPosition: (t) => {
+        const [lon, lat] = trackPredicted(t, nowMs)
+        return [lon, lat, unranged(t.domain, t.alt_m) ? 0 : z(t)]
+      },
       getRadius: (t) => trackSigma(t, nowMs),
       radiusUnits: 'meters',
       radiusMinPixels: 6,
@@ -145,6 +241,8 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
       updateTriggers: { ...triggers, getLineWidth: selected },
       parameters: onTop,
     }),
+    lines('tracks-stems', stems, 1.5),
+    lines('tracks-columns', columns, 2),
     new LineLayer<Track>({
       id: 'tracks-leaders',
       data: tracks.filter((t) => stale(t) && t.velocity_mps),
@@ -190,7 +288,10 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
       data: tracks,
       pickable: true,
       getPosition: at,
-      getText: (t) => t.id,
+      getText: (t) => {
+        const h = trackHeightLabel(t.domain, t.alt_m)
+        return h ? `${t.id} · ${h}` : t.id
+      },
       getSize: 11,
       getColor: tint,
       getTextAnchor: 'start',
@@ -200,6 +301,31 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
       fontWeight: 600,
       outlineWidth: 3,
       outlineColor: OUTLINE,
+      fontSettings: FONT_SETTINGS,
+      characterSet: 'auto',
+      onClick: pick,
+      updateTriggers: triggers,
+      parameters: onTop,
+    }),
+    new TextLayer<Track>({
+      id: 'tracks-aloft',
+      data: aloft,
+      pickable: true,
+      getPosition: (t) => {
+        const [lon, lat] = trackPredicted(t, nowMs)
+        return [lon, lat, 0]
+      },
+      getText: (t) => `▲ ${t.id} · ${trackHeightLabel(t.domain, t.alt_m)}`,
+      getSize: 11,
+      getColor: tint,
+      getTextAnchor: 'middle',
+      getAlignmentBaseline: 'bottom',
+      getPixelOffset: [0, -8],
+      fontFamily: FONT,
+      fontWeight: 600,
+      background: true,
+      getBackgroundColor: [16, 22, 29, 210],
+      backgroundPadding: [5, 3, 5, 3],
       fontSettings: FONT_SETTINGS,
       characterSet: 'auto',
       onClick: pick,

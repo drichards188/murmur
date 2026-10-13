@@ -107,28 +107,3 @@ export function frameIcon(v: Vehicle, stale: boolean): FrameIcon {
   frames.set(sidc, icon)
   return icon
 }
-
-/** CSS px from the symbol centre to the arrow tip, about milsymbol's direction arrow at size 28 */
-const ARROW_LEN = 34
-
-function arrowSvg(w: number, h: number, s: number) {
-  const d = `M${w / 2} ${h} V${3 * s} M${w / 2 - 4 * s} ${8 * s} L${w / 2} ${3 * s} L${w / 2 + 4 * s} ${8 * s}`
-  return (
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">` +
-    `<g stroke-linecap="round" stroke-linejoin="round" fill="none">` +
-    `<path d="${d}" stroke="#0b0f14" stroke-width="${4.5 * s}"/><path d="${d}" stroke="#d7dde4" stroke-width="${1.6 * s}"/>` +
-    `</g></svg>`
-  )
-}
-
-/** Heading arrow: a shaft from the symbol centre (the icon's anchor, bottom middle) to an
- *  arrowhead. Rotated per vehicle (getAngle), so one icon serves every heading. */
-export const ARROW_ICON = {
-  id: 'heading-arrow',
-  url: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(arrowSvg(12 * ICON_SCALE, ARROW_LEN * ICON_SCALE, ICON_SCALE))}`,
-  width: 12 * ICON_SCALE,
-  height: ARROW_LEN * ICON_SCALE,
-  anchorX: 6 * ICON_SCALE,
-  anchorY: ARROW_LEN * ICON_SCALE,
-  size: ARROW_LEN,
-}

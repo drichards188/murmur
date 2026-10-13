@@ -1,5 +1,4 @@
 import { PathLayer, PolygonLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
-import type { ViewMode } from './MapView'
 import { ellipseRing, fmtDist, fmtRel, KEEP_OUT_KIND_LABEL, type EngagePreview, type KeepOutExplanation } from './engage'
 import { circle, distanceM } from './geo'
 import type { LngLat } from './types'
@@ -7,8 +6,8 @@ import type { LngLat } from './types'
 /** Engagement previews on the map (Phase E), through MapView's `layers` prop: for each
  *  engagement in play (and the nomination form's draft) the platform's path forward, the
  *  track's projected motion, the predicted effect point with its radius, the keep-out circle
- *  and the track's uncertainty ellipse at the effect time. At ground level in both views,
- *  drawn over terrain. */
+ *  and the track's uncertainty ellipse at the effect time. At sea level, drawn over the
+ *  terrain and the water (never hidden by either). */
 
 export interface EngageDrawing {
   key: string
@@ -40,7 +39,7 @@ interface Path {
   width: number
 }
 
-export function buildEngageLayers(drawings: EngageDrawing[], nowMs: number, _view: ViewMode) {
+export function buildEngageLayers(drawings: EngageDrawing[], nowMs: number) {
   const onTop = { depthCompare: 'always' as const, depthWriteEnabled: false }
   const dim = (d: EngageDrawing) => (d.selected || d.phase === 'draft' ? 1 : d.phase === 'ended' ? 0.35 : 0.65)
   const paths: Path[] = []

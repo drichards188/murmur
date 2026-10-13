@@ -178,11 +178,16 @@ export default function App() {
     [revealTrackId],
   )
   const trackLayers = useCallback<MapLayers>(
-    (view) =>
-      buildTrackLayers(
-        { tracks: tracks?.tracks ?? [], lost: tracks?.lost ?? [], nowMs: now(), selected: selectedTrack, staleAfterS: tracks?.stale_after_s ?? 10, onClick: onTrackClick },
-        view,
-      ),
+    (screen) =>
+      buildTrackLayers({
+        tracks: tracks?.tracks ?? [],
+        lost: tracks?.lost ?? [],
+        nowMs: now(),
+        selected: selectedTrack,
+        staleAfterS: tracks?.stale_after_s ?? 10,
+        onClick: onTrackClick,
+        screen,
+      }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [tracks, selectedTrack, trackTick, onTrackClick],
   )
@@ -221,7 +226,7 @@ export default function App() {
   const silent = useMemo(() => (state ? estimated(state.vehicles) : []), [state])
   const estimateTick = silent.length ? Math.floor(now() / 500) : 0
   const estimateLayers = useCallback<MapLayers>(
-    (view) => (silent.length ? buildEstimateLayers({ vehicles: silent, nowMs: now(), focus: detailsUid }, view) : []),
+    () => (silent.length ? buildEstimateLayers({ vehicles: silent, nowMs: now(), focus: detailsUid }) : []),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [silent, estimateTick, detailsUid],
   )
@@ -237,15 +242,12 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engageKeepOuts])
   const mapLayers = useCallback<MapLayers>(
-    (view) => [
-      ...estimateLayers(view),
-      ...trackLayers(view),
+    (screen) => [
+      ...estimateLayers(screen),
+      ...trackLayers(screen),
       ...keepOutLayers,
-      ...(engageDrawings.length ? buildEngageLayers(engageDrawings, now(), view) : []),
-      ...buildOrderLayers(
-        { queued: queuedIntents ?? [], intents: allIntents ?? [], taskings: state?.taskings ?? [], vehicles: state?.vehicles ?? [], nowMs: now() },
-        view,
-      ),
+      ...(engageDrawings.length ? buildEngageLayers(engageDrawings, now()) : []),
+      ...buildOrderLayers({ queued: queuedIntents ?? [], intents: allIntents ?? [], taskings: state?.taskings ?? [], vehicles: state?.vehicles ?? [], nowMs: now() }),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [estimateLayers, trackLayers, keepOutLayers, engageDrawings, queuedIntents, allIntents, state?.taskings, state?.vehicles, orderTick],

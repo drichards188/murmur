@@ -1,14 +1,15 @@
 /// <reference types="geojson" />
 import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import { Layer, type LayersList, type PickingInfo } from '@deck.gl/core'
+import { Layer, type LayersList, type PickingInfo, type Viewport } from '@deck.gl/core'
 import { MapboxOverlay } from '@deck.gl/mapbox'
 import { useEffect, useRef, useState } from 'react'
-import { circle, distanceM } from './geo'
+import { distanceM } from './geo'
+import { mapScreen, NO_SCREEN, type MapScreen } from './aloft'
 import { BRIDGE_FILTER, liftBridges, type LiftedBridge } from './bridges'
 import { build3dGlide, build3dStatic, drawnHeight, DEM_TILES, HEIGHT_EXAGGERATION } from './map3d'
 import { declutter } from './declutter'
-import { advanceDrawn, drawnAlt, drawnPosition, drawnPositionOf, drawnTick, glidingCount, isGliding, observeVehicles, resetDrawn, setSmoothing, snapAllDrawn } from './drawn'
+import { advanceDrawn, drawnAlt, drawnPosition, drawnPositionOf, drawnTick, glidingCount, isGliding, noteAltitudes, observeVehicles, resetDrawn, setSmoothing, snapAllDrawn } from './drawn'
 import { GLIDE_LAYER_IDS } from './orderLayers'
 import { buildTrailLayers } from './trailLayers'
 import { perfWatchDeck } from './perf'
@@ -17,10 +18,11 @@ import { drapedWater } from './sea'
 import { vehiclesGeneration } from './useBridge'
 import type { SpaceOverlay } from './space'
 import { EMPTY_OVERLAY } from './space'
-import { linkStubs, spaceFeatures, spaceLinkLayers } from './spaceLayers'
+import { spaceFeatures, spaceLinkLayers } from './spaceLayers'
+import { buildPreviewLayers, buildSurfaceLayers, type SurfaceScale } from './surfaceLayers'
 import type { Cluster, Clusters, LngLat, Tasking, Vehicle } from './types'
 import { callsign } from './types'
-import { buildVehicleLayers, VEHICLE_PICK_LAYERS } from './vehicleLayers'
+import { buildVehicleLayers, heightLabel, VEHICLE_PICK_LAYERS } from './vehicleLayers'
 import { buildClusterLayers, CLUSTER_PICK_LAYERS } from './clusterLayers'
 import { type Bounds, type MapViewport, visibleVehicles } from './viewport'
 
@@ -58,95 +60,22 @@ interface Props {
   /** counts per tile from the bridge while the view holds more vehicles than it sends in
    *  full: drawn as cluster markers instead of the lite vehicles' symbols (clusterLayers.ts) */
   clusters?: Clusters | null
-  /** Extension point for more deck.gl layers (tracks, contacts, ...): called with the current
-   *  view whenever MapView rebuilds its layers, and again whenever this function changes, so
-   *  pass a memoised callback whose identity changes when its data does. Its layers draw above
-   *  the map and the 3D scene and below the vehicles; they survive a WebGL context loss (the
-   *  overlay is rebuilt from this callback). Hide 3D-only layers with `visible: view === '3d'`.
-   *  Pickable layers get deck.gl's own onClick/onHover. */
+  /** Extension point for more deck.gl layers (tracks, contacts, ...): called whenever MapView
+   *  rebuilds its layers, and again whenever this function changes, so pass a memoised
+   *  callback whose identity changes when its data does. Its layers draw above the map and the
+   *  3D scene and below the vehicles; they survive a WebGL context loss (the overlay is rebuilt
+   *  from this callback). Pickable layers get deck.gl's own onClick/onHover. `screen` says what
+   *  the camera cannot show at its height (aloft.ts), as of the rebuild. */
   layers?: MapLayers
 }
 
-export type ViewMode = '2d' | '3d'
-export type MapLayers = (view: ViewMode) => LayersList
-
-/** pending-approval previews from the inbox: dashed violet, the one being read in bold */
-function addPreviewLayers(m: maplibregl.Map) {
-  m.addSource('inbox-preview', { type: 'geojson', data: empty })
-  const w = ['case', ['get', 'sel'], 3, 1.5] as maplibregl.ExpressionSpecification
-  m.addLayer({
-    id: 'inbox-transit',
-    type: 'line',
-    source: 'inbox-preview',
-    filter: ['all', ['==', ['geometry-type'], 'LineString'], ['==', ['get', 'part'], 'transit']],
-    paint: { 'line-color': '#c49bff', 'line-width': w, 'line-dasharray': [0.5, 2], 'line-opacity': 0.8 },
-  })
-  m.addLayer({
-    id: 'inbox-path',
-    type: 'line',
-    source: 'inbox-preview',
-    filter: ['all', ['==', ['geometry-type'], 'LineString'], ['==', ['get', 'part'], 'path']],
-    paint: { 'line-color': '#c49bff', 'line-width': w, 'line-dasharray': [3, 2], 'line-opacity': 0.95 },
-  })
-  m.addLayer({
-    id: 'inbox-points',
-    type: 'circle',
-    source: 'inbox-preview',
-    filter: ['==', ['geometry-type'], 'Point'],
-    paint: { 'circle-radius': ['case', ['get', 'sel'], 7, 4], 'circle-color': '#c49bff', 'circle-stroke-color': '#0b0f14', 'circle-stroke-width': 1.5 },
-  })
-}
+export type MapLayers = (screen: MapScreen) => LayersList
 
 const STYLE = 'https://tiles.openfreemap.org/styles/dark'
 const START: LngLat = [-117.2, 32.703]
 
 type FC = GeoJSON.FeatureCollection
 const empty: FC = { type: 'FeatureCollection', features: [] }
-
-function taskingFeatures(taskings: Tasking[]): FC {
-  const features: GeoJSON.Feature[] = []
-  for (const t of taskings) {
-    const live = t.ops.filter((o) => o.state !== 'superseded' && o.state !== 'failed' && o.state !== 'requeued')
-    if (live.length === 0) continue
-    // ordered vs confirmed: dashed until a vehicle's own telemetry shows it executing (an
-    // ACK says it accepted the order, not that it flies it)
-    const confirmed = live.some((o) => ['active', 'done'].includes(o.state))
-    const props = { kind: t.task, confirmed, label: `${t.task.toUpperCase()} #${t.id}` }
-    if (t.task === 'orbit' && t.params.center) {
-      features.push({
-        type: 'Feature',
-        properties: props,
-        geometry: { type: 'LineString', coordinates: circle(t.params.center, t.params.radius ?? 200) },
-      })
-      features.push({ type: 'Feature', properties: props, geometry: { type: 'Point', coordinates: t.params.center } })
-    } else if (t.task === 'patrol' && t.params.route) {
-      const r = t.params.route
-      features.push({
-        type: 'Feature',
-        properties: props,
-        geometry: { type: 'LineString', coordinates: [...r, r[0]] },
-      })
-      r.forEach((p) => features.push({ type: 'Feature', properties: props, geometry: { type: 'Point', coordinates: p } }))
-    }
-  }
-  return { type: 'FeatureCollection', features }
-}
-
-function draftFeatures(d: Draft): FC {
-  const features: GeoJSON.Feature[] = []
-  if (d.mode === 'orbit' && d.center) {
-    features.push({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: circle(d.center, d.radius) } })
-    features.push({ type: 'Feature', properties: { n: '' }, geometry: { type: 'Point', coordinates: d.center } })
-  }
-  if (d.mode === 'patrol' && d.route.length) {
-    const coords = d.route.length > 2 ? [...d.route, d.route[0]] : d.route
-    if (coords.length > 1) features.push({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: coords } })
-    d.route.forEach((p, i) =>
-      features.push({ type: 'Feature', properties: { n: String(i + 1) }, geometry: { type: 'Point', coordinates: p } }),
-    )
-  }
-  return { type: 'FeatureCollection', features }
-}
 
 // antenna trackers: a beam along the yaw the tracker reports (where it is actually pointing)
 function beamFeatures(vehicles: Vehicle[]): FC {
@@ -162,28 +91,24 @@ function beamFeatures(vehicles: Vehicle[]): FC {
   return { type: 'FeatureCollection', features }
 }
 
-function trailFeatures(vehicles: Vehicle[]): FC {
-  return {
-    type: 'FeatureCollection',
-    features: vehicles
-      .filter((v) => v.trail.length > 1)
-      .map((v) => ({
-        type: 'Feature' as const,
-        properties: { kind: v.kind },
-        geometry: {
-          type: 'LineString' as const,
-          coordinates: [...v.trail.map(([lon, lat]) => [lon, lat]), ...(v.position ? [v.position] : [])],
-        },
-      })),
-  }
-}
-
 const MAX_PITCH = 85
+/** The camera an operator starts with: tilted enough that heights and depths read (the stems,
+ *  the columns), not so far that the far side of the bay flattens into the horizon; north up,
+ *  so the map reads as a chart. Top view (the button, or T) looks straight down from there. */
+const INITIAL_PITCH = 50
+const INITIAL_BEARING = 0
+/** a pitch at or below this is the top view (the button offers to tilt back) */
+const TOP_PITCH = 1
 // middle-drag orbit sensitivity, degrees per pixel
 const ORBIT_YAW = 0.35
 const ORBIT_TILT = 0.25
-const VIEW_KEY = 'murmur.view'
 const SMOOTH_KEY = 'murmur.smooth'
+// the 2D or 3D choice of the console before 3D was its only map (10-12): no longer read
+try {
+  localStorage.removeItem('murmur.view')
+} catch {
+  // storage unavailable: nothing to remove
+}
 /** Above this many vehicles drawn the glide animation runs at 30 Hz instead of 60. The cost of a
  *  glide frame scales with the vehicles drawn, not those gliding: every vehicle's position is
  *  recomputed in each attached layer whenever anything glides. */
@@ -208,87 +133,51 @@ function savedSmooth(): boolean {
   }
 }
 
-function savedView(): ViewMode {
-  try {
-    return localStorage.getItem(VIEW_KEY) === '3d' ? '3d' : '2d'
-  } catch {
-    return '2d'
-  }
-}
-
-/** 2D: flat map, vehicles drawn flat by deck.gl. 3D: terrain + seabed, tilted camera, vehicles drawn by
- *  deck.gl at their true altitude/depth. Tasking and drafting work the same in both. */
-// original filters of the style's road layers, so 2D can restore them
-const roadFilters = new WeakMap<maplibregl.Map, Map<string, maplibregl.FilterSpecification | undefined>>()
-
-/** In 3D, draped bridges would dive to the seabed: drop them from the style's road layers
- *  (they're redrawn at deck height by deck.gl). 2D restores the style's own filters. */
-function setDrapedBridges(m: maplibregl.Map, show: boolean) {
-  let saved = roadFilters.get(m)
-  if (!saved) {
-    saved = new Map()
-    for (const l of m.getStyle().layers) {
-      if ('source-layer' in l && l['source-layer'] === 'transportation') saved.set(l.id, l.filter)
-    }
-    roadFilters.set(m, saved)
-  }
-  for (const [id, filter] of saved) {
+/** The map is 3D (terrain and seabed, a tilted camera, vehicles and tracks at their height or
+ *  depth): the operator's only map since 10-12 (DECISIONS.md). Draped bridges would dive to
+ *  the seabed, so the style's road layers drop them (they're redrawn at deck height by deck.gl,
+ *  bridges.ts); bridge-probe keeps their features indexed for that. */
+function hideDrapedBridges(m: maplibregl.Map) {
+  for (const l of m.getStyle().layers) {
+    if (l.id === 'bridge-probe' || !('source-layer' in l) || l['source-layer'] !== 'transportation') continue
     // the style's road filters are expression filters, so they combine with ours under 'all'
-    const combined = filter ? (['all', filter, BRIDGE_FILTER] as unknown as maplibregl.FilterSpecification) : BRIDGE_FILTER
-    m.setFilter(id, show ? filter : combined)
+    m.setFilter(l.id, l.filter ? (['all', l.filter, BRIDGE_FILTER] as unknown as maplibregl.FilterSpecification) : BRIDGE_FILTER)
   }
 }
 
-// the style's own water colour per water fill layer, so 2D can restore it
-const waterFills = new WeakMap<maplibregl.Map, { id: string; color: unknown }[]>()
 let warnedWater = false
 
-/** In 3D the water is tinted by the style's own water fill, draped on the terrain (sea.ts
+/** The water is tinted by the style's own water fill, draped on the terrain (sea.ts
  *  drapedWater): the sea, lakes, ponds and rivers alike, at whatever height the terrain has
- *  them. 2D restores the style's own colour. Changing it relays out the water's tiles, as the
- *  road filters do. */
-function setDrapedWater(m: maplibregl.Map, is3d: boolean) {
-  let saved = waterFills.get(m)
-  if (!saved) {
-    saved = m
-      .getStyle()
-      .layers.filter((l) => l.type === 'fill' && 'source-layer' in l && l['source-layer'] === 'water')
-      .map((l) => ({ id: l.id, color: m.getPaintProperty(l.id, 'fill-color') }))
-    waterFills.set(m, saved)
-  }
-  for (const { id, color } of saved) {
-    const draped = is3d ? drapedWater(color) : null
-    if (is3d && !draped && !warnedWater) {
+ *  them. Changing it relays out the water's tiles, as the road filters do. */
+function tintDrapedWater(m: maplibregl.Map) {
+  const fills = m.getStyle().layers.filter((l) => l.type === 'fill' && 'source-layer' in l && l['source-layer'] === 'water')
+  for (const { id } of fills) {
+    const draped = drapedWater(m.getPaintProperty(id, 'fill-color'))
+    if (draped) m.setPaintProperty(id, 'fill-color', draped.color as maplibregl.ExpressionSpecification)
+    else if (!warnedWater) {
       warnedWater = true
-      console.warn(`[murmur] the style's water colour (${id}) is not a plain colour: the water is left untinted in 3D (sea.ts drapedWater)`)
+      console.warn(`[murmur] the style's water colour (${id}) is not a plain colour: the water is left untinted (sea.ts drapedWater)`)
     }
-    m.setPaintProperty(id, 'fill-color', (draped?.color ?? color) as maplibregl.ExpressionSpecification)
   }
 }
 
-/** `animate`: tilt the camera into the view (a toggle); false keeps it (restoring a lost context) */
-function applyView(m: maplibregl.Map, view: ViewMode, animate = true) {
-  setDrapedBridges(m, view === '2d')
-  setDrapedWater(m, view === '3d')
-  if (view === '3d') {
-    m.setTerrain({ source: 'dem', exaggeration: HEIGHT_EXAGGERATION })
-    m.setLayoutProperty('hillshade', 'visibility', 'visible')
-    m.setLayoutProperty('trails', 'visibility', 'none')
-    if (animate) m.easeTo({ pitch: 62, bearing: m.getBearing() || -25, duration: 900 })
-  } else {
-    m.setTerrain(null)
-    m.setLayoutProperty('hillshade', 'visibility', 'none')
-    m.setLayoutProperty('trails', 'visibility', 'visible')
-    if (animate) m.easeTo({ pitch: 0, bearing: 0, duration: 700 })
-  }
+/** Terrain and seabed, the bridges and the water, on a freshly loaded style. */
+function apply3d(m: maplibregl.Map) {
+  hideDrapedBridges(m)
+  tintDrapedWater(m)
+  m.setTerrain({ source: 'dem', exaggeration: HEIGHT_EXAGGERATION })
 }
 
-const SPACE_SOURCES = ['space-area', 'space-for', 'space-scenes', 'space-sel', 'space-links', 'space-box', 'space-tasked'] as const
+const SPACE_SOURCES = ['space-area', 'space-for', 'space-scenes'] as const
 
-/** Space overlays, drawn subtly under the vehicles: the earthbound picture stays primary. */
+/** Space overlays, drawn subtly under the vehicles, draped on the terrain as context: the
+ *  earthbound picture stays primary. The selected scene, the drawn box and the tasked
+ *  collections lie on the surface instead (surfaceLayers.ts). */
 function addSpaceLayers(m: maplibregl.Map) {
   for (const id of SPACE_SOURCES) m.addSource(id, { type: 'geojson', data: empty })
-  const before = m.getLayer('trails') ? 'trails' : undefined
+  // under the tracker beams
+  const before = m.getLayer('beams') ? 'beams' : undefined
   m.addLayer({ id: 'space-for', type: 'fill', source: 'space-for', paint: { 'fill-color': ['get', 'color'], 'fill-opacity': 0.035 } }, before)
   m.addLayer(
     { id: 'space-for-edge', type: 'line', source: 'space-for', paint: { 'line-color': ['get', 'color'], 'line-opacity': 0.35, 'line-width': 1, 'line-dasharray': [3, 3] } },
@@ -302,10 +191,6 @@ function addSpaceLayers(m: maplibregl.Map) {
     { id: 'space-area', type: 'line', source: 'space-area', paint: { 'line-color': '#f4f1de', 'line-opacity': 0.35, 'line-width': 1, 'line-dasharray': [6, 4] } },
     before,
   )
-  m.addLayer({ id: 'space-sel-fill', type: 'fill', source: 'space-sel', paint: { 'fill-color': '#ffb347', 'fill-opacity': 0.12 } }, before)
-  m.addLayer({ id: 'space-sel', type: 'line', source: 'space-sel', paint: { 'line-color': '#ffb347', 'line-width': 2 } }, before)
-  m.addLayer({ id: 'space-box', type: 'line', source: 'space-box', paint: { 'line-color': '#f4f1de', 'line-width': 1.5, 'line-dasharray': [2, 2] } })
-  m.addLayer({ id: 'space-links', type: 'line', source: 'space-links', filter: ['==', ['geometry-type'], 'LineString'], paint: { 'line-color': '#c49bff', 'line-width': 1, 'line-opacity': 0.7, 'line-dasharray': [2, 2] } })
   m.addLayer({
     id: 'space-labels',
     type: 'symbol',
@@ -314,57 +199,68 @@ function addSpaceLayers(m: maplibregl.Map) {
     layout: { 'text-field': ['get', 'label'], 'text-size': 10, 'text-font': ['Noto Sans Regular'], 'text-anchor': 'top-left', 'text-offset': [0.3, 0.2] },
     paint: { 'text-color': ['get', 'color'], 'text-opacity': 0.8, 'text-halo-color': '#0b0f14', 'text-halo-width': 1 },
   })
-  m.addLayer({
-    id: 'space-sel-label',
-    type: 'symbol',
-    source: 'space-sel',
-    filter: ['==', ['geometry-type'], 'Point'],
-    layout: { 'text-field': ['get', 'label'], 'text-size': 11, 'text-font': ['Noto Sans Bold'], 'text-anchor': 'bottom-left', 'text-allow-overlap': true },
-    paint: { 'text-color': '#ffb347', 'text-halo-color': '#0b0f14', 'text-halo-width': 1.2 },
-  })
-  m.addLayer({
-    id: 'space-link-labels',
-    type: 'symbol',
-    source: 'space-links',
-    filter: ['==', ['geometry-type'], 'Point'],
-    layout: { 'text-field': ['get', 'label'], 'text-size': 10, 'text-font': ['Noto Sans Regular'], 'text-anchor': 'left', 'text-offset': [0.4, 0] },
-    paint: { 'text-color': '#c49bff', 'text-opacity': 0.85, 'text-halo-color': '#0b0f14', 'text-halo-width': 1 },
-  })
-  // tasked satellite collections still running: their scene outline
-  m.addLayer({ id: 'space-tasked', type: 'line', source: 'space-tasked', filter: ['==', ['geometry-type'], 'LineString'], paint: { 'line-color': '#c49bff', 'line-width': 2, 'line-dasharray': [4, 2] } })
-  m.addLayer({
-    id: 'space-tasked-label',
-    type: 'symbol',
-    source: 'space-tasked',
-    filter: ['==', ['geometry-type'], 'Point'],
-    layout: { 'text-field': ['get', 'label'], 'text-size': 11, 'text-font': ['Noto Sans Bold'], 'text-anchor': 'bottom-left', 'text-allow-overlap': true },
-    paint: { 'text-color': '#c49bff', 'text-halo-color': '#0b0f14', 'text-halo-width': 1.2 },
-  })
 }
 
-function setSpaceData(m: maplibregl.Map, space: SpaceOverlay, view: ViewMode) {
+/** the space overlays' sources (the SATCOM links are deck.gl rays, spaceLinkLayers) */
+function setSpaceData(m: maplibregl.Map, space: SpaceOverlay) {
   const f = spaceFeatures(space)
-  for (const id of SPACE_SOURCES) (m.getSource(id) as maplibregl.GeoJSONSource | undefined)?.setData(id === 'space-links' ? (view === '3d' ? empty : linkStubs(space.links)) : f[id])
+  for (const id of SPACE_SOURCES) (m.getSource(id) as maplibregl.GeoJSONSource | undefined)?.setData(f[id])
 }
 
 /** width of the vehicle details card (.vdetails) plus its margin */
 const FOLLOW_PAD_LEFT = 350
 
+/** Where a drawing on the surface goes (surfaceLayers.ts): the surface's height at a point,
+ *  rendered metres (the water's 0 over the sea, the terrain's over land, as the terrain is drawn
+ *  at this zoom), and metres per pixel at the view's centre. */
+function surfaceScale(m: maplibregl.Map): SurfaceScale {
+  const mPerPx = (40_075_016.686 * Math.cos((m.getCenter().lat * Math.PI) / 180)) / (512 * 2 ** m.getZoom())
+  const terrain = m.terrain
+  if (!terrain) return { surfaceZ: () => 0, mPerPx }
+  // the elevation tiles' zoom the terrain is drawn from here (its source stops at 15)
+  const zoom = Math.min(15, Math.max(0, Math.floor(m.getZoom())))
+  return { surfaceZ: ([lng, lat]) => Math.max(0, terrain.getElevationForLngLatZoom(new maplibregl.LngLat(lng, lat), zoom)), mPerPx }
+}
+
+/** Where a click on the map lands: on the ground over land, on the water's surface over the sea.
+ *  MapLibre gives the terrain under the pointer, which under water is the seabed (the elevation
+ *  tiles include it), up to a few hundred metres past the boat or the spot the pointer is on in
+ *  a tilted view; the water's surface is at sea level, where the boats and every drawing on the
+ *  water are. */
+function surfacePoint(m: maplibregl.Map, e: maplibregl.MapMouseEvent): LngLat {
+  const ground = e.lngLat
+  if ((m.queryTerrainElevation(ground) ?? 0) >= 0) return [ground.lng, ground.lat]
+  // The ray from the camera through the pointer crosses sea level before it meets the seabed.
+  // MapLibre's flat unprojection (MercatorTransform, the v5 the console is pinned to) works in
+  // a frame whose 0 is the camera centre's elevation (rendered metres, the exaggeration
+  // applied), so sea level is at minus that elevation there.
+  const tr = m.transform as unknown as { elevation: number; screenPointToMercatorCoordinateAtZ?: (p: maplibregl.Point, z: number) => maplibregl.MercatorCoordinate }
+  const water = tr.screenPointToMercatorCoordinateAtZ?.(e.point, -tr.elevation)?.toLngLat()
+  return water ? [water.lng, water.lat] : [ground.lng, ground.lat]
+}
+
 export function MapView({ vehicles, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null }: Props) {
-  const [view, setView] = useState<ViewMode>(savedView)
-  const viewRef = useRef(view)
+  // the top view (pitch 0, looking straight down) and the pitch to tilt back to from it
+  const [top, setTop] = useState(false)
+  const tiltBack = useRef(INITIAL_PITCH)
   // display smoothing of our vehicles' motion (glide.ts, drawn.ts): the choice is remembered
   const [smooth, setSmooth] = useState(savedSmooth)
   const smoothRef = useRef(smooth)
   const frameId = useRef(0)
   // the layers that do not move with a glide, kept between animation frames
-  const staticLayers = useRef<{ three: ReturnType<typeof build3dStatic>; space: LayersList; ext: LayersList; clusters: LayersList } | null>(null)
+  const staticLayers = useRef<{ three: ReturnType<typeof build3dStatic>; surface: LayersList; preview: LayersList; space: LayersList; ext: LayersList; clusters: LayersList } | null>(null)
   const lastGlideFrame = useRef(0)
   const lastGeneration = useRef<number | undefined>(undefined)
   const previewGliding = useRef(false)
   const overlay = useRef<MapboxOverlay | null>(null)
   const bridges = useRef<LiftedBridge[]>([])
-  const latest = useRef({ vehicles, selected, bare: new Set<number>(), clusters })
+  const latest = useRef({ vehicles, selected, bare: new Set<number>(), aloft: new Map<number, number>(), clusters })
+  // the surface drawings' inputs (surfaceLayers.ts), and what they were last built from
+  const taskingsRef = useRef(taskings)
+  const draftRef = useRef(draft)
+  const surfaceMemo = useRef<{ key: unknown[]; layers: LayersList } | null>(null)
+  // bumped when new terrain arrives (the surface drawings follow its heights)
+  const terrainGen = useRef(0)
   // the camera's bounds and zoom, as last reported (what the drawn set is cut to)
   const viewport = useRef<MapViewport | null>(null)
   const spaceRef = useRef(space)
@@ -402,30 +298,65 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     viewCb.current = onView
   }, [onMapClick, onToggle, onDeselect, onView])
 
-  /** everything deck.gl draws: the 3D scene (hidden in 2D), SATCOM links, extension layers
-   *  (the `layers` prop), then the vehicles on top. `frame`: an animation frame of a glide, which
-   *  rebuilds only what is attached to a vehicle and reuses the rest as it was. */
-  const deckLayers = (is3d: boolean, frame = false): LayersList => {
-    const { vehicles: vs, selected: sel, bare, clusters: cl } = latest.current
+  /** what this camera cannot show at its height (aloft.ts): from deck.gl's viewport, what it
+   *  draws with */
+  const screenNow = (): MapScreen => {
+    const m = map.current
+    const deck = (overlay.current as unknown as { _deck?: { isInitialized?: boolean; getViewports(): Viewport[] } } | null)?._deck
+    if (!m || !deck?.isInitialized || !ready.current) return NO_SCREEN
+    let vp: Viewport | undefined
+    try {
+      vp = deck.getViewports()[0]
+    } catch {
+      return NO_SCREEN // no view yet
+    }
+    if (!vp) return NO_SCREEN
+    const c = m.getCanvas()
+    return mapScreen(vp, c.clientWidth, c.clientHeight)
+  }
+
+  /** the taskings, the draft and the space segment's drawings on the surface: rebuilt when one of
+   *  them changes, the terrain under them does, or the zoom (their dashes are in pixels) */
+  const surfaceLayers = (m: maplibregl.Map | null): LayersList => {
+    if (!m) return []
+    const sp = spaceRef.current
+    const key = [taskingsRef.current, draftRef.current, sp.box, sp.scene, sp.tasked, terrainGen.current, Math.round(m.getZoom() * 4)]
+    const memo = surfaceMemo.current
+    if (memo && memo.key.every((k, i) => k === key[i])) return memo.layers
+    const layers = buildSurfaceLayers({ taskings: taskingsRef.current, draft: draftRef.current, box: sp.box, scene: sp.scene, tasked: sp.tasked ?? [] }, surfaceScale(m))
+    surfaceMemo.current = { key, layers }
+    return layers
+  }
+
+  /** everything deck.gl draws: the 3D scene, the drawings on the surface, SATCOM links,
+   *  extension layers (the `layers` prop), then the vehicles on top. `frame`: an animation frame
+   *  of a glide, which rebuilds only what is attached to a vehicle and reuses the rest as it was
+   *  (the inbox preview too while one of its vehicles glides: `previewToo`). */
+  const deckLayers = (frame = false, previewToo = false): LayersList => {
+    const { vehicles: vs, selected: sel, bare, aloft, clusters: cl } = latest.current
+    const m = ready.current ? map.current : null
     if (!frame || !staticLayers.current) {
       staticLayers.current = {
-        three: build3dStatic(vs, is3d, bridges.current),
-        space: spaceLinkLayers(spaceRef.current.links, is3d),
-        ext: layersRef.current?.(is3d ? '3d' : '2d') ?? [],
+        three: build3dStatic(vs, bridges.current),
+        surface: surfaceLayers(m),
+        preview: m ? buildPreviewLayers(previewData(), surfaceScale(m)) : [],
+        space: spaceLinkLayers(spaceRef.current.links),
+        ext: layersRef.current?.(screenNow()) ?? [],
         clusters: buildClusterLayers(cl),
       }
-    }
-    const { three, space, ext, clusters: clusterLayers } = staticLayers.current
+    } else if (previewToo && m) staticLayers.current.preview = buildPreviewLayers(previewData(), surfaceScale(m))
+    const { three, surface, preview: previewLayers, space, ext, clusters: clusterLayers } = staticLayers.current
     const tick = drawnTick()
-    // 2D trails draw where the MapLibre trails layer sat (under the taskings), not on top of everything
-    const trailsBefore = !is3d && ready.current && map.current?.getLayer('taskings-intent') ? 'taskings-intent' : undefined
-    const glide = build3dGlide(vs, is3d)
-    const trails = smoothRef.current ? buildTrailLayers(vs, is3d, trailsBefore) : { under: [], over: [] }
+    const glide = build3dGlide(vs)
+    const trails = smoothRef.current ? buildTrailLayers(vs) : { under: [], over: [] }
     const layers: LayersList = [
       // seen through the water (map3d.ts): the trails and stems of what is under it
       ...three.under,
       ...trails.under,
       glide.stemsUnder,
+      // on the water's surface (or the ground): taskings, the draft, the inbox preview
+      ...surface,
+      ...previewLayers,
       // what is above or on the water: bridge decks, the other trails and stems, sea-level shadows
       ...three.decks,
       ...three.over,
@@ -436,11 +367,11 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       // the extension layers that sit at a vehicle follow its glide: re-trigger just those
       ...(frame ? ext.map((l) => (l instanceof Layer && GLIDE_LAYER_IDS.includes(l.id) ? l.clone({ updateTriggers: { ...l.props.updateTriggers, getPosition: tick } } as never) : l)) : ext),
       ...clusterLayers,
-      ...buildVehicleLayers({ vehicles: vs, selected: sel, bare, is3d }),
+      ...buildVehicleLayers({ vehicles: vs, selected: sel, bare, aloft }),
     ]
     return layers
   }
-  const pushLayers = () => overlay.current?.setProps({ layers: deckLayers(viewRef.current === '3d') })
+  const pushLayers = () => overlay.current?.setProps({ layers: deckLayers() })
 
   /** the inbox preview's transit lines start at a vehicle: that end follows the drawn position */
   const previewData = (): FC => {
@@ -477,21 +408,17 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     lastGlideFrame.current = t
     const t0 = performance.now()
     const n = advanceDrawn(t)
-    overlay.current.setProps({ layers: deckLayers(viewRef.current === '3d', true) })
+    // the preview's transit lines start at a vehicle: rebuilt while one of them glides (and once more as it ends)
+    const uids = previewRef.current.features.flatMap((f) => (f.properties?.uid == null ? [] : [f.properties.uid as number]))
+    const previewNow = uids.some(isGliding)
+    overlay.current.setProps({ layers: deckLayers(true, previewNow || previewGliding.current) })
+    previewGliding.current = previewNow
     if (import.meta.env.DEV) {
       const w = window as unknown as { murmurPerf: Record<string, number[]> }
       w.murmurPerf ??= {}
       const a = (w.murmurPerf.glideFrame ??= [])
       a.push(performance.now() - t0)
       if (a.length > 600) a.splice(0, a.length - 600)
-    }
-    // the preview is a MapLibre source: rewritten only while one of its vehicles glides (and once more as it ends)
-    const m = map.current
-    if (m && ready.current) {
-      const uids = previewRef.current.features.flatMap((f) => (f.properties?.uid == null ? [] : [f.properties.uid as number]))
-      const now = uids.some(isGliding)
-      if (now || previewGliding.current) (m.getSource('inbox-preview') as maplibregl.GeoJSONSource | undefined)?.setData(previewData())
-      previewGliding.current = now
     }
     if (n > 0) frameId.current = requestAnimationFrame(glideFrame)
   }
@@ -506,8 +433,8 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       style: STYLE,
       center: cam?.center ?? START,
       zoom: cam?.zoom ?? 12.6,
-      bearing: cam?.bearing ?? 0,
-      pitch: cam?.pitch ?? 0,
+      bearing: cam?.bearing ?? INITIAL_BEARING,
+      pitch: cam?.pitch ?? INITIAL_PITCH,
       attributionControl: { compact: true },
       maxPitch: MAX_PITCH,
     })
@@ -520,7 +447,8 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       const tip = tooltip.current
       if (!tip) return
       if (v && latest.current.bare.has(v.uid)) {
-        tip.textContent = `${callsign(v)}${v.identity?.short ? ` · ${v.identity.short}` : ''}`
+        const h = heightLabel(v)
+        tip.textContent = `${callsign(v)}${v.identity?.short ? ` · ${v.identity.short}` : ''}${h ? ` · ${h}` : ''}`
         tip.style.transform = `translate(${info.x}px, ${info.y - 14}px) translate(-50%, -100%)`
         tip.hidden = false
       } else tip.hidden = true
@@ -533,6 +461,17 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       perfWatchDeck(() => (deck as unknown as { _deck?: { stats: never } })._deck?.stats ?? null)
     }
     attachDeck()
+    // deck.gl takes the camera from the map on each move, and draws with the camera of the frame;
+    // but MapLibre raises or lowers the camera with the terrain under the view's centre as tiles
+    // arrive, without a move, and deck.gl's picking (a click on a vehicle or a track, the hover)
+    // then reads a camera off by that much: tens of pixels over the deep channel, so a click on a
+    // vehicle missed it. A move whenever that elevation changes gives deck.gl the camera again.
+    let deckElevation = m.transform.elevation
+    m.on('render', () => {
+      if (m.transform.elevation === deckElevation) return
+      deckElevation = m.transform.elevation
+      m.fire('move')
+    })
     m.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'bottom-right')
     m.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left')
 
@@ -565,7 +504,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     // camera, same sources (pushed again on load), a new deck.gl overlay and layers.
     m.on('webglcontextrestored', () => setMapGen((n) => n + 1))
 
-    /** the vehicle under a screen point, in either view */
+    /** the vehicle under a screen point */
     const pickVehicle = (p: maplibregl.Point) => {
       const deck = overlay.current
       if (!deck || !ready.current) return null
@@ -594,7 +533,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       // a cluster marker: zoom in on it (two levels: its tile is then four markers or symbols)
       const c = pickCluster(e.point)
       if (c) return m.flyTo({ center: c.c, zoom: m.getZoom() + 2, duration: 700 })
-      clickRef.current([e.lngLat.lng, e.lngLat.lat])
+      clickRef.current(surfacePoint(m, e))
     })
     // Right click deselects: a vehicle under the pointer, else everything. A right drag rotates
     // the map instead, so only a press that barely moved counts as a click.
@@ -611,7 +550,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       deselectRef.current?.(v ? v.uid : null)
     })
     // Middle-drag orbits the camera like a 3D modelling tool: left/right spins (bearing),
-    // up/down tilts (pitch). In 2D only the spin applies, so the map stays flat.
+    // up/down tilts (pitch).
     const surface = m.getCanvasContainer()
     let orbit: { x: number; y: number; bearing: number; pitch: number } | null = null
     const onDown = (e: MouseEvent) => {
@@ -624,8 +563,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     const onMove = (e: MouseEvent) => {
       if (!orbit || lostRef.current) return
       const bearing = orbit.bearing + (e.clientX - orbit.x) * ORBIT_YAW
-      const pitch =
-        viewRef.current === '3d' ? Math.max(0, Math.min(MAX_PITCH, orbit.pitch - (e.clientY - orbit.y) * ORBIT_TILT)) : 0
+      const pitch = Math.max(0, Math.min(MAX_PITCH, orbit.pitch - (e.clientY - orbit.y) * ORBIT_TILT))
       m.jumpTo({ bearing, pitch })
     }
     const onUp = (e: MouseEvent) => {
@@ -651,7 +589,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       // MapLibre renders better with separate sources for 3D terrain and hillshade
       m.addSource('dem-shade', { type: 'raster-dem', tiles: [DEM_TILES], encoding: 'terrarium', tileSize: 256, maxzoom: 15 })
       // invisible layer that keeps bridge features indexed: MapLibre only lets you query
-      // features some layer uses, and in 3D the road layers drop bridges (see setDrapedBridges)
+      // features some layer uses, and the road layers drop bridges (see hideDrapedBridges)
       m.addLayer({
         id: 'bridge-probe',
         type: 'line',
@@ -666,12 +604,10 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
           id: 'hillshade',
           type: 'hillshade',
           source: 'dem-shade',
-          layout: { visibility: 'none' },
           paint: { 'hillshade-exaggeration': 0.35, 'hillshade-shadow-color': '#000000' },
         },
         firstSymbol,
       )
-      m.addSource('trails', { type: 'geojson', data: empty })
       m.addSource('beams', { type: 'geojson', data: empty })
       m.addLayer({
         id: 'beams',
@@ -679,81 +615,25 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
         source: 'beams',
         paint: { 'line-color': '#f4f1de', 'line-width': 1.5, 'line-opacity': 0.55, 'line-dasharray': [4, 3] },
       })
-      m.addSource('taskings', { type: 'geojson', data: empty })
-      m.addSource('draft', { type: 'geojson', data: empty })
-      m.addLayer({
-        id: 'trails',
-        type: 'line',
-        source: 'trails',
-        paint: {
-          'line-color': ['match', ['get', 'kind'], ['plane', 'vtol', 'copter', 'blimp'], '#7fb8ff', '#6fe0c4'],
-          'line-opacity': 0.45,
-          'line-width': 1.5,
-        },
-      })
-      const color = ['match', ['get', 'kind'], 'orbit', '#ffb347', 'patrol', '#c49bff', '#d7dde4'] as maplibregl.ExpressionSpecification
-      m.addLayer({
-        id: 'taskings-intent',
-        type: 'line',
-        source: 'taskings',
-        filter: ['all', ['==', ['geometry-type'], 'LineString'], ['!', ['get', 'confirmed']]],
-        paint: { 'line-color': color, 'line-width': 2, 'line-dasharray': [2, 2], 'line-opacity': 0.9 },
-      })
-      m.addLayer({
-        id: 'taskings-confirmed',
-        type: 'line',
-        source: 'taskings',
-        filter: ['all', ['==', ['geometry-type'], 'LineString'], ['get', 'confirmed']],
-        paint: { 'line-color': color, 'line-width': 2, 'line-opacity': 0.75 },
-      })
-      m.addLayer({
-        id: 'taskings-points',
-        type: 'circle',
-        source: 'taskings',
-        filter: ['==', ['geometry-type'], 'Point'],
-        paint: { 'circle-radius': 4, 'circle-color': color, 'circle-stroke-color': '#0b0f14', 'circle-stroke-width': 1.5 },
-      })
-      m.addLayer({
-        id: 'draft-line',
-        type: 'line',
-        source: 'draft',
-        filter: ['==', ['geometry-type'], 'LineString'],
-        paint: { 'line-color': '#f4f1de', 'line-width': 2, 'line-dasharray': [1, 1.5] },
-      })
-      m.addLayer({
-        id: 'draft-points',
-        type: 'circle',
-        source: 'draft',
-        filter: ['==', ['geometry-type'], 'Point'],
-        paint: { 'circle-radius': 9, 'circle-color': '#f4f1de', 'circle-stroke-color': '#0b0f14', 'circle-stroke-width': 2 },
-      })
-      m.addLayer({
-        id: 'draft-labels',
-        type: 'symbol',
-        source: 'draft',
-        filter: ['==', ['geometry-type'], 'Point'],
-        layout: { 'text-field': ['get', 'n'], 'text-size': 11, 'text-font': ['Noto Sans Bold'], 'text-allow-overlap': true },
-        paint: { 'text-color': '#0b0f14' },
-      })
-      addPreviewLayers(m)
-      ;(m.getSource('inbox-preview') as maplibregl.GeoJSONSource).setData(previewRef.current)
       addSpaceLayers(m)
       ready.current = true
-      if (viewRef.current === '3d') applyView(m, '3d')
-      setSpaceData(m, spaceRef.current, viewRef.current)
+      apply3d(m)
+      setSpaceData(m, spaceRef.current)
       pushLayers()
       reportView()
       setStyleGen((n) => n + 1)
     })
-    // re-estimate bridge decks when the 3D camera stops or new map/terrain tiles arrive.
+    // re-estimate bridge decks when the camera stops or new map/terrain tiles arrive.
     // (Not 'idle': live vehicle updates repaint the map several times a second, so it never is.)
     let bridgeTimer: number | undefined
     const refreshBridges = () => {
       window.clearTimeout(bridgeTimer)
       bridgeTimer = window.setTimeout(() => {
-        if (!ready.current || viewRef.current !== '3d' || !m.getTerrain()) return
+        if (!ready.current || !m.getTerrain()) return
         const t0 = performance.now()
         bridges.current = liftBridges(m)
+        // and the surface drawings follow the terrain that came
+        terrainGen.current++
         if (import.meta.env.DEV) {
           const w = window as unknown as { murmurPerf: Record<string, number[]> }
           w.murmurPerf ??= {}
@@ -849,8 +729,8 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       cancelAnimationFrame(frameId.current)
       frameId.current = 0
     }
-    if (ready.current) (map.current?.getSource('inbox-preview') as maplibregl.GeoJSONSource | undefined)?.setData(previewData())
-    // previewData reads refs only
+    pushLayers()
+    // pushLayers reads refs only
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [smooth])
 
@@ -886,6 +766,8 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     if (newGeneration) {
       if (import.meta.env.DEV) console.debug('[murmur] new data generation', gen, ': vehicles drawn as reported')
     }
+    // a vehicle that stops reporting an altitude is drawn at the last one it reported
+    noteAltitudes(vehicles)
     if (smoothRef.current) {
       // report changes start glides; a new generation or a hidden tab: draw as reported
       const now = performance.now()
@@ -894,14 +776,22 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     }
     const clustered = !!clusters?.cells.length
     const drawn = visibleVehicles(vehicles, viewport.current, clustered)
+    // where each is seen: at its height, or at its foot when that is above the view (aloft.ts)
+    const screen = screenNow()
+    const surface = ready.current ? surfaceScale(m).surfaceZ : () => 0
+    const aloft = new Map<number, number>()
+    const seen = drawn.flatMap((v) => {
+      if (!v.position) return []
+      const [lon, lat] = v.position
+      const z = drawnHeight(v)
+      if (screen.aloft(lon, lat, z)) aloft.set(v.uid, surface(v.position))
+      const p = screen.at(lon, lat, aloft.has(v.uid) ? 0 : z)
+      return [p ? { uid: v.uid, x: p[0], y: p[1] } : { uid: v.uid, ...m.project(v.position) }]
+    })
     // murmur-02g: where symbols bunch up (planes on a runway), only one keeps its labels;
     // the rest show the bare symbol and their callsign on hover
-    const bare = declutter(
-      drawn.flatMap((v) => (v.position ? [{ uid: v.uid, ...m.project(v.position) }] : [])),
-      selected,
-      m.getZoom(),
-    )
-    latest.current = { vehicles: drawn, selected, bare, clusters: clustered ? clusters : null }
+    const bare = declutter(seen, selected, m.getZoom())
+    latest.current = { vehicles: drawn, selected, bare, aloft, clusters: clustered ? clusters : null }
     const t1 = performance.now()
     pushLayers()
     wakeGlide()
@@ -914,12 +804,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       if (a.length > 200) a.splice(0, a.length - 200)
     }
 
-    if (ready.current) {
-      // the 2D trails layer is hidden in 3D: skip rebuilding it there
-      // (with smoothing on, trailLayers.ts draws them, ending at the drawn position)
-      if (view === '2d') (m.getSource('trails') as maplibregl.GeoJSONSource).setData(smooth ? empty : trailFeatures(drawn))
-      ;(m.getSource('beams') as maplibregl.GeoJSONSource).setData(beamFeatures(drawn))
-    }
+    if (ready.current) (m.getSource('beams') as maplibregl.GeoJSONSource).setData(beamFeatures(drawn))
 
     const pts = vehicles.flatMap((v) => (v.position ? [v.position] : []))
     if (pts.length && !lostRef.current) {
@@ -927,22 +812,22 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
       if (!fitAt.current || distanceM(fitAt.current, c) > 50_000) {
         const b = new maplibregl.LngLatBounds(pts[0], pts[0])
         pts.forEach((p) => b.extend(p))
-        m.fitBounds(b, { padding: 120, maxZoom: 13.5, duration: fitAt.current ? 1500 : 0 })
+        m.fitBounds(b, { padding: 120, maxZoom: 13.5, duration: fitAt.current ? 1500 : 0, bearing: m.getBearing() })
         fitAt.current = c
       }
     }
     // pushLayers reads refs; moved re-runs this after a move, styleGen after a (re)load
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vehicles, selected, view, moved, styleGen, clusters, smooth])
+  }, [vehicles, selected, moved, styleGen, clusters, smooth])
 
   useEffect(() => {
     spaceRef.current = space
     const m = map.current
     if (!m || !ready.current) return
-    setSpaceData(m, space, view)
+    setSpaceData(m, space)
     pushLayers()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [space, view, styleGen])
+  }, [space, styleGen])
 
   // extension layers changed (see the `layers` prop)
   useEffect(() => {
@@ -956,8 +841,8 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
   useEffect(() => {
     vehiclesRef.current = vehicles
   }, [vehicles])
-  // Aim at the vehicle itself, not the ground under it: in 3D aircraft are drawn at altitude x
-  // the exaggeration, so the camera centre gets that elevation. Only jumpTo honours a centre
+  // Aim at the vehicle itself, not the ground under it: aircraft are drawn at altitude x the
+  // exaggeration, so the camera centre gets that elevation. Only jumpTo honours a centre
   // elevation (easeTo/flyTo drop it), so following is a per-frame glide built on jumpTo, which
   // also smooths the 4 Hz position updates.
   const following = useRef<{ uid: number; zoom: number | null } | null>(null)
@@ -998,7 +883,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
         // vehicle and reduced-motion users get the slow approach as before
         const k = 1 - Math.exp(-dt / (smooth && isGliding(uid) && !reducedNow ? 0.08 : 0.25))
         const c = m.getCenter()
-        const elev = viewRef.current === '3d' ? (smooth ? drawnAlt(v) * HEIGHT_EXAGGERATION : drawnHeight(v)) : 0
+        const elev = smooth ? drawnAlt(v) * HEIGHT_EXAGGERATION : drawnHeight(v)
         m.setCenterClampedToGround(false)
         const z = m.getZoom()
         const zoom = f.zoom == null ? z : z + (f.zoom - z) * k
@@ -1042,42 +927,61 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     }
   }, [follow])
 
+  // Top view: straight down (pitch 0), for plan judgments (distances, keep-outs), and back to
+  // the pitch it left. Only the camera turns: vehicles and tracks stay at their height. The
+  // button follows the pitch however it got there (a drag, the compass, the keyboard).
   useEffect(() => {
-    viewRef.current = view
-    try {
-      localStorage.setItem(VIEW_KEY, view)
-    } catch {
-      // private mode / blocked storage: the toggle still works for this session
+    const m = map.current
+    if (!m) return
+    const onPitch = () => setTop(m.getPitch() <= TOP_PITCH)
+    onPitch()
+    m.on('pitchend', onPitch)
+    return () => {
+      m.off('pitchend', onPitch)
     }
-    if (map.current && ready.current) {
-      applyView(map.current, view)
-      map.current.fire('moveend')
+  }, [mapGen])
+  const toggleTop = () => {
+    const m = map.current
+    if (!m || lostRef.current) return
+    if (m.getPitch() > TOP_PITCH) {
+      tiltBack.current = m.getPitch()
+      m.easeTo({ pitch: 0, duration: reducedNow ? 0 : 600 })
+    } else m.easeTo({ pitch: tiltBack.current > TOP_PITCH ? tiltBack.current : INITIAL_PITCH, duration: reducedNow ? 0 : 600 })
+  }
+  const toggleTopRef = useRef(toggleTop)
+  toggleTopRef.current = toggleTop
+  // T toggles it, except while typing (a form's field) or with a modifier (the browser's own keys)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 't' && e.key !== 'T') return
+      if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return
+      const t = e.target as HTMLElement | null
+      if (t && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName))) return
+      toggleTopRef.current()
     }
-  }, [view])
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
+  // the drawings on the surface (surfaceLayers.ts): the taskings, the inbox preview, the draft
   useEffect(() => {
-    if (ready.current) (map.current?.getSource('taskings') as maplibregl.GeoJSONSource | undefined)?.setData(taskingFeatures(taskings))
-    // styleGen: push again after a (re)load
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [taskings, styleGen])
-
-  useEffect(() => {
+    taskingsRef.current = taskings
     previewRef.current = preview
-    if (ready.current) (map.current?.getSource('inbox-preview') as maplibregl.GeoJSONSource | undefined)?.setData(previewData())
-    // previewData reads refs only
+    draftRef.current = draft
+    pushLayers()
+    // pushLayers reads refs only; styleGen: push again after a (re)load
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [preview, styleGen])
+  }, [taskings, preview, draft, styleGen])
 
   useEffect(() => {
     const m = map.current
     if (!fit || !m || fit.points.length === 0 || lostRef.current) return
     const bounds = new maplibregl.LngLatBounds(fit.points[0], fit.points[0])
     for (const p of fit.points) bounds.extend(p)
-    m.fitBounds(bounds, { padding: { top: 70, bottom: 70, left: 70, right: fit.padRight + 20 }, maxZoom: 13, duration: 1000 })
+    m.fitBounds(bounds, { padding: { top: 70, bottom: 70, left: 70, right: fit.padRight + 20 }, maxZoom: 13, duration: 1000, bearing: m.getBearing() })
   }, [fit])
 
   useEffect(() => {
-    if (ready.current) (map.current?.getSource('draft') as maplibregl.GeoJSONSource | undefined)?.setData(draftFeatures(draft))
     cursor.current = draft.mode ? 'crosshair' : ''
     if (map.current) map.current.getCanvas().style.cursor = cursor.current
   }, [draft, styleGen])
@@ -1095,11 +999,17 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
         </div>
       )}
       <div className="viewtoggle" role="group" aria-label="Map view">
-        <button className={view === '2d' ? 'on' : ''} onClick={() => setView('2d')}>
-          2D
-        </button>
-        <button className={view === '3d' ? 'on' : ''} onClick={() => setView('3d')}>
-          3D
+        <button
+          className={`topbtn${top ? ' on' : ''}`}
+          aria-pressed={top}
+          title={
+            top
+              ? 'Tilt the camera back (T). Heights and depths read from the side.'
+              : 'Top view (T): look straight down, for plan judgments such as the distance to a keep-out. Only the camera turns: vehicles and tracks stay at their height.'
+          }
+          onClick={toggleTop}
+        >
+          top view
         </button>
         <button
           className={`smoothbtn${smooth ? ' on' : ''}`}
@@ -1109,7 +1019,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
         >
           smooth
         </button>
-        {view === '3d' && <span className="viewnote">heights ×{HEIGHT_EXAGGERATION} · middle-drag: spin + tilt</span>}
+        <span className="viewnote">heights ×{HEIGHT_EXAGGERATION} · middle-drag: spin + tilt · T: top view</span>
       </div>
     </>
   )

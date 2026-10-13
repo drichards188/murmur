@@ -4,7 +4,6 @@ import { fmtDuration } from './decisions'
 import { leadingAt } from './estimate'
 import { drawnPositionOf, drawnTick } from './drawn'
 import { circle, distanceM } from './geo'
-import type { ViewMode } from './MapView'
 import type { LngLat, Tasking, Vehicle } from './types'
 import { isStale } from './types'
 
@@ -23,7 +22,7 @@ import { isStale } from './types'
  *  - an order whose start went out before the link was lost, unconfirmed, and no longer in
  *    force (voided, queued, in the inbox): "MAY BE RUNNING", its tasking line kept.
  *
- *  Drawn at ground level in both views, over terrain. */
+ *  Drawn at sea level, over the terrain and the water (never hidden by either). */
 
 type RGBA = [number, number, number, number]
 const QUEUED: RGBA = [242, 193, 78, 235]
@@ -147,7 +146,7 @@ export interface OrderInput {
   nowMs: number
 }
 
-export function buildOrderLayers(input: OrderInput, _view: ViewMode) {
+export function buildOrderLayers(input: OrderInput) {
   const onTop = { depthCompare: 'always' as const, depthWriteEnabled: false }
   const dashed: Dash[] = []
   const labels: Label[] = []

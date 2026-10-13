@@ -1,7 +1,9 @@
 /// <reference types="geojson" />
-// Theater-map drawing for the space segment: the scenario area, imaging passes in progress
-// (field of regard, faint, and the scene they would take), a highlighted scene, a drawn box,
-// and link lines from SATCOM vehicles toward their best satellite.
+// Theater-map drawing for the space segment: the scenario area and imaging passes in progress
+// (field of regard, faint, and the scene they would take), draped on the terrain by MapLibre as
+// context, and link rays from SATCOM vehicles toward their best satellite. The highlighted scene,
+// the drawn box and the tasked collections are the operator's and lie on the surface
+// (surfaceLayers.ts).
 import { LineLayer, TextLayer } from '@deck.gl/layers'
 import { HEIGHT_EXAGGERATION } from './map3d'
 import type { LinkNow, SpaceOverlay } from './space'
@@ -34,25 +36,15 @@ export function spaceFeatures(s: SpaceOverlay): Record<string, FC> {
       })
     }
   }
-  const sel: GeoJSON.Feature[] = s.scene
-    ? [poly(s.scene.ring), { type: 'Feature', properties: { label: s.scene.label }, geometry: { type: 'Point', coordinates: topLeft(s.scene.ring) } }]
-    : []
   return {
     'space-area': fc(s.area ? [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: closed(s.area.ring) } }] : []),
     'space-for': fc(fields),
     'space-scenes': fc(scenes),
-    'space-sel': fc(sel),
-    'space-box': fc(s.box ? [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: closed(s.box) } }] : []),
-    'space-tasked': fc(
-      (s.tasked ?? []).flatMap((t): GeoJSON.Feature[] => [
-        { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: closed(t.ring) } },
-        { type: 'Feature', properties: { label: t.label }, geometry: { type: 'Point', coordinates: topLeft(t.ring) } },
-      ]),
-    ),
   }
 }
 
-function topLeft(ring: LngLat[]): LngLat {
+/** Where a ring's label goes: its top-left corner, about. */
+export function topLeft(ring: LngLat[]): LngLat {
   return ring.reduce((best, p) => (p[1] - p[0] * 0.2 > best[1] - best[0] * 0.2 ? p : best), ring[0])
 }
 
@@ -63,29 +55,10 @@ function offset(from: LngLat, bearingDeg: number, m: number): LngLat {
   return [from[0] + (m * Math.sin(a)) / (111_320 * Math.cos((lat * Math.PI) / 180)), from[1] + (m * Math.cos(a)) / 111_320]
 }
 
-/** Horizontal reach of a link stub: long when the satellite is low (it is far away along
- *  that bearing), short when it is nearly overhead. */
-function stubLength(elDeg: number) {
-  return 900 + 4500 * Math.cos((elDeg * Math.PI) / 180)
-}
-
 function linkLabel(l: LinkNow) {
   const b = l.best!
   const lat = b.latency_ms != null ? ` ${Math.round(b.latency_ms)} ms` : ''
   return `${b.satellite} ${Math.round(b.elevation_deg)}°${lat}`
-}
-
-/** 2D: a dashed stub from each SATCOM vehicle toward its best satellite's azimuth. */
-export function linkStubs(links: LinkNow[]): FC {
-  const features: GeoJSON.Feature[] = []
-  for (const l of links) {
-    if (!l.best) continue
-    const p: LngLat = [l.position[0], l.position[1]]
-    const end = offset(p, l.best.azimuth_deg, stubLength(l.best.elevation_deg))
-    features.push({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [p, end] } })
-    features.push({ type: 'Feature', properties: { label: linkLabel(l) }, geometry: { type: 'Point', coordinates: end } })
-  }
-  return fc(features)
 }
 
 type XYZ = [number, number, number]
@@ -96,8 +69,9 @@ interface Ray {
   color: [number, number, number, number]
 }
 
-/** 3D: the same links as rays along the true look direction (azimuth and elevation). */
-export function spaceLinkLayers(links: LinkNow[], visible: boolean) {
+/** SATCOM links as rays from each vehicle along the true look direction to its best satellite
+ *  (azimuth and elevation). */
+export function spaceLinkLayers(links: LinkNow[]) {
   const rays: Ray[] = links
     .filter((l) => l.best)
     .map((l) => {
@@ -119,7 +93,6 @@ export function spaceLinkLayers(links: LinkNow[], visible: boolean) {
   return [
     new LineLayer<Ray>({
       id: 'satcom-rays',
-      visible,
       data: rays,
       getSourcePosition: (r) => r.from,
       getTargetPosition: (r) => r.to,
@@ -129,7 +102,6 @@ export function spaceLinkLayers(links: LinkNow[], visible: boolean) {
     }),
     new TextLayer<Ray>({
       id: 'satcom-ray-labels',
-      visible,
       data: rays,
       getPosition: (r) => r.to,
       getText: (r) => r.label,
