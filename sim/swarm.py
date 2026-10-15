@@ -114,7 +114,7 @@ def plan(fleet, platforms):
                 "space_class": spec.get("space_class"),
                 "space_class_alt": spec.get("space_class_alt"),
                 "armed": bool(spec.get("armed", False)),  # carries an effect (policy), not MAVLink arm state
-                "cruise_alt_m": spec.get("alt_m"),
+                "cruise_alt_m": unit.get("cruise_alt_m", spec.get("alt_m")),
                 "min_turn_radius_m": (round(spec["cruise_mps"] / math.radians(spec["turn_dps"]))
                                       if spec.get("turn_dps") and spec.get("cruise_mps") else None),
             })

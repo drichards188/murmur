@@ -16,9 +16,10 @@
 #   out of view counts anywhere it could reach in every keep-out, rules 16), and its circle is
 #   2 km clear of the engagement zone (a circling friendly counts anywhere on its disc).
 # - BLADE 1, a loitering munition (Switchblade 600-class: EO/IR 3 km, 28 m/s, spent by its own
-#   effect), loiters at 80 m over the water off Crissy Field, in line of sight of the ground
+#   effect), loiters at 120 m over the water off Crissy Field, in line of sight of the ground
 #   station there, about 2.7 km (some 95 s) from the holding area. A fixed wing can take only the
-#   fallback `return` (ArduPlane has no lost-link action that holds where it is).
+#   fallback `return` (ArduPlane has no lost-link action that holds where it is). The 80 m
+#   default mission altitude grazed terrain west of the station and broke the radio near release.
 #
 # No armed surface drone: with no order a stand-in boat drifts on the tide (2 m/s on the ebb
 # through the Gate in this scenario's hour), and an armed one may not be given a script's order.
@@ -41,4 +42,5 @@ spawn = [37.8100, -122.4500, 7600, 90] # over the bay east of the bridge, at its
 [[unit]]
 platform = "switchblade"               # armed loitering munition: EO/IR 3 km; 0.7 h
 sim = "standin"
-spawn = [37.8090, -122.4650, 80, 270]  # over the water off Crissy Field, airborne
+spawn = [37.8090, -122.4650, 120, 270]  # over the water off Crissy Field, airborne
+cruise_alt_m = 120                       # keep the engagement mission above the terrain shadow

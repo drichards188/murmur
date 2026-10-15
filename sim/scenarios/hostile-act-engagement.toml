@@ -137,8 +137,9 @@ kind = "fishing_vessel"
 motion = "drift"
 at = [-122.5200, 37.7850]
 
-# A sailing yacht tacking off Lands End, about 1.4 km south-southwest of the holding area at
-# its nearest: inside the picture every keep-out reads, and clear of an engagement there.
+# A sailing yacht tacking offshore of Lands End, about 4 km southwest of the holding area at
+# its nearest. The separation includes room for the engagement check's uncertain future reach
+# when the tracker has no velocity estimate; the yacht still appears in the common picture.
 [[contact]]
 id = "yacht-landsend"
 name = "Sailing yacht tacking off Lands End (no AIS)"
@@ -147,5 +148,5 @@ domain = "surface"
 kind = "sailboat"
 speed_mps = 3
 motion = "loiter"
-center = [-122.5060, 37.8000]
+center = [-122.5350, 37.7900]
 radius_m = 250

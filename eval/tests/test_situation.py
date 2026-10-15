@@ -1265,6 +1265,7 @@ def test_hostile_act_engagement_fits_the_chain():
     platforms = tomllib.loads((REPO / "sim" / "platforms.toml").read_text())
     armed = [c for c, v in planned.items() if platforms[v["platform"]].get("armed")]
     assert armed == ["BLADE 1"] and planned["BLADE 1"]["platform"] == "switchblade"
+    assert planned["BLADE 1"]["cruise_alt_m"] == 120, "the engagement mission must keep its radio above terrain"
     assert {o.vehicles["callsign"] for o in sit.orders} == {"HUNTER 1", "REAPER 1"}
     assert all(platforms[v["platform"]].get("endurance_h") for v in planned.values())
     # the contacts: one hostile without AIS that holds, and acts against one of ours
@@ -1302,12 +1303,15 @@ def test_hostile_act_engagement_fits_the_chain():
         assert haversine_m(*p, *hold) > 1500
     orbit = orders["bay-orbit"].params
     assert haversine_m(*orbit["center"], *hold) - orbit["radius_m"] > 1500
-    # the neutrals that stay near are clear of it by far more than a keep-out
+    # A neutral without a usable velocity estimate may reach anywhere at 25 m/s until
+    # the effect. Leave 90 s of that future reach plus the effect and keep-out discs;
+    # the yacht was once 1.4 km away and stopped a dispatched engagement at T+6:38.
+    uncertain_clearance = 25 * 90 + 2 * (radius + keep_out)
     for c in raw["contact"]:
         if c["motion"] == "loiter":
-            assert haversine_m(*c["center"], *hold) - c["radius_m"] > 3 * (radius + keep_out), c["id"]
+            assert haversine_m(*c["center"], *hold) - c["radius_m"] > uncertain_clearance, c["id"]
         if c["motion"] in ("drift", "station"):
-            assert haversine_m(*c["at"], *hold) > 3 * (radius + keep_out), c["id"]
+            assert haversine_m(*c["at"], *hold) > uncertain_clearance, c["id"]
     # the fallback: after the acts, only when no nomination stands, waiting for the checks
     assert step.params["vehicles"] == {"callsign": "BLADE 1"} and step.params["fallback"] == "return"
     assert step.params["unless_nominated"] is True and float(step.params["wait_s"]) > 0
