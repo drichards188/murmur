@@ -1,10 +1,12 @@
 /// <reference types="geojson" />
 import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
+import './impact.css'
 import { Layer, type LayersList, type PickingInfo, type Viewport } from '@deck.gl/core'
 import { MapboxOverlay } from '@deck.gl/mapbox'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { distanceM } from './geo'
+import { IMPACT_ANIMATION_MS, impactElement, type ImpactEvent } from './impact'
 import { mapScreen, NO_SCREEN, type MapScreen } from './aloft'
 import { BRIDGE_FILTER, liftBridges, type LiftedBridge } from './bridges'
 import { build3dGlide, build3dStatic, drawnHeight, DEM_TILES, HEIGHT_EXAGGERATION } from './map3d'
@@ -36,6 +38,8 @@ export interface Draft {
 interface Props {
   vehicles: Vehicle[]
   hiddenUids?: ReadonlySet<number>
+  impacts?: ImpactEvent[]
+  impactNowMs?: number
   taskings: Tasking[]
   selected: Set<number>
   draft: Draft
@@ -77,6 +81,7 @@ const START: LngLat = [-117.2, 32.703]
 
 type FC = GeoJSON.FeatureCollection
 const empty: FC = { type: 'FeatureCollection', features: [] }
+const noImpacts: ImpactEvent[] = []
 
 // antenna trackers: a beam along the yaw the tracker reports (where it is actually pointing)
 function beamFeatures(vehicles: Vehicle[]): FC {
@@ -240,7 +245,7 @@ function surfacePoint(m: maplibregl.Map, e: maplibregl.MapMouseEvent): LngLat {
   return water ? [water.lng, water.lat] : [ground.lng, ground.lat]
 }
 
-export function MapView({ vehicles: allVehicles, hiddenUids, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null }: Props) {
+export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null }: Props) {
   const vehicles = useMemo(() => hiddenUids?.size ? allVehicles.filter((v) => !hiddenUids.has(v.uid)) : allVehicles, [allVehicles, hiddenUids])
   // the top view (pitch 0, looking straight down) and the pitch to tilt back to from it
   const [top, setTop] = useState(false)
@@ -286,6 +291,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, taskings, selected,
   const container = useRef<HTMLDivElement>(null)
   const tooltip = useRef<HTMLDivElement>(null)
   const map = useRef<maplibregl.Map | null>(null)
+  const impactMarkers = useRef(new Map<string, maplibregl.Marker>())
   const ready = useRef(false)
   // centroid we last zoomed to; refit when the swarm shows up somewhere else (new --location)
   const fitAt = useRef<LngLat | null>(null)
@@ -429,6 +435,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, taskings, selected,
   }
 
   useEffect(() => {
+    const markers = impactMarkers.current
     const cam = camera.current
     const m = new maplibregl.Map({
       container: container.current!,
@@ -691,6 +698,8 @@ export function MapView({ vehicles: allVehicles, hiddenUids, taskings, selected,
     map.current = m
     return () => {
       ready.current = false
+      for (const marker of markers.values()) marker.remove()
+      markers.clear()
       overlay.current = null
       surface.removeEventListener('mousedown', onDown)
       surface.removeEventListener('auxclick', noAux)
@@ -715,6 +724,30 @@ export function MapView({ vehicles: allVehicles, hiddenUids, taskings, selected,
     // mapGen: rebuild after a WebGL context loss (see webglcontextrestored)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapGen])
+
+  // CSS runs the short flash and shockwave; MapLibre keeps its anchor on the effect point
+  // while the operator pans, tilts or zooms. Reconcile by release id so bridge ticks do not
+  // restart the animation, and do not replay old effects when a console reconnects.
+  useEffect(() => {
+    const m = map.current
+    if (!m || !ready.current) return
+    const live = new Set<string>()
+    for (const impact of impacts) {
+      const age = impactNowMs - impact.t
+      if (age < 0 || age >= IMPACT_ANIMATION_MS) continue
+      live.add(impact.key)
+      if (impactMarkers.current.has(impact.key)) continue
+      const marker = new maplibregl.Marker({ element: impactElement(impact, age), anchor: 'center' })
+        .setLngLat(impact.point)
+        .addTo(m)
+      impactMarkers.current.set(impact.key, marker)
+    }
+    for (const [key, marker] of impactMarkers.current) {
+      if (live.has(key)) continue
+      marker.remove()
+      impactMarkers.current.delete(key)
+    }
+  }, [impacts, impactNowMs, styleGen, mapGen])
 
   // the smooth toggle: remembered, and every vehicle is drawn as reported until its next report
   useEffect(() => {

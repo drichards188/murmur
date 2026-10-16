@@ -18,6 +18,9 @@ export interface EngageDrawing {
   selected: boolean
   /** an engagement whose picture no longer holds */
   warn?: boolean
+  /** Actual recorded release; the preview may point somewhere else. */
+  effect?: { t: number; point: LngLat; radius_m: number }
+  assessment?: 'persists' | 'ceased' | 'unknown'
 }
 
 type RGBA = [number, number, number, number]
@@ -80,8 +83,8 @@ export function buildEngageLayers(drawings: EngageDrawing[], nowMs: number) {
     new ScatterplotLayer<EngageDrawing>({
       id: 'engage-effect',
       data: drawings,
-      getPosition: (d) => d.preview.effect_point,
-      getRadius: (d) => d.preview.effect_radius_m,
+      getPosition: (d) => d.effect?.point ?? d.preview.effect_point,
+      getRadius: (d) => d.effect?.radius_m ?? d.preview.effect_radius_m,
       radiusUnits: 'meters',
       radiusMinPixels: 4,
       stroked: true,
@@ -105,9 +108,11 @@ export function buildEngageLayers(drawings: EngageDrawing[], nowMs: number) {
     new TextLayer<EngageDrawing>({
       id: 'engage-labels',
       data: drawings,
-      getPosition: (d) => d.preview.effect_point,
+      getPosition: (d) => d.effect?.point ?? d.preview.effect_point,
       getText: (d) =>
-        d.phase === 'effected' || d.phase === 'ended'
+        d.effect
+          ? `${d.label} · ${d.assessment ? `ASSESSED ${d.assessment.toUpperCase()}` : 'EFFECT RELEASED'}`
+          : d.phase === 'ended'
           ? d.label
           : `${d.label} effect ${fmtRel(d.preview.effect_t - nowMs)}`,
       getSize: 11,

@@ -1,0 +1,71 @@
+/* A screen-space cue at the actual release point. The geographic effect radius stays in
+   deck.gl's engage-effect layer; these pixels make the instant of release visible at any zoom. */
+.impact-marker {
+  position: relative;
+  width: 180px;
+  height: 180px;
+  pointer-events: none;
+  filter: drop-shadow(0 0 10px rgba(255, 116, 33, .55));
+}
+.impact-marker > span { position: absolute; display: block; pointer-events: none; }
+.impact-flash, .impact-core, .impact-smoke, .impact-ring {
+  left: 50%; top: 50%; border-radius: 50%;
+}
+.impact-flash {
+  width: 140px; height: 140px; margin: -70px;
+  background: radial-gradient(circle, #fff 0%, #ffe6a5 12%, #ff982e 32%, rgba(255, 75, 28, .75) 48%, transparent 70%);
+  animation: impact-flash 1.8s ease-out both;
+  animation-delay: var(--impact-age);
+}
+.impact-core {
+  width: 18px; height: 18px; margin: -9px;
+  background: #fff3c1;
+  box-shadow: 0 0 12px 5px #ff8c31, 0 0 35px 12px rgba(255, 85, 35, .85);
+  animation: impact-core 1.8s ease-out both;
+  animation-delay: var(--impact-age);
+}
+.impact-ring {
+  width: 52px; height: 52px; margin: -26px;
+  border: 4px solid #ffd398;
+  box-shadow: 0 0 13px #ff8537, inset 0 0 10px #ff8537;
+  animation: impact-ring 2.8s ease-out both;
+  animation-delay: var(--impact-age);
+}
+.impact-ring-outer { animation-delay: calc(var(--impact-age) + 220ms); }
+.impact-smoke {
+  width: 85px; height: 85px; margin: -42.5px;
+  background: radial-gradient(circle, rgba(96, 87, 80, .85) 0%, rgba(45, 43, 42, .65) 35%, transparent 72%);
+  animation: impact-smoke 5.4s ease-out both;
+  animation-delay: calc(var(--impact-age) + 350ms);
+}
+.impact-label {
+  left: 50%; top: 8px; transform: translateX(-50%);
+  padding: 4px 7px; white-space: nowrap; border: 1px solid #ffc987;
+  border-radius: 3px; color: #fff1d7; background: rgba(33, 18, 13, .92);
+  font: 700 11px/1.2 var(--mono); letter-spacing: .08em;
+  animation: impact-label 5.8s ease-out both;
+  animation-delay: var(--impact-age);
+}
+@keyframes impact-flash { 0% { opacity: 0; transform: scale(.15); } 10%, 30% { opacity: 1; } 100% { opacity: 0; transform: scale(2.1); } }
+@keyframes impact-core { 0% { opacity: 1; transform: scale(.4); } 30% { opacity: 1; transform: scale(1.8); } 100% { opacity: 0; transform: scale(.3); } }
+@keyframes impact-ring { 0% { opacity: .95; transform: scale(.1); } 100% { opacity: 0; transform: scale(3.1); } }
+@keyframes impact-smoke { 0% { opacity: 0; transform: translateY(10px) scale(.25); } 20% { opacity: .7; } 100% { opacity: 0; transform: translateY(-32px) scale(1.8); } }
+@keyframes impact-label { 0%, 8% { opacity: 0; } 20%, 72% { opacity: 1; } 100% { opacity: 0; } }
+
+.impact-status {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+  z-index: 8; display: flex; align-items: center; gap: 14px;
+  max-width: min(680px, calc(100% - 32px)); padding: 10px 13px;
+  color: #fff1db; background: rgba(30, 18, 15, .96); border: 1px solid #ffac61;
+  border-radius: 5px; box-shadow: 0 4px 24px rgba(0, 0, 0, .6), 0 0 16px rgba(255, 121, 46, .35);
+  font: 600 13px/1.25 var(--mono);
+}
+.impact-status strong { color: #ffbf79; }
+.impact-status button { flex: none; border: 1px solid #ffbf79; background: #3e271b; border-radius: 3px; padding: 5px 8px; font: inherit; }
+.impact-status button:hover { background: #63351d; }
+@media (prefers-reduced-motion: reduce) {
+  .impact-marker .impact-flash, .impact-marker .impact-core, .impact-marker .impact-ring, .impact-marker .impact-smoke, .impact-marker .impact-label { animation: none; }
+  .impact-marker .impact-flash, .impact-marker .impact-ring, .impact-marker .impact-smoke { display: none; }
+  .impact-marker .impact-core { opacity: 1; }
+  .impact-marker .impact-label { opacity: 1; }
+}

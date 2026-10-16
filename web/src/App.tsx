@@ -23,6 +23,7 @@ import { ErrorBoundary } from './ErrorBoundary'
 import { EngagePanel } from './EngagePanel'
 import { isEngage, previewOf, RUNNING, type EngagePreview, type KeepOutExplanation } from './engage'
 import { buildEngageLayers, buildKeepOutLayers, type EngageDrawing } from './engageLayers'
+import { IMPACT_STATUS_MS, type ImpactEvent } from './impact'
 import { estimated } from './estimate'
 import { buildEstimateLayers } from './estimateLayers'
 import { circle } from './geo'
@@ -203,7 +204,28 @@ export default function App() {
   )
   // engagements in play (and the form's draft) on the map: paths, effect, keep-out, ellipse
   const allIntents = decisions?.intents
-  const engageTick = Math.floor(now() / 1000)
+  const impactNowMs = now()
+  const engageTick = Math.floor(impactNowMs / 1000)
+  const impacts = useMemo<ImpactEvent[]>(() => (allIntents ?? []).flatMap((i) => {
+    const effect = isEngage(i) ? i.engagement?.effect : null
+    const platform = allVehicles.find((v) => v.uid === Number(i.uids[0]))
+    return effect ? [{ key: `i${i.id}@${effect.t}`, intentId: i.id, point: effect.point, t: effect.t, radius_m: effect.radius_m,
+      platform: platform ? callsign(platform) : undefined, track: i.engagement?.snapshot?.track_id ?? i.engage?.track,
+      assessment: i.engagement?.assessment }] : []
+  }), [allIntents, allVehicles])
+  const seenImpacts = useRef(new Set<string>())
+  const focusImpact = useCallback((impact: ImpactEvent) => {
+    const ring = circle(impact.point, Math.max(impact.radius_m * 4, 450)).filter((_, k) => k % 8 === 0)
+    setFit((f) => ({ points: [impact.point, ...ring], n: (f?.n ?? 0) + 1, padRight: showInbox ? 430 : 70 }))
+  }, [showInbox])
+  useEffect(() => {
+    for (const impact of impacts) {
+      if (seenImpacts.current.has(impact.key)) continue
+      seenImpacts.current.add(impact.key)
+      if (impactNowMs >= impact.t && impactNowMs - impact.t < 4000) focusImpact(impact)
+    }
+  }, [impacts, impactNowMs, focusImpact])
+  const visibleImpact = impacts.filter((impact) => impactNowMs >= impact.t && impactNowMs - impact.t < IMPACT_STATUS_MS).sort((a, b) => b.t - a.t)[0]
   const engageDrawings = useMemo<EngageDrawing[]>(() => {
     const out: EngageDrawing[] = []
     const nowMs = now()
@@ -217,7 +239,8 @@ export default function App() {
       const phase: EngageDrawing['phase'] =
         i.state === 'pending_approval' ? 'pending' : i.state === 'effected' ? 'effected' : RUNNING.includes(i.state) ? 'running' : 'ended'
       const warn = (i.engagement?.watch && !i.engagement.watch.holds) || (i.engage?.live?.changed ?? []).some((c) => c.worse)
-      out.push({ key: `i${i.id}`, label: `ENGAGE i${i.id}`, preview: p, phase, selected: inboxSel?.kind === 'intent' && inboxSel.id === i.id, warn })
+      out.push({ key: `i${i.id}`, label: `ENGAGE i${i.id}`, preview: p, phase, selected: inboxSel?.kind === 'intent' && inboxSel.id === i.id, warn,
+        effect: i.engagement?.effect, assessment: i.engagement?.assessment?.result })
     }
     if (engageDraft) out.push({ key: 'draft', label: 'NOMINATION', preview: engageDraft, phase: 'draft', selected: true })
     return out
@@ -429,6 +452,8 @@ export default function App() {
         <MapView
           vehicles={allVehicles}
           hiddenUids={spent}
+          impacts={impacts}
+          impactNowMs={impactNowMs}
           taskings={taskings}
           selected={selected}
           draft={draft}
@@ -450,6 +475,17 @@ export default function App() {
         <ErrorBoundary name="Situation" className="floating">
           <SituationPanel decisions={decisions} />
         </ErrorBoundary>
+        {visibleImpact && (
+          <div className="impact-status" role="status">
+            <span><strong>{visibleImpact.assessment ? `ASSESSMENT: ${visibleImpact.assessment.result.toUpperCase()}` : 'STRIKE · EFFECT RELEASED'}</strong>
+              {' · '}{visibleImpact.platform ?? `ENGAGE i${visibleImpact.intentId}`}{visibleImpact.track ? ` on ${visibleImpact.track}` : ''}{' · '}
+              {visibleImpact.assessment?.result === 'ceased' ? 'No target detected where expected'
+                : visibleImpact.assessment?.result === 'persists' ? 'Target still detected'
+                : visibleImpact.assessment?.result === 'unknown' ? 'Outcome unknown'
+                : 'Sensor assessment pending'}</span>
+            <button onClick={() => focusImpact(visibleImpact)}>View impact</button>
+          </div>
+        )}
         {showGlobe && (
           <ErrorBoundary name="Globe" className="floating">
           <GlobeInset
