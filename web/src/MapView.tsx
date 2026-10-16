@@ -3,7 +3,7 @@ import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { Layer, type LayersList, type PickingInfo, type Viewport } from '@deck.gl/core'
 import { MapboxOverlay } from '@deck.gl/mapbox'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { distanceM } from './geo'
 import { mapScreen, NO_SCREEN, type MapScreen } from './aloft'
 import { BRIDGE_FILTER, liftBridges, type LiftedBridge } from './bridges'
@@ -35,6 +35,7 @@ export interface Draft {
 
 interface Props {
   vehicles: Vehicle[]
+  hiddenUids?: ReadonlySet<number>
   taskings: Tasking[]
   selected: Set<number>
   draft: Draft
@@ -239,7 +240,8 @@ function surfacePoint(m: maplibregl.Map, e: maplibregl.MapMouseEvent): LngLat {
   return water ? [water.lng, water.lat] : [ground.lng, ground.lat]
 }
 
-export function MapView({ vehicles, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null }: Props) {
+export function MapView({ vehicles: allVehicles, hiddenUids, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null }: Props) {
+  const vehicles = useMemo(() => hiddenUids?.size ? allVehicles.filter((v) => !hiddenUids.has(v.uid)) : allVehicles, [allVehicles, hiddenUids])
   // the top view (pitch 0, looking straight down) and the pitch to tilt back to from it
   const [top, setTop] = useState(false)
   const tiltBack = useRef(INITIAL_PITCH)
@@ -760,7 +762,7 @@ export function MapView({ vehicles, taskings, selected, draft, focus, follow = n
     if (!m) return
     // a new data generation (the first state after a connect, so after a reconnect too): the
     // vehicles are drawn as reported
-    const gen = vehiclesGeneration(vehicles)
+    const gen = vehiclesGeneration(allVehicles)
     const newGeneration = gen !== lastGeneration.current
     lastGeneration.current = gen
     if (newGeneration) {

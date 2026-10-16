@@ -102,7 +102,7 @@ export function useBridge() {
           current = withAges(msg as BridgeState)
           setState(current)
         } else if (msg.type === 'decisions') {
-          setDecisions({ inbox: msg.inbox, intents: msg.intents, space: msg.space, operators: msg.operators })
+          setDecisions({ inbox: msg.inbox, intents: msg.intents, space: msg.space, operators: msg.operators, spent: msg.spent ?? [] })
           setBridgeOperators(msg.operators)
         } else if (msg.type === 'tracks') {
           setTracks(msg as TracksMessage)

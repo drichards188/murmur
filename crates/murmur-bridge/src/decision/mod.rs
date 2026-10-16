@@ -2561,6 +2561,15 @@ impl Decision {
 
     fn message(&self) -> String {
         let inbox = self.inbox_json();
+        let fleet = self.fleet();
+        let spent: Vec<Uid> = self.lock().engine.spent_platforms().into_iter().filter_map(|mark| {
+            let uid = bridge_uid(&mark.uid)?;
+            let cell = fleet.get(&uid)?;
+            if mark.vehicle.as_ref().is_some_and(|was| was.differs(&engage::identity_of(cell)).is_some()) {
+                return None;
+            }
+            Some(uid)
+        }).collect();
         let world = self.engagements_in_view().then(|| self.snapshot());
         let intents: Vec<Value> = {
             let core = self.lock();
@@ -2592,6 +2601,7 @@ impl Decision {
             "intents": intents,
             "space": space,
             "operators": self.operators_json(),
+            "spent": spent,
         })
         .to_string()
     }

@@ -434,7 +434,7 @@ export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus
         {(tracks?.lost ?? []).length > 0 && (
           <section className="tk-lost" aria-label="Lost contacts">
             <p className="tk-note">
-              Lost contacts: tracks the tracker dropped (no detection for 180 s). Every engagement keep-out still counts each, anywhere it could have reached since its
+              Red possible-area rings mark lost contacts: tracks the tracker dropped (no detection for 180 s). Every engagement keep-out still counts each, anywhere it could have reached since its
               last fix at its domain's top speed, until an operator confirms a track carrying its AIS as it (the Review list) or an operator with engagement authority
               accepts it for one engagement.
             </p>

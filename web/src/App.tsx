@@ -156,7 +156,17 @@ export default function App() {
   }, [drawing])
   const onView = useCallback((center: LngLat, bounds: [number, number, number, number], zoom: number) => setMapView({ center, bounds, zoom }), [])
 
-  const vehicles = state?.vehicles ?? []
+  const allVehicles = useMemo(() => state?.vehicles ?? [], [state?.vehicles])
+  const spent = useMemo(() => new Set(decisions?.spent ?? []), [decisions?.spent])
+  const vehicles = useMemo(() => spent.size ? allVehicles.filter((v) => !spent.has(v.uid)) : allVehicles, [allVehicles, spent])
+  useEffect(() => {
+    if (!spent.size) return
+    setSelected((prev) => {
+      const next = new Set([...prev].filter((uid) => !spent.has(uid)))
+      return next.size === prev.size ? prev : next
+    })
+    setDetailsUid((uid) => uid != null && spent.has(uid) ? null : uid)
+  }, [spent])
   const now = useBridgeClock(state?.t)
   // tracks of contacts that are not ours (Phase C2), drawn through MapView's layers prop;
   // ages advance with the bridge clock (useBridgeClock re-renders twice a second), so the
@@ -223,7 +233,7 @@ export default function App() {
   }, [draftKey])
   // silent vehicles' estimates (murmur-4y9): the bridge's motion models evaluated every clock
   // tick, so the callback changes identity each tick only while something is silent
-  const silent = useMemo(() => (state ? estimated(state.vehicles) : []), [state])
+  const silent = useMemo(() => state ? estimated(vehicles) : [], [vehicles, state])
   const estimateTick = silent.length ? Math.floor(now() / 500) : 0
   const estimateLayers = useCallback<MapLayers>(
     () => (silent.length ? buildEstimateLayers({ vehicles: silent, nowMs: now(), focus: detailsUid }) : []),
@@ -247,10 +257,10 @@ export default function App() {
       ...trackLayers(screen),
       ...keepOutLayers,
       ...(engageDrawings.length ? buildEngageLayers(engageDrawings, now()) : []),
-      ...buildOrderLayers({ queued: queuedIntents ?? [], intents: allIntents ?? [], taskings: state?.taskings ?? [], vehicles: state?.vehicles ?? [], nowMs: now() }),
+      ...buildOrderLayers({ queued: queuedIntents ?? [], intents: allIntents ?? [], taskings: state?.taskings ?? [], vehicles, nowMs: now() }),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [estimateLayers, trackLayers, keepOutLayers, engageDrawings, queuedIntents, allIntents, state?.taskings, state?.vehicles, orderTick],
+    [estimateLayers, trackLayers, keepOutLayers, engageDrawings, queuedIntents, allIntents, state?.taskings, vehicles, orderTick],
   )
   const focusTrack = useCallback(
     (t: Track) => setFit((f) => ({ points: [trackPredicted(t, now())], n: (f?.n ?? 0) + 1, padRight: 400 })),
@@ -271,15 +281,15 @@ export default function App() {
     for (const i of [...(pending ?? []), ...(queuedIntents ?? [])])
       for (const u of i.uids) if (Number.isFinite(Number(u))) set.add(Number(u))
     for (const a of alerts ?? []) set.add(a.uid)
-    return [...set].sort((a, b) => a - b)
-  }, [selected, detailsUid, pending, queuedIntents, alerts])
+    return [...set].filter((uid) => !spent.has(uid)).sort((a, b) => a - b)
+  }, [selected, detailsUid, pending, queuedIntents, alerts, spent])
   useEffect(() => {
     if (mapView) setView({ bounds: mapView.bounds, zoom: mapView.zoom, pin: pins })
   }, [mapView, pins, setView])
   const selIntent = inboxSel?.kind === 'intent' ? inboxSel.id : null
   const preview = useMemo(
-    () => (pending && pending.length ? previewFeatures(pending, state?.vehicles ?? [], selIntent) : EMPTY_PREVIEW),
-    [pending, state?.vehicles, selIntent],
+    () => (pending && pending.length ? previewFeatures(pending, vehicles, selIntent) : EMPTY_PREVIEW),
+    [pending, vehicles, selIntent],
   )
   const taskings = state?.taskings ?? []
   const lost = vehicles.filter(isStale).length
@@ -417,7 +427,8 @@ export default function App() {
       <main className={`mapwrap ${showSpace ? 'space-open' : ''}`}>
         <ErrorBoundary name="Map" className="floating">
         <MapView
-          vehicles={vehicles}
+          vehicles={allVehicles}
+          hiddenUids={spent}
           taskings={taskings}
           selected={selected}
           draft={draft}
@@ -476,7 +487,7 @@ export default function App() {
           <ErrorBoundary name="Inbox" className="floating">
           <InboxPanel
             decisions={decisions}
-            vehicles={vehicles}
+            vehicles={allVehicles}
             now={now}
             tab={inboxTab}
             setTab={setInboxTab}
@@ -577,7 +588,7 @@ export default function App() {
           <ErrorBoundary name="Tracks" className="slot">
           <TracksPanel
             tracks={tracks}
-            vehicles={vehicles}
+            vehicles={allVehicles}
             now={now}
             selected={selectedTrack}
             onSelect={setSelectedTrack}

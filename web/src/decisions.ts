@@ -206,6 +206,8 @@ export interface Inbox {
 export interface Decisions {
   inbox: Inbox
   intents: Intent[] // newest first, the latest 50
+  /** Vehicles expended by their own effect; hidden from live fleet and map views. */
+  spent?: number[]
   /** satellite collect and cover runs (absent from bridges without the space executor) */
   space?: SpaceRuns
   /** the operators the bridge accepts, and those with engagement authority */

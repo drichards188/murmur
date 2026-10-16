@@ -40,7 +40,7 @@ import type { LngLat } from './types'
  *   lost-regions        where the keep-out counts each now, growing from its last fix (faint)
  *   lost-columns        an air or subsurface one: its column (it carries no altitude)
  *   lost                its last-known symbol, anticipated and faded, at its last fix
- *   lost-labels         "T-0002 LOST 4 min": out of view since its last fix */
+ *   lost-labels         "T-0002 LOST 4 min · POSSIBLE AREA": the ring is a keep-out */
 
 export interface TrackLayerInput {
   tracks: Track[]
@@ -207,7 +207,7 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
       getPosition: lostAt,
       getText: (l) => {
         const h = trackHeightLabel(l.domain, null)
-        return `${l.id} LOST ${outOfView(l.out_of_view_s)}${h ? ` · ${h}` : ''}`
+        return `${l.id} LOST ${outOfView(l.out_of_view_s)} · POSSIBLE AREA${h ? ` · ${h}` : ''}`
       },
       getSize: 10,
       getColor: rgba(TEXT, 0.6),

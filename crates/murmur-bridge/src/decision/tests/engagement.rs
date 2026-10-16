@@ -381,6 +381,7 @@ async fn an_engagement_through_the_bridge_releases_an_abstract_effect() {
     );
     // the console's view: who signed, the engagement record
     let msg: serde_json::Value = serde_json::from_str(&e.r.d.message()).expect("json");
+    assert_eq!(msg["spent"], json!([1]), "spent munition must leave the live console");
     let mine = msg["intents"]
         .as_array()
         .expect("intents")
@@ -2162,6 +2163,8 @@ async fn a_platform_spent_by_its_effect_stays_spent_after_a_restart_until_an_ope
     });
     let first_line = e2.r.log.lines()[0].clone();
     assert!(first_line.contains("\"spent\":[{\"uid\":\"1\",\"by\":"), "{first_line}");
+    let carried_msg: serde_json::Value = serde_json::from_str(&e2.r.d.message()).expect("json");
+    assert_eq!(carried_msg["spent"], json!([1]), "carried spent munition stays hidden");
     assert!(first_line.contains("\"pointer\":\".last-run-0\""), "the station's pointer named: {first_line}");
     let mut req = orbit(1);
     req.params.center = Some([TARGET.1 + 0.004, TARGET.0]);
@@ -2187,6 +2190,8 @@ async fn a_platform_spent_by_its_effect_stays_spent_after_a_restart_until_an_ope
     let (status, body) = post_as(&api, "op-2", "/api/restores/unspend", json!({ "uid": 1, "note": "still reporting after the effect: a miss" })).await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["unspent"]["uid"], 1, "{body}");
+    let unspent_msg: serde_json::Value = serde_json::from_str(&e2.r.d.message()).expect("json");
+    assert_eq!(unspent_msg["spent"], json!([]), "operator un-spend restores the live vehicle");
     assert!(!e2.r.d.inbox_json()["alerts"].to_string().contains("spent:1"), "the alert clears");
     // its own values go back once it answers, then an orbit goes
     for _ in 0..6 {
