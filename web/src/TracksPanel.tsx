@@ -425,6 +425,7 @@ export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus
         ) : (
           <p className="tk-note">Symbols fade and their uncertainty ring grows with time since the last detection. Hostile takes a declaration: an operator&apos;s, or the engine&apos;s rule on a hostile act our sensors observed (marked BY RULE until an operator confirms it). Proximity alone never declares. From our sensors only.</p>
         )}
+        {!!tracks?.lost?.length && <p className="tk-note">Red rings on the map show the possible area of a lost hostile contact. They remain in engagement keep-out checks after the contact leaves sensor view.</p>}
         {list.map((t) => (
           <div key={t.id} data-track-id={t.id} className={flash === t.id ? 'tk-flash' : undefined}>
             <Row t={t} nowMs={nowMs} staleAfterS={staleAfterS} sel={selected === t.id} onClick={() => onSelect(selected === t.id ? null : t.id)} />

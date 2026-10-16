@@ -11,6 +11,8 @@ import { availableTasks, orbitRange, usePlatformLimits } from './taskDefaults'
 
 interface Props {
   vehicles: Vehicle[]
+  /** Keep names in completed commands after a spent vehicle leaves the live fleet. */
+  historyVehicles?: Vehicle[]
   selected: Set<number>
   draft: Draft
   setDraft: (d: Draft) => void
@@ -52,7 +54,7 @@ function Lifecycle({ state }: { state: string }) {
   )
 }
 
-export function TaskPanel({ vehicles, selected, draft, setDraft, taskings, pendingIds, onInbox, space, now }: Props) {
+export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draft, setDraft, taskings, pendingIds, onInbox, space, now }: Props) {
   const runs = space?.runs ?? []
   const scen = now ? scenarioNow(space, now) : null
   const [kind, setKind] = useState<TaskKind>('orbit')
@@ -62,6 +64,7 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings, pendi
   /** command log notes: tasking id -> the human tier its sender authorized */
   const [authorized, setAuthorized] = useState<Map<number, string>>(new Map())
   const byUid = new Map(vehicles.map((v) => [v.uid, v]))
+  const historyByUid = new Map(historyVehicles.map((v) => [v.uid, v]))
   const sel = [...selected].sort((a, b) => a - b)
   const limits = usePlatformLimits()
   const selVehicles = sel.map((s) => byUid.get(s)).filter((v): v is Vehicle => v != null)
@@ -224,7 +227,7 @@ export function TaskPanel({ vehicles, selected, draft, setDraft, taskings, pendi
             </div>
             {authorized.has(t.id) && <p className="muted">authorized by you ({authorized.get(t.id)})</p>}
             {t.ops.map((o) => {
-              const v = byUid.get(o.uid)
+              const v = historyByUid.get(o.uid)
               return (
                 <div key={o.id} className={`op ${o.state}`}>
                   <span className="op-name" title={v?.identity ? `${v.identity.name} · ${v.identity.role}` : undefined}>
