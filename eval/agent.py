@@ -66,6 +66,10 @@ def _mcp_args(req: dict[str, Any]) -> dict[str, Any]:
 class Proposer:
     kind = "none"
     source_id = ""
+    # True for a proposer that may propose something other than the step's request (the
+    # model): the storyline then records what it proposed, read after the proposal, and
+    # keeps the request as `suggested` (eval/storyline.py `as_proposed`)
+    adjusts: bool = False
 
     async def start(self) -> None:
         pass

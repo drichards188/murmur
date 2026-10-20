@@ -38,7 +38,9 @@ Track selectors `{track = {...}}` and `declare.track`:
 
 Everything resolved at injection time goes to `storyline.jsonl` (the track, its contact and
 both their affiliations, the vehicle's navigation truth), so the metrics can label each
-intent without re-reading the heavy logs, and can cross-check against them.
+intent without re-reading the heavy logs, and can cross-check against them. For a proposer
+that may adjust the step (`adjusts`, the model), the record is what it actually proposed,
+read after the proposal, with the step's request under `suggested` (`Storyline.as_proposed`).
 """
 
 from __future__ import annotations
@@ -298,6 +300,154 @@ def aim_context(center: list[float] | None, radius_m: float | None, tracks: list
     return out
 
 
+# ---- what a proposer that adjusts actually proposed ---------------------------------------------
+
+# a centre or route point that moved less than this is the suggestion's
+SAME_POINT_M = 1.0
+# the request fields each task kind carries in the intent (`params`); a field the actual task
+# does not carry (a radius on a patrol) is not an adjustment
+CARRIES = {"orbit": ("center", "radius_m"), "patrol": ("route",), "track": ("target",), "hold": (), "rtl": ()}
+REQUEST_FIELDS = ("task", "uids", "center", "radius_m", "route", "target", "reserve_pct", "duration_s", "extra")
+
+
+def _uid(u: Any) -> Any:
+    return int(u) if isinstance(u, (int, str)) and str(u).isdigit() else u
+
+
+def _point(p: Any) -> list[float]:
+    if isinstance(p, dict):
+        return [float(p["lon"]), float(p["lat"])]
+    return [float(p[0]), float(p[1])]
+
+
+def request_of(intent: dict[str, Any]) -> dict[str, Any]:
+    """The request an intent the bridge holds stands for, in the storyline's terms: its
+    `kind`, `params`, `uids` and `constraints` as `{task, uids, center, radius_m, route,
+    target, reserve_pct, duration_s}`, any other parameter under `extra`."""
+    params = dict(intent.get("params") or {})
+    req: dict[str, Any] = {"task": intent.get("kind"), "uids": [_uid(u) for u in intent.get("uids") or []]}
+    if params.get("center") is not None:
+        req["center"] = _point(params["center"])
+    if params.get("radius_m") is not None:
+        req["radius_m"] = float(params["radius_m"])
+    if params.get("route") is not None:
+        req["route"] = [_point(p) for p in params["route"]]
+    if params.get("target") is not None:
+        req["target"] = _uid(params["target"])
+    for k in ("reserve_pct", "duration_s"):
+        if (intent.get("constraints") or {}).get(k) is not None:
+            req[k] = intent["constraints"][k]
+    extra = {k: v for k, v in params.items() if k not in ("center", "radius_m", "route", "target")}
+    if extra:
+        req["extra"] = extra
+    return req
+
+
+def _same(k: str, a: Any, b: Any) -> bool:
+    if a is None or b is None:
+        return a is None and b is None
+    try:
+        if k == "center":
+            a, b = _point(a), _point(b)
+            return haversine_m(a[0], a[1], b[0], b[1]) <= SAME_POINT_M
+        if k == "route":
+            pa, pb = [_point(p) for p in a], [_point(p) for p in b]
+            return len(pa) == len(pb) and all(haversine_m(p[0], p[1], q[0], q[1]) <= SAME_POINT_M for p, q in zip(pa, pb))
+        if k in ("radius_m", "reserve_pct", "duration_s"):
+            return abs(float(a) - float(b)) <= 1e-6
+        if k == "uids":
+            return [str(u) for u in a] == [str(u) for u in b]
+        if k == "target":
+            return str(a) == str(b)
+    except (TypeError, ValueError, KeyError, IndexError):
+        return False
+    return bool(a == b)
+
+
+def adjusted_fields(suggested: dict[str, Any], actual: dict[str, Any]) -> list[str]:
+    """The request fields the proposal changed from the suggestion (a point within
+    `SAME_POINT_M` is unchanged)."""
+    carried = CARRIES.get(str(actual.get("task")))
+    out = []
+    for k in REQUEST_FIELDS:
+        if actual.get(k) is None and carried is not None and k in ("center", "radius_m", "route", "target") and k not in carried:
+            continue
+        if not _same(k, suggested.get(k), actual.get(k)):
+            out.append(k)
+    return out
+
+
+def refresh_target(target: dict[str, Any], tracks: list[dict], truth: dict, now: float) -> dict[str, Any]:
+    """A target record read again at `now`: the same track as the C2 shows it now and the
+    same contact as truth has it now (the track as last recorded if the C2 no longer holds
+    it)."""
+    if not target:
+        return {}
+    assoc, contacts = association_map(truth)
+    tid = target.get("track_id")
+    cid = target.get("contact_id")
+    if cid is None and tid is not None:
+        cid = {v: k for k, v in assoc.items()}.get(tid)
+    track = next((t for t in tracks if t["id"] == tid), None) if tid is not None else None
+    rec = target_record(track, contacts.get(cid) if cid is not None else None, now, cid)
+    if track is None and tid is not None:
+        rec = {**{k: v for k, v in target.items() if k.startswith("track_") or k == "declared"}, **rec}
+    return rec
+
+
+def proposed_target(
+    suggested: dict[str, Any], actual: dict[str, Any], target: dict[str, Any], tracks: list[dict], truth: dict, now: float
+) -> dict[str, Any]:
+    """The target of what was actually proposed, at `now`. A centre within `SAME_POINT_M` of
+    the suggestion's keeps the step's target; a centre that moved keeps it if its track is
+    within the task's radius of the new centre (the aim fixed on the same target), else
+    takes the nearest track the C2 shows within the radius (and the contact behind it), else
+    none (nothing is aimed at). A task without a centre keeps the step's target (a changed
+    route is recorded as adjusted, not re-aimed)."""
+    fresh = refresh_target(target, tracks, truth, now)
+    center = actual.get("center")
+    if center is None:
+        return fresh
+    if _same("center", suggested.get("center"), center):
+        return fresh
+    r = float(actual.get("radius_m") or 0.0)
+    pos = fresh.get("track_position")
+    if fresh.get("track_id") is not None and pos and haversine_m(center[0], center[1], pos[0], pos[1]) <= r:
+        return fresh
+    near = [(haversine_m(center[0], center[1], t["position"][0], t["position"][1]), t) for t in tracks if t.get("position")]
+    near = [x for x in near if x[0] <= r]
+    if not near:
+        return {}
+    track = min(near, key=lambda x: x[0])[1]
+    assoc, contacts = association_map(truth)
+    cid = {v: k for k, v in assoc.items()}.get(track["id"])
+    return target_record(track, contacts.get(cid) if cid is not None else None, now, cid)
+
+
+def facts_at(
+    req: dict[str, Any], target: dict[str, Any], lead: dict, vehicle_truth: dict | None, tracks: list[dict], truth: dict, now: float
+) -> dict[str, Any]:
+    """A proposal record's facts at `now`: what was at the aim point, the target, the lead
+    vehicle as the C2 showed it and as truth had it, and whether its platform is armed."""
+    return {
+        "context": aim_context(req.get("center"), req.get("radius_m"), tracks, truth, target, now),
+        "target": target,
+        "vehicle": {
+            "uid": lead.get("uid"),
+            "callsign": (lead.get("identity") or {}).get("callsign"),
+            "platform": (lead.get("identity") or {}).get("platform"),
+            "position": lead.get("position"),
+        },
+        "vehicle_truth": (
+            {k: vehicle_truth.get(k) for k in ("t", "error_m", "spoof_m", "ekf", "fix", "dead_reckoning_s")}
+            if vehicle_truth
+            else None
+        ),
+        "vehicle_shown": {k: lead.get(k) for k in ("nav_ready", "nav_source", "gps_fix", "satellites")},
+        "armed": (lead.get("identity") or {}).get("platform") in armed_platforms(),
+    }
+
+
 class Storyline:
     """Runs a spec's steps against a live stack. Each step starts at `t_ready + at_s` on its
     own task, so a long step (a flood, a retry) never delays the next one."""
@@ -546,7 +696,9 @@ class Storyline:
     async def submit(
         self, step_id: str, p: dict[str, Any], req: dict[str, Any], rationale: str, target: dict[str, Any], lead: dict
     ) -> dict[str, Any]:
-        """Record what the C2 showed and what truth had at the aim point, then propose."""
+        """Record what the C2 showed and what truth had at the aim point, then propose. A
+        proposer that may adjust the request (`adjusts`, the model) is then recorded by what
+        it proposed (`as_proposed`)."""
         now = time.time()
         vehicle_truth = await self.world.vehicle_truth(int(lead["uid"]))
         tracks = await self.world.tracks()
@@ -562,21 +714,7 @@ class Storyline:
             "label": label,
             "reason": p.get("reason", ""),
             "premise": p.get("premise") or {},
-            "context": aim_context(req.get("center"), req.get("radius_m"), tracks, truth, target, now),
-            "target": target,
-            "vehicle": {
-                "uid": lead.get("uid"),
-                "callsign": (lead.get("identity") or {}).get("callsign"),
-                "platform": (lead.get("identity") or {}).get("platform"),
-                "position": lead.get("position"),
-            },
-            "vehicle_truth": (
-                {k: vehicle_truth.get(k) for k in ("t", "error_m", "spoof_m", "ekf", "fix", "dead_reckoning_s")}
-                if vehicle_truth
-                else None
-            ),
-            "vehicle_shown": {k: lead.get(k) for k in ("nav_ready", "nav_source", "gps_fix", "satellites")},
-            "armed": (lead.get("identity") or {}).get("platform") in armed_platforms(),
+            **facts_at(req, target, lead, vehicle_truth, tracks, truth, now),
         }
         try:
             out = await self.proposer.propose(req, rationale)
@@ -588,11 +726,50 @@ class Storyline:
                     rec[k] = out[k]
         except ProposeError as e:
             rec["error"] = str(e)
+        if getattr(self.proposer, "adjusts", False) and rec.get("intent_id") is not None:
+            await self.as_proposed(rec, target)
         self.log.write(rec)
         self.injected.append(rec)
         if rec.get("intent_id") is not None and p.get("withdraw_after_s") is not None:
             self.tasks.append(asyncio.create_task(self.withdraw_later(step_id, int(rec["intent_id"]), float(p["withdraw_after_s"]))))
         return rec
+
+    async def as_proposed(self, rec: dict[str, Any], target: dict[str, Any]) -> None:
+        """For a proposer that may adjust the step (`adjusts`): the record follows what it
+        actually proposed, when it proposed it. The intent the bridge holds is the request
+        (`request_of`), its facts are read again after the proposal (`facts_at`, the target
+        by `proposed_target`), and the suggestion with the facts read before it go under
+        `suggested`, with the request fields that changed (`adjusted`), when the intent was
+        created (`proposed_t` on the bridge's clock, `proposed_t_rel` on the storyline's)
+        and when the facts were read again (`read_t_rel`). If the intent cannot be read, the
+        record keeps the suggestion and says why (`follow_error`)."""
+        iid = int(rec["intent_id"])
+        try:
+            cur = await asyncio.to_thread(self.bridge.intent, iid)
+        except Exception as e:  # noqa: BLE001 (recorded; the report lists it)
+            rec["follow_error"] = f"could not read intent {iid}: {e}"
+            return
+        intent = (cur.get("intent") or cur) if isinstance(cur, dict) else {}
+        actual = request_of(intent)
+        suggested = {k: rec[k] for k in ("request", "context", "target", "vehicle", "vehicle_truth", "vehicle_shown", "armed")}
+        now = time.time()
+        vehicles = await self.world.vehicles()
+        uid = actual["uids"][0] if actual["uids"] else rec["vehicle"]["uid"]
+        lead = next((v for v in vehicles if v.get("uid") == uid), {"uid": uid})
+        vehicle_truth = await self.world.vehicle_truth(uid)
+        tracks = await self.world.tracks()
+        truth = await self.world.truth()
+        aimed = proposed_target(suggested["request"], actual, target, tracks, truth, now)
+        rec["request"] = actual
+        rec.update(facts_at(actual, aimed, lead, vehicle_truth, tracks, truth, now))
+        rec["suggested"] = suggested
+        rec["adjusted"] = adjusted_fields(suggested["request"], actual)
+        if intent.get("created_t") is not None:
+            rec["proposed_t"] = round(float(intent["created_t"]) / 1000.0, 3)
+            # onto the wall clock through the bridge's own time in the truth just read
+            skew = float(truth["t"]) - now if truth.get("t") is not None else 0.0
+            rec["proposed_t_rel"] = self.t_rel(rec["proposed_t"] - skew)
+        rec["read_t_rel"] = self.t_rel(now)
 
     async def withdraw_later(self, step_id: str, intent_id: int, after_s: float) -> None:
         await asyncio.sleep(after_s)

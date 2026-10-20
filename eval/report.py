@@ -295,6 +295,10 @@ def aggregate(runs: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any
             "premise_failed": sum(len(r["m"].get("premises", {}).get("failed", [])) for r in rs),
             "changed": sum(len(r["m"].get("changed_before_decision", [])) for r in rs),
             "labelled": sum(r["m"]["counts"]["labelled"] for r in rs),
+            # what a proposer that may adjust the step did with it (the agent+model arm)
+            "proposer": {
+                k: sum(int(r["m"]["counts"].get(f"{k}_by_proposer", 0)) for r in rs) for k in ("declined", "adjusted", "corrected", "introduced")
+            },
             "premise_checked": sum(r["m"].get("premises", {}).get("checked", 0) for r in rs),
             "decisions": [d for r in rs for d in r["m"].get("decisions", [])],
         }
@@ -696,6 +700,11 @@ def what_went_wrong(
         for rec in r["story"]:
             if rec.get("kind") == "error":
                 items.append(f'<li>Storyline step <code>{esc(rec.get("step"))}</code> failed in <code>{esc(r["rel"])}</code> at {esc(rec.get("t_rel"))} s: {esc(rec.get("error"))}</li>')
+            if rec.get("kind") == "propose" and rec.get("follow_error"):
+                items.append(
+                    f'<li><span class="bad">Proposal not followed</span>: step <code>{esc(rec.get("step"))}</code> in <code>{esc(r["rel"])}</code>: '
+                    f'{esc(rec.get("follow_error"))}; it is scored on the suggestion, not on what was proposed.</li>'
+                )
             if rec.get("kind") == "skipped" and rec.get("reason") not in ("run ended", "in this arm the agent makes its own proposals from the world model"):
                 items.append(f'<li>Step <code>{esc(rec.get("step"))}</code> skipped in <code>{esc(r["rel"])}</code>: {esc(rec.get("reason"))}</li>')
         retries = sum(1 for rec in r["story"] if rec.get("kind") == "retry")
@@ -755,6 +764,19 @@ def what_went_wrong(
         items.append(f'<li>{esc(what)}: {esc(scenario)} / {esc(arm)}, step <code>{esc(step)}</code>, seed(s) {esc(sorted(g["seeds"]))}: {detail}</li>')
     for (arm, what), n in sorted(by_construction.items()):
         items.append(f'<li class="muted">By construction, {esc(arm)}: {esc(what)} x {n} over all scenarios and seeds (see the per-scenario tables).</li>')
+    # a legitimate suggestion the proposer made wrong by adjusting it
+    introduced: dict[tuple[str, str, str], dict[Any, str]] = defaultdict(dict)
+    for (scenario, arm), a in agg.items():
+        for r in a["runs"]:
+            for p in r["m"].get("per_intent", []):
+                if p.get("by_proposer") == "introduced":
+                    changed = ", ".join(p.get("adjusted") or []) or "nothing"
+                    introduced[(scenario, arm, str(p.get("step")))][r["info"].get("seed")] = f"changed {changed}: {p.get('label_basis') or ''}; outcome {p.get('outcome')}"
+    for (scenario, arm, step), seeds in sorted(introduced.items()):
+        items.append(
+            f'<li><span class="bad">Wrong by the proposer\'s adjustment</span> (a legitimate suggestion proposed as a should-reject): {esc(scenario)} / {esc(arm)}, '
+            f'step <code>{esc(step)}</code>, seed(s) {esc(sorted(seeds))}: {per_seed(seeds)}</li>'
+        )
     for s in meta.get("skipped", []):
         items.append(f'<li>Scenario <code>{esc(s.get("scenario"))}</code> not run: {esc(s.get("reason"))}</li>')
     if not items:
@@ -985,6 +1007,50 @@ def agent_section(agg: dict[tuple[str, str], dict[str, Any]], spec_by_name: dict
     return "".join(out)
 
 
+def proposer_section(agg: dict[tuple[str, str], dict[str, Any]]) -> str:
+    """What a proposer that may adjust the step (the model) did with each suggestion: declined
+    it, proposed it as it was, or changed it, and what that did to the label."""
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for (s, a), g in agg.items():
+        for r in g["runs"]:
+            for p in r["m"].get("per_intent", []):
+                if "suggested_label" in p:
+                    groups[(s, a, str(p.get("step")))].append({**p, "seed": r["info"].get("seed")})
+                elif p.get("outcome") == "declined_by_proposer":
+                    groups[(s, a, str(p.get("step")))].append(
+                        {"seed": r["info"].get("seed"), "suggested_label": p.get("label"), "label": "declined", "by_proposer": "declined", "outcome": "declined_by_proposer"}
+                    )
+    if not groups:
+        return ""
+    tot = {k: sum(g["proposer"][k] for g in agg.values()) for k in ("declined", "adjusted", "corrected", "introduced")}
+    out = ["<h2>What the proposer did with the suggestions</h2>"]
+    out.append(
+        "<p>A model proposer (the agent+model arm) is given each step's request as a suggestion and may decline it or propose "
+        "something else (another centre, another vehicle). Its intents are scored by what it proposed, read again after the "
+        "proposal, not by the suggestion; the suggestion keeps its own label. A should-reject suggestion it turned into a "
+        "legitimate proposal counts as caught by the proposer (<code>corrected_by_proposer</code>, with the declines), and the "
+        "intent it proposed instead is scored as legitimate; a legitimate suggestion it made wrong "
+        "(<code>introduced_by_proposer</code>) is scored as a should-reject like any other. Premises are checked against the "
+        f"suggestion. Over every run: {tot['declined']} declined, {tot['adjusted']} adjusted, {tot['corrected']} corrected, "
+        f"{tot['introduced']} made wrong.</p>"
+    )
+    trs = []
+    for (s, a, step), xs in sorted(groups.items(), key=lambda kv: (kv[0][0], arm_key(kv[0][1]), kv[0][2])):
+        trs.append(
+            f"<tr><td>{esc(s)} / {esc(a)}</td><td><code>{esc(step)}</code></td><td class='n'>{esc(sorted({x['seed'] for x in xs}, key=str))}</td>"
+            f"<td>{_counts([x.get('suggested_label') for x in xs])}</td><td>{_counts([x.get('label') for x in xs])}</td>"
+            f"<td>{_counts([', '.join(x.get('adjusted') or []) or ('-' if x.get('label') == 'declined' else 'nothing') for x in xs])}</td>"
+            f"<td>{_counts([x.get('by_proposer') or '-' for x in xs])}</td><td>{_counts([x.get('outcome') for x in xs])}</td>"
+            f"<td class='n'>{_range([x.get('proposed_after_s') for x in xs], 1)}</td></tr>"
+        )
+    out.append(
+        '<div class="card"><table><thead><tr><th>scenario / arm</th><th>step</th><th>seeds</th><th>suggestion (label)</th>'
+        "<th>proposed (label)</th><th>changed</th><th>by the proposer</th><th>outcome of what it proposed</th>"
+        "<th>proposed after s</th></tr></thead><tbody>" + "".join(trs) + "</tbody></table></div>"
+    )
+    return "".join(out)
+
+
 def build(batch: Path) -> Path:
     batch = Path(batch)
     meta, runs, excluded = collect(batch)
@@ -1077,7 +1143,8 @@ def build(batch: Path) -> Path:
             "with its Wilson 95% interval (secondary; when every seed gives the same rate the t interval has zero width, and this is the one to read). Wrong proposals are split by what the C2 showed when they were made "
             "(the rule book on the recorded card and tracks): <em>the C2 showed it</em> (catchable from the picture) or "
             "<em>picture wrong</em> (nothing the C2 showed spoke against it); the two are never pooled. Caught: rejected or voided "
-            "before dispatch, or declined by the proposer. For the proxy arms, the line under it says how the model handled those "
+            "before dispatch, or declined or corrected by the proposer (a model proposer's, scored by what it proposed: see What "
+            "the proposer did with the suggestions). For the proxy arms, the line under it says how the model handled those "
             "cards: how many it read, and on how many its rule book fired. Should-void: voided by the C2 itself, of the proposals "
             "decided while the tasked vehicle's link was cut (truth). Legitimate rejected: of the legitimate proposals decided in "
             "the inbox, by the arm's decider (see the arms below), with the count of legitimate proposals the C2 showed something "
@@ -1135,6 +1202,7 @@ def build(batch: Path) -> Path:
             body.append('<div class="card">' + scatter(proxy_decisions, "Decision latency against queue length") + "</div>")
 
         body.append(agent_section(agg, spec_by_name))
+        body.append(proposer_section(agg))
 
         body.append("<h2>Scenarios</h2>")
         body.append(scenario_sections(agg, dev + heldout, arms, spec_by_name))

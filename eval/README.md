@@ -383,6 +383,16 @@ MURMUR_EVAL_MODEL=1 MURMUR_EVAL_MAX_USD=1.50 \
 The run directory gets `model-transcript.json` (each step's final answer, the intent proposed
 if any, the running cost). A decline is scored as caught by the proposer.
 
+What the model proposes is scored as proposed, not as suggested: after each proposal the
+storyline reads the intent the bridge holds, and the picture and truth again, and records
+those (`storyline.jsonl` keeps the step's request and the facts read before it under
+`suggested`, the request fields the model changed under `adjusted`, and when the intent was
+created as `proposed_t`). The intent is labelled on its own; a should-reject suggestion it
+turned into a legitimate proposal counts as caught by the proposer (`corrected_by_proposer`),
+a legitimate one it made wrong is counted (`introduced_by_proposer`) and scored as a
+should-reject like any other, and the step's premise is checked against the suggestion
+(eval/METRICS.md, "Labels").
+
 ## Study mode (real participants)
 
 ```

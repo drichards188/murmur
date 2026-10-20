@@ -13,9 +13,13 @@ storyline `propose` step it gets the scenario's brief and the situation the step
 track it is about), and is asked to check the picture with the tools and then either
 propose (it may adjust the request) or decline with a reason. Whatever it proposes goes
 through the same checks, policy and inbox as everything else, and the proxy operator
-decides. Labels follow the step: an intent the model proposes for a should_reject step is
-scored like the scripted agent's, and a decline is recorded (`declined`), which the
-metrics count as caught by the proposer.
+decides. Labels follow what the model proposed, not the step (`adjusts`): the storyline
+records the intent the bridge holds, with the picture and truth read again after the
+proposal, and keeps the step's request under `suggested`. The intent is scored on its own
+label; a should_reject suggestion it turned into a legitimate proposal counts as caught by
+the proposer (`corrected_by_proposer`), a legitimate one it made wrong is counted
+(`introduced_by_proposer`), and a decline is recorded (`declined`), which the metrics also
+count as caught by the proposer. A step's premise is checked against the suggestion.
 
 Configuration (environment):
 
@@ -299,6 +303,7 @@ def situation(req: dict[str, Any], rationale: str, brief: str) -> str:
 
 class ModelProposer(Proposer):
     kind = "agent"
+    adjusts = True  # it may move the centre, change the vehicle, ...: scored by what it proposed
 
     def __init__(self, mcp_url: str, model: str | None = None, brief: str = "", client: Any = None, key: str | None = None):
         if not os.environ.get("MURMUR_EVAL_MODEL"):
