@@ -25,14 +25,32 @@ whose wake the guard refused is `budget_stopped`, one whose model call the API r
 (bad parameters, credentials) `model_failed`: both listed apart and left out of every metric.
 Model episodes wait on the network, not the CPU, so more workers than cores are fine (the
 ledger's file lock keeps the shared cap).
+
+**Scoring v2** (`--scoring v2`, eval/SCORING-V2.md): every episode runs the picture sampler and
+gets its class (section 7); each situation (family, situation seed) runs `--replicates K` times,
+replicate r on the seed sha256("{family}:{situation_seed}:{r}") mod 2^31, which drives the link
+emulator, the stand-ins, the agent's first tick and the operator's draws (the situation seed
+still drives the contacts and the sensing); the jobs run in a random order (`--order-seed`); a
+`none` replicate is added for every situation, replicate and condition when the agents lack one
+(`useful` is judged against it); `--operators` and `--policy` add conditions. An episode that
+fails in the simulator or the driver is run again once on the same seeds; a second failure is a
+`harness_error`. Records go gzipped (`<family>-<agent>-s<seed>-r<r>.json.gz`), their index to
+`episodes_v2.json`, the labels' metrics, comparisons, primary endpoint, Holm and multiverse to
+`aggregate_v2.json`, and the scorecard to `scorecard.json` and `scorecard.md`
+(eval/headless/v2/). Without `--scoring v2` nothing here changes.
+
+    .venv/bin/python -m eval.headless.batch --scoring v2 --families fast-unknown --seeds 1000-1009 \\
+        --replicates 4 --agent playbook none --operators approve-all proxy --workers 8
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import multiprocessing as mp
 import os
+import random
 import shutil
 import statistics
 import subprocess
@@ -46,6 +64,11 @@ from . import REPO
 from .situations import Calibration, from_situation
 
 RESULTS = REPO / "eval" / "results" / "headless"
+
+
+def replicate_seed(family: str, situation_seed: int, r: int) -> int:
+    """SCORING-V2.md section 1: replicate r's seed, sha256("{family}:{situation_seed}:{r}") mod 2^31."""
+    return int(hashlib.sha256(f"{family}:{situation_seed}:{r}".encode()).hexdigest(), 16) % (2 ** 31)
 
 
 def parse_seeds(spec: list[str]) -> list[int]:
@@ -64,12 +87,84 @@ def build() -> None:
     subprocess.run([cargo, "build", "--release", "-q", "-p", "murmur-headless"], cwd=REPO, check=True)
 
 
+def _v2_episode(job: dict[str, Any], wd: Path) -> dict[str, Any]:
+    """One scoring v2 episode: the situation from its situation seed, everything else drawn from
+    the replicate seed (the operator's draws too), the picture sampler on."""
+    from .episode import Episode, Options
+    from .families import generate
+
+    if job.get("family"):
+        spec, contacts = generate(job["family"], job["situation_seed"], wd)
+    else:
+        spec, contacts = from_situation(job["situation"]), None
+    spec.seed = int(job["seed"])  # the operator's draws: the replicate's (section 1)
+    if job.get("policy"):
+        spec.policy = Path(job["policy"])
+    opts = Options(agent=job.get("agent") or "playbook", operator=job.get("operator"),
+                   calibration=Calibration(**job["calibration"]), anchors=job.get("anchors", True),
+                   model=job.get("model"), scoring="v2",
+                   replicate={"r": job["r"], "seed": job["seed"], "situation_seed": job["situation_seed"]})
+    return Episode(spec, job["seed"], wd, opts, contacts_path=contacts).run()
+
+
+def _job_v2(job: dict[str, Any]) -> dict[str, Any]:
+    """A v2 job: the episode, run again once on the same seeds if the simulator or the driver
+    failed (a second failure is a `harness_error`, section 7); the record gzipped."""
+    from .v2.aggregate import meta_of
+    from .v2.record import dump
+
+    t0 = time.perf_counter()
+    out_dir = Path(job["out"])
+    name = job_name(job)
+    errors = []
+    for attempt in (1, 2):
+        with tempfile.TemporaryDirectory(prefix="hl-", dir=job.get("tmp")) as td:
+            try:
+                rec = _v2_episode(job, Path(td))
+            except Exception as e:  # noqa: BLE001 (a failed episode is a harness error, counted)
+                errors.append(f"{type(e).__name__}: {e}")
+                continue
+        if job.get("keep_audit"):
+            (out_dir / f"{name}.audit.jsonl").write_text(rec["audit_text"])
+        rec.pop("audit_text", None)
+        if errors:
+            rec["harness_reruns"] = errors
+        path = out_dir / f"{name}.json.gz"
+        size = dump(rec, path)
+        meta = meta_of(rec, path)
+        meta.update(name=name, wall_s=round(time.perf_counter() - t0, 3), attempts=attempt, record_bytes=size,
+                    picture_bytes=len(json.dumps(rec["v2"]["picture"])), reruns=errors,
+                    budget_stopped=bool(rec.get("budget_stopped")), model_failed=bool(rec.get("model_failed")))
+        if rec.get("model"):
+            meta["model"] = (rec.get("model") or {}).get("totals")
+        return meta
+    s = job.get("family") or job["situation"]
+    policy = job.get("policy")
+    if not policy:  # the situation's own policy, as a record would name it
+        try:
+            from .families import generate
+
+            with tempfile.TemporaryDirectory(prefix="hl-", dir=job.get("tmp")) as td:
+                policy = (generate(job["family"], job["situation_seed"], Path(td))[0] if job.get("family")
+                          else from_situation(job["situation"])).policy
+        except Exception:  # noqa: BLE001
+            policy = None
+    return {"path": None, "agent": job.get("agent"), "base": s, "family": job.get("family"),
+            "situation": f"{s}:{job['situation_seed']}", "situation_seed": job["situation_seed"], "r": job["r"],
+            "seed": job["seed"], "operator": (job.get("operator") or {}).get("mode", "proxy"),
+            "policy": Path(policy).name if policy else None, "clock": "paused",
+            "class": "harness_error", "name": name, "errors": errors, "attempts": 2,
+            "wall_s": round(time.perf_counter() - t0, 3)}
+
+
 def _job(job: dict[str, Any]) -> dict[str, Any]:
     """One episode in a worker: the record (without the audit text, kept beside it on request)."""
     from .episode import Episode, Options
     from .families import generate
     from .metrics import episode_metrics
 
+    if job.get("scoring") == "v2":
+        return _job_v2(job)
     t0 = time.perf_counter()
     calib = Calibration(**job["calibration"])
     agent = job.get("agent") or "playbook"
@@ -106,6 +201,9 @@ def _job(job: dict[str, Any]) -> dict[str, Any]:
 def job_name(job: dict[str, Any]) -> str:
     base = job.get("family") or job["situation"]
     agent = job.get("agent") or "playbook"
+    if job.get("scoring") == "v2":
+        cond = f"-{job['condition']}" if job.get("condition") else ""
+        return f"{base}-{agent}-s{job['situation_seed']}-r{job['r']}{cond}"
     return f"{base}-s{job['seed']}" if agent == "playbook" else f"{base}-{agent}-s{job['seed']}"
 
 
@@ -315,7 +413,24 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-anchors", action="store_true")
     ap.add_argument("--no-build", action="store_true")
     ap.add_argument("--speed", action="store_true", help="also report episodes per core-hour (G1b)")
+    ap.add_argument("--scoring", choices=["v1", "v2"], default="v1",
+                    help="v2: the picture sampler, replicates, labels against the paired none replicate, "
+                         "aggregate_v2.json and the scorecard (eval/SCORING-V2.md); v1 (default): as before")
+    ap.add_argument("--replicates", type=int, default=1, help="v2: K replicates per situation (seeds from "
+                    "sha256(family:situation_seed:r))")
+    ap.add_argument("--order-seed", type=int, default=0, help="v2: the seed of the random run order")
+    ap.add_argument("--operators", nargs="*", default=None,
+                    help="v2: operator modes, one condition each (proxy: the situation's own autoplay preset)")
+    ap.add_argument("--policy", nargs="*", default=None, help="v2: policy files, one condition each "
+                    "(default: the situation's own)")
+    ap.add_argument("--primary", nargs=2, default=["model", "playbook"], metavar=("A", "B"),
+                    help="v2: the primary pair (A minus B on need served; A's replicate 0 only when A is the model)")
+    ap.add_argument("--no-multiverse", action="store_true", help="v2: skip the multiverse cells")
     args = ap.parse_args(argv)
+    if args.scoring == "v2":
+        return main_v2(args)
+    if args.replicates != 1 or args.operators or args.policy:
+        raise SystemExit("--replicates, --operators and --policy are scoring v2's: add --scoring v2")
     agents = list(dict.fromkeys(args.agent))
     if "model" in agents and not os.environ.get("MURMUR_EVAL_MODEL"):
         raise SystemExit("--agent model calls the Anthropic API: set MURMUR_EVAL_MODEL=1 to allow it (never in tests)")
@@ -395,6 +510,101 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{len(agg['failed'])} failed:", [f["failed"] for f in agg["failed"]][:5], file=sys.stderr)
     print(out)
     return 0 if not agg["failed"] else 1
+
+
+def v2_jobs(args: argparse.Namespace, agents: list[str], calib: dict[str, Any], out: Path) -> list[dict[str, Any]]:
+    """Every (situation, replicate, condition, agent) of a v2 batch, in a random order."""
+    seeds = parse_seeds(args.seeds)
+    bases: list[dict[str, Any]] = []
+    for fam in args.families or []:
+        bases += [{"family": fam, "situation_seed": s} for s in seeds]
+    if args.situation or not args.families:
+        bases += [{"situation": args.situation or "harbor-watch", "situation_seed": s} for s in seeds]
+    ops: list[tuple[str, dict[str, Any] | None]]
+    if args.operators:
+        ops = [(m, None if m == "proxy" else {"mode": m}) for m in args.operators]
+    else:
+        op = json.loads(args.operator) if args.operator else None
+        ops = [((op or {}).get("mode", "proxy"), op)]
+    pols: list[str | None] = [str(Path(p).resolve()) for p in args.policy] if args.policy else [None]
+    multi = len(ops) * len(pols) > 1
+    model_cfg = json.loads(args.model_config) if args.model_config else None
+    jobs = []
+    for b in bases:
+        fam = b.get("family") or b["situation"]
+        for r in range(max(1, args.replicates)):
+            seed = replicate_seed(fam, b["situation_seed"], r)
+            for mode, op in ops:
+                for pol in pols:
+                    cond = f"{mode}-{Path(pol).stem}" if multi and pol else (mode if multi else None)
+                    for a in agents:
+                        jobs.append({**b, "r": r, "seed": seed, "agent": a, "operator": op, "policy": pol,
+                                     "condition": cond, "scoring": "v2", "calibration": calib, "out": str(out),
+                                     "keep_audit": args.keep_audit, "anchors": not args.no_anchors,
+                                     "model": model_cfg if a == "model" else None})
+    random.Random(args.order_seed).shuffle(jobs)
+    return jobs
+
+
+def main_v2(args: argparse.Namespace) -> int:
+    """`--scoring v2`: the episodes, then their labels, metrics, aggregate and scorecard."""
+    from .v2.aggregate import aggregate, score
+    from .v2.labels import Params
+    from .v2.scorecard import write as write_scorecard
+    from .v2.scorecard import scorecard
+
+    agents = list(dict.fromkeys(args.agent))
+    added_none = "none" not in agents
+    if added_none:
+        agents.append("none")  # `useful` is judged against the paired none replicate (2.5)
+    if "model" in agents and not os.environ.get("MURMUR_EVAL_MODEL"):
+        raise SystemExit("--agent model calls the Anthropic API: set MURMUR_EVAL_MODEL=1 to allow it (never in tests)")
+    if not args.no_build:
+        build()
+    batch = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    out = args.out or RESULTS / batch
+    out.mkdir(parents=True, exist_ok=True)
+    if "model" in agents:
+        os.environ.setdefault("MURMUR_EVAL_LEDGER", str(out / "model-ledger.json"))
+    calib = Calibration.load().as_dict()
+    jobs = v2_jobs(args, agents, calib, out)
+    t0 = time.time()
+    if args.workers <= 1:
+        metas = [_job(j) for j in jobs]
+    else:
+        with mp.get_context("spawn").Pool(args.workers) as pool:
+            metas = list(pool.imap_unordered(_job, jobs, chunksize=1))
+    wall = time.time() - t0
+    metas.sort(key=lambda m: m.get("name") or "")
+    (out / "episodes_v2.json").write_text(json.dumps(metas, indent=1, sort_keys=True))
+    t1 = time.time()
+    scored = score(metas, Params(), multiverse=not args.no_multiverse)
+    agg = aggregate(scored, primary=tuple(args.primary))  # type: ignore[arg-type]
+    done = [m for m in metas if m.get("path")]
+    sizes = [m["record_bytes"] for m in done if m.get("record_bytes")]
+    pics = [m["picture_bytes"] for m in done if m.get("picture_bytes")]
+    agg.update({
+        "batch": batch, "jobs": len(jobs), "done": len(done), "workers": args.workers, "wall_s": round(wall, 3),
+        "scoring_s": round(time.time() - t1, 3), "calibration": calib, "agents": agents,
+        "none_added_for_pairing": added_none, "replicates": args.replicates, "order_seed": args.order_seed,
+        "harness_errors": [m for m in metas if m.get("class") == "harness_error"],
+        "reruns": sum(1 for m in metas if m.get("reruns")),
+        "record_bytes": {"mean": round(statistics.fmean(sizes)) if sizes else None, "max": max(sizes) if sizes else None,
+                         "gzipped": True},
+        "picture_bytes": {"mean": round(statistics.fmean(pics)) if pics else None, "max": max(pics) if pics else None,
+                          "gzipped": False},
+    })
+    (out / "aggregate_v2.json").write_text(json.dumps(agg, indent=1, sort_keys=True, default=str))
+    card = scorecard(scored)
+    j, md = write_scorecard(card, out)
+    print(json.dumps({k: agg[k] for k in ("jobs", "done", "workers", "wall_s", "scoring_s", "record_bytes",
+                                         "picture_bytes", "reruns")}, indent=1))
+    print(md.read_text())
+    if agg["harness_errors"]:
+        print(f"{len(agg['harness_errors'])} harness errors:", [m.get("errors") for m in agg["harness_errors"]][:5],
+              file=sys.stderr)
+    print(out)
+    return 0 if not agg["harness_errors"] else 1
 
 
 if __name__ == "__main__":

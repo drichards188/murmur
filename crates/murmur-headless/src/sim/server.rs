@@ -13,6 +13,11 @@
 //! - `api` `{method, path, body, operator}`: answers `{status, body}`.
 //! - `truth` `{association, log_from}`: the truth now, and the contacts' truth log from a line on
 //!   (evaluation only).
+//! - `picture` `{homes}`: scoring v2's sampler (evaluation only): every track as the bridge
+//!   serves it, the tracker's association, the inbox's alerts, our vehicles' truth; with
+//!   `homes`, each vehicle's platform and sensors and the sensing model's seed and rate.
+//! - `misclassify` `{seed, rate, contacts}`: the sensing model's misclassification draws for
+//!   those contacts (evaluation only: the Python port's check).
 //! - `fault` `{kind, ...}`: a scripted fault (`link_event` with `event`, or `stop` with `uid`).
 //! - `tools`: the MCP tool names (with `defs: true`, also their definitions as `tools/list`
 //!   gives them). `now`: the clock. `perf`: where the computer time went.
@@ -48,6 +53,7 @@ fn slot(req: &Value) -> &'static str {
         (Some("mcp"), _) => "call.mcp_other",
         (Some("api"), _) => "call.api",
         (Some("truth"), _) => "call.truth",
+        (Some("picture"), _) => "call.picture",
         (Some("step"), _) => "call.step",
         _ => "call.other",
     }
@@ -84,6 +90,8 @@ fn handle(ep: &mut Episode, req: &Value) -> Result<Value, String> {
             req["association"].as_bool().unwrap_or(true),
             req["log_from"].as_u64().map(|i| i as usize),
         ),
+        Some("picture") => ep.picture(req["homes"].as_bool().unwrap_or(false)),
+        Some("misclassify") => super::misclassify(req),
         Some("fault") => ep.fault(req),
         Some("tools") if req["defs"].as_bool() == Some(true) => {
             Ok(json!({ "tools": ep.tools(), "defs": ep.tool_defs()? }))

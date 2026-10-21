@@ -116,6 +116,24 @@ class Sim:
     def truth(self, association: bool = True) -> dict[str, Any]:
         return self.rpc({"op": "truth", "association": association})
 
+    def picture(self, homes: bool = False) -> dict[str, Any]:
+        """Scoring v2's picture sample at this instant (evaluation only, never given to an
+        agent): every track as the bridge serves it, the tracker's association, the inbox's
+        alerts and our vehicles' truth; with `homes`, each vehicle's platform and sensors and
+        the sensing model's seed and misclassification rate (eval/headless/v2/record.py)."""
+        out = self.rpc({"op": "picture", "homes": bool(homes)})
+        if "tracks" not in out:
+            raise SimError("this murmur-headless has no picture request: rebuild it from this tree "
+                           "(cargo build --release -p murmur-headless)")
+        return out
+
+    def misclassify(self, seed: int, rate: float, contacts: list[str]) -> list[dict[str, Any]]:
+        """The sensing model's misclassification draws (crates/murmur-bridge tracks/sensing.rs
+        `misclassify_draw`) for these contacts: per (contact, sensor type), the uniform the
+        draw compares with `rate` and the draw (evaluation only)."""
+        return list(self.rpc({"op": "misclassify", "seed": int(seed), "rate": float(rate),
+                              "contacts": list(contacts)})["draws"])
+
     def fault(self, kind: str, **fields: Any) -> dict[str, Any]:
         return self.rpc({"op": "fault", "kind": kind, **fields})
 

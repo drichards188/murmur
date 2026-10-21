@@ -16,10 +16,16 @@ clock, over one `murmur-headless` process.
 - **the script**: the situation's faults and scripted proposers (families.py).
 - **the truth sampler**: our vehicles every `sample_s` and the tracker's association every 10 s;
   the contacts' truth is their own per-step log, read at the end (never given to the AI).
+- **the picture sampler** (scoring v2 only, `Options.scoring = "v2"`; eval/SCORING-V2.md 2.6):
+  every 1 s of situation time, the picture as the bridge serves it, the tracker's association,
+  the inbox's alerts and our vehicles' truth, one request that never moves the clock, kept as
+  change points (v2/record.py). A v2 record also carries `episode_class` (section 7: the driver
+  sets it), the replicate, the audit log's digest and the invariants. A v1 episode runs none of
+  this, so its record is unchanged.
 
-Simultaneous events run in a fixed order (runner, script, operator, AI, sampler) and each
-process's actions happen at one simulated instant, so an episode is a function of (situation,
-seed, calibration, operator model).
+Simultaneous events run in a fixed order (runner, script, operator, AI, sampler, picture) and
+each process's actions happen at one simulated instant, so an episode is a function of
+(situation, seed, calibration, operator model).
 """
 
 from __future__ import annotations
@@ -55,8 +61,12 @@ from playbook.ledger import Ledger  # noqa: E402
 POLL_S = 0.5  # agents/playbook_agent.py
 PLAYBOOK_AGENT = "agent-playbook"
 RECORD_SCHEMA = "murmur-headless-episode/1"
-PRIORITY = {"runner": 0, "script": 1, "operator": 2, "agent": 3, "sampler": 4}
+PRIORITY = {"runner": 0, "script": 1, "operator": 2, "agent": 3, "sampler": 4, "picture": 5}
 AGENTS = ("playbook", "model", "none")
+SCORINGS = ("v1", "v2")
+#: SCORING-V2.md section 7: the classes the driver sets (the batch adds `harness_error` for an
+#: episode that failed in the simulator or the driver)
+EPISODE_CLASSES = ("scored", "harness_error", "budget_stop", "model_failed")
 
 
 @dataclass
@@ -74,6 +84,11 @@ class Options:
     # Anthropic API's (the tests' fake); without one the episode needs MURMUR_EVAL_MODEL=1
     model: dict[str, Any] | None = None
     model_client: Any = None
+    # "v2": the picture sampler, `episode_class`, the audit log's digest (SCORING-V2.md); "v1"
+    # (default) leaves the episode and its record exactly as before
+    scoring: str = "v1"
+    # v2: which replicate this is ({"r", "seed", "situation_seed"}), recorded as given
+    replicate: dict[str, Any] | None = None
 
 
 class Loop:
@@ -267,6 +282,9 @@ class Episode:
         self.ai_first_tick_s: float | None = None
         self.contacts_start_s: float | None = None
         self.bridge_start_s: float | None = None
+        if self.opts.scoring not in SCORINGS:
+            raise ValueError(f"unknown scoring {self.opts.scoring!r}: {', '.join(SCORINGS)}")
+        self.picture_enc: Any = None  # v2/record.py PictureEncoder (scoring v2 only)
 
     def run_async(self, coro: Any) -> Any:
         return self.aloop.run_until_complete(coro)
@@ -317,6 +335,12 @@ class Episode:
             self.loop.at(self.script.first(), "script")
             self.loop.handlers["sampler"] = self.sample
             self.loop.at(0.0, "sampler")
+            if self.opts.scoring == "v2":
+                from .v2.record import PictureEncoder
+
+                self.picture_enc = PictureEncoder(self.sim_epoch)
+                self.loop.handlers["picture"] = self.picture_sample
+                self.loop.at(0.0, "picture")
             self.loop.at(1.0, "runner")
             self.loop.run(self.e.duration_s)
             if self.opts.agent == "model":
@@ -384,6 +408,16 @@ class Episode:
             self.association.setdefault(a["track_id"], a["contact_id"])
         return now + self.opts.sample_s
 
+    def picture_sample(self, now: float) -> float | None:
+        """Scoring v2's picture sampler (SCORING-V2.md 2.6): one read at this instant, every
+        `PICTURE_DT` of situation time to the end; the first also carries the fleet's platforms
+        and sensors and the sensing model's draws' seed and rate."""
+        from .v2.record import PICTURE_DT
+
+        first = not self.picture_enc.times
+        self.picture_enc.add(self.sim.picture(homes=first))
+        return now + PICTURE_DT
+
     def truth_log(self, final: dict[str, Any]) -> None:
         """The contacts' truth, one sample per contacts step on the situation's clock (the
         process's start plus its scenario second), as fullstack.py reads contacts-truth.jsonl."""
@@ -438,7 +472,37 @@ class Episode:
                 "fallbacks": cfg_m["fallbacks"], "max_tokens": cfg_m["max_tokens"],
                 "prompt_sha256": hashlib.sha256(self.agent.system.encode()).hexdigest(),
                 "tools_sha256": hashlib.sha256(json.dumps(self.agent.tools, sort_keys=True).encode()).hexdigest()}}
+        if self.opts.scoring == "v2":
+            rec.update(self.v2_part(audit_text))
         return rec
+
+    def v2_part(self, audit_text: str) -> dict[str, Any]:
+        """Scoring v2's keys (SCORING-V2.md 2.6, 7): the episode class as the driver sets it,
+        the replicate, the condition (operator, policy), the picture samples, the audit log's
+        digest and the invariants. The batch sets `harness_error` for an episode that failed."""
+        from .v2.record import digest_audit, invariant_counts
+
+        if self.opts.agent == "model" and self.agent.budget_stopped:
+            cls = "budget_stop"
+        elif self.opts.agent == "model" and self.agent.model_failed:
+            cls = "model_failed"
+        else:
+            cls = "scored"
+        pic = self.picture_enc.finish()
+        return {
+            "scoring": "v2",
+            "episode_class": cls,
+            "replicate": dict(self.opts.replicate) if self.opts.replicate else None,
+            "v2": {
+                "agent": self.opts.agent,
+                "condition": {"operator": (self.operator.m.mode if self.operator else None),
+                              "policy": Path(self.e.policy).name if self.e.policy else None},
+                "picture": pic,
+                "picture_samples": len(pic["times"]),
+                "audit": digest_audit(audit_text, self.sim_epoch),
+                "invariants": invariant_counts(audit_text),
+            },
+        }
 
 
 def audit_summary(text: str) -> dict[str, Any]:

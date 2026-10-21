@@ -301,6 +301,97 @@ impl Episode {
         }))
     }
 
+    /// The picture and the truth at this instant, for scoring v2's sampler
+    /// (eval/headless/v2/record.py; evaluation only, never reachable from the bridge's API or
+    /// the MCP tools): every track as the bridge serves it (`Track::json`, the same function
+    /// `GET /api/tracks` answers with), the tracker's own association of tracks to contacts
+    /// (sorted: the store keeps it in a hash map), the inbox's alerts as the bridge derives
+    /// them, and our vehicles as the stand-ins really are (position, altitude, speed, mode,
+    /// armed, battery, home, the link's blocking cause). With `homes`, also each vehicle's
+    /// platform and sensors (the bridge's sensor catalog) and the sensing model's seed and
+    /// misclassification rate as the tracker draws them (`MURMUR_SENSE_SEED` and
+    /// `MURMUR_SENSE_MISCLASS` over the scenario's). Reads only: an error if the clock moved.
+    pub fn picture(&self, homes: bool) -> Result<Value, String> {
+        let _g = self.rt.enter();
+        let before = Instant::now();
+        let now = crate::clock::wall();
+        let ev = self.tracks.eval_json(now);
+        let mut association: Vec<(String, String)> = ev["association"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|a| Some((a["track_id"].as_str()?.to_string(), a["contact_id"].as_str()?.to_string())))
+            .collect();
+        association.sort();
+        let ours: Vec<Value> = (0..self.fleet.len())
+            .map(|i| {
+                let blocked = self.emu.blocked(i);
+                self.fleet.read(i, |v| {
+                    let (lat, lon, alt) = v.truth();
+                    let cap = v.capacity_mah();
+                    json!({
+                        "uid": v.cfg.uid(),
+                        "lon": lon, "lat": lat, "alt_m": alt,
+                        "speed_mps": v.st.speed,
+                        "mode": v.st.mode,
+                        "armed": v.st.armed,
+                        "battery_pct": (cap > 0.0).then(|| 100.0 * (1.0 - v.battery.consumed_mah / cap)),
+                        "home": [v.st.home.1, v.st.home.0],
+                        "link_blocked": blocked,
+                    })
+                })
+            })
+            .collect();
+        let alerts = serde_json::to_value(self.decision.current_alerts()).map_err(err("alerts"))?;
+        let mut out = json!({
+            "t": self.now_s(),
+            "wall": now,
+            "tracks": ev["tracks"],
+            "association": association,
+            "alerts": alerts,
+            "ours": ours,
+        });
+        if homes {
+            let catalog = crate::tracks::sensing::SensorCatalog::load(&self.spec.root.join("sim/platforms.toml")).ok();
+            let fleet: Vec<Value> = self
+                .spec
+                .fleet
+                .iter()
+                .map(|v| {
+                    let platform = v["platform"].as_str().unwrap_or_default();
+                    let sensors: Vec<Value> = catalog
+                        .as_ref()
+                        .and_then(|c| c.get(platform))
+                        .map(|p| {
+                            p.sensors
+                                .iter()
+                                .map(|s| json!({ "type": s.kind.as_str(), "range_m": s.range_m, "height": s.height }))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    json!({ "uid": v["uid"], "callsign": v["callsign"], "platform": platform, "sensors": sensors })
+                })
+                .collect();
+            let st = crate::tracks::Settings::from_env();
+            let scenario = self
+                .contacts
+                .as_ref()
+                .map(|c| (c.seed, c.scenario.sensing.misclassification_rate));
+            out["fleet"] = json!(fleet);
+            out["sensing"] = json!({
+                "seed": st.seed.or(scenario.map(|s| s.0)),
+                "misclassification_rate": st.misclassification_rate.or(scenario.map(|s| s.1)),
+                "seed_from_env": st.seed.is_some(),
+                "rate_from_env": st.misclassification_rate.is_some(),
+            });
+        }
+        if Instant::now() != before {
+            return Err("picture moved the simulated clock: a read must answer at the instant it is asked".into());
+        }
+        Ok(out)
+    }
+
     /// A scripted fault, outside the bridge: a link event (the emulator's own `[[event]]`
     /// schema), or a stand-in that stops making way (its cruise and top speed set to zero, as a
     /// fouled propeller would; nothing goes through the bridge).
@@ -356,6 +447,30 @@ impl Episode {
         self.emu.save_space_cache();
         self.decision.shutdown_and_exit()
     }
+}
+
+/// The sensing model's per-(contact, sensor type) misclassification draws
+/// (`tracks::sensing::misclassify_draw`) for a seed and rate: the uniform each draw compares
+/// with the rate, and the draw. Evaluation only: scoring v2's labels port the function to
+/// Python (eval/headless/v2/labels.py) and its test compares the two.
+pub fn misclassify(req: &Value) -> Result<Value, String> {
+    use crate::tracks::sensing::{SensorType, misclassify_draw, uniform};
+    let seed = req["seed"].as_u64().ok_or("misclassify: seed (an unsigned integer)")?;
+    let rate = req["rate"].as_f64().unwrap_or(0.0);
+    let contacts = req["contacts"].as_array().ok_or("misclassify: contacts (a list of ids)")?;
+    let mut draws = Vec::new();
+    for c in contacts {
+        let id = c.as_str().ok_or("misclassify: a contact id is a string")?;
+        for s in [SensorType::Radar, SensorType::EoIr, SensorType::Ais, SensorType::Sonar, SensorType::Esm] {
+            draws.push(json!({
+                "contact": id,
+                "sensor": s.as_str(),
+                "u": uniform(seed ^ 0xC1A5, -1, 0, id, s as u64),
+                "wrong": misclassify_draw(seed, id, s, rate),
+            }));
+        }
+    }
+    Ok(json!({ "draws": draws }))
 }
 
 type Parts = (
