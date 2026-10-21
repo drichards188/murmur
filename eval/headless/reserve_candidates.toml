@@ -1,0 +1,74 @@
+# Where PUMA 1 waits in reserve in scoring v2's world: the candidates (eval/SCORING-V2.md section
+# 0.1, murmur-72l.9). Committed before any calibration run, and not changed after one: the rule
+# in 0.1 picks among exactly these, on the anchors `none` and `oracle` only (approve-all,
+# dev-build seeds 1000-1049, every v2 family with eligible needs). PUMA 2 stays on its current
+# station (its opening order off Lime Point) in every candidate.
+#
+# A candidate is PUMA 1's spawn: where it is airborne at the start and loiters with no order, and
+# its home (where an rtl or its own failsafe brings it back). Each is inside the approved area
+# (sim/areas/golden-gate.geojson: -122.53 to -122.39 lon, 37.77 to 37.87 lat), at least 200 m
+# from every no-go area, at the current spawn's 120 m, over water or ground no higher than 6 m on
+# the baked terrain grid, with no terrain above 12 m on the line to the ground station at Crissy
+# Field (sim/links.toml [ground_station]; the Puma's LOS datalink has a 20 m terrain ramp), so a
+# Puma waiting there keeps its link. Angel Island (Ayala Cove) was looked at and left out: the
+# island's ridge (160 m) stands between it and the ground station.
+#
+# Distances and bearings are from the bridge reference point (-122.4783, 37.8199). `place` is
+# what the name stands for; `why` is why a small UAS could plausibly wait there.
+
+[[candidate]]
+name = "spawn"
+place = "PUMA 1's current spawn: mid-strait, 1.3 km west of the bridge (bearing 275)"
+lon = -122.4930
+lat = 37.8210
+alt_m = 120
+why = """Harbor watch's own reserve position (sim/fleets/harbor-watch.toml): airborne over the
+strait just inside the entrance, the closest point to where anything entering would pass."""
+
+[[candidate]]
+name = "crissy-field"
+place = "Crissy Field, over the airfield lawn, 2.1 km south-east of the bridge (bearing 131)"
+lon = -122.4600
+lat = 37.8075
+alt_m = 120
+why = """The Golden Gate fleets' launch and recovery site, 1.2 km from the operator's ground
+station: a small UAS in reserve waits over its own field, with the best link it can have, and
+is relaunched or recovered there."""
+
+[[candidate]]
+name = "fort-baker"
+place = "Horseshoe Bay at Fort Baker, Marin, over the cove 1.3 km north of the bridge (bearing 5)"
+lon = -122.4770
+lat = 37.8315
+alt_m = 120
+why = """A sheltered cove inside the north end of the bridge with a small-boat harbor and the Coast
+Guard's Station Golden Gate: off the shipping channel, a natural place for a maritime security
+UAS to wait close to its boat crews."""
+
+[[candidate]]
+name = "kirby-cove"
+place = "Off Kirby Cove, Marin, over the water 1.2 km west-north-west of the bridge (bearing 293)"
+lon = -122.4905
+lat = 37.8240
+alt_m = 120
+why = """A beach cove on the Marin side just inside the entrance, below the headlands: a forward
+waiting point overlooking the strait, out of the channel's middle."""
+
+[[candidate]]
+name = "sausalito"
+place = "Off the Sausalito waterfront, Richardson Bay, 3.4 km north of the bridge (bearing 6)"
+lon = -122.4740
+lat = 37.8500
+alt_m = 120
+why = """Sausalito's waterfront and small-boat harbors, out of the main channel and clear of the
+ferry terminal: a quiet place on the water to hold a small UAS between tasks."""
+
+[[candidate]]
+name = "fort-mason"
+place = "Fort Mason piers, San Francisco waterfront, 4.2 km east of the bridge (bearing 104)"
+lon = -122.4315
+lat = 37.8110
+alt_m = 120
+why = """A pier complex (the Army's former port of embarkation) 1.4 km east of the ground station,
+on the city's waterfront: a staging site with a clear line to the operator, away from the
+entrance."""
