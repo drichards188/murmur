@@ -292,6 +292,20 @@ def test_ferries_adds_one_look_at_each_ais_neutral_and_lets_it_go():
     assert fe["playbook"]["config_label"] != pb["playbook"]["config_label"]
 
 
+@pytest.mark.parametrize("agent,family", [("playbook+spam", "fast-unknown"), ("playbook+behind", "fast-unknown"),
+                                          ("playbook+skip-first", "fast-unknown"),
+                                          ("playbook+reserve-blind", "low-battery"), ("playbook+ferries", "fast-unknown"),
+                                          ("null", "fast-unknown")])
+def test_each_perturbation_repeats_on_its_seeds(agent: str, family: str):
+    seed = 1200 if family != "fast-unknown" or agent != "null" else 1000
+    a = cached(family, seed, agent)
+    b = episode(family, seed, agent)
+    strip = lambda r: [{k: v for k, v in ln.items() if k != "rationale"} for ln in r["agent_log"]  # noqa: E731
+                       if ln.get("kind") in ("proposal", "perturbation", "withdrawal", "decision")]
+    assert strip(a) == strip(b) and normalized_audit(a["audit_text"]) == normalized_audit(b["audit_text"])
+    assert fidelity_digest(a) == fidelity_digest(b)
+
+
 # ---- the replicate wiring ------------------------------------------------------------------------
 
 def test_the_batch_sets_the_replicate_and_its_run_id(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
