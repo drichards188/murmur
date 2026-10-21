@@ -312,7 +312,7 @@ class Episode:
             model: OperatorModel = operator_model(self.opts.operator if self.opts.operator is not None
                                                   else self.e.autoplay)
             self.operator = Operator(sim, model, self.e.seed, AUTOPLAY_OPERATOR,
-                                     f"scripted (situation {self.e.name}, autoplay): {AUTOPLAY_OPERATOR} (not a person)",
+                                     self.e.operator_note(AUTOPLAY_OPERATOR),
                                      spec["epoch"])
             self.loop.handlers["operator"] = self.operator.wake
             cfg = make_config(json.loads(playbook_json(self.e)), self.e.config_name or self.e.name)  # type: ignore[arg-type]

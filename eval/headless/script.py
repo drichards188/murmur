@@ -5,16 +5,26 @@ Each item is `{"at_s": t, "kind": ...}` or waits for a trigger:
 - `link_cut` `{uid, duration_s}` at `at_s`, or `{after_first_look: [lo, hi] s, delay_s,
   duration_s, deadline_s}`: a cut of both directions of a vehicle's link (the emulator's own `cut`
   event, as the storyline's `link` step appends one to the run's events file). With
-  `after_first_look`, the vehicle is the one flying the first look of the playbook's to be
-  dispatched, cut `delay_s` (drawn by the generator) after its dispatch; if none is dispatched by
-  `deadline_s`, nothing is cut and the log says "no look to cut". The log records the vehicle's
-  mode at the cut (truth) and whether it was already going home on its own failsafe
-  (`already_recovering`, since when), in which case no look in progress was cut.
+  `after_first_look`, the vehicle is the one flying the first look of the agent under test to be
+  dispatched (`first_look`), cut `delay_s` (drawn by the generator) after its dispatch; if none
+  is dispatched by `deadline_s`, nothing is cut and the log says "no look to cut". The log
+  records the vehicle's mode at the cut (truth) and whether it was already going home on its own
+  failsafe (`already_recovering`, since when), in which case no look in progress was cut.
 - `stop` `{uid}`: the stand-in stops making way (its cruise and top speed set to zero, as a
-  fouled propeller would; nothing goes through the bridge).
+  fouled propeller would; nothing goes through the bridge). Or, with `after_first_look` (scoring
+  v2's `stuck-vehicle`), the vehicle flying the first look of the agent under test stops
+  `delay_s` after its dispatch; if none is dispatched by `deadline_s`, `fallback_uid` stops then.
 - `flood` `{proposals: [{task, uids, center, radius_m | route}], window_s}`: a scripted proposer
   (`agent-scripted`, over MCP, its rationale labelled as the storyline's) puts each in the inbox,
   evenly over the window.
+
+**The first look** (`first_look`; eval/SCORING-V2.md 4.5): the first intent, by its dispatch
+time, that an agent proposed (any agent but the scripted ones, `agent-setup`'s opening orders and
+`agent-scripted`'s proposals), of a look task (the item's `look_tasks`; orbit by default, as v1's
+items have it; v2's are orbit and patrol), flown by a vehicle in the item's `look_uids` when it
+names them (v2: the vehicles that carry a classifying sensor, the Pumas). Until 2026-10-21 it
+counted the playbook's orbits only, so a model agent's look never cut anything; for the playbook
+nothing changes.
 
 Everything it did goes to `log` (the record's `script`), with truth's view of it.
 """
@@ -25,7 +35,7 @@ import sys
 from typing import Any
 
 from eval.agent import _mcp_args
-from eval.situation import SCRIPTED_TIMELINE, STORYLINE_AGENT
+from eval.situation import SCRIPTED_TIMELINE, SETUP_AGENT, STORYLINE_AGENT
 from eval.situation_run import labelled
 
 from . import REPO
@@ -33,6 +43,32 @@ from .sim import HeadlessSession
 
 sys.path.insert(0, str(REPO / "agents"))
 from playbook.beliefs import RECOVERING_MODES  # noqa: E402
+
+#: the scripted proposers, never the agent under test: the opening orders and the timeline's
+#: proposals (SCORING-V2.md 4.5: a trigger never fires on setup or scripted orders)
+SCRIPTED_AGENTS = (SETUP_AGENT, STORYLINE_AGENT)
+#: the scripted items that wait for the first look
+TRIGGERED = ("link_cut", "stop")
+
+
+def first_look(intents: list[dict[str, Any]], item: dict[str, Any]) -> tuple[float, int, int] | None:
+    """The first dispatched look of the agent under test, as `item` counts one (module doc):
+    (its dispatch time, unix s; its intent id; the vehicle flying it), or None. `intents` is the
+    operator API's list (`GET /api/intents`), each with its source, kind, uids and history."""
+    tasks = tuple(item.get("look_tasks") or ("orbit",))
+    only = {int(u) for u in item["look_uids"]} if item.get("look_uids") else None
+    looks = []
+    for i in intents:
+        src = i.get("source") or {}
+        if src.get("kind") != "agent" or src.get("id") in SCRIPTED_AGENTS or i.get("kind") not in tasks:
+            continue
+        uids = [int(u) for u in i.get("uids") or [] if only is None or int(u) in only]
+        if not uids:
+            continue
+        disp = [h for h in i.get("history") or [] if h.get("state") == "dispatched"]
+        if disp:
+            looks.append((float(disp[0]["t"]) / 1000.0, int(i["id"]), uids[0]))
+    return min(looks) if looks else None
 
 
 class Script:
@@ -44,9 +80,10 @@ class Script:
         self.watch: list[dict[str, Any]] = []
         self.n = 0
         for it in self.items:
-            if it.get("kind") == "link_cut" and it.get("after_first_look"):
+            if it.get("kind") in TRIGGERED and it.get("after_first_look"):
                 self.watch.append(it)
-                self._push(float(it["deadline_s"]), {**it, "deadline": True})
+                # the deadline names its watch item (by identity) so a trigger can drop it
+                self._push(float(it["deadline_s"]), {**it, "deadline": True, "watch": it})
             elif it.get("kind") == "flood":
                 props = list(it["proposals"])
                 step = float(it.get("window_s", 0.0)) / max(1, len(props))
@@ -80,33 +117,36 @@ class Script:
         return min(nxt) if nxt else None
 
     def _watch(self, now: float) -> None:
-        """A trigger: the first look of the playbook's dispatched (its intent in the operator
-        API's list, as the console shows it)."""
+        """A trigger: the first look of the agent under test dispatched (`first_look`, its intent
+        in the operator API's list, as the console shows it)."""
         if not self.watch:
             return
         status, body = self.ep.sim.api("GET", "/api/intents")
         if status != 200:
             return
-        looks = []
-        for i in (body or {}).get("intents", []):
-            src = i.get("source") or {}
-            if src.get("kind") != "agent" or src.get("id") != "agent-playbook" or i.get("kind") != "orbit":
-                continue
-            disp = [h for h in i.get("history") or [] if h.get("state") == "dispatched"]
-            if disp:
-                looks.append((float(disp[0]["t"]) / 1000.0, int(i["id"]), [int(u) for u in i.get("uids") or []]))
-        if not looks:
-            return
-        t_disp, iid, uids = min(looks)
+        intents = (body or {}).get("intents", [])
         epoch = self.ep.sim_epoch
         for it in list(self.watch):
+            look = first_look(intents, it)
+            if look is None:
+                continue
+            t_disp, iid, uid = look
             self.watch.remove(it)
             lo, hi = it["after_first_look"]
             delay = float(it.get("delay_s", lo))
             at = (t_disp - epoch) + delay
-            self.queue = [q for q in self.queue if not (q[2].get("deadline") and q[2].get("after_first_look") == it.get("after_first_look"))]
-            self._push(max(at, now), {"kind": "link_cut", "uid": uids[0], "duration_s": it["duration_s"],
-                                      "trigger": {"intent": iid, "dispatched_s": round(t_disp - epoch, 3), "delay_s": delay}})
+            self.queue = [q for q in self.queue if q[2].get("watch") is not it]
+            trigger = {"intent": iid, "dispatched_s": round(t_disp - epoch, 3), "delay_s": delay}
+            if it["kind"] == "link_cut":
+                self._push(max(at, now), {"kind": "link_cut", "uid": uid, "duration_s": it["duration_s"],
+                                          "trigger": trigger})
+            else:
+                self._push(max(at, now), {"kind": "stop", "uid": uid, "trigger": trigger})
+
+    def _mode(self, uid: int) -> Any:
+        """The vehicle's mode now, by truth."""
+        return next((o.get("mode") for o in (self.ep.sim.truth(association=False).get("ours") or [])
+                     if int(o.get("uid", -1)) == uid), None)
 
     def _recovering_since(self, uid: int, now: float) -> float | None:
         """Since when (the episode's samples of our vehicles, every 2 s) `uid` has been in a
@@ -126,14 +166,21 @@ class Script:
         try:
             if kind == "link_cut" and it.get("deadline"):
                 # no look dispatched by the deadline: nothing to cut
-                self.watch = [w for w in self.watch if w.get("after_first_look") != it.get("after_first_look")]
+                self.watch = [w for w in self.watch if w is not it.get("watch")]
                 rec.update(skipped=f"no look to cut: none dispatched by {float(it['deadline_s']):g} s")
+            elif kind == "stop" and it.get("deadline"):
+                # no look dispatched by the deadline: the fallback vehicle stops (on its own task)
+                self.watch = [w for w in self.watch if w is not it.get("watch")]
+                uid = int(it["fallback_uid"])
+                mode = self._mode(uid)
+                sim.fault("stop", uid=uid)
+                rec.update(uid=uid, mode_at_stop=mode,
+                           fallback=f"no look dispatched by {float(it['deadline_s']):g} s: the fallback vehicle stops")
             elif kind == "link_cut":
                 uid = int(it["uid"])
                 # what the vehicle was doing when its link was cut, by truth: a look in progress,
                 # or already going home on its own failsafe (then no look is being cut)
-                mode = next((o.get("mode") for o in (sim.truth(association=False).get("ours") or [])
-                             if int(o.get("uid", -1)) == uid), None)
+                mode = self._mode(uid)
                 recovering = str(mode or "").upper() in RECOVERING_MODES
                 ev = {"name": f"headless cut uid {uid}", "at_s": round(now, 3), "duration_s": float(it["duration_s"]),
                       "uid": uid, "cut": True}
@@ -142,8 +189,12 @@ class Script:
                            trigger=it.get("trigger"), mode_at_cut=mode, already_recovering=recovering,
                            recovering_since_s=self._recovering_since(uid, now) if recovering else None)
             elif kind == "stop":
-                sim.fault("stop", uid=int(it["uid"]))
-                rec.update(uid=int(it["uid"]))
+                uid = int(it["uid"])
+                # a triggered stop (v2) also records the look it hit and the mode at the stop; a
+                # timed one (v1) its vehicle only, as before
+                extra = {"trigger": it["trigger"], "mode_at_stop": self._mode(uid)} if it.get("trigger") else {}
+                sim.fault("stop", uid=uid)
+                rec.update(uid=uid, **extra)
             elif kind == "propose":
                 p = it["proposal"]
                 s = HeadlessSession(sim, STORYLINE_AGENT, "0.1")

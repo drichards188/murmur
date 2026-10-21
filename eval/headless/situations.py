@@ -122,8 +122,43 @@ class EpisodeSpec:
     path: Path | None = None
     config_name: str | None = None
     # what a model AI is told (eval/situation.py `brief_text`: the title and the operator's
-    # brief, never the director's notes); a family keeps its base situation's
+    # brief, never the director's notes); a v1 family keeps its base situation's, a v2 one is
+    # the mission (eval/headless/v2/mission.py) and nothing else
     brief: str = ""
+    # the world it runs in: "v1" (Harbor watch's fleet, the default) or "v2" (scoring v2's base,
+    # eval/SCORING-V2.md section 0: families.py `world="v2"`)
+    world: str = "v1"
+    # scoring v2's replicate r of the situation (SCORING-V2.md section 1), set by whoever runs
+    # replicates; None: the episode seed tells them apart (`run_id`)
+    replicate: int | None = None
+
+    def operator_note(self, operator: str) -> str:
+        """How the scripted operator signs its decisions' notes. v1 names the situation, as it
+        always has (the golden episode holds it); v2 never does (SCORING-V2.md 4.4: the operator
+        model's notes carry no situation name)."""
+        if self.world == "v2":
+            return f"scripted (autoplay): {operator} (not a person)"
+        return f"scripted (situation {self.name}, autoplay): {operator} (not a person)"
+
+
+def opaque_run_id(family: str, situation_seed: int | None, replicate: int | str | None) -> str:
+    """Scoring v2's run id (SCORING-V2.md 4.4): `ep-` and 12 hex characters of a SHA-256 over
+    (family, situation seed, replicate), so nothing an agent reads names the family or a seed.
+    Domain-separated from the replicate seed's hash (same inputs, `run-id:` prefix)."""
+    h = hashlib.sha256(f"run-id:{family}:{situation_seed}:{replicate}".encode()).hexdigest()
+    return f"ep-{h[:12]}"
+
+
+def run_id(e: EpisodeSpec, seed: int) -> str:
+    """The bridge's run id (MURMUR_RUN_ID: the audit log's name, served to agents at connect).
+    v1: `headless-<situation>-s<seed>`, unchanged (the golden episode's audit log holds it). v2:
+    opaque (`opaque_run_id`) over the family (the situation's name for a situation file), the
+    situation seed and the replicate; without a replicate number the episode seed stands in
+    for it, so two replicates of one situation never share a run id."""
+    if e.world != "v2":
+        return f"headless-{e.name}-s{seed}"
+    rep: int | str = e.replicate if e.replicate is not None else f"seed{int(seed)}"
+    return opaque_run_id(e.family or e.name, e.situation_seed, rep)
 
 
 def from_situation(path_or_name: str | Path) -> EpisodeSpec:
@@ -216,7 +251,7 @@ def process_spec(e: EpisodeSpec, seed: int, workdir: Path, calib: Calibration,
         "bridge_start_s": calib.bridge_start_s,
         "battery_pct": {str(k): v for k, v in e.battery_pct.items()},
     }
-    run_id = f"headless-{e.name}-s{seed}"
+    rid = run_id(e, seed)
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "HOME": os.environ.get("HOME", "/tmp"),
@@ -224,7 +259,7 @@ def process_spec(e: EpisodeSpec, seed: int, workdir: Path, calib: Calibration,
         "MURMUR_OPERATORS": ",".join(OPERATORS),
         "MURMUR_ENGAGE_OPERATORS": ",".join(ENGAGE_OPERATORS),
         "MURMUR_AGENTS": ",".join(AGENTS),
-        "MURMUR_RUN_ID": run_id,
+        "MURMUR_RUN_ID": rid,
         "MURMUR_RESUME": "0",
         "MURMUR_POLICY": str(e.policy),
         "MURMUR_AT": e.at,

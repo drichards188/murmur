@@ -523,3 +523,60 @@ protocol = "umaa"
 protocol_note = "Navy programs use UMAA over DDS; JANUS (STANAG 4748) for the acoustic link"
 authenticity = "Same as REMUS"
 authenticity_blocker = "UMAA data-model availability"
+
+# ---------------------------------------------------------------- scoring v2 variants
+# Why these exist: eval/SCORING-V2.md, section 0 (decision D8). In Harbor watch, REAPER 1's
+# EO/IR (40 km) and HUNTER 1's EO/IR and sonar reach the whole 3 km circle around the bridge
+# from their opening orders, so a contact is identified before anyone sends a vehicle to it
+# and a look cannot matter. In the v2 world they fly the same orders carrying radar and AIS
+# only: every contact is still on the picture, but only the Pumas' EO/IR can identify one.
+# Each entry is its platform's own (mq9b, seahunter) with eo_ir and sonar taken out; every
+# other field is identical. Used by sim/fleets/harbor-watch-v2.toml.
+[mq9b_radar]
+name = "MQ-9B SkyGuardian-class"
+short = "MQ-9B"
+role = "MALE ISR/strike UAS"
+domain = "air"
+sim = "standin"
+behavior = "plane"
+callsign = "REAPER"
+cruise_mps = 90
+max_mps = 105
+alt_m = 7600
+climb_mps = 10
+turn_dps = 3
+loiter_radius_m = 3500
+endurance_h = 35
+link = "satcom"
+space_class = "wgs"
+space_class_alt = "ku-geo"
+sidc = "SFAPMFQ--------"
+sensors = [{ type = "radar", range_m = 100000, guess = true }, { type = "ais", range_m = 150000, guess = true }]
+protocol = "stanag4586"
+protocol_note = "GA-ASI's ground control station is STANAG 4586-based"
+authenticity = "JSBSim MALE airframe plus 4586 (matches GA-ASI's 4586-based GCS)"
+authenticity_blocker = "Proprietary flight software"
+
+[seahunter_radar]
+name = "Sea Hunter-class MUSV"
+short = "MUSV"
+role = "Large medium-displacement USV"
+domain = "surface"
+sim = "standin"
+behavior = "boat"
+callsign = "HUNTER"
+cruise_mps = 6
+max_mps = 13
+alt_m = 0
+turn_dps = 4
+loiter_radius_m = 400
+endurance_h = 1000
+link = "satcom"
+space_class = "starlink"
+sidc = "SFSP-----------"
+sensors = [{ type = "radar", range_m = 40000, guess = true }, { type = "ais", range_m = 50000, guess = true }]
+mast_m = 10
+protocol = "umaa"
+protocol_note = "Navy programs use UMAA over DDS (public architecture description v1.1)"
+authenticity = "UMAA plus a ship maneuvering model (e.g. 3-DOF MMG) plus SATCOM"
+authenticity_blocker = "How much of UMAA's data model is public"
