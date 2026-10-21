@@ -106,30 +106,31 @@ def test_the_v2_fleet_is_harbor_watch_with_the_variants():
 
 # ---- v1 is unchanged ----------------------------------------------------------------------------
 
-#: the v1 generator's output before scoring v2 (2026-10-21, commit e8dcedb): `v1_digest` over the
-#: fields `EpisodeSpec` had then, and the contacts file
+#: the v1 generator's output before scoring v2's world (computed from commit 6c2315b, 2026-10-21):
+#: `v1_digest` over the fields `EpisodeSpec` had then and the contacts file, paths relative to
+#: the checkout
 V1_DIGESTS = {
-    "approval-flood:1": "8b8123ea1fc527ed3a86a1b38ac7ffb5642d75606e00f94a2790c24ab3687d63",
-    "approval-flood:1000": "eab5e4787dd8f47d1880bb7299fcc2f54f239cb829028cc85886aa767c86825e",
-    "approval-flood:17": "8c79a370c8f2944c31da7ee8b4e9f862533480c89708bd521413d385952e10d7",
-    "decoy:1": "8781bd8644172d982e60e1695b4a4f5173ec3db20e50ff344f93e9f2f3a6d840",
-    "decoy:1000": "eb243cfc7d545b7a9dcbd7290ec3bf651b74d5f778641ce24aa1bc6e796ea330",
-    "decoy:17": "0a7cdac8ab136d192581ccf7c1cabaccfc9237edafe6e7a860ed402ad658a3e9",
-    "fast-unknown:1": "2c2945c12945911d2861d2a27c235b491c3f0ad00446c08d1712a58f8fd1366b",
-    "fast-unknown:1000": "c7e545c79eb2ddb127dd4d206667d89556446e8b19a6a40a1d17ca4d14dc6fc0",
-    "fast-unknown:17": "1143474054c87084897986f5d8cf479e1390738cee02733306afa2d4be10b82e",
-    "link-cut-mid-look:1": "6e8a01a38b2e8a69be4b026e4ad01f645551f0dff04c6e727b73242dc2ca8cf2",
-    "link-cut-mid-look:1000": "8231d748ceb567debd5a4349747e82428a420f55cd7df4c50239b2f2a656f4e4",
-    "link-cut-mid-look:17": "cb69eb22da60d3a164de2f06a88d95c4daabe0f72d1ea13b9685419ec22fe104",
-    "low-battery:1": "47a22f6f046b08e269bfd3378f20a6a41d950b8f6b9fd0166ead9eae3f66155f",
-    "low-battery:1000": "ae32b2045eb7f2bfbb2ae3476638cc1aab36196ce4d2cd25ea0f490b7a67001b",
-    "low-battery:17": "dcce620410f416287e14376f9716a16f6c019a39537f3d1f4c14cf42658d945e",
-    "stuck-vehicle:1": "1f4c05568636bbc0ce67047ed199f34e9bcd3ee490533c4db564bd65f0862765",
-    "stuck-vehicle:1000": "06a1925bb6b892aec7a01c5425f61e36fdab6ebc83628343d03db928eca3ad4e",
-    "stuck-vehicle:17": "6cdbce147dc3bb5f653c01faaf83e4cac9f48f2365e3d6364d2f1c7039c2e601",
-    "two-at-once:1": "7b8639ffbde916455ff40a9a7937e69d7974af705389584488c5a4856a810c6d",
-    "two-at-once:1000": "5a3701dd1f154fdd08c6b8a246d1b80462ff9686f0829676f1fa2a0ccade0209",
-    "two-at-once:17": "14aabdd6af3ed02d5c6449869479fae148861103730f89963903f02dcd41d5c1",
+    "approval-flood:1": "e4067f0193b57ba21b6449e4483f6ad6c218535d5f42ef09f2da71630b485b9d",
+    "approval-flood:1000": "8bcf9feb17cb23cc5b4668f8792a620894cb5a7a7a803d343c9091e66ccc287c",
+    "approval-flood:17": "1d4210cfecb649ca4e5f088bbfa6aa8269abc46a1676b781640fafca30dc7c72",
+    "decoy:1": "513a60d8cf84defa84daf940e39b525a95bab6e6d64cc60e2f86aed22e295b8a",
+    "decoy:1000": "1e64346a52045e5e3c522ab0187a78622b7205c892db44f72b29fe375ccee633",
+    "decoy:17": "37a99b15b8e8056d7527e4735b4232630f416f9480d3d7244c19a00faff71d2d",
+    "fast-unknown:1": "0d771a41a0626177f6917cecf9006c4453dab63277269ee601ed95e8686d3e8d",
+    "fast-unknown:1000": "42a79dcca7d1aa9fe59cea9f7fd823dc4a1ed8d18cbdff39b0851a1b9df0a1c4",
+    "fast-unknown:17": "66f7e0ff524507b7648edbc87ddc9ffd3c07b6d40ab3b39172cec508961e6c42",
+    "link-cut-mid-look:1": "23e09c77b518dafb360dc93009fedc398543b7aafe86ed8c5343aeb326b72b54",
+    "link-cut-mid-look:1000": "ea9a5569701888fdab8667e0dd2b6e43c925532c19b91f870993e4e0832a3f8a",
+    "link-cut-mid-look:17": "d4c9e97bf7f4f9d14542123f91ff837ceb22f4a2ca719bc4cb5ca8b330b82d40",
+    "low-battery:1": "129c52f6ac0cdf313f471006a1a3220fc9fccc03c9f203c3e44c87b1d1bd7609",
+    "low-battery:1000": "b2142de89b052cb8c47178728f3375478b70ecd92d0fe913cceca2a405fa81c6",
+    "low-battery:17": "78a6f55db98679cbe74ce0b4e44ed950ce5cb341a51f20d00c5e433c14abff7a",
+    "stuck-vehicle:1": "488c186304c6dd563b671d15675bc71386e4853f3e8414b8c450a7a1343b8084",
+    "stuck-vehicle:1000": "3caa60b35239e73434db0a5028f07d33cc5d67bc7292d418529a4f0825a10bcd",
+    "stuck-vehicle:17": "4f5322faeb1474e065d0b409d9b82e5fa6dcd1882bfba65fadbeedb1b3b752a8",
+    "two-at-once:1": "c0b866b8c7b8f567104030d8b63f43e523c5f60dda8a1f64981d90130542ed37",
+    "two-at-once:1000": "fb2592cca6dc26ec71cbcf7e7341447994916a48b7067a5421e16f87710980da",
+    "two-at-once:17": "53f6ff97ff6a4c7324c15aff673fc1aa928d00aeb2b848572094725d33dba485",
 }
 V1_FIELDS = ("name", "fleet", "contacts", "policy", "at", "duration_s", "ai_start_s", "ready_timeout_s", "orders",
              "playbook", "autoplay", "seed", "events", "contacts_seed", "family", "split", "situation_seed",
@@ -150,7 +151,9 @@ def v1_digest(e: Any, path: Path) -> str:
             v = [repr(o) for o in v]
         d[f.name] = v
     d["contacts_text"] = Path(path).read_text()
-    return hashlib.sha256(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()
+    # paths relative to the checkout, so the digest holds in any worktree
+    s = json.dumps(d, sort_keys=True, default=str).replace(str(REPO), "<repo>")
+    return hashlib.sha256(s.encode()).hexdigest()
 
 
 def test_the_v1_families_are_unchanged(tmp_path: Path):
