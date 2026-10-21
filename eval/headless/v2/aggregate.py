@@ -70,6 +70,12 @@ MULTIVERSE: dict[str, tuple[tuple[float, ...], tuple[str, ...]]] = {
 }
 EXCLUDED_CLASSES = ("harness_error", "budget_stop", "model_failed")
 INCOMPLETE_SHARE = 0.05
+#: 3.1's admissibility rule and 10.1's world pilot: none serves at most this share, the oracle at
+#: least that one, of a family's eligible needs
+NONE_MAX = 0.5
+ORACLE_MIN = 0.8
+#: 8.1: reported alone, never pooled
+ALONE = ("harbor-watch",)
 
 
 def base_name(name: str | None) -> str:
@@ -262,32 +268,80 @@ def arms(scored: list[dict[str, Any]]) -> list[tuple[str, str]]:
     return sorted({(e["agent"], cond_key(e)) for e in scored if e.get("agent")})
 
 
+def pooled_share(scored: list[dict[str, Any]], agent: str, cond: str, fam: str | None) -> dict[str, Any]:
+    """An arm's needs served by their deadline over its eligible needs, pooled over the
+    situations (and replicates) of a family, or of every family but Harbor watch (`fam` None)."""
+    served = eligible = situations_n = 0
+    sits = set()
+    for e in scored:
+        if e["agent"] != agent or cond_key(e) != cond or not e.get("metrics") or not e.get("base"):
+            continue
+        b = base_name(e["base"])
+        if (fam is None and b in ALONE) or (fam is not None and b != fam):
+            continue
+        served += e["metrics"]["served"]
+        eligible += e["metrics"]["eligible"]
+        sits.add(e["situation"])
+    situations_n = len(sits)
+    return {"served": served, "eligible": eligible, "share": round(served / eligible, 6) if eligible else None,
+            "n_situations": situations_n}
+
+
 def admissibility(scored: list[dict[str, Any]], cond: str) -> dict[str, Any]:
     """3.1's rule per family: `none` serves at most 50 % and `oracle` at least 80 % of its
     eligible needs (pooled over its situations), when both ran."""
     out = {}
     for fam in sorted({base_name(e["base"]) for e in scored if e.get("base")}):
-        row: dict[str, Any] = {}
+        row: dict[str, Any] = {agent: pooled_share(scored, agent, cond, fam) for agent in ("none", "oracle")}
         for agent in ("none", "oracle"):
-            served = eligible = 0
-            for e in scored:
-                if e["agent"] == agent and cond_key(e) == cond and base_name(e["base"]) == fam and e["metrics"]:
-                    served += e["metrics"]["served"]
-                    eligible += e["metrics"]["eligible"]
-            row[agent] = {"served": served, "eligible": eligible,
-                          "share": round(served / eligible, 6) if eligible else None}
+            row[agent].pop("n_situations", None)
         n, o = row["none"]["share"], row["oracle"]["share"]
-        row["admissible"] = None if n is None or o is None else (n <= 0.5 and o >= 0.8)
+        row["admissible"] = None if n is None or o is None else (n <= NONE_MAX and o >= ORACLE_MIN)
         out[fam] = row
     return out
 
 
+def admitted_families(scored: list[dict[str, Any]], cond: str, pair: tuple[str, str],
+                      given: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Resolution 21: the families the primary pools. A family is admitted when its admissibility
+    verdict (3.1) is true: from `given` (an admissibility batch's `admissibility`, under this
+    condition or its only one: `{"source", "verdicts"}`), else from this batch's own `none` and
+    `oracle` when both ran under this condition (said so: not the admissibility seeds). A family
+    without a true verdict is excluded, with why; Harbor watch is reported alone (8.1), never
+    pooled."""
+    fams = sorted({base_name(e["base"]) for e in scored if e.get("base") and cond_key(e) == cond
+                   and e["agent"] in pair})
+    if given is not None:
+        v = given.get("verdicts") or {}
+        verdicts = v.get(cond) if cond in v else (next(iter(v.values())) if len(v) == 1 else {})
+        source = f"given: {given.get('source')}" + ("" if cond in v else " (its only condition)")
+    else:
+        verdicts = admissibility(scored, cond)
+        source = "this batch's none and oracle (not the admissibility seeds)"
+    admitted, excluded = [], {}
+    for f in fams:
+        if f in ALONE:
+            excluded[f] = "reported alone (8.1)"
+            continue
+        row = (verdicts or {}).get(f) or {}
+        if row.get("admissible") is True:
+            admitted.append(f)
+        elif row.get("admissible") is False:
+            excluded[f] = (f"not admissible: none {row.get('none', {}).get('share')}, oracle "
+                           f"{row.get('oracle', {}).get('share')}")
+        else:
+            excluded[f] = "no admissibility verdict (none or oracle missing, or no eligible needs)"
+    return {"admitted": admitted, "excluded": excluded, "source": source}
+
+
 def aggregate(scored: list[dict[str, Any]], primary: tuple[str, str] = ("model", "playbook"),
               primary_operator: str = "approve-all", r0_only: tuple[str, ...] = ("model",),
-              seed: int = 0) -> dict[str, Any]:
+              seed: int = 0, admissible: dict[str, Any] | None = None) -> dict[str, Any]:
     """aggregate_v2.json: per family and arm, each metric over situations; the comparisons
-    (each agent minus none; the primary pair); the primary endpoint; Holm; the multiverse; the
-    excluded episodes; admissibility."""
+    (each agent minus none; the primary pair); the primary endpoint over the admitted families
+    (`admitted_families`, from `admissible` when given: an admissibility batch's verdicts);
+    Holm; the multiverse; the excluded episodes; admissibility; the world pilot's gate when its
+    agents ran (10.1)."""
     out: dict[str, Any] = {"caveat": "Model results: a scripted operator on generated situations; not human data.",
                            "episodes": len(scored), "excluded": [], "families": {}, "pooled": {}}
     for e in scored:
@@ -349,27 +403,113 @@ def aggregate(scored: list[dict[str, Any]], primary: tuple[str, str] = ("model",
             if block["arms"]:
                 (out["pooled"] if fam == "*" else out["families"].setdefault(fam, {}))[cond] = block
         out.setdefault("admissibility", {})[cond] = admissibility(scored, cond)
-    out["primary"] = primary_endpoint(scored, primary, primary_operator, r0_only, seed)
+        gate = world_pilot(scored, cond)
+        if gate is not None:
+            out.setdefault("world_pilot", {})[cond] = gate
+    fams = {cond: admitted_families(scored, cond, primary, admissible) for cond in primary_conds(scored, primary_operator)}
+    out["primary_families"] = fams
+    out["primary"] = primary_endpoint(scored, primary, primary_operator, r0_only, seed,
+                                      admitted={c: f["admitted"] for c, f in fams.items()})
     out["holm"] = holm_family(out, primary, primary_operator)
     out["multiverse"] = multiverse(scored, primary, r0_only, seed)
     return out
 
 
+def primary_conds(scored: list[dict[str, Any]], operator: str) -> list[str]:
+    return [c for c in sorted({cond_key(e) for e in scored}) if c.startswith(f"{operator};") and c.endswith(";paused")]
+
+
 def primary_endpoint(scored: list[dict[str, Any]], primary: tuple[str, str], operator: str,
-                     r0_only: tuple[str, ...], seed: int) -> dict[str, Any] | None:
+                     r0_only: tuple[str, ...], seed: int,
+                     admitted: dict[str, list[str]] | None = None) -> dict[str, Any] | None:
     """3.1's primary: the mean over situations of (a's served share minus b's), the approve-all
     operator, paused clock, a's replicate 0 only when it is the model, b's replicates averaged;
-    the paired cluster bootstrap at 20 or more situations, else the exact sign test."""
-    conds = [c for c in sorted({cond_key(e) for e in scored}) if c.startswith(f"{operator};") and c.endswith(";paused")]
+    the paired cluster bootstrap at 20 or more situations, else the exact sign test. With
+    `admitted` (per condition, the families admitted: resolution 21) only their situations are
+    pooled, and a condition with none admitted has no primary (said so); without it, every
+    situation (a caller's own selection)."""
+    conds = primary_conds(scored, operator)
     if not conds:
         return None
-    out = {}
+    out: dict[str, Any] = {}
     for cond in conds:
         agents = {e["agent"] for e in scored if cond_key(e) == cond}
         if primary[0] in agents and primary[1] in agents:
-            out[cond] = comparison(scored, primary[0], primary[1], cond, "served_share", None,
+            bases = None if admitted is None else list(admitted.get(cond) or [])
+            if bases is not None and not bases:
+                out[cond] = {"skipped": "no admitted family (resolution 21): see primary_families"}
+                continue
+            out[cond] = comparison(scored, primary[0], primary[1], cond, "served_share", bases,
                                    primary[0] in r0_only, seed=seed)
+            out[cond]["families"] = bases
     return out or None
+
+
+def world_pilot(scored: list[dict[str, Any]], cond: str) -> dict[str, Any] | None:
+    """10.1's gate (free agents, before the freeze), per family and pooled over every family but
+    Harbor watch: `none` serves at most 50 % of eligible needs, `random-valid` fewer than the
+    `playbook`, the `oracle` at least 80 %; and `null` reproduces `none` in every situation and
+    replicate it ran (the same truth, picture samples and audit log bar `agent.action`, by their
+    digests, `batch.fidelity_digest`; the same needs served; no action). Shares pooled over the
+    situations' eligible needs. None if none of these agents ran under `cond`."""
+    agents = {e["agent"] for e in scored if cond_key(e) == cond}
+    wanted = ("none", "random-valid", "playbook", "oracle", "null")
+    if not agents & set(wanted[1:]):
+        return None
+    fams = sorted({base_name(e["base"]) for e in scored if e.get("base") and cond_key(e) == cond} - set(ALONE))
+
+    def row(fam: str | None) -> dict[str, Any]:
+        r: dict[str, Any] = {a: pooled_share(scored, a, cond, fam) for a in wanted[:4] if a in agents}
+        n, rv, pb, o = (r.get(a, {}).get("share") for a in wanted[:4])
+        r["checks"] = {
+            "none_at_most_50": None if n is None else n <= NONE_MAX,
+            "random_valid_below_playbook": None if rv is None or pb is None else rv < pb,
+            "oracle_at_least_80": None if o is None else o >= ORACLE_MIN,
+        }
+        if "null" in agents:
+            r["null_fidelity"] = null_fidelity(scored, cond, fam)
+            r["checks"]["null_fidelity"] = r["null_fidelity"]["pass"]
+        r["pass"] = all(v is not False for v in r["checks"].values()) and any(v is not None for v in r["checks"].values())
+        return r
+
+    out = {"families": {f: row(f) for f in fams}, "pooled": row(None)}
+    out["pass"] = out["pooled"]["pass"] and all(r["pass"] or all(v is None for v in r["checks"].values())
+                                                for r in out["families"].values())
+    return out
+
+
+def null_fidelity(scored: list[dict[str, Any]], cond: str, fam: str | None) -> dict[str, Any]:
+    """4.5: each `null` episode against its `none` replicate (same situation, replicate and
+    condition): the fidelity digests equal (truth, picture, audit bar `agent.action`), the same
+    needs and needs served, no action of its own."""
+    nones = {(e["situation"], int(e.get("r") or 0)): e for e in scored
+             if e["agent"] == "none" and cond_key(e) == cond}
+    pairs = differ = unpaired = 0
+    diffs: list[dict[str, Any]] = []
+    for e in scored:
+        if e["agent"] != "null" or cond_key(e) != cond or not e.get("base"):
+            continue
+        b = base_name(e["base"])
+        if (fam is None and b in ALONE) or (fam is not None and b != fam):
+            continue
+        o = nones.get((e["situation"], int(e.get("r") or 0)))
+        if o is None:
+            unpaired += 1
+            continue
+        pairs += 1
+        bad = [k for k in ("truth", "picture", "audit") if (e.get("fidelity") or {}).get(k) is None
+               or (e.get("fidelity") or {}).get(k) != (o.get("fidelity") or {}).get(k)]
+        m, mo = e.get("metrics") or {}, o.get("metrics") or {}
+        for k in ("needs", "eligible", "served", "fault_met"):
+            if m.get(k) != mo.get(k):
+                bad.append(k)
+        if m.get("actions"):
+            bad.append("actions")
+        if bad:
+            differ += 1
+            diffs.append({"situation": e["situation"], "r": e.get("r"), "differs": bad})
+    return {"pairs": pairs, "differ": differ, "unpaired": unpaired, "pass": pairs > 0 and differ == 0,
+            "differences": diffs[:20]}
 
 
 def holm_family(agg: dict[str, Any], primary: tuple[str, str], operator: str) -> dict[str, Any]:

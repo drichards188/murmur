@@ -11,7 +11,9 @@ clock, over one `murmur-headless` process.
   every 0.5 s until 2 s after the tick began, ticking at once on a waking change. Or
   (`Options.agent = "model"`) the model watch officer (officer.py): agents/watch_officer.py's
   trigger table, picture and prompt, a real model through the Anthropic API, its wakes between
-  two steps of the clock. Or none.
+  two steps of the clock. Or none. Or (scoring v2) one of the anchors `null`, `random-valid`,
+  `oracle`, or a perturbation of the playbook (`playbook+spam`, ...): eval/headless/agents_v2.py,
+  each on a session and woken on the loop from the same first tick.
 - **the operator** (operator.py).
 - **the script**: the situation's faults and scripted proposers (families.py).
 - **the truth sampler**: our vehicles every `sample_s` and the tracker's association every 10 s;
@@ -70,7 +72,11 @@ POLL_S = 0.5  # agents/playbook_agent.py
 PLAYBOOK_AGENT = "agent-playbook"
 RECORD_SCHEMA = "murmur-headless-episode/1"
 PRIORITY = {"runner": 0, "script": 1, "operator": 2, "agent": 3, "sampler": 4, "picture": 5}
-AGENTS = ("playbook", "model", "none")
+#: scoring v2's anchors and perturbations (eval/headless/agents_v2.py; SCORING-V2.md section 5)
+ANCHORS = ("null", "random-valid", "oracle")
+PERTURBATIONS = ("playbook+spam", "playbook+behind", "playbook+skip-first", "playbook+reserve-blind",
+                 "playbook+ferries")
+AGENTS = ("playbook", "model", "none") + ANCHORS + PERTURBATIONS
 SCORINGS = ("v1", "v2")
 #: SCORING-V2.md section 7: the classes the driver sets (the batch adds `harness_error` for an
 #: episode that failed in the simulator or the driver)
@@ -79,7 +85,7 @@ EPISODE_CLASSES = ("scored", "harness_error", "budget_stop", "model_failed")
 
 @dataclass
 class Options:
-    agent: str = "playbook"  # playbook | model | none
+    agent: str = "playbook"  # playbook | model | none | an anchor or perturbation (AGENTS)
     operator: dict[str, Any] | None = None  # None: the situation's [autoplay] (op-auto)
     calibration: Calibration = field(default_factory=Calibration)
     terrain: bool = True
@@ -419,6 +425,10 @@ class Episode:
                 self.agent = WatchOfficer(self, ModelConfig.resolve(self.opts.model), client=self.opts.model_client)
             elif self.opts.agent == "playbook":
                 self.agent = PlaybookAgent(self, cfg)
+            elif self.opts.agent in ANCHORS + PERTURBATIONS:
+                from . import agents_v2
+
+                self.agent = agents_v2.make(self, self.opts.agent, cfg)
             if self.agent is not None:
                 self.loop.handlers["agent"] = self.agent.wake
                 self.ai_first_tick_s = self.opts.calibration.ai_first_tick(self.seed)
@@ -536,8 +546,8 @@ class Episode:
                           "situation_seed": self.e.situation_seed, "path": str(self.e.path) if self.e.path else None},
             "seed": self.seed,
             "provenance": provenance(self.opts.binary),
-            "playbook": {"engine": f"playbook-{ENGINE_VERSION}", "config_label": cfg.label,
-                         "client_version": cfg.client_version} if pb else None,
+            "playbook": {"engine": f"playbook-{ENGINE_VERSION}", "config_label": pb.cfg.label,
+                         "client_version": pb.cfg.client_version} if pb else None,
             "operator": self.operator.describe() if self.operator else None,
             "clock": {"epoch": spec["epoch"], "at": self.e.at, "duration_s": self.e.duration_s,
                       "ai_start_s": self.e.ai_start_s, "calibration": self.opts.calibration.as_dict(),
@@ -571,6 +581,10 @@ class Episode:
             # charged only (a paused record is unchanged): the condition and its constants
             rec["clock"]["condition"] = "charged"
             rec["provenance"] = {**rec["provenance"], "clock": {"condition": "charged", "latency": self.latency.as_dict()}}
+        if self.opts.agent in ANCHORS + PERTURBATIONS:
+            # an anchor's or a perturbation's own account: what it read, what it changed, and what
+            # it read of truth (privileged; agents_v2.py)
+            rec["agent_detail"] = self.agent.describe()
         if self.opts.scoring == "v2":
             rec.update(self.v2_part(audit_text))
         return rec

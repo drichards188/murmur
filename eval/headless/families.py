@@ -266,14 +266,18 @@ def _base() -> tuple[EpisodeSpec, dict[str, Any]]:
     return e, raw
 
 
-def generate(family: str, seed: int, workdir: Path, world: str = "v1") -> tuple[EpisodeSpec, Path]:
+def generate(family: str, seed: int, workdir: Path, world: str = "v1",
+             reserve: str | None = None) -> tuple[EpisodeSpec, Path]:
     """One situation of `family` for `seed`: its spec and its contacts file (in `workdir`). `world`
-    "v2" (or a family named `v2-<family>`) gives scoring v2's (`generate_v2`); v1, the default, is
+    "v2" (or a family named `v2-<family>`) gives scoring v2's (`generate_v2`, and `reserve` names
+    one of PUMA 1's reserve candidates, for the world's calibration only); v1, the default, is
     unchanged."""
     if family.startswith(V2_PREFIX):
         family, world = family[len(V2_PREFIX):], "v2"
     if world == "v2":
-        return generate_v2(family, seed, workdir)
+        return generate_v2(family, seed, workdir, reserve=reserve)
+    if reserve is not None:
+        raise ValueError("a reserve point is scoring v2's world's (world v2)")
     if world != "v1":
         raise ValueError(f"unknown world {world!r}: v1 or v2")
     sp = split()
@@ -380,6 +384,10 @@ def generate(family: str, seed: int, workdir: Path, world: str = "v1") -> tuple[
 #: a family name with this prefix is v2's (for callers that pass names only)
 V2_PREFIX = "v2-"
 V2_FLEET = REPO / "sim" / "fleets" / "harbor-watch-v2.toml"
+#: the vehicle in reserve (no opening order): where it waits is its spawn in V2_FLEET, chosen by
+#: SCORING-V2.md 0.1's rule among the committed candidates (`RESERVE_CANDIDATES`)
+V2_RESERVE_CALLSIGN = "PUMA 1"
+RESERVE_CANDIDATES = HERE / "reserve_candidates.toml"
 #: the playbook's config label in v2: its `[playbook]` table is Harbor watch's, unchanged (same
 #: hash); only the label, which the playbook sends at connect and writes into its rationales,
 #: names no situation (SCORING-V2.md 4.4)
@@ -890,9 +898,45 @@ FAMILIES_V2 = tuple(f for f in V2_GENERATORS if f != "harbor-watch")
 SITUATIONS_V2 = tuple(V2_GENERATORS)
 
 
-def generate_v2(family: str, seed: int, workdir: Path) -> tuple[EpisodeSpec, Path]:
+def reserve_candidates() -> dict[str, dict[str, Any]]:
+    """PUMA 1's reserve point candidates (reserve_candidates.toml, committed before the world's
+    calibration ran), by name."""
+    raw = tomllib.loads(RESERVE_CANDIDATES.read_text())
+    return {c["name"]: c for c in raw["candidate"]}
+
+
+def v2_reserve_spawn() -> list[float]:
+    """Where the v2 fleet has its reserve vehicle wait: its spawn, [lat, lon, alt, heading]."""
+    fleet = tomllib.loads(V2_FLEET.read_text())
+    return list(fleet["unit"][v2_vehicles()[V2_RESERVE_CALLSIGN]["uid"] - 1]["spawn"])
+
+
+def fleet_with_reserve(name: str, workdir: Path) -> tuple[Path, dict[str, Any]]:
+    """The v2 fleet with its reserve vehicle (PUMA 1) waiting at candidate `name` instead (the
+    world's calibration, SCORING-V2.md 0.1): a copy in `workdir` whose only change is that
+    vehicle's spawn (latitude, longitude and altitude; its heading kept), and what was put
+    there. Every other unit, and the opening orders, as V2_FLEET has them."""
+    cands = reserve_candidates()
+    if name not in cands:
+        raise ValueError(f"unknown reserve candidate {name!r}; candidates: {', '.join(cands)}")
+    c = cands[name]
+    fleet = tomllib.loads(V2_FLEET.read_text())
+    i = v2_vehicles()[V2_RESERVE_CALLSIGN]["uid"] - 1
+    heading = fleet["unit"][i]["spawn"][3]
+    fleet["unit"][i]["spawn"] = [float(c["lat"]), float(c["lon"]), float(c["alt_m"]), heading]
+    out = [f"title = {json.dumps(fleet.get('title', 'fleet') + ' (reserve at ' + name + ')')}"]
+    for u in fleet["unit"]:
+        out += ["", "[[unit]]"] + [f"{k} = {_toml_value(v)}" for k, v in u.items()]
+    path = workdir / f"harbor-watch-v2-reserve-{name}.toml"
+    path.write_text("\n".join(out) + "\n")
+    return path, {"name": name, "callsign": V2_RESERVE_CALLSIGN, "lon": c["lon"], "lat": c["lat"], "alt_m": c["alt_m"]}
+
+
+def generate_v2(family: str, seed: int, workdir: Path, reserve: str | None = None) -> tuple[EpisodeSpec, Path]:
     """One v2 situation of `family` for `seed` (module doc, scoring v2): its spec and its contacts
-    file (in `workdir`; Harbor watch's own file for `harbor-watch`)."""
+    file (in `workdir`; Harbor watch's own file for `harbor-watch`). `reserve`: the world's
+    calibration only (SCORING-V2.md 0.1), PUMA 1 waiting at that candidate instead of its spawn
+    in V2_FLEET (`fleet_with_reserve`; the record's stated truth names it); None, the v2 fleet."""
     if family not in V2_GENERATORS:
         raise ValueError(f"unknown v2 family {family!r}; v2: {', '.join(V2_GENERATORS)}")
     area, gen = V2_GENERATORS[family]
@@ -921,6 +965,8 @@ def generate_v2(family: str, seed: int, workdir: Path) -> tuple[EpisodeSpec, Pat
                          "misclassified": sensing_draws(contacts_seed, rate, [c["id"] for c in contacts])}
     e.name = f"v2-{family}-{seed}"
     e.fleet = V2_FLEET
+    if reserve is not None:
+        e.fleet, stated["reserve"] = fleet_with_reserve(reserve, workdir)
     e.family = family
     e.split = "v2"
     e.situation_seed = seed

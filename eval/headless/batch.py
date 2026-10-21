@@ -94,10 +94,11 @@ def _v2_episode(job: dict[str, Any], wd: Path) -> dict[str, Any]:
     from .families import generate
 
     if job.get("family"):
-        spec, contacts = generate(job["family"], job["situation_seed"], wd)
+        spec, contacts = generate(job["family"], job["situation_seed"], wd, reserve=job.get("reserve"))
     else:
         spec, contacts = from_situation(job["situation"]), None
     spec.seed = int(job["seed"])  # the operator's draws: the replicate's (section 1)
+    spec.replicate = int(job["r"])  # the opaque run id: (family, situation seed, replicate) (4.4)
     if job.get("policy"):
         spec.policy = Path(job["policy"])
     opts = Options(agent=job.get("agent") or "playbook", operator=job.get("operator"),
@@ -105,6 +106,36 @@ def _v2_episode(job: dict[str, Any], wd: Path) -> dict[str, Any]:
                    model=job.get("model"), scoring="v2",
                    replicate={"r": job["r"], "seed": job["seed"], "situation_seed": job["situation_seed"]})
     return Episode(spec, job["seed"], wd, opts, contacts_path=contacts).run()
+
+
+def normalized_audit(text: str) -> list[dict[str, Any]]:
+    """The audit log as the null agent must reproduce `none`'s (SCORING-V2.md 4.5): every event
+    but `agent.action` (the bridge's record of an agent's session: its connect, previews,
+    proposals), in order, without what those events take a place in: the event counter (`seq`)
+    and the hash chain (`prev`, `hash`)."""
+    out = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        e = json.loads(line)
+        if e.get("type") == "agent.action":
+            continue
+        out.append({k: v for k, v in e.items() if k not in ("seq", "prev", "hash")})
+    return out
+
+
+def fidelity_digest(rec: dict[str, Any]) -> dict[str, str]:
+    """SHA-256 of what a `null` episode must share with its `none` replicate (4.5): the truth
+    (the contacts' samples, our vehicles' samples, the tracker's association), the picture
+    samples, and the audit log (`normalized_audit`). The labels follow from these."""
+
+    def h(x: Any) -> str:
+        return hashlib.sha256(json.dumps(x, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    truth = rec.get("truth") or {}
+    return {"truth": h({k: truth.get(k) for k in ("contacts", "samples", "ours", "association")}),
+            "picture": h((rec.get("v2") or {}).get("picture")),
+            "audit": h(normalized_audit(rec.get("audit_text") or ""))}
 
 
 def _job_v2(job: dict[str, Any]) -> dict[str, Any]:
@@ -126,6 +157,7 @@ def _job_v2(job: dict[str, Any]) -> dict[str, Any]:
                 continue
         if job.get("keep_audit"):
             (out_dir / f"{name}.audit.jsonl").write_text(rec["audit_text"])
+        fidelity = fidelity_digest(rec)
         rec.pop("audit_text", None)
         if errors:
             rec["harness_reruns"] = errors
@@ -133,6 +165,7 @@ def _job_v2(job: dict[str, Any]) -> dict[str, Any]:
         size = dump(rec, path)
         meta = meta_of(rec, path)
         meta.update(name=name, wall_s=round(time.perf_counter() - t0, 3), attempts=attempt, record_bytes=size,
+                    fidelity=fidelity, reserve=job.get("reserve"),
                     picture_bytes=len(json.dumps(rec["v2"]["picture"])), reruns=errors,
                     budget_stopped=bool(rec.get("budget_stopped")), model_failed=bool(rec.get("model_failed")))
         if rec.get("model"):
@@ -399,9 +432,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--situation", default=None, help="a situation file or name (sim/situations); with "
                     "--families, run beside them (default harbor-watch when no family is given)")
     ap.add_argument("--families", nargs="*", default=None, help="generated families (eval/headless/split.toml)")
-    ap.add_argument("--agent", nargs="+", default=["playbook"], choices=["playbook", "model", "none"],
+    from .episode import AGENTS
+
+    ap.add_argument("--agent", nargs="+", default=["playbook"], choices=list(AGENTS),
                     help="the AI: the playbook (default), the model watch officer (officer.py: the Anthropic "
-                         "API, needs MURMUR_EVAL_MODEL=1), none; several run each situation and seed once per agent")
+                         "API, needs MURMUR_EVAL_MODEL=1), none; scoring v2's anchors null, random-valid, oracle "
+                         "and the playbook's perturbations (agents_v2.py); several run each situation and seed "
+                         "once per agent")
     ap.add_argument("--model-config", default=None,
                     help="model agent overrides as JSON (officer.ModelConfig: model, effort, strong_model, "
                          "strong_effort, max_tokens, max_usd, fallbacks, escalation)")
@@ -426,11 +463,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--primary", nargs=2, default=["model", "playbook"], metavar=("A", "B"),
                     help="v2: the primary pair (A minus B on need served; A's replicate 0 only when A is the model)")
     ap.add_argument("--no-multiverse", action="store_true", help="v2: skip the multiverse cells")
+    ap.add_argument("--admissibility", type=Path, default=None,
+                    help="v2: an admissibility batch (its directory or aggregate_v2.json: none and oracle on the "
+                         "admissibility seeds, SCORING-V2.md 9.2) whose verdicts admit families to the primary "
+                         "(3.1); without it, this batch's own none and oracle, if both ran")
+    ap.add_argument("--reserve", default=None,
+                    help="v2 families only, the world's calibration (SCORING-V2.md 0.1): PUMA 1 waits at this "
+                         "candidate (eval/headless/reserve_candidates.toml) instead of its spawn")
     args = ap.parse_args(argv)
     if args.scoring == "v2":
         return main_v2(args)
-    if args.replicates != 1 or args.operators or args.policy:
-        raise SystemExit("--replicates, --operators and --policy are scoring v2's: add --scoring v2")
+    if args.replicates != 1 or args.operators or args.policy or args.admissibility or args.reserve:
+        raise SystemExit("--replicates, --operators, --policy, --admissibility and --reserve are scoring v2's: "
+                         "add --scoring v2")
     agents = list(dict.fromkeys(args.agent))
     if "model" in agents and not os.environ.get("MURMUR_EVAL_MODEL"):
         raise SystemExit("--agent model calls the Anthropic API: set MURMUR_EVAL_MODEL=1 to allow it (never in tests)")
@@ -541,7 +586,8 @@ def v2_jobs(args: argparse.Namespace, agents: list[str], calib: dict[str, Any], 
                         jobs.append({**b, "r": r, "seed": seed, "agent": a, "operator": op, "policy": pol,
                                      "condition": cond, "scoring": "v2", "calibration": calib, "out": str(out),
                                      "keep_audit": args.keep_audit, "anchors": not args.no_anchors,
-                                     "model": model_cfg if a == "model" else None})
+                                     "model": model_cfg if a == "model" else None,
+                                     "reserve": getattr(args, "reserve", None) if b.get("family") else None})
     random.Random(args.order_seed).shuffle(jobs)
     return jobs
 
@@ -579,7 +625,11 @@ def main_v2(args: argparse.Namespace) -> int:
     (out / "episodes_v2.json").write_text(json.dumps(metas, indent=1, sort_keys=True))
     t1 = time.time()
     scored = score(metas, Params(), multiverse=not args.no_multiverse)
-    agg = aggregate(scored, primary=tuple(args.primary))  # type: ignore[arg-type]
+    admissibility = None
+    if args.admissibility is not None:
+        p = args.admissibility / "aggregate_v2.json" if args.admissibility.is_dir() else args.admissibility
+        admissibility = {"source": str(p), "verdicts": json.loads(p.read_text())["admissibility"]}
+    agg = aggregate(scored, primary=tuple(args.primary), admissible=admissibility)  # type: ignore[arg-type]
     done = [m for m in metas if m.get("path")]
     sizes = [m["record_bytes"] for m in done if m.get("record_bytes")]
     pics = [m["picture_bytes"] for m in done if m.get("picture_bytes")]
