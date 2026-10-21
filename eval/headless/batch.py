@@ -32,8 +32,9 @@ replicate r on the seed sha256("{family}:{situation_seed}:{r}") mod 2^31, which 
 emulator, the stand-ins, the agent's first tick and the operator's draws (the situation seed
 still drives the contacts and the sensing); the jobs run in a random order (`--order-seed`); a
 `none` replicate is added for every situation, replicate and condition when the agents lack one
-(`useful` is judged against it); `--operators` and `--policy` add conditions. An episode that
-fails in the simulator or the driver is run again once on the same seeds; a second failure is a
+(`useful` is judged against it); `--operators`, `--policy` and `--clocks` (paused, the default,
+or charged) add conditions. An episode that fails in the simulator or the driver, or whose model
+input hit the leakage scan, is run again once on the same seeds; a second failure is a
 `harness_error`. Records go gzipped (`<family>-<agent>-s<seed>-r<r>.json.gz`), their index to
 `episodes_v2.json`, the labels' metrics, comparisons, primary endpoint, Holm and multiverse to
 `aggregate_v2.json`, and the scorecard to `scorecard.json` and `scorecard.md`
@@ -117,7 +118,7 @@ def _v2_episode(job: dict[str, Any], wd: Path) -> dict[str, Any]:
         spec.policy = Path(job["policy"])
     opts = Options(agent=job.get("agent") or "playbook", operator=job.get("operator"),
                    calibration=Calibration(**job["calibration"]), anchors=job.get("anchors", True),
-                   model=job.get("model"), scoring="v2",
+                   model=job.get("model"), scoring="v2", clock=job.get("clock") or "paused",
                    replicate={"r": job["r"], "seed": job["seed"], "situation_seed": job["situation_seed"]})
     return Episode(spec, job["seed"], wd, opts, contacts_path=contacts).run()
 
@@ -158,7 +159,8 @@ def fidelity_digest(rec: dict[str, Any]) -> dict[str, str]:
 
 def _job_v2(job: dict[str, Any]) -> dict[str, Any]:
     """A v2 job: the episode, run again once on the same seeds if the simulator or the driver
-    failed (a second failure is a `harness_error`, section 7); the record gzipped."""
+    failed or the model's leakage scan hit an input (a second failure is a `harness_error`, section
+    7); the record gzipped."""
     from .v2.aggregate import meta_of
     from .v2.record import dump
 
@@ -173,6 +175,12 @@ def _job_v2(job: dict[str, Any]) -> dict[str, Any]:
             except Exception as e:  # noqa: BLE001 (a failed episode is a harness error, counted)
                 errors.append(f"{type(e).__name__}: {e}")
                 continue
+        if rec.get("episode_class") == "harness_error" and attempt == 1:
+            # a leakage hit on an input (section 7.1, 4.4): run again once on the same seeds; the
+            # hits are kept in the rerun's `harness_reruns`, a second hit is scored as the class says
+            hits = ((rec.get("v2") or {}).get("leakage") or {}).get("hits") or []
+            errors.append(f"leakage: {len(hits)} hits: {json.dumps(hits[:3])[:400]}")
+            continue
         if job.get("keep_audit"):
             (out_dir / f"{name}.audit.jsonl").write_text(rec["audit_text"])
         fidelity = fidelity_digest(rec)
@@ -203,7 +211,7 @@ def _job_v2(job: dict[str, Any]) -> dict[str, Any]:
     return {"path": None, "agent": job.get("agent"), "base": s, "family": job.get("family"),
             "situation": f"{s}:{job['situation_seed']}", "situation_seed": job["situation_seed"], "r": job["r"],
             "seed": job["seed"], "operator": (job.get("operator") or {}).get("mode", "proxy"),
-            "policy": Path(policy).name if policy else None, "clock": "paused",
+            "policy": Path(policy).name if policy else None, "clock": job.get("clock") or "paused",
             "class": "harness_error", "name": name, "errors": errors, "attempts": 2,
             "wall_s": round(time.perf_counter() - t0, 3)}
 
@@ -478,6 +486,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="v2: operator modes, one condition each (proxy: the situation's own autoplay preset)")
     ap.add_argument("--policy", nargs="*", default=None, help="v2: policy files, one condition each "
                     "(default: the situation's own)")
+    ap.add_argument("--clocks", nargs="*", default=None, choices=["paused", "charged"],
+                    help="v2: clock conditions, one each (default paused; charged: the model's thinking costs "
+                         "simulated time, latency.py, SCORING-V2.md 4.2)")
     ap.add_argument("--primary", nargs=2, default=["model", "playbook"], metavar=("A", "B"),
                     help="v2: the primary pair (A minus B on need served; A's replicate 0 only when A is the model)")
     ap.add_argument("--no-multiverse", action="store_true", help="v2: skip the multiverse cells")
@@ -491,9 +502,9 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.scoring == "v2":
         return main_v2(args)
-    if args.replicates != 1 or args.operators or args.policy or args.admissibility or args.reserve:
-        raise SystemExit("--replicates, --operators, --policy, --admissibility and --reserve are scoring v2's: "
-                         "add --scoring v2")
+    if args.replicates != 1 or args.operators or args.policy or args.clocks or args.admissibility or args.reserve:
+        raise SystemExit("--replicates, --operators, --policy, --clocks, --admissibility and --reserve are scoring "
+                         "v2's: add --scoring v2")
     agents = list(dict.fromkeys(args.agent))
     if "model" in agents and not os.environ.get("MURMUR_EVAL_MODEL"):
         raise SystemExit("--agent model calls the Anthropic API: set MURMUR_EVAL_MODEL=1 to allow it (never in tests)")
@@ -590,6 +601,7 @@ def v2_jobs(args: argparse.Namespace, agents: list[str], calib: dict[str, Any], 
         op = json.loads(args.operator) if args.operator else None
         ops = [((op or {}).get("mode", "proxy"), op)]
     pols: list[str | None] = [str(Path(p).resolve()) for p in args.policy] if args.policy else [None]
+    clocks: list[str] = list(dict.fromkeys(getattr(args, "clocks", None) or ["paused"]))
     multi = len(ops) * len(pols) > 1
     model_cfg = json.loads(args.model_config) if args.model_config else None
     jobs = []
@@ -598,11 +610,14 @@ def v2_jobs(args: argparse.Namespace, agents: list[str], calib: dict[str, Any], 
         for r in range(max(1, args.replicates)):
             seed = replicate_seed(fam, b["situation_seed"], r)
             for mode, op in ops:
-                for pol in pols:
+                for pol, clock in [(p, c) for p in pols for c in clocks]:
                     cond = f"{mode}-{Path(pol).stem}" if multi and pol else (mode if multi else None)
+                    if clock != "paused":  # a paused job keeps its name
+                        cond = f"{cond}-{clock}" if cond else clock
                     for a in agents:
                         jobs.append({**b, "r": r, "seed": seed, "agent": a, "operator": op, "policy": pol,
-                                     "condition": cond, "scoring": "v2", "calibration": calib, "out": str(out),
+                                     "clock": clock, "condition": cond, "scoring": "v2", "calibration": calib,
+                                     "out": str(out),
                                      "keep_audit": args.keep_audit, "anchors": not args.no_anchors,
                                      "model": model_cfg if a == "model" else None,
                                      "reserve": getattr(args, "reserve", None) if b.get("family") else None})

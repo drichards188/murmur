@@ -394,7 +394,10 @@ def test_every_play_of_step_one_is_registered_with_its_class():
     want = {"isr.investigate": 2, "isr.recentre": 2, "isr.release": 2, "isr.armed_overwatch": 2, "link.cover_gap": 3,
             "link.withdraw_pending": 3, "nav.suspect_exclude": 3, "safety.low_reserve": 0, "safety.stuck": 0,
             "hygiene.withdraw_stale": 4}
-    assert {n: p.klass for n, p in PLAYS.items()} == want
+    # the playbook's own plays: eval/headless/agents_v2.py registers its look-at-ferries perturbation's
+    # play when imported (inert unless a config enables it), so a run of every suite may see it here
+    own = {n: p.klass for n, p in PLAYS.items() if type(p).__module__.startswith("playbook.")}
+    assert own == want
     assert intent(1, "orbit", [3])["uids"] == ["3"], "the bridge serves an intent's uids as strings"
     assert GATE == (-122.4783, 37.8199)
 

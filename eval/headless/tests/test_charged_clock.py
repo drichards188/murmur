@@ -334,12 +334,14 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: seed 1000 (v2 scoring). First taken on the code before the charged clock (39233b2) in the
 #: worktree that built it; re-taken in the main checkout once the areas digest, which covers the
 #: checkout's path, was masked (`AREAS`): the playbook's matches 39233b2 run in the main checkout,
-#: masked. A change to the simulator or the bridge changes them too: re-take them on the code
-#: before a change to the driver, never after it.
+#: masked. The two v2 digests re-taken when PUMA 1's reserve point moved to Crissy Field (e72d0e2):
+#: with the fleet before it, main after the anchors merge still gives the earlier digests. A change
+#: to the simulator, the bridge or the v2 world changes them too: re-take them on the code before a
+#: change to the driver, never after it.
 PAUSED = {
     "model harbor-watch s1": "d1814fd13c46a777d2eacae71cee639c871644f7ee2fe6bd99891d670f8709ab",
-    "playbook v2 fast-unknown 1000": "6dfcd4e7b86ee51af74dd604dfe527e849dec093fdebcb26579c14b0b2fa9385",
-    "model v2 fast-unknown 1000": "138efe796c48d2ea4aca0b89303579cbbf69924fde6dd613af3c900cbdc0ea14",
+    "playbook v2 fast-unknown 1000": "9633e0f835eb532f502641c7c00a57334b7c7784bfa778371201413486859694",
+    "model v2 fast-unknown 1000": "679ebd2e7068adbb5e1bfb019adb71d87acf272f66332d2f4a5bf3d10a830ff8",
 }
 
 
