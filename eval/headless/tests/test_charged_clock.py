@@ -240,6 +240,9 @@ def test_the_record_names_the_condition_and_its_constants(flood):
 FEED_ID = re.compile(r'"cursor": ?"([0-9a-f]+):')
 BUILD = re.compile(r'"build":\{[^}]*\}')
 CHAIN = re.compile(r'"(prev|hash)":"[0-9a-f]{64}"')
+#: the areas digest the bridge logs covers the areas source's absolute path (`<checkout>/sim/areas
+#: [...]`), so it differs between checkouts of the same commit
+AREAS = re.compile(r'(\\?"areas_sha256\\?": ?\\?"|\\?"areas\\?": ?\{\\?"sha256\\?": ?\\?")[0-9a-f]{64}')
 
 
 def _strip(o: Any) -> Any:
@@ -265,7 +268,7 @@ def normalized(rec: dict[str, Any]) -> str:
     text = json.dumps(_strip(r), sort_keys=True).replace(str(REPO), "<repo>")
     for f in set(FEED_ID.findall(text)):
         text = text.replace(f, "<feed>")
-    return text
+    return AREAS.sub(r"\1<areas>", text)
 
 
 def test_a_charged_episode_repeats_exactly(flood):
@@ -326,15 +329,17 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 
 # ---- the paused clock is unchanged -----------------------------------------------------------------
 
-#: sha256 of `normalized(record)` for three paused episodes, taken on the code before the charged
-#: clock and the leakage scan (commit 39233b2, the binary built from it): the model with the fake
-#: look script on Harbor watch seed 1 (v1 scoring), the playbook and the model on v2 fast-unknown,
-#: situation seed 1000 (v2 scoring). A change to the simulator or the bridge changes them too:
-#: re-take them on the code before a change to the driver, never after it.
+#: sha256 of `normalized(record)` for three paused episodes, the model with the fake look script
+#: on Harbor watch seed 1 (v1 scoring), the playbook and the model on v2 fast-unknown, situation
+#: seed 1000 (v2 scoring). First taken on the code before the charged clock (39233b2) in the
+#: worktree that built it; re-taken in the main checkout once the areas digest, which covers the
+#: checkout's path, was masked (`AREAS`): the playbook's matches 39233b2 run in the main checkout,
+#: masked. A change to the simulator or the bridge changes them too: re-take them on the code
+#: before a change to the driver, never after it.
 PAUSED = {
-    "model harbor-watch s1": "22610aabb6b45055110a6d96cedeacb25d1c6f2d8bd92a7e0fcd5822170d927f",
-    "playbook v2 fast-unknown 1000": "b11c8d8de975e320b1817b693af0b882ce23d8eec7475b62589b7aa5c9bc089b",
-    "model v2 fast-unknown 1000": "96a36dca016a461470a26201bee823bc753b0b83f0b4d4ec11f3e661dcda5aa1",
+    "model harbor-watch s1": "d1814fd13c46a777d2eacae71cee639c871644f7ee2fe6bd99891d670f8709ab",
+    "playbook v2 fast-unknown 1000": "6dfcd4e7b86ee51af74dd604dfe527e849dec093fdebcb26579c14b0b2fa9385",
+    "model v2 fast-unknown 1000": "138efe796c48d2ea4aca0b89303579cbbf69924fde6dd613af3c900cbdc0ea14",
 }
 
 
