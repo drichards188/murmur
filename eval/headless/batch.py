@@ -126,7 +126,10 @@ def normalized_audit(text: str) -> list[dict[str, Any]]:
     """The audit log as the null agent must reproduce `none`'s (SCORING-V2.md 4.5): every event
     but `agent.action` (the bridge's record of an agent's session: its connect, previews,
     proposals), in order, without what those events take a place in: the event counter (`seq`)
-    and the hash chain (`prev`, `hash`)."""
+    and the hash chain (`prev`, `hash`); and without the binary's build stamp (`run.started`'s
+    `build`: the commit it was built from and whether the tree was dirty, which a rebuild between
+    two episodes changes and which the record's provenance carries; tests/test_episode.py's
+    golden episode leaves it out too)."""
     out = []
     for line in text.splitlines():
         if not line.strip():
@@ -134,7 +137,8 @@ def normalized_audit(text: str) -> list[dict[str, Any]]:
         e = json.loads(line)
         if e.get("type") == "agent.action":
             continue
-        out.append({k: v for k, v in e.items() if k not in ("seq", "prev", "hash")})
+        out.append({k: v for k, v in e.items() if k not in ("seq", "prev", "hash")
+                    and not (k == "build" and e.get("type") == "run.started")})
     return out
 
 

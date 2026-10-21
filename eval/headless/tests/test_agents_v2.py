@@ -111,7 +111,7 @@ def test_null_reproduces_none(family: str, seed: int):
     assert a["scripted_cards"] == b["scripted_cards"]
 
 
-def test_the_fidelity_digest_sees_a_difference():
+def test_the_fidelity_digest_sees_a_difference_but_not_the_build_stamp():
     rec = cached("fast-unknown", 1000, "none")
     other = copy.deepcopy(rec)
     other["audit_text"] = "\n".join(rec["audit_text"].splitlines()[:-1])
@@ -119,6 +119,15 @@ def test_the_fidelity_digest_sees_a_difference():
     other = copy.deepcopy(rec)
     other["truth"]["samples"] = other["truth"]["samples"][:-1]
     assert fidelity_digest(other)["truth"] != fidelity_digest(rec)["truth"]
+    # a rebuild between two episodes restamps run.started's build (the commit, dirty): not a
+    # difference in the episode (the 2026-10-21 world pilot met it: a test rebuilt the binary mid-batch)
+    lines = rec["audit_text"].splitlines()
+    first = json.loads(lines[0])
+    assert first["type"] == "run.started" and "build" in first
+    first["build"] = {"commit": "0" * 40, "dirty": True}
+    other = copy.deepcopy(rec)
+    other["audit_text"] = "\n".join([json.dumps(first)] + lines[1:])
+    assert fidelity_digest(other) == fidelity_digest(rec)
 
 
 # ---- random-valid ------------------------------------------------------------------------------
