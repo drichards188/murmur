@@ -100,6 +100,19 @@ class Sim:
         out = self.rpc({"op": "api", "method": method, "path": path, "body": body, "operator": operator})
         return int(out["status"]), out["body"]
 
+    def tool_defs(self) -> list[dict[str, Any]]:
+        """The MCP tools' definitions as the bridge's `tools/list` gives them (name, description,
+        `inputSchema`): what an MCP client hands its model (eval/headless/officer.py)."""
+        defs = self.rpc({"op": "tools", "defs": True}).get("defs")
+        if not isinstance(defs, list):
+            raise SimError("this murmur-headless lists no tool definitions: rebuild it from this tree "
+                           "(cargo build --release -p murmur-headless)")
+        return defs
+
+    def now(self) -> float:
+        """The simulator's own clock, situation seconds (a pending step runs first)."""
+        return float(self.rpc({"op": "now"})["t"])
+
     def truth(self, association: bool = True) -> dict[str, Any]:
         return self.rpc({"op": "truth", "association": association})
 

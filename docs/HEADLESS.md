@@ -81,7 +81,7 @@ replayed with its anchors.
 | `src/lib.rs` | the 21 bridge modules by path, `#[cfg(not(test))]`, dead code allowed; `pub mod sim` |
 | `src/main.rs` | `murmur-headless --reply-fd N`: the episode spec on stdin's first line, then one JSON request per line on stdin, one answer per line on descriptor N |
 | `src/sim/mod.rs` | `Episode`: the runtime (current thread, paused), the bridge assembled in `main.rs`'s order minus sockets, threads and HTTP clients, the timed tasks; `step_to`, `mcp_call`, `api_call`, `truth` (contacts, our vehicles, the tracker's association), `fault`, `mcp_over_http` (the bridge's own `/mcp` service on the same `Mcp`, for the view test), `finish` |
-| `src/sim/server.rs` | the request loop: `step`, `mcp`, `api`, `truth`, `fault`, `tools`, `now`, `perf`, `mcp_http`, `end`; a request may carry `at` (step first); every other request is checked not to move the clock |
+| `src/sim/server.rs` | the request loop: `step`, `mcp`, `api`, `truth`, `fault`, `tools` (with `defs`, the tools' definitions as the bridge's `tools/list` gives them, for the model agent), `now`, `perf`, `mcp_http`, `end`; a request may carry `at` (step first); every other request is checked not to move the clock |
 | `src/sim/spec.rs` | the episode spec (seed, epoch, fleet, stand-in configs, links, events, terrain grid, SATCOM, contacts, start offsets, battery) |
 | `src/sim/emulator.rs` | murmur-linkemu per vehicle: both lanes queued by its `admit`, delivered on the simulated clock; terrain and SATCOM rounds; `/stats` for the bridge's `emu`; link events (cuts) |
 | `src/sim/fleet.rs` | the stand-ins: `Vehicle::seeded` from the episode seed, a 10 Hz task each with the stand-in engine's phase offsets, a stop fault (cruise and maximum speed to zero) |
@@ -96,7 +96,8 @@ replayed with its anchors.
 | path | what |
 |---|---|
 | `sim.py` | the `murmur-headless` process client; `HeadlessSession`, the session adapter (`AgentSession`'s surface and error semantics: a tool error raises `RuntimeError("<tool>: <error>")`, a refused proposal comes back with `refused`, a result that is not JSON reads as `{"text": ...}`) |
-| `episode.py` | one episode: a discrete-event loop (the situation runner's steps, the operator, the playbook's tick loop, a truth sampler) on simulated time, and the record |
+| `episode.py` | one episode: a discrete-event loop (the situation runner's steps, the operator, the AI, a truth sampler) on simulated time, and the record |
+| `officer.py` | the model watch officer (`Options.agent = "model"`, section 14.1): agents/watch_officer.py's trigger table, picture and prompt on simulated time, a Messages API tool-use loop in place of the CLI, the cost guard, the play category of each proposal |
 | `script.py` | the situation runner's steps (wait for the fleet, the opening orders as `op-setup` after its dry run or by `agent-setup`, faults, scripted proposers) |
 | `operator.py` | the operator on simulated time (section 7) |
 | `situations.py` | a situation file as an episode spec, the `murmur-headless` spec and environment, the calibration |
@@ -133,7 +134,8 @@ Times are the situation's clock (seconds from the stack's start).
    run, and that sets the phase of every later tick): `Engine.start`, then `playbook_agent.py`'s
    tick loop on simulated time (a tick, then `get_changes` every 0.5 s until 2 s after the tick
    began, ticking at once on a waking change; a failed connect again after 2 s doubling to 30 s,
-   three missed ticks a new session at once, as the live agent).
+   three missed ticks a new session at once, as the live agent). The model agent comes on at the
+   same instant (section 14.1); `none` never does.
 5. **Between events** the driver asks for the next event's time (a request's `at`); the runtime
    runs every bridge loop, vehicle, link and contact up to it.
 6. **End** at `duration_s`: the tracker's association, the record, the audit log; the process
@@ -329,23 +331,30 @@ the proposals, the audit log), and step 2 should add them as functions of the re
 One JSON record per episode: the situation (name, family, split, seed), the provenance (commit,
 dirty flag, the binary's hash, the links file's path and hash, the space cache's content hash),
 the playbook config and its label, the operator's parameters, the clock (epoch, duration, the
-calibration, the drawn first tick, the emulator's seed, when the fleet was ready), the playbook's own log lines on the
-simulated clock, the plans, every proposal (time, play, version, target track, truth target,
+calibration, the drawn first tick, the emulator's seed, when the fleet was ready), the AI's own log lines on the
+simulated clock (the model agent's: section 14.1), the plans, every proposal (time, play, version, target track, truth target,
 tracker target, the picture, vehicle, task, tier, state at submission, refusal), every operator
 decision, our intents, the truth (the contacts' per-step log, our vehicles every 2 s, the
 tracker's association, what a family states), the metrics, the audit log's event count, head and
 hash (the log itself on request), and `perf` (computer time, never compared: the slow ticks the
 live agent logs as `tick.slow` are counted there, not written into the record). A full-stack run's
 record carries its `provenance.json`: the commit, the binaries' hashes, the emulator's seed, the
-same untracked inputs and the host's load average at its start.
+same untracked inputs and the host's load average at its start. A model episode (section 14.1)
+adds `model` (its configuration, budgets, the cost guard's summary, every wake, the totals),
+`budget_stopped` and `model_failed`, and its provenance names the models, efforts and the prompt's and tools'
+hashes; a playbook or `none` record has none of these keys.
 
 `python -m eval.headless.batch` (or `make headless`) runs episodes on a process pool, one
-`murmur-headless` process each, writes the records and an aggregate per situation or family:
+`murmur-headless` process each, writes the records and an aggregate per situation or family
+(and per agent: `--agent` runs each situation and seed once per agent, never pooled):
 each metric's mean with a Student t 95 % interval and, for proportions, the pooled Wilson
 interval (eval/stats.py); the speed (episodes per core-hour = episodes / (wall hours x workers),
 the single-worker rate, the 95th percentile of an episode's wall time); and where an episode's
 time went (`perf`: process start, the simulator's own time per task and per request kind, the
-pipe, the driver and the playbook).
+pipe, the driver and the playbook). With more than one agent, `paired` sets each family and
+seed's metrics side by side, agent by agent; with the model agent, each group's `model_cost`
+(US dollars per episode and in all, wakes, model and tool calls, tokens) and the batch's
+`model` (the ledger, the total, the budget-stopped episodes).
 
 ## 11. Results
 
@@ -604,19 +613,168 @@ live reads' schema, and `test_fixes.py`: one test per finding of the fix round, 
 with its fix undone: the same emulator seed on both sides, the link cut waiting for a look, no
 computer time in the record, the provenance and the bridge's links file, CRITERIA.md's metrics,
 the per-step truth, the drawn first tick, the bridge's start, the full stack's binary hashes, the
-reconnect delays).
+reconnect delays; and `test_officer.py`: the model agent of section 14.1 on the real binary with a
+fake Anthropic client (`tests/fake_anthropic.py`, no network): a whole episode and its record,
+the routine conversation carried and the consult fresh, the clock still across every wake, the
+look mapped to `isr.investigate` and judged as a playbook look, a model that does nothing, a
+wake the guard refuses (`cost_guard`, `budget_stopped`, nothing sent), a spend past the cap, the
+shared ledger, the aggregate leaving budget-stopped episodes out, the mapping table, the
+configuration and the permission it needs).
 
 ## 14. Step 2: how it plugs in
 
 - **The truth objective** is a function of the episode record; nothing in the simulator changes.
   Add the fault-handling metrics (section 9) the same way.
-- **Agents** are interchangeable in the driver (`Options.agent`): `playbook` (default) and `none`
-  today; an `oracle` (handed the truth labels explicitly, recorded as such) and `random-valid`
-  (uniform over actions whose preview passes) each get only a session.
+- **Agents** are interchangeable in the driver (`Options.agent`, `batch --agent`): `playbook`
+  (default), `model` (the model watch officer, section 14.1) and `none`; an `oracle` (handed the
+  truth labels explicitly, recorded as such) and `random-valid` (uniform over actions whose
+  preview passes) each get only a session.
 - **Operators**: train and tune with `approve-all`; evaluate with `proxy` and its presets.
 - **Families and seeds**: held-out families report separately and are never tuned on; tuning
   work uses seeds 1000 and up on tuning families only (CRITERIA.md).
 - **The fidelity gate repeats** for each new family once a full-stack situation of its kind exists.
+
+### 14.1 The model watch officer (`agent = "model"`)
+
+The question it serves: on the same frozen situations and seeds, how does the LLM watch officer
+(agents/watch_officer.py's design: a routine model woken by the trigger table, a stronger model
+consulted for consequential moments, the same prompt) compare with the playbook and with no AI
+on section 9's metrics, and what does one episode cost. **It calls the Anthropic API and costs
+money**: an episode refuses to start it without `MURMUR_EVAL_MODEL=1` unless it is handed a
+client (the tests hand it a fake one: nothing in `make check` calls the API).
+
+**What it is.** `eval/headless/officer.py`, agent id `agent-watch` (the live officer's). The live
+officer's own pieces, imported, not copied:
+
+| piece | from |
+|---|---|
+| when to wake, escalate, coalesce, hold back repeats; the budgets | `watch.wake.Waker`, with the `Budgets` the driver builds from `watch_officer.parse_args([])` (60 wakes an hour, 12 tool turns a wake, 6 escalations, a 60 s heartbeat doubling to 300 s while quiet, 3 s coalescing, 10 s between wakes) |
+| what it reads between wakes | `watch.picture.Poller`: `get_changes` on its cursor every `poll_s` (2 s) and the nomination check while a track is declared hostile, through the session adapter |
+| what it is told | `compose` (the update), `render_mine` (its own proposals), `Officer.budget_line`, `CONSULT_HEAD` and the consult note `Officer.do_wake` writes for the routine model's next update |
+| the system prompt | `build_prompt`: `agents/watch/prompt.md` and the situation's brief (`eval/situation.py` `brief_text`, the title and the operator's brief, never the director's notes; a family keeps Harbor watch's) |
+| models and efforts | `watch_officer.DEFAULTS["claude"]`: routine `sonnet` at `medium`, consult `opus` at `high`, as the API ids `claude-sonnet-5-5` and `claude-opus-5-5` (`API_MODELS`); a wake goes to the consult when the `Waker` escalates it and that lane is not backing off, as `Officer.do_wake` decides |
+| a failed turn | `Officer.failed`: the lane backs off (30 s doubling to 900 s), the wake's changes are given back |
+| the model's turn | new: `ApiBackend`, a Messages API tool-use loop in place of `watch/claude.py` (below) |
+
+**The turn.** The tools are the bridge's MCP tools as the simulator lists them (`murmur-headless`'s
+`tools` request with `defs`: the bridge's `tools/list`, the definitions an MCP client hands its
+model), 18 of them; each answer goes back as the compact JSON the MCP server's text content
+holds, up to the bridge's 150,000 characters. A wake is at most `max_turns_per_wake` (12) model
+calls. The routine model's conversation carries over from wake to wake, as the CLI's long-lived
+`claude -p` session does: the driver keeps the messages and sends them again with each call,
+append-only (thinking blocks back unchanged), cached at the end of the system prompt and at the
+last block (`cache_control`). A consult is a fresh conversation (the system prompt and its
+update), as the CLI's consult process is, and the routine model is told what it did. Each call
+sets `output_config.effort`; `thinking` is left out (adaptive on both models). `max_tokens` is
+16,000 a call. A tool outside the bridge's list is answered as the locked-down CLI answers it
+(no such tool).
+
+**Simulated time.** The officer is the episode's `agent` process: it comes on at `ai_start_s`
+plus the drawn first-tick offset (the playbook's), polls every 2 s of simulated time, and asks
+the `Waker` when to wake as `Officer.run` does. A wake runs between two simulator steps: every
+tool call is a request at the current instant (the simulator refuses one that moves its clock),
+and each wake reads the simulator's clock before and after and fails the episode if it moved
+(`clock` in the wake's record; tested). The world waits for the model: the wall time a wake took
+is recorded (`wall_s`, `perf.model_wall_s`), never simulated.
+
+**What differs from the live officer** (`make situation NAME=... AI=claude`):
+
+| live | headless `model` | effect |
+|---|---|---|
+| the world moves on during a turn (10 to 60 s of tool calls and thinking) | the clock stops for a wake | the model is never late for being slow, and acts on a picture as old as its last read, not older; `min_gap_s` and the heartbeat count from a wake's start in both, so a wake can come 10 s of situation time after the last one where live it would come after a long turn ended |
+| Claude Code (`claude -p`, the user's subscription), its session resumed | the Messages API (the SDK's own credentials, billed per token), the conversation kept by the driver | the same conversation; Claude Code may also compact a long session (not reached in 12 minutes) and may add lines of its own to the context |
+| tools named `mcp__murmur__<tool>`; whether the CLI adds the bridge's MCP server instructions (`mcp::INSTRUCTIONS`) under `--system-prompt-file` is not checked | the bare tool names (the prompt names them so); the server instructions not sent | |
+| `--max-turns 12` (the CLI's count) | at most 12 model calls a wake | a long wake may end at another point |
+| usage limits (`watch/limits.py`): wait for the reset or stop | none; an API error after the SDK's two retries is a failed turn (`stop: error`) | the lane backs off on the simulated clock |
+| the CLI's handling of a refusal | no server-side fallback by default (`MURMUR_EVAL_WATCH_FALLBACKS=1` turns it on): a refusal ends the wake, recorded `stop: refusal` | |
+| `--shadow-playbook` in situation runs | not run: the playbook is its own arm on the same seed | |
+| `--max-budget-usd`, the CLI's estimate | the cost guard (below) | |
+
+**The cost guard** is eval/model_agent.py's `CostGuard` and `Ledger` (`WatchGuard`): before each
+call, the worst case of that call (its request at 2 characters a token and its whole
+`max_tokens`, at the list price of the model it goes to; with fallbacks on, at the dearest model,
+twice) is checked against the episode's cap (`MURMUR_EVAL_MAX_USD`, default 3.00) and reserved
+in the batch's ledger (`MURMUR_EVAL_BATCH_MAX_USD`, default 20.00; the batch puts
+`model-ledger.json` in its directory and every worker settles into it under its file lock);
+after it, what it billed at list prices is settled. Unlike the storyline arm, which prices
+every cache read as fresh input, this arm settles cache reads ($0.20 a million tokens on both
+models) and cache writes (1.25 times input) at their own rates: its conversation is cached on
+purpose, and pricing it as fresh would stop a batch at a fraction of its real spend. Every model
+the officer can use must have a price row (an unknown one is refused before the episode starts).
+**A call the guard refuses ends its wake as `cost_guard`, the officer stops (every later call
+would be refused too), and the episode is marked `budget_stopped`**, never recorded as the
+model choosing to do nothing (bd murmur-cv2's lesson from the storyline arm, not fixed there).
+The batch leaves budget-stopped episodes out of every metric and lists them apart, with their
+cost.
+
+**Errors.** An API error after the SDK's two retries (a connection error, a timeout, an
+overload, a server error) fails the wake as the CLI's error turn does: what it was told is
+given back and that model's lane backs off (`Officer.failed`, on the simulated clock); the
+episode is kept and its errors counted (`errors`, the aggregate's `with_errors`). A request the
+API refuses as such (a 4xx other than 408, 409 and 429: bad parameters, credentials, an unknown
+model) or one the SDK cannot make stops the officer at once: every later call would fail alike.
+That episode is `model_failed`, left out of every metric and listed apart, as a budget-stopped
+one is. A failed call's reservation counts as spent (what it billed is unknown), as the guard
+counts it for the storyline arm.
+
+**The record** (section 10): `model` holds the configuration, the budgets, the guard's summary,
+the totals (wakes, consults, model and tool calls, proposals, tokens: fresh input, cache write,
+cache read, output; US dollars, wall seconds, stops, `budget_stopped`) and every wake: its
+simulated time and clock check, reason, why, lane (`routine` or `consult`), model, effort, the
+update it was given, every tool call (name, arguments, an excerpt of the answer, error), every
+model call (request characters, tokens, cost, served model, wall seconds, stop reason), the
+final text (2,000 characters), the stop. Its proposals are `agent_log` lines (`source` model)
+with the play category each maps to and what the picture showed of its target, read by the
+driver as `agent-watch` at the instant before the proposal went in (`get_tracks`, `get_fleet`
+compact, `get_inbox`; reads are not logged by the bridge). The provenance adds the models,
+efforts, fallbacks, `max_tokens` and the system prompt's and tool definitions' hashes.
+
+**The metrics** come out the same for `model`, `playbook` and `none`: metrics.py judges the
+playbook's proposals by play name and target; each model proposal is mapped to the play category
+it is equivalent to by what it does, and its target matched to truth by the playbook's rule
+(labels.py `associate`, from the track's position as the picture showed it then):
+
+| the model proposed | maps to | target |
+|---|---|---|
+| an orbit centred within max(its radius, 500 m) of a track shown, its vehicle not flying the model's own look on that track | `isr.investigate` | the nearest such track |
+| the same, its vehicle flying the model's own look on that track (that order not failed, superseded or requeued, the vehicle not recovering on its own) | `isr.recentre` | that track |
+| a hold or rtl of a vehicle shown with a `not_moving` or `task_failed` alert (an rtl of one also under the low-reserve line maps to low reserve) | `safety.stuck` | `alert:<id>` |
+| a hold or rtl of a vehicle shown under the low-reserve line (25 %, the shipped watch policy's reserve plus 5) | `safety.low_reserve` | `battery:<uid>` |
+| a hold or rtl of a vehicle flying the model's own look, no fault shown | `isr.release` | that look's track |
+| anything else: a patrol, an orbit near no track, a track, collect, cover, engage | `unjudged:<task>` | none |
+
+A second track within 1.5 times the nearest's distance makes the aim `ambiguous`, judged as an
+ambiguous playbook target is (not legitimate). `look_covered` and `time_to_look` count
+`isr.investigate`, `false_looks` any `isr.*` category on a contact that needs no look, `precision`
+the human-tier proposals it can judge (an unjudged one is listed with its kind); `by_play`
+counts every proposal by category so none is dropped. `unfaithful` and `objected` read the
+playbook's evidence record and count playbook proposals only; a re-proposal after a rejection
+counts for the model unless its rationale carries an evidence record naming a material change,
+which a model's prose never does (read the rationales before quoting it). Human-tier cards per
+operator-minute and approval load (`human_cards`, `outcomes`, `approval_latency_s`) are the same
+functions of the audit log for every agent.
+
+**What one episode costs, estimated** before any paid run, from the sizes the fake client saw
+with the real prompt, tools and picture (Harbor watch seed 1, a model that reads the four tools
+the prompt names at every wake and proposes one look): system prompt 5,195 characters; tool
+definitions 30,889; an update about 800 (at most about 1,200); the reads about 15,700 a wake
+(`get_tracks` 11,300, `get_fleet` compact 2,200, `get_intents` mine 1,700, `get_inbox` 540); a
+first request of 36,800 characters, a last of about 311,000 after 15 wakes; 31 model calls (2 of
+them one consult on Opus, 37,000 and 53,000 characters) and 4.9 million request characters in
+all, nearly all of them cache reads. At about 3 characters a token (JSON-heavy; an assumption):
+about 1.6 million cache-read tokens ($0.33), about 120,000 tokens written to the cache ($0.35),
+and the output (thinking and text: unknown until measured, $0.15 to $0.50 at 500 to 1,500 tokens
+a call): **roughly $0.8 to $1.2 an episode**, less if the model reads less. The real figures are
+in each record (`model.totals`) and the aggregate (`model_cost`).
+
+**Determinism.** The world is deterministic given (situation, seed, calibration, operator); the
+model is not. Two runs of one seed can differ in what the model proposes and when, and
+everything downstream of a proposal (the operator's decisions, the vehicles' tasks) differs with
+it, while the playbook and `none` arms repeat exactly. What tells runs apart and lets one be read
+again: each wake's update, tool calls and answer excerpts, final text, served model and token
+counts; the provenance (commit, binary, prompt and tool hashes, models, efforts); the audit log
+(`--keep-audit`). To see the model's own variance, run the same seeds more than once, into
+separate `--out` directories, and compare seed by seed.
 
 ## 15. How to run
 
@@ -634,3 +792,41 @@ reconnect delays).
 
 Records go to `eval/results/headless/<batch>/` unless `--out` says otherwise; the SATCOM look
 cache to `logs/headless/space-cache/` (one file per set of element sets and link profiles).
+
+**The model watch officer** (section 14.1) calls the Anthropic API and is billed: it needs
+`MURMUR_EVAL_MODEL=1`, the Anthropic SDK in `.venv` (`pip install anthropic`) and the SDK's
+own credentials (`ANTHROPIC_API_KEY`, or an `ant auth login` profile). Each episode is capped by
+`MURMUR_EVAL_MAX_USD` (default 3.00), the batch by `MURMUR_EVAL_BATCH_MAX_USD` (default 20.00)
+through `<out>/model-ledger.json`; give each batch a fresh `--out` (a reused one keeps its
+ledger's spend). Model episodes wait on the network, so workers can exceed the cores.
+
+    cargo build --release -p murmur-headless
+
+    # one episode, the smoke test (about $1 by the estimate in 14.1; capped at $2)
+    MURMUR_EVAL_MODEL=1 MURMUR_EVAL_MAX_USD=2 MURMUR_EVAL_BATCH_MAX_USD=2 \
+        .venv/bin/python -m eval.headless.batch --situation harbor-watch --seeds 1 --agent model \
+        --workers 1 --keep-audit --out eval/results/headless/model-smoke
+
+    # the comparison: Harbor watch and two tuning families, seeds 1 to 3, the three agents on the
+    # same situations and seeds (9 model episodes, about $7 to $11; capped at $15 for the batch)
+    MURMUR_EVAL_MODEL=1 MURMUR_EVAL_BATCH_MAX_USD=15 \
+        .venv/bin/python -m eval.headless.batch --situation harbor-watch --families fast-unknown decoy \
+        --seeds 1-3 --agent model playbook none --workers 9 --keep-audit --out eval/results/headless/model-compare
+    # the same through make
+    MURMUR_EVAL_MODEL=1 MURMUR_EVAL_BATCH_MAX_USD=15 make headless SITUATION=harbor-watch \
+        FAMILIES="fast-unknown decoy" SEEDS=1-3 AGENT="model playbook none" WORKERS=9
+
+    # overrides: another model or effort, no consult lane, the server-side refusal fallback
+    MURMUR_EVAL_MODEL=1 .venv/bin/python -m eval.headless.batch ... --agent model \
+        --model-config '{"effort": "high", "escalation": false}'
+    MURMUR_EVAL_WATCH_MODEL=claude-opus-5-5 MURMUR_EVAL_WATCH_FALLBACKS=1 ...
+
+What to read: `aggregate.json`'s `groups` (one per situation or family and agent: `harbor-watch`,
+`harbor-watch [model]`, `harbor-watch [none]`, each family likewise; never pooled), `paired`
+(each family and seed, agent by agent: look covered, time to look, false looks, precision,
+human-tier cards and their rate, the model's dollars and wakes), each model group's
+`model_cost`, `budget_stopped` and `model_failed`, and the batch's `model` (the ledger, the
+total, the budget-stopped and failed episodes, which no metric includes, and the episodes kept
+although a wake's call failed). A model episode's record is
+`<situation>-model-s<seed>.json`; its `model.wakes` say what it was told, read, proposed and
+said at each wake.

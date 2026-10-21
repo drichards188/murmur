@@ -23,6 +23,7 @@ from eval.situation import (
     OPERATORS,
     Order,
     Situation,
+    brief_text,
     load_situation,
 )
 
@@ -120,6 +121,9 @@ class EpisodeSpec:
     truth: dict[str, Any] = field(default_factory=dict)
     path: Path | None = None
     config_name: str | None = None
+    # what a model AI is told (eval/situation.py `brief_text`: the title and the operator's
+    # brief, never the director's notes); a family keeps its base situation's
+    brief: str = ""
 
 
 def from_situation(path_or_name: str | Path) -> EpisodeSpec:
@@ -135,7 +139,7 @@ def from_situation(path_or_name: str | Path) -> EpisodeSpec:
         name=sit.name, fleet=sit.fleet, contacts=sit.contacts, policy=sit.policy, at=sit.at,
         duration_s=sit.duration_s, ai_start_s=sit.ai_start_s, ready_timeout_s=sit.ready_timeout_s,
         orders=list(sit.orders), playbook=dict(sit.playbook), autoplay=dict(sit.autoplay), seed=sit.seed,
-        events=events, path=sit.path, config_name=sit.name,
+        events=events, path=sit.path, config_name=sit.name, brief=brief_text(sit),
     )
 
 

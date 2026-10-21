@@ -8,7 +8,10 @@ clock, over one `murmur-headless` process.
   the operator; the AI at `ai_start_s`; the end at `duration_s`.
 - **the AI** (agents/playbook_agent.py's `Agent.loop`): the unchanged engine
   (`agents/playbook/engine.py`) on a `HeadlessSession`: `start`, then a tick, the change feed
-  every 0.5 s until 2 s after the tick began, ticking at once on a waking change.
+  every 0.5 s until 2 s after the tick began, ticking at once on a waking change. Or
+  (`Options.agent = "model"`) the model watch officer (officer.py): agents/watch_officer.py's
+  trigger table, picture and prompt, a real model through the Anthropic API, its wakes between
+  two steps of the clock. Or none.
 - **the operator** (operator.py).
 - **the script**: the situation's faults and scripted proposers (families.py).
 - **the truth sampler**: our vehicles every `sample_s` and the tracker's association every 10 s;
@@ -53,11 +56,12 @@ POLL_S = 0.5  # agents/playbook_agent.py
 PLAYBOOK_AGENT = "agent-playbook"
 RECORD_SCHEMA = "murmur-headless-episode/1"
 PRIORITY = {"runner": 0, "script": 1, "operator": 2, "agent": 3, "sampler": 4}
+AGENTS = ("playbook", "model", "none")
 
 
 @dataclass
 class Options:
-    agent: str = "playbook"  # playbook | none
+    agent: str = "playbook"  # playbook | model | none
     operator: dict[str, Any] | None = None  # None: the situation's [autoplay] (op-auto)
     calibration: Calibration = field(default_factory=Calibration)
     terrain: bool = True
@@ -66,6 +70,10 @@ class Options:
     keep: Path | None = None  # copy the audit log, anchors and the process log here
     binary: Path | None = None
     sample_s: float = 2.0
+    # agent "model" only (officer.py): ModelConfig overrides, and a client to use instead of the
+    # Anthropic API's (the tests' fake); without one the episode needs MURMUR_EVAL_MODEL=1
+    model: dict[str, Any] | None = None
+    model_client: Any = None
 
 
 class Loop:
@@ -250,7 +258,7 @@ class Episode:
         self.aloop = asyncio.new_event_loop()
         self.want: set[int] = set()
         self.operator: Operator | None = None
-        self.agent: PlaybookAgent | None = None
+        self.agent: Any = None  # PlaybookAgent, officer.WatchOfficer or None
         self.script: Any = None
         self.truth_samples: list[dict[str, Any]] = []
         self.ours_samples: list[dict[str, Any]] = []
@@ -290,8 +298,15 @@ class Episode:
                                      spec["epoch"])
             self.loop.handlers["operator"] = self.operator.wake
             cfg = make_config(json.loads(playbook_json(self.e)), self.e.config_name or self.e.name)  # type: ignore[arg-type]
-            if self.opts.agent == "playbook":
+            if self.opts.agent not in AGENTS:
+                raise ValueError(f"unknown agent {self.opts.agent!r}: {', '.join(AGENTS)}")
+            if self.opts.agent == "model":
+                from .officer import ModelConfig, WatchOfficer
+
+                self.agent = WatchOfficer(self, ModelConfig.resolve(self.opts.model), client=self.opts.model_client)
+            elif self.opts.agent == "playbook":
                 self.agent = PlaybookAgent(self, cfg)
+            if self.agent is not None:
                 self.loop.handlers["agent"] = self.agent.wake
                 self.ai_first_tick_s = self.opts.calibration.ai_first_tick(self.seed)
                 self.loop.at(self.e.ai_start_s + self.ai_first_tick_s, "agent")
@@ -304,6 +319,8 @@ class Episode:
             self.loop.at(0.0, "sampler")
             self.loop.at(1.0, "runner")
             self.loop.run(self.e.duration_s)
+            if self.opts.agent == "model":
+                self.agent.close()
             final = sim.rpc({"op": "truth", "association": True, "log_from": 0})
             for a in final.get("association") or []:
                 self.association.setdefault(a["track_id"], a["contact_id"])
@@ -319,22 +336,26 @@ class Episode:
         audit_text = audit_path.read_text() if audit_path.exists() else ""
         anchors = audit_path.with_suffix(".anchors")
         record = self.record(spec, runner, audit_text, cfg)
+        pb = self.agent if isinstance(self.agent, PlaybookAgent) else None
         record["perf"] = {
             "wall_s": round(time.perf_counter() - wall0, 3),
             "start_s": round(started_s, 3),
             "sim_wait_s": round(sim.wait_s, 3),
             "python_s": round(sim_wall - sim.wait_s - started_s, 3),
             "calls": sim.calls,
-            "ticks": self.agent.ticks if self.agent else 0,
-            "compute_ms_mean": (round(sum(self.agent.engine.compute) / len(self.agent.engine.compute), 3)
-                                if self.agent and self.agent.engine.compute else None),
-            "playbook_s": (round(sum(self.agent.engine.compute) / 1000.0, 3)
-                           if self.agent and self.agent.engine.compute else 0.0),
-            "slow_ticks": self.agent.slow_ticks if self.agent else 0,
+            "ticks": pb.ticks if pb else 0,
+            "compute_ms_mean": (round(sum(pb.engine.compute) / len(pb.engine.compute), 3)
+                                if pb and pb.engine.compute else None),
+            "playbook_s": (round(sum(pb.engine.compute) / 1000.0, 3)
+                           if pb and pb.engine.compute else 0.0),
+            "slow_ticks": pb.slow_ticks if pb else 0,
             # per task or request kind: seconds and polls, timed in the simulator (perf.rs); the
             # tasks run inside `call.*` requests, so they are parts of those, not added to them
             "rust": {k: {"s": round(v["s"], 4), "polls": v["polls"]} for k, v in sorted(rust_perf.items())},
         }
+        if self.opts.agent == "model":
+            # the wall time the model's wakes took (inside python_s): recorded, never simulated
+            record["perf"]["model_wall_s"] = round(self.agent.wall_s, 3)
         if self.opts.keep is not None:
             self.opts.keep.mkdir(parents=True, exist_ok=True)
             for f in (audit_path, anchors, log):
@@ -378,15 +399,16 @@ class Episode:
 
     def record(self, spec: dict[str, Any], runner: Runner, audit_text: str, cfg: Any) -> dict[str, Any]:
         lines = self.agent.lines if self.agent else []
+        pb = self.agent if isinstance(self.agent, PlaybookAgent) else None
         meta = self.contacts_meta
-        return {
+        rec = {
             "schema": RECORD_SCHEMA,
             "situation": {"name": self.e.name, "family": self.e.family, "split": self.e.split,
                           "situation_seed": self.e.situation_seed, "path": str(self.e.path) if self.e.path else None},
             "seed": self.seed,
             "provenance": provenance(self.opts.binary),
             "playbook": {"engine": f"playbook-{ENGINE_VERSION}", "config_label": cfg.label,
-                         "client_version": cfg.client_version} if self.agent else None,
+                         "client_version": cfg.client_version} if pb else None,
             "operator": self.operator.describe() if self.operator else None,
             "clock": {"epoch": spec["epoch"], "at": self.e.at, "duration_s": self.e.duration_s,
                       "ai_start_s": self.e.ai_start_s, "calibration": self.opts.calibration.as_dict(),
@@ -395,7 +417,7 @@ class Episode:
                       "ready_t": runner.ready_t},
             "orders": runner.orders,
             "agent_log": lines,
-            "plans": self.agent.plans if self.agent else [],
+            "plans": pb.plans if pb else [],
             "operator_decisions": self.operator.decisions if self.operator else [],
             "script": self.script.log if self.script else [],
             "truth": {"contacts": meta, "samples": self.truth_samples, "ours": self.ours_samples,
@@ -403,6 +425,20 @@ class Episode:
             "audit": audit_summary(audit_text),
             "audit_text": audit_text,
         }
+        if self.opts.agent == "model":
+            # the model agent only (a playbook or none record has none of these keys): its config, every
+            # wake, its totals; the provenance names the models and efforts
+            rec["model"] = self.agent.describe()
+            rec["budget_stopped"] = self.agent.budget_stopped
+            # a model call the API refused as such (bad parameters, credentials): not the model's run
+            rec["model_failed"] = self.agent.model_failed
+            cfg_m = rec["model"]["config"]
+            rec["provenance"] = {**rec["provenance"], "model": {
+                "agent": "model", "routine": cfg_m["routine"], "consult": cfg_m["consult"],
+                "fallbacks": cfg_m["fallbacks"], "max_tokens": cfg_m["max_tokens"],
+                "prompt_sha256": hashlib.sha256(self.agent.system.encode()).hexdigest(),
+                "tools_sha256": hashlib.sha256(json.dumps(self.agent.tools, sort_keys=True).encode()).hexdigest()}}
+        return rec
 
 
 def audit_summary(text: str) -> dict[str, Any]:

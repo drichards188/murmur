@@ -2,6 +2,27 @@
 headless record and a full-stack one (fullstack.py builds the same schema). Truth-labelled
 metrics come from labels.py; outcomes from the audit log; MODEL RESULTS (a scripted operator,
 generated or scripted situations), never human data.
+
+The same metrics come out for every agent (`playbook`, `model`, `none`). The playbook's
+proposals are judged by play name and target. The model agent (officer.py) proposes intents,
+not plays: each is mapped, when it is proposed, to the play category it is equivalent to by
+what it does (officer.py `map_proposal`; docs/HEADLESS.md section 14), and its target is
+matched to truth by the playbook's rule (labels.py `associate`, from the track's position as
+the picture showed it then):
+
+| the model proposed | maps to | target |
+|---|---|---|
+| an orbit centred within max(its radius, 500 m) of a track shown, its vehicle not flying the model's own look on that track | `isr.investigate` | the nearest such track |
+| the same, its vehicle flying the model's own look on that track | `isr.recentre` | that track |
+| a hold or rtl of a vehicle shown with a `not_moving` or `task_failed` alert (an rtl of one also under the line: low reserve) | `safety.stuck` | `alert:<id>` |
+| a hold or rtl of a vehicle shown under the low-reserve line (`LOW_RESERVE_PCT`) | `safety.low_reserve` | `battery:<uid>` |
+| a hold or rtl of a vehicle flying the model's own look, no fault shown | `isr.release` | that look's track |
+| anything else (a patrol, an orbit near no track, a track, collect, cover, engage) | `unjudged:<task>` | none |
+
+A second track within 1.5 times the distance of the nearest makes the aim `ambiguous`, judged
+as an ambiguous playbook target is. `unfaithful` and `objected` read the playbook's evidence
+record and count playbook proposals only; `by_play` counts every proposal by its play or
+category, unjudged ones included, so none is dropped.
 """
 
 from __future__ import annotations
@@ -136,9 +157,11 @@ def episode_metrics(rec: dict[str, Any]) -> dict[str, Any]:
                 ev = parse_record(str(q["rationale"] or "")) or {}
                 if not ev.get("material_change"):
                     reprop += 1
-    unfaithful = sum(1 for p in props if fidelity.check(str(p["rationale"] or "")))
+    # the playbook's own checks on its evidence record: a model's prose carries none
+    recorded = [p for p in props if p.get("source") != "model"]
+    unfaithful = sum(1 for p in recorded if fidelity.check(str(p["rationale"] or "")))
     objected = 0
-    for p in props:
+    for p in recorded:
         ev = parse_record(str(p["rationale"] or "")) or {}
         if ev.get("rulebook_v2") or "fail" in str((ev.get("preview") or {}).get("checks")):
             objected += 1
@@ -172,8 +195,18 @@ def episode_metrics(rec: dict[str, Any]) -> dict[str, Any]:
         "timeliness_s": timely,
         "association_agreement": {"agree": sum(agree), "n": len(agree)},
         "n_proposals": len(props),
+        "by_play": by_play(props),
         "faults": fault_summary(rec),
     }
+
+
+def by_play(props: list[dict[str, Any]]) -> dict[str, int]:
+    """Proposals per play (the model's: per category, `unjudged:<task>` included)."""
+    out: dict[str, int] = {}
+    for p in props:
+        k = str(p.get("play"))
+        out[k] = out.get(k, 0) + 1
+    return dict(sorted(out.items()))
 
 
 def fault_summary(rec: dict[str, Any]) -> dict[str, int]:

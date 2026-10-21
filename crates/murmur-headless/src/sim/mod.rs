@@ -342,6 +342,13 @@ impl Episode {
             .collect()
     }
 
+    /// The tools' definitions as the MCP server lists them (`tools/list`: name, description,
+    /// `inputSchema`, annotations), for an agent that hands them to a model as they are
+    /// (eval/headless/officer.py).
+    pub fn tool_defs(&self) -> Result<Value, String> {
+        serde_json::to_value(crate::mcp::tools::tools()).map_err(err("tools"))
+    }
+
     /// The end: anchor the audit log's head and close it, as the bridge's clean stop does
     /// (`Decision::shutdown_and_exit`), which ends the process.
     pub fn finish(self) -> ! {

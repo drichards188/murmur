@@ -14,7 +14,8 @@
 //! - `truth` `{association, log_from}`: the truth now, and the contacts' truth log from a line on
 //!   (evaluation only).
 //! - `fault` `{kind, ...}`: a scripted fault (`link_event` with `event`, or `stop` with `uid`).
-//! - `tools`: the MCP tool names. `now`: the clock. `perf`: where the computer time went.
+//! - `tools`: the MCP tool names (with `defs: true`, also their definitions as `tools/list`
+//!   gives them). `now`: the clock. `perf`: where the computer time went.
 //! - `end`: answers `{audit}` (the log's path), then anchors and closes the log and exits.
 //!
 //! Every answer has `ok`; a failed request answers `{ok: false, error}` and the episode goes
@@ -84,6 +85,9 @@ fn handle(ep: &mut Episode, req: &Value) -> Result<Value, String> {
             req["log_from"].as_u64().map(|i| i as usize),
         ),
         Some("fault") => ep.fault(req),
+        Some("tools") if req["defs"].as_bool() == Some(true) => {
+            Ok(json!({ "tools": ep.tools(), "defs": ep.tool_defs()? }))
+        }
         Some("tools") => Ok(json!({ "tools": ep.tools() })),
         Some("now") => Ok(json!({ "t": ep.now_s() })),
         Some("perf") => Ok(json!({ "tasks": perf::report() })),

@@ -139,12 +139,18 @@ def is_track(target: Any) -> bool:
 
 def proposals(rec: dict[str, Any], to_situation: Any) -> list[dict[str, Any]]:
     """Every proposal of the playbook's log, with its evidence record's time on the situation's
-    clock (`to_situation(bridge_t)`), its play, target, truth target and vehicle."""
+    clock (`to_situation(bridge_t)`), its play, target, truth target and vehicle; and every
+    proposal of the model agent's (`source` model, officer.py), with the play category it maps
+    to, the time it was proposed (the driver read the picture at that instant), and its
+    target's position and picture as read then. The same matching rule for both."""
     truth = Truth(rec)
     assoc = (rec.get("truth") or {}).get("association") or {}
     out = []
     for ln in rec.get("agent_log") or []:
         if ln.get("kind") != "proposal":
+            continue
+        if ln.get("source") == "model":
+            out.append(model_proposal(ln, truth, assoc))
             continue
         ev = parse_record(str(ln.get("rationale") or "")) or {}
         tick = ev.get("tick_t")
@@ -165,8 +171,35 @@ def proposals(rec: dict[str, Any], to_situation: Any) -> list[dict[str, Any]]:
             "tier": ((ev.get("preview") or {}).get("tier")),
             "rationale": ln.get("rationale"),
             "picture": picture_of(ev, target),
+            "source": ln.get("source"),
         })
     return out
+
+
+def model_proposal(ln: dict[str, Any], truth: Truth, assoc: dict[str, Any]) -> dict[str, Any]:
+    """A model proposal (officer.py's `proposal` line) in the playbook's proposal shape. Its
+    target's truth identity by the same rule (`associate`, the track's position as the picture
+    showed it at the proposal); an aim between two tracks shown (`aim` ambiguous) is ambiguous;
+    an unmapped proposal (`unjudged:<task>`) keeps its kind as its play."""
+    t = ln.get("t")
+    target = ln.get("target")
+    truth_target = None
+    if ln.get("aim") == AMBIGUOUS:
+        truth_target = AMBIGUOUS
+    elif is_track(target):
+        truth_target = associate(truth, ln.get("predicted"), float(t)) if t is not None else None
+    elif target is not None:
+        truth_target = str(target)
+    return {
+        "t": round(float(t), 3) if t is not None else None,
+        "intent": ln.get("intent"), "play": ln.get("play"), "version": None,
+        "target": target, "truth_target": truth_target,
+        "tracker_target": assoc.get(target) if is_track(target) else None,
+        "uid": ln.get("uid"), "task": (ln.get("request") or {}).get("task"),
+        "state": ln.get("state"), "refused": ln.get("refused"), "tier": ln.get("tier"),
+        "rationale": ln.get("rationale"), "picture": ln.get("picture") if is_track(target) else None,
+        "source": "model", "lane": ln.get("lane"), "mapping": ln.get("mapping"),
+    }
 
 
 def picture_of(ev: dict[str, Any], target: Any) -> dict[str, Any] | None:
