@@ -619,7 +619,13 @@ the routine conversation carried and the consult fresh, the clock still across e
 look mapped to `isr.investigate` and judged as a playbook look, a model that does nothing, a
 wake the guard refuses (`cost_guard`, `budget_stopped`, nothing sent), a spend past the cap, the
 shared ledger, the aggregate leaving budget-stopped episodes out, the mapping table, the
-configuration and the permission it needs).
+configuration and the permission it needs; `test_charged_clock.py`: section 14.1.1's charged
+clock, each call's charge and answer time, the operator, script and samplers inside a turn in
+order, an action at its charged time, repeats, an answer after the end, a failed call, the
+playbook's tick charge, the loop's order, and the paused clock's records byte-identical to before
+it; `test_v2_leakage.py`: the token list, same tasking (the mission as the only brief, one prompt
+and one tool list for every situation), a reading model on every v2 situation clean, a family
+name in a tool result a harness error, echoes and diagnostics).
 
 ## 14. Step 2: how it plugs in
 
@@ -675,13 +681,14 @@ the `Waker` when to wake as `Officer.run` does. A wake runs between two simulato
 tool call is a request at the current instant (the simulator refuses one that moves its clock),
 and each wake reads the simulator's clock before and after and fails the episode if it moved
 (`clock` in the wake's record; tested). The world waits for the model: the wall time a wake took
-is recorded (`wall_s`, `perf.model_wall_s`), never simulated.
+is recorded (`wall_s`, `perf.model_wall_s`), never simulated. That is the **paused** clock, the
+default; the **charged** clock (section 14.1.1) makes a turn cost simulated time.
 
 **What differs from the live officer** (`make situation NAME=... AI=claude`):
 
 | live | headless `model` | effect |
 |---|---|---|
-| the world moves on during a turn (10 to 60 s of tool calls and thinking) | the clock stops for a wake | the model is never late for being slow, and acts on a picture as old as its last read, not older; `min_gap_s` and the heartbeat count from a wake's start in both, so a wake can come 10 s of situation time after the last one where live it would come after a long turn ended |
+| the world moves on during a turn (10 to 60 s of tool calls and thinking) | the clock stops for a wake (paused; on the charged clock it moves by each call's charge, section 14.1.1) | the model is never late for being slow, and acts on a picture as old as its last read, not older; `min_gap_s` and the heartbeat count from a wake's start in both, so a wake can come 10 s of situation time after the last one where live it would come after a long turn ended |
 | Claude Code (`claude -p`, the user's subscription), its session resumed | the Messages API (the SDK's own credentials, billed per token), the conversation kept by the driver | the same conversation; Claude Code may also compact a long session (not reached in 12 minutes) and may add lines of its own to the context |
 | tools named `mcp__murmur__<tool>`; whether the CLI adds the bridge's MCP server instructions (`mcp::INSTRUCTIONS`) under `--system-prompt-file` is not checked | the bare tool names (the prompt names them so); the server instructions not sent | |
 | `--max-turns 12` (the CLI's count) | at most 12 model calls a wake | a long wake may end at another point |
@@ -775,6 +782,52 @@ again: each wake's update, tool calls and answer excerpts, final text, served mo
 counts; the provenance (commit, binary, prompt and tool hashes, models, efforts); the audit log
 (`--keep-audit`). To see the model's own variance, run the same seeds more than once, into
 separate `--out` directories, and compare seed by seed.
+
+#### 14.1.1 The latency-charged clock (scoring v2, SCORING-V2.md 4.2)
+
+`Options.clock = "charged"` (default `paused`) makes the agent's thinking cost simulated time.
+A model call's charge is `a + b_in * input tokens + b_out * output tokens + c * tool calls in its
+answer` (input tokens: fresh, cache write and cache read; output: thinking included); a call
+the API failed is charged `a`; a call never sent (the cost guard, the wake's last call used, a
+leak) nothing. The playbook is charged `playbook_tick_s` per tick. The constants are
+`eval/headless/latency.toml`, **placeholders** (a = 2 s, b_in = 2e-5 s, b_out = 0.02 s, c =
+0.5 s, 0.2 s a tick) until they are fitted to measured API wall times on dev-build episodes
+(SCORING-V2.md section 11, stage 1 item a) and frozen; each charged record carries them
+(`provenance.clock`), and `clock.condition` and `v2.condition.clock` say `charged` (a paused
+record has none of these keys, so it is byte-identical to before: tested on three fixed seeds).
+
+**How a turn is suspended and resumed.** A wake's turn is a `TurnRun` (officer.py) driven one
+model call at a time. At the wake's time t0 the officer composes the update and makes the first
+call at once (wall time only); the answer is not used yet: the officer's next event is at
+`t1 = t0 + charge`, rounded up to the simulator's millisecond grid. The officer returns to the
+episode's loop, which runs everything scheduled before t1 in its usual order (the operator, the
+script's faults and proposers, the truth and picture samplers, the officer's own poller, which
+keeps adding changes to the `Waker` as the live poll task does). At t1 the answer's tool calls
+run, in order, at t1: they read the world as it stands then, and a proposal reaches the bridge
+then (its audit-log creation is t1). The next call is made at t1 on the conversation as it now
+holds, its answer due at t2; and so on. The turn ends when an answer without tool calls is due;
+only then does the `Waker` give a new wake (one turn at a time, as live). An answer due after
+the episode's end is never applied: the wake is recorded `episode_end`. A playbook tick reads
+the picture at its start (the engine's own `read`) and runs the rest of the tick (plan, previews,
+proposals, withdrawals) `playbook_tick_s` later, on those reads; its polls wait for it.
+
+**Why it cannot reorder events or read the future.** A turn is an ordinary event of the `agent`
+process in the loop's queue, ordered by (time, process priority, order scheduled) like every
+other; the loop refuses an event at an instant already passed. A call is only ever made on what
+the conversation holds at the time it is made, and every tool result in it was read at or before
+that time, so no answer depends on a later state of the world; its tool calls run only when the
+loop reaches its charged time, after every event before it. The charge depends only on the
+tokens the API reports and the number of tool calls, never on wall time, so with the same
+answers (the fake client, tested) a charged episode repeats exactly. Each wake records its
+calls' times, charges and answer times (`api_calls[].t`, `charge_s`, `t_answer`), when each tool
+call ran (`tool_calls[].t`), the turn's end (`t_end`) and its total charge.
+
+**The leakage scan** (SCORING-V2.md 4.4 and 7; `eval/headless/v2/leakage.py`), scoring v2 only:
+the system prompt, the tool definitions, every update and every tool result are scanned for
+family names, run names, seeds in names and the scorer's field names before the model can
+receive them; a hit stops the officer before that input is sent (`stop: leakage`) and the
+episode is a `harness_error` (`v2.leakage` holds the hits). The model's own words are scanned as
+diagnostics only; the bridge echoing them back (a rationale) is recorded as an echo, not a hit.
 
 ## 15. How to run
 

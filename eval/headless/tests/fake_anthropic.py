@@ -4,7 +4,8 @@
 what `script(request)` returns: (content blocks, stop reason). Every request is kept
 (`requests`: model, effort, sizes) and its usage is made up from its size (a quarter of its
 characters as input tokens, the previous request's prefix as a cache read), so the cost path
-runs on plausible numbers.
+runs on plausible numbers. Scripts: `LookScript` (one look at a fast unknown), `nothing`,
+`ReadAll` (every read tool at every update: the leakage scan's tests).
 """
 
 from __future__ import annotations
@@ -137,3 +138,39 @@ class LookScript:
 def nothing(req: dict[str, Any]) -> tuple[list[Any], str]:
     """Never reads, never proposes."""
     return [text("No action.")], "end_turn"
+
+
+#: every read tool and the arguments ReadAll calls it with (the leakage scan's tests)
+READS: list[tuple[str, dict[str, Any]]] = [
+    ("get_fleet", {}), ("get_platforms", {}), ("get_areas", {}), ("get_policy", {}),
+    ("get_intents", {"mine": False}), ("get_inbox", {}), ("get_tracks", {"include_stale": True}),
+    ("get_changes", {}), ("get_recent_events", {}), ("get_nominations", {}), ("get_satellite_passes", {}),
+]
+
+
+class ReadAll:
+    """At every update: every read tool (`READS`), then each vehicle (`get_vehicle`) and each
+    intent (`explain_intent`) the answers named, in one answer; then no action. What a curious
+    model would see of the bridge, for the leakage scan."""
+
+    def __init__(self) -> None:
+        self.n = 0
+
+    def id(self) -> str:
+        self.n += 1
+        return f"toolu_{self.n:04d}"
+
+    def __call__(self, req: dict[str, Any]) -> tuple[list[Any], str]:
+        last = req["messages"][-1]
+        if isinstance(last.get("content"), str):  # an update
+            return [tool_use(name, dict(args), self.id()) for name, args in READS], "tool_use"
+        res = last_results(req)
+        if "get_fleet" not in res:
+            return [text("No action.")], "end_turn"
+        uids = [v["uid"] for v in (res["get_fleet"].get("vehicles") or []) if isinstance(v, dict) and "uid" in v]
+        ids = [i["id"] for i in (res.get("get_intents") or {}).get("intents") or [] if isinstance(i, dict) and "id" in i]
+        uses = [tool_use("get_vehicle", {"uid": u}, self.id()) for u in uids]
+        uses += [tool_use("explain_intent", {"id": i}, self.id()) for i in ids]
+        if not uses:
+            return [text("No action.")], "end_turn"
+        return uses, "tool_use"

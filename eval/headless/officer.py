@@ -36,10 +36,24 @@ that can be imported is:
   update), as the CLI's consult process is.
 
 **Simulated time.** The officer is the episode's `agent` process: it polls every `poll_s` of
-simulated time and a wake runs between two simulator steps. Every tool call is a request at
-the current instant (the simulator refuses one that moves its clock, and each wake reads the
-clock before and after and fails the episode if it moved). The world waits for the model: the
-wall time a wake took is recorded, never simulated.
+simulated time. On the **paused** clock (the default) a wake runs between two simulator steps:
+every tool call is a request at the current instant (the simulator refuses one that moves its
+clock, and each wake reads the clock before and after and fails the episode if it moved). The
+world waits for the model: the wall time a wake took is recorded, never simulated.
+
+On the **charged** clock (`Options.clock = "charged"`, eval/SCORING-V2.md 4.2, latency.py) a
+wake is a resumable turn (`OpenTurn`, `TurnRun`): its first model call is made at the wake's
+time; the answer is applied only when the episode's loop reaches that time plus the call's
+charge (its tool calls run then, reading the world and acting at that instant), and the next
+call is made then on what the conversation holds; the turn ends when an answer without tool
+calls is due. Meanwhile the operator, the script, the samplers and the officer's own poller run
+as scheduled; no new wake starts until the turn ends. The charge depends only on the tokens the
+API reports and the tool calls in the answer, never on wall time.
+
+**Leakage** (scoring v2 only, v2/leakage.py, SCORING-V2.md 4.4 and 7): the system prompt, the
+tool definitions, every update and every tool result are scanned before they can be sent; a hit
+stops the officer before that input reaches the model (`stop: leakage`) and the episode is a
+`harness_error`. The model's own text is scanned as a diagnostic only.
 
 **The record.** Each wake (`wakes`): its simulated time, reason, lane, model and effort, the
 update it was given, every tool call (name, arguments, an excerpt of the answer), every model
@@ -56,7 +70,7 @@ import math
 import os
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -317,6 +331,12 @@ def fatal(e: BaseException) -> bool:
     return not any(k in name for k in ("Connection", "Timeout", "Overloaded", "InternalServer", "RateLimit"))
 
 
+def ms_up(t: float) -> float:
+    """`t` on the simulator's clock grid (its runtime's timers fire on whole milliseconds),
+    rounded up: a charged answer is never applied before its whole charge has passed."""
+    return math.ceil(round(t * 1000.0, 6)) / 1000.0
+
+
 def _not_run(b: Any, why: str) -> dict[str, Any]:
     return {"type": "tool_result", "tool_use_id": _get(b, "id"), "content": f"not run: {why}", "is_error": True}
 
@@ -344,6 +364,8 @@ class ApiBackend:
         self.max_turns = max_turns
         self.routine = Conversation()
         self.last_fatal = False  # the last turn's error is one no wait will cure
+        self.halt: Any = None  # () -> a reason not to send the next call, or None (TurnRun)
+        self.on_said: Any = None  # (texts, tool uses) of each answer, as it arrives (TurnRun)
 
     async def _create(self, model: str, effort: str, conv: Conversation) -> tuple[Any, dict[str, Any]]:
         size = len(self.system) + self.tools_chars + conv.chars
@@ -375,56 +397,112 @@ class ApiBackend:
         }
 
     async def turn(self, text: str, model: str, effort: str, consult: bool) -> tuple[Turn, list[dict[str, Any]]]:
-        conv = Conversation() if consult else self.routine
-        conv.append({"role": "user", "content": text})
-        self.last_fatal = False
-        turn = Turn(model=model)
-        calls: list[dict[str, Any]] = []
-        t0 = time.perf_counter()
-        stop = "success"
+        """One wake's whole turn at one instant (the paused clock): each call, then its tool
+        calls at once, until the model answers without one."""
+        run = self.start(text, model, effort, consult)
         while True:
-            if len(calls) >= self.max_turns:
-                stop = "max_turns"  # the CLI's error_max_turns: the turn ends, the session goes on
+            await run.request()
+            if run.stop is not None:
                 break
-            try:
-                r, meta = await self._create(model, effort, conv)
-            except CostGuardExceeded as e:
-                stop, turn.error = "cost_guard", str(e)
-                break
-            except Exception as e:  # noqa: BLE001 (an API error after the SDK's retries: the turn failed)
-                stop, turn.error = "error", f"{type(e).__name__}: {e}"[:2000]
-                self.last_fatal = fatal(e)
-                break
-            calls.append(meta)
-            content = _blocks(r)
-            conv.append({"role": "assistant", "content": content})
-            texts = [str(_get(b, "text")) for b in content if _type(b) == "text" and _get(b, "text")]
-            if texts:
-                turn.text = "\n".join(texts).strip()
-            uses = [b for b in content if _type(b) == "tool_use"]
-            reason = meta["stop_reason"]
-            if reason == "refusal" or (reason == "max_tokens" and uses):
-                if uses:  # the history stays valid: every tool_use answered
-                    conv.append({"role": "user", "content": [_not_run(b, f"the response ended ({reason})") for b in uses]})
-                stop = "refusal" if reason == "refusal" else "max_tokens"
-                details = getattr(r, "stop_details", None)
-                if reason == "refusal":
-                    turn.error = f"refusal: {_plain(details) if details is not None else 'no details'}"
-                break
-            if not uses:
-                stop = "success" if reason in (None, "end_turn", "stop_sequence") else str(reason)
-                break
-            results = []
-            for b in uses:
-                name, args = str(_get(b, "name")), _get(b, "input")
-                answer, is_error = self.execute(name, args)
-                turn.tool_calls.append(ToolCall(name, args, _get(b, "id"), excerpt(answer, EXCERPT), is_error))
-                results.append({"type": "tool_result", "tool_use_id": _get(b, "id"), "content": answer,
-                                "is_error": is_error})
-            conv.append({"role": "user", "content": results})
-        turn.stop = stop
+            run.apply()
+        return run.finish()
+
+    def start(self, text: str, model: str, effort: str, consult: bool) -> "TurnRun":
+        """A turn the caller drives one model call at a time (`TurnRun`): the charged clock runs
+        each call's tool calls only once the simulator has reached the time its answer came."""
+        return TurnRun(self, text, model, effort, consult)
+
+
+class TurnRun:
+    """One wake's turn as steps: `request` makes the next model call (or ends the turn: the last
+    model call of the wake used, the cost guard, an error, an answer without tool calls, a
+    refusal) and keeps its tool calls (`uses`); `apply` runs them (`execute`) and puts their
+    results in the conversation; `finish` gives the `Turn` and the calls' records. A request is
+    only ever made on what the conversation holds, so a call never sees a result of a tool call
+    that has not run. `ApiBackend.halt`, when set, is asked before every call: a reason stops the
+    turn there (the leakage scan's hit: the input is never sent)."""
+
+    def __init__(self, backend: ApiBackend, text: str, model: str, effort: str, consult: bool):
+        self.b = backend
+        self.conv = Conversation() if consult else backend.routine
+        self.conv.append({"role": "user", "content": text})
+        backend.last_fatal = False
+        self.model, self.effort = model, effort
+        self.turn = Turn(model=model)
+        self.calls: list[dict[str, Any]] = []
+        self.uses: list[Any] = []
+        self.stop: str | None = None
+        self.t0 = time.perf_counter()
+        self.busy_s = 0.0  # wall time spent in calls and tool calls (the charged clock's turn)
+
+    async def request(self) -> None:
+        t0 = time.perf_counter()
+        try:
+            await self._request()
+        finally:
+            self.busy_s += time.perf_counter() - t0
+
+    async def _request(self) -> None:
+        turn = self.turn
+        if len(self.calls) >= self.b.max_turns:
+            self.stop = "max_turns"  # the CLI's error_max_turns: the turn ends, the session goes on
+            return
+        why = self.b.halt() if self.b.halt is not None else None
+        if why:
+            self.stop, turn.error = str(why), f"not sent: {why}"
+            return
+        try:
+            r, meta = await self.b._create(self.model, self.effort, self.conv)
+        except CostGuardExceeded as e:
+            self.stop, turn.error = "cost_guard", str(e)
+            return
+        except Exception as e:  # noqa: BLE001 (an API error after the SDK's retries: the turn failed)
+            self.stop, turn.error = "error", f"{type(e).__name__}: {e}"[:2000]
+            self.b.last_fatal = fatal(e)
+            return
+        self.calls.append(meta)
+        content = _blocks(r)
+        self.conv.append({"role": "assistant", "content": content})
+        texts = [str(_get(b, "text")) for b in content if _type(b) == "text" and _get(b, "text")]
+        if texts:
+            turn.text = "\n".join(texts).strip()
+        uses = [b for b in content if _type(b) == "tool_use"]
+        if self.b.on_said is not None:  # the model's own words, before any tool call runs
+            thinking = [str(_get(b, "thinking")) for b in content if _type(b) == "thinking" and _get(b, "thinking")]
+            self.b.on_said(texts + thinking, uses)
+        reason = meta["stop_reason"]
+        if reason == "refusal" or (reason == "max_tokens" and uses):
+            if uses:  # the history stays valid: every tool_use answered
+                self.conv.append({"role": "user", "content": [_not_run(b, f"the response ended ({reason})") for b in uses]})
+            self.stop = "refusal" if reason == "refusal" else "max_tokens"
+            details = getattr(r, "stop_details", None)
+            if reason == "refusal":
+                turn.error = f"refusal: {_plain(details) if details is not None else 'no details'}"
+            return
+        if not uses:
+            self.stop = "success" if reason in (None, "end_turn", "stop_sequence") else str(reason)
+            return
+        self.uses = uses
+
+    def apply(self) -> None:
+        """Run the last answer's tool calls, in order, now; their results go into the conversation."""
+        t0 = time.perf_counter()
+        results = []
+        for b in self.uses:
+            name, args = str(_get(b, "name")), _get(b, "input")
+            answer, is_error = self.b.execute(name, args)
+            self.turn.tool_calls.append(ToolCall(name, args, _get(b, "id"), excerpt(answer, EXCERPT), is_error))
+            results.append({"type": "tool_result", "tool_use_id": _get(b, "id"), "content": answer,
+                            "is_error": is_error})
+        self.conv.append({"role": "user", "content": results})
+        self.uses = []
+        self.busy_s += time.perf_counter() - t0
+
+    def finish(self) -> tuple[Turn, list[dict[str, Any]]]:
+        turn, calls = self.turn, self.calls
+        turn.stop = self.stop or "success"
         turn.num_turns = len(calls)
-        turn.duration_s = time.perf_counter() - t0
+        turn.duration_s = time.perf_counter() - self.t0
         turn.cost_usd = round(sum(c["usd"] for c in calls), 6)
         turn.usage = {k: sum(c["tokens"][k] for c in calls) for k in ("input", "cache_write", "cache_read", "output")}
         turn.context_tokens = max((sum(c["tokens"][k] for k in ("input", "cache_write", "cache_read")) for c in calls),
@@ -620,9 +698,30 @@ class _Log:
         return rec
 
 
+@dataclass
+class OpenTurn:
+    """A wake's turn in progress on the charged clock: its next answer is `due` (situation
+    seconds); `charge_s` so far; when each of its tool calls ran (`tool_t`)."""
+
+    wake: Wake
+    run: TurnRun
+    t0: float
+    before: float
+    due: float
+    escalate: bool
+    lane: str
+    model: str
+    effort: str
+    text: str
+    charge_s: float = 0.0
+    error_charge_s: float = 0.0
+    tool_t: list[float] = field(default_factory=list)
+
+
 class WatchOfficer:
     """agents/watch_officer.py's `Officer` on the episode's clock (`wake` is the episode's
-    `agent` process)."""
+    `agent` process). On the charged clock (`ep.latency`, SCORING-V2.md 4.2) a wake is an
+    `OpenTurn` the episode's loop resumes at each answer's charged time."""
 
     def __init__(self, ep: Any, cfg: ModelConfig, client: Any = None):
         self.ep = ep
@@ -671,6 +770,26 @@ class WatchOfficer:
         self.log.write("run.start", models=cfg.as_dict(), budgets=dict(vars(self.budgets)), agent=AGENT,
                        prompt_chars=len(self.system), tools=sorted(self.tool_names),
                        tools_chars=self.backend.tools_chars)
+        # the latency-charged clock (SCORING-V2.md 4.2): None is the paused clock
+        self.latency: Any = getattr(ep, "latency", None)
+        self.open: OpenTurn | None = None  # the charged turn in progress
+        self.charge_s = 0.0
+        # scoring v2's leakage scan (v2/leakage.py) of everything the model receives; a hit
+        # stops the officer before that input is sent, and the episode is a harness error
+        self.scan: Any = None
+        if getattr(getattr(ep, "opts", None), "scoring", "v1") == "v2":
+            from .v2.leakage import Scanner, context_of
+
+            self.scan = Scanner(context_of(ep))
+            self.scan.scan(self.system, "system_prompt")
+            for t in self.tools:
+                self.scan.scan(json.dumps(t, ensure_ascii=False), f"tool_definition:{t['name']}", structured=True)
+            self.backend.halt = lambda: "leakage" if self.scan.leaked else None
+            self.backend.on_said = self.said
+
+    @property
+    def leaked(self) -> bool:
+        return self.scan is not None and self.scan.leaked
 
     # ---- the event loop's process ----------------------------------------------------------
 
@@ -684,6 +803,9 @@ class WatchOfficer:
     def wake(self, now_s: float) -> float | None:
         if self.stopped:
             return None
+        if self.leaked:  # the system prompt or a tool definition: nothing is ever sent
+            self.log.write("leakage", n_hits=self.scan.n_hits, first=self.scan.hits[0])
+            return self.stop(now_s, "leakage")
         bnow = self.bnow(now_s)
         if not self.connected:
             # Officer.connect: the change feed's cursor and the hostile tracks, retried 2 s
@@ -704,6 +826,17 @@ class WatchOfficer:
         if now_s >= self.next_poll - 1e-9:
             self.poll(bnow)
             self.next_poll = now_s + self.poll_s
+        if self.open is not None:
+            # a charged turn: the poller ran on meanwhile (as live, where it is a task of its
+            # own); its next answer is applied at its time, not before
+            if now_s < self.open.due - 1e-9:
+                return min(self.next_poll, self.open.due)
+            outcome = self.resume(now_s)
+            if outcome:
+                return self.stop(now_s, outcome)
+            if self.open is not None:
+                return min(self.next_poll, self.open.due)
+            bnow = self.bnow(now_s)  # the turn ended now: the next wake is looked for from here
         for _ in range(3):  # Officer.run's loop at one instant: a wake, then (min_gap_s) none
             if self.waker.exhausted():
                 self.log.write("budget.exhausted", what="wakes per run", max_wakes=self.budgets.max_wakes)
@@ -721,6 +854,8 @@ class WatchOfficer:
             outcome = self.do_wake(wake, now_s)
             if outcome:
                 return self.stop(now_s, outcome)
+            if self.open is not None:  # charged: the turn goes on at its first answer's time
+                return min(self.next_poll, self.open.due)
         nxt = min(self.waker.next_check(bnow), bnow + self.poll_s)
         if bnow < self.lanes["routine"].until:
             nxt = min(nxt, self.lanes["routine"].until)
@@ -782,15 +917,77 @@ class WatchOfficer:
         lane = "consult" if escalate else "routine"
         before = self.sim.now()
         self._wake_ctx = {"n": wake.n, "lane": lane}
+        if self.scan is not None:
+            self.scan.scan(text, "update", t=round(now_s, 3), wake=wake.n)
+        if self.latency is not None:
+            # charged: the turn's first call now; its answer is applied at its charged time
+            # (`resume`), the episode's other processes running meanwhile
+            run = self.backend.start(text, model, effort, consult=escalate)
+            self.open = OpenTurn(wake=wake, run=run, t0=now_s, before=before, due=now_s, escalate=escalate,
+                                 lane=lane, model=model, effort=effort, text=text)
+            self.ask(now_s)
+            if self.open.run.stop is not None and self.open.due <= now_s + 1e-9:
+                return self.end_turn(now_s)  # nothing was asked (the guard, a leak): over at once
+            return None
         turn, calls = self.run(self.backend.turn(text, model, effort, consult=escalate))
         after = self.sim.now()
         if after != before:
             raise RuntimeError(f"the simulated clock moved during wake {wake.n}: {before} -> {after}")
+        return self.finish_wake(wake, now_s, now_s, turn, calls, escalate, lane, model, effort, text, [before, after])
+
+    def ask(self, now_s: float) -> None:
+        """Charged: the open turn's next model call, made now on what its conversation holds;
+        its answer (and the tool calls in it) is due after the call's charge."""
+        o = self.open
+        assert o is not None and self.latency is not None
+        n0 = len(o.run.calls)
+        self.run(o.run.request())
+        meta = o.run.calls[-1] if len(o.run.calls) > n0 else None
+        if meta is not None:
+            charge = self.latency.call_s(meta["tokens"], len(o.run.uses))
+        elif o.run.stop == "error":
+            charge = self.latency.a_s  # the call was made and answered with an error
+            o.error_charge_s += charge
+        else:
+            charge = 0.0  # nothing was sent: the wake's last call used, the cost guard, a leak
+        o.due = ms_up(now_s + charge) if charge > 0 else now_s
+        o.charge_s += charge
+        if meta is not None:
+            meta.update(t=round(now_s, 3), charge_s=round(charge, 6), t_answer=o.due)
+
+    def resume(self, now_s: float) -> str | None:
+        """Charged: the open turn's answer is due now. Its tool calls run now (they read the
+        world and act at this instant) and the next call is made; or, when the turn is over,
+        it ends now."""
+        o = self.open
+        assert o is not None
+        if o.run.stop is None:
+            self._wake_ctx = {"n": o.wake.n, "lane": o.lane}
+            o.run.apply()
+            self.ask(now_s)
+            if o.run.stop is None or o.due > now_s + 1e-9:
+                return None
+        return self.end_turn(now_s)
+
+    def end_turn(self, now_s: float) -> str | None:
+        o, self.open = self.open, None
+        assert o is not None
+        turn, calls = o.run.finish()
+        turn.duration_s = o.run.busy_s  # the calls' and tool calls' wall time, not the episode's
+        after = self.sim.now()  # the simulator's clock: `now_s` on its millisecond grid
+        if not now_s - 1e-6 <= after <= ms_up(now_s) + 1e-6:
+            raise RuntimeError(f"wake {o.wake.n} ended at {now_s}, the simulator's clock at {after}")
+        self.charge_s += o.charge_s
+        return self.finish_wake(o.wake, o.t0, now_s, turn, calls, o.escalate, o.lane, o.model, o.effort, o.text,
+                                [o.before, after], o)
+
+    def wake_record(self, wake: Wake, t0: float, turn: Turn, calls: list[dict[str, Any]], escalate: bool, lane: str,
+                    model: str, effort: str, text: str, clock: list[float], o: "OpenTurn | None") -> dict[str, Any]:
         self.wall_s += turn.duration_s
         ids, self._wake_proposed = self._wake_proposed, []
         served = sorted({m for c in calls for m in c["served"]})
         rec = {
-            "n": wake.n, "t": round(now_s, 3), "clock": [before, after], "reason": wake.reason, "why": wake.why,
+            "n": wake.n, "t": round(t0, 3), "clock": clock, "reason": wake.reason, "why": wake.why,
             "lane": lane, "escalate_why": wake.escalate_why if escalate else [], "model": model, "effort": effort,
             "served": served, "changes": len(wake.changes), "update": text, "stop": turn.stop, "error": turn.error,
             "text": (turn.text or "")[:TEXT_MAX],
@@ -799,7 +996,38 @@ class WatchOfficer:
             "proposed": ids, "api_calls": calls, "tokens": turn.usage, "usd": turn.cost_usd,
             "wall_s": round(turn.duration_s, 3), "context_tokens": turn.context_tokens,
         }
+        if o is not None:  # charged only: when each tool call ran, the turn's end and charge
+            for c, t in zip(rec["tool_calls"], o.tool_t):
+                c["t"] = t
+            rec.update(t_end=round(clock[1], 3), charge_s=round(o.charge_s, 6))
+            if o.error_charge_s:
+                rec["error_charge_s"] = round(o.error_charge_s, 6)
         self.wakes.append(rec)
+        return rec
+
+    def said(self, texts: list[str], uses: list[Any]) -> None:
+        """The model's own words as each answer arrives (`ApiBackend.on_said`): the leakage
+        scan's diagnostics, and what it recognizes as their echoes."""
+        n = (self._wake_ctx or {}).get("n")
+        for s in texts:
+            self.scan.said(s, "model_text", t=round(self.sim.t, 3), wake=n)
+        for b in uses:
+            self.scan.said(json.dumps(_get(b, "input"), ensure_ascii=False), f"model_tool_input:{_get(b, 'name')}",
+                           t=round(self.sim.t, 3), wake=n)
+
+    def finish_wake(self, wake: Wake, t0: float, t1: float, turn: Turn, calls: list[dict[str, Any]], escalate: bool,
+                    lane: str, model: str, effort: str, text: str, clock: list[float],
+                    o: "OpenTurn | None" = None) -> str | None:
+        """Officer.do_wake after its turn: the record, then what the turn's end means. `t0` is
+        the wake's start, `t1` its end (the same instant on the paused clock): a failure backs
+        the lane off from the start and gives the changes back at the end, as live."""
+        bnow, bend = self.bnow(t0), self.bnow(t1)
+        rec = self.wake_record(wake, t0, turn, calls, escalate, lane, model, effort, text, clock, o)
+        ids, served = rec["proposed"], rec["served"]
+        if turn.stop == "leakage":
+            # an input the model would have received carries an evaluation token: never sent
+            self.log.write("leakage", n=wake.n, n_hits=self.scan.n_hits, first=self.scan.hits[0])
+            return "leakage"
         if turn.stop == "cost_guard":
             # the guard refused a call: not the model's choice; no further call can pass it
             self.budget_stopped = True
@@ -815,7 +1043,7 @@ class WatchOfficer:
         if turn.stop == "error":
             # Officer.do_wake: what it was told comes back for the next wake, an escalation it
             # spent is returned, and the model's lane backs off
-            self.waker.give_back(wake, bnow)
+            self.waker.give_back(wake, bend)
             stop = self.failed(bnow, crashed=False, lane=lane)
             if stop:
                 self.log.write("error", error=stop)
@@ -851,8 +1079,19 @@ class WatchOfficer:
         return out
 
     def execute(self, name: str, args: Any) -> tuple[str, bool]:
-        """One tool call of the model's, at the current instant: the bridge's answer as compact
-        JSON (what the MCP server's text content holds), up to RESULT_MAX_CHARS."""
+        """One tool call of the model's, at the current instant (on the charged clock, its
+        answer's charged time), scanned before it can be sent (scoring v2's leakage scan)."""
+        if self.open is not None:
+            self.open.tool_t.append(round(self.sim.t, 3))
+        text, is_error = self._execute(name, args)
+        if self.scan is not None:
+            self.scan.scan(text, f"tool_result:{name}", structured=True, t=round(self.sim.t, 3),
+                           wake=(self._wake_ctx or {}).get("n"))
+        return text, is_error
+
+    def _execute(self, name: str, args: Any) -> tuple[str, bool]:
+        """The bridge's answer as compact JSON (what the MCP server's text content holds), up to
+        RESULT_MAX_CHARS."""
         if name not in self.tool_names:
             # what the locked-down CLI answers for a tool outside the Murmur server
             return f"<tool_use_error>Error: No such tool available: {name}</tool_use_error>", True
@@ -901,6 +1140,18 @@ class WatchOfficer:
     # ---- the end ---------------------------------------------------------------------------
 
     def close(self) -> None:
+        if self.open is not None:
+            # charged: the episode ended before the turn's next answer was due; that answer
+            # (and any tool call in it) never reached the world, the calls made are billed
+            o, self.open = self.open, None
+            o.run.stop = "episode_end"
+            o.run.uses = []
+            turn, calls = o.run.finish()
+            turn.duration_s = o.run.busy_s
+            self.charge_s += o.charge_s
+            rec = self.wake_record(o.wake, o.t0, turn, calls, o.escalate, o.lane, o.model, o.effort, o.text,
+                                   [o.before, self.sim.t], o)
+            rec["due"] = round(o.due, 3)
         close = getattr(self.client, "close", None)
         if close is not None:
             try:
@@ -914,7 +1165,7 @@ class WatchOfficer:
         stops: dict[str, int] = {}
         for w in self.wakes:
             stops[w["stop"]] = stops.get(w["stop"], 0) + 1
-        return {
+        out = {
             "wakes": len(self.wakes), "consults": sum(1 for w in self.wakes if w["lane"] == "consult"),
             "api_calls": sum(len(w["api_calls"]) for w in self.wakes),
             "tool_calls": sum(len(w["tool_calls"]) for w in self.wakes),
@@ -924,6 +1175,9 @@ class WatchOfficer:
             "budget_stopped": self.budget_stopped, "model_failed": self.model_failed,
             "stopped": self.stopped, "stopped_t": self.stopped_t,
         }
+        if self.latency is not None:  # charged only: the simulated time the turns took
+            out["charge_s"] = round(self.charge_s, 6)
+        return out
 
     def describe(self) -> dict[str, Any]:
         return {

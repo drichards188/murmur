@@ -1,0 +1,18 @@
+# Scoring v2's latency-charged clock (eval/SCORING-V2.md section 4.2; eval/headless/latency.py).
+#
+# A model call's answer is applied after the simulator advances by
+#   a_s + b_in_s * input tokens + b_out_s * output tokens + c_s * tool calls in the answer
+# (input tokens: fresh, cache write and cache read; output tokens: thinking included). A failed
+# call is charged a_s. The playbook is charged playbook_tick_s per tick.
+#
+# PLACEHOLDERS, not fitted: about 2 s to the first token, 50 output tokens a second, prefill at
+# 50,000 tokens a second, half a second per tool call (the live officer's turns took 10 to 60 s,
+# docs/HEADLESS.md 14.1), and a playbook tick of 0.2 s. They are fitted on dev-build episodes to
+# measured API wall times (SCORING-V2.md section 11, stage 1 item a), then frozen; every charged
+# episode records the values it ran with.
+source = "placeholders (not fitted)"
+a_s = 2.0
+b_in_s = 0.00002
+b_out_s = 0.02
+c_s = 0.5
+playbook_tick_s = 0.2

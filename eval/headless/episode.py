@@ -26,6 +26,13 @@ clock, over one `murmur-headless` process.
 Simultaneous events run in a fixed order (runner, script, operator, AI, sampler, picture) and
 each process's actions happen at one simulated instant, so an episode is a function of
 (situation, seed, calibration, operator model).
+
+**The clock condition** (`Options.clock`, SCORING-V2.md 4.1 and 4.2; docs/HEADLESS.md 14.1.1):
+`paused` (default) as above, the world waiting for the AI; `charged`, the AI's thinking costing
+simulated time by latency.py's constants: a model wake is a turn the loop resumes at each
+answer's charged time (officer.py), a playbook tick reads at its start and acts
+`playbook_tick_s` later, the other processes running meanwhile. Only a charged record carries
+the condition (`clock.condition`, `provenance.clock`, `v2.condition.clock`).
 """
 
 from __future__ import annotations
@@ -48,6 +55,7 @@ from eval.situation_run import dry_run_summary, labelled, submits_itself
 from eval.storyline import select_vehicles
 
 from . import REPO
+from .latency import CLOCKS, Latency
 from .operator import Operator, OperatorModel, operator_model
 from .sim import HeadlessSession, Sim
 from .situations import Calibration, EpisodeSpec, process_spec
@@ -89,28 +97,42 @@ class Options:
     scoring: str = "v1"
     # v2: which replicate this is ({"r", "seed", "situation_seed"}), recorded as given
     replicate: dict[str, Any] | None = None
+    # the clock condition (SCORING-V2.md 4.1, 4.2; latency.py): "paused" (default: the world
+    # waits for the agent, the episode and its record exactly as before) or "charged" (the
+    # agent's thinking costs simulated time); `latency` overrides latency.toml's constants
+    clock: str = "paused"
+    latency: Any = None
 
 
 class Loop:
-    """The event loop: processes wake at simulated times; the simulator steps between."""
+    """The event loop: processes wake at simulated times; the simulator steps between. Events
+    run in (time, process priority, order scheduled); time only moves forward: a process may
+    schedule itself now or later, never at an instant already passed (`at` refuses it), so no
+    event is reordered and nothing runs at an instant the simulator has left. A charged turn
+    (officer.py) is an ordinary event of the `agent` process at each answer's charged time."""
 
     def __init__(self, sim: Sim):
         self.sim = sim
         self.q: list[tuple[float, int, int, str]] = []
         self.n = 0
         self.handlers: dict[str, Any] = {}
+        self.now = 0.0
 
     def at(self, t: float | None, name: str) -> None:
         if t is None:
             return
+        t = round(float(t), 6)
+        if t < self.now - 1e-6:
+            raise RuntimeError(f"{name} asked to run at {t} s, before the loop's current {self.now} s")
         self.n += 1
-        heapq.heappush(self.q, (round(float(t), 6), PRIORITY[name], self.n, name))
+        heapq.heappush(self.q, (t, PRIORITY[name], self.n, name))
 
     def run(self, end: float) -> None:
         while self.q:
             t, _, _, name = heapq.heappop(self.q)
             if t > end:
                 break
+            self.now = max(self.now, t)
             if t > self.sim.t:
                 self.sim.step(t)
             self.at(self.handlers[name](t), name)
@@ -190,6 +212,11 @@ class PlaybookAgent:
         # in `perf`, never written into the record
         self.slow_ticks = 0
         self.plans: list[dict[str, Any]] = []
+        # the charged clock (SCORING-V2.md 4.2): a tick reads the picture when it starts and its
+        # previews, proposals and withdrawals reach the bridge `tick_charge_s` later (`pending`)
+        lat = getattr(ep, "latency", None)
+        self.tick_charge_s: float | None = float(lat.playbook_tick_s) if lat is not None else None
+        self.pending: dict[str, Any] | None = None
         # what each tick's pure part decided (wrapped from outside, the engine unchanged): for
         # CRITERIA.md's timeliness, the first tick whose plan held a play's candidate
         plan = self.engine.plan
@@ -223,6 +250,9 @@ class PlaybookAgent:
         return True
 
     def _tick(self, now: float) -> None:
+        if self.tick_charge_s is not None:
+            self._begin_tick(now)
+            return
         try:
             rep = self.ep.run_async(self.engine.tick(self.session))
             self.ticks += 1
@@ -230,19 +260,74 @@ class PlaybookAgent:
             if rep.compute_ms > 50.0:
                 self.slow_ticks += 1
         except Exception as e:  # noqa: BLE001 (three in a row: a new session, as the agent does)
-            self.misses += 1
-            self.errors += 1
-            self.write("error", error=f"{type(e).__name__}: {e}", misses=self.misses)
-            if self.misses >= 3:
-                self.started = False
+            self._missed(e)
         self.next_at = now + float(self.cfg["tick_s"])
 
+    def _missed(self, e: BaseException) -> None:
+        self.misses += 1
+        self.errors += 1
+        self.write("error", error=f"{type(e).__name__}: {e}", misses=self.misses)
+        if self.misses >= 3:
+            self.started = False
+
+    def _begin_tick(self, now: float) -> None:
+        """Charged: the tick's reads now (the engine's own `read`, as its tick would make them);
+        the rest of the tick when they are due (`_finish_tick`). An engine not yet verified
+        reads nothing now: its whole tick (settle, read, act) runs when due."""
+        reads = None
+        if self.engine.verified:
+            try:
+                reads = self.ep.run_async(self.engine.read(self.session))
+            except Exception as e:  # noqa: BLE001 (as a failed tick)
+                self._missed(e)
+                self.next_at = now + float(self.cfg["tick_s"])
+                return
+        assert self.tick_charge_s is not None
+        self.pending = {"t": now, "due": now + self.tick_charge_s, "reads": reads}
+
+    def _finish_tick(self, now: float) -> None:
+        """Charged: the tick decides on the picture read when it began, and its previews,
+        proposals and withdrawals go out now. The engine is unchanged: its `read` is answered
+        once with what was read then (an attribute of this engine, removed after)."""
+        p, self.pending = self.pending, None
+        assert p is not None
+        eng = self.engine
+        if p["reads"] is not None:
+            taken = p["reads"]
+
+            async def read(session: Any) -> Any:
+                return taken
+
+            eng.read = read  # type: ignore[method-assign]
+        try:
+            rep = self.ep.run_async(eng.tick(self.session))
+            self.ticks += 1
+            self.misses = 0
+            if rep.compute_ms > 50.0:
+                self.slow_ticks += 1
+        except Exception as e:  # noqa: BLE001
+            self._missed(e)
+        finally:
+            eng.__dict__.pop("read", None)
+        self.next_at = p["t"] + float(self.cfg["tick_s"])
+
     def wake(self, now: float) -> float | None:
+        if self.pending is not None:
+            # charged: a tick in progress (no polls meanwhile: the live agent's loop awaits it)
+            if now < self.pending["due"] - 1e-9:
+                return self.pending["due"]
+            self._finish_tick(now)
+            if not self.started:
+                return now
+            assert self.next_at is not None
+            return now + max(0.0, min(POLL_S, self.next_at - now))
         if not self.started:
             if not self._start(now):
                 delay, self.retry_s = self.retry_s, min(self.retry_s * 2.0, 30.0)
                 return now + delay
             self._tick(now)
+            if self.pending is not None:
+                return self.pending["due"]
             if not self.started:  # three misses in a row: a new session at once, as live
                 return now
             return min(now + POLL_S, self.next_at or now)
@@ -252,11 +337,15 @@ class PlaybookAgent:
         except Exception:  # noqa: BLE001 (the tick reads again)
             new = []
             self._tick(now)
+            if self.pending is not None:
+                return self.pending["due"]
             if not self.started:
                 return now
             return min(now + POLL_S, self.next_at)
         if waking(new) or now >= self.next_at - 1e-9:
             self._tick(now)
+            if self.pending is not None:
+                return self.pending["due"]
             if not self.started:  # three misses in a row: a new session at once, as live
                 return now
         return now + min(POLL_S, self.next_at - now)
@@ -285,6 +374,12 @@ class Episode:
         if self.opts.scoring not in SCORINGS:
             raise ValueError(f"unknown scoring {self.opts.scoring!r}: {', '.join(SCORINGS)}")
         self.picture_enc: Any = None  # v2/record.py PictureEncoder (scoring v2 only)
+        # the latency charge (latency.py) on the charged clock; None on the paused one
+        if self.opts.clock not in CLOCKS:
+            raise ValueError(f"unknown clock {self.opts.clock!r}: {', '.join(CLOCKS)}")
+        self.latency: Latency | None = None
+        if self.opts.clock == "charged":
+            self.latency = self.opts.latency if self.opts.latency is not None else Latency.load()
 
     def run_async(self, coro: Any) -> Any:
         return self.aloop.run_until_complete(coro)
@@ -472,36 +567,52 @@ class Episode:
                 "fallbacks": cfg_m["fallbacks"], "max_tokens": cfg_m["max_tokens"],
                 "prompt_sha256": hashlib.sha256(self.agent.system.encode()).hexdigest(),
                 "tools_sha256": hashlib.sha256(json.dumps(self.agent.tools, sort_keys=True).encode()).hexdigest()}}
+        if self.latency is not None:
+            # charged only (a paused record is unchanged): the condition and its constants
+            rec["clock"]["condition"] = "charged"
+            rec["provenance"] = {**rec["provenance"], "clock": {"condition": "charged", "latency": self.latency.as_dict()}}
         if self.opts.scoring == "v2":
             rec.update(self.v2_part(audit_text))
         return rec
 
     def v2_part(self, audit_text: str) -> dict[str, Any]:
         """Scoring v2's keys (SCORING-V2.md 2.6, 7): the episode class as the driver sets it,
-        the replicate, the condition (operator, policy), the picture samples, the audit log's
-        digest and the invariants. The batch sets `harness_error` for an episode that failed."""
+        the replicate, the condition (operator, policy; the clock when charged), the picture
+        samples, the audit log's digest, the invariants and the model's leakage scan. The
+        episode sets `harness_error` on a leakage hit; the batch sets it for an episode that
+        failed."""
         from .v2.record import digest_audit, invariant_counts
 
-        if self.opts.agent == "model" and self.agent.budget_stopped:
+        # the model's leakage scan (v2/leakage.py): a hit on an input is a harness error (7.1)
+        scan = getattr(self.agent, "scan", None) if self.opts.agent == "model" else None
+        if scan is not None and scan.leaked:
+            cls = "harness_error"
+        elif self.opts.agent == "model" and self.agent.budget_stopped:
             cls = "budget_stop"
         elif self.opts.agent == "model" and self.agent.model_failed:
             cls = "model_failed"
         else:
             cls = "scored"
         pic = self.picture_enc.finish()
+        condition = {"operator": (self.operator.m.mode if self.operator else None),
+                     "policy": Path(self.e.policy).name if self.e.policy else None}
+        if getattr(self, "latency", None) is not None:  # charged only; no clock reads as paused
+            condition["clock"] = "charged"
+        v2 = {
+            "agent": self.opts.agent,
+            "condition": condition,
+            "picture": pic,
+            "picture_samples": len(pic["times"]),
+            "audit": digest_audit(audit_text, self.sim_epoch),
+            "invariants": invariant_counts(audit_text),
+        }
+        if scan is not None:
+            v2["leakage"] = scan.record()
         return {
             "scoring": "v2",
             "episode_class": cls,
             "replicate": dict(self.opts.replicate) if self.opts.replicate else None,
-            "v2": {
-                "agent": self.opts.agent,
-                "condition": {"operator": (self.operator.m.mode if self.operator else None),
-                              "policy": Path(self.e.policy).name if self.e.policy else None},
-                "picture": pic,
-                "picture_samples": len(pic["times"]),
-                "audit": digest_audit(audit_text, self.sim_epoch),
-                "invariants": invariant_counts(audit_text),
-            },
+            "v2": v2,
         }
 
 
