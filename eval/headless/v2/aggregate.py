@@ -91,8 +91,17 @@ def base_name(name: str | None) -> str:
 
 
 def area_of(meta: dict[str, Any]) -> str | None:
+    """The test area (9.1) of an episode: its explicit `area` (an area's code, or as the v2
+    generators state it, `S1 identify` or `Harbor watch`), else its family's."""
     if meta.get("area"):
-        return str(meta["area"])
+        a = str(meta["area"])
+        codes = {x["area"] for x in AREAS}
+        names = {str(x["name"]).lower(): x["area"] for x in AREAS}
+        if a in codes:
+            return a
+        if a.split()[0] in codes:
+            return a.split()[0]
+        return names.get(a.lower(), a)
     fam = base_name(meta.get("family") or meta.get("base"))
     for a in AREAS:
         if a["area"] != "S10" and fam in a["families"]:

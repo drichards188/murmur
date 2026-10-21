@@ -39,8 +39,22 @@ fails in the simulator or the driver is run again once on the same seeds; a seco
 `aggregate_v2.json`, and the scorecard to `scorecard.json` and `scorecard.md`
 (eval/headless/v2/). Without `--scoring v2` nothing here changes.
 
+Replicate r's episode gets `spec.replicate = r`, so its opaque run id is per (family, situation
+seed, replicate) and the same for every agent. The agents include scoring v2's anchors (`null`,
+`random-valid`, `oracle`) and the playbook's perturbations (`playbook+spam`, `playbook+behind`,
+`playbook+skip-first`, `playbook+reserve-blind`, `playbook+ferries`): eval/headless/agents_v2.py.
+Each episode's index entry carries its fidelity digests (`fidelity_digest`: truth, picture samples,
+the audit log bar `agent.action`), which the world pilot's gate compares between `null` and `none`
+(aggregate_v2.json `world_pilot`). The primary pools only the families admitted by an
+admissibility verdict (resolution 21): `--admissibility <batch>` takes an admissibility batch's
+(none and oracle on the admissibility seeds), else this batch's own none and oracle if both ran;
+`primary_families` says which and why. `--reserve <candidate>` (the world's calibration only,
+eval/headless/reserve.py) puts PUMA 1 at a committed reserve candidate.
+
     .venv/bin/python -m eval.headless.batch --scoring v2 --families fast-unknown --seeds 1000-1009 \\
         --replicates 4 --agent playbook none --operators approve-all proxy --workers 8
+    .venv/bin/python -m eval.headless.batch --scoring v2 --families v2-fast-unknown v2-decoy \\
+        --seeds 1000-1099 --agent random-valid playbook oracle null --operators approve-all --workers 12
 """
 
 from __future__ import annotations

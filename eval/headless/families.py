@@ -46,7 +46,8 @@ for callers that pass names only, such as batch.py's `--families`; eval/SCORING-
 and 9.1). The v1 families above stay the default and unchanged, for v1 re-scoring only. The v2
 base: Harbor watch's four vehicles, spawn points and three opening orders on the v2 fleet
 (sim/fleets/harbor-watch-v2.toml: REAPER 1 and HUNTER 1 carry radar and AIS only, so only the
-Pumas' EO/IR identifies), its watch policy, its `[playbook]` table (the same config, labelled
+Pumas' EO/IR identifies; PUMA 1 waits in reserve over Crissy Field, the point SCORING-V2.md
+0.1's calibration chose, `V2_RESERVE`), its watch policy, its `[playbook]` table (the same config, labelled
 `watch`, so no situation name reaches the playbook's own reads), 720 s, the AI at 45 s, the
 autoplay operator, its ordinary traffic under a contacts seed drawn per situation, and the
 mission (eval/headless/v2/mission.py) as the brief, verbatim and nothing else. Each family
@@ -385,8 +386,10 @@ def generate(family: str, seed: int, workdir: Path, world: str = "v1",
 V2_PREFIX = "v2-"
 V2_FLEET = REPO / "sim" / "fleets" / "harbor-watch-v2.toml"
 #: the vehicle in reserve (no opening order): where it waits is its spawn in V2_FLEET, chosen by
-#: SCORING-V2.md 0.1's rule among the committed candidates (`RESERVE_CANDIDATES`)
+#: SCORING-V2.md 0.1's rule among the committed candidates (`RESERVE_CANDIDATES`; eval/headless/
+#: reserve.py, 2026-10-21: none and oracle, dev-build seeds 1000-1049): `V2_RESERVE`
 V2_RESERVE_CALLSIGN = "PUMA 1"
+V2_RESERVE = "crissy-field"
 RESERVE_CANDIDATES = HERE / "reserve_candidates.toml"
 #: the playbook's config label in v2: its `[playbook]` table is Harbor watch's, unchanged (same
 #: hash); only the label, which the playbook sends at connect and writes into its rationales,

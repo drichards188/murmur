@@ -1,15 +1,23 @@
 # Harbor watch on scoring v2's base (eval/SCORING-V2.md, section 0, decision D8): the same four
-# stand-ins at the same spawn points as sim/fleets/harbor-watch.toml, flying the same opening
-# orders, but REAPER 1 and HUNTER 1 are the radar-and-AIS-only variants (mq9b_radar,
+# stand-ins as sim/fleets/harbor-watch.toml, at its spawn points but PUMA 1's (below), flying the
+# same opening orders, but REAPER 1 and HUNTER 1 are the radar-and-AIS-only variants (mq9b_radar,
 # seahunter_radar in sim/platforms.toml). Why: with their EO/IR and sonar, the standing
 # sensors identified 22 of 23 contacts that needed a look before the need arose, so a look
 # could not matter; here only the two Pumas (EO/IR) can identify a contact. The picture still
 # shows every contact (radar, AIS).
 #
-# Known, open (murmur-72l.9): PUMA 1 has no opening order and loiters in reserve at its spawn,
-# mid-strait 1.3 km west of the bridge, on the fast boats' approach lane, so its EO/IR identifies
-# most of them within a minute of their need with no agent sent (the 2026-10-21 world smoke: 83
-# of 87 needs). The world pilot (SCORING-V2.md 10.1) decides where the reserve waits.
+# PUMA 1 has no opening order: it waits in reserve at its spawn. Harbor watch's spawn (mid-strait
+# 1.3 km west of the bridge, on the fast boats' approach lane) let its EO/IR identify nearly every
+# need with no agent sent (murmur-72l.9: the 2026-10-21 world smoke, 83 of 87 needs; the
+# calibration below, all 393). Where it waits was chosen by SCORING-V2.md 0.1's rule, on the
+# anchors none and oracle only (approve-all, dev-build seeds 1000-1049, the seven v2 families
+# with eligible needs), among the candidates committed before any run
+# (eval/headless/reserve_candidates.toml): Crissy Field, the fleets' launch site, the one with the
+# lowest pooled none share among those where the oracle serves at least 80 % and none at most
+# 50 % in every family (none 17 of 393, 4.3 %; oracle 393 of 393). Kirby Cove also qualified
+# (none 28.5 %); the current spawn (none 100 %), Fort Baker, Sausalito and Fort Mason (the oracle
+# under 80 % in the low-battery or stuck-vehicle family) did not. Table: eval/headless/reserve.py
+# `choose`. Its spawn's heading and altitude are the old spawn's.
 #
 # uids follow the unit order (sim/swarm.py), as in Harbor watch: 1 HUNTER 1, 2 REAPER 1,
 # 3 PUMA 1, 4 PUMA 2. Callsigns are unchanged (numbering is per callsign prefix), so the
@@ -30,7 +38,7 @@ spawn = [37.8150, -122.4950, 3000, 270] # west of the bridge, airborne at 3000 m
 [[unit]]
 platform = "puma"                      # EO/IR 4 km, in reserve; 2.5 h
 sim = "standin"
-spawn = [37.8210, -122.4930, 120, 270] # west of the bridge, mid-strait, airborne
+spawn = [37.8075, -122.4600, 120, 270] # in reserve over Crissy Field (the launch site), 2.1 km south-east of the bridge, airborne
 
 [[unit]]
 platform = "puma"                      # EO/IR 4 km, on station north of the Gate; 2.5 h

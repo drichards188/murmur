@@ -92,13 +92,22 @@ def test_the_variants_are_their_platforms_without_eo_ir_or_sonar():
 
 
 def test_the_v2_fleet_is_harbor_watch_with_the_variants():
+    """Harbor watch's fleet with the variants, and PUMA 1 waiting where SCORING-V2.md 0.1's
+    calibration chose (a committed candidate; its heading and altitude the old spawn's)."""
+    from eval.headless.families import V2_RESERVE, reserve_candidates
+
     v1, _ = fleet_plan(REPO / "sim" / "fleets" / "harbor-watch.toml")
     v2, _ = fleet_plan(V2_FLEET)
     assert [v["callsign"] for v in v2] == ["HUNTER 1", "REAPER 1", "PUMA 1", "PUMA 2"]
     swap = {"seahunter": "seahunter_radar", "mq9b": "mq9b_radar", "puma": "puma"}
     for a, b in zip(v1, v2):
         assert b["platform"] == swap[a["platform"]]
-        assert {k: v for k, v in a.items() if k != "platform"} == {k: v for k, v in b.items() if k != "platform"}
+        skip = ("platform", "home") if b["callsign"] == "PUMA 1" else ("platform",)
+        assert {k: v for k, v in a.items() if k not in skip} == {k: v for k, v in b.items() if k not in skip}
+    c = reserve_candidates()[V2_RESERVE]
+    old, new = v1[2]["home"], v2[2]["home"]
+    assert new == [c["lat"], c["lon"], c["alt_m"], old[3]] and old[2] == c["alt_m"]
+    assert (old[0], old[1]) == (reserve_candidates()["spawn"]["lat"], reserve_candidates()["spawn"]["lon"])
     assert classifier_uids() == PUMAS
     assert v2_vehicles()["REAPER 1"]["sensors"] == ["ais", "radar"]
     assert v2_vehicles()["HUNTER 1"]["sensors"] == ["ais", "radar"]
