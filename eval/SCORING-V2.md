@@ -38,6 +38,29 @@ orbits move off the approaches; `low-battery` draws its crossing of 20 % inside 
 dependent identification, terrain masking: murmur-jln) is deferred; results under it would be a
 separate dataset.
 
+### 0.1 Calibrating the v2 world on anchors only (added 2026-10-21, after the world smoke)
+
+The world smoke (a245a50, murmur-72l.9) found the D8 world still leaves no room: PUMA 1 waits in
+reserve at its spawn mid-strait, 1.3 km west of the bridge, where the fast boats pass, and
+identifies 83 of 87 needs untasked; waiting over Crissy Field instead, `none` falls to 0 % but so
+does the playbook, because identification takes about 45 s of EO/IR dwell inside a 60 s window.
+Where the reserve waits trades the floor against the ceiling, so it is chosen by a rule that
+looks **only at the anchors `none` and `oracle`, never at an agent under test**:
+
+1. Before any calibration run, a candidate list of PUMA 1 reserve points is committed: its
+   current spawn and five named places inside the approved area a small UAS could plausibly wait
+   at (coordinates recorded), PUMA 2 on its current station.
+2. For each candidate, `none` and `oracle` (approve-all) run on dev-build situation seeds
+   1000-1049 in every family with eligible needs.
+3. A candidate qualifies if, in every such family, `oracle` serves at least 80 % and `none` at most
+   50 % of eligible needs. Among qualifying candidates the one with the lowest pooled `none` share
+   is chosen; ties go to the one nearest the current spawn.
+4. If none qualifies, the mission's 60 s window may be infeasible for this fleet: reported to the
+   owner, and the mission is not changed without the owner's decision.
+
+The chosen point becomes part of the v2 world, hashed at the freeze. The playbook's results at
+any candidate are not consulted.
+
 ## 1. Terms
 
 - **Mission**: the text every agent receives in its brief, verbatim and identically: "Identify
