@@ -304,6 +304,14 @@ def test_the_mapping_of_intents_to_plays():
     far = map_proposal({"task": "orbit", "uids": [3], "center": [-122.60, 37.70], "radius_m": 300}, pic, {})
     assert far["play"] == "unjudged:orbit" and far["target"] is None
     assert map_proposal({"task": "patrol", "uids": [3], "route": [[0, 0], [1, 1]]}, pic, {})["play"] == "unjudged:patrol"
+    # an orbit placed ahead of a moving track, on its course: a look on it (where it will be)
+    fast = {**BOAT, "speed_mps": 15.0, "course_deg": 90.0}
+    ahead = [-122.5198 + 0.017, 37.80595]  # about 1.5 km east: 100 s at 15 m/s
+    lead = map_proposal({"task": "orbit", "uids": [3], "center": ahead, "radius_m": 400}, {**pic, "tracks": [fast, FERRY]}, {})
+    assert lead["play"] == "isr.investigate" and lead["target"] == "T-0008" and 90 <= lead["lead_s"] <= 110
+    behind = [-122.5198 - 0.017, 37.80595]  # the same distance behind it: not a look
+    assert map_proposal({"task": "orbit", "uids": [3], "center": behind, "radius_m": 400},
+                        {**pic, "tracks": [fast, FERRY]}, {})["play"] == "unjudged:orbit"
     twin = {**BOAT, "id": "T-0009", "predicted": [-122.5198 + 0.006, 37.80595]}
     amb = map_proposal({"task": "orbit", "uids": [3], "center": near}, {**pic, "tracks": [BOAT, twin]}, {})
     assert amb["play"] == "isr.investigate" and amb["aim"] == "ambiguous"

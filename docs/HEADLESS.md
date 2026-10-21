@@ -736,7 +736,7 @@ it is equivalent to by what it does, and its target matched to truth by the play
 
 | the model proposed | maps to | target |
 |---|---|---|
-| an orbit centred within max(its radius, 500 m) of a track shown, its vehicle not flying the model's own look on that track | `isr.investigate` | the nearest such track |
+| an orbit centred within max(its radius, 500 m) of a track shown, or, near none, of where a moving track will be on its course within 180 s (a look placed ahead of a fast mover; `lead_s` in the record), its vehicle not flying the model's own look on that track | `isr.investigate` | the nearest such track |
 | the same, its vehicle flying the model's own look on that track (that order not failed, superseded or requeued, the vehicle not recovering on its own) | `isr.recentre` | that track |
 | a hold or rtl of a vehicle shown with a `not_moving` or `task_failed` alert (an rtl of one also under the low-reserve line maps to low reserve) | `safety.stuck` | `alert:<id>` |
 | a hold or rtl of a vehicle shown under the low-reserve line (25 %, the shipped watch policy's reserve plus 5) | `safety.low_reserve` | `battery:<uid>` |

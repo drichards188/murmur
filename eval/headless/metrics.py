@@ -12,7 +12,7 @@ the picture showed it then):
 
 | the model proposed | maps to | target |
 |---|---|---|
-| an orbit centred within max(its radius, 500 m) of a track shown, its vehicle not flying the model's own look on that track | `isr.investigate` | the nearest such track |
+| an orbit centred within max(its radius, 500 m) of a track shown, or, near none, of where a moving track will be on its course within 180 s, its vehicle not flying the model's own look on that track | `isr.investigate` | the nearest such track |
 | the same, its vehicle flying the model's own look on that track | `isr.recentre` | that track |
 | a hold or rtl of a vehicle shown with a `not_moving` or `task_failed` alert (an rtl of one also under the line: low reserve) | `safety.stuck` | `alert:<id>` |
 | a hold or rtl of a vehicle shown under the low-reserve line (`LOW_RESERVE_PCT`) | `safety.low_reserve` | `battery:<uid>` |

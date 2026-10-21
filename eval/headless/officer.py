@@ -52,6 +52,7 @@ before the proposal went in), for metrics.py.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import time
@@ -444,6 +445,32 @@ def track_where(t: dict[str, Any]) -> list[float] | None:
     return None
 
 
+#: how far ahead an orbit may lead a moving track and still be a look on it: about the time a
+#: tasked aircraft takes to get there from a few kilometres (a look placed where a fast boat is
+#: heading, not where it is)
+LEAD_HORIZON_S = 180.0
+LEAD_STEP_S = 5.0
+
+
+def lead_point(t: dict[str, Any], c: tuple[float, float]) -> tuple[float, str, float] | None:
+    """(distance, track id, seconds ahead) of the point on a moving track's course, carried
+    from where it is now (`track_where`) at its speed for up to `LEAD_HORIZON_S`, nearest the
+    centre `c`; None for a track without a course or under 0.5 m/s."""
+    w = track_where(t)
+    v, course = t.get("speed_mps"), t.get("course_deg")
+    if w is None or not isinstance(v, (int, float)) or not isinstance(course, (int, float)) or v < 0.5:
+        return None
+    east, north = v * math.sin(math.radians(course)), v * math.cos(math.radians(course))
+    best = None
+    for k in range(1, int(LEAD_HORIZON_S / LEAD_STEP_S) + 1):
+        s = k * LEAD_STEP_S
+        p = (w[0] + east * s / (111320.0 * math.cos(math.radians(w[1]))), w[1] + north * s / 110540.0)
+        d = dist_m(c, p)
+        if best is None or d < best[0]:
+            best = (d, str(t["id"]), s)
+    return best
+
+
 def picture_of_track(t: dict[str, Any]) -> dict[str, Any]:
     """What the picture showed of a track (labels.py `picture_of`'s shape): the affiliation the C2
     shows (a declaration's when there is one) and its confidence, the identity and its."""
@@ -490,7 +517,9 @@ def map_proposal(req: dict[str, Any], picture: dict[str, Any], looks: dict[int, 
     - an orbit whose centre is within max(its radius, 500 m) of a track shown: a look on the
       nearest such track, `isr.recentre` when the vehicle already flies the model's own look on
       that track, else `isr.investigate`; a second track within 1.5 times that distance makes
-      the aim `ambiguous` (judged as the playbook's ambiguous targets are);
+      the aim `ambiguous` (judged as the playbook's ambiguous targets are); an orbit near no
+      track now but within that distance of where a moving track will be on its course within
+      `LEAD_HORIZON_S` (`lead_point`) is a look on that track the same way (`lead_s`);
     - a hold or an rtl of a vehicle the picture showed with a `not_moving` or `task_failed`
       alert: `safety.stuck` (an rtl of one also under the low-reserve line: `safety.low_reserve`);
       under the line (battery under 25 %, the shipped watch policy's reserve plus 5):
@@ -514,17 +543,25 @@ def map_proposal(req: dict[str, Any], picture: dict[str, Any], looks: dict[int, 
         reach = max(radius, ASSOC_M)
         near = sorted((dist_m((float(c[0]), float(c[1])), (w[0], w[1])), str(t["id"]))
                       for t in tracks if (w := track_where(t)) is not None)
+        lead_s = None
         if not near or near[0][0] > reach:
-            out["rule"] = f"an orbit whose centre is not within {reach:.0f} m (its radius or 500 m) of a track shown"
-            return out
+            # not on any track now: an orbit placed ahead of a moving track, on its course
+            near = sorted(lead for t in tracks if (lead := lead_point(t, (float(c[0]), float(c[1])))) is not None)
+            if not near or near[0][0] > reach:
+                out["rule"] = (f"an orbit whose centre is not within {reach:.0f} m (its radius or 500 m) of a track "
+                               f"shown, nor of where one will be on its course within {LEAD_HORIZON_S:.0f} s")
+                return out
+            lead_s = near[0][2]
+            near = [(d, tid) for d, tid, _ in near]
         d0, tid = near[0]
         t = next(x for x in tracks if str(x["id"]) == tid)
         ambiguous = len(near) > 1 and near[1][0] <= AMBIGUOUS_RATIO * max(d0, 1e-6)
         play = RECENTRE if run is not None and run.get("track") == tid else LOOK
+        where = f"{d0:.0f} m from {tid}" if lead_s is None else f"{d0:.0f} m from where {tid} will be in {lead_s:.0f} s on its course"
         return {"play": play, "target": tid, "aim": AMBIGUOUS if ambiguous else tid, "aim_m": round(d0, 1),
-                "predicted": track_where(t), "picture": picture_of_track(t),
-                "rule": (f"an orbit centred {d0:.0f} m from {tid}" + (f", the vehicle on the model's own look i{run['intent']} on it"
-                                                                      if play == RECENTRE else ""))}
+                "predicted": track_where(t), "picture": picture_of_track(t), **({"lead_s": lead_s} if lead_s is not None else {}),
+                "rule": (f"an orbit centred {where}" + (f", the vehicle on the model's own look i{run['intent']} on it"
+                                                        if play == RECENTRE else ""))}
     if task in ("hold", "rtl") and v is not None:
         stuck = [a for a in picture.get("alerts") or []
                  if isinstance(a, dict) and _uid(a.get("uid")) == uid and a.get("kind") in STUCK_KINDS]
