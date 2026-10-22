@@ -411,6 +411,44 @@ def test_the_ruler_check_judges_each_prediction_by_its_paired_interval():
     assert "Passed: **no**" in ladder.markdown(full)
 
 
+def test_the_validation_judges_anchor_orders_and_perturbation_moves():
+    """0.4's reading of 10.2 (validate.py): an anchor order holds when no link is reversed and its
+    ends' interval excludes zero, and fails on a reversal; a perturbation's move is judged against
+    the plain playbook, and a predicted fall where the playbook is not shown above none is not
+    testable unless it is shown anyway."""
+    from eval.headless import validate as V
+
+    def with_(e: dict[str, Any], **kw: Any) -> dict[str, Any]:
+        e["metrics"].update(kw)
+        return e
+
+    scored = []
+    for sit in range(1, 26):
+        for fam, pb in (("fast-unknown", 1), ("decoy", 0)):
+            scored += [with_(ep("none", fam, sit, 0), cards_per_10min=0.0),
+                       with_(ep("random-valid", fam, sit, 0), cards_per_10min=0.8 + 0.01 * sit),
+                       with_(ep("oracle", fam, sit, 1), cards_per_10min=1.4 + 0.01 * (sit % 3)),
+                       with_(ep("playbook", fam, sit, pb), cards_per_10min=2.0),
+                       with_(ep("playbook+skip-first", fam, sit, 0), cards_per_10min=2.0),
+                       with_(ep("playbook+spam", fam, sit, pb), cards_per_10min=2.0)]
+    res = V.check(scored)[COND]
+    assert res["admissible"] == ["decoy", "fast-unknown"]
+    fam = res["families"]["fast-unknown"]
+    a = {x["metric"]: x for x in fam["anchors"]}
+    assert a["served_share"]["verdict"] == "holds"
+    assert [x["verdict"] for x in a["served_share"]["links"]] == ["tie", "holds"], "none <= random-valid: a tie passes"
+    assert a["cards_per_10min"]["verdict"] == "fails", "the oracle above random-valid on cards is a reversal"
+    assert a["fault_met_share"]["verdict"] == "not testable", "no fault need in these situations"
+    mv = {(p, m["metric"]): m["verdict"] for p, x in fam["perturbations"].items() for m in x["moves"]}
+    assert mv[("playbook+skip-first", "served_share")] == "moved"
+    assert mv[("playbook+spam", "served_share")] == "unchanged"
+    assert mv[("playbook+spam", "cards_per_10min")] == "did not move"
+    skip = res["families"]["decoy"]["perturbations"]["playbook+skip-first"]["moves"][0]
+    assert skip["verdict"] == "not testable" and "not shown above none" in skip["why"]
+    assert {"family": "fast-unknown", "metric": "cards_per_10min", "verdict": "fails"} in res["anchor_failures"]
+    assert "playbook+skip-first" in V.markdown({COND: res})
+
+
 # ---- the perturbations --------------------------------------------------------------------------
 
 def looks(rec: dict[str, Any]) -> list[dict[str, Any]]:

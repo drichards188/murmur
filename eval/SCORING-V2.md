@@ -120,6 +120,57 @@ go, and the pilot's measured cost per episode and run-to-run variance price the 
 owner chose (2026-10-21) to run the $20 pilot before this check: its records can be re-read
 against the ladder at no API cost.
 
+### 0.4 Gates after the ruler check (added 2026-10-22, before any run on dev-validate seeds)
+
+The ruler check passed on seeds 1100-1199 (`eval/results/headless/v2-ladder-1100/REPORT.md`). The
+gates of section 10 are read as follows from now on.
+
+1. **10.1's world check.** "random-valid serves fewer than the playbook" is replaced as the
+   world's check by the ladder (0.3), which passed: the playbook is an agent under test, not the
+   yardstick. 10.1's other conditions stand as written: `none` at most 50 %, the oracle at least
+   80 %, the `null` fidelity test. (`aggregate_v2.json`'s `world_pilot` still computes the
+   replaced condition; it is read as a report.)
+2. **10.2's validation, under relative comparison**, on dev-validate seeds 1500-1599 run as the
+   ladder ran (every v2 family, one replicate, approve-all, the paused clock, `--no-multiverse`;
+   agents `none`, `null`, `random-valid`, the oracle, the playbook and its five perturbations),
+   judged by `eval/headless/validate.py`, committed with this section:
+   - **The anchors' order** is section 5's with the playbook taken out (a link through the
+     playbook keeps what section 5's chain implies): need served and useful, none ≤ random-valid
+     < oracle; useless and harmful, oracle < random-valid; cards per 10 min, none = 0 < oracle <
+     random-valid; RMST, oracle < random-valid ≤ none; fault needs met, none < oracle. So
+     random-valid is above none only where it acts at all (cards; on need served a tie with none
+     passes, as section 5's ≤ says), and the oracle ahead of both on need served, useful and RMST.
+     Per family, each link is the scorer's paired interval judged by 0.3's rule (a reversal
+     fails; a tie on a strict link is "not shown"), and the ends' interval must exclude zero in
+     the stated direction (10.2). Judged in the families admissible by 3.1's rule on this batch's
+     `none` and oracle; reported in every family. On 0.3's seeds the oracle used more cards than
+     random-valid in every family and no anchor did harm: those two orders are judged as written,
+     not changed, and are expected to fail or not show.
+   - **The perturbations** move as section 5 states against the plain playbook. Section 5 gives no
+     margin for a rate per hour, so spam's "useful unchanged" is judged on need served (5 points),
+     useful per hour reported beside it. A predicted fall cannot show where the playbook serves
+     about what `none` serves (7.7 % pooled on 0.3's seeds): skip-first and behind cannot lower
+     need served much from there, and reserve-blind cannot lower fault needs met where the
+     playbook meets none. Where the playbook is not shown above `none` on the metric (their
+     paired interval not wholly above zero), a fall that does not show is reported **not
+     testable**, never as a pass; one that shows anyway is reported as moved.
+   - The construct check and the multiverse of 10.2 are not part of this run.
+3. **The conflict family is set aside from need served** (3.1, 3.2 and useful) until the cause of
+   its having no eligible need is resolved: its generator sets the one need's EO/IR
+   misclassification draw on purpose (`families.py` `_v2_conflict`), so 2.1 makes it a sensing
+   error for every agent, the oracle included. Its restraint and sensing metrics (3.3, 3.6) are
+   still reported.
+4. **The invariant checker's fix** (murmur-gjk, commit 0e00e6e, before any dev-validate run):
+   `dispatch_with_failing_check` (`eval/metrics.py` `invariants`) read an intent's last check over
+   its whole life, so an order dispatched on a passing check, requeued after a link loss and
+   voided when its re-check at dequeue failed counted as a violation although the bridge did
+   right. It now judges the check in force at each dispatch (the latest before it). 0.3's batch
+   is rescored beside it (`v2-ladder-1100-gjk/`: its records re-read; the 356 episodes with an
+   intent checked again after a dispatch had their audit logs regenerated on the same seeds,
+   each identical to the batch's by its fidelity digests): the count falls from 119 intents in
+   109 situations (linkblind 87 in 77, honest 26 in 26, the playbook 6 in 6) to none; no other
+   count, no need served and not the ladder's verdict changes.
+
 ## 1. Terms
 
 - **Mission**: the text every agent receives in its brief, verbatim and identically: "Identify
