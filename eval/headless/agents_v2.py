@@ -51,6 +51,32 @@ agent under test.
   it answers them as they come, as an agent would, so a fault family keeps its test. It is the
   ceiling: as strong as truth and these orders allow.
 
+**The ladder** (the ruler check, SCORING-V2.md 0.3; agent id `agent-watch`; `LADDER`): the oracle
+with one advantage removed and nothing else changed, each deterministic on its seeds as it is:
+
+- `oracle-linkblind` (privileged): no link map and no truth of a blocked link. Its centres are
+  every candidate, as if the link held everywhere, and it knows a lost link only as the session
+  reports it (`link_lost`), answering it as the oracle does (a Puma whose link is lost waits; one
+  its failsafe sends home has its order ended). The rest of truth as the oracle reads it.
+- `oracle-late` (privileged): no look at a contact is planned before its need opens, the first
+  read of its true position inside 3 km of the bridge (the playbook's timing: its watch area is
+  the 3 km circle). Everything else the oracle's.
+- `oracle-honest`: linkblind, reading no truth: the realistic ceiling, the best an agent can do
+  with what Murmur gives it. It is built from a session and the loop's runner alone (`make`), as
+  the playbook and the model watch officer are, never the episode, so it cannot reach truth, the
+  contacts file, the stated sensing draws or the link map. Its sensor vehicles are the fleet's
+  EO/IR carriers by the catalog (cruise speed, EO/IR range); their position, mode, ground speed and
+  battery are what `get_fleet` shows (a reserve line of 21 %: the shown battery is in whole
+  percent). Its needs come from the picture (`get_tracks`): a track in doubt (shown unknown,
+  suspect or hostile, in identity conflict, or under 0.6 identity confidence: the scorer's
+  justified look) whose shown position carried along its estimated velocity at constant speed
+  (`Straight`) comes within 3 km within 300 s, or is inside; due 60 s after it is first shown
+  inside, after its predicted crossing until then; resolved when its identity shows 0.6 or more
+  from EO/IR or sonar without a conflict (which kind is true, the picture cannot say). A track
+  whose motion turns away keeps its last estimate; the need lapses at its deadline. The plan weighs
+  the six earliest open needs. It keeps the oracle's model of the sensing (detection curve, the
+  45 s dwell, a signature by the shown kind, else a small fast boat's) and its planning.
+
 **Perturbations** (agent id `agent-playbook`; `PERTURBATIONS`): the playbook (episode.py
 `PlaybookAgent`, its engine and config unchanged but where stated), with one thing changed:
 
@@ -105,9 +131,11 @@ from playbook.plays.isr import (CHOICES, LOOK_PLAYS, RANK_STEP, alternatives, ho
 
 ANCHOR_AGENT = "agent-watch"
 ANCHORS = ("null", "random-valid", "oracle")
+#: the ruler check's ladder (SCORING-V2.md 0.3): the oracle with one advantage removed each
+LADDER = ("oracle-linkblind", "oracle-honest", "oracle-late")
 PERTURBATIONS = ("playbook+spam", "playbook+behind", "playbook+skip-first", "playbook+reserve-blind",
                  "playbook+ferries")
-NAMES = ANCHORS + PERTURBATIONS
+NAMES = ANCHORS + LADDER + PERTURBATIONS
 #: SCORING-V2.md 2.1: who needs a look, where, by when
 NEED_AFFILIATIONS = ("unknown", "suspect", "hostile")
 NEED_RADIUS_M = 3000.0
@@ -256,8 +284,16 @@ class SessionAgent:
         self.proposals = 0
         self.privileged: dict[str, Any] = {}
 
+    def clock(self) -> float:
+        """The situation time now (the simulator's, which the loop has stepped to this wake)."""
+        return self.ep.sim.t
+
+    def run(self, coro: Any) -> Any:
+        """One session request, answered on the episode's loop."""
+        return self.ep.run_async(coro)
+
     def write(self, kind: str, **fields: Any) -> dict[str, Any]:
-        rec = {"t": round(self.ep.sim.t, 3), "source": self.name, "kind": kind}
+        rec = {"t": round(self.clock(), 3), "source": self.name, "kind": kind}
         for k, v in fields.items():
             rec[f"field_{k}" if k in rec else k] = v
         self.lines.append(rec)
@@ -265,7 +301,7 @@ class SessionAgent:
 
     def call(self, tool: str, **args: Any) -> dict[str, Any]:
         self.calls[tool] = self.calls.get(tool, 0) + 1
-        return self.ep.run_async(self.session.call(tool, **args))
+        return self.run(self.session.call(tool, **args))
 
     def propose(self, rationale: str, req: dict[str, Any], **why: Any) -> dict[str, Any] | None:
         """One proposal; a refusal without an intent is written as the playbook writes one (an
@@ -273,7 +309,7 @@ class SessionAgent:
         self.calls["propose_intent"] = self.calls.get("propose_intent", 0) + 1
         self.proposals += 1
         try:
-            out = self.ep.run_async(self.session.propose(rationale, **_mcp_args(req)))
+            out = self.run(self.session.propose(rationale, **_mcp_args(req)))
         except Exception as e:  # noqa: BLE001
             self.write("error", error=f"propose_intent: {type(e).__name__}: {e}", request=req, **why)
             return None
@@ -510,6 +546,7 @@ class Need:
         self.signature = float(contact.get("signature") or SIGNATURE.get(str(self.kind), 0.5))
         self.resolved_t: float | None = None
         self.conf = 0.0  # its track's identity confidence from a classifying sensor, its true kind
+        self.opened_t: float | None = None  # when it was first read inside 3 km (oracle-late's gate)
 
 
 #: one planned centre: (when its dwell is done, inf if not by the deadline; the centre (east,
@@ -583,19 +620,26 @@ class Oracle(SessionAgent):
     REPLAN_GAP_S = 15.0  # at least this between two orders to one Puma (each is a card)
     REFUSED_S = 10.0  # a Puma none of whose centres passed the checks: left out of the plan so long
     LOW_BATTERY_S = 1800.0  # a refusal for its reserves holds for good when its battery truly has less
+    #: the ladder's handicaps (SCORING-V2.md 0.3; each subclass below removes one advantage): plan
+    #: with the link map and read the link's truth; the most open needs one plan weighs (None: all)
+    LINK_TRUTH = True
+    MAX_PLANNED: int | None = None
 
     def __init__(self, ep: Any):
         super().__init__(ep)
         self.end = float(ep.e.duration_s)
+        self._fresh()
+        self.privileged = {"truth_reads": 0, "contacts_file": None, "sensing_draws": None,
+                           "note": "reads truth (the contacts' routes and states, our vehicles' true state, the "
+                                   "tracker's association, the terrain between the ground station and a point): an "
+                                   "anchor, never an agent under test"}
+
+    def _fresh(self) -> None:
         self.needs: dict[str, Need] = {}
         self.pumas: dict[int, Puma] = {}
         self.plans: list[dict[str, Any]] = []
         self.errors = 0
         self.started = False
-        self.privileged = {"truth_reads": 0, "contacts_file": None, "sensing_draws": None,
-                           "note": "reads truth (the contacts' routes and states, our vehicles' true state, the "
-                                   "tracker's association, the terrain between the ground station and a point): an "
-                                   "anchor, never an agent under test"}
 
     # ---- setup -------------------------------------------------------------------------------------
 
@@ -642,7 +686,7 @@ class Oracle(SessionAgent):
                 continue
             p.xy = _xy((float(o["lon"]), float(o["lat"])))
             p.mode = str(o.get("mode") or "")
-            p.link_blocked = bool(o.get("link_blocked"))
+            p.link_blocked = bool(o.get("link_blocked")) if self.LINK_TRUTH else False
             p.speed = float(o.get("speed_mps") or 0.0)
             p.slow = p.slow + 1 if p.speed < 2.0 else 0
             if o.get("battery_capacity_mah"):
@@ -652,7 +696,10 @@ class Oracle(SessionAgent):
         for n in self.needs.values():
             c = contacts.get(n.id)
             if c and c.get("exists"):
-                n.route.reanchor(now, _xy((float(c["lon"]), float(c["lat"]))))
+                at = _xy((float(c["lon"]), float(c["lat"])))
+                n.route.reanchor(now, at)
+                if n.opened_t is None and math.hypot(*at) <= NEED_RADIUS_M:
+                    n.opened_t = now
         assoc = {str(a["contact_id"]): str(a["track_id"]) for a in truth.get("association") or []}
         tracks = {str(t["id"]): t for t in self.call("get_tracks").get("tracks") or []}
         fleet = {int(v["uid"]): v for v in self.call("get_fleet", compact=True).get("vehicles") or []}
@@ -666,6 +713,10 @@ class Oracle(SessionAgent):
             if n.resolved_t is None and n.conf >= 0.6:
                 n.resolved_t = now
                 self.write("need.resolved", contact=n.id, t=round(now, 1))
+        self.orders(fleet, now)
+
+    def orders(self, fleet: dict[int, dict[str, Any]], now: float) -> None:
+        """Each Puma's link as the session shows it, and whether our order on it has ended."""
         for p in self.pumas.values():
             v = fleet.get(p.uid) or {}
             p.link_lost = bool(v.get("link_lost"))
@@ -700,6 +751,8 @@ class Oracle(SessionAgent):
             return np.zeros((0, 2))
         cands = (base[:, None, :] + np.array(self.OFFSETS)[None, :, :]).reshape(-1, 2)
         cands = np.unique(np.round(cands / 50.0) * 50.0, axis=0)
+        if not self.LINK_TRUTH:
+            return cands  # as if the link held everywhere
         lm = link_map(p.alt_m)
         ring = np.array([(self.ORBIT_M * math.sin(math.radians(a)), self.ORBIT_M * math.cos(math.radians(a)))
                          for a in range(0, 360, 45)] + [(0.0, 0.0)])
@@ -772,6 +825,10 @@ class Oracle(SessionAgent):
         return (p.xy is not None and not p.sent_rtl and not p.link_blocked and not p.link_lost
                 and now >= p.refused_until)
 
+    def may_look(self, n: Need, now: float) -> bool:
+        """Whether a look at `n` may be planned now: the oracle looks as early as it can."""
+        return True
+
     def plan(self, now: float) -> dict[int, dict[str, Any]]:
         """Needs to Pumas: every assignment of the open needs (each to one Puma or to none, each
         Puma's taken in deadline order, one after the other) is tried; the most needs done by
@@ -779,7 +836,9 @@ class Oracle(SessionAgent):
         Returns each tasked Puma's first need: the centre it flies, whether that is a new order,
         and the ranked new centres (the next ones if a preview refuses the first)."""
         open_needs = [n for n in sorted(self.needs.values(), key=lambda n: (n.deadline, n.id))
-                      if n.resolved_t is None and n.deadline > now + 2.0]
+                      if n.resolved_t is None and n.deadline > now + 2.0 and self.may_look(n, now)]
+        if self.MAX_PLANNED is not None:
+            open_needs = open_needs[:self.MAX_PLANNED]
         pumas = [p for p in sorted(self.pumas.values(), key=lambda p: p.uid) if self.usable(p, now)]
         if not open_needs or not pumas:
             return {}
@@ -894,6 +953,202 @@ class Oracle(SessionAgent):
         return {**super().describe(), "needs": {k: {"t_need": round(n.t_need, 1), "deadline": round(n.deadline, 1),
                                                     "resolved_t": n.resolved_t} for k, n in sorted(self.needs.items())},
                 "plans": self.plans, "errors": self.errors}
+
+
+# ---- the ladder: the oracle handicapped, one advantage at a time (SCORING-V2.md 0.3) -------------------
+
+class OracleLinkBlind(Oracle):
+    """The oracle without the link map (module doc): it plans as if the link held everywhere and
+    knows of a lost link only as the session reports it (`link_lost`). Truth otherwise, as the
+    oracle reads it."""
+
+    name = "oracle-linkblind"
+    LINK_TRUTH = False
+
+    def __init__(self, ep: Any):
+        super().__init__(ep)
+        self.privileged["note"] = ("reads truth (the contacts' routes and states, our vehicles' true state bar their "
+                                   "link, the tracker's association), never where the link holds: a ladder rung, never "
+                                   "an agent under test")
+
+
+class OracleLate(Oracle):
+    """The oracle with the playbook's timing (module doc): no look at a contact is planned before
+    its need opens, its true position first read inside 3 km of the bridge."""
+
+    name = "oracle-late"
+
+    def may_look(self, n: Need, now: float) -> bool:
+        return n.opened_t is not None
+
+
+class Straight:
+    """A track's motion as the picture shows it (the honest oracle's prediction): from where it is
+    shown now (`predicted`: the last fix carried to now) along its estimated velocity, held
+    constant; with no velocity yet, where it is. On the situation's clock; it exists already."""
+
+    t0 = -math.inf
+
+    def __init__(self, tid: str):
+        self.id = tid
+        self.xy = (0.0, 0.0)
+        self.v = (0.0, 0.0)
+        self.as_of = 0.0
+
+    def update(self, xy: tuple[float, float], v: tuple[float, float], now: float) -> None:
+        self.xy, self.v, self.as_of = xy, v, now
+
+    def at(self, t: np.ndarray) -> np.ndarray:
+        T = np.asarray(t, dtype=float) - self.as_of
+        return np.stack([self.xy[0] + self.v[0] * T, self.xy[1] + self.v[1] * T], axis=-1)
+
+    def first_within(self, radius_m: float, t_from: float, t_to: float, step: float = 1.0) -> float | None:
+        ts = np.arange(t_from, t_to + step, step)
+        xy = self.at(ts)
+        hit = np.nonzero(np.hypot(xy[:, 0], xy[:, 1]) <= radius_m)[0]
+        return float(ts[hit[0]]) if len(hit) else None
+
+
+class OracleHonest(OracleLinkBlind):
+    """The realistic ceiling (module doc): the link-blind oracle reading no truth. It is built from
+    a session and the loop's runner alone (`make`), as the playbook and the model watch officer
+    are: it never holds the episode, the simulator, the contacts file, the stated sensing draws or
+    the link map, so it reads nothing an agent under test could not."""
+
+    name = "oracle-honest"
+    #: the reserve (20 %) and one more: the session shows the battery in whole percent
+    RESERVE_PCT = 21.0
+    #: a track whose shown motion brings it within 3 km this soon is a need to plan for (the
+    #: scorer's horizon for a justified look, v2/labels.py JUSTIFY_HORIZON_S)
+    HORIZON_S = 300.0
+    #: the plan weighs the earliest so many open needs (the picture can show several in doubt)
+    MAX_PLANNED = 6
+    #: a track whose shown kind has no signature (radar's size class): the smallest surface one's
+    #: (a small fast boat), so it plans to look from close enough
+    SIGNATURE_UNKNOWN = SIGNATURE["small_fast_boat"]
+
+    def __init__(self, session: HeadlessSession, run: Any):
+        # not SessionAgent.__init__: no episode is handed over, only the session and the runner
+        self.session = session
+        self._run = run
+        self.now = 0.0
+        self.lines: list[dict[str, Any]] = []
+        self.calls: dict[str, int] = {}
+        self.proposals = 0
+        self.privileged: dict[str, Any] = {}
+        self.end = math.inf
+        self._fresh()
+
+    def clock(self) -> float:
+        return self.now
+
+    def run(self, coro: Any) -> Any:
+        return self._run(coro)
+
+    def wake(self, now: float) -> float | None:
+        self.now = now
+        return super().wake(now)
+
+    def setup(self) -> None:
+        """Its sensor vehicles from the catalog and the fleet: every vehicle whose platform
+        carries EO/IR, at its catalog cruise speed and EO/IR range."""
+        catalog = {str(p["id"]): p for p in self.call("get_platforms").get("platforms") or []}
+        for v in sorted(self.call("get_fleet", compact=True).get("vehicles") or [], key=lambda v: int(v["uid"])):
+            spec = catalog.get(str(v.get("platform"))) or {}
+            eo = [float(s.get("range_m") or 0.0) for s in spec.get("sensors") or [] if s.get("type") == "eo_ir"]
+            if not eo:
+                continue
+            uid = int(v["uid"])
+            self.pumas[uid] = Puma(uid, str(v.get("callsign") or uid), float(spec.get("cruise_mps") or 20.0),
+                                   float(spec.get("typical_alt_m") or self.TASK_ALT_M), max(eo))
+        self.write("sensors", uids=sorted(self.pumas))
+
+    def read(self, now: float) -> None:
+        fleet = {int(v["uid"]): v for v in self.call("get_fleet", compact=True).get("vehicles") or []}
+        full = {int(v["uid"]): v for v in (self.call("get_fleet", uids=sorted(self.pumas)).get("vehicles") or [])
+                } if self.pumas else {}
+        for p in self.pumas.values():
+            v = fleet.get(p.uid) or {}
+            stale = set(v.get("stale") or [])
+            if v.get("lon") is not None and v.get("lat") is not None:
+                p.xy = _xy((float(v["lon"]), float(v["lat"])))
+            p.mode = str(v.get("mode") or "")
+            if not v.get("link_lost") and "position" not in stale:
+                p.speed = float(((full.get(p.uid) or {}).get("position") or {}).get("groundspeed_mps") or 0.0)
+                p.slow = p.slow + 1 if p.speed < 2.0 else 0
+            if v.get("battery_pct") is not None and "battery" not in stale:
+                p.battery.append((now, float(v["battery_pct"])))
+                p.battery = p.battery[-60:]
+        self.picture(now, self.call("get_tracks").get("tracks") or [])
+        self.orders(fleet, now)
+
+    def picture(self, now: float, tracks: list[dict[str, Any]]) -> None:
+        """Needs from the picture: a track in doubt (shown unknown, suspect or hostile, in identity
+        conflict, or under 0.6 identity confidence: the scorer's justified look) whose shown motion
+        brings it within 3 km within `HORIZON_S`, or that is inside now; due 60 s after it was first
+        read inside, or after its predicted crossing until then. Resolved when its identity shows
+        0.6 or more from EO/IR or sonar without a conflict (the mission's standard; whether the kind
+        is the true one, the picture cannot say). A need whose track stops approaching before it
+        came inside keeps its last estimate, as one whose track goes unseen keeps its last
+        prediction: it lapses at its deadline."""
+        for tr in sorted(tracks, key=lambda t: str(t["id"])):
+            pos = tr.get("predicted") or tr.get("position")
+            if not isinstance(pos, list) or len(pos) != 2 or pos[0] is None or pos[1] is None:
+                continue
+            tid = str(tr["id"])
+            xy = _xy((float(pos[0]), float(pos[1])))
+            vel = tr.get("velocity_mps")
+            v = (float(vel[0]), float(vel[1])) if isinstance(vel, list) and len(vel) == 2 and None not in vel else (0.0, 0.0)
+            idn = tr.get("identity") or {}
+            conf = float(idn.get("confidence") or 0.0)
+            classified = bool(set(idn.get("supported_by") or []) & set(CLASSIFYING)) and not idn.get("conflict")
+            settled = classified and conf >= 0.6
+            kind = str(idn.get("kind") or "")
+            inside = math.hypot(*xy) <= NEED_RADIUS_M
+            n = self.needs.get(tid)
+            if n is None:
+                doubt = str(tr.get("affiliation") or "") in NEED_AFFILIATIONS or bool(idn.get("conflict")) or conf < 0.6
+                if settled or not doubt:
+                    continue
+                route = Straight(tid)
+                route.update(xy, v, now)
+                t_need = now if inside else route.first_within(NEED_RADIUS_M, now, now + self.HORIZON_S)
+                if t_need is None:
+                    continue
+                n = Need(route, t_need, {"kind": kind or None,
+                                         "signature": SIGNATURE.get(kind, self.SIGNATURE_UNKNOWN)})
+                if inside:
+                    n.opened_t = now
+                self.needs[tid] = n
+                self.write("need", track=tid, t_need=round(t_need, 1), deadline=round(n.deadline, 1), inside=inside,
+                           shown=tr.get("affiliation"), shown_kind=kind or None, confidence=round(conf, 3))
+            else:
+                n.route.update(xy, v, now)
+                if n.resolved_t is None and n.opened_t is None:
+                    if inside:
+                        n.opened_t = now
+                        n.t_need, n.deadline = now, now + DEADLINE_S
+                    else:
+                        # its shown motion turned away for now: the last estimate stands (a new
+                        # track's velocity estimate swings), and the need lapses at its deadline
+                        t = n.route.first_within(NEED_RADIUS_M, now, now + self.HORIZON_S)
+                        if t is not None:
+                            n.t_need, n.deadline = t, t + DEADLINE_S
+                if kind in SIGNATURE:
+                    n.kind, n.signature = kind, SIGNATURE[kind]
+            n.conf = conf if classified else 0.0
+            if n.resolved_t is None and settled:
+                n.resolved_t = now
+                self.write("need.resolved", track=tid, t=round(now, 1), shown_kind=kind, confidence=round(conf, 3))
+
+    def describe(self) -> dict[str, Any]:
+        out = super().describe()
+        out.update(truth="none: built from a session alone (no episode, simulator, contacts file or link map)",
+                   horizon_s=self.HORIZON_S)
+        return out
+
+
+LADDER_AGENTS = {c.name: c for c in (OracleLinkBlind, OracleLate)}
 
 
 # ---- perturbations -----------------------------------------------------------------------------------
@@ -1194,6 +1449,13 @@ def make(ep: Any, name: str, cfg: Any) -> Any:
         return RandomValid(ep)
     if name == "oracle":
         return Oracle(ep)
+    if name in LADDER_AGENTS:
+        return LADDER_AGENTS[name](ep)
+    if name == "oracle-honest":
+        # what the playbook and the model get: a session on the simulator and the loop to answer
+        # it, never the episode (so never truth, the contacts file or the link map)
+        return OracleHonest(HeadlessSession(ep.sim, ANCHOR_AGENT, "scoring-v2-oracle-honest/1"),
+                            ep.aloop.run_until_complete)
     if name == "playbook+ferries":
         table = json.loads(playbook_json(ep.e))  # type: ignore[arg-type]
         table["enable"] = sorted(set(table.get("enable") or []) | {FERRY_PLAY})

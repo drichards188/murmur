@@ -12,8 +12,9 @@ clock, over one `murmur-headless` process.
   (`Options.agent = "model"`) the model watch officer (officer.py): agents/watch_officer.py's
   trigger table, picture and prompt, a real model through the Anthropic API, its wakes between
   two steps of the clock. Or none. Or (scoring v2) one of the anchors `null`, `random-valid`,
-  `oracle`, or a perturbation of the playbook (`playbook+spam`, ...): eval/headless/agents_v2.py,
-  each on a session and woken on the loop from the same first tick.
+  `oracle`, a rung of the ruler check's ladder (`oracle-linkblind`, `oracle-honest`,
+  `oracle-late`), or a perturbation of the playbook (`playbook+spam`, ...):
+  eval/headless/agents_v2.py, each on a session and woken on the loop from the same first tick.
 - **the operator** (operator.py).
 - **the script**: the situation's faults and scripted proposers (families.py).
 - **the truth sampler**: our vehicles every `sample_s` and the tracker's association every 10 s;
@@ -74,9 +75,11 @@ RECORD_SCHEMA = "murmur-headless-episode/1"
 PRIORITY = {"runner": 0, "script": 1, "operator": 2, "agent": 3, "sampler": 4, "picture": 5}
 #: scoring v2's anchors and perturbations (eval/headless/agents_v2.py; SCORING-V2.md section 5)
 ANCHORS = ("null", "random-valid", "oracle")
+#: the ruler check's ladder of handicapped oracles (agents_v2.py; SCORING-V2.md 0.3)
+LADDER = ("oracle-linkblind", "oracle-honest", "oracle-late")
 PERTURBATIONS = ("playbook+spam", "playbook+behind", "playbook+skip-first", "playbook+reserve-blind",
                  "playbook+ferries")
-AGENTS = ("playbook", "model", "none") + ANCHORS + PERTURBATIONS
+AGENTS = ("playbook", "model", "none") + ANCHORS + LADDER + PERTURBATIONS
 SCORINGS = ("v1", "v2")
 #: SCORING-V2.md section 7: the classes the driver sets (the batch adds `harness_error` for an
 #: episode that failed in the simulator or the driver)
@@ -425,7 +428,7 @@ class Episode:
                 self.agent = WatchOfficer(self, ModelConfig.resolve(self.opts.model), client=self.opts.model_client)
             elif self.opts.agent == "playbook":
                 self.agent = PlaybookAgent(self, cfg)
-            elif self.opts.agent in ANCHORS + PERTURBATIONS:
+            elif self.opts.agent in ANCHORS + LADDER + PERTURBATIONS:
                 from . import agents_v2
 
                 self.agent = agents_v2.make(self, self.opts.agent, cfg)
@@ -581,7 +584,7 @@ class Episode:
             # charged only (a paused record is unchanged): the condition and its constants
             rec["clock"]["condition"] = "charged"
             rec["provenance"] = {**rec["provenance"], "clock": {"condition": "charged", "latency": self.latency.as_dict()}}
-        if self.opts.agent in ANCHORS + PERTURBATIONS:
+        if self.opts.agent in ANCHORS + LADDER + PERTURBATIONS:
             # an anchor's or a perturbation's own account: what it read, what it changed, and what
             # it read of truth (privileged; agents_v2.py)
             rec["agent_detail"] = self.agent.describe()

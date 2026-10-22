@@ -1,7 +1,8 @@
 """Scoring v2's anchors and perturbations (eval/headless/agents_v2.py; SCORING-V2.md sections 4.5,
-5), the replicate wiring, admissibility in the primary (resolution 21), the world pilot's gate
-(10.1) and the world's reserve calibration (0.1), on the real `murmur-headless` binary (built here
-if stale) and on synthetic scored episodes.
+5), the ruler check's ladder of handicapped oracles and its judging (0.3, ladder.py), the
+replicate wiring, admissibility in the primary (resolution 21), the world pilot's gate (10.1) and
+the world's reserve calibration (0.1), on the real `murmur-headless` binary (built here if stale)
+and on synthetic scored episodes.
 
 Each anchor and perturbation is checked on a small episode for what its name says, against the
 plain playbook (or `none`) on the same situation and replicate, and for repeating exactly on the
@@ -15,16 +16,18 @@ import json
 import math
 import shutil
 import subprocess
+import sys
 import tempfile
 import tomllib
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
 from eval.headless import REPO
 from eval.headless.batch import fidelity_digest, normalized_audit, replicate_seed
-from eval.headless.episode import AGENTS, ANCHORS, PERTURBATIONS, Episode, Options
+from eval.headless.episode import AGENTS, ANCHORS, LADDER, PERTURBATIONS, Episode, Options
 from eval.headless.families import (
     GATE,
     V2_FLEET,
@@ -83,7 +86,8 @@ def test_every_anchor_and_perturbation_is_an_agent():
     from eval.headless import agents_v2
 
     assert set(ANCHORS) == {"null", "random-valid", "oracle"} and set(PERTURBATIONS) == set(agents_v2.PERTURBATIONS)
-    assert agents_v2.NAMES == ANCHORS + PERTURBATIONS and set(agents_v2.NAMES) <= set(AGENTS)
+    assert LADDER == agents_v2.LADDER == ("oracle-linkblind", "oracle-honest", "oracle-late")
+    assert agents_v2.NAMES == ANCHORS + LADDER + PERTURBATIONS and set(agents_v2.NAMES) <= set(AGENTS)
     assert {"playbook", "model", "none"} <= set(AGENTS)
 
 
@@ -211,6 +215,200 @@ def test_the_oracle_skips_a_need_no_look_can_resolve():
     rec = cached("conflict", 1000, "oracle")
     assert any(ln["kind"] == "need.unresolvable" for ln in rec["agent_log"])
     assert not proposals(rec)
+
+
+# ---- the ladder (SCORING-V2.md 0.3) ---------------------------------------------------------------
+
+def test_the_link_blind_oracle_plans_without_the_link_map(monkeypatch: pytest.MonkeyPatch):
+    """oracle-linkblind: the oracle without where the link holds. It never consults the link map
+    (the emulator's terrain check), reads no truth of a blocked link (every order it saw end says
+    none), and reads the rest of truth as the oracle does (privileged). On the same situation its
+    first look goes where the oracle's, kept to the link, does not."""
+    from eval.headless import agents_v2
+
+    def no_map(alt_m: float) -> Any:
+        raise AssertionError("the link-blind oracle consulted the link map")
+
+    monkeypatch.setattr(agents_v2, "link_map", no_map)
+    rec = episode("fast-unknown", 1000, "oracle-linkblind")
+    d = rec["agent_detail"]
+    assert d["agent"] == "oracle-linkblind" and d["errors"] == 0 and d["proposals"] >= 1
+    assert not any(ln["kind"].startswith("error") for ln in rec["agent_log"])
+    assert d["privileged"]["truth_reads"] > 300 and "never where the link holds" in d["privileged"]["note"]
+    ended = [ln for ln in rec["agent_log"] if ln["kind"] == "order.ended"]
+    assert ended and all(ln["link_blocked"] is False for ln in ended)
+    monkeypatch.undo()
+    orc = cached("fast-unknown", 1000, "oracle")
+    assert proposals(orc)[0]["request"]["center"] != proposals(rec)[0]["request"]["center"]
+
+
+#: a situation where the late oracle looks at all (most of the time, by its need's opening no
+#: Puma can reach a contact in its 60 s, so it sends nothing): the second boat, from the bay
+LATE_CASE = ("two-at-once", 1000)
+
+
+def test_the_late_oracle_looks_at_no_contact_before_its_need_opens():
+    """oracle-late: the oracle's plan, but no look at a contact before its true position is read
+    inside 3 km (it reads each second, so within a second of the need's opening by the labels).
+    The oracle on the same situation looks before then."""
+    rec = cached(*LATE_CASE, "oracle-late")
+    orc = cached(*LATE_CASE, "oracle")
+    needs = {n["contact"]: n for n in L.episode_labels(rec)["needs"]}
+    looks_ = [p for p in proposals(rec) if p["request"]["task"] == "orbit"]
+    assert looks_, "the late oracle looks once the need opens"
+    for p in looks_:
+        assert p["t"] >= needs[p["need"]]["t_need"] - 1.0, p
+    first = [p for p in proposals(orc) if p["request"]["task"] == "orbit"][0]
+    assert first["t"] < needs[first["need"]]["t_need"] - 30.0
+    assert rec["agent_detail"]["privileged"]["truth_reads"] > 300
+
+
+def _inside(cls: type) -> bool:
+    """Whether a frame of an instance of `cls` is on the stack."""
+    f = sys._getframe(1)
+    while f is not None:
+        if isinstance(f.f_locals.get("self"), cls):
+            return True
+        f = f.f_back
+    return False
+
+
+def _held(obj: Any, depth: int = 0, seen: set[int] | None = None) -> list[Any]:
+    """Everything `obj` holds, through attributes, containers and bound methods (a few levels),
+    stopping at a session: what is inside one is the MCP tools' business (sim.py)."""
+    from eval.headless.sim import HeadlessSession
+
+    seen = set() if seen is None else seen
+    if id(obj) in seen or depth > 6:
+        return []
+    seen.add(id(obj))
+    out = [obj]
+    if isinstance(obj, HeadlessSession):
+        return out
+    if isinstance(obj, dict):
+        kids = list(obj.keys()) + list(obj.values())
+    elif isinstance(obj, (list, tuple, set, frozenset)):
+        kids = list(obj)
+    elif hasattr(obj, "__self__") and not isinstance(obj, type):
+        kids = [obj.__self__]
+    elif hasattr(obj, "__dict__") and not isinstance(obj, type):
+        kids = list(vars(obj).values())
+    else:
+        kids = []
+    for k in kids:
+        out += _held(k, depth + 1, seen)
+    return out
+
+
+def test_the_honest_oracle_reads_no_truth(monkeypatch: pytest.MonkeyPatch):
+    """oracle-honest is handed what the playbook and the model get, a session and the loop to
+    answer it, never the episode: it holds no episode, simulator, contacts file or link map (its
+    session holds the simulator behind the MCP tools, as theirs do), and while the episode runs
+    no truth read, no contacts file read and no link map is made from inside it. It still serves
+    a plain S1 need from the picture alone, and its record claims no privilege."""
+    from eval.headless import agents_v2
+    from eval.headless.episode import Episode as Ep
+    from eval.headless.sim import HeadlessSession, Sim
+
+    made: list[Any] = []
+    real_make = agents_v2.make
+
+    def make(ep_: Any, name: str, cfg: Any) -> Any:
+        a = real_make(ep_, name, cfg)
+        made.append(a)
+        return a
+
+    monkeypatch.setattr(agents_v2, "make", make)
+    trapped: list[str] = []
+    real_truth = Sim.truth
+
+    def truth(self: Any, *a: Any, **k: Any) -> Any:
+        if _inside(agents_v2.OracleHonest):
+            trapped.append("Sim.truth")
+        return real_truth(self, *a, **k)
+
+    monkeypatch.setattr(Sim, "truth", truth)
+    for fn in ("read_contacts", "need_routes", "link_map", "fleet_plan"):
+        def trap(*a: Any, _fn: str = fn, _orig: Any = getattr(agents_v2, fn), **k: Any) -> Any:
+            if _inside(agents_v2.OracleHonest):
+                trapped.append(_fn)
+            return _orig(*a, **k)
+
+        monkeypatch.setattr(agents_v2, fn, trap)
+    rec = episode("fast-unknown", 1000, "oracle-honest")
+    assert trapped == []
+    (agent,) = made
+    assert isinstance(agent, agents_v2.OracleHonest) and not hasattr(agent, "ep")
+    held = _held(agent)
+    assert not [x for x in held if isinstance(x, (Ep, Sim, agents_v2.LinkMap, agents_v2.Route))]
+    assert not [x for x in held if isinstance(x, (str, Path)) and "contacts" in str(x)]
+    assert [x for x in held if isinstance(x, HeadlessSession)] == [agent.session]
+    d = rec["agent_detail"]
+    assert "privileged" not in d and d["truth"].startswith("none") and d["errors"] == 0
+    assert d["calls"]["get_tracks"] > 300 and d["proposals"] >= 1
+    needs = [n for n in L.episode_labels(rec)["needs"] if n["eligible"]]
+    assert needs and all(n["served"] for n in needs)
+    # it found the need on the picture (a track id), not from the contacts file (a contact id)
+    assert set(d["needs"]) and all(k.startswith("T-") for k in d["needs"])
+
+
+def test_straight_carries_a_track_along_its_shown_velocity():
+    from eval.headless.agents_v2 import Straight
+
+    s = Straight("T-0001")
+    s.update((-4000.0, 0.0), (10.0, 0.0), 100.0)
+    assert s.at(np.array([100.0, 150.0])).tolist() == [[-4000.0, 0.0], [-3500.0, 0.0]]
+    assert s.first_within(3000.0, 100.0, 400.0) == 200.0
+    assert s.first_within(3000.0, 100.0, 150.0) is None
+    s.update((-4000.0, 0.0), (0.0, 0.0), 100.0)  # no velocity shown: where it is
+    assert s.first_within(3000.0, 100.0, 400.0) is None
+
+
+@pytest.mark.parametrize("agent", LADDER)
+def test_each_rung_repeats_on_its_seeds(agent: str):
+    a = cached("two-at-once", 1001, agent)
+    b = episode("two-at-once", 1001, agent)
+    assert proposals(a) == proposals(b) and a["agent_log"] == b["agent_log"]
+    assert normalized_audit(a["audit_text"]) == normalized_audit(b["audit_text"])
+    assert fidelity_digest(a) == fidelity_digest(b)
+
+
+def test_the_ruler_check_judges_each_prediction_by_its_paired_interval():
+    """0.3's rule (ladder.py): a difference whose interval lies above zero holds, one containing
+    zero is a tie, one wholly below zero fails; the check passes when nothing fails in a family
+    with needs; a family without needs is not judged; the pooled row is reported, never judged."""
+    from eval.headless import ladder
+
+    assert ladder.verdict({"lo": 0.01, "hi": 0.2}) == "holds"
+    assert ladder.verdict({"lo": -0.1, "hi": 0.1}) == "tie"
+    assert ladder.verdict({"lo": -0.3, "hi": -0.01}) == "fails"
+    assert ladder.verdict({"lo": None, "hi": None}) == "no data"
+    scored = []
+    for sit in range(1, 26):
+        scored += [ep("none", "fast-unknown", sit, 0), ep("oracle", "fast-unknown", sit, 1),
+                   ep("oracle-late", "fast-unknown", sit, int(sit % 5 == 0)),
+                   ep("oracle-linkblind", "fast-unknown", sit, sit % 2), ep("oracle-honest", "fast-unknown", sit, sit % 2),
+                   ep("none", "quiet", sit, 0, eligible=0), ep("oracle", "quiet", sit, 0, eligible=0)]
+    res = ladder.check(scored)[COND]
+    assert res["passed"] and res["families_with_needs"] == ["fast-unknown"]
+    fam = res["families"]["fast-unknown"]
+    v = {(p["a"], p["b"]): p["verdict"] for p in fam["predictions"]}
+    assert v[("oracle", "oracle-late")] == "holds" and v[("oracle-linkblind", "oracle-honest")] == "tie"
+    assert v[("oracle-late", "none")] == "holds" and v[("oracle-honest", "none")] == "holds"
+    assert "predictions" not in res["families"]["quiet"]
+    assert fam["arms"]["oracle-linkblind"]["share"] == pytest.approx(13 / 25)
+    assert fam["steps"] == {"link": 48.0, "truth": 0.0, "timing": 80.0}
+    assert res["families"]["*"]["predictions"], "the pooled row is reported"
+    # the link-blind rung serving nothing, below the honest one wholly: a reversal, the check fails
+    worse = [dict(e, metrics={**e["metrics"], "served": 0, "served_share": 0.0})
+             if e["agent"] == "oracle-linkblind" else e for e in scored]
+    full = ladder.check(worse)
+    res = full[COND]
+    assert not res["passed"]
+    assert [(f["family"], f["a"], f["b"]) for f in res["failures"]] == [("fast-unknown", "oracle-linkblind", "oracle-honest")]
+    v = {(p["a"], p["b"]): p["verdict"] for p in res["families"]["fast-unknown"]["predictions"]}
+    assert v[("oracle-linkblind", "none")] == "tie", "a tie with none is reported, not a failure"
+    assert "Passed: **no**" in ladder.markdown(full)
 
 
 # ---- the perturbations --------------------------------------------------------------------------

@@ -61,6 +61,65 @@ looks **only at the anchors `none` and `oracle`, never at an agent under test**:
 The chosen point becomes part of the v2 world, hashed at the freeze. The playbook's results at
 any candidate are not consulted.
 
+### 0.3 The ruler check: a ladder of handicapped oracles (added 2026-10-21, before any run on its seeds)
+
+The world pilot (dev seeds 1000-1099) served, pooled: `none` 4.8 %, `random-valid` 4.9 %, the
+playbook 7.2 %, the oracle 100 %; 10.1 failed in link-cut and stuck-vehicle (random-valid not below
+the playbook). The playbook starts its looks too late and loses Pumas to link shadow (murmur-hei),
+and setting it up for the mission failed on the drifter off Mile Rock. The owner approved a change
+of approach (2026-10-21): agents are compared with each other on outcomes, and the scorer is
+checked by a ladder of handicapped oracles, not by the playbook. Each rung is the oracle (section
+5) with one advantage removed and nothing else changed (`eval/headless/agents_v2.py`):
+
+| rung | removes | instead |
+|---|---|---|
+| `oracle-late` | timing | no look at a contact is planned before its need opens (its true position inside 3 km): the playbook's timing |
+| `oracle-linkblind` | where the link holds | no link map and no truth of a blocked link: it plans as if the link held everywhere and knows a lost link only as the session reports it (`link_lost`) |
+| `oracle-honest` | link and truth | linkblind, reading no truth: built from a session alone, as the playbook and the model are; contacts only as the tools show them (tracks in doubt, shown motion carried at constant velocity), our vehicles as the fleet shows them. The realistic ceiling: the best an agent can do with what Murmur gives it |
+
+No fourth rung. What `oracle-honest` keeps is the oracle's model of the sensing (the detection
+curve, the 45 s dwell to 0.6, each shown kind's signature): how the simulator works, not this
+situation's truth, and learnable by any agent; and its planning (every assignment tried, a plan
+each second), which any agent may do.
+
+**Predicted order**, in each family with eligible needs, on need served (3.1): `oracle` ≥
+`oracle-late`; `oracle` ≥ `oracle-linkblind` ≥ `oracle-honest`; every rung, the oracle included,
+above `none`.
+
+**Seeds**: situation seeds 1100-1199 (dev-build seeds no batch has run; 10.1 had named them for
+the world pilot's repeat, which a later world change would now run on other fresh dev seeds), every
+v2 family, one replicate, the approve-all operator, the watch policy, the paused clock, as the
+world pilot ran: `none`, `null` (the fidelity check, 4.5), `random-valid`, the playbook, the oracle
+and the three rungs. Then the three rungs alone on the model pilot's seeds 2600-2601, so its
+situations have the ceiling beside them (no paid agent runs).
+
+**Passing**: each prediction "A at least B" is judged on the paired difference in need served, A
+minus B per situation, with its paired 95 % interval as the scorer makes it (`comparison`: the
+cluster bootstrap, BCa, seed 0, at 20 situations or more, else the exact sign test; section 8).
+An interval wholly below zero is a reversal and fails the check; one containing zero is a tie, not
+a violation (for "A above `none`", the advantage is then reported as not shown); one wholly above
+zero holds. The check passes when no prediction fails in any family with eligible needs. The pooled
+row and time to serve (3.2) are reported, never judged. The analysis is `eval/headless/ladder.py`,
+committed with this section. **A failure is reported, never tuned away on these seeds**: the
+rungs, the world, the mission and the scorer stay as committed here; a change afterwards is a
+dated section and runs on fresh seeds.
+
+**Relative comparison replaces pass marks.** Agents are ranked against each other and against the
+ladder on outcomes, with no pass mark: need served and time to serve are the outcomes; harmful
+actions and keeping vehicles above reserve are hard limits, not traded; cards and useless looks
+are costs. One agent ranks above another when it is at least as good on every outcome and cost
+and better on one (dominance); an exchange rate between an outcome and a cost (say, points of need
+served per card per 10 minutes) is set only where two agents trade one against the other, and
+stated with that comparison.
+
+**The paid pilot's go or no-go** (section 11, stage 1), read against the ladder family by family:
+the model near `none` means fix the cause first, free (harness, tools, prompt), before more is
+spent; the model near `oracle-honest` in every family means harden the situations first, since
+the bench cannot then separate agents; the model in between, with spread across families, means
+go, and the pilot's measured cost per episode and run-to-run variance price the follow-up. The
+owner chose (2026-10-21) to run the $20 pilot before this check: its records can be re-read
+against the ladder at no API cost.
+
 ## 1. Terms
 
 - **Mission**: the text every agent receives in its brief, verbatim and identically: "Identify
