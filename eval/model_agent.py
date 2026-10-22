@@ -82,6 +82,7 @@ PRICES: dict[str, tuple[float, float]] = {
     "claude-opus-4-8": (5.0, 25.0),
     "claude-sonnet-5-5": (2.0, 10.0),
     "claude-sonnet-5": (2.0, 10.0),
+    "claude-haiku-5-5": (0.10, 0.50),  # prompts of 100K tokens or fewer; 0.50 / 2.50 above
     "claude-haiku-4-5": (1.0, 5.0),
 }
 WORST_PRICE = max(PRICES.values(), key=lambda p: p[0] + p[1])
