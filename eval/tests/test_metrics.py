@@ -470,7 +470,45 @@ def test_each_invariant_fires():
     assert not inv["ok"]
 
 
-PLAN_A = {"effect_point": [-122.495, 37.812], "effect_t": T0 + 100_000, "effect_radius_m": 75.0}
+def test_failing_check_is_the_one_in_force_at_dispatch():
+    """murmur-gjk: a dispatch is judged by the check in force when it went out (the latest
+    before it), never by a later one."""
+    log = Log()
+    # dispatched on a passing check, back to the queue when the link was lost mid-upload, voided
+    # when the re-check at dequeue failed: the bridge did right (as v2-ladder-1100's stuck-vehicle,
+    # seed 1107, oracle-honest, intent 7)
+    log.created(1, 0)
+    log.checked(1, 0)
+    log.pending(1, 0)
+    log.add(1, "check.result", intent=1, phase="approve", results=[], passed=True)
+    log.approve(1, 1, by="op-auto")
+    log.add(10, "intent.requeued", intent=1)
+    log.state(1, 10, "dispatched", "queued", "back to the queue: the link to vehicle(s) 4 was lost before the order started")
+    log.add(19, "check.result", intent=1, phase="dequeue", passed=False,
+            results=[{"rule": "reserves", "outcome": "fail"}])
+    log.state(1, 19, "queued", "voided", "re-check failed at dequeue: reserves 4: pass -> fail")
+    inv = M.invariants(log.events, M.trails(log.events), OPS, None)
+    assert inv["counts"]["dispatch_with_failing_check"] == 0, inv["counts"]
+    assert inv["ok"]
+    # dispatched past a failing check, requeued, then re-checked clean and sent again: still a
+    # violation, although its last check passed
+    log.created(2, 30)
+    log.checked(2, 30)
+    log.pending(2, 30)
+    log.add(31, "check.result", intent=2, phase="approve", passed=False,
+            results=[{"rule": "reserves", "outcome": "fail"}])
+    log.approve(2, 31, by="op-auto")
+    log.add(40, "intent.requeued", intent=2)
+    log.state(2, 40, "dispatched", "queued", "back to the queue")
+    log.add(45, "check.result", intent=2, phase="dequeue", results=[], passed=True)
+    log.dispatched(2, 45)
+    log.state(2, 45, "queued", "dispatched")
+    inv = M.invariants(log.events, M.trails(log.events), OPS, None)
+    assert inv["counts"]["dispatch_with_failing_check"] == 1, inv["counts"]
+    assert inv["violations"] == 1
+
+
+PLAN_A ={"effect_point": [-122.495, 37.812], "effect_t": T0 + 100_000, "effect_radius_m": 75.0}
 PLAN_B = {"effect_point": [-122.505, 37.812], "effect_t": T0 + 120_000, "effect_radius_m": 75.0}
 
 

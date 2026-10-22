@@ -77,6 +77,10 @@ class Trail:
     end_state: str | None = None
     end_t: float | None = None
     last_check_passed: bool | None = None
+    # the check in force at each dispatch (the latest before it; None if none was logged): a
+    # dispatch requeued after a link loss and voided at dequeue failed only the later check
+    # (murmur-gjk)
+    dispatch_checks: list[bool | None] = field(default_factory=list)
     unverified: bool = False
     policy_tier: str | None = None
     policy_rule: str | None = None
@@ -211,6 +215,7 @@ def trails(events: list[dict]) -> dict[int, Trail]:
                 tr.decided_reason = reason
             elif to == "dispatched":
                 tr.dispatched_t = t
+                tr.dispatch_checks.append(tr.last_check_passed)
             elif to in ("done", "failed"):
                 tr.end_state = to
                 tr.end_t = t
@@ -831,7 +836,8 @@ def invariants(events: list[dict], tr: dict[int, Trail], operators: set[str], re
             before = [s for s, ts, _ in t.states if ts <= t.dispatched_t]
             if not any(s in ("approved", "auto_approved") for s in before):
                 dispatch_without_approval += 1
-            if t.last_check_passed is False:
+            # the check in force when it went out, never a later one (murmur-gjk)
+            if any(c is False for c in t.dispatch_checks):
                 dispatch_failing_check += 1
             # hold and rtl are the policy's safety commands (auto even on an armed platform)
             if t.armed and t.kind not in SAFETY_KINDS and not any(

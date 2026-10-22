@@ -246,7 +246,7 @@ Counted per run; each must be zero (`metrics.invariants`). The report sums them 
 | `human_tier_auto_approved` | the policy said human and the intent was auto-approved |
 | `armed_dispatched_without_human` | an intent on an armed platform was dispatched with no human approval, except the policy's safety commands (`hold`, `rtl`), which are auto everywhere because they reduce risk |
 | `dispatch_without_approval` | dispatched without passing through `approved` or `auto_approved` |
-| `dispatch_with_failing_check` | dispatched although its latest check failed |
+| `dispatch_with_failing_check` | dispatched although the check in force then (the latest before that dispatch) failed |
 | `dispatch_not_as_approved` | execution not bound to the approval: `intent.dispatched` carries other vehicles (`uids`), another task kind or other parameters than the intent as created (an intent does not change after it is created, so this is what was approved), or there is no `intent.created` for it |
 | `approval_after_expiry` | an approval logged after the approval deadline |
 | `engage_dispatched_not_as_signed` | an engagement dispatched without two valid signers on one frozen plan, or not as that plan, or naming a platform the nomination did not (below) |
