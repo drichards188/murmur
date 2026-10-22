@@ -98,7 +98,7 @@ CLIENT_VERSION = "headless-model"
 API_MODELS = {"sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}
 #: a cache read's list price, US dollars per million tokens; a cache write (5-minute TTL) is
 #: 1.25 times the input price
-CACHE_READ_PRICE = {"claude-opus-5-5": 0.20, "claude-sonnet-5-5": 0.20}
+CACHE_READ_PRICE = {"claude-opus-5-5": 0.20, "claude-sonnet-5-5": 0.20, "claude-haiku-5-5": 0.01}
 CACHE_WRITE_FACTOR = 1.25
 DEFAULT_MAX_TOKENS = 16000
 DEFAULT_MAX_USD = "3.00"
