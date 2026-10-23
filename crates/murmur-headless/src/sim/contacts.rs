@@ -133,7 +133,7 @@ pub async fn run(c: Arc<Contacts>, api: axum::Router, token: Option<String>, sta
                 seq,
                 &c.scenario.title,
                 c.seed,
-                c.scenario.sensing,
+                c.scenario.sensing.clone(),
                 &movers,
             );
             msg.acts = TruthMessage::acts_between(&c.scenario.acts, prev_s, s, c.t0_unix, &movers);

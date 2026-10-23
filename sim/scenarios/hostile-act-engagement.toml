@@ -19,6 +19,7 @@ seed = 17
 
 [sensing]
 misclassification_rate = 0.0     # deterministic identities: the situation is about the chain
+model = "legacy"                 # pinned: a v1 situation, the legacy model's
 
 # ---------------------------------------------------------------- the hostile
 # Runs in from the sea at 15 m/s (29 kn), no AIS, and holds mid-strait 1.5 km west of the bridge,

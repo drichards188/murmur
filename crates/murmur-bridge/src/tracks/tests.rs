@@ -17,6 +17,7 @@ const T0: f64 = 1_000_000.0;
 mod before_oho;
 mod calib;
 mod calib_air;
+mod physical;
 
 fn catalog() -> SensorCatalog {
     SensorCatalog::from_toml(include_str!("../../../../sim/platforms.toml")).expect("catalog")

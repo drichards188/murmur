@@ -61,13 +61,14 @@ const LOS_MOVE_M: f64 = 50.0;
 const LOS_MAX_AGE_S: f64 = 5.0;
 /// A gimbal settles this long after a slew or a zoom, s (research [E]: about 1 s).
 const SETTLE_S: f64 = 1.0;
-/// A search step dwells this long on one aim point, s [E].
-const SEARCH_DWELL_S: f64 = 4.0;
+/// A search step dwells this long on one aim point, s [E]: about the time to detect a clear
+/// contact (tau 3.4 s) after the settle.
+const SEARCH_DWELL_S: f64 = 5.0;
 /// The payload manager searches at least this long between two cues, s [E].
 const SEARCH_MIN_S: f64 = 10.0;
 /// A cue that finds nothing in the wide field, and a lock that identifies nothing, give up
 /// after this long, s [E].
-const CUE_MAX_S: f64 = 6.0;
+const CUE_MAX_S: f64 = 8.0;
 const LOCK_MAX_S: f64 = 10.0;
 /// A cue is a track fixed within this long, s (the tracker's stale age).
 const CUE_FRESH_S: f64 = 10.0;
@@ -349,6 +350,13 @@ impl Engine {
             self.noticed_no_terrain = true;
             println!("sensing: physical model without a terrain grid: line of sight by earth curvature only");
         }
+    }
+
+    /// A terrain grid given directly (tests).
+    #[cfg(test)]
+    pub fn set_terrain(&mut self, g: Grid) {
+        self.terrain = GridSlot { path: Some("test".into()), grid: Some(Arc::new(g)) };
+        self.los.clear();
     }
 
     /// The terrain's obstruction of the ray from `o` to `t` at k = 7/6 and 4/3, cached per pair
@@ -737,6 +745,13 @@ impl Engine {
         let st = cx.st;
         let key = (o.uid, si);
         let bore = self.steer(cx, o, h_s, si, reach_m, eo, targets);
+        if bore.blind {
+            // slewing or zooming: the gimbal sees nothing, but a look in progress survives it
+            // (the image tracker keeps its target through a zoom)
+            for l in self.looks.entry(key).or_default().values_mut() {
+                l.seen_s = st.s;
+            }
+        }
         let mut identified_now: Vec<String> = Vec::new();
         for t in targets {
             if !t.above || t.sig.dc_m <= 0.0 {
@@ -790,8 +805,9 @@ impl Engine {
             let u_t = uniform(st.seed, look.start_tick, o.uid, &t.c.id, salt(si, SensorType::EoIr, 2));
             let u_id = uniform(st.seed, look.start_tick, o.uid, &t.c.id, salt(si, SensorType::EoIr, 3));
             if look.detected_s.is_none() && u < pd[0] {
+                // the dwell so far, counting the second this tick closes
                 let tau = eo::TAU_K_S / pd[0].max(1e-6);
-                if st.s - look.start_s >= -tau * (1.0 - u_t).ln() {
+                if st.s - look.start_s + 1.0 >= -tau * (1.0 - u_t).ln() {
                     look.detected_s = Some(st.s);
                 }
             }
@@ -802,7 +818,7 @@ impl Engine {
             if u < pd[1] && st.s - det_s >= RECOGNISE_AFTER_S {
                 (level, conf) = (Level::Recognise, pd[1]);
             }
-            if u < id_p && look.narrow_since.is_some_and(|n| st.s - n >= IDENTIFY_DWELL_S + u_id) {
+            if u < id_p && look.narrow_since.is_some_and(|n| st.s - n + 1.0 >= IDENTIFY_DWELL_S + u_id) {
                 (level, conf) = (Level::Identify, id_p);
                 identified_now.push(t.c.id.clone());
             }

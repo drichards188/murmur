@@ -17,6 +17,7 @@ seed = 11
 
 [sensing]
 misclassification_rate = 0.02
+model = "legacy"                 # pinned: v1 and v2 situations (and their records) are the legacy model's
 
 # ---------------------------------------------------------------- ferries (AIS, neutral)
 [[contact]]

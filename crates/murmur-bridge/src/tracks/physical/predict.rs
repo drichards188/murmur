@@ -32,11 +32,15 @@ pub struct Prediction {
     /// The terrain alone; none without a grid.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terrain_clear: Option<bool>,
-    /// A pointed sensor's chance to detect, recognise, identify, given the time it takes.
+    /// A pointed sensor's chance to detect, recognise, identify, given the time it takes (an
+    /// EO/IR sensor in its best field for each).
     pub p_detect: f64,
     pub p_recognise: f64,
     pub p_identify: f64,
-    /// EO/IR: the mean time to detect in the field, s.
+    /// EO/IR: the chance to detect it in the wide field a search sweeps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub p_search: Option<f64>,
+    /// EO/IR: the mean time to detect in the wide field, s.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tau_s: Option<f64>,
     /// A radar's or scanning sonar's revolution, AIS's report interval, s.
@@ -111,6 +115,7 @@ pub fn predict(a: &Ask) -> Prediction {
         p_detect: 0.0,
         p_recognise: 0.0,
         p_identify: 0.0,
+        p_search: None,
         tau_s: None,
         revisit_s: None,
         channel: None,
@@ -132,17 +137,20 @@ pub fn predict(a: &Ask) -> Prediction {
             } else {
                 t.sig.dc_m * (vis / t.vis_height_m).clamp(0.0, 1.0).sqrt()
             };
+            let mut search: f64 = 0.0;
             for ch in &eo.channels {
                 let wide = eo::channel_p(ch, false, p.slant_m, dc, t.sig.thermal_k, &cond, sun);
                 let narrow = eo::channel_p(ch, ch.zooms(), p.slant_m, dc, t.sig.thermal_k, &cond, sun);
-                out.p_detect = out.p_detect.max(wide[0]);
+                search = search.max(wide[0]);
+                out.p_detect = out.p_detect.max(wide[0]).max(narrow[0]);
                 out.p_recognise = out.p_recognise.max(wide[1]).max(narrow[1]);
                 if narrow[2] > out.p_identify {
                     out.p_identify = narrow[2];
                     out.channel = Some(ch.band.as_str());
                 }
             }
-            out.tau_s = (out.p_detect > 0.0).then(|| eo::TAU_K_S / out.p_detect);
+            out.p_search = Some(search);
+            out.tau_s = (search > 0.0).then(|| eo::TAU_K_S / search);
         }
         Resolved::Radar(r) => {
             if sight(h_s, &t, &p, K_RADIO, obstruction).is_none() {
