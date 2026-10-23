@@ -40,6 +40,16 @@ packet's own ids are exempt there (they are packet content), and recorded if the
 
 **Resumable**: a packet whose answers are filled is skipped, and so is one given up on or
 refused (`judge.json`) unless `--retry-failed`. `--limit N` attempts at most N packets.
+
+**Retried** (murmur-7yh): a packet whose attempt fails on a transient error (officer.py
+`transient`: a dropped stream such as httpx's `RemoteProtocolError`, a connection error, a
+timeout, 408, 409, 429, 529 or another 5xx) is attempted again from scratch (a fresh upload and
+conversation), at most `RETRIES` (3) more times, after waits of `RETRY_BACKOFF_S` (10, 30, 90 s);
+each failed attempt is recorded in the run log's row (`attempts`: the error, its wall time, what
+its dropped call was charged). A packet that fails every attempt is an `error` (not marked, so the
+next run takes it up) and the run goes on to the next packet; it stops when `MAX_ERRORS_IN_ROW`
+(2) packets in a row failed so, at once on an error no wait will cure (a 4xx other than 408, 409
+and 429: officer.py `fatal`), or when the cost guard refuses a call.
 `--dry-run` builds every request and writes them (`judge-dry-run.json`, no file contents), prints
 the brief, one request's shape and the cost guard's reservations, and calls nothing.
 
@@ -62,9 +72,18 @@ the call the reservation is settled at what `usage` says was billed (fresh input
 cache reads, output, per iteration when `usage.iterations` itemizes them) plus the container at
 its wall time (at least `CONTAINER_MIN_S`, free hours not counted). A call that costs more than it
 reserved stops the run at once (the guard's assumptions failed: look before going on). A call
-that fails keeps its reservation as spent. Per packet, its calls, tokens and cost go into the run
-log `<packets dir>/judge-log.jsonl`; the ledger defaults to `<packets dir>/judge-ledger.json`
-(`--ledger`, or `MURMUR_EVAL_LEDGER`).
+that raises (a dropped stream, any failed call) billed what is unknown: it is charged the input
+it sent, counted conservatively (`JudgeGuard.dropped`): its request, at 2 characters a token,
+once for each of the `SERVER_ITERATIONS` its server loop could have run, at the cache write price
+(at the dearest list price and twice with `--fallbacks`), plus the container for its wall time
+(at least `CONTAINER_MIN_S`); the rest of its reservation is released. The output it generated
+before it failed is unknown and not charged. (For a judge request of 4,170 characters on
+claude-opus-5-5: 10 x 2,085 tokens x $4 x 1.25 per million, $0.104, plus the container, against
+a worst case of about $3.26 that a failed call used to keep as spent, and about $0.25 for a
+typical answered packet.) The officer's guard (WatchGuard) still keeps a failed call's worst case.
+Per packet, its calls (a dropped one marked `dropped`, with its charge), tokens and cost go into
+the run log `<packets dir>/judge-log.jsonl`; the ledger defaults to
+`<packets dir>/judge-ledger.json` (`--ledger`, or `MURMUR_EVAL_LEDGER`).
 
 Configuration (environment):
 
@@ -87,10 +106,10 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from eval.headless.officer import (API_MODELS, CACHE_WRITE_FACTOR, FALLBACK_BETA, ModelArmError, WatchGuard, _plain,
-                                   _type, chars, fatal, usage_parts)
+                                   _type, chars, fatal, transient, usage_parts)
 from eval.model_agent import PRICES, WORST_PRICE, CostGuardExceeded, Ledger, price_of
 
 from . import leakage
@@ -123,7 +142,12 @@ DRY_RUN = "judge-dry-run.json"
 #: a packet's own outcome; given up on and refused are not retried unless asked
 MARK = "judge.json"
 FINAL = ("gave_up", "refused")
-#: consecutive transient failures that stop the run (the API is down: stop spending reservations)
+#: a packet whose attempt fails on a transient error (a dropped stream, a connection error, a
+#: timeout, 429, 529, 5xx: officer.py `transient`) is tried again from scratch at most this many
+#: more times, after these waits (the last repeated)
+RETRIES = 3
+RETRY_BACKOFF_S = (10.0, 30.0, 90.0)
+#: packets in a row that failed every attempt on transient errors: the run stops (the API is down)
 MAX_ERRORS_IN_ROW = 2
 
 
@@ -231,6 +255,7 @@ _SPEC_WORDS = (
     ("label", "eligible", r"eligib\w*"), ("label", "contributed", r"contribut\w*"),
     ("label", "useful", r"useful\w*"), ("label", "redundant", r"redundan\w*"), ("label", "useless", r"useless\w*"),
     ("label", "follow-up", r"follow[-_ ]?ups?"), ("label", "justified", r"justif\w*"),
+    ("label", "duplicate", r"duplicat\w*"),
     ("label", "aim", r"aim(?:s|ed|ing)?"), ("label", "fault response", r"fault[-_ ]respons\w*"),
     ("label", "harmful", r"harmful\w*"), ("label", "credited", r"credit\w*"),
     ("agent", "playbook", r"playbook\w*"), ("agent", "oracle", r"oracle\w*"), ("agent", "random-valid", r"random[-_ ]valid"),
@@ -389,6 +414,8 @@ class JudgeGuard(WatchGuard):
     call) and the code container's time on top of the tokens."""
 
     container_usd: float = 0.0
+    dropped_calls: int = 0
+    dropped_usd: float = 0.0
 
     def worst_case(self, model: str, request_chars: int, max_tokens: int) -> float:
         pin, pout = WORST_PRICE if self.fallbacks else price_of(model)
@@ -412,10 +439,36 @@ class JudgeGuard(WatchGuard):
             self.ledger.add(usd)
         return usd
 
+    def dropped_input(self, request_chars: int) -> float:
+        """The input a call that raised sent, counted conservatively: the request (at 2
+        characters a token) once per server iteration it could have run, at the cache write
+        price; at the dearest list price and twice with fallbacks, as `worst_case`."""
+        pin, _ = WORST_PRICE if self.fallbacks else price_of(self.model)
+        attempts = 2 if self.fallbacks else 1
+        return attempts * SERVER_ITERATIONS * (request_chars / 2.0) * pin * CACHE_WRITE_FACTOR / 1e6
+
+    def dropped(self, request_chars: int, wall_s: float) -> float:
+        """A call that raised (a dropped stream, any failed call): what it billed is unknown, so
+        it is charged the input it sent (`dropped_input`) and the code container for its wall
+        time (at least `CONTAINER_MIN_S`), settled against its reservation (the rest released);
+        the output it generated before it failed is unknown and not charged."""
+        container = max(wall_s, CONTAINER_MIN_S) / 3600.0 * CONTAINER_USD_PER_HOUR
+        usd = self.dropped_input(request_chars) + container
+        if self.ledger is not None:
+            self.ledger.settle(self.reserved_usd, usd)
+        self.reserved_usd = 0.0
+        self.spent_usd += usd
+        self.container_usd += container
+        self.dropped_calls += 1
+        self.dropped_usd += usd
+        return usd
+
     def summary(self) -> dict[str, Any]:
         return {**super().summary(), "container_usd": round(self.container_usd, 6),
+                "dropped_calls": self.dropped_calls, "dropped_usd": round(self.dropped_usd, 6),
                 "pricing": "list prices; cache reads and writes at their own rates; code execution at its hourly "
-                           "rate, free hours not counted"}
+                           "rate, free hours not counted; a call that raised at the input it sent (its request "
+                           "once per server iteration, at the cache write price) and its container time"}
 
 
 # ---- the driver ------------------------------------------------------------------------------
@@ -499,8 +552,10 @@ def plan(packets: Path, seed: int = 0, only: list[str] | None = None, retry_fail
 class Judge:
     def __init__(self, packets: Path, client: Any, guard: JudgeGuard, model: str = DEFAULT_MODEL,
                  effort: str = DEFAULT_EFFORT, max_tokens: int = DEFAULT_MAX_TOKENS,
-                 max_continuations: int = MAX_CONTINUATIONS, fallbacks: bool = False):
+                 max_continuations: int = MAX_CONTINUATIONS, fallbacks: bool = False,
+                 sleep: Callable[[float], None] | None = None):
         self.packets = packets
+        self.sleep = sleep if sleep is not None else time.sleep  # the wait before a retry (a test's own)
         self.client = client
         self.guard = guard
         self.model = model
@@ -569,8 +624,15 @@ class Judge:
                 cm = self.client.messages.stream(**kw)
             with cm as stream:
                 resp = stream.get_final_message()
-        except BaseException:
-            self.guard.failed()  # what it billed is unknown: its worst case counts as spent
+        except BaseException as e:
+            # what it billed is unknown: the input it sent and its container time (JudgeGuard.dropped)
+            wall = time.monotonic() - t0
+            usd = self.guard.dropped(size, wall)
+            run.calls.append({"call": len(run.calls) + 1, "dropped": True, "error": f"{type(e).__name__}: {e}"[:300],
+                              "request_chars": size, "reserved_usd": round(est, 6), "usd": round(usd, 6),
+                              "container_usd": round(max(wall, CONTAINER_MIN_S) / 3600.0 * CONTAINER_USD_PER_HOUR, 6),
+                              "tokens": {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0},
+                              "stop_reason": None, "wall_s": round(wall, 3), "container": run.container})
             raise
         wall = time.monotonic() - t0
         served = getattr(resp, "model", None)
@@ -617,11 +679,55 @@ class Judge:
 
     # -- a packet
 
+    def _attempt(self, d: Path, run: PacketRun, q: dict[str, Any], row: dict[str, Any]) -> tuple[str, list[str], list[str]]:
+        """One attempt at a packet on a fresh conversation: (status, problems, minor). Raises
+        what its calls raise (a transient error is retried by `packet`)."""
+        orders, contacts, answers = q["orders"], q["contacts"], q["answers"]
+        still = f"still working after {self.max_continuations} continuations"
+        row.pop("asked_to_fix", None)
+        stop, texts = self._round(run)
+        first = parse_answer(texts)
+        if stop == "refusal":
+            return "refused", [], []
+        if stop == "pause_limit":
+            return "gave_up", [still], []
+        c = check(first, orders, contacts, cut=stop == "max_tokens")
+        if c.problems or c.minor:
+            text = fix_text(c.problems + c.minor)
+            hits = leak_hits(text, run.exempt)
+            if hits:
+                raise LeakError(f"packet {run.pid}: the correction carries evaluation tokens: {hits[:5]}")
+            run.messages.append({"role": "user", "content": text})
+            row["asked_to_fix"] = c.problems + c.minor
+            stop, texts = self._round(run)
+            if stop == "refusal":
+                return "refused", [], []
+            if stop == "pause_limit":
+                return "gave_up", [still], []
+            c = check(merge(first, parse_answer(texts)), orders, contacts, cut=stop == "max_tokens")
+        if c.problems:
+            return "gave_up", c.problems, []
+        self.write(d, run.pid, answers, c)
+        return "answered", [], c.minor
+
+    def _delete(self, run: PacketRun, row: dict[str, Any]) -> None:
+        if not run.file_id:
+            return
+        try:
+            self.client.files.delete(run.file_id)
+            row["file_deleted"] = row.get("file_deleted", True)  # False if an earlier attempt's was not
+        except Exception as e:  # noqa: BLE001
+            row["file_deleted"] = False
+            row["delete_error"] = f"{type(e).__name__}: {e} (file {run.file_id})"
+
     def packet(self, d: Path) -> dict[str, Any]:
+        """A packet, attempted from scratch again (a fresh upload and conversation) after a
+        transient error, at most `RETRIES` more times with `RETRY_BACKOFF_S` waits; each failed
+        attempt is recorded in the row's `attempts`, its dropped call charged (JudgeGuard.dropped)."""
         run, q = self.start(d)
         if q["leaks"]:
             raise LeakError(f"packet {d.name}: the request carries evaluation tokens: {q['leaks'][:5]}")
-        orders, contacts, answers = q["orders"], q["contacts"], q["answers"]
+        orders, contacts = q["orders"], q["contacts"]
         row: dict[str, Any] = {"packet": run.pid, "at": _now(), "version": VERSION, "model": self.model,
                                "effort": self.effort, "orders": len(orders), "contacts": len(contacts)}
         if q["ids_matching_tokens"]:
@@ -630,65 +736,56 @@ class Judge:
         status: str | None = None
         problems: list[str] = []
         minor: list[str] = []
-        still = f"still working after {self.max_continuations} continuations"
-        try:
-            stop, texts = self._round(run)
-            first = parse_answer(texts)
-            if stop == "refusal":
-                status = "refused"
-            elif stop == "pause_limit":
-                status, problems = "gave_up", [still]
-            else:
-                c = check(first, orders, contacts, cut=stop == "max_tokens")
-                if c.problems or c.minor:
-                    text = fix_text(c.problems + c.minor)
-                    hits = leak_hits(text, run.exempt)
-                    if hits:
-                        raise LeakError(f"packet {run.pid}: the correction carries evaluation tokens: {hits[:5]}")
-                    run.messages.append({"role": "user", "content": text})
-                    row["asked_to_fix"] = c.problems + c.minor
-                    stop, texts = self._round(run)
-                    if stop == "refusal":
-                        status = "refused"
-                    elif stop == "pause_limit":
-                        status, problems = "gave_up", [still]
-                    else:
-                        c = check(merge(first, parse_answer(texts)), orders, contacts, cut=stop == "max_tokens")
-                if status is None:
-                    if c.problems:
-                        status, problems = "gave_up", c.problems
-                    else:
-                        status, minor = "answered", c.minor
-                        self.write(d, run.pid, answers, c)
-            self.errors_in_row = 0
-        except (CostGuardExceeded, Stop) as e:
-            status, problems = "stopped", [str(e)]
-            self.halt = self.halt or str(e)
-        except LeakError:
-            raise
-        except Exception as e:  # noqa: BLE001
-            status, problems = "error", [f"{type(e).__name__}: {e}"]
-            self.errors_in_row += 1
-            if fatal(e):
-                self.halt = f"the API refused the request as such ({type(e).__name__}: {e})"
-            elif self.errors_in_row >= MAX_ERRORS_IN_ROW:
-                self.halt = f"{self.errors_in_row} packets failed in a row on transient errors; last: {type(e).__name__}: {e}"
-        finally:
-            if run.file_id:
-                try:
-                    self.client.files.delete(run.file_id)
-                    row["file_deleted"] = True
-                except Exception as e:  # noqa: BLE001
-                    row["file_deleted"] = False
-                    row["delete_error"] = f"{type(e).__name__}: {e} (file {run.file_id})"
+        calls: list[dict[str, Any]] = []  # every attempt's calls, the dropped ones included
+        attempts: list[dict[str, Any]] = []
+        for n in range(1 + RETRIES):
+            if n:
+                run, q = self.start(d)  # a fresh conversation (the same request: scanned already)
+            ta = time.monotonic()
+            retry = False
+            try:
+                status, problems, minor = self._attempt(d, run, q, row)
+                self.errors_in_row = 0
+            except (CostGuardExceeded, Stop) as e:
+                status, problems = "stopped", [str(e)]
+                self.halt = self.halt or str(e)
+            except LeakError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                what = f"{type(e).__name__}: {e}"
+                status, problems = "error", [what]
+                if fatal(e):
+                    self.errors_in_row += 1
+                    self.halt = f"the API refused the request as such ({what})"
+                elif transient(e) and n < RETRIES and not self.halt:
+                    retry = True
+                else:
+                    self.errors_in_row += 1
+                    if self.errors_in_row >= MAX_ERRORS_IN_ROW:
+                        self.halt = (f"{self.errors_in_row} packets failed in a row on transient errors"
+                                     f"{' (each attempted ' + str(1 + RETRIES) + ' times)' if transient(e) else ''}; "
+                                     f"last: {what}")
+                if transient(e):
+                    attempts.append({"attempt": n + 1, "error": what[:500], "wall_s": round(time.monotonic() - ta, 3),
+                                     "calls": len(run.calls),
+                                     "charged_usd": round(sum(c["usd"] for c in run.calls), 6),
+                                     "retried": retry})
+            finally:
+                self._delete(run, row)
+                calls += [{**c, "attempt": n + 1} for c in run.calls]
+            if not retry:
+                break
+            self.sleep(RETRY_BACKOFF_S[min(n, len(RETRY_BACKOFF_S) - 1)])
+        if attempts:
+            row["attempts"] = attempts
         row.update({
-            "status": status or "error", "problems": problems, "minor": minor, "calls": len(run.calls),
-            "rounds": 1 + ("asked_to_fix" in row), "stop_reasons": [c["stop_reason"] for c in run.calls],
-            "tokens": {k: sum(c["tokens"][k] for c in run.calls) for k in ("input", "cache_write", "cache_read", "output")},
-            "usd": round(sum(c["usd"] for c in run.calls), 6),
-            "container_usd": round(sum(c["container_usd"] for c in run.calls), 6),
-            "reserved_max_usd": round(max((c["reserved_usd"] for c in run.calls), default=0.0), 6),
-            "wall_s": round(time.monotonic() - t0, 3), "per_call": run.calls,
+            "status": status or "error", "problems": problems, "minor": minor, "calls": len(calls),
+            "rounds": 1 + ("asked_to_fix" in row), "stop_reasons": [c["stop_reason"] for c in calls],
+            "tokens": {k: sum(c["tokens"][k] for c in calls) for k in ("input", "cache_write", "cache_read", "output")},
+            "usd": round(sum(c["usd"] for c in calls), 6),
+            "container_usd": round(sum(c["container_usd"] for c in calls), 6),
+            "reserved_max_usd": round(max((c["reserved_usd"] for c in calls), default=0.0), 6),
+            "wall_s": round(time.monotonic() - t0, 3), "per_call": calls,
         })
         if run.calls:
             _write(d / "judge-transcript.json", {"packet": run.pid, "model": self.model, "effort": self.effort,
