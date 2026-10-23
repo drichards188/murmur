@@ -430,6 +430,9 @@ class Episode:
         wall0 = time.perf_counter()
         workdir = self.workdir
         workdir.mkdir(parents=True, exist_ok=True)
+        # world v3: the episode's conditions drawn from its world's ranges by its seed (a
+        # situation with `[headless] conditions = "world"`); otherwise the spec as given
+        self.e = self.e.drawn(self.seed)
         spec, env = process_spec(self.e, self.seed, workdir, self.opts.calibration, terrain=self.opts.terrain,
                                  space=self.opts.space, anchors=self.opts.anchors, contacts_path=self.contacts_path)
         self.section16(spec, env)
@@ -652,16 +655,23 @@ class Episode:
         look cache)."""
         if self.opts.effects is not None:
             spec["effects"] = dict(self.opts.effects)
-        if self.opts.space_snapshot is not None:
+        snapshot = self.space_snapshot
+        if snapshot is not None:
             from . import space
 
-            root = space.unpack(self.opts.space_snapshot)
+            root = space.unpack(snapshot)
             env["MURMUR_ROOT"] = str(root)
             spec["space_root"] = str(root)
             if spec.get("space"):
                 # the episode's link profiles (its world's: section 17; sim/links.toml at the
                 # Golden Gate, as before)
-                spec["space_cache"] = str(space.look_cache_file(self.opts.space_snapshot, Path(spec["links"])))
+                spec["space_cache"] = str(space.look_cache_file(snapshot, Path(spec["links"])))
+
+    @property
+    def space_snapshot(self) -> str | None:
+        """The pinned element sets the episode reads: its options', else its world's (world v3's
+        worlds name theirs: sim/worlds/README.md), else none (as before)."""
+        return self.opts.space_snapshot if self.opts.space_snapshot is not None else self.e.space_snapshot
 
     def section16_record(self) -> dict[str, Any]:
         """The record's keys for section 16, each only when its option is on (a record without
@@ -673,10 +683,10 @@ class Episode:
             out["review"] = {"policy": self.reviewer.describe(), "decisions": self.reviewer.decisions}
         if self.opts.effects is not None:
             out["effects"] = {"config": dict(self.opts.effects), "applied": self.effects}
-        if self.opts.space_snapshot is not None:
+        if self.space_snapshot is not None:
             from . import space
 
-            out["space"] = {"snapshot": space.describe(self.opts.space_snapshot)}
+            out["space"] = {"snapshot": space.describe(self.space_snapshot)}
         return out
 
     def v2_part(self, audit_text: str) -> dict[str, Any]:

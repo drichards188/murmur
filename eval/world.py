@@ -11,10 +11,15 @@ What a world names (sim/worlds/README.md has the format with the Golden Gate's f
 - `areas`: the operator's areas, a directory of `*.geojson` (the bridge's `MURMUR_AREAS`);
 - `tidewater`: the tidewater scenario its terrain, tide, currents and wind come from, and `at`,
   the scenario time a situation starts at unless it says;
+- `traffic`: the background contacts a situation in it takes unless it names its own (a
+  contacts scenario, sim/scenarios; world v3's worlds: every domain, the physical sensing model);
+- `space`: the pinned satellite element sets an episode in it reads (eval/headless/space.py:
+  `sim/headless/space/<space>/`) unless the batch names others;
 - `[terrain]`: the baked grids (eval/headless/bake_world.py): `surface`, the surface heights
   the link emulator's terrain line of sight reads; `land_water`, the water depth the bridge's
-  domain rule and the stand-ins' conditions read; the box, spacing and time they were sampled
-  on;
+  domain rule and the stand-ins' conditions read; `bathymetry`, the seabed's height the
+  physical sensing model's sonar reads (named by the traffic's `[sensing]`); the box, spacing
+  and time they were sampled on;
 - `[currents]`: the baked current field (the same tool) for contacts and drifters;
 - `[links]` and `[[ground_station]]`: the link profiles and where the operator's radios are;
 - `[points]`: named reference points, `[lon, lat]`;
@@ -45,8 +50,8 @@ WORLDS = REPO / "sim" / "worlds"
 DEFAULT_WORLD = "golden-gate"
 
 TOP_KEYS = {"name", "title", "fleet", "areas", "tidewater", "at", "terrain", "currents", "links", "ground_station",
-            "points", "operating_box", "mission", "conditions"}
-TERRAIN_KEYS = {"surface", "land_water", "box", "spacing_m", "sampled_at"}
+            "points", "operating_box", "mission", "conditions", "traffic", "space"}
+TERRAIN_KEYS = {"surface", "land_water", "bathymetry", "box", "spacing_m", "sampled_at"}
 CURRENTS_KEYS = {"field", "spacing_m", "from", "to", "step_s", "box"}
 STATION_KEYS = {"name", "lat", "lon", "alt_m"}
 MISSION_KEYS = {"center", "radius_m", "grace_s"}
@@ -110,6 +115,11 @@ class World:
     operating_box: dict[str, float]
     mission: Mission
     conditions: dict[str, Any] = field(default_factory=dict)
+    # world v3's worlds (none in the Golden Gate's: every situation before them names its own
+    # contacts and runs without a snapshot unless the batch asks)
+    traffic: Path | None = None
+    space: str | None = None
+    bathymetry_grid: Path | None = None
 
     def point(self, name: str) -> tuple[float, float]:
         """A named reference point, (lon, lat)."""
@@ -283,4 +293,20 @@ def _load(path: Path) -> World:
         operating_box=_box(raw["operating_box"], "operating_box", path) if "operating_box" in raw else {},
         mission=mission,
         conditions=cond,
+        traffic=_repo_path(raw["traffic"], "traffic", path) if "traffic" in raw else None,
+        space=_space(raw.get("space"), path),
+        bathymetry_grid=(_repo_path(terrain["bathymetry"], "[terrain] bathymetry", path, False)
+                         if "bathymetry" in terrain else None),
     )
+
+
+def _space(v: Any, path: Path) -> str | None:
+    """The world's pinned element sets: a snapshot's name under sim/headless/space (checked by
+    eval/headless/space.py when an episode unpacks it)."""
+    if v is None:
+        return None
+    if not isinstance(v, str) or not v.strip() or "/" in v:
+        raise WorldError(f"{path}: space is a snapshot's name (sim/headless/space/<name>)")
+    if not (REPO / "sim" / "headless" / "space" / v / "provenance.json").is_file():
+        raise WorldError(f"{path}: space {v!r}: no snapshot sim/headless/space/{v}/ (eval/headless/space.py)")
+    return v
