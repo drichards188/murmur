@@ -11,7 +11,7 @@
 use crate::decision::queue::CarryCheck;
 use crate::tasks::tests::Firmware;
 use crate::tracks::sensing::{Observer, SensorSpec, SensorType};
-use crate::tracks::truth::{ContactTruth, Domain as TDomain, Sensing, TruthAffiliation, TruthMessage};
+use crate::tracks::truth::{ContactTruth, Domain as TDomain, Sensing, SensingModel, TruthAffiliation, TruthMessage};
 use murmur_decide::replay::{ReplayOptions, replay_str_with};
 
 use super::engagement::{Erig, TARGET, engage_rig_clocked};
@@ -143,8 +143,10 @@ fn sense_mover(e: &Erig, s: u32) {
         seq: u64::from(s),
         scenario: "test".into(),
         seed: 1,
+        // the legacy model's (the observer's sensors are their range_m alone)
         sensing: Sensing {
             misclassification_rate: 0.0,
+            model: Some(SensingModel::Legacy),
             ..Default::default()
         },
         contacts: vec![ContactTruth {

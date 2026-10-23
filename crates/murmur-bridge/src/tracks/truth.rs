@@ -87,13 +87,15 @@ fn one() -> f64 {
     1.0
 }
 
-/// Which sensing model turns truth into detections: today's (`sensing.rs`) or the physical one
-/// (`physical/`, WORLD-V3-PLAN section 2).
+/// Which sensing model turns truth into detections: the legacy one (`sensing.rs`, every record
+/// before world v3) or the physical one (`physical/`, WORLD-V3-PLAN section 2), the default since
+/// the platform catalog carries every sensor's figures (WORLD-V3-PLAN section 3). The v1 and v2
+/// worlds and the Phase G stacks name `legacy` (docs/SENSING.md).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SensingModel {
-    #[default]
     Legacy,
+    #[default]
     Physical,
 }
 

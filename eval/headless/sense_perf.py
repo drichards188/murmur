@@ -84,7 +84,7 @@ def measure(model: str, seconds: float, seed: int = 1) -> dict[str, float]:
         finally:
             sim.end()
         log = (d / "headless.log").read_text(errors="replace")
-        said = next((ln for ln in log.splitlines() if ln.startswith("sensing: the ")), "sensing: the legacy model (default)")
+        said = next((ln for ln in log.splitlines() if ln.startswith("sensing: the ")), "sensing: not said (no truth message)")
         return {"simulated_s": seconds, "wall_s": round(wall, 2), "factor": round(seconds / wall, 1), "tracks": len(tracks),
                 "bridge": said}
 

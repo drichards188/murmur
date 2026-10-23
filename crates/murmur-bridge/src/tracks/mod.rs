@@ -30,8 +30,9 @@
 //! and `MURMUR_SENSE_MISCLASS` override them on the bridge.
 //!
 //! **Two sensing models** (WORLD-V3-PLAN section 2, docs/SENSING.md): `legacy` (`sensing.rs`,
-//! the default) and `physical` (`physical/`). The scenario names one (`[sensing] model`, in
-//! the truth message) and `MURMUR_SENSE_MODEL` overrides it on the bridge; the physical model
+//! every record before world v3) and `physical` (`physical/`, the default). The scenario names
+//! one (`[sensing] model`, in the truth message) and `MURMUR_SENSE_MODEL` overrides it on the
+//! bridge (the v1 and v2 worlds and the Phase G stacks name `legacy` there); the physical model
 //! keeps state across messages (pointing, looks, scans) and reads the scenario's terrain grid,
 //! conditions and signature overrides from the same message. Both feed the same tracker.
 //!
@@ -397,16 +398,20 @@ impl Tracks {
         Ok((n_contacts, detections.len(), n_tracks))
     }
 
-    /// The sensing model a message runs on: `MURMUR_SENSE_MODEL`, else the scenario's, else
-    /// legacy. Said when it is the physical model or changes.
+    /// The sensing model a message runs on: `MURMUR_SENSE_MODEL`, else the scenario's, else the
+    /// default (physical). Said at the first message and when it changes.
     fn model_for(&self, msg: &TruthMessage) -> SensingModel {
         let m = self.settings.model.or(msg.sensing.model).unwrap_or_default();
         let mut last = lock(&self.last_model);
         if *last != Some(m) {
-            if last.is_some() || m != SensingModel::Legacy {
-                let why = if self.settings.model.is_some() { "MURMUR_SENSE_MODEL" } else { "the scenario" };
-                println!("sensing: the {} model ({why})", m.as_str());
-            }
+            let why = if self.settings.model.is_some() {
+                "MURMUR_SENSE_MODEL"
+            } else if msg.sensing.model.is_some() {
+                "the scenario"
+            } else {
+                "the default"
+            };
+            println!("sensing: the {} model ({why})", m.as_str());
             if m == SensingModel::Physical {
                 let ph = physical::spec::placeholders(&self.catalog);
                 if !ph.is_empty() {
