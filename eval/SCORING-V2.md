@@ -411,11 +411,15 @@ check of the new code ran on dev seeds 1000-1499.
      3. a judged move not testable (an untested check is not a pass): for reserve-blind this needs
         `oracle-honest` shown above `none` on fault needs met in low-battery, which item 3's landing
         gives;
-     4. a ladder reversal;
-     5. a `null` episode that differs from its `none` replicate (4.5);
-     6. 10.1's world conditions failing in a family with eligible needs (`none` over 50 %, or the
+     4. a judged move whose per-family paired interval lies wholly the wrong way (for spam's need
+        served, wholly below -5 points) in any family with eligible needs, whatever the pooled
+        verdict (the guard, added by the owner's delegate before the run: it only strengthens the
+        rule; `validate.py` `WRONG_WAY`);
+     5. a ladder reversal;
+     6. a `null` episode that differs from its `none` replicate (4.5);
+     7. 10.1's world conditions failing in a family with eligible needs (`none` over 50 %, or the
         oracle under 80 %);
-     7. the re-judge failing (item 6).
+     8. the re-judge failing (item 6).
 
      Not blocking, but reported: the per-family moves; the reported orders (cards, harm, useless per
      hour); the playbook's perturbations; pooled rows. A block is reported, never tuned away on these
@@ -462,7 +466,11 @@ check of the new code ran on dev seeds 1000-1499.
      testable.
    - **The dev confirmation** (dev seeds 1250-1299, the world after item 3, every v2 family, the 19
      agents, the run's settings, judged by the re-specified rule; 8,550 episodes, no harness error).
-     **Nothing blocks: 0 blocks.**
+     **Nothing blocks: 0 blocks**, the guard (block 4) included: re-judged with it on the same
+     batch, no `oracle-honest` move lies wholly the wrong way in any family with eligible needs (of
+     the per-family cells, 29 did not move, were not shown not worse or were not testable, all
+     reported; the only per-family reversals are playbook+ferries' bad-card share in fast-unknown
+     and link-cut-mid-look, which are reported, not judged).
      - **The anchors' orders** hold in all 7 admissible families: need served, useful, RMST and
        `useless_share` (link-cut-mid-look +49.5 [+47.0, +51.7] points, stuck-vehicle +49.0 [+46.4,
        +50.0], elsewhere +89 to +100); fault needs met in low-battery +92.0 [+82.0, +98.0] points
@@ -493,6 +501,12 @@ check of the new code ran on dev seeds 1000-1499.
        previews refused on the reserves check 1,812 times.
      - Pooled need served: the oracle 100 %, `oracle-linkblind` 80.4 %, `oracle-honest` 76.3 %, the
        playbook 6.4 %, `none` 4.6 %.
+   - **Known limits of the rule.** A pooled move can hold while it fails to move in some families
+     (the per-family cells are reported, and only a per-family reversal blocks). `useless_share`
+     against random-valid is close to automatic where random-valid's few actions are all useless
+     (near 100 %), so it mostly checks that the oracle's looks have an effect, and it is informative
+     mainly in link-cut-mid-look and stuck-vehicle. `oracle-late` serves what `none` serves (4.6 %
+     pooled), so its rung above `none` is a tie in every family and tells nothing.
    - **Seeds 2000-2099 run on the rule as it stands here, with no change after.**
 
 6. **The re-judge, pre-registered** (2.7 again). The owner's budget is $50 in all; what the ledgers
@@ -534,7 +548,7 @@ check of the new code ran on dev seeds 1000-1499.
      must be informative this time: it passes only with at least 5 "yes" answers on the instruments'
      side (a harmful order), and with fewer it is untested, which is not a pass.
    - **On failure.** If any question's pi is under 0.8, or `harmed` is untested, labels v2 fail the
-     construct check, and the freeze is blocked (item 5's block 7). The disagreements are listed and
+     construct check, and the freeze is blocked (item 5's block 8). The disagreements are listed and
      adjudicated, and a label change is a new dated section, re-run on fresh seeds (its revalidation
      on 2100-2199, its blind check on a fresh sample and fresh model seeds), funded only by the owner's
      decision. The stage 1 pilot's results stay descriptive, scored with version 2 and marked

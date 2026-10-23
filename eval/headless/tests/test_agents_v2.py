@@ -620,6 +620,24 @@ def test_the_stratified_bootstrap_and_the_non_inferiority_verdict():
     assert V._equivalence("unchanged", "served_share", -0.04, 0.06)["verdict"] == "inconclusive"
 
 
+def test_a_move_wholly_the_wrong_way_in_one_family_blocks_though_it_holds_pooled():
+    """0.5's guard: skip-first lowers need served in fast-unknown (40 situations) and raises it in
+    decoy (10): pooled it moved down, but decoy's interval lies wholly the wrong way, which blocks."""
+    from eval.headless import validate as V
+
+    scored = []
+    for fam, n, honest, skip in (("fast-unknown", 40, 1, 0), ("decoy", 10, 0, 1)):
+        for sit in range(1, n + 1):
+            scored += [ep("none", fam, sit, 0), ep("oracle", fam, sit, 1), ep("oracle-honest", fam, sit, honest),
+                       ep("oracle-honest+skip-first", fam, sit, skip)]
+    res = V.check(scored)[COND]
+    pooled = {(p, m["metric"]): m for p, ms in res["pooled_moves"].items() for m in ms}
+    assert pooled[("oracle-honest+skip-first", "served_share")]["verdict"] == "moved"
+    assert res["wrong_way"] == [{"family": "decoy", "perturbation": "oracle-honest+skip-first",
+                                 "metric": "served_share", "verdict": "moved the wrong way"}]
+    assert "oracle-honest+skip-first served_share moved the wrong way in decoy (per family)" in res["blocks"]
+
+
 def test_the_revalidation_judges_the_honest_base_and_reports_cards_and_harm():
     """0.5 (validate.py's default section): the cards and harm orders reported, never judged; the
     moves judged on the honest oracle, the playbook's beside them reported; a judged prediction

@@ -43,9 +43,11 @@ after labels v2 on seeds 2000-2099. Per condition and family:
 
 **What blocks the freeze** (0.5, `blocks`): an anchor order that fails or is not shown in an
 admissible family; a pooled move that did not move, moved the wrong way, or (spam's need served)
-is not shown not worse; a pooled move not testable (an untested check is not a pass); a ladder
-reversal; a null fidelity difference; a family with eligible needs where none serves over 50 % or
-the oracle under 80 %.
+is not shown not worse; a pooled move not testable (an untested check is not a pass); a judged
+move whose per-family interval lies wholly the wrong way (for spam's need served, wholly below
+minus 5 points) in any family with eligible needs, the pooled move notwithstanding (`WRONG_WAY`);
+a ladder reversal; a null fidelity difference; a family with eligible needs where none serves over
+50 % or the oracle under 80 %.
 
 Writes `validate.json` and `validate.md` beside the batch's records.
 """
@@ -147,6 +149,8 @@ SECTIONS: dict[str, dict[str, Any]] = {
 DEFAULT_SECTION = "0.5"
 #: a judged move's verdicts that are failures
 MOVE_FAILS = ("did not move", "moved the wrong way", "changed", "inconclusive", "not shown not worse", "worse")
+#: 0.5's guard: a judged move's per-family verdicts that block although the pooled move holds
+WRONG_WAY = ("moved the wrong way", "worse")
 
 
 def link_verdict(c: dict[str, Any]) -> str:
@@ -362,6 +366,12 @@ def check(scored: list[dict[str, Any]], seed: int = 0, section: str = DEFAULT_SE
                 for p, ms in block["pooled_moves"].items() for m in ms if m["verdict"] in MOVE_FAILS]
             block["untested"] = [{"perturbation": p, "metric": m["metric"]} for p, ms in block["pooled_moves"].items()
                                  for m in ms if m["verdict"] in ("not testable", "set aside (0.4)")]
+            # the guard (0.5): a judged move whose per-family interval lies wholly the wrong way (or,
+            # for spam's need served, wholly below the margin) in any family with eligible needs
+            block["wrong_way"] = [
+                {"family": f, "perturbation": p, "metric": m["metric"], "verdict": m["verdict"]}
+                for f in needy for p, x in block["families"][f]["perturbations"].items() for m in x["moves"]
+                if m["verdict"] in WRONG_WAY]
         else:
             # 0.4 as it ran: every family judged
             for r in block["families"].values():
@@ -398,6 +408,8 @@ def blocks(block: dict[str, Any], section: str) -> list[str]:
     out = [f"anchor order {x['metric']} {x['verdict']} in {x['family']}" for x in block["anchor_failures"]]
     out += [f"{x['perturbation']} {x['metric']} {x['verdict']} ({x['family']})" for x in block["perturbation_failures"]]
     out += [f"{x['perturbation']} {x['metric']} not testable" for x in block["untested"]]
+    out += [f"{x['perturbation']} {x['metric']} {x['verdict']} in {x['family']} (per family)"
+            for x in block.get("wrong_way") or []]
     out += [f"ladder: {x['a']} below {x['b']} in {x['family']}" for x in (block.get("ladder") or {}).get("failures") or []]
     nf = block.get("null_fidelity")
     if nf is not None and not nf["pass"]:
