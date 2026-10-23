@@ -413,9 +413,10 @@ def process_spec(e: EpisodeSpec, seed: int, workdir: Path, calib: Calibration,
     return spec, env
 
 
-#: what the drawn conditions (eval/world.py `draw_conditions`) set in a contacts scenario's
-#: `[conditions]` (docs/SENSING.md): Koschmieder visibility, sea state, wind (sonar noise)
 def sensing_conditions(c: dict[str, Any]) -> dict[str, float]:
+    """What drawn conditions (eval/world.py `draw_conditions`) set in a contacts scenario's
+    `[conditions]` (docs/SENSING.md): the Koschmieder visibility, the sea state, the wind (the
+    sonar's ambient noise)."""
     out: dict[str, float] = {}
     if c.get("visibility_km") is not None:
         out["visibility_m"] = round(1000.0 * float(c["visibility_km"]), 1)
