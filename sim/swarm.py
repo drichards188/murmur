@@ -2,7 +2,8 @@
 """Launch a fleet: ArduPilot SITL vehicles plus lightweight stand-ins.
 
 A fleet file (sim/fleets/*.toml) lists units: a platform from sim/platforms.toml, a count
-and a start point. Platforms ArduPilot can fly run as real SITL processes; the rest
+and a start point (and, for a stand-in boat or ROV at a pier, `moored = true`: the current
+leaves it where it is until it first arms). Platforms ArduPilot can fly run as real SITL processes; the rest
 (HALE/MALE aircraft, AUVs, large ships, drifters) run as MAVLink-speaking stand-ins in
 one process: the Rust engine, crates/murmur-standins (target/release/murmur-standins, built
 here if cargo is around; MURMUR_STANDINS_BIN overrides the binary). It reads tidewater
@@ -118,6 +119,10 @@ def plan(fleet, platforms):
                 "min_turn_radius_m": (round(spec["cruise_mps"] / math.radians(spec["turn_dps"]))
                                       if spec.get("turn_dps") and spec.get("cruise_mps") else None),
             })
+            if unit.get("moored"):
+                # a stand-in tied up at its pier until it first arms (crates/murmur-standins
+                # config.rs `moored`): only when the unit says so, so every other entry is as before
+                vehicles[-1]["moored"] = True
     return vehicles
 
 
