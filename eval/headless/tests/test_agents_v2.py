@@ -639,9 +639,10 @@ def test_a_move_wholly_the_wrong_way_in_one_family_blocks_though_it_holds_pooled
 
 
 def test_the_revalidation_judges_the_honest_base_and_reports_cards_and_harm():
-    """0.5 (validate.py's default section): the cards and harm orders reported, never judged; the
-    moves judged on the honest oracle, the playbook's beside them reported; a judged prediction
-    not testable in any family, a ladder reversal and a world condition each block the freeze."""
+    """0.5, as 0.6 (validate.py's default section) judges it bar one ladder order (test_ladder.py):
+    the cards and harm orders reported, never judged; the moves judged on the honest oracle, the
+    playbook's beside them reported; a judged prediction not testable in any family, a ladder
+    reversal and a world condition each block the freeze."""
     from eval.headless import validate as V
 
     def with_(e: dict[str, Any], **kw: Any) -> dict[str, Any]:
@@ -660,7 +661,7 @@ def test_the_revalidation_judges_the_honest_base_and_reports_cards_and_harm():
                        ep("oracle-honest+reserve-blind", fam, sit, 1),
                        ep("playbook", fam, sit, 0), ep("playbook+skip-first", fam, sit, 0)]
     res = V.check(scored)[COND]
-    assert res["section"] == "0.5" and res["admissible"] == ["decoy", "fast-unknown"]
+    assert res["section"] == "0.6" and res["admissible"] == ["decoy", "fast-unknown"]
     fam = res["families"]["fast-unknown"]
     a = {x["metric"]: x for x in fam["anchors"]}
     assert a["cards_per_10min"]["verdict"] == "fails" and not a["cards_per_10min"]["judged"]

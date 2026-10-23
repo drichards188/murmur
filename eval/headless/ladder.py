@@ -15,9 +15,13 @@ cluster bootstrap, BCa, seed 0), judged by 0.3's rule:
   advantage is then not shown);
 - `fails`: it lies below zero, a reversal outside its interval.
 
-The check passes when no prediction fails in any family with needs. The pooled row is reported,
-never judged. Agents the batch did not run are left out of the predictions that name them. Writes
-`ladder.json` and `ladder.md` beside the batch's records.
+The check passes when no judged prediction fails in any family with needs. The pooled row is
+reported, never judged. `--rule` picks the orders judged (`RULES`): `0.3` judges every one, as 0.3,
+0.4 and 0.5 ran (kept so those runs can be re-read exactly); `0.6` (the default) computes and
+reports the orders in `NOT_JUDGED` but does not judge them: the truth step in stuck-vehicle, where
+the rungs' handicaps interact (SCORING-V2.md 0.6). Every other order is judged in every family.
+Agents the batch did not run are left out of the predictions that name them. Writes `ladder.json`
+and `ladder.md` beside the batch's records.
 """
 
 from __future__ import annotations
@@ -43,6 +47,14 @@ PREDICTIONS: tuple[tuple[str, str, bool], ...] = (
     ("oracle-linkblind", "none", True),
     ("oracle-honest", "none", True),
 )
+#: 0.6: orders computed and reported per family but not judged, as (family, A, B): never in
+#: `failures`, never counted toward `passed`. The truth step in stuck-vehicle: there truth without
+#: the link map sends the replacement Puma into link shadow, so the prediction, which assumed the
+#: rungs' handicaps do not interact, was mis-specified (SCORING-V2.md 0.6)
+NOT_JUDGED: frozenset[tuple[str, str, str]] = frozenset({("stuck-vehicle", "oracle-linkblind", "oracle-honest")})
+#: each rule the ladder is judged by, and the orders it reports but does not judge
+RULES: dict[str, frozenset[tuple[str, str, str]]] = {"0.3": frozenset(), "0.6": NOT_JUDGED}
+DEFAULT_RULE = "0.6"
 #: the gap between the oracle and the honest ceiling, and what each rung's step removes
 STEPS = (("link", "oracle", "oracle-linkblind"), ("truth", "oracle-linkblind", "oracle-honest"),
          ("timing", "oracle", "oracle-late"))
@@ -87,16 +99,18 @@ def families_with_needs(scored: list[dict[str, Any]], cond: str) -> list[str]:
                                    if cond_key(e) == cond and base_name(e.get("base")) == f)]
 
 
-def check(scored: list[dict[str, Any]], seed: int = 0) -> dict[str, Any]:
+def check(scored: list[dict[str, Any]], seed: int = 0, rule: str = DEFAULT_RULE) -> dict[str, Any]:
     """Per condition: the arms per family (every family) and pooled over the families with needs,
-    each prediction's paired difference and verdict per family with needs (and pooled, reported
-    only), the steps of the gap, and whether the check passed."""
+    each prediction's paired difference and verdict per family with needs (and pooled), whether it
+    is judged (the pooled row and the rule's `RULES` orders are reported only), the steps of the
+    gap, and whether the check passed."""
+    reported = RULES[rule]
     out: dict[str, Any] = {}
     for cond in sorted({cond_key(e) for e in scored}):
         agents = sorted({e["agent"] for e in scored if cond_key(e) == cond and e.get("agent")})
         fams = sorted({base_name(e["base"]) for e in scored if e.get("base") and cond_key(e) == cond} - set(ALONE))
         needy = families_with_needs(scored, cond)
-        block: dict[str, Any] = {"agents": agents, "families_with_needs": needy, "families": {}}
+        block: dict[str, Any] = {"rule": rule, "agents": agents, "families_with_needs": needy, "families": {}}
         for fam in fams + ["*"]:
             f = None if fam == "*" else fam
             bases = needy if f is None else [f]
@@ -108,15 +122,18 @@ def check(scored: list[dict[str, Any]], seed: int = 0) -> dict[str, Any]:
                         continue
                     c = comparison(scored, a, b, cond, METRIC, bases, seed=seed)
                     preds.append({"a": a, "b": b, "strict": strict, "verdict": verdict(c),
+                                  "judged": f is not None and (f, a, b) not in reported,
                                   **{k: c.get(k) for k in ("mean_difference", "lo", "hi", "n_situations", "method",
                                                            "excluded_share")}})
                 row["predictions"] = preds
                 row["steps"] = {name: _step(row["arms"], hi_, lo_) for name, hi_, lo_ in STEPS
                                 if hi_ in agents and lo_ in agents}
             block["families"][fam] = row
-        judged = [p for fam, r in block["families"].items() if fam != "*" for p in r.get("predictions") or []]
-        block["failures"] = [{"family": fam, **p} for fam, r in block["families"].items() if fam != "*"
-                             for p in r.get("predictions") or [] if p["verdict"] == "fails"]
+        per_family = [(fam, p) for fam, r in block["families"].items() if fam != "*" for p in r.get("predictions") or []]
+        judged = [p for _, p in per_family if p["judged"]]
+        block["failures"] = [{"family": fam, **p} for fam, p in per_family if p["judged"] and p["verdict"] == "fails"]
+        # the rule's orders, computed in each family with needs and reported, never judged (0.6)
+        block["reported"] = [{"family": fam, **p} for fam, p in per_family if not p["judged"]]
         block["passed"] = bool(judged) and not block["failures"]
         out[cond] = block
     return out
@@ -146,7 +163,9 @@ def markdown(res: dict[str, Any]) -> str:
              "(SCORING-V2.md 0.3).", ""]
     for cond, block in res.items():
         lines += [f"## {cond}", "", f"Passed: **{'yes' if block['passed'] else 'no'}**"
-                  + (f" ({len(block['failures'])} reversal(s))" if block["failures"] else ""), ""]
+                  + (f" ({len(block['failures'])} reversal(s))" if block["failures"] else "")
+                  + "".join(f"; reported, not judged ({block['rule']}): {x['a']} >= {x['b']} in {x['family']} "
+                            f"{x['verdict']}" for x in block.get("reported") or []), ""]
         for fam, row in block["families"].items():
             title = "pooled over the families with needs" if fam == "*" else fam
             lines += [f"### {title}", "", "| agent | served | need served | situation mean [95 % CI] | time to serve "
@@ -164,10 +183,11 @@ def markdown(res: dict[str, Any]) -> str:
                 for p in row["predictions"]:
                     op = ">" if p["strict"] else ">="
                     v = p["verdict"] + (" (advantage not shown)" if p["strict"] and p["verdict"] == "tie" else "")
+                    if not p["judged"]:
+                        v += " (reported, not judged)" if fam == "*" else f" (reported, not judged: {block['rule']})"
                     lines.append(f"| {p['a']} {op} {p['b']} | {_num(None if p['mean_difference'] is None else 100 * p['mean_difference'])} "
                                  f"[{_num(None if p['lo'] is None else 100 * p['lo'])}, "
-                                 f"{_num(None if p['hi'] is None else 100 * p['hi'])}] pts | {p['n_situations']} | "
-                                 f"{v if fam != '*' else v + ' (reported, not judged)'} |")
+                                 f"{_num(None if p['hi'] is None else 100 * p['hi'])}] pts | {p['n_situations']} | {v} |")
             if row.get("steps"):
                 lines += ["", "Steps (points of need served, pooled shares): "
                           + ", ".join(f"{k} {_num(v)}" for k, v in row["steps"].items())]
@@ -178,9 +198,11 @@ def markdown(res: dict[str, Any]) -> str:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("batch", type=Path, help="a scoring v2 batch directory (its episodes_v2.json)")
+    ap.add_argument("--rule", choices=sorted(RULES), default=DEFAULT_RULE,
+                    help="the orders judged (SCORING-V2.md 0.3: every one; 0.6: all but NOT_JUDGED)")
     args = ap.parse_args(argv)
     metas = json.loads((args.batch / "episodes_v2.json").read_text())
-    res = check(score(metas, Params(), multiverse=False))
+    res = check(score(metas, Params(), multiverse=False), rule=args.rule)
     (args.batch / "ladder.json").write_text(json.dumps(res, indent=1, sort_keys=True, default=str))
     md = markdown(res)
     (args.batch / "ladder.md").write_text(md)
