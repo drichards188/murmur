@@ -249,8 +249,10 @@ meaningful. Decision and command, not weapons.
   aircraft at its slant range (`Detection::slant_from`): a test that reads such a fix's
   `lat`/`lon` as the aircraft's position is wrong by its height's share.
 - Two sensing models (docs/SENSING.md): `legacy` (default) and `physical`, chosen by the
-  contacts scenario's `[sensing] model` or `MURMUR_SENSE_MODEL` (which wins); the v1 scenarios
-  pin `legacy`. Under `physical` the catalog's `range_m` is not a sensor's reach (the decision
+  contacts scenario's `[sensing] model` or `MURMUR_SENSE_MODEL` (which wins); v1 and v2 worlds
+  are pinned to `legacy` by that variable (`process_spec`, `fullstack.stack_env`,
+  `eval/stack.py`), never in their contacts files (the v1 generator's digests hold them byte for
+  byte). Under `physical` the catalog's `range_m` is not a sensor's reach (the decision
   engine still reads it; the model reads the entry's other fields or placeholders from it), a
   camera sees only where its payload manager points and takes seconds a look (tau 3.4 / P s,
   1 s to settle after each slew: a test expecting it to see something within a few ticks

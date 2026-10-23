@@ -80,6 +80,9 @@ class SenseModel:
                 self.proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
+                self.proc.wait()
+        if self.proc.stdout is not None:
+            self.proc.stdout.close()
 
     def __enter__(self) -> "SenseModel":
         return self

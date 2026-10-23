@@ -596,7 +596,11 @@ link = "satcom"
 space_class = "wgs"
 space_class_alt = "ku-geo"
 sidc = "SFAPMFQ--------"
-sensors = [{ type = "radar", range_m = 100000, guess = true }, { type = "ais", range_m = 150000, guess = true }]
+# the base platform's sensors without EO/IR (its radar's physical figures too, as [mq9b])
+sensors = [
+  { type = "radar", range_m = 100000, guess = true, r50_m = 300000, rcs_ref_m2 = 10000, scan_s = 5, beam_deg = 3, cell_m = 15, band_ghz = 16.7 },
+  { type = "ais", range_m = 150000, guess = true },
+]
 protocol = "stanag4586"
 protocol_note = "GA-ASI's ground control station is STANAG 4586-based"
 authenticity = "JSBSim MALE airframe plus 4586 (matches GA-ASI's 4586-based GCS)"
@@ -619,7 +623,12 @@ endurance_h = 1000
 link = "satcom"
 space_class = "starlink"
 sidc = "SFSP-----------"
-sensors = [{ type = "radar", range_m = 40000, guess = true }, { type = "ais", range_m = 50000, guess = true }]
+# the base platform's sensors without EO/IR and sonar (its radar's physical figures too, as
+# [seahunter])
+sensors = [
+  { type = "radar", range_m = 40000, guess = true, r50_m = 12450, rcs_ref_m2 = 7.5, scan_s = 2.5, beam_deg = 1.2, cell_m = 37, band_ghz = 9.4 },
+  { type = "ais", range_m = 50000, guess = true },
+]
 mast_m = 10
 protocol = "umaa"
 protocol_note = "Navy programs use UMAA over DDS (public architecture description v1.1)"

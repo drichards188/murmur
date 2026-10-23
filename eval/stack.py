@@ -478,6 +478,8 @@ class Stack:
             "MURMUR_EVAL_TRUTH": "1",
             "MURMUR_SIM_TOKEN": self.sim_token,
             "MURMUR_SENSE_SEED": str(self.seed),
+            # the evaluation's situations are the legacy sensing model's (docs/SENSING.md)
+            "MURMUR_SENSE_MODEL": "legacy",
             # the console's origin (study mode), the only one a browser may change things from
             "MURMUR_WEB_PORT": str(b.web),
             # the run-time anchors go with the run: the replay checks the log against them

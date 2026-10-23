@@ -531,9 +531,11 @@ group. Dates are 2026.
   fourth-root law with the two-ray model, hull-down and sea clutter drawn once per scan, AIS by
   class interval, VHF horizon and slot load, sonar by the sonar equation with FOMs from
   reference ranges, ESM by received power, all masked by horizons and the scenario's terrain
-  grid. Chosen per contacts scenario (`[sensing] model`) or by `MURMUR_SENSE_MODEL`; the v1
-  scenarios pin `legacy`, so v1 and v2 records stay as they were (their episodes byte-identical,
-  the golden included). Why not replace the legacy model: every record so far is its, and the
+  grid. Chosen per contacts scenario (`[sensing] model`) or by `MURMUR_SENSE_MODEL`; the v1 and
+  v2 worlds are pinned to `legacy` by the evaluation layer's bridge environment (headless,
+  G1's full stack, Phase G's stacks), not in their contacts files, whose generated text the v1
+  digests hold; so v1 and v2 records stay as they were (their episodes byte-identical, the
+  golden included). Why not replace the legacy model: every record so far is its, and the
   platform catalog's real figures (B1) come after; the coordinator flips the default then.
   Kept out of the decision engine's reach on purpose: `TrackFacts`, the sensor type names and
   the identity interface are unchanged (no rules version); signatures are a per-kind table with

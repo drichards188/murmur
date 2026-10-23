@@ -71,6 +71,8 @@ def measure(model: str, seconds: float, seed: int = 1) -> dict[str, float]:
         e = from_situation("harbor-watch")
         e.fleet, e.contacts, e.orders, e.script = fleet, contacts, [], []
         spec, env = process_spec(e, seed, d / "work", Calibration.load(), anchors=False)
+        # Harbor watch's spec is a v1 world, pinned to the legacy model: here the scenario says
+        env.pop("MURMUR_SENSE_MODEL", None)
         sim = Sim(spec, env, log=d / "headless.log")
         try:
             t0 = time.perf_counter()

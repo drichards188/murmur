@@ -23,10 +23,13 @@ needed. The physical model adds one thing to a detection, its identification evi
 | `MURMUR_SENSE_MODEL=legacy\|physical` on the bridge | overrides the scenario's (as `MURMUR_SENSE_SEED` does) |
 | neither | `legacy` (the default until the platform catalog's figures land, WORLD-V3-PLAN B1) |
 
-The v1 situations' scenarios (`sim/scenarios/harbor-watch.toml`, `hostile-act-engagement.toml`)
-pin `model = "legacy"`, and the v1 and v2 families inherit Harbor watch's `[sensing]`, so a later
-change of the default leaves their records as they were. A legacy scenario's truth messages
-carry nothing new (every new field is left out when unset): its episodes are byte-identical.
+The v1 and v2 worlds are pinned to `legacy` by the evaluation layer, not in their contacts files
+(the v1 generator's digests hold those byte for byte): `MURMUR_SENSE_MODEL=legacy` in every
+headless episode of a v1 or v2 world (`eval/headless/situations.py` `process_spec`), in a G1
+full-stack copy (`eval/headless/fullstack.py`) and in the Phase G evaluation's stacks
+(`eval/stack.py`). A later change of the default leaves their records as they were. A legacy
+scenario's truth messages carry nothing new (every new field is left out when unset): its
+episodes are byte-identical.
 
 The bridge says which model it runs on (`sensing: the physical model (the scenario)`), lists the
 catalog sensors running on placeholders, and says once if there is no terrain grid.
