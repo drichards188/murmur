@@ -372,6 +372,61 @@ fn the_payload_manager_cues_to_a_radar_track_and_identifies_it() {
     assert!(dets.iter().any(|d| d.uid == 1 && d.sensor == SensorType::Radar));
 }
 
+/// A placeholder sensor of `kind` reaching `range_m` (no catalog figures: B1 changes those).
+fn placeholder(kind: &str, range_m: f64) -> SensorSpec {
+    toml::from_str::<toml::Table>(&format!("s = {{ type = \"{kind}\", range_m = {range_m} }}")).expect("toml")["s"].clone().try_into().expect("spec")
+}
+
+/// `n` ticks of the engine with the contact moved each second by `motion(s)`: every detection.
+fn run_moving(e: &mut Engine, obs: &[Observer], n: i64, motion: impl Fn(i64) -> ContactTruth) -> Vec<Detection> {
+    let sensing = day();
+    let mut out = Vec::new();
+    for s in 0..n {
+        let st = Step { seed: 7, tick: s, s: s as f64, t: 1_781_467_800.0 + s as f64, misclassification_rate: 0.0, sensing: &sensing };
+        out.extend(e.step(&st, obs, &[motion(s)]));
+    }
+    out
+}
+
+/// A 2D radar's plot of an aircraft carries no elevation (murmur-7vp): a USV's camera cued by
+/// its own navigation radar to a light aircraft 1,500 m up and 5 km out, 17 degrees above the
+/// sea where the plot is (the wide field reaches 6 degrees either side of its middle), searches
+/// in elevation, acquires it and, its image tracker following it across the sky at 50 m/s,
+/// identifies it.
+#[test]
+fn a_camera_cued_by_a_2d_radar_finds_an_aircraft_in_elevation_and_identifies_it() {
+    let o = usv(1, BASE.0, BASE.1, vec![placeholder("radar", 40_000.0), placeholder("eo_ir", 15_000.0)]);
+    let plane = |s: i64| {
+        let (lat, lon) = at(BASE.0, BASE.1, -3_000.0 + 50.0 * s as f64, 5_000.0);
+        let mut c = contact("plane", "light_aircraft", Domain::Air, lat, lon);
+        (c.alt_m, c.speed_mps, c.course_deg) = (1_500.0, 50.0, 90.0);
+        c
+    };
+    let dets = run_moving(&mut Engine::new(None), std::slice::from_ref(&o), 120, plane);
+    let radar = dets.iter().find(|d| d.sensor == SensorType::Radar).expect("the radar holds it");
+    assert!(radar.slant_from.is_some() && radar.alt_m.is_none(), "{radar:?}");
+    let eo: Vec<&Detection> = dets.iter().filter(|d| d.sensor == SensorType::EoIr).collect();
+    assert!(eo.iter().any(|d| d.look.is_some_and(|l| l.level == Level::Identify) && d.label.as_deref() == Some("light_aircraft")), "{eo:?}");
+    // never an altitude from the camera: the tracker's facts stay 2D
+    assert!(eo.iter().all(|d| d.alt_m.is_none()));
+}
+
+/// The image tracker keeps a locked contact (murmur-7vp): a camera 120 m up locks on a small
+/// boat crossing its view at 12 m/s, 1.5 km off, and identifies it; the gimbal follows its line
+/// of sight in closed loop rather than slewing and settling again each second.
+#[test]
+fn a_locked_camera_follows_a_moving_boat_and_identifies_it() {
+    let o = Observer { uid: 5, lat: BASE.0, lon: BASE.1, alt_msl: 120.0, mast_m: 0.0, sensors: vec![placeholder("eo_ir", 3_000.0)], ..Observer::default() };
+    let boat = |s: i64| {
+        let (lat, lon) = at(BASE.0, BASE.1, -600.0 + 12.0 * s as f64, 1_500.0);
+        let mut c = contact("boat", "small_fast_boat", Domain::Surface, lat, lon);
+        (c.speed_mps, c.course_deg) = (12.0, 90.0);
+        c
+    };
+    let dets = run_moving(&mut Engine::new(None), std::slice::from_ref(&o), 120, boat);
+    assert!(dets.iter().any(|d| d.look.is_some_and(|l| l.level == Level::Identify)), "{dets:?}");
+}
+
 /// Deterministic: the same seed and inputs give the same detections.
 #[test]
 fn the_physical_model_is_deterministic() {

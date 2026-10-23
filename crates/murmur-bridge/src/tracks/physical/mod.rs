@@ -11,11 +11,13 @@
 //! - **EO/IR** ([`eo`]): each channel's pixels on target through the ACQUIRE curve, the
 //!   atmosphere, the light and the thermal crossover; a contact is seen only inside the
 //!   field of view the payload manager points ([`Gimbal`]: search the task area in the wide
-//!   field, cue to the nearest unidentified radar, AIS or EO track there, then the stalest,
-//!   lock on in the narrow field to identify, back to search). A look draws once whether the
-//!   contact is detectable at all and when (exponential, tau 3.4 / P s); identification needs
-//!   the narrow field on it for 2 to 3 s. A detection gives the size class, a recognition the
-//!   family, an identification the kind; a wrong call is likelier at recognition.
+//!   field, cue to the nearest unidentified radar, AIS or EO track there, then the stalest, an
+//!   aircraft whose height no sensor measured searched for in elevation, lock on in the narrow
+//!   field to identify, the image tracker following it, back to search). A look draws once
+//!   whether the contact is detectable at all and when (exponential, tau 3.4 / P s);
+//!   identification needs the narrow field on it for 2 to 3 s. A detection gives the size
+//!   class, a recognition the family, an identification the kind; a wrong call is likelier at
+//!   recognition.
 //! - **Radar** ([`radar`]): one Swerling 1 draw per scan as the beam passes the contact, the
 //!   fourth-root law about the radar's reference, the two-ray model for low targets, sea
 //!   clutter by sea state; 30 m or 1 % of range, and 1 degree in bearing.
@@ -72,6 +74,20 @@ const CUE_MAX_S: f64 = 8.0;
 const LOCK_MAX_S: f64 = 10.0;
 /// A cue is a track fixed within this long, s (the tracker's stale age).
 const CUE_FRESH_S: f64 = 10.0;
+/// A cued camera holds its aim while the cue stays within this share of its field's width of
+/// the boresight (the contact stays well inside the field), and slews (and settles) only when
+/// the cue leaves it: it does not chase a track's every update [E] (murmur-7vp).
+const CUE_DEADBAND: f64 = 0.25;
+/// The band of heights an aircraft whose height no sensor measured may fly at, m: a camera cued
+/// to it searches in elevation from just above the surface to the ceiling, or to the height its
+/// 2D radar plot's slant range allows if lower [E here: the ceiling is above the service
+/// ceilings of the light aircraft and helicopters the air kinds stand for, 4 to 6 km, and the
+/// 7,000 m the engagement scenarios' highest aircraft fly] (murmur-7vp).
+const AIR_FLOOR_M: f64 = 10.0;
+const AIR_CEILING_M: f64 = 8_000.0;
+/// Each bar of a cue's elevation search is stared at this long once the gimbal has settled, s
+/// [E]: about the time to detect a clear contact (tau 3.4 s), as a search step's dwell.
+const BAR_STARE_S: f64 = 4.0;
 /// An identified contact is not cued again for this long, s; one looked at and not identified
 /// for [`RETRY_S`]; with nothing unidentified to cue, the stalest look older than
 /// [`STALE_LOOK_S`] is revisited [E].
@@ -227,6 +243,9 @@ pub struct Gimbal {
     step: usize,
     step_s: f64,
     seen_s: f64,
+    /// a cue's elevation search: the bar it is on, and when its stare began (the gimbal settled)
+    bar: usize,
+    bar_s: f64,
 }
 
 /// Where a camera looks this tick.
@@ -264,8 +283,70 @@ struct Dwell {
 struct Cue {
     lat: f64,
     lon: f64,
-    alt: f64,
+    /// its height, m, and when it was measured: a surface or ground contact's (the surface), a
+    /// height-finding radar's of an aircraft (kept while fresh); None: an aircraft no sensor
+    /// gave a height
+    alt: Option<(f64, f64)>,
+    /// a 2D radar's plot of an aircraft: the radar's position and height above the sea, the
+    /// plot being at the slant range on its bearing
+    slant: Option<(f64, f64, f64)>,
     s: f64,
+}
+
+impl Cue {
+    /// Where the contact would be at height `h`: on a 2D radar plot's slant-range arc (over the
+    /// radar beyond it), else over the fix.
+    fn at_height(&self, h: f64) -> (f64, f64) {
+        let Some((rlat, rlon, rh)) = self.slant else {
+            return (self.lat, self.lon);
+        };
+        let (de, dn) = en(rlat, rlon, self.lat, self.lon);
+        let r = de.hypot(dn);
+        let dz = h - rh;
+        let f = (r * r - dz * dz).max(0.0).sqrt() / r.max(1.0);
+        (rlat + f * dn / M_PER_DEG, rlon + f * de / (M_PER_DEG * rlat.to_radians().cos()))
+    }
+
+    /// The aims (azimuth, elevation, radians) a camera at `o`, `h_s` above the sea, with a wide
+    /// field `wide` across, steps through for this cue: one, at the contact, where its height is
+    /// known (a surface contact's, a height-finding radar's); for an aircraft no sensor gave a
+    /// height, the bars of an elevation search over the heights it may fly at ([`AIR_FLOOR_M`]
+    /// to [`AIR_CEILING_M`], or what the slant range allows), lowest first, a field (as wide as
+    /// it is, three quarters of that high) a bar, stepping four fifths of its height
+    /// (murmur-7vp).
+    fn aims(&self, o: &Observer, h_s: f64, wide: f64) -> Vec<(f64, f64)> {
+        /// The heights sampled along the band (each covered by a bar).
+        const SAMPLES: usize = 160;
+        let aim = |(lat, lon): (f64, f64), alt: f64| {
+            let (de, dn) = en(o.lat, o.lon, lat, lon);
+            (de.atan2(dn), (alt - h_s).atan2(de.hypot(dn).max(1.0)))
+        };
+        if let Some((h, _)) = self.alt {
+            return vec![aim(self.at_height(h), h)];
+        }
+        let top = match self.slant {
+            Some((rlat, rlon, rh)) => {
+                let (de, dn) = en(rlat, rlon, self.lat, self.lon);
+                (rh + de.hypot(dn)).min(AIR_CEILING_M)
+            }
+            None => AIR_CEILING_M,
+        };
+        let high = 0.75 * wide;
+        let mut bars: Vec<(f64, f64)> = Vec::new();
+        for k in 0..=SAMPLES {
+            let h = AIR_FLOOR_M + (top - AIR_FLOOR_M).max(0.0) * k as f64 / SAMPLES as f64;
+            let (az, el) = aim(self.at_height(h), h);
+            let covered = bars.iter().any(|&(bar_az, bar_el)| {
+                let daz = (az - bar_az + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
+                daz.abs() * el.cos() <= 0.45 * wide && (el - bar_el).abs() <= 0.45 * high
+            });
+            if !covered {
+                // a new bar with this height near its foot
+                bars.push((az, (el + 0.35 * high).min(std::f64::consts::FRAC_PI_2)));
+            }
+        }
+        bars
+    }
 }
 
 /// A grid the scenario names: its path and what loading it gave.
@@ -359,6 +440,20 @@ impl Engine {
         self.los.clear();
     }
 
+    /// What camera `si` of `uid` is doing (diagnostics): its azimuth and elevation, radians, its
+    /// narrow field, slewing or settling until when, and its mode (`search`, `cue`, `lock`).
+    #[cfg(test)]
+    pub fn gimbal_of(&self, uid: u64, si: usize) -> Option<(f64, f64, bool, f64, &'static str)> {
+        self.gimbals.get(&(uid, si)).map(|g| {
+            let mode = match g.mode {
+                Mode::Search => "search",
+                Mode::Cue(_) => "cue",
+                Mode::Lock(_) => "lock",
+            };
+            (g.az, g.el, g.narrow, g.busy_until, mode)
+        })
+    }
+
     /// The terrain's obstruction of the ray from `o` to `t` at k = 7/6 and 4/3, cached per pair
     /// (refreshed when an end moves [`LOS_MOVE_M`] or after [`LOS_MAX_AGE_S`]); None: no grid.
     fn terrain_los(&mut self, o: &Observer, h_s: f64, t: &Target, s: f64) -> Option<[f64; 2]> {
@@ -409,7 +504,8 @@ impl Engine {
                 }
             }
         }
-        self.cue_from(&out, st.s);
+        let heights: HashMap<u64, f64> = observers.iter().map(|o| (o.uid, sensor_height_m(o))).collect();
+        self.cue_from(&out, st.s, &heights);
         let first_eo = out.len();
         for o in observers {
             if o.submerged {
@@ -422,16 +518,26 @@ impl Engine {
                 }
             }
         }
-        self.cue_from(&out[first_eo..], st.s);
+        self.cue_from(&out[first_eo..], st.s, &heights);
         self.forget(st.s, contacts);
         out
     }
 
-    /// Track positions to cue cameras to: every fix this tick, the contact's last.
-    fn cue_from(&mut self, dets: &[Detection], s: f64) {
+    /// Track positions to cue cameras to: every fix this tick, the contact's last. An aircraft's
+    /// height is what a height-finding radar measured within [`CUE_FRESH_S`], else unknown (a 2D
+    /// radar's, a camera's and ESM's fixes give none); a 2D radar's plot of it keeps the radar
+    /// (`heights`: each observer's sensor height), its slant range being on the plot's bearing.
+    fn cue_from(&mut self, dets: &[Detection], s: f64, heights: &HashMap<u64, f64>) {
         for d in dets {
-            let alt = d.alt_m.unwrap_or(0.0);
-            self.cues.insert(d.contact_id.clone(), Cue { lat: d.lat, lon: d.lon, alt, s });
+            let alt = match d.alt_m {
+                Some(a) => Some((a, s)),
+                None if d.domain == Domain::Air => {
+                    self.cues.get(&d.contact_id).and_then(|c| c.alt).filter(|(_, t)| s - t <= CUE_FRESH_S)
+                }
+                None => Some((0.0, s)),
+            };
+            let slant = d.slant_from.map(|(lat, lon)| (lat, lon, heights.get(&d.uid).copied().unwrap_or(0.0)));
+            self.cues.insert(d.contact_id.clone(), Cue { lat: d.lat, lon: d.lon, alt, slant, s });
         }
     }
 
@@ -854,8 +960,15 @@ impl Engine {
     /// The payload manager's turn (WORLD-V3-PLAN 2.4, decision W1): search the task area in the
     /// wide field; after [`SEARCH_MIN_S`], cue to a track there (the nearest unidentified,
     /// else the stalest look); once the wide field has the contact, lock on in the narrow
-    /// field until it is identified or [`LOCK_MAX_S`] has passed; back to search. A camera
-    /// that cannot slew looks along the heading; one that is all panoramic does not point.
+    /// field until it is identified or [`LOCK_MAX_S`] has passed; back to search. A cue to an
+    /// aircraft whose height no sensor measured (a 2D radar's plot, a camera's or ESM's fix)
+    /// searches the elevations it may fly at, bar by bar ([`Cue::aims`]); a cued camera re-aims
+    /// only when the cue leaves the middle of its field ([`CUE_DEADBAND`]), and a locked one
+    /// follows its contact in closed loop (murmur-7vp: slewing and settling again at each
+    /// track update and each second of a lock left the cameras blind 93 to 98 % of the time
+    /// they were cued or locked). A slew, a zoom, a search step and a new bar settle
+    /// ([`SETTLE_S`]). A camera that cannot slew looks along the heading; one that is all
+    /// panoramic does not point.
     #[allow(clippy::too_many_arguments)]
     fn steer(&mut self, cx: &Ctx, o: &Observer, h_s: f64, si: usize, reach_m: f64, eo: &EoSensor, targets: &[Target]) -> Boresight {
         let s = cx.st.s;
@@ -876,6 +989,8 @@ impl Engine {
             step: 0,
             step_s: f64::NEG_INFINITY,
             seen_s: s,
+            bar: 0,
+            bar_s: f64::NEG_INFINITY,
         });
         g.seen_s = s;
         let aim = |lat: f64, lon: f64, alt: f64| {
@@ -895,9 +1010,15 @@ impl Engine {
                 let done = self.identified.get(&c).is_some_and(|ti| *ti >= g.since) || s - g.since >= LOCK_MAX_S;
                 match target(&c).filter(|_| !done) {
                     Some(t) => {
-                        // the image tracker keeps it centred
+                        // the image tracker keeps it centred: the gimbal follows it in closed
+                        // loop, with nothing to settle, while its line of sight turns no faster
+                        // than the gimbal slews (murmur-7vp)
                         let (az, el) = aim(t.c.lat, t.c.lon, t.top_msl);
-                        point(&mut g, az, el, true);
+                        if g.narrow && angle(g.az, g.el, az, el) <= slew {
+                            (g.az, g.el) = (az, el);
+                        } else {
+                            point(&mut g, az, el, true);
+                        }
                     }
                     None => {
                         self.looked.insert(c, s);
@@ -910,6 +1031,14 @@ impl Engine {
             Mode::Cue(c) => {
                 let acquired = s >= g.busy_until
                     && self.looks.get(&key).and_then(|l| l.get(&c)).is_some_and(|l| l.detected_s.is_some());
+                // one aim at the contact, or an aircraft's elevation search: each bar stared at
+                // for BAR_STARE_S once settled, then the next, the cue ending with the last
+                let aims = self.cues.get(&c).map(|cue| cue.aims(o, h_s, wide)).unwrap_or_default();
+                let scan = aims.len() > 1;
+                let bar_over = scan && s >= g.busy_until && s - g.bar_s >= BAR_STARE_S;
+                // one aim gives up CUE_MAX_S after the cue began (or after the search's last bar,
+                // when a height came during it)
+                let began = if g.bar > 0 { g.bar_s } else { g.since };
                 if acquired {
                     g.mode = Mode::Lock(c.clone());
                     g.since = s;
@@ -917,14 +1046,24 @@ impl Engine {
                         let (az, el) = aim(t.c.lat, t.c.lon, t.top_msl);
                         point(&mut g, az, el, true);
                     }
-                } else if s - g.since >= CUE_MAX_S || target(&c).is_none() {
+                } else if target(&c).is_none()
+                    || (!scan && s - began >= CUE_MAX_S)
+                    || (bar_over && g.bar + 1 >= aims.len())
+                {
                     self.looked.insert(c, s);
                     g.mode = Mode::Search;
                     g.since = s;
                     g.step_s = f64::NEG_INFINITY;
-                } else if let Some(cue) = self.cues.get(&c) {
-                    let (az, el) = aim(cue.lat, cue.lon, cue.alt);
+                } else if bar_over {
+                    g.bar += 1;
+                    let (az, el) = aims[g.bar];
                     point(&mut g, az, el, false);
+                    g.bar_s = g.busy_until.max(s);
+                } else if let Some(&(az, el)) = aims.get(g.bar.min(aims.len().saturating_sub(1))) {
+                    // the cue's updates: re-aimed only once the cue leaves the field's middle
+                    if angle(g.az, g.el, az, el) > CUE_DEADBAND * wide {
+                        point(&mut g, az, el, false);
+                    }
                 }
             }
             Mode::Search => {}
@@ -932,11 +1071,14 @@ impl Engine {
         if g.mode == Mode::Search {
             let pick = (s - g.since >= SEARCH_MIN_S).then(|| self.pick_cue(o, reach_m, s)).flatten();
             if let Some(c) = pick {
-                let cue = self.cues[&c];
-                let (az, el) = aim(cue.lat, cue.lon, cue.alt);
+                let first = self.cues[&c].aims(o, h_s, wide).first().copied();
                 g.mode = Mode::Cue(c);
                 g.since = s;
-                point(&mut g, az, el, false);
+                g.bar = 0;
+                if let Some((az, el)) = first {
+                    point(&mut g, az, el, false);
+                }
+                g.bar_s = g.busy_until.max(s);
             } else if s - g.step_s >= SEARCH_DWELL_S {
                 let pts = search_points(o, reach_m, wide);
                 let (lat, lon) = pts[g.step % pts.len()];

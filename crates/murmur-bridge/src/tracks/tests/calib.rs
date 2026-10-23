@@ -911,6 +911,21 @@ fn calib_physical() {
     eprintln!("--- the criteria on the physical model: {}", if bad.is_empty() { "all hold".to_string() } else { format!("\n{}", bad.join("\n")) });
 }
 
+/// The same on the tuning sets (a check for a change to the physical model, which is never
+/// tuned on the held-out set: `cargo test -p murmur-bridge --release calib_physical_tuning --
+/// --ignored --nocapture`).
+#[test]
+#[ignore]
+fn calib_physical_tuning() {
+    let mut table = Vec::new();
+    let mut bad = Vec::new();
+    for (cases, seeds) in [(first_cases(), FIRST_SEEDS), (round_one_cases(), ROUND_ONE_SEEDS), (round_two_cases(), ROUND_TWO_SEEDS)] {
+        bad.extend(failures_by(&cases, seeds, &mut table, &|c, seed| run_by(c, seed, &mut physical(seed))));
+    }
+    eprintln!("{}", table.join("\n"));
+    eprintln!("--- the criteria on the physical model: {}", if bad.is_empty() { "all hold".to_string() } else { format!("\n{}", bad.join("\n")) });
+}
+
 #[test]
 fn the_seed_sets_are_disjoint() {
     let sets = [FIRST_SEEDS, ROUND_ONE_SEEDS, ROUND_TWO_SEEDS, HELD_OUT_SEEDS];
