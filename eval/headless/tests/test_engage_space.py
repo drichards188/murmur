@@ -6,8 +6,9 @@ choices and the pinned element sets. Smoke episodes (the real `murmur-headless`,
 stale): the engagement chain end to end on `hostile-act-engagement` (a hostile act, the rule
 declaration, its review, the nomination, two signatures, the effect, the assessment, what is
 owed back), its abort (the fallback and the restore), its miss (a munition that survives and an
-operator who un-spends it), a collect and a cover on the pinned snapshot, each audit log
-replayed with its anchors; and two runs of one seed the same but for the change feed's id.
+operator who un-spends it), a lost contact that blocks until its AIS claim is confirmed, a
+collect and a cover on the pinned snapshot, each audit log replayed with its anchors; and two
+runs of one seed the same record.
 """
 
 from __future__ import annotations
@@ -270,6 +271,9 @@ def test_the_scripted_agents_choices():
     assert sc.standing_on(noms, "T-0001")["id"] == 5
     assert sc.standing_on(noms[:1], "T-0001") is None
     assert sc.first_passing([{"uid": 2, "passed": False}, {"uid": 3, "passed": True}])["uid"] == 3
+    assert sc.failing_rules([{"uid": 3, "callsign": "BLADE 1", "checks": [
+        {"rule": "keep_out_tracks", "outcome": "fail"}, {"rule": "reach", "outcome": "pass"},
+        {"rule": "target_declared", "outcome": "unverified"}]}]) == {"BLADE 1": ["keep_out_tracks", "target_declared"]}
     now = 1_781_431_200_000
     opts = [{"norad_id": 1, "collect_time": "2026-06-14T10:05:00Z"}, {"norad_id": 2, "collect_time": "2026-06-14T11:00:00Z"}]
     assert sc.choose_option(opts, now, 600.0)["norad_id"] == 2
@@ -447,6 +451,73 @@ def test_a_miss_leaves_the_target_and_a_surviving_munition_is_unspent(binary: Pa
     assert unspent["operator"] == "op-2"
     assert first(evs, "platform.restore", uid=unspent["uid"])["confirmed"]
     assert ("unspend", "done") in [(d["kind"], d["result"]) for d in rec["review"]["decisions"]]
+    replays(tmp_path / "a")
+
+
+#: a trawler that goes dark near the holding area, and the same AIS seen again later: its track is
+#: dropped (a lost contact every engagement's keep-out counts) and the new one claims it
+LOST_TRAWLER = """
+
+[[contact]]
+id = "trawler-dark"
+name = "Trawler that goes dark east of the holding area (AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+motion = "station"
+at = [-122.4820, 37.8160]
+start_s = 0
+end_s = 5
+ais = { mmsi = "366999401", name = "F/V SEA WOLF", ship_type = "fishing" }
+
+[[contact]]
+id = "trawler-back"
+name = "The same trawler seen again (its AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+motion = "station"
+at = [-122.4815, 37.8162]
+start_s = 240
+ais = { mmsi = "366999401", name = "F/V SEA WOLF", ship_type = "fishing" }
+"""
+
+
+def test_a_lost_contact_blocks_until_its_ais_claim_is_confirmed(binary: Path, tmp_path: Path):
+    """Rules 16 headless: a trawler goes dark near the holding area; its track is dropped with its
+    AIS and every keep-out counts it, so no platform passes the form; the same AIS seen again
+    claims it, the reviewer (`accept-all`) confirms the claim through the review list's path,
+    and only then does the agent nominate; the chain runs on to the effect, and the log replays."""
+    from eval.headless.episode import Episode, Options
+    from eval.headless.situations import Calibration, from_situation
+
+    contacts = tmp_path / "contacts.toml"
+    contacts.write_text((REPO / "sim" / "scenarios" / "hostile-act-engagement.toml").read_text() + LOST_TRAWLER)
+    opts = Options(calibration=Calibration.load(), keep=tmp_path / "a",
+                   **{**ENGAGE, "review": {"preset": "accept-all"}})
+    with tempfile.TemporaryDirectory(prefix="engage-space-") as td:
+        rec = Episode(from_situation("hostile-act-engagement"), 1, Path(td), opts, contacts_path=contacts).run()
+    evs = events(rec)
+    dropped = first(evs, "track.dropped")
+    assert dropped["ais"]["mmsi"] == "366999401"
+    claimed = first(evs, "lost.claimed", track=dropped["track"])
+    back = first(evs, "track.reacquired", track=dropped["track"])
+    assert back["by"] == "op-auto" and back["by_track"] == claimed["by_track"]
+    assert ("ais_claim", "done") in [(d["kind"], d["result"]) for d in rec["review"]["decisions"]]
+    t0 = evs[0]["t"]  # the bridge's clock at the situation's zero, ms
+    confirmed_s = (first(evs, "ident.confirmed")["t"] - t0) / 1000.0
+    back_s = (back["t"] - t0) / 1000.0
+    # with the declaration confirmed and until the claim was, the lost contact blocked BLADE 1's
+    # keep-out, as the form's explanation names it
+    lost = f"lost_contact:{dropped['track']}"
+    blocked = [ln for ln in rec["agent_log"] if ln["kind"] == "engage.none_passes" and confirmed_s < ln["t"] < back_s]
+    assert blocked and all("keep_out_tracks" in ln["failing"]["BLADE 1"] and lost in ln["blocking"]["BLADE 1"]
+                           for ln in blocked), rec["agent_log"]
+    after = [ln for ln in rec["agent_log"] if ln["kind"] == "engage.none_passes" and ln["t"] > back_s]
+    assert all(lost not in ln["blocking"]["BLADE 1"] for ln in after), "retired once the claim was confirmed"
+    nominated = next(ln for ln in rec["agent_log"] if ln["kind"] == "engage.nominated")
+    assert nominated["t"] > back_s
+    first(evs, "engage.effect", intent=nominated["intent"])
     replays(tmp_path / "a")
 
 

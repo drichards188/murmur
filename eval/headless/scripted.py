@@ -14,7 +14,8 @@ start:
   it reads the nomination form's dry run (`get_nomination_options` for that track, at most once
   a second as the tool allows) and nominates the first armed platform that passes every check
   (`propose_intent` task engage), at most `max_nominations` times per track (a nomination that
-  expired, was voided or was declined may be made again).
+  expired, was voided or was declined may be made again). When none passes, the log names each
+  platform's failing checks and what blocks its keep-outs, as the form's explanation does.
 - **collect** (`collect = {...}`): at `at_s`, the imaging passes over the area
   (`get_satellite_passes`), then the ranked tasking options (`get_satellite_tasking_options`),
   and a collect proposed with the first option whose collect time is at least `min_lead_s`
@@ -106,6 +107,23 @@ def first_passing(options: list[dict[str, Any]]) -> dict[str, Any] | None:
     return next((o for o in options if o.get("passed")), None)
 
 
+def failing_rules(options: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """What keeps each platform of the dry run from passing: its checks that do not pass, by
+    rule (pure, for tests)."""
+    return {str(o.get("callsign") or o.get("uid")): sorted({str(c.get("rule")) for c in o.get("checks") or []
+                                                            if c.get("outcome") != "pass"})
+            for o in options}
+
+
+def keep_out_blockers(options: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """What blocks each platform's keep-outs, as the form's explanation names it
+    (`keep_outs.items` that block: `track:T-0003`, `lost_contact:T-0002`, `vehicle:2`)."""
+    return {str(o.get("callsign") or o.get("uid")): [f"{it.get('subject')}:{it.get('id')}"
+                                                     for it in (o.get("keep_outs") or {}).get("items") or []
+                                                     if it.get("blocks")]
+            for o in options}
+
+
 def choose_option(options: list[dict[str, Any]], now_ms: int, min_lead_s: float) -> dict[str, Any] | None:
     """The first ranked option whose collect time is at least `min_lead_s` after now (scenario
     milliseconds), as the answer ranks them (pure, for tests)."""
@@ -135,6 +153,7 @@ class ScriptedAgent:
         self.session = HeadlessSession(ep.sim, STORYLINE_AGENT, "0.1")
         self.lines: list[dict[str, Any]] = []
         self.nominations: dict[str, int] = {}  # track -> nominations made
+        self._turn = 0
         self.collect_done = plan.collect is None
         self.cover_done = plan.cover is None
         self.detail: dict[str, Any] = {"plan": plan.as_dict()}
@@ -180,12 +199,16 @@ class ScriptedAgent:
         if not hostile:
             return
         noms = self.call("get_nominations").get("nominations") or []
-        for track in hostile:
+        # one dry run a wake (the tool allows one a second), the tracks taken in turn
+        k = self._turn % len(hostile)
+        self._turn += 1
+        for track in hostile[k:] + hostile[:k]:
             there = standing_on(noms, track)
             if there is not None or self.nominations.get(track, 0) >= int(cfg["max_nominations"]):
                 continue
+            # the whole dry run (each platform's checks), so the log says what blocks
             args: dict[str, Any] = {"track_id": track, "effect_radius_m": float(cfg["effect_radius_m"]),
-                                    "window_s": int(cfg["window_s"]), "fallback": cfg["fallback"], "passed_only": True}
+                                    "window_s": int(cfg["window_s"]), "fallback": cfg["fallback"]}
             if cfg.get("uids"):
                 args["uids"] = [int(u) for u in cfg["uids"]]
             try:
@@ -196,9 +219,9 @@ class ScriptedAgent:
             opts = form.get("options") or []
             pick = first_passing(opts)
             if pick is None:
-                why = "; ".join(f"{o.get('callsign') or o.get('uid')}: does not pass" for o in opts) or "no armed platform"
-                self.write("engage.none_passes", track=track, options=len(opts), why=why[:300])
-                continue
+                self.write("engage.none_passes", track=track, options=len(opts), failing=failing_rules(opts),
+                           blocking=keep_out_blockers(opts))
+                return
             uid = int(pick["uid"])
             rationale = (f"{track} is declared hostile and no nomination on it stands; "
                          f"{pick.get('callsign') or uid} passes every nomination check now (the form's dry run): "

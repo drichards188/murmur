@@ -682,7 +682,8 @@ disarm, the battery and the refused arm are the stand-ins' own tests (`behavior/
 `test_engage_space.py` (section 16): the signers' and the reviewer's policies on a fake operator
 API, the scripted agent's choices, the pinned snapshot (its provenance, a changed file caught,
 the unpacked tree), and smoke episodes on the binary: the engagement chain end to end, an abort,
-a miss with a surviving munition un-spent, a collect, a cover, each log replayed with its
+a miss with a surviving munition un-spent, a lost contact blocking until its AIS claim is
+confirmed, a collect, a cover, each log replayed with its
 anchors, two of them run twice and compared whole, and an episode without the options having
 none of it.
 
@@ -1105,7 +1106,14 @@ the two-person rule among them, all zero; replay: every decision reproduced exac
 operator, fallback return), then `engage.preload` restore, confirmed. **Miss** (`p_hit` 0,
 `survives_miss`, the reviewer's `unspend`): the boat still seen 3.8 s after the effect,
 `engage.assessed` persists; BLADE 1 flew on, `op-2` un-spent it at 359 s (`platform.unspent`)
-and its own values went back at 360 s (`platform.restore`, confirmed).
+and its own values went back at 360 s (`platform.restore`, confirmed). **A lost contact and its
+AIS claim** (the test adds to the scenario a trawler with AIS that goes dark at 5 s near the
+holding area and the same AIS back at 240 s; the reviewer's `accept-all`): its track dropped at
+186 s with its AIS (`track.dropped`), and from the declaration's confirmation at 211 s the form
+named it blocking BLADE 1's keep-out (`lost_contact:T-0008`); the new track claimed it at 241 s
+(`lost.claimed`), `op-auto` confirmed the claim at 249 s (`track.reacquired`), the lost contact
+retired, and once the claimant's own young track settled the agent nominated at 286 s and the
+chain ran on to the effect.
 
 **Collect** (`harbor-watch` for 9,000 s, the snapshot; about 20 s): 15 imaging windows; three
 taskable options, all Capella SAR (03:00 local: no optical scene in the dark); the agent chose
@@ -1125,8 +1133,10 @@ engagement and the cover, each run twice on one seed, gave the same record twice
 - **The preload writes what was there** for BLADE 1 (its own lost-link values are the `return`
   preload), so the set and the restore exercise the path, not a change of values; an FPV with
   fallback `abort` (ArduCopter `FS_GCS_ENABLE` 7) would change them.
-- **No flag, lost contact or AIS claim** arises in `hostile-act-engagement`: the reviewer's work
-  on them is tested on a fake operator API, not in a smoke episode. Situations that raise them
+- **No review flag, and no lost contact to accept for a waiting nomination,** arises in a smoke
+  episode: the reviewer's work on them is tested on a fake operator API. (A lost contact blocks
+  the form, so an agent cannot nominate past it; only one dropped while a nomination waits
+  unsigned can be accepted for it, a timing the families must make.) Situations that raise them
   are the families' work (F15, F16).
 - **A silent platform still senses for a few seconds**: the bridge's sensing model keeps a
   vehicle's sensors on until its link goes stale (`tracks::observers`), so a munition that left
