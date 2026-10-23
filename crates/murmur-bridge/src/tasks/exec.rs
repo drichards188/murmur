@@ -907,14 +907,17 @@ impl Task<'_> {
                         self.set_mode(self.caps.arm).await?;
                         continue;
                     }
-                    // pre-arm checks can fail for a while after boot (EKF settling)
+                    // pre-arm checks can fail for a while after boot (EKF settling); for good,
+                    // the op fails with the autopilot's last word on it (a landed Puma: "Arm:
+                    // landed, no crew for a hand launch")
+                    let said = self.v().read(|s| s.last_statustext().map(str::to_string));
                     if Instant::now() > deadline {
-                        return fail(e);
+                        return fail(match said {
+                            Some(reason) => format!("{e} ({reason})"),
+                            None => e,
+                        });
                     }
-                    let reason = self
-                        .v()
-                        .read(|s| s.last_statustext().map(str::to_string))
-                        .unwrap_or(e);
+                    let reason = said.unwrap_or(e);
                     self.op().narrate(format!("arming: {reason}"));
                     sleep(RETRY_PAUSE).await;
                 }

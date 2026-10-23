@@ -103,6 +103,8 @@ pub(crate) struct Quirks {
     pub cut_after_arm: bool,
     /// its clock runs at this rate of ours (0: 1.0): a simulator slower than the wall
     pub boot_rate: f64,
+    /// refuse every arm, saying this first (a landed hand-launched Puma's stand-in)
+    pub refuse_arm: Option<&'static str>,
 }
 
 impl Quirks {
@@ -284,6 +286,16 @@ impl Fake {
                             && (self.mode == self.fw.mode("BRAKE")
                                 || self.mode == self.fw.mode("LAND")));
                     if c.param1 > 0.5 && refuses {
+                        return self.ack(c.command, apm::MavResult::MAV_RESULT_FAILED);
+                    }
+                    if c.param1 > 0.5
+                        && let Some(why) = self.q.refuse_arm
+                    {
+                        self.emit(MavMessage::STATUSTEXT(apm::STATUSTEXT_DATA {
+                            severity: apm::MavSeverity::MAV_SEVERITY_CRITICAL,
+                            text: mav::char_array(why),
+                            ..Default::default()
+                        }));
                         return self.ack(c.command, apm::MavResult::MAV_RESULT_FAILED);
                     }
                     self.armed = c.param1 > 0.5;
@@ -1768,6 +1780,45 @@ async fn a_vehicle_its_failsafe_sent_home_is_held_then_armed() {
     assert_eq!(s.state, Done, "{s:?}");
     assert_eq!(w.count("MAV_CMD_COMPONENT_ARM_DISARM"), 2, "refused in RTL, then armed");
     assert_eq!(w.count("MISSION_COUNT"), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_arm_refused_for_good_fails_the_op_saying_why() {
+    // a landed Puma, hand-launched, refuses every arm (its stand-in's words): the order tries
+    // for its patience, then fails with them, and the inbox's alert carries them
+    let why = "Arm: landed, no crew for a hand launch";
+    let (boat, w) = watched(
+        39,
+        Firmware::Rover,
+        Quirks {
+            refuse_arm: Some(why),
+            ..quick()
+        },
+    );
+    sleep(Duration::from_millis(500)).await;
+    let tm = TaskManager::default();
+    let t = tm.dispatch_unchecked(patrol(39, &boat, short_patrol()));
+    let s = settle(&t.ops[0], 120).await;
+    assert_eq!(s.state, Failed, "{s:?}");
+    assert_eq!(
+        s.detail,
+        format!("MAV_CMD_COMPONENT_ARM_DISARM rejected: MAV_RESULT_FAILED ({why})")
+    );
+    let tries = w.count("MAV_CMD_COMPONENT_ARM_DISARM");
+    assert!(
+        (10..=20).contains(&tries),
+        "retried for its patience: {tries}"
+    );
+    let a = crate::decision::alerts::alerts(
+        std::slice::from_ref(&boat),
+        std::slice::from_ref(&s),
+        clock::wall(),
+    );
+    assert_eq!(a.len(), 1, "{a:?}");
+    assert_eq!(
+        (a[0].kind, a[0].detail.as_str()),
+        ("task_failed", s.detail.as_str())
+    );
 }
 
 #[tokio::test(start_paused = true)]
