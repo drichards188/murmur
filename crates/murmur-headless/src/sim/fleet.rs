@@ -5,6 +5,7 @@
 //! wall clock. No tidewater conditions (no current) and open sky (no GNSS geometry thread):
 //! docs/HEADLESS.md, "What the simulator leaves out".
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -17,6 +18,9 @@ use super::emulator::Emulator;
 
 pub struct Fleet {
     vehicles: Vec<Mutex<Vehicle>>,
+    /// Gone from the world (an engagement's platform spent by its own effect, `Spec::effects`):
+    /// it neither steps nor sends, and answers nothing.
+    gone: Vec<AtomicBool>,
 }
 
 fn lock(m: &Mutex<Vehicle>) -> MutexGuard<'_, Vehicle> {
@@ -51,7 +55,19 @@ impl Fleet {
             }
             vehicles.push(Mutex::new(v));
         }
-        Ok(Fleet { vehicles })
+        let gone = vehicles.iter().map(|_| AtomicBool::new(false)).collect();
+        Ok(Fleet { vehicles, gone })
+    }
+
+    /// Vehicle `i` leaves the world: from now on it neither steps nor sends nor answers (a
+    /// loitering munition spent by its own effect). Its last state stays readable for truth.
+    pub fn remove(&self, i: usize) {
+        self.gone[i].store(true, Ordering::Relaxed);
+    }
+
+    /// Whether vehicle `i` has left the world ([`Self::remove`]).
+    pub fn is_gone(&self, i: usize) -> bool {
+        self.gone[i].load(Ordering::Relaxed)
     }
 
     pub fn len(&self) -> usize {
@@ -64,6 +80,9 @@ impl Fleet {
 
     /// One 10 Hz step of vehicle `i` and the frames it sent.
     pub fn step(&self, i: usize) -> Vec<Vec<u8>> {
+        if self.is_gone(i) {
+            return Vec::new();
+        }
         let mut v = lock(&self.vehicles[i]);
         v.step();
         v.link.take_captured()
@@ -71,6 +90,9 @@ impl Fleet {
 
     /// A datagram from the bridge for vehicle `i`, and the frames it answered with.
     pub fn deliver(&self, i: usize, data: &[u8]) -> Vec<Vec<u8>> {
+        if self.is_gone(i) {
+            return Vec::new();
+        }
         let mut v = lock(&self.vehicles[i]);
         v.on_datagram(data);
         v.link.take_captured()
