@@ -13,6 +13,10 @@ Per episode (`episode_metrics`), as 3.1 to 3.9 define them:
   and the fault metric `fault_actions` (labels v2: every action on a vehicle with an open fault,
   `also_fault`, whatever outcome label it got, refused and harmful ones apart; `fault_response`
   stays the label alone, a hold or rtl that earned no label of effect);
+- 3.3 `useless_share` (SCORING-V2.md 0.5): useless actions over the actions that got an outcome
+  label (every label but refused: useful, follow-up, duplicate, fault response, redundant,
+  useless, harmful; a refused proposal never ran, so it has no outcome); none when there is no
+  such action;
 - 3.4 agent `cards`, `cards_per_10min` (over the watch: from the agent's start to the end),
   `flood_share` (trailing 10-min windows every 10 s; a flood starts above 10 new cards in a
   window and ends at the first window under 5; the share of windows in flood), `bad_card_share`
@@ -162,6 +166,7 @@ def episode_metrics(rec: dict[str, Any], labels: dict[str, Any]) -> dict[str, An
         "per_hour": per_hour,
         "harmful_kinds": dict(sorted(harm_kinds.items())),
         "actions": len(acts),
+        "useless_share": round(counts.get("useless", 0) / len(acted), 6) if acted else None,
         # 3.4
         "cards": len(cards), "cards_per_10min": round(len(cards) / (watch / 600.0), 6),
         "flood": flood, "flood_share": flood["share"],
@@ -203,7 +208,8 @@ def episode_metrics(rec: dict[str, Any], labels: dict[str, Any]) -> dict[str, An
 #: the scalar metrics averaged over a situation's replicates (8.1)
 SCALARS = ("served_share", "served_late_share", "rmst", "cards_per_10min", "flood_share", "bad_card_share",
            "repeats", "fault_met_share", "sensing_error_share", "justified_useless_share", "pre_served_share",
-           "harmful_dispatched", "useless_dispatched", "voids", "scripted_cards_per_10min", "time_margin_median")
+           "harmful_dispatched", "useless_dispatched", "voids", "scripted_cards_per_10min", "time_margin_median",
+           "useless_share")
 
 
 def situation_metrics(episodes: list[dict[str, Any]]) -> dict[str, Any]:
@@ -257,6 +263,7 @@ INTERVALS = {
     "served_share": "bootstrap", "served_late_share": "bootstrap", "pre_served_share": "bootstrap",
     "fault_met_share": "bootstrap", "bad_card_share": "bootstrap", "sensing_error_share": "bootstrap",
     "justified_useless_share": "bootstrap", "flood_share": "bootstrap", "served_after_stop": "bootstrap",
+    "useless_share": "bootstrap",
     "rmst": "bootstrap",
 }
 

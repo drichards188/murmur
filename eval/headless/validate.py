@@ -19,7 +19,9 @@ after labels v2 on seeds 2000-2099. Per condition and family:
   reversed but the ends' interval contains zero, `fails` on a reversal, and is `not testable` where
   the metric has no value for an agent in it (no eligible need, no fault need). Judged in the
   admissible families (3.1's rule on this batch's none and oracle, `admissibility`), reported in
-  every family. 0.5 judges every order of 0.4 but cards and harm, which it reports (`REPORTED`).
+  every family. 0.5 judges every order of 0.4 but cards and harm, which it reports (`REPORTED`),
+  and judges useless as a share of the actions with an outcome label (`useless_share`), per hour
+  reported (`ANCHOR_ORDERS_05`).
 - **The perturbations**: each against its base (0.4: the plain playbook; 0.5: `oracle-honest`, the
   playbook's perturbations reported beside, not judged) on its metrics (`MOVES`): `up` or `down` is
   `moved` when the paired interval lies wholly in that direction, `moved the wrong way` when wholly
@@ -29,17 +31,21 @@ after labels v2 on seeds 2000-2099. Per condition and family:
   that metric (the base minus none interval not wholly above zero): there is nothing the
   perturbation is known to take away; a fall shown there is still reported as `moved`. A metric with
   no value in a family is `not testable` there. 0.4 sets the conflict family aside from need served.
+  0.5 (re-specified) judges each move once, pooled over the families with eligible needs
+  (`pooled_move`: paired by situation, the cluster bootstrap over situations stratified by family,
+  stats.py `stratified_bca`), the room rule on the pooled base minus none; per family the moves are
+  reported. Spam's need served is non-inferiority there (`not worse`: the interval's lower bound
+  above minus 5 points), not two-sided equivalence.
 - **The ladder** (0.5): 0.3's predicted order of the rungs, re-checked by 0.3's rule (ladder.py).
 - **Null fidelity** (4.5): `null` against its `none` replicate (aggregate.py `null_fidelity`).
 - **The world's conditions** (0.5, 10.1 as 0.4 left it): in each family with eligible needs, `none`
   serves at most 50 % and the oracle at least 80 % (pooled shares).
 
 **What blocks the freeze** (0.5, `blocks`): an anchor order that fails or is not shown in an
-admissible family; a judged move that did not move, moved the wrong way, changed, or was
-inconclusive, in any family with eligible needs (0.5 judges moves there and reports them in quiet
-and conflict, as 0.4's report read them); a judged prediction not testable in every family (an untested check is
-not a pass); a ladder reversal; a null fidelity difference; a family with eligible needs where none
-serves over 50 % or the oracle under 80 %.
+admissible family; a pooled move that did not move, moved the wrong way, or (spam's need served)
+is not shown not worse; a pooled move not testable (an untested check is not a pass); a ladder
+reversal; a null fidelity difference; a family with eligible needs where none serves over 50 % or
+the oracle under 80 %.
 
 Writes `validate.json` and `validate.md` beside the batch's records.
 """
@@ -53,8 +59,9 @@ from typing import Any
 
 from . import ladder as LD
 from .ladder import families_with_needs
+from .v2 import stats as S
 from .v2.aggregate import (ALONE, NONE_MAX, ORACLE_MIN, admissibility, base_name, comparison, cond_key,
-                           null_fidelity, pooled_share, score, situations, values)
+                           excluded_situations, null_fidelity, pooled_share, score, situations, values)
 from .v2.labels import Params
 
 #: section 5's expected order on the anchors, the playbook taken out (0.4): per metric, the chain
@@ -69,9 +76,23 @@ ANCHOR_ORDERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("rmst", ("oracle", "<", "random-valid", "<=", "none")),
     ("fault_met_share", ("none", "<", "oracle")),
 )
+#: 0.5's anchor orders: 0.4's, with useless judged as a share of the actions with an outcome label
+#: (`useless_share`, metrics.py) and reported per hour (0.5 item 5, re-specified as the cards
+#: order was: a rate per hour mostly measures how much an agent acts)
+ANCHOR_ORDERS_05: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("served_share", ("none", "<=", "random-valid", "<", "oracle")),
+    ("per_hour.useful", ("none", "<=", "random-valid", "<", "oracle")),
+    ("useless_share", ("oracle", "<", "random-valid")),
+    ("per_hour.useless", ("oracle", "<", "random-valid")),
+    ("per_hour.harmful", ("oracle", "<", "random-valid")),
+    ("cards_per_10min", ("none", "<", "oracle", "<", "random-valid")),
+    ("rmst", ("oracle", "<", "random-valid", "<=", "none")),
+    ("fault_met_share", ("none", "<", "oracle")),
+)
 #: 0.5: orders reported, never judged: cards (mis-specified in 0.4: the oracle acts more, and cards
-#: are a cost, not a quality ranking) and harm (no anchor harms; harm is judged on the perturbations)
-REPORTED = ("per_hour.harmful", "cards_per_10min")
+#: are a cost, not a quality ranking), harm (no anchor harms; harm is judged on the perturbations)
+#: and useless per hour (judged as a share instead)
+REPORTED = ("per_hour.harmful", "cards_per_10min", "per_hour.useless")
 #: section 5's perturbations: what each must move against the plain playbook. `unchanged` on need
 #: served stands for "useful unchanged" (0.4: section 5 gives no margin for a rate per hour; useful
 #: per hour is reported beside it)
@@ -88,7 +109,7 @@ MOVES: dict[str, tuple[tuple[str, str], ...]] = {
 #: reserves check refuses any order that would leave a Puma under 20 % after 900 s on task, so no
 #: harmful (a) order can be dispatched through the C2 (agents_v2.py)
 HONEST_MOVES: dict[str, tuple[tuple[str, str], ...]] = {
-    "oracle-honest+spam": (("served_share", "unchanged"), ("per_hour.follow_up", "up"), ("repeats", "up"),
+    "oracle-honest+spam": (("served_share", "not worse"), ("per_hour.follow_up", "up"), ("repeats", "up"),
                            ("cards_per_10min", "up")),
     "oracle-honest+behind": (("served_share", "down"), ("per_hour.useless", "up")),
     "oracle-honest+skip-first": (("served_share", "down"),),
@@ -119,13 +140,13 @@ SET_ASIDE = {"conflict": ("served_share", "rmst", "per_hour.useful")}
 #: part of it
 SECTIONS: dict[str, dict[str, Any]] = {
     "0.4": {"orders": ANCHOR_ORDERS, "reported": (), "judged": ("playbook", MOVES), "reported_moves": None,
-            "ladder": False, "world": False},
-    "0.5": {"orders": ANCHOR_ORDERS, "reported": REPORTED, "judged": ("oracle-honest", HONEST_MOVES),
-            "reported_moves": ("playbook", MOVES), "ladder": True, "world": True},
+            "ladder": False, "world": False, "pooled": False},
+    "0.5": {"orders": ANCHOR_ORDERS_05, "reported": REPORTED, "judged": ("oracle-honest", HONEST_MOVES),
+            "reported_moves": ("playbook", MOVES), "ladder": True, "world": True, "pooled": True},
 }
 DEFAULT_SECTION = "0.5"
 #: a judged move's verdicts that are failures
-MOVE_FAILS = ("did not move", "moved the wrong way", "changed", "inconclusive")
+MOVE_FAILS = ("did not move", "moved the wrong way", "changed", "inconclusive", "not shown not worse", "worse")
 
 
 def link_verdict(c: dict[str, Any]) -> str:
@@ -178,6 +199,66 @@ def anchor_order(scored: list[dict[str, Any]], cond: str, fam: str, metric: str,
     return out
 
 
+def _equivalence(want: str, metric: str, lo: float, hi: float) -> dict[str, Any]:
+    """`unchanged` (0.4: two-sided, the interval inside the margin) or `not worse` (0.5,
+    non-inferiority: the interval's lower bound above minus the margin)."""
+    m = MARGINS[metric]
+    if want == "unchanged":
+        return {"margin": m, "verdict": "unchanged" if -m <= lo and hi <= m else
+                ("changed" if lo > 0 or hi < 0 else "inconclusive")}
+    return {"margin": m, "verdict": "not worse" if lo > -m else ("worse" if hi < -m else "not shown not worse")}
+
+
+def _diffs(scored: list[dict[str, Any]], a: str, b: str, cond: str, metric: str, fam: str) -> list[float]:
+    """a minus b on one metric per situation of a family, paired, the situations section 7 leaves
+    out (an episode of either not scored) left out."""
+    va = values(situations(scored, a, cond, [fam]), metric)
+    vb = values(situations(scored, b, cond, [fam]), metric)
+    out_s = excluded_situations(scored, (a, b), cond, [fam])
+    return [va[s] - vb[s] for s in sorted(set(va) & set(vb), key=str)
+            if va[s] is not None and vb[s] is not None and s not in out_s]
+
+
+def _pooled(scored: list[dict[str, Any]], a: str, b: str, cond: str, metric: str, fams: list[str],
+            seed: int) -> dict[str, Any]:
+    """a minus b pooled over families: the mean over every paired situation, its interval the
+    cluster bootstrap over situations stratified by family (stats.py `stratified_bca`)."""
+    strata = {f: _diffs(scored, a, b, cond, metric, f) for f in fams}
+    c = S.stratified_bca({f: d for f, d in strata.items() if d}, seed=seed)
+    return {"mean_difference": c.get("estimate"), "lo": c.get("lo"), "hi": c.get("hi"), "n_situations": c.get("n"),
+            "method": "paired cluster bootstrap stratified by family (BCa)", "families": c.get("strata")}
+
+
+def pooled_move(scored: list[dict[str, Any]], cond: str, fams: list[str], agent: str, metric: str, want: str,
+                agents: set[str], seed: int = 0, base: str = "oracle-honest") -> dict[str, Any]:
+    """0.5: a move judged pooled over the families with eligible needs, by `move`'s verdicts; a
+    predicted fall is not testable where the base is not shown above none on the pooled interval
+    (unless it shows anyway)."""
+    fams = [f for f in fams if not (f in SET_ASIDE and metric in SET_ASIDE[f])]
+    out: dict[str, Any] = {"metric": metric, "predicted": want, "base": base, "families": fams}
+    c = _pooled(scored, agent, base, cond, metric, fams, seed)
+    out["difference"] = c
+    lo, hi = c.get("lo"), c.get("hi")
+    if lo is None or hi is None:
+        return {**out, "verdict": "not testable", "why": "no paired situations with a value"}
+    if want in ("unchanged", "not worse"):
+        return {**out, **_equivalence(want, metric, lo, hi)}
+    up = want == "up"
+    if (lo > 0) if up else (hi < 0):
+        out["verdict"] = "moved"
+    elif (hi < 0) if up else (lo > 0):
+        out["verdict"] = "moved the wrong way"
+    else:
+        out["verdict"] = "did not move"
+    if not up and "none" in agents:
+        room = _pooled(scored, base, "none", cond, metric, fams, seed)
+        out[f"{base}_minus_none"] = room
+        if out["verdict"] == "did not move" and not (room.get("lo") is not None and room["lo"] > 0):
+            out["verdict"] = "not testable"
+            out["why"] = f"{base} is not shown above none: nothing known for it to take away"
+    return out
+
+
 def move(scored: list[dict[str, Any]], cond: str, fam: str, agent: str, metric: str, want: str,
          agents: set[str], seed: int = 0, base: str = "playbook") -> dict[str, Any]:
     out: dict[str, Any] = {"metric": metric, "predicted": want, "base": base,
@@ -192,11 +273,8 @@ def move(scored: list[dict[str, Any]], cond: str, fam: str, agent: str, metric: 
     lo, hi = c.get("lo"), c.get("hi")
     if lo is None or hi is None:
         return {**out, "verdict": "not testable", "why": "no paired situations"}
-    if want == "unchanged":
-        m = MARGINS[metric]
-        out["margin"] = m
-        out["verdict"] = "unchanged" if -m <= lo and hi <= m else ("changed" if lo > 0 or hi < 0 else "inconclusive")
-        return out
+    if want in ("unchanged", "not worse"):
+        return {**out, **_equivalence(want, metric, lo, hi)}
     up = want == "up"
     if (lo > 0) if up else (hi < 0):
         out["verdict"] = "moved"
@@ -265,27 +343,42 @@ def check(scored: list[dict[str, Any]], seed: int = 0, section: str = DEFAULT_SE
         judged_orders = [(f, a) for f in block["admissible"] for a in block["families"][f]["anchors"] if a["judged"]]
         block["anchor_failures"] = [{"family": f, "metric": a["metric"], "verdict": a["verdict"]} for f, a in judged_orders
                                     if a["verdict"] in ("fails", "not shown")]
-        # 0.5: moves are judged in the families with eligible needs, reported in the others (as
-        # 0.4's report read quiet and conflict); 0.4 as it ran judged every family
-        judged_fams = set(fams) if section == "0.4" else set(block["families_with_needs"])
-        for f, r in block["families"].items():
-            for x in r["perturbations"].values():
-                for m in x["moves"]:
-                    m["judged"] = f in judged_fams
-        block["perturbation_failures"] = [
-            {"family": f, "perturbation": p, "metric": m["metric"], "verdict": m["verdict"]}
-            for f, r in block["families"].items() for p, x in r["perturbations"].items() for m in x["moves"]
-            if m["judged"] and m["verdict"] in MOVE_FAILS]
-        # a judged prediction never testable in any family is untested, not passed
-        tested: dict[tuple[str, str], bool] = {}
-        for f, r in block["families"].items():
-            if f not in judged_fams:
-                continue
-            for p, x in r["perturbations"].items():
-                for m in x["moves"]:
-                    k = (p, m["metric"])
-                    tested[k] = tested.get(k, False) or m["verdict"] not in ("not testable", "set aside (0.4)")
-        block["untested"] = [{"perturbation": p, "metric": mn} for (p, mn), t in sorted(tested.items()) if not t]
+        if sec["pooled"]:
+            # 0.5 (re-specified): each move judged once, pooled over the families with eligible
+            # needs (paired by situation, the bootstrap stratified by family); per family reported
+            needy = block["families_with_needs"]
+            for r in block["families"].values():
+                for x in r["perturbations"].values():
+                    for m in x["moves"]:
+                        m["judged"] = False
+            block["pooled_moves"] = {p: [pooled_move(scored, cond, needy, p, mn, want, agents, seed, base) for mn, want in ms]
+                                     for p, ms in judged.items() if p in agents and base in agents}
+            rb, rm = sec["reported_moves"]
+            block["pooled_reported_moves"] = {p: [pooled_move(scored, cond, needy, p, mn, want, agents, seed, rb)
+                                                  for mn, want in ms]
+                                              for p, ms in rm.items() if p in agents and rb in agents}
+            block["perturbation_failures"] = [
+                {"family": "pooled", "perturbation": p, "metric": m["metric"], "verdict": m["verdict"]}
+                for p, ms in block["pooled_moves"].items() for m in ms if m["verdict"] in MOVE_FAILS]
+            block["untested"] = [{"perturbation": p, "metric": m["metric"]} for p, ms in block["pooled_moves"].items()
+                                 for m in ms if m["verdict"] in ("not testable", "set aside (0.4)")]
+        else:
+            # 0.4 as it ran: every family judged
+            for r in block["families"].values():
+                for x in r["perturbations"].values():
+                    for m in x["moves"]:
+                        m["judged"] = True
+            block["perturbation_failures"] = [
+                {"family": f, "perturbation": p, "metric": m["metric"], "verdict": m["verdict"]}
+                for f, r in block["families"].items() for p, x in r["perturbations"].items() for m in x["moves"]
+                if m["verdict"] in MOVE_FAILS]
+            tested: dict[tuple[str, str], bool] = {}
+            for r in block["families"].values():
+                for p, x in r["perturbations"].items():
+                    for m in x["moves"]:
+                        k = (p, m["metric"])
+                        tested[k] = tested.get(k, False) or m["verdict"] not in ("not testable", "set aside (0.4)")
+            block["untested"] = [{"perturbation": p, "metric": mn} for (p, mn), t in sorted(tested.items()) if not t]
         if sec["ladder"]:
             lad = LD.check([e for e in scored if cond_key(e) == cond]).get(cond) or {}
             block["ladder"] = {"failures": lad.get("failures") or [], "passed": lad.get("passed"),
@@ -303,8 +396,8 @@ def blocks(block: dict[str, Any], section: str) -> list[str]:
     if section == "0.4":
         return []
     out = [f"anchor order {x['metric']} {x['verdict']} in {x['family']}" for x in block["anchor_failures"]]
-    out += [f"{x['perturbation']} {x['metric']} {x['verdict']} in {x['family']}" for x in block["perturbation_failures"]]
-    out += [f"{x['perturbation']} {x['metric']} not testable in any family" for x in block["untested"]]
+    out += [f"{x['perturbation']} {x['metric']} {x['verdict']} ({x['family']})" for x in block["perturbation_failures"]]
+    out += [f"{x['perturbation']} {x['metric']} not testable" for x in block["untested"]]
     out += [f"ladder: {x['a']} below {x['b']} in {x['family']}" for x in (block.get("ladder") or {}).get("failures") or []]
     nf = block.get("null_fidelity")
     if nf is not None and not nf["pass"]:
@@ -379,6 +472,18 @@ def markdown(res: dict[str, Any]) -> str:
         if block.get("world"):
             lines += ["World (10.1): " + "; ".join(f"{f} none {_num(w['none'], 100, 1)} %, oracle {_num(w['oracle'], 100, 1)} %"
                                                    for f, w in block["world"].items()), ""]
+        for key, title in (("pooled_moves", "The moves, judged pooled over the families with eligible needs"),
+                           ("pooled_reported_moves", "The playbook's moves, pooled (reported, not judged)")):
+            if not block.get(key):
+                continue
+            lines += [f"### {title}", "", "| perturbation | metric | predicted | base | perturbed minus base [95 % CI] | "
+                      "situations | verdict |", "|---|---|---|---|---|---|---|"]
+            for p, ms in block[key].items():
+                for m in ms:
+                    v = m["verdict"] if key == "pooled_moves" else f"{m['verdict']} (reported)"
+                    lines.append(f"| {p} | {m['metric']} | {m['predicted']} | {m['base']} | "
+                                 f"{_diff(m.get('difference'), m['metric'])} | {(m.get('difference') or {}).get('n_situations')} | {v} |")
+            lines.append("")
         for fam, row in block["families"].items():
             lines += [f"### {fam}{'' if fam in block['admissible'] else ' (not admissible: reported, not judged)'}", "",
                       "| metric | order | means | ends: higher minus lower [95 % CI] | links | verdict |",

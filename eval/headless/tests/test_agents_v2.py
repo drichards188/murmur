@@ -599,6 +599,27 @@ def test_the_validation_judges_anchor_orders_and_perturbation_moves():
     assert "playbook+skip-first" in V.markdown({COND: res})
 
 
+def test_the_stratified_bootstrap_and_the_non_inferiority_verdict():
+    """0.5's pooled moves: the mean over every situation, resampled within each family; spam's
+    need served is `not worse` when the lower bound is above minus the margin."""
+    from eval.headless import validate as V
+    from eval.headless.v2 import stats as S
+
+    rng = np.random.default_rng(3)
+    strata = {"a": list(rng.normal(-0.2, 0.1, 40)), "b": list(rng.normal(0.0, 0.1, 60))}
+    c = S.stratified_bca(strata, seed=0)
+    x = np.array(strata["a"] + strata["b"])
+    assert c["estimate"] == pytest.approx(x.mean(), abs=1e-6) and c["lo"] < c["estimate"] < c["hi"]
+    assert c["strata"] == {"a": 40, "b": 60} and c["n"] == 100
+    plain = S.bca(list(x), seed=0)
+    assert (c["hi"] - c["lo"]) < (plain["hi"] - plain["lo"]), "stratifying removes the between-family spread"
+    assert S.stratified_bca({"a": [0.1, 0.1]})["degenerate"]
+    assert V._equivalence("not worse", "served_share", -0.04, 0.10)["verdict"] == "not worse"
+    assert V._equivalence("not worse", "served_share", -0.06, 0.10)["verdict"] == "not shown not worse"
+    assert V._equivalence("not worse", "served_share", -0.20, -0.06)["verdict"] == "worse"
+    assert V._equivalence("unchanged", "served_share", -0.04, 0.06)["verdict"] == "inconclusive"
+
+
 def test_the_revalidation_judges_the_honest_base_and_reports_cards_and_harm():
     """0.5 (validate.py's default section): the cards and harm orders reported, never judged; the
     moves judged on the honest oracle, the playbook's beside them reported; a judged prediction
@@ -627,13 +648,21 @@ def test_the_revalidation_judges_the_honest_base_and_reports_cards_and_harm():
     assert a["cards_per_10min"]["verdict"] == "fails" and not a["cards_per_10min"]["judged"]
     assert not a["per_hour.harmful"]["judged"] and a["served_share"]["judged"]
     assert not any(x["metric"] == "cards_per_10min" for x in res["anchor_failures"])
-    mv = {(p, m["metric"]): m["verdict"] for p, x in fam["perturbations"].items() for m in x["moves"]}
-    assert mv[("oracle-honest+skip-first", "served_share")] == "moved"
-    assert fam["perturbations"]["oracle-honest+skip-first"]["base"] == "oracle-honest"
-    assert "playbook+skip-first" in fam["reported_perturbations"] and "playbook+skip-first" not in fam["perturbations"]
+    # per family the moves are reported; each is judged once, pooled over the families with needs
+    mv = {(p, m["metric"]): m for p, x in fam["perturbations"].items() for m in x["moves"]}
+    assert mv[("oracle-honest+skip-first", "served_share")]["verdict"] == "moved"
+    assert not mv[("oracle-honest+skip-first", "served_share")]["judged"]
+    pooled = {(p, m["metric"]): m for p, ms in res["pooled_moves"].items() for m in ms}
+    skip = pooled[("oracle-honest+skip-first", "served_share")]
+    assert skip["verdict"] == "moved" and skip["base"] == "oracle-honest" and skip["difference"]["n_situations"] == 50
+    assert skip["difference"]["families"] == {"decoy": 25, "fast-unknown": 25}
+    assert skip["difference"]["mean_difference"] == -1.0 and skip["difference"]["method"].startswith("paired cluster")
+    assert "playbook+skip-first" in res["pooled_reported_moves"] and "playbook+skip-first" not in res["pooled_moves"]
     # reserve-blind's fault met: no fault need in these situations, so untested: that blocks
     assert {"perturbation": "oracle-honest+reserve-blind", "metric": "fault_met_share"} in res["untested"]
-    assert "oracle-honest+reserve-blind fault_met_share not testable in any family" in res["blocks"]
+    assert "oracle-honest+reserve-blind fault_met_share not testable" in res["blocks"]
+    # useless judged as a share, per hour reported
+    assert a["useless_share"]["judged"] and not a["per_hour.useless"]["judged"]
     assert res["ladder"]["passed"] and res["world"]["fast-unknown"] == {
         "none": 0.0, "oracle": 1.0, "none_at_most_50": True, "oracle_at_least_80": True}
     md = V.markdown({COND: res})

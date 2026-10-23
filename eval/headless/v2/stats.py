@@ -5,6 +5,7 @@ interval resamples or tests situations, never episodes or needs as if independen
 
 - `bca` / `paired_cluster_bootstrap`: the bias-corrected and accelerated bootstrap (Efron 1987;
   10,000 resamples) of the mean over situations; paired: of the per-situation differences.
+  `stratified_bca`: the same of a mean pooled over strata (families), resampling within each.
 - `sign_test`: the exact two-sided sign test (ties dropped) with the distribution-free interval
   for the median difference (order statistics).
 - `t_interval`: Student t over situations (rates and burden per hour), with `bca` beside it as
@@ -76,6 +77,47 @@ def bca(values: Sequence[float], n_boot: int = N_BOOT, seed: int = 0, alpha: flo
     prop = min(max(prop, 1.0 / (2 * n_boot)), 1.0 - 1.0 / (2 * n_boot))
     z0 = st.norm.ppf(prop)
     jack = np.array([f(np.delete(x, i)) for i in range(n)])
+    d = jack.mean() - jack
+    den = 6.0 * (np.sum(d ** 2) ** 1.5)
+    a = float(np.sum(d ** 3) / den) if den > 0 else 0.0
+    zs = st.norm.ppf([alpha / 2.0, 1.0 - alpha / 2.0])
+    adj = st.norm.cdf(z0 + (z0 + zs) / (1.0 - a * (z0 + zs)))
+    lo, hi = np.quantile(boot, adj, method="linear")
+    out.update(lo=_r(lo), hi=_r(hi), z0=_r(z0), acceleration=_r(a))
+    return out
+
+
+def stratified_bca(strata: dict[Any, Sequence[float]], n_boot: int = N_BOOT, seed: int = 0,
+                   alpha: float = ALPHA) -> dict[str, Any]:
+    """The BCa bootstrap of the mean over every value pooled (one per situation, each weighted
+    alike), resampling within each stratum with its size kept (a family's situations stay that
+    family's): the bias correction from the stratified resamples, the acceleration from the
+    jackknife leaving one situation out. Degenerate data give the point as its interval."""
+    xs = {k: _arr(v) for k, v in strata.items()}
+    xs = {k: v for k, v in xs.items() if len(v)}
+    out: dict[str, Any] = {"method": "stratified bca", "n": int(sum(len(v) for v in xs.values())), "n_boot": n_boot,
+                           "strata": {str(k): len(v) for k, v in sorted(xs.items(), key=lambda kv: str(kv[0]))},
+                           "estimate": None, "lo": None, "hi": None}
+    if not xs:
+        return out
+    x = np.concatenate([xs[k] for k in sorted(xs, key=str)])
+    n = len(x)
+    theta = float(x.mean())
+    out["estimate"] = _r(theta)
+    if n < 2 or np.allclose(x, x[0]):
+        out["lo"] = out["hi"] = _r(theta)
+        out["degenerate"] = True
+        return out
+    rng = np.random.default_rng(seed)
+    sums = np.zeros(n_boot)
+    for k in sorted(xs, key=str):
+        v = xs[k]
+        sums += v[rng.integers(0, len(v), size=(n_boot, len(v)))].sum(axis=1)
+    boot = sums / n
+    prop = (np.sum(boot < theta) + 0.5 * np.sum(boot == theta)) / n_boot
+    prop = min(max(prop, 1.0 / (2 * n_boot)), 1.0 - 1.0 / (2 * n_boot))
+    z0 = st.norm.ppf(prop)
+    jack = (x.sum() - x) / (n - 1)
     d = jack.mean() - jack
     den = 6.0 * (np.sum(d ** 2) ** 1.5)
     a = float(np.sum(d ** 3) / den) if den > 0 else 0.0
