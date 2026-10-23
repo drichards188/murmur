@@ -276,12 +276,26 @@ check of the new code ran on dev seeds 1000-1499.
 
 3. **The world change.**
 
-   > **[PLACEHOLDER: the world change (murmur-a5v). The world agent's paragraph goes here: a Puma's
-   > RTL, an rtl order or its own lost-link or battery failsafe, ends in a landing at home (AUTOLAND,
-   > disarmed, not launched again); what changed and where, the world's new hash, and its own checks
-   > on dev seeds. To be placed by the owner before the revalidation runs. Item 2a's reserve rule
-   > needs it: on the world before it, a Puma's rtl loiters over home and never lands, so every low
-   > reserve on dev seeds 1200-1249 is unmet, for every agent.]**
+   World change, 2026-10-22 (murmur-a5v): a Puma sent home now lands. Its stand-in carries
+   ArduPlane's RTL_AUTOLAND 1 and a hand launch (TKOFF_THR_MINACC 15; `standin_params` in
+   sim/platforms.toml), so any RTL of a Puma (an agent's rtl or its own lost-link or battery
+   failsafe) ends, once on its RTL circle, in a landing at home in AUTOLAND, disarmed and drawing
+   only its avionics load, and the Puma then refuses to arm, so a later order for it fails saying
+   why; the hand-over from RTL to AUTOLAND is the stand-in's, since ArduPlane would need a
+   DO_LAND_START sequence the bridge's missions never carry. From home the landing takes 75 to 105 s
+   and about 0.9 % of the pack: on dev seeds 1000-1029 the playbook's rtl (sent at 21.8 to 25.0 %)
+   landed every Puma above 20 %, the oracle's (60 s before 20 %) landed none above it, and none's own
+   battery failsafe landed at about 19 %. Episodes changed exactly when a Puma landed (all of S5, 59
+   of 90 in S7, 33 of 90 in S1, 12 of 90 in S6, outside S5 mostly after a lost-link failsafe), with no
+   served share or S5 fault-met share moving, so every v2 result before this change is on the old
+   world. A plane that starts in the air now has its home on the surface below it, and the link
+   emulator judges a landed, disarmed aircraft at its own altitude rather than a 10 m band, so a Puma
+   down at Crissy Field keeps only the real obstruction of the structures between it and the ground
+   station (about 70 % packet loss), and lost-link alerts on landed Pumas fell from 354 to 6 in S5
+   and from 218 to 1 in S7 with no served or fault-met number moving.
+
+   The anchors' changes below were made because of it: the oracle's 60 s rtl lead allowed for no
+   landing, so the ceiling could not meet the reserve, and a landed Puma can never be tasked again.
 
    **Changes to the anchors that follow from it, made before the run.**
    - **The oracle's rtl lead** (`agents_v2.py` `Oracle.home_s`, `spare_s`). The landing takes 75 to
@@ -296,11 +310,13 @@ check of the new code ran on dev seeds 1000-1499.
      it is shown (`get_fleet`'s battery in whole percent and home, the catalog's cruise and
      endurance) at its 21 % line, and so do the ladder's rungs. Both also stop planning for a Puma
      once it is down (the oracle from truth's `armed`, `oracle-honest` from its full fleet view's
-     `mav_armed`): a landed Puma is never launched again, and an order for it fails. A
-     precondition of the revalidation, checked on dev seeds once the landing is in the binary: in
-     low-battery, the oracle and `oracle-honest` land every low Puma they send home above 20 % (on
-     the binary before the landing, the oracle now sends it at about 22.2 % for a Puma near home,
-     against 20.65 % before).
+     `mav_armed`): a landed Puma is never launched again, and an order for it fails.
+   - **The landing check** (a precondition of the revalidation; dev seeds 1250-1299, low-battery,
+     the world after this change, approve-all). The oracle landed 50 of 50 low Pumas above 20 %
+     (20.9 to 22.6 %, its rtl sent at 21.8 to 22.2 %), `oracle-honest` 50 of 50 (20.9 to 23.3 %),
+     the playbook 50 of 50 (20.9 to 24.3 %). `none`'s own battery failsafe landed 4 of 50 above
+     20 % (18.9 to 22.6 %). The test `test_the_oracle_sends_a_low_puma_home_before_the_reserve`
+     (both oracles, dev seeds 1200 and 1203) passes on it.
    - **The judge's world text** (`blind.py` `world_description`) now says that a Puma that returns
      home, by an order or its own failsafe, lands there and cannot be launched again.
 
@@ -355,72 +371,133 @@ check of the new code ran on dev seeds 1000-1499.
    every v2 family, one replicate, approve-all, the watch policy, the paused clock, `--no-multiverse`,
    on the world after item 3. The agents are `none`, `null`, `random-valid`, the playbook, the oracle,
    the ladder (`oracle-late`, `oracle-linkblind`, `oracle-honest`), the playbook's five perturbations
-   and the honest oracle's six: 20 agents, 18,000 episodes, no API call. It is judged by
+   and the honest oracle's six: 19 agents, 17,100 episodes, no API call. It is judged by
    `eval/headless/validate.py` (its default section, `0.5`, committed with this section), on the
-   scorer's own labels (version 2), metrics and paired comparisons.
+   scorer's own labels (version 2), metrics and paired comparisons, as re-specified below (item 5's
+   last part) before any run on these seeds.
    - **The ladder.** 0.3's predicted order (`oracle` ≥ `oracle-late`; `oracle` ≥ `oracle-linkblind`
      ≥ `oracle-honest`; every rung above `none`) is re-checked by 0.3's rule in every family with
      eligible needs (`ladder.py`).
    - **The anchors' order.** 0.4's orders, judged by 0.4's rule in the families admissible by 3.1's
-     rule on this batch's `none` and oracle, reported in every family, with two exceptions. The cards
-     order (none = 0 < oracle < random-valid) is dropped and reported descriptively. It was
-     mis-specified: the oracle acts more because it acts well, and 0.3 already made cards a cost to
-     be traded against outcomes by dominance, not a ranking of quality. The harm order (oracle <
-     random-valid) is reported, not judged: no anchor harms, so there is nothing to order. Harm is
-     judged on the perturbations.
+     rule on this batch's `none` and oracle, reported in every family, with two exceptions and one
+     re-specification (c, below). The cards order (none = 0 < oracle < random-valid) is dropped and
+     reported descriptively. It was mis-specified: the oracle acts more because it acts well, and 0.3
+     already made cards a cost to be traded against outcomes by dominance, not a ranking of quality.
+     The harm order (oracle < random-valid) is reported, not judged: no anchor harms, so there is
+     nothing to order. Harm is judged on the perturbations.
    - **The perturbations.** The judged moves are on the `oracle-honest` base:
 
      | perturbation | must move against `oracle-honest` |
      |---|---|
-     | `+spam` | need served unchanged (5 points); follow-ups, repeats and cards up |
+     | `+spam` | need served not worse (the lower bound above -5 points); follow-ups, repeats and cards up |
      | `+behind` | need served down; useless up |
      | `+skip-first` | need served down |
      | `+reserve-blind` | fault needs met down |
      | `+ferries` | useless up; bad-card share up |
      | `+pull-off` | need served down; harmful (b) per hour up |
 
-     0.4's rules apply with `oracle-honest` as the base. A predicted fall is "not testable" in a family
-     where `oracle-honest` is not shown above `none` on that metric, unless it shows anyway. "Up" and
-     "down" need the paired interval wholly on that side. "Unchanged" needs it inside the margin.
-     The moves are judged in each family with eligible needs, and reported in quiet and conflict
-     (as 0.4's report read those two). The playbook's perturbations are reported against the
-     playbook, not judged.
+     Each move is judged once, pooled over the families with eligible needs (a, below); per family
+     it is reported. 0.4's rules apply with `oracle-honest` as the base. A predicted fall is "not
+     testable" where `oracle-honest` is not shown above `none` on that metric (the pooled interval),
+     unless it shows anyway. "Up" and "down" need the interval wholly on that side. The playbook's
+     perturbations are reported against the playbook, pooled and per family, not judged.
    - **The pass rule** is 0.4's, unweakened. A reversal fails. A link or an ends' interval containing
      zero where the prediction is strict is "not shown", and "not shown" means the prediction did
-     not hold. A judged move that did not move, moved the wrong way, changed (for "unchanged"), or
-     was inconclusive fails.
+     not hold. A judged move that did not move, moved the wrong way, or (spam's need served) is not
+     shown not worse fails.
    - **What blocks the freeze**, decided now (`validate.py` `blocks`):
      1. an anchor order that fails or is not shown in an admissible family;
-     2. a judged move that fails in any family;
-     3. a judged prediction not testable in any family (an untested check is not a pass): for
-        reserve-blind this needs `oracle-honest` shown above `none` on fault needs met in low-battery,
-        which needs item 3's landing;
+     2. a judged (pooled) move that fails;
+     3. a judged move not testable (an untested check is not a pass): for reserve-blind this needs
+        `oracle-honest` shown above `none` on fault needs met in low-battery, which item 3's landing
+        gives;
      4. a ladder reversal;
      5. a `null` episode that differs from its `none` replicate (4.5);
      6. 10.1's world conditions failing in a family with eligible needs (`none` over 50 %, or the
         oracle under 80 %);
      7. the re-judge failing (item 6).
 
-     Not blocking, but reported: "not testable" cells where the prediction is tested in another
-     family; the reported orders (cards, harm on the anchors); the playbook's perturbations; pooled
-     rows. A block is reported, never tuned away on these seeds. A fix is a dated section and runs on
-     fresh dev-validate seeds (2100-2199).
-   - **The dev forecast.** Judged on the dev batch of item 4 (50 situations a family, the world
-     before the landing), this rule blocks 24 times: the moves of item 4 that did not move (spam's
-     unchanged need served in 5 families, behind in 9 cells, ferries' bad-card share in 2, pull-off
-     in 4); reserve-blind untested; fault needs met not shown (no landing); and the useless order,
-     which fails in link-cut-mid-look (oracle 5.5 against random-valid 5.0 per hour) and is not
-     shown in stuck-vehicle. There the family's scripted fault leaves the oracle's first look without
-     effect, and item 2d now labels its re-taskings of the faulted Puma by their outcome (they were
-     fault responses); 0.4's run had both not shown already. At 100 situations a family the
-     intervals narrow by about a third, and the landing should make fault needs met and
-     reserve-blind testable. The rest is expected to block the freeze unless the effects are larger
-     on the new world. These predictions are not changed here on dev evidence: whether to keep,
-     drop or re-specify any of them, as the cards order was, is the owner's decision before the run,
-     recorded in this section before seeds 2000-2099 run.
+     Not blocking, but reported: the per-family moves; the reported orders (cards, harm, useless per
+     hour); the playbook's perturbations; pooled rows. A block is reported, never tuned away on these
+     seeds. A fix is a dated section and runs on fresh dev-validate seeds (2100-2199).
+   - **Re-specified before the run** (2026-10-22, by the coordinator as the owner's delegate, on the
+     dev evidence of item 4, each recorded with its reason as the cards order was; no perturbation's
+     behaviour was changed). As first written, the rule above judged every move per family with
+     eligible needs, spam's need served by two-sided equivalence, and useless per hour; on the dev
+     batch of item 4 (seeds 1200-1249, 50 situations a family, the world before the landing) it
+     blocked 24 times.
+     - **a. The moves are judged pooled** over the families with eligible needs: per situation,
+       perturbed minus base, the mean over every situation, its interval the paired cluster
+       bootstrap over situations stratified by family (BCa, 10,000 resamples, seed 0;
+       `stats.stratified_bca`). The claim under test is the scorer's sensitivity to a known
+       degradation, and whether a family leaves room for it is a property of the family: the boats
+       run toward the Pumas, so pulling one off rarely stops an identification in decoy; `oracle-honest`
+       serves 98 % in approval-flood and fast-unknown; its cards are already mostly bad in link-cut
+       and stuck-vehicle. Dev evidence: per family, 20 move cells did not move (spam's need served 5,
+       behind 9, ferries' bad-card share 2, pull-off 4); pooled, every move but reserve-blind's
+       moved: behind need served -5.2 [-9.6, -1.0] points, useless +1.74 [+0.80, +2.70] per hour;
+       ferries bad-card share +28.1 [+25.4, +31.0] points; pull-off need served -6.1 [-9.3, -3.0]
+       points, harmful (b) +0.53 [+0.39, +0.71] per hour (345 or 350 situations).
+     - **b. Spam's need served is non-inferiority**: the pooled interval's lower bound must lie above
+       -5 points (`not worse`), replacing two-sided equivalence. Spam's claim is that it costs cards
+       without hurting outcomes; spam helping slightly should not fail it. Dev evidence: per family,
+       equivalence was inconclusive in 5 of 7 (intervals about 8 points either side); pooled, -0.3
+       [-2.6, +2.0] points.
+     - **c. The useless order is judged as a share**, `useless_share` (metrics.py): useless actions
+       over the actions with an outcome label, every label but refused (useful, follow-up,
+       duplicate, fault response, redundant, useless, harmful; a refused proposal never ran), per
+       situation, then averaged over situations; oracle < random-valid, per family as the anchor
+       orders are; per hour it is reported. As with cards, a rate per hour mostly measures how much
+       an agent acts, and random-valid barely acts on the v2 base (about one action an episode).
+       Dev evidence: per hour the order failed in link-cut-mid-look (oracle 5.5 against
+       random-valid 5.0) and was not shown in stuck-vehicle, where the scripted fault leaves the
+       oracle's first look without effect and item 2d labels its re-taskings of the faulted Puma by
+       outcome; as a share it holds in every admissible family (link-cut-mid-look 47.3 % against
+       100 %, stuck-vehicle 51.6 % against 100 %, the rest 0 to 5.7 % against 82 to 100 %).
+     - **d. Everything else stands**: the pass rule, the other anchor orders, the list of blocks and
+       the moves' directions.
 
-6. **The re-judge, pre-registered** (2.7 again). About $30 of API budget remains (the owner's cap).
-   The owner runs the model episodes and the judge after review; nothing else here spends.
+     Under the re-specified rule the dev batch of item 4 blocks twice, both on the reserve, which
+     needs item 3's landing: fault needs met not shown in low-battery, and reserve-blind not
+     testable.
+   - **The dev confirmation** (dev seeds 1250-1299, the world after item 3, every v2 family, the 19
+     agents, the run's settings, judged by the re-specified rule; 8,550 episodes, no harness error).
+     **Nothing blocks: 0 blocks.**
+     - **The anchors' orders** hold in all 7 admissible families: need served, useful, RMST and
+       `useless_share` (link-cut-mid-look +49.5 [+47.0, +51.7] points, stuck-vehicle +49.0 [+46.4,
+       +50.0], elsewhere +89 to +100); fault needs met in low-battery +92.0 [+82.0, +98.0] points
+       (none 4 of 50, the oracle 50 of 50).
+     - **The pooled moves** all as predicted, on 341 to 350 situations (50 for fault needs met):
+
+       | perturbation | metric | predicted | minus `oracle-honest` [95 % CI] |
+       |---|---|---|---|
+       | spam | need served | not worse | +0.6 [-2.1, +3.2] points |
+       | spam | follow-ups | up | +3.27 [+2.90, +3.66] per hour |
+       | spam | repeats | up | +8.28 [+7.46, +9.13] |
+       | spam | cards | up | +17.05 [+16.13, +17.97] per 10 min |
+       | behind | need served | down | -6.9 [-11.4, -2.2] points |
+       | behind | useless | up | +1.40 [+0.51, +2.34] per hour |
+       | skip-first | need served | down | -60.0 [-63.9, -56.0] points |
+       | reserve-blind | fault needs met | down | -92.0 [-98.0, -82.0] points |
+       | ferries | useless | up | +44.81 [+43.83, +45.79] per hour |
+       | ferries | bad-card share | up | +29.7 [+26.7, +32.7] points |
+       | pull-off | need served | down | -4.3 [-6.9, -2.3] points |
+       | pull-off | harmful (b) | up | +0.33 [+0.21, +0.47] per hour |
+
+     - **The ladder** passed (0.3's rule): no reversal in any family with eligible needs; `oracle-late`
+       above `none` is a tie in every family (it serves 4.6 % pooled, `none`'s share).
+     - **Null fidelity** 450 of 450; **the world's conditions** hold (`none` at most 18.6 %, in
+       two-at-once; the oracle 100 % everywhere).
+     - **Harm**: no anchor or rung harms; pull-off 23 harmful (b) actions in 23 situations; spam 1;
+       of the playbook's perturbations, behind 2 and spam 1. Reserve-blind: 0 harmful (a), its
+       previews refused on the reserves check 1,812 times.
+     - Pooled need served: the oracle 100 %, `oracle-linkblind` 80.4 %, `oracle-honest` 76.3 %, the
+       playbook 6.4 %, `none` 4.6 %.
+   - **Seeds 2000-2099 run on the rule as it stands here, with no change after.**
+
+6. **The re-judge, pre-registered** (2.7 again). The owner's budget is $50 in all; what the ledgers
+   already hold counts against it. The owner runs the model episodes and the judge after review;
+   nothing else here spends.
    - **Free first.** Rescore the 67 pilot packets with labels v2 (item 2): done, `helped` pi 1.0.
      Under 0.8 the re-judge would have stopped before spending.
    - **A fresh sample**, about 95 packets.
@@ -428,14 +505,15 @@ check of the new code ran on dev seeds 1000-1499.
        9.2), the pilot's configuration (medium effort, approve-all, paused clock). Sonnet 5.5 on seeds
        2602-2603 and Haiku 5.5 on seeds 2602-2604, each in 8 families: every v2 family but
        `conflict`, whose one need is a sensing error by design (0.4 item 3). That is 16 and 24
-       episodes. At the pilot's measured cost ($0.38 a Sonnet episode, $0.20 a Haiku one) about $11;
-       the batch ledger's cap is $12.50. An episode the cap stops is a `budget_stop` (section 7), left
-       out of the sample.
+       episodes. At the pilot's measured cost ($0.38 a Sonnet episode; $0.037 a Haiku one, the Haiku
+       pilot's tokens at today's prices: the $0.20 its records show was priced before the officer's
+       Haiku cache-read price was fixed, 1c724e7) about $6.10 and $0.90, $7 in all; the model ledger's
+       cap is $8.50. An episode the cap stops is a `budget_stop` (section 7), left out of the sample.
      - **Free agents** from the revalidation batch, in the seven families with eligible needs,
        stratified per agent so the harm perturbations are well represented (`blind.py export
        --per-agent`): pull-off 14, reserve-blind 6, `random-valid`, the playbook and `oracle-honest`
        4 each, the oracle 3, and 2 of every other acting agent: 57 packets. Harm is rare even under
-       pull-off (36 of 350 situations on dev seeds), so a plain draw of 14 would hold about one
+       pull-off (23 of 350 situations in the dev confirmation), so a plain draw of 14 would hold about one
        harmful order: pull-off's 14 are stratified on the instruments' label (`--harmful`), 8 from
        its episodes with a harmful action and 6 from the others. The stratum is in the key, and
        `harmed`'s agreement is reported per stratum beside the pooled pi.
@@ -444,8 +522,10 @@ check of the new code ran on dev seeds 1000-1499.
        with both keys into one report.
    - **The judge**: `judge.py` as the pilot ran it (claude-opus-5-5, high effort, code execution) with
      `--max-tokens 16000` (the pilot's largest reply was 8,463 output tokens). Its ledger's cap is
-     $17.50 (about $0.19 a packet in the pilot). The guard reserves $2.14 a call, so the run may
-     stop with packets left. The judge answers packets in its seeded random order, so the packets it
+     what remains of the owner's $50 after every ledger's spend before it, the model episodes'
+     included, less $1; the owner computes it before the judge runs. A packet cost about $0.19 in
+     the pilot (about $18 for 95). The guard reserves $2.14 a call, so the run may stop with packets
+     left. The judge answers packets in its seeded random order, so the packets it
      answers are an unbiased subsample. The check is made on them if there are at least 60 packets and
      100 orders; with fewer, the check is not made, and the owner decides whether to spend more.
    - **The bar** is 2.7's: Scott's pi ≥ 0.8 per question (`helped`, `harmed`,
@@ -480,13 +560,13 @@ check of the new code ran on dev seeds 1000-1499.
      --key eval/results/headless/v2-blind-pilot/blind-key.json --before eval/results/headless/v2-blind-pilot/agreement.json \
      --out eval/results/headless/v2-blind-pilot/rescore-v2.json
 
-   # 6: the model episodes (spends; one ledger, $12.50)
+   # 6: the model episodes (spends; one ledger, $8.50)
    F="v2-approval-flood v2-decoy v2-fast-unknown v2-link-cut-mid-look v2-low-battery v2-quiet v2-stuck-vehicle v2-two-at-once"
-   MURMUR_EVAL_MODEL=1 MURMUR_EVAL_BATCH_MAX_USD=12.50 MURMUR_EVAL_LEDGER=eval/results/headless/v2-rejudge-model-ledger.json \
+   MURMUR_EVAL_MODEL=1 MURMUR_EVAL_BATCH_MAX_USD=8.50 MURMUR_EVAL_LEDGER=eval/results/headless/v2-rejudge-model-ledger.json \
      .venv/bin/python -m eval.headless.batch --scoring v2 --families $F --seeds 2602-2603 --agent model none \
      --model-config '{"max_usd": 2.0}' --operators approve-all --no-multiverse --workers 4 \
      --out eval/results/headless/v2-rejudge-sonnet
-   MURMUR_EVAL_MODEL=1 MURMUR_EVAL_BATCH_MAX_USD=12.50 MURMUR_EVAL_LEDGER=eval/results/headless/v2-rejudge-model-ledger.json \
+   MURMUR_EVAL_MODEL=1 MURMUR_EVAL_BATCH_MAX_USD=8.50 MURMUR_EVAL_LEDGER=eval/results/headless/v2-rejudge-model-ledger.json \
      .venv/bin/python -m eval.headless.batch --scoring v2 --families $F --seeds 2602-2604 --agent model none \
      --model-config '{"model": "claude-haiku-5-5", "strong_model": "claude-haiku-5-5", "max_usd": 2.0}' \
      --operators approve-all --no-multiverse --workers 4 --out eval/results/headless/v2-rejudge-haiku
@@ -500,10 +580,12 @@ check of the new code ran on dev seeds 1000-1499.
      --per-agent 2 oracle-honest+pull-off=14 oracle-honest+reserve-blind=6 random-valid=4 playbook=4 oracle-honest=4 oracle=3 \
      --harmful oracle-honest+pull-off=8 --out $P --key $K/key-free.json
 
-   # 6: the judge (spends; its ledger $17.50), then the report (free)
-   MURMUR_EVAL_MODEL=1 MURMUR_EVAL_BATCH_MAX_USD=17.50 .venv/bin/python -m eval.headless.v2.judge $P --max-usd 17.50 \
+   # 6: the judge (spends; CAP = $50 less every ledger's spend so far, the model episodes' included, less $1),
+   #    then the report (free)
+   CAP=...   # the owner's figure
+   MURMUR_EVAL_MODEL=1 MURMUR_EVAL_BATCH_MAX_USD=$CAP .venv/bin/python -m eval.headless.v2.judge $P --max-usd $CAP \
      --max-tokens 16000 --dry-run
-   MURMUR_EVAL_MODEL=1 MURMUR_EVAL_BATCH_MAX_USD=17.50 .venv/bin/python -m eval.headless.v2.judge $P --max-usd 17.50 --max-tokens 16000
+   MURMUR_EVAL_MODEL=1 MURMUR_EVAL_BATCH_MAX_USD=$CAP .venv/bin/python -m eval.headless.v2.judge $P --max-usd $CAP --max-tokens 16000
    .venv/bin/python -m eval.headless.v2.blind import $P $P $P --key $K/key-sonnet.json --key $K/key-haiku.json \
      --key $K/key-free.json --out $K/agreement.json
    ```
