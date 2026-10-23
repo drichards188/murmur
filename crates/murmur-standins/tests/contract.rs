@@ -273,6 +273,7 @@ fn config(spec: Spec, port: u16, alt: f64) -> VehicleConfig {
         home: [37.8, -122.6, alt, 90.0],
         spec,
         params: Default::default(),
+        surface_m: None,
     }
 }
 
@@ -787,6 +788,209 @@ async fn plane_rtl_circles_home_at_the_turn_bounded_radius() {
         (v.st.alt - 7600.0).abs() < 1.0,
         "RTL_ALTITUDE -1: same altitude"
     );
+}
+
+/// The Puma's catalog entry as the stand-in gets it (sim/platforms.toml `[puma]`), and the
+/// ArduPilot parameters swarm.py gives a Puma stand-in (its `standin_params`).
+fn puma() -> Spec {
+    Spec {
+        name: "Puma 3 AE-class".into(),
+        behavior: "plane".into(),
+        cruise_mps: 20.0,
+        max_mps: 0.0,
+        climb_mps: None,
+        turn_dps: None,
+        loiter_radius_m: None,
+        endurance_h: Some(2.5),
+        link: Some("los".into()),
+    }
+}
+
+/// A Puma in the air at 120 m over its home (it spawned there), circling it in LOITER, with
+/// `pct` % of its pack left, stepped by hand.
+async fn puma_aloft(pct: f64) -> (Vehicle, UdpSocket) {
+    puma_aloft_over(pct, None).await
+}
+
+/// [`puma_aloft`] over a surface `surface_m` high, as the launcher found it under the spawn.
+async fn puma_aloft_over(pct: f64, surface_m: Option<f64>) -> (Vehicle, UdpSocket) {
+    let sink = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
+    let port = sink.local_addr().expect("addr").port();
+    let sock = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
+    sock.connect(("127.0.0.1", port)).await.expect("connect");
+    let mut cfg = config(puma(), port, 120.0);
+    cfg.surface_m = surface_m;
+    cfg.params = [
+        ("RTL_AUTOLAND".into(), 1.0),
+        ("TKOFF_THR_MINACC".into(), 15.0),
+    ]
+    .into();
+    let mut v = Vehicle::seeded(cfg, sock, None, SEED).expect("vehicle");
+    v.link.capture();
+    assert!(v.st.armed && v.st.mode == "LOITER", "spawned flying");
+    v.battery.consumed_mah = v.capacity_mah() * (1.0 - pct / 100.0);
+    (v, sink)
+}
+
+fn battery_pct(v: &Vehicle) -> f64 {
+    100.0 * (1.0 - v.battery.consumed_mah / v.capacity_mah())
+}
+
+/// Step until `done` or `max_s`; the seconds stepped.
+fn step_until(v: &mut Vehicle, max_s: f64, done: impl Fn(&Vehicle) -> bool) -> f64 {
+    let mut t = 0.0;
+    while t < max_s && !done(v) {
+        v.step();
+        t += 0.1;
+    }
+    t
+}
+
+/// RTL_AUTOLAND from 2 km out: home, the AUTOLAND pattern, down at home, disarmed, the
+/// heartbeat saying so; then the pack drains at the disarmed (avionics) load only.
+#[tokio::test]
+async fn a_puma_sent_home_lands_disarms_and_draws_only_its_avionics_load() {
+    let (mut v, _sink) = puma_aloft(25.0).await;
+    let home = v.st.home;
+    v.st.lon += 2000.0 / (111_320.0 * home.0.to_radians().cos());
+    v.set_mode("RTL");
+    let start = battery_pct(&v);
+    let t_rtl = step_until(&mut v, 600.0, |v| v.st.mode != "RTL");
+    assert_eq!(v.st.mode, "AUTOLAND", "after {t_rtl:.0} s of RTL");
+    let t_down = step_until(&mut v, 600.0, |v| !v.st.armed);
+    assert!(!v.st.armed, "landed and disarmed");
+    let d = distance_m(v.st.lat, v.st.lon, home.0, home.1);
+    assert!(d < 150.0, "down {d:.0} m from home");
+    assert!((v.st.alt - home.2).abs() < 0.01 && v.st.speed < 0.5);
+    let used = start - battery_pct(&v);
+    // RTL to disarm at about cruise load: 1 % per 90 s
+    let flown = t_rtl + t_down;
+    assert!(
+        (used - flown / 90.0).abs() < 0.6,
+        "{used:.2} % in {flown:.0} s"
+    );
+    assert!(
+        battery_pct(&v) > 20.0,
+        "home above the reserve: {:.2} %",
+        battery_pct(&v)
+    );
+    let MavMessage::HEARTBEAT(hb) = murmur_standins::telemetry::heartbeat(&v) else {
+        panic!("not a heartbeat");
+    };
+    assert_eq!(hb.custom_mode, 26, "AUTOLAND");
+    assert!(
+        !hb.base_mode
+            .contains(MavModeFlag::MAV_MODE_FLAG_SAFETY_ARMED)
+    );
+    let said = events(&mut v);
+    assert!(said.iter().any(|t| t == "Auto disarmed"), "{said:?}");
+    // ten minutes on the ground: the idle load (battery.rs IDLE_LOAD, 5 % of cruise's draw)
+    let before = v.battery.consumed_mah;
+    let at = (v.st.lat, v.st.lon);
+    step_until(&mut v, 600.0, |_| false);
+    let idle = v.battery.consumed_mah - before;
+    let cruise = v.capacity_mah() / (2.5 * 3600.0) * 600.0;
+    assert!(
+        (idle - 0.05 * cruise).abs() < 0.5,
+        "{idle:.1} mAh in 600 s (cruise {cruise:.0})"
+    );
+    assert!(!v.st.armed && (v.st.lat, v.st.lon) == at && v.st.mode == "AUTOLAND");
+}
+
+/// A plane that starts in the air has its home on the surface below it, at the height the
+/// launcher found there (Crissy Field's 3 m), says so in HOME_POSITION, and lands on that
+/// surface; one that starts on the ground keeps its home where it stands.
+#[tokio::test]
+async fn a_puma_started_in_the_air_has_its_home_on_the_surface_and_lands_on_it() {
+    let (mut v, _sink) = puma_aloft_over(80.0, Some(3.0)).await;
+    assert_eq!(v.st.home.2, 3.0);
+    assert_eq!(v.st.alt, 120.0, "flying where it spawned");
+    let MavMessage::HOME_POSITION(h) =
+        murmur_standins::telemetry::build(&v, HOME_POSITION_DATA::ID).expect("home position")
+    else {
+        panic!("not a home position");
+    };
+    assert_eq!(h.altitude, 3000, "mm above MSL");
+    v.set_mode("RTL");
+    step_until(&mut v, 600.0, |v| !v.st.armed);
+    assert_eq!(v.st.mode, "AUTOLAND");
+    assert!(
+        (v.st.alt - 3.0).abs() < 0.01,
+        "down on the surface: {}",
+        v.st.alt
+    );
+    // no surface known: the sea's 0 m, as before
+    let (v, _sink) = puma_aloft_over(80.0, None).await;
+    assert_eq!(v.st.home.2, 0.0);
+    // started on the ground: home where it stands, whatever the surface sampled
+    let sink = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
+    let port = sink.local_addr().expect("addr").port();
+    let sock = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
+    let mut cfg = config(puma(), port, 5.0);
+    cfg.surface_m = Some(3.0);
+    let v = Vehicle::seeded(cfg, sock, None, SEED).expect("vehicle");
+    assert_eq!((v.st.home.2, v.st.armed), (5.0, false));
+}
+
+/// The battery's low failsafe (20 %) comes during the landing: ArduPlane never breaks one off
+/// (handle_battery_failsafe: already landing in AUTOLAND), so it does not go back to RTL.
+#[tokio::test]
+async fn the_battery_failsafe_does_not_break_off_a_puma_landing() {
+    let (mut v, _sink) = puma_aloft(20.4).await;
+    v.set_mode("RTL");
+    let mut modes = vec![v.st.mode];
+    while v.st.armed && modes.len() < 5 {
+        v.step();
+        if modes.last() != Some(&v.st.mode) {
+            modes.push(v.st.mode);
+        }
+        assert!(v.now() < 600.0, "never landed: {modes:?}");
+    }
+    assert_eq!(modes, ["RTL", "AUTOLAND"]);
+    let said = events(&mut v);
+    let low = said.iter().position(|t| t.starts_with("Battery 1 is low"));
+    let flare = said.iter().position(|t| t.starts_with("Flare"));
+    assert!(low.is_some() && flare.is_some(), "{said:?}");
+}
+
+/// Down again, a Puma refuses the arm an order needs, on the wire: the reason ahead of the
+/// FAILED ACK, every time it is asked.
+#[tokio::test]
+async fn a_landed_puma_refuses_to_arm_and_says_why() {
+    let (mut v, _sink) = puma_aloft(80.0).await;
+    v.set_mode("RTL");
+    step_until(&mut v, 600.0, |v| !v.st.armed);
+    assert_eq!(v.st.mode, "AUTOLAND", "a mode ArduPlane arms in");
+    v.link.take_captured();
+    let arm = MavMessage::COMMAND_LONG(COMMAND_LONG_DATA {
+        target_system: SYSID,
+        target_component: 1,
+        command: MavCmd::MAV_CMD_COMPONENT_ARM_DISARM,
+        param1: 1.0,
+        ..Default::default()
+    });
+    for _ in 0..2 {
+        v.handle(&arm);
+        let mut seen = Vec::new();
+        for frame in v.link.take_captured() {
+            let mut r = PeekReader::new(&frame[..]);
+            match mavlink::read_v2_msg::<MavMessage, _>(&mut r) {
+                Ok((_, MavMessage::STATUSTEXT(t))) => {
+                    seen.push(t.text.to_str().unwrap_or("").to_owned())
+                }
+                Ok((_, MavMessage::COMMAND_ACK(a))) => seen.push(format!("{:?}", a.result)),
+                _ => {}
+            }
+        }
+        assert_eq!(
+            seen,
+            [
+                "Arm: landed, no crew for a hand launch",
+                "MAV_RESULT_FAILED"
+            ]
+        );
+        assert!(!v.st.armed);
+    }
 }
 
 /// Events as the vehicle sent them since the last call: "IR n" for MISSION_ITEM_REACHED,

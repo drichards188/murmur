@@ -3,7 +3,7 @@ and what the driver does (orders, the operator, the AI, scripted faults), from a
 (Harbor watch) or a generated one (families.py).
 
 The fleet manifest and the stand-ins' configs are `sim/swarm.py`'s own (`plan`,
-`lost_link_params`, as `scripts/up.sh` and eval/stack.py use them); the bridge's environment is
+`standin_params`, as `scripts/up.sh` and eval/stack.py use them); the bridge's environment is
 the one `eval/situation_run.py` gives a situation's stack (its roster, agents, run id, policy,
 scenario clock, simulation token, no resume).
 """
@@ -204,9 +204,7 @@ def fleet_plan(fleet: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]
         if v["sim"] != "standin":
             raise ValueError(f"{fleet}: {v['callsign']} is SITL: the simulator runs stand-ins only")
         spec = platforms[v["platform"]]
-        standins.append({**v, "spec": spec,
-                         "params": swarm.lost_link_params(v["platform"], spec,
-                                                          swarm.STANDIN_FIRMWARE.get(spec["behavior"]))})
+        standins.append({**v, "spec": spec, "params": swarm.standin_params(v["platform"], spec)})
     return vehicles, standins
 
 

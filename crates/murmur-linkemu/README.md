@@ -111,6 +111,12 @@ v2 and concatenated frames work).
   `max_points`) and sends them in as few `POST /v1/sample` requests as fit (20,000 points each).
   Answers are kept for good (terrain does not move); a failed request is counted and retried.
   The request time is the scenario clock, clamped into the scenario's range from `/v1/info`.
+
+  A landed, disarmed aircraft is judged at rest (`link.rs` `Link::at_rest`: an `air` link whose
+  last autopilot HEARTBEAT says disarmed and whose GLOBAL_POSITION_INT puts it within 1 m of its
+  home's altitude): at its own altitude, to 0.1 m, with its antenna `AT_REST_ANTENNA_M` (0.5 m,
+  a GUESS) above it, instead of its altitude band, which could put an aircraft resting on 3 m
+  of ground at 0 m, under the surface. No other vehicle's check changes.
   Without a tidewater URL nothing is checked and `los.state` is `off`.
 - **Propagation delay**: `propagation_mps = 1500` for sound.
 

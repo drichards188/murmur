@@ -41,6 +41,9 @@
 #        No sensors: the platform sees nothing (antenna tracker).
 # mast_m: height of a surface vessel's sensors above the water, for the radio horizon
 #        (default 3 m; aircraft use their altitude, submerged vehicles have no horizon).
+# standin_params: ArduPilot parameters a stand-in of this platform sets over its firmware's
+#        defaults (sim/swarm.py `standin_params`; the lost-link timer it sets per vehicle
+#        still wins). Unlike `params`, never given to a SITL vehicle: the entry says why.
 
 # ---------------------------------------------------------------- air
 [rq4]
@@ -164,6 +167,14 @@ behavior = "plane"
 cruise_mps = 20
 typical_alt_m = 80
 endurance_h = 2.5
+# Sent home, a Puma lands there, as a real one does (murmur-a5v): RTL_AUTOLAND 1, ArduPlane's
+# landing once on the RTL circle at home (crates/murmur-standins/src/behavior/plane.rs: with no
+# DO_LAND_START in the mission, the AUTOLAND mode's landing at home). It is hand-launched
+# (TKOFF_THR_MINACC, ArduPlane's throw detection): down again, nobody relaunches it, so it
+# refuses to arm. Stand-ins only: a SITL ArduPlane needs a DO_LAND_START sequence in its mission
+# to land from RTL, which the bridge's missions never carry (it would still circle home), and
+# SITL has no one to throw it (TKOFF_THR_MINACC would keep it on the ground for good).
+standin_params = { RTL_AUTOLAND = 1, TKOFF_THR_MINACC = 15 }
 [switchblade]
 name = "Switchblade 600-class"
 short = "LM"

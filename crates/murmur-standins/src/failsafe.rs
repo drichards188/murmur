@@ -26,7 +26,8 @@
 //! - AntennaTracker: none (no FS_GCS_* parameters).
 //!
 //! Battery (AP_BattMonitor::check_failsafes): "Battery 1 is low|critical <V>V used <mAh> mAh",
-//! then the firmware's handle_battery_failsafe for BATT_FS_LOW_ACT / BATT_FS_CRT_ACT.
+//! then the firmware's handle_battery_failsafe for BATT_FS_LOW_ACT / BATT_FS_CRT_ACT (Plane:
+//! not while landing, in AUTOLAND or on an AUTO mission's LAND item).
 //!
 //! EKF (navigation lost, e.g. GNSS jammed: nav.rs), each firmware's ekf_check.cpp at 10 Hz:
 //! 10 failing checks in a row (EKF_CHECK_ITERATIONS_MAX, 1 s) trigger, as many passing ones
@@ -509,8 +510,13 @@ impl Vehicle {
         if !self.st.armed {
             return;
         }
+        // a landing under way is never broken off (Plane::handle_battery_failsafe: flight
+        // stage LAND, or the AUTOLAND mode)
+        let plane_landing = self.st.mode == "AUTOLAND"
+            || (self.st.mode == "AUTO" && self.mission.landing() && !self.mission.complete);
         match self.firmware {
             Firmware::Plane => match act {
+                1 | 2 | 7 if plane_landing => {}
                 // 2 Land: without a DO_LAND_START sequence ArduPlane falls back to RTL
                 1 | 2 | 7 => _ = self.try_mode("RTL"),
                 3 => self.disarm(),

@@ -4,7 +4,8 @@
 # station. The Pumas talk over line of sight to the ground station at Crissy Field
 # (sim/links.toml): a Puma at its 80 m behind the Marin Headlands (off Kirby Cove, say) or
 # south of the strait west of the bridge (behind the Presidio bluffs) loses its link in the
-# terrain shadow, and after 5 s its own lost-link failsafe sends it home. HUNTER 1 and REAPER 1
+# terrain shadow, and after 5 s its own lost-link failsafe sends it home, where it lands (and,
+# hand-launched, does not fly again: sim/platforms.toml `standin_params`). HUNTER 1 and REAPER 1
 # talk over SATCOM.
 #
 # Every platform here has an endurance figure in sim/platforms.toml, so the C2 can check

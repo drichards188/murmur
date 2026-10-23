@@ -40,11 +40,30 @@ fn main() {
 async fn run(path: &str) -> Result<(), String> {
     // a scenario rate needs a scenario start, as in the bridge (murmur-drd)
     conditions::check_scenario_env()?;
-    let fleet = Fleet::load(path)?;
+    let mut fleet = Fleet::load(path)?;
     for w in fleet.endurance_warnings() {
         eprintln!("murmur-standins: {w}");
     }
     let tidewater = conditions::Config::from_env();
+    // the surface under each spawn point, once: a stand-in that starts in the air has its
+    // home there (VehicleConfig::surface_m); without tidewater, at 0 m
+    if let Some(tw) = &tidewater {
+        let points: Vec<(f64, f64)> = fleet
+            .vehicles
+            .iter()
+            .map(|v| (v.home[0], v.home[1]))
+            .collect();
+        match conditions::surfaces(tw, &points).await {
+            Ok(surfaces) => {
+                for (v, s) in fleet.vehicles.iter_mut().zip(surfaces) {
+                    v.surface_m = v.surface_m.or(s);
+                }
+            }
+            Err(e) => println!(
+                "tidewater: no surface heights ({e}); a stand-in that starts in the air has its home at 0 m"
+            ),
+        }
+    }
     let host = fleet.bridge_host.clone();
     let homes: Vec<(f64, f64)> = fleet
         .vehicles

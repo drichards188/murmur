@@ -86,7 +86,7 @@ replayed with its anchors.
 | `src/sim/emulator.rs` | murmur-linkemu per vehicle: both lanes queued by its `admit`, delivered on the simulated clock; terrain and SATCOM rounds; `/stats` for the bridge's `emu`; link events (cuts) |
 | `src/sim/fleet.rs` | the stand-ins: `Vehicle::seeded` from the episode seed, a 10 Hz task each with the stand-in engine's phase offsets, a stop fault (cruise and maximum speed to zero) |
 | `src/sim/contacts.rs` | the contacts loop of `murmur-contacts` on the simulated clock |
-| `src/sim/terrain.rs` | the baked surface-height grid as the emulator's terrain sampler (section 12) |
+| `src/sim/terrain.rs` | the baked surface-height grid as the emulator's terrain sampler (section 12), and the height of an airborne spawn's home (section 8) |
 | `src/sim/space_cache.rs` | the SATCOM look cache (section 12) |
 | `src/sim/perf.rs` | computer time per task and per request kind (diagnostics only) |
 | `tests/pieces.rs` | the grid answers tidewater's heights; a cached SATCOM look equals the look it would have computed |
@@ -293,6 +293,50 @@ said (unchanged since): `fast-unknown`, `decoy`, `link-cut-mid-look`, `low-batte
 
 The split is by family and committed before any result (`split.toml`). Family reports use seeds
 1 to 30 per family and never pool tuning and held-out families.
+
+**A Puma sent home lands** (murmur-a5v, 2026-10-22; a change to the world in every situation,
+v1 and v2, and in the full stack's Harbor watch, whose Pumas are stand-ins too). The Puma's
+stand-in carries ArduPlane's RTL_AUTOLAND 1 and a hand launch, TKOFF_THR_MINACC 15
+(`standin_params` in `sim/platforms.toml`, given by `sim/swarm.py` `standin_params`, which
+`situations.py` uses). An RTL, whatever started it (an rtl order, the lost-link or the battery
+failsafe), flies home; on the RTL circle, at least 3 s into the RTL, it hands over to the
+AUTOLAND mode, ArduPlane's landing at home (the stand-in's step: ArduPlane's RTL hands over only
+to a DO_LAND_START sequence in the mission, which the bridge's missions never carry;
+docs/AUTHENTICITY.md), loiters down to 55 m beside the final approach's start 400 m out, lands
+at home and disarms. Down, it reports AUTOLAND, disarmed, draws the avionics load only (5 % of
+cruise's), and refuses to arm ("Arm: landed, no crew for a hand launch"), so a later order for
+it fails, the order's failure and the inbox's `task_failed` alert carrying those words (the
+bridge's arm retry now ends with the autopilot's last word, as its mode change already did).
+From an RTL at home to the disarm takes 75 to 105 s, about 0.9 % of a Puma's pack. Section 11's
+results predate it. On dev seeds 1000-1029 (S1, S5, S6, S7; playbook, oracle, none;
+approve-all) an episode's truth, picture or audit log differs from before exactly when a Puma
+handed over to a landing (360 of 360 checked; of five records compared in full, the four with
+a landing, the golden's among them, were byte-identical up to it, the fifth throughout): all of
+S5, 59 of 90 in S7, 33 of 90 in S1,
+12 of 90 in S6, outside S5 mostly after the Pumas' own lost-link failsafe; no served share and
+no S5 fault-met share changed. In S5 the playbook's
+rtl (at its 25 % line, 21.8 to 25.0 %) lands every Puma above 20 % (20.8 to 24.2 %); the
+oracle's (60 s before its true battery reaches 20 %, at 20.65 %) lands none above it (19.6 to
+20.0 %): the landing costs more than that minute.
+
+**A plane that starts in the air has its home on the surface below it** (murmur-a5v, the same
+day). Until then it was at 0 m, so a Puma down at Crissy Field (PUMA 1's v2 home: land, 3.0 m)
+lay 3 m under it, and the link emulator, which keys its terrain answers on 10 m altitude bands
+and puts a LOS vehicle's antenna at its altitude, judged it at 0 m behind the DEM's 8 to 12 m
+structures between it and the ground station: 17 m of obstruction, 80 to 90 % of its packets
+lost, lost-link alerts on it for the rest of the episode (354 in S5, 218 in S7 over dev seeds
+1000-1029). Now the simulator puts an airborne spawn's home at the baked grid's height there (the
+stand-in engine live, at tidewater's: `surface_m` in its config), and the emulator judges a
+landed, disarmed aircraft at rest: at its own altitude plus a 0.5 m antenna (`AT_REST_ANTENNA_M`,
+murmur-linkemu `link.rs`), not rounded into a band; nothing else changes for any other vehicle.
+Down at 3.0 m, PUMA 1 still has the DEM's structures 13.7 m above its ray to the mast, which
+stays: about 70 % of its packets lost, a whip on the ground behind them. PUMA 2 rests on the water at
+0.4 m. On the same seeds: lost-link alerts on a landed Puma 354 to 6 in S5, 218 to 1 in S7, 56
+to 0 in S1, 6 to 0 in S6; no served share and no S5 fault-met share moved. Every plane that
+starts in the air reports its altitude above that home (REAPER 1's over the water, 0.4 m), so the
+engine's logged check inputs carry it, and float rounding in its missions' relative altitudes
+moves REAPER 1's battery by a hundredth of a percent late in an episode; no decision changed in
+the episodes compared in full.
 
 ## 9. Truth labels and metrics
 
@@ -625,7 +669,12 @@ order, an action at its charged time, repeats, an answer after the end, a failed
 playbook's tick charge, the loop's order, and the paused clock's records byte-identical to before
 it; `test_v2_leakage.py`: the token list, same tasking (the mission as the only brief, one prompt
 and one tool list for every situation), a reading model on every v2 situation clean, a family
-name in a tool result a harness error, echoes and diagnostics).
+name in a tool result a harness error, echoes and diagnostics; `test_world_v2.py`'s Puma tests
+(section 8): only the Pumas' stand-in configs carry RTL_AUTOLAND and the hand launch, and PUMA 2
+sent home lands at home in AUTOLAND, disarmed, shown so by `get_fleet`, and a later orbit for it
+fails with the stand-in's words in the order and the inbox's alert). The landing itself, the
+disarm, the battery and the refused arm are the stand-ins' own tests (`behavior/plane.rs`,
+`tests/contract.rs`); the bridge's arm failure with the autopilot's words is `tasks/tests.rs`.
 
 ## 14. Step 2: how it plugs in
 
