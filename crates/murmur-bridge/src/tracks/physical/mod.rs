@@ -1086,8 +1086,10 @@ fn label_at(st: &Step, uid: u64, si: usize, sensor: SensorType, t: &Target, leve
 /// (a 2D radar's bearing segment read at its middle, as the legacy `observe_act`); the observer
 /// with the smallest error places the act. None: nobody saw it.
 pub fn observe_act(detections: &[Detection], actor: &str) -> Option<ActObservation> {
+    /// An observer's best fix (lat, lon, its 1-sigma) and its sensors that saw the act.
+    type ObserverFix = ((f64, f64, f64), Vec<String>);
     let mut sensors: Vec<String> = Vec::new();
-    let mut per: BTreeMap<u64, ((f64, f64, f64), Vec<String>)> = BTreeMap::new();
+    let mut per: BTreeMap<u64, ObserverFix> = BTreeMap::new();
     for d in detections {
         if d.contact_id != actor || !matches!(d.sensor, SensorType::Radar | SensorType::EoIr | SensorType::Sonar) {
             continue;

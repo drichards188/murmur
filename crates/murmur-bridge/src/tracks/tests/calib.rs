@@ -727,8 +727,11 @@ pub fn physical(seed: u64) -> impl FnMut(u32, &[Observer], ContactTruth) -> Vec<
     }
 }
 
+/// A case's detections at second `s` of its observers and contact, from one sensing model.
+pub type Sense<'a> = dyn FnMut(u32, &[Observer], ContactTruth) -> Vec<Detection> + 'a;
+
 /// Run both filters on `case` at `seed` on the detections `sense` gives each second.
-pub fn run_by(case: &Case, seed: u64, sense: &mut dyn FnMut(u32, &[Observer], ContactTruth) -> Vec<Detection>) -> Scores {
+pub fn run_by(case: &Case, seed: u64, sense: &mut Sense) -> Scores {
     let ec = EngageRules::default();
     let table = case.table(seed, case.n as usize + SPANS_S[1] as usize + 1);
     let mut new: Option<Track> = None;

@@ -26,7 +26,7 @@ const TWILIGHT_DEG: f64 = 6.0;
 /// The ACQUIRE target transfer probability function: `x^E / (1 + x^E)`, `x = p / p50`,
 /// `E = 2.7 + 0.7 x` (research [7,8]).
 pub fn acquire(px: f64, p50: f64) -> f64 {
-    if !(px > 0.0) {
+    if px.is_nan() || px <= 0.0 {
         return 0.0;
     }
     let x = px / p50;

@@ -79,7 +79,7 @@ impl Grid {
         if body.len() != h.nlat * h.nlon * 2 || h.nlat < 2 || h.nlon < 2 {
             return Err(format!("{}: {} bytes of samples for a {}x{} grid", path.display(), body.len(), h.nlat, h.nlon));
         }
-        let data = body.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
+        let data = body.as_chunks::<2>().0.iter().map(|c| i16::from_le_bytes(*c)).collect();
         Ok(Grid { h, data })
     }
 

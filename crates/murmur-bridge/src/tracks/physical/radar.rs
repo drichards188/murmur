@@ -20,7 +20,7 @@ const SCR_MIN: f64 = 10.0;
 
 /// A Swerling 1 target's detection probability at signal-to-noise `snr` (a power ratio).
 pub fn pd_swerling1(snr: f64) -> f64 {
-    if !(snr > 0.0) {
+    if snr.is_nan() || snr <= 0.0 {
         return 0.0;
     }
     (-THRESHOLD / (1.0 + snr)).exp()
