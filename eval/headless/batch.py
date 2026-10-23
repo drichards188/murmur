@@ -100,6 +100,10 @@ def parse_seeds(spec: list[str]) -> list[int]:
     return out
 
 
+#: docs/HEADLESS.md section 16's options (episode.Options), each off unless given
+SECTION16 = ("signers", "review", "scripted", "effects", "space_snapshot")
+
+
 def build() -> None:
     cargo = shutil.which("cargo") or str(Path.home() / ".cargo" / "bin" / "cargo")
     subprocess.run([cargo, "build", "--release", "-q", "-p", "murmur-headless"], cwd=REPO, check=True)
@@ -237,7 +241,7 @@ def _job(job: dict[str, Any]) -> dict[str, Any]:
         else:
             spec, contacts = from_situation(job["situation"]), None
         opts = Options(agent=agent, operator=job.get("operator"), calibration=calib, anchors=job.get("anchors", True),
-                       model=job.get("model"))
+                       model=job.get("model"), **{k: job[k] for k in SECTION16 if job.get(k) is not None})
         try:
             rec = Episode(spec, job["seed"], wd, opts, contacts_path=contacts).run()
         except Exception as e:  # noqa: BLE001 (a failed episode is a record too)
@@ -479,6 +483,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-anchors", action="store_true")
     ap.add_argument("--no-build", action="store_true")
     ap.add_argument("--speed", action="store_true", help="also report episodes per core-hour (G1b)")
+    # docs/HEADLESS.md section 16 (v1 only), each off unless given
+    ap.add_argument("--signers", default=None, help='the engagement signers as JSON (signers.py: {"preset": ...})')
+    ap.add_argument("--review", default=None, help='the reviewer as JSON (review.py: {"preset": ...})')
+    ap.add_argument("--scripted", default=None, help="the scripted agent's plan as JSON (scripted.py; --agent scripted)")
+    ap.add_argument("--effects", default=None,
+                    help='engagement effects as JSON ({"p_hit", "spend_expended", "survives_miss"})')
+    ap.add_argument("--space-snapshot", default=None, help="the pinned element sets of this world "
+                    "(sim/headless/space/<world>/): the bridge's space segment and the emulator's SATCOM read them")
     ap.add_argument("--scoring", choices=["v1", "v2"], default="v1",
                     help="v2: the picture sampler, replicates, labels against the paired none replicate, "
                          "aggregate_v2.json and the scorecard (eval/SCORING-V2.md); v1 (default): as before")
@@ -508,6 +520,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.replicates != 1 or args.operators or args.policy or args.clocks or args.admissibility or args.reserve:
         raise SystemExit("--replicates, --operators, --policy, --clocks, --admissibility and --reserve are scoring "
                          "v2's: add --scoring v2")
+    if args.scripted and "scripted" not in args.agent:
+        raise SystemExit("--scripted is the scripted agent's plan: add --agent scripted")
     agents = list(dict.fromkeys(args.agent))
     if "model" in agents and not os.environ.get("MURMUR_EVAL_MODEL"):
         raise SystemExit("--agent model calls the Anthropic API: set MURMUR_EVAL_MODEL=1 to allow it (never in tests)")
@@ -532,9 +546,14 @@ def main(argv: list[str] | None = None) -> int:
             base.append({"situation": args.situation or "harbor-watch", "seed": s})
     # every situation and seed once per agent, agents interleaved (a capped batch stops evenly)
     jobs = [{**b, "agent": a} for b in base for a in agents]
+    section16 = {"signers": json.loads(args.signers) if args.signers else None,
+                 "review": json.loads(args.review) if args.review else None,
+                 "scripted": json.loads(args.scripted) if args.scripted else None,
+                 "effects": json.loads(args.effects) if args.effects else None,
+                 "space_snapshot": args.space_snapshot}
     for j in jobs:
         j.update(calibration=calib, operator=operator, out=str(out), keep_audit=args.keep_audit,
-                 anchors=not args.no_anchors, model=model_cfg if j["agent"] == "model" else None)
+                 anchors=not args.no_anchors, model=model_cfg if j["agent"] == "model" else None, **section16)
     t0 = time.time()
     if args.workers <= 1:
         results = [_job(j) for j in jobs]

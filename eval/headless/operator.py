@@ -156,7 +156,8 @@ class Operator:
     def _auto(self, now: float) -> float:
         action = "approve" if self.m.mode == "approve-all" else "reject"
         note = f"rules-only baseline: {action} all"
-        for i in self._inbox():
+        # engagement nominations are the signers' (a plain approve is refused for one)
+        for i in (c for c in self._inbox() if c.get("kind") != "engage"):
             state = self._answer(int(i["id"]), action, note)
             self.decisions.append({"t": round(now, 3), "intent_id": int(i["id"]), "action": action, "result": state})
         return now + 1.0
