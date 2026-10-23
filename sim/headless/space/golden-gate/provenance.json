@@ -1,0 +1,240 @@
+{
+ "command": ".venv/bin/python -m eval.headless.space snapshot --world golden-gate --cache sim/space/cache --catalog sim/space/constellations.toml --areas sim/space/areas.toml --note \"CelesTrak GP JSON (celestrak.org/NORAD/elements/gp.php), each query's file imported into sim/space/cache with murmur-space import on 2026-10-02 (fetched_at in element_sets); the catalog and areas as committed at the snapshot's commit\"",
+ "element_sets": [
+  {
+   "bytes": 423,
+   "fetched_at": "2026-10-02T17:28:27.262443107Z",
+   "objects": 1,
+   "query": "CATNR=25544",
+   "url": "import:/tmp/claude-1000/-home-david-murmur/6da11d89-9fdb-4aa3-943f-9de195c16367/scratchpad/catnr-25544.json"
+  },
+  {
+   "bytes": 13259,
+   "fetched_at": "2026-10-02T17:28:27.171555493Z",
+   "objects": 32,
+   "query": "GROUP=gps-ops",
+   "url": "import:/tmp/claude-1000/-home-david-murmur/6da11d89-9fdb-4aa3-943f-9de195c16367/scratchpad/group-gps-ops.json"
+  },
+  {
+   "bytes": 22497,
+   "fetched_at": "2026-10-02T17:28:26.625385513Z",
+   "objects": 55,
+   "query": "GROUP=intelsat",
+   "url": "import:/tmp/claude-1000/-home-david-murmur/6da11d89-9fdb-4aa3-943f-9de195c16367/scratchpad/group-intelsat.json"
+  },
+  {
+   "bytes": 33403,
+   "fetched_at": "2026-10-02T17:28:26.468774572Z",
+   "objects": 80,
+   "query": "GROUP=iridium-NEXT",
+   "url": "import:/tmp/claude-1000/-home-david-murmur/6da11d89-9fdb-4aa3-943f-9de195c16367/scratchpad/group-iridium-next.json"
+  },
+  {
+   "bytes": 49144,
+   "fetched_at": "2026-10-02T17:28:26.921518578Z",
+   "objects": 117,
+   "query": "GROUP=planet",
+   "url": "import:/tmp/claude-1000/-home-david-murmur/6da11d89-9fdb-4aa3-943f-9de195c16367/scratchpad/group-planet.json"
+  },
+  {
+   "bytes": 4700519,
+   "fetched_at": "2026-10-02T17:28:26.376736562Z",
+   "objects": 11125,
+   "query": "GROUP=starlink",
+   "url": "import:/tmp/claude-1000/-home-david-murmur/6da11d89-9fdb-4aa3-943f-9de195c16367/scratchpad/starlink.json"
+  },
+  {
+   "bytes": 3864,
+   "fetched_at": "2026-10-02T17:28:26.997373117Z",
+   "objects": 9,
+   "query": "NAME=CAPELLA",
+   "url": "import:/tmp/claude-1000/-home-david-murmur/6da11d89-9fdb-4aa3-943f-9de195c16367/scratchpad/name-capella.json"
+  },
+  {
+   "bytes": 417,
+   "fetched_at": "2026-10-02T17:28:26.844004833Z",
+   "objects": 1,
+   "query": "NAME=GEOEYE",
+   "url": "import:/tmp/claude-1000/-home-david-murmur/6da11d89-9fdb-4aa3-943f-9de195c16367/scratchpad/name-geoeye.json"
+  },
+  {
+   "bytes": 22142,
+   "fetched_at": "2026-10-02T17:28:27.075583848Z",
+   "objects": 53,
+   "query": "NAME=ICEYE",
+   "url": "import:/tmp/claude-1000/-home-david-murmur/6da11d89-9fdb-4aa3-943f-9de195c16367/scratchpad/name-iceye.json"
+  },
+  {
+   "bytes": 2500,
+   "fetched_at": "2026-10-02T17:28:26.772478213Z",
+   "objects": 6,
+   "query": "NAME=LEGION",
+   "url": "import:/tmp/claude-1000/-home-david-murmur/6da11d89-9fdb-4aa3-943f-9de195c16367/scratchpad/name-legion.json"
+  },
+  {
+   "bytes": 4057,
+   "fetched_at": "2026-10-02T17:28:26.539388005Z",
+   "objects": 10,
+   "query": "NAME=WGS",
+   "url": "import:/tmp/claude-1000/-home-david-murmur/6da11d89-9fdb-4aa3-943f-9de195c16367/scratchpad/name-wgs.json"
+  },
+  {
+   "bytes": 1703,
+   "fetched_at": "2026-10-02T17:28:26.697168309Z",
+   "objects": 4,
+   "query": "NAME=WORLDVIEW",
+   "url": "import:/tmp/claude-1000/-home-david-murmur/6da11d89-9fdb-4aa3-943f-9de195c16367/scratchpad/name-worldview.json"
+  }
+ ],
+ "files": [
+  {
+   "bytes": 10520,
+   "from": "sim/space/constellations.toml",
+   "name": "constellations.toml",
+   "sha256": "32ee75529d915421de313decbeb5ebf3686f16c65eb8f84b77e27e7cc317a473"
+  },
+  {
+   "bytes": 734,
+   "from": "sim/space/areas.toml",
+   "name": "areas.toml",
+   "sha256": "5a79425cfb5adc723c7bb41147a7b77aba350284be2d5d98176f4a503ef5f52e"
+  },
+  {
+   "bytes": 423,
+   "name": "cache/catnr-25544.json",
+   "query": "CATNR=25544",
+   "sha256": "157e0bf1472e754a3570ea2edf00513ba1e70a8a7c6909f6f13e4bd1bace3913"
+  },
+  {
+   "bytes": 230,
+   "name": "cache/catnr-25544.meta.json",
+   "sha256": "894222899c14eee3dee96383560c60c58052dd19c74752ff752b1e5359ce27f6"
+  },
+  {
+   "bytes": 13259,
+   "name": "cache/group-gps-ops.json",
+   "query": "GROUP=gps-ops",
+   "sha256": "d0b450afd2cb7f832cf9849671341c486ce9e6840508a8106600a61aaff5693a"
+  },
+  {
+   "bytes": 237,
+   "name": "cache/group-gps-ops.meta.json",
+   "sha256": "656761b87a9515f8a5f9088bf1fb4eb0e57181561b1b5f53deca8b97f29b2cb0"
+  },
+  {
+   "bytes": 22497,
+   "name": "cache/group-intelsat.json",
+   "query": "GROUP=intelsat",
+   "sha256": "f492d297dce096d221e9ef6612d05638326be221486830436064ea786765d81a"
+  },
+  {
+   "bytes": 239,
+   "name": "cache/group-intelsat.meta.json",
+   "sha256": "78c9fe5a2aa1f80f474e472a34889ee44c8eeb1f21d85c7ac0c28b13d7830a89"
+  },
+  {
+   "bytes": 33403,
+   "name": "cache/group-iridium-next.json",
+   "query": "GROUP=iridium-NEXT",
+   "sha256": "78927a25c2066443da80a3080e0ebef926fb020bb1b3ca8a2d704c275f9993c9"
+  },
+  {
+   "bytes": 247,
+   "name": "cache/group-iridium-next.meta.json",
+   "sha256": "964c7cbcf5393fe9190f6a35271f97b1c9258570005222afe170cdd5e7b08f07"
+  },
+  {
+   "bytes": 49144,
+   "name": "cache/group-planet.json",
+   "query": "GROUP=planet",
+   "sha256": "db42908e380618aadef9020786df1c31a57f90d2830bc06d1556bad83f06031d"
+  },
+  {
+   "bytes": 236,
+   "name": "cache/group-planet.meta.json",
+   "sha256": "fb77bba9cd8682f8d574d9778381189774195bba909f05f065836864270d6f44"
+  },
+  {
+   "bytes": 4700519,
+   "name": "cache/group-starlink.json",
+   "query": "GROUP=starlink",
+   "sha256": "4cbc17dff1e9e19afb1b2f2b9f9bd7d2de70658704f25a99adae3d246b4f20ba"
+  },
+  {
+   "bytes": 238,
+   "name": "cache/group-starlink.meta.json",
+   "sha256": "c6fb182b4dd4f31bf60d60f6f310a586568ff455b2a7f2e054a742dad85dd159"
+  },
+  {
+   "bytes": 3864,
+   "name": "cache/name-capella.json",
+   "query": "NAME=CAPELLA",
+   "sha256": "b71d9bf3cbcc6c1a1dc6db902cf024ccffd7d09ec2be4837f8d9d5f21bc11770"
+  },
+  {
+   "bytes": 233,
+   "name": "cache/name-capella.meta.json",
+   "sha256": "fb2de0f3168c087a5a94c39e77563970c7fd78896258be5f63ad9338414c366c"
+  },
+  {
+   "bytes": 417,
+   "name": "cache/name-geoeye.json",
+   "query": "NAME=GEOEYE",
+   "sha256": "ccff734e3e678a2249868f08daee797151eaf76b3e3922eda4c373e43005492c"
+  },
+  {
+   "bytes": 230,
+   "name": "cache/name-geoeye.meta.json",
+   "sha256": "76d8f52148072ac15c8758186b7e61f3675dafa509cdebf484b23f4cbc1f7c3c"
+  },
+  {
+   "bytes": 22142,
+   "name": "cache/name-iceye.json",
+   "query": "NAME=ICEYE",
+   "sha256": "0ac79f27328de05d374e439ad7bab293b22b3e541e822ba703fcf5e30354e9ba"
+  },
+  {
+   "bytes": 231,
+   "name": "cache/name-iceye.meta.json",
+   "sha256": "36be3fda3252320cab5e7dfea15acd6c5f44eff96337a1d74e6cd91a56bb751b"
+  },
+  {
+   "bytes": 2500,
+   "name": "cache/name-legion.json",
+   "query": "NAME=LEGION",
+   "sha256": "5ce88b76348b047ff4db10545223d75d2ca9f3b287ddad7066648dee354f2561"
+  },
+  {
+   "bytes": 231,
+   "name": "cache/name-legion.meta.json",
+   "sha256": "df246acffd0209ff5669848d4a9296ea57367c28248325f93bf15118f33d1326"
+  },
+  {
+   "bytes": 4057,
+   "name": "cache/name-wgs.json",
+   "query": "NAME=WGS",
+   "sha256": "6c8531e7de808efec986e1589630ff3b0b8dfb9571ed9d7ba101b60d2c9390cf"
+  },
+  {
+   "bytes": 226,
+   "name": "cache/name-wgs.meta.json",
+   "sha256": "8599373e35548277a1d7771f19575e85058df9dca89903bffd99c4919c4182ec"
+  },
+  {
+   "bytes": 1703,
+   "name": "cache/name-worldview.json",
+   "query": "NAME=WORLDVIEW",
+   "sha256": "bfe1694afba6ea01d5a998fd942fc3374780a9a8edaf25a8d0ef2201604c680b"
+  },
+  {
+   "bytes": 237,
+   "name": "cache/name-worldview.meta.json",
+   "sha256": "666a4d26e78f1463846bd5cf54b0bf23b8df2e07a7bffc7e4afbee54470e1087"
+  }
+ ],
+ "id": "970ff616e5fbd4ccc1ebd7213f6c71d4792da778c6aa8822f2a4c7190fb8944d",
+ "made": "2026-10-23",
+ "source": "CelesTrak GP JSON (celestrak.org/NORAD/elements/gp.php), each query's file imported into sim/space/cache with murmur-space import on 2026-10-02 (fetched_at in element_sets); the catalog and areas as committed at the snapshot's commit",
+ "what": "satellite element sets pinned for the headless simulator's space segment (docs/HEADLESS.md)",
+ "world": "golden-gate"
+}
