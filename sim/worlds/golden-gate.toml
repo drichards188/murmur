@@ -1,0 +1,65 @@
+# The Golden Gate: every situation and record before world v3 ran here (eval/world.py; the format
+# in sim/worlds/README.md). Each value below is what the code held as a constant until world v3,
+# moved here unchanged, so every v1 and v2 situation gives exactly the results it gave before.
+name = "golden-gate"
+title = "Golden Gate"
+fleet = "sim/fleets/harbor-watch.toml"        # Harbor watch's four stand-ins
+areas = "sim/areas"                           # the bridge's MURMUR_AREAS default: golden-gate.geojson
+tidewater = "golden-gate-2026-06"             # ~/tidewater/scenarios: spring tides, 13-16 June 2026
+at = "2026-06-14T10:00:00Z"
+# The operating area and a margin (the oracle's link map covers it: eval/headless/agents_v2.py).
+operating_box = { lat_min = 37.74, lat_max = 37.90, lon_min = -122.57, lon_max = -122.35 }
+
+# Baked from tidewater (eval/headless/bake_world.py golden-gate; provenance beside each file).
+[terrain]
+surface = "sim/headless/terrain/golden-gate.grid.gz"           # max(elevation, water level): link line of sight
+land_water = "sim/headless/terrain/golden-gate.water.grid.gz"  # water level minus elevation: the domain rule
+box = { lat_min = 37.74, lat_max = 37.90, lon_min = -122.62, lon_max = -122.36 }
+spacing_m = 20.0
+sampled_at = "2026-06-14T10:00:00Z"
+
+# Tidewater's currents (SFBOFS, NOAA's model of the bay) on the scenario's area, hourly over its
+# whole window, for drifting contacts and our drifters and boats.
+[currents]
+field = "sim/headless/terrain/golden-gate.currents.gz"
+box = { lat_min = 37.77, lat_max = 37.88, lon_min = -122.56, lon_max = -122.38 }
+spacing_m = 250.0
+from = "2026-06-13T00:00:00Z"
+to = "2026-06-16T00:00:00Z"
+step_s = 3600.0
+
+[links]
+file = "sim/links.toml"
+
+# Where the operator's radios are (sim/links.toml's [ground_station]).
+[[ground_station]]
+name = "Crissy Field"
+lat = 37.8068
+lon = -122.4460
+alt_m = 5.0
+
+# Named reference points, [lon, lat].
+[points]
+bridge = [-122.4783, 37.8199]              # the Golden Gate Bridge, mid-span (the protected point)
+mouth = [-122.5050, 37.8100]               # the strait's mouth, west of the bridge
+bay_axis = [-122.4500, 37.8250]            # east of the bridge, mid-channel
+channel_east_south = [-122.4720, 37.8135]  # HUNTER 1's patrol line east of the bridge
+channel_east_north = [-122.4720, 37.8250]
+bay_entrance = [-122.5050, 37.8150]        # REAPER 1's wide orbit over the bay entrance
+lime_point = [-122.4680, 37.8240]          # PUMA 2's station
+crissy_field = [-122.4460, 37.8068]        # the launch site and the ground station
+
+# The labels' rule: unknown, suspect or hostile within 3 km of the bridge needs a look within 60 s.
+[mission]
+center = "bridge"
+radius_m = 3000.0
+grace_s = 60.0
+
+# What a situation's conditions are drawn from (eval/world.py `draw_conditions`). Nothing reads
+# them before world v3's sensor model (A1); no v1 or v2 situation draws them.
+[conditions]
+at = ["2026-06-13T00:00:00Z", "2026-06-15T23:00:00Z"]  # inside tidewater's window and the baked currents'
+utc_offset_h = -7                          # PDT
+visibility_km = [0.2, 30.0]                # [E] advection fog in the strait under 200 m; clear days 30 km and more
+wind_mps = [2.98, 7.76]                    # tidewater's HRRR wind at the bridge, hourly over the window (bake_world.py)
+sea_state = [0, 5]                         # [E] Douglas; the bar outside the Gate breaks in a big swell

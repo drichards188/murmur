@@ -1,0 +1,42 @@
+{
+ "baked": "2026-10-23",
+ "box": {
+  "lat_max": 37.9,
+  "lat_min": 37.74,
+  "lon_max": -122.36,
+  "lon_min": -122.62
+ },
+ "command": ".venv/bin/python -m eval.headless.bake_world golden-gate --url http://127.0.0.1:9571 --only land_water currents",
+ "dims": {
+  "nlat": 892,
+  "nlon": 1145
+ },
+ "file": "golden-gate.water.grid.gz",
+ "nodata_points": 535844,
+ "sampled_at": "2026-06-14T10:00:00Z",
+ "scenario": "golden-gate-2026-06",
+ "sha256": "dd0aa39e0d458fe4990a79df176630517d07b14570068d965796978293e598a6",
+ "spacing_m": 20.0,
+ "tidewater": {
+  "commit": "3a531c9e90dd5ad288f431ecd48b65e0e06ee2ef",
+  "info": {
+   "bounds": {
+    "east": -122.38,
+    "north": 37.88,
+    "south": 37.77,
+    "west": -122.56
+   },
+   "name": "golden-gate-2026-06",
+   "time_range": {
+    "end": "2026-06-16T00:00:00+00:00",
+    "end_unix": 1781568000.0,
+    "start": "2026-06-13T00:00:00+00:00",
+    "start_unix": 1781308800.0
+   },
+   "title": "Golden Gate, spring tides, 13-16 June 2026"
+  }
+ },
+ "water_points": 258453,
+ "what": "water depth (water level minus elevation: above 0 water, else land), metres x 10, tidewater's water_depth_m",
+ "world": "golden-gate"
+}

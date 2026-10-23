@@ -74,15 +74,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from eval.world import DEFAULT_WORLD, load_world
+
 from . import HERE, REPO
 from .situations import TERRAIN_GRID, EpisodeSpec, fleet_plan, from_situation
 from .v2.mission import MISSION, MISSION_SHA256
 
-GATE = (-122.4783, 37.8199)
+#: the v1 and v2 families are the Golden Gate's: their reference points are its world's
+#: (sim/worlds/golden-gate.toml)
+WORLD = load_world(DEFAULT_WORLD)
+GATE = WORLD.point("bridge")
 #: link-cut-mid-look: no look dispatched by then, no cut (the cut and its window still fit in 720 s)
 LINK_CUT_DEADLINE_S = 600.0
-MOUTH = (-122.5050, 37.8100)  # the strait's mouth, west of the bridge
-BAY_AXIS = (-122.4500, 37.8250)  # east of the bridge, mid-channel
+MOUTH = WORLD.point("mouth")  # the strait's mouth, west of the bridge
+BAY_AXIS = WORLD.point("bay_axis")  # east of the bridge, mid-channel
 BASE_CONTACTS = REPO / "sim" / "scenarios" / "harbor-watch.toml"
 BASE_FAST_BOAT = "fastboat-west"
 
@@ -354,12 +359,12 @@ def generate(family: str, seed: int, workdir: Path, world: str = "v1",
         for k in range(n):
             if k % 2 == 0:
                 dx = rng.uniform(-300, 300)
-                a = offset((-122.4720, 37.8135), 90, dx)
-                b = offset((-122.4720, 37.8250), 90, dx)
+                a = offset(WORLD.point("channel_east_south"), 90, dx)
+                b = offset(WORLD.point("channel_east_north"), 90, dx)
                 props.append({"task": "patrol", "uids": [1], "route": [list(a), list(b)],
                               "note": "scripted flood: patrol the channel east of the bridge"})
             else:
-                c = offset((-122.5050, 37.8150), rng.uniform(0, 360), rng.uniform(0, 1000))
+                c = offset(WORLD.point("bay_entrance"), rng.uniform(0, 360), rng.uniform(0, 1000))
                 props.append({"task": "orbit", "uids": [2], "center": list(c), "radius_m": round(rng.uniform(2000, 2500)),
                               "note": "scripted flood: orbit over the bay entrance"})
         script.append({"kind": "flood", "at_s": at, "window_s": window, "proposals": props})
@@ -404,7 +409,8 @@ OFF_APPROACHES_M = 3500.0
 #: -122.4768), so its transit from its opening orbit and its return home never cross the bridge's
 #: line, where the towers' no-go boxes are
 WEST_OF_TOWERS_LON = -122.482
-AREAS_FILE = REPO / "sim" / "areas" / "golden-gate.geojson"
+#: the world's areas (a directory, as the bridge's MURMUR_AREAS)
+AREAS_FILE = WORLD.areas
 
 #: crates/murmur-bridge/src/tracks/sensing.rs `SensorType`, in declaration order (`sensor as u64`)
 SENSOR_INDEX = {"radar": 0, "eo_ir": 1, "ais": 2, "sonar": 3, "esm": 4}
@@ -459,14 +465,16 @@ def sensing_draws(seed: int, rate: float, ids: list[str], sensors: tuple[str, ..
 
 
 class Areas:
-    """sim/areas/golden-gate.geojson: the approved area and the no-go areas (by their bounding
-    boxes, which is what they are: rectangles)."""
+    """The world's areas (the Golden Gate's: sim/areas/golden-gate.geojson): the approved area
+    and the no-go areas (by their bounding boxes, which is what they are: rectangles). A
+    directory is every `*.geojson` in it in name order, as the bridge loads `MURMUR_AREAS`."""
 
     def __init__(self, path: Path = AREAS_FILE):
-        gj = json.loads(path.read_text())
+        files = sorted(path.glob("*.geojson")) if path.is_dir() else [path]
+        features = [f for p in files for f in json.loads(p.read_text())["features"]]
         self.approved: list[tuple[float, float, float, float]] = []
         self.no_go: list[tuple[float, float, float, float]] = []
-        for f in gj["features"]:
+        for f in features:
             kind = f["properties"].get("kind")
             if kind not in ("approved", "no_go"):
                 continue
@@ -770,12 +778,13 @@ def need_deadline_s(c: dict[str, Any]) -> float | None:
     contacts process's start, a few seconds in, left out). None if it never comes that close."""
     route = [tuple(p) for p in c.get("route") or []]
     travelled = 0.0
+    m = WORLD.mission
     for a, b in zip(route, route[1:]):
         n = max(1, int(dist_m(a, b) / 10.0))
         step = dist_m(a, b) / n
         for k in range(n + 1):
-            if dist_m(lerp(a, b, k / n), GATE) <= 3000.0:
-                return float(c.get("start_s", 0.0)) + (travelled + k * step) / float(c["speed_mps"]) + 60.0
+            if dist_m(lerp(a, b, k / n), m.center) <= m.radius_m:
+                return float(c.get("start_s", 0.0)) + (travelled + k * step) / float(c["speed_mps"]) + m.grace_s
         travelled += dist_m(a, b)
     return None
 

@@ -6,6 +6,14 @@ The fleet manifest and the stand-ins' configs are `sim/swarm.py`'s own (`plan`,
 `standin_params`, as `scripts/up.sh` and eval/stack.py use them); the bridge's environment is
 the one `eval/situation_run.py` gives a situation's stack (its roster, agents, run id, policy,
 scenario clock, simulation token, no resume).
+
+**The world** (eval/world.py, sim/worlds/<name>.toml; world v3's H5) gives what was the Golden
+Gate's alone: the terrain grid the link emulator reads, the links file and its ground station,
+the operator's areas and, by the situation's `[headless]` choice, the land/water grid the
+bridge's domain rule reads (H1) and the water our boats and the drifting contacts move in (H4).
+A spec that says nothing of them (`EpisodeSpec`'s defaults: the Golden Gate, no terrain source
+for the domain rule, still water) runs exactly as every episode before world v3, and its record
+has none of world v3's keys.
 """
 
 from __future__ import annotations
@@ -26,13 +34,16 @@ from eval.situation import (
     brief_text,
     load_situation,
 )
+from eval.world import DEFAULT_WORLD, World, load_world
 
 from . import HERE, REPO
 
-#: the Golden Gate Bridge, mid-span (Harbor watch's protected point)
-GATE = (-122.4783, 37.8199)
-#: the terrain grid baked from tidewater (sim/headless/terrain/README.md)
-TERRAIN_GRID = REPO / "sim" / "headless" / "terrain" / "golden-gate.grid.gz"
+#: the Golden Gate Bridge, mid-span (Harbor watch's protected point): the Golden Gate world's
+#: `bridge` point
+GATE = load_world(DEFAULT_WORLD).point("bridge")
+#: the terrain grid baked from tidewater (sim/headless/terrain/README.md): the Golden Gate
+#: world's surface grid
+TERRAIN_GRID: Path = load_world(DEFAULT_WORLD).surface_grid  # type: ignore[assignment]
 #: the station's ports in a headless run: identifiers only, nothing is bound
 HTTP_PORT = 9565
 VEHICLE_BASE = 29000
@@ -93,6 +104,48 @@ def links_file() -> Path:
     return Path(os.environ.get("MURMUR_LINKS") or REPO / "sim" / "links.toml")
 
 
+def links_for(w: World, workdir: Path) -> Path:
+    """The link profiles of an episode in world `w`: MURMUR_LINKS when set (as `links_file`),
+    else the world's links file, as it is when its `[ground_station]` is the world's (the Golden
+    Gate's: sim/links.toml, byte for byte), else a copy in `workdir` with the world's station in
+    it. The link emulator has one ground station, so a world naming more is refused here."""
+    if os.environ.get("MURMUR_LINKS"):
+        return links_file()
+    base = w.links
+    if not w.ground_stations:
+        return base
+    if len(w.ground_stations) > 1:
+        raise ValueError(f"{w.path}: {len(w.ground_stations)} ground stations; the link emulator has one "
+                         "(crates/murmur-linkemu: [ground_station])")
+    gs = w.ground_stations[0]
+    text = base.read_text()
+    cur = tomllib.loads(text).get("ground_station") or {}
+    if (cur.get("lat"), cur.get("lon"), cur.get("alt_m")) == (gs.lat, gs.lon, gs.alt_m):
+        return base
+    want = {"lat": gs.lat, "lon": gs.lon, "alt_m": gs.alt_m}
+    out, inside, done = [], False, set()
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("["):
+            if inside:
+                out += [f"{k} = {v!r}" for k, v in want.items() if k not in done]
+            inside = s == "[ground_station]"
+        key = s.split("=", 1)[0].strip() if inside and "=" in s and not s.startswith("#") else None
+        if key in want:
+            out.append(f"{key} = {want[key]!r}")
+            done.add(key)
+            continue
+        out.append(line)
+    if inside:
+        out += [f"{k} = {v!r}" for k, v in want.items() if k not in done]
+    if "ground_station" not in tomllib.loads(text):
+        # a table at the end (one at the top would take the file's top-level keys into it)
+        out += ["", "[ground_station]", *[f"{k} = {v!r}" for k, v in want.items()]]
+    path = workdir / f"links-{w.name}.toml"
+    path.write_text("\n".join(out) + "\n")
+    return path
+
+
 @dataclass
 class EpisodeSpec:
     """One situation as the driver runs it."""
@@ -131,6 +184,36 @@ class EpisodeSpec:
     # scoring v2's replicate r of the situation (SCORING-V2.md section 1), set by whoever runs
     # replicates; None: the episode seed tells them apart (`run_id`)
     replicate: int | None = None
+    # world v3 (eval/world.py): the world it runs in (sim/worlds/<map>.toml; `world` above is the
+    # scoring world, v1 or v2) and what the simulator takes from it. The defaults are every
+    # episode's before world v3, so a spec that says nothing runs and records as before:
+    # `domain_rule` "not_evaluated" (no terrain source for the bridge's domain rule) or "grid" (the
+    # world's land/water grid); `currents` "none" (still water) or "world" (the world's current
+    # field moves drifting contacts, and our vehicles that take conditions get their water from
+    # the world: depth, current and the drawn wind); `conditions` drawn by the generator
+    # (`World.draw_conditions`), recorded, its wind in our vehicles' water.
+    map: str = DEFAULT_WORLD
+    domain_rule: str = "not_evaluated"
+    currents: str = "none"
+    conditions: dict[str, Any] | None = None
+
+    @property
+    def place(self) -> World:
+        """The world it runs in."""
+        return load_world(self.map)
+
+    def as_before_world_v3(self) -> bool:
+        """Nothing of world v3: the Golden Gate, no terrain source, still water, no conditions
+        (its record carries no `world` key; every v1 and v2 situation)."""
+        return (self.map == DEFAULT_WORLD and self.domain_rule == "not_evaluated" and self.currents == "none"
+                and not self.conditions)
+
+    def world_record(self) -> dict[str, Any] | None:
+        """What a record says of its world (None before world v3: no key, the record unchanged)."""
+        if self.as_before_world_v3():
+            return None
+        return {"name": self.map, "domain_rule": self.domain_rule, "currents": self.currents,
+                "conditions": self.conditions}
 
     def operator_note(self, operator: str) -> str:
         """How the scripted operator signs its decisions' notes. v1 names the situation, as it
@@ -162,7 +245,8 @@ def run_id(e: EpisodeSpec, seed: int) -> str:
 
 
 def from_situation(path_or_name: str | Path) -> EpisodeSpec:
-    """A situation file (sim/situations/), as its runner would run it on autoplay."""
+    """A situation file (sim/situations/), as its runner would run it on autoplay: its world and
+    `[headless]` choices, and its timeline (`[[step]]`) as the script's items (`timeline`)."""
     sit: Situation = load_situation(path_or_name)
     if sit.todo:
         raise ValueError(f"{sit.path}: a stub, not runnable")
@@ -174,8 +258,19 @@ def from_situation(path_or_name: str | Path) -> EpisodeSpec:
         name=sit.name, fleet=sit.fleet, contacts=sit.contacts, policy=sit.policy, at=sit.at,
         duration_s=sit.duration_s, ai_start_s=sit.ai_start_s, ready_timeout_s=sit.ready_timeout_s,
         orders=list(sit.orders), playbook=dict(sit.playbook), autoplay=dict(sit.autoplay), seed=sit.seed,
-        events=events, path=sit.path, config_name=sit.name, brief=brief_text(sit),
+        events=events, path=sit.path, config_name=sit.name, brief=brief_text(sit), script=timeline(sit),
+        map=sit.world, domain_rule=sit.domain_rule, currents=sit.currents,
     )
+
+
+def timeline(sit: Situation) -> list[dict[str, Any]]:
+    """A situation's `[[step]]`s as the script's items (script.py `step`): each at its `at_s`,
+    with its id, kind and keys, and the storyline's proposer. A `note` is the panel's (display
+    only, as live): the simulator has no panel, so it is left out, and Harbor watch's two notes
+    leave its script empty, as before."""
+    return [{"kind": "step", "at_s": float(s.at_s), "id": s.id, "step": s.kind, "params": dict(s.params),
+             "proposer": sit.storyline_proposer}
+            for s in sit.steps if s.kind != "note"]
 
 
 def _swarm() -> Any:
@@ -208,11 +303,11 @@ def fleet_plan(fleet: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]
     return vehicles, standins
 
 
-def space_cache_file() -> Path:
+def space_cache_file(links: Path | None = None) -> Path:
     """Where SATCOM looks are kept between episodes (crates/murmur-headless space_cache.rs):
     one file per set of element sets and link profiles, so a new fetch or new profiles start a
     new one."""
-    links = links_file()
+    links = links or links_file()
     h = hashlib.sha256(links.read_bytes())
     cache = REPO / "sim" / "space" / "cache"
     if cache.is_dir():
@@ -224,9 +319,12 @@ def space_cache_file() -> Path:
 def process_spec(e: EpisodeSpec, seed: int, workdir: Path, calib: Calibration,
                  terrain: bool = True, space: bool = True, anchors: bool = True,
                  contacts_path: Path | None = None) -> tuple[dict[str, Any], dict[str, str]]:
-    """The `murmur-headless` spec and environment for one episode."""
+    """The `murmur-headless` spec and environment for one episode, in its world (module doc)."""
     vehicles, standins = fleet_plan(e.fleet)
     contacts = contacts_path or e.contacts
+    w = e.place
+    links = links_for(w, workdir)
+    grid = w.surface_grid
     spec: dict[str, Any] = {
         "seed": int(seed),
         "epoch": at_unix(e.at),
@@ -237,12 +335,12 @@ def process_spec(e: EpisodeSpec, seed: int, workdir: Path, calib: Calibration,
         "bridge_base": BRIDGE_BASE,
         "fleet": vehicles,
         "standins": standins,
-        "links": str(links_file()),
+        "links": str(links),
         "linkemu_seed": emulator_seed(seed),
         "events": e.events,
-        "terrain_grid": str(TERRAIN_GRID) if terrain and TERRAIN_GRID.exists() else None,
+        "terrain_grid": str(grid) if terrain and grid is not None and grid.exists() else None,
         "space": space,
-        "space_cache": str(space_cache_file()) if space else None,
+        "space_cache": str(space_cache_file(links)) if space else None,
         "contacts":({"scenario": str(contacts), "start_s": calib.contacts_start_s, "seed": e.contacts_seed}
                      if contacts else None),
         "standins_start_s": calib.standins_start_s,
@@ -271,8 +369,41 @@ def process_spec(e: EpisodeSpec, seed: int, workdir: Path, calib: Calibration,
         # the bridge serves the emulator's view (/api/links) as with an emulator; nothing polls
         "MURMUR_LINKEMU_URL": "http://headless.invalid:1",
         # the bridge's lost-link timers (estimate.rs) from the same profiles as the emulator's
-        "MURMUR_LINKS": str(links_file()),
+        "MURMUR_LINKS": str(links),
     }
     if not anchors:
         env["MURMUR_ANCHORS"] = "0"
+    world_spec(e, w, spec, env)
     return spec, env
+
+
+def world_spec(e: EpisodeSpec, w: World, spec: dict[str, Any], env: dict[str, str]) -> None:
+    """What the world adds to the spec and the bridge's environment, each only when the episode
+    asks for it, so an episode as before world v3 has exactly its spec and environment of then:
+    the operator's areas when they are not the bridge's default (`MURMUR_AREAS`); the land/water
+    grid for the domain rule (`MURMUR_LAND_WATER_GRID`, read by the bridge's own `Settings`); the
+    water (`spec["water"]`: the land/water grid for depth, the current field, the drawn wind)."""
+    if w.areas.resolve() != (REPO / "sim" / "areas").resolve():
+        env["MURMUR_AREAS"] = str(w.areas)
+    if e.domain_rule == "grid":
+        if w.land_water_grid is None or not w.land_water_grid.exists():
+            raise ValueError(f"{w.path}: domain_rule grid, but no baked land/water grid (eval/headless/bake_world.py)")
+        env["MURMUR_LAND_WATER_GRID"] = str(w.land_water_grid)
+    elif e.domain_rule != "not_evaluated":
+        raise ValueError(f"domain_rule {e.domain_rule!r}: grid or not_evaluated")
+    if e.currents == "world":
+        if w.currents is None or not w.currents.field.exists():
+            raise ValueError(f"{w.path}: currents world, but no baked current field (eval/headless/bake_world.py)")
+        water: dict[str, Any] = {"currents": str(w.currents.field)}
+        if w.land_water_grid is not None and w.land_water_grid.exists():
+            water["land_water"] = str(w.land_water_grid)
+        c = e.conditions or {}
+        if c.get("wind_mps") is not None and c.get("wind_from_deg") is not None:
+            import math
+
+            # the wind blows from wind_from_deg: its velocity points the other way
+            to = math.radians(float(c["wind_from_deg"]) + 180.0)
+            water["wind_en"] = [round(float(c["wind_mps"]) * math.sin(to), 4), round(float(c["wind_mps"]) * math.cos(to), 4)]
+        spec["water"] = water
+    elif e.currents != "none":
+        raise ValueError(f"currents {e.currents!r}: world or none")

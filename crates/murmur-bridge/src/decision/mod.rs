@@ -303,6 +303,10 @@ pub struct Settings {
     /// How operators are authenticated (`MURMUR_AUTH`: credentials unless `dev`).
     pub auth: AuthMode,
     pub tidewater: Option<String>,
+    /// A baked land/water grid for the domain rule when there is no tidewater
+    /// (`MURMUR_LAND_WATER_GRID`; world v3's H1, the headless simulator's worlds): see
+    /// [`terrain`]. Not read with a tidewater URL.
+    pub land_water: Option<PathBuf>,
     /// Run-time anchors of the audit log (`logs/anchors/<run-id>.anchors`, or
     /// `MURMUR_ANCHOR_DIR`; every `MURMUR_ANCHOR_EVERY` events, 100; `MURMUR_ANCHOR_CMD` gets
     /// each one). `MURMUR_ANCHORS=0` turns them off.
@@ -356,6 +360,7 @@ impl Settings {
             // (a dev run unless MURMUR_AUTH=credentials)
             auth: AuthMode::Dev,
             tidewater: var("MURMUR_TIDEWATER_URL"),
+            land_water: var("MURMUR_LAND_WATER_GRID").map(PathBuf::from),
             last_run: Some(root.join("logs/audit").join(format!(
                 ".last-run-{}",
                 var("MURMUR_HTTP_PORT").and_then(|p| p.parse::<u16>().ok()).unwrap_or(8765)
@@ -603,7 +608,7 @@ impl Decision {
                 sink,
                 audit_path: s.audit.clone(),
                 clock,
-                terrain: Terrain::new(s.tidewater.as_deref()),
+                terrain: Terrain::with_grid(s.tidewater.as_deref(), s.land_water.as_deref()),
                 operators: s.operators.clone(),
                 engage_operators: s.engage_operators.clone(),
                 scripted: s.scripted.clone(),
@@ -813,6 +818,11 @@ impl Decision {
 
     pub fn terrain_configured(&self) -> bool {
         self.terrain.configured()
+    }
+
+    /// The baked land/water grid the domain rule reads, when it reads one (no tidewater).
+    pub fn terrain_grid(&self) -> Option<String> {
+        self.terrain.grid_source()
     }
 
     /// Give the engine the space segment (once `crate::space` has loaded it), with the

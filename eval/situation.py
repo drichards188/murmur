@@ -97,10 +97,19 @@ SITUATION_PORTS = {
 }
 
 TOP_KEYS = {
-    "title", "brief", "director", "todo", "fleet", "contacts", "events", "policy", "duration_s",
+    "title", "brief", "director", "todo", "world", "fleet", "contacts", "events", "policy", "duration_s",
     "rate", "at", "tidewater", "operator", "ai", "cosigner", "reveal", "seed", "ready_timeout_s", "ai_start_s",
-    "order", "step", "watch", "playbook", "storyline", "autoplay",
+    "order", "step", "watch", "playbook", "storyline", "autoplay", "headless",
 }
+# `[headless]`: what the headless simulator takes from the world (docs/HEADLESS.md, worlds); a
+# live run reads tidewater itself and ignores the table. `domain_rule`: "grid", the world's baked
+# land/water grid answers the bridge's domain rule (the default), or "not_evaluated", no terrain
+# source, as every headless run before world v3; `currents`: "world", the world's baked current
+# field moves drifting contacts, and our boats and drifters get their water (current and depth)
+# from the world (the default), or "none", still water, as before world v3.
+HEADLESS_KEYS = {"domain_rule", "currents"}
+DOMAIN_RULES = ("grid", "not_evaluated")
+CURRENTS = ("world", "none")
 ORDER_KEYS = {"id", "task", "vehicles", "center", "radius_m", "route", "target", "reserve_pct", "duration_s", "note"}
 # what each step kind may carry (eval/storyline.py's docstring), besides id, at_s and kind
 STEP_COMMON = {"text", "director"}
@@ -116,6 +125,29 @@ STEP_KEYS = {
     "engage": {"track", "vehicles", "effect_radius_m", "window_s", "fallback", "rationale", "label", "reason", "retry_s",
                "unless_nominated", "wait_s"},
 }
+# the faults only the headless simulator makes (docs/HEADLESS.md, faults and timelines; each
+# modelled as the stand-ins or ArduPilot behave): the live runner refuses a situation with one
+# (`resolve_modes`). Live, a GNSS jammer or spoofer is an events file's `gnss` table
+# (sim/events/golden-gate-gnss.toml), which the headless simulator reads too.
+#   gnss     effect = "jam" | "spoof", from at_s for duration_s (default: to the end), on the
+#            vehicles selected (default all) and, if given, inside circle = {lat, lon, radius_m}
+#            (a jammer needs one); jam: power_w (EIRP; none: no fix in the circle), height_m;
+#            spoof: walk_mps, bearing_deg, max_offset_m (crates/murmur-standins/src/gnss.rs)
+#   battery  drop_pct: that share of the pack's capacity lost at once (a damaged cell); rate:
+#            the draw times this from now, for duration_s (default: to the end)
+#   reboot   the autopilot restarts: silent for down_s (default 3), then heard again
+#   stop     the vehicle stops making way (its cruise and top speed set to zero)
+#   current  a uniform current east_mps, north_mps in place of the world's for duration_s
+#            (default: to the end), for contacts and our vehicles alike
+HEADLESS_STEP_KEYS = {
+    "gnss": {"effect", "vehicles", "circle", "power_w", "height_m", "walk_mps", "bearing_deg", "max_offset_m",
+             "duration_s"},
+    "battery": {"vehicles", "drop_pct", "rate", "duration_s"},
+    "reboot": {"vehicles", "down_s"},
+    "stop": {"vehicles"},
+    "current": {"east_mps", "north_mps", "duration_s"},
+}
+STEP_KEYS.update(HEADLESS_STEP_KEYS)
 WATCH_KEYS = {"at_s", "text", "director"}
 TIDEWATER_HOME = Path(os.environ.get("TIDEWATER_HOME", Path.home() / "tidewater"))
 
@@ -152,6 +184,9 @@ class Situation:
     brief: str
     director: str
     todo: bool
+    # the world it runs in (sim/worlds/<world>.toml; eval/world.py): its fleet, `at` and
+    # tidewater scenario are the situation's unless it names its own
+    world: str = "golden-gate"
     fleet: Path | None = None
     contacts: Path | None = None
     events: list[Path] = field(default_factory=list)
@@ -174,6 +209,9 @@ class Situation:
     playbook: dict[str, Any] = field(default_factory=dict)
     storyline_proposer: str = "agent"
     autoplay: dict[str, Any] = field(default_factory=dict)
+    # [headless] (HEADLESS_KEYS): the headless simulator's terrain source and water
+    domain_rule: str = "grid"
+    currents: str = "world"
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -297,6 +335,10 @@ def _steps(raw: list[Any], sit: Path, duration_s: float) -> list[Step]:
                 f"{sit}: step {sid!r}: a situation resolves tracks as the C2 sees them ({{id = ...}} or "
                 "{select = ...}); contact selectors need the evaluation's truth hook, which a situation leaves off"
             )
+        if kind in HEADLESS_STEP_KEYS:
+            _headless_step(sid, kind, s, sit)
+            steps.append(Step(id=sid, kind=kind, at_s=at_s, params=s))
+            continue
         try:
             _check_step(Step(id=sid, kind=kind, at_s=at_s, params=check))
         except ValueError as e:
@@ -304,6 +346,59 @@ def _steps(raw: list[Any], sit: Path, duration_s: float) -> list[Step]:
         steps.append(Step(id=sid, kind=kind, at_s=at_s, params=s))
     steps.sort(key=lambda s: s.at_s)
     return steps
+
+
+def _headless_step(sid: str, kind: str, s: dict[str, Any], sit: Path) -> None:
+    """A headless fault step's values (HEADLESS_STEP_KEYS), each of the right type and range."""
+    def num(k: str, lo: float | None = None, hi: float | None = None) -> float | None:
+        if k not in s:
+            return None
+        v = _num(s[k], f"step {sid!r}: {k}", sit)
+        if lo is not None and v < lo:
+            raise SituationError(f"{sit}: step {sid!r}: {k} {v:g} is below {lo:g}")
+        if hi is not None and v > hi:
+            raise SituationError(f"{sit}: step {sid!r}: {k} {v:g} is above {hi:g}")
+        return v
+
+    if "vehicles" in s and not (isinstance(s["vehicles"], dict) and {"uids", "callsign", "platform"} & set(s["vehicles"])):
+        raise SituationError(f"{sit}: step {sid!r}: vehicles is {{callsign = ...}}, {{platform = ...}} or {{uids = [...]}}")
+    if kind in ("battery", "reboot", "stop") and "vehicles" not in s:
+        raise SituationError(f"{sit}: step {sid!r}: a {kind} step needs vehicles")
+    if num("duration_s", 0.0) == 0.0:
+        raise SituationError(f"{sit}: step {sid!r}: duration_s > 0 (leave it out for the rest of the run)")
+    if kind == "gnss":
+        effect = s.get("effect")
+        if effect not in ("jam", "spoof"):
+            raise SituationError(f"{sit}: step {sid!r}: effect is jam or spoof")
+        c = s.get("circle")
+        if c is not None and not (isinstance(c, dict) and set(c) == {"lat", "lon", "radius_m"}):
+            raise SituationError(f"{sit}: step {sid!r}: circle is {{lat, lon, radius_m}}")
+        if effect == "jam" and c is None:
+            raise SituationError(f"{sit}: step {sid!r}: a jammer needs a circle (its footprint's outer limit)")
+        jam, spoof = {"power_w", "height_m"}, {"walk_mps", "bearing_deg", "max_offset_m"}
+        wrong = set(s) & (spoof if effect == "jam" else jam)
+        if wrong:
+            raise SituationError(f"{sit}: step {sid!r}: {sorted(wrong)} are not {effect} fields")
+        num("power_w", 1e-9)
+        num("height_m", 0.0)
+        num("walk_mps", 0.0)
+        num("bearing_deg", 0.0, 360.0)
+        num("max_offset_m", 0.0)
+    elif kind == "battery":
+        if num("drop_pct", 0.0, 100.0) is None and num("rate", 0.0) is None:
+            raise SituationError(f"{sit}: step {sid!r}: a battery step needs drop_pct (a step) or rate (a new draw)")
+        if "duration_s" in s and "rate" not in s:
+            raise SituationError(f"{sit}: step {sid!r}: duration_s is the rate's (a drop is at once)")
+    elif kind == "reboot":
+        num("down_s", 0.0, 600.0)
+    elif kind == "current":
+        if num("east_mps", -10.0, 10.0) is None or num("north_mps", -10.0, 10.0) is None:
+            raise SituationError(f"{sit}: step {sid!r}: a current step needs east_mps and north_mps")
+
+
+def headless_steps(sit: Situation) -> list[Step]:
+    """The steps only the headless simulator can run (HEADLESS_STEP_KEYS)."""
+    return [s for s in sit.steps if s.kind in HEADLESS_STEP_KEYS]
 
 
 def tidewater_scenario(v: Any) -> tuple[str, Path | None]:
@@ -344,7 +439,26 @@ def load_situation(path_or_name: str | Path) -> Situation:
     if sit.todo:
         # a stub: title and brief only, written later; nothing else is read
         return sit
-    sit.fleet = _path(raw.get("fleet"), base, "fleet", path)
+    from .world import WorldError, load_world
+
+    try:
+        world = load_world(str(raw.get("world", sit.world)))
+    except WorldError as e:
+        raise SituationError(f"{path}: world: {e}") from None
+    sit.world = world.name
+    # the world's fleet, scenario time and tidewater scenario unless the situation names its own
+    sit.fleet = _path(raw["fleet"], base, "fleet", path) if "fleet" in raw else world.fleet
+    raw_at = raw.get("at", world.at or sit.at)
+    raw_tidewater = raw.get("tidewater", world.tidewater)
+    hl = _table(raw.get("headless"), "[headless]", path)
+    if set(hl) - HEADLESS_KEYS:
+        raise SituationError(f"{path}: [headless] takes {sorted(HEADLESS_KEYS)}, not {sorted(set(hl) - HEADLESS_KEYS)}")
+    sit.domain_rule = str(hl.get("domain_rule", sit.domain_rule))
+    if sit.domain_rule not in DOMAIN_RULES:
+        raise SituationError(f"{path}: [headless] domain_rule is one of {DOMAIN_RULES}")
+    sit.currents = str(hl.get("currents", sit.currents))
+    if sit.currents not in CURRENTS:
+        raise SituationError(f"{path}: [headless] currents is one of {CURRENTS}")
     if raw.get("contacts"):
         sit.contacts = _path(raw["contacts"], base, "contacts", path)
     events = raw.get("events", [])
@@ -360,8 +474,8 @@ def load_situation(path_or_name: str | Path) -> Situation:
     sit.rate = _num(raw.get("rate", 1), "rate", path)
     if not sit.rate > 0:
         raise SituationError(f"{path}: rate must be > 0")
-    sit.at = str(raw.get("at", sit.at))
-    sit.tidewater_wanted, sit.tidewater = tidewater_scenario(raw.get("tidewater", "none"))
+    sit.at = str(raw_at)
+    sit.tidewater_wanted, sit.tidewater = tidewater_scenario(raw_tidewater)
     sit.operator = str(raw.get("operator", "live"))
     if sit.operator not in OPERATOR_MODES:
         raise SituationError(f"{path}: operator {sit.operator!r} not in {OPERATOR_MODES}")
@@ -509,6 +623,13 @@ def resolve_modes(sit: Situation, operator: str | None = None, ai: str | None = 
     if co not in COSIGNERS:
         raise SituationError(f"cosigner {co!r}: one of {', '.join(COSIGNERS)}")
     rv = sit.reveal if reveal is None else bool(reveal)
+    faults = sorted({s.kind for s in headless_steps(sit)})
+    if faults:
+        raise SituationError(
+            f"{sit.name}: its timeline has {', '.join(faults)} steps, faults only the headless simulator makes "
+            f"(docs/HEADLESS.md): run it with `.venv/bin/python -m eval.headless.batch --situation {sit.name}`. A live "
+            "GNSS jammer or spoofer is an events file's gnss table (sim/events/golden-gate-gnss.toml)."
+        )
     if op == "live" and any(s.kind == "declare" for s in sit.steps):
         raise SituationError(
             f"{sit.name}: a declare step is a script's declaration, refused in live mode: the person declares (a hostile "

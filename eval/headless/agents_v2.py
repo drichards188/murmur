@@ -155,6 +155,7 @@ import numpy as np
 
 from eval.agent import _mcp_args
 from eval.situation import playbook_json
+from eval.world import DEFAULT_WORLD, load_world
 
 from .episode import PLAYBOOK_AGENT, POLL_S, PlaybookAgent
 from .sim import HeadlessSession
@@ -178,9 +179,9 @@ PERTURBATIONS = ("playbook+spam", "playbook+behind", "playbook+skip-first", "pla
 HONEST_PERTURBATIONS = ("oracle-honest+spam", "oracle-honest+behind", "oracle-honest+skip-first",
                         "oracle-honest+reserve-blind", "oracle-honest+ferries", "oracle-honest+pull-off")
 NAMES = ANCHORS + LADDER + PERTURBATIONS + HONEST_PERTURBATIONS
-#: SCORING-V2.md 2.1: who needs a look, where, by when
+#: SCORING-V2.md 2.1: who needs a look, where, by when (the Golden Gate world's mission radius)
 NEED_AFFILIATIONS = ("unknown", "suspect", "hostile")
-NEED_RADIUS_M = 3000.0
+NEED_RADIUS_M = load_world(DEFAULT_WORLD).mission.radius_m
 DEADLINE_S = 60.0
 #: murmur-contacts motion.rs: a contact speeds up from its spawn at this rate
 CONTACT_ACCEL_MPS2 = 0.5
@@ -508,9 +509,10 @@ class LinkMap:
         self.surface = np.where(self.nodata, 0.0, raw * w.h["scale"])
         self.dlat = self.CELL_M / M_PER_DEG
         self.dlon = self.dlat / max(math.cos(math.radians(self.gs[1])), 0.05)
-        # the cells of the operating area and a margin
-        self.ci0, self.ci1 = int(math.floor(37.74 / self.dlat)), int(math.floor(37.90 / self.dlat))
-        self.cj0, self.cj1 = int(math.floor(-122.57 / self.dlon)), int(math.floor(-122.35 / self.dlon))
+        # the cells of the operating area and a margin (the Golden Gate world's `operating_box`)
+        box = load_world(DEFAULT_WORLD).operating_box
+        self.ci0, self.ci1 = int(math.floor(box["lat_min"] / self.dlat)), int(math.floor(box["lat_max"] / self.dlat))
+        self.cj0, self.cj1 = int(math.floor(box["lon_min"] / self.dlon)), int(math.floor(box["lon_max"] / self.dlon))
         ci = np.arange(self.ci0, self.ci1 + 1)
         cj = np.arange(self.cj0, self.cj1 + 1)
         lat = (ci + 0.5) * self.dlat

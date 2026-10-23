@@ -7,6 +7,8 @@ whose truth affiliation is unknown, suspect or hostile needs a look by the time 
 within `LOOK_RADIUS_M` (3 km) of the protected point (the Golden Gate Bridge), plus
 `LOOK_GRACE_S` (60 s); every other contact (neutral, assumed friend, friend), or one that never
 comes that close, needs none. The crossing time is the first truth sample within the radius.
+The point, the radius and the grace are the record's world's mission (eval/world.py; the Golden
+Gate's for a record without a world, every record before world v3).
 
 **A proposal's target**: a live track id follows detection order, so it is matched by truth: the
 contact nearest the track's `predicted` position in the evidence record at its `tick_t`, if
@@ -23,14 +25,19 @@ import math
 import sys
 from typing import Any
 
+from eval.world import DEFAULT_WORLD, Mission, load_world
+
 from . import REPO
 
 sys.path.insert(0, str(REPO / "agents"))
 from playbook.rationale import parse_record  # noqa: E402
 
-PROTECTED = (-122.4783, 37.8199)  # the Golden Gate Bridge, mid-span (lon, lat)
-LOOK_RADIUS_M = 3000.0
-LOOK_GRACE_S = 60.0
+#: the Golden Gate world's mission (sim/worlds/golden-gate.toml): the bridge, mid-span (lon,
+#: lat), 3 km, 60 s; a record of another world reads its own (`mission_of`)
+_GG = load_world(DEFAULT_WORLD).mission
+PROTECTED = _GG.center
+LOOK_RADIUS_M = _GG.radius_m
+LOOK_GRACE_S = _GG.grace_s
 ASSOC_M = 500.0
 AMBIGUOUS_RATIO = 1.5
 NEEDS_LOOK = ("unknown", "suspect", "hostile")
@@ -87,18 +94,25 @@ class Truth:
         return None
 
 
+def mission_of(rec: dict[str, Any]) -> Mission:
+    """The mission geometry of a record's world (`world.name`; a record without one is the
+    Golden Gate's, as every record before world v3)."""
+    return load_world((rec.get("world") or {}).get("name") or DEFAULT_WORLD).mission
+
+
 def contact_labels(rec: dict[str, Any], truth: Truth | None = None) -> dict[str, dict[str, Any]]:
     truth = truth or Truth(rec)
+    mission = mission_of(rec)
     out = {}
     for cid, m in sorted(truth.meta.items()):
         aff = str(m.get("affiliation") or "").lower()
-        within = truth.first_within(cid, PROTECTED, LOOK_RADIUS_M)
+        within = truth.first_within(cid, mission.center, mission.radius_m)
         needs = aff in NEEDS_LOOK and within is not None
         out[cid] = {
             "affiliation": aff, "kind": m.get("kind"), "ais": bool(m.get("ais")),
             "first_within_s": round(within, 3) if within is not None else None,
             "needs_look": needs,
-            "look_by_s": round(within + LOOK_GRACE_S, 3) if needs and within is not None else None,
+            "look_by_s": round(within + mission.grace_s, 3) if needs and within is not None else None,
         }
     return out
 

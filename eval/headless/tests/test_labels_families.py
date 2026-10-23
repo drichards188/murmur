@@ -98,11 +98,16 @@ def test_the_production_bridge_build_never_sets_the_headless_cfg():
 
 def test_the_terrain_grid_is_the_one_its_provenance_names():
     d = REPO / "sim" / "headless" / "terrain"
-    prov = json.loads((d / "golden-gate.provenance.json").read_text())
-    assert hashlib.sha256((d / prov["file"]).read_bytes()).hexdigest() == prov["sha256"], \
-        "the grid changed without its provenance: bake it again (eval/headless/bake_terrain.py)"
-    for k in ("tidewater", "scenario", "spacing_m", "baked", "command", "sampled_at"):
-        assert prov.get(k), k
+    # the surface grid (baked 2026-10-09 by bake_terrain.py; bake_world.py rebuilt the same bytes
+    # on 2026-10-23), the land/water grid and the current field (bake_world.py)
+    for name in ("golden-gate.provenance.json", "golden-gate.water.provenance.json",
+                 "golden-gate.currents.provenance.json"):
+        prov = json.loads((d / name).read_text())
+        assert hashlib.sha256((d / prov["file"]).read_bytes()).hexdigest() == prov["sha256"], \
+            f"{prov['file']} changed without its provenance: bake it again (eval/headless/bake_world.py)"
+        for k in ("tidewater", "scenario", "spacing_m", "baked", "command"):
+            assert prov.get(k), (name, k)
+        assert prov.get("sampled_at") or prov.get("from"), name
 
 
 def test_g1_pairs_within_ten_seconds_exactly():

@@ -553,7 +553,7 @@ class Episode:
             "situation": {"name": self.e.name, "family": self.e.family, "split": self.e.split,
                           "situation_seed": self.e.situation_seed, "path": str(self.e.path) if self.e.path else None},
             "seed": self.seed,
-            "provenance": provenance(self.opts.binary),
+            "provenance": provenance(self.opts.binary, Path(spec["links"])),
             "playbook": {"engine": f"playbook-{ENGINE_VERSION}", "config_label": pb.cfg.label,
                          "client_version": pb.cfg.client_version} if pb else None,
             "operator": self.operator.describe() if self.operator else None,
@@ -572,6 +572,11 @@ class Episode:
             "audit": audit_summary(audit_text),
             "audit_text": audit_text,
         }
+        world = self.e.world_record()
+        if world is not None:
+            # world v3 only (eval/world.py): the world and what the simulator took from it; a
+            # record without it is the Golden Gate's as before world v3
+            rec["world"] = world
         if self.opts.agent == "model":
             # the model agent only (a playbook or none record has none of these keys): its config, every
             # wake, its totals; the provenance names the models and efforts
@@ -649,19 +654,20 @@ def audit_summary(text: str) -> dict[str, Any]:
     return {"events": len(lines), "head": head, "sha256": hashlib.sha256(text.encode()).hexdigest()}
 
 
-_PROV: dict[str, Any] | None = None
+_PROV: dict[tuple[str | None, str | None], dict[str, Any]] = {}
 
 
-def provenance(binary: Path | None) -> dict[str, Any]:
+def provenance(binary: Path | None, links: Path | None = None) -> dict[str, Any]:
     """The commit, whether the tree differed from it, the simulator's binary and its hash, and
-    the untracked inputs it read (the link profiles, the satellite element sets)."""
-    global _PROV
-    if _PROV is None:
+    the untracked inputs it read (the link profiles, the episode's: its world's, the satellite
+    element sets)."""
+    key = (str(binary) if binary else None, str(links) if links else None)
+    if key not in _PROV:
         from .provenance import git_state, inputs, sha256_file
         from .sim import BINARY
         from .situations import links_file
 
         b = Path(binary or BINARY)
-        _PROV = {**git_state(), "binary": str(b), "binary_sha256": sha256_file(b) if b.exists() else None,
-                 **inputs(links_file())}
-    return _PROV
+        _PROV[key] = {**git_state(), "binary": str(b), "binary_sha256": sha256_file(b) if b.exists() else None,
+                      **inputs(links or links_file())}
+    return _PROV[key]
