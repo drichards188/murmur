@@ -7,8 +7,8 @@
 title = "Fault drill"
 brief = """
 You have the watch at the Golden Gate. HUNTER 1 patrols the channel east of the bridge, PUMA 1
-holds station off Lime Point, a drifting buoy reports from the strait, and a recon UGV patrols
-Crissy Field. Expect equipment trouble this morning: keep our vehicles safe and on task, and
+waits in reserve west of the bridge, a drifting buoy reports from the strait, and a recon UGV
+patrols Crissy Field. Traffic is normal. Expect equipment trouble this morning: keep our vehicles safe and on task, and
 judge what the C2 can and cannot tell you about each of them.
 """
 director = """
@@ -44,14 +44,6 @@ task = "patrol"
 vehicles = { platform = "seahunter" }
 route = [[-122.4720, 37.8135], [-122.4720, 37.8250]]
 note = "Opening order: patrol the channel east of the bridge"
-
-[[order]]
-id = "lime-point"
-task = "orbit"
-vehicles = { platform = "puma" }
-center = [-122.4680, 37.8240]
-radius_m = 300
-note = "Opening order: hold station off Lime Point"
 
 [[order]]
 id = "crissy-patrol"
