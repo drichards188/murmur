@@ -22,6 +22,8 @@ rmcp = { version = "3.5", features = ["transport-streamable-http-server"] }
 schemars = "1"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1.5"
+# The physical sensing model's terrain grids (gzip, the format of sim/headless/terrain).
+flate2 = "1"
 
 [lints]
 workspace = true

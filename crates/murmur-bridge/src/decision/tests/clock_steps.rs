@@ -145,6 +145,7 @@ fn sense_mover(e: &Erig, s: u32) {
         seed: 1,
         sensing: Sensing {
             misclassification_rate: 0.0,
+            ..Default::default()
         },
         contacts: vec![ContactTruth {
             id: "runner".into(),
@@ -170,7 +171,9 @@ fn sense_mover(e: &Erig, s: u32) {
         alt_msl: 0.0,
         mast_m: 4.0,
         submerged: false,
-        sensors: vec![SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true, height: false }],
+        heading_deg: None,
+        area: None,
+        sensors: vec![SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true, height: false, physical: Default::default() }],
     };
     // arrival on the bridge's clock, as `Tracks::on_truth` stamps it
     e.tracks.on_truth_with(msg, &[observer], clock::wall()).expect("sensing");

@@ -28,6 +28,7 @@ fn settings() -> Settings {
         misclassification_rate: Some(0.0),
         eval_truth: false,
         drop_s: 180.0,
+        model: None,
         sim_token: Some("test-token".into()),
     }
 }
@@ -68,6 +69,8 @@ fn observer(uid: u64, lat: f64, lon: f64, alt: f64, sensors: &[(SensorType, f64)
         alt_msl: alt,
         mast_m: 4.0,
         submerged: false,
+        heading_deg: None,
+        area: None,
         sensors: sensors
             .iter()
             .map(|(kind, range_m)| SensorSpec {
@@ -75,6 +78,7 @@ fn observer(uid: u64, lat: f64, lon: f64, alt: f64, sensors: &[(SensorType, f64)
                 range_m: *range_m,
                 guess: true,
                 height: false,
+                physical: Default::default(),
             })
             .collect(),
     }
@@ -89,6 +93,7 @@ fn truth(s: f64, contacts: Vec<ContactTruth>) -> TruthMessage {
         seed: 42,
         sensing: Sensing {
             misclassification_rate: 0.0,
+            ..Default::default()
         },
         contacts,
         acts: Vec::new(),

@@ -29,6 +29,12 @@
 //! misclassification rate come from the scenario (in the truth message); `MURMUR_SENSE_SEED`
 //! and `MURMUR_SENSE_MISCLASS` override them on the bridge.
 //!
+//! **Two sensing models** (WORLD-V3-PLAN section 2, docs/SENSING.md): `legacy` (`sensing.rs`,
+//! the default) and `physical` (`physical/`). The scenario names one (`[sensing] model`, in
+//! the truth message) and `MURMUR_SENSE_MODEL` overrides it on the bridge; the physical model
+//! keeps state across messages (pointing, looks, scans) and reads the scenario's terrain grid,
+//! conditions and signature overrides from the same message. Both feed the same tracker.
+//!
 //! **Effects** (Phase E): an engagement's abstract effect (a point, a radius, a time) goes
 //! back to the contacts process on the same labelled channel, in the answer to its next
 //! `POST /api/sim/contacts` (`effects`), with the contact the target track was associated
@@ -44,13 +50,14 @@
 //! derives hostile.
 
 pub mod model;
+pub mod physical;
 pub mod sensing;
 #[cfg(test)]
 mod tests;
 pub mod truth;
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
@@ -66,8 +73,8 @@ use serde_json::{Value, json};
 use tokio::sync::watch;
 
 use self::model::{Declared, Track};
-use self::sensing::{Detection, Observer, Params, SensorCatalog, misclassify_draw};
-use self::truth::TruthMessage;
+use self::sensing::{Detection, Observer, Params, SearchArea, SensorCatalog, misclassify_draw};
+use self::truth::{SensingModel, TruthMessage};
 use crate::clock::{self, round};
 use crate::decision::Decision;
 use crate::world::World;
@@ -79,6 +86,9 @@ pub struct Settings {
     pub misclassification_rate: Option<f64>,
     pub eval_truth: bool,
     pub drop_s: f64,
+    /// `MURMUR_SENSE_MODEL` (`legacy` or `physical`): the sensing model whatever the scenario
+    /// names.
+    pub model: Option<SensingModel>,
     /// The simulation channel's token (`MURMUR_SIM_TOKEN`, generated per stack by `up.sh` and
     /// the evaluation's runner and given to this bridge and the contacts process only): `POST
     /// /api/sim/contacts` carries it (`X-Murmur-Sim-Token`, checked before the body is read)
@@ -103,6 +113,13 @@ impl Settings {
                 .and_then(|s| s.trim().parse().ok())
                 .unwrap_or(180.0f64)
                 .max(model::STALE_S),
+            model: var("MURMUR_SENSE_MODEL").and_then(|s| match s.parse() {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    println!("MURMUR_SENSE_MODEL: {e}; the scenario's model");
+                    None
+                }
+            }),
             sim_token: var("MURMUR_SIM_TOKEN").map(|t| t.trim().to_string()),
         }
     }
@@ -160,6 +177,11 @@ pub struct Tracks {
     catalog: SensorCatalog,
     settings: Settings,
     inner: Mutex<Inner>,
+    /// The physical sensing model's state across truth messages (pointing, looks, scans, the
+    /// terrain), its grid paths relative to the repository.
+    physical: Mutex<physical::Engine>,
+    /// The sensing model the last message ran on (said when it changes).
+    last_model: Mutex<Option<SensingModel>>,
     updates: watch::Sender<Arc<String>>,
 }
 
@@ -168,10 +190,18 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Tracks {
+    #[cfg(test)]
     pub fn new(catalog: SensorCatalog, settings: Settings) -> Tracks {
+        Self::with_root(catalog, settings, None)
+    }
+
+    /// `root`: the repository, which a scenario's grid paths are relative to.
+    pub fn with_root(catalog: SensorCatalog, settings: Settings, root: Option<PathBuf>) -> Tracks {
         let t = Tracks {
             catalog,
             settings,
+            physical: Mutex::new(physical::Engine::new(root)),
+            last_model: Mutex::new(None),
             inner: Mutex::new(Inner {
                 truth: None,
                 tracks: BTreeMap::new(),
@@ -195,7 +225,9 @@ impl Tracks {
     /// From `sim/platforms.toml` and the environment; a bad catalog is an error (the sensing
     /// model would silently see nothing).
     pub fn load(platforms: &Path) -> Result<Tracks, String> {
-        Ok(Tracks::new(SensorCatalog::load(platforms)?, Settings::from_env()))
+        // the repository: sim/platforms.toml's grandparent
+        let root = platforms.parent().and_then(Path::parent).map(Path::to_path_buf);
+        Ok(Tracks::with_root(SensorCatalog::load(platforms)?, Settings::from_env(), root))
     }
 
     pub fn eval_truth_enabled(&self) -> bool {
@@ -238,6 +270,18 @@ impl Tracks {
                 if !fresh {
                     return None;
                 }
+                // the task's area, for the physical model's payload manager (the task manager's
+                // lock is not held while the vehicle is read)
+                let area = world.tasks.task_of(cell.uid).and_then(|(kind, p)| match kind {
+                    crate::tasks::TaskKind::Orbit => p.center.map(|c| SearchArea::Orbit {
+                        center: (c[1], c[0]),
+                        radius_m: p.radius.unwrap_or(200.0),
+                    }),
+                    crate::tasks::TaskKind::Patrol => p.route.filter(|r| r.len() >= 2).map(|r| SearchArea::Route {
+                        points: r.iter().map(|q| (q[1], q[0])).collect(),
+                    }),
+                    _ => None,
+                });
                 cell.read(|v| {
                     let (lat, lon) = v.pos?;
                     let id = v.identity.as_deref()?;
@@ -256,6 +300,8 @@ impl Tracks {
                         mast_m: ps.mast_m,
                         submerged,
                         sensors: ps.sensors.clone(),
+                        heading_deg: v.heading.or(v.yaw),
+                        area,
                     })
                 })
             })
@@ -289,9 +335,25 @@ impl Tracks {
         };
         let seed = params.seed;
         let rate = params.misclassification_rate;
-        let mut detections = sensing::detect(params, observers, &msg.contacts, &|contact, sensor| {
-            misclassify_draw(seed, contact, sensor, rate)
-        });
+        let model = self.model_for(&msg);
+        let mut detections = match model {
+            SensingModel::Legacy => sensing::detect(params, observers, &msg.contacts, &|contact, sensor| {
+                misclassify_draw(seed, contact, sensor, rate)
+            }),
+            SensingModel::Physical => {
+                let mut engine = lock(&self.physical);
+                engine.configure(&msg.sensing);
+                let step = physical::Step {
+                    seed,
+                    tick: params.tick,
+                    s: msg.s,
+                    t: msg.t,
+                    misclassification_rate: rate,
+                    sensing: &msg.sensing,
+                };
+                engine.step(&step, observers, &msg.contacts)
+            }
+        };
         // each fix dated by the clock of the truth it was drawn from: the filter's intervals
         // are the contact's own, whatever the bridge's wall clock does meanwhile (on this
         // host it steps back about a second every half minute)
@@ -304,7 +366,8 @@ impl Tracks {
             self.fold(&mut inner, &detections, now);
             // rules 9: the hostile acts of this tick, as our sensors observe them (after the
             // fold: an act by a contact first seen this tick is attributed to its new track)
-            self.sense_acts(&mut inner, params, observers, &msg, now);
+            let physical = (model == SensingModel::Physical).then_some(detections.as_slice());
+            self.sense_acts(&mut inner, params, observers, &msg, now, physical);
             inner.truth = Some((now, msg));
             inner.last_detections = detections.len();
             self.drop_old(&mut inner, now);
@@ -314,25 +377,51 @@ impl Tracks {
         Ok((n_contacts, detections.len(), n_tracks))
     }
 
+    /// The sensing model a message runs on: `MURMUR_SENSE_MODEL`, else the scenario's, else
+    /// legacy. Said when it is the physical model or changes.
+    fn model_for(&self, msg: &TruthMessage) -> SensingModel {
+        let m = self.settings.model.or(msg.sensing.model).unwrap_or_default();
+        let mut last = lock(&self.last_model);
+        if *last != Some(m) {
+            if last.is_some() || m != SensingModel::Legacy {
+                let why = if self.settings.model.is_some() { "MURMUR_SENSE_MODEL" } else { "the scenario" };
+                println!("sensing: the {} model ({why})", m.as_str());
+            }
+            if m == SensingModel::Physical {
+                let ph = physical::spec::placeholders(&self.catalog);
+                if !ph.is_empty() {
+                    println!("sensing: placeholder figures (from range_m) for {}", ph.join(", "));
+                }
+            }
+            *last = Some(m);
+        }
+        m
+    }
+
     /// Rules 9: each new act in a truth message, observed by our sensors or not
     /// (`sensing::observe_act`). An observed one becomes a report for the decision engine
     /// (`A-<n>`, at the bridge's clock now): whom it was against (our vehicle, the track its
     /// victim is associated with, or something we hold no track of), which sensors saw it,
     /// where its author appeared to be and that position's error. Every act, observed or not,
-    /// is kept for the evaluation view with the truth behind it.
-    fn sense_acts(&self, inner: &mut Inner, params: Params, observers: &[Observer], msg: &TruthMessage, now: f64) {
+    /// is kept for the evaluation view with the truth behind it. Under the physical model
+    /// (`physical`: this tick's detections) the sensors that detected the act's author this
+    /// tick observed it (`physical::observe_act`).
+    fn sense_acts(&self, inner: &mut Inner, params: Params, observers: &[Observer], msg: &TruthMessage, now: f64, physical: Option<&[Detection]>) {
         for a in &msg.acts {
             if !inner.acts_seen.insert(a.id.clone()) {
                 continue;
             }
             let actor = msg.contacts.iter().find(|c| c.id == a.by);
             let actor_track = inner.by_contact.get(&a.by).cloned();
-            let observed = actor.and_then(|c| {
-                // the author where the act happened (the contacts process says where)
-                let mut c = c.clone();
-                c.lat = a.lat;
-                c.lon = a.lon;
-                sensing::observe_act(params, observers, &c, &a.id)
+            let observed = actor.and_then(|c| match physical {
+                Some(dets) => physical::observe_act(dets, &c.id),
+                None => {
+                    // the author where the act happened (the contacts process says where)
+                    let mut c = c.clone();
+                    c.lat = a.lat;
+                    c.lon = a.lon;
+                    sensing::observe_act(params, observers, &c, &a.id)
+                }
             });
             let Some(obs) = observed else {
                 inner.act_records.push(json!({

@@ -101,10 +101,12 @@ impl Obs {
             alt_msl: self.alt,
             mast_m: self.mast,
             submerged: false,
+            heading_deg: None,
+            area: None,
             sensors: self
                 .sensors
                 .iter()
-                .map(|&(kind, range_m)| SensorSpec { kind, range_m, guess: true, height: false })
+                .map(|&(kind, range_m)| SensorSpec { kind, range_m, guess: true, height: false, physical: Default::default() })
                 .collect(),
         }
     }
