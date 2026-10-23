@@ -149,12 +149,53 @@ cached per observer and contact, recomputed when either end moves 50 m or after 
 floor)`; 50 % thresholds 1.5, 6 and 12 px [5]; the ACQUIRE curve `P = x^E / (1 + x^E)`,
 `E = 2.7 + 0.7 x` [7,8]; atmosphere `1 / (1 + (R / R_atm)^6)` (shape [E]) with
 `R_atm = 0.69 V` in the visible [9] and `ln(dT / 0.1 K) / 0.2 km^-1` in the IR [10], at most 4.5
-times the visible's in haze [11]. A day camera has no light below civil twilight, a low-light
+times the visible's in haze [11]. `R` is the line of sight's sea-level equivalent (the slant
+path, below): a horizontal path along the sea is its own length. A day camera has no light below civil twilight, a low-light
 one 0.4 of its range at night [E]; a thermal camera's contrast dips to a quarter with the sun 5
 degrees up (crossover, shape [E]), which costs it the square root of that in pixels and its
 atmospheric range. Time to detect in view: one draw per look whether the contact is
 detectable at all (P) and one when (exponential, `tau = 3.4 / P` s [12]). Recognition after a
 second of detection; identification needs the narrow field on the contact for 2 to 3 s [E].
+
+**The slant path** (`eo::sea_level_m`, murmur-7vp). The visibility and the clear air's thermal
+coefficient are the surface's; the air above holds less. Over the sea the aerosol is held in
+the marine boundary layer, about 1 km deep by lidar (over the subtropical North Atlantic its top
+is at about 1.0 km month by month, 2007-2018: Barreto et al., ACP 22, 739-763, 2022, supplement,
+https://acp.copernicus.org/articles/22/739/2022/acp-22-739-2022-supplement.pdf; over the Indian
+Ocean under 1 km, the aerosol above it thin and below 4 km: the INDOEX ship lidar,
+https://ntrs.nasa.gov/api/citations/20010069577/downloads/20010069577.pdf). The model takes the
+extinction as falling with height as `exp(-h / H)` [E here]: the aerosol's (the visible bands,
+and the thermal bands' haze limit) with `H` = 1.2 km, the middle of the 1 to 1.5 km such
+profiles take, and the clear air's thermal coefficient, mostly water vapour's, with 2 km, the
+slower of the heights quoted for it (1.3 km fitted from lunar-eclipse photometry,
+https://arxiv.org/abs/0706.0660), so a high camera is not given more than the air allows. A
+straight line of sight `R` long between heights `h1 < h2` meets `R H (exp(-h1 / H) - exp(-h2
+/ H)) / (h2 - h1)` of sea-level air (heights below the sea count as at it; the earth's
+curvature, which lifts a long path a little, is ignored); a thermal band is held by the clear
+air or the haze, whichever leaves it less. Along the sea it is the horizontal model value for
+value (`a_horizontal_path_at_the_sea_is_the_model_before`; a mast's few metres change a range
+by under 1 %). Before it the whole slant path was at the surface's visibility: the RQ-4's
+cameras at 18 km never reached Pd 0.5 on a vehicle (0.17 straight down), and the MQ-9B's and
+the CCA's stopped at about 15 km slant (13 and 10 km out). Now, by day at 20 km visibility (`cargo test -p
+murmur-bridge slant_camera_table -- --ignored --nocapture`; slant ranges, the geometry and blur
+alone beside them):
+
+| Camera | Target | D / R / I, km | Geometry and blur alone, km |
+|---|---|---|---|
+| RQ-4 at 18,000 m | vehicle (NATO 2.3 m, 2 K) | 143 / 38.2 / 19.1 | 152 / 38.1 / 19.1 |
+| RQ-4 | small fast boat | 181 / 58.1 / 29.0 | 232 / 58.0 / 29.0 |
+| MQ-9B at 7,600 m | vehicle | 87.6 / 53.3 / 27.4 | 219 / 54.8 / 27.4 |
+| MQ-9B | small fast boat | 88.0 / 71.0 / 41.5 | 333 / 83.3 / 41.7 |
+| CCA at 11,000 m | vehicle | 113 / 38.4 / 19.2 | 153 / 38.3 / 19.2 |
+| CCA | small fast boat | 124 / 58.1 / 29.2 | 233 / 58.3 / 29.2 |
+
+(before: the RQ-4 nothing; the MQ-9B 15.0 / 13.9 / 13.6 and 17.0 / 16.4 / 13.8; the CCA 15.0 /
+13.8 / 12.8 and 17.0 / 16.4 / 13.7). Recognition and identification are now the geometry's and
+the blur's; only the long detection ranges, at a few degrees of elevation through tens of
+kilometres of the boundary layer, are the atmosphere's
+(`a_high_camera_looking_down_reaches_what_its_geometry_and_blur_allow`: from 18 km, an RQ-4-class
+camera's D/R/I ranges against a vehicle are within 15 % of its geometry's, identification
+within 2 %).
 
 **Pointing** (`Engine::steer`, decision W1). Each EO/IR sensor's payload manager, simulated on
 the vehicle: it searches its vehicle's task area in the wide field (an orbit's centre and six
@@ -266,7 +307,12 @@ day camera's detections; sea state 5 loses a small boat to the navigation radar 
 keeps a ferry; a camera cued by a radar track identifies it with no order naming it; a camera
 cued by a 2D radar to an aircraft 17 degrees above the plot finds it in elevation and identifies
 it, and a locked camera follows a crossing boat and identifies it (murmur-7vp: both fail before
-it); deterministic; per-observer evidence (a closer look corrects a wrong call).
+it); deterministic; per-observer evidence (a closer look corrects a wrong call). The slant path
+(`physical::eo::tests`): along the sea the atmosphere is the horizontal model's value for value
+in every band, visibility, contrast and light; a camera at 18 km reaches about the D/R/I ranges
+its geometry and blur allow. The tracker (`tracks::tests::calib_air`): two sweeping radars'
+bearings 4 s apart do not range an aircraft with no velocity, the same pair in one tick does,
+and the legacy model's pair 4 s apart still does.
 
 **The tracker on the physical model** (`calib_physical`, `air_calib_physical`,
 `air_calib_physical_held_out`: the held-out sets, evaluated once, never tuned on; the asserting
@@ -319,6 +365,56 @@ sets' views):
   (0 to 0.6 %): a camera's look is a few seconds a cue (decision W1: identify, then search
   again; an identified contact is looked at again after 2 to 5 minutes), never the tens of
   seconds of position fixes the tracker's velocity needs.
+- murmur-7vp, the tracker's half (with the slant path above), developed on the air tuning sets
+  only and judged once on a third set written before either change
+  (`physical_held_out_two_cases`, seeds 281-310, every class in yet other variants; 251-280
+  spent). A sweeping radar's plot carries its scan (`Detection::scan_s`) and the tracker
+  time-aligns two such radars' bearings before taking them as ranging an aircraft, as a
+  multi-sensor tracker fuses asynchronous sensors: each measurement in time order, the earlier
+  one's information carried to the later's time by the motion model and widened by what the
+  model does not know of the motion, a cross fix only as good as its bearings are
+  time-coincident. The earlier line, carried to now, is wider across itself by the filter's
+  velocity uncertainty across it times the gap (60 m/s for a track without a velocity), and the
+  pair ranges the aircraft only when its cross fix is still as good as two simultaneous bearings
+  crossing at 30 degrees give (`model::Bearing::aligned`: `sin theta >= sin 30 * sqrt((s1^2 +
+  (sv dt)^2 + s2^2) / (s1^2 + s2^2))`, the rule as it was at `dt` 0). A reset to one radar's
+  segment drops the other radars' bearings: their information along it is gone from the
+  estimate, which the rule before still counted when a bearing seconds old crossed the next one
+  (the tuning sets' misses on straight flight and a turn, for one: the track reset to radar A's
+  segment, then taken as ranged by A's next bearing and B's discarded one, slid kilometres along
+  A's bearing on no information). And a ranging
+  fix holds a track on sweeping radars' bearings 6 s, not 10 (`model::SWEPT_RANGE_FRESH_S`): a
+  camera's look of a few seconds gives a velocity measured over a turn, and an aircraft turning
+  at 6 to 8 m/s^2 leaves that extrapolation by a bearing's error in 5 to 6 s (the second pattern
+  the camera half found, tightest loiters sliding along one radar's bearing). The legacy
+  model's radars, which plot every tick, keep the rules as they were (`scan_s` none), so every
+  legacy record and calibration is unchanged. On the tuning sets (all-sensors mix, a keep-out
+  3 s ahead): 24 misses in 227,869 samples before, 11 with the alignment and the reset (none
+  left on two radars' bearings seconds apart; the tightest loiters' remained), 2 with the 6 s
+  window (8 s: 6, 7 s: 4, 6 to 4 s: the same 2; in the radar and EO/IR mix the tightest loiter's
+  4 misses went at 7 s). Those 2 (random turns at 40 m/s, seed
+  190) are a pair taken in one tick crossing at 30.6 degrees with one radar's bearing 3.6 of
+  its sigmas off: the cross fix 1.1 km out at 3.2 of its sigmas, a tail of the 30-degree rule,
+  and with them the class's tracker alone 3 s ahead at 363 m against its 300. Every class
+  stays honest (NEES 0.78 to 1.95 over the mixes, within two sigmas 95.2 to 100 %; before 0.75
+  to 1.95, 94.9 to 100 %). The one-turn class's velocities (round two's 120-degree turn at 5
+  deg/s: a velocity given in 0.2 % of samples as the turn begins, the steady model's lag)
+  have a normalized error of 7.48, as before the change (7.53): a tuning-set failure the change
+  neither made nor fixed.
+  The third set's one run (`air_calib_physical_held_out_two`): in the 2D radar and the radar
+  and EO/IR mixes every criterion holds (NEES 1.66 to 1.96, within two sigmas 98.3 to 100 %, the
+  tracker alone at most 0.33 % and 98 m 3 s ahead, every keep-out holding, no velocity and no
+  altitude given). In the all-sensors mix every class is honest (NEES 0.92 to 1.78, within two
+  sigmas 95.5 to 100 %), the steady classes' velocities too (normalized error 0.23 to 0.54,
+  given in 0 to 0.4 % of samples), no altitude is given, the tracker alone holds its bounds (3 s
+  ahead at most 0.70 % and 213 m, 10 s 0.07 % and 109 m, 30 s 0.14 % and 604 m), and a keep-out
+  10, 30, 60 and 100 s ahead holds every case; but a keep-out 3 s ahead missed the approach and
+  break 3 times in 2,837 samples, by up to 102 m (seeds 281, 284 and 304: a break 140 degrees
+  left at 7 deg/s while speeding up to 90 m/s, about 11 m/s^2 of turn, seen through it only by
+  the two radars' bearings, which cross at 32 to 39 degrees a second or two apart and so range
+  it, while both models' velocity lags the turn: the estimate 500 to 700 m behind at 2.7 to 3.7
+  of its sigmas). The constant-velocity models' lag in a hard turn, not the bearings' timing:
+  the tracker's follow-up is a turn model.
 
 **Cost** (`eval/headless/sense_perf.py`): a Golden Gate world of 30 stand-ins of ten types and
 40 contacts of every domain, headless, 30 simulated minutes: 91 times real time on the
@@ -345,8 +441,10 @@ The legacy model's Python ports (`v2/labels.py`, `families.py`, `agents_v2.py`,
   classification times, the misclassification rates per level and the size-class thresholds
   are estimates. The physical radars have no elevation beam: a 2D radar sees an aircraft at
   any elevation, and a camera cued by it searches up to the slant range.
-- The tracker ranges an aircraft on two 2D radars' bearings seconds apart (above): the
-  all-sensors mix's remaining air keep-out misses, a tracker follow-up.
+- The tracker's two models are constant-velocity: through a hard turn (a break at 11 m/s^2,
+  the tightest loiter at 6) seen only by bearings they lag, and a keep-out 3 s ahead can miss by
+  tens of metres (the second air held-out set's approach and break, above); a coordinated-turn
+  model is the follow-up.
 - Radar: no land clutter (ground contacts are seen as on water, terrain masking apart), no
   pulse integration or sidelobes, a ship's radar heard by ESM every second (its sidelobes)
   rather than once per turn, and the X-band clutter table for every band.
@@ -356,11 +454,11 @@ The legacy model's Python ports (`v2/labels.py`, `families.py`, `agents_v2.py`,
   public); no ray paths, layers or convergence zones; bathymetry only from a grid a scenario
   names, else one depth.
 - The sun ignores refraction; the thermal crossover and the low-light share are shapes [E].
-- The atmosphere is applied along the whole slant path at the surface's visibility: a camera
-  high up loses as much as one looking along the sea. The RQ-4's cameras at 18 km never reach
-  Pd 0.5 on a 5 m target (0.17 by day straight down at 20 km visibility), and the MQ-9B's and
-  the CCA's stop at about 13 and 10 km slant. A slant-path atmosphere is a model follow-up; the
-  catalog keeps the research's figures (W3).
+- The slant path's atmosphere is one exponential profile per kind of extinction, the same
+  everywhere: no capping inversion, elevated haze or dust layer, or cloud, and the molecular
+  (Rayleigh) part of the visibility thins with the aerosol's 1.2 km rather than its own 8 km
+  (a high camera's longest detection ranges are a little long for it); the line of sight is
+  straight.
 - The catalog: Sea Hunter carries its navigation radar only (a second radar entry would change
   what the legacy model reads for v1 and v2); REMUS's side-scan listens all round, not to its two
   sides; the Saildrone's cameras image every 5 s, looked through every second here; fixed

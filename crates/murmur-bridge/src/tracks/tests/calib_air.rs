@@ -1489,20 +1489,22 @@ fn air_physical_pointing() {
 }
 
 /// Each second a keep-out 3 s ahead misses an aircraft on the physical model, what fixed it in
-/// the 10 s before, and (`AIR_HISTORY=1`) the fixes and the track before it (a diagnostic for
+/// the 10 s before, and (`AIR_HISTORY=1`) the fixes and the track before it (`AIR_HISTORY=2`
+/// with the filter's state: when it was ranged, the bearings it keeps; a diagnostic for
 /// murmur-7vp: `AIR_CASE=<name prefix> AIR_SET=... cargo test -p murmur-bridge --release
 /// air_physical_misses -- --ignored --nocapture`; the all-sensors mix, `AIR_MIX=eo` radar and
 /// EO/IR, `AIR_MIX=radars` the all-sensors mix's radars alone; `AIR_MODEL=legacy` the legacy
-/// model). The tuning sets; `AIR_SET=physical_held_out` explains the physical held-out set's
-/// one run after it, never for tuning.
+/// model; `AIR_VEL=1` the seconds a velocity given is off by more than 4 of its sigmas instead).
+/// The tuning sets; `AIR_SET=physical_held_out` and `physical_held_out_two` explain the physical
+/// held-out sets' one runs after them, never for tuning.
 #[test]
 #[ignore]
 fn air_physical_misses() {
     use crate::tracks::physical::{Engine, Step, conditions::Conditions};
-    let sets = if std::env::var("AIR_SET").is_ok_and(|s| s == "physical_held_out") {
-        vec![(physical_held_out_cases(), AIR_PHYSICAL_HELD_OUT_SEEDS)]
-    } else {
-        tuning_sets()
+    let sets = match std::env::var("AIR_SET").as_deref() {
+        Ok("physical_held_out") => vec![(physical_held_out_cases(), AIR_PHYSICAL_HELD_OUT_SEEDS)],
+        Ok("physical_held_out_two") => vec![(physical_held_out_two_cases(), AIR_PHYSICAL_HELD_OUT_TWO_SEEDS)],
+        _ => tuning_sets(),
     };
     let prefix = std::env::var("AIR_CASE").unwrap_or_default();
     let mix = if std::env::var("AIR_MIX").is_ok_and(|m| m == "eo") { Mix::RadarEoIr } else { Mix::All };
