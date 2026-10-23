@@ -42,6 +42,14 @@ use serde_json::{Map, Value, json};
 
 use crate::world::World;
 
+/// The clock the answer cache ages its entries on: the monotonic clock live; in the headless
+/// simulator tokio's paused clock, so an answer's age is simulated time, as every other age
+/// there is (docs/HEADLESS.md, the space segment).
+#[cfg(not(murmur_headless))]
+type CacheInstant = Instant;
+#[cfg(murmur_headless)]
+type CacheInstant = tokio::time::Instant;
+
 /// Longest window a query may ask for (link windows over Starlink cost ~2 s a day).
 const MAX_WINDOW: Duration = Duration::days(3);
 /// The console's default look-ahead.
@@ -201,7 +209,7 @@ pub struct SpaceApi {
     /// SATCOM classes per platform id, from `space_class` / `space_class_alt` in
     /// sim/platforms.toml (read once at start).
     satcom: HashMap<String, Vec<String>>,
-    cache: Mutex<HashMap<String, (Instant, Arc<str>)>>,
+    cache: Mutex<HashMap<String, (CacheInstant, Arc<str>)>>,
 }
 
 type Api = Arc<SpaceApi>;
@@ -225,6 +233,7 @@ pub fn router<S: Clone + Send + Sync + 'static>(
     let root = repo_root();
     let api = Arc::new(SpaceApi::new(world, root, ScenarioClock::from_env()));
     let loader = api.clone();
+    #[cfg(not(murmur_headless))]
     std::thread::spawn(move || {
         let mut seen = loader.cache_signature();
         loader.load_and_install(on_loaded.as_ref(), "loaded");
@@ -238,7 +247,33 @@ pub fn router<S: Clone + Send + Sync + 'static>(
             }
         }
     });
+    #[cfg(murmur_headless)]
+    sim_loader(loader, on_loaded);
     routes(api)
+}
+
+/// The loader in the headless simulator (docs/HEADLESS.md, the space segment): the first load
+/// at once, inside the simulation's runtime, so the segment, its pinned time shift and the
+/// decision layer's `space.loaded` come at the simulated instant the router is built (the
+/// episode's start) and never at a real-time moment the episode cannot reproduce; then the same
+/// look at the element sets every [`CACHE_POLL`], on the simulated clock (a pinned snapshot
+/// does not change, so it never reloads unless its files do).
+#[cfg(murmur_headless)]
+fn sim_loader(loader: Api, on_loaded: Option<OnLoaded>) {
+    let mut seen = loader.cache_signature();
+    loader.load_and_install(on_loaded.as_ref(), "loaded");
+    tokio::spawn(async move {
+        let mut every = tokio::time::interval(CACHE_POLL);
+        every.tick().await;
+        loop {
+            every.tick().await;
+            let now = loader.cache_signature();
+            if now != seen {
+                seen = now;
+                loader.load_and_install(on_loaded.as_ref(), "reloaded (element sets changed on disk)");
+            }
+        }
+    });
 }
 
 fn routes<S: Clone + Send + Sync + 'static>(api: Api) -> Router<S> {
@@ -388,7 +423,7 @@ impl SpaceApi {
         {
             cache.remove(&oldest);
         }
-        cache.insert(key, (Instant::now(), body));
+        cache.insert(key, (CacheInstant::now(), body));
     }
 
     /// The session's time map (what positions, tracks and instantaneous links use).

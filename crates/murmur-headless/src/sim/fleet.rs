@@ -10,6 +10,7 @@
 //! GNSS environment of jammers and spoofers (`set_gnss`, the stand-ins' own `gnss::Env`).
 //! A vehicle none of them touches steps exactly as before.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -42,6 +43,9 @@ struct Held {
 
 pub struct Fleet {
     vehicles: Vec<Mutex<Held>>,
+    /// Gone from the world (an engagement's platform spent by its own effect, `Spec::effects`):
+    /// it neither steps nor sends, and answers nothing.
+    gone: Vec<AtomicBool>,
     /// The episode seed (a rebooted autopilot's draws start from it again, offset per reboot).
     seed: u64,
     reboots: Mutex<u64>,
@@ -90,7 +94,19 @@ impl Fleet {
             }
             vehicles.push(Mutex::new(Held { v, drain: None, silent_until: None }));
         }
-        Ok(Fleet { vehicles, seed, reboots: Mutex::new(0) })
+        let gone = vehicles.iter().map(|_| AtomicBool::new(false)).collect();
+        Ok(Fleet { vehicles, gone, seed, reboots: Mutex::new(0) })
+    }
+
+    /// Vehicle `i` leaves the world: from now on it neither steps nor sends nor answers (a
+    /// loitering munition spent by its own effect). Its last state stays readable for truth.
+    pub fn remove(&self, i: usize) {
+        self.gone[i].store(true, Ordering::Relaxed);
+    }
+
+    /// Whether vehicle `i` has left the world ([`Self::remove`]).
+    pub fn is_gone(&self, i: usize) -> bool {
+        self.gone[i].load(Ordering::Relaxed)
     }
 
     pub fn len(&self) -> usize {
@@ -105,8 +121,12 @@ impl Fleet {
         s.silent_until.is_some_and(|t| Instant::now() < t)
     }
 
-    /// One 10 Hz step of vehicle `i` and the frames it sent (none while it reboots).
+    /// One 10 Hz step of vehicle `i` and the frames it sent (none while it reboots, none once
+    /// it is gone).
     pub fn step(&self, i: usize) -> Vec<Vec<u8>> {
+        if self.is_gone(i) {
+            return Vec::new();
+        }
         let mut s = lock(&self.vehicles[i]);
         match s.drain {
             None => s.v.step(),
@@ -129,8 +149,11 @@ impl Fleet {
     }
 
     /// A datagram from the bridge for vehicle `i`, and the frames it answered with (unheard
-    /// while it reboots).
+    /// while it reboots, or once it is gone).
     pub fn deliver(&self, i: usize, data: &[u8]) -> Vec<Vec<u8>> {
+        if self.is_gone(i) {
+            return Vec::new();
+        }
         let mut s = lock(&self.vehicles[i]);
         if Self::silent(&s) {
             return Vec::new();

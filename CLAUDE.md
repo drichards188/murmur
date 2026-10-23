@@ -269,6 +269,11 @@ meaningful. Decision and command, not weapons.
   still crosses a 300 bps modem: expect tens of seconds per exchange, and ArduPilot's own 8 s
   mission-upload timeout makes uploads there unlikely to finish. `MURMUR_TELEMETRY=uniform`
   restores the one-plan-for-all for A/B runs.
+- Headless engagements and space are opt-in (docs/HEADLESS.md section 16): without
+  `Options.signers` nobody signs (the proxy operator never decides an engagement card), and
+  without `Options.space_snapshot` the bridge has no space segment. A space episode reads the
+  committed snapshot `sim/headless/space/<world>/`, never `sim/space/cache`: a new fetch changes
+  nothing headless until `python -m eval.headless.space snapshot` pins it.
 
 ## Conventions
 

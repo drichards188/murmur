@@ -18,6 +18,9 @@ clock, over one `murmur-headless` process.
   on a session and woken on the loop from the same first tick.
 - **the operator** (operator.py).
 - **the script**: the situation's faults and scripted proposers (families.py).
+- **the signers and the reviewer** (signers.py, review.py; `Options.signers`, `Options.review`,
+  docs/HEADLESS.md section 16): scripted operators who decide engagement nominations and work
+  the review list, from when the runner starts the operator. Off by default.
 - **the truth sampler**: our vehicles every `sample_s` and the tracker's association every 10 s;
   the contacts' truth is their own per-step log, read at the end (never given to the AI).
 - **the picture sampler** (scoring v2 only, `Options.scoring = "v2"`; eval/SCORING-V2.md 2.6):
@@ -73,7 +76,9 @@ from playbook.ledger import Ledger  # noqa: E402
 POLL_S = 0.5  # agents/playbook_agent.py
 PLAYBOOK_AGENT = "agent-playbook"
 RECORD_SCHEMA = "murmur-headless-episode/1"
-PRIORITY = {"runner": 0, "script": 1, "operator": 2, "agent": 3, "sampler": 4, "picture": 5}
+# the signers and the reviewer are operators: right after the operator at the same instant
+PRIORITY = {"runner": 0, "script": 1, "operator": 2, "signers": 2.1, "review": 2.2, "agent": 3, "sampler": 4,
+            "picture": 5}
 #: scoring v2's anchors and perturbations (eval/headless/agents_v2.py; SCORING-V2.md section 5)
 ANCHORS = ("null", "random-valid", "oracle")
 #: the ruler check's ladder of handicapped oracles (agents_v2.py; SCORING-V2.md 0.3)
@@ -84,7 +89,8 @@ PERTURBATIONS = ("playbook+spam", "playbook+behind", "playbook+skip-first", "pla
 HONEST_PERTURBATIONS = ("oracle-honest+spam", "oracle-honest+behind", "oracle-honest+skip-first",
                         "oracle-honest+reserve-blind", "oracle-honest+ferries", "oracle-honest+pull-off")
 V2_AGENTS = ANCHORS + LADDER + PERTURBATIONS + HONEST_PERTURBATIONS
-AGENTS = ("playbook", "model", "none") + V2_AGENTS
+#: the scripted agent for the engagement chain and the space segment (scripted.py)
+AGENTS = ("playbook", "model", "none") + V2_AGENTS + ("scripted",)
 SCORINGS = ("v1", "v2")
 #: SCORING-V2.md section 7: the classes the driver sets (the batch adds `harness_error` for an
 #: episode that failed in the simulator or the driver)
@@ -116,6 +122,17 @@ class Options:
     # agent's thinking costs simulated time); `latency` overrides latency.toml's constants
     clock: str = "paused"
     latency: Any = None
+    # docs/HEADLESS.md section 16, each off (None) by default, the episode and its record then
+    # exactly as before: the engagement signers (signers.py `signer_policy`: {"preset", ...}),
+    # the reviewer (review.py `review_policy`), the scripted agent's plan (agent "scripted",
+    # scripted.py `ScriptedPlan`), how an effect plays out on the truth side ({"p_hit",
+    # "spend_expended", "survives_miss"}: the simulator's `effects`), and the pinned element
+    # sets the bridge's space segment and the emulator's SATCOM read (space.py: a world name)
+    signers: dict[str, Any] | None = None
+    review: dict[str, Any] | None = None
+    scripted: dict[str, Any] | None = None
+    effects: dict[str, Any] | None = None
+    space_snapshot: str | None = None
 
 
 class Loop:
@@ -388,6 +405,9 @@ class Episode:
         if self.opts.scoring not in SCORINGS:
             raise ValueError(f"unknown scoring {self.opts.scoring!r}: {', '.join(SCORINGS)}")
         self.picture_enc: Any = None  # v2/record.py PictureEncoder (scoring v2 only)
+        self.signers: Any = None  # signers.Signers (Options.signers)
+        self.reviewer: Any = None  # review.Reviewer (Options.review)
+        self.effects: list[dict[str, Any]] = []
         # the latency charge (latency.py) on the charged clock; None on the paused one
         if self.opts.clock not in CLOCKS:
             raise ValueError(f"unknown clock {self.opts.clock!r}: {', '.join(CLOCKS)}")
@@ -401,6 +421,10 @@ class Episode:
     def start_operator(self, now: float) -> None:
         if self.operator is not None:
             self.loop.at(self.operator.start(now), "operator")
+        if self.signers is not None:
+            self.loop.at(self.signers.start(now), "signers")
+        if self.reviewer is not None:
+            self.loop.at(self.reviewer.start(now), "review")
 
     def run(self) -> dict[str, Any]:
         wall0 = time.perf_counter()
@@ -408,6 +432,7 @@ class Episode:
         workdir.mkdir(parents=True, exist_ok=True)
         spec, env = process_spec(self.e, self.seed, workdir, self.opts.calibration, terrain=self.opts.terrain,
                                  space=self.opts.space, anchors=self.opts.anchors, contacts_path=self.contacts_path)
+        self.section16(spec, env)
         self.want = {int(v["uid"]) for v in spec["fleet"]}
         # the fleet as planned (uid, callsign, platform): what a timeline's fault step selects in
         self.planned = list(spec["fleet"])
@@ -426,6 +451,16 @@ class Episode:
                                      self.e.operator_note(AUTOPLAY_OPERATOR),
                                      spec["epoch"])
             self.loop.handlers["operator"] = self.operator.wake
+            if self.opts.signers is not None:
+                from .signers import Signers, signer_policy
+
+                self.signers = Signers(sim, signer_policy(self.opts.signers), self.seed, float(spec["epoch"]))
+                self.loop.handlers["signers"] = self.signers.wake
+            if self.opts.review is not None:
+                from .review import Reviewer, review_policy
+
+                self.reviewer = Reviewer(sim, review_policy(self.opts.review), self.seed)
+                self.loop.handlers["review"] = self.reviewer.wake
             cfg = make_config(json.loads(playbook_json(self.e)), self.e.config_name or self.e.name)  # type: ignore[arg-type]
             if self.opts.agent not in AGENTS:
                 raise ValueError(f"unknown agent {self.opts.agent!r}: {', '.join(AGENTS)}")
@@ -439,6 +474,10 @@ class Episode:
                 from . import agents_v2
 
                 self.agent = agents_v2.make(self, self.opts.agent, cfg)
+            elif self.opts.agent == "scripted":
+                from .scripted import ScriptedAgent, ScriptedPlan
+
+                self.agent = ScriptedAgent(self, ScriptedPlan.from_spec(self.opts.scripted))
             if self.agent is not None:
                 self.loop.handlers["agent"] = self.agent.wake
                 self.ai_first_tick_s = self.opts.calibration.ai_first_tick(self.seed)
@@ -464,6 +503,7 @@ class Episode:
             for a in final.get("association") or []:
                 self.association.setdefault(a["track_id"], a["contact_id"])
             self.truth_log(final)
+            self.effects = list(final.get("effects") or [])
             # where the simulator's computer time went (diagnostics; not part of the episode)
             rust_perf = sim.rpc({"op": "perf"}).get("tasks") or {}
             end = sim.end()
@@ -596,13 +636,48 @@ class Episode:
             # charged only (a paused record is unchanged): the condition and its constants
             rec["clock"]["condition"] = "charged"
             rec["provenance"] = {**rec["provenance"], "clock": {"condition": "charged", "latency": self.latency.as_dict()}}
-        if self.opts.agent in V2_AGENTS:
+        if self.opts.agent in V2_AGENTS or self.opts.agent == "scripted":
             # an anchor's or a perturbation's own account: what it read, what it changed, and what
-            # it read of truth (privileged; agents_v2.py)
+            # it read of truth (privileged; agents_v2.py); the scripted agent's plan and options
             rec["agent_detail"] = self.agent.describe()
+        rec.update(self.section16_record())
         if self.opts.scoring == "v2":
             rec.update(self.v2_part(audit_text))
         return rec
+
+    def section16(self, spec: dict[str, Any], env: dict[str, str]) -> None:
+        """The simulator's side of docs/HEADLESS.md section 16, only where an option asks: the
+        effects (`spec["effects"]`), and the pinned element sets unpacked once and given to the
+        bridge's space loader (`MURMUR_ROOT`) and the emulator's SATCOM (`space_root`, its own
+        look cache)."""
+        if self.opts.effects is not None:
+            spec["effects"] = dict(self.opts.effects)
+        if self.opts.space_snapshot is not None:
+            from . import space
+
+            root = space.unpack(self.opts.space_snapshot)
+            env["MURMUR_ROOT"] = str(root)
+            spec["space_root"] = str(root)
+            if spec.get("space"):
+                # the episode's link profiles (its world's: section 17; sim/links.toml at the
+                # Golden Gate, as before)
+                spec["space_cache"] = str(space.look_cache_file(self.opts.space_snapshot, Path(spec["links"])))
+
+    def section16_record(self) -> dict[str, Any]:
+        """The record's keys for section 16, each only when its option is on (a record without
+        them is exactly as before)."""
+        out: dict[str, Any] = {}
+        if self.signers is not None:
+            out["signers"] = {"policy": self.signers.describe(), "decisions": self.signers.decisions}
+        if self.reviewer is not None:
+            out["review"] = {"policy": self.reviewer.describe(), "decisions": self.reviewer.decisions}
+        if self.opts.effects is not None:
+            out["effects"] = {"config": dict(self.opts.effects), "applied": self.effects}
+        if self.opts.space_snapshot is not None:
+            from . import space
+
+            out["space"] = {"snapshot": space.describe(self.opts.space_snapshot)}
+        return out
 
     def v2_part(self, audit_text: str) -> dict[str, Any]:
         """Scoring v2's keys (SCORING-V2.md 2.6, 7): the episode class as the driver sets it,

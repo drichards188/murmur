@@ -75,6 +75,9 @@ pub struct Setup<'a> {
     pub space_outlook: bool,
     /// Where SATCOM looks are kept between episodes (`space_cache`).
     pub space_cache: Option<std::path::PathBuf>,
+    /// A pinned space snapshot's root (`Spec::space_root`): the catalog and element sets under
+    /// its `sim/space/`, the same the bridge's space segment reads; none: the links file's.
+    pub space_root: Option<&'a std::path::Path>,
 }
 
 /// The SATCOM source, its settings and the links that follow a constellation.
@@ -90,9 +93,14 @@ impl Emulator {
     /// terrain from the baked grid (the ground station's altitude settled against it, as the
     /// emulator settles it against tidewater's DEM), SATCOM from murmur-space's data.
     pub fn new(setup: Setup<'_>, start: Instant) -> Result<Arc<Emulator>, String> {
-        let Setup { links_file, events, fleet, seed, epoch, grid, space, space_outlook, space_cache } = setup;
+        let Setup { links_file, events, fleet, seed, epoch, grid, space, space_outlook, space_cache, space_root } = setup;
         let mut cfg = Config::load(links_file)?;
         cfg.event.extend(events.iter().cloned());
+        if let Some(root) = space_root {
+            let dir = root.join("sim/space");
+            cfg.space.catalog = dir.join("constellations.toml").to_string_lossy().into_owned();
+            cfg.space.cache = dir.join("cache").to_string_lossy().into_owned();
+        }
         // the SATCOM look-ahead (next outage, next pass, for `/stats` and the console) is
         // display only, and its propagation over half an hour every minute was most of an
         // episode's time: off unless asked for (docs/HEADLESS.md, what it leaves out)
