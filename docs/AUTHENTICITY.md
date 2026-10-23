@@ -77,8 +77,11 @@ so a new behavior inherits it:
   disarmed", "Distance from LAND point"); leaving AUTO then resets the mission ("In landing
   sequence: mission reset") or restarts the landing sequence at the previous waypoint.
   MISSION_ITEM_REACHED 0 on entering GUIDED. Home follows a disarmed plane or rover
-  (HOME_POSITION when it moves), so it is where the vehicle arms. RTL_AUTOLAND (ArduPlane's
-  default 0: RTL circles home) 1 or 2 ends an RTL in a landing (ModeRTL::navigate): on the RTL
+  (HOME_POSITION when it moves), so it is where the vehicle arms. A plane that starts in the
+  air has its home on the surface below it: at tidewater's surface height there (sampled once
+  at start; the headless simulator reads its baked grid), at 0 m without tidewater.
+  RTL_AUTOLAND (ArduPlane's default 0: RTL circles home) 1 or 2 ends an RTL in a landing
+  (ModeRTL::navigate): on the RTL
   circle within 10 m of the RTL altitude (1) or at once (2), once per RTL, a DO_LAND_START in
   the mission is jumped to in AUTO ("Landing sequence start"). With none, ArduPlane keeps
   circling; the bridge's missions never carry one, so the stand-in flies ArduPlane's own

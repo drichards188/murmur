@@ -35,6 +35,13 @@ pub struct VehicleConfig {
     /// doesn't model are reported and skipped.
     #[serde(default)]
     pub params: BTreeMap<String, f64>,
+    /// The surface's height at the spawn point, m above MSL (the ground, or the water over it:
+    /// tidewater's elevation or water level, whichever is higher), when the launcher knows it:
+    /// a vehicle that starts in the air has its home there, on the surface below it, and lands
+    /// on it. None: at 0 m, the sea's. The engine samples tidewater for it at start; the
+    /// headless simulator reads its baked surface grid.
+    #[serde(default)]
+    pub surface_m: Option<f64>,
 }
 
 /// What a stand-in simulates for a platform with no `endurance_h` in `sim/platforms.toml`. The

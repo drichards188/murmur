@@ -584,9 +584,10 @@ def test_a_puma_sent_home_lands_and_refuses_a_later_order_saying_why(binary: Non
     """PUMA 2 circles its home off Lime Point (no opening orders here); sent home (an rtl), it lands
     there in AUTOLAND and disarms, and the fleet read shows it down. A later orbit for it fails,
     the arm refused for good with the stand-in's words, which the order's failure and the inbox's
-    alert carry; nothing moves it. (PUMA 1, down at Crissy Field at 0 m, reads as a few metres
-    under the baked surface to the link emulator, which then loses most of its packets: an order
-    for it can fail first on telemetry too stale to check, so this test uses PUMA 2.)"""
+    alert carry; nothing moves it. Both Pumas' homes are on the baked surface below their spawns.
+    (PUMA 1, down at Crissy Field with the DEM's structures between it and the ground station,
+    keeps a degraded link, about two thirds of its packets lost: an order for it can fail first
+    on the link, so this test uses PUMA 2.)"""
     from eval.agent import _rest_body
     from eval.headless.sim import Sim
     from eval.situation import SETUP_OPERATOR
@@ -611,8 +612,18 @@ def test_a_puma_sent_home_lands_and_refuses_a_later_order_saying_why(binary: Non
 
     try:
         sim.step(20.0)
+        # both Pumas started in the air: their homes are on the baked surface below them
+        # (Crissy Field's land for PUMA 1, the water off Lime Point for PUMA 2)
+        for callsign in ("PUMA 1", "PUMA 2"):
+            uid = v2_vehicles()[callsign]["uid"]
+            fleet = sim.mcp("agent-playbook", ("agent-playbook", "test"), "get_fleet", {"uids": [uid]})["structured"]
+            pos = next(v for v in fleet["vehicles"] if v["uid"] == uid)["position"]
+            spawn = next(v for v in sim.picture()["ours"] if v["uid"] == uid)["home"]
+            surface = water().surface(spawn[0], spawn[1])
+            assert abs(pos["alt_msl_m"] - pos["alt_rel_m"] - surface) < 0.2, (callsign, pos, surface)
         start = ours()
         assert start["armed"] and start["mode"] == "LOITER"
+        surface = water().surface(start["home"][0], start["home"][1])
         order("rtl")
         t = 20.0
         while ours()["armed"] and t < 300.0:
@@ -620,7 +631,7 @@ def test_a_puma_sent_home_lands_and_refuses_a_later_order_saying_why(binary: Non
         down = ours()
         assert not down["armed"] and down["mode"] == "AUTOLAND", down
         assert dist_m((down["lon"], down["lat"]), (start["home"][0], start["home"][1])) < 150.0
-        assert down["alt_m"] < 0.5 and down["speed_mps"] < 0.5
+        assert abs(down["alt_m"] - surface) < 0.2 and down["speed_mps"] < 0.5, (down, surface)
         t = sim.step(t + 3.0)  # the next heartbeat
         v = shown()
         assert v["autopilot"]["mode"] == "AUTOLAND" and not v["autopilot"]["mav_armed"], v

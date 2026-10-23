@@ -507,7 +507,8 @@ impl Behavior for Plane {
 
     fn spawn(&self, spec: &Spec, st: &mut State) {
         if st.alt > 50.0 {
-            // spawned high: on station, flying, home on the surface below
+            // spawned high: on station, flying, home on the surface below (the sea's 0 m here;
+            // Vehicle::seeded puts it at the surface's height there when the launcher knows it)
             st.home.2 = 0.0;
             st.speed = spec.cruise_mps;
             st.armed = true;

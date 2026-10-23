@@ -273,6 +273,7 @@ fn config(spec: Spec, port: u16, alt: f64) -> VehicleConfig {
         home: [37.8, -122.6, alt, 90.0],
         spec,
         params: Default::default(),
+        surface_m: None,
     }
 }
 
@@ -808,11 +809,17 @@ fn puma() -> Spec {
 /// A Puma in the air at 120 m over its home (it spawned there), circling it in LOITER, with
 /// `pct` % of its pack left, stepped by hand.
 async fn puma_aloft(pct: f64) -> (Vehicle, UdpSocket) {
+    puma_aloft_over(pct, None).await
+}
+
+/// [`puma_aloft`] over a surface `surface_m` high, as the launcher found it under the spawn.
+async fn puma_aloft_over(pct: f64, surface_m: Option<f64>) -> (Vehicle, UdpSocket) {
     let sink = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
     let port = sink.local_addr().expect("addr").port();
     let sock = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
     sock.connect(("127.0.0.1", port)).await.expect("connect");
     let mut cfg = config(puma(), port, 120.0);
+    cfg.surface_m = surface_m;
     cfg.params = [
         ("RTL_AUTOLAND".into(), 1.0),
         ("TKOFF_THR_MINACC".into(), 15.0),
@@ -888,6 +895,41 @@ async fn a_puma_sent_home_lands_disarms_and_draws_only_its_avionics_load() {
         "{idle:.1} mAh in 600 s (cruise {cruise:.0})"
     );
     assert!(!v.st.armed && (v.st.lat, v.st.lon) == at && v.st.mode == "AUTOLAND");
+}
+
+/// A plane that starts in the air has its home on the surface below it, at the height the
+/// launcher found there (Crissy Field's 3 m), says so in HOME_POSITION, and lands on that
+/// surface; one that starts on the ground keeps its home where it stands.
+#[tokio::test]
+async fn a_puma_started_in_the_air_has_its_home_on_the_surface_and_lands_on_it() {
+    let (mut v, _sink) = puma_aloft_over(80.0, Some(3.0)).await;
+    assert_eq!(v.st.home.2, 3.0);
+    assert_eq!(v.st.alt, 120.0, "flying where it spawned");
+    let MavMessage::HOME_POSITION(h) =
+        murmur_standins::telemetry::build(&v, HOME_POSITION_DATA::ID).expect("home position")
+    else {
+        panic!("not a home position");
+    };
+    assert_eq!(h.altitude, 3000, "mm above MSL");
+    v.set_mode("RTL");
+    step_until(&mut v, 600.0, |v| !v.st.armed);
+    assert_eq!(v.st.mode, "AUTOLAND");
+    assert!(
+        (v.st.alt - 3.0).abs() < 0.01,
+        "down on the surface: {}",
+        v.st.alt
+    );
+    // no surface known: the sea's 0 m, as before
+    let (v, _sink) = puma_aloft_over(80.0, None).await;
+    assert_eq!(v.st.home.2, 0.0);
+    // started on the ground: home where it stands, whatever the surface sampled
+    let sink = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
+    let port = sink.local_addr().expect("addr").port();
+    let sock = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
+    let mut cfg = config(puma(), port, 5.0);
+    cfg.surface_m = Some(3.0);
+    let v = Vehicle::seeded(cfg, sock, None, SEED).expect("vehicle");
+    assert_eq!((v.st.home.2, v.st.armed), (5.0, false));
 }
 
 /// The battery's low failsafe (20 %) comes during the landing: ArduPlane never breaks one off

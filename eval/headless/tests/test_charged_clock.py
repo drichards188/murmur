@@ -338,13 +338,17 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: with the fleet before it, main after the anchors merge still gives the earlier digests. All three
 #: re-taken when a Puma's RTL came to end in a landing (murmur-a5v): the code before it gave the
 #: earlier digests in that worktree, and each record was byte-identical to it up to its first RTL
-#: to AUTOLAND hand-over (a Puma's lost-link failsafe in all three). A change to the simulator,
-#: the bridge or the v2 world changes them too: re-take them on the code before a change to the
-#: driver, never after it.
+#: to AUTOLAND hand-over (a Puma's lost-link failsafe in all three). Re-taken again when a plane
+#: that starts in the air got its home on the surface below it and a landed, disarmed aircraft's
+#: link a terrain check at rest (murmur-a5v): against the records before it, the engine's logged
+#: check inputs (altitudes above the new homes) and REAPER 1's battery (a hundredth of a percent,
+#: late) differ, and in v2 the landed PUMA 1's link events after its landing; every proposal,
+#: operator decision, order and plan is the same. A change to the simulator, the bridge or the v2
+#: world changes them too: re-take them on the code before a change to the driver, never after it.
 PAUSED = {
-    "model harbor-watch s1": "5d5f50cd65478242226d396bc5e84369ae29d2f3a8bed1bd76fa9268f0dc8939",
-    "playbook v2 fast-unknown 1000": "c2eef0a2d5ded0a0673c86dd54bc0c32e2070e8e395050b12186585d2a869f72",
-    "model v2 fast-unknown 1000": "9542e73d0a3dfc8a823d11f5b56bc46575555a2b775474417922c581d3b69671",
+    "model harbor-watch s1": "aaad7bc7a102551067f28c25a9b9d2e02cfe1e5e9fc8ecb8c58f58c1c3ab2b94",
+    "playbook v2 fast-unknown 1000": "4d9b812bcea2a284fd66ce31d0258aad727742ad7c0bfe5e88caded646427c88",
+    "model v2 fast-unknown 1000": "665f72b96dd528d3be7f347c3a9a0b359bc87498be3a391bd6cc8c6e2d5aad41",
 }
 
 
