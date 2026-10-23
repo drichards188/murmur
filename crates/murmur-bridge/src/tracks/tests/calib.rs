@@ -901,12 +901,28 @@ fn failures_by(cases: &[Case], seeds: std::ops::RangeInclusive<u64>, table: &mut
 /// The tracker as tuned, on the physical sensing model's detections of the held-out set
 /// (WORLD-V3-PLAN 2.8 item 3: an evaluation, never tuning; the asserting tests stay on the
 /// legacy model they were judged on): the same table and criteria, reported, not asserted
-/// (`cargo test -p murmur-bridge --release calib_physical -- --ignored --nocapture`).
+/// (`cargo test -p murmur-bridge --release -- --ignored --exact tracks::tests::calib::calib_physical
+/// --nocapture`: the name alone matches the other physical runs too).
 #[test]
 #[ignore]
 fn calib_physical() {
     let mut table = Vec::new();
     let bad = failures_by(&held_out_cases(), HELD_OUT_SEEDS, &mut table, &|c, seed| run_by(c, seed, &mut physical(seed)));
+    eprintln!("{}", table.join("\n"));
+    eprintln!("--- the criteria on the physical model: {}", if bad.is_empty() { "all hold".to_string() } else { format!("\n{}", bad.join("\n")) });
+}
+
+/// The same on the tuning sets (a check for a change to the physical model, which is never
+/// tuned on the held-out set: `cargo test -p murmur-bridge --release calib_physical_tuning --
+/// --ignored --nocapture`).
+#[test]
+#[ignore]
+fn calib_physical_tuning() {
+    let mut table = Vec::new();
+    let mut bad = Vec::new();
+    for (cases, seeds) in [(first_cases(), FIRST_SEEDS), (round_one_cases(), ROUND_ONE_SEEDS), (round_two_cases(), ROUND_TWO_SEEDS)] {
+        bad.extend(failures_by(&cases, seeds, &mut table, &|c, seed| run_by(c, seed, &mut physical(seed))));
+    }
     eprintln!("{}", table.join("\n"));
     eprintln!("--- the criteria on the physical model: {}", if bad.is_empty() { "all hold".to_string() } else { format!("\n{}", bad.join("\n")) });
 }

@@ -117,6 +117,26 @@ tracker keeps it centred) until it is identified or 10 s pass, then searches aga
 progress survives the slew and zoom. A camera that cannot slew looks along its vehicle's
 heading; a panoramic one does not point. The constants are [E].
 
+A cue to an aircraft whose height no sensor measured (a 2D radar's plot, a camera's or ESM's
+fix) is an elevation search (murmur-7vp): a 2D radar measures range and bearing, not elevation,
+so the aircraft is somewhere on the arc its slant range allows along that bearing, from just
+above the sea to as high as it may fly; the camera steps its wide field through those elevations
+bar by bar (four fifths of the field's height a step), lowest first, staring 4 s at each once
+settled, as its search steps the task area and as an EO director cued by a 2D surveillance radar
+scans in elevation at the cued bearing. The band is 10 m to 8,000 m, or the slant range if lower
+([E here]: above the 4 to 6 km service ceilings of the light aircraft and helicopters the air
+kinds stand for, and the 7,000 m of the engagement scenarios' highest aircraft). A
+height-finding radar's fix (within 10 s) aims at the aircraft itself. A cued camera re-aims
+only when the cue leaves the middle of its field (a quarter of its width off the boresight); a
+locked one follows its contact in closed loop while the line of sight turns no faster than the
+gimbal slews: only a slew, a zoom, a search step and a new bar settle (the research's "slew
+time = angle / slew rate + about 1 s to settle" is a step's; a stabilised gimbal under its
+image tracker keeps the target centred and sharp, and holding a cue that stays in view needs no
+step). Before this, a cue aimed at the plot on the sea, and every track update while cued and
+every second of a lock slewed and settled again: on the air tuning sets the cameras were blind
+93 to 98 % of the time they were cued or locked, and 3.5 to 8.8 % of cues acquired the aircraft
+(30 to 70 % now).
+
 **Radar** (`physical/radar.rs`, decision W2). One Swerling 1 draw per scan as the beam passes
 the contact's bearing, against a 1e-4 false-alarm threshold; the fourth-root law about each
 radar's reference [16]; the two-ray model for low targets, power as R^-8 beyond the crossover
@@ -193,26 +213,62 @@ the test checks the chain and that a 12 m/s wind shortens them.
 Properties (`tracks::tests::physical`): nothing beyond its horizon; nothing behind a ridge; a
 fixed camera sees nothing outside its field; identification falls with range; night removes a
 day camera's detections; sea state 5 loses a small boat to the navigation radar at 5 km and
-keeps a ferry; a camera cued by a radar track identifies it with no order naming it;
-deterministic; per-observer evidence (a closer look corrects a wrong call).
+keeps a ferry; a camera cued by a radar track identifies it with no order naming it; a camera
+cued by a 2D radar to an aircraft 17 degrees above the plot finds it in elevation and identifies
+it, and a locked camera follows a crossing boat and identifies it (murmur-7vp: both fail before
+it); deterministic; per-observer evidence (a closer look corrects a wrong call).
 
-**The tracker on the physical model** (`calib_physical`, `air_calib_physical`: the held-out
-sets, evaluated once, never tuned on; the asserting calibrations stay on the legacy model they
-were judged on, unchanged):
+**The tracker on the physical model** (`calib_physical`, `air_calib_physical`,
+`air_calib_physical_held_out`: the held-out sets, evaluated once, never tuned on; the asserting
+calibrations stay on the legacy model they were judged on, unchanged; `calib_physical_tuning`,
+`air_calib_physical_tuning`, `air_physical_pointing` and `air_physical_misses` are the tuning
+sets' views):
 
 - Surface (seeds 66-95): every criterion holds; per class NEES 1.01 to 1.88, the truth within
   two sigmas 87.5 to 98.4 % when updated, and a keep-out 60 and 100 s ahead holds every case at
-  least as often as the old filter's.
-- Air (seeds 221-250): honest per class and mix (NEES 0.75 to 1.96, within two sigmas 95.5 to
-  100 %), but in the all-sensors mix a keep-out 3 s ahead missed a loitering aircraft 9 times in
-  3,742 samples by up to 2,079 m (10 s ahead 5 times, 1,671 m), a weave twice (1,212 m), a route
-  once (221 m), a helicopter's hover and go once (38 m), the far transit once (87 m); the
-  tracker alone exceeded its bounds there for loitering, route and weave; hover and go's
-  velocities had a mean normalized error of 9.41. The tracker almost never gives an aircraft a
-  velocity in any mix (0 to 0.7 % of samples): its tracks are unranged 2D-radar bearing
-  segments, 1 to 3 km of 1-sigma, so keep-outs are wide (blocks 89 to 100 % at 60 s). The likely cause: a 2D radar's cue of an aircraft carries no elevation, so
-  the payload manager aims at the plot on the sea and rarely acquires the aircraft; a camera
-  cued along a bearing should search in elevation (a follow-up, judged on new held-out sets).
+  least as often as the old filter's. After murmur-7vp, still every criterion: per class NEES
+  1.03 to 1.97 (before 1.01 to 1.88), within two sigmas 86.3 to 97.7 % (87.5 to 97.9).
+- Air (seeds 221-250, before murmur-7vp; spent for the physical model since): honest per class
+  and mix (NEES 0.75 to 1.96, within two sigmas 95.5 to 100 %), but in the all-sensors mix a
+  keep-out 3 s ahead missed a loitering aircraft 9 times in 3,742 samples by up to 2,079 m (10 s
+  ahead 5 times, 1,671 m), a weave twice (1,212 m), a route once (221 m), a helicopter's hover
+  and go once (38 m), the far transit once (87 m); the tracker alone exceeded its bounds there
+  for loitering, route and weave; hover and go's velocities had a mean normalized error of
+  9.41. The tracker almost never gives an aircraft a velocity in any mix (0 to 0.7 % of
+  samples): its tracks are unranged 2D-radar bearing segments, 1 to 3 km of 1-sigma, so
+  keep-outs are wide (blocks 89 to 100 % at 60 s). The likely cause, as written then: a 2D
+  radar's cue of an aircraft carries no elevation, so the payload manager aims at the plot on
+  the sea and rarely acquires the aircraft; a camera cued along a bearing should search in
+  elevation (a follow-up, judged on new held-out sets).
+- murmur-7vp: the elevation search and the gimbal's following (Pointing, above) were measured on
+  the air tuning sets only and judged once on a new held-out set written before them
+  (`physical_held_out_cases`, seeds 251-280, every class in yet other variants). The cameras
+  now acquire aircraft (above), but the keep-out misses were not the cameras': on the tuning
+  sets every miss 3 s ahead (24 in 227,808 samples of the all-sensors mix) came with only the
+  USV's and the ship's 2D radars fixing the aircraft in the 10 s before, 23 of them more than
+  10 s after a camera's fix; the mix's radars alone, without a camera, miss 21 times on the
+  physical model and never on the legacy one. The physical radars plot an aircraft once a scan,
+  as the beam passes (a radar's fix in 56 % of the all-sensors mix's seconds; the ship's radar
+  sees a 1 m^2 aircraft on about 0.4 to 0.75 of its scans 5 to 7 km out), where the legacy model
+  gave every radar a fix nearly every second: two bearings that cross by 30 degrees come
+  seconds apart, the tracker takes the pair as ranging it (`model::CROSSING_DEG`,
+  `RANGE_FRESH_S`), and the estimate slides along a bearing past its sigma. A second pattern
+  shows now that cameras fix aircraft: after a camera's few fixes of the tightest loiter (500 m
+  at 55 m/s), the track counts as ranged for 10 s on one radar's bearings and slides along them
+  (the radar and EO/IR mix of the tuning sets, 4 misses 3 s ahead by up to 102 m, none before
+  the fix). Both are the tracker's (a follow-up; the tracker is unchanged here).
+  The new held-out set's one run: in the 2D radar and the radar and EO/IR mixes every criterion
+  holds; in the all-sensors mix every class is honest (NEES 0.90 to 1.95 over every mix, within
+  two sigmas 96.1 to 100 %), the steady classes' velocities too (normalized error 0.59 to
+  1.26), no altitude is given, and a keep-out 30, 60 and 100 s ahead holds every case, but a
+  keep-out 3 s ahead missed the weave 4 times in 4,730 samples by up to 1,575 m (10 s ahead 3
+  times, 1,130 m) and the hexagon route twice in 4,609 by up to 220 m, and the tracker alone
+  exceeded its bounds for the weave (3 s: 0.11 %, 1,685 m; 10 s: 0.06 %, 1,241 m) and the
+  route (3 s: 330 m against 300). Each of those misses came with only the same two radars in
+  the 10 s before, 13 to 112 s after a camera's fix. Aircraft still almost never get a velocity
+  (0 to 0.6 %): a camera's look is a few seconds a cue (decision W1: identify, then search
+  again; an identified contact is looked at again after 2 to 5 minutes), never the tens of
+  seconds of position fixes the tracker's velocity needs.
 
 **Cost** (`eval/headless/sense_perf.py`): a Golden Gate world of 30 stand-ins of ten types and
 40 contacts of every domain, headless, 30 simulated minutes: 91 times real time on the
@@ -235,9 +291,12 @@ The legacy model's Python ports (`v2/labels.py`, `families.py`, `agents_v2.py`,
 - Association is still by contact id (perfect association); a gating tracker is later work.
 - EO/IR gives a position, as the legacy model (a passive sensor without a rangefinder is angles
   only: the murmur-oho follow-up stands). Its fix error is the legacy model's.
-- The payload manager's constants, the classification times, the misclassification rates per
-  level and the size-class thresholds are estimates; a 2D radar's cue of an aircraft carries
-  no elevation (above).
+- The payload manager's constants (its elevation band and bar dwell among them), the
+  classification times, the misclassification rates per level and the size-class thresholds
+  are estimates. The physical radars have no elevation beam: a 2D radar sees an aircraft at
+  any elevation, and a camera cued by it searches up to the slant range.
+- The tracker ranges an aircraft on two 2D radars' bearings seconds apart (above): the
+  all-sensors mix's remaining air keep-out misses, a tracker follow-up.
 - Radar: no land clutter (ground contacts are seen as on water, terrain masking apart), no
   pulse integration or sidelobes, a ship's radar heard by ESM every second (its sidelobes)
   rather than once per turn, and the X-band clutter table for every band.

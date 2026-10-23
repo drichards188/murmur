@@ -548,7 +548,12 @@ group. Dates are 2026.
   in its all-sensors mix (keep-out misses 3 s ahead up to 2 km; aircraft almost never get a
   velocity, because a 2D radar's cue carries no elevation and cameras rarely acquire them),
   reported in docs/SENSING.md as a follow-up. Headless it costs nothing measurable (91 times
-  real time with 30 vehicles and 40 contacts).
+  real time with 30 vehicles and 40 contacts). murmur-7vp (10-23) found the cameras' part two
+  payload-manager faults (a cue aimed at the sea; a gimbal settling again at every track update
+  and every second of a lock) and fixed them, but the keep-out misses were the tracker's: two
+  2D radars' bearings seconds apart (the physical radars plot an aircraft once a scan) taken as
+  ranging it; a new air held-out set (251-280) still fails in the all-sensors mix
+  (docs/SENSING.md), a tracker follow-up.
 - **W1: cameras point themselves; orders name no look target** (10-23, approved). Each EO/IR
   sensor has a simulated payload manager on its vehicle: it searches the task area (an orbit's
   circle, a patrol's route, else around the vehicle) in the wide field, cues to the nearest

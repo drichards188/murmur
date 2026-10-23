@@ -53,6 +53,20 @@
 //!    every criterion held but the strictest, twice ([`HELD_OUT_FOUND`]: a keep-out 3 s ahead
 //!    missed an aircraft without a velocity by 20 m and 6 m in some 300,000 samples). The test
 //!    asserts on it, those two pinned as found.
+//! 9. The physical sensing model (WORLD-V3-PLAN 2.8 item 3) was evaluated once on the held-out
+//!    set ([`air_calib_physical`]) and failed in the all-sensors mix (murmur-7vp, docs/SENSING.md).
+//!    [`physical_held_out_cases`] on [`AIR_PHYSICAL_HELD_OUT_SEEDS`] was written then, before
+//!    anything was changed: [`AIR_HELD_OUT_SEEDS`] are spent for the physical model, and the fix
+//!    was developed on the tuning sets (101-220) only. The new set is run once, after the fix.
+//! 10. The fix (961d924: the payload manager's elevation search on a cue without a height, and
+//!     its gimbal following a cue or a lock without settling again) made the cameras acquire
+//!     aircraft, but the tuning sets showed the keep-out misses to be the tracker's (two 2D
+//!     radars' bearings seconds apart taken as ranging it; docs/SENSING.md), and the tracker was
+//!     not changed. The new set's one run ([`air_calib_physical_held_out`]): every criterion held
+//!     in the 2D radar and the radar and EO/IR mixes; in the all-sensors mix every class was
+//!     honest and gave no altitude, but a keep-out 3 s ahead missed the weave 4 times by up to
+//!     1,575 m (10 s ahead 3 times, 1,130 m) and the hexagon route twice by up to 220 m, and the
+//!     tracker alone exceeded its bounds for the weave and the route.
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
@@ -75,8 +89,12 @@ pub const AIR_ROUND_ONE_SEEDS: RangeInclusive<u64> = 131..=160;
 pub const AIR_ROUND_TWO_SEEDS: RangeInclusive<u64> = 161..=190;
 /// The third air held-out set's seeds, tuning data since.
 pub const AIR_ROUND_THREE_SEEDS: RangeInclusive<u64> = 191..=220;
-/// The air held-out set's seeds: used nowhere in tuning.
+/// The air held-out set's seeds: used nowhere in tuning. Spent for the physical sensing model
+/// (its one run there found murmur-7vp).
 pub const AIR_HELD_OUT_SEEDS: RangeInclusive<u64> = 221..=250;
+/// The physical sensing model's air held-out set's seeds ([`physical_held_out_cases`]): written
+/// before murmur-7vp's fix, run once after it.
+pub const AIR_PHYSICAL_HELD_OUT_SEEDS: RangeInclusive<u64> = 251..=280;
 /// The rules the tracker before this calibration was judged under (the keep-out's regions).
 const BEFORE_RULES: u32 = 12;
 
@@ -441,6 +459,56 @@ pub fn held_out_cases() -> Vec<AirCase> {
             |_, len| fly(len, (9000.0, 1000.0, 270.0, 70.0), 8.0, 3.0, |t, _, _, _| if t < 110.0 { (270.0, 70.0) } else { (120.0, 85.0) }),
         ),
         air("a far transit at 80 m/s, 14 km out, 2500 m", "far transit", "light_aircraft", 2500.0, straight(12000.0, 14000.0, 200.0, 80.0)),
+    ]
+}
+
+/// The physical sensing model's held-out set (murmur-7vp, see the module doc): written before
+/// any change the physical model's failure on [`AIR_HELD_OUT_SEEDS`] led to, the same classes
+/// as [`held_out_cases`] in yet other variants; run once, on [`AIR_PHYSICAL_HELD_OUT_SEEDS`],
+/// when the fix was done, never tuned on.
+pub fn physical_held_out_cases() -> Vec<AirCase> {
+    vec![
+        air("straight 40 m/s south-east, over the fleet, 600 m", "straight", "light_aircraft", 600.0, straight(-5000.0, 7000.0, 135.0, 40.0)),
+        air("straight 70 m/s north, 6 km east of the USV, 2000 m", "straight", "light_aircraft", 2000.0, straight(6000.0, -9000.0, 0.0, 70.0)),
+        air("loitering 750 m at 35 m/s anticlockwise, 900 m", "loitering", "light_aircraft", 900.0, circle(-1000.0, -500.0, 750.0, 35.0, false)),
+        air("loitering 1300 m at 50 m/s, 1400 m", "loitering", "light_aircraft", 1400.0, circle(3500.0, 2000.0, 1300.0, 50.0, true)),
+        air("small UAS circling 220 m at 16 m/s, 90 m", "loitering", "unknown_uas", 90.0, circle(-1800.0, 800.0, 220.0, 16.0, true)),
+        air(
+            "a hexagon route at 50 m/s, turns at 5 deg/s, 700 m",
+            "route",
+            "light_aircraft",
+            700.0,
+            route(vec![(-4000.0, 0.0), (-2000.0, 3500.0), (2000.0, 3500.0), (4000.0, 0.0), (2000.0, -3500.0), (-2000.0, -3500.0)], 50.0, 5.0),
+        ),
+        air(
+            "150 s straight at 50 m/s, then 80 degrees left at 5 deg/s, 1100 m",
+            "one turn",
+            "light_aircraft",
+            1100.0,
+            one_turn(5000.0, -5000.0, 330.0, 50.0, 150.0, -80.0, 5.0),
+        ),
+        air("weave 45 m/s, 40 degrees either way over 35 s, 800 m", "weave", "light_aircraft", 800.0, weave(-6000.0, -2000.0, 50.0, 45.0, 40.0, 35.0)),
+        air(
+            "random turns at 45 m/s, 40 to 140 degrees at 6 deg/s every 20 to 60 s, 700 m",
+            "random turns",
+            "light_aircraft",
+            700.0,
+            random_turns(1000.0, 2000.0, 45.0, (20.0, 60.0), (40.0, 140.0), 6.0, 0xF6),
+        ),
+        air("45 to 70 m/s at 100 s, then 50 at 200 s, at 2 m/s^2, straight, 1300 m", "speed change", "light_aircraft", 1300.0, |_, len| {
+            fly(len, (-7000.0, 3000.0, 110.0, 45.0), 0.0, 2.0, |t, _, _, _| (110.0, if t < 100.0 { 45.0 } else if t < 200.0 { 70.0 } else { 50.0 }))
+        }),
+        air("helicopter hovering 60 s, 35 m/s south-west for 150 s at 2 m/s^2, then hovering, 250 m", "hover and go", "helicopter", 250.0, |_, len| {
+            fly(len, (2000.0, 3000.0, 225.0, 0.0), 25.0, 2.0, |t, _, _, _| (225.0, if (60.0..210.0).contains(&t) { 35.0 } else { 0.0 }))
+        }),
+        air(
+            "an approach north-east at 65 m/s, then a break 120 degrees right at 9 deg/s to 80 m/s at 2.5 m/s^2, 800 m",
+            "approach and break",
+            "light_aircraft",
+            800.0,
+            |_, len| fly(len, (-7000.0, -7000.0, 45.0, 65.0), 9.0, 2.5, |t, _, _, _| if t < 120.0 { (45.0, 65.0) } else { (165.0, 80.0) }),
+        ),
+        air("a far transit at 90 m/s, 16 km out, 3000 m", "far transit", "light_aircraft", 3000.0, straight(-14000.0, 16000.0, 100.0, 90.0)),
     ]
 }
 
@@ -980,12 +1048,27 @@ const HELD_OUT_FOUND: [&str; 2] = [
 /// The air tracker as tuned, on the physical sensing model's detections of the held-out set
 /// (WORLD-V3-PLAN 2.8 item 3: an evaluation, never tuning; the asserting tests stay on the
 /// legacy model they were judged on): the same table and criteria, reported, not asserted
-/// (`cargo test -p murmur-bridge --release air_calib_physical -- --ignored --nocapture`).
+/// (`cargo test -p murmur-bridge --release -- --ignored --exact
+/// tracks::tests::calib_air::air_calib_physical --nocapture`: the name alone matches the others).
 #[test]
 #[ignore]
 fn air_calib_physical() {
     let mut table = Vec::new();
     let bad = failures_on(&held_out_cases(), AIR_HELD_OUT_SEEDS, &mut table, true);
+    eprintln!("{}", table.join("\n"));
+    eprintln!("--- the criteria on the physical model: {}", if bad.is_empty() { "all hold".to_string() } else { format!("\n{}", bad.join("\n")) });
+}
+
+/// The physical sensing model's own air held-out set (murmur-7vp): [`physical_held_out_cases`]
+/// on [`AIR_PHYSICAL_HELD_OUT_SEEDS`], written before the fix, run once after it, the same
+/// criteria reported (`cargo test -p murmur-bridge --release -- --ignored --exact
+/// tracks::tests::calib_air::air_calib_physical_held_out --nocapture`). Its one run is the module
+/// doc's step 10: a record, not a target (a tracker change is judged on a set written for it).
+#[test]
+#[ignore]
+fn air_calib_physical_held_out() {
+    let mut table = Vec::new();
+    let bad = failures_on(&physical_held_out_cases(), AIR_PHYSICAL_HELD_OUT_SEEDS, &mut table, true);
     eprintln!("{}", table.join("\n"));
     eprintln!("--- the criteria on the physical model: {}", if bad.is_empty() { "all hold".to_string() } else { format!("\n{}", bad.join("\n")) });
 }
@@ -1123,6 +1206,276 @@ fn air_calib_table() {
     eprintln!("--- failures\n{}", bad.join("\n"));
 }
 
+/// The air tracker on the physical sensing model's detections of the tuning sets (a tuning aid
+/// for the physical model, murmur-7vp: `cargo test -p murmur-bridge --release
+/// air_calib_physical_tuning -- --ignored --nocapture`; `AIR_SET=tuning|one|two|three` for one
+/// set): the same table and criteria, reported.
+#[test]
+#[ignore]
+fn air_calib_physical_tuning() {
+    let mut table = Vec::new();
+    let mut bad = Vec::new();
+    for (cases, seeds) in tuning_sets() {
+        bad.extend(failures_on(&cases, seeds, &mut table, true));
+    }
+    eprintln!("{}", table.join("\n"));
+    eprintln!("--- the criteria on the physical model: {}", if bad.is_empty() { "all hold".to_string() } else { format!("\n{}", bad.join("\n")) });
+}
+
+/// The air tuning sets, or the one `AIR_SET` names (`tuning`, `one`, `two`, `three`).
+fn tuning_sets() -> Vec<(Vec<AirCase>, RangeInclusive<u64>)> {
+    let want = std::env::var("AIR_SET").ok();
+    [
+        ("tuning", tuning_cases(), AIR_TUNING_SEEDS),
+        ("one", round_one_cases(), AIR_ROUND_ONE_SEEDS),
+        ("two", round_two_cases(), AIR_ROUND_TWO_SEEDS),
+        ("three", round_three_cases(), AIR_ROUND_THREE_SEEDS),
+    ]
+    .into_iter()
+    .filter(|(name, _, _)| want.as_deref().is_none_or(|w| w == *name))
+    .map(|(_, c, s)| (c, s))
+    .collect()
+}
+
+/// Where the physical model's cameras point on an aircraft and what they get (a diagnostic for
+/// murmur-7vp, the tuning sets only: `cargo test -p murmur-bridge --release
+/// air_physical_pointing -- --ignored --nocapture`, `AIR_SET` as above): per mix and camera,
+/// the seconds searching, cued and locked, the cues started and how many acquired the aircraft,
+/// the camera's elevation off the aircraft's while cued, the share of cued seconds it was in the
+/// wide field, and the seconds each sensor type fixed it.
+#[test]
+#[ignore]
+fn air_physical_pointing() {
+    use crate::tracks::physical::spec::{Resolved, resolve};
+    use crate::tracks::physical::{Engine, Step, conditions::Conditions, sensor_height_m};
+    #[derive(Default)]
+    struct Cam {
+        s: [f64; 3],
+        cues: f64,
+        acquired: f64,
+        el_err: f64,
+        el_n: f64,
+        in_wide: f64,
+        settled: f64,
+        fixes: f64,
+        blind: [f64; 3],
+    }
+    for mix in [Mix::RadarEoIr, Mix::All] {
+        let mut cams: BTreeMap<u64, Cam> = BTreeMap::new();
+        let (mut n, mut radar_s, mut eo_s, mut any_s) = (0.0, 0.0, 0.0, 0.0);
+        for (cases, seeds) in tuning_sets() {
+            for case in &cases {
+                for seed in seeds.clone() {
+                    let sensing = crate::tracks::truth::Sensing {
+                        conditions: Some(Conditions { sun_elevation_deg: Some(45.0), ..Conditions::default() }),
+                        ..Default::default()
+                    };
+                    let mut engine = Engine::new(None);
+                    let table = (case.motion)(seed, case.n as usize + 1);
+                    let obs: Vec<Observer> = mix.observers().iter().map(Obs::now).collect();
+                    let mut last: BTreeMap<u64, &'static str> = BTreeMap::new();
+                    for s in 0..case.n {
+                        let ((e, nn), (ve, vn)) = table[s as usize];
+                        let (lat, lon) = at(BASE.0, BASE.1, e, nn);
+                        let mut c: ContactTruth = contact("c", case.kind, Domain::Air, lat, lon);
+                        c.alt_m = case.alt_m;
+                        c.speed_mps = ve.hypot(vn);
+                        c.course_deg = ve.atan2(vn).to_degrees().rem_euclid(360.0);
+                        let st = Step { seed, tick: i64::from(s), s: f64::from(s), t: T0 + f64::from(s), misclassification_rate: 0.0, sensing: &sensing };
+                        let dets = engine.step(&st, &obs, std::slice::from_ref(&c));
+                        n += 1.0;
+                        radar_s += f64::from(u8::from(dets.iter().any(|d| d.sensor == SensorType::Radar)));
+                        eo_s += f64::from(u8::from(dets.iter().any(|d| d.sensor == SensorType::EoIr)));
+                        any_s += f64::from(u8::from(!dets.is_empty()));
+                        for o in &obs {
+                            let h_s = sensor_height_m(o);
+                            for (si, spec) in o.sensors.iter().enumerate() {
+                                let Resolved::EoIr(eo) = resolve(spec, h_s > 20.0) else { continue };
+                                let Some((az, el, narrow, busy, mode)) = engine.gimbal_of(o.uid, si) else { continue };
+                                let cam = cams.entry(o.uid).or_default();
+                                cam.s[match mode {
+                                    "search" => 0,
+                                    "cue" => 1,
+                                    _ => 2,
+                                }] += 1.0;
+                                let before = last.insert(o.uid, mode);
+                                if mode == "cue" && before != Some("cue") {
+                                    cam.cues += 1.0;
+                                }
+                                if mode == "lock" && before == Some("cue") {
+                                    cam.acquired += 1.0;
+                                }
+                                cam.fixes += f64::from(u8::from(dets.iter().any(|d| d.uid == o.uid && d.sensor == SensorType::EoIr)));
+                                if f64::from(s) < busy {
+                                    cam.blind[match mode {
+                                        "search" => 0,
+                                        "cue" => 1,
+                                        _ => 2,
+                                    }] += 1.0;
+                                }
+                                if mode == "cue" {
+                                    let (de, dn) = crate::tracks::physical::geometry::en(o.lat, o.lon, lat, lon);
+                                    let el_true = (case.alt_m - h_s).atan2(de.hypot(dn).max(1.0));
+                                    let az_true = de.atan2(dn);
+                                    cam.el_err += (el - el_true).to_degrees().abs();
+                                    cam.el_n += 1.0;
+                                    if f64::from(s) >= busy {
+                                        cam.settled += 1.0;
+                                        let wide = eo.channels.iter().map(|ch| if narrow { ch.narrow_rad } else { ch.wide_rad }).fold(0.0, f64::max);
+                                        let daz = (az_true - az + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
+                                        if daz.abs() * el_true.cos() <= 0.5 * wide && (el_true - el).abs() <= 0.375 * wide {
+                                            cam.in_wide += 1.0;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "{}: {n} samples; seconds with a radar fix {:.1}%, an EO/IR fix {:.1}%, any {:.1}%",
+            mix.name(),
+            100.0 * radar_s / n,
+            100.0 * eo_s / n,
+            100.0 * any_s / n
+        );
+        for (uid, c) in &cams {
+            let tot = c.s.iter().sum::<f64>().max(1.0);
+            eprintln!(
+                "  camera of {uid}: search {:5.1}% cue {:5.1}% lock {:5.1}% | cues {:6.0}, acquired {:5.1}% | elevation off while cued {:5.1} deg, in the field once settled {:5.1}% | seconds with its fix {:5.1}% | blind in search {:4.1}% cue {:4.1}% lock {:4.1}%",
+                100.0 * c.s[0] / tot,
+                100.0 * c.s[1] / tot,
+                100.0 * c.s[2] / tot,
+                c.cues,
+                100.0 * c.acquired / c.cues.max(1.0),
+                c.el_err / c.el_n.max(1.0),
+                100.0 * c.in_wide / c.settled.max(1.0),
+                100.0 * c.fixes / tot,
+                100.0 * c.blind[0] / c.s[0].max(1.0),
+                100.0 * c.blind[1] / c.s[1].max(1.0),
+                100.0 * c.blind[2] / c.s[2].max(1.0)
+            );
+        }
+    }
+}
+
+/// Each second a keep-out 3 s ahead misses an aircraft on the physical model, what fixed it in
+/// the 10 s before, and (`AIR_HISTORY=1`) the fixes and the track before it (a diagnostic for
+/// murmur-7vp: `AIR_CASE=<name prefix> AIR_SET=... cargo test -p murmur-bridge --release
+/// air_physical_misses -- --ignored --nocapture`; the all-sensors mix, `AIR_MIX=eo` radar and
+/// EO/IR, `AIR_MIX=radars` the all-sensors mix's radars alone; `AIR_MODEL=legacy` the legacy
+/// model). The tuning sets; `AIR_SET=physical_held_out` explains the physical held-out set's
+/// one run after it, never for tuning.
+#[test]
+#[ignore]
+fn air_physical_misses() {
+    use crate::tracks::physical::{Engine, Step, conditions::Conditions};
+    let sets = if std::env::var("AIR_SET").is_ok_and(|s| s == "physical_held_out") {
+        vec![(physical_held_out_cases(), AIR_PHYSICAL_HELD_OUT_SEEDS)]
+    } else {
+        tuning_sets()
+    };
+    let prefix = std::env::var("AIR_CASE").unwrap_or_default();
+    let mix = if std::env::var("AIR_MIX").is_ok_and(|m| m == "eo") { Mix::RadarEoIr } else { Mix::All };
+    let radars_only = std::env::var("AIR_MIX").is_ok_and(|m| m == "radars");
+    let legacy = std::env::var("AIR_MODEL").is_ok_and(|m| m == "legacy");
+    let ec = rules(murmur_decide::RULES_VERSION);
+    let (mut n_misses, mut n_samples) = (0, 0);
+    for (cases, seeds) in sets {
+        for case in cases.iter().filter(|c| c.name.starts_with(&prefix)) {
+            for seed in seeds.clone() {
+                let sensing = crate::tracks::truth::Sensing {
+                    conditions: Some(Conditions { sun_elevation_deg: Some(45.0), ..Conditions::default() }),
+                    ..Default::default()
+                };
+                let mut engine = Engine::new(None);
+                let table = (case.motion)(seed, case.n as usize + 4);
+                let mut obs: Vec<Observer> = mix.observers().iter().map(Obs::now).collect();
+                if radars_only {
+                    for o in &mut obs {
+                        o.sensors.retain(|x| x.kind == SensorType::Radar);
+                    }
+                }
+                let mut track: Option<Track> = None;
+                let mut log: Vec<String> = Vec::new();
+                let mut last_eo = f64::NEG_INFINITY;
+                let mut radars: Vec<(u64, f64)> = Vec::new();
+                for s in 0..case.n {
+                    let now = T0 + f64::from(s);
+                    let ((e, n), (ve, vn)) = table[s as usize];
+                    let (lat, lon) = at(BASE.0, BASE.1, e, n);
+                    let mut c: ContactTruth = contact("c", case.kind, Domain::Air, lat, lon);
+                    c.alt_m = case.alt_m;
+                    c.speed_mps = ve.hypot(vn);
+                    c.course_deg = ve.atan2(vn).to_degrees().rem_euclid(360.0);
+                    let st = Step { seed, tick: i64::from(s), s: f64::from(s), t: T0 + f64::from(s), misclassification_rate: 0.0, sensing: &sensing };
+                    let mut dets = if legacy {
+                        detect(Params { seed, tick: i64::from(s), misclassification_rate: 0.0 }, &obs, std::slice::from_ref(&c), &|_, _| false)
+                    } else {
+                        engine.step(&st, &obs, std::slice::from_ref(&c))
+                    };
+                    let mut what = Vec::new();
+                    for d in &mut dets {
+                        d.measured_t = Some(now);
+                        if d.sensor == SensorType::EoIr {
+                            last_eo = f64::from(s);
+                        } else {
+                            radars.push((d.uid, f64::from(s)));
+                        }
+                        let (de, dn) = crate::tracks::physical::geometry::en(lat, lon, d.lat, d.lon);
+                        what.push(format!("{}:{}({:.0}m off, sigma {:.0})", d.uid, d.sensor.as_str(), de.hypot(dn), d.sigma_m));
+                        match &mut track {
+                            None => track = Some(Track::new("T-0001".into(), 1, d, now)),
+                            Some(t) => t.update(d, now),
+                        }
+                    }
+                    let Some(t) = track.as_ref().filter(|_| !dets.is_empty()) else {
+                        log.push(format!("  {s:3}: no fix"));
+                        continue;
+                    };
+                    let (de, dn) = crate::tracks::physical::geometry::en(lat, lon, t.lat, t.lon);
+                    let f = t.facts(now);
+                    let ((e3, n3), _) = table[s as usize + 3];
+                    let ahead = at(BASE.0, BASE.1, e3, n3);
+                    let regions = track_reach(&f, calib::ms(now + 3.0), &ec);
+                    let miss = regions.iter().map(|r| haversine_m(r.center, LonLat::new(ahead.1, ahead.0)) - r.radius_m).fold(f64::INFINITY, f64::min);
+                    log.push(format!(
+                        "  {s:3}: est {:5.0} m off ({:.0} m east, {:.0} north), sigma {:4.0}, vel {:?} | 3 s miss {:6.0} | {}",
+                        de.hypot(dn),
+                        de,
+                        dn,
+                        t.sigma_m,
+                        t.vel.map(|(a, b)| ((a * 10.0).round() / 10.0, (b * 10.0).round() / 10.0)),
+                        miss,
+                        what.join(" ")
+                    ));
+                    if s >= SETTLE_S {
+                        n_samples += 1;
+                    }
+                    if s >= SETTLE_S && miss > 0.0 {
+                        n_misses += 1;
+                        let mut recent: Vec<u64> = radars.iter().filter(|r| f64::from(s) - r.1 <= 10.0).map(|r| r.0).collect();
+                        recent.sort_unstable();
+                        recent.dedup();
+                        eprintln!(
+                            "{} seed {seed} second {s}: missed by {miss:.0} m, {:.0} s after a camera's fix, radars in the last 10 s {recent:?}",
+                            case.name,
+                            f64::from(s) - last_eo
+                        );
+                        if std::env::var("AIR_HISTORY").is_ok() {
+                            let from = log.len().saturating_sub(25);
+                            eprintln!("{}", log[from..].join("\n"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("--- a keep-out 3 s ahead missed {n_misses} of {n_samples} scored seconds");
+}
+
 /// The tuning grid (a tuning aid, the tuning sets only: `AIR_GRID="q steady,q manoeuvring,gate,
 /// initial velocity sigma;..." cargo test -p murmur-bridge --release air_tune_grid -- --ignored
 /// --nocapture`): each candidate of the air constants on every tuning case and mix, summarized.
@@ -1193,6 +1546,7 @@ fn the_air_seed_sets_are_disjoint_from_each_other_and_the_surface_sets() {
         AIR_ROUND_TWO_SEEDS,
         AIR_ROUND_THREE_SEEDS,
         AIR_HELD_OUT_SEEDS,
+        AIR_PHYSICAL_HELD_OUT_SEEDS,
     ];
     for (i, a) in sets.iter().enumerate() {
         for b in &sets[i + 1..] {
