@@ -182,8 +182,15 @@ pub struct Tracks {
     physical: Mutex<physical::Engine>,
     /// The sensing model the last message ran on (said when it changes).
     last_model: Mutex<Option<SensingModel>>,
+    /// The headless simulator's word that a vehicle has left the world (a platform spent by
+    /// its own effect): it senses nothing from then on, whatever its link's age.
+    #[cfg(murmur_headless)]
+    gone: OnceLock<Gone>,
     updates: watch::Sender<Arc<String>>,
 }
+
+#[cfg(murmur_headless)]
+type Gone = Box<dyn Fn(u64) -> bool + Send + Sync>;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -202,6 +209,8 @@ impl Tracks {
             settings,
             physical: Mutex::new(physical::Engine::new(root)),
             last_model: Mutex::new(None),
+            #[cfg(murmur_headless)]
+            gone: OnceLock::new(),
             inner: Mutex::new(Inner {
                 truth: None,
                 tracks: BTreeMap::new(),
@@ -228,6 +237,13 @@ impl Tracks {
         // the repository: sim/platforms.toml's grandparent
         let root = platforms.parent().and_then(Path::parent).map(Path::to_path_buf);
         Ok(Tracks::with_root(SensorCatalog::load(platforms)?, Settings::from_env(), root))
+    }
+
+    /// The headless simulator says which vehicles have left the world (`gone(uid)`): from then
+    /// on they are no sensor carriers, at once, not when their links go stale.
+    #[cfg(murmur_headless)]
+    pub fn set_gone(&self, gone: impl Fn(u64) -> bool + Send + Sync + 'static) {
+        let _ = self.gone.set(Box::new(gone));
     }
 
     pub fn eval_truth_enabled(&self) -> bool {
@@ -268,6 +284,10 @@ impl Tracks {
                     .last_rx_t
                     .is_some_and(|t| wall - t <= link.stale_after_s());
                 if !fresh {
+                    return None;
+                }
+                #[cfg(murmur_headless)]
+                if self.gone.get().is_some_and(|g| g(cell.uid)) {
                     return None;
                 }
                 // the task's area, for the physical model's payload manager (the task manager's

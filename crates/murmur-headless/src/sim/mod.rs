@@ -597,6 +597,13 @@ async fn assemble(spec: &Spec) -> Result<Parts, String> {
         return Err(format!("{} stand-ins for {} vehicles: every vehicle must be a stand-in", cfgs.len(), vspecs.len()));
     }
     let fleet = Arc::new(Fleet::new(cfgs, spec.seed, &spec.battery_pct)?);
+    // a vehicle that leaves the world (spent by its own effect) senses nothing from then on
+    {
+        let by_uid: std::collections::HashMap<u64, usize> =
+            (0..fleet.len()).map(|i| (u64::from(fleet.read(i, |v| v.cfg.uid())), i)).collect();
+        let f = fleet.clone();
+        tracks.set_gone(move |uid| by_uid.get(&uid).is_some_and(|i| f.is_gone(*i)));
+    }
     // the bridge is up at `bridge_start_s` (the full stack's first anchor): before, a frame from
     // the emulator or a contacts message reaches no one
     let bridge_up = zero + Duration::from_secs_f64(spec.bridge_start_s.max(0.0));
