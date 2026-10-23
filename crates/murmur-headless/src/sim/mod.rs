@@ -272,7 +272,7 @@ impl Episode {
         let ours: Vec<Value> = (0..self.fleet.len())
             .map(|i| {
                 let blocked = self.emu.blocked(i);
-                self.fleet.read(i, |v| {
+                let mut o = self.fleet.read(i, |v| {
                     let (lat, lon, alt) = v.truth();
                     json!({
                         "uid": v.cfg.uid(),
@@ -285,11 +285,17 @@ impl Episode {
                         "battery_capacity_mah": v.capacity_mah(),
                         "link_blocked": blocked,
                     })
-                })
+                });
+                // spent by its own effect (`Spec::effects`): its last state, and that it is gone
+                if self.fleet.is_gone(i) {
+                    o["gone"] = json!(true);
+                }
+                o
             })
             .collect();
         let eval = if association { self.tracks.eval_json(now) } else { json!({ "association": null }) };
-        Ok(json!({
+        let effects = self.contacts.as_ref().map(|c| c.effects()).filter(|e| !e.is_empty());
+        let mut out = json!({
             "t": self.now_s(),
             "wall": now,
             "contacts": self.contacts.as_ref().map(|c| c.truth()),
@@ -298,7 +304,12 @@ impl Episode {
             "contacts_start_s": self.spec.contacts.as_ref().map(|c| c.start_s),
             "bridge_start_s": self.spec.bridge_start_s,
             "log": log_from.and_then(|i| self.contacts.as_ref().map(|c| c.log_from(i))),
-        }))
+        });
+        // the engagement effects applied with the episode's `effects`, when there were any
+        if let Some(e) = effects {
+            out["effects"] = json!(e);
+        }
+        Ok(out)
     }
 
     /// The picture and the truth at this instant, for scoring v2's sampler
@@ -556,6 +567,7 @@ async fn assemble(spec: &Spec) -> Result<Parts, String> {
             space: spec.space,
             space_outlook: spec.space_outlook,
             space_cache: spec.space_cache.clone(),
+            space_root: spec.space_root.as_deref(),
         },
         zero,
     )?;
@@ -656,18 +668,42 @@ async fn assemble(spec: &Spec) -> Result<Parts, String> {
             let path = if c.scenario.is_absolute() { c.scenario.clone() } else { spec.root.join(&c.scenario) };
             let ct = Arc::new(Contacts::load(&path, c.seed, spec.epoch)?);
             let token = std::env::var("MURMUR_SIM_TOKEN").ok().filter(|t| !t.trim().is_empty());
+            let fx = effect_sim(spec, &platforms, &emu.uids, &fleet)?;
             tokio::spawn(perf::timed("contacts", contacts::run(
                 ct.clone(),
                 api.clone(),
                 token,
                 zero + Duration::from_secs_f64(c.start_s.max(0.0)),
                 bridge_up,
+                fx,
             )));
             Some(ct)
         }
         None => None,
     };
     Ok((zero, world, decision, tracks, api, mcp, emu, fleet, contacts, settings.audit.clone()))
+}
+
+/// The episode's engagement effects (`Spec::effects`): its draw's seed and which of the fleet's
+/// platforms the catalog says are spent by their own effect. None without `effects`.
+fn effect_sim(spec: &Spec, platforms: &std::path::Path, uids: &[u32], fleet: &Arc<Fleet>) -> Result<Option<contacts::EffectSim>, String> {
+    let Some(cfg) = spec.effects.clone() else {
+        return Ok(None);
+    };
+    if !(0.0..=1.0).contains(&cfg.p_hit) {
+        return Err(format!("effects: p_hit {} is not a probability", cfg.p_hit));
+    }
+    let catalog = murmur_decide::Catalog::load(platforms).map_err(err("effects: the platform catalog"))?;
+    let mut expended = std::collections::BTreeMap::new();
+    for (i, v) in spec.fleet.iter().enumerate() {
+        let platform = v["platform"].as_str().unwrap_or_default();
+        if catalog.get(platform).is_some_and(|p| p.expended_by_effect)
+            && let Some(uid) = uids.get(i)
+        {
+            expended.insert(uid.to_string(), i);
+        }
+    }
+    Ok(Some(contacts::EffectSim { cfg, seed: spec.seed, expended, fleet: fleet.clone() }))
 }
 
 /// A tool result's JSON as the live session reads it (agents/scripted_agent.py `content`): the
