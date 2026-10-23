@@ -30,6 +30,9 @@ from eval.proxy import EngagementSigners, ProxyOperator, ProxyParams
 
 # ---- the format ----------------------------------------------------------------------------------
 
+#: world v3's watch situations, one per world (sim/worlds/README.md): headless only
+WATCHES_V3 = ("golden-gate-v3-watch", "san-diego-watch", "golden-gate-scale-watch")
+
 
 def test_every_situation_loads():
     paths = sorted(S.SITUATIONS.glob("*.toml"))
@@ -38,10 +41,16 @@ def test_every_situation_loads():
     for p in paths:
         sit = S.load_situation(p)
         assert sit.title and sit.brief, p
-        # fault-drill runs in the headless simulator only (its faults are the simulator's)
-        if p.stem not in ("harbor-watch", "hostile-act-engagement", "fault-drill"):
+        # fault-drill and world v3's watches run in the headless simulator only (the faults are the
+        # simulator's; so is a world's conditions draw)
+        if p.stem not in ("harbor-watch", "hostile-act-engagement", "fault-drill", *WATCHES_V3):
             assert sit.todo, f"{p.stem} is a stub until the AI work lands"
     assert S.headless_steps(S.load_situation("fault-drill"))
+    for name in WATCHES_V3:
+        sit = S.load_situation(name)
+        assert sit.conditions == "world" and sit.world != "golden-gate", name
+        with pytest.raises(S.SituationError, match="only the headless simulator"):
+            S.resolve_modes(sit)
     hw = S.load_situation("harbor-watch")
     assert not hw.todo
     assert hw.fleet and hw.fleet.exists() and hw.contacts and hw.contacts.exists()

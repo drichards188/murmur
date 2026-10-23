@@ -646,6 +646,12 @@ def resolve_modes(sit: Situation, operator: str | None = None, ai: str | None = 
             f"(docs/HEADLESS.md): run it with `.venv/bin/python -m eval.headless.batch --situation {sit.name}`. A live "
             "GNSS jammer or spoofer is an events file's gnss table (sim/events/golden-gate-gnss.toml)."
         )
+    if sit.conditions == "world":
+        raise SituationError(
+            f"{sit.name}: its conditions are drawn per episode from its world's ranges, which only the headless simulator "
+            f"does (docs/HEADLESS.md, the three worlds): run it with `.venv/bin/python -m eval.headless.batch --situation "
+            f"{sit.name}`."
+        )
     if op == "live" and any(s.kind == "declare" for s in sit.steps):
         raise SituationError(
             f"{sit.name}: a declare step is a script's declaration, refused in live mode: the person declares (a hostile "

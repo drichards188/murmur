@@ -10,7 +10,8 @@
 # channel to and from Naval Base San Diego (the bay's deep-draft channel past Ballast Point and
 # North Island, under the Coronado Bridge) and a car carrier to the National City Marine
 # Terminal; a tanker at anchor off Point Loma; sportfishing out of the Point Loma landings to the
-# kelp beds, a commercial boat to Tuna Harbor; sailing off Harbor Island and in the south bay;
+# kelp beds and to the Coronado Islands' banks, a commercial boat to Tuna Harbor; sailing off
+# Harbor Island and in the south bay; a ship in the coastal lane and a troller well offshore;
 # the Coast Guard (Sector San Diego, Harbor Drive) and the Harbor Police. Air: airliners on the
 # final approach to San Diego International's runway 27 over downtown (450 m about 6 to 10 km
 # out on a 3 degree path; a contact keeps one altitude, so each flies the segment and leaves at
@@ -243,7 +244,8 @@ dc_m = 6
 height_m = 3
 rcs_m2 = 30
 
-# ---------------------------------------------------------------- offshore, 15 to 30 km out
+# ---------------------------------------------------------------- offshore, 25 to 30 km out
+# Beyond the horizon of our boats' masts for the low ones.
 [[contact]]
 id = "cargo-coastal-lane"
 name = "Container ship northbound in the coastal lane, well offshore"
@@ -257,17 +259,32 @@ ais = { mmsi = "366999207", name = "MAERSK SEATTLE", ship_type = "cargo" }
 
 [[contact]]
 id = "fishing-offshore"
-name = "Troller working 15 km south-west of Point Loma (no AIS)"
+name = "Troller working 25 km south-west of Point Loma (no AIS)"
 affiliation = "neutral"
 domain = "surface"
 kind = "fishing_vessel"
 speed_mps = 2
 motion = "loiter"
-center = [-117.3900, 32.5800]
+center = [-117.4700, 32.5700]
 radius_m = 900
 dc_m = 6
 height_m = 3
 rcs_m2 = 30
+
+[[contact]]
+id = "sportfisher-coronado-islands"
+name = "Sportfishing boat working the banks off the Coronado Islands, 28 km south (AIS class B)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+speed_mps = 2
+motion = "loiter"
+center = [-117.2600, 32.4300]
+radius_m = 800
+ais = { mmsi = "338999705", name = "SAN DIEGO", ship_type = "fishing" }
+dc_m = 7
+height_m = 4
+rcs_m2 = 60
 
 # ---------------------------------------------------------------- air: SAN arrivals (runway 27, over downtown)
 [[contact]]
