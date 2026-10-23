@@ -267,6 +267,11 @@ pub struct Detection {
     pub slant_from: Option<(f64, f64)>,
     /// The physical model's identification evidence for `label`; None from the legacy model.
     pub look: Option<Look>,
+    /// A sweeping radar's plot: its revolution, s (the physical model's radars plot a contact
+    /// once a scan, as the beam passes, so two radars' plots of it come seconds apart and the
+    /// tracker time-aligns them: `model::Track::update`). None: a sensor that reports every tick
+    /// (the legacy model's radars, whose pairs the tracker takes as it always has).
+    pub scan_s: Option<f64>,
 }
 
 /// The AIS message as received: identity only, nothing about its truthfulness.
@@ -513,6 +518,7 @@ pub fn detect(
                     measured_t: None,
                     slant_from: slant.then_some((o.lat, o.lon)),
                     look: None,
+                    scan_s: None,
                 });
             }
         }

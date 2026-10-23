@@ -557,7 +557,21 @@ group. Dates are 2026.
   and every second of a lock) and fixed them, but the keep-out misses were the tracker's: two
   2D radars' bearings seconds apart (the physical radars plot an aircraft once a scan) taken as
   ranging it; a new air held-out set (251-280) still fails in the all-sensors mix
-  (docs/SENSING.md), a tracker follow-up.
+  (docs/SENSING.md), a tracker follow-up. Its second half (10-23, WORLD-V3-PLAN 2.7's retuning
+  on the tuning sets, judged on a new air held-out set, 281-310, written before it): the cameras'
+  atmosphere along the slant path (the extinction falling with height, `exp(-h / H)`, the
+  aerosol's H 1.2 km, the clear air's water vapour 2 km; along the sea the model before, value
+  for value), so the RQ-4's, MQ-9B's and CCA's cameras recognise and identify at their
+  geometry's and blur's ranges instead of seeing nothing past about 15 km; and the tracker
+  time-aligns two sweeping radars' bearings (a sweeping radar's plot carries its scan,
+  `Detection::scan_s`): a pair seconds apart ranges an aircraft only when, the earlier line
+  widened by the filter's velocity uncertainty across it times the gap, it crosses as well as
+  two simultaneous bearings at 30 degrees; a reset to one radar's segment drops the others'
+  bearings; a ranging fix holds 6 s on sweeping radars' bearings (tuned). Gated on the scan, so
+  the legacy model's radars, which plot every tick, keep the rules as they were: no legacy
+  record moves. The new set's one run holds every criterion but one: a keep-out 3 s ahead
+  missed an approach and hard break 3 times by up to 102 m (the constant-velocity models'
+  lag in an 11 m/s^2 turn seen only by bearings; a turn model is the follow-up).
 - **W1: cameras point themselves; orders name no look target** (10-23, approved). Each EO/IR
   sensor has a simulated payload manager on its vehicle: it searches the task area (an orbit's
   circle, a patrol's route, else around the vehicle) in the wide field, cues to the nearest

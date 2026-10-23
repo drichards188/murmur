@@ -67,6 +67,18 @@
 //!     honest and gave no altitude, but a keep-out 3 s ahead missed the weave 4 times by up to
 //!     1,575 m (10 s ahead 3 times, 1,130 m) and the hexagon route twice by up to 220 m, and the
 //!     tracker alone exceeded its bounds for the weave and the route.
+//! 11. [`physical_held_out_two_cases`] on [`AIR_PHYSICAL_HELD_OUT_TWO_SEEDS`] was written then,
+//!     before anything was changed in the tracker or the cameras' atmosphere (murmur-7vp's
+//!     second half): [`AIR_PHYSICAL_HELD_OUT_SEEDS`] are spent, the changes were developed on the
+//!     tuning sets (101-220) only, and the new set is run once, after them
+//!     ([`air_calib_physical_held_out_two`]).
+//! 12. The changes (the cameras' slant-path atmosphere; the tracker time-aligning two sweeping
+//!     radars' bearings, dropping the others' bearings at a reset to one's segment, and holding
+//!     a ranging fix 6 s on them: `model::Bearing::aligned`, `model::SWEPT_RANGE_FRESH_S`) took
+//!     the tuning sets' all-sensors misses 3 s ahead from 24 to 2. The new set's one run: every
+//!     criterion held in every mix but one, a keep-out 3 s ahead missing the approach and break
+//!     in the all-sensors mix 3 times by up to 102 m (the constant-velocity models' lag in a
+//!     hard turn seen only by two radars' bearings; docs/SENSING.md).
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
@@ -93,8 +105,12 @@ pub const AIR_ROUND_THREE_SEEDS: RangeInclusive<u64> = 191..=220;
 /// (its one run there found murmur-7vp).
 pub const AIR_HELD_OUT_SEEDS: RangeInclusive<u64> = 221..=250;
 /// The physical sensing model's air held-out set's seeds ([`physical_held_out_cases`]): written
-/// before murmur-7vp's fix, run once after it.
+/// before murmur-7vp's fix, run once after it. Spent (its run found the tracker's half).
 pub const AIR_PHYSICAL_HELD_OUT_SEEDS: RangeInclusive<u64> = 251..=280;
+/// The physical sensing model's second air held-out set's seeds
+/// ([`physical_held_out_two_cases`]): written before murmur-7vp's tracker and atmosphere changes,
+/// run once after them.
+pub const AIR_PHYSICAL_HELD_OUT_TWO_SEEDS: RangeInclusive<u64> = 281..=310;
 /// The rules the tracker before this calibration was judged under (the keep-out's regions).
 const BEFORE_RULES: u32 = 12;
 
@@ -509,6 +525,58 @@ pub fn physical_held_out_cases() -> Vec<AirCase> {
             |_, len| fly(len, (-7000.0, -7000.0, 45.0, 65.0), 9.0, 2.5, |t, _, _, _| if t < 120.0 { (45.0, 65.0) } else { (165.0, 80.0) }),
         ),
         air("a far transit at 90 m/s, 16 km out, 3000 m", "far transit", "light_aircraft", 3000.0, straight(-14000.0, 16000.0, 100.0, 90.0)),
+    ]
+}
+
+/// The physical sensing model's second air held-out set (murmur-7vp, the tracker's half and the
+/// slant-path atmosphere; see the module doc): written before either change, the same classes as
+/// [`physical_held_out_cases`] in yet other variants; run once, on
+/// [`AIR_PHYSICAL_HELD_OUT_TWO_SEEDS`], when both were done, never tuned on.
+pub fn physical_held_out_two_cases() -> Vec<AirCase> {
+    vec![
+        air("straight 55 m/s west-south-west, 5 km north-east of the USV, 800 m", "straight", "light_aircraft", 800.0, straight(7000.0, 2000.0, 250.0, 55.0)),
+        air("straight 85 m/s south, 8 km west of the USV, 2500 m", "straight", "light_aircraft", 2500.0, straight(-8000.0, 9000.0, 180.0, 85.0)),
+        air("loitering 1000 m at 40 m/s anticlockwise, 1100 m", "loitering", "light_aircraft", 1100.0, circle(0.0, 3000.0, 1000.0, 40.0, false)),
+        air("loitering 550 m at 55 m/s, 600 m", "loitering", "light_aircraft", 600.0, circle(-2500.0, -2000.0, 550.0, 55.0, true)),
+        air("small UAS circling 300 m at 20 m/s anticlockwise, 150 m", "loitering", "unknown_uas", 150.0, circle(2500.0, 1000.0, 300.0, 20.0, false)),
+        air(
+            "a diamond route at 55 m/s, turns at 4 deg/s, 900 m",
+            "route",
+            "light_aircraft",
+            900.0,
+            route(vec![(0.0, -2000.0), (5000.0, 2000.0), (0.0, 6000.0), (-5000.0, 2000.0)], 55.0, 4.0),
+        ),
+        air(
+            "100 s straight at 60 m/s, then 140 degrees right at 6 deg/s, 600 m",
+            "one turn",
+            "light_aircraft",
+            600.0,
+            one_turn(-6000.0, -4000.0, 50.0, 60.0, 100.0, 140.0, 6.0),
+        ),
+        air("weave 65 m/s, 30 degrees either way over 45 s, 1200 m", "weave", "light_aircraft", 1200.0, weave(-8000.0, 3000.0, 110.0, 65.0, 30.0, 45.0)),
+        air(
+            "random turns at 50 m/s, 50 to 170 degrees at 7 deg/s every 25 to 55 s, 500 m",
+            "random turns",
+            "light_aircraft",
+            500.0,
+            random_turns(-1000.0, -500.0, 50.0, (25.0, 55.0), (50.0, 170.0), 7.0, 0x17),
+        ),
+        air("70 to 40 m/s at 90 s, then 60 at 190 s, at 1.5 m/s^2, straight, 900 m", "speed change", "light_aircraft", 900.0, |_, len| {
+            fly(len, (5000.0, 5000.0, 230.0, 70.0), 0.0, 1.5, |t, _, _, _| (230.0, if t < 90.0 { 70.0 } else if t < 190.0 { 40.0 } else { 60.0 }))
+        }),
+        air("helicopter at 20 m/s west, hovers 70 s from 2 m/s^2, then 40 m/s south-east, 180 m", "hover and go", "helicopter", 180.0, |_, len| {
+            fly(len, (2500.0, 1500.0, 270.0, 20.0), 30.0, 2.0, |t, _, _, _| {
+                if t < 80.0 { (270.0, 20.0) } else if t < 150.0 { (270.0, 0.0) } else { (135.0, 40.0) }
+            })
+        }),
+        air(
+            "an approach south-west at 75 m/s, then a break 140 degrees left at 7 deg/s to 90 m/s at 3 m/s^2, 700 m",
+            "approach and break",
+            "light_aircraft",
+            700.0,
+            |_, len| fly(len, (8000.0, 8000.0, 225.0, 75.0), 7.0, 3.0, |t, _, _, _| if t < 100.0 { (225.0, 75.0) } else { (85.0, 90.0) }),
+        ),
+        air("a far transit at 85 m/s, 18 to 24 km out, 3500 m", "far transit", "light_aircraft", 3500.0, straight(15000.0, -14000.0, 10.0, 85.0)),
     ]
 }
 
@@ -1073,6 +1141,21 @@ fn air_calib_physical_held_out() {
     eprintln!("--- the criteria on the physical model: {}", if bad.is_empty() { "all hold".to_string() } else { format!("\n{}", bad.join("\n")) });
 }
 
+/// The physical sensing model's second air held-out set (murmur-7vp, the tracker's half and the
+/// slant-path atmosphere): [`physical_held_out_two_cases`] on [`AIR_PHYSICAL_HELD_OUT_TWO_SEEDS`],
+/// written before both changes, run once after them, the same criteria reported (`cargo test -p
+/// murmur-bridge --release -- --ignored --exact
+/// tracks::tests::calib_air::air_calib_physical_held_out_two --nocapture`). A record, not a
+/// target: a later change is judged on a set written for it.
+#[test]
+#[ignore]
+fn air_calib_physical_held_out_two() {
+    let mut table = Vec::new();
+    let bad = failures_on(&physical_held_out_two_cases(), AIR_PHYSICAL_HELD_OUT_TWO_SEEDS, &mut table, true);
+    eprintln!("{}", table.join("\n"));
+    eprintln!("--- the criteria on the physical model: {}", if bad.is_empty() { "all hold".to_string() } else { format!("\n{}", bad.join("\n")) });
+}
+
 /// The same criteria on the tuning sets (what the air constants were chosen on).
 #[test]
 fn on_the_air_tuning_sets_the_tracker_is_honest_and_a_keep_out_holds() {
@@ -1168,6 +1251,57 @@ fn a_2d_radar_fix_of_an_aircraft_gives_no_altitude_and_one_radar_does_not_range_
     let (f, _) = follow(Mix::RadarEoIr, true, 1500.0);
     let alt = f.alt_m.expect("a 3D radar measures height");
     assert!((alt - 1500.0).abs() < 100.0 && murmur_decide::engage::track_altitude(&f, f.last_seen_t, &ec).is_some(), "{f:?}");
+}
+
+/// Two 2D radars' bearings of an aircraft range it when they cross by 30 degrees or more (murmur-oho).
+/// A sweeping radar's pair seconds apart is time-aligned first (murmur-7vp): a track with no
+/// velocity could have moved hundreds of metres across the earlier bearing in the gap, so the
+/// pair no longer ranges it and the track stays the bearing segment, kilometres long; taken in
+/// one tick the same pair ranges it to a few hundred metres; and the legacy model's radars,
+/// which plot every tick, keep the rule as it was for a pair seconds apart.
+#[test]
+fn two_sweeping_radars_bearings_seconds_apart_are_time_aligned() {
+    use crate::tracks::sensing::Detection;
+    // an aircraft 1,500 m up, 2 km north and 1.5 km east of radar A (at the origin); radar B 3 km
+    // east of A: the bearings cross at about 33 degrees
+    let (truth_e, truth_n, alt) = (1500.0, 2000.0, 1500.0);
+    let plot = |uid: u64, e0: f64, t: f64, scan: Option<f64>| {
+        let (de, dn) = (truth_e - e0, truth_n);
+        let slant = de.hypot(dn).hypot(alt);
+        let w = (de / de.hypot(dn), dn / de.hypot(dn));
+        let (olat, olon) = at(BASE.0, BASE.1, e0, 0.0);
+        let (lat, lon) = at(BASE.0, BASE.1, e0 + slant * w.0, slant * w.1);
+        Detection {
+            contact_id: "c".into(),
+            uid,
+            sensor: SensorType::Radar,
+            lat,
+            lon,
+            alt_m: None,
+            sigma_m: slant * 1f64.to_radians(),
+            range_m: slant,
+            velocity_mps: None,
+            label: None,
+            ais: None,
+            domain: Domain::Air,
+            measured_t: Some(T0 + t),
+            slant_from: Some((olat, olon)),
+            look: None,
+            scan_s: scan,
+        }
+    };
+    let follow = |gap: f64, scan: Option<f64>| {
+        let mut t = Track::new("T-0001".into(), 1, &plot(1, 0.0, 0.0, scan), T0);
+        t.update(&plot(2, 3000.0, gap, scan), T0 + gap);
+        let (lat, lon) = at(BASE.0, BASE.1, truth_e, truth_n);
+        (t.sigma_m, haversine_m(LonLat::new(t.lon, t.lat), LonLat::new(lon, lat)))
+    };
+    let (together, err) = follow(0.0, Some(2.5));
+    assert!(together < 400.0 && err < 2.0 * together, "one tick: sigma {together:.0} error {err:.0}");
+    let (apart, err) = follow(4.0, Some(2.5));
+    assert!(apart > 1_000.0 && err < 2.0 * apart, "4 s apart: sigma {apart:.0} error {err:.0}");
+    let (legacy, _) = follow(4.0, None);
+    assert!(legacy < 600.0, "the legacy model's pair 4 s apart ranges it as before: sigma {legacy:.0}");
 }
 
 /// Print every case of the tuning sets on every mix (a tuning aid: `cargo test -p
@@ -1362,20 +1496,22 @@ fn air_physical_pointing() {
 }
 
 /// Each second a keep-out 3 s ahead misses an aircraft on the physical model, what fixed it in
-/// the 10 s before, and (`AIR_HISTORY=1`) the fixes and the track before it (a diagnostic for
+/// the 10 s before, and (`AIR_HISTORY=1`) the fixes and the track before it (`AIR_HISTORY=2`
+/// with the filter's state: when it was ranged, the bearings it keeps; a diagnostic for
 /// murmur-7vp: `AIR_CASE=<name prefix> AIR_SET=... cargo test -p murmur-bridge --release
 /// air_physical_misses -- --ignored --nocapture`; the all-sensors mix, `AIR_MIX=eo` radar and
 /// EO/IR, `AIR_MIX=radars` the all-sensors mix's radars alone; `AIR_MODEL=legacy` the legacy
-/// model). The tuning sets; `AIR_SET=physical_held_out` explains the physical held-out set's
-/// one run after it, never for tuning.
+/// model; `AIR_VEL=1` the seconds a velocity given is off by more than 4 of its sigmas instead).
+/// The tuning sets; `AIR_SET=physical_held_out` and `physical_held_out_two` explain the physical
+/// held-out sets' one runs after them, never for tuning.
 #[test]
 #[ignore]
 fn air_physical_misses() {
     use crate::tracks::physical::{Engine, Step, conditions::Conditions};
-    let sets = if std::env::var("AIR_SET").is_ok_and(|s| s == "physical_held_out") {
-        vec![(physical_held_out_cases(), AIR_PHYSICAL_HELD_OUT_SEEDS)]
-    } else {
-        tuning_sets()
+    let sets = match std::env::var("AIR_SET").as_deref() {
+        Ok("physical_held_out") => vec![(physical_held_out_cases(), AIR_PHYSICAL_HELD_OUT_SEEDS)],
+        Ok("physical_held_out_two") => vec![(physical_held_out_two_cases(), AIR_PHYSICAL_HELD_OUT_TWO_SEEDS)],
+        _ => tuning_sets(),
     };
     let prefix = std::env::var("AIR_CASE").unwrap_or_default();
     let mix = if std::env::var("AIR_MIX").is_ok_and(|m| m == "eo") { Mix::RadarEoIr } else { Mix::All };
@@ -1442,19 +1578,31 @@ fn air_physical_misses() {
                     let regions = track_reach(&f, calib::ms(now + 3.0), &ec);
                     let miss = regions.iter().map(|r| haversine_m(r.center, LonLat::new(ahead.1, ahead.0)) - r.radius_m).fold(f64::INFINITY, f64::min);
                     log.push(format!(
-                        "  {s:3}: est {:5.0} m off ({:.0} m east, {:.0} north), sigma {:4.0}, vel {:?} | 3 s miss {:6.0} | {}",
+                        "  {s:3}: est {:5.0} m off ({:.0} m east, {:.0} north), sigma {:4.0}, vel {:?} | 3 s miss {:6.0} | {}{}",
                         de.hypot(dn),
                         de,
                         dn,
                         t.sigma_m,
                         t.vel.map(|(a, b)| ((a * 10.0).round() / 10.0, (b * 10.0).round() / 10.0)),
                         miss,
-                        what.join(" ")
+                        what.join(" "),
+                        if std::env::var("AIR_HISTORY").is_ok_and(|h| h == "2") { format!(" | {} | truth v ({ve:.1},{vn:.1})", t.debug_state()) } else { String::new() }
                     ));
                     if s >= SETTLE_S {
                         n_samples += 1;
                     }
-                    if s >= SETTLE_S && miss > 0.0 {
+                    // AIR_VEL=1: each second a velocity given is off by more than 4 of its sigmas,
+                    // instead of the keep-out's misses
+                    let want_vel = std::env::var("AIR_VEL").is_ok();
+                    let vel_off = t.vel.map(|(a, b)| ((a - ve).powi(2) + (b - vn).powi(2)).sqrt() / t.vel_sigma_mps());
+                    if want_vel && s >= SETTLE_S && vel_off.is_some_and(|v| v > 4.0) {
+                        eprintln!("{} seed {seed} second {s}: a velocity off by {:.1} of its sigma {:.2}", case.name, vel_off.unwrap_or(0.0), t.vel_sigma_mps());
+                        if std::env::var("AIR_HISTORY").is_ok() {
+                            let from = log.len().saturating_sub(25);
+                            eprintln!("{}", log[from..].join("\n"));
+                        }
+                    }
+                    if !want_vel && s >= SETTLE_S && miss > 0.0 {
                         n_misses += 1;
                         let mut recent: Vec<u64> = radars.iter().filter(|r| f64::from(s) - r.1 <= 10.0).map(|r| r.0).collect();
                         recent.sort_unstable();
@@ -1547,6 +1695,7 @@ fn the_air_seed_sets_are_disjoint_from_each_other_and_the_surface_sets() {
         AIR_ROUND_THREE_SEEDS,
         AIR_HELD_OUT_SEEDS,
         AIR_PHYSICAL_HELD_OUT_SEEDS,
+        AIR_PHYSICAL_HELD_OUT_TWO_SEEDS,
     ];
     for (i, a) in sets.iter().enumerate() {
         for b in &sets[i + 1..] {

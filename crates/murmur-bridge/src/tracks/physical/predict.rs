@@ -139,8 +139,8 @@ pub fn predict(a: &Ask) -> Prediction {
             };
             let mut search: f64 = 0.0;
             for ch in &eo.channels {
-                let wide = eo::channel_p(ch, false, p.slant_m, dc, t.sig.thermal_k, &cond, sun);
-                let narrow = eo::channel_p(ch, ch.zooms(), p.slant_m, dc, t.sig.thermal_k, &cond, sun);
+                let wide = eo::channel_p(ch, false, p.slant_m, [h_s, t.top_msl], dc, t.sig.thermal_k, &cond, sun);
+                let narrow = eo::channel_p(ch, ch.zooms(), p.slant_m, [h_s, t.top_msl], dc, t.sig.thermal_k, &cond, sun);
                 search = search.max(wide[0]);
                 out.p_detect = out.p_detect.max(wide[0]).max(narrow[0]);
                 out.p_recognise = out.p_recognise.max(wide[1]).max(narrow[1]);

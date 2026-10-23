@@ -14,7 +14,12 @@
 //! aircraft, so a track no other fix has ranged within [`RANGE_FRESH_S`] is the middle of that
 //! segment with its spread and no velocity ([`Model::reset_to_segment`]), and a ranged one
 //! loses its along-line knowledge as an aircraft turning hard would ([`ALONG_Q`]) once only
-//! bearings come; the track never invents its height. Each fix weighs
+//! bearings come; the track never invents its height. The physical model's radars sweep, plotting
+//! an aircraft once a scan, so two radars' bearings of it come seconds apart: such a pair ranges
+//! it only when, time-aligned, it still crosses as well as two simultaneous bearings at
+//! [`CROSSING_DEG`] ([`Bearing::aligned`]), never after a reset to one radar's segment has
+//! discarded the other's bearing, and a ranging fix holds for [`SWEPT_RANGE_FRESH_S`]
+//! (murmur-7vp; the legacy model's radars, which plot every tick, keep the rule as it was). Each fix weighs
 //! the two models by how well each predicted it, and the estimate is their mixture, whose
 //! covariance widens while they disagree (a turn, a sprint, a stop). The reported covariance is
 //! that widened by the recent fixes' consistency ([`REPORT_NIS`]): fixes farther off than
@@ -135,14 +140,29 @@ const SLANT_CLAMP_SIGMAS: f64 = 3.0;
 /// the edge of its reach (half its fixes) misses ten in a row once in a thousand. After it the
 /// track is the segment again, whatever its covariance says (the review of 10-07: a covariance
 /// kept small by the steady model's noise let an unranged track slide kilometres along the
-/// line).
+/// line). A sweeping radar's bearing (the physical model) holds it [`SWEPT_RANGE_FRESH_S`].
 const RANGE_FRESH_S: f64 = 10.0;
+/// A sweeping radar's bearing (`Detection::scan_s`, the physical model's radars) keeps a track
+/// ranged for this long after a ranging fix instead of [`RANGE_FRESH_S`], s (murmur-7vp). A
+/// physical camera fixes an aircraft in looks of a few seconds (a cue, a lock, then its search
+/// again: decision W1), and the radars plot it once a scan, so a track ranged by a look is held
+/// on a few bearings a radar, which show neither a turn along the line nor that the look's
+/// velocity, measured over seconds of a turn, is stale; an aircraft turning at the air sets' 6
+/// to 8 m/s^2 leaves its extrapolation by a 2D radar's bearing error 6 km out (about 100 m) in
+/// 5 to 6 s (`a t^2 / 2`). Tuned on the air tuning sets (`tracks::tests::calib_air`, physical):
+/// at 10 s a keep-out 3 s ahead missed the tightest loiters (500 and 650 m at 50 to 55 m/s) 13
+/// times in about 230,000 samples, by up to 265 m; at 8 s 5, at 7 s 2, at 6, 5 and 4 s none, at
+/// a few per cent more track sigma. The legacy model's radars, which plot every tick, keep
+/// [`RANGE_FRESH_S`].
+const SWEPT_RANGE_FRESH_S: f64 = 6.0;
 /// Two radars' bearings range an aircraft when they cross by this much or more, degrees. Where
 /// they cross, the error along them is their errors across them over the crossing's sine: 3.9
 /// times at 15 degrees, 2 at 30. At 15 (the first choice) two radars 12 km out, each 140 to 160
 /// m across, put an aircraft 3 km off its truth at 3.8 of its sigmas, and a keep-out 3 s ahead
 /// missed it by up to 1,235 m (`tracks::tests::calib_air`, round three); at 30 and above none
-/// did, and the classes' honesty and velocity shares were the same.
+/// did, and the classes' honesty and velocity shares were the same. Two sweeping radars' bearings,
+/// seconds apart, must cross by more: the earlier is first carried to the later's time
+/// ([`Bearing::aligned`], murmur-7vp).
 const CROSSING_DEG: f64 = 30.0;
 /// A 2D radar's bearings cannot see an aircraft manoeuvre along the line, which only a
 /// position fix measures: once no position fix has come for this long, s, each bearing's
@@ -533,6 +553,42 @@ fn interact(models: &[Model; 2], dt: f64) -> [Model; 2] {
     out
 }
 
+/// One observer's last 2D radar bearing of an aircraft, as the track keeps it to find another
+/// radar's bearing across it ([`CROSSING_DEG`]).
+#[derive(Debug, Clone, Copy)]
+struct Bearing {
+    uid: u64,
+    /// when it was taken, by the fixes' clock
+    t: f64,
+    /// its unit direction, east and north
+    w: [f64; 2],
+    /// the radar's 1-sigma error across it at the plot, m
+    sigma: f64,
+}
+
+impl Bearing {
+    /// Time alignment (murmur-7vp): how much more than [`CROSSING_DEG`]'s sine this bearing, `age`
+    /// seconds old, must cross a sweeping radar's bearing now (1-sigma `sigma` across it) by
+    /// for the pair to range the aircraft. A multi-sensor tracker fuses asynchronous sensors in
+    /// time order, each measurement's information carried to the next one's time by the motion
+    /// model, its uncertainty grown by what the model does not know of the motion; a cross fix
+    /// from two bearings is only as good as they are time-coincident (an emitter's
+    /// triangulation from asynchronous bearings, the same). Here the earlier line, carried to
+    /// now, is wider across itself by the distance the aircraft could have moved across it in
+    /// `age`: the filter's velocity uncertainty across it (`c`, the prediction to now; 60 m/s
+    /// for a track without a velocity) times `age`. The pair ranges it when the cross fix's error
+    /// along the bearing is no more than two simultaneous bearings crossing at
+    /// [`CROSSING_DEG`] give: `sin theta >= sin 30 * sqrt((s1^2 + (sv age)^2 + s2^2) / (s1^2 +
+    /// s2^2))`. Simultaneous plots (age 0) are the rule as it was, and the legacy model's
+    /// radars, which plot every tick, keep it ([`super::sensing::Detection::scan_s`]).
+    fn aligned(&self, sigma: f64, c: &M4, age: f64) -> f64 {
+        let n = [self.w[1], -self.w[0]];
+        let vv = n[0] * n[0] * c[2][2] + 2.0 * n[0] * n[1] * c[2][3] + n[1] * n[1] * c[3][3];
+        let (a, r) = (self.sigma * self.sigma, sigma * sigma);
+        ((a + vv * age * age + r) / (a + r)).sqrt()
+    }
+}
+
 /// A 2D radar's fix of an aircraft, in metres east and north of the track's estimate: the
 /// radar at `o`, the unit direction `w` of its bearing, its plot `rho` metres out (the slant
 /// range).
@@ -685,8 +741,8 @@ pub struct Track {
     ranged_t: Option<f64>,
     /// when a position fix last came (not a 2D radar's bearing), by the fixes' clock
     fixed_t: Option<f64>,
-    /// each observer's last 2D radar bearing of it: (uid, when, unit direction east, north)
-    bearings: Vec<(u64, f64, [f64; 2])>,
+    /// each observer's last 2D radar bearing of it
+    bearings: Vec<Bearing>,
 
     /// 1 sigma at `last_seen_t`, in its least certain direction
     pub sigma_m: f64,
@@ -843,7 +899,7 @@ impl Track {
             Some((olat, olon)) => {
                 let m_per_lon = 111_320.0 * olat.to_radians().cos();
                 let s = Slant::new([0.0, 0.0], [(d.lon - olon) * m_per_lon, (d.lat - olat) * 111_320.0]);
-                self.bearings.push((d.uid, t_fix, s.w));
+                self.bearings.push(Bearing { uid: d.uid, t: t_fix, w: s.w, sigma: d.sigma_m });
             }
             None => {
                 self.ranged_t = Some(t_fix);
@@ -900,6 +956,25 @@ impl Track {
         self.models[1].p
     }
 
+    /// The filter's state in a line (a diagnostic for the calibration tests): when it was last
+    /// ranged and fixed, the bearings it keeps, the manoeuvring model's probability, the
+    /// mixture's velocity and its sigma whether or not it is shown.
+    #[cfg(test)]
+    pub fn debug_state(&self) -> String {
+        let (x, c) = mixture(&self.models);
+        let b: Vec<String> = self.bearings.iter().map(|b| format!("{}@{:.0}:{:.1}", b.uid, b.t, b.w[0].atan2(b.w[1]).to_degrees())).collect();
+        format!(
+            "ranged {:?} fixed {:?} bearings [{}] pm {:.2} v ({:.1},{:.1}) vs {:.1}",
+            self.ranged_t.map(|t| t.round()),
+            self.fixed_t.map(|t| t.round()),
+            b.join(" "),
+            self.models[1].p,
+            x[2],
+            x[3],
+            vel_var(&c).sqrt()
+        )
+    }
+
     /// Where the track is believed to be at `now`: the last estimate carried forward on
     /// its velocity (dead reckoning); the uncertainty says how far to trust it.
     pub fn predicted(&self, now: f64) -> (f64, f64) {
@@ -954,10 +1029,12 @@ impl Track {
             Some(s) => s.line(r),
             None => Meas::position(z, r),
         };
-        // ranged: a position fix now or within RANGE_FRESH_S, or another radar's bearing across
-        // this one within it (the two lines cross: the filter's own update triangulates)
+        // ranged: a position fix now or within RANGE_FRESH_S (a sweeping radar's bearing:
+        // SWEPT_RANGE_FRESH_S), or another radar's bearing across this one within it (the two
+        // lines cross: the filter's own update triangulates)
         let t_fix = d.measured_t.unwrap_or(now);
-        let fresh = |t: f64| (0.0..=RANGE_FRESH_S).contains(&(t_fix - t));
+        let window = if d.scan_s.is_some() { SWEPT_RANGE_FRESH_S } else { RANGE_FRESH_S };
+        let fresh = |t: f64| (0.0..=window).contains(&(t_fix - t));
         let ranged = match &slant {
             None => {
                 self.ranged_t = Some(t_fix);
@@ -966,20 +1043,34 @@ impl Track {
             }
             Some(s) => {
                 // another radar's bearing across this one ranged it when it came (the filter
-                // folded it in then): the pair triangulates
+                // folded it in then): the pair triangulates. A sweeping radar's pair is
+                // time-aligned (`Bearing::aligned`): the earlier line carried to this one's time
                 let crossing = CROSSING_DEG.to_radians().sin();
+                let align = d.scan_s.is_some();
+                let prior = if align { mixture(&models).1 } else { [[0.0; 4]; 4] };
                 let crossed = self
                     .bearings
                     .iter()
-                    .filter(|&&(uid, t, w)| uid != d.uid && fresh(t) && (w[0] * s.w[1] - w[1] * s.w[0]).abs() >= crossing)
-                    .map(|b| b.1)
+                    .filter(|b| {
+                        let age = t_fix - b.t;
+                        let need = if align && age > 0.0 { crossing * b.aligned(d.sigma_m, &prior, age) } else { crossing };
+                        b.uid != d.uid && fresh(b.t) && (b.w[0] * s.w[1] - b.w[1] * s.w[0]).abs() >= need
+                    })
+                    .map(|b| b.t)
                     .fold(None, |a: Option<f64>, t| Some(a.map_or(t, |a| a.max(t))));
                 if let Some(t) = crossed {
                     self.ranged_t = Some(self.ranged_t.map_or(t, |r| r.max(t)));
                 }
-                self.bearings.retain(|b| b.0 != d.uid && fresh(b.1));
-                self.bearings.push((d.uid, t_fix, s.w));
-                self.ranged_t.is_some_and(fresh)
+                self.bearings.retain(|b| b.uid != d.uid && fresh(b.t));
+                self.bearings.push(Bearing { uid: d.uid, t: t_fix, w: s.w, sigma: d.sigma_m });
+                let ranged = self.ranged_t.is_some_and(fresh);
+                if align && !ranged {
+                    // the track is this bearing's segment again (below): what the other radars'
+                    // bearings said along it is gone from the estimate, so none of them can
+                    // range it with a later one of this radar's
+                    self.bearings.retain(|b| b.uid == d.uid);
+                }
+                ranged
             }
         };
         // bearings cannot see a manoeuvre along the line: once no position fix has come for

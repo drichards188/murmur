@@ -172,6 +172,59 @@ fn target(kind: &str, domain: Domain) -> ContactTruth {
     c
 }
 
+/// The high cameras' D/R/I ranges through the atmosphere (murmur-7vp, the slant path; docs/SENSING.md
+/// quotes it: `cargo test -p murmur-bridge slant_camera_table -- --ignored --nocapture`): the
+/// RQ-4's, the MQ-9B's and the CCA's EO/IR at their catalog altitudes against a vehicle (NATO
+/// 2.3 m, 2 K) and a small fast boat, by day (the sun 45 degrees up) at 20 km visibility, as the
+/// ground distance and the slant range at which each falls to one half; beside them the slant
+/// ranges the geometry and blur alone allow (each channel's pixels on target through the ACQUIRE
+/// curve, no atmosphere).
+#[test]
+#[ignore]
+fn slant_camera_table() {
+    use super::super::physical::eo;
+    let cat = catalog();
+    let km = |m: f64| (m / 10.0).round() / 100.0;
+    for id in ["rq4", "mq9b", "cca"] {
+        let (alt, _) = operating(id);
+        let spec = cat.get(id).expect(id).sensors.iter().find(|s| s.kind == SensorType::EoIr).cloned().expect("a camera");
+        let Resolved::EoIr(cam) = resolve(&spec, true) else { panic!("a camera") };
+        for (kind, domain) in [("vehicle", Domain::Ground), ("small_fast_boat", Domain::Surface)] {
+            let t = target(kind, domain);
+            let r = ranges_of(id, &spec, &t, None);
+            let sig = super::super::physical::signature::kind_signature(kind, domain);
+            let slant = |d: f64| if d > 0.0 { d.hypot(alt - sig.height_m) } else { 0.0 };
+            let geometry: Vec<f64> = (0..3)
+                .map(|level| {
+                    eo::range_at(0.5, |s| {
+                        cam.channels
+                            .iter()
+                            .map(|ch| {
+                                // as the prediction: detection and recognition in either field,
+                                // identification in the narrow one
+                                let p = |narrow: bool| eo::acquire(sig.dc_m / (s * ch.ifov(narrow)), eo::P50_PX[level]);
+                                if level == 2 { p(ch.zooms()) } else { p(false).max(p(ch.zooms())) }
+                            })
+                            .fold(0.0, f64::max)
+                    })
+                })
+                .collect();
+            eprintln!(
+                "{id:<5} {alt:6.0} m  {kind:<16} ground D/R/I {:6.2} {:6.2} {:6.2} km | slant {:6.2} {:6.2} {:6.2} km | geometry and blur alone {:6.2} {:6.2} {:6.2} km",
+                km(r[0]),
+                km(r[1]),
+                km(r[2]),
+                km(slant(r[0])),
+                km(slant(r[1])),
+                km(slant(r[2])),
+                km(geometry[0]),
+                km(geometry[1]),
+                km(geometry[2])
+            );
+        }
+    }
+}
+
 /// Each catalog sensor's `range_m` (what the decision engine and the legacy model read) against
 /// the physical model's typical range: for EO/IR the detection range of the placeholders'
 /// nominal target (5 m, 3 m high, 2 K: a surface contact of no known kind) with its
