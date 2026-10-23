@@ -21,12 +21,12 @@ sim = "standin"
 count = 1
 spawn = [37.8070, -122.4600, 80, 270]  # over the Presidio, airborne
 [[unit]]
-platform = "magura"                    # armed USV-S; radar, EO/IR, AIS
+platform = "magura"                    # armed USV-S; EO/IR, AIS (no radar)
 sim = "standin"
 count = 1
 spawn = [37.8280, -122.4700, 0, 180]   # off Horseshoe Bay
 [[unit]]
-platform = "corsair"                   # sensor ship: radar 20 km, EO/IR 8 km, AIS
+platform = "corsair"                   # sensor ship: EO/IR 8 km, ESM, AIS (passive: no radar)
 sim = "standin"
 count = 1
 spawn = [37.8200, -122.4650, 0, 270]   # east of the bridge, mid-channel

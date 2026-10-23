@@ -39,10 +39,10 @@
 //! Figures are "-class" ballpark values, marked `guess` in the catalog; the point is the
 //! structure (range, horizon, dwell, independence, cooperative identity), not the numbers.
 //!
-//! This is the `legacy` model. The `physical` model (`physical/`, docs/SENSING.md) is chosen
-//! per contacts scenario (`[sensing] model`) or by `MURMUR_SENSE_MODEL`; it shares the types
-//! here (a catalog sensor's physical fields, an observer's heading and task area, a
-//! detection's `look`), which this model leaves unread and empty.
+//! This is the `legacy` model, chosen per contacts scenario (`[sensing] model`) or by
+//! `MURMUR_SENSE_MODEL`. The `physical` model (`physical/`, docs/SENSING.md), the default,
+//! shares the types here (a catalog sensor's physical fields, an observer's heading and task
+//! area, a detection's `look`), which this model leaves unread and empty.
 
 use std::collections::HashMap;
 use std::path::Path;

@@ -7,7 +7,7 @@ use super::model::{STALE_S, Track};
 use super::sensing::{
     Detection, Observer, Params, SensorCatalog, SensorSpec, SensorType, detect, horizon_m, pd,
 };
-use super::truth::{Ais, ContactTruth, Domain, Sensing, TruthAffiliation, TruthMessage};
+use super::truth::{Ais, ContactTruth, Domain, Sensing, SensingModel, TruthAffiliation, TruthMessage};
 use super::{Settings, Tracks};
 use murmur_decide::Affiliation;
 
@@ -17,19 +17,22 @@ const T0: f64 = 1_000_000.0;
 mod before_oho;
 mod calib;
 mod calib_air;
+mod catalog;
 mod physical;
 
 fn catalog() -> SensorCatalog {
     SensorCatalog::from_toml(include_str!("../../../../sim/platforms.toml")).expect("catalog")
 }
 
+/// These tests are the legacy model's (the physical model's are `physical`): pinned to it, as
+/// `MURMUR_SENSE_MODEL=legacy` pins a v1 or v2 episode.
 fn settings() -> Settings {
     Settings {
         seed: Some(42),
         misclassification_rate: Some(0.0),
         eval_truth: false,
         drop_s: 180.0,
-        model: None,
+        model: Some(SensingModel::Legacy),
         sim_token: Some("test-token".into()),
     }
 }
@@ -771,4 +774,19 @@ fn a_vehicle_silent_past_its_stale_age_senses_nothing() {
 fn stale_is_out_of_view() {
     assert_eq!(super::model::STALE_S, murmur_decide::engage::OUT_OF_VIEW_S);
     assert_eq!(murmur_decide::keepout::TrackerMemory::default().stale_after_s, murmur_decide::engage::OUT_OF_VIEW_S);
+}
+
+/// The physical model is the default (WORLD-V3-PLAN section 3: the catalog carries every
+/// sensor's figures): a scenario that names no model, with no `MURMUR_SENSE_MODEL`, runs on it;
+/// a scenario naming `legacy`, or the environment (as the v1 and v2 worlds and the Phase G stacks
+/// set it), runs on the legacy model.
+#[test]
+fn the_physical_model_is_the_default() {
+    let unpinned = Tracks::new(catalog(), Settings { model: None, ..settings() });
+    assert_eq!(unpinned.model_for(&truth(1.0, Vec::new())), SensingModel::Physical);
+    let mut named = truth(2.0, Vec::new());
+    named.sensing.model = Some(SensingModel::Legacy);
+    assert_eq!(unpinned.model_for(&named), SensingModel::Legacy);
+    let pinned = Tracks::new(catalog(), settings());
+    assert_eq!(pinned.model_for(&truth(1.0, Vec::new())), SensingModel::Legacy);
 }

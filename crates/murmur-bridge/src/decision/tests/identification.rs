@@ -10,7 +10,7 @@ use murmur_decide::{Affiliation, FlagResolution, IdentConfig};
 use super::engagement::{Erig, engage_rig_auth_policy};
 use super::*;
 use crate::tracks::sensing::{Observer, SensorSpec, SensorType};
-use crate::tracks::truth::{ActTruth, ContactTruth, Domain as TDomain, Sensing, TruthAffiliation, TruthMessage};
+use crate::tracks::truth::{ActTruth, ContactTruth, Domain as TDomain, Sensing, SensingModel, TruthAffiliation, TruthMessage};
 
 /// In ez-gate-west, west of the bridge (as the engagement tests).
 const TARGET: (f64, f64) = (37.8120, -122.4950);
@@ -82,8 +82,10 @@ pub(super) fn truth_with(e: &Erig, now_s: f64, scen_s: f64, acts: Vec<ActTruth>)
         seq: 0,
         scenario: "test".into(),
         seed: 1,
+        // the legacy model's (the observer's sensors are their range_m alone)
         sensing: Sensing {
             misclassification_rate: 0.0,
+            model: Some(SensingModel::Legacy),
             ..Default::default()
         },
         contacts: vec![boat()],

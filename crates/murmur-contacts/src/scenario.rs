@@ -200,7 +200,7 @@ pub struct Sensing {
     /// Probability, per track, that a classifying sensor reports the wrong kind.
     #[serde(default)]
     pub misclassification_rate: f64,
-    /// The bridge's sensing model (none: its default, `legacy`, unless `MURMUR_SENSE_MODEL`).
+    /// The bridge's sensing model (none: its default, `physical`, unless `MURMUR_SENSE_MODEL`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<SensingModel>,
     /// The physical model's terrain and bathymetry grids (`sim/headless/terrain/*.grid.gz`

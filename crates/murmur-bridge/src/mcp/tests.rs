@@ -1023,7 +1023,7 @@ async fn get_changes_reports_what_changed_since_a_cursor() {
 #[tokio::test]
 async fn tracks_are_perception_with_age_and_never_truth() {
     use crate::tracks::sensing::{Observer, SensorSpec, SensorType};
-    use crate::tracks::truth::{Ais, ContactTruth, Domain, Sensing, TruthAffiliation, TruthMessage};
+    use crate::tracks::truth::{Ais, ContactTruth, Domain, Sensing, SensingModel, TruthAffiliation, TruthMessage};
     let r = rig();
     // a dark fast boat 1.5 km from a boat of ours with radar and EO/IR, seen for a minute
     let observer = Observer {
@@ -1069,7 +1069,7 @@ async fn tracks_are_perception_with_age_and_never_truth() {
             seq: s as u64,
             scenario: "test".into(),
             seed: 1,
-            sensing: Sensing { misclassification_rate: 0.0, ..Default::default() },
+            sensing: Sensing { misclassification_rate: 0.0, model: Some(SensingModel::Legacy), ..Default::default() },
             contacts: vec![contact.clone()],
             acts: Vec::new(),
         };
@@ -1717,7 +1717,7 @@ async fn operator_views_need_an_operator_over_http() {
 /// radar and EO/IR observer 1.5 km away.
 fn hostile_track(r: &Rig) {
     use crate::tracks::sensing::{Observer, SensorSpec, SensorType};
-    use crate::tracks::truth::{ContactTruth, Domain, Sensing, TruthAffiliation, TruthMessage};
+    use crate::tracks::truth::{ContactTruth, Domain, Sensing, SensingModel, TruthAffiliation, TruthMessage};
     let observer = Observer {
         uid: 9,
         lat: 37.8120,
@@ -1755,7 +1755,7 @@ fn hostile_track(r: &Rig) {
             seq: s as u64,
             scenario: "test".into(),
             seed: 1,
-            sensing: Sensing { misclassification_rate: 0.0, ..Default::default() },
+            sensing: Sensing { misclassification_rate: 0.0, model: Some(SensingModel::Legacy), ..Default::default() },
             contacts: vec![contact.clone()],
             acts: Vec::new(),
         };
@@ -1779,7 +1779,7 @@ fn hostile_track(r: &Rig) {
 /// long: inside the keep-out of any effect on the hostile boat.
 fn neutral_alongside(r: &Rig) {
     use crate::tracks::sensing::{Observer, SensorSpec, SensorType};
-    use crate::tracks::truth::{ContactTruth, Domain, Sensing, TruthAffiliation, TruthMessage};
+    use crate::tracks::truth::{ContactTruth, Domain, Sensing, SensingModel, TruthAffiliation, TruthMessage};
     let observer = Observer {
         uid: 9,
         lat: 37.8120,
@@ -1817,7 +1817,7 @@ fn neutral_alongside(r: &Rig) {
             seq: s as u64,
             scenario: "test".into(),
             seed: 1,
-            sensing: Sensing { misclassification_rate: 0.0, ..Default::default() },
+            sensing: Sensing { misclassification_rate: 0.0, model: Some(SensingModel::Legacy), ..Default::default() },
             contacts: vec![
                 contact("fastboat", TruthAffiliation::Hostile, "small_fast_boat", 37.8120),
                 contact("fisher", TruthAffiliation::Neutral, "fishing_vessel", 37.8138),
@@ -1844,7 +1844,7 @@ fn neutral_alongside(r: &Rig) {
 /// engine (`track.dropped`), which holds it as a lost contact. The hostile boat declared.
 fn lost_alongside(r: &Rig) {
     use crate::tracks::sensing::{Observer, SensorSpec, SensorType};
-    use crate::tracks::truth::{ContactTruth, Domain, Sensing, TruthAffiliation, TruthMessage};
+    use crate::tracks::truth::{ContactTruth, Domain, Sensing, SensingModel, TruthAffiliation, TruthMessage};
     let observer = Observer {
         uid: 9,
         lat: 37.8120,
@@ -1886,7 +1886,7 @@ fn lost_alongside(r: &Rig) {
             seq: s as u64,
             scenario: "test".into(),
             seed: 1,
-            sensing: Sensing { misclassification_rate: 0.0, ..Default::default() },
+            sensing: Sensing { misclassification_rate: 0.0, model: Some(SensingModel::Legacy), ..Default::default() },
             contacts,
             acts: Vec::new(),
         };
