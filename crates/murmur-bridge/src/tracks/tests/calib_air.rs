@@ -1246,6 +1246,57 @@ fn a_2d_radar_fix_of_an_aircraft_gives_no_altitude_and_one_radar_does_not_range_
     assert!((alt - 1500.0).abs() < 100.0 && murmur_decide::engage::track_altitude(&f, f.last_seen_t, &ec).is_some(), "{f:?}");
 }
 
+/// Two 2D radars' bearings of an aircraft range it when they cross by 30 degrees or more (murmur-oho).
+/// A sweeping radar's pair seconds apart is time-aligned first (murmur-7vp): a track with no
+/// velocity could have moved hundreds of metres across the earlier bearing in the gap, so the
+/// pair no longer ranges it and the track stays the bearing segment, kilometres long; taken in
+/// one tick the same pair ranges it to a few hundred metres; and the legacy model's radars,
+/// which plot every tick, keep the rule as it was for a pair seconds apart.
+#[test]
+fn two_sweeping_radars_bearings_seconds_apart_are_time_aligned() {
+    use crate::tracks::sensing::Detection;
+    // an aircraft 1,500 m up, 2 km north and 1.5 km east of radar A (at the origin); radar B 3 km
+    // east of A: the bearings cross at about 33 degrees
+    let (truth_e, truth_n, alt) = (1500.0, 2000.0, 1500.0);
+    let plot = |uid: u64, e0: f64, t: f64, scan: Option<f64>| {
+        let (de, dn) = (truth_e - e0, truth_n);
+        let slant = de.hypot(dn).hypot(alt);
+        let w = (de / de.hypot(dn), dn / de.hypot(dn));
+        let (olat, olon) = at(BASE.0, BASE.1, e0, 0.0);
+        let (lat, lon) = at(BASE.0, BASE.1, e0 + slant * w.0, slant * w.1);
+        Detection {
+            contact_id: "c".into(),
+            uid,
+            sensor: SensorType::Radar,
+            lat,
+            lon,
+            alt_m: None,
+            sigma_m: slant * 1f64.to_radians(),
+            range_m: slant,
+            velocity_mps: None,
+            label: None,
+            ais: None,
+            domain: Domain::Air,
+            measured_t: Some(T0 + t),
+            slant_from: Some((olat, olon)),
+            look: None,
+            scan_s: scan,
+        }
+    };
+    let follow = |gap: f64, scan: Option<f64>| {
+        let mut t = Track::new("T-0001".into(), 1, &plot(1, 0.0, 0.0, scan), T0);
+        t.update(&plot(2, 3000.0, gap, scan), T0 + gap);
+        let (lat, lon) = at(BASE.0, BASE.1, truth_e, truth_n);
+        (t.sigma_m, haversine_m(LonLat::new(t.lon, t.lat), LonLat::new(lon, lat)))
+    };
+    let (together, err) = follow(0.0, Some(2.5));
+    assert!(together < 400.0 && err < 2.0 * together, "one tick: sigma {together:.0} error {err:.0}");
+    let (apart, err) = follow(4.0, Some(2.5));
+    assert!(apart > 1_000.0 && err < 2.0 * apart, "4 s apart: sigma {apart:.0} error {err:.0}");
+    let (legacy, _) = follow(4.0, None);
+    assert!(legacy < 600.0, "the legacy model's pair 4 s apart ranges it as before: sigma {legacy:.0}");
+}
+
 /// Print every case of the tuning sets on every mix (a tuning aid: `cargo test -p
 /// murmur-bridge --release air_calib_table -- --ignored --nocapture`; `CALIB=held_out` for the
 /// held-out set; `AIR_RULES=13` judges the tracker after under the rules before the aircraft
@@ -1518,19 +1569,31 @@ fn air_physical_misses() {
                     let regions = track_reach(&f, calib::ms(now + 3.0), &ec);
                     let miss = regions.iter().map(|r| haversine_m(r.center, LonLat::new(ahead.1, ahead.0)) - r.radius_m).fold(f64::INFINITY, f64::min);
                     log.push(format!(
-                        "  {s:3}: est {:5.0} m off ({:.0} m east, {:.0} north), sigma {:4.0}, vel {:?} | 3 s miss {:6.0} | {}",
+                        "  {s:3}: est {:5.0} m off ({:.0} m east, {:.0} north), sigma {:4.0}, vel {:?} | 3 s miss {:6.0} | {}{}",
                         de.hypot(dn),
                         de,
                         dn,
                         t.sigma_m,
                         t.vel.map(|(a, b)| ((a * 10.0).round() / 10.0, (b * 10.0).round() / 10.0)),
                         miss,
-                        what.join(" ")
+                        what.join(" "),
+                        if std::env::var("AIR_HISTORY").is_ok_and(|h| h == "2") { format!(" | {} | truth v ({ve:.1},{vn:.1})", t.debug_state()) } else { String::new() }
                     ));
                     if s >= SETTLE_S {
                         n_samples += 1;
                     }
-                    if s >= SETTLE_S && miss > 0.0 {
+                    // AIR_VEL=1: each second a velocity given is off by more than 4 of its sigmas,
+                    // instead of the keep-out's misses
+                    let want_vel = std::env::var("AIR_VEL").is_ok();
+                    let vel_off = t.vel.map(|(a, b)| ((a - ve).powi(2) + (b - vn).powi(2)).sqrt() / t.vel_sigma_mps());
+                    if want_vel && s >= SETTLE_S && vel_off.is_some_and(|v| v > 4.0) {
+                        eprintln!("{} seed {seed} second {s}: a velocity off by {:.1} of its sigma {:.2}", case.name, vel_off.unwrap_or(0.0), t.vel_sigma_mps());
+                        if std::env::var("AIR_HISTORY").is_ok() {
+                            let from = log.len().saturating_sub(25);
+                            eprintln!("{}", log[from..].join("\n"));
+                        }
+                    }
+                    if !want_vel && s >= SETTLE_S && miss > 0.0 {
                         n_misses += 1;
                         let mut recent: Vec<u64> = radars.iter().filter(|r| f64::from(s) - r.1 <= 10.0).map(|r| r.0).collect();
                         recent.sort_unstable();

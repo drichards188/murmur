@@ -640,6 +640,7 @@ impl Engine {
                 measured_t: None,
                 slant_from: slant.then_some((o.lat, o.lon)),
                 look: Some(Look { level: Level::Detect, confidence: 0.5 * (1.0 - (-dwell / 90.0).exp()) }),
+                scan_s: Some(r.scan_s),
             });
         }
     }
@@ -702,6 +703,7 @@ impl Engine {
                 measured_t: None,
                 slant_from: None,
                 look: None,
+                scan_s: None,
             });
         }
     }
@@ -781,6 +783,7 @@ impl Engine {
                 measured_t: None,
                 slant_from: None,
                 look: Some(Look { level, confidence: conf }),
+                scan_s: None,
             });
         }
     }
@@ -842,6 +845,7 @@ impl Engine {
                 measured_t: None,
                 slant_from: None,
                 look: Some(Look { level: Level::Detect, confidence: 0.6 * (1.0 - (-dwell / 60.0).exp()) }),
+                scan_s: None,
             });
         }
     }
@@ -884,7 +888,7 @@ impl Engine {
                     continue;
                 }
                 in_view = true;
-                let pc = eo::channel_p(ch, narrow, p.slant_m, dc, t.sig.thermal_k, &cx.cond, cx.sun);
+                let pc = eo::channel_p(ch, narrow, p.slant_m, [h_s, t.top_msl], dc, t.sig.thermal_k, &cx.cond, cx.sun);
                 for (a, b) in pd.iter_mut().zip(pc) {
                     *a = a.max(b);
                 }
@@ -950,6 +954,7 @@ impl Engine {
                 measured_t: None,
                 slant_from: None,
                 look: Some(Look { level, confidence: conf }),
+                scan_s: None,
             });
         }
         for c in identified_now {

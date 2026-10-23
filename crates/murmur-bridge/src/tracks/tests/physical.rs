@@ -55,7 +55,7 @@ fn close(got: f64, want: f64, tol: f64) -> bool {
 /// The 50 % range of one channel (no zoom) against a target in clear daylight, km.
 fn r50_km(ch: &EoChannel, dc: f64, dt: f64, level: usize) -> f64 {
     let c = Conditions::default();
-    range_at(0.5, |r| eo::channel_p(ch, false, r, dc, dt, &c, 45.0)[level]) / 1000.0
+    range_at(0.5, |r| eo::channel_p(ch, false, r, [0.0; 2], dc, dt, &c, 45.0)[level]) / 1000.0
 }
 
 /// FLIR M364C LR (640 px, 18 degrees; [13]): a person detected at 0.97 km and the NATO 2.3 m
@@ -104,7 +104,7 @@ fn the_mx20_and_mantis_i45_geometry_reproduces() {
     // the atmosphere caps the MWIR's long geometric ranges (research: about 15-25 km)
     let capped = r50_km(&EoChannel { narrow_rad: mwir.narrow_rad, ..mwir.clone() }, 2.3, 2.0, 0);
     let narrow = EoChannel { wide_rad: mwir.narrow_rad, ..mwir.clone() };
-    let d = range_at(0.5, |r| eo::channel_p(&narrow, false, r, 2.3, 2.0, &Conditions::default(), 45.0)[0]) / 1000.0;
+    let d = range_at(0.5, |r| eo::channel_p(&narrow, false, r, [0.0; 2], 2.3, 2.0, &Conditions::default(), 45.0)[0]) / 1000.0;
     assert!(d < 25.0 && capped < 25.0, "{d:.1} {capped:.1}");
 }
 
@@ -456,6 +456,7 @@ fn look(uid: u64, sensor: SensorType, level: Level, label: &str, confidence: f64
         measured_t: Some(1_000.0),
         slant_from: None,
         look: Some(Look { level, confidence }),
+        scan_s: None,
     }
 }
 
