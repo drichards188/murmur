@@ -63,6 +63,7 @@ tests, which pass unchanged.
 | `crates/murmur-bridge/src/heartbeat.rs` | one GCS heartbeat round moved into `send_round(world, k, msg)`, which the heartbeat thread calls and the simulator calls once a simulated second | refactor |
 | `crates/murmur-bridge/src/emu.rs` | `Emu::ingest` made `pub(crate)`: the simulator hands it the in-memory emulator's `/stats` JSON every 2 s, as the poll hands it the HTTP answer | visibility |
 | `crates/murmur-linkemu/src/proxy.rs` | `Pending`, `Delay`, `admit` made `pub`; the 250 ms link gauge update moved into `pub fn gauge`, which the proxy calls | visibility + refactor |
+| `crates/murmur-bridge/src/space.rs` | `sim_loader`: the space segment loads at once inside the simulation's runtime and the 30 s look at the element sets runs on the simulated clock (no loader thread); the answer cache ages on tokio's paused clock (section 16.2) | `cfg(murmur_headless)` |
 | `Cargo.toml` (workspace) | `unexpected_cfgs` check-cfg for `murmur_headless` | lint config |
 
 Not changed: `agents/playbook/`, the tracker and sensing model, murmur-decide, the stand-ins, the
@@ -82,10 +83,10 @@ replayed with its anchors.
 | `src/main.rs` | `murmur-headless --reply-fd N`: the episode spec on stdin's first line, then one JSON request per line on stdin, one answer per line on descriptor N |
 | `src/sim/mod.rs` | `Episode`: the runtime (current thread, paused), the bridge assembled in `main.rs`'s order minus sockets, threads and HTTP clients, the timed tasks; `step_to`, `mcp_call`, `api_call`, `truth` (contacts, our vehicles, the tracker's association), `fault`, `mcp_over_http` (the bridge's own `/mcp` service on the same `Mcp`, for the view test), `finish` |
 | `src/sim/server.rs` | the request loop: `step`, `mcp`, `api`, `truth`, `fault`, `tools` (with `defs`, the tools' definitions as the bridge's `tools/list` gives them, for the model agent), `now`, `perf`, `mcp_http`, `end`; a request may carry `at` (step first); every other request is checked not to move the clock |
-| `src/sim/spec.rs` | the episode spec (seed, epoch, fleet, stand-in configs, links, events, terrain grid, SATCOM, contacts, start offsets, battery) |
-| `src/sim/emulator.rs` | murmur-linkemu per vehicle: both lanes queued by its `admit`, delivered on the simulated clock; terrain and SATCOM rounds; `/stats` for the bridge's `emu`; link events (cuts) |
-| `src/sim/fleet.rs` | the stand-ins: `Vehicle::seeded` from the episode seed, a 10 Hz task each with the stand-in engine's phase offsets, a stop fault (cruise and maximum speed to zero) |
-| `src/sim/contacts.rs` | the contacts loop of `murmur-contacts` on the simulated clock |
+| `src/sim/spec.rs` | the episode spec (seed, epoch, fleet, stand-in configs, links, events, terrain grid, SATCOM, contacts, start offsets, battery; optional `space_root` and `effects`, section 16) |
+| `src/sim/emulator.rs` | murmur-linkemu per vehicle: both lanes queued by its `admit`, delivered on the simulated clock; terrain and SATCOM rounds (the catalog and element sets under `space_root` when given); `/stats` for the bridge's `emu`; link events (cuts) |
+| `src/sim/fleet.rs` | the stand-ins: `Vehicle::seeded` from the episode seed, a 10 Hz task each with the stand-in engine's phase offsets, a stop fault (cruise and maximum speed to zero), a vehicle leaving the world (`remove`: a munition spent by its own effect) |
+| `src/sim/contacts.rs` | the contacts loop of `murmur-contacts` on the simulated clock; with `effects`, each engagement effect's draw and a spent platform's removal (section 16.1) |
 | `src/sim/terrain.rs` | the baked surface-height grid as the emulator's terrain sampler (section 12), and the height of an airborne spawn's home (section 8) |
 | `src/sim/space_cache.rs` | the SATCOM look cache (section 12) |
 | `src/sim/perf.rs` | computer time per task and per request kind (diagnostics only) |
@@ -110,6 +111,8 @@ replayed with its anchors.
 | `gate.py` | G1 as CRITERIA.md defines it |
 | `provenance.py` | the commit and dirty flag, the binaries' hashes, the untracked inputs (links file, space cache) |
 | `bake_terrain.py` | the terrain grid, sampled once from `tidewater serve` |
+| `signers.py`, `review.py`, `scripted.py` | section 16: the engagement signers, the reviewer, the scripted agent (engage, collect, cover) |
+| `space.py` | section 16.2: a world's pinned element sets (make, verify, unpack) |
 | `calibration.toml`, `split.toml`, `CRITERIA.md` | the offsets; the frozen split; the frozen gates |
 | `tests/` | section 6 and 5's tests, the operator against `eval/proxy.py`, the session, labels and families |
 
@@ -176,13 +179,13 @@ so nothing went to bd and nothing is sorted in the simulator.
 
 | site | what it is | handled |
 |---|---|---|
-| `space.rs` `router`: `std::thread::spawn` loader, then a 30 s `thread::sleep` poll | loads the space segment (element sets) on a real thread and hands it to the decision layer | the episode's `MURMUR_ROOT` is an empty directory: the load fails at once ("no element sets", one stderr line), the segment never reaches the engine (no `space.loaded`, no collect or cover; no family uses them) and the poll finds nothing, ever. The live Harbor watch run has the segment; the playbook never uses it |
+| `space.rs` `router`: `std::thread::spawn` loader, then a 30 s `thread::sleep` poll | loads the space segment (element sets) on a real thread and hands it to the decision layer | from section 16 the headless build has no loader thread (`sim_loader`, `cfg(murmur_headless)`): the first load runs at once inside the runtime as the router is built (the episode's start), the poll on the simulated clock. Without `Options.space_snapshot` the episode's `MURMUR_ROOT` is an empty directory: the load fails at once ("no element sets", one stderr line), the segment never reaches the engine (no `space.loaded`, no collect or cover) and the poll finds nothing, ever, as before (the golden holds). With it, `MURMUR_ROOT` is the unpacked snapshot, which never changes, so it never reloads |
 | `heartbeat.rs`: the GCS heartbeat thread, its `Instant` and `thread::sleep` | 1 Hz heartbeats on a real thread | not started; `send_round` on a simulated 1 s interval |
 | `decision/terrain.rs`, `estimate.rs`, `heartbeat.rs` thread spawns and sleeps further down | test code | inside `#[cfg(test)]` modules, not compiled |
-| `spawn_blocking`: `platforms::catalog` (`get_platforms`, `/api/platforms`), `Decision::prepare_space` (space tasks), `keepout::explain` (engagement options), auth (password checks) | work on tokio's blocking pool, a real thread | tokio's paused clock does not auto-advance while a blocking task is in flight, so its result lands at the simulated instant it was asked; `at_once` checks a request did not move the clock. Only `get_platforms` runs in the families; the others never (no space, no engagements, dev auth) |
+| `spawn_blocking`: `platforms::catalog` (`get_platforms`, `/api/platforms`), `Decision::prepare_space` (space tasks), `keepout::explain` (engagement options), auth (password checks) | work on tokio's blocking pool, a real thread | tokio's paused clock does not auto-advance while a blocking task is in flight, so its result lands at the simulated instant it was asked; `at_once` checks a request did not move the clock. Only `get_platforms` runs in the families; space queries and the engagement options run in section 16's episodes (a collect's answer is computed at the instant of its check, so rules 13's `computed_t` equals it); auth never (dev auth) |
 | `tasks/exec.rs`, `decision/preload.rs`, `mcp/mod.rs`, `mcp/changes.rs` (`taken`) `Instant` | timeouts, patience, session use, digest age | these are `tokio::time::Instant`: the paused clock |
 | `mcp/changes.rs` `Feed::default`: `SystemTime::now`, pid, counter | the change feed's nonce, so a cursor from an earlier bridge is told to reset | real by design and only ever compared for equality. Two runs of one seed had different nonces and came out identical in everything else, which shows nothing decides on its value; the golden test enforces it: each run has exactly one feed id, the two differ, and with one put in place of the other everywhere the whole record and audit log are byte-identical (`only_the_feed_id_differs`) |
-| `space.rs` `Instant` (load timing, answer cache age) | space answers | the space segment is off (above) |
+| `space.rs` `Instant` (load timing, answer cache age) | space answers | the answer cache ages on tokio's paused clock in the headless build (`CacheInstant`), so whether an answer comes from the cache is a function of simulated time; the load timing is printed only |
 | `auth.rs` `Instant`, `SystemTime` | login rate limits, credential file times | a dev run: no logins |
 | `world.rs` `SystemTime` | the fleet manifest's modification time, printed with its age | stderr only |
 | `emu.rs` summary from the emulator's `/stats` | the emulator's terrain request and SATCOM round milliseconds (computer time) | display only (`/api/links` `summary`, as live); no tool reads it; the two-process test leaves it out |
@@ -640,7 +643,8 @@ made here; nothing was tuned on them.
 | no tidewater currents or winds (the stand-ins run without conditions; drifting contacts do not drift) | HUNTER 1's patrol track; the Mile Rock boat | none seen on the playbook's proposals |
 | the emulator's terrain line of sight from a baked surface-height grid (`sim/headless/terrain/golden-gate.grid.gz`, 20 m spacing, tidewater's `max(elevation, water level)` at the scenario's start; provenance beside it, its hash tested) instead of tidewater's samples; a cell's first answer at once instead of up to a second later | the Pumas' terrain shadows behind the Presidio | the grid is finer than the emulator's 250 m cells |
 | SATCOM looks at the terminal's position rounded to 0.001 deg (about 100 m) and 100 m of altitude, cached between episodes; the 30-minute outlook (display only) off | Reaper's SATCOM link | under a tenth of a degree of elevation to a satellite 550 km up; the outlook is not read by any tool |
-| the bridge's space segment off (section 5.1) | collect and cover tasks; the audit log has no `space.loaded` | none on the playbook (no space plays) |
+| the bridge's space segment off (section 5.1) unless `Options.space_snapshot` pins a world's element sets (section 16.2) | collect and cover tasks; the audit log has no `space.loaded` | none on the playbook (no space plays) |
+| boat and UGV engagements: the domain rule is "not evaluated" without a land and water grid (H1), which blocks a consequential engagement | `magura`, `ugv_armed` | only air-launched effectors (Switchblade, FPV) engage headless until the grid lands (section 16.4) |
 | the domain rule "not evaluated" for surface vehicles (no tidewater for the decision layer's terrain) | the checks shown on HUNTER 1's orders | none on the playbook's air tasks |
 | no concurrency: a tick's reads at one instant, zero time per call | timing within a tick | under the 10 s matching window |
 | no console push, CoT export, situation panel | display and export | none |
@@ -675,6 +679,12 @@ sent home lands at home in AUTOLAND, disarmed, shown so by `get_fleet`, and a la
 fails with the stand-in's words in the order and the inbox's alert). The landing itself, the
 disarm, the battery and the refused arm are the stand-ins' own tests (`behavior/plane.rs`,
 `tests/contract.rs`); the bridge's arm failure with the autopilot's words is `tasks/tests.rs`.
+`test_engage_space.py` (section 16): the signers' and the reviewer's policies on a fake operator
+API, the scripted agent's choices, the pinned snapshot (its provenance, a changed file caught,
+the unpacked tree), and smoke episodes on the binary: the engagement chain end to end, an abort,
+a miss with a surviving munition un-spent, a collect, a cover, each log replayed with its
+anchors, two of them run twice and compared whole, and an episode without the options having
+none of it.
 
 ## 14. Step 2: how it plugs in
 
@@ -932,3 +942,194 @@ total, the budget-stopped and failed episodes, which no metric includes, and the
 although a wake's call failed). A model episode's record is
 `<situation>-model-s<seed>.json`; its `model.wakes` say what it was told, read, proposed and
 said at each wake.
+
+**Engagements, review and space** (section 16; v1 batches; the scripted signers, reviewer and
+agent; the engagement effect drawn; the Golden Gate's pinned element sets):
+
+    .venv/bin/python -m eval.headless.batch --situation hostile-act-engagement --agent scripted \
+        --signers '{"preset": "scripted"}' --review '{"preset": "confirm-declarations"}' \
+        --effects '{"p_hit": 0.8}' --seeds 1-10 --keep-audit --out eval/results/headless/engage
+    .venv/bin/python -m eval.headless.batch --situation harbor-watch --agent scripted --space-snapshot golden-gate \
+        --scripted '{"engage": null, "cover": {"at_s": 60}}' --seeds 1-3 --out eval/results/headless/cover
+
+## 16. Engagements, review and space (world v3: H2 and H3, murmur-1z6.3)
+
+Status: **built** 2026-10-23 (docs/WORLD-V3-PLAN.md section 4). Everything here is off unless an
+option asks for it: `Options.signers`, `review`, `scripted` (with `agent = "scripted"`),
+`effects` and `space_snapshot` in episode.py, or the batch's `--signers`, `--review`,
+`--scripted`, `--effects` and `--space-snapshot` (v1 only). An episode without them runs exactly
+as before and its record has none of their keys (the golden holds; tested). No rule of the
+decision engine changed: the simulator and its scripted operators exercise what the engine and
+the bridge already do, through the same REST paths and MCP tools a person and an agent use, and
+the bridge logs every act as the live stack logs it.
+
+**Scripts, not judgment, and never human data.** The signers, the reviewer and the scripted
+agent each follow stated rules; every note and rationale they leave says "scripted" and "not a
+person" (the agent's "not a person, not a model"). Headless runs are dev runs: no passwords and
+no passkeys (credentials mode is out of scope here).
+
+### 16.1 The engagement chain
+
+| step | who | how (the paths a person or an agent uses) |
+|---|---|---|
+| a hostile act | the contacts scenario's `[[act]]` | truth on the simulation channel; our sensors observe it and the engine declares the track hostile by rule (rules 9, `ident.act`, `ident.declared`) |
+| the review | the reviewer (`review.py`) | `GET /api/review`, then `POST /api/tracks/{id}/confirm` (`ident.confirmed`) |
+| the nomination | the scripted agent (`scripted.py`, `agent-scripted`) | MCP `get_tracks` (affiliation hostile), `get_nominations` (none stands on it), `get_nomination_options` (at most once a second, as the tool allows), `propose_intent` task engage with the first platform that passes every check |
+| two signatures | the signers (`signers.py`, `op-2` and `op-3`) | `GET /api/inbox` (the nomination's `engage` view), `POST /api/intents/{id}/picture` (a token), then `POST .../approve` with `{"token"}` |
+| dispatch, the lost-link preload, its verifies | the bridge, unchanged | parameter reads and writes on the stand-in over the emulated link (`engage.preload` intent, set, verify) |
+| the effect | the engine releases it (`engage.effect`); the bridge queues it on the simulation channel; the headless contacts apply it | `Options.effects` (below) |
+| the assessment | the engine, on the tracks our sensors keep | `engage.assessed`: ceased when the target left the picture, persists when it is still seen |
+| what is owed back | the engine and the bridge | an expended platform's own values closed at the release (`restore.closed`, expended); after an abort or a stop, the fallback and `engage.preload` restore; after an un-spend, `platform.restore` |
+
+**The effect** (`effects = {"p_hit", "spend_expended", "survives_miss"}`; crates/murmur-headless
+`contacts.rs`). The effect stays abstract: a point, a radius, a time. Whether it takes the
+intended contact out of play is a draw, a uniform from the episode seed and the intent
+(splitmix64, `effect_draw`) compared with `p_hit` (default 1). A hit is applied exactly as the
+contacts process applies it (every contact inside the radius flagged, out of play unless its
+scenario says `persists`); a miss touches nothing inside the radius. A platform whose catalog
+says `expended_by_effect` (Switchblade, FPV) leaves the world at the effect with
+`spend_expended` (default true): its stand-in stops stepping, sends nothing and answers nothing,
+so its link goes silent; with `survives_miss` one whose effect missed flies on, and the bridge's
+rules 15 alert (spent, still heard) follows once the engagement is over. Every effect, its draw,
+whether it hit and whether the platform left are in truth's `effects` and the record's
+`effects.applied` (evaluation only: nothing of it reaches the bridge's API or the MCP tools).
+Without `effects` an effect is applied as the contacts process applies it and the platform
+flies on, as before.
+
+**The signers** (`Options.signers = {"preset": ..., ...}`). eval/proxy.py's
+`EngagementSigners` on simulated time, its own `next_signer` deciding who signs next (never the
+proposer, never twice, only while the engine's live picture passes): a look at the inbox every
+`period_s` (3 s), and for each nomination the next signer looks, reads for `read_s` (3 s), reads
+the nomination again and signs on that token only if the same signer would still sign; the next
+signer follows at once. A signature the engine refuses (409: the plan shown no longer holds) is
+recorded and the signer looks again. Draws from `random.Random("signers:<seed>")`.
+
+| preset | what |
+|---|---|
+| `scripted` (default) | EngagementSigners exactly: every nomination whose live picture passes is signed |
+| `deliberate` | `read_s` 20, `period_s` 10: the frozen plan must hold longer between the signatures |
+| `cautious` | `decline_if` `accepted_lost`, `accepted_unknown`, `changed`: a reading signer declines a nomination that rests on a lost contact or a vehicle of ours accepted as lost, or whose checks are worse than at nomination, saying which (`POST .../reject`) |
+| `decline` | the first eligible signer looks, reads and declines every nomination |
+| `absent` | nobody answers: every nomination waits until it expires |
+| `abort` | signs, then aborts every engagement still dispatched 20 s after its dispatch (`POST .../abort`): the fallback and the restore |
+| `mode = "rates"` | each nomination's fate drawn once: signed with `p_sign`, declined with `p_decline`, else left to expire, the first look after a lognormal latency |
+
+**The reviewer** (`Options.review = {"preset": ..., ...}`; operator `op-auto`, engagement
+authority `op-2`). It looks every `attend_s` (5 s; lognormal with `attend_sigma`), reads each
+item `read_s` (3 s) and acts once per item:
+
+| item | presets that act on it | path |
+|---|---|---|
+| a rule declaration awaiting an operator | `confirm-declarations` (default) and `accept-all` confirm; `skeptic` revokes | `POST /api/tracks/{id}/confirm`, `.../revoke` |
+| a review flag in force | `accept-all` confirms, `skeptic` dismisses; `flags = "declare"` declares the flagged track hostile | `POST /api/review/{flag}/resolve`, `POST /api/tracks/{id}/declare` |
+| a lost contact a waiting nomination counts (`engage.lost_open`) | `accept-all` accepts it for that engagement (again after a reset of the signatures) | `POST /api/intents/{id}/accept_unknown` `{track, since}` |
+| a live track carrying a lost contact's AIS | `accept-all` confirms it, only when the engine names no blocker | `POST /api/review/lost/{track}/confirm` `{by_track}` |
+| a platform spent but still heard | `unspend = "unspend"` | `POST /api/restores/unspend` |
+
+`absent` reviews nothing. Situations' `[autoplay] confirm_rule_declarations` and `grant_agents`
+(eval/proxy.py) are not read by the headless operator (section 7); the reviewer's default
+preset does the first. The approve-all operator leaves engagement nominations to the signers (a
+plain approve is refused for one).
+
+**The scripted agent** (`agent = "scripted"`, `Options.scripted = {"engage": {...},
+"collect": {...}, "cover": {...}, "period_s"}`): every `period_s` (5 s) from the AI's start, it
+nominates on each track declared hostile when no nomination on it stands and the form's dry run
+passes a platform (`effect_radius_m` 75, `window_s` 600, `fallback` return, `uids` to limit it,
+at most `max_nominations` 3 per track). It is a stand-in so the chain runs end to end, not an
+agent under evaluation, and v1's metrics do not judge engagements, collects or covers (H7).
+
+### 16.2 Space on the simulated clock
+
+**The loader.** The bridge's space segment loads at the episode's start inside the
+simulation's runtime (`sim_loader`, section 2.1), so its pinned time shift and the engine's
+`space.loaded` are the episode's, never a real-time moment's; the 30 s look at the element sets
+runs on the simulated clock and the answer cache ages on it. Every space answer (passes,
+tasking options, a collect's or a cover's query) is computed off the runtime as live
+(`spawn_blocking`) at the simulated instant it is asked: the paused clock does not move while it
+runs, so a collect's answer is computed at its check's own time and rules 13's `computed_t`
+equals it (the 5 s bound holds trivially); a cover is prepared outside the lock as live
+(`Decision::lock_with_space`). Rules 11's re-check after a reload never fires on a pinned
+snapshot (nothing changes on disk), and a cancel goes through `POST /api/intents/{id}/cancel`
+as live.
+
+**The pinned element sets.** `sim/headless/space/<world>/` (golden-gate today): the catalog and
+named areas as committed when it was made, every element-set file the catalog's queries read,
+gzipped, beside its own `.meta.json`, and `provenance.json` (each file's SHA-256 and size
+uncompressed, the element sets' source and fetch times, how and when it was made, and its `id`:
+one SHA-256 over every file's name and digest). Golden Gate's: CelesTrak GP JSON imported into
+`sim/space/cache` with `murmur-space import` on 2026-10-02 (11,451 satellites in 11 classes;
+the June scenario is time-shifted +109 days, crates/murmur-space README "Epoch honesty"), id
+`970ff616e5fbd4cc...`, about 0.7 MB in git. `eval/headless/space.py` unpacks it once per id, every
+digest checked, to `logs/headless/space-snapshots/<world>-<id>/` (`sim/space/...` and a link to
+this checkout's `sim/platforms.toml`), and an episode with `space_snapshot` points both the
+bridge (`MURMUR_ROOT`) and the emulator's SATCOM (`space_root`, with its own look cache) at it,
+so a space episode depends on the commit alone. Without it the emulator reads `sim/space/cache`
+as before (an untracked input, hashed in the record's provenance). To pin another world's:
+
+    .venv/bin/python -m eval.headless.space snapshot --world <name> --cache sim/space/cache \
+        --note "<where the element sets came from>"
+    .venv/bin/python -m eval.headless.space verify --world <name>
+
+**The tools and the tasks.** `get_satellite_passes` and `get_satellite_tasking_options` answer
+headless as live (the bridge's own `/api/space/*` routes through its MCP server). The scripted
+agent's `collect` (`at_s`, `area`, `capabilities`, `window_s`, `rank`, `min_lead_s`) reads the
+passes and the ranked options and proposes a collect with the first option at least
+`min_lead_s` ahead; it waits for a human (the `satellite-collect` tier), the operator decides it
+like any card, and the bridge's simulated executor runs it on the scenario clock (`tasked`,
+`collected`, `product_ready`, then done). Its `cover` (`area`, `window_s`, `service`,
+`min_level`) runs on its own (`coverage-query`): `watching`, the predicted outages or the
+fewest in view, `ended`.
+
+**Replay.** `murmur-replay <log> --anchors <log>.anchors` re-decides every collect and cover
+from the logged answers; with `--space <root>/sim/space/constellations.toml
+<root>/sim/space/cache` (the unpacked snapshot) it re-runs every query on the same segment.
+
+### 16.3 The smoke episodes (seed 1, 2026-10-23)
+
+**Engagement end to end** (`hostile-act-engagement`, the scripted agent, the `scripted`
+signers, `confirm-declarations`, `p_hit` 1; about 1.5 s of computer time for 720 s): the boat's
+first act at 205.8 s, observed by HUNTER 1's radar, EO/IR and sonar and REAPER 1's radar and
+EO/IR, declared hostile by rule at 206.0 s (attribution 0.98); `op-auto` confirmed it at 211.0 s
+(read from 208.0 s). At 206.2 s the form showed BLADE 1 not passing (target uncertainty); at
+211.2 s it passed and the agent nominated it. `op-2` looked at 216 and 219 s and was refused both
+times (409: the plan shown no longer held, the boat's velocity estimate still settling after it
+stopped), signed at 225 s; `op-3` signed at 228 s and BLADE 1 was dispatched. The preload's
+write-ahead at 229 s and its set at 230 s (BLADE 1's own values are the `return` preload:
+`FS_GCS_ENABL` 1, `FS_LONG_ACTN` 1, `FS_LONG_TIMEOUT` 5), verifies every 6 s from 311 s; the
+effect released at 351.0 s, its debt closed at once (`restore.closed`, expended); the draw hit,
+the boat left the picture and BLADE 1 the world; `engage.assessed` ceased at 367.0 s (the point
+covered 15 s by HUNTER 1's and REAPER 1's radar). 237 events; `eval/metrics.py`'s invariants,
+the two-person rule among them, all zero; replay: every decision reproduced exactly, anchors OK.
+
+**Abort** (`abort` signers): `op-2` aborted 21 s after the dispatch: `engage.stopped` (cause
+operator, fallback return), then `engage.preload` restore, confirmed. **Miss** (`p_hit` 0,
+`survives_miss`, the reviewer's `unspend`): the boat still seen 3.8 s after the effect,
+`engage.assessed` persists; BLADE 1 flew on, `op-2` un-spent it at 359 s (`platform.unspent`)
+and its own values went back at 360 s (`platform.restore`, confirmed).
+
+**Collect** (`harbor-watch` for 9,000 s, the snapshot; about 20 s): 15 imaging windows; three
+taskable options, all Capella SAR (03:00 local: no optical scene in the dark); the agent chose
+CAPELLA-20 (NORAD 68485) for 11:25:23Z and proposed it at 61.2 s; `op-auto` read and approved it
+at 70.0 s; tasked, collected at 5,124 s, product ready at 8,724 s, done. Replay with `--space`:
+three queries recomputed, identical. **Cover** (GPS over a 5 km circle at the bridge for 600
+s): auto at 61.2 s, watching (9 to 10 satellites at the worst of 9 sample points, PDOP at most
+1.67), fewest in view 9 at 10:06:01Z, ended at 10:11:01Z, done. Every one replays exactly, and the
+engagement and the cover, each run twice on one seed, gave the same record twice.
+
+### 16.4 Not done, or found
+
+- **Boat and UGV engagements** (`magura`, `ugv_armed`) are refused headless until the land and
+  water grid lands (H1): the domain rule answers "not evaluated", which blocks a consequential
+  engagement. Nothing here depends on the domain: the effect, the signers, the reviewer and the
+  agent run the same for them once it answers. Not tested yet.
+- **The preload writes what was there** for BLADE 1 (its own lost-link values are the `return`
+  preload), so the set and the restore exercise the path, not a change of values; an FPV with
+  fallback `abort` (ArduCopter `FS_GCS_ENABLE` 7) would change them.
+- **No flag, lost contact or AIS claim** arises in `hostile-act-engagement`: the reviewer's work
+  on them is tested on a fake operator API, not in a smoke episode. Situations that raise them
+  are the families' work (F15, F16).
+- **A silent platform still senses for a few seconds**: the bridge's sensing model keeps a
+  vehicle's sensors on until its link goes stale (`tracks::observers`), so a munition that left
+  at the effect may still report the target for its stale age (seen in the miss: `3:eo_ir` at
+  +3.8 s). That is the sensor model's (A1's), not changed here.
+- The engagement, collect and cover outcomes are not yet labels or metrics (H7, C1).
