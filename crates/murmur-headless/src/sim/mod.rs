@@ -18,6 +18,7 @@ pub mod contacts;
 pub mod emulator;
 pub mod fleet;
 pub mod perf;
+pub mod sense;
 pub mod server;
 pub mod space_cache;
 pub mod spec;

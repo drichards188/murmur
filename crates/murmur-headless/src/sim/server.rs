@@ -18,6 +18,8 @@
 //!   `homes`, each vehicle's platform and sensors and the sensing model's seed and rate.
 //! - `misclassify` `{seed, rate, contacts}`: the sensing model's misclassification draws for
 //!   those contacts (evaluation only: the Python port's check).
+//! - `sense` `{observer, sensor, target, conditions, t, terrain, ranges}`: the physical sensing
+//!   model's predictions (`sense.rs`; evaluation only).
 //! - `fault` `{kind, ...}`: a scripted fault (`link_event` with `event`, or `stop` with `uid`).
 //! - `tools`: the MCP tool names (with `defs: true`, also their definitions as `tools/list`
 //!   gives them). `now`: the clock. `perf`: where the computer time went.
@@ -92,6 +94,7 @@ fn handle(ep: &mut Episode, req: &Value) -> Result<Value, String> {
         ),
         Some("picture") => ep.picture(req["homes"].as_bool().unwrap_or(false)),
         Some("misclassify") => super::misclassify(req),
+        Some("sense") => super::sense::sense(req, &ep.spec.root),
         Some("fault") => ep.fault(req),
         Some("tools") if req["defs"].as_bool() == Some(true) => {
             Ok(json!({ "tools": ep.tools(), "defs": ep.tool_defs()? }))
