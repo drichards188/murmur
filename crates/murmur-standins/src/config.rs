@@ -28,10 +28,11 @@ pub struct VehicleConfig {
     /// [lat, lon, alt_m (negative = depth), heading_deg]
     pub home: [f64; 4],
     pub spec: Spec,
-    /// ArduPilot parameters `sim/swarm.py` sets for this vehicle, as a SITL vehicle gets them
-    /// in its defaults file (today the lost-link failsafe timer for its link profile, from
-    /// `sim/links.toml`). Applied over the seeded table; names the stand-in doesn't model are
-    /// reported and skipped.
+    /// ArduPilot parameters `sim/swarm.py` sets for this vehicle (`standin_params`): its
+    /// platform's `standin_params` from the catalog (a Puma's RTL_AUTOLAND and hand launch),
+    /// then what a SITL vehicle gets in its defaults file (the lost-link failsafe timer for its
+    /// link profile, from `sim/links.toml`). Applied over the seeded table; names the stand-in
+    /// doesn't model are reported and skipped.
     #[serde(default)]
     pub params: BTreeMap<String, f64>,
 }

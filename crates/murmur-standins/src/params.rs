@@ -5,9 +5,10 @@
 //! here. Values follow ArduPilot's defaults, then Murmur's `sim/params/*.parm` for the kind
 //! (so a stand-in and a SITL vehicle of the same kind answer alike), then the platform
 //! catalog, then what `sim/swarm.py` sets per vehicle (`VehicleConfig::params`: the
-//! lost-link timer for its link profile, `lost_link_s` in `sim/links.toml`, which replaces
-//! the timeouts seeded here). Where Murmur chose a value ArduPilot leaves off (the GCS
-//! failsafes), the table says so. Behaviors read their parameters from here.
+//! platform's `standin_params`, then the lost-link timer for its link profile, `lost_link_s`
+//! in `sim/links.toml`, which replaces the timeouts seeded here). Where Murmur chose a value
+//! ArduPilot leaves off (the GCS failsafes), the table says so. Behaviors read their
+//! parameters from here.
 
 use mavlink::dialects::ardupilotmega::MavParamType;
 
@@ -170,6 +171,16 @@ impl Params {
                 p.put("TKOFF_ALT", I16, 60.0, false);
                 // AP_Landing: disarm this long after an auto-land (0 = stay armed)
                 p.put("LAND_DISARMDELAY", I8, 20.0, false);
+                // ModeRTL::navigate: 0 circles home; 1 lands once on the RTL circle, 2 at once,
+                // by the mission's DO_LAND_START sequence (plane.rs: none, the AUTOLAND mode's)
+                p.put("RTL_AUTOLAND", I8, 0.0, false);
+                // ModeAutoLand: the final approach's start, m above home and m from home
+                p.put("AUTOLAND_WP_ALT", I16, 55.0, false);
+                p.put("AUTOLAND_WP_DIST", I16, 400.0, false);
+                p.put("AUTOLAND_DIR_OFF", I16, 0.0, false);
+                // auto takeoff: the forward acceleration (a throw) it waits for; 0 = none, a
+                // runway takeoff (TKOFF_THR_MINACC: "around 15" for hand and bungee launches)
+                p.put("TKOFF_THR_MINACC", F32, 0.0, false);
                 p.put("THR_FAILSAFE", I8, 0.0, false);
                 // GCS heartbeat loss: RTL after FS_LONG_TIMEOUT (Murmur's choice, as
                 // sim/params/plane.parm; ArduPlane ships FS_GCS_ENABL 0). The timeout is
@@ -181,7 +192,7 @@ impl Params {
                 p.put("FS_SHORT_ACTN", I8, 0.0, false);
                 let vtol = spec.behavior == "vtol";
                 p.put("Q_ENABLE", I8, if vtol { 1.0 } else { 0.0 }, false);
-                // low: RTL; critical: Land (no landing sequence in a stand-in: RTL)
+                // low: RTL; critical: Land (no landing sequence in the bridge's missions: RTL)
                 p.put("BATT_FS_LOW_ACT", I8, 1.0, false);
                 p.put("BATT_FS_CRT_ACT", I8, 2.0, false);
             }
