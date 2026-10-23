@@ -1,0 +1,161 @@
+# San Diego (sim/worlds/san-diego.toml; docs/WORLD-V3-PLAN.md section 5): 24 stand-ins in Golden
+# Gate v3's domain mix (10 air, 5 surface, 5 subsurface, 2 ground, the antenna tracker), adapted
+# from sim/fleets/sandiego.toml's units: its four Pumas, its X10s, the FVR-90 and the airship at
+# NAS North Island, its three Corsairs at the North Island piers and its BlueROV, with world v3's
+# REAPER, HAWK, Sea Hunter, Magura, Saildrone, REMUS, buoys and UGVs. Stand-ins only.
+#
+# Where each starts, checked against the world's baked grids (eval/headless/tests/
+# test_worlds_v3.py): the small aircraft, the airship and the tracker on the ground at NAS North
+# Island beside the runways (sandiego.toml's launch site); REAPER 1 and HAWK 1 on station, flown
+# in from their bases off the map; HUNTER 1 alongside at Naval Base Point Loma (in the channel
+# north of Ballast Point, clear of the sub base's no-go box), the Corsairs at the North Island
+# carrier piers (north face), VIPER 1 off the Naval Amphibious Base in the south bay, the
+# Saildrone at sea off Point Loma; REMUS 1 at the surface in the entrance channel, the BlueROV at
+# the carrier piers, the buoys along the entrance channel (8 to 15 m of water); the UGVs on North
+# Island. Altitudes are the surface's height there, rounded.
+#
+# uids follow the unit order (sim/swarm.py): 1 REAPER 1, 2 HAWK 1, 3-6 PUMA 1-4, 7 SKY 1, 8 SKY 2,
+# 9 KESTREL 1, 10 ZEP 1, 11 HUNTER 1, 12-14 MARLIN 1-3, 15 VIPER 1, 16 ALBATROSS 1, 17 REMUS 1,
+# 18 EEL 1, 19-21 DRIFT 1-3, 22 FERRET 1, 23 MULE 1, 24 TRK 1. Opening orders:
+# sim/situations/san-diego-watch.toml.
+title = "San Diego: 24 stand-ins across every domain"
+
+# ---- air
+[[unit]]
+platform = "mq9b"                      # on station from its base
+sim = "standin"
+spawn = [32.6500, -117.2700, 3000, 0]  # over the approaches off Point Loma, airborne at 3000 m
+
+[[unit]]
+platform = "rq4"                       # the far orbit offshore
+sim = "standin"
+spawn = [32.5500, -117.5500, 18000, 0] # about 32 km west-south-west, airborne at 18,000 m
+
+[[unit]]
+platform = "puma"                      # NAS North Island, on the ground (the playbook's sensor in reserve)
+sim = "standin"
+spawn = [32.6985, -117.2080, 6, 290]
+cruise_alt_m = 150
+
+[[unit]]
+platform = "puma"
+sim = "standin"
+spawn = [32.6990, -117.2060, 8, 290]
+cruise_alt_m = 150
+
+[[unit]]
+platform = "puma"
+sim = "standin"
+spawn = [32.6980, -117.2100, 5, 290]
+cruise_alt_m = 150
+
+[[unit]]
+platform = "puma"
+sim = "standin"
+spawn = [32.7000, -117.2120, 5, 290]
+cruise_alt_m = 150
+
+[[unit]]
+platform = "x10"
+sim = "standin"
+spawn = [32.6995, -117.2040, 8, 0]
+cruise_alt_m = 100
+
+[[unit]]
+platform = "x10"
+sim = "standin"
+spawn = [32.6965, -117.2040, 7, 0]
+cruise_alt_m = 100
+
+[[unit]]
+platform = "fvr90"
+sim = "standin"
+spawn = [32.6970, -117.2060, 7, 290]
+cruise_alt_m = 150
+
+[[unit]]
+platform = "lta"                       # the airship at its mast on North Island
+sim = "standin"
+spawn = [32.6960, -117.2090, 6, 0]
+cruise_alt_m = 250
+
+# ---- surface
+[[unit]]
+platform = "seahunter"                 # alongside at Naval Base Point Loma
+sim = "standin"
+spawn = [32.6950, -117.2352, 0, 0]     # 15 m of water
+moored = true                          # tied up until it first arms (sim/swarm.py)
+
+[[unit]]
+platform = "corsair"                   # the North Island carrier piers, north face
+sim = "standin"
+spawn = [32.7120, -117.1960, 0, 90]    # 7 m
+moored = true                          # tied up until it first arms (sim/swarm.py)
+
+[[unit]]
+platform = "corsair"
+sim = "standin"
+spawn = [32.7125, -117.1900, 0, 90]    # 13 m
+moored = true                          # tied up until it first arms (sim/swarm.py)
+
+[[unit]]
+platform = "corsair"
+sim = "standin"
+spawn = [32.7118, -117.2010, 0, 90]    # 7 m
+moored = true                          # tied up until it first arms (sim/swarm.py)
+
+[[unit]]
+platform = "magura"                    # armed USV off the Naval Amphibious Base, Coronado
+sim = "standin"
+spawn = [32.6790, -117.1525, 0, 0]     # 3.4 m
+moored = true                          # tied up until it first arms (sim/swarm.py)
+
+[[unit]]
+platform = "saildrone"                 # at sea off Point Loma
+sim = "standin"
+spawn = [32.6600, -117.2700, 0, 0]     # 52 m
+
+# ---- subsurface
+[[unit]]
+platform = "remus"                     # at the surface in the entrance channel off Ballast Point
+sim = "standin"
+spawn = [32.6830, -117.2310, 0, 0]     # 14 m
+cruise_alt_m = -8                      # its survey depth in a 12 to 15 m channel
+
+[[unit]]
+platform = "bluerov"                   # at the carrier piers
+sim = "standin"
+spawn = [32.7116, -117.1985, 0, 90]
+moored = true                          # tied up until it first arms (sim/swarm.py)
+
+[[unit]]
+platform = "buoy"                      # drifting buoys along the entrance channel
+sim = "standin"
+spawn = [32.6700, -117.2320, 0, 0]     # the channel's mouth, 8 m
+
+[[unit]]
+platform = "buoy"
+sim = "standin"
+spawn = [32.6850, -117.2310, 0, 0]     # off Ballast Point, 15 m
+
+[[unit]]
+platform = "buoy"
+sim = "standin"
+spawn = [32.7020, -117.2270, 0, 0]     # off North Island's west shore, 14 m
+
+# ---- ground
+[[unit]]
+platform = "ugv_recon"                 # North Island, the west shore road
+sim = "standin"
+spawn = [32.6950, -117.2230, 4, 0]
+
+[[unit]]
+platform = "ugv_logistics"             # North Island, by the piers
+sim = "standin"
+spawn = [32.7050, -117.2000, 7, 90]
+
+# ---- support
+[[unit]]
+platform = "tracker"                   # the antenna tracker at the launch site
+sim = "standin"
+spawn = [32.6975, -117.2030, 7, 0]

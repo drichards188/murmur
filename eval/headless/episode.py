@@ -185,7 +185,11 @@ class Runner:
         if self.phase == "waiting":
             status, body = ep.sim.api("GET", "/api/state")
             vehicles = (body or {}).get("vehicles", []) if status == 200 else []
-            ready = {v["uid"] for v in vehicles if v.get("nav_ready") and v.get("position")}
+            # world v3's worlds: a home too (an order's checks need it; a slow link's vehicle, an
+            # AUV on its acoustic modem, can be navigating before the bridge has its home), so the
+            # opening orders are not refused for a fact a second away; v1 and v2 as before
+            ready = {v["uid"] for v in vehicles
+                     if v.get("nav_ready") and v.get("position") and (ep.e.world != "v3" or v.get("home"))}
             if ep.want <= ready or now >= ep.e.ready_timeout_s:
                 self.ready_t = now
                 self.issue_orders(vehicles, now)

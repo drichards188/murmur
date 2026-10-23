@@ -70,16 +70,19 @@ cruise_alt_m = 250
 platform = "seahunter"                 # sensor ship (MUSV), full kit; at a mooring off the Marina
 sim = "standin"
 spawn = [37.8160, -122.4400, 0, 270]   # 22 m of water
+moored = true                          # tied up until it first arms (sim/swarm.py)
 
 [[unit]]
 platform = "corsair"                   # at the Coast Guard station's pier, Horseshoe Bay
 sim = "standin"
 spawn = [37.8304, -122.4766, 0, 90]    # 5.9 m of water
+moored = true                          # tied up until it first arms (sim/swarm.py)
 
 [[unit]]
 platform = "magura"                    # armed USV, alongside in Horseshoe Bay
 sim = "standin"
 spawn = [37.8302, -122.4742, 0, 90]    # 4.6 m of water
+moored = true                          # tied up until it first arms (sim/swarm.py)
 
 [[unit]]
 platform = "saildrone"                 # at sea west of the Gate
@@ -97,6 +100,7 @@ cruise_alt_m = -15                      # its survey depth
 platform = "bluerov"                   # tethered ROV at the Horseshoe Bay pier
 sim = "standin"
 spawn = [37.8310, -122.4758, 0, 90]    # 3.8 m of water
+moored = true                          # tied up until it first arms (sim/swarm.py)
 
 [[unit]]
 platform = "buoy"                      # drifting sensor buoys in the channel

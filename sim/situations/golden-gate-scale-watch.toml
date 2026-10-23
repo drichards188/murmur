@@ -1,0 +1,460 @@
+# Golden Gate scale watch: the scale world (sim/worlds/golden-gate-scale.toml) on a busy day,
+# nothing scripted: 100 of ours in every domain, Golden Gate v3's traffic plus a heavier day, the
+# physical sensing model, the world's land/water grid and currents, and each episode's conditions
+# drawn from the world's ranges by its seed. For load and allocation under many simultaneous needs
+# (WORLD-V3-PLAN H6, family F17), and the world's smoke and real-time factor
+# (eval/headless/tests/test_worlds_v3.py):
+#   .venv/bin/python -m eval.headless.batch --situation golden-gate-scale-watch --seeds 1-2 --agent none playbook
+# Headless only. The opening orders (54) were laid out on the world's grids from the fleet as
+# planned: the MQ-9Bs and RQ-4s on wide and far orbits, eight Pumas, ten X10s, three FVR-90s and
+# the airships on station, four Sea Hunters and half the Corsairs on patrol, the Saildrones on
+# their stations, the AUVs on survey lines, the ROVs inspecting their piers, the recon UGVs on
+# patrol; the rest wait (the armed Maguras tied up: no opening order may move an armed platform).
+title = "Golden Gate scale watch"
+brief = """
+You have the watch at the Golden Gate with a hundred of ours in the air, on and under the water
+and ashore, on a busy day: ferries, ships in the channel, a crab fleet off Point Bonita, a yacht
+race off the Cityfront, powerboats, the Coast Guard, sightseeing aircraft and helicopters, a news
+helicopter over the bridge, cars and walkers ashore. Keep the picture and our vehicles in order.
+"""
+director = """
+Nothing is scripted: the world's ordinary traffic only, heavier than Golden Gate v3's. The
+conditions are drawn per episode from the world's ranges.
+"""
+
+world = "golden-gate-scale"
+policy = "sim/situations/policies/watch.toml"
+duration_s = 1800
+ai_start_s = 45
+ready_timeout_s = 300
+operator = "autoplay"
+ai = "playbook"
+seed = 1
+
+[headless]
+domain_rule = "grid"
+currents = "world"
+conditions = "world"
+
+# ---- the opening orders (op-setup: by policy, or through agent-setup to the inbox)
+[[order]]
+id = "orbit-reaper-1"
+task = "orbit"
+vehicles = { callsign = "REAPER 1" }
+center = [-122.505, 37.815]
+radius_m = 4000
+note = "Opening order: a wide orbit"
+
+[[order]]
+id = "orbit-reaper-2"
+task = "orbit"
+vehicles = { callsign = "REAPER 2" }
+center = [-122.48, 37.87]
+radius_m = 4000
+note = "Opening order: a wide orbit"
+
+[[order]]
+id = "orbit-reaper-3"
+task = "orbit"
+vehicles = { callsign = "REAPER 3" }
+center = [-122.43, 37.77]
+radius_m = 3000
+note = "Opening order: a wide orbit"
+
+[[order]]
+id = "orbit-reaper-4"
+task = "orbit"
+vehicles = { callsign = "REAPER 4" }
+center = [-122.55, 37.79]
+radius_m = 4000
+note = "Opening order: a wide orbit"
+
+[[order]]
+id = "orbit-hawk-1"
+task = "orbit"
+vehicles = { callsign = "HAWK 1" }
+center = [-122.8, 37.7]
+radius_m = 15000
+note = "Opening order: the far orbit offshore"
+
+[[order]]
+id = "orbit-hawk-2"
+task = "orbit"
+vehicles = { callsign = "HAWK 2" }
+center = [-122.85, 37.95]
+radius_m = 15000
+note = "Opening order: the far orbit offshore"
+
+[[order]]
+id = "station-puma-5"
+task = "orbit"
+vehicles = { callsign = "PUMA 5" }
+center = [-122.468, 37.824]
+radius_m = 300
+note = "Opening order: launch and hold station"
+
+[[order]]
+id = "station-puma-6"
+task = "orbit"
+vehicles = { callsign = "PUMA 6" }
+center = [-122.46, 37.816]
+radius_m = 300
+note = "Opening order: launch and hold station"
+
+[[order]]
+id = "station-puma-7"
+task = "orbit"
+vehicles = { callsign = "PUMA 7" }
+center = [-122.44, 37.825]
+radius_m = 300
+note = "Opening order: launch and hold station"
+
+[[order]]
+id = "station-puma-8"
+task = "orbit"
+vehicles = { callsign = "PUMA 8" }
+center = [-122.45, 37.835]
+radius_m = 300
+note = "Opening order: launch and hold station"
+
+[[order]]
+id = "station-puma-9"
+task = "orbit"
+vehicles = { callsign = "PUMA 9" }
+center = [-122.43, 37.815]
+radius_m = 300
+note = "Opening order: launch and hold station"
+
+[[order]]
+id = "station-puma-10"
+task = "orbit"
+vehicles = { callsign = "PUMA 10" }
+center = [-122.405, 37.83]
+radius_m = 300
+note = "Opening order: launch and hold station"
+
+[[order]]
+id = "station-puma-11"
+task = "orbit"
+vehicles = { callsign = "PUMA 11" }
+center = [-122.475, 37.845]
+radius_m = 300
+note = "Opening order: launch and hold station"
+
+[[order]]
+id = "station-puma-12"
+task = "orbit"
+vehicles = { callsign = "PUMA 12" }
+center = [-122.44, 37.845]
+radius_m = 300
+note = "Opening order: launch and hold station"
+
+[[order]]
+id = "station-sky-6"
+task = "orbit"
+vehicles = { callsign = "SKY 6" }
+center = [-122.47652, 37.82983]
+radius_m = 150
+note = "Opening order: hold over the shore"
+
+[[order]]
+id = "station-sky-7"
+task = "orbit"
+vehicles = { callsign = "SKY 7" }
+center = [-122.47606, 37.82983]
+radius_m = 150
+note = "Opening order: hold over the shore"
+
+[[order]]
+id = "station-sky-8"
+task = "orbit"
+vehicles = { callsign = "SKY 8" }
+center = [-122.47652, 37.83019]
+radius_m = 150
+note = "Opening order: hold over the shore"
+
+[[order]]
+id = "station-sky-9"
+task = "orbit"
+vehicles = { callsign = "SKY 9" }
+center = [-122.47606, 37.83019]
+radius_m = 150
+note = "Opening order: hold over the shore"
+
+[[order]]
+id = "station-sky-10"
+task = "orbit"
+vehicles = { callsign = "SKY 10" }
+center = [-122.43277, 37.81043]
+radius_m = 150
+note = "Opening order: hold over the shore"
+
+[[order]]
+id = "station-sky-11"
+task = "orbit"
+vehicles = { callsign = "SKY 11" }
+center = [-122.43164, 37.81169]
+radius_m = 150
+note = "Opening order: hold over the shore"
+
+[[order]]
+id = "station-sky-12"
+task = "orbit"
+vehicles = { callsign = "SKY 12" }
+center = [-122.43209, 37.81133]
+radius_m = 150
+note = "Opening order: hold over the shore"
+
+[[order]]
+id = "station-sky-13"
+task = "orbit"
+vehicles = { callsign = "SKY 13" }
+center = [-122.45023, 37.81257]
+radius_m = 150
+note = "Opening order: hold over the shore"
+
+[[order]]
+id = "station-sky-14"
+task = "orbit"
+vehicles = { callsign = "SKY 14" }
+center = [-122.44977, 37.81257]
+radius_m = 150
+note = "Opening order: hold over the shore"
+
+[[order]]
+id = "station-sky-15"
+task = "orbit"
+vehicles = { callsign = "SKY 15" }
+center = [-122.45045, 37.81239]
+radius_m = 150
+note = "Opening order: hold over the shore"
+
+[[order]]
+id = "orbit-kestrel-1"
+task = "orbit"
+vehicles = { callsign = "KESTREL 1" }
+center = [-122.515, 37.82]
+radius_m = 800
+note = "Opening order: orbit over the approaches"
+
+[[order]]
+id = "orbit-kestrel-2"
+task = "orbit"
+vehicles = { callsign = "KESTREL 2" }
+center = [-122.5, 37.835]
+radius_m = 800
+note = "Opening order: orbit over the approaches"
+
+[[order]]
+id = "orbit-kestrel-3"
+task = "orbit"
+vehicles = { callsign = "KESTREL 3" }
+center = [-122.49, 37.8]
+radius_m = 800
+note = "Opening order: orbit over the approaches"
+
+[[order]]
+id = "station-zep-1"
+task = "orbit"
+vehicles = { callsign = "ZEP 1" }
+center = [-122.483, 37.833]
+radius_m = 400
+note = "Opening order: the airship holds station"
+
+[[order]]
+id = "station-zep-2"
+task = "orbit"
+vehicles = { callsign = "ZEP 2" }
+center = [-122.495, 37.84]
+radius_m = 400
+note = "Opening order: the airship holds station"
+
+[[order]]
+id = "station-zep-3"
+task = "orbit"
+vehicles = { callsign = "ZEP 3" }
+center = [-122.42, 37.805]
+radius_m = 400
+note = "Opening order: the airship holds station"
+
+[[order]]
+id = "station-zep-4"
+task = "orbit"
+vehicles = { callsign = "ZEP 4" }
+center = [-122.47, 37.8]
+radius_m = 400
+note = "Opening order: the airship holds station"
+
+[[order]]
+id = "patrol-hunter-1"
+task = "patrol"
+vehicles = { callsign = "HUNTER 1" }
+route = [[-122.485, 37.818], [-122.51, 37.808], [-122.527, 37.802]]
+note = "Opening order: patrol"
+
+[[order]]
+id = "patrol-hunter-2"
+task = "patrol"
+vehicles = { callsign = "HUNTER 2" }
+route = [[-122.472, 37.8135], [-122.472, 37.825]]
+note = "Opening order: patrol"
+
+[[order]]
+id = "patrol-hunter-3"
+task = "patrol"
+vehicles = { callsign = "HUNTER 3" }
+route = [[-122.45, 37.82], [-122.43, 37.818]]
+note = "Opening order: patrol"
+
+[[order]]
+id = "patrol-hunter-4"
+task = "patrol"
+vehicles = { callsign = "HUNTER 4" }
+route = [[-122.44, 37.835], [-122.46, 37.845]]
+note = "Opening order: patrol"
+
+[[order]]
+id = "station-albatross-1"
+task = "patrol"
+vehicles = { callsign = "ALBATROSS 1" }
+route = [[-122.52, 37.80939], [-122.52, 37.79861]]
+note = "Opening order: sail its station"
+
+[[order]]
+id = "station-albatross-2"
+task = "patrol"
+vehicles = { callsign = "ALBATROSS 2" }
+route = [[-122.52, 37.8049], [-122.52, 37.79412]]
+note = "Opening order: sail its station"
+
+[[order]]
+id = "station-albatross-3"
+task = "patrol"
+vehicles = { callsign = "ALBATROSS 3" }
+route = [[-122.52, 37.81388], [-122.52, 37.8031]]
+note = "Opening order: sail its station"
+
+[[order]]
+id = "station-albatross-4"
+task = "patrol"
+vehicles = { callsign = "ALBATROSS 4" }
+route = [[-122.52455, 37.80849], [-122.52455, 37.79771]]
+note = "Opening order: sail its station"
+
+[[order]]
+id = "survey-remus-1"
+task = "patrol"
+vehicles = { callsign = "REMUS 1" }
+route = [[-122.455, 37.82359], [-122.455, 37.81641]]
+note = "Opening order: survey the channel"
+
+[[order]]
+id = "survey-remus-2"
+task = "patrol"
+vehicles = { callsign = "REMUS 2" }
+route = [[-122.45061, 37.81931], [-122.45939, 37.81745]]
+note = "Opening order: survey the channel"
+
+[[order]]
+id = "survey-remus-3"
+task = "patrol"
+vehicles = { callsign = "REMUS 3" }
+route = [[-122.455, 37.82521], [-122.455, 37.81803]]
+note = "Opening order: survey the channel"
+
+[[order]]
+id = "survey-remus-4"
+task = "patrol"
+vehicles = { callsign = "REMUS 4" }
+route = [[-122.45587, 37.82347], [-122.45823, 37.81653]]
+note = "Opening order: survey the channel"
+
+[[order]]
+id = "survey-remus-5"
+task = "patrol"
+vehicles = { callsign = "REMUS 5" }
+route = [[-122.45295, 37.82359], [-122.45295, 37.81641]]
+note = "Opening order: survey the channel"
+
+[[order]]
+id = "survey-remus-6"
+task = "patrol"
+vehicles = { callsign = "REMUS 6" }
+route = [[-122.45045, 37.81677], [-122.45955, 37.81677]]
+note = "Opening order: survey the channel"
+
+[[order]]
+id = "inspect-eel-1"
+task = "patrol"
+vehicles = { callsign = "EEL 1" }
+route = [[-122.476, 37.83158], [-122.476, 37.83086]]
+note = "Opening order: inspect the pier"
+
+[[order]]
+id = "inspect-eel-2"
+task = "patrol"
+vehicles = { callsign = "EEL 2" }
+route = [[-122.47645, 37.83122], [-122.47645, 37.8305]]
+note = "Opening order: inspect the pier"
+
+[[order]]
+id = "inspect-eel-3"
+task = "patrol"
+vehicles = { callsign = "EEL 3" }
+route = [[-122.43295, 37.81072], [-122.43295, 37.81]]
+note = "Opening order: inspect the pier"
+
+[[order]]
+id = "inspect-eel-4"
+task = "patrol"
+vehicles = { callsign = "EEL 4" }
+route = [[-122.43295, 37.81108], [-122.43295, 37.81036]]
+note = "Opening order: inspect the pier"
+
+[[order]]
+id = "patrol-ferret-1"
+task = "patrol"
+vehicles = { callsign = "FERRET 1" }
+route = [[-122.447, 37.8092], [-122.447, 37.8074]]
+note = "Opening order: patrol the shore"
+
+[[order]]
+id = "patrol-ferret-2"
+task = "patrol"
+vehicles = { callsign = "FERRET 2" }
+route = [[-122.447, 37.80884], [-122.447, 37.80704]]
+note = "Opening order: patrol the shore"
+
+[[order]]
+id = "patrol-ferret-3"
+task = "patrol"
+vehicles = { callsign = "FERRET 3" }
+route = [[-122.478, 37.83432], [-122.478, 37.83252]]
+note = "Opening order: patrol the shore"
+
+[[order]]
+id = "patrol-ferret-4"
+task = "patrol"
+vehicles = { callsign = "FERRET 4" }
+route = [[-122.47823, 37.83306], [-122.47823, 37.83126]]
+note = "Opening order: patrol the shore"
+
+[[order]]
+id = "patrol-ferret-5"
+task = "patrol"
+vehicles = { callsign = "FERRET 5" }
+route = [[-122.43232, 37.80846], [-122.43232, 37.80666]]
+note = "Opening order: patrol the shore"
+
+[playbook]
+sensor_platform = "puma"
+[[playbook.watch_area]]
+name = "the Golden Gate approaches"
+center = [-122.4783, 37.8199]
+radius_m = 3000
+[[playbook.protected]]
+name = "the Golden Gate Bridge"
+point = [-122.4783, 37.8199]
+
+[autoplay]
+preset = "default"

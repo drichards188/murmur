@@ -1,0 +1,563 @@
+# San Diego's background traffic (sim/worlds/san-diego.toml; docs/WORLD-V3-PLAN.md section 5):
+# what moves around the bay entrance, the bay and the approaches on an ordinary day, in every
+# domain but under the water (subsurface contacts come with situations), under the physical
+# sensing model. Format: crates/murmur-contacts/src/scenario.rs; points are [lon, lat].
+# Everything here is truth: the console and the AI only ever see what our sensors make of it.
+# A situation in the world takes this file unless it names its own contacts.
+#
+# Sources (approximations, not schedules): the Coronado ferry between Broadway Pier and the
+# Coronado ferry landing and the harbor cruises from the Embarcadero; Navy ships in the entrance
+# channel to and from Naval Base San Diego (the bay's deep-draft channel past Ballast Point and
+# North Island, under the Coronado Bridge) and a car carrier to the National City Marine
+# Terminal; a tanker at anchor off Point Loma; sportfishing out of the Point Loma landings to the
+# kelp beds, a commercial boat to Tuna Harbor; sailing off Harbor Island and in the south bay;
+# the Coast Guard (Sector San Diego, Harbor Drive) and the Harbor Police. Air: airliners on the
+# final approach to San Diego International's runway 27 over downtown (450 m about 6 to 10 km
+# out on a 3 degree path; a contact keeps one altitude, so each flies the segment and leaves at
+# its end) and departing west over Point Loma, a Navy MH-60 from North Island, a coastal
+# sightseeing flight, a banner tow along the beaches, a hobby drone by the Hotel del Coronado.
+# Ground: Harbor Drive by the airport, Rosecrans Street, Cabrillo Memorial Drive along the Point
+# Loma ridge, Orange Avenue in Coronado, Pacific Highway downtown, a Navy truck on North Island;
+# walkers on the Embarcadero and Coronado Beach, visitors at Cabrillo National Monument. Routes
+# are drawn to stay on water or on land on the world's baked grid (checked:
+# eval/headless/tests/test_worlds_v3.py). An airliner is a `light_aircraft` contact (the kinds
+# have no airliner) with an airliner's size, radar cross-section and heat; a Navy ship is a
+# `patrol_boat` (what AIS's ship type "military" means to the tracker) with a warship's.
+#
+# AIS by class: the ferry, the cruise boats, the ships, the Navy ships (in harbour), the Coast
+# Guard and the commercial fishing boat class A; the sportfisher, the Harbor Police and one
+# sailboat class B; the other small craft none. Names and MMSIs are fictional.
+title = "San Diego traffic"
+seed = 37
+
+[sensing]
+misclassification_rate = 0.05
+model = "physical"
+terrain = "sim/headless/terrain/san-diego.grid.gz"
+bathymetry = "sim/headless/terrain/san-diego.bathy.grid.gz"
+
+# What the sensing model senses in when a situation draws nothing (`[headless] conditions =
+# "world"` draws visibility, wind and sea state per episode); the sun from the scenario clock.
+# Shipping noise for sonar: a busy naval harbour.
+[conditions]
+visibility_m = 15000
+sea_state = 2
+wind_mps = 4
+shipping = 0.7
+
+# ---------------------------------------------------------------- ferries and harbor cruises
+[[contact]]
+id = "ferry-coronado"
+name = "Coronado ferry (Broadway Pier to the Coronado ferry landing)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 5
+motion = "route"
+route = [[-117.1765, 32.7155], [-117.1745, 32.7060], [-117.1752, 32.6985]]
+reverse = true
+dwell_s = 300
+ais = { mmsi = "366999701", name = "MV CORONADO", ship_type = "passenger" }
+dc_m = 12
+height_m = 6
+rcs_m2 = 300
+
+[[contact]]
+id = "cruise-harbor"
+name = "Harbor cruise from the Embarcadero out to Ballast Point and back"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 5
+motion = "route"
+route = [[-117.1770, 32.7165], [-117.1900, 32.7150], [-117.2100, 32.7145], [-117.2260, 32.7050], [-117.2310, 32.6930], [-117.2275, 32.7060], [-117.2100, 32.7160], [-117.1900, 32.7165]]
+dwell_s = 600
+start_s = 90
+ais = { mmsi = "366999702", name = "MV HARBOR QUEEN", ship_type = "passenger" }
+
+# ---------------------------------------------------------------- the Navy and the ships (class A)
+[[contact]]
+id = "navy-ddg-inbound"
+name = "Navy destroyer inbound to Naval Base San Diego"
+affiliation = "assumed_friend"
+domain = "surface"
+kind = "patrol_boat"
+speed_mps = 6
+motion = "transit"
+route = [[-117.3000, 32.6000], [-117.2500, 32.6350], [-117.2340, 32.6650], [-117.2320, 32.6900], [-117.2260, 32.7060], [-117.2100, 32.7140], [-117.1900, 32.7145], [-117.1760, 32.7080], [-117.1680, 32.6990], [-117.1540, 32.6900], [-117.1450, 32.6880], [-117.1300, 32.6800], [-117.1255, 32.6740]]
+start_s = 200
+ais = { mmsi = "369999801", name = "NAVY 112", ship_type = "military" }
+dc_m = 40
+height_m = 30
+rcs_m2 = 1500
+thermal_k = 3
+
+[[contact]]
+id = "navy-lcs-outbound"
+name = "Navy littoral combat ship outbound from Naval Base San Diego"
+affiliation = "assumed_friend"
+domain = "surface"
+kind = "patrol_boat"
+speed_mps = 7
+motion = "transit"
+route = [[-117.1255, 32.6740], [-117.1300, 32.6800], [-117.1450, 32.6880], [-117.1540, 32.6900], [-117.1680, 32.6990], [-117.1760, 32.7080], [-117.1900, 32.7145], [-117.2100, 32.7140], [-117.2260, 32.7060], [-117.2320, 32.6900], [-117.2340, 32.6650], [-117.2500, 32.6350], [-117.3000, 32.6000]]
+start_s = 900
+ais = { mmsi = "369999802", name = "NAVY 24", ship_type = "military" }
+dc_m = 25
+height_m = 20
+rcs_m2 = 500
+thermal_k = 3
+
+[[contact]]
+id = "car-carrier-national-city"
+name = "Car carrier inbound to the National City Marine Terminal"
+affiliation = "neutral"
+domain = "surface"
+kind = "cargo_ship"
+speed_mps = 5
+motion = "transit"
+route = [[-117.2800, 32.6000], [-117.2500, 32.6350], [-117.2340, 32.6650], [-117.2320, 32.6900], [-117.2260, 32.7060], [-117.2100, 32.7140], [-117.1900, 32.7145], [-117.1760, 32.7080], [-117.1680, 32.6990], [-117.1540, 32.6900], [-117.1450, 32.6880], [-117.1300, 32.6800], [-117.1270, 32.6650], [-117.1250, 32.6560]]
+start_s = 400
+ais = { mmsi = "366999203", name = "GLOVIS COURAGE", ship_type = "cargo" }
+
+[[contact]]
+id = "tanker-anchored"
+name = "Tanker at anchor off Point Loma"
+affiliation = "neutral"
+domain = "surface"
+kind = "tanker"
+motion = "station"
+at = [-117.2900, 32.6650]
+ais = { mmsi = "366999206", name = "PACIFIC STAR", ship_type = "tanker" }
+
+# ---------------------------------------------------------------- fishing
+[[contact]]
+id = "sportfisher-out"
+name = "Sportfishing boat from the Point Loma landings to the kelp beds (AIS class B)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+speed_mps = 8
+motion = "transit"
+route = [[-117.2240, 32.7135], [-117.2290, 32.7020], [-117.2320, 32.6880], [-117.2340, 32.6650], [-117.2500, 32.6600], [-117.2620, 32.6800]]
+ais = { mmsi = "338999702", name = "PACIFIC QUEST", ship_type = "fishing" }
+dc_m = 7
+height_m = 4
+rcs_m2 = 60
+
+[[contact]]
+id = "fishing-kelp-beds"
+name = "Sport fishing boat drifting at the Point Loma kelp beds (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+motion = "drift"
+at = [-117.2650, 32.6950]
+dc_m = 5
+height_m = 2.5
+rcs_m2 = 15
+
+[[contact]]
+id = "fishing-tuna-harbor"
+name = "Commercial fishing boat inbound to Tuna Harbor (AIS class A)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+speed_mps = 5
+motion = "transit"
+route = [[-117.2600, 32.6200], [-117.2400, 32.6500], [-117.2340, 32.6650], [-117.2320, 32.6900], [-117.2260, 32.7060], [-117.2100, 32.7140], [-117.1900, 32.7145], [-117.1775, 32.7105]]
+start_s = 600
+ais = { mmsi = "366999703", name = "F/V SANTA CRUZ", ship_type = "fishing" }
+ais_class = "a"
+
+# ---------------------------------------------------------------- sailing and pleasure boats
+[[contact]]
+id = "sailboat-harbor-island"
+name = "Daysailer off Harbor Island (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "sailboat"
+speed_mps = 2.5
+motion = "route"
+route = [[-117.2000, 32.7175], [-117.1850, 32.7185], [-117.1800, 32.7125], [-117.1950, 32.7135]]
+
+[[contact]]
+id = "sailboat-south-bay"
+name = "Yacht sailing in the south bay off Coronado (AIS class B)"
+affiliation = "neutral"
+domain = "surface"
+kind = "sailboat"
+speed_mps = 3
+motion = "route"
+route = [[-117.1500, 32.6800], [-117.1350, 32.6700], [-117.1450, 32.6600]]
+ais = { mmsi = "338999703", name = "SEA BREEZE", ship_type = "pleasure" }
+
+[[contact]]
+id = "sailboat-coastal"
+name = "Yacht on passage up the coast to Mission Bay (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "sailboat"
+speed_mps = 3.5
+motion = "transit"
+route = [[-117.2600, 32.6100], [-117.2700, 32.6600], [-117.2750, 32.7200], [-117.2650, 32.7600]]
+
+[[contact]]
+id = "powerboat-bay"
+name = "Pleasure powerboat running across the bay (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "small_fast_boat"
+speed_mps = 9
+motion = "route"
+route = [[-117.2200, 32.7150], [-117.1900, 32.7170], [-117.1720, 32.7050], [-117.1550, 32.6900]]
+reverse = true
+dwell_s = 300
+start_s = 300
+
+# ---------------------------------------------------------------- the Coast Guard and the Harbor Police
+[[contact]]
+id = "uscg-response-boat"
+name = "Coast Guard response boat from Sector San Diego patrolling the bay and the entrance (AIS)"
+affiliation = "assumed_friend"
+domain = "surface"
+kind = "patrol_boat"
+speed_mps = 8
+motion = "route"
+route = [[-117.1860, 32.7200], [-117.2050, 32.7150], [-117.2150, 32.7140], [-117.2260, 32.7060], [-117.2290, 32.6960], [-117.2330, 32.6700], [-117.2290, 32.6960], [-117.2260, 32.7060], [-117.2150, 32.7145], [-117.2050, 32.7160]]
+ais = { mmsi = "366999402", name = "CG 45678", ship_type = "law_enforcement" }
+
+[[contact]]
+id = "harbor-police"
+name = "Harbor Police patrol boat in the central bay (AIS class B)"
+affiliation = "assumed_friend"
+domain = "surface"
+kind = "patrol_boat"
+speed_mps = 5
+motion = "loiter"
+center = [-117.1820, 32.7080]
+radius_m = 500
+ais = { mmsi = "338999704", name = "HARBOR POLICE 7", ship_type = "law_enforcement" }
+ais_class = "b"
+dc_m = 6
+height_m = 3
+rcs_m2 = 30
+
+# ---------------------------------------------------------------- offshore, 15 to 30 km out
+[[contact]]
+id = "cargo-coastal-lane"
+name = "Container ship northbound in the coastal lane, well offshore"
+affiliation = "neutral"
+domain = "surface"
+kind = "cargo_ship"
+speed_mps = 8
+motion = "transit"
+route = [[-117.4800, 32.5000], [-117.4900, 32.7000], [-117.5100, 32.9000]]
+ais = { mmsi = "366999207", name = "MAERSK SEATTLE", ship_type = "cargo" }
+
+[[contact]]
+id = "fishing-offshore"
+name = "Troller working 15 km south-west of Point Loma (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+speed_mps = 2
+motion = "loiter"
+center = [-117.3900, 32.5800]
+radius_m = 900
+dc_m = 6
+height_m = 3
+rcs_m2 = 30
+
+# ---------------------------------------------------------------- air: SAN arrivals (runway 27, over downtown)
+[[contact]]
+id = "arrival-1"
+name = "Airliner on final for runway 27 over downtown"
+affiliation = "neutral"
+domain = "air"
+kind = "light_aircraft"
+speed_mps = 75
+alt_m = 450
+motion = "transit"
+route = [[-117.0300, 32.7560], [-117.1350, 32.7410]]
+start_s = 30
+end_s = 170
+dc_m = 20
+height_m = 12
+rcs_m2 = 30
+thermal_k = 20
+
+[[contact]]
+id = "arrival-2"
+name = "Airliner on final for runway 27 over downtown"
+affiliation = "neutral"
+domain = "air"
+kind = "light_aircraft"
+speed_mps = 75
+alt_m = 450
+motion = "transit"
+route = [[-117.0300, 32.7560], [-117.1350, 32.7410]]
+start_s = 330
+end_s = 470
+dc_m = 20
+height_m = 12
+rcs_m2 = 30
+thermal_k = 20
+
+[[contact]]
+id = "arrival-3"
+name = "Airliner on final for runway 27 over downtown"
+affiliation = "neutral"
+domain = "air"
+kind = "light_aircraft"
+speed_mps = 75
+alt_m = 450
+motion = "transit"
+route = [[-117.0300, 32.7560], [-117.1350, 32.7410]]
+start_s = 700
+end_s = 840
+dc_m = 20
+height_m = 12
+rcs_m2 = 30
+thermal_k = 20
+
+[[contact]]
+id = "arrival-4"
+name = "Airliner on final for runway 27 over downtown"
+affiliation = "neutral"
+domain = "air"
+kind = "light_aircraft"
+speed_mps = 75
+alt_m = 450
+motion = "transit"
+route = [[-117.0300, 32.7560], [-117.1350, 32.7410]]
+start_s = 1050
+end_s = 1190
+dc_m = 20
+height_m = 12
+rcs_m2 = 30
+thermal_k = 20
+
+[[contact]]
+id = "arrival-5"
+name = "Airliner on final for runway 27 over downtown"
+affiliation = "neutral"
+domain = "air"
+kind = "light_aircraft"
+speed_mps = 75
+alt_m = 450
+motion = "transit"
+route = [[-117.0300, 32.7560], [-117.1350, 32.7410]]
+start_s = 1450
+end_s = 1590
+dc_m = 20
+height_m = 12
+rcs_m2 = 30
+thermal_k = 20
+
+# ---------------------------------------------------------------- air: SAN departures (west over Point Loma)
+[[contact]]
+id = "departure-1"
+name = "Airliner departing runway 27, climbing west over Point Loma"
+affiliation = "neutral"
+domain = "air"
+kind = "light_aircraft"
+speed_mps = 90
+alt_m = 900
+motion = "transit"
+route = [[-117.2050, 32.7310], [-117.2600, 32.7200], [-117.3600, 32.7000]]
+start_s = 150
+end_s = 300
+dc_m = 20
+height_m = 12
+rcs_m2 = 30
+thermal_k = 25
+
+[[contact]]
+id = "departure-2"
+name = "Airliner departing runway 27, climbing west over Point Loma"
+affiliation = "neutral"
+domain = "air"
+kind = "light_aircraft"
+speed_mps = 90
+alt_m = 900
+motion = "transit"
+route = [[-117.2050, 32.7310], [-117.2600, 32.7200], [-117.3600, 32.7000]]
+start_s = 800
+end_s = 950
+dc_m = 20
+height_m = 12
+rcs_m2 = 30
+thermal_k = 25
+
+[[contact]]
+id = "departure-3"
+name = "Airliner departing runway 27, climbing west over Point Loma"
+affiliation = "neutral"
+domain = "air"
+kind = "light_aircraft"
+speed_mps = 90
+alt_m = 900
+motion = "transit"
+route = [[-117.2050, 32.7310], [-117.2600, 32.7200], [-117.3600, 32.7000]]
+start_s = 1300
+end_s = 1450
+dc_m = 20
+height_m = 12
+rcs_m2 = 30
+thermal_k = 25
+
+# ---------------------------------------------------------------- air: helicopters, light aircraft, a drone
+[[contact]]
+id = "navy-mh60"
+name = "Navy MH-60 from North Island over the entrance and the approaches (transponder on)"
+affiliation = "assumed_friend"
+domain = "air"
+kind = "helicopter"
+speed_mps = 50
+alt_m = 200
+motion = "route"
+route = [[-117.2100, 32.7000], [-117.2330, 32.6800], [-117.2500, 32.6400], [-117.2200, 32.6550]]
+start_s = 120
+
+[[contact]]
+id = "cessna-coastal"
+name = "Light aircraft sightseeing along the Silver Strand and Point Loma"
+affiliation = "neutral"
+domain = "air"
+kind = "light_aircraft"
+speed_mps = 50
+alt_m = 350
+motion = "transit"
+route = [[-117.1300, 32.6000], [-117.1700, 32.6700], [-117.2450, 32.6600], [-117.2650, 32.7600]]
+start_s = 600
+
+[[contact]]
+id = "banner-tow"
+name = "Banner tow along the Coronado beaches"
+affiliation = "neutral"
+domain = "air"
+kind = "light_aircraft"
+speed_mps = 35
+alt_m = 250
+motion = "route"
+route = [[-117.1550, 32.6550], [-117.1800, 32.6740], [-117.2100, 32.6780]]
+reverse = true
+
+[[contact]]
+id = "drone-hotel-del"
+name = "Hobby drone over Coronado Beach by the Hotel del Coronado (no transponder)"
+affiliation = "neutral"
+domain = "air"
+kind = "small_drone"
+speed_mps = 5
+alt_m = 70
+motion = "loiter"
+center = [-117.1840, 32.6790]
+radius_m = 60
+start_s = 300
+end_s = 1000
+
+# ---------------------------------------------------------------- ground
+[[contact]]
+id = "car-harbor-drive"
+name = "Car on Harbor Drive past the airport"
+affiliation = "neutral"
+domain = "ground"
+kind = "vehicle"
+speed_mps = 13
+motion = "route"
+route = [[-117.2050, 32.7255], [-117.1950, 32.7275], [-117.1800, 32.7265], [-117.1730, 32.7200]]
+reverse = true
+dwell_s = 60
+
+[[contact]]
+id = "car-rosecrans"
+name = "Car on Rosecrans Street to Shelter Island"
+affiliation = "neutral"
+domain = "ground"
+kind = "vehicle"
+speed_mps = 11
+motion = "route"
+route = [[-117.2150, 32.7400], [-117.2250, 32.7300], [-117.2290, 32.7220]]
+reverse = true
+dwell_s = 120
+
+[[contact]]
+id = "car-cabrillo-drive"
+name = "Car on Cabrillo Memorial Drive along the Point Loma ridge"
+affiliation = "neutral"
+domain = "ground"
+kind = "vehicle"
+speed_mps = 11
+motion = "route"
+route = [[-117.2455, 32.7100], [-117.2450, 32.6950], [-117.2430, 32.6800], [-117.2410, 32.6740]]
+reverse = true
+dwell_s = 600
+
+[[contact]]
+id = "car-orange-ave"
+name = "Car on Orange Avenue, Coronado"
+affiliation = "neutral"
+domain = "ground"
+kind = "vehicle"
+speed_mps = 11
+motion = "route"
+route = [[-117.1745, 32.6955], [-117.1765, 32.6900], [-117.1790, 32.6840]]
+reverse = true
+dwell_s = 180
+
+[[contact]]
+id = "truck-pacific-highway"
+name = "Delivery truck on Pacific Highway by the cruise terminal"
+affiliation = "neutral"
+domain = "ground"
+kind = "truck"
+speed_mps = 11
+motion = "route"
+route = [[-117.1715, 32.7180], [-117.1712, 32.7260], [-117.1740, 32.7320]]
+reverse = true
+dwell_s = 240
+
+[[contact]]
+id = "navy-truck-north-island"
+name = "Navy truck on North Island"
+affiliation = "assumed_friend"
+domain = "ground"
+kind = "truck"
+speed_mps = 9
+motion = "route"
+route = [[-117.2200, 32.6960], [-117.2100, 32.7020], [-117.2000, 32.7060]]
+reverse = true
+dwell_s = 300
+
+[[contact]]
+id = "walkers-embarcadero"
+name = "Walkers on the Embarcadero"
+affiliation = "neutral"
+domain = "ground"
+kind = "person"
+speed_mps = 1.3
+motion = "route"
+route = [[-117.1735, 32.7120], [-117.1735, 32.7170], [-117.1730, 32.7210]]
+reverse = true
+
+[[contact]]
+id = "walkers-coronado-beach"
+name = "Walkers on Coronado Beach"
+affiliation = "neutral"
+domain = "ground"
+kind = "person"
+speed_mps = 1.3
+motion = "route"
+route = [[-117.1785, 32.6805], [-117.1815, 32.6812]]
+reverse = true
+
+[[contact]]
+id = "visitors-cabrillo"
+name = "Visitors at Cabrillo National Monument"
+affiliation = "neutral"
+domain = "ground"
+kind = "person"
+motion = "station"
+at = [-117.2410, 32.6725]
