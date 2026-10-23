@@ -556,3 +556,88 @@ def test_a_v2_episode_stops_the_playbooks_first_look_and_names_no_situation(bina
     for text in (rec["audit_text"], json.dumps(rec["agent_log"])):
         for token in ("stuck-vehicle", "harbor-watch", "Harbor watch", "-s1000", "seed 1000", "v2-stuck"):
             assert token not in text, token
+
+
+# ---- a Puma sent home lands (murmur-a5v) -------------------------------------------------------------
+
+def test_only_the_pumas_stand_ins_get_rtl_autoland_and_the_hand_launch():
+    """The catalog's `standin_params` (sim/platforms.toml [puma]) reach the Pumas' stand-in configs,
+    over their firmware's defaults and under the lost-link timer; the other vehicles' parameters
+    are their lost-link timers alone, as before."""
+    from eval.situation import load_situation  # noqa: F401 (the swarm module loads with it)
+    from eval.stack import _swarm
+
+    swarm = _swarm()
+    platforms = swarm.load_platforms()
+    _, standins = fleet_plan(V2_FLEET)
+    for s in standins:
+        lost = swarm.lost_link_params(s["platform"], s["spec"], swarm.STANDIN_FIRMWARE[s["spec"]["behavior"]])
+        if s["platform"] == "puma":
+            assert s["params"] == {"RTL_AUTOLAND": 1, "TKOFF_THR_MINACC": 15, **lost}, s["params"]
+        else:
+            assert s["params"] == lost, (s["callsign"], s["params"])
+    assert [p for p, spec in platforms.items() if spec.get("standin_params")] == ["puma"]
+    assert "RTL_AUTOLAND" not in platforms["puma"]["params"], "never a SITL Puma's"
+
+
+def test_a_puma_sent_home_lands_and_refuses_a_later_order_saying_why(binary: None, tmp_path: Path):
+    """PUMA 2 circles its home off Lime Point (no opening orders here); sent home (an rtl), it lands
+    there in AUTOLAND and disarms, and the fleet read shows it down. A later orbit for it fails,
+    the arm refused for good with the stand-in's words, which the order's failure and the inbox's
+    alert carry; nothing moves it. (PUMA 1, down at Crissy Field at 0 m, reads as a few metres
+    under the baked surface to the link emulator, which then loses most of its packets: an order
+    for it can fail first on telemetry too stale to check, so this test uses PUMA 2.)"""
+    from eval.agent import _rest_body
+    from eval.headless.sim import Sim
+    from eval.situation import SETUP_OPERATOR
+
+    e, contacts = generate("quiet", 1000, tmp_path, world="v2")
+    spec, env = process_spec(e, 1000, tmp_path, Calibration.load(), contacts_path=contacts)
+    sim = Sim(spec, env, log=tmp_path / "sim.log")
+    puma = v2_vehicles()["PUMA 2"]["uid"]
+
+    def order(task: str, **params: Any) -> int:
+        status, out = sim.api("POST", "/api/intents", _rest_body({"task": task, "uids": [puma], **params}, "test"),
+                              SETUP_OPERATOR)
+        assert status // 100 == 2 and out.get("dispatched"), json.dumps(out)[:3000]
+        return int(out["intent"]["id"])
+
+    def ours() -> dict[str, Any]:
+        return next(v for v in sim.picture()["ours"] if v["uid"] == puma)
+
+    def shown() -> dict[str, Any]:
+        fleet = sim.mcp("agent-playbook", ("agent-playbook", "test"), "get_fleet", {"uids": [puma]})["structured"]
+        return next(v for v in fleet["vehicles"] if v["uid"] == puma)
+
+    try:
+        sim.step(20.0)
+        start = ours()
+        assert start["armed"] and start["mode"] == "LOITER"
+        order("rtl")
+        t = 20.0
+        while ours()["armed"] and t < 300.0:
+            t = sim.step(t + 2.0)
+        down = ours()
+        assert not down["armed"] and down["mode"] == "AUTOLAND", down
+        assert dist_m((down["lon"], down["lat"]), (start["home"][0], start["home"][1])) < 150.0
+        assert down["alt_m"] < 0.5 and down["speed_mps"] < 0.5
+        t = sim.step(t + 3.0)  # the next heartbeat
+        v = shown()
+        assert v["autopilot"]["mode"] == "AUTOLAND" and not v["autopilot"]["mav_armed"], v
+        assert v["position"]["alt_rel_m"] < 0.5 and v["position"]["groundspeed_mps"] < 0.5
+        assert v["link"]["loss_pct"] < 20, v["link"]
+        i = order("orbit", center=[-122.47, 37.815], radius_m=300.0)
+        sim.step(t + 60.0)
+        status, intents = sim.api("GET", "/api/intents")
+        it = next(x for x in intents["intents"] if x["id"] == i)
+        why = "Arm: landed, no crew for a hand launch"
+        failed = f"MAV_CMD_COMPONENT_ARM_DISARM rejected: MAV_RESULT_FAILED ({why})"
+        assert it["state"] == "failed" and failed in json.dumps(it), json.dumps(it)[:3000]
+        status, inbox = sim.api("GET", "/api/inbox")
+        alerts = [a for a in inbox["alerts"] if a["uid"] == puma]
+        assert [(a["kind"], a["detail"]) for a in alerts] == [("task_failed", failed)], alerts
+        still = ours()
+        assert not still["armed"] and still["mode"] == "AUTOLAND"
+        assert (still["lon"], still["lat"], still["alt_m"]) == (down["lon"], down["lat"], down["alt_m"])
+    finally:
+        sim.end()

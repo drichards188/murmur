@@ -168,6 +168,14 @@ def lost_link_params(pid, spec, firmware, links=None):
     return {name: seconds} if seconds is not None and name else {}
 
 
+def standin_params(pid, spec, links=None):
+    """A stand-in's ArduPilot parameters over its firmware's defaults: the catalog's
+    `standin_params` for its platform (a Puma's RTL_AUTOLAND and hand launch), then what a SITL
+    vehicle's defaults file would add for it (the lost-link timer, `lost_link_params`)."""
+    firmware = STANDIN_FIRMWARE.get(spec["behavior"])
+    return {**(spec.get("standin_params") or {}), **lost_link_params(pid, spec, firmware, links)}
+
+
 def parse_parm(text):
     """name -> value from an ArduPilot .parm file (comments and blank lines skipped)."""
     out = {}
@@ -308,11 +316,11 @@ def main():
 
     if standins:
         cfg = RUN / "standins.json"
-        # params: what a SITL vehicle's defaults file would add for it (the lost-link timer)
+        # params: the catalog's stand-in parameters, then what a SITL vehicle's defaults file
+        # would add for it (the lost-link timer)
         cfg.write_text(json.dumps({"bridge_host": args.bridge_host, "vehicles": [
             {**v, "spec": platforms[v["platform"]],
-             "params": lost_link_params(v["platform"], platforms[v["platform"]],
-                                        STANDIN_FIRMWARE.get(platforms[v["platform"]]["behavior"]))}
+             "params": standin_params(v["platform"], platforms[v["platform"]])}
             for v in standins]}))
         log = open(RUN / "standins.log", "w")
         procs.append(subprocess.Popen([engine, str(cfg)],

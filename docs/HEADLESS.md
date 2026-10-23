@@ -294,6 +294,35 @@ said (unchanged since): `fast-unknown`, `decoy`, `link-cut-mid-look`, `low-batte
 The split is by family and committed before any result (`split.toml`). Family reports use seeds
 1 to 30 per family and never pool tuning and held-out families.
 
+**A Puma sent home lands** (murmur-a5v, 2026-10-22; a change to the world in every situation,
+v1 and v2, and in the full stack's Harbor watch, whose Pumas are stand-ins too). The Puma's
+stand-in carries ArduPlane's RTL_AUTOLAND 1 and a hand launch, TKOFF_THR_MINACC 15
+(`standin_params` in `sim/platforms.toml`, given by `sim/swarm.py` `standin_params`, which
+`situations.py` uses). An RTL, whatever started it (an rtl order, the lost-link or the battery
+failsafe), flies home; on the RTL circle, at least 3 s into the RTL, it hands over to the
+AUTOLAND mode, ArduPlane's landing at home (the stand-in's step: ArduPlane's RTL hands over only
+to a DO_LAND_START sequence in the mission, which the bridge's missions never carry;
+docs/AUTHENTICITY.md), loiters down to 55 m beside the final approach's start 400 m out, lands
+at home and disarms. Down, it reports AUTOLAND, disarmed, draws the avionics load only (5 % of
+cruise's), and refuses to arm ("Arm: landed, no crew for a hand launch"), so a later order for
+it fails, the order's failure and the inbox's `task_failed` alert carrying those words (the
+bridge's arm retry now ends with the autopilot's last word, as its mode change already did).
+From an RTL at home to the disarm takes 75 to 105 s, about 0.9 % of a Puma's pack. Section 11's
+results predate it. On dev seeds 1000-1029 (S1, S5, S6, S7; playbook, oracle, none;
+approve-all) an episode's truth, picture or audit log differs from before exactly when a Puma
+handed over to a landing (360 of 360 checked; of five records compared in full, the four with
+a landing, the golden's among them, were byte-identical up to it, the fifth throughout): all of
+S5, 59 of 90 in S7, 33 of 90 in S1,
+12 of 90 in S6, outside S5 mostly after the Pumas' own lost-link failsafe; no served share and
+no S5 fault-met share changed. In S5 the playbook's
+rtl (at its 25 % line, 21.8 to 25.0 %) lands every Puma above 20 % (20.8 to 24.2 %); the
+oracle's (60 s before its true battery reaches 20 %, at 20.65 %) lands none above it (19.6 to
+20.0 %): the landing costs more than that minute. PUMA 1's v2 home, Crissy Field, is land:
+down at 0 m (an airborne spawn's home is on a sea-level surface) it reads about 5 m under the
+baked surface, and the link emulator's terrain ramp loses 80 to 90 % of its packets, so its
+shown state lags, lost-link alerts come and go, and an order for it can be refused first on
+telemetry too old to check. PUMA 2's home is water and its link holds.
+
 ## 9. Truth labels and metrics
 
 **Truth** on both sides is the contacts process's own log, one sample per step (its scenario
@@ -625,7 +654,12 @@ order, an action at its charged time, repeats, an answer after the end, a failed
 playbook's tick charge, the loop's order, and the paused clock's records byte-identical to before
 it; `test_v2_leakage.py`: the token list, same tasking (the mission as the only brief, one prompt
 and one tool list for every situation), a reading model on every v2 situation clean, a family
-name in a tool result a harness error, echoes and diagnostics).
+name in a tool result a harness error, echoes and diagnostics; `test_world_v2.py`'s Puma tests
+(section 8): only the Pumas' stand-in configs carry RTL_AUTOLAND and the hand launch, and PUMA 2
+sent home lands at home in AUTOLAND, disarmed, shown so by `get_fleet`, and a later orbit for it
+fails with the stand-in's words in the order and the inbox's alert). The landing itself, the
+disarm, the battery and the refused arm are the stand-ins' own tests (`behavior/plane.rs`,
+`tests/contract.rs`); the bridge's arm failure with the autopilot's words is `tasks/tests.rs`.
 
 ## 14. Step 2: how it plugs in
 
