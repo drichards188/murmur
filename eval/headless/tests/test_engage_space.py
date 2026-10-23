@@ -351,6 +351,16 @@ def first(evs: list[dict[str, Any]], typ: str, **match: Any) -> dict[str, Any]:
     return found[0]
 
 
+def fixes_by(o: Any, uid: str) -> list[int]:
+    """Every fix time (`source_t`, ms) of vehicle `uid`'s sensors anywhere in an audit event."""
+    if isinstance(o, dict):
+        own = [t for s, t in (o.get("source_t") or {}).items() if s.startswith(uid + ":")] if isinstance(o.get("source_t"), dict) else []
+        return own + [t for k, v in o.items() if k != "source_t" for t in fixes_by(v, uid)]
+    if isinstance(o, list):
+        return [t for v in o for t in fixes_by(v, uid)]
+    return []
+
+
 def same_episode(a: dict[str, Any], b: dict[str, Any]) -> None:
     """Two runs of one seed: the whole record (provenance and the audit log included; only
     `perf`, the computer's own timings, left out) is the same, the change feed's per-process id
@@ -412,6 +422,10 @@ def test_the_engagement_chain_runs_end_to_end(binary: Path, tmp_path: Path):
     # the effect on the truth side: the drawn hit took the boat out, the munition left the world
     (fx,) = rec["effects"]["applied"]
     assert fx["hit"] and fx["platform_removed"] and fx["applied"]["out_of_play"] == ["fastboat-raider"]
+    # a munition that left the world senses nothing from the next truth message on (not when
+    # its link goes stale): no track holds a fix of it from more than a second after the effect
+    later = [t for x in evs if x["t"] > effect["t"] for t in fixes_by(x, str(effect["uid"]))]
+    assert later and max(later) <= effect["t"] + 1000, max(later)
     # the scripted operators' own records, and the two-person rule read from the log alone
     assert [d["by"] for d in rec["signers"]["decisions"] if d["action"] == "sign"][-2:] in (["op-2", "op-3"], ["op-3", "op-2"])
     assert [(d["kind"], d["result"]) for d in rec["review"]["decisions"]] == [("declaration", "done")]

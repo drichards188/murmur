@@ -39,6 +39,17 @@
 #        are "-class" ballpark figures from public descriptions, rounded; guess = true marks
 #        the ones that are an estimate rather than a published number (most of them).
 #        No sensors: the platform sees nothing (antenna tracker).
+#        That is the legacy sensing model's reading. The physical model (docs/SENSING.md;
+#        crates/murmur-bridge/src/tracks/physical/spec.rs) reads more fields of the same entry:
+#          eo_ir: slew_dps, channels = [{ band = "day"|"lowlight"|"mwir"|"lwir", wide_deg,
+#                 narrow_deg, px, blur_urad, panoramic }]
+#          radar: r50_m and rcs_ref_m2 (Pd 0.5 per scan), scan_s (at most 5: decision W2),
+#                 beam_deg, cell_m, band_ghz
+#          sonar: mode = "passive"|"active", freq_khz, ranges = { <kind> = m } (Pd 0.5 in 50 m of
+#                 water, 5 m/s wind), max_m, scan_s
+#          esm:   s_min_dbm, bearing_deg
+#        A sensor without them runs on placeholders derived from range_m (the bridge lists them
+#        when the physical model starts); range_m itself stays what the decision engine reads.
 # mast_m: height of a surface vessel's sensors above the water, for the radio horizon
 #        (default 3 m; aircraft use their altitude, submerged vehicles have no horizon).
 # standin_params: ArduPilot parameters a stand-in of this platform sets over its firmware's
@@ -90,7 +101,15 @@ link = "satcom"
 space_class = "wgs"
 space_class_alt = "ku-geo"
 sidc = "SFAPMFQ--------"
-sensors = [{ type = "radar", range_m = 100000, guess = true }, { type = "eo_ir", range_m = 40000, guess = true }, { type = "ais", range_m = 150000, guess = true }]
+# physical model: the Lynx radar ([34]: maritime to 300 km; r50 scaled from 300 km at 10^4 m^2 [E];
+# its revisit at the W2 cap of 5 s, the research's 6-12 rpm [E]; Ku band) and the MX-20 turret
+# ([3]: MWIR 640 px at 18.2 to 0.24 degrees, spotter 1080p at 1.07 to 0.2, 57 deg/s; blur floors
+# [E] 20 urad MWIR and 7 urad visible). Research references in docs/research/sensors.md.
+sensors = [
+  { type = "radar", range_m = 100000, guess = true, r50_m = 300000, rcs_ref_m2 = 10000, scan_s = 5, beam_deg = 3, cell_m = 15, band_ghz = 16.7 },
+  { type = "eo_ir", range_m = 40000, guess = true, slew_dps = 57, channels = [{ band = "mwir", wide_deg = 18.2, narrow_deg = 0.24, px = 640, blur_urad = 20 }, { band = "day", wide_deg = 1.07, narrow_deg = 0.2, px = 1920, blur_urad = 7 }] },
+  { type = "ais", range_m = 150000, guess = true },
+]
 protocol = "stanag4586"
 protocol_note = "GA-ASI's ground control station is STANAG 4586-based"
 authenticity = "JSBSim MALE airframe plus 4586 (matches GA-ASI's 4586-based GCS)"
@@ -157,7 +176,10 @@ vehicle = "plane"
 callsign = "PUMA"
 link = "los"
 sidc = "SFAPMFQ--------"
-sensors = [{ type = "eo_ir", range_m = 4000, guess = true }]
+# physical model: the Mantis i45 ([37]: EO 15 MP, 56 to 1.2 degrees; blur floor 25 urad [E], the
+# research's small-UAS gimbal) with the i45 N's LWIR ([38]: 640 px, 40 to 5.3 degrees); slew
+# 90 deg/s [E, 60-120].
+sensors = [{ type = "eo_ir", range_m = 4000, guess = true, slew_dps = 90, channels = [{ band = "day", wide_deg = 56, narrow_deg = 1.2, px = 4472, blur_urad = 25 }, { band = "lwir", wide_deg = 40, narrow_deg = 5.3, px = 640, blur_urad = 50 }] }]
 protocol = "proprietary"
 protocol_note = "AV's ground station and datalink are proprietary; MAVLink in the sim, labelled as such"
 authenticity = "ArduPilot SITL tuned to the airframe, plus AV's DDL link profile"
@@ -417,7 +439,15 @@ endurance_h = 1000
 link = "satcom"
 space_class = "starlink"
 sidc = "SFSP-----------"
-sensors = [{ type = "radar", range_m = 40000, guess = true }, { type = "eo_ir", range_m = 15000, guess = true }, { type = "ais", range_m = 50000, guess = true }, { type = "sonar", range_m = 10000, guess = true }]
+# physical model: the radar is a navigation radar calibrated on IMO MSC.192(79) Table 2 ([19]: a
+# 7.5 m^2 small vessel at 5.0 NM with Pd 0.8, 6.72 NM at Pd 0.5) turning at 24 rpm ([18]); 1.2
+# degree beam, 37 m range cell [E]. The long-range radar is the platform catalog's to add.
+sensors = [
+  { type = "radar", range_m = 40000, guess = true, r50_m = 12450, rcs_ref_m2 = 7.5, scan_s = 2.5, beam_deg = 1.2, cell_m = 37, band_ghz = 9.4 },
+  { type = "eo_ir", range_m = 15000, guess = true },
+  { type = "ais", range_m = 50000, guess = true },
+  { type = "sonar", range_m = 10000, guess = true },
+]
 mast_m = 10
 protocol = "umaa"
 protocol_note = "Navy programs use UMAA over DDS (public architecture description v1.1)"
@@ -464,7 +494,9 @@ endurance_h = 2000
 link = "satcom"
 space_class = "iridium"
 sidc = "SFSP-----------"
-sensors = [{ type = "sonar", range_m = 3000, guess = true }]
+# physical model: SSQ-53-type passive hydrophones ([48]); reference ranges in 50 m of water [E,
+# research section b]: cargo ship 10-40 km, fast boat 2-5, battery submarine 1, AUV 0.3, diver 0.1.
+sensors = [{ type = "sonar", range_m = 3000, guess = true, mode = "passive", freq_khz = 1, ranges = { cargo_ship = 20000, small_fast_boat = 3500, submarine = 1000, uuv = 300, diver = 100 } }]
 mast_m = 1
 protocol = "telemetry"
 protocol_note = "Iridium-style short messages; no commands exist"
@@ -481,7 +513,9 @@ vehicle = "sub"
 callsign = "EEL"
 link = "tether"
 sidc = "SFUP-----------"
-sensors = [{ type = "sonar", range_m = 500, guess = true }]
+# physical model: the Ping360 scanning imaging sonar ([49]: 750 kHz, 0.75 to 50 m, 9-35 s a
+# turn): anything within its 50 m, a diver at its edge.
+sensors = [{ type = "sonar", range_m = 500, guess = true, mode = "active", freq_khz = 750, max_m = 50, scan_s = 20, ranges = { diver = 50 } }]
 protocol = "mavlink"
 protocol_note = "ArduSub speaks MAVLink natively"
 authenticity = "ArduSub SITL (already authentic) plus Gazebo for camera and sonar"
@@ -562,7 +596,11 @@ link = "satcom"
 space_class = "wgs"
 space_class_alt = "ku-geo"
 sidc = "SFAPMFQ--------"
-sensors = [{ type = "radar", range_m = 100000, guess = true }, { type = "ais", range_m = 150000, guess = true }]
+# the base platform's sensors without EO/IR (its radar's physical figures too, as [mq9b])
+sensors = [
+  { type = "radar", range_m = 100000, guess = true, r50_m = 300000, rcs_ref_m2 = 10000, scan_s = 5, beam_deg = 3, cell_m = 15, band_ghz = 16.7 },
+  { type = "ais", range_m = 150000, guess = true },
+]
 protocol = "stanag4586"
 protocol_note = "GA-ASI's ground control station is STANAG 4586-based"
 authenticity = "JSBSim MALE airframe plus 4586 (matches GA-ASI's 4586-based GCS)"
@@ -585,7 +623,12 @@ endurance_h = 1000
 link = "satcom"
 space_class = "starlink"
 sidc = "SFSP-----------"
-sensors = [{ type = "radar", range_m = 40000, guess = true }, { type = "ais", range_m = 50000, guess = true }]
+# the base platform's sensors without EO/IR and sonar (its radar's physical figures too, as
+# [seahunter])
+sensors = [
+  { type = "radar", range_m = 40000, guess = true, r50_m = 12450, rcs_ref_m2 = 7.5, scan_s = 2.5, beam_deg = 1.2, cell_m = 37, band_ghz = 9.4 },
+  { type = "ais", range_m = 50000, guess = true },
+]
 mast_m = 10
 protocol = "umaa"
 protocol_note = "Navy programs use UMAA over DDS (public architecture description v1.1)"

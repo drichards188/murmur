@@ -524,6 +524,48 @@ group. Dates are 2026.
 
 ## Fleet and simulation
 
+- **A physical sensing model beside the legacy one, the legacy model the default for now**
+  (10-23, murmur-1z6.1; WORLD-V3-PLAN section 2, approved; docs/SENSING.md). Per-sensor physics
+  from the open-source research (docs/research/sensors.md): EO/IR by pixels on target (ACQUIRE,
+  atmosphere, day and night, thermal crossover) inside a pointed field of view, radar by the
+  fourth-root law with the two-ray model, hull-down and sea clutter drawn once per scan, AIS by
+  class interval, VHF horizon and slot load, sonar by the sonar equation with FOMs from
+  reference ranges, ESM by received power, all masked by horizons and the scenario's terrain
+  grid. Chosen per contacts scenario (`[sensing] model`) or by `MURMUR_SENSE_MODEL`; the v1 and
+  v2 worlds are pinned to `legacy` by the evaluation layer's bridge environment (headless,
+  G1's full stack, Phase G's stacks), not in their contacts files, whose generated text the v1
+  digests hold; so v1 and v2 records stay as they were (their episodes byte-identical, the
+  golden included). Why not replace the legacy model: every record so far is its, and the
+  platform catalog's real figures (B1) come after; the coordinator flips the default then.
+  Kept out of the decision engine's reach on purpose: `TrackFacts`, the sensor type names and
+  the identity interface are unchanged (no rules version); signatures are a per-kind table with
+  overrides by contact id, because a field on the truth structs would break the tracker's
+  comparison copies (`tests/before_oho`). Identification evidence is kept per observer, sensor
+  and level, not pooled per sensor type: a detection gives a size class, a recognition a family,
+  an identification the kind, the most specific level names the track and a lower level never
+  adds to it, so a closer look corrects a wrong call (murmur-jln). Evaluated, not tuned: the
+  surface calibration's held-out set holds every criterion on it; the air held-out set does not
+  in its all-sensors mix (keep-out misses 3 s ahead up to 2 km; aircraft almost never get a
+  velocity, because a 2D radar's cue carries no elevation and cameras rarely acquire them),
+  reported in docs/SENSING.md as a follow-up. Headless it costs nothing measurable (91 times
+  real time with 30 vehicles and 40 contacts).
+- **W1: cameras point themselves; orders name no look target** (10-23, approved). Each EO/IR
+  sensor has a simulated payload manager on its vehicle: it searches the task area (an orbit's
+  circle, a patrol's route, else around the vehicle) in the wide field, cues to the nearest
+  unidentified track there (a radar's, AIS's or a camera's own; then the stalest), locks on in
+  the narrow field to identify, and searches again. No change to intents, so no decision-rules
+  version; an optional look target in orbit and patrol orders is a later rules version. The
+  task area reaches the sensing model from the bridge's task manager (`TaskManager::task_of`),
+  the heading from the vehicle's telemetry, live and headless alike. Cueing also to tracks a
+  camera found itself, not only to radar and AIS tracks as the plan's text has it: a dark boat
+  only a camera has seen would otherwise never be looked at closely.
+- **W2: every radar revisits within 5 s** (10-23, approved). The catalog refuses a slower radar
+  (`physical::spec::validate`), which keeps the 10 s out-of-view rule (rules 16, "Out of view
+  before the drop counts the same", under Direction) sound: ten seconds are two revisits at the
+  slowest. Airborne surface search,
+  6 to 12 rpm in the research, is held at the cap (the MQ-9B's Lynx at 5 s); a slower radar
+  would reopen that rule.
+
 - **The CCA's C2 link is SATCOM, as the other large aircraft's** (10-04, murmur-3zj). The
   stock fleets spawn it 21.5 km from Crissy Field at 11 km altitude, 24.2 km of slant range
   (the emulator's range is the slant range to the ground station), where the `los` class

@@ -248,6 +248,18 @@ meaningful. Decision and command, not weapons.
   the tracker before it (`tracks/tests/before_oho/`: never edit them). A 2D radar plots an
   aircraft at its slant range (`Detection::slant_from`): a test that reads such a fix's
   `lat`/`lon` as the aircraft's position is wrong by its height's share.
+- Two sensing models (docs/SENSING.md): `legacy` (default) and `physical`, chosen by the
+  contacts scenario's `[sensing] model` or `MURMUR_SENSE_MODEL` (which wins); v1 and v2 worlds
+  are pinned to `legacy` by that variable (`process_spec`, `fullstack.stack_env`,
+  `eval/stack.py`), never in their contacts files (the v1 generator's digests hold them byte for
+  byte). Under `physical` the catalog's `range_m` is not a sensor's reach (the decision
+  engine still reads it; the model reads the entry's other fields or placeholders from it), a
+  camera sees only where its payload manager points and takes seconds a look (tau 3.4 / P s,
+  1 s to settle after each slew: a test expecting it to see something within a few ticks
+  fails), and the sun comes from the truth message's clock: a test at the tests' `T0`
+  (1,000,000 s, 1970) is near dawn at the Gate, so state `sun_elevation_deg` in its conditions.
+  Its held-out calibration runs (`calib_physical`, `air_calib_physical`) are evaluations: never
+  tune the sensing model or the tracker on them.
 - This host's wall clock (WSL) stepped back 0.5 to 0.9 s every ~32 s for the first two hours or
   so after boot (monotonic up to 2 % fast against Windows), then stopped. The bridge times
   everything on `clock::wall` (the monotonic rate, steered within ~2 s of the wall clock at

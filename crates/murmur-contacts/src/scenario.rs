@@ -21,9 +21,18 @@
 //! ais = { mmsi = "366999001", name = "MV SAUSALITO", ship_type = "passenger" }
 //! ```
 //!
+//! The bridge's physical sensing model (WORLD-V3-PLAN section 2, docs/SENSING.md) is chosen in
+//! `[sensing]` (`model = "physical"`, with `terrain` and `bathymetry` grids, paths relative to
+//! the repository); a top-level `[conditions]` gives `visibility_m`, `sea_state`, `wind_mps`,
+//! `shipping`, `water_depth_m` and `sun_elevation_deg` (each optional); and a contact may
+//! override its kind's signature with `dc_m`, `height_m`, `rcs_m2`, `thermal_k`, `source_db`,
+//! `target_db`, `ais_class` (`a`, `b`, `none`) and `emitter_dbm`. All of it rides in the truth
+//! message's `sensing` (absent when the scenario says none of it, so a legacy scenario's
+//! messages are as before).
+//!
 //! Optional per contact: `alt_m` (negative = depth; defaults per domain), `emits` (has a
 //! radar or transponder an ESM receiver can hear; default per kind), `signature` (detection
-//! range multiplier; default per kind), `turn_dps`, `start_s` and `end_s` (scenario seconds
+//! range multiplier, the legacy model's; default per kind), `turn_dps`, `start_s` and `end_s` (scenario seconds
 //! the contact exists), `ais.spoofed = true` (the AIS identity is false: a suspect boat
 //! claiming to be a fishing vessel), `on_effect` (what an engagement's abstract effect does
 //! to it: `"out_of_play"`, the default, removes it from the scenario, so our sensors stop
@@ -31,6 +40,7 @@
 //! and holds there; `loiter` needs `center` and `radius_m`; `station` and `drift` need
 //! `at`. Drift follows the tidewater current when the contacts process has conditions.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -94,6 +104,12 @@ pub const KINDS: &[KindDefaults] = &[
     KindDefaults { kind: "uuv", domain: Domain::Subsurface, signature: 0.15, emits: false, turn_dps: 8.0, alt_m: -20.0 },
     KindDefaults { kind: "vehicle", domain: Domain::Ground, signature: 0.5, emits: false, turn_dps: 15.0, alt_m: 0.0 },
     KindDefaults { kind: "truck", domain: Domain::Ground, signature: 0.8, emits: false, turn_dps: 10.0, alt_m: 0.0 },
+    // the physical sensing model's kinds (WORLD-V3-PLAN 2.1): their signatures are the bridge's
+    // table (tracks/physical/signature.rs); these multipliers only serve a legacy run
+    KindDefaults { kind: "small_drone", domain: Domain::Air, signature: 0.15, emits: false, turn_dps: 30.0, alt_m: 80.0 },
+    KindDefaults { kind: "periscope", domain: Domain::Subsurface, signature: 0.2, emits: false, turn_dps: 2.0, alt_m: -15.0 },
+    KindDefaults { kind: "diver", domain: Domain::Subsurface, signature: 0.05, emits: false, turn_dps: 20.0, alt_m: -5.0 },
+    KindDefaults { kind: "person", domain: Domain::Ground, signature: 0.2, emits: false, turn_dps: 60.0, alt_m: 0.0 },
 ];
 
 pub fn kind_defaults(kind: &str) -> Option<&'static KindDefaults> {
@@ -111,11 +127,92 @@ pub enum OnEffect {
     Persists,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+/// The bridge's sensing models (`murmur-bridge` `tracks::truth::SensingModel`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SensingModel {
+    Legacy,
+    Physical,
+}
+
+/// AIS carriage for a contact's signature override.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AisClass {
+    A,
+    B,
+    None,
+}
+
+/// `[conditions]`: what the physical sensing model senses in (each optional; the bridge fills
+/// the rest with a clear day, sea state 2 and its sonar reference environment).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Conditions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility_m: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sea_state: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wind_mps: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shipping: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub water_depth_m: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sun_elevation_deg: Option<f64>,
+}
+
+/// A contact's changes to its kind's signature in the physical model (the bridge's
+/// `tracks::physical::signature::SignatureOverride`).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct SignatureFields {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dc_m: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height_m: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rcs_m2: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thermal_k: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_db: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_db: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ais_class: Option<AisClass>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emitter_dbm: Option<f64>,
+}
+
+impl SignatureFields {
+    pub fn is_empty(&self) -> bool {
+        *self == SignatureFields::default()
+    }
+}
+
+/// `[sensing]`, as the truth message carries it to the bridge. `conditions` and `signatures`
+/// are filled from the scenario's `[conditions]` and its contacts' signature fields, never
+/// written in `[sensing]` itself.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Sensing {
     /// Probability, per track, that a classifying sensor reports the wrong kind.
     #[serde(default)]
     pub misclassification_rate: f64,
+    /// The bridge's sensing model (none: its default, `legacy`, unless `MURMUR_SENSE_MODEL`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<SensingModel>,
+    /// The physical model's terrain and bathymetry grids (`sim/headless/terrain/*.grid.gz`
+    /// format), paths relative to the repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terrain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bathymetry: Option<String>,
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub conditions: Option<Conditions>,
+    #[serde(default, skip_deserializing, skip_serializing_if = "BTreeMap::is_empty")]
+    pub signatures: BTreeMap<String, SignatureFields>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -125,6 +222,9 @@ pub struct Scenario {
     pub seed: u64,
     #[serde(default)]
     pub sensing: Sensing,
+    /// The physical sensing model's conditions (into `sensing.conditions` at load).
+    #[serde(default)]
+    pub conditions: Option<Conditions>,
     #[serde(default, rename = "contact")]
     pub contacts: Vec<ContactSpec>,
     /// Rules 9: scripted hostile acts (`[[act]]`), truth only.
@@ -200,6 +300,9 @@ pub struct ContactSpec {
     pub end_s: Option<f64>,
     #[serde(default)]
     pub on_effect: OnEffect,
+    /// The physical sensing model's per-contact signature (`dc_m`, `rcs_m2`, ...).
+    #[serde(flatten)]
+    pub physical: SignatureFields,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -339,10 +442,18 @@ impl ContactSpec {
 
 impl Scenario {
     pub fn from_toml(text: &str) -> Result<Scenario, String> {
-        let s: Scenario = toml::from_str(text).map_err(|e| e.to_string())?;
+        let mut s: Scenario = toml::from_str(text).map_err(|e| e.to_string())?;
         if !(0.0..=1.0).contains(&s.sensing.misclassification_rate) {
             return Err("sensing.misclassification_rate must be within 0..1".into());
         }
+        // the physical model's conditions and signatures ride in the sensing section
+        s.sensing.conditions = s.conditions;
+        s.sensing.signatures = s
+            .contacts
+            .iter()
+            .filter(|c| !c.physical.is_empty())
+            .map(|c| (c.id.clone(), c.physical))
+            .collect();
         let mut seen = std::collections::BTreeSet::new();
         for c in &s.contacts {
             if !seen.insert(c.id.as_str()) {
@@ -452,6 +563,56 @@ mod tests {
         assert!(
             Scenario::from_toml("title = \"t\"\n[[contact]]\nid = \"a\"\naffiliation = \"neutral\"\ndomain = \"surface\"\nkind = \"ferry\"\nmotion = \"station\"\nat=[0,0]\n[[contact]]\nid = \"a\"\naffiliation = \"neutral\"\ndomain = \"surface\"\nkind = \"ferry\"\nmotion = \"station\"\nat=[0,0]\n").is_err()
         );
+    }
+
+    /// The physical sensing model's settings ride in the sensing section: the model, the
+    /// grids, the conditions, each contact's signature fields by id; a legacy scenario's
+    /// section serializes as before (the misclassification rate alone).
+    #[test]
+    fn the_physical_models_settings_ride_in_the_sensing_section() {
+        let s = Scenario::from_toml(
+            r#"
+            title = "t"
+            [sensing]
+            misclassification_rate = 0.02
+            model = "physical"
+            terrain = "sim/headless/terrain/golden-gate.grid.gz"
+            [conditions]
+            visibility_m = 4000
+            sea_state = 4
+            [[contact]]
+            id = "dark"
+            affiliation = "unknown"
+            domain = "surface"
+            kind = "small_fast_boat"
+            motion = "station"
+            at = [-122.5, 37.8]
+            rcs_m2 = 0.8
+            ais_class = "none"
+            [[contact]]
+            id = "diver"
+            affiliation = "unknown"
+            domain = "subsurface"
+            kind = "diver"
+            motion = "station"
+            at = [-122.49, 37.8]
+            "#,
+        )
+        .expect("parses");
+        assert_eq!(s.sensing.model, Some(SensingModel::Physical));
+        assert_eq!(s.sensing.conditions.and_then(|c| c.sea_state), Some(4.0));
+        assert_eq!(s.sensing.signatures.len(), 1);
+        assert_eq!(s.sensing.signatures["dark"].rcs_m2, Some(0.8));
+        assert_eq!(s.sensing.signatures["dark"].ais_class, Some(AisClass::None));
+        let cs = s.contacts().expect("valid");
+        assert_eq!(cs[1].alt_m, -5.0);
+        let json = serde_json::to_value(&s.sensing).expect("json");
+        assert_eq!(json["signatures"]["dark"]["rcs_m2"], 0.8);
+        assert_eq!(json["conditions"]["visibility_m"], 4000.0);
+        let legacy = Scenario::from_toml("title = \"t\"\n[sensing]\nmisclassification_rate = 0.05\n").expect("parses");
+        assert_eq!(serde_json::to_string(&legacy.sensing).expect("json"), r#"{"misclassification_rate":0.05}"#);
+        assert!(Scenario::from_toml("title = \"t\"\n[sensing]\nmodel = \"optical\"\n").is_err());
+        assert!(Scenario::from_toml("title = \"t\"\n[sensing]\nsignatures = {}\n").is_err());
     }
 
     /// Every contacts scenario that ships loads, its contacts and acts valid.

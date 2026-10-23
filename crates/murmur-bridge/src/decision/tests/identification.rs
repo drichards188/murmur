@@ -69,9 +69,11 @@ pub(super) fn truth_with(e: &Erig, now_s: f64, scen_s: f64, acts: Vec<ActTruth>)
         alt_msl: 0.0,
         mast_m: 4.0,
         submerged: false,
+        heading_deg: None,
+        area: None,
         sensors: vec![
-            SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true, height: false },
-            SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true, height: false },
+            SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true, height: false, physical: Default::default() },
+            SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true, height: false, physical: Default::default() },
         ],
     };
     let msg = TruthMessage {
@@ -82,6 +84,7 @@ pub(super) fn truth_with(e: &Erig, now_s: f64, scen_s: f64, acts: Vec<ActTruth>)
         seed: 1,
         sensing: Sensing {
             misclassification_rate: 0.0,
+            ..Default::default()
         },
         contacts: vec![boat()],
         acts,

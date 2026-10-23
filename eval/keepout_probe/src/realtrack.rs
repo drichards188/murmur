@@ -195,6 +195,8 @@ pub fn observers(cat: &SensorCatalog, input: &TrackerIn) -> Result<Vec<Observer>
                 alt_msl: 0.0,
                 mast_m: p.mast_m,
                 submerged: false,
+                heading_deg: None,
+                area: None,
                 sensors,
             })
         })

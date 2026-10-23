@@ -188,7 +188,7 @@ async fn run() -> Result<(), String> {
             seq,
             &scenario.title,
             seed,
-            scenario.sensing,
+            scenario.sensing.clone(),
             &movers,
         );
         msg.effects = std::mem::take(&mut applied);
