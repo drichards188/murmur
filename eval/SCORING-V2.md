@@ -604,6 +604,135 @@ check of the new code ran on dev seeds 1000-1499.
      --key $K/key-free.json --out $K/agreement.json
    ```
 
+### 0.6 The ladder's truth step in stuck-vehicle, and the revalidation on 2100-2199 (added 2026-10-23, before any run on seeds 2100-2199)
+
+The revalidation of 0.5 item 5 ran on seeds 2000-2099 and blocked once, on the ladder. This
+section records that run, the block and its mechanism, makes one change to the rule (approved by
+the owner), and pre-registers the revalidation on fresh dev-validate seeds 2100-2199, as 0.5 item 5
+requires of a fix. 0.5 stays as pre-registered: `validate.py --section 0.5` and `ladder.py --rule
+0.3` re-read the 2000-2099 batch exactly as it was judged.
+
+1. **The revalidation on 2000-2099** (0.5 item 5, as run; `eval/results/headless/v2-revalidate-2000/`):
+   every v2 family, the 19 agents, the run's settings, judged by 0.5's rule; 17,100 episodes, no
+   harness error. **1 block: the ladder** (block 5), `oracle-linkblind` below `oracle-honest` in
+   stuck-vehicle (item 2). Everything else held:
+   - **The anchors' orders**: none failed or not shown in the 7 admissible families (every family
+     with eligible needs). **The moves**: every pooled move as predicted, none not testable; **the
+     guard** (block 4): no `oracle-honest` move lies wholly the wrong way in any family.
+   - **Null fidelity** 900 of 900; **the world's conditions** hold (`none` 0.0 % in six families
+     with eligible needs and 23.1 % in two-at-once; the oracle 100 % in every one).
+   - **The pooled moves**, on 692 to 700 situations (100 for fault needs met):
+
+     | perturbation | metric | predicted | minus `oracle-honest` [95 % CI] |
+     |---|---|---|---|
+     | spam | need served | not worse | +0.2 [-1.5, +1.9] points |
+     | spam | follow-ups | up | +3.06 [+2.79, +3.34] per hour |
+     | spam | repeats | up | +8.33 [+7.73, +8.95] |
+     | spam | cards | up | +17.16 [+16.52, +17.83] per 10 min |
+     | behind | need served | down | -5.9 [-9.2, -2.6] points |
+     | behind | useless | up | +1.29 [+0.64, +1.98] per hour |
+     | skip-first | need served | down | -60.9 [-63.9, -58.1] points |
+     | reserve-blind | fault needs met | down | -100.0 [-100.0, -100.0] points |
+     | ferries | useless | up | +44.04 [+43.25, +44.79] per hour |
+     | ferries | bad-card share | up | +29.9 [+27.8, +32.1] points |
+     | pull-off | need served | down | -6.0 [-8.0, -4.3] points |
+     | pull-off | harmful (b) | up | +0.53 [+0.41, +0.65] per hour |
+
+   - **The ladder's truth step**, `oracle-linkblind` ≥ `oracle-honest`, per family with eligible
+     needs: approval-flood +8.1 [+4.0, +15.2] points, holds; decoy +5.2 [+2.1, +11.3], holds;
+     fast-unknown +1.0 [-2.0, +5.0], tie; link-cut-mid-look +29.6 [+18.4, +40.8], holds;
+     low-battery 0.0 [-8.2, +8.2], tie; **stuck-vehicle -20.0 [-31.0, -8.0], fails**; two-at-once
+     +4.5 [+2.0, +8.0], holds; pooled +4.0 [+0.9, +6.9] (reported). No other ladder prediction is
+     reversed in any family.
+   - Pooled need served (served over eligible, 791 needs): the oracle 100 %, `oracle-linkblind`
+     80.7 %, `oracle-honest` 76.6 %, the playbook 9.1 %, `oracle-late` 5.9 %, `random-valid` 5.9 %,
+     `none` 5.8 %.
+
+2. **The block and its mechanism** (diagnosed from the records, nothing changed). In stuck-vehicle
+   the oracle served 100 of 100 needs, `oracle-honest` 37, `oracle-linkblind` 17, `oracle-late`
+   and `none` 0. The family stops the Puma flying the agent's first look (`families.py`
+   `_v2_stuck_vehicle`), so the other Puma must fly the look again. `oracle-linkblind` knows the
+   boat from about 46 s and sends both Pumas at once to its true intercept near the south shore;
+   the replacement Puma flies into link shadow, and its own lost-link failsafe takes it home (RTL).
+   The replacement Puma raised a `lost_link` alert before 600 s in 99 of 100 `oracle-linkblind`
+   episodes, 62 of 100 `oracle-honest` and 15 of 100 for the oracle. `oracle-honest` sees the boat
+   only when the C2 shows it (about 260 s in the seeds inspected) and orbits further east,
+   mid-channel. Here truth without the link map hurts: 0.3's prediction assumed the rungs'
+   handicaps do not interact, and in this family they do. **The prediction was mis-specified**, as
+   the cards order was in 0.4. The scorer, the labels and the world are not implicated, and none
+   of them changes.
+
+   **The dev seeds pointed the same way, and were read as ties.** On the ruler check's seeds
+   (1100-1199) the truth step in stuck-vehicle was -10.1 [-21.2, 0.0] points (`oracle-linkblind`
+   21.2 % against `oracle-honest` 31.3 %); in 0.5's dev confirmation (1250-1299), 16.3 % against
+   22.4 %. Both were ties, so neither failed, but both had their centre below zero in the same
+   family. The coordinator should have caught this when writing 0.5 and did not: the two ties were
+   read as passes, and the prediction was carried into the revalidation unexamined.
+
+3. **The change.** `oracle-linkblind` ≥ `oracle-honest` in stuck-vehicle is **reported, not
+   judged**: it is computed and shown in its family's row with its verdict, marked "reported, not
+   judged", and never fails the ladder or blocks the freeze (`eval/headless/ladder.py`
+   `NOT_JUDGED`, the ladder's rule `0.6`; `validate.py`'s section `0.6`, now its default). Every
+   other order is judged as 0.5 judges it: the truth step in each of the six other families with
+   eligible needs, and in stuck-vehicle the oracle over `oracle-late` and over `oracle-linkblind`
+   and every rung above `none`. Nothing else changes: 0.5's rule as re-specified, the list of
+   blocks, the moves and their directions, the guard, the anchors' orders, the agents, the world,
+   the labels (version 2) and the re-judge's plan (item 6).
+
+4. **Known limit.** The carve-out was chosen after seeing where the order failed. That is why it
+   is tested on fresh seeds, and why it is one order in one family: a reversal of the truth step
+   in any other family on 2100-2199 still blocks. The alternative considered was to report the
+   truth step in every family, since no rung's planner reasons about the link, so more truth is not
+   guaranteed to help a link-blind planner anywhere. It was not taken: it would drop a check that
+   held or tied in the six other families on 1100-1199, 1250-1299 and 2000-2099, and the owner
+   approved the narrower change. The residual risk: on 2000-2099 the truth step was a tie near
+   zero in fast-unknown (+1.0 [-2.0, +5.0] points) and low-battery (0.0 [-8.2, +8.2]), so a chance
+   reversal there on fresh seeds is possible, and it would block.
+
+5. **The revalidation on seeds 2100-2199.** It runs exactly as 0.5 item 5's did (every v2 family,
+   the 19 agents, one replicate, approve-all, the watch policy, the paused clock, `--no-multiverse`,
+   the world after 0.5 item 3), on seeds 2100-2199 into `eval/results/headless/v2-revalidate-2100`,
+   then `validate.py` (its default section, `0.6`) and `ladder.py` (its default rule, `0.6`) on that
+   directory. It is judged by 0.5's rule with this section's one change. If it blocks, the block is
+   reported and nothing is spent; a further fix is a dated section and runs on fresh seeds from
+   2200 (still 9.2's range after a metric change, 2000-2499).
+   - **Seeds 2100-2199 run on the rule as it stands here, with no change after.**
+
+6. **The re-judge** (0.5 item 6) is unchanged but for one thing: its free agents' packets are
+   exported from the batch of record, `v2-revalidate-2100`, not `v2-revalidate-2000`. It runs only
+   if 2100-2199 has 0 blocks. The budget: the owner's $50, less the $15.88 the blind pilot spent,
+   leaves $34.12; the caps are 0.5 item 6's (the model ledger $8.50; the judge's cap $50 less every
+   ledger's spend before it, the model episodes' included, less $1). 0.5 item 6's "on failure" named
+   2100-2199 for the revalidation after a label change; those seeds are now this run's, so such a
+   revalidation runs on fresh seeds from 2200.
+
+7. **The commands** (from the repository's root): 0.5 item 7's, with only the batch directory (and
+   the revalidation's seeds) changed. The training-set rescore, the model episodes, their two
+   exports, the judge and the report are exactly as 0.5 item 7 gives them.
+
+   ```
+   # 5: the revalidation on fresh seeds (free)
+   .venv/bin/python -m eval.headless.batch --scoring v2 --families v2-approval-flood v2-conflict v2-decoy \
+     v2-fast-unknown v2-link-cut-mid-look v2-low-battery v2-quiet v2-stuck-vehicle v2-two-at-once --seeds 2100-2199 \
+     --agent none null random-valid playbook oracle oracle-late oracle-linkblind oracle-honest playbook+spam \
+     playbook+behind playbook+skip-first playbook+reserve-blind playbook+ferries oracle-honest+spam \
+     oracle-honest+behind oracle-honest+skip-first oracle-honest+reserve-blind oracle-honest+ferries \
+     oracle-honest+pull-off --operators approve-all --no-multiverse --workers 20 --out eval/results/headless/v2-revalidate-2100
+   .venv/bin/python -m eval.headless.validate eval/results/headless/v2-revalidate-2100
+   .venv/bin/python -m eval.headless.ladder eval/results/headless/v2-revalidate-2100
+
+   # 0.5's run, re-read as it was judged (free)
+   .venv/bin/python -m eval.headless.validate eval/results/headless/v2-revalidate-2000 --section 0.5
+   .venv/bin/python -m eval.headless.ladder eval/results/headless/v2-revalidate-2000 --rule 0.3
+
+   # 6: the free agents' packets (free), from the batch of record, into 0.5 item 7's directory
+   P=eval/results/headless/v2-rejudge/packets; K=eval/results/headless/v2-rejudge
+   .venv/bin/python -m eval.headless.v2.blind export eval/results/headless/v2-revalidate-2100 --seed 1 \
+     --families approval-flood decoy fast-unknown link-cut-mid-look low-battery stuck-vehicle two-at-once \
+     --per-agent 2 oracle-honest+pull-off=14 oracle-honest+reserve-blind=6 random-valid=4 playbook=4 oracle-honest=4 oracle=3 \
+     --harmful oracle-honest+pull-off=8 --out $P --key $K/key-free.json
+   ```
+
 ## 1. Terms
 
 - **Mission**: the text every agent receives in its brief, verbatim and identically: "Identify

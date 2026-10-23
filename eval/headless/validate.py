@@ -3,12 +3,15 @@ state it) on one scoring v2 batch, with the scorer's own labels, metrics and pai
 (v2/aggregate.py), as eval/headless/ladder.py reads the ladder. MODEL RESULTS: a scripted operator
 on generated situations; never human data.
 
-    .venv/bin/python -m eval.headless.validate eval/results/headless/v2-revalidate-2000             # 0.5
+    .venv/bin/python -m eval.headless.validate eval/results/headless/v2-revalidate-2100             # 0.6
+    .venv/bin/python -m eval.headless.validate eval/results/headless/v2-revalidate-2000 --section 0.5
     .venv/bin/python -m eval.headless.validate eval/results/headless/v2-validate-1500 --section 0.4
 
 `--section` picks the pre-registration the batch is judged by (`SECTIONS`): `0.4` as it ran on
-seeds 1500-1599 (kept so that run can be re-read exactly), `0.5` (the default) the revalidation
-after labels v2 on seeds 2000-2099. Per condition and family:
+seeds 1500-1599 and `0.5`, the revalidation after labels v2, as it ran on seeds 2000-2099 (each
+kept so that run can be re-read exactly); `0.6` (the default), 0.5's with one change, for seeds
+2100-2199: the ladder's truth step in stuck-vehicle is reported, not judged (`ladder.NOT_JUDGED`).
+Per condition and family:
 
 - **The anchors' order**: section 5's expected order with the playbook taken out, each a chain from
   the lowest value to the highest. Each link is a paired difference, higher minus lower
@@ -36,7 +39,9 @@ after labels v2 on seeds 2000-2099. Per condition and family:
   stats.py `stratified_bca`), the room rule on the pooled base minus none; per family the moves are
   reported. Spam's need served is non-inferiority there (`not worse`: the interval's lower bound
   above minus 5 points), not two-sided equivalence.
-- **The ladder** (0.5): 0.3's predicted order of the rungs, re-checked by 0.3's rule (ladder.py).
+- **The ladder** (0.5): 0.3's predicted order of the rungs, re-checked by 0.3's rule (ladder.py);
+  0.6 reports `oracle-linkblind` >= `oracle-honest` in stuck-vehicle, not judged (ladder.py's rule
+  `0.6`), and judges every other order in every family as 0.5 did.
 - **Null fidelity** (4.5): `null` against its `none` replicate (aggregate.py `null_fidelity`).
 - **The world's conditions** (0.5, 10.1 as 0.4 left it): in each family with eligible needs, `none`
   serves at most 50 % and the oracle at least 80 % (pooled shares).
@@ -46,8 +51,8 @@ admissible family; a pooled move that did not move, moved the wrong way, or (spa
 is not shown not worse; a pooled move not testable (an untested check is not a pass); a judged
 move whose per-family interval lies wholly the wrong way (for spam's need served, wholly below
 minus 5 points) in any family with eligible needs, the pooled move notwithstanding (`WRONG_WAY`);
-a ladder reversal; a null fidelity difference; a family with eligible needs where none serves over
-50 % or the oracle under 80 %.
+a ladder reversal (0.6: of a judged order); a null fidelity difference; a family with eligible
+needs where none serves over 50 % or the oracle under 80 %.
 
 Writes `validate.json` and `validate.md` beside the batch's records.
 """
@@ -138,15 +143,18 @@ MARGINS = {"served_share": 0.05, "cards_per_10min": 0.25}
 #: need served is set aside in these families (0.4)
 SET_ASIDE = {"conflict": ("served_share", "rmst", "per_hour.useful")}
 #: each pre-registration: its anchor orders (judged, and reported only), its perturbations (judged
-#: against a base, and reported against another), whether the ladder and the world's conditions are
-#: part of it
+#: against a base, and reported against another), the ladder's rule if the ladder is part of it
+#: (ladder.py `RULES`), and whether the world's conditions are. 0.6 is 0.5 with the ladder's truth
+#: step in stuck-vehicle reported, not judged (SCORING-V2.md 0.6)
 SECTIONS: dict[str, dict[str, Any]] = {
     "0.4": {"orders": ANCHOR_ORDERS, "reported": (), "judged": ("playbook", MOVES), "reported_moves": None,
-            "ladder": False, "world": False, "pooled": False},
+            "ladder": None, "world": False, "pooled": False},
     "0.5": {"orders": ANCHOR_ORDERS_05, "reported": REPORTED, "judged": ("oracle-honest", HONEST_MOVES),
-            "reported_moves": ("playbook", MOVES), "ladder": True, "world": True, "pooled": True},
+            "reported_moves": ("playbook", MOVES), "ladder": "0.3", "world": True, "pooled": True},
+    "0.6": {"orders": ANCHOR_ORDERS_05, "reported": REPORTED, "judged": ("oracle-honest", HONEST_MOVES),
+            "reported_moves": ("playbook", MOVES), "ladder": "0.6", "world": True, "pooled": True},
 }
-DEFAULT_SECTION = "0.5"
+DEFAULT_SECTION = "0.6"
 #: a judged move's verdicts that are failures
 MOVE_FAILS = ("did not move", "moved the wrong way", "changed", "inconclusive", "not shown not worse", "worse")
 #: 0.5's guard: a judged move's per-family verdicts that block although the pooled move holds
@@ -390,8 +398,10 @@ def check(scored: list[dict[str, Any]], seed: int = 0, section: str = DEFAULT_SE
                         tested[k] = tested.get(k, False) or m["verdict"] not in ("not testable", "set aside (0.4)")
             block["untested"] = [{"perturbation": p, "metric": mn} for (p, mn), t in sorted(tested.items()) if not t]
         if sec["ladder"]:
-            lad = LD.check([e for e in scored if cond_key(e) == cond]).get(cond) or {}
-            block["ladder"] = {"failures": lad.get("failures") or [], "passed": lad.get("passed"),
+            # only the judged orders' reversals are failures; the rule's other orders are reported (0.6)
+            lad = LD.check([e for e in scored if cond_key(e) == cond], rule=sec["ladder"]).get(cond) or {}
+            block["ladder"] = {"rule": sec["ladder"], "failures": lad.get("failures") or [],
+                               "reported": lad.get("reported") or [], "passed": lad.get("passed"),
                                "families": {f: r.get("predictions") for f, r in (lad.get("families") or {}).items()}}
         if sec["world"]:
             block["world"] = world(scored, cond)
@@ -478,8 +488,10 @@ def markdown(res: dict[str, Any]) -> str:
                       f"({nf['unpaired']} unpaired): {'passed' if nf['pass'] else 'FAILED'}.", ""]
         if block.get("ladder") is not None:
             lad = block["ladder"]
-            lines += [f"Ladder (0.3's rule): {'passed' if lad['passed'] else 'FAILED'}"
+            lines += [f"Ladder ({lad['rule']}'s rule): {'passed' if lad['passed'] else 'FAILED'}"
                       + (f", reversals: {[(x['family'], x['a'], x['b']) for x in lad['failures']]}" if lad["failures"] else "")
+                      + "".join(f"; reported, not judged ({lad['rule']}): {x['a']} >= {x['b']} in {x['family']} "
+                                f"{x['verdict']}" for x in lad.get("reported") or [])
                       + ".", ""]
         if block.get("world"):
             lines += ["World (10.1): " + "; ".join(f"{f} none {_num(w['none'], 100, 1)} %, oracle {_num(w['oracle'], 100, 1)} %"
@@ -522,7 +534,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("batch", type=Path, help="a scoring v2 batch directory (its episodes_v2.json)")
     ap.add_argument("--section", choices=sorted(SECTIONS), default=DEFAULT_SECTION,
-                    help="the pre-registration to judge by (SCORING-V2.md 0.4 or 0.5)")
+                    help="the pre-registration to judge by (SCORING-V2.md 0.4, 0.5 or 0.6)")
     args = ap.parse_args(argv)
     metas = json.loads((args.batch / "episodes_v2.json").read_text())
     res = check(score(metas, Params(), multiverse=False), section=args.section)
