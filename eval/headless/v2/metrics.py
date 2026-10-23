@@ -8,8 +8,11 @@ Per episode (`episode_metrics`), as 3.1 to 3.9 define them:
 - 3.1 `served_share` (needs served by their deadline over eligible needs), `served_late_share`
   (the multiverse's S'), `served_after_stop` (S6: needs arising after the scripted stop);
 - 3.2 `time_to_serve` per eligible need (censored at 60 s, a miss as 60), `rmst`;
-- 3.3 each action label per situation-hour (`per_hour`), `useless` both ways
-  (`useless_unjustified`, `useless_justified`), harmful by kind;
+- 3.3 each action label per situation-hour (`per_hour`; `duplicate` its own rate, neither credit
+  nor cost), `useless` both ways (`useless_unjustified`, `useless_justified`), harmful by kind,
+  and the fault metric `fault_actions` (labels v2: every action on a vehicle with an open fault,
+  `also_fault`, whatever outcome label it got, refused and harmful ones apart; `fault_response`
+  stays the label alone, a hold or rtl that earned no label of effect);
 - 3.4 agent `cards`, `cards_per_10min` (over the watch: from the agent's start to the end),
   `flood_share` (trailing 10-min windows every 10 s; a flood starts above 10 new cards in a
   window and ends at the first window under 5; the share of windows in flood), `bad_card_share`
@@ -40,9 +43,12 @@ FLOOD_STEP_S = 10.0
 FLOOD_START = 10  # more than this many new cards in a window starts a flood
 FLOOD_END = 5  # the first window under this ends it
 HOUR_S = 3600.0
-#: per-hour counts (3.3)
-RATE_LABELS = ("useful", "follow_up", "redundant", "useless", "useless_unjustified", "useless_justified",
-               "harmful", "refused", "fault_response")
+#: per-hour counts (3.3): the labels (labels.py ACTION_LABELS), useless both ways, and the fault
+#: metric (`fault_actions`: every action with `also_fault` but refused and harmful ones)
+RATE_LABELS = ("useful", "follow_up", "duplicate", "redundant", "useless", "useless_unjustified", "useless_justified",
+               "harmful", "refused", "fault_response", "fault_actions")
+#: the labels an action on a faulted vehicle may have and still count as a response to the fault
+FAULT_COUNTED = ("useful", "follow_up", "duplicate", "fault_response", "redundant", "useless")
 
 
 def _mean(xs: list[float]) -> float | None:
@@ -94,6 +100,8 @@ def episode_metrics(rec: dict[str, Any], labels: dict[str, Any]) -> dict[str, An
         counts[a["label"]] += 1
         if a["label"] == "useless":
             counts["useless_justified" if a["justified"].get("justified") else "useless_unjustified"] += 1
+        if a["label"] in FAULT_COUNTED and (a.get("also_fault") or a["label"] == "fault_response"):
+            counts["fault_actions"] += 1
     harm_kinds: dict[str, int] = defaultdict(int)
     for a in acts:
         if a["label"] == "harmful":

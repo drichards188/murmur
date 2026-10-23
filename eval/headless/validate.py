@@ -1,32 +1,45 @@
-"""The validation (eval/SCORING-V2.md 10.2, read under relative comparison as section 0.4 states it)
-on one scoring v2 batch, with the scorer's own labels, metrics and paired comparisons
+"""The validation (eval/SCORING-V2.md 10.2, read under relative comparison as sections 0.4 and 0.5
+state it) on one scoring v2 batch, with the scorer's own labels, metrics and paired comparisons
 (v2/aggregate.py), as eval/headless/ladder.py reads the ladder. MODEL RESULTS: a scripted operator
 on generated situations; never human data.
 
-    .venv/bin/python -m eval.headless.validate eval/results/headless/v2-validate-1500
+    .venv/bin/python -m eval.headless.validate eval/results/headless/v2-revalidate-2000             # 0.5
+    .venv/bin/python -m eval.headless.validate eval/results/headless/v2-validate-1500 --section 0.4
 
-Per condition and family:
+`--section` picks the pre-registration the batch is judged by (`SECTIONS`): `0.4` as it ran on
+seeds 1500-1599 (kept so that run can be re-read exactly), `0.5` (the default) the revalidation
+after labels v2 on seeds 2000-2099. Per condition and family:
 
-- **The anchors' order**: section 5's expected order with the playbook taken out (`ANCHOR_ORDERS`,
-  each a chain from the lowest value to the highest). Each link is a paired difference, higher
-  minus lower (`comparison`: the paired cluster bootstrap, BCa, seed 0, at 20 situations or more,
-  else the exact sign test), judged by 0.3's rule: `holds` wholly above zero, `tie` containing it
-  (for a strict link the advantage is not shown), `fails` wholly below (a reversal). An order
-  `holds` when no link fails and its ends' interval lies wholly in the stated direction (10.2),
-  is `not shown` when nothing is reversed but the ends' interval contains zero, `fails` on a
-  reversal, and is `not testable` where the metric has no value for an agent in it (no eligible
-  need, no fault need). Judged in the admissible families (3.1's rule on this batch's none and
-  oracle, `admissibility`), reported in every family.
-- **The perturbations**: each against the plain playbook on section 5's metrics (`MOVES`): `up`
-  or `down` is `moved` when the paired interval lies wholly in that direction, `moved the wrong
-  way` when wholly in the other, else `did not move`; `unchanged` is `unchanged` when the interval
-  lies inside the equivalence margin (5 points of a share, 0.25 cards per 10 min), `changed` when it
-  excludes zero, else `inconclusive`. A predicted fall is `not testable` where the playbook is not
-  shown above none on that metric (the playbook minus none interval not wholly above zero): there
-  is nothing the perturbation is known to take away; a fall shown there is still reported as
-  `moved`. A metric with no value in a family is `not testable` there. 0.4 sets the conflict family
-  aside from need served.
+- **The anchors' order**: section 5's expected order with the playbook taken out, each a chain from
+  the lowest value to the highest. Each link is a paired difference, higher minus lower
+  (`comparison`: the paired cluster bootstrap, BCa, seed 0, at 20 situations or more, else the exact
+  sign test), judged by 0.3's rule: `holds` wholly above zero, `tie` containing it (for a strict link
+  the advantage is not shown), `fails` wholly below (a reversal). An order `holds` when no link fails
+  and its ends' interval lies wholly in the stated direction (10.2), is `not shown` when nothing is
+  reversed but the ends' interval contains zero, `fails` on a reversal, and is `not testable` where
+  the metric has no value for an agent in it (no eligible need, no fault need). Judged in the
+  admissible families (3.1's rule on this batch's none and oracle, `admissibility`), reported in
+  every family. 0.5 judges every order of 0.4 but cards and harm, which it reports (`REPORTED`).
+- **The perturbations**: each against its base (0.4: the plain playbook; 0.5: `oracle-honest`, the
+  playbook's perturbations reported beside, not judged) on its metrics (`MOVES`): `up` or `down` is
+  `moved` when the paired interval lies wholly in that direction, `moved the wrong way` when wholly
+  in the other, else `did not move`; `unchanged` is `unchanged` when the interval lies inside the
+  equivalence margin (5 points of a share, 0.25 cards per 10 min), `changed` when it excludes zero,
+  else `inconclusive`. A predicted fall is `not testable` where the base is not shown above none on
+  that metric (the base minus none interval not wholly above zero): there is nothing the
+  perturbation is known to take away; a fall shown there is still reported as `moved`. A metric with
+  no value in a family is `not testable` there. 0.4 sets the conflict family aside from need served.
+- **The ladder** (0.5): 0.3's predicted order of the rungs, re-checked by 0.3's rule (ladder.py).
 - **Null fidelity** (4.5): `null` against its `none` replicate (aggregate.py `null_fidelity`).
+- **The world's conditions** (0.5, 10.1 as 0.4 left it): in each family with eligible needs, `none`
+  serves at most 50 % and the oracle at least 80 % (pooled shares).
+
+**What blocks the freeze** (0.5, `blocks`): an anchor order that fails or is not shown in an
+admissible family; a judged move that did not move, moved the wrong way, changed, or was
+inconclusive, in any family with eligible needs (0.5 judges moves there and reports them in quiet
+and conflict, as 0.4's report read them); a judged prediction not testable in every family (an untested check is
+not a pass); a ladder reversal; a null fidelity difference; a family with eligible needs where none
+serves over 50 % or the oracle under 80 %.
 
 Writes `validate.json` and `validate.md` beside the batch's records.
 """
@@ -38,8 +51,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+from . import ladder as LD
 from .ladder import families_with_needs
-from .v2.aggregate import ALONE, admissibility, base_name, comparison, cond_key, null_fidelity, score, situations, values
+from .v2.aggregate import (ALONE, NONE_MAX, ORACLE_MIN, admissibility, base_name, comparison, cond_key,
+                           null_fidelity, pooled_share, score, situations, values)
 from .v2.labels import Params
 
 #: section 5's expected order on the anchors, the playbook taken out (0.4): per metric, the chain
@@ -54,6 +69,9 @@ ANCHOR_ORDERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("rmst", ("oracle", "<", "random-valid", "<=", "none")),
     ("fault_met_share", ("none", "<", "oracle")),
 )
+#: 0.5: orders reported, never judged: cards (mis-specified in 0.4: the oracle acts more, and cards
+#: are a cost, not a quality ranking) and harm (no anchor harms; harm is judged on the perturbations)
+REPORTED = ("per_hour.harmful", "cards_per_10min")
 #: section 5's perturbations: what each must move against the plain playbook. `unchanged` on need
 #: served stands for "useful unchanged" (0.4: section 5 gives no margin for a rate per hour; useful
 #: per hour is reported beside it)
@@ -65,6 +83,19 @@ MOVES: dict[str, tuple[tuple[str, str], ...]] = {
     "playbook+reserve-blind": (("fault_met_share", "down"),),
     "playbook+ferries": (("per_hour.useless", "up"), ("bad_card_share", "up")),
 }
+#: 0.5: the same moves on the honest oracle (the realistic ceiling: room for a fall), and the
+#: harm-inducing pull-off. reserve-blind's harmful (a) is reported, not judged: the bridge's
+#: reserves check refuses any order that would leave a Puma under 20 % after 900 s on task, so no
+#: harmful (a) order can be dispatched through the C2 (agents_v2.py)
+HONEST_MOVES: dict[str, tuple[tuple[str, str], ...]] = {
+    "oracle-honest+spam": (("served_share", "unchanged"), ("per_hour.follow_up", "up"), ("repeats", "up"),
+                           ("cards_per_10min", "up")),
+    "oracle-honest+behind": (("served_share", "down"), ("per_hour.useless", "up")),
+    "oracle-honest+skip-first": (("served_share", "down"),),
+    "oracle-honest+reserve-blind": (("fault_met_share", "down"),),
+    "oracle-honest+ferries": (("per_hour.useless", "up"), ("bad_card_share", "up")),
+    "oracle-honest+pull-off": (("served_share", "down"), ("per_hour.harmful_b", "up")),
+}
 #: reported beside each perturbation, never judged
 DESCRIPTIVE: dict[str, tuple[str, ...]] = {
     "playbook+spam": ("per_hour.useful",),
@@ -72,11 +103,29 @@ DESCRIPTIVE: dict[str, tuple[str, ...]] = {
     "playbook+skip-first": ("rmst",),
     "playbook+reserve-blind": ("per_hour.harmful_a", "per_hour.fault_response"),
     "playbook+ferries": ("cards_per_10min",),
+    "oracle-honest+spam": ("per_hour.useful", "per_hour.redundant", "per_hour.refused"),
+    "oracle-honest+behind": ("rmst",),
+    "oracle-honest+skip-first": ("rmst",),
+    "oracle-honest+reserve-blind": ("per_hour.harmful_a", "per_hour.refused", "per_hour.fault_actions"),
+    "oracle-honest+ferries": ("cards_per_10min",),
+    "oracle-honest+pull-off": ("per_hour.harmful", "rmst"),
 }
 #: "unchanged": section 5's equivalence margins
 MARGINS = {"served_share": 0.05, "cards_per_10min": 0.25}
 #: need served is set aside in these families (0.4)
 SET_ASIDE = {"conflict": ("served_share", "rmst", "per_hour.useful")}
+#: each pre-registration: its anchor orders (judged, and reported only), its perturbations (judged
+#: against a base, and reported against another), whether the ladder and the world's conditions are
+#: part of it
+SECTIONS: dict[str, dict[str, Any]] = {
+    "0.4": {"orders": ANCHOR_ORDERS, "reported": (), "judged": ("playbook", MOVES), "reported_moves": None,
+            "ladder": False, "world": False},
+    "0.5": {"orders": ANCHOR_ORDERS, "reported": REPORTED, "judged": ("oracle-honest", HONEST_MOVES),
+            "reported_moves": ("playbook", MOVES), "ladder": True, "world": True},
+}
+DEFAULT_SECTION = "0.5"
+#: a judged move's verdicts that are failures
+MOVE_FAILS = ("did not move", "moved the wrong way", "changed", "inconclusive")
 
 
 def link_verdict(c: dict[str, Any]) -> str:
@@ -130,15 +179,15 @@ def anchor_order(scored: list[dict[str, Any]], cond: str, fam: str, metric: str,
 
 
 def move(scored: list[dict[str, Any]], cond: str, fam: str, agent: str, metric: str, want: str,
-         agents: set[str], seed: int = 0) -> dict[str, Any]:
-    out: dict[str, Any] = {"metric": metric, "predicted": want,
-                           "means": {a: _mean(scored, a, cond, metric, fam) for a in ("none", "playbook", agent)
+         agents: set[str], seed: int = 0, base: str = "playbook") -> dict[str, Any]:
+    out: dict[str, Any] = {"metric": metric, "predicted": want, "base": base,
+                           "means": {a: _mean(scored, a, cond, metric, fam) for a in ("none", base, agent)
                                      if a in agents}}
     if fam in SET_ASIDE and metric in SET_ASIDE[fam]:
         return {**out, "verdict": "set aside (0.4)"}
-    if out["means"].get(agent) is None or out["means"].get("playbook") is None:
+    if out["means"].get(agent) is None or out["means"].get(base) is None:
         return {**out, "verdict": "not testable", "why": "no value in this family"}
-    c = _cmp(scored, agent, "playbook", cond, metric, fam, seed)
+    c = _cmp(scored, agent, base, cond, metric, fam, seed)
     out["difference"] = c
     lo, hi = c.get("lo"), c.get("hi")
     if lo is None or hi is None:
@@ -156,45 +205,115 @@ def move(scored: list[dict[str, Any]], cond: str, fam: str, agent: str, metric: 
     else:
         out["verdict"] = "did not move"
     if not up and "none" in agents:
-        room = _cmp(scored, "playbook", "none", cond, metric, fam, seed)
-        out["playbook_minus_none"] = room
+        room = _cmp(scored, base, "none", cond, metric, fam, seed)
+        out[f"{base}_minus_none"] = room
         if out["verdict"] == "did not move" and not (room.get("lo") is not None and room["lo"] > 0):
             out["verdict"] = "not testable"
-            out["why"] = "the playbook is not shown above none here: nothing known for it to take away"
+            out["why"] = f"{base} is not shown above none here: nothing known for it to take away"
     return out
 
 
-def check(scored: list[dict[str, Any]], seed: int = 0) -> dict[str, Any]:
+def _moves(scored: list[dict[str, Any]], cond: str, fam: str, agents: set[str], base: str,
+           moves: dict[str, tuple[tuple[str, str], ...]], seed: int) -> dict[str, Any]:
+    out = {}
+    for p, ms in moves.items():
+        if p not in agents or base not in agents:
+            continue
+        out[p] = {"base": base,
+                  "moves": [move(scored, cond, fam, p, mn, want, agents, seed, base) for mn, want in ms],
+                  "beside": {mn: {"means": {a: _mean(scored, a, cond, mn, fam) for a in (base, p)},
+                                  "difference": _cmp(scored, p, base, cond, mn, fam, seed)}
+                             for mn in DESCRIPTIVE.get(p, ())}}
+    return out
+
+
+def world(scored: list[dict[str, Any]], cond: str) -> dict[str, Any]:
+    """10.1's conditions as 0.4 left them, per family with eligible needs: none at most 50 %, the
+    oracle at least 80 % (pooled shares)."""
+    out = {}
+    for fam in families_with_needs(scored, cond):
+        n, o = (pooled_share(scored, a, cond, fam)["share"] for a in ("none", "oracle"))
+        out[fam] = {"none": n, "oracle": o, "none_at_most_50": None if n is None else n <= NONE_MAX,
+                    "oracle_at_least_80": None if o is None else o >= ORACLE_MIN}
+    return out
+
+
+def check(scored: list[dict[str, Any]], seed: int = 0, section: str = DEFAULT_SECTION) -> dict[str, Any]:
+    sec = SECTIONS[section]
+    base, judged = sec["judged"]
     out: dict[str, Any] = {}
     for cond in sorted({cond_key(e) for e in scored}):
         agents = {e["agent"] for e in scored if cond_key(e) == cond and e.get("agent")}
         fams = sorted({base_name(e["base"]) for e in scored if e.get("base") and cond_key(e) == cond} - set(ALONE))
         adm = admissibility(scored, cond)
-        block: dict[str, Any] = {"agents": sorted(agents), "families_with_needs": families_with_needs(scored, cond),
+        block: dict[str, Any] = {"section": section, "agents": sorted(agents),
+                                 "families_with_needs": families_with_needs(scored, cond),
                                  "admissible": [f for f in fams if (adm.get(f) or {}).get("admissible") is True],
                                  "admissibility": adm, "families": {}}
         for fam in fams:
-            row: dict[str, Any] = {"anchors": [anchor_order(scored, cond, fam, mn, ch, agents, seed) for mn, ch in ANCHOR_ORDERS],
-                                   "perturbations": {}}
-            for p, moves in MOVES.items():
-                if p not in agents:
-                    continue
-                row["perturbations"][p] = {
-                    "moves": [move(scored, cond, fam, p, mn, want, agents, seed) for mn, want in moves],
-                    "beside": {mn: {"means": {a: _mean(scored, a, cond, mn, fam) for a in ("playbook", p)},
-                                    "difference": _cmp(scored, p, "playbook", cond, mn, fam, seed)}
-                               for mn in DESCRIPTIVE.get(p, ())}}
+            row: dict[str, Any] = {"anchors": [anchor_order(scored, cond, fam, mn, ch, agents, seed)
+                                               for mn, ch in sec["orders"]],
+                                   "perturbations": _moves(scored, cond, fam, agents, base, judged, seed)}
+            for a in row["anchors"]:
+                a["judged"] = a["metric"] not in sec["reported"]
+            if sec["reported_moves"] is not None:
+                rb, rm = sec["reported_moves"]
+                row["reported_perturbations"] = _moves(scored, cond, fam, agents, rb, rm, seed)
             row["null_fidelity"] = null_fidelity(scored, cond, fam) if "null" in agents else None
             block["families"][fam] = row
         block["null_fidelity"] = null_fidelity(scored, cond, None) if "null" in agents else None
-        judged = [(f, a) for f in block["admissible"] for a in block["families"][f]["anchors"]]
-        block["anchor_failures"] = [{"family": f, "metric": a["metric"], "verdict": a["verdict"]} for f, a in judged
+        judged_orders = [(f, a) for f in block["admissible"] for a in block["families"][f]["anchors"] if a["judged"]]
+        block["anchor_failures"] = [{"family": f, "metric": a["metric"], "verdict": a["verdict"]} for f, a in judged_orders
                                     if a["verdict"] in ("fails", "not shown")]
+        # 0.5: moves are judged in the families with eligible needs, reported in the others (as
+        # 0.4's report read quiet and conflict); 0.4 as it ran judged every family
+        judged_fams = set(fams) if section == "0.4" else set(block["families_with_needs"])
+        for f, r in block["families"].items():
+            for x in r["perturbations"].values():
+                for m in x["moves"]:
+                    m["judged"] = f in judged_fams
         block["perturbation_failures"] = [
             {"family": f, "perturbation": p, "metric": m["metric"], "verdict": m["verdict"]}
             for f, r in block["families"].items() for p, x in r["perturbations"].items() for m in x["moves"]
-            if m["verdict"] in ("did not move", "moved the wrong way", "changed", "inconclusive")]
+            if m["judged"] and m["verdict"] in MOVE_FAILS]
+        # a judged prediction never testable in any family is untested, not passed
+        tested: dict[tuple[str, str], bool] = {}
+        for f, r in block["families"].items():
+            if f not in judged_fams:
+                continue
+            for p, x in r["perturbations"].items():
+                for m in x["moves"]:
+                    k = (p, m["metric"])
+                    tested[k] = tested.get(k, False) or m["verdict"] not in ("not testable", "set aside (0.4)")
+        block["untested"] = [{"perturbation": p, "metric": mn} for (p, mn), t in sorted(tested.items()) if not t]
+        if sec["ladder"]:
+            lad = LD.check([e for e in scored if cond_key(e) == cond]).get(cond) or {}
+            block["ladder"] = {"failures": lad.get("failures") or [], "passed": lad.get("passed"),
+                               "families": {f: r.get("predictions") for f, r in (lad.get("families") or {}).items()}}
+        if sec["world"]:
+            block["world"] = world(scored, cond)
+        block["blocks"] = blocks(block, section)
         out[cond] = block
+    return out
+
+
+def blocks(block: dict[str, Any], section: str) -> list[str]:
+    """0.5's list of what blocks the freeze, each in words (0.4 had none: its failures were the
+    record)."""
+    if section == "0.4":
+        return []
+    out = [f"anchor order {x['metric']} {x['verdict']} in {x['family']}" for x in block["anchor_failures"]]
+    out += [f"{x['perturbation']} {x['metric']} {x['verdict']} in {x['family']}" for x in block["perturbation_failures"]]
+    out += [f"{x['perturbation']} {x['metric']} not testable in any family" for x in block["untested"]]
+    out += [f"ladder: {x['a']} below {x['b']} in {x['family']}" for x in (block.get("ladder") or {}).get("failures") or []]
+    nf = block.get("null_fidelity")
+    if nf is not None and not nf["pass"]:
+        out.append(f"null fidelity: {nf['differ']} of {nf['pairs']} pairs differ")
+    for fam, w in (block.get("world") or {}).items():
+        if w["none_at_most_50"] is False:
+            out.append(f"world: none serves {w['none']:.0%} in {fam}")
+        if w["oracle_at_least_80"] is False:
+            out.append(f"world: the oracle serves {w['oracle']:.0%} in {fam}")
     return out
 
 
@@ -217,20 +336,49 @@ def _diff(c: dict[str, Any] | None, metric: str) -> str:
     return f"{_num(c['mean_difference'], s, nd)} [{_num(c.get('lo'), s, nd)}, {_num(c.get('hi'), s, nd)}]{' ' + unit if unit else ''}"
 
 
+def _move_rows(perts: dict[str, Any], judged: bool) -> list[str]:
+    lines = []
+    for p, x in perts.items():
+        b = x["base"]
+        for m in x["moves"]:
+            s, nd, _ = _scale(m["metric"])
+            lines.append(f"| {p} | {m['metric']} | {m['predicted']} | {_num(m['means'].get(b), s, nd)} "
+                         f"| {_num(m['means'].get(p), s, nd)} | {_diff(m.get('difference'), m['metric'])} | "
+                         f"{m['verdict'] if judged and m.get('judged', True) else m['verdict'] + ' (reported)'} |")
+        for mn, d in x["beside"].items():
+            s, nd, _ = _scale(mn)
+            lines.append(f"| {p} | {mn} | (reported) | {_num(d['means'].get(b), s, nd)} | "
+                         f"{_num(d['means'].get(p), s, nd)} | {_diff(d['difference'], mn)} | - |")
+    return lines
+
+
 def markdown(res: dict[str, Any]) -> str:
     lines = ["# The validation: anchors and perturbations", "",
              "Model results: a scripted operator on generated situations; not human data. Differences are paired by "
-             "situation, with the scorer's 95 % interval (cluster bootstrap, BCa, seed 0; SCORING-V2.md 0.3, 0.4, 5, "
+             "situation, with the scorer's 95 % interval (cluster bootstrap, BCa, seed 0; SCORING-V2.md 0.3, 0.4, 0.5, 5, "
              "10.2). Shares in points, RMST in seconds, rates per hour, cards per 10 min.", ""]
     for cond, block in res.items():
-        lines += [f"## {cond}", "", f"Admissible families (3.1, this batch's none and oracle): "
+        lines += [f"## {cond} (section {block['section']})", "", f"Admissible families (3.1, this batch's none and oracle): "
                   f"{', '.join(block['admissible']) or 'none'}.", "",
                   f"Anchor orders failed or not shown in admissible families: {len(block['anchor_failures'])}. "
-                  f"Perturbation moves not as predicted: {len(block['perturbation_failures'])}.", ""]
+                  f"Perturbation moves not as predicted: {len(block['perturbation_failures'])}. "
+                  f"Judged predictions not testable anywhere: {len(block['untested'])}.", ""]
+        if block["section"] != "0.4":
+            lines += [f"**Blocks the freeze: {len(block['blocks'])}**" + (":" if block["blocks"] else " (nothing).")]
+            lines += [f"- {b}" for b in block["blocks"]]
+            lines.append("")
         nf = block.get("null_fidelity")
         if nf:
             lines += [f"Null fidelity: {nf['pairs'] - nf['differ']} of {nf['pairs']} pairs identical "
                       f"({nf['unpaired']} unpaired): {'passed' if nf['pass'] else 'FAILED'}.", ""]
+        if block.get("ladder") is not None:
+            lad = block["ladder"]
+            lines += [f"Ladder (0.3's rule): {'passed' if lad['passed'] else 'FAILED'}"
+                      + (f", reversals: {[(x['family'], x['a'], x['b']) for x in lad['failures']]}" if lad["failures"] else "")
+                      + ".", ""]
+        if block.get("world"):
+            lines += ["World (10.1): " + "; ".join(f"{f} none {_num(w['none'], 100, 1)} %, oracle {_num(w['oracle'], 100, 1)} %"
+                                                   for f, w in block["world"].items()), ""]
         for fam, row in block["families"].items():
             lines += [f"### {fam}{'' if fam in block['admissible'] else ' (not admissible: reported, not judged)'}", "",
                       "| metric | order | means | ends: higher minus lower [95 % CI] | links | verdict |",
@@ -240,21 +388,15 @@ def markdown(res: dict[str, Any]) -> str:
                 links = "; ".join(f"{x['higher']} - {x['lower']}: {x['verdict']}"
                                   + (" (not shown)" if x["strict"] and x["verdict"] == "tie" else "")
                                   for x in a.get("links") or [])
+                v = a["verdict"] if a.get("judged", True) else f"{a['verdict']} (reported, not judged)"
                 lines.append(f"| {a['metric']} | {a['order']} | {means} | {_diff(a.get('ends'), a['metric'])} | "
-                             f"{links or 'n/a'} | {a['verdict']} |")
+                             f"{links or 'n/a'} | {v} |")
+            head = ["", "| perturbation | metric | predicted | base | perturbed | perturbed minus base [95 % CI] | verdict |",
+                    "|---|---|---|---|---|---|---|"]
             if row["perturbations"]:
-                lines += ["", "| perturbation | metric | predicted | playbook | perturbed | perturbed minus playbook "
-                          "[95 % CI] | verdict |", "|---|---|---|---|---|---|---|"]
-                for p, x in row["perturbations"].items():
-                    for m in x["moves"]:
-                        s, nd, _ = _scale(m["metric"])
-                        lines.append(f"| {p} | {m['metric']} | {m['predicted']} | {_num(m['means'].get('playbook'), s, nd)} "
-                                     f"| {_num(m['means'].get(p), s, nd)} | {_diff(m.get('difference'), m['metric'])} | "
-                                     f"{m['verdict']} |")
-                    for mn, b in x["beside"].items():
-                        s, nd, _ = _scale(mn)
-                        lines.append(f"| {p} | {mn} | (reported) | {_num(b['means'].get('playbook'), s, nd)} | "
-                                     f"{_num(b['means'].get(p), s, nd)} | {_diff(b['difference'], mn)} | - |")
+                lines += head + _move_rows(row["perturbations"], True)
+            if row.get("reported_perturbations"):
+                lines += head + _move_rows(row["reported_perturbations"], False)
             lines.append("")
     return "\n".join(lines)
 
@@ -262,14 +404,18 @@ def markdown(res: dict[str, Any]) -> str:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("batch", type=Path, help="a scoring v2 batch directory (its episodes_v2.json)")
+    ap.add_argument("--section", choices=sorted(SECTIONS), default=DEFAULT_SECTION,
+                    help="the pre-registration to judge by (SCORING-V2.md 0.4 or 0.5)")
     args = ap.parse_args(argv)
     metas = json.loads((args.batch / "episodes_v2.json").read_text())
-    res = check(score(metas, Params(), multiverse=False))
+    res = check(score(metas, Params(), multiverse=False), section=args.section)
     (args.batch / "validate.json").write_text(json.dumps(res, indent=1, sort_keys=True, default=str))
     md = markdown(res)
     (args.batch / "validate.md").write_text(md)
     print(md)
-    return 0 if all(not b["anchor_failures"] and not b["perturbation_failures"] for b in res.values()) else 1
+    if args.section == "0.4":
+        return 0 if all(not b["anchor_failures"] and not b["perturbation_failures"] for b in res.values()) else 1
+    return 0 if all(not b["blocks"] for b in res.values()) else 1
 
 
 if __name__ == "__main__":

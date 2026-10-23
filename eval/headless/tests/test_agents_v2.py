@@ -27,7 +27,7 @@ import pytest
 
 from eval.headless import REPO
 from eval.headless.batch import fidelity_digest, normalized_audit, replicate_seed
-from eval.headless.episode import AGENTS, ANCHORS, LADDER, PERTURBATIONS, Episode, Options
+from eval.headless.episode import AGENTS, ANCHORS, HONEST_PERTURBATIONS, LADDER, PERTURBATIONS, Episode, Options
 from eval.headless.families import (
     GATE,
     V2_FLEET,
@@ -87,7 +87,8 @@ def test_every_anchor_and_perturbation_is_an_agent():
 
     assert set(ANCHORS) == {"null", "random-valid", "oracle"} and set(PERTURBATIONS) == set(agents_v2.PERTURBATIONS)
     assert LADDER == agents_v2.LADDER == ("oracle-linkblind", "oracle-honest", "oracle-late")
-    assert agents_v2.NAMES == ANCHORS + LADDER + PERTURBATIONS and set(agents_v2.NAMES) <= set(AGENTS)
+    assert HONEST_PERTURBATIONS == agents_v2.HONEST_PERTURBATIONS
+    assert agents_v2.NAMES == ANCHORS + LADDER + PERTURBATIONS + HONEST_PERTURBATIONS and set(agents_v2.NAMES) <= set(AGENTS)
     assert {"playbook", "model", "none"} <= set(AGENTS)
 
 
@@ -201,12 +202,41 @@ def test_the_oracle_repeats():
 
 
 def test_the_oracle_sends_a_low_puma_home_before_the_reserve():
+    """Its one rtl goes before the battery reaches the reserve. Labels v2 (SCORING-V2.md 0.5 2a)
+    meet the need only on the ground at home: the rtl is useful when the world lands the Puma in
+    time, a fault response when it does not (a world whose rtl loiters over home)."""
     rec = cached("low-battery", 1200, "oracle")
     fn = L.episode_labels(rec)["fault_needs"]
     uid = rec["truth"]["stated"]["low_battery"]["uid"]
-    assert [f["status"] for f in fn if str(f["uid"]) == str(uid)] == ["met"]
+    (f,) = [f for f in fn if str(f["uid"]) == str(uid)]
     rtl = [a for a in actions(rec) if a["kind"] == "rtl"]
     assert len(rtl) == 1 and rtl[0]["uids"] == [str(uid)]
+    assert f["t_reserve"] is None or rtl[0]["dispatched"] < f["t_reserve"]
+    assert rtl[0]["label"] == ("useful" if f["status"] == "met" else "fault_response")
+
+
+def test_the_oracle_times_its_rtl_by_the_way_home_and_the_landing():
+    """SCORING-V2.md 0.5 (murmur-a5v): a Puma sent home lands, which takes up to 105 s, so the rtl
+    goes when the battery, less the dispatch, the transit home at cruise and the landing at the
+    cruise draw, comes to the reserve and a 1 % margin; the honest oracle the same from its 21 %
+    line. A plan gives a Puma no work it could not finish before then."""
+    from eval.headless import agents_v2
+
+    oracle = object.__new__(agents_v2.Oracle)  # its timing reads only class constants
+    honest = object.__new__(agents_v2.OracleHonest)
+    p = agents_v2.Puma(4, "PUMA 2", 20.0, 80.0, 4000.0, endurance_h=2.5)
+    p.xy, p.home_xy = (0.0, 0.0), (0.0, -2000.0)  # 2 km from home: 100 s at cruise
+    assert p.cruise_drain() == pytest.approx(1.0 / 90.0)
+    assert oracle.home_s(p) == pytest.approx(6.0 + 100.0 + 105.0)
+    cost = (6.0 + 100.0 + 105.0) / 90.0  # 2.34 % of the pack
+    p.battery = [(0.0, 24.0)]
+    assert oracle.spare_s(p) == pytest.approx((24.0 - cost - 21.0) * 90.0)
+    assert honest.spare_s(p) == pytest.approx(0.0), "the honest oracle's line is 21 % + 1 %"
+    p.battery = [(0.0, 21.0 + cost - 0.01)]
+    assert oracle.spare_s(p) == 0.0, "time to go home"
+    # its home unknown: no transit counted, the landing still is
+    p.home_xy = None
+    assert oracle.home_s(p) == pytest.approx(6.0 + 105.0)
 
 
 def test_the_oracle_skips_a_need_no_look_can_resolve():
@@ -352,6 +382,117 @@ def test_the_honest_oracle_reads_no_truth(monkeypatch: pytest.MonkeyPatch):
     assert set(d["needs"]) and all(k.startswith("T-") for k in d["needs"])
 
 
+#: where each of the honest oracle's perturbations acts (dev seeds)
+HONEST_AT = {"oracle-honest+spam": ("decoy", 1002), "oracle-honest+behind": ("decoy", 1002),
+             "oracle-honest+ferries": ("decoy", 1002), "oracle-honest+reserve-blind": ("low-battery", 1001),
+             "oracle-honest+pull-off": ("fast-unknown", 1000)}
+
+
+@pytest.mark.parametrize("agent", sorted(HONEST_AT))
+def test_the_honest_oracle_s_perturbations_read_no_truth(agent: str, monkeypatch: pytest.MonkeyPatch):
+    """SCORING-V2.md 0.5 item 4: built as `oracle-honest` is (a session and the loop's runner, never
+    the episode), no truth, contacts file or link map is read from inside any of them while their
+    episode runs, their record claims no privilege, and each records what it changed."""
+    from eval.headless import agents_v2
+    from eval.headless.episode import Episode as Ep
+    from eval.headless.sim import Sim
+
+    made: list[Any] = []
+    real_make = agents_v2.make
+    monkeypatch.setattr(agents_v2, "make", lambda ep_, name, cfg: made.append(real_make(ep_, name, cfg)) or made[-1])
+    trapped: list[str] = []
+    real_truth = Sim.truth
+
+    def truth(self: Any, *a: Any, **k: Any) -> Any:
+        if _inside(agents_v2.OracleHonest):
+            trapped.append("Sim.truth")
+        return real_truth(self, *a, **k)
+
+    monkeypatch.setattr(Sim, "truth", truth)
+    for fn in ("read_contacts", "need_routes", "link_map", "fleet_plan"):
+        def trap(*a: Any, _fn: str = fn, _orig: Any = getattr(agents_v2, fn), **k: Any) -> Any:
+            if _inside(agents_v2.OracleHonest):
+                trapped.append(_fn)
+            return _orig(*a, **k)
+
+        monkeypatch.setattr(agents_v2, fn, trap)
+    family, seed = HONEST_AT[agent]
+    rec = episode(family, seed, agent)
+    assert trapped == []
+    (a,) = made
+    assert isinstance(a, agents_v2.HONEST_PERTURBED[agent]) and not hasattr(a, "ep")
+    assert not [x for x in _held(a) if isinstance(x, (Ep, Sim, agents_v2.LinkMap, agents_v2.Route))]
+    d = rec["agent_detail"]
+    assert "privileged" not in d and d["truth"].startswith("none") and d["base"] == "oracle-honest"
+    assert d["errors"] == 0
+    if agent != "oracle-honest+reserve-blind":
+        assert d["changes"] > 0 and any(ln["kind"] == "perturbation" for ln in rec["agent_log"])
+
+
+def test_honest_spam_behind_and_ferries_change_one_thing():
+    hon = cached("decoy", 1002, "oracle-honest")
+    sp, bh, fe = (cached("decoy", 1002, a) for a in ("oracle-honest+spam", "oracle-honest+behind",
+                                                      "oracle-honest+ferries"))
+    # spam: each held look proposed again, the same request, at least 20 s after the last
+    again = [ln for ln in sp["agent_log"] if ln["kind"] == "perturbation" and ln["what"] == "re-proposed"]
+    assert again and len(proposals(sp)) > len(proposals(hon))
+    by_req: dict[str, list[float]] = {}
+    for ln in proposals(sp):
+        by_req.setdefault(json.dumps(ln["request"], sort_keys=True), []).append(ln["t"])
+    assert any(len(ts) > 1 for ts in by_req.values())
+    assert all(b - a >= 20.0 - 1e-6 for ts in by_req.values() for a, b in zip(ts, ts[1:]))
+    # behind: every look's centre 1.5 EO/IR ranges (4 km) from the centre it planned
+    moved = [ln for ln in bh["agent_log"] if ln["kind"] == "perturbation"]
+    assert moved and all(dist_m(tuple(m["planned"]), tuple(m["centre"])) == pytest.approx(6000.0, rel=0.01) for m in moved)
+    assert {tuple(ln["request"]["center"]) for ln in proposals(bh)} <= {tuple(m["centre"]) for m in moved}
+    # ferries: one look at each neutral with AIS, let go by a hold
+    looks_ = [ln for ln in fe["agent_log"] if ln["kind"] == "perturbation" and ln["what"] == "look at a neutral with AIS"]
+    contacts = {c["id"]: c for c in fe["truth"]["contacts"]}
+    assert looks_ and len({ln["track"] for ln in looks_}) == len(looks_)
+    for ln in looks_:
+        c = fe["truth"]["association"].get(ln["track"])
+        assert c and contacts[c]["affiliation"] == "neutral" and contacts[c]["ais"]
+    assert any(ln["kind"] == "perturbation" and ln["what"] == "let a ferry look go" for ln in fe["agent_log"])
+
+
+def test_honest_skip_first_is_privileged_and_never_looks_at_the_earliest_need():
+    hon = cached("decoy", 1002, "oracle-honest")
+    sk = cached("decoy", 1002, "oracle-honest+skip-first")
+    first = sk["agent_detail"]["privileged"]["earliest_need"]
+    assert sk["agent_detail"]["privileged"]["truth_reads"] > 300 and sk["agent_detail"]["truth"].startswith("privileged")
+    served = lambda r: {n["contact"]: n["served"] for n in L.episode_labels(r)["needs"]}  # noqa: E731
+    assert served(hon)[first] and not served(sk)[first]
+    hidden = {ln["track"] for ln in sk["agent_log"] if ln["kind"] == "perturbation"}
+    planned = {ln["track"] for ln in sk["agent_log"] if ln["kind"] == "need"}
+    assert hidden and all(sk["truth"]["association"].get(t) == first for t in hidden)
+    assert not hidden & planned, "it never plans a look at the earliest need's tracks"
+
+
+def test_honest_reserve_blind_sends_no_rtl_and_keeps_its_pumas_in_the_plan():
+    hon = cached("low-battery", 1001, "oracle-honest")
+    rb = cached("low-battery", 1001, "oracle-honest+reserve-blind")
+    assert any(a["kind"] == "rtl" for a in actions(hon))
+    assert not any(a["kind"] == "rtl" for a in actions(rb))
+    uid = str(rb["truth"]["stated"]["low_battery"]["uid"])
+    assert {str(f["uid"]): f["status"] for f in L.episode_labels(rb)["fault_needs"]}[uid] != "met"
+    # no harmful (a): the bridge's reserves check refuses an orbit of the low Puma at its preview
+    assert not any(h["kind"] == "a" for a in actions(rb) for h in a["harm"])
+
+
+def test_honest_pull_off_takes_a_puma_off_an_open_need_it_was_raising_hits_on():
+    """Its pull-off goes to the station of least dwell, gives the need up, and on two-at-once 1010
+    (dev) leaves fast-1 unserved: harmful (b), which `oracle-honest` does not do there."""
+    po = cached("fast-unknown", 1000, "oracle-honest+pull-off")
+    pulls = [ln for ln in po["agent_log"] if ln["kind"] == "perturbation"]
+    assert pulls and all(p["hits"][1] > p["hits"][0] for p in pulls)
+    assert any(ln["kind"] == "pull-off.stations" for ln in po["agent_log"])
+    hon = cached("two-at-once", 1010, "oracle-honest")
+    harm = cached("two-at-once", 1010, "oracle-honest+pull-off")
+    assert not any(a["harm"] for a in actions(hon))
+    bad = [h for a in actions(harm) for h in a["harm"]]
+    assert bad and all(h["kind"] == "b" for h in bad)
+
+
 def test_straight_carries_a_track_along_its_shown_velocity():
     from eval.headless.agents_v2 import Straight
 
@@ -431,7 +572,7 @@ def test_the_validation_judges_anchor_orders_and_perturbation_moves():
                        with_(ep("playbook", fam, sit, pb), cards_per_10min=2.0),
                        with_(ep("playbook+skip-first", fam, sit, 0), cards_per_10min=2.0),
                        with_(ep("playbook+spam", fam, sit, pb), cards_per_10min=2.0)]
-    res = V.check(scored)[COND]
+    res = V.check(scored, section="0.4")[COND]
     assert res["admissible"] == ["decoy", "fast-unknown"]
     fam = res["families"]["fast-unknown"]
     a = {x["metric"]: x for x in fam["anchors"]}
@@ -447,6 +588,57 @@ def test_the_validation_judges_anchor_orders_and_perturbation_moves():
     assert skip["verdict"] == "not testable" and "not shown above none" in skip["why"]
     assert {"family": "fast-unknown", "metric": "cards_per_10min", "verdict": "fails"} in res["anchor_failures"]
     assert "playbook+skip-first" in V.markdown({COND: res})
+
+
+def test_the_revalidation_judges_the_honest_base_and_reports_cards_and_harm():
+    """0.5 (validate.py's default section): the cards and harm orders reported, never judged; the
+    moves judged on the honest oracle, the playbook's beside them reported; a judged prediction
+    not testable in any family, a ladder reversal and a world condition each block the freeze."""
+    from eval.headless import validate as V
+
+    def with_(e: dict[str, Any], **kw: Any) -> dict[str, Any]:
+        e["metrics"].update(kw)
+        return e
+
+    scored = []
+    for sit in range(1, 26):
+        for fam in ("fast-unknown", "decoy"):
+            scored += [with_(ep("none", fam, sit, 0), cards_per_10min=0.0),
+                       with_(ep("random-valid", fam, sit, 0), cards_per_10min=0.8 + 0.01 * sit),
+                       with_(ep("oracle", fam, sit, 1), cards_per_10min=1.4 + 0.01 * (sit % 3)),
+                       ep("oracle-late", fam, sit, 1), ep("oracle-linkblind", fam, sit, 1),
+                       ep("oracle-honest", fam, sit, 1),
+                       ep("oracle-honest+skip-first", fam, sit, 0),
+                       ep("oracle-honest+reserve-blind", fam, sit, 1),
+                       ep("playbook", fam, sit, 0), ep("playbook+skip-first", fam, sit, 0)]
+    res = V.check(scored)[COND]
+    assert res["section"] == "0.5" and res["admissible"] == ["decoy", "fast-unknown"]
+    fam = res["families"]["fast-unknown"]
+    a = {x["metric"]: x for x in fam["anchors"]}
+    assert a["cards_per_10min"]["verdict"] == "fails" and not a["cards_per_10min"]["judged"]
+    assert not a["per_hour.harmful"]["judged"] and a["served_share"]["judged"]
+    assert not any(x["metric"] == "cards_per_10min" for x in res["anchor_failures"])
+    mv = {(p, m["metric"]): m["verdict"] for p, x in fam["perturbations"].items() for m in x["moves"]}
+    assert mv[("oracle-honest+skip-first", "served_share")] == "moved"
+    assert fam["perturbations"]["oracle-honest+skip-first"]["base"] == "oracle-honest"
+    assert "playbook+skip-first" in fam["reported_perturbations"] and "playbook+skip-first" not in fam["perturbations"]
+    # reserve-blind's fault met: no fault need in these situations, so untested: that blocks
+    assert {"perturbation": "oracle-honest+reserve-blind", "metric": "fault_met_share"} in res["untested"]
+    assert "oracle-honest+reserve-blind fault_met_share not testable in any family" in res["blocks"]
+    assert res["ladder"]["passed"] and res["world"]["fast-unknown"] == {
+        "none": 0.0, "oracle": 1.0, "none_at_most_50": True, "oracle_at_least_80": True}
+    md = V.markdown({COND: res})
+    assert "Blocks the freeze" in md and "(reported, not judged)" in md
+    # a ladder reversal (link-blind under honest) blocks, and so does an oracle under 80 %
+    def swap(agent: str, served: int) -> list[dict[str, Any]]:
+        return [ep(agent, e["base"], e["situation_seed"], served) if e["agent"] == agent else e for e in scored]
+
+    scored = swap("oracle-linkblind", 0)
+    r2 = V.check(scored)[COND]
+    assert any(b.startswith("ladder: oracle-linkblind below oracle-honest") for b in r2["blocks"])
+    scored = swap("oracle", 0)
+    r3 = V.check(scored)[COND]
+    assert "world: the oracle serves 0% in fast-unknown" in r3["blocks"]
 
 
 # ---- the perturbations --------------------------------------------------------------------------
@@ -504,11 +696,10 @@ def test_reserve_blind_never_sends_an_rtl():
     pb = cached("low-battery", 1200, "playbook")
     rb = cached("low-battery", 1200, "playbook+reserve-blind")
     uid = str(rb["truth"]["stated"]["low_battery"]["uid"])
-    assert any(a["kind"] == "rtl" for a in actions(pb))
+    assert any(a["kind"] == "rtl" and a["dispatched"] is not None for a in actions(pb))
     assert not any(a["kind"] == "rtl" for a in actions(rb))
-    met = {str(f["uid"]): f["status"] for f in L.episode_labels(pb)["fault_needs"]}
     blind = {str(f["uid"]): f["status"] for f in L.episode_labels(rb)["fault_needs"]}
-    assert met[uid] == "met" and blind[uid] != "met"
+    assert blind[uid] != "met"
     assert any(ln["kind"] == "perturbation" and ln["what"] == "dropped an rtl" for ln in rb["agent_log"])
 
 
@@ -531,7 +722,8 @@ def test_ferries_adds_one_look_at_each_ais_neutral_and_lets_it_go():
 @pytest.mark.parametrize("agent,family", [("playbook+spam", "fast-unknown"), ("playbook+behind", "fast-unknown"),
                                           ("playbook+skip-first", "fast-unknown"),
                                           ("playbook+reserve-blind", "low-battery"), ("playbook+ferries", "fast-unknown"),
-                                          ("null", "fast-unknown")])
+                                          ("null", "fast-unknown"), ("oracle-honest+pull-off", "two-at-once"),
+                                          ("oracle-honest+spam", "decoy")])
 def test_each_perturbation_repeats_on_its_seeds(agent: str, family: str):
     seed = 1200 if family != "fast-unknown" or agent != "null" else 1000
     a = cached(family, seed, agent)

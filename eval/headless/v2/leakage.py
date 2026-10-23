@@ -57,10 +57,11 @@ FIELDS = (
     "t_need", "t_served", "pre_served", "served_share", "served_late", "served_after_stop",
     "contact_need", "fault_need", "fault_needs", "sensing_error", "identity_resolved",
     "identified_in_time", "need_outcomes", "aimed_need", "fault_met", "fault_censored", "met_by",
-    "t_met", "t_open", "t_closed",
+    "t_met", "t_open", "t_closed", "t_identified", "t_landed",
     # v2 action labels (2.5) that are not ordinary words, and their columns
     "fault_response", "follow_up", "also_fault", "redundant_because", "justified_on_picture",
     "useless_justified", "useless_unjustified", "harmful_dispatched", "useless_dispatched",
+    "duplicate_of_none", "fault_actions", "met_fault",
     # v2 metrics and the multiverse (3, 8.5)
     "time_to_serve", "time_margin", "bad_card_share", "flood_share", "n_eff",
     "justify_horizon_s", "aim_fallback_m", "low_reserve_open_pct",
