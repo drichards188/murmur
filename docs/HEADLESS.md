@@ -1354,3 +1354,31 @@ the factors were 59 to 128, 33 to 100 and 7 to 14.
     .venv/bin/python -m eval.headless.batch --situation golden-gate-v3-watch --seeds 1-3 --agent none playbook
     .venv/bin/python -m eval.headless.batch --situation san-diego-watch --seeds 1-3 9 --agent none playbook
     .venv/bin/python -m eval.headless.batch --situation golden-gate-scale-watch --seeds 1-3 --agent none playbook
+
+## 18. Scoring v3 (world v3 C1, first part; bd murmur-1z6.6)
+
+Built 2026-10-23 beside scoring v2, which is unchanged (eval/SCORING-V3.md, a draft, says what
+it defines and what the owner has to decide). `Options.scoring = "v3"` runs v2's picture sampler
+and writes its part of the record under `v3` (`scoring`, `episode_class`, `replicate` and `v3`);
+`EpisodeSpec.opaque` gives a situation v2's opaque run id and anonymous operator notes. Off by
+default: a v1 or v2 episode runs and records exactly as before (the golden, the v2 episode and
+batch tests pass unchanged).
+
+- `eval/headless/v3/families.py`: F1-F6 and F18 on golden-gate-v3 and san-diego
+  (`v3-<family>-<gg|sd>`), each on its world's watch situation, its conditions drawn from the
+  world's ranges by the situation seed.
+- `eval/headless/v3/labels.py`, `metrics.py`: needs per domain (the world's mission circle, the
+  domain's grace, sensor and level), v2's action labels with the domain's sensors, nominations and
+  review decisions against truth, collect and cover `unjudged`.
+- `eval/headless/v3/oracle.py` (agent `oracle-v3`): the basic v3 oracle, a feasibility check. It
+  asks the running episode's sensing model (`sense`) which of our platforms can identify each
+  contact at what range under the drawn conditions, and a per-world link map
+  (`eval/headless/v3/linkmap.py`, the emulator's terrain check) where a line-of-sight or mesh
+  datalink holds.
+- `eval/headless/v3/run.py`: a batch (`batch`) and the dev check's report (`report`: labels,
+  need served per family and world, 10.1's conditions, the single-cause analysis of
+  `eval/headless/v3/causes.py`).
+
+      .venv/bin/python -m eval.headless.v3.run batch --families all --seeds 5000-5029 \
+          --agent none random-valid oracle-v3 --workers 20 --out <dir>
+      .venv/bin/python -m eval.headless.v3.run report <dir>
