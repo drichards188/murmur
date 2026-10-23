@@ -1,6 +1,6 @@
 # World v3: realistic sensors and evaluation across Murmur's breadth
 
-Status: **draft for the owner's approval, 2026-10-23** (bd epic murmur-1z6). Nothing here is
+Status: **approved by the owner 2026-10-23, decisions W1-W5 as recommended** (bd epic murmur-1z6). Nothing here is
 built yet. Inputs: the sensing code map, the capability inventory and the sensor research
 (`docs/research/sensors.md`, public sources, [n] cited and [E] estimated).
 
