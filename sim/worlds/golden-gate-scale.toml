@@ -1,0 +1,72 @@
+# The scale world (docs/WORLD-V3-PLAN.md section 5 and H6; the format in sim/worlds/README.md):
+# Golden Gate v3's map, grids, currents, links, ground station, points, mission, conditions and
+# pinned element sets, with 100 stand-ins in the same domain mix (sim/fleets/golden-gate-scale.toml)
+# and Golden Gate v3's traffic plus a heavier day (sim/scenarios/golden-gate-scale-traffic.toml):
+# for load and allocation under many simultaneous needs (family F17).
+name = "golden-gate-scale"
+title = "Golden Gate scale (100 nodes)"
+fleet = "sim/fleets/golden-gate-scale.toml"
+areas = "sim/areas"                           # golden-gate.geojson (illustrative, as the v1 world's)
+traffic = "sim/scenarios/golden-gate-scale-traffic.toml"
+space = "golden-gate"                         # sim/headless/space/golden-gate (eval/headless/space.py)
+tidewater = "golden-gate-2026-06"
+at = "2026-06-14T10:00:00Z"
+operating_box = { lat_min = 37.74, lat_max = 37.90, lon_min = -122.57, lon_max = -122.35 }
+
+# The Golden Gate's grids (eval/headless/bake_world.py golden-gate) and the seabed for sonar
+# (bake_world.py golden-gate-v3 --only bathymetry, the same points and time).
+[terrain]
+surface = "sim/headless/terrain/golden-gate.grid.gz"
+land_water = "sim/headless/terrain/golden-gate.water.grid.gz"
+bathymetry = "sim/headless/terrain/golden-gate.bathy.grid.gz"
+box = { lat_min = 37.74, lat_max = 37.90, lon_min = -122.62, lon_max = -122.36 }
+spacing_m = 20.0
+sampled_at = "2026-06-14T10:00:00Z"
+
+[currents]
+field = "sim/headless/terrain/golden-gate.currents.gz"
+box = { lat_min = 37.77, lat_max = 37.88, lon_min = -122.56, lon_max = -122.38 }
+spacing_m = 250.0
+from = "2026-06-13T00:00:00Z"
+to = "2026-06-16T00:00:00Z"
+step_s = 3600.0
+
+[links]
+file = "sim/links.toml"
+
+[[ground_station]]
+name = "Crissy Field"
+lat = 37.8068
+lon = -122.4460
+alt_m = 5.0
+
+# Named reference points, [lon, lat]: the Golden Gate world's, and where world v3's fleet works.
+[points]
+bridge = [-122.4783, 37.8199]              # the Golden Gate Bridge, mid-span (the protected point)
+mouth = [-122.5050, 37.8100]               # the strait's mouth, west of the bridge
+bay_axis = [-122.4500, 37.8250]            # east of the bridge, mid-channel
+channel_east_south = [-122.4720, 37.8135]
+channel_east_north = [-122.4720, 37.8250]
+bay_entrance = [-122.5050, 37.8150]
+lime_point = [-122.4680, 37.8240]
+crissy_field = [-122.4460, 37.8068]        # the launch site and the ground station
+horseshoe_bay = [-122.4760, 37.8305]       # the Coast Guard station's pier at Fort Baker
+fort_baker = [-122.4790, 37.8330]          # the parade ground, a launch point on the north shore
+point_bonita = [-122.5300, 37.8150]        # the approaches, north side
+mile_rock = [-122.5100, 37.7930]           # the approaches, south side
+far_orbit = [-122.8000, 37.7000]           # HAWK 1's orbit, offshore
+
+# The labels' rule, as the v1 world's: unknown, suspect or hostile within 3 km of the bridge
+# needs a look within 60 s.
+[mission]
+center = "bridge"
+radius_m = 3000.0
+grace_s = 60.0
+
+# The Golden Gate world's ranges (sim/worlds/golden-gate.toml says where each comes from).
+[conditions]
+at = ["2026-06-13T00:00:00Z", "2026-06-15T23:00:00Z"]
+utc_offset_h = -7                          # PDT
+visibility_km = [0.2, 30.0]                # [E] advection fog in the strait under 200 m; clear days 30 km and more
+wind_mps = [2.98, 7.76]                    # tidewater's HRRR wind at the bridge, hourly over the window
+sea_state = [0, 5]                         # [E] Douglas; the bar outside the Gate breaks in a big swell

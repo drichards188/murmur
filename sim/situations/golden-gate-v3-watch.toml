@@ -1,0 +1,142 @@
+# Golden Gate v3 watch: world v3's Golden Gate (sim/worlds/golden-gate-v3.toml) on an ordinary
+# day, nothing scripted: 20 of ours in every domain, the world's background traffic in every
+# domain, the physical sensing model, the world's land/water grid and currents, and each
+# episode's conditions (start time, so day or night, visibility, wind, sea state) drawn from the
+# world's ranges by its seed. The headless base the world v3 families build on, and the world's
+# smoke (eval/headless/tests/test_worlds_v3.py):
+#   .venv/bin/python -m eval.headless.batch --situation golden-gate-v3-watch --seeds 1-3 --agent none playbook
+# Headless only: the live runner has no tidewater conditions draw and runs the fleet as given.
+title = "Golden Gate v3 watch"
+brief = """
+You have the watch at the Golden Gate with twenty of ours: REAPER 1 orbits wide over the
+bay entrance and HAWK 1 far offshore; PUMA 2 holds station off Lime Point, KESTREL 1 over the
+approaches, SKY 2 over Horseshoe Bay and the airship over the Marin Headlands; PUMA 1 and SKY 1
+wait at Crissy Field. HUNTER 1 patrols west of the Gate, MARLIN 1 the channel east of the
+bridge, ALBATROSS 1 sails its station off Point Bonita, VIPER 1 waits armed in Horseshoe Bay.
+REMUS 1 surveys the channel, three buoys drift in it, EEL 1 waits at the Horseshoe Bay pier.
+FERRET 1 patrols Crissy Field, MULE 1 waits at Fort Baker. Traffic is normal for the place:
+ferries, ships in the channel, fishing and sailing boats, the Coast Guard, sightseeing aircraft
+and helicopters, cars and walkers ashore. Keep the picture and our vehicles in order.
+"""
+director = """
+Nothing is scripted: the world's ordinary traffic only. The conditions (time of day, visibility,
+wind, sea state) are drawn per episode from the world's ranges.
+"""
+
+world = "golden-gate-v3"                      # its fleet and traffic (contacts) and space snapshot
+policy = "sim/situations/policies/watch.toml"
+duration_s = 1800
+ai_start_s = 45
+ready_timeout_s = 240
+operator = "autoplay"
+ai = "playbook"
+seed = 1
+
+[headless]
+domain_rule = "grid"
+currents = "world"
+conditions = "world"
+
+# ---- the opening orders (op-setup: by policy, or through agent-setup to the inbox)
+[[order]]
+id = "entrance-orbit"
+task = "orbit"
+vehicles = { callsign = "REAPER 1" }
+center = [-122.5050, 37.8150]
+radius_m = 4000
+note = "Opening order: orbit wide over the bay entrance"
+
+[[order]]
+id = "far-orbit"
+task = "orbit"
+vehicles = { callsign = "HAWK 1" }
+center = [-122.8000, 37.7000]
+radius_m = 15000                              # its turn at 160 m/s and 2.5 deg/s is 3.7 km
+note = "Opening order: the far orbit offshore"
+
+[[order]]
+id = "lime-point-station"
+task = "orbit"
+vehicles = { callsign = "PUMA 2" }
+center = [-122.4680, 37.8240]
+radius_m = 300
+note = "Opening order: launch from Crissy Field and hold station off Lime Point"
+
+[[order]]
+id = "approaches-orbit"
+task = "orbit"
+vehicles = { callsign = "KESTREL 1" }
+center = [-122.5150, 37.8200]
+radius_m = 800
+note = "Opening order: orbit over the approaches"
+
+[[order]]
+id = "horseshoe-station"
+task = "orbit"
+vehicles = { callsign = "SKY 2" }
+center = [-122.4740, 37.8295]
+radius_m = 150
+note = "Opening order: hold over Horseshoe Bay"
+
+[[order]]
+id = "headlands-station"
+task = "orbit"
+vehicles = { callsign = "ZEP 1" }
+center = [-122.4830, 37.8330]
+radius_m = 400
+note = "Opening order: the airship holds over the Marin Headlands"
+
+[[order]]
+id = "approaches-patrol"
+task = "patrol"
+vehicles = { callsign = "HUNTER 1" }
+route = [[-122.4850, 37.8180], [-122.5100, 37.8080], [-122.5270, 37.8020]]
+note = "Opening order: patrol west of the Gate"
+
+[[order]]
+id = "channel-patrol"
+task = "patrol"
+vehicles = { callsign = "MARLIN 1" }
+route = [[-122.4720, 37.8135], [-122.4720, 37.8250]]
+note = "Opening order: patrol the channel east of the bridge"
+
+[[order]]
+id = "bonita-station"
+task = "patrol"
+vehicles = { callsign = "ALBATROSS 1" }
+route = [[-122.5150, 37.8040], [-122.5260, 37.8150]]
+note = "Opening order: sail the station off Point Bonita"
+
+[[order]]
+id = "channel-survey"
+task = "patrol"
+vehicles = { callsign = "REMUS 1" }
+route = [[-122.4650, 37.8180], [-122.4500, 37.8230]]
+note = "Opening order: survey the channel east of the bridge"
+
+[[order]]
+id = "eel-pier"
+task = "patrol"
+vehicles = { callsign = "EEL 1" }
+route = [[-122.4764, 37.8311], [-122.4752, 37.8308]]
+note = "Opening order: inspect the Horseshoe Bay pier"
+
+[[order]]
+id = "crissy-patrol"
+task = "patrol"
+vehicles = { callsign = "FERRET 1" }
+route = [[-122.4600, 37.8085], [-122.4480, 37.8082]]
+note = "Opening order: patrol Crissy Field"
+
+[playbook]
+sensor_platform = "puma"
+[[playbook.watch_area]]
+name = "the Golden Gate approaches"
+center = [-122.4783, 37.8199]
+radius_m = 3000
+[[playbook.protected]]
+name = "the Golden Gate Bridge"
+point = [-122.4783, 37.8199]
+
+[autoplay]
+preset = "default"

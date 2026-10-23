@@ -53,6 +53,8 @@ pub struct Vehicle {
     pub yaw_rate: f64,
     /// came down without power
     pub crashed: bool,
+    /// still tied up where it spawned (`VehicleConfig::moored`) until it first arms
+    pub moored: bool,
     /// when the next acoustic status is due (sim seconds)
     pub acoustic_next: f64,
     /// MISSION_CURRENT last sent, so events don't repeat it
@@ -145,6 +147,7 @@ impl Vehicle {
         let link = Link::new(sock, cfg.sysid());
         let mut mission = Mission::default();
         mission.cfg.firmware = firmware;
+        let moored = cfg.moored;
         Ok(Vehicle {
             cfg,
             behavior,
@@ -164,6 +167,7 @@ impl Vehicle {
             rx,
             yaw_rate: 0.0,
             crashed: false,
+            moored,
             acoustic_next: 0.0,
             announced_seq: None,
             mission_request_warned: false,
@@ -290,11 +294,21 @@ impl Vehicle {
             },
             max_speed: spec.max_mps.max(spec.cruise_mps),
         };
-        let sample = if self.behavior.wants_conditions() {
+        let mut sample = if self.behavior.wants_conditions() {
             self.water.as_ref().and_then(|w| w.latest())
         } else {
             None
         };
+        // tied up until it first arms: the water still under it, no current to carry it off
+        if self.moored && self.st.armed {
+            self.moored = false;
+        }
+        if self.moored
+            && let Some(s) = sample.as_mut()
+        {
+            s.current_east = Some(0.0);
+            s.current_north = Some(0.0);
+        }
         self.check_failsafes(now);
 
         // a flat battery drives nothing: the behavior sees an unpowered vehicle

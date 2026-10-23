@@ -1,0 +1,844 @@
+# The scale world's background traffic (sim/worlds/golden-gate-scale.toml; docs/WORLD-V3-PLAN.md
+# H6): Golden Gate v3's traffic (sim/scenarios/golden-gate-v3-traffic.toml), every contact of it
+# copied unchanged, and a heavier day on top (the section at the end). Sources and AIS carriage
+# as Golden Gate v3's file says. Routes stay on water or on land on the world's baked grid
+# (checked: eval/headless/tests/test_worlds_v3.py).
+title = "Golden Gate scale traffic"
+seed = 31
+
+[sensing]
+misclassification_rate = 0.05
+model = "physical"
+terrain = "sim/headless/terrain/golden-gate.grid.gz"
+bathymetry = "sim/headless/terrain/golden-gate.bathy.grid.gz"
+
+# What the sensing model senses in when a situation draws nothing (`[headless] conditions =
+# "world"` draws visibility, wind and sea state per episode and puts them here); the sun comes
+# from the scenario clock. Shipping noise for sonar: a busy harbour entrance.
+[conditions]
+visibility_m = 20000
+sea_state = 2
+wind_mps = 5
+shipping = 0.7
+
+# ---------------------------------------------------------------- ferries and passenger boats
+[[contact]]
+id = "ferry-sausalito"
+name = "Sausalito ferry (Ferry Building to Sausalito)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 10
+motion = "route"
+route = [[-122.3855, 37.7966], [-122.3870, 37.8040], [-122.3960, 37.8115], [-122.4120, 37.8150], [-122.4400, 37.8220], [-122.4620, 37.8390], [-122.4760, 37.8555]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999101", name = "MV GOLDEN BEAR", ship_type = "passenger" }
+
+[[contact]]
+id = "ferry-larkspur"
+name = "Larkspur ferry (Ferry Building to Larkspur through Raccoon Strait)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 12
+motion = "route"
+route = [[-122.3855, 37.7966], [-122.3870, 37.8040], [-122.3960, 37.8115], [-122.4120, 37.8180], [-122.4300, 37.8400], [-122.4470, 37.8500], [-122.4460, 37.8600], [-122.4370, 37.8640], [-122.4300, 37.8780], [-122.4400, 37.9100], [-122.4800, 37.9350], [-122.5070, 37.9440]]
+reverse = true
+dwell_s = 600
+start_s = 240
+ais = { mmsi = "366999102", name = "MV MARIN CREST", ship_type = "passenger" }
+
+[[contact]]
+id = "ferry-angel-island"
+name = "Ferry from Pier 41 to Ayala Cove (Angel Island) and Tiburon"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 9
+motion = "route"
+route = [[-122.4120, 37.8133], [-122.4250, 37.8400], [-122.4470, 37.8500], [-122.4460, 37.8600], [-122.4370, 37.8625], [-122.4370, 37.8690], [-122.4360, 37.8715]]
+reverse = true
+dwell_s = 420
+start_s = 120
+ais = { mmsi = "366999104", name = "MV RACCOON STRAIT", ship_type = "passenger" }
+
+[[contact]]
+id = "ferry-alcatraz"
+name = "Alcatraz ferry (Pier 33 to the island)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 6
+motion = "route"
+route = [[-122.3985, 37.8100], [-122.4140, 37.8200], [-122.4195, 37.8262]]
+reverse = true
+dwell_s = 300
+ais = { mmsi = "366999105", name = "MV ALCATRAZ FLYER", ship_type = "passenger" }
+
+[[contact]]
+id = "cruise-bay"
+name = "Bay cruise from Pier 43 1/2 under the bridge and back"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 6
+motion = "route"
+route = [[-122.4150, 37.8140], [-122.4200, 37.8170], [-122.4500, 37.8160], [-122.4740, 37.8215], [-122.4850, 37.8200], [-122.4650, 37.8150], [-122.4300, 37.8250], [-122.4150, 37.8150]]
+dwell_s = 300
+start_s = 60
+ais = { mmsi = "366999106", name = "MV BAY VOYAGER", ship_type = "passenger" }
+
+# ---------------------------------------------------------------- the ship channel (class A)
+[[contact]]
+id = "cargo-inbound"
+name = "Container ship inbound over the bar to Oakland"
+affiliation = "neutral"
+domain = "surface"
+kind = "cargo_ship"
+speed_mps = 7
+motion = "transit"
+route = [[-122.6400, 37.7700], [-122.5600, 37.7930], [-122.5100, 37.8060], [-122.4790, 37.8180], [-122.4300, 37.8320], [-122.4000, 37.8220], [-122.3830, 37.8030], [-122.3550, 37.8080]]
+start_s = 300
+ais = { mmsi = "366999201", name = "MSC AURELIA", ship_type = "cargo" }
+
+[[contact]]
+id = "tanker-outbound"
+name = "Product tanker outbound from Richmond"
+affiliation = "neutral"
+domain = "surface"
+kind = "tanker"
+speed_mps = 6
+motion = "transit"
+route = [[-122.4050, 37.8800], [-122.4100, 37.8450], [-122.4500, 37.8280], [-122.4790, 37.8170], [-122.5500, 37.7960], [-122.6500, 37.7700]]
+start_s = 700
+ais = { mmsi = "366999204", name = "PACIFIC VOYAGER", ship_type = "tanker" }
+
+[[contact]]
+id = "cargo-outbound"
+name = "Bulk carrier outbound, already west of the bridge"
+affiliation = "neutral"
+domain = "surface"
+kind = "cargo_ship"
+speed_mps = 6
+motion = "transit"
+route = [[-122.4900, 37.8140], [-122.5500, 37.7960], [-122.6800, 37.7500]]
+ais = { mmsi = "366999202", name = "PACIFIC HARVESTER", ship_type = "cargo" }
+
+# ---------------------------------------------------------------- fishing
+[[contact]]
+id = "fishing-wharf"
+name = "Trawler from Fisherman's Wharf to the grounds (AIS class A)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+speed_mps = 5
+motion = "route"
+route = [[-122.4150, 37.8145], [-122.4600, 37.8230], [-122.4790, 37.8190], [-122.5500, 37.7850]]
+reverse = true
+dwell_s = 900
+ais = { mmsi = "366999301", name = "F/V ANNA MARIE", ship_type = "fishing" }
+ais_class = "a"
+
+[[contact]]
+id = "fishing-charter"
+name = "Charter boat out of Sausalito to the Potato Patch (AIS class B)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+speed_mps = 8
+motion = "transit"
+route = [[-122.4750, 37.8530], [-122.4640, 37.8420], [-122.4630, 37.8300], [-122.4740, 37.8240], [-122.4900, 37.8200], [-122.5300, 37.8080], [-122.5500, 37.8150]]
+start_s = 500
+ais = { mmsi = "366999302", name = "SALTY LADY", ship_type = "fishing" }
+dc_m = 6
+height_m = 3
+rcs_m2 = 40
+
+[[contact]]
+id = "fishing-bonita"
+name = "Crab boat drifting off Point Bonita (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+motion = "drift"
+at = [-122.5400, 37.8050]
+dc_m = 7
+height_m = 3
+rcs_m2 = 60
+
+[[contact]]
+id = "fishing-milerock"
+name = "Sport fishing boat drifting off Mile Rock (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+motion = "drift"
+at = [-122.5200, 37.7850]
+dc_m = 5
+height_m = 2.5
+rcs_m2 = 15
+
+# ---------------------------------------------------------------- sailing
+[[contact]]
+id = "sailboat-cityfront"
+name = "Racing yacht on a lap of the Cityfront course (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "sailboat"
+speed_mps = 3
+motion = "route"
+route = [[-122.4500, 37.8150], [-122.4650, 37.8300], [-122.4400, 37.8400], [-122.4200, 37.8180]]
+
+[[contact]]
+id = "sailboat-crissy"
+name = "Daysailer tacking off Crissy Field (AIS class B)"
+affiliation = "neutral"
+domain = "surface"
+kind = "sailboat"
+speed_mps = 2.5
+motion = "route"
+route = [[-122.4550, 37.8125], [-122.4720, 37.8215], [-122.4600, 37.8285], [-122.4450, 37.8185]]
+ais = { mmsi = "338999501", name = "WINDSONG", ship_type = "pleasure" }
+
+[[contact]]
+id = "sailboat-outbound"
+name = "Cruising yacht motor-sailing out the Gate (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "sailboat"
+speed_mps = 3.5
+motion = "transit"
+route = [[-122.4400, 37.8300], [-122.4700, 37.8240], [-122.4950, 37.8150], [-122.5400, 37.8100]]
+start_s = 200
+
+[[contact]]
+id = "sailboat-richardson"
+name = "Yacht at anchor off Sausalito (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "sailboat"
+motion = "station"
+at = [-122.4700, 37.8500]
+
+# ---------------------------------------------------------------- the Coast Guard (assumed friend)
+[[contact]]
+id = "uscg-mlb"
+name = "Coast Guard motor lifeboat from Station Golden Gate patrolling the Gate (AIS)"
+affiliation = "assumed_friend"
+domain = "surface"
+kind = "patrol_boat"
+speed_mps = 8
+motion = "route"
+route = [[-122.4700, 37.8280], [-122.4800, 37.8225], [-122.4950, 37.8170], [-122.5250, 37.8080], [-122.4850, 37.8215]]
+start_s = 400
+ais = { mmsi = "366999401", name = "CG 47312", ship_type = "law_enforcement" }
+
+# ---------------------------------------------------------------- offshore, 12 to 30 km out
+# The approaches beyond the bar: the pilot station, a ship in the southern lane, a salmon
+# troller off Ocean Beach, a yacht on passage up the coast from Half Moon Bay. Far enough that
+# the horizon hides the low ones from our boats' masts.
+[[contact]]
+id = "pilot-boat"
+name = "Bar pilot boat on station at the pilot area"
+affiliation = "neutral"
+domain = "surface"
+kind = "patrol_boat"
+speed_mps = 4
+motion = "loiter"
+center = [-122.7000, 37.7600]
+radius_m = 1500
+ais = { mmsi = "366999601", name = "PILOT CALIFORNIA", ship_type = "other" }
+
+[[contact]]
+id = "cargo-southern-lane"
+name = "Container ship inbound in the southern lane to the pilot area"
+affiliation = "neutral"
+domain = "surface"
+kind = "cargo_ship"
+speed_mps = 6
+motion = "transit"
+route = [[-122.7300, 37.6400], [-122.7000, 37.7400], [-122.6400, 37.7700], [-122.5600, 37.7930], [-122.5100, 37.8060], [-122.4790, 37.8180]]
+start_s = 120
+ais = { mmsi = "366999205", name = "EVER LUCENT", ship_type = "cargo" }
+
+[[contact]]
+id = "fishing-ocean-beach"
+name = "Salmon troller working off Ocean Beach (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+speed_mps = 2
+motion = "loiter"
+center = [-122.6300, 37.7300]
+radius_m = 800
+dc_m = 6
+height_m = 3
+rcs_m2 = 30
+
+[[contact]]
+id = "sailboat-northbound"
+name = "Yacht on passage up the coast from Half Moon Bay to the Gate (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "sailboat"
+speed_mps = 3.5
+motion = "transit"
+route = [[-122.6200, 37.5500], [-122.5950, 37.6500], [-122.5700, 37.7600], [-122.5300, 37.8000], [-122.4900, 37.8150]]
+
+# ---------------------------------------------------------------- air
+[[contact]]
+id = "cessna-sightseeing"
+name = "Light aircraft on a sightseeing loop over the Gate (transponder on)"
+affiliation = "neutral"
+domain = "air"
+kind = "light_aircraft"
+speed_mps = 55
+alt_m = 450
+motion = "route"
+route = [[-122.3700, 37.7600], [-122.4500, 37.8100], [-122.5200, 37.8300], [-122.4400, 37.8700]]
+
+[[contact]]
+id = "cessna-shoreline"
+name = "Light aircraft westbound along the city front and out past Point Bonita"
+affiliation = "neutral"
+domain = "air"
+kind = "light_aircraft"
+speed_mps = 50
+alt_m = 600
+motion = "transit"
+route = [[-122.3800, 37.8150], [-122.4400, 37.8150], [-122.4900, 37.8180], [-122.5600, 37.8100], [-122.6500, 37.8000]]
+start_s = 400
+
+[[contact]]
+id = "heli-tour"
+name = "Tour helicopter around Alcatraz and the bridge"
+affiliation = "neutral"
+domain = "air"
+kind = "helicopter"
+speed_mps = 45
+alt_m = 300
+motion = "route"
+route = [[-122.4000, 37.8080], [-122.4500, 37.8150], [-122.4780, 37.8200], [-122.4950, 37.8230], [-122.4650, 37.8330], [-122.4230, 37.8300]]
+
+[[contact]]
+id = "heli-tour-late"
+name = "Second tour helicopter, the bridge and Sausalito"
+affiliation = "neutral"
+domain = "air"
+kind = "helicopter"
+speed_mps = 45
+alt_m = 350
+motion = "route"
+route = [[-122.4100, 37.8100], [-122.4700, 37.8180], [-122.4900, 37.8250], [-122.4700, 37.8500], [-122.4300, 37.8350]]
+start_s = 900
+
+[[contact]]
+id = "drone-baker-beach"
+name = "Hobby drone over the shore by Baker Beach (no transponder)"
+affiliation = "neutral"
+domain = "air"
+kind = "small_drone"
+speed_mps = 5
+alt_m = 90
+motion = "loiter"
+center = [-122.4860, 37.7960]
+radius_m = 80
+start_s = 600
+end_s = 1300
+
+# ---------------------------------------------------------------- ground
+[[contact]]
+id = "car-mason"
+name = "Car on Mason Street along Crissy Field"
+affiliation = "neutral"
+domain = "ground"
+kind = "vehicle"
+speed_mps = 11
+motion = "route"
+route = [[-122.4440, 37.8060], [-122.4520, 37.8065], [-122.4600, 37.8070]]
+reverse = true
+dwell_s = 120
+
+[[contact]]
+id = "truck-marine-drive"
+name = "Delivery truck on Marine Drive to Fort Point"
+affiliation = "neutral"
+domain = "ground"
+kind = "truck"
+speed_mps = 7
+motion = "route"
+route = [[-122.4600, 37.8070], [-122.4680, 37.8085], [-122.4740, 37.8095]]
+reverse = true
+dwell_s = 300
+start_s = 150
+
+[[contact]]
+id = "car-lincoln"
+name = "Car on Lincoln Boulevard through the Presidio"
+affiliation = "neutral"
+domain = "ground"
+kind = "vehicle"
+speed_mps = 11
+motion = "route"
+route = [[-122.4550, 37.8030], [-122.4650, 37.8020], [-122.4720, 37.8040], [-122.4760, 37.8060]]
+reverse = true
+dwell_s = 60
+
+[[contact]]
+id = "car-conzelman"
+name = "Car on Conzelman Road up the Marin Headlands"
+affiliation = "neutral"
+domain = "ground"
+kind = "vehicle"
+speed_mps = 9
+motion = "route"
+route = [[-122.4795, 37.8320], [-122.4825, 37.8285], [-122.4900, 37.8280], [-122.4995, 37.8275]]
+reverse = true
+dwell_s = 600
+start_s = 300
+
+[[contact]]
+id = "car-fort-baker"
+name = "Car on Alexander Avenue down to Fort Baker"
+affiliation = "neutral"
+domain = "ground"
+kind = "vehicle"
+speed_mps = 9
+motion = "route"
+route = [[-122.4800, 37.8380], [-122.4790, 37.8360], [-122.4775, 37.8340]]
+reverse = true
+dwell_s = 400
+
+[[contact]]
+id = "walkers-crissy"
+name = "Walkers on the Crissy Field promenade"
+affiliation = "neutral"
+domain = "ground"
+kind = "person"
+speed_mps = 1.4
+motion = "route"
+route = [[-122.4480, 37.8088], [-122.4560, 37.8088], [-122.4640, 37.8086]]
+reverse = true
+
+[[contact]]
+id = "walker-fort-point"
+name = "Visitor walking out to Fort Point"
+affiliation = "neutral"
+domain = "ground"
+kind = "person"
+speed_mps = 1.2
+motion = "route"
+route = [[-122.4700, 37.8090], [-122.4740, 37.8095], [-122.4765, 37.8102]]
+reverse = true
+dwell_s = 300
+
+[[contact]]
+id = "visitors-battery-spencer"
+name = "Visitors at the Battery Spencer viewpoint"
+affiliation = "neutral"
+domain = "ground"
+kind = "person"
+motion = "station"
+at = [-122.4825, 37.8285]
+
+# ================================================================ the scale world's heavier traffic
+# Everything above is Golden Gate v3's traffic, byte for byte; below, a busier day on the same
+# water and shore: second boats on the ferry runs and the Oakland and Vallejo ferries, more
+# ships in the channel, a crab fleet off Point Bonita, a yacht race off the Cityfront, powerboats,
+# a Coast Guard cutter, more sightseeing aircraft and helicopters, a news helicopter over the
+# bridge, a second hobby drone, more cars and walkers.
+
+[[contact]]
+id = "x-ferry-sausalito-2"
+name = "Second Sausalito ferry, half a cycle behind the first"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 10
+motion = "route"
+route = [[-122.4760, 37.8555], [-122.4620, 37.8390], [-122.4400, 37.8220], [-122.4120, 37.8150], [-122.3960, 37.8115], [-122.3870, 37.8040], [-122.3855, 37.7966]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999111", name = "MV SONOMA", ship_type = "passenger" }
+
+[[contact]]
+id = "x-ferry-larkspur-2"
+name = "Second Larkspur ferry, inbound to the Ferry Building"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 12
+motion = "route"
+route = [[-122.5070, 37.9440], [-122.4800, 37.9350], [-122.4400, 37.9100], [-122.4300, 37.8780], [-122.4370, 37.8640], [-122.4460, 37.8600], [-122.4470, 37.8500], [-122.4300, 37.8400], [-122.4120, 37.8180], [-122.3960, 37.8115], [-122.3870, 37.8040], [-122.3855, 37.7966]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999112", name = "MV MENDOCINO", ship_type = "passenger" }
+
+[[contact]]
+id = "x-ferry-oakland"
+name = "Oakland and Alameda ferry from the Ferry Building"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 11
+motion = "route"
+route = [[-122.3855, 37.7966], [-122.3750, 37.7990], [-122.3550, 37.7980], [-122.3300, 37.7950], [-122.2900, 37.7900]]
+reverse = true
+dwell_s = 480
+ais = { mmsi = "366999103", name = "MV ESTUARY", ship_type = "passenger" }
+
+[[contact]]
+id = "x-ferry-vallejo"
+name = "Vallejo ferry from the Ferry Building, north past Angel Island"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 15
+motion = "route"
+route = [[-122.3855, 37.7966], [-122.3870, 37.8040], [-122.3850, 37.8300], [-122.3950, 37.8800], [-122.3800, 37.9500], [-122.3200, 38.0400]]
+reverse = true
+dwell_s = 900
+start_s = 300
+ais = { mmsi = "366999113", name = "MV SOLANO", ship_type = "passenger" }
+
+[[contact]]
+id = "x-cargo-inbound-2"
+name = "Second container ship inbound over the bar"
+affiliation = "neutral"
+domain = "surface"
+kind = "cargo_ship"
+speed_mps = 7
+motion = "transit"
+route = [[-122.6400, 37.7700], [-122.5600, 37.7930], [-122.5100, 37.8060], [-122.4790, 37.8180], [-122.4300, 37.8320], [-122.4000, 37.8220], [-122.3830, 37.8030], [-122.3550, 37.8080]]
+start_s = 1000
+ais = { mmsi = "366999208", name = "CMA CGM BRAZIL", ship_type = "cargo" }
+
+[[contact]]
+id = "x-tanker-inbound"
+name = "Crude tanker inbound to Richmond"
+affiliation = "neutral"
+domain = "surface"
+kind = "tanker"
+speed_mps = 6
+motion = "transit"
+route = [[-122.6500, 37.7700], [-122.5500, 37.7960], [-122.4790, 37.8170], [-122.4500, 37.8280], [-122.4100, 37.8450], [-122.4050, 37.8800]]
+start_s = 1300
+ais = { mmsi = "366999209", name = "ALASKAN NAVIGATOR", ship_type = "tanker" }
+
+[[contact]]
+id = "x-crab-bonita-1"
+name = "Crab boat working pots off Point Bonita (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+speed_mps = 2
+motion = "loiter"
+center = [-122.5450, 37.8120]
+radius_m = 400
+dc_m = 7
+height_m = 3
+rcs_m2 = 60
+
+[[contact]]
+id = "x-crab-bonita-2"
+name = "Second crab boat off Point Bonita (AIS class B)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+speed_mps = 2
+motion = "loiter"
+center = [-122.5350, 37.8000]
+radius_m = 300
+ais = { mmsi = "338999303", name = "LUCKY STRIKE", ship_type = "fishing" }
+dc_m = 7
+height_m = 3
+rcs_m2 = 60
+
+[[contact]]
+id = "x-crab-bonita-3"
+name = "Third crab boat drifting off the Potato Patch (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+motion = "drift"
+at = [-122.5500, 37.8200]
+dc_m = 6
+height_m = 3
+rcs_m2 = 40
+
+[[contact]]
+id = "x-sportfish-presidio"
+name = "Sport fishing boat off the Presidio shore (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+motion = "drift"
+at = [-122.4900, 37.8050]
+dc_m = 5
+height_m = 2.5
+rcs_m2 = 15
+
+[[contact]]
+id = "x-race-1"
+name = "Racing yacht, Cityfront course (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "sailboat"
+speed_mps = 3.2
+motion = "route"
+route = [[-122.4450, 37.8140], [-122.4600, 37.8320], [-122.4400, 37.8420], [-122.4300, 37.8200]]
+
+[[contact]]
+id = "x-race-2"
+name = "Racing yacht, Cityfront course (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "sailboat"
+speed_mps = 3.0
+motion = "route"
+route = [[-122.4450, 37.8140], [-122.4600, 37.8320], [-122.4400, 37.8420], [-122.4300, 37.8200]]
+start_s = 60
+
+[[contact]]
+id = "x-race-3"
+name = "Racing yacht, Cityfront course (AIS class B)"
+affiliation = "neutral"
+domain = "surface"
+kind = "sailboat"
+speed_mps = 3.4
+motion = "route"
+route = [[-122.4450, 37.8140], [-122.4600, 37.8320], [-122.4400, 37.8420], [-122.4300, 37.8200]]
+start_s = 120
+ais = { mmsi = "338999511", name = "ZEPHYR", ship_type = "pleasure" }
+
+[[contact]]
+id = "x-race-4"
+name = "Racing yacht, Cityfront course (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "sailboat"
+speed_mps = 2.8
+motion = "route"
+route = [[-122.4450, 37.8140], [-122.4600, 37.8320], [-122.4400, 37.8420], [-122.4300, 37.8200]]
+start_s = 180
+
+[[contact]]
+id = "x-race-5"
+name = "Racing yacht, Cityfront course (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "sailboat"
+speed_mps = 3.1
+motion = "route"
+route = [[-122.4450, 37.8140], [-122.4600, 37.8320], [-122.4400, 37.8420], [-122.4300, 37.8200]]
+start_s = 240
+
+[[contact]]
+id = "x-race-6"
+name = "Racing yacht, Cityfront course (AIS class B)"
+affiliation = "neutral"
+domain = "surface"
+kind = "sailboat"
+speed_mps = 3.3
+motion = "route"
+route = [[-122.4450, 37.8140], [-122.4600, 37.8320], [-122.4400, 37.8420], [-122.4300, 37.8200]]
+start_s = 300
+ais = { mmsi = "338999512", name = "WILD THING", ship_type = "pleasure" }
+
+[[contact]]
+id = "x-race-committee"
+name = "Race committee boat anchored at the start line (AIS class B)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+motion = "station"
+at = [-122.4450, 37.8150]
+ais = { mmsi = "338999513", name = "STFYC SIGNAL", ship_type = "pleasure" }
+dc_m = 6
+height_m = 3
+rcs_m2 = 20
+
+[[contact]]
+id = "x-powerboat-1"
+name = "Powerboat running from Sausalito to the city front (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "small_fast_boat"
+speed_mps = 12
+motion = "route"
+route = [[-122.4750, 37.8530], [-122.4640, 37.8420], [-122.4500, 37.8250], [-122.4300, 37.8130]]
+reverse = true
+dwell_s = 400
+start_s = 200
+
+[[contact]]
+id = "x-powerboat-2"
+name = "Powerboat out the Gate and back (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "small_fast_boat"
+speed_mps = 10
+motion = "route"
+route = [[-122.4500, 37.8200], [-122.4800, 37.8200], [-122.5200, 37.8100]]
+reverse = true
+dwell_s = 300
+start_s = 700
+
+[[contact]]
+id = "x-uscg-cutter"
+name = "Coast Guard patrol boat on station in the central bay (AIS)"
+affiliation = "assumed_friend"
+domain = "surface"
+kind = "patrol_boat"
+speed_mps = 6
+motion = "loiter"
+center = [-122.4450, 37.8230]
+radius_m = 800
+ais = { mmsi = "366999403", name = "CGC TERN", ship_type = "law_enforcement" }
+
+[[contact]]
+id = "x-cessna-bay-tour"
+name = "Light aircraft on the Bay Tour, Alcatraz to the bridge (transponder on)"
+affiliation = "neutral"
+domain = "air"
+kind = "light_aircraft"
+speed_mps = 50
+alt_m = 500
+motion = "route"
+route = [[-122.3900, 37.8000], [-122.4230, 37.8270], [-122.4780, 37.8200], [-122.5000, 37.8400], [-122.4400, 37.8600]]
+start_s = 200
+
+[[contact]]
+id = "x-cessna-coast"
+name = "Light aircraft southbound along the coast past the Gate"
+affiliation = "neutral"
+domain = "air"
+kind = "light_aircraft"
+speed_mps = 55
+alt_m = 700
+motion = "transit"
+route = [[-122.6000, 37.9200], [-122.5400, 37.8300], [-122.5300, 37.7600], [-122.5200, 37.6500]]
+start_s = 800
+
+[[contact]]
+id = "x-heli-tour-3"
+name = "Tour helicopter along the city front and the bridge"
+affiliation = "neutral"
+domain = "air"
+kind = "helicopter"
+speed_mps = 45
+alt_m = 300
+motion = "route"
+route = [[-122.3950, 37.8050], [-122.4400, 37.8130], [-122.4780, 37.8180], [-122.4500, 37.8270]]
+start_s = 450
+
+[[contact]]
+id = "x-heli-news"
+name = "News helicopter holding over the bridge (transponder on)"
+affiliation = "neutral"
+domain = "air"
+kind = "helicopter"
+speed_mps = 20
+alt_m = 500
+motion = "loiter"
+center = [-122.4783, 37.8199]
+radius_m = 600
+start_s = 1000
+
+[[contact]]
+id = "x-drone-battery-spencer"
+name = "Hobby drone at the Battery Spencer viewpoint (no transponder)"
+affiliation = "neutral"
+domain = "air"
+kind = "small_drone"
+speed_mps = 4
+alt_m = 170
+motion = "loiter"
+center = [-122.4830, 37.8290]
+radius_m = 60
+start_s = 300
+end_s = 900
+
+[[contact]]
+id = "x-car-lincoln-2"
+name = "Second car on Lincoln Boulevard"
+affiliation = "neutral"
+domain = "ground"
+kind = "vehicle"
+speed_mps = 11
+motion = "route"
+route = [[-122.4760, 37.8060], [-122.4720, 37.8040], [-122.4650, 37.8020], [-122.4550, 37.8030]]
+reverse = true
+dwell_s = 90
+start_s = 120
+
+[[contact]]
+id = "x-car-mason-2"
+name = "Second car on Mason Street"
+affiliation = "neutral"
+domain = "ground"
+kind = "vehicle"
+speed_mps = 11
+motion = "route"
+route = [[-122.4600, 37.8070], [-122.4520, 37.8065], [-122.4440, 37.8060]]
+reverse = true
+dwell_s = 200
+start_s = 60
+
+[[contact]]
+id = "x-van-conzelman"
+name = "Tour van on Conzelman Road"
+affiliation = "neutral"
+domain = "ground"
+kind = "truck"
+speed_mps = 8
+motion = "route"
+route = [[-122.4795, 37.8320], [-122.4825, 37.8285], [-122.4900, 37.8280]]
+reverse = true
+dwell_s = 900
+start_s = 600
+
+[[contact]]
+id = "x-car-fort-baker-2"
+name = "Second car down to Fort Baker"
+affiliation = "neutral"
+domain = "ground"
+kind = "vehicle"
+speed_mps = 9
+motion = "route"
+route = [[-122.4800, 37.8380], [-122.4790, 37.8360], [-122.4775, 37.8340]]
+reverse = true
+dwell_s = 500
+start_s = 500
+
+[[contact]]
+id = "x-walkers-crissy-beach"
+name = "Walkers on the Crissy Field promenade, eastbound"
+affiliation = "neutral"
+domain = "ground"
+kind = "person"
+speed_mps = 1.3
+motion = "route"
+route = [[-122.4640, 37.8086], [-122.4560, 37.8088], [-122.4480, 37.8088]]
+reverse = true
+
+[[contact]]
+id = "x-walkers-fort-baker"
+name = "Walkers at Fort Baker"
+affiliation = "neutral"
+domain = "ground"
+kind = "person"
+speed_mps = 1.2
+motion = "route"
+route = [[-122.4790, 37.8325], [-122.4770, 37.8330]]
+reverse = true
+
+[[contact]]
+id = "x-visitors-crissy"
+name = "Visitors on the Crissy Field lawn"
+affiliation = "neutral"
+domain = "ground"
+kind = "person"
+motion = "station"
+at = [-122.4540, 37.8086]

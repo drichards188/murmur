@@ -689,7 +689,11 @@ the unpacked tree), and smoke episodes on the binary: the engagement chain end t
 a miss with a surviving munition un-spent, a lost contact blocking until its AIS claim is
 confirmed, a collect, a cover, each log replayed with its
 anchors, two of them run twice and compared whole, and an episode without the options having
-none of it.
+none of it. `test_worlds_v3.py` (section 17.5): world v3's three worlds against their own baked
+grids (every spawn, every opening order's way, the traffic on its medium, AIS on surface contacts
+only), their pinned element sets and San Diego's provenance, the conditions drawing day and
+night and reaching the sensing model, and one short episode per world on the binary; the moored
+hull is the stand-ins' own test (`tests/mooring.rs`).
 
 ## 14. Step 2: how it plugs in
 
@@ -1262,3 +1266,91 @@ geometry in the simulator, as before).
 
     .venv/bin/python -m eval.headless.batch --situation fault-drill --seeds 1-10 --agent playbook none
     .venv/bin/python -m eval.headless.bake_world golden-gate --url http://127.0.0.1:9570 --out /tmp/rebake
+
+### 17.5 The three worlds (world v3 section 5 and H6, bd murmur-1z6.5)
+
+Built 2026-10-23: Golden Gate v3, San Diego and the 100-node scale world, each with a watch
+situation (`golden-gate-v3-watch`, `san-diego-watch`, `golden-gate-scale-watch`: nothing
+scripted, 30 minutes, headless only). What each world holds and where its data comes from is
+`sim/worlds/README.md`; here, what the simulator does with them and the smoke. **Every v1 and v2
+situation runs as before**: each change below is off unless a world v3 world or a situation's key
+asks for it (the golden's digest, the null fidelity and the charged clock's byte-identity tests
+pass unchanged).
+
+- **A situation in one of world v3's worlds** (any but `golden-gate`; `EpisodeSpec.world = "v3"`)
+  takes its world's `traffic` as its contacts unless it names its own, runs the sensing model
+  those contacts name (their `[sensing] model = "physical"`, with the world's terrain and
+  bathymetry grids) instead of being pinned to the legacy one, and reads the world's pinned
+  element sets (`space`; `Options.space_snapshot` overrides it). Its runner waits for every
+  vehicle's home as well as its position before the opening orders (an AUV on its acoustic
+  modem navigates before the bridge has its home, and the checks refuse an order without one).
+  A situation in `golden-gate` (the fault drill) stays v1, on the legacy model.
+- **Drawn conditions** (`[headless] conditions = "world"`): at the episode's start
+  (`EpisodeSpec.drawn`), `World.draw_conditions` from `random.Random("conditions:<world>:<seed>")`;
+  the draw's start becomes the episode's `at` (the scenario clock, so the sun), and its
+  visibility, sea state and wind replace the contacts scenario's own in a copy beside the episode
+  (`contacts_with_conditions`), which the bridge's physical model reads; the wind also blows on
+  our vehicles' water (17.4). The record's `world` carries the draw, `conditions_from` and
+  `space`. The live runner refuses such a situation.
+- **Moored hulls**: a fleet unit's `moored = true` (sim/swarm.py) ties a stand-in boat or ROV to
+  its pier: the current leaves it where it is until it first arms (crates/murmur-standins
+  `VehicleConfig::moored`, `tests/mooring.rs`). Before it, an idle boat at a pier drifted with
+  the tidal current and ran aground within ten minutes (seen in the first smokes: VIPER 1 at 592
+  s, MARLIN 1 at 818 s).
+- **The seabed**: `[terrain] bathymetry`, tidewater's elevation baked beside the other grids
+  (`bake_world.py --only bathymetry`), so the sonar's spreading uses the water's real depth.
+
+**The smoke** (2026-10-23; `.venv/bin/python -m eval.headless.batch --situation <watch> --seeds 1-3
+--agent none playbook`, San Diego with seed 9 too; 30 simulated minutes each; 20 episodes, none
+failed, no harness error, no opening order refused at submission):
+
+| world | ours | traffic (surface, air, ground) | tracked by the end | local times drawn |
+| --- | --- | --- | --- | --- |
+| Golden Gate v3 | 20 | 21, 5, 8 | every contact, every episode | 04:06, 23:59, 07:49 |
+| San Diego | 24 | 18, 12, 9 | every contact, every episode | 05:36 (dawn), 07:46, 16:36, 01:14 |
+| scale | 100 | 41, 10, 15 | every contact, every episode | 15:35, 00:49, 01:55 |
+
+No hull ran aground in any of them but one drifting buoy (DRIFT 15 in the scale world, after 28
+minutes adrift: a drifter does). Terrain and the horizon, from the bridge's own prediction
+(`murmur-headless --sense`) for every pair of one of our sensors (radar, EO/IR, AIS, ESM) and a
+contact within the sensor's catalog range, at 5, 15, 25 and 30 minutes of seed 1's episode with
+`none`: Golden Gate v3 712 of 2,707 pairs behind terrain (26 %), 4 beyond the horizon, 28 more
+hull-down past 70 % of it (the yacht on passage from Half Moon Bay, 20 to 28 km out, below our
+boats' masts); San Diego 945 of 3,656 behind terrain (26 %; Point Loma's ridge between the bay
+and the approaches, North Island's buildings), 8 beyond the horizon (the troller 25 km offshore,
+the sportfisher at the Coronado Islands), 44 hull-down; the scale world 6,967 of 23,821 (29 %),
+2 and 240. Seed 1's sun: -12 degrees at the Golden Gate, 4 in San Diego, 50 in the scale world.
+
+**Real time** (one episode of 30 minutes at a time, seed 1, this host, 28 cores, other agents'
+work loading it to 6 to 16): Golden Gate v3 104 times real time with `none`, 65 with the
+playbook; San Diego 115 and 48; the scale world **19 and 9.5**. The scale world is under the
+20-times bar of WORLD-V3-PLAN 2.8 item 4 (which is for 30 vehicles and 40 contacts); its
+episodes take 1.5 minutes (`none`) and 3 (the playbook). Under three or four parallel workers
+the factors were 59 to 128, 33 to 100 and 7 to 14.
+
+**Found, or left as it is.**
+
+- Corsair, Magura, FVR-90, the airship and the UGVs have no endurance figure in
+  sim/platforms.toml, so every order for them waits for a person (`endurance-unknown`), and the
+  autoplay operator's rule book rejects any such card it reads (an unverified check): in a watch
+  their opening orders go out only when op-auto skims the card. The catalog is B1's.
+- The armed Maguras have no opening order (a script may not move an armed platform); moored,
+  they wait at their piers.
+- The airship (5 m/s at most) cannot hold station when the drawn wind is stronger (the Golden
+  Gate's reaches 7.8 m/s): it drifts downwind, as a small airship would.
+- Small aircraft on line-of-sight links fall now and then to their 5 s lost-link failsafe (the
+  link's loss bursts, a terrain shadow), as at Harbor watch; a Puma that lands is not
+  relaunched.
+- A contact keeps one altitude: an airliner on San Diego's approach flies its segment at 450 m
+  and leaves, a departure at 900 m. The kinds have no airliner or warship: an airliner is a
+  `light_aircraft` with an airliner's size, cross-section and heat, a Navy ship a `patrol_boat`
+  (AIS `military`) with a warship's.
+- The playbook in San Diego proposes many more looks (30 human-tier cards per episode against
+  5 at Golden Gate v3, 56 in the scale world): its watch area at the bay entrance is full of
+  traffic. v1's metrics and labels are the Golden Gate's (H7, C1's work).
+- Many of the platforms' sensors still run on placeholders (the bridge lists them at start):
+  B1 fills the catalog.
+
+    .venv/bin/python -m eval.headless.batch --situation golden-gate-v3-watch --seeds 1-3 --agent none playbook
+    .venv/bin/python -m eval.headless.batch --situation san-diego-watch --seeds 1-3 9 --agent none playbook
+    .venv/bin/python -m eval.headless.batch --situation golden-gate-scale-watch --seeds 1-3 --agent none playbook

@@ -106,10 +106,14 @@ TOP_KEYS = {
 # land/water grid answers the bridge's domain rule (the default), or "not_evaluated", no terrain
 # source, as every headless run before world v3; `currents`: "world", the world's baked current
 # field moves drifting contacts, and our boats and drifters get their water (current and depth)
-# from the world (the default), or "none", still water, as before world v3.
-HEADLESS_KEYS = {"domain_rule", "currents"}
+# from the world (the default), or "none", still water, as before world v3; `conditions`:
+# "world", each episode's conditions (its start, visibility, wind, sea state) drawn from the
+# world's `[conditions]` ranges by the episode seed and given to the contacts' sensing model, or
+# "none", what the contacts scenario says (the default, as before world v3's worlds).
+HEADLESS_KEYS = {"domain_rule", "currents", "conditions"}
 DOMAIN_RULES = ("grid", "not_evaluated")
 CURRENTS = ("world", "none")
+CONDITIONS = ("world", "none")
 ORDER_KEYS = {"id", "task", "vehicles", "center", "radius_m", "route", "target", "reserve_pct", "duration_s", "note"}
 # what each step kind may carry (eval/storyline.py's docstring), besides id, at_s and kind
 STEP_COMMON = {"text", "director"}
@@ -212,6 +216,7 @@ class Situation:
     # [headless] (HEADLESS_KEYS): the headless simulator's terrain source and water
     domain_rule: str = "grid"
     currents: str = "world"
+    conditions: str = "none"
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -402,14 +407,17 @@ def headless_steps(sit: Situation) -> list[Step]:
 
 
 def tidewater_scenario(v: Any) -> tuple[str, Path | None]:
-    """`tidewater = "<scenario>"` (a name under ~/tidewater/scenarios, or a path) or "none":
-    what was asked and the file, when it exists here."""
+    """`tidewater = "<scenario>"` (a name under ~/tidewater/scenarios, or a path: a relative one
+    is this repository's, as San Diego's sim/worlds/san-diego.tidewater.toml) or "none": what
+    was asked and the file, when it exists here."""
     if v is None or v == "none":
         return "none", None
     name = str(v)
     p = Path(name).expanduser()
     if p.suffix != ".toml":
         p = TIDEWATER_HOME / "scenarios" / f"{name}.toml"
+    elif not p.is_absolute() and not p.exists():
+        p = REPO / p
     return name, (p if p.exists() else None)
 
 
@@ -459,8 +467,16 @@ def load_situation(path_or_name: str | Path) -> Situation:
     sit.currents = str(hl.get("currents", sit.currents))
     if sit.currents not in CURRENTS:
         raise SituationError(f"{path}: [headless] currents is one of {CURRENTS}")
+    sit.conditions = str(hl.get("conditions", sit.conditions))
+    if sit.conditions not in CONDITIONS:
+        raise SituationError(f"{path}: [headless] conditions is one of {CONDITIONS}")
+    if sit.conditions == "world" and not world.conditions:
+        raise SituationError(f"{path}: [headless] conditions world, but {world.name} has no [conditions]")
     if raw.get("contacts"):
         sit.contacts = _path(raw["contacts"], base, "contacts", path)
+    elif "contacts" not in raw and world.traffic is not None:
+        # the world's background traffic unless the situation names its own (or none: "")
+        sit.contacts = world.traffic
     events = raw.get("events", [])
     if isinstance(events, str):
         events = [events]
@@ -629,6 +645,12 @@ def resolve_modes(sit: Situation, operator: str | None = None, ai: str | None = 
             f"{sit.name}: its timeline has {', '.join(faults)} steps, faults only the headless simulator makes "
             f"(docs/HEADLESS.md): run it with `.venv/bin/python -m eval.headless.batch --situation {sit.name}`. A live "
             "GNSS jammer or spoofer is an events file's gnss table (sim/events/golden-gate-gnss.toml)."
+        )
+    if sit.conditions == "world":
+        raise SituationError(
+            f"{sit.name}: its conditions are drawn per episode from its world's ranges, which only the headless simulator "
+            f"does (docs/HEADLESS.md, the three worlds): run it with `.venv/bin/python -m eval.headless.batch --situation "
+            f"{sit.name}`."
         )
     if op == "live" and any(s.kind == "declare" for s in sit.steps):
         raise SituationError(

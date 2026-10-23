@@ -21,13 +21,20 @@ the file's SHA-256), at the paths the world file names (sim/worlds/<name>.toml):
   `water_depth_m` (water level minus elevation: above 0 water, else land), in the same format:
   the bridge's domain rule reads it when no tidewater is configured
   (crates/murmur-bridge/src/decision/terrain.rs), and the stand-ins' conditions their depth.
+- `[terrain] bathymetry` (optional): the seabed's and the ground's height on the same points at
+  the same time, tidewater's `elevation_m` (NAVD88; below 0 under the sea), in the same format:
+  the physical sensing model's water depth for sonar (a contacts scenario's `[sensing]
+  bathymetry`, docs/SENSING.md).
 - `[currents] field`: tidewater's current at the surface on the `[currents]` box every
   `spacing_m`, from `from` to `to` every `step_s`: a JSON header line (the grid's keys and `t0`,
   `dt`, `nt` unix seconds), then `nt x nlat x nlon` pairs of little-endian i16 (east, north)
   in cm/s, -32768 where tidewater has no data. Drifting contacts and our drifters and boats
   read it (crates/murmur-headless/src/sim/water.rs).
 
-Without a `[terrain] box` the grids cover the tidewater scenario's own bounds (`/v1/info`).
+Without a `[terrain] box` the grids cover the tidewater scenario's own bounds (`/v1/info`). A
+world's `tidewater` is the scenario's name (under ~/tidewater/scenarios) or the path of its file
+(San Diego's is in this repository: `sim/worlds/san-diego.tidewater.toml`); the server must
+serve that scenario.
 The tool also prints the wind's range at the mission's centre, hourly over the currents'
 window (the world's `[conditions] wind_mps`), and records it in the currents' provenance.
 """
@@ -43,11 +50,12 @@ import math
 import struct
 import subprocess
 import sys
+import tomllib
 import urllib.request
 from pathlib import Path
 from typing import Any
 
-from eval.world import World, load_world
+from eval.world import REPO, World, load_world
 
 NODATA = -32768
 
@@ -123,16 +131,26 @@ def target(world_path: Path | None, out: Path | None) -> Path | None:
     return out / world_path.name if out is not None else world_path
 
 
+def scenario_name(tidewater: str) -> str:
+    """The tidewater scenario's name: the world's `tidewater` itself, or the `name` in the file it
+    names (a path ending in .toml, relative to the repository)."""
+    if not tidewater.endswith(".toml"):
+        return tidewater
+    p = Path(tidewater).expanduser()
+    p = p if p.is_absolute() else REPO / p
+    return str(tomllib.loads(p.read_text())["name"])
+
+
 def bake(w: World, url: str, what: set[str], out: Path | None, batch: int, command: str) -> dict[str, Any]:
     info = json.loads(urllib.request.urlopen(f"{url}/v1/info", timeout=30).read())
-    if info.get("name") != w.tidewater:
+    if info.get("name") != scenario_name(w.tidewater):
         raise SystemExit(f"tidewater serves {info.get('name')!r}, the world names {w.tidewater!r}")
     b = info["bounds"]
     scenario_box = {"lat_min": b["south"], "lat_max": b["north"], "lon_min": b["west"], "lon_max": b["east"]}
     common = {"tidewater": {"commit": tidewater_commit(), "info": info}, "scenario": w.tidewater, "world": w.name,
               "baked": dt.datetime.now(dt.timezone.utc).date().isoformat(), "command": command}
     done: dict[str, Any] = {}
-    if what & {"surface", "land_water"}:
+    if what & {"surface", "land_water", "bathymetry"}:
         box = w.box or scenario_box
         h = lattice(box, w.spacing_m)
         pts = points(h)
@@ -140,22 +158,28 @@ def bake(w: World, url: str, what: set[str], out: Path | None, batch: int, comma
         samples = sample(url, unix(w.sampled_at), pts, batch, "terrain")
         heights: list[int] = []
         depths: list[int] = []
+        beds: list[int] = []
         for s in samples:
             e = s.get("elevation_m")
             if e is None:
                 heights.append(NODATA)
                 depths.append(NODATA)
+                beds.append(NODATA)
                 continue
             lvl = s.get("water_level_m")
             heights.append(i16((max(float(e), float(lvl)) if lvl is not None else float(e)) * 10.0))
             d = s.get("water_depth_m")
             depths.append(i16(float(d) * 10.0) if d is not None else NODATA)
+            beds.append(i16(float(e) * 10.0))
         header = {**h, "scale": 0.1, "nodata": NODATA}
         for kind, values, wpath, desc in (
             ("surface", heights, w.surface_grid,
              "surface height (max of elevation and water level), metres x 10, as tidewater's /v1/sample answers the link emulator"),
             ("land_water", depths, w.land_water_grid,
              "water depth (water level minus elevation: above 0 water, else land), metres x 10, tidewater's water_depth_m"),
+            ("bathymetry", beds, w.bathymetry_grid,
+             "seabed and ground height (tidewater's elevation_m, NAVD88: below 0 under the sea), metres x 10: the "
+             "physical sensing model's water depth for sonar"),
         ):
             p = target(wpath, out)
             if kind not in what or p is None:
@@ -214,8 +238,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("world", help="a world in sim/worlds (its name) or a world file")
     ap.add_argument("--url", default="http://127.0.0.1:9570", help="tidewater serve, running the world's scenario")
-    ap.add_argument("--only", nargs="+", choices=("surface", "land_water", "currents"),
-                    default=["surface", "land_water", "currents"])
+    ap.add_argument("--only", nargs="+", choices=("surface", "land_water", "bathymetry", "currents"),
+                    default=["surface", "land_water", "bathymetry", "currents"])
     ap.add_argument("--out", type=Path, help="write into this directory instead of the world's paths")
     ap.add_argument("--batch", type=int, default=20_000)
     args = ap.parse_args(argv)

@@ -38,6 +38,9 @@ Situation panel is over the map's top left.
 | `harbor-watch.toml` | runs | Four of ours on station at the Golden Gate, normal traffic, and an unknown fast boat without AIS that comes in from the west and holds near the bridge. The AI should notice it and propose a sensor orbit; the watch policy puts that in front of the operator. Every platform has an endurance figure, so the three opening orders go out by policy. 12 minutes at rate 1. Its `[playbook]`: a 3 km watch area and the bridge as the protected point, Pumas preferred. |
 | `hostile-act-engagement.toml` | runs | The engagement decision chain end to end, on autoplay by default (`make situation NAME=hostile-act-engagement` plays out with nothing to do but watch). Three of ours (HUNTER 1, a sensor ship; REAPER 1, high overhead; BLADE 1, a loitering munition), normal traffic (ferries, the shipping lane, fishing boats, a yacht), and a fast boat without AIS that runs in from the sea, holds mid-strait west of the bridge inside the engagement zone and, from about 3:30, fires on HUNTER 1 (an abstract act). Our sensors observe the act, the engine declares the boat hostile by rule (rules 9), op-auto confirms the declaration (scripted), the AI nominates an engagement with BLADE 1, op-2 and op-3 sign it (scripted), BLADE 1 is dispatched, the engine releases the effect (an abstract event) and assesses it ("ceased"), by about 7 to 8 minutes. If no nomination stands by 5:45, the timeline nominates BLADE 1 (agent-scripted, saying so): with `AI=playbook` (no engagement play) or `AI=none` it is always the timeline. Its autoplay grants every request the AI makes (`grant_agents`), so a run shows what the AI does when it gets everything it asks for; the engine's checks and the policy's tiers are the shipped ones. 12 minutes at rate 1. |
 | `fault-drill.toml` | headless only | Every fault of the headless simulator once on a timeline (docs/HEADLESS.md section 17): a current, a GNSS jammer over Crissy Field (the UGV loses its fix and holds), a battery drop and a heavier draw on PUMA 1, a spoofer on HUNTER 1, HUNTER 1's autopilot rebooting, a link cut, a timeline proposal, a stopped UGV. Its fleet is a boat, a Puma, a drifting buoy and a UGV. `.venv/bin/python -m eval.headless.batch --situation fault-drill --seeds 1-10`; the live runner refuses it. |
+| `golden-gate-v3-watch.toml` | headless only | World v3's Golden Gate (`sim/worlds/golden-gate-v3.toml`) on an ordinary day, nothing scripted: 20 of ours in every domain (air, surface, subsurface, ground, the antenna tracker), the world's traffic in every domain under the physical sensing model, the world's land/water grid and currents, each episode's conditions drawn from the world's ranges by its seed (day or night, fog to clear, wind, sea state). The base world v3's families build on at the Gate. 30 minutes. |
+| `san-diego-watch.toml` | headless only | The same in San Diego (`sim/worlds/san-diego.toml`): 24 of ours, the bay entrance, North Island, the bay and the approaches, its traffic (the Coronado ferry, Navy ships, airliners on the airport's approach, ...). 30 minutes. |
+| `golden-gate-scale-watch.toml` | headless only | The 100-node scale world (`sim/worlds/golden-gate-scale.toml`): 100 of ours at the Gate, 54 opening orders, Golden Gate v3's traffic plus a heavier day. For load and allocation (WORLD-V3-PLAN H6, F17). 30 minutes. |
 | `comms-cut-gnss-spoof.toml` | stub (TODO) | Title and brief only. |
 | `approval-flood.toml` | stub (TODO) | Title and brief only. |
 
@@ -228,9 +231,10 @@ director = """Truth and intent, for whoever runs the situation: shown only when 
 todo = false                                  # true: a stub (title and brief only); not runnable
 
 world = "golden-gate"                         # sim/worlds/<world>.toml (default golden-gate): its fleet,
-                                              # tidewater and at unless named here
+                                              # tidewater, at and traffic unless named here
 fleet = "sim/fleets/harbor-watch.toml"        # sim/fleets format (stand-ins start in seconds)
-contacts = "sim/scenarios/harbor-watch.toml"  # crates/murmur-contacts format; optional
+contacts = "sim/scenarios/harbor-watch.toml"  # crates/murmur-contacts format; optional (default: the
+                                              # world's traffic, if it names one; "" for none)
 events = []                                   # link and GNSS event files, merged; optional
 policy = "sim/situations/policies/watch.toml" # default sim/policy.toml
 tidewater = "golden-gate-2026-06"             # a scenario in ~/tidewater/scenarios, a path, or "none"
@@ -250,6 +254,10 @@ reveal = false                                # director's notes and what is to 
 domain_rule = "grid"                          # grid: the world's land/water grid answers the domain
                                               # rule (default); not_evaluated: no terrain source
 currents = "world"                            # world: the world's currents and water (default); none
+conditions = "none"                           # world: each episode's start, visibility, wind and sea
+                                              # state drawn from the world's [conditions] by its seed,
+                                              # into the contacts' sensing model; none (default): the
+                                              # contacts scenario's own
 
 [[order]]                                     # opening orders, once the fleet is ready: op-setup's
                                               # (never for an armed platform; see above)
@@ -336,7 +344,10 @@ jammer or spoofer is an events file's `gnss` table, sim/events/golden-gate-gnss.
 A fault's `vehicles` select in the fleet as planned (`{callsign}`, `{platform (, index, all)}`,
 `{uids}`), whether the C2 hears them or not. `[headless]` says what the simulator takes from the
 world: Harbor watch pins `domain_rule = "not_evaluated"` and `currents = "none"`, as every
-headless run before world v3, so its results and every family built on it hold.
+headless run before world v3, so its results and every family built on it hold. A situation in
+one of world v3's own worlds (any but `golden-gate`) runs the sensing model its contacts name
+(their traffic files say the physical one) and the world's pinned element sets; one in
+`golden-gate` stays on the legacy model (docs/SENSING.md).
 
 **The playbook.** `[playbook]` is the playbook engine's config on top of its shipped defaults
 (`agents/playbook/defaults.toml`, every threshold with its reason; `agents/README.md`, "The

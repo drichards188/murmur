@@ -1,0 +1,30 @@
+# Named areas and points for murmur-space (`--area <name>`). Polygons are [lon, lat] rings
+# (GeoJSON order). utc_offset_h is for display only (local times in tables).
+
+[area.golden-gate]
+title = "Golden Gate scenario box (tidewater golden-gate-2026-06)"
+# ~tidewater scenario bounds: west -122.56, south 37.77, east -122.38, north 37.88
+polygon = [[-122.56, 37.77], [-122.38, 37.77], [-122.38, 37.88], [-122.56, 37.88]]
+utc_offset_h = -7
+
+[area.gg-bridge]
+title = "Golden Gate Bridge, mid-span"
+point = [-122.4783, 37.8199]
+radius_km = 1
+utc_offset_h = -7
+
+[area.bay-approaches]
+title = "San Francisco Bay and approaches (~100 km)"
+polygon = [[-123.10, 37.40], [-122.00, 37.40], [-122.00, 38.20], [-123.10, 38.20]]
+utc_offset_h = -7
+
+[area.san-diego]
+title = "San Diego scenario box (tidewater san-diego-2026-06, sim/worlds/san-diego.tidewater.toml)"
+polygon = [[-117.32, 32.60], [-117.10, 32.60], [-117.10, 32.77], [-117.32, 32.77]]
+utc_offset_h = -7
+
+[area.sd-bay-entrance]
+title = "San Diego Bay entrance, off Ballast Point"
+point = [-117.2320, 32.6860]
+radius_km = 1
+utc_offset_h = -7

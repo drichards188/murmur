@@ -1,0 +1,41 @@
+{
+ "baked": "2026-10-23",
+ "box": {
+  "lat_max": 32.77,
+  "lat_min": 32.6,
+  "lon_max": -117.1,
+  "lon_min": -117.32
+ },
+ "command": ".venv/bin/python -m eval.headless.bake_world san-diego --url http://127.0.0.1:9581 --only surface land_water bathymetry currents",
+ "dims": {
+  "nlat": 948,
+  "nlon": 1032
+ },
+ "file": "san-diego.grid.gz",
+ "nodata_points": 1979,
+ "sampled_at": "2026-06-14T17:00:00Z",
+ "scenario": "sim/worlds/san-diego.tidewater.toml",
+ "sha256": "93db6850517f95c6f05ba0c96ac122793684d0fdb9018aee98ad07cf2d9b9660",
+ "spacing_m": 20.0,
+ "tidewater": {
+  "commit": "3a531c9e90dd5ad288f431ecd48b65e0e06ee2ef",
+  "info": {
+   "bounds": {
+    "east": -117.1,
+    "north": 32.77,
+    "south": 32.6,
+    "west": -117.32
+   },
+   "name": "san-diego-2026-06",
+   "time_range": {
+    "end": "2026-06-16T00:00:00+00:00",
+    "end_unix": 1781568000.0,
+    "start": "2026-06-13T00:00:00+00:00",
+    "start_unix": 1781308800.0
+   },
+   "title": "San Diego Bay and approaches, spring tides, 13-16 June 2026"
+  }
+ },
+ "what": "surface height (max of elevation and water level), metres x 10, as tidewater's /v1/sample answers the link emulator",
+ "world": "san-diego"
+}

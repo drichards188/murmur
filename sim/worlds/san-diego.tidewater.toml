@@ -1,0 +1,55 @@
+# San Diego: the bay entrance, North Island, the bay and the approaches off Point Loma, over the
+# same spring-tide days as the Golden Gate's scenario (13-16 June 2026, the 14-15 June new moon).
+# The tidewater scenario of Murmur's San Diego world (sim/worlds/san-diego.toml): kept in this
+# repository because tidewater's `Scenario.load` takes a file path. Fetch once, then it runs
+# offline (tidewater caches under its own data/cache/san-diego-2026-06/):
+#   ~/tidewater/.venv/bin/tidewater fetch sim/worlds/san-diego.tidewater.toml
+# and bake the world's grids from it (sim/worlds/README.md):
+#   ~/tidewater/.venv/bin/tidewater serve sim/worlds/san-diego.tidewater.toml --port 9571 &
+#   .venv/bin/python -m eval.headless.bake_world san-diego --url http://127.0.0.1:9571
+name = "san-diego-2026-06"
+title = "San Diego Bay and approaches, spring tides, 13-16 June 2026"
+
+# From the kelp beds off Point Loma (about 8 km offshore) to the Coronado Bridge and Naval Base
+# San Diego, from Imperial Beach to Mission Bay's entrance: the bay, its entrance channel, North
+# Island, Point Loma's ridge (up to about 130 m) and the airport's approach.
+[area]
+west = -117.32
+south = 32.60
+east = -117.10
+north = 32.77
+resolution_m = 15
+
+[time]
+start = "2026-06-13T00:00:00Z"
+end = "2026-06-16T00:00:00Z"
+
+[tide]
+# NOAA CO-OPS water level station 9410170, San Diego (Quarantine Station, inside the entrance)
+station = "9410170"
+# the NCEI coastal DEM's vertical datum
+datum = "NAVD"
+source = "observed"
+
+[currents]
+# NOAA CO-OPS harmonic predictions at every current station in the area, blended by inverse
+# distance (no operational hydrodynamic model covers San Diego Bay at the bay's scale; WCOFS's
+# cells are kilometres wide)
+source = "coops-predictions"
+interval_min = 6
+
+[wind]
+# Archived NOAA HRRR (3 km) via Open-Meteo, as the Golden Gate's
+source = "open-meteo-historical-forecast"
+model = "gfs_hrrr"
+grid = [5, 4]
+
+# Suggested start points (lat, lon, alt_m, heading_deg), as sim/fleets/sandiego.toml uses them
+[spawn]
+plane = [32.6990, -117.2050, 5.0, 290.0]    # NAS North Island, beside the runways
+vtol = [32.7010, -117.2085, 5.0, 290.0]
+copter = [32.6962, -117.2000, 5.0, 0.0]
+blimp = [32.6950, -117.2110, 5.0, 0.0]
+tracker = [32.6975, -117.1985, 5.0, 0.0]
+boat = [32.7115, -117.1850, 0.0, 0.0]       # off the North Island carrier piers
+sub = [32.7140, -117.1870, 0.0, 0.0]

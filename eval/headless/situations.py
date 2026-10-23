@@ -179,7 +179,9 @@ class EpisodeSpec:
     # the mission (eval/headless/v2/mission.py) and nothing else
     brief: str = ""
     # the world it runs in: "v1" (Harbor watch's fleet, the default) or "v2" (scoring v2's base,
-    # eval/SCORING-V2.md section 0: families.py `world="v2"`)
+    # eval/SCORING-V2.md section 0: families.py `world="v2"`), both on the legacy sensing model;
+    # "v3": a situation in one of world v3's worlds (any but the Golden Gate's own file, whose
+    # situations, the fault drill among them, stay v1), on the sensing model its contacts name
     world: str = "v1"
     # scoring v2's replicate r of the situation (SCORING-V2.md section 1), set by whoever runs
     # replicates; None: the episode seed tells them apart (`run_id`)
@@ -196,6 +198,12 @@ class EpisodeSpec:
     domain_rule: str = "not_evaluated"
     currents: str = "none"
     conditions: dict[str, Any] | None = None
+    # world v3's worlds (sim/worlds/README.md): `conditions_from` "world" draws `conditions` (and
+    # the start, `at`) from the world's ranges by the episode seed when the episode runs
+    # (`drawn`), "none" leaves them as given; `space_snapshot` is the world's pinned element sets
+    # (eval/headless/space.py), which an episode reads unless its options name others
+    conditions_from: str = "none"
+    space_snapshot: str | None = None
 
     @property
     def place(self) -> World:
@@ -206,14 +214,34 @@ class EpisodeSpec:
         """Nothing of world v3: the Golden Gate, no terrain source, still water, no conditions
         (its record carries no `world` key; every v1 and v2 situation)."""
         return (self.map == DEFAULT_WORLD and self.domain_rule == "not_evaluated" and self.currents == "none"
-                and not self.conditions)
+                and not self.conditions and self.conditions_from == "none" and self.space_snapshot is None)
 
     def world_record(self) -> dict[str, Any] | None:
         """What a record says of its world (None before world v3: no key, the record unchanged)."""
         if self.as_before_world_v3():
             return None
-        return {"name": self.map, "domain_rule": self.domain_rule, "currents": self.currents,
-                "conditions": self.conditions}
+        out = {"name": self.map, "domain_rule": self.domain_rule, "currents": self.currents,
+               "conditions": self.conditions}
+        if self.conditions_from != "none":
+            out["conditions_from"] = self.conditions_from
+        if self.space_snapshot is not None:
+            out["space"] = self.space_snapshot
+        return out
+
+    def drawn(self, seed: int) -> "EpisodeSpec":
+        """This situation with its conditions drawn for an episode seed (`conditions_from`
+        "world"): `World.draw_conditions` from `random.Random("conditions:<world>:<seed>")`, so
+        the same seed draws the same conditions in every situation of a world (a pair of
+        situations on one seed meets the same day or night, fog and sea); the draw's start
+        becomes the episode's `at` (the scenario clock, so the sun's place). Anything else: as
+        it is."""
+        if self.conditions_from != "world" or self.conditions is not None:
+            return self
+        import dataclasses
+        import random
+
+        c = self.place.draw_conditions(random.Random(f"conditions:{self.map}:{int(seed)}"))
+        return dataclasses.replace(self, conditions=c, at=c["at"])
 
     def operator_note(self, operator: str) -> str:
         """How the scripted operator signs its decisions' notes. v1 names the situation, as it
@@ -259,7 +287,9 @@ def from_situation(path_or_name: str | Path) -> EpisodeSpec:
         duration_s=sit.duration_s, ai_start_s=sit.ai_start_s, ready_timeout_s=sit.ready_timeout_s,
         orders=list(sit.orders), playbook=dict(sit.playbook), autoplay=dict(sit.autoplay), seed=sit.seed,
         events=events, path=sit.path, config_name=sit.name, brief=brief_text(sit), script=timeline(sit),
-        map=sit.world, domain_rule=sit.domain_rule, currents=sit.currents,
+        map=sit.world, domain_rule=sit.domain_rule, currents=sit.currents, conditions_from=sit.conditions,
+        space_snapshot=load_world(sit.world).space if sit.world != DEFAULT_WORLD else None,
+        world="v1" if sit.world == DEFAULT_WORLD else "v3",
     )
 
 
@@ -322,6 +352,8 @@ def process_spec(e: EpisodeSpec, seed: int, workdir: Path, calib: Calibration,
     """The `murmur-headless` spec and environment for one episode, in its world (module doc)."""
     vehicles, standins = fleet_plan(e.fleet)
     contacts = contacts_path or e.contacts
+    if contacts and e.conditions:
+        contacts = contacts_with_conditions(Path(contacts), e.conditions, workdir)
     w = e.place
     links = links_for(w, workdir)
     grid = w.surface_grid
@@ -379,6 +411,55 @@ def process_spec(e: EpisodeSpec, seed: int, workdir: Path, calib: Calibration,
         env["MURMUR_ANCHORS"] = "0"
     world_spec(e, w, spec, env)
     return spec, env
+
+
+def sensing_conditions(c: dict[str, Any]) -> dict[str, float]:
+    """What drawn conditions (eval/world.py `draw_conditions`) set in a contacts scenario's
+    `[conditions]` (docs/SENSING.md): the Koschmieder visibility, the sea state, the wind (the
+    sonar's ambient noise)."""
+    out: dict[str, float] = {}
+    if c.get("visibility_km") is not None:
+        out["visibility_m"] = round(1000.0 * float(c["visibility_km"]), 1)
+    if c.get("sea_state") is not None:
+        out["sea_state"] = float(c["sea_state"])
+    if c.get("wind_mps") is not None:
+        out["wind_mps"] = float(c["wind_mps"])
+    return out
+
+
+def contacts_with_conditions(path: Path, c: dict[str, Any], workdir: Path) -> Path:
+    """A copy of a contacts scenario in the episode's directory with the drawn conditions in its
+    `[conditions]` table (the sensing model's: visibility, sea state, wind), each in place of the
+    scenario's own value for it; the scenario's other conditions (shipping, water depth, a fixed
+    sun) stay. The sun is the scenario clock's, which the draw's start set."""
+    want = sensing_conditions(c)
+    if not want:
+        return path
+    text = path.read_text()
+    out, inside, done, seen = [], False, set(), False
+    for line in text.splitlines():
+        st = line.strip()
+        if st.startswith("["):
+            if inside:
+                out += [f"{k} = {v!r}" for k, v in want.items() if k not in done]
+            inside = st == "[conditions]"
+            seen = seen or inside
+        key = st.split("=", 1)[0].strip() if inside and "=" in st and not st.startswith("#") else None
+        if key in want:
+            out.append(f"{key} = {want[key]!r}")
+            done.add(key)
+            continue
+        out.append(line)
+    if inside:
+        out += [f"{k} = {v!r}" for k, v in want.items() if k not in done]
+    if not seen:
+        out += ["", "# drawn for this episode (eval/headless/situations.py contacts_with_conditions)", "[conditions]",
+                *[f"{k} = {v!r}" for k, v in want.items()]]
+    workdir.mkdir(parents=True, exist_ok=True)
+    dst = workdir / f"contacts-{path.stem}.toml"
+    dst.write_text("\n".join(out) + "\n")
+    tomllib.loads(dst.read_text())  # a table the scenario's own layout broke fails here, not in the simulator
+    return dst
 
 
 def world_spec(e: EpisodeSpec, w: World, spec: dict[str, Any], env: dict[str, str]) -> None:

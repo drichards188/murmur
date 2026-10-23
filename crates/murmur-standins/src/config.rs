@@ -42,6 +42,11 @@ pub struct VehicleConfig {
     /// headless simulator reads its baked surface grid.
     #[serde(default)]
     pub surface_m: Option<f64>,
+    /// Tied up at a pier or a mooring at the start (a fleet unit's `moored`, sim/swarm.py): the
+    /// current does not carry it off until it first arms (casts off), as it would a hull with
+    /// its motors stopped. Off by default: every other vehicle drifts as before.
+    #[serde(default)]
+    pub moored: bool,
 }
 
 /// What a stand-in simulates for a platform with no `endurance_h` in `sim/platforms.toml`. The

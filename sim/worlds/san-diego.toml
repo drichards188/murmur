@@ -1,0 +1,80 @@
+# San Diego (docs/WORLD-V3-PLAN.md section 5, decision W4; the format in sim/worlds/README.md):
+# the bay entrance, NAS North Island, the bay to Naval Base San Diego and the approaches off
+# Point Loma, from the tidewater scenario sim/worlds/san-diego.tidewater.toml (NOAA NCEI DEM with
+# bathymetry, CO-OPS observed water level at 9410170 and current predictions at the bay's
+# stations, HRRR wind via Open-Meteo; 13-16 June 2026). Its fleet (24 stand-ins in every
+# domain), background traffic in every domain under the physical sensing model, areas (plausible
+# approximations, marked so), one ground station on Point Loma and its pinned element sets.
+name = "san-diego"
+title = "San Diego"
+fleet = "sim/fleets/san-diego-v3.toml"
+areas = "sim/areas/san-diego"                 # a directory of its own: every Golden Gate stack loads sim/areas
+traffic = "sim/scenarios/san-diego-traffic.toml"
+space = "san-diego"                           # sim/headless/space/san-diego (eval/headless/space.py)
+tidewater = "sim/worlds/san-diego.tidewater.toml"
+at = "2026-06-14T17:00:00Z"
+# The operating area and a margin (the oracle's link map covers it).
+operating_box = { lat_min = 32.60, lat_max = 32.77, lon_min = -117.32, lon_max = -117.10 }
+
+# Baked from tidewater (eval/headless/bake_world.py san-diego; provenance beside each file).
+[terrain]
+surface = "sim/headless/terrain/san-diego.grid.gz"           # max(elevation, water level): line of sight
+land_water = "sim/headless/terrain/san-diego.water.grid.gz"  # water level minus elevation: the domain rule
+bathymetry = "sim/headless/terrain/san-diego.bathy.grid.gz"  # the seabed (NAVD88): the sonar's water depth
+box = { lat_min = 32.60, lat_max = 32.77, lon_min = -117.32, lon_max = -117.10 }
+spacing_m = 20.0
+sampled_at = "2026-06-14T17:00:00Z"        # 10:00 PDT, water level 1.2 m NAVD88
+
+# CO-OPS harmonic predictions at the bay's current stations (16 with data, from Point Loma Light
+# to National City), blended by inverse distance (tidewater's station layer), hourly.
+[currents]
+field = "sim/headless/terrain/san-diego.currents.gz"
+box = { lat_min = 32.60, lat_max = 32.77, lon_min = -117.32, lon_max = -117.10 }
+spacing_m = 250.0
+from = "2026-06-13T00:00:00Z"
+to = "2026-06-16T00:00:00Z"
+step_s = 3600.0
+
+[links]
+file = "sim/links.toml"
+
+# One station covers the world: a mast on the Point Loma ridge (91 m, plus the profiles' 10 m
+# mast) sees the bay, North Island, the entrance and the approaches to the west and south, all
+# within 12 km [E: an approximate site near the Navy's Point Loma facilities].
+[[ground_station]]
+name = "Point Loma"
+lat = 32.6900
+lon = -117.2440
+alt_m = 91.0
+
+# Named reference points, [lon, lat] (approximate).
+[points]
+bay_entrance = [-117.2320, 32.6860]        # the entrance channel off Ballast Point (the mission's centre)
+channel_mouth = [-117.2330, 32.6650]       # where the entrance channel meets the sea, off Point Loma's tip
+approaches = [-117.2700, 32.6400]          # open water south-west of Point Loma
+sub_base = [-117.2380, 32.6930]            # Naval Base Point Loma's piers
+shelter_island = [-117.2270, 32.7140]
+north_island = [-117.2080, 32.6985]        # NAS North Island: our launch site
+carrier_piers = [-117.1980, 32.7095]       # North Island's carrier piers
+broadway_pier = [-117.1762, 32.7155]       # the Coronado ferry's San Diego landing
+coronado_landing = [-117.1755, 32.6978]    # the Coronado ferry landing
+coronado_bridge = [-117.1480, 32.6930]
+naval_base = [-117.1200, 32.6780]          # Naval Base San Diego's piers
+airport = [-117.1897, 32.7336]             # San Diego International (Lindbergh Field)
+point_loma_mast = [-117.2440, 32.6900]     # the ground station
+far_orbit = [-117.5500, 32.5500]           # HAWK 1's orbit, offshore
+
+# The labels' rule: unknown, suspect or hostile within 3 km of the bay entrance needs a look
+# within 60 s (the channel from Point Loma's tip to Shelter Island, North Island's west shore).
+[mission]
+center = "bay_entrance"
+radius_m = 3000.0
+grace_s = 60.0
+
+# What a situation's conditions are drawn from (eval/world.py `draw_conditions`).
+[conditions]
+at = ["2026-06-13T00:00:00Z", "2026-06-15T23:00:00Z"]  # inside tidewater's window and the baked currents'
+utc_offset_h = -7                          # PDT
+visibility_km = [0.5, 30.0]                # [E] June's marine layer: morning fog on the coast under 1 km some days; clear afternoons 30 km
+wind_mps = [1.12, 5.39]                    # tidewater's HRRR wind at the bay entrance, hourly over the window (bake_world.py)
+sea_state = [0, 4]                         # [E] Douglas; a sheltered bay, a long-period swell in the approaches
