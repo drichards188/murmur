@@ -558,7 +558,7 @@ group. Dates are 2026.
   2D radars' bearings seconds apart (the physical radars plot an aircraft once a scan) taken as
   ranging it; a new air held-out set (251-280) still fails in the all-sensors mix
   (docs/SENSING.md), a tracker follow-up. Its second half (10-23, WORLD-V3-PLAN 2.7's retuning
-  on the tuning sets, judged on a third air set, 281-310, written before it): the cameras'
+  on the tuning sets, judged on a new air held-out set, 281-310, written before it): the cameras'
   atmosphere along the slant path (the extinction falling with height, `exp(-h / H)`, the
   aerosol's H 1.2 km, the clear air's water vapour 2 km; along the sea the model before, value
   for value), so the RQ-4's, MQ-9B's and CCA's cameras recognise and identify at their
@@ -569,7 +569,7 @@ group. Dates are 2026.
   two simultaneous bearings at 30 degrees; a reset to one radar's segment drops the others'
   bearings; a ranging fix holds 6 s on sweeping radars' bearings (tuned). Gated on the scan, so
   the legacy model's radars, which plot every tick, keep the rules as they were: no legacy
-  record moves. The third set's one run holds every criterion but one: a keep-out 3 s ahead
+  record moves. The new set's one run holds every criterion but one: a keep-out 3 s ahead
   missed an approach and hard break 3 times by up to 102 m (the constant-velocity models'
   lag in an 11 m/s^2 turn seen only by bearings; a turn model is the follow-up).
 - **W1: cameras point themselves; orders name no look target** (10-23, approved). Each EO/IR

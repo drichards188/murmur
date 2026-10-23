@@ -367,7 +367,7 @@ sets' views):
   again; an identified contact is looked at again after 2 to 5 minutes), never the tens of
   seconds of position fixes the tracker's velocity needs.
 - murmur-7vp, the tracker's half (with the slant path above), developed on the air tuning sets
-  only and judged once on a third set written before either change
+  only and judged once on the physical model's second air held-out set, written before either change
   (`physical_held_out_two_cases`, seeds 281-310, every class in yet other variants; 251-280
   spent). A sweeping radar's plot carries its scan (`Detection::scan_s`) and the tracker
   time-aligns two such radars' bearings before taking them as ranging an aircraft, as a
@@ -402,7 +402,7 @@ sets' views):
   deg/s: a velocity given in 0.2 % of samples as the turn begins, the steady model's lag)
   have a normalized error of 7.48, as before the change (7.53): a tuning-set failure the change
   neither made nor fixed.
-  The third set's one run (`air_calib_physical_held_out_two`): in the 2D radar and the radar
+  The new set's one run (`air_calib_physical_held_out_two`): in the 2D radar and the radar
   and EO/IR mixes every criterion holds (NEES 1.66 to 1.96, within two sigmas 98.3 to 100 %, the
   tracker alone at most 0.33 % and 98 m 3 s ahead, every keep-out holding, no velocity and no
   altitude given). In the all-sensors mix every class is honest (NEES 0.92 to 1.78, within two
