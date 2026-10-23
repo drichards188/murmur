@@ -26,9 +26,17 @@ a UUV and a diver deeper than their depth plus 2 m, a vehicle on land, an aircra
   reaches the circle 15 to 100 s after it appears (`F1_LEAD_S`), so a buoy's passive sonar, which hears
   a fast boat tens of kilometres off and identifies after 180 s of contact, cannot identify it by its
   deadline: the need is the cameras' (and a surface need's sensor is EO/IR, SCORING-V3.md 2.2).
-- **F2 unknown drone inbound** (air): a small drone, truth unknown, no transponder (its datalink
-  emits), 12 to 25 m/s at 60 to 150 m above the surface it crosses, from 3.8 to 5.5 km out to a target
-  inside the circle (our boats' pier, the protected point, a shore post), where it hovers.
+- **F2 unknown drone inbound** (air; version 2): a small drone, truth unknown, no transponder (its
+  datalink emits), 12 to 25 m/s at 60 to 150 m above the surface it crosses, from 3.8 to 5.5 km out to
+  a target inside the circle (our boats' pier, the protected point, a shore post), where it hovers.
+  By day only (local 08:00 to 17:00, `F2_DAY_ONLY`): version 1 drew the world's day and night, and no
+  camera identified a drone at night (night is F9's). Version 3 brings it from bearings over the
+  strait or the bay (Golden Gate: 250 to 275 deg or 60 to 110; San Diego: over Coronado, 100 to 150,
+  or the sea, 170 to 230): version 2's drones from over the Marin Headlands, Lands End or Point
+  Loma's ridge flew 130 to 440 m above the sea, and our small aircraft, whose orders cannot name an
+  altitude, fly theirs at 150 m: the oracle could send nothing in 24 of those 28 situations and served
+  1. A route of version 3 to a target behind a shore (the Horseshoe Bay pier, Fort Point) may still
+  cross the headlands' or the Presidio's edge, up to 270 m (16 of its 60 dev situations).
 - **F3 low aircraft, transponder off** (air): a light aircraft, truth unknown, no emitter, 45 to 60
   m/s at 150 to 400 m above the highest ground it crosses, on a straight line through the circle
   passing within 1.5 km of the centre, from 9 km out to 9 km out on the far side.
@@ -79,6 +87,12 @@ F1_LEAD_S = (15.0, 100.0)
 #: combine to recognise it before its need opens (5 of 6 `none` episodes on seeds 5000-5002), so
 #: nothing is left for an agent; from inside the bay none of them hears it in its first minutes
 F4_SEA_SHARE = 0.0
+#: F2 (version 2, after the first dev check, seeds 5000-5029): by day only. At night no camera of
+#: either fleet identifies a small drone unless it passes within about 200 m (the Puma's LWIR; the
+#: FVR-90's 390 m, the airship's 580 m): no agent and no oracle identified one at night (0 of 25
+#: situations), the single largest cause of its losses (`no_look@night`). Night is
+#: F9's to test.
+F2_DAY_ONLY = True
 #: the episodes' length: the subsurface families need their 300 s grace and the time to come in
 DURATION_S = {"f4-uuv": 1200.0, "f5-diver": 1200.0}
 DEFAULT_DURATION_S = 900.0
@@ -238,7 +252,7 @@ class Place:
     piers: tuple[tuple[str, tuple[float, float], tuple[float, float]], ...]  # name, pier, open-water bearings
     roads: tuple[tuple[str, tuple[tuple[float, float], ...]], ...]  # name, route ending at the restricted point
     drone_targets: tuple[tuple[str, tuple[float, float]], ...]
-    drone_sectors: tuple[tuple[float, float], ...]  # bearings from the centre a drone comes from
+    drone_sectors: tuple[tuple[float, float], ...]  # bearings from the centre a drone comes from (F2 v3)
 
 
 PLACES: dict[str, Place] = {
@@ -259,7 +273,7 @@ PLACES: dict[str, Place] = {
         ),
         drone_targets=(("the Horseshoe Bay pier", (-122.4760, 37.8305)), ("the bridge", (-122.4783, 37.8199)),
                        ("Fort Point", (-122.4765, 37.8102))),
-        drone_sectors=((290.0, 345.0), (195.0, 240.0), (60.0, 110.0)),
+        drone_sectors=((250.0, 275.0), (60.0, 110.0)),  # F2 v3: over the strait or the bay
     ),
     "san-diego": Place(
         sea_entry=(190.0, 235.0, 4500.0, 6500.0),
@@ -277,7 +291,7 @@ PLACES: dict[str, Place] = {
         ),
         drone_targets=(("HUNTER 1's berth", (-117.2352, 32.6950)), ("the bay entrance", (-117.2320, 32.6860)),
                        ("North Island's west shore", (-117.2230, 32.6950))),
-        drone_sectors=((250.0, 290.0), (100.0, 150.0), (170.0, 210.0)),
+        drone_sectors=((100.0, 150.0), (170.0, 230.0)),  # F2 v3: over Coronado or the sea
     ),
 }
 
@@ -565,31 +579,42 @@ def all_names() -> list[str]:
     return [family_name(f, w) for f in GENERATORS for w in WORLDS.values()]
 
 
-def night_at(rng: random.Random, w: World) -> str:
-    """A start in the world's conditions window whose local time is between 21:00 and 05:00."""
+#: the local hours a family's start may be moved into: night 21:00 to 05:00 (F5), day 08:00 to
+#: 17:00 (F2 version 2)
+LIGHT_HOURS = {"night": (21, 5), "day": (8, 17)}
+
+
+def local_at(rng: random.Random, w: World, light: str) -> str:
+    """A start in the world's conditions window whose local hour is in `LIGHT_HOURS[light]`."""
+    lo, hi = LIGHT_HOURS[light]
     a, b = (dt.datetime.fromisoformat(x.replace("Z", "+00:00")) for x in w.conditions["at"])
     off = dt.timedelta(hours=float(w.conditions.get("utc_offset_h", 0)))
     for _ in range(1000):
         t = a + (b - a) * rng.random()
         h = (t + off).hour
-        if h >= 21 or h < 5:
+        if (lo <= h < hi) if lo < hi else (h >= lo or h < hi):
             return dt.datetime.fromtimestamp(60.0 * math.floor(t.timestamp() / 60.0), dt.timezone.utc).strftime(
                 "%Y-%m-%dT%H:%M:%SZ")
-    raise RuntimeError("no night in the world's window")
+    raise RuntimeError(f"no {light} in the world's window")
 
 
-def conditions(world: str, seed: int, night: bool, rng: random.Random) -> dict[str, Any]:
+def night_at(rng: random.Random, w: World) -> str:
+    """A start in the world's conditions window whose local time is between 21:00 and 05:00."""
+    return local_at(rng, w, "night")
+
+
+def conditions(world: str, seed: int, light: str | None, rng: random.Random) -> dict[str, Any]:
     """The situation's conditions: the world's draw for this seed (the same in every family of the
-    world), its start moved into the night when the family asks."""
+    world), its start moved into the night or the day when the family asks."""
     w = load_world(world)
     c = w.draw_conditions(random.Random(f"conditions:{world}:{int(seed)}"))
-    if night:
-        c["at"] = night_at(rng, w)
+    if light:
+        c["at"] = local_at(rng, w, light)
         if "utc_offset_h" in w.conditions:
             t = dt.datetime.fromisoformat(c["at"].replace("Z", "+00:00")) + dt.timedelta(
                 hours=float(w.conditions["utc_offset_h"]))
             c["local_time"] = t.strftime("%H:%M")
-        c["night_by_family"] = True
+        c[f"{light}_by_family"] = True
     return c
 
 
@@ -623,7 +648,8 @@ def generate(name: str, seed: int, workdir: Path) -> tuple[EpisodeSpec, Path]:
     if family == "f5-diver":
         d.night = rng.random() < 0.7
     gen(d)
-    cond = conditions(world, int(seed), d.night, rng)
+    light = "night" if d.night else ("day" if family == "f2-drone" and F2_DAY_ONLY else None)
+    cond = conditions(world, int(seed), light, rng)
     contacts_seed = rng.randrange(1, 2 ** 31)
     workdir.mkdir(parents=True, exist_ok=True)
     path = workdir / f"{name}-{int(seed)}.contacts.toml"

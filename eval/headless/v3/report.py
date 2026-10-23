@@ -90,6 +90,23 @@ def capable(reach: dict[str, float], domain: str, movers: set[str]) -> list[str]
     return sorted({k.split(":")[0] for k, v in reach.items() if float(v) >= CAPABLE_M[s] and k.split(":")[0] in movers})
 
 
+def flags(causes: dict[str, dict[str, Any]], share: float = 0.5, least: int = 3) -> list[str]:
+    """Lesson 3 (SCORING-V3.md 10.2): the causes that explain over half of an agent's losses (of at
+    least `least`), by the whole key or by its platform or gap alone; `none`'s `no_look` is the room
+    a family leaves an agent, counted apart (choice 13)."""
+    out = []
+    for agent, sc in causes.items():
+        if not sc or (sc.get("lost") or 0) < least:
+            continue
+        for key, sh in ((sc.get("top"), sc.get("share")), (sc.get("top_coarse"), sc.get("share_coarse"))):
+            if key is None or (sh or 0) <= share:
+                continue
+            if agent == "none" and str(key).startswith("no_look"):
+                continue
+            out.append(f"{agent}: {key} {round(100 * sh)} %")
+    return sorted(set(out))
+
+
 def summarize(scored: list[dict[str, Any]]) -> dict[str, Any]:
     pdom = platform_domains()
     out: dict[str, Any] = {"families": {}, "coverage": {}}
@@ -152,8 +169,8 @@ def summarize(scored: list[dict[str, Any]]) -> dict[str, Any]:
         oo = block["agents"].get(ORACLE, {}).get("share")
         block["conditions_10_1"] = {"none_at_most_50": None if nn is None else nn <= NONE_MAX,
                                     "oracle_at_least_80": None if oo is None else oo >= ORACLE_MIN}
-        sc = [block["agents"].get(a, {}).get("single_cause", {}) for a in ("none", ORACLE)]
-        block["redesign"] = any((x.get("share") or 0) > 0.5 and (x.get("lost") or 0) >= 3 for x in sc)
+        block["flags"] = flags({a: block["agents"].get(a, {}).get("single_cause", {}) for a in ("none", ORACLE)})
+        block["redesign"] = bool(block["flags"])
         out["families"][f] = block
     # pooled over both worlds, per family
     pooled: dict[str, Any] = {}
@@ -186,7 +203,7 @@ def markdown(summary: dict[str, Any], d: Path) -> str:
               f"{', '.join(cov['tasks_ordered']) or 'none'}.", f"- {cov['situations']} situations, {cov['episodes']} episodes.", ""]
     lines += ["## Per family and world", "",
               "| family | world | none | random-valid | oracle | time to serve (oracle, median s) | 10.1 | capable types (min) | "
-              "none's top cause | oracle's top cause |", "|---|---|---|---|---|---|---|---|---|---|"]
+              "none's top cause | oracle's top cause | lesson 3 |", "|---|---|---|---|---|---|---|---|---|---|---|"]
     for f, b in summary["families"].items():
         a = b["agents"]
 
@@ -205,7 +222,7 @@ def markdown(summary: dict[str, Any], d: Path) -> str:
                                                  ("oracle under 80", c["oracle_at_least_80"] is False)) if v)))
         lines.append(f"| {b['family']} | {b['world']} | {cell('none')} | {cell('random-valid')} | {cell(ORACLE)} | "
                      f"{(a.get(ORACLE) or {}).get('time_to_serve_median_s')} | {ok} | {b['capable_types']['min']} | "
-                     f"{cause('none')} | {cause(ORACLE)} |")
+                     f"{cause('none')} | {cause(ORACLE)} | {'; '.join(b['flags']) or 'no flag'} |")
     lines += ["", "## Pooled over both worlds", "", "| family | none | random-valid | oracle |", "|---|---|---|---|"]
     for fam, x in summary["pooled"].items():
         def c2(agent: str) -> str:
