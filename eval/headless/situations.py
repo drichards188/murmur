@@ -204,6 +204,9 @@ class EpisodeSpec:
     # (eval/headless/space.py), which an episode reads unless its options name others
     conditions_from: str = "none"
     space_snapshot: str | None = None
+    # scoring v3's families (eval/headless/v3/families.py): the run id and the operator's notes
+    # name no situation, as v2's (SCORING-V2.md 4.4); False for everything else, as before
+    opaque: bool = False
 
     @property
     def place(self) -> World:
@@ -247,7 +250,7 @@ class EpisodeSpec:
         """How the scripted operator signs its decisions' notes. v1 names the situation, as it
         always has (the golden episode holds it); v2 never does (SCORING-V2.md 4.4: the operator
         model's notes carry no situation name)."""
-        if self.world == "v2":
+        if self.world == "v2" or self.opaque:
             return f"scripted (autoplay): {operator} (not a person)"
         return f"scripted (situation {self.name}, autoplay): {operator} (not a person)"
 
@@ -266,7 +269,7 @@ def run_id(e: EpisodeSpec, seed: int) -> str:
     opaque (`opaque_run_id`) over the family (the situation's name for a situation file), the
     situation seed and the replicate; without a replicate number the episode seed stands in
     for it, so two replicates of one situation never share a run id."""
-    if e.world != "v2":
+    if e.world != "v2" and not e.opaque:
         return f"headless-{e.name}-s{seed}"
     rep: int | str = e.replicate if e.replicate is not None else f"seed{int(seed)}"
     return opaque_run_id(e.family or e.name, e.situation_seed, rep)

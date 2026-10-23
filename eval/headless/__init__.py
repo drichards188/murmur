@@ -11,6 +11,9 @@
     batch.py      N episodes across cores; the aggregate
     gate.py       G1 and G1b (CRITERIA.md)
     bake_world.py a world's grids and current field from tidewater (eval/world.py: the worlds)
+    v2/           scoring v2 (eval/SCORING-V2.md), frozen
+    v3/           scoring v3 (eval/SCORING-V3.md, a draft): needs and labels in every domain, the
+                  first world v3 families, the basic v3 oracle and the dev check
 
 MODEL RESULTS ONLY: the operator is a scripted model with stated parameters, the situations
 are generated from stated distributions, the labels are the generated truth. Nothing here is

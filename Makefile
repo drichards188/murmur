@@ -46,7 +46,7 @@ headless: ## headless simulator batch (docs/HEADLESS.md): SITUATION=harbor-watch
 
 check:   ## typecheck + lint + glide and sea checks (node 22.18+: it runs the .ts directly) + Rust lint and tests + evaluation and watch officer unit tests (stand-in CLIs, no model)
 	cd web && npx tsc -b && npx oxlint src && node src/glide.check.ts && node src/sea.check.ts
-	.venv/bin/python -m py_compile sim/swarm.py sim/tests/*.py scripts/*.py agents/*.py agents/watch/*.py agents/playbook/*.py agents/playbook/plays/*.py agents/tests/*.py eval/*.py eval/tests/*.py eval/headless/*.py eval/headless/v2/*.py eval/headless/tests/*.py
+	.venv/bin/python -m py_compile sim/swarm.py sim/tests/*.py scripts/*.py agents/*.py agents/watch/*.py agents/playbook/*.py agents/playbook/plays/*.py agents/tests/*.py eval/*.py eval/tests/*.py eval/headless/*.py eval/headless/v2/*.py eval/headless/v3/*.py eval/headless/tests/*.py
 	.venv/bin/python -m pytest -q eval/tests
 	.venv/bin/python -m pytest -q agents/tests
 	$(CARGO) clippy --workspace --all-targets -- -D warnings
