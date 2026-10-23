@@ -53,6 +53,11 @@
 //!    every criterion held but the strictest, twice ([`HELD_OUT_FOUND`]: a keep-out 3 s ahead
 //!    missed an aircraft without a velocity by 20 m and 6 m in some 300,000 samples). The test
 //!    asserts on it, those two pinned as found.
+//! 9. The physical sensing model (WORLD-V3-PLAN 2.8 item 3) was evaluated once on the held-out
+//!    set ([`air_calib_physical`]) and failed in the all-sensors mix (murmur-7vp, docs/SENSING.md).
+//!    [`physical_held_out_cases`] on [`AIR_PHYSICAL_HELD_OUT_SEEDS`] was written then, before
+//!    anything was changed: [`AIR_HELD_OUT_SEEDS`] are spent for the physical model, and the fix
+//!    was developed on the tuning sets (101-220) only. The new set is run once, after the fix.
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
@@ -75,8 +80,12 @@ pub const AIR_ROUND_ONE_SEEDS: RangeInclusive<u64> = 131..=160;
 pub const AIR_ROUND_TWO_SEEDS: RangeInclusive<u64> = 161..=190;
 /// The third air held-out set's seeds, tuning data since.
 pub const AIR_ROUND_THREE_SEEDS: RangeInclusive<u64> = 191..=220;
-/// The air held-out set's seeds: used nowhere in tuning.
+/// The air held-out set's seeds: used nowhere in tuning. Spent for the physical sensing model
+/// (its one run there found murmur-7vp).
 pub const AIR_HELD_OUT_SEEDS: RangeInclusive<u64> = 221..=250;
+/// The physical sensing model's air held-out set's seeds ([`physical_held_out_cases`]): written
+/// before murmur-7vp's fix, run once after it.
+pub const AIR_PHYSICAL_HELD_OUT_SEEDS: RangeInclusive<u64> = 251..=280;
 /// The rules the tracker before this calibration was judged under (the keep-out's regions).
 const BEFORE_RULES: u32 = 12;
 
@@ -441,6 +450,56 @@ pub fn held_out_cases() -> Vec<AirCase> {
             |_, len| fly(len, (9000.0, 1000.0, 270.0, 70.0), 8.0, 3.0, |t, _, _, _| if t < 110.0 { (270.0, 70.0) } else { (120.0, 85.0) }),
         ),
         air("a far transit at 80 m/s, 14 km out, 2500 m", "far transit", "light_aircraft", 2500.0, straight(12000.0, 14000.0, 200.0, 80.0)),
+    ]
+}
+
+/// The physical sensing model's held-out set (murmur-7vp, see the module doc): written before
+/// any change the physical model's failure on [`AIR_HELD_OUT_SEEDS`] led to, the same classes
+/// as [`held_out_cases`] in yet other variants; run once, on [`AIR_PHYSICAL_HELD_OUT_SEEDS`],
+/// when the fix was done, never tuned on.
+pub fn physical_held_out_cases() -> Vec<AirCase> {
+    vec![
+        air("straight 40 m/s south-east, over the fleet, 600 m", "straight", "light_aircraft", 600.0, straight(-5000.0, 7000.0, 135.0, 40.0)),
+        air("straight 70 m/s north, 6 km east of the USV, 2000 m", "straight", "light_aircraft", 2000.0, straight(6000.0, -9000.0, 0.0, 70.0)),
+        air("loitering 750 m at 35 m/s anticlockwise, 900 m", "loitering", "light_aircraft", 900.0, circle(-1000.0, -500.0, 750.0, 35.0, false)),
+        air("loitering 1300 m at 50 m/s, 1400 m", "loitering", "light_aircraft", 1400.0, circle(3500.0, 2000.0, 1300.0, 50.0, true)),
+        air("small UAS circling 220 m at 16 m/s, 90 m", "loitering", "unknown_uas", 90.0, circle(-1800.0, 800.0, 220.0, 16.0, true)),
+        air(
+            "a hexagon route at 50 m/s, turns at 5 deg/s, 700 m",
+            "route",
+            "light_aircraft",
+            700.0,
+            route(vec![(-4000.0, 0.0), (-2000.0, 3500.0), (2000.0, 3500.0), (4000.0, 0.0), (2000.0, -3500.0), (-2000.0, -3500.0)], 50.0, 5.0),
+        ),
+        air(
+            "150 s straight at 50 m/s, then 80 degrees left at 5 deg/s, 1100 m",
+            "one turn",
+            "light_aircraft",
+            1100.0,
+            one_turn(5000.0, -5000.0, 330.0, 50.0, 150.0, -80.0, 5.0),
+        ),
+        air("weave 45 m/s, 40 degrees either way over 35 s, 800 m", "weave", "light_aircraft", 800.0, weave(-6000.0, -2000.0, 50.0, 45.0, 40.0, 35.0)),
+        air(
+            "random turns at 45 m/s, 40 to 140 degrees at 6 deg/s every 20 to 60 s, 700 m",
+            "random turns",
+            "light_aircraft",
+            700.0,
+            random_turns(1000.0, 2000.0, 45.0, (20.0, 60.0), (40.0, 140.0), 6.0, 0xF6),
+        ),
+        air("45 to 70 m/s at 100 s, then 50 at 200 s, at 2 m/s^2, straight, 1300 m", "speed change", "light_aircraft", 1300.0, |_, len| {
+            fly(len, (-7000.0, 3000.0, 110.0, 45.0), 0.0, 2.0, |t, _, _, _| (110.0, if t < 100.0 { 45.0 } else if t < 200.0 { 70.0 } else { 50.0 }))
+        }),
+        air("helicopter hovering 60 s, 35 m/s south-west for 150 s at 2 m/s^2, then hovering, 250 m", "hover and go", "helicopter", 250.0, |_, len| {
+            fly(len, (2000.0, 3000.0, 225.0, 0.0), 25.0, 2.0, |t, _, _, _| (225.0, if (60.0..210.0).contains(&t) { 35.0 } else { 0.0 }))
+        }),
+        air(
+            "an approach north-east at 65 m/s, then a break 120 degrees right at 9 deg/s to 80 m/s at 2.5 m/s^2, 800 m",
+            "approach and break",
+            "light_aircraft",
+            800.0,
+            |_, len| fly(len, (-7000.0, -7000.0, 45.0, 65.0), 9.0, 2.5, |t, _, _, _| if t < 120.0 { (45.0, 65.0) } else { (165.0, 80.0) }),
+        ),
+        air("a far transit at 90 m/s, 16 km out, 3000 m", "far transit", "light_aircraft", 3000.0, straight(-14000.0, 16000.0, 100.0, 90.0)),
     ]
 }
 
@@ -990,6 +1049,19 @@ fn air_calib_physical() {
     eprintln!("--- the criteria on the physical model: {}", if bad.is_empty() { "all hold".to_string() } else { format!("\n{}", bad.join("\n")) });
 }
 
+/// The physical sensing model's own air held-out set (murmur-7vp): [`physical_held_out_cases`]
+/// on [`AIR_PHYSICAL_HELD_OUT_SEEDS`], written before the fix, run once after it, the same
+/// criteria reported (`cargo test -p murmur-bridge --release air_calib_physical_held_out --
+/// --ignored --nocapture`).
+#[test]
+#[ignore]
+fn air_calib_physical_held_out() {
+    let mut table = Vec::new();
+    let bad = failures_on(&physical_held_out_cases(), AIR_PHYSICAL_HELD_OUT_SEEDS, &mut table, true);
+    eprintln!("{}", table.join("\n"));
+    eprintln!("--- the criteria on the physical model: {}", if bad.is_empty() { "all hold".to_string() } else { format!("\n{}", bad.join("\n")) });
+}
+
 /// The same criteria on the tuning sets (what the air constants were chosen on).
 #[test]
 fn on_the_air_tuning_sets_the_tracker_is_honest_and_a_keep_out_holds() {
@@ -1193,6 +1265,7 @@ fn the_air_seed_sets_are_disjoint_from_each_other_and_the_surface_sets() {
         AIR_ROUND_TWO_SEEDS,
         AIR_ROUND_THREE_SEEDS,
         AIR_HELD_OUT_SEEDS,
+        AIR_PHYSICAL_HELD_OUT_SEEDS,
     ];
     for (i, a) in sets.iter().enumerate() {
         for b in &sets[i + 1..] {
