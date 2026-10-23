@@ -38,8 +38,10 @@ def test_every_situation_loads():
     for p in paths:
         sit = S.load_situation(p)
         assert sit.title and sit.brief, p
-        if p.stem not in ("harbor-watch", "hostile-act-engagement"):
+        # fault-drill runs in the headless simulator only (its faults are the simulator's)
+        if p.stem not in ("harbor-watch", "hostile-act-engagement", "fault-drill"):
             assert sit.todo, f"{p.stem} is a stub until the AI work lands"
+    assert S.headless_steps(S.load_situation("fault-drill"))
     hw = S.load_situation("harbor-watch")
     assert not hw.todo
     assert hw.fleet and hw.fleet.exists() and hw.contacts and hw.contacts.exists()

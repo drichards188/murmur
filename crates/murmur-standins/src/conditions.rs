@@ -65,6 +65,19 @@ impl Slot {
     pub fn latest(&self) -> Option<Sample> {
         self.sample.lock().ok().and_then(|s| s.clone())
     }
+
+    /// Where the vehicle last said it was ([lat, lon, depth]): for a source of conditions other
+    /// than the poller below (the headless simulator's baked water).
+    pub fn position(&self) -> Option<[f64; 3]> {
+        self.position.lock().ok().and_then(|p| *p)
+    }
+
+    /// A sample for the vehicle, as the poller below puts one.
+    pub fn put(&self, sample: Sample) {
+        if let Ok(mut s) = self.sample.lock() {
+            *s = Some(sample);
+        }
+    }
 }
 
 /// Scenario clock: MURMUR_AT plus elapsed wall time times MURMUR_RATE.

@@ -79,6 +79,7 @@ circling friendly counts anywhere on its disc: such an orbit blocks every engage
 it moves, and the form's keep-out explanation says so).
 """
 
+world = "golden-gate"                         # sim/worlds/golden-gate.toml
 fleet = "sim/fleets/hostile-act-engagement.toml"
 contacts = "sim/scenarios/hostile-act-engagement.toml"
 events = []                                   # no comms or GNSS events: the situation is the chain

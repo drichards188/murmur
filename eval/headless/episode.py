@@ -434,6 +434,8 @@ class Episode:
                                  space=self.opts.space, anchors=self.opts.anchors, contacts_path=self.contacts_path)
         self.section16(spec, env)
         self.want = {int(v["uid"]) for v in spec["fleet"]}
+        # the fleet as planned (uid, callsign, platform): what a timeline's fault step selects in
+        self.planned = list(spec["fleet"])
         self.sim_epoch = float(spec["epoch"])
         log = workdir / "sim.log"
         sim = Sim(spec, env, binary=self.opts.binary, log=log)
@@ -593,7 +595,7 @@ class Episode:
             "situation": {"name": self.e.name, "family": self.e.family, "split": self.e.split,
                           "situation_seed": self.e.situation_seed, "path": str(self.e.path) if self.e.path else None},
             "seed": self.seed,
-            "provenance": provenance(self.opts.binary),
+            "provenance": provenance(self.opts.binary, Path(spec["links"])),
             "playbook": {"engine": f"playbook-{ENGINE_VERSION}", "config_label": pb.cfg.label,
                          "client_version": pb.cfg.client_version} if pb else None,
             "operator": self.operator.describe() if self.operator else None,
@@ -612,6 +614,11 @@ class Episode:
             "audit": audit_summary(audit_text),
             "audit_text": audit_text,
         }
+        world = self.e.world_record()
+        if world is not None:
+            # world v3 only (eval/world.py): the world and what the simulator took from it; a
+            # record without it is the Golden Gate's as before world v3
+            rec["world"] = world
         if self.opts.agent == "model":
             # the model agent only (a playbook or none record has none of these keys): its config, every
             # wake, its totals; the provenance names the models and efforts
@@ -647,13 +654,14 @@ class Episode:
             spec["effects"] = dict(self.opts.effects)
         if self.opts.space_snapshot is not None:
             from . import space
-            from .situations import links_file
 
             root = space.unpack(self.opts.space_snapshot)
             env["MURMUR_ROOT"] = str(root)
             spec["space_root"] = str(root)
             if spec.get("space"):
-                spec["space_cache"] = str(space.look_cache_file(self.opts.space_snapshot, links_file()))
+                # the episode's link profiles (its world's: section 17; sim/links.toml at the
+                # Golden Gate, as before)
+                spec["space_cache"] = str(space.look_cache_file(self.opts.space_snapshot, Path(spec["links"])))
 
     def section16_record(self) -> dict[str, Any]:
         """The record's keys for section 16, each only when its option is on (a record without
@@ -723,19 +731,20 @@ def audit_summary(text: str) -> dict[str, Any]:
     return {"events": len(lines), "head": head, "sha256": hashlib.sha256(text.encode()).hexdigest()}
 
 
-_PROV: dict[str, Any] | None = None
+_PROV: dict[tuple[str | None, str | None], dict[str, Any]] = {}
 
 
-def provenance(binary: Path | None) -> dict[str, Any]:
+def provenance(binary: Path | None, links: Path | None = None) -> dict[str, Any]:
     """The commit, whether the tree differed from it, the simulator's binary and its hash, and
-    the untracked inputs it read (the link profiles, the satellite element sets)."""
-    global _PROV
-    if _PROV is None:
+    the untracked inputs it read (the link profiles, the episode's: its world's, the satellite
+    element sets)."""
+    key = (str(binary) if binary else None, str(links) if links else None)
+    if key not in _PROV:
         from .provenance import git_state, inputs, sha256_file
         from .sim import BINARY
         from .situations import links_file
 
         b = Path(binary or BINARY)
-        _PROV = {**git_state(), "binary": str(b), "binary_sha256": sha256_file(b) if b.exists() else None,
-                 **inputs(links_file())}
-    return _PROV
+        _PROV[key] = {**git_state(), "binary": str(b), "binary_sha256": sha256_file(b) if b.exists() else None,
+                      **inputs(links or links_file())}
+    return _PROV[key]

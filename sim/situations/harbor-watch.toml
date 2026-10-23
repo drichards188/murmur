@@ -55,6 +55,14 @@ ai = "claude"
 cosigner = "you"
 reveal = false
 seed = 1
+world = "golden-gate"                         # sim/worlds/golden-gate.toml
+
+# The headless simulator as before world v3, pinned: G1's reference, the golden episode and every
+# v1 and v2 family (built on this file) hold today's results. No terrain source for the domain rule
+# (HUNTER 1's patrol shows "not evaluated", as live without tidewater) and still water.
+[headless]
+domain_rule = "not_evaluated"
+currents = "none"
 
 # ---- opening orders, once the fleet is ready: issued by the setup script (op-setup) where the
 # policy sends them out by itself; any other is proposed by agent-setup instead and waits for the

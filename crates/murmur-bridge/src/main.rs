@@ -272,6 +272,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if !decision.terrain_configured() {
         println!("no MURMUR_TIDEWATER_URL: the domain rule records \"not evaluated\"");
+    } else if let Some(grid) = decision.terrain_grid() {
+        println!("no MURMUR_TIDEWATER_URL: the domain rule reads the baked land/water grid {grid}");
     }
     // tracks of contacts that are not ours (Phase C2): sensors from the catalog
     let tracks = tracks::init(&world.cfg.platforms).map_err(|e| format!("tracks: {e}"))?;
