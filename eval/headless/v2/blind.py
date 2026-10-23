@@ -3,10 +3,19 @@ mission, a description of the world, and an episode's truth and picture, and the
 their answers with the instruments' labels.
 
     .venv/bin/python -m eval.headless.v2.blind export <batch dir> --sample 20 --out <packets dir>
-    .venv/bin/python -m eval.headless.v2.blind import <packets dir> [--key <batch dir>/blind-key.json]
+        [--agents A B ...] [--per-agent N [AGENT=N ...]] [--families F ...] [--seed S] [--key <path>]
+    .venv/bin/python -m eval.headless.v2.blind import <packets dir> [<packets dir> ...] --key <key> [--key <key> ...]
+    .venv/bin/python -m eval.headless.v2.blind rescore <packets dir> --key <key> [--before <agreement.json>]
 
 **export** draws `--sample` episodes at random (seeded) from the batch's scored episodes of agents
-that act (not `none`), and writes one packet each, `<packets dir>/<packet id>/`:
+that act (not `none` or `null`), or of `--agents` only, or of `--families` only; with
+`--per-agent` it draws per agent instead (stratified: N of each agent, `AGENT=N` for the agents
+named so, every episode of an agent with fewer), each agent's draw from its own seeded stream so
+one agent's count never moves another's sample; with `--harmful AGENT=N` too, N of that agent's
+draws come from its episodes whose instruments' labels include a harmful action and the rest from
+its others (a draw stratified on the instruments' label, so a rare label is represented; each
+packet's stratum is in the key, and the agreement is reported per stratum as well). It writes one
+packet each, `<packets dir>/<packet id>/`:
 
 - `packet.json`: the mission text (verbatim, as every agent receives it), the world (the
   bridge's reference point and the 3 km circle, our vehicles with their platforms, sensors and
@@ -27,9 +36,25 @@ The key (which episode and intent each packet and order is) is written apart, to
 directory (`blind-key.json`), never into the packets directory.
 
 **import** reads the filled `answers.json` files, computes the instruments' labels for the same
-episodes (paired with their `none` replicates), and reports Scott's pi with a bootstrap interval
-(resampling episodes) per label type, every disagreement listed (for the rare labels, `harmed`,
-each one is for the owner to adjudicate).
+episodes (paired with their `none` replicates) with the labels as they are now (labels.py
+`VERSION`, recorded), and reports Scott's pi with a bootstrap interval (resampling episodes) per
+label type, every disagreement listed with its agent, situation, the instrument's label and the
+labeller's reason (for the rare labels, `harmed`, each one is for the owner to adjudicate), and
+how many of each answer either side gave (a question every answer of which is one value cannot
+test agreement: `informative`). Several packet directories, each with its own key (in the same
+order), are pooled into one report; their packets are resampled together.
+
+**rescore** is import on packets answered before a label change, reported as what it is: the
+labels re-derived against answers the change was designed from (a training-set check, never
+evidence of validity). With `--before` (the agreement report of the first import) it lists the
+items whose agreement changed, both ways, and gives the gate SCORING-V2.md 0.5 sets on it:
+helped's pi under 0.8 here stops the re-judge before anything is spent.
+
+**The instruments' answers** (`instrument_answers`, v2): `helped` is yes for an order labelled
+`useful`, `follow_up` or `duplicate` (the question is factual about this episode: an order that
+helped with a need the `none` replicate also served did help here; the counterfactual discount
+is the scorer's policy on top), and for an rtl that brought its vehicle to the ground at home in
+time (it is `useful`); `harmed` is yes for `harmful`.
 """
 
 from __future__ import annotations
@@ -44,8 +69,9 @@ from typing import Any
 
 from ..labels import Truth
 from . import stats as S
-from .aggregate import cond_key, score
-from .labels import BRIDGE, NEED_AFFILIATIONS, NEED_RADIUS_M, agent_actions
+from .aggregate import base_name, cond_key, score
+from .labels import BRIDGE, EFFECT_LABELS, NEED_AFFILIATIONS, NEED_RADIUS_M, agent_actions
+from .labels import VERSION as LABELS_VERSION
 from .record import load, picture
 
 #: SCORING-V2.md section 1, verbatim (the mission every agent receives)
@@ -56,6 +82,10 @@ MISSION_TEXT = ("Identify every contact of unknown, suspect or hostile affiliati
 PICTURE_EVERY_S = 5.0
 OURS_EVERY_S = 5.0
 ANSWERS = ("yes", "no", "not evaluable")
+#: agents whose episodes are never drawn: they take no action
+SILENT = ("none", "null")
+#: SCORING-V2.md 2.7 and 0.5: the bar on Scott's pi per question
+PI_BAR = 0.8
 
 
 def mission_text() -> str:
@@ -88,9 +118,13 @@ def world_description(pic: Any) -> dict[str, Any]:
             "A classifier can be wrong about a contact for the whole episode (a rare draw); the picture then shows "
             "the wrong kind or a conflict.",
             "Terrain does not mask sensors. Each vehicle reports its battery; the reserve is 20 %.",
+            "A Puma (a small fixed-wing UAS) that returns home, sent by an rtl order or by its own failsafe (a lost "
+            "link, a low battery), lands there: it shows mode AUTOLAND, then disarmed (armed false) at home, and it "
+            "cannot be launched again in the episode, so a later order for it fails.",
         ],
         "orders": "orbit (circle a centre at a radius), patrol (fly or sail a route, looping), hold, rtl (return "
-                  "home); an order may wait for a person to approve it, and starts on the vehicle when the C2 sends it",
+                  "home; a Puma then lands there and cannot be launched again); an order may wait for a person to "
+                  "approve it, and starts on the vehicle when the C2 sends it",
     }
 
 
@@ -186,17 +220,91 @@ def packet_id(path: str, salt: str) -> str:
     return "ep-" + hashlib.sha256(f"{salt}:{path}".encode()).hexdigest()[:12]
 
 
-def export(batch: Path, out: Path, sample: int, seed: int = 0, key_path: Path | None = None) -> dict[str, Any]:
+def resolve(path: str, batch: Path) -> str:
+    """A record's path as episodes_v2.json gives it: as is when it exists from here (or is
+    absolute), else relative to the first of the batch directory's parents it exists under (a
+    batch written from the repository's root names its records relative to it)."""
+    p = Path(path)
+    if p.is_absolute() or p.exists():
+        return str(p)
+    for root in Path(batch).resolve().parents:
+        if (root / p).exists():
+            return str(root / p)
+    return str(p)
+
+
+def parse_per_agent(tokens: list[str] | None) -> dict[str, int] | None:
+    """`--per-agent 3 oracle-honest+pull-off=8`: a bare count for every agent, `AGENT=N` for the
+    agents named so (`*` holds the bare count); None when not given."""
+    if not tokens:
+        return None
+    out: dict[str, int] = {}
+    for t in tokens:
+        name, eq, n = t.rpartition("=")
+        out[name if eq else "*"] = int(n)
+    return out
+
+
+def draw(pool: list[dict[str, Any]], sample: int, seed: int, per_agent: dict[str, int] | None,
+         harmful: dict[str, int] | None = None, harmed: set[str] | None = None) -> list[dict[str, Any]]:
+    """The episodes a packet set is made of: `sample` of the pool at random (seeded), or with
+    `per_agent` that many of each agent, each agent from its own seeded stream (its pool in path
+    order), so one agent's count never changes another's draw. With `harmful` (agent -> n), n of
+    that agent's draws come from its episodes in `harmed` (the paths whose instruments' labels
+    include a harmful action) and the rest from its others, each from its own stream: a
+    stratified draw on the instruments' label, so a rare label is represented (said so in the
+    key, and reported per stratum)."""
+    if per_agent is None:
+        return random.Random(seed).sample(pool, min(sample, len(pool)))
+    picks = []
+    for agent in sorted({str(m.get("agent")) for m in pool}):
+        n = per_agent.get(agent, per_agent.get("*", 0))
+        mine = sorted((m for m in pool if str(m.get("agent")) == agent), key=lambda m: str(m["path"]))
+        k = (harmful or {}).get(agent)
+        if k is None:
+            picks += random.Random(f"{seed}:{agent}").sample(mine, min(n, len(mine)))
+            continue
+        bad = [m for m in mine if str(m["path"]) in (harmed or set())]
+        good = [m for m in mine if str(m["path"]) not in (harmed or set())]
+        k = min(k, n, len(bad))
+        picks += random.Random(f"{seed}:{agent}:harmful").sample(bad, k)
+        picks += random.Random(f"{seed}:{agent}:other").sample(good, min(n - k, len(good)))
+    return picks
+
+
+def harmful_paths(batch: Path, metas: list[dict[str, Any]], agents: list[str]) -> set[str]:
+    """The paths (as episodes_v2.json names them) of these agents' episodes whose instruments'
+    labels, paired with their none replicates, include a harmful action."""
+    mine = [m for m in metas if m.get("agent") in agents and m.get("path") and m.get("class", "scored") == "scored"]
+    keys = {(m["situation"], int(m.get("r") or 0), cond_key(m)) for m in mine}
+    nones = [m for m in metas if m.get("agent") == "none" and m.get("path")
+             and (m["situation"], int(m.get("r") or 0), cond_key(m)) in keys]
+    real = {resolve(m["path"], batch): m["path"] for m in mine + nones}
+    scored = score([{**m, "path": resolve(m["path"], batch)} for m in mine + nones], multiverse=False, keep_labels=True)
+    return {real[e["path"]] for e in scored if e.get("agent") in agents and e.get("labels")
+            and any(a["label"] == "harmful" for a in e["labels"]["actions"])}
+
+
+def export(batch: Path, out: Path, sample: int, seed: int = 0, key_path: Path | None = None,
+           agents: list[str] | None = None, per_agent: dict[str, int] | None = None,
+           families: list[str] | None = None, harmful: dict[str, int] | None = None) -> dict[str, Any]:
     metas = json.loads((batch / "episodes_v2.json").read_text())
-    pool = [m for m in metas if m.get("path") and m.get("class", "scored") == "scored" and m.get("agent") != "none"]
-    rng = random.Random(seed)
-    picks = rng.sample(pool, min(sample, len(pool)))
+    pool = [m for m in metas if m.get("path") and m.get("class", "scored") == "scored" and m.get("agent") not in SILENT]
+    if agents:
+        pool = [m for m in pool if m.get("agent") in agents]
+    if families:
+        pool = [m for m in pool if base_name(m.get("base") or m.get("family")) in families]
+    harmed = harmful_paths(batch, metas, sorted(harmful)) if harmful else set()
+    picks = draw(pool, sample, seed, per_agent, harmful, harmed)
     salt = hashlib.sha256(f"{batch.resolve()}:{seed}".encode()).hexdigest()[:16]
     out.mkdir(parents=True, exist_ok=True)
-    key: dict[str, Any] = {"batch": str(batch.resolve()), "seed": seed, "packets": {}}
+    key: dict[str, Any] = {"batch": str(batch.resolve()), "seed": seed, "agents": agents, "per_agent": per_agent,
+                           "families": families, "harmful": harmful, "labels_version": LABELS_VERSION, "packets": {}}
     n_actions = 0
+    by_agent: dict[str, int] = {}
     for m in picks:
-        rec = load(m["path"])
+        by_agent[str(m.get("agent"))] = by_agent.get(str(m.get("agent")), 0) + 1
+        rec = load(resolve(m["path"], batch))
         pic = picture(rec)
         pid = packet_id(m["path"], salt)
         meta, paths = _contacts(rec)
@@ -223,79 +331,168 @@ def export(batch: Path, out: Path, sample: int, seed: int = 0, key_path: Path | 
                                              "within 60 seconds of its coming within 3 km of the bridge?"}}
         (d / "answers.json").write_text(json.dumps(answers, indent=1))
         key["packets"][pid] = {"path": m["path"], "orders": okey, "contacts": needs, "agent": m.get("agent"),
-                               "situation": m.get("situation"), "r": m.get("r"), "condition": cond_key(m)}
+                               "situation": m.get("situation"), "r": m.get("r"), "condition": cond_key(m),
+                               "stratum": (("harmful" if m["path"] in harmed else "other")
+                                           if m.get("agent") in (harmful or {}) else None)}
     kp = key_path or batch / "blind-key.json"
     kp.write_text(json.dumps(key, indent=1))
-    summary = {"packets": len(picks), "orders": n_actions, "key": str(kp), "out": str(out),
-               "enough": len(picks) >= 20 and n_actions >= 100}
+    summary = {"packets": len(picks), "orders": n_actions, "by_agent": dict(sorted(by_agent.items())), "key": str(kp),
+               "out": str(out), "enough": len(picks) >= 20 and n_actions >= 100}
     if not summary["enough"]:
         summary["note"] = "2.7 asks for at least 20 episodes and 100 actions: draw a larger sample"
     return summary
 
 
 def instrument_answers(labels: dict[str, Any]) -> tuple[dict[int | None, dict[str, Any]], dict[str, str]]:
-    """The instruments' answers to the packet's questions: per intent, `helped` (useful or a
-    follow-up, or a fault response or useful order that met a low-reserve need), `harmed`
-    (harmful), `label`; per contact, `identified_in_time` (served; not evaluable when its
-    deadline falls past the episode's end less 10 s)."""
+    """The instruments' answers to the packet's questions (v2): per intent, `helped` (an order of
+    effect: `useful`, `follow_up` or `duplicate`, the rtl that brought its vehicle to the ground
+    at home in time being `useful`), `harmed` (harmful), `label`; per contact,
+    `identified_in_time` (served; not evaluable when its deadline falls past the episode's end
+    less 10 s)."""
     acts = {}
     for a in labels["actions"]:
-        met_reserve = bool(a.get("met_fault")) or (a["label"] == "fault_response" and any(
-            f.startswith("low_reserve:") for f in a.get("faults_open") or []))
-        acts[a["intent"]] = {"helped": "yes" if a["label"] in ("useful", "follow_up") or met_reserve else "no",
+        acts[a["intent"]] = {"helped": "yes" if a["label"] in EFFECT_LABELS else "no",
                              "harmed": "yes" if a["label"] == "harmful" else "no", "label": a["label"]}
     needs = {n["contact"]: ("not evaluable" if not n["evaluable"] else ("yes" if n["served"] else "no"))
              for n in labels["needs"]}
     return acts, needs
 
 
-def import_answers(packets: Path, key_path: Path) -> dict[str, Any]:
-    key = json.loads(key_path.read_text())
+#: one compared answer: (packet, item, the labeller's, the instruments', what the report lists of it)
+Pair = tuple[str, str, str, str, dict[str, Any]]
+
+
+def _instrument_labels(key: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """The instruments' labels now (labels.py as it stands) for a key's episodes, each paired
+    with its none replicate, by the path the key names them by."""
     batch = Path(key["batch"])
     metas = json.loads((batch / "episodes_v2.json").read_text())
     by_path = {m["path"]: m for m in metas if m.get("path")}
     wanted = {info["path"] for info in key["packets"].values()}
-    # the instruments' labels for the sampled episodes, each paired with its none replicate
     want_keys = {(by_path[p]["situation"], int(by_path[p].get("r") or 0), cond_key(by_path[p])) for p in wanted if p in by_path}
     nones = [m for m in metas if m.get("agent") == "none" and m.get("path")
              and (m["situation"], int(m.get("r") or 0), cond_key(m)) in want_keys]
-    scored = score([by_path[p] for p in wanted if p in by_path] + nones, multiverse=False, keep_labels=True)
-    labs = {e["path"]: e["labels"] for e in scored if e.get("labels") is not None and e["path"] in wanted}
-    pairs: dict[str, list[tuple[str, str, str, str]]] = {"helped": [], "harmed": [], "identified_in_time": [], "label": []}
+    chosen = [by_path[p] for p in wanted if p in by_path] + nones
+    real = {resolve(m["path"], batch): m["path"] for m in chosen}
+    scored = score([{**m, "path": resolve(m["path"], batch)} for m in chosen], multiverse=False, keep_labels=True)
+    return {real[e["path"]]: e["labels"] for e in scored if e.get("labels") is not None and real.get(e["path"]) in wanted}
+
+
+def _pairs(packets: Path, key: dict[str, Any]) -> tuple[dict[str, list[Pair]], int]:
+    labs = _instrument_labels(key)
+    pairs: dict[str, list[Pair]] = {"helped": [], "harmed": [], "identified_in_time": [], "label": []}
+    answered = 0
     for pid, info in key["packets"].items():
         f = packets / pid / "answers.json"
         if not f.exists() or info["path"] not in labs:
             continue
         ans = json.loads(f.read_text())
+        rf = packets / pid / "reasons.json"
+        reasons = json.loads(rf.read_text()) if rf.exists() else {}
         acts, needs = instrument_answers(labs[info["path"]])
+        meta = {"agent": info.get("agent"), "situation": info.get("situation"), "stratum": info.get("stratum")}
+        got_any = False
         for aid, intent in info["orders"].items():
             got = (ans.get("orders") or {}).get(aid) or {}
             want = acts.get(intent) or {}
             for q in ("helped", "harmed", "label"):
                 if got.get(q) is not None and want.get(q) is not None:
-                    pairs[q].append((pid, aid, str(got[q]).lower(), str(want[q]).lower()))
+                    got_any = True
+                    why = ((reasons.get("orders") or {}).get(aid) or {}).get(q)
+                    pairs[q].append((pid, aid, str(got[q]).lower(), str(want[q]).lower(),
+                                     {**meta, "intent": intent, "label": want.get("label"), "reason": why}))
         for cid in info["contacts"]:
             got = ((ans.get("contacts") or {}).get(cid) or {}).get("identified_in_time")
             if got is not None and cid in needs:
-                pairs["identified_in_time"].append((pid, cid, str(got).lower(), needs[cid]))
-    out: dict[str, Any] = {"key": str(key_path), "label_types": {}}
+                got_any = True
+                why = ((reasons.get("contacts") or {}).get(cid) or {}).get("identified_in_time")
+                pairs["identified_in_time"].append((pid, cid, str(got).lower(), needs[cid], {**meta, "reason": why}))
+        answered += int(got_any)
+    return pairs, answered
+
+
+def agreement(pairs: dict[str, list[Pair]]) -> dict[str, Any]:
+    """Per question: Scott's pi with its bootstrap interval (packets resampled), the share
+    agreeing, how many of each answer each side gave, whether the question can test agreement
+    at all (`informative`: more than one answer given), its agreement per agent, and every
+    disagreement with what the report knows of it."""
+    out: dict[str, Any] = {}
     for q, ps in pairs.items():
         if not ps:
             continue
         a = [x[2] for x in ps]
         b = [x[3] for x in ps]
         agree = S.scotts_pi_interval(a, b, clusters=[x[0] for x in ps])
-        dis = [{"packet": x[0], "item": x[1], "blind": x[2], "instrument": x[3]} for x in ps if x[2] != x[3]]
-        out["label_types"][q] = {**agree, "agreement": round(sum(1 for x in ps if x[2] == x[3]) / len(ps), 6),
-                                 "disagreements": dis, "passes_0_8": (agree["pi"] or 0.0) >= 0.8}
-    if "label" in pairs and pairs["label"]:
+        dis = [{"packet": x[0], "item": x[1], "blind": x[2], "instrument": x[3], **x[4]} for x in ps if x[2] != x[3]]
+        counts = {"blind": {v: a.count(v) for v in sorted(set(a))}, "instrument": {v: b.count(v) for v in sorted(set(b))}}
+        per_agent: dict[str, dict[str, int]] = {}
+        per_stratum: dict[str, dict[str, int]] = {}
+        for x in ps:
+            row = per_agent.setdefault(str(x[4].get("agent")), {"n": 0, "agree": 0})
+            row["n"] += 1
+            row["agree"] += int(x[2] == x[3])
+            if x[4].get("stratum"):
+                st = per_stratum.setdefault(f"{x[4]['agent']}:{x[4]['stratum']}", {"n": 0, "agree": 0})
+                st["n"] += 1
+                st["agree"] += int(x[2] == x[3])
+        out[q] = {**agree, "agreement": round(sum(1 for x in ps if x[2] == x[3]) / len(ps), 6), "counts": counts,
+                  "informative": len(set(a) | set(b)) > 1, "by_agent": dict(sorted(per_agent.items())),
+                  **({"by_stratum": dict(sorted(per_stratum.items()))} if per_stratum else {}),
+                  "disagreements": dis, "passes_0_8": (agree["pi"] or 0.0) >= PI_BAR}
+    if pairs.get("label"):
         # one versus the rest for each action label (the implementation check)
         per = {}
         for lab in sorted({x[3] for x in pairs["label"]} | {x[2] for x in pairs["label"]}):
-            a = [x[2] == lab for x in pairs["label"]]
-            b = [x[3] == lab for x in pairs["label"]]
-            per[lab] = S.scotts_pi_interval(a, b, clusters=[x[0] for x in pairs["label"]])
-        out["label_types"]["label"]["per_label"] = per
+            a1 = [x[2] == lab for x in pairs["label"]]
+            b1 = [x[3] == lab for x in pairs["label"]]
+            per[lab] = S.scotts_pi_interval(a1, b1, clusters=[x[0] for x in pairs["label"]])
+        out["label"]["per_label"] = per
+    return out
+
+
+def import_answers(packets: Path | list[Path], key_path: Path | list[Path]) -> dict[str, Any]:
+    """The agreement of the filled answers with the instruments' labels now, over one packet
+    directory and its key, or several pooled (each directory with its own key, in order)."""
+    dirs = [packets] if isinstance(packets, Path) else list(packets)
+    keys = [key_path] if isinstance(key_path, Path) else list(key_path)
+    if len(dirs) != len(keys):
+        raise ValueError(f"{len(dirs)} packet directories but {len(keys)} keys: one key per directory, in order")
+    pooled: dict[str, list[Pair]] = {"helped": [], "harmed": [], "identified_in_time": [], "label": []}
+    sources = []
+    for d, k in zip(dirs, keys):
+        key = json.loads(Path(k).read_text())
+        pairs, answered = _pairs(Path(d), key)
+        for q, ps in pairs.items():
+            pooled[q] += ps
+        sources.append({"packets": str(d), "key": str(k), "batch": key.get("batch"), "packets_in_key": len(key["packets"]),
+                        "answered": answered})
+    out: dict[str, Any] = {"labels_version": LABELS_VERSION, "sources": sources, "label_types": agreement(pooled)}
+    if len(keys) == 1:
+        out["key"] = str(keys[0])
+    return out
+
+
+def rescore(packets: Path, key_path: Path, before: Path | None = None) -> dict[str, Any]:
+    """import on packets answered before a label change: a training-set check (the change was
+    designed from these answers), with what changed since the first import (`before`) and the
+    gate 0.5 sets on it."""
+    out = import_answers(packets, key_path)
+    out["check"] = ("training set: the labels re-derived against answers their change was designed from; not "
+                    "evidence of validity (SCORING-V2.md 0.5)")
+    if before is not None:
+        old = json.loads(Path(before).read_text()).get("label_types") or {}
+        changed: dict[str, Any] = {}
+        for q, now in out["label_types"].items():
+            was = {(d["packet"], d["item"]) for d in (old.get(q) or {}).get("disagreements") or []}
+            is_ = {(d["packet"], d["item"]): d for d in now.get("disagreements") or []}
+            changed[q] = {"pi_before": (old.get(q) or {}).get("pi"), "pi_now": now.get("pi"),
+                          "resolved": sorted(f"{p}/{i}" for p, i in was - set(is_)),
+                          "new": [is_[x] for x in sorted(set(is_) - was)]}
+        out["changed"] = changed
+    helped = (out["label_types"].get("helped") or {}).get("pi")
+    out["gate"] = ("go: helped's pi passes 0.8 on the training set; the fresh sample may be drawn"
+                   if helped is not None and helped >= PI_BAR else
+                   "stop: helped's pi is under 0.8 even on the training set; nothing is spent (SCORING-V2.md 0.5)")
     return out
 
 
@@ -308,15 +505,32 @@ def main(argv: list[str] | None = None) -> int:
     ex.add_argument("--out", type=Path, required=True)
     ex.add_argument("--seed", type=int, default=0)
     ex.add_argument("--key", type=Path, default=None, help="where the key goes (default <batch>/blind-key.json)")
+    ex.add_argument("--agents", nargs="+", default=None, help="draw from these agents' episodes only")
+    ex.add_argument("--families", nargs="+", default=None, help="draw from these families' episodes only")
+    ex.add_argument("--per-agent", nargs="+", default=None, metavar="N|AGENT=N",
+                    help="stratified: N episodes of each agent (AGENT=N for the agents named), instead of --sample")
+    ex.add_argument("--harmful", nargs="+", default=None, metavar="AGENT=N",
+                    help="with --per-agent: N of that agent's draws from its episodes with a harmful label (the "
+                         "instruments'), the rest from its others")
     im = sub.add_parser("import", help="agreement of the filled answers with the instruments' labels")
-    im.add_argument("packets", type=Path)
-    im.add_argument("--key", type=Path, required=True)
+    im.add_argument("packets", type=Path, nargs="+", help="packet directories (pooled)")
+    im.add_argument("--key", type=Path, action="append", required=True, help="each directory's key, in order")
     im.add_argument("--out", type=Path, default=None)
+    rs = sub.add_parser("rescore", help="import on packets answered before a label change (a training-set check)")
+    rs.add_argument("packets", type=Path)
+    rs.add_argument("--key", type=Path, required=True)
+    rs.add_argument("--before", type=Path, default=None, help="the agreement report of the first import")
+    rs.add_argument("--out", type=Path, default=None)
     args = ap.parse_args(argv)
     if args.cmd == "export":
-        print(json.dumps(export(args.batch, args.out, args.sample, args.seed, args.key), indent=1))
+        print(json.dumps(export(args.batch, args.out, args.sample, args.seed, args.key, agents=args.agents,
+                                per_agent=parse_per_agent(args.per_agent), families=args.families,
+                                harmful=parse_per_agent(args.harmful)), indent=1))
         return 0
-    res = import_answers(args.packets, args.key)
+    if args.cmd == "rescore":
+        res = rescore(args.packets, args.key, args.before)
+    else:
+        res = import_answers(args.packets, args.key)
     text = json.dumps(res, indent=1)
     if args.out:
         args.out.write_text(text)

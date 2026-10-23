@@ -76,8 +76,9 @@ def answer(helped: Any = "yes", harmed: Any = "no", iit: Any = "yes", reasons: b
 
 
 class FakeStream:
-    def __init__(self, resp: Any):
+    def __init__(self, resp: Any, error: BaseException | None = None):
         self.resp = resp
+        self.error = error
 
     def __enter__(self) -> "FakeStream":
         return self
@@ -86,11 +87,29 @@ class FakeStream:
         return False
 
     def get_final_message(self) -> Any:
+        if self.error is not None:
+            raise self.error  # the stream dropped while it was read, as httpx's does
         return self.resp
 
 
+class RemoteProtocolError(Exception):
+    """httpx's name for a stream the server dropped (the SDK passes it through mid-stream)."""
+
+
+class Overloaded(Exception):
+    status_code = 529
+
+
+class BadRequest(Exception):
+    status_code = 400
+
+
+DROPPED = "peer closed connection without sending complete message body (incomplete chunked read)"
+
+
 class FakeClient:
-    """`script(request, n)` gives (content blocks, stop reason) for the n-th request (from 1).
+    """`script(request, n)` gives (content blocks, stop reason) for the n-th request (from 1), or
+    raises an exception, which the stream raises as it is read (a dropped stream, an API error).
     Usage: a quarter of the request's characters as input, `out_tokens` output."""
 
     def __init__(self, script: Callable[[dict[str, Any], int], tuple[list[Any], str]], out_tokens: int = 500):
@@ -114,7 +133,10 @@ class FakeClient:
     def _stream(self, **kw: Any) -> FakeStream:
         req = json.loads(json.dumps(kw, default=_plain))  # a snapshot: the driver appends to its lists later
         self.requests.append(req)
-        blocks, stop = self.script(req, len(self.requests))
+        try:
+            blocks, stop = self.script(req, len(self.requests))
+        except Exception as e:  # noqa: BLE001 (pytest.fail is a BaseException: it passes through)
+            return FakeStream(None, error=e)
         size = len(json.dumps(req))
         usage = SimpleNamespace(input_tokens=size // 4, output_tokens=self.out_tokens, cache_creation_input_tokens=0,
                                 cache_read_input_tokens=0)
@@ -327,6 +349,148 @@ def test_a_call_that_costs_more_than_it_reserved_stops_the_run(packets: Path, mo
     assert len(fake.requests) == 1 and fake.deleted == ["file_1"]
     row = json.loads((packets / J.LOG).read_text().splitlines()[0])
     assert row["status"] == "stopped" and "more than" in row["problems"][0]
+
+
+# ---- transient errors: retried, the dropped call charged the input it sent (murmur-7yh) ----------
+
+
+def dropped_usd(request_chars: int, wall_s: float = 0.0) -> float:
+    """JudgeGuard.dropped's charge on claude-opus-5-5 ($4 input), written out: the request at 2
+    characters a token, once per server iteration, at 1.25 times the input price, and the
+    container for at least 300 s at $0.05 an hour."""
+    return J.SERVER_ITERATIONS * (request_chars / 2.0) * 4.0 * 1.25 / 1e6 + max(wall_s, 300.0) / 3600.0 * 0.05
+
+
+def log_rows(packets: Path) -> list[dict[str, Any]]:
+    return [json.loads(x) for x in (packets / J.LOG).read_text().splitlines()]
+
+
+def test_the_classifier_treats_a_dropped_stream_as_transient():
+    from eval.headless.officer import fatal, transient
+
+    assert transient(RemoteProtocolError(DROPPED)) and not fatal(RemoteProtocolError(DROPPED))
+    assert transient(Overloaded("overloaded")) and not fatal(Overloaded("overloaded"))
+    assert not transient(BadRequest("invalid_request_error")) and fatal(BadRequest("invalid_request_error"))
+    # the text alone, or a cause on the chain, says so too
+    assert transient(Exception(DROPPED)) and not fatal(Exception(DROPPED))
+    try:
+        try:
+            raise RemoteProtocolError("reset")
+        except RemoteProtocolError as inner:
+            raise RuntimeError("the stream failed") from inner
+    except RuntimeError as e:
+        assert transient(e) and not fatal(e)
+    for code_ in (408, 409, 429, 500, 503, 529):
+        assert transient(type("E", (Exception,), {"status_code": code_})()), code_
+    for code_ in (400, 401, 403, 404, 413):
+        e = type("E", (Exception,), {"status_code": code_})()
+        assert not transient(e) and fatal(e), code_
+    # an error of our own (not the API's) still stops: no wait cures a bug
+    assert not transient(KeyError("x")) and fatal(KeyError("x"))
+
+
+def test_a_dropped_stream_is_retried_from_scratch_and_charged_the_input_it_sent(packets: Path,
+                                                                                 monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("MURMUR_EVAL_BATCH_MAX_USD", raising=False)
+    waits: list[float] = []
+    monkeypatch.setattr(J.time, "sleep", waits.append)
+
+    def script(req: dict[str, Any], n: int) -> tuple[list[Any], str]:
+        if n == 1:
+            raise RemoteProtocolError(DROPPED)
+        return [*code(n), text(answer())], "end_turn"
+
+    fake = FakeClient(script)
+    first = J.plan(packets, 0)[0][0].name
+    assert run(packets, fake, "--limit", "1") == 0
+    # a fresh upload and conversation for the second attempt; each upload deleted
+    assert len(fake.requests) == 2 and len(fake.uploads) == 2 and fake.deleted == ["file_1", "file_2"]
+    assert [len(r["messages"]) for r in fake.requests] == [1, 1] and waits == [J.RETRY_BACKOFF_S[0]]
+    (row,) = log_rows(packets)
+    assert row["packet"] == first and row["status"] == "answered" and row["file_deleted"] is True
+    assert json.loads((packets / first / J.MARK).read_text())["status"] == "answered"
+    drop, ok = row["per_call"]
+    assert drop["dropped"] is True and "RemoteProtocolError" in drop["error"] and drop["attempt"] == 1
+    assert drop["usd"] == pytest.approx(dropped_usd(drop["request_chars"], drop["wall_s"]), abs=1e-6)
+    assert 0.09 < drop["usd"] < 0.15 and drop["usd"] < drop["reserved_usd"] / 20  # far from the worst case
+    assert ok["attempt"] == 2 and ok["stop_reason"] == "end_turn"
+    (att,) = row["attempts"]
+    assert att["attempt"] == 1 and att["retried"] is True and "incomplete chunked read" in att["error"]
+    assert att["charged_usd"] == pytest.approx(drop["usd"], abs=1e-6) and att["calls"] == 1
+    # the ledger: the dropped call's charge and the answered call's cost, nothing left reserved
+    led = json.loads((packets / J.LEDGER).read_text())
+    assert led["reserved"] == 0.0 and led["usd"] == pytest.approx(drop["usd"] + ok["usd"], abs=1e-5)
+    assert row["usd"] == pytest.approx(led["usd"], abs=1e-5)
+
+
+def test_a_packet_dropped_on_every_attempt_is_an_error_and_the_run_goes_on(packets: Path,
+                                                                           monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("MURMUR_EVAL_BATCH_MAX_USD", raising=False)
+    waits: list[float] = []
+    monkeypatch.setattr(J.time, "sleep", waits.append)
+    tries = 1 + J.RETRIES
+
+    def script(req: dict[str, Any], n: int) -> tuple[list[Any], str]:
+        if n <= tries:
+            raise RemoteProtocolError(DROPPED)
+        return [text(answer())], "end_turn"
+
+    fake = FakeClient(script)
+    order = [d.name for d in J.plan(packets, 0)[0]]
+    assert run(packets, fake) == 0, "one packet failing every attempt does not stop the run"
+    assert len(fake.requests) == tries + 1 and len(fake.deleted) == tries + 1
+    assert waits == list(J.RETRY_BACKOFF_S)
+    bad, good = log_rows(packets)
+    assert [bad["packet"], good["packet"]] == order
+    assert bad["status"] == "error" and "RemoteProtocolError" in bad["problems"][0] and bad["calls"] == tries
+    assert [a["retried"] for a in bad["attempts"]] == [True] * J.RETRIES + [False]
+    assert not (packets / bad["packet"] / J.MARK).exists(), "an error is taken up again by the next run"
+    assert good["status"] == "answered" and "attempts" not in good
+    led = json.loads((packets / J.LEDGER).read_text())
+    assert led["reserved"] == 0.0 and led["usd"] == pytest.approx(bad["usd"] + good["usd"], abs=1e-5)
+    assert bad["usd"] == pytest.approx(sum(dropped_usd(c["request_chars"], c["wall_s"]) for c in bad["per_call"]), abs=1e-5)
+    # the next run takes the failed packet up again
+    assert [d.name for d in J.plan(packets, 0)[0]] == [bad["packet"]]
+
+
+def test_two_packets_in_a_row_failing_every_attempt_stop_the_run(packets: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                 capsys: pytest.CaptureFixture[str]):
+    monkeypatch.setattr(J.time, "sleep", lambda s: None)
+
+    def script(req: dict[str, Any], n: int) -> tuple[list[Any], str]:
+        raise RemoteProtocolError(DROPPED)
+
+    fake = FakeClient(script)
+    assert run(packets, fake) == 3
+    assert len(fake.requests) == 2 * (1 + J.RETRIES)
+    assert [r["status"] for r in log_rows(packets)] == ["error", "error"]
+    res = json.loads(capsys.readouterr().out)
+    assert "2 packets failed in a row on transient errors" in res["stopped"] and res["guard"]["dropped_calls"] == 8
+
+
+def test_an_error_no_wait_cures_stops_at_once_and_an_overload_is_retried(packets: Path, monkeypatch: pytest.MonkeyPatch):
+    waits: list[float] = []
+    monkeypatch.setattr(J.time, "sleep", waits.append)
+    def refused(req: dict[str, Any], n: int) -> tuple[list[Any], str]:
+        raise BadRequest("invalid_request_error: bad parameter")
+
+    fake = FakeClient(refused)
+    assert run(packets, fake) == 3
+    assert len(fake.requests) == 1 and waits == [] and fake.deleted == ["file_1"]
+    (row,) = log_rows(packets)
+    assert row["status"] == "error" and "attempts" not in row and row["per_call"][0]["dropped"] is True
+    (packets / J.LOG).unlink()
+
+    def script(req: dict[str, Any], n: int) -> tuple[list[Any], str]:
+        if n == 1:
+            raise Overloaded("overloaded_error")
+        return [text(answer())], "end_turn"
+
+    fake = FakeClient(script)
+    assert run(packets, fake, "--limit", "1") == 0
+    assert len(fake.requests) == 2 and waits == [J.RETRY_BACKOFF_S[0]]
+    (row,) = log_rows(packets)
+    assert row["status"] == "answered" and row["attempts"][0]["error"].startswith("Overloaded")
 
 
 def test_no_api_without_the_flag(packets: Path, monkeypatch: pytest.MonkeyPatch):

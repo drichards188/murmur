@@ -43,9 +43,10 @@ input hit the leakage scan, is run again once on the same seeds; a second failur
 Replicate r's episode gets `spec.replicate = r`, so its opaque run id is per (family, situation
 seed, replicate) and the same for every agent. The agents include scoring v2's anchors (`null`,
 `random-valid`, `oracle`), the ruler check's ladder (`oracle-linkblind`, `oracle-honest`,
-`oracle-late`; judged by eval/headless/ladder.py, SCORING-V2.md 0.3) and the playbook's
+`oracle-late`; judged by eval/headless/ladder.py, SCORING-V2.md 0.3), the playbook's
 perturbations (`playbook+spam`, `playbook+behind`, `playbook+skip-first`, `playbook+reserve-blind`,
-`playbook+ferries`): eval/headless/agents_v2.py.
+`playbook+ferries`) and the honest oracle's (`oracle-honest+spam`, `+behind`, `+skip-first`,
+`+reserve-blind`, `+ferries`, `+pull-off`; SCORING-V2.md 0.5): eval/headless/agents_v2.py.
 Each episode's index entry carries its fidelity digests (`fidelity_digest`: truth, picture samples,
 the audit log bar `agent.action`), which the world pilot's gate compares between `null` and `none`
 (aggregate_v2.json `world_pilot`). The primary pools only the families admitted by an

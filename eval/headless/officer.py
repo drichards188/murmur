@@ -319,16 +319,67 @@ def _get(b: Any, k: str) -> Any:
     return b.get(k) if isinstance(b, dict) else getattr(b, k, None)
 
 
+#: HTTP statuses a wait may cure: a timeout, a conflict, a rate limit, and every server error
+#: (529, overloaded, included)
+TRANSIENT_STATUS = (408, 409, 429)
+#: parts of an exception's class name that say the transport or the service failed, not the request
+TRANSIENT_NAMES = ("Connection", "Timeout", "Overloaded", "InternalServer", "RateLimit", "RemoteProtocol", "Protocol",
+                   "ReadError", "WriteError", "IncompleteRead", "ChunkedEncoding", "ServiceUnavailable")
+#: what a dropped stream says when its class name does not
+TRANSIENT_TEXT = ("incomplete chunked read", "peer closed connection")
+
+
+def _chain(e: BaseException) -> list[BaseException]:
+    """The exception and every one on its `__cause__` / `__context__` chain, once each."""
+    out: list[BaseException] = []
+    todo: list[BaseException | None] = [e]
+    while todo:
+        x = todo.pop(0)
+        if x is None or any(x is y for y in out):
+            continue
+        out.append(x)
+        todo += [x.__cause__, x.__context__]
+    return out
+
+
+def transient(e: BaseException) -> bool:
+    """An error a wait may cure: an HTTP status of a timeout, a conflict, a rate limit or a
+    server error (408, 409, 429, 500 to 599), or a transport failure anywhere on the exception's
+    chain (a connection error, a timeout, a dropped stream: httpx's `RemoteProtocolError`,
+    "peer closed connection without sending complete message body (incomplete chunked read)",
+    which the SDK passes through unwrapped mid-stream). A status on the exception itself decides
+    alone (a 400 raised while handling a dropped connection is still a 400)."""
+    own = getattr(e, "status_code", None)
+    if isinstance(own, int) and not isinstance(own, bool):
+        return own in TRANSIENT_STATUS or 500 <= own < 600
+    for x in _chain(e):
+        status = getattr(x, "status_code", None)
+        if isinstance(status, int) and not isinstance(status, bool) \
+                and (status in TRANSIENT_STATUS or 500 <= status < 600):
+            return True
+        name = type(x).__name__
+        if any(k in name for k in TRANSIENT_NAMES):
+            return True
+        text = str(x).lower()
+        if any(k in text for k in TRANSIENT_TEXT):
+            return True
+    return False
+
+
 def fatal(e: BaseException) -> bool:
     """An error no wait will cure: a request the API refuses as such (a 4xx other than a
     timeout, a conflict or a rate limit: bad parameters, credentials, permissions, an unknown
-    model) or a failure before any request (the SDK's arguments). A connection error, a
-    timeout, an overload or a server error is transient."""
+    model) or a failure before any request (the SDK's arguments). A transient error (`transient`:
+    a connection error, a timeout, an overload, a server error, a dropped stream) never is.
+    Before `transient`, httpx's `RemoteProtocolError` (a stream the server dropped) counted as
+    fatal: it stopped the blind labeller's run (murmur-7yh) and would have marked a model
+    episode `model_failed`."""
+    if transient(e):
+        return False
     status = getattr(e, "status_code", None)
     if isinstance(status, int):
-        return 400 <= status < 500 and status not in (408, 409, 429)
-    name = type(e).__name__
-    return not any(k in name for k in ("Connection", "Timeout", "Overloaded", "InternalServer", "RateLimit"))
+        return 400 <= status < 500 and status not in TRANSIENT_STATUS
+    return True
 
 
 def ms_up(t: float) -> float:
