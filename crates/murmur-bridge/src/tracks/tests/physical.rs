@@ -172,8 +172,8 @@ fn a_radar_revisiting_slower_than_5_s_is_refused() {
     assert!(super::super::sensing::SensorCatalog::from_toml(ok).is_ok());
 }
 
-/// Every platform's every sensor resolves to a working physical sensor, real figures or
-/// placeholders.
+/// Every platform's every sensor resolves to a working physical sensor (none on placeholders:
+/// `catalog::no_catalog_sensor_runs_on_placeholders`).
 #[test]
 fn every_catalog_sensor_resolves() {
     let cat = catalog();
@@ -188,8 +188,6 @@ fn every_catalog_sensor_resolves() {
             }
         }
     }
-    let ph = super::super::physical::spec::placeholders(&cat);
-    assert!(!ph.contains(&"puma:eo_ir".to_string()) && ph.contains(&"x10:eo_ir".to_string()), "{ph:?}");
 }
 
 fn usv(uid: u64, lat: f64, lon: f64, sensors: Vec<SensorSpec>) -> Observer {
