@@ -524,8 +524,9 @@ group. Dates are 2026.
 
 ## Fleet and simulation
 
-- **A physical sensing model beside the legacy one, the legacy model the default for now**
-  (10-23, murmur-1z6.1; WORLD-V3-PLAN section 2, approved; docs/SENSING.md). Per-sensor physics
+- **A physical sensing model beside the legacy one, the physical model the default since the
+  catalog's figures** (10-23, murmur-1z6.1, murmur-1z6.4; WORLD-V3-PLAN sections 2 and 3,
+  approved; docs/SENSING.md). Per-sensor physics
   from the open-source research (docs/research/sensors.md): EO/IR by pixels on target (ACQUIRE,
   atmosphere, day and night, thermal crossover) inside a pointed field of view, radar by the
   fourth-root law with the two-ray model, hull-down and sea clutter drawn once per scan, AIS by
@@ -535,8 +536,11 @@ group. Dates are 2026.
   v2 worlds are pinned to `legacy` by the evaluation layer's bridge environment (headless,
   G1's full stack, Phase G's stacks), not in their contacts files, whose generated text the v1
   digests hold; so v1 and v2 records stay as they were (their episodes byte-identical, the
-  golden included). Why not replace the legacy model: every record so far is its, and the
-  platform catalog's real figures (B1) come after; the coordinator flips the default then.
+  golden included). Why not replace the legacy model: every record so far is its. The legacy
+  model was the default until the platform catalog carried every type's figures (B1, 10-23,
+  murmur-1z6.4: each value cited or estimated from the research, none tuned, W3); since then a
+  scenario that names no model runs on the physical one, the live stack and new worlds
+  included, while v1, v2 and the Phase G stacks stay pinned to `legacy` as above.
   Kept out of the decision engine's reach on purpose: `TrackFacts`, the sensor type names and
   the identity interface are unchanged (no rules version); signatures are a per-kind table with
   overrides by contact id, because a field on the truth structs would break the tracker's

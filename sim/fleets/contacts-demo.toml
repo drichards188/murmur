@@ -16,7 +16,7 @@ sim = "standin"
 count = 1
 spawn = [37.8060, -122.4430, 5, 0]     # Crissy Field
 [[unit]]
-platform = "magura"                    # radar 8 km, EO/IR 5 km, AIS receiver
+platform = "magura"                    # EO/IR 5 km, AIS receiver (no radar)
 sim = "standin"
 count = 1
 spawn = [37.8120, -122.4880, 0, 270]   # south side of the Gate

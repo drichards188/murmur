@@ -21,7 +21,7 @@ sim = "standin"
 spawn = [37.8080, -122.4600, 120, 270] # east of the bridge (clear of the towers' no-go boxes)
 
 [[unit]]
-platform = "magura"                    # radar 8 km, EO/IR 5 km, AIS receiver
+platform = "magura"                    # EO/IR 5 km, AIS receiver (no radar)
 sim = "standin"
 spawn = [37.8120, -122.4880, 0, 270]   # south side of the Gate
 

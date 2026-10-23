@@ -6,7 +6,7 @@
 # and `[identification] rule_declaration = true` in the policy (sim/policy.toml has it).
 #
 # - act-clear: the fast boat, alone and holding west of the bridge, fires on our USV (magura,
-#   uid 2). The corsair's radar and EO/IR see it; the engine attributes it to the fast boat's
+#   uid 2). The corsair's EO/IR sees it; the engine attributes it to the fast boat's
 #   track, usually above the threshold, and declares it hostile by rule (a review item: confirm or
 #   revoke).
 # - act-ambiguous: a skiff tied up 25 m from a stopped crab boat fires on the corsair (uid 4).
