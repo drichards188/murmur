@@ -25,7 +25,7 @@
 use super::{BASE, T0, at, contact, observer};
 use crate::tracks::model::Track;
 use crate::tracks::sensing::{Detection, Observer, Params, SensorType, detect};
-use crate::tracks::truth::{Ais, Domain};
+use crate::tracks::truth::{Ais, ContactTruth, Domain};
 use murmur_decide::engage::track_reach;
 use murmur_decide::geo::haversine_m;
 use murmur_decide::{Affiliation, EngageRules, Fact, LonLat, Time, TrackFacts};
@@ -705,8 +705,30 @@ pub(super) fn hold(f: &TrackFacts, now: f64, span: f64, truth: (f64, f64), ec: &
     h.reach += regions.iter().map(|r| r.radius_m).fold(0.0, f64::max);
 }
 
-/// Run both filters on `case` at `seed`.
+/// Run both filters on `case` at `seed`, on the legacy sensing model (what they were judged on).
 pub fn run(case: &Case, seed: u64) -> Scores {
+    run_by(case, seed, &mut |s, obs, c| {
+        detect(Params { seed, tick: i64::from(s), misclassification_rate: 0.0 }, obs, &[c], &|_, _| false)
+    })
+}
+
+/// The physical sensing model's detections of a case, second by second (its own state kept
+/// across them), by day (WORLD-V3-PLAN 2.8 item 3: an evaluation, never tuning).
+pub fn physical(seed: u64) -> impl FnMut(u32, &[Observer], ContactTruth) -> Vec<Detection> {
+    use crate::tracks::physical::{Engine, Step, conditions::Conditions};
+    let mut engine = Engine::new(None);
+    let sensing = crate::tracks::truth::Sensing {
+        conditions: Some(Conditions { sun_elevation_deg: Some(45.0), ..Conditions::default() }),
+        ..Default::default()
+    };
+    move |s, obs, c| {
+        let st = Step { seed, tick: i64::from(s), s: f64::from(s), t: T0 + f64::from(s), misclassification_rate: 0.0, sensing: &sensing };
+        engine.step(&st, obs, &[c])
+    }
+}
+
+/// Run both filters on `case` at `seed` on the detections `sense` gives each second.
+pub fn run_by(case: &Case, seed: u64, sense: &mut dyn FnMut(u32, &[Observer], ContactTruth) -> Vec<Detection>) -> Scores {
     let ec = EngageRules::default();
     let table = case.table(seed, case.n as usize + SPANS_S[1] as usize + 1);
     let mut new: Option<Track> = None;
@@ -723,8 +745,7 @@ pub fn run(case: &Case, seed: u64) -> Scores {
             c.ais = Some(Ais { mmsi: "366000001".into(), name: "MV TEST".into(), ship_type: "passenger".into(), spoofed: false });
             c.emits = true;
         }
-        let params = Params { seed, tick: i64::from(s), misclassification_rate: 0.0 };
-        let dets = detect(params, &case.observers, &[c], &|_, _| false);
+        let dets = sense(s, &case.observers, c);
         for d in &dets {
             match &mut new {
                 None => new = Some(Track::new("T-0001".into(), 1, d, now)),
@@ -768,6 +789,11 @@ pub fn run(case: &Case, seed: u64) -> Scores {
 
 /// A case's scores summed over `seeds`, and one line per seed.
 pub fn over_seeds(case: &Case, seeds: impl Iterator<Item = u64>) -> (Scores, Vec<(u64, Scores)>) {
+    over_seeds_by(case, seeds, &run)
+}
+
+/// The same with each seed's scores from `run`.
+pub fn over_seeds_by(case: &Case, seeds: impl Iterator<Item = u64>, run: &dyn Fn(&Case, u64) -> Scores) -> (Scores, Vec<(u64, Scores)>) {
     let mut total = Scores::default();
     let mut each = Vec::new();
     for seed in seeds {
@@ -836,10 +862,15 @@ fn calib_table() {
 /// overconfident; and at least 0.5, so none is uselessly loose. A keep-out 60 and 100 s
 /// ahead, per case: the truth inside it at least as often as with the old filter.
 fn failures(cases: &[Case], seeds: std::ops::RangeInclusive<u64>, table: &mut Vec<String>) -> Vec<String> {
+    failures_by(cases, seeds, table, &run)
+}
+
+/// The same criteria on the scores `run` gives (the physical sensing model's evaluation).
+fn failures_by(cases: &[Case], seeds: std::ops::RangeInclusive<u64>, table: &mut Vec<String>, run: &dyn Fn(&Case, u64) -> Scores) -> Vec<String> {
     let mut bad = Vec::new();
     let mut by_class: std::collections::BTreeMap<&str, Scores> = Default::default();
     for c in cases {
-        let (s, _) = over_seeds(c, seeds.clone());
+        let (s, _) = over_seeds_by(c, seeds.clone(), run);
         table.push(line(c.name, &s));
         by_class.entry(c.class).or_default().add(&s);
         for (k, span) in SPANS_S.iter().enumerate() {
@@ -855,12 +886,26 @@ fn failures(cases: &[Case], seeds: std::ops::RangeInclusive<u64>, table: &mut Ve
         }
     }
     for (class, s) in &by_class {
+        table.push(line(&format!("class {class}"), s));
         let (nees, cover) = (s.new.mean_nees(), s.new.coverage());
         if !(cover >= 0.83 && (0.5..=2.6).contains(&nees)) {
             bad.push(format!("{class}: NEES {nees:.2}, within 2 sigma {:.1}% when updated", 100.0 * cover));
         }
     }
     bad
+}
+
+/// The tracker as tuned, on the physical sensing model's detections of the held-out set
+/// (WORLD-V3-PLAN 2.8 item 3: an evaluation, never tuning; the asserting tests stay on the
+/// legacy model they were judged on): the same table and criteria, reported, not asserted
+/// (`cargo test -p murmur-bridge --release calib_physical -- --ignored --nocapture`).
+#[test]
+#[ignore]
+fn calib_physical() {
+    let mut table = Vec::new();
+    let bad = failures_by(&held_out_cases(), HELD_OUT_SEEDS, &mut table, &|c, seed| run_by(c, seed, &mut physical(seed)));
+    eprintln!("{}", table.join("\n"));
+    eprintln!("--- the criteria on the physical model: {}", if bad.is_empty() { "all hold".to_string() } else { format!("\n{}", bad.join("\n")) });
 }
 
 #[test]

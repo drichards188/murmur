@@ -735,6 +735,21 @@ fn rules(version: u32) -> EngageRules {
 /// (the current rules in every asserting test), the tracker alone under the rules before the
 /// aircraft region, the tracker before under rules 12.
 pub fn run(case: &AirCase, mix: Mix, seed: u64, rules_after: u32) -> AirScores {
+    run_on(case, mix, seed, rules_after, false)
+}
+
+/// The same with the tracker after on the physical sensing model's detections (`physical`:
+/// WORLD-V3-PLAN 2.8 item 3, an evaluation, never tuning; by day), the tracker before on its own
+/// sensing model's as always.
+pub fn run_on(case: &AirCase, mix: Mix, seed: u64, rules_after: u32, physical: bool) -> AirScores {
+    use crate::tracks::physical::{Engine, Step, conditions::Conditions};
+    let mut engine = physical.then(|| {
+        let sensing = crate::tracks::truth::Sensing {
+            conditions: Some(Conditions { sun_elevation_deg: Some(45.0), ..Conditions::default() }),
+            ..Default::default()
+        };
+        (Engine::new(None), sensing)
+    });
     let (ec, ec_tracker, ec_old) = (rules(rules_after), rules(AIRCRAFT_REACH_SINCE - 1), rules(BEFORE_RULES));
     let longest = AIR_SPANS_S[AIR_SPANS_S.len() - 1] as usize;
     let table = (case.motion)(seed, case.n as usize + longest + 1);
@@ -752,7 +767,13 @@ pub fn run(case: &AirCase, mix: Mix, seed: u64, rules_after: u32) -> AirScores {
         c.alt_m = case.alt_m;
         c.speed_mps = ve.hypot(vn);
         c.course_deg = ve.atan2(vn).to_degrees().rem_euclid(360.0);
-        let mut dets = detect(Params { seed, tick: i64::from(s), misclassification_rate: 0.0 }, &now_obs, std::slice::from_ref(&c), &|_, _| false);
+        let mut dets = match engine.as_mut() {
+            Some((e, sensing)) => {
+                let st = Step { seed, tick: i64::from(s), s: f64::from(s), t: T0 + f64::from(s), misclassification_rate: 0.0, sensing };
+                e.step(&st, &now_obs, std::slice::from_ref(&c))
+            }
+            None => detect(Params { seed, tick: i64::from(s), misclassification_rate: 0.0 }, &now_obs, std::slice::from_ref(&c), &|_, _| false),
+        };
         let mut old_dets = before_oho::sensing::detect(
             before_oho::sensing::Params { seed, tick: i64::from(s), misclassification_rate: 0.0 },
             &old_obs,
@@ -796,9 +817,14 @@ pub fn run(case: &AirCase, mix: Mix, seed: u64, rules_after: u32) -> AirScores {
 
 /// A case's scores on a mix, summed over `seeds`.
 pub fn over_seeds(case: &AirCase, mix: Mix, seeds: RangeInclusive<u64>, rules_after: u32) -> AirScores {
+    over_seeds_on(case, mix, seeds, rules_after, false)
+}
+
+/// The same, the tracker after on the physical sensing model when `physical`.
+pub fn over_seeds_on(case: &AirCase, mix: Mix, seeds: RangeInclusive<u64>, rules_after: u32, physical: bool) -> AirScores {
     let mut total = AirScores::default();
     for seed in seeds {
-        total.add(&run(case, mix, seed, rules_after));
+        total.add(&run_on(case, mix, seed, rules_after, physical));
     }
     total
 }
@@ -868,11 +894,16 @@ pub const TRACKER_MAX_MISS_M: [f64; TRACKER_SPANS] = [300.0, 1_200.0, 5_000.0];
 /// least as often as the tracker before this calibration's did, under rules 12); and never an
 /// altitude (no mix has a radar that measures height).
 pub fn failures(cases: &[AirCase], seeds: RangeInclusive<u64>, table: &mut Vec<String>) -> Vec<String> {
+    failures_on(cases, seeds, table, false)
+}
+
+/// The same criteria, the tracker after on the physical sensing model when `physical`.
+pub fn failures_on(cases: &[AirCase], seeds: RangeInclusive<u64>, table: &mut Vec<String>, physical: bool) -> Vec<String> {
     let mut bad = Vec::new();
     let mut by_class: BTreeMap<(&str, Mix), AirScores> = BTreeMap::new();
     for c in cases {
         for mix in MIXES {
-            let s = over_seeds(c, mix, seeds.clone(), murmur_decide::RULES_VERSION);
+            let s = over_seeds_on(c, mix, seeds.clone(), murmur_decide::RULES_VERSION, physical);
             table.push(line(c.name, mix, &s));
             by_class.entry((c.class, mix)).or_default().add(&s);
             for (k, span) in AIR_SPANS_S.iter().enumerate() {
@@ -945,6 +976,19 @@ const HELD_OUT_FOUND: [&str; 2] = [
     "straight 75 m/s west, 10 km north of the USV, 1500 m (all sensors): a keep-out 3 s ahead missed it 1 times of 7769, by up to 20 m (the tracker before: 100.0% held)",
     "a quadrilateral route at 60 m/s, turns at 4 deg/s, 1000 m (all sensors): a keep-out 3 s ahead missed it 1 times of 8084, by up to 6 m (the tracker before: 99.7% held)",
 ];
+
+/// The air tracker as tuned, on the physical sensing model's detections of the held-out set
+/// (WORLD-V3-PLAN 2.8 item 3: an evaluation, never tuning; the asserting tests stay on the
+/// legacy model they were judged on): the same table and criteria, reported, not asserted
+/// (`cargo test -p murmur-bridge --release air_calib_physical -- --ignored --nocapture`).
+#[test]
+#[ignore]
+fn air_calib_physical() {
+    let mut table = Vec::new();
+    let bad = failures_on(&held_out_cases(), AIR_HELD_OUT_SEEDS, &mut table, true);
+    eprintln!("{}", table.join("\n"));
+    eprintln!("--- the criteria on the physical model: {}", if bad.is_empty() { "all hold".to_string() } else { format!("\n{}", bad.join("\n")) });
+}
 
 /// The same criteria on the tuning sets (what the air constants were chosen on).
 #[test]
