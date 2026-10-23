@@ -120,8 +120,9 @@ reach; it was not changed here. Against the physical model's typical range (`car
 murmur-bridge catalog_table -- --ignored --nocapture`: a camera's detection of a 5 m target, a
 radar's of 100 m^2, ESM a patrol boat's radar, AIS a ferry, each sonar per kind; clear day, sea
 state 2, no terrain), these differ by more than 2x, for a later decision: the RQ-4's radar (200
-km against 61) and cameras (50 against nothing, below), the CCA's radar (150 against 316), cameras
-(30 against 10) and ESM (200 against 443), the MQ-9B's cameras (40 against 13) and AIS (150
+km against 61) and cameras (50 against 198 out since the slant path, nothing before it), the
+CCA's radar (150 against 316), cameras (30 against 126; 10 before the slant path) and ESM (200
+against 443), the MQ-9B's cameras (40 against 88; 13 before) and AIS (150
 against 373), Sea Hunter's radar (40 against 11) and sonar on a submarine (3.0 against 7.5), the
 Puma's, Switchblade's, X10's and UGVs' cameras (0.8 to 4 km against 4 to 14), the Magura's camera
 (5 against 10.1), and every sonar on the kinds it was not built for (the BlueROV and REMUS against
@@ -410,11 +411,17 @@ sets' views):
   ahead at most 0.70 % and 213 m, 10 s 0.07 % and 109 m, 30 s 0.14 % and 604 m), and a keep-out
   10, 30, 60 and 100 s ahead holds every case; but a keep-out 3 s ahead missed the approach and
   break 3 times in 2,837 samples, by up to 102 m (seeds 281, 284 and 304: a break 140 degrees
-  left at 7 deg/s while speeding up to 90 m/s, about 11 m/s^2 of turn, seen through it only by
-  the two radars' bearings, which cross at 32 to 39 degrees a second or two apart and so range
-  it, while both models' velocity lags the turn: the estimate 500 to 700 m behind at 2.7 to 3.7
-  of its sigmas). The constant-velocity models' lag in a hard turn, not the bearings' timing:
-  the tracker's follow-up is a turn model.
+  left at 7 deg/s while speeding up to 90 m/s, about 11 m/s^2 of turn, seen through most of it
+  only by the two radars' bearings, which cross at 32 to 39 degrees in one tick or a second or
+  two apart and so range it, while both models' velocity lags the turn: the estimate 540 to 720
+  m behind at 3.4 to 3.9 of its sigmas). The constant-velocity models' lag in a hard turn, not
+  the bearings' timing: the tracker's follow-up is a turn model. The legacy model is untouched:
+  the legacy calibrations' tables (surface and air, tuning and held-out sets) and a keep-out
+  evaluation (seeds 1 to 3, 20 situations, the radar and all variants) came out byte for byte
+  as at the commit before (d80fd4a), and the golden episode and v1/v2 null fidelity hold. So
+  did the surface evaluation on the physical model (seeds 66-95, every criterion holding): its
+  contacts on the water give no 2D radar bearings, and its cameras, at most 80 m up, look a few
+  kilometres along the sea, where the slant path changes the atmosphere's share by under 1 %.
 
 **Cost** (`eval/headless/sense_perf.py`): a Golden Gate world of 30 stand-ins of ten types and
 40 contacts of every domain, headless, 30 simulated minutes: 91 times real time on the

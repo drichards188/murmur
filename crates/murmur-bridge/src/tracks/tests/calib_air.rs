@@ -72,6 +72,13 @@
 //!     second half): [`AIR_PHYSICAL_HELD_OUT_SEEDS`] are spent, the changes were developed on the
 //!     tuning sets (101-220) only, and the new set is run once, after them
 //!     ([`air_calib_physical_held_out_two`]).
+//! 12. The changes (the cameras' slant-path atmosphere; the tracker time-aligning two sweeping
+//!     radars' bearings, dropping the others' bearings at a reset to one's segment, and holding
+//!     a ranging fix 6 s on them: `model::Bearing::aligned`, `model::SWEPT_RANGE_FRESH_S`) took
+//!     the tuning sets' all-sensors misses 3 s ahead from 24 to 2. The new set's one run: every
+//!     criterion held in every mix but one, a keep-out 3 s ahead missing the approach and break
+//!     in the all-sensors mix 3 times by up to 102 m (the constant-velocity models' lag in a
+//!     hard turn seen only by two radars' bearings; docs/SENSING.md).
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
