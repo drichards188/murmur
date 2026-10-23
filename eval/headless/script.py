@@ -29,8 +29,14 @@ Each item is `{"at_s": t, "kind": ...}` or waits for a trigger:
   and the headless faults (eval/situation.py `HEADLESS_STEP_KEYS`; crates/murmur-headless/src/
   sim/faults.rs models each): `gnss`, `battery`, `reboot`, `stop`, `current`, on the vehicles
   its selector names in the fleet as planned (a fault reaches a vehicle the C2 does not hear).
-  An `engage` step is recorded as skipped: the headless engagement chain (its signers) is world
-  v3's H2. A `note` is the panel's and never reaches the script.
+  An `engage` step nominates as the live one does (eval/engage.py `EngageAdapter.run_step`):
+  its track and vehicles resolved as a proposal's; with `unless_nominated`, skipped while a
+  nomination on the track stands, whoever made it; with `wait_s`, the nomination form's dry run
+  (`get_nomination_options`) asked every 3 s until the platform passes every check, skipped with
+  the failing checks if it never does; then `agent-scripted` nominates it over MCP. Who signs it
+  is the episode's (`Options.signers`, signers.py, docs/HEADLESS.md section 16); without signers
+  the nomination waits and expires, as live with no one at the console. A `note` is the panel's
+  and never reaches the script.
 
 **The first look** (`first_look`; eval/SCORING-V2.md 4.5): the first intent, by its dispatch
 time, that an agent proposed (any agent but the scripted ones, `agent-setup`'s opening orders and
@@ -295,12 +301,13 @@ class Script:
                                  self.ep.sim_epoch + now)
             if track is None:
                 raise ValueError(f"declare: no track matches {p['track']!r}")
-            req = {"affiliation": p["affiliation"], **({"note": p["note"]} if p.get("note") else {})}
+            # the note says it is a script's, as the live timeline's bridge labels it
+            req = {"affiliation": p["affiliation"], "note": labelled(SCRIPTED_TIMELINE, p.get("note"))}
             status, out = sim.api("POST", f"/api/tracks/{track['id']}/declare", req, STORYLINE_OPERATOR)
             rec.update(operator=STORYLINE_OPERATOR, track=track["id"], affiliation=p["affiliation"], status=status,
                        result=((out or {}).get("declared") or {}).get("affiliation"))
         elif kind == "engage":
-            rec["skipped"] = "an engagement step: the headless engagement chain and its signers are world v3's H2"
+            return self._engage(now, it, rec)
         else:
             rec["error"] = f"unknown step kind {kind!r}"
         return None
@@ -346,6 +353,63 @@ class Script:
         out = self.ep.run_async(s.propose(labelled(SCRIPTED_TIMELINE, rationale), **_mcp_args(req)))
         rec.update(intent=out.get("id"), state=out.get("state"), refused=out.get("refused"), request=req,
                    target=target.get("track_id"), tries=int(it.get("tries", 0)) + 1)
+        return None
+
+    def _engage(self, now: float, it: dict[str, Any], rec: dict[str, Any]) -> bool | None:
+        """An engagement step as eval/engage.py `EngageAdapter.run_step` runs it live (module
+        doc), on the simulated clock: False while it waits (its track, or the checks)."""
+        from eval.engage import EngageAdapter, failing_checks, standing_nomination
+
+        sim, p = self.ep.sim, it["params"]
+        if it.get("proposer", "agent") != "agent":
+            rec["error"] = "the operator proposer (op-planner) is not in the headless simulator: [storyline] proposer = agent"
+            return None
+        first = float(it.get("first_t", now))
+        try:
+            status, state = sim.api("GET", "/api/state")
+            chosen = select_vehicles(p["vehicles"], (state or {}).get("vehicles", []) if status == 200 else [])
+            lead = chosen[0]
+            _, target = self._center({"track": p["track"]}, lead, now)
+        except (StepError, ValueError, KeyError) as e:
+            if now + 2.0 <= first + float(p.get("retry_s", 20)):
+                self._push(now + 2.0, {**it, "first_t": first, "tries": int(it.get("tries", 0)) + 1})
+                return False
+            raise ValueError(f"{e} (tried for {now - first:g} s)") from None
+        uids = [int(v["uid"]) for v in chosen]
+        track = target.get("track_id")
+        req = EngageAdapter.request(p, uids, target)
+        rec.update(engage=True, track=track, uids=uids)
+        if p.get("unless_nominated"):
+            status, out = sim.api("GET", "/api/intents")
+            there = standing_nomination((out or {}).get("intents", []) if status == 200 else [], track)
+            if there is not None:
+                src = there.get("source") or {}
+                rec.update(skipped=f"a nomination on {track} stands: intent {there.get('id')} by {src.get('kind')} "
+                                   f"{src.get('id')} ({there.get('state')})",
+                           nomination={"intent_id": there.get("id"), "source": src, "state": there.get("state")})
+                return None
+        if "wait_s" in p:
+            s = HeadlessSession(sim, STORYLINE_AGENT, "0.1")
+            x = req["extra"]
+            form = self.ep.run_async(s.call("get_nomination_options", track_id=x["track"],
+                                            effect_radius_m=x["effect_radius_m"], window_s=x["window_s"],
+                                            fallback=x["fallback"], uids=uids))
+            want = {str(u) for u in uids}
+            failing = failing_checks(next((o for o in form.get("options") or [] if str(o.get("uid")) in want), None))
+            if failing:
+                since = float(it.get("wait_from", now))
+                if now + 3.0 <= since + float(p["wait_s"]):
+                    self._push(now + 3.0, {**it, "first_t": now, "wait_from": since, "failing": failing})
+                    return False
+                callsign = (lead.get("identity") or {}).get("callsign") or uids
+                rec.update(skipped=f"{callsign} did not pass the nomination checks within {float(p['wait_s']):g} s: "
+                                   f"{'; '.join(failing)}"[:600], failing=failing)
+                return None
+        rationale = fill(str(p.get("rationale", "")), target, lead) or f"engage {track} with {lead.get('uid')}"
+        s = HeadlessSession(sim, STORYLINE_AGENT, "0.1")
+        out = self.ep.run_async(s.propose(labelled(SCRIPTED_TIMELINE, rationale), **_mcp_args(req)))
+        rec.update(intent=out.get("id"), state=out.get("state"), refused=out.get("refused"), request=req,
+                   waited_s=round(now - float(it.get("wait_from", now)), 3))
         return None
 
     def _center(self, c: Any, lead: dict[str, Any], now: float) -> tuple[list[float], dict[str, Any]]:

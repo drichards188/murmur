@@ -116,7 +116,7 @@ meaningful. Decision and command, not weapons.
 - Keep fixed port bases (vehicle, bridge) below the ephemeral range: stand-ins and clients draw
   from it, and a fixed base inside it collides at random. It can change between boots: check
   `sysctl net.ipv4.ip_local_port_range` (39160-43255 as of 2026-10-08; was 37795-41890 on 10-04).
-- Headless worlds (`sim/worlds/`, docs/HEADLESS.md 16): Harbor watch's `[headless]` pin
+- Headless worlds (`sim/worlds/`, docs/HEADLESS.md 17): Harbor watch's `[headless]` pin
   (`domain_rule = "not_evaluated"`, `currents = "none"`) holds every v1 and v2 result and the
   golden: never drop it. A new world's areas go in their own directory, never in `sim/areas`
   (every Golden Gate stack loads all of it). In a worktree without `sim/space/cache` (untracked)

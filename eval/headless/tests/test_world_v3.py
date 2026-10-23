@@ -362,6 +362,25 @@ def test_the_fault_drill_runs_every_step(tmp_path: Path):
     assert '"type":"vehicle.rebooted"' in rec["audit_text"]
 
 
+def test_a_timeline_engage_step_nominates_and_the_signers_sign(tmp_path: Path):
+    """The engagement situation's fallback step (`unless_nominated`, `wait_s`): with no AI, it
+    waits for BLADE 1 to pass the nomination form's checks, agent-scripted nominates it, the
+    episode's scripted signers (section 16) sign it and it goes out; with a nomination standing
+    it is skipped, saying whose."""
+    e = from_situation("hostile-act-engagement")
+    opts = dict(calibration=Calibration.load(), signers={"preset": "scripted"}, review={"preset": "confirm-declarations"})
+    rec = Episode(e, 1, tmp_path / "none", Options(agent="none", **opts)).run()
+    (step,) = [s for s in rec["script"] if s.get("step") == "fallback-nomination"]
+    assert step["engage"] and step["intent"] is not None and not step.get("skipped") and not step.get("error"), step
+    assert step["request"]["extra"]["fallback"] == "return" and step["request"]["extra"]["effect_radius_m"] == 75.0
+    assert "situation timeline (scripted, not a person)" in rec["audit_text"]
+    signed = [d for d in rec["signers"]["decisions"] if d.get("intent_id", d.get("intent")) == step["intent"]]
+    assert signed and signed[-1].get("result") == "dispatched", rec["signers"]["decisions"]
+    rec = Episode(e, 1, tmp_path / "scripted", Options(agent="scripted", **opts)).run()
+    (step,) = [s for s in rec["script"] if s.get("step") == "fallback-nomination"]
+    assert step["skipped"].startswith("a nomination on ") and step.get("intent") is None, step
+
+
 def test_the_live_runner_refuses_the_simulators_faults():
     sit = load_situation("fault-drill")
     with pytest.raises(SituationError, match="headless simulator"):

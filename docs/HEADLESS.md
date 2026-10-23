@@ -1218,10 +1218,16 @@ world's `wind_mps`.
 `script.py` `step` items) as the live storyline runs them, on the simulated clock: `propose`
 (vehicles as the C2 lists them; a centre that is a place, a track as the C2 shows it, or a
 vehicle; tried every 2 s for `retry_s`; `agent-scripted` over MCP), `flood`, `link` (the
-emulator's own event), `declare` (op-planner). A `note` is the panel's and is left out (Harbor
-watch's two notes leave its script empty, as before); an `engage` step is recorded as skipped
-(the headless engagement chain is world v3's H2); the `[storyline] proposer = "operator"` is not
-in the simulator yet (recorded as an error).
+emulator's own event), `declare` (op-planner, its note labelled as the timeline's), `engage`
+(as eval/engage.py runs it live: `unless_nominated` skips while a nomination on the track stands,
+`wait_s` asks the nomination form's dry run every 3 s until the platform passes, then
+`agent-scripted` nominates; the episode's signers, section 16's `Options.signers`, sign it, and
+without them it waits and expires as live with no one at the console). A `note` is the panel's
+and is left out (Harbor watch's two notes leave its script empty, as before); the
+`[storyline] proposer = "operator"` is not in the simulator yet (recorded as an error). The
+engagement situation with no AI, the scripted signers and the confirming reviewer: its
+fallback step waits 12 s for BLADE 1's checks, nominates at 357 s, op-2 and op-3 sign, and the
+effect goes out (seeds 1-3; tested).
 
 **The faults** (situation step kinds the live runner refuses; `crates/murmur-headless/src/sim/
 faults.rs` says what each is modelled on): `gnss` (a jammer: no fix inside its footprint by J/S,

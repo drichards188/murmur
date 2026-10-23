@@ -1093,7 +1093,7 @@ group. Dates are 2026.
   the model that served each iteration (a fallback can bill another). The Anthropic SDK is not
   in `requirements.txt`; no test calls an external API.
 - **Worlds are data, and v1 and v2 are pinned to before them** (10-23, world v3 H5;
-  docs/HEADLESS.md 16). Each map is a file, `sim/worlds/<name>.toml` (fleet, areas, tidewater
+  docs/HEADLESS.md 17). Each map is a file, `sim/worlds/<name>.toml` (fleet, areas, tidewater
   scenario, baked grids and currents, links and ground station, named points, the mission's
   circle, condition ranges); a situation names its world and its `[headless]` choices. New
   behaviour is opt-in per situation; Harbor watch pins the simulator as it was

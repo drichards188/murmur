@@ -37,7 +37,7 @@ Situation panel is over the map's top left.
 | --- | --- | --- |
 | `harbor-watch.toml` | runs | Four of ours on station at the Golden Gate, normal traffic, and an unknown fast boat without AIS that comes in from the west and holds near the bridge. The AI should notice it and propose a sensor orbit; the watch policy puts that in front of the operator. Every platform has an endurance figure, so the three opening orders go out by policy. 12 minutes at rate 1. Its `[playbook]`: a 3 km watch area and the bridge as the protected point, Pumas preferred. |
 | `hostile-act-engagement.toml` | runs | The engagement decision chain end to end, on autoplay by default (`make situation NAME=hostile-act-engagement` plays out with nothing to do but watch). Three of ours (HUNTER 1, a sensor ship; REAPER 1, high overhead; BLADE 1, a loitering munition), normal traffic (ferries, the shipping lane, fishing boats, a yacht), and a fast boat without AIS that runs in from the sea, holds mid-strait west of the bridge inside the engagement zone and, from about 3:30, fires on HUNTER 1 (an abstract act). Our sensors observe the act, the engine declares the boat hostile by rule (rules 9), op-auto confirms the declaration (scripted), the AI nominates an engagement with BLADE 1, op-2 and op-3 sign it (scripted), BLADE 1 is dispatched, the engine releases the effect (an abstract event) and assesses it ("ceased"), by about 7 to 8 minutes. If no nomination stands by 5:45, the timeline nominates BLADE 1 (agent-scripted, saying so): with `AI=playbook` (no engagement play) or `AI=none` it is always the timeline. Its autoplay grants every request the AI makes (`grant_agents`), so a run shows what the AI does when it gets everything it asks for; the engine's checks and the policy's tiers are the shipped ones. 12 minutes at rate 1. |
-| `fault-drill.toml` | headless only | Every fault of the headless simulator once on a timeline (docs/HEADLESS.md section 16): a current, a GNSS jammer over Crissy Field (the UGV loses its fix and holds), a battery drop and a heavier draw on PUMA 1, a spoofer on HUNTER 1, HUNTER 1's autopilot rebooting, a link cut, a timeline proposal, a stopped UGV. Its fleet is a boat, a Puma, a drifting buoy and a UGV. `.venv/bin/python -m eval.headless.batch --situation fault-drill --seeds 1-10`; the live runner refuses it. |
+| `fault-drill.toml` | headless only | Every fault of the headless simulator once on a timeline (docs/HEADLESS.md section 17): a current, a GNSS jammer over Crissy Field (the UGV loses its fix and holds), a battery drop and a heavier draw on PUMA 1, a spoofer on HUNTER 1, HUNTER 1's autopilot rebooting, a link cut, a timeline proposal, a stopped UGV. Its fleet is a boat, a Puma, a drifting buoy and a UGV. `.venv/bin/python -m eval.headless.batch --situation fault-drill --seeds 1-10`; the live runner refuses it. |
 | `comms-cut-gnss-spoof.toml` | stub (TODO) | Title and brief only. |
 | `approval-flood.toml` | stub (TODO) | Title and brief only. |
 
@@ -246,7 +246,7 @@ ai = "claude"                                 # claude | codex | playbook | none
 cosigner = "you"                              # you | scripted (live mode, engagements)
 reveal = false                                # director's notes and what is to come in the panel
 
-[headless]                                    # the headless simulator only (docs/HEADLESS.md 16)
+[headless]                                    # the headless simulator only (docs/HEADLESS.md 17)
 domain_rule = "grid"                          # grid: the world's land/water grid answers the domain
                                               # rule (default); not_evaluated: no terrain source
 currents = "world"                            # world: the world's currents and water (default); none
@@ -319,9 +319,10 @@ it is op-planner's), every `at_s` is before `duration_s`, and a value of the wro
 refused with the key named.
 
 **Headless.** The headless simulator runs a situation's timeline too (docs/HEADLESS.md section
-16): `propose`, `flood`, `link` and `declare` as above on its simulated clock (a `note` is the
-panel's, an `engage` step is skipped until the headless engagement chain, the operator proposer
-is not in it yet), and five faults only it can make, which the live runner refuses (a live GNSS
+17): `propose`, `flood`, `link`, `declare` and `engage` as above on its simulated clock (an
+`engage` step's nomination is signed by the episode's scripted signers, section 16, when it has
+them; a `note` is the panel's; the operator proposer is not in it yet), and five faults only it
+can make, which the live runner refuses (a live GNSS
 jammer or spoofer is an events file's `gnss` table, sim/events/golden-gate-gnss.toml):
 
 | kind | keys | what |
