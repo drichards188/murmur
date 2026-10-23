@@ -18,9 +18,20 @@
 //! point moves with its track every second, so it alone is answered from the nearest
 //! sample within [`murmur_decide::engage::TERRAIN_NEAR_M`] (the log says where that sample
 //! was and how far), and not at all when the samples that near disagree (a shoreline).
+//!
+//! Without tidewater, a baked land/water grid (`MURMUR_LAND_WATER_GRID`, world v3's H1; the
+//! headless simulator gives it from its world) answers instead, at once and from the grid
+//! alone: tidewater's water depth (water level minus elevation) sampled once on a regular grid
+//! (eval/headless/bake_world.py, [`Grid`]). A waypoint is the depth there, bilinear between the
+//! four samples around it (outside coverage next to a sample without data, as tidewater outside
+//! its DEM); an effect point is the nearest grid sample within reach, and not answered when the
+//! samples that near disagree, as with the cache. The tide stays at the time it was baked. With
+//! a tidewater URL the grid is not read: live behaves as before.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::io::Read;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use murmur_decide::{LonLat, NearSample, Surface, TerrainOracle, Time};
@@ -49,6 +60,8 @@ struct Cached {
 
 pub struct Terrain {
     client: Option<Tidewater>,
+    /// The baked land/water grid, read only without tidewater (module doc).
+    grid: Option<Arc<Grid>>,
     cache: Mutex<HashMap<Key, Cached>>,
     last_error: Mutex<Option<String>>,
     /// When tidewater last failed (wall s).
@@ -63,6 +76,7 @@ impl Terrain {
     pub fn fixed(map: murmur_decide::PolygonTerrain) -> Terrain {
         Terrain {
             client: None,
+            grid: None,
             cache: Mutex::default(),
             last_error: Mutex::new(None),
             failed_at: Mutex::new(None),
@@ -71,17 +85,36 @@ impl Terrain {
     }
 
     /// `url`: tidewater serve, e.g. `http://127.0.0.1:8774`; None: no terrain source.
+    #[cfg(test)]
     pub fn new(url: Option<&str>) -> Terrain {
-        let (client, err) = match url.map(Tidewater::new) {
+        Terrain::with_grid(url, None)
+    }
+
+    /// [`Terrain::new`], and without a tidewater URL the baked land/water grid at `grid` (its
+    /// water depth, [`Grid`]) as the source; a grid that can't be read leaves no source, said
+    /// once. With a URL the grid is not read.
+    pub fn with_grid(url: Option<&str>, grid: Option<&Path>) -> Terrain {
+        let (client, mut err) = match url.map(Tidewater::new) {
             None => (None, None),
             Some(Ok(c)) => (Some(c), None),
             Some(Err(e)) => (None, Some(e)),
+        };
+        let grid = match (url, grid) {
+            (None, Some(p)) => match Grid::load(p) {
+                Ok(g) => Some(Arc::new(g)),
+                Err(e) => {
+                    err = Some(format!("land/water grid: {e}"));
+                    None
+                }
+            },
+            _ => None,
         };
         if let Some(e) = &err {
             eprintln!("terrain: {e}; the domain rule will record \"not evaluated\"");
         }
         Terrain {
             client,
+            grid,
             cache: Mutex::default(),
             last_error: Mutex::new(err),
             failed_at: Mutex::new(None),
@@ -91,7 +124,12 @@ impl Terrain {
     }
 
     pub fn configured(&self) -> bool {
-        self.client.is_some()
+        self.client.is_some() || self.grid.is_some()
+    }
+
+    /// The baked grid answers (no tidewater): which, for the startup line.
+    pub fn grid_source(&self) -> Option<String> {
+        self.grid.as_ref().map(|g| g.source.clone())
     }
 
     /// Fetch whatever the cache can't answer exactly for these points (waypoints).
@@ -172,6 +210,9 @@ impl TerrainOracle for CacheOracle<'_> {
         }
         let _ = at; // tidewater is asked at scenario time when prefetching
         t.source()?;
+        if let Some(g) = t.grid.as_ref().filter(|_| t.client.is_none()) {
+            return Ok(points.iter().map(|p| g.surface(*p)).collect());
+        }
         // the cache guard is dropped before `not_answered` takes the last error
         let found = {
             let cache = t.cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -195,6 +236,12 @@ impl TerrainOracle for CacheOracle<'_> {
         }
         let _ = at;
         t.source()?;
+        if let Some(g) = t.grid.as_ref().filter(|_| t.client.is_none()) {
+            let near = g.samples_within(p, within_m);
+            let near: Vec<(f64, LonLat, &Surface)> = near.iter().map(|(d, q, s)| (*d, *q, s)).collect();
+            return nearest_agreeing(&near, within_m)
+                .unwrap_or_else(|| Err(format!("no land/water grid sample within {within_m:.0} m of the effect point")));
+        }
         // the cache guard is dropped before `not_answered` takes the last error
         let found = {
             let cache = t.cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -215,7 +262,7 @@ impl TerrainOracle for CacheOracle<'_> {
 impl Terrain {
     /// `Err` when there is no terrain source at all.
     fn source(&self) -> Result<(), String> {
-        if self.client.is_some() {
+        if self.client.is_some() || self.grid.is_some() {
             return Ok(());
         }
         let why = self
@@ -265,6 +312,130 @@ fn kind(s: &Surface) -> &'static str {
         Surface::Water { .. } => "water",
         Surface::Land => "land",
         Surface::OutsideCoverage => "outside coverage",
+    }
+}
+
+/// A baked grid's header (eval/headless/bake_world.py): the first sample's `lat0`, `lon0`, the
+/// spacing `dlat`, `dlon` (degrees), the size `nlat` x `nlon`, `scale` metres a unit and the
+/// `nodata` value (where tidewater had no data).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct GridHeader {
+    pub lat0: f64,
+    pub lon0: f64,
+    pub dlat: f64,
+    pub dlon: f64,
+    pub nlat: usize,
+    pub nlon: usize,
+    pub scale: f64,
+    pub nodata: i16,
+}
+
+/// A baked grid: gzip of one JSON header line ([`GridHeader`]), then `nlat x nlon`
+/// little-endian i16 row by row from the south-west. The world's land/water grid holds
+/// tidewater's water depth (water level minus elevation: above 0 water, else land), its surface
+/// grid the surface height the headless link emulator's terrain line of sight reads
+/// (crates/murmur-headless/src/sim/terrain.rs, which reads it with this).
+pub struct Grid {
+    pub h: GridHeader,
+    data: Vec<i16>,
+    /// The file it was read from (said at startup).
+    pub source: String,
+}
+
+impl Grid {
+    pub fn load(path: &Path) -> Result<Grid, String> {
+        let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut raw = Vec::new();
+        flate2::read::GzDecoder::new(file)
+            .read_to_end(&mut raw)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let nl = raw
+            .iter()
+            .position(|b| *b == b'\n')
+            .ok_or_else(|| format!("{}: no header line", path.display()))?;
+        let h: GridHeader =
+            serde_json::from_slice(&raw[..nl]).map_err(|e| format!("{}: header: {e}", path.display()))?;
+        let body = &raw[nl + 1..];
+        if body.len() != h.nlat * h.nlon * 2 {
+            return Err(format!(
+                "{}: {} bytes of samples for a {}x{} grid",
+                path.display(),
+                body.len(),
+                h.nlat,
+                h.nlon
+            ));
+        }
+        let data = body
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| i16::from_le_bytes(*c))
+            .collect();
+        Ok(Grid {
+            h,
+            data,
+            source: path.display().to_string(),
+        })
+    }
+
+    fn at(&self, i: usize, j: usize) -> Option<f64> {
+        let v = *self.data.get(i * self.h.nlon + j)?;
+        (v != self.h.nodata).then(|| f64::from(v) * self.h.scale)
+    }
+
+    /// The value at a point, bilinear between the four samples around it; None outside the
+    /// grid or next to a sample without data (as tidewater outside its DEM).
+    pub fn height(&self, lat: f64, lon: f64) -> Option<f64> {
+        let y = (lat - self.h.lat0) / self.h.dlat;
+        let x = (lon - self.h.lon0) / self.h.dlon;
+        if !(y >= 0.0 && x >= 0.0) {
+            return None;
+        }
+        let (i, j) = (y.floor() as usize, x.floor() as usize);
+        if i + 1 >= self.h.nlat || j + 1 >= self.h.nlon {
+            return None;
+        }
+        let (fy, fx) = (y - i as f64, x - j as f64);
+        let a = self.at(i, j)?;
+        let b = self.at(i, j + 1)?;
+        let c = self.at(i + 1, j)?;
+        let d = self.at(i + 1, j + 1)?;
+        Some((a * (1.0 - fx) + b * fx) * (1.0 - fy) + (c * (1.0 - fx) + d * fx) * fy)
+    }
+
+    /// What a land/water grid says is at a point: water as deep as its depth there, land, or
+    /// outside coverage (tidewater's `surface`).
+    pub fn surface(&self, p: LonLat) -> Surface {
+        depth_surface(self.height(p.lat, p.lon))
+    }
+
+    /// Every sample of a land/water grid within `r_m` of `p`: how far, where, what it says.
+    pub fn samples_within(&self, p: LonLat, r_m: f64) -> Vec<(f64, LonLat, Surface)> {
+        let h = &self.h;
+        let reach = |d_deg: f64| (r_m / (d_deg * 111_320.0)).ceil() as i64 + 1;
+        let (di, dj) = (reach(h.dlat), reach(h.dlon * p.lat.to_radians().cos().max(0.01)));
+        let ci = ((p.lat - h.lat0) / h.dlat).round() as i64;
+        let cj = ((p.lon - h.lon0) / h.dlon).round() as i64;
+        let mut out = Vec::new();
+        for i in (ci - di).max(0)..=(ci + di).min(h.nlat as i64 - 1) {
+            for j in (cj - dj).max(0)..=(cj + dj).min(h.nlon as i64 - 1) {
+                let q = LonLat::new(h.lon0 + j as f64 * h.dlon, h.lat0 + i as f64 * h.dlat);
+                let d = murmur_decide::geo::haversine_m(p, q);
+                if d <= r_m {
+                    out.push((d, q, depth_surface(self.at(i as usize, j as usize))));
+                }
+            }
+        }
+        out
+    }
+}
+
+/// A water depth as tidewater's surface: none is outside coverage, above 0 water, else land.
+fn depth_surface(depth_m: Option<f64>) -> Surface {
+    match depth_m {
+        None => Surface::OutsideCoverage,
+        Some(d) if d > 0.0 => Surface::Water { depth_m: d },
+        Some(_) => Surface::Land,
     }
 }
 
@@ -591,6 +762,71 @@ mod tests {
         let n = o.sample_near(Time(0), q, 50.0).expect("near sample");
         assert_eq!(n.surface, Surface::Land);
         assert!((n.distance_m - 20.0).abs() < 0.5, "{}", n.distance_m);
+    }
+
+    /// A 3 x 4 land/water grid at 0.001 degrees: water depth in decimetres, the west column
+    /// land, the north-east sample without data.
+    fn small_grid(dir: &Path) -> std::path::PathBuf {
+        use std::io::Write;
+        let header = serde_json::json!({"lat0": 37.80, "lon0": -122.50, "dlat": 0.001, "dlon": 0.001,
+            "nlat": 3, "nlon": 4, "scale": 0.1, "nodata": -32768});
+        let rows: [[i16; 4]; 3] = [[-50, 100, 120, 140], [-40, 110, 130, 150], [-30, 120, 140, -32768]];
+        let mut raw = format!("{header}\n").into_bytes();
+        for r in rows {
+            for v in r {
+                raw.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        let path = dir.join("lw.grid.gz");
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&raw).expect("gzip");
+        std::fs::write(&path, gz.finish().expect("gzip")).expect("write");
+        path
+    }
+
+    /// H1: without tidewater the baked grid answers the domain rule: water as deep as the grid
+    /// says, land, outside coverage beyond it or next to a sample without data; an effect point
+    /// from the nearest sample unless the samples near it disagree (a shoreline). With a URL the
+    /// grid is not read (live as before), and no grid is no source.
+    #[test]
+    fn the_land_water_grid_answers_without_tidewater() {
+        let dir = std::env::temp_dir().join(format!("murmur-lw-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = small_grid(&dir);
+        let t = Terrain::with_grid(None, Some(&path));
+        assert!(t.configured());
+        assert!(t.grid_source().is_some_and(|s| s.ends_with("lw.grid.gz")));
+        let o = t.oracle();
+        let water = LonLat::new(-122.4985, 37.8005);
+        let land = LonLat::new(-122.50, 37.801);
+        let out = LonLat::new(-122.40, 37.80);
+        let edge = LonLat::new(-122.4975, 37.8015); // next to the sample without data
+        let got = o.sample(Time(0), &[water, land, out, edge]).expect("answered");
+        match &got[0] {
+            Surface::Water { depth_m } => assert!((depth_m - 11.5).abs() < 0.01, "{depth_m}"),
+            s => panic!("{s:?}"),
+        }
+        assert_eq!(got[1], Surface::Land);
+        assert_eq!(got[2], Surface::OutsideCoverage);
+        assert_eq!(got[3], Surface::OutsideCoverage);
+        // an effect point well inside the water: the nearest sample, and where it was
+        let n = o.sample_near(Time(0), LonLat::new(-122.498, 37.801), 50.0).expect("near");
+        assert!(matches!(n.surface, Surface::Water { .. }));
+        assert!(n.distance_m < 1.0, "{}", n.distance_m);
+        // on the shoreline: land and water both within reach
+        let e = o.sample_near(Time(0), LonLat::new(-122.4995, 37.801), 80.0).expect_err("shoreline");
+        assert!(e.contains("shoreline"), "{e}");
+        // with tidewater the grid is not read; no grid and no tidewater: no source
+        assert!(Terrain::with_grid(Some("http://127.0.0.1:9"), Some(&path)).grid_source().is_none());
+        let none = Terrain::with_grid(None, None);
+        assert!(!none.configured());
+        assert!(none.oracle().sample(Time(0), &[water]).is_err());
+        // a grid that can't be read is no source, and says why
+        let bad = Terrain::with_grid(None, Some(&dir.join("missing.gz")));
+        assert!(!bad.configured());
+        let e = bad.oracle().sample(Time(0), &[water]).expect_err("no source");
+        assert!(e.contains("land/water grid"), "{e}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

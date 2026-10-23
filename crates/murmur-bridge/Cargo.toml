@@ -22,7 +22,8 @@ rmcp = { version = "3.5", features = ["transport-streamable-http-server"] }
 schemars = "1"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1.5"
-# The physical sensing model's terrain grids (gzip, the format of sim/headless/terrain).
+# Baked grids, gzip (the format of sim/headless/terrain): the physical sensing model's terrain,
+# and the domain rule's land/water grid without tidewater (decision/terrain.rs).
 flate2 = "1"
 
 [lints]

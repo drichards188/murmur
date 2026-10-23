@@ -2,8 +2,10 @@
 //! movers and steps, the same truth message to the bridge's simulation channel
 //! (`POST /api/sim/contacts` with the stack's token, through the bridge's own router), the
 //! effects from its answer applied the same way, at the same 1 Hz from the process's own start.
-//! Its scenario clock starts at `MURMUR_AT` at its own start, as every process's does. Drifting
-//! contacts get no current (no tidewater).
+//! Its scenario clock starts at `MURMUR_AT` at its own start, as every process's does. Each
+//! contact steps with the water's current at its position (world v3: the world's baked field or
+//! a `current` fault, `water.rs`; only a drifting contact moves with it), as the process does
+//! with tidewater; still water gives none, as before world v3.
 //!
 //! With the episode's `effects` ([`EffectSim`], docs/HEADLESS.md, engagements) an effect is a
 //! draw: it takes the intended contact out (applied as the contacts process applies it) with
@@ -27,6 +29,7 @@ use tower::ServiceExt;
 
 use super::fleet::Fleet;
 use super::spec::Effects;
+use super::water::Water;
 
 /// An engagement's effect in the simulation (`Spec::effects`): the draw, and the platforms
 /// spent by their own effect (their uid as the bridge names it, and their stand-in).
@@ -210,6 +213,7 @@ impl Contacts {
 
 /// The process's loop from `start`: a message every second, the first at once. A message before
 /// `bridge_up` is lost (no bridge answers yet: the live process logs the error and goes on).
+/// `water`: the episode's water, its zero and epoch (its scenario time is the situation's).
 pub async fn run(
     c: Arc<Contacts>,
     api: axum::Router,
@@ -217,7 +221,9 @@ pub async fn run(
     start: Instant,
     bridge_up: Instant,
     fx: Option<EffectSim>,
+    water: (Arc<Water>, Instant, f64),
 ) {
+    let (water, zero, epoch) = water;
     let period = Duration::from_secs(1);
     tokio::time::sleep_until(start).await;
     let mut every = tokio::time::interval(period);
@@ -234,8 +240,10 @@ pub async fn run(
         let s = now.saturating_duration_since(start).as_secs_f64();
         let mut msg = {
             let mut movers = c.movers();
+            let t = epoch + now.saturating_duration_since(zero).as_secs_f64();
             for m in movers.iter_mut() {
-                m.step(s, dt, None);
+                let current = water.current(m.st.lat, m.st.lon, t);
+                m.step(s, dt, current);
             }
             seq += 1;
             let mut msg = TruthMessage::build(

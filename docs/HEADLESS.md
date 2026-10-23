@@ -65,6 +65,8 @@ tests, which pass unchanged.
 | `crates/murmur-linkemu/src/proxy.rs` | `Pending`, `Delay`, `admit` made `pub`; the 250 ms link gauge update moved into `pub fn gauge`, which the proxy calls | visibility + refactor |
 | `crates/murmur-bridge/src/space.rs` | `sim_loader`: the space segment loads at once inside the simulation's runtime and the 30 s look at the element sets runs on the simulated clock (no loader thread); the answer cache ages on tokio's paused clock (section 16.2) | `cfg(murmur_headless)` |
 | `Cargo.toml` (workspace) | `unexpected_cfgs` check-cfg for `murmur_headless` | lint config |
+| `crates/murmur-bridge/src/decision/terrain.rs`, `decision/mod.rs` (world v3, 2026-10-23) | the baked land/water grid as the domain rule's source when no tidewater URL is set (`MURMUR_LAND_WATER_GRID`, `Settings::land_water`, `Terrain::with_grid`, `Grid`); with a URL nothing changes (section 17) | feature, live and headless |
+| `crates/murmur-standins/src/conditions.rs` (world v3) | `Slot::position` and `Slot::put`: a source of conditions other than the HTTP poller | visibility |
 
 Not changed: `agents/playbook/`, the tracker and sensing model, murmur-decide, the stand-ins, the
 contacts, the engine's behaviour. The stuck-vehicle fault needed no hook in `murmur-standins`
@@ -83,11 +85,13 @@ replayed with its anchors.
 | `src/main.rs` | `murmur-headless --reply-fd N`: the episode spec on stdin's first line, then one JSON request per line on stdin, one answer per line on descriptor N |
 | `src/sim/mod.rs` | `Episode`: the runtime (current thread, paused), the bridge assembled in `main.rs`'s order minus sockets, threads and HTTP clients, the timed tasks; `step_to`, `mcp_call`, `api_call`, `truth` (contacts, our vehicles, the tracker's association), `fault`, `mcp_over_http` (the bridge's own `/mcp` service on the same `Mcp`, for the view test), `finish` |
 | `src/sim/server.rs` | the request loop: `step`, `mcp`, `api`, `truth`, `fault`, `tools` (with `defs`, the tools' definitions as the bridge's `tools/list` gives them, for the model agent), `now`, `perf`, `mcp_http`, `end`; a request may carry `at` (step first); every other request is checked not to move the clock |
-| `src/sim/spec.rs` | the episode spec (seed, epoch, fleet, stand-in configs, links, events, terrain grid, SATCOM, contacts, start offsets, battery; optional `space_root` and `effects`, section 16) |
+| `src/sim/spec.rs` | the episode spec (seed, epoch, fleet, stand-in configs, links, events, terrain grid, SATCOM, contacts, start offsets, battery; optional `space_root` and `effects`, section 16; world v3's water, section 17) |
 | `src/sim/emulator.rs` | murmur-linkemu per vehicle: both lanes queued by its `admit`, delivered on the simulated clock; terrain and SATCOM rounds (the catalog and element sets under `space_root` when given); `/stats` for the bridge's `emu`; link events (cuts) |
-| `src/sim/fleet.rs` | the stand-ins: `Vehicle::seeded` from the episode seed, a 10 Hz task each with the stand-in engine's phase offsets, a stop fault (cruise and maximum speed to zero), a vehicle leaving the world (`remove`: a munition spent by its own effect) |
-| `src/sim/contacts.rs` | the contacts loop of `murmur-contacts` on the simulated clock; with `effects`, each engagement effect's draw and a spent platform's removal (section 16.1) |
-| `src/sim/terrain.rs` | the baked surface-height grid as the emulator's terrain sampler (section 12), and the height of an airborne spawn's home (section 8) |
+| `src/sim/fleet.rs` | the stand-ins: `Vehicle::seeded` from the episode seed, a 10 Hz task each with the stand-in engine's phase offsets, a stop fault (cruise and maximum speed to zero), a vehicle leaving the world (`remove`: a munition spent by its own effect); world v3's battery draw, reboot and GNSS environment, and the conditions poller (section 17) |
+| `src/sim/faults.rs` | world v3's faults (section 17): gnss jam and spoof, battery, reboot, current; the events files' GNSS events for the stand-ins |
+| `src/sim/water.rs` | world v3's water (section 17): the world's current field, and the tidewater samples our vehicles that take conditions get |
+| `src/sim/contacts.rs` | the contacts loop of `murmur-contacts` on the simulated clock, each contact with the water's current at it (none in still water, section 17); with `effects`, each engagement effect's draw and a spent platform's removal (section 16.1) |
+| `src/sim/terrain.rs` | the world's baked surface-height grid (read with the bridge's own `decision::terrain::Grid`) as the emulator's terrain sampler (section 12), and the height of an airborne spawn's home (section 8) |
 | `src/sim/space_cache.rs` | the SATCOM look cache (section 12) |
 | `src/sim/perf.rs` | computer time per task and per request kind (diagnostics only) |
 | `tests/pieces.rs` | the grid answers tidewater's heights; a cached SATCOM look equals the look it would have computed |
@@ -99,9 +103,9 @@ replayed with its anchors.
 | `sim.py` | the `murmur-headless` process client; `HeadlessSession`, the session adapter (`AgentSession`'s surface and error semantics: a tool error raises `RuntimeError("<tool>: <error>")`, a refused proposal comes back with `refused`, a result that is not JSON reads as `{"text": ...}`) |
 | `episode.py` | one episode: a discrete-event loop (the situation runner's steps, the operator, the AI, a truth sampler) on simulated time, and the record |
 | `officer.py` | the model watch officer (`Options.agent = "model"`, section 14.1): agents/watch_officer.py's trigger table, picture and prompt on simulated time, a Messages API tool-use loop in place of the CLI, the cost guard, the play category of each proposal |
-| `script.py` | the situation runner's steps (wait for the fleet, the opening orders as `op-setup` after its dry run or by `agent-setup`, faults, scripted proposers) |
+| `script.py` | the families' faults and scripted proposers, and a situation's timeline (its `[[step]]`s, section 17) |
 | `operator.py` | the operator on simulated time (section 7) |
-| `situations.py` | a situation file as an episode spec, the `murmur-headless` spec and environment, the calibration |
+| `situations.py` | a situation file as an episode spec (its world, `[headless]` choices and timeline), the `murmur-headless` spec and environment, the calibration |
 | `families.py` | the family generator (section 8) |
 | `labels.py` | truth labels per contact; the target association; what the picture showed at each proposal |
 | `metrics.py` | CRITERIA.md's metrics and the reported ones, from an episode record |
@@ -110,7 +114,8 @@ replayed with its anchors.
 | `batch.py` | `python -m eval.headless.batch`: episodes on a process pool, a record each, the aggregate, the speed and where the time went |
 | `gate.py` | G1 as CRITERIA.md defines it |
 | `provenance.py` | the commit and dirty flag, the binaries' hashes, the untracked inputs (links file, space cache) |
-| `bake_terrain.py` | the terrain grid, sampled once from `tidewater serve` |
+| `bake_world.py` | a world's grids, sampled once from `tidewater serve`: the surface heights, the land/water grid, the current field (section 17) |
+| `../world.py` | the worlds (`sim/worlds/<name>.toml`, section 17) |
 | `signers.py`, `review.py`, `scripted.py` | section 16: the engagement signers, the reviewer, the scripted agent (engage, collect, cover) |
 | `space.py` | section 16.2: a world's pinned element sets (make, verify, unpack) |
 | `calibration.toml`, `split.toml`, `CRITERIA.md` | the offsets; the frozen split; the frozen gates |
@@ -194,7 +199,7 @@ so nothing went to bd and nothing is sorted in the simulator.
 | murmur-space rayon (`par_iter` in `link_at`, windows, passes) | the SATCOM look's propagation | every parallel step is a map, filter or flat map collected into a `Vec`, which rayon keeps in input order; no parallel float reduction. The look cache answers the same with or without a cached look (`tests/pieces.rs`) |
 | murmur-standins `messages::unix_usec`, `vehicle::wall_nanos` (`SystemTime`) | SYSTEM_TIME and GPS time fields; `Vehicle::new`'s seed | the bridge reads `time_boot_ms` (the stand-in's tick count), never the Unix fields; the simulator calls `Vehicle::seeded` with the episode seed |
 | murmur-standins `Vehicle::started` (`Instant`) | TIMESYNC's `tc1` in the stand-in's reply | the bridge checks only `tc1 != 0` and times the round trip on its own (simulated) clock |
-| murmur-standins `gnss.rs`, `conditions.rs` (threads, sleeps, `Instant`) | GNSS jamming and tidewater conditions pollers | not started (no tidewater in the simulator, section 12) |
+| murmur-standins `gnss.rs`, `conditions.rs` (threads, sleeps, `Instant`) | GNSS jamming and tidewater conditions pollers | not started (no tidewater in the simulator, section 12). World v3 (section 17): the stand-ins' GNSS events and faults use `gnss::Env` with no sky table (no geometry thread) on the vehicles' own tick clock; their conditions come from the simulator's own task on the paused clock (`fleet::feed_water`); a reboot's fresh autopilot draws from the episode seed and its reboot count |
 | murmur-decide `anchor.rs` hook thread, `time.rs` `SystemClock` | an anchor hook command; the engine's default clock | no hook is configured; the bridge gives the engine `BridgeClock` |
 | `HashMap`/`HashSet` in the bridge (`estimate.rs`, `decision/{mod,queue,engage,terrain}.rs`, `tasks/mod.rs`, `emu.rs`, `world.rs`, `link.rs`, `tracks/{mod,sensing}.rs`, `mcp/world.rs`) | per-uid and per-op state | every use is a lookup, an insert, a `retain`, an order-free `any`/`find` on a unique key, or a collection sorted before use (`TaskManager::current_ops` sorts by uid; the engagement lanes' platforms are sorted). `push.rs` and `cot.rs` (also maps) are not started |
 | unseeded random draws | none found in the by-path modules or the linked libraries' used paths | |
@@ -640,12 +645,11 @@ made here; nothing was tuned on them.
 |---|---|---|
 | process start offsets are medians from the calibration runs, the playbook's first tick a uniform draw over their range, not each run's own | when the first look comes, and the phase of every tick | the re-run's own offsets were within 0.05 s of the calibrated medians; the look agreed within 1.7 s in every seed (section 11.2) |
 | the emulator's draws fall on packets in arrival order, the same streams on both sides for a situation (fix round 1) but not always the same packets | packet loss on a degraded link, and so whether a lost-link failsafe fires | the re-run's three unpaired cases (section 11.2); the early-return rate 4 of 13 full stack, 22 % of 200 headless episodes |
-| no tidewater currents or winds (the stand-ins run without conditions; drifting contacts do not drift) | HUNTER 1's patrol track; the Mile Rock boat | none seen on the playbook's proposals |
+| no tidewater currents or winds (the stand-ins run without conditions; drifting contacts do not drift) in every v1 and v2 situation (Harbor watch pins `currents = "none"`); a world v3 situation takes its world's baked field and depth, the tide held at its bake (section 17) | HUNTER 1's patrol track; the Mile Rock boat | none seen on the playbook's proposals |
 | the emulator's terrain line of sight from a baked surface-height grid (`sim/headless/terrain/golden-gate.grid.gz`, 20 m spacing, tidewater's `max(elevation, water level)` at the scenario's start; provenance beside it, its hash tested) instead of tidewater's samples; a cell's first answer at once instead of up to a second later | the Pumas' terrain shadows behind the Presidio | the grid is finer than the emulator's 250 m cells |
 | SATCOM looks at the terminal's position rounded to 0.001 deg (about 100 m) and 100 m of altitude, cached between episodes; the 30-minute outlook (display only) off | Reaper's SATCOM link | under a tenth of a degree of elevation to a satellite 550 km up; the outlook is not read by any tool |
 | the bridge's space segment off (section 5.1) unless `Options.space_snapshot` pins a world's element sets (section 16.2) | collect and cover tasks; the audit log has no `space.loaded` | none on the playbook (no space plays) |
-| boat and UGV engagements: the domain rule is "not evaluated" without a land and water grid (H1), which blocks a consequential engagement | `magura`, `ugv_armed` | only air-launched effectors (Switchblade, FPV) engage headless until the grid lands (section 16.4) |
-| the domain rule "not evaluated" for surface vehicles (no tidewater for the decision layer's terrain) | the checks shown on HUNTER 1's orders | none on the playbook's air tasks |
+| the domain rule "not evaluated" for surface vehicles (no tidewater for the decision layer's terrain) in every v1 and v2 situation (Harbor watch pins `domain_rule = "not_evaluated"`), which also blocks a boat's or UGV's consequential engagement there; a world v3 situation's is answered by its world's baked land/water grid (section 17), so boat and UGV engagements can pass it (section 16.4) | the checks shown on HUNTER 1's orders; `magura`, `ugv_armed` | none on the playbook's air tasks |
 | no concurrency: a tick's reads at one instant, zero time per call | timing within a tick | under the 10 s matching window |
 | no console push, CoT export, situation panel | display and export | none |
 
@@ -1129,7 +1133,9 @@ engagement and the cover, each run twice on one seed, gave the same record twice
 - **Boat and UGV engagements** (`magura`, `ugv_armed`) are refused headless until the land and
   water grid lands (H1): the domain rule answers "not evaluated", which blocks a consequential
   engagement. Nothing here depends on the domain: the effect, the signers, the reviewer and the
-  agent run the same for them once it answers. Not tested yet.
+  agent run the same for them once it answers. Not tested yet. (The grid has since landed:
+  a situation with `[headless] domain_rule = "grid"` gets its world's, section 17.2; Harbor
+  watch and every v1 and v2 situation keep "not evaluated".)
 - **The preload writes what was there** for BLADE 1 (its own lost-link values are the `return`
   preload), so the set and the restore exercise the path, not a change of values; an FPV with
   fallback `abort` (ArduCopter `FS_GCS_ENABLE` 7) would change them.
@@ -1143,3 +1149,116 @@ engagement and the cover, each run twice on one seed, gave the same record twice
   at the effect may still report the target for its stale age (seen in the miss: `3:eo_ir` at
   +3.8 s). That is the sensor model's (A1's), not changed here.
 - The engagement, collect and cover outcomes are not yet labels or metrics (H7, C1).
+
+## 17. World v3: worlds, land and water, faults and timelines
+
+Built 2026-10-23 for world v3's H1, H4 and H5 (docs/WORLD-V3-PLAN.md section 4; bd
+murmur-1z6.2). **Every v1 and v2 situation runs and records exactly as before**: Harbor watch
+pins the simulator as it was (`[headless] domain_rule = "not_evaluated"`, `currents = "none"`),
+every family is built on it, and a spec that says nothing of world v3 has none of its keys.
+Shown on 2026-10-23: the golden episode's digest, the null fidelity test and the charged clock's
+byte-identity pass unchanged; and 144 episodes run at the commit before this work and after it
+(Harbor watch and the seven v1 families on seeds 1-4 with the playbook and `none`; the ten v2
+situation kinds on seeds 1-2 with the playbook, the oracle, `null` and `none`, scoring v2) gave
+the same record and the same audit log, episode by episode (the build commit, the change feed's
+per-process nonce and the log's own hashes masked, as the golden masks them).
+
+### 17.1 Worlds (H5)
+
+A world is a file per map, `sim/worlds/<name>.toml` (format: `sim/worlds/README.md`; read by
+`eval/world.py`), naming what was the Golden Gate's alone in the code: the default fleet, the
+operator's areas (a directory, the bridge's `MURMUR_AREAS`), the tidewater scenario and start,
+the baked grids and the box and spacing they were baked on, the current field, the links file
+and the ground station, named reference points, the operating box, the mission's circle (the
+labels' centre, radius and grace) and the ranges a situation's conditions are drawn from (time,
+visibility, wind, sea state: `World.draw_conditions`, recorded, its wind in our vehicles' water;
+nothing else reads them before the sensor model of world v3's A1). `golden-gate.toml` holds the
+constants it replaced, unchanged (tested). A situation names its world (`world = "golden-gate"`,
+the default) and takes its fleet, `at` and tidewater scenario from it unless it names its own.
+
+What the simulator takes from it (`situations.py` `process_spec` and `world_spec`): the surface
+grid for the emulator's terrain; the links file, written into the episode's directory with the
+world's ground station when the file's differs (the link emulator has one station: a world
+naming two is refused); `MURMUR_AREAS` when its areas are not `sim/areas` (a world's own areas
+go in a directory of their own: every Golden Gate stack loads all of `sim/areas`). Labels read
+the mission from the record's world (`labels.py` `mission_of`; a record without one is the
+Golden Gate's). The families, v2's labels and the oracle read the Golden Gate world's points,
+mission and operating box. A world v3 record carries `world` (its name, domain rule, currents,
+conditions); before world v3 there is no such key.
+
+### 17.2 Land and water (H1)
+
+The bridge's domain rule reads a baked land/water grid when no tidewater URL is set
+(`MURMUR_LAND_WATER_GRID`; `crates/murmur-bridge/src/decision/terrain.rs` `Terrain::with_grid`):
+tidewater's water depth (water level minus elevation) on the world's 20 m grid at its bake time.
+A waypoint is the depth there, bilinear between the four samples around it (water above 0, land
+otherwise, outside coverage next to a sample without data, as tidewater outside its DEM); an
+engagement's effect point is the nearest grid sample within `TERRAIN_NEAR_M`, refused when the
+samples that near disagree (a shoreline), as with tidewater's cache. The engine logs what it
+read, so replay is unchanged. A situation's `[headless] domain_rule = "grid"` (the default)
+gives the simulator's bridge its world's grid; a boat's route over Crissy Field then fails
+("is not water; seahunter needs water"), over the channel passes, and a UGV's the other way
+round (tested). The tide stays at the bake (Golden Gate: 10:00Z on 14 June, 0.44 m).
+
+### 17.3 The bake tool
+
+`eval/headless/bake_world.py <world> --url <tidewater serve>` bakes a world's surface grid,
+land/water grid (one pass at its `sampled_at`) and current field (hourly over its window) from
+the world's tidewater scenario, each with a provenance file, on the world's box (without one,
+the scenario's own bounds), and prints the wind's range at the mission's centre for the world's
+conditions. Rebuilt on 2026-10-23 from tidewater 3a531c9, the Golden Gate's surface grid came out
+byte for byte the grid baked on 2026-10-09 (SHA-256 9153e1a4...), so it and its provenance stay
+as they were; its land/water grid (583 KB) and current field (325 KB, 50 x 65 points, 73 hours,
+fastest 2.29 m/s) are new; the wind at the bridge over the window, 2.98 to 7.76 m/s, is the
+world's `wind_mps`.
+
+### 17.4 Faults and timelines (H4)
+
+**The timeline.** A situation's `[[step]]`s run in the simulator (`situations.py` `timeline`,
+`script.py` `step` items) as the live storyline runs them, on the simulated clock: `propose`
+(vehicles as the C2 lists them; a centre that is a place, a track as the C2 shows it, or a
+vehicle; tried every 2 s for `retry_s`; `agent-scripted` over MCP), `flood`, `link` (the
+emulator's own event), `declare` (op-planner, its note labelled as the timeline's), `engage`
+(as eval/engage.py runs it live: `unless_nominated` skips while a nomination on the track stands,
+`wait_s` asks the nomination form's dry run every 3 s until the platform passes, then
+`agent-scripted` nominates; the episode's signers, section 16's `Options.signers`, sign it, and
+without them it waits and expires as live with no one at the console). A `note` is the panel's
+and is left out (Harbor watch's two notes leave its script empty, as before); the
+`[storyline] proposer = "operator"` is not in the simulator yet (recorded as an error). The
+engagement situation with no AI, the scripted signers and the confirming reviewer: its
+fallback step waits 12 s for BLADE 1's checks, nominates at 357 s, op-2 and op-3 sign, and the
+effect goes out (seeds 1-3; tested).
+
+**The faults** (situation step kinds the live runner refuses; `crates/murmur-headless/src/sim/
+faults.rs` says what each is modelled on): `gnss` (a jammer: no fix inside its footprint by J/S,
+the navigation filter loses its position and each firmware's EKF failsafe acts, Rover holding,
+the C2 seeing no fix and no position source; a spoofer: the believed position walks off the
+truth with the flags good; both the stand-ins' own GNSS model, which also reads the events
+files' `gnss` tables now, as the live engine reads `MURMUR_EVENTS`), `battery` (a share of the
+pack gone at once, or the draw times a rate), `reboot` (the autopilot silent for its boot,
+default 3 s, then a fresh one: time since boot from 0, stream rates, failsafes and filter new,
+parameters, stored mission and pack kept; on the surface disarmed in its boot mode, in the air
+ArduPilot's watchdog restore; the bridge logs `vehicle.rebooted` once a message with the time
+since boot comes, about 10 to 30 s later), `stop` (as the families' stuck vehicle), `current`
+(a uniform current in place of the world's for a while). A fault's vehicles are selected in the
+fleet as planned, heard or not. `sim/situations/fault-drill.toml` runs each once; its smoke
+episode and one test per fault are `eval/headless/tests/test_world_v3.py`; ten seeds with the
+playbook and with `none` ran every step without an error.
+
+**The water.** `[headless] currents = "world"` (the default) gives the episode its world's
+water (`water.rs`): contacts step with the current at their position (only a drifting one moves
+with it, as with tidewater), and our vehicles that take conditions (boats, subs, the drifter, a
+UGV, a sailboat, a blimp) get a tidewater-shaped sample about once a second, as the stand-in
+engine's poller gives them: elevation and water level from the surface and land/water grids
+(the depth under a keel, the ground under a UGV), the current from the field (bilinear in space,
+linear in time, held outside its window; surface current only), the drawn wind. Without water a
+contact steps with no current, as before.
+
+**What is left out.** The pack's used mAh is carried through a reboot (ArduPilot's monitor
+counts from 0 again and would report a full pack); a cell lost shows as used charge, not as a
+voltage sag; the tide is held at the grids' bake; the current is the surface's at every depth;
+the link emulator has one ground station; the GNSS sky stays `Sky::LEGACY` (no constellation
+geometry in the simulator, as before).
+
+    .venv/bin/python -m eval.headless.batch --situation fault-drill --seeds 1-10 --agent playbook none
+    .venv/bin/python -m eval.headless.bake_world golden-gate --url http://127.0.0.1:9570 --out /tmp/rebake

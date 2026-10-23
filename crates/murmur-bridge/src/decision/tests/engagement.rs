@@ -1398,6 +1398,7 @@ async fn a_bad_pointer_is_a_failed_carry_not_a_failed_start() {
         scripted: Vec::new(),
         auth: murmur_decide::AuthMode::Dev,
         tidewater: None,
+        land_water: None,
         anchors: None,
         last_run: Some(pointer.to_path_buf()),
         resume: crate::decision::queue::ResumeFrom::Off,
@@ -2253,6 +2254,7 @@ async fn a_pointer_that_cannot_be_read_falls_back_to_the_stations_newest_log_tha
         scripted: Vec::new(),
         auth: murmur_decide::AuthMode::Dev,
         tidewater: None,
+        land_water: None,
         anchors: Some(murmur_decide::AnchorConfig {
             path: dir.join("anchors").join(format!("{run}.anchors")),
             every: 1,
@@ -2465,6 +2467,7 @@ async fn a_refused_fallback_records_every_log_that_may_be_the_one_the_pointer_na
         scripted: Vec::new(),
         auth: murmur_decide::AuthMode::Dev,
         tidewater: None,
+        land_water: None,
         anchors: Some(murmur_decide::AnchorConfig {
             path: dir.join("anchors").join(format!("{run}.anchors")),
             every: 1,

@@ -81,6 +81,25 @@ pub struct Spec {
     /// contacts process applies it (every contact inside the radius, the platform untouched).
     #[serde(default)]
     pub effects: Option<Effects>,
+    /// The world's water (world v3, H4; eval/headless/situations.py `world_spec`): the current
+    /// field the contacts drift with, and the conditions our vehicles that take them get
+    /// (`water.rs`). None: still water and no conditions, as before world v3.
+    #[serde(default)]
+    pub water: Option<WaterSpec>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WaterSpec {
+    /// The world's current field (`[currents] field`).
+    #[serde(default)]
+    pub currents: Option<PathBuf>,
+    /// The world's land/water grid (`[terrain] land_water`): depth and elevation.
+    #[serde(default)]
+    pub land_water: Option<PathBuf>,
+    /// The situation's drawn wind, (east, north) m/s, the same everywhere.
+    #[serde(default)]
+    pub wind_en: Option<[f64; 2]>,
 }
 
 /// An engagement's effect in the simulation (docs/HEADLESS.md, engagements). The effect stays

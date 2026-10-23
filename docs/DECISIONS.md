@@ -1134,6 +1134,27 @@ group. Dates are 2026.
   (`MURMUR_EVAL_BATCH_MAX_USD`, default $20, a shared ledger), and what was billed is priced at
   the model that served each iteration (a fallback can bill another). The Anthropic SDK is not
   in `requirements.txt`; no test calls an external API.
+- **Worlds are data, and v1 and v2 are pinned to before them** (10-23, world v3 H5;
+  docs/HEADLESS.md 17). Each map is a file, `sim/worlds/<name>.toml` (fleet, areas, tidewater
+  scenario, baked grids and currents, links and ground station, named points, the mission's
+  circle, condition ranges); a situation names its world and its `[headless]` choices. New
+  behaviour is opt-in per situation; Harbor watch pins the simulator as it was
+  (`domain_rule = "not_evaluated"`, `currents = "none"`), so every v1 and v2 situation and the
+  goldens give exactly their old results (144 episodes compared record by record), and a record
+  without a `world` key is the Golden Gate's. Why: v2's results stay descriptive of their world
+  and re-readable; a world v3 change can't move them silently. Don't drop the pin.
+- **Without tidewater, the domain rule reads a baked land/water grid** (10-23, world v3 H1).
+  `MURMUR_LAND_WATER_GRID` (tidewater's water depth on the world's grid, eval/headless/
+  bake_world.py) answers waypoints and effect points as tidewater's cache would; with a
+  tidewater URL nothing changes. The tide is held at the bake. Why: boats' and UGVs' routes and
+  engagements are checked headless, where there is no tidewater; replay reads the logged
+  samples either way.
+- **Headless faults are the vehicle's own behaviour** (10-23, world v3 H4). GNSS jam and spoof,
+  battery, reboot and current act on the stand-ins (their GNSS model, battery, a fresh autopilot)
+  or the water, never on what the bridge believes, so the C2 sees a fault only through the
+  vehicle's telemetry, as live. A reboot on the surface comes back disarmed in its boot mode, in
+  the air as ArduPilot's watchdog restore (armed, its mode, home and mission place). The live
+  runner refuses the steps (a live jammer or spoofer is an events file's `gnss` table).
 
 ## Engineering
 

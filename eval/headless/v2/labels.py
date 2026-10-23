@@ -111,12 +111,16 @@ import math
 from dataclasses import asdict, dataclass, replace
 from typing import Any
 
+from eval.world import DEFAULT_WORLD, load_world
+
 from ..labels import Truth, dist_m
 from .record import CLASSIFYING, Picture, carry, picture
 
 VERSION = "2"
-BRIDGE = (-122.4783, 37.8199)  # the bridge reference point (lon, lat), SCORING-V2.md 2.1
-NEED_RADIUS_M = 3000.0
+#: the bridge reference point (lon, lat) and the need's radius, SCORING-V2.md 2.1: the Golden
+#: Gate world's mission (sim/worlds/golden-gate.toml), v2's only world
+BRIDGE = load_world(DEFAULT_WORLD).mission.center
+NEED_RADIUS_M = load_world(DEFAULT_WORLD).mission.radius_m
 DEADLINE_S = 60.0
 END_MARGIN_S = 10.0
 NEED_AFFILIATIONS = ("unknown", "suspect", "hostile")
