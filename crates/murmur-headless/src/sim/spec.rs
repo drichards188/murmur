@@ -71,6 +71,25 @@ pub struct Spec {
     /// A stand-in that starts with less than a full battery: uid -> charge, %.
     #[serde(default)]
     pub battery_pct: BTreeMap<u32, f64>,
+    /// The world's water (world v3, H4; eval/headless/situations.py `world_spec`): the current
+    /// field the contacts drift with, and the conditions our vehicles that take them get
+    /// (`water.rs`). None: still water and no conditions, as before world v3.
+    #[serde(default)]
+    pub water: Option<WaterSpec>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WaterSpec {
+    /// The world's current field (`[currents] field`).
+    #[serde(default)]
+    pub currents: Option<PathBuf>,
+    /// The world's land/water grid (`[terrain] land_water`): depth and elevation.
+    #[serde(default)]
+    pub land_water: Option<PathBuf>,
+    /// The situation's drawn wind, (east, north) m/s, the same everywhere.
+    #[serde(default)]
+    pub wind_en: Option<[f64; 2]>,
 }
 
 fn yes() -> bool {

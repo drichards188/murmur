@@ -85,6 +85,7 @@ impl Terrain {
     }
 
     /// `url`: tidewater serve, e.g. `http://127.0.0.1:8774`; None: no terrain source.
+    #[cfg(test)]
     pub fn new(url: Option<&str>) -> Terrain {
         Terrain::with_grid(url, None)
     }

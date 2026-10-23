@@ -1,0 +1,28 @@
+# The fault drill (sim/situations/fault-drill.toml): one of each kind of vehicle a fault of world
+# v3's H4 acts on differently, at the Golden Gate. Stand-ins only (the headless simulator runs
+# nothing else). uids follow the unit order (sim/swarm.py): 1 HUNTER 1 (a boat: the domain rule
+# checks its route against water, a spoofer walks its position off), 2 PUMA 1 (a fixed wing: its
+# battery and its link), 3 a drifting buoy (moves with the current), 4 a recon UGV on Crissy
+# Field (the domain rule checks its route against land; a jammer takes its fix and its EKF
+# failsafe holds it).
+title = "Fault drill: a boat, a drone, a drifter and a ground vehicle at the Gate"
+
+[[unit]]
+platform = "seahunter"
+sim = "standin"
+spawn = [37.8200, -122.4660, 0, 270]   # east of the bridge, mid-channel
+
+[[unit]]
+platform = "puma"
+sim = "standin"
+spawn = [37.8210, -122.4930, 120, 270] # west of the bridge, mid-strait, airborne
+
+[[unit]]
+platform = "buoy"
+sim = "standin"
+spawn = [37.8150, -122.4900, 0, 0]     # in the Gate: drifts with the tide
+
+[[unit]]
+platform = "ugv_recon"
+sim = "standin"
+spawn = [37.8055, -122.4480, 7, 90]    # Crissy Field

@@ -409,6 +409,8 @@ class Episode:
         spec, env = process_spec(self.e, self.seed, workdir, self.opts.calibration, terrain=self.opts.terrain,
                                  space=self.opts.space, anchors=self.opts.anchors, contacts_path=self.contacts_path)
         self.want = {int(v["uid"]) for v in spec["fleet"]}
+        # the fleet as planned (uid, callsign, platform): what a timeline's fault step selects in
+        self.planned = list(spec["fleet"])
         self.sim_epoch = float(spec["epoch"])
         log = workdir / "sim.log"
         sim = Sim(spec, env, binary=self.opts.binary, log=log)

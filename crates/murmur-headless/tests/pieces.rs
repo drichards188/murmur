@@ -40,6 +40,48 @@ fn the_grid_has_the_presidio_and_the_strait() {
     assert_eq!(g.height(37.0, -122.47), None, "outside the grid");
 }
 
+/// World v3: the Golden Gate's land/water grid and current field as the water reads them. In
+/// the strait at 10:00Z the ebb runs west at a knot or more (tidewater answered -1.79 east,
+/// 0.46 north at the bridge); Crissy Field is land; nothing outside the field; a current step
+/// is the current while it lasts.
+#[test]
+fn the_world_water_reads_the_baked_grids() {
+    use murmur_headless::sim::spec::WaterSpec;
+    use murmur_headless::sim::water::{CurrentField, Water};
+    let t = 1_781_431_200.0; // 2026-06-14T10:00:00Z
+    let f = CurrentField::load(&repo().join("sim/headless/terrain/golden-gate.currents.gz")).expect("field");
+    let (e, n) = f.at(37.8199, -122.4783, t).expect("the bridge");
+    assert!(e < -1.0 && e > -2.6 && n.abs() < 1.0, "{e} {n}");
+    // between two hourly steps the current is between them
+    let (a, b) = (f.at(37.8199, -122.4783, t).expect("a").0, f.at(37.8199, -122.4783, t + 3600.0).expect("b").0);
+    let mid = f.at(37.8199, -122.4783, t + 1800.0).expect("mid").0;
+    assert!((mid - (a + b) / 2.0).abs() < 1e-9, "{a} {mid} {b}");
+    assert_eq!(f.at(37.0, -122.48, t), None, "outside the field");
+    let surface = Arc::new(Grid::load(&repo().join("sim/headless/terrain/golden-gate.grid.gz")).expect("grid"));
+    let spec = WaterSpec {
+        currents: Some(repo().join("sim/headless/terrain/golden-gate.currents.gz")),
+        land_water: Some(repo().join("sim/headless/terrain/golden-gate.water.grid.gz")),
+        wind_en: Some([1.0, -2.0]),
+    };
+    let w = Water::load(&spec, Some(surface)).expect("water");
+    let sea = w.sample(37.8199, -122.4783, t);
+    let depth = sea.water_depth_m.expect("depth");
+    assert!(depth > 50.0, "the channel under the bridge: {depth}");
+    assert!((sea.water_level_m.expect("level") - sea.elevation_m.expect("bed") - depth).abs() < 1e-9);
+    assert!(sea.navigable(5.0) && sea.current_east.is_some_and(|c| c < -1.0));
+    assert_eq!((sea.wind_east, sea.wind_north), (Some(1.0), Some(-2.0)));
+    let land = w.sample(37.8060, -122.4480, t);
+    assert!(!land.navigable(0.1) && land.surface_m().is_some_and(|s| s > 1.0), "{land:?}");
+    assert_eq!((land.current_east, land.current_north), (Some(0.0), Some(0.0)));
+    assert_eq!(w.sample(37.0, -122.48, t).elevation_m, None, "out of the area");
+    // a current step in place of the field, while it lasts
+    w.set_uniform(1.5, 0.5, t + 10.0, Some(60.0));
+    assert_eq!(w.current(37.8199, -122.4783, t + 20.0), Some((1.5, 0.5)));
+    assert_eq!(w.current(37.8199, -122.4783, t + 75.0), f.at(37.8199, -122.4783, t + 75.0));
+    assert_eq!(w.current(37.0, -122.48, t + 20.0), Some((1.5, 0.5)), "uniform everywhere");
+    assert_eq!(Water::still().current(37.8199, -122.4783, t), None, "still water: none, as before world v3");
+}
+
 /// A source whose answer is a function of where and when it is asked, and that counts asks.
 struct Fake(AtomicU64);
 

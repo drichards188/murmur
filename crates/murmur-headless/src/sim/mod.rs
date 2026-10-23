@@ -16,12 +16,14 @@
 
 pub mod contacts;
 pub mod emulator;
+pub mod faults;
 pub mod fleet;
 pub mod perf;
 pub mod server;
 pub mod space_cache;
 pub mod spec;
 pub mod terrain;
+pub mod water;
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -60,6 +62,8 @@ pub struct Episode {
     emu: Arc<Emulator>,
     fleet: Arc<Fleet>,
     contacts: Option<Arc<Contacts>>,
+    /// The water (world v3: the world's currents, a `current` fault; still otherwise).
+    water: Arc<water::Water>,
     /// Agents whose `session.connected` is logged (once each, as the MCP server logs it).
     connected: BTreeSet<String>,
     /// The bridge's own `/mcp` endpoint on the same `Mcp` (the view-identity test), and each
@@ -81,7 +85,7 @@ impl Episode {
             .build()
             .map_err(err("runtime"))?;
         let parts = rt.block_on(assemble(&spec))?;
-        let (zero, _world, decision, tracks, api, mcp, emu, fleet, contacts, audit_path) = parts;
+        let (zero, _world, decision, tracks, api, mcp, emu, fleet, contacts, audit_path, water) = parts;
         let mut ep = Episode {
             rt,
             zero,
@@ -93,6 +97,7 @@ impl Episode {
             emu,
             fleet,
             contacts,
+            water,
             connected: BTreeSet::new(),
             mcp_http: None,
             http_sessions: std::collections::BTreeMap::new(),
@@ -394,7 +399,8 @@ impl Episode {
 
     /// A scripted fault, outside the bridge: a link event (the emulator's own `[[event]]`
     /// schema), or a stand-in that stops making way (its cruise and top speed set to zero, as a
-    /// fouled propeller would; nothing goes through the bridge).
+    /// fouled propeller would; nothing goes through the bridge), or one of world v3's
+    /// (`faults.rs`: gnss, battery, reboot, current).
     pub fn fault(&mut self, f: &Value) -> Result<Value, String> {
         let _g = self.rt.enter();
         match f["kind"].as_str() {
@@ -413,7 +419,11 @@ impl Episode {
                 });
                 Ok(json!({ "stopped": uid }))
             }
-            other => Err(format!("unknown fault kind {other:?}")),
+            Some(other) => {
+                drop(_g);
+                faults::apply(self, other, f)
+            }
+            None => Err("a fault without a kind".into()),
         }
     }
 
@@ -484,6 +494,7 @@ type Parts = (
     Arc<Fleet>,
     Option<Arc<Contacts>>,
     PathBuf,
+    Arc<water::Water>,
 );
 
 async fn assemble(spec: &Spec) -> Result<Parts, String> {
@@ -583,7 +594,16 @@ async fn assemble(spec: &Spec) -> Result<Parts, String> {
     if cfgs.len() != vspecs.len() {
         return Err(format!("{} stand-ins for {} vehicles: every vehicle must be a stand-in", cfgs.len(), vspecs.len()));
     }
-    let fleet = Arc::new(Fleet::new(cfgs, spec.seed, &spec.battery_pct)?);
+    // world v3: the world's water (still without one), and the GNSS events of the events files
+    let water = Arc::new(match &spec.water {
+        Some(w) => water::Water::load(w, grid.clone())?,
+        None => water::Water::still(),
+    });
+    let conditions = spec.water.as_ref().map(|_| (&*water, spec.epoch + spec.standins_start_s.max(0.0)));
+    let fleet = Arc::new(Fleet::new(cfgs, spec.seed, &spec.battery_pct, conditions)?);
+    if let Some(env) = faults::from_events(spec)? {
+        fleet.set_gnss(&env);
+    }
     // the bridge is up at `bridge_start_s` (the full stack's first anchor): before, a frame from
     // the emulator or a contacts message reaches no one
     let bridge_up = zero + Duration::from_secs_f64(spec.bridge_start_s.max(0.0));
@@ -633,6 +653,9 @@ async fn assemble(spec: &Spec) -> Result<Parts, String> {
     for i in 0..fleet.len() {
         tokio::spawn(perf::timed("standins", fleet::run(fleet.clone(), emu.clone(), i, s0)));
     }
+    if spec.water.is_some() {
+        tokio::spawn(perf::timed("standins.water", fleet::feed_water(fleet.clone(), water.clone(), s0, zero, spec.epoch)));
+    }
 
     // the router and the agents' server, as main.rs builds them
     let auth_settings = crate::auth::Settings::from_env(spec.http_port).map_err(err("auth"))?;
@@ -662,12 +685,13 @@ async fn assemble(spec: &Spec) -> Result<Parts, String> {
                 token,
                 zero + Duration::from_secs_f64(c.start_s.max(0.0)),
                 bridge_up,
+                (water.clone(), zero, spec.epoch),
             )));
             Some(ct)
         }
         None => None,
     };
-    Ok((zero, world, decision, tracks, api, mcp, emu, fleet, contacts, settings.audit.clone()))
+    Ok((zero, world, decision, tracks, api, mcp, emu, fleet, contacts, settings.audit.clone(), water))
 }
 
 /// A tool result's JSON as the live session reads it (agents/scripted_agent.py `content`): the
