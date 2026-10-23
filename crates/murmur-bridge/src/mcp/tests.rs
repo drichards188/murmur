@@ -1033,10 +1033,12 @@ async fn tracks_are_perception_with_age_and_never_truth() {
         alt_msl: 0.0,
         mast_m: 4.0,
         submerged: false,
+        heading_deg: None,
+        area: None,
         sensors: vec![
-            SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true, height: false },
-            SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true, height: false },
-            SensorSpec { kind: SensorType::Ais, range_m: 15_000.0, guess: true, height: false },
+            SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true, height: false, physical: Default::default() },
+            SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true, height: false, physical: Default::default() },
+            SensorSpec { kind: SensorType::Ais, range_m: 15_000.0, guess: true, height: false, physical: Default::default() },
         ],
     };
     let contact = ContactTruth {
@@ -1067,7 +1069,7 @@ async fn tracks_are_perception_with_age_and_never_truth() {
             seq: s as u64,
             scenario: "test".into(),
             seed: 1,
-            sensing: Sensing { misclassification_rate: 0.0 },
+            sensing: Sensing { misclassification_rate: 0.0, ..Default::default() },
             contacts: vec![contact.clone()],
             acts: Vec::new(),
         };
@@ -1723,9 +1725,11 @@ fn hostile_track(r: &Rig) {
         alt_msl: 0.0,
         mast_m: 4.0,
         submerged: false,
+        heading_deg: None,
+        area: None,
         sensors: vec![
-            SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true, height: false },
-            SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true, height: false },
+            SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true, height: false, physical: Default::default() },
+            SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true, height: false, physical: Default::default() },
         ],
     };
     let contact = ContactTruth {
@@ -1751,7 +1755,7 @@ fn hostile_track(r: &Rig) {
             seq: s as u64,
             scenario: "test".into(),
             seed: 1,
-            sensing: Sensing { misclassification_rate: 0.0 },
+            sensing: Sensing { misclassification_rate: 0.0, ..Default::default() },
             contacts: vec![contact.clone()],
             acts: Vec::new(),
         };
@@ -1783,9 +1787,11 @@ fn neutral_alongside(r: &Rig) {
         alt_msl: 0.0,
         mast_m: 4.0,
         submerged: false,
+        heading_deg: None,
+        area: None,
         sensors: vec![
-            SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true, height: false },
-            SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true, height: false },
+            SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true, height: false, physical: Default::default() },
+            SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true, height: false, physical: Default::default() },
         ],
     };
     let contact = |id: &str, aff, kind: &str, lat: f64| ContactTruth {
@@ -1811,7 +1817,7 @@ fn neutral_alongside(r: &Rig) {
             seq: s as u64,
             scenario: "test".into(),
             seed: 1,
-            sensing: Sensing { misclassification_rate: 0.0 },
+            sensing: Sensing { misclassification_rate: 0.0, ..Default::default() },
             contacts: vec![
                 contact("fastboat", TruthAffiliation::Hostile, "small_fast_boat", 37.8120),
                 contact("fisher", TruthAffiliation::Neutral, "fishing_vessel", 37.8138),
@@ -1846,9 +1852,11 @@ fn lost_alongside(r: &Rig) {
         alt_msl: 0.0,
         mast_m: 4.0,
         submerged: false,
+        heading_deg: None,
+        area: None,
         sensors: vec![
-            SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true, height: false },
-            SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true, height: false },
+            SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true, height: false, physical: Default::default() },
+            SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true, height: false, physical: Default::default() },
         ],
     };
     let contact = |id: &str, aff, kind: &str, lat: f64| ContactTruth {
@@ -1878,7 +1886,7 @@ fn lost_alongside(r: &Rig) {
             seq: s as u64,
             scenario: "test".into(),
             seed: 1,
-            sensing: Sensing { misclassification_rate: 0.0 },
+            sensing: Sensing { misclassification_rate: 0.0, ..Default::default() },
             contacts,
             acts: Vec::new(),
         };

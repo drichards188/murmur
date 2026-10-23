@@ -371,6 +371,10 @@ def process_spec(e: EpisodeSpec, seed: int, workdir: Path, calib: Calibration,
         # the bridge's lost-link timers (estimate.rs) from the same profiles as the emulator's
         "MURMUR_LINKS": str(links),
     }
+    if e.world in ("v1", "v2"):
+        # v1 and v2 are the legacy sensing model's worlds (docs/SENSING.md): pinned here, not in
+        # their contacts files, which the v1 generator's digests hold byte for byte
+        env["MURMUR_SENSE_MODEL"] = "legacy"
     if not anchors:
         env["MURMUR_ANCHORS"] = "0"
     world_spec(e, w, spec, env)

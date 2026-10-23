@@ -368,6 +368,18 @@ impl TaskManager {
         })
     }
 
+    /// The task a vehicle's latest op carries and its parameters, unless that op failed, was
+    /// superseded or requeued (the physical sensing model's payload manager searches its area).
+    pub fn task_of(&self, uid: Uid) -> Option<(TaskKind, TaskParams)> {
+        let inner = self.lock();
+        let op = inner.active.get(&uid)?;
+        if matches!(op.state(), OpState::Failed | OpState::Superseded | OpState::Requeued) {
+            return None;
+        }
+        let tasking = op.tasking;
+        Some((op.task, inner.taskings.iter().find(|t| t.id == tasking)?.params.clone()))
+    }
+
     /// A newer order (intent `newer`) was queued for `uid`: its current op, if it carries an
     /// older intent and the vehicle has not started it yet (waiting for a fix or a link,
     /// mid-exchange), is stopped and failed saying so; one it started runs on until the newer

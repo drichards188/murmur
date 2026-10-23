@@ -1499,6 +1499,7 @@ dependencies = [
 name = "murmur-keepout-probe"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "murmur-decide",
  "serde",
  "serde_json",

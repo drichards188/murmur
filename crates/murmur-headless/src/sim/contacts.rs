@@ -252,7 +252,7 @@ pub async fn run(
                 seq,
                 &c.scenario.title,
                 c.seed,
-                c.scenario.sensing,
+                c.scenario.sensing.clone(),
                 &movers,
             );
             msg.acts = TruthMessage::acts_between(&c.scenario.acts, prev_s, s, c.t0_unix, &movers);

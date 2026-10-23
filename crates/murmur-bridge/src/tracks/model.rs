@@ -40,7 +40,9 @@
 //! anywhere it could reach (rules 9).
 //!
 //! Existence confidence climbs with hits and decays in silence; identity confidence grows
-//! with dwell per sensor type and combines across independent sensors. Several observers'
+//! with dwell per sensor type and combines across independent sensors (the legacy sensing
+//! model), or, from the physical model's looks, is kept per observer, sensor and level, the
+//! most specific level winning and independent looks combining ([`Track::identity`]). Several observers'
 //! fixes of one tick are folded one after another, as independent measurements (they are:
 //! each sensor's draw is its own). Association is by the simulation's contact id (see
 //! `mod.rs`); a dropped track that is seen again gets a new id, as a real tracker would start
@@ -52,7 +54,8 @@ use murmur_decide::{Affiliation, Fact, LonLat, Manoeuvre, Time, TrackFacts};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::sensing::{AisHeard, Detection, SensorType, family};
+use super::physical::signature::size_class_of;
+use super::sensing::{AisHeard, Detection, Level, SensorType, family};
 use super::truth::Domain;
 use crate::clock::round;
 
@@ -573,6 +576,22 @@ struct Classifier {
     last_t: f64,
 }
 
+/// One observer's sensor's evidence at one level (the physical model): what it called the
+/// contact and the surest it has been of it.
+#[derive(Debug, Clone, PartialEq)]
+struct LookMark {
+    label: String,
+    confidence: f64,
+}
+
+/// A label's support at one level: the looks that gave it, combined as independent.
+struct LevelBest {
+    label: String,
+    confidence: f64,
+    /// the sensor of its surest look
+    sensor: SensorType,
+}
+
 /// A declaration in force, as the decision engine's identification ledger holds it (rules 9:
 /// the bridge mirrors the ledger here for display; decisions read the ledger itself).
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -677,6 +696,9 @@ pub struct Track {
     pub hits: u64,
     pub sources: BTreeMap<(u64, SensorType), Source>,
     classifiers: BTreeMap<SensorType, Classifier>,
+    /// the physical model's looks, per observer, sensor and level (empty under the legacy
+    /// model, whose `classifiers` pool per sensor type)
+    looks: BTreeMap<(u64, SensorType, Level), LookMark>,
     pub ais: Option<AisHeard>,
     ais_t: Option<f64>,
     pub declared: Option<Declared>,
@@ -802,6 +824,7 @@ impl Track {
             hits: 0,
             sources: BTreeMap::new(),
             classifiers: BTreeMap::new(),
+            looks: BTreeMap::new(),
             ais: None,
             ais_t: None,
             declared: None,
@@ -1132,8 +1155,16 @@ impl Track {
             });
         src.hits += 1;
         src.last_t = now;
-        // classification dwell per sensor type
-        if let Some(label) = &d.label {
+        // the physical model's look: per observer, sensor and level, the surest it has been
+        if let (Some(label), Some(look)) = (&d.label, d.look) {
+            let m = self
+                .looks
+                .entry((d.uid, d.sensor, look.level))
+                .or_insert(LookMark { label: label.clone(), confidence: 0.0 });
+            m.confidence = if m.label == *label { m.confidence.max(look.confidence) } else { look.confidence };
+            m.label = label.clone();
+        } else if let Some(label) = &d.label {
+            // classification dwell per sensor type
             let c = self.classifiers.entry(d.sensor).or_insert(Classifier {
                 label: label.clone(),
                 dwell_s: 0.0,
@@ -1160,7 +1191,11 @@ impl Track {
 
     /// The identity estimate from what the sensors said. Prefers a kind-level label (EO/IR,
     /// sonar) over AIS over a family (radar, ESM); combines the sensors consistent with it.
+    /// From the physical model's looks, [`Self::identity_from_looks`].
     pub fn identity(&self) -> Identity {
+        if !self.looks.is_empty() {
+            return self.identity_from_looks();
+        }
         let kind_level = [SensorType::EoIr, SensorType::Sonar]
             .into_iter()
             .filter_map(|s| self.classifiers.get(&s).map(|c| (s, c)))
@@ -1248,6 +1283,108 @@ impl Track {
             conflict,
             supported_by,
         }
+    }
+
+    /// The best-supported label among the looks at `level`: each label's looks (one per
+    /// observer and sensor) combined as independent, `1 - prod(1 - c)`; the surest label wins
+    /// (the first in name order of equals).
+    fn best_at(&self, level: Level) -> Option<LevelBest> {
+        let mut by: BTreeMap<&str, (f64, SensorType, f64)> = BTreeMap::new();
+        for ((_, s, l), m) in &self.looks {
+            if *l != level {
+                continue;
+            }
+            let e = by.entry(m.label.as_str()).or_insert((1.0, *s, 0.0));
+            e.0 *= 1.0 - m.confidence.clamp(0.0, 1.0);
+            if m.confidence > e.2 {
+                e.1 = *s;
+                e.2 = m.confidence;
+            }
+        }
+        by.into_iter()
+            .map(|(label, (miss, sensor, _))| LevelBest { label: label.to_string(), confidence: 1.0 - miss, sensor })
+            .fold(None, |best: Option<LevelBest>, b| match best {
+                Some(a) if a.confidence >= b.confidence => Some(a),
+                _ => Some(b),
+            })
+    }
+
+    /// The identity estimate from the physical model's looks (WORLD-V3-PLAN 2.3, 2.7): the most
+    /// specific level any look reached names it (an identification's kind, else the AIS
+    /// identity's, else a recognition's family, else a detection's size class), with the
+    /// combined confidence of the looks at that level that agree (and AIS, when it names the
+    /// same kind); a look at a lower level never adds to it, and one that disagrees with it is
+    /// superseded, not a conflict: a closer look corrects a wrong call (murmur-jln). Conflicts,
+    /// as the legacy identity's: AIS against an identification (or a recognition's family),
+    /// a speed the AIS kind cannot make, or two looks at the chosen level that disagree.
+    fn identity_from_looks(&self) -> Identity {
+        let id = self.best_at(Level::Identify);
+        let rec = self.best_at(Level::Recognise);
+        let det = self.best_at(Level::Detect);
+        let ais_kind_label = self.ais.as_ref().map(|a| ais_kind(&a.ship_type).to_string());
+        let chosen: Option<(String, Option<Level>)> = id
+            .as_ref()
+            .map(|b| (b.label.clone(), Some(Level::Identify)))
+            .or_else(|| ais_kind_label.clone().map(|k| (k, None)))
+            .or_else(|| rec.as_ref().map(|b| (b.label.clone(), Some(Level::Recognise))))
+            .or_else(|| det.as_ref().map(|b| (b.label.clone(), Some(Level::Detect))));
+        let Some((kind, level)) = chosen else {
+            return Identity { kind: None, confidence: 0.0, ais: self.ais.clone(), conflict: None, supported_by: Vec::new() };
+        };
+        // what each level says when it agrees with the kind
+        let at = |l: Level| match l {
+            Level::Identify => kind.clone(),
+            Level::Recognise => family(&kind).to_string(),
+            Level::Detect => size_class_of(&kind).to_string(),
+        };
+        let mut miss = 1.0;
+        let mut supported: std::collections::BTreeSet<SensorType> = std::collections::BTreeSet::new();
+        for ((_, s, l), m) in &self.looks {
+            if m.label == at(*l) {
+                supported.insert(*s);
+                if Some(*l) == level {
+                    miss *= 1.0 - m.confidence.clamp(0.0, 1.0);
+                }
+            }
+        }
+        let mut conflict = None;
+        if let Some(a) = &self.ais {
+            let ak = ais_kind(&a.ship_type);
+            if ak == kind {
+                supported.insert(SensorType::Ais);
+                miss *= 1.0 - AIS_CONF;
+            } else if let Some(b) = id.as_ref().filter(|b| b.confidence >= 0.3) {
+                conflict = Some(format!("AIS says {} ({}) but {} identifies it as {}", a.ship_type, a.name, b.sensor.as_str(), b.label));
+            }
+            if conflict.is_none()
+                && let Some(b) = rec.as_ref().filter(|b| b.confidence >= 0.3)
+                && family(ak) != "unknown"
+                && b.label != family(ak)
+            {
+                conflict = Some(format!("AIS says {} ({}) but {} recognises it as {}", a.ship_type, a.name, b.sensor.as_str(), b.label));
+            }
+            let speed = self.speed_mps();
+            if conflict.is_none() && speed > plausible_speed_mps(ak) {
+                conflict = Some(format!("AIS says {} ({}) but it is making {:.0} m/s", a.ship_type, a.name, speed));
+            }
+        }
+        // another label at the chosen level, as sure as a call that counts
+        if conflict.is_none()
+            && let Some(l) = level.filter(|l| *l != Level::Detect)
+        {
+            let mut others: BTreeMap<&str, (f64, SensorType)> = BTreeMap::new();
+            for ((_, s, ll), m) in &self.looks {
+                if *ll == l && m.label != kind {
+                    let e = others.entry(m.label.as_str()).or_insert((1.0, *s));
+                    e.0 *= 1.0 - m.confidence.clamp(0.0, 1.0);
+                }
+            }
+            if let Some((label, (_, s))) = others.into_iter().find(|(_, (miss, _))| 1.0 - miss >= 0.3) {
+                let verb = if l == Level::Identify { "identifies" } else { "recognises" };
+                conflict = Some(format!("{} {verb} it as {label} while the estimate is {kind}", s.as_str()));
+            }
+        }
+        Identity { kind: Some(kind), confidence: 1.0 - miss, ais: self.ais.clone(), conflict, supported_by: supported.into_iter().collect() }
     }
 
     /// The affiliation shown and why: a declaration in force (an operator's, or the engine's

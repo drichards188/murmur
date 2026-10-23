@@ -87,10 +87,54 @@ fn one() -> f64 {
     1.0
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+/// Which sensing model turns truth into detections: today's (`sensing.rs`) or the physical one
+/// (`physical/`, WORLD-V3-PLAN section 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SensingModel {
+    #[default]
+    Legacy,
+    Physical,
+}
+
+impl SensingModel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SensingModel::Legacy => "legacy",
+            SensingModel::Physical => "physical",
+        }
+    }
+}
+
+impl std::str::FromStr for SensingModel {
+    type Err = String;
+    fn from_str(s: &str) -> Result<SensingModel, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "legacy" => Ok(SensingModel::Legacy),
+            "physical" => Ok(SensingModel::Physical),
+            other => Err(format!("unknown sensing model {other:?} (legacy, physical)")),
+        }
+    }
+}
+
+/// The scenario's sensing section. Everything but the misclassification rate is the physical
+/// model's (and absent from a legacy scenario's messages): the model it names, the terrain
+/// and bathymetry grids (paths, relative to the repository), the conditions, and each
+/// contact's signature overrides by contact id.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Sensing {
     #[serde(default)]
     pub misclassification_rate: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<SensingModel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terrain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bathymetry: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conditions: Option<super::physical::conditions::Conditions>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub signatures: std::collections::BTreeMap<String, super::physical::signature::SignatureOverride>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

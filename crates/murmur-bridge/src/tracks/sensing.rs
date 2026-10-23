@@ -38,12 +38,18 @@
 //!
 //! Figures are "-class" ballpark values, marked `guess` in the catalog; the point is the
 //! structure (range, horizon, dwell, independence, cooperative identity), not the numbers.
+//!
+//! This is the `legacy` model. The `physical` model (`physical/`, docs/SENSING.md) is chosen
+//! per contacts scenario (`[sensing] model`) or by `MURMUR_SENSE_MODEL`; it shares the types
+//! here (a catalog sensor's physical fields, an observer's heading and task area, a
+//! detection's `look`), which this model leaves unread and empty.
 
 use std::collections::HashMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use super::physical::spec::PhysicalFields;
 use super::truth::{ContactTruth, Domain};
 use crate::geo::haversine_m;
 
@@ -128,6 +134,9 @@ pub struct SensorSpec {
     /// gives none.
     #[serde(default)]
     pub height: bool,
+    /// The physical model's figures (`physical::spec`); none: placeholders from `range_m`.
+    #[serde(flatten)]
+    pub physical: PhysicalFields,
 }
 
 /// Sensors and mast height per platform id.
@@ -163,6 +172,9 @@ impl SensorCatalog {
             {
                 return Err(format!("platforms.toml [{id}]: {:?} range_m must be > 0", s.kind));
             }
+            for s in &sensors {
+                super::physical::spec::validate(s).map_err(|e| format!("platforms.toml [{id}] {}: {e}", s.kind.as_str()))?;
+            }
             let mast_m = spec
                 .get("mast_m")
                 .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)))
@@ -184,7 +196,7 @@ impl SensorCatalog {
 
 /// One of our vehicles as a sensor carrier: where it says it is (the sensor measures
 /// relative to its own navigation, so the track inherits that error) and what it carries.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Observer {
     pub uid: u64,
     pub lat: f64,
@@ -194,6 +206,37 @@ pub struct Observer {
     pub mast_m: f64,
     pub submerged: bool,
     pub sensors: Vec<SensorSpec>,
+    /// The physical model's payload manager: where the vehicle heads (degrees true), and the
+    /// area its task covers, which its cameras search (none: around itself).
+    pub heading_deg: Option<f64>,
+    pub area: Option<SearchArea>,
+}
+
+/// The area a vehicle's task covers (physical model, WORLD-V3-PLAN 2.4): an orbit's circle or
+/// a patrol's route, (lat, lon).
+#[derive(Debug, Clone, PartialEq)]
+pub enum SearchArea {
+    Orbit { center: (f64, f64), radius_m: f64 },
+    Route { points: Vec<(f64, f64)> },
+}
+
+/// How far a look got (physical model, WORLD-V3-PLAN 2.3): a detection gives the contact's
+/// domain and size class, a recognition its family, an identification its kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Level {
+    Detect,
+    Recognise,
+    Identify,
+}
+
+/// The physical model's evidence in one detection: the level its label is at and how sure
+/// this look is of it. The tracker keeps it per observer and sensor, not pooled per sensor
+/// type (`model::Track::identity`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Look {
+    pub level: Level,
+    pub confidence: f64,
 }
 
 /// What one sensor reported about one contact on one tick.
@@ -222,6 +265,8 @@ pub struct Detection {
     /// the slant range and the bearing, not the height, so the plot (`lat`, `lon`) is at the
     /// slant range on the bearing: the aircraft is on that bearing, no farther out.
     pub slant_from: Option<(f64, f64)>,
+    /// The physical model's identification evidence for `label`; None from the legacy model.
+    pub look: Option<Look>,
 }
 
 /// The AIS message as received: identity only, nothing about its truthfulness.
@@ -267,7 +312,7 @@ pub fn uniform(seed: u64, tick: i64, uid: u64, contact: &str, salt: u64) -> f64 
 }
 
 /// Standard normal (Box-Muller from two uniforms).
-fn normal(seed: u64, tick: i64, uid: u64, contact: &str, salt: u64) -> f64 {
+pub fn normal(seed: u64, tick: i64, uid: u64, contact: &str, salt: u64) -> f64 {
     let u1 = uniform(seed, tick, uid, contact, salt).max(1e-12);
     let u2 = uniform(seed, tick, uid, contact, salt ^ 0x5555);
     (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()
@@ -314,6 +359,10 @@ pub fn family(kind: &str) -> &'static str {
         "unknown_uas" | "small_uas" => "small_uas",
         "submarine" | "uuv" | "submerged" => "submerged",
         "vehicle" | "truck" | "ground_vehicle" => "ground_vehicle",
+        // the physical model's kinds (no legacy scenario has them)
+        "small_drone" => "small_uas",
+        "periscope" => "submerged",
+        "diver" | "person" => "person",
         _ => "unknown",
     }
 }
@@ -333,6 +382,11 @@ pub fn confusion(kind: &str) -> &'static str {
         "submarine" => "uuv",
         "uuv" => "submarine",
         "truck" => "vehicle",
+        // the physical model's kinds (no legacy scenario has them)
+        "small_drone" => "light_aircraft",
+        "periscope" => "submarine",
+        "diver" => "uuv",
+        "person" => "vehicle",
         _ => "vehicle",
     }
 }
@@ -458,6 +512,7 @@ pub fn detect(
                     domain: c.domain,
                     measured_t: None,
                     slant_from: slant.then_some((o.lat, o.lon)),
+                    look: None,
                 });
             }
         }

@@ -201,11 +201,13 @@ impl Erig {
             alt_msl: 0.0,
             mast_m: 4.0,
             submerged: false,
+            heading_deg: None,
+            area: None,
             sensors: vec![
-                SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true, height: false },
-                SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true, height: false },
+                SensorSpec { kind: SensorType::Radar, range_m: 8_000.0, guess: true, height: false, physical: Default::default() },
+                SensorSpec { kind: SensorType::EoIr, range_m: 5_000.0, guess: true, height: false, physical: Default::default() },
                 // hears only contacts that broadcast (none but a test's own AIS contacts)
-                SensorSpec { kind: SensorType::Ais, range_m: 20_000.0, guess: true, height: false },
+                SensorSpec { kind: SensorType::Ais, range_m: 20_000.0, guess: true, height: false, physical: Default::default() },
             ],
         };
         let mut contacts = if with_target {
@@ -236,6 +238,7 @@ impl Erig {
             seed: 1,
             sensing: Sensing {
                 misclassification_rate: 0.0,
+                ..Default::default()
             },
             contacts,
             acts: Vec::new(),
