@@ -171,6 +171,340 @@ gates of section 10 are read as follows from now on.
    109 situations (linkblind 87 in 77, honest 26 in 26, the playbook 6 in 6) to none; no other
    count, no need served and not the ladder's verdict changes.
 
+### 0.5 Labels v2, the revalidation and the re-judge (added 2026-10-22, before any run on seeds 2000-2499)
+
+Two checks of the scorer ran on 2026-10-22, and both pointed at the action labels (murmur-qbf,
+murmur-fpv). This section changes the labels, places the world change, and pre-registers the
+revalidation on seeds 2000-2099 and a fresh blind check. Per 9.2 a metric changed after the
+dev-validate seeds moves to 2000-2499. Nothing here was designed on the 1500-1599 records: the
+label changes come from the blind check's 11 disagreements (model-pilot seeds 2600-2601), and every
+check of the new code ran on dev seeds 1000-1499.
+
+1. **The two checks.**
+   - **The blind construct check** (2.7; `eval/results/headless/v2-blind-pilot/`): an Opus judge with
+     code execution, blind to the scorer, answered the packets of the paid pilot's 67 episodes.
+     `identified_in_time` agreed 72/72 (Scott's pi 1.0). `harmed` agreed 132/132, but every answer on
+     both sides was "no": uninformative. `helped` agreed 121/132, pi 0.75 [0.63, 0.86], under the 0.8
+     bar. Of the 11 `helped` disagreements the judge had the better case on 8; the other 3 were
+     definitional, and the owner decided them (item 2e).
+   - **The validation on 1500-1599** (0.4; `v2-validate-1500/REPORT.md`) failed as pre-registered.
+     Outcomes held in every family. The cards order was reversed in all 7 judged families (the
+     oracle acts more: the prediction was mis-specified). Harm was untested (no anchor harms).
+     behind's need served, spam's follow-ups and ferries' bad-card share did not move: the playbook
+     serves about what `none` serves (8.4 % against 5.3 % pooled), so taking something from it
+     cannot show, and in stuck-vehicle ferries' bad-card share fell, through the precedence rule of
+     item 2d.
+
+2. **Labels v2** (`eval/headless/v2/labels.py`, `VERSION` 2; each choice a named constant there,
+   documented in its docstring). Credit is for effect only.
+   - **a. A low reserve is met by its outcome** (2.4). The need is met when the vehicle is on the
+     ground at home after having flown (truth `armed` false, within `HOME_M` of the home it had at
+     its last armed sample: the record's home follows a landed plane) before its true battery
+     reaches 20 %. It is unmet when the battery reaches 20 % first: an rtl still flying does not
+     meet it. It is censored when neither happens by the end, and so is a vehicle never launched
+     (it never came home). The fault stays open until the vehicle is on the ground at home. An rtl is credited (`useful`) only when it brought that landing about: it flew,
+     its own run began at or before the landing, no other order that flew began on the vehicle in
+     between, and the vehicle was neither returning already (a failsafe's return is not the rtl's
+     doing) nor on the ground when it was dispatched. Cases ep-15c3, 9251, adbb, b550: an rtl of a
+     low Puma was credited as answering the reserve, though the Puma kept circling home and fell
+     under 20 %. Supersedes resolutions 6 and 11.
+   - **b. An order is credited only for what its vehicle did while flying it** (2.3). It contributes
+     only if its vehicle ran it (its op reached `active` or `done`, which the task layer judges from
+     telemetry), and only through hits during its own run (from the vehicle's first `acked`, `active`
+     or `done` for it). An order that never ran does not end its vehicle's earlier order. Case b4db: a
+     model order whose mission upload failed was credited as a follow-up, from hits its vehicle took
+     while still flying the earlier order.
+   - **c. No credit after the need was identified** (2.3). The contribution window ends at
+     `t_identified`: the first sample of the stretch of resolved samples that served the need (for a
+     pre-served need, when that stretch began, not `t_need`). Cases 7006 (a follow-up) and 95fa (a
+     useful order): their vehicles' first hits came after the other Puma had already taken the track
+     past 0.6.
+   - **d. Effect outranks an open fault** (2.5's precedence): refused, harmful, useful, follow-up,
+     duplicate, fault response, redundant, useless. `fault_response` is now the label only of a hold
+     or an rtl on a faulted vehicle that earned no label of effect. A re-tasking (an orbit or a patrol)
+     of a faulted vehicle is labelled by its outcome, as any order is. Every action on a faulted
+     vehicle carries `also_fault`. The fault metric (3.3's fault responses, `per_hour.fault_actions`,
+     S6's row) counts every such action but refused and harmful ones. Case 494c: a model order that
+     identified the contact was a fault response because a stuck alert was open, so not helped (it is
+     now a follow-up: the episode's first order holds the credit). The same rule made ferries' looks by
+     a stuck Puma fault responses, not bad cards, in 0.4's run. Supersedes resolution 10's
+     "re-tasking: any action on that vehicle".
+   - **e. Duplicate** (2.5; the owner's decision on ep-e79c, d626, 9254). An order that contributed to
+     an eligible need its paired `none` replicate also served, and to no need it could be credited for,
+     is `duplicate`. In two-at-once the `none` replicate served fast-2 through standing orders, and
+     version 1 called the agent's order useless although it is what identified fast-2 in its own
+     episode. `duplicate` is neither credit nor cost: not useful, not useless, not a bad card; it is
+     reported as its own rate (`per_hour.duplicate`; S2's row). In the blind mapping it answers
+     `helped: yes`: the blind question is factual about this episode, and the counterfactual discount
+     is a scoring policy applied on top of it.
+   - **f. Harm (b) is judged by where the order sends the vehicle** (2.5). The needs harm (b) spares
+     are those an orbit or patrol points its vehicle at: the contact's truth positions over [t_a, t_a +
+     300 s] come within the aim fallback distance (1 km) of the order's geometry. A hold or an rtl
+     spares the needs in its aim, as before. Version 1 spared every need in the aim, which is by hits
+     first, so a vehicle sent away whose sensor still caught the contact on its way out was never
+     harmful. The 11 disagreements could not show this (no `harmed` yes). It came out of building the
+     harm perturbation (item 4): on dev seeds 1000-1019 (fast-unknown, decoy, two-at-once), each of the
+     6 needs a deliberate pull-off left unserved was spared under version 1; under version 2, 5 are
+     harmful, and the sixth pull-off's station lay 434 m from the boat's path. Supersedes resolution
+     8's "needs in the action's own aim excluded".
+   - **g. The blind mapping** (`blind.py`; supersedes resolution 26): `helped` is yes for `useful`,
+     `follow_up` and `duplicate` (an rtl that met a reserve being `useful`); `harmed` is yes for
+     `harmful`.
+
+   The 11 disagreements under version 2 (each rebuilt as a small synthetic record in
+   `eval/headless/tests/test_v2_labels.py`):
+
+   | packet | agent, family | order | judge | v1 label (helped) | v2 label (helped) |
+   |---|---|---|---|---|---|
+   | ep-15c3 | oracle, low-battery | rtl | no | fault response (yes) | fault response (no) |
+   | ep-9251 | playbook, low-battery | rtl | no | fault response (yes) | fault response (no) |
+   | ep-adbb | oracle, low-battery | rtl | no | fault response (yes) | fault response (no) |
+   | ep-b550 | playbook, low-battery | rtl | no | fault response (yes) | fault response (no) |
+   | ep-b4db | model, decoy | orbit, upload failed | no | follow-up (yes) | redundant (no) |
+   | ep-7006 | oracle, fast-unknown | orbit | no | follow-up (yes) | redundant (no) |
+   | ep-95fa | oracle, link-cut-mid-look | orbit | no | useful (yes) | useless (no) |
+   | ep-494c | model, low-battery | orbit, stuck alert open | yes | fault response (no) | follow-up (yes) |
+   | ep-e79c | oracle, two-at-once | orbit | yes | useless (no) | duplicate (yes) |
+   | ep-d626 | model, two-at-once | orbit | yes | useless (no) | duplicate (yes) |
+   | ep-9254 | random-valid, two-at-once | orbit | yes | useless (no) | duplicate (yes) |
+
+   **The training-set rescore** (`blind.py rescore`, free): the 67 pilot packets, labels v2 against
+   the judge's existing answers. `helped` agrees 132/132 (pi 1.0): all 11 resolved, none new.
+   `identified_in_time` 72/72; `harmed` 132/132, still all "no". This is a training-set check: the
+   changes were designed from these disagreements, so it is not evidence that they are right. Only
+   the fresh sample (item 6) is.
+
+3. **The world change.**
+
+   > **[PLACEHOLDER: the world change (murmur-a5v). The world agent's paragraph goes here: a Puma's
+   > RTL, an rtl order or its own lost-link or battery failsafe, ends in a landing at home (AUTOLAND,
+   > disarmed, not launched again); what changed and where, the world's new hash, and its own checks
+   > on dev seeds. To be placed by the owner before the revalidation runs. Item 2a's reserve rule
+   > needs it: on the world before it, a Puma's rtl loiters over home and never lands, so every low
+   > reserve on dev seeds 1200-1249 is unmet, for every agent.]**
+
+   **Changes to the anchors that follow from it, made before the run.**
+   - **The oracle's rtl lead** (`agents_v2.py` `Oracle.home_s`, `spare_s`). The landing takes 75 to
+     105 s from an RTL at home and about 0.9 % of the pack, which the oracle's 60 s lead did not
+     allow for: on dev seeds 1000-1029 it landed none of 28 Pumas above 20 % (the world agent's
+     check; the playbook's 25 % line landed 30 of 30 above). The ceiling must be able to meet the
+     reserve, so the oracle now sends its rtl when its true battery, less what the rtl's dispatch
+     (6 s), the transit to the Puma's reported home at cruise and the stand-in's landing (105 s, the
+     longest; its parameters AUTOLAND_WP_ALT 55 m, AUTOLAND_WP_DIST 400 m, LAND_DISARMDELAY 20 s)
+     draw at the cruise load (1 % in 90 s, the catalog endurance), comes to 20 % and a 1 % margin. No
+     plan gives a Puma work it could not finish before then. `oracle-honest` does the same from what
+     it is shown (`get_fleet`'s battery in whole percent and home, the catalog's cruise and
+     endurance) at its 21 % line, and so do the ladder's rungs. A precondition of the revalidation,
+     checked on dev seeds once the landing is in the binary: in low-battery, the oracle and
+     `oracle-honest` land every low Puma they send home above 20 % (on the binary before the landing,
+     the oracle now sends it at about 22.2 % for a Puma near home, against 20.65 % before).
+   - **The judge's world text** (`blind.py` `world_description`) now says that a Puma that returns
+     home, by an order or its own failsafe, lands there and cannot be launched again.
+
+4. **Perturbations on the realistic ceiling, and harm on purpose** (`eval/headless/agents_v2.py`,
+   `HONEST_PERTURBATIONS`). The playbook serves about what `none` serves, so a predicted fall on it
+   cannot show. Section 5's five perturbations are rebuilt on `oracle-honest` (0.3's realistic
+   ceiling: 73.9 % served pooled on 1100-1199, against the playbook's 7.7 % and `none`'s 5.3 %), each
+   changing one thing as the playbook's do: `oracle-honest+spam`, `+behind`, `+skip-first`,
+   `+reserve-blind` and `+ferries`. Like
+   `oracle-honest`, each is built from a session and the loop's runner alone and reads no truth,
+   except skip-first, which reads the contacts file and the tracker's association, says so, and
+   records its reads, as the playbook's does. The playbook's versions are kept and reported.
+   Two of them do harm on purpose:
+   - **reserve-blind (harm a).** It never sends an rtl, and the battery takes no Puma out of its
+     plans. A harmful (a) order cannot reach a vehicle through the C2, though: the bridge's own
+     reserves check (`sim/policy.toml` `[rules] reserve_pct = 20`, `task_duration_s = 900`;
+     `crates/murmur-decide/src/rules.rs` `reserves`) refuses any orbit that would leave a Puma under
+     20 % after 900 s on task, which is any orbit of a Puma under about 30 %. So harm (a) is judged
+     nowhere; reserve-blind is judged on fault needs met.
+   - **pull-off (harm b), `oracle-honest+pull-off`.** The moment any Puma's EO/IR raises its hits on
+     an open need not yet resolved, that Puma is re-tasked away, and the need is given up. It is sent
+     to another open need at least 3 km from it, else to the point 2.5 or 4 km away (of 16 bearings)
+     where its own sensing model says it adds the least dwell on the contact. It reads only the
+     session.
+
+   **Dev-seed evidence** (seeds 1200-1249, every v2 family, one replicate, approve-all, the paused
+   clock, labels v2, the world before item 3's change and the oracle's old rtl lead; 13 agents,
+   5,850 episodes, no harness error; `validate.py`'s section 0.5 run on it as a forecast, `null` and
+   the playbook's perturbations not run):
+   - **Harm.** No anchor or rung (`none`, `random-valid`, the playbook, the oracle, `oracle-late`,
+     `oracle-linkblind`, `oracle-honest`: 3,150 episodes) has a harmful action. Pull-off has 37
+     harmful (b) actions, in 36 of the 350 situations with eligible needs, in every family with
+     needs (stuck-vehicle 10, link-cut-mid-look 7, low-battery 6, two-at-once 6, approval-flood 3,
+     fast-unknown 3, decoy 2). Behind has 1. Reserve-blind has none: it sent no rtl, and its
+     previews were refused on the reserves check 1,818 times, against `oracle-honest`'s 786.
+   - **Need served**, pooled over the families with needs: `oracle-honest` 77.0 % (304 of 395);
+     spam 76.7 %; reserve-blind 76.5 %; pull-off 70.9 %; behind 70.1 %; skip-first 19.2 %. Ferries
+     serves more, 85.6 %: its extra looks put Pumas out early, as the playbook's did on 1500-1599.
+   - **Per prediction**, over the 7 families with eligible needs:
+     - skip-first: need served down in 7 of 7.
+     - spam: follow-ups, repeats and cards up in 7 of 7; need served unchanged in 2, inconclusive in
+       5 (intervals about 8 points either side at 50 situations).
+     - ferries: useless up in 7; bad-card share up in 5, not in link-cut-mid-look or
+       stuck-vehicle, where `oracle-honest`'s cards are already mostly bad.
+     - behind: need served down in 3, useless up in 2. Its moved centres mostly fail the preview's
+       geofence, so it sends fewer looks rather than worse ones.
+     - pull-off: harmful (b) up in 6 (decoy +0.2 [0.0, 0.7] per hour); need served down in 4 (not
+       in decoy, low-battery or stuck-vehicle).
+     - reserve-blind: not testable (no Puma lands in this world).
+
+5. **The revalidation on seeds 2000-2099** (9.2's role after a metric change). It runs as 0.4's did:
+   every v2 family, one replicate, approve-all, the watch policy, the paused clock, `--no-multiverse`,
+   on the world after item 3. The agents are `none`, `null`, `random-valid`, the playbook, the oracle,
+   the ladder (`oracle-late`, `oracle-linkblind`, `oracle-honest`), the playbook's five perturbations
+   and the honest oracle's six: 20 agents, 18,000 episodes, no API call. It is judged by
+   `eval/headless/validate.py` (its default section, `0.5`, committed with this section), on the
+   scorer's own labels (version 2), metrics and paired comparisons.
+   - **The ladder.** 0.3's predicted order (`oracle` ≥ `oracle-late`; `oracle` ≥ `oracle-linkblind`
+     ≥ `oracle-honest`; every rung above `none`) is re-checked by 0.3's rule in every family with
+     eligible needs (`ladder.py`).
+   - **The anchors' order.** 0.4's orders, judged by 0.4's rule in the families admissible by 3.1's
+     rule on this batch's `none` and oracle, reported in every family, with two exceptions. The cards
+     order (none = 0 < oracle < random-valid) is dropped and reported descriptively. It was
+     mis-specified: the oracle acts more because it acts well, and 0.3 already made cards a cost to
+     be traded against outcomes by dominance, not a ranking of quality. The harm order (oracle <
+     random-valid) is reported, not judged: no anchor harms, so there is nothing to order. Harm is
+     judged on the perturbations.
+   - **The perturbations.** The judged moves are on the `oracle-honest` base:
+
+     | perturbation | must move against `oracle-honest` |
+     |---|---|
+     | `+spam` | need served unchanged (5 points); follow-ups, repeats and cards up |
+     | `+behind` | need served down; useless up |
+     | `+skip-first` | need served down |
+     | `+reserve-blind` | fault needs met down |
+     | `+ferries` | useless up; bad-card share up |
+     | `+pull-off` | need served down; harmful (b) per hour up |
+
+     0.4's rules apply with `oracle-honest` as the base. A predicted fall is "not testable" in a family
+     where `oracle-honest` is not shown above `none` on that metric, unless it shows anyway. "Up" and
+     "down" need the paired interval wholly on that side. "Unchanged" needs it inside the margin.
+     The moves are judged in each family with eligible needs, and reported in quiet and conflict
+     (as 0.4's report read those two). The playbook's perturbations are reported against the
+     playbook, not judged.
+   - **The pass rule** is 0.4's, unweakened. A reversal fails. A link or an ends' interval containing
+     zero where the prediction is strict is "not shown", and "not shown" means the prediction did
+     not hold. A judged move that did not move, moved the wrong way, changed (for "unchanged"), or
+     was inconclusive fails.
+   - **What blocks the freeze**, decided now (`validate.py` `blocks`):
+     1. an anchor order that fails or is not shown in an admissible family;
+     2. a judged move that fails in any family;
+     3. a judged prediction not testable in any family (an untested check is not a pass): for
+        reserve-blind this needs `oracle-honest` shown above `none` on fault needs met in low-battery,
+        which needs item 3's landing;
+     4. a ladder reversal;
+     5. a `null` episode that differs from its `none` replicate (4.5);
+     6. 10.1's world conditions failing in a family with eligible needs (`none` over 50 %, or the
+        oracle under 80 %);
+     7. the re-judge failing (item 6).
+
+     Not blocking, but reported: "not testable" cells where the prediction is tested in another
+     family; the reported orders (cards, harm on the anchors); the playbook's perturbations; pooled
+     rows. A block is reported, never tuned away on these seeds. A fix is a dated section and runs on
+     fresh dev-validate seeds (2100-2199).
+   - **The dev forecast.** Judged on the dev batch of item 4 (50 situations a family, the world
+     before the landing), this rule blocks 24 times: the moves of item 4 that did not move (spam's
+     unchanged need served in 5 families, behind in 9 cells, ferries' bad-card share in 2, pull-off
+     in 4); reserve-blind untested; fault needs met not shown (no landing); and the useless order,
+     which fails in link-cut-mid-look (oracle 5.5 against random-valid 5.0 per hour) and is not
+     shown in stuck-vehicle. There the family's scripted fault leaves the oracle's first look without
+     effect, and item 2d now labels its re-taskings of the faulted Puma by their outcome (they were
+     fault responses); 0.4's run had both not shown already. At 100 situations a family the
+     intervals narrow by about a third, and the landing should make fault needs met and
+     reserve-blind testable. The rest is expected to block the freeze unless the effects are larger
+     on the new world. These predictions are not changed here on dev evidence: whether to keep,
+     drop or re-specify any of them, as the cards order was, is the owner's decision before the run,
+     recorded in this section before seeds 2000-2099 run.
+
+6. **The re-judge, pre-registered** (2.7 again). About $30 of API budget remains (the owner's cap).
+   The owner runs the model episodes and the judge after review; nothing else here spends.
+   - **Free first.** Rescore the 67 pilot packets with labels v2 (item 2): done, `helped` pi 1.0.
+     Under 0.8 the re-judge would have stopped before spending.
+   - **A fresh sample**, about 95 packets.
+     - **Model episodes** on the world after item 3, model-pilot seeds from 2602 (stage 1's role,
+       9.2), the pilot's configuration (medium effort, approve-all, paused clock). Sonnet 5.5 on seeds
+       2602-2603 and Haiku 5.5 on seeds 2602-2604, each in 8 families: every v2 family but
+       `conflict`, whose one need is a sensing error by design (0.4 item 3). That is 16 and 24
+       episodes. At the pilot's measured cost ($0.38 a Sonnet episode, $0.20 a Haiku one) about $11;
+       the batch ledger's cap is $12.50. An episode the cap stops is a `budget_stop` (section 7), left
+       out of the sample.
+     - **Free agents** from the revalidation batch, in the seven families with eligible needs,
+       stratified per agent so the harm perturbations are well represented (`blind.py export
+       --per-agent`): pull-off 14, reserve-blind 6, `random-valid`, the playbook and `oracle-honest`
+       4 each, the oracle 3, and 2 of every other acting agent: 57 packets. Harm is rare even under
+       pull-off (36 of 350 situations on dev seeds), so a plain draw of 14 would hold about one
+       harmful order: pull-off's 14 are stratified on the instruments' label (`--harmful`), 8 from
+       its episodes with a harmful action and 6 from the others. The stratum is in the key, and
+       `harmed`'s agreement is reported per stratum beside the pooled pi.
+     - Both exports write into one packets directory, each with its own key, so the judge's seeded
+       order mixes the model's packets and the free agents'. `blind.py import` reads the directory
+       with both keys into one report.
+   - **The judge**: `judge.py` as the pilot ran it (claude-opus-5-5, high effort, code execution) with
+     `--max-tokens 16000` (the pilot's largest reply was 8,463 output tokens). Its ledger's cap is
+     $17.50 (about $0.19 a packet in the pilot). The guard reserves $2.14 a call, so the run may
+     stop with packets left. The judge answers packets in its seeded random order, so the packets it
+     answers are an unbiased subsample. The check is made on them if there are at least 60 packets and
+     100 orders; with fewer, the check is not made, and the owner decides whether to spend more.
+   - **The bar** is 2.7's: Scott's pi ≥ 0.8 per question (`helped`, `harmed`,
+     `identified_in_time`), on the pooled sample, with its bootstrap interval over packets. Every
+     `harmed` disagreement is adjudicated by the owner and listed (2.7's rare-label rule). `harmed`
+     must be informative this time: it passes only with at least 5 "yes" answers on the instruments'
+     side (a harmful order), and with fewer it is untested, which is not a pass.
+   - **On failure.** If any question's pi is under 0.8, or `harmed` is untested, labels v2 fail the
+     construct check, and the freeze is blocked (item 5's block 7). The disagreements are listed and
+     adjudicated, and a label change is a new dated section, re-run on fresh seeds (its revalidation
+     on 2100-2199, its blind check on a fresh sample and fresh model seeds), funded only by the owner's
+     decision. The stage 1 pilot's results stay descriptive, scored with version 2 and marked
+     "construct check failed".
+   - Not part of it: 2.7's implementation check (a second instance recomputing the labels from this
+     file) and the owner's spot-check of 20 labels, which run before the freeze as 2.7 states.
+
+7. **The commands** (from the repository's root, after item 3's world change is in the binary):
+
+   ```
+   # 5: the revalidation (free)
+   .venv/bin/python -m eval.headless.batch --scoring v2 --families v2-approval-flood v2-conflict v2-decoy \
+     v2-fast-unknown v2-link-cut-mid-look v2-low-battery v2-quiet v2-stuck-vehicle v2-two-at-once --seeds 2000-2099 \
+     --agent none null random-valid playbook oracle oracle-late oracle-linkblind oracle-honest playbook+spam \
+     playbook+behind playbook+skip-first playbook+reserve-blind playbook+ferries oracle-honest+spam \
+     oracle-honest+behind oracle-honest+skip-first oracle-honest+reserve-blind oracle-honest+ferries \
+     oracle-honest+pull-off --operators approve-all --no-multiverse --workers 20 --out eval/results/headless/v2-revalidate-2000
+   .venv/bin/python -m eval.headless.validate eval/results/headless/v2-revalidate-2000
+   .venv/bin/python -m eval.headless.ladder eval/results/headless/v2-revalidate-2000
+
+   # 6: the training-set rescore (free)
+   .venv/bin/python -m eval.headless.v2.blind rescore eval/results/headless/v2-blind-pilot/packets \
+     --key eval/results/headless/v2-blind-pilot/blind-key.json --before eval/results/headless/v2-blind-pilot/agreement.json \
+     --out eval/results/headless/v2-blind-pilot/rescore-v2.json
+
+   # 6: the model episodes (spends; one ledger, $12.50)
+   F="v2-approval-flood v2-decoy v2-fast-unknown v2-link-cut-mid-look v2-low-battery v2-quiet v2-stuck-vehicle v2-two-at-once"
+   MURMUR_EVAL_MODEL=1 MURMUR_EVAL_BATCH_MAX_USD=12.50 MURMUR_EVAL_LEDGER=eval/results/headless/v2-rejudge-model-ledger.json \
+     .venv/bin/python -m eval.headless.batch --scoring v2 --families $F --seeds 2602-2603 --agent model none \
+     --model-config '{"max_usd": 2.0}' --operators approve-all --no-multiverse --workers 4 \
+     --out eval/results/headless/v2-rejudge-sonnet
+   MURMUR_EVAL_MODEL=1 MURMUR_EVAL_BATCH_MAX_USD=12.50 MURMUR_EVAL_LEDGER=eval/results/headless/v2-rejudge-model-ledger.json \
+     .venv/bin/python -m eval.headless.batch --scoring v2 --families $F --seeds 2602-2604 --agent model none \
+     --model-config '{"model": "claude-haiku-5-5", "strong_model": "claude-haiku-5-5", "max_usd": 2.0}' \
+     --operators approve-all --no-multiverse --workers 4 --out eval/results/headless/v2-rejudge-haiku
+
+   # 6: the packets (free), into one directory, a key each
+   P=eval/results/headless/v2-rejudge/packets; K=eval/results/headless/v2-rejudge
+   .venv/bin/python -m eval.headless.v2.blind export eval/results/headless/v2-rejudge-sonnet --agents model --sample 16 --out $P --key $K/key-sonnet.json
+   .venv/bin/python -m eval.headless.v2.blind export eval/results/headless/v2-rejudge-haiku --agents model --sample 24 --out $P --key $K/key-haiku.json
+   .venv/bin/python -m eval.headless.v2.blind export eval/results/headless/v2-revalidate-2000 --seed 1 \
+     --families approval-flood decoy fast-unknown link-cut-mid-look low-battery stuck-vehicle two-at-once \
+     --per-agent 2 oracle-honest+pull-off=14 oracle-honest+reserve-blind=6 random-valid=4 playbook=4 oracle-honest=4 oracle=3 \
+     --harmful oracle-honest+pull-off=8 --out $P --key $K/key-free.json
+
+   # 6: the judge (spends; its ledger $17.50), then the report (free)
+   MURMUR_EVAL_MODEL=1 MURMUR_EVAL_BATCH_MAX_USD=17.50 .venv/bin/python -m eval.headless.v2.judge $P --max-usd 17.50 \
+     --max-tokens 16000 --dry-run
+   MURMUR_EVAL_MODEL=1 MURMUR_EVAL_BATCH_MAX_USD=17.50 .venv/bin/python -m eval.headless.v2.judge $P --max-usd 17.50 --max-tokens 16000
+   .venv/bin/python -m eval.headless.v2.blind import $P $P $P --key $K/key-sonnet.json --key $K/key-haiku.json \
+     --key $K/key-free.json --out $K/agreement.json
+   ```
+
 ## 1. Terms
 
 - **Mission**: the text every agent receives in its brief, verbatim and identically: "Identify
@@ -592,12 +926,12 @@ contract.
 | 3 | sensing error | every classifying sensor type the fleet carries that could hold the contact has its draw set |
 | 4 | AIS | never counts toward resolution (2.2 aligned to the mission) |
 | 5 | pre-served, t_served | judged on the sample at or before t_need; if pre-served, t_served = t_need |
-| 6 | home, on an rtl | within 150 m of home after having left it; a returning or landing mode by truth; the fault stays open past 20 % until home or returning |
+| 6 | home, on an rtl | within 150 m of home after having left it; a returning or landing mode by truth; the fault stays open past 20 % until home or returning (superseded by 0.5 2a: on the ground at home) |
 | 7 | harmful (a) | an orbit or patrol whose geometry stays over 150 m from home, started with true battery under 20 % |
-| 8 | harmful (b) | "raising its hits": a rise in the 10 s before the action started; eligible needs only; needs in the action's own aim excluded; harmful outranks fault response (labels carry `also_fault`) |
+| 8 | harmful (b) | "raising its hits": a rise in the 10 s before the action started; eligible needs only; needs in the action's own aim excluded (superseded by 0.5 2f: the needs an orbit or patrol is pointed at); harmful outranks fault response (labels carry `also_fault`) |
 | 9 | harmful (c) | a dispatched engagement whose track's contact is truth neutral or friend |
-| 10 | fault response | stuck: an inbox `not_moving`, `task_failed` or `left_task` alert, or the script's stop; link cut: blocked by truth or a `lost_link` alert; re-tasking: any action on that vehicle |
-| 11 | useful on low reserve | the first rtl running when the need was met (most become fault responses by precedence) |
+| 10 | fault response | stuck: an inbox `not_moving`, `task_failed` or `left_task` alert, or the script's stop; link cut: blocked by truth or a `lost_link` alert; re-tasking: any action on that vehicle (superseded by 0.5 2d: a re-tasking is labelled by its outcome, with `also_fault`) |
+| 11 | useful on low reserve | the first rtl running when the need was met (most become fault responses by precedence) (superseded by 0.5 2a: the rtl that brought the vehicle to the ground at home) |
 | 12 | credit order | by creation time |
 | 13 | redundant | the need was already served, or shown resolved, at creation |
 | 14 | aim by geometry | an orbit's ring (distance abs(d - r)), a patrol's closed polyline |
@@ -612,7 +946,7 @@ contract.
 | 23 | multiverse | one dimension at a time |
 | 24 | pairing key | situation, replicate, operator, policy, clock condition |
 | 25 | exclusion sensitivity | 7.2's sensitivity line applies where a budget stop or model failure is the only reason a situation was excluded |
-| 26 | blind "helped" | useful, follow-up, or an rtl answering low reserve; "harmed" maps to harmful |
+| 26 | blind "helped" | useful, follow-up, or an rtl answering low reserve; "harmed" maps to harmful (superseded by 0.5 2g: useful, follow-up or duplicate) |
 | 27 | area membership | the family name without version marks, or an explicit `area` field; S9's time margin summarized per situation by its median |
 
 ## Part B: the storyline bench (requirements; metrics in a later dated section)
