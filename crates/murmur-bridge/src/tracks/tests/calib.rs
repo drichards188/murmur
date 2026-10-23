@@ -901,7 +901,8 @@ fn failures_by(cases: &[Case], seeds: std::ops::RangeInclusive<u64>, table: &mut
 /// The tracker as tuned, on the physical sensing model's detections of the held-out set
 /// (WORLD-V3-PLAN 2.8 item 3: an evaluation, never tuning; the asserting tests stay on the
 /// legacy model they were judged on): the same table and criteria, reported, not asserted
-/// (`cargo test -p murmur-bridge --release calib_physical -- --ignored --nocapture`).
+/// (`cargo test -p murmur-bridge --release -- --ignored --exact tracks::tests::calib::calib_physical
+/// --nocapture`: the name alone matches the other physical runs too).
 #[test]
 #[ignore]
 fn calib_physical() {

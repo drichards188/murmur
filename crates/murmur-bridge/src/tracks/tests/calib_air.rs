@@ -58,6 +58,15 @@
 //!    [`physical_held_out_cases`] on [`AIR_PHYSICAL_HELD_OUT_SEEDS`] was written then, before
 //!    anything was changed: [`AIR_HELD_OUT_SEEDS`] are spent for the physical model, and the fix
 //!    was developed on the tuning sets (101-220) only. The new set is run once, after the fix.
+//! 10. The fix (961d924: the payload manager's elevation search on a cue without a height, and
+//!     its gimbal following a cue or a lock without settling again) made the cameras acquire
+//!     aircraft, but the tuning sets showed the keep-out misses to be the tracker's (two 2D
+//!     radars' bearings seconds apart taken as ranging it; docs/SENSING.md), and the tracker was
+//!     not changed. The new set's one run ([`air_calib_physical_held_out`]): every criterion held
+//!     in the 2D radar and the radar and EO/IR mixes; in the all-sensors mix every class was
+//!     honest and gave no altitude, but a keep-out 3 s ahead missed the weave 4 times by up to
+//!     1,575 m (10 s ahead 3 times, 1,130 m) and the hexagon route twice by up to 220 m, and the
+//!     tracker alone exceeded its bounds for the weave and the route.
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
@@ -1039,7 +1048,8 @@ const HELD_OUT_FOUND: [&str; 2] = [
 /// The air tracker as tuned, on the physical sensing model's detections of the held-out set
 /// (WORLD-V3-PLAN 2.8 item 3: an evaluation, never tuning; the asserting tests stay on the
 /// legacy model they were judged on): the same table and criteria, reported, not asserted
-/// (`cargo test -p murmur-bridge --release air_calib_physical -- --ignored --nocapture`).
+/// (`cargo test -p murmur-bridge --release -- --ignored --exact
+/// tracks::tests::calib_air::air_calib_physical --nocapture`: the name alone matches the others).
 #[test]
 #[ignore]
 fn air_calib_physical() {
@@ -1051,8 +1061,9 @@ fn air_calib_physical() {
 
 /// The physical sensing model's own air held-out set (murmur-7vp): [`physical_held_out_cases`]
 /// on [`AIR_PHYSICAL_HELD_OUT_SEEDS`], written before the fix, run once after it, the same
-/// criteria reported (`cargo test -p murmur-bridge --release air_calib_physical_held_out --
-/// --ignored --nocapture`).
+/// criteria reported (`cargo test -p murmur-bridge --release -- --ignored --exact
+/// tracks::tests::calib_air::air_calib_physical_held_out --nocapture`). Its one run is the module
+/// doc's step 10: a record, not a target (a tracker change is judged on a set written for it).
 #[test]
 #[ignore]
 fn air_calib_physical_held_out() {
@@ -1350,23 +1361,29 @@ fn air_physical_pointing() {
     }
 }
 
-/// Each second a keep-out 3 s ahead misses an aircraft on the physical model, with the fixes
-/// and the track before it (a diagnostic for murmur-7vp, the tuning sets only: `AIR_CASE=<name
-/// prefix> AIR_SET=... cargo test -p murmur-bridge --release air_physical_misses -- --ignored
-/// --nocapture`, the all-sensors mix, `AIR_MIX=eo` for radar and EO/IR).
+/// Each second a keep-out 3 s ahead misses an aircraft on the physical model, what fixed it in
+/// the 10 s before, and (`AIR_HISTORY=1`) the fixes and the track before it (a diagnostic for
+/// murmur-7vp: `AIR_CASE=<name prefix> AIR_SET=... cargo test -p murmur-bridge --release
+/// air_physical_misses -- --ignored --nocapture`; the all-sensors mix, `AIR_MIX=eo` radar and
+/// EO/IR, `AIR_MIX=radars` the all-sensors mix's radars alone; `AIR_MODEL=legacy` the legacy
+/// model). The tuning sets; `AIR_SET=physical_held_out` explains the physical held-out set's
+/// one run after it, never for tuning.
 #[test]
 #[ignore]
 fn air_physical_misses() {
     use crate::tracks::physical::{Engine, Step, conditions::Conditions};
+    let sets = if std::env::var("AIR_SET").is_ok_and(|s| s == "physical_held_out") {
+        vec![(physical_held_out_cases(), AIR_PHYSICAL_HELD_OUT_SEEDS)]
+    } else {
+        tuning_sets()
+    };
     let prefix = std::env::var("AIR_CASE").unwrap_or_default();
     let mix = if std::env::var("AIR_MIX").is_ok_and(|m| m == "eo") { Mix::RadarEoIr } else { Mix::All };
-    // the all-sensors mix's radars alone (`AIR_MIX=radars`), and the legacy model
-    // (`AIR_MODEL=legacy`)
     let radars_only = std::env::var("AIR_MIX").is_ok_and(|m| m == "radars");
     let legacy = std::env::var("AIR_MODEL").is_ok_and(|m| m == "legacy");
     let ec = rules(murmur_decide::RULES_VERSION);
     let (mut n_misses, mut n_samples) = (0, 0);
-    for (cases, seeds) in tuning_sets() {
+    for (cases, seeds) in sets {
         for case in cases.iter().filter(|c| c.name.starts_with(&prefix)) {
             for seed in seeds.clone() {
                 let sensing = crate::tracks::truth::Sensing {

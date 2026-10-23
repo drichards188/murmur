@@ -258,8 +258,10 @@ meaningful. Decision and command, not weapons.
   1 s to settle after each slew: a test expecting it to see something within a few ticks
   fails), and the sun comes from the truth message's clock: a test at the tests' `T0`
   (1,000,000 s, 1970) is near dawn at the Gate, so state `sun_elevation_deg` in its conditions.
-  Its held-out calibration runs (`calib_physical`, `air_calib_physical`) are evaluations: never
-  tune the sensing model or the tracker on them.
+  Its held-out calibration runs (`calib_physical`, `air_calib_physical`, and its own air set
+  `air_calib_physical_held_out`, seeds 251-280, run once for murmur-7vp; 221-250 are spent for
+  it) are evaluations: never tune the sensing model or the tracker on them. Mind `cargo test
+  calib_physical -- --ignored`: the name matches every one of them (use `--exact`).
 - This host's wall clock (WSL) stepped back 0.5 to 0.9 s every ~32 s for the first two hours or
   so after boot (monotonic up to 2 % fast against Windows), then stopped. The bridge times
   everything on `clock::wall` (the monotonic rate, steered within ~2 s of the wall clock at
