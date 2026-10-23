@@ -294,10 +294,13 @@ check of the new code ran on dev seeds 1000-1499.
      draw at the cruise load (1 % in 90 s, the catalog endurance), comes to 20 % and a 1 % margin. No
      plan gives a Puma work it could not finish before then. `oracle-honest` does the same from what
      it is shown (`get_fleet`'s battery in whole percent and home, the catalog's cruise and
-     endurance) at its 21 % line, and so do the ladder's rungs. A precondition of the revalidation,
-     checked on dev seeds once the landing is in the binary: in low-battery, the oracle and
-     `oracle-honest` land every low Puma they send home above 20 % (on the binary before the landing,
-     the oracle now sends it at about 22.2 % for a Puma near home, against 20.65 % before).
+     endurance) at its 21 % line, and so do the ladder's rungs. Both also stop planning for a Puma
+     once it is down (the oracle from truth's `armed`, `oracle-honest` from its full fleet view's
+     `mav_armed`): a landed Puma is never launched again, and an order for it fails. A
+     precondition of the revalidation, checked on dev seeds once the landing is in the binary: in
+     low-battery, the oracle and `oracle-honest` land every low Puma they send home above 20 % (on
+     the binary before the landing, the oracle now sends it at about 22.2 % for a Puma near home,
+     against 20.65 % before).
    - **The judge's world text** (`blind.py` `world_description`) now says that a Puma that returns
      home, by an order or its own failsafe, lands there and cannot be launched again.
 

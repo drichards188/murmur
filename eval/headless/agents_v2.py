@@ -48,7 +48,9 @@ agent under test.
   stand-in's landing (105 s, the longest of murmur-a5v's 75 to 105 s) draw at the cruise load,
   comes to the reserve (20 %) and a 1 % margin; a plan never gives a Puma work it could not finish
   before then (SCORING-V2.md 0.5: the 60 s lead before, which the landing outlasts, landed no
-  Puma above 20 %). One whose truth shows it stopped looks
+  Puma above 20 %). One whose truth shows it disarmed (down at home: a Puma that lands, after an
+  rtl or its own failsafe, is never launched again, murmur-a5v) is not planned for again. One
+  whose truth shows it stopped looks
   from where it is; one whose link is blocked or lost waits. It dispatches as soon as it can
   (from its first tick), not just in time: an early look is never worse for it. It knows nothing
   of the situation's scripted faults before they happen (a stop or a link cut on the first look):
@@ -71,7 +73,8 @@ with one advantage removed and nothing else changed, each deterministic on its s
   contacts file, the stated sensing draws or the link map. Its sensor vehicles are the fleet's
   EO/IR carriers by the catalog (cruise speed, EO/IR range, endurance); their position, mode,
   ground speed, battery and home are what `get_fleet` shows (a reserve line of 21 %: the shown
-  battery is in whole percent), so its rtl is timed as the oracle's from what it is shown. Its
+  battery is in whole percent), so its rtl is timed as the oracle's from what it is shown, and a
+  Puma its full fleet view shows disarmed is down for good. Its
   needs come from the picture (`get_tracks`): a track in doubt (shown unknown,
   suspect or hostile, in identity conflict, or under 0.6 identity confidence: the scorer's
   justified look) whose shown position carried along its estimated velocity at constant speed
@@ -604,6 +607,7 @@ class Puma:
         self.endurance_s = float(endurance_h) * 3600.0
         self.xy: tuple[float, float] | None = None
         self.home_xy: tuple[float, float] | None = None  # where an rtl takes it (its reported home)
+        self.down = False  # seen disarmed: landed, and never launched again (murmur-a5v)
         self.mode = ""
         self.link_blocked = False
         self.link_lost = False
@@ -752,6 +756,7 @@ class Oracle(SessionAgent):
             p.link_blocked = bool(o.get("link_blocked")) if self.LINK_TRUTH else False
             p.speed = float(o.get("speed_mps") or 0.0)
             p.slow = p.slow + 1 if p.speed < 2.0 else 0
+            p.down = p.down or o.get("armed") is False
             if o.get("battery_capacity_mah"):
                 p.battery.append((now, 100.0 * (1.0 - float(o["battery_consumed_mah"]) / float(o["battery_capacity_mah"]))))
                 p.battery = p.battery[-60:]
@@ -900,7 +905,7 @@ class Oracle(SessionAgent):
         return (ranked_c[0], True) if ranked_c else (None, False)
 
     def usable(self, p: Puma, now: float) -> bool:
-        return (p.xy is not None and not p.sent_rtl and not p.link_blocked and not p.link_lost
+        return (p.xy is not None and not p.sent_rtl and not p.down and not p.link_blocked and not p.link_lost
                 and now >= p.refused_until)
 
     def may_look(self, n: Need, now: float) -> bool:
@@ -1188,6 +1193,9 @@ class OracleHonest(OracleLinkBlind):
             if v.get("battery_pct") is not None and "battery" not in stale:
                 p.battery.append((now, float(v["battery_pct"])))
                 p.battery = p.battery[-60:]
+            # shown disarmed (a landing: never launched again, murmur-a5v), on a fresh fact
+            if "autopilot" not in stale and ((full.get(p.uid) or {}).get("autopilot") or {}).get("mav_armed") is False:
+                p.down = True
         self.picture(now, self.call("get_tracks").get("tracks") or [])
         self.orders(fleet, now)
 
