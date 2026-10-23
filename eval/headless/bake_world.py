@@ -25,7 +25,7 @@ the file's SHA-256), at the paths the world file names (sim/worlds/<name>.toml):
   `spacing_m`, from `from` to `to` every `step_s`: a JSON header line (the grid's keys and `t0`,
   `dt`, `nt` unix seconds), then `nt x nlat x nlon` pairs of little-endian i16 (east, north)
   in cm/s, -32768 where tidewater has no data. Drifting contacts and our drifters and boats
-  read it (crates/murmur-headless/src/sim/conditions.rs).
+  read it (crates/murmur-headless/src/sim/water.rs).
 
 Without a `[terrain] box` the grids cover the tidewater scenario's own bounds (`/v1/info`).
 The tool also prints the wind's range at the mission's centre, hourly over the currents'
