@@ -39,8 +39,8 @@
 #        are "-class" ballpark figures from public descriptions, rounded; guess = true marks
 #        the ones that are an estimate rather than a published number (most of them).
 #        No sensors: the platform sees nothing (antenna tracker).
-#        That is the legacy sensing model's reading. The physical model (docs/SENSING.md;
-#        crates/murmur-bridge/src/tracks/physical/spec.rs) reads more fields of the same entry:
+#        That is the legacy sensing model's reading. The physical model, the default (docs/SENSING.md;
+#        crates/murmur-bridge/src/tracks/physical/spec.rs), reads more fields of the same entry:
 #          eo_ir: slew_dps, channels = [{ band = "day"|"lowlight"|"mwir"|"lwir", wide_deg,
 #                 narrow_deg, px, blur_urad, panoramic }]
 #          radar: r50_m and rcs_ref_m2 (Pd 0.5 per scan), scan_s (at most 5: decision W2),
@@ -49,7 +49,11 @@
 #                 water, 5 m/s wind), max_m, scan_s
 #          esm:   s_min_dbm, bearing_deg
 #        A sensor without them runs on placeholders derived from range_m (the bridge lists them
-#        when the physical model starts); range_m itself stays what the decision engine reads.
+#        when the physical model starts); every sensor here gives them (a test says so), each
+#        value commented with its source: [n] a reference of docs/research/sensors.md, [E] the
+#        research's estimate, [E here] an estimate it does not make, each with its basis. Never
+#        tune one to make a situation work (decision W3). range_m itself stays what the decision
+#        engine reads (an engagement assessment's coverage) and the legacy model's reach.
 # mast_m: height of a surface vessel's sensors above the water, for the radio horizon
 #        (default 3 m; aircraft use their altitude, submerged vehicles have no horizon).
 # standin_params: ArduPilot parameters a stand-in of this platform sets over its firmware's

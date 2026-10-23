@@ -21,18 +21,21 @@ needed. The physical model adds one thing to a detection, its identification evi
 |---|---|
 | contacts scenario `[sensing] model = "physical"` | the scenario's model, carried in every truth message |
 | `MURMUR_SENSE_MODEL=legacy\|physical` on the bridge | overrides the scenario's (as `MURMUR_SENSE_SEED` does) |
-| neither | `legacy` (the default until the platform catalog's figures land, WORLD-V3-PLAN B1) |
+| neither | `physical`, the default since the platform catalog carries every sensor's figures (WORLD-V3-PLAN B1) |
 
-The v1 and v2 worlds are pinned to `legacy` by the evaluation layer, not in their contacts files
-(the v1 generator's digests hold those byte for byte): `MURMUR_SENSE_MODEL=legacy` in every
-headless episode of a v1 or v2 world (`eval/headless/situations.py` `process_spec`), in a G1
-full-stack copy (`eval/headless/fullstack.py`) and in the Phase G evaluation's stacks
-(`eval/stack.py`). A later change of the default leaves their records as they were. A legacy
-scenario's truth messages carry nothing new (every new field is left out when unset): its
-episodes are byte-identical.
+The live stack (`make up`, `make goldengate`, `make situation`) and any new world run on the
+physical model unless they name the legacy one. The v1 and v2 worlds are pinned to `legacy` by
+the evaluation layer, not in their contacts files (the v1 generator's digests hold those byte for
+byte): `MURMUR_SENSE_MODEL=legacy` in every headless episode of a v1 or v2 world
+(`eval/headless/situations.py` `process_spec`), in a G1 full-stack copy
+(`eval/headless/fullstack.py`) and in the Phase G evaluation's stacks (`eval/stack.py`). The
+change of the default left their records as they were. A legacy scenario's truth messages carry
+nothing new (every new field is left out when unset): its episodes are byte-identical.
 
-The bridge says which model it runs on (`sensing: the physical model (the scenario)`), lists the
-catalog sensors running on placeholders, and says once if there is no terrain grid.
+The bridge says which model it runs on at the first truth message and on a change (`sensing: the
+physical model (the default)`, or `(the scenario)`, `(MURMUR_SENSE_MODEL)`), lists any catalog
+sensors running on placeholders (none in `sim/platforms.toml`), and says once if there is no
+terrain grid.
 
 ## What a scenario gives it
 
@@ -76,9 +79,56 @@ A sensor without them runs on **placeholders** derived from `range_m`: a camera 
 shows a 5 m target at 1.5 px at `range_m` (a day channel of 1,280 px and an LWIR one of 640, the
 narrow field an eighth of the wide, 60 deg/s); a radar seeing 100 m^2 half the time at
 `range_m` (scan 2.5 s, 5 s airborne); a passive sonar hearing each kind at `range_m` times its
-legacy signature multiplier; an ESM receiver of -80 dBm and 5 degrees. Real figures today:
-the Puma (Mantis i45), the MQ-9B (MX-20 and Lynx), Sea Hunter's navigation radar, the BlueROV's
-Ping360 and the buoy. The platform catalog (WORLD-V3-PLAN section 3, B1) fills the rest.
+legacy signature multiplier; an ESM receiver of -80 dBm and 5 degrees. No sensor of
+`sim/platforms.toml` runs on them (`tracks::tests::catalog::no_catalog_sensor_runs_on_placeholders`;
+`every_catalog_sensor_field_is_one_the_schema_reads` catches a misspelt field, which serde would
+pass over).
+
+### The platforms' sensors (WORLD-V3-PLAN section 3, B1)
+
+Every value in the catalog carries a comment with its source: [n] a reference of
+`docs/research/sensors.md`, [E] the research's estimate with its basis, [E here] an estimate the
+research does not make, with its basis. Values are the research's, never tuned to make a
+situation work (decision W3). Ranges below are the research's, at Pd 0.5.
+
+| Platform | Sensors under the physical model | Sources |
+|---|---|---|
+| RQ-4 | radar 200 km on 10^4 m^2, 5 s; EO 1,024 px and MWIR 640 px at 10 and 30 urad, no zoom; ESM -90 dBm, 1 deg | [31,32,29]; IFOVs [E]; the rest [E], [E here] |
+| MQ-9B | Lynx radar 300 km on 10^4 m^2, 5 s; MX-20 MWIR 640 px 18.2 to 0.24 deg, spotter 1,920 px 1.07 to 0.2 deg, 57 deg/s; AIS | [34,3]; r50 scaling, blur floors [E] |
+| CCA | AESA radar (3D) 100 km on 1 m^2, 5 s; MX-15-class MWIR 26.7 to 0.54 deg, spotter 1.1 to 0.43 deg; ESM -80 dBm, 2 deg | [E]; [35]; [30] |
+| FVR-90 | MX-8: MWIR 640 px 28.4 to 2.75 deg, EO 1,280 px 30 to 1.53 deg | [36]; blur, slew [E] |
+| Puma 3 AE | Mantis i45: EO 4,472 px 56 to 1.2 deg, LWIR 640 px 40 to 5.3 deg | [37,38]; blur, slew [E] |
+| Switchblade 600 | EO 1,280 px 56 to 3 deg, LWIR 640 px 40 to 12 deg | [39]; narrow fields [E]; wide fields [E here] from [37,38] |
+| Skydio X10 | visible 3,840 px 80 to 10.4 deg; Boson+ LWIR 640 px 32.4 deg | [40]; px [E here] |
+| FPV | one fixed day camera, 150 deg, 720 px | [E] |
+| Small airship | MX-10 class: MWIR 640 px 30 to 1.8 deg, EO and spotter 1,920 px 31 to 0.61 deg; AIS | [4] as [E] |
+| Logistics and mine-laying UGVs | fixed drive cameras: day 90 deg 1,920 px, LWIR 50 deg 640 px | [E] |
+| Armed UGV | Guardian 2.0: MWIR 640 px 17.6 to 2.2 deg, day 1,920 px 38 to 1.9 deg | [15]; px, blur [E here] |
+| Recon UGV | a mast uncooled LWIR 640 px 12 to 4 deg | [E] like [15] |
+| Antenna tracker | none | |
+| Magura V5 | one fixed day camera, 20 deg, 1,920 px; AIS. **No radar** | [41]; camera [E] |
+| Corsair | a fixed 360 deg ring, LWIR 640 px and day 1,920 px at 18 deg; ESM -80 dBm, 2 deg; AIS. **No radar** | [42,13,30]; day camera, ESM [E] |
+| Sea Hunter | navigation radar on the IMO anchors, 2.5 s; a ring as the Corsair's; AIS; active hull sonar, a submarine at 7.5 km, a UUV at 1.5, to 20 km | [19,18,43,44,25]; [E] |
+| Saildrone Explorer | a fixed 360 deg ring of 60 deg day cameras, 1,920 px; AIS. **No radar** | [45,46,47]; cameras [E] |
+| Buoy | passive, 1 kHz: a cargo ship 20 km, a fast boat 3.5, a submarine 1, a UUV 0.3, a diver 0.1 | [48]; ranges [E] |
+| BlueROV2 | Ping360, active 750 kHz, to 50 m, 20 s a turn | [49] |
+| REMUS 600 | side-scan as an active sonar, 455 kHz, to 300 m, a UUV at 225 m | [50]; [E] |
+| Orca XLUUV | passive, 1 kHz: a cargo ship 20 km, a submarine 1.5; the quieter classes the buoy's | [E]; [E here] |
+
+`range_m` stays what the decision engine reads (an assessment's coverage) and the legacy model's
+reach; it was not changed here. Against the physical model's typical range (`cargo test -p
+murmur-bridge catalog_table -- --ignored --nocapture`: a camera's detection of a 5 m target, a
+radar's of 100 m^2, ESM a patrol boat's radar, AIS a ferry, each sonar per kind; clear day, sea
+state 2, no terrain), these differ by more than 2x, for a later decision: the RQ-4's radar (200
+km against 61) and cameras (50 against nothing, below), the CCA's radar (150 against 316), cameras
+(30 against 10) and ESM (200 against 443), the MQ-9B's cameras (40 against 13) and AIS (150
+against 373), Sea Hunter's radar (40 against 11) and sonar on a submarine (3.0 against 7.5), the
+Puma's, Switchblade's, X10's and UGVs' cameras (0.8 to 4 km against 4 to 14), the Magura's camera
+(5 against 10.1), and every sonar on the kinds it was not built for (the BlueROV and REMUS against
+surface ships, the buoy and the Orca against a cargo ship or a slow fast boat). The removed radars
+(Corsair, Magura, Saildrone) changed none of the 94 engagement scenarios' outcomes (under the
+default, `--rules 6`, seeded noise and the review proxy) nor the keep-out evaluation (its fleets'
+observers are Sea Hunters; the Magura engages).
 
 ## The model
 
@@ -247,5 +297,13 @@ The legacy model's Python ports (`v2/labels.py`, `families.py`, `agents_v2.py`,
   public); no ray paths, layers or convergence zones; bathymetry only from a grid a scenario
   names, else one depth.
 - The sun ignores refraction; the thermal crossover and the low-light share are shapes [E].
-- Most platforms run on placeholders until the catalog's figures replace them (B1).
+- The atmosphere is applied along the whole slant path at the surface's visibility: a camera
+  high up loses as much as one looking along the sea. The RQ-4's cameras at 18 km never reach
+  Pd 0.5 on a 5 m target (0.17 by day straight down at 20 km visibility), and the MQ-9B's and
+  the CCA's stop at about 13 and 10 km slant. A slant-path atmosphere is a model follow-up; the
+  catalog keeps the research's figures (W3).
+- The catalog: Sea Hunter carries its navigation radar only (a second radar entry would change
+  what the legacy model reads for v1 and v2); REMUS's side-scan listens all round, not to its two
+  sides; the Saildrone's cameras image every 5 s, looked through every second here; fixed
+  cameras (the Magura's, the FPV's, the UGVs' drive cameras) see along the heading only.
 - A tick is a second: a look, a scan pass and a report are resolved to the second.
