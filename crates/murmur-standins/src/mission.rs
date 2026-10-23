@@ -84,6 +84,9 @@ pub struct Mission {
     pub complete: bool,
     /// DO_SET_HOME passed: (lat, lon, alt)
     pub new_home: Option<(f64, f64, f64)>,
+    /// the next AUTO resumes at the current item whatever MIS_RESTART says (AP_Mission's
+    /// set_force_resume, as ArduPlane's RTL_AUTOLAND sets it for its landing sequence)
+    pub force_resume: bool,
     /// the navigation item whose start AP_Mission has announced ("Mission: N WP")
     announced: Option<u16>,
     /// timed item in progress: (seq, arrived at)
@@ -254,7 +257,8 @@ impl Mission {
     /// Entering AUTO (AP_Mission::start_or_resume): a finished mission, or MIS_RESTART=1,
     /// starts again from item 1; otherwise it resumes where it was.
     pub fn start_or_resume(&mut self, restart: bool) {
-        if self.complete || restart {
+        let forced = std::mem::take(&mut self.force_resume);
+        if self.complete || (restart && !forced) {
             self.seq = if self.present() { 1 } else { 0 };
             self.restart_state();
         }
@@ -307,6 +311,33 @@ impl Mission {
         let it = self.items.get(self.seq as usize)?;
         (is_nav(it.command) && (it.x != 0 || it.y != 0))
             .then(|| (f64::from(it.x) / 1e7, f64::from(it.y) / 1e7))
+    }
+
+    /// The landing sequence nearest (lat, lon) (AP_Mission::get_landing_sequence_start): the
+    /// DO_LAND_START whose own location, or else the next navigation item's, is closest; the
+    /// first of equals. None without one.
+    pub fn landing_sequence_start(&self, lat: f64, lon: f64) -> Option<u16> {
+        let located = |it: &MISSION_ITEM_INT_DATA| {
+            (it.x != 0 || it.y != 0).then(|| (f64::from(it.x) / 1e7, f64::from(it.y) / 1e7))
+        };
+        let mut best: Option<(u16, f64)> = None;
+        for (i, it) in self.items.iter().enumerate().skip(1) {
+            if it.command != MavCmd::MAV_CMD_DO_LAND_START {
+                continue;
+            }
+            let at = located(it).or_else(|| {
+                self.items[i + 1..]
+                    .iter()
+                    .find(|n| is_nav(n.command))
+                    .and_then(located)
+            });
+            let Some((la, lo)) = at else { continue };
+            let d = distance_m(lat, lon, la, lo);
+            if best.is_none_or(|(_, b)| d < b) {
+                best = Some((i as u16, d));
+            }
+        }
+        best.map(|(i, _)| i)
     }
 
     /// Whether the current item is a landing (the behavior watches for touchdown).

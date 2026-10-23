@@ -335,13 +335,20 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: worktree that built it; re-taken in the main checkout once the areas digest, which covers the
 #: checkout's path, was masked (`AREAS`): the playbook's matches 39233b2 run in the main checkout,
 #: masked. The two v2 digests re-taken when PUMA 1's reserve point moved to Crissy Field (e72d0e2):
-#: with the fleet before it, main after the anchors merge still gives the earlier digests. A change
-#: to the simulator, the bridge or the v2 world changes them too: re-take them on the code before a
-#: change to the driver, never after it.
+#: with the fleet before it, main after the anchors merge still gives the earlier digests. All three
+#: re-taken when a Puma's RTL came to end in a landing (murmur-a5v): the code before it gave the
+#: earlier digests in that worktree, and each record was byte-identical to it up to its first RTL
+#: to AUTOLAND hand-over (a Puma's lost-link failsafe in all three). Re-taken again when a plane
+#: that starts in the air got its home on the surface below it and a landed, disarmed aircraft's
+#: link a terrain check at rest (murmur-a5v): against the records before it, the engine's logged
+#: check inputs (altitudes above the new homes) and REAPER 1's battery (a hundredth of a percent,
+#: late) differ, and in v2 the landed PUMA 1's link events after its landing; every proposal,
+#: operator decision, order and plan is the same. A change to the simulator, the bridge or the v2
+#: world changes them too: re-take them on the code before a change to the driver, never after it.
 PAUSED = {
-    "model harbor-watch s1": "d1814fd13c46a777d2eacae71cee639c871644f7ee2fe6bd99891d670f8709ab",
-    "playbook v2 fast-unknown 1000": "9633e0f835eb532f502641c7c00a57334b7c7784bfa778371201413486859694",
-    "model v2 fast-unknown 1000": "679ebd2e7068adbb5e1bfb019adb71d87acf272f66332d2f4a5bf3d10a830ff8",
+    "model harbor-watch s1": "aaad7bc7a102551067f28c25a9b9d2e02cfe1e5e9fc8ecb8c58f58c1c3ab2b94",
+    "playbook v2 fast-unknown 1000": "4d9b812bcea2a284fd66ce31d0258aad727742ad7c0bfe5e88caded646427c88",
+    "model v2 fast-unknown 1000": "665f72b96dd528d3be7f347c3a9a0b359bc87498be3a391bd6cc8c6e2d5aad41",
 }
 
 

@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use murmur_standins::conditions::{Slot, sample_once};
+use murmur_standins::conditions::{Slot, sample_once, surfaces_at};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -142,6 +142,32 @@ async fn batches_all_reported_positions_and_keeps_the_last_sample_on_error() {
         .await
         .expect("recovered");
     assert_eq!(slots[0].latest().map(|s| s.lat), Some(37.85));
+}
+
+/// The surface under each point, in one request: the water over a seabed (the mock's 1 m water
+/// level over -9 m), nothing outside the area.
+#[tokio::test]
+async fn surfaces_are_the_water_or_ground_under_each_point() {
+    let status = Arc::new(Mutex::new(200));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let url = mock(status, seen.clone()).await;
+    let client = reqwest::Client::new();
+    let s = surfaces_at(
+        &client,
+        &url,
+        1_781_431_200.0,
+        &[(37.80, -122.60), (37.81, -122.40)],
+    )
+    .await
+    .expect("surfaces");
+    assert_eq!(s, [Some(1.0), None]);
+    assert_eq!(seen.lock().expect("lock").len(), 1, "one request");
+    let ground = murmur_standins::conditions::Sample {
+        elevation_m: Some(3.0),
+        water_level_m: Some(0.4),
+        ..Default::default()
+    };
+    assert_eq!(ground.surface_m(), Some(3.0));
 }
 
 #[tokio::test]

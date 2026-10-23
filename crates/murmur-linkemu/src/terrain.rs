@@ -74,9 +74,14 @@ pub trait Sampler: Send + Sync {
 struct Key {
     ci: i64,
     cj: i64,
+    /// the altitude band (`alt_step_m`), or for a vehicle at rest its altitude in decimetres
     band: i64,
+    at_rest: bool,
     p: [u64; 5],
 }
+
+/// A vehicle at rest's altitude in the key, to this resolution (m).
+const AT_REST_STEP_M: f64 = 0.1;
 
 struct Req {
     key: Key,
@@ -119,15 +124,30 @@ impl TidewaterTerrain {
         }
     }
 
-    fn key(&self, v: &GeoPoint, gs: &GeoPoint, p: &LosParams) -> Key {
+    fn key(&self, v: &GeoPoint, gs: &GeoPoint, p: &LosParams, at_rest: bool) -> Key {
         let dlat = self.cfg.cell_m / M_PER_DEG;
         let dlon = dlat / gs.lat.to_radians().cos().max(0.05);
+        let step = if at_rest {
+            AT_REST_STEP_M
+        } else {
+            self.cfg.alt_step_m
+        };
         Key {
             ci: (v.lat / dlat).floor() as i64,
             cj: (v.lon / dlon).floor() as i64,
-            band: (v.alt_m / self.cfg.alt_step_m).round() as i64,
+            band: (v.alt_m / step).round() as i64,
+            at_rest,
             p: p.key(),
         }
+    }
+
+    fn band_alt_m(&self, k: &Key) -> f64 {
+        let step = if k.at_rest {
+            AT_REST_STEP_M
+        } else {
+            self.cfg.alt_step_m
+        };
+        k.band as f64 * step
     }
 
     /// Cells waiting for an answer and cells answered.
@@ -144,7 +164,7 @@ impl TidewaterTerrain {
         let centre = GeoPoint {
             lat: (r.key.ci as f64 + 0.5) * dlat,
             lon: (r.key.cj as f64 + 0.5) * dlon,
-            alt_m: r.key.band as f64 * self.cfg.alt_step_m,
+            alt_m: self.band_alt_m(&r.key),
         };
         let total = haversine_m(&r.gs, &centre);
         let n = ((total / self.cfg.sample_spacing_m).ceil() as usize)
@@ -276,9 +296,8 @@ impl TidewaterTerrain {
     }
 }
 
-impl Terrain for TidewaterTerrain {
-    fn obstruction_m(&self, vehicle: &GeoPoint, gs: &GeoPoint, p: &LosParams) -> Option<f64> {
-        let key = self.key(vehicle, gs, p);
+impl TidewaterTerrain {
+    fn cached_or_queued(&self, key: Key, gs: &GeoPoint, p: &LosParams) -> Option<f64> {
         let mut st = self.state.lock().ok()?;
         if let Some(o) = st.cache.get(&key) {
             return Some(*o);
@@ -292,6 +311,22 @@ impl Terrain for TidewaterTerrain {
             });
         }
         None
+    }
+}
+
+impl Terrain for TidewaterTerrain {
+    fn obstruction_m(&self, vehicle: &GeoPoint, gs: &GeoPoint, p: &LosParams) -> Option<f64> {
+        self.cached_or_queued(self.key(vehicle, gs, p, false), gs, p)
+    }
+
+    /// Keyed at the vehicle's own altitude (to `AT_REST_STEP_M`), not its band.
+    fn obstruction_at_rest_m(
+        &self,
+        vehicle: &GeoPoint,
+        gs: &GeoPoint,
+        p: &LosParams,
+    ) -> Option<f64> {
+        self.cached_or_queued(self.key(vehicle, gs, p, true), gs, p)
     }
 
     fn stats(&self) -> Option<Value> {
@@ -679,6 +714,38 @@ mod tests {
         let again = veh(-122.40 + 0.0002, 52.0);
         assert_eq!(t.obstruction_m(&again, &gs(), &p), Some(ob));
         assert_eq!(t.sizes(), (0, 3));
+    }
+
+    /// A vehicle at rest is judged at its own altitude: down at 3.5 m, behind a 20 m ridge, the
+    /// banded check rounds it to 0 m (more obstructed by the 3.5 m it lost); at rest it keeps
+    /// them. Its own cell entry: the band's answer for a moving vehicle there is unchanged.
+    #[tokio::test]
+    async fn a_vehicle_at_rest_keeps_its_own_altitude_where_the_band_rounds_it_away() {
+        let t = TidewaterTerrain::new(cfg());
+        let s = RidgeSampler {
+            ridge_lon: -122.43,
+            height: 20.0,
+            fail: Default::default(),
+            calls: Default::default(),
+        };
+        let p = LosParams {
+            gs_antenna_m: 10.0,
+            k: 1.0e9, // flat Earth, to isolate the ridge
+            ..LosParams::default()
+        };
+        let down = veh(-122.40, 3.5);
+        assert_eq!(t.obstruction_m(&down, &gs(), &p), None);
+        assert_eq!(t.obstruction_at_rest_m(&down, &gs(), &p), None);
+        assert_eq!(t.tick(&s, 0.0).await, 2, "two cells: banded and at rest");
+        let banded = t.obstruction_m(&down, &gs(), &p).expect("answered");
+        let rest = t.obstruction_at_rest_m(&down, &gs(), &p).expect("answered");
+        // the ridge is about 35 % of the way out: the ray over it rises by that share of 3.5 m
+        let lift = banded - rest;
+        assert!(
+            (3.5 * 0.3..3.5 * 0.4).contains(&lift),
+            "the ray at the ridge rises by its share of the 3.5 m: {banded} vs {rest}"
+        );
+        assert!(rest > 0.0 && rest < banded);
     }
 
     #[tokio::test]

@@ -77,10 +77,27 @@ so a new behavior inherits it:
   disarmed", "Distance from LAND point"); leaving AUTO then resets the mission ("In landing
   sequence: mission reset") or restarts the landing sequence at the previous waypoint.
   MISSION_ITEM_REACHED 0 on entering GUIDED. Home follows a disarmed plane or rover
-  (HOME_POSITION when it moves), so it is where the vehicle arms.
+  (HOME_POSITION when it moves), so it is where the vehicle arms. A plane that starts in the
+  air has its home on the surface below it: at tidewater's surface height there (sampled once
+  at start; the headless simulator reads its baked grid), at 0 m without tidewater.
+  RTL_AUTOLAND (ArduPlane's default 0: RTL circles home) 1 or 2 ends an RTL in a landing
+  (ModeRTL::navigate): on the RTL
+  circle within 10 m of the RTL altitude (1) or at once (2), once per RTL, a DO_LAND_START in
+  the mission is jumped to in AUTO ("Landing sequence start"). With none, ArduPlane keeps
+  circling; the bridge's missions never carry one, so the stand-in flies ArduPlane's own
+  landing at home instead, the AUTOLAND mode (mode_autoland.cpp: a loiter down to
+  AUTOLAND_WP_ALT beside the final approach's start AUTOLAND_WP_DIST out, then the slope
+  landing; refused on the ground, "Must already be flying!"). That hand-over is the
+  stand-in's; it comes no sooner than 3 s into the RTL, as ArduPlane's heartbeat on every mode
+  change (Plane::set_mode) would have said RTL first. TKOFF_THR_MINACC above 0 is a hand
+  launch: a stand-in has a launch crew only where it starts, so down again after flying it
+  refuses to arm ("Arm: landed, no crew for a hand launch"), and armed on the ground its auto
+  takeoff waits for a throw that never comes. Only the Puma sets them (`standin_params` in
+  `sim/platforms.toml`, murmur-a5v).
 - **Failures**: battery drained by load over the catalog endurance, battery and GCS-loss
   failsafes per firmware with ArduPilot's texts (`battery.rs`, `failsafe.rs`): ArduPlane's
-  "GCS Failsafe On: switched to RTL", armed or not, never during a landing; ArduRover's,
+  "GCS Failsafe On: switched to RTL", armed or not, never during a landing, nor its battery
+  failsafe's RTL (in AUTOLAND, or on an AUTO mission's LAND item); ArduRover's,
   announced as "Radio Failsafe" (its 50 Hz radio check wins the race to announce a failsafe
   the 10 Hz GCS check raised, as the motorboat SITL shows; "GCS Failsafe Cleared" when the
   GCS is back); ArduSub's "MYGCS: heartbeat lost" then the action (disarm for a tethered
@@ -222,6 +239,11 @@ Differences the comparisons report as notes, by design (the scripts list them un
   firmware; the stand-in says what the SITL said every time it was watched.
 - The plane's disarm after an auto-land is timed from the flare as SITL did it (about 15 s
   with LAND_DISARMDELAY 20), not from an is_flying model.
+- The Puma's stand-in lands when sent home and is hand-launched (`standin_params`:
+  RTL_AUTOLAND 1, TKOFF_THR_MINACC 15); a SITL Puma gets neither, so in a live stack it
+  circles home after an RTL and takes off from a runway: ArduPlane lands from RTL only through
+  a DO_LAND_START sequence in its mission, which the bridge's missions never carry, and SITL
+  never throws it. The comparison script builds its own stand-in configs without them.
 
 ### Air
 

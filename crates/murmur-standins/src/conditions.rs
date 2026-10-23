@@ -39,6 +39,13 @@ impl Sample {
     pub fn current_north(&self) -> f64 {
         self.current_north.unwrap_or(0.0)
     }
+
+    /// The surface's height: the ground, or the water over it (the higher of elevation and
+    /// water level, as the link emulator reads tidewater); None outside the scenario area.
+    pub fn surface_m(&self) -> Option<f64> {
+        let e = self.elevation_m?;
+        Some(self.water_level_m.map_or(e, |w| e.max(w)))
+    }
 }
 
 /// One vehicle's mailbox: it writes where it is, the poller writes what the water is like there.
@@ -184,6 +191,45 @@ pub async fn start(cfg: Config, slots: Vec<Arc<Slot>>) {
             );
         }
     });
+}
+
+/// The surface's height at each point now (`Sample::surface_m`; None outside the area), in
+/// one request: where a vehicle that starts in the air has its home (`VehicleConfig::
+/// surface_m`). Asked once, at start.
+pub async fn surfaces(cfg: &Config, points: &[(f64, f64)]) -> Result<Vec<Option<f64>>, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+    surfaces_at(
+        &client,
+        &format!("{}/v1/sample", cfg.url),
+        cfg.clock.now(),
+        points,
+    )
+    .await
+}
+
+/// [`surfaces`] against an endpoint at scenario time `t`. Public so tests can drive it.
+pub async fn surfaces_at(
+    client: &reqwest::Client,
+    endpoint: &str,
+    t: f64,
+    points: &[(f64, f64)],
+) -> Result<Vec<Option<f64>>, String> {
+    let slots: Vec<Arc<Slot>> = points
+        .iter()
+        .map(|&(lat, lon)| {
+            let s = Arc::new(Slot::default());
+            s.report(lat, lon, 0.0);
+            s
+        })
+        .collect();
+    sample_once(client, endpoint, t, &slots).await?;
+    Ok(slots
+        .iter()
+        .map(|s| s.latest().and_then(|x| x.surface_m()))
+        .collect())
 }
 
 /// Say it once per outage; the vehicles keep the last samples meanwhile.

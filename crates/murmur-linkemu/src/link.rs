@@ -4,12 +4,22 @@
 use crate::config::TerrainMode;
 use crate::config::{Config, DirSel, DownWhen, EventCfg};
 use crate::geo::{GeoPoint, Terrain, haversine_m, slant_m};
-use crate::mavpos::scan_position;
+use crate::mavpos::scan;
 use crate::model::{Cause, Cond, Dir, DirState, Params, Verdict};
 use crate::sat::SatShared;
 use crate::timeline::{Timeline, parse_iso_utc};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+
+/// A landed, disarmed aircraft (`Link::at_rest`) rests on the surface it came down on: its
+/// terrain check puts its antenna this high above the altitude it reports (GUESS: an antenna
+/// in a small airframe lying on the ground), at that altitude rather than the cache's band,
+/// which can round one on the ground metres under its surface (a Puma down at 3 m read as 0 m).
+pub const AT_REST_ANTENNA_M: f64 = 0.5;
+/// A disarmed aircraft within this of its home's altitude (GLOBAL_POSITION_INT's relative
+/// altitude) is on the ground: ArduPilot's home follows a disarmed plane, so it is where it
+/// landed.
+pub const AT_REST_REL_ALT_M: f64 = 1.0;
 
 #[derive(Clone, Debug)]
 pub struct LinkMeta {
@@ -231,6 +241,9 @@ pub struct Link {
     obstruction_m: Option<f64>,
     /// Packets decided while no terrain answer existed.
     pub los_unknown_pkts: u64,
+    /// The vehicle's last heartbeat: armed; and its altitude above home with its position.
+    armed: Option<bool>,
+    rel_alt_m: Option<f64>,
     /// SATCOM state when the profile follows a constellation class (`space_class`).
     sat: Option<Arc<SatShared>>,
     /// The profile that carries the traffic while `down_when` closes this one
@@ -263,6 +276,8 @@ impl Link {
             gs_range_m: None,
             obstruction_m: None,
             los_unknown_pkts: 0,
+            armed: None,
+            rel_alt_m: None,
             sat,
             gated: None,
         }
@@ -327,11 +342,31 @@ impl Link {
             self.gs_range_m = Some(slant_m(&p, gs));
             if let Some(t) = &self.params.terrain
                 && self.env.terrain.enabled()
-                && let Some(o) = self.env.terrain.obstruction_m(&p, gs, &t.los)
             {
-                self.obstruction_m = Some(o);
+                let o = if self.at_rest() {
+                    let lift = (AT_REST_ANTENNA_M - t.los.antenna_m).max(0.0);
+                    let rest = GeoPoint {
+                        alt_m: p.alt_m + lift,
+                        ..p
+                    };
+                    self.env.terrain.obstruction_at_rest_m(&rest, gs, &t.los)
+                } else {
+                    self.env.terrain.obstruction_m(&p, gs, &t.los)
+                };
+                if let Some(o) = o {
+                    self.obstruction_m = Some(o);
+                }
             }
         }
+    }
+
+    /// A landed, disarmed aircraft: of the air domain, its last heartbeat disarmed, within
+    /// `AT_REST_REL_ALT_M` of its home's altitude. Its terrain check is at rest (see
+    /// `AT_REST_ANTENNA_M`); no other vehicle's is.
+    pub fn at_rest(&self) -> bool {
+        self.meta.domain == "air"
+            && self.armed == Some(false)
+            && self.rel_alt_m.is_some_and(|r| r.abs() < AT_REST_REL_ALT_M)
     }
 
     pub fn los_state(&self) -> LosState {
@@ -358,9 +393,15 @@ impl Link {
         }
     }
 
-    /// Look at an uplink datagram (vehicle to bridge) for a position. Never alters it.
+    /// Look at an uplink datagram (vehicle to bridge) for a position and the armed flag. Never
+    /// alters it.
     pub fn observe_up(&mut self, datagram: &[u8]) {
-        if let Some(p) = scan_position(datagram) {
+        let seen = scan(datagram);
+        if seen.armed.is_some() {
+            self.armed = seen.armed;
+        }
+        if let Some(p) = seen.pos {
+            self.rel_alt_m = seen.rel_alt_m;
             self.set_position(p);
         }
     }
@@ -961,5 +1002,82 @@ mod tests {
     fn a_profile_without_space_class_has_no_satcom_state() {
         let l = build("[class.los]\n", meta(1, "los", "air"));
         assert!(l.sat_shared().is_none());
+    }
+
+    /// Records each question the link asks its terrain: (altitude, at rest).
+    #[derive(Default)]
+    struct Asked(std::sync::Mutex<Vec<(f64, bool)>>);
+    impl Terrain for Asked {
+        fn obstruction_m(&self, v: &GeoPoint, _: &GeoPoint, _: &LosParams) -> Option<f64> {
+            self.0.lock().expect("lock").push((v.alt_m, false));
+            Some(17.0)
+        }
+        fn obstruction_at_rest_m(&self, v: &GeoPoint, _: &GeoPoint, _: &LosParams) -> Option<f64> {
+            self.0.lock().expect("lock").push((v.alt_m, true));
+            Some(13.0)
+        }
+    }
+
+    /// An autopilot heartbeat, then a position `rel_m` above home, in one datagram.
+    fn heartbeat_and_position(armed: bool, alt_m: f64, rel_m: f64) -> Vec<u8> {
+        use mavlink::dialects::ardupilotmega as apm;
+        let h = mavlink::MavHeader {
+            sequence: 0,
+            system_id: 1,
+            component_id: 1,
+        };
+        let hb = apm::MavMessage::HEARTBEAT(apm::HEARTBEAT_DATA {
+            autopilot: apm::MavAutopilot::MAV_AUTOPILOT_ARDUPILOTMEGA,
+            mavtype: apm::MavType::MAV_TYPE_FIXED_WING,
+            base_mode: if armed {
+                apm::MavModeFlag::MAV_MODE_FLAG_SAFETY_ARMED
+            } else {
+                apm::MavModeFlag::empty()
+            },
+            ..Default::default()
+        });
+        let pos = apm::MavMessage::GLOBAL_POSITION_INT(apm::GLOBAL_POSITION_INT_DATA {
+            lat: (37.81 * 1e7) as i32,
+            lon: (-122.4 * 1e7) as i32,
+            alt: (alt_m * 1e3) as i32,
+            relative_alt: (rel_m * 1e3) as i32,
+            ..Default::default()
+        });
+        let mut out = Vec::new();
+        for m in [hb, pos] {
+            mavlink::write_versioned_msg(&mut out, mavlink::MavlinkVersion::V2, h, &m)
+                .expect("write");
+        }
+        out
+    }
+
+    #[test]
+    fn only_a_landed_disarmed_aircraft_is_judged_at_rest_at_its_own_altitude() {
+        // (domain, armed, metres above home) -> at rest
+        for (domain, armed, rel, rest) in [
+            ("air", false, 0.2, true),
+            ("air", true, 0.2, false), // armed: a landing still rolling out, a takeoff
+            ("air", false, 40.0, false), // a dead glider, not down yet
+            ("surface", false, 0.0, false),
+        ] {
+            let t = Arc::new(Asked::default());
+            let cfg = Config::parse(
+                "[ground_station]\nlat = 37.8\nlon = -122.4\n[class.los]\nterrain = \"ramp\"\nterrain_ramp_m = 20\n",
+            )
+            .expect("cfg");
+            let params = Params::from_profile(&cfg.resolve("los").expect("p")).expect("params");
+            let env = Arc::new(Env::new(&cfg, t.clone(), 1).expect("env"));
+            let mut l = Link::new(meta(1, "los", domain), params, env);
+            l.observe_up(&heartbeat_and_position(armed, 3.0, rel));
+            assert_eq!(l.at_rest(), rest, "{domain} armed {armed} rel {rel}");
+            let asked = t.0.lock().expect("lock").clone();
+            // at rest: its own 3 m plus the antenna, asked as such
+            let want = if rest { 3.0 + AT_REST_ANTENNA_M } else { 3.0 };
+            assert_eq!(asked, [(want, rest)]);
+            assert_eq!(
+                l.los_state(),
+                LosState::Obstructed(if rest { 13.0 } else { 17.0 })
+            );
+        }
     }
 }

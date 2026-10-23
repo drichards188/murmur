@@ -43,6 +43,7 @@ fn config(spec: Spec, port: u16, alt: f64) -> VehicleConfig {
         home: [HOME.0, HOME.1, alt, 0.0],
         spec,
         params: Default::default(),
+        surface_m: None,
     }
 }
 

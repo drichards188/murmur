@@ -50,24 +50,28 @@ FEED = re.compile(r'"cursor": "[0-9a-f]+:')
 # the build; the chain itself is checked by the replay below
 BUILD = re.compile(r'"build":\{[^}]*\}')
 PREV = re.compile(r'"prev":"[0-9a-f]{64}"')
+AREAS_SHA = re.compile(r'("areas_sha256":"|"areas":\{"sha256":")[0-9a-f]{64}')
 
 
 def audit_without_build(text: str) -> str:
-    return PREV.sub('"prev":"<chain>"', BUILD.sub('"build":<build>', text))
+    # the checkout's path too: `run.started` logs the areas directory, and the areas' hash (in
+    # every check's inputs) covers it, so a worktree's differs
+    text = AREAS_SHA.sub(r"\1<areas>", PREV.sub('"prev":"<chain>"', BUILD.sub('"build":<build>', text)))
+    return text.replace(str(REPO), "<repo>")
 
 
 def normalized(rec: dict[str, Any]) -> str:
     """The record as the golden holds it: no `perf` (computer time), the change feed's nonce (a
     fresh value per bridge process by design, `mcp/changes.rs`; it is only ever compared for
-    equality) masked, the audit log without the commit it was built from. Everything else must be
-    byte-identical."""
+    equality) masked, the audit log without the commit it was built from, the checkout's path
+    masked. Everything else must be byte-identical."""
     r = {k: v for k, v in rec.items() if k not in ("perf", "provenance")}
     if "audit_text" in r:
         r["audit_text"] = audit_without_build(r["audit_text"])
     if isinstance(r.get("audit"), dict):
         # the log's head and hash are of the log with its build; the digest hashes it without
         r["audit"] = {k: v for k, v in r["audit"].items() if k not in ("head", "sha256")}
-    return FEED.sub('"cursor": "<feed>:', json.dumps(r, sort_keys=True))
+    return FEED.sub('"cursor": "<feed>:', json.dumps(r, sort_keys=True)).replace(str(REPO), "<repo>")
 
 
 FEED_ID = re.compile(r'"cursor": "([0-9a-f]+):')

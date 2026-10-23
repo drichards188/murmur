@@ -552,7 +552,7 @@ async fn assemble(spec: &Spec) -> Result<Parts, String> {
             fleet: &vspecs,
             seed: spec.linkemu_seed.unwrap_or(spec.seed),
             epoch: spec.epoch,
-            grid,
+            grid: grid.clone(),
             space: spec.space,
             space_outlook: spec.space_outlook,
             space_cache: spec.space_cache.clone(),
@@ -567,12 +567,19 @@ async fn assemble(spec: &Spec) -> Result<Parts, String> {
         world.attach_link(link.clone());
         bridge_links.push(link);
     }
-    let cfgs: Vec<murmur_standins::config::VehicleConfig> = spec
+    let mut cfgs: Vec<murmur_standins::config::VehicleConfig> = spec
         .standins
         .iter()
         .map(|v| serde_json::from_value(v.clone()))
         .collect::<Result<_, _>>()
         .map_err(err("stand-ins"))?;
+    // a stand-in that starts in the air has its home on the surface below it: the baked grid's
+    // height there, as the stand-in engine samples tidewater's live
+    if let Some(g) = &grid {
+        for c in &mut cfgs {
+            c.surface_m = c.surface_m.or_else(|| g.height(c.home[0], c.home[1]));
+        }
+    }
     if cfgs.len() != vspecs.len() {
         return Err(format!("{} stand-ins for {} vehicles: every vehicle must be a stand-in", cfgs.len(), vspecs.len()));
     }

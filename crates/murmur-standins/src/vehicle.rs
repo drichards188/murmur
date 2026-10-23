@@ -113,6 +113,14 @@ impl Vehicle {
             demand: 0.0,
         };
         behavior.spawn(&cfg.spec, &mut st);
+        // a vehicle that starts in the air (its behavior put its home below it) has its home
+        // on the surface there: at the surface's height when the launcher knows it, else 0 m
+        if st.home.2 < alt
+            && behavior.airborne(&st)
+            && let Some(surface) = cfg.surface_m.filter(|s| s.is_finite() && *s < alt)
+        {
+            st.home.2 = surface;
+        }
         let seed = u64::from(cfg.uid()).wrapping_mul(0x1000_0000_01B3) ^ seed;
         let mut rng = Gauss::new(seed);
         let firmware = behavior.firmware();

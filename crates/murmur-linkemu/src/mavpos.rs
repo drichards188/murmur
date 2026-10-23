@@ -4,19 +4,36 @@ use crate::geo::GeoPoint;
 use mavlink::MavHeader;
 use mavlink::ReadVersion;
 use mavlink::dialects::ardupilotmega::GLOBAL_POSITION_INT_DATA;
-use mavlink::dialects::ardupilotmega::MavMessage;
+use mavlink::dialects::ardupilotmega::{MavAutopilot, MavMessage, MavModeFlag};
 use mavlink::peek_reader::PeekReader;
 
+const HEARTBEAT: u32 = 0;
 const GLOBAL_POSITION_INT: u32 = 33;
 const HIGH_LATENCY2: u32 = 235;
 
-/// Returns the last position in a datagram, if any: GLOBAL_POSITION_INT, or HIGH_LATENCY2
-/// (all an AUV under water sends, and what the bridge asks Iridium-class vehicles for; without
-/// it the depth gate would never see a dive). A datagram can carry several concatenated
-/// frames (v1 or v2); frames are walked by their length fields and only those two messages
-/// are handed to the mavlink crate (which checks the CRC).
+/// What a datagram says about its vehicle, the last of each in it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Seen {
+    pub pos: Option<GeoPoint>,
+    /// metres above its home, with `pos` when GLOBAL_POSITION_INT gave it
+    pub rel_alt_m: Option<f64>,
+    /// the autopilot's HEARTBEAT: armed (MAV_MODE_FLAG_SAFETY_ARMED)
+    pub armed: Option<bool>,
+}
+
+/// Returns the last position in a datagram, if any (see [`scan`]).
 pub fn scan_position(buf: &[u8]) -> Option<GeoPoint> {
-    let mut found = None;
+    scan(buf).pos
+}
+
+/// The last position in a datagram, if any: GLOBAL_POSITION_INT (with its relative altitude),
+/// or HIGH_LATENCY2 (all an AUV under water sends, and what the bridge asks Iridium-class
+/// vehicles for; without it the depth gate would never see a dive); and the last autopilot
+/// HEARTBEAT's armed flag. A datagram can carry several concatenated frames (v1 or v2); frames
+/// are walked by their length fields and only those three messages are handed to the mavlink
+/// crate (which checks the CRC).
+pub fn scan(buf: &[u8]) -> Seen {
+    let mut seen = Seen::default();
     let mut i = 0;
     while i < buf.len() {
         let (total, msgid) = match buf[i] {
@@ -35,7 +52,7 @@ pub fn scan_position(buf: &[u8]) -> Option<GeoPoint> {
         if i + total > buf.len() {
             break;
         }
-        if msgid == GLOBAL_POSITION_INT || msgid == HIGH_LATENCY2 {
+        if msgid == GLOBAL_POSITION_INT || msgid == HIGH_LATENCY2 || msgid == HEARTBEAT {
             let mut frame = &buf[i..i + total];
             let mut reader = PeekReader::new(&mut frame);
             // lat = lon = 0 is an autopilot without a position yet (ArduPilot sends zeros
@@ -43,28 +60,41 @@ pub fn scan_position(buf: &[u8]) -> Option<GeoPoint> {
             // judge it thousands of kilometres out.
             let p =
                 match mavlink::read_versioned_msg::<MavMessage, _>(&mut reader, ReadVersion::Any) {
-                    Ok((_, MavMessage::GLOBAL_POSITION_INT(d))) => {
-                        Some((d.lat, d.lon, f64::from(d.alt) * 1e-3))
-                    }
+                    Ok((_, MavMessage::GLOBAL_POSITION_INT(d))) => Some((
+                        d.lat,
+                        d.lon,
+                        f64::from(d.alt) * 1e-3,
+                        Some(f64::from(d.relative_alt) * 1e-3),
+                    )),
                     // altitude in whole metres above MSL (negative: depth)
                     Ok((_, MavMessage::HIGH_LATENCY2(d))) => {
-                        Some((d.latitude, d.longitude, f64::from(d.altitude)))
+                        Some((d.latitude, d.longitude, f64::from(d.altitude), None))
+                    }
+                    Ok((_, MavMessage::HEARTBEAT(h)))
+                        if h.autopilot != MavAutopilot::MAV_AUTOPILOT_INVALID =>
+                    {
+                        seen.armed = Some(
+                            h.base_mode
+                                .contains(MavModeFlag::MAV_MODE_FLAG_SAFETY_ARMED),
+                        );
+                        None
                     }
                     _ => None,
                 };
-            if let Some((lat, lon, alt_m)) = p
+            if let Some((lat, lon, alt_m, rel)) = p
                 && (lat != 0 || lon != 0)
             {
-                found = Some(GeoPoint {
+                seen.pos = Some(GeoPoint {
                     lat: f64::from(lat) * 1e-7,
                     lon: f64::from(lon) * 1e-7,
                     alt_m,
                 });
+                seen.rel_alt_m = rel;
             }
         }
         i += total;
     }
-    found
+    seen
 }
 
 /// A v2 GLOBAL_POSITION_INT frame, for tests and the load generator.
@@ -104,6 +134,46 @@ mod tests {
         assert!((p.alt_m + 12.5).abs() < 1e-3);
         assert!(scan_position(&[0u8; 20]).is_none());
         assert!(scan_position(&f[..f.len() - 3]).is_none());
+    }
+
+    #[test]
+    fn reads_the_relative_altitude_and_the_autopilots_armed_flag() {
+        use mavlink::dialects::ardupilotmega::HEARTBEAT_DATA;
+        let h = MavHeader {
+            sequence: 0,
+            system_id: 1,
+            component_id: 1,
+        };
+        let beat = |autopilot, armed: bool| {
+            let msg = MavMessage::HEARTBEAT(HEARTBEAT_DATA {
+                autopilot,
+                base_mode: if armed {
+                    MavModeFlag::MAV_MODE_FLAG_SAFETY_ARMED
+                } else {
+                    MavModeFlag::empty()
+                },
+                ..Default::default()
+            });
+            let mut out = Vec::new();
+            mavlink::write_versioned_msg(&mut out, mavlink::MavlinkVersion::V2, h, &msg)
+                .expect("write");
+            out
+        };
+        let mut d = beat(MavAutopilot::MAV_AUTOPILOT_ARDUPILOTMEGA, false);
+        d.extend(position_frame(1, 37.8, -122.4, 3.0));
+        let s = scan(&d);
+        assert_eq!(s.armed, Some(false));
+        assert_eq!(s.rel_alt_m, Some(3.0));
+        // a heartbeat from no autopilot (a GCS, a camera) says nothing of the vehicle
+        assert_eq!(
+            scan(&beat(MavAutopilot::MAV_AUTOPILOT_INVALID, true)).armed,
+            None
+        );
+        assert_eq!(
+            scan(&beat(MavAutopilot::MAV_AUTOPILOT_ARDUPILOTMEGA, true)).armed,
+            Some(true)
+        );
+        assert_eq!(scan(&position_frame(1, 37.8, -122.4, 3.0)).armed, None);
     }
 
     #[test]

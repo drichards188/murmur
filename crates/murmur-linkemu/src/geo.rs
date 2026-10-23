@@ -73,6 +73,18 @@ pub trait Terrain: Send + Sync {
     /// yet (the caller treats the path as open and counts it).
     fn obstruction_m(&self, vehicle: &GeoPoint, gs: &GeoPoint, p: &LosParams) -> Option<f64>;
 
+    /// [`Terrain::obstruction_m`] for a vehicle at rest on the surface (a landed, disarmed
+    /// aircraft: `link.rs` `Link::at_rest`): at its own altitude, where a moving vehicle's is
+    /// rounded to a cache band that can put one on the ground metres under it.
+    fn obstruction_at_rest_m(
+        &self,
+        vehicle: &GeoPoint,
+        gs: &GeoPoint,
+        p: &LosParams,
+    ) -> Option<f64> {
+        self.obstruction_m(vehicle, gs, p)
+    }
+
     /// False for the no-op terrain: links then report the check as off.
     fn enabled(&self) -> bool {
         true
