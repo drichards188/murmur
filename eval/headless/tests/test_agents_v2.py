@@ -201,11 +201,14 @@ def test_the_oracle_repeats():
     assert proposals(a) == proposals(b) and normalized_audit(a["audit_text"]) == normalized_audit(b["audit_text"])
 
 
-def test_the_oracle_sends_a_low_puma_home_before_the_reserve():
+@pytest.mark.parametrize("agent,seed", [("oracle", 1200), ("oracle", 1203), ("oracle-honest", 1200),
+                                        ("oracle-honest", 1203)])
+def test_the_oracle_sends_a_low_puma_home_before_the_reserve(agent: str, seed: int):
     """Its one rtl goes before the battery reaches the reserve. Labels v2 (SCORING-V2.md 0.5 2a)
     meet the need only on the ground at home: the rtl is useful when the world lands the Puma in
-    time, a fault response when it does not (a world whose rtl loiters over home)."""
-    rec = cached("low-battery", 1200, "oracle")
+    time, a fault response when it does not. On a world whose rtl ends in a landing (murmur-a5v)
+    the Puma is down above 20 %: the ceiling meets the reserve (0.5 item 3's precondition)."""
+    rec = cached("low-battery", seed, agent)
     fn = L.episode_labels(rec)["fault_needs"]
     uid = rec["truth"]["stated"]["low_battery"]["uid"]
     (f,) = [f for f in fn if str(f["uid"]) == str(uid)]
@@ -213,6 +216,12 @@ def test_the_oracle_sends_a_low_puma_home_before_the_reserve():
     assert len(rtl) == 1 and rtl[0]["uids"] == [str(uid)]
     assert f["t_reserve"] is None or rtl[0]["dispatched"] < f["t_reserve"]
     assert rtl[0]["label"] == ("useful" if f["status"] == "met" else "fault_response")
+    if f["t_landed"] is not None:  # the world lands a Puma sent home
+        from eval.headless.v2.record import picture
+
+        pic = picture(rec)
+        assert pic.vehicle(str(uid), pic.index(f["t_landed"]))["battery_pct"] > 20.0
+        assert f["status"] == "met"
 
 
 def test_the_oracle_times_its_rtl_by_the_way_home_and_the_landing():
