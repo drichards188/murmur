@@ -65,8 +65,10 @@ formula, refraction ignored.
 
 ## What the catalog gives it
 
-`sim/platforms.toml`'s sensor entries keep `type` and `range_m` (the decision engine reads
-`range_m`; the legacy model too) and may add the physical fields (`physical/spec.rs`):
+`sim/platforms.toml`'s sensor entries keep `type` and `range_m` (the legacy model's reach, and
+what the decision engine reads in a run on that model; on the physical model it reads the
+generated `physical_reach_m`, "The decision engine's reaches" below) and may add the physical
+fields (`physical/spec.rs`):
 
 | Sensor | Fields |
 |---|---|
@@ -115,11 +117,13 @@ situation work (decision W3). Ranges below are the research's, at Pd 0.5.
 | REMUS 600 | side-scan as an active sonar, 455 kHz, to 300 m, a UUV at 225 m | [50]; [E] |
 | Orca XLUUV | passive, 1 kHz: a cargo ship 20 km, a submarine 1.5; the quieter classes the buoy's | [E]; [E here] |
 
-`range_m` stays what the decision engine reads (an assessment's coverage) and the legacy model's
-reach; it was not changed here. Against the physical model's typical range (`cargo test -p
+`range_m` stays the legacy model's reach (and the decision engine's in a run on that model); it
+was not changed here. Against the physical model's typical range (`cargo test -p
 murmur-bridge catalog_table -- --ignored --nocapture`: a camera's detection of a 5 m target, a
 radar's of 100 m^2, ESM a patrol boat's radar, AIS a ferry, each sonar per kind; clear day, sea
-state 2, no terrain), these differ by more than 2x, for a later decision: the RQ-4's radar (200
+state 2, no terrain), these differ by more than 2x, for a later decision (taken 10-24, bd
+murmur-1u4: in a run on the physical model the engine reads that model's own reaches, the next
+section; `range_m` unchanged): the RQ-4's radar (200
 km against 61) and cameras (50 against 198 out since the slant path, nothing before it), the
 CCA's radar (150 against 316), cameras (30 against 126; 10 before the slant path) and ESM (200
 against 443), the MQ-9B's cameras (40 against 88; 13 before) and AIS (150
@@ -130,6 +134,121 @@ surface ships, the buoy and the Orca against a cargo ship or a slow fast boat). 
 (Corsair, Magura, Saildrone) changed none of the 94 engagement scenarios' outcomes (under the
 default, `--rules 6`, seeded noise and the review proxy) nor the keep-out evaluation (its fleets'
 observers are Sea Hunters; the Magura engages).
+
+## The decision engine's reaches (bd murmur-1u4)
+
+**Where the engine reads a reach.** In one place: an engagement's assessment
+(`engage::observe`, `engage::covering_sensor`). After the effect, a vehicle of ours with a fresh
+position covers the effect point when one of its sensors that confirms presence or absence in
+the target's domain (`engage::sees`: radar and EO/IR for air, ground and surface; sonar for
+surface and subsurface; never AIS, cooperative, nor ESM, emitters only) reaches the point;
+covered 15 s with no detection is "ceased". The engine's other reasoning about our sensors is by
+type, never by range, and reads nothing of the catalog's: a track's altitude counts only when a
+recent radar (an aircraft) or a radar or AIS report (a vessel) backs it (`engage::track_altitude`),
+EO/IR and sonar are the classifying sources a lost contact's claimant is judged by (`lost.rs`),
+and the scenario runner stamps radar and AIS as its ranging sources (`scenario.rs` `ranging`).
+
+**What it reads.** On the legacy model `range_m`, as before. On the physical model the catalog's
+`physical_reach_m`: for each radar, EO/IR and sonar and each domain it confirms in, how far out
+the physical model's prediction (`physical/predict.rs`, the bridge's own functions), the sensor
+pointed at the domain's reference contact in the reference conditions, detects it at least half
+the time all the way:
+
+- **Reference contact**: a contact of no known kind of the domain, as `range_m` was the reach of
+  a nominal contact (signature 1.0) rather than of any one threat: the model's own signature for
+  one (`signature::kind_signature`'s default by domain: surface D_c 5 m, 3 m high, 10 m^2, 2 K,
+  140 dB, target strength 10 dB; air 3 m, 2 m, 1 m^2, 5 K; ground the NATO 2.3 m vehicle,
+  100 m^2, 2 K; subsurface 120 dB, 10 dB), where the contacts process puts a contact that names
+  no altitude (an aircraft 300 m up, under water 30 m deep, else at the surface).
+- **Reference conditions**: the catalog table's: a clear day (20 km visibility) with the sun 45
+  degrees up, sea state 2, the sonar's reference environment (50 m of water, 5 m/s of wind,
+  moderate shipping), no terrain; our vehicle at its catalog operating height (`alt_m`, else
+  `typical_alt_m`) and `mast_m`.
+- **Detection**: the assessment asks whether the contact is still there, not what it is.
+- **All the way**: the first fall below one half out from the sensor (a 1 % grid, then
+  bisection). Where the detection probability only falls with distance that is the model's D
+  range (`predict::ranges`); where it does not, the disc covered throughout, never a crossing
+  beyond a gap. The two differ only for the airborne radars against the surface contact: a
+  10 m^2 contact needs 10 dB over the sea clutter in its cell, which for an airborne radar at
+  steep grazing sits about at that line, so it comes and goes within 2 km of the nadir and is
+  gone beyond; `predict::ranges`'s bisection lands on one of those crossings (0.47 to 1.61 km),
+  the reach is the inner edge (0.40 to 0.44 km).
+
+Rounded to 10 m; a domain reached under 5 m is left out (the sensor does not cover there).
+Derived, never tuned (W3), never edited by hand: `cargo test -p murmur-bridge
+write_physical_reaches -- --ignored --nocapture` writes the line after each platform's
+`sensors` and prints the table below, and `tracks::tests::reaches::physical_reaches_are_the_generators`
+fails while a committed value is not the generator's (after a change to the physical model or to
+a sensor's figures that moves one).
+
+| Sensor | `range_m` | Air | Ground | Surface | Subsurface | Small fast boat, small drone (80 m) |
+|---|---|---|---|---|---|---|
+| RQ-4 radar (18,000 m) | 200 | 9.32 | 60.7 | 0.42 (model 1.61) | | 0.10, 0 |
+| RQ-4 EO/IR | 50 | 184 | 142 | 198 | | 180, 14.8 |
+| MQ-9B radar (7,600 m; also MQ-9B radar-only) | 100 | 29.1 | 94.7 | 0.44 (model 1.55) | | 0.10, 8.42 |
+| MQ-9B EO/IR | 40 | 108 | 87.2 | 87.8 | | 87.7, 32.5 |
+| CCA radar (11,000 m) | 150 | 99.5 | 316 | 0.40 (model 0.47) | | 0.10, 36.0 |
+| CCA EO/IR | 30 | 143 | 113 | 126 | | 123, 20.6 |
+| FVR-90 EO/IR | 10 | 19.3 | 14.3 | 15.2 | | 16.8, 10.4 |
+| Puma EO/IR | 4 | 16.2 | 14.3 | 14.5 | | 14.3, 9.06 |
+| Switchblade EO/IR | 3 | 16.2 | 14.3 | 14.4 | | 14.3, 5.70 |
+| X10 EO/IR | 1.5 | 15.8 | 13.9 | 14.1 | | 14.0, 4.94 |
+| FPV EO/IR | 0.5 | 0.48 | 0.42 | 0.92 | | 0.64, 0.04 |
+| Small airship EO/IR | 8 | 20.8 | 14.9 | 15.1 | | 17.1, 12.4 |
+| Logistics and mine-laying UGVs EO/IR | 1, 0.8 | 2.43 | 1.88 | 4.08 | | 2.86, 0.27 |
+| Armed UGV EO/IR | 2 | 20.1 | 12.0 | 13.3 | | 12.1, 10.6 |
+| Recon UGV EO/IR | 2 | 16.3 | 10.2 | 12.5 | | 11.2, 2.14 |
+| Magura EO/IR | 5 | 10.5 | 7.33 | 10.1 | | 8.65, 1.28 |
+| Corsair EO/IR | 8 | 11.3 | 8.84 | 12.1 | | 10.7, 1.43 |
+| Sea Hunter radar (also radar-only) | 40 | 7.53 | 10.1 | 9.77 | | 7.43, 2.83 |
+| Sea Hunter EO/IR | 15 | 11.3 | 8.99 | 13.1 | | 11.7, 1.43 |
+| Sea Hunter sonar | 10 | | | 4.87 | 4.87 | 4.87 |
+| Saildrone EO/IR | 5 | 3.66 | 2.81 | 6.09 | | 4.28, 0.42 |
+| Buoy sonar | 3 | | | 0.37 | 0.12 | 0.09 |
+| BlueROV sonar | 0.5 | | | 0.05 | 0.04 | 0.05 |
+| REMUS sonar | 3 | | | 0.26 | 0.27 | 0.26 |
+| Orca sonar | 8 | | | 0.36 | 0.12 | 0.07 |
+
+(km; blank: the sensor does not confirm a contact in that domain; the last column is context,
+not used: the same rule against a small fast boat holding still and a small drone 80 m up.)
+What moves most against `range_m`: the airborne radars no longer cover a surface contact beyond
+about 0.4 km (their cameras cover it 88 to 198 km out); every sonar covers less, most of all on
+the kinds it was not built for (the buoy and the Orca a few hundred metres, not 3 and 8 km); the
+small aircraft's and the UGVs' cameras cover several times more (14 to 20 km where `range_m`
+gave 1.5 to 4); the Sea Hunter's radar 7.5 to 10 km, not 40.
+
+**Which runs read them, and replay.** The bridge builds the decision facts from the catalog with
+the reaches of the sensing model in force (`Tracks::sensing_model`: `MURMUR_SENSE_MODEL`, else
+the model the last truth message ran on, else the default, physical; `Decision::facts_catalog`,
+`murmur_decide::Catalog::reaching`). On the physical model each radar, EO/IR and sonar's facts
+carry `reach_m`, which the engine reads instead of `range_m` (`SensorFact::reach_for`; a domain
+with no reach there is not covered); on the legacy model (the v1 and v2 worlds, G1's full stack
+and the Phase G stacks, all pinned by `MURMUR_SENSE_MODEL=legacy`) they carry none, so those
+runs' facts, logs and decisions are byte for byte as before. The facts are logged with every
+decision, so replay recomputes either kind of log without the catalog or the sensing model; an
+old log has no `reach_m` and replays as it always did. No decision-rules version: the rule (a
+seeing sensor reaching the point covers it) is unchanged and only its input differs, and
+`TrackFacts`, the tracker and `tests/before_oho` are untouched. The scenario runner reads
+`range_m` unless told `--reaches physical` (`RunOptions::reaches`); its tracks are scripted
+either way.
+
+**What it changed.** The 94 engine scenarios under every option set tried (the default, rules 5
+to 15, the review proxy and its misreading variant, the nominator, `--ident off`, track noise
+seeds 1 to 5 and 7, act noise seeds 1 to 3): on the legacy reaches every result and audit log is
+as before (the build stamp aside); on the physical reaches every scenario ends as designed and
+replays, and the only change is the evidence of three assessments, each still ceased after
+15 s: the observer's camera is named in place of its radar, in 48 because the MQ-9B's radar no
+longer reaches the surface contact 1.5 km off (0.44 km; its camera 87.8), in 72 and 76 because
+the Sea Hunter's camera now reaches farther than its radar (13.1 against 9.77 km; both reach the
+point 1.2 km off). The scenarios' coverage comes from the engaging Switchblade over the point
+and an observer within 1.5 km, so they exercise little of the change. The keep-out
+evaluation does not read a reach (the nomination's checks only, on tracks from the legacy model):
+its numbers cannot move with them.
+
+**Limits.** A reach is a pointed sensor's in clear daylight: a fixed camera's field, where the
+payload manager points, night, haze and terrain are not in it, and the engine does not know the
+conditions. `sees` still leaves radar and EO/IR out of a subsurface target's coverage, though the
+physical model lets them see a periscope's mast (a type rule: changing it is a rules change).
 
 ## The model
 

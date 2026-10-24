@@ -1,8 +1,9 @@
 //! Platform facts from the catalog (`sim/platforms.toml`) and the capability table.
 //!
 //! The bridge copies a vehicle's [`PlatformFacts`] into each [`crate::WorldSnapshot`], so the
-//! facts a rule read (armed, turn radius, endurance) are logged with the decision and replay
-//! needs no catalog file.
+//! facts a rule read (armed, turn radius, endurance, a sensor's reach) are logged with the
+//! decision and replay needs no catalog file. A sensor's reach is the one of the sensing model
+//! the run is on ([`Reaches`], [`Catalog::reaching`]).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -139,7 +140,63 @@ pub struct PlatformFacts {
 pub struct SensorFact {
     #[serde(rename = "type")]
     pub kind: String,
+    /// The legacy sensing model's reach (and the engine's in a run on that model).
     pub range_m: f64,
+    /// In a run on the physical sensing model, the engine's reach by the domain of what it
+    /// looks for: the catalog's `physical_reach_m`, derived from the physical model
+    /// (docs/SENSING.md, "The decision engine's reaches"; [`Catalog::reaching`]). Absent in a
+    /// run on the legacy model, for a sensor the catalog derives none for, and in every log
+    /// before it: the engine reads `range_m` then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reach_m: Option<SensorReach>,
+}
+
+impl SensorFact {
+    /// How far this sensor reaches a contact in `domain`, m: its physical reach for the domain
+    /// when it carries them (none: it does not reach one there at all), else `range_m`.
+    pub fn reach_for(&self, domain: Domain) -> Option<f64> {
+        match &self.reach_m {
+            Some(r) => r.get(domain),
+            None => Some(self.range_m),
+        }
+    }
+}
+
+/// A sensor's reach by the domain of the contact, m (none: it does not reach one there).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SensorReach {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub air: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ground: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subsurface: Option<f64>,
+}
+
+impl SensorReach {
+    pub fn get(&self, domain: Domain) -> Option<f64> {
+        match domain {
+            Domain::Air => self.air,
+            Domain::Ground => self.ground,
+            Domain::Surface => self.surface,
+            Domain::Subsurface => self.subsurface,
+        }
+    }
+}
+
+/// Which reach of each sensor the decision facts carry: the sensing model the run is on
+/// (bd murmur-1u4). The engine reads whatever the facts carry, and the facts are logged with
+/// each decision, so replay needs neither the catalog nor the model.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Reaches {
+    /// `range_m` alone, as every record before world v3 (v1, v2, the Phase G stacks).
+    #[default]
+    Legacy,
+    /// `range_m` and the physical model's reaches by domain (`physical_reach_m`).
+    Physical,
 }
 
 #[derive(Deserialize)]
@@ -159,6 +216,10 @@ struct RawPlatform {
     expended_by_effect: bool,
     #[serde(default)]
     sensors: Vec<RawSensor>,
+    /// Each sensor's reach under the physical model, by its type and the contact's domain
+    /// (generated: docs/SENSING.md, "The decision engine's reaches").
+    #[serde(default)]
+    physical_reach_m: BTreeMap<String, SensorReach>,
 }
 
 #[derive(Deserialize)]
@@ -174,16 +235,46 @@ pub enum CatalogError {
     Parse(#[from] toml::de::Error),
     #[error("platform catalog {0}: {1}")]
     Io(String, std::io::Error),
+    #[error("platform catalog: {0}")]
+    Invalid(String),
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Catalog {
+    /// Each platform's facts with `range_m` alone ([`Reaches::Legacy`]).
     pub platforms: BTreeMap<String, PlatformFacts>,
+    /// Each platform's `physical_reach_m`, by sensor type: what [`Catalog::reaching`] puts
+    /// on its sensors for a run on the physical model.
+    physical_reach: BTreeMap<String, BTreeMap<String, SensorReach>>,
 }
 
 impl Catalog {
     pub fn from_toml(text: &str) -> Result<Self, CatalogError> {
-        let raw: BTreeMap<String, RawPlatform> = toml::from_str(text)?;
+        let mut raw: BTreeMap<String, RawPlatform> = toml::from_str(text)?;
+        let mut physical_reach = BTreeMap::new();
+        for (id, r) in &mut raw {
+            for (kind, reach) in &r.physical_reach_m {
+                if !r.sensors.iter().any(|s| s.kind == *kind) {
+                    return Err(CatalogError::Invalid(format!(
+                        "[{id}] physical_reach_m.{kind}: the platform carries no {kind}"
+                    )));
+                }
+                for d in [Domain::Air, Domain::Ground, Domain::Surface, Domain::Subsurface] {
+                    if let Some(m) = reach.get(d)
+                        && !(m.is_finite() && m > 0.0)
+                    {
+                        return Err(CatalogError::Invalid(format!(
+                            "[{id}] physical_reach_m.{kind}.{}: {m} m (a reach is above 0; leave out a domain it does not reach)",
+                            format!("{d:?}").to_lowercase()
+                        )));
+                    }
+                }
+            }
+            let reach = std::mem::take(&mut r.physical_reach_m);
+            if !reach.is_empty() {
+                physical_reach.insert(id.clone(), reach);
+            }
+        }
         let platforms = raw
             .into_iter()
             .map(|(id, r)| {
@@ -208,6 +299,7 @@ impl Catalog {
                         .map(|s| SensorFact {
                             kind: s.kind,
                             range_m: s.range_m,
+                            reach_m: None,
                         })
                         .collect(),
                     climb_mps: r.climb_mps.filter(|c| c.is_finite() && *c > 0.0),
@@ -217,7 +309,10 @@ impl Catalog {
                 (id, facts)
             })
             .collect();
-        Ok(Catalog { platforms })
+        Ok(Catalog {
+            platforms,
+            physical_reach,
+        })
     }
 
     pub fn load(path: &Path) -> Result<Self, CatalogError> {
@@ -228,5 +323,91 @@ impl Catalog {
 
     pub fn get(&self, id: &str) -> Option<&PlatformFacts> {
         self.platforms.get(id)
+    }
+
+    /// This catalog with its sensors' facts for a run on `reaches`' sensing model: on the
+    /// legacy one `range_m` alone, as the catalog is loaded (its facts, and so every decision
+    /// logged with them, as before the physical reaches existed); on the physical one each
+    /// sensor the catalog derives reaches for carries them too (`reach_m`), which the engine
+    /// then reads instead of `range_m` ([`SensorFact::reach_for`]).
+    pub fn reaching(&self, reaches: Reaches) -> Catalog {
+        let mut c = self.clone();
+        for (id, p) in &mut c.platforms {
+            for s in &mut p.sensors {
+                s.reach_m = match reaches {
+                    Reaches::Legacy => None,
+                    Reaches::Physical => self
+                        .physical_reach
+                        .get(id)
+                        .and_then(|by_kind| by_kind.get(&s.kind))
+                        .cloned(),
+                };
+            }
+        }
+        c
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    const TEXT: &str = r#"
+[usv]
+domain = "surface"
+sim = "standin"
+behavior = "boat"
+sensors = [{ type = "radar", range_m = 40000 }, { type = "ais", range_m = 50000 }, { type = "sonar", range_m = 10000 }]
+physical_reach_m = { radar = { air = 7530, surface = 9770 }, sonar = {} }
+"#;
+
+    /// Loaded, the facts carry `range_m` alone and serialize as every log before the physical
+    /// reaches; on the physical model each sensor with derived reaches carries them, and one
+    /// without (AIS) none.
+    #[test]
+    fn the_legacy_facts_are_as_before_and_the_physical_ones_carry_the_reaches() {
+        let c = Catalog::from_toml(TEXT).unwrap();
+        assert_eq!(c, c.reaching(Reaches::Legacy));
+        let radar = &c.get("usv").unwrap().sensors[0];
+        assert_eq!(serde_json::to_string(radar).unwrap(), r#"{"type":"radar","range_m":40000.0}"#);
+        assert_eq!(radar.reach_for(Domain::Surface), Some(40_000.0));
+        assert_eq!(radar.reach_for(Domain::Ground), Some(40_000.0));
+
+        let p = c.reaching(Reaches::Physical);
+        let s = &p.get("usv").unwrap().sensors;
+        assert_eq!(s[0].reach_for(Domain::Surface), Some(9_770.0));
+        assert_eq!(s[0].reach_for(Domain::Air), Some(7_530.0));
+        // a domain it is given no reach in: it does not reach a contact there
+        assert_eq!(s[0].reach_for(Domain::Ground), None);
+        assert_eq!(s[1].reach_m, None);
+        assert_eq!(s[1].reach_for(Domain::Surface), Some(50_000.0));
+        assert_eq!(s[2].reach_m, Some(SensorReach::default()));
+        assert_eq!(s[2].reach_for(Domain::Subsurface), None);
+        // logged and read back as it was
+        let json = serde_json::to_string(&s[0]).unwrap();
+        assert_eq!(json, r#"{"type":"radar","range_m":40000.0,"reach_m":{"air":7530.0,"surface":9770.0}}"#);
+        assert_eq!(serde_json::from_str::<SensorFact>(&json).unwrap(), s[0]);
+        // and back to the legacy facts
+        assert_eq!(p.reaching(Reaches::Legacy), c);
+    }
+
+    /// A reach for a sensor the platform does not carry, a reach of 0 and a misspelt domain are
+    /// refused.
+    #[test]
+    fn a_bad_physical_reach_is_refused() {
+        for (bad, why) in [
+            ("physical_reach_m = { eo_ir = { air = 10 } }", "carries no eo_ir"),
+            ("physical_reach_m = { radar = { air = 0 } }", "a reach is above 0"),
+            ("physical_reach_m = { radar = { surfce = 10 } }", "surfce"),
+        ] {
+            let text = TEXT.replace(
+                "physical_reach_m = { radar = { air = 7530, surface = 9770 }, sonar = {} }",
+                bad,
+            );
+            let e = Catalog::from_toml(&text).unwrap_err().to_string();
+            assert!(e.contains(why), "{bad}: {e}");
+        }
     }
 }

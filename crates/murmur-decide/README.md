@@ -315,7 +315,14 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
   (approved) or aborts (dispatched) with `engage.stopped` when it fails, releasing a
   `FallbackOrder`; when it holds and is ready it logs `engage.effect` and returns an
   `EffectOrder`. After the effect it logs `engage.observe` each second and finally
-  `engage.assessed` (persists, ceased, unknown).
+  `engage.assessed` (persists, ceased, unknown). A vehicle of ours covers the effect point
+  when a sensor that sees the target's domain reaches it (`engage::covering_sensor`): its
+  `range_m`, or in a run on the physical sensing model the catalog's `physical_reach_m` for
+  the domain, derived from that model (bd murmur-1u4, docs/SENSING.md "The decision engine's
+  reaches"). The facts carry whichever the run is on (`Catalog::reaching`) and are logged with
+  each observation, so replay needs neither the catalog nor the model; a legacy run's facts
+  carry `range_m` alone, as before. `murmur-scenarios --reaches physical` runs the scenarios
+  on the physical reaches.
 - **Stop**: `Engine::abort_engagement(id, &HumanAuthority, note)` (any operator),
   `Engine::stop_engagement_system(id, reason)` (the bridge: task failed) and
   `Engine::supersede_engagement(id, by)` (another order dispatched to its platform: cause
@@ -1701,9 +1708,10 @@ The full contract is in the crate docs (`src/lib.rs`). In short:
    than the last one, so even a clock that steps back leaves the log in order and replayed
    (`tests/clock.rs` runs every scenario on two such clocks), but the durations it decided on
    would have moved with each step.
-2. Per decision call, build a `WorldSnapshot` keyed by `uid`: platform facts from the catalog,
-   and timestamped facts from telemetry (autopilot kind, nav ready, position, home, battery).
-   Unknown is `None`.
+2. Per decision call, build a `WorldSnapshot` keyed by `uid`: platform facts from the catalog
+   (its sensors' reaches those of the sensing model the run is on: `Catalog::reaching`, the
+   bridge's `Decision::facts_catalog`), and timestamped facts from telemetry (autopilot kind,
+   nav ready, position, home, battery). Unknown is `None`.
 3. Terrain: a `TerrainOracle` over tidewater's `POST /v1/sample` (lat-first points; null
    elevation is outside coverage; `water_depth_m > 0` is water), or `NoTerrain`.
 4. Operator endpoints: `submit` (also behind the legacy `POST /api/tasks`), `approve`,

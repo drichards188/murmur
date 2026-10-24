@@ -398,6 +398,13 @@ impl Tracks {
         Ok((n_contacts, detections.len(), n_tracks))
     }
 
+    /// The sensing model in force: `MURMUR_SENSE_MODEL`, else the one the last truth message
+    /// ran on, else the default (physical). The decision facts carry our sensors' reaches under
+    /// it (`murmur_decide::Reaches`, bd murmur-1u4).
+    pub fn sensing_model(&self) -> SensingModel {
+        self.settings.model.or(*lock(&self.last_model)).unwrap_or_default()
+    }
+
     /// The sensing model a message runs on: `MURMUR_SENSE_MODEL`, else the scenario's, else the
     /// default (physical). Said at the first message and when it changes.
     fn model_for(&self, msg: &TruthMessage) -> SensingModel {

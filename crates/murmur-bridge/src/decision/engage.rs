@@ -1498,7 +1498,7 @@ impl Decision {
                 let uid = bridge_uid(&sp.uid)?;
                 let cell = fleet.get(&uid)?;
                 let interval = cell.link_snapshot(now).expected_interval_ms;
-                let facts = cell.read(|v| super::snapshot::vehicle_facts(v, &self.catalog, now, interval, None));
+                let facts = cell.read(|v| super::snapshot::vehicle_facts(v, self.facts_catalog(), now, interval, None));
                 if core.engine.unspend_refusal(&sp.uid, Some(&facts), Some(&identity_of(cell)), t).is_some() {
                     return None;
                 }

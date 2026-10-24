@@ -724,7 +724,8 @@ impl AssessResult {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ObserveStep {
     /// Our vehicles with a fresh position and a sensor that sees the target's domain within
-    /// its nominal range of the effect point, as `"<uid>:<sensor> <range> m"`.
+    /// its reach of the effect point ([`covering_sensor`]: `range_m`, or on the physical
+    /// sensing model the catalog's reach for the domain), as `"<uid>:<sensor> <range> m"`.
     pub covered_by: Vec<String>,
     /// The target track is in the picture.
     pub track_present: bool,
@@ -4475,13 +4476,29 @@ fn release_checks(
 // ---- assessment -----------------------------------------------------------------------------
 
 /// Which sensor types can confirm the presence or absence of a contact in `domain`. AIS is
-/// left out (cooperative, and the target may spoof it), ESM too (only emitters).
-fn sees(sensor: &str, domain: Domain) -> bool {
+/// left out (cooperative, and the target may spoof it), ESM too (only emitters). Public for
+/// the catalog's generator of the physical reaches (one per sensor and domain it sees).
+pub fn sees(sensor: &str, domain: Domain) -> bool {
     match domain {
         Domain::Subsurface => sensor == "sonar",
         Domain::Surface => matches!(sensor, "radar" | "eo_ir" | "sonar"),
         Domain::Air | Domain::Ground => matches!(sensor, "radar" | "eo_ir"),
     }
+}
+
+/// The sensor of platform `p` that covers a contact in `domain` `d` metres away, for the
+/// assessment: of the types that see the domain ([`sees`]), the one reaching farthest there, if
+/// that is at least `d`. A sensor's reach is `range_m`, or in a run on the physical sensing
+/// model the reach by domain the catalog derives from that model, which the facts then carry
+/// (logged with the decision; [`crate::SensorFact::reach_for`]).
+pub fn covering_sensor(p: &crate::PlatformFacts, domain: Domain, d: f64) -> Option<&SensorFact> {
+    p.sensors
+        .iter()
+        .filter(|s| sees(&s.kind, domain))
+        .filter_map(|s| s.reach_for(domain).map(|r| (s, r)))
+        .filter(|(_, r)| *r >= d)
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(s, _)| s)
 }
 
 /// One observation step after the effect.
@@ -4500,12 +4517,7 @@ pub fn observe(
         };
         let Some(p) = &v.platform else { continue };
         let d = haversine_m(*pos, effect.point);
-        let best: Option<&SensorFact> = p
-            .sensors
-            .iter()
-            .filter(|s| sees(&s.kind, domain) && s.range_m >= d)
-            .max_by(|a, b| a.range_m.total_cmp(&b.range_m));
-        if let Some(s) = best {
+        if let Some(s) = covering_sensor(p, domain, d) {
             covered_by.push(format!("{uid}:{} {:.0} m", s.kind, d));
         }
     }
