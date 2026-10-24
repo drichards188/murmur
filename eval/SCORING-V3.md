@@ -308,9 +308,20 @@ Each was made to build and run the dev check; each has an alternative.
    **Recommend** the change with F16.
 10. **F4 version 2 comes from inside the bay only** (6). *Alternative*: keep the sea approach and
     accept that standing sonar serves it. **Recommend** version 2.
-11. **F5's night** (p 0.7 by the family) and **F2 by day and night** as the world draws them. 
-    *Alternative*: F2 by day only (11.3: no camera identifies a small drone at night unless it passes
-    within about 200 m). **Recommend** deciding with F9 (night and fog), which tests the night itself.
+11. **F2 by day only** (version 2) and **F5 at night with p 0.7**: both move the drawn start within
+    the world's window, where the plan says each family's conditions are the world's, day and night.
+    No camera identified a drone at night (0 of 25 situations, 11.4). *Alternative*: keep night in F2
+    (its ceiling then stays under 20 %). **Recommend** day only, night being F9's to test.
+12. **F2 on bearings over the strait or the bay** (version 3; version 4, routes over ground under
+    60 m only, proposed): our small aircraft fly at their fleet altitude (150 m) and no order names
+    an altitude, so a drone over the Marin Headlands, Lands End or Point Loma's ridge (130 to 440 m
+    above the sea) could not be met. *Alternative*: let orbit and patrol orders name an altitude (a
+    decision-rules version, beside W1's look target). **Recommend** version 4 on the next dev batch,
+    and the altitude with W1's later phase.
+13. **`none`'s `no_look` and lesson 3** (10.2): when nothing of the standing fleet looks at a contact,
+    that is the room the family leaves an agent, not a quirk it hangs on. *Alternative*: count it as
+    any other cause (then F2 and F6 flag on `none` alone). **Recommend** counting it apart: a family
+    is flagged on the oracle's causes, and on `none`'s other than `no_look`.
 
 ## 10. Gates (dev)
 
