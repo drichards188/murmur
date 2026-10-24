@@ -86,9 +86,12 @@ def test_the_variants_are_their_platforms_without_eo_ir_or_sonar():
     for base, var in (("mq9b", "mq9b_radar"), ("seahunter", "seahunter_radar")):
         a, b = dict(cat[base]), dict(cat[var])
         sa, sb = a.pop("sensors"), b.pop("sensors")
+        # the decision engine's physical reaches follow the sensors (bd murmur-1u4, generated)
+        ra, rb = a.pop("physical_reach_m"), b.pop("physical_reach_m")
         assert a == b, f"{var} differs from {base} beyond its sensors"
         assert sb == [s for s in sa if s["type"] not in ("eo_ir", "sonar")]
         assert {s["type"] for s in sb} == {"radar", "ais"}
+        assert rb == {k: r for k, r in ra.items() if k not in ("eo_ir", "sonar")}
 
 
 def test_the_v2_fleet_is_harbor_watch_with_the_variants():

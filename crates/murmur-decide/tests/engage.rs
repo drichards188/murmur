@@ -80,6 +80,58 @@ fn scenarios_are_deterministic_and_seedable() {
     assert!(c.replay_ok, "{:?}", c.replay_mismatches);
 }
 
+/// bd murmur-1u4: in a run on the physical sensing model the assessment reads each sensor's
+/// reach for the target's domain from the facts (the catalog's `physical_reach_m`), on the
+/// legacy one `range_m`, from the real catalog: a domain a sensor is given no reach in it does
+/// not cover, and the farthest-reaching sensor is the one named.
+#[test]
+fn the_assessment_reads_the_reach_of_the_run_s_sensing_model() {
+    let legacy = catalog();
+    let physical = legacy.reaching(Reaches::Physical);
+    let cover = |c: &Catalog, platform: &str, domain: Domain, d: f64| {
+        engage::covering_sensor(c.get(platform).unwrap(), domain, d).map(|s| s.kind.clone())
+    };
+    // the buoy's passive sonar: range_m 3 km; the physical model hears the reference contact
+    // under water only a few hundred metres out
+    assert_eq!(cover(&legacy, "buoy", Domain::Subsurface, 1_000.0).as_deref(), Some("sonar"));
+    assert_eq!(cover(&physical, "buoy", Domain::Subsurface, 1_000.0), None);
+    assert_eq!(cover(&physical, "buoy", Domain::Subsurface, 50.0).as_deref(), Some("sonar"));
+    // the MQ-9B over a surface contact 1.5 km out: its radar (100 km) on the legacy model, its
+    // camera on the physical one (sea clutter holds the radar to the reference contact within a
+    // few hundred metres; the camera sees it tens of kilometres out)
+    assert_eq!(cover(&legacy, "mq9b", Domain::Surface, 1_500.0).as_deref(), Some("radar"));
+    assert_eq!(cover(&physical, "mq9b", Domain::Surface, 1_500.0).as_deref(), Some("eo_ir"));
+    // the Switchblade's camera: range_m 3 km, the physical model's several times that
+    assert_eq!(cover(&legacy, "switchblade", Domain::Surface, 5_000.0), None);
+    assert_eq!(cover(&physical, "switchblade", Domain::Surface, 5_000.0).as_deref(), Some("eo_ir"));
+    // AIS and ESM never cover (cooperative, emitters only), with or without reaches
+    for c in [&legacy, &physical] {
+        assert_eq!(cover(c, "corsair", Domain::Surface, 20_000.0), None);
+    }
+}
+
+/// A scenario run on the physical reaches decides on them, logs them with its facts and
+/// replays; on the legacy reaches (the default) its log carries none.
+#[test]
+fn a_run_on_the_physical_reaches_logs_them_and_replays() {
+    let f = root().join("sim/scenarios/engage/48-high-friend-above.toml");
+    let legacy = scenario::run_file(&f, &root(), &RunOptions::default()).unwrap();
+    let physical = scenario::run_file(&f, &root(), &RunOptions { reaches: Reaches::Physical, ..RunOptions::default() }).unwrap();
+    for r in [&legacy, &physical] {
+        assert!(r.ok, "{:?}", r.failures);
+        assert!(r.replay_ok, "{:?}", r.replay_mismatches);
+        assert_eq!(r.assessment.as_deref(), Some("ceased"));
+    }
+    assert!(!legacy.log.contains("reach_m"));
+    assert!(physical.log.contains(r#""reach_m":{"#));
+    let reason = |r: &scenario::ScenarioResult| r.final_reason.clone().unwrap_or_default();
+    assert!(reason(&legacy).contains("reaper-1:radar"), "{}", reason(&legacy));
+    assert!(reason(&physical).contains("reaper-1:eo_ir"), "{}", reason(&physical));
+    let rep = replay::replay_str(&physical.log).unwrap();
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    assert_eq!(rep.assessments, 1);
+}
+
 #[test]
 fn replay_counts_the_chain() {
     let f = root().join("sim/scenarios/engage/01-nominal.toml");

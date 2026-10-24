@@ -452,6 +452,9 @@ pub struct Decision {
     world: Arc<World>,
     clock: SharedClock,
     catalog: Catalog,
+    /// The catalog with the physical model's sensor reaches on its facts (bd murmur-1u4):
+    /// the facts of a run on that sensing model ([`Decision::facts_catalog`]).
+    catalog_physical: Catalog,
     areas: AreaSet,
     operators: Vec<OperatorId>,
     engage_operators: Vec<OperatorId>,
@@ -772,6 +775,7 @@ impl Decision {
             me: me.clone(),
             world,
             clock,
+            catalog_physical: p.catalog.reaching(murmur_decide::Reaches::Physical),
             catalog: p.catalog,
             areas: p.areas,
             operators: p.operators,
@@ -2000,10 +2004,22 @@ impl Decision {
 
     // ---- world --------------------------------------------------------------------------
 
+    /// The catalog the decision facts come from now: with our sensors' reaches under the
+    /// sensing model in force (`Tracks::sensing_model`), which the engine reads for an
+    /// engagement's assessment and every decision logs with its facts. On the legacy model
+    /// (the v1 and v2 worlds, the Phase G stacks) and without a track store, `range_m` alone,
+    /// as before the physical reaches existed (bd murmur-1u4, docs/SENSING.md).
+    fn facts_catalog(&self) -> &Catalog {
+        match self.tracks().map(|t| t.sensing_model()) {
+            Some(crate::tracks::truth::SensingModel::Physical) => &self.catalog_physical,
+            Some(crate::tracks::truth::SensingModel::Legacy) | None => &self.catalog,
+        }
+    }
+
     fn snapshot(&self) -> murmur_decide::WorldSnapshot {
         snapshot::build(
             &self.world,
-            &self.catalog,
+            self.facts_catalog(),
             &self.areas,
             self.clock.now(),
             self.tracks().as_deref(),

@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use crate::areas::AreaSet;
 use crate::audit::{EventBody, MemorySink, parse_log};
 use crate::authority::{Grants, OperatorSession, Roster};
-use crate::catalog::{Catalog, Domain};
+use crate::catalog::{Catalog, Domain, Reaches};
 use crate::engage::{self, EngageWindow, EngagementEvent, Fallback, offset};
 use crate::engine::{Engine, Order, Routed};
 use crate::geo::{LonLat, haversine_m};
@@ -641,6 +641,11 @@ pub struct RunOptions {
     /// world's time, scripted times) read it, as the bridge's facts and engine both read the
     /// wall clock before it kept a clock of its own. None: the clock never steps.
     pub clock_step: Option<ClockStep>,
+    /// bd murmur-1u4: which reach of each of our sensors the engine reads (the assessment's
+    /// coverage), as the bridge's facts carry it on that sensing model: `range_m`
+    /// ([`Reaches::Legacy`], the default and every expectation's) or the catalog's
+    /// `physical_reach_m` ([`Reaches::Physical`]). The tracks are scripted either way.
+    pub reaches: Reaches,
 }
 
 /// A clock that steps back by `back_ms` every `every_s` seconds of the run
@@ -1114,8 +1119,10 @@ pub fn run(
         policy.identification = Some(i);
         policy.sync();
     }
-    let catalog =
-        Catalog::load(&rel(&sc.catalog, "sim/platforms.toml")).map_err(|e| setup(e.to_string()))?;
+    // its sensors' reaches as a run on the chosen sensing model's facts carry them
+    let catalog = Catalog::load(&rel(&sc.catalog, "sim/platforms.toml"))
+        .map_err(|e| setup(e.to_string()))?
+        .reaching(opts.reaches);
     let areas = AreaSet::load_dir(&rel(&sc.areas, "sim/areas"), T0).map_err(|e| setup(e.to_string()))?;
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();

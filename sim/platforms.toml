@@ -56,8 +56,17 @@
 #        when the physical model starts); every sensor here gives them (a test says so), each
 #        value commented with its source: [n] a reference of docs/research/sensors.md, [E] the
 #        research's estimate, [E here] an estimate it does not make, each with its basis. Never
-#        tune one to make a situation work (decision W3). range_m itself stays what the decision
-#        engine reads (an engagement assessment's coverage) and the legacy model's reach.
+#        tune one to make a situation work (decision W3). range_m itself stays the legacy model's
+#        reach and what the decision engine reads in a run on that model (an engagement
+#        assessment's coverage).
+# physical_reach_m: what the decision engine reads instead in a run on the physical model (bd
+#        murmur-1u4; docs/SENSING.md, "The decision engine's reaches"): for each radar, EO/IR and
+#        sonar, by the domain of the contact it confirms (air, ground, surface, subsurface), the
+#        distance out to which the physical model, the sensor pointed at a contact of no known
+#        kind in the reference conditions, detects it at least half the time all the way, m (a
+#        domain it does not reach left out). Generated from the entries above, never edited:
+#        cargo test -p murmur-bridge write_physical_reaches -- --ignored
+#        (tracks::tests::reaches fails while a value is not the generator's).
 # mast_m: height of a surface vessel's sensors above the water, for the radio horizon
 #        (default 3 m; aircraft use their altitude, submerged vehicles have no horizon).
 # standin_params: ArduPilot parameters a stand-in of this platform sets over its firmware's
@@ -98,6 +107,7 @@ sensors = [
   { type = "eo_ir", range_m = 50000, guess = true, slew_dps = 60, channels = [{ band = "day", wide_deg = 0.59, px = 1024, blur_urad = 10 }, { band = "mwir", wide_deg = 1.1, px = 640, blur_urad = 30 }] },
   { type = "esm", range_m = 300000, guess = true, s_min_dbm = -90, bearing_deg = 1 },
 ]
+physical_reach_m = { radar = { air = 9320, ground = 60700, surface = 420 }, eo_ir = { air = 184430, ground = 142300, surface = 198140 } }
 protocol = "stanag4586"
 protocol_note = "Interop path via a STANAG 4586 vehicle-specific module; the real ground segment is the manufacturer's own"
 authenticity = "JSBSim HALE airframe, a 4586 interface and SATCOM latency and bandwidth"
@@ -131,6 +141,7 @@ sensors = [
   { type = "eo_ir", range_m = 40000, guess = true, slew_dps = 57, channels = [{ band = "mwir", wide_deg = 18.2, narrow_deg = 0.24, px = 640, blur_urad = 20 }, { band = "day", wide_deg = 1.07, narrow_deg = 0.2, px = 1920, blur_urad = 7 }] },
   { type = "ais", range_m = 150000, guess = true },
 ]
+physical_reach_m = { radar = { air = 29130, ground = 94670, surface = 440 }, eo_ir = { air = 107840, ground = 87240, surface = 87800 } }
 protocol = "stanag4586"
 protocol_note = "GA-ASI's ground control station is STANAG 4586-based"
 authenticity = "JSBSim MALE airframe plus 4586 (matches GA-ASI's 4586-based GCS)"
@@ -174,6 +185,7 @@ sensors = [
   { type = "eo_ir", range_m = 30000, guess = true, slew_dps = 60, channels = [{ band = "mwir", wide_deg = 26.7, narrow_deg = 0.54, px = 640, blur_urad = 20 }, { band = "day", wide_deg = 1.1, narrow_deg = 0.43, px = 1920, blur_urad = 10 }] },
   { type = "esm", range_m = 200000, guess = true, s_min_dbm = -80, bearing_deg = 2 },
 ]
+physical_reach_m = { radar = { air = 99540, ground = 316410, surface = 400 }, eo_ir = { air = 143090, ground = 112900, surface = 126350 } }
 protocol = "uci"
 protocol_note = "A-GRA, UCI and OMS are controlled distribution; stays on the generic intent API"
 authenticity = "A-GRA/UCI interface plus a JSBSim jet model"
@@ -193,6 +205,7 @@ sidc = "SFAPMFQ--------"
 # a vehicle detected at about 20 km in the MWIR, identified at about 9 by day); blur floors 20
 # urad [E, between the MX-10's under 15 ([4]) and a small-UAS gimbal's 25-50]; slew 60 deg/s [E].
 sensors = [{ type = "eo_ir", range_m = 10000, guess = true, slew_dps = 60, channels = [{ band = "mwir", wide_deg = 28.4, narrow_deg = 2.75, px = 640, blur_urad = 20 }, { band = "day", wide_deg = 30, narrow_deg = 1.53, px = 1280, blur_urad = 20 }] }]
+physical_reach_m = { eo_ir = { air = 19320, ground = 14280, surface = 15240 } }
 protocol = "stanag4586"
 protocol_note = "STANAG 4586 is plausible if Army or NATO; the real GCS is proprietary"
 authenticity = "ArduPilot QuadPlane SITL tuned to the airframe (mass, speeds), plus 4586 if Army/NATO"
@@ -220,6 +233,7 @@ sidc = "SFAPMFQ--------"
 # research's small-UAS gimbal) with the i45 N's LWIR ([38]: 640 px, 40 to 5.3 degrees); slew
 # 90 deg/s [E, 60-120].
 sensors = [{ type = "eo_ir", range_m = 4000, guess = true, slew_dps = 90, channels = [{ band = "day", wide_deg = 56, narrow_deg = 1.2, px = 4472, blur_urad = 25 }, { band = "lwir", wide_deg = 40, narrow_deg = 5.3, px = 640, blur_urad = 50 }] }]
+physical_reach_m = { eo_ir = { air = 16210, ground = 14340, surface = 14470 } }
 protocol = "proprietary"
 protocol_note = "AV's ground station and datalink are proprietary; MAVLink in the sim, labelled as such"
 authenticity = "ArduPilot SITL tuned to the airframe, plus AV's DDL link profile"
@@ -255,6 +269,7 @@ sidc = "SFAPMFQ--------"
 # the IR uncooled LWIR [E here]; blur floors 25 urad visible and 50 IR [E, a small-UAS gimbal];
 # slew 60 deg/s [E].
 sensors = [{ type = "eo_ir", range_m = 3000, guess = true, slew_dps = 60, channels = [{ band = "day", wide_deg = 56, narrow_deg = 3, px = 1280, blur_urad = 25 }, { band = "lwir", wide_deg = 40, narrow_deg = 12, px = 640, blur_urad = 50 }] }]
+physical_reach_m = { eo_ir = { air = 16190, ground = 14280, surface = 14350 } }
 protocol = "proprietary"
 protocol_note = "AV's fire-control system is proprietary; MAVLink in the sim, labelled as such"
 authenticity = "ArduPilot SITL tuned to loiter and dash speeds"
@@ -280,6 +295,7 @@ sidc = "SFAPMHQ--------"
 # across without zoom (a person detected at about 0.57 km); blur floor 25 urad [E, a small-UAS
 # gimbal]; slew 90 deg/s [E, as the Puma's].
 sensors = [{ type = "eo_ir", range_m = 1500, guess = true, slew_dps = 90, channels = [{ band = "day", wide_deg = 80, narrow_deg = 10.4, px = 3840, blur_urad = 25 }, { band = "lwir", wide_deg = 32.4, px = 640 }] }]
+physical_reach_m = { eo_ir = { air = 15810, ground = 13930, surface = 14050 } }
 protocol = "proprietary"
 protocol_note = "Skydio's stack is proprietary; MAVLink in the sim, labelled as such"
 authenticity = "ArduPilot or PX4 SITL plus Gazebo for vision-based obstacle avoidance; CoT to TAK"
@@ -305,6 +321,7 @@ sidc = "SFAPMHQ--------"
 # physical model: [E] a fixed camera of about 150 degrees and 720 px (research: a vehicle detected
 # at about 0.42 km); it looks along the heading.
 sensors = [{ type = "eo_ir", range_m = 500, guess = true, slew_dps = 0, channels = [{ band = "day", wide_deg = 150, px = 720 }] }]
+physical_reach_m = { eo_ir = { air = 480, ground = 420, surface = 920 } }
 protocol = "rc"
 protocol_note = "Pilot RC link (ExpressLRS-style or fiber); no C2 protocol exists"
 authenticity = "Betaflight SITL plus an RC link model (ExpressLRS-style, fiber); realistically human-piloted"
@@ -331,6 +348,7 @@ sidc = "SFAPML---------"
 # vehicle detected at about 31 km in the MWIR); the EO and its spotter as one 1,920 px channel
 # [E here] from 31 to 0.61 degrees; slew 60 deg/s [E]. AIS receiver as before [E].
 sensors = [{ type = "eo_ir", range_m = 8000, guess = true, slew_dps = 60, channels = [{ band = "mwir", wide_deg = 30, narrow_deg = 1.8, px = 640, blur_urad = 15 }, { band = "day", wide_deg = 31, narrow_deg = 0.61, px = 1920, blur_urad = 15 }] }, { type = "ais", range_m = 30000, guess = true }]
+physical_reach_m = { eo_ir = { air = 20760, ground = 14870, surface = 15090 } }
 protocol = "mavlink"
 protocol_note = "Small airships run ArduPilot Blimp, which speaks MAVLink natively"
 authenticity = "ArduPilot Blimp SITL (already authentic for small airships)"
@@ -358,6 +376,7 @@ sidc = "SFGPEV---------"
 # camera about 50 degrees, 640 px [E here]; a vehicle detected at about 1.9 km by day): they
 # look along the heading, and terrain masking dominates.
 sensors = [{ type = "eo_ir", range_m = 1000, guess = true, slew_dps = 0, channels = [{ band = "day", wide_deg = 90, px = 1920 }, { band = "lwir", wide_deg = 50, px = 640 }] }]
+physical_reach_m = { eo_ir = { air = 2430, ground = 1880, surface = 4080 } }
 protocol = "jaus"
 protocol_note = "US program-of-record UGVs use JAUS (Army UGV IOP); Ukrainian builds often use MAVLink"
 authenticity = "JAUS/IOP interface plus Gazebo terrain and obstacles; or MAVLink plus a Starlink link profile for Ukrainian-style builds"
@@ -386,6 +405,7 @@ sidc = "SFGPEV---------"
 # out), 640 px MWIR [E here] and 1,920 px day (the research's check of the day camera); blur
 # floor 20 urad [E here, a stabilised sight as a large turret's MWIR]; slew 60 deg/s [E].
 sensors = [{ type = "eo_ir", range_m = 2000, guess = true, slew_dps = 60, channels = [{ band = "mwir", wide_deg = 17.6, narrow_deg = 2.2, px = 640, blur_urad = 20 }, { band = "day", wide_deg = 38, narrow_deg = 1.9, px = 1920, blur_urad = 20 }] }]
+physical_reach_m = { eo_ir = { air = 20120, ground = 12030, surface = 13310 } }
 protocol = "jaus"
 protocol_note = "US program-of-record UGVs use JAUS (Army UGV IOP); Ukrainian builds often use MAVLink"
 authenticity = "Same as the logistics UGV"
@@ -409,6 +429,7 @@ sidc = "SFGPEV---------"
 # physical model: [E] fixed drive cameras, as the logistics UGV's (research: about 90 degrees at
 # 1080p; an LWIR camera about 50 degrees, 640 px [E here]).
 sensors = [{ type = "eo_ir", range_m = 800, guess = true, slew_dps = 0, channels = [{ band = "day", wide_deg = 90, px = 1920 }, { band = "lwir", wide_deg = 50, px = 640 }] }]
+physical_reach_m = { eo_ir = { air = 2430, ground = 1880, surface = 4080 } }
 protocol = "jaus"
 protocol_note = "US program-of-record UGVs use JAUS (Army UGV IOP); Ukrainian builds often use MAVLink"
 authenticity = "Same as the logistics UGV"
@@ -434,6 +455,7 @@ sidc = "SFGPEV---------"
 # 4 degrees, 640 px [E here]; published vehicle 8.5/2.9/2.0 km, a person about 3/1/0.5); blur
 # floor 20 urad and slew 60 deg/s [E here, as the armed UGV's].
 sensors = [{ type = "eo_ir", range_m = 2000, guess = true, slew_dps = 60, channels = [{ band = "lwir", wide_deg = 12, narrow_deg = 4, px = 640, blur_urad = 20 }] }]
+physical_reach_m = { eo_ir = { air = 16250, ground = 10190, surface = 12490 } }
 protocol = "jaus"
 protocol_note = "US program-of-record UGVs use JAUS (Army UGV IOP); Ukrainian builds often use MAVLink"
 authenticity = "Same as the logistics UGV"
@@ -479,6 +501,7 @@ sidc = "SFSP-----------"
 # physical model: [E] the guidance cameras as one fixed 20 degree camera at 1080p, 1,920 px, looking
 # along the heading (a vehicle-size target detected at about 8.4 km, research); by day only.
 sensors = [{ type = "eo_ir", range_m = 5000, guess = true, slew_dps = 0, channels = [{ band = "day", wide_deg = 20, px = 1920 }] }, { type = "ais", range_m = 15000, guess = true }]
+physical_reach_m = { eo_ir = { air = 10460, ground = 7330, surface = 10080 } }
 mast_m = 1.5
 protocol = "proprietary"
 protocol_note = "Control software is proprietary; MAVLink in the sim, labelled as such"
@@ -517,6 +540,7 @@ sensors = [
   { type = "ais", range_m = 30000, guess = true },
   { type = "esm", range_m = 30000, guess = true, s_min_dbm = -80, bearing_deg = 2 },
 ]
+physical_reach_m = { eo_ir = { air = 11280, ground = 8840, surface = 12060 } }
 mast_m = 4
 protocol = "proprietary"
 protocol_note = "Proprietary unless Navy-procured, in which case UMAA; MAVLink in the sim, labelled as such"
@@ -564,6 +588,7 @@ sensors = [
   { type = "ais", range_m = 50000, guess = true },
   { type = "sonar", range_m = 10000, guess = true, mode = "active", freq_khz = 10, max_m = 20000, ranges = { submarine = 7500, uuv = 1500 } },
 ]
+physical_reach_m = { radar = { air = 7530, ground = 10060, surface = 9770 }, eo_ir = { air = 11290, ground = 8990, surface = 13060 }, sonar = { surface = 4870, subsurface = 4870 } }
 mast_m = 10
 protocol = "umaa"
 protocol_note = "Navy programs use UMAA over DDS (public architecture description v1.1)"
@@ -589,6 +614,7 @@ sidc = "SFSP-----------"
 # every second) as a fixed ring of 60 degree, 1080p (1,920 px) visible cameras [E] (a small boat
 # detected at about 4.3 km, identified at 0.5).
 sensors = [{ type = "eo_ir", range_m = 5000, guess = true, channels = [{ band = "day", wide_deg = 60, px = 1920, panoramic = true }] }, { type = "ais", range_m = 30000, guess = true }]
+physical_reach_m = { eo_ir = { air = 3660, ground = 2810, surface = 6090 } }
 mast_m = 4
 protocol = "proprietary"
 protocol_note = "Vendor cloud API is proprietary; MAVLink in the sim, labelled as such"
@@ -619,6 +645,7 @@ sidc = "SFSP-----------"
 # research section b]: cargo ship 10-40 km, fast boat 2-5, battery submarine 1, AUV 0.3, diver 0.1;
 # 1 kHz [E here, a low-frequency passive band].
 sensors = [{ type = "sonar", range_m = 3000, guess = true, mode = "passive", freq_khz = 1, ranges = { cargo_ship = 20000, small_fast_boat = 3500, submarine = 1000, uuv = 300, diver = 100 } }]
+physical_reach_m = { sonar = { surface = 370, subsurface = 120 } }
 mast_m = 1
 protocol = "telemetry"
 protocol_note = "Iridium-style short messages; no commands exist"
@@ -638,6 +665,7 @@ sidc = "SFUP-----------"
 # physical model: the Ping360 scanning imaging sonar ([49]: 750 kHz, 0.75 to 50 m, 9-35 s a
 # turn, 20 here [E]): anything within its 50 m, a diver at its edge [E].
 sensors = [{ type = "sonar", range_m = 500, guess = true, mode = "active", freq_khz = 750, max_m = 50, scan_s = 20, ranges = { diver = 50 } }]
+physical_reach_m = { sonar = { surface = 50, subsurface = 40 } }
 protocol = "mavlink"
 protocol_note = "ArduSub speaks MAVLink natively"
 authenticity = "ArduSub SITL (already authentic) plus Gazebo for camera and sonar"
@@ -667,6 +695,7 @@ sidc = "SFUP-----------"
 # middle of 150-300]; 455 kHz [E here, a high-frequency side-scan's band]. The model listens all
 # round, not to the two sides alone.
 sensors = [{ type = "sonar", range_m = 3000, guess = true, mode = "active", freq_khz = 455, max_m = 300, ranges = { uuv = 225 } }]
+physical_reach_m = { sonar = { surface = 260, subsurface = 270 } }
 protocol = "umaa"
 protocol_note = "Navy programs use UMAA over DDS; JANUS (STANAG 4748) for the acoustic link"
 authenticity = "UMAA over DDS, a JANUS acoustic link, an INS/DVL error model and ocean currents at depth (tidewater)"
@@ -696,6 +725,7 @@ sidc = "SFUP-----------"
 # does not carry the submarine's reference 24 dB up to a UUV (about 90 km); 1 kHz [E here, as the
 # buoy's].
 sensors = [{ type = "sonar", range_m = 8000, guess = true, mode = "passive", freq_khz = 1, ranges = { cargo_ship = 20000, small_fast_boat = 3500, submarine = 1500, uuv = 300, diver = 100 } }]
+physical_reach_m = { sonar = { surface = 360, subsurface = 120 } }
 protocol = "umaa"
 protocol_note = "Navy programs use UMAA over DDS; JANUS (STANAG 4748) for the acoustic link"
 authenticity = "Same as REMUS"
@@ -733,6 +763,7 @@ sensors = [
   { type = "radar", range_m = 100000, guess = true, r50_m = 300000, rcs_ref_m2 = 10000, scan_s = 5, beam_deg = 3, cell_m = 15, band_ghz = 16.7 },
   { type = "ais", range_m = 150000, guess = true },
 ]
+physical_reach_m = { radar = { air = 29130, ground = 94670, surface = 440 } }
 protocol = "stanag4586"
 protocol_note = "GA-ASI's ground control station is STANAG 4586-based"
 authenticity = "JSBSim MALE airframe plus 4586 (matches GA-ASI's 4586-based GCS)"
@@ -761,6 +792,7 @@ sensors = [
   { type = "radar", range_m = 40000, guess = true, r50_m = 12450, rcs_ref_m2 = 7.5, scan_s = 2.5, beam_deg = 1.2, cell_m = 37, band_ghz = 9.4 },
   { type = "ais", range_m = 50000, guess = true },
 ]
+physical_reach_m = { radar = { air = 7530, ground = 10060, surface = 9770 } }
 mast_m = 10
 protocol = "umaa"
 protocol_note = "Navy programs use UMAA over DDS (public architecture description v1.1)"

@@ -1,4 +1,4 @@
-//! `murmur-scenarios [--json] [--seed N --noise M --vnoise V] [--rules N] [--root DIR] [--log-dir DIR] <file-or-dir>...`
+//! `murmur-scenarios [--json] [--seed N --noise M --vnoise V] [--rules N] [--reaches legacy|physical] [--root DIR] [--log-dir DIR] <file-or-dir>...`
 //!
 //! Run engagement scenarios (`sim/scenarios/engage/*.toml`, format in
 //! `crate::scenario` and `sim/scenarios/engage/README.md`) against the decision engine:
@@ -19,6 +19,9 @@
 //! inbox by its own procedure over what the console shows (`scenario::ReviewProxy`; with
 //! `--ident off` it declares from the acts itself; a model, never human data), and
 //! `--nominator` nominates every declared track and has two signers sign it.
+//! `--reaches legacy|physical` (bd murmur-1u4): which reach of our sensors the engine reads (the
+//! assessment's coverage), as the bridge's facts carry it on that sensing model: `range_m`
+//! (`legacy`, the default, the designed ends') or the catalog's `physical_reach_m`.
 //! `--log-dir` writes each run's audit log as `<scenario>.jsonl`. `--root` is the
 //! repo (default: the current directory) for `sim/policy.toml`, `sim/platforms.toml` and
 //! `sim/areas`.
@@ -94,8 +97,18 @@ fn main() -> ExitCode {
                 opts.proxy.get_or_insert_with(Default::default).attend_s = v;
             }
             "--nominator" => opts.nominator = true,
+            "--reaches" => {
+                opts.reaches = match args.next().as_deref() {
+                    Some("legacy") => murmur_decide::Reaches::Legacy,
+                    Some("physical") => murmur_decide::Reaches::Physical,
+                    _ => {
+                        eprintln!("murmur-scenarios: --reaches legacy|physical");
+                        return ExitCode::from(2);
+                    }
+                };
+            }
             _ if a.starts_with("--") => {
-                eprintln!("usage: murmur-scenarios [--json] [--seed N --noise M --vnoise V] [--rules N] [--ident on|off] [--threshold X] [--nominate-unconfirmed] [--corroboration none|second_observation] [--act-noise] [--proxy [--proxy-diligence P] [--proxy-misread P] [--proxy-attend S]] [--nominator] [--root DIR] [--log-dir DIR] <file-or-dir>...");
+                eprintln!("usage: murmur-scenarios [--json] [--seed N --noise M --vnoise V] [--rules N] [--ident on|off] [--threshold X] [--nominate-unconfirmed] [--corroboration none|second_observation] [--act-noise] [--proxy [--proxy-diligence P] [--proxy-misread P] [--proxy-attend S]] [--nominator] [--reaches legacy|physical] [--root DIR] [--log-dir DIR] <file-or-dir>...");
                 return ExitCode::from(2);
             }
             _ => paths.push(PathBuf::from(a)),

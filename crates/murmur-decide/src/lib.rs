@@ -108,7 +108,8 @@
 //!    ([`EngineError::NotOnRoster`]), and replay checks every logged session against it.
 //! 2. **World snapshot.** Before each decision call, build a [`WorldSnapshot`] from the
 //!    world model, keyed by `uid`: `t` = now; per vehicle, [`PlatformFacts`] from the catalog
-//!    (via the fleet manifest's platform id), and [`Fact`]s stamped with the time the
+//!    (via the fleet manifest's platform id; its sensors' reaches those of the sensing model
+//!    the run is on, [`Catalog::reaching`]), and [`Fact`]s stamped with the time the
 //!    telemetry carrying them arrived: autopilot kind (heartbeat MAV_TYPE), nav ready
 //!    (`has_position`), position, home, battery percent. Unknown is `None`, never a default.
 //!    `areas` = the loaded set; leave `terrain` as `NotQueried` (the engine fills it).
@@ -312,7 +313,7 @@ pub use authority::{
     STEP_UP_MAX_AGE_MS, StepUp, StepUpRef,
 };
 pub use audit::RestoreClosure;
-pub use catalog::{AutopilotKind, Catalog, Domain, PlatformFacts, SensorFact};
+pub use catalog::{AutopilotKind, Catalog, Domain, PlatformFacts, Reaches, SensorFact, SensorReach};
 pub use engage::{
     AssessResult, Assessment, EffectOrder, EffectRecord, EngageOrder, EngagePreview, EngageRules,
     EngageSnapshot, EngageWindow, Engagement, EngagementEvent, Fallback, FallbackOrder,

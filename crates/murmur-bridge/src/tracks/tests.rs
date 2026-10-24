@@ -19,6 +19,7 @@ mod calib;
 mod calib_air;
 mod catalog;
 mod physical;
+mod reaches;
 
 fn catalog() -> SensorCatalog {
     SensorCatalog::from_toml(include_str!("../../../../sim/platforms.toml")).expect("catalog")
