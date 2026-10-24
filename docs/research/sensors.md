@@ -162,6 +162,29 @@ Diver detection sonar, for comparison: open-circuit diver 0.9-1.0 km, rebreather
 - **Buoy (3 km) and Orca (8 km):** plausible against surface ships, far too long against quiet submarines and UUVs. Sonar range should be set per target class.
 - **EO `range_m`:** replace the single range with per-task D/R/I derived from FOV, pixel count and the target's critical dimension. Identification is the range that matters for engagement decisions.
 
+### Endurance
+
+Added 2026-10-23 (murmur-4v7) for the eight platform types that had no `endurance_h` in sim/platforms.toml. Without one, the C2 cannot estimate reserves and sim/policy.toml routes every order on the platform to a person.
+
+- **What the figure means:** hours at the catalog's cruise speed. The reserves check and a stand-in's battery both read it that way.
+- **Range-only sources:** where a source gives a range but no hours, the figure is that range divided by the catalog's cruise speed [E].
+  - Electric UGVs: energy per kilometre changes little with speed, so this holds.
+  - Boats: fuel per mile rises with speed. If the range was quoted at a slower speed than the catalog's cruise, this overstates the hours at cruise. Saronic does not say what speed its range assumes.
+- **Generic types:** the airship and the four UGVs are not models of a named vehicle. Each takes a named comparable's published figure, and the choice of comparable is the estimate.
+
+| Platform | `endurance_h` | Source and basis |
+|---|---|---|
+| FVR-90 | 8 | Spec sheet: endurance 8-16 h, range 810 nmi, cruise 50 kt [36; archived copy 59]. The low end [E]: the catalog's MX-8 weighs 15 lb [36], most of the 22 lb nose payload. Trade press gives 12-18 h with an 8-22 lb payload in 2023 [60, secondary]. |
+| Small airship | 12 | [E] Comparable: Kelluu's 12 m hydrogen airship, a "proven flight time of 12 hours throughout the year", payload at most 6 kg [61]. The catalog's MX-10-class turret weighs 16.8 kg [4], so carrying it takes a larger hull; the hours are taken as they are. |
+| Tracked logistics UGV | 15 | [E] Comparable: Milrem's THeMIS, tracked, with cargo and CASEVAC payloads. Run time is up to 15 h hybrid and 1.5 h on batteries alone, at up to 20 km/h [62]; the 15 h is "at cruise speed with full fuel tanks" [63]. |
+| Armed UGV | 15 | [E] Comparable: the same THeMIS carrying a remote weapon station; Kongsberg's PROTECTOR RS6 is one of its listed payloads [62]. |
+| Mine-laying UGV | 5.5 | [E] Comparable: Tencore's TerMIT 2.0, a tracked UGV whose mine-laying module carries 20 TM-62 mines. Range up to 40 km at 15 km/h on hard ground or 12 km/h off-road, on four 73 Ah 20S batteries [64]. 40 km at the catalog's 7.2 km/h (2 m/s) is 5.6 h. |
+| Small recon UGV | 3 | [E] Comparable: Rheinmetall's Mission Master SP, the smallest of its family, which has an Armed Reconnaissance variant. Endurance 54 km, top speed 40 km/h [65]. 54 km at the catalog's 18 km/h (5 m/s) is 3.0 h. |
+| Magura V5 | 20 | [E] The declared range at the declared cruise speed, which is close to the catalog's 23 kt (12 m/s). IDEF 2023: 450 nmi at 22 kt [66], which is 20.5 h. The Eurosatory 2024 brochure: 960 km at 45 km/h [67], which is 21.3 h. |
+| Corsair | 64 | [E] Saronic publishes a 1,000+ nmi range and 35+ kt top speed, but no endurance or cruise speed [69]. 1,000 nmi at the catalog's 15.6 kt (8 m/s) is 64 h. In Saronic's own trials it ran more than 92 continuous hours underway, at a speed not given, and loitered for five days [70]. |
+
+**Magura V5's "60 hours":** the "up to 60 hours" of autonomy often repeated for the Magura V5 is not used here. In the sources found, it traces back to figures the Minister of Digital Transformation gave in November 2022 for an unnamed naval drone [68], not to a Magura V5 declaration.
+
 ### References
 1. https://gdal.org/en/stable/programs/gdal_viewshed.html
 3. https://www.militarysystems-tech.com/sites/militarysystems/files/supplier_docs//PDS-MX-20-20D-January-2017.pdf
@@ -220,3 +243,15 @@ Diver detection sonar, for comparison: open-circuit diver 0.9-1.0 km, rebreather
 56. https://www.navysbir.com/n19_2/N192-059.htm
 57. https://www.globalsecurity.org/military/systems/ship/silent.htm
 58. https://nora.nerc.ac.uk/id/eprint/100256/
+59. https://web.archive.org/web/2023/https://l3harris.com/sites/default/files/2020-08/L3Harris_Collateral_FVR-90_SpecSheet_Web_0520.pdf (an archived copy of [36], whose link now answers 404; endurance is on its second page)
+60. https://www.thedefensepost.com/2023/10/25/us-navy-fvr-drones
+61. https://kelluu.com/ (its FAQ)
+62. https://milremrobotics.com/themis-family/
+63. https://www.edrmagazine.eu/milrem-robotics-themis-ground-robot-gets-new-teeth-edge-hunter-sp-loitering-munitions
+64. https://tencore.com.ua/termit
+65. https://www.rheinmetall.com/Rheinmetall%20Group/brochure-download/Uncrewed-Systems/B253e1024-Rheinmetall-Mission-Master-family.pdf
+66. https://militarnyi.com/en/news/magura-v5-marine-drone-developed-in-ukraine/
+67. https://euro-sd.com/2024/06/major-news/38905/magura-v5-at-eurosatory-2024-2/
+68. https://militarnyi.com/uk/news/ukrayina-rozkryla-detali-pro-udarni-morski-bpa/
+69. https://www.saronic.com/vessels
+70. https://www.workboat.com/saronic-runs-endurance-trials-on-corsair-asv-for-navy-program
