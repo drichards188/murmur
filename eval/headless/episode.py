@@ -28,7 +28,9 @@ clock, over one `murmur-headless` process.
   the inbox's alerts and our vehicles' truth, one request that never moves the clock, kept as
   change points (v2/record.py). A v2 record also carries `episode_class` (section 7: the driver
   sets it), the replicate, the audit log's digest and the invariants. A v1 episode runs none of
-  this, so its record is unchanged.
+  this, so its record is unchanged. Scoring v3 (`Options.scoring = "v3"`, eval/SCORING-V3.md)
+  runs the same sampler and writes the same part under `v3` (eval/headless/v3/); its own agent,
+  the basic v3 oracle (`oracle-v3`), is eval/headless/v3/oracle.py.
 
 Simultaneous events run in a fixed order (runner, script, operator, AI, sampler, picture) and
 each process's actions happen at one simulated instant, so an episode is a function of
@@ -89,9 +91,14 @@ PERTURBATIONS = ("playbook+spam", "playbook+behind", "playbook+skip-first", "pla
 HONEST_PERTURBATIONS = ("oracle-honest+spam", "oracle-honest+behind", "oracle-honest+skip-first",
                         "oracle-honest+reserve-blind", "oracle-honest+ferries", "oracle-honest+pull-off")
 V2_AGENTS = ANCHORS + LADDER + PERTURBATIONS + HONEST_PERTURBATIONS
+#: scoring v3's own agents (eval/headless/v3/oracle.py): the basic v3 oracle; `none` and
+#: `random-valid` carry over from v2
+V3_AGENTS = ("oracle-v3",)
 #: the scripted agent for the engagement chain and the space segment (scripted.py)
-AGENTS = ("playbook", "model", "none") + V2_AGENTS + ("scripted",)
-SCORINGS = ("v1", "v2")
+AGENTS = ("playbook", "model", "none") + V2_AGENTS + ("scripted",) + V3_AGENTS
+SCORINGS = ("v1", "v2", "v3")
+#: the scorings that run the picture sampler and write its part of the record (v2 and v3 alike)
+PICTURE_SCORINGS = ("v2", "v3")
 #: SCORING-V2.md section 7: the classes the driver sets (the batch adds `harness_error` for an
 #: episode that failed in the simulator or the driver)
 EPISODE_CLASSES = ("scored", "harness_error", "budget_stop", "model_failed")
@@ -485,6 +492,10 @@ class Episode:
                 from .scripted import ScriptedAgent, ScriptedPlan
 
                 self.agent = ScriptedAgent(self, ScriptedPlan.from_spec(self.opts.scripted))
+            elif self.opts.agent in V3_AGENTS:
+                from .v3 import oracle as oracle_v3
+
+                self.agent = oracle_v3.make(self, self.opts.agent)
             if self.agent is not None:
                 self.loop.handlers["agent"] = self.agent.wake
                 self.ai_first_tick_s = self.opts.calibration.ai_first_tick(self.seed)
@@ -496,7 +507,7 @@ class Episode:
             self.loop.at(self.script.first(), "script")
             self.loop.handlers["sampler"] = self.sample
             self.loop.at(0.0, "sampler")
-            if self.opts.scoring == "v2":
+            if self.opts.scoring in PICTURE_SCORINGS:
                 from .v2.record import PictureEncoder
 
                 self.picture_enc = PictureEncoder(self.sim_epoch)
@@ -643,13 +654,14 @@ class Episode:
             # charged only (a paused record is unchanged): the condition and its constants
             rec["clock"]["condition"] = "charged"
             rec["provenance"] = {**rec["provenance"], "clock": {"condition": "charged", "latency": self.latency.as_dict()}}
-        if self.opts.agent in V2_AGENTS or self.opts.agent == "scripted":
+        if self.opts.agent in V2_AGENTS or self.opts.agent == "scripted" or self.opts.agent in V3_AGENTS:
             # an anchor's or a perturbation's own account: what it read, what it changed, and what
-            # it read of truth (privileged; agents_v2.py); the scripted agent's plan and options
+            # it read of truth (privileged; agents_v2.py, v3/oracle.py); the scripted agent's plan
+            # and options
             rec["agent_detail"] = self.agent.describe()
         rec.update(self.section16_record())
-        if self.opts.scoring == "v2":
-            rec.update(self.v2_part(audit_text))
+        if self.opts.scoring in PICTURE_SCORINGS:
+            rec.update(self.v2_part(audit_text, self.opts.scoring))
         return rec
 
     def section16(self, spec: dict[str, Any], env: dict[str, str]) -> None:
@@ -693,12 +705,12 @@ class Episode:
             out["space"] = {"snapshot": space.describe(self.space_snapshot)}
         return out
 
-    def v2_part(self, audit_text: str) -> dict[str, Any]:
+    def v2_part(self, audit_text: str, scoring: str = "v2") -> dict[str, Any]:
         """Scoring v2's keys (SCORING-V2.md 2.6, 7): the episode class as the driver sets it,
         the replicate, the condition (operator, policy; the clock when charged), the picture
         samples, the audit log's digest, the invariants and the model's leakage scan. The
         episode sets `harness_error` on a leakage hit; the batch sets it for an episode that
-        failed."""
+        failed. Scoring v3 writes the same part under its own key (`v3`)."""
         from .v2.record import digest_audit, invariant_counts
 
         # the model's leakage scan (v2/leakage.py): a hit on an input is a harness error (7.1)
@@ -727,10 +739,10 @@ class Episode:
         if scan is not None:
             v2["leakage"] = scan.record()
         return {
-            "scoring": "v2",
+            "scoring": scoring,
             "episode_class": cls,
             "replicate": dict(self.opts.replicate) if self.opts.replicate else None,
-            "v2": v2,
+            scoring: v2,
         }
 
 
