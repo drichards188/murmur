@@ -84,6 +84,12 @@
 //!     model): [`AIR_PHYSICAL_HELD_OUT_TWO_SEEDS`] are spent, the change is developed on the
 //!     tuning sets (101-220) only, and the new set is run once, after it
 //!     ([`air_calib_physical_held_out_three`]).
+//! 14. Its one run (2026-10-24) did not confirm the manoeuvre model: with it, the all-sensors
+//!     mix missed the weave once 3 s ahead (93 m, 1 of 5,503 samples); the tracker without it
+//!     held every criterion on the same set. The model was not adopted (it stays on the branch
+//!     `worktree-agent-a14a1c3af5ac2d6ac`, commit dc0964a); [`AIR_PHYSICAL_HELD_OUT_THREE_SEEDS`]
+//!     are spent. The tracker's physical calibration is judged again on a fresh set after the
+//!     sensing model's next changes.
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
@@ -118,7 +124,8 @@ pub const AIR_PHYSICAL_HELD_OUT_SEEDS: RangeInclusive<u64> = 251..=280;
 pub const AIR_PHYSICAL_HELD_OUT_TWO_SEEDS: RangeInclusive<u64> = 281..=310;
 /// The physical sensing model's third air held-out set's seeds
 /// ([`physical_held_out_three_cases`]): written before murmur-0b8's manoeuvre model, run once
-/// after it.
+/// after it. Spent (the tracker without the model held every criterion; the model was not
+/// adopted).
 pub const AIR_PHYSICAL_HELD_OUT_THREE_SEEDS: RangeInclusive<u64> = 311..=340;
 /// The rules the tracker before this calibration was judged under (the keep-out's regions).
 const BEFORE_RULES: u32 = 12;

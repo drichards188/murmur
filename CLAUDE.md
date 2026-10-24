@@ -264,8 +264,10 @@ meaningful. Decision and command, not weapons.
   fails), and the sun comes from the truth message's clock: a test at the tests' `T0`
   (1,000,000 s, 1970) is near dawn at the Gate, so state `sun_elevation_deg` in its conditions.
   Its held-out calibration runs (`calib_physical`, `air_calib_physical`, and its own air sets
-  `air_calib_physical_held_out`, seeds 251-280, and `air_calib_physical_held_out_two`, 281-310,
-  each run once for murmur-7vp; 221-250 and 251-280 are spent for it) are evaluations: never
+  `air_calib_physical_held_out`, seeds 251-280, `air_calib_physical_held_out_two`, 281-310, each
+  run once for murmur-7vp, and `air_calib_physical_held_out_three`, 311-340, run once for
+  murmur-0b8, whose manoeuvre model it did not confirm; 221-340 are spent for it, so the next
+  physical air check needs a fresh set from 341) are evaluations: never
   tune the sensing model or the tracker on them. Mind `cargo test calib_physical -- --ignored`:
   the name matches every one of them (use `--exact`). A physical radar's plot carries its scan
   (`Detection::scan_s`): the tracker time-aligns such bearings and holds a ranging fix 6 s on
