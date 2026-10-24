@@ -1330,10 +1330,12 @@ the factors were 59 to 128, 33 to 100 and 7 to 14.
 
 **Found, or left as it is.**
 
-- Corsair, Magura, FVR-90, the airship and the UGVs have no endurance figure in
-  sim/platforms.toml, so every order for them waits for a person (`endurance-unknown`), and the
-  autoplay operator's rule book rejects any such card it reads (an unverified check): in a watch
-  their opening orders go out only when op-auto skims the card. The catalog is B1's.
+- Corsair, Magura, FVR-90, the airship and the UGVs had no endurance figure when these worlds
+  were built, so their orders waited for a person (`endurance-unknown`). Since murmur-4v7 they
+  carry cited or estimated figures (docs/research/sensors.md, "Endurance"): ordinary orders in
+  the approved area for the unarmed ones are auto, and 22 opening orders across the v3 watches,
+  the scale world and fault-drill now dispatch by policy. Magura and the armed UGV stay in the
+  armed-platform tier.
 - The armed Maguras have no opening order (a script may not move an armed platform); moored,
   they wait at their piers.
 - The airship (5 m/s at most) cannot hold station when the drawn wind is stronger (the Golden
