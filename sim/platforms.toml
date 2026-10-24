@@ -15,9 +15,13 @@
 # link: los | mesh | satcom | acoustic | tether   (used by the link emulator, phase D)
 # alt_m: cruise altitude above sea level; negative = operating depth for subs (stand-ins:
 #        the bridge tasks them at this altitude/depth).
-# typical_alt_m, cruise_mps, endurance_h on SITL platforms: display only (the Platforms
-#        panel), matching how the sim flies them; tasking for SITL uses per-autopilot defaults.
-#        Endurance is left out where we don't have a figure we trust.
+# typical_alt_m, cruise_mps on SITL platforms: display only (the Platforms panel), matching how
+#        the sim flies them; tasking for SITL uses per-autopilot defaults.
+# endurance_h: hours at cruise. The C2's reserves check reads it on every platform (without it,
+#        an order needs a person: sim/policy.toml `unknown_endurance`), and a stand-in drains
+#        its battery over it. Left out where nothing applies (the antenna tracker). The figures
+#        added for murmur-4v7 carry a comment with their source, as the sensors do: [n] a
+#        reference of docs/research/sensors.md ("Endurance"), [E] an estimate with its basis.
 # short: compact model label shown on the map symbol.
 # armed: true for platforms that carry an effect; any task on them needs a human
 #        (sim/policy.toml). Omitted means false.
@@ -199,6 +203,9 @@ cruise_mps = 24
 climb_mps = 5
 turn_dps = 23
 typical_alt_m = 70
+# endurance: 8 to 16 h ([36], its second page; archived [59]); the low end [E], as it carries the
+# MX-8 (15 lb, most of the 22 lb nose payload [36]).
+endurance_h = 8
 [puma]
 name = "Puma 3 AE-class"
 short = "PUMA"
@@ -332,6 +339,9 @@ typical_alt_m = 20
 cruise_mps = 3
 max_mps = 5
 climb_mps = 1
+# endurance: [E] a comparable vehicle's, Kelluu's 12 m hydrogen airship: 12 h ([61]; it lifts 6 kg,
+# less than the MX-10-class turret's 16.8 kg [4]).
+endurance_h = 12
 # ---------------------------------------------------------------- ground
 [ugv_logistics]
 name = "Tracked logistics UGV"
@@ -355,6 +365,9 @@ authenticity_blocker = "SAE JAUS documents are paid"
 params = { CRUISE_SPEED = 3, WP_SPEED = 3 }
 cruise_mps = 3
 typical_alt_m = 0
+# endurance: [E] a comparable vehicle's, Milrem's THeMIS (tracked; cargo and CASEVAC payloads):
+# 15 h hybrid at cruise, 1.5 h on batteries alone ([62,63]).
+endurance_h = 15
 [ugv_armed]
 name = "Armed UGV (remote weapon station)"
 short = "UGV-A"
@@ -380,6 +393,8 @@ authenticity_blocker = "SAE JAUS documents are paid"
 params = { CRUISE_SPEED = 4, WP_SPEED = 4 }
 cruise_mps = 4
 typical_alt_m = 0
+# endurance: [E] the same THeMIS carrying a remote weapon station ([62]): 15 h hybrid.
+endurance_h = 15
 [ugv_mines]
 name = "Mine-laying UGV"
 short = "UGV-M"
@@ -401,6 +416,9 @@ authenticity_blocker = "SAE JAUS documents are paid"
 params = { CRUISE_SPEED = 2, WP_SPEED = 2 }
 cruise_mps = 2
 typical_alt_m = 0
+# endurance: [E] a comparable vehicle's, Tencore's TerMIT 2.0 (tracked; a module laying 20 TM-62
+# mines): 40 km on four 73 Ah 20S batteries ([64]) at the catalog's 2 m/s, 5.6 h.
+endurance_h = 5.5
 [ugv_recon]
 name = "Small recon UGV"
 short = "UGV-R"
@@ -423,6 +441,9 @@ authenticity_blocker = "SAE JAUS documents are paid"
 params = { CRUISE_SPEED = 5, WP_SPEED = 5 }
 cruise_mps = 5
 typical_alt_m = 0
+# endurance: [E] a comparable vehicle's, Rheinmetall's Mission Master SP (it has an Armed
+# Reconnaissance variant): 54 km ([65]) at the catalog's 5 m/s, 3.0 h.
+endurance_h = 3
 [tracker]
 name = "Antenna tracker"
 short = "ANT"
@@ -467,6 +488,10 @@ params = { CRUISE_SPEED = 12, WP_SPEED = 12 }
 behavior = "boat"
 cruise_mps = 12
 typical_alt_m = 0
+# endurance: [E] the declared 450 nmi at its declared 22 kt cruise ([66]; the Eurosatory 2024
+# brochure's 960 km at 45 km/h [67] gives 21 h), 20 h. The "60 hours" often quoted for it is a
+# 2022 figure for an unnamed drone ([68]).
+endurance_h = 20
 [corsair]
 name = "Corsair-class autonomous surface vessel"
 short = "USV-M"
@@ -501,6 +526,10 @@ params = { CRUISE_SPEED = 8, WP_SPEED = 8 }
 behavior = "boat"
 cruise_mps = 8
 typical_alt_m = 0
+# endurance: [E] the published 1,000+ nmi range ([69]; no endurance or cruise speed published) at
+# the catalog's 8 m/s (15.6 kt), 64 h; Saronic's trials ran more than 92 h underway at a speed not
+# given ([70]).
+endurance_h = 64
 [seahunter]
 name = "Sea Hunter-class MUSV"
 short = "MUSV"

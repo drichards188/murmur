@@ -83,6 +83,10 @@ pub fn vehicle(platform: &str, at: LonLat) -> VehicleFacts {
 
 /// sky-1 x10 copter, blade-1 switchblade, hawk-1 RQ-4 stand-in, boat-1 Sea Hunter stand-in,
 /// mule-1 logistics UGV, track-1 antenna tracker, buoy-1 drifter, remus-1 AUV.
+///
+/// mule-1 stands for a platform without an endurance figure: its catalog figure is taken out.
+/// Since murmur-4v7 every catalog platform that takes orders has one, and the tests of unknown
+/// endurance still need a vehicle to run on.
 pub fn world() -> WorldSnapshot {
     let mut w = WorldSnapshot::new(T0);
     w.areas = Some(areas());
@@ -97,6 +101,13 @@ pub fn world() -> WorldSnapshot {
         ("remus-1", "remus", BAY),
     ] {
         w.vehicles.insert(Uid::new(uid), vehicle(platform, at));
+    }
+    if let Some(p) = w
+        .vehicles
+        .get_mut(&Uid::new("mule-1"))
+        .and_then(|v| v.platform.as_mut())
+    {
+        p.endurance_h = None;
     }
     w
 }
