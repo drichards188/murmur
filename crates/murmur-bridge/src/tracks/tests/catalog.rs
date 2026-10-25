@@ -41,7 +41,7 @@ fn every_catalog_sensor_field_is_one_the_schema_reads() {
         match t {
             "eo_ir" => &["slew_dps", "channels"],
             "radar" => &["height", "r50_m", "rcs_ref_m2", "scan_s", "beam_deg", "cell_m", "band_ghz"],
-            "sonar" => &["mode", "freq_khz", "ranges", "max_m", "scan_s"],
+            "sonar" => &["mode", "freq_khz", "ranges", "max_m", "scan_s", "passive"],
             "esm" => &["s_min_dbm", "bearing_deg"],
             _ => &[],
         }
@@ -60,6 +60,15 @@ fn every_catalog_sensor_field_is_one_the_schema_reads() {
             if let Some(r) = s.get("ranges").and_then(|v| v.as_table()) {
                 for k in r.keys() {
                     assert!(kinds.contains(&k.as_str()), "[{id}] sonar ranges.{k}: not a kind the sonar model knows");
+                }
+            }
+            // an active sonar's passive mode: its own band, ranges and reach
+            if let Some(p) = s.get("passive").and_then(|v| v.as_table()) {
+                for k in p.keys() {
+                    assert!(["freq_khz", "ranges", "max_m"].contains(&k.as_str()), "[{id}] sonar passive.{k}: not a field the schema reads");
+                }
+                for k in p.get("ranges").and_then(|v| v.as_table()).map(|r| r.keys().collect::<Vec<_>>()).unwrap_or_default() {
+                    assert!(kinds.contains(&k.as_str()), "[{id}] sonar passive.ranges.{k}: not a kind the sonar model knows");
                 }
             }
         }

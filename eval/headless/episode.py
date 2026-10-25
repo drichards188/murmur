@@ -415,7 +415,7 @@ class Episode:
         self.bridge_start_s: float | None = None
         if self.opts.scoring not in SCORINGS:
             raise ValueError(f"unknown scoring {self.opts.scoring!r}: {', '.join(SCORINGS)}")
-        self.picture_enc: Any = None  # v2/record.py PictureEncoder (scoring v2 only)
+        self.picture_enc: Any = None  # v2/record.py PictureEncoder (v3: v3/record.py's)
         self.signers: Any = None  # signers.Signers (Options.signers)
         self.reviewer: Any = None  # review.Reviewer (Options.review)
         self.effects: list[dict[str, Any]] = []
@@ -509,8 +509,11 @@ class Episode:
             self.loop.at(0.0, "sampler")
             if self.opts.scoring in PICTURE_SCORINGS:
                 from .v2.record import PictureEncoder
+                from .v3.record import PictureEncoderV3
 
-                self.picture_enc = PictureEncoder(self.sim_epoch)
+                # v3 also keeps each track's looks (the physical model's: which sensor reached
+                # which level); a legacy picture has none, so the two encode alike
+                self.picture_enc = (PictureEncoderV3 if self.opts.scoring == "v3" else PictureEncoder)(self.sim_epoch)
                 self.loop.handlers["picture"] = self.picture_sample
                 self.loop.at(0.0, "picture")
             self.loop.at(1.0, "runner")

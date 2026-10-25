@@ -11,8 +11,8 @@ use super::super::physical::conditions::Conditions;
 use super::super::physical::eo::{self, P50_PX, range_at};
 use super::super::physical::geometry::{Grid, Header, K_RADIO, visible_height_m};
 use super::super::physical::predict::{self, Ask};
-use super::super::physical::spec::{Band, EoChannel, Resolved, resolve};
-use super::super::physical::{Engine, Step, radar};
+use super::super::physical::spec::{Band, EoChannel, Resolved, SonarMode, resolve};
+use super::super::physical::{Engine, Step, radar, signature, sonar};
 use super::super::sensing::{Detection, Level, Look, Observer, SearchArea, SensorSpec, SensorType};
 use super::super::truth::{ContactTruth, Domain, Sensing};
 use super::{BASE, at, catalog, contact};
@@ -481,4 +481,221 @@ fn looks_are_kept_per_observer_and_a_closer_look_corrects_a_wrong_call() {
     // a radar's size class alone names the track at the detection level, with its confidence
     let r = Track::new("T-0002".into(), 2, &look(1, SensorType::Radar, Level::Detect, "small_surface", 0.3), 1_000.0);
     assert_eq!(r.identity().kind.as_deref(), Some("small_surface"));
+}
+
+/// One `Step` of second `s` under `sensing`, its draws from `seed` (no wrong calls).
+fn step_at(seed: u64, s: i64, sensing: &Sensing) -> Step<'_> {
+    Step { seed, tick: s, s: s as f64, t: 1_781_467_800.0 + s as f64, misclassification_rate: 0.0, sensing }
+}
+
+/// The first second `uid` reached `level` (or a higher one) on any contact, among `dets`
+/// stamped with their seconds.
+fn first_at(dets: &[(i64, Detection)], uid: u64, level: Level) -> Option<i64> {
+    dets.iter().find(|(_, d)| d.uid == uid && d.look.is_some_and(|l| l.level >= level)).map(|(s, _)| *s)
+}
+
+/// `n` seconds of the engine from 0 under `sensing` with draws from `seed`: every detection with
+/// its second.
+fn run_seeded(seed: u64, sensing: &Sensing, obs: &[Observer], contacts: &[ContactTruth], n: i64) -> Vec<(i64, Detection)> {
+    let mut e = Engine::new(None);
+    let mut out = Vec::new();
+    for s in 0..n {
+        out.extend(e.step(&step_at(seed, s, sensing), obs, contacts).into_iter().map(|d| (s, d)));
+    }
+    out
+}
+
+/// A passive sonar classifies on the signal it hears, not on the time since it first heard
+/// it (the first v3 dev check, SCORING-V3.md 11.2: a run survived 30 s gaps and its confidence
+/// grew with its length alone, so a buoy hearing a diver one second in fifteen recognised it as
+/// fast as one hearing it every second). A buoy hearing a diver 7 % of the seconds does not
+/// recognise it in fifteen minutes; hearing it every second, it recognises it after a minute of
+/// signal and identifies it after three.
+#[test]
+fn a_passive_sonar_classifies_on_the_signal_it_hears() {
+    let buoy = usv(1, BASE.0, BASE.1, sensors_of("buoy"));
+    let Resolved::Sonar(sn) = resolve(&buoy.sensors[0], false) else { panic!("the buoy's sonar") };
+    let diver = |ground: f64| {
+        let (lat, lon) = at(BASE.0, BASE.1, ground, 0.0);
+        let mut c = contact("d", "diver", Domain::Subsurface, lat, lon);
+        c.alt_m = -3.0;
+        c
+    };
+    let fom = sonar::fom_db(&sn, "diver", &signature::kind_signature("diver", Domain::Subsurface)).expect("heard");
+    // the reference environment (50 m of water, the reference wind and shipping): no noise shift
+    let ground_at = |p: f64| range_at(p, |g| sonar::pd(&sn, fom, g.hypot(3.0), 50.0, 0.0));
+    let sensing = with(Conditions { sun_elevation_deg: Some(45.0), ..Conditions::default() });
+    let faint = run_seeded(7, &sensing, std::slice::from_ref(&buoy), &[diver(ground_at(0.07))], 900);
+    let share = faint.len() as f64 / 900.0;
+    assert!((0.04..0.11).contains(&share), "heard {share:.3} of the seconds");
+    assert_eq!(first_at(&faint, 1, Level::Recognise), None, "recognised on {} detections", faint.len());
+    let clear = run_seeded(7, &sensing, std::slice::from_ref(&buoy), &[diver(ground_at(0.995))], 240);
+    assert!(clear.len() >= 235, "{}", clear.len());
+    let rec = first_at(&clear, 1, Level::Recognise).expect("recognised");
+    let id = first_at(&clear, 1, Level::Identify).expect("identified");
+    assert!((59..=64).contains(&rec) && (179..=186).contains(&id), "recognised at {rec} s, identified at {id} s");
+}
+
+/// A contact held in a camera's field accrues evidence each second (SCORING-V3.md 11.3: one
+/// draw a look decided detection, recognition and identification for the whole look, so a look
+/// whose draw fell between the identification and recognition chances recognised and never
+/// identified while the contact stayed). A fixed day camera with a boat ahead where it
+/// recognises it 7 times in 8 and identifies it about a third of the time a look: on every one
+/// of twenty seeds it identifies it within three minutes.
+#[test]
+fn a_contact_held_in_a_cameras_field_is_identified_in_time() {
+    let fixed: SensorSpec = toml::from_str::<toml::Table>(
+        "s = { type = \"eo_ir\", range_m = 6000, slew_dps = 0, channels = [{ band = \"day\", wide_deg = 20, px = 1920 }] }",
+    )
+    .expect("toml")["s"]
+        .clone()
+        .try_into()
+        .expect("spec");
+    let o = Observer { heading_deg: Some(0.0), ..usv(1, BASE.0, BASE.1, vec![fixed]) };
+    let cond = Conditions { sun_elevation_deg: Some(45.0), ..Conditions::default() };
+    let boat = |north: f64| {
+        let (lat, lon) = at(BASE.0, BASE.1, 0.0, north);
+        contact("b", "small_fast_boat", Domain::Surface, lat, lon)
+    };
+    let north = range_at(0.35, |d| predict::predict(&ask(&o.sensors[0], &o, &boat(d), cond)).p_identify);
+    let p = predict::predict(&ask(&o.sensors[0], &o, &boat(north), cond));
+    assert!(p.p_recognise > 0.8 && (p.p_identify - 0.35).abs() < 0.01, "{p:?}");
+    let sensing = with(cond);
+    for seed in 1..=20 {
+        let dets = run_seeded(seed, &sensing, std::slice::from_ref(&o), &[boat(north)], 180);
+        assert!(first_at(&dets, 1, Level::Identify).is_some(), "seed {seed}: never identified at {north:.0} m");
+    }
+}
+
+/// A locked camera keeps its contact while it stays the payload manager's choice and gets
+/// likelier to identify (SCORING-V3.md 11.3: a lock lasted at most 10 s). A USV's camera cued
+/// by its radar to a boat closing from 8 km stays locked on it, the boat drawing nearer, until
+/// it identifies it.
+#[test]
+fn a_locked_camera_keeps_a_closing_contact_until_it_identifies_it() {
+    let cam: SensorSpec = toml::from_str::<toml::Table>(
+        "s = { type = \"eo_ir\", range_m = 8000, slew_dps = 60, channels = [{ band = \"day\", wide_deg = 30, narrow_deg = 6, px = 1280 }] }",
+    )
+    .expect("toml")["s"]
+        .clone()
+        .try_into()
+        .expect("spec");
+    let o = usv(1, BASE.0, BASE.1, vec![placeholder("radar", 40_000.0), cam]);
+    let sensing = day();
+    for seed in [3, 7, 11] {
+        let mut e = Engine::new(None);
+        let (mut locked_at, mut id_at, mut broke) = (None, None, None);
+        for s in 0..600 {
+            let (lat, lon) = at(BASE.0, BASE.1, 0.0, 8_500.0 - 12.0 * s as f64);
+            let mut c = contact("b", "small_fast_boat", Domain::Surface, lat, lon);
+            (c.speed_mps, c.course_deg) = (12.0, 180.0);
+            let dets = e.step(&step_at(seed, s, &sensing), std::slice::from_ref(&o), std::slice::from_ref(&c));
+            if dets.iter().any(|d| d.sensor == SensorType::EoIr && d.look.is_some_and(|l| l.level == Level::Identify)) {
+                id_at = Some(s);
+                break;
+            }
+            match (locked_at, e.gimbal_of(1, 1).map(|g| g.4)) {
+                (None, Some("lock")) => locked_at = Some(s),
+                (Some(_), Some(m)) if m != "lock" => {
+                    broke = Some(s);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let locked = locked_at.expect("locked on");
+        assert_eq!(broke, None, "seed {seed}: locked at {locked} s, the lock ended before an identification");
+        let id = id_at.expect("identified");
+        assert!(id - locked > 10, "seed {seed}: locked at {locked} s, identified at {id} s: not a test of the lock's length");
+    }
+}
+
+/// Each camera keeps its own history (SCORING-V3.md 11.3: the payload managers' `looked` and
+/// `identified` were keyed by contact alone, so one camera's failed cue kept every camera off
+/// that contact for 60 s). A far camera's cue on a boat beyond its horizon fails at 18 s; a
+/// second vehicle's camera arriving near the boat at 20 s cues to it as soon as its own
+/// search's 10 s are up, at 30 s (before, not until 78 s), on every seed.
+#[test]
+fn one_cameras_failed_cue_keeps_no_other_camera_off_the_contact() {
+    let (lat, lon) = at(BASE.0, BASE.1, 0.0, 25_000.0);
+    let boat = contact("b", "small_fast_boat", Domain::Surface, lat, lon);
+    let far = usv(1, BASE.0, BASE.1, vec![placeholder("eo_ir", 30_000.0)]);
+    let (rlat, rlon) = at(lat, lon, 2_000.0, 0.0);
+    let ship = usv(3, rlat, rlon, radar_only());
+    let (nlat, nlon) = at(lat, lon, 0.0, -1_000.0);
+    let near = Observer { alt_msl: 120.0, mast_m: 0.0, heading_deg: Some(0.0), ..usv(2, nlat, nlon, vec![placeholder("eo_ir", 3_000.0)]) };
+    let sensing = day();
+    for seed in [3, 7, 11] {
+        let mut e = Engine::new(None);
+        let mut dets: Vec<(i64, Detection)> = Vec::new();
+        let (mut far_failed, mut near_cued) = (None, None);
+        for s in 0..40 {
+            let mut obs = vec![far.clone(), ship.clone()];
+            if s >= 20 {
+                obs.push(near.clone());
+            }
+            dets.extend(e.step(&step_at(seed, s, &sensing), &obs, std::slice::from_ref(&boat)).into_iter().map(|d| (s, d)));
+            if far_failed.is_none() && s > 10 && e.gimbal_of(1, 0).is_some_and(|g| g.4 == "search") {
+                far_failed = Some(s);
+            }
+            if near_cued.is_none() && e.gimbal_of(2, 0).is_some_and(|g| g.4 != "search") {
+                near_cued = Some(s);
+            }
+        }
+        assert!(far_failed.is_some_and(|s| s < 20), "seed {seed}: the far camera's cue ended at {far_failed:?}");
+        assert!(!dets.iter().any(|(_, d)| d.uid == 1), "seed {seed}: the far camera saw it beyond its horizon");
+        assert_eq!(near_cued, Some(30), "seed {seed}: the near camera's first cue");
+    }
+}
+
+/// Sea Hunter's MS3 hull sonar is active and passive ([44]): it listens as well as pings, so it
+/// identifies a UUV it hears nearly every second after its passive mode's three minutes of
+/// signal, where its active mode alone only recognises (SCORING-V3.md choice 3).
+#[test]
+fn sea_hunters_hull_sonar_listens_as_well_as_it_pings() {
+    let spec = sensors_of("seahunter").into_iter().find(|s| s.kind == SensorType::Sonar).expect("a sonar");
+    let Resolved::Sonar(sn) = resolve(&spec, false) else { panic!("a sonar") };
+    assert_eq!(sn.mode, SonarMode::Active);
+    let passive = sn.passive.as_deref().expect("its passive mode");
+    assert_eq!(passive.mode, SonarMode::Passive);
+    assert!(passive.ranges.iter().any(|(k, _)| k == "uuv"), "{passive:?}");
+    let o = usv(1, BASE.0, BASE.1, vec![spec]);
+    // 30 m off, 10 m down: heard nine seconds in ten (its passive reference is 300 m)
+    let (lat, lon) = at(BASE.0, BASE.1, 30.0, 0.0);
+    let mut uuv = contact("u", "uuv", Domain::Subsurface, lat, lon);
+    uuv.alt_m = -10.0;
+    let dets = run(&mut Engine::new(None), &day(), std::slice::from_ref(&o), std::slice::from_ref(&uuv), 0, 300);
+    let levels: std::collections::BTreeSet<Level> = dets.iter().filter_map(|d| d.look.map(|l| l.level)).collect();
+    assert!(levels.contains(&Level::Recognise) && levels.contains(&Level::Identify), "{levels:?}");
+    let id = dets.iter().find(|d| d.look.is_some_and(|l| l.level == Level::Identify)).expect("identified");
+    assert_eq!(id.label.as_deref(), Some("uuv"));
+    // the model's prediction takes each level from the mode that does it better
+    let p = predict::predict(&ask(&o.sensors[0], &o, &uuv, Conditions::default()));
+    assert!(p.p_identify > 0.5 && p.identify_after_s.is_some(), "{p:?}");
+}
+
+/// The picture says which sensor reached which level (SCORING-V3.md choice 5): under the
+/// physical model a track's `identity.looks` lists each observer's sensor's level, label and
+/// confidence; a legacy track's JSON has no such field (v1 and v2 records hold it as it was).
+#[test]
+fn the_picture_says_which_sensor_reached_which_level() {
+    let mut t = Track::new("T-0001".into(), 1, &look(4, SensorType::Radar, Level::Detect, "small_surface", 0.3), 1_000.0);
+    t.update(&look(5, SensorType::EoIr, Level::Recognise, "small_craft", 0.7), 1_001.0);
+    t.update(&look(5, SensorType::EoIr, Level::Identify, "small_fast_boat", 0.62), 1_002.0);
+    let j = t.json(1_002.0);
+    let looks = j["identity"]["looks"].as_array().expect("looks");
+    let rows: Vec<(u64, &str, &str, &str)> = looks
+        .iter()
+        .map(|l| (l["uid"].as_u64().expect("uid"), l["sensor"].as_str().expect("sensor"), l["level"].as_str().expect("level"), l["label"].as_str().expect("label")))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![(4, "radar", "detect", "small_surface"), (5, "eo_ir", "recognise", "small_craft"), (5, "eo_ir", "identify", "small_fast_boat")]
+    );
+    assert_eq!(looks[2]["confidence"].as_f64(), Some(0.62));
+    // the legacy model's detection carries no look: no `looks`, the identity's fields as before
+    let legacy = Detection { look: None, ..look(4, SensorType::EoIr, Level::Detect, "small_fast_boat", 0.0) };
+    let j = Track::new("T-0002".into(), 2, &legacy, 1_000.0).json(1_000.0);
+    let keys: Vec<&String> = j["identity"].as_object().expect("identity").keys().collect();
+    assert_eq!(keys, ["kind", "confidence", "ais", "conflict", "supported_by"]);
 }

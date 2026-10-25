@@ -136,6 +136,7 @@ mod tests {
             max_m: f64::INFINITY,
             scan_s: None,
             placeholder: false,
+            passive: None,
         };
         let dnl = noise_db(70.0, 12.0, REF_SHIPPING) - noise_db(70.0, REF_WIND_MPS, REF_SHIPPING);
         assert!(dnl > 3.0, "{dnl}");

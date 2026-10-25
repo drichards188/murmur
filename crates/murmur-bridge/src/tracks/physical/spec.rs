@@ -10,6 +10,8 @@
 //!     { band = "lwir", wide_deg = 40, narrow_deg = 5.3, px = 640 } ] }
 //! { type = "radar", range_m = 12000, r50_m = 12450, rcs_ref_m2 = 7.5, scan_s = 2.5, beam_deg = 1.2, cell_m = 37 }
 //! { type = "sonar", range_m = 3000, mode = "passive", freq_khz = 1, ranges = { cargo_ship = 20000, submarine = 1000 } }
+//! { type = "sonar", range_m = 10000, mode = "active", freq_khz = 10, ranges = { submarine = 7500 },
+//!   passive = { ranges = { submarine = 1000 } } }
 //! { type = "esm", range_m = 300000, s_min_dbm = -80, bearing_deg = 2 }
 //! ```
 
@@ -114,11 +116,30 @@ pub struct PhysicalFields {
     pub ranges: BTreeMap<String, f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_m: Option<f64>,
+    /// Sonar: an active sonar whose array also listens, its passive mode (a hull sonar that is
+    /// "active and passive"): its own reference ranges by kind, and its band and instrumented
+    /// range where they are not the active mode's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passive: Option<PassiveFields>,
     /// ESM: the least received power it detects, dBm, and its bearing error, degrees.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub s_min_dbm: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bearing_deg: Option<f64>,
+}
+
+/// An active sonar's passive mode as the catalog gives it (`passive = { ... }` on the entry).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PassiveFields {
+    /// Its band, kHz; none: the active mode's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freq_khz: Option<f64>,
+    /// Its reference ranges by kind (Pd 0.5 in the reference environment), m.
+    pub ranges: BTreeMap<String, f64>,
+    /// Its instrumented range, m; none: the active mode's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_m: Option<f64>,
 }
 
 /// An EO/IR channel resolved: angles in radians.
@@ -176,6 +197,8 @@ pub struct SonarSensor {
     /// A scanning sonar's revolution, s (one draw per pass); none: every second.
     pub scan_s: Option<f64>,
     pub placeholder: bool,
+    /// An active sonar's passive mode (its array listening on every bearing, a draw a second).
+    pub passive: Option<Box<SonarSensor>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -287,14 +310,19 @@ pub fn resolve(spec: &SensorSpec, airborne: bool) -> Resolved {
             } else {
                 f.ranges.iter().map(|(k, r)| (k.clone(), *r)).collect()
             };
-            Resolved::Sonar(SonarSensor {
-                mode: f.mode.unwrap_or(SonarMode::Passive),
-                freq_khz: f.freq_khz.unwrap_or(1.0),
-                ranges,
-                max_m: f.max_m.unwrap_or(f64::INFINITY),
-                scan_s: f.scan_s,
-                placeholder,
-            })
+            let (mode, freq_khz, max_m) = (f.mode.unwrap_or(SonarMode::Passive), f.freq_khz.unwrap_or(1.0), f.max_m.unwrap_or(f64::INFINITY));
+            let passive = f.passive.as_ref().filter(|_| mode == SonarMode::Active).map(|p| {
+                Box::new(SonarSensor {
+                    mode: SonarMode::Passive,
+                    freq_khz: p.freq_khz.unwrap_or(freq_khz),
+                    ranges: p.ranges.iter().map(|(k, r)| (k.clone(), *r)).collect(),
+                    max_m: p.max_m.unwrap_or(max_m),
+                    scan_s: None,
+                    placeholder: false,
+                    passive: None,
+                })
+            });
+            Resolved::Sonar(SonarSensor { mode, freq_khz, ranges, max_m, scan_s: f.scan_s, placeholder, passive })
         }
         SensorType::Esm => Resolved::Esm(EsmSensor {
             s_min_dbm: f.s_min_dbm.unwrap_or(-80.0),
@@ -337,6 +365,19 @@ pub fn validate(spec: &SensorSpec) -> Result<(), String> {
     pos(f.bearing_deg, "bearing_deg")?;
     if let Some((k, _)) = f.ranges.iter().find(|(_, r)| !(r.is_finite() && **r > 0.0)) {
         return Err(format!("ranges.{k} must be > 0"));
+    }
+    if let Some(p) = &f.passive {
+        if spec.kind != SensorType::Sonar || f.mode != Some(SonarMode::Active) {
+            return Err("a passive mode belongs to an active sonar (mode = \"active\")".into());
+        }
+        pos(p.freq_khz, "passive.freq_khz")?;
+        pos(p.max_m, "passive.max_m")?;
+        if p.ranges.is_empty() {
+            return Err("a passive mode needs its reference ranges".into());
+        }
+        if let Some((k, _)) = p.ranges.iter().find(|(_, r)| !(r.is_finite() && **r > 0.0)) {
+            return Err(format!("passive.ranges.{k} must be > 0"));
+        }
     }
     if spec.kind == SensorType::Radar && f.scan_s.is_some_and(|s| s > MAX_RADAR_REVISIT_S) {
         return Err(format!(

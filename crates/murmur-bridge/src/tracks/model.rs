@@ -1595,9 +1595,31 @@ impl Track {
     /// themselves (position along `velocity_mps`, `pos_sigma_m` growing by
     /// `sigma_growth_mps` per second, `confidence` decaying), so the message only changes
     /// when the track does. `now` (the bridge's wall clock) sets `state` and the symbol.
+    ///
+    /// Under the physical model `identity` also carries `looks`: each observer's sensor's
+    /// evidence at each level it reached (detection, recognition, identification), what it
+    /// called the contact and the surest it has been, which the identity combines; so a reader
+    /// can tell which sensor reached which level. The legacy model has no looks, and its JSON is
+    /// as it was.
     pub fn json(&self, now: f64) -> Value {
         let id = self.identity();
         let (aff, aff_conf, why) = self.affiliation();
+        let mut identity = json!({
+            "kind": id.kind,
+            "confidence": round(id.confidence, 3),
+            "ais": id.ais,
+            "conflict": id.conflict,
+            "supported_by": id.supported_by,
+        });
+        if !self.looks.is_empty() {
+            identity["looks"] = self
+                .looks
+                .iter()
+                .map(|((uid, sensor, level), m)| {
+                    json!({ "uid": uid, "sensor": sensor.as_str(), "level": level, "label": m.label, "confidence": round(m.confidence, 3) })
+                })
+                .collect();
+        }
         json!({
             "id": self.id,
             "domain": self.domain.as_str(),
@@ -1613,13 +1635,7 @@ impl Track {
             "affiliation": aff.as_str(),
             "affiliation_confidence": round(aff_conf, 3),
             "affiliation_reason": why,
-            "identity": {
-                "kind": id.kind,
-                "confidence": round(id.confidence, 3),
-                "ais": id.ais,
-                "conflict": id.conflict,
-                "supported_by": id.supported_by,
-            },
+            "identity": identity,
             "sources": self.sources.values().map(|s| json!({
                 "uid": s.uid, "sensor": s.sensor.as_str(), "hits": s.hits, "last_t": round(s.last_t, 2),
             })).collect::<Vec<_>>(),
