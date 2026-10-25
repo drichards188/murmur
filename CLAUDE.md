@@ -262,9 +262,10 @@ meaningful. Decision and command, not weapons.
   generated `physical_reach_m`, bd murmur-1u4: a change to the physical model or a sensor's
   figures that moves one fails `tracks::tests::reaches` until `cargo test -p murmur-bridge
   write_physical_reaches -- --ignored` rewrites the catalog's lines), a
-  camera sees only where its payload manager points and takes seconds a look (tau 3.4 / P s,
-  1 s to settle after each slew: a test expecting it to see something within a few ticks
-  fails), and the sun comes from the truth message's clock: a test at the tests' `T0`
+  camera sees only where its payload manager points and takes seconds a look (each level builds
+  up second by second at ACQUIRE's rate P²/T, T 3.4 s to detect and 1 s to recognise or
+  identify, plus 1 s to settle after each slew: a test expecting it to see something within a
+  few ticks fails; docs/SENSING.md), and the sun comes from the truth message's clock: a test at the tests' `T0`
   (1,000,000 s, 1970) is near dawn at the Gate, so state `sun_elevation_deg` in its conditions.
   Its held-out calibration runs (`calib_physical`, `air_calib_physical`, and its own air sets
   `air_calib_physical_held_out`, seeds 251-280, `air_calib_physical_held_out_two`, 281-310, each
