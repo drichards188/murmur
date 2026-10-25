@@ -23,7 +23,8 @@ use murmur_decide::Domain as DDomain;
 
 use super::super::physical::conditions::Conditions;
 use super::super::physical::predict::{self, Ask};
-use super::super::sensing::{Observer, SensorCatalog, SensorSpec};
+use super::super::physical::radar;
+use super::super::sensing::{Observer, SensorCatalog, SensorSpec, SensorType};
 use super::super::truth::{ContactTruth, Domain, TruthAffiliation};
 use super::{BASE, at, catalog};
 
@@ -144,29 +145,59 @@ impl<'a> Line<'a> {
     }
 
     /// The reach, m: how far out the contact is detected at least half the time all the way (0:
-    /// not even at 1 m). Where the detection probability only falls with distance this is the
-    /// model's D range (`predict::ranges`, which bisects for one crossing); where it does not,
+    /// not even at the start). Where the detection probability only falls with distance this is
+    /// the model's D range (`predict::ranges`, which bisects for one crossing); where it does not,
     /// the disc covered throughout, never a crossing beyond a gap (an airborne radar's sea
-    /// clutter rule cuts a small surface contact out in rings near the nadir, and out
-    /// altogether beyond).
+    /// clutter cuts a contact holding still on the sea out within kilometres of its nadir, so it
+    /// covers no disc there). The disc starts at 1 m, a radar's at its minimum range
+    /// ([`radar::MIN_RANGE_M`], the IMO's 40 m from the antenna): nearer, the contact would be
+    /// alongside, inside the hull that carries the radar, where the sea's specular glare under
+    /// the antenna (murmur-qlt) hides it.
     fn reach_m(&self) -> f64 {
-        inner_edge(|d| self.p_detect(d))
+        inner_edge(self.start_m(), |d| self.p_detect(d))
     }
 
-    /// The model's D range (`predict::ranges`), for the table.
+    /// Where the reach's disc starts, m (ground).
+    fn start_m(&self) -> f64 {
+        if self.spec.kind == SensorType::Radar { radar::MIN_RANGE_M } else { 1.0 }
+    }
+
+    /// Context for the table: the nearest and the farthest the contact is detected at least half
+    /// the time, m (a 1 % grid from the start out to 1,000 km; none: nowhere).
+    fn seen_between(&self) -> Option<(f64, f64)> {
+        let mut d = self.start_m();
+        let mut seen: Option<(f64, f64)> = None;
+        while d <= 1.0e6 {
+            if self.p_detect(d) >= 0.5 {
+                seen = Some(seen.map_or((d, d), |(a, _)| (a, d)));
+            }
+            d *= 1.01;
+        }
+        seen
+    }
+
+    /// The model's D range (`predict::ranges`'s bisection for one crossing, from where the
+    /// reach's disc starts), for the table.
     fn model_d_m(&self) -> f64 {
-        let t = self.target(1000.0);
-        predict::ranges(&self.ask(&t))[0]
+        let (mut lo, mut hi) = (self.start_m(), 1.0e6f64);
+        if self.p_detect(lo) < 0.5 {
+            return 0.0;
+        }
+        for _ in 0..80 {
+            let mid = (lo * hi).sqrt();
+            if self.p_detect(mid) >= 0.5 { lo = mid } else { hi = mid }
+        }
+        lo
     }
 }
 
-/// How far from 1 m `p` stays at or above one half, m (0: not at 1 m; at most 1,000 km, as
-/// `eo::range_at`): its first fall below it on a 1 % grid, refined by bisection.
-fn inner_edge(p: impl Fn(f64) -> f64) -> f64 {
-    if p(1.0) < 0.5 {
+/// How far from `start` m `p` stays at or above one half, m (0: not at the start; at most
+/// 1,000 km, as `eo::range_at`): its first fall below it on a 1 % grid, refined by bisection.
+fn inner_edge(start: f64, p: impl Fn(f64) -> f64) -> f64 {
+    if p(start) < 0.5 {
         return 0.0;
     }
-    let mut lo = 1.0f64;
+    let mut lo = start;
     while lo < 1.0e6 {
         let hi = (lo * 1.01).min(1.0e6);
         if p(hi) < 0.5 {
@@ -355,8 +386,14 @@ fn table(text: &str) {
                 }
                 let (td, _, h) = DOMAINS.iter().find(|(_, x, _)| *x == d).expect("domain");
                 let r = ds.iter().find(|(x, _)| *x == d).map_or(0.0, |(_, m)| *m as f64);
-                let model = Line::new(&cat, &table, id, s, REFERENCE_KIND, *td, *h).model_d_m();
-                if (model - r).abs() > 10.0 { format!("{:.2}*{:.2}", km(r), km(model)) } else { format!("{:.2}", km(r)) }
+                let line = Line::new(&cat, &table, id, s, REFERENCE_KIND, *td, *h);
+                let model = line.model_d_m();
+                match line.seen_between() {
+                    // seen only beyond a gap (an airborne radar against a contact still on the sea)
+                    Some((a, b)) if a > line.start_m() * 1.02 => format!("{:.2}[{:.1}-{:.1}]", km(r), km(a), km(b)),
+                    _ if (model - r).abs() > 10.0 => format!("{:.2}*{:.2}", km(r), km(model)),
+                    _ => format!("{:.2}", km(r)),
+                }
             };
             let boat = murmur_decide::engage::sees(kind, DDomain::Surface).then(|| km(Line::new(&cat, &table, id, s, "small_fast_boat", Domain::Surface, 0.0).reach_m()));
             let drone = murmur_decide::engage::sees(kind, DDomain::Air).then(|| km(Line::new(&cat, &table, id, s, "small_drone", Domain::Air, 80.0).reach_m()));
@@ -404,11 +441,15 @@ fn physical_reach_table() {
 #[test]
 fn the_reach_stops_at_the_first_gap() {
     let falling = |d: f64| if d < 2_500.0 { 0.9 } else { 0.1 };
-    assert!((inner_edge(falling) - 2_500.0).abs() < 1.0);
+    assert!((inner_edge(1.0, falling) - 2_500.0).abs() < 1.0);
     let gap = |d: f64| if !(800.0..1_200.0).contains(&d) && d < 5_000.0 { 0.9 } else { 0.1 };
-    assert!((inner_edge(gap) - 800.0).abs() < 1.0);
-    assert_eq!(inner_edge(|_| 0.4), 0.0);
-    assert_eq!(inner_edge(|_| 0.6), 1.0e6);
+    assert!((inner_edge(1.0, gap) - 800.0).abs() < 1.0);
+    assert_eq!(inner_edge(1.0, |_| 0.4), 0.0);
+    assert_eq!(inner_edge(1.0, |_| 0.6), 1.0e6);
+    // from a radar's minimum range: what is under the antenna does not count
+    let glare = |d: f64| if (10.0..3_000.0).contains(&d) { 0.9 } else { 0.1 };
+    assert_eq!(inner_edge(1.0, glare), 0.0);
+    assert!((inner_edge(40.0, glare) - 3_000.0).abs() < 1.0);
 }
 
 /// The rewrite puts a platform's line after its sensors however they are laid out, replaces an

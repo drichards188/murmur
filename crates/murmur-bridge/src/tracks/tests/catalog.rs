@@ -40,7 +40,7 @@ fn every_catalog_sensor_field_is_one_the_schema_reads() {
     let by_type = |t: &str| -> &'static [&'static str] {
         match t {
             "eo_ir" => &["slew_dps", "channels"],
-            "radar" => &["height", "r50_m", "rcs_ref_m2", "scan_s", "beam_deg", "cell_m", "band_ghz"],
+            "radar" => &["height", "r50_m", "rcs_ref_m2", "scan_s", "beam_deg", "cell_m", "band_ghz", "doppler"],
             "sonar" => &["mode", "freq_khz", "ranges", "max_m", "scan_s", "passive"],
             "esm" => &["s_min_dbm", "bearing_deg"],
             _ => &[],

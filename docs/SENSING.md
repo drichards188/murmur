@@ -95,9 +95,9 @@ situation work (decision W3). Ranges below are the research's, at Pd 0.5.
 
 | Platform | Sensors under the physical model | Sources |
 |---|---|---|
-| RQ-4 | radar 200 km on 10^4 m^2, 5 s; EO 1,024 px and MWIR 640 px at 10 and 30 urad, no zoom; ESM -90 dBm, 1 deg | [31,32,29]; IFOVs [E]; the rest [E], [E here] |
-| MQ-9B | Lynx radar 300 km on 10^4 m^2, 5 s; MX-20 MWIR 640 px 18.2 to 0.24 deg, spotter 1,920 px 1.07 to 0.2 deg, 57 deg/s; AIS | [34,3]; r50 scaling, blur floors [E] |
-| CCA | AESA radar (3D) 100 km on 1 m^2, 5 s; MX-15-class MWIR 26.7 to 0.54 deg, spotter 1.1 to 0.43 deg; ESM -80 dBm, 2 deg | [E]; [35]; [30] |
+| RQ-4 | radar 200 km on 10^4 m^2, 5 s, X band, a 1 m range cell, a 3 deg beam, a Doppler mode; EO 1,024 px and MWIR 640 px at 10 and 30 urad, no zoom; ESM -90 dBm, 1 deg | [31,32,29,75]; IFOVs [E]; the rest [E], [E here] |
+| MQ-9B | Lynx radar 300 km on 10^4 m^2, 5 s, Ku band, a 1 m range cell, a 3 deg beam, a Doppler mode; MX-20 MWIR 640 px 18.2 to 0.24 deg, spotter 1,920 px 1.07 to 0.2 deg, 57 deg/s; AIS | [34,3,74,75,76]; r50 scaling, the cell, beam, blur floors [E] |
+| CCA | AESA radar (3D) 100 km on 1 m^2, 5 s, X band, a 1 m range cell, a 3 deg beam, a Doppler mode; MX-15-class MWIR 26.7 to 0.54 deg, spotter 1.1 to 0.43 deg; ESM -80 dBm, 2 deg | [E]; [35]; [30] |
 | FVR-90 | MX-8: MWIR 640 px 28.4 to 2.75 deg, EO 1,280 px 30 to 1.53 deg | [36]; blur, slew [E] |
 | Puma 3 AE | Mantis i45: EO 4,472 px 56 to 1.2 deg, LWIR 640 px 40 to 5.3 deg | [37,38]; blur, slew [E] |
 | Switchblade 600 | EO 1,280 px 56 to 3 deg, LWIR 640 px 40 to 12 deg | [39]; narrow fields [E]; wide fields [E here] from [37,38] |
@@ -166,13 +166,17 @@ the time all the way:
   `typical_alt_m`) and `mast_m`.
 - **Detection**: the assessment asks whether the contact is still there, not what it is.
 - **All the way**: the first fall below one half out from the sensor (a 1 % grid, then
-  bisection). Where the detection probability only falls with distance that is the model's D
-  range (`predict::ranges`); where it does not, the disc covered throughout, never a crossing
-  beyond a gap. The two differ only for the airborne radars against the surface contact: a
-  10 m^2 contact needs 10 dB over the sea clutter in its cell, which for an airborne radar at
-  steep grazing sits about at that line, so it comes and goes within 2 km of the nadir and is
-  gone beyond; `predict::ranges`'s bisection lands on one of those crossings (0.47 to 1.61 km),
-  the reach is the inner edge (0.40 to 0.44 km).
+  bisection), from 1 m out, or a radar's minimum range (40 m from the antenna: IMO MSC.192(79)
+  5.4.1 [19]; nearer, the reference contact would be alongside, under the antenna, where the
+  sea's specular glare is since sensing round 3). Where the detection probability only falls
+  with distance that is the model's D range (`predict::ranges`); where it does not, the disc
+  covered throughout, never a crossing beyond a gap. The two differ only for the airborne
+  radars against the surface contact: holding still, it is lost in the sea's glare (the steep
+  grazing angles' reflectivity and the specular return under the aircraft) within 16.5 km of
+  the MQ-9B's nadir and 22.6 km of the CCA's, and seen beyond it to the noise's range; the
+  RQ-4's radar sees it nowhere (its glare reaches past its noise range). So they cover no disc
+  (no surface reach). Before sensing round 3 a defect in the grazing angle made it come and go
+  within 2 km of the nadir, and the reach was that ring's inner edge (0.40 to 0.44 km).
 
 Rounded to 10 m; a domain reached under 5 m is left out (the sensor does not cover there).
 Derived, never tuned (W3), never edited by hand: `cargo test -p murmur-bridge
@@ -183,11 +187,11 @@ a sensor's figures that moves one).
 
 | Sensor | `range_m` | Air | Ground | Surface | Subsurface | Small fast boat, small drone (80 m) |
 |---|---|---|---|---|---|---|
-| RQ-4 radar (18,000 m) | 200 | 9.32 | 60.7 | 0.42 (model 1.61) | | 0.10, 0 |
+| RQ-4 radar (18,000 m) | 200 | 9.32 | 60.7 | none (not seen holding still) | | 0, 0 |
 | RQ-4 EO/IR | 50 | 184 | 142 | 198 | | 180, 14.8 |
-| MQ-9B radar (7,600 m; also MQ-9B radar-only) | 100 | 29.1 | 94.7 | 0.44 (model 1.55) | | 0.10, 8.42 |
+| MQ-9B radar (7,600 m; also MQ-9B radar-only) | 100 | 29.1 | 94.7 | none (seen 16.5 to 52.7) | | 0, 8.42 |
 | MQ-9B EO/IR | 40 | 108 | 87.2 | 87.8 | | 87.7, 32.5 |
-| CCA radar (11,000 m) | 150 | 99.5 | 316 | 0.40 (model 0.47) | | 0.10, 36.0 |
+| CCA radar (11,000 m) | 150 | 99.5 | 316 | none (seen 22.6 to 178) | | 0, 36.0 |
 | CCA EO/IR | 30 | 143 | 113 | 126 | | 123, 20.6 |
 | FVR-90 EO/IR | 10 | 19.3 | 14.3 | 15.2 | | 16.8, 10.4 |
 | Puma EO/IR | 4 | 16.2 | 14.3 | 14.5 | | 14.3, 9.06 |
@@ -209,10 +213,12 @@ a sensor's figures that moves one).
 | REMUS sonar | 3 | | | 0.26 | 0.27 | 0.26 |
 | Orca sonar | 8 | | | 0.36 | 0.12 | 0.07 |
 
-(km; blank: the sensor does not confirm a contact in that domain; the last column is context,
-not used: the same rule against a small fast boat holding still and a small drone 80 m up.)
-What moves most against `range_m`: the airborne radars no longer cover a surface contact beyond
-about 0.4 km (their cameras cover it 88 to 198 km out); every sonar covers less, most of all on
+(km; blank: the sensor does not confirm a contact in that domain; "seen": where the contact is
+detected at least half the time beyond the gap, context; the last column is context, not used:
+the same rule against a small fast boat holding still and a small drone 80 m up.)
+What moves most against `range_m`: the airborne radars cover no surface contact holding still
+(the sea's glare under them; they see one beyond it, and one moving along their line of sight
+through their Doppler modes; their cameras cover it 88 to 198 km out); every sonar covers less, most of all on
 the kinds it was not built for (the buoy and the Orca a few hundred metres, not 3 and 8 km); the
 small aircraft's and the UGVs' cameras cover several times more (14 to 20 km where `range_m`
 gave 1.5 to 4); the Sea Hunter's radar 7.5 to 10 km, not 40.
@@ -238,7 +244,8 @@ seeds 1 to 5 and 7, act noise seeds 1 to 3): on the legacy reaches every result 
 as before (the build stamp aside); on the physical reaches every scenario ends as designed and
 replays, and the only change is the evidence of three assessments, each still ceased after
 15 s: the observer's camera is named in place of its radar, in 48 because the MQ-9B's radar no
-longer reaches the surface contact 1.5 km off (0.44 km; its camera 87.8), in 72 and 76 because
+longer reaches the surface contact 1.5 km off (0.44 km then, none since sensing round 3, whose
+reaches left all 94 results as they were; its camera 87.8), in 72 and 76 because
 the Sea Hunter's camera now reaches farther than its radar (13.1 against 9.77 km; both reach the
 point 1.2 km off). The scenarios' coverage comes from the engaging Switchblade over the point
 and an observer within 1.5 km, so they exercise little of the change. The keep-out
@@ -351,8 +358,14 @@ settled, as its search steps the task area and as an EO director cued by a 2D su
 scans in elevation at the cued bearing. The band is 10 m to 8,000 m, or the slant range if lower
 ([E here]: above the 4 to 6 km service ceilings of the light aircraft and helicopters the air
 kinds stand for, and the 7,000 m of the engagement scenarios' highest aircraft). A
-height-finding radar's fix (within 10 s) aims at the aircraft itself. A cued camera re-aims
-only when the cue leaves the middle of its field (a quarter of its width off the boresight); a
+height-finding radar's fix (within 10 s) aims at the aircraft itself. A cued camera holds its
+cue's pattern (its one aim, or its bars) while each new fix keeps the contact within it, and
+plans it again from the fix only when the fix puts the contact outside it (sensing round 3,
+below): one aim while the fix stays in the middle of its field (a quarter of its width off the
+boresight), a known height while it lies in the current bar's field, a fix with no height while
+some place it allows lies in one of the bars' fields (another sensor's fix of the aircraft, a
+2D radar's arc or a camera's position, is another line through the same aircraft, not a new
+search); a new plan keeps the bar the search had reached. A
 locked one follows its contact in closed loop while the line of sight turns no faster than the
 gimbal slews: only a slew, a zoom, a search step and a new bar settle (the research's "slew
 time = angle / slew rate + about 1 s to settle" is a step's; a stabilised gimbal under its
@@ -366,8 +379,13 @@ every second of a lock slewed and settled again: on the air tuning sets the came
 the contact's bearing, against a 1e-4 false-alarm threshold; the fourth-root law about each
 radar's reference [16]; the two-ray model for low targets, power as R^-8 beyond the crossover
 `4 pi h_r h_t / lambda` with both heights above the tangent plane at the reflection point [E];
-sea clutter `sigma0 R theta (c tau / 2) sec psi` from the research's sigma0 table by grazing
-angle and sea state, a surface target needing 10 dB over it [E]. Accuracy 30 m or 1 % of range
+sea clutter `sigma0 R theta (c tau / 2) sec psi`, a surface target needing 10 dB over it [E]
+(sensing round 3, below: `c tau / 2` the radar's range resolution, `psi` the spherical earth's
+grazing angle, valid to the nadir; `sigma0` the research's table to 10 degrees, the NRL model's
+slope beyond it to 60 [71] and its frequency term for other bands, and the quasi-specular return
+near vertical incidence [72,73]); a radar with a Doppler mode sees a surface target moving along
+its line of sight faster than the sea clutter's Doppler band (`0.25 + 0.44 U` m/s, `U` the wind
+[72]) against the noise alone. Accuracy 30 m or 1 % of range
 and 1 degree in bearing [19] (the larger given as the fix's 1-sigma). A 2D radar plots an
 aircraft at its slant range on the bearing, as the legacy model. Every radar revisits in at
 most 5 s: the catalog refuses a slower one.
@@ -436,6 +454,7 @@ Anchors (`tracks::tests::physical`, `physical::{radar,rf,sonar}::tests`; the tab
 | IMO small vessel with reflector | 5.00 NM | 5.0 NM | 15 % |
 | IMO navigation buoy | 4.51 NM | 4.6 NM | 15 % |
 | IMO 10 m vessel | 3.80 NM | 3.4 NM | 15 % |
+| IMO minimum range: the buoy from 15 m, calm (5.4.1) | Pd over 0.8 from 40 m to 1 NM | from 40 m to 1 NM [19] | inside |
 | AIS from 15 m to a 10 m and a 25 m antenna | 15.6, 19.7 NM | 15-20 NM [21] | inside |
 | AIS MQ-9B at 7,600 m to a 10 m antenna | 372 km | about 370 km | 5 % |
 | Sentinel diver / UUV / mini-sub (active) | 950 / 1200 / 1500 m | 0.9-1.0 / 1.2 / 1.5 km [27] | 2 % |
@@ -626,7 +645,7 @@ whenever the next fix moves the elevation search's current bar past a quarter of
 (`Cue::aims` is rebuilt from each new fix), so a Puma that had the drone in its wide field at its
 first bar (F2 San Diego, seed 5108) was blind 11 of the cue's next 18 s and its cue ended,
 keeping it off the drone for a minute; a follow-up (cue from the track, or keep the bar a cue
-update falls within), not made here.
+update falls within), not made here (sensing round 3, below, keeps the pattern).
 
 Legacy byte for byte: every legacy calibration and the anchors (`cargo test`), the golden
 episode and v1/v2 null fidelity (`eval/headless/tests`), and a keep-out evaluation (seeds 1 to
@@ -635,6 +654,136 @@ the surface criteria all hold as before; on the air tuning sets the all-sensors 
 keep-out misses 3 s ahead as before, other cases (a 500 m loiter by 113 m, an approach and break
 by 53 m, against random turns by 253 m before), and one class's velocity error over its bound
 (speed change 6.67, against one turn 7.48 before). No held-out set was run.
+
+**Sensing round 3** (bd murmur-qlt and the cued camera's pattern; 2026-10-25). Two changes, physics
+and bookkeeping, no sensor value tuned (W3), judged once on held-out sets written before them.
+
+1. *Airborne radars against the sea* (Radar, above; research "Airborne radar against the sea").
+   The derived reaches of the MQ-9B's, RQ-4's and CCA's radars against a surface contact were
+   0.40 to 0.44 km, their cameras' 88 to 198 km. The cause was a defect before the clutter model:
+   the grazing angle was the small-angle `h / g` read as an angle, hundreds of degrees within a
+   few kilometres of an aircraft's nadir, whose secant (capped at 20) came and went; on top of it
+   a 15 m cell [E here] and the table's 10-degree reflectivity held to the nadir. Now:
+   - the grazing angle is the spherical earth's, exact from the horizon to the nadir
+     (`radar::grazing`; a mast's small angles are as before to 1e-4);
+   - the cell is the radar's range resolution: 1 m for the three (Lynx resolves 0.1 to 3 m over
+     its 3 GHz band [34] and publishes no maritime figure: taken as a sea-search waveform's for
+     small targets, 0.8 to 0.95 m [74], and the RQ-4 ISS's wide-area search, 1 m [75]); their
+     3 degree beams now have a basis (Lynx's aperture within its 19.5 in gimbal [34]; an X-band
+     fighter's 0.7 m [E]);
+   - sigma0 is the research's table up to 10 degrees (X band, unchanged: the navigation radars'
+     worked example and anchors), the NRL model's slope beyond it to 60 degrees and its
+     frequency term for other bands [71] (Ku band about 2 to 4.5 dB over X), and the
+     quasi-specular return near vertical incidence (Kirchhoff's geometric-optics limit with Cox
+     and Munk's slopes [72,73]: about +13 dB straight down at 5 m/s, as a Ku altimeter measures);
+   - a radar with a Doppler mode (`doppler`: Lynx's GMTI, DMTI and maritime moving-target
+     tracking [34,76], the RQ-4's GMTI [31], a fighter AESA's pulse-Doppler [E]) sees a surface
+     contact moving along its line of sight faster than the sea clutter's band, `0.25 + 0.44 U`
+     m/s (the mean shift up or down wind and one 3 dB width [72]), against the noise alone.
+
+   What the Lynx class (7,600 m, Ku band) does now against a 10 m^2 contact in sea state 2:
+   holding still, lost in the sea's glare within 16.5 km of its nadir (sigma0 rises from -32
+   dB at 20 degrees to -12 dB at 60 and +13 straight down) and seen from there to 52.7 km (the
+   noise's range); moving 5 m/s along its line of sight, seen from near the nadir to the noise's
+   range (`radar::tests`). The research's estimate (a 2.5 m^2 boat at about 40 km, scaled from 300
+   km on 10^4 m^2) is the moving case's; holding still, a 2.5 m^2 boat is under the clutter
+   everywhere. The navigation radar's IMO anchors are unchanged (11.45, 9.03, 5.00, 4.51, 3.80
+   NM; it is X band and its clutter at a mast's grazing angles is the table's), as are its sea
+   state 5 worked example, and a new anchor holds: the IMO buoy is seen from 40 m to 1 NM from
+   15 m in calm conditions (MSC.192(79) 5.4.1 [19]).
+
+   The reaches (`write_physical_reaches`): the three airborne radars no longer cover a surface
+   contact (0.42, 0.44 and 0.40 km before; none now, seen holding still 16.5 to 52.7 km by the
+   MQ-9B and 22.6 to 178 by the CCA, nowhere by the RQ-4); their air and ground reaches, and
+   every other sensor's, are as before. A radar's reach now starts at its 40 m minimum range: from
+   1 m the Sea Hunter's radar would have lost its 9.77 km surface reach to the specular glare
+   under its own antenna, where a contact would be inside its hull. The 94 engine scenarios on
+   the physical reaches: every result as before (their assessments already named the MQ-9B's
+   camera).
+
+2. *A cued camera holds its search pattern* (Pointing, above). Round 2's dev check found a
+   camera cued by a 2D radar's plot re-aiming whenever a new fix moved its current bar. The
+   mechanism (traced on F2 San Diego seed 5108): the cue is the contact's latest fix, and fixes
+   of one drone came from two Sea Hunter radars and other cameras by turns, each another line
+   through the drone (a radar's slant-range arc, a camera's position with no height), so the
+   bars were rebuilt every second from another line, the bar the camera was on jumped between
+   patterns of one to eleven bars, and it slewed and settled at nearly every fix: two Pumas were
+   blind 63 and 70 % of the seconds they were cued. The payload manager now keeps the cue's
+   pattern and plans it again only when a fix puts the contact outside it (one aim: outside the
+   field's middle, as before; a known height: outside the current bar; a fix with no height:
+   nowhere in any bar's field); a new plan keeps the bar the search had reached, and a single
+   aim's cue (a surface or ground contact's) behaves as before. On the same seed the Pumas were
+   blind 36 % of their cued seconds (the slews and settles between bars), and the need was still
+   lost: they found the drone in their lowest bar, did not detect it in its 4 s stare, and walked
+   up the pattern's empty bars (`looked:puma(detected)`). Test
+   (`physical::tests::a_cued_camera_holds_its_search_while_the_cue_stays_within_it`): a camera
+   whose cue alternates each second between a radar's plot and a camera's fix of one aircraft
+   steps its bars no faster than a stare, each once, to the pattern's end; before, it re-aimed
+   every second for the whole run, never ending the cue.
+
+**The held-out sets, run once** (written before the round, commit 6e08444; never tuned on):
+
+- Surface (`calib_physical_held_out`, seeds 371-400, every class in yet other variants): every
+  criterion holds. Per class NEES 1.04 to 1.94, the truth within two sigmas 87.2 to 97.2 % when
+  updated, and a keep-out 60 and 100 s ahead holds every case at least as often as the old
+  filter's (60 s: 72.2 to 100 % against 1.1 to 100 %; 100 s: 69.0 to 100 % against 0.4 to 100 %).
+- Air (`air_calib_physical_held_out_four`, seeds 341-370): every class honest in every mix
+  (NEES 0.91 to 1.96, within two sigmas 95.5 to 100 %), the steady classes' velocities too
+  (normalized error at most 0.41; a velocity given in 0 to 0.5 % of samples), no altitude from
+  sensors that measure none, the tracker alone within its bounds (at most 0.49 % and 176 m 3 s
+  ahead, 0.20 % and 556 m 10 s, 0.20 % and 1,471 m 30 s), and a keep-out 10, 30, 60 and 100 s
+  ahead holds every case; but a keep-out 3 s ahead missed the approach and break (an approach
+  at 70 m/s, then a break 150 degrees left at 8 deg/s to 85 m/s, 750 m up; all sensors) 3 times
+  in 3,271 samples, by up to 66 m (the tracker before: 98.9 % held). The second held-out set's
+  pattern (the constant-velocity models' lag through a hard turn seen by bearings; the follow-up
+  is a turn model), not this round's.
+
+The physical tuning-set views (not criteria): the surface criteria all hold; on the air tuning
+sets' all-sensors mix, keep-outs 3 s ahead missed a 500 m loiter once (113 m) and random turns at
+40 m/s twice (241 m), the speed change class's velocity error is 2.85 (6.67 after round 2) and
+the random turns' tracker alone 352 m 3 s ahead (its bound 300).
+
+The dev check after the round (scoring v3's runner; coverage as SCORING-V3.md section 0: both
+worlds, F1 to F6, fresh dev seeds 5130-5159, `none` / `random-valid` / the basic oracle, one
+replicate, 1,080 episodes, no harness error; 187 situations by day, 122 at night, 21 in twilight,
+30 in fog; model results only; records deleted after this summary). Need served, pooled over both
+worlds, beside round 2's on its own fresh seeds (5100-5129, after its fixes):
+
+| family | round 2 (5100-5129) | round 3 (5130-5159) |
+|---|---|---|
+| F1 fast boat | 39 / 40 / 43 of 60 | 35 / 35 / 47 of 60 |
+| F2 drone (version 3) | 0 / 1 / 30 of 60 | 1 / 1 / 30 of 60 |
+| F3 low aircraft | 40 / 38 / 41 of 60 | 40 / 40 / 48 of 60 |
+| F4 UUV | 40 / 40 / 51 of 55 | 39 / 39 / 55 of 58 |
+| F5 diver | 25 / 25 / 33 of 60 | 27 / 27 / 35 of 60 |
+| F6 shore vehicle | 20 / 19 / 34 of 60 | 24 / 20 / 34 of 60 |
+
+Per world (`none` / `random-valid` / oracle of 30, F4 Golden Gate of 28): F1 16/16/25 and
+19/19/22, F2 1/1/14 and 0/0/16, F3 19/20/27 and 21/20/21, F4 11/11/27 and 28/28/28, F5 0/0/6 and
+27/27/29, F6 6/8/12 and 18/12/22 (Golden Gate, San Diego). 10.1 holds only for F4 Golden Gate (the
+oracle 96 %, `none` 39 %). The oracle's commonest losses: F2 `looked:puma` (11 of 30) and
+`looked:seahunter` (7), F5 `looked:seahunter` and `looked:buoy` (12 and 11 of 25), F6 `looked:lta`
+(9 of 26) and `no_look` (6). Lesson 3 flags F3 (`looked:corsair`, 55 % of `none`'s Golden Gate
+losses and 67 % of the oracle's; `looked:seahunter` 56 % of `none`'s San Diego), F5 (`looked:buoy`,
+93 % and 67 % of `none`'s) and F6 San Diego (`looked:corsair` 58 % of `none`'s), much as
+section 11.1's did.
+
+The two rounds' seeds differ, so their difference mixes the round's changes with the seeds'
+(a binomial spread of about 4 needs). One paired batch separates them for the families the changes
+reach: the base commit's physical model and catalog (6e08444) on the same seeds 5130-5159, F1 to
+F3, `none` and the oracle (360 episodes, records deleted). Base to round 3, needs served (gained /
+lost of the same situations): F1 `none` 31 to 35 (5 / 1), the oracle 47 to 47 (2 / 2); F2 `none`
+1 to 1, the oracle 23 to 30 (12 / 5); F3 `none` 36 to 40 (8 / 4), the oracle 40 to 48 (9 / 1). The
+air families' rise is the held pattern's (the radar change reaches an air contact only through the
+surface tracks its Doppler modes add, which compete for the cameras' cues), F3's the clearest; on
+seed 5108 the drone's loss that remains is the elevation search's own (a Puma finds it in its
+lowest bar, does not detect it in the bar's 4 s stare, and walks up bars where it is not). The
+airborne radars' new surface tracks did not move the oracle's F1.
+
+Legacy byte for byte: every legacy calibration and the anchors (`cargo test`), the golden
+episode and v1/v2 null fidelity (`eval/headless/tests`), and a keep-out evaluation (seeds 1 to
+3, 20 situations, the radar and all variants: 23,040 records each, identical to the base
+commit's).
 
 **Cost** (`eval/headless/sense_perf.py`): a Golden Gate world of 30 stand-ins of ten types and
 40 contacts of every domain, headless, 30 simulated minutes: 91 times real time on the
@@ -666,8 +815,14 @@ The legacy model's Python ports (`v2/labels.py`, `families.py`, `agents_v2.py`,
   tens of metres (the second air held-out set's approach and break, above); a coordinated-turn
   model is the follow-up.
 - Radar: no land clutter (ground contacts are seen as on water, terrain masking apart), no
-  pulse integration or sidelobes, a ship's radar heard by ESM every second (its sidelobes)
-  rather than once per turn, and the X-band clutter table for every band.
+  pulse or scan-to-scan integration, sidelobes or SAR (a radar searches with its real beam, so
+  a SAR's fine cross-range cell is not used against the sea), a ship's radar heard by ESM every
+  second (its sidelobes) rather than once per turn. Sea clutter is HH; above 10 degrees it is
+  the research's 10-degree value carried by the NRL model's slope, held beyond 60 degrees under
+  the specular return; the Doppler band is taken at its largest (looking up or down wind: the
+  look's angle to the wind is not modelled) and a Doppler radar's own motion as compensated; the
+  airborne radars' field of regard (Lynx: -5 to -60 degrees of elevation [34]) is not modelled,
+  nor any radar's minimum range (the reaches start at the IMO's 40 m).
 - AIS: turning intervals and class B SO ignored; slot load counts the reports a receiver could
   hear, not their collisions in time.
 - Sonar: the reference ranges carry the model (source levels and thresholds are mostly not

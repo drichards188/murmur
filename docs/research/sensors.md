@@ -185,6 +185,20 @@ Added 2026-10-23 (murmur-4v7) for the eight platform types that had no `enduranc
 
 **Magura V5's "60 hours":** the "up to 60 hours" of autonomy often repeated for the Magura V5 is not used here. In the sources found, it traces back to figures the Minister of Digital Transformation gave in November 2022 for an unnamed naval drone [68], not to a Magura V5 declaration.
 
+### Airborne radar against the sea
+
+Added 2026-10-25 (murmur-qlt). The airborne radars' sea clutter, for docs/SENSING.md's radar model and the catalog's airborne radar figures.
+
+- **Range cell:** Lynx has a 2-channel Ku-band front end with 3 GHz of bandwidth (0.05 m possible), SAR "very fine to 3 m", and a field of regard of -5 to -60 degrees elevation [34]. Its maritime search (MWAS, "small target detection", a 30 deg/s scan [76,77]) publishes no resolution. Two published references for a search cell:
+  - A sea-surface search waveform resolves 2.7 to 3.1 ft (0.8 to 0.95 m) where periscopes are sought and 12.4 ft (3.8 m) for boats, at a typical 2.0 degree beam, with pulse-to-pulse Doppler processing and scan-to-scan frequency agility to decorrelate sea clutter [74].
+  - The RQ-4's ISS covers 40,000 nmi^2 a day at 1 m resolution, or 2 x 2 km spots at 0.33 m [75].
+- **Beam:** Lynx's antenna sweeps a 17.1 x 19.5 in volume [34], so its aperture is about 0.4 m. At 16.7 GHz, 1.2 lambda / D gives about 3 degrees [E].
+- **Doppler:** "Doppler radars can distinguish targets from clutter if the target's velocity along the radar line of sight is beyond that of the clutter" [72]. At X band, the sea clutter spectrum's 3 dB width is about 0.24 U and its mean shift looking upwind 0.25 + 0.2 U (HH) or 0.25 + 0.18 U (VV), U the wind in m/s. Both are nearly independent of band and grazing angle, and the shift varies with the cosine of the look's angle to the wind [72]. Lynx detects dismounts moving at about 1 mph over land [76] and tracks moving targets at sea [34].
+- **sigma0 beyond 10 degrees:** the NRL model fits Nathanson's tables at 0.1 to 60 degrees, 0.5 to 35 GHz and sea states 0 to 6, within 2.2 to 2.6 dB [71] (this is the model the table above was to be replaced by [17]).
+  - From about 60 to 90 degrees, physical optics applies [72]. For a sea with Gaussian slopes its geometric-optics limit is `|R(0)|^2 sec^4 theta exp(-tan^2 theta / s^2) / s^2` (Barrick 1968, Valenzuela 1978), with Cox and Munk's mean square slope `s^2 = 0.003 + 5.12e-3 U` [73].
+  - |R(0)|^2 of seawater at X to Ku band is about 0.6 [E]. At 5 m/s this gives about +13 dB straight down, the level a Ku-band altimeter measures.
+- **Minimum range:** a navigation radar must show the IMO buoy "at a minimum horizontal range of 40 m from the antenna position and up to a range of 1 NM" in calm conditions (MSC.192(79) 5.4.1 [19]).
+
 ### References
 1. https://gdal.org/en/stable/programs/gdal_viewshed.html
 3. https://www.militarysystems-tech.com/sites/militarysystems/files/supplier_docs//PDS-MX-20-20D-January-2017.pdf
@@ -255,3 +269,10 @@ Added 2026-10-23 (murmur-4v7) for the eight platform types that had no `enduranc
 68. https://militarnyi.com/uk/news/ukrayina-rozkryla-detali-pro-udarni-morski-bpa/
 69. https://www.saronic.com/vessels
 70. https://www.workboat.com/saronic-runs-endurance-trials-on-corsair-asv-for-navy-program
+71. V. Gregers-Hansen and R. Mital, "An Improved Empirical Model for Radar Sea Clutter Reflectivity", NRL/MR/5310--12-9346, 2012 (DTIC ADA559494); Gregers-Hansen's own `NRL_SigmaSea.m`: https://github.com/scivision/nrl-radar-sea-clutter
+72. A. M. Raynal and A. W. Doerry, "Doppler Characteristics of Sea Clutter", SAND2010-3828, Sandia National Laboratories, 2010 (for GA-ASI): https://www.osti.gov/servlets/purl/992329
+73. C. Cox and W. Munk, "Measurement of the Roughness of the Sea Surface from Photographs of the Sun's Glitter", J. Opt. Soc. Am. 44, 838-850, 1954
+74. US Patent 5,594,451, a sea surface search waveform (APG-63U): https://patents.google.com/patent/US5594451A/en
+75. https://www.militaryaerospace.com/communications/article/16708790/global-hawk-uses-raytheon-optics
+76. https://www.ga-asi.com/radars/lynx-multi-mode-radar
+77. https://www.ga.com/ga-asi-radar-shines-during-us-navy-spearhead-iia-exercise
