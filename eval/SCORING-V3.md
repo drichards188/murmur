@@ -637,7 +637,7 @@ Each rung is the ceiling with one switch of the same planner turned off, nothing
 | `oracle-v3-late` | timing | no look before the need opens (the contact's true position inside the circle) |
 | `oracle-v3-linkblind` | the link | no link map and no truth of a blocked link: it plans as if every datalink held and learns of a lost link only from the session (`link_lost`) |
 | `oracle-v3-sensorblind` | the sensors | no sensing model: every sensor reaches its catalog `range_m` (the reach `get_platforms` shows) on every kind, by day or night, in any visibility, past any terrain (the v3 analogue of not knowing your sensors) |
-| `oracle-v3-honest` | truth | link-blind, reading no truth: built from a session, the loop's runner and the sensing model's functions alone (planner.py `HonestCeiling`, `sense_only`), never the episode. It keeps the model (the catalog's figures make it learnable) with the sun from the scenario clock, but not the drawn visibility, sea or wind, which the C2 does not show (it assumes a clear day's), and no contact's truth: its needs come from the picture (v2's honest oracle's rule: a track in doubt whose shown motion brings it within the circle within 300 s, or inside; due its domain's grace after it is shown inside; an aircraft the picture gives no velocity, as a 2D radar's bearings seldom range one, taken to come straight in at 25 m/s, a small drone's top speed; the contact's kind its shown kind, else the size class a radar or camera detected (an ESM receiver names every emitter of a domain alike), else its family's stand-in) |
+| `oracle-v3-honest` | truth | link-blind, reading no truth: built from a session, the loop's runner and the sensing model's functions alone (planner.py `HonestCeiling`, `sense_only`), never the episode. It keeps the model (the catalog's figures make it learnable) with the sun from the scenario clock, but not the drawn visibility, sea or wind, which the C2 does not show (it assumes a clear day's), and no contact's truth: its needs come from the picture (v2's honest oracle's rule: a track in doubt whose shown motion brings it within the circle within 300 s, or inside; due its domain's grace after it is shown inside, and worked on for two graces more while unresolved, since its clock starts when the picture shows the contact inside, which a 2D radar's plot of an aircraft can do before it is; an aircraft the picture gives no velocity, as a 2D radar's bearings seldom range one, taken to come straight in at 25 m/s, a small drone's top speed; the contact's kind its shown kind, else the size class a radar or camera detected (an ESM receiver names every emitter of a domain alike), else its family's stand-in) |
 
 **Predicted order, judged** (per family-world, on need served, v2 0.3's rule: a paired interval
 wholly below zero fails; one containing zero is a tie; the guard of 10.5 across each family's cells):
@@ -700,3 +700,34 @@ shows anyway; per family-world each move is reported and enters the guard (10.5)
     .venv/bin/python -m eval.headless.v3.run report eval/results/headless/v3-ruler-5230 --workers 8
     .venv/bin/python -m eval.headless.v3.ruler report eval/results/headless/v3-ruler-5230 \
         --prev eval/results/headless/v3-ruler-5160
+
+### 12.6 What the ceiling found in the fixed world (reported, not changed)
+
+The sensing model and the catalog are the fixed world (the owner's decision of 2026-10-25): what
+follows is reported for the owner, nothing in crates/murmur-bridge/src/tracks/ or sim/platforms.toml
+was changed. Each is a consequence of the model's rules as written (docs/SENSING.md), found while
+building the ceiling's look model; none was tuned around.
+
+1. **A gimballed camera's first identification fixes its evidence for five minutes.** A look's
+   confidence is the identification chance at the second the camera identifies, the lock then ends,
+   and the camera does not cue that contact again for `REVISIT_S` (300 s) (tracks/physical/mod.rs
+   `eo`, `steer`). A camera that finds a contact in its wide field well outside its 0.6 range locks
+   there and tends to identify on the way in below 0.6; the track keeps that evidence from that
+   camera however close it comes. In the planner's tables (the model's own predictions; a clear day
+   unless stated): a Puma at 150 m identifies a small fast boat at 0.6 out to about 9.5 km by day and
+   1.8 km at night, but cues from 4 km; a Puma identifies a small drone at 0.6 out to about 1 km by
+   day. The panoramic rings, which keep reporting as the range closes, do not have it. A payload
+   operator would look again; whether the model's manager should (re-zoom on a closing contact
+   identified below the mission's evidence) is the owner's question.
+2. **A camera's cue reach is the catalog's legacy `range_m`.** The payload manager cues to tracks
+   within `range_m` and searches its task area by it (Puma 4 km, X10 1.5 km, the airship 8 km), not by
+   the physical reach (`physical_reach_m`: 14 to 16 km for those cameras' detection), so the reach
+   that decides when a camera's attention turns to a contact is a figure SENSING.md calls the legacy
+   model's. It is consistent (W3: no value was tuned), but undocumented as the cue's radius.
+3. **One active sonar never reaches 0.6, and an active sonar's listening mode does not add to it.**
+   An active look's confidence tends to 0.6 (`0.6 (1 - e^(-s/60))`), and the tracker keeps one look
+   per observer and sensor, so Sea Hunter's MS3 passive mode (0.8 cap) replaces its active look
+   rather than combining with it. Under water a need takes two sonars, or Sea Hunter within its
+   passive range (a diver 100 m) for about 170 s of signal. At the Horseshoe Bay pier (F5 Golden
+   Gate) the only sonar in time is the pier's own BlueROV (Ping360, 50 m): the plan's feasibility
+   names those needs `no_time` (12.2) when no second sonar can reach the diver by its deadline.
