@@ -29,7 +29,7 @@ def added(path: Path) -> list[dict]:
     return [c for c in raw["contact"] if c["id"] in ("boat-1", "drone-1", "aircraft-1", "uuv-1", "diver-1", "vehicle-1")]
 
 
-@pytest.mark.parametrize("name", F.all_names())
+@pytest.mark.parametrize("name", F.all_names(first_part=True))
 def test_every_family_draws_its_element_in_its_medium_and_into_the_circle(name: str, tmp_path: Path):
     fam, world = F.parse(name)
     w = load_world(world)
@@ -80,7 +80,7 @@ def test_f5_is_mostly_at_night(tmp_path: Path):
 
 
 def test_family_names_round_trip():
-    for n in F.all_names():
+    for n in F.all_names(first_part=True):
         fam, world = F.parse(n)
         assert F.family_name(fam, world) == n
     with pytest.raises(ValueError):
@@ -95,7 +95,7 @@ def binary() -> None:
     subprocess.run([cargo, "build", "--release", "-q", "-p", "murmur-headless"], cwd=REPO, check=True)
 
 
-@pytest.mark.parametrize("name", F.all_names())
+@pytest.mark.parametrize("name", F.all_names(first_part=True))
 def test_a_short_episode_per_family_and_world(name: str, tmp_path: Path, binary: None):
     fam, world = F.parse(name)
     e, path = F.generate(name, 5000, tmp_path)

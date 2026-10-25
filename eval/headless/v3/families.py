@@ -559,6 +559,28 @@ FAMILY_DOMAIN = {"f1-fast-boat": "surface", "f2-drone": "air", "f3-low-aircraft"
                  "f5-diver": "subsurface", "f6-shore-vehicle": "ground", "f18-quiet": None}
 
 
+#: the families built in modules of their own (each with `GENERATORS`, `FAMILY_DOMAIN` and a
+#: `generate(name, seed, workdir)` of its own): F7-F13 in families_f7_f13.py
+EXTENSIONS = ("families_f7_f13",)
+
+
+@lru_cache(maxsize=None)
+def extension(family: str) -> Any:
+    """The module that builds `family` when it is not one of this file's, or None."""
+    import importlib
+
+    for m in EXTENSIONS:
+        mod = importlib.import_module(f"{__package__}.{m}")
+        if family in mod.GENERATORS:
+            return mod
+    return None
+
+
+def family_domain(family: str) -> str | None:
+    ext = extension(family) if family not in FAMILY_DOMAIN else None
+    return ext.FAMILY_DOMAIN[family] if ext is not None else FAMILY_DOMAIN.get(family)
+
+
 def family_name(family: str, world: str) -> str:
     tag = next(k for k, v in WORLDS.items() if v == world)
     return f"{PREFIX}{family}-{tag}"
@@ -570,13 +592,20 @@ def parse(name: str) -> tuple[str, str]:
         raise ValueError(f"not a v3 family name: {name!r}")
     body = name[len(PREFIX):]
     fam, _, tag = body.rpartition("-")
-    if fam not in GENERATORS or tag not in WORLDS:
+    if (fam not in GENERATORS and extension(fam) is None) or tag not in WORLDS:
         raise ValueError(f"unknown v3 family {name!r}: v3-<{'|'.join(GENERATORS)}>-<{'|'.join(WORLDS)}>")
     return fam, WORLDS[tag]
 
 
-def all_names() -> list[str]:
-    return [family_name(f, w) for f in GENERATORS for w in WORLDS.values()]
+def all_names(first_part: bool = False) -> list[str]:
+    """Every family on both worlds (`first_part`: F1-F6 and F18 only, this file's)."""
+    import importlib
+
+    fams = list(GENERATORS)
+    if not first_part:
+        for m in EXTENSIONS:
+            fams += list(importlib.import_module(f"{__package__}.{m}").GENERATORS)
+    return [family_name(f, w) for f in fams for w in WORLDS.values()]
 
 
 #: the local hours a family's start may be moved into: night 21:00 to 05:00 (F5), day 08:00 to
@@ -636,6 +665,8 @@ def contacts_file(world: str, seed: int, added: list[dict[str, Any]], path: Path
 def generate(name: str, seed: int, workdir: Path) -> tuple[EpisodeSpec, Path]:
     """One situation of `name` (`v3-<family>-<gg|sd>`) for `seed`: its spec and contacts file."""
     family, world = parse(name)
+    if family not in GENERATORS:
+        return extension(family).generate(name, seed, workdir)
     label, gen = GENERATORS[family]
     rng = random.Random(f"v3:{family}:{world}:{int(seed)}")
     e = from_situation(WATCH[world])
