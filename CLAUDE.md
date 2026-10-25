@@ -269,10 +269,16 @@ meaningful. Decision and command, not weapons.
   (1,000,000 s, 1970) is near dawn at the Gate, so state `sun_elevation_deg` in its conditions.
   Its held-out calibration runs (`calib_physical`, `air_calib_physical`, and its own air sets
   `air_calib_physical_held_out`, seeds 251-280, `air_calib_physical_held_out_two`, 281-310, each
-  run once for murmur-7vp, and `air_calib_physical_held_out_three`, 311-340, run once for
-  murmur-0b8, whose manoeuvre model it did not confirm; 221-340 are spent for it, so the next
-  physical air check needs a fresh set from 341) are evaluations: never
-  tune the sensing model or the tracker on them. Mind `cargo test calib_physical -- --ignored`:
+  run once for murmur-7vp, `air_calib_physical_held_out_three`, 311-340, run once for
+  murmur-0b8, whose manoeuvre model it did not confirm, and `air_calib_physical_held_out_four`,
+  341-370, with the surface's own `calib_physical_held_out`, 371-400, run once for sensing round
+  3; 221-400 are spent, so the next physical check needs a fresh set from 401) are evaluations: never
+  tune the sensing model or the tracker on them. Sea clutter (round 3, murmur-qlt): the grazing
+  angle is the spherical earth's to the nadir, a radar's `cell_m` its range resolution, its
+  `doppler` mode clears a surface contact moving along its line of sight past the clutter's band;
+  an airborne radar sees a contact holding still on the sea only beyond its nadir's glare (no
+  surface reach), and radars' reaches start at the IMO's 40 m minimum range. A cued camera holds
+  its search pattern while each new fix keeps the contact within it (`Gimbal::pattern`). Mind `cargo test calib_physical -- --ignored`:
   the name matches every one of them (use `--exact`). A physical radar's plot carries its scan
   (`Detection::scan_s`): the tracker time-aligns such bearings and holds a ranging fix 6 s on
   them, while a plot without it (the legacy model's) takes the rules as they were; a test that

@@ -294,6 +294,22 @@ mod tests {
         assert_eq!(pd(&r, 2.5, 5_000.0, 5_000.0, 15.0, 2.0, fast), 0.0);
     }
 
+    /// IMO MSC.192(79) 5.4.1: in calm conditions, from 15 m, the navigation buoy is detected
+    /// from 40 m out ([`MIN_RANGE_M`]) to 1 NM; the steep grazing near the ship (20 degrees at
+    /// 40 m) leaves it clear of the sea clutter.
+    #[test]
+    fn the_imo_minimum_range_holds() {
+        let r = imo_radar();
+        let calm = Some(Sea { state: 0.0, wind_mps: 0.0, radial_mps: 0.0 });
+        let mut g = MIN_RANGE_M;
+        while g <= NM {
+            let v = visible_height_m(3.5, 3.5, g, 15.0, K_RADIO);
+            let p = pd(&r, 5.0, g.hypot(15.0 - 3.5), g, 15.0, v, calm);
+            assert!(p > 0.8, "{g:.0} m: {p}");
+            g *= 1.05;
+        }
+    }
+
     #[test]
     fn the_fourth_root_law_holds_short_of_the_crossover() {
         let r = imo_radar();
