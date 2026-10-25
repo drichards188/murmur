@@ -168,6 +168,16 @@ def ais_spoofed(meta: dict[str, Any]) -> bool:
     return isinstance(a, dict) and bool(a.get("spoofed"))
 
 
+def mark_spoofed(rec: dict[str, Any], truth: Truth) -> Truth:
+    """The record's truth says only whether a contact broadcasts AIS (`ais`: true); the situation
+    states which broadcast an identity not their own (families_f7_f13.py `ais_spoofed`): their
+    `ais` becomes `{"spoofed": true}` here."""
+    for cid in ((rec.get("truth") or {}).get("stated") or {}).get("ais_spoofed") or []:
+        if cid in truth.meta:
+            truth.meta[cid] = {**truth.meta[cid], "ais": {"spoofed": True}}
+    return truth
+
+
 def ais_true(meta: dict[str, Any]) -> bool:
     """The contact truly broadcasts its own AIS identity."""
     return bool(meta.get("ais")) and not ais_spoofed(meta)
@@ -584,7 +594,7 @@ def episode_labels(rec: dict[str, Any], none: dict[str, Any] | None = None, para
     """Every label of a v3 episode; `none` (or `none_labels`) its paired `none` replicate's."""
     p = params or Params()
     pic = picture(rec)
-    truth = Truth(rec)
+    truth = mark_spoofed(rec, Truth(rec))
     needs = contact_needs(rec, pic, truth, p)
     fneeds = fault_needs_v3(rec, pic, p)
     if none_labels is None and none is not None:

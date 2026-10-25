@@ -22,7 +22,8 @@ from .able import able
 from .causes import cause_of, light, new_hits, single_cause
 from .faults import lost_vehicles
 from .families import WORLDS, family_domain, parse
-from .labels import episode_labels, picture, sensing_errors
+from ..v2.labels import Params
+from .labels import episode_labels, mark_spoofed, picture, pointed_at, sensing_errors
 from .metrics import episode_metrics
 from .mission import rule
 
@@ -43,7 +44,7 @@ def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]
     lab = episode_labels(rec, none_labels=none_labels)
     met = episode_metrics(rec, lab)
     pic = picture(rec)
-    truth = Truth(rec)
+    truth = mark_spoofed(rec, Truth(rec))
     wrong = sensing_errors(pic, truth)
     plat = {str(v["uid"]): str(v.get("platform")) for v in pic.fleet}
     needs = []
@@ -78,11 +79,21 @@ def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]
             "fault_needs": [{"uid": f["uid"], "platform": plat.get(str(f["uid"])), "domain": f.get("domain"),
                              "status": f["status"]} for f in lab["fault_needs"]],
             "lost": lost_vehicles(rec, pic),
-            # F8's restraint: the agent's orders aimed at a look-alike the situation added
-            "decoy_looks": sum(1 for a in lab["actions"] if (a.get("aim") or {}).get("primary") in decoys),
+            # F8's restraint: the agent's orders that send a vehicle at a look-alike the situation added
+            # and at no need (v2's "pointed at": truth positions over the next 300 s within 1 km of
+            # the order's geometry, labels.py `pointed_at`)
+            "decoy_looks": sum(1 for a in lab["actions"] if decoys and a.get("label") != "refused"
+                               and a.get("kind") in ("orbit", "patrol")
+                               and decoy_only(pointed_at(a, a.get("aim") or {}, pic, truth, Params()), decoys,
+                                              {n["contact"] for n in lab["needs"]})),
             "decoys": len(decoys),
             "per_hour": {k: met["per_hour"].get(k) for k in ("useless", "useless_justified", "useless_unjustified",
                                                               "harmful", "fault_response", "fault_actions")}}
+
+
+def decoy_only(pointed: set[str], decoys: set[str], needs: set[str]) -> bool:
+    """An order pointed at a look-alike and at none of the situation's needs."""
+    return bool(pointed & decoys) and not (pointed & needs)
 
 
 def score_batch(d: Path, workers: int = 8) -> list[dict[str, Any]]:

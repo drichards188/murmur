@@ -41,7 +41,7 @@ renamed where a family has more than one; what each family adds:
   within the circle (the thermal crossover, p 0.25; `sun_elevation_deg`) or day (p 0.3); fog
   (visibility log-uniform from the world's lowest to 2 km) always by day and with p 0.5 otherwise.
 - **F10 rising sea state** (900 s): the sea state drawn from the world's top three (Golden Gate 3
-  to 5, San Diego 3 to 4) and the wind from the upper half of its range; F1's boat with its speed
+  to 5, San Diego 2 to 4) and the wind from the upper half of its range; F1's boat with its speed
   capped by the sea (`F10_TOP_SPEED`, [E here]: a planing hull slows in a seaway), and with p 0.5 a
   second small boat, slower (3 to 6 m/s), from the other approach, within the circle 60 s before
   to 240 s after the first. The model's conditions hold for the episode: "rising" is the family's
@@ -69,9 +69,10 @@ renamed where a family has more than one; what each family adds:
   vehicle: stopped 5 to 60 s after its dispatch; none dispatched by the need's deadline, the
   standing vehicle best placed for the need stops then); a **battery** fault on a standing aircraft
   or UGV on its opening order (PUMA 2, KESTREL 1, SKY 2, FERRET 1, and PUMA 3 in San Diego; not
-  that vehicle) 120 to 360 s in, a share of its pack gone at once to leave a drawn 22 to 33 % and,
-  where its endurance needs it, a heavier draw, so its true battery crosses the 20 % reserve 150 to
-  400 s later (the low-reserve fault need, SCORING-V3.md 2.4); and with p 0.7 a **reboot** (3 to
+  that vehicle) 120 to 300 s in, a share of its pack gone at once to leave a drawn 22 to 33 % and,
+  where its endurance needs it, a heavier draw, so its true battery crosses the 20 % reserve 1.5 to
+  3 times its way home later (version 2, `home_s`: a prompt rtl brings it home in time, a late one
+  does not; the low-reserve fault need, SCORING-V3.md 2.4); and with p 0.7 a **reboot** (3 to
   8 s silent) of another standing boat on its patrol up to 120 s before the need, which boots
   disarmed and drops its task.
 """
@@ -83,6 +84,7 @@ import math
 import random
 import tomllib
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 
@@ -125,6 +127,16 @@ F12_JAM_SHARE = 0.65
 #: F13: the battery fault's vehicles (a standing aircraft or UGV on its opening order)
 F13_BATTERY = {"golden-gate-v3": ("PUMA 2", "KESTREL 1", "SKY 2", "FERRET 1"),
                "san-diego": ("PUMA 2", "PUMA 3", "KESTREL 1", "SKY 2", "FERRET 1")}
+#: F13 version 2 (after the dev check, seeds 5300-5319: version 1's crossing 150 to 400 s after the
+#: fault left 16 of 40 battery faults that no prompt rtl could have met, KESTREL 1 and the Pumas far
+#: out): the fault 120 to 300 s in, and the reserve crossed 1.5 to 3 times the vehicle's way home
+#: after it (`home_s`), at least 60 s before the end
+F13_FAULT_S = (120.0, 300.0)
+F13_SLACK = (1.5, 3.0)
+F13_END_MARGIN_S = 60.0
+#: what landing or stopping at home takes after the way there, s ([E here]: a Puma's AUTOLAND took
+#: 70 to 100 s from its arrival over home in the smoke episodes, a copter's RTL descent less)
+F13_LAND_S = {"plane": 120.0, "vtol": 90.0, "copter": 60.0, "ugv": 15.0}
 F13_REBOOT_SHARE = 0.7
 F13_REBOOT = {"golden-gate-v3": ("HUNTER 1", "MARLIN 1", "ALBATROSS 1"),
               "san-diego": ("HUNTER 1", "MARLIN 1", "MARLIN 2", "ALBATROSS 1")}
@@ -313,14 +325,31 @@ def sensor_uids(world: str, sensor: str) -> list[int]:
 
 def opening_looks(world: str) -> list[tuple[str, list[tuple[float, float]]]]:
     """The watch situation's opening orders: (callsign, the points of its orbit centre or route)."""
+    return [(cs, pts) for cs, pts, _ in opening_orders(world)]
+
+
+@lru_cache(maxsize=None)
+def opening_orders(world: str) -> tuple[tuple[str, list[tuple[float, float]], float], ...]:
+    """(callsign, its orbit centre or route, the orbit's radius or 0) of each opening order."""
     sit = tomllib.loads((REPO / "sim" / "situations" / f"{F.WATCH[world]}.toml").read_text())
     out = []
     for o in sit.get("order") or []:
         cs = (o.get("vehicles") or {}).get("callsign")
         pts = [tuple(o["center"])] if o.get("center") else [tuple(p) for p in o.get("route") or []]
         if cs and pts:
-            out.append((str(cs), pts))
-    return out
+            out.append((str(cs), pts, float(o.get("radius_m") or 0.0)))
+    return tuple(out)
+
+
+@lru_cache(maxsize=None)
+def home_s(world: str, callsign: str) -> float:
+    """How long a standing vehicle needs to come home from the farthest point of its opening order
+    at its cruise, and land or stop (`F13_LAND_S`, by its kind)."""
+    s = by_callsign(world)[callsign]
+    home = (float(s["home"][1]), float(s["home"][0]))
+    _, pts, radius = next(o for o in opening_orders(world) if o[0] == callsign)
+    far = max(F.dist_m(p, home) for p in pts) + radius
+    return far / float(s["spec"]["cruise_mps"]) + F13_LAND_S.get(str(s["spec"].get("behavior")), 60.0)
 
 
 #: the domains whose vehicles a need of a domain is given to (no UGV ashore for a boat, no boat for
@@ -550,7 +579,11 @@ def _f13(d: DraftX) -> None:
     c = one_need(d, (("boat", 0.4), ("air", 0.3), ("vehicle", 0.15), ("uuv", 0.15)))
     if c["domain"] == "subsurface":
         d.duration_s = 1200.0
-        c["start_s"] = round(max(MIN_START_S, d.rng.uniform(*UUV_ENTRY_S) - travel_s(c, d.center, d.w.mission.radius_m)), 1)
+        r = d.w.mission.radius_m
+        entry = d.rng.uniform(*UUV_ENTRY_S)
+        if entry - travel_s(c, d.center, r) < MIN_START_S:
+            recut(d, c, d.elements[-1], entry - MIN_START_S)  # as `element` does for a timed one
+        c["start_s"] = round(max(MIN_START_S, entry - travel_s(c, d.center, r)), 1)
         d.elements[-1]["start_s"] = c["start_s"]
         d.elements[-1]["entry_s"] = round(entry_s(d, c), 1)
     t_in = entry_s(d, c)
@@ -565,11 +598,15 @@ def _f13(d: DraftX) -> None:
                      "deadline_s": round(t_in + grace, 1), "fallback_uid": int(cat[fallback]["uid"]),
                      "look_tasks": ["orbit", "patrol"], "look_uids": sensor_uids(d.world, sensor)})
     faults: list[dict[str, Any]] = [{"kind": "breakdown", "of": "the first look", "fallback": fallback}]
-    # a battery fault on a standing aircraft or UGV
-    who = d.rng.choice([x for x in F13_BATTERY[d.world] if x != fallback])
+    # a battery fault on a standing aircraft or UGV, timed so a prompt rtl can bring it home in time
+    # (version 2: the crossing a drawn 1.5 to 3 times its way home after the fault, `home_s`)
+    room = d.duration_s - F13_END_MARGIN_S
+    cands = [x for x in F13_BATTERY[d.world] if x != fallback and F13_FAULT_S[0] + F13_SLACK[0] * home_s(d.world, x) <= room]
+    who = d.rng.choice(cands)
     spec = cat[who]["spec"]
-    t_f = d.rng.uniform(120.0, 360.0)
-    cross = d.rng.uniform(150.0, 400.0)
+    back = home_s(d.world, who)
+    t_f = d.rng.uniform(F13_FAULT_S[0], min(F13_FAULT_S[1], room - F13_SLACK[0] * back))
+    cross = min(back * d.rng.uniform(*F13_SLACK), room - t_f)
     e_s = 3600.0 * float(spec["endurance_h"])
     target = min(33.0, max(22.0, 20.0 + 100.0 * cross / e_s))
     rate = max(1.0, (target - 20.0) / 100.0 * e_s / cross)
@@ -581,7 +618,8 @@ def _f13(d: DraftX) -> None:
     d.script.append(step(t_f, "battery-fault", "battery", **params))
     faults.append({"kind": "battery", "callsign": who, "domain": spec.get("domain"), "at_s": round(t_f, 1),
                    "drop_pct": drop, "rate": round(rate, 2), "planned_left_pct": round(target, 1),
-                   "planned_crossing_s": round(t_f + cross, 1)})
+                   "planned_crossing_s": round(t_f + cross, 1), "home_s": round(back, 1)})
+    d.stated["version"] = 2
     # a reboot of a standing boat on its patrol
     if d.rng.random() < F13_REBOOT_SHARE:
         boat = d.rng.choice([x for x in F13_REBOOT[d.world] if x != fallback])
@@ -652,6 +690,11 @@ def generate(name: str, seed: int, workdir: Path) -> tuple[EpisodeSpec, Path]:
     stated["contacts_seed"] = contacts_seed
     stated["conditions"] = cond
     stated["added"] = [c["id"] for c in d.added]
+    # the contacts whose AIS identity is not their own: the record's truth says only that a contact
+    # broadcasts (labels.py `mark_spoofed` reads this)
+    spoofed = [c["id"] for c in d.added if (c.get("ais") or {}).get("spoofed")]
+    if spoofed:
+        stated["ais_spoofed"] = spoofed
     stated["needs"] = [x["contact"] for x in d.elements]
     stated["elements"] = d.elements
     if d.decoys:

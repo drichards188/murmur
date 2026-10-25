@@ -190,6 +190,8 @@ def test_f13_spreads_its_faults_across_domains_and_vehicles(world: str, tmp_path
         bat = faults[1]
         assert cat[bat["callsign"]]["spec"]["domain"] in ("air", "ground")
         assert 20.0 < bat["planned_left_pct"] <= 35.0 and bat["planned_crossing_s"] < e.duration_s
+        # version 2: a prompt rtl can bring it home before the reserve
+        assert bat["planned_crossing_s"] - bat["at_s"] >= X.F13_SLACK[0] * bat["home_s"] - 0.2
         if "reboot" in kinds:
             assert cat[faults[2]["callsign"]]["spec"]["domain"] == "surface"
 
@@ -249,7 +251,8 @@ def test_a_short_episode_per_family_and_world(name: str, tmp_path: Path, binary:
     lab = episode_labels(rec)
     judged = {n["contact"] for n in lab["needs"] if n["evaluable"]}
     assert judged and judged <= set(e.truth["needs"]), "only the family's needs, and at least one judged"
-    assert set(e.truth["needs"]) <= set(detail["needs"]), "the oracle knows every need"
+    due = {n["contact"] for n in e.truth["elements"] if n["entry_s"] < e.duration_s - 2.0}
+    assert due <= set(detail["needs"]), "the oracle knows every need that comes in the (shortened) episode"
     log = rec.get("script") or []
     for s in log:
         assert not s.get("error"), s

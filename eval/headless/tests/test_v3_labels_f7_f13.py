@@ -42,6 +42,18 @@ def test_a_spoofer_is_resolved_by_eo_ir_exposing_the_spoof():
     assert n["ais_spoofed"] and n["ais"] is False, "a spoofed AIS is not the contact's own true AIS"
 
 
+def test_the_record_s_truth_says_only_that_it_broadcasts_and_the_situation_names_the_spoofer():
+    """The headless truth records `ais: true` for any broadcaster; the situation's stated truth
+    (`ais_spoofed`) names the spoofers."""
+    s = spoofer(("small_fast_boat", 0.9, AIS_CONFLICT, ["eo_ir"]), 130.0)
+    s.contacts["c"]["meta"]["ais"] = True
+    rec = v3_record(s)
+    assert not need(L.episode_labels(rec), "c")["served"], "a true broadcaster in conflict"
+    rec["truth"]["stated"] = {"ais_spoofed": ["c"]}
+    n = need(L.episode_labels(rec), "c")
+    assert n["served"] and n["ais_spoofed"] and not n["ais"]
+
+
 def test_a_spoofer_believed_is_never_resolved():
     assert not need(labels(spoofer(BELIEVED, 0.0)), "c")["served"]
 
