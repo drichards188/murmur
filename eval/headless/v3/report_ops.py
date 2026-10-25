@@ -89,7 +89,8 @@ def blockers(rec: dict[str, Any], pic: Any) -> dict[str, Any]:
             elif subject == "vehicle":
                 c = "ours"
             elif kind == "aircraft" or domain == "air":
-                c = "aircraft"
+                # rules 14's aircraft reach, or an aircraft's track with no velocity (top speed)
+                c = "aircraft" if kind == "aircraft" else f"aircraft:{kind}"
             elif kind == "no_velocity" and domain == "ground":
                 c = "ground_no_velocity"
                 cid = whole.get(str(tid))
@@ -98,10 +99,8 @@ def blockers(rec: dict[str, Any], pic: Any) -> dict[str, Any]:
                 truth = "unassociated" if cid is None else ("stationary" if (mv is not None and mv < STATIONARY_MPS) else "moving")
                 noveloc[(truth, "young" if age < YOUNG_S else "older")] += 1
                 noveloc_tracks[str(tid)] = truth
-            elif kind == "young":
-                c = "young"
             else:
-                c = f"other:{kind}"
+                c = f"other:{domain}:{kind}"
             here.add(c)
         for c in here:
             cats[c] += 1
@@ -148,6 +147,12 @@ def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]
                        for e in ((rec.get("effects") or {}).get("applied") or [])]}
     if meta["agent"] == ORACLE:
         out["blockers"] = blockers(rec, pic)
+        b = out["blockers"]
+        for e in out["ops"].get("engagement") or []:
+            # the oracle tried: what kept every attempt from passing, by the commonest blocker
+            if e.get("cause") == "no_nomination" and b.get("attempts") and not b.get("passed"):
+                top = Counter(b.get("categories") or {}).most_common(1)
+                e["cause"] = "never_passed:" + (top[0][0] if top else "other")
     return out
 
 
@@ -203,8 +208,9 @@ def summarize(scored: list[dict[str, Any]]) -> dict[str, Any]:
                 x["cover_labels"] = dict(Counter(a["label"] for s in ag for a in s["actions"] if a["kind"] == "cover"))
             if engs:
                 x["engagement"] = {"right": sum(1 for e in engs if e["right"]), "effective": sum(1 for e in engs if e["effective"]),
+                                   "executed": sum(1 for e in engs if e.get("executed")),
                                    "restraint_ok": sum(1 for e in engs if e["restraint_ok"]), "of": len(engs),
-                                   "causes": single_cause([e["cause"] for e in engs if not e["effective"] and e.get("cause")])}
+                                   "causes": single_cause([e["cause"] for e in engs if not e.get("executed") and e.get("cause")])}
             if noms or engs:
                 x["nominations"] = dict(Counter(a["label"] for a in noms))
                 x["harmful"] = sum(1 for a in noms if a["label"] == "harmful")
@@ -264,7 +270,7 @@ def markdown(summary: dict[str, Any], d: Path) -> str:
                 parts.append(f"cover {pct(x['cover']['served'], x['cover']['of'])} (outage in {x['cover']['with_outage']})")
             if "engagement" in x:
                 e = x["engagement"]
-                parts.append(f"engagement right {pct(e['right'], e['of'])}, effective {e['effective']}, restraint ok {e['restraint_ok']}")
+                parts.append(f"engagement right {pct(e['right'], e['of'])}, executed {e['executed']}, effective {e['effective']}, restraint ok {e['restraint_ok']}")
             if "nominations" in x:
                 parts.append(f"nominations {x['nominations']} harmful {x['harmful']} unwarranted {x['unwarranted']}")
             if "review" in x:

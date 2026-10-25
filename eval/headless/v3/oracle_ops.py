@@ -30,9 +30,16 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from eval.agent import _mcp_args
+
 from ..labels import dist_m
 from ..scripted import first_passing, keep_out_blockers, standing_on
-from .oracle import Need, OracleV3, Path2
+from .families import wet
+from .oracle import Need, OracleV3, Path2, to_ll, to_xy
+
+
+def wet_point(world: str, p: tuple[float, float], depth_m: float = 3.0) -> bool:
+    return wet(world, [p, p], depth_m)
 
 ENGAGE_TICK_S = 4.0
 COLLECT_MIN_LEAD_S = 600.0
@@ -229,6 +236,7 @@ class OracleOps(OracleV3):
         if now < float(e.get("arrives_s") or 0.0) - 150.0:
             return
         hold = (float(e["hold"][0]), float(e["hold"][1]))
+        hx = to_xy(self.origin, hold)
         ours = {int(o["uid"]): o for o in truth.get("ours") or []}
         for uid, u in self.armed_units.items():
             if uid in self.prepositioned or u.platform == "fpv":
@@ -236,14 +244,38 @@ class OracleOps(OracleV3):
             o = ours.get(uid)
             if o is None:
                 continue
-            here = (float(o["lon"]), float(o["lat"]))
-            d = max(dist_m(here, hold), 1.0)
-            f = min(1.0, 700.0 / d)
-            centre = [round(hold[0] + (here[0] - hold[0]) * f, 6), round(hold[1] + (here[1] - hold[1]) * f, 6)]
             self.prepositioned.add(uid)
-            self.propose(f"Bring {u.callsign} to loiter 700 m off the hostile's holding point (a scoring anchor placed "
-                         "from truth).", {"task": "orbit", "uids": [uid], "center": centre, "radius_m": u.orbit_m},
-                         need="engage:" + str(e["target"]))
+            u.xy = to_xy(self.origin, (float(o["lon"]), float(o["lat"])))
+            # candidates 700 and 1,000 m off the point, nearest the platform first; the first
+            # whose link holds (line-of-sight and mesh links, the link map), on water for a boat,
+            # whose dry run passes
+            cands = []
+            for r in (700.0, 1000.0):
+                for b in range(0, 360, 30):
+                    c = (hx[0] + r * math.sin(math.radians(b)), hx[1] + r * math.cos(math.radians(b)))
+                    cands.append((math.hypot(c[0] - u.xy[0], c[1] - u.xy[1]), c))
+            tried = 0
+            for _, c in sorted(cands):
+                if tried >= 6:
+                    break
+                ll = to_ll(self.origin, c[0], c[1])
+                if u.spec.get("domain") == "surface" and not wet_point(self.world.name, (ll[0], ll[1])):
+                    continue
+                if not self.link_holds(u, c):
+                    continue
+                tried += 1
+                req = {"task": "orbit", "uids": [uid], "center": ll, "radius_m": u.orbit_m}
+                try:
+                    pv = self.call("preview_intent", **_mcp_args(req))
+                except Exception:  # noqa: BLE001
+                    continue
+                if not pv.get("passed"):
+                    continue
+                self.propose(f"Bring {u.callsign} to loiter off the hostile's holding point (a scoring anchor placed "
+                             "from truth).", req, need="engage:" + str(e["target"]))
+                break
+            else:
+                self.write("preposition.none", uid=uid, tried=tried)
 
     def engage(self, now: float) -> None:
         e = self.st["engagement"]

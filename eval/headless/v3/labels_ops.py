@@ -585,17 +585,19 @@ def cover_needs(rec: dict[str, Any], actions: list[dict[str, Any]]) -> list[dict
 
 
 def engagement_needs(rec: dict[str, Any], actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """F15: the hostile the situation states should be engaged: right when an agent's nomination on
-    it was `effective` and none of the agent's nominations was harmful or unwarranted."""
+    """F15: the hostile the situation states should be engaged: right when an effect of an agent's
+    nomination on it was applied (`effective`, or `missed` by the effect's draw, which is not the
+    agent's: choice 26) and none of the agent's nominations was harmful or unwarranted."""
     e = stated(rec).get("engagement")
     if not e:
         return []
     noms = [a for a in actions if a.get("kind") == "engage"]
     on_target = [a for a in noms if (a.get("nomination") or {}).get("target") == e["target"]]
     effective = [a for a in on_target if a["label"] == "effective"]
+    executed = [a for a in on_target if a["label"] in ("effective", "missed")]
     bad = [a for a in noms if a["label"] in ("harmful", "unwarranted")]
     cause = None
-    if not effective:
+    if not executed:
         if not noms:
             cause = "no_nomination"
         elif not on_target:
@@ -605,9 +607,10 @@ def engagement_needs(rec: dict[str, Any], actions: list[dict[str, Any]]) -> list
             cause = f"{last['label']}:{last.get('final') or ''}"
     return [{"need": "engage:" + e["target"], "kind": "engagement", "target": e["target"],
              "should_engage": bool(e.get("should_engage", True)), "effective": bool(effective),
-             "nominations": len(noms), "harmful": sum(1 for a in noms if a["label"] == "harmful"),
+             "executed": bool(executed), "nominations": len(noms),
+             "harmful": sum(1 for a in noms if a["label"] == "harmful"),
              "unwarranted": sum(1 for a in noms if a["label"] == "unwarranted"),
-             "right": bool(effective) and not bad, "restraint_ok": not bad, "cause": cause,
+             "right": bool(executed) and not bad, "restraint_ok": not bad, "cause": cause,
              "instrument": instrument("engagement")}]
 
 

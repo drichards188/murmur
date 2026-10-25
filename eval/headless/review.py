@@ -33,8 +33,9 @@ identification at `EVIDENCE_CONF` or more that EO/IR supports) and the claim's o
 | item | diligent: acts when | waits for evidence, then (after `max_wait_s` from its first read) |
 |---|---|---|
 | a rule declaration | revokes when EO/IR shows a civil kind (`CIVIL_KINDS`), confirms when it shows another | confirms on the act's evidence alone |
-| a flag | declares the one named track EO/IR shows as a non-civil kind (an attribution among several), dismisses when EO/IR shows every named track civil | dismisses (weak evidence never declares) |
-| an AIS claim | confirms when the engine's evidence says the kinds agree by EO/IR or sonar, declines (`decline`, no request) when they differ or the engine names a blocker | leaves it (`leave`, no request) |
+| a proximity flag | dismisses it once read (keeping company is weak evidence: it never declares) | |
+| another flag | declares the one named track EO/IR shows as a non-civil kind (an attribution among several), dismisses when EO/IR shows every named track civil | dismisses (weak evidence never declares) |
+| an AIS claim | confirms when EO/IR shows the claimant as the kind its AIS names (`AIS_KIND`), declines (`decline`, no request) when it shows another, when the claimant's identity conflicts or the engine names a blocker | leaves it (`leave`, no request) |
 
 A decision with no request (`decline`, `leave`) is recorded with `result` "done (no request)".
 Every flag decision records the flag's tracks (`tracks`), and an AIS claim's the claimant's
@@ -61,6 +62,10 @@ CIVIL_KINDS = ("ferry", "cargo_ship", "tanker", "sailboat", "fishing_vessel", "p
                "helicopter", "vehicle", "truck", "person")
 EVIDENCE_CONF = 0.6
 NO_REQUEST = "done (no request)"
+#: the kind an AIS ship type names (crates/murmur-bridge tracks/model.rs `ais_kind`)
+AIS_KIND = {"passenger": "ferry", "cargo": "cargo_ship", "tanker": "tanker", "fishing": "fishing_vessel",
+            "pleasure": "sailboat", "sailing": "sailboat", "law_enforcement": "patrol_boat", "military": "patrol_boat",
+            "sar": "patrol_boat", "tug": "tug"}
 
 
 @dataclass
@@ -224,6 +229,10 @@ def judge(act: dict[str, Any], tracks: dict[str, dict[str, Any]], claim: dict[st
         return ("confirm", "no EO/IR evidence after the wait: the act's evidence stands") if late else ("wait", "")
     if act["kind"] == "flag":
         kinds = {t: eo_kind(tracks.get(t)) for t in act.get("tracks") or []}
+        if act.get("flag_kind") == "proximity":
+            # keeping company is weak evidence: read, it is dismissed whatever a look shows
+            seen = ", ".join(f"{t} a {k}" for t, k in kinds.items() if k) or "no EO/IR identification"
+            return "dismiss", f"proximity alone never declares ({seen})"
         armed = [t for t, k in kinds.items() if k is not None and k not in CIVIL_KINDS]
         if len(armed) == 1:
             return f"declare:{armed[0]}", f"EO/IR shows {armed[0]} a {kinds[armed[0]]}"
@@ -232,15 +241,18 @@ def judge(act: dict[str, Any], tracks: dict[str, dict[str, Any]], claim: dict[st
         return ("dismiss", "no telling EO/IR evidence after the wait: weak evidence never declares") if late else ("wait", "")
     if act["kind"] == "ais_claim":
         c = claim or {}
-        said = " ".join(str(x) for x in c.get("evidence") or [])
-        classified = "by eo_ir" in said or "by sonar" in said
-        if c.get("blockers"):
-            return "decline", ("the engine names a blocker: " + "; ".join(str(b) for b in c["blockers"]))[:240]
-        if classified and "the kinds differ" in said:
-            return "decline", "our sensors' kind differs from the lost contact's"
-        if classified and "the kinds agree" in said and "confirm" in (c.get("actions") or []):
-            return "confirm", "our sensors' kind agrees with the lost contact's"
-        return ("leave", "no classifying evidence after the wait") if late else ("wait", "")
+        tr = tracks.get(str(act.get("by_track"))) or {}
+        idn = tr.get("identity") or {}
+        want = AIS_KIND.get(str((idn.get("ais") or {}).get("ship_type") or ""))
+        k = eo_kind(tr)
+        if c.get("blockers") or idn.get("conflict"):
+            why = "; ".join(str(b) for b in c.get("blockers") or []) or str(idn.get("conflict"))
+            return "decline", f"what our sensors see contradicts the claim: {why}"[:240]
+        if k is not None and want is not None and k != want:
+            return "decline", f"EO/IR shows a {k}, its AIS says a {want}"
+        if k is not None and k == want and "confirm" in (c.get("actions") or []):
+            return "confirm", f"EO/IR shows a {k}, as its AIS says"
+        return ("leave", "no EO/IR identification of the claimant after the wait") if late else ("wait", "")
     return "leave", "not an item the evidence reviewer judges"
 
 
