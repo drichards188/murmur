@@ -109,14 +109,17 @@ M = 111_320.0
 
 class Quality:
     """One platform's domain sensor against one contact under given conditions: its chance at each
-    horizontal distance of `DISTANCES` (EO/IR: identification, `p`; sonar: each mode's detection,
-    `active` and `passive`), its camera's cue reach (catalog `range_m`) and whether it is gimballed
-    (a camera that zooms and cues) or looks all round or along its heading."""
+    horizontal distance of `DISTANCES` (EO/IR: identification in its best field, `p`, and detection
+    in the wide field a cue or a search holds on it, `search`; sonar: each mode's detection, `active`
+    and `passive`), its camera's cue reach (catalog `range_m`) and whether it is gimballed (a camera
+    that slews, zooms and cues) or looks all round (or along its heading)."""
 
     def __init__(self, sensor: str, p: np.ndarray, cue_m: float, gimballed: bool,
-                 active: np.ndarray | None = None, passive: np.ndarray | None = None, nominal: bool = False):
+                 active: np.ndarray | None = None, passive: np.ndarray | None = None, nominal: bool = False,
+                 search: np.ndarray | None = None):
         self.sensor = sensor
         self.p = p
+        self.search = search if search is not None else p
         self.cue_m = cue_m
         self.gimballed = gimballed
         self.active = active if active is not None else np.zeros_like(p)
@@ -140,8 +143,8 @@ class Quality:
         if self.sensor == "sonar":
             return {"sensor": "sonar", "active_08_m": round(self.reach(0.8, "active")), "passive_08_m":
                     round(self.reach(0.8, "passive")), "nominal": self.nominal}
-        return {"sensor": self.sensor, "r60_m": round(self.reach()), "best": round(self.best(), 3), "cue_m": self.cue_m,
-                "gimballed": self.gimballed, "nominal": self.nominal}
+        return {"sensor": self.sensor, "r60_m": round(self.reach()), "search_50_m": round(self.reach(0.5, "search")),
+                "best": round(self.best(), 3), "cue_m": self.cue_m, "gimballed": self.gimballed, "nominal": self.nominal}
 
 
 def nominal_quality(sensor: str, range_m: float, gimballed: bool) -> Quality:
@@ -149,14 +152,14 @@ def nominal_quality(sensor: str, range_m: float, gimballed: bool) -> Quality:
     inside = (DISTANCES <= range_m).astype(float)
     if sensor == "sonar":
         return Quality("sonar", inside, range_m, False, active=inside, passive=np.zeros_like(inside), nominal=True)
-    return Quality(sensor, inside, range_m, gimballed, nominal=True)
+    return Quality(sensor, inside, range_m, gimballed, nominal=True, search=inside)
 
 
 # ---- one look's value along a planned encounter -----------------------------------------------------------
 
 class Look:
     """What one vehicle's look at one need is planned to give by the deadline: EO/IR, the chance
-    of a confident identification (`high`, at 0.6 or more) and of an early, lower one (`low`, at
+    of a confident identification (`high`, at 0.6 or more) and of a lower one (`low`, at
     confidence `low_c`); sonar, the confidence its seconds of signal give (`conf`)."""
 
     def __init__(self, uid: int, kind: str, high: float = 0.0, low: float = 0.0, low_c: float = 0.0, conf: float = 0.0,
@@ -170,46 +173,82 @@ class Look:
                 "t_first": None if self.t_first is None else round(self.t_first, 1)}
 
 
+#: the payload manager's constants (tracks/physical/mod.rs): detection's ACQUIRE time constant, a
+#: cue's 8 s to find its contact in the wide field, then 60 s off it (RETRY_S) and 10 s of search
+#: (SEARCH_MIN_S) before the next cue; identification's hazard `p^2` a second (LEVEL_TAU_S) after 2 s
+#: of the narrow field (IDENTIFY_DWELL_S)
+TAU_DETECT_S = 3.4
+CUE_S = 8.0
+CUE_PERIOD_S = CUE_S + 60.0 + 10.0
+IDENTIFY_DWELL_S = 2.0
+
+
+def identification(p_id: np.ndarray, d_lock: np.ndarray, dt: float, dwell_steps: int) -> np.ndarray:
+    """The chance of identifying at each step, given the chance the lock (or, for a camera that
+    looks all round, the detection) came at each step: identification accrues at `p^2` a second
+    from `dwell_steps` after it (P(id in step t) = (1 - e^(-h(t))) e^(-H(t-1)) times the sum over
+    l <= t - dwell of P(lock at l) e^(H(l + dwell - 1)), in log space)."""
+    n = len(p_id)
+    h = p_id ** 2 * dt
+    H = np.cumsum(h)
+    shift = np.concatenate([np.zeros(dwell_steps), d_lock[: n - dwell_steps]]) if dwell_steps else d_lock
+    # the hazard counts from the step after the dwell: weight each lock by e^(H at its start)
+    H0 = np.concatenate([[0.0], H[:-1]])
+    with np.errstate(divide="ignore"):
+        x = np.log(np.maximum(shift, 1e-300)) + H0
+    x = np.where(shift > 0.0, x, -np.inf)
+    L = np.logaddexp.accumulate(x)
+    # in a step the chance is the hazard's own, 1 - e^(-h), after surviving the steps before it
+    with np.errstate(over="ignore", invalid="ignore"):
+        out = -np.expm1(-h) * np.exp(np.where(np.isfinite(L), L - (H - h), -np.inf))
+    return np.nan_to_num(out, nan=0.0)
+
+
 def eo_look(uid: int, q: Quality, ts: np.ndarray, r: np.ndarray, dist_centre: np.ndarray, area_m: float,
             exists: np.ndarray, dt: float) -> Look:
-    """An EO/IR look over an encounter: `r` the vehicle's distance to the contact at `ts`,
-    `dist_centre` the contact's distance from the orbit's centre (a camera cues to a track within
-    its reach and its task area: the orbit and half its reach). A gimballed camera's lock begins at
-    the cue and identifies at the hazard `p^2` a second (LEVEL_TAU_S 1 s), once: before the 0.6
-    range it does so at a lower confidence. A camera that looks all round keeps reporting as the
-    range closes (its confidence is the surest it has been)."""
+    """An EO/IR look over an encounter, as the payload manager runs it (tracks/physical/mod.rs
+    `steer`, `eo`): `r` the vehicle's distance to the contact at `ts`, `dist_centre` the contact's
+    distance from the orbit's centre.
+
+    A gimballed camera cues to a track within its reach and its task area (the orbit and half its
+    reach), holds its wide field on it for 8 s while the detection accrues (`search`'s chance at the
+    ACQUIRE rate), and after a cue that found nothing is off the contact for 60 s and searches 10 s;
+    once detected it locks in the narrow field and, after 2 s, identifies at the hazard `p^2` a
+    second, once: the look's confidence is the identification chance at that second (below 0.6, a
+    `low` look). A camera that looks all round has the contact in view whenever it is in sight,
+    detects and identifies at the same rates, and keeps reporting as the range closes: its
+    confidence is the surest the encounter gives after it identifies."""
     p = q.at(r) * exists
+    ps = q.at(r, "search") * exists
+    dwell = max(1, int(round(IDENTIFY_DWELL_S / dt)))
     if q.gimballed:
         cue = exists & (r <= q.cue_m) & (dist_centre <= area_m)
         if not cue.any():
             return Look(uid, "eo")
         first = int(np.argmax(cue))
-        pc = np.where(cue, p, 0.0)
-        hi = pc >= P60
-        haz = pc ** 2 * dt
-        cum = np.cumsum(haz)
-        surv = np.exp(-cum)
-        if hi.any():
-            k = int(np.argmax(hi))
-            early = 1.0 - math.exp(-float(np.sum(haz[:k])))
-            # once in the 0.6 range: identified in its few seconds there, if it stays long enough
-            stay = float(np.sum(haz[k:]))
-            high = (1.0 - early) * (1.0 - math.exp(-stay))
-        else:
-            early = 1.0 - float(surv[-1])
-            high = 0.0
-        dens = haz * np.concatenate([[1.0], surv[:-1]])
-        low_c = float(np.sum(dens * pc) / np.sum(dens)) if np.sum(dens) > 0 else 0.0
-        return Look(uid, "eo", high=P_EXEC * high, low=P_EXEC * early, low_c=min(low_c, P60 - 1e-3),
-                    t_first=float(ts[first]))
-    # all round (or along the heading): the confidence is the surest the range gives once identified
-    haz = p ** 2 * dt
-    got = 1.0 - math.exp(-float(np.sum(haz)))
-    best = float(np.max(p)) if len(p) else 0.0
-    if best >= P60:
-        k = int(np.argmax(p >= P60))
-        return Look(uid, "eo", high=P_EXEC * got, t_first=float(ts[k]))
-    return Look(uid, "eo", low=P_EXEC * got, low_c=best)
+        on = cue & (((ts - ts[first]) % CUE_PERIOD_S) < CUE_S)
+    else:
+        on = exists & (p + ps > 0.0)
+        if not on.any():
+            return Look(uid, "eo")
+        first = int(np.argmax(on))
+    hd = np.where(on, ps ** 2 / TAU_DETECT_S * dt, 0.0)
+    got = 1.0 - np.exp(-np.cumsum(hd))
+    d_lock = np.diff(np.concatenate([[0.0], got]))
+    pid = identification(p, d_lock, dt, dwell)
+    if q.gimballed:
+        conf = p
+    else:
+        # the surest from each step to the deadline
+        conf = np.maximum.accumulate(p[::-1])[::-1]
+    hi_mask = conf >= P60
+    high = float(np.sum(pid[hi_mask]))
+    low = float(np.sum(pid[~hi_mask]))
+    low_c = float(np.sum(pid[~hi_mask] * conf[~hi_mask]) / low) if low > 1e-9 else 0.0
+    k = np.nonzero(pid > 1e-6)[0]
+    t_first = float(ts[k[0]]) if len(k) else float(ts[first])
+    return Look(uid, "eo", high=P_EXEC * min(high, 1.0), low=P_EXEC * min(low, 1.0), low_c=min(low_c, P60 - 1e-3),
+                t_first=t_first)
 
 
 def sonar_look(uid: int, q: Quality, r: np.ndarray, exists: np.ndarray, dt: float) -> Look:
@@ -254,6 +293,21 @@ def p_resolved(looks: list[Look]) -> float:
         ps = float(np.clip((comb - 0.45) / 0.3, 0.0, 1.0))
         p = 1.0 - (1.0 - p) * (1.0 - ps)
     return min(p, 1.0)
+
+
+def utility(looks: list[Look]) -> float:
+    """What the plan maximises when it builds a set of looks: the chance the need is resolved, and a
+    tenth of the evidence the looks bring short of it (EO/IR the chance of any identification
+    weighted by its confidence; sonar the combined confidence), so a first look that only a second
+    could complete (two lower identifications, two active sonars) is still worth sending."""
+    eo = [x for x in looks if x.kind == "eo"]
+    so = [x for x in looks if x.kind == "sonar"]
+    soft = 0.0
+    if eo:
+        soft = max(soft, 1.0 - float(np.prod([1.0 - min(1.0, x.high + x.low * x.low_c) for x in eo])))
+    if so:
+        soft = max(soft, 1.0 - float(np.prod([1.0 - x.conf for x in so])))
+    return p_resolved(looks) + 0.1 * soft
 
 
 # ---- needs and units ---------------------------------------------------------------------------------
@@ -340,6 +394,8 @@ class Ceiling(SessionAgent):
     MAX_LOOKS = 3
     P_TARGET = 0.95
     MIN_GAIN = 0.02
+    #: a need is feasible for the plan when its best set of looks resolves it with this chance
+    FEASIBLE_P = 0.1
     CHASE_M = 400.0
     CHASE_LEAD_S = 20.0
     #: an aircraft that flies this high when tasked (the MQ-9B at 7,600 m, the RQ-4 at 18,000) is
@@ -446,6 +502,7 @@ class Ceiling(SessionAgent):
         ll = to_ll(self.origin, 0.0, 0.0)
         lat_scale = M * math.cos(math.radians(ll[1]))
         p = np.zeros(len(DISTANCES))
+        srch = np.zeros(len(DISTANCES))
         act = np.zeros(len(DISTANCES))
         pas = np.zeros(len(DISTANCES))
         zeros = 0
@@ -462,10 +519,11 @@ class Ceiling(SessionAgent):
                 p[i] = max(act[i], pas[i])
             else:
                 p[i] = float(pr.get("p_identify") or 0.0)
-            zeros = zeros + 1 if p[i] <= 0.0 and i > 3 and p[: i].max() > 0.0 else 0
+                srch[i] = float(pr.get("p_search") or pr.get("p_detect") or 0.0)
+            zeros = zeros + 1 if max(p[i], srch[i]) <= 0.0 and i > 3 and max(p[: i].max(), srch[: i].max()) > 0.0 else 0
             if zeros >= 3:
                 break
-        q = Quality(sensor, p, u.range_m(sensor), gimballed, active=act, passive=pas)
+        q = Quality(sensor, p, u.range_m(sensor), gimballed, active=act, passive=pas, search=srch)
         self.quality[k] = q
         return q
 
@@ -717,10 +775,10 @@ class Ceiling(SessionAgent):
         ranked = []
         for c in self.centres(n, ts, pos, exists):
             lk = self.look_value(u, n, q, c, now, u.xy, ts, pos, exists)
-            v = p_resolved([lk])
-            if v <= 0.0 and lk.low <= 0.0:
+            v = utility([lk])
+            if v <= 1e-4:
                 continue
-            ranked.append((-(v + 0.25 * lk.low * lk.low_c), lk.t_first if lk.t_first is not None else 1e9, c, lk))
+            ranked.append((-round(v, 4), lk.t_first if lk.t_first is not None else 1e9, c, lk))
         ranked.sort(key=lambda x: (x[0], x[1]))
         tried = 0
         for _, _, c, lk in ranked:
@@ -760,6 +818,7 @@ class Ceiling(SessionAgent):
             p = p_resolved(have)
             if p >= self.P_TARGET or len(have) >= self.MAX_LOOKS:
                 continue
+            uv = utility(have)
             opts = []
             for u in self.units.values():
                 if u.uid in taken or u.uid in n.assigned:
@@ -769,14 +828,15 @@ class Ceiling(SessionAgent):
                     opts.append(o)
             chosen: list[dict[str, Any]] = []
             while opts and len(have) + len(chosen) < self.MAX_LOOKS and p < self.P_TARGET:
-                gains = [(p_resolved(have + [c["look"] for c in chosen] + [o["look"]]) - p, -o["t"], -o["uid"], i)
+                gains = [(round(utility(have + [c["look"] for c in chosen] + [o["look"]]) - uv, 4), -o["t"], -o["uid"], i)
                          for i, o in enumerate(opts)]
                 g, _, _, i = max(gains)
                 if g < self.MIN_GAIN:
                     break
                 o = opts.pop(i)
                 chosen.append(o)
-                p += g
+                uv += g
+                p = p_resolved(have + [c["look"] for c in chosen])
             for o in chosen:
                 taken.add(o["uid"])
                 o["p_after"] = round(p, 3)
@@ -923,7 +983,12 @@ class Ceiling(SessionAgent):
         units = [u for u in self.units.values() if u.xy is not None and not u.down and domain_sensor(n.domain) in u.sensors
                  and not (n.domain == "subsurface" and u.domain == "air")]
         rows: dict[str, Any] = {}
-        capable, clear_capable, timely, seen, linked, reserved = [], [], [], [], [], []
+        capable: list[UnitV3] = []
+        clear_capable: list[UnitV3] = []
+        timely: list[tuple[UnitV3, Look]] = []
+        seen: list[tuple[UnitV3, Look]] = []
+        linked: list[tuple[UnitV3, Look]] = []
+        reserved: list[tuple[UnitV3, Look]] = []
         for u in units:
             q = self.quality_of(u, n)
             row: dict[str, Any] = {"platform": u.platform, **(q.summary() if q else {})}
@@ -944,40 +1009,52 @@ class Ceiling(SessionAgent):
             best = None
             for c in self.centres(n, ts, pos, exists):
                 lk = self.look_value(u, n, q, c, now, u.xy, ts, pos, exists)
-                # alone, or a look a second could combine with to 0.6 (two at 0.37 do)
-                v = max(p_resolved([lk]), lk.low if lk.low_c >= 0.37 else 0.0, 0.5 if lk.conf >= 0.3 else 0.0)
-                if v > 0.0 and (best is None or v > best[0]):
+                v = utility([lk])
+                if v > 1e-4 and (best is None or v > best[0]):
                     best = (v, c, lk)
             if best is None:
                 continue
-            timely.append(u)
-            row["best_alone"] = round(best[0], 3)
+            timely.append((u, best[2]))
+            row["best_alone"] = round(p_resolved([best[2]]), 3)
             if self.sees_from(u, best[1], n, best[2].t_first if best[2].t_first is not None else float(ts[-1])):
-                seen.append(u)
+                seen.append((u, best[2]))
                 if self.link_holds(u, best[1]) and self.medium_ok(u, best[1]):
-                    linked.append(u)
+                    linked.append((u, best[2]))
                     if self.reserve_ok(u, best[1], now, n.deadline):
-                        reserved.append(u)
+                        reserved.append((u, best[2]))
         light = self.light_at(n)
+        # the best set of looks each stage leaves (up to MAX_LOOKS, greedily), its chance of a 0.6
+        best_p = {k: round(self.best_set([lk for _, lk in v]), 3)
+                  for k, v in (("timely", timely), ("seen", seen), ("linked", linked), ("reserved", reserved))}
         if not capable:
             if clear_capable:
                 verdict = "fog" if light == "fog" else ("night" if light in ("night", "twilight") else "conditions")
             else:
                 verdict = "fleet_gap"
-        elif not timely:
+        elif best_p["timely"] < self.FEASIBLE_P:
             verdict = "no_time"
-        elif not seen:
+        elif best_p["seen"] < self.FEASIBLE_P:
             verdict = "terrain"
-        elif not linked:
+        elif best_p["linked"] < self.FEASIBLE_P:
             verdict = "link"
-        elif not reserved:
+        elif best_p["reserved"] < self.FEASIBLE_P:
             verdict = "reserve"
         else:
             verdict = "feasible"
         return {"verdict": verdict, "light": light, "capable": sorted({u.platform for u in capable}),
                 "clear_day_capable": sorted({u.platform for u in clear_capable}),
-                "timely": sorted({u.platform for u in timely}), "seen": sorted({u.platform for u in seen}),
-                "units": rows}
+                "timely": sorted({u.platform for u, _ in timely}), "seen": sorted({u.platform for u, _ in seen}),
+                "best_p": best_p, "units": rows}
+
+    def best_set(self, looks: list[Look]) -> float:
+        """The chance the best set of these looks (up to `MAX_LOOKS`, chosen greedily) resolves the
+        need."""
+        chosen: list[Look] = []
+        left = list(looks)
+        while left and len(chosen) < self.MAX_LOOKS:
+            i = max(range(len(left)), key=lambda k: utility(chosen + [left[k]]))
+            chosen.append(left.pop(i))
+        return p_resolved(chosen)
 
     def light_at(self, n: NeedV3) -> str:
         """day, night, twilight or fog at the need's time (the drawn visibility under 2 km is fog;

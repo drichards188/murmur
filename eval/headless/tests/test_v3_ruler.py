@@ -21,13 +21,17 @@ from eval.headless.v3 import ruler as RU
 
 # ---- the look model ----------------------------------------------------------------------------------
 
-def quality(r60: float, cue_m: float, gimballed: bool = True, steep: float = 1.4) -> P.Quality:
-    """An EO/IR table: the identification chance 0.6 at `r60`, falling with distance as ACQUIRE's
-    curve does (about 0.4 at 1.27 times it)."""
+def acquire(r60: float) -> np.ndarray:
+    """ACQUIRE's curve with its 0.6 point at `r60` (about 0.4 at 1.27 times it)."""
     x = np.minimum(r60 / np.maximum(P.DISTANCES, 1.0) * 1.13, 20.0)
     e = 2.7 + 0.7 * x
-    p = x ** e / (1 + x ** e)
-    return P.Quality("eo_ir", p, cue_m, gimballed)
+    return x ** e / (1 + x ** e)
+
+
+def quality(r60: float, cue_m: float, gimballed: bool = True, search_m: float | None = None) -> P.Quality:
+    """An EO/IR table: identification 0.6 at `r60`; the wide field's detection 0.6 at `search_m`
+    (by default where it identifies)."""
+    return P.Quality("eo_ir", acquire(r60), cue_m, gimballed, search=acquire(search_m or r60))
 
 
 def test_a_quality_table_reads_its_reach_and_interpolates():
@@ -44,13 +48,26 @@ def closing(start_m: float, end_m: float, speed: float, dt: float = 2.0, hold_s:
     return ts, r, np.zeros_like(r), np.ones(len(r), dtype=bool)
 
 
-def test_a_camera_whose_cue_outruns_its_0_6_range_tends_to_identify_early_and_low():
-    ts, r, dc, ex = closing(6000.0, 300.0, 15.0)
-    near = P.eo_look(1, quality(2000.0, 1800.0), ts, r, dc, 1e9, ex, 2.0)
-    far = P.eo_look(1, quality(2000.0, 6000.0), ts, r, dc, 1e9, ex, 2.0)
-    assert near.high > 0.7 and near.low < 0.05, near.as_dict()
-    assert far.low > near.low and far.high < near.high
+def test_a_camera_that_locks_far_from_its_0_6_range_tends_to_identify_early_and_low():
+    # closing slowly: a camera that finds the contact in its wide field far out locks there and
+    # identifies on the way in, mostly below 0.6; one that finds it only near identifies above
+    ts, r, dc, ex = closing(6000.0, 300.0, 5.0)
+    near = P.eo_look(1, quality(2000.0, 8000.0, search_m=800.0), ts, r, dc, 1e9, ex, 2.0)
+    far = P.eo_look(1, quality(2000.0, 8000.0, search_m=6000.0), ts, r, dc, 1e9, ex, 2.0)
+    assert near.high > 0.6 and near.low < 0.1, near.as_dict()
+    assert far.low > near.low and far.high < near.high, far.as_dict()
     assert 0.0 < far.low_c < P.P60
+
+
+def test_a_cue_that_finds_nothing_keeps_the_camera_off_for_a_minute():
+    ts = np.arange(0.0, 200.0, 2.0)
+    r = np.full(len(ts), 1000.0)
+    ex = np.ones(len(ts), dtype=bool)
+    q = P.Quality("eo_ir", np.full(len(P.DISTANCES), 0.9), 4000.0, True, search=np.full(len(P.DISTANCES), 0.3))
+    lk = P.eo_look(1, q, ts, r, np.zeros(len(ts)), 1e9, ex, 2.0)
+    # three 8 s cues in 200 s at 0.3^2 / 3.4 a second: about half the chance a steady stare gives
+    stare = 1.0 - math.exp(-200.0 * 0.09 / 3.4)
+    assert 0.2 * stare < lk.high / P.P_EXEC < 0.7 * stare
 
 
 def test_a_camera_that_looks_all_round_keeps_its_surest_look():
@@ -235,6 +252,22 @@ def test_feasibility_names_why_no_plan_could_serve_a_need():
     assert st.feasibility(st.needs["boat-1"], 10.0)["verdict"] == "terrain"
     st.unseen = set()
     assert st.feasibility(st.needs["boat-1"], 10.0)["verdict"] == "feasible"
+
+
+def test_one_active_sonar_in_time_is_not_enough_and_the_plan_sends_two():
+    path = Straight("uuv-1")
+    path.update((-800.0, 0.0), (1.0, 0.0), 0.0)
+    n = P.NeedV3("uuv-1", "uuv", "subsurface", path, 100.0, -10.0, 1.0)
+    near = unit(1, "remus", (-700.0, 100.0), cruise=2.0, sensors=("sonar",), domain="subsurface")
+    far = unit(2, "remus", (40000.0, 0.0), cruise=2.0, sensors=("sonar",), domain="subsurface")
+    tables = {("remus", "uuv-1"): sonar(250.0)}
+    st = Stub([near, far], [n], tables)
+    f = st.feasibility(n, 10.0)
+    assert f["verdict"] == "no_time" and f["timely"] == ["remus"], f
+    other = unit(2, "remus", (-600.0, -100.0), cruise=2.0, sensors=("sonar",), domain="subsurface")
+    st = Stub([near, other], [n], tables)
+    assert st.feasibility(n, 10.0)["verdict"] == "feasible"
+    assert sorted(o["uid"] for o in st.plan(10.0)) == [1, 2], "the first look alone resolves nothing; two do"
 
 
 def test_the_reserve_keeps_a_low_vehicle_out_and_the_reserve_blind_one_does_not_care():

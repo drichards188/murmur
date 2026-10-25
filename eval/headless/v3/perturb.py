@@ -315,6 +315,10 @@ class PullOff(Perturbed):
 class WrongSensor(Perturbed):
     name = "oracle-v3-honest+wrong-sensor"
 
+    def __init__(self, *a: Any, **kw: Any):
+        super().__init__(*a, **kw)
+        self.dropped: set[tuple[str, int]] = set()
+
     def wrong(self, u: UnitV3, n: NeedV3) -> bool:
         """The unit carries no sensor the need's domain is identified by."""
         return domain_sensor(n.domain) not in u.sensors
@@ -327,7 +331,12 @@ class WrongSensor(Perturbed):
             cands = [u for u in self.units.values() if u.uid not in taken and self.usable(u, now) and self.wrong(u, n)
                      and self.medium_ok(u, tuple(o["centre"]))]
             if not cands:
-                self.note("dropped a look: no vehicle with the wrong sensor can go there", need=n.id, instead_of=o["uid"])
+                key = (n.id, o["uid"])
+                dropped = self.__dict__.setdefault("dropped", set())
+                if key not in dropped:
+                    dropped.add(key)
+                    self.note("dropped a look: no vehicle with the wrong sensor can go there", need=n.id,
+                              instead_of=o["uid"])
                 continue
             c = tuple(o["centre"])
             w = min(cands, key=lambda u: (math.hypot(c[0] - u.xy[0], c[1] - u.xy[1]), u.uid))

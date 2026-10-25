@@ -4,8 +4,10 @@ Status: **draft, 2026-10-23** (bd murmur-1z6.6, first part; docs/WORLD-V3-PLAN.m
 approved by the owner). Nothing here is frozen and nothing is pre-registered: this draft defines the
 needs and labels across every domain, the first seven situation families and the anchors the
 feasibility checks need, reports the first dev check (section 11), and lists the definitional choices
-the owner has to make (section 9). The ladder and the perturbations are C2's; the validation, the
-pre-registration and the blind check are D's. **Scoring v2 is frozen**: its labels (version 2), its
+the owner has to make (section 9). **2026-10-25 (C2, bd murmur-1z6.7)**: the room test replaces
+v2's fixed world conditions and the lessons are written in (section 10); the ceiling, its ladder and
+the honest ceiling's perturbations are section 12's, their two dev batches and the audit section
+13's. The validation, the pre-registration and the blind check are D's. **Scoring v2 is frozen**: its labels (version 2), its
 families, its oracle and every v1 and v2 golden and record are unchanged; v3 is built beside it
 (`eval/headless/v3/`), importing v2's code where it is unchanged.
 
@@ -228,12 +230,15 @@ the same world for every agent of a situation (its seed draws its contacts, sens
 |---|---|
 | `none` | no agent |
 | `random-valid` | v2's (agents_v2.py): every 30 s one orbit drawn uniformly over the idle vehicles and shown tracks whose preview passes |
-| `oracle-v3` | the basic v3 oracle (eval/headless/v3/oracle.py): privileged (the contacts file, our vehicles' truth, the tracker's association, the sensing model's predictions); for each need, the two vehicles carrying the domain's sensor that can be in reach of the contact earliest (the model's identification range, recognition under water, for the platform at its working altitude under the drawn conditions; their transit at cruise), sent to orbit where they meet it, the centre kept only where the model sees the contact from it and, for a line-of-sight or mesh datalink, where the link map says the orbit and the transit keep the link; it follows a contact it met but has not identified |
+| `playbook` | the playbook watch officer (episode.py), unchanged, on the world's watch configuration (its sensor platform the Puma, its watch area the 3 km circle) |
+| `oracle-v3` | the ceiling (section 12.1, eval/headless/v3/planner.py), since 2026-10-25 |
+| `oracle-v3-basic` | the first dev check's `oracle-v3` (eval/headless/v3/oracle.py), kept under this name to compare with section 11: privileged (the contacts file, our vehicles' truth, the tracker's association, the sensing model's predictions); for each need, the two vehicles carrying the domain's sensor that can be in reach of the contact earliest (the model's identification range, recognition under water, for the platform at its working altitude under the drawn conditions; their transit at cruise), sent to orbit where they meet it, the centre kept only where the model sees the contact from it and, for a line-of-sight or mesh datalink, where the link map says the orbit and the transit keep the link; it follows a contact it met but has not identified |
 
 The basic oracle leaves the high aircraft (MQ-9B, RQ-4) on their standing orders: an orbit takes them
 to their catalog altitude (7,600 and 18,000 m) and their one camera is shared by every track within
 tens of kilometres. It sends two vehicles per need (under water, one active sonar never reaches 0.6
-alone; above it, see 11.3). The ladder of handicapped oracles and the perturbations are C2's.
+alone; above it, see 11.3). The ceiling, its ladder of handicapped oracles and the honest ceiling's
+perturbations are section 12's.
 
 ## 6. Families
 
@@ -332,21 +337,83 @@ name an altitude) is deferred: it changes the order format and the decision rule
 
 ## 10. Gates (dev)
 
-1. **v2's 10.1 world conditions, per family and world**: `none` serves at most 50 % and the oracle at
-   least 80 % of eligible needs. Reported; a failure is examined, never tuned away on the seeds that
-   showed it.
-2. **Lesson 3, single cause**: per family and agent (`none`, the oracle), the share of lost needs the
-   most frequent cause explains (eval/headless/v3/causes.py: `not_tracked`, `misidentified:<platform>`,
-   `lost:<platform>`, `no_look@<light>`, `looked:<platform>@<light>(<level shown>)`), whole and by its
-   platform or gap alone (`looked:corsair` whatever the light). Over 50 % of at least 3 losses, by
-   either, flags the family for redesign before validation; `none`'s `no_look` is the room the family
-   leaves an agent and is counted apart (choice 13).
-3. **Two vehicle types per need**: per need, the platform types the sensing model says can answer it
-   under its drawn conditions (the oracle's ranges, at least 150 m for a camera and 35 m for a sonar),
-   among the vehicles that take orders.
-4. Lessons written in (WORLD-V3-PLAN 7): coverage first (0); at least two dev batches audited before
-   any rule is pre-registered, every judged cell leaning the wrong way in both examined; Holm across a
-   family's guard cells; one validation, then the paid blind check.
+Written 2026-10-25, before any run of the ceiling or its ladder on dev seeds 5160-5299 (section 13):
+the owner's decision of that day replaced v2's fixed world conditions (item 1), and the lessons of
+WORLD-V3-PLAN 7 are written in (items 2 to 5). Nothing here is pre-registered: the rules that judge
+validation are written in phase D, after the audit of item 3.
+
+1. **The room test** (eval/headless/v3/room.py; in the dev report, report.py and ruler.py). It
+   replaces v2's 10.1 world conditions (`none` at most 50 %, the oracle at least 80 % of eligible
+   needs), which the first dev check failed in every family (11.1).
+   - **Why.** With realistic sensors some needs are hard for anyone (a small drone at night, a diver
+     under active sonars whose ranges on a person are a few hundred metres), and the world's standing
+     sensors legitimately serve others (the surface rings by day, REAPER's camera). A fixed share for
+     the floor and the ceiling judges how hard the world is, which is a finding about the fleet, not
+     a property of the scorer. What the scorer needs from a family is room: a ceiling measurably
+     above the floor, so an agent's need served has somewhere to sit between them.
+   - **The test**, per family and world: the ceiling (`oracle-v3`, 12.1) minus `none` on need served,
+     paired by situation (each situation's served over eligible needs; the situations where both have
+     an eligible need). The family-world has **room** when (a) the paired 95 % interval of the mean
+     difference lies wholly above zero (section 8's rule: the paired cluster bootstrap, BCa, seed 0,
+     at 20 situations or more, else the exact sign test; v2/metrics.py `compare`), and (b) the mean
+     difference is at least **10 points** (`room.MIN_ROOM`). Verdicts: `room`; `small` (the interval
+     above zero, the mean under 10 points); `none shown` (the interval reaches zero); `reversed` (the
+     interval wholly below zero).
+   - **The minimum effect, 10 points**, for two reasons that agree. *Resolution*: at the test's
+     planned size (v2 8.6: about 150 situations a cell) the paired 95 % interval of a difference in
+     need served has a half-width of about 1.96 sqrt(q) / sqrt(150), with q the share of situations
+     the two sides disagree on; for q between 0.3 and 0.5 (the first dev check's discordance between
+     `none` and the oracle) that is 8.8 to 11.3 points, so a room under 10 points could not separate
+     even the ceiling from the floor at that size. *Placement*: v2 0.5 b judges "not worse" with a
+     margin of 5 points; in a room under twice that, an agent can be "not worse" than the floor and
+     the ceiling at once, so the family cannot place it.
+   - **What follows.** A family-world without room is reported with its verdict and examined (its
+     mechanism found in the records), never tuned on the seeds that showed it; its agents' numbers
+     are reported, but it does not rank agents until a redesign shows room on fresh dev seeds.
+     Agents are compared with each other and with the ceiling's measured need served as v2's relative
+     comparison does (SCORING-V2.md 0.3): outcomes (need served, time to serve), hard limits (harm,
+     the reserve), costs (cards, useless looks), dominance where it holds and a stated exchange rate
+     only where two agents trade one for the other. An agent's place in the room, (agent - `none`) /
+     (ceiling - `none`), is reported, never judged.
+   - **Multiplicity.** The test admits family-worlds, one decision each: a family-world with no
+     true room passes (a) by chance at most 2.5 % of the time (one-sided). No correction across the
+     twelve family-worlds is applied: were none to have room, (a) alone would admit one in about one
+     batch in four; (b), which a family without room rarely reaches, and the audit of item 3 (a room
+     that leans the wrong way, or is `small`, in both batches is examined) guard against it.
+2. **Coverage first** (lesson 1): every v3 result opens with section 0's statement filled from its
+   own batch (ruler.py and report.py write it first), naming any shortcut.
+3. **The audit before pre-registration** (lesson 2; ruler.py `audit`). At least two dev batches, on
+   seeds no rule was written from (section 13: 5160-5229, then 5230-5299). Every judged cell (the
+   room per family-world; the ladder's judged orders per family-world, 12.3; each perturbation's
+   judged moves, pooled and per family-world, 12.4) whose point estimate leans the wrong way in both
+   batches is listed, its mechanism found in the records, and settled before any rule is written:
+   the prediction corrected and the cell reported as mis-specified (as v2 0.6 did for the truth
+   step), the agent or family fixed and run again on fresh dev seeds, or the cell reported and not
+   judged, with its reason. A tie is not a pass when it leans the wrong way twice: v2 read two such
+   ties as passes and the revalidation failed on them (SCORING-V2.md 0.6 item 2).
+4. **Lesson 3, single cause** (report.py `flags`, causes.py): per family-world and agent (`none`, the
+   ceiling), the share of lost needs the most frequent cause explains (`not_tracked`,
+   `misidentified:<platform>`, `lost:<platform>`, `no_look@<light>`,
+   `looked:<platform>@<light>(<level shown>)`), whole and by its platform or gap alone
+   (`looked:corsair` whatever the light). Over 50 % of at least 3 losses, by either, flags the family
+   for redesign before validation. `none`'s `no_look` is the room the family leaves an agent and is
+   counted apart (choice 13). The ceiling's losses are also reported by its plan's verdict (12.2):
+   a family whose ceiling losses are mostly one capability gap (night, say) has its finding named,
+   and the redesign, if any, is the owner's (W3: a family is never drawn around a sensor's quirk).
+5. **The per-family guard, with Holm** (lesson 4; ruler.py `report`, `guard`), decided now. Within
+   each family (F1 to F6, its two worlds together), the guard's cells are, per world, every judged
+   ladder order (12.3) and every judged and testable perturbation move (12.4). Each cell is tested
+   for leaning the wrong way: the one-sided sign-flip permutation test of the mean paired
+   difference, each situation's difference oriented so the prediction is positive (spam's "not
+   worse" shifted by its 5-point margin; exact up to 16 situations, else 10,000 random patterns,
+   seed 0). Holm's step-down at alpha 0.05 across the family's cells; a cell it rejects is a guard
+   failure, which in phase D blocks validation (v2 0.5 block 4, with the multiplicity control v2
+   lacked). Without the correction, a family's 32 cells (16 a world) at a one-sided 2.5 % would flag at
+   least one cell in about half the families by chance alone. In dev the guard is reported, never acted on.
+6. **Two vehicle types per need**: per need, the platform types the sensing model says can answer it
+   under its drawn conditions (the ceiling's ranges: its 0.6 identification range at least 150 m for
+   a camera, a sonar's 0.5 detection range at least 35 m), among the vehicles that take orders.
+7. **One validation, then the paid blind check** (lesson 5), phase D's.
 
 ## 11. The first dev check (2026-10-23)
 
@@ -466,3 +533,170 @@ The ladder and perturbations (C2) are worth building on F1, F2 v3, F3 and F6, wh
 `none` by 13 to 53 points; F4 and F5 wait for 11.2. 10.1 cannot hold anywhere until 11.3 is examined
 with A1: the oracle's ceiling is the cameras'. Two dev batches are needed before any rule is
 pre-registered (lesson 2); this is the first.
+
+## 12. The ruler: the ceiling, its ladder and the honest ceiling's perturbations (C2)
+
+Added 2026-10-25 (bd murmur-1z6.7), before any run on the dev seeds of section 13. The owner's
+decisions of that day: the sensing model is the fixed world (crates/murmur-bridge/src/tracks/ and
+sim/platforms.toml are not changed here; what looks like a defect there is reported, 12.6), and the
+room test replaces v2's fixed world conditions (10.1). Code: eval/headless/v3/planner.py (the ceiling
+and its rungs), perturb.py (the perturbations), room.py, ruler.py (the batch and the report); tests:
+eval/headless/tests/test_v3_ruler.py, and test_v3_families.py runs the ceiling once per family and
+world.
+
+### 12.1 The ceiling (`oracle-v3`)
+
+**Privileged**, counted and recorded (`agent_detail.privileged`), never given to an agent under test:
+the contacts file (every contact's route, speed, height and start), our vehicles' truth (position,
+mode, battery, a blocked link), the tracker's association, the physical model's predictions under the
+drawn conditions (`sense`, the bridge's own functions), the terrain and the link map (linkmap.py).
+It plans what a perfect watch officer would; cameras point themselves (W1), so it places vehicles,
+never gimbals.
+
+1. **Which vehicle can identify each contact, and how well.** For every vehicle that takes an orbit
+   and carries the need's domain sensor, a table of the model's chances against the need's contact
+   (its kind and height) at 34 horizontal distances from 10 m to about 60 km, at the vehicle's working
+   height, under the drawn visibility, sea and wind, with the sun at the need's time (`Quality`):
+   EO/IR's identification in its best field and detection in the wide field; under water each sonar
+   mode's detection a second (the active mode's, and a listening array's passive one).
+2. **What a look is worth** (`Look`, `eo_look`, `sonar_look`, `p_resolved`). The plan values the
+   evidence the picture needs, a confidence of 0.6, through the model's own rules
+   (tracks/physical/mod.rs `steer`, `eo`, `sonar`), not through a range:
+   - a gimballed camera cues to a track within its catalog reach (`range_m`) and its task area (the
+     orbit and half that reach); it holds its wide field on it for 8 s while the detection accrues
+     (`p^2 / 3.4` a second, the wide field's chance), and a cue that found nothing keeps it off that
+     contact for 60 s; once detected it locks in the narrow field and, after 2 s, identifies at the
+     hazard `p^2` a second, once in five minutes. The look's confidence is the identification chance
+     at the second it identifies, so a camera that finds a contact far out of its 0.6 range tends to
+     identify on the way in below 0.6 (a `low` look, at the confidence the hazard weights); one that
+     finds it only near identifies above it (`high`). The plan computes both chances over the
+     encounter (the lock's distribution, then the identification's, `identification`);
+   - a camera that looks all round (the surface rings) has the contact in view whenever it is in
+     sight and keeps reporting as the range closes, so its look is the surest the encounter gives
+     after it identifies;
+   - two lower looks combine (`1 - prod(1 - c)`): two at 0.45 make 0.70;
+   - a sonar look's confidence follows its seconds of signal, the better mode's (the tracker keeps
+     one look per observer and sensor): active `0.6 (1 - e^(-s/60))`, passive `0.8 (1 - e^(-s/120))`,
+     from 60 s on; one active sonar never reaches 0.6 alone, two do after about a minute each;
+   - every look is discounted by `P_EXEC` (0.8), the plan's insurance against what it does not
+     model: a camera busy with another contact, a lock that loses its contact, a wrong call.
+3. **Transit, endurance, reserve and link.** Each vehicle flies or sails straight at its catalog
+   cruise from where it truly is, after the order's dispatch (8 s) and, for an aircraft on the
+   ground, its launch (25 s); its orbit's centre keeps to its medium on the world's land/water grid
+   (a boat in 3 m of water, a submersible at its depth and 2 m, a ground vehicle ashore); its true
+   battery takes it there, through the deadline and home above the reserve (20 %) and 3 %, at the
+   catalog endurance; a line-of-sight or mesh datalink keeps the link over the orbit and the transit
+   (the link map; v2's tolerances). An aircraft is sent home before its battery, less its way home,
+   reaches the reserve (no episode of F1 to F6 is long enough for one to).
+4. **Geometry.** Candidate centres along the contact's predicted path (its route at its speed,
+   re-anchored on truth every read) from now to the deadline, at most 40, and its end point (where it
+   holds, hovers or parks). For each, the vehicle's distance to the contact over time (`profile`:
+   straight to the centre, then circling) gives the look's value; the best centres are tried in turn
+   until one keeps to the medium, the reserve and the link and is in the model's sight of the
+   contact (horizon and terrain, `sees_from`).
+5. **Sets of looks.** Needs earliest deadline first; for each, vehicles are added greedily while
+   each raises the plan's utility by 2 points or more (`utility`: the chance the need is resolved by
+   its deadline, and a tenth of the evidence short of it, so a first look only a second can complete
+   still counts), up to 3 looks or a 95 % chance; a vehicle serves one need at a time. Every order is previewed; a refusal sends the plan to
+   the next vehicle. A vehicle that met its contact without resolving it follows it (`chase`: a new
+   orbit where the contact will be, once it is 400 m from the centre, 20 s apart). It reads and plans
+   every 4 s (at once when an order ended or a need was resolved or opened).
+6. **What it leaves out.** It does not re-task the high aircraft (MQ-9B, RQ-4): their one camera cues
+   to every track within its reach (40 and 50 km), so where they orbit does not decide what they look
+   at, and the plan cannot place their attention (W1); their looks come from their standing orbits,
+   as for every agent. It does not use the situation's sensing draws (which observer calls a contact
+   wrong): a perfect watch officer could not know them. It cannot name an altitude (choice 12) or a
+   look target (W1).
+
+### 12.2 The ceiling's losses by cause
+
+At its first tick the ceiling judges each need with every vehicle that takes orders, from where it
+then is (`feasibility`, recorded per need): whether any set of looks could raise its evidence to 0.6
+by the deadline, and if none could, the first reason that applies:
+
+| verdict | when |
+|---|---|
+| `fleet_gap` | no vehicle's domain sensor reaches 0.6 on this kind at its working height, even by a clear day (20 km, the sun 45 degrees up) |
+| `night`, `fog` | one would by a clear day, none does in the drawn light (night or twilight) or visibility (under 2 km) |
+| `no_time` | capable vehicles, none in reach of the contact's path by its deadline (or able to add a look two of which combine to 0.6) |
+| `terrain` | in reach, never in the model's sight of the contact (horizon or terrain) |
+| `link` | only where a line-of-sight or mesh datalink fails |
+| `reserve` | only beyond a battery's reach |
+| `feasible` | otherwise |
+
+The report (ruler.py) gives the ceiling's lost needs by these verdicts (capability findings about
+the fleet, not failures of the ceiling) and, for a need its plan could have served, by the loss's
+cause on the picture (causes.py): what went wrong in the execution.
+
+### 12.3 The ladder and its predicted order
+
+Each rung is the ceiling with one switch of the same planner turned off, nothing else changed:
+
+| rung | removes | instead |
+|---|---|---|
+| `oracle-v3-late` | timing | no look before the need opens (the contact's true position inside the circle) |
+| `oracle-v3-linkblind` | the link | no link map and no truth of a blocked link: it plans as if every datalink held and learns of a lost link only from the session (`link_lost`) |
+| `oracle-v3-sensorblind` | the sensors | no sensing model: every sensor reaches its catalog `range_m` (the reach `get_platforms` shows) on every kind, by day or night, in any visibility, past any terrain (the v3 analogue of not knowing your sensors) |
+| `oracle-v3-honest` | truth | link-blind, reading no truth: built from a session, the loop's runner and the sensing model's functions alone (planner.py `HonestCeiling`, `sense_only`), never the episode. It keeps the model (the catalog's figures make it learnable) with the sun from the scenario clock, but not the drawn visibility, sea or wind, which the C2 does not show (it assumes a clear day's), and no contact's truth: its needs come from the picture (v2's honest oracle's rule: a track in doubt whose shown motion brings it within the circle within 300 s, or inside; due its domain's grace after it is shown inside; the contact's kind its shown kind, its family's stand-in, or its detection's size class) |
+
+**Predicted order, judged** (per family-world, on need served, v2 0.3's rule: a paired interval
+wholly below zero fails; one containing zero is a tie; the guard of 10.5 across each family's cells):
+
+- `oracle-v3` ≥ `oracle-v3-late`;
+- `oracle-v3` ≥ `oracle-v3-linkblind`;
+- `oracle-v3` ≥ `oracle-v3-sensorblind`.
+
+These are the only orders whose handicaps provably do not interact: each compares the ceiling with
+a rung that differs from it in one switch of one planner (planner.py `LATE`, `KNOW_LINK`,
+`KNOW_SENSORS`), so no second handicap is present. They are not provably monotone (no planner here
+is optimal: a switch's information can mislead it, as an early look below 0.6 or an over-cautious
+link map could), which is what judging them tests. Where a family-world gives the switch nothing to
+act on, the rung's plan is the ceiling's and the order is a tie by construction (link-blindness
+where no candidate's datalink is terrain-limited).
+
+**Reported, never judged**, with their paired differences:
+
+- the truth step, `oracle-v3-linkblind` against `oracle-v3-honest`: two handicaps, truth and the
+  link, which v2 found to interact (truth without the link map sent a Puma into link shadow,
+  SCORING-V2.md 0.6);
+- `oracle-v3-sensorblind` against `oracle-v3-honest`: each lacks what the other has (the model, or
+  truth), so no order follows;
+- `oracle-v3-late` against `oracle-v3-honest`: timing against truth and the link;
+- every rung against `none`: an agent that moves vehicles can take one off a need its standing order
+  would have served (v3's standing sensors serve needs: the rings, REAPER's camera, the buoys), so
+  not even the ceiling is provably above the floor; the ceiling's step over the floor is the room
+  test's (10.1).
+
+### 12.4 The honest ceiling's perturbations
+
+Each is `oracle-v3-honest` with one thing changed (perturb.py), built as it is and reading no truth
+unless it says so; each writes what it changed (`perturbation` lines):
+
+| perturbation | changes | must move against `oracle-v3-honest` |
+|---|---|---|
+| `+spam` | every look it holds is proposed again, the same request, every 20 s; an accepted copy becomes its look | need served not worse (the pooled lower bound above -5 points); follow-ups, repeats and cards up |
+| `+behind` | each look's centre 1.5 times the vehicle's look range (its 0.6 range on the need's kind, a sonar's 0.8 detection range, else the catalog's) behind the contact along its shown course, before the preview | need served down; useless up |
+| `+skip-first` (privileged) | the situation's earliest need (the contacts file) is taken out of every track list it reads, by the tracker's association | need served down |
+| `+reserve-blind` | no rtl, and the battery takes no vehicle out of its plans (the bridge's reserves check still refuses an order that would leave a vehicle under its reserve) | fault needs met down: **not testable in F1 to F6**, which script no low reserve (F13's) and are too short for a battery to reach it; reported |
+| `+ferries` | a look at every track shown neutral with an AIS identity, once per track, by a vehicle with a camera and no order of its own, after every real look; let go after 90 s or once settled | useless up; bad-card share up |
+| `+pull-off` (harm on purpose) | the moment a vehicle's domain sensor raises its hits on an open need shown inside the circle, that vehicle is sent to a station 2.5 or 4 km away where its own model says its look is worth least, and the need is given up | need served down; harmful (b) up |
+| `+wrong-sensor` (new to v3) | each look it plans goes instead to the nearest vehicle carrying no sensor the need's domain is identified by (REMUS or the ROV, sonar only, for a contact above the water; a camera-only vehicle for one under it), at the same centre where its medium allows, else the look is dropped | need served down; useless up |
+
+The moves are judged as v2 0.5's re-specification (a to c) judges them: pooled over the family-worlds
+with eligible needs (the stratified bootstrap of the per-situation differences, BCa, 10,000
+resamples, seed 0), "up" and "down" needing the interval wholly on that side; a predicted fall is
+`not testable` where the honest ceiling is not shown above `none` on that metric (pooled), unless it
+shows anyway; per family-world each move is reported and enters the guard (10.5).
+
+### 12.5 The commands
+
+    .venv/bin/python -m eval.headless.v3.ruler batch --seeds 5160-5194 --workers 8 \
+        --out eval/results/headless/v3-ruler-5160
+    .venv/bin/python -m eval.headless.v3.run report eval/results/headless/v3-ruler-5160 --workers 8
+    .venv/bin/python -m eval.headless.v3.ruler report eval/results/headless/v3-ruler-5160
+    # the second batch, and the audit against the first
+    .venv/bin/python -m eval.headless.v3.ruler batch --seeds 5230-5264 --workers 8 \
+        --out eval/results/headless/v3-ruler-5230
+    .venv/bin/python -m eval.headless.v3.run report eval/results/headless/v3-ruler-5230 --workers 8
+    .venv/bin/python -m eval.headless.v3.ruler report eval/results/headless/v3-ruler-5230 \
+        --prev eval/results/headless/v3-ruler-5160
