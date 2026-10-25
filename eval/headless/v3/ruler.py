@@ -87,7 +87,11 @@ MOVES: dict[str, tuple[tuple[str, str], ...]] = {
     "oracle-v3-honest+reserve-blind": (("fault_met_share", "down"),),
     "oracle-v3-honest+ferries": (("per_hour.useless", "up"), ("bad_card_share", "up")),
     "oracle-v3-honest+pull-off": (("served_share", "down"), ("per_hour.harmful_b", "up")),
-    "oracle-v3-honest+wrong-sensor": (("served_share", "down"), ("per_hour.useless", "up")),
+    # useless as a share (v2 0.5 c): the honest ceiling looks at traffic it cannot tell from a need
+    # (about 36 looks an episode on the smoke seed 5100, most useless), and wrong-sensor drops the
+    # looks no wrong vehicle can take, so its useless looks per hour fall while every look it sends
+    # is useless (seen on the smoke seed, before any run on the dev seeds)
+    "oracle-v3-honest+wrong-sensor": (("served_share", "down"), ("useless_share", "up")),
 }
 NOT_WORSE = 0.05
 #: lesson 4: the guard's level, Holm across each family's cells
@@ -313,7 +317,8 @@ def report(scored: list[dict[str, Any]], summary: dict[str, Any], seed: int = 0)
             strata: dict[str, list[float]] = defaultdict(list)
             for k in both:
                 strata[k[0]].append(va[k] - vb[k])
-            honest_up[metric] = S.stratified_bca(strata, seed=seed) if both else {"estimate": None}
+            b = S.stratified_bca(strata, seed=seed) if both else {"estimate": None}
+            honest_up[metric] = {**b, "mean_difference": b.get("estimate")}
     out["honest_above_none"] = honest_up
     moves: dict[str, Any] = {}
     for pert, ms in MOVES.items():
@@ -427,23 +432,37 @@ def markdown(r: dict[str, Any], d: Path) -> str:
     L += ["", "## Lesson 3 (single cause)", ""]
     for f, fl in r["lesson3"].items():
         L.append(f"- {f}: {'; '.join(fl or []) or 'no flag'}")
-    L += ["", "## The ladder (need served)", "", "| cell | " + " | ".join(RUNGS + ("none",)) + " | judged | reported |",
+    short = {"oracle-v3": "ceiling", "oracle-v3-late": "late", "oracle-v3-linkblind": "linkblind",
+             "oracle-v3-sensorblind": "sensorblind", "oracle-v3-honest": "honest", "none": "none"}
+    L += ["", "## The ladder", "", "Need served (%), per family-world and pooled per family (`*`).", "",
+          "| cell | " + " | ".join(short[a] for a in RUNGS + ("none",)) + " | playbook | random-valid |",
           "|---|" + "---|" * (len(RUNGS) + 3)]
     for cell, x in r["ladder"].items():
         arms = x["arms"]
-        jd = "; ".join(f"{p['a'].replace('oracle-v3', 'O')} >= {p['b'].replace('oracle-v3', 'O')}: {p['verdict']} "
-                       f"{ci(p)}" for p in x["predictions"] if p["judged"] or (cell.endswith('*') and (p['a'], p['b']) in JUDGED))
-        rp = "; ".join(f"{p['a'].replace('oracle-v3', 'O')} - {p['b'].replace('oracle-v3', 'O')} {ci(p)}"
-                       for p in x["predictions"] if (p["a"], p["b"]) in REPORTED)
-        L.append(f"| {cell} | " + " | ".join(f"{pct((arms.get(a) or {}).get('share'))}" for a in RUNGS + ("none",))
-                 + f" | {jd} | {rp} |")
+        L.append(f"| {cell} | " + " | ".join(f"{pct((arms.get(a) or {}).get('share'))}"
+                                            for a in RUNGS + ("none", "playbook", "random-valid")) + " |")
+    L += ["", "Judged orders (A at least B; v2 0.3's rule), A minus B in points [95 % CI]:", "",
+          "| cell | " + " | ".join(f"ceiling >= {short[b]}" for _, b in JUDGED) + " |", "|---|" + "---|" * len(JUDGED)]
+    for cell, x in r["ladder"].items():
+        by = {(q["a"], q["b"]): q for q in x["predictions"]}
+        L.append(f"| {cell} | " + " | ".join(f"{(by.get(j) or {}).get('verdict', 'n/a')} {ci(by.get(j) or {})}"
+                                            for j in JUDGED) + " |")
+    L += ["", "Reported, never judged (A minus B, points), pooled per family:", "",
+          "| family | " + " | ".join(f"{short[a]} - {short[b]}" for a, b in REPORTED) + " |", "|---|" + "---|" * len(REPORTED)]
+    for cell, x in r["ladder"].items():
+        if not cell.endswith("*"):
+            continue
+        by = {(q["a"], q["b"]): q for q in x["predictions"]}
+        L.append(f"| {cell[:-1]} | " + " | ".join(ci(by.get(j) or {}) for j in REPORTED) + " |")
     L += ["", "## Perturbations (against the honest ceiling)", "",
           f"Honest above `none` (pooled, need served): {ci(r['honest_above_none'].get('served_share') or {}, 100)}.", "",
           "| perturbation | metric | predicted | pooled [95 % CI] | verdict | per family-world |", "|---|---|---|---|---|---|"]
     for pert, rows in r["moves"].items():
         for m in rows:
             scale = 100.0 if m["metric"].endswith("share") else 1.0
-            per = ", ".join(f"{f.replace('v3-', '')} {c['verdict']}" for f, c in m["per_family"].items())
+            counts = Counter(c["verdict"] for c in m["per_family"].values())
+            wrong = [f.replace("v3-", "") for f, c in m["per_family"].items() if c["verdict"] in ("wrong way", "worse")]
+            per = ", ".join(f"{k} {v}" for k, v in counts.most_common()) + (f" (wrong way: {', '.join(wrong)})" if wrong else "")
             L.append(f"| {pert.replace('oracle-v3-honest', 'honest')} | {m['metric']} | {m['want']} | "
                      f"{ci(m, scale, 1 if scale == 100.0 else 2)} | {m['verdict']} | {per} |")
     L += ["", "## The per-family guard (Holm)", ""]
