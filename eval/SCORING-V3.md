@@ -6,8 +6,7 @@ needs and labels across every domain, the first seven situation families and the
 feasibility checks need, reports the first dev check (section 11), and lists the definitional choices
 the owner has to make (section 9). **2026-10-25 (C2, bd murmur-1z6.7)**: the room test replaces
 v2's fixed world conditions and the lessons are written in (section 10); the ceiling, its ladder and
-the honest ceiling's perturbations are section 13's, their two dev batches and the audit section
-14's. The validation, the pre-registration and the blind check are D's. **Scoring v2 is frozen**: its labels (version 2), its
+the honest ceiling's perturbations, their dev batch and the audit are section 13's. The validation, the pre-registration and the blind check are D's. **Scoring v2 is frozen**: its labels (version 2), its
 families, its oracle and every v1 and v2 golden and record are unchanged; v3 is built beside it
 (`eval/headless/v3/`), importing v2's code where it is unchanged.
 
@@ -337,7 +336,7 @@ name an altitude) is deferred: it changes the order format and the decision rule
 
 ## 10. Gates (dev)
 
-Written 2026-10-25, before any run of the ceiling or its ladder on dev seeds 5160-5194 and 5230-5264 (section 14):
+Written 2026-10-25, before any run of the ceiling or its ladder on dev seeds 5160-5194 (13.7):
 the owner's decision of that day replaced v2's fixed world conditions (item 1), and the lessons of
 WORLD-V3-PLAN 7 are written in (items 2 to 5). Nothing here is pre-registered: the rules that judge
 validation are written in phase D, after the audit of item 3.
@@ -382,11 +381,16 @@ validation are written in phase D, after the audit of item 3.
      that leans the wrong way, or is `small`, in both batches is examined) guard against it.
 2. **Coverage first** (lesson 1): every v3 result opens with section 0's statement filled from its
    own batch (ruler.py and report.py write it first), naming any shortcut.
-3. **The audit before pre-registration** (lesson 2; ruler.py `audit`). At least two dev batches, on
-   seeds no rule was written from (section 14: 5160-5194, then 5230-5264). Every judged cell (the
+3. **The audit before pre-registration** (lesson 2; ruler.py `audit`). Two dev samples on seeds no
+   rule was written from. **The owner's decision of 2026-10-25** (to cut testing): one dev batch
+   (5160-5194, 13.7), its two halves audited against each other (seeds 5160-5176 and 5177-5194,
+   `ruler.py report --halves`), in place of a second batch (5230-5264, not run). Each half is a full
+   set of families, worlds and agents on disjoint seeds, so a lean the halves share is the same
+   evidence a second batch of that size would give; each half is half the batch, so more cells lean
+   the wrong way in one half by chance, and only a lean in both counts. Every judged cell (the
    room per family-world; the ladder's judged orders per family-world, 13.3; each perturbation's
    judged moves, pooled and per family-world, 13.4) whose point estimate leans the wrong way in both
-   batches is listed, its mechanism found in the records, and settled before any rule is written:
+   samples is listed, its mechanism found in the records, and settled before any rule is written:
    the prediction corrected and the cell reported as mis-specified (as v2 0.6 did for the truth
    step), the agent or family fixed and run again on fresh dev seeds, or the cell reported and not
    judged, with its reason. A tie is not a pass when it leans the wrong way twice: v2 read two such
@@ -536,7 +540,7 @@ pre-registered (lesson 2); this is the first.
 
 ## 13. The ruler: the ceiling, its ladder and the honest ceiling's perturbations (C2)
 
-Added 2026-10-25 (bd murmur-1z6.7), before any run on the dev seeds of section 14. The owner's
+Added 2026-10-25 (bd murmur-1z6.7), before any run on the dev seeds of 13.7. The owner's
 decisions of that day: the sensing model is the fixed world (crates/murmur-bridge/src/tracks/ and
 sim/platforms.toml are not changed here; what looks like a defect there is reported, 13.6), and the
 room test replaces v2's fixed world conditions (10.1). Code: eval/headless/v3/planner.py (the ceiling
@@ -690,16 +694,14 @@ shows anyway; per family-world each move is reported and enters the guard (10.5)
 
 ### 13.5 The commands
 
-    .venv/bin/python -m eval.headless.v3.ruler batch --seeds 5160-5194 --workers 8 \
+    .venv/bin/python -m eval.headless.v3.ruler batch --seeds 5160-5194 --workers 18 \
         --out eval/results/headless/v3-ruler-5160
     .venv/bin/python -m eval.headless.v3.run report eval/results/headless/v3-ruler-5160 --workers 8
-    .venv/bin/python -m eval.headless.v3.ruler report eval/results/headless/v3-ruler-5160
-    # the second batch, and the audit against the first
-    .venv/bin/python -m eval.headless.v3.ruler batch --seeds 5230-5264 --workers 8 \
-        --out eval/results/headless/v3-ruler-5230
-    .venv/bin/python -m eval.headless.v3.run report eval/results/headless/v3-ruler-5230 --workers 8
-    .venv/bin/python -m eval.headless.v3.ruler report eval/results/headless/v3-ruler-5230 \
-        --prev eval/results/headless/v3-ruler-5160
+    .venv/bin/python -m eval.headless.v3.ruler report eval/results/headless/v3-ruler-5160 \
+        --halves 5160-5176 5177-5194
+
+The batch resumes by record (a job whose record is in the directory is not run again; one cut off
+while written is run again).
 
 ### 13.6 What the ceiling found in the fixed world (reported, not changed)
 

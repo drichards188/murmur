@@ -429,6 +429,13 @@ def test_the_audit_lists_the_cells_that_lean_the_wrong_way_in_both_batches():
     assert a["wrong_way_once"] == 1
 
 
+def test_the_audit_s_halves_split_one_batch_by_seed():
+    rows = scored("v3-f1-fast-boat-gg", {"oracle-v3": [1] * 6, "none": [0] * 6})
+    a, b = RU.halves(rows, ["0-2", "3-5"])
+    assert {s["seed"] for s in a} == {0, 1, 2} and {s["seed"] for s in b} == {3, 4, 5}
+    assert len(a) == len(b) == 6
+
+
 def test_a_stopped_batch_recovers_the_records_its_index_missed(tmp_path):
     import gzip
     import json

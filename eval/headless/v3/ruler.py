@@ -31,7 +31,8 @@ stopped part way loses at most a chunk. Its workers run numpy on one thread each
    wrong way (a one-sided sign-flip permutation test), Holm's correction across the family's cells;
 7. with `--prev`, the audit (lesson 2, SCORING-V3.md 10.3): every judged cell (the room test, the
    ladder's judged orders, the moves pooled and per family-world) whose point estimate leans the
-   wrong way in both batches.
+   wrong way in both batches; with `--halves`, in both halves of this batch (the owner's decision of
+   2026-10-25: one dev batch, its seeds split in two).
 """
 
 from __future__ import annotations
@@ -430,6 +431,10 @@ def audit(now: dict[str, Any], prev: dict[str, Any]) -> dict[str, Any]:
             "wrong_way_once": len(once)}
 
 
+def _num(x: float | None) -> str:
+    return "n/a" if x is None else f"{x:+.3f}"
+
+
 def pct(x: float | None, nd: int = 0) -> str:
     return "n/a" if x is None else f"{100 * x:.{nd}f}"
 
@@ -506,11 +511,21 @@ def markdown(r: dict[str, Any], d: Path) -> str:
                  f"{', '.join(f'{k} {v:.3f}' for k, v in g['smallest']) or 'n/a'}")
     if r.get("audit"):
         a = r["audit"]
-        L += ["", "## Audit (lesson 2)", "", f"{a['cells']} judged cells in both batches; "
+        what = f"halves {' and '.join(a['halves'])}" if a.get("halves") else "batches"
+        L += ["", "## Audit (lesson 2)", "", f"{a['cells']} judged cells in both {what}; "
               f"{len(a['wrong_way_both'])} lean the wrong way in both; {a['wrong_way_once']} in one only.", ""]
         for x in a["wrong_way_both"]:
-            L.append(f"- {x['cell']}: {x['now']} now, {x['prev']} before (want {x['want']})")
+            L.append(f"- {x['cell']}: {_num(x['prev'])} in the first, {_num(x['now'])} in the second (want {x['want']})")
     return "\n".join(L) + "\n"
+
+
+def halves(scored: list[dict[str, Any]], spec: list[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The batch's episodes on two disjoint seed ranges (`lo-hi lo-hi`), each a full set of families,
+    worlds and agents: the audit's two halves (the owner's decision of 2026-10-25, SCORING-V3.md 10.3)."""
+    from ..batch import parse_seeds
+
+    a, b = (set(parse_seeds([x])) for x in spec)
+    return [s for s in scored if s["seed"] in a], [s for s in scored if s["seed"] in b]
 
 
 def cmd_report(args: argparse.Namespace) -> int:
@@ -519,6 +534,11 @@ def cmd_report(args: argparse.Namespace) -> int:
     if args.prev:
         ps, pscored = load_scored(args.prev)
         r["audit"] = audit(r, report(pscored, ps, seed=0))
+    elif args.halves:
+        first, second = halves(scored, args.halves)
+        ra, rb = report(first, summary, seed=0), report(second, summary, seed=0)
+        r["audit"] = {**audit(rb, ra), "halves": args.halves, "situations": [
+            len({(s["family"], s["seed"]) for s in first}), len({(s["family"], s["seed"]) for s in second})]}
     (args.dir / "ruler_v3.json").write_text(json.dumps(r, indent=1, sort_keys=True, default=str))
     md = markdown(r, args.dir)
     (args.dir / "ruler_v3.md").write_text(md)
@@ -539,7 +559,8 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--no-build", action="store_true")
     r = sub.add_parser("report")
     r.add_argument("dir", type=Path)
-    r.add_argument("--prev", type=Path)
+    r.add_argument("--prev", type=Path, help="an earlier batch to audit against")
+    r.add_argument("--halves", nargs=2, metavar="SEEDS", help="audit two halves of this batch (lo-hi lo-hi)")
     args = ap.parse_args(argv)
     return cmd_batch(args) if args.cmd == "batch" else cmd_report(args)
 
