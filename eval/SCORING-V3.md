@@ -114,6 +114,16 @@ reaches the circle at most 100 s after it appears; 100 + 60 < 180); a family tha
 needs the tracker to say each look's level (a small read-only addition to `Track::json` in
 crates/murmur-bridge/src/tracks/, not made here: another agent is changing that code).
 
+**A spoofed AIS** (F8's spoofer, choice 17). A contact may broadcast an AIS identity that is not its
+own (truth's `ais.spoofed`). AIS supports a surface need only from the contact's own true broadcast
+(as above: "its own true AIS"), so a spoofed AIS never resolves its contact, and its hits never
+count as a contribution. Once a camera identifies the contact, the tracker shows its true kind and an
+identity conflict ("AIS says fishing (...) but eo_ir identifies it as small_fast_boat"): the spoof
+exposed. For a contact whose AIS is spoofed, that conflict, and only a conflict that begins "AIS
+says", does not stop the need from being resolved; every other rule of 2.2 holds (its true kind at
+0.6 or more, supported by EO/IR). Any other contact in conflict with its own AIS stays unresolved,
+as before.
+
 ### 2.3 Contribution
 
 v2's, with the need's own sensors: a dispatched action **contributed** to need c if its vehicle raised
@@ -123,9 +133,28 @@ identified (`t_identified`), and c is served. An order its vehicle never ran con
 
 ### 2.4 Fault needs
 
-v2's, unchanged (eval/headless/v2/labels.py `fault_needs`, version 2): a low reserve opens at 35 %
-of the true battery and is met by the vehicle on the ground at home before 20 %. No v3 family scripts
-a fault yet (F11-F13).
+v2's low reserve (eval/headless/v2/labels.py `fault_needs`, version 2), in every domain
+(eval/headless/v3/faults.py, for F13): it opens at 35 % of the true battery and is met by the vehicle
+**safe at home** before 20 %; unmet when the reserve comes first; censored when neither happens by
+the end. Safe at home (choice 14): an aircraft as v2 has it, on the ground (disarmed) within 150 m of
+the home it had at its last armed sample, after having flown, so an aircraft's need is v2's value for
+value (tested); a boat, a sub or a UGV within 150 m of its home and stopped there (disarmed, or under
+0.5 m/s for 10 s), a sub at the surface (above 1 m deep), after having moved. A Rover's rtl ends
+holding at home, armed: v2's "on the ground" would never meet a boat's need.
+
+The faults the families script on a timeline (F12, F13: a `stop`, a `reboot`, a `battery` fault, a
+GNSS jam or spoof) are **open faults** on their vehicles (choice 15), beside v2's (a stuck alert or
+the script's stop, a low reserve, a link cut or lost): a stop from its time on; a reboot until the
+vehicle is armed again (on the surface it boots disarmed and drops its task), or 60 s for one that
+comes back armed; a battery fault until the vehicle is safe at home; a spoof on its vehicles for its
+duration; a jam on every vehicle truly inside its circle while it is on. A hold or an rtl on a
+faulted vehicle that earned no label of effect is a `fault_response`, and every action on one carries
+`also_fault`, as v2's.
+
+**Vehicles lost** (a diagnostic, no need; choice 16): by the end, an aircraft on the ground or the
+water (disarmed) more than 150 m from its home after having flown, or a boat or a sub whose true
+position is out of the water on the world's land/water grid (aground). The mission names only the
+reserve, so a vehicle lost to a GNSS jammer's landing is reported, never scored.
 
 ### 2.5 Action labels: the moving kinds
 
@@ -258,6 +287,28 @@ channel's buoys and HUNTER 1's patrol, whose looks recognised it before its need
 `none` pilot episodes (11.2). **F2 version 2** is by day only and **version 3** comes over water or
 low ground only (11.4).
 
+### 6.1 F7-F13 (the second part)
+
+Built as F1-F6 (eval/headless/v3/families_f7_f13.py, its docstring has every range; families.py
+finds them through `EXTENSIONS`), on both worlds, from F1-F6's own element draws (each route kept to
+its medium on the world's grids), re-timed where a family needs its elements at a time and renamed
+where it has several. The world's conditions are drawn by the seed as in every family and changed
+only where the family says so, recorded in the record's conditions (`light_by_family`,
+`visibility_by_family`, `sea_by_family`). Where an element's need would otherwise fall due after
+the episode, its route starts nearer (a UUV comes within the circle 250 to 650 s in, so its 300 s
+grace ends inside 1,200 s); a boat given another speed than F1's keeps F1's lead (it appears 15 to
+100 s before the circle at its own speed: no buoy identifies it by its deadline, 2.2).
+
+| | family | needs | what it adds |
+|---|---|---|---|
+| F7 | three at once | air, surface, subsurface (three a situation) | F4's UUV within the circle 300 to 650 s in, F1's boat and an air element (F2's drone by day with p 0.5, else F3's aircraft) each 90 s before to 150 s after it; 1,200 s |
+| F8 | decoys and AIS spoofing | one, any domain | the need: on the surface (p 0.4) a **spoofer** with p 0.6 (a small fast boat, truth suspect, broadcasting a fishing vessel's AIS identity at 4 to 6.5 m/s, a fishing vessel's speed: the picture shows a consistent neutral fishing vessel until a camera identifies it) else F1's boat; air, subsurface (F4's UUV or F5's diver) or ground (p 0.2 each). Five look-alikes of neutral truth within the circle 150 s either side: a fishing boat or a sailboat without AIS; a fishing boat with a cloned AIS identity (a cargo ship's or a ferry's, `spoofed`) or a sportfisher whose AIS says fishing at 10 to 14 m/s; a hobby drone (by day) or a light aircraft with its transponder off; a research UUV or a diver at work; a car or a truck on another shore road |
+| F9 | night and fog | one: surface (0.4), air (0.3, drone or aircraft whatever the light), ground (0.3) | the light toward the hard end: night 0.45, twilight with the sun 0 to 10 degrees up as the need comes in (the thermal crossover) 0.25, day 0.3; fog (log-uniform from the world's lowest visibility to 2 km) always by day, p 0.5 otherwise |
+| F10 | rising sea state | one or two small boats on the surface | the sea from the world's top three states (Golden Gate 3 to 5, San Diego 3 to 4), the wind from the upper half of its range; F1's boat at a speed the sea allows (10 to 15 m/s at most, [E here]); with p 0.5 a second, slower boat (3 to 6 m/s) from the other approach |
+| F11 | link trouble | one: surface or air (RF), subsurface (acoustic) | p 0.6 an **RF jammer** over the need's way inside the circle (1.2 to 2.5 km, from 60 to 240 s before the need, for 400 to 800 s: line-of-sight and mesh links jammed, SATCOM half lost and LEO terminals on an Iridium-class 700 ms, both GUESS); else the **acoustic channel closed** over the AUV's survey line from 200 to 400 s before F4's UUV, for 150 to 300 s: REMUS falls silent, surfaces on its 120 s timer, reports at the surface over its Iridium-class link, orders to it waiting in the Queue meanwhile |
+| F12 | GNSS jam or spoof | one: surface (0.4), air (0.3), ground (0.3) | p 0.65 a GNSS **jammer** denying the fix in a circle 0.8 to 2 km over the need's way, from 60 to 240 s before the need to the end (copters and the airship land, boats and UGVs hold, fixed wings dead-reckon, subs keep their DVL); else a **spoofer** walking the believed position of the standing vehicle best placed for the need 1 to 3 m/s off, up to 300 to 1,000 m, from 30 to 200 s before it |
+| F13 | vehicle faults across domains | one: surface (0.4), air (0.3), ground (0.15), subsurface (0.15) | a **breakdown** of the vehicle flying the agent's first look with the need's sensor (v2's stuck vehicle, 5 to 60 s after its dispatch; none by the need's deadline, the standing vehicle best placed stops then); a **battery** fault on a standing aircraft or UGV (another vehicle), 120 to 360 s in, leaving 22 to 33 % and crossing 20 % 150 to 400 s later (a low reserve, 2.4); p 0.7 a **reboot** (3 to 8 s) of another standing boat up to 120 s before the need |
+
 ## 7. Episode classes
 
 v2's section 7.
@@ -329,6 +380,49 @@ name an altitude) is deferred: it changes the order format and the decision rule
     that is the room the family leaves an agent, not a quirk it hangs on. *Alternative*: count it as
     any other cause (then F2 and F6 flag on `none` alone). **Recommend** counting it apart: a family
     is flagged on the oracle's causes, and on `none`'s other than `no_look`.
+
+Choices 14 to 21 come with F7-F13 (6.1, section 12; numbered after the first part's, to be renumbered
+with F14-F17's if they clash when the two parts are merged):
+
+14. **The low reserve in every domain** (2.4): a boat, a sub or a UGV is safe at home when stopped
+    within 150 m of its home (disarmed, or under 0.5 m/s for 10 s), a sub at the surface; an aircraft
+    keeps v2's "on the ground at home". *Alternative*: v2's rule for every vehicle (disarmed at home),
+    which a boat's rtl never meets (a Rover's rtl ends holding, armed), or an rtl order alone (v2
+    version 1's, which credited intent, not effect). **Recommend** as specified.
+15. **The timeline's faults are open faults** (2.4): a scripted stop, reboot, battery fault, GNSS
+    jam or spoof makes a hold or an rtl on its vehicle a `fault_response` (and every action on it
+    `also_fault`), as v2's stuck alert and link cut do, though the C2 shows a spoof nowhere and a jam
+    only as the vehicle's lost fix. *Alternative*: only what the C2 shows (v2's alerts), so a hold of a
+    spoofed vehicle is `useless`. **Recommend** as specified: the label is about the vehicle's truth,
+    as harm (a) is.
+16. **Vehicles lost are a diagnostic, not a need** (2.4): an aircraft down away from home or a hull
+    aground is reported per family and agent, never scored, because the mission names only the
+    reserve. *Alternative*: a "keep every vehicle" fault need, with a sentence added to the mission (a
+    new mission text and SHA for every family). **Recommend** the diagnostic now, and the need with
+    the next mission version if the owner wants vehicle safety judged.
+17. **A spoofed AIS** (2.2): AIS supports only a true broadcaster; a spoofer is resolved when EO/IR
+    shows its true kind at 0.6, its AIS conflict allowed. *Alternative*: count the spoofer resolved
+    when the picture shows it suspect (the conflict alone, at any level), which a recognition gives
+    before an identification. **Recommend** as specified: the mission asks for the kind.
+18. **F8's spoofing is the surface's** (6.1): the model has AIS only for surface contacts (no ADS-B,
+    no other cooperative identity), so the spoofer and the cloned identity are boats; F8's decoys
+    cover every domain. *Alternative*: model an aircraft's transponder (a sensor model change, A1's).
+    **Recommend** as specified, the transponder for a later sensor round.
+19. **F9 and F10 move the conditions toward the hard end** (6.1), recorded per situation: F9's
+    light (night, the crossover twilight, day in fog) and fog; F10's sea from the world's top three
+    states and the wind from its upper half. The model holds the conditions for an episode, so
+    "rising" sea is across situations, not within one. *Alternative*: the world's own draw (then F9
+    and F10 are mostly clear days and calm seas, F1-F6 again). **Recommend** as specified.
+20. **F11's jammer effects are the example file's GUESS** (6.1): line-of-sight and mesh links lost
+    inside the circle, SATCOM half lost, LEO terminals on an Iridium-class 700 ms. And the acoustic
+    outage closes the AUV's surfaced radio too while it lasts: the link emulator applies an event to a
+    link whichever profile carries its traffic, so "surface to report" is only after the outage.
+    *Alternative*: an emulator change so an event names the submerged profile alone. **Recommend** as
+    specified for now, the emulator change if F11's AUV case is to test surfacing during an outage.
+21. **F13's breakdown hits the agent's first look** (v2's stuck vehicle), its battery fault a
+    standing vehicle sized to cross the reserve inside the episode, its reboot a standing boat:
+    three vehicles, three domains. *Alternative*: faults at drawn times on drawn vehicles, whatever
+    the agent does (then a breakdown seldom touches a look). **Recommend** as specified.
 
 ## 10. Gates (dev)
 

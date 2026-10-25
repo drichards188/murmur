@@ -211,6 +211,28 @@ def binary() -> None:
     subprocess.run([cargo, "build", "--release", "-q", "-p", "murmur-headless"], cwd=REPO, check=True)
 
 
+def test_the_types_able_to_answer_a_need_come_from_the_sensing_model(binary: None):
+    """eval/headless/v3/able.py: a UUV is a sonar's (REMUS, Sea Hunter's hull sonar), never an
+    aircraft's; a boat by day is answered by many types; a drone at night by the thermal cameras."""
+    from eval.headless.v3.able import able
+
+    def rec(at: str) -> dict[str, Any]:
+        return {"world": {"name": "golden-gate-v3", "conditions": {"at": at, "visibility_km": 20.0, "sea_state": 2}},
+                "truth": {"stated": {"elements": [{"contact": "uuv-1", "depth_m": 8.0, "speed_mps": 1.5},
+                                                  {"contact": "boat-1", "speed_mps": 14.0},
+                                                  {"contact": "drone-1", "alt_m": 120.0, "speed_mps": 18.0}]}}}
+
+    needs = [{"contact": "uuv-1", "domain": "subsurface", "kind": "uuv", "t_need": 300.0},
+             {"contact": "boat-1", "domain": "surface", "kind": "small_fast_boat", "t_need": 300.0},
+             {"contact": "drone-1", "domain": "air", "kind": "small_drone", "t_need": 300.0}]
+    day = able(rec("2026-06-14T19:00:00Z"), needs)  # local noon
+    assert {"remus", "seahunter"} <= set(day["uuv-1"]) and not {"puma", "x10", "lta"} & set(day["uuv-1"])
+    assert len(day["boat-1"]) >= 4 and "puma" in day["boat-1"]
+    night = able(rec("2026-06-14T08:00:00Z"), needs)  # 01:00 local
+    assert set(night["drone-1"]) <= {"puma", "fvr90", "lta", "x10", "corsair", "seahunter", "ugv_recon"}
+    assert "saildrone" not in night["boat-1"], "a day camera ring sees nothing at night"
+
+
 @pytest.mark.parametrize("name", NAMES)
 def test_a_short_episode_per_family_and_world(name: str, tmp_path: Path, binary: None):
     fam, world = F.parse(name)

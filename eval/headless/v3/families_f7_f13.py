@@ -25,8 +25,8 @@ renamed where a family has more than one; what each family adds:
   6.5 m/s, a speed a fishing vessel makes, so the picture shows it a consistent, neutral fishing
   vessel until a camera identifies it: `F8_SPOOFER_SPEED`), else F1's boat; in the air (p 0.2) F2's
   drone by day with p 0.5, else F3's aircraft; under water (p 0.2) F4's UUV or F5's diver (p 0.5
-  each); on the ground (p 0.2) F6's vehicle. And five
-  look-alikes of truth neutral affiliation, each within the circle 150 s either side of the need:
+  each); on the ground (p 0.2) F6's vehicle. And five look-alikes of truth neutral affiliation,
+  each within the circle 150 s either side of the need:
   on the surface a fishing boat (p 0.5, 3 to 7 m/s) or a sailboat (2 to 4 m/s) without AIS, and a
   boat whose AIS looks wrong: a fishing boat broadcasting a cloned identity (`spoofed`, a cargo
   ship's or a passenger vessel's, p 0.5: the picture shows the conflict once a camera recognises
@@ -68,16 +68,16 @@ renamed where a family has more than one; what each family adds:
   **breakdown** of the vehicle flying the agent's first look in the need's domain (v2's stuck
   vehicle: stopped 5 to 60 s after its dispatch; none dispatched by the need's deadline, the
   standing vehicle best placed for the need stops then); a **battery** fault on a standing aircraft
-  or UGV on its opening order (PUMA 2, KESTREL 1, SKY 2, FERRET 1, and PUMA 3 in San Diego) 120 to
-  360 s in, a share of its pack gone at once to leave a drawn 22 to 33 % and, where its endurance
-  needs it, a heavier draw, so its true battery crosses the 20 % reserve 150 to 400 s later (the
-  low-reserve fault need, SCORING-V3.md 2.4); and with p 0.7 a **reboot** (3 to 8 s silent) of a
-  standing boat on its patrol up to 120 s before the need, which boots disarmed and drops its task.
+  or UGV on its opening order (PUMA 2, KESTREL 1, SKY 2, FERRET 1, and PUMA 3 in San Diego; not
+  that vehicle) 120 to 360 s in, a share of its pack gone at once to leave a drawn 22 to 33 % and,
+  where its endurance needs it, a heavier draw, so its true battery crosses the 20 % reserve 150 to
+  400 s later (the low-reserve fault need, SCORING-V3.md 2.4); and with p 0.7 a **reboot** (3 to
+  8 s silent) of another standing boat on its patrol up to 120 s before the need, which boots
+  disarmed and drops its task.
 """
 
 from __future__ import annotations
 
-import dataclasses
 import datetime as dt
 import math
 import random

@@ -18,6 +18,7 @@ from typing import Any
 from .. import REPO
 from ..labels import Truth
 from ..v2.record import load
+from .able import able
 from .causes import cause_of, light, new_hits, single_cause
 from .faults import lost_vehicles
 from .families import WORLDS, family_domain, parse
@@ -55,11 +56,16 @@ def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]
             hit = new_hits(pic, n["contact"], rule(n["domain"]).sensors, n["t_need"] - 300.0, n["t_identified"] + 1.0)
             row["identified_with"] = sorted({plat.get(u, u) for u in hit})
         needs.append(row)
+    if meta["agent"] == "none":
+        # the types the sensing model says could answer each need: once a situation, on its `none`
+        for row, types in zip(needs, (able(rec, lab["needs"]) or {}).values()):
+            row["able"] = types
     reach = ((rec.get("agent_detail") or {}).get("reach_m") or {}) if meta["agent"] == ORACLE else {}
     fleet_types = sorted({str(v.get("platform")) for v in pic.fleet})
     sensors = sorted({str(x.get("type")) for v in pic.fleet for x in v.get("sensors") or []})
     domains_ours = Counter(str((v.get("platform"))) for v in pic.fleet)
     cond = (rec.get("world") or {}).get("conditions") or {}
+    decoys = {d["contact"] for d in ((rec.get("truth") or {}).get("stated") or {}).get("decoys") or []}
     contact_domains = sorted({str(m.get("domain")) for m in truth.meta.values()})
     actions = Counter(a["label"] for a in lab["actions"])
     return {"name": meta["name"], "family": meta["family"], "agent": meta["agent"], "seed": meta["situation_seed"],
@@ -72,6 +78,9 @@ def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]
             "fault_needs": [{"uid": f["uid"], "platform": plat.get(str(f["uid"])), "domain": f.get("domain"),
                              "status": f["status"]} for f in lab["fault_needs"]],
             "lost": lost_vehicles(rec, pic),
+            # F8's restraint: the agent's orders aimed at a look-alike the situation added
+            "decoy_looks": sum(1 for a in lab["actions"] if (a.get("aim") or {}).get("primary") in decoys),
+            "decoys": len(decoys),
             "per_hour": {k: met["per_hour"].get(k) for k in ("useless", "useless_justified", "useless_unjustified",
                                                               "harmful", "fault_response", "fault_actions")}}
 
@@ -91,9 +100,12 @@ def platform_domains() -> dict[str, str]:
     return {k: str(v.get("domain")) for k, v in cat.items() if isinstance(v, dict)}
 
 
-def capable(reach: dict[str, float], domain: str, movers: set[str]) -> list[str]:
+def capable(reach: dict[str, float], domain: str, movers: set[str], need: str | None = None) -> list[str]:
+    """The platform types whose reach for a need (`need`: its contact; every need of the episode
+    when None, as with one need an episode) is at least `CAPABLE_M` of the domain's sensor."""
     s = rule(domain).sensors[0]
-    return sorted({k.split(":")[0] for k, v in reach.items() if float(v) >= CAPABLE_M[s] and k.split(":")[0] in movers})
+    return sorted({k.split(":")[0] for k, v in reach.items() if float(v) >= CAPABLE_M[s] and k.split(":")[0] in movers
+                   and (need is None or k.split(":", 1)[1] == need)})
 
 
 def flags(causes: dict[str, dict[str, Any]], share: float = 0.5, least: int = 3) -> list[str]:
@@ -167,12 +179,13 @@ def summarize(scored: list[dict[str, Any]]) -> dict[str, Any]:
                               for dom in sorted({n["domain"] for n in needs})},
                 **fault_summary(ag),
             }
-        caps = []
-        for s in rows:
-            if s["agent"] != ORACLE:
-                continue
-            for n in s["needs"]:
-                caps.append(len(capable(s["reach"], n["domain"], movers)))
+        caps = [len(n["able"]) for s in rows if s["agent"] == "none" for n in s["needs"] if "able" in n]
+        if not caps:  # a batch without `none`: the oracle's own reaches (the first dev check's)
+            for s in rows:
+                if s["agent"] != ORACLE:
+                    continue
+                for n in s["needs"]:
+                    caps.append(len(capable(s["reach"], n["domain"], movers, n["contact"])))
         block["capable_types"] = {"min": min(caps) if caps else None, "median": statistics.median(caps) if caps else None,
                                   "needs_with_fewer_than_2": sum(1 for c in caps if c < 2), "of": len(caps)}
         nn = block["agents"].get("none", {}).get("share")
@@ -214,6 +227,8 @@ def fault_summary(ag: list[dict[str, Any]]) -> dict[str, Any]:
 
     return {"fault_needs": {"met": st["met"], "unmet": st["unmet"], "censored": st["censored"],
                             "met_share": round(st["met"] / judged, 3) if judged else None},
+            "decoy_looks": sum(int(s.get("decoy_looks") or 0) for s in ag),
+            "decoy_situations_looked": sum(1 for s in ag if s.get("decoy_looks")),
             "lost_vehicles": sum(lost.values()), "lost_by": dict(lost.most_common()),
             "per_hour": {k: mean(k) for k in ("useless", "useless_justified", "harmful", "fault_response")}}
 
@@ -265,8 +280,9 @@ def markdown(summary: dict[str, Any], d: Path) -> str:
               "Fault needs met (low reserve, met over judged; censored apart), vehicles lost by the end (a diagnostic), "
               "useless orders per situation-hour (justified on the picture among them).", "",
               "| family | world | fault needs met: none / random-valid / oracle | vehicles lost: none / random-valid / oracle | "
-              "useless per hour (justified): random-valid / oracle | harmful per hour: random-valid / oracle |",
-              "|---|---|---|---|---|---|"]
+              "useless per hour (justified): random-valid / oracle | harmful per hour: random-valid / oracle | "
+              "orders at a look-alike: random-valid / oracle |",
+              "|---|---|---|---|---|---|---|"]
     for f, b in summary["families"].items():
         a = b["agents"]
 
@@ -285,7 +301,8 @@ def markdown(summary: dict[str, Any], d: Path) -> str:
                      f"{lost('none')} / {lost('random-valid')} / {lost(ORACLE)} | "
                      f"{ph('random-valid', 'useless')} ({ph('random-valid', 'useless_justified')}) / "
                      f"{ph(ORACLE, 'useless')} ({ph(ORACLE, 'useless_justified')}) | "
-                     f"{ph('random-valid', 'harmful')} / {ph(ORACLE, 'harmful')} |")
+                     f"{ph('random-valid', 'harmful')} / {ph(ORACLE, 'harmful')} | "
+                     f"{(a.get('random-valid') or {}).get('decoy_looks', 'n/a')} / {(a.get(ORACLE) or {}).get('decoy_looks', 'n/a')} |")
     return "\n".join(lines) + "\n"
 
 
