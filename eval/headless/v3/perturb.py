@@ -1,4 +1,4 @@
-"""The honest v3 ceiling's perturbations (eval/SCORING-V3.md 12.4; bd murmur-1z6.7): `oracle-v3-honest`
+"""The honest v3 ceiling's perturbations (eval/SCORING-V3.md 13.4; bd murmur-1z6.7): `oracle-v3-honest`
 with one thing changed, so a known degradation has room to show. MODEL RESULTS ONLY.
 
 Each is built as the honest ceiling is (a session, the loop's runner, the world's public map and

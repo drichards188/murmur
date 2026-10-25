@@ -6,8 +6,8 @@ needs and labels across every domain, the first seven situation families and the
 feasibility checks need, reports the first dev check (section 11), and lists the definitional choices
 the owner has to make (section 9). **2026-10-25 (C2, bd murmur-1z6.7)**: the room test replaces
 v2's fixed world conditions and the lessons are written in (section 10); the ceiling, its ladder and
-the honest ceiling's perturbations are section 12's, their two dev batches and the audit section
-13's. The validation, the pre-registration and the blind check are D's. **Scoring v2 is frozen**: its labels (version 2), its
+the honest ceiling's perturbations are section 13's, their two dev batches and the audit section
+14's. The validation, the pre-registration and the blind check are D's. **Scoring v2 is frozen**: its labels (version 2), its
 families, its oracle and every v1 and v2 golden and record are unchanged; v3 is built beside it
 (`eval/headless/v3/`), importing v2's code where it is unchanged.
 
@@ -238,7 +238,7 @@ The basic oracle leaves the high aircraft (MQ-9B, RQ-4) on their standing orders
 to their catalog altitude (7,600 and 18,000 m) and their one camera is shared by every track within
 tens of kilometres. It sends two vehicles per need (under water, one active sonar never reaches 0.6
 alone; above it, see 11.3). The ceiling, its ladder of handicapped oracles and the honest ceiling's
-perturbations are section 12's.
+perturbations are section 13's.
 
 ## 6. Families
 
@@ -337,7 +337,7 @@ name an altitude) is deferred: it changes the order format and the decision rule
 
 ## 10. Gates (dev)
 
-Written 2026-10-25, before any run of the ceiling or its ladder on dev seeds 5160-5299 (section 13):
+Written 2026-10-25, before any run of the ceiling or its ladder on dev seeds 5160-5194 and 5230-5264 (section 14):
 the owner's decision of that day replaced v2's fixed world conditions (item 1), and the lessons of
 WORLD-V3-PLAN 7 are written in (items 2 to 5). Nothing here is pre-registered: the rules that judge
 validation are written in phase D, after the audit of item 3.
@@ -351,7 +351,7 @@ validation are written in phase D, after the audit of item 3.
      the floor and the ceiling judges how hard the world is, which is a finding about the fleet, not
      a property of the scorer. What the scorer needs from a family is room: a ceiling measurably
      above the floor, so an agent's need served has somewhere to sit between them.
-   - **The test**, per family and world: the ceiling (`oracle-v3`, 12.1) minus `none` on need served,
+   - **The test**, per family and world: the ceiling (`oracle-v3`, 13.1) minus `none` on need served,
      paired by situation (each situation's served over eligible needs; the situations where both have
      an eligible need). The family-world has **room** when (a) the paired 95 % interval of the mean
      difference lies wholly above zero (section 8's rule: the paired cluster bootstrap, BCa, seed 0,
@@ -383,9 +383,9 @@ validation are written in phase D, after the audit of item 3.
 2. **Coverage first** (lesson 1): every v3 result opens with section 0's statement filled from its
    own batch (ruler.py and report.py write it first), naming any shortcut.
 3. **The audit before pre-registration** (lesson 2; ruler.py `audit`). At least two dev batches, on
-   seeds no rule was written from (section 13: 5160-5229, then 5230-5299). Every judged cell (the
-   room per family-world; the ladder's judged orders per family-world, 12.3; each perturbation's
-   judged moves, pooled and per family-world, 12.4) whose point estimate leans the wrong way in both
+   seeds no rule was written from (section 14: 5160-5194, then 5230-5264). Every judged cell (the
+   room per family-world; the ladder's judged orders per family-world, 13.3; each perturbation's
+   judged moves, pooled and per family-world, 13.4) whose point estimate leans the wrong way in both
    batches is listed, its mechanism found in the records, and settled before any rule is written:
    the prediction corrected and the cell reported as mis-specified (as v2 0.6 did for the truth
    step), the agent or family fixed and run again on fresh dev seeds, or the cell reported and not
@@ -397,12 +397,12 @@ validation are written in phase D, after the audit of item 3.
    `looked:<platform>@<light>(<level shown>)`), whole and by its platform or gap alone
    (`looked:corsair` whatever the light). Over 50 % of at least 3 losses, by either, flags the family
    for redesign before validation. `none`'s `no_look` is the room the family leaves an agent and is
-   counted apart (choice 13). The ceiling's losses are also reported by its plan's verdict (12.2):
+   counted apart (choice 13). The ceiling's losses are also reported by its plan's verdict (13.2):
    a family whose ceiling losses are mostly one capability gap (night, say) has its finding named,
    and the redesign, if any, is the owner's (W3: a family is never drawn around a sensor's quirk).
 5. **The per-family guard, with Holm** (lesson 4; ruler.py `report`, `guard`), decided now. Within
    each family (F1 to F6, its two worlds together), the guard's cells are, per world, every judged
-   ladder order (12.3) and every judged and testable perturbation move (12.4). Each cell is tested
+   ladder order (13.3) and every judged and testable perturbation move (13.4). Each cell is tested
    for leaning the wrong way: the one-sided sign-flip permutation test of the mean paired
    difference, each situation's difference oriented so the prediction is positive (spam's "not
    worse" shifted by its 5-point margin; exact up to 16 situations, else 10,000 random patterns,
@@ -534,17 +534,17 @@ The ladder and perturbations (C2) are worth building on F1, F2 v3, F3 and F6, wh
 with A1: the oracle's ceiling is the cameras'. Two dev batches are needed before any rule is
 pre-registered (lesson 2); this is the first.
 
-## 12. The ruler: the ceiling, its ladder and the honest ceiling's perturbations (C2)
+## 13. The ruler: the ceiling, its ladder and the honest ceiling's perturbations (C2)
 
-Added 2026-10-25 (bd murmur-1z6.7), before any run on the dev seeds of section 13. The owner's
+Added 2026-10-25 (bd murmur-1z6.7), before any run on the dev seeds of section 14. The owner's
 decisions of that day: the sensing model is the fixed world (crates/murmur-bridge/src/tracks/ and
-sim/platforms.toml are not changed here; what looks like a defect there is reported, 12.6), and the
+sim/platforms.toml are not changed here; what looks like a defect there is reported, 13.6), and the
 room test replaces v2's fixed world conditions (10.1). Code: eval/headless/v3/planner.py (the ceiling
 and its rungs), perturb.py (the perturbations), room.py, ruler.py (the batch and the report); tests:
 eval/headless/tests/test_v3_ruler.py, and test_v3_families.py runs the ceiling once per family and
 world.
 
-### 12.1 The ceiling (`oracle-v3`)
+### 13.1 The ceiling (`oracle-v3`)
 
 **Privileged**, counted and recorded (`agent_detail.privileged`), never given to an agent under test:
 the contacts file (every contact's route, speed, height and start), our vehicles' truth (position,
@@ -608,7 +608,7 @@ never gimbals.
    wrong): a perfect watch officer could not know them. It cannot name an altitude (choice 12) or a
    look target (W1).
 
-### 12.2 The ceiling's losses by cause
+### 13.2 The ceiling's losses by cause
 
 At its first tick the ceiling judges each need with every vehicle that takes orders, from where it
 then is (`feasibility`, recorded per need): whether any set of looks could raise its evidence to 0.6
@@ -628,7 +628,7 @@ The report (ruler.py) gives the ceiling's lost needs by these verdicts (capabili
 the fleet, not failures of the ceiling) and, for a need its plan could have served, by the loss's
 cause on the picture (causes.py): what went wrong in the execution.
 
-### 12.3 The ladder and its predicted order
+### 13.3 The ladder and its predicted order
 
 Each rung is the ceiling with one switch of the same planner turned off, nothing else changed:
 
@@ -667,7 +667,7 @@ where no candidate's datalink is terrain-limited).
   not even the ceiling is provably above the floor; the ceiling's step over the floor is the room
   test's (10.1).
 
-### 12.4 The honest ceiling's perturbations
+### 13.4 The honest ceiling's perturbations
 
 Each is `oracle-v3-honest` with one thing changed (perturb.py), built as it is and reading no truth
 unless it says so; each writes what it changed (`perturbation` lines):
@@ -688,7 +688,7 @@ resamples, seed 0), "up" and "down" needing the interval wholly on that side; a 
 `not testable` where the honest ceiling is not shown above `none` on that metric (pooled), unless it
 shows anyway; per family-world each move is reported and enters the guard (10.5).
 
-### 12.5 The commands
+### 13.5 The commands
 
     .venv/bin/python -m eval.headless.v3.ruler batch --seeds 5160-5194 --workers 8 \
         --out eval/results/headless/v3-ruler-5160
@@ -701,7 +701,7 @@ shows anyway; per family-world each move is reported and enters the guard (10.5)
     .venv/bin/python -m eval.headless.v3.ruler report eval/results/headless/v3-ruler-5230 \
         --prev eval/results/headless/v3-ruler-5160
 
-### 12.6 What the ceiling found in the fixed world (reported, not changed)
+### 13.6 What the ceiling found in the fixed world (reported, not changed)
 
 The sensing model and the catalog are the fixed world (the owner's decision of 2026-10-25): what
 follows is reported for the owner, nothing in crates/murmur-bridge/src/tracks/ or sim/platforms.toml
@@ -730,4 +730,4 @@ building the ceiling's look model; none was tuned around.
    rather than combining with it. Under water a need takes two sonars, or Sea Hunter within its
    passive range (a diver 100 m) for about 170 s of signal. At the Horseshoe Bay pier (F5 Golden
    Gate) the only sonar in time is the pier's own BlueROV (Ping360, 50 m): the plan's feasibility
-   names those needs `no_time` (12.2) when no second sonar can reach the diver by its deadline.
+   names those needs `no_time` (13.2) when no second sonar can reach the diver by its deadline.

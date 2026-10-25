@@ -1,5 +1,5 @@
 """Scoring v3's ruler: the dev batches of the ceiling, its ladder and the honest ceiling's perturbations,
-and their report (eval/SCORING-V3.md sections 10 and 12; bd murmur-1z6.7). MODEL RESULTS ONLY: free,
+and their report (eval/SCORING-V3.md sections 10, 13 and 14; bd murmur-1z6.7). MODEL RESULTS ONLY: free,
 deterministic agents on generated situations; never human data, never an API call.
 
     .venv/bin/python -m eval.headless.v3.ruler batch --seeds 5160-5229 --workers 8 --out <dir>
@@ -26,7 +26,7 @@ stopped part way loses at most a chunk. Its workers run numpy on one thread each
    differences;
 5. each perturbation's moves against the honest ceiling (`MOVES`), pooled over the family-worlds
    with eligible needs (the stratified bootstrap, v2 0.5 a), and per family-world;
-6. the per-family guard (lesson 4, SCORING-V3.md 10.4): within each family, every judged cell of
+6. the per-family guard (lesson 4, SCORING-V3.md 10.5): within each family, every judged cell of
    either world (the ladder's judged orders, the perturbations' judged moves) tested for leaning the
    wrong way (a one-sided sign-flip permutation test), Holm's correction across the family's cells;
 7. with `--prev`, the audit (lesson 2, SCORING-V3.md 10.3): every judged cell (the room test, the
@@ -65,7 +65,7 @@ PERTURBATIONS = ("oracle-v3-honest+spam", "oracle-v3-honest+behind", "oracle-v3-
                  "oracle-v3-honest+wrong-sensor")
 AGENTS = ("none", "random-valid", "playbook") + RUNGS + PERTURBATIONS
 CHUNK = 200
-#: SCORING-V3.md 12.3: the orders judged, (A, B): A at least B on need served. Each removes one
+#: SCORING-V3.md 13.3: the orders judged, (A, B): A at least B on need served. Each removes one
 #: advantage from the same planner, with no second handicap to interact with
 JUDGED: tuple[tuple[str, str], ...] = (("oracle-v3", "oracle-v3-late"), ("oracle-v3", "oracle-v3-linkblind"),
                                        ("oracle-v3", "oracle-v3-sensorblind"))
@@ -77,7 +77,7 @@ REPORTED: tuple[tuple[str, str], ...] = (("oracle-v3-linkblind", "oracle-v3-hone
                                          ("oracle-v3-late", "oracle-v3-honest"),
                                          ("oracle-v3-late", "none"), ("oracle-v3-linkblind", "none"),
                                          ("oracle-v3-sensorblind", "none"), ("oracle-v3-honest", "none"))
-#: SCORING-V3.md 12.4: each perturbation's predicted moves against the honest ceiling (metric, want);
+#: SCORING-V3.md 13.4: each perturbation's predicted moves against the honest ceiling (metric, want);
 #: `not worse`: the pooled interval's lower bound above -`NOT_WORSE` (non-inferiority, v2 0.5 b)
 MOVES: dict[str, tuple[tuple[str, str], ...]] = {
     "oracle-v3-honest+spam": (("served_share", "not worse"), ("per_hour.follow_up", "up"), ("repeats", "up"),
@@ -105,11 +105,46 @@ def _one_thread() -> None:
         os.environ[k] = "1"
 
 
+def recover(out: Path) -> int:
+    """A batch stopped part way leaves records its index does not hold (the chunk in flight): each is
+    read back into the index from the record itself (its fidelity digest and wall time are not
+    kept), and one that cannot be read (cut off while written) is removed, to be run again."""
+    import gzip
+
+    idx = out / "episodes_v3.json"
+    old = json.loads(idx.read_text()) if idx.exists() else []
+    known = {m["name"] for m in old}
+    added = 0
+    for p in sorted(out.glob("*.json.gz")):
+        name = p.name[: -len(".json.gz")]
+        if name in known:
+            continue
+        try:
+            rec = json.loads(gzip.decompress(p.read_bytes()))
+        except Exception:  # noqa: BLE001 (cut off while written: run it again)
+            p.unlink()
+            continue
+        rep = rec.get("replicate") or {}
+        agent = name.rsplit("-s", 1)[0]
+        fam = next(f for f in FAMILIES if agent.startswith(f + "-"))
+        old.append({"name": name, "path": str(p), "family": fam, "agent": agent[len(fam) + 1:],
+                    "situation_seed": int(rep.get("situation_seed")), "r": int(rep.get("r") or 0),
+                    "seed": int(rep.get("seed")), "class": rec.get("episode_class"), "attempts": 1,
+                    "record_bytes": p.stat().st_size, "wall_s": None, "fidelity": None, "reruns": [],
+                    "recovered": True})
+        added += 1
+    if added:
+        idx.write_text(json.dumps(sorted(old, key=lambda m: m["name"]), indent=1, sort_keys=True))
+    return added
+
+
 def cmd_batch(args: argparse.Namespace) -> int:
     from ..batch import build, parse_seeds
     from .run import job_name, jobs_for, run_job
 
     _one_thread()
+    if args.out.exists():
+        print(json.dumps({"recovered": recover(args.out)}), flush=True)
     fams = list(args.families or FAMILIES)
     agents = list(dict.fromkeys(args.agent or AGENTS))
     if "none" not in agents:

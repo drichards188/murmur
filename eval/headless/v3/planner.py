@@ -1,4 +1,4 @@
-"""Scoring v3's ceiling and its ladder (eval/SCORING-V3.md sections 5 and 12; bd murmur-1z6.7). MODEL
+"""Scoring v3's ceiling and its ladder (eval/SCORING-V3.md sections 5 and 13; bd murmur-1z6.7). MODEL
 RESULTS ONLY: free, deterministic agents on generated situations.
 
 **`oracle-v3`, the ceiling** (privileged, counted and recorded in `agent_detail.privileged`, never
@@ -41,14 +41,14 @@ that cameras point themselves (decision W1: it places vehicles, never gimbals):
 
 It knows nothing of the situation's sensing draws (which observer calls the contact wrong): a perfect
 watch officer could not. **Feasibility** (`feasibility`, recorded per need at the oracle's first
-tick, for the report of its losses by cause; eval/SCORING-V3.md 12.2): with every vehicle of the
+tick, for the report of its losses by cause; eval/SCORING-V3.md 13.2): with every vehicle of the
 fleet that takes orders, from where it is then, whether any can raise the need's evidence to 0.6 by
 its deadline, and if none can, why: `fleet_gap` (no vehicle's sensor reaches 0.6 on this kind even by
 a clear day), `night` or `fog` (one would by a clear day, not in the drawn light or visibility),
 `no_time` (capable vehicles, none in reach of its path by the deadline), `terrain` (in reach, never in
 sight), `link` (only where the datalink fails), `reserve`.
 
-**The ladder** (SCORING-V3.md 12.3): the ceiling with one advantage removed, nothing else changed:
+**The ladder** (SCORING-V3.md 13.3): the ceiling with one advantage removed, nothing else changed:
 
 - `oracle-v3-late`: no look before the need opens (its true position inside the circle);
 - `oracle-v3-linkblind`: no link map and no truth of a blocked link (a lost link only as the

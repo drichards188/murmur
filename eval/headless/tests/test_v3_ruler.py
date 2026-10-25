@@ -1,4 +1,4 @@
-"""Scoring v3's ruler (eval/SCORING-V3.md 10 and 12): the ceiling's planning (v3/planner.py), each rung
+"""Scoring v3's ruler (eval/SCORING-V3.md 10 and 13): the ceiling's planning (v3/planner.py), each rung
 and perturbation (v3/planner.py, v3/perturb.py), the room test (v3/room.py) and the report's tests
 (v3/ruler.py), on stubs: no episode runs here (test_v3_families.py runs the ceiling in one short
 episode per family and world)."""
