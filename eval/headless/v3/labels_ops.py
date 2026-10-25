@@ -438,9 +438,11 @@ def gnss_probe(rec: dict[str, Any], probe_id: str) -> list[tuple[float, int]]:
 
 def outage_samples(rec: dict[str, Any], need: dict[str, Any]) -> list[float]:
     """The cover need's predicted outage: the truth probe's samples in its run with fewer than its
-    required satellites in view."""
+    required satellites in view, after the run's scheduled start (an outage at the start itself
+    is the scheduler's: the run starts then whatever an agent does, and can only be held after;
+    the first dev batch counted it, and two of the oracle's twenty runs could not be served)."""
     lo, hi = float(need["start_s"]), float(need["end_s"])
-    return [t for t, v in gnss_probe(rec, need["id"]) if lo - 1e-6 <= t <= hi + 1e-6 and v < int(need["min_level"])]
+    return [t for t, v in gnss_probe(rec, need["id"]) if lo + 1e-6 < t <= hi + 1e-6 and v < int(need["min_level"])]
 
 
 def same_route(a: Any, b: Any, tol_m: float = 5.0) -> bool:

@@ -19,7 +19,7 @@ import pytest
 from eval.headless import REPO
 from eval.headless import review as rv
 from eval.headless.tests.test_engage_space import FakeSim
-from eval.headless.tests.test_v2_labels import EPOCH, Synth, at, inbound
+from eval.headless.tests.test_v2_labels import EPOCH, Synth, inbound
 from eval.headless.tests.test_v3_labels import UNRESOLVED, by_intent, v3_record
 from eval.headless.v3 import families as F
 from eval.headless.v3 import families_ops as FO
@@ -187,6 +187,12 @@ def test_a_cover_is_useful_when_the_predicted_outage_was_avoided():
     assert by_intent(cover_world("fail", held_at=None, other_fail=True))[30]["label"] == "refused"
     late = cover_world("fail", held_at=550.0, created=450.0)["ops"]["cover"][0]
     assert not late["served"] and late["cause"] == "not_asked", "asked after the run began"
+
+
+def test_an_outage_at_the_run_s_own_start_is_the_scheduler_s():
+    rec = {"clock": {"epoch": EPOCH}, "script": [{"kind": "probe", "id": "gnss-1", "answer": {"samples": [
+        {"t": iso(400.0), "visible": 8}, {"t": iso(700.0), "visible": 11}, {"t": iso(1000.0), "visible": 9}]}}]}
+    assert O.outage_samples(rec, NEED) == [1000.0]
 
 
 def test_without_the_space_digest_collect_and_cover_stay_unjudged():

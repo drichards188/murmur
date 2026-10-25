@@ -19,14 +19,15 @@ scale world (golden-gate-scale) only. Every route keeps to its medium on the wor
     of interest is reported making for it"). Optical (by day, at a pass) and SAR (day or night)
     collects both answer it when a pass serves; so would a long flight of REAPER 1 or HAWK 1 out
     of the approved area.
-  - *a GNSS cover need*: a UGV (FERRET 1 at the Golden Gate, MULE 1 in San Diego) starts a scheduled GNSS-guided run along
-    a shore road at 300 to 700 s for 15 minutes (the timeline proposes it then, `agent-scripted`
-    over MCP); its survey-grade fix needs at least N GPS satellites in view (N 9 with p 0.6, else
-    10: GPS-only geometry at a 5 degree mask shows 8 to 13 here, so an outage of N is predicted in
-    about half the situations, choice 15). The brief asks for coverage to be confirmed before the
-    run and the run held through any predicted outage. Truth is the bridge's own GNSS answer for
-    the run (`GET /api/space/gnss` at the route's middle, 300 s steps), read at 1 s by the script
-    (`probe`, never an agent's) and kept in the record's script log.
+  - *a GNSS cover need*: a UGV (FERRET 1 at the Golden Gate, MULE 1 in San Diego) starts a
+    scheduled GNSS-guided run along a shore road at 300 to 700 s for 15 minutes (the timeline
+    proposes it then, `agent-scripted` over MCP); its survey-grade fix needs at least N GPS
+    satellites in view (N 9 with p 0.6, else 10: GPS-only geometry at a 5 degree mask shows 8 to
+    13 here, so an outage of N is predicted inside the run in some situations: 4 of 20 on the dev
+    seeds, choice 15). The brief asks for coverage to be confirmed before the run and the run held
+    through any predicted outage. Truth is the bridge's own GNSS answer for the run (`GET
+    /api/space/gnss` at the route's middle, 300 s steps), read at 1 s by the script (`probe`,
+    never an agent's) and kept in the record's script log.
 - **F15 the engagement chain** (1,200 s): a hostile small fast boat (no AIS) comes in from the sea
   to hold at a drawn point in the world's engagement zone and fires on one of ours there (HUNTER 1
   p 0.6, ALBATROSS 1 p 0.4) three times a minute apart, 20 to 80 s after it arrives (250 to 420
@@ -76,7 +77,6 @@ scale world (golden-gate-scale) only. Every route keeps to its medium on the wor
 from __future__ import annotations
 
 import datetime as dt
-import math
 import random
 import re
 import tomllib

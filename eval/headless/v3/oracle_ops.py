@@ -206,7 +206,7 @@ class OracleOps(OracleV3):
                     t = unix(x.get("t"))
                     if t is not None and x.get("visible") is not None and int(x["visible"]) < int(n["min_level"]):
                         out.append(round(t - self.epoch, 3))
-                return [t for t in out if float(n["start_s"]) - 1e-6 <= t <= float(n["end_s"]) + 1e-6]
+                return [t for t in out if float(n["start_s"]) + 1e-6 < t <= float(n["end_s"]) + 1e-6]
         return []
 
     def hold_through(self, now: float) -> None:
