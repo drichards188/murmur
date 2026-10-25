@@ -559,5 +559,8 @@ class OracleV3(SessionAgent):
 
 def make(ep: Any, name: str) -> Any:
     if name == "oracle-v3":
-        return OracleV3(ep)
+        # with F14-F16's few additions (oracle_ops.py); in every other family it is OracleV3 exactly
+        from .oracle_ops import OracleOps
+
+        return OracleOps(ep)
     raise ValueError(f"unknown v3 agent {name!r}")

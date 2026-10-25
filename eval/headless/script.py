@@ -216,6 +216,15 @@ class Script:
                 extra = {"trigger": it["trigger"], "mode_at_stop": self._mode(uid)} if it.get("trigger") else {}
                 sim.fault("stop", uid=uid)
                 rec.update(uid=uid, **extra)
+            elif kind == "probe":
+                # truth for the labels (scoring v3's F14): an operator API read of the space segment
+                # (GET, logged nowhere), its answer kept in the script's log only; never an agent's
+                status, out = sim.api("GET", str(it["path"]))
+                ans = out if isinstance(out, dict) else {}
+                rec.update(id=it.get("id"), path=it["path"], status=status,
+                           answer={"samples": [{"t": s.get("t"), "visible": s.get("visible")}
+                                               for s in ans.get("samples") or []],
+                                   "visible_min": ans.get("visible_min"), "visible_max": ans.get("visible_max")})
             elif kind == "propose":
                 p = it["proposal"]
                 s = HeadlessSession(sim, STORYLINE_AGENT, "0.1")
