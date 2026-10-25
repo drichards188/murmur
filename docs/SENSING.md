@@ -574,6 +574,68 @@ sets' views):
   contacts on the water give no 2D radar bearings, and its cameras, at most 80 m up, look a few
   kilometres along the sea, where the slant path changes the atmosphere's share by under 1 %.
 
+**The first v3 dev check's sensing defects** (murmur-1z6.6's dev check, eval/SCORING-V3.md 11.2
+and 11.3; 2026-10-24). Four changes, each physics or bookkeeping, no sensor value tuned (W3):
+
+1. *Sonar evidence* (Sonar, above): a classification integrates the signal heard, not the time
+   since the first detection. Before, a run survived 30 s gaps and its confidence grew with its
+   length, so a buoy hearing a diver 5 to 8 % of the seconds recognised it as fast as one hearing
+   it every second.
+2. *EO/IR looks and the payload manager* (EO/IR and Pointing, above): each level accrues as a
+   hazard while the contact is in the field (before, one draw a look decided all three levels, so
+   a look between the identification and recognition chances never identified while the contact
+   stayed); a lock holds while its contact is a candidate and its identification gets likelier
+   (before, 10 s at most); and each camera keeps its own history (before, `looked` and
+   `identified` were keyed by contact alone, so one camera's failed cue kept every camera off the
+   contact for 60 s, an identification for 300 s). A first version let any nearer unidentified
+   contact take a lock; it thrashed between contacts in traffic and was dropped.
+3. *Sea Hunter's hull sonar listens* (the catalog, above): `passive = { ranges }` on an active
+   sonar; the MS3 is "active and passive" [44], its passive figures are the buoy's [E here].
+4. *Each look's level in the picture* (What a look yields, above): `identity.looks`, physical
+   model only; recorded under scoring v3 (`eval/headless/v3/record.py`).
+
+Need served, pooled over both worlds, on fresh dev seeds 5100-5129 (`none` / `random-valid` /
+the basic oracle; one replicate, 1,080 episodes each side, no harness error; model results only),
+before (the code of murmur-1z6.6) and after:
+
+| family | before | after |
+|---|---|---|
+| F1 fast boat | 39 / 40 / 43 of 60 | 39 / 40 / 43 |
+| F2 drone (version 3) | 0 / 1 / 31 of 60 | 0 / 1 / 30 |
+| F3 low aircraft | 33 / 36 / 46 of 60 | 40 / 38 / 41 |
+| F4 UUV | 48 / 48 / 48 of 55 | 40 / 40 / 51 |
+| F5 diver | 45 / 45 / 48 of 60 | 25 / 25 / 33 |
+| F6 shore vehicle | 28 / 22 / 34 of 60 | 20 / 19 / 34 |
+
+The sonar change does what 11.2 asked: the standing buoys no longer recognise the UUV and the
+diver for `none` (F4 Golden Gate 26 to 14 of 28, F5 Golden Gate 15 to 0 of 30), and the oracle's
+F4 rose to 51 of 55 (10.1 holds on F4 Golden Gate). Under water the oracle's own sonars now need
+their seconds of signal too: F5 Golden Gate's oracle fell from 18 to 3 of 30, its vehicles
+recognising the diver 30 to 200 s after the deadline (the active sonars' diver ranges are a few
+hundred metres, so an orbit hears it a share of the seconds). The camera changes did not raise
+the oracle's air and ground service (F2 31 to 30, F3 46 to 41, F6 34 to 34, all within a
+binomial spread of about 4 needs). Taken apart on F2 and F3 (seeds 5100-5129, the oracle and
+`none`): the hazard alone, with the old lock and shared history, served 14 and 46 of 60 (from 31
+and 46): ACQUIRE's rate makes a short look at a middling chance less likely to identify than the
+old draw, which gave the full chance at the dwell; the per-camera history brought F2 back to 30,
+chiefly its failed cues (shared identifications with per-camera failed cues: 26), as one camera's
+failed cue no longer keeps the oracle's other camera off the drone; the lock
+change moved 137 of 240 episodes and left the pooled counts as they were. What still limits the drones
+(F2's `looked:puma(detected)`): a camera cued by a 2D radar's plot re-aims, slewing and settling,
+whenever the next fix moves the elevation search's current bar past a quarter of the field
+(`Cue::aims` is rebuilt from each new fix), so a Puma that had the drone in its wide field at its
+first bar (F2 San Diego, seed 5108) was blind 11 of the cue's next 18 s and its cue ended,
+keeping it off the drone for a minute; a follow-up (cue from the track, or keep the bar a cue
+update falls within), not made here.
+
+Legacy byte for byte: every legacy calibration and the anchors (`cargo test`), the golden
+episode and v1/v2 null fidelity (`eval/headless/tests`), and a keep-out evaluation (seeds 1 to
+3, 20 situations, the radar and all variants: records identical). The physical tuning-set views:
+the surface criteria all hold as before; on the air tuning sets the all-sensors mix has 2
+keep-out misses 3 s ahead as before, other cases (a 500 m loiter by 113 m, an approach and break
+by 53 m, against random turns by 253 m before), and one class's velocity error over its bound
+(speed change 6.67, against one turn 7.48 before). No held-out set was run.
+
 **Cost** (`eval/headless/sense_perf.py`): a Golden Gate world of 30 stand-ins of ten types and
 40 contacts of every domain, headless, 30 simulated minutes: 91 times real time on the
 physical model, 82 on the legacy one (this host, 28 cores, one episode).
