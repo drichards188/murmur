@@ -660,6 +660,14 @@ class Ceiling(SessionAgent):
 
     # ---- the plan -----------------------------------------------------------------------------------------
 
+    def until(self, n: NeedV3) -> float:
+        """How long the plan works on an unresolved need: the ceiling knows its true deadline."""
+        return n.deadline
+
+    def target(self, n: NeedV3, now: float) -> float:
+        """The time the plan's looks must come by."""
+        return n.deadline
+
     def usable(self, u: UnitV3, now: float) -> bool:
         return u.xy is not None and not u.down and not u.link_bad and now >= u.refused_until
 
@@ -740,7 +748,7 @@ class Ceiling(SessionAgent):
         return eo_look(u.uid, q, ts, d, dc, area, exists, self.STEP_S)
 
     def window(self, n: NeedV3, now: float) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
-        last = n.deadline - self.MARGIN_S[n.domain]
+        last = self.target(n, now) - self.MARGIN_S[n.domain]
         t_lo = max(now, getattr(n.path, "t0", now))
         if last <= now:
             return None
@@ -805,10 +813,10 @@ class Ceiling(SessionAgent):
         taken: set[int] = set()
         for u in self.units.values():
             if u.order is not None and u.order.get("need") in self.needs and \
-                    self.needs[u.order["need"]].resolved_t is None and self.needs[u.order["need"]].deadline > now:
+                    self.needs[u.order["need"]].resolved_t is None and self.until(self.needs[u.order["need"]]) > now:
                 taken.add(u.uid)
         for n in sorted(self.needs.values(), key=lambda n: (n.deadline, n.id)):
-            if n.resolved_t is not None or n.deadline <= now or not self.may_look(n, now):
+            if n.resolved_t is not None or self.until(n) <= now or not self.may_look(n, now):
                 continue
             win = self.window(n, now)
             if win is None:
@@ -849,7 +857,7 @@ class Ceiling(SessionAgent):
         rtl are the movers' tasks: none follows a track)."""
         out = []
         for n in self.needs.values():
-            if n.resolved_t is not None or n.deadline <= now:
+            if n.resolved_t is not None or self.until(n) <= now:
                 continue
             here = n.path.at(np.array([now]))[0]
             if np.isnan(here[0]):
@@ -1130,6 +1138,9 @@ KIND_DOMAIN = {"small_craft": "surface", "large_vessel": "surface", "aircraft": 
 FAMILY_KIND = {"small_craft": "small_fast_boat", "large_vessel": "cargo_ship", "aircraft": "light_aircraft",
                "small_uas": "small_drone", "ground_vehicle": "vehicle", "person": "diver", "submerged": "uuv"}
 CLASSIFYING = ("eo_ir", "sonar")
+#: the speed the honest ceiling takes an unranged aircraft to come in at (a small drone's 25 m/s,
+#: the top of F2's 12 to 25: the mission's threat for its 30 s grace, mission.py)
+THREAT_MPS = {"air": 25.0}
 
 
 class HonestCeiling(CeilingLinkBlind):
@@ -1143,6 +1154,8 @@ class HonestCeiling(CeilingLinkBlind):
     #: a track whose shown motion brings it within the circle this soon is a need to plan for
     HORIZON_S = 300.0
     MAX_PLANNED = 6
+    #: an unresolved need is worked on this many graces past its own deadline (`until`)
+    LAPSE_GRACES = 2.0
     #: the reserve and one more: the session shows the battery in whole percent
     RESERVE_PCT = 21.0
 
@@ -1235,21 +1248,38 @@ class HonestCeiling(CeilingLinkBlind):
         self.read_orders(now, fleet)
 
     def kind_of(self, tr: dict[str, Any]) -> tuple[str, str]:
-        """(kind, domain) the model is asked about for a track: its shown kind, its family's stand-in,
-        else its detection's size class, else its domain's smallest threat."""
+        """(kind, domain) the model is asked about for a track: its shown kind; else the size class a
+        radar or camera detected (an ESM receiver's family names every emitter of a domain alike,
+        `aircraft` for a small drone's datalink); else its shown family's stand-in, its size class, its
+        domain's smallest threat."""
         idn = tr.get("identity") or {}
         kind = str(idn.get("kind") or "")
         dom = str(tr.get("domain") or KIND_DOMAIN.get(kind) or "surface")
         if kind in FAMILY:
             return kind, dom
+        for lk in idn.get("looks") or []:
+            if lk.get("level") == "detect" and lk.get("sensor") in ("radar", "eo_ir", "sonar") \
+                    and lk.get("label") in SIZE_KIND:
+                return SIZE_KIND[str(lk["label"])], dom
         if kind in FAMILY_KIND:
             return FAMILY_KIND[kind], dom
         if kind in SIZE_KIND:
             return SIZE_KIND[kind], dom
-        for lk in idn.get("looks") or []:
-            if lk.get("level") == "detect" and lk.get("label") in SIZE_KIND:
-                return SIZE_KIND[str(lk["label"])], dom
         return DOMAIN_KIND.get(dom, "small_fast_boat"), dom
+
+    def motion(self, xy: tuple[float, float], v: tuple[float, float], dom: str) -> tuple[float, float]:
+        """The velocity the plan carries a track at: its shown one; an aircraft the picture gives none
+        (a 2D radar's bearings seldom range one) is taken to come straight in at its domain's threat
+        speed (`THREAT_MPS`), as a watch officer would."""
+        if dom in THREAT_MPS and math.hypot(*v) < 0.5:
+            d = math.hypot(*xy)
+            if d > 1.0:
+                return (-THREAT_MPS[dom] * xy[0] / d, -THREAT_MPS[dom] * xy[1] / d)
+        return v
+
+    def due_in(self, route: Any, now: float) -> float | None:
+        """When the track's carried motion brings it within the circle (within `HORIZON_S`)."""
+        return route.first_within(self.radius, now, now + self.HORIZON_S)
 
     def picture(self, now: float, tracks: list[dict[str, Any]]) -> None:
         """Needs from the picture (v2's honest oracle's rule): a track in doubt (shown unknown,
@@ -1283,23 +1313,23 @@ class HonestCeiling(CeilingLinkBlind):
                 if settled or not doubt:
                     continue
                 route = Straight(tid)
-                route.update(xy, v, now)
-                t_need = now if inside else route.first_within(self.radius, now, now + self.HORIZON_S)
+                route.update(xy, v if inside else self.motion(xy, v, dom), now)
+                t_need = now if inside else self.due_in(route, now)
                 if t_need is None:
                     continue
-                n = NeedV3(tid, kind, dom, route, t_need, alt, math.hypot(*v), opened_t=now if inside else None)
+                n = NeedV3(tid, kind, dom, route, t_need, alt, math.hypot(*route.v), opened_t=now if inside else None)
                 self.needs[tid] = n
                 self.write("need", track=tid, t_need=round(t_need, 1), deadline=round(n.deadline, 1), inside=inside,
                            shown=tr.get("affiliation"), contact_kind=kind, domain=dom, confidence=round(conf, 3))
             else:
-                n.path.update(xy, v, now)
-                n.speed = math.hypot(*v)
+                n.path.update(xy, v if inside else self.motion(xy, v, dom), now)
+                n.speed = math.hypot(*n.path.v)
                 if n.resolved_t is None and n.opened_t is None:
                     if inside:
                         n.opened_t = now
                         n.t_need, n.deadline = now, now + n.rule.grace_s
                     else:
-                        t = n.path.first_within(self.radius, now, now + self.HORIZON_S)
+                        t = self.due_in(n.path, now)
                         if t is not None:
                             n.t_need, n.deadline = t, t + n.rule.grace_s
                 if kind != n.kind and kind in FAMILY:
@@ -1309,13 +1339,23 @@ class HonestCeiling(CeilingLinkBlind):
                 self.write("need.resolved", track=tid, t=round(now, 1), shown_kind=idn.get("kind"),
                            confidence=round(conf, 3))
 
+    def until(self, n: NeedV3) -> float:
+        """The honest ceiling does not know a need's true deadline (its own is from when the picture
+        first showed the contact inside, and a 2D radar's plot of an aircraft can show it inside
+        before it is): it keeps working on an unresolved need for `LAPSE_GRACES` graces past its own
+        deadline, its looks planned to come by then."""
+        return n.deadline + self.LAPSE_GRACES * n.rule.grace_s
+
+    def target(self, n: NeedV3, now: float) -> float:
+        return self.until(n)
+
     def plan(self, now: float) -> list[dict[str, Any]]:
         # weigh the earliest open needs only (the picture can show many in doubt)
-        open_ = sorted((n for n in self.needs.values() if n.resolved_t is None and n.deadline > now),
+        open_ = sorted((n for n in self.needs.values() if n.resolved_t is None and self.until(n) > now),
                        key=lambda n: (n.deadline, n.id))
         keep = {n.id for n in open_[: self.MAX_PLANNED]}
         saved = self.needs
-        self.needs = {k: v for k, v in saved.items() if k in keep or v.resolved_t is not None or v.deadline <= now
+        self.needs = {k: v for k, v in saved.items() if k in keep or v.resolved_t is not None or self.until(v) <= now
                       or any(self.units[u].order is not None for u in v.assigned)}
         try:
             return super().plan(now)
