@@ -733,3 +733,43 @@ building the ceiling's look model; none was tuned around.
    passive range (a diver 100 m) for about 170 s of signal. At the Horseshoe Bay pier (F5 Golden
    Gate) the only sonar in time is the pier's own BlueROV (Ping360, 50 m): the plan's feasibility
    names those needs `no_time` (13.2) when no second sonar can reach the diver by its deadline.
+
+### 13.7 Dev batch 1, partial (seeds 5160-5194, stopped 2026-10-25)
+
+**A partial batch: development evidence, not an audit.** The owner stopped the batch on 2026-10-25
+(large runs are for the one final validation); this summarises the 3,984 of its 6,300 episodes on
+disk (63 %), run in shuffled order, so every family-world and agent cell holds 14 to 29 of its 35
+situations. A paired comparison uses only the situations both arms ran: 6 to 19 per family-world
+(always the exact sign test, under the bootstrap's 20), 17 to 32 per family. Thinnest: the room in F1
+Golden Gate (6 paired) and the ladder's sensorblind in F1 Golden Gate and F3 (7 to 9). No guard (10.5), no
+audit of halves (10.3) and no pre-registration proposal were made from it; its records are deleted.
+**Coverage**: section 0's worlds, fleets and sensors; all 15 agents of ruler.py; tasks ordered orbit,
+patrol and hold; the approve-all operator, the paused clock, one replicate; by light, of the 258
+situations with a `none` episode, day 144, night 101, fog 9, twilight 4. Six records rerun across
+the batch's provenance groups (two builds of one source, trees dirty with doc edits) matched exactly.
+
+**Room (10.1).** Ceiling minus `none` on need served, paired, Golden Gate then San Diego (points, n):
+F1 +33 (6), +45 (11); F2 +38 (16), +50 (16); F3 +9 (11), -7 (14); F4 +62 (13), -5 (19); F5 +31 (13),
++8 (13); F6 +21 (14), +20 (15). No family-world shows room by the rule: every interval reaches zero at
+these sizes. Pooled over both worlds (stratified bootstrap, for orientation, not the rule's unit): F1
++41 [+12, +65], F2 +44 [+22, +63], F3 +0 [-20, +20], F4 +22 [+9, +34], F5 +19 [+8, +38], F6 +21 [+3,
++38]. F3 shows no room in either world; in F4 and F5 San Diego `none` already serves 100 % and 92 %.
+
+**The ceiling's losses (13.2), capability findings.** It served 185 of 250 eligible needs (74 %; by
+day 109 of 143, at night 67 of 94). Its plan judged 228 feasible, 2 `link` and 20 `no_time`: every F5
+Golden Gate diver at the Horseshoe Bay pier (13.6 item 3), of which 5 were served anyway by the buoy,
+Sea Hunter and the BlueROV together, so feasibility is conservative there. Of the 65 lost: 36 a look
+that identified below 0.6 and held (`looked`: drones by the Puma by day 12 times in F2, 13.6 item 1;
+aircraft by Sea Hunter at night 5 times in F3), 15 that `no_time`, 11 one observer's drawn wrong call
+(`misidentified`), 3 no look.
+
+**Wrong-way leans.** No judged ladder order fails and no perturbation moves the wrong way. The ladder
+leans, none with its interval below zero: F3 ceiling over late -7 [-22, +4] (San Diego -21 on 14),
+F6 over linkblind -3 and over sensorblind -3; each rests on 1 to 3 situations where the ceiling's looks
+fell short of 0.6 or met a wrong call and the rung's other vehicles did not (execution, no mechanism
+found). Spam's need served leans down, -2.8 [-7.0, +0.7], so "not worse" is not shown. Pull-off's and
+wrong-sensor's need served are not testable: the honest ceiling stands only +5.9 [-0.7, +13.2] above
+`none` pooled (below it in F3, -10), since truth is worth +48 points in F2 and +24 in F1 (linkblind
+minus honest). The rest moved as predicted (behind -7.0 [-13.9, -0.6], skip-first -5.3 [-9.4, -2.4];
+the useless, repeat, card, bad-card and harm measures up). F3's room and the honest ceiling's step over `none` are
+the cells to work on before the validation.
