@@ -1,4 +1,4 @@
-"""Scoring v3's labels for F7-F13 (eval/SCORING-V3.md 2.2 and 2.4, choices 14 to 17) on small
+"""Scoring v3's labels for F7-F13 (eval/SCORING-V3.md 2.2 and 2.4, choices 27 to 30) on small
 synthetic records (tests/test_v2_labels.py `Synth`, moved under `v3` with a world): a contact with a
 spoofed AIS identity, the low reserve in every domain, the timeline's faults open on a vehicle, the
 vehicles lost by the end (a diagnostic) and the spoofer's cause of loss. No simulator."""
@@ -33,7 +33,7 @@ def spoofer(after: tuple[Any, ...], t1: float, ais: dict[str, Any] = SPOOFED, du
     return s
 
 
-# ---- 2.2, choice 17: a spoofed AIS ---------------------------------------------------------------
+# ---- 2.2, choice 30: a spoofed AIS ---------------------------------------------------------------
 
 def test_a_spoofer_is_resolved_by_eo_ir_exposing_the_spoof():
     lab = labels(spoofer(("small_fast_boat", 0.9, AIS_CONFLICT, ["eo_ir"]), 130.0))
@@ -99,7 +99,7 @@ def test_a_spoofer_lost_while_the_picture_believes_it_is_named_so():
     assert cause_of(rec, L.picture(rec), Truth(rec), n, []) == "spoof_believed@day"
 
 
-# ---- 2.4, choice 14: the low reserve in every domain ----------------------------------------------
+# ---- 2.4, choice 27: the low reserve in every domain ----------------------------------------------
 
 HOME_WATER = (-122.4400, 37.8160)  # HUNTER 1's mooring off the Marina (22 m of water)
 
@@ -158,7 +158,7 @@ def test_an_aircraft_s_low_reserve_is_v2_s_value_for_value(land_at: float | None
     assert [{k: f[k] for k in keys} for f in ours] == [{k: f[k] for k in keys} for f in v2]
 
 
-# ---- choice 15: the timeline's faults open on a vehicle -------------------------------------------
+# ---- choice 28: the timeline's faults open on a vehicle -------------------------------------------
 
 def step_log(t: float, sid: str, kind: str, uids: Any, **kw: Any) -> dict[str, Any]:
     return {"t": t, "kind": "step", "step": sid, "step_kind": kind, "uids": uids, **kw}

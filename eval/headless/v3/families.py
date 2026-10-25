@@ -307,6 +307,9 @@ class Draft:
     stated: dict[str, Any]
     added: list[dict[str, Any]] = field(default_factory=list)
     night: bool = False
+    # what a family changes in the spec once it is built (families_ops.py: the fleet, the brief,
+    # the script, the duration, the episode's options): each called with (spec, workdir)
+    post: list[Callable[[Any, Path], None]] = field(default_factory=list)
 
     @property
     def w(self) -> World:
@@ -559,14 +562,18 @@ FAMILY_DOMAIN = {"f1-fast-boat": "surface", "f2-drone": "air", "f3-low-aircraft"
                  "f5-diver": "subsurface", "f6-shore-vehicle": "ground", "f18-quiet": None}
 
 
+#: the worlds a family runs on, by tag, when not both maps (F17: the scale world only)
+FAMILY_WORLDS: dict[str, tuple[str, ...]] = {}
+
 #: the families built in modules of their own (each with `GENERATORS`, `FAMILY_DOMAIN` and a
-#: `generate(name, seed, workdir)` of its own): F7-F13 in families_f7_f13.py
+#: `generate(name, seed, workdir)` of its own), on both maps: F7-F13 in families_f7_f13.py. (F14-F17,
+#: families_ops.py, add themselves to this file's registries instead, at its end.)
 EXTENSIONS = ("families_f7_f13",)
 
 
 @lru_cache(maxsize=None)
 def extension(family: str) -> Any:
-    """The module that builds `family` when it is not one of this file's, or None."""
+    """The module that builds `family` when it is not one of this file's registry's, or None."""
     import importlib
 
     for m in EXTENSIONS:
@@ -597,15 +604,16 @@ def parse(name: str) -> tuple[str, str]:
     return fam, WORLDS[tag]
 
 
-def all_names(first_part: bool = False) -> list[str]:
-    """Every family on both worlds (`first_part`: F1-F6 and F18 only, this file's)."""
+def all_names() -> list[str]:
+    """Every family on its worlds: this file's registry (F1-F6, F18, and F14-F17 once registered)
+    on both maps unless `FAMILY_WORLDS` says otherwise, then the extensions' (F7-F13) on both."""
     import importlib
 
-    fams = list(GENERATORS)
-    if not first_part:
-        for m in EXTENSIONS:
-            fams += list(importlib.import_module(f"{__package__}.{m}").GENERATORS)
-    return [family_name(f, w) for f in fams for w in WORLDS.values()]
+    out = [f"{PREFIX}{f}-{tag}" for f in GENERATORS for tag in FAMILY_WORLDS.get(f, ("gg", "sd"))]
+    for m in EXTENSIONS:
+        out += [f"{PREFIX}{f}-{tag}" for f in importlib.import_module(f"{__package__}.{m}").GENERATORS
+                for tag in ("gg", "sd")]
+    return out
 
 
 #: the local hours a family's start may be moved into: night 21:00 to 05:00 (F5), day 08:00 to
@@ -701,6 +709,8 @@ def generate(name: str, seed: int, workdir: Path) -> tuple[EpisodeSpec, Path]:
     e.config_name = "watch"
     e.brief = mission_text(world)
     e.opaque = True
+    for f in d.post:
+        f(e, workdir)
     return e, path
 
 
@@ -711,3 +721,9 @@ def needs_of(e: EpisodeSpec) -> list[dict[str, Any]]:
         dom = (e.truth.get("element") or {}).get("domain")
         out.append({"contact": c, "domain": dom, "grace_s": DOMAINS[dom].grace_s if dom in DOMAINS else None})
     return out
+
+
+# F14-F17 (families_ops.py) add themselves to the registries above
+from . import families_ops as _ops  # noqa: E402
+
+_ops.register()

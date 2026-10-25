@@ -46,8 +46,13 @@ def in_medium(world: str, c: dict[str, Any]) -> bool:
     return float(c["alt_m"]) >= F.top_surface(world, route, 100.0) + 50.0
 
 
-def test_the_new_families_register_beside_the_first_part():
-    assert len(NAMES) == 14 and set(F.all_names(first_part=True)) < set(F.all_names())
+def test_the_new_families_register_beside_the_others():
+    """F1-F18 are all named: F7-F13 on both maps through the extension hook, beside F1-F6, F18 and
+    F14-F17 (F17 on the scale world only)."""
+    every = F.all_names()
+    assert len(NAMES) == 14 and set(NAMES) < set(every) and len(every) == len(set(every))
+    numbers = sorted({int(F.parse(n)[0].split("-")[0][1:]) for n in every})
+    assert numbers == list(range(1, 19)), numbers
     for n in NAMES:
         fam, world = F.parse(n)
         assert F.family_name(fam, world) == n and F.family_domain(fam)

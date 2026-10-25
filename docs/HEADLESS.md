@@ -1040,6 +1040,20 @@ item `read_s` (3 s) and acts once per item:
 preset does the first. The approve-all operator leaves engagement nominations to the signers (a
 plain approve is refused for one).
 
+**The evidence reviewer** (preset `evidence`, scoring v3's F16, 2026-10-25): still scripted and
+truth-blind, it decides on what the picture shows and reads less under load (review.py's module
+doc has its rules): a camera's civil kind revokes a rule declaration, proximity alone never
+declares, an attribution's one non-civil track is declared, an AIS claim is confirmed when a
+camera's kind matches the claimant's AIS and declined when it does not; it waits up to
+`max_wait_s` (180 s) for evidence; at an item's first read it is diligent with probability
+`diligence` x 2^-(load/`fatigue_load`) (0.9, 8), its load the review items open and the cards of
+the last `load_window_s` (120 s), else it says yes to what the engine asks. Every flag decision now
+records the flag's tracks and every claim decision the claimant's track (`by_track`), so each is
+judged against truth (SCORING-V3.md 2.9, choice 9). **A defect fixed**: the reviewer read the flags in
+force under `open`, but the bridge serves them under `flags` (`GET /api/review`), so before
+2026-10-25 no headless reviewer ever acted on a flag (the unit test's fake used `open`; it now
+reads either).
+
 **The scripted agent** (`agent = "scripted"`, `Options.scripted = {"engage": {...},
 "collect": {...}, "cover": {...}, "period_s"}`): every `period_s` (5 s) from the AI's start, it
 nominates on each track declared hostile when no nomination on it stands and the form's dry run
@@ -1396,3 +1410,27 @@ batch tests pass unchanged).
       .venv/bin/python -m eval.headless.v3.run batch --families all --seeds 5000-5029 \
           --agent none random-valid oracle-v3 --workers 20 --out <dir>
       .venv/bin/python -m eval.headless.v3.run report <dir>
+
+**F14-F17** (2026-10-25, the third part; SCORING-V3.md 6, 9 and 12):
+
+- `eval/headless/v3/families_ops.py`: F14 space, F15 the engagement chain, F16 the operator's
+  review load on golden-gate-v3 and san-diego, F17 scale on golden-gate-scale (`v3-f17-scale-sc`),
+  added to families.py's registries; each changes the built spec where it must (`Draft.post`):
+  the fleet (F15's Switchblade and FPV at the end, every uid before them unchanged), the brief
+  (F14's tasking), the script, the episode's length and its scripted operators (`spec.options`,
+  which the v3 runner passes to `Options`: F15's signers, reviewer and effects, F16's reviewer).
+- `eval/headless/v3/labels_ops.py`: 2.8, 2.9 and 2.10 and the families' needs (gap, cover,
+  engagement, review items), from a digest of each collect and cover the episode writes under
+  `v3.space` when the log holds one (a record without one is as before).
+- The script's `probe` item (script.py): an operator API read (`GET`, logged nowhere) of the
+  space segment kept in the script's log as truth for the labels (F14's GNSS answer for a run).
+- `eval/headless/v3/oracle_ops.py`: the basic oracle's additions for feasibility (a collect, a
+  cover and the holds through a predicted outage; a loitering munition brought 700 m off the
+  hostile's holding point before nominating, and every nomination attempt logged with what blocks
+  it; looks at F16's review items). In F1-F6 and F18 it is the basic oracle exactly.
+- `eval/headless/v3/report_ops.py`: the dev check's report for these families (`dev_ops.md`).
+
+      .venv/bin/python -m eval.headless.v3.run batch --families v3-f14-space-gg v3-f14-space-sd \
+          v3-f15-engage-gg v3-f15-engage-sd v3-f16-review-gg v3-f16-review-sd v3-f17-scale-sc \
+          --seeds 5400-5409 --agent none random-valid oracle-v3 --workers 8 --out <dir>
+      .venv/bin/python -m eval.headless.v3.report_ops <dir>

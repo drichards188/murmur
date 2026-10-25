@@ -13,5 +13,7 @@ it unchanged, never edited.
 - `able.py`: the vehicle types the sensing model says could answer each need (the dev check);
 - `metrics.py`: v2's metrics and need served per domain;
 - `oracle.py`: the basic v3 oracle (agent `oracle-v3`);
-- `run.py`: a v3 batch and its dev check (`python -m eval.headless.v3.run`).
+- `run.py`: a v3 batch and its dev check (`python -m eval.headless.v3.run`);
+- `families_ops.py`, `labels_ops.py`, `oracle_ops.py`, `report_ops.py`: F14-F17, labels 2.8-2.10
+  and the families' needs, the basic oracle's additions for them, and their dev check.
 """

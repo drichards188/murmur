@@ -1,5 +1,5 @@
 """Scoring v3's fault needs and open faults (eval/SCORING-V3.md 2.4, extended for F11-F13 by
-choices 14 and 15): v2's low reserve, in every domain, and the faults the v3 families script (a
+choices 27 and 28): v2's low reserve, in every domain, and the faults the v3 families script (a
 timeline's `step`s: GNSS jam and spoof, battery, reboot, stop) as faults open on a vehicle, so a
 hold or an rtl on it is a fault response (v2's label) and every action on it carries `also_fault`.
 And a diagnostic of no need: the vehicles lost by the end (`lost_vehicles`).
@@ -7,13 +7,13 @@ And a diagnostic of no need: the vehicles lost by the end (`lost_vehicles`).
 - **Low reserve** (v2's rule, version 2: eval/headless/v2/labels.py `fault_needs`): opens when the
   vehicle's true battery is at or under 35 %; met when the vehicle is **safe at home** at a sample
   from the opening and before its battery reaches the reserve (20 %); unmet when the reserve comes
-  first; censored when neither by the end. Safe at home (choice 14): an aircraft as v2 has it, on the
+  first; censored when neither by the end. Safe at home (choice 27): an aircraft as v2 has it, on the
   ground (disarmed) within 150 m of the home it had at its last armed sample, after having flown; a
   boat, a sub or a UGV within 150 m of its home and stopped there (disarmed, or under 0.5 m/s for
   `STOPPED_S`), a sub at the surface (above 1 m deep), after having moved (armed) since the episode
   began. A Rover's rtl ends holding at home, armed: v2's "on the ground" would never meet a boat's.
 - **Open faults** (v2's `_open_faults`: a stuck alert or the script's stop, a low reserve open, a
-  link cut or lost; and choice 15): a timeline `stop` from its time on; a `reboot` from its time
+  link cut or lost; and choice 28): a timeline `stop` from its time on; a `reboot` from its time
   until the vehicle is armed again (on the surface it boots disarmed and drops its task) or 60 s
   for one that comes back armed; a `battery` fault from its time until the vehicle is safe at home;
   a GNSS `spoof` on its vehicles from its time for its duration; a GNSS `jam` on every vehicle
@@ -183,7 +183,7 @@ def open_faults(a: dict[str, Any], pic: Picture, rec: dict[str, Any], fneeds: li
 
 def lost_vehicles(rec: dict[str, Any], pic: Picture) -> list[dict[str, Any]]:
     """Our vehicles lost by the episode's end (no need: the mission names only the reserve,
-    choice 16): an aircraft on the ground or the water (disarmed) more than 150 m from its home after
+    choice 29): an aircraft on the ground or the water (disarmed) more than 150 m from its home after
     having flown; a boat or a sub whose true position at the end is out of the water (the world's
     land/water grid: under 0.5 m, aground)."""
     from .families import grids

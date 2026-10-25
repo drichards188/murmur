@@ -1,5 +1,5 @@
 """Scoring v3's situation families F7-F13 (docs/WORLD-V3-PLAN.md section 6; eval/SCORING-V3.md
-sections 6.1 and 12), each on both of world v3's maps, golden-gate-v3 and san-diego. MODEL RESULTS
+sections 6.1 and 14), each on both of world v3's maps, golden-gate-v3 and san-diego. MODEL RESULTS
 ONLY: situations from stated distributions, labels from generated truth, the operator a scripted
 model.
 
