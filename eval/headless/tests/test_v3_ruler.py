@@ -427,3 +427,21 @@ def test_the_audit_lists_the_cells_that_lean_the_wrong_way_in_both_batches():
     a = RU.audit(rep(-0.02, 0.01), rep(-0.05, -0.03))
     assert [x["cell"] for x in a["wrong_way_both"]] == ["room v3-f1-fast-boat-gg"]
     assert a["wrong_way_once"] == 1
+
+
+def test_a_stopped_batch_recovers_the_records_its_index_missed(tmp_path):
+    import gzip
+    import json
+
+    (tmp_path / "episodes_v3.json").write_text(json.dumps([{"name": "v3-f1-fast-boat-sd-none-s5160-r0"}]))
+    rec = {"episode_class": "scored", "replicate": {"r": 0, "seed": 7, "situation_seed": 5161}}
+    good = tmp_path / "v3-f1-fast-boat-sd-oracle-v3-sensorblind-s5161-r0.json.gz"
+    good.write_bytes(gzip.compress(json.dumps(rec).encode()))
+    cut = tmp_path / "v3-f2-drone-gg-none-s5161-r0.json.gz"
+    cut.write_bytes(gzip.compress(b"{" * 100)[:10])
+    assert RU.recover(tmp_path) == 1
+    idx = {m["name"]: m for m in json.loads((tmp_path / "episodes_v3.json").read_text())}
+    m = idx["v3-f1-fast-boat-sd-oracle-v3-sensorblind-s5161-r0"]
+    assert (m["family"], m["agent"], m["situation_seed"], m["class"]) == \
+        ("v3-f1-fast-boat-sd", "oracle-v3-sensorblind", 5161, "scored")
+    assert not cut.exists(), "a record cut off while written is run again"
