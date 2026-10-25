@@ -29,8 +29,9 @@ clock, over one `murmur-headless` process.
   change points (v2/record.py). A v2 record also carries `episode_class` (section 7: the driver
   sets it), the replicate, the audit log's digest and the invariants. A v1 episode runs none of
   this, so its record is unchanged. Scoring v3 (`Options.scoring = "v3"`, eval/SCORING-V3.md)
-  runs the same sampler and writes the same part under `v3` (eval/headless/v3/); its own agent,
-  the basic v3 oracle (`oracle-v3`), is eval/headless/v3/oracle.py.
+  runs the same sampler and writes the same part under `v3` (eval/headless/v3/); its own agents
+  (the basic v3 oracle, the ceiling `oracle-v3`, its ladder and the honest ceiling's perturbations)
+  are eval/headless/v3/'s (oracle.py `make`).
 
 Simultaneous events run in a fixed order (runner, script, operator, AI, sampler, picture) and
 each process's actions happen at one simulated instant, so an episode is a function of
@@ -91,9 +92,13 @@ PERTURBATIONS = ("playbook+spam", "playbook+behind", "playbook+skip-first", "pla
 HONEST_PERTURBATIONS = ("oracle-honest+spam", "oracle-honest+behind", "oracle-honest+skip-first",
                         "oracle-honest+reserve-blind", "oracle-honest+ferries", "oracle-honest+pull-off")
 V2_AGENTS = ANCHORS + LADDER + PERTURBATIONS + HONEST_PERTURBATIONS
-#: scoring v3's own agents (eval/headless/v3/oracle.py): the basic v3 oracle; `none` and
-#: `random-valid` carry over from v2
-V3_AGENTS = ("oracle-v3",)
+#: scoring v3's own agents (eval/headless/v3/oracle.py `make`): the basic v3 oracle, the ceiling and
+#: its ladder (v3/planner.py), the honest ceiling's perturbations (v3/perturb.py); `none`,
+#: `random-valid` and the playbook carry over
+V3_AGENTS = ("oracle-v3-basic", "oracle-v3", "oracle-v3-late", "oracle-v3-linkblind", "oracle-v3-sensorblind",
+             "oracle-v3-honest", "oracle-v3-honest+spam", "oracle-v3-honest+behind", "oracle-v3-honest+skip-first",
+             "oracle-v3-honest+reserve-blind", "oracle-v3-honest+ferries", "oracle-v3-honest+pull-off",
+             "oracle-v3-honest+wrong-sensor")
 #: the scripted agent for the engagement chain and the space segment (scripted.py)
 AGENTS = ("playbook", "model", "none") + V2_AGENTS + ("scripted",) + V3_AGENTS
 SCORINGS = ("v1", "v2", "v3")

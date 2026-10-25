@@ -1,8 +1,9 @@
-"""The v3 dev check's report (eval/SCORING-V3.md 10.2): every episode of a v3 batch labelled against its
+"""The v3 dev check's report (eval/SCORING-V3.md 10): every episode of a v3 batch labelled against its
 `none` replicate, and per family and world: the coverage, need served per agent with time to serve,
-v2's 10.1 world conditions (`none` at most 50 %, the oracle at least 80 % of eligible needs), the
-vehicle types the sensing model says could answer each need and those that did, and the share of the
-needs `none` and the oracle lost that one cause explains (causes.py). MODEL RESULTS ONLY.
+the room test (10.1, room.py: the ceiling measurably above `none`; it replaced v2's fixed world
+conditions on 2026-10-25), the vehicle types the sensing model says could answer each need and those
+that did, and the share of the needs `none` and the oracle lost that one cause explains (causes.py).
+MODEL RESULTS ONLY.
 """
 
 from __future__ import annotations
@@ -23,9 +24,8 @@ from .families import FAMILY_DOMAIN, WORLDS, parse
 from .labels import episode_labels, picture, sensing_errors
 from .metrics import episode_metrics
 from .mission import rule
+from .room import room
 
-NONE_MAX = 0.5
-ORACLE_MIN = 0.8
 ORACLE = "oracle-v3"
 #: a vehicle type can answer a need when its model range (a pointed sensor, Pd 0.5, under the
 #: situation's conditions, open geometry) times the oracle's share reaches at least this far
@@ -54,7 +54,11 @@ def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]
             hit = new_hits(pic, n["contact"], rule(n["domain"]).sensors, n["t_need"] - 300.0, n["t_identified"] + 1.0)
             row["identified_with"] = sorted({plat.get(u, u) for u in hit})
         needs.append(row)
-    reach = ((rec.get("agent_detail") or {}).get("reach_m") or {}) if meta["agent"] == ORACLE else {}
+    detail = rec.get("agent_detail") or {}
+    reach = (detail.get("reach_m") or {}) if meta["agent"] in (ORACLE, "oracle-v3-basic") else {}
+    # the ceiling's plan verdict per need at its first tick (planner.py `feasibility`)
+    feas = {k: {x: (v.get("feasibility") or {}).get(x) for x in ("verdict", "light", "capable", "timely")}
+            for k, v in (detail.get("needs") or {}).items() if v.get("feasibility")} if meta["agent"] == ORACLE else {}
     fleet_types = sorted({str(v.get("platform")) for v in pic.fleet})
     sensors = sorted({str(x.get("type")) for v in pic.fleet for x in v.get("sensors") or []})
     domains_ours = Counter(str((v.get("platform"))) for v in pic.fleet)
@@ -64,7 +68,9 @@ def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]
     return {"name": meta["name"], "family": meta["family"], "agent": meta["agent"], "seed": meta["situation_seed"],
             "needs": needs, "metrics": {k: met[k] for k in ("served_share", "cards", "cards_per_10min", "useless_share",
                                                              "by_domain", "per_hour", "actions", "nominations", "review",
-                                                             "unjudged_actions")},
+                                                             "unjudged_actions", "bad_card_share", "repeats",
+                                                             "fault_met_share", "rmst", "harmful_kinds")},
+            "feasibility": feas,
             "actions": dict(actions), "reach": reach, "fleet_types": fleet_types, "fleet_count": domains_ours,
             "sensors": sensors, "light": light(rec), "conditions": cond, "contact_domains": contact_domains,
             "contacts": len(truth.meta), "kinds_task": sorted({a.get("kind") for a in lab["actions"] if a.get("kind")})}
@@ -165,10 +171,8 @@ def summarize(scored: list[dict[str, Any]]) -> dict[str, Any]:
                 caps.append(len(capable(s["reach"], n["domain"], movers)))
         block["capable_types"] = {"min": min(caps) if caps else None, "median": statistics.median(caps) if caps else None,
                                   "needs_with_fewer_than_2": sum(1 for c in caps if c < 2), "of": len(caps)}
-        nn = block["agents"].get("none", {}).get("share")
-        oo = block["agents"].get(ORACLE, {}).get("share")
-        block["conditions_10_1"] = {"none_at_most_50": None if nn is None else nn <= NONE_MAX,
-                                    "oracle_at_least_80": None if oo is None else oo >= ORACLE_MIN}
+        # 10.1, the room test (replacing v2's fixed conditions, the owner's decision of 2026-10-25)
+        block["room"] = room(scored, f) if {ORACLE, "none"} <= set(block["agents"]) else None
         block["flags"] = flags({a: block["agents"].get(a, {}).get("single_cause", {}) for a in ("none", ORACLE)})
         block["redesign"] = bool(block["flags"])
         out["families"][f] = block
@@ -202,7 +206,7 @@ def markdown(summary: dict[str, Any], d: Path) -> str:
               f"(situations by light).", f"- Agents: {', '.join(cov['agents'])}; tasks ordered: "
               f"{', '.join(cov['tasks_ordered']) or 'none'}.", f"- {cov['situations']} situations, {cov['episodes']} episodes.", ""]
     lines += ["## Per family and world", "",
-              "| family | world | none | random-valid | oracle | time to serve (oracle, median s) | 10.1 | capable types (min) | "
+              "| family | world | none | random-valid | oracle | time to serve (oracle, median s) | room (10.1) | capable types (min) | "
               "none's top cause | oracle's top cause | lesson 3 |", "|---|---|---|---|---|---|---|---|---|---|---|"]
     for f, b in summary["families"].items():
         a = b["agents"]
@@ -215,11 +219,10 @@ def markdown(summary: dict[str, Any], d: Path) -> str:
             sc = (a.get(agent) or {}).get("single_cause") or {}
             return f"{sc['top']} {pct(sc['share'])} of {sc['lost']}" if sc.get("lost") else "none lost"
 
-        c = b["conditions_10_1"]
-        ok = "n/a" if c["none_at_most_50"] is None else (
-            ("pass" if c["none_at_most_50"] and c["oracle_at_least_80"] else
-             "fail: " + ", ".join(k for k, v in (("none over 50", not c["none_at_most_50"]),
-                                                 ("oracle under 80", c["oracle_at_least_80"] is False)) if v)))
+        rm = b.get("room") or {}
+        ok = "n/a" if not rm or rm.get("mean_difference") is None else (
+            f"{rm['verdict']}: {100 * rm['mean_difference']:+.0f} [{100 * (rm.get('lo') or 0):+.0f}, "
+            f"{100 * (rm.get('hi') or 0):+.0f}]")
         lines.append(f"| {b['family']} | {b['world']} | {cell('none')} | {cell('random-valid')} | {cell(ORACLE)} | "
                      f"{(a.get(ORACLE) or {}).get('time_to_serve_median_s')} | {ok} | {b['capable_types']['min']} | "
                      f"{cause('none')} | {cause(ORACLE)} | {'; '.join(b['flags']) or 'no flag'} |")
