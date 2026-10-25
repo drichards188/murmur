@@ -1380,6 +1380,10 @@ batch tests pass unchanged).
 - `eval/headless/v3/run.py`: a batch (`batch`) and the dev check's report (`report`: labels,
   need served per family and world, 10.1's conditions, the single-cause analysis of
   `eval/headless/v3/causes.py`).
+- `eval/headless/v3/record.py`: v2's picture encoding plus each track's looks under the physical
+  model (`identity.looks` of `Track::json`: which observer's sensor reached which level, its label
+  and confidence), as change points per `<uid>:<sensor>:<level>`; `looks` and `reached` read them.
+  A picture without looks (every legacy one) encodes exactly as v2's.
 
       .venv/bin/python -m eval.headless.v3.run batch --families all --seeds 5000-5029 \
           --agent none random-valid oracle-v3 --workers 20 --out <dir>

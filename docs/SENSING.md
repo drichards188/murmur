@@ -74,7 +74,7 @@ fields (`physical/spec.rs`):
 |---|---|
 | `eo_ir` | `slew_dps`; `channels = [{ band = "day" \| "lowlight" \| "mwir" \| "lwir", wide_deg, narrow_deg, px, blur_urad, panoramic }]` |
 | `radar` | `r50_m` and `rcs_ref_m2` (Pd 0.5 per scan), `scan_s` (at most 5 s), `beam_deg`, `cell_m`, `band_ghz` |
-| `sonar` | `mode = "passive" \| "active"`, `freq_khz`, `ranges = { <kind> = m }`, `max_m`, `scan_s` |
+| `sonar` | `mode = "passive" \| "active"`, `freq_khz`, `ranges = { <kind> = m }`, `max_m`, `scan_s`; an active sonar that also listens, `passive = { ranges, freq_khz, max_m }` (its band and reach the active mode's unless given) |
 | `esm` | `s_min_dbm`, `bearing_deg` |
 
 A sensor without them runs on **placeholders** derived from `range_m`: a camera whose wide field
@@ -110,7 +110,7 @@ situation work (decision W3). Ranges below are the research's, at Pd 0.5.
 | Antenna tracker | none | |
 | Magura V5 | one fixed day camera, 20 deg, 1,920 px; AIS. **No radar** | [41]; camera [E] |
 | Corsair | a fixed 360 deg ring, LWIR 640 px and day 1,920 px at 18 deg; ESM -80 dBm, 2 deg; AIS. **No radar** | [42,13,30]; day camera, ESM [E] |
-| Sea Hunter | navigation radar on the IMO anchors, 2.5 s; a ring as the Corsair's; AIS; active hull sonar, a submarine at 7.5 km, a UUV at 1.5, to 20 km | [19,18,43,44,25]; [E] |
+| Sea Hunter | navigation radar on the IMO anchors, 2.5 s; a ring as the Corsair's; AIS; the MS3 hull sonar, active (a submarine at 7.5 km, a UUV at 1.5, to 20 km) and passive (the buoy's ranges per class) | [19,18,43,44,25]; [E]; passive ranges [E here] |
 | Saildrone Explorer | a fixed 360 deg ring of 60 deg day cameras, 1,920 px; AIS. **No radar** | [45,46,47]; cameras [E] |
 | Buoy | passive, 1 kHz: a cargo ship 20 km, a fast boat 3.5, a submarine 1, a UUV 0.3, a diver 0.1 | [48]; ranges [E] |
 | BlueROV2 | Ping360, active 750 kHz, to 50 m, 20 s a turn | [49] |
@@ -273,9 +273,18 @@ times the visible's in haze [11]. `R` is the line of sight's sea-level equivalen
 path, below): a horizontal path along the sea is its own length. A day camera has no light below civil twilight, a low-light
 one 0.4 of its range at night [E]; a thermal camera's contrast dips to a quarter with the sun 5
 degrees up (crossover, shape [E]), which costs it the square root of that in pixels and its
-atmospheric range. Time to detect in view: one draw per look whether the contact is
-detectable at all (P) and one when (exponential, `tau = 3.4 / P` s [12]). Recognition after a
-second of detection; identification needs the narrow field on the contact for 2 to 3 s [E].
+atmospheric range. Time in view: each level accrues as a hazard while the contact is in the
+field, at that second's range, light and field (murmur-1z6.6's dev check, below): ACQUIRE's time
+law `P (1 - exp(-t / tau))`, `tau = 3.4 / P` s [12], has the initial rate `P / tau = P^2 / 3.4` a
+second, and a look accrues it every second it holds the contact, reaching the level when the sum
+passes a draw made once per look and level (an exponential). A short look is ACQUIRE's; a longer
+one keeps accruing (each second of a moving scene is new evidence) where one draw a look stopped
+at `P`. Detection's constant is 3.4 s [12]; recognition's and identification's 1 s once their
+dwell is met, recognition a second after the detection, identification after 2 s of the narrow
+field ([E here]: at `P = 1` a level comes in the first second its dwell allows two times in
+three, so an identification in 2 to 3 s of the narrow field as the research's [E]). A contact
+found stays held while its detection chance stays above a share of what it was when found, drawn
+once a look (below it, it fades out of the image).
 
 **The slant path** (`eo::sea_level_m`, murmur-7vp). The visibility and the clear air's thermal
 coefficient are the surface's; the air above holds less. Over the sea the aerosol is held in
@@ -324,9 +333,14 @@ half its reach), 5 s a step, 1 s to settle after any slew or zoom; after 10 s of
 to a track there (a radar's, AIS's or a camera's own fix within 10 s; the nearest not
 identified in 5 minutes, else the one looked at longest ago, beyond 2 minutes), slews its wide
 field there, and once the wide field has the contact locks on in the narrow field (the image
-tracker keeps it centred) until it is identified or 10 s pass, then searches again. A look in
-progress survives the slew and zoom. A camera that cannot slew looks along its vehicle's
-heading; a panoramic one does not point. The constants are [E].
+tracker keeps it centred) until it is identified, while it stays a candidate (fresh, in reach and
+the task area; asked each second) and no cue of a higher class has come (a contact not identified,
+against a revisit: it takes the camera at once; a nearer contact of the same class does not, which
+would thrash between two contacts and finish neither), and while the identification keeps getting
+likelier (the contact closing, the light rising) or did within 10 s; then it searches again. Each camera keeps its own history of what it
+identified and what it looked at in vain (a payload manager on its vehicle knows what its camera
+did, not another's). A look in progress survives the slew and zoom. A camera that cannot slew
+looks along its vehicle's heading; a panoramic one does not point. The constants are [E].
 
 A cue to an aircraft whose height no sensor measured (a 2D radar's plot, a camera's or ESM's
 fix) is an elevation search (murmur-7vp): a 2D radar measures range and bearing, not elevation,
@@ -367,9 +381,16 @@ for its speed [22] (turning ignored); heard within the VHF horizon `4.12 km (sqr
 absorption [25,26]; ambient noise from turbulence, shipping, wind and thermal noise [26]. Each
 sensor's FOM per kind is calibrated from its reference ranges (50 m of water, 5 m/s wind,
 moderate shipping); a kind without one takes the nearest reference kind's shifted by the
-difference in source level or target strength. Passive sonar recognises after 60 s of contact
-and identifies after 180 s; active sonar localises (5 m + 1 %) and recognises by the track
-after 60 s; a scanning sonar draws once per pass [E].
+difference in source level or target strength. Passive sonar recognises after 60 s of signal
+heard and identifies after 180 s; active sonar localises (5 m + 1 %) and recognises by the track
+after 60 s of echoes; a scanning sonar draws once per pass [E]. The evidence is the signal
+received, not the time since the first detection (murmur-1z6.6's dev check, below): each
+detection counts the draw interval it closes (a second, or a scanning sonar's turn), a run's first
+a second, and a run ends after 30 s unheard; a look's confidence grows with it (passive `0.8 (1 -
+exp(-s / 120))`, active `0.6 (1 - exp(-s / 60))`). Heard every second it is the run's length, as
+before; heard one second in fifteen, fifteen times slower, and a run broken by a 30 s gap starts
+again. An active sonar that also listens (Sea Hunter's MS3, "active and passive" [44]) runs its
+passive mode beside it: its own draws and evidence, the same wrong calls (one sensor's).
 
 **ESM** (`physical/rf.rs`). An emitter in radio line of sight heard when `Pt Gt lambda^2 /
 (4 pi R)^2` reaches the receiver's sensitivity, `0.95 Phi((Pr - S_min) / 3 dB)` a second [28];
@@ -387,7 +408,11 @@ agree at that level combine as independent (`1 - prod(1 - c)`), a lower level ne
 and a disagreeing lower level is superseded, not a conflict, so a closer look corrects a wrong
 call (murmur-jln). Conflicts are the legacy identity's: AIS against an identification (or a
 recognition's family), a speed the AIS kind cannot make, two disagreeing looks at the chosen
-level.
+level. The picture says which sensor reached which level: a track's `identity.looks` (`GET
+/api/tracks`, the headless picture) lists each observer's sensor's evidence at each level it
+reached, `{uid, sensor, level, label, confidence}` (`detect`, `recognise`, `identify`), the
+surest it has been; the physical model's only, so a legacy track's JSON is byte for byte as it
+was (v1 and v2 records hold it). `TrackFacts` and the identity interface are unchanged.
 
 **Hostile acts** (rules 9). An act is observed by the sensors that detected its author that
 second (radar, EO/IR, sonar), each observer's best fix placing it.
@@ -427,7 +452,14 @@ day camera's detections; sea state 5 loses a small boat to the navigation radar 
 keeps a ferry; a camera cued by a radar track identifies it with no order naming it; a camera
 cued by a 2D radar to an aircraft 17 degrees above the plot finds it in elevation and identifies
 it, and a locked camera follows a crossing boat and identifies it (murmur-7vp: both fail before
-it); deterministic; per-observer evidence (a closer look corrects a wrong call). The slant path
+it); deterministic; per-observer evidence (a closer look corrects a wrong call). After the first
+v3 dev check (each fails before it): a buoy hearing a diver 7 % of the seconds does not recognise
+it in fifteen minutes, and hearing it every second recognises it after a minute and identifies it
+after three; a fixed camera holding a boat where one look identifies it a third of the time
+identifies it within three minutes on every one of twenty seeds; a locked camera keeps a boat
+closing from 8 km until it identifies it; one camera's failed cue keeps no other camera off the
+contact; Sea Hunter's hull sonar identifies a UUV by listening; a track's JSON says which sensor
+reached which level under the physical model and is as before under the legacy one. The slant path
 (`physical::eo::tests`): along the sea the atmosphere is the horizontal model's value for value
 in every band, visibility, contrast and light; a camera at 18 km reaches about the D/R/I ranges
 its geometry and blur allow. The tracker (`tracks::tests::calib_air`): two sweeping radars'
@@ -542,6 +574,68 @@ sets' views):
   contacts on the water give no 2D radar bearings, and its cameras, at most 80 m up, look a few
   kilometres along the sea, where the slant path changes the atmosphere's share by under 1 %.
 
+**The first v3 dev check's sensing defects** (murmur-1z6.6's dev check, eval/SCORING-V3.md 11.2
+and 11.3; 2026-10-24). Four changes, each physics or bookkeeping, no sensor value tuned (W3):
+
+1. *Sonar evidence* (Sonar, above): a classification integrates the signal heard, not the time
+   since the first detection. Before, a run survived 30 s gaps and its confidence grew with its
+   length, so a buoy hearing a diver 5 to 8 % of the seconds recognised it as fast as one hearing
+   it every second.
+2. *EO/IR looks and the payload manager* (EO/IR and Pointing, above): each level accrues as a
+   hazard while the contact is in the field (before, one draw a look decided all three levels, so
+   a look between the identification and recognition chances never identified while the contact
+   stayed); a lock holds while its contact is a candidate and its identification gets likelier
+   (before, 10 s at most); and each camera keeps its own history (before, `looked` and
+   `identified` were keyed by contact alone, so one camera's failed cue kept every camera off the
+   contact for 60 s, an identification for 300 s). A first version let any nearer unidentified
+   contact take a lock; it thrashed between contacts in traffic and was dropped.
+3. *Sea Hunter's hull sonar listens* (the catalog, above): `passive = { ranges }` on an active
+   sonar; the MS3 is "active and passive" [44], its passive figures are the buoy's [E here].
+4. *Each look's level in the picture* (What a look yields, above): `identity.looks`, physical
+   model only; recorded under scoring v3 (`eval/headless/v3/record.py`).
+
+Need served, pooled over both worlds, on fresh dev seeds 5100-5129 (`none` / `random-valid` /
+the basic oracle; one replicate, 1,080 episodes each side, no harness error; model results only),
+before (the code of murmur-1z6.6) and after:
+
+| family | before | after |
+|---|---|---|
+| F1 fast boat | 39 / 40 / 43 of 60 | 39 / 40 / 43 |
+| F2 drone (version 3) | 0 / 1 / 31 of 60 | 0 / 1 / 30 |
+| F3 low aircraft | 33 / 36 / 46 of 60 | 40 / 38 / 41 |
+| F4 UUV | 48 / 48 / 48 of 55 | 40 / 40 / 51 |
+| F5 diver | 45 / 45 / 48 of 60 | 25 / 25 / 33 |
+| F6 shore vehicle | 28 / 22 / 34 of 60 | 20 / 19 / 34 |
+
+The sonar change does what 11.2 asked: the standing buoys no longer recognise the UUV and the
+diver for `none` (F4 Golden Gate 26 to 14 of 28, F5 Golden Gate 15 to 0 of 30), and the oracle's
+F4 rose to 51 of 55 (10.1 holds on F4 Golden Gate). Under water the oracle's own sonars now need
+their seconds of signal too: F5 Golden Gate's oracle fell from 18 to 3 of 30, its vehicles
+recognising the diver 30 to 200 s after the deadline (the active sonars' diver ranges are a few
+hundred metres, so an orbit hears it a share of the seconds). The camera changes did not raise
+the oracle's air and ground service (F2 31 to 30, F3 46 to 41, F6 34 to 34, all within a
+binomial spread of about 4 needs). Taken apart on F2 and F3 (seeds 5100-5129, the oracle and
+`none`): the hazard alone, with the old lock and shared history, served 14 and 46 of 60 (from 31
+and 46): ACQUIRE's rate makes a short look at a middling chance less likely to identify than the
+old draw, which gave the full chance at the dwell; the per-camera history brought F2 back to 30,
+chiefly its failed cues (shared identifications with per-camera failed cues: 26), as one camera's
+failed cue no longer keeps the oracle's other camera off the drone; the lock
+change moved 137 of 240 episodes and left the pooled counts as they were. What still limits the drones
+(F2's `looked:puma(detected)`): a camera cued by a 2D radar's plot re-aims, slewing and settling,
+whenever the next fix moves the elevation search's current bar past a quarter of the field
+(`Cue::aims` is rebuilt from each new fix), so a Puma that had the drone in its wide field at its
+first bar (F2 San Diego, seed 5108) was blind 11 of the cue's next 18 s and its cue ended,
+keeping it off the drone for a minute; a follow-up (cue from the track, or keep the bar a cue
+update falls within), not made here.
+
+Legacy byte for byte: every legacy calibration and the anchors (`cargo test`), the golden
+episode and v1/v2 null fidelity (`eval/headless/tests`), and a keep-out evaluation (seeds 1 to
+3, 20 situations, the radar and all variants: records identical). The physical tuning-set views:
+the surface criteria all hold as before; on the air tuning sets the all-sensors mix has 2
+keep-out misses 3 s ahead as before, other cases (a 500 m loiter by 113 m, an approach and break
+by 53 m, against random turns by 253 m before), and one class's velocity error over its bound
+(speed change 6.67, against one turn 7.48 before). No held-out set was run.
+
 **Cost** (`eval/headless/sense_perf.py`): a Golden Gate world of 30 stand-ins of ten types and
 40 contacts of every domain, headless, 30 simulated minutes: 91 times real time on the
 physical model, 82 on the legacy one (this host, 28 cores, one episode).
@@ -586,7 +680,8 @@ The legacy model's Python ports (`v2/labels.py`, `families.py`, `agents_v2.py`,
   (a high camera's longest detection ranges are a little long for it); the line of sight is
   straight.
 - The catalog: Sea Hunter carries its navigation radar only (a second radar entry would change
-  what the legacy model reads for v1 and v2); REMUS's side-scan listens all round, not to its two
+  what the legacy model reads for v1 and v2), and its hull sonar's passive mode has no published
+  figures (the buoy's estimates); REMUS's side-scan listens all round, not to its two
   sides; the Saildrone's cameras image every 5 s, looked through every second here; fixed
   cameras (the Magura's, the FPV's, the UGVs' drive cameras) see along the heading only.
 - A tick is a second: a look, a scan pass and a report are resolved to the second.

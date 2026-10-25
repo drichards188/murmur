@@ -40,7 +40,8 @@ pub struct Prediction {
     /// EO/IR: the chance to detect it in the wide field a search sweeps.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub p_search: Option<f64>,
-    /// EO/IR: the mean time to detect in the wide field, s.
+    /// EO/IR: the mean time to detect in the wide field held on it, s (the detection hazard's,
+    /// `TAU_K_S / P^2`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tau_s: Option<f64>,
     /// A radar's or scanning sonar's revolution, AIS's report interval, s.
@@ -49,7 +50,8 @@ pub struct Prediction {
     /// EO/IR: the channel that identifies best.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel: Option<&'static str>,
-    /// Sonar: the contact it takes to recognise and to identify, s.
+    /// Sonar: the seconds of signal it must hear to recognise and to identify (a contact heard
+    /// a share `p` of the seconds takes about that over `p`, while no gap ends the run).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recognise_after_s: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -150,7 +152,7 @@ pub fn predict(a: &Ask) -> Prediction {
                 }
             }
             out.p_search = Some(search);
-            out.tau_s = (search > 0.0).then(|| eo::TAU_K_S / search);
+            out.tau_s = (search > 0.0).then(|| eo::TAU_K_S / (search * search));
         }
         Resolved::Radar(r) => {
             if sight(h_s, &t, &p, K_RADIO, obstruction).is_none() {
@@ -188,7 +190,7 @@ pub fn predict(a: &Ask) -> Prediction {
             let depth_t = if t.c.domain == Domain::Subsurface { t.c.alt_m.min(0.0) } else { 0.0 };
             let r = p.ground_m.hypot(depth_t - o.alt_msl.min(0.0));
             out.range_m = r;
-            out.horizon_m = sn.max_m;
+            out.horizon_m = sn.passive.as_deref().map_or(sn.max_m, |p| p.max_m.max(sn.max_m));
             out.visible_height_m = 0.0;
             out.line_of_sight = r <= sn.max_m;
             out.terrain_clear = None;
@@ -197,14 +199,20 @@ pub fn predict(a: &Ask) -> Prediction {
                 .and_then(|g| g.height(0.5 * (o.lat + t.c.lat), 0.5 * (o.lon + t.c.lon)))
                 .filter(|h| *h < -1.0)
                 .map_or(cond.water_depth_m, |h| -h);
-            let dnl = sonar::noise_db(sn.freq_khz, cond.wind_mps, cond.shipping)
-                - sonar::noise_db(sn.freq_khz, sonar::REF_WIND_MPS, sonar::REF_SHIPPING);
-            if let Some(fom) = sonar::fom_db(sn, &t.c.kind, &t.sig) {
-                out.p_detect = sonar::pd(sn, fom, r, water, dnl);
-                out.p_recognise = out.p_detect;
-                match sn.mode {
+            // the sonar and an active sonar's passive mode: each level its better mode's
+            for mode in std::iter::once(sn).chain(sn.passive.as_deref()) {
+                let Some(fom) = sonar::fom_db(mode, &t.c.kind, &t.sig) else {
+                    continue;
+                };
+                let dnl = sonar::noise_db(mode.freq_khz, cond.wind_mps, cond.shipping)
+                    - sonar::noise_db(mode.freq_khz, sonar::REF_WIND_MPS, sonar::REF_SHIPPING);
+                let p = sonar::pd(mode, fom, r, water, dnl);
+                out.line_of_sight |= r <= mode.max_m;
+                out.p_detect = out.p_detect.max(p);
+                out.p_recognise = out.p_recognise.max(p);
+                match mode.mode {
                     SonarMode::Passive => {
-                        out.p_identify = out.p_detect;
+                        out.p_identify = out.p_identify.max(p);
                         out.recognise_after_s = Some(PASSIVE_RECOGNISE_S);
                         out.identify_after_s = Some(PASSIVE_IDENTIFY_S);
                     }

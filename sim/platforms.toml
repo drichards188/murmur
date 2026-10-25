@@ -578,15 +578,19 @@ sidc = "SFSP-----------"
 #     is not here: a second entry would change what the legacy model reads for v1 and v2.
 #   eo_ir: 360 degree stereo EO/IR ([43]), figures not published: [E here] a fixed ring as the
 #     Corsair's, M364C-class thermal (640 px at 18 degrees [13]) beside 1,920 px visible.
-#   sonar: the MS3 hull sonar, active and passive ([44]), as an active sonar: a submarine half
-#     the time at 7.5 km and a small UUV at 1.5 km (the research's 5-10 and 1-2 km [E], from
-#     FAS's figure-of-merit examples [25]), to 20 km (the 95 dB example's 19 km [25]); 10 kHz [E
-#     here, a mid-frequency hull sonar]; its preformed beams listen on every bearing at once.
+#   sonar: the MS3 hull sonar, active and passive ([44]). Active: a submarine half the time at
+#     7.5 km and a small UUV at 1.5 km (the research's 5-10 and 1-2 km [E], from FAS's
+#     figure-of-merit examples [25]), to 20 km (the 95 dB example's 19 km [25]); 10 kHz [E here,
+#     a mid-frequency hull sonar]; its preformed beams listen on every bearing at once. Passive
+#     (`passive`, the same array listening in the same band and to the same 20 km): the research
+#     gives its passive mode no figures, so the buoy's estimates for every class [E here] (a
+#     cargo ship 20 km, a fast boat 3.5, a submarine on battery 1, a UUV 0.3, a diver 0.1): a hull
+#     array's gain over the buoy's one hydrophone taken as spent on the ship's own noise under way.
 sensors = [
   { type = "radar", range_m = 40000, guess = true, r50_m = 12450, rcs_ref_m2 = 7.5, scan_s = 2.5, beam_deg = 1.2, cell_m = 37, band_ghz = 9.4 },
   { type = "eo_ir", range_m = 15000, guess = true, channels = [{ band = "lwir", wide_deg = 18, px = 640, panoramic = true }, { band = "day", wide_deg = 18, px = 1920, panoramic = true }] },
   { type = "ais", range_m = 50000, guess = true },
-  { type = "sonar", range_m = 10000, guess = true, mode = "active", freq_khz = 10, max_m = 20000, ranges = { submarine = 7500, uuv = 1500 } },
+  { type = "sonar", range_m = 10000, guess = true, mode = "active", freq_khz = 10, max_m = 20000, ranges = { submarine = 7500, uuv = 1500 }, passive = { ranges = { cargo_ship = 20000, small_fast_boat = 3500, submarine = 1000, uuv = 300, diver = 100 } } },
 ]
 physical_reach_m = { radar = { air = 7530, ground = 10060, surface = 9770 }, eo_ir = { air = 11290, ground = 8990, surface = 13060 }, sonar = { surface = 4870, subsurface = 4870 } }
 mast_m = 10

@@ -13,11 +13,12 @@
 //!   field of view the payload manager points ([`Gimbal`]: search the task area in the wide
 //!   field, cue to the nearest unidentified radar, AIS or EO track there, then the stalest, an
 //!   aircraft whose height no sensor measured searched for in elevation, lock on in the narrow
-//!   field to identify, the image tracker following it, back to search). A look draws once
-//!   whether the contact is detectable at all and when (exponential, tau 3.4 / P s);
-//!   identification needs the narrow field on it for 2 to 3 s. A detection gives the size
-//!   class, a recognition the family, an identification the kind; a wrong call is likelier at
-//!   recognition.
+//!   field to identify while it stays the manager's choice, the image tracker following it,
+//!   back to search; each camera its own history). Each level of a look accrues as a hazard
+//!   while the contact is in the field, ACQUIRE's initial rate at this second's range and light
+//!   (tau 3.4 / P s to detect); identification needs the narrow field on it for 2 to 3 s. A
+//!   detection gives the size class, a recognition the family, an identification the kind; a
+//!   wrong call is likelier at recognition.
 //! - **Radar** ([`radar`]): one Swerling 1 draw per scan as the beam passes the contact, the
 //!   fourth-root law about the radar's reference, the two-ray model for low targets, sea
 //!   clutter by sea state; 30 m or 1 % of range, and 1 degree in bearing.
@@ -25,7 +26,8 @@
 //!   horizon, decoded by slot load; emitters heard over the receiver's sensitivity in radio
 //!   line of sight.
 //! - **Sonar** ([`sonar`]): the sonar equation with each sensor's figure of merit per kind from
-//!   its reference ranges; passive classifies over minutes, active localises.
+//!   its reference ranges; passive classifies over minutes of signal heard, active localises;
+//!   an active sonar may listen too (its passive mode).
 //!
 //! Deterministic as the legacy model: every draw is a hash of the seed, a tick or a scan or a
 //! look's start, the vehicle, the contact and the sensor; state (pointing, looks, scans) moves
@@ -68,8 +70,9 @@ const SETTLE_S: f64 = 1.0;
 const SEARCH_DWELL_S: f64 = 5.0;
 /// The payload manager searches at least this long between two cues, s [E].
 const SEARCH_MIN_S: f64 = 10.0;
-/// A cue that finds nothing in the wide field, and a lock that identifies nothing, give up
-/// after this long, s [E].
+/// A cue that finds nothing in the wide field gives up after this long, s [E]; a lock gives up
+/// this long after the identification it waits for last got likelier (the contact closing, the
+/// light rising), s [E: the lock's longest before, now its patience without progress].
 const CUE_MAX_S: f64 = 8.0;
 const LOCK_MAX_S: f64 = 10.0;
 /// A cue is a track fixed within this long, s (the tracker's stale age).
@@ -96,14 +99,27 @@ const RETRY_S: f64 = 60.0;
 const STALE_LOOK_S: f64 = 120.0;
 /// A recognition needs the contact detected this long first, s [E].
 const RECOGNISE_AFTER_S: f64 = 1.0;
-/// Identification needs the narrow field on the contact for 2 to 3 s (research [E]): 2 s plus
-/// a uniform second per look.
+/// Identification needs the narrow field on the contact for 2 to 3 s (research [E]): at least
+/// 2 s, then the level's hazard ([`LEVEL_TAU_S`]).
 const IDENTIFY_DWELL_S: f64 = 2.0;
+/// Each level of an EO/IR look accrues as a hazard while the contact is in the field (a
+/// look's evidence grows with the seconds it holds the contact, at the current range and
+/// light): ACQUIRE's time law's initial rate, `P / tau = P^2 / T` a second with `tau = T / P`
+/// [12], so a short look is ACQUIRE's `P (1 - exp(-t / tau))` and a longer one keeps
+/// accruing where one draw a look stopped at `P`. Detection's `T` is the NVL constant
+/// ([`eo::TAU_K_S`], 3.4 s); recognition's and identification's this, once their own dwell
+/// is met [E here: at P = 1 the level comes in the first second its dwell allows two times in
+/// three, so a recognition about a second after the detection and an identification in 2 to
+/// 3 s of the narrow field, as the research's [E] times].
+const LEVEL_TAU_S: f64 = 1.0;
 /// A sensor's run of hits on a contact ends after this gap, s (its dwell starts again).
 const DWELL_GAP_S: f64 = 30.0;
-/// A passive sonar recognises after this much contact, s, and identifies after
+/// A passive sonar recognises after this many seconds of signal heard, and identifies after
 /// [`PASSIVE_IDENTIFY_S`] (research: passive spectra separate ship, submarine and UUV after
-/// minutes [E]); an active sonar recognises by the track [27] and never identifies.
+/// minutes [E]); an active sonar recognises by the track [27] and never identifies. Seconds
+/// heard, not of contact: a classifier integrates the signal it receives, so a contact heard
+/// one second in twenty takes twenty times as long (each detection counts the draw interval it
+/// closes, a second or a scan; a run's first counts a second).
 const PASSIVE_RECOGNISE_S: f64 = 60.0;
 const PASSIVE_IDENTIFY_S: f64 = 180.0;
 const ACTIVE_RECOGNISE_S: f64 = 60.0;
@@ -260,14 +276,21 @@ struct Boresight {
     fixed: bool,
 }
 
-/// One EO/IR look at a contact: from when it entered the field, when it was detected, since
-/// when the narrow field has held it, and the best level it reached.
+/// One EO/IR look at a contact: from when it entered the field, when it was detected (and how
+/// likely that was then), since when the narrow field has held it, each level's hazard accrued
+/// ([`LEVEL_TAU_S`]) and whether it reached recognition and identification, and the best
+/// identification chance it has had and when that last rose (a lock's progress).
 #[derive(Debug, Clone)]
 struct EoLook {
     start_tick: i64,
-    start_s: f64,
     detected_s: Option<f64>,
+    detected_p: f64,
     narrow_since: Option<f64>,
+    accrued: [f64; 3],
+    recognised: bool,
+    identified: bool,
+    id_best: f64,
+    id_best_s: f64,
     seen_s: f64,
 }
 
@@ -276,6 +299,14 @@ struct EoLook {
 struct Dwell {
     first_s: f64,
     last_s: f64,
+}
+
+/// A sonar's run of detections of a contact: its last, and the seconds of signal the run has
+/// heard (the evidence its classification integrates).
+#[derive(Debug, Clone, Copy)]
+struct Heard {
+    last_s: f64,
+    signal_s: f64,
 }
 
 /// A track position a camera may be cued to (a radar's, AIS's or a camera's own fix).
@@ -365,9 +396,14 @@ pub struct Engine {
     gimbals: HashMap<(u64, usize), Gimbal>,
     looks: HashMap<(u64, usize), HashMap<String, EoLook>>,
     dwell: HashMap<(u64, usize), HashMap<String, Dwell>>,
+    /// each sonar's (and an active sonar's passive mode's: the third key) evidence per contact
+    heard: HashMap<(u64, usize, u8), HashMap<String, Heard>>,
     cues: HashMap<String, Cue>,
-    identified: HashMap<String, f64>,
-    looked: HashMap<String, f64>,
+    /// each camera's own history (a payload manager on its vehicle knows what it did, not what
+    /// another camera did): when it identified each contact, and when it last looked at one in
+    /// vain
+    identified: HashMap<(u64, usize), HashMap<String, f64>>,
+    looked: HashMap<(u64, usize), HashMap<String, f64>>,
 }
 
 impl Engine {
@@ -382,6 +418,7 @@ impl Engine {
             gimbals: HashMap::new(),
             looks: HashMap::new(),
             dwell: HashMap::new(),
+            heard: HashMap::new(),
             cues: HashMap::new(),
             identified: HashMap::new(),
             looked: HashMap::new(),
@@ -498,7 +535,13 @@ impl Engine {
                 match resolve(s, h_s > 20.0) {
                     Resolved::Radar(r) => self.radar(&ctx, o, h_s, si, &r, &targets, &mut out),
                     Resolved::Ais => self.ais(&ctx, o, h_s, si, &targets, &mut out),
-                    Resolved::Sonar(sn) => self.sonar(&ctx, o, si, &sn, &targets, &mut out),
+                    Resolved::Sonar(sn) => {
+                        self.sonar(&ctx, o, si, 0, &sn, &targets, &mut out);
+                        // an active sonar whose array also listens: its passive mode
+                        if let Some(p) = sn.passive.as_deref() {
+                            self.sonar(&ctx, o, si, 1, p, &targets, &mut out);
+                        }
+                    }
                     Resolved::Esm(e) => self.esm(&ctx, o, h_s, si, &e, &targets, &mut out),
                     Resolved::EoIr(_) => {}
                 }
@@ -551,12 +594,21 @@ impl Engine {
         for per in self.dwell.values_mut() {
             per.retain(|k, d| live.contains(k.as_str()) && s - d.last_s <= DWELL_GAP_S);
         }
+        for per in self.heard.values_mut() {
+            per.retain(|k, h| live.contains(k.as_str()) && s - h.last_s <= DWELL_GAP_S);
+        }
         for per in self.los.values_mut() {
             per.retain(|k, l| live.contains(k.as_str()) && s - l.s <= 60.0);
         }
         self.gimbals.retain(|_, g| s - g.seen_s <= 60.0);
-        self.identified.retain(|k, t| live.contains(k.as_str()) && s - *t <= REVISIT_S);
-        self.looked.retain(|k, t| live.contains(k.as_str()) && s - *t <= 3600.0);
+        for per in self.identified.values_mut() {
+            per.retain(|k, t| live.contains(k.as_str()) && s - *t <= REVISIT_S);
+        }
+        self.identified.retain(|_, per| !per.is_empty());
+        for per in self.looked.values_mut() {
+            per.retain(|k, t| live.contains(k.as_str()) && s - *t <= 3600.0);
+        }
+        self.looked.retain(|_, per| !per.is_empty());
     }
 
     /// A run of hits by sensor `si` of `uid` on `contact`: its dwell now, s.
@@ -568,6 +620,27 @@ impl Engine {
         }
         d.last_s = s;
         s - d.first_s + 1.0
+    }
+
+    /// A sonar's detection of `contact` (`key`: the observer, the sensor and its mode): the
+    /// seconds of signal its run has now heard. Each detection counts the draw interval it
+    /// closes (`revisit_s`: a second, or a scanning sonar's turn), no more than the time since
+    /// the last; a run's first counts a second, and a gap of [`DWELL_GAP_S`] ends the run. At
+    /// one detection a draw this is the run's length, as the dwell before it; heard one draw in
+    /// twenty, it grows twenty times slower.
+    fn heard(&mut self, key: (u64, usize, u8), contact: &str, s: f64, revisit_s: f64) -> f64 {
+        let per = self.heard.entry(key).or_default();
+        match per.get_mut(contact) {
+            Some(h) if s - h.last_s <= DWELL_GAP_S => {
+                h.signal_s += (s - h.last_s).clamp(0.0, revisit_s);
+                h.last_s = s;
+                h.signal_s
+            }
+            _ => {
+                per.insert(contact.to_string(), Heard { last_s: s, signal_s: 1.0 });
+                1.0
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -708,12 +781,16 @@ impl Engine {
         }
     }
 
-    fn sonar(&mut self, cx: &Ctx, o: &Observer, si: usize, sn: &SonarSensor, targets: &[Target], out: &mut Vec<Detection>) {
+    /// Sonar `si` of `o` in one of its modes (`part` 0, or 1 for an active sonar's passive mode:
+    /// its own draws and evidence, the same wrong calls, being the same sensor's).
+    #[allow(clippy::too_many_arguments)]
+    fn sonar(&mut self, cx: &Ctx, o: &Observer, si: usize, part: u8, sn: &SonarSensor, targets: &[Target], out: &mut Vec<Detection>) {
         let st = cx.st;
+        let draw_salt = |what: u64| salt(si, SensorType::Sonar, what + 16 * u64::from(part));
         let dnl = sonar::noise_db(sn.freq_khz, cx.cond.wind_mps, cx.cond.shipping)
             - sonar::noise_db(sn.freq_khz, sonar::REF_WIND_MPS, sonar::REF_SHIPPING);
         let depth_o = o.alt_msl.min(0.0);
-        let phase = sn.scan_s.map(|sc| uniform(st.seed, -2, o.uid, "sonar", salt(si, SensorType::Sonar, 0)) * sc);
+        let phase = sn.scan_s.map(|sc| uniform(st.seed, -2, o.uid, "sonar", draw_salt(0)) * sc);
         for t in targets {
             if !matches!(t.c.domain, Domain::Surface | Domain::Subsurface) {
                 continue;
@@ -742,31 +819,29 @@ impl Engine {
                 }
                 _ => st.tick,
             };
-            if pd <= 0.0 || uniform(st.seed, draw, o.uid, &t.c.id, salt(si, SensorType::Sonar, 1)) >= pd {
+            if pd <= 0.0 || uniform(st.seed, draw, o.uid, &t.c.id, draw_salt(1)) >= pd {
                 continue;
             }
-            let dwell = self.hit(o.uid, si, &t.c.id, st.s);
+            // the evidence: the seconds of signal this run has heard, not its length
+            let heard = self.heard((o.uid, si, part), &t.c.id, st.s, sn.scan_s.unwrap_or(1.0));
             // passive classifies over minutes; active localises, and recognises by the track
             let (level, conf, sigma) = match sn.mode {
                 SonarMode::Passive => {
-                    let level = if dwell >= PASSIVE_IDENTIFY_S {
+                    let level = if heard >= PASSIVE_IDENTIFY_S {
                         Level::Identify
-                    } else if dwell >= PASSIVE_RECOGNISE_S {
+                    } else if heard >= PASSIVE_RECOGNISE_S {
                         Level::Recognise
                     } else {
                         Level::Detect
                     };
-                    (level, 0.8 * (1.0 - (-dwell / 120.0).exp()), 50.0 + 0.10 * r)
+                    (level, 0.8 * (1.0 - (-heard / 120.0).exp()), 50.0 + 0.10 * r)
                 }
                 SonarMode::Active => {
-                    let level = if dwell >= ACTIVE_RECOGNISE_S { Level::Recognise } else { Level::Detect };
-                    (level, 0.6 * (1.0 - (-dwell / 60.0).exp()), 5.0 + 0.01 * r)
+                    let level = if heard >= ACTIVE_RECOGNISE_S { Level::Recognise } else { Level::Detect };
+                    (level, 0.6 * (1.0 - (-heard / 60.0).exp()), 5.0 + 0.01 * r)
                 }
             };
-            let (ne, nn) = (
-                normal(st.seed, st.tick, o.uid, &t.c.id, salt(si, SensorType::Sonar, 2)),
-                normal(st.seed, st.tick, o.uid, &t.c.id, salt(si, SensorType::Sonar, 3)),
-            );
+            let (ne, nn) = (normal(st.seed, st.tick, o.uid, &t.c.id, draw_salt(2)), normal(st.seed, st.tick, o.uid, &t.c.id, draw_salt(3)));
             out.push(Detection {
                 contact_id: t.c.id.clone(),
                 uid: o.uid,
@@ -902,33 +977,55 @@ impl Engine {
             }
             let look = self.looks.entry(key).or_default().entry(t.c.id.clone()).or_insert(EoLook {
                 start_tick: st.tick,
-                start_s: st.s,
                 detected_s: None,
+                detected_p: 0.0,
                 narrow_since: None,
+                accrued: [0.0; 3],
+                recognised: false,
+                identified: false,
+                id_best: 0.0,
+                id_best_s: st.s,
                 seen_s: st.s,
             });
             look.seen_s = st.s;
             look.narrow_since = if id_view { Some(look.narrow_since.unwrap_or(st.s)) } else { None };
-            // one draw per look: whether it is detectable at all (P_inf) and when (exponential,
-            // tau 3.4 / P_inf); the same draw decides recognition and identification
-            let u = uniform(st.seed, look.start_tick, o.uid, &t.c.id, salt(si, SensorType::EoIr, 1));
-            let u_t = uniform(st.seed, look.start_tick, o.uid, &t.c.id, salt(si, SensorType::EoIr, 2));
-            let u_id = uniform(st.seed, look.start_tick, o.uid, &t.c.id, salt(si, SensorType::EoIr, 3));
-            if look.detected_s.is_none() && u < pd[0] {
-                // the dwell so far, counting the second this tick closes
-                let tau = eo::TAU_K_S / pd[0].max(1e-6);
-                if st.s - look.start_s + 1.0 >= -tau * (1.0 - u_t).ln() {
-                    look.detected_s = Some(st.s);
+            if id_p > look.id_best {
+                (look.id_best, look.id_best_s) = (id_p, st.s);
+            }
+            // each level's evidence accrues while the contact is in the field, at this second's
+            // probability (LEVEL_TAU_S), and is reached when it passes the look's own draw of
+            // what it takes (an exponential: one per look and level)
+            let start = look.start_tick;
+            let draw = |what: u64| uniform(st.seed, start, o.uid, &t.c.id, salt(si, SensorType::EoIr, what));
+            let need = |what: u64| -(1.0 - draw(what)).ln();
+            if look.detected_s.is_none() {
+                // the second this tick closes, at ACQUIRE's rate (tau 3.4 / P)
+                look.accrued[0] += pd[0] * pd[0] / eo::TAU_K_S;
+                if look.accrued[0] >= need(1) {
+                    (look.detected_s, look.detected_p) = (Some(st.s), pd[0]);
                 }
             }
-            let Some(det_s) = look.detected_s.filter(|_| u < pd[0]) else {
+            let Some(det_s) = look.detected_s else {
                 continue;
             };
+            // a contact found stays held while it stays about as findable as when it was found
+            // (below a share of that drawn once a look, it fades out of the image)
+            if pd[0] < look.detected_p * draw(6) {
+                continue;
+            }
+            if !look.recognised && st.s - det_s >= RECOGNISE_AFTER_S {
+                look.accrued[1] += pd[1] * pd[1] / LEVEL_TAU_S;
+                look.recognised = look.accrued[1] >= need(2);
+            }
+            if !look.identified && look.narrow_since.is_some_and(|n| st.s - n + 1.0 >= IDENTIFY_DWELL_S) {
+                look.accrued[2] += id_p * id_p / LEVEL_TAU_S;
+                look.identified = look.accrued[2] >= need(3);
+            }
             let (mut level, mut conf) = (Level::Detect, pd[0]);
-            if u < pd[1] && st.s - det_s >= RECOGNISE_AFTER_S {
+            if look.recognised {
                 (level, conf) = (Level::Recognise, pd[1]);
             }
-            if u < id_p && look.narrow_since.is_some_and(|n| st.s - n + 1.0 >= IDENTIFY_DWELL_S + u_id) {
+            if look.identified && id_view {
                 (level, conf) = (Level::Identify, id_p);
                 identified_now.push(t.c.id.clone());
             }
@@ -957,23 +1054,30 @@ impl Engine {
                 scan_s: None,
             });
         }
-        for c in identified_now {
-            self.identified.insert(c, st.s);
+        if !identified_now.is_empty() {
+            let mine = self.identified.entry(key).or_default();
+            for c in identified_now {
+                mine.insert(c, st.s);
+            }
         }
     }
 
     /// The payload manager's turn (WORLD-V3-PLAN 2.4, decision W1): search the task area in the
     /// wide field; after [`SEARCH_MIN_S`], cue to a track there (the nearest unidentified,
     /// else the stalest look); once the wide field has the contact, lock on in the narrow
-    /// field until it is identified or [`LOCK_MAX_S`] has passed; back to search. A cue to an
-    /// aircraft whose height no sensor measured (a 2D radar's plot, a camera's or ESM's fix)
-    /// searches the elevations it may fly at, bar by bar ([`Cue::aims`]); a cued camera re-aims
-    /// only when the cue leaves the middle of its field ([`CUE_DEADBAND`]), and a locked one
-    /// follows its contact in closed loop (murmur-7vp: slewing and settling again at each
-    /// track update and each second of a lock left the cameras blind 93 to 98 % of the time
-    /// they were cued or locked). A slew, a zoom, a search step and a new bar settle
-    /// ([`SETTLE_S`]). A camera that cannot slew looks along the heading; one that is all
-    /// panoramic does not point.
+    /// field until it is identified, while it stays a candidate (fresh, in reach and the task
+    /// area) and no cue of a higher class has come (one not identified, against a revisit: cued
+    /// at once), and while its identification keeps getting likelier (or did within
+    /// [`LOCK_MAX_S`]); back to search. Each camera keeps its own history of what it
+    /// identified and looked at in vain: one camera's failed cue does not keep another off the
+    /// contact. A cue to an aircraft whose height no sensor measured (a 2D radar's plot, a
+    /// camera's or ESM's fix) searches the elevations it may fly at, bar by bar
+    /// ([`Cue::aims`]); a cued camera re-aims only when the cue leaves the middle of its field
+    /// ([`CUE_DEADBAND`]), and a locked one follows its contact in closed loop (murmur-7vp:
+    /// slewing and settling again at each track update and each second of a lock left the
+    /// cameras blind 93 to 98 % of the time they were cued or locked). A slew, a zoom, a search
+    /// step and a new bar settle ([`SETTLE_S`]). A camera that cannot slew looks along the
+    /// heading; one that is all panoramic does not point.
     #[allow(clippy::too_many_arguments)]
     fn steer(&mut self, cx: &Ctx, o: &Observer, h_s: f64, si: usize, reach_m: f64, eo: &EoSensor, targets: &[Target]) -> Boresight {
         let s = cx.st.s;
@@ -1010,10 +1114,16 @@ impl Engine {
             (g.az, g.el, g.narrow) = (az, el, narrow);
         };
         let target = |id: &str| targets.iter().find(|t| t.c.id == id);
+        let mut cue_to: Option<String> = None;
         match g.mode.clone() {
             Mode::Lock(c) => {
-                let done = self.identified.get(&c).is_some_and(|ti| *ti >= g.since) || s - g.since >= LOCK_MAX_S;
-                match target(&c).filter(|_| !done) {
+                // held until this camera identifies it, while it stays a candidate the manager
+                // would keep (a cue of a higher class takes the camera at once), and while the
+                // identification keeps getting likelier or did within LOCK_MAX_S
+                let identified = self.identified.get(&key).and_then(|m| m.get(&c)).is_some_and(|ti| *ti >= g.since);
+                let progress = self.looks.get(&key).and_then(|l| l.get(&c)).map_or(g.since, |l| l.id_best_s.max(g.since));
+                let choice = if identified || s - progress >= LOCK_MAX_S { None } else { self.pick_cue(key, o, reach_m, s, Some(&c)) };
+                match target(&c).filter(|_| choice.as_deref() == Some(c.as_str())) {
                     Some(t) => {
                         // the image tracker keeps it centred: the gimbal follows it in closed
                         // loop, with nothing to settle, while its line of sight turns no faster
@@ -1026,7 +1136,11 @@ impl Engine {
                         }
                     }
                     None => {
-                        self.looked.insert(c, s);
+                        // a cue of a higher class (`pick_cue`) takes the camera at once
+                        cue_to = choice.filter(|x| *x != c);
+                        if !identified {
+                            self.looked.entry(key).or_default().insert(c, s);
+                        }
                         g.mode = Mode::Search;
                         g.since = s;
                         g.step_s = f64::NEG_INFINITY;
@@ -1055,7 +1169,7 @@ impl Engine {
                     || (!scan && s - began >= CUE_MAX_S)
                     || (bar_over && g.bar + 1 >= aims.len())
                 {
-                    self.looked.insert(c, s);
+                    self.looked.entry(key).or_default().insert(c, s);
                     g.mode = Mode::Search;
                     g.since = s;
                     g.step_s = f64::NEG_INFINITY;
@@ -1074,7 +1188,7 @@ impl Engine {
             Mode::Search => {}
         }
         if g.mode == Mode::Search {
-            let pick = (s - g.since >= SEARCH_MIN_S).then(|| self.pick_cue(o, reach_m, s)).flatten();
+            let pick = cue_to.or_else(|| (s - g.since >= SEARCH_MIN_S).then(|| self.pick_cue(key, o, reach_m, s, None)).flatten());
             if let Some(c) = pick {
                 let first = self.cues[&c].aims(o, h_s, wide).first().copied();
                 g.mode = Mode::Cue(c);
@@ -1101,29 +1215,41 @@ impl Engine {
         b
     }
 
-    /// The track to cue to (WORLD-V3-PLAN 2.4): within the camera's reach and the task area,
-    /// fixed within [`CUE_FRESH_S`], not looked at in vain within [`RETRY_S`]; the nearest not
-    /// identified within [`REVISIT_S`], else the one looked at longest ago (beyond
-    /// [`STALE_LOOK_S`]).
-    fn pick_cue(&self, o: &Observer, reach_m: f64, s: f64) -> Option<String> {
+    /// The track camera `key` cues to (WORLD-V3-PLAN 2.4): within its reach and the task area,
+    /// fixed within [`CUE_FRESH_S`], not looked at in vain by it within [`RETRY_S`]; the nearest
+    /// it has not identified within [`REVISIT_S`], else the one it looked at longest ago (beyond
+    /// [`STALE_LOOK_S`]). A locked camera asks it each second, `holding` its contact: it keeps
+    /// the contact while it is a candidate, unless the contact is a revisit and a contact the
+    /// camera has not identified is one (a higher class); a nearer contact of the same class
+    /// does not preempt a lock (it would thrash between two contacts and finish neither).
+    fn pick_cue(&self, key: (u64, usize), o: &Observer, reach_m: f64, s: f64, holding: Option<&str>) -> Option<String> {
+        let none = HashMap::new();
+        let identified = self.identified.get(&key).unwrap_or(&none);
+        let looked = self.looked.get(&key).unwrap_or(&none);
         let mut cands: Vec<(&String, f64, f64)> = self
             .cues
             .iter()
-            .filter(|(c, cue)| {
-                s - cue.s <= CUE_FRESH_S && self.looked.get(*c).is_none_or(|t| s - t >= RETRY_S)
-            })
+            .filter(|(c, cue)| s - cue.s <= CUE_FRESH_S && looked.get(*c).is_none_or(|t| s - t >= RETRY_S))
             .filter_map(|(c, cue)| {
                 let d = haversine_m(o.lat, o.lon, cue.lat, cue.lon);
                 let in_area = o.area.as_ref().is_none_or(|a| area_distance_m(a, cue.lat, cue.lon) <= 0.5 * reach_m);
-                let last = self.identified.get(c).copied().into_iter().chain(self.looked.get(c).copied()).fold(f64::NEG_INFINITY, f64::max);
+                let last = identified.get(c).copied().into_iter().chain(looked.get(c).copied()).fold(f64::NEG_INFINITY, f64::max);
                 (d <= reach_m && in_area).then_some((c, d, last))
             })
             .collect();
         cands.sort_by(|a, b| a.0.cmp(b.0));
-        let unidentified = cands
-            .iter()
-            .filter(|(c, _, _)| self.identified.get(*c).is_none_or(|t| s - t > REVISIT_S))
-            .min_by(|a, b| a.1.total_cmp(&b.1));
+        let unidentified_ = |c: &str| identified.get(c).is_none_or(|t| s - t > REVISIT_S);
+        let unidentified = cands.iter().filter(|(c, _, _)| unidentified_(c)).min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some(h) = holding {
+            // a lock keeps its contact while it is still a candidate, unless a cue of a higher
+            // class (one not identified, against a revisit) has come; a nearer one of its own
+            // class does not take the camera from it
+            return match cands.iter().find(|(c, _, _)| c.as_str() == h) {
+                None => None,
+                Some(_) if unidentified_(h) || unidentified.is_none() => Some(h.to_string()),
+                Some(_) => unidentified.map(|(c, _, _)| (*c).clone()),
+            };
+        }
         if let Some((c, _, _)) = unidentified {
             return Some((*c).clone());
         }
