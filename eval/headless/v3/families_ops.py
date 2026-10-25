@@ -15,7 +15,7 @@ scale world (golden-gate-scale) only. Every route keeps to its medium on the wor
 - **F14 space** (1,200 s; the brief is the mission and a tasking paragraph, choice 14):
   - *a gap* a satellite collect fills: imagery of a 1.5 to 2.5 km circle at a harbour 70 to 160 km
     away (`GAP_PLACES`: beyond the reach of every standing sensor of ours, HAWK 1's 50 km camera
-    on its far orbit included) is needed by a due time 2.5 to 6 hours after the start ("a vessel
+    on its far orbit included) is needed by a due time 4 to 10 hours after the start (version 2; "a vessel
     of interest is reported making for it"). Optical (by day, at a pass) and SAR (day or night)
     collects both answer it when a pass serves; so would a long flight of REAPER 1 or HAWK 1 out
     of the approved area.
@@ -103,6 +103,13 @@ GAP_PLACES = {
     "san-diego": (("Oceanside harbour", (-117.400, 33.200)), ("Dana Point harbour", (-117.700, 33.455)),
                   ("Avalon, Catalina Island", (-118.325, 33.345)), ("San Clemente Island's north end", (-118.550, 33.020))),
 }
+#: F14 (version 2, after the first dev batch, seeds 5400-5409): the gap's due time, hours after the
+#: start. Version 1 drew 2.5 to 6 h, shorter than every optical class's fastest product (WorldView:
+#: a 2 h lead, 45 min downlink, 1 h processing; SkySat 5 h) and ICEYE's (4 h): only Capella's SAR
+#: (2 h) could answer, and in 4 of 15 oracle situations nothing did (the single dominating cause of
+#: a need with fewer than two options). Version 2 draws 4 to 10 h, so optical by day and both SARs can.
+GAP_DUE_H = (4.0, 10.0)
+F14_VERSION = 2
 #: F14: the cover need's vehicle and its shore roads (from its spawn), and the satellites the run
 #: needs in view (N, its probability)
 #: (Golden Gate: FERRET 1 on Crissy Field, since the Fort Baker road up from MULE 1's pier is in the
@@ -216,7 +223,7 @@ def _f14_space(d: Any) -> None:
     rng = d.rng
     name, center = GAP_PLACES[d.world][rng.randrange(len(GAP_PLACES[d.world]))]
     radius = round(rng.uniform(1500.0, 2500.0))
-    due = round(rng.uniform(2.5, 6.0) * 3600.0, 1)
+    due = round(rng.uniform(*GAP_DUE_H) * 3600.0, 1)
     gap = {"id": "gap-1", "place": name, "center": [center[0], center[1]], "radius_m": radius, "due_s": due,
            "reason": "a vessel of interest is reported making for it"}
     callsign, road, route = GNSS_RUN[d.world]
@@ -232,7 +239,8 @@ def _f14_space(d: Any) -> None:
              "area": {"kind": "circle", "center": [round(mid[0], 6), round(mid[1], 6)],
                       "radius_km": round((half + 200.0) / 1000.0, 3)}}
     d.stated["gap_needs"] = [gap]
-    d.stated["element"] = {"domain": None, "gap": name, "due_s": due, "gnss_run": road, "min_level": int(level)}
+    d.stated["element"] = {"domain": None, "gap": name, "due_s": due, "gnss_run": road, "min_level": int(level),
+                           "version": F14_VERSION}
 
     def post(e: EpisodeSpec, workdir: Path) -> None:
         u = uids(e.fleet)

@@ -23,8 +23,8 @@ their runs, fault needs, the reserve, the precedence); what changes is written h
   replicate also served the need; harm by geometry), with the world's centre, the domain's sensors,
   and a `track` order pointed at the contact its track names.
 - **Nominations** (`engage`, 2.8) and **review decisions** (2.9), judged against truth: their own
-  labels (`nomination_labels`, `review_labels`). **Collect** and **cover** (2.10): defined in
-  SCORING-V3.md, labelled `unjudged` here until F14 builds them.
+  labels (`nomination_labels`, `review_labels`), and **collect** and **cover** (2.10): built in
+  labels_ops.py with F14-F16's own needs (`ops` in the labels, where a situation states them).
 """
 
 from __future__ import annotations
@@ -356,7 +356,7 @@ def harmful(a: dict[str, Any], aim: dict[str, Any], pic: Picture, needs: dict[st
 
 #: the kinds labelled as v2 labels its orders (moving a vehicle, or holding or recalling it)
 MOVING_KINDS = ("orbit", "patrol", "track", "hold", "rtl")
-#: defined in SCORING-V3.md 2.10, built with F14: labelled `unjudged` until then
+#: SCORING-V3.md 2.10 (labels_ops.py `space_label`)
 SPACE_KINDS = ("collect", "cover")
 
 
@@ -485,8 +485,8 @@ def review_labels(rec: dict[str, Any], pic: Picture, truth: Truth) -> list[dict[
     `unjudged` when the record cannot say. A declaration or a flag: confirming or declaring is right
     when the track's contact is of hostile truth, revoking or dismissing when it is not. An AIS claim
     (`ais_claim`, on a lost track): confirming is right when the claimant's contact is the lost
-    track's own (the claimant's track is read from the decision's `by_track` when it carries one;
-    review.py's decisions do not yet, so it is `unjudged` until they do). A lost contact accepted for
+    track's own (the claimant's track is read from the decision's `by_track`; a decision without
+    one is `unjudged`). A lost contact accepted for
     an engagement (`lost_contact`): right when, by truth, its contact had left the world or is of
     hostile truth. An un-spend: right when the platform's effect did not take it out of the world.
     review.py records the claimant's track now (choice 9); a claimant that is the lost contact's

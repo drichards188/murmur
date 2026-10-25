@@ -354,7 +354,7 @@ def test_each_family_draws_its_elements_in_their_medium(name: str, tmp_path: Pat
             (gap,) = e.truth["gap_needs"]
             (cov,) = e.truth["cover_needs"]
             assert F.dist_m(tuple(gap["center"]), load_world(world).mission.center) > 55_000.0
-            assert 2.5 * 3600 <= gap["due_s"] <= 6 * 3600 and cov["min_level"] in (9, 10)
+            assert FO.GAP_DUE_H[0] * 3600 <= gap["due_s"] <= FO.GAP_DUE_H[1] * 3600 and cov["min_level"] in (9, 10)
             assert F.dry(world, [tuple(p) for p in cov["route"]])
             kinds = [s["kind"] for s in e.script]
             assert "probe" in kinds and "flood" in kinds and not opts

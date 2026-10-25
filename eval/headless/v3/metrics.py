@@ -5,7 +5,8 @@
 - **need served per domain** (3.1b): served over eligible needs of each domain, beside the pooled
   share;
 - nominations and review decisions per situation-hour by their labels (3.11, 3.12);
-- `unjudged` actions (collect, cover until F14) counted apart, never in a rate of quality.
+- `unjudged` actions (a collect or cover a record cannot judge, 2.10) counted apart, never in a rate of
+  quality.
 """
 
 from __future__ import annotations

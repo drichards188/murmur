@@ -97,7 +97,11 @@ def blockers(rec: dict[str, Any], pic: Any) -> dict[str, Any]:
                 mv = _moved_before(speeds.get(str(cid), []), float(a["t"])) if cid else None
                 age = float(a["t"]) - first_seen.get(str(tid), float(a["t"]))
                 truth = "unassociated" if cid is None else ("stationary" if (mv is not None and mv < STATIONARY_MPS) else "moving")
-                noveloc[(truth, "young" if age < YOUNG_S else "older")] += 1
+                # whether the picture ever showed it a velocity before the attempt
+                ka = pic.index(float(a["t"]))
+                kin = ((pic.tracks or {}).get(str(tid)) or {}).get("kin") or []
+                had = any(r[3] is not None for r in kin if ka is not None and r[0] <= ka)
+                noveloc[(truth, "young" if age < YOUNG_S else ("lost_velocity" if had else "never_velocity"))] += 1
                 noveloc_tracks[str(tid)] = truth
             else:
                 c = f"other:{domain}:{kind}"
@@ -146,6 +150,16 @@ def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]
            "effects": [{"hit": e.get("hit"), "removed": e.get("platform_removed")}
                        for e in ((rec.get("effects") or {}).get("applied") or [])]}
     if meta["agent"] == ORACLE:
+        # the vehicle types the sensing model says could answer each need (the oracle's ranges,
+        # at least 150 m for a camera, 35 m for a sonar: report.py's rule)
+        reach = detail.get("reach_m") or {}
+        dom = {n["contact"]: n["domain"] for n in needs}
+        per: dict[str, set[str]] = defaultdict(set)
+        for k, v in reach.items():
+            plat, cid = k.split(":", 1)
+            if float(v) >= (35.0 if dom.get(cid) == "subsurface" else 150.0):
+                per[cid].add(plat)
+        out["capable_types"] = {cid: len(ps) for cid, ps in per.items()}
         out["blockers"] = blockers(rec, pic)
         b = out["blockers"]
         for e in out["ops"].get("engagement") or []:
@@ -245,6 +259,9 @@ def summarize(scored: list[dict[str, Any]]) -> dict[str, Any]:
                     agg["situations_with_a_pass"] = sum(1 for b in bl if b["passed"])
                     agg["situations"] = len(bl)
                     x["blockers"] = agg
+                caps = [c for s in ag for c in (s.get("capable_types") or {}).values()]
+                if caps:
+                    x["capable_types"] = {"needs": len(caps), "min": min(caps), "fewer_than_2": sum(1 for c in caps if c < 2)}
                 so = [s["space_options"] for s in ag if s.get("space_options")]
                 if so:
                     caps = [len((v or {}).get("capabilities_in_time") or []) for d in so for v in d.values()]
@@ -298,6 +315,8 @@ def markdown(summary: dict[str, Any], d: Path) -> str:
                 L.append(f"  - no-velocity ground blockers {bl['no_velocity_ground']} (tracks {bl['no_velocity_tracks']})")
             if "space_options" in x:
                 L.append(f"  - space options {x['space_options']}")
+            if "capable_types" in x:
+                L.append(f"  - capable types per need {x['capable_types']}")
         L.append("")
     return "\n".join(L) + "\n"
 

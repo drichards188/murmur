@@ -11,9 +11,14 @@ MCP tools an agent has. In every other family it does exactly what `OracleV3` do
   probe predicts an outage in the run (fewer satellites than the run needs at a sample), it holds
   the run's vehicle (`hold`, a safety command) 20 s before each outage sample while the run is
   under way, and sends the run again (the same patrol) 20 s after it when the run still has time.
-- **F15** (the stated `engagement`): every `ENGAGE_TICK_S`, once the hostile's track (by the
+- **F15** (the stated `engagement`): 150 s before the hostile reaches its holding point it brings
+  one loitering munition (the Switchblade, else the Magura) to orbit 700 to 1,000 m off it where
+  its link holds (`preposition`: a short span keeps the keep-out's reach regions small); every
+  `ENGAGE_TICK_S`, once the hostile's track (by the
   tracker's association) shows declared hostile and no nomination on it stands, it reads the
-  nomination form's dry run for the armed platforms and nominates the first that passes, with an
+  nomination form's dry run for the armed platforms (each attempt logged, `engage.attempt`), sends
+  any vehicle of ours the form names inside a keep-out 2.5 km off (`make_room`), and nominates the
+  first that passes, with an
   effect radius of 75 m, or 40 m when a contact that is not hostile by truth is within 175 m of
   the target; it waits while one is within 140 m (3D), and never nominates a track whose contact
   is not hostile by truth (restraint by truth), at most three times.
@@ -98,6 +103,8 @@ class OracleOps(OracleV3):
         self.contacts: dict[str, dict[str, Any]] = {}
         self.armed_units: dict[int, Any] = {}
         self.prepositioned: set[int] = set()
+        self.moved: dict[int, float] = {}
+        self.engager: int | None = None
 
     # ---- setup: F16's review looks -----------------------------------------------------------------
 
@@ -227,55 +234,82 @@ class OracleOps(OracleV3):
 
     # ---- F15 -----------------------------------------------------------------------------------------
 
+    def orbit_off(self, uid: int, u: Any, here: tuple[float, float], hold: tuple[float, float], radii: tuple[float, ...],
+                  why: str) -> bool:
+        """An orbit for `uid` `radii` off the holding point, nearest its position first: the first
+        whose link holds (line-of-sight and mesh links, the link map), on water for a boat, whose
+        dry run passes (at most six dry runs)."""
+        hx = to_xy(self.origin, hold)
+        u.xy = to_xy(self.origin, here)
+        cands = []
+        for r in radii:
+            for b in range(0, 360, 30):
+                c = (hx[0] + r * math.sin(math.radians(b)), hx[1] + r * math.cos(math.radians(b)))
+                cands.append((math.hypot(c[0] - u.xy[0], c[1] - u.xy[1]), c))
+        tried = 0
+        for _, c in sorted(cands):
+            if tried >= 6:
+                break
+            ll = to_ll(self.origin, c[0], c[1])
+            if u.spec.get("domain") == "surface" and not wet_point(self.world.name, (ll[0], ll[1])):
+                continue
+            if not self.link_holds(u, c):
+                continue
+            tried += 1
+            req = {"task": "orbit", "uids": [uid], "center": ll, "radius_m": u.orbit_m}
+            try:
+                pv = self.call("preview_intent", **_mcp_args(req))
+            except Exception:  # noqa: BLE001
+                continue
+            if not pv.get("passed"):
+                continue
+            out = self.propose(f"{why} (a scoring anchor placed from truth).", req,
+                               need="engage:" + str(self.st["engagement"]["target"]))
+            return out is not None
+        self.write("orbit_off.none", uid=uid, tried=tried, why=why)
+        return False
+
     def preposition(self, now: float, truth: dict[str, Any]) -> None:
         """Before the hostile's arrival at its holding point (truth: the stated point and time),
-        each armed platform that loiters (the Switchblade, the Magura) is sent to orbit 700 m off
-        it on its own side, so a nomination's span (the dispatch delay and the transit) is short
-        and the keep-out's reach regions, which grow with it, stay small."""
+        one armed platform that loiters (the Switchblade, else the Magura) is sent to orbit 700
+        to 1,000 m off it, so a nomination's span (the dispatch delay and the transit) is short and
+        the keep-out's reach regions, which grow with it, stay small. One only: a second loitering
+        there would be one of ours inside the first's keep-out."""
         e = self.st["engagement"]
-        if now < float(e.get("arrives_s") or 0.0) - 150.0:
+        if self.prepositioned or now < float(e.get("arrives_s") or 0.0) - 150.0:
             return
         hold = (float(e["hold"][0]), float(e["hold"][1]))
-        hx = to_xy(self.origin, hold)
         ours = {int(o["uid"]): o for o in truth.get("ours") or []}
-        for uid, u in self.armed_units.items():
-            if uid in self.prepositioned or u.platform == "fpv":
-                continue
+        order = {"switchblade": 0, "magura": 1}
+        for uid, u in sorted(self.armed_units.items(), key=lambda kv: order.get(kv[1].platform, 9)):
             o = ours.get(uid)
-            if o is None:
+            if u.platform not in order or o is None:
                 continue
             self.prepositioned.add(uid)
-            u.xy = to_xy(self.origin, (float(o["lon"]), float(o["lat"])))
-            # candidates 700 and 1,000 m off the point, nearest the platform first; the first
-            # whose link holds (line-of-sight and mesh links, the link map), on water for a boat,
-            # whose dry run passes
-            cands = []
-            for r in (700.0, 1000.0):
-                for b in range(0, 360, 30):
-                    c = (hx[0] + r * math.sin(math.radians(b)), hx[1] + r * math.cos(math.radians(b)))
-                    cands.append((math.hypot(c[0] - u.xy[0], c[1] - u.xy[1]), c))
-            tried = 0
-            for _, c in sorted(cands):
-                if tried >= 6:
-                    break
-                ll = to_ll(self.origin, c[0], c[1])
-                if u.spec.get("domain") == "surface" and not wet_point(self.world.name, (ll[0], ll[1])):
-                    continue
-                if not self.link_holds(u, c):
-                    continue
-                tried += 1
-                req = {"task": "orbit", "uids": [uid], "center": ll, "radius_m": u.orbit_m}
-                try:
-                    pv = self.call("preview_intent", **_mcp_args(req))
-                except Exception:  # noqa: BLE001
-                    continue
-                if not pv.get("passed"):
-                    continue
-                self.propose(f"Bring {u.callsign} to loiter off the hostile's holding point (a scoring anchor placed "
-                             "from truth).", req, need="engage:" + str(e["target"]))
-                break
-            else:
-                self.write("preposition.none", uid=uid, tried=tried)
+            if self.orbit_off(uid, u, (float(o["lon"]), float(o["lat"])), hold, (700.0, 1000.0),
+                              f"Bring {u.callsign} to loiter off the hostile's holding point"):
+                self.engager = uid
+                return
+
+    def make_room(self, now: float, opts: list[dict[str, Any]], truth: dict[str, Any]) -> None:
+        """Our vehicles the form names inside a keep-out (`keep_out_friendly`) are sent to orbit 2.5
+        km off the holding point, each at most once every 120 s (deconfliction before an effect)."""
+        e = self.st["engagement"]
+        hold = (float(e["hold"][0]), float(e["hold"][1]))
+        ours = {int(o["uid"]): o for o in truth.get("ours") or []}
+        engager = getattr(self, "engager", None)
+        names = sorted({int(it["id"]) for o in opts for it in (o.get("keep_outs") or {}).get("items") or []
+                        if it.get("blocks") and it.get("subject") == "vehicle" and str(it.get("id")).isdigit()})
+        for uid in names:
+            if uid == engager or now - self.moved.get(uid, -1e9) < 120.0 or uid not in ours:
+                continue
+            u = self.units.get(uid) or self.armed_units.get(uid)
+            if u is None:
+                continue
+            self.moved[uid] = now
+            o = ours[uid]
+            self.orbit_off(uid, u, (float(o["lon"]), float(o["lat"])), hold, (2500.0, 3000.0),
+                           f"Take {u.callsign} clear of the engagement's keep-out")
 
     def engage(self, now: float) -> None:
         e = self.st["engagement"]
@@ -323,6 +357,7 @@ class OracleOps(OracleV3):
                    options=[attempt_row(o) for o in opts])
         if pick is None:
             self.write("engage.none_passes", track=tid, blocking=keep_out_blockers(opts))
+            self.make_room(now, opts, truth)
             return
         req = {"task": "engage", "uids": [int(pick["uid"])], "extra": {
             "track_id": tid, "effect_radius_m": radius, "window_s": 600, "fallback": "return"}}
