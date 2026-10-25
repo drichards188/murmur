@@ -13,7 +13,13 @@ cargo run -p murmur-decide --bin murmur-scenarios -- sim/scenarios/engage       
 cargo run -p murmur-decide --bin murmur-scenarios -- --json sim/scenarios/engage     # one JSON object per line
 cargo run -p murmur-decide --bin murmur-scenarios -- --seed 7 --noise 3 --log-dir logs/engage sim/scenarios/engage
 cargo run -p murmur-decide --bin murmur-scenarios -- --rules 6 sim/scenarios/engage   # what rules 6 did
+cargo run -p murmur-decide --bin murmur-scenarios -- --reaches physical sim/scenarios/engage   # the physical model's sensor reaches
 ```
+
+The assessment's coverage reads each sensor's `range_m` (the legacy sensing model's reach, and
+every designed end's) unless `--reaches physical` (`RunOptions::reaches`) gives the facts the
+catalog's `physical_reach_m`, as the bridge's facts carry them in a run on the physical model
+(bd murmur-1u4, docs/SENSING.md "The decision engine's reaches").
 
 Exit status 0 when every scenario ended as designed (and replayed, and any tamper was
 caught), 1 otherwise, 2 on a load error. `cargo test -p murmur-decide --test engage` runs

@@ -79,6 +79,17 @@
 //!     criterion held in every mix but one, a keep-out 3 s ahead missing the approach and break
 //!     in the all-sensors mix 3 times by up to 102 m (the constant-velocity models' lag in a
 //!     hard turn seen only by two radars' bearings; docs/SENSING.md).
+//! 13. [`physical_held_out_three_cases`] on [`AIR_PHYSICAL_HELD_OUT_THREE_SEEDS`] was written then,
+//!     before anything was changed in the tracker for that failure (murmur-0b8, a manoeuvre
+//!     model): [`AIR_PHYSICAL_HELD_OUT_TWO_SEEDS`] are spent, the change is developed on the
+//!     tuning sets (101-220) only, and the new set is run once, after it
+//!     ([`air_calib_physical_held_out_three`]).
+//! 14. Its one run (2026-10-24) did not confirm the manoeuvre model: with it, the all-sensors
+//!     mix missed the weave once 3 s ahead (93 m, 1 of 5,503 samples); the tracker without it
+//!     held every criterion on the same set. The model was not adopted (it stays on the branch
+//!     `worktree-agent-a14a1c3af5ac2d6ac`, commit dc0964a); [`AIR_PHYSICAL_HELD_OUT_THREE_SEEDS`]
+//!     are spent. The tracker's physical calibration is judged again on a fresh set after the
+//!     sensing model's next changes.
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
@@ -109,8 +120,13 @@ pub const AIR_HELD_OUT_SEEDS: RangeInclusive<u64> = 221..=250;
 pub const AIR_PHYSICAL_HELD_OUT_SEEDS: RangeInclusive<u64> = 251..=280;
 /// The physical sensing model's second air held-out set's seeds
 /// ([`physical_held_out_two_cases`]): written before murmur-7vp's tracker and atmosphere changes,
-/// run once after them.
+/// run once after them. Spent (its run found the hard break's lag, murmur-0b8).
 pub const AIR_PHYSICAL_HELD_OUT_TWO_SEEDS: RangeInclusive<u64> = 281..=310;
+/// The physical sensing model's third air held-out set's seeds
+/// ([`physical_held_out_three_cases`]): written before murmur-0b8's manoeuvre model, run once
+/// after it. Spent (the tracker without the model held every criterion; the model was not
+/// adopted).
+pub const AIR_PHYSICAL_HELD_OUT_THREE_SEEDS: RangeInclusive<u64> = 311..=340;
 /// The rules the tracker before this calibration was judged under (the keep-out's regions).
 const BEFORE_RULES: u32 = 12;
 
@@ -577,6 +593,58 @@ pub fn physical_held_out_two_cases() -> Vec<AirCase> {
             |_, len| fly(len, (8000.0, 8000.0, 225.0, 75.0), 7.0, 3.0, |t, _, _, _| if t < 100.0 { (225.0, 75.0) } else { (85.0, 90.0) }),
         ),
         air("a far transit at 85 m/s, 18 to 24 km out, 3500 m", "far transit", "light_aircraft", 3500.0, straight(15000.0, -14000.0, 10.0, 85.0)),
+    ]
+}
+
+/// The physical sensing model's third air held-out set (murmur-0b8, a manoeuvre model in the
+/// tracker; see the module doc): written before any change for it, the same classes as
+/// [`physical_held_out_two_cases`] in yet other variants; run once, on
+/// [`AIR_PHYSICAL_HELD_OUT_THREE_SEEDS`], when the change is done, never tuned on.
+pub fn physical_held_out_three_cases() -> Vec<AirCase> {
+    vec![
+        air("straight 60 m/s north-north-west, past the USV, 1000 m", "straight", "light_aircraft", 1000.0, straight(4000.0, -8000.0, 340.0, 60.0)),
+        air("straight 75 m/s east by north, 6 to 10 km north of the USV, 1800 m", "straight", "light_aircraft", 1800.0, straight(-9000.0, 3000.0, 80.0, 75.0)),
+        air("loitering 850 m at 45 m/s, 700 m", "loitering", "light_aircraft", 700.0, circle(1500.0, -1000.0, 850.0, 45.0, true)),
+        air("loitering 600 m at 50 m/s anticlockwise, 1300 m", "loitering", "light_aircraft", 1300.0, circle(-3000.0, 4000.0, 600.0, 50.0, false)),
+        air("small UAS circling 250 m at 17 m/s, 110 m", "loitering", "unknown_uas", 110.0, circle(-500.0, 2500.0, 250.0, 17.0, true)),
+        air(
+            "a trapezoid route at 45 m/s, turns at 6 deg/s, 600 m",
+            "route",
+            "light_aircraft",
+            600.0,
+            route(vec![(-4000.0, -1500.0), (4000.0, -1500.0), (2500.0, 3000.0), (-2500.0, 3000.0)], 45.0, 6.0),
+        ),
+        air(
+            "130 s straight at 55 m/s, then 110 degrees left at 7 deg/s, 800 m",
+            "one turn",
+            "light_aircraft",
+            800.0,
+            one_turn(6000.0, 2000.0, 260.0, 55.0, 130.0, -110.0, 7.0),
+        ),
+        air("weave 50 m/s, 35 degrees either way over 30 s, 900 m", "weave", "light_aircraft", 900.0, weave(-7000.0, -3000.0, 70.0, 50.0, 35.0, 30.0)),
+        air(
+            "random turns at 55 m/s, 40 to 160 degrees at 6 deg/s every 20 to 50 s, 800 m",
+            "random turns",
+            "light_aircraft",
+            800.0,
+            random_turns(500.0, 1500.0, 55.0, (20.0, 50.0), (40.0, 160.0), 6.0, 0x2B),
+        ),
+        air("55 to 75 m/s at 80 s, then 45 at 180 s, at 2 m/s^2, straight, 1100 m", "speed change", "light_aircraft", 1100.0, |_, len| {
+            fly(len, (-6000.0, -4000.0, 40.0, 55.0), 0.0, 2.0, |t, _, _, _| (40.0, if t < 80.0 { 55.0 } else if t < 180.0 { 75.0 } else { 45.0 }))
+        }),
+        air("helicopter at 30 m/s north-east, hovers 60 s from 2.5 m/s^2, then 35 m/s west, 220 m", "hover and go", "helicopter", 220.0, |_, len| {
+            fly(len, (-2000.0, -2500.0, 45.0, 30.0), 25.0, 2.5, |t, _, _, _| {
+                if t < 85.0 { (45.0, 30.0) } else if t < 145.0 { (45.0, 0.0) } else { (270.0, 35.0) }
+            })
+        }),
+        air(
+            "an approach north-west at 80 m/s, then a break 130 degrees right at 7.5 deg/s to 90 m/s at 2.5 m/s^2, 900 m",
+            "approach and break",
+            "light_aircraft",
+            900.0,
+            |_, len| fly(len, (7000.0, -6000.0, 315.0, 80.0), 7.5, 2.5, |t, _, _, _| if t < 110.0 { (315.0, 80.0) } else { (85.0, 90.0) }),
+        ),
+        air("a far transit at 90 m/s north-north-east, 16 to 22 km out, 3000 m", "far transit", "light_aircraft", 3000.0, straight(-19000.0, -9000.0, 20.0, 90.0)),
     ]
 }
 
@@ -1156,6 +1224,20 @@ fn air_calib_physical_held_out_two() {
     eprintln!("--- the criteria on the physical model: {}", if bad.is_empty() { "all hold".to_string() } else { format!("\n{}", bad.join("\n")) });
 }
 
+/// The physical sensing model's third air held-out set (murmur-0b8, a manoeuvre model in the
+/// tracker): [`physical_held_out_three_cases`] on [`AIR_PHYSICAL_HELD_OUT_THREE_SEEDS`], written
+/// before the change, run once after it, the same criteria reported (`cargo test -p murmur-bridge
+/// --release -- --ignored --exact tracks::tests::calib_air::air_calib_physical_held_out_three
+/// --nocapture`). A record, not a target: a later change is judged on a set written for it.
+#[test]
+#[ignore]
+fn air_calib_physical_held_out_three() {
+    let mut table = Vec::new();
+    let bad = failures_on(&physical_held_out_three_cases(), AIR_PHYSICAL_HELD_OUT_THREE_SEEDS, &mut table, true);
+    eprintln!("{}", table.join("\n"));
+    eprintln!("--- the criteria on the physical model: {}", if bad.is_empty() { "all hold".to_string() } else { format!("\n{}", bad.join("\n")) });
+}
+
 /// The same criteria on the tuning sets (what the air constants were chosen on).
 #[test]
 fn on_the_air_tuning_sets_the_tracker_is_honest_and_a_keep_out_holds() {
@@ -1502,8 +1584,9 @@ fn air_physical_pointing() {
 /// air_physical_misses -- --ignored --nocapture`; the all-sensors mix, `AIR_MIX=eo` radar and
 /// EO/IR, `AIR_MIX=radars` the all-sensors mix's radars alone; `AIR_MODEL=legacy` the legacy
 /// model; `AIR_VEL=1` the seconds a velocity given is off by more than 4 of its sigmas instead).
-/// The tuning sets; `AIR_SET=physical_held_out` and `physical_held_out_two` explain the physical
-/// held-out sets' one runs after them, never for tuning.
+/// The tuning sets; `AIR_SET=physical_held_out`, `physical_held_out_two` and
+/// `physical_held_out_three` explain the physical held-out sets' one runs after them, never for
+/// tuning.
 #[test]
 #[ignore]
 fn air_physical_misses() {
@@ -1511,6 +1594,7 @@ fn air_physical_misses() {
     let sets = match std::env::var("AIR_SET").as_deref() {
         Ok("physical_held_out") => vec![(physical_held_out_cases(), AIR_PHYSICAL_HELD_OUT_SEEDS)],
         Ok("physical_held_out_two") => vec![(physical_held_out_two_cases(), AIR_PHYSICAL_HELD_OUT_TWO_SEEDS)],
+        Ok("physical_held_out_three") => vec![(physical_held_out_three_cases(), AIR_PHYSICAL_HELD_OUT_THREE_SEEDS)],
         _ => tuning_sets(),
     };
     let prefix = std::env::var("AIR_CASE").unwrap_or_default();
@@ -1696,6 +1780,7 @@ fn the_air_seed_sets_are_disjoint_from_each_other_and_the_surface_sets() {
         AIR_HELD_OUT_SEEDS,
         AIR_PHYSICAL_HELD_OUT_SEEDS,
         AIR_PHYSICAL_HELD_OUT_TWO_SEEDS,
+        AIR_PHYSICAL_HELD_OUT_THREE_SEEDS,
     ];
     for (i, a) in sets.iter().enumerate() {
         for b in &sets[i + 1..] {

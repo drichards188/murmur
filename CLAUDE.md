@@ -257,15 +257,20 @@ meaningful. Decision and command, not weapons.
   `legacy`, chosen by the contacts scenario's `[sensing] model` or `MURMUR_SENSE_MODEL` (which
   wins); v1 and v2 worlds and the eval stacks are pinned to `legacy` by that variable
   (`process_spec`, `fullstack.stack_env`, `eval/stack.py`), never in their contacts files (the v1 generator's digests hold them byte for
-  byte). Under `physical` the catalog's `range_m` is not a sensor's reach (the decision
-  engine still reads it; the model reads the entry's other fields or placeholders from it), a
+  byte). Under `physical` the catalog's `range_m` is not a sensor's reach (the model reads the
+  entry's other fields or placeholders from it; the decision engine's assessment reads the
+  generated `physical_reach_m`, bd murmur-1u4: a change to the physical model or a sensor's
+  figures that moves one fails `tracks::tests::reaches` until `cargo test -p murmur-bridge
+  write_physical_reaches -- --ignored` rewrites the catalog's lines), a
   camera sees only where its payload manager points and takes seconds a look (tau 3.4 / P s,
   1 s to settle after each slew: a test expecting it to see something within a few ticks
   fails), and the sun comes from the truth message's clock: a test at the tests' `T0`
   (1,000,000 s, 1970) is near dawn at the Gate, so state `sun_elevation_deg` in its conditions.
   Its held-out calibration runs (`calib_physical`, `air_calib_physical`, and its own air sets
-  `air_calib_physical_held_out`, seeds 251-280, and `air_calib_physical_held_out_two`, 281-310,
-  each run once for murmur-7vp; 221-250 and 251-280 are spent for it) are evaluations: never
+  `air_calib_physical_held_out`, seeds 251-280, `air_calib_physical_held_out_two`, 281-310, each
+  run once for murmur-7vp, and `air_calib_physical_held_out_three`, 311-340, run once for
+  murmur-0b8, whose manoeuvre model it did not confirm; 221-340 are spent for it, so the next
+  physical air check needs a fresh set from 341) are evaluations: never
   tune the sensing model or the tracker on them. Mind `cargo test calib_physical -- --ignored`:
   the name matches every one of them (use `--exact`). A physical radar's plot carries its scan
   (`Detection::scan_s`): the tracker time-aligns such bearings and holds a ranging fix 6 s on

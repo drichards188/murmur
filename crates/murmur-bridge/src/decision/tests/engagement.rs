@@ -2681,3 +2681,80 @@ async fn a_restart_inside_the_assessment_window_still_waits_for_it() {
     assert!(body["detail"].as_str().unwrap_or_default().contains("would have ended"), "{body}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// bd murmur-1u4: the decision facts carry our sensors' reaches under the sensing model in
+/// force: on the physical one (the default, before any truth too) the catalog's
+/// `physical_reach_m` on each sensor that has them, on the legacy one (named by the scenario or
+/// by `MURMUR_SENSE_MODEL`) `range_m` alone, as every record before them.
+#[tokio::test(start_paused = true)]
+async fn the_decision_facts_carry_the_reaches_of_the_sensing_model_in_force() {
+    let dir = std::env::temp_dir().join(format!("murmur-reaches-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let manifest = dir.join("fleet.json");
+    std::fs::write(
+        &manifest,
+        json!({ "vehicles": [{ "uid": 2, "sysid": 2, "port": 2, "platform": "seahunter", "callsign": "USV 2" }] }).to_string(),
+    )
+    .expect("manifest");
+    let world = || {
+        let w = World::new(Config {
+            base_port: 0,
+            http_port: 0,
+            default_ports: 0,
+            manifest: manifest.clone(),
+            platforms: root().join("sim/platforms.toml"),
+            root: root(),
+        });
+        w.load_manifest();
+        w
+    };
+    let tracks = |model| {
+        let settings = crate::tracks::Settings {
+            seed: Some(1),
+            misclassification_rate: Some(0.0),
+            eval_truth: false,
+            drop_s: 180.0,
+            model,
+            sim_token: None,
+        };
+        let cat = crate::tracks::sensing::SensorCatalog::load(&root().join("sim/platforms.toml")).expect("sensors");
+        Arc::new(Tracks::new(cat, settings))
+    };
+    // which of the USV's sensors (radar, EO/IR, AIS, sonar) carry reaches in the facts now
+    let reaches = |e: &Erig| -> Vec<bool> {
+        let snap = e.r.d.snapshot();
+        let p = snap.vehicles.get(&murmur_decide::Uid::new("2")).and_then(|v| v.platform.clone()).expect("its platform");
+        p.sensors.iter().map(|s| s.reach_m.is_some()).collect()
+    };
+    let truth = |e: &Erig, model| {
+        let msg = TruthMessage {
+            t: e.now_s(),
+            s: e.now_s(),
+            seq: 0,
+            scenario: "test".into(),
+            seed: 1,
+            sensing: Sensing { misclassification_rate: 0.0, model: Some(model), ..Default::default() },
+            contacts: Vec::new(),
+            acts: Vec::new(),
+        };
+        e.tracks.on_truth_with(msg, &[], e.now_s()).expect("sensing");
+    };
+    let physical = vec![true, true, false, true];
+    let legacy = vec![false; 4];
+
+    // no MURMUR_SENSE_MODEL: the default (physical) until a scenario names one
+    let e = engage_rig_on(Some((world(), tracks(None))));
+    assert_eq!(reaches(&e), physical);
+    truth(&e, SensingModel::Legacy);
+    assert_eq!(reaches(&e), legacy);
+    truth(&e, SensingModel::Physical);
+    assert_eq!(reaches(&e), physical);
+
+    // MURMUR_SENSE_MODEL=legacy (the v1 and v2 worlds, the Phase G stacks): from the start and
+    // whatever a scenario names
+    let e = engage_rig_on(Some((world(), tracks(Some(SensingModel::Legacy)))));
+    assert_eq!(reaches(&e), legacy);
+    truth(&e, SensingModel::Physical);
+    assert_eq!(reaches(&e), legacy);
+    let _ = std::fs::remove_dir_all(&dir);
+}

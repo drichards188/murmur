@@ -643,6 +643,34 @@ group. Dates are 2026.
   sensors (radar, EO/IR, sonar by domain; not AIS or ESM) reach the effect point at their
   nominal range cover it. Detected after the effect (beyond a grace for the truth side's
   tick): persists; covered `assess_dwell_s` without a detection: ceased; else unknown.
+- **In a run on the physical sensing model, the assessment's reaches are that model's own**
+  (10-24, bd murmur-1u4, the owner's decision; docs/SENSING.md, "The decision engine's
+  reaches"). `range_m` was more than 2x off the physical model for about 15 sensors, so the
+  engine's idea of what our sensors cover was out of step with what they detect. The engine
+  reads a reach in one place, the assessment's coverage (its other reasoning about our sensors
+  is by type: altitude backing, classification, never a range). The catalog now carries
+  `physical_reach_m` beside the sensors: per radar, EO/IR and sonar and per domain it confirms
+  in, how far out the physical model, pointed at a contact of no known kind of that domain (the
+  model's default signature, where the contacts process puts one) in the catalog table's
+  conditions (clear day, sea state 2, the sonar reference), detects it at least half the time
+  all the way. Derived by a checked-in generator, never tuned (W3); a test holds the catalog to
+  it. Why the inner edge, not `predict::ranges`'s bisection: for an airborne radar on a small
+  surface contact the sea clutter rule makes detection come and go near the nadir, and a
+  crossing beyond a gap would claim coverage where the contact is not seen; for an assessment
+  that calls "ceased" on no detection, overclaiming coverage is the dangerous error. Why a
+  contact of no known kind, not the likeliest target: `range_m` was a nominal contact's too, and
+  a domain's reference should not be a choice of threat (the table gives a small fast boat and
+  a small drone beside it). Design: the facts carry the reaches only in a run on the physical
+  model (`Catalog::reaching`, chosen by the bridge from the sensing model in force); the engine
+  reads `reach_m` when the facts carry it, `range_m` otherwise. So the legacy model's runs (v1,
+  v2, G1, Phase G, all pinned by `MURMUR_SENSE_MODEL=legacy`) log and decide byte for byte as
+  before, and replay needs neither catalog nor model: the facts are logged with each decision.
+  No rules version (the rule is unchanged, only its input; `TrackFacts` and `before_oho`
+  untouched). Rejected: rewriting `range_m` (it is the legacy model's reach and every v1/v2
+  record's), and one reach per sensor (a radar's reach on a 1 m^2 aircraft and a 100 m^2
+  vehicle differ threefold or more, and on a small boat in sea clutter by far more). The 94 scenarios end as designed on either reach (on the physical
+  one three assessments name a camera where they named a radar); the keep-out evaluation does
+  not read a reach.
 - **A silent vehicle's estimate is situational awareness, not a decision input** (10-04,
   murmur-4y9). The bridge's `estimate` module projects a silent vehicle from its last report
   (task, mode, velocity, else stationary) with a region that grows with the silence, and

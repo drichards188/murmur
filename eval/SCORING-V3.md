@@ -271,6 +271,13 @@ its cells, decided before any run.
 
 Each was made to build and run the dev check; each has an alternative.
 
+**The owner's decision (2026-10-24)**: every recommendation below is accepted, to be iterated
+later ("we can iterate later"), with four qualifications. Choices 3 (subsurface met at recognition)
+and 10 (F4 from inside the bay) are revisited after the sensing model's sonar and payload-manager
+fixes, since both partly answered those defects. Choice 11 stands for judging, and night drone
+identification is reported as a capability gap of the fleet, never hidden. Choice 12 (orders that
+name an altitude) is deferred: it changes the order format and the decision rules.
+
 1. **Per-domain grace** (2.1): surface 60 s, air 30 s, ground 60 s, subsurface 300 s. *Alternative*:
    one grace for every domain (v2's 60 s, which no sonar can meet), or a per-contact grace from its
    own speed (the time it takes to cover 600 m). **Recommend** the per-domain values: they are what
