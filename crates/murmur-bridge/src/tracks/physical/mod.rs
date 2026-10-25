@@ -21,7 +21,9 @@
 //!   wrong call is likelier at recognition.
 //! - **Radar** ([`radar`]): one Swerling 1 draw per scan as the beam passes the contact, the
 //!   fourth-root law about the radar's reference, the two-ray model for low targets, sea
-//!   clutter by sea state; 30 m or 1 % of range, and 1 degree in bearing.
+//!   clutter in the radar's range cell by grazing angle, sea state, band and wind (a radar with a
+//!   Doppler mode sees a contact moving clear of it); 30 m or 1 % of range, and 1 degree in
+//!   bearing.
 //! - **AIS** and **ESM** ([`rf`]): reports at the transponder class's interval within the VHF
 //!   horizon, decoded by slot load; emitters heard over the receiver's sensitivity in radio
 //!   line of sight.
@@ -669,7 +671,7 @@ impl Engine {
             } else {
                 visible_height_m(t.top_msl, t.vis_height_m, p.ground_m, h_s, K_RADIO)
             };
-            let sea = (t.c.domain == Domain::Surface || t.c.domain == Domain::Subsurface).then_some(cx.cond.sea_state);
+            let sea = (t.c.domain == Domain::Surface || t.c.domain == Domain::Subsurface).then(|| sea_for(&cx.cond, t.c, &p));
             let pd = radar::pd(r, t.sig.rcs_m2, p.slant_m, p.ground_m, h_s, h_t, sea);
             let scan = k as i64;
             if pd <= 0.0 || uniform(st.seed, scan, o.uid, &t.c.id, salt(si, SensorType::Radar, 1)) >= pd {
@@ -1259,6 +1261,14 @@ impl Engine {
             .min_by(|a, b| a.2.total_cmp(&b.2))
             .map(|(c, _, _)| (*c).clone())
     }
+}
+
+/// The sea a surface contact is seen against by a radar at the pair's end (sea clutter): the sea
+/// state and the wind, and the contact's own speed along the line of sight (its course and speed
+/// over the ground, the line of sight's depression taken into account; a Doppler mode's).
+pub fn sea_for(cond: &Conditions, c: &ContactTruth, p: &Pair) -> radar::Sea {
+    let radial = c.speed_mps * (c.course_deg.to_radians() - p.bearing).cos() * p.el.cos();
+    radar::Sea { state: cond.sea_state, wind_mps: cond.wind_mps, radial_mps: radial }
 }
 
 /// What one step reads besides the state.

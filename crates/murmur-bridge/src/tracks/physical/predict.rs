@@ -164,7 +164,7 @@ pub fn predict(a: &Ask) -> Prediction {
             } else {
                 visible_height_m(t.top_msl, t.vis_height_m, p.ground_m, h_s, K_RADIO)
             };
-            let sea = matches!(t.c.domain, Domain::Surface | Domain::Subsurface).then_some(cond.sea_state);
+            let sea = matches!(t.c.domain, Domain::Surface | Domain::Subsurface).then(|| super::sea_for(&cond, t.c, &p));
             out.p_detect = radar::pd(r, t.sig.rcs_m2, p.slant_m, p.ground_m, h_s, h_t, sea);
             out.revisit_s = Some(r.scan_s);
         }

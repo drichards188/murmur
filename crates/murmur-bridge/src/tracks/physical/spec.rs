@@ -97,14 +97,20 @@ pub struct PhysicalFields {
     /// Radar or scanning sonar: one revolution, s.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scan_s: Option<f64>,
-    /// Radar azimuth beamwidth, degrees, and range cell, m (sea clutter).
+    /// Radar azimuth beamwidth, degrees, and range cell, m: its range resolution, `c tau / 2`
+    /// after pulse compression (sea clutter).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub beam_deg: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cell_m: Option<f64>,
-    /// Radar frequency, GHz (the two-ray model's wavelength).
+    /// Radar frequency, GHz (the two-ray model's wavelength, sea clutter's band).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub band_ghz: Option<f64>,
+    /// Radar: a Doppler (moving target) mode over the sea, its own motion compensated: a target
+    /// moving along its line of sight faster than the sea clutter's Doppler band is limited by
+    /// the noise alone (`radar::pd`). None: a non-coherent radar (a navigation radar's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doppler: Option<bool>,
     /// Sonar: passive or active, its frequency, its reference ranges (Pd 0.5 in the reference
     /// environment: 50 m of water, 5 m/s wind, moderate shipping) by contact kind, and its
     /// instrumented range.
@@ -182,6 +188,10 @@ pub struct RadarSensor {
     pub beam_rad: f64,
     pub cell_m: f64,
     pub lambda_m: f64,
+    /// Its band, GHz (sea clutter's frequency dependence).
+    pub ghz: f64,
+    /// A Doppler mode over the sea (the catalog's `doppler`).
+    pub doppler: bool,
     /// Measures elevation too (the catalog's `height`).
     pub height: bool,
     pub placeholder: bool,
@@ -291,13 +301,16 @@ pub fn resolve(spec: &SensorSpec, airborne: bool) -> Resolved {
         }
         SensorType::Radar => {
             let placeholder = f.r50_m.is_none();
+            let ghz = f.band_ghz.unwrap_or(9.4);
             Resolved::Radar(RadarSensor {
                 r50_m: f.r50_m.unwrap_or(spec.range_m),
                 rcs_ref_m2: f.rcs_ref_m2.unwrap_or(PLACEHOLDER_RCS_M2),
                 scan_s: f.scan_s.unwrap_or(if airborne { 5.0 } else { 2.5 }),
                 beam_rad: f.beam_deg.unwrap_or(1.2).to_radians(),
                 cell_m: f.cell_m.unwrap_or(if airborne { 15.0 } else { 37.0 }),
-                lambda_m: 0.299_792_458 / f.band_ghz.unwrap_or(9.4),
+                lambda_m: 0.299_792_458 / ghz,
+                ghz,
+                doppler: f.doppler.unwrap_or(false),
                 height: spec.height,
                 placeholder,
             })

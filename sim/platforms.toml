@@ -95,19 +95,22 @@ space_class_alt = "ku-geo"
 sidc = "SFAPMFQ--------"
 # physical model:
 #   radar: EISS SAR/GMTI to 200 km ([31], secondary) taken as Pd 0.5 on a 10^4 m^2 ship, as the
-#     MQ-9B's Lynx [E]; revisit at the W2 cap of 5 s (airborne search 6-12 rpm [E]); beam and
-#     cell as the Lynx entry's, X band [E here].
+#     MQ-9B's Lynx [E]; revisit at the W2 cap of 5 s (airborne search 6-12 rpm [E]); X band
+#     [E here]. Sea clutter (murmur-qlt): a 1 m range cell, the ISS's wide-area search resolution
+#     ([75]: 1 m over 40,000 nmi^2 a day, 0.33 m spots); a 3 degree beam [E here: an aperture of
+#     about 0.7 m at X band, 1.2 lambda / D]; a Doppler mode over the sea, its GMTI ([31]; its own
+#     motion compensated [E]).
 #   eo_ir: EO NIIRS 6 and IR 5.5 ([31]) at the research's IFOVs, 10 and 30 urad [E] (a vehicle
 #     identified at about 19 and 6 km): a step-stare imager without zoom, 1,024 px visible and
 #     640 px MWIR [E here], fields px x IFOV; slew 60 deg/s [E here, the research's turret rate].
 #   esm: to the radio horizon (about 550 km from 18 km [E]); -90 dBm, the sensitive end of the
 #     research's -60 to -90 [E]; 1 degree, an interferometer's ([29]).
 sensors = [
-  { type = "radar", range_m = 200000, guess = true, r50_m = 200000, rcs_ref_m2 = 10000, scan_s = 5, beam_deg = 3, cell_m = 15, band_ghz = 9.6 },
+  { type = "radar", range_m = 200000, guess = true, r50_m = 200000, rcs_ref_m2 = 10000, scan_s = 5, beam_deg = 3, cell_m = 1, band_ghz = 9.6, doppler = true },
   { type = "eo_ir", range_m = 50000, guess = true, slew_dps = 60, channels = [{ band = "day", wide_deg = 0.59, px = 1024, blur_urad = 10 }, { band = "mwir", wide_deg = 1.1, px = 640, blur_urad = 30 }] },
   { type = "esm", range_m = 300000, guess = true, s_min_dbm = -90, bearing_deg = 1 },
 ]
-physical_reach_m = { radar = { air = 9320, ground = 60700, surface = 420 }, eo_ir = { air = 184430, ground = 142300, surface = 198140 } }
+physical_reach_m = { radar = { air = 9320, ground = 60700 }, eo_ir = { air = 184430, ground = 142300, surface = 198140 } }
 protocol = "stanag4586"
 protocol_note = "Interop path via a STANAG 4586 vehicle-specific module; the real ground segment is the manufacturer's own"
 authenticity = "JSBSim HALE airframe, a 4586 interface and SATCOM latency and bandwidth"
@@ -133,15 +136,21 @@ space_class = "wgs"
 space_class_alt = "ku-geo"
 sidc = "SFAPMFQ--------"
 # physical model: the Lynx radar ([34]: maritime to 300 km; r50 scaled from 300 km at 10^4 m^2 [E];
-# its revisit at the W2 cap of 5 s, the research's 6-12 rpm [E]; Ku band) and the MX-20 turret
+# its revisit at the W2 cap of 5 s, the research's 6-12 rpm [E]; Ku band, 15.2 to 18.2 GHz; sea
+# clutter, murmur-qlt: a 1 m range cell [E: Lynx resolves 0.1 to 3 m over its 3 GHz band [34];
+# its maritime search's resolution is not published, taken as a sea-search waveform's for small
+# targets, 0.8 to 0.95 m [74], and the RQ-4 ISS's wide-area search, 1 m [75]]; a 3 degree beam [E:
+# an aperture of about 0.4 m within its 19.5 in gimbal [34], 1.2 lambda / D at 16.7 GHz]; a
+# Doppler mode over the sea [two channels, GMTI and DMTI to about 1 mph over land, moving target
+# tracking at sea: [34,76]; its own motion compensated]) and the MX-20 turret
 # ([3]: MWIR 640 px at 18.2 to 0.24 degrees, spotter 1080p at 1.07 to 0.2, 57 deg/s; blur floors
 # [E] 20 urad MWIR and 7 urad visible). Research references in docs/research/sensors.md.
 sensors = [
-  { type = "radar", range_m = 100000, guess = true, r50_m = 300000, rcs_ref_m2 = 10000, scan_s = 5, beam_deg = 3, cell_m = 15, band_ghz = 16.7 },
+  { type = "radar", range_m = 100000, guess = true, r50_m = 300000, rcs_ref_m2 = 10000, scan_s = 5, beam_deg = 3, cell_m = 1, band_ghz = 16.7, doppler = true },
   { type = "eo_ir", range_m = 40000, guess = true, slew_dps = 57, channels = [{ band = "mwir", wide_deg = 18.2, narrow_deg = 0.24, px = 640, blur_urad = 20 }, { band = "day", wide_deg = 1.07, narrow_deg = 0.2, px = 1920, blur_urad = 7 }] },
   { type = "ais", range_m = 150000, guess = true },
 ]
-physical_reach_m = { radar = { air = 29130, ground = 94670, surface = 440 }, eo_ir = { air = 107840, ground = 87240, surface = 87800 } }
+physical_reach_m = { radar = { air = 29130, ground = 94670 }, eo_ir = { air = 107840, ground = 87240, surface = 87800 } }
 protocol = "stanag4586"
 protocol_note = "GA-ASI's ground control station is STANAG 4586-based"
 authenticity = "JSBSim MALE airframe plus 4586 (matches GA-ASI's 4586-based GCS)"
@@ -173,7 +182,10 @@ space_class_alt = "ku-geo"
 sidc = "SFAPMFQ--------"
 # physical model: nothing is published (research).
 #   radar: an AESA fire-control radar (3D: `height`), fighter class, about 100 km against 1 m^2
-#     [E]; revisit at the W2 cap of 5 s [E]; 3 degree beam, 15 m cell, X band [E here].
+#     [E]; revisit at the W2 cap of 5 s [E]; X band [E here]. Sea clutter (murmur-qlt): a 1 m
+#     range cell [E: as the MQ-9B's and the RQ-4's, an AESA's sea-surface search at SAR-class
+#     resolution]; a 3 degree beam [E here: a fighter's aperture of about 0.7 m at X band]; a
+#     Doppler mode over the sea [E: a pulse-Doppler radar, its own motion compensated].
 #   eo_ir: a pod like the MX-15 [E] ([35]: MWIR 26.7 to 0.54 degrees, spotter 1.1 to 0.43, 60
 #     deg/s), 640 px MWIR and 1,920 px spotter [E here]; blur floors 20 urad MWIR [E, a 15-20 in
 #     turret] and 10 visible [E, a large turret's 5-10] (a vehicle identified at about 10 km in
@@ -181,11 +193,11 @@ sidc = "SFAPMFQ--------"
 #   esm: to the radio horizon (about 430 km from 11 km [E]); -80 dBm, the middle of the
 #     research's -60 to -90 [E]; 2 degrees, installed ([30]).
 sensors = [
-  { type = "radar", range_m = 150000, guess = true, height = true, r50_m = 100000, rcs_ref_m2 = 1, scan_s = 5, beam_deg = 3, cell_m = 15, band_ghz = 10 },
+  { type = "radar", range_m = 150000, guess = true, height = true, r50_m = 100000, rcs_ref_m2 = 1, scan_s = 5, beam_deg = 3, cell_m = 1, band_ghz = 10, doppler = true },
   { type = "eo_ir", range_m = 30000, guess = true, slew_dps = 60, channels = [{ band = "mwir", wide_deg = 26.7, narrow_deg = 0.54, px = 640, blur_urad = 20 }, { band = "day", wide_deg = 1.1, narrow_deg = 0.43, px = 1920, blur_urad = 10 }] },
   { type = "esm", range_m = 200000, guess = true, s_min_dbm = -80, bearing_deg = 2 },
 ]
-physical_reach_m = { radar = { air = 99540, ground = 316410, surface = 400 }, eo_ir = { air = 143090, ground = 112900, surface = 126350 } }
+physical_reach_m = { radar = { air = 99540, ground = 316410 }, eo_ir = { air = 143090, ground = 112900, surface = 126350 } }
 protocol = "uci"
 protocol_note = "A-GRA, UCI and OMS are controlled distribution; stays on the generic intent API"
 authenticity = "A-GRA/UCI interface plus a JSBSim jet model"
@@ -764,10 +776,10 @@ space_class_alt = "ku-geo"
 sidc = "SFAPMFQ--------"
 # the base platform's sensors without EO/IR (its radar's physical figures too, as [mq9b])
 sensors = [
-  { type = "radar", range_m = 100000, guess = true, r50_m = 300000, rcs_ref_m2 = 10000, scan_s = 5, beam_deg = 3, cell_m = 15, band_ghz = 16.7 },
+  { type = "radar", range_m = 100000, guess = true, r50_m = 300000, rcs_ref_m2 = 10000, scan_s = 5, beam_deg = 3, cell_m = 1, band_ghz = 16.7, doppler = true },
   { type = "ais", range_m = 150000, guess = true },
 ]
-physical_reach_m = { radar = { air = 29130, ground = 94670, surface = 440 } }
+physical_reach_m = { radar = { air = 29130, ground = 94670 } }
 protocol = "stanag4586"
 protocol_note = "GA-ASI's ground control station is STANAG 4586-based"
 authenticity = "JSBSim MALE airframe plus 4586 (matches GA-ASI's 4586-based GCS)"
