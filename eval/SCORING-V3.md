@@ -4,7 +4,9 @@ Status: **draft, 2026-10-23** (bd murmur-1z6.6, first part; docs/WORLD-V3-PLAN.m
 approved by the owner). Nothing here is frozen and nothing is pre-registered: this draft defines the
 needs and labels across every domain, the first seven situation families and the anchors the
 feasibility checks need, reports the first dev check (section 11), and lists the definitional choices
-the owner has to make (section 9). The ladder and the perturbations are C2's; the validation, the
+the owner has to make (section 9). **Second part, 2026-10-25**: families F7-F13 (6.1), the labels
+they need (2.2's spoofed AIS, 2.4's fault needs in every domain, choices 14-21) and their dev check
+(section 12). The ladder and the perturbations are C2's; the validation, the
 pre-registration and the blind check are D's. **Scoring v2 is frozen**: its labels (version 2), its
 families, its oracle and every v1 and v2 golden and record are unchanged; v3 is built beside it
 (`eval/headless/v3/`), importing v2's code where it is unchanged.
