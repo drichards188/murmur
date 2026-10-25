@@ -309,7 +309,7 @@ grace ends inside 1,200 s); a boat given another speed than F1's keeps F1's lead
 | F10 | rising sea state | one or two small boats on the surface | the sea from the world's top three states (Golden Gate 3 to 5, San Diego 2 to 4), the wind from the upper half of its range; F1's boat at a speed the sea allows (15 m/s at most in sea state 3, 12 in 4, 10 in 5, [E here]); with p 0.5 a second, slower boat (3 to 6 m/s) from the other approach |
 | F11 | link trouble | one: surface or air (RF), subsurface (acoustic) | p 0.6 an **RF jammer** over the need's way inside the circle (1.2 to 2.5 km, from 60 to 240 s before the need, for 400 to 800 s: line-of-sight and mesh links jammed, SATCOM half lost and LEO terminals on an Iridium-class 700 ms, both GUESS); else the **acoustic channel closed** over the AUV's survey line from 200 to 400 s before F4's UUV, for 150 to 300 s: REMUS falls silent, surfaces on its 120 s timer, reports at the surface over its Iridium-class link, orders to it waiting in the Queue meanwhile |
 | F12 | GNSS jam or spoof | one: surface (0.4), air (0.3), ground (0.3) | p 0.65 a GNSS **jammer** denying the fix in a circle 0.8 to 2 km over the need's way, from 60 to 240 s before the need to the end (copters and the airship land, boats and UGVs hold, fixed wings dead-reckon, subs keep their DVL); else a **spoofer** walking the believed position of the standing vehicle best placed for the need 1 to 3 m/s off, up to 300 to 1,000 m, from 30 to 200 s before it |
-| F13 | vehicle faults across domains | one: surface (0.4), air (0.3), ground (0.15), subsurface (0.15) | a **breakdown** of the vehicle flying the agent's first look with the need's sensor (v2's stuck vehicle, 5 to 60 s after its dispatch; none by the need's deadline, the standing vehicle best placed stops then); a **battery** fault on a standing aircraft or UGV (another vehicle), 120 to 360 s in, leaving 22 to 33 % and crossing 20 % 150 to 400 s later (a low reserve, 2.4); p 0.7 a **reboot** (3 to 8 s) of another standing boat up to 120 s before the need |
+| F13 | vehicle faults across domains | one: surface (0.4), air (0.3), ground (0.15), subsurface (0.15) | a **breakdown** of the vehicle flying the agent's first look with the need's sensor (v2's stuck vehicle, 5 to 60 s after its dispatch; none by the need's deadline, the standing vehicle best placed stops then); a **battery** fault on a standing aircraft or UGV (another vehicle), 120 to 300 s in, leaving 22 to 33 % and crossing 20 % 1.5 to 3 times its way home later (version 2, 12.2: a prompt rtl meets it; a low reserve, 2.4); p 0.7 a **reboot** (3 to 8 s) of another standing boat up to 120 s before the need |
 
 ## 7. Episode classes
 
@@ -422,9 +422,11 @@ with F14-F17's if they clash when the two parts are merged):
     *Alternative*: an emulator change so an event names the submerged profile alone. **Recommend** as
     specified for now, the emulator change if F11's AUV case is to test surfacing during an outage.
 21. **F13's breakdown hits the agent's first look** (v2's stuck vehicle), its battery fault a
-    standing vehicle sized to cross the reserve inside the episode, its reboot a standing boat:
-    three vehicles, three domains. *Alternative*: faults at drawn times on drawn vehicles, whatever
-    the agent does (then a breakdown seldom touches a look). **Recommend** as specified.
+    standing vehicle, the reserve crossed inside the episode and 1.5 to 3 times the vehicle's way
+    home after the fault (version 2, 12.2: a prompt rtl meets it, a late one does not), its reboot a
+    standing boat: three vehicles, three domains. *Alternative*: faults at drawn times on drawn
+    vehicles, whatever the agent does (then a breakdown seldom touches a look, and a battery fault
+    is often past saving). **Recommend** as specified.
 
 ## 10. Gates (dev)
 
@@ -562,3 +564,152 @@ The ladder and perturbations (C2) are worth building on F1, F2 v3, F3 and F6, wh
 `none` by 13 to 53 points; F4 and F5 wait for 11.2. 10.1 cannot hold anywhere until 11.3 is examined
 with A1: the oracle's ceiling is the cameras'. Two dev batches are needed before any rule is
 pre-registered (lesson 2); this is the first.
+
+## 12. The second dev check: F7-F13 (2026-10-25)
+
+**Coverage.** Worlds golden-gate-v3 and san-diego, each with its fleet (20 and 24 stand-ins: air 8
+and 10, surface 7 and 9 counting the drifting buoys, subsurface 2, ground 3 counting the antenna
+tracker) and its background traffic in every domain, under the physical sensing model (EO/IR with
+pointing, radar, AIS, ESM, active and passive sonar, terrain and horizon). F7-F13 on both worlds on
+dev seeds 5300-5319, and F13 version 2 on fresh dev seeds 5350-5369; agents `none`, `random-valid`
+and the basic oracle (`oracle-v3`, section 5), and on F13 version 2 the playbook as well (its safety
+play's rtl, a check that the fault needs can be met); one replicate, the approve-all operator, the
+paused clock. 320 situations, 1,040 episodes, no harness error; the records deleted after this
+summary. Needs (seeds 5300-5319): 380, every one evaluable and none a sensing error: surface 183
+(small fast boats, F8's spoofer among them), air 88 (light aircraft 78, small drones 10), subsurface
+63 (UUVs 59, divers 4), ground 46 (cars 28, trucks 18); and F8's 200 look-alikes of neutral truth
+(in every domain, and a boat whose AIS looks wrong). Conditions by light (situations; fog is under
+2 km whatever the hour): day 128, night 85, fog 40, twilight 27, F9 and F10 having moved theirs
+(choice 19). Faults and link troubles: F11's RF jammers (24 situations) and acoustic outages (16);
+F12's GNSS jammers (28) and spoofers (12); F13's breakdowns, battery faults (PUMA 2, PUMA 3,
+KESTREL 1, SKY 2, FERRET 1) and reboots (Sea Hunter, the Corsairs, the Saildrone). Tasks ordered:
+orbits only (the anchors order nothing else). **Shortcuts, named**: the basic oracle is a
+feasibility check, not a ceiling (it never recalls a vehicle on a low reserve and knows no jammer);
+AIS exists only on the surface (choice 18); conditions hold for an episode; a GNSS spoof does not
+change what the spoofed vehicle's sensors see (12.4). Model results only.
+
+### 12.1 Need served, per family and world
+
+Need served is pooled over each family's eligible needs (F7 three a situation, F10 one or two, the
+others one). "After opening" is the median time to serve of the needs served after they opened (most
+are pre-served, identified before they came within the circle: the oracle's count is given). "Types
+able" is the fewest platform types, among those that take orders, that the sensing model says could
+answer a need of the family under its drawn conditions (eval/headless/v3/able.py, asked of
+`murmur-headless --sense` for every type; the first check read the oracle's own log, 12.4 item 5);
+every need had at least two. Fault needs: F13's low reserve, met of judged, `none` / `random-valid` /
+oracle.
+
+| family | world | `none` | `random-valid` | oracle | after opening, s (`none` / oracle) | oracle pre-served | fault needs met | types able (min) | `none`'s top cause | oracle's top cause | lesson 3 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| F7 three at once | Golden Gate | 29/60 | 30/60 | 48/60 | 22 / 49 | 39 | | 2 | `looked:corsair@night(recognised),late` 23 % of 31 | `looked:corsair@night(recognised),late` 25 % of 12 | oracle: `looked:corsair` 67 % |
+| F7 three at once | San Diego | 44/60 | 43/60 | 48/60 | 47 / 25 | 42 | | 2 | `looked:seahunter@night(recognised),late` 12 % of 16 | `misidentified:corsair` 25 % of 12 | `none`: `looked:seahunter` 56 % |
+| F8 decoys, AIS spoofing | Golden Gate | 10/20 | 9/20 | 15/20 | 24 / 12 | 10 | | 2 | `looked:corsair@night(recognised),late` 20 % of 10 | `misidentified:seahunter` 40 % of 5 | none |
+| F8 decoys, AIS spoofing | San Diego | 11/20 | 9/20 | 14/20 | 62 / 20 | 8 | | 2 | `looked:corsair@day(identified),late` 22 % of 9 | `looked:corsair@day(identified),late` 17 % of 6 | none |
+| F9 night and fog | Golden Gate | 3/20 | 4/20 | 10/20 | 14 / 23 | 6 | | 6 | `no_look@fog` 47 % of 17 | `no_look@fog` 40 % of 10 | none |
+| F9 night and fog | San Diego | 9/20 | 11/20 | 14/20 | 9 / 16 | 8 | | 6 | `looked:seahunter@fog(recognised),late` 27 % of 11 | `looked:seahunter@fog(recognised),late` 33 % of 6 | none |
+| F10 sea state | Golden Gate | 19/32 | 20/32 | 18/32 | 25 / 24 | 13 | | 7 | `looked:corsair@night(identified),late` 23 % of 13 | `looked:seahunter@night(recognised),late` 36 % of 14 | none |
+| F10 sea state | San Diego | 19/28 | 19/28 | 24/28 | 45 / 32 | 20 | | 7 | `looked:seahunter@night(recognised),late` 22 % of 9 | `looked:seahunter@night(recognised),late` 50 % of 4 | oracle: `looked:seahunter` 75 % |
+| F11 link trouble | Golden Gate | 12/20 | 12/20 | 16/20 | 41 / 20 | 9 | | 2 | `misidentified:unknown` 12 % of 8 | `looked:corsair@night(identified),late` 25 % of 4 | oracle: `looked:corsair` 75 % |
+| F11 link trouble | San Diego | 14/20 | 14/20 | 13/20 | 14 / 13 | 11 | | 2 | `misidentified:buoy` 17 % of 6 | `looked:saildrone@day(detected)` 14 % of 7 | none |
+| F12 GNSS | Golden Gate | 9/20 | 9/20 | 13/20 | 33 / 12 | 10 | | 5 | `looked:corsair@night(recognised),late` 18 % of 11 | `looked:corsair@night(identified),late` 29 % of 7 | none |
+| F12 GNSS | San Diego | 13/20 | 13/20 | 18/20 | 14 / 9 | 13 | | 7 | `looked:seahunter@twilight(recognised),late` 14 % of 7 | `looked:puma@night(recognised),late` 50 % of 2 | none |
+| F13 faults, v1 | Golden Gate | 5/20 | 5/20 | 11/20 | 43 / 55 | 8 | 0 / 0 / 0 of 19 | 2 | `looked:corsair@night(recognised),late` 27 % of 15 | `looked:corsair@night(recognised),late` 22 % of 9 | none |
+| F13 faults, v1 | San Diego | 14/20 | 15/20 | 18/20 | 18 / 14 | 13 | 0 / 0 / 0 of 19 | 6 | `looked:seahunter@twilight(recognised),late` 17 % of 6 | `looked:seahunter@night(recognised),late` 50 % of 2 | none |
+| F13 faults, v2 (5350-5369) | Golden Gate | 8/20 | 8/20 | 15/20 | 32 / 28 | 9 | 0 / 0 / 0 of 18 | 2 | `looked:seahunter@day(detected),late` 17 % of 12 | `misidentified:puma` 20 % of 5 | none |
+| F13 faults, v2 (5350-5369) | San Diego | 15/20 | 16/20 | 17/20 | 25 / 18 | 14 | 0 / 0 / 0 of 20 | 2 | `looked:corsair@day(identified),late` 20 % of 5 | `misidentified:unknown` 33 % of 3 | none |
+
+Pooled over both worlds: F7 `none` 61 %, oracle 80 %; F8 52 % and 72 %; F9 30 % and 60 %; F10 63 %
+and 70 %; F11 65 % and 72 %; F12 55 % and 78 %; F13 version 2 57 % and 80 %. `random-valid` serves
+what `none` serves, give or take a need, in every family (it orders an orbit every 30 s: 11 to 22
+useless an hour). 10.1's world conditions hold in one cell of fourteen (F7 Golden Gate); reported,
+not designed for (the owner's room test replaces them).
+
+### 12.2 Lesson 3: single causes
+
+Four cells flag (10.2, by the platform alone): F7 Golden Gate, the oracle's `looked:corsair` (8 of
+its 12 losses); F7 San Diego, `none`'s `looked:seahunter` (9 of 16); F10 San Diego, the oracle's
+`looked:seahunter` (3 of 4); F11 Golden Gate, the oracle's `looked:corsair` (3 of 4). Each is 11.3's
+camera limit, the one F3 and F6 flagged in the first check. The standing boat nearest the action
+(MARLIN 1's Corsair on the channel east of the bridge; HUNTER 1's Sea Hunter on the San Diego
+entrance) has an always-on ring that looks at everything near it, so it has the most new hits on a
+contact; the contact was recognised, or identified after its deadline, but not identified in time:
+mostly at night (F7 Golden Gate's 8: night 5, day 2, fog 1; recognised 4, identified late 4) and
+mostly on aircraft (9 of F7 Golden Gate's 12 oracle losses are F3's aircraft). The cause is the
+cameras', spread over light and level, and two of the four cells rest on three losses. A family drawn
+around it would be tuned to the model (W3, lesson 3): **no redesign for these**. The coarse key names
+where the ring was rather than what failed; a key naming the platform whose look reached the highest
+level would separate the two (for C2 and D).
+
+**F13 version 2** (a redesign, said here as lesson 3 asks): not a single-cause flag but an
+infeasibility the dev check showed. Version 1 put the battery's 20 % crossing 150 to 400 s after the
+fault; by each vehicle's way home at cruise and a landing (`home_s`), 16 of its 40 battery faults
+could not have been met by any rtl, however prompt (KESTREL 1 over the approaches 4 to 7 km out, the
+Pumas 2 to 3 km out). Version 2 puts the crossing 1.5 to 3 times the vehicle's way home after the
+fault: all 40 on seeds 5350-5369 can be met by an rtl at the fault. The anchors met none (none
+recalls); the playbook, whose safety play sends an rtl under 25 %, met 17 of 40: the need is the
+agent's to meet. Version 2 also starts a timed UUV nearer when it could not come in by its time (two
+San Diego situations, run again).
+
+### 12.3 What each family's point does
+
+- **F7**: under water the oracle served all 40 UUVs (`none` 30), on the surface 32 of 40 (`none` 26),
+  in the air 24 of 40 (`none` 17): the air need is the one left (F3's aircraft at night).
+- **F8**: the spoofer was served in 4 of 5 situations by every agent (the standing rings identify it
+  before its need opens, and the AIS conflict then shows it suspect). The look-alikes' cost: orders
+  sent at a look-alike and at no need (v2's "pointed at", 1 km over 300 s), `random-valid` 43 in 40
+  situations, the oracle 4, `none` 0; useless orders an hour, 18.2 for `random-valid` (7.6 of them
+  justified on the picture) and 11.7 for the oracle (6.2).
+- **F9**: fog is the hard end: `none` served 4 of 27 needs in fog and 8 of 13 without (the oracle 13
+  and 11); by day in fog 1 of 12 (oracle 2); at night without fog 5 of 7 (oracle 7). Thermal cameras
+  still work at night; in fog little does. The crossover twilight: 3 of 6 clear (oracle 4), 0 of 3 in
+  fog (oracle 3).
+- **F10**: no gradient with the sea in need served (sea state 5: 8 of 15 for every agent; 2 to 4: 30
+  of 45 for `none`, 34 for the oracle): the cameras serve the boats, and at night (about a third of
+  the drawn starts) they do not in time. The radar's loss of small boats shows in the tracks, not in
+  need served (the need is the cameras').
+- **F11**: the RF jammer leaves the basic oracle no better than `none` (14 of 24 each): it sends
+  line-of-sight aircraft into the jammer (`lost:fvr90` once) and knows no other way. The acoustic
+  outage costs little (`none` 12 of 16, oracle 15) because the buoys and Sea Hunter's hull sonar hear
+  the UUV without REMUS (11.2's standing sonar).
+- **F12**: the GNSS jammer landed SKY 2 (the X10 over Horseshoe Bay, or over North Island) away from
+  home in 9 of 28 jammed situations and held MARLIN 1 until it went aground once, for `none` and the
+  oracle alike (neither keeps a copter out of a jammer); need served under a jammer, `none` 17 of 28,
+  the oracle 22; under a spoofer 5 of 12 and 9 of 12, with nothing lost (12.4 item 1).
+- **F13**: version 2's fault needs (12.2); need served `none` 23 of 40, the oracle 32, the playbook 23.
+
+**Vehicles lost** (choice 16, a diagnostic): besides F12's, `random-valid` lost the Magura in 34 to
+39 of each family's 40 episodes, aground on its way out (12.4 item 2).
+
+### 12.4 Defects and limits found (for A1, A2, B2 and the C2)
+
+1. **A spoofed vehicle senses from where it believes it is** (A1, A2): the bridge builds each
+   observer from the vehicle's reported position (crates/murmur-bridge/src/tracks/mod.rs
+   `observers`), headless too, so a GNSS spoof moves the vehicle's truth but neither its sensors'
+   geometry nor its fixes' placement: F12's spoofer changes nothing the picture shows, only where the
+   vehicle truly goes (aground, off station). The physics should place a sensor at its truth and its
+   report at the believed position. Not changed (the sensor model is fixed): F12 keeps the spoof
+   (p 0.35), whose need served then measures nothing of the spoof.
+2. **An order that passes the checks can drive a boat aground on its way** (the C2): the domain rule
+   (the grid) checks an orbit's geometry, not the straight way to it, and the stand-in steers
+   straight: `random-valid`'s orbits for VIPER 1 west of the Gate run it ashore at Cavallo Point on
+   its way out of Horseshoe Bay, and San Diego's Magura likewise. A check of the transit, or a route
+   around the shore, is the C2's to decide.
+3. **A link event cannot tell the AUV's modem from its surfaced radio** (the link emulator): an event
+   applies to a link whichever profile carries its traffic, so F11's acoustic outage closes REMUS's
+   surfaced Iridium-class radio too while it lasts (choice 20).
+4. **The record's truth says only that a contact broadcasts AIS** (`ais: true`), not that it is
+   spoofed: the situation states it (`ais_spoofed`, read by labels.py `mark_spoofed`).
+5. **The first check's "types able"** counted the oracle's own reaches over every need of an episode
+   (wrong with several needs) and only for the vehicles it weighed; it is now asked of the model per
+   need (able.py). The first check's figures (11.1) stand as they were computed.
+6. **Vehicles lost's "aground"** reads the land/water grid at 20 m: twice EEL 1 at its pier read
+   ashore (F9), a grid edge, not a grounding.
+
+### 12.5 What next
+
+F7-F13 are ready for C2's ladder and room test, with these named: F11's RF jammer and F12's jammer
+give an agent a decision the basic oracle does not make (keep line-of-sight aircraft and copters
+out); F13's fault needs are met only by an agent's recall; F8's look-alikes cost `random-valid` and
+not the oracle; F12's spoof waits for 12.4 item 1; F11's acoustic outage waits for 11.2's standing
+sonar. A second dev batch (lesson 2) is needed before any rule is pre-registered: this is F7-F12's
+first and F13 version 2's first on its own seeds.
