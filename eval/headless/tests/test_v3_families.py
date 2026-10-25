@@ -24,7 +24,8 @@ from eval.world import load_world
 
 SEEDS = range(5000, 5012)
 #: F1-F6 and F18 (F14-F17, families_ops.py, have their own tests: test_v3_ops.py)
-BASE_NAMES = [n for n in F.all_names() if not FO.is_ops(n)]
+#: F1-F6 and F18 (F7-F13 and F14-F17 have their own tests)
+BASE_NAMES = [n for n in F.all_names() if not FO.is_ops(n) and F.extension(F.parse(n)[0]) is None]
 
 
 def added(path: Path) -> list[dict]:

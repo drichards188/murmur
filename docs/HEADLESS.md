@@ -1398,6 +1398,14 @@ batch tests pass unchanged).
   model (`identity.looks` of `Track::json`: which observer's sensor reached which level, its label
   and confidence), as change points per `<uid>:<sensor>:<level>`; `looks` and `reached` read them.
   A picture without looks (every legacy one) encodes exactly as v2's.
+- `eval/headless/v3/families_f7_f13.py` (second part, 2026-10-25): F7-F13 on both worlds
+  (SCORING-V3.md 6.1), found by families.py through `EXTENSIONS`. Besides contacts and conditions,
+  a family's situation carries a timeline of faults (`EpisodeSpec.script`: section 17.4's `gnss`,
+  `battery`, `reboot` steps, and v2's `stop` after the agent's first look) and link events
+  (`EpisodeSpec.events`: the emulator's own `[[event]]`s, with a circle for a jammer).
+- `eval/headless/v3/faults.py`: the low reserve in every domain, the timeline's faults as open
+  faults, the vehicles lost (a diagnostic); `eval/headless/v3/able.py`: the types the sensing model
+  (`murmur-headless --sense`) says could answer each need, for the dev report.
 
       .venv/bin/python -m eval.headless.v3.run batch --families all --seeds 5000-5029 \
           --agent none random-valid oracle-v3 --workers 20 --out <dir>

@@ -6,6 +6,9 @@ lost needs that the most frequent key explains; over 50 % is redesigned before v
 The first that applies, judged on the picture up to the deadline:
 
 1. `not_tracked`: no track was associated with the contact by the deadline.
+1b. `spoof_believed@<light>`: a contact broadcasting a spoofed AIS identity (F8's spoofer) whose
+   track still shows another kind than its own at the deadline (the AIS's, or a look's below
+   identification).
 2. `misidentified:<platform>`: the track showed a conflict, or another kind at the identification
    level, at the deadline (the platform: the observer whose wrong-call draw is set and that looked,
    else `unknown`). Another family is not counted here: ESM's detection names a domain's family
@@ -117,6 +120,9 @@ def cause_of(rec: dict[str, Any], pic: Picture, truth: Truth, n: dict[str, Any],
     idn = pic.identity(tid, kD) if tid else None
     true_kind = str(n.get("kind"))
     shown = level_shown(idn["kind"] if idn else None, true_kind)
+    if n.get("ais_spoofed") and idn and idn["kind"] != true_kind:
+        # the picture still believes the spoofed AIS (or a family of it): no camera identified it
+        return f"spoof_believed@{lt}"
     if idn and (idn.get("conflict") or shown == "wrong_kind"):
         looked = new_hits(pic, cid, rule(n["domain"]).sensors, t0 - LOOK_BEFORE_S, D)
         who = [str(u) for u in wrong if str(u) in looked]

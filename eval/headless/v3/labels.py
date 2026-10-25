@@ -25,6 +25,11 @@ their runs, fault needs, the reserve, the precedence); what changes is written h
 - **Nominations** (`engage`, 2.8) and **review decisions** (2.9), judged against truth: their own
   labels (`nomination_labels`, `review_labels`), and **collect** and **cover** (2.10): built in
   labels_ops.py with F14-F16's own needs (`ops` in the labels, where a situation states them).
+- **A spoofed AIS** (2.2, choice 30; F8's spoofer): AIS supports only a contact's own true
+  broadcast, and a contact whose AIS is spoofed is resolved when the picture shows its true kind
+  from EO/IR at 0.6 or more, the only conflict allowed being the AIS's own (the spoof exposed).
+- **Fault needs** (2.4, choices 27 and 28; faults.py): v2's low reserve in every domain, and the
+  timeline's faults (stop, reboot, battery, GNSS jam and spoof) as faults open on a vehicle.
 """
 
 from __future__ import annotations
@@ -36,10 +41,12 @@ from eval.world import load_world
 
 from ..labels import Truth, dist_m
 from ..v2 import labels as V2
-from ..v2.labels import Params, fault_needs, geometry, geometry_dist
+from ..v2.labels import Params, geometry, geometry_dist
 from ..v2.labels import instrument as _v2_instrument
 from ..v2.record import Picture, carry
 from . import labels_ops as OPS
+from .faults import fault_needs as fault_needs_v3
+from .faults import open_faults
 from .mission import DOMAINS, RESOLVE_CONF, rule
 
 VERSION = "3"
@@ -156,10 +163,35 @@ def shown_ok(kind_shown: str | None, meta: dict[str, Any]) -> bool:
     return rule(meta.get("domain")).level == "recognise" and kind_shown is not None and kind_shown == FAMILY.get(true)
 
 
+def ais_spoofed(meta: dict[str, Any]) -> bool:
+    """The contact broadcasts an AIS identity that is not its own (truth's `ais.spoofed`)."""
+    a = meta.get("ais")
+    return isinstance(a, dict) and bool(a.get("spoofed"))
+
+
+def mark_spoofed(rec: dict[str, Any], truth: Truth) -> Truth:
+    """The record's truth says only whether a contact broadcasts AIS (`ais`: true); the situation
+    states which broadcast an identity not their own (families_f7_f13.py `ais_spoofed`): their
+    `ais` becomes `{"spoofed": true}` here."""
+    for cid in ((rec.get("truth") or {}).get("stated") or {}).get("ais_spoofed") or []:
+        if cid in truth.meta:
+            truth.meta[cid] = {**truth.meta[cid], "ais": {"spoofed": True}}
+    return truth
+
+
+def ais_true(meta: dict[str, Any]) -> bool:
+    """The contact truly broadcasts its own AIS identity."""
+    return bool(meta.get("ais")) and not ais_spoofed(meta)
+
+
+#: how the tracker words a conflict between the AIS identity and the looks (tracks/model.rs)
+AIS_CONFLICT = "AIS says "
+
+
 def supported(idn: dict[str, Any], meta: dict[str, Any]) -> bool:
     r = rule(meta.get("domain"))
     sb = set(idn.get("supported_by") or [])
-    return bool(sb & set(r.sensors)) or (r.ais_counts and "ais" in sb and bool(meta.get("ais")))
+    return bool(sb & set(r.sensors)) or (r.ais_counts and "ais" in sb and ais_true(meta))
 
 
 def resolved_at(pic: Picture, k: int | None, cid: str, meta: dict[str, Any]) -> bool:
@@ -169,7 +201,10 @@ def resolved_at(pic: Picture, k: int | None, cid: str, meta: dict[str, Any]) -> 
     if tid is None:
         return False
     idn = pic.identity(tid, k)
-    if not idn or idn["conflict"] or not shown_ok(idn["kind"], meta):
+    if not idn or not shown_ok(idn["kind"], meta):
+        return False
+    # a spoofed AIS against the true identification is the spoof exposed, not a doubt (choice 30)
+    if idn["conflict"] and not (ais_spoofed(meta) and str(idn["conflict"]).startswith(AIS_CONFLICT)):
         return False
     if idn["confidence"] is None or float(idn["confidence"]) < RESOLVE_CONF:
         return False
@@ -213,7 +248,8 @@ def contact_needs(rec: dict[str, Any], pic: Picture, truth: Truth, p: Params) ->
         served = t_served is not None and t_served <= D + 1e-9
         late_s = grace * p.late_s / V2.DEADLINE_S  # the multiverse's S' scales each domain's grace
         out.append({
-            "contact": cid, "kind": m.get("kind"), "affiliation": aff, "ais": bool(m.get("ais")), "domain": domain,
+            "contact": cid, "kind": m.get("kind"), "affiliation": aff, "ais": ais_true(m), "domain": domain,
+            "ais_spoofed": ais_spoofed(m),
             "grace_s": grace, "t_need": round(t_need, 3), "deadline": round(D, 3), "evaluable": evaluable,
             "sensing_error": se["error"], "sensing": {k: se[k] for k in ("holders", "wrong_observers")},
             "eligible": evaluable and not se["error"], "pre_served": pre,
@@ -390,7 +426,7 @@ def label_actions(rec: dict[str, Any], pic: Picture, truth: Truth, needs_list: l
             continue
         if a["kind"] == "engage":
             lab.update(aim=empty_aim, aimed_need=None, contributed=[], justified={"justified": False},
-                       faults_open=V2._open_faults(a, pic, rec, fneeds), harm=[])
+                       faults_open=open_faults(a, pic, rec, fneeds), harm=[])
             lab.update(nomination_label(a, rec, pic, truth))
             lab["also_fault"] = bool(lab["faults_open"])
             out.append(lab)
@@ -398,14 +434,14 @@ def label_actions(rec: dict[str, Any], pic: Picture, truth: Truth, needs_list: l
         if a["kind"] in SPACE_KINDS:
             # 2.10 (labels_ops.py): a cover whose only failing check is coverage answered its question
             lab.update(aim=empty_aim, aimed_need=None, contributed=[], justified={"justified": False},
-                       faults_open=V2._open_faults(a, pic, rec, fneeds), harm=[])
+                       faults_open=open_faults(a, pic, rec, fneeds), harm=[])
             lab.update(OPS.space_label(a, rec, pic, none_cover))
             lab["also_fault"] = bool(lab["faults_open"])
             out.append(lab)
             continue
         if a["kind"] not in MOVING_KINDS:
             lab.update(aim=empty_aim, aimed_need=None, contributed=[], justified={"justified": False},
-                       faults_open=V2._open_faults(a, pic, rec, fneeds), harm=[], label="unjudged",
+                       faults_open=open_faults(a, pic, rec, fneeds), harm=[], label="unjudged",
                        unjudged_because=f"no v3 label for {a['kind']!r}")
             lab["also_fault"] = bool(lab["faults_open"])
             out.append(lab)
@@ -415,7 +451,7 @@ def label_actions(rec: dict[str, Any], pic: Picture, truth: Truth, needs_list: l
         lab["aimed_need"] = V2.aimed_need(aim, needs)
         lab["contributed"] = contributed(a, pic, needs) if a["runs"] else []
         lab["justified"] = justified(a, aim, pic, truth, p, center, radius)
-        lab["faults_open"] = V2._open_faults(a, pic, rec, fneeds)
+        lab["faults_open"] = open_faults(a, pic, rec, fneeds)
         harm = harmful(a, aim, pic, needs, truth, p)
         lab["harm"] = harm
         lab["also_fault"] = bool(lab["faults_open"])
@@ -508,9 +544,9 @@ def episode_labels(rec: dict[str, Any], none: dict[str, Any] | None = None, para
     """Every label of a v3 episode; `none` (or `none_labels`) its paired `none` replicate's."""
     p = params or Params()
     pic = picture(rec)
-    truth = Truth(rec)
+    truth = mark_spoofed(rec, Truth(rec))
     needs = contact_needs(rec, pic, truth, p)
-    fneeds = fault_needs(rec, pic, p)
+    fneeds = fault_needs_v3(rec, pic, p)
     if none_labels is None and none is not None:
         none_labels = episode_labels(none, params=p) if none is not rec else None
     ns = none_served_of(none_labels)
