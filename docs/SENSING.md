@@ -812,8 +812,11 @@ The legacy model's Python ports (`v2/labels.py`, `families.py`, `agents_v2.py`,
   any elevation, and a camera cued by it searches up to the slant range.
 - The tracker's two models are constant-velocity: through a hard turn (a break at 11 m/s^2,
   the tightest loiter at 6) seen only by bearings they lag, and a keep-out 3 s ahead can miss by
-  tens of metres (the second air held-out set's approach and break, above); a coordinated-turn
-  model is the follow-up.
+  tens of metres (the second air held-out set's approach and break, above). A coordinated-turn
+  model (murmur-0b8) was not confirmed on its held-out set and not adopted; the fourth set
+  (341-370) found the same lag (3 of 3,271 samples, up to 66 m). Accepted as a known limit by
+  the owner (10-25, DECISIONS.md): allow about 100 m beyond the estimate for a keep-out within a
+  few seconds of a manoeuvring aircraft seen only by bearings.
 - Radar: no land clutter (ground contacts are seen as on water, terrain masking apart), no
   pulse or scan-to-scan integration, sidelobes or SAR (a radar searches with its real beam, so
   a SAR's fine cross-range cell is not used against the sea), a ship's radar heard by ESM every

@@ -572,6 +572,16 @@ group. Dates are 2026.
   record moves. The new set's one run holds every criterion but one: a keep-out 3 s ahead
   missed an approach and hard break 3 times by up to 102 m (the constant-velocity models'
   lag in an 11 m/s^2 turn seen only by bearings; a turn model is the follow-up).
+- **The tracker's short-horizon lag on an aircraft's hard break is a known, accepted limit**
+  (10-25, the owner). Three independent physical air held-out sets found it: 281-310 (3 of
+  2,837 samples, up to 102 m) and 341-370 (3 of 3,271, up to 66 m) without a turn model; a
+  coordinated-turn model (murmur-0b8) was not confirmed on 311-340 (it missed a weave reversal
+  instead) and was not adopted. The miss is a keep-out 3 s ahead only, in the all-sensors mix,
+  when only 2D radars' bearings see an 11 m/s^2 break; keep-outs 10 s ahead and longer held in
+  every set, and honesty (NEES) held throughout. It is documented, not tuned: anything that
+  relies on a keep-out within a few seconds of a manoeuvring aircraft seen only by bearings must
+  allow about 100 m beyond the track's estimate. Physical air seeds 221-370 and surface 371-400
+  are spent.
 - **W1: cameras point themselves; orders name no look target** (10-23, approved). Each EO/IR
   sensor has a simulated payload manager on its vehicle: it searches the task area (an orbit's
   circle, a patrol's route, else around the vehicle) in the wide field, cues to the nearest
