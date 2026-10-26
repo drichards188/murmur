@@ -917,6 +917,61 @@ attempts with a no-velocity ground blocker 791 of 1,186 blocked (66.7 %) before,
 after; attempts with any ground track among the blockers 808 and 578; nominations passed 4
 before and after (aircraft block 97 %: the owner's question, SCORING-V3.md 12.4).
 
+**Aircraft velocity under the physical model** (murmur-e3b's air half, 10-26; found, not changed).
+In the same F15 smoke 952 of the 1,191 attempts had an aircraft blocker with no velocity (1,649
+blocker-attempt pairs: the hobby drone over Baker Beach 796, the tour helicopters 537, the light
+aircraft 316), and in F2 (seeds 5370-5379, both worlds, `none`) the drone had a velocity by its
+deadline in 8 of 20. The cause is not ground's:
+
+- *Emitting aircraft* (transponders, a drone's datalink) are fixed by ESM, a position each second
+  from each receiver that hears them (the Corsair's, 2 degrees: 200 to 370 m; the RQ-4's, 1 degree
+  from 18 km up: 570 to 730 m), and by 2D radars' bearings; cameras fixed them a few per cent of
+  the seconds (decision W1's looks: on seed 5403 the three aircraft tracked for 13 to 20 minutes
+  had 61 to 163 camera fixes each, against 1,541 to 2,264 ESM fixes). From fixes that coarse a
+  constant-velocity filter sure the aircraft never manoeuvres settles at a velocity 1-sigma of
+  about 2.4 to 2.8 m/s (0.2 m^2/s^3); the IMM's mixing, the manoeuvring model's spread (13 m/s at
+  20 m^2/s^3) flowing into the steady model each second at a manoeuvring probability coarse fixes
+  cannot lower below 0.1 to 0.2, puts the steady model at 5.2 to 6.5 m/s and the mixture at 7.2 to
+  8.9 (seed 5403's tracks, means over their updates). The world tuning set agrees
+  (`calib_air::air_velocity_why`, Golden Gate's fleet without its cameras: the steady model alone
+  over 3 m/s in 88 to 100 % of seconds, the mixture 5 to 8 m/s). That 1-sigma is honest: the
+  mixture's velocity has a mean normalized error of 0.2 in straight flight (cautious) and 2.4 to
+  2.8 on routes that turn every minute or so.
+- *The hobby drone* emits nothing: 2D radars' bearings alone, so it is unranged (one radar does
+  not range an aircraft; no height bound is assumed) and has no velocity by design.
+- Fixed by a camera every second, an aircraft has a velocity 63 to 89 % of the time.
+
+So under the 3 m/s gate an ESM-fixed aircraft has no velocity, and no honest tuning of the IMM
+gives it one. A larger gate would show velocities at their honest 5 to 12 m/s, but the engine's
+velocity region (rules 6) takes a shown velocity as good to the policy's
+`track_velocity_sigma_mps` (1 m/s) and its acceleration term; only rules 14's speed bound reads
+the tracker's own `velocity_sigma_mps`. On the physical tuning sets with the world mixes
+(`air_tune_grid_physical`) an air gate of 6 or 12 m/s took the criteria's failures from 13 to 42
+and 81: the tracker alone 3 and 10 s ahead missing 3 to 31 % of samples by up to 1.5 km (its
+bounds 3 and 4 %, 300 and 1,200 m), and steady classes' velocity errors over their 2.6 (one turn
+5.49 and hover and go 3.48 at 6 m/s, speed change 3.23 at 12). A real air tracker reports every
+established track's velocity with its covariance, and what reads the velocity reads the
+covariance; here the velocity region would have to read the velocity's own 1-sigma, a
+decision-rules version, so the tracker was left as it was. Nor would it unblock F15: rules 14
+counts an aircraft with a velocity from its speed, two of its sigmas and 31.5 m/s of unseen
+speed-up, speeding up at 4.5 m/s^2 to 100 m/s, so over F15's 57 s span a helicopter at 45 m/s (5
+m/s 1-sigma) reaches 5.68 km and a hovering drone 5.32 km, against 5.70 without a velocity. An
+experiment, not kept (the air gate at 12 m/s, the same smokes): attempts with a no-velocity
+aircraft blocker 952 to 662 (643 of them the radar-only drone), air track samples with a velocity
+47.5 to 87.0 %, F2's drones with a velocity by the deadline 8 to 15 of 20; attempts with an
+aircraft blocker 1,152 of 1,186 blocked both times (97 %), nominations passed 4 both times, the
+aircraft blockers' shortfall still a median 2.6 km.
+
+In Golden Gate's two mixes the tuning sets find the tracker as it is failing these criteria.
+Hard turns seen without a camera, by ESM and bearings: keep-outs 3 s ahead missed five cases, by up to 223 m (round three's
+break at 10 deg/s 12 times in 8,083 samples, and once 10 s ahead by 41 m; a sightseeing loop's 6
+deg/s turns 4 times, by up to 75 m), more than the accepted break lag's 100 m (DECISIONS.md,
+10-25), and the tracker alone missed that break 3 s ahead by up to 333 m (its bound 300). And the
+hobby drones circling 60 and 100 m at 4 to 6 m/s, fixed by a camera, whose velocity lags the
+circle: the tracker alone (the velocity region) missed 3 s ahead in 10.5 % of samples, by up to
+44 m, while rules 14's keep-outs held them. The sixth air held-out set (521-550, `calib_air`) was
+written for this change and is unspent.
+
 ## Python
 
 `eval/headless/sensing.py` (`SenseModel`, through `murmur-headless --sense`, or the `sense`

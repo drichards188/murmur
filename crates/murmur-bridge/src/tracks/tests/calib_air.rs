@@ -113,6 +113,13 @@
 //!     criteria are [`failures_on`]'s on every one of those mixes, and each class's velocity
 //!     share and velocity error are reported. The change is developed on the tuning sets (101-220)
 //!     only, and the new set is run once, after it ([`air_calib_physical_held_out_six`]).
+//! 18. No tracker change was made, so the sixth set is unspent. On the tuning sets
+//!     ([`air_velocity_why`], [`air_tune_grid_physical`]) the cause was the fixes, not the
+//!     constants: an emitting aircraft is fixed by ESM positions (200 to 730 m) and 2D radars'
+//!     bearings, and the honest velocity 1-sigma from those is 5 to 8 m/s, over the 3 m/s gate;
+//!     a larger gate fails the tracker alone (the engine's velocity region takes a shown velocity
+//!     as good to the policy's 1 m/s). docs/SENSING.md, "Aircraft velocity under the physical
+//!     model".
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
@@ -2129,6 +2136,156 @@ fn air_physical_misses() {
         }
     }
     eprintln!("--- a keep-out 3 s ahead missed {n_misses} of {n_samples} scored seconds");
+}
+
+/// Why an aircraft's track gives no velocity on the physical model (a diagnostic for murmur-e3b's
+/// air half, the tuning sets only: `AIR_SET=... AIR_MIX=world|world_no_cameras|eo|all cargo test
+/// -p murmur-bridge --release air_velocity_why -- --ignored --nocapture`): per case, of the
+/// scored seconds, the share with a velocity shown, unranged (the bearing segment: no velocity
+/// by design), ranged but with even the steady model's velocity 1-sigma over the gate, and ranged
+/// with the steady model's under it but the mixture's over (the manoeuvring model's share); the
+/// mean manoeuvring probability and each model's velocity 1-sigma; and the share of seconds with
+/// a fix of each sensor type.
+#[test]
+#[ignore]
+fn air_velocity_why() {
+    use crate::tracks::physical::{Engine, Step, conditions::Conditions};
+    let mix = match std::env::var("AIR_MIX").as_deref() {
+        Ok("eo") => Mix::RadarEoIr,
+        Ok("world") => Mix::World,
+        Ok("world_no_cameras") => Mix::WorldNoCameras,
+        Ok("radar") => Mix::Radar,
+        _ => Mix::All,
+    };
+    let prefix = std::env::var("AIR_CASE").unwrap_or_default();
+    eprintln!("mix {}", mix.name());
+    for (cases, seeds) in tuning_sets() {
+        for case in cases.iter().filter(|c| c.name.starts_with(&prefix)) {
+            let mut k = [0.0f64; 4];
+            let (mut n, mut pm, mut s0, mut s1, mut sm) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+            let mut fixes: BTreeMap<&str, f64> = BTreeMap::new();
+            // per hypothetical gate: (shown, sum of the shown velocities' normalized errors)
+            const GATES: [f64; 6] = [3.0, 5.0, 8.0, 12.0, 20.0, f64::INFINITY];
+            let mut gated = [(0.0f64, 0.0f64); 6];
+            for seed in seeds.clone() {
+                let sensing = crate::tracks::truth::Sensing {
+                    conditions: Some(Conditions { sun_elevation_deg: Some(45.0), ..Conditions::default() }),
+                    ..Default::default()
+                };
+                let mut engine = Engine::new(None);
+                let table = (case.motion)(seed, case.n as usize + 1);
+                let obs: Vec<Observer> = mix.observers().iter().map(Obs::now).collect();
+                let mut track: Option<Track> = None;
+                for s in 0..case.n {
+                    let now = T0 + f64::from(s);
+                    let ((e, nn), (ve, vn)) = table[s as usize];
+                    let (lat, lon) = at(BASE.0, BASE.1, e, nn);
+                    let mut c: ContactTruth = contact("c", case.kind, Domain::Air, lat, lon);
+                    c.alt_m = case.alt_m;
+                    c.speed_mps = ve.hypot(vn);
+                    c.course_deg = ve.atan2(vn).to_degrees().rem_euclid(360.0);
+                    if let Some(emits) = case.emits {
+                        c.emits = emits;
+                    }
+                    let st = Step { seed, tick: i64::from(s), s: f64::from(s), t: now, misclassification_rate: 0.0, sensing: &sensing };
+                    let mut dets = engine.step(&st, &obs, std::slice::from_ref(&c));
+                    let mut kinds: Vec<&str> = Vec::new();
+                    for d in &mut dets {
+                        d.measured_t = Some(now);
+                        kinds.push(if d.slant_from.is_some() { "bearing" } else { d.sensor.as_str() });
+                        match &mut track {
+                            None => track = Some(Track::new("T-0001".into(), 1, d, now)),
+                            Some(t) => t.update(d, now),
+                        }
+                    }
+                    let Some(t) = track.as_ref().filter(|_| !dets.is_empty() && s >= SETTLE_S) else { continue };
+                    kinds.sort_unstable();
+                    kinds.dedup();
+                    for kd in kinds {
+                        *fixes.entry(kd).or_default() += 1.0;
+                    }
+                    let [v0, v1, p, vm, ranged_age, _, xe, xn] = t.debug_velocity();
+                    n += 1.0;
+                    pm += p;
+                    s0 += v0;
+                    s1 += v1;
+                    sm += vm;
+                    let window = if dets.iter().any(|d| d.scan_s.is_some() && d.slant_from.is_some()) { 6.0 } else { 10.0 };
+                    if ranged_age <= window {
+                        let sv = t.vel_sigma_mps();
+                        let nees = ((xe - ve).powi(2) + (xn - vn).powi(2)) / (sv * sv);
+                        for (g, acc) in GATES.iter().zip(gated.iter_mut()) {
+                            if vm < *g {
+                                acc.0 += 1.0;
+                                acc.1 += nees;
+                            }
+                        }
+                    }
+                    let i = if t.vel.is_some() {
+                        0
+                    } else if ranged_age > window {
+                        1
+                    } else if v0 >= 3.0 {
+                        2
+                    } else {
+                        3
+                    };
+                    k[i] += 1.0;
+                }
+            }
+            let f: Vec<String> = fixes.iter().map(|(kd, x)| format!("{kd} {:.0}%", 100.0 * x / n.max(1.0))).collect();
+            let g: Vec<String> = GATES
+                .iter()
+                .zip(gated)
+                .map(|(gate, (m, e))| format!("<{gate:.0}: {:.0}% vNEES {:.2}", 100.0 * m / n.max(1.0), e / m.max(1.0)))
+                .collect();
+            eprintln!("    gates {}", g.join(" | "));
+            eprintln!(
+                "{:<70} n {n:6} shown {:5.1}% unranged {:5.1}% steady over {:5.1}% mixture over {:5.1}% | pm {:.2} sigma v steady {:5.1} man {:5.1} mix {:5.1} | fixes {}",
+                case.name,
+                100.0 * k[0] / n.max(1.0),
+                100.0 * k[1] / n.max(1.0),
+                100.0 * k[2] / n.max(1.0),
+                100.0 * k[3] / n.max(1.0),
+                pm / n.max(1.0),
+                s0 / n.max(1.0),
+                s1 / n.max(1.0),
+                sm / n.max(1.0),
+                f.join(" ")
+            );
+        }
+    }
+}
+
+/// The tuning grid on the physical model (a tuning aid, the tuning sets only: `AIR_GRID` as
+/// [`air_tune_grid`]'s, `AIR_SET` and `AIR_MIXES=world` as [`air_calib_physical_tuning`]'s;
+/// `cargo test -p murmur-bridge --release air_tune_grid_physical -- --ignored --nocapture`): each
+/// candidate's failures of the criteria and each class's velocity share and error.
+#[test]
+#[ignore]
+fn air_tune_grid_physical() {
+    let grid: Vec<[f64; 4]> = std::env::var("AIR_GRID")
+        .ok()
+        .map(|g| {
+            g.split(';')
+                .map(|c| {
+                    let v: Vec<f64> = c.split(',').map(|x| x.trim().parse().expect("a number")).collect();
+                    [v[0], v[1], v[2], v[3]]
+                })
+                .collect()
+        })
+        .unwrap_or_else(|| vec![[0.2, 20.0, 3.0, 60.0]]);
+    let mixes: &[Mix] = if std::env::var("AIR_MIXES").is_ok_and(|m| m == "world") { &WORLD_MIXES } else { &MIXES };
+    for t in grid {
+        crate::tracks::model::AIR_TUNE.set(Some(t));
+        let (mut table, mut summary, mut bad) = (Vec::new(), Vec::new(), Vec::new());
+        for (cases, seeds) in tuning_sets() {
+            bad.extend(failures_with_summary(&cases, seeds, &mut table, true, mixes, &mut summary));
+        }
+        eprintln!("=== {t:?}: {}", if bad.is_empty() { "all hold".to_string() } else { format!("{} failures", bad.len()) });
+        eprintln!("{}\n{}", bad.join("\n"), summary.join("\n"));
+    }
+    crate::tracks::model::AIR_TUNE.set(None);
 }
 
 /// The tuning grid (a tuning aid, the tuning sets only: `AIR_GRID="q steady,q manoeuvring,gate,

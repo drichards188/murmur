@@ -1130,6 +1130,27 @@ impl Track {
         )
     }
 
+    /// The velocity's parts (a diagnostic for the calibration tests): each model's velocity
+    /// 1-sigma in its least certain direction (steady, manoeuvring), the manoeuvring model's
+    /// probability, the mixture's velocity 1-sigma, the seconds since a fix last ranged the
+    /// track and since a position fix came, by the fixes' clock (infinite: never), and the
+    /// mixture's velocity (east, north) whether or not it is shown.
+    #[cfg(test)]
+    pub fn debug_velocity(&self) -> [f64; 8] {
+        let (x, c) = mixture(&self.models);
+        let t = self.fix_t.unwrap_or(self.last_seen_t);
+        [
+            vel_var(&self.models[0].c).sqrt(),
+            vel_var(&self.models[1].c).sqrt(),
+            self.models[1].p,
+            vel_var(&c).sqrt(),
+            self.ranged_t.map_or(f64::INFINITY, |r| t - r),
+            self.fixed_t.map_or(f64::INFINITY, |r| t - r),
+            x[2],
+            x[3],
+        ]
+    }
+
     /// Where the track is believed to be at `now`: the last estimate carried forward on
     /// its velocity (dead reckoning); the uncertainty says how far to trust it.
     pub fn predicted(&self, now: f64) -> (f64, f64) {
