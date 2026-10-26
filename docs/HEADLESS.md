@@ -1235,7 +1235,9 @@ west of the Gate passed on their waypoints and drove it ashore on the way out of
 refused those orbits now (eval/SCORING-V3.md 14.4 item 2). Harbor watch's pin leaves the rule not
 evaluated there, so the golden episode and the charged clock's three paused records were re-taken
 for their audit log's `run.started` alone (`rules_version` 17 for 16; the code before it gives the
-earlier digests, every other byte the same).
+earlier digests, every other byte the same). Decision rules 18 (murmur-vni: a track predicted with its own
+velocity error) and the air tracker's agreed velocities re-took them again for `rules_version`
+alone (18 for 17): Harbor watch and the v2 episodes have no velocity the change moves.
 
 ### 17.3 The bake tool
 

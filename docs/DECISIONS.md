@@ -606,6 +606,37 @@ group. Dates are 2026.
   like the air break's lag; keep-outs held in every ground case. F15 smoke: no-velocity ground blockers 66.7 % to 3.0 % of blocked attempts,
   nominations passed unchanged (4 of 1,191; aircraft block 97 %). Details: docs/SENSING.md,
   "Ground tracks under coarse fixes". Physical seeds 401-490 are spent.
+- **Aircraft show the velocities the tracker's two models agree on, up to 20 m/s 1-sigma** (10-26,
+  bd murmur-vni, the owner's decision A of 2026-10-26, with decision rules 18 under Engineering).
+  Under the physical sensing model an emitting aircraft is fixed by ESM positions and 2D radars'
+  bearings and its honest velocity 1-sigma is 5 to 9 m/s, so the 3 m/s gate hid every such
+  velocity (docs/SENSING.md, "Aircraft velocity under the physical model"). With rules 18 the
+  engine predicts a track with the velocity's own error, so a velocity need only be honest: an
+  aircraft's is now also shown with a 1-sigma up to 20 m/s while the IMM's two models agree on it
+  (the spread of their velocities about the mixture's below 1 m/s); the 3 m/s gate stands for
+  every domain. Why agreement: in a turn or a speed-up the steady model lags and the manoeuvring
+  one follows, and a velocity shown then is off by more than its sigma; a plain larger gate (4 to
+  12 m/s) showed those, failed up to 49 of the tuning sets' criteria and, at 10, the legacy
+  calibration's asserting sets. Chosen on the air tuning sets (101-220, the world set on
+  101-130) with Golden Gate's mixes: 15 failures against 13, every keep-out miss the same, every
+  steady class's velocity honest (two that were not now are), the new failures the tracker
+  alone's largest miss in hard turns without a camera (329 to 387 m 3 s ahead against 300). The
+  sixth air held-out set (521-550), written before and run once after (a78ab5e): positions honest
+  (within two sigmas 88.3 to 100 %), every steady class's velocity honest (NEES 0.21 to 1.54), no
+  altitude; keep-outs missed three cases by 9 to 13 m 3 s ahead (as with the old gate, an
+  attribution run showed) and the break without cameras 24 times by up to 185 m 3 s ahead and
+  once by 36 m 10 s ahead (the accepted break lag; the old gate: 27 by 203 m and 2 by 95 m); the
+  tracker alone failed five times, all in hard turns (up to 456 m 3 s ahead, 1,209 m 10 s ahead, a
+  weave without cameras 4.71 % of samples 3 s ahead). Velocity shown in the camera-less mix in 31
+  to 46 % of the steady classes' samples (none before). Cost, stated: a velocity shown in a hard
+  turn the filter has not yet taken in may still lag by a few hundred metres a few seconds ahead
+  (the tracker alone's failures); every keep-out of an aircraft counts rules 14's reach, which
+  covers it, and agents and the console see the velocity without its error (`get_tracks` carries
+  no `velocity_sigma_mps`: a follow-up). Smokes: F15 unchanged (4 of 1,191 nominations passed,
+  aircraft blocking 1,152), attempts with a no-velocity aircraft blocker 952 to 893; F2's drone with
+  a velocity by its deadline 20 of 20 (8). Rejected: the reported (consistency-widened) sigma, the
+  manoeuvring probability or the widening as the honesty condition (37 to 45 failures at 8 m/s).
+  Ground and surface are unchanged. Air seeds 521-550 are spent.
 - **Identity fusion by specificity and weight of evidence; the picture names each kind's level**
   (10-26; the owner unfroze the sensor model for SCORING-V3.md 15's defects (a), (c) and (d)).
   (a) A track's `identity.level` (`detect`, `recognise`, `identify`) says whether its kind is a
@@ -2309,7 +2340,9 @@ group. Dates are 2026.
   holds worse than 1 m/s blocks farther along its course (a radar-only boat at 3 m/s, 100 s
   ahead: 2-sigma 644 m for 307 m). The 96 earlier scenarios end as under rules 17 (their tracks
   give no error, so the floor applies); scenarios 97 and 98 show a nomination rejected and an
-  engagement under way aborted by the error; replay reads the error from the logged facts.
+  engagement under way aborted by the error; replay reads the error from the logged facts. With
+  it the air tracker shows the velocities its models agree on up to 20 m/s (under Fleet and
+  simulation).
 - **Decision rules are versioned; old logs replay with their own rules** (10-04,
   coordinator). A rule change that alters decisions bumps `RULES_VERSION` and is gated on
   it; `run.started` records the version (none: 1) and the policy schema, and replay

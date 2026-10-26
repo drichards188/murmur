@@ -972,6 +972,84 @@ circle: the tracker alone (the velocity region) missed 3 s ahead in 10.5 % of sa
 44 m, while rules 14's keep-outs held them. The sixth air held-out set (521-550, `calib_air`) was
 written for this change and is unspent.
 
+**Aircraft velocity, the change** (murmur-vni, 10-26, the owner's decision A: the decision engine
+reads the tracker's velocity uncertainty). Two parts.
+
+- *Decision rules 18* (`VELOCITY_SIGMA_SINCE`, crates/murmur-decide/README.md): the keep-out's
+  regions along a track's velocity and its average velocity grow with the 1-sigma the tracker
+  reports (`velocity_sigma_mps`), the policy's 1 m/s a floor; a young track's speed bound adds two
+  of the same. A shown velocity no longer has to be good to 1 m/s to be safe to give the engine.
+  The air calibration's "tracker alone" is now the current rules' regions without rules 14's
+  aircraft region (`calib_air::tracker_regions`; rules 13's until then).
+- *The air gate*: an aircraft's velocity is also shown with a 1-sigma up to 20 m/s while the IMM's
+  two models agree on it, the spread of their velocities about the mixture's (each weighted by its
+  probability) below 1 m/s (`model::AIR_VEL_AGREED_SIGMA_MPS`, `AIR_VEL_AGREE_MPS`); the 3 m/s
+  gate stands as before, for every domain. Agreement is the honesty condition. Under coarse fixes
+  the models agree in steady flight and the mixture's velocity is honest (cautious, a velocity
+  NEES of about 0.2); in a turn, a speed-up or a stop the steady model lags and the manoeuvring
+  one follows, and a velocity shown then is off by more than its sigma. A plain larger gate showed
+  those: on the tuning sets with the world mixes its failures of the criteria were 17, 18, 27, 47,
+  47 and 49 at 4, 5, 6, 8, 10 and 12 m/s (the tracker alone a few seconds ahead, in turns), and at
+  10 it failed the legacy calibration's asserting sets. Other honesty conditions tried at 8 m/s
+  (the reported, consistency-widened sigma under the gate; the manoeuvring model's probability
+  under 0.3; the widening under 1.5): 37 to 45 failures. With agreement at 1 m/s, gates of 8, 10,
+  12, 15 and 20 gave 18, 18, 18, 16 and 15; agreement at 1.5, 2 and 3 m/s (gate 10) 22, 31 and 39,
+  at 0.5 and 0.75 (gate 12) 15 and 17 with less velocity. Ground and surface tracks are unchanged:
+  nothing in their calibrations asked for it.
+
+On the tuning sets (101-220, and the world set on 101-130) with every mix of `WORLD_MIXES`: 13
+failures before, 15 after. Every keep-out miss is the same, line for line. The two velocities
+over the honesty bound before (speed change 2.85 and hover and go 5.76, with every sensor) are
+within it; every class flown straight between manoeuvres is honest. The four new failures are the
+tracker alone's largest miss in turns seen without a camera: 3 s ahead 329 to 387 m in random
+turns and two routes (the bound 300 m), 10 s ahead 1,206 m in the approach and break (1,200; its
+3 s miss, failing before at 333 m, now 470 m). That is the accepted limit's kind (DECISIONS.md,
+10-25 and 10-26: allow about 250 m within a few seconds where no camera holds an aircraft), and
+rules 14's region, in every keep-out of an aircraft, covers it. The share of samples with a
+velocity, the class lines' mean: Golden Gate without cameras 0 to 26 % (its steady classes 0 to
+33 %), Golden Gate 51 to 65 % (77 to 83 %), every sensor 0 to 32 %, a radar and EO/IR 0 to 4 %; one
+2D radar none (unranged, by design).
+
+The sixth air held-out set (521-550, `air_calib_physical_held_out_six`, every mix of
+`WORLD_MIXES`), written before the change and run once after it (a78ab5e):
+
+- *Position*: every class and mix honest when updated, NEES 0.82 to 1.96, within two sigmas 88.3
+  to 100 %. No altitude from sensors that measure none.
+- *Velocity*: every class flown straight between manoeuvres honest, a velocity NEES of 0.21 to
+  1.54. Shown in Golden Gate without cameras 31 to 46 % of the steady classes' samples (straight
+  45.5, one turn 44.6, hover and go 39.1, speed change 34.6, a drone inbound 31.1), with them 67 to
+  86 %, with every sensor 24 to 30 %. The classes that keep turning are reported, not asserted:
+  random turns 3.9 and 4.1, a weave without cameras 10.4, a loiter without cameras 5.3.
+- *Keep-outs*: five misses. Three a few metres 3 s ahead (a loiter with every sensor, 1 in 4,412
+  by 10 m; a tour helicopter's route without cameras, 1 in 8,091 by 13 m; the approach and break
+  with every sensor, 2 in 2,572 by 9 m), and the approach and break without cameras, 24 in 8,085
+  by up to 185 m 3 s ahead and 1 by 36 m 10 s ahead: the accepted break lag. Keep-outs 30, 60 and
+  100 s ahead held every case.
+- *The tracker alone*: five failures, all in hard turns: the approach and break with every sensor
+  (3 s ahead 1.83 % of samples by up to 456 m; 10 s, 1.36 % by up to 1,209 m) and without cameras
+  (3 s, 2.19 % by up to 353 m), a route without cameras (3 s, 2.14 % by up to 365 m), a weave
+  without cameras (3 s, 4.71 % of samples, by up to 158 m, over the 3 % share).
+
+For attribution only, after that one run and with nothing changed after it, the same set with the
+air gate at 3 m/s (rules 18 kept): the same three small keep-out misses; the break without
+cameras 27 times by up to 203 m 3 s ahead and twice by up to 95 m 10 s ahead; the tracker alone
+over its bound once (the break, 313 m); two velocities dishonest (hover and go 10.6, speed change
+16.2, with every sensor). So the new gate adds the tracker alone's four failures in hard turns,
+narrows the break's keep-out misses, and makes those two velocities honest.
+
+The smokes, the same situations before (main's code) and after:
+
+- F15 (golden-gate-v3, seeds 5400-5409, the basic oracle with its loiter): 1,191 nomination
+  attempts both times, 4 passed both times, 1,186 blocked by a keep-out and 1,152 of those by an
+  aircraft both times. Attempts with an aircraft blocker with a velocity 850 to 946, with one
+  without a velocity 952 to 893, with every aircraft blocker given a velocity 200 to 259;
+  blocker-attempt pairs counted by rules 14's aircraft reach 1,680 to 2,009, by no velocity 1,649
+  to 1,310. As expected: over F15's spans rules 14's reach from a velocity's speed bound is the
+  top-speed reach, so a velocity unblocks nothing there; the radar-only hobby drone stays without
+  one (unranged).
+- F2 (seeds 5370-5379, both worlds, `none`): the drone's track had a velocity at some sample by its
+  need's deadline in 20 of 20 (8 before), at the deadline in 11 of 20 (5).
+
 ## Python
 
 `eval/headless/sensing.py` (`SenseModel`, through `murmur-headless --sense`, or the `sense`

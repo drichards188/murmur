@@ -351,10 +351,13 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: it gave the earlier ones, and each record is the same but for the model's `get_tracks` results
 #: (the longer note, each track's `identity.level`) and its transcript's sizes and estimated costs;
 #: the playbook's, which keeps no reads, did not move.
+#: Re-taken for decision rules 18 and the air velocity gate (murmur-vni): each record is the
+#: earlier one but for its audit log's `run.started` (`rules_version` 18 for 17); the gate moved
+#: nothing in them.
 PAUSED = {
-    "model harbor-watch s1": "3aa2dfa4a0077a6f47dcbeae511f89fac31a15f7b2f2757819d186aa9b697400",
-    "playbook v2 fast-unknown 1000": "56ef42c4f1aa2d5a20925db8e53ab1fe5897db08f62f582eb41b056ccad73658",
-    "model v2 fast-unknown 1000": "efb57164b7eb80bf1058a1ea804ad09e37a5e86dce3d7ec96f7915261bb8033e",
+    "model harbor-watch s1": "311704bcd27e9fa8d6f889ddbecfa39c5bda79803672647f020f19afcb5d7180",
+    "playbook v2 fast-unknown 1000": "417a7a97ed201d2376f0a67b8ff673ce3e1ee0ce0121aeae2df9bdfff95486d1",
+    "model v2 fast-unknown 1000": "64eca71f703b7e5a931db4ce02a599e54e5e1b12db973b99a6f68be9c1f420e6",
 }
 
 

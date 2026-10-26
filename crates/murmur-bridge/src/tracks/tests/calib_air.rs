@@ -130,8 +130,11 @@
 //!     [`WORLD_MIXES`] only: the failures of the criteria went from 13 to 15, every keep-out's
 //!     the same, both steady classes' velocity errors over the bound before honest now, and the
 //!     four new ones the tracker alone's largest miss in turns seen without a camera (3 s ahead
-//!     329 to 387 m against 300; 10 s ahead 1,206 m against 1,200). The sixth set (521-550) is
-//!     run once, after it ([`air_calib_physical_held_out_six`]).
+//!     329 to 387 m against 300; 10 s ahead 1,206 m against 1,200). The sixth set (521-550) was
+//!     run once, after it ([`air_calib_physical_held_out_six`], a78ab5e): positions and every
+//!     steady class's velocity honest, no altitude; keep-outs missed three cases by 9 to 13 m 3 s
+//!     ahead and the break without cameras by up to 185 m (3 s) and 36 m (10 s); the tracker alone
+//!     failed five times, all in hard turns (docs/SENSING.md, "Aircraft velocity, the change").
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
@@ -179,8 +182,9 @@ pub const AIR_PHYSICAL_HELD_OUT_FOUR_SEEDS: RangeInclusive<u64> = 341..=370;
 pub const AIR_PHYSICAL_HELD_OUT_FIVE_SEEDS: RangeInclusive<u64> = 401..=430;
 /// The physical sensing model's sixth air held-out set's seeds
 /// ([`physical_held_out_six_cases`]): written before murmur-e3b's air velocity change, run once
-/// after it. 221-520 were spent (the ground's tuning set the last, 491-520); the fresh sets start
-/// at 521.
+/// after it (murmur-vni, a78ab5e). 221-520 were spent (the ground's tuning set the last, 491-520);
+/// the fresh sets started at 521. Spent: the next air check needs a fresh set from 551 (551-580
+/// and 581-610 are earmarked for the surface and the ground).
 pub const AIR_PHYSICAL_HELD_OUT_SIX_SEEDS: RangeInclusive<u64> = 521..=550;
 /// The rules the tracker before this calibration was judged under (the keep-out's regions).
 const BEFORE_RULES: u32 = 12;
