@@ -4540,12 +4540,9 @@ fn replay_inner<S: AsRef<str>>(
                             since: since.unwrap_or(Time(i64::MIN)),
                         },
                     },
-                    Accepting::Behaving(t, f) => Expected::TrackAcceptance {
+                    Accepting::Behaving(t, _) => Expected::TrackAcceptance {
                         intent: *intent,
-                        track: crate::passkey::AcceptedTrack {
-                            track: (*t).clone(),
-                            at: f.position.t,
-                        },
+                        track: crate::passkey::AcceptedTrack { track: (*t).clone() },
                     },
                 };
                 check_step_up(

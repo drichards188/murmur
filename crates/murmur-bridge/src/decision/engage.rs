@@ -43,6 +43,13 @@
 //!   signature; `.../revoke_unknown` withdraws it). Only an operator with engagement
 //!   authority accepts (403 otherwise); an agent's request with it is refused. The card
 //!   shows the acceptances to every signer, and their picture tokens carry them.
+//! - **Live tracks as behaving now** (rules 19, bd murmur-j0x). A nomination may carry
+//!   `accept_behaving`: live tracks the nominating operator accepts as they are behaving now
+//!   (`POST /api/intents/{id}/accept_behaving` does it while the nomination waits with no
+//!   signature; `.../revoke_behaving` withdraws it, any operator). Engagement authority only
+//!   (403), never an agent's, the `accept_unknown` step-up in a credentials run. The keep-out
+//!   then counts the track along its accepted path and its course now; the acceptance lapses
+//!   on its own (`engage.acceptance_lapsed`) and the card shows the lapse.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -87,6 +94,18 @@ pub struct EngageParams {
     /// accepts, each since the last fix the check names. An operator's only.
     #[serde(default)]
     pub accept_lost: Vec<AcceptLost>,
+    /// Rules 19: the live tracks the nominating operator accepts as they are behaving now (each
+    /// with its facts at the nomination, which the engine logs). An operator's with engagement
+    /// authority only.
+    #[serde(default)]
+    pub accept_behaving: Vec<AcceptBehaving>,
+}
+
+/// Rules 19: "track `track`, as it is behaving now: accept" (its estimate at the acceptance).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptBehaving {
+    pub track: String,
 }
 
 /// Rules 16: "lost contact `track`, out of view since `since`: accept".
@@ -2067,6 +2086,60 @@ impl Decision {
         out
     }
 
+    /// `POST /api/intents/{id}/accept_behaving` with `{"track"}` (rules 19, bd murmur-j0x): an
+    /// operator with engagement authority accepts, for a nomination waiting with no signature yet,
+    /// live track `track` as it is behaving now: its facts now are logged with `engage.accepted`
+    /// naming the track, and the keep-out counts it along its accepted path and its course now
+    /// until the acceptance lapses or is revoked. 403 without engagement authority; 409 when the
+    /// engine refuses it (out of view, no velocity, the target, already accepted, after a
+    /// signature). Never automatic, never an agent's (agents have no route here).
+    pub fn accept_behaving(
+        &self,
+        by: &super::Actor,
+        id: u64,
+        track: &str,
+        step: Option<crate::auth::StepUpChecked>,
+    ) -> Result<super::Outcome, DecisionError> {
+        let id = IntentId(id);
+        let world = self.snapshot();
+        let out = {
+            let mut guard = self.lock();
+            let core = &mut *guard;
+            let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
+            let Some(auth) = session.engagement_authority() else {
+                return Err(DecisionError::new(
+                    403,
+                    format!("{by} has no engagement authority: only an operator with it accepts a live track as behaving now"),
+                ));
+            };
+            let step = Self::mint_step(&mut core.engine, session, by, step)?;
+            match core.engine.accept_live_track(id, auth, step, track, &world) {
+                Ok(_) => Ok(self.outcome(core, id)),
+                Err(e) => Err(self.with_intent(core, id, engine_err(e))),
+            }
+        };
+        self.publish();
+        out
+    }
+
+    /// `POST /api/intents/{id}/revoke_behaving` with `{"track"}` (rules 19): any operator
+    /// withdraws an acceptance of a live track as behaving now (it only restricts: the keep-out
+    /// counts the track by all its regions again, which stops an engagement it now blocks).
+    pub fn revoke_behaving(&self, by: &super::Actor, id: u64, track: &str) -> Result<super::Outcome, DecisionError> {
+        let id = IntentId(id);
+        let out = {
+            let mut guard = self.lock();
+            let core = &mut *guard;
+            let session = Self::session(&mut core.engine, &mut core.sessions, &core.logins, by, &self.engage_operators, self.auth)?;
+            match core.engine.revoke_live_track(id, session.authority(), track) {
+                Ok(_) => Ok(self.outcome(core, id)),
+                Err(e) => Err(self.with_intent(core, id, engine_err(e))),
+            }
+        };
+        self.publish();
+        out
+    }
+
     /// `POST /api/intents/{id}/revoke_unknown` with `{"track"}` (rules 16): any operator
     /// withdraws an acceptance of a lost contact.
     pub fn revoke_lost(&self, by: &super::Actor, id: u64, track: &str) -> Result<super::Outcome, DecisionError> {
@@ -2340,6 +2413,45 @@ impl Decision {
         } else {
             Vec::new()
         };
+        // rules 19: the live tracks accepted for it as behaving now (each with the estimate it was
+        // accepted on), and the acceptances that lapsed on their own, shown to every signer
+        let accepted_behaving: Vec<Value> = record
+            .map(|e| {
+                e.accepted_behaving
+                    .iter()
+                    .map(|(track, a)| {
+                        json!({
+                            "track": track,
+                            "by": a.by,
+                            "t": a.t,
+                            "estimate_t": a.facts.position.t,
+                            "position": a.facts.position.value,
+                            "velocity_mps": a.facts.velocity_mps,
+                            "velocity_sigma_mps": engage::track_velocity_error(&a.facts, &self.rules.engage_rules()),
+                            "identity": a.facts.identity,
+                            "affiliation": a.facts.affiliation.value,
+                            "domain": a.facts.domain,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let lapsed: Vec<Value> = record
+            .map(|e| e.lapsed.iter().map(|l| json!(l)).collect())
+            .unwrap_or_default();
+        // rules 19: what accepting each live blocker as behaving now would do (and how each
+        // acceptance in force stands now), as the checks read it; acceptable only while it waits
+        // with no signature
+        let behaving: Vec<Value> = if matches!(i.state(), State::PendingApproval | State::Approved | State::Dispatched) {
+            core.engine
+                .behaving_options(i.id(), world, &self.terrain.oracle())
+                .iter()
+                .map(|b| json!(b))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let behaving_acceptable_now = i.state() == State::PendingApproval && i.concurrences().is_empty();
         let eligible: Vec<String> = self
             .engage_operators
             .iter()
@@ -2359,6 +2471,10 @@ impl Decision {
             "accepted": accepted,
             "accepted_lost": accepted_lost,
             "lost_open": lost_open,
+            "accepted_behaving": accepted_behaving,
+            "lapsed": lapsed,
+            "behaving": behaving,
+            "behaving_acceptable_now": behaving_acceptable_now,
             "token_ttl_s": self.rules.engage_rules().token_ttl(),
             "max_signing_s": self.rules.engage_rules().max_signing_s,
             // the plan the first signature froze: every later signer signs it exactly

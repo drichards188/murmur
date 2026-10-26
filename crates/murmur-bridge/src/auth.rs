@@ -1447,7 +1447,8 @@ async fn login_passkey_options(State(auth): State<Arc<Auth>>, body: Bytes) -> Re
 /// "intent": n, "token": t}` (an engagement's signature quotes its picture token), `{"act":
 /// "declare_hostile", "track": id}`, `{"act": "confirm_declaration", "track": id}`, `{"act":
 /// "accept_unknown", "intent": n or null, "accept_unknown": [{"uid", "since"}], "accept_lost":
-/// [{"track", "since"}]}` (lost contacts, rules 16), `{"act": "unspend", "uid": n}` (rules 15).
+/// [{"track", "since"}], "accept_behaving": [{"track"}]}` (lost contacts, rules 16; live tracks
+/// as behaving now, rules 19), `{"act": "unspend", "uid": n}` (rules 15).
 /// The act's request then carries the assertion as `"passkey"`.
 async fn step_up_options(State(auth): State<Arc<Auth>>, headers: HeaderMap, body: Bytes) -> Response {
     #[derive(Deserialize)]
@@ -1464,6 +1465,9 @@ async fn step_up_options(State(auth): State<Arc<Auth>>, headers: HeaderMap, body
         /// rules 16: lost contacts accepted with it
         #[serde(default)]
         accept_lost: Vec<crate::decision::engage::AcceptLost>,
+        /// rules 19: live tracks accepted as behaving now with it
+        #[serde(default)]
+        accept_behaving: Vec<crate::decision::engage::AcceptBehaving>,
         #[serde(default)]
         uid: Option<crate::vehicle::Uid>,
     }
@@ -1486,8 +1490,8 @@ async fn step_up_options(State(auth): State<Arc<Auth>>, headers: HeaderMap, body
         },
         "declare_hostile" => track().map(|track| murmur_decide::StepUpFor::DeclareHostile { track }),
         "confirm_declaration" => track().and_then(|t| auth.decision.confirm_purpose(&t)),
-        "accept_unknown" if !b.accept_unknown.is_empty() || !b.accept_lost.is_empty() => {
-            Ok(auth.decision.accept_purpose(b.intent, &b.accept_unknown, &b.accept_lost))
+        "accept_unknown" if !b.accept_unknown.is_empty() || !b.accept_lost.is_empty() || !b.accept_behaving.is_empty() => {
+            Ok(auth.decision.accept_purpose(b.intent, &b.accept_unknown, &b.accept_lost, &b.accept_behaving))
         }
         "unspend" => match b.uid {
             Some(u) => auth.decision.unspend_purpose(u),

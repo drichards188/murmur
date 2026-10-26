@@ -365,6 +365,8 @@ fn label_of(kind: engage::ReachKind) -> &'static str {
         engage::ReachKind::NoVelocity => "no_velocity",
         engage::ReachKind::Aircraft => "aircraft",
         engage::ReachKind::OutOfView => "out_of_view",
+        // rules 19: a track accepted as behaving now (no probe world accepts one)
+        engage::ReachKind::Accepted => "accepted",
     }
 }
 

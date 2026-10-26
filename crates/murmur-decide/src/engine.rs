@@ -1696,7 +1696,7 @@ impl Engine {
         let step_up = if accept.is_empty() && contacts.is_empty() && behaving.is_empty() {
             None
         } else {
-            let named: Vec<(String, Time)> = behaving.iter().map(|(id, t)| (id.clone(), t.position.t)).collect();
+            let named: Vec<String> = behaving.iter().map(|(id, _)| id.clone()).collect();
             let expected = if named.is_empty() {
                 crate::passkey::StepUpFor::accepting_lost(None, accept, contacts)
             } else {
@@ -2012,7 +2012,7 @@ impl Engine {
         let Some(facts) = filled.tracks.get(track).cloned() else {
             return Err(no(format!("{track} is not in the picture")));
         };
-        let expected = crate::passkey::StepUpFor::accepting_all(Some(id), &[], &[], &[(track.to_string(), facts.position.t)]);
+        let expected = crate::passkey::StepUpFor::accepting_all(Some(id), &[], &[], &[track.to_string()]);
         let step_up = self.act_step_up(policy::StepUpAct::AcceptUnknown, by.operator(), by.session(), step, &expected)?;
         self.record_behaving(id, by.operator(), by.session(), step_up, track, &facts, world.t)?;
         self.get(id)
@@ -4224,6 +4224,38 @@ impl Engine {
             None => engage::preview(spec, &inputs, &self.policy.rules).ok(),
         };
         Some((checks, pv))
+    }
+
+    /// Rules 19: for the console's card of engagement `id` (pending, approved or under way), each
+    /// live track that blocks its keep-out on `world` now and what accepting it as behaving now
+    /// would do, and each track accepted for it as the acceptance has it now (its plan's effect
+    /// point once a signature froze one), read as the checks read them ([`crate::keepout::
+    /// behaving_options`]). Read-only, nothing logged; empty before rules 19 or when there is
+    /// nothing to judge.
+    pub fn behaving_options(
+        &self,
+        id: IntentId,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Vec<crate::keepout::BehavingInfo> {
+        let Some(intent) = self.intents.get(&id) else {
+            return Vec::new();
+        };
+        let spec = intent.spec();
+        if spec.kind() != TaskKind::Engage || !self.policy.rules.accept_behaving() {
+            return Vec::new();
+        }
+        let mut inputs = world.for_intent_with(spec, terrain, &self.policy.rules);
+        self.identify(&mut inputs);
+        self.fill_engine_facts(spec, &mut inputs);
+        // a frozen plan's (or the approval's) effect point and time: what the signers signed
+        let plan = intent
+            .engagement()
+            .and_then(|e| e.snapshot.as_ref().map(|s| &s.preview).or(e.plan.as_ref().map(|p| &p.preview)));
+        match plan {
+            Some(p) => crate::keepout::behaving_at(spec, &inputs, &self.policy.rules, p).unwrap_or_default(),
+            None => crate::keepout::behaving_options(spec, &inputs, &self.policy.rules).unwrap_or_default(),
+        }
     }
 
     // ---- identification (rules 9) ----------------------------------------------------

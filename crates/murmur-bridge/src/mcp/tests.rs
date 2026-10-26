@@ -1955,7 +1955,7 @@ async fn agents_read_lost_contacts_and_no_tool_accepts_one() {
     for t in tools::tools() {
         let schema = serde_json::to_string(&t.input_schema).expect("schema");
         assert!(!t.name.contains("accept"), "{}", t.name);
-        assert!(!schema.contains("accept_lost") && !schema.contains("accept_unknown"), "{}: {schema}", t.name);
+        assert!(!schema.contains("accept_lost") && !schema.contains("accept_unknown") && !schema.contains("accept_behaving"), "{}: {schema}", t.name);
         if t.name == "get_tracks" || t.name == "get_nomination_options" {
             assert_eq!(t.annotations.as_ref().and_then(|a| a.read_only_hint), Some(true), "{}", t.name);
         }
@@ -1972,6 +1972,12 @@ async fn agents_read_lost_contacts_and_no_tool_accepts_one() {
     n["accept_unknown"] = json!([{ "uid": 3, "since": null }]);
     let (refused, out) = r.call(&planner(), "propose_intent", n).await;
     assert!(refused && out["status"] == 403, "{out}");
+    // rules 19: nor a live track as behaving now
+    let mut n = nomination(2, Some("T-0001 is declared hostile and holding in ez-gate-west"));
+    n["accept_behaving"] = json!([{ "track": "T-0001" }]);
+    let (refused, out) = r.call(&planner(), "propose_intent", n).await;
+    assert!(refused && out["status"] == 403, "{out}");
+    assert!(out["error"].as_str().unwrap_or("").contains("as behaving now"), "{out}");
     assert_eq!(r.events("intent.created"), created, "nothing nominated");
     assert_eq!(r.events("engage.accepted"), 0, "nothing accepted");
     let rep = r.replays();

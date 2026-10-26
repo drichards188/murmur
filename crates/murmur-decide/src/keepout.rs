@@ -739,6 +739,65 @@ impl Runs {
 /// effect radius above the policy's maximum, a signature's frozen plan, rules before 6) or
 /// when the explanation would not agree with the checks (then nothing is shown rather than
 /// something wrong).
+/// Rules 19: for each live track that blocks the keep-out on tracks of nomination `spec` on
+/// `world` (its own acceptance as behaving now, if one is in force, read as the check reads it),
+/// what accepting it as behaving now would do ([`BehavingInfo`]); and each track accepted for it,
+/// blocking or not, as the acceptance has it. Without the explanation's scans (cheap: the card of
+/// a waiting nomination reads it every time it is drawn). Read-only, not logged. Err as
+/// [`explain`] when there is nothing to judge (not an engagement, no preview, a frozen plan's
+/// checks, rules before 19).
+pub fn behaving_options(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Result<Vec<BehavingInfo>, String> {
+    let pv = engage::preview(spec, world, cfg).map_err(|e| format!("no preview: {e}"))?;
+    behaving_at(spec, world, cfg, &pv)
+}
+
+/// [`behaving_options`] at a given plan's effect point and time (`pv`: a frozen plan's, or the
+/// approval's: what the signers signed).
+pub fn behaving_at(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig, pv: &EngagePreview) -> Result<Vec<BehavingInfo>, String> {
+    let ec = cfg.engage_rules();
+    if !ec.accept_behaving() {
+        return Err("these decision rules have no acceptance of a live track as behaving now".into());
+    }
+    let (track_id, radius, _, _) = engage::params(spec).ok_or("not an engagement")?;
+    let window = engage::effective_window(spec, &ec).ok_or("not an engagement")?;
+    let pv = pv.clone();
+    let target = world
+        .tracks
+        .get(track_id)
+        .ok_or_else(|| format!("track {track_id} is not in the picture"))?;
+    let opts = Options::default();
+    let ctx = Ctx {
+        spec,
+        world,
+        cfg,
+        ec: ec.clone(),
+        opts: &opts,
+        platform: spec.uids.first(),
+        track_id,
+        target,
+        radius,
+        clearance: pv.keep_out_m,
+        window,
+        pv,
+    };
+    let (point, effect_t, clearance) = (ctx.pv.effect_point, ctx.pv.effect_t, ctx.clearance);
+    let alt = engage::effect_alt(Some(target), world.t, effect_t, ctx.pv.effect_radius_m, &ec);
+    let mut out = Vec::new();
+    for (id, t) in &world.tracks {
+        if engage::track_exempt(id, t, track_id, &ec) {
+            continue;
+        }
+        let (standing, accepted, lapse) = engage::live_standing(id, t, point, effect_t, clearance, world, &ec, alt, false);
+        let blocks = standing.as_ref().is_some_and(|s| s.blocks(clearance));
+        if (blocks || accepted.is_some() || lapse.is_some())
+            && let Some(b) = behaving_info(&ctx, id, t, alt, accepted, lapse)
+        {
+            out.push(b);
+        }
+    }
+    Ok(out)
+}
+
 pub fn explain(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig, opts: &Options) -> Result<Explanation, String> {
     let ec = cfg.engage_rules();
     if !ec.v6() {

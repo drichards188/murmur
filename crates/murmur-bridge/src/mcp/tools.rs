@@ -189,6 +189,10 @@ pub struct IntentParams {
     #[serde(default)]
     #[schemars(skip)]
     pub accept_lost: Option<Value>,
+    /// Rules 19: nor accepting a live track as behaving now (refused, 403).
+    #[serde(default)]
+    #[schemars(skip)]
+    pub accept_behaving: Option<Value>,
 }
 
 /// `get_link_coverage`'s arguments: parsed to check them and for the schema; the query reads the
@@ -332,6 +336,7 @@ impl IntentParams {
         // refused by the agent path (403), never dropped
         put("accept_unknown", self.accept_unknown);
         put("accept_lost", self.accept_lost);
+        put("accept_behaving", self.accept_behaving);
         serde_json::from_value(Value::Object(body)).map_err(|e| format!("bad arguments: {e}"))
     }
 }

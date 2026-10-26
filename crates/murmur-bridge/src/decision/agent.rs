@@ -414,6 +414,13 @@ impl Decision {
                     "an agent can't accept a lost contact: only an operator with engagement authority can (engage.accepted)",
                 ));
             }
+            // rules 19: nor a live track as behaving now
+            if !req.engage.accept_behaving.is_empty() {
+                return Err(DecisionError::new(
+                    403,
+                    "an agent can't accept a live track as behaving now: only an operator with engagement authority can (engage.accepted)",
+                ));
+            }
             self.check_vehicles(&req.uids)?;
             return engage::proposal(req, self.clock.now());
         }

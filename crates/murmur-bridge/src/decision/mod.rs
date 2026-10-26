@@ -251,6 +251,8 @@ fn engine_err(e: EngineError) -> DecisionError {
         | EngineError::NoPicture { .. }
         | EngineError::SupersedesEngagement { .. }
         | EngineError::NotAccepted { .. }
+        | EngineError::NotAcceptedContact { .. }
+        | EngineError::NotAcceptedTrack { .. }
         | EngineError::NotWrittenOff(_)
         | EngineError::NotUnspent(_) => 409,
         EngineError::EngagementNeedsAuthority(_)
@@ -1168,17 +1170,22 @@ impl Decision {
         self.lock().engine.confirm_purpose(track).map_err(engine_err)
     }
 
-    /// What a passkey acceptance of lost vehicles (rules 16: and lost contacts) is for
-    /// (`intent` None: with a nomination).
+    /// What a passkey acceptance of lost vehicles (rules 16: and lost contacts; rules 19: and
+    /// live tracks as behaving now) is for (`intent` None: with a nomination).
     pub fn accept_purpose(
         &self,
         intent: Option<u64>,
         list: &[engage::AcceptUnknown],
         lost: &[engage::AcceptLost],
+        behaving: &[engage::AcceptBehaving],
     ) -> murmur_decide::StepUpFor {
         let v: Vec<(DUid, Option<Time>)> = list.iter().map(engage::AcceptUnknown::engine).collect();
         let c: Vec<(String, Time)> = lost.iter().map(engage::AcceptLost::engine).collect();
-        murmur_decide::StepUpFor::accepting_lost(intent.map(IntentId), &v, &c)
+        if behaving.is_empty() {
+            return murmur_decide::StepUpFor::accepting_lost(intent.map(IntentId), &v, &c);
+        }
+        let t: Vec<String> = behaving.iter().map(|a| a.track.clone()).collect();
+        murmur_decide::StepUpFor::accepting_all(intent.map(IntentId), &v, &c, &t)
     }
 
     /// Credentials run, rules 10: open the engine session for a login whose passkey
@@ -1501,7 +1508,9 @@ impl Decision {
             let accept: Vec<(DUid, Option<Time>)> =
                 req.engage.accept_unknown.iter().map(engage::AcceptUnknown::engine).collect();
             let contacts: Vec<(String, Time)> = req.engage.accept_lost.iter().map(engage::AcceptLost::engine).collect();
-            let submitted = if accept.is_empty() && contacts.is_empty() {
+            // rules 19: and of live tracks as behaving now (their facts now)
+            let behaving: Vec<String> = req.engage.accept_behaving.iter().map(|a| a.track.clone()).collect();
+            let submitted = if accept.is_empty() && contacts.is_empty() && behaving.is_empty() {
                 core.engine
                     .submit(session.authority(), proposal, &world, &self.terrain.oracle())
             } else {
@@ -1509,18 +1518,25 @@ impl Decision {
                     return Err(DecisionError::new(
                         403,
                         format!(
-                            "{by} has no engagement authority: only an operator with it accepts a lost {}",
-                            if contacts.is_empty() { "vehicle" } else { "vehicle or contact" }
+                            "{by} has no engagement authority: only an operator with it accepts a {}",
+                            if !behaving.is_empty() {
+                                "live track as behaving now"
+                            } else if contacts.is_empty() {
+                                "lost vehicle"
+                            } else {
+                                "lost vehicle or contact"
+                            }
                         ),
                     ));
                 };
                 let step = Self::mint_step(&mut core.engine, session, by, step)?;
-                core.engine.submit_accepting_lost(
+                core.engine.submit_accepting_all(
                     auth,
                     step,
                     proposal,
                     &accept,
                     &contacts,
+                    &behaving,
                     &world,
                     &self.terrain.oracle(),
                 )

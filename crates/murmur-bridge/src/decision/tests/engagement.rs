@@ -282,6 +282,7 @@ impl Erig {
                 fallback: Some(fallback.into()),
                 accept_unknown: Vec::new(),
                 accept_lost: Vec::new(),
+                accept_behaving: Vec::new(),
             },
             constraints: Constraints::default(),
             rationale: None,
@@ -2758,4 +2759,100 @@ async fn the_decision_facts_carry_the_reaches_of_the_sensing_model_in_force() {
     truth(&e, SensingModel::Physical);
     assert_eq!(reaches(&e), legacy);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Rules 19 (bd murmur-j0x): a live boat whose reach blocks the keep-out (young: tracked 20 s,
+/// so it may still manoeuvre) is accepted as behaving now by an operator with engagement
+/// authority, never by an agent or an operator without it; the card and every signer's picture
+/// token show it, the nomination form's explanation says accepting it clears it, any operator
+/// revokes it, and the log replays.
+#[tokio::test(start_paused = true)]
+async fn only_engagement_authority_accepts_a_live_track_as_behaving_now() {
+    let e = engage_rig();
+    // the platform 3 km south of the target: the effect a while out
+    e.r.vehicle(1, Firmware::Copter, "fpv", (TARGET.0 - 3_000.0 / 111_320.0, TARGET.1));
+    sleep(Duration::from_millis(500)).await;
+    e.picture().await;
+    // a boat 1.5 km north of the target, steaming north at 5 m/s, seen for 20 s
+    let mut boat = ContactTruth {
+        id: "launch".into(),
+        name: "launch".into(),
+        affiliation: TruthAffiliation::Neutral,
+        domain: TDomain::Surface,
+        kind: "fishing_vessel".into(),
+        lat: TARGET.0 + 1_500.0 / 111_320.0,
+        lon: TARGET.1,
+        alt_m: 0.0,
+        speed_mps: 5.0,
+        course_deg: 0.0,
+        emits: false,
+        signature: 1.0,
+        ais: None,
+    };
+    for _ in 0..20 {
+        e.r.clock.advance_ms(1000);
+        boat.lat += 5.0 / 111_320.0;
+        e.sense_at_with(e.now_s(), true, std::slice::from_ref(&boat));
+        e.r.d.tick();
+        sleep(Duration::from_secs(1)).await;
+    }
+    let boat_id = e
+        .tracks
+        .tracks_json(e.now_s())
+        .iter()
+        .find(|t| t["id"] != "T-0001")
+        .and_then(|t| t["id"].as_str().map(str::to_string))
+        .expect("the boat's track");
+    // the nomination form: it blocks, and accepting it as behaving now would clear it
+    let opts = e
+        .r
+        .d
+        .engage_options(engage::OptionsRequest {
+            track: "T-0001".into(),
+            effect_radius_m: 100.0,
+            window_s: Some(300),
+            fallback: Some("return".into()),
+            uids: Some(vec![1]),
+            passed_only: false,
+        })
+        .await
+        .expect("options");
+    let items = opts["options"][0]["keep_outs"]["items"].as_array().cloned().unwrap_or_default();
+    let item = items.iter().find(|i| i["id"] == boat_id.as_str()).cloned().expect("the boat blocks");
+    assert_eq!(item["blocks"], true, "{item}");
+    assert_eq!(item["behaving"]["acceptable"], true, "{item}");
+    assert_eq!(item["behaving"]["clears"], true, "{item}");
+    // an agent can't accept it; op-1 (no engagement authority) neither
+    let mut req = e.nomination("return");
+    req.engage.accept_behaving = vec![engage::AcceptBehaving { track: boat_id.clone() }];
+    req.rationale = Some("the declared fast boat west of the bridge".into());
+    let err = e.r.d.agent_propose(&AgentId::new("agent-planner"), req.clone()).await.expect_err("agent");
+    assert_eq!(err.status, 403, "{}", err.detail);
+    let err = e.r.d.submit(&op("op-1"), req.clone()).await.expect_err("no authority");
+    assert_eq!(err.status, 403, "{}", err.detail);
+    // op-2 accepts it with the nomination: it waits for its signers, the card shows it
+    let out = e.r.d.submit(&op("op-2"), req).await.expect("nominated");
+    assert_eq!(out.state, State::PendingApproval, "{}", out.intent);
+    let id = out.id;
+    let msg: Value = serde_json::from_str(&e.r.d.message()).expect("json");
+    let mine = msg["inbox"]["pending"].as_array().expect("pending").iter().find(|i| i["id"] == id.0).cloned().expect("intent");
+    assert_eq!(mine["engage"]["accepted_behaving"][0]["track"], boat_id.as_str(), "{mine}");
+    assert_eq!(mine["engage"]["accepted_behaving"][0]["by"], "op-2", "{mine}");
+    let card = mine["engage"]["behaving"].as_array().cloned().unwrap_or_default();
+    assert!(card.iter().any(|b| b["track"] == boat_id.as_str() && b["accepted_by"] == "op-2"), "{mine}");
+    let token = e.look("op-3", id).expect("picture");
+    assert_eq!(token["behaving_accepted"][&boat_id]["by"], "op-2", "{token}");
+    // op-1 has no engagement authority: it may not accept, but it may revoke
+    let err = e.r.d.accept_behaving(&op("op-1"), id.0, &boat_id, None).expect_err("no authority");
+    assert_eq!(err.status, 403, "{}", err.detail);
+    e.r.d.revoke_behaving(&op("op-1"), id.0, &boat_id).expect("revoked");
+    let err = e.r.d.approve_with(&op("op-3"), id.0, None, token["id"].as_u64(), false).await.expect_err("old token");
+    assert!(err.detail.contains("changed since you looked"), "{}", err.detail);
+    // op-3 accepts it again while it waits with no signature, but not twice
+    e.r.d.accept_behaving(&op("op-3"), id.0, &boat_id, None).expect("accepted");
+    let err = e.r.d.accept_behaving(&op("op-3"), id.0, &boat_id, None).expect_err("twice");
+    assert_eq!(err.status, 409, "{}", err.detail);
+    assert_eq!((e.r.events("engage.accepted"), e.r.events("engage.acceptance_revoked")), (2, 1));
+    let rep = replay::replay_str(&e.r.log.text()).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
 }

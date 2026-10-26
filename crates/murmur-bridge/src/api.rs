@@ -250,7 +250,8 @@ async fn create_intent(
         Ok(op) => op,
         Err(e) => return decision_error(e),
     };
-    let accepting = !req.engage.accept_unknown.is_empty() || !req.engage.accept_lost.is_empty();
+    let accepting =
+        !req.engage.accept_unknown.is_empty() || !req.engage.accept_lost.is_empty() || !req.engage.accept_behaving.is_empty();
     if proof.is_some() && !accepting {
         return error(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -380,7 +381,7 @@ async fn intent_action(
             Err(e) => decision_error(e),
         };
     }
-    if proof.is_some() && !matches!(action.as_str(), "approve" | "accept_unknown") {
+    if proof.is_some() && !matches!(action.as_str(), "approve" | "accept_unknown" | "accept_behaving") {
         return error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "a password or passkey goes with an approval or an acceptance of a lost vehicle (a step-up) only",
@@ -436,6 +437,34 @@ async fn intent_action(
                 );
             }
         },
+        // rules 19: {"track": id}, a live track as behaving now (its facts at the acceptance), and
+        // the step-up with it when the policy lists accept_unknown (`password` or `passkey`)
+        "accept_behaving" => match serde_json::from_slice::<AcceptBehavingAction>(&body) {
+            Ok(a) => {
+                let needed = app.decision.steps_up(murmur_decide::StepUpAct::AcceptUnknown);
+                let step = match app.auth.step_up(&op, &format!("i{id} accept_behaving"), proof, needed).await {
+                    Ok(s) => s,
+                    Err(r) => return *r,
+                };
+                app.decision.accept_behaving(&op, id, &a.track, step)
+            }
+            Err(e) => {
+                return error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    format!("accept_behaving wants {{\"track\": id}}: {e}"),
+                );
+            }
+        },
+        // rules 19: {"track": id}
+        "revoke_behaving" => match serde_json::from_slice::<Value>(&body) {
+            Ok(v) => match v["track"].as_str() {
+                Some(t) => app.decision.revoke_behaving(&op, id, t),
+                None => return error(StatusCode::UNPROCESSABLE_ENTITY, "revoke_behaving wants {\"track\": id}"),
+            },
+            Err(e) => {
+                return error(StatusCode::UNPROCESSABLE_ENTITY, format!("revoke_behaving wants {{\"track\": id}}: {e}"));
+            }
+        },
         // rules 16: {"track": id}
         "revoke_unknown" if lost_contact(&body) => match serde_json::from_slice::<Value>(&body) {
             Ok(v) => app.decision.revoke_lost(&op, id, v["track"].as_str().unwrap_or_default()),
@@ -454,7 +483,7 @@ async fn intent_action(
             return error(
                 StatusCode::NOT_FOUND,
                 format!(
-                    "unknown action {action:?} (approve, reject, cancel, abort, picture, accept_unknown, revoke_unknown)"
+                    "unknown action {action:?} (approve, reject, cancel, abort, picture, accept_unknown, revoke_unknown, accept_behaving, revoke_behaving)"
                 ),
             );
         }
@@ -478,6 +507,18 @@ async fn intent_action(
 struct AcceptLostAction {
     track: String,
     since: i64,
+    #[serde(default, rename = "password")]
+    _password: Option<Value>,
+    #[serde(default, rename = "passkey")]
+    _passkey: Option<Value>,
+}
+
+/// Rules 19: `accept_behaving`: the live track, and the step-up's `password` or `passkey` (taken
+/// as the proof before this is read; nothing else).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AcceptBehavingAction {
+    track: String,
     #[serde(default, rename = "password")]
     _password: Option<Value>,
     #[serde(default, rename = "passkey")]
