@@ -2,7 +2,7 @@
 
 Open-source C2 testbed: one operator supervising ~100 autonomous air, ground, surface and
 subsurface nodes, built to measure whether human judgment over consequential decisions stays
-meaningful. Decision and command, not weapons.
+meaningful.
 
 ## Start of a session
 

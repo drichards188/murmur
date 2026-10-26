@@ -10,7 +10,7 @@ An open-source passion project: a C2 (command and control) testbed for one quest
 operator supervises 100 autonomous nodes, does human judgment over consequential decisions stay
 meaningful, and how would you know?** Context: the US announced the Autonomous Warfare Command
 (AutoWarCom) on 2026-09-30; its public framing is scale, with nothing said about how human
-judgment survives scale. This is about C2 decision and command, not weapons.
+judgment survives scale.
 
 Why defense first: it is the hardest, highest-stakes setting for supervising autonomy (contested
 links, adversaries, irreversible decisions). Practices proven there carry over to easier
@@ -277,9 +277,10 @@ Exit: the 30%-loss write-up (murmur-t7d), with numbers.
 
 ## Phase E: engagement decision chain
 
-C2 decision study, not weapons: effects are abstract events (a point, a radius, a time). No
-autonomous engagement; no munition types, warheads, blast, lethality, terminal guidance or
-aim-point optimisation anywhere.
+Effects are abstract events (a point, a radius, a time, a hit-or-miss draw). Since 2026-10-26
+(the owner: "key to situational awareness") a munition is shown in flight from its release to its
+impact and the strike is animated, so an operator sees what is on the way and when it lands. No
+autonomous engagement; no warheads, blast, lethality, terminal guidance or aim-point optimisation.
 
 Built (`crates/murmur-decide/src/engage.rs`, `scenario.rs`; bridge `decision/engage.rs`;
 contacts `effect.rs`; console `EngagePanel`, `EngageCard`, `engageLayers.ts`):

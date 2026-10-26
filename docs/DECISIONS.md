@@ -17,6 +17,14 @@ group. Dates are 2026.
   nominate and explain, the authorize step is closed to them in code. Armed platforms always
   need human approval. Stays inside DoD Directive 3000.09 (appropriate human judgment over use
   of force).
+- **Munitions shown in flight and strikes animated** (10-26, the owner: "I want to see munitions
+  on the way and an animation when they strike. its key to situational awareness"). Amends the
+  entry above: a munition released by a standoff platform is a thing in the picture from release
+  to impact (its position, its time to impact), the effect lands at impact rather than at release,
+  and the console animates the strike. Effects stay abstract otherwise (a point, a radius, a
+  hit-or-miss draw; no warheads, blast or lethality), and every safeguard above stands: no
+  autonomous engagement, the authorize step closed to agents in code, armed platforms always
+  needing human approval, DoD Directive 3000.09.
 - **Pitch depth and rigor, not "first"** (10-02). Pressure test found the ideas in closed
   work (RESCHU, IMPACT, Aegis doctrine, Lattice, Legion, Palantir AIP, Thunderforge, DARPA
   ASIMOV) and shallow open versions (AMOS, AeroMind, Pharos, SandTable). Cite them. Engage
