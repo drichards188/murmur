@@ -345,10 +345,12 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: late) differ, and in v2 the landed PUMA 1's link events after its landing; every proposal,
 #: operator decision, order and plan is the same. A change to the simulator, the bridge or the v2
 #: world changes them too: re-take them on the code before a change to the driver, never after it.
+#: Re-taken for decision rules 17 (murmur-k8i item 2): the code before it gave the earlier digests,
+#: and each record is the same but for its audit log's `run.started` (`rules_version` 17 for 16).
 PAUSED = {
-    "model harbor-watch s1": "aaad7bc7a102551067f28c25a9b9d2e02cfe1e5e9fc8ecb8c58f58c1c3ab2b94",
-    "playbook v2 fast-unknown 1000": "4d9b812bcea2a284fd66ce31d0258aad727742ad7c0bfe5e88caded646427c88",
-    "model v2 fast-unknown 1000": "665f72b96dd528d3be7f347c3a9a0b359bc87498be3a391bd6cc8c6e2d5aad41",
+    "model harbor-watch s1": "9c03f478f84b3f606f19cbe284446177c9c10e7df6919c7ec0c3e3249fa96246",
+    "playbook v2 fast-unknown 1000": "56ef42c4f1aa2d5a20925db8e53ab1fe5897db08f62f582eb41b056ccad73658",
+    "model v2 fast-unknown 1000": "9c78d1c164e122f656c18ffba764a096a0d73400138fbb15f35133fa5bc94dde",
 }
 
 

@@ -1221,7 +1221,10 @@ rules 17 (murmur-k8i item 2) the rule also judges a point every 20 m along each 
 (the transit from where the vehicle is, the task path, the return home, an engagement's way and an
 rtl's), each answered by the grid as a waypoint is: the F7-F13 dev check's Magura, whose orbits
 west of the Gate passed on their waypoints and drove it ashore on the way out of Horseshoe Bay, is
-refused those orbits now (eval/SCORING-V3.md 14.4 item 2).
+refused those orbits now (eval/SCORING-V3.md 14.4 item 2). Harbor watch's pin leaves the rule not
+evaluated there, so the golden episode and the charged clock's three paused records were re-taken
+for their audit log's `run.started` alone (`rules_version` 17 for 16; the code before it gives the
+earlier digests, every other byte the same).
 
 ### 17.3 The bake tool
 

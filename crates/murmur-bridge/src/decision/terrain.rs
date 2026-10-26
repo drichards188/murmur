@@ -62,11 +62,72 @@ struct Cached {
     at: f64,
 }
 
+/// The cached samples, and their keys by cell of [`CELL_E7`] (0.0005 degrees: about 55 m by 44 m at
+/// the Gate), so the samples near a point are found without reading them all: rules 17 asks for
+/// hundreds of points along a route under the decision lock, and a moving effect point refetches
+/// its legs every second.
+#[derive(Default)]
+struct Cache {
+    map: HashMap<Key, Cached>,
+    cells: HashMap<Key, Vec<Key>>,
+}
+
+/// [`Cache`]'s cell, in 1e-7 degrees.
+const CELL_E7: i64 = 5_000;
+
+impl Cache {
+    fn cell(k: Key) -> Key {
+        (k.0.div_euclid(CELL_E7), k.1.div_euclid(CELL_E7))
+    }
+
+    fn insert(&mut self, k: Key, c: Cached) {
+        if self.map.insert(k, c).is_none() {
+            self.cells.entry(Self::cell(k)).or_default().push(k);
+        }
+    }
+
+    fn get(&self, k: &Key) -> Option<&Cached> {
+        self.map.get(k)
+    }
+
+    /// Forget the answers older than [`CACHE_TTL_S`].
+    fn retain_fresh(&mut self, now: f64) {
+        self.map.retain(|_, c| now - c.at < CACHE_TTL_S);
+        let map = &self.map;
+        self.cells.retain(|_, ks| {
+            ks.retain(|k| map.contains_key(k));
+            !ks.is_empty()
+        });
+    }
+
+    /// Every cached sample within `r_m` of `p`: how far, where, what it says.
+    fn within(&self, p: LonLat, r_m: f64) -> Vec<(f64, LonLat, &Surface)> {
+        let cell_m = CELL_E7 as f64 / 1e7 * 111_320.0;
+        let di = (r_m / cell_m).ceil() as i64;
+        let dj = (r_m / (cell_m * p.lat.to_radians().cos().max(0.01))).ceil() as i64;
+        let (cj, ci) = Self::cell(p.e7());
+        let mut out = Vec::new();
+        for j in cj - dj..=cj + dj {
+            for i in ci - di..=ci + di {
+                for k in self.cells.get(&(j, i)).into_iter().flatten() {
+                    let Some(c) = self.map.get(k) else { continue };
+                    let q = LonLat::new(k.0 as f64 / 1e7, k.1 as f64 / 1e7);
+                    let d = murmur_decide::geo::haversine_m(p, q);
+                    if d <= r_m {
+                        out.push((d, q, &c.surface));
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
 pub struct Terrain {
     client: Option<Tidewater>,
     /// The baked land/water grid, read only without tidewater (module doc).
     grid: Option<Arc<Grid>>,
-    cache: Mutex<HashMap<Key, Cached>>,
+    cache: Mutex<Cache>,
     last_error: Mutex<Option<String>>,
     /// When tidewater last failed (wall s).
     failed_at: Mutex<Option<f64>>,
@@ -157,18 +218,12 @@ impl Terrain {
         let now = clock::wall();
         let missing: Vec<LonLat> = {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-            cache.retain(|_, c| now - c.at < CACHE_TTL_S);
+            cache.retain_fresh(now);
             let mut seen = std::collections::HashSet::new();
-            let close = |p: &LonLat| {
-                skip_within_m > 0.0
-                    && cache.keys().any(|k| {
-                        let q = LonLat::new(k.0 as f64 / 1e7, k.1 as f64 / 1e7);
-                        murmur_decide::geo::haversine_m(*p, q) <= skip_within_m
-                    })
-            };
+            let close = |p: &LonLat| skip_within_m > 0.0 && !cache.within(*p, skip_within_m).is_empty();
             points
                 .iter()
-                .filter(|p| !cache.contains_key(&p.e7()) && !close(p) && seen.insert(p.e7()))
+                .filter(|p| cache.get(&p.e7()).is_none() && !close(p) && seen.insert(p.e7()))
                 .copied()
                 .collect()
         };
@@ -249,14 +304,7 @@ impl TerrainOracle for CacheOracle<'_> {
         // the cache guard is dropped before `not_answered` takes the last error
         let found = {
             let cache = t.cache.lock().unwrap_or_else(|e| e.into_inner());
-            let near: Vec<(f64, LonLat, &Surface)> = cache
-                .iter()
-                .map(|(k, c)| {
-                    let q = LonLat::new(k.0 as f64 / 1e7, k.1 as f64 / 1e7);
-                    (murmur_decide::geo::haversine_m(p, q), q, &c.surface)
-                })
-                .filter(|(d, _, _)| *d <= within_m)
-                .collect();
+            let near = cache.within(p, within_m);
             nearest_agreeing(&near, within_m)
         };
         found.ok_or_else(|| t.not_answered("the effect point"))?
@@ -301,19 +349,11 @@ impl TerrainOracle for CacheOracle<'_> {
     }
 }
 
-/// The nearest cached sample within `within_m` of `p` (a cheap box test on the keys first).
-fn nearest_cached(cache: &HashMap<Key, Cached>, p: LonLat, within_m: f64) -> Option<NearSample> {
-    let (lon_e7, lat_e7) = p.e7();
-    let dlat = (within_m / 111_320.0 * 1e7).ceil() as i64;
-    let dlon = (within_m / (111_320.0 * p.lat.to_radians().cos().max(0.01)) * 1e7).ceil() as i64;
+/// The nearest cached sample within `within_m` of `p` (ties: the smaller key).
+fn nearest_cached(cache: &Cache, p: LonLat, within_m: f64) -> Option<NearSample> {
     cache
-        .iter()
-        .filter(|(k, _)| (k.0 - lon_e7).abs() <= dlon && (k.1 - lat_e7).abs() <= dlat)
-        .map(|(k, c)| {
-            let q = LonLat::new(k.0 as f64 / 1e7, k.1 as f64 / 1e7);
-            (murmur_decide::geo::haversine_m(p, q), q, &c.surface)
-        })
-        .filter(|(d, _, _)| *d <= within_m)
+        .within(p, within_m)
+        .into_iter()
         .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.e7().cmp(&b.1.e7())))
         .map(|(d, q, s)| NearSample { surface: s.clone(), at: q, distance_m: d })
 }

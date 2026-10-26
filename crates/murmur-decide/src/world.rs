@@ -846,12 +846,9 @@ impl WorldSnapshot {
         let points: Vec<LonLat> = legs.iter().flat_map(|(_, pts)| pts.iter().map(|(p, _)| *p)).collect();
         let answers = match oracle.sample_along(w.t, &points, crate::route::LEG_NEAR_M) {
             Ok(a) if a.len() == points.len() => a,
-            Ok(_) => {
-                w.terrain = TerrainInputs::Unavailable {
-                    reason: "the terrain oracle gave the wrong number of answers along the route".into(),
-                };
-                return;
-            }
+            // a wrong-length answer is a broken oracle, not a missing one: no answers along the
+            // legs, so the rule fails rather than skipping (as for the waypoints)
+            Ok(_) => Vec::new(),
             Err(reason) => {
                 w.terrain = TerrainInputs::Unavailable { reason };
                 return;
