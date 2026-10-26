@@ -38,8 +38,8 @@ title = "Hostile act to engagement"
 brief = """
 You have the watch at the Golden Gate on a June morning. Intelligence warns of a possible attack on
 our vessels by small craft. Two of ours are on station: HUNTER 1, a sensor ship patrolling the
-channel east of the bridge; and REAPER 1, an armed long-endurance drone loitering high over the bay
-east of the bridge, its weapons stations loaded. Traffic is normal: ferries, ships in the lane,
+channel east of the bridge; and REAPER 1, an armed long-endurance drone loitering high off Lands
+End, west of the bridge, its weapons stations loaded. Traffic is normal: ferries, ships in the lane,
 fishing boats, a sailing yacht.
 
 The opening orders come from the setup script (op-setup, not a person) and go out by policy. An
@@ -65,7 +65,7 @@ the engine attributes it to the boat's track at 0.9 or more and declares the tra
 (a loose fix is flagged instead, and the next act is another chance); op-auto confirms the
 declaration on autoplay (live: you, in the Review list). The watch officer is woken by the hostile
 declaration (the stronger model) and again when an armed platform passes every nomination check
-(`nomination.possible`); it should nominate REAPER 1 (some 50 s away at 90 m/s; a fixed wing takes
+(`nomination.possible`); it should nominate REAPER 1 (some 35 s away at 90 m/s; a fixed wing takes
 fallback return) with a rationale. op-2 and op-3 sign the plan within seconds; REAPER 1 is
 dispatched; the engine releases the effect when it is at the point, around 6:30 to 7:30; the boat leaves the
 picture (out of play) and the assessment reads "ceased" some 15 s after, our sensors covering the
@@ -83,7 +83,7 @@ world = "golden-gate"                         # sim/worlds/golden-gate.toml
 fleet = "sim/fleets/hostile-act-engagement.toml"
 contacts = "sim/scenarios/hostile-act-engagement.toml"
 events = []                                   # no comms or GNSS events: the situation is the chain
-policy = "sim/situations/policies/watch.toml" # sim/policy.toml + an AI's tasking waits for the operator;
+policy = "sim/situations/policies/hostile-act-reaper.toml" # watch.toml with a standoff release distance;
                                               # the shipped engagement tier and [identification]
                                               # (rule_declaration on, nominate_unconfirmed off)
 tidewater = "golden-gate-2026-06"             # real tide, current and terrain (~/tidewater)
@@ -99,8 +99,8 @@ reveal = false
 seed = 1
 
 # ---- opening orders, once the fleet is ready: issued by the setup script (op-setup); never for
-# an armed platform (refused at load), so REAPER 1, armed here, loiters high where it spawns over
-# the bay east of the bridge. HUNTER 1 has an endurance figure: its order goes out by policy (the
+# an armed platform (refused at load), so REAPER 1, armed here, loiters high where it spawns off
+# Lands End, west of the bridge. HUNTER 1 has an endurance figure: its order goes out by policy (the
 # default tier).
 [[order]]
 id = "gate-patrol"
@@ -131,7 +131,7 @@ director = true
 # step says which checks failed). In autoplay op-2 and op-3 sign it like any other; live, you do.
 # Its rationale begins "situation timeline (scripted, not a person)". 5:45 leaves the AI some two
 # minutes after the declaration is confirmed (a consult of the stronger model takes about 40 s)
-# and still puts the effect inside 8 minutes (signatures in seconds, REAPER 1's run some 50 s).
+# and still puts the effect inside 8 minutes (signatures in seconds, REAPER 1's run some 35 s).
 [[step]]
 id = "fallback-nomination"
 at_s = 345
@@ -150,7 +150,7 @@ text = "Timeline fallback at 5:45: agent-scripted nominates REAPER 1 unless a no
 # ---- what to watch for, shown in the console's Situation panel as each comes due
 [[watch]]
 at_s = 0
-text = "The stack comes up: two of ours at the Gate. The setup script's opening order goes out by policy: HUNTER 1 on patrol east of the bridge. REAPER 1 is armed: no script orders it, so it loiters high over the bay."
+text = "The stack comes up: two of ours at the Gate. The setup script's opening order goes out by policy: HUNTER 1 on patrol east of the bridge. REAPER 1 is armed: no script orders it, so it loiters high off Lands End."
 
 [[watch]]
 at_s = 40

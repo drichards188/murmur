@@ -12,11 +12,14 @@
 #   boat there and place an act's author within a few tens of metres, far enough to stay out of
 #   an engagement's keep-out there.
 # - REAPER 1, the armed MALE drone (mq9b_armed: radar 100 km, EO/IR 40 km, weapons stations
-#   loaded), at its 7,600 m cruise altitude over the bay east of the bridge: its radar keeps every
+#   loaded), at its 7,600 m cruise altitude off Lands End, west of the bridge: its radar keeps every
 #   contact of the picture in view (a track out of view counts anywhere it could reach in every
 #   keep-out, rules 16), and it is the armed platform an engagement nominates. A script may not
-#   move an armed platform, so it has no opening order: it loiters where it spawns, some 4.5 km
-#   (about 50 s at 90 m/s) east of the holding area. A fixed wing can take only the fallback
+#   move an armed platform, so it has no opening order: it loiters where it spawns, some 3 km
+#   (about 35 s at 90 m/s) southwest of the holding area. West of the bridge, so its way to the
+#   effect point and home never crosses the bridge towers' or Alcatraz's no-go areas: the
+#   geofence judges no-go areas at every altitude, and from east of the bridge every route it was
+#   given crossed one (the first run, 2026-10-26). A fixed wing can take only the fallback
 #   `return` (ArduPlane has no lost-link action that holds where it is). It fires and flies on:
 #   it is not spent by its own effect.
 #
@@ -36,4 +39,4 @@ spawn = [37.8200, -122.4660, 0, 270]   # east of the bridge, mid-channel
 [[unit]]
 platform = "mq9b_armed"                # armed MALE ISR/strike: radar 100 km, EO/IR 40 km; 35 h
 sim = "standin"
-spawn = [37.8100, -122.4500, 7600, 90] # over the bay east of the bridge, at its cruise altitude
+spawn = [37.8000, -122.5250, 7600, 0]  # off Lands End, west of the bridge, at its cruise altitude
