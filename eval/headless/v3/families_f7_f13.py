@@ -53,9 +53,12 @@ renamed where a family has more than one; what each family adds:
   sim/link-events/golden-gate.toml's jammer and sim/links.toml's satcom_iridium, both GUESS), its
   need F1's boat or an air element (p 0.5 each); else **the AUV must surface**: the acoustic
   channel closed over a circle 2 to 3 km around the AUV's survey line from 200 to 400 s before F4's
-  UUV comes within the circle, for 150 to 300 s (the emulator's own `cut` on the `acoustic` class):
-  REMUS falls silent, surfaces on its 120 s lost-link timer and reports at the surface over its
-  Iridium-class link (acoustic_surface, 700 ms), orders to it waiting in the Queue meanwhile.
+  UUV comes within the circle, for 150 to 300 s (the emulator's own `cut` on the `acoustic`
+  profile while it carries the traffic, `active_profile`: the modem under water, never the radio
+  at the surface): REMUS falls silent, surfaces on its 120 s lost-link timer and reports at the
+  surface over its Iridium-class link (acoustic_surface, 700 ms) while the outage lasts, orders to
+  it waiting in the Queue meanwhile. (Before murmur-k8i item 3 the cut was on the `acoustic`
+  class, which closed the surfaced radio too: SCORING-V3.md choice 33.)
 - **F12 GNSS jam or spoof** (900 s): one need (F1's boat p 0.4, an air element p 0.3, F6's vehicle
   p 0.3); with p 0.65 a GNSS **jammer** denying the fix in a circle 0.8 to 2 km around a point of the
   need's way inside the mission circle, from 60 to 240 s before the need comes within it to the end
@@ -543,8 +546,9 @@ def _f11(d: DraftX) -> None:
         t0 = max(30.0, t_in - d.rng.uniform(200.0, 400.0))
         dur = round(d.rng.uniform(150.0, 300.0), 1)
         circle = {"lat": round(mid[1], 6), "lon": round(mid[0], 6), "radius_m": r}
+        # the modem alone: while REMUS is under water (its surfaced radio stays open)
         d.events.append({"name": "the acoustic channel closed", "at_s": round(t0, 1), "duration_s": dur,
-                         "class": "acoustic", "circle": circle, "cut": True})
+                         "active_profile": "acoustic", "circle": circle, "cut": True})
         d.stated["trouble"] = {"kind": "acoustic_outage", "circle": circle, "from_s": round(t0, 1), "duration_s": dur,
                                "need_in_s": round(t_in, 1)}
 

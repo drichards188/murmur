@@ -352,7 +352,7 @@ grace ends inside 1,200 s); a boat given another speed than F1's keeps F1's lead
 | F8 | decoys and AIS spoofing | one, any domain | the need: on the surface (p 0.4) a **spoofer** with p 0.6 (a small fast boat, truth suspect, broadcasting a fishing vessel's AIS identity at 4 to 6.5 m/s, a fishing vessel's speed: the picture shows a consistent neutral fishing vessel until a camera identifies it) else F1's boat; air, subsurface (F4's UUV or F5's diver) or ground (p 0.2 each). Five look-alikes of neutral truth within the circle 150 s either side: a fishing boat or a sailboat without AIS; a fishing boat with a cloned AIS identity (a cargo ship's or a ferry's, `spoofed`) or a sportfisher whose AIS says fishing at 10 to 14 m/s; a hobby drone (by day) or a light aircraft with its transponder off; a research UUV or a diver at work; a car or a truck on another shore road |
 | F9 | night and fog | one: surface (0.4), air (0.3, drone or aircraft whatever the light), ground (0.3) | the light toward the hard end: night 0.45, twilight with the sun 0 to 10 degrees up as the need comes in (the thermal crossover) 0.25, day 0.3; fog (log-uniform from the world's lowest visibility to 2 km) always by day, p 0.5 otherwise |
 | F10 | rising sea state | one or two small boats on the surface | the sea from the world's top three states (Golden Gate 3 to 5, San Diego 2 to 4), the wind from the upper half of its range; F1's boat at a speed the sea allows (15 m/s at most in sea state 3, 12 in 4, 10 in 5, [E here]); with p 0.5 a second, slower boat (3 to 6 m/s) from the other approach |
-| F11 | link trouble | one: surface or air (RF), subsurface (acoustic) | p 0.6 an **RF jammer** over the need's way inside the circle (1.2 to 2.5 km, from 60 to 240 s before the need, for 400 to 800 s: line-of-sight and mesh links jammed, SATCOM half lost and LEO terminals on an Iridium-class 700 ms, both GUESS); else the **acoustic channel closed** over the AUV's survey line from 200 to 400 s before F4's UUV, for 150 to 300 s: REMUS falls silent, surfaces on its 120 s timer, reports at the surface over its Iridium-class link, orders to it waiting in the Queue meanwhile |
+| F11 | link trouble | one: surface or air (RF), subsurface (acoustic) | p 0.6 an **RF jammer** over the need's way inside the circle (1.2 to 2.5 km, from 60 to 240 s before the need, for 400 to 800 s: line-of-sight and mesh links jammed, SATCOM half lost and LEO terminals on an Iridium-class 700 ms, both GUESS); else the **acoustic channel closed** over the AUV's survey line from 200 to 400 s before F4's UUV, for 150 to 300 s (the modem alone, `active_profile`, since murmur-k8i item 3): REMUS falls silent, surfaces on its 120 s timer, reports at the surface over its Iridium-class link, orders to it waiting in the Queue meanwhile |
 | F12 | GNSS jam or spoof | one: surface (0.4), air (0.3), ground (0.3) | p 0.65 a GNSS **jammer** denying the fix in a circle 0.8 to 2 km over the need's way, from 60 to 240 s before the need to the end (copters and the airship land, boats and UGVs hold, fixed wings dead-reckon, subs keep their DVL); else a **spoofer** walking the believed position of the standing vehicle best placed for the need 1 to 3 m/s off, up to 300 to 1,000 m, from 30 to 200 s before it |
 | F13 | vehicle faults across domains | one: surface (0.4), air (0.3), ground (0.15), subsurface (0.15) | a **breakdown** of the vehicle flying the agent's first look with the need's sensor (v2's stuck vehicle, 5 to 60 s after its dispatch; none by the need's deadline, the standing vehicle best placed stops then); a **battery** fault on a standing aircraft or UGV (another vehicle), 120 to 300 s in, leaving 22 to 33 % and crossing 20 % 1.5 to 3 times its way home later (version 2, 14.2: a prompt rtl meets it; a low reserve, 2.4); p 0.7 a **reboot** (3 to 8 s) of another standing boat up to 120 s before the need |
 
@@ -527,6 +527,10 @@ is built as recommended and has its alternative.
     link whichever profile carries its traffic, so "surface to report" is only after the outage.
     *Alternative*: an emulator change so an event names the submerged profile alone. **Recommend** as
     specified for now, the emulator change if F11's AUV case is to test surfacing during an outage.
+    **Done** (murmur-k8i item 3, 2026-10-26): an event's `active_profile` selects a link only while
+    that profile carries its traffic, and F11's outage cuts `active_profile = "acoustic"`, REMUS's
+    modem under water, so it surfaces on its lost-link timer and reports over its Iridium-class radio
+    while the outage lasts (14.4 item 3).
 34. **F13's breakdown hits the agent's first look** (v2's stuck vehicle), its battery fault a
     standing vehicle, the reserve crossed inside the episode and 1.5 to 3 times the vehicle's way
     home after the fault (version 2, 14.2: a prompt rtl meets it, a late one does not), its reboot a
@@ -1323,7 +1327,14 @@ San Diego situations, run again).
    differ episode by episode.
 3. **A link event cannot tell the AUV's modem from its surfaced radio** (the link emulator): an event
    applies to a link whichever profile carries its traffic, so F11's acoustic outage closes REMUS's
-   surfaced Iridium-class radio too while it lasts (choice 33).
+   surfaced Iridium-class radio too while it lasts (choice 33). **Fixed after this check**
+   (murmur-k8i item 3, 2026-10-26; the figures above predate it): an event's `active_profile`
+   selector matches a link only while that profile carries its traffic (crates/murmur-linkemu
+   README), and F11's outage names `active_profile = "acoustic"`. Two F11 AUV situations (Golden
+   Gate 5337, San Diego 5302; `none`), the old event against the new on the same binary: REMUS under
+   water in the outage cut in both (130 and 133 s); surfaced on its lost-link timer within it (116
+   and 144 s), before cut every second with the bridge's `lost_link` alert on it throughout, now open
+   every second, the bridge hearing it (its alert `left_task`: it left its survey to surface).
 4. **The record's truth says only that a contact broadcasts AIS** (`ais: true`), not that it is
    spoofed: the situation states it (`ais_spoofed`, read by labels.py `mark_spoofed`).
 5. **The first check's "types able"** counted the oracle's own reaches over every need of an episode

@@ -166,7 +166,7 @@ def test_f11_and_f12_script_their_trouble_over_the_need(world: str, tmp_path: Pa
             assert next(ev for ev in e.events if ev.get("profile") == "satcom_leo")["loss"] == 0.0, "latency, not a jam"
             assert tr["from_s"] < tr["need_in_s"] < tr["from_s"] + tr["duration_s"]
         else:
-            assert e.events[0]["class"] == "acoustic" and e.events[0]["cut"] and e.truth["elements"][0]["domain"] == "subsurface"
+            assert e.events[0]["active_profile"] == "acoustic" and "class" not in e.events[0] and e.events[0]["cut"] and e.truth["elements"][0]["domain"] == "subsurface"
         e, _ = F.generate(f"v3-f12-gnss-{world}", seed, tmp_path)
         g = e.truth["gnss"]
         st = [s for s in e.script if s.get("kind") == "step"]

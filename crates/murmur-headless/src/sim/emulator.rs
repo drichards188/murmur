@@ -96,6 +96,8 @@ impl Emulator {
         let Setup { links_file, events, fleet, seed, epoch, grid, space, space_outlook, space_cache, space_root } = setup;
         let mut cfg = Config::load(links_file)?;
         cfg.event.extend(events.iter().cloned());
+        // the episode's events checked as the emulator checks a scenario file's
+        cfg.validate()?;
         if let Some(root) = space_root {
             let dir = root.join("sim/space");
             cfg.space.catalog = dir.join("constellations.toml").to_string_lossy().into_owned();

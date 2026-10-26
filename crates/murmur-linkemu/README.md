@@ -130,7 +130,10 @@ start plus elapsed x `MURMUR_RATE`, the stand-ins' convention; it is an error wi
 with the same `MURMUR_AT` and `MURMUR_RATE` as the stand-ins and shortly after them: the
 emulator's clock starts at its own start. Events wholly in the past never fire.
 Selectors (all must match): `class`, `profile`, `platform`, `domain`, `uid`, `uids`,
-`circle = {lat, lon, radius_m}` (vehicle inside it, by its last known position). Effects:
+`circle = {lat, lon, radius_m}` (vehicle inside it, by its last known position), and
+`active_profile` (only while that profile carries the vehicle's traffic: an AUV's `acoustic`
+modem under water, not its `acoustic_surface` radio once surfaced; `class` and `profile` name
+the vehicle's link whichever profile carries it; a name that is no profile is refused). Effects:
 `loss` (extra, independent), `cut`, `extra_latency_ms`; `dir = both|up|down`. A circle with no
 `loss` jams (loss 1.0), counted as cause `jam`.
 

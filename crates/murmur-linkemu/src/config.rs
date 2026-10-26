@@ -261,6 +261,11 @@ pub struct EventCfg {
     pub domain: Option<String>,
     pub uid: Option<u32>,
     pub uids: Option<Vec<u32>>,
+    /// Only while this profile carries the vehicle's traffic: its own profile while its gate
+    /// is open, its `gated_profile` while the gate is closed (`acoustic`: an AUV's modem while
+    /// it is under water, not its radio at the surface; `acoustic_surface`: the radio alone).
+    /// `profile` and `class` name the vehicle's link whichever profile carries it.
+    pub active_profile: Option<String>,
     /// Only vehicles inside this circle are affected (a jammer).
     pub circle: Option<Circle>,
     #[serde(default = "default_dir")]
@@ -420,7 +425,7 @@ impl Config {
         Ok(cfg.event)
     }
 
-    fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         for (name, p) in &self.class {
             let r = self.resolve(name)?;
             let _ = p;
@@ -481,6 +486,12 @@ impl Config {
             }
             if e.at_s.is_some_and(|a| a < 0.0) || e.duration_s.is_some_and(|d| d < 0.0) {
                 return Err(format!("event {:?}: negative time", e.name));
+            }
+            // a misspelt profile would match no traffic, silently
+            if let Some(p) = &e.active_profile
+                && !self.class.contains_key(p)
+            {
+                return Err(format!("event {:?}: active_profile {p:?} is no profile", e.name));
             }
             if e.at_scenario.is_none() && e.until_scenario.is_some() {
                 return Err(format!(

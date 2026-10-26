@@ -13,7 +13,8 @@
 # Format: the emulator reads only the [[event]] tables of this file and ignores any other
 # top-level table, so other consumers (e.g. a GNSS jammer model for the stand-ins' navigation)
 # can keep their own tables in the same scenario file. Inside [[event]], unknown keys are an
-# error. Selectors: class, profile, platform, domain, uid, uids, circle {lat, lon, radius_m}
+# error. Selectors: class, profile, platform, domain, uid, uids, circle {lat, lon, radius_m},
+# active_profile (only while that profile carries the traffic: an AUV's acoustic modem alone)
 # (all given must match). Effects: loss (extra, independent), cut, extra_latency_ms;
 # dir = both | up | down. A circle without `loss` jams (loss 1.0, cause "jam").
 

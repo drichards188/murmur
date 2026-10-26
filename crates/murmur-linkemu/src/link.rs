@@ -52,15 +52,25 @@ struct Selectors {
     platform: Option<String>,
     domain: Option<String>,
     uids: Option<Vec<u32>>,
+    /// The profile that must carry the traffic now (checked per packet, as the circle is: it
+    /// changes with the vehicle's depth).
+    active_profile: Option<String>,
 }
 
 impl Selectors {
+    /// The selectors a link's identity decides (once, and at each reload).
     fn matches(&self, m: &LinkMeta) -> bool {
         self.class.as_ref().is_none_or(|c| *c == m.class)
             && self.profile.as_ref().is_none_or(|c| *c == m.profile)
             && self.platform.as_ref().is_none_or(|c| *c == m.platform)
             && self.domain.as_ref().is_none_or(|c| *c == m.domain)
             && self.uids.as_ref().is_none_or(|u| u.contains(&m.uid))
+    }
+
+    /// `active_profile`: whether `active`, the profile carrying the link's traffic now, is the
+    /// one the event names.
+    fn carried_by(&self, active: &str) -> bool {
+        self.active_profile.as_deref().is_none_or(|p| p == active)
     }
 }
 
@@ -134,6 +144,7 @@ impl Schedule {
                     platform: e.platform.clone(),
                     domain: e.domain.clone(),
                     uids,
+                    active_profile: e.active_profile.clone(),
                 },
             });
         }
@@ -417,9 +428,10 @@ impl Link {
             s.apply(now_ns, &mut c.blocked, &mut c.base_latency_ns);
         }
         let p = self.active();
+        let active = self.active_profile();
         for &i in &self.events {
             let e = &self.sched.events[i];
-            if now_ns < e.start_ns || now_ns >= e.end_ns {
+            if now_ns < e.start_ns || now_ns >= e.end_ns || !e.selectors.carried_by(active) {
                 continue;
             }
             if (e.dir == DirSel::Up && dir != Dir::Up)
@@ -495,10 +507,11 @@ impl Link {
     /// (inside the window, selectors and circle matching), for the stats view.
     pub fn active_events(&mut self, now_ns: u64) -> Vec<String> {
         self.refresh_events();
+        let active = self.active_profile();
         self.events
             .iter()
             .map(|&i| &self.sched.events[i])
-            .filter(|e| now_ns >= e.start_ns && now_ns < e.end_ns)
+            .filter(|e| now_ns >= e.start_ns && now_ns < e.end_ns && e.selectors.carried_by(active))
             .filter(|e| match (&e.circle, &self.pos) {
                 (None, _) => true,
                 (Some((centre, r)), Some(p)) => haversine_m(p, centre) <= *r,
@@ -785,6 +798,66 @@ mod tests {
         // a gated profile may not be gated itself
         let bad = "[class.a]\ndown_when = \"surfaced\"\ngated_profile = \"b\"\n[class.b]\ndown_when = \"submerged\"\n";
         assert!(Config::parse(bad).is_err());
+    }
+
+    /// murmur-k8i item 3: an event can name the profile carrying the traffic. `active_profile =
+    /// "acoustic"` cuts an AUV's modem under water and leaves its radio at the surface alone (a
+    /// `class` or `profile` selector names the vehicle's link whichever profile carries it, so
+    /// it closes both); `acoustic_surface` the other way round. A profile no link has is refused.
+    #[test]
+    fn an_event_can_cut_the_profile_carrying_the_traffic_alone() {
+        let toml = |sel: &str| {
+            format!(
+                r#"
+                [class.acoustic]
+                down_when = "surfaced"
+                gated_profile = "acoustic_surface"
+                latency_ms = 100
+                [class.acoustic_surface]
+                latency_ms = 700
+                [[event]]
+                name = "outage"
+                at_s = 10
+                duration_s = 100
+                cut = true
+                {sel}
+            "#
+            )
+        };
+        let link = |sel: &str| {
+            let cfg = Config::parse(&toml(sel)).expect("cfg");
+            let p = |n: &str| Params::from_profile(&cfg.resolve(n).expect("p")).expect("params");
+            Link::new(
+                meta(1, "acoustic", "subsurface"),
+                p("acoustic"),
+                Arc::new(Env::new(&cfg, Arc::new(NoTerrain), 9).expect("env")),
+            )
+            .with_gated("acoustic_surface", p("acoustic_surface"))
+        };
+        let blocked = |l: &mut Link, depth: f64, t: u64| {
+            l.observe_up(&position_frame(0, 37.8, -122.4, depth));
+            (l.blocked_now(t).is_some(), l.active_events(t).len())
+        };
+        // the modem alone: cut under water during the event, the radio at the surface open
+        let mut modem = link(r#"active_profile = "acoustic""#);
+        assert_eq!(blocked(&mut modem, -20.0, 5 * NS), (false, 0), "before the event");
+        assert_eq!(blocked(&mut modem, -20.0, 20 * NS), (true, 1), "the modem is cut");
+        assert!(matches!(modem.decide(Dir::Up, 20 * NS, 50, 0), Verdict::Drop(Cause::Cut)));
+        assert_eq!(blocked(&mut modem, 0.0, 30 * NS), (false, 0), "surfaced: its radio carries the traffic");
+        assert!(matches!(modem.decide(Dir::Up, 30 * NS, 50, 0), Verdict::Forward { .. }));
+        assert_eq!(blocked(&mut modem, -20.0, 40 * NS), (true, 1), "under water again");
+        assert_eq!(blocked(&mut modem, -20.0, 120 * NS), (false, 0), "after the event");
+        // the radio alone
+        let mut radio = link(r#"active_profile = "acoustic_surface""#);
+        assert_eq!(blocked(&mut radio, -20.0, 20 * NS), (false, 0));
+        assert_eq!(blocked(&mut radio, 0.0, 30 * NS), (true, 1));
+        // by class: both, as before
+        let mut both = link(r#"class = "acoustic""#);
+        assert_eq!(blocked(&mut both, -20.0, 20 * NS), (true, 1));
+        assert_eq!(blocked(&mut both, 0.0, 30 * NS), (true, 1));
+        // a profile no link has is refused, not silently matched by nothing
+        let err = Config::parse(&toml(r#"active_profile = "acoustc""#)).expect_err("refused");
+        assert!(err.contains("active_profile"), "{err}");
     }
 
     /// A terrain whose answer the test can change.
