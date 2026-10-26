@@ -103,6 +103,11 @@ pub enum EngineError {
     /// fix, not an engagement, after a signature): nothing was logged.
     #[error("lost contact {track}: {why}")]
     NotAcceptedContact { track: String, why: String },
+    /// Rules 19: an acceptance of a live track as behaving now the engine refuses (not in the
+    /// picture, out of view, no velocity, not protected, not an engagement, after a signature,
+    /// before rules 19), or a revocation of one not in force: nothing was logged.
+    #[error("track {track}: {why}")]
+    NotAcceptedTrack { track: String, why: String },
     /// Rules 8: a session or step-up the run's authentication does not allow (an asserted
     /// session in a credentials run, a step-up in a dev run, a step-up for another session
     /// or too old): nothing was logged.
@@ -1585,7 +1590,7 @@ impl Engine {
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
     ) -> Result<&Intent, EngineError> {
-        self.submit_accepting_lost_inner(by, step, proposal, accept, &[], world, terrain)
+        self.submit_accepting_lost_inner(by, step, proposal, accept, &[], &[], world, terrain)
     }
 
     /// Rules 16: [`Engine::submit_accepting`] that also accepts lost contacts, each `(track,
@@ -1604,7 +1609,28 @@ impl Engine {
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
     ) -> Result<&Intent, EngineError> {
-        self.submit_accepting_lost_inner(by, step, proposal, vehicles, contacts, world, terrain)
+        self.submit_accepting_lost_inner(by, step, proposal, vehicles, contacts, &[], world, terrain)
+    }
+
+    /// Rules 19: [`Engine::submit_accepting_lost`] that also accepts live tracks as they are
+    /// behaving now (`tracks`, by id: each with its facts on `world`, see
+    /// [`Engine::accept_live_track`]). Logged as `engage.accepted` naming each track with its
+    /// facts, before the checks. Refused, nothing logged, for a track that may not be accepted
+    /// ([`engage::behaving_acceptable`]: not in the picture, out of view, no velocity, the target
+    /// or a declared hostile), or before rules 19.
+    #[allow(clippy::too_many_arguments)]
+    pub fn submit_accepting_all(
+        &mut self,
+        by: &EngagementAuthority,
+        step: Option<StepUp>,
+        proposal: Proposal,
+        vehicles: &[(Uid, Option<Time>)],
+        contacts: &[(String, Time)],
+        tracks: &[String],
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Result<&Intent, EngineError> {
+        self.submit_accepting_lost_inner(by, step, proposal, vehicles, contacts, tracks, world, terrain)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1615,9 +1641,34 @@ impl Engine {
         proposal: Proposal,
         accept: &[(Uid, Option<Time>)],
         contacts: &[(String, Time)],
+        tracks: &[String],
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
     ) -> Result<&Intent, EngineError> {
+        // rules 19: the live tracks accepted as behaving now, each with its facts as decisions
+        // read them (identification filled)
+        let behaving: Vec<(String, TrackFacts)> = if tracks.is_empty() {
+            Vec::new()
+        } else {
+            let target = match &proposal.task {
+                Task::Engage { track, .. } => track.clone(),
+                _ => {
+                    return Err(EngineError::NotAcceptedTrack {
+                        track: tracks[0].clone(),
+                        why: "an acceptance of a live track as behaving now is for an engagement's keep-out only".into(),
+                    });
+                }
+            };
+            let filled = self.identified(world);
+            let mut out = Vec::new();
+            for track in tracks {
+                self.acceptable_track(track, &target, &filled)?;
+                if let Some(t) = filled.tracks.get(track) {
+                    out.push((track.clone(), t.clone()));
+                }
+            }
+            out
+        };
         if let Some((uid, _)) = accept.first()
             && !matches!(proposal.task, Task::Engage { .. })
         {
@@ -1640,11 +1691,17 @@ impl Engine {
         for (track, since) in contacts {
             self.acceptable_contact(track, *since)?;
         }
-        // rules 8: accepting a lost vehicle may be marked consequential
-        let step_up = if accept.is_empty() && contacts.is_empty() {
+        // rules 8: accepting a lost vehicle may be marked consequential (rules 19: and a live
+        // track as behaving now, the same act)
+        let step_up = if accept.is_empty() && contacts.is_empty() && behaving.is_empty() {
             None
         } else {
-            let expected = crate::passkey::StepUpFor::accepting_lost(None, accept, contacts);
+            let named: Vec<(String, Time)> = behaving.iter().map(|(id, t)| (id.clone(), t.position.t)).collect();
+            let expected = if named.is_empty() {
+                crate::passkey::StepUpFor::accepting_lost(None, accept, contacts)
+            } else {
+                crate::passkey::StepUpFor::accepting_all(None, accept, contacts, &named)
+            };
             self.act_step_up(policy::StepUpAct::AcceptUnknown, by.operator(), by.session(), step, &expected)?
         };
         let source = Source::Human {
@@ -1655,6 +1712,7 @@ impl Engine {
             session: by.session(),
             list: accept,
             contacts,
+            tracks: &behaving,
             step_up,
         };
         let human = by.human();
@@ -1730,12 +1788,14 @@ impl Engine {
             intent: id,
             uid: Some(uid.clone()),
             contact: None,
+            track: None,
             since,
             by: by.operator().clone(),
             session: by.session(),
             world_t: world.t,
             vehicle: Some(vehicle),
             lost: None,
+            behaving: None,
             step_up,
         })?;
         self.get_mut(id)?.engagement_mut().accepted.insert(
@@ -1776,6 +1836,7 @@ impl Engine {
             intent: id,
             uid: Some(uid.clone()),
             contact: None,
+            track: None,
             by: by.operator().clone(),
             session: by.session(),
         })?;
@@ -1828,12 +1889,14 @@ impl Engine {
             intent: id,
             uid: None,
             contact: Some(track.to_string()),
+            track: None,
             since: Some(since),
             by: by.operator().clone(),
             session: by.session(),
             world_t: world.t,
             vehicle: None,
             lost,
+            behaving: None,
             step_up,
         })?;
         self.get_mut(id)?.engagement_mut().accepted_lost.insert(
@@ -1874,6 +1937,7 @@ impl Engine {
             intent: id,
             uid: None,
             contact: Some(track.to_string()),
+            track: None,
             by: by.operator().clone(),
             session: by.session(),
         })?;
@@ -1891,6 +1955,204 @@ impl Engine {
             return Err(no("these decision rules have no lost contacts".into()));
         }
         engage::contact_lost_since(track, self.lost.get(track), Some(since)).map_err(no)
+    }
+
+    // ---- live tracks accepted as behaving now (rules 19) --------------------------------
+
+    /// Rules 19 (bd murmur-j0x): an operator with engagement authority accepts, for engagement
+    /// `id` while it waits with no signature yet, live track `track` as it is behaving now: its
+    /// facts on `world` (as decisions read them) are logged with `engage.accepted` naming the
+    /// track and the world's time, and from then on the keep-out on tracks of this engagement
+    /// counts it along the path accepted for it and its course now
+    /// ([`engage::behaving_regions`]) instead of anywhere it could turn or speed up to, while the
+    /// acceptance holds: it lapses on its own when the track departs from the accepted prediction
+    /// beyond its uncertainty or goes out of view ([`engage::behaving_lapse`];
+    /// `engage.acceptance_lapsed`, at the next step or decision), and a new one needs a person
+    /// again. As the other acceptances: every signer's picture token carries it (a token from
+    /// before is refused), a reset of the signatures clears it, any operator may revoke it, never
+    /// an agent's (only an [`EngagementAuthority`] takes it). Refused, nothing logged, after a
+    /// signature, before rules 19, or for a track that may not be accepted
+    /// ([`engage::behaving_acceptable`]).
+    pub fn accept_live_track(
+        &mut self,
+        id: IntentId,
+        by: &EngagementAuthority,
+        step: Option<StepUp>,
+        track: &str,
+        world: &WorldSnapshot,
+    ) -> Result<&Intent, EngineError> {
+        let no = |why: String| EngineError::NotAcceptedTrack {
+            track: track.to_string(),
+            why,
+        };
+        let intent = self.get(id)?;
+        if intent.spec().kind() != TaskKind::Engage {
+            return Err(EngineError::NotAnEngagement(id));
+        }
+        if intent.state() != State::PendingApproval {
+            return Err(no(format!(
+                "{id} is not waiting for signatures: nominate it again to accept a live track as behaving now"
+            )));
+        }
+        if !intent.concurrences().is_empty() {
+            return Err(no(format!(
+                "{id} already has signatures on a plan made without this acceptance: they must be dropped first"
+            )));
+        }
+        let target = engage::params(intent.spec()).map(|p| p.0.to_string()).unwrap_or_default();
+        // an acceptance this picture lapses goes first; one that holds is not given twice
+        self.lapse_behaving(id, world)?;
+        if self.get(id)?.engagement().is_some_and(|e| e.accepted_behaving.contains_key(track)) {
+            return Err(no(format!(
+                "already accepted as behaving now for {id}: revoke that acceptance to accept it anew"
+            )));
+        }
+        let filled = self.identified(world);
+        self.acceptable_track(track, &target, &filled)?;
+        let Some(facts) = filled.tracks.get(track).cloned() else {
+            return Err(no(format!("{track} is not in the picture")));
+        };
+        let expected = crate::passkey::StepUpFor::accepting_all(Some(id), &[], &[], &[(track.to_string(), facts.position.t)]);
+        let step_up = self.act_step_up(policy::StepUpAct::AcceptUnknown, by.operator(), by.session(), step, &expected)?;
+        self.record_behaving(id, by.operator(), by.session(), step_up, track, &facts, world.t)?;
+        self.get(id)
+    }
+
+    /// Rules 19: any operator withdraws an acceptance of a live track as behaving now for
+    /// engagement `id` (pending, approved or under way: it only restricts). Logged as
+    /// `engage.acceptance_revoked` naming the track; the keep-out counts it again by all its
+    /// regions (which stops an engagement it now blocks).
+    pub fn revoke_live_track(&mut self, id: IntentId, by: &HumanAuthority, track: &str) -> Result<&Intent, EngineError> {
+        let intent = self.get(id)?;
+        if intent.spec().kind() != TaskKind::Engage {
+            return Err(EngineError::NotAnEngagement(id));
+        }
+        if !matches!(
+            intent.state(),
+            State::PendingApproval | State::Approved | State::Dispatched
+        ) || !intent.engagement().is_some_and(|e| e.accepted_behaving.contains_key(track))
+        {
+            return Err(EngineError::NotAcceptedTrack {
+                track: track.to_string(),
+                why: format!("no acceptance of it as behaving now is in force on {id}"),
+            });
+        }
+        self.emit(EventBody::EngageAcceptanceRevoked {
+            intent: id,
+            uid: None,
+            contact: None,
+            track: Some(track.to_string()),
+            by: by.operator().clone(),
+            session: by.session(),
+        })?;
+        self.get_mut(id)?.engagement_mut().accepted_behaving.remove(track);
+        self.get(id)
+    }
+
+    /// Rules 19: whether live track `track` may be accepted as behaving now for an engagement on
+    /// `target`, on `world` (identification filled).
+    fn acceptable_track(&self, track: &str, target: &str, world: &WorldSnapshot) -> Result<(), EngineError> {
+        let no = |why: String| EngineError::NotAcceptedTrack {
+            track: track.to_string(),
+            why,
+        };
+        if !self.policy.rules.accept_behaving() {
+            return Err(no("these decision rules have no acceptance of a live track as behaving now".into()));
+        }
+        let ec = self.policy.rules.engage_rules();
+        engage::behaving_acceptable(track, world.tracks.get(track), world.t, target, &ec).map_err(no)
+    }
+
+    /// Rules 19: log an acceptance of live track `track` as behaving now for engagement `id`
+    /// (`engage.accepted` with its facts and the world's time) and hold it.
+    #[allow(clippy::too_many_arguments)]
+    fn record_behaving(
+        &mut self,
+        id: IntentId,
+        by: &OperatorId,
+        session: SessionId,
+        step_up: Option<StepUpRef>,
+        track: &str,
+        facts: &TrackFacts,
+        world_t: Time,
+    ) -> Result<(), EngineError> {
+        self.emit(EventBody::EngageAccepted {
+            intent: id,
+            uid: None,
+            contact: None,
+            track: Some(track.to_string()),
+            since: Some(facts.position.t),
+            by: by.clone(),
+            session,
+            world_t,
+            vehicle: None,
+            lost: None,
+            behaving: Some(Box::new(facts.clone())),
+            step_up,
+        })?;
+        self.get_mut(id)?.engagement_mut().accepted_behaving.insert(
+            track.to_string(),
+            engage::AcceptedBehaving {
+                by: by.clone(),
+                t: world_t,
+                facts: facts.clone(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Rules 19: the live tracks accepted as behaving now for engagement `id`.
+    fn accepted_behaving_for(&self, id: IntentId) -> BTreeMap<String, engage::AcceptedBehaving> {
+        self.intents
+            .get(&id)
+            .and_then(Intent::engagement)
+            .map(|e| e.accepted_behaving.clone())
+            .unwrap_or_default()
+    }
+
+    /// Rules 19: engagement `id`'s acceptances as behaving now that the picture (`world`, its
+    /// identification filled here) lapses ([`engage::behaving_lapse`]): each is logged
+    /// (`engage.acceptance_lapsed`, with why, the world's time and the track's facts then, none
+    /// when it is not in the picture), dropped for good and recorded on the engagement for the
+    /// card. Run before every step of the engagement and before a look or a signature, so a
+    /// decision reads only acceptances its own picture bears out. Nothing before rules 19.
+    pub fn lapse_behaving(&mut self, id: IntentId, world: &WorldSnapshot) -> Result<Vec<engage::LapseRecord>, EngineError> {
+        if !self.policy.rules.accept_behaving() {
+            return Ok(Vec::new());
+        }
+        let accepted = self.accepted_behaving_for(id);
+        if accepted.is_empty() {
+            return Ok(Vec::new());
+        }
+        let filled = self.identified(world);
+        let ec = self.policy.rules.engage_rules();
+        let mut out = Vec::new();
+        for (track, a) in accepted {
+            let live = filled.tracks.get(&track);
+            let Some(lapse) = engage::behaving_lapse(&track, &a, live, filled.t, &ec) else {
+                continue;
+            };
+            let t = self.emit(EventBody::EngageAcceptanceLapsed {
+                intent: id,
+                track: track.clone(),
+                kind: lapse.kind,
+                detail: lapse.detail.clone(),
+                world_t: filled.t,
+                facts: live.cloned().map(Box::new),
+            })?;
+            let record = engage::LapseRecord {
+                track: track.clone(),
+                t,
+                kind: lapse.kind,
+                detail: lapse.detail,
+                accepted_by: a.by.clone(),
+            };
+            let e = self.get_mut(id)?.engagement_mut();
+            e.accepted_behaving.remove(&track);
+            e.lapsed.push(record.clone());
+            out.push(record);
+        }
+        Ok(out)
     }
 
     // ---- lost contacts (rules 16) -----------------------------------------------------
@@ -2099,6 +2361,11 @@ impl Engine {
         }
         w.lost_contacts = self.lost.in_force_for(&w.tracks, &self.ident, self.policy.rules.rule_id());
         w.lost_accepted = self.accepted_lost_for(spec.id);
+        // rules 19: and its live tracks accepted as behaving now (every engagement decision reads
+        // them where it reads its lost contacts)
+        if self.policy.rules.accept_behaving() {
+            w.behaving_accepted = self.accepted_behaving_for(spec.id);
+        }
     }
 
     /// Rules 16: the lost contacts an operator accepted for engagement `id`.
@@ -2613,6 +2880,10 @@ impl Engine {
         if intent.concurrences().iter().any(|a| a.by == operator) {
             return Err(EngineError::AlreadySigned { id, by: operator });
         }
+        // rules 19: an acceptance as behaving now this picture lapses is logged first, so the
+        // signer is shown the acceptances that hold
+        self.lapse_behaving(id, world)?;
+        let intent = self.get(id)?;
         let frozen = intent.engagement().and_then(|e| e.plan.clone());
         let track_id = engage::params(&spec).map(|p| p.0.to_string()).unwrap_or_default();
         let mut inputs = world.subset_for(&spec);
@@ -2641,6 +2912,7 @@ impl Engine {
             track: TrackIdentity::of(&track_id, track),
             unknown_accepted: self.accepted_for(id),
             lost_accepted: self.accepted_lost_for(id),
+            behaving_accepted: self.accepted_behaving_for(id),
         };
         let logged = self.log_inputs(&inputs)?;
         self.emit(EventBody::PictureIssued {
@@ -2888,9 +3160,12 @@ impl Engine {
         // token's track identity is compared with it)
         let filled = self.identified(world);
         let world: &WorldSnapshot = &filled;
-        let intent = self.get(id)?;
-        next_state(intent.state(), Transition::Approve)
+        next_state(self.get(id)?.state(), Transition::Approve)
             .map_err(|err| EngineError::Illegal { id, err })?;
+        // rules 19: an acceptance as behaving now this picture lapses is logged before the
+        // signature reads the acceptances (a token from before the lapse is then refused)
+        self.lapse_behaving(id, world)?;
+        let intent = self.get(id)?;
         let spec = intent.spec().clone();
         let expires = intent.expires_t();
         let (of, proposer_excluded) = intent
@@ -2933,6 +3208,7 @@ impl Engine {
         };
         let accepted = self.accepted_for(id);
         let accepted_lost = self.accepted_lost_for(id);
+        let accepted_behaving = self.accepted_behaving_for(id);
         if let Err(why) = engage::check_token(
             &shown,
             id,
@@ -2943,6 +3219,7 @@ impl Engine {
             frozen.as_ref(),
             &accepted,
             &accepted_lost,
+            &accepted_behaving,
         ) {
             self.refuse(by, session, id, &why)?;
             return Err(EngineError::StalePicture { id, why });
@@ -2997,7 +3274,10 @@ impl Engine {
         let self_accepted = self
             .get(id)?
             .engagement()
-            .is_some_and(|e| e.accepted.values().chain(e.accepted_lost.values()).any(|a| &a.by == by));
+            .is_some_and(|e| {
+                e.accepted.values().chain(e.accepted_lost.values()).any(|a| &a.by == by)
+                    || e.accepted_behaving.values().any(|a| &a.by == by)
+            });
         let n = u32::try_from(self.get(id)?.concurrences().len()).unwrap_or(u32::MAX) + 1;
         if n < of {
             let t = self.emit(EventBody::ApprovalConcurred {
@@ -3118,6 +3398,8 @@ impl Engine {
         // new picture); rules 16: of lost contacts too
         e.accepted.clear();
         e.accepted_lost.clear();
+        // rules 19: and of live tracks as behaving now
+        e.accepted_behaving.clear();
         e.reset = Some(engage::ResetRecord { t, dropped, reason });
         Ok(())
     }
@@ -3577,7 +3859,7 @@ impl Engine {
                         i.state(),
                         State::Approved | State::Dispatched | State::Effected
                     ) || (i.state() == State::PendingApproval
-                        && i.engagement().is_some_and(|e| e.plan.is_some())))
+                        && i.engagement().is_some_and(|e| e.plan.is_some() || !e.accepted_behaving.is_empty())))
             })
             .map(Intent::id)
             .collect();
@@ -3598,6 +3880,15 @@ impl Engine {
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
     ) -> Result<Option<EngagementEvent>, EngineError> {
+        // rules 19: the acceptances as behaving now this picture lapses go first (logged, dropped
+        // for good), so the step reads only those that hold; a pending nomination with one is
+        // stepped for this alone until a signature freezes a plan
+        if matches!(
+            self.get(id)?.state(),
+            State::PendingApproval | State::Approved | State::Dispatched
+        ) {
+            self.lapse_behaving(id, world)?;
+        }
         let intent = self.get(id)?;
         let spec = intent.spec().clone();
         let state = intent.state();
@@ -5748,12 +6039,14 @@ impl Engine {
                     intent: id,
                     uid: Some(uid.clone()),
                     contact: None,
+                    track: None,
                     since: *since,
                     by: a.by.clone(),
                     session: a.session,
                     world_t: world.t,
                     vehicle: Some(Box::new(world.vehicles.get(uid).cloned().unwrap_or_default())),
                     lost: None,
+                    behaving: None,
                     step_up: a.step_up,
                 })?;
                 self.get_mut(id)?.engagement_mut().accepted.insert(
@@ -5771,12 +6064,14 @@ impl Engine {
                     intent: id,
                     uid: None,
                     contact: Some(track.clone()),
+                    track: None,
                     since: Some(*since),
                     by: a.by.clone(),
                     session: a.session,
                     world_t: world.t,
                     vehicle: None,
                     lost: filled.get(track).cloned().map(Box::new),
+                    behaving: None,
                     step_up: a.step_up,
                 })?;
                 self.get_mut(id)?.engagement_mut().accepted_lost.insert(
@@ -5786,6 +6081,10 @@ impl Engine {
                         by: a.by.clone(),
                     },
                 );
+            }
+            // rules 19: and the live tracks it accepts as behaving now, with their facts
+            for (track, facts) in a.tracks {
+                self.record_behaving(id, a.by, a.session, a.step_up, track, facts, world.t)?;
             }
         }
 
@@ -6102,6 +6401,8 @@ struct Acceptor<'a> {
     list: &'a [(Uid, Option<Time>)],
     /// Rules 16: the lost contacts accepted, each since its last fix.
     contacts: &'a [(String, Time)],
+    /// Rules 19: the live tracks accepted as behaving now, each with its facts then.
+    tracks: &'a [(String, TrackFacts)],
     /// Rules 8: the step-up the acceptances quote (`[approval] step_up_acts`).
     step_up: Option<StepUpRef>,
 }

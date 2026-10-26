@@ -537,6 +537,12 @@ pub struct WorldSnapshot {
     /// The keep-out leaves out a contact lost since exactly then. Absent when none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub lost_accepted: BTreeMap<String, crate::engage::AcceptedUnknown>,
+    /// Engine-filled for an engagement's checks (rules 19): the live tracks an operator accepted
+    /// for it as behaving now (`engage.accepted` naming a track), each with its facts then. The
+    /// keep-out on tracks counts such a track along its accepted path and its course now while
+    /// the acceptance holds on this picture ([`crate::engage::behaving_lapse`]). Absent when none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub behaving_accepted: BTreeMap<String, crate::engage::AcceptedBehaving>,
 }
 
 /// A decision's inputs as logged: the [`WorldSnapshot`] with the area set replaced by its
@@ -590,6 +596,9 @@ pub struct LoggedInputs {
     /// The lost contacts accepted for this engagement (rules 16; absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub lost_accepted: BTreeMap<String, crate::engage::AcceptedUnknown>,
+    /// The live tracks accepted for this engagement as behaving now (rules 19; absent when none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub behaving_accepted: BTreeMap<String, crate::engage::AcceptedBehaving>,
 }
 
 impl LoggedInputs {
@@ -623,6 +632,7 @@ impl LoggedInputs {
             spent_carried: world.spent_carried.clone(),
             lost_contacts: world.lost_contacts.clone(),
             lost_accepted: world.lost_accepted.clone(),
+            behaving_accepted: world.behaving_accepted.clone(),
         }
     }
 
@@ -673,6 +683,7 @@ impl LoggedInputs {
             identities: BTreeMap::new(),
             lost_contacts: self.lost_contacts.clone(),
             lost_accepted: self.lost_accepted.clone(),
+            behaving_accepted: self.behaving_accepted.clone(),
         }
     }
 }
@@ -731,6 +742,8 @@ impl WorldSnapshot {
             // engine-owned (rules 16): filled from its ledger of lost contacts
             lost_contacts: BTreeMap::new(),
             lost_accepted: BTreeMap::new(),
+            // engine-owned (rules 19): filled from its engagement's acceptances
+            behaving_accepted: BTreeMap::new(),
         }
     }
 

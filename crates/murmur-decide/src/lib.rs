@@ -317,7 +317,7 @@ pub use catalog::{AutopilotKind, Catalog, Domain, PlatformFacts, Reaches, Sensor
 pub use engage::{
     AssessResult, Assessment, EffectOrder, EffectRecord, EngageOrder, EngagePreview, EngageRules,
     EngageSnapshot, EngageWindow, Engagement, EngagementEvent, Fallback, FallbackOrder,
-    AcceptedUnknown, EffectAlt, FrozenPlan, LostLinkPreload, ObserveStep, ParamBits, ParamSetting,
+    AcceptedBehaving, AcceptedUnknown, EffectAlt, FrozenPlan, Lapse, LapseKind, LapseRecord, LostLinkPreload, ObserveStep, ParamBits, ParamSetting,
     PictureToken, PictureVerdict, PreloadPhase, PreloadRecord, ResetRecord, SignedPicture, StopCause,
     StopRecord, TrackIdentity, VehicleIdentity,
 };
@@ -339,7 +339,7 @@ pub use intent::{
     State, Targets, Task, TaskKind, Transition, next_state,
 };
 pub use passkey::{
-    AcceptedVehicle, Assertion, CHALLENGE_TTL_MS, PasskeyKey, PasskeyRoster, PasskeyUse, StepUpFor,
+    AcceptedTrack, AcceptedVehicle, Assertion, CHALLENGE_TTL_MS, PasskeyKey, PasskeyRoster, PasskeyUse, StepUpFor,
     Study,
 };
 pub use policy::{
@@ -352,7 +352,7 @@ pub use queue::{
 };
 pub use route::{LegKind, Route, RouteLeg, Segment};
 pub use rules::{
-    AIRCRAFT_REACH_SINCE, CARRY_FOLLOWUPS_SINCE, CheckResult, LOST_CONTACT_SINCE, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
+    ACCEPT_BEHAVING_SINCE, AIRCRAFT_REACH_SINCE, CARRY_FOLLOWUPS_SINCE, CheckResult, LOST_CONTACT_SINCE, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
     QUEUE_FOLLOWUPS_SINCE, REVIEW_FOLLOWUPS_SINCE, ROUTE_SURFACE_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_VERSION,
     RuleId, RulesConfig, SPACE_FOLLOWUPS_SINCE, SPACE_REPLAY_SINCE, STEP_UP_SCHEMA_SINCE, UnknownEndurance, VELOCITY_SIGMA_SINCE,
 };

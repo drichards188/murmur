@@ -1522,6 +1522,16 @@ pub fn run(
         for (id, e) in &outcome.errors {
             failures.push(format!("t={s}: step_engagements {id}: {e}"));
         }
+        // rules 19: the acceptances as behaving now that lapsed this second (at the step, a look
+        // or a signature)
+        for i in engine.intents() {
+            let Some(e) = i.engagement() else { continue };
+            let seen = extra.lapses_seen.entry(i.id()).or_insert(0);
+            for l in e.lapsed.iter().skip(*seen) {
+                extra.lapsed.push(format!("t={s} {} lapsed ({}): {}", l.track, l.kind.as_str(), l.detail));
+            }
+            *seen = e.lapsed.len();
+        }
         {
             {
                 for ev in outcome.events {
@@ -2382,10 +2392,6 @@ fn act(
             accept_lost,
             accept_behaving,
         } => {
-            // rules 19: not in this engine yet (the scenarios are written first)
-            if !accept_behaving.is_empty() {
-                return failures.push(format!("t={s}: nominate: accepting a live track as behaving now is not in this engine"));
-            }
             let task = Task::Engage {
                 track: track.clone(),
                 effect_radius_m: *radius_m,
@@ -2415,19 +2421,29 @@ fn act(
                 (Some(by), _) => match session(by) {
                     Some(sess) => {
                         proposal.rationale = rationale.as_deref().map(Rationale::new).transpose().ok().flatten();
-                        match (accepted.is_empty() && contacts.is_empty(), sess.engagement_authority()) {
+                        match (accepted.is_empty() && contacts.is_empty() && accept_behaving.is_empty(), sess.engagement_authority()) {
                             (true, _) => engine.submit(sess.authority(), proposal, &w, terrain).map(|i| i.id()),
-                            (false, Some(auth)) if contacts.is_empty() => engine
+                            (false, Some(auth)) if contacts.is_empty() && accept_behaving.is_empty() => engine
                                 .submit_accepting(auth, proposal, &accepted, &w, terrain)
                                 .map(|i| i.id()),
-                            (false, Some(auth)) => engine
+                            (false, Some(auth)) if accept_behaving.is_empty() => engine
                                 .submit_accepting_lost(auth, None, proposal, &accepted, &contacts, &w, terrain)
+                                .map(|i| i.id()),
+                            // rules 19: and live tracks as behaving now, each with its facts now
+                            (false, Some(auth)) => engine
+                                .submit_accepting_all(auth, None, proposal, &accepted, &contacts, accept_behaving, &w, terrain)
                                 .map(|i| i.id()),
                             // the bridge refuses the whole nomination (403): so does the runner
                             (false, None) => {
                                 return refusals.push(format!(
-                                    "{by}: accepting a lost {} needs engagement authority (nomination refused)",
-                                    if contacts.is_empty() { "vehicle" } else { "contact" }
+                                    "{by}: accepting a {} needs engagement authority (nomination refused)",
+                                    if !accept_behaving.is_empty() {
+                                        "live track as behaving now"
+                                    } else if contacts.is_empty() {
+                                        "lost vehicle"
+                                    } else {
+                                        "lost contact"
+                                    }
                                 ));
                             }
                         }
@@ -2439,6 +2455,12 @@ fn act(
                     if !accept.is_empty() || !accept_lost.is_empty() {
                         refusals.push(format!(
                             "agent {agent}: no acceptance of a lost vehicle on an agent's proposal (its port has no such parameter)"
+                        ));
+                    }
+                    // rules 19: nor of a live track as behaving now
+                    if !accept_behaving.is_empty() {
+                        refusals.push(format!(
+                            "agent {agent}: no acceptance of a live track as behaving now on an agent's proposal (its port has no such parameter)"
                         ));
                     }
                     let Ok(r) = Rationale::new(rationale.clone().unwrap_or_default()) else {
@@ -2594,11 +2616,45 @@ fn act(
                 Err(e) => refusals.push(e.to_string()),
             }
         }
-        Action::Accept { behaving: Some(_), .. } | Action::Revoke { behaving: Some(_), .. } => {
-            failures.push(format!("t={s}: accepting a live track as behaving now is not in this engine"));
+        // rules 19: a live track as behaving now, its facts now
+        Action::Accept { by, behaving: Some(track), .. } => {
+            let (Some(id), Some(sess)) = (*last, session(by)) else {
+                return failures.push(format!("t={s}: accept: no nomination or unknown operator {by}"));
+            };
+            let w = world(tracks, vehicles);
+            let Some(auth) = sess.engagement_authority() else {
+                return refusals.push(format!("{by}: accepting a live track as behaving now needs engagement authority"));
+            };
+            if let Err(e) = engine.accept_live_track(id, auth, None, track, &w) {
+                refusals.push(e.to_string());
+            }
         }
-        Action::AgentAccept { behaving: Some(_), .. } => {
-            failures.push(format!("t={s}: accepting a live track as behaving now is not in this engine"));
+        Action::Revoke { by, behaving: Some(track), .. } => {
+            let (Some(id), Some(sess)) = (*last, session(by)) else {
+                return failures.push(format!("t={s}: revoke: no nomination or unknown operator {by}"));
+            };
+            if let Err(e) = engine.revoke_live_track(id, sess.authority(), track) {
+                refusals.push(e.to_string());
+            }
+        }
+        Action::AgentAccept { agent, behaving: Some(track), .. } => {
+            // AgentPort has no accept method: the attempt is recorded, nothing may move
+            let before = last.and_then(|id| engine.intent(id)).map(|i| {
+                (i.state(), i.engagement().map(|e| e.accepted_behaving.clone()).unwrap_or_default())
+            });
+            let _ = engine.agent_port(AgentId::new(agent)).record_action(
+                "engage.accept.attempt",
+                &format!("track {track}: no agent path to accepting a live track as behaving now exists"),
+            );
+            refusals.push(format!(
+                "agent {agent}: no accept method on AgentPort (accepting {track} as behaving now cannot be expressed)"
+            ));
+            let after = last.and_then(|id| engine.intent(id)).map(|i| {
+                (i.state(), i.engagement().map(|e| e.accepted_behaving.clone()).unwrap_or_default())
+            });
+            if before != after {
+                failures.push(format!("t={s}: the intent moved on an agent's attempt to accept"));
+            }
         }
         Action::Accept { by, uid, track, since_s, .. } => {
             let (Some(id), Some(sess)) = (*last, session(by)) else {
@@ -3025,6 +3081,7 @@ struct Extra {
     /// Rules 19: the acceptances as behaving now that lapsed, as `t=<s> <track> lapsed (<kind>):
     /// <detail>`.
     lapsed: Vec<String>,
+    lapses_seen: BTreeMap<IntentId, usize>,
     /// Rules 16: the tracks a `drop_track` step asked to drop before the tracker's drop age had
     /// passed by the run's clock (a clock that steps back), dropped once it has, each with the
     /// second of its step; one still waiting at the end of the run fails it.
@@ -4194,6 +4251,42 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
             if !done {
                 return Err("no engage.accepted to forge".into());
+            }
+        }
+        "drop_behaving_acceptance" => {
+            // rules 19: hide that an operator accepted a live track as behaving now (the decisions
+            // still read it)
+            let before = events.len();
+            events.retain(|e| {
+                !matches!(&e.body, EventBody::EngageAccepted { intent, track: Some(_), .. } if *intent == spec.id)
+            });
+            if events.len() == before {
+                return Err("no acceptance as behaving now to drop".into());
+            }
+        }
+        "drop_behaving_lapse" => {
+            // rules 19: hide that an acceptance as behaving now lapsed (the decisions after it
+            // read none)
+            let before = events.len();
+            events.retain(|e| !matches!(&e.body, EventBody::EngageAcceptanceLapsed { intent, .. } if *intent == spec.id));
+            if events.len() == before {
+                return Err("no engage.acceptance_lapsed to drop".into());
+            }
+        }
+        "behaving_acceptance_by_agent" => {
+            // rules 19: an acceptance as behaving now credited to an agent (in the operator's
+            // session)
+            let mut done = false;
+            for e in &mut events {
+                if let EventBody::EngageAccepted { intent, by, track: Some(_), .. } = &mut e.body
+                    && *intent == spec.id
+                {
+                    *by = OperatorId::new("agent-planner");
+                    done = true;
+                }
+            }
+            if !done {
+                return Err("no acceptance as behaving now to forge".into());
             }
         }
         "hide_self_accepted" => {

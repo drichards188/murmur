@@ -268,6 +268,45 @@ pub struct Item {
     pub other: Option<String>,
     /// Rules 16: a lost contact's facts for an acceptance (none for anything else).
     pub lost: Option<LostInfo>,
+    /// Rules 19: a live track's acceptance as behaving now: the one in force for this
+    /// engagement, or what accepting it would do (none for anything else, or before rules 19).
+    pub behaving: Option<BehavingInfo>,
+}
+
+/// Rules 19: a live track as an operator with engagement authority would accept it "as it is
+/// behaving now" for this engagement, or as an acceptance in force has it: its accepted path
+/// ([`engage::behaving_regions`]) against the keep-out on this picture.
+#[derive(Clone, Debug, Serialize)]
+pub struct BehavingInfo {
+    /// The track id to name in the acceptance.
+    pub track: String,
+    /// Accepted for this engagement already, by whom, and when (the world's time).
+    pub accepted_by: Option<String>,
+    pub accepted_t: Option<Time>,
+    /// Whether it may be accepted now (in the picture and in view, with a velocity, protected).
+    pub acceptable: bool,
+    /// Why it may not, when it may not.
+    pub why_not: Option<String>,
+    /// The estimate an acceptance now would start from (its time, position, velocity and the
+    /// velocity's error): what the operator accepts.
+    pub estimate_t: Time,
+    pub position: LonLat,
+    pub velocity_mps: Option<[f64; 2]>,
+    pub velocity_sigma_mps: f64,
+    /// Accepted as behaving now (or as the acceptance in force has it), whether the keep-out
+    /// would hold for it on this picture: every region, the accepted path's and its course's
+    /// now, clear.
+    pub clears: bool,
+    /// Its nearest region's edge from the effect point then (negative inside), m, and by how much
+    /// it would fail the clearance (negative: clear by).
+    pub edge_m: Option<f64>,
+    pub short_m: Option<f64>,
+    /// The accepted path's region at the effect time.
+    pub region: Option<Region>,
+    /// In plain words, with the numbers, and what the acceptance would assume.
+    pub reason: String,
+    /// Rules 19: when the picture lapses the acceptance in force (logged at the next step): why.
+    pub lapsed: Option<String>,
 }
 
 /// One region of an item at the effect time.
@@ -534,7 +573,9 @@ impl Ctx<'_> {
 /// A track or vehicle as the scans read it.
 #[derive(Clone)]
 enum Probe<'a> {
-    Track(&'a str, &'a TrackFacts),
+    /// A live track, with the acceptance of it as behaving now for this engagement (rules 19),
+    /// when there is one: the check judges it by its accepted path while that holds.
+    Track(&'a str, &'a TrackFacts, Option<&'a engage::AcceptedBehaving>),
     Vehicle(&'a Uid, &'a VehicleFacts),
     /// Rules 16: a lost contact the check judges (not live, exempt or accepted).
     Lost(&'a str, &'a TrackFacts),
@@ -544,7 +585,7 @@ impl Probe<'_> {
     /// As the words name it.
     fn label(&self, opts: &Options) -> String {
         match self {
-            Probe::Track(id, t) => track_label(id, t),
+            Probe::Track(id, t, _) => track_label(id, t),
             Probe::Vehicle(u, _) => format!("{} (ours)", opts.name(u)),
             Probe::Lost(id, t) => format!("lost contact {}", track_label(id, t)),
         }
@@ -574,6 +615,27 @@ fn judged_lost<'w>(world: &'w WorldSnapshot, target: &str, ec: &EngageRules) -> 
 #[allow(clippy::too_many_arguments)]
 fn track_clear(t: &TrackFacts, point: LonLat, at: Time, clearance: f64, now: Time, ec: &EngageRules, alt: Option<EffectAlt>) -> bool {
     engage::track_standing(t, point, at, clearance, now, ec, alt, false).is_none_or(|s| !s.blocks(clearance))
+}
+
+/// Rules 19: [`track_clear`] for live track `id` with the acceptance of it as behaving now, when
+/// there is one: by its accepted path and its course now while the acceptance holds on the facts
+/// at `now` ([`engage::behaving_lapse`]), else as any track, as [`engage::live_standing`] judges.
+#[allow(clippy::too_many_arguments)]
+fn live_clear(
+    id: &str,
+    t: &TrackFacts,
+    accepted: Option<&engage::AcceptedBehaving>,
+    point: LonLat,
+    at: Time,
+    clearance: f64,
+    now: Time,
+    ec: &EngageRules,
+    alt: Option<EffectAlt>,
+) -> bool {
+    match accepted.filter(|a| ec.accept_behaving() && engage::behaving_lapse(id, a, Some(t), now, ec).is_none()) {
+        Some(a) => engage::behaving_standing(a, t, point, at, clearance, now, ec, alt, false).is_none_or(|s| !s.blocks(clearance)),
+        None => track_clear(t, point, at, clearance, now, ec, alt),
+    }
 }
 
 /// Rules 16: [`track_clear`] for a lost contact (its facts at the drop): by its regions as one
@@ -623,7 +685,7 @@ fn scan_speed_mps(ctx: &Ctx, probes: &[Probe]) -> f64 {
     let fastest = probes
         .iter()
         .map(|p| match p {
-            Probe::Track(_, t) | Probe::Lost(_, t) => track(t),
+            Probe::Track(_, t, _) | Probe::Lost(_, t) => track(t),
             Probe::Vehicle(_, v) => {
                 let speed = v.velocity_mps.as_ref().map_or(0.0, |f| f.value[0].hypot(f.value[1]));
                 let cruise = v.platform.as_ref().and_then(|p| p.cruise_mps).unwrap_or(0.0);
@@ -724,11 +786,14 @@ pub fn explain(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig, opts
         if engage::track_exempt(id, t, track_id, &ec) {
             continue;
         }
-        let Some(s) = engage::track_standing(t, point, effect_t, clearance, world.t, &ec, alt, true) else {
+        // rules 19: an accepted track by its accepted path while the acceptance holds
+        let (standing, accepted, lapse) = engage::live_standing(id, t, point, effect_t, clearance, world, &ec, alt, true);
+        let Some(s) = standing else {
             continue;
         };
         if s.blocks(clearance) || s.edge < NEAR_FACTOR * clearance {
-            items.push((track_item(&ctx, id, t, &s, alt), Probe::Track(id, t)));
+            let item = track_item(&ctx, id, t, &s, alt, accepted, lapse);
+            items.push((item, Probe::Track(id, t, accepted)));
         }
     }
     // rules 16: the lost contacts it judges
@@ -815,6 +880,10 @@ fn agrees(ctx: &Ctx, checks: &[CheckResult], items: &[(Item, Probe)], alt: Optio
         }
         let mut alone = WorldSnapshot::new(world.t);
         alone.tracks.insert(id.clone(), t.clone());
+        // rules 19: with its acceptance as behaving now, as the check reads it
+        if let Some(a) = world.behaving_accepted.get(id) {
+            alone.behaving_accepted.insert(id.clone(), a.clone());
+        }
         let fails = engage::keep_out_tracks(point, effect_t, clearance, ctx.track_id, &alone, ec, alt).outcome != Outcome::Pass;
         if fails != listed(Subject::Track, id) {
             return disagree();
@@ -883,7 +952,15 @@ fn verdict(blocks: bool, edge: f64, clearance: f64) -> String {
     }
 }
 
-fn track_item(ctx: &Ctx, id: &str, t: &TrackFacts, s: &TrackStanding, alt: Option<EffectAlt>) -> Item {
+fn track_item(
+    ctx: &Ctx,
+    id: &str,
+    t: &TrackFacts,
+    s: &TrackStanding,
+    alt: Option<EffectAlt>,
+    accepted: Option<&engage::AcceptedBehaving>,
+    lapse: Option<engage::Lapse>,
+) -> Item {
     let (ec, clearance, effect_t) = (&ctx.ec, ctx.clearance, ctx.pv.effect_t);
     let point = ctx.pv.effect_point;
     let blocks = s.blocks(clearance);
@@ -960,6 +1037,15 @@ fn track_item(ctx: &Ctx, id: &str, t: &TrackFacts, s: &TrackStanding, alt: Optio
                 engage::AIRCRAFT_LAG_M
             )
         }
+        ReachKind::Accepted => {
+            let (by, at) = accepted.map_or((String::new(), Time(0)), |a| (a.by.to_string(), a.facts.position.t));
+            let v = accepted.and_then(|a| a.facts.velocity_mps).map_or(0.0, |[e, n]| e.hypot(n));
+            format!(
+                "Accepted as behaving now by {by} (its estimate at t={}): on that course at {v:.1} m/s it is predicted {} from the effect point at the effect time, give or take {r} ({k:.0}-sigma since then).",
+                at.0,
+                dist(s.d)
+            )
+        }
         ReachKind::OutOfView => {
             let (speed, lag) = engage::out_of_view_speed(t, ec);
             let lag = if lag > 0.0 { format!(", and {lag:.0} m more for the tracker's lag behind an aircraft") } else { String::new() };
@@ -1019,14 +1105,116 @@ fn track_item(ctx: &Ctx, id: &str, t: &TrackFacts, s: &TrackStanding, alt: Optio
         not_by_waiting: None,
         other: other_remedy(blocks, near.kind, t, ec),
         lost: None,
+        behaving: behaving_info(ctx, id, t, alt, accepted, lapse),
     }
+}
+
+/// Rules 19: the acceptance of live track `id` as behaving now for this engagement (in force,
+/// or what one now would do), judged as the check judges it ([`engage::behaving_standing`]). None
+/// before rules 19.
+fn behaving_info(
+    ctx: &Ctx,
+    id: &str,
+    t: &TrackFacts,
+    alt: Option<EffectAlt>,
+    accepted: Option<&engage::AcceptedBehaving>,
+    lapse: Option<engage::Lapse>,
+) -> Option<BehavingInfo> {
+    let ec = &ctx.ec;
+    if !ec.accept_behaving() {
+        return None;
+    }
+    let (point, effect_t, clearance, now) = (ctx.pv.effect_point, ctx.pv.effect_t, ctx.clearance, ctx.world.t);
+    let acceptable = engage::behaving_acceptable(id, Some(t), now, ctx.track_id, ec);
+    // what is (or would be) accepted: the acceptance in force, or the estimate now
+    let hypothetical;
+    let a = match accepted {
+        Some(a) => a,
+        None => {
+            hypothetical = engage::AcceptedBehaving {
+                by: crate::ids::OperatorId::new("(you)"),
+                t: now,
+                facts: t.clone(),
+            };
+            &hypothetical
+        }
+    };
+    let standing = (accepted.is_some() || acceptable.is_ok())
+        .then(|| engage::behaving_standing(a, t, point, effect_t, clearance, now, ec, alt, true))
+        .flatten();
+    let region = standing.as_ref().and_then(|st| {
+        st.regions.iter().find(|r| r.kind == ReachKind::Accepted).map(|r| {
+            let edge = haversine_m(r.center, point) - r.radius_m;
+            Region {
+                kind: r.kind.as_str(),
+                center: r.center,
+                radius_m: r.radius_m,
+                edge_m: edge,
+                inside: edge < clearance,
+                how: r.how.clone(),
+            }
+        })
+    });
+    let clears = standing.as_ref().is_some_and(|st| !st.blocks(clearance));
+    let edge_m = standing.as_ref().map(|st| st.edge);
+    let span = secs(effect_t.ms_since(t.position.t)).max(0.0);
+    let reason = match (&standing, &acceptable, accepted) {
+        (_, Err(why), None) => format!("It may not be accepted as behaving now: {why}."),
+        (None, _, _) => "Its accepted path could not be judged.".to_string(),
+        (Some(st), _, accepted) => {
+            let near = &st.regions[st.nearest];
+            let v = t.velocity_mps.map_or(0.0, |[e, n]| e.hypot(n));
+            let what = if accepted.is_some() { "Accepted as behaving now" } else { "Accepted as behaving now (on its course at" };
+            let assume = if accepted.is_some() {
+                String::new()
+            } else {
+                format!(" {v:.1} m/s, its velocity known to {:.1} m/s)", engage::track_velocity_error(t, ec))
+            };
+            let verdict = if clears {
+                format!(
+                    "it would stay {} from the effect point ({}): the keep-out holds for it",
+                    dist(st.edge),
+                    near.kind.as_str()
+                )
+            } else {
+                format!(
+                    "it would still come within {} of the effect point ({}), short by {}",
+                    dist(st.edge.max(0.0)),
+                    near.kind.as_str(),
+                    dist(clearance - st.edge)
+                )
+            };
+            format!(
+                "{what}{assume}, it counts along that path and its course now over the {span:.0} s to the effect, not anywhere it could turn or speed up to: {verdict}. The acceptance lapses on its own if it departs from that course beyond its uncertainty or goes out of view."
+            )
+        }
+    };
+    Some(BehavingInfo {
+        track: id.to_string(),
+        accepted_by: accepted.map(|a| a.by.to_string()),
+        accepted_t: accepted.map(|a| a.t),
+        acceptable: acceptable.is_ok(),
+        why_not: acceptable.err(),
+        estimate_t: t.position.t,
+        position: engage::track_at(t, now),
+        velocity_mps: t.velocity_mps,
+        velocity_sigma_mps: engage::track_velocity_error(t, ec),
+        clears,
+        edge_m,
+        short_m: edge_m.map(|e| clearance - e),
+        region,
+        reason,
+        lapsed: lapse.map(|l| l.detail),
+    })
 }
 
 /// Rules 16: a lost contact as an item: its regions (a live track's from its facts at the drop,
 /// and anywhere at its domain's top speed), since when it is out of view, and what would clear
 /// it.
 fn lost_item(ctx: &Ctx, id: &str, l: &crate::lost::LostContact, s: &TrackStanding, alt: Option<EffectAlt>) -> Item {
-    let mut item = track_item(ctx, id, &l.facts, s, alt);
+    let mut item = track_item(ctx, id, &l.facts, s, alt, None, None);
+    // rules 19: a lost contact is accepted as one, never as behaving now
+    item.behaving = None;
     let now = ctx.world.t;
     let unseen = secs(now.ms_since(l.since())).max(0.0);
     let dropped = secs(now.ms_since(l.dropped_t)).max(0.0);
@@ -1129,6 +1317,7 @@ fn vehicle_item(ctx: &Ctx, uid: &Uid, v: &VehicleFacts, st: FriendlyStanding, al
         not_by_waiting: None,
         other: None,
         lost: None,
+        behaving: None,
     };
     match st {
         FriendlyStanding::Accepted { .. } => None,
@@ -1240,7 +1429,7 @@ fn same_picture(ctx: &Ctx, items: &mut [(Item, Probe)], more_blocking: bool) -> 
         .tracks
         .iter()
         .filter(|(id, t)| !engage::track_exempt(id, t, ctx.track_id, ec))
-        .map(|(id, t)| Probe::Track(id, t))
+        .map(|(id, t)| Probe::Track(id, t, world.behaving_accepted.get(id.as_str())))
         .chain(
             world
                 .vehicles
@@ -1257,7 +1446,7 @@ fn same_picture(ctx: &Ctx, items: &mut [(Item, Probe)], more_blocking: bool) -> 
     let grid_margin = grid_margin_for(ctx.clearance, grid_speed);
     let scan = ctx.clearance + grid_margin;
     let clear_at = |p: &Probe, point: LonLat, at: Time, alt: Option<EffectAlt>| match p {
-        Probe::Track(_, t) => track_clear(t, point, at, scan, world.t, ec, alt),
+        Probe::Track(id, t, a) => live_clear(id, t, *a, point, at, scan, world.t, ec, alt),
         Probe::Lost(_, t) => lost_clear(t, point, at, scan, world.t, ec, alt),
         Probe::Vehicle(u, v) => vehicle_clear(u, v, point, at, scan, world, cfg, alt),
     };
@@ -1459,7 +1648,7 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)], shown: usize) -> (Opt
     let mut stuck: Vec<String> = Vec::new();
     for (item, probe) in items.iter_mut().filter(|(i, _)| i.blocks) {
         let out_of_view = match probe {
-            Probe::Track(_, t) => (!in_view(t, now, mem)).then(|| secs(now.ms_since(t.last_seen_t))),
+            Probe::Track(_, t, _) => (!in_view(t, now, mem)).then(|| secs(now.ms_since(t.last_seen_t))),
             Probe::Vehicle(..) | Probe::Lost(..) => None,
         };
         if let Some(unseen) = out_of_view {
@@ -1488,6 +1677,8 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)], shown: usize) -> (Opt
         base: &'a TrackFacts,
         now_kinds: Vec<&'static str>,
         then: TrackFacts,
+        /// rules 19: its acceptance as behaving now for this engagement, if any
+        accepted: Option<&'a engage::AcceptedBehaving>,
     }
     struct V<'a> {
         uid: &'a Uid,
@@ -1510,6 +1701,7 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)], shown: usize) -> (Opt
                 .map(|(i, _)| i.regions.iter().map(|r| r.kind).collect())
                 .unwrap_or_default(),
             then: t.clone(),
+            accepted: world.behaving_accepted.get(id.as_str()),
         })
         .collect();
     let mut vehicles: Vec<V> = world
@@ -1576,7 +1768,7 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)], shown: usize) -> (Opt
                 project_vehicle_into(v.base, &mut v.then, v.circle, v.rep, v.vel, now, w);
             }
         }
-        let track_ok = |t: &T| track_clear(&t.then, point, at, ctx.clearance, w, ec, alt);
+        let track_ok = |t: &T| live_clear(t.id, &t.then, t.accepted, point, at, ctx.clearance, w, ec, alt);
         // rules 16: a lost contact stays as it is (its reach grows with the span by itself)
         let lost_ok = |l: &&crate::lost::LostContact| lost_clear(&l.facts, point, at, ctx.clearance, w, ec, alt);
         let vehicle_ok = |v: &V| vehicle_clear(v.uid, &v.then, point, at, ctx.clearance, &lean, cfg, alt);

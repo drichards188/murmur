@@ -179,7 +179,7 @@ fn a_dry_run_and_its_explanation_read_the_trackers_velocity_error() {
     w.vehicles.insert(uid("blade-1"), blade);
     w.tracks.insert("T-0001".into(), target);
     let cfg18 = policy().rules;
-    assert_eq!(cfg18.rules_version, VELOCITY_SIGMA_SINCE);
+    assert!(cfg18.rules_version >= VELOCITY_SIGMA_SINCE);
     let pv = engage::preview(&spec, &w, &cfg18).unwrap();
     let span = (pv.effect_t.0 - T0.0) as f64 / 1000.0;
     // a boat whose course passes 700 m from the effect point at the effect time

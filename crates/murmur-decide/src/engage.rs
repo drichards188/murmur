@@ -353,6 +353,13 @@ impl EngageRules {
         self.rules_version >= crate::rules::VELOCITY_SIGMA_SINCE
     }
 
+    /// The decisions of rules 19 on ([`crate::rules::ACCEPT_BEHAVING_SINCE`]): a live track an
+    /// operator accepted as behaving now counts along its accepted path and its course now, until
+    /// the acceptance lapses.
+    pub fn accept_behaving(&self) -> bool {
+        self.rules_version >= crate::rules::ACCEPT_BEHAVING_SINCE
+    }
+
     /// The optional keys this section sets, each with the policy schema that introduced it
     /// (or, for an old name, the first schema whose builds read it): a log claiming an
     /// older schema can't carry them (replay checks).
@@ -693,6 +700,12 @@ pub struct PictureToken {
     /// refused).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub lost_accepted: BTreeMap<String, AcceptedUnknown>,
+    /// Rules 19: the live tracks accepted for it as behaving now when it was shown, by track id,
+    /// each with its facts then (every signer sees them; a signature quoting a token whose set
+    /// differs from the engagement's now, an acceptance given, revoked or lapsed since, is
+    /// refused).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub behaving_accepted: BTreeMap<String, AcceptedBehaving>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -823,6 +836,14 @@ pub struct Engagement {
     /// each was dropped under (`since`: its last fix).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub accepted_lost: BTreeMap<String, AcceptedUnknown>,
+    /// Rules 19: the live tracks an operator accepted for this engagement as behaving now, by
+    /// track id, each with its facts then; dropped when revoked, lapsed or reset with the plan.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub accepted_behaving: BTreeMap<String, AcceptedBehaving>,
+    /// Rules 19: the acceptances as behaving now that lapsed on their own, in order (every signer
+    /// and the card are shown them).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub lapsed: Vec<LapseRecord>,
 }
 
 /// Rules 6: an operator's explicit acceptance that one of our vehicles is lost (its
@@ -885,6 +906,195 @@ pub fn contact_lost_since(id: &str, lost: Option<&crate::lost::LostContact>, sin
         ));
     }
     Ok(())
+}
+
+/// Rules 19 ([`crate::rules::ACCEPT_BEHAVING_SINCE`], bd murmur-j0x): an operator's explicit
+/// acceptance of one live track as it is behaving now, for one engagement (`engage.accepted`
+/// naming the `track`, with its facts then). The keep-out on tracks then counts it along the path
+/// accepted for it and along its course now ([`behaving_regions`]), not anywhere it could turn or
+/// speed up to, while the acceptance holds: it lapses on its own ([`behaving_lapse`]) when the
+/// track's estimate departs from the accepted prediction beyond its uncertainty or the track goes
+/// out of view, and a new one needs a person again. Never automatic, never an agent's.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AcceptedBehaving {
+    pub by: OperatorId,
+    /// The world's time when it was accepted.
+    pub t: Time,
+    /// The track's facts then (as decisions read them, its identification filled): the
+    /// estimate the prediction starts from, its position with its time, its velocity and the
+    /// velocity's error.
+    pub facts: TrackFacts,
+}
+
+/// Rules 19: why an acceptance as behaving now lapsed ([`behaving_lapse`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LapseKind {
+    /// The track is no longer in the picture (dropped: a lost contact from then on).
+    Gone,
+    /// No detection for [`OUT_OF_VIEW_S`]: nothing checks its course.
+    OutOfView,
+    /// The tracker no longer gives it a velocity (it withholds one while a velocity is
+    /// uncertain, as in a turn): its course can't be checked.
+    NoVelocity,
+    /// Its estimated position left the accepted prediction's region.
+    Position,
+    /// Its estimated velocity departed from the accepted one beyond their uncertainty.
+    Velocity,
+}
+
+impl LapseKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LapseKind::Gone => "gone",
+            LapseKind::OutOfView => "out_of_view",
+            LapseKind::NoVelocity => "no_velocity",
+            LapseKind::Position => "position",
+            LapseKind::Velocity => "velocity",
+        }
+    }
+}
+
+/// Rules 19: an acceptance's lapse, with the numbers in words.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Lapse {
+    pub kind: LapseKind,
+    pub detail: String,
+}
+
+/// Rules 19: a lapse as the engagement records it (for the card and every signer): which track,
+/// when, why, and who had accepted it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LapseRecord {
+    pub track: String,
+    pub t: Time,
+    pub kind: LapseKind,
+    pub detail: String,
+    pub accepted_by: OperatorId,
+}
+
+/// Rules 19: whether live track `id` (`t`, the picture's; none: not in it) may be accepted as
+/// behaving now at `now` for an engagement on `target`: in the picture, protected (not the
+/// target, not a declared hostile), in view (seen within [`OUT_OF_VIEW_S`]) and with a velocity
+/// (a course to accept). The engine refuses an acceptance otherwise; replay recomputes it from the
+/// facts logged with `engage.accepted`.
+pub fn behaving_acceptable(id: &str, t: Option<&TrackFacts>, now: Time, target: &str, ec: &EngageRules) -> Result<(), String> {
+    let Some(t) = t else {
+        return Err(format!("{id} is not in the picture"));
+    };
+    if id == target {
+        return Err(format!("{id} is the target: it is not protected"));
+    }
+    if track_exempt(id, t, target, ec) {
+        return Err(format!("{id} is declared hostile: it is not protected"));
+    }
+    let unseen = secs(now.ms_since(t.last_seen_t)).max(0.0);
+    if unseen >= OUT_OF_VIEW_S {
+        return Err(format!(
+            "{id} is out of view (no detection for {unseen:.0} s): only a track in view may be accepted as behaving now"
+        ));
+    }
+    if t.velocity_mps.is_none() {
+        return Err(format!("{id} has no velocity estimate: there is no course to accept"));
+    }
+    Ok(())
+}
+
+/// Rules 19: where the path accepted for a track puts it at `t` (its accepted velocity carried
+/// from its accepted position).
+pub fn accepted_at(a: &AcceptedBehaving, t: Time) -> LonLat {
+    track_at(&a.facts, t)
+}
+
+/// Rules 19: whether the acceptance `a` of track `id` has lapsed on the picture at `now` (`live`,
+/// the track's facts in it; none: it is not in the picture). Lapsed when, in this order:
+///
+/// - the track is no longer in the picture (`gone`);
+/// - it is out of view, no detection for [`OUT_OF_VIEW_S`] (`out_of_view`);
+/// - the tracker gives it no velocity (`no_velocity`: it withholds one while a velocity is
+///   uncertain, as in a turn);
+/// - its estimated position departs from where the accepted path puts it at the estimate's time
+///   by more than `keep_out_sigma` times their combined 1-sigma: the accepted prediction's
+///   ([`track_prediction_sigma`] of the accepted facts over the time since, rules 18's velocity
+///   error and the domain's white-noise acceleration included) and the estimate's own
+///   (`position`): the accepted confidence, the one the keep-out counts it with;
+/// - its estimated velocity departs from the accepted one by more than `keep_out_sigma` times
+///   their combined 1-sigma: each velocity's error ([`track_velocity_error`]) and the velocity
+///   the white-noise acceleration builds over the time since (`q t`, the same model's)
+///   (`velocity`).
+///
+/// None: it holds. A lapse is for good: the engine logs it and drops the acceptance, and a new
+/// one needs a person.
+pub fn behaving_lapse(id: &str, a: &AcceptedBehaving, live: Option<&TrackFacts>, now: Time, ec: &EngageRules) -> Option<Lapse> {
+    let lapse = |kind: LapseKind, detail: String| Some(Lapse { kind, detail });
+    let Some(t) = live else {
+        return lapse(LapseKind::Gone, format!("{id} is no longer in the picture"));
+    };
+    let unseen = secs(now.ms_since(t.last_seen_t)).max(0.0);
+    if unseen >= OUT_OF_VIEW_S {
+        return lapse(
+            LapseKind::OutOfView,
+            format!("{id} out of view (no detection for {unseen:.0} s): its course can no longer be checked"),
+        );
+    }
+    let Some([ve, vn]) = t.velocity_mps else {
+        return lapse(
+            LapseKind::NoVelocity,
+            format!("the tracker no longer gives {id} a velocity (as in a turn): its course can no longer be checked"),
+        );
+    };
+    let k = ec.keep_out_sigma;
+    let since = secs(t.position.t.ms_since(a.facts.position.t)).max(0.0);
+    let predicted = accepted_at(a, t.position.t);
+    let d = haversine_m(predicted, t.position.value);
+    let sigma_p = track_prediction_sigma(&a.facts, since, ec).hypot(t.pos_sigma_m);
+    if d > k * sigma_p {
+        return lapse(
+            LapseKind::Position,
+            format!(
+                "{id} is {d:.0} m from where its accepted course puts it {since:.0} s on, beyond the {:.0} m it was accepted with ({k:.0}-sigma)",
+                k * sigma_p
+            ),
+        );
+    }
+    let [ae, an] = a.facts.velocity_mps.unwrap_or([0.0, 0.0]);
+    let dv = (ve - ae).hypot(vn - an);
+    let accel = ec.track_accel(t.domain);
+    let sigma_v = (track_velocity_error(&a.facts, ec).powi(2) + track_velocity_error(t, ec).powi(2) + accel * accel * since).sqrt();
+    if dv > k * sigma_v {
+        return lapse(
+            LapseKind::Velocity,
+            format!(
+                "{id}'s velocity is {dv:.1} m/s off the accepted {:.1} m/s ({:.1} m/s now), beyond the {:.1} m/s it was accepted with ({k:.0}-sigma, {since:.0} s on)",
+                ae.hypot(an),
+                ve.hypot(vn),
+                k * sigma_v
+            ),
+        );
+    }
+    None
+}
+
+/// Rules 19: the acceptance of live track `id` (`t`) as behaving now in force for this decision
+/// (`world.behaving_accepted`): Ok(Some) while it holds, Ok(None) when there is none (or before
+/// rules 19), Err with the lapse when the picture lapses it (the engine logs that at its next
+/// step; until then the decision judges the track as if none had been given).
+pub fn behaving_in_force<'w>(
+    id: &str,
+    t: &TrackFacts,
+    world: &'w WorldSnapshot,
+    ec: &EngageRules,
+) -> Result<Option<&'w AcceptedBehaving>, Lapse> {
+    if !ec.accept_behaving() {
+        return Ok(None);
+    }
+    let Some(a) = world.behaving_accepted.get(id) else {
+        return Ok(None);
+    };
+    match behaving_lapse(id, a, Some(t), world.t, ec) {
+        Some(l) => Err(l),
+        None => Ok(Some(a)),
+    }
 }
 
 /// Rules 6: which vehicle a preload was set on, as the bridge knows it (its manifest and its
@@ -2749,6 +2959,9 @@ pub enum ReachKind {
     /// Rules 16: out of view (a lost contact, or a live track unseen [`OUT_OF_VIEW_S`]):
     /// anywhere it reaches at its domain's top speed since its last fix ([`lost_reach`]).
     OutOfView,
+    /// Rules 19: along the path an operator accepted for it as behaving now
+    /// ([`behaving_regions`]).
+    Accepted,
 }
 
 impl ReachKind {
@@ -2761,6 +2974,7 @@ impl ReachKind {
             ReachKind::Young => "young",
             ReachKind::Aircraft => "aircraft",
             ReachKind::OutOfView => "out_of_view",
+            ReachKind::Accepted => "accepted",
         }
     }
 }
@@ -2900,6 +3114,87 @@ fn regions_at(t: &TrackFacts, effect_t: Time, ec: &EngageRules, words: bool, uns
         });
     }
     out
+}
+
+/// Rules 19: the regions a keep-out counts a live track in at `effect_t` while an operator's
+/// acceptance of it as behaving now holds (`a`, [`behaving_lapse`] none on this picture): along
+/// the path accepted for it (its accepted velocity from its accepted position, with
+/// `keep_out_sigma` of [`track_prediction_sigma`] of the accepted facts over the span since its
+/// accepted estimate: rules 18's velocity error and the domain's white-noise acceleration, and
+/// for an aircraft the tracker's lag, [`AIRCRAFT_LAG_M`]) and along its course now (its velocity
+/// and its average velocity, as any track's: [`track_reach`]'s `velocity` and `mean_velocity`).
+/// Not anywhere it could turn or speed up to (an aircraft's reach, a young track's, a
+/// manoeuvre's): that is the judgment the operator took, and the lapse watches it. The keep-out
+/// holds for it only if every region clears it.
+pub fn behaving_regions(a: &AcceptedBehaving, t: &TrackFacts, effect_t: Time, ec: &EngageRules, words: bool) -> Vec<TrackReach> {
+    let k = ec.keep_out_sigma;
+    let span = secs(effect_t.ms_since(a.facts.position.t)).max(0.0);
+    let sigma = track_prediction_sigma(&a.facts, span, ec);
+    let lag = if ec.aircraft_reach() && a.facts.domain == Domain::Air { AIRCRAFT_LAG_M } else { 0.0 };
+    let radius_m = k * sigma + lag;
+    let mut out = vec![TrackReach {
+        center: accepted_at(a, effect_t),
+        radius_m,
+        how: if words {
+            let v = a.facts.velocity_mps.map_or(0.0, |[e, n]| e.hypot(n));
+            let lag = if lag > 0.0 { format!(" and the tracker's lag ({lag:.0} m)") } else { String::new() };
+            format!(
+                "accepted as behaving now by {} at t={}: on its accepted course at {v:.1} m/s, {k:.0}-sigma {:.0} m over {span:.0} s (its velocity known to {:.1} m/s){lag}",
+                a.by,
+                a.t.0,
+                k * sigma,
+                track_velocity_error(&a.facts, ec)
+            )
+        } else {
+            String::new()
+        },
+        kind: ReachKind::Accepted,
+    }];
+    out.extend(
+        reach(t, effect_t, ec, words)
+            .into_iter()
+            .filter(|r| matches!(r.kind, ReachKind::Velocity | ReachKind::MeanVelocity)),
+    );
+    out
+}
+
+/// Rules 19: [`track_standing`] for a track accepted as behaving now whose acceptance holds: by
+/// [`behaving_regions`].
+#[allow(clippy::too_many_arguments)]
+pub fn behaving_standing(
+    a: &AcceptedBehaving,
+    t: &TrackFacts,
+    point: LonLat,
+    effect_t: Time,
+    keep_out_m: f64,
+    now: Time,
+    ec: &EngageRules,
+    alt: Option<EffectAlt>,
+    words: bool,
+) -> Option<TrackStanding> {
+    standing(t, behaving_regions(a, t, effect_t, ec, words), point, effect_t, keep_out_m, now, ec, alt)
+}
+
+/// How one live track stands against a keep-out for this decision: by [`behaving_standing`] while
+/// an acceptance of it as behaving now holds on `world` (rules 19), else by [`track_standing`].
+/// Returns the standing, the acceptance in force, and the lapse when the picture lapses one.
+#[allow(clippy::too_many_arguments)]
+pub fn live_standing<'w>(
+    id: &str,
+    t: &TrackFacts,
+    point: LonLat,
+    effect_t: Time,
+    keep_out_m: f64,
+    world: &'w WorldSnapshot,
+    ec: &EngageRules,
+    alt: Option<EffectAlt>,
+    words: bool,
+) -> (Option<TrackStanding>, Option<&'w AcceptedBehaving>, Option<Lapse>) {
+    match behaving_in_force(id, t, world, ec) {
+        Ok(Some(a)) => (behaving_standing(a, t, point, effect_t, keep_out_m, world.t, ec, alt, words), Some(a), None),
+        Ok(None) => (track_standing(t, point, effect_t, keep_out_m, world.t, ec, alt, words), None, None),
+        Err(l) => (track_standing(t, point, effect_t, keep_out_m, world.t, ec, alt, words), None, Some(l)),
+    }
 }
 
 /// The regions of [`track_reach`]; `words`: with each region's `how`.
@@ -3296,6 +3591,8 @@ pub fn keep_out_tracks(
     let mut nearest: Option<(f64, &str)> = None;
     let mut count = 0;
     let mut by_alt: Vec<String> = Vec::new();
+    // rules 19: the tracks accepted as behaving now whose acceptance holds on this picture
+    let mut behaving: Vec<String> = Vec::new();
     for (id, t) in &world.tracks {
         if track_exempt(id, t, target, ec) {
             continue;
@@ -3325,10 +3622,17 @@ pub fn keep_out_tracks(
             continue;
         }
         // rules 6: from its estimate, over the span since it (rules 9: a manoeuvring track
-        // also anywhere it reaches at the fastest it went); the region nearest the point
-        let Some(s) = track_standing(t, point, effect_t, keep_out_m, world.t, ec, alt, true) else {
+        // also anywhere it reaches at the fastest it went); the region nearest the point. Rules
+        // 19: a track accepted as behaving now, while the acceptance holds on this picture, along
+        // its accepted path and its course now
+        let (standing, accepted_now, lapse) = live_standing(id, t, point, effect_t, keep_out_m, world, ec, alt, true);
+        let Some(s) = standing else {
             continue;
         };
+        if let Some(a) = accepted_now {
+            behaving.push(format!("{id} by {} (on its course from t={})", a.by, a.facts.position.t.0));
+        }
+        let lapsed = lapse.map_or(String::new(), |l| format!("; its acceptance as behaving now lapsed: {}", l.detail));
         let edge = s.edge;
         if edge < keep_out_m {
             // in 3D where both altitudes are known (recent and ranged: track_altitude), the
@@ -3348,6 +3652,14 @@ pub fn keep_out_tracks(
                     secs(world.t.ms_since(t.last_seen_t)).max(0.0),
                     vertical_note(alt, s.alt_known)
                 )
+            } else if let Some(a) = accepted_now {
+                // rules 19: an accepted track still in the way on its accepted path or its course
+                format!(
+                    "track {} accepted as behaving now by {} predicted {d:.0} m from the effect point at the effect time ({how}); keep-out {keep_out_m:.0} m{}",
+                    describe_track(id, t),
+                    a.by,
+                    vertical_note(alt, s.alt_known)
+                )
             } else {
                 format!(
                     "track {} predicted {d:.0} m from the effect point at the effect time ({how}); keep-out {keep_out_m:.0} m{}",
@@ -3355,7 +3667,7 @@ pub fn keep_out_tracks(
                     vertical_note(alt, s.alt_known)
                 )
             };
-            return check(r, None, Outcome::Fail, detail);
+            return check(r, None, Outcome::Fail, format!("{detail}{lapsed}"));
         }
         if nearest.is_none_or(|(n, _)| edge < n) {
             nearest = Some((edge, id));
@@ -3415,11 +3727,16 @@ pub fn keep_out_tracks(
     } else {
         format!("; lost contacts accepted for it: {}", accepted.join(", "))
     };
+    let behaving = if behaving.is_empty() {
+        String::new()
+    } else {
+        format!("; accepted as behaving now: {}", behaving.join(", "))
+    };
     check(
         r,
         None,
         Outcome::Pass,
-        format!("{count} protected track(s){lost} clear of the {keep_out_m:.0} m keep-out at the effect time{near}{by_alt}{accepted}"),
+        format!("{count} protected track(s){lost} clear of the {keep_out_m:.0} m keep-out at the effect time{near}{by_alt}{accepted}{behaving}"),
     )
 }
 
@@ -3974,6 +4291,7 @@ pub fn check_token(
     plan: Option<&FrozenPlan>,
     accepted: &BTreeMap<Uid, AcceptedUnknown>,
     lost_accepted: &BTreeMap<String, AcceptedUnknown>,
+    behaving_accepted: &BTreeMap<String, AcceptedBehaving>,
 ) -> Result<(), String> {
     if token.intent != intent || token.by != *by || token.session != session {
         return Err(format!(
@@ -4009,6 +4327,10 @@ pub fn check_token(
     // rules 16: and the lost contacts
     if token.lost_accepted != *lost_accepted {
         return Err("the lost contacts accepted for it changed since you looked: look again".into());
+    }
+    // rules 19: and the live tracks accepted as behaving now (one given, revoked or lapsed)
+    if token.behaving_accepted != *behaving_accepted {
+        return Err("the tracks accepted for it as behaving now changed since you looked: look again".into());
     }
     let Some(t) = track_now else {
         return Err(format!("{} is no longer in the picture", token.track.id));

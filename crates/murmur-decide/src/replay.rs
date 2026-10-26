@@ -1531,6 +1531,9 @@ struct Tracked {
     accepted: BTreeMap<Uid, engage::AcceptedUnknown>,
     /// Engage, rules 16: the lost contacts operators accepted for it.
     accepted_lost: BTreeMap<String, engage::AcceptedUnknown>,
+    /// Engage, rules 19: the live tracks operators accepted for it as behaving now, each with its
+    /// facts then (dropped by a revocation, a lapse or a reset).
+    accepted_behaving: BTreeMap<String, engage::AcceptedBehaving>,
     /// Collect and cover: the order it was dispatched with (what a cancel's and a re-check's
     /// reports are recomputed against).
     space_order: Option<SpaceOrder>,
@@ -1666,6 +1669,7 @@ impl Tracked {
             preload_stop_due: None,
             accepted: BTreeMap::new(),
             accepted_lost: BTreeMap::new(),
+            accepted_behaving: BTreeMap::new(),
             space_order: None,
             cancel_due: None,
             cancel_reported: false,
@@ -1919,6 +1923,9 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (rules::LOST_CONTACT_SINCE, "\"track_drop_s\":", "the tracker's drop age in run.started"),
     (rules::ROUTE_SURFACE_SINCE, "\"along\":[", "land/water answers along a route's legs (a decision's terrain)"),
     (rules::ROUTE_SURFACE_SINCE, "\"warning\":\"", "a check's warning (a safety command's way crossing the wrong surface)"),
+    (rules::ACCEPT_BEHAVING_SINCE, "\"type\":\"engage.acceptance_lapsed\"", "a lapsed acceptance of a live track as behaving now"),
+    (rules::ACCEPT_BEHAVING_SINCE, "\"behaving_accepted\":{", "a live track accepted as behaving now (decision inputs, a picture token)"),
+    (rules::ACCEPT_BEHAVING_SINCE, "\"behaving\":{", "an acceptance of a live track as behaving now"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -2906,6 +2913,8 @@ fn replay_inner<S: AsRef<str>>(
                 // rules 16: of lost contacts too
                 tr.accepted.clear();
                 tr.accepted_lost.clear();
+                // rules 19: and of live tracks as behaving now
+                tr.accepted_behaving.clear();
             }
             EventBody::ApprovalGranted {
                 intent,
@@ -3988,6 +3997,23 @@ fn replay_inner<S: AsRef<str>>(
                 check_accepted(&mut r, e, *intent, &inputs.unknown_accepted, &intents);
                 check_ident_inputs(&mut r, e, Some(*intent), &inputs.tracks, &ident, policy.as_ref());
                 check_lost_inputs(&mut r, e, *intent, inputs, &lost, &ident, &intents, &mut pictured, policy.as_ref());
+                // rules 19: the engine logs a lapse before the step that would read it, so no
+                // held picture reads an acceptance as behaving now that it lapses
+                if let Some(pol) = policy.as_ref().filter(|p| p.rules.accept_behaving()) {
+                    let ec = pol.rules.engage_rules();
+                    for (track, a) in &inputs.behaving_accepted {
+                        if let Some(l) = engage::behaving_lapse(track, a, inputs.tracks.get(track), inputs.t, &ec) {
+                            bad(
+                                &mut r,
+                                e,
+                                Some(*intent),
+                                "a held picture reads an acceptance as behaving now its own picture lapses (no lapse logged first)",
+                                track.clone(),
+                                l.detail,
+                            );
+                        }
+                    }
+                }
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(
                         &mut r,
@@ -4470,19 +4496,22 @@ fn replay_inner<S: AsRef<str>>(
                 intent,
                 uid,
                 contact,
+                track: live_track,
                 since,
                 by,
                 session,
                 world_t,
                 vehicle,
                 lost: lost_logged,
+                behaving,
                 step_up,
             } => {
-                // a vehicle of ours (rules 6) or a lost contact (rules 16), exactly one, with its
-                // facts
-                let subject = match (uid, contact, vehicle, lost_logged) {
-                    (Some(u), None, Some(v), None) => Some(Accepting::Vehicle(u, v)),
-                    (None, Some(c), None, l) => Some(Accepting::Contact(c, l.as_deref())),
+                // a vehicle of ours (rules 6), a lost contact (rules 16) or a live track as
+                // behaving now (rules 19), exactly one, with its facts
+                let subject = match (uid, contact, live_track, vehicle, lost_logged, behaving) {
+                    (Some(u), None, None, Some(v), None, None) => Some(Accepting::Vehicle(u, v)),
+                    (None, Some(c), None, None, l, None) => Some(Accepting::Contact(c, l.as_deref())),
+                    (None, None, Some(t), None, None, Some(f)) => Some(Accepting::Behaving(t, f)),
                     _ => None,
                 };
                 let Some(subject) = subject else {
@@ -4511,6 +4540,13 @@ fn replay_inner<S: AsRef<str>>(
                             since: since.unwrap_or(Time(i64::MIN)),
                         },
                     },
+                    Accepting::Behaving(t, f) => Expected::TrackAcceptance {
+                        intent: *intent,
+                        track: crate::passkey::AcceptedTrack {
+                            track: (*t).clone(),
+                            at: f.position.t,
+                        },
+                    },
                 };
                 check_step_up(
                     &mut r,
@@ -4533,6 +4569,7 @@ fn replay_inner<S: AsRef<str>>(
                 let what = match &subject {
                     Accepting::Vehicle(..) => "vehicle",
                     Accepting::Contact(..) => "contact",
+                    Accepting::Behaving(..) => "track as behaving now (a live",
                 };
                 // an operator's own session, with engagement authority: an agent has none
                 match sessions.get(session) {
@@ -4609,6 +4646,40 @@ fn replay_inner<S: AsRef<str>>(
                             );
                         }
                     }
+                    // rules 19: a live track that could be accepted then (in the picture, in view,
+                    // with a velocity, protected), its estimate's time the one named, and its
+                    // identification the ledger's
+                    Accepting::Behaving(t, facts) => {
+                        if !policy.as_ref().is_some_and(|p| p.rules.accept_behaving()) {
+                            bad(&mut r, e, Some(*intent), "an acceptance of a live track as behaving now before rules 19", (*t).clone(), String::new());
+                        }
+                        if let Some(pol) = &policy {
+                            let target = engage::params(&tr.spec).map(|p| p.0.to_string()).unwrap_or_default();
+                            if let Err(why) =
+                                engage::behaving_acceptable(t, Some(facts), *world_t, &target, &pol.rules.engage_rules())
+                            {
+                                bad(&mut r, e, Some(*intent), "acceptance of a track that could not be accepted as behaving now", (*t).clone(), why);
+                            }
+                        }
+                        if *since != Some(facts.position.t) {
+                            bad(
+                                &mut r,
+                                e,
+                                Some(*intent),
+                                "an acceptance as behaving now names another estimate than its facts'",
+                                json(since),
+                                json(&facts.position.t),
+                            );
+                        }
+                        check_ident_inputs(
+                            &mut r,
+                            e,
+                            Some(*intent),
+                            &std::iter::once(((*t).clone(), (**facts).clone())).collect(),
+                            &ident,
+                            policy.as_ref(),
+                        );
+                    }
                 }
                 // at the nomination by its own (human) submitter, or while it waits with no
                 // signature
@@ -4636,12 +4707,35 @@ fn replay_inner<S: AsRef<str>>(
                     Accepting::Contact(c, _) => {
                         tr.accepted_lost.insert(c.clone(), accepted);
                     }
+                    Accepting::Behaving(t, facts) => {
+                        // one in force is never given again (the engine refuses it): a second
+                        // acceptance means the first was revoked or lapsed in between
+                        if tr.accepted_behaving.contains_key(t) {
+                            bad(
+                                &mut r,
+                                e,
+                                Some(*intent),
+                                "a track accepted as behaving now again while an acceptance of it is in force",
+                                t.clone(),
+                                "revoked or lapsed first".into(),
+                            );
+                        }
+                        tr.accepted_behaving.insert(
+                            t.clone(),
+                            engage::AcceptedBehaving {
+                                by: by.clone(),
+                                t: *world_t,
+                                facts: facts.clone(),
+                            },
+                        );
+                    }
                 }
             }
             EventBody::EngageAcceptanceRevoked {
                 intent,
                 uid,
                 contact,
+                track: live_track,
                 by,
                 session,
             } => {
@@ -4650,9 +4744,11 @@ fn replay_inner<S: AsRef<str>>(
                     bad(&mut r, e, Some(*intent), "revocation for an unknown intent", String::new(), String::new());
                     continue;
                 };
-                let removed = match (uid, contact) {
-                    (Some(u), None) => tr.accepted.remove(u).is_some(),
-                    (None, Some(c)) => tr.accepted_lost.remove(c).is_some(),
+                let removed = match (uid, contact, live_track) {
+                    (Some(u), None, None) => tr.accepted.remove(u).is_some(),
+                    (None, Some(c), None) => tr.accepted_lost.remove(c).is_some(),
+                    // rules 19: of a live track as behaving now
+                    (None, None, Some(t)) => tr.accepted_behaving.remove(t).is_some(),
                     _ => false,
                 };
                 if !removed
@@ -4663,8 +4759,58 @@ fn replay_inner<S: AsRef<str>>(
                         e,
                         Some(*intent),
                         "revocation of an acceptance that is not in force",
-                        json(&(uid, contact, tr.state)),
+                        json(&(uid, contact, live_track, tr.state)),
                         "an acceptance of it, the engagement pending or under way".into(),
+                    );
+                }
+            }
+            // rules 19: a lapse its own facts bear out, of an acceptance in force
+            EventBody::EngageAcceptanceLapsed {
+                intent,
+                track,
+                kind,
+                detail,
+                world_t,
+                facts,
+            } => {
+                let Some(tr) = intents.get_mut(intent) else {
+                    bad(&mut r, e, Some(*intent), "lapse for an unknown intent", String::new(), String::new());
+                    continue;
+                };
+                if !policy.as_ref().is_some_and(|p| p.rules.accept_behaving()) {
+                    bad(&mut r, e, Some(*intent), "a lapse of an acceptance as behaving now before rules 19", track.clone(), String::new());
+                }
+                if (e.t.0 - world_t.0).abs() > engage::ACCEPT_WORLD_SKEW_MS {
+                    bad(&mut r, e, Some(*intent), "lapse's world is not the one at the lapse", json(world_t), json(&e.t));
+                }
+                if !matches!(tr.state, State::PendingApproval | State::Approved | State::Dispatched) {
+                    bad(&mut r, e, Some(*intent), "a lapse of an engagement no longer in play", json(&tr.state), String::new());
+                }
+                let Some(a) = tr.accepted_behaving.remove(track) else {
+                    bad(&mut r, e, Some(*intent), "a lapse of an acceptance that is not in force", track.clone(), String::new());
+                    continue;
+                };
+                if let Some(pol) = &policy {
+                    let again = engage::behaving_lapse(track, &a, facts.as_deref(), *world_t, &pol.rules.engage_rules());
+                    if again.as_ref().map(|l| (l.kind, l.detail.as_str())) != Some((*kind, detail.as_str())) {
+                        bad(
+                            &mut r,
+                            e,
+                            Some(*intent),
+                            "a lapse its facts do not bear out",
+                            json(&(kind, detail)),
+                            json(&again),
+                        );
+                    }
+                }
+                if let Some(f) = facts {
+                    check_ident_inputs(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        &std::iter::once((track.clone(), (**f).clone())).collect(),
+                        &ident,
+                        policy.as_ref(),
                     );
                 }
             }
@@ -7239,7 +7385,8 @@ fn check_carried_restores(r: &mut ReplayReport, events: &[Event], opts: &ReplayO
 /// Rules 6: a signature's `self_accepted`: the signer accepted one of the engagement's lost
 /// vehicles in force.
 fn check_self_accepted(r: &mut ReplayReport, e: &Event, id: IntentId, tr: &Tracked, by: &OperatorId, logged: bool) {
-    let want = tr.accepted.values().chain(tr.accepted_lost.values()).any(|a| &a.by == by);
+    let want = tr.accepted.values().chain(tr.accepted_lost.values()).any(|a| &a.by == by)
+        || tr.accepted_behaving.values().any(|a| &a.by == by);
     if logged != want {
         bad(r, e, Some(id), "self_accepted flag differs", logged.to_string(), want.to_string());
     }
@@ -7334,6 +7481,12 @@ enum Expected {
         intent: IntentId,
         contact: crate::passkey::AcceptedContact,
     },
+    /// Rules 19: an acceptance of live track `track` as behaving now for `intent`, as for a
+    /// vehicle.
+    TrackAcceptance {
+        intent: IntentId,
+        track: crate::passkey::AcceptedTrack,
+    },
     /// A passkey registration: it re-enters the password, whatever the step-up factor.
     Registration,
     /// An act no passkey assertion is made for (rules 8's `track.declare`, a declaration that
@@ -7368,6 +7521,11 @@ impl Expected {
                     made,
                     StepUpFor::AcceptUnknown { intent: i, contacts, .. }
                         if (i.is_none() || *i == Some(*intent)) && contacts.contains(contact)
+                ),
+                Expected::TrackAcceptance { intent, track } => matches!(
+                    made,
+                    StepUpFor::AcceptUnknown { intent: i, tracks, .. }
+                        if (i.is_none() || *i == Some(*intent)) && tracks.contains(track)
                 ),
                 Expected::Registration | Expected::Unbound => false,
             };
@@ -8353,6 +8511,8 @@ fn check_accepted(
 enum Accepting<'a> {
     Vehicle(&'a Uid, &'a crate::world::VehicleFacts),
     Contact(&'a String, Option<&'a crate::lost::LostContact>),
+    /// Rules 19: a live track as behaving now, with its facts then.
+    Behaving(&'a String, &'a crate::world::TrackFacts),
 }
 
 /// Rules 16: the track ids decisions (and claims and confirmations) have read in their
@@ -8501,6 +8661,23 @@ fn check_lost_inputs(
             json(&want_accepted),
         );
     }
+    // rules 19: and its live tracks accepted as behaving now (none before rules 19, none for
+    // anything but an engagement)
+    let want_behaving = if engage && pol.rules.accept_behaving() {
+        intents.get(&id).map(|tr| tr.accepted_behaving.clone()).unwrap_or_default()
+    } else {
+        BTreeMap::new()
+    };
+    if inputs.behaving_accepted != want_behaving {
+        bad(
+            r,
+            e,
+            Some(id),
+            "a decision's tracks accepted as behaving now differ from the acceptances logged for it",
+            json(&inputs.behaving_accepted.keys().collect::<Vec<_>>()),
+            json(&want_behaving.keys().collect::<Vec<_>>()),
+        );
+    }
 }
 
 /// A signature's evidence. An engagement's: it quotes a picture token that was issued to this
@@ -8602,6 +8779,17 @@ fn check_signed(
             "signature on a picture token whose accepted lost contacts have changed since",
             json(&tok.lost_accepted),
             json(&tr.accepted_lost),
+        );
+    }
+    // rules 19: and of live tracks as behaving now (given, revoked or lapsed since)
+    if tok.behaving_accepted != tr.accepted_behaving {
+        bad(
+            r,
+            e,
+            Some(id),
+            "signature on a picture token whose tracks accepted as behaving now have changed since",
+            json(&tok.behaving_accepted.keys().collect::<Vec<_>>()),
+            json(&tr.accepted_behaving.keys().collect::<Vec<_>>()),
         );
     }
     if tok.intent != id || tok.by != *by || tok.session != session {
@@ -8797,6 +8985,17 @@ fn check_issued(
             "picture token's accepted lost contacts differ from the acceptances logged for it",
             json(&tok.lost_accepted),
             json(&tr.accepted_lost),
+        );
+    }
+    // rules 19: and the live tracks accepted as behaving now
+    if tok.behaving_accepted != tr.accepted_behaving {
+        bad(
+            r,
+            e,
+            Some(id),
+            "picture token's tracks accepted as behaving now differ from the acceptances logged for it",
+            json(&tok.behaving_accepted.keys().collect::<Vec<_>>()),
+            json(&tr.accepted_behaving.keys().collect::<Vec<_>>()),
         );
     }
     match &tr.plan {

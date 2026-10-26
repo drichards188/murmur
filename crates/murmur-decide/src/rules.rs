@@ -232,8 +232,24 @@ pub enum UnknownEndurance {
 /// the tracker drops stays in the keep-out as a lost contact ([`crate::lost`]). Version 17
 /// ([`ROUTE_SURFACE_SINCE`]): the domain rule judges the legs a boat, sub or ground vehicle
 /// travels, not only its waypoints. Version 18 ([`VELOCITY_SIGMA_SINCE`]): a protected track is
-/// predicted with its own velocity error, as the tracker reports it.
-pub const RULES_VERSION: u32 = VELOCITY_SIGMA_SINCE;
+/// predicted with its own velocity error, as the tracker reports it. Version 19
+/// ([`ACCEPT_BEHAVING_SINCE`]): an operator may accept a live track as it is behaving now, and
+/// the acceptance lapses on its own when the track departs from it.
+pub const RULES_VERSION: u32 = ACCEPT_BEHAVING_SINCE;
+
+/// The rules version from which an operator with engagement authority may accept one live track
+/// that blocks an engagement's keep-out as it is behaving now (bd murmur-j0x, the owner's
+/// decision B of 2026-10-26, option 2 of docs/ENGAGEMENT-IN-TRAFFIC.md): logged as
+/// `engage.accepted` naming the track with its facts then, for that engagement only, at the
+/// nomination or before a first signature, with the `accept_unknown` step-up, shown to every
+/// signer, revocable by any operator, reset with the plan and never an agent's. The keep-out then
+/// counts it along the path accepted for it and its course now
+/// ([`crate::engage::behaving_regions`]), not anywhere it could turn or speed up to; the
+/// acceptance lapses on its own (`engage.acceptance_lapsed`) when the track's estimate departs
+/// from the accepted prediction beyond its uncertainty or it goes out of view
+/// ([`crate::engage::behaving_lapse`]). Every gate of that change reads this constant, never a
+/// literal: another change taking 19 first renumbers it in this one line.
+pub const ACCEPT_BEHAVING_SINCE: u32 = 19;
 
 /// The rules version from which a protected track's keep-out regions read the tracker's own
 /// velocity error (murmur-vni, the owner's decision A of 2026-10-26): the region along its
@@ -521,6 +537,11 @@ impl RulesConfig {
     /// error.
     pub fn velocity_sigma(&self) -> bool {
         self.rules_version >= VELOCITY_SIGMA_SINCE
+    }
+
+    /// Rules 19 ([`ACCEPT_BEHAVING_SINCE`]): a live track may be accepted as behaving now.
+    pub fn accept_behaving(&self) -> bool {
+        self.rules_version >= ACCEPT_BEHAVING_SINCE
     }
 
     /// `[rules.engage]`, or its defaults.

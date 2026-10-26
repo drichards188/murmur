@@ -583,6 +583,11 @@ pub enum EventBody {
     /// `uid`; `since` its last fix; `lost` the contact as the engine's ledger held it, instead
     /// of `vehicle`): its keep-out on tracks leaves that contact out while it is lost since
     /// exactly then. Everything else as for a vehicle.
+    ///
+    /// Rules 19: or a live track as it is behaving now (`track`, its id; `since` its estimate's
+    /// time; `behaving` its facts then, as decisions read them, instead of `vehicle`): its
+    /// keep-out on tracks counts it along the path accepted for it and its course now while the
+    /// acceptance holds (`engage.acceptance_lapsed` ends it). Everything else as for a vehicle.
     #[serde(rename = "engage.accepted")]
     EngageAccepted {
         intent: IntentId,
@@ -590,6 +595,8 @@ pub enum EventBody {
         uid: Option<Uid>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         contact: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        track: Option<String>,
         #[serde(default)]
         since: Option<Time>,
         by: OperatorId,
@@ -603,6 +610,10 @@ pub enum EventBody {
         /// ledger: in force, lost since exactly `since`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lost: Option<Box<crate::lost::LostContact>>,
+        /// Rules 19: the live track's facts at the acceptance (replay checks it could be
+        /// accepted: in the picture, in view, with a velocity, protected).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        behaving: Option<Box<crate::world::TrackFacts>>,
         /// Rules 8: the step-up the acceptance quoted (`[approval] step_up_acts` lists
         /// `accept_unknown`); every acceptance of one nomination may quote the same one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -619,8 +630,30 @@ pub enum EventBody {
         uid: Option<Uid>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         contact: Option<String>,
+        /// Rules 19: or of a live track as behaving now.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        track: Option<String>,
         by: OperatorId,
         session: SessionId,
+    },
+
+    /// Engage, rules 19: an acceptance of live track `track` as behaving now lapsed on its own
+    /// (`engage::behaving_lapse`): the track's estimate departed from the accepted prediction
+    /// beyond its uncertainty (`position`, `velocity`), the tracker gave it no velocity
+    /// (`no_velocity`), it went out of view (`out_of_view`) or left the picture (`gone`). Logged
+    /// with the world's time and the track's facts then (none: not in the picture), before the
+    /// step or decision that would read the acceptance; from here on the keep-out counts the
+    /// track by all its regions, and a new acceptance needs a person. Replay recomputes the lapse
+    /// from these facts and the acceptance's.
+    #[serde(rename = "engage.acceptance_lapsed")]
+    EngageAcceptanceLapsed {
+        intent: IntentId,
+        track: String,
+        kind: crate::engage::LapseKind,
+        detail: String,
+        world_t: Time,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        facts: Option<Box<crate::world::TrackFacts>>,
     },
 
     /// Rules 16 ([`crate::lost`]): the bridge's tracker dropped `track` (no detection for its

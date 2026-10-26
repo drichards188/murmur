@@ -639,6 +639,7 @@ fn ex_item() -> Item {
         not_by_waiting: None,
         other: None,
         lost: None,
+        behaving: None,
     }
 }
 
