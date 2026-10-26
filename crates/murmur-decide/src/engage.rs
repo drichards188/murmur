@@ -224,7 +224,8 @@ pub struct EngageRules {
     /// Rules 6: the 1-sigma error of a protected track's velocity estimate, m/s. A track is
     /// predicted along its velocity with this error times the span on top of its own
     /// position uncertainty and its manoeuvre noise ([`track_prediction_sigma`]). Default 1
-    /// (schema 4; basis: the Phase G velocity-noise sweep, docs in the README).
+    /// (schema 4; basis: the Phase G velocity-noise sweep, docs in the README). From rules 18 a
+    /// floor: the tracker's own error counts when larger ([`track_velocity_error`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub track_velocity_sigma_mps: Option<f64>,
     /// Rules 6: a protected track's manoeuvre as acceleration noise, 1-sigma per domain,
@@ -344,6 +345,12 @@ impl EngageRules {
     /// out of view, lost or live, counts anywhere at its domain's top speed ([`out_of_view`]).
     pub fn lost(&self) -> bool {
         self.rules_version >= crate::rules::LOST_CONTACT_SINCE
+    }
+
+    /// The decisions of rules 18 on ([`crate::rules::VELOCITY_SIGMA_SINCE`]): a protected track
+    /// is predicted with its own velocity error ([`track_velocity_error`]).
+    pub fn own_velocity_error(&self) -> bool {
+        self.rules_version >= crate::rules::VELOCITY_SIGMA_SINCE
     }
 
     /// The optional keys this section sets, each with the policy schema that introduced it
@@ -2681,13 +2688,32 @@ pub fn friendly_vertical_mps(v: &crate::world::VehicleFacts, ec: &EngageRules) -
 /// age), the velocity estimate's error times the span (`track_velocity_sigma_mps`), and the
 /// manoeuvres it may make, `q span^3 / 3` with `q` the domain's acceleration noise squared
 /// times the 1 s update (`track_accel_mps2`). Not linear in speed times time: a fast track on
-/// a steady course is as predictable as a slow one.
+/// a steady course is as predictable as a slow one. Rules 18: the velocity's error is the
+/// tracker's own when larger than the policy's ([`track_velocity_error`]).
 pub fn track_prediction_sigma(t: &TrackFacts, span_s: f64, ec: &EngageRules) -> f64 {
     let span = span_s.max(0.0);
-    let v = ec.track_velocity_sigma() * span;
+    let v = track_velocity_error(t, ec) * span;
     let a = ec.track_accel(t.domain);
     let q = a * a; // m^2/s^3 at the 1 s update
     (t.pos_sigma_m.powi(2) + v * v + q * span.powi(3) / 3.0).sqrt()
+}
+
+/// The 1-sigma error, m/s, a protected track's velocity is predicted with (the regions along its
+/// velocity and its average velocity, [`track_prediction_sigma`]; a young track's speed bound).
+/// Rules 18 ([`crate::rules::VELOCITY_SIGMA_SINCE`], murmur-vni): the tracker's own, in its least
+/// certain direction (`velocity_sigma_mps`), or the policy's `track_velocity_sigma_mps` when that
+/// is larger or none is given (a scenario, a caller that does not say), the same reading as
+/// rules 14's speed bound ([`aircraft_speed_bound`]); before, the policy's alone, whatever the
+/// tracker said: every shown velocity was taken as good to 1 m/s, which held only while the
+/// tracker showed none worse than its gate allowed (3 m/s) and the gate kept aircraft fixed by
+/// coarse sensors from showing any.
+pub fn track_velocity_error(t: &TrackFacts, ec: &EngageRules) -> f64 {
+    let policy = ec.track_velocity_sigma();
+    if ec.own_velocity_error() {
+        t.velocity_sigma_mps.unwrap_or(0.0).max(policy)
+    } else {
+        policy
+    }
 }
 
 /// One region a protected track may be in at the effect time, as a keep-out counts it: a
@@ -2758,7 +2784,11 @@ impl ReachKind {
 /// it likes, so its course says little of where it will be even seconds ahead; with a velocity
 /// it also counts anywhere it reaches from its speed bound ([`aircraft_speed_bound`]), speeding
 /// up at [`AIRCRAFT_SPEEDUP_MPS2`] to its top speed ([`aircraft_reach_m`]), whether or not the
-/// tracker has seen it turn. The keep-out holds only if every region clears it.
+/// tracker has seen it turn. Rules 18 (murmur-vni): the regions along its velocity and its average
+/// velocity, and a young track's speed bound, read the velocity's error the tracker reports when
+/// larger than the policy's ([`track_velocity_error`]), so a velocity known only to 6 m/s widens
+/// them as it should rather than counting as good to 1. The keep-out holds only if every region
+/// clears it.
 pub fn track_reach(t: &TrackFacts, effect_t: Time, ec: &EngageRules) -> Vec<TrackReach> {
     reach(t, effect_t, ec, true)
 }
@@ -2896,15 +2926,19 @@ fn reach(t: &TrackFacts, effect_t: Time, ec: &EngageRules, words: bool) -> Vec<T
         }];
     };
     let sigma = track_prediction_sigma(t, span, ec);
+    let v_err = track_velocity_error(t, ec);
     let mut out = vec![TrackReach {
         center: track_at(t, effect_t),
         radius_m: k * sigma,
         how: if words {
+            // rules 18: and the velocity error it was predicted with (the tracker's, or the
+            // policy's floor)
+            let at = if ec.own_velocity_error() { format!(" at {v_err:.1} m/s") } else { String::new() };
             format!(
-                "{k:.0}-sigma {:.0} m over {span:.0} s: tracker {:.0} m, velocity {:.0} m, manoeuvre {:.0} m",
+                "{k:.0}-sigma {:.0} m over {span:.0} s: tracker {:.0} m, velocity {:.0} m{at}, manoeuvre {:.0} m",
                 k * sigma,
                 t.pos_sigma_m,
-                ec.track_velocity_sigma() * span,
+                v_err * span,
                 ec.track_accel(t.domain) * (span.powi(3) / 3.0).sqrt()
             )
         } else {
@@ -2954,7 +2988,8 @@ fn reach(t: &TrackFacts, effect_t: Time, ec: &EngageRules, words: bool) -> Vec<T
     {
         let tracked = secs(t.position.t.ms_since(first)).max(0.0);
         let top = top_speed_mps(t.domain);
-        let bound = ve.hypot(vn) + k * ec.track_velocity_sigma();
+        // rules 18: its own velocity error when larger than the policy's
+        let bound = ve.hypot(vn) + k * v_err;
         let speed = top.max(bound);
         let radius_m = k * t.pos_sigma_m + speed * span;
         out.push(TrackReach {

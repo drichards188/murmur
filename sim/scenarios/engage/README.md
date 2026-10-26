@@ -204,6 +204,9 @@ tracked_s = 600                  # rules 12, optional: the tracker started it th
                                  # tracked 45 s with a velocity, and until then it is young
                                  # (absent: 600, an established track; a `track` step that
                                  # makes one: 0, it appears then)
+velocity_sigma_mps = 3.0         # rules 14 and 18, optional: its velocity's 1-sigma error as the
+                                 # tracker reports it (`velocity_sigma_mps`; absent: none given,
+                                 # the policy's `track_velocity_sigma_mps` stands in)
 
 [[step]]
 at_s = 0
@@ -238,7 +241,7 @@ Actions (each `[[step]]` has `at_s` and `action`):
 | `reject` | `by` | an operator rejects it |
 | `abort` | `by` | any operator stops it; the fallback is commanded |
 | `agent_approve` | `agent` | an agent "tries" to approve: there is no such method on its port, so it is recorded and the intent must not move |
-| `track` | `id` and any of `at`, `velocity`, `affiliation`, `declared_by`, `undeclare`, `identity`, `identity_confidence`, `sigma_m`, `domain`, `silent`, `velocity_error`, `alt_m`, `tracked_s`, `ais` (rules 16) | a track changes (or appears); `velocity` is how the contact really moves, `velocity_error` how far the tracker's estimate is off it; `tracked_s` (rules 12) when one this step makes was started (0: a new track) |
+| `track` | `id` and any of `at`, `velocity`, `affiliation`, `declared_by`, `undeclare`, `identity`, `identity_confidence`, `sigma_m`, `domain`, `silent`, `velocity_error`, `alt_m`, `tracked_s`, `ais` (rules 16), `velocity_sigma_mps` (rules 18) | a track changes (or appears); `velocity` is how the contact really moves, `velocity_error` how far the tracker's estimate is off it; `tracked_s` (rules 12) when one this step makes was started (0: a new track); `velocity_sigma_mps` the velocity's 1-sigma error the tracker now reports |
 | `write_off` | `by`, `uid` or `log`, `note` | rules 12: an operator writes off the lost-link values owed back to one of our vehicles, saying why (`restore.closed`); rules 15: or an earlier log whose carry failed (`log`) |
 | `unspend` | `by`, `uid`, `note` | rules 15: an operator with engagement authority un-spends a platform spent by its own effect, saying why (`platform.unspent`), once the engagement that spent it ended and it was heard after that and is not silent; without engagement authority it is refused (a scenario has no credentials: no step-up) |
 | `vehicle` | `uid` and any of `at`, `velocity`, `silent`, `report_interval_ms`, `nav` (`gnss`, `dead_reckoning`), `gps_fix` (3: a 3D fix), `gps_glitch`, `circling`, `reported_circle`, `alt_m` | one of ours changes; `silent` cuts its link (both ways: it hears no GCS either) |
@@ -347,3 +350,5 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess).
 | 94-claim-confirmed-by-an-operator | keep_out_tracks | rules 16: a claim on a lost contact confirmed by op-3 after an agent's attempt; the confirmation credited to an agent in the log | done (ceased); tamper caught (not the operator's session) |
 | 95-transit-crosses-land | domain | rules 17: an orbit west of the bridge and a nomination for the armed USV in Richardson Bay, waypoints and effect point on the water, the straight way across the Marin shore | the orbit and the nomination rejected (domain: `transit leg ... crosses land at`, where and how far along); `--rules 16` dispatches the orbit and leaves the nomination waiting for its signers |
 | 96-route-round-the-point | domain | rules 17: the USV in the strait; an orbit in Richardson Bay across the shore's corner, then a patrol round the point, then a nomination on a clear way | the orbit rejected (domain: its transit), the patrol dispatched, the nomination waiting for its signers; `--rules 16` dispatches the orbit |
+| 97-velocity-known-to-3-mps | keep_out_tracks | rules 18: a fishing boat whose course passes 700 m from the effect point at the effect time, fixed by a radar only, its velocity known to 3 m/s as the tracker reports it | rejected (keep_out_tracks: 2-sigma 644 m over 100 s, `velocity 300 m at 3.0 m/s`), then, the boat 1.4 km off by the effect, the same nomination waits for its signers; `--rules 17` (every velocity good to the policy's 1 m/s, 2-sigma about 310 m) lets the first through |
+| 98-velocity-error-grows-under-way | keep_out_tracks | rules 18: a ferry whose course passes 850 m from the effect point, its velocity known to 0.5 m/s (AIS), signed and dispatched; 20 s on its AIS goes quiet and the tracker reports its velocity known to 4 m/s | aborted (keep_out_tracks: 2-sigma 705 m over 85 s), fallback return; `--rules 17` goes ahead (done, ceased) |

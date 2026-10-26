@@ -444,7 +444,9 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
     uncertainty). Defaults and basis: `track_velocity_sigma_mps` 1.0 (the Phase G
     velocity-noise sweep passed every scenario at 0.5 m/s per axis and saw late aborts at
     1 m/s per axis; the Phase G live tracks' estimates moved by at most 1.3 m/s from one
-    second to the next, AIS ones 0.3); `track_accel_mps2` 0.2 m/s^2 on the surface and under
+    second to the next, AIS ones 0.3; from rules 18 a floor under the error the tracker
+    reports for the track, `velocity_sigma_mps`, which counts when larger:
+    `engage::track_velocity_error`); `track_accel_mps2` 0.2 m/s^2 on the surface and under
     water (a ferry or patrol boat in a 300 m turn at 10 m/s pulls 0.33 m/s^2; Bar-Shalom's
     rule of thumb puts the noise between half and all of the largest manoeuvre), 2.0 in the
     air and on the ground (a standard-rate turn at 55 m/s is 2.9 m/s^2). A track without a
@@ -600,7 +602,8 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
   blocking is one the check fails on, judged alone (a picture with only it), and no other.
   The tracker's memories come from the bridge (`Tracks::memory()`); the defaults are the same.
   `tests/keepout.rs` checks each claim against `rules::evaluate`: on seeded random pictures
-  (240 in the suite; `MURMUR_KO_SEED`, `MURMUR_KO_WORLDS` for more), a dry run at the stated
+  (700 in the suite, from rules 18 most tracks' velocities with an error of their own;
+  `MURMUR_KO_SEED`, `MURMUR_KO_WORLDS` for more), a dry run at the stated
   nomination time on the projected picture passes that item's keep-out and one second
   earlier fails; the platform placed within the stated distance passes and one step farther
   fails; placed so the effect lands exactly at times inside a window (a moving target's
@@ -1721,6 +1724,39 @@ Rules versions:
   waiting for its signers); the scenario runner's `task` step takes `patrol` with a `route`.
   Fixtures (a clean build of this branch): `tests/data/audit/v17-engagement-scenario-01.jsonl`,
   `v17-transit-crosses-land-scenario-95.jsonl`, `v17-route-round-the-point-scenario-96.jsonl`.
+- **18** (murmur-vni, the owner's decision A of 2026-10-26; every gate reads
+  `VELOCITY_SIGMA_SINCE`, so another change taking the number first renumbers it in one line; no
+  policy key changes, schema 7; a v18 log carries every rules 17 behaviour too): *a protected
+  track is predicted with its own velocity error*. Up to rules 17 the region along a track's
+  velocity (and along its average velocity) grew with the policy's `track_velocity_sigma_mps`
+  (1 m/s) whatever the tracker said, and a young track's speed bound added `keep_out_sigma` of
+  the same: every shown velocity counted as good to 1 m/s. That held only while the tracker
+  showed none worse than its gate allowed (3 m/s, so up to three times the error assumed), and
+  it kept the gate there: aircraft fixed by ESM positions and 2D radars' bearings, whose honest
+  velocity 1-sigma is 5 to 9 m/s, showed no velocity at all (docs/SENSING.md, "Aircraft velocity
+  under the physical model"). From rules 18 those regions read the error the tracker reports in
+  its least certain direction (`TrackFacts::velocity_sigma_mps`, a logged fact since rules 14),
+  or the policy's when that is larger or none is given (`engage::track_velocity_error`: the
+  policy's figure is a floor, as in rules 14's speed bound), so a velocity known to 3 m/s widens
+  the prediction three times as fast as one known to 1 m/s. The region's detail names the error
+  it was predicted with (`velocity 300 m at 3.0 m/s`), and the keep-out explanation says it
+  (`its velocity known to 3.0 m/s`); the explanation's scan bounds its regions' growth with it
+  too. Every other region is as before: rules 14's aircraft reach, rules 16's out of view and a
+  manoeuvre's or a track without a velocity's. A track whose velocity the tracker holds better
+  than the policy's 1 m/s, or one with no error given (every scenario before 97), is judged as
+  before: the 96 scenarios before it end as they did under rules 17 (the same states, failed
+  rules, assessments, fallbacks and refusals; two final details, 46's and 73's, now say `at 1.0
+  m/s`). No new marker: replay reads the error from the logged facts, and a rules 18 log
+  claiming rules 17 is caught where a decision read an error above the policy's (scenarios 97
+  and 98's). Scenarios 97 (a fishing boat whose course passes 700 m from the effect point, fixed
+  by a radar only, its velocity known to 3 m/s: rejected, then waiting for its signers once the
+  boat is 1.4 km off by the effect; `--rules 17` lets the first through) and 98 (a ferry 850 m
+  off, its velocity known to 0.5 m/s from its AIS, signed and dispatched; its AIS quiet, the
+  tracker reports 4 m/s and the engagement aborts; `--rules 17` goes ahead); a scenario's track
+  takes `velocity_sigma_mps`, in the file and in a `track` step. `tests/rules18.rs`. Fixtures (a
+  clean build of this branch): `tests/data/audit/v18-engagement-scenario-01.jsonl`,
+  `v18-velocity-known-to-3-mps-scenario-97.jsonl`,
+  `v18-velocity-error-grows-under-way-scenario-98.jsonl`.
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

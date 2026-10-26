@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 55] = [
+const LOGS: [(&str, u32); 58] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -162,13 +162,20 @@ const LOGS: [(&str, u32); 55] = [
     ("v17-engagement-scenario-01.jsonl", ROUTE_SURFACE_SINCE),
     ("v17-transit-crosses-land-scenario-95.jsonl", ROUTE_SURFACE_SINCE),
     ("v17-route-round-the-point-scenario-96.jsonl", ROUTE_SURFACE_SINCE),
+    // rules 18 (murmur-vni, a track predicted with its own velocity error; a clean build of this
+    // branch): scenario 01; 97, a nomination rejected for a boat whose velocity is known to 3 m/s,
+    // then waiting for its signers once the boat is farther; 98, an engagement under way aborted
+    // when a ferry's velocity error grows from 0.5 to 4 m/s
+    ("v18-engagement-scenario-01.jsonl", VELOCITY_SIGMA_SINCE),
+    ("v18-velocity-known-to-3-mps-scenario-97.jsonl", VELOCITY_SIGMA_SINCE),
+    ("v18-velocity-error-grows-under-way-scenario-98.jsonl", VELOCITY_SIGMA_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v17-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v18-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -1753,7 +1760,7 @@ fn the_rules_17_logs_judge_a_routes_legs_and_cannot_claim_rules_16() {
     let round = fixture("v17-route-round-the-point-scenario-96.jsonl");
     assert!(round.contains("all 5 waypoints on water, and the transit, task path, return ("), "the patrol");
     for (name, text) in [("95", &refused), ("96", &round)] {
-        let r = replay_str(text).unwrap();
+        let r = with(text, RulesAccepted::Exactly(now));
         assert!(r.ok(), "{name}: {:?}", r.mismatches);
         let mut ls = lines(text);
         let tag = format!("\"rules_version\":{now},");
@@ -1765,5 +1772,32 @@ fn the_rules_17_logs_judge_a_routes_legs_and_cannot_claim_rules_16() {
             "{name}: {:?}",
             whats(&r)
         );
+    }
+}
+
+/// Rules 18 (murmur-vni): the committed logs carry the tracker's velocity error in the facts each
+/// decision read (`velocity_sigma_mps`, logged since rules 14) and the keep-out's detail naming the
+/// error a track was predicted with; claimed as rules 17 (the version before), which took every
+/// velocity as good to the policy's 1 m/s, replay recomputes the decisions with that and finds
+/// them differ: no new marker is needed, the decisions themselves give it away.
+#[test]
+fn the_rules_18_logs_read_a_tracks_velocity_error_and_cannot_claim_rules_17() {
+    let (now, before) = (VELOCITY_SIGMA_SINCE, ROUTE_SURFACE_SINCE);
+    assert_eq!(before + 1, now, "the version just before");
+    let rejected = fixture("v18-velocity-known-to-3-mps-scenario-97.jsonl");
+    assert!(rejected.contains("\"velocity_sigma_mps\":3.0"), "the fact it read");
+    assert!(rejected.contains("velocity 300 m at 3.0 m/s"), "the detail names the error");
+    let aborted = fixture("v18-velocity-error-grows-under-way-scenario-98.jsonl");
+    assert!(aborted.contains("\"velocity_sigma_mps\":4.0") && aborted.contains("at 4.0 m/s"), "the error grown under way");
+    for (name, text) in [("97", &rejected), ("98", &aborted)] {
+        let r = with(text, RulesAccepted::Exactly(now));
+        assert!(r.ok(), "{name}: {:?}", r.mismatches);
+        let mut ls = lines(text);
+        let tag = format!("\"rules_version\":{now},");
+        assert!(ls[0].contains(&tag), "{name}");
+        ls[0] = ls[0].replacen(&tag, &format!("\"rules_version\":{before},"), 1);
+        let r = with(&rechain(&ls), RulesAccepted::Exactly(before));
+        assert!(!r.ok(), "{name}: claimed as rules {before}, its decisions must differ");
+        eprintln!("{name}: {:?}", whats(&r));
     }
 }

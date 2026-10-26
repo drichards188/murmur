@@ -235,6 +235,13 @@ fn random_world(rng: &mut Rng) -> (WorldSnapshot, IntentSpec) {
             t.affiliation = Fact::new(Affiliation::Hostile, seen);
             t.declared_by = Some("op-2".into());
         }
+        // rules 18: most velocities come with the tracker's own error, below or above the
+        // policy's 1 m/s (an aircraft fixed by ESM and bearings up to 12), drawn from a stream of
+        // their own so the pictures above are the ones they were
+        let mut own = Rng(at.lon.to_bits() ^ (seen.0 as u64));
+        if vel.is_some() && own.chance(0.7) {
+            t.velocity_sigma_mps = Some(own.range(0.3, if air { 12.0 } else { 4.0 }));
+        }
         w.tracks.insert(id, t);
     }
     // rules 16: now and then a contact the tracker dropped, out of view 3 to 6 min
@@ -639,10 +646,11 @@ fn ex_item() -> Item {
 fn every_claim_of_the_explanation_holds_in_a_dry_run() {
     let mut n = Counts::default();
     // MURMUR_KO_SEED and MURMUR_KO_WORLDS run it longer or on other pictures (400: under rules
-    // 14 an aircraft's lag closed the one later-only window the first 240 had)
+    // 14 an aircraft's lag closed the one later-only window the first 240 had; 700: under rules
+    // 18 the tracks' own velocity errors closed the first 600's)
     let env = |k: &str| std::env::var(k).ok().and_then(|s| s.parse::<u64>().ok());
     let mut rng = Rng(env("MURMUR_KO_SEED").unwrap_or(0x6b6f_2d31_3265));
-    for _ in 0..env("MURMUR_KO_WORLDS").unwrap_or(400) {
+    for _ in 0..env("MURMUR_KO_WORLDS").unwrap_or(700) {
         n.worlds += 1;
         let (w, spec) = random_world(&mut rng);
         let before = w.clone();

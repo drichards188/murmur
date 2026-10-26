@@ -606,9 +606,10 @@ fn vehicle_clear(
 /// How fast any region's edge in the scan may move relative to the effect point, m/s (a bound
 /// for [`grid_margin_for`]): the target's speed, plus the fastest of each track's (its
 /// domain's top speed or its own bound, whichever is faster, and how fast its prediction's
-/// uncertainty may grow over the longest transit: `keep_out_sigma` of the policy's velocity
-/// error and of the acceleration noise's growth) and each vehicle's of ours (its speed or its
-/// cruise speed, and its growth).
+/// uncertainty may grow over the longest transit: `keep_out_sigma` of the velocity error it is
+/// predicted with, the policy's or from rules 18 the tracker's when larger
+/// ([`engage::track_velocity_error`]), and of the acceleration noise's growth) and each vehicle's
+/// of ours (its speed or its cruise speed, and its growth).
 fn scan_speed_mps(ctx: &Ctx, probes: &[Probe]) -> f64 {
     let ec = &ctx.ec;
     let k = ec.keep_out_sigma;
@@ -616,7 +617,7 @@ fn scan_speed_mps(ctx: &Ctx, probes: &[Probe]) -> f64 {
     let target = engage::target_velocity(ctx.target, ec);
     let track = |t: &TrackFacts| {
         let (own, _) = engage::out_of_view_speed(t, ec);
-        let growth = k * (ec.track_velocity_sigma() + (ec.track_accel(t.domain).powi(2) * span).sqrt());
+        let growth = k * (engage::track_velocity_error(t, ec) + (ec.track_accel(t.domain).powi(2) * span).sqrt());
         own + growth
     };
     let fastest = probes
@@ -908,8 +909,14 @@ fn track_item(ctx: &Ctx, id: &str, t: &TrackFacts, s: &TrackStanding, alt: Optio
     let what = match near.kind {
         ReachKind::Velocity => {
             let v = t.velocity_mps.map_or(0.0, |[e, n]| e.hypot(n));
+            // rules 18: the velocity's own error widens it
+            let known = if ec.own_velocity_error() {
+                format!(", its velocity known to {:.1} m/s", engage::track_velocity_error(t, ec))
+            } else {
+                String::new()
+            };
             format!(
-                "On its course at {v:.1} m/s it is predicted {} from the effect point at the effect time, give or take {r} ({k:.0}-sigma over {span:.0} s).",
+                "On its course at {v:.1} m/s it is predicted {} from the effect point at the effect time, give or take {r} ({k:.0}-sigma over {span:.0} s{known}).",
                 dist(s.d)
             )
         }

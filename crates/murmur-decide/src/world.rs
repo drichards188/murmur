@@ -266,8 +266,10 @@ pub struct TrackFacts {
     pub first_seen_t: Option<Time>,
     /// Rules 14: the 1-sigma error of `velocity_mps` in its least certain direction, m/s, as the
     /// tracker reports it: how much faster than its velocity says an aircraft may be going
-    /// ([`crate::engage::aircraft_reach_m`]). Absent: no velocity, a caller that does not say
-    /// (a scenario: the policy's `track_velocity_sigma_mps` stands in), or an older log.
+    /// ([`crate::engage::aircraft_reach_m`]); rules 18, also how far off its velocity may carry
+    /// any track's predicted position ([`crate::engage::track_velocity_error`]). Absent: no
+    /// velocity, a caller that does not say (a scenario that gives none: the policy's
+    /// `track_velocity_sigma_mps` stands in), or an older log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub velocity_sigma_mps: Option<f64>,
 }

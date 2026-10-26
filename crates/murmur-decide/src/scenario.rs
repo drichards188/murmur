@@ -314,6 +314,11 @@ pub struct TrackDef {
     /// ([`WorldSnapshot::track_ais`]): what a lost contact is matched again by.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ais: Option<crate::world::AisIdentity>,
+    /// Rules 14 and 18: the 1-sigma error of its velocity estimate as the tracker reports it, m/s
+    /// ([`TrackFacts::velocity_sigma_mps`]; none without a velocity estimate). Absent: none given,
+    /// and the policy's `track_velocity_sigma_mps` stands in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub velocity_sigma_mps: Option<f64>,
 }
 
 /// Rules 12, scenarios: how long a track is tracked with a velocity estimate before it has an
@@ -500,6 +505,10 @@ pub enum Action {
         /// Rules 16: the AIS identity its contact broadcasts.
         #[serde(default)]
         ais: Option<crate::world::AisIdentity>,
+        /// Rules 14 and 18: the tracker now reports its velocity's 1-sigma error as this, m/s
+        /// ([`TrackDef::velocity_sigma_mps`]), until set again.
+        #[serde(default)]
+        velocity_sigma_mps: Option<f64>,
     },
     /// One of our vehicles changes: position, velocity, link (silent: no reports; a report
     /// interval: the link class changed), navigation source (`gnss`, `dead_reckoning`).
@@ -2016,7 +2025,7 @@ fn track_sim(t: &TrackDef) -> TrackSim {
                 .filter(|s| *s >= SCENARIO_MEAN_MIN_S && !t.no_velocity_estimate)
                 .map(|_| t.velocity),
             first_seen_t: Some(T0.plus_ms(-((t.tracked_s.unwrap_or(SCENARIO_TRACKED_S) * 1000.0).round() as i64))),
-            velocity_sigma_mps: None,
+            velocity_sigma_mps: t.velocity_sigma_mps.filter(|_| !t.no_velocity_estimate),
         },
         ais: t.ais.clone(),
         silent: t.silent,
@@ -2689,6 +2698,7 @@ fn act(
             alt_m,
             tracked_s,
             ais,
+            velocity_sigma_mps,
         } => {
             let new = !tracks.contains_key(id);
             let t = tracks.entry(id.clone()).or_insert_with(|| {
@@ -2714,10 +2724,14 @@ fn act(
                     manoeuvre_speed_mps: None,
                     tracked_s: None,
                     ais: None,
+                    velocity_sigma_mps: None,
                 })
             });
             if let Some(a) = ais {
                 t.ais = Some(a.clone());
+            }
+            if let Some(v) = velocity_sigma_mps {
+                t.facts.velocity_sigma_mps = Some(*v);
             }
             // rules 12: a track a step makes appears now (or `tracked_s` ago): young, its
             // average velocity comes once tracked long enough

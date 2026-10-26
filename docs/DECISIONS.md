@@ -2286,6 +2286,30 @@ group. Dates are 2026.
   them; an operator or agent sends a patrol round the point, scenario 96), refusing the rtl
   (rejected, above), and judging only the transit (rejected: the return is where a lost link
   sends the boat).
+- **A protected track is predicted with its own velocity error** (10-26, bd murmur-vni, rules 18,
+  `VELOCITY_SIGMA_SINCE`; the owner's decision A of 2026-10-26: the decision engine reads the
+  tracker's velocity uncertainty, so aircraft and drones can show honest velocities instead of
+  none). The keep-out's regions along a track's velocity and its average velocity grow with the
+  1-sigma the tracker reports in its least certain direction (`velocity_sigma_mps`), or the
+  policy's `track_velocity_sigma_mps` (1 m/s) when that is larger or none is given; a young
+  track's speed bound adds `keep_out_sigma` of the same (`engage::track_velocity_error`). Why:
+  up to rules 17 every shown velocity counted as good to the policy's 1 m/s, so the tracker's
+  3 m/s gate was the only thing keeping a worse velocity out of the decisions, and it kept the
+  air tracker from showing the honest 5 to 9 m/s velocities of aircraft fixed by ESM positions
+  and 2D radars' bearings (docs/SENSING.md, "Aircraft velocity under the physical model": on the
+  physical tuning sets a 6 or 12 m/s air gate under the old region raised the calibration's
+  failures from 13 to 42 and 81). A real tracker reports a velocity with its covariance and what
+  reads the velocity reads the covariance; this is the engine doing so. The policy's figure
+  stays a floor, as in rules 14's speed bound: it is the basis of the scenarios and of the Phase
+  G sweep, and a tracker's error below it (an AIS course and speed, 0.3 m/s) is not taken to
+  narrow a keep-out. Rejected: raising the air gate alone (the engine's contract broken, above);
+  raising the policy's figure for every track (it would widen every surface keep-out for the
+  sake of the aircraft); a per-domain policy figure (a radar-only boat and an AIS-reporting one
+  differ more than a boat and an aircraft do). Cost, stated: a track whose velocity the tracker
+  holds worse than 1 m/s blocks farther along its course (a radar-only boat at 3 m/s, 100 s
+  ahead: 2-sigma 644 m for 307 m). The 96 earlier scenarios end as under rules 17 (their tracks
+  give no error, so the floor applies); scenarios 97 and 98 show a nomination rejected and an
+  engagement under way aborted by the error; replay reads the error from the logged facts.
 - **Decision rules are versioned; old logs replay with their own rules** (10-04,
   coordinator). A rule change that alters decisions bumps `RULES_VERSION` and is gated on
   it; `run.started` records the version (none: 1) and the policy schema, and replay

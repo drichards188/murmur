@@ -1,0 +1,95 @@
+# Rules 18 (murmur-vni), the picture watch reads the velocity's error too: a ferry steaming east
+# at 6 m/s whose course passes 850 m north of the effect point at the effect time, its velocity
+# known to 0.5 m/s while its AIS reports come (the policy's 1 m/s counts: 2-sigma about 310 m,
+# clear). The engagement is signed and dispatched. Twenty seconds on its AIS goes quiet and only
+# a radar fixes it: the tracker now reports its velocity known to 4 m/s, and the region along
+# its course, 80 s ahead, is about 670 m in 2-sigma, inside the clearance. From rules 18 the
+# engagement is aborted and the fallback commanded; up to rules 17 (every shown velocity good to
+# 1 m/s) it went ahead.
+title = "A velocity error that grows under way aborts the engagement"
+invariant = "keep_out_tracks"
+attack = "a ferry 850 m off the effect point's course loses its AIS after dispatch; its velocity known to 4 m/s"
+expect = "aborted"
+expect_rule = "keep_out_tracks"
+end_s = 200
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[track]]
+id = "T-0002"
+at = [-122.501891, 37.819636]   # 850 m north of the target and 606 m west, steaming east
+velocity = [6.0, 0.0]
+affiliation = "neutral"
+identity = "ferry"
+identity_confidence = 0.9
+sources = ["3:radar", "9:ais"]
+velocity_sigma_mps = 0.5    # its AIS reports' course and speed
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 2
+action = "expect"
+state = "pending_approval"
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 20                   # its AIS goes quiet: a radar's fixes only
+action = "track"
+id = "T-0002"
+velocity_sigma_mps = 4.0
+
+[[step]]
+at_s = 22
+action = "expect"
+state = "aborted"
+rule = "keep_out_tracks"

@@ -231,8 +231,22 @@ pub enum UnknownEndurance {
 /// follow-ups of rules 12's carries. Version 16 ([`LOST_CONTACT_SINCE`]): a protected contact
 /// the tracker drops stays in the keep-out as a lost contact ([`crate::lost`]). Version 17
 /// ([`ROUTE_SURFACE_SINCE`]): the domain rule judges the legs a boat, sub or ground vehicle
-/// travels, not only its waypoints.
-pub const RULES_VERSION: u32 = ROUTE_SURFACE_SINCE;
+/// travels, not only its waypoints. Version 18 ([`VELOCITY_SIGMA_SINCE`]): a protected track is
+/// predicted with its own velocity error, as the tracker reports it.
+pub const RULES_VERSION: u32 = VELOCITY_SIGMA_SINCE;
+
+/// The rules version from which a protected track's keep-out regions read the tracker's own
+/// velocity error (murmur-vni, the owner's decision A of 2026-10-26): the region along its
+/// velocity and the one along its average velocity grow with the velocity's 1-sigma the tracker
+/// reports (`TrackFacts::velocity_sigma_mps`, the least certain direction's), or the policy's
+/// `track_velocity_sigma_mps` when that is larger or none is given, and a young track's speed
+/// bound adds `keep_out_sigma` of the same ([`crate::engage::track_velocity_error`]). Before, every
+/// shown velocity was taken as good to the policy's 1 m/s, so the tracker could show a velocity
+/// only once its error was near that (its 3 m/s gate), and aircraft fixed by ESM positions and 2D
+/// radars' bearings, whose honest velocity error is 5 to 9 m/s, showed none. Every gate of that
+/// change reads this constant, never a literal: another change taking 18 first renumbers it in
+/// this one line.
+pub const VELOCITY_SIGMA_SINCE: u32 = 18;
 
 /// The rules version from which the domain rule judges the way a boat, a sub or a ground
 /// vehicle goes, not only its waypoints (murmur-k8i, item 2): land or water every
@@ -501,6 +515,12 @@ impl RulesConfig {
     /// Rules 17 ([`ROUTE_SURFACE_SINCE`]): the domain rule judges a route's legs.
     pub fn route_surface(&self) -> bool {
         self.rules_version >= ROUTE_SURFACE_SINCE
+    }
+
+    /// Rules 18 ([`VELOCITY_SIGMA_SINCE`]): a protected track is predicted with its own velocity
+    /// error.
+    pub fn velocity_sigma(&self) -> bool {
+        self.rules_version >= VELOCITY_SIGMA_SINCE
     }
 
     /// `[rules.engage]`, or its defaults.

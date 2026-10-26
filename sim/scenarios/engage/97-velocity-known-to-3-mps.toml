@@ -1,0 +1,83 @@
+# Rules 18 (murmur-vni), a protected track predicted with its own velocity error: a fishing boat
+# steaming east at 6 m/s, followed for ten minutes, whose course passes 700 m north of the effect
+# point at the effect time. Only a radar fixes it, and the tracker reports its velocity known to
+# 3 m/s, not to the policy's 1 m/s. Until rules 18 the keep-out took every shown velocity as good
+# to 1 m/s: 2-sigma about 310 m a hundred seconds ahead, clear of the 275 m clearance. From rules
+# 18 the region along its course grows with the error the tracker gives (2-sigma about 640 m):
+# the first nomination is rejected; once the boat has gone 1.4 km off the point by the effect,
+# the same nomination waits for its signers.
+title = "A velocity known only to 3 m/s widens the region along a track's course"
+invariant = "keep_out_tracks"
+attack = "a boat whose course passes 700 m from the effect point, its velocity known to 3 m/s"
+expect = "pending_approval"
+end_s = 220
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[track]]
+id = "T-0002"
+at = [-122.501959, 37.818288]   # 700 m north of the target and 612 m west, steaming east
+velocity = [6.0, 0.0]
+affiliation = "neutral"
+identity = "fishing_vessel"
+identity_confidence = 0.9
+sources = ["3:radar"]
+velocity_sigma_mps = 3.0    # as the tracker reports it: a radar's fixes only
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 2
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 3
+action = "expect"
+state = "rejected"
+rule = "keep_out_tracks"
+
+[[step]]
+at_s = 200                  # by its effect the boat is 1.4 km from the point
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 201
+action = "expect"
+state = "pending_approval"
