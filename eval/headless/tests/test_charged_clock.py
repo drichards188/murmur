@@ -359,10 +359,13 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: added: its transcript's sizes and estimated costs) and the playbook's two proposals (play version
 #: 2, the predicted-link sentence in the rationale and its audit line); every proposal, decision,
 #: order and vehicle state is the same.
+#: Re-taken for decision rules 19 (bd murmur-j0x, a live track accepted as behaving now): each record
+#: is the earlier one but for its audit log's `run.started` (`rules_version` 19 for 18): with that one
+#: number put back, each gives the digest before it.
 PAUSED = {
-    "model harbor-watch s1": "c470f1a1a0eec665aa69c0d6b4b3f0394ba0b4e0d8b0ede704f05bafb094deb4",
-    "playbook v2 fast-unknown 1000": "f0759b0bbe27d7f93ec10fba9e74540b6e25315b0c48a78e2690ccbd7356d069",
-    "model v2 fast-unknown 1000": "a3be232a8dc503e54391679a936d0d60ccdaca1623ad977ef87e14fcf4e29c70",
+    "model harbor-watch s1": "d840387bee3770bed07d334131c5ad39173f2178fb41c589b276950fa821ed6c",
+    "playbook v2 fast-unknown 1000": "9ca9ec9ea94e3ec575eca28cd786f245f6e0b6c672106308afbe32a9aa0295fb",
+    "model v2 fast-unknown 1000": "164c3e3201c62d085fec2631195df3b2d5c292b522d2a8d9d866c0163ca041c3",
 }
 
 
