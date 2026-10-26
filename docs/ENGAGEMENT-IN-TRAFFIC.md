@@ -1,7 +1,7 @@
 # Engagements in traffic: who decides when the keep-out blocks
 
-Status: **design note for the owner's decision, 2026-10-25** (bd murmur-e3b, part B). No code.
-Part A (the tracker keeping a velocity for steady and stationary tracks) is approved and being
+Status: **decided 2026-10-26: option 2, built as decision rules 19 (section 6)** (bd murmur-e3b,
+part B; the build bd murmur-j0x). Part A (the tracker keeping a velocity for steady and stationary tracks) is approved and being
 built separately.
 
 ## 1. What happens
@@ -91,3 +91,32 @@ including "if it keeps behaving as now".
 
 Choose option 1 or 2 (or another). If option 2: the build starts after part A lands, as its own
 task, with the engine scenarios and the replay checks written first.
+
+**Decided (2026-10-26, the owner's decision B): option 2.** Built as decision rules 19
+(`ACCEPT_BEHAVING_SINCE`, bd murmur-j0x; crates/murmur-decide/README.md, DECISIONS.md "A person
+may accept a live blocker as it is behaving now"), the engine scenarios and replay checks first
+(scenarios 99 to 105):
+
+- **The acceptance** (`engage.accepted` naming the track, with its facts then): an operator with
+  engagement authority, one live track (in view, with a velocity, protected), one engagement, at
+  the nomination or before a first signature, the `accept_unknown` step-up; shown to every signer
+  on the card and the picture token, revocable by any operator, reset with the plan, never an
+  agent's.
+- **What the engine assumes**: the track counts along the path accepted for it (its accepted
+  velocity from its accepted estimate, the white-noise prediction's 2-sigma growing as rules 18
+  grows it, an aircraft's tracker lag) and along its course now, instead of anywhere it could turn
+  or speed up to.
+- **The lapse**: out of view (`OUT_OF_VIEW_S`), or the estimate departs from the accepted
+  prediction by more than 2-sigma of their combined uncertainty, in position or, while the tracker
+  shows a velocity, in velocity. Logged (`engage.acceptance_lapsed`, with why) before anything
+  reads the acceptance again; the engagement is then blocked, or stopped if under way, and a new
+  acceptance needs a person. A velocity the tracker withholds for a moment is not a lapse (the
+  first build's extra test, which ended every acceptance of a steady aircraft in a headless
+  episode); a turn during such a gap shows by position, later.
+- **Console and headless**: the nomination form's explanation and the card say, for each live
+  blocker, whether accepting it as behaving now would clear it; the scripted reviewer's
+  `accept-behaving` preset accepts an aircraft when it would.
+- **Not yet measured**: F15 before and after, how often an acceptance lapses in traffic, and
+  whether any lapse comes too late. An agent's nomination that the keep-out blocks is still
+  rejected when proposed, so in the headless runs the acceptance reaches only a nomination that
+  waits (a blocker that came after it) unless a scripted operator nominates.

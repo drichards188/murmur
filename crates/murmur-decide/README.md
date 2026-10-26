@@ -568,6 +568,33 @@ point, a radius, a time); nothing models a weapon, guidance or an aim point. `Ta
     reinstated for good (`lost.reinstated`, `lost::void_reason`). A contact without AIS is
     never claimed (association across a drop is by identity, and nothing else names one
     contact).
+  - *Live tracks accepted as behaving now* (rules 19, bd murmur-j0x, the owner's decision B of
+    2026-10-26): an operator with engagement authority may accept one live track that blocks a
+    waiting nomination's keep-out as it is behaving now, for that engagement only, at the
+    nomination (`Engine::submit_accepting_all`) or before a first signature
+    (`Engine::accept_live_track`): logged as `engage.accepted` naming the `track`, with its facts
+    then (`behaving`) and the world's time; only a track in the picture, in view, with a
+    velocity, protected (`engage::behaving_acceptable`), never twice while one is in force. For
+    that engagement the keep-out on tracks counts it along the path accepted for it (its accepted
+    velocity from its accepted estimate, `keep_out_sigma` of `track_prediction_sigma` of the
+    accepted facts over the span since, rules 18's velocity error and the domain's white-noise
+    acceleration included, and an aircraft's tracker lag) and along its course now (its live
+    velocity and average velocity regions), not anywhere it could turn or speed up to
+    (`engage::behaving_regions`, region kind `accepted`); every other track counts as before. The
+    acceptance lapses on its own (`engage::behaving_lapse`) when the track leaves the picture,
+    goes out of view (`OUT_OF_VIEW_S`), or its estimate departs from the accepted prediction by
+    more than `keep_out_sigma` times their combined 1-sigma, in position (the prediction's and
+    the estimate's) or, while the tracker shows a velocity, in velocity (each velocity's error and
+    the white-noise acceleration's `q t`). The engine logs a lapse (`engage.acceptance_lapsed`,
+    with its kind, its words, the world's time and the track's facts) before every step, look,
+    signature and acceptance of the engagement (a waiting nomination with one is stepped for
+    it), drops it for good and records it on the engagement (`Engagement::lapsed`, the card's); a
+    decision whose own picture lapses one judges the track as if none had been given. The rest as
+    the other acceptances: every signer's picture token carries them (`behaving_accepted`; a
+    token from before a change is refused), a reset clears them, any operator revokes one
+    (`Engine::revoke_live_track`), the `accept_unknown` step-up (a passkey's purpose names the
+    track, `StepUpFor::AcceptUnknown { tracks }`), the signer who accepted is `self_accepted`,
+    and only an `EngagementAuthority` takes one (an agent's port has no such method).
 - **Keep-out explanation** (`keepout.rs`, murmur-12e; read-only, no rules change). The
   checks judge each track and vehicle of ours through `engage::track_standing` and
   `engage::friendly_standing` (the region the check reads, its kind, centre and radius,
@@ -1757,6 +1784,45 @@ Rules versions:
   clean build of this branch): `tests/data/audit/v18-engagement-scenario-01.jsonl`,
   `v18-velocity-known-to-3-mps-scenario-97.jsonl`,
   `v18-velocity-error-grows-under-way-scenario-98.jsonl`.
+- **19** (bd murmur-j0x, the owner's decision B of 2026-10-26, option 2 of
+  docs/ENGAGEMENT-IN-TRAFFIC.md; every gate reads `ACCEPT_BEHAVING_SINCE`, so another change taking
+  the number first renumbers it in one line; no policy key changes, schema 7; a v19 log carries
+  every rules 18 behaviour too): *an operator may accept a live track as behaving now*. In traffic
+  the keep-out refused nearly every engagement (F15: 1,186 of 1,191 attempts at Golden Gate v3, an
+  aircraft among the blockers in 97 %), mostly for aircraft counted anywhere they could turn or
+  speed up to (rules 14), and no person could make the call. From rules 19 an operator with
+  engagement authority may accept one such live track for one engagement (*Live tracks accepted
+  as behaving now* above): the keep-out then counts it along its accepted path and its course
+  now, and the acceptance lapses on its own on a departure beyond the prediction's uncertainty or
+  out of view. A first build also lapsed one whenever the tracker withheld the track's velocity;
+  on the legacy sensing model that ended an acceptance of a steady aircraft every 10 to 20 s in a
+  headless episode, and the owner's decision names the two tests alone, so a velocity withheld
+  for a moment leaves the position test running. New events and facts (markers: a log claiming
+  rules 18 or older can't carry them): `engage.acceptance_lapsed`, an `engage.accepted` naming a
+  `track` with `behaving`, an `engage.acceptance_revoked` naming a `track`, decision inputs' and
+  picture tokens' `behaving_accepted`. Replay recomputes each acceptance (rules 19, the operator's
+  own session with engagement authority, the nomination or before a first signature, the track
+  acceptable on its logged facts, its estimate's time the one named, never twice while one is in
+  force), each lapse from its logged facts and the acceptance's (the same kind and words),
+  every decision's and token's acceptances against its ledger (accepted less revoked, lapsed and
+  reset), the self-acceptance of each signature, and flags a held picture (`engage.picture`) that
+  reads an acceptance its own picture lapses (the engine logs the lapse first). The keep-out
+  explanation says, for each live blocker, what accepting it as behaving now would do
+  (`keepout::Item::behaving`, `keepout::BehavingInfo`: acceptable, clears, the accepted path's
+  region and why), and `keepout::behaving_options` says it without the scans for a waiting
+  nomination's card. The 98 scenarios before it end exactly as under rules 18 (state, failed
+  rules, assessment, refusals, fallback and final reason). Scenarios 99 (83's aircraft accepted at
+  the nomination, held to the effect; `--rules 18`: the nomination refused), 100 (a jump off the
+  accepted path lapses it while no plan is frozen, a token from before refused, accepted again),
+  101 (out of view: lapsed, the signature dropped, voided), 102 (revoked under way: aborted), 103
+  (reset with the plan), 104 (an operator without engagement authority and an agent refused), 105
+  (a turn back under way: lapsed by velocity at the next step, aborted then, nothing released);
+  the scenario runner's steps take `accept_behaving` (nominate) and `behaving` (accept, revoke,
+  agent_accept), and `expect_lapsed`. `tests/rules19.rs`. Fixtures (a clean build of `502e0da`):
+  `tests/data/audit/v19-engagement-scenario-01.jsonl`,
+  `v19-aircraft-accepted-as-behaving-scenario-99.jsonl`,
+  `v19-behaving-acceptance-lapses-on-a-jump-scenario-100.jsonl`,
+  `v19-behaving-acceptance-lapses-under-way-scenario-105.jsonl`.
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

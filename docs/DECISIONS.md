@@ -283,6 +283,41 @@ group. Dates are 2026.
   is inside the radar's nominal coverage, so it misses as today does: a track ages out within
   coverage only when the sensors stopped seeing a contact that was there). So none is shipped;
   the acceptance is the way through, and its frequency is the stated cost of failing closed.
+- **A person may accept a live blocker as it is behaving now; the acceptance lapses on its own**
+  (2026-10-26, the owner's decision B, option 2 of docs/ENGAGEMENT-IN-TRAFFIC.md; bd murmur-j0x;
+  rules 19, `ACCEPT_BEHAVING_SINCE`). In traffic the keep-out refused nearly every engagement
+  (scoring v3's F15 at Golden Gate v3: 1,186 of 1,191 attempts, an aircraft among the blockers in
+  97 %), above all for aircraft counted anywhere they could turn or speed up to (rules 14), and
+  nothing let a person make the call. Decided, mirroring the lost friendly and the lost contact
+  above: an operator with engagement authority may accept one live track that blocks a waiting
+  nomination's keep-out, for that engagement only, at the nomination or before a first signature,
+  on the assumption the keep-out explanation already computes (that it keeps its course and
+  speed). The acceptance records the track's facts then (position with its time, velocity, the
+  velocity's error); for that engagement the keep-out counts the track along the path accepted
+  for it, with the white-noise prediction's uncertainty growing as rules 18 grows it, and along its
+  course now, instead of anywhere at its domain's top speed; every other track counts as before.
+  It lapses on its own when the track goes out of view or its estimate departs from the accepted
+  prediction by more than `keep_out_sigma` (2) times their combined 1-sigma, in position or, while
+  a velocity is shown, in velocity; the engine logs the lapse (`engage.acceptance_lapsed`, with
+  why) before anything reads the acceptance again, the keep-out then counts the track by all its
+  regions (blocked again, or stopped if under way), and a new acceptance needs a person. Same
+  safeguards as the other acceptances: logged under the operator's session with the facts, the
+  `accept_unknown` step-up (one act for every acceptance: a person accepting something the
+  machine cannot vouch for), shown to every signer on the card and the picture token (a token from
+  before a change is refused), revocable by any operator, reset with the plan, never an agent's;
+  the signer who accepted is recorded. Why this one: it does not weaken the default, it turns the
+  worst-case assumption into a stated, signed human judgment the machine keeps checking, and
+  replay checks every part of it from the log. Rejected: lapsing also whenever the tracker
+  withholds the track's velocity (the first build): the tracker withholds an aircraft's velocity
+  while its two models disagree, as in a turn, but on the legacy sensing model also every 10 to
+  20 s in straight flight, which ended every acceptance in a headless episode; the stated cost is
+  that a turn during such a gap shows only by position, later (at 60 s from the acceptance an
+  aircraft's 2-sigma position gate is about 1.1 km). Not measured yet: how often an acceptance
+  lapses in F15 traffic, and whether any lapse comes too late (an accepted track inside the
+  effect circle at the effect time); scenario 105 shows a late lapse stopping an engagement under
+  way. An agent's nomination that the keep-out blocks is still rejected at submission: in the
+  headless runs a person's acceptance applies to a nomination that waits (a blocker that came
+  after it), unless a scripted operator nominates.
   The plausible-speed region (since replaced by the top speed, below) came from the first
   measurement (10-07, the main thread's call, the same rules version since the lost contacts had
   not merged): the first version counted a lost contact by a live track's regions alone, a

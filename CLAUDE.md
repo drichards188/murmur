@@ -257,6 +257,17 @@ meaningful. Decision and command, not weapons.
   tracker may show an aircraft's velocity up to 20 m/s 1-sigma while its two models agree (the
   3 m/s gate elsewhere). Such a velocity can lag a hard turn by a few hundred metres a few
   seconds ahead; keep-outs cover it, but `get_tracks` does not yet carry the sigma.
+- Rules 19 (`ACCEPT_BEHAVING_SINCE`, bd murmur-j0x): an operator with engagement authority may
+  accept a live blocker as behaving now (`accept_behaving` on a nomination, `POST
+  /api/intents/{id}/accept_behaving`/`revoke_behaving {track}`, the `accept_unknown` step-up);
+  the keep-out counts it along its accepted path and its course now until it lapses on its own
+  (out of view, or its estimate leaves the accepted prediction's 2-sigma in position or velocity:
+  `engage.acceptance_lapsed`, logged before any step, look, signature or acceptance reads it). A
+  waiting nomination with one is stepped every second for its lapse; anything that judges a live
+  track for an engagement goes through `engage::live_standing`, never `track_standing` alone.
+  The card's `engage.behaving` and the form's `keep_outs.items[].behaving` say what accepting a
+  blocker would do; agents see them and can never accept. Scenarios 99-105; the headless
+  reviewer's `accept-behaving` preset.
 - Predicted link coverage (docs/LINK-COVERAGE.md, bd murmur-hei): `GET`/`POST
   /api/links/coverage`, `link_coverage` in dry runs and `preview_intent`, the MCP tool
   `get_link_coverage`, the console's Links layer and the order form's dry run (`web/src/
