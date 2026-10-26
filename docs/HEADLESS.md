@@ -1216,7 +1216,12 @@ samples that near disagree (a shoreline), as with tidewater's cache. The engine 
 read, so replay is unchanged. A situation's `[headless] domain_rule = "grid"` (the default)
 gives the simulator's bridge its world's grid; a boat's route over Crissy Field then fails
 ("is not water; seahunter needs water"), over the channel passes, and a UGV's the other way
-round (tested). The tide stays at the bake (Golden Gate: 10:00Z on 14 June, 0.44 m).
+round (tested). The tide stays at the bake (Golden Gate: 10:00Z on 14 June, 0.44 m). From decision
+rules 17 (murmur-k8i item 2) the rule also judges a point every 20 m along each leg of the route
+(the transit from where the vehicle is, the task path, the return home, an engagement's way and an
+rtl's), each answered by the grid as a waypoint is: the F7-F13 dev check's Magura, whose orbits
+west of the Gate passed on their waypoints and drove it ashore on the way out of Horseshoe Bay, is
+refused those orbits now (eval/SCORING-V3.md 14.4 item 2).
 
 ### 17.3 The bake tool
 

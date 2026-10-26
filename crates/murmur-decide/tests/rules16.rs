@@ -385,7 +385,7 @@ fn a_rules_16_log_claiming_rules_15_is_caught_by_its_markers() {
     let (mut e, log) = engine_on(&clock, None);
     drop_ferry(&mut e, &clock, T0, T0.plus_ms(180_000), Some("366999501"));
     let text = log.text().replacen(
-        &format!("\"rules_version\":{LOST_CONTACT_SINCE},"),
+        &format!("\"rules_version\":{},", rules::RULES_VERSION),
         &format!("\"rules_version\":{CARRY_FOLLOWUPS_SINCE},"),
         1,
     );
@@ -819,7 +819,8 @@ fn a_drop_sooner_than_the_trackers_drop_age_is_caught() {
         let (mut e, log) = start(&clock, LOST_CONTACT_SINCE);
         drop_ferry(&mut e, &clock, T0, T0.plus_ms(at_s * 1000), None);
         assert!(log.text().lines().next().unwrap().contains("\"track_drop_s\":180"));
-        whats_of(&replay_str(&log.text()).unwrap())
+        let opts = replay::ReplayOptions { rules: RulesAccepted::Exactly(LOST_CONTACT_SINCE), ..Default::default() };
+        whats_of(&replay_str_with(&log.text(), &opts).unwrap())
     };
     let w = early(100);
     assert!(w.iter().any(|m| m.contains("a track dropped sooner than the tracker's drop age")), "{w:?}");

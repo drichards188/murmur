@@ -409,7 +409,7 @@ fn domain_cannot_evaluate() {
     // terrain never sampled (bypassing for_intent)
     let s = spec(human(), orbit(ON_WATER, 200.0, &["boat-1"]));
     let w = world().subset_for(&s);
-    let r: Vec<_> = rules::domain(&s, &w);
+    let r: Vec<_> = rules::domain(&s, &w, &cfg());
     assert_outcome(
         &r[0],
         Outcome::Fail,

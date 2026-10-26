@@ -1917,6 +1917,8 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (rules::LOST_CONTACT_SINCE, "\"contact\":\"", "an acceptance of a lost contact"),
     (rules::LOST_CONTACT_SINCE, "\"ais\":{", "a lost contact's AIS identity"),
     (rules::LOST_CONTACT_SINCE, "\"track_drop_s\":", "the tracker's drop age in run.started"),
+    (rules::ROUTE_SURFACE_SINCE, "\"along\":[", "land/water answers along a route's legs (a decision's terrain)"),
+    (rules::ROUTE_SURFACE_SINCE, "\"warning\":\"", "a check's warning (a safety command's way crossing the wrong surface)"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -8813,11 +8815,26 @@ fn check_issued(
 }
 
 /// A terrain answer taken from a nearby sample: within [`engage::TERRAIN_NEAR_M`] of the
-/// point, and as far as it says.
+/// point, and as far as it says; rules 17: the answers along a leg within
+/// [`crate::route::LEG_NEAR_M`] of their points.
 fn check_terrain(r: &mut ReplayReport, e: &Event, id: IntentId, w: &WorldSnapshot) {
-    let crate::world::TerrainInputs::Sampled { samples } = &w.terrain else {
+    let crate::world::TerrainInputs::Sampled { samples, along } = &w.terrain else {
         return;
     };
+    for l in along {
+        if let Some(d) = l.near_m
+            && !(0.0..=crate::route::LEG_NEAR_M).contains(&d)
+        {
+            bad(
+                r,
+                e,
+                Some(id),
+                "terrain answers along a leg taken from samples too far from their points",
+                format!("{d:.1} m"),
+                format!("at most {:.0} m", crate::route::LEG_NEAR_M),
+            );
+        }
+    }
     for s in samples {
         let Some(from) = &s.from else { continue };
         let p = crate::geo::LonLat::new(s.lon_e7 as f64 / 1e7, s.lat_e7 as f64 / 1e7);

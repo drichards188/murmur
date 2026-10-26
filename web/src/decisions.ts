@@ -169,7 +169,7 @@ export interface IntentSpace {
 export type Severity = 'high' | 'medium'
 
 export interface Alert {
-  id: string // link:<uid>, op:<op id>, restore:<uid> or spent:<uid>; stable while the condition lasts
+  id: string // link:<uid>, op:<op id>, restore:<uid>, spent:<uid> or route:<op id>; stable while the condition lasts
   kind:
     | 'lost_link'
     | 'not_moving'
@@ -181,6 +181,7 @@ export interface Alert {
     | 'space_missed'
     | 'space_recheck_unknown'
     | 'spent'
+    | 'path_crosses_land'
   severity: Severity
   uid: number
   callsign: string | null
@@ -362,6 +363,7 @@ export const ALERT_LABEL: Record<Alert['kind'], string> = {
   space_missed: 'SATELLITE TASK LOST',
   space_recheck_unknown: 'SATELLITE RE-CHECK UNKNOWN',
   spent: 'SPENT, STILL HEARD',
+  path_crosses_land: 'PATH CROSSES LAND',
 }
 
 // ---- operator ------------------------------------------------------------------------------

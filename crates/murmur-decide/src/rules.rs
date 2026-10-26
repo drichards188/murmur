@@ -172,6 +172,11 @@ pub struct CheckResult {
     pub detail: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fix: Option<Fix>,
+    /// Rules 17: what a person must see though the check passed: a safety command (rtl) whose
+    /// way home crosses land goes as ordered, and the bridge raises an inbox alert from this
+    /// (`path_crosses_land`) while the order runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 impl CheckResult {
@@ -182,6 +187,7 @@ impl CheckResult {
             outcome,
             detail: detail.into(),
             fix: None,
+            warning: None,
         }
     }
 }
@@ -223,8 +229,23 @@ pub enum UnknownEndurance {
 /// never changes mid-log. Version 14 ([`AIRCRAFT_REACH_SINCE`]): an aircraft counts in a
 /// keep-out anywhere it could turn or speed up to. Version 15 ([`CARRY_FOLLOWUPS_SINCE`]): the
 /// follow-ups of rules 12's carries. Version 16 ([`LOST_CONTACT_SINCE`]): a protected contact
-/// the tracker drops stays in the keep-out as a lost contact ([`crate::lost`]).
-pub const RULES_VERSION: u32 = LOST_CONTACT_SINCE;
+/// the tracker drops stays in the keep-out as a lost contact ([`crate::lost`]). Version 17
+/// ([`ROUTE_SURFACE_SINCE`]): the domain rule judges the legs a boat, sub or ground vehicle
+/// travels, not only its waypoints.
+pub const RULES_VERSION: u32 = ROUTE_SURFACE_SINCE;
+
+/// The rules version from which the domain rule judges the way a boat, a sub or a ground
+/// vehicle goes, not only its waypoints (murmur-k8i, item 2): land or water every
+/// [`crate::route::LEG_STEP_M`] along each straight leg of its route ([`crate::route`]: the
+/// transit from where it is, the task path's legs, the return home; an engagement's transit to
+/// its effect point and return; an rtl's way home), the answers logged one letter a point
+/// (`along`, [`crate::world::LegSurfaces`]). A mission or a nomination that crosses the wrong
+/// surface is refused, saying which leg and where; a leg may leave the wrong surface at the
+/// vehicle and reach it at home within [`crate::route::LEG_ENDS_M`] (a pier). An rtl, the safety
+/// command, is never refused for its way home: it passes with a `warning` (an inbox alert while
+/// it runs), and one whose way can't be checked is not evaluated. Every gate of that change reads
+/// this constant, never a literal: another change taking 17 first renumbers it in this one line.
+pub const ROUTE_SURFACE_SINCE: u32 = 17;
 
 /// The rules version from which the follow-ups of rules 12's carries decide (murmur-zq3,
 /// murmur-imu): a platform spent by its own effect stays spent across a restart (`run.started`'s
@@ -477,6 +498,11 @@ impl RulesConfig {
         self.rules_version >= LOST_CONTACT_SINCE
     }
 
+    /// Rules 17 ([`ROUTE_SURFACE_SINCE`]): the domain rule judges a route's legs.
+    pub fn route_surface(&self) -> bool {
+        self.rules_version >= ROUTE_SURFACE_SINCE
+    }
+
     /// `[rules.engage]`, or its defaults.
     pub fn engage_rules(&self) -> EngageRules {
         let mut e = self.engage.clone().unwrap_or_default();
@@ -512,7 +538,7 @@ pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
             out.extend(capability(spec, world));
             out.extend(readiness(spec, world, cfg));
             out.extend(platform_limits(spec, world, cfg));
-            out.extend(domain(spec, world));
+            out.extend(domain(spec, world, cfg));
             out.extend(geofence(spec, world, cfg));
             out.extend(reserves(spec, world, cfg));
             // engage: the engagement checks (crate::engage), after the vehicle rules
@@ -804,8 +830,199 @@ pub fn needs_terrain(spec: &IntentSpec, world: &WorldSnapshot) -> bool {
         })
 }
 
-/// Boats and subs keep their waypoints on water, UGVs on land.
-pub fn domain(spec: &IntentSpec, world: &WorldSnapshot) -> Vec<CheckResult> {
+/// Boats and subs keep to water, UGVs to land: up to rules 16 their waypoints; from rules 17
+/// ([`ROUTE_SURFACE_SINCE`]) the waypoints and every leg of the route ([`domain_route`]).
+pub fn domain(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Vec<CheckResult> {
+    if cfg.route_surface() {
+        return domain_route(spec, world, cfg);
+    }
+    domain_waypoints(spec, world)
+}
+
+/// Rules 17: the waypoints as before (each answered exactly), then the points along every
+/// straight leg of each vehicle's route ([`crate::route::Route::legs`], [`crate::route::along`]),
+/// in travel order: the transit from its position, the task path's legs, the return home (an
+/// engagement's transit to its effect point and return; an rtl's way home). The first point on
+/// the wrong surface refuses the order, naming the leg, the point and how far along it is; a leg
+/// that starts at the vehicle may leave the wrong surface within [`crate::route::LEG_ENDS_M`],
+/// and one that ends at home may reach it there (a pier, a slipway, a grid edge at the berth).
+/// A hold or an rtl, the safety commands, are never refused for their way: an rtl whose way home
+/// crosses the wrong surface passes with a warning (the bridge alerts on it while it runs), and
+/// one whose way can't be checked is not evaluated.
+fn domain_route(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Vec<CheckResult> {
+    use crate::route::{LEG_ENDS_M, LEG_STEP_M, along};
+    let r = RuleId::Domain;
+    let kind = spec.kind();
+    let safety = is_safety_command(kind);
+    per_vehicle(spec, world, r, |uid, v| {
+        let res = |o, d: String| CheckResult::new(r, Some(uid), o, d);
+        let not_checked = |why: String| {
+            if safety {
+                res(
+                    Outcome::NotEvaluated,
+                    format!("path not checked ({} is a safety command): {why}", kind.as_str()),
+                )
+            } else {
+                res(Outcome::Fail, why)
+            }
+        };
+        let Some(platform) = &v.platform else {
+            return res(
+                Outcome::Fail,
+                "cannot evaluate: platform not in the catalog".into(),
+            );
+        };
+        let Some(need) = required_surface(platform.domain, platform.autopilot) else {
+            return res(
+                Outcome::Pass,
+                "no surface constraint for this domain".into(),
+            );
+        };
+        let route = match route_for(spec, v, world, cfg) {
+            Ok(route) => route,
+            Err(e) => return not_checked(e),
+        };
+        if route.is_empty() {
+            return res(Outcome::Pass, format!("no path for {}", kind.as_str()));
+        }
+        match &world.terrain {
+            TerrainInputs::Unavailable { reason } => {
+                return res(
+                    Outcome::NotEvaluated,
+                    format!("terrain unavailable: {reason}"),
+                );
+            }
+            TerrainInputs::NotQueried | TerrainInputs::NotNeeded => {
+                return not_checked("cannot evaluate: terrain was not sampled".into());
+            }
+            TerrainInputs::Sampled { .. } => {}
+        }
+        let is = if need == "water" { "not water" } else { "not land" };
+        // the waypoints, each answered exactly, as up to rules 16
+        let waypoints = route.task.as_ref().map_or(0, |p| p.points.len());
+        if let Some(path) = &route.task {
+            for (i, p) in path.points.iter().enumerate() {
+                let at = format!("waypoint {} ({:.5}, {:.5})", i + 1, p.lon, p.lat);
+                let ok = match world.terrain.lookup(*p) {
+                    None => {
+                        return res(
+                            Outcome::Fail,
+                            format!("cannot evaluate: no terrain sample for {at}"),
+                        );
+                    }
+                    Some(Surface::OutsideCoverage) => {
+                        return res(
+                            Outcome::Fail,
+                            format!("cannot evaluate: {at} is outside terrain coverage"),
+                        );
+                    }
+                    Some(Surface::Land) => need == "land",
+                    Some(Surface::Water { depth_m }) => need == "water" && *depth_m > 0.0,
+                };
+                if !ok {
+                    return res(
+                        Outcome::Fail,
+                        format!("{at} is {is}; {} needs {need}", platform.id),
+                    );
+                }
+            }
+        }
+        // the legs, in travel order
+        let good = if need == "water" { 'w' } else { 'l' };
+        let mut points = 0usize;
+        let mut ends: Vec<String> = Vec::new();
+        for leg in route.legs() {
+            let Some(pts) = along(leg.from, leg.to) else {
+                return not_checked(format!(
+                    "cannot evaluate: the {} is {:.0} km, longer than the {:.0} km the rule samples",
+                    leg.name,
+                    haversine_m(leg.from, leg.to) / 1000.0,
+                    crate::route::LEG_MAX_M / 1000.0
+                ));
+            };
+            if pts.is_empty() {
+                continue;
+            }
+            let Some(answers) = world.terrain.along_for(leg.from, leg.to) else {
+                return not_checked(format!("cannot evaluate: no terrain answers along the {}", leg.name));
+            };
+            let letters: Vec<char> = answers.surfaces.chars().collect();
+            if letters.len() != pts.len() {
+                return not_checked(format!(
+                    "cannot evaluate: {} terrain answers along the {}, which has {} points",
+                    letters.len(),
+                    leg.name,
+                    pts.len()
+                ));
+            }
+            points += pts.len();
+            let len = haversine_m(leg.from, leg.to);
+            // a leg from the vehicle may leave the wrong surface it starts on, and one to home
+            // may reach it there, each within LEG_ENDS_M and only before (after) the right one
+            let first_good = letters.iter().position(|c| *c == good).unwrap_or(letters.len());
+            let last_good = letters.iter().rposition(|c| *c == good);
+            for (i, ((p, d), c)) in pts.iter().zip(&letters).enumerate() {
+                if *c == good {
+                    continue;
+                }
+                if leg.departs && i < first_good && *d <= LEG_ENDS_M {
+                    let e = format!("the {} starts off {need} within {LEG_ENDS_M:.0} m of the vehicle", leg.name);
+                    if !ends.contains(&e) {
+                        ends.push(e);
+                    }
+                    continue;
+                }
+                if leg.arrives_home && last_good.is_none_or(|g| i > g) && len - d <= LEG_ENDS_M {
+                    let e = format!("the {} ends off {need} within {LEG_ENDS_M:.0} m of home", leg.name);
+                    if !ends.contains(&e) {
+                        ends.push(e);
+                    }
+                    continue;
+                }
+                let at = format!("({:.5}, {:.5}), {d:.0} m along it", p.lon, p.lat);
+                if *c == 'o' {
+                    return not_checked(format!("cannot evaluate: the {} leaves terrain coverage at {at}", leg.name));
+                }
+                let crosses = match (need, *c) {
+                    ("water", 'd') => "water no deeper than 0 m",
+                    ("water", _) => "land",
+                    _ => "water",
+                };
+                let detail = format!("{} crosses {crosses} at {at}; {} needs {need}", leg.name, platform.id);
+                if safety {
+                    // the safety command goes as ordered, and a person is told
+                    let mut c = res(
+                        Outcome::Pass,
+                        format!("{detail}: the {} goes as ordered (a safety command)", kind.as_str()),
+                    );
+                    c.warning = Some(format!(
+                        "{} path crosses {crosses} at ({:.5}, {:.5}), {d:.0} m along the {}: send a safer order",
+                        kind.as_str(),
+                        p.lon,
+                        p.lat,
+                        leg.name
+                    ));
+                    return c;
+                }
+                return res(Outcome::Fail, detail);
+            }
+        }
+        let parts = route.parts();
+        let mut detail = if waypoints > 0 {
+            format!("all {waypoints} waypoints on {need}, and the {parts} ({points} points every {LEG_STEP_M:.0} m)")
+        } else {
+            format!("the {parts} on {need} ({points} points every {LEG_STEP_M:.0} m)")
+        };
+        for e in ends {
+            detail.push_str("; ");
+            detail.push_str(&e);
+        }
+        res(Outcome::Pass, detail)
+    })
+}
+
+/// Up to rules 16: boats and subs keep their waypoints on water, UGVs on land.
+fn domain_waypoints(spec: &IntentSpec, world: &WorldSnapshot) -> Vec<CheckResult> {
     let r = RuleId::Domain;
     let path = spec.task.path();
     per_vehicle(spec, world, r, |uid, v| {

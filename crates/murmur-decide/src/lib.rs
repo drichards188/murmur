@@ -350,10 +350,10 @@ pub use queue::{
     Basis, CarriedApproval, CarriedHold, CarriedSpent, KindQueue, OpenIntent, QueueConfig, QueueState, Reach,
     Recheck, RecheckRecord, RestoreOwed, ResumedFrom, Verdict,
 };
-pub use route::{LegKind, Route, Segment};
+pub use route::{LegKind, Route, RouteLeg, Segment};
 pub use rules::{
     AIRCRAFT_REACH_SINCE, CARRY_FOLLOWUPS_SINCE, CheckResult, LOST_CONTACT_SINCE, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
-    QUEUE_FOLLOWUPS_SINCE, REVIEW_FOLLOWUPS_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_VERSION,
+    QUEUE_FOLLOWUPS_SINCE, REVIEW_FOLLOWUPS_SINCE, ROUTE_SURFACE_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_VERSION,
     RuleId, RulesConfig, SPACE_FOLLOWUPS_SINCE, SPACE_REPLAY_SINCE, STEP_UP_SCHEMA_SINCE, UnknownEndurance,
 };
 pub use space::{
@@ -364,6 +364,6 @@ pub use space::{
 pub use terrain::{NearSample, NoTerrain, PolygonTerrain, Surface, TerrainOracle};
 pub use time::{Clock, ManualClock, SystemClock, Time};
 pub use world::{
-    AisIdentity, Affiliation, Circle, CircleSource, Fact, GpsFixFrom, LoggedInputs, Manoeuvre, LoggedSpace, SpaceInputs, TerrainInputs, TrackFacts,
+    AisIdentity, Affiliation, Circle, CircleSource, Fact, GpsFixFrom, LegSurfaces, LoggedInputs, Manoeuvre, LoggedSpace, SpaceInputs, TerrainInputs, TrackFacts,
     VehicleFacts, WorldSnapshot,
 };

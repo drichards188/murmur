@@ -2026,8 +2026,46 @@ impl Decision {
         )
     }
 
+    /// Rules 17: while a safety command the domain rule let go with a warning (an rtl whose way
+    /// home crosses land, `CheckResult::warning`) runs, an inbox alert says where, so a person
+    /// can send a safer order. It clears when the vehicle's op ends or another order replaces it.
+    fn route_alerts(&self, core: &Core, now_wall: f64) -> Vec<alerts::Alert> {
+        if !self.rules.route_surface() {
+            return Vec::new();
+        }
+        let fleet = self.fleet();
+        self.world
+            .tasks
+            .current_ops()
+            .into_iter()
+            .filter(|op| !op.state.is_terminal())
+            .filter_map(|op| {
+                let i = core.engine.intent(IntentId(op.intent_id))?;
+                let u = duid(op.uid);
+                let warning = i
+                    .checks()
+                    .iter()
+                    .find(|c| c.rule == rules::RuleId::Domain && c.uid.as_ref() == Some(&u))?
+                    .warning
+                    .clone()?;
+                Some(alerts::Alert {
+                    id: format!("route:{}", op.id),
+                    kind: "path_crosses_land",
+                    severity: alerts::Severity::High,
+                    uid: op.uid,
+                    callsign: fleet.get(&op.uid).and_then(|c| alerts::callsign(c)),
+                    detail: warning,
+                    since_t: op.history.first().map_or(now_wall, |h| h.t),
+                    op_id: Some(op.id),
+                    intent_id: Some(op.intent_id),
+                })
+            })
+            .collect()
+    }
+
     /// Ask tidewater for the task's waypoints first, if some target must stay on water or
-    /// land (the engine's oracle then answers from the cache).
+    /// land (the engine's oracle then answers from the cache); rules 17: and the points along
+    /// each leg of their routes, from where they are now.
     async fn prefetch(&self, task: &Task, uids: &[DUid]) {
         if !self.terrain.configured() {
             return;
@@ -2035,9 +2073,28 @@ impl Decision {
         if matches!(task, Task::Engage { .. }) {
             return self.prefetch_engage(task, uids, None).await;
         }
-        let Some(path) = task.path() else { return };
+        // only when some target must keep to water or land (no world snapshot otherwise)
+        if !self.needs_surface(uids) {
+            return;
+        }
+        if let Some(path) = task.path() {
+            self.terrain.prefetch(&path.points).await;
+        }
+        // rules 17: the points along each leg the domain rule judges, from where they are now
+        // (a vehicle that moves before the decision finds each answered from a sample near it)
+        if self.rules.route_surface() {
+            let spec = Self::prefetch_spec(self.clock.now(), task, uids);
+            let points = murmur_decide::route::along_points(&spec, &self.snapshot().subset_for(&spec), &self.rules);
+            if !points.is_empty() {
+                self.terrain.prefetch(&points).await;
+            }
+        }
+    }
+
+    /// Whether some of these vehicles must keep to water or land (the catalog's domain).
+    fn needs_surface(&self, uids: &[DUid]) -> bool {
         let fleet = self.fleet();
-        let needs = uids.iter().filter_map(bridge_uid).any(|u| {
+        uids.iter().filter_map(bridge_uid).any(|u| {
             fleet
                 .get(&u)
                 .and_then(|c| {
@@ -2050,21 +2107,14 @@ impl Decision {
                 })
                 .and_then(|p| self.catalog.get(&p).cloned())
                 .is_some_and(|p| rules::required_surface(p.domain, p.autopilot).is_some())
-        });
-        if needs {
-            self.terrain.prefetch(&path.points).await;
-        }
+        })
     }
 
-    /// An engagement's effect point, for a boat or ground platform: `plan` (a frozen or
-    /// token plan's point), or the preview on the world now.
-    async fn prefetch_engage(&self, task: &Task, uids: &[DUid], plan: Option<LonLat>) {
-        if !self.terrain.configured() {
-            return;
-        }
-        let spec = murmur_decide::IntentSpec {
+    /// The spec a prefetch reads the world for (no intent is made).
+    fn prefetch_spec(now: murmur_decide::Time, task: &Task, uids: &[DUid]) -> murmur_decide::IntentSpec {
+        murmur_decide::IntentSpec {
             id: IntentId(0),
-            created_t: self.clock.now(),
+            created_t: now,
             source: murmur_decide::Source::Human {
                 id: OperatorId::new("prefetch"),
             },
@@ -2072,7 +2122,17 @@ impl Decision {
             uids: uids.to_vec(),
             constraints: Constraints::default(),
             rationale: None,
-        };
+        }
+    }
+
+    /// An engagement's effect point, for a boat or ground platform: `plan` (a frozen or
+    /// token plan's point), or the preview on the world now; rules 17: and the points along its
+    /// way there and home.
+    async fn prefetch_engage(&self, task: &Task, uids: &[DUid], plan: Option<LonLat>) {
+        if !self.terrain.configured() {
+            return;
+        }
+        let spec = Self::prefetch_spec(self.clock.now(), task, uids);
         let world = self.snapshot().subset_for(&spec);
         if !murmur_decide::engage::surface_needed(&spec, &world) {
             return;
@@ -2080,6 +2140,10 @@ impl Decision {
         let point = plan.or_else(|| murmur_decide::engage::terrain_point(&spec, &world, &self.rules));
         if let Some(p) = point {
             self.terrain.prefetch_near(&[p]).await;
+        }
+        let along = murmur_decide::route::along_points(&spec, &world, &self.rules);
+        if !along.is_empty() {
+            self.terrain.prefetch(&along).await;
         }
     }
 
@@ -2154,6 +2218,14 @@ impl Decision {
             .collect();
         if !points.is_empty() {
             self.terrain.prefetch_near(&points).await;
+        }
+        // rules 17: and the points along each one's way there and home, from where it is now
+        let along: Vec<LonLat> = specs
+            .iter()
+            .flat_map(|(s, _)| murmur_decide::route::along_points(s, &world.subset_for(s), &self.rules))
+            .collect();
+        if !along.is_empty() {
+            self.terrain.prefetch(&along).await;
         }
     }
 
@@ -2504,6 +2576,8 @@ impl Decision {
             alerts.extend(self.pending_carry_alerts(&core, clock::wall()));
             alerts.extend(self.spent_alerts(&core, clock::wall()));
             alerts.extend(self.space_alerts(&core, clock::wall()));
+            // rules 17: an rtl that went as ordered though its way home crosses land
+            alerts.extend(self.route_alerts(&core, clock::wall()));
         }
         alerts.sort_by(|a, b| a.severity.cmp(&b.severity).then(a.since_t.total_cmp(&b.since_t)));
         alerts

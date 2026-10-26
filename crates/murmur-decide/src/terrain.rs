@@ -1,5 +1,6 @@
 //! Land or water at a point: the input to the domain rule (boats and subs stay on water,
-//! UGVs on land).
+//! UGVs on land): at each waypoint, and from rules 17 at points along each leg of a route
+//! ([`TerrainOracle::sample_along`], [`crate::route::along`]).
 //!
 //! The real implementation will call tidewater's sampling service
 //! (`POST /v1/sample {"t", "points": [[lat, lon, null], ...]}`; note lat-first order there):
@@ -40,6 +41,29 @@ pub trait TerrainOracle {
             })
             .ok_or_else(|| "the terrain oracle gave no answer".into())
     }
+
+    /// Rules 17: one answer for each point along a leg of a route ([`crate::route::along`]),
+    /// in order: the point's own, or the nearest sample within `within_m` and where it was
+    /// taken (a source that holds only samples fetched before the decision, while the vehicle
+    /// moved: the bridge's tidewater cache). `Err` when any point has none, which the domain
+    /// rule records as "not evaluated", as for [`Self::sample`]. The default asks for every
+    /// point itself.
+    fn sample_along(&self, t: Time, points: &[LonLat], within_m: f64) -> Result<Vec<NearSample>, String> {
+        let _ = within_m;
+        let answers = self.sample(t, points)?;
+        if answers.len() != points.len() {
+            return Err("the terrain oracle gave the wrong number of answers".into());
+        }
+        Ok(points
+            .iter()
+            .zip(answers)
+            .map(|(p, surface)| NearSample {
+                surface,
+                at: *p,
+                distance_m: 0.0,
+            })
+            .collect())
+    }
 }
 
 /// [`TerrainOracle::sample_near`]'s answer.
@@ -56,6 +80,18 @@ impl Surface {
     /// Land, water or outside coverage (a depth difference is not a disagreement).
     pub fn same_kind(&self, other: &Surface) -> bool {
         std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+
+    /// Rules 17: the letter a point along a leg is logged as
+    /// ([`crate::world::LegSurfaces`]): `w` water deeper than 0, `d` water no deeper, `l` land,
+    /// `o` outside coverage.
+    pub fn letter(&self) -> char {
+        match self {
+            Surface::Water { depth_m } if *depth_m > 0.0 => 'w',
+            Surface::Water { .. } => 'd',
+            Surface::Land => 'l',
+            Surface::OutsideCoverage => 'o',
+        }
     }
 }
 

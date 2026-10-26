@@ -330,7 +330,27 @@ pub enum TerrainInputs {
     },
     Sampled {
         samples: Vec<TerrainSample>,
+        /// Rules 17: the answers along each leg of the vehicles' routes ([`LegSurfaces`]).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        along: Vec<LegSurfaces>,
     },
+}
+
+/// Rules 17: what the land/water source answered at the points along one straight leg of a
+/// route ([`crate::route::along`]), one letter a point in travel order ([`Surface::letter`]:
+/// `w` water deeper than 0, `d` water no deeper, `l` land, `o` outside coverage). The rule works
+/// the points out again from the leg's ends, which the logged facts give.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LegSurfaces {
+    /// The leg's start and end, `[lon, lat]` at MAVLink's 1e-7 degree resolution.
+    pub from_e7: [i64; 2],
+    pub to_e7: [i64; 2],
+    pub surfaces: String,
+    /// The farthest a point's answer was taken from the point, m, when the source answered
+    /// some from a sample near them (at most [`crate::route::LEG_NEAR_M`]); absent: every point
+    /// was answered itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub near_m: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -355,10 +375,21 @@ impl TerrainInputs {
     pub fn lookup(&self, p: LonLat) -> Option<&Surface> {
         let (lon_e7, lat_e7) = p.e7();
         match self {
-            TerrainInputs::Sampled { samples } => samples
+            TerrainInputs::Sampled { samples, .. } => samples
                 .iter()
                 .find(|s| s.lon_e7 == lon_e7 && s.lat_e7 == lat_e7)
                 .map(|s| &s.surface),
+            _ => None,
+        }
+    }
+
+    /// Rules 17: the answers along the leg from `from` to `to`.
+    pub fn along_for(&self, from: LonLat, to: LonLat) -> Option<&LegSurfaces> {
+        let (f, t) = (from.e7(), to.e7());
+        match self {
+            TerrainInputs::Sampled { along, .. } => along
+                .iter()
+                .find(|l| l.from_e7 == [f.0, f.1] && l.to_e7 == [t.0, t.1]),
             _ => None,
         }
     }
@@ -703,7 +734,8 @@ impl WorldSnapshot {
 
     /// What the engine logs and evaluates for one intent: [`Self::subset_for`] plus terrain
     /// answers for its waypoints from `oracle` (only if some target needs a land/water
-    /// check). Public so the bridge can build the same view, e.g. to prefetch terrain.
+    /// check), and from rules 17 for the points along its vehicles' routes. Public so the
+    /// bridge can build the same view, e.g. to prefetch terrain.
     pub fn for_intent(&self, spec: &IntentSpec, oracle: &dyn TerrainOracle) -> WorldSnapshot {
         self.for_intent_with(spec, oracle, &RulesConfig::default())
     }
@@ -751,11 +783,13 @@ impl WorldSnapshot {
                                 surface: near.surface,
                                 from,
                             }],
+                            along: Vec::new(),
                         }
                     }
                     Err(reason) => TerrainInputs::Unavailable { reason },
                 },
             };
+            Self::sample_legs(&mut w, spec, oracle, cfg);
             return w;
         }
         w.terrain = match spec.task.path() {
@@ -775,16 +809,84 @@ impl WorldSnapshot {
                             }
                         })
                         .collect(),
+                    along: Vec::new(),
                 },
                 // A wrong-length answer is a broken oracle, not a missing one: no samples,
                 // so the domain rule fails rather than skipping.
                 Ok(_) => TerrainInputs::Sampled {
                     samples: Vec::new(),
+                    along: Vec::new(),
                 },
                 Err(reason) => TerrainInputs::Unavailable { reason },
             },
             _ => TerrainInputs::NotNeeded,
         };
+        Self::sample_legs(&mut w, spec, oracle, cfg);
         w
+    }
+
+    /// Rules 17 ([`crate::rules::ROUTE_SURFACE_SINCE`]): the answers along every leg the domain
+    /// rule judges ([`crate::route::surface_legs`]), in one query, beside the waypoints' (or the
+    /// effect point's). A source that can't answer them all leaves the terrain unavailable, as
+    /// it does for a waypoint (the rule records "not evaluated"). Nothing under older rules.
+    fn sample_legs(w: &mut WorldSnapshot, spec: &IntentSpec, oracle: &dyn TerrainOracle, cfg: &RulesConfig) {
+        if !cfg.route_surface() || matches!(w.terrain, TerrainInputs::Unavailable { .. }) {
+            return;
+        }
+        let legs: Vec<(crate::route::RouteLeg, Vec<(LonLat, f64)>)> = crate::route::surface_legs(spec, w, cfg)
+            .into_iter()
+            .filter_map(|l| {
+                let pts = crate::route::along(l.from, l.to)?;
+                (!pts.is_empty()).then_some((l, pts))
+            })
+            .collect();
+        if legs.is_empty() {
+            return;
+        }
+        let points: Vec<LonLat> = legs.iter().flat_map(|(_, pts)| pts.iter().map(|(p, _)| *p)).collect();
+        let answers = match oracle.sample_along(w.t, &points, crate::route::LEG_NEAR_M) {
+            Ok(a) if a.len() == points.len() => a,
+            Ok(_) => {
+                w.terrain = TerrainInputs::Unavailable {
+                    reason: "the terrain oracle gave the wrong number of answers along the route".into(),
+                };
+                return;
+            }
+            Err(reason) => {
+                w.terrain = TerrainInputs::Unavailable { reason };
+                return;
+            }
+        };
+        let mut answers = answers.into_iter();
+        let along: Vec<LegSurfaces> = legs
+            .iter()
+            .map(|(l, pts)| {
+                let mut near: f64 = 0.0;
+                let surfaces: String = answers
+                    .by_ref()
+                    .take(pts.len())
+                    .map(|a| {
+                        near = near.max(a.distance_m);
+                        a.surface.letter()
+                    })
+                    .collect();
+                let (f, t) = (l.from.e7(), l.to.e7());
+                LegSurfaces {
+                    from_e7: [f.0, f.1],
+                    to_e7: [t.0, t.1],
+                    surfaces,
+                    near_m: (near > 0.0).then(|| (near * 10.0).round() / 10.0),
+                }
+            })
+            .collect();
+        match &mut w.terrain {
+            TerrainInputs::Sampled { along: a, .. } => *a = along,
+            other => {
+                *other = TerrainInputs::Sampled {
+                    samples: Vec::new(),
+                    along,
+                }
+            }
+        }
     }
 }

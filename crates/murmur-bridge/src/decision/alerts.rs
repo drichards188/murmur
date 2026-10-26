@@ -28,7 +28,8 @@ pub struct Alert {
     pub id: String,
     /// lost_link | not_moving | left_task | task_failed | ack_timeout | may_be_running |
     /// restore_pending (rules 6: a platform's own lost-link failsafe not confirmed back after
-    /// an engagement)
+    /// an engagement) | path_crosses_land (rules 17: an rtl that went as ordered though its
+    /// way home crosses land)
     pub kind: &'static str,
     pub severity: Severity,
     pub uid: Uid,

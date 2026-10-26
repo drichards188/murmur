@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 52] = [
+const LOGS: [(&str, u32); 55] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -157,13 +157,18 @@ const LOGS: [(&str, u32); 52] = [
     ("v16-lost-contact-claimed-by-a-spoof-scenario-93.jsonl", LOST_CONTACT_SINCE),
     // and a live run with its anchors (see the test below)
     ("v16-lost-contacts-live.jsonl", LOST_CONTACT_SINCE),
+    // rules 17 (a clean build of this branch): scenario 01; 95, an orbit and a nomination
+    // refused for a transit across the shore; 96, a patrol round the point accepted
+    ("v17-engagement-scenario-01.jsonl", ROUTE_SURFACE_SINCE),
+    ("v17-transit-crosses-land-scenario-95.jsonl", ROUTE_SURFACE_SINCE),
+    ("v17-route-round-the-point-scenario-96.jsonl", ROUTE_SURFACE_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v16-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v17-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -1663,7 +1668,7 @@ fn the_rules_16_logs_carry_lost_contacts_and_cannot_claim_rules_15() {
     let blocks = fixture("v16-lost-contact-blocks-scenario-86.jsonl");
     assert!(blocks.contains("\"type\":\"track.dropped\",\"track\":\"T-0002\""));
     assert!(blocks.contains("lost contact T-0002 (neutral, fishing_vessel) could be"), "the check names it");
-    let r = replay_str(&blocks).unwrap();
+    let r = with(&blocks, RulesAccepted::Exactly(LOST_CONTACT_SINCE));
     assert!(r.ok(), "{:?}", r.mismatches);
     assert_eq!(r.lost_contacts, 1);
     let accepted = fixture("v16-lost-contact-accepted-scenario-87.jsonl");
@@ -1674,7 +1679,7 @@ fn the_rules_16_logs_carry_lost_contacts_and_cannot_claim_rules_15() {
     assert!(back.contains("\"type\":\"track.reacquired\",\"track\":\"T-0002\",\"by_track\":\"T-0005\",\"by\":\"op-2\""));
     let spoof = fixture("v16-lost-contact-claimed-by-a-spoof-scenario-93.jsonl");
     assert!(spoof.contains("\"type\":\"lost.reinstated\",\"track\":\"T-0002\",\"by_track\":\"T-0009\""));
-    let r = replay_str(&spoof).unwrap();
+    let r = with(&spoof, RulesAccepted::Exactly(LOST_CONTACT_SINCE));
     assert!(r.ok(), "{:?}", r.mismatches);
     assert_eq!((r.lost_claims, r.lost_confirmed, r.lost_reinstated), (1, 1, 1));
     for (name, text) in [("86", &blocks), ("87", &accepted), ("88", &back), ("93", &spoof)] {
@@ -1713,7 +1718,7 @@ fn the_rules_16_live_log_holds_lost_contacts_until_accepted_or_confirmed() {
     let text = fixture(name);
     let a = anchor::verify(&text, &anchors_of(name));
     assert!(a.ok() && a.shutdown, "{:?}", a.problems);
-    let r = replay_str(&text).unwrap();
+    let r = with(&text, RulesAccepted::Exactly(LOST_CONTACT_SINCE));
     assert!(r.ok(), "{:?}", r.mismatches);
     assert_eq!(r.build.as_ref().map(|b| b.dirty), Some(Some(false)));
     assert_eq!((r.lost_contacts, r.lost_claims, r.lost_confirmed), (2, 1, 1));
@@ -1731,4 +1736,34 @@ fn the_rules_16_live_log_holds_lost_contacts_until_accepted_or_confirmed() {
     // a v16 log carries rules 15's too: the station's pointer in its first line; and the drop age
     assert!(lines(&text)[0].contains("\"pointer\":\".last-run-"), "rules 15's pointer");
     assert!(lines(&text)[0].contains("\"track_drop_s\":180"), "the tracker's drop age");
+}
+
+/// Rules 17 (murmur-k8i item 2): the committed logs carry the land and water answered along each
+/// leg of a boat's route (`along`, one letter a point) and the domain rule's refusals naming the
+/// leg and where it reaches land; a patrol round the point is judged leg by leg and passes; and
+/// claimed as rules 16 (the version before), a log with the answers is caught by its markers.
+#[test]
+fn the_rules_17_logs_judge_a_routes_legs_and_cannot_claim_rules_16() {
+    let (now, before) = (ROUTE_SURFACE_SINCE, LOST_CONTACT_SINCE);
+    assert_eq!(before + 1, now, "the version just before");
+    let refused = fixture("v17-transit-crosses-land-scenario-95.jsonl");
+    assert!(refused.contains("\"along\":[{\"from_e7\":[-1224500000,378450000]"), "answers from the boat's position");
+    assert!(refused.contains("transit leg (position to waypoint 1) crosses land at ("), "the orbit");
+    assert!(refused.contains("transit leg (position to effect point) crosses land at ("), "the nomination");
+    let round = fixture("v17-route-round-the-point-scenario-96.jsonl");
+    assert!(round.contains("all 5 waypoints on water, and the transit, task path, return ("), "the patrol");
+    for (name, text) in [("95", &refused), ("96", &round)] {
+        let r = replay_str(text).unwrap();
+        assert!(r.ok(), "{name}: {:?}", r.mismatches);
+        let mut ls = lines(text);
+        let tag = format!("\"rules_version\":{now},");
+        assert!(ls[0].contains(&tag), "{name}");
+        ls[0] = ls[0].replacen(&tag, &format!("\"rules_version\":{before},"), 1);
+        let r = with(&rechain(&ls), RulesAccepted::Exactly(before));
+        assert!(
+            whats(&r).iter().any(|w| w.contains("land/water answers along a route's legs") && w.contains(&format!("only builds of rules {now}"))),
+            "{name}: {:?}",
+            whats(&r)
+        );
+    }
 }

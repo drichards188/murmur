@@ -28,7 +28,8 @@ The full table is `intent::next_state`; anything else is a typed `IllegalTransit
 1. **Rules** (`rules.rs`) are pure functions of the intent and a `WorldSnapshot`:
    capability (the KINDS table), readiness (nav ready, fresh), platform limits (orbit radius
    vs minimum turn radius, with a suggested radius instead of silent widening), domain (boats
-   and subs on water, UGVs on land, via a `TerrainOracle`), geofence (no-go polygons from
+   and subs on water, UGVs on land, via a `TerrainOracle`: the waypoints, and from rules 17
+   every leg of the route, below), geofence (no-go polygons from
    `sim/areas/*.geojson`), reserves (endurance left after the task). **Fail-closed**: a rule
    that can't evaluate (unknown vehicle, missing or stale fact, no area file, unanswered
    terrain point) fails and says why. Freshness is link-aware: a vehicle's limit is
@@ -52,7 +53,13 @@ The full table is `intent::next_state`; anything else is a typed `IllegalTransit
    Geofence results are per vehicle, and details name the leg: `transit leg (position to
    waypoint 1) crosses alcatraz`, `return leg (waypoint 1 to home): home is inside ...`,
    `task path: leg 1-2 crosses ...`. A leg that starts at the vehicle inside a no-go area
-   is leaving it and is allowed, so a vehicle that strayed in can be brought out.
+   is leaving it and is allowed, so a vehicle that strayed in can be brought out. From rules
+   17 the domain rule judges the same legs for land and water (`route::Route::legs`): a point
+   every 20 m along each (`route::along`, measured from the leg's far end), besides each
+   waypoint answered exactly; an engagement's legs too (position to effect point, effect point
+   to home), and an rtl's way home. Details name the leg and the point: `transit leg
+   (position to waypoint 1) crosses land at (-122.46012, 37.83968), 1067 m along it; magura
+   needs water`.
 3. **Policy** (`sim/policy.toml`, first match wins): hold/rtl auto; any task on an
    `armed = true` platform (switchblade, fpv, ugv_armed) needs a human; leaving the approved
    area (any leg of any vehicle's route) needs a human; an `unverified` reserves check
@@ -1671,6 +1678,50 @@ Rules versions:
   the claim while the spent switchblade's alert stands beside it; see `tests/versions.rs`).
   The measurement of what it costs is in `eval/METRICS.md` ("Out of view").
 
+- **17** (murmur-k8i item 2, the F7-F13 dev check's groundings; every gate reads
+  `ROUTE_SURFACE_SINCE`, so another change taking the number first renumbers it in one line; no
+  policy key changes, schema 7; a v17 log carries every rules 16 behaviour too): the domain rule
+  judges the way a boat, sub or ground vehicle goes, not only its waypoints. Up to rules 16 it
+  sampled an orbit's 12 ring points or a patrol's route points and nothing between them, nothing
+  of the transit from the vehicle's position or the return home, and nothing of an engagement's
+  or an rtl's way; the stand-ins and ArduPilot's AUTO drive straight to waypoint 1, so
+  `random-valid`'s orbits west of the Gate ran the Magura ashore at Cavallo Point in 34 to 39 of
+  each F7-F13 family's 40 episodes. From rules 17 the engine samples land or water every
+  `route::LEG_STEP_M` (20 m, the baked grid's spacing) along each straight leg of each vehicle's
+  route (`route::surface_legs`: the transit from where it is, the task path's legs with a loop's
+  closing leg, the return from the task's end to home; an engagement's transit to its predicted
+  effect point and return; an rtl's way home), in one oracle query beside the waypoints
+  (`TerrainOracle::sample_along`), and logs the answers one letter a point per leg
+  (`TerrainInputs::Sampled`'s `along`, `world::LegSurfaces`: `w` water deeper than 0, `d` water
+  no deeper, `l` land, `o` outside coverage; `near_m` when a source answered some from a sample
+  near them, at most `route::LEG_NEAR_M`, 25 m: the bridge's tidewater cache while the vehicle
+  moves; replay bounds it). The waypoints are judged first, exactly as before, then the legs in
+  travel order; the first point on the wrong surface refuses a mission or a nomination, naming
+  the leg, the point and how far along it is (`transit leg (position to effect point) crosses
+  land at (-122.46012, 37.83758), 1213 m along it; magura needs water`). A leg from the vehicle
+  may leave the wrong surface it starts on, and a leg to home may reach it there, within
+  `route::LEG_ENDS_M` (40 m: a pier, a slipway, a grid edge that reads a berth ashore), only
+  before the right surface is reached (after it is left); a leg longer than `route::LEG_MAX_M`
+  (200 km) can't be judged. A hold or an rtl, the safety commands, are never refused for their
+  way (the coordinator, 10-26; DECISIONS.md): an rtl whose way home crosses the wrong surface
+  passes with a `warning` on its check (`CheckResult::warning`, the marker; the bridge raises an
+  inbox alert `path_crosses_land` from it while the rtl runs), and one whose way can't be worked
+  out is `not_evaluated`. A source that can't answer every point leaves the terrain unavailable,
+  as for a waypoint (not evaluated). Not covered: a multi-vehicle orbit's other vehicles start
+  at other ring points than waypoint 1 (the bridge spreads them by slot; the transit checked is
+  to waypoint 1, as the geofence's), an RTL commanded mid-loop, and anything narrower than the
+  20 m step. The bridge fetches the points from where the vehicles are just before each decision
+  (`route::along_points`) and every second for queued intents and pending engagements, and
+  answers a point a moving vehicle shifted from the nearest cached sample within 25 m. Markers
+  (a log claiming rules 16 or older can't carry them): `along`, a check's `warning`. The rules 9
+  test that runs every scenario under rules 8 skips 95 and 96. Scenarios 95 (an orbit and a
+  nomination from Richardson Bay refused for a transit across the Marin shore; `--rules 16`:
+  the orbit dispatched and the nomination waiting for its signers) and 96 (an orbit across the
+  shore's corner refused, a patrol round the point accepted, a nomination on a clear way
+  waiting for its signers); the scenario runner's `task` step takes `patrol` with a `route`.
+  Fixtures (a clean build of this branch): `tests/data/audit/v17-engagement-scenario-01.jsonl`,
+  `v17-transit-crosses-land-scenario-95.jsonl`, `v17-route-round-the-point-scenario-96.jsonl`.
+
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
 `seen_max_age_s`, an unreleased build's name for it, is still read; **3** adds `[queue]`
@@ -1817,7 +1868,9 @@ on the scenario clock.
   mid-loop flies home from wherever the vehicle is, which sweeps a region the return-leg
   check (from waypoint 1) doesn't cover. A leg starting inside a no-go area is allowed to
   leave it; if a concave area makes that straight leg re-enter it, that isn't caught. The
-  domain rule checks waypoints only, not the legs between them. Areas are 2D (no altitude
+  domain rule checks the legs from rules 17, every 20 m, so a spit or breakwater narrower than
+  that can fall between two points, and a multi-vehicle orbit's other vehicles are checked to
+  waypoint 1, not the ring point the bridge sends each to first. Areas are 2D (no altitude
   bands).
 - Reserves assume cruise speed and a fixed time-on-task horizon (`task_duration_s`), because
   orbits and patrols loop until told otherwise; the bridge doesn't end tasks after a duration

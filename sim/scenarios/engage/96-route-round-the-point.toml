@@ -1,0 +1,83 @@
+# Rules 17 (murmur-k8i item 2): the armed USV in the strait is sent into Richardson Bay, past the
+# Marin shore's corner (the runner's land: Marin north of 37.832 and west of -122.46). An orbit in
+# the bay is refused: the straight way to it cuts the corner (`--rules 16`: it went out). A patrol
+# that rounds the corner, out and back on the water, is accepted (each of its legs judged every
+# 20 m, as are the transit to it and the return home), and so is a nomination whose way to the
+# effect point and home again is on the water: the rule refuses the way, not the boat.
+title = "A route round the point is accepted where the straight way is refused"
+invariant = "domain"
+attack = "an orbit across the corner of the shore, then a patrol round it, then a nomination on a clear way"
+expect = "pending_approval"
+end_s = 12
+
+[[operator]]
+id = "op-1"
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "viper-1"
+platform = "magura"         # armed USV (ArduRover), 12 m/s
+at = [-122.4700, 37.8160]   # in the strait, east of the bridge
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1                    # an orbit in Richardson Bay: the straight way cuts the corner
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["viper-1"]
+center = [-122.4580, 37.8500]
+radius_m = 80
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "rejected"
+task_reason = "transit leg (position to waypoint 1) crosses land at"
+
+[[step]]
+at_s = 3                    # round the corner into the bay and back, on the water
+action = "task"
+by = "op-1"
+task = "patrol"
+uids = ["viper-1"]
+route = [[-122.4650, 37.8280], [-122.4550, 37.8290], [-122.4560, 37.8450], [-122.4540, 37.8450], [-122.4530, 37.8300]]
+
+[[step]]
+at_s = 4
+action = "expect"
+task_state = "dispatched"
+
+[[step]]
+at_s = 6
+action = "nominate"
+by = "op-1"
+platform = "viper-1"
+track = "T-0001"
+radius_m = 75
+fallback = "loiter"
+window_s = 600
+
+[[step]]
+at_s = 7
+action = "expect"
+state = "pending_approval"

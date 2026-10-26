@@ -449,6 +449,9 @@ pub enum Action {
         center: Option<[f64; 2]>,
         #[serde(default)]
         radius_m: Option<f64>,
+        /// A patrol's route, `[lon, lat]` each.
+        #[serde(default)]
+        route: Option<Vec<[f64; 2]>>,
     },
     /// The loop stalls: no engagement step for `seconds` (a bridge that stopped holding the
     /// picture).
@@ -2467,16 +2470,22 @@ fn act(
             uids,
             center,
             radius_m,
+            route,
         } => {
-            let t = match (task.as_str(), center) {
-                ("hold", _) => Task::Hold {},
-                ("rtl", _) => Task::Rtl {},
-                ("orbit", Some(c)) => Task::Orbit {
+            let t = match (task.as_str(), center, route) {
+                ("hold", _, _) => Task::Hold {},
+                ("rtl", _, _) => Task::Rtl {},
+                ("orbit", Some(c), _) => Task::Orbit {
                     center: LonLat::new(c[0], c[1]),
                     radius_m: radius_m.unwrap_or(200.0),
                 },
-                (other, _) => {
-                    return failures.push(format!("t={s}: task {other}: hold, rtl, or orbit with a center"));
+                ("patrol", _, Some(r)) => Task::Patrol {
+                    route: r.iter().map(|p| LonLat::new(p[0], p[1])).collect(),
+                },
+                (other, _, _) => {
+                    return failures.push(format!(
+                        "t={s}: task {other}: hold, rtl, orbit with a center, or patrol with a route"
+                    ));
                 }
             };
             let proposal = Proposal::new(t, uids.iter().map(Uid::new).collect());
@@ -3720,6 +3729,11 @@ fn fly(vehicles: &mut BTreeMap<String, VehicleSim>, o: &crate::engine::DispatchO
                 Task::Orbit { center, .. } => {
                     v.goal = Some(*center);
                     v.orbit = true;
+                }
+                // a patrol: to its first waypoint (the runner flies no further)
+                Task::Patrol { route } if !route.is_empty() => {
+                    v.goal = Some(route[0]);
+                    v.orbit = false;
                 }
                 _ => {
                     v.goal = None;

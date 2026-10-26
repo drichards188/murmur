@@ -1212,7 +1212,16 @@ San Diego situations, run again).
    (the grid) checks an orbit's geometry, not the straight way to it, and the stand-in steers
    straight: `random-valid`'s orbits for VIPER 1 west of the Gate run it ashore at Cavallo Point on
    its way out of Horseshoe Bay, and San Diego's Magura likewise. A check of the transit, or a route
-   around the shore, is the C2's to decide.
+   around the shore, is the C2's to decide. **Fixed after this check** (murmur-k8i item 2, decision
+   rules 17, 2026-10-26; the figures above predate it): the domain rule judges land or water every
+   20 m along the transit, the task path's legs and the return home (an engagement's way too), and
+   refuses an order whose way crosses the wrong surface; an rtl is never refused, only warned
+   (crates/murmur-decide/README.md, rules 17). Smoke, F7-F13 on golden-gate-v3, seeds 5300 and
+   5301, `random-valid` (14 episodes each side): the Magura aground at the end in 13 of 14 before,
+   0 of 14 after, and no vehicle lost; `random-valid` still orbits the Magura in every episode
+   (22 orders, all on ways the rule passed: east of the bay, by Alcatraz), and no order its preview
+   passed was refused at submission. Its draws change with the valid set, so its other orders
+   differ episode by episode.
 3. **A link event cannot tell the AUV's modem from its surfaced radio** (the link emulator): an event
    applies to a link whichever profile carries its traffic, so F11's acoustic outage closes REMUS's
    surfaced Iridium-class radio too while it lasts (choice 33).

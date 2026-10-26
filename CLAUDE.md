@@ -245,6 +245,13 @@ meaningful. Decision and command, not weapons.
   the scenario runner do: 180; an engine test passes it in `StartCarry`) and each drop comes that
   long after the track was last seen, its fix no later than that sighting; replay flags either.
   Burden model: `python -m eval.lost_burden`.
+- Rules 17 (`ROUTE_SURFACE_SINCE`, murmur-k8i item 2): the domain rule judges land or water
+  every 20 m along each leg a boat, sub or UGV travels (transit, task path, return; an
+  engagement's way; an rtl's), logged one letter a point (`along`), besides the waypoints. A
+  mission or nomination across the wrong surface is refused; an rtl never is: it goes with a
+  check `warning` and an inbox alert `path_crosses_land`. The bridge fetches the points before
+  each decision and answers a moving vehicle's from the nearest cached tidewater sample within
+  25 m (`TerrainOracle::sample_along`).
 - The tracker is a two-model IMM; changes must pass `tracks::tests::calib`. Its held-out seeds
   (66-95) are not for tuning: write a new held-out set if you tune on them. Aircraft have their
   own calibration (`tracks::tests::calib_air`: held-out seeds 221-250, run once, its two misses

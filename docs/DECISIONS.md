@@ -2217,6 +2217,28 @@ group. Dates are 2026.
   come from the nearest cached sample within 50 m; the logged sample says where it was taken
   and how far. Samples that near which disagree (a shoreline, a coverage edge) leave it not
   evaluated, which fails closed for an engagement. Every other waypoint is answered exactly.
+- **The domain rule judges the way a vehicle goes; a safety command's way only warns** (10-26,
+  bd murmur-k8i item 2, rules 17; the owner approved fixing the F7-F13 dev check's defect list on
+  10-25; the coordinator's direction on safety commands, 10-26). Land or water every 20 m along
+  each straight leg a boat, sub or UGV travels (the transit from where it is, the task path's
+  legs, the return home; an engagement's transit to its effect point and return; an rtl's way
+  home), besides each waypoint answered exactly. A mission or a nomination whose way crosses the
+  wrong surface is refused, naming the leg and the point. A hold or an rtl is never refused for
+  its way: an rtl whose way home crosses land goes as ordered, with a warning on its check and an
+  inbox alert (`path_crosses_land`, where it crosses) while it runs, so a person can send a safer
+  order; one whose way can't be worked out is not evaluated. Why: the stand-ins and ArduPilot's
+  AUTO drive the straight line to waypoint 1, and the waypoint check passed orbits whose way ran
+  ashore (`random-valid`'s Magura aground in 34 to 39 of each family's 40 episodes); and rules 7
+  sends the safety commands at once because they are the operator's way to bring a vehicle back:
+  refusing a recall because its straight way home crosses land would take that away. A leg may
+  leave or reach the wrong surface within 40 m of the vehicle or home (a pier, a grid edge at the
+  berth). A mission's return leg is refused like the others, because the rtl or lost-link
+  failsafe at its end would drive the same straight line: a boat on the far side of a headland
+  from home takes a mission only when its waypoint 1 sees home across the water. Considered:
+  planning routes around land in the engine (not now: the engine checks orders, it does not plan
+  them; an operator or agent sends a patrol round the point, scenario 96), refusing the rtl
+  (rejected, above), and judging only the transit (rejected: the return is where a lost link
+  sends the boat).
 - **Decision rules are versioned; old logs replay with their own rules** (10-04,
   coordinator). A rule change that alters decisions bumps `RULES_VERSION` and is gated on
   it; `run.started` records the version (none: 1) and the policy schema, and replay

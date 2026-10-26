@@ -579,6 +579,47 @@ async fn the_rules_reject_land_waypoints_and_no_go_crossings() {
     r.replays();
 }
 
+/// Rules 17: a boat whose straight way home crosses the shore. A mission is refused for its
+/// return leg; an rtl, the safety command, goes as ordered with a warning on its domain check,
+/// and the inbox says where the way crosses land while it runs; another order clears it.
+#[tokio::test(start_paused = true)]
+async fn an_rtl_whose_way_home_crosses_land_goes_with_an_inbox_alert() {
+    let r = rig();
+    r.vehicle(8, Firmware::Rover, "magura", SEA);
+    sleep(Duration::from_millis(500)).await;
+    let cell = r.world.vehicles().into_iter().find(|c| c.uid == 8).expect("cell");
+    // home south of the Presidio shore
+    cell.write(|v| {
+        v.home = Some((37.785, -122.46));
+        v.seen.home = Some(clock::wall());
+    });
+    let out =
+        r.d.submit(&op1(), patrol(8, vec![[SEA.1, SEA.0], [-122.46, 37.826]]))
+            .await
+            .expect("submit");
+    assert_eq!(out.state, State::Rejected);
+    assert!(r.reason(out.id).contains("return leg (waypoint 1 to home) crosses land at"), "{}", r.reason(out.id));
+    let rtl = r.d.submit(&op1(), simple("rtl", 8)).await.expect("rtl");
+    assert_eq!(rtl.state, State::Dispatched, "{}", r.reason(rtl.id));
+    let warning = {
+        let core = r.d.lock();
+        let i = core.engine.intent(rtl.id).expect("intent");
+        let c = i.checks().iter().find(|c| c.rule == rules::RuleId::Domain).expect("domain").clone();
+        assert_eq!(c.outcome, rules::Outcome::Pass, "{c:?}");
+        c.warning.expect("a warning")
+    };
+    assert!(warning.starts_with("rtl path crosses land at ("), "{warning}");
+    let alerts = r.d.current_alerts();
+    let a = alerts.iter().find(|a| a.kind == "path_crosses_land").expect("the alert");
+    assert_eq!((a.uid, a.intent_id, a.detail.as_str()), (8, Some(rtl.id.0), warning.as_str()));
+    // a hold replaces the rtl: the alert goes
+    let hold = r.d.submit(&op1(), simple("hold", 8)).await.expect("hold");
+    assert_eq!(hold.state, State::Dispatched);
+    sleep(Duration::from_millis(500)).await;
+    assert!(r.d.current_alerts().iter().all(|a| a.kind != "path_crosses_land"));
+    r.replays();
+}
+
 #[tokio::test(start_paused = true)]
 async fn vehicle_events_reach_the_audit_log() {
     let r = rig();

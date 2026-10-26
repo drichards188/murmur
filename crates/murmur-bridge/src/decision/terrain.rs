@@ -18,6 +18,10 @@
 //! point moves with its track every second, so it alone is answered from the nearest
 //! sample within [`murmur_decide::engage::TERRAIN_NEAR_M`] (the log says where that sample
 //! was and how far), and not at all when the samples that near disagree (a shoreline).
+//! Rules 17: the points along each leg of a route are fetched from where the vehicles are just
+//! before the decision (`murmur_decide::route::along_points`); a point the vehicle's moving has
+//! shifted since is answered from the nearest cached sample within
+//! [`murmur_decide::route::LEG_NEAR_M`] (the log says how far, per leg).
 //!
 //! Without tidewater, a baked land/water grid (`MURMUR_LAND_WATER_GRID`, world v3's H1; the
 //! headless simulator gives it from its world) answers instead, at once and from the grid
@@ -257,6 +261,61 @@ impl TerrainOracle for CacheOracle<'_> {
         };
         found.ok_or_else(|| t.not_answered("the effect point"))?
     }
+
+    /// Rules 17: the points along a route's legs. The grid answers each itself; the cache each
+    /// from its own sample or, when the vehicle moved since they were fetched (the points are
+    /// measured from the leg's far end, so each moved little), from the nearest cached sample
+    /// within `within_m`, and says how far. A point with neither fails the query (not evaluated).
+    fn sample_along(&self, at: Time, points: &[LonLat], within_m: f64) -> Result<Vec<NearSample>, String> {
+        let t = self.0;
+        #[cfg(test)]
+        if t.fixed.is_some() {
+            return self.sample(at, points).map(|s| {
+                points
+                    .iter()
+                    .zip(s)
+                    .map(|(p, surface)| NearSample { surface, at: *p, distance_m: 0.0 })
+                    .collect()
+            });
+        }
+        let _ = at;
+        t.source()?;
+        if let Some(g) = t.grid.as_ref().filter(|_| t.client.is_none()) {
+            return Ok(points
+                .iter()
+                .map(|p| NearSample { surface: g.surface(*p), at: *p, distance_m: 0.0 })
+                .collect());
+        }
+        // the cache guard is dropped before `not_answered` takes the last error
+        let found = {
+            let cache = t.cache.lock().unwrap_or_else(|e| e.into_inner());
+            points
+                .iter()
+                .map(|p| match cache.get(&p.e7()) {
+                    Some(c) => Some(NearSample { surface: c.surface.clone(), at: *p, distance_m: 0.0 }),
+                    None => nearest_cached(&cache, *p, within_m),
+                })
+                .collect::<Option<Vec<_>>>()
+        };
+        found.ok_or_else(|| t.not_answered("every point along the route"))
+    }
+}
+
+/// The nearest cached sample within `within_m` of `p` (a cheap box test on the keys first).
+fn nearest_cached(cache: &HashMap<Key, Cached>, p: LonLat, within_m: f64) -> Option<NearSample> {
+    let (lon_e7, lat_e7) = p.e7();
+    let dlat = (within_m / 111_320.0 * 1e7).ceil() as i64;
+    let dlon = (within_m / (111_320.0 * p.lat.to_radians().cos().max(0.01)) * 1e7).ceil() as i64;
+    cache
+        .iter()
+        .filter(|(k, _)| (k.0 - lon_e7).abs() <= dlon && (k.1 - lat_e7).abs() <= dlat)
+        .map(|(k, c)| {
+            let q = LonLat::new(k.0 as f64 / 1e7, k.1 as f64 / 1e7);
+            (murmur_decide::geo::haversine_m(p, q), q, &c.surface)
+        })
+        .filter(|(d, _, _)| *d <= within_m)
+        .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.e7().cmp(&b.1.e7())))
+        .map(|(d, q, s)| NearSample { surface: s.clone(), at: q, distance_m: d })
 }
 
 impl Terrain {
@@ -762,6 +821,26 @@ mod tests {
         let n = o.sample_near(Time(0), q, 50.0).expect("near sample");
         assert_eq!(n.surface, Surface::Land);
         assert!((n.distance_m - 20.0).abs() < 0.5, "{}", n.distance_m);
+    }
+
+    /// Rules 17: a point along a leg is answered from its own cached sample, or, the vehicle
+    /// having moved since the points were fetched, from the nearest cached one within reach,
+    /// saying how far; with none that near the query fails (the rule: not evaluated).
+    #[test]
+    fn points_along_a_leg_take_the_nearest_cached_sample_within_reach() {
+        let mut t = Terrain::new(Some("http://127.0.0.1:9"));
+        let p = LonLat::new(-122.47, 37.82);
+        t.cache.get_mut().expect("cache").insert(p.e7(), Cached { surface: Surface::Land, at: clock::wall() });
+        let o = t.oracle();
+        let own = o.sample_along(Time(0), &[p], 25.0).expect("its own");
+        assert_eq!((own[0].surface.clone(), own[0].distance_m), (Surface::Land, 0.0));
+        let q = murmur_decide::engage::offset(p, 20.0, 0.0);
+        let near = o.sample_along(Time(0), &[q], 25.0).expect("near");
+        assert_eq!((near[0].surface.clone(), near[0].at.e7()), (Surface::Land, p.e7()));
+        assert!((near[0].distance_m - 20.0).abs() < 0.5, "{}", near[0].distance_m);
+        let far = murmur_decide::engage::offset(p, 30.0, 0.0);
+        let e = o.sample_along(Time(0), &[q, far], 25.0).expect_err("one too far");
+        assert!(e.contains("every point along the route"), "{e}");
     }
 
     /// A 3 x 4 land/water grid at 0.001 degrees: water depth in decimetres, the west column
