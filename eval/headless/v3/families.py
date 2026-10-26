@@ -37,9 +37,14 @@ a UUV and a diver deeper than their depth plus 2 m, a vehicle on land, an aircra
   altitude, fly theirs at 150 m: the oracle could send nothing in 24 of those 28 situations and served
   1. A route of version 3 to a target behind a shore (the Horseshoe Bay pier, Fort Point) may still
   cross the headlands' or the Presidio's edge, up to 270 m (16 of its 60 dev situations).
-- **F3 low aircraft, transponder off** (air): a light aircraft, truth unknown, no emitter, 45 to 60
-  m/s at 150 to 400 m above the highest ground it crosses, on a straight line through the circle
-  passing within 1.5 km of the centre, from 9 km out to 9 km out on the far side.
+- **F3 low aircraft, transponder off** (air; version 2): a light aircraft, truth unknown, no emitter,
+  45 to 60 m/s at 150 to 400 m above the highest ground it crosses, on a straight line through the
+  circle passing within 1.5 km of the centre, from 9 km out to 9 km out on the far side. Its
+  contact says `emits = false`: version 1 left the field unset, so the contacts process gave the
+  aircraft its kind's default (`emits` true for a light aircraft) and its transponder, the only
+  emitter the sensing model gives the kind (signature.rs), was on, so every ESM receiver heard it
+  from the moment it appeared (SCORING-V3.md 15 (g)). With the transponder off it emits nothing:
+  the model has no radio among a light aircraft's emissions, and a pilot flying dark keeps silence.
 - **F4 UUV in the channel** (subsurface; version 2): a UUV, truth unknown, 1 to 2.5 m/s, 5 to 15 m
   deep (2 m above the shallowest seabed of its route at least), down the bay's lane toward the
   channel from 0.2 to 1.2 km outside the circle; it holds 0.5 to 2 km from the centre. Version 1
@@ -48,10 +53,15 @@ a UUV and a diver deeper than their depth plus 2 m, a vehicle on land, an aircra
 - **F5 diver at a pier** (subsurface): a diver, truth unknown, 0.3 to 0.6 m/s, 2 to 4 m deep, from
   200 to 450 m off a pier where our boats lie (Golden Gate: Horseshoe Bay; San Diego: HUNTER 1's
   berth or the submarine piers at Point Loma) to 20 to 40 m off it, where it stays; at night p 0.7.
-- **F6 vehicle at a restricted shore** (ground): a car or a truck, truth unknown or suspect, 6 to 12
-  m/s, along a shore road to a restricted point inside the circle (Golden Gate: Fort Point, the
-  Horseshoe Bay pier, Battery Spencer; San Diego: the submarine base's gate, North Island's west
-  shore), where it parks.
+- **F6 vehicle at a restricted shore** (ground; version 2): a car or a truck, truth unknown or
+  suspect, 6 to 12 m/s, along a shore road to a restricted point inside the circle (Golden Gate:
+  Fort Point, the Horseshoe Bay pier, Battery Spencer; San Diego: the submarine base's gate, North
+  Island's west shore), where it parks. It appears on its road outside the circle and comes within
+  it 15 to 100 s later at its speed (F1's lead, `F6_LEAD_S`), so its need opens at its start (150 to
+  400 s) and that lead, and its deadline a minute later. Version 1 put it at its road's first point,
+  inside the circle on three roads of five (2.84 and 2.96 km out), so in 11 of 20 situations its
+  need opened as it appeared, its deadline 60 s on (SCORING-V3.md 15 (h)); version 2's roads reach
+  1.4 to 2.9 km outside the circle (`PLACES`), on land on the world's grid.
 - **F18 quiet**: the world's traffic only (no contact of unknown, suspect or hostile truth
   affiliation): the cost of acting.
 """
@@ -93,6 +103,12 @@ F4_SEA_SHARE = 0.0
 #: situations), the single largest cause of its losses (`no_look@night`). Night is
 #: F9's to test.
 F2_DAY_ONLY = True
+#: F3 version 2 (after SCORING-V3.md 15): the aircraft's transponder off (`emits = false`)
+F3_VERSION = 2
+#: F6 version 2 (after SCORING-V3.md 15): the vehicle appears on its road outside the circle and
+#: comes within it this long after, at its speed (F1's lead; the roads reach far enough out)
+F6_VERSION = 2
+F6_LEAD_S = F1_LEAD_S
 #: the episodes' length: the subsurface families need their 300 s grace and the time to come in
 DURATION_S = {"f4-uuv": 1200.0, "f5-diver": 1200.0}
 DEFAULT_DURATION_S = 900.0
@@ -263,12 +279,18 @@ PLACES: dict[str, Place] = {
         bay_via=((-122.4500, 37.8250),),  # the bay's axis, mid-channel
         through=((-122.4500, 37.8250), (-122.4180, 37.8300)),
         piers=(("the Horseshoe Bay pier", (-122.4760, 37.8305), (140.0, 230.0)),),
+        # F6 version 2: each road starts 1.5 to 1.7 km of road outside the circle (version 1's: Fort
+        # Point's 0.43 km out, the Marin roads' 2.84 km from the centre, inside it): Fort Point's
+        # from Marina Boulevard, the Marin roads' from the north-west, about where US-101 comes down
+        # from the Waldo Tunnel above Richardson Bay
         roads=(
-            ("Fort Point", ((-122.4440, 37.8060), (-122.4600, 37.8070), (-122.4680, 37.8085), (-122.4740, 37.8095),
-                            (-122.4765, 37.8102))),
-            ("the Horseshoe Bay pier", ((-122.4840, 37.8450), (-122.4800, 37.8380), (-122.4790, 37.8360),
+            ("Fort Point", ((-122.4320, 37.8060), (-122.4380, 37.8052), (-122.4440, 37.8060), (-122.4600, 37.8070),
+                            (-122.4680, 37.8085), (-122.4740, 37.8095), (-122.4765, 37.8102))),
+            ("the Horseshoe Bay pier", ((-122.5000, 37.8555), (-122.4940, 37.8525), (-122.4880, 37.8495),
+                                        (-122.4840, 37.8450), (-122.4800, 37.8380), (-122.4790, 37.8360),
                                         (-122.4775, 37.8340), (-122.4768, 37.8322))),
-            ("Battery Spencer", ((-122.4840, 37.8450), (-122.4800, 37.8380), (-122.4795, 37.8320),
+            ("Battery Spencer", ((-122.5000, 37.8555), (-122.4940, 37.8525), (-122.4880, 37.8495),
+                                 (-122.4840, 37.8450), (-122.4800, 37.8380), (-122.4795, 37.8320),
                                  (-122.4825, 37.8285))),
         ),
         drone_targets=(("the Horseshoe Bay pier", (-122.4760, 37.8305)), ("the bridge", (-122.4783, 37.8199)),
@@ -283,10 +305,14 @@ PLACES: dict[str, Place] = {
         through=((-117.2290, 32.7000), (-117.2220, 32.7090), (-117.2050, 32.7130)),
         piers=(("HUNTER 1's berth at Point Loma", (-117.2352, 32.6950), (60.0, 150.0)),
                ("the submarine piers at Point Loma", (-117.2370, 32.6900), (60.0, 140.0))),
+        # F6 version 2: the gate's road from farther north on the ridge (version 1's started 2.96 km
+        # from the centre, inside the circle), North Island's from Coronado (version 1's started
+        # 0.76 km of road out): 1.4 and 2.9 km of road outside the circle
         roads=(
-            ("the submarine base's gate", ((-117.2455, 32.7100), (-117.2450, 32.6950), (-117.2420, 32.6920),
-                                           (-117.2395, 32.6905))),
-            ("North Island's west shore", ((-117.2000, 32.7060), (-117.2100, 32.7020), (-117.2200, 32.6960),
+            ("the submarine base's gate", ((-117.2465, 32.7230), (-117.2460, 32.7165), (-117.2455, 32.7100),
+                                           (-117.2450, 32.6950), (-117.2420, 32.6920), (-117.2395, 32.6905))),
+            ("North Island's west shore", ((-117.1810, 32.6960), (-117.1880, 32.6990), (-117.1940, 32.7030),
+                                           (-117.2000, 32.7060), (-117.2100, 32.7020), (-117.2200, 32.6960),
                                            (-117.2230, 32.6950))),
         ),
         drone_targets=(("HUNTER 1's berth", (-117.2352, 32.6950)), ("the bay entrance", (-117.2320, 32.6860)),
@@ -379,15 +405,31 @@ def start_before(route: list[tuple[float, float]], center: tuple[float, float], 
 
 
 def contact(cid: str, name: str, kind: str, domain: str, aff: str, speed: float, route: list[tuple[float, float]],
-            start_s: float, alt_m: float = 0.0, emits: bool = False) -> dict[str, Any]:
+            start_s: float, alt_m: float = 0.0, emits: bool | None = None) -> dict[str, Any]:
+    """A contact for the contacts file. `emits` None leaves its kind's default (murmur-contacts
+    scenario.rs `KINDS`: a light aircraft's and a ship's on, a small boat's and a drone's off);
+    True or False states it."""
     c: dict[str, Any] = {"id": cid, "name": name, "affiliation": aff, "domain": domain, "kind": kind,
                          "speed_mps": round(speed, 2), "motion": "transit",
                          "route": [[round(p[0], 6), round(p[1], 6)] for p in route], "start_s": round(start_s, 1)}
     if alt_m:
         c["alt_m"] = round(alt_m, 1)
-    if emits:
-        c["emits"] = True
+    if emits is not None:
+        c["emits"] = bool(emits)
     return c
+
+
+def lead_m(lead_s: float, speed: float, top_m: float = 3000.0) -> float:
+    """How far before the circle a contact appears so it comes within it `lead_s` after, from rest
+    at the contacts' acceleration, then at `speed` (`time_to` inverted)."""
+    lo, hi = 0.0, top_m
+    for _ in range(40):
+        mid = 0.5 * (lo + hi)
+        if time_to(mid, speed) < lead_s:
+            lo = mid
+        else:
+            hi = mid
+    return lo
 
 
 # ---- the families -----------------------------------------------------------------------------------
@@ -408,13 +450,7 @@ def _f1_fast_boat(d: Draft) -> None:
             return None
         full, how = ended
         # it appears `before` metres before the circle, so it reaches the circle `lead` s after
-        lo, hi = 0.0, 3000.0
-        for _ in range(40):
-            mid = 0.5 * (lo + hi)
-            if time_to(mid, speed) < lead:
-                lo = mid
-            else:
-                hi = mid
+        lo = lead_m(lead, speed)
         part = start_before(full, d.center, r, lo)
         return None if part is None else (part, how, lo)
 
@@ -459,11 +495,13 @@ def _f3_aircraft(d: Draft) -> None:
     k = first_within(route, d.center, d.w.mission.radius_m) or 0.0
     t_in = d.rng.uniform(250.0, 600.0)
     start = max(60.0, t_in - time_to(k, speed))
+    # version 2: its transponder off, the kind's only emitter (module doc)
     d.added.append(contact("aircraft-1", "Light aircraft, transponder off", "light_aircraft", "air", "unknown", speed,
-                           route, start, alt_m=alt))
+                           route, start, alt_m=alt, emits=False))
     d.stated["element"] = {"contact": "aircraft-1", "kind": "light_aircraft", "domain": "air",
                            "heading_deg": round(b, 1), "passes_within_m": round(abs(miss)), "speed_mps": round(speed, 2),
-                           "alt_m": round(alt, 1), "above_m": round(above, 1), "start_s": round(start, 1)}
+                           "alt_m": round(alt, 1), "above_m": round(above, 1), "start_s": round(start, 1),
+                           "emits": False, "version": F3_VERSION}
 
 
 def _f4_uuv(d: Draft) -> None:
@@ -528,18 +566,25 @@ def _f6_vehicle(d: Draft) -> None:
     kind = "vehicle" if d.rng.random() < 0.7 else "truck"
     aff = "unknown" if d.rng.random() < 0.6 else "suspect"
     speed = d.rng.uniform(6.0, 12.0)
+    # version 2: it appears `before` metres of road outside the circle, so it comes within it `lead`
+    # s after it appears (module doc)
+    lead = d.rng.uniform(*F6_LEAD_S)
+    before = lead_m(lead, speed)
 
     def draw() -> Any:
         route = [tuple(q) for q in road]
         route = [route[0], *[(q[0], q[1]) for q in route[1:-1]], offset(route[-1], d.rng.uniform(0, 360), d.rng.uniform(0, 30))]
-        return route if dry(d.world, route) else None
+        if not dry(d.world, route):
+            return None
+        return start_before(route, d.center, d.w.mission.radius_m, before)
 
     route = _retry("F6 road", draw)
     start = d.rng.uniform(150.0, 400.0)
     d.added.append(contact("vehicle-1", f"{'Car' if kind == 'vehicle' else 'Truck'} at a restricted shore", kind,
                            "ground", aff, speed, route, start))
     d.stated["element"] = {"contact": "vehicle-1", "kind": kind, "domain": "ground", "affiliation": aff,
-                           "restricted": name, "speed_mps": round(speed, 2), "start_s": round(start, 1)}
+                           "restricted": name, "speed_mps": round(speed, 2), "start_s": round(start, 1),
+                           "appears_before_circle_m": round(before), "lead_s": round(lead, 1), "version": F6_VERSION}
 
 
 def _f18_quiet(d: Draft) -> None:

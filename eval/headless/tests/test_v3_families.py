@@ -78,6 +78,70 @@ def test_the_families_are_seeded_and_share_conditions_by_seed(tmp_path: Path):
     assert c.conditions == a.conditions, "one seed, the same day or night in every family of a world"
 
 
+def test_f3_s_aircraft_has_its_transponder_off_so_no_esm_hears_it(tmp_path: Path, binary: None):
+    """F3 version 2 (SCORING-V3.md 15 (g)): the contact states `emits = false`, where version 1 left
+    the field to the contacts process, whose default for a light aircraft is its transponder on; the
+    sensing model's ESM hears the aircraft with it on and not with it off. The families that draw
+    F3's aircraft as an element (F7-F13, F8's look-alike, F17) carry it off too."""
+    from eval.headless.sensing import SenseModel
+
+    for name in ("v3-f3-low-aircraft-gg", "v3-f3-low-aircraft-sd"):
+        for seed in SEEDS:
+            e, path = F.generate(name, seed, tmp_path)
+            (c,) = added(path)
+            assert c["kind"] == "light_aircraft" and c["emits"] is False
+            assert e.truth["element"]["version"] == F.F3_VERSION == 2
+    drawn = 0
+    for name in ("v3-f7-three-at-once-gg", "v3-f8-decoys-sd", "v3-f9-night-fog-gg", "v3-f17-scale-sc"):
+        for seed in range(5000, 5006):
+            _, path = F.generate(name, seed, tmp_path)
+            for x in tomllib.loads(path.read_text())["contact"]:
+                if x["id"].startswith(("aircraft-", "decoy-air")) and x["kind"] == "light_aircraft":
+                    assert x["emits"] is False, (name, seed, x["id"])
+                    drawn += 1
+    assert drawn > 5, "F3's aircraft drawn as an element"
+    _, path = F.generate("v3-f3-low-aircraft-gg", 5000, tmp_path)
+    (c,) = added(path)
+    lon, lat = c["route"][0]
+    target = {"kind": "light_aircraft", "domain": "air", "lat": lat, "lon": lon, "alt_m": c["alt_m"],
+              "speed_mps": c["speed_mps"]}
+    observer = {"platform": "corsair", "lat": lat - 0.02, "lon": lon, "alt_m": 0.0}
+    clear = {"visibility_m": 20000.0, "sea_state": 2, "sun_elevation_deg": 30.0}
+    with SenseModel() as m:
+        on = m.predict(observer, {**target, "emits": True}, sensor="esm", conditions=clear)
+        off = m.predict(observer, {**target, "emits": c["emits"]}, sensor="esm", conditions=clear)
+    assert on[0]["p_detect"] > 0.5, "a transponder on is heard (version 1)"
+    assert off[0]["p_detect"] == 0.0, "version 2 emits nothing an ESM receiver can hear"
+
+
+def test_f6_s_vehicle_appears_outside_the_circle_and_comes_in(tmp_path: Path):
+    """F6 version 2 (SCORING-V3.md 15 (h)): the vehicle appears on its road outside the circle and
+    comes within it its drawn lead later (F1's 15 to 100 s), on every road of both worlds; version 1
+    put it inside the circle on three roads of five."""
+    lo, hi = F.F6_LEAD_S
+    for name in ("v3-f6-shore-vehicle-gg", "v3-f6-shore-vehicle-sd"):
+        _, world = F.parse(name)
+        w = load_world(world)
+        centre, r = w.mission.center, w.mission.radius_m
+        for road, pts in F.PLACES[world].roads:
+            k = F.first_within(list(pts), centre, r)
+            assert k is not None and k >= F.lead_m(hi, 12.0), f"{road}: long enough outside for the longest lead"
+        roads = set()
+        for seed in range(5000, 5040):
+            e, path = F.generate(name, seed, tmp_path)
+            (c,) = added(path)
+            el = e.truth["element"]
+            route = [tuple(q) for q in c["route"]]
+            assert F.dist_m(route[0], centre) > r, (name, seed, "it appears outside the circle")
+            k = F.first_within(route, centre, r)
+            assert k is not None and F.dry(world, route)
+            assert lo <= el["lead_s"] <= hi and abs(F.time_to(k, float(c["speed_mps"])) - el["lead_s"]) < 2.0, \
+                "it comes within the circle its drawn lead after it appears"
+            assert el["version"] == F.F6_VERSION == 2
+            roads.add(el["restricted"])
+        assert roads == {n for n, _ in F.PLACES[world].roads}, "every road is drawn"
+
+
 def test_f5_is_mostly_at_night(tmp_path: Path):
     nights = [F.generate("v3-f5-diver-sd", s, tmp_path)[0].conditions.get("night_by_family", False) for s in range(5000, 5040)]
     assert 0.5 < sum(nights) / len(nights) < 0.9

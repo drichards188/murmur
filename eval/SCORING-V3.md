@@ -9,10 +9,11 @@ they need (2.2's spoofed AIS, 2.4's fault needs in every domain, choices 27-34) 
 (section 14). **2026-10-25 (C2, bd murmur-1z6.7)**: the room test replaces v2's fixed world
 conditions and the lessons are written in (section 10); the ceiling, its ladder and the honest
 ceiling's perturbations, their dev batch and the audit are section 13's. **2026-10-26**: why the
-picture leaves an honest agent little room, and the honest ceiling's fixes (section 15). The validation,
-the pre-registration and the blind check are D's. **Scoring v2 is frozen**: its labels (version 2), its
-families, its oracle and every v1 and v2 golden and record are unchanged; v3 is built beside it
-(`eval/headless/v3/`), importing v2's code where it is unchanged.
+picture leaves an honest agent little room, and the honest ceiling's fixes (section 15); then F3
+version 2 (its transponder off) and F6 version 2 (its vehicle appears outside the circle) (6). The
+validation, the pre-registration and the blind check are D's. **Scoring v2 is frozen**: its labels
+(version 2), its families, its oracle and every v1 and v2 golden and record are unchanged; v3 is
+built beside it (`eval/headless/v3/`), importing v2's code where it is unchanged.
 
 ## 0. Coverage (the standing rule)
 
@@ -294,10 +295,10 @@ grids, currents and element sets), the mission as the brief, 900 s (F4, F5: 1,20
 |---|---|---|---|
 | F1 | fast boat, no AIS | surface | a small fast boat, unknown, 10 to 18 m/s, from the sea (p 0.6) or the bay (0.4), holding 0.8 to 2.4 km out (p 0.7) or running through; it appears 15 to 100 s before the circle (2.2) |
 | F2 | unknown drone inbound (version 3) | air | a small drone, unknown, 12 to 25 m/s, 60 to 150 m above the surface, from 3.8 to 5.5 km out on bearings over the strait or the bay to a target inside the circle, where it hovers; by day only |
-| F3 | low aircraft, transponder off | air | a light aircraft, unknown, no emitter, 45 to 60 m/s, 150 to 400 m above the ground, a straight pass within 1.5 km of the centre |
+| F3 | low aircraft, transponder off (version 2) | air | a light aircraft, unknown, no emitter (version 2: its transponder off), 45 to 60 m/s, 150 to 400 m above the ground, a straight pass within 1.5 km of the centre |
 | F4 | UUV in the channel (version 2) | subsurface | a UUV, unknown, 1 to 2.5 m/s, 5 to 15 m deep, down the bay's lane toward the channel, holding 0.5 to 2 km out |
 | F5 | diver at a pier | subsurface | a diver, unknown, 0.3 to 0.6 m/s, 2 to 4 m deep, from 200 to 450 m off a pier where our boats lie to 20 to 40 m off it; night p 0.7 |
-| F6 | vehicle at a restricted shore | ground | a car or truck, unknown or suspect, 6 to 12 m/s, along a shore road to a restricted point inside the circle, where it parks |
+| F6 | vehicle at a restricted shore (version 2) | ground | a car or truck, unknown or suspect, 6 to 12 m/s, along a shore road to a restricted point inside the circle, where it parks; it appears on its road 15 to 100 s before the circle at its speed (version 2) |
 | F14 | space | space, ground | a gap: imagery of a 1.5 to 2.5 km circle at a harbour 60 to 160 km off, beyond every standing sensor of ours, due 4 to 10 hours on (version 2; version 1 drew 2.5 to 6, 12.2) (optical or SAR collects, or a long flight); a GNSS need: a UGV's scheduled run (FERRET 1 on Crissy Field, MULE 1 on North Island) at 300 to 700 s for 15 minutes needs 9 (p 0.6) or 10 GPS satellites in view, held through any outage; truth is the bridge's own GNSS answer (`probe`); the brief adds both as tasking (choices 14, 15); 1,200 s |
 | F15 | engagement chain | surface | a hostile fast boat holds in the engagement zone and fires on HUNTER 1 or ALBATROSS 1 three times; the rule declaration, the review (confirms declarations, declares flagged escorts, accepts lost contacts, confirms uncontradicted claims), the agent's nomination, two scripted signers, the effect (hit p 0.85), the assessment, what is owed back; BLADE 1 (Switchblade) and WASP 1 (FPV) added beside VIPER 1 (Magura); drawn: an escort, neutral or suspect (p 0.35, the restraint case: choice 24), a crossing sailboat (p 0.4), low air traffic (p 0.5, the 3D keep-out), a trawler lost and claimed back (p 0.35); 1,200 s |
 | F16 | operator review load | surface | the evidence reviewer (review.py, choice 23); a declaration (p 0.7) with an escort (p 0.5), an attribution between a hostile skiff and a crab boat (p 0.6), an AIS claim, the same vessel back or a spoofer (p 0.8 each half), an approval flood of 8 to 16 routine cards (p 0.8); 1,200 s |
@@ -310,13 +311,33 @@ channel's buoys and HUNTER 1's patrol, whose looks recognised it before its need
 `none` pilot episodes (11.2). **F2 version 2** is by day only and **version 3** comes over water or
 low ground only (11.4).
 
+**F3 version 2 and F6 version 2** (2026-10-26, from section 15's (g) and (h)). Each brings its
+family to its design above; neither was drawn from a result. **F3**: version 1 left the contact's
+`emits` unset, so the contacts process gave the aircraft its kind's default (on for a light
+aircraft) and the sensing model's one emitter for the kind, its transponder (signature.rs), was on:
+every ESM receiver heard the "transponder off" aircraft from the moment it appeared (section 15: ESM
+made the first track of 19 of 20). Version 2 states `emits = false`, so it emits nothing (choice 35:
+the model has no radio among a light aircraft's emissions, and none is added). **F6**: version 1 put
+the vehicle at its road's first point, inside the circle on three roads of five (2.84 and 2.96 km
+from the centre), so in 11 of 20 situations its need opened as it appeared, its deadline 60 s on.
+Version 2 extends those roads outward on land (each now reaches 1.4 to 2.9 km of road outside the
+circle: Fort Point's from Marina Boulevard, the Marin roads' from the north-west, the submarine base's
+from farther up the ridge, North Island's from Coronado) and draws the time it comes within the circle
+as F1 draws its boat's: it starts 150 to 400 s in, as before, on its road 15 to 100 s of driving
+before the circle at its speed (F1's lead; choice 36), its deadline a minute after that.
+The families that draw these elements (F7-F13's aircraft and vehicles, F8's look-alikes among them,
+and F17's) draw them as version 2 now; each element's statement carries its `version`. F1, F2, F4,
+F5, F10, F14-F16 and F18 are unchanged, situation for situation (checked on four seeds of every
+family and world).
+
 ### 6.1 F7-F13 (the second part)
 
 Built as F1-F6 (eval/headless/v3/families_f7_f13.py, its docstring has every range; families.py
 finds them through `EXTENSIONS`), on both worlds, from F1-F6's own element draws (each route kept to
 its medium on the world's grids), re-timed where a family needs its elements at a time and renamed
-where it has several. The world's conditions are drawn by the seed as in every family and changed
-only where the family says so, recorded in the record's conditions (`light_by_family`,
+where it has several (since 2026-10-26, F3's and F6's version 2: the aircraft emits nothing, the
+vehicle appears outside the circle). The world's conditions are drawn by the seed as in every family
+and changed only where the family says so, recorded in the record's conditions (`light_by_family`,
 `visibility_by_family`, `sea_by_family`). Where an element's need would otherwise fall due after
 the episode, its route starts nearer (a UUV comes within the circle 250 to 650 s in, so its 300 s
 grace ends inside 1,200 s); a boat given another speed than F1's keeps F1's lead (it appears 15 to
@@ -509,6 +530,23 @@ is built as recommended and has its alternative.
     standing boat: three vehicles, three domains. *Alternative*: faults at drawn times on drawn
     vehicles, whatever the agent does (then a breakdown seldom touches a look, and a battery fault
     is often past saving). **Recommend** as specified.
+
+Choices 35 and 36 come with F3 and F6 version 2 (6; section 15's (g) and (h)), two fixes that bring
+the families to their design, for the owner; each is built as recommended and has its alternative.
+
+35. **F3's aircraft emits nothing** (version 2, 6): with its transponder off, the kind's only
+    emitter in the sensing model (signature.rs), no ESM receiver hears it. The model gives a light
+    aircraft no radio; none is added. *Alternative*: keep an emission an ESM receiver could hear, a
+    radio (not in the model: a scenario's `emitter_dbm` can only weaken the transponder, at its own
+    1,090 MHz, a stand-in rather than a radio; a radio is a sensor-model change, A1's).
+    **Recommend** as built: the family's design says "no emitter", and a pilot flying dark keeps
+    radio silence.
+36. **F6's lead is F1's** (version 2, 6): the vehicle appears 15 to 100 s of driving before the
+    circle, so its deadline comes 75 to 160 s after it appears (section 15: F2's a median 152 s, F3's
+    199 s). *Alternative*: a lead of its own (longer: a ground radar shows a car the second it
+    appears), or the time it comes within the circle drawn outright, as F3's (250 to 600 s), with
+    roads long enough for it. **Recommend** F1's: one rule for the families whose contact appears on
+    its way in, on roads the world's grid holds.
 
 ## 10. Gates (dev)
 
