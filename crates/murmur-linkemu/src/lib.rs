@@ -2,6 +2,7 @@
 //! bridge and degrades each vehicle's link according to its link class. See the README.
 
 pub mod config;
+pub mod coverage;
 pub mod geo;
 pub mod http;
 pub mod link;

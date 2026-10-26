@@ -197,6 +197,47 @@ impl Params {
     }
 }
 
+impl Params {
+    /// The long-run average loss of the profile's Gilbert-Elliott chain (what `loss` asked for).
+    pub fn mean_loss(&self) -> f64 {
+        let pi_bad = if self.p_gb + self.p_bg > 0.0 {
+            self.p_gb / (self.p_gb + self.p_bg)
+        } else {
+            0.0
+        };
+        self.loss_good * (1.0 - pi_bad) + self.loss_bad * pi_bad
+    }
+}
+
+/// The share of packets lost to range at `d_m` from the ground station (slant range), for a
+/// profile's `(ok_m, max_m, exponent)`: none up to `ok`, certain from `max`, rising as
+/// ((d - ok) / (max - ok)) ^ exponent between. The link (`Link::cond`) and the coverage
+/// predictor (`crate::coverage`) both use this.
+pub fn range_loss((ok, max, exp): (f64, f64, f64), d_m: f64) -> f64 {
+    if d_m <= ok {
+        0.0
+    } else if d_m >= max {
+        1.0
+    } else {
+        ((d_m - ok) / (max - ok)).powf(exp)
+    }
+}
+
+/// What a path obstructed by `obstruction_m` (positive: terrain above the ray) does under a
+/// profile's terrain handling: (blocked, share of packets lost). `block` drops everything; `ramp`
+/// loses `obstruction / terrain_ramp_m`, capped at 1; a clear path (0 or less) nothing. The link
+/// and the coverage predictor both use this.
+pub fn terrain_effect(t: &TerrainParams, obstruction_m: f64) -> (bool, f64) {
+    if obstruction_m <= 0.0 {
+        return (false, 0.0);
+    }
+    match t.mode {
+        TerrainMode::Block => (true, 0.0),
+        TerrainMode::Ramp => (false, (obstruction_m / t.ramp_m).min(1.0)),
+        TerrainMode::Off => (false, 0.0),
+    }
+}
+
 fn ms_to_ns(ms: f64) -> u64 {
     (ms.max(0.0) * 1e6) as u64
 }

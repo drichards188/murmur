@@ -1,11 +1,10 @@
 //! One vehicle's link: its profile, scripted events, position-driven physics and the two
 //! direction models.
 
-use crate::config::TerrainMode;
 use crate::config::{Config, DirSel, DownWhen, EventCfg};
 use crate::geo::{GeoPoint, Terrain, haversine_m, slant_m};
 use crate::mavpos::scan;
-use crate::model::{Cause, Cond, Dir, DirState, Params, Verdict};
+use crate::model::{Cause, Cond, Dir, DirState, Params, Verdict, range_loss, terrain_effect};
 use crate::sat::SatShared;
 use crate::timeline::{Timeline, parse_iso_utc};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -458,26 +457,17 @@ impl Link {
             }
             c.extra_latency_ns += e.extra_latency_ns;
         }
-        if let (Some((ok, max, exp)), Some(d)) = (p.range, self.gs_range_m) {
-            c.range_loss = if d <= ok {
-                0.0
-            } else if d >= max {
-                1.0
-            } else {
-                ((d - ok) / (max - ok)).powf(exp)
-            };
+        if let (Some(r), Some(d)) = (p.range, self.gs_range_m) {
+            c.range_loss = range_loss(r, d);
         }
         if let (Some(t), Some(o)) = (&p.terrain, self.obstruction_m)
             && self.env.ground_station.is_some()
-            && o > 0.0
         {
-            match t.mode {
-                TerrainMode::Block => {
-                    c.blocked.get_or_insert(Cause::Terrain);
-                }
-                TerrainMode::Ramp => c.terrain_loss = (o / t.ramp_m).min(1.0),
-                TerrainMode::Off => {}
+            let (blocked, loss) = terrain_effect(t, o);
+            if blocked {
+                c.blocked.get_or_insert(Cause::Terrain);
             }
+            c.terrain_loss = loss;
         }
         if let (Some(mps), Some(d)) = (p.propagation_mps, self.gs_range_m) {
             c.extra_latency_ns += (d / mps * 1e9) as u64;
@@ -542,12 +532,7 @@ impl Link {
 /// A profile's nominal numbers: long-run average loss of its Gilbert-Elliott chain, one-way
 /// base latency and jitter, uplink bandwidth and queue, and its physics switches.
 fn nominal_of(p: &Params) -> serde_json::Value {
-    let pi_bad = if p.p_gb + p.p_bg > 0.0 {
-        p.p_gb / (p.p_gb + p.p_bg)
-    } else {
-        0.0
-    };
-    let loss = p.loss_good * (1.0 - pi_bad) + p.loss_bad * pi_bad;
+    let loss = p.mean_loss();
     serde_json::json!({
         "loss": (loss * 1e4).round() / 1e4,
         "latency_ms": p.latency_ns as f64 / 1e6,
