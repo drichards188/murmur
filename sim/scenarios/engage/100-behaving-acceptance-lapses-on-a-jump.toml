@@ -1,0 +1,113 @@
+# Rules 19: an acceptance "as behaving now" lapses on its own when the track's estimate departs
+# from the path accepted for it beyond its uncertainty, and a new one needs a person again. op-1
+# nominates accepting 99's aircraft; op-2 looks (the picture token carries the acceptance). Four
+# seconds later the aircraft's estimate is 600 m east of where its accepted course puts it (the
+# tracker re-associated it): far outside the accepted path's 2-sigma then (tens of metres), so
+# the engine logs the lapse (`engage.acceptance_lapsed`, position) at its next step, though no
+# signature has frozen a plan yet. op-2 then signs on the token from before the lapse: refused,
+# look again. op-1 accepts the aircraft again, as it now behaves (its new position, the same
+# course north, still clear); op-2 and op-3 sign the new picture and the effect is released.
+# Afterwards the lapse is cut from the log: replay finds decisions after it reading an acceptance
+# its ledger holds as lapsed (and an acceptance given twice).
+title = "An acceptance as behaving lapses when the track departs from its accepted path"
+invariant = "keep_out_tracks"
+attack = "the lapse is cut from the log"
+expect = "done"
+expect_assessment = "ceased"
+expect_refusals = ["look again"]
+expect_lapsed = ["T-0002 lapsed (position)"]
+tamper = "drop_behaving_lapse"
+end_s = 260
+
+[[operator]]
+id = "op-1"                 # nominates and accepts: engagement authority, so never a signer
+engage = true
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[track]]
+id = "T-0002"
+at = [-122.4950, 37.8300]   # 2 km north of the target, flying north at 50 m/s
+velocity = [0.0, 50.0]
+affiliation = "neutral"
+identity = "light_aircraft"
+identity_confidence = 0.9
+domain = "air"
+sources = ["3:radar", "3:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 2
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+accept_behaving = ["T-0002"]
+
+[[step]]
+at_s = 4
+action = "look"
+by = "op-2"
+
+[[step]]
+at_s = 6
+action = "track"
+id = "T-0002"
+at = [-122.4882, 37.8327]   # 600 m east of where its accepted course puts it now
+
+[[step]]
+at_s = 7
+action = "expect"
+state = "pending_approval"
+
+[[step]]
+at_s = 8
+action = "approve"          # on the token from before the lapse: refused, look again
+by = "op-2"
+
+[[step]]
+at_s = 10
+action = "accept"           # a person accepts it again, as it now behaves
+by = "op-1"
+behaving = "T-0002"
+
+[[step]]
+at_s = 12
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 14
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 15
+action = "expect"
+state = "dispatched"

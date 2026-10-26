@@ -116,6 +116,10 @@ pub struct Scenario {
     /// is suspect: ...`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expect_reinstated: Vec<String>,
+    /// Rules 19: acceptances of a live track as behaving now that lapsed on their own, in order
+    /// (substrings of `t=<s> T-0002 lapsed (velocity): ...`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect_lapsed: Vec<String>,
     /// After the run, attack the log and require replay to catch it:
     /// `proposer_approval`, `agent_approval`, `suppress_void`, `edit_snapshot`,
     /// `drop_signature`, `edit_effect`, `strip_approvers`, `drop_reset`, `agent_order_auto`,
@@ -127,7 +131,10 @@ pub struct Scenario {
     /// to a later fix everywhere it appears), `hide_reinstatement` (a void confirmation's
     /// `lost.reinstated` cut and the lost contact cut from every decision after it),
     /// `confirm_by_agent` (an operator's confirmation of a claim credited to an agent), and
-    /// `move_drop` (a drop's last fix moved 6 km, everywhere the contact appears).
+    /// `move_drop` (a drop's last fix moved 6 km, everywhere the contact appears), and for rules
+    /// 19 `drop_behaving_acceptance` (an acceptance of a live track as behaving now cut),
+    /// `drop_behaving_lapse` (its lapse cut) and `behaving_acceptance_by_agent` (the acceptance
+    /// credited to an agent's session).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tamper: Option<String>,
     /// Seconds to run (default: the last step plus 10).
@@ -384,6 +391,10 @@ pub enum Action {
         /// accepts, each since its last fix as the check shows it.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         accept_lost: Vec<String>,
+        /// Rules 19: the live tracks the nominating operator accepts as they are behaving now
+        /// (each with its facts at the nomination).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        accept_behaving: Vec<String>,
     },
     /// Rules 6: an operator with engagement authority accepts, for the last nomination while
     /// it waits with no signature, that one of our vehicles is lost since its last report
@@ -391,6 +402,8 @@ pub enum Action {
     /// it). Without engagement authority it is refused.
     ///
     /// Rules 16: or a lost contact, `track` instead of `uid` (since its last fix, or `since_s`).
+    ///
+    /// Rules 19: or a live track as it is behaving now, `behaving` (its facts now).
     Accept {
         by: String,
         #[serde(default)]
@@ -399,22 +412,34 @@ pub enum Action {
         track: Option<String>,
         #[serde(default)]
         since_s: Option<f64>,
+        #[serde(default)]
+        behaving: Option<String>,
     },
     /// Rules 6: an operator withdraws an acceptance of a lost vehicle (rules 16: or of a lost
-    /// contact, `track`) for the last nomination (pending or under way).
+    /// contact, `track`; rules 19: or of a live track as behaving now, `behaving`) for the last
+    /// nomination (pending or under way).
     Revoke {
         by: String,
         #[serde(default)]
         uid: Option<String>,
         #[serde(default)]
         track: Option<String>,
+        #[serde(default)]
+        behaving: Option<String>,
     },
     /// Rules 16: the tracker drops `track` (as the bridge's does after 180 s without a
     /// detection), handing the engine its facts now; the runner stops carrying it.
     DropTrack { track: String },
-    /// An agent "tries" to accept a lost vehicle: there is no such method on its port, so it
-    /// is recorded and nothing may change.
-    AgentAccept { agent: String, uid: String },
+    /// An agent "tries" to accept a lost vehicle (`uid`; rules 19: or a live track as behaving
+    /// now, `behaving`): there is no such method on its port, so it is recorded and nothing may
+    /// change.
+    AgentAccept {
+        agent: String,
+        #[serde(default)]
+        uid: Option<String>,
+        #[serde(default)]
+        behaving: Option<String>,
+    },
     /// Rules 16: an operator confirms the claim of live track `by_track` to be lost contact
     /// `track` (refused while something contradicts it).
     ConfirmClaim { by: String, track: String, by_track: String },
@@ -949,6 +974,10 @@ pub struct ScenarioResult {
     /// Rules 16: the confirmations void (`t=<s> T-0002 counts again: why`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub reinstated: Vec<String>,
+    /// Rules 19: the acceptances of a live track as behaving now that lapsed (`t=<s> T-0002
+    /// lapsed (velocity): ...`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub lapsed: Vec<String>,
     /// Rules 9: the identification events, in order (`t=<s> declared T-0001 by
     /// rule:hostile_act ...`), and the same with the truth behind each (evaluation labels).
     pub ident_reports: Vec<String>,
@@ -1695,6 +1724,7 @@ pub fn run(
     for (want, got, what) in [
         (&sc.expect_claimed, &extra.claimed, "claims raised"),
         (&sc.expect_reinstated, &extra.reinstated, "confirmations void"),
+        (&sc.expect_lapsed, &extra.lapsed, "acceptances lapsed"),
     ] {
         let mut it = got.iter();
         for w in want {
@@ -1796,6 +1826,7 @@ pub fn run(
         reacquired: extra.reacquired.clone(),
         claimed: extra.claimed.clone(),
         reinstated: extra.reinstated.clone(),
+        lapsed: extra.lapsed.clone(),
         ident_reports,
         ident,
         proxy: extra.proxy.is_some().then_some(extra.proxy_stats),
@@ -2349,7 +2380,12 @@ fn act(
             window_s,
             accept,
             accept_lost,
+            accept_behaving,
         } => {
+            // rules 19: not in this engine yet (the scenarios are written first)
+            if !accept_behaving.is_empty() {
+                return failures.push(format!("t={s}: nominate: accepting a live track as behaving now is not in this engine"));
+            }
             let task = Task::Engage {
                 track: track.clone(),
                 effect_radius_m: *radius_m,
@@ -2558,7 +2594,13 @@ fn act(
                 Err(e) => refusals.push(e.to_string()),
             }
         }
-        Action::Accept { by, uid, track, since_s } => {
+        Action::Accept { behaving: Some(_), .. } | Action::Revoke { behaving: Some(_), .. } => {
+            failures.push(format!("t={s}: accepting a live track as behaving now is not in this engine"));
+        }
+        Action::AgentAccept { behaving: Some(_), .. } => {
+            failures.push(format!("t={s}: accepting a live track as behaving now is not in this engine"));
+        }
+        Action::Accept { by, uid, track, since_s, .. } => {
             let (Some(id), Some(sess)) = (*last, session(by)) else {
                 return failures.push(format!("t={s}: accept: no nomination or unknown operator {by}"));
             };
@@ -2589,7 +2631,7 @@ fn act(
                 refusals.push(e.to_string());
             }
         }
-        Action::Revoke { by, uid, track } => {
+        Action::Revoke { by, uid, track, .. } => {
             let (Some(id), Some(sess)) = (*last, session(by)) else {
                 return failures.push(format!("t={s}: revoke: no nomination or unknown operator {by}"));
             };
@@ -2623,7 +2665,8 @@ fn act(
                 failures.push(format!("t={s}: drop_track {track}: {e}"));
             }
         }
-        Action::AgentAccept { agent, uid } => {
+        Action::AgentAccept { agent, uid, .. } => {
+            let uid = uid.clone().unwrap_or_default();
             // AgentPort has propose, preview, withdraw, record and read: nothing accepts a lost
             // vehicle. The attempt is recorded; the intent and its acceptances must not move.
             let before = last.and_then(|id| engine.intent(id)).map(|i| {
@@ -2979,6 +3022,9 @@ struct Extra {
     reacquired: Vec<String>,
     claimed: Vec<String>,
     reinstated: Vec<String>,
+    /// Rules 19: the acceptances as behaving now that lapsed, as `t=<s> <track> lapsed (<kind>):
+    /// <detail>`.
+    lapsed: Vec<String>,
     /// Rules 16: the tracks a `drop_track` step asked to drop before the tracker's drop age had
     /// passed by the run's clock (a clock that steps back), dropped once it has, each with the
     /// second of its step; one still waiting at the end of the run fails it.
@@ -3270,6 +3316,7 @@ fn proxies(
                 window_s: Some(600),
                 accept: Vec::new(),
                 accept_lost: Vec::new(),
+                accept_behaving: Vec::new(),
             },
             engine, sessions, tracks, vehicles, catalog, areas, now, terrain, last, refusals, fallback_seen, failures,
             engaging, extra, s,

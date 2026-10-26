@@ -1,0 +1,88 @@
+# Rules 19: only a person with engagement authority accepts a live track "as behaving now", as 55
+# and 89 for lost friendlies and lost contacts. op-4, who has no engagement authority, nominates
+# accepting 99's aircraft: the whole nomination is refused (the bridge answers 403). An agent
+# nominates and asks to accept the same aircraft: its port takes no acceptance, so the nomination
+# is checked without one and rejected (keep_out_tracks: the aircraft could turn or speed up to the
+# effect point); the agent then tries to accept on the record, and there is no method for it
+# either. Nothing moves.
+title = "An agent cannot accept a live track as behaving"
+invariant = "keep_out_tracks"
+attack = "an agent, and an operator without engagement authority, accept an aircraft as behaving now"
+expect = "rejected"
+expect_rule = "keep_out_tracks"
+expect_refusals = [
+    "accepting a live track as behaving now needs engagement authority (nomination refused)",
+    "no acceptance of a live track as behaving now on an agent's proposal",
+    "no accept method on AgentPort",
+]
+end_s = 20
+
+[[agent]]
+id = "agent-planner"
+
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+[[operator]]
+id = "op-4"                 # no engagement authority
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[track]]
+id = "T-0002"
+at = [-122.4950, 37.8300]   # 2 km north of the target, flying north at 50 m/s
+velocity = [0.0, 50.0]
+affiliation = "neutral"
+identity = "light_aircraft"
+identity_confidence = 0.9
+domain = "air"
+sources = ["3:radar", "3:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-2"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-4"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+accept_behaving = ["T-0002"]
+
+[[step]]
+at_s = 2
+action = "nominate"
+agent = "agent-planner"
+rationale = "declared hostile fast boat holding west of the bridge; the aircraft is flying away"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+accept_behaving = ["T-0002"]
+
+[[step]]
+at_s = 4
+action = "agent_accept"
+agent = "agent-planner"
+behaving = "T-0002"

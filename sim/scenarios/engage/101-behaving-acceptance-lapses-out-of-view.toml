@@ -1,0 +1,88 @@
+# Rules 19: an acceptance "as behaving now" lapses when the track goes out of view
+# (`engage::OUT_OF_VIEW_S`, 10 s without a detection): nothing then checks its course. op-1
+# nominates accepting 99's aircraft and op-2 signs, freezing the plan. The aircraft then goes
+# unseen; ten seconds on, the engine logs the lapse (out_of_view), the plan no longer holds (the
+# aircraft counts anywhere it could have flown, as any track out of view does) and op-2's
+# signature is dropped with it. op-3 signs the new picture: the aircraft blocks, the nomination
+# is void.
+title = "An acceptance as behaving lapses when the track goes out of view"
+invariant = "keep_out_tracks"
+attack = "an accepted aircraft goes out of view while the signatures wait"
+expect = "voided"
+expect_rule = "keep_out_tracks"
+expect_reset = true
+expect_lapsed = ["T-0002 lapsed (out_of_view)"]
+end_s = 40
+
+[[operator]]
+id = "op-1"                 # nominates and accepts: engagement authority, so never a signer
+engage = true
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[track]]
+id = "T-0002"
+at = [-122.4950, 37.8300]   # 2 km north of the target, flying north at 50 m/s
+velocity = [0.0, 50.0]
+affiliation = "neutral"
+identity = "light_aircraft"
+identity_confidence = 0.9
+domain = "air"
+sources = ["3:radar", "3:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 2
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+accept_behaving = ["T-0002"]
+
+[[step]]
+at_s = 4
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 5
+action = "expect"
+state = "pending_approval"
+concurrences = 1
+
+[[step]]
+at_s = 6
+action = "track"
+id = "T-0002"
+silent = true               # no detection from here on
+
+[[step]]
+at_s = 20
+action = "approve"
+by = "op-3"

@@ -1,0 +1,91 @@
+# Rules 19: any operator may withdraw an acceptance "as behaving now", at any time before the
+# effect (it only restricts), as 60 for a lost friendly. The engagement was approved with 99's
+# aircraft accepted; under way op-4 (no engagement authority) revokes it
+# (`engage.acceptance_revoked` naming the track). The held picture counts the aircraft again
+# anywhere it could turn or speed up to, which covers the effect point: the engagement stops
+# with its fallback before any release. Afterwards the acceptance is credited, in the log, to an
+# agent's session: replay finds an acceptance under a session that is not the operator's.
+title = "A revoked acceptance as behaving stops the engagement"
+invariant = "keep_out_tracks"
+attack = "the acceptance is withdrawn under way; the log credits it to an agent"
+expect = "aborted"
+expect_rule = "keep_out_tracks"
+expect_stop = "picture"
+tamper = "behaving_acceptance_by_agent"
+end_s = 60
+
+[[agent]]
+id = "agent-planner"
+
+[[operator]]
+id = "op-1"                 # nominates and accepts: engagement authority, so never a signer
+engage = true
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+[[operator]]
+id = "op-4"                 # no engagement authority: may still revoke
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[track]]
+id = "T-0002"
+at = [-122.4950, 37.8300]   # 2 km north of the target, flying north at 50 m/s
+velocity = [0.0, 50.0]
+affiliation = "neutral"
+identity = "light_aircraft"
+identity_confidence = 0.9
+domain = "air"
+sources = ["3:radar", "3:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+accept_behaving = ["T-0002"]
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 12
+action = "revoke"
+by = "op-4"
+behaving = "T-0002"

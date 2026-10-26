@@ -117,7 +117,9 @@ tamper = "suppress_void"         # optional log attack replay must catch: propos
                                  # and rules 15: unspend_without_authority, drop_may_owe_fact,
                                  # and rules 16: hide_lost_contact, drop_track_dropped,
                                  # forge_lost_acceptance, hide_reinstatement,
-                                 # confirm_by_agent, move_drop, redrop
+                                 # confirm_by_agent, move_drop, redrop,
+                                 # and rules 19: drop_behaving_acceptance,
+                                 # drop_behaving_lapse, behaving_acceptance_by_agent
                                  # (one with nothing to edit in a run's log reports "not
                                  # applicable")
 end_s = 120                      # seconds to run (default: the last step + 10)
@@ -148,6 +150,10 @@ expect_reacquired = ["T-0002 is T-0005 again"]   # rules 16, optional: lost cont
                                  # (expect_none_reacquired = true: none)
 expect_claimed = ["T-0005 claims to be T-0002"]  # rules 16, optional: claims raised, in order
 expect_reinstated = ["T-0002 counts again"]      # rules 16, optional: confirmations void
+expect_lapsed = ["T-0002 lapsed (velocity)"]     # rules 19, optional: acceptances as behaving
+                                 # now that lapsed on their own, in order (`t=<s> T-0002
+                                 # lapsed (<kind>): <detail>`; kinds out_of_view, gone,
+                                 # no_velocity, position, velocity)
 # policy, catalog, areas = "path"  # optional, relative to the repo (defaults: sim/...)
 
 [[carried]]                      # rules 15, optional: an earlier log whose carry failed at
@@ -226,13 +232,13 @@ Actions (each `[[step]]` has `at_s` and `action`):
 | `revoke_declaration` | `by`, `track`, `note` | rules 9: an operator revokes the declaration in force; the engagements on the track stop first |
 | `resolve_flag` | `by`, `track`, `flag` (optional: its number; default the newest on the track), `resolution` (`confirmed`, `dismissed`) | rules 9: an operator resolves a review flag |
 | `agent_declare` | `agent`, `track` | rules 9: an agent "tries" to declare: its port has no such method; recorded, nothing may change |
-| `nominate` | `by` or `agent` (+ `rationale`), `platform`, `track`, `radius_m`, `fallback` (`abort`, `return`, `loiter`), `window_s`, `accept` (rules 6: vehicles the operator accepts as lost, each since its last report), `accept_lost` (rules 16: lost contacts the operator accepts, each since its last fix) | a nomination; becomes "the last nomination" the other steps act on |
-| `accept` | `by`, `uid` or (rules 16) `track`, `since_s` (optional: another report or fix than the last, which the engine refuses) | rules 6: an operator with engagement authority accepts a lost vehicle (rules 16: a lost contact) for the last nomination while it waits with no signature (without it: refused) |
-| `revoke` | `by`, `uid` or (rules 16) `track` | rules 6: any operator withdraws an acceptance from the last nomination (pending or under way) |
+| `nominate` | `by` or `agent` (+ `rationale`), `platform`, `track`, `radius_m`, `fallback` (`abort`, `return`, `loiter`), `window_s`, `accept` (rules 6: vehicles the operator accepts as lost, each since its last report), `accept_lost` (rules 16: lost contacts the operator accepts, each since its last fix), `accept_behaving` (rules 19: live tracks the operator accepts as they are behaving now, each with its facts then) | a nomination; becomes "the last nomination" the other steps act on |
+| `accept` | `by`, `uid` or (rules 16) `track` or (rules 19) `behaving`, `since_s` (optional: another report or fix than the last, which the engine refuses) | rules 6: an operator with engagement authority accepts a lost vehicle (rules 16: a lost contact; rules 19: a live track as it is behaving now) for the last nomination while it waits with no signature (without it: refused) |
+| `revoke` | `by`, `uid` or (rules 16) `track` or (rules 19) `behaving` | rules 6: any operator withdraws an acceptance from the last nomination (pending or under way) |
 | `drop_track` | `track` | rules 16: the tracker drops it (its facts and AIS now go to the engine, `track.dropped`); from then on it is a lost contact |
 | `confirm_claim` | `by`, `track` (the lost contact), `by_track` (the live track claiming to be it) | rules 16: an operator confirms a claim on a lost contact (refused while anything contradicts it) |
 | `agent_confirm` | `agent`, `track` | rules 16: an agent "tries" to confirm a claim: its port has no such method; recorded, nothing may move |
-| `agent_accept` | `agent`, `uid` | an agent "tries" to accept a lost vehicle: its port has no such method; recorded, nothing may move |
+| `agent_accept` | `agent`, `uid` or (rules 19) `behaving` | an agent "tries" to accept a lost vehicle (rules 19: a live track as behaving now): its port has no such method; recorded, nothing may move |
 | `look` | `by` | an operator with engagement authority asks for the picture (a picture token: the plan and the track now); their next `approve` quotes it |
 | `approve` | `by` | a signature: through `approve_engagement` if the session has engagement authority (quoting the token from their last `look`, or one asked for now), else `approve` (which the engine refuses for an engagement) |
 | `approve_task` | `by`, `acknowledge` | an operator approves the last `task`; `acknowledge` accepts that its dispatch stops an engagement in play |
@@ -352,3 +358,10 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess).
 | 96-route-round-the-point | domain | rules 17: the USV in the strait; an orbit in Richardson Bay across the shore's corner, then a patrol round the point, then a nomination on a clear way | the orbit rejected (domain: its transit), the patrol dispatched, the nomination waiting for its signers; `--rules 16` dispatches the orbit |
 | 97-velocity-known-to-3-mps | keep_out_tracks | rules 18: a fishing boat whose course passes 700 m from the effect point at the effect time, fixed by a radar only, its velocity known to 3 m/s as the tracker reports it | rejected (keep_out_tracks: 2-sigma 644 m over 100 s, `velocity 300 m at 3.0 m/s`), then, the boat 1.4 km off by the effect, the same nomination waits for its signers; `--rules 17` (every velocity good to the policy's 1 m/s, 2-sigma about 310 m) lets the first through |
 | 98-velocity-error-grows-under-way | keep_out_tracks | rules 18: a ferry whose course passes 850 m from the effect point, its velocity known to 0.5 m/s (AIS), signed and dispatched; 20 s on its AIS goes quiet and the tracker reports its velocity known to 4 m/s | aborted (keep_out_tracks: 2-sigma 705 m over 85 s), fallback return; `--rules 17` goes ahead (done, ceased) |
+| 99-aircraft-accepted-as-behaving | keep_out_tracks | rules 19: 83's aircraft, 2 km north and flying away, accepted by the nominating operator as it is behaving now; the acceptance cut from the log | pending, signed by two others, done (ceased): the aircraft counts along its accepted path and its course now, not anywhere it could turn or speed up to; tamper caught (`--rules 18`: the nomination refused) |
+| 100-behaving-acceptance-lapses-on-a-jump | keep_out_tracks | rules 19: the accepted aircraft's estimate 600 m off its accepted path while no signature has frozen a plan; a signer signs on a token from before the lapse; the lapse cut from the log | lapsed (position) at the next step; refused (look again); accepted again by a person; done (ceased); tamper caught |
+| 101-behaving-acceptance-lapses-out-of-view | keep_out_tracks | rules 19: the accepted aircraft goes unseen while a signature waits | lapsed (out_of_view) 10 s on; the plan dropped (reset); voided at the next signature (keep_out_tracks) |
+| 102-behaving-acceptance-revoked | keep_out_tracks | rules 19: an operator without engagement authority revokes the acceptance under way; the log credits the acceptance to an agent | aborted (keep_out_tracks), fallback return; tamper caught |
+| 103-reset-clears-behaving-acceptance | keep_out_tracks | rules 19: the frozen plan an acceptance as behaving was given for is dropped; a signer signs the new one | reset; voided (keep_out_tracks: the acceptance went with the plan) |
+| 104-agent-cannot-accept-behaving | keep_out_tracks | rules 19: an operator without engagement authority, then an agent, accept the aircraft as behaving now | refusals; rejected (keep_out_tracks) |
+| 105-behaving-acceptance-lapses-under-way | keep_out_tracks | rules 19: the accepted aircraft turns back toward the effect point under way; the lapse cut from the log | lapsed (velocity) at the next step, aborted (keep_out_tracks) at that step, fallback return, nothing released; tamper caught |

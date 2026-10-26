@@ -1,0 +1,89 @@
+# Rules 19: a late lapse stops an engagement under way. The engagement was approved and dispatched
+# with 99's aircraft accepted "as behaving now". Twenty seconds on, the aircraft turns back south,
+# toward the effect point, at 50 m/s: its velocity departs from the accepted one far beyond its
+# uncertainty (the accepted and the live estimate's errors and the white-noise acceleration's
+# growth since, 2-sigma), so the engine logs the lapse (velocity) at its next step and the held
+# picture counts the aircraft again anywhere it could turn or speed up to: the engagement stops
+# with its fallback, nothing released. Afterwards the lapse is cut from the log: replay finds the
+# picture after it reading no acceptance where its ledger still holds one.
+title = "A late lapse of an acceptance as behaving stops the engagement under way"
+invariant = "keep_out_tracks"
+attack = "an accepted aircraft turns back toward the effect point under way; the lapse is cut from the log"
+expect = "aborted"
+expect_rule = "keep_out_tracks"
+expect_stop = "picture"
+expect_lapsed = ["T-0002 lapsed (velocity)"]
+tamper = "drop_behaving_lapse"
+end_s = 60
+
+[[operator]]
+id = "op-1"                 # nominates and accepts: engagement authority, so never a signer
+engage = true
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[track]]
+id = "T-0002"
+at = [-122.4950, 37.8300]   # 2 km north of the target, flying north at 50 m/s
+velocity = [0.0, 50.0]
+affiliation = "neutral"
+identity = "light_aircraft"
+identity_confidence = 0.9
+domain = "air"
+sources = ["3:radar", "3:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+accept_behaving = ["T-0002"]
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 30
+action = "track"
+id = "T-0002"
+velocity = [0.0, -50.0]     # turns back south, toward the effect point

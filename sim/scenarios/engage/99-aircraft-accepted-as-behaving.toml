@@ -1,0 +1,89 @@
+# Rules 19 (the owner's decision B of 2026-10-26): 83's light aircraft, 2 km north of the target
+# and flying north at 50 m/s on a steady course. Under rules 14 it counts anywhere it could turn
+# or speed up to, which covers the effect point a minute and a half out: 83 rejects this very
+# nomination. Here the nominating operator, who has engagement authority, accepts it "as it is
+# behaving now" (logged as `engage.accepted` naming the track, with its facts then). For this
+# engagement the keep-out then counts it along the path accepted for it (its accepted velocity
+# from its accepted position, with the white-noise prediction's 2-sigma as rules 18 grows it)
+# and along its course now, not anywhere at its top speed. Two signers are shown the acceptance
+# on their picture tokens and sign; the aircraft keeps its course, the acceptance holds every
+# second, and the effect is released and assessed. Afterwards the acceptance is cut from the
+# log: replay finds decisions reading an acceptance nobody gave.
+title = "An operator accepts a live aircraft as behaving now"
+invariant = "keep_out_tracks"
+attack = "the acceptance is cut from the log"
+expect = "done"
+expect_assessment = "ceased"
+tamper = "drop_behaving_acceptance"
+end_s = 260
+
+[[operator]]
+id = "op-1"                 # nominates and accepts: engagement authority, so never a signer
+engage = true
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"    # armed, EO/IR 3 km: it also covers the point for the assessment
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[track]]
+id = "T-0002"
+at = [-122.4950, 37.8300]   # 2 km north of the target, flying north at 50 m/s (83's aircraft)
+velocity = [0.0, 50.0]
+affiliation = "neutral"
+identity = "light_aircraft"
+identity_confidence = 0.9
+domain = "air"
+sources = ["3:radar", "3:eo_ir"]   # a 2D radar and EO/IR: no height, the keep-out stays 2D
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 2
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+accept_behaving = ["T-0002"]   # "T-0002 as it is behaving now: accept"
+
+[[step]]
+at_s = 3
+action = "expect"
+state = "pending_approval"
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"
