@@ -1,6 +1,7 @@
 import { operatorFetch, operatorHeaders } from './auth'
 import { getOperator, StepUpNeeded, type Check, type Intent } from './decisions'
 import type { Declaration } from './ident'
+import type { Munition } from './munition'
 import type { LngLat } from './types'
 
 /** Engagements (Phase E): an abstract effect (a point, a radius, a time) on a track an
@@ -77,7 +78,12 @@ export interface Engagement {
   preview?: EngagePreview
   snapshot?: EngageSnapshot
   watch?: PictureVerdict
+  /** the engine's release (`t`), not the earlier predicted effect; with a munition the effect
+   *  lands at its impact, the time of flight later */
   effect?: { t: number; point: LngLat; radius_m: number; planned_t: number }
+  /** a standoff platform's munition from the release on (bd murmur-64z, munition.ts); none for
+   *  a platform spent by its own effect, nor before the release */
+  munition?: Munition
   stop?: { t: number; cause: { kind: 'operator' | 'picture' | 'system' | 'superseded' | 'revoked'; by?: string | number; track?: string; declaration?: number }; reason: string; fallback?: Fallback | null }
   plan?: { t: number; by: string; preview: EngagePreview; track: TrackIdentity }
   observe?: { covered_by: string[]; track_present: boolean; seen_after_effect_t?: number }

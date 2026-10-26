@@ -1,11 +1,16 @@
+import type { Munition } from './munition'
 import type { LngLat } from './types'
 
-/** The engine's recorded release, not the earlier predicted effect time or point. */
+/** A strike: where and when the effect lands, as recorded, not the earlier predicted effect
+ *  time or point. With a munition (bd murmur-64z) that is its impact, the time of flight after
+ *  the release; without one (a platform that is its own munition) the engine's release. */
 export interface ImpactEvent {
   key: string
   intentId: number
   point: LngLat
   t: number
+  /** the munition on its way to this strike, if the platform launched one */
+  munition?: Munition
   radius_m: number
   platform?: string
   track?: string
@@ -30,7 +35,7 @@ export function impactElement(impact: ImpactEvent, ageMs: number): HTMLDivElemen
   }
   const label = document.createElement('span')
   label.className = 'impact-label'
-  label.textContent = 'EFFECT RELEASED'
+  label.textContent = 'IMPACT'
   el.appendChild(label)
   return el
 }

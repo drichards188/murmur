@@ -20,6 +20,8 @@ export interface EngageDrawing {
   warn?: boolean
   /** Actual recorded release; the preview may point somewhere else. */
   effect?: { t: number; point: LngLat; radius_m: number }
+  /** its munition's impact (bd murmur-64z): the effect lands then, not at the release */
+  impactT?: number
   assessment?: 'persists' | 'ceased' | 'unknown'
 }
 
@@ -52,6 +54,8 @@ export function buildEngageLayers(drawings: EngageDrawing[], nowMs: number) {
     paths.push({ path: d.preview.track_path, color: a(THEIRS, k * 0.8), width: 1.5 })
   }
   const tick = Math.floor(nowMs / 1000)
+  // released, and landed: a munition still in flight has not struck yet
+  const struck = (d: EngageDrawing) => d.effect != null && !(d.impactT != null && nowMs < d.impactT)
   return [
     new ScatterplotLayer<EngageDrawing>({
       id: 'engage-keepout',
@@ -89,10 +93,11 @@ export function buildEngageLayers(drawings: EngageDrawing[], nowMs: number) {
       radiusMinPixels: 4,
       stroked: true,
       filled: true,
-      getFillColor: (d) => a(EFFECT, d.phase === 'effected' ? 0.45 : d.phase === 'ended' ? 0.1 : 0.16),
+      getFillColor: (d) => a(EFFECT, d.phase === 'effected' && struck(d) ? 0.45 : d.phase === 'ended' ? 0.1 : 0.16),
       getLineColor: (d) => a(EFFECT, dim(d)),
       getLineWidth: (d) => (d.selected ? 2.5 : 1.5),
       lineWidthUnits: 'pixels',
+      updateTriggers: { getFillColor: tick },
       parameters: onTop,
     }),
     new PathLayer<Path>({
@@ -111,7 +116,7 @@ export function buildEngageLayers(drawings: EngageDrawing[], nowMs: number) {
       getPosition: (d) => d.effect?.point ?? d.preview.effect_point,
       getText: (d) =>
         d.effect
-          ? `${d.label} · ${d.assessment ? `ASSESSED ${d.assessment.toUpperCase()}` : 'EFFECT RELEASED'}`
+          ? `${d.label} · ${d.assessment ? `ASSESSED ${d.assessment.toUpperCase()}` : struck(d) ? 'IMPACT' : 'MUNITION IN FLIGHT'}`
           : d.phase === 'ended'
           ? d.label
           : `${d.label} effect ${fmtRel(d.preview.effect_t - nowMs)}`,

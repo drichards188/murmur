@@ -18,6 +18,8 @@ export interface PlatformLimits {
   authenticity?: string
   authenticity_blocker?: string
   space_class?: string
+  /** one-way: spent by its own effect (a loitering munition), so it is its own munition */
+  expended_by_effect?: boolean
 }
 
 // Must match sim/policy.toml [rules]: the decision core rejects an orbit tighter than this.

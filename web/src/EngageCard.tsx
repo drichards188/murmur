@@ -31,6 +31,7 @@ import {
 } from './engage'
 import './engage.css'
 import { distanceM } from './geo'
+import { secondsToImpact } from './munition'
 import { declarationBasis, unconfirmedRule } from './ident'
 import { stepsUpAct } from './auth'
 import type { Vehicle } from './types'
@@ -778,7 +779,17 @@ function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardPr
           Effect released {fmtRel(e.effect.t - now())} at {ll(e.effect.point)} (radius {Math.round(e.effect.radius_m)} m, planned {fmtRel(e.effect.planned_t - e.effect.t)} from release)
         </p>
       )}
-      {i.state === 'effected' && (
+      {e?.munition &&
+        (now() < e.munition.impact_t ? (
+          <p className="eg-munition flying">
+            <b>{e.munition.name} in flight</b>: impact in {secondsToImpact(e.munition, now())} s
+          </p>
+        ) : (
+          <p className="eg-munition">
+            <b>Impact at {fmtZ(e.munition.impact_t)}</b> ({e.munition.name}, {Math.round(e.munition.tof_s)} s from its launch at {fmtZ(e.munition.launch_t)})
+          </p>
+        ))}
+      {i.state === 'effected' && !(e?.munition && now() < e.munition.impact_t) && (
         <p className="muted">
           Assessing: the effect point covered for {e?.covered_s.toFixed(0) ?? 0} s{e?.observe?.covered_by.length ? ` by ${e.observe.covered_by.join(', ')}` : ' (no sensor of ours covers it)'}
         </p>

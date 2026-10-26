@@ -2,16 +2,18 @@
 import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import './impact.css'
-import { Layer, type LayersList, type PickingInfo, type Viewport } from '@deck.gl/core'
+import { Layer, WebMercatorViewport, type LayersList, type PickingInfo, type Viewport } from '@deck.gl/core'
 import { MapboxOverlay } from '@deck.gl/mapbox'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { distanceM } from './geo'
 import { IMPACT_ANIMATION_MS, impactElement, type ImpactEvent } from './impact'
 import { mapScreen, NO_SCREEN, type MapScreen } from './aloft'
 import { BRIDGE_FILTER, liftBridges, type LiftedBridge } from './bridges'
-import { build3dGlide, build3dStatic, drawnHeight, DEM_TILES, HEIGHT_EXAGGERATION } from './map3d'
+import { build3dGlide, build3dStatic, drawnHeight, DEM_TILES, HEIGHT_EXAGGERATION, z } from './map3d'
 import { declutter } from './declutter'
 import { advanceDrawn, drawnAlt, drawnPosition, drawnPositionOf, drawnTick, glidingCount, isGliding, noteAltitudes, observeVehicles, resetDrawn, setSmoothing, snapAllDrawn } from './drawn'
+import { LAUNCH_FLASH_MS, munitionShown } from './munition'
+import { buildMunitionLayers } from './munitionLayers'
 import { GLIDE_LAYER_IDS } from './orderLayers'
 import { buildTrailLayers } from './trailLayers'
 import { perfWatchDeck } from './perf'
@@ -42,6 +44,11 @@ interface Props {
   hiddenUids?: ReadonlySet<number>
   impacts?: ImpactEvent[]
   impactNowMs?: number
+  /** the console's clock (the bridge's, as `impactNowMs` is): where a munition in flight is drawn
+   *  on each animation frame (munitionLayers.ts) and when its strike starts */
+  bridgeNow?: () => number
+  /** platforms that are their own munition, on their way: tagged (vehicleLayers.ts) */
+  oneWay?: ReadonlySet<number>
   taskings: Tasking[]
   selected: Set<number>
   draft: Draft
@@ -57,8 +64,10 @@ interface Props {
   onFollowing?: (following: boolean) => void
   /** inbox: where pending intents would send their vehicles (see inboxPreview.ts) */
   preview?: FC
-  /** inbox: fit the view to these points (n changes on every request) */
-  fit?: { points: LngLat[]; n: number; padRight: number } | null
+  /** inbox: fit the view to these points (n changes on every request); `aloft`, points at their
+   *  height (metres above mean sea level) the view must hold too, such as a munition's launch
+   *  point thousands of metres up: the camera then backs off until they are in it */
+  fit?: { points: LngLat[]; n: number; padRight: number; aloft?: [number, number, number][] } | null
   /** space overlays: area, passes in progress, highlighted scene, SATCOM link lines */
   space?: SpaceOverlay
   /** the view while it moves (4 times a second) and when it stops: centre, bounds (w, s, e,
@@ -256,7 +265,7 @@ function surfacePoint(m: maplibregl.Map, e: maplibregl.MapMouseEvent): LngLat {
   return water ? [water.lng, water.lat] : [ground.lng, ground.lat]
 }
 
-export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, linkRoute = null }: Props) {
+export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, bridgeNow, oneWay, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, linkRoute = null }: Props) {
   const vehicles = useMemo(() => hiddenUids?.size ? allVehicles.filter((v) => !hiddenUids.has(v.uid)) : allVehicles, [allVehicles, hiddenUids])
   // the top view (pitch 0, looking straight down) and the pitch to tilt back to from it
   const [top, setTop] = useState(false)
@@ -272,7 +281,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   const previewGliding = useRef(false)
   const overlay = useRef<MapboxOverlay | null>(null)
   const bridges = useRef<LiftedBridge[]>([])
-  const latest = useRef({ vehicles, selected, bare: new Set<number>(), aloft: new Map<number, number>(), clusters })
+  const latest = useRef({ vehicles, selected, bare: new Set<number>(), aloft: new Map<number, number>(), clusters, oneWay })
   // the surface drawings' inputs (surfaceLayers.ts), and what they were last built from
   const taskingsRef = useRef(taskings)
   const draftRef = useRef(draft)
@@ -309,6 +318,13 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   const tooltip = useRef<HTMLDivElement>(null)
   const map = useRef<maplibregl.Map | null>(null)
   const impactMarkers = useRef(new Map<string, maplibregl.Marker>())
+  // the strikes and the clock, for the animation frames of a munition's flight; the latest clock
+  // reading the markers were reconciled at (never back: see syncImpacts)
+  const impactsRef = useRef(impacts)
+  const clockRef = useRef(bridgeNow)
+  const syncedAt = useRef(0)
+  // munitions were drawn in the last layers built
+  const munitionsDrawn = useRef(false)
   const ready = useRef(false)
   // centroid we last zoomed to; refit when the swarm shows up somewhere else (new --location)
   const fitAt = useRef<LngLat | null>(null)
@@ -371,7 +387,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
    *  of a glide, which rebuilds only what is attached to a vehicle and reuses the rest as it was
    *  (the inbox preview too while one of its vehicles glides: `previewToo`). */
   const deckLayers = (frame = false, previewToo = false): LayersList => {
-    const { vehicles: vs, selected: sel, bare, aloft, clusters: cl } = latest.current
+    const { vehicles: vs, selected: sel, bare, aloft, clusters: cl, oneWay: ow } = latest.current
     const m = ready.current ? map.current : null
     if (!frame || !staticLayers.current) {
       staticLayers.current = {
@@ -408,9 +424,27 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       // the extension layers that sit at a vehicle follow its glide: re-trigger just those
       ...(frame ? ext.map((l) => (l instanceof Layer && GLIDE_LAYER_IDS.includes(l.id) ? l.clone({ updateTriggers: { ...l.props.updateTriggers, getPosition: tick } } as never) : l)) : ext),
       ...clusterLayers,
-      ...buildVehicleLayers({ vehicles: vs, selected: sel, bare, aloft }),
+      ...buildVehicleLayers({ vehicles: vs, selected: sel, bare, aloft, oneWay: ow }),
+      // munitions in flight over everything: what is on the way
+      ...munitionLayers(),
     ]
     return layers
+  }
+
+  /** the munitions in flight, or flashing at their launch, at `t` (the bridge's clock) */
+  const munitionsAt = (t: number) => impactsRef.current.flatMap((i) => (i.munition && munitionShown(i.munition, t) ? [i.munition] : []))
+  /** Animation frames are wanted for a munition: one is in flight or flashing at its launch, or
+   *  is to be launched within a second. Never with reduced motion (the console's tick steps it). */
+  const munitionsFlying = () => {
+    const t = clockRef.current?.()
+    if (t == null || reducedNow) return false
+    return impactsRef.current.some(({ munition: m }) => m && t >= m.launch_t - 1000 && (t < m.impact_t || t < m.launch_t + LAUNCH_FLASH_MS))
+  }
+  const munitionLayers = (): LayersList => {
+    const t = clockRef.current?.()
+    const live = t == null ? [] : munitionsAt(t)
+    munitionsDrawn.current = live.length > 0
+    return live.length ? buildMunitionLayers(live, t!, screenNow(), reducedNow) : []
   }
   const pushLayers = () => overlay.current?.setProps({ layers: deckLayers() })
 
@@ -437,9 +471,13 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   // fleet, and 30 Hz is still smooth for glides of 150 ms to a second. Not throttled while the
   // camera follows a vehicle: the camera aims at the pose of every display frame, and deck.gl
   // must draw that same pose or the followed symbol shakes against the view.
+  //
+  // The same frames draw a munition in flight (munitionLayers.ts), smoothing on or off: then they
+  // run while one flies, and step only the glides there are (none: no vehicle is re-positioned).
   const glideFrame = (t: number) => {
     frameId.current = 0
-    if (!smoothRef.current || lostRef.current || !overlay.current) return
+    const flying = munitionsFlying()
+    if ((!smoothRef.current && !flying) || lostRef.current || !overlay.current) return
     const every = latest.current.vehicles.length > GLIDE_MANY ? 1000 / 30 : 1000 / 60
     if (!following.current && t - lastGlideFrame.current < every - 2) {
       // too soon: wait for the next display frame (the glide may have ended meanwhile; the next real frame then draws its end)
@@ -448,7 +486,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     }
     lastGlideFrame.current = t
     const t0 = performance.now()
-    const n = advanceDrawn(t)
+    const n = glidingCount() > 0 ? advanceDrawn(t) : 0
     // the preview's transit lines start at a vehicle: rebuilt while one of them glides (and once more as it ends)
     const uids = previewRef.current.features.flatMap((f) => (f.properties?.uid == null ? [] : [f.properties.uid as number]))
     const previewNow = uids.some(isGliding)
@@ -461,10 +499,13 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       a.push(performance.now() - t0)
       if (a.length > 600) a.splice(0, a.length - 600)
     }
-    if (n > 0) frameId.current = requestAnimationFrame(glideFrame)
+    // a munition that has just landed: its strike starts this frame, not at the next tick
+    if (flying && clockRef.current) syncImpacts(clockRef.current())
+    if (n > 0 || munitionsFlying()) frameId.current = requestAnimationFrame(glideFrame)
   }
   const wakeGlide = () => {
-    if (!frameId.current && smoothRef.current && glidingCount() > 0 && document.visibilityState === 'visible') frameId.current = requestAnimationFrame(glideFrame)
+    if (frameId.current || document.visibilityState !== 'visible') return
+    if ((smoothRef.current && glidingCount() > 0) || munitionsFlying()) frameId.current = requestAnimationFrame(glideFrame)
   }
 
   useEffect(() => {
@@ -799,14 +840,20 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   }, [mapGen])
 
   // CSS runs the short flash and shockwave; MapLibre keeps its anchor on the effect point
-  // while the operator pans, tilts or zooms. Reconcile by release id so bridge ticks do not
-  // restart the animation, and do not replay old effects when a console reconnects.
-  useEffect(() => {
+  // while the operator pans, tilts or zooms. Reconcile by strike id so bridge ticks do not
+  // restart the animation, and do not replay old effects when a console reconnects. Called at
+  // each tick and on the animation frames of a munition's flight, whose clock readings can come a
+  // little after a tick's: the latest reading within a second counts, so a strike a frame started
+  // is not taken down again by a tick read just before it (and a clock set back, a new run, is
+  // followed).
+  const syncImpacts = (nowMs: number) => {
     const m = map.current
     if (!m || !ready.current) return
+    const now = nowMs < syncedAt.current && syncedAt.current - nowMs < 1000 ? syncedAt.current : nowMs
+    syncedAt.current = now
     const live = new Set<string>()
-    for (const impact of impacts) {
-      const age = impactNowMs - impact.t
+    for (const impact of impactsRef.current) {
+      const age = now - impact.t
       if (age < 0 || age >= IMPACT_ANIMATION_MS) continue
       live.add(impact.key)
       if (impactMarkers.current.has(impact.key)) continue
@@ -820,7 +867,18 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       marker.remove()
       impactMarkers.current.delete(key)
     }
-  }, [impacts, impactNowMs, styleGen, mapGen])
+  }
+  useEffect(() => {
+    impactsRef.current = impacts
+    clockRef.current = bridgeNow
+    syncImpacts(impactNowMs)
+    // a munition in flight: animation frames; none (reduced motion), a step at each tick instead,
+    // and one more to take off one that has landed (or was left drawn while the tab was hidden)
+    if (munitionsFlying()) wakeGlide()
+    else if (overlay.current && (munitionsDrawn.current || (reducedNow && munitionsAt(impactNowMs).length))) overlay.current.setProps({ layers: deckLayers(true) })
+    // syncImpacts, wakeGlide and deckLayers read refs only
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [impacts, impactNowMs, bridgeNow, styleGen, mapGen])
 
   // the smooth toggle: remembered, and every vehicle is drawn as reported until its next report
   useEffect(() => {
@@ -899,7 +957,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     // murmur-02g: where symbols bunch up (planes on a runway), only one keeps its labels;
     // the rest show the bare symbol and their callsign on hover
     const bare = declutter(seen, selected, m.getZoom())
-    latest.current = { vehicles: drawn, selected, bare, aloft, clusters: clustered ? clusters : null }
+    latest.current = { vehicles: drawn, selected, bare, aloft, clusters: clustered ? clusters : null, oneWay }
     const t1 = performance.now()
     pushLayers()
     wakeGlide()
@@ -926,7 +984,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     }
     // pushLayers reads refs; moved re-runs this after a move, styleGen after a (re)load
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vehicles, selected, moved, styleGen, clusters, smooth])
+  }, [vehicles, selected, moved, styleGen, clusters, smooth, oneWay])
 
   useEffect(() => {
     spaceRef.current = space
@@ -1108,7 +1166,71 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     if (!fit || !m || fit.points.length === 0 || lostRef.current) return
     const bounds = new maplibregl.LngLatBounds(fit.points[0], fit.points[0])
     for (const p of fit.points) bounds.extend(p)
-    m.fitBounds(bounds, { padding: { top: 70, bottom: 70, left: 70, right: fit.padRight + 20 }, maxZoom: 13, duration: 1000, bearing: m.getBearing() })
+    const padding = { top: 70, bottom: 70, left: 70, right: fit.padRight + 20 }
+    const options = { padding, maxZoom: 13, duration: 1000, bearing: m.getBearing() }
+    const cam = fit.aloft?.length ? m.cameraForBounds(bounds, options) : undefined
+    if (!cam?.center || cam.zoom == null) {
+      m.fitBounds(bounds, options)
+      return
+    }
+    // MapLibre fits on the ground; a point thousands of metres up (drawn twice as high, map3d.ts)
+    // is above that view at the operator's pitch. Seen through deck.gl's camera (what draws it),
+    // with room at the top for the status line over the map (and below, for the strike): centre
+    // the points' extent in the padded view and back off a quarter zoom level at a time until it
+    // holds them all, then come back in while it still does.
+    const c = m.getCanvas()
+    const [width, height] = [c.clientWidth, c.clientHeight]
+    const pad = { ...padding, top: 130, bottom: 110 }
+    const mid = [(pad.left + width - pad.right) / 2, (pad.top + height - pad.bottom) / 2]
+    const bearing = cam.bearing ?? m.getBearing()
+    const pitch = m.getPitch()
+    const start = maplibregl.LngLat.convert(cam.center)
+    const home: LngLat = [start.lng, start.lat]
+    const pts: [number, number, number][] = [...fit.points.map(([lon, lat]): [number, number, number] => [lon, lat, 0]), ...fit.aloft!.map(([lon, lat, alt]): [number, number, number] => [lon, lat, z(alt)])]
+    /** where the points are on the screen at this centre and zoom; null when one is behind the camera */
+    const extent = (center: LngLat, zoom: number) => {
+      const vp = new WebMercatorViewport({ width, height, longitude: center[0], latitude: center[1], zoom, pitch, bearing })
+      const screen = mapScreen(vp, width, height)
+      const xs: number[] = []
+      const ys: number[] = []
+      for (const [lon, lat, h] of pts) {
+        const p = screen.at(lon, lat, h)
+        if (!p) return null
+        xs.push(p[0])
+        ys.push(p[1])
+      }
+      return { vp, x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) }
+    }
+    type Extent = ReturnType<typeof extent>
+    const holds = (e: Extent) => e != null && e.x0 >= pad.left && e.x1 <= width - pad.right && e.y0 >= pad.top && e.y1 <= height - pad.bottom
+    /** The centre that moves the middle of the points' extent towards the middle of the padded
+     *  view: by at most a quarter of the view each way (a point far off the screen would send the
+     *  centre past the horizon); the centre as it was when even that lands past the horizon or
+     *  tens of kilometres off. */
+    const centred = (center: LngLat, zoom: number): LngLat => {
+      const e = extent(center, zoom)
+      if (!e) return center
+      const dx = Math.max(-width / 4, Math.min(width / 4, (e.x0 + e.x1) / 2 - mid[0]))
+      const dy = Math.max(-height / 4, Math.min(height / 4, (e.y0 + e.y1) / 2 - mid[1]))
+      const to = e.vp.unproject([width / 2 + dx, height / 2 + dy], { targetZ: 0 })
+      return Number.isFinite(to[0]) && Number.isFinite(to[1]) && distanceM(home, [to[0], to[1]]) < 50_000 ? [to[0], to[1]] : center
+    }
+    let center = home
+    let zoom = cam.zoom
+    for (let k = 0; k < 32; k++) {
+      // centred twice (the perspective moves the points as the centre moves)
+      center = centred(centred(center, zoom), zoom)
+      if (holds(extent(center, zoom))) break
+      zoom -= 0.25
+    }
+    // a quarter level closer, centred again, while that holds them too
+    for (let k = 0; k < 12 && zoom < 13; k++) {
+      const closer = centred(centred(center, zoom + 0.25), zoom + 0.25)
+      if (!holds(extent(closer, zoom + 0.25))) break
+      center = closer
+      zoom += 0.25
+    }
+    m.flyTo({ center, zoom, bearing, duration: reducedNow ? 0 : 1000 })
   }, [fit])
 
   useEffect(() => {

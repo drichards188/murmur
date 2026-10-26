@@ -146,10 +146,15 @@
   font-weight: 600;
 }
 .eg-effect,
+.eg-munition,
 .eg-stop,
 .eg-assess {
   font-size: 12px;
   margin: 4px 0;
+}
+/* a munition on its way (bd murmur-64z): the impact marker's orange */
+.eg-munition.flying {
+  color: #ffc987;
 }
 .eg-assess.ceased {
   color: #8fe0b0;

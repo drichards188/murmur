@@ -24,6 +24,8 @@ import { EngagePanel } from './EngagePanel'
 import { isEngage, previewOf, RUNNING, type EngagePreview, type KeepOutExplanation } from './engage'
 import { buildEngageLayers, buildKeepOutLayers, type EngageDrawing } from './engageLayers'
 import { IMPACT_STATUS_MS, type ImpactEvent } from './impact'
+import { secondsToImpact } from './munition'
+import { usePlatformLimits } from './taskDefaults'
 import { estimated } from './estimate'
 import { buildEstimateLayers } from './estimateLayers'
 import { circle } from './geo'
@@ -214,26 +216,59 @@ export default function App() {
   const allIntents = decisions?.intents
   const impactNowMs = now()
   const engageTick = Math.floor(impactNowMs / 1000)
+  // Strikes (bd murmur-64z): a munition's impact, the time of flight after its release; a
+  // platform that is its own munition strikes at the release.
   const impacts = useMemo<ImpactEvent[]>(() => (allIntents ?? []).flatMap((i) => {
     const effect = isEngage(i) ? i.engagement?.effect : null
+    const m = i.engagement?.munition
     const platform = allVehicles.find((v) => v.uid === Number(i.uids[0]))
-    return effect ? [{ key: `i${i.id}@${effect.t}`, intentId: i.id, point: effect.point, t: effect.t, radius_m: effect.radius_m,
+    const t = m ? m.impact_t : effect?.t
+    return effect && t != null ? [{ key: `i${i.id}@${t}`, intentId: i.id, point: m ? m.impact_point : effect.point, t, radius_m: effect.radius_m, munition: m,
       platform: platform ? callsign(platform) : undefined, track: i.engagement?.snapshot?.track_id ?? i.engage?.track,
       assessment: i.engagement?.assessment }] : []
   }), [allIntents, allVehicles])
   const seenImpacts = useRef(new Set<string>())
+  /** frame the strike: its effect circle, with room around it */
   const focusImpact = useCallback((impact: ImpactEvent) => {
     const ring = circle(impact.point, Math.max(impact.radius_m * 4, 450)).filter((_, k) => k % 8 === 0)
     setFit((f) => ({ points: [impact.point, ...ring], n: (f?.n ?? 0) + 1, padRight: showInbox ? 430 : 70 }))
   }, [showInbox])
+  /** frame a munition's flight: its launch point (up where it was released), the impact point
+   *  and the effect circle, so the operator watches it fly and strike */
+  const focusFlight = useCallback((impact: ImpactEvent) => {
+    const m = impact.munition
+    if (!m) return focusImpact(impact)
+    const ring = circle(impact.point, Math.max(impact.radius_m * 4, 450)).filter((_, k) => k % 8 === 0)
+    setFit((f) => ({ points: [m.launch_point, impact.point, ...ring], aloft: [[...m.launch_point, m.launch_alt_m]], n: (f?.n ?? 0) + 1, padRight: showInbox ? 430 : 70 }))
+  }, [showInbox, focusImpact])
+  // the view goes to a munition at its launch (its flight and strike), to any other strike as
+  // it lands; one seen too late for either (a console that reconnects) is left alone
   useEffect(() => {
     for (const impact of impacts) {
       if (seenImpacts.current.has(impact.key)) continue
+      const from = impact.munition?.launch_t ?? impact.t
+      if (impactNowMs < from) continue // not yet: looked at again on the next tick
       seenImpacts.current.add(impact.key)
-      if (impactNowMs >= impact.t && impactNowMs - impact.t < 4000) focusImpact(impact)
+      if (impactNowMs - impact.t < 4000) (impact.munition ? focusFlight : focusImpact)(impact)
     }
-  }, [impacts, impactNowMs, focusImpact])
-  const visibleImpact = impacts.filter((impact) => impactNowMs >= impact.t && impactNowMs - impact.t < IMPACT_STATUS_MS).sort((a, b) => b.t - a.t)[0]
+  }, [impacts, impactNowMs, focusImpact, focusFlight])
+  // the status line: a munition on its way (the next to land) before any strike's status, which
+  // has the line once nothing is in flight
+  const flyingImpact = impacts.filter((x) => x.munition && impactNowMs >= x.munition.launch_t && impactNowMs < x.t).sort((a, b) => a.t - b.t)[0]
+  const visibleImpact = flyingImpact ? undefined : impacts.filter((impact) => impactNowMs >= impact.t && impactNowMs - impact.t < IMPACT_STATUS_MS).sort((a, b) => b.t - a.t)[0]
+  // platforms that are their own munition (catalog expended_by_effect) on their way: tagged on
+  // the map, so the operator sees what is on the way (bd murmur-64z)
+  const platformCatalog = usePlatformLimits()
+  const oneWayKey = (allIntents ?? [])
+    .filter((i) => isEngage(i) && i.state === 'dispatched')
+    .map((i) => Number(i.uids[0]))
+    .filter((uid) => {
+      const platform = allVehicles.find((v) => v.uid === uid)?.identity?.platform
+      return platform != null && !!platformCatalog?.get(platform)?.expended_by_effect
+    })
+    .sort((a, b) => a - b)
+    .join()
+  const oneWay = useMemo(() => new Set(oneWayKey ? oneWayKey.split(',').map(Number) : []), [oneWayKey])
   const engageDrawings = useMemo<EngageDrawing[]>(() => {
     const out: EngageDrawing[] = []
     const nowMs = now()
@@ -248,7 +283,7 @@ export default function App() {
         i.state === 'pending_approval' ? 'pending' : i.state === 'effected' ? 'effected' : RUNNING.includes(i.state) ? 'running' : 'ended'
       const warn = (i.engagement?.watch && !i.engagement.watch.holds) || (i.engage?.live?.changed ?? []).some((c) => c.worse)
       out.push({ key: `i${i.id}`, label: `ENGAGE i${i.id}`, preview: p, phase, selected: inboxSel?.kind === 'intent' && inboxSel.id === i.id, warn,
-        effect: i.engagement?.effect, assessment: i.engagement?.assessment?.result })
+        effect: i.engagement?.effect, impactT: i.engagement?.munition?.impact_t, assessment: i.engagement?.assessment?.result })
     }
     if (engageDraft) out.push({ key: 'draft', label: 'NOMINATION', preview: engageDraft, phase: 'draft', selected: true })
     return out
@@ -470,6 +505,8 @@ export default function App() {
           hiddenUids={spent}
           impacts={impacts}
           impactNowMs={impactNowMs}
+          bridgeNow={now}
+          oneWay={oneWay}
           taskings={taskings}
           selected={selected}
           draft={draft}
@@ -503,9 +540,17 @@ export default function App() {
         <ErrorBoundary name="Situation" className="floating">
           <SituationPanel decisions={decisions} />
         </ErrorBoundary>
+        {flyingImpact?.munition && (
+          <div className="impact-status" role="status">
+            <span><strong>MUNITION IN FLIGHT</strong>
+              {' · '}{flyingImpact.munition.name} from {flyingImpact.platform ?? `ENGAGE i${flyingImpact.intentId}`}{flyingImpact.track ? ` on ${flyingImpact.track}` : ''}{' · '}
+              impact in {secondsToImpact(flyingImpact.munition, impactNowMs)} s</span>
+            <button onClick={() => focusFlight(flyingImpact)}>View flight</button>
+          </div>
+        )}
         {visibleImpact && (
           <div className="impact-status" role="status">
-            <span><strong>{visibleImpact.assessment ? `ASSESSMENT: ${visibleImpact.assessment.result.toUpperCase()}` : 'STRIKE · EFFECT RELEASED'}</strong>
+            <span><strong>{visibleImpact.assessment ? `ASSESSMENT: ${visibleImpact.assessment.result.toUpperCase()}` : 'STRIKE · IMPACT'}</strong>
               {' · '}{visibleImpact.platform ?? `ENGAGE i${visibleImpact.intentId}`}{visibleImpact.track ? ` on ${visibleImpact.track}` : ''}{' · '}
               {visibleImpact.assessment?.result === 'ceased' ? 'No target detected where expected'
                 : visibleImpact.assessment?.result === 'persists' ? 'Target still detected'
