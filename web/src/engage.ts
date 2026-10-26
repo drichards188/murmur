@@ -111,6 +111,20 @@ export interface EngageView {
    *  it, each out of view since `since` (engine ms, its last fix): an operator with engagement
    *  authority may accept one for this engagement */
   lost_open?: { track: string; since: number; identity: string | null; affiliation: string; ais: string | null }[]
+  /** rules 19: the live tracks accepted for it as behaving now, in force: each with who, when
+   *  (engine ms), and the estimate accepted (its course and speed). Every signer's picture
+   *  carries them. */
+  accepted_behaving?: AcceptedBehavingView[]
+  /** rules 19: the acceptances as behaving now that lapsed on their own, oldest first: shown to
+   *  every signer */
+  lapsed?: BehavingLapse[]
+  /** rules 19: for each live blocker on the card's picture (the frozen plan's effect once
+   *  signed) and each accepted track, what accepting it as behaving now would do, or how the
+   *  acceptance in force stands */
+  behaving?: BehavingInfo[]
+  /** rules 19: while it waits with no signature: only then may an operator with engagement
+   *  authority accept a live track as behaving now (revoking is allowed any time in play) */
+  behaving_acceptable_now?: boolean
   /** how long a picture token is good for, and the most the signatures on one plan may take */
   token_ttl_s?: number
   max_signing_s?: number
@@ -167,6 +181,10 @@ export interface PictureToken {
   /** rules 16: the lost contacts accepted for it when it was shown (track id -> who, since
    *  which fix) */
   lost_accepted?: Record<string, { since: number | null; by: string }>
+  /** rules 19: the live tracks accepted for it as behaving now when it was shown (track id ->
+   *  who, when, and the facts accepted); a signature on a token from before an acceptance was
+   *  given, revoked or lapsed is refused (409: look again) */
+  behaving_accepted?: Record<string, { by: string; t: number; facts: TrackFactsSnap }>
 }
 
 // ---- rules 19: live tracks accepted as behaving now (murmur-j0x) ---------------------------
@@ -201,6 +219,43 @@ export interface BehavingInfo {
   lapsed: string | null
 }
 
+/** Rules 19: an acceptance in force as the card shows it. */
+export interface AcceptedBehavingView {
+  track: string
+  by: string
+  /** when it was accepted (engine ms) */
+  t: number
+  /** the estimate accepted: its time, position, velocity (east, north m/s) and that velocity's
+   *  error */
+  estimate_t: number
+  position: LngLat
+  velocity_mps: [number, number] | null
+  velocity_sigma_mps: number
+  identity: string | null
+  affiliation: string
+  domain: string
+}
+
+export type BehavingLapseKind = 'gone' | 'out_of_view' | 'no_velocity' | 'position' | 'velocity'
+
+/** Rules 19: an acceptance as behaving now that lapsed on its own. */
+export interface BehavingLapse {
+  track: string
+  t: number
+  kind: BehavingLapseKind
+  /** the numbers in a sentence */
+  detail: string
+  accepted_by: string
+}
+
+export const LAPSE_LABEL: Record<BehavingLapseKind, string> = {
+  gone: 'left the picture',
+  out_of_view: 'went out of view',
+  no_velocity: 'lost its velocity',
+  position: 'left its accepted path',
+  velocity: 'changed course or speed',
+}
+
 /** A velocity as the operator reads it: "course 093°, 12.3 m/s (known to 0.4 m/s)". */
 export function courseText(v: [number, number] | null, sigma?: number) {
   if (!v) return 'no velocity'
@@ -209,6 +264,20 @@ export function courseText(v: [number, number] | null, sigma?: number) {
   if (speed < 0.3) return `holding, ${speed.toFixed(1)} m/s${known}`
   const deg = ((Math.atan2(v[0], v[1]) * 180) / Math.PI + 360) % 360
   return `course ${String(Math.round(deg) % 360).padStart(3, '0')}°, ${speed.toFixed(1)} m/s${known}`
+}
+
+/** Rules 19: an acceptance's identity for comparing a picture token with the card: the track,
+ *  who accepted it and when (a new acceptance of the same track is a change). */
+export function behavingKey(list: { track: string; by: string; t: number }[]): string {
+  return list
+    .map((a) => `${a.track}@${a.by}@${a.t}`)
+    .sort()
+    .join(',')
+}
+
+/** The acceptances a picture token carries, as `behavingKey` reads them. */
+export function tokenBehavingKey(tok: PictureToken): string {
+  return behavingKey(Object.entries(tok.behaving_accepted ?? {}).map(([track, a]) => ({ track, by: a.by, t: a.t })))
 }
 
 /** Ask for the picture to sign (an operator with engagement authority who may sign it). */
@@ -454,6 +523,23 @@ export async function nominate(req: {
  *  estimate at the acceptance). */
 export function acceptBehavingBody(tracks: string[]): { track: string }[] {
   return tracks.map((track) => ({ track }))
+}
+
+/** Rules 19: an operator with engagement authority accepts, for a nomination waiting with no
+ *  signature, a live track as it is behaving now (`engage.accepted`, its estimate now);
+ *  `proof`: the step-up with it, when the policy lists `accept_unknown` (its passkey made for
+ *  this intent and track). */
+export async function acceptBehavingFor(id: number, track: string, proof?: { password?: string; passkey?: Record<string, unknown> }): Promise<Intent> {
+  const b = await post(`/api/intents/${id}/accept_behaving`, { track, ...(proof ?? {}) })
+  return b.intent as Intent
+}
+
+/** Rules 19: any operator withdraws an acceptance of a live track as behaving now (pending or
+ *  under way): the keep-out counts it by every region again, which stops an engagement it now
+ *  blocks. */
+export async function revokeBehaving(id: number, track: string): Promise<Intent> {
+  const b = await post(`/api/intents/${id}/revoke_behaving`, { track })
+  return b.intent as Intent
 }
 
 /** Rules 16: the lost contacts an acceptance names, as the request and its step-up's passkey

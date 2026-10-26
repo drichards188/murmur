@@ -1,23 +1,31 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ApproveExtra, Check, Intent } from './decisions'
-import { fmtDuration, getOperator, intentAction, StepUpNeeded, stepsUp, useOperator, useOperators } from './decisions'
+import { fmtDuration, fmtZ, getOperator, intentAction, StepUpNeeded, stepsUp, useOperator, useOperators } from './decisions'
 import { reportView } from './operatorView'
 import { RationaleText } from './Rationale'
 import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
 import {
   abortEngagement,
+  acceptBehavingFor,
   acceptLostFor,
+  behavingKey,
+  courseText,
   engageParams,
   FALLBACK_LABEL,
+  fmtDist,
   fmtRel,
   isEngage,
+  LAPSE_LABEL,
   previewOf,
   requestPicture,
+  revokeBehaving,
   revokeLost,
   revokeUnknown,
   RUNNING,
   STATE_LABEL,
+  tokenBehavingKey,
+  type BehavingInfo,
   type EngagePreview,
   type PictureToken,
 } from './engage'
@@ -74,7 +82,19 @@ function Acceptances({ intent: i, vehicles, now, onDone, signing }: Pick<CardPro
   const accepted = i.engage?.accepted ?? []
   // rules 16: lost contacts accepted for it
   const lost = i.engage?.accepted_lost ?? []
-  if (!accepted.length && !lost.length) return null
+  // rules 19: live tracks accepted for it as behaving now, and how each stands on the picture
+  const behaving = i.engage?.accepted_behaving ?? []
+  const standing = new Map((i.engage?.behaving ?? []).map((b) => [b.track, b]))
+  if (!accepted.length && !lost.length && !behaving.length) return null
+  const revokeB = async (track: string) => {
+    setError(null)
+    try {
+      await revokeBehaving(i.id, track)
+      onDone(`i${i.id}: acceptance of ${track} as behaving now revoked by ${getOperator()}`, 'ok')
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
   const withdrawLost = async (track: string) => {
     setError(null)
     try {
@@ -107,6 +127,29 @@ function Acceptances({ intent: i, vehicles, now, onDone, signing }: Pick<CardPro
           )}
         </p>
       ))}
+      {behaving.map((a) => {
+        const b = standing.get(a.track)
+        return (
+          <div key={`behaving-${a.track}`} className="eg-alarm eg-behaving" role="status">
+            <b>Accepted as behaving now</b> by {a.by} {fmtRel(a.t - now())}: {a.track} ({a.identity ?? 'unclassified'}, {a.affiliation}, {a.domain}),{' '}
+            {courseText(a.velocity_mps, a.velocity_sigma_mps)} on its estimate at {fmtZ(a.estimate_t)}. The keep-out counts it along that course, not anywhere it
+            could turn or speed up to; the acceptance lapses on its own if it departs from that course beyond its uncertainty or goes out of view
+            {signing ? '; your signature covers this acceptance.' : '.'}{' '}
+            <button
+              type="button"
+              className="ghost mini"
+              onClick={(ev) => {
+                ev.stopPropagation()
+                void revokeB(a.track)
+              }}
+              title="Any operator may revoke it: the keep-out counts the track by all its regions again, which stops an engagement it then blocks"
+            >
+              Revoke
+            </button>
+            {b && !b.lapsed && <span className={`eg-behaving-now ${b.clears ? 'clears' : 'short'}`}>Now: {b.reason}</span>}
+          </div>
+        )
+      })}
       {lost.map((a) => (
         <p key={`lost-${a.track}`} className="eg-alarm" role="status">
           Accepted as a lost contact by {a.by}: {a.track}, dropped by the tracker, out of view {a.since == null ? '' : `since ${fmtRel(a.since - now())}`}. The keep-out
@@ -177,6 +220,114 @@ function AcceptLostHere({ intent: i, now, onDone }: Pick<CardProps, 'intent' | '
           passwordLabel="Consequential: your password to accept a lost contact"
           purpose="to accept this lost contact for this engagement"
           ariaLabel="password to accept a lost contact"
+          value={step}
+          onChange={(s) => setStep(s)}
+          busy={busy != null}
+          bad={bad}
+        />
+      )}
+      {error && <p className="error ix-error">{error}</p>}
+    </div>
+  )
+}
+
+/** Rules 19: the acceptances as behaving now that lapsed on their own, shown prominently to
+ *  every signer (and while the engagement is under way): which track, who had accepted it,
+ *  when, and the engine's sentence with the numbers. A lapse the picture shows before the
+ *  engine logs it (its next step) is shown too. */
+function BehavingLapses({ intent: i, now }: Pick<CardProps, 'intent' | 'now'>) {
+  const lapsed = i.engage?.lapsed ?? []
+  const accepted = new Set((i.engage?.accepted_behaving ?? []).map((a) => a.track))
+  // lapsing on the picture now, not yet logged: an acceptance still in force that the picture lapses
+  const lapsing = (i.engage?.behaving ?? []).filter((b) => b.lapsed && b.accepted_by && accepted.has(b.track))
+  if (!lapsed.length && !lapsing.length) return null
+  return (
+    <div className="eg-alarm eg-lapse" role="alert">
+      <b>Acceptance as behaving now lapsed</b>
+      <ul>
+        {lapsing.map((b) => (
+          <li key={`now-${b.track}`}>
+            {b.track} (accepted by {b.accepted_by}) is lapsing now: {b.lapsed}
+          </li>
+        ))}
+        {lapsed.map((l) => (
+          <li key={`${l.track}@${l.t}`}>
+            {l.track} (accepted by {l.accepted_by}) {LAPSE_LABEL[l.kind] ?? l.kind} {fmtRel(l.t - now())}: {l.detail}
+          </li>
+        ))}
+      </ul>
+      <span className="eg-lapse-foot">The keep-out counts it by all its regions again; accepting it again takes a person.</span>
+    </div>
+  )
+}
+
+/** Rules 19: while the nomination waits with no signature, an operator with engagement
+ *  authority may accept a live blocker as it is behaving now (its estimate then), with the
+ *  step-up when the policy lists `accept_unknown`. Logged under their session, shown to every
+ *  signer, cleared by a reset; it lapses on its own. Never offered to anyone without engagement
+ *  authority (an agent has no route to it at all). */
+function AcceptBehavingHere({ intent: i, onDone }: Pick<CardProps, 'intent' | 'onDone'>) {
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [step, setStep] = useStepUp()
+  const [bad, setBad] = useState(false)
+  const [operator] = useOperator()
+  const ops = useOperators()
+  const open = (i.engage?.behaving ?? []).filter((b) => !b.accepted_by)
+  const hasAuthority = (i.engage?.engage_operators ?? ops.engage).includes(operator)
+  if (!i.engage?.behaving_acceptable_now || !open.length || !hasAuthority) return null
+  const stepUp = stepsUpAct('accept_unknown')
+  const anyAcceptable = open.some((b) => b.acceptable)
+  const accept = async (b: BehavingInfo) => {
+    setBusy(b.track)
+    setError(null)
+    setBad(false)
+    try {
+      const proof = stepUp ? await stepUpProof(step, { act: 'accept_unknown', intent: i.id, accept_behaving: [{ track: b.track }] }) : undefined
+      await acceptBehavingFor(i.id, b.track, proof)
+      setStep({ password: '' })
+      onDone(`i${i.id}: ${b.track} accepted as behaving now by ${operator}`, 'ok')
+    } catch (err) {
+      if (err instanceof StepUpNeeded) setBad(true)
+      setError((err as Error).message)
+    }
+    setBusy(null)
+  }
+  return (
+    <div className="eg-accept-behaving-here">
+      {open.map((b) => (
+        <div key={b.track} className={`ko-behaving ${b.acceptable ? '' : 'not'}`}>
+          <span className="eg-behaving-head">
+            Live blocker <b>{b.track}</b>
+            {b.acceptable ? `, ${courseText(b.velocity_mps, b.velocity_sigma_mps)} on its estimate at ${fmtZ(b.estimate_t)}` : ''}
+          </span>
+          <div className="ko-behaving-reason">{b.reason}</div>
+          {b.acceptable && !b.clears && (
+            <div className="ko-behaving-short">
+              Accepting it would not clear the keep-out{b.short_m != null && b.short_m > 0 ? `: it would still be short ${fmtDist(b.short_m)}` : ''}.
+            </div>
+          )}
+          {b.acceptable && (
+            <button
+              type="button"
+              className="ghost mini"
+              disabled={busy != null || (stepUp && !stepUpReady(step))}
+              onClick={(ev) => {
+                ev.stopPropagation()
+                void accept(b)
+              }}
+              title="Accept it as it is behaving now, for this engagement only: logged under your session with its estimate now, shown to every signer, cleared if the signatures are dropped; it lapses on its own"
+            >
+              Accept as behaving now
+            </button>
+          )}
+        </div>
+      ))}
+      {stepUp && anyAcceptable && (
+        <StepUpField
+          passwordLabel="Consequential: your password to accept a live track as behaving now"
+          purpose="to accept this track as behaving now for this engagement"
+          ariaLabel="password to accept a live track as behaving now"
           value={step}
           onChange={(s) => setStep(s)}
           busy={busy != null}
@@ -313,6 +464,19 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
   const plan = view?.plan ?? null
   const [shown, setShown] = useState<PictureToken | null>(null)
   const shownLeft = shown ? (shown.expires_t - now()) / 1000 : 0
+  // rules 19: an acceptance as behaving now given, revoked or lapsed while a picture is shown
+  // makes the signature on it refused (409): drop it and say to look again. Only on a change of
+  // the card's acceptances, so a card a moment behind the token never drops a fresh one.
+  const behavingNow = behavingKey(view?.accepted_behaving ?? [])
+  const [behavingSeen, setBehavingSeen] = useState(behavingNow)
+  if (behavingSeen !== behavingNow) {
+    setBehavingSeen(behavingNow)
+    if (shown && tokenBehavingKey(shown) !== behavingNow) {
+      setShown(null)
+      setError('The tracks accepted for it as behaving now changed since you looked: look again.')
+    }
+  }
+  const lapses = (view?.lapsed?.length ?? 0) > 0
   const signHint = isProposer
     ? `You (${operator}) proposed this: the proposer may not approve it (two-person rule).`
     : !hasAuthority
@@ -382,7 +546,7 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
 
   return (
     <article
-      className={`ix-card eg-card ${selected ? 'sel' : ''} ${worse.length ? 'eg-warn' : ''}`}
+      className={`ix-card eg-card ${selected ? 'sel' : ''} ${worse.length || lapses ? 'eg-warn' : ''}`}
       tabIndex={0}
       onClick={onFocus}
       onKeyDown={(e) => {
@@ -411,6 +575,7 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
           </ul>
         </div>
       )}
+      <BehavingLapses intent={i} now={now} />
       {drift != null && drift > 25 && (
         <p className="eg-drift">
           The track is {Math.round(drift)} m from where the nomination's preview put it now.
@@ -476,6 +641,7 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
         )}
         <Acceptances intent={i} vehicles={vehicles} now={now} onDone={onDone} signing />
         {signed.length === 0 && <AcceptLostHere intent={i} now={now} onDone={onDone} />}
+        <AcceptBehavingHere intent={i} onDone={onDone} />
         {plan && (
           <p className="eg-plan">
             Plan frozen by {plan.by}&apos;s signature {fmtRel(plan.t - now())}: effect at {ll(plan.effect_point)} {fmtRel(plan.effect_t - now())}, radius {Math.round(plan.effect_radius_m)} m, on {plan.track.id} ({plan.track.identity ?? 'unclassified'}, {declarationBasis(plan.track.declaration, plan.track.declared_by)}). Every signature is on this exact plan; if it stops holding, the signatures are dropped.
@@ -484,7 +650,7 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
         {(view?.signatures ?? []).map((s) => (
           <p key={s.by} className="muted">
             {s.by} signed {fmtRel(s.t - now())} on the effect point {ll(s.effect_point)}
-            {s.self_accepted ? ', having also accepted a lost vehicle for it' : ''}.
+            {s.self_accepted ? ', having also made an acceptance for it (a lost vehicle or contact, or a track as behaving now)' : ''}.
           </p>
         ))}
         <p>
@@ -536,6 +702,12 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
                 {a.since == null ? '' : ` (out of view since ${fmtRel(a.since - now())})`}.{' '}
               </span>
             ))}
+            {Object.entries(shown.behaving_accepted ?? {}).map(([track, a]) => (
+              <span key={`behaving-${track}`} className="eg-alarm">
+                It covers {track} accepted as behaving now by {a.by} {fmtRel(a.t - now())} ({courseText(a.facts.velocity_mps ?? null)} on its estimate at{' '}
+                {fmtZ(a.facts.position.t)}).{' '}
+              </span>
+            ))}
             {shownLeft > 0 ? `Valid ${Math.ceil(shownLeft)} s.` : 'Expired: look again.'}{' '}
             <button className="ghost mini" onClick={() => setShown(null)}>
               Cancel
@@ -573,8 +745,9 @@ function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardPr
     }
     setBusy(false)
   }
+  const lapses = (i.engage?.lapsed?.length ?? 0) > 0
   return (
-    <article className={`ix-card eg-run ${i.state} ${selected ? 'sel' : ''}`} tabIndex={0} onClick={onFocus}>
+    <article className={`ix-card eg-run ${i.state} ${selected ? 'sel' : ''} ${lapses ? 'eg-warn' : ''}`} tabIndex={0} onClick={onFocus}>
       <header className="ix-head">
         <strong className="ix-kind eg-kind">ENGAGE</strong>
         <span className="ix-id">i{i.id}</span>
@@ -598,6 +771,7 @@ function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardPr
             : `Picture changed: ${failing.map((c) => `${c.rule} (${c.detail})`).join('; ')}`}
         </p>
       )}
+      <BehavingLapses intent={i} now={now} />
       {abortable && <Acceptances intent={i} vehicles={vehicles} now={now} onDone={onDone} />}
       {e?.effect && (
         <p className="eg-effect">
