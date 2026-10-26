@@ -1789,7 +1789,9 @@ fn the_rules_18_logs_read_a_tracks_velocity_error_and_cannot_claim_rules_17() {
     assert!(rejected.contains("velocity 300 m at 3.0 m/s"), "the detail names the error");
     let aborted = fixture("v18-velocity-error-grows-under-way-scenario-98.jsonl");
     assert!(aborted.contains("\"velocity_sigma_mps\":4.0") && aborted.contains("at 4.0 m/s"), "the error grown under way");
-    for (name, text) in [("97", &rejected), ("98", &aborted)] {
+    // 97's nomination rejected by a keep-out rules 17 passes; 98's abort for a picture rules 17
+    // finds holding
+    for (name, text, differs) in [("97", &rejected, "rejected by rules that passed"), ("98", &aborted, "stopped for the picture, but the picture held")] {
         let r = with(text, RulesAccepted::Exactly(now));
         assert!(r.ok(), "{name}: {:?}", r.mismatches);
         let mut ls = lines(text);
@@ -1797,7 +1799,6 @@ fn the_rules_18_logs_read_a_tracks_velocity_error_and_cannot_claim_rules_17() {
         assert!(ls[0].contains(&tag), "{name}");
         ls[0] = ls[0].replacen(&tag, &format!("\"rules_version\":{before},"), 1);
         let r = with(&rechain(&ls), RulesAccepted::Exactly(before));
-        assert!(!r.ok(), "{name}: claimed as rules {before}, its decisions must differ");
-        eprintln!("{name}: {:?}", whats(&r));
+        assert!(whats(&r).iter().any(|w| w.contains(differs)), "{name}: {:?}", whats(&r));
     }
 }
