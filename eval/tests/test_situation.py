@@ -43,7 +43,7 @@ def test_every_situation_loads():
         assert sit.title and sit.brief, p
         # fault-drill and world v3's watches run in the headless simulator only (the faults are the
         # simulator's; so is a world's conditions draw)
-        if p.stem not in ("harbor-watch", "hostile-act-engagement", "fault-drill", *WATCHES_V3):
+        if p.stem not in ("harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition", "fault-drill", *WATCHES_V3):
             assert sit.todo, f"{p.stem} is a stub until the AI work lands"
     assert S.headless_steps(S.load_situation("fault-drill"))
     for name in WATCHES_V3:
@@ -1263,7 +1263,7 @@ def test_hostile_act_engagement_fits_the_chain():
     from eval.proxy import proxy_params
     from eval.storyline import haversine_m
 
-    sit = S.load_situation("hostile-act-engagement")
+    sit = S.load_situation("hostile-act-loitering-munition")
     assert not sit.todo
     assert (sit.operator, sit.ai, sit.cosigner, sit.reveal) == ("autoplay", "claude", "scripted", False)
     assert sit.duration_s == 720 and sit.rate == 1
@@ -1603,7 +1603,7 @@ def test_the_runner_shows_the_chain_confirmations_and_grants(tmp_path: Path):
     nominated, who signed, the effect and the assessment, and what the fallback step did."""
     from eval import situation_run as R
 
-    sit = S.load_situation("hostile-act-engagement")
+    sit = S.load_situation("hostile-act-loitering-munition")
 
     async def make():
         return R.Runner(sit, S.resolve_modes(sit, ai="none"), {}, {"checked": False}, out_dir=tmp_path / "run")

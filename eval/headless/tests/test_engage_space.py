@@ -3,7 +3,7 @@ headless.
 
 Unit tests (no binary): the scripted signers' and reviewer's policies, the scripted agent's
 choices and the pinned element sets. Smoke episodes (the real `murmur-headless`, built here if
-stale): the engagement chain end to end on `hostile-act-engagement` (a hostile act, the rule
+stale): the engagement chain end to end on `hostile-act-loitering-munition` (a hostile act, the rule
 declaration, its review, the nomination, two signatures, the effect, the assessment, what is
 owed back), its abort (the fallback and the restore), its miss (a munition that survives and an
 operator who un-spends it), a lost contact that blocks until its AIS claim is confirmed, a
@@ -422,7 +422,7 @@ def test_the_engagement_chain_runs_end_to_end(binary: Path, tmp_path: Path):
     nomination through the MCP tools, two signatures on one frozen plan, the dispatch and the
     platform's lost-link preload, the effect, the assessment by our sensors, and what was owed
     back closed (the munition is spent by its own effect); the log replays, every decision."""
-    rec = episode("hostile-act-engagement", tmp_path / "a", **ENGAGE)
+    rec = episode("hostile-act-loitering-munition", tmp_path / "a", **ENGAGE)
     evs = events(rec)
     act = first(evs, "ident.act")
     decl = first(evs, "ident.declared")
@@ -463,11 +463,11 @@ def test_the_engagement_chain_runs_end_to_end(binary: Path, tmp_path: Path):
     text = replays(tmp_path / "a")
     assert "1 effect(s)" in text and "1 assessment(s)" in text
     # the same seed again: the same episode
-    same_episode(rec, episode("hostile-act-engagement", None, **ENGAGE))
+    same_episode(rec, episode("hostile-act-loitering-munition", None, **ENGAGE))
 
 
 def test_an_aborted_engagement_takes_its_fallback_and_restores(binary: Path, tmp_path: Path):
-    rec = episode("hostile-act-engagement", tmp_path / "a",
+    rec = episode("hostile-act-loitering-munition", tmp_path / "a",
                   **{**ENGAGE, "signers": {"preset": "abort"}, "scripted": {"engage": {"max_nominations": 1}}})
     evs = events(rec)
     stopped = first(evs, "engage.stopped")
@@ -479,7 +479,7 @@ def test_an_aborted_engagement_takes_its_fallback_and_restores(binary: Path, tmp
 
 
 def test_a_miss_leaves_the_target_and_a_surviving_munition_is_unspent(binary: Path, tmp_path: Path):
-    rec = episode("hostile-act-engagement", tmp_path / "a",
+    rec = episode("hostile-act-loitering-munition", tmp_path / "a",
                   **{**ENGAGE, "effects": {"p_hit": 0.0, "survives_miss": True},
                      "review": {"preset": "confirm-declarations", "unspend": "unspend"},
                      "scripted": {"engage": {"max_nominations": 1}}})
@@ -536,7 +536,7 @@ def test_a_lost_contact_blocks_until_its_ais_claim_is_confirmed(binary: Path, tm
     opts = Options(calibration=Calibration.load(), keep=tmp_path / "a",
                    **{**ENGAGE, "review": {"preset": "accept-all"}})
     with tempfile.TemporaryDirectory(prefix="engage-space-") as td:
-        rec = Episode(from_situation("hostile-act-engagement"), 1, Path(td), opts, contacts_path=contacts).run()
+        rec = Episode(from_situation("hostile-act-loitering-munition"), 1, Path(td), opts, contacts_path=contacts).run()
     evs = events(rec)
     dropped = first(evs, "track.dropped")
     assert dropped["ais"]["mmsi"] == "366999401"
@@ -562,13 +562,13 @@ def test_a_lost_contact_blocks_until_its_ais_claim_is_confirmed(binary: Path, tm
 
 
 def with_contacts(tmp_path: Path, extra: str, duration_s: float, **opts: Any) -> dict[str, Any]:
-    """`hostile-act-engagement` with contacts added to its scenario, kept in `tmp_path / "a"`."""
+    """`hostile-act-loitering-munition` with contacts added to its scenario, kept in `tmp_path / "a"`."""
     from eval.headless.episode import Episode, Options
     from eval.headless.situations import Calibration, from_situation
 
     contacts = tmp_path / "contacts.toml"
     contacts.write_text((REPO / "sim" / "scenarios" / "hostile-act-engagement.toml").read_text() + extra)
-    e = from_situation("hostile-act-engagement")
+    e = from_situation("hostile-act-loitering-munition")
     e.duration_s = duration_s
     with tempfile.TemporaryDirectory(prefix="engage-space-") as td:
         return Episode(e, 1, Path(td), Options(calibration=Calibration.load(), keep=tmp_path / "a", **opts),

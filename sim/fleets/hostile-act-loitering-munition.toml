@@ -1,0 +1,46 @@
+# Hostile act to engagement with a loitering munition (sim/situations/hostile-act-loitering-munition.toml): three stand-ins at the
+# Golden Gate, one of them armed. Stand-ins only, so the situation starts in seconds and needs no
+# ArduPilot build.
+#
+# uids follow the unit order (sim/swarm.py): 1 HUNTER 1, 2 REAPER 1, 3 BLADE 1. The situation's
+# contacts name HUNTER 1 by its uid (the hostile act's victim); its opening orders and timeline
+# select them by callsign.
+#
+# Where each one is, and why (the engagement checks read every one of ours):
+# - HUNTER 1, the sensor ship (radar 40 km, EO/IR 15 km), patrols the channel east of the bridge,
+#   about 2 km from the holding area west of it: close enough for its EO/IR to classify a small
+#   boat there and place an act's author within a few tens of metres, far enough to stay out of
+#   an engagement's keep-out there.
+# - REAPER 1, the MALE drone (radar 100 km, EO/IR 40 km), orbits at its 7,600 m cruise altitude
+#   over the bay east of the bridge: its radar keeps every contact of the picture in view (a track
+#   out of view counts anywhere it could reach in every keep-out, rules 16), and its circle is
+#   2 km clear of the engagement zone (a circling friendly counts anywhere on its disc).
+# - BLADE 1, a loitering munition (Switchblade 600-class: EO/IR 3 km, 28 m/s, spent by its own
+#   effect), loiters at 120 m over the water off Crissy Field, in line of sight of the ground
+#   station there, about 2.7 km (some 95 s) from the holding area. A fixed wing can take only the
+#   fallback `return` (ArduPlane has no lost-link action that holds where it is). The 80 m
+#   default mission altitude grazed terrain west of the station and broke the radio near release.
+#
+# No armed surface drone: with no order a stand-in boat drifts on the tide (2 m/s on the ebb
+# through the Gate in this scenario's hour), and an armed one may not be given a script's order.
+#
+# Every platform has an endurance figure in sim/platforms.toml, so the opening orders (HUNTER 1
+# and REAPER 1 only: an armed platform never gets a script's order) go out by policy.
+#   make situation NAME=hostile-act-engagement   (or make up FLEET=hostile-act-engagement)
+title = "Hostile act to engagement: three stand-ins at the Gate, one armed"
+
+[[unit]]
+platform = "seahunter"                 # sensor ship (MUSV): radar 40 km, EO/IR 15 km, AIS 50 km; 1000 h
+sim = "standin"
+spawn = [37.8200, -122.4660, 0, 270]   # east of the bridge, mid-channel
+
+[[unit]]
+platform = "mq9b"                      # MALE ISR: radar 100 km, EO/IR 40 km; 35 h
+sim = "standin"
+spawn = [37.8100, -122.4500, 7600, 90] # over the bay east of the bridge, at its cruise altitude
+
+[[unit]]
+platform = "switchblade"               # armed loitering munition: EO/IR 3 km; 0.7 h
+sim = "standin"
+spawn = [37.8090, -122.4650, 120, 270]  # over the water off Crissy Field, airborne
+cruise_alt_m = 120                       # keep the engagement mission above the terrain shadow

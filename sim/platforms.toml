@@ -156,6 +156,43 @@ protocol_note = "GA-ASI's ground control station is STANAG 4586-based"
 authenticity = "JSBSim MALE airframe plus 4586 (matches GA-ASI's 4586-based GCS)"
 authenticity_blocker = "Proprietary flight software"
 
+# The armed MQ-9B: the same aircraft with its weapons stations loaded (the class carries
+# Hellfire-class munitions on its wing stations). A separate entry so that only fleets that ask
+# for it are armed: every order for an armed platform waits for a person, and a script may not
+# move one. It is not spent by its own effect: it fires and flies on. Every other field is
+# [mq9b]'s. Used by sim/fleets/hostile-act-engagement.toml.
+[mq9b_armed]
+name = "MQ-9B SkyGuardian-class (armed)"
+short = "MQ-9B"
+role = "MALE ISR/strike UAS"
+armed = true
+domain = "air"
+sim = "standin"
+behavior = "plane"
+callsign = "REAPER"
+cruise_mps = 90
+max_mps = 105
+alt_m = 7600
+climb_mps = 10
+turn_dps = 3
+loiter_radius_m = 3500
+endurance_h = 35
+link = "satcom"
+space_class = "wgs"
+space_class_alt = "ku-geo"
+sidc = "SFAPMFQ--------"
+# the base platform's sensors and their physical figures, as [mq9b]
+sensors = [
+  { type = "radar", range_m = 100000, guess = true, r50_m = 300000, rcs_ref_m2 = 10000, scan_s = 5, beam_deg = 3, cell_m = 1, band_ghz = 16.7, doppler = true },
+  { type = "eo_ir", range_m = 40000, guess = true, slew_dps = 57, channels = [{ band = "mwir", wide_deg = 18.2, narrow_deg = 0.24, px = 640, blur_urad = 20 }, { band = "day", wide_deg = 1.07, narrow_deg = 0.2, px = 1920, blur_urad = 7 }] },
+  { type = "ais", range_m = 150000, guess = true },
+]
+physical_reach_m = { radar = { air = 29130, ground = 94670 }, eo_ir = { air = 107840, ground = 87240, surface = 87800 } }
+protocol = "stanag4586"
+protocol_note = "GA-ASI's ground control station is STANAG 4586-based"
+authenticity = "JSBSim MALE airframe plus 4586 (matches GA-ASI's 4586-based GCS)"
+authenticity_blocker = "Proprietary flight software"
+
 [cca]
 name = "Collaborative Combat Aircraft (YFQ-42A/44A-class)"
 short = "CCA"

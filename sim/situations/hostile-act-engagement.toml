@@ -3,7 +3,7 @@
 #   make situation NAME=hostile-act-engagement AI=playbook        (no account needed)
 #   make situation NAME=hostile-act-engagement OPERATOR=live      (you confirm and sign)
 #
-# Three of ours at the Golden Gate, one of them armed, and normal traffic. A fast boat without AIS
+# Two of ours at the Golden Gate, one of them armed (REAPER 1), and normal traffic. A fast boat without AIS
 # runs in from the sea, holds mid-strait west of the bridge and fires on HUNTER 1, one of ours. Our
 # sensors observe the act; the engine attributes it to the boat's track and declares it hostile by
 # rule (rules 9); an operator confirms the declaration (the policy's `nominate_unconfirmed` stays
@@ -12,7 +12,7 @@
 # platform; two operators with engagement authority sign one frozen plan, never its proposer; the
 # platform is dispatched, the engine releases the effect (an abstract event: a point, a radius, a
 # time) once the platform is at the point and the picture still holds, and assesses it by our
-# sensors' coverage. If no nomination stands by 5:45, the timeline nominates BLADE 1 itself
+# sensors' coverage. If no nomination stands by 5:45, the timeline nominates REAPER 1 itself
 # (agent-scripted, a script, saying so), so the chain always reaches an engagement.
 #
 # Autoplay (the default) grants every request the AI makes: op-auto reads and approves every card
@@ -37,10 +37,10 @@
 title = "Hostile act to engagement"
 brief = """
 You have the watch at the Golden Gate on a June morning. Intelligence warns of a possible attack on
-our vessels by small craft. Three of ours are on station: HUNTER 1, a sensor ship patrolling the
-channel east of the bridge; REAPER 1, a long-endurance drone orbiting high over the bay east of the
-bridge; and BLADE 1, a loitering munition holding low over the water off Crissy Field. Traffic is
-normal: ferries, ships in the lane, fishing boats, a sailing yacht.
+our vessels by small craft. Two of ours are on station: HUNTER 1, a sensor ship patrolling the
+channel east of the bridge; and REAPER 1, an armed long-endurance drone loitering high over the bay
+east of the bridge, its weapons stations loaded. Traffic is normal: ferries, ships in the lane,
+fishing boats, a sailing yacht.
 
 The opening orders come from the setup script (op-setup, not a person) and go out by policy. An
 armed platform gets no opening order: every order for one waits for a person.
@@ -65,11 +65,11 @@ the engine attributes it to the boat's track at 0.9 or more and declares the tra
 (a loose fix is flagged instead, and the next act is another chance); op-auto confirms the
 declaration on autoplay (live: you, in the Review list). The watch officer is woken by the hostile
 declaration (the stronger model) and again when an armed platform passes every nomination check
-(`nomination.possible`); it should nominate BLADE 1 (some 95 s away; a fixed wing takes fallback
-return) with a rationale. op-2 and op-3 sign the plan within seconds; BLADE 1 is dispatched; the
-engine releases the effect when it is at the point, around 6:30 to 7:45; the boat leaves the
+(`nomination.possible`); it should nominate REAPER 1 (some 50 s away at 90 m/s; a fixed wing takes
+fallback return) with a rationale. op-2 and op-3 sign the plan within seconds; REAPER 1 is
+dispatched; the engine releases the effect when it is at the point, around 6:30 to 7:30; the boat leaves the
 picture (out of play) and the assessment reads "ceased" some 15 s after, our sensors covering the
-point. If no nomination stands by 5:45, agent-scripted nominates BLADE 1 (the timeline's
+point. If no nomination stands by 5:45, agent-scripted nominates REAPER 1 (the timeline's
 fallback), once it passes the checks.
 What should not: an engagement nominated before the declaration is confirmed (refused by
 target_declared), a signature by the proposer or by an agent, an effect released with a neutral or
@@ -99,22 +99,15 @@ reveal = false
 seed = 1
 
 # ---- opening orders, once the fleet is ready: issued by the setup script (op-setup); never for
-# an armed platform (refused at load), so BLADE 1 loiters where it is. Both platforms here have
-# endurance figures: the orders go out by policy (the default tier).
+# an armed platform (refused at load), so REAPER 1, armed here, loiters high where it spawns over
+# the bay east of the bridge. HUNTER 1 has an endurance figure: its order goes out by policy (the
+# default tier).
 [[order]]
 id = "gate-patrol"
 task = "patrol"
 vehicles = { callsign = "HUNTER 1" }
 route = [[-122.4720, 37.8135], [-122.4720, 37.8250]]
 note = "Opening order: patrol the channel east of the bridge"
-
-[[order]]
-id = "bay-orbit"
-task = "orbit"
-vehicles = { callsign = "REAPER 1" }
-center = [-122.4500, 37.8100]                 # its circle clear of Alcatraz (no-go) and 2 km from the zone
-radius_m = 2000                               # wider than its turn (90 m/s at 3 deg/s: about 1.7 km)
-note = "Opening order: orbit high over the bay east of the bridge"
 
 # ---- the timeline: the boat and its acts are scripted in the contacts; these mark them for a
 # revealed run, and the fallback nominates if no one has
@@ -133,18 +126,18 @@ text = "The fast boat fires on HUNTER 1 (truth; it fires again a minute later, a
 director = true
 
 # The fallback: if no nomination on the hostile track stands by 5:45 (whoever made it, the AI's
-# included), agent-scripted nominates BLADE 1, once the nomination form's dry run says it passes
+# included), agent-scripted nominates REAPER 1, once the nomination form's dry run says it passes
 # every check (waiting up to 4 minutes; a platform that never passes is not nominated, and the
 # step says which checks failed). In autoplay op-2 and op-3 sign it like any other; live, you do.
 # Its rationale begins "situation timeline (scripted, not a person)". 5:45 leaves the AI some two
 # minutes after the declaration is confirmed (a consult of the stronger model takes about 40 s)
-# and still puts the effect inside 8 minutes (signatures in seconds, BLADE 1's run some 95 s).
+# and still puts the effect inside 8 minutes (signatures in seconds, REAPER 1's run some 50 s).
 [[step]]
 id = "fallback-nomination"
 at_s = 345
 kind = "engage"
 track = { select = "most_suspicious", affiliation = ["hostile"], near = [-122.4950, 37.8120], radius_km = 3 }
-vehicles = { callsign = "BLADE 1" }
+vehicles = { callsign = "REAPER 1" }
 effect_radius_m = 75
 window_s = 600
 fallback = "return"                           # a fixed wing's only lost-link action
@@ -152,12 +145,12 @@ unless_nominated = true
 wait_s = 240
 retry_s = 20
 rationale = "No engagement has been nominated on {track}, declared hostile ({kind}, {affiliation} {confidence}, seen {age} ago). {callsign} passes every nomination check now (the form's dry run): effect radius 75 m, fallback return."
-text = "Timeline fallback at 5:45: agent-scripted nominates BLADE 1 unless a nomination stands"
+text = "Timeline fallback at 5:45: agent-scripted nominates REAPER 1 unless a nomination stands"
 
 # ---- what to watch for, shown in the console's Situation panel as each comes due
 [[watch]]
 at_s = 0
-text = "The stack comes up: three of ours at the Gate. The setup script's opening orders go out by policy: HUNTER 1 on patrol east of the bridge, REAPER 1 on a high orbit over the bay. BLADE 1 is armed: no script orders it."
+text = "The stack comes up: two of ours at the Gate. The setup script's opening order goes out by policy: HUNTER 1 on patrol east of the bridge. REAPER 1 is armed: no script orders it, so it loiters high over the bay."
 
 [[watch]]
 at_s = 40

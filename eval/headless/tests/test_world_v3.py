@@ -400,7 +400,7 @@ def test_a_timeline_engage_step_nominates_and_the_signers_sign(tmp_path: Path):
     waits for BLADE 1 to pass the nomination form's checks, agent-scripted nominates it, the
     episode's scripted signers (section 16) sign it and it goes out; with a nomination standing
     it is skipped, saying whose."""
-    e = from_situation("hostile-act-engagement")
+    e = from_situation("hostile-act-loitering-munition")
     opts = dict(calibration=Calibration.load(), signers={"preset": "scripted"}, review={"preset": "confirm-declarations"})
     rec = Episode(e, 1, tmp_path / "none", Options(agent="none", **opts)).run()
     (step,) = [s for s in rec["script"] if s.get("step") == "fallback-nomination"]
