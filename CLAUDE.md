@@ -316,5 +316,18 @@ meaningful. Decision and command, not weapons.
 ## Conventions
 
 - bd for all task tracking; the pre-commit hook exports issues to `.beads/issues.jsonl`.
-- Commit and push to the local remote (`~/git/murmur.git`) when work lands.
+- Commit and push to `origin` (GitHub) when work lands; `~/git/murmur.git` is stale.
 - No AI attribution in commits; no em dashes in prose (global CLAUDE.md).
+- The history is public and read by people judging the work, so write it for them:
+  - A subject line of 72 characters at most, in the imperative ("Add", "Fix", "Calibrate"),
+    no trailing period, saying what changed for the project rather than which file moved.
+  - A blank line, then a body wrapped at 72 that says what was wrong or missing, what changed
+    and why, and what it was checked against. Bug, issue and section ids belong in the body.
+  - One commit per coherent change. No "WIP", "lint" or "fix typo" commits on main: fold
+    them into the change they belong to before it lands.
+  - Work from a branch or worktree lands on main by a squash (`git merge --squash`) with a
+    written message, never a merge commit; main stays linear, and no branch or worktree name
+    (`worktree-agent-...`) appears in the history.
+  - A commit that test data or a document cites by hash (a fixture's `build`, a results
+    note) is never rewritten after it is pushed; before a push, keep its tree identical and say
+    which hash it stands for.
