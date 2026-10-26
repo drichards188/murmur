@@ -25,6 +25,10 @@
 //! Position error (1 sigma, metres): radar 30 + 1% of range; EO/IR 15 + 0.5%; AIS 10 (the
 //! ship's own GPS); sonar 50 + 10% (bearing-heavy); ESM bearing only, 5 degrees. The
 //! noise is Gaussian, drawn deterministically from (seed, tick, vehicle, contact, sensor).
+//! A sensor measures from where its vehicle is and the vehicle lays the fix off from where it
+//! believes it is, so every fix but AIS's carries the vehicle's navigation error
+//! ([`Observer::geolocate`]: a GNSS spoofer's walk, a dead reckoning's drift; none outside the
+//! headless simulator, which alone knows a vehicle's truth).
 //!
 //! # What a sensor can say
 //!
@@ -49,6 +53,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use super::physical::geometry::M_PER_DEG;
 use super::physical::spec::PhysicalFields;
 use super::truth::{ContactTruth, Domain};
 use crate::geo::haversine_m;
@@ -194,13 +199,22 @@ impl SensorCatalog {
     }
 }
 
-/// One of our vehicles as a sensor carrier: where it says it is (the sensor measures
-/// relative to its own navigation, so the track inherits that error) and what it carries.
+/// One of our vehicles as a sensor carrier: where it is, what it carries, and how far its own
+/// navigation is off (murmur-k8i). Its sensors see from where it is (`lat`, `lon`: range,
+/// horizon, terrain and the water are the truth's); it places what they measure relative to
+/// itself from where it believes it is (`believed`), so its fixes carry its navigation error, a
+/// GNSS spoofer's walk or a dead reckoning's drift (`geolocate`), and its payload manager points
+/// at a world position from there too. Only the headless simulator knows a vehicle's truth (the
+/// stand-in's own navigation filter, crates/murmur-standins/src/nav.rs); elsewhere `lat`, `lon`
+/// are where it says it is and the error is none.
 #[derive(Debug, Clone, Default)]
 pub struct Observer {
     pub uid: u64,
     pub lat: f64,
     pub lon: f64,
+    /// Where the vehicle believes it is less where it is, metres east and north (its estimate's
+    /// error: what it reports is this far off its truth).
+    pub nav_error_m: (f64, f64),
     pub alt_msl: f64,
     /// height of the sensors above the water or ground, for the horizon
     pub mast_m: f64,
@@ -210,6 +224,25 @@ pub struct Observer {
     /// area its task covers, which its cameras search (none: around itself).
     pub heading_deg: Option<f64>,
     pub area: Option<SearchArea>,
+}
+
+impl Observer {
+    /// Where the vehicle believes it is (lat, lon): where it is, moved by its navigation error.
+    pub fn believed(&self) -> (f64, f64) {
+        self.geolocate(self.lat, self.lon)
+    }
+
+    /// A position this vehicle measured relative to itself (a radar's plot, a camera's or a
+    /// sonar's fix, an ESM bearing's), as it places it: moved by its navigation error, the
+    /// measurement being laid off from where it believes it is. Without an error, the position
+    /// itself, unchanged.
+    pub fn geolocate(&self, lat: f64, lon: f64) -> (f64, f64) {
+        let (e, n) = self.nav_error_m;
+        if e == 0.0 && n == 0.0 {
+            return (lat, lon);
+        }
+        (lat + n / M_PER_DEG, lon + e / (M_PER_DEG * lat.to_radians().cos()))
+    }
 }
 
 /// The area a vehicle's task covers (physical model, WORLD-V3-PLAN 2.4): an orbit's circle or
@@ -477,6 +510,9 @@ pub fn detect(
                 } else {
                     (c.lat + sigma * nn / 111_320.0, c.lon + sigma * ne / (111_320.0 * c.lat.to_radians().cos()))
                 };
+                // measured from where the vehicle is, laid off from where it believes it is (its
+                // navigation error); AIS is the contact's own GPS position, whatever ours believes
+                let (lat, lon) = if s.kind == SensorType::Ais { (lat, lon) } else { o.geolocate(lat, lon) };
                 let wrong = s.kind.classifier().is_some() && misclassified(&c.id, s.kind);
                 // no range, no altitude: a contact on the water ranged by a radar (or
                 // reporting itself over AIS) is at sea level; an aircraft's height comes
@@ -516,7 +552,7 @@ pub fn detect(
                     },
                     domain: c.domain,
                     measured_t: None,
-                    slant_from: slant.then_some((o.lat, o.lon)),
+                    slant_from: slant.then(|| o.believed()),
                     look: None,
                     scan_s: None,
                 });
@@ -608,6 +644,11 @@ pub fn observe_act(p: Params, observers: &[Observer], actor: &ContactTruth, act_
                 (o.lat + 0.5 * hi * bearing.cos() / 111_320.0, o.lon + 0.5 * hi * bearing.sin() / m_per_lon, (hi / 3.0).max(sigma))
             } else {
                 (actor.lat + sigma * nn / 111_320.0, actor.lon + sigma * ne / (111_320.0 * actor.lat.to_radians().cos()), sigma)
+            };
+            // laid off from where the vehicle believes it is, as its detections are
+            let fix = {
+                let (lat, lon) = o.geolocate(fix.0, fix.1);
+                (lat, lon, fix.2)
             };
             let e = per_observer.entry(o.uid).or_insert((fix, Vec::new()));
             if fix.2 < e.0.2 {

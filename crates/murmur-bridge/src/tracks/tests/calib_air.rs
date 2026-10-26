@@ -156,6 +156,7 @@ impl Obs {
             uid: self.uid,
             lat,
             lon,
+            nav_error_m: (0.0, 0.0),
             alt_msl: self.alt,
             mast_m: self.mast,
             submerged: false,

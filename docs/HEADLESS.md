@@ -1263,6 +1263,18 @@ fleet as planned, heard or not. `sim/situations/fault-drill.toml` runs each once
 episode and one test per fault are `eval/headless/tests/test_world_v3.py`; ten seeds with the
 playbook and with `none` ran every step without an error.
 
+**A vehicle whose navigation is off** (a spoofer's walk, a dead reckoning's drift; murmur-k8i,
+2026-10-25). It reports and flies by what it believes, so the C2 shows it there and it ends up
+off where it was sent; its sensors see from where it is; it lays their fixes off from what it
+believes (every fix but AIS's carries its error) and its camera points at places from there
+(docs/SENSING.md). The simulator gives the tracker each vehicle's error, the stand-in's own
+(`Tracks::set_nav_error`), and the observer is the position the vehicle reports less it. The
+`detections` request gives the last sensing step's fixes with their contacts' truth and each
+observer's error (evaluation only). Before it, a spoofed vehicle sensed from where it believed
+it was and its fixes sat on the truth, so a spoof changed nothing in the picture (SCORING-V3.md
+14.4 item 1). A vehicle whose navigation is right is placed and sensed as before; a sub dead
+reckoning under water now carries its drift (0.1 to 0.5 % of the way it has come) on its fixes.
+
 **The water.** `[headless] currents = "world"` (the default) gives the episode its world's
 water (`water.rs`): contacts step with the current at their position (only a drifting one moves
 with it, as with tidewater), and our vehicles that take conditions (boats, subs, the drifter, a

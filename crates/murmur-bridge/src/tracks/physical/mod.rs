@@ -30,6 +30,12 @@
 //! - **Sonar** ([`sonar`]): the sonar equation with each sensor's figure of merit per kind from
 //!   its reference ranges; passive classifies over minutes of signal heard, active localises;
 //!   an active sonar may listen too (its passive mode).
+//! - **Navigation** (murmur-k8i): every sensor sees from where its vehicle is ([`Observer`]'s
+//!   `lat`, `lon`); the vehicle lays its radar's plots, its cameras', sonars' and ESM's fixes off
+//!   from where it believes it is ([`Observer::geolocate`]: its navigation error, a GNSS
+//!   spoofer's walk or a dead reckoning's drift, rides on every fix but AIS's, the contact's own
+//!   GPS), and its payload manager points at a cue or its search from there; a lock follows its
+//!   contact in the image, where the vehicle's navigation plays no part.
 //!
 //! Deterministic as the legacy model: every draw is a hash of the seed, a tick or a scan or a
 //! look's start, the vehicle, the contact and the sensor; state (pointing, looks, scans) moves
@@ -373,12 +379,14 @@ impl Cue {
     /// Where the contact may be, as lines of sight (azimuth, elevation, radians) from a camera at
     /// `o`, `h_s` above the sea: the one at the contact where its height is known, else one at
     /// each of the heights sampled along the band it may fly at, lowest first ([`Cue::aims`]'s
-    /// bars cover them).
+    /// bars cover them). A cue is a place: the payload manager aims at it from where its vehicle
+    /// believes it is ([`Observer::believed`]).
     fn sightlines(&self, o: &Observer, h_s: f64) -> Vec<(f64, f64)> {
         /// The heights sampled along the band (each covered by a bar).
         const SAMPLES: usize = 160;
+        let (olat, olon) = o.believed();
         let aim = |(lat, lon): (f64, f64), alt: f64| {
-            let (de, dn) = en(o.lat, o.lon, lat, lon);
+            let (de, dn) = en(olat, olon, lat, lon);
             (de.atan2(dn), (alt - h_s).atan2(de.hypot(dn).max(1.0)))
         };
         if let Some((h, _)) = self.alt {
@@ -710,6 +718,8 @@ impl Engine {
             let bearing = p.bearing + sig_x * n_x / p.slant_m.max(1.0);
             let m_per_lon = M_PER_DEG * o.lat.to_radians().cos();
             let (lat, lon) = (o.lat + range.max(0.0) * bearing.cos() / M_PER_DEG, o.lon + range.max(0.0) * bearing.sin() / m_per_lon);
+            // the range and bearing laid off from where the vehicle believes it is
+            let (lat, lon) = o.geolocate(lat, lon);
             let alt_m = match t.c.domain {
                 Domain::Surface => Some(t.c.alt_m),
                 Domain::Air if r.height => {
@@ -731,7 +741,7 @@ impl Engine {
                 ais: None,
                 domain: t.c.domain,
                 measured_t: None,
-                slant_from: slant.then_some((o.lat, o.lon)),
+                slant_from: slant.then(|| o.believed()),
                 look: Some(Look { level: Level::Detect, confidence: 0.5 * (1.0 - (-dwell / 90.0).exp()) }),
                 scan_s: Some(r.scan_s),
             });
@@ -862,12 +872,13 @@ impl Engine {
                 }
             };
             let (ne, nn) = (normal(st.seed, st.tick, o.uid, &t.c.id, draw_salt(2)), normal(st.seed, st.tick, o.uid, &t.c.id, draw_salt(3)));
+            let (lat, lon) = o.geolocate(t.c.lat + sigma * nn / M_PER_DEG, t.c.lon + sigma * ne / (M_PER_DEG * t.c.lat.to_radians().cos()));
             out.push(Detection {
                 contact_id: t.c.id.clone(),
                 uid: o.uid,
                 sensor: SensorType::Sonar,
-                lat: t.c.lat + sigma * nn / M_PER_DEG,
-                lon: t.c.lon + sigma * ne / (M_PER_DEG * t.c.lat.to_radians().cos()),
+                lat,
+                lon,
                 alt_m: None,
                 sigma_m: sigma,
                 range_m: r,
@@ -924,12 +935,13 @@ impl Engine {
                 Domain::Ground => "ground_vehicle",
                 Domain::Subsurface => "submerged",
             };
+            let (lat, lon) = o.geolocate(t.c.lat + sigma * nn / M_PER_DEG, t.c.lon + sigma * ne / (M_PER_DEG * t.c.lat.to_radians().cos()));
             out.push(Detection {
                 contact_id: t.c.id.clone(),
                 uid: o.uid,
                 sensor: SensorType::Esm,
-                lat: t.c.lat + sigma * nn / M_PER_DEG,
-                lon: t.c.lon + sigma * ne / (M_PER_DEG * t.c.lat.to_radians().cos()),
+                lat,
+                lon,
                 alt_m: None,
                 sigma_m: sigma,
                 range_m: p.slant_m,
@@ -1055,12 +1067,13 @@ impl Engine {
                 normal(st.seed, st.tick, o.uid, &t.c.id, salt(si, SensorType::EoIr, 4)),
                 normal(st.seed, st.tick, o.uid, &t.c.id, salt(si, SensorType::EoIr, 5)),
             );
+            let (lat, lon) = o.geolocate(t.c.lat + sigma * nn / M_PER_DEG, t.c.lon + sigma * ne / (M_PER_DEG * t.c.lat.to_radians().cos()));
             out.push(Detection {
                 contact_id: t.c.id.clone(),
                 uid: o.uid,
                 sensor: SensorType::EoIr,
-                lat: t.c.lat + sigma * nn / M_PER_DEG,
-                lon: t.c.lon + sigma * ne / (M_PER_DEG * t.c.lat.to_radians().cos()),
+                lat,
+                lon,
                 alt_m: None,
                 sigma_m: sigma,
                 range_m: p.slant_m,
@@ -1126,8 +1139,16 @@ impl Engine {
             bar_s: f64::NEG_INFINITY,
         });
         g.seen_s = s;
+        // the image tracker's line of sight to a contact it has in view: from where the vehicle is
         let aim = |lat: f64, lon: f64, alt: f64| {
             let (de, dn) = en(o.lat, o.lon, lat, lon);
+            (de.atan2(dn), (alt - h_s).atan2(de.hypot(dn).max(1.0)))
+        };
+        // the payload manager's to a place (a search point; a cue's, `Cue::sightlines`): from where
+        // the vehicle believes it is, so a navigation error turns it off the place
+        let (blat, blon) = o.believed();
+        let aim_at_place = |lat: f64, lon: f64, alt: f64| {
+            let (de, dn) = en(blat, blon, lat, lon);
             (de.atan2(dn), (alt - h_s).atan2(de.hypot(dn).max(1.0)))
         };
         let point = |g: &mut Gimbal, az: f64, el: f64, narrow: bool| {
@@ -1250,7 +1271,7 @@ impl Engine {
                 let (lat, lon) = pts[g.step % pts.len()];
                 g.step += 1;
                 g.step_s = s;
-                let (az, el) = aim(lat, lon, 0.0);
+                let (az, el) = aim_at_place(lat, lon, 0.0);
                 point(&mut g, az, el, false);
             } else if g.narrow {
                 let (az, el) = (g.az, g.el);
@@ -1273,12 +1294,14 @@ impl Engine {
         let none = HashMap::new();
         let identified = self.identified.get(&key).unwrap_or(&none);
         let looked = self.looked.get(&key).unwrap_or(&none);
+        // how far a cue is, as the payload manager reckons it: from where its vehicle believes it is
+        let (olat, olon) = o.believed();
         let mut cands: Vec<(&String, f64, f64)> = self
             .cues
             .iter()
             .filter(|(c, cue)| s - cue.s <= CUE_FRESH_S && looked.get(*c).is_none_or(|t| s - t >= RETRY_S))
             .filter_map(|(c, cue)| {
-                let d = haversine_m(o.lat, o.lon, cue.lat, cue.lon);
+                let d = haversine_m(olat, olon, cue.lat, cue.lon);
                 let in_area = o.area.as_ref().is_none_or(|a| area_distance_m(a, cue.lat, cue.lon) <= 0.5 * reach_m);
                 let last = identified.get(c).copied().into_iter().chain(looked.get(c).copied()).fold(f64::NEG_INFINITY, f64::max);
                 (d <= reach_m && in_area).then_some((c, d, last))
@@ -1362,8 +1385,10 @@ fn area_distance_m(a: &SearchArea, lat: f64, lon: f64) -> f64 {
 
 /// The ground points a camera's search steps through (WORLD-V3-PLAN 2.4): an orbit's centre
 /// and six points halfway out; a route's points every quarter of the reach, those within it;
-/// around the vehicle at half its reach, one wide field (less an overlap) a step.
+/// around the vehicle at half its reach, one wide field (less an overlap) a step. Places the
+/// payload manager reckons from where its vehicle believes it is.
 fn search_points(o: &Observer, reach_m: f64, wide_rad: f64) -> Vec<(f64, f64)> {
+    let (olat, olon) = o.believed();
     let at = |lat: f64, lon: f64, bearing: f64, d: f64| {
         (lat + d * bearing.cos() / M_PER_DEG, lon + d * bearing.sin() / (M_PER_DEG * lat.to_radians().cos()))
     };
@@ -1381,7 +1406,7 @@ fn search_points(o: &Observer, reach_m: f64, wide_rad: f64) -> Vec<(f64, f64)> {
                 for i in 0..n {
                     let f = i as f64 / n as f64;
                     let p = (w[0].0 + f * (w[1].0 - w[0].0), w[0].1 + f * (w[1].1 - w[0].1));
-                    if haversine_m(o.lat, o.lon, p.0, p.1) <= reach_m {
+                    if haversine_m(olat, olon, p.0, p.1) <= reach_m {
                         pts.push(p);
                     }
                 }
@@ -1395,7 +1420,8 @@ fn search_points(o: &Observer, reach_m: f64, wide_rad: f64) -> Vec<(f64, f64)> {
 fn around(o: &Observer, reach_m: f64, wide_rad: f64, at: impl Fn(f64, f64, f64, f64) -> (f64, f64)) -> Vec<(f64, f64)> {
     let heading = o.heading_deg.unwrap_or(0.0).to_radians();
     let n = (std::f64::consts::TAU / (0.8 * wide_rad.max(1e-3))).ceil().clamp(1.0, 36.0) as usize;
-    (0..n).map(|k| at(o.lat, o.lon, heading + std::f64::consts::TAU * k as f64 / n as f64, 0.5 * reach_m)).collect()
+    let (olat, olon) = o.believed();
+    (0..n).map(|k| at(olat, olon, heading + std::f64::consts::TAU * k as f64 / n as f64, 0.5 * reach_m)).collect()
 }
 
 /// What a look at `level` calls the contact: its size class (a detection), its family (a

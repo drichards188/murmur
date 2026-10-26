@@ -787,7 +787,7 @@ KESTREL 1, SKY 2, FERRET 1) and reboots (Sea Hunter, the Corsairs, the Saildrone
 orbits only (the anchors order nothing else). **Shortcuts, named**: the basic oracle is a
 feasibility check, not a ceiling (it never recalls a vehicle on a low reserve and knows no jammer);
 AIS exists only on the surface (choice 31); conditions hold for an episode; a GNSS spoof does not
-change what the spoofed vehicle's sensors see (14.4). Model results only.
+change what the spoofed vehicle's sensors see (14.4; fixed since this check). Model results only.
 
 ### 14.1 Need served, per family and world
 
@@ -889,7 +889,17 @@ San Diego situations, run again).
    geometry nor its fixes' placement: F12's spoofer changes nothing the picture shows, only where the
    vehicle truly goes (aground, off station). The physics should place a sensor at its truth and its
    report at the believed position. Not changed (the sensor model is fixed): F12 keeps the spoof
-   (p 0.35), whose need served then measures nothing of the spoof.
+   (p 0.35), whose need served then measures nothing of the spoof. **Fixed after this check**
+   (murmur-k8i, 2026-10-25; the figures above predate it): the simulator gives the tracker each
+   vehicle's navigation error, so a spoofed vehicle senses from its truth (the observer is its
+   report less the error) and lays every fix but AIS's off by the error (docs/SENSING.md). Smoke,
+   four F12 spoofs on golden-gate-v3 (seeds 5300, 5306, 5314, 5322; `none`; from 60 s after each
+   spoof's start): the reported position walks off the truth to the cap as before (428 to 647 m at
+   the end); the observer sat 397 to 577 m from the truth on average and now 0.5 to 11 m (the
+   report's own lag); the spoofed vehicle's radar, camera and sonar fixes lay -11 to 2 m along the
+   offset and now 325 to 546 m, within 21 m of the offset at the same samples (380 to 551 m); its
+   AIS reports stay within 13 m of the truth. Tracks it feeds now show it: HUNTER 1's, mostly fused
+   with AIS, 130 m along the offset on average (-2 before).
 2. **An order that passes the checks can drive a boat aground on its way** (the C2): the domain rule
    (the grid) checks an orbit's geometry, not the straight way to it, and the stand-in steers
    straight: `random-valid`'s orbits for VIPER 1 west of the Gate run it ashore at Cavallo Point on
@@ -911,6 +921,7 @@ San Diego situations, run again).
 F7-F13 are ready for C2's ladder and room test, with these named: F11's RF jammer and F12's jammer
 give an agent a decision the basic oracle does not make (keep line-of-sight aircraft and copters
 out); F13's fault needs are met only by an agent's recall; F8's look-alikes cost `random-valid` and
-not the oracle; F12's spoof waits for 14.4 item 1; F11's acoustic outage waits for 11.2's standing
+not the oracle; F12's spoof waited for 14.4 item 1 (fixed since: its need served is to be measured
+again); F11's acoustic outage waits for 11.2's standing
 sonar. A second dev batch (lesson 2) is needed before any rule is pre-registered: this is F7-F12's
 first and F13 version 2's first on its own seeds.

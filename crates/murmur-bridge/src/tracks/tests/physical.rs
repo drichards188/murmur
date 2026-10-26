@@ -699,3 +699,83 @@ fn the_picture_says_which_sensor_reached_which_level() {
     let keys: Vec<&String> = j["identity"].as_object().expect("identity").keys().collect();
     assert_eq!(keys, ["kind", "confidence", "ais", "conflict", "supported_by"]);
 }
+
+/// murmur-k8i: a vehicle whose own navigation is off (a GNSS spoofer has walked what it believes
+/// 300 m east and 400 m south of where it is) senses from where it is and lays what it measures
+/// off from where it believes it is. Against the same vehicle with its navigation right: every
+/// radar plot and ESM fix is the same draw moved by the error, every AIS report (the contact's
+/// own GPS) unmoved; its camera's fixes are off the truth by the error; and a boat 4 km from
+/// where it is, 34 km from where it believes it is, is seen, and placed from where it believes.
+#[test]
+fn a_vehicle_whose_navigation_is_off_senses_from_its_truth_and_fixes_off_by_its_error() {
+    use super::super::physical::geometry::en;
+    let mut sensors = sensors_of("seahunter");
+    sensors.extend(sensors_of("corsair").into_iter().filter(|s| s.kind == SensorType::Esm));
+    let right = usv(1, BASE.0, BASE.1, sensors);
+    let off = Observer { nav_error_m: (300.0, -400.0), ..right.clone() };
+    let (lat, lon) = at(BASE.0, BASE.1, 0.0, 3_000.0);
+    let mut ferry = contact("ferry", "ferry", Domain::Surface, lat, lon);
+    ferry.ais = Some(super::super::truth::Ais { mmsi: "366999000".into(), name: "FERRY".into(), ship_type: "passenger".into(), spoofed: false });
+    let (lat, lon) = at(BASE.0, BASE.1, 1_500.0, 500.0);
+    let contacts = [ferry, contact("boat", "small_fast_boat", Domain::Surface, lat, lon)];
+    let truth_of = |id: &str| contacts.iter().find(|c| c.id == id).map(|c| (c.lat, c.lon)).expect("a contact");
+    let dets = |o: &Observer| run(&mut Engine::new(None), &day(), std::slice::from_ref(o), &contacts, 0, 180);
+    let (a, b) = (dets(&right), dets(&off));
+    // the scanning and listening sensors draw alike whatever the vehicle believes: pair them
+    let drawn_alike = |d: &&Detection| d.sensor != SensorType::EoIr;
+    let (pa, pb): (Vec<&Detection>, Vec<&Detection>) = (a.iter().filter(drawn_alike).collect(), b.iter().filter(drawn_alike).collect());
+    assert_eq!(pa.len(), pb.len());
+    let kinds: std::collections::BTreeSet<SensorType> = pa.iter().map(|d| d.sensor).collect();
+    assert!(kinds.is_superset(&[SensorType::Radar, SensorType::Ais, SensorType::Esm].into()), "{kinds:?}");
+    for (x, y) in pa.iter().zip(&pb) {
+        assert_eq!((&x.contact_id, x.sensor), (&y.contact_id, y.sensor));
+        let (de, dn) = en(x.lat, x.lon, y.lat, y.lon);
+        if x.sensor == SensorType::Ais {
+            assert!(de.hypot(dn) < 1e-6, "an AIS report moved {de:.1} m east, {dn:.1} m north");
+        } else {
+            assert!((de - 300.0).abs() < 0.5 && (dn + 400.0).abs() < 0.5, "{:?} moved {de:.1} m east, {dn:.1} m north", x.sensor);
+        }
+    }
+    // the camera, cued by its own radar's plots and pointing from where it believes it is, still
+    // finds the contacts, and its fixes are off the truth by the error
+    let eo: Vec<(f64, f64)> = b
+        .iter()
+        .filter(|d| d.sensor == SensorType::EoIr)
+        .map(|d| {
+            let (lat, lon) = truth_of(&d.contact_id);
+            en(lat, lon, d.lat, d.lon)
+        })
+        .collect();
+    assert!(eo.len() >= 10, "{} camera fixes", eo.len());
+    let n = eo.len() as f64;
+    let (me, mn) = (eo.iter().map(|e| e.0).sum::<f64>() / n, eo.iter().map(|e| e.1).sum::<f64>() / n);
+    assert!((me - 300.0).abs() < 40.0 && (mn + 400.0).abs() < 40.0, "the camera's fixes {me:.0} m east, {mn:.0} m north");
+    // it sees from where it is: 4 km to a boat, though it believes itself 34 km from it
+    let far = Observer { nav_error_m: (0.0, -30_000.0), ..usv(1, BASE.0, BASE.1, radar_only()) };
+    let (lat, lon) = at(BASE.0, BASE.1, 0.0, 4_000.0);
+    let near = contact("b", "small_fast_boat", Domain::Surface, lat, lon);
+    let seen = run(&mut Engine::new(None), &day(), std::slice::from_ref(&far), std::slice::from_ref(&near), 0, 60);
+    let d = seen.first().expect("seen from where it is");
+    let (de, dn) = en(lat, lon, d.lat, d.lon);
+    assert!(de.abs() < 200.0 && (dn + 30_000.0).abs() < 200.0, "placed {de:.0} m east, {dn:.0} m north of the boat");
+}
+
+/// murmur-k8i: the payload manager points at a place from where its vehicle believes it is. A
+/// Puma orbiting a point 2 km north of it, its navigation 1 km east of where it is, first looks
+/// at the orbit's centre along the line from where it believes it is (27 degrees west of north),
+/// not due north.
+#[test]
+fn the_payload_manager_points_from_where_its_vehicle_believes_it_is() {
+    let center = at(BASE.0, BASE.1, 0.0, 2_000.0);
+    let puma = Observer {
+        heading_deg: Some(0.0),
+        area: Some(SearchArea::Orbit { center, radius_m: 1_000.0 }),
+        nav_error_m: (1_000.0, 0.0),
+        ..puma_at(BASE.0, BASE.1)
+    };
+    let mut e = Engine::new(None);
+    run(&mut e, &day(), std::slice::from_ref(&puma), &[], 0, 1);
+    let (az, ..) = e.gimbal_of(5, 0).expect("its camera");
+    let want = (-1_000f64).atan2(2_000.0);
+    assert!((az - want).abs() < 1e-3, "{:.1} degrees, not {:.1}", az.to_degrees(), want.to_degrees());
+}

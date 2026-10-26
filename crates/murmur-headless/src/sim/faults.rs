@@ -12,7 +12,11 @@
 //!   GPS_RAW_INT's fix and EKF_STATUS_REPORT's flags (the bridge's `nav` facts, `gps_glitch`).
 //!   Spoofing captures the receiver inside its circle and walks its position off the truth at
 //!   `walk_mps` on `bearing_deg`, the fix and the flags still good: the vehicle believes it, and
-//!   so does every report the C2 reads (nav.rs: what happens when the capture ends). GNSS
+//!   so does every report the C2 reads (nav.rs: what happens when the capture ends). It flies by
+//!   what it believes, so it ends up off where it was sent; its sensors see from where it is and
+//!   it lays their fixes off from what it believes (murmur-k8i: the simulator gives the tracker
+//!   each vehicle's navigation error, `Tracks::set_nav_error`, a dead reckoning's drift as a
+//!   spoofer's walk; crates/murmur-bridge/src/tracks/sensing.rs `Observer`). GNSS
 //!   events in the situation's events files reach the stand-ins too, at start (`from_events`),
 //!   as `MURMUR_EVENTS` gives them to the live engine.
 //! - **`battery`**: `drop_pct` of the pack's capacity gone at once (a damaged cell; the

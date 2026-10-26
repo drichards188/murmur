@@ -328,6 +328,14 @@ impl Episode {
     /// platform and sensors (the bridge's sensor catalog) and the sensing model's seed and
     /// misclassification rate as the tracker draws them (`MURMUR_SENSE_SEED` and
     /// `MURMUR_SENSE_MISCLASS` over the scenario's). Reads only: an error if the clock moved.
+    /// The last sensing step (evaluation only; never reachable from the bridge's API or the MCP
+    /// tools): each detection with its contact's truth in that step, and each observer with its
+    /// navigation error (`Tracks::last_step_json`).
+    pub fn detections(&self) -> Value {
+        let _g = self.rt.enter();
+        self.tracks.last_step_json()
+    }
+
     pub fn picture(&self, homes: bool) -> Result<Value, String> {
         let _g = self.rt.enter();
         let before = Instant::now();
@@ -617,12 +625,17 @@ async fn assemble(spec: &Spec) -> Result<Parts, String> {
     if let Some(env) = faults::from_events(spec)? {
         fleet.set_gnss(&env);
     }
-    // a vehicle that leaves the world (spent by its own effect) senses nothing from then on
+    // a vehicle that leaves the world (spent by its own effect) senses nothing from then on; one
+    // whose navigation is off (a GNSS spoofer's walk, a dead reckoning's drift: the stand-in's
+    // own filter, murmur-k8i) senses from its truth and lays its fixes off from what it believes
     {
         let by_uid: std::collections::HashMap<u64, usize> =
             (0..fleet.len()).map(|i| (u64::from(fleet.read(i, |v| v.cfg.uid())), i)).collect();
         let f = fleet.clone();
-        tracks.set_gone(move |uid| by_uid.get(&uid).is_some_and(|i| f.is_gone(*i)));
+        let by = by_uid.clone();
+        tracks.set_gone(move |uid| by.get(&uid).is_some_and(|i| f.is_gone(*i)));
+        let f = fleet.clone();
+        tracks.set_nav_error(move |uid| by_uid.get(&uid).map(|i| f.read(*i, |v| (v.nav.err_e, v.nav.err_n))));
     }
     // the bridge is up at `bridge_start_s` (the full stack's first anchor): before, a frame from
     // the emulator or a contacts message reaches no one
