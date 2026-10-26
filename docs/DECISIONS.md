@@ -581,7 +581,10 @@ group. Dates are 2026.
   every set, and honesty (NEES) held throughout. It is documented, not tuned: anything that
   relies on a keep-out within a few seconds of a manoeuvring aircraft seen only by bearings must
   allow about 100 m beyond the track's estimate. Physical air seeds 221-370 and surface 371-400
-  are spent.
+  are spent. Larger without cameras (10-26, murmur-e3b's air diagnostics on tuning data): in
+  Golden Gate's catalog mix with no cameras, a hard break seen only by ESM positions and 2D
+  bearings was missed 3 s ahead by up to 223 m, and once 10 s ahead by 41 m; so where no camera
+  holds the aircraft, allow about 250 m within a few seconds and some tens of metres at 10 s.
 - **Ground tracks keep a velocity under coarse fixes: the ground models calibrated on truth**
   (10-25, murmur-e3b part A, the owner's option "keep a velocity for tracks seen stationary or
   steady"). The F15 dev check's no-velocity ground blockers (67 % of blocked nominations) were
