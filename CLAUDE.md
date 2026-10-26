@@ -252,6 +252,11 @@ meaningful. Decision and command, not weapons.
   check `warning` and an inbox alert `path_crosses_land`. The bridge fetches the points before
   each decision and answers a moving vehicle's from the nearest cached tidewater sample within
   25 m (`TerrainOracle::sample_along`).
+- Rules 18 (`VELOCITY_SIGMA_SINCE`, murmur-vni): a track's velocity regions and a young track's
+  speed bound grow with the tracker's own `velocity_sigma_mps` (the policy's 1 m/s a floor), so the
+  tracker may show an aircraft's velocity up to 20 m/s 1-sigma while its two models agree (the
+  3 m/s gate elsewhere). Such a velocity can lag a hard turn by a few hundred metres a few
+  seconds ahead; keep-outs cover it, but `get_tracks` does not yet carry the sigma.
 - Predicted link coverage (docs/LINK-COVERAGE.md, bd murmur-hei): `GET`/`POST
   /api/links/coverage`, `link_coverage` in dry runs and `preview_intent`, the MCP tool
   `get_link_coverage`, the console's Links layer and the order form's dry run (`web/src/
@@ -290,8 +295,8 @@ meaningful. Decision and command, not weapons.
   murmur-0b8, whose manoeuvre model it did not confirm, and `air_calib_physical_held_out_four`,
   341-370, with the surface's own `calib_physical_held_out`, 371-400, run once for sensing round
   3, and 401-490 for the ground calibration (murmur-e3b; ground tuning sets 491-520); 221-490
-  are spent; 521-550 is the air velocity change's held-out set, written and not yet run, so a
-  new physical check takes a fresh set from 551) are evaluations: never
+  are spent, and 521-550 for the air velocity change (rules 18, murmur-vni), so a new physical
+  check takes a fresh set from 551) are evaluations: never
   tune the sensing model or the tracker on them. Sea clutter (round 3, murmur-qlt): the grazing
   angle is the spherical earth's to the nadir, a radar's `cell_m` its range resolution, its
   `doppler` mode clears a surface contact moving along its line of sight past the clutter's band;

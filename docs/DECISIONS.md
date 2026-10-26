@@ -636,7 +636,9 @@ group. Dates are 2026.
   aircraft blocking 1,152), attempts with a no-velocity aircraft blocker 952 to 893; F2's drone with
   a velocity by its deadline 20 of 20 (8). Rejected: the reported (consistency-widened) sigma, the
   manoeuvring probability or the widening as the honesty condition (37 to 45 failures at 8 m/s).
-  Ground and surface are unchanged. Air seeds 521-550 are spent.
+  Ground and surface are unchanged. Air seeds 521-550 are spent. Merged 10-26 with that cost
+  stated (the owner approved the change and may revisit the tracker-alone bounds, which were
+  written for velocities gated at 3 m/s).
 - **Identity fusion by specificity and weight of evidence; the picture names each kind's level**
   (10-26; the owner unfroze the sensor model for SCORING-V3.md 15's defects (a), (c) and (d)).
   (a) A track's `identity.level` (`detect`, `recognise`, `identify`) says whether its kind is a
