@@ -19,7 +19,11 @@ against it. Its numbers are outputs of a model with stated parameters, never hum
 
 Modes:
 
-- `proxy` (default): as above.
+- `proxy` (default): as above, with the situation's two `[autoplay]` settings as eval/proxy.py
+  reads them: `grant_agents` (every card from one of those agent ids read, never skimmed and
+  without the draw, and approved whatever the rule book alone finds; the note and the decision
+  say so) and `confirm_rule_declarations` (after each look's cards, the review list read once
+  and every rule declaration no one has confirmed confirmed, each read first: a `read_s` draw).
 - `approve-all`, `reject-all`: eval/proxy.py's `AutoApprover`, a look every second.
 - `never`: answers nothing; every human-tier card expires (the shadow's absent operator).
 - `rates`: a fixed operator: each new card is approved with probability `approve`, rejected
@@ -34,7 +38,7 @@ import random
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from eval.proxy import PRESETS, ProxyParams, judge, proxy_params, shown_on
+from eval.proxy import PRESETS, Judgment, ProxyParams, granted, judge, proxy_params, shown_on
 
 MODES = ("proxy", "approve-all", "reject-all", "never", "rates")
 
@@ -103,6 +107,12 @@ class Operator:
         # rates: card id -> (decide at, action)
         self._due: dict[int, tuple[float, str, bool]] = {}
         self.started = False
+        # `confirm_rule_declarations`: the declarations already confirmed (or tried), by their
+        # review id ("D-1"); this look's still to read (None: the review list not read yet this
+        # look), and the one being read
+        self.handled_reviews: set[str] = set()
+        self._decls: list[dict[str, Any]] | None = None
+        self._reading: dict[str, Any] | None = None
 
     def describe(self) -> dict[str, Any]:
         return {"operator": self.operator, **self.m.as_dict(), "proxy": self.m.mode == "proxy"}
@@ -199,6 +209,9 @@ class Operator:
         if self._open is not None:
             self._decide(now)
             return self._next_card(now)
+        if self._reading is not None:
+            self._confirm(now)
+            return self._next_review(now)
         # a look: the inbox, soonest expiry first, engagement nominations left to the signers
         pending = sorted(self._inbox(), key=lambda i: i.get("expires_t") or 0)
         pending = [i for i in pending if i.get("kind") != "engage"]
@@ -208,7 +221,7 @@ class Operator:
 
     def _next_card(self, now: float) -> float:
         if not self._cards:
-            return now + self._lognormal(self.p.attend_s, self.p.attend_sigma)
+            return self._next_review(now)
         card = self._cards.pop(0)
         p = self.p
         iid = int(card["id"])
@@ -217,8 +230,11 @@ class Operator:
         load = max(0.0, (self._queue - 1) / p.fatigue_queue) if p.fatigue_queue > 0 else 0.0
         fatigue = 2.0 ** (-load)
         trust = p.trust_agent if (card.get("source") or {}).get("kind") == "agent" else 1.0
-        p_read = min(1.0, max(0.0, p.diligence * fatigue * trust))
-        diligent = self.rng.random() < p_read
+        grant = granted(card, p)
+        # a granted agent's card is always read (no draw: eval/proxy.py's short-circuit) and
+        # always approved (`_decide`)
+        p_read = 1.0 if grant else min(1.0, max(0.0, p.diligence * fatigue * trust))
+        diligent = grant is not None or self.rng.random() < p_read
         hurry = 1.0 - p.hurry * min(1.0, load)
         if diligent:
             n_checks = len(card.get("checks", []))
@@ -226,7 +242,7 @@ class Operator:
         else:
             seconds = self._lognormal(p.skim_s, p.read_sigma) * hurry
         self._open = {"card": card, "shown": shown, "opened": now, "diligent": diligent, "p_read": p_read,
-                      "queue": self._queue}
+                      "queue": self._queue, "grant": grant}
         return now + seconds
 
     def _decide(self, now: float) -> None:
@@ -237,17 +253,64 @@ class Operator:
         status, body = self.sim.api("GET", "/api/tracks")
         tracks = list((body or {}).get("tracks", [])) if status == 200 else []
         found = judge(card, tracks, p)
-        j = found if o["diligent"] else type(found)("approve", "rubber stamp: not read", [])
+        grant = o["grant"]
+        if grant:
+            alone = "nothing against it" if found.action == "approve" else f"reject ({found.reason})"
+            j = Judgment("approve", f"granted: this autoplay approves every request of {grant} (grant_agents); "
+                                    f"the rule book alone: {alone}", found.tracks)
+        else:
+            j = found if o["diligent"] else Judgment("approve", "rubber stamp: not read", [])
         shown["tracks"] = j.tracks
         open_ms = int(round((now - o["opened"]) * 1000))
         self._view(iid, "decide", shown, now, j.action, open_ms)
         note = f"{self.note_prefix} ({p.preset}, {'read' if o['diligent'] else 'skimmed'}, queue {o['queue']}): {j.reason}"
         result = self._answer(iid, j.action, note)
         self.handled.add(iid)
+        rec: dict[str, Any] = {"t": round(now, 3), "intent_id": iid, "action": j.action, "reason": j.reason,
+                               "diligent": o["diligent"]}
+        if p.grant_agents:
+            # only where the situation grants (a record without the setting is as before)
+            rec["granted"] = grant is not None
+        rec.update({"if_read": found.action, "queue": o["queue"], "p_read": round(o["p_read"], 3), "open_ms": open_ms,
+                    "opened_t": round(o["opened"], 3), "tracks": j.tracks, "result": result})
+        self.decisions.append(rec)
+
+    # ---- eval/proxy.py's `confirm_rule_declarations` -------------------------------------------
+
+    def _next_review(self, now: float) -> float:
+        """After a look's cards: with `confirm_rule_declarations`, the review list read once and
+        each rule declaration in force that no one has confirmed read (`read_s`, a draw) and
+        confirmed in turn (`_confirm`), as eval/proxy.py's `_review`; then the next look. A
+        script, not a judgment: it never revokes, and flags are left alone."""
+        if self.p.confirm_rule_declarations:
+            if self._decls is None:
+                status, review = self.sim.api("GET", "/api/review")
+                self._decls = list(((review or {}) if status == 200 else {}).get("declarations") or [])
+            while self._decls:
+                d = self._decls.pop(0)
+                key = str(d.get("id"))
+                if key in self.handled_reviews or "confirm" not in (d.get("actions") or []) or not d.get("track"):
+                    continue
+                self.handled_reviews.add(key)
+                self._reading = d
+                return now + self._lognormal(self.p.read_s, self.p.read_sigma)
+        self._decls = None
+        return now + self._lognormal(self.p.attend_s, self.p.attend_sigma)
+
+    def _confirm(self, now: float) -> None:
+        d, self._reading = self._reading, None
+        assert d is not None
+        key, track = str(d.get("id")), str(d["track"])
+        status, out = self._post("POST", f"/api/tracks/{track}/confirm", {})
+        if status // 100 == 2:
+            result = "confirmed" if isinstance(out, dict) else str(out)
+        else:
+            result = f"error {status}: {out.get('detail') if isinstance(out, dict) else out}"
         self.decisions.append({
-            "t": round(now, 3), "intent_id": iid, "action": j.action, "reason": j.reason, "diligent": o["diligent"],
-            "if_read": found.action, "queue": o["queue"], "p_read": round(o["p_read"], 3), "open_ms": open_ms,
-            "opened_t": round(o["opened"], 3), "tracks": j.tracks, "result": result,
+            "t": round(now, 3), "intent_id": None, "action": "confirm", "declaration": key, "track": track,
+            "reason": f"{self.note_prefix}: confirms every rule declaration (confirm_rule_declarations): "
+                      f"{d.get('basis') or d.get('declared_by') or ''}"[:400],
+            "result": result,
         })
 
 

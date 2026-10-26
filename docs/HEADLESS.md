@@ -265,6 +265,8 @@ Parameters, as recorded in each episode record (the `default` preset):
 | `read_s`, `read_per_check_s`, `read_sigma`, `skim_s`, `hurry` | 6 s, 1.5 s, 0.3, 2 s, 0.5 | reading and skimming times, shortened under load |
 | `diligence`, `fatigue_queue`, `trust_agent` | 0.8, 6, 1.0 | whether it reads a card: `diligence x 2^(-(queue - 1) / fatigue_queue) x trust` |
 | `c_min` | 0.5 | the rule book's affiliation threshold |
+| `grant_agents` | none | eval/proxy.py's: every card from these agent ids read (no draw) and approved whatever the rule book finds, the note and the decision (`granted`, recorded only where the situation sets it) saying so |
+| `confirm_rule_declarations` | false | eval/proxy.py's: after each look's cards, the review list read once and every rule declaration no one has confirmed read (`read_s`, a draw) and confirmed |
 | `rates` mode: `approve`, `reject`, `latency_median_s`, `latency_sigma`, `reads` | none | a fixed operator |
 
 **What it rewards, and why that matters.** It approves every card it does not read, and it reads
@@ -1036,9 +1038,11 @@ item `read_s` (3 s) and acts once per item:
 | a platform spent but still heard | `unspend = "unspend"` | `POST /api/restores/unspend` |
 
 `absent` reviews nothing. Situations' `[autoplay] confirm_rule_declarations` and `grant_agents`
-(eval/proxy.py) are not read by the headless operator (section 7); the reviewer's default
-preset does the first. The approve-all operator leaves engagement nominations to the signers (a
-plain approve is refused for one).
+(eval/proxy.py) are the headless operator's too (section 7; murmur-pk8, 2026-10-26: before, it
+read neither). With the reviewer beside it, both confirm a rule declaration as `op-auto`: whoever
+reads it first confirms, and the other's request is refused (409) and recorded so. The
+approve-all operator leaves engagement nominations to the signers (a plain approve is refused for
+one).
 
 **The evidence reviewer** (preset `evidence`, scoring v3's F16, 2026-10-25): still scripted and
 truth-blind, it decides on what the picture shows and reads less under load (review.py's module
