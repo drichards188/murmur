@@ -951,6 +951,12 @@ def stack_ports(env: dict[str, str]) -> dict[str, int]:
     }
 
 
+def up_starts_console(env: dict[str, str]) -> bool:
+    """Whether `scripts/up.sh` starts a console of its own on MURMUR_WEB_PORT: not with
+    MURMUR_WEB=0, when the launcher's (`make start`, eval/launcher.py) serves it there."""
+    return (env.get("MURMUR_WEB") or "1").strip() not in ("0", "off", "false", "no")
+
+
 def tcp_answers(port: int, host: str = "127.0.0.1", timeout: float = 0.5) -> bool:
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -1001,10 +1007,12 @@ def range_problems(ports: dict[str, int], vehicles: int) -> list[str]:
     return out
 
 
-def port_problems(ports: dict[str, int], vehicles: int, sitl: int, root: Path = REPO) -> list[str]:
+def port_problems(ports: dict[str, int], vehicles: int, sitl: int, root: Path = REPO, skip: tuple[str, ...] = ()) -> list[str]:
     """Why a stack can't start on these ports now: its UDP ranges can't carry the fleet
     (`range_problems`), one already answers (or a port is held), or this checkout's stack is
-    up. Never touches what holds them."""
+    up. Never touches what holds them. `skip` names TCP ports not to look at: the console's
+    ("web") when the launcher serves it (`up_starts_console`), tidewater's when one there is
+    reused."""
     out = range_problems(ports, vehicles)
     if out:
         return out
@@ -1017,7 +1025,7 @@ def port_problems(ports: dict[str, int], vehicles: int, sitl: int, root: Path = 
         ("linkemu", "MURMUR_LINKEMU_PORT"),
         ("tidewater", "MURMUR_TIDEWATER_PORT"),
     ):
-        if tcp_answers(ports[key]):
+        if key not in skip and tcp_answers(ports[key]):
             out.append(f"something answers on {var}={ports[key]}")
     for key, var in (("vehicle_base", "MURMUR_BASE_PORT"), ("bridge_base", "MURMUR_BRIDGE_BASE_PORT")):
         taken = [p for p in range(ports[key], ports[key] + max(1, vehicles)) if udp_taken(p)]

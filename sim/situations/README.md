@@ -31,6 +31,13 @@ station deletes only pointers that name a situation's log (`situation-*`): if th
 that is another stack's), the runner refuses to start and says so. The runner prints the console's address (`http://127.0.0.1:5673` by default); the
 Situation panel is over the map's top left.
 
+The main menu (`make start`, `eval/launcher.py`) runs the same runner on the same block, with the
+operator and AI chosen there (the file's cosigner and reveal), and with `MURMUR_WEB=0` and
+`MURMUR_WEB_PORT` its own console's port: `scripts/up.sh` starts no console of its own, the
+runner does not check that port, and the launcher's console (:5173) reaches the situation's bridge
+through the launcher's relay. Its End stops the runner (SIGTERM, as Ctrl-C here: the AI, the
+scripted operators, the summary), then the stack, as `make down` does.
+
 ## Situations
 
 | file | status | what |

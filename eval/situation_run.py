@@ -94,6 +94,7 @@ from .situation import (
     stack_ports,
     status_doc,
     step_text,
+    up_starts_console,
 )
 from .stack import _swarm
 from .storyline import Storyline, World, select_vehicles
@@ -1202,7 +1203,8 @@ def preflight(sit: Situation, modes: dict[str, Any], env: dict[str, str]) -> dic
     pf = ai_preflight(modes["ai"])
     ports = stack_ports(env)
     vehicles, sitl = plan_counts(sit.fleet)  # type: ignore[arg-type]
-    problems = port_problems(ports, len(vehicles), sitl)
+    # the console's port is the launcher's own when it started this run (MURMUR_WEB=0)
+    problems = port_problems(ports, len(vehicles), sitl, skip=() if up_starts_console(env) else ("web",))
     if problems:
         raise SituationError(
             "refusing to start: " + "; ".join(problems) + ". If that is a stack of yours, stop it with `make down` "

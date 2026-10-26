@@ -16,6 +16,10 @@ meaningful.
 
 ## Run and verify
 
+- `make start` is how a person opens Murmur: the launcher (`eval/launcher.py`, API :8760, bridge
+  relay :8761) serves the console at :5173 with a main menu and runs one scenario at a time: the
+  open world (`make goldengate` itself, default ports) or a situation (`eval.situation_run`, its
+  own block), each with `MURMUR_WEB=0` (up.sh starts no console); End is `make down`'s.
 - `make goldengate` runs the default fleet (one of each of 22 platform types) at the Golden
   Gate with tidewater conditions; `make up FLEET=<name>` for other fleets; `make down` stops.
   `make situation NAME=harbor-watch [OPERATOR=live|autoplay] [AI=claude|codex|playbook|none]`

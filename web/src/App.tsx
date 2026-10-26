@@ -67,7 +67,9 @@ function readInvite(): { operator: string; code: string } | null {
   return { operator: decodeURIComponent(m[1]), code: m[2] }
 }
 
-export default function App() {
+/** The console. `onMenu`: the launcher's main menu (`make start`), shown over it; absent when
+ *  the stack was started without the launcher. */
+export default function App({ onMenu }: { onMenu?: () => void }) {
   const { state, status, decisions, tracks, setView } = useBridge()
   // who this console acts for (rules 8): asked once the bridge answers, and again on reconnect
   const auth = useAuth()
@@ -447,7 +449,12 @@ export default function App() {
   return (
     <div className="app">
       <PerfMark />
-      <header className="topbar">
+      <header className={`topbar${onMenu ? ' has-menu' : ''}`}>
+        {onMenu && (
+          <button className="ghost menu-btn" onClick={onMenu} title="The main menu: the scenario running, ending it, and the others to start">
+            Menu
+          </button>
+        )}
         <span className="brand">MURMUR</span>
         <span className="sub">multi-domain swarm C2</span>
         <span className="spacer" />

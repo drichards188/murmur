@@ -42,6 +42,23 @@ make goldengate GG_FLEET=full-spectrum AT=2026-06-14T10:00:00Z   # with real tid
 
 ```bash
 make setup   # once: .venv, Rust release build, ArduPilot SITL in ~/ardupilot, npm install (~10 min)
+make start   # the main menu: open http://localhost:5173, pick a scenario, Start
+```
+
+**The main menu** is how to open Murmur. `make start` runs the launcher (`eval/launcher.py`),
+which serves the console and starts one scenario at a time from its menu: the **open world**
+first, the default (the Golden Gate with the full-spectrum fleet, real tide, current and wind and
+the harbor's traffic: what `make goldengate` runs; you command freely, nothing is scripted or
+scored), then each situation in `sim/situations/` with its brief, fleet and duration, and its
+operator (you, or autoplay) and AI watch officer (Claude, Codex, Playbook or None) with the
+situation's own defaults chosen. The menu shows the launch's progress (vehicles take 30 to 60 s
+in the open world, seconds in a stand-in situation) and opens the console on it; the console's
+**Menu** button returns to the menu, which can end the scenario (as `make down` does: nothing it
+started is left running) or start another (ending the one running first). Ctrl-C in the terminal
+ends the running scenario and stops the launcher. The terminal commands below still start a
+stack directly; its console then shows no menu.
+
+```bash
 make up      # swarm + bridge + web (a dev run); open http://127.0.0.1:5173
 ```
 

@@ -1,4 +1,4 @@
-.PHONY: setup build up goldengate situation down sim bridge web eval headless check
+.PHONY: setup build start up goldengate situation down sim bridge web eval headless check
 
 FLEET ?= sandiego   # any sim/fleets/*.toml: sandiego, canaveral, golden-gate, ...
 CARGO ?= $(shell command -v cargo || echo $(HOME)/.cargo/bin/cargo)
@@ -8,6 +8,9 @@ setup:   ## one-time: venv, Rust release build, ArduPilot SITL build, npm instal
 
 build:   ## release builds of the Rust bridge, stand-in engine, link emulator, contacts, murmur-replay and murmur-auth (up.sh does this too)
 	$(CARGO) build --release -p murmur-bridge -p murmur-standins -p murmur-linkemu -p murmur-decide -p murmur-contacts -p murmur-auth
+
+start:   ## the main menu (eval/launcher.py): open http://localhost:5173, pick the open world (what make goldengate runs) or a situation and start it there; Ctrl-C ends the running one and stops the launcher
+	.venv/bin/python -m eval.launcher
 
 up:      ## swarm + link emulator + bridge + web (MURMUR_LINKEMU=0 bypasses the emulator; ports: scripts/up.sh)
 	./scripts/up.sh --fleet $(FLEET) $(ARGS)

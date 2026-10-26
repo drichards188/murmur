@@ -25,6 +25,8 @@
 #   MURMUR_WEB_PORT          5173   console (vite)
 #   MURMUR_TIDEWATER_PORT    8770   tidewater serve (reused if one already answers there)
 #   MURMUR_SITL_INSTANCE_BASE 0     first SITL instance (TCP 5760 + 10*instance)
+# MURMUR_WEB=0 starts no console: the launcher's (`make start`, eval/launcher.py) already serves
+# one on MURMUR_WEB_PORT, whose origin the bridge still accepts.
 # MURMUR_TIDEWATER_URL overrides the port with any running `tidewater serve`. The scenario
 # clock (MURMUR_AT, MURMUR_RATE) goes to the stand-ins, tidewater drive, the emulator and
 # the contacts process; a MURMUR_RATE other than 1 needs MURMUR_AT (refused otherwise).
@@ -40,6 +42,7 @@ export MURMUR_HTTP_PORT="${MURMUR_HTTP_PORT:-8765}"
 web_port="${MURMUR_WEB_PORT:-5173}"
 export MURMUR_BRIDGE_URL="http://127.0.0.1:$MURMUR_HTTP_PORT"  # vite proxies here
 case "${MURMUR_LINKEMU:-1}" in 0|off|false|no) linkemu=0 ;; *) linkemu=1 ;; esac
+case "${MURMUR_WEB:-1}" in 0|off|false|no) web=0 ;; *) web=1 ;; esac
 vehicle_base="$MURMUR_BASE_PORT"
 bridge_base="${MURMUR_BRIDGE_BASE_PORT:-$((vehicle_base + 1000))}"
 emu_port="${MURMUR_LINKEMU_PORT:-8766}"
@@ -185,7 +188,13 @@ fi
 # exec in each subshell so the tracked pid is the real process and cleanup reaches it
 .venv/bin/python sim/swarm.py --base-port "$vehicle_base" "$@" > logs/sim.log 2>&1 & pids+=($!)
 env "${bridge_env[@]}" MURMUR_SIM_TOKEN="$sim_token" target/release/murmur-bridge > logs/bridge.log 2>&1 & pids+=($!)
-(cd web && exec node_modules/.bin/vite --host 127.0.0.1 --port "$web_port" --strictPort) > logs/web.log 2>&1 & pids+=($!)
+if [ "$web" = 1 ]; then
+  (cd web && exec node_modules/.bin/vite --host 127.0.0.1 --port "$web_port" --strictPort) > logs/web.log 2>&1 & pids+=($!)
+  starting="swarm, bridge (:$MURMUR_HTTP_PORT) and web"
+else
+  echo "web: not started (MURMUR_WEB=0): the launcher's console on :$web_port serves this stack"
+  starting="swarm and bridge (:$MURMUR_HTTP_PORT)"
+fi
 if [ -n "${MURMUR_CONTACTS:-}" ]; then
   # contacts that are not ours: truth goes only to the bridge's simulation channel
   MURMUR_SIM_TOKEN="$sim_token" target/release/murmur-contacts "$MURMUR_CONTACTS" > logs/contacts.log 2>&1 & pids+=($!)
@@ -202,7 +211,7 @@ if [ -n "${MURMUR_SCENARIO:-}" ]; then
   echo "tidewater: $MURMUR_SCENARIO from $MURMUR_AT (logs/tidewater*.log)"
 fi
 
-echo "swarm, bridge (:$MURMUR_HTTP_PORT) and web starting; logs in ./logs"
+echo "$starting starting; logs in ./logs"
 echo "open http://127.0.0.1:$web_port  (vehicles get a GPS fix ~20-30s after start)"
 if [ "${MURMUR_AUTH:-dev}" = credentials ]; then
   # rules 10: WebAuthn takes no IP address as a relying party: passkeys need the localhost name
