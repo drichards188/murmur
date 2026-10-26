@@ -9,11 +9,13 @@ they need (2.2's spoofed AIS, 2.4's fault needs in every domain, choices 27-34) 
 (section 14). **2026-10-25 (C2, bd murmur-1z6.7)**: the room test replaces v2's fixed world
 conditions and the lessons are written in (section 10); the ceiling, its ladder and the honest
 ceiling's perturbations, their dev batch and the audit are section 13's. **2026-10-26**: why the
-picture leaves an honest agent little room, and the honest ceiling's fixes (section 15); then F3
-version 2 (its transponder off) and F6 version 2 (its vehicle appears outside the circle) (6). The
-validation, the pre-registration and the blind check are D's. **Scoring v2 is frozen**: its labels
-(version 2), its families, its oracle and every v1 and v2 golden and record are unchanged; v3 is
-built beside it (`eval/headless/v3/`), importing v2's code where it is unchanged.
+picture leaves an honest agent little room, and the honest ceiling's fixes (section 15); then the
+owner's decision of that day (section 9): the ceiling is `oracle-v3-shown`, `oracle-v3` the
+foreknowledge ceiling, reported, and the ladder rebuilt on the new ceiling (10.1, 13); F3 version 2
+(its transponder off) and F6 version 2 (its vehicle appears outside the circle) (6), and their smoke
+(section 16). The validation, the pre-registration and the blind check are D's. **Scoring v2 is
+frozen**: its labels (version 2), its families, its oracle and every v1 and v2 golden and record are
+unchanged; v3 is built beside it (`eval/headless/v3/`), importing v2's code where it is unchanged.
 
 ## 0. Coverage (the standing rule)
 
@@ -275,7 +277,8 @@ the same world for every agent of a situation (its seed draws its contacts, sens
 | `none` | no agent |
 | `random-valid` | v2's (agents_v2.py): every 30 s one orbit drawn uniformly over the idle vehicles and shown tracks whose preview passes |
 | `playbook` | the playbook watch officer (episode.py), unchanged, on the world's watch configuration (its sensor platform the Puma, its watch area the 3 km circle) |
-| `oracle-v3` | the ceiling (section 13.1, eval/headless/v3/planner.py), since 2026-10-25 |
+| `oracle-v3-shown` | the ceiling (section 13.1, eval/headless/v3/planner.py), since 2026-10-26: the planner with no look before the picture shows the contact |
+| `oracle-v3` | the foreknowledge ceiling (13.1): the same planner looking from the start, so it can act before a contact exists; the ceiling from 2026-10-25 to 2026-10-26, reported since, never judged |
 | `oracle-v3-basic` | the `oracle-v3` of the dev checks of sections 11, 12 and 14 (eval/headless/v3/oracle.py, with oracle_ops.py's additions in F14-F16), kept under this name to compare with them: privileged (the contacts file, our vehicles' truth, the tracker's association, the sensing model's predictions); for each need, the two vehicles carrying the domain's sensor that can be in reach of the contact earliest (the model's identification range, recognition under water, for the platform at its working altitude under the drawn conditions; their transit at cruise), sent to orbit where they meet it, the centre kept only where the model sees the contact from it and, for a line-of-sight or mesh datalink, where the link map says the orbit and the transit keep the link; it follows a contact it met but has not identified |
 
 The basic oracle leaves the high aircraft (MQ-9B, RQ-4) on their standing orders: an orbit takes them
@@ -531,6 +534,16 @@ is built as recommended and has its alternative.
     vehicles, whatever the agent does (then a breakdown seldom touches a look, and a battery fault
     is often past saving). **Recommend** as specified.
 
+**The owner's decision (2026-10-26)**: the ceiling of the room test (10.1) and of relative
+comparison (an agent's place in the room) is `oracle-v3-shown`, the planner with no look before the
+picture shows the contact: the reachable ceiling. `oracle-v3` is kept as the **foreknowledge
+ceiling**, reported (what anticipation is worth: its step over the ceiling and over `none`) and never
+judged. Section 15 found the old ceiling's lead over an agent acting on the picture to be mostly
+foreknowledge: it ordered a median 170 to 250 s before a contact even existed, which no agent can.
+Built (10.1, 13.1 to 13.3; room.py, ruler.py, report.py, planner.py): the ladder's rungs are now the
+new ceiling with one more switch off (13.3 says which orders still hold by construction), and the
+ceiling records each need's feasibility when the picture first shows its contact.
+
 Choices 35 and 36 come with F3 and F6 version 2 (6; section 15's (g) and (h)), two fixes that bring
 the families to their design, for the owner; each is built as recommended and has its alternative.
 
@@ -552,7 +565,8 @@ the families to their design, for the owner; each is built as recommended and ha
 
 Written 2026-10-25, before any run of the ceiling or its ladder on dev seeds 5160-5194 (13.7):
 the owner's decision of that day replaced v2's fixed world conditions (item 1), and the lessons of
-WORLD-V3-PLAN 7 are written in (items 2 to 5). Nothing here is pre-registered: the rules that judge
+WORLD-V3-PLAN 7 are written in (items 2 to 5). The owner's decision of 2026-10-26 (9) made
+`oracle-v3-shown` the ceiling throughout. Nothing here is pre-registered: the rules that judge
 validation are written in phase D, after the audit of item 3.
 
 1. **The room test** (eval/headless/v3/room.py; in the dev report, report.py and ruler.py). It
@@ -564,7 +578,13 @@ validation are written in phase D, after the audit of item 3.
      the floor and the ceiling judges how hard the world is, which is a finding about the fleet, not
      a property of the scorer. What the scorer needs from a family is room: a ceiling measurably
      above the floor, so an agent's need served has somewhere to sit between them.
-   - **The test**, per family and world: the ceiling (`oracle-v3`, 13.1) minus `none` on need served,
+   - **The ceiling** is `oracle-v3-shown` (13.1; the owner's decision of 2026-10-26, 9): the planner
+     with no look before the picture shows the contact. Until then it was `oracle-v3`, whose lead
+     over an agent acting on the picture was mostly foreknowledge (15): it sent vehicles to a
+     contact's route minutes before the contact existed. A room measured against it would credit
+     the family with room no agent can reach. `oracle-v3` is reported beside the room as the
+     **foreknowledge ceiling** (its step over `none` and over the ceiling), never judged.
+   - **The test**, per family and world: the ceiling minus `none` on need served,
      paired by situation (each situation's served over eligible needs; the situations where both have
      an eligible need). The family-world has **room** when (a) the paired 95 % interval of the mean
      difference lies wholly above zero (section 8's rule: the paired cluster bootstrap, BCa, seed 0,
@@ -885,9 +905,19 @@ sim/platforms.toml are not changed here; what looks like a defect there is repor
 room test replaces v2's fixed world conditions (10.1). Code: eval/headless/v3/planner.py (the ceiling
 and its rungs), perturb.py (the perturbations), room.py, ruler.py (the batch and the report); tests:
 eval/headless/tests/test_v3_ruler.py, and test_v3_families.py runs the ceiling once per family and
-world.
+world. **Since 2026-10-26** (the owner's decision, 9) the ceiling is `oracle-v3-shown` and the rungs
+are built on it (13.3); 13.7's batch ran the ladder as it was, on `oracle-v3`.
 
-### 13.1 The ceiling (`oracle-v3`)
+### 13.1 The ceiling (`oracle-v3-shown`) and the foreknowledge ceiling (`oracle-v3`)
+
+One planner, two ceilings. **The ceiling**, `oracle-v3-shown` (since 2026-10-26), places no look at a
+contact before the picture shows it (the tracker associates a track with the contact; the planner
+reads that every 4 s and plans at once when a contact is first shown); everything else below is the
+planner's. **The foreknowledge ceiling**, `oracle-v3` (the ceiling of 13.7 and of section 15), looks
+from the start: it reads every contact's route in the contacts file, so it can send a vehicle to where
+a contact will be before the contact exists, and section 15 found that to be most of its lead over
+the ceiling (its first order a median 171 to 250 s before the contact appeared; 14 of its 15 F2 drones
+identified by vehicles already waiting on the route). It is reported, never judged.
 
 **Privileged**, counted and recorded (`agent_detail.privileged`), never given to an agent under test:
 the contacts file (every contact's route, speed, height and start), our vehicles' truth (position,
@@ -953,12 +983,14 @@ never gimbals.
 
 ### 13.2 The ceiling's losses by cause
 
-At its first tick the ceiling judges each need with every vehicle that takes orders, from where it
-then is (`feasibility`, recorded per need): whether any set of looks could raise its evidence to 0.6
-by the deadline, and if none could, the first reason that applies:
+The ceiling judges each need when the picture first shows its contact (its first chance to act), the
+foreknowledge ceiling at its first tick, with every vehicle that takes orders, from where it then is
+(`feasibility`, recorded per need): whether any set of looks could raise its evidence to 0.6 by the
+deadline, and if none could, the first reason that applies:
 
 | verdict | when |
 |---|---|
+| `not_shown` | the picture did not show the contact before its deadline (the ceiling's only) |
 | `fleet_gap` | no vehicle's domain sensor reaches 0.6 on this kind at its working height, even by a clear day (20 km, the sun 45 degrees up) |
 | `night`, `fog` | one would by a clear day, none does in the drawn light (night or twilight) or visibility (under 2 km) |
 | `no_time` | capable vehicles, none in reach of the contact's path by its deadline (or able to add a look two of which combine to 0.6) |
@@ -973,11 +1005,13 @@ cause on the picture (causes.py): what went wrong in the execution.
 
 ### 13.3 The ladder and its predicted order
 
-Each rung is the ceiling with one switch of the same planner turned off, nothing else changed:
+Each rung is the ceiling (`oracle-v3-shown`) with one more switch of the same planner turned off,
+nothing else changed (since 2026-10-26; until then each rung was `oracle-v3` with one switch off, as
+13.7 ran them):
 
 | rung | removes | instead |
 |---|---|---|
-| `oracle-v3-late` | timing | no look before the need opens (the contact's true position inside the circle) |
+| `oracle-v3-late` | timing | no look before the need opens either (the contact's true position inside the circle) |
 | `oracle-v3-linkblind` | the link | no link map and no truth of a blocked link: it plans as if every datalink held and learns of a lost link only from the session (`link_lost`) |
 | `oracle-v3-sensorblind` | the sensors | no sensing model: every sensor reaches its catalog `range_m` (the reach `get_platforms` shows) on every kind, by day or night, in any visibility, past any terrain (the v3 analogue of not knowing your sensors) |
 | `oracle-v3-honest` | truth | link-blind, reading no truth: built from a session, the loop's runner and the sensing model's functions alone (planner.py `HonestCeiling`, `sense_only`), never the episode. It keeps the model (the catalog's figures make it learnable) with the sun from the scenario clock, but not the drawn visibility, sea or wind, which the C2 does not show (it assumes a clear day's), and no contact's truth: its needs come from the picture (v2's honest oracle's rule: a track in doubt whose shown motion brings it within the circle within 300 s, or inside; due its domain's grace after it is shown inside, and worked on for two graces more while unresolved, since its clock starts when the picture shows the contact inside, which a 2D radar's plot of an aircraft can do before it is; an aircraft the picture gives no velocity, as a 2D radar's bearings seldom range one, taken to come straight in at 25 m/s, a small drone's top speed; the contact's kind its shown kind, else the size class a radar or camera detected (an ESM receiver names every emitter of a domain alike), else its family's stand-in). Since section 15 (2026-10-26): a need is resolved only at the mission's level (a kind; under water a class), a family only ESM shows and each ground size class are planned as their smallest member, and earliest deadline first takes a vehicle off a need due 60 s later |
@@ -985,9 +1019,9 @@ Each rung is the ceiling with one switch of the same planner turned off, nothing
 **Predicted order, judged** (per family-world, on need served, v2 0.3's rule: a paired interval
 wholly below zero fails; one containing zero is a tie; the guard of 10.5 across each family's cells):
 
-- `oracle-v3` ≥ `oracle-v3-late`;
-- `oracle-v3` ≥ `oracle-v3-linkblind`;
-- `oracle-v3` ≥ `oracle-v3-sensorblind`.
+- `oracle-v3-shown` ≥ `oracle-v3-late`;
+- `oracle-v3-shown` ≥ `oracle-v3-linkblind`;
+- `oracle-v3-shown` ≥ `oracle-v3-sensorblind`.
 
 These are the only orders whose handicaps provably do not interact: each compares the ceiling with
 a rung that differs from it in one switch of one planner (planner.py `LATE`, `KNOW_LINK`,
@@ -997,11 +1031,36 @@ link map could), which is what judging them tests. Where a family-world gives th
 act on, the rung's plan is the ceiling's and the order is a tie by construction (link-blindness
 where no candidate's datalink is terrain-limited).
 
+**Against the new ceiling** (2026-10-26). Left on `oracle-v3`, none of the three rungs would stand
+in a provable order with `oracle-v3-shown`, each differing from it in two switches:
+
+- `oracle-v3-late` against `oracle-v3-shown`: two gates that do not nest. The picture usually shows a
+  contact before it comes within the circle (F2's drone 4.8 km out, F3's aircraft 9 km, section 15),
+  so the ceiling may look first; but it can show one only after (a diver under the sonars, F5), and
+  then the late rung, knowing the need is open, would look first;
+- `oracle-v3-linkblind` and `oracle-v3-sensorblind` against `oracle-v3-shown`: each would keep
+  foreknowledge, which the ceiling lacks, while lacking the link map or the model, which it has: two
+  switches the opposite way, so no order follows.
+
+Rebuilt on the ceiling (planner.py: `CeilingLate`, `CeilingLinkBlind` and `CeilingSensorBlind`
+subclass `CeilingShown`), each rung differs from it in one switch again, so **all three judged orders
+hold by construction** in this section's sense (no second handicap present), and none is provably
+monotone, as before. What one switch can act on changes for one of them: the late rung now loses only
+the stretch between the picture's showing a contact and its coming within the circle (a tie by
+construction where the picture shows a contact only once it is inside), where on `oracle-v3` it lost
+all the foreknowledge before the need opened; link-blindness and sensor-blindness act as before, on
+looks planned from when the contact is shown. **The foreknowledge step**, `oracle-v3` ≥
+`oracle-v3-shown`, is a one-switch order too (`SHOWN`), reported and never judged (the owner's
+decision): what acting before the picture shows a contact is worth.
+
 **Reported, never judged**, with their paired differences:
 
-- the truth step, `oracle-v3-linkblind` against `oracle-v3-honest`: two handicaps, truth and the
-  link, which v2 found to interact (truth without the link map sent a Puma into link shadow,
-  SCORING-V2.md 0.6);
+- the foreknowledge ceiling against the ceiling and against `none` (the room 13.7 measured);
+- the truth step, `oracle-v3-linkblind` against `oracle-v3-honest`: both look only at what the
+  picture shows (the honest ceiling's needs are its tracks) and neither knows the link, so the step is
+  truth alone, but truth is several advantages at once (each contact's route ahead, its true kind,
+  the drawn conditions, the tracker's association), and v2 found truth's to interact with the link's
+  (truth without the link map sent a Puma into link shadow, SCORING-V2.md 0.6);
 - `oracle-v3-sensorblind` against `oracle-v3-honest`: each lacks what the other has (the model, or
   truth), so no order follows;
 - `oracle-v3-late` against `oracle-v3-honest`: timing against truth and the link;
@@ -1077,7 +1136,8 @@ building the ceiling's look model; none was tuned around.
 
 **A partial batch: development evidence, not an audit.** The owner stopped the batch on 2026-10-25
 (large runs are for the one final validation); this summarises the 3,984 of its 6,300 episodes on
-disk (63 %), run in shuffled order, so every family-world and agent cell holds 14 to 29 of its 35
+disk (63 %), with `oracle-v3` as the ceiling and the rungs built on it (the foreknowledge ceiling
+since 2026-10-26, 13.1; the figures stand as computed), run in shuffled order, so every family-world and agent cell holds 14 to 29 of its 35
 situations. A paired comparison uses only the situations both arms ran: 6 to 19 per family-world
 (always the exact sign test, under the bootstrap's 20), 17 to 32 per family. Thinnest: the room in F1
 Golden Gate (6 paired) and the ladder's sensorblind in F1 Golden Gate and F3 (7 to 9). No guard (10.5), no
@@ -1341,3 +1401,47 @@ circle in 11 of 20 (its roads start 2.84 and 2.96 km out): 60 s to its deadline.
 in a conflict no look clears (d), leaving one or two needs for anyone: 13.7's +9 and -7. **Next**: the
 owner on foreknowledge in the ceiling (the shown rung, 32 of 60, is what an agent can reach), (a), (d),
 (f), F6's timing; then the room test and the perturbations with the fixed honest ceiling.
+**Decided 2026-10-26** (9): the shown rung is the ceiling (10.1, 13), the foreknowledge ceiling
+reported; (g) and (h) are fixed by F3 and F6 version 2 (6); (a), (d) and (f) stand. Section 16 is
+their smoke.
+
+## 16. The new ceiling, and F3 and F6 version 2: a smoke (dev seeds 5470-5474)
+
+**Coverage.** golden-gate-v3 (20 of ours: air 8, surface 7 counting the 3 drifting buoys, subsurface
+2, ground 3 counting the antenna tracker) and san-diego (24: air 10, surface 9, subsurface 2, ground
+3), their traffic in every domain (35 and 40 contacts with the element), the physical sensing model
+(EO/IR with pointing, radar, AIS, ESM, sonar, terrain and horizon); F3 version 2 and F6 version 2 on
+both worlds, fresh dev seeds 5470-5474 (20 situations: day 8, night 10, fog 2; one eligible need each,
+air 10, ground 10); `none`, `oracle-v3-honest` and the ceiling `oracle-v3-shown`, 60 episodes, no
+harness error; orbits only; one replicate, approve-all, paused clock; records deleted after this
+summary. **Shortcuts**: five situations a family-world, so no room verdict (the rule's exact sign
+test cannot exclude zero at five); neither the foreknowledge ceiling nor the rungs ran. Model results
+only.
+
+| need served | `none` | honest | ceiling | ceiling - `none`, points (situations up / down) |
+|---|---|---|---|---|
+| F3 Golden Gate | 4/5 | 1/5 | 4/5 | +0 (0 / 0) |
+| F3 San Diego | 0/5 | 0/5 | 2/5 | +40 (2 / 0) |
+| F6 Golden Gate | 1/5 | 2/5 | 3/5 | +40 (2 / 0) |
+| F6 San Diego | 3/5 | 3/5 | 4/5 | +20 (1 / 0) |
+
+- **F3's aircraft emits nothing.** No ESM source on its track in any of the 30 F3 episodes (version 1:
+  ESM made its first track in 19 of 20, 15); the picture shows it 1 to 5 s after it appears, by radar
+  in 9 of 10 situations and a camera alone in 1, and its need opens 164 to 180 s later.
+- **F6's vehicle appears outside the circle.** Its need opens 29 to 98 s after it appears (version 1:
+  as it appeared in 11 of 20); the picture shows it within 1 to 6 s, by radar or a camera.
+- **The ceiling acts on the picture only.** Its first order for a need came 1 to 33 s after the
+  contact appeared (median 5 s), never before (the foreknowledge ceiling's, section 15: a median 171
+  to 250 s before). Its feasibility, judged when the picture first showed the contact: 16 feasible,
+  4 `terrain` (F6's roads behind the headlands or up the ridge; 2 of those 4 served anyway).
+- **Room against the new ceiling** (point estimates, no verdict at this size): F3 +0 at the Golden
+  Gate, where the standing cameras (the boats' rings) serve 4 of 5 for every agent, +40 in San
+  Diego; F6 +40 and +20. Pooled, F3 +20 (2 up, 0 down of 10) and F6 +30 (3 up, 0 down): the ceiling
+  lost no need `none` served.
+- **The honest ceiling** served 1 of 10 F3 needs (`none` 4) and 5 of 10 F6 (`none` 4). In F3 it sent
+  58 to 117 orders an episode, most at traffic shown in doubt (15 (f)), with a harmful (b) order (a
+  vehicle raising hits on the aircraft taken off it) in 5 of its 10 episodes, and once its own
+  airship's wrong call held the track in conflict to the deadline (15 (d)). Section 15 measured it at
+  16 of 20 on F3 version 1, whose aircraft ESM showed at once; whether version 2 (first shown by radar,
+  its family unnamed) changes how it plans the aircraft, or five seeds a world simply differ, this
+  smoke cannot say: the cell to watch in the next dev batch.

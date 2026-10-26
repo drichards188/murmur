@@ -6,6 +6,7 @@ episode per family and world)."""
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -203,19 +204,24 @@ def test_the_plan_keeps_off_a_centre_where_the_link_fails_and_the_linkblind_rung
     class Blind(Stub, P.CeilingLinkBlind):
         pass
 
-    b = Blind([unit(1, "puma", (-3000.0, 1000.0), link="los")], [boat_need()], tables)
+    m = boat_need()
+    m.shown_t = 0.0  # each rung is the ceiling (`oracle-v3-shown`) with one more switch off
+    b = Blind([unit(1, "puma", (-3000.0, 1000.0), link="los")], [m], tables)
     b.blocked = {1}
     assert [o["uid"] for o in b.plan(10.0)] == [1]
 
 
-def test_the_late_rung_waits_for_the_need_to_open():
+def test_the_late_rung_waits_for_the_need_to_open_and_the_picture_to_show_it():
     class Late(Stub, P.CeilingLate):
         pass
 
     n = boat_need()
     st = Late([unit(1, "puma", (-3000.0, 1000.0))], [n], {("puma", "boat-1"): quality(2000.0, 1800.0)})
-    assert st.plan(10.0) == []
-    n.opened_t = 300.0
+    n.shown_t = 0.0
+    assert st.plan(10.0) == [], "shown but not yet open"
+    n.shown_t, n.opened_t = None, 300.0
+    assert st.plan(300.0) == [], "open but not yet shown: the rung is the ceiling's, which waits for the picture"
+    n.shown_t = 300.0
     assert [o["uid"] for o in st.plan(300.0)] == [1]
 
 
@@ -224,6 +230,7 @@ def test_the_sensorblind_rung_believes_the_catalog_range_on_every_kind():
         pass
 
     n = boat_need()
+    n.shown_t = 0.0
     u = unit(1, "x10", (-3000.0, 0.0), range_m=1500.0)
     st = SB([u], [n], {("x10", "boat-1"): P.Quality("eo_ir", np.zeros(len(P.DISTANCES)), 1500.0, True)})
     q = st.quality_of(u, n)
@@ -417,15 +424,59 @@ def test_the_honest_ceiling_takes_a_vehicle_off_a_later_need_for_an_earlier_one(
     assert all(o["uid"] != 1 for o in ceiling.plan(100.0)), "the ceiling keeps a vehicle on its need"
 
 
-def test_the_shown_rung_waits_for_the_picture_to_show_the_contact():
+def test_the_ceiling_waits_for_the_picture_to_show_the_contact_and_the_foreknowledge_ceiling_does_not():
     class Shown(Stub, P.CeilingShown):
         pass
 
     n = boat_need()
-    st = Shown([unit(1, "puma", (-3000.0, 1000.0))], [n], {("puma", "boat-1"): quality(2000.0, 1800.0)})
+    tables = {("puma", "boat-1"): quality(2000.0, 1800.0)}
+    st = Shown([unit(1, "puma", (-3000.0, 1000.0))], [n], tables)
     assert st.plan(10.0) == []
     n.shown_t = 20.0
     assert [o["uid"] for o in st.plan(20.0)] == [1]
+    fk = Stub([unit(1, "puma", (-3000.0, 1000.0))], [boat_need()], tables)
+    assert [o["uid"] for o in fk.plan(10.0)] == [1], "the foreknowledge ceiling orders before the contact is shown"
+    for rung in (P.CeilingLate, P.CeilingLinkBlind, P.CeilingSensorBlind):
+        assert issubclass(rung, P.CeilingShown) and rung.SHOWN, "every rung is the ceiling with one more switch off"
+    assert not P.HonestCeiling.SHOWN, "the honest ceiling's needs are the picture's tracks"
+
+
+def test_the_ceiling_judges_feasibility_when_the_picture_first_shows_the_contact():
+    class Shown(Stub, P.CeilingShown):
+        pass
+
+    class Late(Stub, P.CeilingLate):
+        pass
+
+    tables = {("puma", "boat-1"): quality(2000.0, 1800.0)}
+    n = boat_need()
+    st = Shown([unit(1, "puma", (-3000.0, 1000.0))], [n], tables)
+    st.assess(10.0)
+    assert n.feasibility is None, "not before the picture shows the contact"
+    n.shown_t = 40.0
+    st.assess(40.0)
+    assert n.feasibility["verdict"] == "feasible" and n.feasibility["shown_t"] == 40.0
+    first = dict(n.feasibility)
+    st.assess(80.0)
+    assert n.feasibility == first, "judged once"
+    m = boat_need()
+    st = Shown([unit(1, "puma", (-3000.0, 1000.0))], [m], tables)
+    st.assess(m.deadline - 1.0)
+    assert m.feasibility is None
+    st.assess(m.deadline)
+    assert m.feasibility["verdict"] == "not_shown", "never shown by its deadline"
+    late = boat_need()
+    late.shown_t = late.deadline + 4.0
+    st = Shown([unit(1, "puma", (-3000.0, 1000.0))], [late], tables)
+    st.assess(late.shown_t)
+    assert late.feasibility["verdict"] == "not_shown"
+    fk = Stub([unit(1, "puma", (-3000.0, 1000.0))], [boat_need()], tables)
+    fk.assess(10.0)
+    assert fk.needs["boat-1"].feasibility["verdict"] == "feasible", "the foreknowledge ceiling at its first tick"
+    lt = Late([unit(1, "puma", (-3000.0, 1000.0))], [boat_need()], tables)
+    lt.needs["boat-1"].shown_t = 10.0
+    lt.assess(10.0)
+    assert lt.needs["boat-1"].feasibility is None, "a rung records none"
 
 
 def test_every_agent_name_is_dispatched():
@@ -457,15 +508,37 @@ def scored(family: str, rows: dict[str, list[int]]) -> list[dict[str, Any]]:
 
 
 def test_the_room_test_needs_an_interval_above_zero_and_the_minimum_room():
-    big = scored("v3-f1-fast-boat-gg", {"oracle-v3": [1] * 30, "none": [0] * 15 + [1] * 15})
+    big = scored("v3-f1-fast-boat-gg", {"oracle-v3-shown": [1] * 30, "none": [0] * 15 + [1] * 15})
     assert R.room(big, "v3-f1-fast-boat-gg")["verdict"] == "room"
-    tie = scored("v3-f1-fast-boat-gg", {"oracle-v3": [1, 0] * 15, "none": [0, 1] * 15})
+    tie = scored("v3-f1-fast-boat-gg", {"oracle-v3-shown": [1, 0] * 15, "none": [0, 1] * 15})
     assert R.room(tie, "v3-f1-fast-boat-gg")["verdict"] == "none shown"
-    small = scored("v3-f1-fast-boat-gg", {"oracle-v3": [1] * 100, "none": [0] * 6 + [1] * 94})
+    small = scored("v3-f1-fast-boat-gg", {"oracle-v3-shown": [1] * 100, "none": [0] * 6 + [1] * 94})
     r = R.room(small, "v3-f1-fast-boat-gg")
     assert r["lo"] > 0 and r["verdict"] == "small", r
-    rev = scored("v3-f1-fast-boat-gg", {"oracle-v3": [0] * 30, "none": [1] * 30})
+    rev = scored("v3-f1-fast-boat-gg", {"oracle-v3-shown": [0] * 30, "none": [1] * 30})
     assert R.room(rev, "v3-f1-fast-boat-gg")["verdict"] == "reversed"
+
+
+def test_the_room_is_judged_against_the_shown_ceiling_and_foreknowledge_is_only_reported():
+    assert R.CEILING == RU.CEILING == "oracle-v3-shown" and R.FORESIGHT == "oracle-v3"
+    assert all(a == R.CEILING for a, _ in RU.JUDGED), "the ladder's judged orders descend from the ceiling"
+    assert (R.FORESIGHT, R.CEILING) in RU.REPORTED and R.FORESIGHT in RU.AGENTS
+    fw = "v3-f2-drone-gg"
+    # foreknowledge serves every need; the ceiling acting on the picture no more than the floor
+    rows = scored(fw, {"oracle-v3": [1] * 30, "oracle-v3-shown": [1, 0] * 15, "none": [0, 1] * 15})
+    assert R.room(rows, fw)["ceiling"] == "oracle-v3-shown"
+    assert R.room(rows, fw)["verdict"] == "none shown"
+    assert R.room_all([x for x in rows if x["agent"] != "oracle-v3-shown"]) == {}, "the foreknowledge ceiling is no ceiling"
+    r = RU.report(rows, {}, seed=0)
+    assert r["room"][fw]["verdict"] == "none shown"
+    fk = r["foreknowledge"][fw]
+    assert fk["judged"] is False and fk["over_floor"]["mean_difference"] == pytest.approx(0.5)
+    assert fk["over_ceiling"]["mean_difference"] == pytest.approx(0.5)
+    cells = RU.judged_cells(r)
+    assert cells[f"room {fw}"] == (r["room"][fw]["mean_difference"], "up")
+    assert not any("oracle-v3 " in k or k.endswith(" oracle-v3") for k in cells), "foreknowledge is never judged"
+    md = RU.markdown(r, Path("x"))
+    assert "Ceiling (`oracle-v3-shown`)" in md and "foreknowledge ceiling (`oracle-v3`)" in md
 
 
 def test_the_one_sided_test_and_the_verdicts():

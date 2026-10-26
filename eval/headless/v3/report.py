@@ -3,7 +3,9 @@
 the room test (10.1, room.py: the ceiling measurably above `none`; it replaced v2's fixed world
 conditions on 2026-10-25), the vehicle types the sensing model says could answer each need and those
 that did, and the share of the needs `none` and the oracle lost that one cause explains (causes.py).
-MODEL RESULTS ONLY.
+The oracle of these columns is the ceiling, `oracle-v3-shown` since 2026-10-26 (the owner's
+decision, SCORING-V3.md 9); the foreknowledge ceiling `oracle-v3` is reported beside it, never
+judged. MODEL RESULTS ONLY.
 """
 
 from __future__ import annotations
@@ -27,9 +29,12 @@ from ..v2.labels import Params
 from .labels import episode_labels, mark_spoofed, picture, pointed_at, sensing_errors
 from .metrics import episode_metrics
 from .mission import rule
-from .room import room
+from .room import CEILING, FORESIGHT, room
 
-ORACLE = "oracle-v3"
+#: the ceiling (room.py): the oracle the room, lesson 3 and the capable types read
+ORACLE = CEILING
+#: the planners whose reaches and feasibility a record carries (planner.py), and the basic oracle's
+PLANNERS = (CEILING, FORESIGHT)
 #: a vehicle type can answer a need when its model range (a pointed sensor, Pd 0.5, under the
 #: situation's conditions, open geometry) times the oracle's share reaches at least this far
 CAPABLE_M = {"eo_ir": 150.0, "sonar": 35.0}
@@ -62,10 +67,11 @@ def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]
         for row, types in zip(needs, (able(rec, lab["needs"]) or {}).values()):
             row["able"] = types
     detail = rec.get("agent_detail") or {}
-    reach = (detail.get("reach_m") or {}) if meta["agent"] in (ORACLE, "oracle-v3-basic") else {}
-    # the ceiling's plan verdict per need at its first tick (planner.py `feasibility`)
-    feas = {k: {x: (v.get("feasibility") or {}).get(x) for x in ("verdict", "light", "capable", "timely")}
-            for k, v in (detail.get("needs") or {}).items() if v.get("feasibility")} if meta["agent"] == ORACLE else {}
+    reach = (detail.get("reach_m") or {}) if meta["agent"] in PLANNERS + ("oracle-v3-basic",) else {}
+    # the ceilings' plan verdict per need (planner.py `feasibility`: the ceiling's when the picture first
+    # showed the contact, the foreknowledge ceiling's at its first tick)
+    feas = {k: {x: (v.get("feasibility") or {}).get(x) for x in ("verdict", "light", "capable", "timely", "shown_t")}
+            for k, v in (detail.get("needs") or {}).items() if v.get("feasibility")} if meta["agent"] in PLANNERS else {}
     fleet_types = sorted({str(v.get("platform")) for v in pic.fleet})
     sensors = sorted({str(x.get("type")) for v in pic.fleet for x in v.get("sensors") or []})
     domains_ours = Counter(str((v.get("platform"))) for v in pic.fleet)
@@ -169,7 +175,7 @@ def summarize(scored: list[dict[str, Any]]) -> dict[str, Any]:
         block: dict[str, Any] = {"family": fam, "world": world, "domain": family_domain(fam), "agents": {}}
         movers = set()
         for s in rows:
-            if s["agent"] == ORACLE:
+            if s["agent"] in PLANNERS:
                 movers |= {k.split(":")[0] for k in s["reach"]}
         for agent in sorted({s["agent"] for s in rows}):
             ag = [s for s in rows if s["agent"] == agent]
@@ -199,7 +205,7 @@ def summarize(scored: list[dict[str, Any]]) -> dict[str, Any]:
         caps = [len(n["able"]) for s in rows if s["agent"] == "none" for n in s["needs"] if "able" in n]
         if not caps:  # a batch without `none`: the oracle's own reaches (the first dev check's)
             for s in rows:
-                if s["agent"] != ORACLE:
+                if s["agent"] not in PLANNERS:
                     continue
                 for n in s["needs"]:
                     caps.append(len(capable(s["reach"], n["domain"], movers, n["contact"])))
@@ -207,6 +213,9 @@ def summarize(scored: list[dict[str, Any]]) -> dict[str, Any]:
                                   "needs_with_fewer_than_2": sum(1 for c in caps if c < 2), "of": len(caps)}
         # 10.1, the room test (replacing v2's fixed conditions, the owner's decision of 2026-10-25)
         block["room"] = room(scored, f) if {ORACLE, "none"} <= set(block["agents"]) else None
+        # reported, never judged: the foreknowledge ceiling over the floor
+        block["foreknowledge"] = (room(scored, f, ceiling=FORESIGHT) if {FORESIGHT, "none"} <= set(block["agents"])
+                                  else None)
         block["flags"] = flags({a: block["agents"].get(a, {}).get("single_cause", {}) for a in ("none", ORACLE)})
         block["redesign"] = bool(block["flags"])
         out["families"][f] = block
@@ -264,8 +273,11 @@ def markdown(summary: dict[str, Any], d: Path) -> str:
               f"(situations by light).", f"- Agents: {', '.join(cov['agents'])}; tasks ordered: "
               f"{', '.join(cov['tasks_ordered']) or 'none'}.", f"- {cov['situations']} situations, {cov['episodes']} episodes.", ""]
     lines += ["## Per family and world", "",
-              "| family | world | none | random-valid | oracle | time to serve (oracle, median s) | room (10.1) | capable types (min) | "
-              "none's top cause | oracle's top cause | lesson 3 |", "|---|---|---|---|---|---|---|---|---|---|---|"]
+              f"The oracle is the ceiling (`{ORACLE}`); the foreknowledge ceiling (`{FORESIGHT}`) is reported, never judged.",
+              "",
+              "| family | world | none | random-valid | oracle | foreknowledge | time to serve (oracle, median s) | room (10.1) | "
+              "capable types (min) | none's top cause | oracle's top cause | lesson 3 |",
+              "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for f, b in summary["families"].items():
         a = b["agents"]
 
@@ -282,14 +294,16 @@ def markdown(summary: dict[str, Any], d: Path) -> str:
             f"{rm['verdict']}: {100 * rm['mean_difference']:+.0f} [{100 * (rm.get('lo') or 0):+.0f}, "
             f"{100 * (rm.get('hi') or 0):+.0f}]")
         lines.append(f"| {b['family']} | {b['world']} | {cell('none')} | {cell('random-valid')} | {cell(ORACLE)} | "
+                     f"{cell(FORESIGHT)} | "
                      f"{(a.get(ORACLE) or {}).get('time_to_serve_median_s')} | {ok} | {b['capable_types']['min']} | "
                      f"{cause('none')} | {cause(ORACLE)} | {'; '.join(b['flags']) or 'no flag'} |")
-    lines += ["", "## Pooled over both worlds", "", "| family | none | random-valid | oracle |", "|---|---|---|---|"]
+    lines += ["", "## Pooled over both worlds", "", "| family | none | random-valid | oracle | foreknowledge |",
+              "|---|---|---|---|---|"]
     for fam, x in summary["pooled"].items():
         def c2(agent: str) -> str:
             y = x.get(agent) or {}
             return f"{y.get('served', 0)}/{y.get('eligible', 0)} ({pct(y.get('share'))})" if y.get("eligible") else "no needs"
-        lines.append(f"| {fam} | {c2('none')} | {c2('random-valid')} | {c2(ORACLE)} |")
+        lines.append(f"| {fam} | {c2('none')} | {c2('random-valid')} | {c2(ORACLE)} | {c2(FORESIGHT)} |")
     lines += ["", "## Faults and restraint, per family and world", "",
               "Fault needs met (low reserve, met over judged; censored apart), vehicles lost by the end (a diagnostic), "
               "useless orders per situation-hour (justified on the picture among them).", "",

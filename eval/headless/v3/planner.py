@@ -1,7 +1,14 @@
 """Scoring v3's ceiling and its ladder (eval/SCORING-V3.md sections 5 and 13; bd murmur-1z6.7). MODEL
 RESULTS ONLY: free, deterministic agents on generated situations.
 
-**`oracle-v3`, the ceiling** (privileged, counted and recorded in `agent_detail.privileged`, never
+**`oracle-v3-shown`, the ceiling** (the owner's decision of 2026-10-26, SCORING-V3.md 9): the planner
+below (`Ceiling`) with no look at a contact before the picture shows it (the tracker associates a
+track with it, `CeilingShown`). **`oracle-v3`, the foreknowledge ceiling**: the same planner looking
+from the start, so it can order a vehicle to a contact's route minutes before the contact exists
+(a median 170 to 250 s in SCORING-V3.md 15), which no agent can; it is reported (what anticipation is
+worth), never judged.
+
+**The planner** (privileged, counted and recorded in `agent_detail.privileged`, never
 given to an agent under test). It reads the situation's contacts file (every contact's route, speed,
 height and start, so each need's crossing of the mission circle and its deadline before it happens),
 our vehicles' true state (position, mode, battery, a blocked link), the tracker's association, the
@@ -40,28 +47,31 @@ that cameras point themselves (decision W1: it places vehicles, never gimbals):
    session or truth shows it, never before.
 
 It knows nothing of the situation's sensing draws (which observer calls the contact wrong): a perfect
-watch officer could not. **Feasibility** (`feasibility`, recorded per need at the oracle's first
-tick, for the report of its losses by cause; eval/SCORING-V3.md 13.2): with every vehicle of the
-fleet that takes orders, from where it is then, whether any can raise the need's evidence to 0.6 by
-its deadline, and if none can, why: `fleet_gap` (no vehicle's sensor reaches 0.6 on this kind even by
-a clear day), `night` or `fog` (one would by a clear day, not in the drawn light or visibility),
-`no_time` (capable vehicles, none in reach of its path by the deadline), `terrain` (in reach, never in
-sight), `link` (only where the datalink fails), `reserve`.
+watch officer could not. **Feasibility** (`feasibility`, for the report of its losses by cause;
+eval/SCORING-V3.md 13.2), recorded per need by the ceiling when the picture first shows the contact
+(its first chance to act; `not_shown` when that comes only at or after the deadline) and by the
+foreknowledge ceiling at its first tick: with every vehicle of the fleet that takes orders, from
+where it is then, whether any can raise the need's evidence to 0.6 by its deadline, and if none can,
+why: `fleet_gap` (no vehicle's sensor reaches 0.6 on this kind even by a clear day), `night` or `fog`
+(one would by a clear day, not in the drawn light or visibility), `no_time` (capable vehicles, none in
+reach of its path by the deadline), `terrain` (in reach, never in sight), `link` (only where the
+datalink fails), `reserve`.
 
-**The ladder** (SCORING-V3.md 13.3): the ceiling with one advantage removed, nothing else changed:
+**The ladder** (SCORING-V3.md 13.3): the ceiling (`oracle-v3-shown`) with one more advantage removed,
+nothing else changed (since 2026-10-26; before, each rung was the foreknowledge ceiling with one
+removed):
 
-- `oracle-v3-late`: no look before the need opens (its true position inside the circle);
+- `oracle-v3-late`: no look before the need opens either (its true position inside the circle);
 - `oracle-v3-linkblind`: no link map and no truth of a blocked link (a lost link only as the
   session's `link_lost` shows it);
 - `oracle-v3-sensorblind`: no sensing model: every sensor reaches its catalog `range_m` (what
   `get_platforms` shows as its reach) on every kind, by day or night, in any visibility, and sees
   past any terrain;
-- `oracle-v3-shown` (a diagnostic, SCORING-V3.md 15, never judged): no look before the picture shows
-  the contact (the tracker associates a track with it);
 - `oracle-v3-honest` (`HonestCeiling`): linkblind, reading no truth: the realistic ceiling, built
   from a session alone. It keeps the sensing model (the catalog's figures make it learnable) with
   the sun from the scenario clock, but not the drawn visibility, sea or wind (the C2 does not show
-  them: it assumes a clear day's), nor any contact's truth: its needs come from the picture.
+  them: it assumes a clear day's), nor any contact's truth: its needs come from the picture, so it
+  too looks at nothing the picture does not show.
 """
 
 from __future__ import annotations
@@ -376,7 +386,8 @@ def qkey(u: UnitV3, n: NeedV3, key: str = "") -> tuple[str, str]:
 # ---- the ceiling --------------------------------------------------------------------------------------
 
 class Ceiling(SessionAgent):
-    """The v3 ceiling (module doc). Privileged: truth, the contacts file, the sensing model."""
+    """The v3 planner (module doc), looking from the start: the foreknowledge ceiling. Privileged:
+    truth, the contacts file, the sensing model."""
 
     name = "oracle-v3"
     #: it reads and plans every so often (its orders go out at once)
@@ -423,8 +434,9 @@ class Ceiling(SessionAgent):
     KNOW_LINK = True
     KNOW_SENSORS = True
     LATE = False
-    #: the shown rung's switch (a diagnostic, SCORING-V3.md 15): no look before the picture shows
-    #: the contact (a track the tracker associates with it)
+    #: the ceiling's switch (SCORING-V3.md 13.1; a diagnostic rung in section 15, the ceiling since
+    #: 2026-10-26): no look before the picture shows the contact (a track the tracker associates
+    #: with it). Off, the planner is the foreknowledge ceiling
     SHOWN = False
     RESERVE_AWARE = True
     TRUTH = True
@@ -681,8 +693,8 @@ class Ceiling(SessionAgent):
         return u.xy is not None and not u.down and not u.link_bad and now >= u.refused_until
 
     def may_look(self, n: NeedV3, now: float) -> bool:
-        """The late rung's switch: no look before the need opens; the shown rung's: none before
-        the picture shows the contact."""
+        """The ceiling's switch: no look before the picture shows the contact; the late rung's:
+        none before the need opens either."""
         return (not self.LATE or n.opened_t is not None) and (not self.SHOWN or n.shown_t is not None)
 
     def medium_ok(self, u: UnitV3, xy: tuple[float, float]) -> bool:
@@ -958,10 +970,12 @@ class Ceiling(SessionAgent):
 
     def due(self, now: float) -> bool:
         """Whether to plan again: every `PLAN_EVERY_S`, or at once when an order ended, a need was
-        resolved or opened, or a unit was lost since the last plan."""
+        resolved or opened, its contact first shown (the ceiling), or a unit was lost since the
+        last plan."""
         state = (tuple(sorted((u.uid, u.order["intent"] if u.order else None, u.down, u.link_bad)
                               for u in self.units.values())),
-                 tuple(sorted((n.id, n.resolved_t is None, n.opened_t is None) for n in self.needs.values())))
+                 tuple(sorted((n.id, n.resolved_t is None, n.opened_t is None, self.SHOWN and n.shown_t is None)
+                              for n in self.needs.values())))
         if state != getattr(self, "_plan_state", None) or now - getattr(self, "_plan_t", -1e9) >= self.PLAN_EVERY_S:
             self._plan_state, self._plan_t = state, now
             return True
@@ -972,10 +986,8 @@ class Ceiling(SessionAgent):
             if not self.started:
                 self.setup()
                 self.started = True
-                self.read(now)
-                self.assess(now)
-            else:
-                self.read(now)
+            self.read(now)
+            self.assess(now)
             self.homeward(now)
             plan = self.plan(now) if self.due(now) else []
             for o in plan + self.chase(now):
@@ -989,17 +1001,36 @@ class Ceiling(SessionAgent):
 
     # ---- feasibility: why a need could not be served (for the report of the ceiling's losses) -------------
 
+    def is_ceiling(self) -> bool:
+        """The ceiling or the foreknowledge ceiling: every switch but `SHOWN` at the ceiling's
+        value (a rung or the honest ceiling turns one off)."""
+        return self.KNOW_LINK and self.KNOW_SENSORS and not self.LATE and self.RESERVE_AWARE and self.TRUTH
+
     def assess(self, now: float) -> None:
-        """Per need, at the first tick, with every unit from where it is (module doc): whether any
-        could raise its evidence to 0.6 by the deadline, and if none could, the first reason that
-        applies. The full ceiling only (the rungs record none)."""
-        if type(self) is not Ceiling:
+        """Per need, once, with every unit from where it is (module doc): whether any could raise its
+        evidence to 0.6 by the deadline, and if none could, the first reason that applies. The
+        ceiling judges a need at the tick the picture first shows its contact (its first chance to
+        act), `not_shown` when the deadline comes first; the foreknowledge ceiling every need at its
+        first tick. The ceilings only (the rungs record none)."""
+        if not self.is_ceiling():
             return
         for n in self.needs.values():
-            try:
-                n.feasibility = self.feasibility(n, now)
-            except Exception as e:  # noqa: BLE001
-                n.feasibility = {"verdict": "unknown", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+            if n.feasibility is not None:
+                continue
+            if self.SHOWN and n.shown_t is None:
+                if now >= n.deadline:
+                    n.feasibility = {"verdict": "not_shown", "shown_t": None}
+                    self.write("feasibility", contact=n.id, **n.feasibility)
+                continue
+            if self.SHOWN and n.shown_t is not None and n.shown_t >= n.deadline:
+                n.feasibility = {"verdict": "not_shown", "shown_t": round(n.shown_t, 1)}
+            else:
+                try:
+                    n.feasibility = self.feasibility(n, now)
+                except Exception as e:  # noqa: BLE001
+                    n.feasibility = {"verdict": "unknown", "error": f"{type(e).__name__}: {str(e)[:200]}"}
+                if self.SHOWN:
+                    n.feasibility["shown_t"] = round(float(n.shown_t), 1)
             self.write("feasibility", contact=n.id, **{k: v for k, v in n.feasibility.items() if k != "units"})
 
     def feasibility(self, n: NeedV3, now: float) -> dict[str, Any]:
@@ -1119,36 +1150,41 @@ class Ceiling(SessionAgent):
                              "reserve_aware": self.RESERVE_AWARE, "truth": self.TRUTH}}
 
 
-class CeilingLate(Ceiling):
-    """No look before the need opens (its true position inside the circle)."""
+class CeilingShown(Ceiling):
+    """The ceiling (SCORING-V3.md 13.1; the owner's decision of 2026-10-26): the planner with no look
+    before the picture shows the contact (the tracker associates a track with it), everything else
+    the foreknowledge ceiling's. Section 15 found the foreknowledge ceiling's lead over it mostly
+    acting before the contact exists, which no agent can, so this is the reachable ceiling: the
+    room test's and relative comparison's. Its step under the foreknowledge ceiling is what acting
+    before the picture shows a contact is worth (reported); the honest ceiling's step under it,
+    what truth is worth once the picture shows it."""
+
+    name = "oracle-v3-shown"
+    SHOWN = True
+
+
+class CeilingLate(CeilingShown):
+    """The ceiling, and no look before the need opens either (its true position inside the
+    circle)."""
 
     name = "oracle-v3-late"
     LATE = True
 
 
-class CeilingLinkBlind(Ceiling):
-    """No link map and no truth of a blocked link: a lost link only as the session shows it."""
+class CeilingLinkBlind(CeilingShown):
+    """The ceiling with no link map and no truth of a blocked link: a lost link only as the session
+    shows it."""
 
     name = "oracle-v3-linkblind"
     KNOW_LINK = False
 
 
-class CeilingSensorBlind(Ceiling):
-    """No sensing model: every sensor reaches its catalog `range_m` on every kind, in any light and
-    visibility, past any terrain (the v3 analogue of not knowing your sensors)."""
+class CeilingSensorBlind(CeilingShown):
+    """The ceiling with no sensing model: every sensor reaches its catalog `range_m` on every kind, in
+    any light and visibility, past any terrain (the v3 analogue of not knowing your sensors)."""
 
     name = "oracle-v3-sensorblind"
     KNOW_SENSORS = False
-
-
-class CeilingShown(Ceiling):
-    """A diagnostic (SCORING-V3.md 15), never judged: the ceiling with no look before the picture
-    shows the contact (the tracker associates a track with it), everything else the ceiling's. Its
-    step under the ceiling is what acting before the picture shows a contact is worth; the honest
-    ceiling's step under it, what truth is worth once the picture shows it."""
-
-    name = "oracle-v3-shown"
-    SHOWN = True
 
 
 # ---- the honest ceiling: only what the picture shows -----------------------------------------------------
@@ -1191,6 +1227,9 @@ class HonestCeiling(CeilingLinkBlind):
 
     name = "oracle-v3-honest"
     TRUTH = False
+    #: its needs are the picture's tracks, so it looks at nothing the picture does not show; the
+    #: ceiling's gate, which reads the tracker's association with truth, is not its
+    SHOWN = False
     #: a track whose shown motion brings it within the circle this soon is a need to plan for
     HORIZON_S = 300.0
     MAX_PLANNED = 6
@@ -1449,7 +1488,7 @@ def sense_only(sim: Any) -> Callable[[dict[str, Any]], dict[str, Any]]:
     return ask
 
 
-LADDER = {c.name: c for c in (Ceiling, CeilingLate, CeilingLinkBlind, CeilingSensorBlind, CeilingShown)}
+LADDER = {c.name: c for c in (Ceiling, CeilingShown, CeilingLate, CeilingLinkBlind, CeilingSensorBlind)}
 NAMES = tuple(LADDER) + (HonestCeiling.name,)
 
 

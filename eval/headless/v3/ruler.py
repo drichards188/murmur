@@ -14,13 +14,15 @@ stopped part way loses at most a chunk. Its workers run numpy on one thread each
 **report** reads the batch's `dev_v3.json` (run.py `report`) and writes `ruler_v3.json` and
 `ruler_v3.md`, opening with the batch's coverage (lesson 1):
 
-1. the room test per family and world (room.py; SCORING-V3.md 10.1);
+1. the room test per family and world (room.py; SCORING-V3.md 10.1), against the ceiling
+   `oracle-v3-shown` (the owner's decision of 2026-10-26), and beside it, reported and never judged,
+   the foreknowledge ceiling's (`oracle-v3`) steps over the floor and over the ceiling;
 2. lesson 3's single-cause share per family and world, for `none` and the ceiling (`none`'s
    `no_look` apart, choice 13; report.py `flags`);
-3. the ceiling's losses by cause: its plan's feasibility verdict at its first tick (planner.py
-   `feasibility`: `fleet_gap`, `night`, `fog`, `no_time`, `terrain`, `link`, `reserve`) for the
-   needs no plan could serve, else the loss's cause on the picture (causes.py) for the needs its
-   plan could have served;
+3. the ceiling's losses by cause: its plan's feasibility verdict when the picture first showed the
+   contact (planner.py `feasibility`: `not_shown`, `fleet_gap`, `night`, `fog`, `no_time`, `terrain`,
+   `link`, `reserve`) for the needs no plan could serve, else the loss's cause on the picture
+   (causes.py) for the needs its plan could have served;
 4. the ladder per family and world, and pooled per family: each rung's need served, the judged
    orders (`JUDGED`) by v2 0.3's rule and the reported ones (`REPORTED`), with their paired
    differences;
@@ -54,26 +56,29 @@ import numpy as np
 from .. import REPO
 from ..v2 import metrics as V2M
 from ..v2 import stats as S
-from .room import MIN_ROOM, room
+from .room import CEILING, FORESIGHT, MIN_ROOM, foreknowledge, room
 
 FAMILIES = tuple(f"v3-{f}-{w}" for f in ("f1-fast-boat", "f2-drone", "f3-low-aircraft", "f4-uuv", "f5-diver",
                                          "f6-shore-vehicle") for w in ("gg", "sd"))
-CEILING = "oracle-v3"
 HONEST = "oracle-v3-honest"
-RUNGS = ("oracle-v3", "oracle-v3-late", "oracle-v3-linkblind", "oracle-v3-sensorblind", "oracle-v3-honest")
+#: the ceiling (`oracle-v3-shown`, room.py) and its rungs, each the ceiling with one more switch off
+#: (planner.py; SCORING-V3.md 13.3); the foreknowledge ceiling (`oracle-v3`) runs beside them, reported
+RUNGS = (CEILING, "oracle-v3-late", "oracle-v3-linkblind", "oracle-v3-sensorblind", "oracle-v3-honest")
 PERTURBATIONS = ("oracle-v3-honest+spam", "oracle-v3-honest+behind", "oracle-v3-honest+skip-first",
                  "oracle-v3-honest+reserve-blind", "oracle-v3-honest+ferries", "oracle-v3-honest+pull-off",
                  "oracle-v3-honest+wrong-sensor")
-AGENTS = ("none", "random-valid", "playbook") + RUNGS + PERTURBATIONS
+AGENTS = ("none", "random-valid", "playbook", FORESIGHT) + RUNGS + PERTURBATIONS
 CHUNK = 200
 #: SCORING-V3.md 13.3: the orders judged, (A, B): A at least B on need served. Each removes one
-#: advantage from the same planner, with no second handicap to interact with
-JUDGED: tuple[tuple[str, str], ...] = (("oracle-v3", "oracle-v3-late"), ("oracle-v3", "oracle-v3-linkblind"),
-                                       ("oracle-v3", "oracle-v3-sensorblind"))
-#: computed and reported, never judged: two handicaps that may interact (the truth step, as v2 0.6
-#: found), or a rung against the floor (an agent that moves vehicles can take one off a need the
-#: floor's standing orders would have served)
-REPORTED: tuple[tuple[str, str], ...] = (("oracle-v3-linkblind", "oracle-v3-honest"),
+#: advantage from the ceiling's planner, with no second handicap to interact with
+JUDGED: tuple[tuple[str, str], ...] = ((CEILING, "oracle-v3-late"), (CEILING, "oracle-v3-linkblind"),
+                                       (CEILING, "oracle-v3-sensorblind"))
+#: computed and reported, never judged: the foreknowledge ceiling over the ceiling and the floor (the
+#: owner's decision of 2026-10-26: one switch, but foreknowledge no agent has), two handicaps that may
+#: interact (the truth step, as v2 0.6 found), or a rung against the floor (an agent that moves
+#: vehicles can take one off a need the floor's standing orders would have served)
+REPORTED: tuple[tuple[str, str], ...] = ((FORESIGHT, CEILING), (FORESIGHT, "none"),
+                                         ("oracle-v3-linkblind", "oracle-v3-honest"),
                                          ("oracle-v3-sensorblind", "oracle-v3-honest"),
                                          ("oracle-v3-late", "oracle-v3-honest"),
                                          ("oracle-v3-late", "none"), ("oracle-v3-linkblind", "none"),
@@ -318,6 +323,8 @@ def report(scored: list[dict[str, Any]], summary: dict[str, Any], seed: int = 0)
                            "with_needs": needy, "min_room": MIN_ROOM}
     # 1-3: the room, lesson 3, the ceiling's losses
     out["room"] = {f: room(scored, f, seed=seed) for f in fws if CEILING in agents and "none" in agents}
+    # reported, never judged: what the foreknowledge ceiling's anticipation is worth
+    out["foreknowledge"] = {f: x for f in fws if (x := foreknowledge(scored, f, seed=seed)) is not None}
     out["lesson3"] = {f: (summary.get("families") or {}).get(f, {}).get("flags") for f in fws}
     out["ceiling_losses"] = {f: ceiling_losses(scored, f) for f in fws}
     out["feasibility"] = {f: feasibility_counts(scored, f) for f in fws}
@@ -458,12 +465,20 @@ def markdown(r: dict[str, Any], d: Path) -> str:
     L += [f"- Conditions: {', '.join(f'{k} {v}' for k, v in sorted((cov.get('light') or {}).items()))} (situations by "
           f"light); {cov.get('situations')} situations, {cov.get('episodes')} episodes.",
           f"- Agents: {', '.join(r['agents'])}.", ""]
-    L += ["## Room (10.1)", "", f"Ceiling minus `none` on need served, paired by situation; room when the interval lies "
-          f"above zero and the mean is at least {100 * MIN_ROOM:.0f} points.", "",
+    L += ["## Room (10.1)", "", f"Ceiling (`{CEILING}`) minus `none` on need served, paired by situation; room when the "
+          f"interval lies above zero and the mean is at least {100 * MIN_ROOM:.0f} points.", "",
           "| family-world | none | ceiling | ceiling - none [95 % CI] | n | verdict |", "|---|---|---|---|---|---|"]
     for f, x in r["room"].items():
         L.append(f"| {f} | {pct(x.get('floor_share'))} % | {pct(x.get('ceiling_share'))} % | {ci(x)} | "
                  f"{x.get('n_situations')} | {x['verdict']} |")
+    if r.get("foreknowledge"):
+        L += ["", f"The foreknowledge ceiling (`{FORESIGHT}`), reported, never judged: its step over `none` and over the "
+              "ceiling (what acting before the picture shows a contact is worth), points [95 % CI] (n).", "",
+              "| family-world | foreknowledge | over none | over the ceiling |", "|---|---|---|---|"]
+        for f, x in r["foreknowledge"].items():
+            a, b = x.get("over_floor") or {}, x.get("over_ceiling") or {}
+            L.append(f"| {f} | {pct((a or b).get('ceiling_share'))} % | {ci(a) if a else 'n/a'} ({a.get('n_situations')}) | "
+                     f"{ci(b) if b else 'n/a'} ({b.get('n_situations')}) |")
     L += ["", "## The ceiling's losses by cause", "", "| family-world | plan verdicts (eligible needs) | lost | by cause |",
           "|---|---|---|---|"]
     for f, x in r["ceiling_losses"].items():
@@ -472,15 +487,18 @@ def markdown(r: dict[str, Any], d: Path) -> str:
     L += ["", "## Lesson 3 (single cause)", ""]
     for f, fl in r["lesson3"].items():
         L.append(f"- {f}: {'; '.join(fl or []) or 'no flag'}")
-    short = {"oracle-v3": "ceiling", "oracle-v3-late": "late", "oracle-v3-linkblind": "linkblind",
-             "oracle-v3-sensorblind": "sensorblind", "oracle-v3-honest": "honest", "none": "none"}
-    L += ["", "## The ladder", "", "Need served (%), per family-world and pooled per family (`*`).", "",
-          "| cell | " + " | ".join(short[a] for a in RUNGS + ("none",)) + " | playbook | random-valid |",
-          "|---|" + "---|" * (len(RUNGS) + 3)]
+    short = {FORESIGHT: "foreknowledge", CEILING: "ceiling", "oracle-v3-late": "late",
+             "oracle-v3-linkblind": "linkblind", "oracle-v3-sensorblind": "sensorblind", "oracle-v3-honest": "honest",
+             "none": "none"}
+    arms_order = (FORESIGHT,) + RUNGS + ("none",)
+    L += ["", "## The ladder", "", "Need served (%), per family-world and pooled per family (`*`); the foreknowledge "
+          "ceiling reported beside the ladder.", "",
+          "| cell | " + " | ".join(short[a] for a in arms_order) + " | playbook | random-valid |",
+          "|---|" + "---|" * (len(arms_order) + 2)]
     for cell, x in r["ladder"].items():
         arms = x["arms"]
         L.append(f"| {cell} | " + " | ".join(f"{pct((arms.get(a) or {}).get('share'))}"
-                                            for a in RUNGS + ("none", "playbook", "random-valid")) + " |")
+                                            for a in arms_order + ("playbook", "random-valid")) + " |")
     L += ["", "Judged orders (A at least B; v2 0.3's rule), A minus B in points [95 % CI]:", "",
           "| cell | " + " | ".join(f"ceiling >= {short[b]}" for _, b in JUDGED) + " |", "|---|" + "---|" * len(JUDGED)]
     for cell, x in r["ladder"].items():

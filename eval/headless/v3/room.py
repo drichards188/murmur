@@ -2,6 +2,13 @@
 fixed world conditions): per family and world, the ceiling must do measurably better than `none` on
 need served, so the family leaves agents room between the floor and the ceiling. MODEL RESULTS ONLY.
 
+**The ceiling is `oracle-v3-shown`** (the owner's decision of 2026-10-26, SCORING-V3.md 9 and 15): the
+planner with no look before the picture shows the contact, the reachable ceiling. `oracle-v3`, the
+same planner looking from the start, ordered a median 170 to 250 s before a contact even existed, so
+its lead over an agent acting on the picture was mostly foreknowledge, which no agent has; it is the
+**foreknowledge ceiling** (`FORESIGHT`), reported beside the room (`foreknowledge`: its step over the
+floor and over the ceiling, what anticipation is worth), never judged.
+
 **The test.** Per situation, the ceiling's need served (served over eligible needs) minus `none`'s, on
 the situations where both have an eligible need. The room is shown when
 
@@ -30,7 +37,10 @@ from ..v2 import metrics as V2M
 
 #: the smallest room worth a family, in points of need served (module doc; SCORING-V3.md 10.1)
 MIN_ROOM = 0.10
-CEILING = "oracle-v3"
+#: the room test's and relative comparison's ceiling (module doc)
+CEILING = "oracle-v3-shown"
+#: the foreknowledge ceiling: reported, never judged
+FORESIGHT = "oracle-v3"
 FLOOR = "none"
 
 
@@ -80,3 +90,19 @@ def room_all(scored: list[dict[str, Any]], seed: int = 0) -> dict[str, dict[str,
     if CEILING not in agents or FLOOR not in agents:
         return {}
     return {f: room(scored, f, seed=seed) for f in fams}
+
+
+def foreknowledge(scored: list[dict[str, Any]], family: str, seed: int = 0) -> dict[str, Any] | None:
+    """Reported, never judged: the foreknowledge ceiling's step over the floor (the room v3 measured
+    before 2026-10-26) and over the ceiling (what acting before the picture shows a contact is
+    worth), each paired by situation as the room is, its verdict computed by the room's rule for
+    reading only."""
+    agents = {s["agent"] for s in scored if s["family"] == family}
+    if FORESIGHT not in agents:
+        return None
+    out: dict[str, Any] = {"judged": False}
+    if FLOOR in agents:
+        out["over_floor"] = room(scored, family, ceiling=FORESIGHT, floor=FLOOR, seed=seed)
+    if CEILING in agents:
+        out["over_ceiling"] = room(scored, family, ceiling=FORESIGHT, floor=CEILING, seed=seed)
+    return out

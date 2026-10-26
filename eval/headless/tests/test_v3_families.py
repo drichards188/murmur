@@ -173,8 +173,9 @@ def test_a_short_episode_per_family_and_world(name: str, tmp_path: Path, binary:
         k = F.first_within([tuple(p) for p in c["route"]], load_world(world).mission.center, 3000.0) or 0.0
         end = float(c["start_s"]) + F.time_to(k, float(c["speed_mps"])) + 60.0
     e.duration_s = min(e.duration_s, max(end, 200.0))
-    opts = Options(agent="oracle-v3", operator={"mode": "approve-all"}, calibration=Calibration.load(), scoring="v3",
-                   replicate={"r": 0, "seed": 5000, "situation_seed": 5000})
+    # the ceiling (SCORING-V3.md 13.1: `oracle-v3-shown` since 2026-10-26)
+    opts = Options(agent="oracle-v3-shown", operator={"mode": "approve-all"}, calibration=Calibration.load(),
+                   scoring="v3", replicate={"r": 0, "seed": 5000, "situation_seed": 5000})
     rec = Episode(e, 5000, tmp_path / "ep", opts, contacts_path=path).run()
     assert rec["scoring"] == "v3" and rec["episode_class"] == "scored" and "v2" not in rec
     assert rec["world"]["name"] == world and rec["world"]["conditions"]["at"] == e.at
@@ -182,10 +183,13 @@ def test_a_short_episode_per_family_and_world(name: str, tmp_path: Path, binary:
     lab = episode_labels(rec)
     assert lab["version"] == "3" and lab["world"] == world
     detail = rec["agent_detail"]
-    assert detail["agent"] == "oracle-v3" and detail["errors"] == 0, rec["agent_log"][-3:]
+    assert detail["agent"] == "oracle-v3-shown" and detail["errors"] == 0, rec["agent_log"][-3:]
     if fam != "f18-quiet":
         cid = e.truth["added"][0]
         assert any(row[0] == cid for s in rec["truth"]["samples"] for row in s["contacts"]), "the element moves"
         assert cid in detail["needs"], "the oracle knows the need"
+        feas = detail["needs"][cid]["feasibility"]
+        assert feas is None or feas["verdict"] in ("not_shown", "fleet_gap", "night", "fog", "conditions", "no_time",
+                                                   "terrain", "link", "reserve", "feasible", "unknown"), feas
     else:
         assert detail["needs"] == {} and detail["proposals"] == 0, "nothing to do in a quiet watch"

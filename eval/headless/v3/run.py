@@ -2,7 +2,7 @@
 free, deterministic agents on generated situations; never human data, never an API call.
 
     .venv/bin/python -m eval.headless.v3.run batch --families all --seeds 5000-5009 \\
-        --agent none random-valid oracle-v3 --workers 20 --out <dir>
+        --agent none random-valid oracle-v3-shown --workers 20 --out <dir>
     .venv/bin/python -m eval.headless.v3.run report <dir>
 
 **batch** runs every (family, situation seed, agent) once (replicate 0; its seed
@@ -12,8 +12,9 @@ with its index (`episodes_v3.json`); an episode that fails is run again once, a 
 `harness_error`. A `none` replicate is added for every situation when the agents lack one (labels
 judge `useful` against it). **report** labels every episode against its `none` replicate (labels.py),
 and writes `dev_v3.json` and `dev_v3.md`: per family and world, the coverage, need served per agent
-(pooled over the family's needs) with time to serve, 10.1's conditions (`none` at most 50 %, the oracle
-at least 80 %), and the single-cause analysis of the needs `none` and the oracle lost (`causes.py`).
+(pooled over the family's needs) with time to serve, 10.1's room test (the ceiling, `oracle-v3-shown`,
+measurably above `none`), and the single-cause analysis of the needs `none` and the oracle lost
+(`causes.py`).
 """
 
 from __future__ import annotations
@@ -144,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     b = sub.add_parser("batch")
     b.add_argument("--families", nargs="+", default=["all"])
     b.add_argument("--seeds", nargs="+", default=["5000-5009"])
-    b.add_argument("--agent", nargs="+", default=["none", "random-valid", "oracle-v3"])
+    b.add_argument("--agent", nargs="+", default=["none", "random-valid", "oracle-v3-shown"])
     b.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) // 2))
     b.add_argument("--out", type=Path, default=REPO / "eval" / "results" / "headless" / "v3-dev")
     b.add_argument("--order-seed", type=int, default=0)
