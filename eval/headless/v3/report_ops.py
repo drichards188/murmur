@@ -24,7 +24,10 @@ from .causes import cause_of, light, single_cause
 from .families import parse
 from .labels import episode_labels, picture, sensing_errors
 
-ORACLE = "oracle-v3"
+#: the basic oracle with its F14-F16 additions (oracle_ops.py), whose attempts this report reads: agent
+#: `oracle-v3-basic`, run as `oracle-v3` in section 12's dev check (that name is the ceiling since
+#: section 13, planner.py, which makes no attempt, so its records add only their reaches here)
+ORACLES = ("oracle-v3-basic", "oracle-v3")
 STATIONARY_MPS = 0.2
 YOUNG_S = 60.0
 
@@ -149,7 +152,7 @@ def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]
            "element": st.get("element"), "space_options": detail.get("space_options"),
            "effects": [{"hit": e.get("hit"), "removed": e.get("platform_removed")}
                        for e in ((rec.get("effects") or {}).get("applied") or [])]}
-    if meta["agent"] == ORACLE:
+    if meta["agent"] in ORACLES:
         # the vehicle types the sensing model says could answer each need (the oracle's ranges,
         # at least 150 m for a camera, 35 m for a sonar: report.py's rule)
         reach = detail.get("reach_m") or {}
@@ -243,7 +246,7 @@ def summarize(scored: list[dict[str, Any]]) -> dict[str, Any]:
                                                        for r in revs if r["label"] == "wrong"])}
             rtf = [s["rtf"] for s in ag if s["rtf"]]
             x["rtf_median"] = med(rtf)
-            if agent == ORACLE:
+            if agent in ORACLES:
                 bl = [s["blockers"] for s in ag if s.get("blockers")]
                 if bl:
                     agg: dict[str, Any] = {"attempts": sum(b["attempts"] for b in bl), "passed": sum(b["passed"] for b in bl),

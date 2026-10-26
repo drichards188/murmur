@@ -423,7 +423,7 @@ def smoke(name: str, agent: str, duration: float, tmp_path: Path) -> tuple[dict[
 
 @pytest.mark.parametrize("name", ["v3-f14-space-gg", "v3-f14-space-sd"])
 def test_f14_smoke_a_collect_and_a_cover(name: str, tmp_path: Path, binary: None):
-    rec, lab = smoke(name, "oracle-v3", 300.0, tmp_path)
+    rec, lab = smoke(name, "oracle-v3-basic", 300.0, tmp_path)
     assert rec["episode_class"] == "scored" and rec["agent_detail"]["errors"] == 0, rec["agent_log"][-3:]
     probe = next(s for s in rec["script"] if s["kind"] == "probe")
     assert probe["status"] == 200 and len(probe["answer"]["samples"]) == 4

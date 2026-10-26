@@ -1,5 +1,7 @@
-"""The basic v3 oracle (agent `oracle-v3`; eval/SCORING-V3.md section 5): a feasibility check for the
-v3 families, not yet the ceiling of a ladder (C2 builds that). MODEL RESULTS ONLY.
+"""The basic v3 oracle (agent `oracle-v3-basic`, the first dev check's `oracle-v3`; eval/SCORING-V3.md
+section 5): a feasibility check for the v3 families, kept to compare with that check. The ceiling of
+the ladder, `oracle-v3`, is planner.py's (C2); its rungs and the honest ceiling's perturbations are
+planner.py's and perturb.py's, dispatched by `make` here. MODEL RESULTS ONLY.
 
 **Privileged, counted and recorded** (`agent_detail.privileged`), never given to an agent under test:
 it reads the situation's contacts file (every contact's route, speed, depth or altitude and start:
@@ -170,7 +172,7 @@ class Unit:
 class OracleV3(SessionAgent):
     """The basic v3 oracle (module doc). Privileged: truth, the contacts file, the sensing model."""
 
-    name = "oracle-v3"
+    name = "oracle-v3-basic"
     TICK_S = 2.0
     DISPATCH_S = 8.0
     #: a share of the model's Pd 0.5 range the plan counts on (the model's range is a pointed
@@ -558,9 +560,18 @@ class OracleV3(SessionAgent):
 
 
 def make(ep: Any, name: str) -> Any:
-    if name == "oracle-v3":
+    """Scoring v3's agent `name` for episode `ep`: the basic oracle here (with F14-F16's few
+    additions, oracle_ops.py), the ceiling and its rungs (planner.py), the honest ceiling's
+    perturbations (perturb.py)."""
+    if name == "oracle-v3-basic":
         # with F14-F16's few additions (oracle_ops.py); in every other family it is OracleV3 exactly
         from .oracle_ops import OracleOps
 
         return OracleOps(ep)
+    from . import perturb, planner
+
+    if name in planner.NAMES:
+        return planner.make(ep, name)
+    if name in perturb.NAMES:
+        return perturb.make(ep, name)
     raise ValueError(f"unknown v3 agent {name!r}")

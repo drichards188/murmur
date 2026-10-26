@@ -247,12 +247,12 @@ def test_a_short_episode_per_family_and_world(name: str, tmp_path: Path, binary:
     # long enough for the first need to be judged
     first = min(n["entry_s"] + GRACE[n["domain"]] for n in e.truth["elements"])
     e.duration_s = min(e.duration_s, max(math.ceil(first) + 20.0, 240.0))
-    opts = Options(agent="oracle-v3", operator={"mode": "approve-all"}, calibration=Calibration.load(), scoring="v3",
+    opts = Options(agent="oracle-v3-basic", operator={"mode": "approve-all"}, calibration=Calibration.load(), scoring="v3",
                    replicate={"r": 0, "seed": 5300, "situation_seed": 5300})
     rec = Episode(e, 5300, tmp_path / "ep", opts, contacts_path=path).run()
     assert rec["scoring"] == "v3" and rec["episode_class"] == "scored" and rec["world"]["name"] == world
     detail = rec["agent_detail"]
-    assert detail["agent"] == "oracle-v3" and detail["errors"] == 0, rec["agent_log"][-3:]
+    assert detail["agent"] == "oracle-v3-basic" and detail["errors"] == 0, rec["agent_log"][-3:]
     lab = episode_labels(rec)
     judged = {n["contact"] for n in lab["needs"] if n["evaluable"]}
     assert judged and judged <= set(e.truth["needs"]), "only the family's needs, and at least one judged"

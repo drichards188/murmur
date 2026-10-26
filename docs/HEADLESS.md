@@ -1386,13 +1386,14 @@ batch tests pass unchanged).
 - `eval/headless/v3/labels.py`, `metrics.py`: needs per domain (the world's mission circle, the
   domain's grace, sensor and level), v2's action labels with the domain's sensors, nominations and
   review decisions against truth, collect and cover `unjudged`.
-- `eval/headless/v3/oracle.py` (agent `oracle-v3`): the basic v3 oracle, a feasibility check. It
-  asks the running episode's sensing model (`sense`) which of our platforms can identify each
-  contact at what range under the drawn conditions, and a per-world link map
+- `eval/headless/v3/oracle.py` (agent `oracle-v3-basic`, run as `oracle-v3` until the ceiling took
+  that name: SCORING-V3.md section 13, `eval/headless/v3/planner.py`): the basic v3 oracle, a
+  feasibility check. It asks the running episode's sensing model (`sense`) which of our platforms
+  can identify each contact at what range under the drawn conditions, and a per-world link map
   (`eval/headless/v3/linkmap.py`, the emulator's terrain check) where a line-of-sight or mesh
   datalink holds.
 - `eval/headless/v3/run.py`: a batch (`batch`) and the dev check's report (`report`: labels,
-  need served per family and world, 10.1's conditions, the single-cause analysis of
+  need served per family and world, 10.1's room test, the single-cause analysis of
   `eval/headless/v3/causes.py`).
 - `eval/headless/v3/record.py`: v2's picture encoding plus each track's looks under the physical
   model (`identity.looks` of `Track::json`: which observer's sensor reached which level, its label
@@ -1432,5 +1433,5 @@ batch tests pass unchanged).
 
       .venv/bin/python -m eval.headless.v3.run batch --families v3-f14-space-gg v3-f14-space-sd \
           v3-f15-engage-gg v3-f15-engage-sd v3-f16-review-gg v3-f16-review-sd v3-f17-scale-sc \
-          --seeds 5400-5409 --agent none random-valid oracle-v3 --workers 8 --out <dir>
+          --seeds 5400-5409 --agent none random-valid oracle-v3-basic --workers 8 --out <dir>
       .venv/bin/python -m eval.headless.v3.report_ops <dir>
