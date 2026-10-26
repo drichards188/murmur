@@ -560,10 +560,14 @@ class OracleV3(SessionAgent):
 
 
 def make(ep: Any, name: str) -> Any:
-    """Scoring v3's agent `name` for episode `ep`: the basic oracle here, the ceiling and its rungs
-    (planner.py), the honest ceiling's perturbations (perturb.py)."""
+    """Scoring v3's agent `name` for episode `ep`: the basic oracle here (with F14-F16's few
+    additions, oracle_ops.py), the ceiling and its rungs (planner.py), the honest ceiling's
+    perturbations (perturb.py)."""
     if name == "oracle-v3-basic":
-        return OracleV3(ep)
+        # with F14-F16's few additions (oracle_ops.py); in every other family it is OracleV3 exactly
+        from .oracle_ops import OracleOps
+
+        return OracleOps(ep)
     from . import perturb, planner
 
     if name in planner.NAMES:

@@ -936,6 +936,16 @@ group. Dates are 2026.
 
 ## Evaluation (Phase G)
 
+- **How much testing world v3 needs** (10-25, the owner: "how much testing is really
+  necessary", then yes to the recommendation). Kept: one pre-registered validation on fresh
+  situations, the paid blind label check, and the test suite (`make check`, `pytest eval`),
+  run on main once per round of merges rather than after every merge. The tracker's physical
+  held-out calibration is judged once more at the end, the sensor model being frozen. The
+  ruler's dev audit uses the two halves of one dev batch (5160-5176, 5177-5194) instead of a
+  second batch. Dropped: keeping the v1 and v2 worlds reproducible byte for byte from the
+  current code (their recorded results stand as history, tagged with the commits that made
+  them; the legacy sensing model and its pins remain until something needs them gone), and
+  re-running the 94 engine scenarios for changes that do not touch the decision engine.
 - **A situation's autoplay may grant every AI request and confirm rule declarations; neither is
   a policy change** (10-12, user direction: "i want a situation where a hostile is engaged", then
   "have all watch agent requests granted"; `sim/situations/hostile-act-engagement.toml`,

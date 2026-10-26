@@ -5,9 +5,17 @@ it unchanged, never edited.
 
 - `mission.py`: the per-domain mission (what must be identified, by which sensor, by when) and its
   text for each world;
-- `families.py`: F1-F6 and F18 on golden-gate-v3 and san-diego;
-- `labels.py`: contact needs per domain, fault needs (v2's), the action labels;
+- `families.py`: F1-F6 and F18 on golden-gate-v3 and san-diego, and the families built in modules
+  of their own (`EXTENSIONS`): `families_f7_f13.py`, F7-F13;
+- `labels.py`: contact needs per domain (a spoofed AIS among them), the action labels;
+- `faults.py`: fault needs (v2's low reserve, in every domain), the timeline's faults open on a
+  vehicle, the vehicles lost (a diagnostic);
+- `able.py`: the vehicle types the sensing model says could answer each need (the dev check);
 - `metrics.py`: v2's metrics and need served per domain;
-- `oracle.py`: the basic v3 oracle (agent `oracle-v3`);
-- `run.py`: a v3 batch and its dev check (`python -m eval.headless.v3.run`).
+- `oracle.py`: the basic v3 oracle (agent `oracle-v3-basic`) and `make`, which builds every v3 agent;
+- `planner.py`, `perturb.py`, `room.py`, `ruler.py`: the ceiling (`oracle-v3`) and its ladder, the
+  honest ceiling's perturbations, the room test, and the ruler's batch and report (section 13);
+- `run.py`: a v3 batch and its dev check (`python -m eval.headless.v3.run`);
+- `families_ops.py`, `labels_ops.py`, `oracle_ops.py`, `report_ops.py`: F14-F17, labels 2.8-2.10
+  and the families' needs, the basic oracle's additions for them, and their dev check.
 """

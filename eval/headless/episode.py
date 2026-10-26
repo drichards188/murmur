@@ -478,7 +478,7 @@ class Episode:
             if self.opts.review is not None:
                 from .review import Reviewer, review_policy
 
-                self.reviewer = Reviewer(sim, review_policy(self.opts.review), self.seed)
+                self.reviewer = Reviewer(sim, review_policy(self.opts.review), self.seed, epoch=float(spec["epoch"]))
                 self.loop.handlers["review"] = self.reviewer.wake
             cfg = make_config(json.loads(playbook_json(self.e)), self.e.config_name or self.e.name)  # type: ignore[arg-type]
             if self.opts.agent not in AGENTS:
@@ -746,6 +746,14 @@ class Episode:
         }
         if scan is not None:
             v2["leakage"] = scan.record()
+        if scoring == "v3":
+            # scoring v3's 2.10 (v3/labels_ops.py): each collect and cover with its checks, its space
+            # answer and its order, only when the log holds one (a record without is as before)
+            from .v3.labels_ops import digest_space
+
+            space = digest_space(audit_text, self.sim_epoch)
+            if space is not None:
+                v2["space"] = space
         return {
             "scoring": scoring,
             "episode_class": cls,

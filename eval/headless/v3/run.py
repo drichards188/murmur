@@ -47,8 +47,11 @@ def _episode(job: dict[str, Any], wd: Path) -> dict[str, Any]:
     spec, contacts = generate(job["family"], job["situation_seed"], wd)
     spec.seed = int(job["seed"])
     spec.replicate = int(job["r"])
+    # a family's own scripted operators and effects (F15, F16: families_ops.py `set_options`)
+    extra = dict(getattr(spec, "options", None) or {})
     opts = Options(agent=job["agent"], operator=job.get("operator"), calibration=Calibration(**job["calibration"]),
-                   scoring="v3", replicate={"r": job["r"], "seed": job["seed"], "situation_seed": job["situation_seed"]})
+                   scoring="v3", replicate={"r": job["r"], "seed": job["seed"], "situation_seed": job["situation_seed"]},
+                   **extra)
     return Episode(spec, job["seed"], wd, opts, contacts_path=contacts).run()
 
 

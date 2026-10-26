@@ -17,11 +17,15 @@ from eval.headless import REPO
 from eval.headless.episode import Episode, Options
 from eval.headless.situations import Calibration, run_id
 from eval.headless.v3 import families as F
+from eval.headless.v3 import families_ops as FO
 from eval.headless.v3.labels import episode_labels
 from eval.headless.v3.mission import mission_text
 from eval.world import load_world
 
 SEEDS = range(5000, 5012)
+#: F1-F6 and F18 (F14-F17, families_ops.py, have their own tests: test_v3_ops.py)
+#: F1-F6 and F18 (F7-F13 and F14-F17 have their own tests)
+BASE_NAMES = [n for n in F.all_names() if not FO.is_ops(n) and F.extension(F.parse(n)[0]) is None]
 
 
 def added(path: Path) -> list[dict]:
@@ -29,7 +33,7 @@ def added(path: Path) -> list[dict]:
     return [c for c in raw["contact"] if c["id"] in ("boat-1", "drone-1", "aircraft-1", "uuv-1", "diver-1", "vehicle-1")]
 
 
-@pytest.mark.parametrize("name", F.all_names())
+@pytest.mark.parametrize("name", BASE_NAMES)
 def test_every_family_draws_its_element_in_its_medium_and_into_the_circle(name: str, tmp_path: Path):
     fam, world = F.parse(name)
     w = load_world(world)
@@ -95,7 +99,7 @@ def binary() -> None:
     subprocess.run([cargo, "build", "--release", "-q", "-p", "murmur-headless"], cwd=REPO, check=True)
 
 
-@pytest.mark.parametrize("name", F.all_names())
+@pytest.mark.parametrize("name", BASE_NAMES)
 def test_a_short_episode_per_family_and_world(name: str, tmp_path: Path, binary: None):
     fam, world = F.parse(name)
     e, path = F.generate(name, 5000, tmp_path)
