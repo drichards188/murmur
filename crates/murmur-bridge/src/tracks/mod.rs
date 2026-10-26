@@ -172,7 +172,16 @@ struct Inner {
     dropped: BTreeMap<String, (TrackFacts, Option<AisIdentity>)>,
     /// rules 16: the engine's lost contacts, for display ([`Tracks::mirror_lost`])
     lost: Vec<Value>,
+    /// The headless simulator's evaluation view of the last sensing step: its detections, and
+    /// each observer's uid, position and navigation error ([`Tracks::last_step_json`]).
+    #[cfg(murmur_headless)]
+    last_step: (Vec<Detection>, Vec<StepObserver>),
 }
+
+/// An observer of the last sensing step: its uid, where it sensed from (lat, lon), its
+/// navigation error (metres east and north).
+#[cfg(murmur_headless)]
+type StepObserver = (u64, f64, f64, (f64, f64));
 
 pub struct Tracks {
     catalog: SensorCatalog,
@@ -187,11 +196,19 @@ pub struct Tracks {
     /// its own effect): it senses nothing from then on, whatever its link's age.
     #[cfg(murmur_headless)]
     gone: OnceLock<Gone>,
+    /// The headless simulator's word on how far a vehicle's own navigation is off its truth
+    /// (murmur-k8i): it senses from its truth and lays its fixes off from what it believes.
+    #[cfg(murmur_headless)]
+    nav_error: OnceLock<NavError>,
     updates: watch::Sender<Arc<String>>,
 }
 
 #[cfg(murmur_headless)]
 type Gone = Box<dyn Fn(u64) -> bool + Send + Sync>;
+/// A vehicle's navigation error now, metres east and north (what it believes less what is);
+/// None: not one of the simulator's.
+#[cfg(murmur_headless)]
+type NavError = Box<dyn Fn(u64) -> Option<(f64, f64)> + Send + Sync>;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -212,6 +229,8 @@ impl Tracks {
             last_model: Mutex::new(None),
             #[cfg(murmur_headless)]
             gone: OnceLock::new(),
+            #[cfg(murmur_headless)]
+            nav_error: OnceLock::new(),
             inner: Mutex::new(Inner {
                 truth: None,
                 tracks: BTreeMap::new(),
@@ -225,6 +244,8 @@ impl Tracks {
                 act_records: Vec::new(),
                 dropped: BTreeMap::new(),
                 lost: Vec::new(),
+                #[cfg(murmur_headless)]
+                last_step: (Vec::new(), Vec::new()),
             }),
             updates: watch::channel(Arc::new(String::new())).0,
         };
@@ -245,6 +266,17 @@ impl Tracks {
     #[cfg(murmur_headless)]
     pub fn set_gone(&self, gone: impl Fn(u64) -> bool + Send + Sync + 'static) {
         let _ = self.gone.set(Box::new(gone));
+    }
+
+    /// The headless simulator says how far each vehicle's navigation is off its truth
+    /// (`nav_error(uid)`, metres east and north: the stand-in's own filter, a GNSS spoofer's walk
+    /// or a dead reckoning's drift): its sensors then see from its truth, the position it
+    /// reports less that error, and it lays their fixes off from what it believes
+    /// (`sensing::Observer`). Without it (the bridge itself, which never knows our vehicles'
+    /// truth), an observer is where the vehicle says it is.
+    #[cfg(murmur_headless)]
+    pub fn set_nav_error(&self, nav_error: impl Fn(u64) -> Option<(f64, f64)> + Send + Sync + 'static) {
+        let _ = self.nav_error.set(Box::new(nav_error));
     }
 
     pub fn eval_truth_enabled(&self) -> bool {
@@ -268,7 +300,9 @@ impl Tracks {
         sim_token_check(self.settings.sim_token.as_deref(), headers)
     }
 
-    /// Our vehicles as sensor carriers: those with a position and a live link.
+    /// Our vehicles as sensor carriers: those with a position and a live link, each where it
+    /// says it is, or (the headless simulator, which knows its navigation error) at its truth
+    /// with that error, for its fixes (`sensing::Observer`).
     fn observers(&self, world: &World) -> Vec<Observer> {
         let mono = clock::mono();
         // a link's last packet is on the bridge's wall clock (`LinkSnapshot::last_rx_t`), as
@@ -303,8 +337,22 @@ impl Tracks {
                     }),
                     _ => None,
                 });
+                // where the vehicle's navigation is off its truth, where the simulator knows it
+                // (read before the vehicle's cell, whose lock is not held meanwhile)
+                #[cfg(murmur_headless)]
+                let nav_error_m = self.nav_error.get().and_then(|f| f(cell.uid)).unwrap_or((0.0, 0.0));
+                #[cfg(not(murmur_headless))]
+                let nav_error_m = (0.0, 0.0);
                 cell.read(|v| {
+                    // where it says it is: what it believes; its sensors see from its truth
                     let (lat, lon) = v.pos?;
+                    let (e, n) = nav_error_m;
+                    let (lat, lon) = if e == 0.0 && n == 0.0 {
+                        (lat, lon)
+                    } else {
+                        let m = physical::geometry::M_PER_DEG;
+                        (lat - n / m, lon - e / (m * lat.to_radians().cos()))
+                    };
                     let id = v.identity.as_deref()?;
                     let platform = id.str("platform")?;
                     let ps = self.catalog.get(platform)?;
@@ -317,6 +365,7 @@ impl Tracks {
                         uid: cell.uid,
                         lat,
                         lon,
+                        nav_error_m,
                         alt_msl: alt,
                         mast_m: ps.mast_m,
                         submerged,
@@ -384,6 +433,13 @@ impl Tracks {
         let n_contacts = msg.contacts.len();
         let n_tracks = {
             let mut inner = lock(&self.inner);
+            #[cfg(murmur_headless)]
+            {
+                inner.last_step = (
+                    detections.clone(),
+                    observers.iter().map(|o| (o.uid, o.lat, o.lon, o.nav_error_m)).collect(),
+                );
+            }
             self.fold(&mut inner, &detections, now);
             // rules 9: the hostile acts of this tick, as our sensors observe them (after the
             // fold: an act by a contact first seen this tick is attributed to its new track)
@@ -828,6 +884,29 @@ impl Tracks {
             "effects_sent": inner.effects_sent,
             // rules 9: every hostile act, observed (and the report it became) or not
             "acts": inner.act_records,
+        })
+    }
+
+    /// The last sensing step, for the headless simulator's evaluation only (never served by the
+    /// bridge): each detection with its contact's truth in that step's message, and each
+    /// observer (its uid, where it was, its navigation error, metres east and north).
+    #[cfg(murmur_headless)]
+    pub fn last_step_json(&self) -> Value {
+        let inner = lock(&self.inner);
+        let msg = inner.truth.as_ref().map(|(_, m)| m);
+        let truth: HashMap<&str, (f64, f64)> =
+            msg.map(|m| m.contacts.iter().map(|c| (c.id.as_str(), (c.lat, c.lon))).collect()).unwrap_or_default();
+        let (dets, obs) = &inner.last_step;
+        json!({
+            "s": msg.map(|m| m.s),
+            "detections": dets.iter().map(|d| json!({
+                "uid": d.uid, "sensor": d.sensor.as_str(), "contact": d.contact_id,
+                "lat": d.lat, "lon": d.lon, "sigma_m": d.sigma_m, "slant": d.slant_from.is_some(),
+                "truth": truth.get(d.contact_id.as_str()).map(|(lat, lon)| [lat, lon]),
+            })).collect::<Vec<_>>(),
+            "observers": obs.iter().map(|(uid, lat, lon, (e, n))| json!({
+                "uid": uid, "lat": lat, "lon": lon, "nav_error_m": [e, n],
+            })).collect::<Vec<_>>(),
         })
     }
 

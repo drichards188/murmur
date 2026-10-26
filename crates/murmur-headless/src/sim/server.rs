@@ -16,6 +16,8 @@
 //! - `picture` `{homes}`: scoring v2's sampler (evaluation only): every track as the bridge
 //!   serves it, the tracker's association, the inbox's alerts, our vehicles' truth; with
 //!   `homes`, each vehicle's platform and sensors and the sensing model's seed and rate.
+//! - `detections`: the last sensing step (evaluation only): each detection with its contact's
+//!   truth in that step, and each observer with its navigation error.
 //! - `misclassify` `{seed, rate, contacts}`: the sensing model's misclassification draws for
 //!   those contacts (evaluation only: the Python port's check).
 //! - `sense` `{observer, sensor, target, conditions, t, terrain, ranges}`: the physical sensing
@@ -93,6 +95,7 @@ fn handle(ep: &mut Episode, req: &Value) -> Result<Value, String> {
             req["log_from"].as_u64().map(|i| i as usize),
         ),
         Some("picture") => ep.picture(req["homes"].as_bool().unwrap_or(false)),
+        Some("detections") => Ok(ep.detections()),
         Some("misclassify") => super::misclassify(req),
         Some("sense") => super::sense::sense(req, &ep.spec.root),
         Some("fault") => ep.fault(req),

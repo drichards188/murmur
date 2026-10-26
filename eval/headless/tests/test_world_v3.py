@@ -227,9 +227,17 @@ def test_a_gnss_jammer_takes_the_fix_and_the_ugv_failsafe_holds_it(tmp_path: Pat
         sim.kill()
 
 
+def en(frm: tuple[float, float], to: tuple[float, float]) -> tuple[float, float]:
+    """Metres east and north from `frm` to `to` (each lon, lat)."""
+    return ((to[0] - frm[0]) * 111_320.0 * math.cos(math.radians(frm[1])), (to[1] - frm[1]) * 111_320.0)
+
+
 def test_a_spoofer_walks_the_position_the_vehicle_believes(tmp_path: Path):
     """The receiver captured: the position HUNTER 1 reports (and believes) walks north of the
-    truth at 3 m/s up to its cap, the fix and the flags still good."""
+    truth at 3 m/s up to its cap, the fix and the flags still good. Its sensors see from where it
+    is and it lays their fixes off from where it believes it is (murmur-k8i): its radar's,
+    camera's and sonar's fixes are off their contacts' truth by its error, its AIS reports (the
+    contacts' own GPS) are not."""
     sim, _ = drill(tmp_path)
     try:
         sim.step(10)
@@ -245,6 +253,31 @@ def test_a_spoofer_walks_the_position_the_vehicle_believes(tmp_path: Path):
         d, v = offset()
         assert 120.0 <= d <= 220.0, d
         assert (v["nav"]["gps_fix"], v["nav"]["ready"], v["nav"]["source"]) == (3, True, "gnss")
+        # at the cap (400 m north from about 143 s): what it reports, where its sensors see from,
+        # and where it lays their fixes
+        rel: list[tuple[float, float]] = []
+        ais: list[tuple[float, float]] = []
+        for t in range(150, 166):
+            sim.step(t)
+            step = sim.detections()
+            me = next(o for o in step["observers"] if int(o["uid"]) == HUNTER)
+            err = tuple(me["nav_error_m"])
+            assert abs(err[0]) < 1.0 and abs(err[1] - 400.0) < 1.0, err
+            truth, rep = ours(sim, HUNTER), vehicle(sim, HUNTER)["position"]
+            assert dist_m((me["lon"], me["lat"]), (truth["lon"], truth["lat"])) < 30.0, "it sees from where it is"
+            rep_off = en((truth["lon"], truth["lat"]), (rep["lon"], rep["lat"]))
+            assert math.dist(rep_off, err) < 30.0, f"it reports where it believes it is: {rep_off}"
+            for x in step["detections"]:
+                if int(x["uid"]) != HUNTER or not x["truth"] or x["slant"]:
+                    continue
+                e = en((x["truth"][1], x["truth"][0]), (x["lon"], x["lat"]))
+                (ais if x["sensor"] == "ais" else rel).append(e)
+        assert len(rel) >= 5 and ais, (len(rel), len(ais))
+        def mean(xs: list[tuple[float, float]], k: int) -> float:
+            return sum(x[k] for x in xs) / len(xs)
+
+        assert abs(mean(rel, 0)) < 60.0 and abs(mean(rel, 1) - 400.0) < 60.0, (mean(rel, 0), mean(rel, 1), len(rel))
+        assert abs(mean(ais, 0)) < 30.0 and abs(mean(ais, 1)) < 30.0, (mean(ais, 0), mean(ais, 1), len(ais))
         sim.step(220)
         d, _ = offset()
         assert d <= 430.0, f"capped at 400 m: {d}"

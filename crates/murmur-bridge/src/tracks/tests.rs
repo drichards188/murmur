@@ -71,6 +71,7 @@ fn observer(uid: u64, lat: f64, lon: f64, alt: f64, sensors: &[(SensorType, f64)
         uid,
         lat,
         lon,
+        nav_error_m: (0.0, 0.0),
         alt_msl: alt,
         mast_m: 4.0,
         submerged: false,
@@ -604,6 +605,57 @@ fn an_act_by_an_aircraft_only_a_2d_radar_sees_is_placed_on_its_bearing_segment()
     assert!(off <= 1.5 * a.sigma_m + 100.0, "the truth on the segment, {off} m off, sigma {}", a.sigma_m);
     let b = observed(&both);
     assert!(b.sigma_m < 100.0 && b.sensors.iter().any(|s| s == "1:eo_ir"), "{b:?}");
+}
+
+/// murmur-k8i, the legacy model: a vehicle whose navigation is off (250 m west and 600 m north of
+/// where it is) lays every fix but AIS's (the contact's own GPS) off by its error, from the same
+/// draws as with its navigation right, and a 2D radar's plot of an aircraft from where it
+/// believes it is; an act it observes is placed off by the error too.
+#[test]
+fn legacy_fixes_carry_the_observers_navigation_error() {
+    let sensors = [(SensorType::Radar, 40_000.0), (SensorType::EoIr, 15_000.0), (SensorType::Ais, 50_000.0), (SensorType::Esm, 30_000.0)];
+    let right = observer(1, BASE.0, BASE.1, 0.0, &sensors);
+    let off = Observer { nav_error_m: (-250.0, 600.0), ..right.clone() };
+    let (lat, lon) = at(BASE.0, BASE.1, 0.0, 2_000.0);
+    let mut ferry = contact("ferry", "ferry", Domain::Surface, lat, lon);
+    ferry.ais = Some(Ais { mmsi: "366999000".into(), name: "FERRY".into(), ship_type: "passenger".into(), spoofed: false });
+    let (lat, lon) = at(BASE.0, BASE.1, 1_000.0, 3_000.0);
+    let plane = contact("plane", "light_aircraft", Domain::Air, lat, lon);
+    let contacts = [ferry, plane.clone()];
+    let moved = |a: &Detection, b: &Detection| {
+        let m = 111_320.0;
+        ((b.lon - a.lon) * m * a.lat.to_radians().cos(), (b.lat - a.lat) * m)
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    for tick in 0..30 {
+        let p = Params { seed: 3, tick, misclassification_rate: 0.0 };
+        let a = detect(p, std::slice::from_ref(&right), &contacts, &|_, _| false);
+        let b = detect(p, std::slice::from_ref(&off), &contacts, &|_, _| false);
+        assert_eq!(a.len(), b.len());
+        for (x, y) in a.iter().zip(&b) {
+            assert_eq!((&x.contact_id, x.sensor), (&y.contact_id, y.sensor));
+            seen.insert(x.sensor);
+            let (de, dn) = moved(x, y);
+            if x.sensor == SensorType::Ais {
+                assert!(de.hypot(dn) < 1e-6, "an AIS report moved {de:.1} m east, {dn:.1} m north");
+            } else {
+                assert!((de + 250.0).abs() < 0.5 && (dn - 600.0).abs() < 0.5, "{:?} moved {de:.1} m east, {dn:.1} m north", x.sensor);
+            }
+            if let Some(from) = y.slant_from {
+                assert_eq!(from, off.believed(), "a 2D radar's plot laid off from where it believes it is");
+            }
+        }
+    }
+    assert!(seen.is_superset(&[SensorType::Radar, SensorType::EoIr, SensorType::Ais, SensorType::Esm].into()), "{seen:?}");
+    let act = |o: &Observer| {
+        (0..40)
+            .find_map(|tick| super::sensing::observe_act(Params { seed: 3, tick, misclassification_rate: 0.0 }, std::slice::from_ref(o), &plane, "act-1"))
+            .expect("observed")
+    };
+    let (a, b) = (act(&right), act(&off));
+    let m = 111_320.0;
+    let (de, dn) = ((b.lon - a.lon) * m * a.lat.to_radians().cos(), (b.lat - a.lat) * m);
+    assert!((de + 250.0).abs() < 0.5 && (dn - 600.0).abs() < 0.5, "the act moved {de:.1} m east, {dn:.1} m north");
 }
 
 #[test]

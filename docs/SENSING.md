@@ -272,6 +272,21 @@ camera's critical dimension (sqrt of the visible height share) and the radar's t
 Terrain line of sight from the grid with the link emulator's earth bulge `d1 d2 / (2 k R)`,
 cached per observer and contact, recomputed when either end moves 50 m or after 5 s [E].
 
+**Where a vehicle senses from, and where it lays its fixes** (both models; murmur-k8i). A
+vehicle's sensors see from where it is: range, horizon, terrain, the water and every draw are the
+truth's. It lays what they measure off from where it believes it is, so a radar's plot, a
+camera's, a sonar's and an ESM bearing's fix carry its navigation error (a GNSS spoofer's walk,
+a dead reckoning's drift; `Observer::geolocate`), a 2D radar's slant-range plot is laid off from
+the radar's believed position, and an AIS report, the contact's own GPS, carries none. Its
+payload manager reckons a place (a cue, its search points, a cue's distance) from where it
+believes it is and points there, so a camera cued by its own radar still points right, and one
+cued by another vehicle's track points off by its error; a lock follows its contact in the image,
+which the vehicle's navigation does not enter. The headless simulator alone knows a vehicle's
+truth: it gives the bridge each vehicle's error (the stand-in's own filter, nav.rs), and the
+observer is the position the vehicle reports less that error. The error is horizontal (a spoofer
+moves no height or heading). Its last step's detections, with their contacts' truth and each
+observer's error, are the simulator's `detections` request (evaluation only).
+
 **EO/IR** (`physical/eo.rs`). Pixels on target `p = D_c / (R IFOV)`, `IFOV = max(FOV / px, blur
 floor)`; 50 % thresholds 1.5, 6 and 12 px [5]; the ACQUIRE curve `P = x^E / (1 + x^E)`,
 `E = 2.7 + 0.7 x` [7,8]; atmosphere `1 / (1 + (R / R_atm)^6)` (shape [E]) with
@@ -804,6 +819,11 @@ The legacy model's Python ports (`v2/labels.py`, `families.py`, `agents_v2.py`,
 ## Limits, stated
 
 - Association is still by contact id (perfect association); a gating tracker is later work.
+- Our vehicles' truth reaches only the headless simulator's bridge: on the live stack nothing
+  carries a stand-in's truth to the bridge (its truth log is a file for the evaluation), so a
+  live vehicle under a GNSS spoofer or dead reckoning senses from where it says it is and its
+  fixes sit on their contacts' truth, as before murmur-k8i; what it reports, and the
+  `gps_glitch` flag, are the same live and headless (the stand-ins' own model).
 - EO/IR gives a position, as the legacy model (a passive sensor without a rangefinder is angles
   only: the murmur-oho follow-up stands). Its fix error is the legacy model's.
 - The payload manager's constants (its elevation band and bar dwell among them), the

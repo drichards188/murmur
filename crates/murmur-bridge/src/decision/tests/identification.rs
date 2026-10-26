@@ -66,6 +66,7 @@ pub(super) fn truth_with(e: &Erig, now_s: f64, scen_s: f64, acts: Vec<ActTruth>)
         uid: 9,
         lat: TARGET.0,
         lon: TARGET.1 + 0.017,
+        nav_error_m: (0.0, 0.0),
         alt_msl: 0.0,
         mast_m: 4.0,
         submerged: false,

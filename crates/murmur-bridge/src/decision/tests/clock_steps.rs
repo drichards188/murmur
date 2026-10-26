@@ -170,6 +170,7 @@ fn sense_mover(e: &Erig, s: u32) {
         uid: 9,
         lat: TARGET.0 + 0.0135,
         lon: TARGET.1 - 0.01,
+        nav_error_m: (0.0, 0.0),
         alt_msl: 0.0,
         mast_m: 4.0,
         submerged: false,

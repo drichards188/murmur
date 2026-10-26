@@ -192,6 +192,7 @@ pub fn observers(cat: &SensorCatalog, input: &TrackerIn) -> Result<Vec<Observer>
                 uid: o.uid,
                 lat: o.at[1],
                 lon: o.at[0],
+                nav_error_m: (0.0, 0.0),
                 alt_msl: 0.0,
                 mast_m: p.mast_m,
                 submerged: false,

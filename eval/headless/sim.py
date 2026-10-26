@@ -127,6 +127,14 @@ class Sim:
                            "(cargo build --release -p murmur-headless)")
         return out
 
+    def detections(self) -> dict[str, Any]:
+        """The last sensing step (evaluation only, never given to an agent): each detection
+        (`uid`, `sensor`, `contact`, `lat`, `lon`, `sigma_m`, `slant`) with its contact's truth in
+        that step (`truth`: [lat, lon]), and each observer where its sensors saw from (`lat`,
+        `lon`) with its navigation error (`nav_error_m`: what it believes less where it is,
+        metres east and north; murmur-k8i)."""
+        return self.rpc({"op": "detections"})
+
     def misclassify(self, seed: int, rate: float, contacts: list[str]) -> list[dict[str, Any]]:
         """The sensing model's misclassification draws (crates/murmur-bridge tracks/sensing.rs
         `misclassify_draw`) for these contacts: per (contact, sensor type), the uniform the
