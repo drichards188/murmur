@@ -78,7 +78,33 @@ const MAX_DWELL_PER_HIT_S: f64 = 2.0;
 /// A velocity estimate is shown (and given to decisions) once its 1-sigma, in its least
 /// certain direction, is below this. Judged for aircraft too against the truth
 /// (`tracks::tests::calib_air`): at 3.5 a route's velocities came with a normalized error over 2.
+/// An aircraft's is also shown under [`AIR_VEL_AGREED_SIGMA_MPS`] while the two models agree on
+/// it ([`AIR_VEL_AGREE_MPS`]).
 const VEL_KNOWN_SIGMA_MPS: f64 = 3.0;
+/// An aircraft's velocity is also shown (and given to decisions) with a 1-sigma up to this, m/s,
+/// while the IMM's two models agree on it ([`AIR_VEL_AGREE_MPS`]): from decision rules 18 the
+/// engine predicts a track with the velocity's own reported error (`velocity_sigma_mps`), so a
+/// velocity no longer has to be known to a few m/s to be safe to give it, only honest
+/// (murmur-vni, the owner's decision A of 2026-10-26). Under the physical sensing model an
+/// emitting aircraft is fixed by ESM positions (200 to 730 m) and 2D radars' bearings, and its
+/// velocity's honest 1-sigma is 5 to 9 m/s in steady flight: never under the 3 m/s gate. Chosen
+/// on the air tuning sets with Golden Gate's mixes (`calib_air::air_tune_grid_physical`, docs/
+/// SENSING.md): with the agreement below, 8, 10, 12, 15 and 20 each kept every keep-out exactly
+/// as at 3; at 20 every class flown straight between manoeuvres was honest (from 8 to 15 one or
+/// two were not, shown in 1 to 9 % of their samples, a velocity NEES of 2.8 to 4.1, the mean
+/// over few samples), and 20 showed the most. Above it a velocity says little even of an
+/// aircraft's direction.
+const AIR_VEL_AGREED_SIGMA_MPS: f64 = 20.0;
+/// The IMM's two models agree on an aircraft's velocity when the spread of their velocities
+/// about the mixture's (each weighted by its probability) is below this, m/s: at the
+/// manoeuvring model's usual probability under coarse fixes (0.15), its velocity within about
+/// 3 m/s of the steady model's. A turn, a speed-up or a stop the filter has not yet taken in
+/// pulls the models apart (the steady one lags, the manoeuvring one follows), and a velocity
+/// shown then is off by more than its sigma says: without this condition a larger gate failed
+/// the legacy calibration's asserting sets (the tracker alone a few seconds ahead) and showed
+/// dishonest velocities in turns. 1 (0.5, 0.75, 1.5, 2 and 3 tried on the tuning sets): the
+/// most velocity with the fewest failures of the criteria, the tracker alone's included.
+const AIR_VEL_AGREE_MPS: f64 = 1.0;
 /// An AIS report's course and speed over ground, 1-sigma per axis, m/s.
 const AIS_VEL_SIGMA_MPS: f64 = 0.3;
 
@@ -130,7 +156,8 @@ pub const SOJOURN_S: [f64; 2] = [120.0, 30.0];
 #[cfg(test)]
 thread_local! {
     /// The air calibration's tuning grid (`tests::calib_air`): the air constants overridden on
-    /// this thread (steady and manoeuvring white-noise acceleration, the velocity gate, the
+    /// this thread (steady and manoeuvring white-noise acceleration, the velocity gate while the
+    /// models agree, [`AIR_VEL_AGREED_SIGMA_MPS`]; until murmur-vni the one gate, then 3, the
     /// initial velocity sigma).
     pub static AIR_TUNE: std::cell::Cell<Option<[f64; 4]>> = const { std::cell::Cell::new(None) };
     /// The ground calibration's tuning grid (`tests::calib_ground`): the ground models' white-noise
@@ -269,15 +296,32 @@ fn initial_vel_sigma(domain: Domain) -> f64 {
     }
 }
 
-/// A velocity estimate is shown (and given to decisions) once its 1-sigma, in its least
-/// certain direction, is below this, m/s.
-fn vel_known_sigma(domain: Domain) -> f64 {
-    #[cfg(test)]
-    if let (Domain::Air, Some(t)) = (domain, AIR_TUNE.get()) {
-        return t[2];
-    }
-    let _ = domain;
-    VEL_KNOWN_SIGMA_MPS
+/// Whether a velocity estimate is shown (and given to decisions): its 1-sigma, in its least
+/// certain direction (`sigma`, m/s), below [`VEL_KNOWN_SIGMA_MPS`], or for an aircraft below
+/// [`AIR_VEL_AGREED_SIGMA_MPS`] with the two models agreeing on it (`spread`, the spread of
+/// their velocities about the mixture's, m/s, below [`AIR_VEL_AGREE_MPS`]).
+fn vel_known(domain: Domain, sigma: f64, spread: f64) -> bool {
+    let agreed = match domain {
+        Domain::Air => {
+            #[cfg(test)]
+            if let Some(t) = AIR_TUNE.get() {
+                return sigma < VEL_KNOWN_SIGMA_MPS || (sigma < t[2] && spread < AIR_VEL_AGREE_MPS);
+            }
+            AIR_VEL_AGREED_SIGMA_MPS
+        }
+        _ => 0.0,
+    };
+    sigma < VEL_KNOWN_SIGMA_MPS || (sigma < agreed && spread < AIR_VEL_AGREE_MPS)
+}
+
+/// The spread of the models' velocities about the mixture's `x`, weighted by their
+/// probabilities, m/s: how far apart the two models are on the velocity.
+fn vel_spread(models: &[Model; 2], x: &V4) -> f64 {
+    models
+        .iter()
+        .map(|m| m.p * ((m.x[2] - x[2]).powi(2) + (m.x[3] - x[3]).powi(2)))
+        .sum::<f64>()
+        .sqrt()
 }
 
 /// The state of one model: east and north of the track's estimate (m), velocity east and
@@ -868,7 +912,7 @@ pub struct Track {
     /// when a detection last carried an altitude (wall s): a sensor that ranges the contact
     /// in height measured it then (rules 6 count it for a 3D keep-out only while recent)
     pub alt_t: Option<f64>,
-    /// east, north m/s, once known (its 1-sigma below `VEL_KNOWN_SIGMA_MPS`)
+    /// east, north m/s, once known ([`vel_known`])
     pub vel: Option<(f64, f64)>,
     /// the filter's two models at `last_seen_t`, relative to `lat`, `lon` (their mixture)
     models: [Model; 2],
@@ -1311,8 +1355,9 @@ impl Track {
     }
 
     /// The models' mixture now: the 1-sigma, the velocity (known once its 1-sigma is below
-    /// `VEL_KNOWN_SIGMA_MPS`), and the manoeuvre evidence: a velocity that changed within
-    /// the memory by more than `MANOEUVRE_MIN_MPS` and more than its noise explains.
+    /// `VEL_KNOWN_SIGMA_MPS`, or an aircraft's below `AIR_VEL_AGREED_SIGMA_MPS` with the models
+    /// agreeing: [`vel_known`]), and the manoeuvre evidence: a velocity that changed within the
+    /// memory by more than `MANOEUVRE_MIN_MPS` and more than its noise explains.
     fn after_estimate(&mut self, now: f64) {
         if self.pos_hist.back().is_none_or(|s| now - s.0 >= VEL_SAMPLE_S) {
             self.pos_hist.push_back((now, self.lat, self.lon));
@@ -1322,7 +1367,7 @@ impl Track {
         }
         let (x, c) = mixture(&self.models);
         self.sigma_m = (pos_var(&c) * self.inflate).sqrt();
-        let known = vel_var(&c).sqrt() < vel_known_sigma(self.domain);
+        let known = vel_known(self.domain, vel_var(&c).sqrt(), vel_spread(&self.models, &x));
         self.vel = known.then_some((x[2], x[3]));
         if !known {
             return;

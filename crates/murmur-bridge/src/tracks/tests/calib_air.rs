@@ -120,6 +120,18 @@
 //!     a larger gate fails the tracker alone (the engine's velocity region takes a shown velocity
 //!     as good to the policy's 1 m/s). docs/SENSING.md, "Aircraft velocity under the physical
 //!     model".
+//! 19. murmur-vni (the owner's decision A of 2026-10-26): decision rules 18 predict a track with
+//!     its own velocity error, so the tracker alone is judged by the regions its estimate gives
+//!     under the current rules without rules 14's aircraft region ([`tracker_regions`]: rules
+//!     13's until then, every velocity taken as good to 1 m/s). The tracker then shows an
+//!     aircraft's velocity with a 1-sigma up to 20 m/s while its two models agree on it
+//!     (`model::AIR_VEL_AGREED_SIGMA_MPS`, `AIR_VEL_AGREE_MPS`), as well as under the 3 m/s gate.
+//!     Developed on the tuning sets (101-220, and the world tuning set on 101-130) with
+//!     [`WORLD_MIXES`] only: the failures of the criteria went from 13 to 15, every keep-out's
+//!     the same, both steady classes' velocity errors over the bound before honest now, and the
+//!     four new ones the tracker alone's largest miss in turns seen without a camera (3 s ahead
+//!     329 to 387 m against 300; 10 s ahead 1,206 m against 1,200). The sixth set (521-550) is
+//!     run once, after it ([`air_calib_physical_held_out_six`]).
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
@@ -130,9 +142,9 @@ use super::{BASE, T0, at, contact};
 use crate::tracks::model::Track;
 use crate::tracks::sensing::{Observer, Params, SensorSpec, SensorType, detect};
 use crate::tracks::truth::{ContactTruth, Domain};
-use murmur_decide::engage::track_reach;
+use murmur_decide::engage::{AIRCRAFT_LAG_M, ReachKind, TrackReach, track_reach};
 use murmur_decide::geo::haversine_m;
-use murmur_decide::{AIRCRAFT_REACH_SINCE, EngageRules, LonLat, TrackFacts};
+use murmur_decide::{EngageRules, LonLat, Time, TrackFacts};
 
 /// The air tuning set's seeds.
 pub const AIR_TUNING_SEEDS: RangeInclusive<u64> = 101..=130;
@@ -1114,9 +1126,31 @@ pub struct AirHold {
     pub max_miss: f64,
 }
 
+/// The tracker alone: the regions its own estimate gives under `ec` (along its velocity with
+/// its velocity's error, from rules 18 its own when larger than the policy's; along its average
+/// velocity; a manoeuvre's or a young track's reach; without a velocity, its domain's top speed),
+/// without rules 14's aircraft region and the tracker's lag it adds to every region of an
+/// aircraft. Until rules 18 these were rules 13's regions exactly; from rules 18 they are those
+/// with the velocity's own error, as the engine reads it.
+fn tracker_regions(f: &TrackFacts, effect_t: Time, ec: &EngageRules) -> Vec<TrackReach> {
+    let lag = f.domain == murmur_decide::catalog::Domain::Air && ec.aircraft_reach();
+    track_reach(f, effect_t, ec)
+        .into_iter()
+        .filter(|r| r.kind != ReachKind::Aircraft)
+        .map(|mut r| {
+            if lag && r.kind == ReachKind::NoVelocity {
+                r.radius_m -= AIRCRAFT_LAG_M;
+            }
+            r
+        })
+        .collect()
+}
+
 impl AirHold {
-    fn sample(&mut self, f: &TrackFacts, now: f64, span: f64, truth: (f64, f64), ec: &EngageRules) {
-        let regions = track_reach(f, calib::ms(now + span), ec);
+    /// `alone`: the tracker alone ([`tracker_regions`]), else the keep-out's every region.
+    fn sample(&mut self, f: &TrackFacts, now: f64, span: f64, truth: (f64, f64), ec: &EngageRules, alone: bool) {
+        let effect_t = calib::ms(now + span);
+        let regions = if alone { tracker_regions(f, effect_t, ec) } else { track_reach(f, effect_t, ec) };
         let p = LonLat::new(truth.1, truth.0);
         let miss = regions.iter().map(|r| haversine_m(r.center, p) - r.radius_m).fold(f64::INFINITY, f64::min);
         self.n += 1.0;
@@ -1154,8 +1188,7 @@ pub struct Side {
     pub tally: Tally,
     /// the keep-out (the rules it is judged under) at each of [`AIR_SPANS_S`]
     pub hold: [AirHold; 5],
-    /// the tracker alone: the regions of the rules before the aircraft region, at the first
-    /// [`TRACKER_SPANS`] spans
+    /// the tracker alone ([`tracker_regions`]), at the first [`TRACKER_SPANS`] spans
     pub track_hold: [AirHold; TRACKER_SPANS],
     /// the farthest the truth was from the estimate when updated, in its reported sigmas
     pub tail: f64,
@@ -1204,7 +1237,7 @@ impl Side {
     /// One tracker's scored second: its estimate against the truth `(lat, lon)` with velocity
     /// `(ve, vn)`, and its keep-outs against the truth at each span ahead.
     #[allow(clippy::too_many_arguments)]
-    fn score(&mut self, f: &TrackFacts, est: Est, now: f64, truth: (f64, f64, f64, f64), ahead: &[(f64, f64); 5], ec: &EngageRules, ec_tracker: &EngageRules, pts: &[(f64, f64)]) {
+    fn score(&mut self, f: &TrackFacts, est: Est, now: f64, truth: (f64, f64, f64, f64), ahead: &[(f64, f64); 5], ec: &EngageRules, pts: &[(f64, f64)]) {
         let (lat, lon, ve, vn) = truth;
         let de = (est.lon - lon) * 111_320.0 * lat.to_radians().cos();
         let dn = (est.lat - lat) * 111_320.0;
@@ -1219,9 +1252,9 @@ impl Side {
         self.with_v += f64::from(u8::from(f.velocity_mps.is_some()));
         self.with_alt += f64::from(u8::from(f.alt_m.is_some()));
         for (k, span) in AIR_SPANS_S.iter().enumerate() {
-            self.hold[k].sample(f, now, *span, ahead[k], ec);
+            self.hold[k].sample(f, now, *span, ahead[k], ec, false);
             if k < TRACKER_SPANS {
-                self.track_hold[k].sample(f, now, *span, ahead[k], ec_tracker);
+                self.track_hold[k].sample(f, now, *span, ahead[k], ec, true);
             }
         }
         for (k, idx) in [3usize, 4].into_iter().enumerate() {
@@ -1275,8 +1308,8 @@ fn rules(version: u32) -> EngageRules {
 }
 
 /// Both trackers on `case`, seen by `mix`, at `seed`: the tracker after judged under `rules_after`
-/// (the current rules in every asserting test), the tracker alone under the rules before the
-/// aircraft region, the tracker before under rules 12.
+/// (the current rules in every asserting test), and alone by the same rules' regions without the
+/// aircraft region ([`tracker_regions`]), the tracker before under rules 12.
 pub fn run(case: &AirCase, mix: Mix, seed: u64, rules_after: u32) -> AirScores {
     run_on(case, mix, seed, rules_after, false)
 }
@@ -1293,7 +1326,7 @@ pub fn run_on(case: &AirCase, mix: Mix, seed: u64, rules_after: u32, physical: b
         };
         (Engine::new(None), sensing)
     });
-    let (ec, ec_tracker, ec_old) = (rules(rules_after), rules(AIRCRAFT_REACH_SINCE - 1), rules(BEFORE_RULES));
+    let (ec, ec_old) = (rules(rules_after), rules(BEFORE_RULES));
     let longest = AIR_SPANS_S[AIR_SPANS_S.len() - 1] as usize;
     let table = (case.motion)(seed, case.n as usize + longest + 1);
     let obs = mix.observers();
@@ -1351,11 +1384,11 @@ pub fn run_on(case: &AirCase, mix: Mix, seed: u64, rules_after: u32, physical: b
         let truth = (lat, lon, ve, vn);
         if let Some(t) = new.as_ref().filter(|_| !dets.is_empty()) {
             let est = Est { lat: t.lat, lon: t.lon, sigma: t.sigma_m, vel: t.vel, vel_sigma: t.vel_sigma_mps(), man_p: t.manoeuvring_p() };
-            sc.new.score(&t.facts(now), est, now, truth, &ahead, &ec, &ec_tracker, &pts);
+            sc.new.score(&t.facts(now), est, now, truth, &ahead, &ec, &pts);
         }
         if let Some(t) = old.as_ref().filter(|_| !old_dets.is_empty()) {
             let est = Est { lat: t.lat, lon: t.lon, sigma: t.sigma_m, vel: t.vel, vel_sigma: t.vel_sigma_mps(), man_p: t.manoeuvring_p() };
-            sc.old.score(&t.facts(now), est, now, truth, &ahead, &ec_old, &ec_old, &pts);
+            sc.old.score(&t.facts(now), est, now, truth, &ahead, &ec_old, &pts);
         }
     }
     sc
@@ -1418,9 +1451,10 @@ pub fn line(name: &str, mix: Mix, s: &AirScores) -> String {
 pub const STEADY_CLASSES: [&str; 5] = ["straight", "one turn", "speed change", "hover and go", "drone inbound"];
 
 /// The tracker alone, at [`AIR_SPANS_S`]`[..TRACKER_SPANS]` (3, 10 and 30 s), per class and mix:
-/// at most this share of samples outside every region of the rules before the aircraft region
-/// (rules 13, whose track regions are rules 12's), and never farther outside than
-/// [`TRACKER_MAX_MISS_M`]. A turn or a speed-up the tracker has not yet taken in puts the truth
+/// at most this share of samples outside every region its own estimate gives ([`tracker_regions`]:
+/// the current rules' without the aircraft region; until rules 18 rules 13's, whose track regions
+/// are rules 12's, every velocity taken as good to the policy's 1 m/s), and never farther outside
+/// than [`TRACKER_MAX_MISS_M`]. A turn or a speed-up the tracker has not yet taken in puts the truth
 /// outside them (that is what rules 14's region is for); a few seconds ahead the tracker's own
 /// estimate, velocity and sigma decide. The bounds are the air tuning sets' worst (2.5% and 232
 /// m at 3 s, 3.1% and 872 m at 10 s, 8.6% and 2,984 m at 30 s) with headroom; 30 s ahead, the
@@ -1492,13 +1526,15 @@ pub fn failures_with_summary(
     }
     for ((class, mix), s) in &by_class {
         table.push(line(&format!("class: {class}"), *mix, s));
+        let alone: Vec<String> = s.new.track_hold.iter().map(|h| format!("{:.2}%/{:.0}m", 100.0 * (1.0 - h.coverage()), h.max_miss)).collect();
         summary.push(format!(
-            "  {class:<20} {:<14} velocity {:5.1}% vNEES {:6.2} | NEES {:4.2} within 2 sigma {:5.1}%",
+            "  {class:<20} {:<14} velocity {:5.1}% vNEES {:6.2} | NEES {:4.2} within 2 sigma {:5.1}% | alone {}",
             mix.name(),
             100.0 * s.new.velocity_share(),
             s.new.tally.vnees / s.new.tally.vn.max(1.0),
             s.new.tally.mean_nees(),
-            100.0 * s.new.tally.coverage()
+            100.0 * s.new.tally.coverage(),
+            alone.join(" ")
         ));
         let (nees, cover) = (s.new.tally.mean_nees(), s.new.tally.coverage());
         if !(cover >= 0.83 && (0.5..=2.6).contains(&nees)) {
@@ -2274,7 +2310,7 @@ fn air_tune_grid_physical() {
                 })
                 .collect()
         })
-        .unwrap_or_else(|| vec![[0.2, 20.0, 3.0, 60.0]]);
+        .unwrap_or_else(|| vec![[0.2, 20.0, 20.0, 60.0]]);
     let mixes: &[Mix] = if std::env::var("AIR_MIXES").is_ok_and(|m| m == "world") { &WORLD_MIXES } else { &MIXES };
     for t in grid {
         crate::tracks::model::AIR_TUNE.set(Some(t));
@@ -2288,9 +2324,10 @@ fn air_tune_grid_physical() {
     crate::tracks::model::AIR_TUNE.set(None);
 }
 
-/// The tuning grid (a tuning aid, the tuning sets only: `AIR_GRID="q steady,q manoeuvring,gate,
-/// initial velocity sigma;..." cargo test -p murmur-bridge --release air_tune_grid -- --ignored
-/// --nocapture`): each candidate of the air constants on every tuning case and mix, summarized.
+/// The tuning grid (a tuning aid, the tuning sets only: `AIR_GRID="q steady,q manoeuvring,gate
+/// while the models agree,initial velocity sigma;..." cargo test -p murmur-bridge --release
+/// air_tune_grid -- --ignored --nocapture`; a gate of 3 is the one gate before murmur-vni): each
+/// candidate of the air constants on every tuning case and mix, summarized.
 #[test]
 #[ignore]
 fn air_tune_grid() {
@@ -2304,7 +2341,7 @@ fn air_tune_grid() {
                 })
                 .collect()
         })
-        .unwrap_or_else(|| vec![[0.2, 20.0, 3.0, 60.0]]);
+        .unwrap_or_else(|| vec![[0.2, 20.0, 20.0, 60.0]]);
     let cases: Vec<(AirCase, RangeInclusive<u64>)> = tuning_cases()
         .into_iter()
         .map(|c| (c, AIR_TUNING_SEEDS))
