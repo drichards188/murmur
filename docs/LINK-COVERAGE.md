@@ -1,7 +1,7 @@
 # Showing link coverage ahead of time
 
 Status: **approved 2026-10-26** (bd murmur-hei; the fix list's item 2). Section 3's predictor,
-bridge, agents and playbook are built (section 7); the console layer is not yet.
+bridge, agents, playbook and console are built (section 7).
 
 ## 1. Why
 
@@ -100,6 +100,19 @@ stays a later decision.
   baked surface grid (`MURMUR_SURFACE_GRID`), cached for good per cell; a grid without satellites
   cached whole.
 - **Agents**: `get_link_coverage` (agents/README.md).
+- **Console** (`web/src/coverage.ts`, `CoverageControl.tsx`, `DryRun.tsx`, `linkLayers.ts`): the
+  topbar's Links button (off by default) shows a card, labelled predicted, to pick a link class or
+  the one selected vehicle's own link, and an altitude (presets, a value, above sea level or above
+  the surface; the vehicle's mission altitude for its own link). The map gets the grid for the view
+  (`GET /api/links/coverage`, the bbox clamped to 30 km around the centre and snapped to blocks of
+  cells so a small pan asks for the same grid, at the 250 m terrain cell or coarser to stay within
+  12 000 cells, 600 where satellites decide it; asked 450 ms after the view settles) as one image
+  draped on the terrain under the labels, and the cell under the pointer says its state, reason and
+  loss. The order form runs the dry run (`POST /api/intents/preview`) once the order is complete and
+  again 5 s after each answer: the checks' verdict, then per vehicle the route answer's sentence, the failsafe's
+  chance, `holds`, and a bar per leg; the map colours the order's legs by their stretches (each at
+  its share of the leg drawn from the order's own geometry) and marks `first_down` and `trip_down`.
+  Information only: the Send button never waits on it.
 - **Playbook**: `isr.investigate` version 2 ranks the free sensor aircraft whose predicted link
   holds for the orbit first (one `get_link_coverage` call a tick) and says so in its rationale.
 - Not predicted, as section 3 says: scripted events, handover outages, a landed aircraft's at-rest

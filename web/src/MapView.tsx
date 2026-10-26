@@ -26,6 +26,8 @@ import type { Cluster, Clusters, LngLat, Tasking, Vehicle } from './types'
 import { callsign } from './types'
 import { buildVehicleLayers, heightLabel, VEHICLE_PICK_LAYERS } from './vehicleLayers'
 import { buildClusterLayers, CLUSTER_PICK_LAYERS } from './clusterLayers'
+import { cellAt, cellDetail, type CoverageImage, type LinkRouteDrawing } from './coverage'
+import { buildLinkRouteLayers } from './linkLayers'
 import { type Bounds, type MapViewport, visibleVehicles } from './viewport'
 
 export interface Draft {
@@ -72,9 +74,18 @@ interface Props {
    *  from this callback). Pickable layers get deck.gl's own onClick/onHover. `screen` says what
    *  the camera cannot show at its height (aloft.ts), as of the rebuild. */
   layers?: MapLayers
+  /** predicted link coverage (coverage.ts): one image draped on the terrain under the labels,
+   *  its cell under the pointer said in a tooltip */
+  coverage?: CoverageImage | null
+  /** the drafted order's legs coloured by predicted link, on the surface like the draft */
+  linkRoute?: LinkRouteDrawing | null
 }
 
 export type MapLayers = (screen: MapScreen) => LayersList
+
+/** a transparent pixel: the coverage image source's placeholder while the layer is off */
+const BLANK_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+const COVERAGE = 'link-coverage'
 
 const STYLE = 'https://tiles.openfreemap.org/styles/dark'
 const START: LngLat = [-117.2, 32.703]
@@ -245,7 +256,7 @@ function surfacePoint(m: maplibregl.Map, e: maplibregl.MapMouseEvent): LngLat {
   return water ? [water.lng, water.lat] : [ground.lng, ground.lat]
 }
 
-export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null }: Props) {
+export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, linkRoute = null }: Props) {
   const vehicles = useMemo(() => hiddenUids?.size ? allVehicles.filter((v) => !hiddenUids.has(v.uid)) : allVehicles, [allVehicles, hiddenUids])
   // the top view (pitch 0, looking straight down) and the pitch to tilt back to from it
   const [top, setTop] = useState(false)
@@ -255,7 +266,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   const smoothRef = useRef(smooth)
   const frameId = useRef(0)
   // the layers that do not move with a glide, kept between animation frames
-  const staticLayers = useRef<{ three: ReturnType<typeof build3dStatic>; surface: LayersList; preview: LayersList; space: LayersList; ext: LayersList; clusters: LayersList } | null>(null)
+  const staticLayers = useRef<{ three: ReturnType<typeof build3dStatic>; surface: LayersList; preview: LayersList; link: LayersList; space: LayersList; ext: LayersList; clusters: LayersList } | null>(null)
   const lastGlideFrame = useRef(0)
   const lastGeneration = useRef<number | undefined>(undefined)
   const previewGliding = useRef(false)
@@ -266,6 +277,12 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   const taskingsRef = useRef(taskings)
   const draftRef = useRef(draft)
   const surfaceMemo = useRef<{ key: unknown[]; layers: LayersList } | null>(null)
+  // the drafted order's predicted link (linkLayers.ts), and what it was last built from
+  const linkRouteRef = useRef(linkRoute)
+  const linkMemo = useRef<{ key: unknown[]; layers: LayersList } | null>(null)
+  // the coverage grid under the pointer (its tooltip)
+  const coverageRef = useRef(coverage)
+  const covTip = useRef<HTMLDivElement>(null)
   // bumped when new terrain arrives (the surface drawings follow its heights)
   const terrainGen = useRef(0)
   // the camera's bounds and zoom, as last reported (what the drawn set is cut to)
@@ -336,6 +353,19 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     return layers
   }
 
+  /** the drafted order's predicted link: rebuilt when it changes, the terrain under it does, or
+   *  the zoom (the return leg's dashes are in pixels) */
+  const linkLayers = (m: maplibregl.Map | null): LayersList => {
+    const d = linkRouteRef.current
+    if (!m || !d) return []
+    const key = [d, terrainGen.current, Math.round(m.getZoom() * 4)]
+    const memo = linkMemo.current
+    if (memo && memo.key.every((k, i) => k === key[i])) return memo.layers
+    const layers = buildLinkRouteLayers(d, surfaceScale(m))
+    linkMemo.current = { key, layers }
+    return layers
+  }
+
   /** everything deck.gl draws: the 3D scene, the drawings on the surface, SATCOM links,
    *  extension layers (the `layers` prop), then the vehicles on top. `frame`: an animation frame
    *  of a glide, which rebuilds only what is attached to a vehicle and reuses the rest as it was
@@ -348,12 +378,13 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
         three: build3dStatic(vs, bridges.current),
         surface: surfaceLayers(m),
         preview: m ? buildPreviewLayers(previewData(), surfaceScale(m)) : [],
+        link: linkLayers(m),
         space: spaceLinkLayers(spaceRef.current.links),
         ext: layersRef.current?.(screenNow()) ?? [],
         clusters: buildClusterLayers(cl),
       }
     } else if (previewToo && m) staticLayers.current.preview = buildPreviewLayers(previewData(), surfaceScale(m))
-    const { three, surface, preview: previewLayers, space, ext, clusters: clusterLayers } = staticLayers.current
+    const { three, surface, preview: previewLayers, link, space, ext, clusters: clusterLayers } = staticLayers.current
     const tick = drawnTick()
     const glide = build3dGlide(vs)
     const trails = smoothRef.current ? buildTrailLayers(vs) : { under: [], over: [] }
@@ -362,9 +393,11 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       ...three.under,
       ...trails.under,
       glide.stemsUnder,
-      // on the water's surface (or the ground): taskings, the draft, the inbox preview
+      // on the water's surface (or the ground): taskings, the draft, the inbox preview, the
+      // draft's predicted link
       ...surface,
       ...previewLayers,
+      ...link,
       // what is above or on the water: bridge decks, the other trails and stems, sea-level shadows
       ...three.decks,
       ...three.over,
@@ -558,6 +591,33 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       const v = pickVehicle(e.point)
       deselectRef.current?.(v ? v.uid : null)
     })
+    // Predicted link coverage under the pointer: the cell it is over (the image is draped on the
+    // terrain, so the terrain point under the pointer is the cell drawn there), unless a
+    // vehicle's own tooltip is showing.
+    const hideCovTip = () => {
+      if (covTip.current) covTip.current.hidden = true
+    }
+    m.on('mousemove', (e: maplibregl.MapMouseEvent) => {
+      const tip = covTip.current
+      const img = coverageRef.current
+      if (!tip) return
+      const c = img && (tooltip.current?.hidden ?? true) ? cellAt(img.grid, e.lngLat.lng, e.lngLat.lat) : null
+      if (!c || !img) return hideCovTip()
+      const g = img.grid
+      const alt = g.alt_ref === 'surface' ? `${g.alt_m} m above surface` : g.alt_m < 0 ? `${-g.alt_m} m deep` : `${g.alt_m} m MSL`
+      tip.replaceChildren()
+      const head = document.createElement('b')
+      head.className = c.state
+      head.textContent = `predicted ${c.state === 'unknown' ? 'not yet' : c.state}`
+      const words = document.createTextNode(` · ${cellDetail(c)}`)
+      const foot = document.createElement('small')
+      foot.textContent = `${g.callsign ? `${g.callsign}: ` : ''}${g.profile} at ${alt}`
+      tip.append(head, words, foot)
+      tip.style.transform = `translate(${e.point.x + 14}px, ${e.point.y + 14}px)`
+      tip.hidden = false
+    })
+    m.on('mouseout', hideCovTip)
+    m.on('movestart', hideCovTip)
     // Middle-drag orbits the camera like a 3D modelling tool: left/right spins (bearing),
     // up/down tilts (pitch).
     const surface = m.getCanvasContainer()
@@ -614,6 +674,19 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
           type: 'hillshade',
           source: 'dem-shade',
           paint: { 'hillshade-exaggeration': 0.35, 'hillshade-shadow-color': '#000000' },
+        },
+        firstSymbol,
+      )
+      // predicted link coverage: one image (coverage.ts gridImage), draped on the terrain over
+      // the hillshade and under the labels; hidden until there is a grid
+      m.addSource(COVERAGE, { type: 'image', url: BLANK_PNG, coordinates: [[-0.001, 0.001], [0.001, 0.001], [0.001, -0.001], [-0.001, -0.001]] })
+      m.addLayer(
+        {
+          id: COVERAGE,
+          type: 'raster',
+          source: COVERAGE,
+          layout: { visibility: 'none' },
+          paint: { 'raster-opacity': 1, 'raster-resampling': 'nearest', 'raster-fade-duration': 0 },
         },
         firstSymbol,
       )
@@ -864,6 +937,28 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [space, styleGen])
 
+  // predicted link coverage: the image swapped in place (one texture; nothing per frame), or the
+  // layer hidden
+  useEffect(() => {
+    coverageRef.current = coverage
+    const m = map.current
+    if (!coverage && covTip.current) covTip.current.hidden = true
+    if (!m || !ready.current || !m.getLayer(COVERAGE)) return
+    const src = m.getSource(COVERAGE) as maplibregl.ImageSource | undefined
+    if (coverage && src) {
+      src.updateImage({ url: coverage.url, coordinates: coverage.coordinates })
+      m.setLayoutProperty(COVERAGE, 'visibility', 'visible')
+    } else m.setLayoutProperty(COVERAGE, 'visibility', 'none')
+  }, [coverage, styleGen])
+
+  // the drafted order's predicted link
+  useEffect(() => {
+    if (linkRouteRef.current === linkRoute) return
+    linkRouteRef.current = linkRoute
+    pushLayers()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linkRoute])
+
   // extension layers changed (see the `layers` prop)
   useEffect(() => {
     if (layersRef.current === layers) return
@@ -1025,6 +1120,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     <>
       <div ref={container} className="map" />
       <div ref={tooltip} className="vtip" hidden />
+      <div ref={covTip} className="covtip" hidden />
       {glLost && (
         <div className="banner gl-banner" role="status">
           Map graphics paused: the browser lost the WebGL context. Waiting for it to come back…{' '}

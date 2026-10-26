@@ -1,4 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { EMPTY_ROUTE, routeDrawing, type LinkRouteDrawing } from './coverage'
+import { DryRun } from './DryRun'
+import { useDryRun } from './useDryRun'
 import type { Draft } from './MapView'
 import type { TaskKind, Tasking, Vehicle } from './types'
 import { callsign, LIFECYCLE, opEnding } from './types'
@@ -6,7 +9,7 @@ import { TaskResult, type TaskOutcome } from './TaskResult'
 import { tierLabel, type SpaceRuns } from './decisions'
 import { scenarioNow } from './decisions'
 import { SpaceRunCard } from './SpaceRuns'
-import { sendTask, TaskRefused } from './useBridge'
+import { sendTask, TaskRefused, type TaskRequest } from './useBridge'
 import { availableTasks, orbitRange, usePlatformLimits } from './taskDefaults'
 
 interface Props {
@@ -23,6 +26,8 @@ interface Props {
   /** satellite collects and covers, and the bridge clock (for their countdowns) */
   space?: SpaceRuns
   now?: () => number
+  /** the drafted order's predicted link, for the map (the dry run's `link_coverage`) */
+  onLinkRoute?: (d: LinkRouteDrawing | null) => void
 }
 
 const TASKS: { kind: TaskKind; label: string; hint: string }[] = [
@@ -54,7 +59,7 @@ function Lifecycle({ state }: { state: string }) {
   )
 }
 
-export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draft, setDraft, taskings, pendingIds, onInbox, space, now }: Props) {
+export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draft, setDraft, taskings, pendingIds, onInbox, space, now, onLinkRoute }: Props) {
   const runs = space?.runs ?? []
   const scen = now ? scenarioNow(space, now) : null
   const [kind, setKind] = useState<TaskKind>('orbit')
@@ -106,18 +111,40 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
           ? trackPair
           : true)
 
+  /** the order as drafted, once it is complete: what Send sends and the dry run asks about */
+  const request = useMemo<TaskRequest | null>(
+    () =>
+      ready
+        ? {
+            task: kind,
+            uids: kind === 'track' ? trackers : sel,
+            ...(kind === 'track' ? { target: others[0] } : {}),
+            ...(kind === 'orbit' ? { center: draft.center!, radius: draft.radius } : {}),
+            ...(kind === 'patrol' ? { route: draft.route } : {}),
+          }
+        : null,
+    // the selection by its key; the rest as drafted
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [ready, kind, selKey, draft.center, draft.radius, draft.route],
+  )
+  // the dry run (checks, policy, predicted link) of the order while it stands; information only
+  const dry = useDryRun(busy ? null : request, vehicles)
+  const linkRoute = useMemo(
+    () => (dry.answer?.link_coverage && dry.order ? routeDrawing(dry.answer.link_coverage, dry.order, dry.at) : EMPTY_ROUTE),
+    [dry.answer, dry.order, dry.at],
+  )
+  useEffect(() => {
+    onLinkRoute?.(linkRoute.lines.length || linkRoute.dots.length || linkRoute.marks.length ? linkRoute : null)
+  }, [linkRoute, onLinkRoute])
+  useEffect(() => () => onLinkRoute?.(null), [onLinkRoute])
+
   const submit = async () => {
+    if (!request) return
     setBusy(true)
     setError(null)
     setOutcome(null)
     try {
-      const answer = await sendTask({
-        task: kind,
-        uids: kind === 'track' ? trackers : sel,
-        ...(kind === 'track' ? { target: others[0] } : {}),
-        ...(kind === 'orbit' ? { center: draft.center!, radius: draft.radius } : {}),
-        ...(kind === 'patrol' ? { route: draft.route } : {}),
-      })
+      const answer = await sendTask(request)
       if (answer.status === 202 && answer.intent_id != null && answer.state === 'queued') {
         setOutcome({ kind: 'queued', intentId: answer.intent_id, detail: answer.detail ?? '' })
       } else if (answer.status === 202 && answer.intent_id != null) {
@@ -198,6 +225,7 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
               : `Send ${kind.toUpperCase()} to ${sel.length} vehicle${sel.length > 1 ? 's' : ''}`}
         </button>
         {error && <p className="error">{error}</p>}
+        {request && !outcome && <DryRun st={dry} vehicles={vehicles} />}
         {outcome && (
           <TaskResult
             outcome={outcome}

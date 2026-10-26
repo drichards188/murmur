@@ -35,6 +35,8 @@ import { noteFocusedIntent, noteTrackViewed } from './operatorView'
 import { refreshAuth, useAuth } from './auth'
 import { EnrollScreen, LoginScreen, OperatorBadge } from './Login'
 import { SituationPanel } from './SituationPanel'
+import { CoverageControl } from './CoverageControl'
+import { gridImage, type CoverageGrid, type LinkRouteDrawing } from './coverage'
 
 function useUtcClock() {
   const [now, setNow] = useState(() => new Date())
@@ -110,6 +112,12 @@ export default function App() {
   }, [selectedTrack])
   const [fit, setFit] = useState<{ points: LngLat[]; n: number; padRight: number } | null>(null)
   const [showGlobe, setShowGlobe] = useState(false)
+  // predicted link coverage (docs/LINK-COVERAGE.md): the map layer, off by default, and the
+  // drafted order's predicted link (the task panel's dry run)
+  const [showCoverage, setShowCoverage] = useState(false)
+  const [coverageGrid, setCoverageGrid] = useState<CoverageGrid | null>(null)
+  const coverageImage = useMemo(() => (showCoverage && coverageGrid ? gridImage(coverageGrid) : null), [showCoverage, coverageGrid])
+  const [linkRoute, setLinkRoute] = useState<LinkRouteDrawing | null>(null)
   const [mapView, setMapView] = useState<{ center: LngLat; bounds: [number, number, number, number]; zoom: number } | null>(null)
   const [drawing, setDrawing] = useState<LngLat | 'start' | null>(null)
   const [box, setBox] = useState<LngLat[] | null>(null)
@@ -425,6 +433,14 @@ export default function App() {
         <button className={`ghost platforms-btn ${showGlobe ? 'on' : ''}`} onClick={() => setShowGlobe((v) => !v)} title="Globe inset: satellites by class">
           Globe
         </button>
+        <button
+          className={`ghost platforms-btn ${showCoverage ? 'on' : ''}`}
+          aria-pressed={showCoverage}
+          onClick={() => setShowCoverage((v) => !v)}
+          title="Predicted link coverage on the map: up, degraded and down for a link class at an altitude (the link emulator's geometry; its random loss and scripted events are not in it)"
+        >
+          Links
+        </button>
         <button className="ghost platforms-btn" onClick={() => setShowPlatforms((v) => !v)}>
           Platforms
         </button>
@@ -469,8 +485,20 @@ export default function App() {
           onView={onView}
           layers={mapLayers}
           clusters={state?.clusters ?? null}
+          coverage={coverageImage}
+          linkRoute={linkRoute}
         />
         </ErrorBoundary>
+        {showCoverage && (
+          <ErrorBoundary name="Link coverage" className="floating">
+            <CoverageControl
+              view={mapView}
+              vehicle={selected.size === 1 ? (vehicles.find((v) => selected.has(v.uid)) ?? null) : null}
+              onGrid={setCoverageGrid}
+              onClose={() => setShowCoverage(false)}
+            />
+          </ErrorBoundary>
+        )}
         {/* a situation runner's status (make situation): shown only while one has posted it */}
         <ErrorBoundary name="Situation" className="floating">
           <SituationPanel decisions={decisions} />
@@ -637,7 +665,7 @@ export default function App() {
           </ErrorBoundary>
         </div>
         <ErrorBoundary name="Task panel" className="slot tasking">
-        <TaskPanel vehicles={vehicles} historyVehicles={allVehicles} selected={selected} draft={draft} setDraft={setDraft} taskings={taskings} pendingIds={pendingIds} onInbox={openIntent} space={spaceRuns} now={now} />
+        <TaskPanel vehicles={vehicles} historyVehicles={allVehicles} selected={selected} draft={draft} setDraft={setDraft} taskings={taskings} pendingIds={pendingIds} onInbox={openIntent} space={spaceRuns} now={now} onLinkRoute={setLinkRoute} />
         </ErrorBoundary>
       </div>
     </div>

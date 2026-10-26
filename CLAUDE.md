@@ -254,7 +254,8 @@ meaningful. Decision and command, not weapons.
   25 m (`TerrainOracle::sample_along`).
 - Predicted link coverage (docs/LINK-COVERAGE.md, bd murmur-hei): `GET`/`POST
   /api/links/coverage`, `link_coverage` in dry runs and `preview_intent`, the MCP tool
-  `get_link_coverage`. Read-only, never logged, never a check; it shares the link emulator's
+  `get_link_coverage`, the console's Links layer and the order form's dry run (`web/src/
+  coverage.ts`). Read-only, never logged, never a check; it shares the link emulator's
   own range and terrain code (`murmur-linkemu` `coverage.rs`), so prediction and simulation
   cannot disagree on geometry, but it does not predict scripted events (a jammer, a cut).
   Terrain comes from tidewater or a baked grid named by `MURMUR_SURFACE_GRID` (headless: the
