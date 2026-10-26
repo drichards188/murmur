@@ -1420,6 +1420,31 @@ owner on foreknowledge in the ceiling (the shown rung, 32 of 60, is what an agen
 reported; (g) and (h) are fixed by F3 and F6 version 2 (6); (a), (d) and (f) stand. Section 16 is
 their smoke.
 
+### 15.1 F3 version 2: the honest ceiling under `none`, and its harm (b), checked (seeds 5480-5489)
+
+**Coverage.** Section 16's worlds, fleets and sensing; F3 version 2 on both worlds, dev seeds 5480-5489
+(20 situations), version 1 (`emits` unset by a scratch patch) on 5480-5484; `none` and `oracle-v3-honest`,
+80 episodes (20 a trial clock); records deleted. **Shortcut**: run after 29c398e, which section 16 predates.
+
+- **Section 16's deficit does not recur.** Version 2: honest 12 of 20, `none` 10 (3 up, 1 down); on
+  5480-5484, 6 and 6 in either version. In the loss (Golden Gate 5483) the honest ceiling's boats were 14
+  to 274 m (Sea Hunter) and 0.3 to 1.5 km (Corsair) from `none`'s; Sea Hunter's camera began on the
+  aircraft 35 s later, then a wrong recognition: the sensing draws, not the plan.
+- **Harm (b) is the label as defined, on orders that could not change the outcome** (for the owner): 5
+  in 4 of 20 episodes (version 1: 2 in 1 of 10), all Golden Gate, Corsair or Sea Hunter (panoramic cameras,
+  which do not point) sent to a neutral Cessna or sailboat 3.0 to 5.8 km off the aircraft's route 9 to 19
+  s before its deadline, 4 as chases; each moved 37 to 127 m by then, its camera still raising hits on
+  the aircraft; `none` lost the need for 4 of the 5. Air's 30 s grace confines harm (b) to orders too late
+  for a boat's move to matter; the re-taskings that could (boats sent to traffic from the first tick, 7
+  of 10) come before the need opens. Orders: a median 66 an episode, 80 % at neutral or friend traffic.
+- **A planning defect version 2 exposes** (reported, not fixed). 2D radars alone track the silent aircraft
+  at first, at the middle of the bearing segment its slant range bounds (tracks/model.rs; `pos_sigma_m` in
+  kilometres), about half its range from the radar. The honest ceiling takes that point as the position
+  and starts its clock when it falls inside: in 3 of 20 situations (Golden Gate) 57 to 163 s early, giving
+  up 60 s later (on 5480-5484: 2 of 10, version 1 none). A clock restarted when the track shows outside
+  again served the same 12 of 20 and raised median orders from 66 to 104 (not kept); one reading
+  `pos_sigma_m` would change the honest ceiling in every family, so it needs measuring across them.
+
 ## 16. The new ceiling, and F3 and F6 version 2: a smoke (dev seeds 5470-5474)
 
 **Coverage.** golden-gate-v3 (20 of ours: air 8, surface 7 counting the 3 drifting buoys, subsurface
