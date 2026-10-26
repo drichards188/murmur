@@ -138,6 +138,9 @@ class FakeSession:
         self.decided_meanwhile: dict[int, str] = {}  # id -> the state a withdraw finds (a race)
         self.page: dict[int, set[int]] = {}  # tick -> the ids get_intents shows (the newest page)
         self.explain_raise: dict[int, BaseException] = {}  # id -> what explain_intent raises (once each)
+        # get_link_coverage: a callable of one query (uid, order) to its vehicle's answer, or None
+        # (the default: no answer, so a look ranks as without the tool)
+        self.coverage: Any = None
 
     def advance(self) -> Reads:
         self.i += 1
@@ -179,6 +182,11 @@ class FakeSession:
                     "changes": r.changes if args.get("since") else []}
         if name == "get_areas":
             return self.areas
+        if name == "get_link_coverage":
+            qs = args.get("queries") or []
+            if self.coverage is None:
+                return {"answers": [{} for _ in qs]}
+            return {"answers": [{"vehicles": [self.coverage(q)]} for q in qs]}
         if name == "get_nominations":
             return {"nominations": self.nominations}
         if name == "get_platforms":

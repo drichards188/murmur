@@ -28,6 +28,11 @@
 //! `{"type": "decisions", "inbox": ..., "intents": [...]}` and `{"type": "tracks", ...}`
 //! (Phase C2, see `tracks`) on connect and whenever they change (existing clients ignore
 //! message types they don't know).
+//!
+//! Predicted link coverage (`crate::coverage`, information only): `GET /api/links/coverage`
+//! (`class` or `uid`, `alt`, `bbox`, `res`: a grid; or `point`) and `POST /api/links/coverage`
+//! (the same as JSON, a `route`, an `order` as the dry run takes it, or `queries`); the dry run
+//! carries the order's answer as `link_coverage`.
 
 use std::sync::Arc;
 
@@ -82,6 +87,7 @@ pub fn router(app: App) -> Router {
         .route("/api/engage/options", post(engage_options))
         .route("/api/platforms", get(platforms))
         .route("/api/stats", get(stats))
+        .route("/api/links/coverage", get(coverage_get).post(coverage_post))
         .route("/ws", get(ws))
         .route("/api/space/runs", get(space_runs))
         .merge(crate::space::router(app.world.clone(), {
@@ -291,6 +297,30 @@ async fn preview_intent(
     match app.decision.operator_dry_run(&op, req).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => decision_error(e),
+    }
+}
+
+/// `GET /api/links/coverage`: predicted link coverage (`crate::coverage`), read-only.
+async fn coverage_get(
+    State(app): State<App>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let q = crate::coverage::from_query_string(&params);
+    match crate::coverage::query(&app.world, &app.decision, &q).await {
+        Ok(v) => Json(v).into_response(),
+        Err((status, detail)) => error(StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_REQUEST), detail),
+    }
+}
+
+/// `POST /api/links/coverage`: the same as JSON, and routes, orders and several queries.
+async fn coverage_post(State(app): State<App>, body: Result<Json<Value>, JsonRejection>) -> Response {
+    let q = match body {
+        Ok(Json(q)) => q,
+        Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, e.body_text()),
+    };
+    match crate::coverage::query(&app.world, &app.decision, &q).await {
+        Ok(v) => Json(v).into_response(),
+        Err((status, detail)) => error(StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_REQUEST), detail),
     }
 }
 

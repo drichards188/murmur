@@ -1,7 +1,7 @@
 # Showing link coverage ahead of time
 
-Status: **design note for the owner's approval, 2026-10-26** (bd murmur-hei; the fix list's
-item 2). No code.
+Status: **approved 2026-10-26** (bd murmur-hei; the fix list's item 2). Section 3's predictor,
+bridge, agents and playbook are built (section 7); the console layer is not yet.
 
 ## 1. Why
 
@@ -75,3 +75,32 @@ decide whether the machine should insist.
 
 Approve phase 3 (predictor, bridge, console, agents, playbook; no rules change)? Section 4
 stays a later decision.
+
+## 7. As built (2026-10-26)
+
+- **Predictor**: `crates/murmur-linkemu/src/coverage.rs`. The link's own physics is shared, not
+  copied: `model::range_loss` and `model::terrain_effect` are what `Link::cond` now calls, and the
+  predictor asks a `Terrain` as `Link::set_position` does (with `TidewaterTerrain`, the emulator's
+  250 m cells, 10 m altitude bands and profile sampling). States: up, degraded from 20 % loss,
+  down from 95 % or wherever the emulator blocks (the live link badges' thresholds, now one
+  constant). Reasons: `range`, `terrain`, `no_sat`, `submerged`, `surfaced`, the link's own
+  `loss`. A route's failsafe is walked heartbeat by heartbeat (the bridge's period on that link)
+  with the predicted loss where the vehicle then is: the chance it trips on the way and in five
+  minutes on station; `holds` when that is at most 10 %. Checked against the emulator's `Link` at
+  sampled points (a ridge, and a 7 x 7 x 3 lattice on the Golden Gate's grid for both
+  terrain-limited classes: equal to the last bit) and on known shadows (the Marin Headlands and the
+  city's hills at a Puma's 85 m).
+- **Bridge**: `crates/murmur-bridge/src/coverage.rs`, outside the decision lock, never logged.
+  `GET /api/links/coverage?class=los&alt=85&bbox=w,s,e,n&res=250` (or `uid=`, `point=`,
+  `above_surface=1`, `at=`) and `POST` with the same as JSON, a `route`, an `order` or `queries`.
+  The dry run and `preview_intent` carry the order's answer as `link_coverage`, per vehicle: its
+  legs (transit, task path, return, as `murmur_decide::route::route_for` lays them out) with their
+  stretches up, degraded and down, `first_down` and `trip_down` (where, why, how long at its
+  cruise speed), `failsafe_s`, `p_failsafe`, `holds` and a sentence. Terrain from tidewater or a
+  baked surface grid (`MURMUR_SURFACE_GRID`), cached for good per cell; a grid without satellites
+  cached whole.
+- **Agents**: `get_link_coverage` (agents/README.md).
+- **Playbook**: `isr.investigate` version 2 ranks the free sensor aircraft whose predicted link
+  holds for the orbit first (one `get_link_coverage` call a tick) and says so in its rationale.
+- Not predicted, as section 3 says: scripted events, handover outages, a landed aircraft's at-rest
+  check.

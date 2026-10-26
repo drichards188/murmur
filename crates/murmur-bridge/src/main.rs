@@ -37,6 +37,7 @@ mod api;
 mod auth;
 mod clock;
 mod cot;
+mod coverage;
 mod decision;
 mod emu;
 mod estimate;

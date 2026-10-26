@@ -10,6 +10,8 @@ murmur-space = { path = "../murmur-space" }
 murmur-decide = { path = "../murmur-decide" }
 # Operator and agent credentials (rules 8): password hashes, sessions, keys.
 murmur-auth = { path = "../murmur-auth" }
+# Predicted link coverage (bd murmur-hei): the link emulator's own predictor and geometry.
+murmur-linkemu = { path = "../murmur-linkemu" }
 mavlink = { version = "0.18", default-features = false, features = ["std", "dialect-ardupilotmega", "mav2-message-extensions"] }
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }

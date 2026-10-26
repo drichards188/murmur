@@ -4,7 +4,9 @@
        any older card of ours still open, by explain_intent), get_changes since the cursor (and,
        while a link is lost, that vehicle's full facts and its order's parameters; after a
        truncated change feed, get_nominations for the engagements it would have reported); the
-       catalog and the policy once a session (and the areas, in shadow mode)
+       catalog and the policy once a session (and the areas, in shadow mode); and when a track is
+       worth a look, get_link_coverage once for the predicted link of every orbit a look could
+       offer (`isr.link_queries`)
     2. beliefs (beliefs.py)
     3. plays: each returns candidates, what blocks it, what of its own is live
     4. arbiter: engagements in play, the total order, cooldowns and material change, back-offs,
@@ -60,7 +62,7 @@ from .beliefs import NOT_RUNNING, RECOVERING_MODES, Beliefs, build, catalog
 from .config import Config
 from .beliefs import CLASSIFYING
 from .ledger import APPROVED, OPEN, RESTART_WITHDRAWAL, WAITING, Decision, Ledger, key_of, pair_of
-from .plays import P0, PLAYS, Candidate, Result, Withdrawal
+from .plays import P0, PLAYS, Candidate, Result, Withdrawal, isr
 from .reads import Reads
 
 WITHDRAW_PLAYS = ("link.withdraw_pending", "nav.suspect_exclude", "hygiene.withdraw_stale")
@@ -139,6 +141,7 @@ class Engine:
         self.reread_engaging = False  # after a verification that dropped the engagements it knew
         self.verified = False  # the ledger checked against this bridge (verify): no tick before
         self.compute: list[float] = []
+        self.links_said = False  # a failed get_link_coverage said once
 
     # ---- verifying the ledger against the bridge ---------------------------------------------------
 
@@ -407,9 +410,38 @@ class Engine:
                     src = i.get("source") or {}
                     self.led.params[str(iid)] = {"task": i.get("kind"), "params": dict(i.get("params") or {}),
                                                  "source": f"{src.get('kind')} {src.get('id')}", "play": None}
-        return Reads(fleet=fleet, tracks=tracks, inbox=inbox, intents=intents, changes=changes,
-                     platforms=self.platforms or {}, policy=self.policy or {}, lost_full=lost_full,
-                     changes_t=self.changes_t)
+        r = Reads(fleet=fleet, tracks=tracks, inbox=inbox, intents=intents, changes=changes,
+                  platforms=self.platforms or {}, policy=self.policy or {}, lost_full=lost_full,
+                  changes_t=self.changes_t)
+        r.links = await self.read_links(session, r)
+        return r
+
+    async def read_links(self, session: Any, r: Reads) -> dict[str, dict[str, Any]]:
+        """The predicted link of each orbit a look could offer (`isr.link_queries`, on beliefs from
+        these reads; the tick's own beliefs are made after the ledger takes the changes), from one
+        get_link_coverage call: holds, the failsafe's chance and the bridge's sentence per
+        "<uid>|<track>". A bridge without the tool or a failed call leaves it empty (said once), and
+        a look then ranks as before."""
+        if "isr.investigate" not in self.cfg["plays"]:
+            return {}
+        queries = isr.link_queries(build(r, self.cfg, self.led), self.led)
+        if not queries:
+            return {}
+        try:
+            ans = await session.call("get_link_coverage", queries=[q for _, q in queries])
+        except Exception as e:  # noqa: BLE001 (an older bridge, or a failed call: read again next tick)
+            if not self.links_said:
+                self.links_said = True
+                self.log("links.unread", error=f"{type(e).__name__}: {str(e)[:200]}",
+                         text=f"the predicted link could not be read ({type(e).__name__}: {str(e)[:120]}): looks rank "
+                              "without it")
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        for (key, _), a in zip(queries, (ans or {}).get("answers") or []):
+            v = ((a or {}).get("vehicles") or [{}])[0] if isinstance(a, dict) else {}
+            if isinstance(v, dict) and isinstance(v.get("holds"), bool):
+                out[key] = {"holds": v["holds"], "p_failsafe": v.get("p_failsafe"), "sentence": v.get("sentence")}
+        return out
 
     # ---- the pure part ----------------------------------------------------------------------------
 

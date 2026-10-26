@@ -44,11 +44,12 @@ const HISTORY_S: f64 = 62.0;
 const WINDOWS_S: [f64; 3] = [10.0, 30.0, 60.0];
 /// Uplink packets a window needs before it is used for the recent figures.
 const MIN_PKTS: u64 = 5;
-/// Recent loss (both directions) at or above this marks a link degraded in the fleet row.
-pub const DEGRADED_LOSS: f64 = 0.2;
+/// Recent loss (both directions) at or above this marks a link degraded in the fleet row (the
+/// coverage predictor's threshold too: a predicted and a measured link read alike).
+pub const DEGRADED_LOSS: f64 = murmur_linkemu::coverage::DEGRADED_LOSS;
 /// Recent loss at or above this counts as down even when the emulator does not block the
-/// link outright.
-pub const DOWN_LOSS: f64 = 0.95;
+/// link outright (the predictor's too).
+pub const DOWN_LOSS: f64 = murmur_linkemu::coverage::DOWN_LOSS;
 /// No answer from the emulator for this long: the briefs are cleared.
 const STALE_S: f64 = 10.0;
 const TIMEOUT: Duration = Duration::from_secs(2);

@@ -732,6 +732,14 @@ fn config(world: &World) -> &'static Config {
     })
 }
 
+/// A platform's figures from the catalog (cruise speed, domain, link and SATCOM class), or its
+/// kind's defaults when the catalog does not know it, as the estimate reads them.
+pub fn platform_limits(world: &World, platform: Option<&str>, kind: Option<Kind>) -> PlatformLimits {
+    platform
+        .and_then(|p| config(world).limits.platforms.get(p).cloned())
+        .unwrap_or_else(|| kind_defaults(kind))
+}
+
 /// A kind's figures when the manifest names no platform (a SITL vehicle on a bare port).
 fn kind_defaults(kind: Option<Kind>) -> PlatformLimits {
     let (cruise, domain) = match kind {

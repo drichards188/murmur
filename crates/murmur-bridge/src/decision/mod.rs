@@ -1423,6 +1423,7 @@ impl Decision {
         }
         let proposal = proposal(&req)?;
         self.prefetch(&proposal.task, &proposal.uids).await;
+        let (task, uids) = (proposal.task.clone(), proposal.uids.clone());
         let preview = {
             let guard = self.lock();
             let world = self.snapshot();
@@ -1435,7 +1436,47 @@ impl Decision {
         v["operator"] = json!(by.operator().as_str());
         v["submission_authorizes"] = json!(preview.would_reach == State::Approved);
         v["note"] = json!("a dry run: nothing was created or logged");
+        // information only, after the decision and outside the lock (docs/LINK-COVERAGE.md)
+        if !uids.is_empty() {
+            v["link_coverage"] = self.link_coverage(&task, &uids).await;
+        }
         Ok(v)
+    }
+
+    /// The predicted link along each vehicle's route for an order (docs/LINK-COVERAGE.md,
+    /// `crate::coverage`): the transit, task path and return the engine's route geometry lays
+    /// out (`murmur_decide::route::route_for`), each predicted by the link emulator's own
+    /// geometry. Information only: read outside the decision lock, never logged, never a check.
+    pub async fn link_coverage(&self, task: &Task, uids: &[DUid]) -> Value {
+        let spec = Self::prefetch_spec(self.clock.now(), task, uids);
+        let world = self.snapshot().subset_for(&spec);
+        let routes = uids
+            .iter()
+            .map(|u| crate::coverage::VehicleRoute {
+                uid: bridge_uid(u),
+                route: match world.vehicles.get(u) {
+                    Some(v) => murmur_decide::route::route_for(&spec, v, &world, &self.rules),
+                    None => Err(format!("no vehicle with uid {u}")),
+                },
+            })
+            .collect();
+        self.world.coverage().order_answer(&self.world, routes).await
+    }
+
+    /// [`Self::link_coverage`] for a request as the dry run takes it (a vehicle task or an
+    /// engagement nomination).
+    pub async fn link_coverage_for(&self, req: &IntentRequest) -> Result<Value, DecisionError> {
+        let p = match req.task.as_str() {
+            "engage" => engage::proposal(req, self.clock.now())?,
+            "collect" | "cover" => {
+                return Err(DecisionError::new(422, "a space task has no vehicle route"));
+            }
+            _ => proposal(req)?,
+        };
+        if p.uids.is_empty() {
+            return Err(DecisionError::new(422, "name the vehicles (uids, or uid)"));
+        }
+        Ok(self.link_coverage(&p.task, &p.uids).await)
     }
 
     /// A human's engagement nomination: never approved at submission (the engine's floor);

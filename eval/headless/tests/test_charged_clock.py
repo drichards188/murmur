@@ -354,10 +354,15 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: Re-taken for decision rules 18 and the air velocity gate (murmur-vni): each record is the
 #: earlier one but for its audit log's `run.started` (`rules_version` 18 for 17); the gate moved
 #: nothing in them.
+#: All three re-taken for predicted link coverage (bd murmur-hei), on top of rules 18: the code
+#: before it gave rules 18's digests, and each record is the same but for the model's tool list (`get_link_coverage`
+#: added: its transcript's sizes and estimated costs) and the playbook's two proposals (play version
+#: 2, the predicted-link sentence in the rationale and its audit line); every proposal, decision,
+#: order and vehicle state is the same.
 PAUSED = {
-    "model harbor-watch s1": "311704bcd27e9fa8d6f889ddbecfa39c5bda79803672647f020f19afcb5d7180",
-    "playbook v2 fast-unknown 1000": "417a7a97ed201d2376f0a67b8ff673ce3e1ee0ce0121aeae2df9bdfff95486d1",
-    "model v2 fast-unknown 1000": "64eca71f703b7e5a931db4ce02a599e54e5e1b12db973b99a6f68be9c1f420e6",
+    "model harbor-watch s1": "c470f1a1a0eec665aa69c0d6b4b3f0394ba0b4e0d8b0ede704f05bafb094deb4",
+    "playbook v2 fast-unknown 1000": "f0759b0bbe27d7f93ec10fba9e74540b6e25315b0c48a78e2690ccbd7356d069",
+    "model v2 fast-unknown 1000": "a3be232a8dc503e54391679a936d0d60ccdaca1623ad977ef87e14fcf4e29c70",
 }
 
 

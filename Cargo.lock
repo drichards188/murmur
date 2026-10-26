@@ -1428,6 +1428,7 @@ dependencies = [
  "mavlink",
  "murmur-auth",
  "murmur-decide",
+ "murmur-linkemu",
  "murmur-space",
  "quick-xml 0.42.0",
  "rmcp",

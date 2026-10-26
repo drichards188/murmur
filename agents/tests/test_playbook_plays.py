@@ -120,6 +120,51 @@ def test_investigate_prefers_the_configured_platform_then_eta_battery_uid():
     assert res.candidates[0].uid == 6, "a tie by ETA and battery goes to the lower uid"
 
 
+def test_investigate_prefers_a_vehicle_whose_predicted_link_holds_and_says_why():
+    """Version 2: the predicted link of each choice's orbit (reads.links, get_link_coverage) ranks
+    first; the rationale says the link and whom the look was chosen over for theirs. A link not
+    known counts as holding; when none holds the look still goes, saying so."""
+    near, far = vehicle(3, "PUMA 1", "puma", offset(-1200, 200)), vehicle(5, "PUMA 3", "puma", offset(-6000, 0))
+    r = reads(vehicles=[near, far], tracks=[track("T-1", "suspect", 0.7)])
+    res, _ = look(r)
+    assert [c.uid for c in res.candidates] == [3, 5], "without a prediction: by ETA, as version 1"
+    assert "link" not in res.candidates[0].derived
+    r.links = {"3|T-1": {"holds": False, "p_failsafe": 1.0,
+                         "sentence": "PUMA 1 would lose its link 2.0 km along the transit leg (behind terrain from the "
+                                     "ground station), for about 50 s; its failsafe trips after 5 s."},
+               "5|T-1": {"holds": True, "p_failsafe": 0.0,
+                         "sentence": "PUMA 3's link is predicted to hold on the transit leg and the task path (loss at most 1 %)."}}
+    res, _ = look(r)
+    assert [c.uid for c in res.candidates] == [5, 3], "the one whose link holds first"
+    first = res.candidates[0]
+    assert first.derived["link"]["holds"] is True and first.derived["link_passed_over"] == ["PUMA 1"]
+    assert first.alternatives[0]["uid"] == 3 and first.alternatives[0]["link_holds"] is False
+    text = PLAYS["isr.investigate"].render(first.record("test", T0))
+    assert "Predicted link: PUMA 3's link is predicted to hold" in text and "Chosen over PUMA 1, whose predicted link would not hold." in text
+    # none holds: the look still goes, by the order before, and says so
+    r.links["5|T-1"] = dict(r.links["5|T-1"], holds=False, sentence="PUMA 3 would lose its link on the task path.")
+    res, _ = look(r)
+    assert res.candidates[0].uid == 3 and res.candidates[0].derived["link_passed_over"] == []
+    text = PLAYS["isr.investigate"].render(res.candidates[0].record("test", T0))
+    assert "No free sensor aircraft's predicted link holds there." in text
+    # one not known counts as holding
+    del r.links["5|T-1"]
+    res, _ = look(r)
+    assert res.candidates[0].uid == 5 and "link" not in res.candidates[0].derived
+
+
+def test_link_queries_ask_for_every_free_sensor_aircraft_on_each_look():
+    from playbook.plays.isr import link_queries
+
+    near, far = vehicle(3, "PUMA 1", "puma", offset(-1200, 200)), vehicle(5, "PUMA 3", "puma", offset(-6000, 0))
+    r = reads(vehicles=[near, far, FLEET[0]], tracks=[track("T-1", "suspect", 0.7), track("T-2", "neutral", 0.9)])
+    b = build(r, config(), Ledger())
+    q = link_queries(b, Ledger())
+    assert [k for k, _ in q] == ["3|T-1", "5|T-1"], "a neutral is not worth a look; the boat is no sensor aircraft"
+    assert q[0][1] == {"uid": 3, "brief": True,
+                       "order": {"task": "orbit", "center": track("T-1")["predicted"], "radius_m": 1000.0}}
+
+
 def test_investigate_needs_a_watch_area_or_a_protected_point():
     res, _ = look(reads(vehicles=FLEET, tracks=[track("T-1")]), cfg=config(watch_area=[], protected=[]))
     assert res.candidates == [] and res.blocked == [("-", "no watch area or protected point is configured")]

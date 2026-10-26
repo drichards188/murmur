@@ -2219,3 +2219,99 @@ async fn an_agent_order_on_an_engaging_platform_waits_for_a_human() {
     r.replays();
 }
 
+/// `get_link_coverage` (read-only, not logged) at points, for an order, over a grid and several
+/// at once; and the same order answer inside `preview_intent` as `link_coverage`, information
+/// only: the preview is logged as before, without it, and the log replays.
+#[tokio::test(start_paused = true)]
+async fn link_coverage_is_read_only_and_rides_in_the_preview() {
+    let r = rig();
+    assert!(r.world.set_coverage(crate::coverage::tests::golden_gate_coverage()));
+    r.vehicle(1, Firmware::Copter, "x10", (LAT, LON));
+    let cell = r.world.vehicles().into_iter().find(|c| c.uid == 1).expect("cell");
+    cell.write(|v| {
+        v.home = Some((LAT, LON));
+        v.home_alt = Some(5.0);
+        v.seen.home = Some(crate::clock::wall());
+    });
+    sleep(Duration::from_millis(500)).await;
+
+    // a class at points: behind the Marin Headlands at 85 m, and over the bay
+    let pts = r
+        .ok(
+            &planner(),
+            "get_link_coverage",
+            json!({ "class": "los", "alt_m": 85.0, "points": [[-122.52, 37.845], [-122.42, 37.825]] }),
+        )
+        .await;
+    assert_eq!(pts["points"][0]["state"], "down", "{pts}");
+    assert_eq!(pts["points"][0]["reason"], "terrain");
+    assert_eq!(pts["points"][1]["state"], "up", "{pts}");
+    assert_eq!(pts["predicted"], true);
+    assert!(pts["note"].as_str().is_some_and(|n| n.contains("information only")));
+
+    // an order into the shadow: where the copter's mesh link goes, against its 10 s failsafe
+    let order = r
+        .ok(
+            &planner(),
+            "get_link_coverage",
+            json!({ "uid": 1, "order": { "task": "orbit", "center": [-122.52, 37.845], "radius_m": 150 } }),
+        )
+        .await;
+    let v = &order["vehicles"][0];
+    assert_eq!(v["callsign"], "x10 1", "{order}");
+    assert_eq!(v["profile"], "mesh");
+    assert_eq!(v["failsafe_s"], 10.0);
+    assert_eq!(v["holds"], false, "{v}");
+    let parts: Vec<&str> = v["legs"].as_array().expect("legs").iter().filter_map(|l| l["part"].as_str()).collect();
+    assert_eq!(parts, ["transit", "task", "return"]);
+    let s = v["sentence"].as_str().expect("sentence");
+    assert!(s.starts_with("x10 1 would lose its link "), "{s}");
+
+    // a grid, kept to what lands whole in a model's context
+    let grid = r
+        .ok(
+            &planner(),
+            "get_link_coverage",
+            json!({ "class": "mesh", "alt_m": 30.0, "above_surface": true,
+                    "bbox": [-122.60, 37.70, -122.30, 37.90], "res_m": 100 }),
+        )
+        .await;
+    let n = grid["nlat"].as_u64().expect("n") * grid["nlon"].as_u64().expect("n");
+    assert!(n <= tools::AGENT_GRID_CELLS, "{n}");
+    assert_eq!(grid["coarsened"], true);
+    assert_eq!(grid["alt_ref"], "surface");
+    assert_eq!(grid["state"].as_str().expect("state").len() as u64, n);
+
+    // several at once, a refusal among them answered in its place
+    let many = r
+        .ok(
+            &planner(),
+            "get_link_coverage",
+            json!({ "queries": [
+                { "uid": 1 },
+                { "class": "laser", "point": [-122.4, 37.8] },
+                { "uid": 1, "brief": true, "order": { "task": "orbit", "center": [-122.52, 37.845], "radius_m": 150 } },
+            ] }),
+        )
+        .await;
+    assert_eq!(many["answers"][0]["uid"], 1, "{many}");
+    assert!(many["answers"][1]["error"].as_str().is_some_and(|e| e.contains("laser")), "{many}");
+    let brief = &many["answers"][2]["vehicles"][0];
+    assert_eq!(brief["holds"], false, "{many}");
+    assert!(brief.get("legs").is_none() && brief["sentence"] == v["sentence"], "{brief}");
+    // and a refusal of the whole call is a tool error the model can read
+    let (err, why) = r.call(&planner(), "get_link_coverage", json!({ "class": "los" })).await;
+    assert!(err, "{why}");
+
+    // the preview carries the order's answer; the log is as without it
+    let pv = r.ok(&planner(), "preview_intent", orbit(1, "")).await;
+    let lc = &pv["link_coverage"];
+    assert_eq!(lc["vehicles"][0]["uid"], 1, "{pv}");
+    assert!(lc["vehicles"][0]["sentence"].as_str().is_some_and(|s| s.starts_with("x10 1")), "{lc}");
+    assert!(lc["vehicles"][0]["holds"].is_boolean());
+    assert_eq!(r.actions("intent.preview"), 1);
+    assert!(!r.log.text().contains("link_coverage"), "never logged");
+    assert!(!r.log.text().contains("would lose its link"), "never logged");
+    r.replays();
+}
+

@@ -168,6 +168,26 @@ pub fn can(kind: Option<Kind>, task: TaskKind) -> bool {
     kind.and_then(caps).is_some_and(|c| c.tasks.contains(&task))
 }
 
+/// Mission altitude relative to home (negative = depth) for the vehicle in `slot` among
+/// same-kind vehicles in one tasking (stacked apart): the platform's own cruise altitude when the
+/// fleet manifest knows it (`cruise_alt_m`: a Global Hawk at 18 km, an AUV at 40 m depth), else
+/// the per-autopilot default (`Caps::alt`).
+pub fn mission_alt(caps: &Caps, cruise_alt_m: Option<f64>, home_alt: Option<f64>, slot: usize) -> f64 {
+    let (mut base, mut step) = caps.alt;
+    if let Some(cruise) = cruise_alt_m
+        && (cruise > 50.0 || cruise < 0.0)
+    {
+        base = if cruise > 0.0 {
+            cruise - home_alt.unwrap_or(0.0)
+        } else {
+            cruise
+        };
+        let sign = if step == 0.0 { 1.0 } else { step };
+        step = step.abs().max(cruise.abs() * 0.02).copysign(sign);
+    }
+    base + step * slot as f64
+}
+
 /// Takeoff altitude cap for aircraft that take off from the ground.
 pub fn takeoff_alt(kind: Kind) -> f64 {
     match kind {

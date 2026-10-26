@@ -191,6 +191,53 @@ pub struct IntentParams {
     pub accept_lost: Option<Value>,
 }
 
+/// `get_link_coverage`'s arguments: parsed to check them and for the schema; the query reads the
+/// JSON itself (`crate::coverage::query`).
+#[allow(dead_code)]
+#[derive(Deserialize, JsonSchema)]
+pub struct CoverageParams {
+    /// A vehicle's fleet uid: its own link profile, its position (a route or an order starts
+    /// there) and the altitude its orders use.
+    pub uid: Option<u64>,
+    /// A link class or profile instead of a vehicle: los, mesh, satcom, satcom_leo,
+    /// satcom_iridium, satcom_ku_geo, acoustic, tether.
+    pub class: Option<String>,
+    /// Altitude in metres above mean sea level (negative is depth); default the vehicle's, or
+    /// 100 m for a class.
+    pub alt_m: Option<f64>,
+    /// alt_m is above the surface there (terrain or water) instead of sea level.
+    pub above_surface: Option<bool>,
+    /// One point, [lon, lat].
+    pub point: Option<[f64; 2]>,
+    /// Several points, [[lon, lat], ...].
+    pub points: Option<Vec<[f64; 2]>>,
+    /// A route travelled in order, [[lon, lat], ...] (with uid: from where the vehicle is now).
+    pub route: Option<Vec<[f64; 2]>>,
+    /// route: a loop (a patrol), one lap judged.
+    #[serde(rename = "loop")]
+    pub looped: Option<bool>,
+    /// A proposed order, as preview_intent takes it (task, center, radius_m, route, ...; the
+    /// vehicle from uid unless it has uids): each vehicle's transit, task path and return.
+    pub order: Option<Value>,
+    /// order: each vehicle's verdict (holds, the failsafe's chance, the sentence) without its
+    /// legs, for ranking many choices at once.
+    pub brief: Option<bool>,
+    /// A box [w, s, e, n] in degrees: a grid over it.
+    pub bbox: Option<[f64; 4]>,
+    /// The grid's spacing in metres (default 250, the emulator's terrain cell); a box too large
+    /// for it is answered coarser and says so.
+    pub res_m: Option<f64>,
+    /// When, for SATCOM: RFC 3339 in scenario time (default now).
+    pub at: Option<String>,
+    /// Several queries at once (each an object with these fields), answered in order (at most
+    /// 64).
+    pub queries: Option<Vec<Value>>,
+}
+
+/// The largest grid an agent's answer holds, cells (each a letter of state, one of reason and
+/// a loss).
+pub const AGENT_GRID_CELLS: u64 = 10_000;
+
 #[derive(Deserialize, JsonSchema)]
 pub struct NominationsParams {
     /// Only nominations this agent made.
@@ -451,6 +498,28 @@ pub fn tools() -> Vec<Tool> {
                 .into(),
             true,
         ),
+        tool::<CoverageParams>(
+            "get_link_coverage",
+            "Read the predicted link coverage (read-only, not logged): what the link emulator's \
+             own geometry (range from the ground station, terrain between, SATCOM satellites in \
+             view, an AUV's depth) says a datalink would be before a vehicle goes there. For a \
+             vehicle (uid: its own link profile, its position, the altitude its orders use) or a \
+             link class (class, with alt_m above sea level or above_surface): at a point or \
+             points (up, degraded or down, the share of packets lost, and why: range, terrain, \
+             no_sat, submerged or surfaced); along a route (from the vehicle's position with \
+             uid; loop for a patrol); for a proposed order (order, as preview_intent takes it, \
+             for example {\"task\": \"orbit\", \"center\": [lon, lat], \"radius_m\": 400}: \
+             its transit, task path and return, where the link first goes down and for how long \
+             against the vehicle's lost-link failsafe time, the chance the failsafe trips on the \
+             way and in five minutes on station, holds, and a plain sentence); or a grid over a \
+             box (bbox [w, s, e, n], res_m) for a map, one letter a cell. queries asks several \
+             at once. preview_intent carries the same order answer as link_coverage. A \
+             prediction, not an observation: scripted jamming and outages are not in it and the \
+             real link varies; it is information for whoever decides, not a check, and no rule \
+             reads it."
+                .into(),
+            true,
+        ),
         tool::<IntentParams>(
             "preview_intent",
             "Dry run of a proposal: run the fail-closed checks and the risk-tier policy on \
@@ -461,8 +530,11 @@ pub fn tools() -> Vec<Tool> {
              For a collect without a chosen option it is a tasking query: the space answer \
              lists the ranked options and nothing is created. For an engage nomination it \
              also returns the preview: the platform's path forward, the predicted effect \
-             point and time, the uncertainty ellipse and the keep-out. Nothing moves; the preview is \
-             logged under your agent id. Use it before propose_intent."
+             point and time, the uncertainty ellipse and the keep-out. For a vehicle task it \
+             also returns link_coverage, the predicted link along each vehicle's route (as \
+             get_link_coverage answers an order: information only, never a check). Nothing \
+             moves; the preview is logged under your agent id (link_coverage is not). Use it \
+             before propose_intent."
                 .into(),
             true,
         ),
@@ -721,6 +793,24 @@ pub async fn call(
             put("exclusions", p.exclusions.map(|v| json!(v)));
             mcp.api(Method::POST, "/api/space/task", Some(Value::Object(body)))
                 .await
+        }
+        "get_link_coverage" => {
+            let mut raw = Value::Object(args.clone());
+            let _ = params!(CoverageParams);
+            // an agent's grid is kept to what lands whole in a model's context
+            raw["max_cells"] = json!(AGENT_GRID_CELLS);
+            if let Some(qs) = raw.get_mut("queries").and_then(Value::as_array_mut) {
+                for q in qs.iter_mut().filter(|q| q.is_object()) {
+                    q["max_cells"] = json!(AGENT_GRID_CELLS);
+                }
+            }
+            crate::coverage::query(&mcp.world, &mcp.decision, &raw)
+                .await
+                .map_err(|(status, detail)| DecisionError {
+                    status,
+                    detail,
+                    intent: None,
+                })
         }
         "preview_intent" => {
             let p = params!(IntentParams);

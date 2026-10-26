@@ -142,6 +142,7 @@ impl Decision {
     ) -> Result<Value, DecisionError> {
         let proposal = self.agent_proposal(&req)?;
         self.prefetch(&proposal.task, &proposal.uids).await;
+        let (task, uids) = (proposal.task.clone(), proposal.uids.clone());
         let preview = {
             let mut guard = self.lock_with_space(&proposal.task).await;
             guard
@@ -150,7 +151,12 @@ impl Decision {
                 .preview(proposal, &self.snapshot(), &self.terrain.oracle())
                 .map_err(engine_err)?
         };
-        Ok(preview_json(&preview, self.tol()))
+        let mut out = preview_json(&preview, self.tol());
+        // information only, after the decision and outside the lock (docs/LINK-COVERAGE.md)
+        if !uids.is_empty() {
+            out["link_coverage"] = self.link_coverage(&task, &uids).await;
+        }
+        Ok(out)
     }
 
     /// Withdraw one of the agent's own intents before dispatch. Another agent's or a

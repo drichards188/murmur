@@ -43,7 +43,7 @@ use std::time::Duration;
 use tokio::sync::broadcast::{self, error::RecvError};
 use tokio::time::{Instant, sleep, timeout_at};
 
-use super::caps::{Caps, OrbitStyle, caps, takeoff_alt};
+use super::caps::{Caps, OrbitStyle, caps, mission_alt, takeoff_alt};
 use super::op::{OpCell, OpState};
 use super::{TaskKind, TaskParams};
 use crate::clock::{self, round_int};
@@ -1025,25 +1025,13 @@ impl Task<'_> {
     /// when the fleet manifest knows it (a Global Hawk at 18 km, an AUV at 40 m depth), else
     /// the per-autopilot default. Same-kind vehicles in one tasking are stacked apart.
     fn task_alt(&self) -> f64 {
-        let (mut base, mut step) = self.caps.alt;
         let (cruise, home_alt) = self.v().read(|s| {
             (
                 s.identity.as_ref().and_then(|i| i.num("cruise_alt_m")),
                 s.home_alt,
             )
         });
-        if let Some(cruise) = cruise
-            && (cruise > 50.0 || cruise < 0.0)
-        {
-            base = if cruise > 0.0 {
-                cruise - home_alt.unwrap_or(0.0)
-            } else {
-                cruise
-            };
-            let sign = if step == 0.0 { 1.0 } else { step };
-            step = step.abs().max(cruise.abs() * 0.02).copysign(sign);
-        }
-        base + step * self.ctx.op.slot as f64
+        mission_alt(self.caps, cruise, home_alt, self.ctx.op.slot)
     }
 
     /// Whether a mission built now starts with a takeoff (grounded aircraft).

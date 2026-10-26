@@ -579,6 +579,18 @@ async fn assemble(spec: &Spec) -> Result<Parts, String> {
         Some(p) => Some(Arc::new(terrain::Grid::load(p)?)),
         None => None,
     };
+    // the link coverage predictor (information only) on the episode's own links file, the same
+    // baked terrain and SATCOM data as its emulator, with caches of its own
+    world.set_coverage(crate::coverage::Coverage::new(crate::coverage::Sources {
+        links: spec.links.clone(),
+        root: spec.root.clone(),
+        terrain: grid.as_ref().map(|g| {
+            let s: Arc<dyn murmur_linkemu::terrain::Sampler> = Arc::new(crate::coverage::GridSampler(g.clone()));
+            (s, format!("surface grid {}", g.source))
+        }),
+        space_root: spec.space_root.clone(),
+        space: spec.space,
+    }));
     let emu = Emulator::new(
         emulator::Setup {
             links_file: &spec.links,

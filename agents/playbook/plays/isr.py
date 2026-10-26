@@ -7,8 +7,12 @@
   the classification up by 0.02 within 30 s, and for at most 120 s per track), or faster than
   8 m/s, or an identity conflict (what was seen does not fit its AIS, or the sensors' labels
   disagree: the tracker's own anomaly flag). Action: an orbit by the free unarmed sensor aircraft (an
-  imaging sensor in its catalog) that is the preferred platform if one is configured, then
-  nearest by ETA at its cruise speed, then most battery, then lowest uid; centred on the
+  imaging sensor in its catalog) whose predicted link holds for that orbit (version 2: the
+  bridge's `get_link_coverage`, read once a tick for every free one, `link_queries`; the
+  failsafe's chance on the way and five minutes on station at most 10 %; one not known counts as
+  holding, and when none holds the look still goes, saying so), then the preferred platform if one
+  is configured, then nearest by ETA at its cruise speed, then most battery, then lowest uid; its
+  rationale says the predicted link and which vehicles it was chosen over for theirs; centred on the
   track's position carried to now; radius max(1.1 x its minimum turn, a quarter of its imaging
   range). Score: 0.5 plus half the urgency of the closest approach (1 at once, 0 at the 10-minute
   horizon) when closing, 0.25 when only inside a watch area; plus 0.1 for a suspect; times the
@@ -58,6 +62,8 @@ SUSPICION = {"neutral": 0, "assumed_friend": 0, "unknown": 1, "suspect": 2, "hos
 CHOICES = 3
 RANK_STEP = 0.001
 LIVE_WAITING = ("proposed", "checked", "auto_approved", "pending_approval", "approved", "queued")
+# get_link_coverage answers at most this many queries a call
+MAX_LINK_QUERIES = 64
 
 
 # ---- shared pieces --------------------------------------------------------------------------------
@@ -332,8 +338,38 @@ def urgency(tr: Track, b: Beliefs) -> float:
     return base + (0.1 if tr.affiliation == "suspect" else 0.0)
 
 
-def ranked(b: Beliefs, point: tuple[float, float], ok, preferred: str = "") -> tuple[list[Vehicle], list[tuple[Vehicle, str]]]:
-    """(free vehicles that pass `ok`, ranked; capable ones that are not free, with why)."""
+def link_key(uid: int, target: str) -> str:
+    """The key of a look's predicted link in the reads (`Reads.links`)."""
+    return f"{uid}|{target}"
+
+
+def link_fails(link: dict[str, Any] | None) -> bool:
+    """A predicted link that does not hold (one not known counts as holding)."""
+    return isinstance(link, dict) and link.get("holds") is False
+
+
+def link_queries(b: Beliefs, led: Ledger) -> list[tuple[str, dict[str, Any]]]:
+    """The orbits a look could offer this tick, for one `get_link_coverage` call (the engine's read,
+    before the plays): each track worth a look that nothing of ours holds, each free sensor
+    aircraft in the order a look ranks them before the link, the orbit it would ask of it."""
+    out: list[tuple[str, dict[str, Any]]] = []
+    for tid, tr in sorted(b.tracks.items()):
+        if tr.where is None or holding(LOOK_PLAYS, tid, b, led) is not None:
+            continue
+        why, _ = look_reasons(tr, b)
+        if not why:
+            continue
+        free, _ = ranked(b, tr.where, sensor_capable, b.cfg["sensor_platform"])
+        for v in free:
+            out.append((link_key(v.uid, tid), {"uid": v.uid, "brief": True, "order": {
+                "task": "orbit", "center": R.ll(tr.where), "radius_m": orbit_radius(v, b.cfg)}}))
+    return out[:MAX_LINK_QUERIES]
+
+
+def ranked(b: Beliefs, point: tuple[float, float], ok, preferred: str = "",
+           link=None) -> tuple[list[Vehicle], list[tuple[Vehicle, str]]]:
+    """(free vehicles that pass `ok`, ranked; capable ones that are not free, with why). With
+    `link` (a vehicle's predicted link for this look, or None), those whose link holds first."""
     free, busy = [], []
     for uid, v in sorted(b.vehicles.items()):
         if not ok(v):
@@ -346,14 +382,17 @@ def ranked(b: Beliefs, point: tuple[float, float], ok, preferred: str = "") -> t
 
     def rank(v: Vehicle) -> tuple:
         e = eta_s(v, point)
-        return (0 if preferred and v.platform == preferred else 1, float("inf") if e is None else round(e, 3),
+        return (1 if link is not None and link_fails(link(v)) else 0,
+                0 if preferred and v.platform == preferred else 1, float("inf") if e is None else round(e, 3),
                 -(v.battery_pct or 0.0), v.uid)
 
     return sorted(free, key=rank), busy
 
 
-def alternatives(free: list[Vehicle], busy: list[tuple[Vehicle, str]], point: tuple[float, float]) -> list[dict[str, Any]]:
-    out = [{"uid": v.uid, "callsign": v.callsign, "eta_s": R.r0(eta_s(v, point)), "battery_pct": R.r0(v.battery_pct)}
+def alternatives(free: list[Vehicle], busy: list[tuple[Vehicle, str]], point: tuple[float, float],
+                 link=None) -> list[dict[str, Any]]:
+    out = [{"uid": v.uid, "callsign": v.callsign, "eta_s": R.r0(eta_s(v, point)), "battery_pct": R.r0(v.battery_pct),
+            **({"link_holds": link(v)["holds"]} if link is not None and isinstance(link(v), dict) else {})}
            for v in free[1:4]]
     out += [{"uid": v.uid, "callsign": v.callsign, "not_free": why} for v, why in busy[:3]]
     return out
@@ -400,6 +439,18 @@ def track_text(record: dict[str, Any]) -> str:
             f"({R.quote(aff.get('reason') or '')}); {motion}; {where_text(record['derived'])}; seen by {sb}")
 
 
+def link_text(record: dict[str, Any]) -> str:
+    """The predicted link of a look's orbit, and the vehicles it was chosen over for theirs."""
+    d = record["derived"]
+    lk = d.get("link")
+    if not isinstance(lk, dict):
+        return ""
+    over = d.get("link_passed_over") or []
+    chosen = f" Chosen over {', '.join(over)}, whose predicted link would not hold." if over else ""
+    none = " No free sensor aircraft's predicted link holds there." if lk.get("holds") is False else ""
+    return f" Predicted link: {lk.get('sentence') or ('holds' if lk.get('holds') else 'would not hold')}{chosen}{none}"
+
+
 def sensor_text(record: dict[str, Any], what: str) -> str:
     v = record["vehicle"]
     alts = [a for a in record.get("alternatives") or [] if "eta_s" in a]
@@ -420,6 +471,8 @@ def vehicle_ref(v: Vehicle) -> dict[str, Any]:
 
 class Investigate(Play):
     name, klass = "isr.investigate", P2
+    # 2: the predicted link of each choice's orbit ranks first (get_link_coverage)
+    version = "2"
 
     def evaluate(self, b: Beliefs, led: Ledger) -> Result:
         res = Result()
@@ -436,24 +489,37 @@ class Investigate(Play):
             if not why_look:
                 continue
             point = tr.where
-            free, busy = ranked(b, point, sensor_capable, cfg["sensor_platform"])
+
+            def link(v: Vehicle, tid: str = tid) -> dict[str, Any] | None:
+                return b.links.get(link_key(v.uid, tid))
+
+            known = link if b.links else None
+            free, busy = ranked(b, point, sensor_capable, cfg["sensor_platform"], known)
             if not free:
                 detail = "; ".join(f"{v.callsign}: {why}" for v, why in busy[:3]) or "none in the fleet"
                 res.blocked.append((tid, f"no free sensor aircraft ({detail})"))
                 continue
+            # the order before the link: who was passed over for a link that would not hold
+            before = [v.uid for v in ranked(b, point, sensor_capable, cfg["sensor_platform"])[0]] if known else []
             score = urgency(tr, b) * led.score_factor.get(f"{self.name}|{tid}", 1.0)
             for rank, v in enumerate(free[:CHOICES]):
                 radius = orbit_radius(v, cfg)
                 derived = approach_derived(tr, b)
                 derived.update({"eta_s": R.r0(eta_s(v, point)), "radius_m": radius, "rank": rank,
                                 "preferred": bool(cfg["sensor_platform"]) and v.platform == cfg["sensor_platform"]})
+                lk = link(v) if known else None
+                if isinstance(lk, dict):
+                    derived["link"] = {"holds": lk.get("holds"), "p_failsafe": lk.get("p_failsafe"),
+                                       "sentence": lk.get("sentence")}
+                    ahead = before[: before.index(v.uid)] if v.uid in before else []
+                    derived["link_passed_over"] = [b.vehicles[u].callsign for u in ahead if link_fails(link(b.vehicles[u]))]
                 res.candidates.append(Candidate(
                     play=self.name, version=self.version, klass=self.klass, score=score - RANK_STEP * rank,
                     target=tid, uid=v.uid, task="orbit",
                     request={"task": "orbit", "uids": [v.uid], "center": R.ll(point), "radius_m": radius},
                     facts=track_facts(tr, b) + vehicle_facts(v), derived=derived, thresholds=look_thresholds(b),
                     withdraw_if=look_withdraw_if(b), basis=track_basis(tr, b), trigger=why_look,
-                    alternatives=alternatives(free[rank:], busy, point), claims=(v.uid,), vehicle=vehicle_ref(v),
+                    alternatives=alternatives(free[rank:], busy, point, known), claims=(v.uid,), vehicle=vehicle_ref(v),
                 ))
         return res
 
@@ -466,7 +532,8 @@ class Investigate(Play):
     def render(self, record: dict[str, Any]) -> str:
         return (f"{R.head(record)} Orbit {record['vehicle']['callsign']} over {record['target']} "
                 f"({record['request']['radius_m']:.0f} m radius) to keep a sensor on it. {track_text(record)}. "
-                f"{sensor_text(record, 'sensor aircraft')}. Why now: {'; '.join(record['trigger'])}. {R.tail(record)}")
+                f"{sensor_text(record, 'sensor aircraft')}.{link_text(record)} Why now: {'; '.join(record['trigger'])}. "
+                f"{R.tail(record)}")
 
 
 class Recentre(Play):

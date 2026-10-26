@@ -67,6 +67,7 @@ tests, which pass unchanged.
 | `Cargo.toml` (workspace) | `unexpected_cfgs` check-cfg for `murmur_headless` | lint config |
 | `crates/murmur-bridge/src/decision/terrain.rs`, `decision/mod.rs` (world v3, 2026-10-23) | the baked land/water grid as the domain rule's source when no tidewater URL is set (`MURMUR_LAND_WATER_GRID`, `Settings::land_water`, `Terrain::with_grid`, `Grid`); with a URL nothing changes (section 17) | feature, live and headless |
 | `crates/murmur-standins/src/conditions.rs` (world v3) | `Slot::position` and `Slot::put`: a source of conditions other than the HTTP poller | visibility |
+| `crates/murmur-bridge/src/coverage.rs`, `world.rs` (bd murmur-hei, 2026-10-26) | predicted link coverage (docs/LINK-COVERAGE.md): `World::set_coverage` gives the predictor the episode's links file, the world's baked surface grid and `space_root`, each with caches of its own (never the emulator's, so a query cannot change what the emulator does); its satellite work runs at once on the simulated clock (`run_blocking`). Information only: an agent's `get_link_coverage` and `preview_intent`'s `link_coverage`. The golden episode and the charged clock's three paused records were re-taken: the code before gives the earlier digests, and each record differs only in the tool list the agents see and the playbook's proposals (`isr.investigate` version 2 and its predicted-link sentence, in the record and the audit log); every proposal, decision and order is the same | feature, live and headless |
 
 Not changed: `agents/playbook/`, the tracker and sensing model, murmur-decide, the stand-ins, the
 contacts, the engine's behaviour. The stuck-vehicle fault needed no hook in `murmur-standins`
@@ -81,7 +82,7 @@ replayed with its anchors.
 | path | what |
 |---|---|
 | `Cargo.toml`, `build.rs` | the bridge's dependencies (the build script fails, naming the difference, if they drift from `crates/murmur-bridge/Cargo.toml`) plus `murmur-standins`, `murmur-linkemu`, `murmur-contacts`; sets `cfg(murmur_headless)`; the library is `test = false` |
-| `src/lib.rs` | the 21 bridge modules by path, `#[cfg(not(test))]`, dead code allowed; `pub mod sim` |
+| `src/lib.rs` | the 22 bridge modules by path, `#[cfg(not(test))]`, dead code allowed; `pub mod sim` |
 | `src/main.rs` | `murmur-headless --reply-fd N`: the episode spec on stdin's first line, then one JSON request per line on stdin, one answer per line on descriptor N |
 | `src/sim/mod.rs` | `Episode`: the runtime (current thread, paused), the bridge assembled in `main.rs`'s order minus sockets, threads and HTTP clients, the timed tasks; `step_to`, `mcp_call`, `api_call`, `truth` (contacts, our vehicles, the tracker's association), `fault`, `mcp_over_http` (the bridge's own `/mcp` service on the same `Mcp`, for the view test), `finish` |
 | `src/sim/server.rs` | the request loop: `step`, `mcp`, `api`, `truth`, `fault`, `tools` (with `defs`, the tools' definitions as the bridge's `tools/list` gives them, for the model agent), `now`, `perf`, `mcp_http`, `end`; a request may carry `at` (step first); every other request is checked not to move the clock |

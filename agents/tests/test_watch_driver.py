@@ -167,7 +167,7 @@ def test_a_watch_wakes_escalates_and_tells_the_routine_model(fake_claude, tmp_pa
     shadow = [x for x in log if x["kind"] == "shadow"]
     assert len(shadow) == 1 and shadow[0]["track"] == "T-0009" and shadow[0]["request"]["task"] == "orbit"
     assert shadow[0]["request"]["uids"] == [4], "what it would have proposed, logged only"
-    assert shadow[0]["record"]["play"] == "isr.investigate@1" and shadow[0]["record"]["preview"]["shadow"] is True
+    assert shadow[0]["record"]["play"] == "isr.investigate@2" and shadow[0]["record"]["preview"]["shadow"] is True
     assert "Shadow: not previewed, not proposed." in shadow[0]["rationale"]
     calls = o.poller.session.calls
     assert calls and not set(calls) & set(WRITERS), "the shadow reads only"

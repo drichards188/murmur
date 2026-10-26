@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
 use std::time::{Duration, SystemTime};
 
 use mavlink::MessageData;
@@ -128,6 +128,9 @@ pub struct World {
     pub tasks: TaskManager,
     /// The water sampler's drift tracks (`crate::estimate`).
     pub water: crate::estimate::WaterTracks,
+    /// Predicted link coverage (`crate::coverage`), made on first use from the environment
+    /// unless set first (the headless simulator sets its episode's).
+    coverage: OnceLock<Arc<crate::coverage::Coverage>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -147,7 +150,22 @@ impl World {
             wanted_ports: Mutex::new(wanted),
             tasks: TaskManager::default(),
             water: crate::estimate::WaterTracks::default(),
+            coverage: OnceLock::new(),
         })
+    }
+
+    /// The link coverage predictor (`crate::coverage`), from the environment on first use.
+    pub fn coverage(&self) -> Arc<crate::coverage::Coverage> {
+        self.coverage
+            .get_or_init(|| Arc::new(crate::coverage::Coverage::from_env(&self.cfg.root)))
+            .clone()
+    }
+
+    /// Sets the coverage predictor's sources before its first use (false: too late, one is in
+    /// use). The headless simulator sets its episode's; tests set theirs.
+    #[allow(dead_code)]
+    pub fn set_coverage(&self, c: crate::coverage::Coverage) -> bool {
+        self.coverage.set(Arc::new(c)).is_ok()
     }
 
     /// All vehicles, in uid order.

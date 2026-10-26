@@ -46,8 +46,8 @@ def test_a_tick_previews_vetoes_and_proposes_with_the_record_after_the_delimiter
     rationale = s.proposed[0]["rationale"]
     text, body = R.split(rationale)
     rec = R.parse_record(rationale)
-    assert body is not None and rec["play"] == "isr.investigate@1" and rec["config"] == e.cfg.label
-    assert text.startswith("[isr.investigate v1] Orbit PUMA 1 over T-1 (1000 m radius)")
+    assert body is not None and rec["play"] == "isr.investigate@2" and rec["config"] == e.cfg.label
+    assert text.startswith("[isr.investigate v2] Orbit PUMA 1 over T-1 (1000 m radius)")
     assert "Rule book v2: nothing against." in text and "tier human (agent-tasking)" in text
     # every number the text cites is in the record (rationale fidelity, by construction)
     assert f"battery {rec['vehicle']['battery_pct']:.0f}%" in text
@@ -55,6 +55,45 @@ def test_a_tick_previews_vetoes_and_proposes_with_the_record_after_the_delimiter
     assert e.led.entries["101"]["play"] == "isr.investigate" and e.led.entries["101"]["state"] == "pending_approval"
     kinds = [x["kind"] for x in lines]
     assert kinds.count("proposal") == 1
+
+
+def test_a_tick_reads_the_predicted_link_once_and_the_look_goes_where_it_holds():
+    """One get_link_coverage call a tick for every orbit a look could offer; the proposal goes to
+    the vehicle whose predicted link holds, and its rationale says so. A failing call is said once
+    and the look ranks as before."""
+    far = vehicle(5, "PUMA 3", "puma", offset(-6000, 0))
+    s = FakeSession([reads(vehicles=FLEET + [far], tracks=[track("T-1", "suspect", 0.7)])])
+    s.coverage = lambda q: {"holds": q["uid"] != 3, "p_failsafe": 1.0 if q["uid"] == 3 else 0.0,
+                            "sentence": f"uid {q['uid']}: predicted."}
+    e = Engine(config())
+
+    async def go():
+        await e.start(s)
+        return await e.tick(s)
+
+    asyncio.run(go())
+    asked = [a for n, a in s.calls if n == "get_link_coverage"]
+    assert len(asked) == 1 and [q["uid"] for q in asked[0]["queries"]] == [3, 5]
+    assert s.proposed[0]["request"]["uids"] == [5]
+    assert "Predicted link: uid 5: predicted. Chosen over PUMA 1" in s.proposed[0]["rationale"]
+
+    class Broken(FakeSession):
+        async def call(self, name, **args):
+            if name == "get_link_coverage":
+                raise RuntimeError("unknown tool get_link_coverage")
+            return await super().call(name, **args)
+
+    b = Broken([reads(vehicles=FLEET + [far], tracks=[track("T-1", "suspect", 0.7)])] * 2)
+    lines: list[dict] = []
+    e = Engine(config(), log=lambda kind, **f: lines.append({"kind": kind, **f}))
+
+    async def go2():
+        await e.start(b)
+        return [await e.tick(b) for _ in range(2)]
+
+    asyncio.run(go2())
+    assert b.proposed[0]["request"]["uids"] == [3], "as before"
+    assert [x["kind"] for x in lines].count("links.unread") == 1, "said once"
 
 
 def test_the_rule_book_vetoes_what_a_passing_preview_lets_through():
@@ -180,7 +219,7 @@ def test_recorded_reads_give_byte_identical_proposals_and_rationales():
     if os.environ.get("UPDATE_GOLDEN") == "1":
         GOLDEN.write_text(a)
     assert a == GOLDEN.read_text(), "the golden output changed: see the diff, and regenerate only on purpose"
-    assert "proposed i101" in a and "[isr.investigate v1] Orbit PUMA 1 over T-0008" in a
+    assert "proposed i101" in a and "[isr.investigate v2] Orbit PUMA 1 over T-0008" in a
 
 
 def hundred() -> tuple[list[dict], list[dict]]:

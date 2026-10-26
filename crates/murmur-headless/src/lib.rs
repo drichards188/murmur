@@ -32,6 +32,10 @@ mod clock;
 mod cot;
 #[cfg(not(test))]
 #[allow(dead_code)]
+#[path = "../../murmur-bridge/src/coverage.rs"]
+mod coverage;
+#[cfg(not(test))]
+#[allow(dead_code)]
 #[path = "../../murmur-bridge/src/decision/mod.rs"]
 mod decision;
 #[cfg(not(test))]
