@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 58] = [
+const LOGS: [(&str, u32); 62] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -169,13 +169,21 @@ const LOGS: [(&str, u32); 58] = [
     ("v18-engagement-scenario-01.jsonl", VELOCITY_SIGMA_SINCE),
     ("v18-velocity-known-to-3-mps-scenario-97.jsonl", VELOCITY_SIGMA_SINCE),
     ("v18-velocity-error-grows-under-way-scenario-98.jsonl", VELOCITY_SIGMA_SINCE),
+    // rules 19 (bd murmur-j0x, a live track accepted as behaving now; a clean build of 502e0da):
+    // scenario 01; 99, an aircraft accepted at the nomination, held to the effect; 100, the
+    // acceptance lapsed by a jump off the accepted path, a token from before it refused, accepted
+    // again; 105, a late lapse by a turn that stops the engagement under way
+    ("v19-engagement-scenario-01.jsonl", ACCEPT_BEHAVING_SINCE),
+    ("v19-aircraft-accepted-as-behaving-scenario-99.jsonl", ACCEPT_BEHAVING_SINCE),
+    ("v19-behaving-acceptance-lapses-on-a-jump-scenario-100.jsonl", ACCEPT_BEHAVING_SINCE),
+    ("v19-behaving-acceptance-lapses-under-way-scenario-105.jsonl", ACCEPT_BEHAVING_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v18-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v19-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
