@@ -840,6 +840,7 @@ impl Tracks {
                     affiliation: aff.as_str(),
                     reason: why,
                     kind: id.kind,
+                    level: id.level.map(sensing::Level::as_str),
                     identity_confidence: id.confidence,
                     ais_name: id.ais.map(|a| a.name),
                     sources: t

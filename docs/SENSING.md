@@ -435,17 +435,82 @@ a fix along the bearing with the error the bearing implies (as the legacy model)
 `large_vessel`, `small_craft`, `aircraft`, `small_uas`, `ground_vehicle`, `person`,
 `submerged`), an identification's its kind. A wrong call is drawn once per observer, sensor,
 contact and level: at recognition twice the scenario's misclassification rate, at
-identification the rate itself [E]. The tracker keeps each observer's sensor's evidence per
-level (`Track::identity_from_looks`): the most specific level names the track, the looks that
-agree at that level combine as independent (`1 - prod(1 - c)`), a lower level never adds to it
-and a disagreeing lower level is superseded, not a conflict, so a closer look corrects a wrong
-call (murmur-jln). Conflicts are the legacy identity's: AIS against an identification (or a
-recognition's family), a speed the AIS kind cannot make, two disagreeing looks at the chosen
-level. The picture says which sensor reached which level: a track's `identity.looks` (`GET
+identification the rate itself [E]. ESM's detection names only the domain of the emitter it
+hears (`aircraft`, `vessel`, `ground_vehicle`, `submerged`), not its size.
+
+**Identity fusion** (`Track::identity_from_looks`; the defects (a), (c) and (d) of
+SCORING-V3.md 15). The tracker keeps each observer's sensor's evidence per level, the surest
+each has been, and fuses it by specificity, reliability and weight of evidence:
+
+- *Precedence: the more specific label wins.* A kind (an identification) over the AIS
+  identity's kind over a family (a recognition) over a size class (a radar's or a camera's
+  detection) over the domain alone (ESM's detection). A less specific label never displaces a
+  more specific one, whatever its confidence: ESM's `aircraft` gives way to a radar's
+  `small_air` (before, the surer ESM look named the track and the radar's correct size class
+  lost, 15 (c)). A lower-level look that agrees (a family's or size class's kind, ESM's domain)
+  supports the label (`supported_by`) but never adds to its confidence; one that disagrees is
+  superseded, not a conflict, so a closer look corrects a wrong call (murmur-jln).
+- *Confidence.* The looks that agree at the chosen level combine as independent, `1 - prod(1 -
+  c)` (the AIS identity's 0.85 too when it names the same kind). With other labels at that
+  level, the label's belief by Dempster's rule over them, `odds / (1 + sum of every label's
+  odds)` with a label's odds `s / (1 - s)`: a dissent lowers it.
+- *Conflicts, and when they clear.* A dissent is a conflict when it is a call that counts (0.3)
+  and the looks for the claim do not outweigh every look against it: their weight of evidence,
+  Shafer's `-ln(1 - support)`, which adds over independent looks, at least twice the dissent's
+  (two looks as sure as a stray wrong call outweigh it; one against one stays split). The
+  claims checked: the AIS identity's kind against what our sensors identify (or, while no
+  identification counts, its family against what they recognise, identifications counting for
+  their family), the estimate against another label at its level, and the speed the AIS kind
+  can make. Before, any dissent that counted held the track in conflict for good: one wrong
+  look among the six or seven cameras that looked at an aircraft, and 32 % of neutral contacts
+  within 4 km were shown suspect or in conflict (15 (d)). The AIS identity is the contact's own
+  claim: it never weighs in the looks' dispute, only against what they settle on, so a spoof
+  stays exposed however many cameras see it. Recency is not weighed: association is by contact
+  id and a contact's kind does not change, and a wrong call is drawn once per observer, sensor,
+  contact and level, so a camera's newer look of it is no new evidence. A contact every look got
+  wrong shows what the looks say, never its truth.
+- *The level shown.* A track's `identity.level` (`GET /api/tracks`, MCP `get_tracks`, the
+  console, the change feed's `identity_level`) says how specific `identity.kind` is: `detect` a
+  size class, or from ESM alone the domain; `recognise` a family; `identify` a kind, a sensor's
+  identification or, with none, the AIS identity's. The confidence is that level's: a camera's
+  detection reads `small_air 0.99` (a sure size class), which without the level looked resolved
+  (15 (a)). The legacy model's tracks carry it too (an EO/IR or sonar kind or the AIS kind at
+  `identify`, a radar's or ESM's family at `recognise`); their fusion is unchanged.
+
+The picture also says which sensor reached which level: a track's `identity.looks` (`GET
 /api/tracks`, the headless picture) lists each observer's sensor's evidence at each level it
 reached, `{uid, sensor, level, label, confidence}` (`detect`, `recognise`, `identify`), the
-surest it has been; the physical model's only, so a legacy track's JSON is byte for byte as it
-was (v1 and v2 records hold it). `TrackFacts` and the identity interface are unchanged.
+surest it has been; the physical model's only. `TrackFacts` and the identity interface the
+decision engine reads are unchanged (no rules version); what moves is their inputs: the
+identity confidence where looks disagree, and the affiliation estimate where a conflict clears.
+
+*The smokes* (2026-10-26; model results only): golden-gate-v3 (20 of ours, its traffic in the
+air, on the surface and on the ground, the physical model; conditions drawn per situation: day
+18 of 20 for F2 and F8), dev seeds 5380-5389, one replicate, approve-all, the paused clock; F8
+(decoys and spoofing) and F2 (drone) with `none` and `oracle-v3-honest`, F15 and F16 (the
+engagement chain, the review load) with `none` and their scripted reviewer; 120 episodes, the
+code before and after. A contact counts in doubt when its track was shown suspect or in an
+identity conflict at any second while it was within 4 km of the mission centre.
+
+| | F2 | F8 | F15 | F16 |
+|---|---|---|---|---|
+| neutral traffic in doubt, before | 56 of 210 (27 %) | 63 of 211 (30 %) | 74 of 241 (31 %) | 73 of 238 (31 %) |
+| after | 34 (16 %) | 37 (18 %) | 44 (18 %) | 48 (20 %) |
+| its tracked seconds in doubt, before / after | 13.7 / 3.3 % | 18.7 / 4.0 % | 19.3 / 3.8 % | 19.9 / 4.5 % |
+| F8's spoofer (suspect) in conflict | | 2 of 2, 99 % of its seconds, both | | |
+| flags true / false; rule declarations true / false | 0 / 0; 0 / 0 | 0 / 0; 0 / 0 | 0 / 6; 10 / 0, both | 5 / 4; 7 / 0, both |
+| needs served, `oracle-v3-honest` (`none`) | 0 to 1 of 10 (0, 0) | 5 to 6 of 10 (5, 5) | | |
+
+(`none`'s figures; `oracle-v3-honest`'s doubt moved as `none`'s.) Of `none`'s F2 and F8 traffic
+in doubt before, 65 came into doubt by two identifications disagreeing and were still in doubt at
+their last second within 4 km; after, 5. What remains is mostly not these defects': a charter
+fishing boat in the Golden Gate traffic runs at 8.0 m/s, a fishing vessel's plausible top, and
+the tracker's speed noise (quoted 8 to 11 m/s) raises the AIS speed conflict (18 of the 71, 11
+still at their last second); cargo ships identified before their AIS is heard are suspect until
+it is (12, all cleared); a camera's wrong call against a true AIS identity (a ferry
+identified as a cargo ship, say) is a conflict until other looks outweigh it (14, 12 cleared).
+F8's look-alikes with a cloned AIS identity or a sportfisher's speed stay in conflict, as they
+should, and the spoofer stays exposed.
 
 **Hostile acts** (rules 9). An act is observed by the sensors that detected its author that
 second (radar, EO/IR, sonar), each observer's best fix placing it.
@@ -911,3 +976,8 @@ The legacy model's Python ports (`v2/labels.py`, `families.py`, `agents_v2.py`,
   sides; the Saildrone's cameras image every 5 s, looked through every second here; fixed
   cameras (the Magura's, the FPV's, the UGVs' drive cameras) see along the heading only.
 - A tick is a second: a look, a scan pass and a report are resolved to the second.
+- Identity fusion: a look's confidence is the chance it reached its level, not a measured
+  classifier reliability; the two-to-one weight that settles a dispute and the 0.3 of a call that
+  counts are choices [E here]; no recency weighting (perfect association). The AIS speed check
+  compares the estimate's speed with a kind's plausible top without its uncertainty, so a fishing
+  boat at the top (the Golden Gate's charter, 8 m/s) is in conflict now and then.

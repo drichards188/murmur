@@ -263,6 +263,17 @@ pub enum Level {
     Identify,
 }
 
+impl Level {
+    /// Its name in the picture (`identity.level`, a look's `level`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Level::Detect => "detect",
+            Level::Recognise => "recognise",
+            Level::Identify => "identify",
+        }
+    }
+}
+
 /// The physical model's evidence in one detection: the level its label is at and how sure
 /// this look is of it. The tracker keeps it per observer and sensor, not pooled per sensor
 /// type (`model::Track::identity`).

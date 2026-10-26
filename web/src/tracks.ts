@@ -38,6 +38,8 @@ export interface Track {
   affiliation_reason: string
   identity: {
     kind: string | null
+    /** how specific `kind` is: a size class (or from ESM alone the domain), a family, or a kind */
+    level?: IdentityLevel | null
     confidence: number
     ais: { mmsi: string; name: string; ship_type: string } | null
     conflict: string | null
@@ -137,17 +139,49 @@ export const KIND_LABEL: Record<string, string> = {
   uuv: 'UUV',
   vehicle: 'vehicle',
   truck: 'truck',
-  large_vessel: 'large vessel (radar)',
-  small_craft: 'small craft (radar)',
+  large_vessel: 'large vessel',
+  small_craft: 'small craft',
   aircraft: 'aircraft',
-  small_uas: 'small UAS (radar)',
+  small_uas: 'small UAS',
   ground_vehicle: 'ground vehicle',
   submerged: 'submerged contact',
   vessel: 'vessel',
+  small_surface: 'small surface contact',
+  large_surface: 'large surface contact',
+  small_air: 'small air contact',
+  large_air: 'large air contact',
+  small_ground: 'small ground contact',
+  large_ground: 'large ground contact',
+  subsurface: 'subsurface contact',
 }
 
 export function kindLabel(kind: string | null) {
   return kind == null ? 'unclassified' : (KIND_LABEL[kind] ?? kind.replace(/_/g, ' '))
+}
+
+/** How specific a track's kind is (SCORING-V3.md 15 (a)): a detection gives a size class (or, from
+ *  ESM alone, the domain), a recognition a family, an identification a kind. */
+export type IdentityLevel = 'detect' | 'recognise' | 'identify'
+
+export const LEVEL_LABEL: Record<IdentityLevel, string> = {
+  detect: 'detected: size class only',
+  recognise: 'recognised: family only',
+  identify: 'identified',
+}
+
+const LEVEL_SHORT: Record<IdentityLevel, string> = { detect: 'DET', recognise: 'REC', identify: 'ID' }
+
+/** The kind with its level, wherever the kind is shown: "small air contact (detected: size
+ *  class only)". A bridge before the level gives the kind alone. */
+export function kindWithLevel(identity: { kind: string | null; level?: IdentityLevel | null }) {
+  const k = kindLabel(identity.kind)
+  return identity.kind != null && identity.level ? `${k} (${LEVEL_LABEL[identity.level]})` : k
+}
+
+/** The map symbol's short kind with its level: "SM AIR (DET)". */
+export function kindShortWithLevel(identity: { kind: string | null; level?: IdentityLevel | null }) {
+  const k = kindShort(identity.kind)
+  return k != null && identity.level ? `${k} (${LEVEL_SHORT[identity.level]})` : k
 }
 
 /** Short form for the map symbol's type field. */
@@ -173,6 +207,13 @@ const KIND_SHORT: Record<string, string> = {
   ground_vehicle: 'GND VEH',
   submerged: 'SUBM',
   vessel: 'VESSEL',
+  small_surface: 'SM SURF',
+  large_surface: 'LG SURF',
+  small_air: 'SM AIR',
+  large_air: 'LG AIR',
+  small_ground: 'SM GND',
+  large_ground: 'LG GND',
+  subsurface: 'SUBSURF',
 }
 
 export function kindShort(kind: string | null) {
@@ -228,18 +269,18 @@ export interface RenderedTrackSymbol {
 const cache = new Map<string, RenderedTrackSymbol>()
 
 /** The 2525 symbol for a track: the bridge gives the SIDC (affiliation frame, dimension,
- *  function by the estimated kind, status A dashed when stale). Labels: id and kind. */
+ *  function by the estimated kind, status A dashed when stale). Labels: id, and kind with its level. */
 export function trackSymbolSvg(t: Track, opts: { stale: boolean; size?: number; labels?: boolean }): RenderedTrackSymbol {
   const labels = opts.labels ?? true
   const sidc = opts.stale ? t.sidc.slice(0, 3) + 'A' + t.sidc.slice(4) : t.sidc.slice(0, 3) + 'P' + t.sidc.slice(4)
   const kind = t.identity.kind
-  const key = `${sidc}|${opts.size}|${labels}|${t.id}|${kind}`
+  const key = `${sidc}|${opts.size}|${labels}|${t.id}|${kind}|${t.identity.level ?? ''}`
   const hit = cache.get(key)
   if (hit) return hit
   const sym = new ms.Symbol(sidc, {
     size: opts.size ?? 24,
     uniqueDesignation: labels ? t.id : undefined,
-    type: labels ? kindShort(kind) : undefined,
+    type: labels ? kindShortWithLevel(t.identity) : undefined,
     infoColor: '#d7dde4',
     outlineColor: '#0b0f14',
     outlineWidth: 3,

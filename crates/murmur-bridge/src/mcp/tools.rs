@@ -382,8 +382,14 @@ pub fn tools() -> Vec<Tool> {
                  is). Each track: estimated position with its 1-sigma uncertainty now \
                  (growing while unseen) and the position carried along its velocity to now, \
                  existence confidence now (decaying while unseen), the identity estimate \
-                 (kind, an AIS identity if heard) with its confidence, the sensors that \
-                 support it and any conflict, the affiliation estimate (unknown, suspect, \
+                 (kind, and its level: detect means kind is only a size class such as \
+                 small_air, or from ESM alone the domain; recognise a family such as \
+                 small_uas; identify a kind such as unknown_uas, from a sensor or, with no \
+                 identification, from the AIS identity; an AIS identity if heard) with its \
+                 confidence, the sensors that support it and any conflict (a call that \
+                 disagrees and is not yet outweighed by agreeing looks; a conflict with the \
+                 AIS identity stays while what our sensors see contradicts it), the \
+                 affiliation estimate (unknown, suspect, \
                  neutral, assumed_friend; hostile only when declared: by a human operator, or \
                  by the engine's hostile-act rule on an observed act, with its evidence and \
                  whether an operator confirmed it, in declared; review lists the review flags \

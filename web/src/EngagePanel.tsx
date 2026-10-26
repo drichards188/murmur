@@ -8,7 +8,7 @@ import { KeepOutExplain } from './KeepOutExplain'
 import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
 import type { TracksMessage } from './tracks'
-import { kindLabel } from './tracks'
+import { kindWithLevel } from './tracks'
 import type { Vehicle } from './types'
 import { callsign } from './types'
 
@@ -182,7 +182,7 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
             {!hostile.some((h) => h.id === track) && <option value={track}>{track || 'choose a declared-hostile track'}</option>}
             {hostile.map((h) => (
               <option key={h.id} value={h.id}>
-                {h.id} {kindLabel(h.identity.kind)} (declared hostile by{' '}
+                {h.id} {kindWithLevel(h.identity)} (declared hostile by{' '}
                 {h.declared?.rule ? (h.declared.confirmed_by ? `rule, confirmed by ${h.declared.confirmed_by}` : 'rule, not confirmed') : h.declared?.by})
               </option>
             ))}

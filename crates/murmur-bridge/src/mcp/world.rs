@@ -499,7 +499,16 @@ pub async fn tracks(
                  suspect for review, never declared on that). \
                  identity.kind is the best classification with its confidence, the sensors \
                  that support it and any conflict (an AIS identity that does not fit what \
-                 was seen). sources lists which of our vehicles and sensors hold the track. \
+                 was seen, or a call that disagrees and is not yet outweighed by agreeing \
+                 looks). identity.level says how specific kind is: detect, only a size class \
+                 (small_air, large_surface, ...) or, seen by ESM alone, the domain (aircraft, \
+                 vessel, ground_vehicle, submerged); recognise, a family (small_uas, \
+                 aircraft, small_craft, large_vessel, ...); identify, a kind (unknown_uas, \
+                 light_aircraft, fishing_vessel, ...) from a sensor's identification or, with \
+                 none, the AIS identity's (identity.looks, where present, says which of our \
+                 sensors reached which level). The confidence is that level's: small_air at \
+                 0.99 is a sure size class, not an identified contact. sources lists which \
+                 of our vehicles and sensors hold the track. \
                  lost lists the contacts the tracker dropped (no detection for 180 s) that \
                  every engagement keep-out still counts, from their last fix (since_t), with \
                  the regions counted now; only an operator with engagement authority may \

@@ -734,6 +734,9 @@ fn cot_track_types_follow_the_estimated_affiliation() {
     assert_eq!(samples.len(), 1);
     let xml = crate::cot::build_track_event(&crate::cot::CotConfig::default(), &samples[0], T0 + 240.0, 1.0);
     assert!(xml.contains("type=\"a-s-U-S\""), "{xml}");
+    // the kind with how specific it is (SCORING-V3.md 15 (a)), in the remarks and the detail
+    let level = samples[0].level.expect("a level");
+    assert!(xml.contains(&format!("({level}) |")) && xml.contains(&format!(" level=\"{level}\"")), "{xml}");
     assert!(xml.contains("how=\"m-f\""));
     assert!(xml.contains("uid=\"murmur-main-track-1\""));
     // a contact that doesn't move must not read as moving, sonar noise notwithstanding

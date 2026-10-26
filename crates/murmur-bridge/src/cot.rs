@@ -80,7 +80,8 @@
 //! (machine fused: the bridge fuses detections over time and, when it has them, across
 //! sensors). `ce` is the track's 1-sigma position uncertainty at that moment, growing with
 //! age; `le` is 50 m (or unknown for a bearing-only or surface track where height isn't
-//! estimated). The remarks carry the estimated kind, confidence, sources and age; `_murmur`
+//! estimated). The remarks carry the estimated kind and its level (`detect`, `recognise`,
+//! `identify`: a size class, a family or a kind), confidence, sources and age; `_murmur`
 //! the same as attributes, plus `predicted="1"` once the track is stale and the point is
 //! dead-reckoned from its last fix, and `fused="1"` when more than one sensor feeds it. A
 //! track is published until the bridge drops it, going stale on the client (`stale = time
@@ -536,6 +537,8 @@ pub struct TrackSample {
     pub affiliation: &'static str,
     pub reason: String,
     pub kind: Option<String>,
+    /// how specific `kind` is (`detect`, `recognise`, `identify`; the picture's `identity.level`)
+    pub level: Option<&'static str>,
     pub identity_confidence: f64,
     pub ais_name: Option<String>,
     pub sources: Vec<String>,
@@ -590,9 +593,10 @@ pub fn build_track_event(cfg: &CotConfig, t: &TrackSample, now: f64, period: f64
     }
     let mut r: Vec<String> = Vec::new();
     r.push(format!(
-        "{} {}",
+        "{} {}{}",
         t.affiliation.replace('_', " "),
-        t.kind.as_deref().unwrap_or("unclassified")
+        t.kind.as_deref().unwrap_or("unclassified"),
+        t.level.filter(|_| t.kind.is_some()).map(|l| format!(" ({l})")).unwrap_or_default()
     ));
     if let Some(n) = &t.ais_name {
         r.push(format!("AIS {n}"));
@@ -624,6 +628,9 @@ pub fn build_track_event(cfg: &CotConfig, t: &TrackSample, now: f64, period: f64
     ));
     if let Some(k) = &t.kind {
         x.push_str(&format!(" kind=\"{}\"", xml_escape(k)));
+        if let Some(l) = t.level {
+            x.push_str(&format!(" level=\"{l}\""));
+        }
     }
     if t.stale {
         x.push_str(" predicted=\"1\"");

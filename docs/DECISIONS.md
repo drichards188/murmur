@@ -603,6 +603,29 @@ group. Dates are 2026.
   like the air break's lag; keep-outs held in every ground case. F15 smoke: no-velocity ground blockers 66.7 % to 3.0 % of blocked attempts,
   nominations passed unchanged (4 of 1,191; aircraft block 97 %). Details: docs/SENSING.md,
   "Ground tracks under coarse fixes". Physical seeds 401-490 are spent.
+- **Identity fusion by specificity and weight of evidence; the picture names each kind's level**
+  (10-26; the owner unfroze the sensor model for SCORING-V3.md 15's defects (a), (c) and (d)).
+  (a) A track's `identity.level` (`detect`, `recognise`, `identify`) says whether its kind is a
+  size class, a family or a kind, in the track JSON, MCP's `get_tracks` and `get_changes`, the
+  console and CoT: a camera's detection read `small_air 0.99` and an agent took it as resolved.
+  (c) A less specific label never displaces a more specific one: ESM's detection names only the
+  domain (`aircraft`) and gives way to a radar's size class (`small_air`), supporting it. (d) A
+  dissent is a conflict only until the agreeing looks outweigh it two to one in Shafer's weight
+  of evidence (`-ln(1 - support)`, additive over independent looks); the AIS identity is the
+  contact's claim, checked against what the looks settle on and never weighed among them, so a
+  spoof stays exposed; a wrong recognition is superseded by an identification agreeing with the
+  AIS identity, as without AIS; the confidence is Dempster's belief among the level's labels (as
+  before when nothing disagrees). Why: one wrong look among many held a track in conflict for
+  good, 32 % of neutral contacts within 4 km shown suspect or in conflict. Rejected: weighting by
+  recency (association is by contact id, a kind does not change, a camera's wrong call repeats
+  itself, so a newer look of it is no new evidence); clearing to the AIS identity (it would hide a
+  spoof). `TrackFacts` and the engine's identity interface are unchanged, no rules version; the
+  legacy model's fusion is unchanged (it gains the level only). Smoke (golden-gate-v3, F2, F8,
+  F15, F16, dev seeds 5380-5389, 120 episodes): neutral traffic in doubt within 4 km from 27-31 %
+  to 16-20 % of contacts and from 14-20 % to 3-5 % of its seconds; flags and rule declarations
+  unchanged (F15 0 true, 6 false, 10 declarations right; F16 5 and 4, 7 right); F8's spoofer in
+  conflict 99 % of its seconds as before; the honest ceiling 1 need more in F2 and in F8 of 10.
+  Details: docs/SENSING.md, "Identity fusion".
 - **W1: cameras point themselves; orders name no look target** (10-23, approved). Each EO/IR
   sensor has a simulated payload manager on its vehicle: it searches the task area (an orbit's
   circle, a patrol's route, else around the vehicle) in the wide field, cues to the nearest

@@ -462,7 +462,9 @@ fn look(uid: u64, sensor: SensorType, level: Level, label: &str, confidence: f64
 
 /// Identification evidence per observer (WORLD-V3-PLAN 2.7): a wrong recognition is superseded
 /// by the same observer's closer look (murmur-jln), two observers' identifications combine as
-/// independent looks, and a disagreeing identification is a conflict.
+/// independent looks, and a disagreeing identification as sure as they are is a conflict (the
+/// evidence split, SCORING-V3.md 15 (d)), its dissent lowering the estimate's confidence (Dempster's
+/// rule: odds 5.25 against 4).
 #[test]
 fn looks_are_kept_per_observer_and_a_closer_look_corrects_a_wrong_call() {
     let mut t = Track::new("T-0001".into(), 1, &look(1, SensorType::EoIr, Level::Recognise, "large_vessel", 0.8), 1_000.0);
@@ -474,13 +476,170 @@ fn looks_are_kept_per_observer_and_a_closer_look_corrects_a_wrong_call() {
     assert!((id.confidence - 0.6).abs() < 1e-9 && id.conflict.is_none(), "{id:?}");
     t.update(&look(2, SensorType::EoIr, Level::Identify, "small_fast_boat", 0.6), 1_002.0);
     assert!((t.identity().confidence - 0.84).abs() < 1e-9);
-    t.update(&look(3, SensorType::EoIr, Level::Identify, "fishing_vessel", 0.5), 1_003.0);
+    t.update(&look(3, SensorType::EoIr, Level::Identify, "fishing_vessel", 0.8), 1_003.0);
     let id = t.identity();
     assert_eq!(id.kind.as_deref(), Some("small_fast_boat"));
     assert!(id.conflict.as_deref().is_some_and(|c| c.contains("fishing_vessel")), "{id:?}");
+    assert!((id.confidence - 5.25 / 10.25).abs() < 1e-9, "{id:?}");
     // a radar's size class alone names the track at the detection level, with its confidence
     let r = Track::new("T-0002".into(), 2, &look(1, SensorType::Radar, Level::Detect, "small_surface", 0.3), 1_000.0);
     assert_eq!(r.identity().kind.as_deref(), Some("small_surface"));
+}
+
+/// [`look`] of a contact in `domain`.
+fn look_in(domain: Domain, uid: u64, sensor: SensorType, level: Level, label: &str, confidence: f64) -> Detection {
+    Detection { domain, ..look(uid, sensor, level, label, confidence) }
+}
+
+/// An AIS report from the contact: `ship_type`, no course or speed.
+fn ais_report(uid: u64, ship_type: &str) -> Detection {
+    Detection {
+        sensor: SensorType::Ais,
+        label: None,
+        look: None,
+        ais: Some(super::super::sensing::AisHeard { mmsi: "366000009".into(), name: "F/V TEST".into(), ship_type: ship_type.into() }),
+        ..look(uid, SensorType::Ais, Level::Detect, "", 0.0)
+    }
+}
+
+/// Defect a (SCORING-V3.md 15): the identity says how specific its kind is. A
+/// camera's detection at 0.99 is a sure size class (`detect`), not an identified contact; a
+/// recognition's family is at `recognise`, an identification's kind at `identify`, and the AIS
+/// identity's kind with no identification at `identify` too. The picture's `identity.level`
+/// carries it beside the kind, for the legacy model's tracks as well.
+#[test]
+fn the_identity_says_how_specific_its_kind_is() {
+    let mut t = Track::new("T-0001".into(), 1, &look_in(Domain::Air, 5, SensorType::EoIr, Level::Detect, "small_air", 0.99), 1_000.0);
+    let id = t.identity();
+    assert_eq!((id.kind.as_deref(), id.level), (Some("small_air"), Some(Level::Detect)));
+    assert!((id.confidence - 0.99).abs() < 1e-9);
+    assert_eq!(t.json(1_000.0)["identity"]["level"], "detect");
+    t.update(&look_in(Domain::Air, 5, SensorType::EoIr, Level::Recognise, "small_uas", 0.7), 1_001.0);
+    assert_eq!(t.identity().level, Some(Level::Recognise));
+    assert_eq!(t.json(1_001.0)["identity"]["level"], "recognise");
+    t.update(&look_in(Domain::Air, 5, SensorType::EoIr, Level::Identify, "unknown_uas", 0.62), 1_002.0);
+    let id = t.identity();
+    assert_eq!((id.kind.as_deref(), id.level), (Some("unknown_uas"), Some(Level::Identify)));
+    assert_eq!(t.json(1_002.0)["identity"]["level"], "identify");
+    // the AIS identity's kind, recognitions under it, no identification
+    let mut a = Track::new("T-0002".into(), 2, &ais_report(1, "fishing"), 1_000.0);
+    a.update(&look(4, SensorType::EoIr, Level::Recognise, "small_craft", 0.5), 1_001.0);
+    let id = a.identity();
+    assert_eq!((id.kind.as_deref(), id.level), (Some("fishing_vessel"), Some(Level::Identify)));
+    assert!(id.supported_by.contains(&SensorType::Ais) && id.supported_by.contains(&SensorType::EoIr), "{id:?}");
+    // nothing classified yet: no kind, no level
+    let n = Track::new("T-0003".into(), 3, &Detection { label: None, look: None, ..look(4, SensorType::Radar, Level::Detect, "", 0.0) }, 1_000.0);
+    assert_eq!(n.json(1_000.0)["identity"]["level"], serde_json::Value::Null);
+}
+
+/// Defect c (SCORING-V3.md 15): ESM hears an emitter and names only its
+/// domain (`aircraft`); a radar's size class (`small_air`) is more specific and names the track
+/// however sure the ESM look is, ESM supporting it (same domain) without adding to its
+/// confidence. ESM alone still names the domain, and supports an identification of its domain.
+#[test]
+fn esm_never_displaces_a_more_specific_label() {
+    let mut t = Track::new("T-0001".into(), 1, &look_in(Domain::Air, 1, SensorType::Radar, Level::Detect, "small_air", 0.05), 1_000.0);
+    t.update(&look_in(Domain::Air, 2, SensorType::Esm, Level::Detect, "aircraft", 0.6), 1_001.0);
+    let id = t.identity();
+    assert_eq!((id.kind.as_deref(), id.level), (Some("small_air"), Some(Level::Detect)));
+    assert!((id.confidence - 0.05).abs() < 1e-9, "{id:?}");
+    assert_eq!(id.supported_by, vec![SensorType::Radar, SensorType::Esm]);
+    let e = Track::new("T-0002".into(), 2, &look_in(Domain::Air, 2, SensorType::Esm, Level::Detect, "aircraft", 0.6), 1_000.0);
+    let id = e.identity();
+    assert_eq!((id.kind.as_deref(), id.level, id.supported_by.as_slice()), (Some("aircraft"), Some(Level::Detect), &[SensorType::Esm][..]));
+    t.update(&look_in(Domain::Air, 5, SensorType::EoIr, Level::Identify, "unknown_uas", 0.7), 1_002.0);
+    let id = t.identity();
+    assert_eq!(id.kind.as_deref(), Some("unknown_uas"));
+    assert!(id.supported_by.contains(&SensorType::Esm) && id.supported_by.contains(&SensorType::Radar), "{id:?}");
+}
+
+/// Defect d (SCORING-V3.md 15: one wrong look among many held a track in
+/// conflict for good). A stray wrong identification against one agreeing look is a conflict (the
+/// evidence split); once agreeing looks outweigh it two to one in weight of evidence it clears,
+/// the estimate's confidence keeping the dissent (Dempster's rule).
+#[test]
+fn a_stray_wrong_call_clears_once_agreeing_looks_outweigh_it() {
+    let mut t = Track::new("T-0001".into(), 1, &look(1, SensorType::EoIr, Level::Identify, "small_fast_boat", 0.7), 1_000.0);
+    assert!(t.identity().conflict.is_none());
+    t.update(&look(2, SensorType::EoIr, Level::Identify, "fishing_vessel", 0.7), 1_001.0);
+    let id = t.identity();
+    assert!(id.conflict.is_some(), "one against one is split: {id:?}");
+    assert_eq!(t.estimate().0, murmur_decide::Affiliation::Suspect);
+    t.update(&look(3, SensorType::EoIr, Level::Identify, "fishing_vessel", 0.75), 1_002.0);
+    let id = t.identity();
+    assert_eq!((id.kind.as_deref(), id.conflict.as_deref()), (Some("fishing_vessel"), None), "{id:?}");
+    // fishing 1 - 0.3 x 0.25 = 0.925 (odds 12.33) against small_fast_boat 0.7 (odds 2.33)
+    let odds = 0.925 / 0.075;
+    assert!((id.confidence - odds / (1.0 + odds + 0.7 / 0.3)).abs() < 1e-9, "{id:?}");
+    assert_eq!(t.estimate().0, murmur_decide::Affiliation::Neutral);
+}
+
+/// Defect d against the AIS identity: a camera's wrong identification of a fishing vessel that
+/// broadcasts its own AIS is a conflict while it stands alone or one against one, and clears once
+/// the identifications agreeing with the AIS identity outweigh it; a wrong recognition is
+/// superseded by an identification agreeing with the AIS identity (a closer look corrects it, as
+/// it does without AIS).
+#[test]
+fn a_wrong_call_against_a_true_ais_identity_clears_once_outweighed() {
+    let mut t = Track::new("T-0001".into(), 1, &ais_report(1, "fishing"), 1_000.0);
+    assert_eq!(t.estimate().0, murmur_decide::Affiliation::Neutral);
+    t.update(&look(2, SensorType::EoIr, Level::Identify, "small_fast_boat", 0.7), 1_001.0);
+    assert!(t.identity().conflict.as_deref().is_some_and(|c| c.starts_with("AIS says fishing")), "{:?}", t.identity());
+    t.update(&look(3, SensorType::EoIr, Level::Identify, "fishing_vessel", 0.7), 1_002.0);
+    assert!(t.identity().conflict.is_some(), "one against one is split: {:?}", t.identity());
+    t.update(&look(4, SensorType::EoIr, Level::Identify, "fishing_vessel", 0.75), 1_003.0);
+    let id = t.identity();
+    assert_eq!((id.kind.as_deref(), id.conflict.as_deref()), (Some("fishing_vessel"), None), "{id:?}");
+    assert_eq!(t.estimate().0, murmur_decide::Affiliation::Neutral);
+    // a wrong recognition (large_vessel), and an identification agreeing with the AIS identity
+    let mut r = Track::new("T-0002".into(), 2, &ais_report(1, "fishing"), 1_000.0);
+    r.update(&look(2, SensorType::EoIr, Level::Recognise, "large_vessel", 0.8), 1_001.0);
+    assert!(r.identity().conflict.as_deref().is_some_and(|c| c.contains("recognises it as large_vessel")), "{:?}", r.identity());
+    r.update(&look(3, SensorType::EoIr, Level::Identify, "fishing_vessel", 0.8), 1_002.0);
+    assert_eq!(r.identity().conflict, None);
+}
+
+/// What defect d's fix must not do: clear a conflict the evidence still holds, or show a
+/// contact's truth where the looks did not. A spoofed AIS identity stays exposed however many
+/// cameras identify the boat, a camera's wrong call agreeing with the spoof included; one wrong
+/// identification against a true AIS identity stays a conflict (never cleared to the AIS kind);
+/// and a contact every camera misidentified (the model's wrong-call draw at the identification
+/// level: rate 1) shows what they said, never its truth.
+#[test]
+fn a_spoof_stays_exposed_and_a_misidentified_contact_shows_what_the_looks_say() {
+    let mut s = Track::new("T-0001".into(), 1, &ais_report(1, "fishing"), 1_000.0);
+    for uid in 2..5 {
+        s.update(&look(uid, SensorType::EoIr, Level::Identify, "small_fast_boat", 0.9), 1_000.0 + uid as f64);
+    }
+    s.update(&look(5, SensorType::EoIr, Level::Identify, "fishing_vessel", 0.9), 1_005.0);
+    let id = s.identity();
+    assert_eq!(id.kind.as_deref(), Some("small_fast_boat"));
+    assert!(id.conflict.as_deref().is_some_and(|c| c.contains("AIS says fishing") && c.contains("small_fast_boat")), "{id:?}");
+    assert_eq!(s.estimate().0, murmur_decide::Affiliation::Suspect);
+    let mut w = Track::new("T-0002".into(), 2, &ais_report(1, "fishing"), 1_000.0);
+    w.update(&look(2, SensorType::EoIr, Level::Identify, "small_fast_boat", 0.95), 1_001.0);
+    let id = w.identity();
+    assert_eq!(id.kind.as_deref(), Some("small_fast_boat"));
+    assert!(id.conflict.is_some(), "{id:?}");
+    // the physical model, every identification wrong: a locked camera on a small fast boat
+    let o = Observer { uid: 5, lat: BASE.0, lon: BASE.1, alt_msl: 120.0, mast_m: 0.0, sensors: vec![placeholder("eo_ir", 3_000.0)], ..Observer::default() };
+    let sensing = day();
+    let mut e = Engine::new(None);
+    let mut track: Option<Track> = None;
+    for s in 0..120i64 {
+        let (lat, lon) = at(BASE.0, BASE.1, -600.0 + 12.0 * s as f64, 1_500.0);
+        let mut c = contact("boat", "small_fast_boat", Domain::Surface, lat, lon);
+        (c.speed_mps, c.course_deg) = (12.0, 90.0);
+        let st = Step { seed: 7, tick: s, s: s as f64, t: 1_781_467_800.0 + s as f64, misclassification_rate: 1.0, sensing: &sensing };
+        for d in e.step(&st, std::slice::from_ref(&o), &[c]) {
+            match track.as_mut() {
+                Some(t) => t.update(&d, 1_000.0 + s as f64),
+                None => track = Some(Track::new("T-0003".into(), 3, &d, 1_000.0 + s as f64)),
+            }
+        }
+    }
+    let id = track.expect("seen").identity();
+    assert_eq!((id.kind.as_deref(), id.level), (Some("fishing_vessel"), Some(Level::Identify)), "{id:?}");
 }
 
 /// One `Step` of second `s` under `sensing`, its draws from `seed` (no wrong calls).
@@ -676,7 +835,8 @@ fn sea_hunters_hull_sonar_listens_as_well_as_it_pings() {
 
 /// The picture says which sensor reached which level (SCORING-V3.md choice 5): under the
 /// physical model a track's `identity.looks` lists each observer's sensor's level, label and
-/// confidence; a legacy track's JSON has no such field (v1 and v2 records hold it as it was).
+/// confidence; a legacy track's JSON has no such field, only its identity's level (murmur-k8i
+/// item 3).
 #[test]
 fn the_picture_says_which_sensor_reached_which_level() {
     let mut t = Track::new("T-0001".into(), 1, &look(4, SensorType::Radar, Level::Detect, "small_surface", 0.3), 1_000.0);
@@ -693,11 +853,12 @@ fn the_picture_says_which_sensor_reached_which_level() {
         vec![(4, "radar", "detect", "small_surface"), (5, "eo_ir", "recognise", "small_craft"), (5, "eo_ir", "identify", "small_fast_boat")]
     );
     assert_eq!(looks[2]["confidence"].as_f64(), Some(0.62));
-    // the legacy model's detection carries no look: no `looks`, the identity's fields as before
+    // the legacy model's detection carries no look: no `looks`; an EO/IR kind is at identification
     let legacy = Detection { look: None, ..look(4, SensorType::EoIr, Level::Detect, "small_fast_boat", 0.0) };
     let j = Track::new("T-0002".into(), 2, &legacy, 1_000.0).json(1_000.0);
     let keys: Vec<&String> = j["identity"].as_object().expect("identity").keys().collect();
-    assert_eq!(keys, ["kind", "confidence", "ais", "conflict", "supported_by"]);
+    assert_eq!(keys, ["kind", "level", "confidence", "ais", "conflict", "supported_by"]);
+    assert_eq!(j["identity"]["level"], "identify");
 }
 
 /// murmur-k8i: a vehicle whose own navigation is off (a GNSS spoofer has walked what it believes

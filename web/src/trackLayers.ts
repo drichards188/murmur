@@ -3,7 +3,7 @@ import type { PickingInfo } from '@deck.gl/core'
 import { NO_SCREEN, type MapScreen } from './aloft'
 import { HEIGHT_EXAGGERATION } from './map3d'
 import type { LostContact, Track, TrackDomain } from './tracks'
-import { isTrackStale, kindShort, lostSidc, sidcFrameIcon, trackConfidence, trackFrameIcon, trackOpacity, trackPredicted, trackSigma } from './tracks'
+import { isTrackStale, kindShortWithLevel, lostSidc, sidcFrameIcon, trackConfidence, trackFrameIcon, trackOpacity, trackPredicted, trackSigma } from './tracks'
 import type { LngLat } from './types'
 
 /** Tracks on the map (Phase C2), as deck.gl layers through MapView's `layers` prop, at their
@@ -18,7 +18,7 @@ import type { LngLat } from './types'
  *   tracks-selection    ring around the selected track
  *   tracks              the 2525 frame with the estimated affiliation (pickable: onClick)
  *   tracks-ids          "T-0001 · 450 m" right of the frame (its height or depth, or "alt ?"),
- *                       tracks-kinds the estimated kind left of it
+ *                       tracks-kinds the estimated kind and its level left of it
  *   tracks-aloft        "▲ T-0001 · 9500 m" at the foot of the stem of one drawn above the view
  *                       (aloft.ts)
  *
@@ -336,7 +336,7 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
       id: 'tracks-kinds',
       data: tracks.filter((t) => t.identity.kind != null),
       getPosition: at,
-      getText: (t) => kindShort(t.identity.kind) ?? '',
+      getText: (t) => kindShortWithLevel(t.identity) ?? '',
       getSize: 10,
       getColor: tint,
       getTextAnchor: 'end',

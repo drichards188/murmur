@@ -4,6 +4,7 @@ import { type Reveal, scrollSpanIntoView, useFlash } from './reveal'
 import {
   AFFILIATION_LABEL,
   type Affiliation,
+  LEVEL_LABEL,
   SENSOR_LABEL,
   type Track,
   type TracksMessage,
@@ -11,6 +12,7 @@ import {
   fmtAge,
   isTrackStale,
   kindLabel,
+  kindWithLevel,
   sortTracks,
   trackAge,
   trackConfidence,
@@ -102,6 +104,7 @@ function Row({ t, nowMs, staleAfterS, sel, onClick }: { t: Track; nowMs: number;
         </span>
         <span className="tk-kind">
           <b>{kindLabel(t.identity.kind)}</b>
+          {t.identity.kind != null && t.identity.level ? ` (${LEVEL_LABEL[t.identity.level]})` : ''}
           {t.identity.ais ? ` · AIS ${t.identity.ais.name}` : ''}
           {t.identity.conflict ? ' · conflict' : ''}
           {` · ${t.sources.map((s) => SENSOR_LABEL[s.sensor]).filter((v, i, a) => a.indexOf(v) === i).join(', ')}`}
@@ -209,7 +212,7 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
         </dd>
         <dt>Identity</dt>
         <dd>
-          {kindLabel(t.identity.kind)} ({pct(t.identity.confidence)})
+          {kindWithLevel(t.identity)} ({pct(t.identity.confidence)})
           {t.identity.supported_by.length ? ` by ${t.identity.supported_by.map((s) => SENSOR_LABEL[s]).join(', ')}` : ''}
           {t.identity.ais && (
             <>

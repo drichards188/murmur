@@ -347,10 +347,14 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: world changes them too: re-take them on the code before a change to the driver, never after it.
 #: Re-taken for decision rules 17 (murmur-k8i item 2): the code before it gave the earlier digests,
 #: and each record is the same but for its audit log's `run.started` (`rules_version` 17 for 16).
+#: The two model digests re-taken for the identity's level (SCORING-V3.md 15 (a)): the code before
+#: it gave the earlier ones, and each record is the same but for the model's `get_tracks` results
+#: (the longer note, each track's `identity.level`) and its transcript's sizes and estimated costs;
+#: the playbook's, which keeps no reads, did not move.
 PAUSED = {
-    "model harbor-watch s1": "9c03f478f84b3f606f19cbe284446177c9c10e7df6919c7ec0c3e3249fa96246",
+    "model harbor-watch s1": "3aa2dfa4a0077a6f47dcbeae511f89fac31a15f7b2f2757819d186aa9b697400",
     "playbook v2 fast-unknown 1000": "56ef42c4f1aa2d5a20925db8e53ab1fe5897db08f62f582eb41b056ccad73658",
-    "model v2 fast-unknown 1000": "9c78d1c164e122f656c18ffba764a096a0d73400138fbb15f35133fa5bc94dde",
+    "model v2 fast-unknown 1000": "efb57164b7eb80bf1058a1ea804ad09e37a5e86dce3d7ec96f7915261bb8033e",
 }
 
 

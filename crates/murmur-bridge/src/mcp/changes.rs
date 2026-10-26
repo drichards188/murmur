@@ -249,8 +249,9 @@ fn digest(mcp: &Mcp) -> (Digest, Vec<RecentEvent>) {
                     summary: json!({
                         "track": id,
                         "domain": t["domain"],
-                        // the classification (`kind` is the change's own)
+                        // the classification (`kind` is the change's own) and how specific it is
                         "identity": t["identity"]["kind"],
+                        "identity_level": t["identity"]["level"],
                         // what the contact broadcasts, if anything: its own claim, unverified
                         "ais": t["identity"]["ais"],
                         "affiliation": t["affiliation"],

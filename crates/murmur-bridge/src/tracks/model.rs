@@ -47,7 +47,8 @@
 //! Existence confidence climbs with hits and decays in silence; identity confidence grows
 //! with dwell per sensor type and combines across independent sensors (the legacy sensing
 //! model), or, from the physical model's looks, is kept per observer, sensor and level, the
-//! most specific level winning and independent looks combining ([`Track::identity`]). Several observers'
+//! most specific level winning, independent looks combining, and a dissent a conflict only until
+//! the agreeing looks outweigh it ([`Track::identity`]). Several observers'
 //! fixes of one tick are folded one after another, as independent measurements (they are:
 //! each sensor's draw is its own). Association is by the simulation's contact id (see
 //! `mod.rs`); a dropped track that is seen again gets a new id, as a real tracker would start
@@ -662,12 +663,140 @@ struct LookMark {
     confidence: f64,
 }
 
-/// A label's support at one level: the looks that gave it, combined as independent.
-struct LevelBest {
-    label: String,
-    confidence: f64,
+/// How specific a look's label is, for identity fusion (docs/SENSING.md, "What a look yields"):
+/// the domain alone (an ESM receiver's detection: it hears an emitter of the air, the surface,
+/// the ground or under the water, and says nothing of its size), a size class (a radar's or a
+/// camera's detection), a family (a recognition) or a kind (an identification). A label never
+/// gives way to a less specific one (SCORING-V3.md 15, defect c).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Rank {
+    Domain,
+    Size,
+    Family,
+    Kind,
+}
+
+impl Rank {
+    /// A look's rank: its level, and at detection whether its label is a size class.
+    fn of(level: Level, label: &str) -> Rank {
+        match level {
+            Level::Identify => Rank::Kind,
+            Level::Recognise => Rank::Family,
+            Level::Detect if is_size_class(label) => Rank::Size,
+            Level::Detect => Rank::Domain,
+        }
+    }
+
+    /// The level a label of this rank is at (the picture's `identity.level`).
+    fn level(self) -> Level {
+        match self {
+            Rank::Kind => Level::Identify,
+            Rank::Family => Level::Recognise,
+            Rank::Size | Rank::Domain => Level::Detect,
+        }
+    }
+
+    /// What `label` (of this rank or a more specific one) says at this rank: a kind's family,
+    /// size class or domain, a family's size class or domain, a size class's domain.
+    fn says(self, label: &str) -> &str {
+        match self {
+            Rank::Kind => label,
+            Rank::Family => family(label),
+            Rank::Size => size_class_of(label),
+            Rank::Domain => domain_label(label),
+        }
+    }
+
+    /// A look of this rank saying `label` agrees with the estimate `kind` (of this rank or a
+    /// more specific one).
+    fn agrees(self, kind: &str, label: &str) -> bool {
+        let k = self.says(kind);
+        k != "unknown" && k == self.says(label)
+    }
+}
+
+/// The physical model's detection labels that name a size class (`physical::signature::size_class`).
+fn is_size_class(label: &str) -> bool {
+    matches!(label, "small_surface" | "large_surface" | "small_air" | "large_air" | "small_ground" | "large_ground" | "subsurface")
+}
+
+/// The domain a label names, in the words of ESM's detections (`aircraft`, `vessel`,
+/// `ground_vehicle`, `submerged`), or `unknown`.
+fn domain_label(label: &str) -> &'static str {
+    if label == "vessel" {
+        return "vessel";
+    }
+    match size_class_of(label) {
+        "small_air" | "large_air" => "aircraft",
+        "small_surface" | "large_surface" => "vessel",
+        "small_ground" | "large_ground" => "ground_vehicle",
+        "subsurface" => "submerged",
+        _ => "unknown",
+    }
+}
+
+/// A call as sure as this counts: below it a disagreeing label is no conflict.
+const CALL: f64 = 0.3;
+
+/// The looks for a label outweigh the looks against it when their weight of evidence is at least
+/// this many times theirs. A look's weight is Shafer's `-ln(1 - c)` (A Mathematical Theory of
+/// Evidence, 1976, ch. 5), which adds over independent looks as their supports combine
+/// (`1 - prod(1 - c)`): two looks as sure as a stray wrong call outweigh it, one against one stays
+/// split (SCORING-V3.md 15, defect d).
+const OUTWEIGH: f64 = 2.0;
+
+/// One label's support at a rank: its looks combined as independent.
+struct Support {
+    /// the chance every look giving it missed, `prod(1 - c)`; its support is `1 - miss`
+    miss: f64,
     /// the sensor of its surest look
     sensor: SensorType,
+    surest: f64,
+}
+
+/// Every label's support at one rank ([`Track::support`]), by label.
+type Supports = BTreeMap<String, Support>;
+
+/// The best-supported label (the first in name order of equals).
+fn leader(by: &Supports) -> Option<(&str, &Support)> {
+    by.iter().fold(None, |best, (l, s)| match best {
+        Some((_, b)) if 1.0 - b.miss >= 1.0 - s.miss => best,
+        _ => Some((l.as_str(), s)),
+    })
+}
+
+/// Looks whose chance of all missing is `miss_for` outweigh looks whose chance is
+/// `miss_against` ([`OUTWEIGH`]): `-ln(miss_for) >= OUTWEIGH * -ln(miss_against)`.
+fn outweighs(miss_for: f64, miss_against: f64) -> bool {
+    miss_against > 0.0 && miss_for <= miss_against.powf(OUTWEIGH)
+}
+
+/// The call that disputes `claim` at a rank: the surest other label that counts ([`CALL`]),
+/// unless the looks for `claim` outweigh every look against it. None: undisputed, or settled.
+fn disputed<'a>(by: &'a Supports, claim: &str) -> Option<(&'a str, &'a Support)> {
+    let miss_for = by.get(claim).map_or(1.0, |s| s.miss);
+    let miss_against: f64 = by.iter().filter(|(l, _)| l.as_str() != claim).map(|(_, s)| s.miss).product();
+    if outweighs(miss_for, miss_against) {
+        return None;
+    }
+    by.iter().filter(|(l, s)| l.as_str() != claim && 1.0 - s.miss >= CALL).fold(None, |best, (l, s)| match best {
+        Some((_, b)) if 1.0 - b.miss >= 1.0 - s.miss => best,
+        _ => Some((l.as_str(), s)),
+    })
+}
+
+/// The belief in `kind` among a rank's labels by Dempster's rule, its support also missing by
+/// `also_miss` (an AIS identity naming it): each label's looks a simple support, so the belief is
+/// `odds / (1 + sum of every label's odds)` with a label's odds `s / (1 - s)`. With no other
+/// label, its support `1 - miss`, as the looks combine.
+fn belief(by: &Supports, kind: &str, also_miss: f64) -> f64 {
+    let miss = by.get(kind).map_or(1.0, |s| s.miss) * also_miss;
+    if by.keys().all(|l| l == kind) {
+        return 1.0 - miss;
+    }
+    let odds = |m: f64| (1.0 - m) / m.max(1e-12);
+    let others: f64 = by.iter().filter(|(l, _)| l.as_str() != kind).map(|(_, s)| odds(s.miss)).sum();
+    odds(miss) / (1.0 + odds(miss) + others)
 }
 
 /// A declaration in force, as the decision engine's identification ledger holds it (rules 9:
@@ -823,11 +952,15 @@ fn plausible_speed_mps(kind: &str) -> f64 {
     }
 }
 
-/// The identity estimate: the best label, its confidence, and the AIS identity.
+/// The identity estimate: the best label, its level, its confidence, and the AIS identity.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Identity {
     /// the most specific label a sensor gave (kind, or a radar/ESM family)
     pub kind: Option<String>,
+    /// how specific `kind` is (SCORING-V3.md 15, defect a): `identify` a kind (a sensor's
+    /// identification, or the AIS identity's kind), `recognise` a family, `detect` a size class
+    /// (or, from ESM alone, the domain); None with no kind
+    pub level: Option<Level>,
     pub confidence: f64,
     pub ais: Option<AisHeard>,
     /// why the identity is not to be trusted, when it isn't
@@ -1303,8 +1436,9 @@ impl Track {
     }
 
     /// The identity estimate from what the sensors said. Prefers a kind-level label (EO/IR,
-    /// sonar) over AIS over a family (radar, ESM); combines the sensors consistent with it.
-    /// From the physical model's looks, [`Self::identity_from_looks`].
+    /// sonar) over AIS over a family (radar, ESM); combines the sensors consistent with it. Its
+    /// level: an EO/IR or sonar kind, or the AIS identity's, is at identification, a radar's or
+    /// ESM's family at recognition. From the physical model's looks, [`Self::identity_from_looks`].
     pub fn identity(&self) -> Identity {
         if !self.looks.is_empty() {
             return self.identity_from_looks();
@@ -1325,12 +1459,13 @@ impl Track {
                     .total_cmp(&self.classifier_conf(b.0, b.1))
             });
         let kind = kind_level
-            .map(|(_, c)| c.label.clone())
-            .or_else(|| ais_kind_label.clone())
-            .or_else(|| family_level.map(|(_, c)| c.label.clone()));
-        let Some(kind) = kind else {
+            .map(|(_, c)| (c.label.clone(), Level::Identify))
+            .or_else(|| ais_kind_label.clone().map(|k| (k, Level::Identify)))
+            .or_else(|| family_level.map(|(_, c)| (c.label.clone(), Level::Recognise)));
+        let Some((kind, level)) = kind else {
             return Identity {
                 kind: None,
+                level: None,
                 confidence: 0.0,
                 ais: self.ais.clone(),
                 conflict: None,
@@ -1391,6 +1526,7 @@ impl Track {
         }
         Identity {
             kind: Some(kind),
+            level: Some(level),
             confidence: 1.0 - miss,
             ais: self.ais.clone(),
             conflict,
@@ -1398,106 +1534,117 @@ impl Track {
         }
     }
 
-    /// The best-supported label among the looks at `level`: each label's looks (one per
-    /// observer and sensor) combined as independent, `1 - prod(1 - c)`; the surest label wins
-    /// (the first in name order of equals).
-    fn best_at(&self, level: Level) -> Option<LevelBest> {
-        let mut by: BTreeMap<&str, (f64, SensorType, f64)> = BTreeMap::new();
+    /// Every label's support at `rank`: each look at that rank or a more specific one (one per
+    /// observer, sensor and level) as what it says at `rank`, combined with the looks saying the
+    /// same as independent, `1 - prod(1 - c)`: an identification of a fishing vessel supports
+    /// `small_craft` among the recognitions. A less specific look never counts at a more specific
+    /// rank.
+    fn support(&self, rank: Rank) -> Supports {
+        let mut by = Supports::new();
         for ((_, s, l), m) in &self.looks {
-            if *l != level {
+            if Rank::of(*l, &m.label) < rank {
                 continue;
             }
-            let e = by.entry(m.label.as_str()).or_insert((1.0, *s, 0.0));
-            e.0 *= 1.0 - m.confidence.clamp(0.0, 1.0);
-            if m.confidence > e.2 {
-                e.1 = *s;
-                e.2 = m.confidence;
+            let c = m.confidence.clamp(0.0, 1.0);
+            let e = by.entry(rank.says(&m.label).to_string()).or_insert(Support { miss: 1.0, sensor: *s, surest: 0.0 });
+            e.miss *= 1.0 - c;
+            if c > e.surest {
+                e.sensor = *s;
+                e.surest = c;
             }
         }
-        by.into_iter()
-            .map(|(label, (miss, sensor, _))| LevelBest { label: label.to_string(), confidence: 1.0 - miss, sensor })
-            .fold(None, |best: Option<LevelBest>, b| match best {
-                Some(a) if a.confidence >= b.confidence => Some(a),
-                _ => Some(b),
-            })
+        by
     }
 
-    /// The identity estimate from the physical model's looks (WORLD-V3-PLAN 2.3, 2.7): the most
-    /// specific level any look reached names it (an identification's kind, else the AIS
-    /// identity's, else a recognition's family, else a detection's size class), with the
-    /// combined confidence of the looks at that level that agree (and AIS, when it names the
-    /// same kind); a look at a lower level never adds to it, and one that disagrees with it is
-    /// superseded, not a conflict: a closer look corrects a wrong call (murmur-jln). Conflicts,
-    /// as the legacy identity's: AIS against an identification (or a recognition's family),
-    /// a speed the AIS kind cannot make, or two looks at the chosen level that disagree.
+    /// The identity estimate from the physical model's looks (WORLD-V3-PLAN 2.3, 2.7), fused by
+    /// level, reliability and weight of evidence (SCORING-V3.md 15, defects a, c, d):
+    ///
+    /// - **Which label.** The most specific evidence names the track ([`Rank`]): an
+    ///   identification's kind, else the AIS identity's, else a recognition's family, else a
+    ///   detection's size class, else ESM's domain. A less specific label never displaces a more
+    ///   specific one (ESM's `aircraft` gives way to a radar's `small_air`, defect c); a look at a
+    ///   lower level that agrees supports it (`supported_by`) but never adds to its confidence,
+    ///   and one that disagrees is superseded, not a conflict: a closer look corrects a wrong call
+    ///   (murmur-jln). Among the labels at the chosen rank, the best supported names it.
+    /// - **Its confidence**: Dempster's rule over that rank's labels ([`belief`]), AIS adding its
+    ///   own when it names the same kind: with no label against it, the looks' combined support
+    ///   as before; a dissent lowers it.
+    /// - **Conflicts** (defect d): AIS against what our sensors identify (or, with no
+    ///   identification that counts, recognise, identifications counting for their family), a
+    ///   speed the AIS kind cannot make, or another label at the chosen rank; a dissent that
+    ///   counts ([`CALL`]) is a conflict until the looks for the claim (the AIS identity's kind
+    ///   or family, or the estimate) outweigh every look against it ([`OUTWEIGH`]). So one stray
+    ///   wrong call among later agreeing looks clears; one call against one, or against the AIS
+    ///   identity alone, stays a conflict; and a contact every look got wrong shows what the looks
+    ///   say. The AIS identity is the contact's claim: it never weighs in the looks' dispute,
+    ///   only against what they settle on (a spoof stays exposed however many cameras see it).
     fn identity_from_looks(&self) -> Identity {
-        let id = self.best_at(Level::Identify);
-        let rec = self.best_at(Level::Recognise);
-        let det = self.best_at(Level::Detect);
-        let ais_kind_label = self.ais.as_ref().map(|a| ais_kind(&a.ship_type).to_string());
-        let chosen: Option<(String, Option<Level>)> = id
-            .as_ref()
-            .map(|b| (b.label.clone(), Some(Level::Identify)))
-            .or_else(|| ais_kind_label.clone().map(|k| (k, None)))
-            .or_else(|| rec.as_ref().map(|b| (b.label.clone(), Some(Level::Recognise))))
-            .or_else(|| det.as_ref().map(|b| (b.label.clone(), Some(Level::Detect))));
-        let Some((kind, level)) = chosen else {
-            return Identity { kind: None, confidence: 0.0, ais: self.ais.clone(), conflict: None, supported_by: Vec::new() };
+        let ids = self.support(Rank::Kind);
+        let ais_kind_label = self.ais.as_ref().map(|a| ais_kind(&a.ship_type));
+        let top = self.looks.iter().map(|((_, _, l), m)| Rank::of(*l, &m.label)).max();
+        // the chosen rank (None: the AIS identity's kind) and its labels' support
+        let (rank, by) = match (top, ais_kind_label) {
+            (Some(Rank::Kind), _) => (Some(Rank::Kind), self.support(Rank::Kind)),
+            (_, Some(_)) => (None, Supports::new()),
+            (Some(r), None) => (Some(r), self.support(r)),
+            (None, None) => {
+                return Identity { kind: None, level: None, confidence: 0.0, ais: self.ais.clone(), conflict: None, supported_by: Vec::new() };
+            }
         };
-        // what each level says when it agrees with the kind
-        let at = |l: Level| match l {
-            Level::Identify => kind.clone(),
-            Level::Recognise => family(&kind).to_string(),
-            Level::Detect => size_class_of(&kind).to_string(),
+        let kind = match (rank, ais_kind_label) {
+            (None, Some(ak)) => ak.to_string(),
+            _ => leader(&by).map(|(l, _)| l.to_string()).unwrap_or_default(),
         };
-        let mut miss = 1.0;
+        // every sensor whose look agrees with the kind at its own rank
+        let upto = rank.unwrap_or(Rank::Kind);
         let mut supported: std::collections::BTreeSet<SensorType> = std::collections::BTreeSet::new();
         for ((_, s, l), m) in &self.looks {
-            if m.label == at(*l) {
+            let r = Rank::of(*l, &m.label);
+            if r <= upto && r.agrees(&kind, &m.label) {
                 supported.insert(*s);
-                if Some(*l) == level {
-                    miss *= 1.0 - m.confidence.clamp(0.0, 1.0);
-                }
             }
         }
+        let mut also_miss = 1.0;
         let mut conflict = None;
         if let Some(a) = &self.ais {
             let ak = ais_kind(&a.ship_type);
             if ak == kind {
                 supported.insert(SensorType::Ais);
-                miss *= 1.0 - AIS_CONF;
-            } else if let Some(b) = id.as_ref().filter(|b| b.confidence >= 0.3) {
-                conflict = Some(format!("AIS says {} ({}) but {} identifies it as {}", a.ship_type, a.name, b.sensor.as_str(), b.label));
+                also_miss = 1.0 - AIS_CONF;
             }
+            if let Some((label, s)) = disputed(&ids, ak) {
+                conflict = Some(format!("AIS says {} ({}) but {} identifies it as {}", a.ship_type, a.name, s.sensor.as_str(), label));
+            }
+            // recognitions (and the identifications' families) count only while no
+            // identification does: a closer look corrects them
             if conflict.is_none()
-                && let Some(b) = rec.as_ref().filter(|b| b.confidence >= 0.3)
+                && !ids.values().any(|s| 1.0 - s.miss >= CALL)
                 && family(ak) != "unknown"
-                && b.label != family(ak)
+                && let Some((label, s)) = disputed(&self.support(Rank::Family), family(ak))
             {
-                conflict = Some(format!("AIS says {} ({}) but {} recognises it as {}", a.ship_type, a.name, b.sensor.as_str(), b.label));
+                conflict = Some(format!("AIS says {} ({}) but {} recognises it as {}", a.ship_type, a.name, s.sensor.as_str(), label));
             }
             let speed = self.speed_mps();
             if conflict.is_none() && speed > plausible_speed_mps(ak) {
                 conflict = Some(format!("AIS says {} ({}) but it is making {:.0} m/s", a.ship_type, a.name, speed));
             }
         }
-        // another label at the chosen level, as sure as a call that counts
+        // another label at the chosen rank, as sure as a call that counts and not outweighed
         if conflict.is_none()
-            && let Some(l) = level.filter(|l| *l != Level::Detect)
+            && let Some(r) = rank.filter(|r| *r >= Rank::Family)
+            && let Some((label, s)) = disputed(&by, &kind)
         {
-            let mut others: BTreeMap<&str, (f64, SensorType)> = BTreeMap::new();
-            for ((_, s, ll), m) in &self.looks {
-                if *ll == l && m.label != kind {
-                    let e = others.entry(m.label.as_str()).or_insert((1.0, *s));
-                    e.0 *= 1.0 - m.confidence.clamp(0.0, 1.0);
-                }
-            }
-            if let Some((label, (_, s))) = others.into_iter().find(|(_, (miss, _))| 1.0 - miss >= 0.3) {
-                let verb = if l == Level::Identify { "identifies" } else { "recognises" };
-                conflict = Some(format!("{} {verb} it as {label} while the estimate is {kind}", s.as_str()));
-            }
+            let verb = if r == Rank::Kind { "identifies" } else { "recognises" };
+            conflict = Some(format!("{} {verb} it as {label} while the estimate is {kind}", s.sensor.as_str()));
         }
-        Identity { kind: Some(kind), confidence: 1.0 - miss, ais: self.ais.clone(), conflict, supported_by: supported.into_iter().collect() }
+        Identity {
+            confidence: belief(&by, &kind, also_miss),
+            kind: Some(kind),
+            level: Some(rank.map_or(Level::Identify, Rank::level)),
+            ais: self.ais.clone(),
+            conflict,
+            supported_by: supported.into_iter().collect(),
+        }
     }
 
     /// The affiliation shown and why: a declaration in force (an operator's, or the engine's
@@ -1618,16 +1765,19 @@ impl Track {
     /// `sigma_growth_mps` per second, `confidence` decaying), so the message only changes
     /// when the track does. `now` (the bridge's wall clock) sets `state` and the symbol.
     ///
-    /// Under the physical model `identity` also carries `looks`: each observer's sensor's
-    /// evidence at each level it reached (detection, recognition, identification), what it
-    /// called the contact and the surest it has been, which the identity combines; so a reader
-    /// can tell which sensor reached which level. The legacy model has no looks, and its JSON is
-    /// as it was.
+    /// `identity.level` says how specific `identity.kind` is (SCORING-V3.md 15 (a)): `detect` a
+    /// size class (or, from ESM alone, the domain), `recognise` a family, `identify` a kind
+    /// (a sensor's identification, or the AIS identity's kind: `supported_by` says which); null
+    /// with no kind. Under the physical model `identity` also carries `looks`: each observer's
+    /// sensor's evidence at each level it reached (detection, recognition, identification), what
+    /// it called the contact and the surest it has been, which the identity combines; so a reader
+    /// can tell which sensor reached which level. The legacy model has no looks.
     pub fn json(&self, now: f64) -> Value {
         let id = self.identity();
         let (aff, aff_conf, why) = self.affiliation();
         let mut identity = json!({
             "kind": id.kind,
+            "level": id.level,
             "confidence": round(id.confidence, 3),
             "ais": id.ais,
             "conflict": id.conflict,
