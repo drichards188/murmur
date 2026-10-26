@@ -9,7 +9,7 @@ of item is its policy (`ReviewPolicy`, presets in `PRESETS`, a batch's `Options.
 | item | where it reads it | what it may do | REST path |
 |---|---|---|---|
 | a rule declaration awaiting an operator (rules 9) | `GET /api/review` `declarations` | confirm or revoke | `POST /api/tracks/{id}/confirm`, `.../revoke` |
-| a review flag in force (rules 9) | `GET /api/review` `open` | confirm, dismiss, or declare the flagged track hostile | `POST /api/review/{flag}/resolve`, `POST /api/tracks/{id}/declare` |
+| a review flag in force (rules 9) | `GET /api/review` `flags` | confirm, dismiss, or declare the flagged track hostile | `POST /api/review/{flag}/resolve`, `POST /api/tracks/{id}/declare` |
 | a lost contact a waiting nomination's keep-out counts (rules 16) | `GET /api/inbox`, a nomination's `engage.lost_open` | accept it for that engagement (engagement authority) | `POST /api/intents/{id}/accept_unknown` `{track, since}` |
 | a live track carrying a lost contact's AIS (rules 16) | `GET /api/review` `lost_claims` | confirm it, only when nothing contradicts it | `POST /api/review/lost/{track}/confirm` `{by_track}` |
 | a platform spent by its own effect but still heard (rules 15) | `GET /api/inbox` alerts of kind `spent` | un-spend it (engagement authority) | `POST /api/restores/unspend` `{uid, note}` |

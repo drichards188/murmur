@@ -535,6 +535,121 @@ def test_a_lost_contact_blocks_until_its_ais_claim_is_confirmed(binary: Path, tm
     replays(tmp_path / "a")
 
 
+def with_contacts(tmp_path: Path, extra: str, duration_s: float, **opts: Any) -> dict[str, Any]:
+    """`hostile-act-engagement` with contacts added to its scenario, kept in `tmp_path / "a"`."""
+    from eval.headless.episode import Episode, Options
+    from eval.headless.situations import Calibration, from_situation
+
+    contacts = tmp_path / "contacts.toml"
+    contacts.write_text((REPO / "sim" / "scenarios" / "hostile-act-engagement.toml").read_text() + extra)
+    e = from_situation("hostile-act-engagement")
+    e.duration_s = duration_s
+    with tempfile.TemporaryDirectory(prefix="engage-space-") as td:
+        return Episode(e, 1, Path(td), Options(calibration=Calibration.load(), keep=tmp_path / "a", **opts),
+                       contacts_path=contacts).run()
+
+
+#: a fishing boat stopped 255 m from the raider's holding point: once the raider is declared, the
+#: weak-evidence rule flags it for keeping company (a proximity flag, one track)
+ESCORT = """
+
+[[contact]]
+id = "escort-boat"
+name = "Fishing boat stopped near the raider's holding point (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+motion = "station"
+at = [-122.4950, 37.81425]
+start_s = 0
+"""
+
+
+@pytest.mark.parametrize("flags", ["dismiss", "declare"])
+def test_the_reviewer_resolves_a_review_flag_on_the_real_bridge(binary: Path, tmp_path: Path, flags: str):
+    """murmur-zr9: a review flag in force, as the bridge serves it (`GET /api/review` `flags`),
+    reaches the reviewer, who resolves it through the console's path: dismissed
+    (`POST /api/review/{flag}/resolve`, `ident.flag_resolved`) or the flagged track declared hostile
+    (`POST /api/tracks/{id}/declare` with the flag, `ident.declared` by the operator). Before
+    2026-10-25 the reviewer read the flags under `open` (only its fake served them there) and never
+    acted on one: this test fails on that reviewer."""
+    rec = with_contacts(tmp_path, ESCORT, 330.0, agent="none",
+                        review={"preset": "confirm-declarations", "flags": flags})
+    evs = events(rec)
+    escort = next(t for t, c in rec["truth"]["association"].items() if c == "escort-boat")
+    flagged = first(evs, "ident.flagged")
+    assert flagged["flag"]["kind"] == "proximity" and flagged["flag"]["tracks"] == [escort]
+    decided = [d for d in rec["review"]["decisions"] if d["kind"] == "flag"]
+    assert [(d["action"], d["item"], d["tracks"], d["by"], d["result"]) for d in decided] == [
+        (flags, f"F-{flagged['flag']['id']}", [escort], "op-auto", "done")]
+    if flags == "dismiss":
+        res = first(evs, "ident.flag_resolved", flag=flagged["flag"]["id"])
+        assert res["resolution"] == "dismissed" and res["by"] == "op-auto" and "scripted" in res["note"]
+    else:
+        decl = [e for e in evs if e["type"] == "ident.declared" and e["declaration"]["track"] == escort]
+        assert len(decl) == 1, decl
+        by = decl[0]["declaration"]["by"]
+        assert decl[0]["declaration"]["affiliation"] == "hostile"
+        assert (by["kind"], by["operator"], by["flag"]) == ("operator", "op-auto", flagged["flag"]["id"])
+    assert evs.index(flagged) < min(evs.index(e) for e in evs if e["type"] in ("ident.flag_resolved", "ident.declared")
+                                    and (e.get("flag") == flagged["flag"]["id"]
+                                         or (e.get("declaration") or {}).get("track") == escort))
+    replays(tmp_path / "a")
+
+
+#: a trawler on AIS east of the holding area that goes dark 40 s after the nomination: out of view
+#: its track blocks the keep-out, and 180 s later it is dropped while the nomination still waits
+LOST_AFTER_NOMINATION = """
+
+[[contact]]
+id = "trawler-dark"
+name = "Trawler east of the holding area that goes dark (AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+motion = "station"
+at = [-122.4820, 37.8160]
+start_s = 0
+end_s = 250
+ais = { mmsi = "366999401", name = "F/V SEA WOLF", ship_type = "fishing" }
+"""
+
+
+def test_a_lost_contact_is_accepted_for_a_waiting_nomination_on_the_real_bridge(binary: Path, tmp_path: Path):
+    """murmur-zr9: rules 16 headless, the acceptance path. The agent nominates while the trawler is
+    in view; the signers (rates, their first look 150 s on) find the live picture failing once it
+    goes dark; the tracker drops it while the nomination waits unsigned, the inbox lists it under
+    the nomination's `engage.lost_open`, the reviewer (`accept-all`) accepts it for that engagement
+    under engagement authority (`POST /api/intents/{id}/accept_unknown`, `engage.accepted`), and only
+    then does the picture pass and the two sign; the log replays."""
+    rec = with_contacts(tmp_path, LOST_AFTER_NOMINATION, 470.0, agent="scripted",
+                        scripted={"engage": {"max_nominations": 1}},
+                        signers={"preset": "scripted", "mode": "rates", "latency_median_s": 150.0,
+                                 "latency_sigma": 0.0},
+                        review={"preset": "accept-all"}, effects={"p_hit": 1.0})
+    evs = events(rec)
+    trawler = next(t for t, c in rec["truth"]["association"].items() if c == "trawler-dark")
+    nom = next(e for e in evs if e["type"] == "intent.created" and e["intent"]["kind"] == "engage")
+    iid = nom["intent"]["id"]
+    dropped = first(evs, "track.dropped", track=trawler)
+    accepted = first(evs, "engage.accepted", intent=iid)
+    assert (accepted["contact"], accepted["by"]) == (trawler, "op-2")
+    assert accepted["since"] == dropped["facts"]["position"]["t"]
+    signed = [e for e in evs if e["type"] in ("approval.concurred", "approval.granted") and e["intent"] == iid]
+    assert [e["by"] for e in signed] == ["op-2", "op-3"]
+    # nominated while the trawler was in view, dropped while it waited unsigned, signed only after
+    assert evs.index(nom) < evs.index(dropped) < evs.index(accepted) < evs.index(signed[0])
+    first(evs, "intent.state", intent=iid, to="dispatched")
+    assert [(d["kind"], d["action"], d["item"], d["track"], d["by"], d["result"])
+            for d in rec["review"]["decisions"] if d["kind"] == "lost_contact"] == [
+        ("lost_contact", "accept", iid, trawler, "op-2", "done")]
+    t0 = evs[0]["t"]
+    waits = [d for d in rec["signers"]["decisions"] if d["action"] == "wait"
+             and d["t"] < (accepted["t"] - t0) / 1000.0]
+    assert waits and all("keep_out_tracks" in d["reason"] for d in waits)
+    replays(tmp_path / "a")
+
+
 def test_a_collect_is_tasked_collected_and_delivered(binary: Path, tmp_path: Path):
     """The pinned snapshot's segment loads on the simulated clock; the scripted agent reads the
     passes and the tasking options, proposes a collect with the first option, the operator

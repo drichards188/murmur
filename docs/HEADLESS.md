@@ -1162,10 +1162,17 @@ engagement and the cover, each run twice on one seed, gave the same record twice
   preload), so the set and the restore exercise the path, not a change of values; an FPV with
   fallback `abort` (ArduCopter `FS_GCS_ENABLE` 7) would change them.
 - **No review flag, and no lost contact to accept for a waiting nomination,** arises in a smoke
-  episode: the reviewer's work on them is tested on a fake operator API. (A lost contact blocks
-  the form, so an agent cannot nominate past it; only one dropped while a nomination waits
-  unsigned can be accepted for it, a timing the families must make.) Situations that raise them
-  are the families' work (F15, F16).
+  episode. (A lost contact blocks the form, so an agent cannot nominate past it; only one dropped
+  while a nomination waits unsigned can be accepted for it, a timing the families must make.)
+  Situations that raise them are the families' work (F15, F16). Since murmur-zr9 (2026-10-26) the
+  reviewer's work on both is tested on the real bridge, in short episodes of
+  `hostile-act-engagement` with a contact added (`tests/test_engage_space.py`): a boat stopped
+  255 m from the raider's hold is flagged (proximity) once the raider is declared, and the
+  reviewer dismisses the flag or declares the boat through the console's paths (this test fails
+  on the reviewer that read the flags under `open`); a trawler on AIS that goes dark 40 s after
+  the nomination is dropped 180 s later while the nomination waits (the signers' first look 150 s
+  on), the reviewer accepts it for the nomination (`engage.accepted`, `op-2`), and only then do
+  the two sign; both logs replay.
 - **A silent platform still senses for a few seconds**: the bridge's sensing model keeps a
   vehicle's sensors on until its link goes stale (`tracks::observers`), so a munition that left
   at the effect may still report the target for its stale age (seen in the miss: `3:eo_ir` at
