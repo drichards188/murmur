@@ -368,6 +368,66 @@ def test_wrong_sensor_sends_a_vehicle_that_cannot_identify_the_domain():
     assert st.wrong(wrong, n) and not st.wrong(right, n)
 
 
+def shown_track(kind: str, conf: float, looks: list[dict[str, Any]], domain: str = "air",
+                supported=("radar", "eo_ir")) -> dict[str, Any]:
+    """A track as the picture serves it, 1 km out from the Golden Gate's centre, shown unknown."""
+    lon, lat = -122.4783 + 1000.0 / (111_320.0 * math.cos(math.radians(37.8199))), 37.8199
+    return {"id": "T-1", "domain": domain, "position": [lon, lat], "affiliation": "unknown",
+            "identity": {"kind": kind, "confidence": conf, "conflict": None, "supported_by": list(supported),
+                         "looks": looks}}
+
+
+def test_the_honest_ceiling_resolves_a_need_only_at_the_mission_s_level():
+    st = honest(P.HonestCeiling, [], [], {})
+    det = [{"uid": 3, "sensor": "eo_ir", "level": "detect", "label": "small_air", "confidence": 0.99}]
+    st.picture(10.0, [shown_track("small_air", 0.99, det)])
+    assert st.needs["T-1"].resolved_t is None, "a camera's detection (a size class) is not an identification"
+    rec = det + [{"uid": 3, "sensor": "eo_ir", "level": "recognise", "label": "small_uas", "confidence": 0.95}]
+    st.picture(11.0, [shown_track("small_uas", 0.95, rec)])
+    assert st.needs["T-1"].resolved_t is None, "above the water a family is not the kind"
+    ide = rec + [{"uid": 3, "sensor": "eo_ir", "level": "identify", "label": "small_drone", "confidence": 0.8}]
+    st.picture(12.0, [shown_track("small_drone", 0.8, ide)])
+    assert st.needs["T-1"].resolved_t == 12.0
+    assert P.at_level("submerged", "subsurface") and not P.at_level("subsurface", "subsurface")
+
+
+def test_an_esm_family_alone_is_planned_as_the_domain_s_smallest_threat():
+    st = honest(P.HonestCeiling, [], [], {})
+    esm = [{"uid": 2, "sensor": "esm", "level": "detect", "label": "aircraft", "confidence": 0.3}]
+    assert st.kind_of(shown_track("aircraft", 0.0, esm, supported=())) == ("small_drone", "air")
+    rec = esm + [{"uid": 3, "sensor": "eo_ir", "level": "recognise", "label": "aircraft", "confidence": 0.7}]
+    assert st.kind_of(shown_track("aircraft", 0.7, rec)) == ("light_aircraft", "air")
+
+
+def test_the_honest_ceiling_takes_a_vehicle_off_a_later_need_for_an_earlier_one():
+    early = boat_need(300.0)
+    path = Straight("late-1")
+    path.update((-5000.0, 2000.0), (5.0, 0.0), 0.0)
+    late = P.NeedV3("late-1", "small_fast_boat", "surface", path, 700.0, 0.0, 5.0)
+    u = unit(1, "puma", (-3000.0, 1000.0))
+    u.order = {"intent": 9, "need": late.id, "t": 0.0, "centre": [-4000.0, 2000.0], "req": {}, "text": ""}
+    late.assigned = [1]
+    tables = {("puma", "boat-1"): quality(2000.0, 1800.0), ("puma", "late-1"): quality(2000.0, 1800.0)}
+    st = honest(P.HonestCeiling, [u], [early, late], tables)
+    assert [(o["uid"], o["need"]) for o in st.plan(100.0)] == [(1, "boat-1")]
+    assert st.order(st.plan(100.0)[0], 100.0) and late.assigned == [] and early.assigned == [1]
+    ceiling = Stub([u], [boat_need(300.0)], tables)
+    u.order["need"] = "late-1"
+    ceiling.needs["late-1"] = late
+    assert all(o["uid"] != 1 for o in ceiling.plan(100.0)), "the ceiling keeps a vehicle on its need"
+
+
+def test_the_shown_rung_waits_for_the_picture_to_show_the_contact():
+    class Shown(Stub, P.CeilingShown):
+        pass
+
+    n = boat_need()
+    st = Shown([unit(1, "puma", (-3000.0, 1000.0))], [n], {("puma", "boat-1"): quality(2000.0, 1800.0)})
+    assert st.plan(10.0) == []
+    n.shown_t = 20.0
+    assert [o["uid"] for o in st.plan(20.0)] == [1]
+
+
 def test_every_agent_name_is_dispatched():
     from eval.headless.episode import V3_AGENTS
     from eval.headless.v3 import oracle as O

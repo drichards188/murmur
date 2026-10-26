@@ -8,8 +8,9 @@ the owner has to make (section 9). **Second part, 2026-10-25**: families F7-F13 
 they need (2.2's spoofed AIS, 2.4's fault needs in every domain, choices 27-34) and their dev check
 (section 14). **2026-10-25 (C2, bd murmur-1z6.7)**: the room test replaces v2's fixed world
 conditions and the lessons are written in (section 10); the ceiling, its ladder and the honest
-ceiling's perturbations, their dev batch and the audit are section 13's. The validation, the
-pre-registration and the blind check are D's. **Scoring v2 is frozen**: its labels (version 2), its
+ceiling's perturbations, their dev batch and the audit are section 13's. **2026-10-26**: why the
+picture leaves an honest agent little room, and the honest ceiling's fixes (section 15). The validation,
+the pre-registration and the blind check are D's. **Scoring v2 is frozen**: its labels (version 2), its
 families, its oracle and every v1 and v2 golden and record are unchanged; v3 is built beside it
 (`eval/headless/v3/`), importing v2's code where it is unchanged.
 
@@ -941,7 +942,7 @@ Each rung is the ceiling with one switch of the same planner turned off, nothing
 | `oracle-v3-late` | timing | no look before the need opens (the contact's true position inside the circle) |
 | `oracle-v3-linkblind` | the link | no link map and no truth of a blocked link: it plans as if every datalink held and learns of a lost link only from the session (`link_lost`) |
 | `oracle-v3-sensorblind` | the sensors | no sensing model: every sensor reaches its catalog `range_m` (the reach `get_platforms` shows) on every kind, by day or night, in any visibility, past any terrain (the v3 analogue of not knowing your sensors) |
-| `oracle-v3-honest` | truth | link-blind, reading no truth: built from a session, the loop's runner and the sensing model's functions alone (planner.py `HonestCeiling`, `sense_only`), never the episode. It keeps the model (the catalog's figures make it learnable) with the sun from the scenario clock, but not the drawn visibility, sea or wind, which the C2 does not show (it assumes a clear day's), and no contact's truth: its needs come from the picture (v2's honest oracle's rule: a track in doubt whose shown motion brings it within the circle within 300 s, or inside; due its domain's grace after it is shown inside, and worked on for two graces more while unresolved, since its clock starts when the picture shows the contact inside, which a 2D radar's plot of an aircraft can do before it is; an aircraft the picture gives no velocity, as a 2D radar's bearings seldom range one, taken to come straight in at 25 m/s, a small drone's top speed; the contact's kind its shown kind, else the size class a radar or camera detected (an ESM receiver names every emitter of a domain alike), else its family's stand-in) |
+| `oracle-v3-honest` | truth | link-blind, reading no truth: built from a session, the loop's runner and the sensing model's functions alone (planner.py `HonestCeiling`, `sense_only`), never the episode. It keeps the model (the catalog's figures make it learnable) with the sun from the scenario clock, but not the drawn visibility, sea or wind, which the C2 does not show (it assumes a clear day's), and no contact's truth: its needs come from the picture (v2's honest oracle's rule: a track in doubt whose shown motion brings it within the circle within 300 s, or inside; due its domain's grace after it is shown inside, and worked on for two graces more while unresolved, since its clock starts when the picture shows the contact inside, which a 2D radar's plot of an aircraft can do before it is; an aircraft the picture gives no velocity, as a 2D radar's bearings seldom range one, taken to come straight in at 25 m/s, a small drone's top speed; the contact's kind its shown kind, else the size class a radar or camera detected (an ESM receiver names every emitter of a domain alike), else its family's stand-in). Since section 15 (2026-10-26): a need is resolved only at the mission's level (a kind; under water a class), a family only ESM shows and each ground size class are planned as their smallest member, and earliest deadline first takes a vehicle off a need due 60 s later |
 
 **Predicted order, judged** (per family-world, on need served, v2 0.3's rule: a paired interval
 wholly below zero fails; one containing zero is a tie; the guard of 10.5 across each family's cells):
@@ -1242,3 +1243,63 @@ not the oracle; F12's spoof waited for 14.4 item 1 (fixed since: its need served
 again); F11's acoustic outage waits for 11.2's standing
 sonar. A second dev batch (lesson 2) is needed before any rule is pre-registered: this is F7-F12's
 first and F13 version 2's first on its own seeds.
+
+## 15. Why the picture gives an honest agent little room (development evidence)
+
+**Coverage.** golden-gate-v3 (20 of ours) and san-diego (24), their traffic in every domain, the physical
+sensing model; F2 (version 3, by day), F3, F6 on both worlds, fresh dev seeds 5370-5379 (60 situations:
+day 44, night 14, twilight 2; one eligible need each, air 40, ground 20); `none`, `oracle-v3-honest`,
+`oracle-v3` and `oracle-v3-shown` (a diagnostic: the ceiling with no look before the tracker shows the
+contact, never judged), 240 episodes, then 120 of the honest ceiling after its fixes; orbits only; one
+replicate, approve-all, paused clock. **Shortcuts**: one draw a situation and arm; causes cut at 15 s, 1.5 km.
+
+| need served of 20: F2 drone / F3 aircraft / F6 vehicle (all 60) | `none` | honest, 13.7's | honest, fixed | shown rung | ceiling |
+|---|---|---|---|---|---|
+| | 0 / 14 / 7 (21) | 4 / 12 / 9 (25) | 6 / 16 / 9 (31) | 7 / 15 / 10 (32) | 15 / 16 / 12 (43) |
+
+**The ceiling's room is foreknowledge.** Its lead over the shown rung, +18 points (13 situations up, 2
+down, sign p 0.007; F2 +40), is acting before the contact exists: its first order came a median 250 s
+(F2), 171 s (F3) and 239 s (F6) before the contact appeared; 14 of its 15 F2 drones were identified by
+vehicles waiting on the route. The fixed honest ceiling is +17 over `none` (10 up, 0 down, p 0.002) and 2
+points under the shown rung (4 up, 3 down): truth adds little once the picture shows a contact, and
+13.7's "truth is worth +48 points in F2" is mostly foreknowledge, which no agent has.
+
+| `none`'s picture, median [quartiles] | F2 drone | F3 aircraft | F6 vehicle |
+|---|---|---|---|
+| appears, km out; its deadline, s after | 4.8 [4.3, 5.2]; 152 [134, 180] | 9.0; 199 [194, 206] | 3.0 [2.8, 3.6] (inside: 11 of 20); 60 [60, 132] |
+| first track, s after (sensor); its error | 1 [0, 3] (radar 14, ESM 7); 0.7 km [0.2, 1.4] | 0 (ESM 19); 0.2 km | 0 (radar 18); 0.1 km |
+| velocity / size class / family / kind by the deadline | 8 / 20 / 1 / 0 of 20 | 20 / 20 / 20 / 16 | 14 / 20 / 11 / 10 |
+| 13.7's honest: need, first order, s after the track; time left | 2, 4 [2, 19]; 141 s [109, 171] | 1, 2 [1, 14]; 194 s | 5, 6 [3, 13]; 56 s [52, 86] |
+
+**The honest ceiling's losses** (13.7's, 35): not in the picture in time 0 (every contact shown within 7 s
+of appearing); shown without a usable kind or velocity 0 (a need formed on the size class within seconds
+for each contact not already identified); usable but no order 2 (6 %: vehicles held on traffic due
+later); acted but the look failed 33 (94 %): the ordered camera showed at most a family or size class by
+the deadline 16, came within 1.5 km and never detected 11, never came that near 6. In 18 it had taken a
+size class or family as resolved. Fixed, it lost 29 (no order 2, looked 18, near 6, not reached 3): the
+shown rung served 4, only the ceiling 11, neither 14: the cameras' limits (11.3, 13.6) in 1 to 3 minutes.
+
+**Fixed in the honest ceiling** (planner.py, tested): (1) a need resolved on any EO/IR identity at 0.6, a
+size class or family too (256 of 533 resolutions), now only at the mission's level (`at_level`); (2) a
+family only ESM shows (`aircraft`) planned as a light aircraft, now the domain's smallest threat; (3) a
+car planned as a truck, a person as a car (the ground size classes); (4) no preemption: now a vehicle on a
+need due 60 s later is free for an earlier one (`free_for`). (1) and (2): 26 of 60; all four: 31 (10 up, 4
+down against 13.7's, p 0.18); orders rose from 3,737 to 5,128. 13.7's honest figures stand as computed.
+
+**Reported, not changed.** (a) One identity field names a size class, family or kind at that level's
+confidence (a camera's detection reads `small_air 0.99` from `eo_ir`); only `identity.looks` gives the
+level: fix (1)'s cause. (b) Drones: no velocity (12 of 20 none by the deadline), 0.7 km error, no height.
+(c) ESM shows the family `aircraft` for any air emitter, over the radar's correct `small_air`. (d) A
+conflict never clears: one wrong look among many holds it; 4 or 5 of 20 F3 aircraft were in conflict at
+the deadline in every arm (6 or 7 cameras looked); 277 of 870 neutral contacts within 4 km (32 %) were
+shown suspect or in conflict. (e) The C2 shows no conditions: the honest ceiling plans a clear day. (f)
+Only contacts of unknown or suspect truth are credited, yet 84 % of the fixed honest ceiling's 813 needs
+and 79 % of its orders were neutral traffic shown in doubt. (g) F3's "transponder off" aircraft emits
+(its kind's transponder, signature.rs, is left on by families.py). (h) F6's vehicle appears inside the
+circle in 11 of 20 (its roads start 2.84 and 2.96 km out): 60 s to its deadline.
+
+**F3.** Shown at once, the aircraft crosses three minutes of standing cameras (the boats' rings in 11 of
+`none`'s 14 identifications, the FVR-90 in 4, REAPER in 2; 10 before its need opened); 4 or 5 of 20 end
+in a conflict no look clears (d), leaving one or two needs for anyone: 13.7's +9 and -7. **Next**: the
+owner on foreknowledge in the ceiling (the shown rung, 32 of 60, is what an agent can reach), (a), (d),
+(f), F6's timing; then the room test and the perturbations with the fixed honest ceiling.

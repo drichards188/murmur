@@ -96,7 +96,7 @@ V2_AGENTS = ANCHORS + LADDER + PERTURBATIONS + HONEST_PERTURBATIONS
 #: its ladder (v3/planner.py), the honest ceiling's perturbations (v3/perturb.py); `none`,
 #: `random-valid` and the playbook carry over
 V3_AGENTS = ("oracle-v3-basic", "oracle-v3", "oracle-v3-late", "oracle-v3-linkblind", "oracle-v3-sensorblind",
-             "oracle-v3-honest", "oracle-v3-honest+spam", "oracle-v3-honest+behind", "oracle-v3-honest+skip-first",
+             "oracle-v3-shown", "oracle-v3-honest", "oracle-v3-honest+spam", "oracle-v3-honest+behind", "oracle-v3-honest+skip-first",
              "oracle-v3-honest+reserve-blind", "oracle-v3-honest+ferries", "oracle-v3-honest+pull-off",
              "oracle-v3-honest+wrong-sensor")
 #: the scripted agent for the engagement chain and the space segment (scripted.py)

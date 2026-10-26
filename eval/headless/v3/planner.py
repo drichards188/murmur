@@ -56,6 +56,8 @@ sight), `link` (only where the datalink fails), `reserve`.
 - `oracle-v3-sensorblind`: no sensing model: every sensor reaches its catalog `range_m` (what
   `get_platforms` shows as its reach) on every kind, by day or night, in any visibility, and sees
   past any terrain;
+- `oracle-v3-shown` (a diagnostic, SCORING-V3.md 15, never judged): no look before the picture shows
+  the contact (the tracker associates a track with it);
 - `oracle-v3-honest` (`HonestCeiling`): linkblind, reading no truth: the realistic ceiling, built
   from a session alone. It keeps the sensing model (the catalog's figures make it learnable) with
   the sun from the scenario clock, but not the drawn visibility, sea or wind (the C2 does not show
@@ -322,6 +324,8 @@ class NeedV3:
         self.deadline = t_need + self.rule.grace_s
         self.resolved_t: float | None = None
         self.opened_t = opened_t
+        #: when the picture first showed the contact (the shown rung's gate)
+        self.shown_t: float | None = None
         self.assigned: list[int] = []
         self.feasibility: dict[str, Any] | None = None
         self.hold: tuple[float, float] | None = None
@@ -419,6 +423,9 @@ class Ceiling(SessionAgent):
     KNOW_LINK = True
     KNOW_SENSORS = True
     LATE = False
+    #: the shown rung's switch (a diagnostic, SCORING-V3.md 15): no look before the picture shows
+    #: the contact (a track the tracker associates with it)
+    SHOWN = False
     RESERVE_AWARE = True
     TRUTH = True
 
@@ -623,6 +630,8 @@ class Ceiling(SessionAgent):
         tracks = {str(t["id"]): t for t in self.call("get_tracks").get("tracks") or []}
         self._tracks = tracks
         for n in self.needs.values():
+            if n.shown_t is None and assoc.get(n.id) in tracks:
+                n.shown_t = now
             if n.resolved_t is not None:
                 continue
             tr = tracks.get(assoc.get(n.id, ""))
@@ -672,8 +681,9 @@ class Ceiling(SessionAgent):
         return u.xy is not None and not u.down and not u.link_bad and now >= u.refused_until
 
     def may_look(self, n: NeedV3, now: float) -> bool:
-        """The late rung's switch: no look before the need opens."""
-        return not self.LATE or n.opened_t is not None
+        """The late rung's switch: no look before the need opens; the shown rung's: none before
+        the picture shows the contact."""
+        return (not self.LATE or n.opened_t is not None) and (not self.SHOWN or n.shown_t is not None)
 
     def medium_ok(self, u: UnitV3, xy: tuple[float, float]) -> bool:
         """The centre keeps to the unit's medium on the world's land/water grid."""
@@ -828,8 +838,9 @@ class Ceiling(SessionAgent):
                 continue
             uv = utility(have)
             opts = []
+            fresh = {o["uid"] for o in out}
             for u in self.units.values():
-                if u.uid in taken or u.uid in n.assigned:
+                if u.uid in n.assigned or (u.uid in taken and (u.uid in fresh or not self.free_for(u, n, now))):
                     continue
                 o = self.option(u, n, now, win)
                 if o is not None:
@@ -850,6 +861,11 @@ class Ceiling(SessionAgent):
                 o["p_after"] = round(p, 3)
                 out.append(o)
         return out
+
+    def free_for(self, u: UnitV3, n: NeedV3, now: float) -> bool:
+        """Whether a vehicle working on another need may be taken off it for need `n` (the honest
+        ceiling's preemption); the ceiling's vehicles serve one need until it is resolved or over."""
+        return False
 
     def chase(self, now: float) -> list[dict[str, Any]]:
         """Orders that follow a contact a vehicle met but has not resolved: when the contact is more
@@ -1099,7 +1115,7 @@ class Ceiling(SessionAgent):
                 "reach_m": self.reach_m(),
                 "quality": {f"{k[0]}:{k[1]}": q.summary() for k, q in sorted(self.quality.items())},
                 "plans": self.plans, "errors": self.errors,
-                "switches": {"know_link": self.KNOW_LINK, "know_sensors": self.KNOW_SENSORS, "late": self.LATE,
+                "switches": {"know_link": self.KNOW_LINK, "know_sensors": self.KNOW_SENSORS, "late": self.LATE, "shown": self.SHOWN,
                              "reserve_aware": self.RESERVE_AWARE, "truth": self.TRUTH}}
 
 
@@ -1125,12 +1141,24 @@ class CeilingSensorBlind(Ceiling):
     KNOW_SENSORS = False
 
 
+class CeilingShown(Ceiling):
+    """A diagnostic (SCORING-V3.md 15), never judged: the ceiling with no look before the picture
+    shows the contact (the tracker associates a track with it), everything else the ceiling's. Its
+    step under the ceiling is what acting before the picture shows a contact is worth; the honest
+    ceiling's step under it, what truth is worth once the picture shows it."""
+
+    name = "oracle-v3-shown"
+    SHOWN = True
+
+
 # ---- the honest ceiling: only what the picture shows -----------------------------------------------------
 
 #: a track's kind for the sensing model when the picture names none: by its detection's size class
-#: (the physical model's labels), else by its domain
+#: (the physical model's labels), else by its domain. On the ground the class's smaller member
+#: (SCORING-V3.md 15): a car and a truck are both `large_ground`, a person `small_ground`
+#: (tracks/physical/signature.rs `size_class`); before, a car was planned as a truck and a person as a car
 SIZE_KIND = {"small_surface": "small_fast_boat", "large_surface": "cargo_ship", "small_air": "small_drone",
-             "large_air": "light_aircraft", "small_ground": "vehicle", "large_ground": "truck", "subsurface": "uuv"}
+             "large_air": "light_aircraft", "small_ground": "person", "large_ground": "vehicle", "subsurface": "uuv"}
 DOMAIN_KIND = {"surface": "small_fast_boat", "air": "small_drone", "ground": "vehicle", "subsurface": "uuv"}
 KIND_DOMAIN = {"small_craft": "surface", "large_vessel": "surface", "aircraft": "air", "small_uas": "air",
                "ground_vehicle": "ground", "person": "ground", "submerged": "subsurface"}
@@ -1138,6 +1166,18 @@ KIND_DOMAIN = {"small_craft": "surface", "large_vessel": "surface", "aircraft": 
 FAMILY_KIND = {"small_craft": "small_fast_boat", "large_vessel": "cargo_ship", "aircraft": "light_aircraft",
                "small_uas": "small_drone", "ground_vehicle": "vehicle", "person": "diver", "submerged": "uuv"}
 CLASSIFYING = ("eo_ir", "sonar")
+def at_level(shown: str | None, domain: str) -> bool:
+    """Whether a shown identity is at the mission's level for the domain (mission.py): a kind (an
+    identification), or under the water a class (a recognition's family) or better. A detection's
+    size class (`small_air`) or, above the water, a family (`small_uas`) is not, whatever its
+    confidence: the picture's identity names them in the same field, at the detection's or the
+    recognition's confidence (SCORING-V3.md 15: before this the honest ceiling took 256 of its 533
+    resolutions on one, 18 of its 35 losses on F2, F3 and F6 among them)."""
+    if shown in FAMILY:
+        return True
+    return rule(domain).level == "recognise" and shown in set(FAMILY.values())
+
+
 #: the speed the honest ceiling takes an unranged aircraft to come in at (a small drone's 25 m/s,
 #: the top of F2's 12 to 25: the mission's threat for its 30 s grace, mission.py)
 THREAT_MPS = {"air": 25.0}
@@ -1158,6 +1198,8 @@ class HonestCeiling(CeilingLinkBlind):
     LAPSE_GRACES = 2.0
     #: the reserve and one more: the session shows the battery in whole percent
     RESERVE_PCT = 21.0
+    #: a vehicle on a need due this much later is free for an earlier one (`free_for`)
+    PREEMPT_S = 60.0
 
     def __init__(self, session: Any, run: Callable[[Any], Any], world: str, at: str, end_s: float,
                  sense_fn: Callable[[dict[str, Any]], dict[str, Any]]):
@@ -1251,17 +1293,21 @@ class HonestCeiling(CeilingLinkBlind):
         """(kind, domain) the model is asked about for a track: its shown kind; else the size class a
         radar or camera detected (an ESM receiver's family names every emitter of a domain alike,
         `aircraft` for a small drone's datalink); else its shown family's stand-in, its size class, its
-        domain's smallest threat."""
+        domain's smallest threat. A family counts only when a classifying sensor recognised it (an
+        ESM receiver's detection shows a family it never recognised: SCORING-V3.md 15)."""
         idn = tr.get("identity") or {}
         kind = str(idn.get("kind") or "")
         dom = str(tr.get("domain") or KIND_DOMAIN.get(kind) or "surface")
         if kind in FAMILY:
             return kind, dom
-        for lk in idn.get("looks") or []:
+        looks = idn.get("looks") or []
+        for lk in looks:
             if lk.get("level") == "detect" and lk.get("sensor") in ("radar", "eo_ir", "sonar") \
                     and lk.get("label") in SIZE_KIND:
                 return SIZE_KIND[str(lk["label"])], dom
-        if kind in FAMILY_KIND:
+        recognised = not looks or any(lk.get("level") == "recognise" and lk.get("sensor") in CLASSIFYING
+                                      and lk.get("label") == kind for lk in looks)
+        if kind in FAMILY_KIND and recognised:
             return FAMILY_KIND[kind], dom
         if kind in SIZE_KIND:
             return SIZE_KIND[kind], dom
@@ -1287,7 +1333,8 @@ class HonestCeiling(CeilingLinkBlind):
         (carried at constant velocity) brings it within the circle within `HORIZON_S`, or that is
         inside; due its domain's grace after it is first shown inside, after its predicted crossing
         until then; resolved when its identity shows 0.6 or more from EO/IR or sonar without a
-        conflict (which kind is true, the picture cannot say)."""
+        conflict, at the mission's level (`at_level`: a kind, or under the water a class; which kind
+        is true, the picture cannot say)."""
         self.shown_before = self.shown
         self.shown = {str(t["id"]): t for t in tracks}
         for tr in sorted(tracks, key=lambda t: str(t["id"])):
@@ -1301,9 +1348,9 @@ class HonestCeiling(CeilingLinkBlind):
             idn = tr.get("identity") or {}
             conf = float(idn.get("confidence") or 0.0)
             classified = bool(set(idn.get("supported_by") or []) & set(CLASSIFYING)) and not idn.get("conflict")
-            settled = classified and conf >= P60
             inside = math.hypot(*xy) <= self.radius
             kind, dom = self.kind_of(tr)
+            settled = classified and conf >= P60 and at_level(idn.get("kind"), dom)
             alt = float(tr.get("alt_m") or 0.0)
             if dom == "air" and alt <= 0.0:
                 alt = AIR_DEFAULT_ALT_M
@@ -1362,6 +1409,25 @@ class HonestCeiling(CeilingLinkBlind):
         finally:
             self.needs = saved
 
+    def free_for(self, u: UnitV3, n: NeedV3, now: float) -> bool:
+        """Earliest deadline first, with preemption: a vehicle working on a need due at least
+        `PREEMPT_S` later than `n` is free for `n` (past its `REPLAN_S` since its last order, so the
+        order is not refused). The picture shows many tracks in doubt, most of them traffic
+        (SCORING-V3.md 15): without it a vehicle sent to a sailboat due in five minutes stayed off
+        a drone due in one."""
+        m = self.needs.get(str((u.order or {}).get("need") or ""))
+        return (m is not None and m.id != n.id and m.deadline > n.deadline + self.PREEMPT_S
+                and now - u.last_order_t >= self.REPLAN_S)
+
+    def order(self, o: dict[str, Any], now: float) -> bool:
+        ok = super().order(o, now)
+        if ok:
+            # a vehicle taken off another need no longer counts as that need's look
+            for m in self.needs.values():
+                if m.id != o["need"] and o["uid"] in m.assigned:
+                    m.assigned.remove(o["uid"])
+        return ok
+
     def assess(self, now: float) -> None:
         return
 
@@ -1383,7 +1449,7 @@ def sense_only(sim: Any) -> Callable[[dict[str, Any]], dict[str, Any]]:
     return ask
 
 
-LADDER = {c.name: c for c in (Ceiling, CeilingLate, CeilingLinkBlind, CeilingSensorBlind)}
+LADDER = {c.name: c for c in (Ceiling, CeilingLate, CeilingLinkBlind, CeilingSensorBlind, CeilingShown)}
 NAMES = tuple(LADDER) + (HonestCeiling.name,)
 
 
