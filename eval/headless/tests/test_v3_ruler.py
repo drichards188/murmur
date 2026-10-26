@@ -479,6 +479,36 @@ def test_the_ceiling_judges_feasibility_when_the_picture_first_shows_the_contact
     assert lt.needs["boat-1"].feasibility is None, "a rung records none"
 
 
+def test_the_honest_ceiling_with_the_predictor_asks_it_for_the_orbit_it_would_order():
+    """`oracle-v3-honest-linked` (bd murmur-hei): a line-of-sight or mesh link holds where the
+    C2's `get_link_coverage` says the orbit from the vehicle's position holds, asked once per 100 m
+    of the vehicle's position and 25 m of the centre; other links, and a failed call, as the honest
+    ceiling (yes)."""
+    hl = P.HonestLinked.__new__(P.HonestLinked)
+    hl.origin = (-122.47, 37.82)
+    asked: list[dict[str, Any]] = []
+    errors: list[str] = []
+
+    def call(tool: str, **args: Any) -> dict[str, Any]:
+        asked.append({"tool": tool, **args})
+        if args["order"]["center"][1] > 37.83:
+            raise RuntimeError("no answer")
+        return {"vehicles": [{"holds": args["order"]["center"][0] > -122.47}]}
+
+    hl.call = call
+    hl.write = lambda kind, **f: errors.append(kind)
+    puma = unit(1, "puma", (0.0, 0.0), link="los")
+    assert hl.link_holds(puma, (-500.0, 0.0)) is False, "west of the origin: the predictor says no"
+    assert hl.link_holds(puma, (500.0, 0.0)) is True
+    assert hl.link_holds(puma, (505.0, 3.0)) is True and len(asked) == 2, "the same centre: kept"
+    q = asked[0]
+    assert q["tool"] == "get_link_coverage" and q["uid"] == 1 and q["brief"] is True
+    assert q["order"]["task"] == "orbit" and q["order"]["radius_m"] == puma.orbit_m
+    assert hl.link_holds(puma, (0.0, 2000.0)) is True and errors == ["error.link_coverage"], "no answer: yes"
+    assert hl.link_holds(unit(2, "mq9b", (0.0, 0.0), link="satcom"), (-500.0, 0.0)) is True and len(asked) == 3
+    assert P.HonestLinked.KNOW_LINK and not P.HonestLinked.TRUTH and P.HonestLinked.name in P.NAMES
+
+
 def test_every_agent_name_is_dispatched():
     from eval.headless.episode import V3_AGENTS
     from eval.headless.v3 import oracle as O

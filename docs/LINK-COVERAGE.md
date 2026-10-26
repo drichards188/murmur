@@ -104,3 +104,44 @@ stays a later decision.
   holds for the orbit first (one `get_link_coverage` call a tick) and says so in its rationale.
 - Not predicted, as section 3 says: scripted events, handover outages, a landed aircraft's at-rest
   check.
+
+## 8. The paired comparison (2026-10-26; MODEL RESULTS ONLY)
+
+**What the world covers.** World v3's Golden Gate map only (`golden-gate-v3`): its whole fleet on its
+opening orders (the Pumas, FVR-90s and airship on LOS radios, the X10 and two UGV types on the mesh,
+the MQ-9B and RQ-4 on GEO SATCOM, the Corsair, Magura, Sea Hunter and Saildrone on LEO SATCOM, the
+buoy on Iridium, REMUS acoustic, the ROV and the antenna tracker tethered), the physical
+sensing model, the baked terrain and land/water grids, the scripted approve-all operator, one
+replicate per situation. Four families where links decide: F2 (a drone), F7 (three contacts at
+once), F11 (link trouble: an RF jammer, or the AUV made to surface; neither is predicted) and F13
+(vehicle faults), five situations each on dev seeds 5480-5484 (scoring v3's dev range, unused
+before), 60 episodes: `none`, `oracle-v3-honest`, and `oracle-v3-honest-linked`, the same honest
+ceiling where its link map would be reading `get_link_coverage` for the orbit it would order (from
+the vehicle's position; it plans only looks whose link holds). Not the San Diego map, not the other
+families, no model agent.
+
+| family | `none` | honest | honest + predictor | orders ended in a failsafe after a lost link (honest / + predictor) |
+|---|---|---|---|---|
+| F2 drone | 0 / 5 | 1 / 5 | 0 / 5 | 6 / 0 |
+| F7 three at once | 9 / 15 | 11 / 15 | 12 / 15 | 10 / 0 |
+| F11 link trouble | 1 / 5 | 2 / 5 | 2 / 5 | 11 / 6 |
+| F13 vehicle faults | 2 / 5 | 3 / 5 | 4 / 5 | 7 / 1 |
+| pooled | 12 / 30 | 17 / 30 | 18 / 30 | 34 / 7 |
+
+Need served is eligible needs served by their deadline (SCORING-V3.md). An order "ended in a failsafe
+after a lost link" is one the oracle logged as ended with its vehicle in a return or landing mode
+within 120 s of a `lost_link` alert on that vehicle: 13 Pumas, 8 recon UGVs, 7 FVR-90s, 4 X10s and 2
+logistics UGVs for the honest ceiling; 3, 1, 1 and 2 (no logistics UGV) with the predictor. The six
+left in F11 are its jammer's, which no prediction shows.
+
+Paired by situation, need served moved in 5 of 20 (3 up, 2 down; net +1): within what 20 situations
+can tell, so no claim on need served follows. What the predictor does is clear: the orders lost to a
+link the honest ceiling could not see fell from 34 to 7, and with them the failsafe returns (60 orders
+ended in a return or landing mode, 20 with it). Needs were not lost to the links here (every lost
+need's cause is `looked` or `no_look`: the contact was not identified in time, causes.py), so a vehicle
+kept on station did not turn into a need served. The predictor's calls: 10,488 over 30 episodes, no
+error, and no longer episodes (median 45 s of computer time against 47 s; three workers).
+
+    .venv/bin/python -m eval.headless.v3.run batch --families v3-f2-drone-gg v3-f7-three-at-once-gg \
+        v3-f11-link-trouble-gg v3-f13-vehicle-faults-gg --seeds 5480-5484 \
+        --agent oracle-v3-honest oracle-v3-honest-linked --workers 3 --out <dir>

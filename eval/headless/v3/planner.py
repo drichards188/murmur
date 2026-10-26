@@ -71,7 +71,9 @@ removed):
   from a session alone. It keeps the sensing model (the catalog's figures make it learnable) with
   the sun from the scenario clock, but not the drawn visibility, sea or wind (the C2 does not show
   them: it assumes a clear day's), nor any contact's truth: its needs come from the picture, so it
-  too looks at nothing the picture does not show.
+  too looks at nothing the picture does not show;
+- `oracle-v3-honest-linked` (`HonestLinked`): the honest ceiling with the C2's link predictor
+  (`get_link_coverage`) where the link map would be: a diagnostic, not a rung (bd murmur-hei).
 """
 
 from __future__ import annotations
@@ -1478,6 +1480,39 @@ class HonestCeiling(CeilingLinkBlind):
         return out
 
 
+class HonestLinked(HonestCeiling):
+    """The honest ceiling given the bridge's link predictor (docs/LINK-COVERAGE.md, bd murmur-hei):
+    where the ceiling's link map reads the world's terrain, it asks the C2's own `get_link_coverage`
+    for the orbit it would order (the vehicle's route from where it is, as `preview_intent` shows
+    it) and plans only looks whose predicted link holds (the failsafe's chance on the way and five
+    minutes on station at most 10 %). Everything else is the honest ceiling's, reading no truth: a
+    diagnostic of what the predictor is worth to it, not a rung of the ladder."""
+
+    name = "oracle-v3-honest-linked"
+    KNOW_LINK = True
+
+    def link_holds(self, u: UnitV3, centre: tuple[float, float]) -> bool:
+        """A line-of-sight or mesh datalink: the predictor's answer for the orbit from where the
+        vehicle is (kept per 100 m of its position and 25 m of the centre); any other link, or no
+        answer: yes, as the honest ceiling."""
+        if u.link not in self.TERRAIN_LINKS or u.xy is None:
+            return True
+        cache = self.__dict__.setdefault("_links", {})
+        key = (u.uid, round(u.xy[0] / 100.0), round(u.xy[1] / 100.0), round(centre[0] / 25.0), round(centre[1] / 25.0))
+        if key not in cache:
+            lon, lat = to_ll(self.origin, *centre)
+            holds = True
+            try:
+                ans = self.call("get_link_coverage", uid=u.uid, brief=True,
+                                order={"task": "orbit", "center": [round(lon, 6), round(lat, 6)], "radius_m": u.orbit_m})
+                v = (ans.get("vehicles") or [{}])[0]
+                holds = v.get("holds") is not False
+            except Exception as e:  # noqa: BLE001 (no answer: as the honest ceiling)
+                self.write("error.link_coverage", uid=u.uid, error=f"{type(e).__name__}: {str(e)[:200]}")
+            cache[key] = holds
+        return cache[key]
+
+
 def sense_only(sim: Any) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """A callable that asks the simulator the sensing model's question and nothing else (the
     model's functions on the catalog: no episode state)."""
@@ -1489,7 +1524,7 @@ def sense_only(sim: Any) -> Callable[[dict[str, Any]], dict[str, Any]]:
 
 
 LADDER = {c.name: c for c in (Ceiling, CeilingShown, CeilingLate, CeilingLinkBlind, CeilingSensorBlind)}
-NAMES = tuple(LADDER) + (HonestCeiling.name,)
+NAMES = tuple(LADDER) + (HonestCeiling.name, HonestLinked.name)
 
 
 def make(ep: Any, name: str) -> Any:
@@ -1500,7 +1535,8 @@ def make(ep: Any, name: str) -> Any:
 
     if name in LADDER:
         return LADDER[name](ep)
-    if name == HonestCeiling.name:
-        return HonestCeiling(HeadlessSession(ep.sim, ANCHOR_AGENT, f"scoring-v3-{name}/1"), ep.aloop.run_until_complete,
-                             str(load_world(ep.e.map).name), str(ep.e.at), float(ep.e.duration_s), sense_only(ep.sim))
+    if name in (HonestCeiling.name, HonestLinked.name):
+        cls = HonestLinked if name == HonestLinked.name else HonestCeiling
+        return cls(HeadlessSession(ep.sim, ANCHOR_AGENT, f"scoring-v3-{name}/1"), ep.aloop.run_until_complete,
+                   str(load_world(ep.e.map).name), str(ep.e.at), float(ep.e.duration_s), sense_only(ep.sim))
     raise ValueError(f"unknown v3 ceiling {name!r}")

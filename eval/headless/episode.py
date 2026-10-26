@@ -98,7 +98,7 @@ V2_AGENTS = ANCHORS + LADDER + PERTURBATIONS + HONEST_PERTURBATIONS
 V3_AGENTS = ("oracle-v3-basic", "oracle-v3", "oracle-v3-late", "oracle-v3-linkblind", "oracle-v3-sensorblind",
              "oracle-v3-shown", "oracle-v3-honest", "oracle-v3-honest+spam", "oracle-v3-honest+behind", "oracle-v3-honest+skip-first",
              "oracle-v3-honest+reserve-blind", "oracle-v3-honest+ferries", "oracle-v3-honest+pull-off",
-             "oracle-v3-honest+wrong-sensor")
+             "oracle-v3-honest+wrong-sensor", "oracle-v3-honest-linked")
 #: the scripted agent for the engagement chain and the space segment (scripted.py)
 AGENTS = ("playbook", "model", "none") + V2_AGENTS + ("scripted",) + V3_AGENTS
 SCORINGS = ("v1", "v2", "v3")
