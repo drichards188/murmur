@@ -182,8 +182,9 @@ export type StepUpAct =
   | { act: 'declare_hostile'; track: string }
   | { act: 'confirm_declaration'; track: string }
   /** rules 8 and 16: accepting lost contacts with a nomination (`intent` null) or for one
-   *  waiting (its id), each `{track, since}` exactly as the request names it */
-  | { act: 'accept_unknown'; intent: number | null; accept_lost: { track: string; since: number }[] }
+   *  waiting (its id), each `{track, since}` exactly as the request names it; rules 19: and
+   *  live tracks as behaving now, each `{track}` (the same act and step-up) */
+  | { act: 'accept_unknown'; intent: number | null; accept_lost?: { track: string; since: number }[]; accept_behaving?: { track: string }[] }
   | { act: 'unspend'; uid: number }
 
 async function postJson(path: string, body: unknown): Promise<Record<string, unknown>> {

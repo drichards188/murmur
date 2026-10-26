@@ -169,6 +169,48 @@ export interface PictureToken {
   lost_accepted?: Record<string, { since: number | null; by: string }>
 }
 
+// ---- rules 19: live tracks accepted as behaving now (murmur-j0x) ---------------------------
+
+/** Rules 19: a live track as an operator with engagement authority would accept it "as it is
+ *  behaving now" for one engagement (or as the acceptance in force has it): the estimate it
+ *  starts from, the accepted path's region at the effect time, and whether the keep-out would
+ *  then hold for it. The engine judges it along that path and its course now, not anywhere it
+ *  could turn or speed up to, and lapses the acceptance on its own when it departs from it. */
+export interface BehavingInfo {
+  track: string
+  /** accepted for this engagement already: by whom, when (engine ms) */
+  accepted_by: string | null
+  accepted_t: number | null
+  /** whether it may be accepted now (in the picture and in view, with a velocity, protected) */
+  acceptable: boolean
+  why_not: string | null
+  /** the estimate an acceptance now would start from */
+  estimate_t: number
+  position: LngLat
+  velocity_mps: [number, number] | null
+  velocity_sigma_mps: number
+  /** accepted, whether the keep-out would hold for it on this picture */
+  clears: boolean
+  edge_m: number | null
+  short_m: number | null
+  /** the accepted path's region at the effect time (kind `accepted`) */
+  region: KeepOutRegion | null
+  /** in plain words, with the numbers and what the acceptance assumes */
+  reason: string
+  /** the picture lapses the acceptance in force (the engine logs it at its next step): why */
+  lapsed: string | null
+}
+
+/** A velocity as the operator reads it: "course 093°, 12.3 m/s (known to 0.4 m/s)". */
+export function courseText(v: [number, number] | null, sigma?: number) {
+  if (!v) return 'no velocity'
+  const speed = Math.hypot(v[0], v[1])
+  const known = sigma != null ? ` (known to ${sigma.toFixed(1)} m/s)` : ''
+  if (speed < 0.3) return `holding, ${speed.toFixed(1)} m/s${known}`
+  const deg = ((Math.atan2(v[0], v[1]) * 180) / Math.PI + 360) % 360
+  return `course ${String(Math.round(deg) % 360).padStart(3, '0')}°, ${speed.toFixed(1)} m/s${known}`
+}
+
 /** Ask for the picture to sign (an operator with engagement authority who may sign it). */
 export async function requestPicture(id: number): Promise<PictureToken> {
   return (await post(`/api/intents/${id}/picture`, {})) as PictureToken
@@ -259,7 +301,8 @@ export interface KeepOutExplanation {
   note: string
 }
 
-export type KeepOutKind = 'velocity' | 'mean_velocity' | 'manoeuvre' | 'young' | 'no_velocity' | 'aircraft' | 'out_of_view' | 'circling' | 'cruise_reach' | 'lost'
+/** `accepted` (rules 19): along the path an operator accepted for a live track as behaving now */
+export type KeepOutKind = 'velocity' | 'mean_velocity' | 'manoeuvre' | 'young' | 'no_velocity' | 'aircraft' | 'out_of_view' | 'circling' | 'cruise_reach' | 'lost' | 'accepted'
 
 export interface KeepOutRegion {
   kind: KeepOutKind
@@ -317,6 +360,9 @@ export interface KeepOutItem {
   other: string | null
   /** rules 16: a lost contact's facts for an acceptance */
   lost?: KeepOutLost | null
+  /** rules 19: a live track's acceptance as behaving now: what accepting it would do, or the
+   *  acceptance in force (null for vehicles and lost contacts) */
+  behaving?: BehavingInfo | null
 }
 
 /** A stretch of effect times (engine ms); for a holding target, the platform's distances
@@ -355,6 +401,7 @@ export const KEEP_OUT_KIND_LABEL: Record<KeepOutKind, string> = {
   circling: 'circling',
   cruise_reach: 'cruise reach',
   lost: 'lost: cruise reach',
+  accepted: 'accepted as behaving now',
 }
 
 /** A distance for the form: metres below a kilometre, else kilometres. */
@@ -381,9 +428,12 @@ export async function nominate(req: {
   fallback: Fallback
   rationale: string
   acceptLost?: KeepOutLost[]
+  /** rules 19: the live tracks the operator accepts as behaving now with it (track ids) */
+  acceptBehaving?: string[]
   proof?: { password?: string; passkey?: Record<string, unknown> }
 }): Promise<Intent> {
   const accept_lost = acceptLostBody(req.acceptLost ?? [])
+  const accept_behaving = acceptBehavingBody(req.acceptBehaving ?? [])
   const b = await post('/api/intents', {
     task: 'engage',
     uids: [req.uid],
@@ -392,9 +442,18 @@ export async function nominate(req: {
     window_s: req.windowS,
     fallback: req.fallback,
     rationale: req.rationale.trim() || null,
-    ...(accept_lost.length ? { accept_lost, ...(req.proof ?? {}) } : {}),
+    ...(accept_lost.length ? { accept_lost } : {}),
+    ...(accept_behaving.length ? { accept_behaving } : {}),
+    ...(accept_lost.length || accept_behaving.length ? (req.proof ?? {}) : {}),
   })
   return b.intent as Intent
+}
+
+/** Rules 19: the live tracks an acceptance as behaving now names, as the request and its
+ *  step-up's passkey challenge both carry them (the track id only: the engine logs the
+ *  estimate at the acceptance). */
+export function acceptBehavingBody(tracks: string[]): { track: string }[] {
+  return tracks.map((track) => ({ track }))
 }
 
 /** Rules 16: the lost contacts an acceptance names, as the request and its step-up's passkey

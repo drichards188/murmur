@@ -1,8 +1,23 @@
 import { useEffect, useMemo, useState } from 'react'
-import { stepsUpAct } from './auth'
+import { stepsUpAct, useAuth } from './auth'
 import type { Check } from './decisions'
-import { StepUpNeeded, useOperator } from './decisions'
-import { acceptLostBody, engageOptions, FALLBACK_LABEL, fmtDist, fmtRel, KEEP_OUT_KIND_LABEL, nominate, type EngageOption, type EngagePreview, type Fallback, type KeepOutExplanation, type KeepOutLost } from './engage'
+import { StepUpNeeded, useOperator, useOperators } from './decisions'
+import {
+  acceptBehavingBody,
+  acceptLostBody,
+  engageOptions,
+  FALLBACK_LABEL,
+  fmtDist,
+  fmtRel,
+  KEEP_OUT_KIND_LABEL,
+  nominate,
+  type BehavingInfo,
+  type EngageOption,
+  type EngagePreview,
+  type Fallback,
+  type KeepOutExplanation,
+  type KeepOutLost,
+} from './engage'
 import './engage.css'
 import { KeepOutExplain } from './KeepOutExplain'
 import { StepUpField } from './StepUp'
@@ -60,6 +75,11 @@ function keepOutLine(o: EngageOption) {
 
 export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepOuts, onNominated, onClose }: Props) {
   const [operator] = useOperator()
+  const auth = useAuth()
+  const ops = useOperators()
+  // rules 19: only an operator with engagement authority may accept a live track as behaving
+  // now (the bridge refuses the whole nomination otherwise): nobody else is offered the control
+  const mayAcceptBehaving = auth.auth === 'credentials' ? auth.engage === true : ops.engage.includes(operator)
   const hostile = useMemo(() => (tracks?.tracks ?? []).filter((t) => t.affiliation === 'hostile' && t.declared), [tracks])
   const [track, setTrack] = useState<string>(initial.track ?? hostile[0]?.id ?? '')
   const [radius, setRadius] = useState(75)
@@ -83,13 +103,34 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
       else delete next[l.track]
       return next
     })
+  // rules 19: the live tracks the operator accepts as behaving now with the nomination (by
+  // track id): the engine logs each one's estimate at the nomination
+  const [acceptBehaving, setAcceptBehaving] = useState<Record<string, BehavingInfo>>({})
+  const onAcceptBehaving = (b: BehavingInfo, on: boolean) =>
+    setAcceptBehaving((cur) => {
+      const next = { ...cur }
+      if (on) next[b.track] = b
+      else delete next[b.track]
+      return next
+    })
   // what was accepted goes with the target and the platform it was shown for: a new choice
   // starts with none ticked
-  useEffect(() => setAcceptLost({}), [track, uid])
+  useEffect(() => {
+    setAcceptLost({})
+    setAcceptBehaving({})
+  }, [track, uid])
+  const lostIds = Object.keys(acceptLost)
+  // (none sent for an operator without engagement authority, say after switching operator)
+  const behavingIds = mayAcceptBehaving ? Object.keys(acceptBehaving) : []
+  // "T-0007 as lost and T-0002 as behaving now", for the step-up's label
+  const acceptWhat = [lostIds.length ? `${lostIds.join(', ')} as lost` : '', behavingIds.length ? `${behavingIds.join(', ')} as behaving now` : '']
+    .filter(Boolean)
+    .join(' and ')
   // rules 8 and 10: in a credentials run whose policy lists accept_unknown, accepting a lost
-  // contact takes the operator's step-up (the password again, or their passkey), as accepting a
-  // lost vehicle of ours does; the bridge refuses the nomination without it
-  const accepting = Object.keys(acceptLost).length > 0
+  // contact (rules 19: or a live track as behaving now) takes the operator's step-up (the
+  // password again, or their passkey), as accepting a lost vehicle of ours does; the bridge
+  // refuses the nomination without it
+  const accepting = lostIds.length > 0 || behavingIds.length > 0
   const stepUp = accepting && stepsUpAct('accept_unknown')
   const [step, setStep] = useStepUp()
   const [stepBad, setStepBad] = useState(false)
@@ -126,6 +167,11 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
   }, [track, radius, windowS, fallback, tick])
 
   const chosen = options?.find((o) => o.uid === uid) ?? null
+  // rules 19: the ticked tracks that accepting would not clear, on the latest dry run
+  const behavingShort = behavingIds.filter((id) => {
+    const b = chosen?.keep_outs?.items.find((x) => x.behaving?.track === id)?.behaving ?? acceptBehaving[id]
+    return !b.clears
+  })
   useEffect(() => {
     onPreview(chosen?.preview ?? null)
   }, [chosen, onPreview])
@@ -152,8 +198,15 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
     setRefused(null)
     try {
       const list = Object.values(acceptLost)
-      const proof = stepUp ? await stepUpProof(step, { act: 'accept_unknown', intent: null, accept_lost: acceptLostBody(list) }) : undefined
-      const i = await nominate({ track, uid, radius, windowS, fallback, rationale, acceptLost: list, proof })
+      const proof = stepUp
+        ? await stepUpProof(step, {
+            act: 'accept_unknown',
+            intent: null,
+            ...(list.length ? { accept_lost: acceptLostBody(list) } : {}),
+            ...(behavingIds.length ? { accept_behaving: acceptBehavingBody(behavingIds) } : {}),
+          })
+        : undefined
+      const i = await nominate({ track, uid, radius, windowS, fallback, rationale, acceptLost: list, acceptBehaving: behavingIds, proof })
       setStepBad(false)
       onNominated(i.id)
     } catch (e) {
@@ -259,20 +312,36 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
         </section>
       )}
       {chosen?.keep_outs && (
-        <KeepOutExplain ex={chosen.keep_outs} name={nameOf(chosen.uid)} now={now} acceptLost={acceptLost} onAcceptLost={onAcceptLost} />
+        <KeepOutExplain
+          ex={chosen.keep_outs}
+          name={nameOf(chosen.uid)}
+          now={now}
+          acceptLost={acceptLost}
+          onAcceptLost={onAcceptLost}
+          acceptBehaving={acceptBehaving}
+          onAcceptBehaving={mayAcceptBehaving ? onAcceptBehaving : undefined}
+        />
       )}
-      {Object.keys(acceptLost).length > 0 && (
+      {lostIds.length > 0 && (
         <p className="eg-alarm" role="status">
-          You accept {Object.keys(acceptLost).join(', ')} as lost for this engagement: logged under your session with the nomination, shown to every signer, and
-          the checks leave {Object.keys(acceptLost).length > 1 ? 'them' : 'it'} out while out of view since that fix (the dry run above does not).
+          You accept {lostIds.join(', ')} as lost for this engagement: logged under your session with the nomination, shown to every signer, and
+          the checks leave {lostIds.length > 1 ? 'them' : 'it'} out while out of view since that fix (the dry run above does not).
+        </p>
+      )}
+      {behavingIds.length > 0 && (
+        <p className="eg-alarm" role="status">
+          You accept {behavingIds.join(', ')} as behaving now for this engagement: logged under your session with the nomination and the estimate then, shown
+          to every signer. The keep-out counts {behavingIds.length > 1 ? 'each' : 'it'} along that course, not anywhere it could turn or speed up to (the dry run
+          above does not), and the acceptance lapses on its own if it departs from that course beyond its uncertainty or goes out of view.
+          {behavingShort.length > 0 ? ` Accepting ${behavingShort.join(', ')} would not clear the keep-out.` : ''}
         </p>
       )}
       {stepUp && (
         <div className="tk-stepup eg-stepup">
           <StepUpField
-            passwordLabel={`Consequential: your password to accept ${Object.keys(acceptLost).join(', ')} as lost`}
-            purpose={`to accept ${Object.keys(acceptLost).join(', ')} as lost for this engagement`}
-            ariaLabel="Your password, to accept the lost contacts"
+            passwordLabel={`Consequential: your password to accept ${acceptWhat}`}
+            purpose={`to accept ${acceptWhat} for this engagement`}
+            ariaLabel="Your password, to accept for this engagement"
             value={step}
             onChange={(s) => {
               setStep(s)

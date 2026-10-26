@@ -405,6 +405,31 @@
   color: #7d8b9a;
 }
 
+/* rules 19: a live blocker accepted as behaving now (teal, as on the map) */
+.ko-behaving {
+  margin-top: 6px;
+  padding: 4px 6px;
+  border-left: 2px solid #6edec4;
+  background: rgba(110, 222, 196, 0.06);
+  font-size: 11.5px;
+}
+.ko-behaving.not {
+  border-left-color: #3a4652;
+  background: none;
+}
+.ko-behaving .ko-accept {
+  margin: 0 0 2px;
+  color: #aaeede;
+}
+.ko-behaving-reason {
+  margin-top: 2px;
+  color: #c3ccd6;
+}
+.ko-behaving-short {
+  margin-top: 2px;
+  color: #ffd39a;
+}
+
 @media (max-width: 720px) {
   .eg-panel {
     left: 8px;

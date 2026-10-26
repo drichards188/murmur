@@ -1,5 +1,5 @@
 import { fmtZ } from './decisions'
-import { fmtDist, KEEP_OUT_KIND_LABEL, type EffectWindow, type KeepOutExplanation, type KeepOutItem, type KeepOutLost, type MoveWithin } from './engage'
+import { courseText, fmtDist, KEEP_OUT_KIND_LABEL, type BehavingInfo, type EffectWindow, type KeepOutExplanation, type KeepOutItem, type KeepOutLost, type MoveWithin } from './engage'
 
 /** Why a keep-out blocks the chosen option of the nomination form, and what would clear it
  *  (murmur-12e): the bridge's read-only explanation, from the functions the checks read on
@@ -15,6 +15,10 @@ interface Props {
    *  toggle (absent: the explanation is read-only here) */
   acceptLost?: Record<string, KeepOutLost>
   onAcceptLost?: (l: KeepOutLost, on: boolean) => void
+  /** rules 19: the live tracks the operator accepts as behaving now with the nomination, by
+   *  track id, and a toggle (absent: read-only) */
+  acceptBehaving?: Record<string, BehavingInfo>
+  onAcceptBehaving?: (b: BehavingInfo, on: boolean) => void
 }
 
 /** "56 s", "3 min 36 s". */
@@ -48,7 +52,41 @@ function AcceptLost({ l, on, onToggle }: { l: KeepOutLost; on: boolean; onToggle
   )
 }
 
-function Item({ i, ex, acceptLost, onAcceptLost }: { i: KeepOutItem; ex: KeepOutExplanation } & Pick<Props, 'acceptLost' | 'onAcceptLost'>) {
+/** Rules 19: a live blocker as the operator would accept it "as behaving now" for this
+ *  engagement: the engine's own words on what that assumes and whether the keep-out would then
+ *  hold for it, and (when it may be accepted) the control. It covers this engagement only and
+ *  lapses on its own when the track departs from that course or goes out of view. */
+function AcceptBehaving({ b, on, onToggle }: { b: BehavingInfo; on: boolean; onToggle?: (b: BehavingInfo, on: boolean) => void }) {
+  return (
+    <div className={`ko-behaving ${b.acceptable ? '' : 'not'}`}>
+      {b.acceptable && onToggle && (
+        <label className="ko-accept">
+          <input type="checkbox" checked={on} onChange={(e) => onToggle(b, e.target.checked)} />
+          <span>
+            <b>Accept as behaving now</b>: {b.track}, {courseText(b.velocity_mps, b.velocity_sigma_mps)}, its estimate at {fmtZ(b.estimate_t)} (engagement authority;
+            logged under your session with the nomination; for this engagement only)
+          </span>
+        </label>
+      )}
+      <div className="ko-behaving-reason">{b.reason}</div>
+      {b.acceptable && !onToggle && <div className="ko-behaving-reason">Only an operator with engagement authority may accept it as behaving now.</div>}
+      {b.acceptable && !b.clears && (
+        <div className="ko-behaving-short">
+          Accepting it would not clear the keep-out{b.short_m != null && b.short_m > 0 ? `: it would still be short ${fmtDist(b.short_m)}` : ''}.
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Item({
+  i,
+  ex,
+  acceptLost,
+  onAcceptLost,
+  acceptBehaving,
+  onAcceptBehaving,
+}: { i: KeepOutItem; ex: KeepOutExplanation } & Pick<Props, 'acceptLost' | 'onAcceptLost' | 'acceptBehaving' | 'onAcceptBehaving'>) {
   const kind = i.subject === 'lost_contact' ? `lost: ${i.region ? KEEP_OUT_KIND_LABEL[i.region.kind] : 'its reach'}` : i.region ? KEEP_OUT_KIND_LABEL[i.region.kind] : 'cannot be placed'
   return (
     <div className={`ko-item ${i.blocks ? 'blocks' : 'near'}`}>
@@ -74,6 +112,7 @@ function Item({ i, ex, acceptLost, onAcceptLost }: { i: KeepOutItem; ex: KeepOut
         </ul>
       )}
       {i.blocks && i.lost && onAcceptLost && <AcceptLost l={i.lost} on={!!acceptLost?.[i.lost.track]} onToggle={onAcceptLost} />}
+      {i.blocks && i.behaving && <AcceptBehaving b={i.behaving} on={!!acceptBehaving?.[i.behaving.track]} onToggle={onAcceptBehaving} />}
     </div>
   )
 }
@@ -121,7 +160,7 @@ function Placement({ mw, name, t }: { mw: MoveWithin; name: string; t: number })
   )
 }
 
-export function KeepOutExplain({ ex, name, now, acceptLost, onAcceptLost }: Props) {
+export function KeepOutExplain({ ex, name, now, acceptLost, onAcceptLost, acceptBehaving, onAcceptBehaving }: Props) {
   if (!ex.items.length) return null
   const blocking = ex.items.filter((i) => i.blocks)
   const near = ex.items.filter((i) => !i.blocks)
@@ -137,7 +176,7 @@ export function KeepOutExplain({ ex, name, now, acceptLost, onAcceptLost }: Prop
         vehicle of ours at the effect time.
       </p>
       {blocking.map((i) => (
-        <Item key={`${i.subject}${i.id}`} i={i} ex={ex} acceptLost={acceptLost} onAcceptLost={onAcceptLost} />
+        <Item key={`${i.subject}${i.id}`} i={i} ex={ex} acceptLost={acceptLost} onAcceptLost={onAcceptLost} acceptBehaving={acceptBehaving} onAcceptBehaving={onAcceptBehaving} />
       ))}
       {near.length > 0 && (
         <details className="ko-near" open={!ex.blocked}>

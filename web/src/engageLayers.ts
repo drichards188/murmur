@@ -135,6 +135,8 @@ export function buildEngageLayers(drawings: EngageDrawing[], nowMs: number) {
 // ---- the keep-out explanation (murmur-12e) --------------------------------------------------
 
 const NEAR: RGBA = [154, 166, 178, 200]
+/** rules 19: a live blocker's path if accepted as behaving now */
+const BEHAVING: RGBA = [110, 222, 196, 235]
 
 /** A ring as dashes (deck.gl's PathLayer draws no dashes without an extension). */
 function dashedRing(center: LngLat, radiusM: number, dashes = 48): LngLat[][] {
@@ -157,8 +159,10 @@ interface Label {
  *  that blocks (amber) or nearly blocks (grey), the region the check reads at the effect time
  *  (dashed, faintly filled when it blocks) with its other regions that reach the clearance, a
  *  line from where it is now to where that region is centred, a ring on it now and a short
- *  label; and the platform's move-within ring (dashed blue) around the point it would need to
- *  be within. Read-only, as the explanation is. */
+ *  label; for a live blocker, the region its accepted path would have at the effect time if
+ *  accepted as behaving now (rules 19; dashed teal, beside its own); and the platform's
+ *  move-within ring (dashed blue) around the point it would need to be within. Read-only, as
+ *  the explanation is. */
 export function buildKeepOutLayers(ex: KeepOutExplanation, platformName: string) {
   const onTop = { depthCompare: 'always' as const, depthWriteEnabled: false }
   const paths: Path[] = []
@@ -177,6 +181,16 @@ export function buildKeepOutLayers(ex: KeepOutExplanation, platformName: string)
         for (const d of dashedRing(o.center, o.radius_m, 36)) paths.push({ path: d, color: a(color, 0.45), width: 1 })
       }
       if (i.now && distanceM(i.now, r.center) > 30) paths.push({ path: [i.now, r.center], color: a(color, 0.7), width: 1 })
+    }
+    // rules 19: what accepting a live blocker as behaving now would count instead: its accepted
+    // path's region at the effect time
+    const b = i.blocks ? i.behaving : null
+    if (b?.region) {
+      const br = b.region
+      for (const d of dashedRing(br.center, br.radius_m, 40)) paths.push({ path: d, color: a(BEHAVING, b.acceptable ? 1 : 0.5), width: 1.8 })
+      if (i.now && distanceM(i.now, br.center) > 30) paths.push({ path: [i.now, br.center], color: a(BEHAVING, 0.6), width: 1 })
+      const num = b.short_m == null ? '' : b.clears ? ` · clear by ${fmtDist(-b.short_m)}` : ` · still short ${fmtDist(b.short_m)}`
+      labels.push({ at: circle(br.center, br.radius_m, 4)[2], text: `${b.track} as behaving now${num}`, color: [170, 238, 222, 255], below: true })
     }
     if (i.now) {
       marks.push({ at: i.now, color })
