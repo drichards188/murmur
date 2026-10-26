@@ -582,6 +582,27 @@ group. Dates are 2026.
   relies on a keep-out within a few seconds of a manoeuvring aircraft seen only by bearings must
   allow about 100 m beyond the track's estimate. Physical air seeds 221-370 and surface 371-400
   are spent.
+- **Ground tracks keep a velocity under coarse fixes: the ground models calibrated on truth**
+  (10-25, murmur-e3b part A, the owner's option "keep a velocity for tracks seen stationary or
+  steady"). The F15 dev check's no-velocity ground blockers (67 % of blocked nominations) were
+  mostly people and parked cars whose only recent fixes were the MQ-9B's radar, a plot every 5 s
+  at 125 to 200 m: fixes too coarse to tell the IMM's models apart, so the manoeuvring model sat
+  at its probability floor and ground's uncalibrated manoeuvring noise (12 m^2/s^3) kept the
+  mixture's velocity 1-sigma at 5 to 6 m/s, three times the velocity's actual error, over the 3
+  m/s gate. Ground's white-noise acceleration is now 0.01 and 1 m^2/s^3, chosen on a new ground
+  calibration (`tracks::tests::calib_ground`, tuning seeds 491-520) as the air's were; the gate,
+  the IMM's structure, `TrackFacts` and the rules are unchanged. Rejected: widening the gate
+  (dishonest), gating on the reported (consistency-widened) sigma (no gain), and a per-track
+  manoeuvre rate learned from the time a track was seen stationary (no gain once ground was
+  calibrated, and less honest on a car setting off). Fresh held-out sets written first
+  (air 401-430, surface 431-460, ground 461-490), run once: air and surface hold (the surface's
+  one miss, a zigzag's keep-out 60 s ahead 75.0 % against the old filter's 76.5 %, is not this
+  change's); ground holds every velocity class (a standing or steady contact has a velocity 90 %
+  of the time under that radar alone) but fails position honesty on a hairpin road (within two
+  sigmas 78 to 81 %, against 83 %): the owner accepted that cost (10-26), a documented limit
+  like the air break's lag; keep-outs held in every ground case. F15 smoke: no-velocity ground blockers 66.7 % to 3.0 % of blocked attempts,
+  nominations passed unchanged (4 of 1,191; aircraft block 97 %). Details: docs/SENSING.md,
+  "Ground tracks under coarse fixes". Physical seeds 401-490 are spent.
 - **W1: cameras point themselves; orders name no look target** (10-23, approved). Each EO/IR
   sensor has a simulated payload manager on its vehicle: it searches the task area (an orbit's
   circle, a patrol's route, else around the vehicle) in the wide field, cues to the nearest

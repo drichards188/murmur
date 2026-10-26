@@ -804,6 +804,54 @@ commit's).
 40 contacts of every domain, headless, 30 simulated minutes: 91 times real time on the
 physical model, 82 on the legacy one (this host, 28 cores, one episode).
 
+**Ground tracks under coarse fixes** (murmur-e3b, 10-25). In the F15 dev check (SCORING-V3.md
+12.2) a ground track with no velocity blocked two thirds of the nominations. The cause, from the
+smoke's records (seeds 5400-5409, the basic oracle): not gaps between fixes but coarse ones. In
+2,634 of the 3,105 (attempt, track) pairs the only fixes of the last 10 s were the airborne
+radars' (the MQ-9B's every 5 s, 1-sigma 125 to 200 m: 1 degree of a slant range from 7,600 m;
+the RQ-4's coarser); 64 % of the pairs were people, the rest cars and a truck, and a track had a
+velocity only while a camera (1 Hz, 25 to 40 m) looked at it. Such fixes cannot tell the IMM's
+two models apart, so the manoeuvring model's probability stays at its floor (about 0.15), and
+ground's manoeuvring noise, 12 m^2/s^3 (about 13 m/s each way between such fixes, some of it
+leaking into the steady model through the interaction), held the mixture's velocity 1-sigma at
+5 to 6 m/s, over the 3 m/s gate, where the velocity's actual error was about a third of that
+(a velocity NEES of 0.2; surface tracks' is 0.2 to 0.3 in their steady classes too, the IMM's
+known caution in quiet periods). Ground's constants had been scaled from the single-model
+values and never checked against truth, and no calibration set had a ground contact. The fix
+calibrates them as the air's were (`tracks::tests::calib_ground`: people standing and walking,
+cars parked, driving straight and a winding road, parking and setting off at the contacts
+process's 0.5 m/s^2, as world v3's traffic moves; a MALE aircraft's radar from 7,600 m alone,
+with a ship offshore, and with a quadcopter's camera): 0.01 and 1 m^2/s^3, the most velocity
+with every ground class of the tuning set (seeds 491-520) honest (`ground_tune_grid`). The gate,
+the IMM and the other domains are unchanged. A track's own manoeuvre rate learned from the time
+it was seen stationary (a gamma prior on the onset rate) was tried on the tuning sets and
+dropped: once ground was calibrated it added no velocity and cost honesty on departures.
+
+The held-out sets, written before the change (commit b3e9ecf) and run once after it (588fd57):
+
+- Ground (`ground_calib_held_out`, seeds 461-490): in every mix every velocity class is honest
+  (holding, transit, a stop, a car setting off: velocity NEES 0.19 to 1.26) and a person or car
+  standing or keeping its course has a velocity 90 to 91 % of the time under the airborne radar
+  alone, 97 to 98 % with more sensors (the tracker before, on the tuning set: 0 % and 4 to 38 %);
+  keep-outs 60 and 100 s ahead hold every case at least as often as the old filter's. One class
+  fails: a car at 11 m/s up a hairpin road is within two sigmas 78.3, 81.0 and 81.3 % of the
+  time when updated (NEES 2.57, 2.44, 2.74; the criterion 83 % and 2.6), its velocity, when
+  shown, lagging the bends (velocity NEES 14 to 20, a class not asked for one). The tuning set's
+  winding road (9 m/s) held at 86 %. A follow-up: a car that keeps turning is beyond the steady
+  model, and the manoeuvring model's 1 m^2/s^3 trades it for the velocity of the contacts that
+  do not.
+- Surface (`calib_physical_held_out_two`, seeds 431-460, with two contacts only the far radar
+  fixes, about 100 m every 2.5 s): every criterion holds but one, not this change's (the surface
+  models are untouched): a keep-out 60 s ahead held the 50-degree zigzag 75.0 % of the time, the
+  old filter's 76.5 %. Per class NEES 0.98 to 1.92, within two sigmas 87.4 to 97.7 %, the
+  steady classes' velocities honest (NEES 0.22 to 1.45).
+- Air (`air_calib_physical_held_out_five`, seeds 401-430): every criterion holds.
+
+The F15 smoke, before and after (the same 10 situations, the basic oracle's 1,191 attempts):
+attempts with a no-velocity ground blocker 791 of 1,186 blocked (66.7 %) before, 35 (3.0 %)
+after; attempts with any ground track among the blockers 808 and 578; nominations passed 4
+before and after (aircraft block 97 %: the owner's question, SCORING-V3.md 12.4).
+
 ## Python
 
 `eval/headless/sensing.py` (`SenseModel`, through `murmur-headless --sense`, or the `sense`

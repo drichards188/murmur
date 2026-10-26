@@ -29,6 +29,16 @@
 //! yet other variants, and run once after it (`calib_physical_held_out`): an evaluation, never
 //! tuning. 96-125 were asked for; 101-130 are the air tuning set's (`calib_air`), so it takes
 //! 371-400, after the air sets.
+//!
+//! [`physical_held_out_two_cases`] on [`PHYSICAL_HELD_OUT_TWO_SEEDS`] (431-460) was written before
+//! any change to the tracker for murmur-e3b (tracks seen stationary or steady keep a velocity),
+//! with the air's and the ground's own new sets (`calib_air`, `calib_ground`), every class in yet
+//! other variants and two contacts only the far radar fixes; the change is developed on the
+//! tuning sets, and the set is run once after it (`calib_physical_held_out_two`), with one more
+//! criterion than the sets before: a velocity given honest in [`VELOCITY_CLASSES`]. The change
+//! turned out to be the ground models' constants alone (the surface's untouched); the set's one
+//! run (588fd57) held every criterion but one: a keep-out 60 s ahead held the 50-degree zigzag
+//! 75.0% of the time, the old filter's 76.5%.
 
 use super::{BASE, T0, at, contact, observer};
 use crate::tracks::model::Track;
@@ -49,6 +59,10 @@ pub const HELD_OUT_SEEDS: std::ops::RangeInclusive<u64> = 66..=95;
 /// The physical sensing model's own surface held-out set's seeds ([`physical_held_out_cases`]):
 /// written before sensing round 3, run once after it.
 pub const PHYSICAL_HELD_OUT_SEEDS: std::ops::RangeInclusive<u64> = 371..=400;
+/// The physical sensing model's second surface held-out set's seeds
+/// ([`physical_held_out_two_cases`]): written before murmur-e3b's tracker change, run once after
+/// it.
+pub const PHYSICAL_HELD_OUT_TWO_SEEDS: std::ops::RangeInclusive<u64> = 431..=460;
 /// Seconds before anything is scored (a new track settles).
 pub(super) const SETTLE_S: u32 = 30;
 /// How far ahead a keep-out is checked, s.
@@ -358,6 +372,28 @@ fn random_turns(seed: u64, len: usize) -> Vec<Kinematics> {
     out
 }
 
+/// A case in any domain, its motion drawn per seed (the ground calibration, `calib_ground`).
+pub(super) fn domain_case(
+    name: &'static str,
+    class: &'static str,
+    kind: &'static str,
+    domain: Domain,
+    observers: Vec<Observer>,
+    n: u32,
+    f: impl Fn(u64, usize) -> Vec<Kinematics> + 'static,
+) -> Case {
+    Case {
+        name,
+        class,
+        kind,
+        domain,
+        ais: false,
+        observers,
+        n,
+        motion: Motion::Drawn(Box::new(f)),
+    }
+}
+
 fn drawn(
     name: &'static str,
     class: &'static str,
@@ -638,6 +674,134 @@ pub fn physical_held_out_cases() -> Vec<Case> {
         drawn("patrol rectangle 1200 by 600 m at 6 m/s", "patrol box", "patrol_boat", two(), patrol_rectangle),
     ]
 }
+
+/// A zigzag of 50 degree course changes: 8 m/s, course 200 then 250 degrees, 45 s each.
+fn zigzag_50(_: u64, len: usize) -> Vec<Kinematics> {
+    integrate(900.0, 900.0, len, |t| {
+        let h = if ((t / 45.0).floor() as i64) % 2 == 0 { 200f64 } else { 250f64 }.to_radians();
+        (8.0 * h.sin(), 8.0 * h.cos())
+    })
+}
+
+/// Sprint and stop: 9 m/s for 20 s, still for 30 s, north-east.
+fn sprint_stop_9(s: f64) -> Kinematics {
+    let c = (s / 50.0).floor();
+    let r = s - c * 50.0;
+    let u = std::f64::consts::FRAC_1_SQRT_2;
+    let d = c * 180.0 + if r < 20.0 { 9.0 * r } else { 180.0 };
+    let v = if r < 20.0 { 9.0 } else { 0.0 };
+    ((-900.0 + u * d, -900.0 + u * d), (v * u, v * u))
+}
+
+/// A weave: 8 m/s, course 20 degrees swinging 40 degrees either way over 75 s.
+fn weave_40(_: u64, len: usize) -> Vec<Kinematics> {
+    integrate(-300.0, -1200.0, len, |t| {
+        let h = (20.0 + 40.0 * (std::f64::consts::TAU * t / 75.0).sin()).to_radians();
+        (8.0 * h.sin(), 8.0 * h.cos())
+    })
+}
+
+/// Random turns, drawn per seed: 9 m/s, every 20 to 60 s a new course 35 to 135 degrees
+/// either way, turned to at 12 degrees a second.
+fn random_turns_12(seed: u64, len: usize) -> Vec<Kinematics> {
+    let mut x = seed.wrapping_mul(0xC2B2_AE3D_27D4_EB4F).wrapping_add(0x1656_67B1_9E37_79F9);
+    let mut u = move || {
+        x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        (x >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let (mut e, mut n, mut course, mut want) = (-200.0f64, 600.0f64, 120f64, 120f64);
+    let mut next = 20.0 + 40.0 * u();
+    let mut out = Vec::with_capacity(len);
+    for s in 0..len {
+        let t = s as f64;
+        if t >= next {
+            let turn = 35.0 + 100.0 * u();
+            want = course + if u() < 0.5 { -turn } else { turn };
+            next = t + 20.0 + 40.0 * u();
+        }
+        let h = course.to_radians();
+        out.push(((e, n), (9.0 * h.sin(), 9.0 * h.cos())));
+        for _ in 0..10 {
+            course += (want - course).clamp(-1.2, 1.2);
+            let h = course.to_radians();
+            e += 0.9 * h.sin();
+            n += 0.9 * h.cos();
+        }
+    }
+    out
+}
+
+/// A patrol square: 1,000 m sides at 8 m/s, anticlockwise, turning at 10 degrees a second at
+/// each corner.
+fn patrol_square(_: u64, len: usize) -> Vec<Kinematics> {
+    let corners = [(500.0f64, -500.0f64), (500.0, 500.0), (-500.0, 500.0), (-500.0, -500.0)];
+    let (mut e, mut n) = (-500.0f64, -500.0f64);
+    let mut course = 90f64;
+    let mut leg = 0;
+    let mut out = Vec::with_capacity(len);
+    for _ in 0..len {
+        let h = course.to_radians();
+        out.push(((e, n), (8.0 * h.sin(), 8.0 * h.cos())));
+        for _ in 0..10 {
+            let (we, wn) = corners[leg];
+            if (we - e).hypot(wn - n) < 10.0 {
+                leg = (leg + 1) % 4;
+            }
+            let (we, wn) = corners[leg];
+            let want = (we - e).atan2(wn - n).to_degrees();
+            let delta = ((want - course + 540.0) % 360.0) - 180.0;
+            course += delta.clamp(-1.0, 1.0);
+            let h = course.to_radians();
+            e += 0.8 * h.sin();
+            n += 0.8 * h.cos();
+        }
+    }
+    out
+}
+
+/// The physical sensing model's second surface held-out set (murmur-e3b, tracks seen stationary
+/// or steady keep a velocity): written before any change to the tracker for it, every class in
+/// yet other variants and two contacts only the far radar fixes (about 100 m a fix, every 2.5 s:
+/// the sparse, coarse fixes that change is about), on seeds used nowhere else; run once, on
+/// [`PHYSICAL_HELD_OUT_TWO_SEEDS`], when the change is done, never tuned on
+/// ([`calib_physical_held_out_two`]).
+pub fn physical_held_out_two_cases() -> Vec<Case> {
+    let o = observers();
+    let two = || vec![o.near.clone(), o.near2.clone()];
+    let u = std::f64::consts::FRAC_1_SQRT_2;
+    vec![
+        case("holding, the near ship", "holding", "fishing_vessel", false, vec![o.near.clone()], 300, holding),
+        case("holding, the far radar only", "holding", "fishing_vessel", false, vec![o.far.clone()], 300, holding),
+        case("transit 7 m/s north-west, four sensors", "transit", "small_fast_boat", false, two(), 300, move |s| {
+            ((900.0 - 7.0 * u * s, -900.0 + 7.0 * u * s), (-7.0 * u, 7.0 * u))
+        }),
+        case("transit 5 m/s east, the far radar only", "transit", "fishing_vessel", false, vec![o.far.clone()], 300, transit(-800.0, -300.0, 5.0)),
+        case("AIS ferry 9 m/s south", "transit", "ferry", true, vec![o.ais_rx.clone()], 300, |s| ((-300.0, 1300.0 - 9.0 * s), (0.0, -9.0))),
+        case(
+            "stops after a 9 m/s transit at 140 s, the near ship and the far radar",
+            "stop after transit",
+            "fishing_vessel",
+            false,
+            vec![o.near.clone(), o.far.clone()],
+            300,
+            |s| if s < 140.0 { ((-1260.0 + 9.0 * s, 200.0), (9.0, 0.0)) } else { ((0.0, 200.0), (0.0, 0.0)) },
+        ),
+        case("a 90 degree turn at 6 deg/s, 9 m/s", "90 degree turn", "small_fast_boat", false, two(), 300, turn(9.0, 6.0)),
+        case("circling 700 m at 6 m/s", "circling", "patrol_boat", false, vec![o.near.clone()], 300, circling(700.0, 6.0)),
+        drawn("zigzag 8 m/s, 50 degrees every 45 s", "zigzag", "small_fast_boat", two(), zigzag_50),
+        case("sprint 9 m/s 20 s, stop 30 s, north-east", "sprint and stop", "small_fast_boat", false, two(), 300, sprint_stop_9),
+        drawn("weave 8 m/s, 40 degrees either way over 75 s", "weave", "fishing_vessel", two(), weave_40),
+        drawn("random legs, drawn per seed", "random legs", "small_fast_boat", two(), random_legs),
+        drawn("random turns at 12 deg/s, 9 m/s", "random turns", "small_fast_boat", two(), random_turns_12),
+        drawn("patrol square 1000 m at 8 m/s", "patrol box", "patrol_boat", two(), patrol_square),
+    ]
+}
+
+/// The classes of [`physical_held_out_two_cases`] in which a velocity given must be honest
+/// (murmur-e3b's own criterion, written with the set): a contact holding still or keeping its
+/// course and speed, or doing so between one manoeuvre (as the air calibration's
+/// `calib_air::STEADY_CLASSES`). The classes that manoeuvre again and again are reported.
+pub const VELOCITY_CLASSES: [&str; 4] = ["holding", "transit", "stop after transit", "90 degree turn"];
 
 /// The tracker before rules 9's review, as it estimated position, velocity and 1-sigma (its
 /// arithmetic, replicated for the comparison: a scalar update, a velocity from fixes 10 s
@@ -1003,6 +1167,20 @@ fn failures(cases: &[Case], seeds: std::ops::RangeInclusive<u64>, table: &mut Ve
 
 /// The same criteria on the scores `run` gives (the physical sensing model's evaluation).
 fn failures_by(cases: &[Case], seeds: std::ops::RangeInclusive<u64>, table: &mut Vec<String>, run: &dyn Fn(&Case, u64) -> Scores) -> Vec<String> {
+    failures_with_velocity(cases, seeds, table, run, &[])
+}
+
+/// [`failures_by`]'s criteria and one more (murmur-e3b's sets): in each of `velocity_classes`,
+/// its cases and seeds pooled, a velocity given within a mean normalized error (NEES, two
+/// dimensions, expected 2) of 2.6, as the air calibration asks of its steady classes. Each
+/// class's share of scored seconds without a velocity is in the table (`nov`).
+pub(super) fn failures_with_velocity(
+    cases: &[Case],
+    seeds: std::ops::RangeInclusive<u64>,
+    table: &mut Vec<String>,
+    run: &dyn Fn(&Case, u64) -> Scores,
+    velocity_classes: &[&str],
+) -> Vec<String> {
     let mut bad = Vec::new();
     let mut by_class: std::collections::BTreeMap<&str, Scores> = Default::default();
     for c in cases {
@@ -1026,6 +1204,10 @@ fn failures_by(cases: &[Case], seeds: std::ops::RangeInclusive<u64>, table: &mut
         let (nees, cover) = (s.new.mean_nees(), s.new.coverage());
         if !(cover >= 0.83 && (0.5..=2.6).contains(&nees)) {
             bad.push(format!("{class}: NEES {nees:.2}, within 2 sigma {:.1}% when updated", 100.0 * cover));
+        }
+        let vnees = s.new.vnees / s.new.vn.max(1.0);
+        if velocity_classes.contains(class) && vnees > 2.6 {
+            bad.push(format!("{class}: a velocity given with a mean normalized error of {vnees:.2}"));
         }
     }
     bad
@@ -1059,6 +1241,27 @@ fn calib_physical_held_out() {
     eprintln!("--- the criteria on the physical model: {}", if bad.is_empty() { "all hold".to_string() } else { format!("\n{}", bad.join("\n")) });
 }
 
+/// The physical sensing model's second surface held-out set (murmur-e3b: tracks seen stationary
+/// or steady keep a velocity): [`physical_held_out_two_cases`] on [`PHYSICAL_HELD_OUT_TWO_SEEDS`],
+/// written before the tracker change, run once after it, the criteria of
+/// [`failures_with_velocity`] reported with [`VELOCITY_CLASSES`] (`cargo test -p murmur-bridge
+/// --release -- --ignored --exact tracks::tests::calib::calib_physical_held_out_two
+/// --nocapture`). A record, not a target: a later change is judged on a set written for it.
+#[test]
+#[ignore]
+fn calib_physical_held_out_two() {
+    let mut table = Vec::new();
+    let bad = failures_with_velocity(
+        &physical_held_out_two_cases(),
+        PHYSICAL_HELD_OUT_TWO_SEEDS,
+        &mut table,
+        &|c, seed| run_by(c, seed, &mut physical(seed)),
+        &VELOCITY_CLASSES,
+    );
+    eprintln!("{}", table.join("\n"));
+    eprintln!("--- the criteria on the physical model: {}", if bad.is_empty() { "all hold".to_string() } else { format!("\n{}", bad.join("\n")) });
+}
+
 /// The same on the tuning sets (a check for a change to the physical model, which is never
 /// tuned on the held-out set: `cargo test -p murmur-bridge --release calib_physical_tuning --
 /// --ignored --nocapture`).
@@ -1068,7 +1271,7 @@ fn calib_physical_tuning() {
     let mut table = Vec::new();
     let mut bad = Vec::new();
     for (cases, seeds) in [(first_cases(), FIRST_SEEDS), (round_one_cases(), ROUND_ONE_SEEDS), (round_two_cases(), ROUND_TWO_SEEDS)] {
-        bad.extend(failures_by(&cases, seeds, &mut table, &|c, seed| run_by(c, seed, &mut physical(seed))));
+        bad.extend(failures_with_velocity(&cases, seeds, &mut table, &|c, seed| run_by(c, seed, &mut physical(seed)), &VELOCITY_CLASSES));
     }
     eprintln!("{}", table.join("\n"));
     eprintln!("--- the criteria on the physical model: {}", if bad.is_empty() { "all hold".to_string() } else { format!("\n{}", bad.join("\n")) });
@@ -1076,7 +1279,7 @@ fn calib_physical_tuning() {
 
 #[test]
 fn the_seed_sets_are_disjoint() {
-    let sets = [FIRST_SEEDS, ROUND_ONE_SEEDS, ROUND_TWO_SEEDS, HELD_OUT_SEEDS, PHYSICAL_HELD_OUT_SEEDS];
+    let sets = [FIRST_SEEDS, ROUND_ONE_SEEDS, ROUND_TWO_SEEDS, HELD_OUT_SEEDS, PHYSICAL_HELD_OUT_SEEDS, PHYSICAL_HELD_OUT_TWO_SEEDS];
     for (i, a) in sets.iter().enumerate() {
         for b in &sets[i + 1..] {
             assert!(a.end() < b.start() || b.end() < a.start(), "{a:?} and {b:?} overlap");

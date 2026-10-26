@@ -95,6 +95,13 @@
 //!     elevation search against a cue still inside it): the tracker is not changed, the sensing
 //!     changes are developed on the tuning sets (101-220) only, and the new set is run once,
 //!     after them ([`air_calib_physical_held_out_four`]), every criterion reported.
+//! 16. [`physical_held_out_five_cases`] on [`AIR_PHYSICAL_HELD_OUT_FIVE_SEEDS`] (401-430: 221-400
+//!     are spent) was written before any change to the tracker for murmur-e3b (tracks seen
+//!     stationary or steady keep a velocity), with the surface's and the ground's own new sets
+//!     (`calib`, `calib_ground`): the change is developed on the tuning sets (101-220) only, and
+//!     the new set is run once, after it ([`air_calib_physical_held_out_five`]), every
+//!     criterion reported. The change turned out to be the ground models' constants alone (the
+//!     air's untouched); the set's one run (588fd57): every criterion held.
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
@@ -135,6 +142,11 @@ pub const AIR_PHYSICAL_HELD_OUT_THREE_SEEDS: RangeInclusive<u64> = 311..=340;
 /// The physical sensing model's fourth air held-out set's seeds
 /// ([`physical_held_out_four_cases`]): written before sensing round 3, run once after it.
 pub const AIR_PHYSICAL_HELD_OUT_FOUR_SEEDS: RangeInclusive<u64> = 341..=370;
+/// The physical sensing model's fifth air held-out set's seeds
+/// ([`physical_held_out_five_cases`]): written before murmur-e3b's tracker change, run once
+/// after it. 221-400 were spent; the fresh sets start at 401 (air 401-430, the surface's
+/// `calib::PHYSICAL_HELD_OUT_TWO_SEEDS` 431-460, the ground's `calib_ground` 461-490).
+pub const AIR_PHYSICAL_HELD_OUT_FIVE_SEEDS: RangeInclusive<u64> = 401..=430;
 /// The rules the tracker before this calibration was judged under (the keep-out's regions).
 const BEFORE_RULES: u32 = 12;
 
@@ -704,6 +716,56 @@ pub fn physical_held_out_four_cases() -> Vec<AirCase> {
             |_, len| fly(len, (2000.0, 9000.0, 180.0, 70.0), 8.0, 3.0, |t, _, _, _| if t < 115.0 { (180.0, 70.0) } else { (30.0, 85.0) }),
         ),
         air("a far transit at 95 m/s east, 17 to 22 km north of the USV, 3200 m", "far transit", "light_aircraft", 3200.0, straight(-14250.0, 14000.0, 90.0, 95.0)),
+    ]
+}
+
+/// The physical sensing model's fifth air held-out set (murmur-e3b, tracks seen stationary or
+/// steady keep a velocity; see the module doc): written before any change to the tracker for
+/// it, the same classes as [`physical_held_out_four_cases`] in yet other variants; run once, on
+/// [`AIR_PHYSICAL_HELD_OUT_FIVE_SEEDS`], when the change is done, never tuned on.
+pub fn physical_held_out_five_cases() -> Vec<AirCase> {
+    vec![
+        air("straight 45 m/s south-west, 5 km east of the USV, 900 m", "straight", "light_aircraft", 900.0, straight(5000.0, 8000.0, 225.0, 45.0)),
+        air("straight 85 m/s east, 8 km north of the USV, 2600 m", "straight", "light_aircraft", 2600.0, straight(-10000.0, 5000.0, 90.0, 85.0)),
+        air("loitering 1000 m at 38 m/s, 1000 m", "loitering", "light_aircraft", 1000.0, circle(-2500.0, 2000.0, 1000.0, 38.0, true)),
+        air("loitering 600 m at 52 m/s anticlockwise, 700 m", "loitering", "light_aircraft", 700.0, circle(2500.0, -500.0, 600.0, 52.0, false)),
+        air("small UAS circling 240 m at 13 m/s, 70 m", "loitering", "unknown_uas", 70.0, circle(-1200.0, -1800.0, 240.0, 13.0, true)),
+        air(
+            "a square route 6 km at 55 m/s, turns at 4 deg/s, 900 m",
+            "route",
+            "light_aircraft",
+            900.0,
+            route(vec![(-3000.0, -1500.0), (3000.0, -1500.0), (3000.0, 4500.0), (-3000.0, 4500.0)], 55.0, 4.0),
+        ),
+        air(
+            "150 s straight at 48 m/s, then 80 degrees left at 5 deg/s, 650 m",
+            "one turn",
+            "light_aircraft",
+            650.0,
+            one_turn(-5000.0, -3000.0, 60.0, 48.0, 150.0, -80.0, 5.0),
+        ),
+        air("weave 52 m/s, 30 degrees either way over 35 s, 850 m", "weave", "light_aircraft", 850.0, weave(-6000.0, 3000.0, 110.0, 52.0, 30.0, 35.0)),
+        air(
+            "random turns at 42 m/s, 40 to 140 degrees at 6 deg/s every 20 to 55 s, 700 m",
+            "random turns",
+            "light_aircraft",
+            700.0,
+            random_turns(800.0, 1200.0, 42.0, (20.0, 55.0), (40.0, 140.0), 6.0, 0x4D),
+        ),
+        air("45 to 65 m/s at 60 s, then 35 at 160 s, at 2 m/s^2, straight, 1100 m", "speed change", "light_aircraft", 1100.0, |_, len| {
+            fly(len, (-5000.0, 1000.0, 70.0, 45.0), 0.0, 2.0, |t, _, _, _| (70.0, if t < 60.0 { 45.0 } else if t < 160.0 { 65.0 } else { 35.0 }))
+        }),
+        air("helicopter hovering 70 s, 28 m/s east for 110 s at 2.5 m/s^2, then hovering, 180 m", "hover and go", "helicopter", 180.0, |_, len| {
+            fly(len, (-2000.0, 500.0, 90.0, 0.0), 25.0, 2.5, |t, _, _, _| (90.0, if (70.0..180.0).contains(&t) { 28.0 } else { 0.0 }))
+        }),
+        air(
+            "an approach west at 75 m/s, then a break 140 degrees right at 9 deg/s to 88 m/s at 3 m/s^2, 650 m",
+            "approach and break",
+            "light_aircraft",
+            650.0,
+            |_, len| fly(len, (8000.0, -2000.0, 270.0, 75.0), 9.0, 3.0, |t, _, _, _| if t < 105.0 { (270.0, 75.0) } else { (50.0, 88.0) }),
+        ),
+        air("a far transit at 85 m/s south, 16 to 21 km west of the USV, 2800 m", "far transit", "light_aircraft", 2800.0, straight(-16000.0, 9000.0, 180.0, 85.0)),
     ]
 }
 
@@ -1312,6 +1374,22 @@ fn air_calib_physical_held_out_four() {
     eprintln!("--- the criteria on the physical model: {}", if bad.is_empty() { "all hold".to_string() } else { format!("\n{}", bad.join("\n")) });
 }
 
+/// The physical sensing model's fifth air held-out set (murmur-e3b: tracks seen stationary or
+/// steady keep a velocity): [`physical_held_out_five_cases`] on
+/// [`AIR_PHYSICAL_HELD_OUT_FIVE_SEEDS`], written before the tracker change, run once after it,
+/// the criteria of [`failures_on`] reported, and each class's velocity share in the table
+/// (`cargo test -p murmur-bridge --release -- --ignored --exact
+/// tracks::tests::calib_air::air_calib_physical_held_out_five --nocapture`). A record, not a
+/// target: a later change is judged on a set written for it.
+#[test]
+#[ignore]
+fn air_calib_physical_held_out_five() {
+    let mut table = Vec::new();
+    let bad = failures_on(&physical_held_out_five_cases(), AIR_PHYSICAL_HELD_OUT_FIVE_SEEDS, &mut table, true);
+    eprintln!("{}", table.join("\n"));
+    eprintln!("--- the criteria on the physical model: {}", if bad.is_empty() { "all hold".to_string() } else { format!("\n{}", bad.join("\n")) });
+}
+
 /// The same criteria on the tuning sets (what the air constants were chosen on).
 #[test]
 fn on_the_air_tuning_sets_the_tracker_is_honest_and_a_keep_out_holds() {
@@ -1670,6 +1748,7 @@ fn air_physical_misses() {
         Ok("physical_held_out_two") => vec![(physical_held_out_two_cases(), AIR_PHYSICAL_HELD_OUT_TWO_SEEDS)],
         Ok("physical_held_out_three") => vec![(physical_held_out_three_cases(), AIR_PHYSICAL_HELD_OUT_THREE_SEEDS)],
         Ok("physical_held_out_four") => vec![(physical_held_out_four_cases(), AIR_PHYSICAL_HELD_OUT_FOUR_SEEDS)],
+        Ok("physical_held_out_five") => vec![(physical_held_out_five_cases(), AIR_PHYSICAL_HELD_OUT_FIVE_SEEDS)],
         _ => tuning_sets(),
     };
     let prefix = std::env::var("AIR_CASE").unwrap_or_default();
@@ -1849,6 +1928,9 @@ fn the_air_seed_sets_are_disjoint_from_each_other_and_the_surface_sets() {
         calib::ROUND_TWO_SEEDS,
         calib::HELD_OUT_SEEDS,
         calib::PHYSICAL_HELD_OUT_SEEDS,
+        calib::PHYSICAL_HELD_OUT_TWO_SEEDS,
+        super::calib_ground::GROUND_TUNING_SEEDS,
+        super::calib_ground::GROUND_HELD_OUT_SEEDS,
         AIR_TUNING_SEEDS,
         AIR_ROUND_ONE_SEEDS,
         AIR_ROUND_TWO_SEEDS,
@@ -1858,6 +1940,7 @@ fn the_air_seed_sets_are_disjoint_from_each_other_and_the_surface_sets() {
         AIR_PHYSICAL_HELD_OUT_TWO_SEEDS,
         AIR_PHYSICAL_HELD_OUT_THREE_SEEDS,
         AIR_PHYSICAL_HELD_OUT_FOUR_SEEDS,
+        AIR_PHYSICAL_HELD_OUT_FIVE_SEEDS,
     ];
     for (i, a) in sets.iter().enumerate() {
         for b in &sets[i + 1..] {

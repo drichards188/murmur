@@ -88,18 +88,37 @@ const AIS_VEL_SIGMA_MPS: f64 = 0.3;
 /// (`tracks::tests::calib_air`: they were 0.4 and 80, scaled from the surface's, and gave a
 /// straight-flying aircraft seen by radar and EO/IR a velocity 15% of the time; the most
 /// velocity with every class honest and a velocity on a route within a normalized error of 2);
-/// ground and subsurface scaled from the single-model values by the same factors (a fifth,
-/// and forty times), not checked against truth.
+/// ground values on the ground tuning set (`tracks::tests::calib_ground`, murmur-e3b: people
+/// and vehicles standing, walking, driving a winding road, parking and setting off, seen by a
+/// MALE aircraft's radar, a ship and a quadcopter). Ground's were 0.06 and 12, scaled from the
+/// single-model values by the factors below and never checked; under a coarse radar's fixes (an
+/// airborne radar's 150 to 200 m every 5 s, the F15 dev check's commonest source of a ground
+/// track's last fixes) such fixes cannot tell the two models apart, the manoeuvring model's
+/// probability stays at its floor (about 0.15) and its velocity spread at 12 (about 13 m/s each
+/// way, some of it leaking into the steady model through the interaction) kept the mixture's
+/// velocity 1-sigma at 5 to 6 m/s, over the gate, for a person standing or a car parked for
+/// minutes, whose velocity was in truth within a third of that. 0.01 and 1 (a car turning at 15
+/// degrees a second at 9 to 11 m/s accelerates at 2.4 to 2.9 m/s^2, as the surface sets' boats
+/// do) give a velocity to a contact standing or keeping its course under that radar alone 90% of
+/// the time with every ground class honest (`calib_ground::ground_tune_grid`): at 1.5 and above
+/// a fifth of the time or less; at 0.75 two points more, a car on a winding road one point nearer
+/// the 83% line within two sigmas (85%) and its lagging velocity in the bends shown more often;
+/// at 0.5 that car is within two sigmas 82.5% of the time. Subsurface scaled from the single-model
+/// values by the same factors (a fifth, and forty times), not checked against truth.
 pub fn process_noise(domain: Domain) -> [f64; 2] {
     #[cfg(test)]
     if let (Domain::Air, Some(t)) = (domain, AIR_TUNE.get()) {
         return [t[0], t[1]];
     }
+    #[cfg(test)]
+    if let (Domain::Ground, Some(t)) = (domain, GROUND_TUNE.get()) {
+        return t;
+    }
     match domain {
         Domain::Air => [0.2, 20.0],
         Domain::Surface => [0.01, 2.0],
         Domain::Subsurface => [0.002, 0.4],
-        Domain::Ground => [0.06, 12.0],
+        Domain::Ground => [0.01, 1.0],
     }
 }
 
@@ -113,6 +132,9 @@ thread_local! {
     /// this thread (steady and manoeuvring white-noise acceleration, the velocity gate, the
     /// initial velocity sigma).
     pub static AIR_TUNE: std::cell::Cell<Option<[f64; 4]>> = const { std::cell::Cell::new(None) };
+    /// The ground calibration's tuning grid (`tests::calib_ground`): the ground models' white-noise
+    /// acceleration overridden on this thread (steady, manoeuvring).
+    pub static GROUND_TUNE: std::cell::Cell<Option<[f64; 2]>> = const { std::cell::Cell::new(None) };
 }
 
 /// A fix this far from the manoeuvring model's prediction (its innovation's normalized

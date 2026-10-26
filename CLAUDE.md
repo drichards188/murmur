@@ -279,7 +279,8 @@ meaningful. Decision and command, not weapons.
   run once for murmur-7vp, `air_calib_physical_held_out_three`, 311-340, run once for
   murmur-0b8, whose manoeuvre model it did not confirm, and `air_calib_physical_held_out_four`,
   341-370, with the surface's own `calib_physical_held_out`, 371-400, run once for sensing round
-  3; 221-400 are spent, so the next physical check needs a fresh set from 401) are evaluations: never
+  3, and 401-490 for the ground calibration (murmur-e3b; ground tuning sets 491-520); 221-490
+  are spent, so the next physical check needs a fresh set from 521) are evaluations: never
   tune the sensing model or the tracker on them. Sea clutter (round 3, murmur-qlt): the grazing
   angle is the spherical earth's to the nadir, a radar's `cell_m` its range resolution, its
   `doppler` mode clears a surface contact moving along its line of sight past the clutter's band;
