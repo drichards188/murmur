@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import type { Domain } from './types'
 
 /** The launcher (`make start`, eval/launcher.py): Murmur's main menu. It serves this console and
  *  starts and stops one scenario at a time (the open world, what `make goldengate` runs, or a
@@ -25,6 +26,8 @@ export interface Scenario {
   /** how many of them run in ArduPilot SITL (the rest are stand-ins) */
   sitl?: number
   platform_types?: number
+  /** how many of them in each domain (air, ground, surface, subsurface) */
+  domains?: Record<Domain, number>
   /** how long vehicles usually take to be ready (s) */
   typical_s?: [number, number]
   contacts?: number

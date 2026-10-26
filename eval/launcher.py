@@ -109,6 +109,7 @@ MAKE_VARS = (
     "AT", "EVENTS", "CONTACTS", "GG_FLEET", "ARGS", "FLEET", "NAME", "OPERATOR", "AI", "COSIGNER", "REVEAL",
 )
 START_KEYS = {"scenario", "operator", "ai", "replace"}
+DOMAINS = ("air", "ground", "surface", "subsurface")  # sim/platforms.toml's, in the menu's order
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # how long vehicles usually take to be navigation-ready (the menu says so while it waits)
 TYPICAL_SITL_S = (30, 60)
@@ -170,6 +171,8 @@ def _fleet(path: Path) -> dict[str, Any]:
         "vehicles": len(vehicles),
         "sitl": sitl,
         "platform_types": len({v["platform"] for v in vehicles}),
+        # how many of them in each domain (the catalog's), which the menu draws
+        "domains": {d: sum(1 for v in vehicles if v["domain"] == d) for d in DOMAINS},
         "typical_s": list(TYPICAL_SITL_S if sitl else TYPICAL_STANDINS_S),
     }
 

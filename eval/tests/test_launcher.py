@@ -47,6 +47,11 @@ def test_the_open_world_comes_first_then_the_situations(menu):
     hae = next(e for e in entries if e["id"] == "hostile-act-engagement")
     assert (hae["operator"], hae["ai"], hae["vehicles"], hae["sitl"], hae["duration_s"]) == ("autoplay", "claude", 2, 0, 720.0)
     assert hae["operators"] == ["live", "autoplay"] and hae["ais"] == list(S.AI_MODES) and hae["typical_s"] == [5, 20]
+    # each fleet by domain, every vehicle counted once: the full spectrum has all four
+    for e in entries:
+        if e["runnable"]:
+            assert list(e["domains"]) == list(L.DOMAINS) and sum(e["domains"].values()) == e["vehicles"]
+    assert all(first["domains"].values()) and hae["domains"] == {"air": 1, "ground": 0, "surface": 1, "subsurface": 0}
 
 
 def test_the_menu_never_carries_a_directors_notes(menu):
