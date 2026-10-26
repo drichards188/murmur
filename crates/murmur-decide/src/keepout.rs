@@ -280,6 +280,8 @@ pub struct Item {
 pub struct BehavingInfo {
     /// The track id to name in the acceptance.
     pub track: String,
+    /// Its domain (air, surface, ...).
+    pub domain: Domain,
     /// Accepted for this engagement already, by whom, and when (the world's time).
     pub accepted_by: Option<String>,
     pub accepted_t: Option<Time>,
@@ -1250,6 +1252,7 @@ fn behaving_info(
     };
     Some(BehavingInfo {
         track: id.to_string(),
+        domain: t.domain,
         accepted_by: accepted.map(|a| a.by.to_string()),
         accepted_t: accepted.map(|a| a.t),
         acceptable: acceptable.is_ok(),

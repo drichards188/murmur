@@ -1890,8 +1890,11 @@ impl Decision {
         let active = core.engine.intents().any(|i| {
             matches!(i.spec().task, Task::Engage { .. })
                 && match i.state() {
-                    // signatures waiting for the rest are held on their plan too
-                    State::PendingApproval => i.engagement().is_some_and(|e| e.plan.is_some()),
+                    // signatures waiting for the rest are held on their plan too; rules 19: and a
+                    // nomination with a live track accepted as behaving now is watched for its lapse
+                    State::PendingApproval => i
+                        .engagement()
+                        .is_some_and(|e| e.plan.is_some() || !e.accepted_behaving.is_empty()),
                     State::Approved | State::Dispatched | State::Effected => true,
                     _ => false,
                 }

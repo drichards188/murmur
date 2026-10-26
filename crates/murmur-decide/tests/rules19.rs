@@ -197,7 +197,9 @@ fn an_acceptance_lapses_when_the_estimate_leaves_the_accepted_path_or_course() {
     assert_eq!(lapse(Some(&later(10, 0.0, Some([12.0, 50.0]))), 10), None);
     let turned = lapse(Some(&later(10, 0.0, Some([14.0, 50.0]))), 10).unwrap();
     assert_eq!(turned.kind, LapseKind::Velocity, "{}", turned.detail);
-    assert_eq!(lapse(Some(&later(10, 0.0, None)), 10).unwrap().kind, LapseKind::NoVelocity);
+    // no velocity for a moment: its position alone is held to the path
+    assert_eq!(lapse(Some(&later(10, 0.0, None)), 10), None);
+    assert_eq!(lapse(Some(&later(10, 95.0, None)), 10).unwrap().kind, LapseKind::Position);
     // unseen 10 s: out of view, whatever its last estimate said
     assert_eq!(lapse(Some(&later(5, 0.0, on)), 15).unwrap().kind, LapseKind::OutOfView);
     assert_eq!(lapse(None, 10).unwrap().kind, LapseKind::Gone);

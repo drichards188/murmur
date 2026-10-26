@@ -934,9 +934,6 @@ pub enum LapseKind {
     Gone,
     /// No detection for [`OUT_OF_VIEW_S`]: nothing checks its course.
     OutOfView,
-    /// The tracker no longer gives it a velocity (it withholds one while a velocity is
-    /// uncertain, as in a turn): its course can't be checked.
-    NoVelocity,
     /// Its estimated position left the accepted prediction's region.
     Position,
     /// Its estimated velocity departed from the accepted one beyond their uncertainty.
@@ -948,7 +945,6 @@ impl LapseKind {
         match self {
             LapseKind::Gone => "gone",
             LapseKind::OutOfView => "out_of_view",
-            LapseKind::NoVelocity => "no_velocity",
             LapseKind::Position => "position",
             LapseKind::Velocity => "velocity",
         }
@@ -1011,8 +1007,6 @@ pub fn accepted_at(a: &AcceptedBehaving, t: Time) -> LonLat {
 ///
 /// - the track is no longer in the picture (`gone`);
 /// - it is out of view, no detection for [`OUT_OF_VIEW_S`] (`out_of_view`);
-/// - the tracker gives it no velocity (`no_velocity`: it withholds one while a velocity is
-///   uncertain, as in a turn);
 /// - its estimated position departs from where the accepted path puts it at the estimate's time
 ///   by more than `keep_out_sigma` times their combined 1-sigma: the accepted prediction's
 ///   ([`track_prediction_sigma`] of the accepted facts over the time since, rules 18's velocity
@@ -1021,10 +1015,15 @@ pub fn accepted_at(a: &AcceptedBehaving, t: Time) -> LonLat {
 /// - its estimated velocity departs from the accepted one by more than `keep_out_sigma` times
 ///   their combined 1-sigma: each velocity's error ([`track_velocity_error`]) and the velocity
 ///   the white-noise acceleration builds over the time since (`q t`, the same model's)
-///   (`velocity`).
+///   (`velocity`); while the tracker gives it no velocity (it withholds one while its models
+///   disagree, as in a turn, and for an aircraft on coarse fixes now and then in straight flight),
+///   only its position is held to the accepted path, and a turn shows there, later.
 ///
 /// None: it holds. A lapse is for good: the engine logs it and drops the acceptance, and a new
-/// one needs a person.
+/// one needs a person. The owner's decision names these two tests, a departure beyond the
+/// prediction's uncertainty and out of view; a velocity the tracker withholds for a moment is
+/// neither (lapsing on it, as first built, ended an acceptance of a steady aircraft every 10 to
+/// 20 s in a headless episode on the legacy sensing model).
 pub fn behaving_lapse(id: &str, a: &AcceptedBehaving, live: Option<&TrackFacts>, now: Time, ec: &EngageRules) -> Option<Lapse> {
     let lapse = |kind: LapseKind, detail: String| Some(Lapse { kind, detail });
     let Some(t) = live else {
@@ -1037,12 +1036,6 @@ pub fn behaving_lapse(id: &str, a: &AcceptedBehaving, live: Option<&TrackFacts>,
             format!("{id} out of view (no detection for {unseen:.0} s): its course can no longer be checked"),
         );
     }
-    let Some([ve, vn]) = t.velocity_mps else {
-        return lapse(
-            LapseKind::NoVelocity,
-            format!("the tracker no longer gives {id} a velocity (as in a turn): its course can no longer be checked"),
-        );
-    };
     let k = ec.keep_out_sigma;
     let since = secs(t.position.t.ms_since(a.facts.position.t)).max(0.0);
     let predicted = accepted_at(a, t.position.t);
@@ -1057,6 +1050,8 @@ pub fn behaving_lapse(id: &str, a: &AcceptedBehaving, live: Option<&TrackFacts>,
             ),
         );
     }
+    // its velocity, while the tracker gives it one
+    let [ve, vn] = t.velocity_mps?;
     let [ae, an] = a.facts.velocity_mps.unwrap_or([0.0, 0.0]);
     let dv = (ve - ae).hypot(vn - an);
     let accel = ec.track_accel(t.domain);

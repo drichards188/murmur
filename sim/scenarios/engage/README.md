@@ -153,7 +153,7 @@ expect_reinstated = ["T-0002 counts again"]      # rules 16, optional: confirmat
 expect_lapsed = ["T-0002 lapsed (velocity)"]     # rules 19, optional: acceptances as behaving
                                  # now that lapsed on their own, in order (`t=<s> T-0002
                                  # lapsed (<kind>): <detail>`; kinds out_of_view, gone,
-                                 # no_velocity, position, velocity)
+                                 # position, velocity)
 # policy, catalog, areas = "path"  # optional, relative to the repo (defaults: sim/...)
 
 [[carried]]                      # rules 15, optional: an earlier log whose carry failed at

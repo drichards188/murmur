@@ -11,6 +11,7 @@ of item is its policy (`ReviewPolicy`, presets in `PRESETS`, a batch's `Options.
 | a rule declaration awaiting an operator (rules 9) | `GET /api/review` `declarations` | confirm or revoke | `POST /api/tracks/{id}/confirm`, `.../revoke` |
 | a review flag in force (rules 9) | `GET /api/review` `flags` | confirm, dismiss, or declare the flagged track hostile | `POST /api/review/{flag}/resolve`, `POST /api/tracks/{id}/declare` |
 | a lost contact a waiting nomination's keep-out counts (rules 16) | `GET /api/inbox`, a nomination's `engage.lost_open` | accept it for that engagement (engagement authority) | `POST /api/intents/{id}/accept_unknown` `{track, since}` |
+| a live track that blocks a waiting nomination's keep-out (rules 19) | `GET /api/inbox`, a nomination's `engage.behaving` (while `behaving_acceptable_now`) | accept it as behaving now for that engagement (engagement authority) when the explanation says that clears it (`acceptable` and `clears`); `live_blockers = "accept_aircraft"` only an aircraft, `"accept_clearing"` any | `POST /api/intents/{id}/accept_behaving` `{track}` |
 | a live track carrying a lost contact's AIS (rules 16) | `GET /api/review` `lost_claims` | confirm it, only when nothing contradicts it | `POST /api/review/lost/{track}/confirm` `{by_track}` |
 | a platform spent by its own effect but still heard (rules 15) | `GET /api/inbox` alerts of kind `spent` | un-spend it (engagement authority) | `POST /api/restores/unspend` `{uid, note}` |
 
@@ -56,6 +57,10 @@ FLAGS = ("confirm", "dismiss", "declare", "leave", "evidence")
 LOST = ("accept", "leave")
 CLAIMS = ("confirm", "leave", "evidence")
 UNSPEND = ("unspend", "leave")
+#: rules 19: what the reviewer does with a live track blocking a waiting nomination's keep-out
+LIVE = ("accept_aircraft", "accept_clearing", "leave")
+#: rules 19: a live blocker still blocking this much later (by its estimates) is a new item
+RETRY_S = 30.0
 #: the evidence reviewer: what it calls a civil kind (a camera's identification of one contradicts
 #: a hostile declaration), and the confidence an EO/IR identification must show to count
 CIVIL_KINDS = ("ferry", "cargo_ship", "tanker", "sailboat", "fishing_vessel", "patrol_boat", "light_aircraft",
@@ -82,6 +87,8 @@ class ReviewPolicy:
     lost_contacts: str = "leave"
     ais_claims: str = "leave"
     unspend: str = "leave"
+    # rules 19: accept a live blocker as behaving now when the explanation says that clears it
+    live_blockers: str = "leave"
     label: str = "scripted"
     preset: str = "confirm-declarations"
     # the evidence reviewer (module doc): read only when an item's policy is "evidence"
@@ -92,6 +99,9 @@ class ReviewPolicy:
 
     def as_dict(self) -> dict[str, Any]:
         out = {**asdict(self), "scripted": True}
+        if self.live_blockers == "leave":
+            # a policy that accepts no live blocker records as it did before rules 19
+            out.pop("live_blockers")
         if not self.uses_evidence():
             # a policy that reads no evidence records as it did before the evidence reviewer
             for k in EVIDENCE_KEYS:
@@ -119,6 +129,10 @@ PRESETS: dict[str, dict[str, Any]] = {
     "absent": {"declarations": "leave"},
     # decides on what the picture shows, reading less under load (module doc; scoring v3's F16)
     "evidence": {"declarations": "evidence", "flags": "evidence", "ais_claims": "evidence"},
+    # rules 19 (bd murmur-j0x): accept-all's lost contacts, and a live aircraft that blocks a
+    # waiting nomination accepted as behaving now when the explanation says that clears it
+    "accept-behaving": {"flags": "confirm", "lost_contacts": "accept", "ais_claims": "confirm",
+                        "live_blockers": "accept_aircraft"},
 }
 
 
@@ -134,7 +148,7 @@ def review_policy(spec: dict[str, Any] | None = None) -> ReviewPolicy:
             raise ValueError(f"unknown review parameter {k!r}")
         setattr(p, k, float(v) if isinstance(getattr(p, k), float) else v)
     for k, allowed in (("declarations", DECLARATIONS), ("flags", FLAGS), ("lost_contacts", LOST),
-                       ("ais_claims", CLAIMS), ("unspend", UNSPEND)):
+                       ("ais_claims", CLAIMS), ("unspend", UNSPEND), ("live_blockers", LIVE)):
         if getattr(p, k) not in allowed:
             raise ValueError(f"review {k}: {getattr(p, k)!r} is not one of {', '.join(allowed)}")
     if p.attend_s <= 0 or p.read_s < 0:
@@ -274,6 +288,37 @@ def lost_acts(p: ReviewPolicy, card: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def behaving_acts(p: ReviewPolicy, card: dict[str, Any]) -> list[dict[str, Any]]:
+    """Rules 19: the live tracks blocking a waiting nomination's keep-out (`engage.behaving`, while
+    it waits with no signature: `behaving_acceptable_now`) that the explanation says accepting as
+    behaving now would clear (`acceptable` and `clears`), not accepted yet: each accepted for it
+    (`accept_aircraft`: an aircraft only). A lapse ends an acceptance for good; the same track
+    blocking again after one is a new item (its key counts the lapses), as after a reset, and so is
+    one still blocking `RETRY_S` of its estimates later (an acceptance the engine refused, its
+    velocity gone for a moment, is tried again: a person looks again)."""
+    if p.live_blockers == "leave" or card.get("kind") != "engage" or card.get("state") != "pending_approval":
+        return []
+    view = card.get("engage") or {}
+    if not view.get("behaving_acceptable_now"):
+        return []
+    iid = int(card["id"])
+    reset_t = (view.get("reset") or {}).get("t")
+    lapses = len(view.get("lapsed") or [])
+    out = []
+    for b in view.get("behaving") or []:
+        if b.get("accepted_by") or not (b.get("acceptable") and b.get("clears")):
+            continue
+        if p.live_blockers == "accept_aircraft" and b.get("domain") != "air":
+            continue
+        track = b.get("track")
+        window = int(float(b.get("estimate_t") or 0) // (RETRY_S * 1000.0))
+        out.append({"key": f"behaving:{iid}:{track}:{reset_t}:{lapses}:{window}", "kind": "live_blocker", "action": "accept",
+                    "item": iid, "track": track, "domain": b.get("domain"), "by": p.engage_operator,
+                    "why": str(b.get("reason") or "")[:240],
+                    "path": f"/api/intents/{iid}/accept_behaving", "body": {"track": track}})
+    return out
+
+
 def unspend_acts(p: ReviewPolicy, alerts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Platforms spent by their own effect but still heard (inbox alerts of kind `spent`)."""
     if p.unspend != "unspend":
@@ -318,7 +363,8 @@ class Reviewer:
 
     def _idle(self) -> bool:
         p = self.policy
-        return all(getattr(p, k) == "leave" for k in ("declarations", "flags", "lost_contacts", "ais_claims", "unspend"))
+        return all(getattr(p, k) == "leave"
+                   for k in ("declarations", "flags", "lost_contacts", "ais_claims", "unspend", "live_blockers"))
 
     def start(self, now: float) -> float | None:
         return None if self._idle() else now
@@ -341,11 +387,12 @@ class Reviewer:
             acts += [claim_act(self.policy, c) for c in review.get("lost_claims") or []]
         if now is not None:
             acts = [a for a in acts if a is None or self._defer.get(a["key"], -1.0) <= now + 1e-9]
-        if self.policy.lost_contacts != "leave" or self.policy.unspend != "leave":
+        if self.policy.lost_contacts != "leave" or self.policy.unspend != "leave" or self.policy.live_blockers != "leave":
             status, inbox = self.sim.api("GET", "/api/inbox")
             if status == 200 and inbox:
                 for card in sorted(inbox.get("pending") or [], key=lambda c: int(c.get("id", 0))):
                     acts += lost_acts(self.policy, card)
+                    acts += behaving_acts(self.policy, card)
                 acts += unspend_acts(self.policy, inbox.get("alerts") or [])
         seen: set[str] = set()
         out = []
@@ -383,7 +430,7 @@ class Reviewer:
             else:
                 result = f"error {status}: {(out or {}).get('detail') if isinstance(out, dict) else out}"[:400]
         rec = {k: act[k] for k in ("kind", "action", "item", "by") if k in act}
-        for k in ("track", "tracks", "by_track", "uid", "why", "diligent", "load"):
+        for k in ("track", "tracks", "by_track", "uid", "domain", "why", "diligent", "load"):
             if k in act:
                 rec[k] = act[k]
         self.decisions.append({"t": round(now, 3), "read_from_t": round(act["opened_t"], 3), **rec, "result": result})

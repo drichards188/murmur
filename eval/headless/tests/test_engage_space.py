@@ -238,6 +238,32 @@ def test_review_items_become_the_console_requests():
     assert [(a["path"], a["body"]["uid"]) for a in un] == [("/api/restores/unspend", 3)]
 
 
+def test_a_live_blocker_is_accepted_as_behaving_now_only_when_that_clears_it():
+    """Rules 19: `accept-behaving` accepts a live aircraft blocking a waiting nomination as behaving
+    now when the card's explanation says it may and that clears it; not a boat (`accept_aircraft`),
+    not one that would still block, not one accepted already, not after a signature; after a lapse
+    the same aircraft is a new item."""
+    p = rv.review_policy({"preset": "accept-behaving"})
+    assert (p.lost_contacts, p.live_blockers) == ("accept", "accept_aircraft")
+    assert "live_blockers" not in rv.review_policy({"preset": "accept-all"}).as_dict()
+    plane = {"track": "T-0005", "domain": "air", "acceptable": True, "clears": True, "accepted_by": None, "reason": "r"}
+    boat = {**plane, "track": "T-0006", "domain": "surface"}
+    toward = {**plane, "track": "T-0007", "clears": False}
+    taken = {**plane, "track": "T-0008", "accepted_by": "op-2"}
+    card = engage_card(behaving=[plane, boat, toward, taken], behaving_acceptable_now=True)
+    acts = rv.behaving_acts(p, card)
+    assert [(a["path"], a["body"], a["by"], a["domain"]) for a in acts] == [
+        ("/api/intents/7/accept_behaving", {"track": "T-0005"}, "op-2", "air")]
+    anyone = rv.behaving_acts(rv.review_policy({"live_blockers": "accept_clearing"}), card)
+    assert [a["track"] for a in anyone] == ["T-0005", "T-0006"]
+    assert rv.behaving_acts(p, engage_card(behaving=[plane], behaving_acceptable_now=False)) == []
+    assert rv.behaving_acts(rv.review_policy({}), card) == []
+    lapsed = engage_card(behaving=[plane], behaving_acceptable_now=True, lapsed=[{"track": "T-0005"}])
+    assert rv.behaving_acts(p, lapsed)[0]["key"] != acts[0]["key"], "a new acceptance after a lapse"
+    with pytest.raises(ValueError):
+        rv.review_policy({"live_blockers": "accept"})
+
+
 def test_the_reviewer_reads_then_acts_once_per_item():
     review = {"declarations": [{"id": "D-1", "track": "T-0008", "actions": ["confirm", "revoke"]}],
               "open": [{"id": "F-1", "flag": 1, "tracks": ["T-0004"], "actions": ["confirm", "dismiss", "declare"]}],
@@ -647,6 +673,64 @@ def test_a_lost_contact_is_accepted_for_a_waiting_nomination_on_the_real_bridge(
     waits = [d for d in rec["signers"]["decisions"] if d["action"] == "wait"
              and d["t"] < (accepted["t"] - t0) / 1000.0]
     assert waits and all("keep_out_tracks" in d["reason"] for d in waits)
+    replays(tmp_path / "a")
+
+
+#: a light aircraft that appears 2 km north of the raider's holding point after the nomination and
+#: flies north at 50 m/s, low (no ranged height: the keep-out stays 2D): it may turn or speed up to
+#: the effect point, so its reach blocks the waiting nomination's keep-out (rules 14)
+AIRCRAFT_AFTER_NOMINATION = """
+
+[[contact]]
+id = "aircraft-north"
+name = "Light aircraft leaving the Gate northbound, low (no transponder)"
+affiliation = "neutral"
+domain = "air"
+kind = "light_aircraft"
+speed_mps = 50
+alt_m = 300
+motion = "transit"
+route = [[-122.4950, 37.8300], [-122.4950, 38.0500]]
+start_s = 240
+"""
+
+
+def test_a_live_aircraft_is_accepted_as_behaving_now_for_a_waiting_nomination_on_the_real_bridge(
+        binary: Path, tmp_path: Path):
+    """bd murmur-j0x: rules 19 headless. The agent nominates while the sky is clear; an aircraft then
+    appears north of the target and its reach blocks the waiting nomination's keep-out; the card's
+    explanation (`engage.behaving`) says accepting it as behaving now clears it, and the reviewer
+    (`accept-behaving`) accepts it under engagement authority (`POST /api/intents/{id}/accept_behaving`,
+    `engage.accepted` naming the track); the signers' pictures carry it and they sign; the log replays."""
+    rec = with_contacts(tmp_path, AIRCRAFT_AFTER_NOMINATION, 470.0, agent="scripted",
+                        scripted={"engage": {"max_nominations": 1}},
+                        signers={"preset": "scripted", "mode": "rates", "latency_median_s": 150.0,
+                                 "latency_sigma": 0.0},
+                        review={"preset": "accept-behaving"}, effects={"p_hit": 1.0})
+    evs = events(rec)
+    plane = next(t for t, c in rec["truth"]["association"].items() if c == "aircraft-north")
+    nom = next(e for e in evs if e["type"] == "intent.created" and e["intent"]["kind"] == "engage")
+    iid = nom["intent"]["id"]
+    accepted = first(evs, "engage.accepted", intent=iid)
+    assert (accepted["track"], accepted["by"]) == (plane, "op-2")
+    assert accepted["behaving"]["domain"] == "air" and accepted["behaving"]["velocity_mps"] is not None
+    # each look at a blocker that clears accepts it (one the engine refuses then, its velocity gone
+    # for a moment, is recorded so); an acceptance lapses when the estimate leaves its accepted path
+    # (a young track's velocity still settling), and is given again by the reviewer, never by itself
+    decided = [d for d in rec["review"]["decisions"] if d["kind"] == "live_blocker"]
+    assert decided and all((d["action"], d["track"], d["by"]) == ("accept", plane, "op-2") for d in decided), decided
+    assert decided[0]["result"] == "done" and decided[-1]["result"] == "done", decided
+    lapses = [e for e in evs if e["type"] == "engage.acceptance_lapsed" and e["intent"] == iid]
+    assert all(e["kind"] in ("position", "velocity", "out_of_view", "gone") for e in lapses), lapses
+    assert len([e for e in evs if e["type"] == "engage.accepted" and e["intent"] == iid]) == \
+        len([d for d in decided if d["result"] == "done"])
+    signed = [e for e in evs if e["type"] in ("approval.concurred", "approval.granted") and e["intent"] == iid]
+    assert [e["by"] for e in signed] == ["op-2", "op-3"]
+    # nominated before the aircraft, accepted before the first signature; every signer was shown it
+    assert evs.index(nom) < evs.index(accepted) < evs.index(signed[0])
+    for s in signed:
+        assert plane in (s["token"].get("behaving_accepted") or {}), s["token"]
+    first(evs, "intent.state", intent=iid, to="dispatched")
     replays(tmp_path / "a")
 
 
