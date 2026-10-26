@@ -252,6 +252,15 @@ meaningful. Decision and command, not weapons.
   check `warning` and an inbox alert `path_crosses_land`. The bridge fetches the points before
   each decision and answers a moving vehicle's from the nearest cached tidewater sample within
   25 m (`TerrainOracle::sample_along`).
+- Predicted link coverage (docs/LINK-COVERAGE.md, bd murmur-hei): `GET`/`POST
+  /api/links/coverage`, `link_coverage` in dry runs and `preview_intent`, the MCP tool
+  `get_link_coverage`. Read-only, never logged, never a check; it shares the link emulator's
+  own range and terrain code (`murmur-linkemu` `coverage.rs`), so prediction and simulation
+  cannot disagree on geometry, but it does not predict scripted events (a jammer, a cut).
+  Terrain comes from tidewater or a baked grid named by `MURMUR_SURFACE_GRID` (headless: the
+  world's); without either it is not checked and the answer says so. It predicts at the
+  order's altitude: a vehicle flying lower sits in another 10 m band and can lose its link
+  sooner than predicted.
 - The tracker is a two-model IMM; changes must pass `tracks::tests::calib`. Its held-out seeds
   (66-95) are not for tuning: write a new held-out set if you tune on them. Aircraft have their
   own calibration (`tracks::tests::calib_air`: held-out seeds 221-250, run once, its two misses
