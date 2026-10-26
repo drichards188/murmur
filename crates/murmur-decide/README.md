@@ -1858,9 +1858,10 @@ Rules versions:
   the impact moved 10 s in the log is caught) and 107 (the MQ-9B at 9,000 m, beyond its missile's
   slant range even overhead: never released, aborted late by `engage_window`; `--rules 19`
   releases both over the point); the scenario runner's target leaves the picture at the strike;
-  tamper `edit_munition`. `tests/rules20.rs`. Fixtures (a clean build of the commit that brought
-  rules 20, named in each log's `build`): `tests/data/audit/v20-engagement-scenario-01.jsonl`,
-  `v20-standoff-missile-released-early-scenario-106.jsonl`.
+  tamper `edit_munition`. `tests/rules20.rs`. Fixtures (a clean build of `c788c83`):
+  `tests/data/audit/v20-engagement-scenario-01.jsonl`,
+  `v20-standoff-missile-released-early-scenario-106.jsonl` (relabelled rules 19, its flight is
+  caught).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
