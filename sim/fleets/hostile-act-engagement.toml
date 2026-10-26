@@ -21,7 +21,9 @@
 #   geofence judges no-go areas at every altitude, and from east of the bridge every route it was
 #   given crossed one (the first run, 2026-10-26). A fixed wing can take only the fallback
 #   `return` (ArduPlane has no lost-link action that holds where it is). It fires and flies on:
-#   it is not spent by its own effect.
+#   it is not spent by its own effect. Its munition (rules 20, the catalog's Hellfire-class
+#   missile, 8 km of slant range) is released from some 2 to 2.5 km out and strikes some 18 s
+#   later, so it never has to come nearer than its turn allows (about 1.75 km).
 #
 # No armed surface drone: with no order a stand-in boat drifts on the tide (2 m/s on the ebb
 # through the Gate in this scenario's hour), and an armed one may not be given a script's order.

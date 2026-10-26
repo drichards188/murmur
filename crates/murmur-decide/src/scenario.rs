@@ -134,7 +134,8 @@ pub struct Scenario {
     /// `move_drop` (a drop's last fix moved 6 km, everywhere the contact appears), and for rules
     /// 19 `drop_behaving_acceptance` (an acceptance of a live track as behaving now cut),
     /// `drop_behaving_lapse` (its lapse cut) and `behaving_acceptance_by_agent` (the acceptance
-    /// credited to an agent's session).
+    /// credited to an agent's session), and for rules 20 `edit_munition` (the released munition's
+    /// impact moved 10 s later).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tamper: Option<String>,
     /// Seconds to run (default: the last step plus 10).
@@ -1314,7 +1315,8 @@ pub fn run(
     let mut failures: Vec<String> = Vec::new();
     let mut refusals: Vec<String> = Vec::new();
     let mut last: Option<IntentId> = None;
-    let mut target_out: Option<String> = None;
+    // the target taken out of play by the effect, from when it strikes (rules 20: a munition's impact)
+    let mut target_out: Option<(String, Time)> = None;
     let mut fallback_seen: Option<String> = None;
     let mut engaging: BTreeMap<IntentId, (String, LonLat)> = BTreeMap::new();
     let mut extra = Extra {
@@ -1340,7 +1342,7 @@ pub fn run(
             if s > 0 {
                 tr.truth = offset(tr.truth, e, n);
             }
-            let silent = tr.silent || target_out.as_deref() == Some(id.as_str());
+            let silent = tr.silent || target_out.as_ref().is_some_and(|(out, at)| out == id && now >= *at);
             if s > 0 && !silent {
                 // the velocity estimate: the real one, plus a scripted error, plus a
                 // wobble correlated over about 10 s
@@ -1558,7 +1560,7 @@ pub fn run(
                         }
                         EngagementEvent::Effect(e) => {
                             if sc.after_effect != "persists" {
-                                target_out = Some(e.track.clone());
+                                target_out = Some((e.track.clone(), e.strike_t()));
                             }
                         }
                         EngagementEvent::Voided { .. } | EngagementEvent::Assessed { .. } => {}
@@ -4177,6 +4179,27 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
             if !done {
                 return Err(format!("nothing to {kind}"));
+            }
+        }
+        "edit_munition" => {
+            // rules 20: the munition's flight made to strike 10 s later than its release gave
+            // (as if it had been released from farther out), its time of flight to match
+            let mut done = false;
+            for e in &mut events {
+                if let EventBody::EngageEffect {
+                    intent,
+                    munition: Some(m),
+                    ..
+                } = &mut e.body
+                    && *intent == spec.id
+                {
+                    m.impact_t = m.impact_t.plus_ms(10_000);
+                    m.tof_s += 10.0;
+                    done = true;
+                }
+            }
+            if !done {
+                return Err("no munition released to edit".into());
             }
         }
         "drop_preload" => {

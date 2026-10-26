@@ -1239,12 +1239,14 @@ impl Ledger {
 /// revocation, `after`: after it), each with its approval snapshot and that picture's world
 /// as logged. What a revocation of a bystander's declaration stops, besides the engagements
 /// on the track itself. Rules 16: the picture's lost contacts are refilled too, so a declared
-/// hostile the tracker dropped (exempt as it was live) is a bystander as well.
+/// hostile the tracker dropped (exempt as it was live) is a bystander as well. Each engagement
+/// comes with its platform (rules 20: a munition's strike sets when the keep-out is judged).
 pub fn revocation_bystanders<'a>(
     in_play: impl Iterator<
         Item = (
             IntentId,
             &'a str,
+            Option<&'a crate::ids::Uid>,
             &'a crate::engage::EngageSnapshot,
             &'a crate::world::WorldSnapshot,
         ),
@@ -1255,8 +1257,8 @@ pub fn revocation_bystanders<'a>(
     cfg: &crate::rules::RulesConfig,
 ) -> Vec<IntentId> {
     let mut out: Vec<IntentId> = in_play
-        .filter(|(_, target, _, _)| *target != track)
-        .filter(|(_, _, snap, w)| {
+        .filter(|(_, target, _, _, _)| *target != track)
+        .filter(|(_, _, uid, snap, w)| {
             let refill = |l: &Ledger| {
                 let mut w = (*w).clone();
                 l.fill(&mut w.tracks);
@@ -1267,11 +1269,11 @@ pub fn revocation_bystanders<'a>(
             };
             let (pre, post) = (refill(before), refill(after));
             let pass = |w: &crate::world::WorldSnapshot| {
-                crate::engage::picture_keep_out_tracks(snap, w, cfg).outcome == crate::rules::Outcome::Pass
+                crate::engage::picture_keep_out_tracks(*uid, snap, w, cfg).outcome == crate::rules::Outcome::Pass
             };
             pass(&pre) && !pass(&post)
         })
-        .map(|(id, _, _, _)| id)
+        .map(|(id, _, _, _, _)| id)
         .collect();
     out.sort();
     out

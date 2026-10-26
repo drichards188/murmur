@@ -1,0 +1,68 @@
+# Rules 20 (bd murmur-64z): 106's armed MQ-9B flying at 9,000 m engages a boat holding west of the
+# bridge. Its Hellfire-class missile reaches 8,000 m of slant range, so from 9,000 m it is out of
+# range even straight above the point: the `arrival` check fails on the slant range ("the
+# Hellfire-class missile reaches 8000 m"), not on arrival_m, and nothing is released. The window
+# check judges the soonest the missile could strike (its flight from its range, about 19 s), so the
+# engagement is stopped late with its fallback some 19 s before an effect released at the point
+# would have been.
+title = "A standoff missile out of range is never released"
+invariant = "engage_window"
+attack = "a release from beyond the munition's range"
+expect = "aborted"
+expect_rule = "engage_window"
+end_s = 200
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "reaper-1"
+platform = "mq9b_armed"
+at = [-122.5250, 37.8000]   # off Lands End, west of the bridge
+alt_m = 9000                # above the missile's 8,000 m slant range
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "reaper-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"

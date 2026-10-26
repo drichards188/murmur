@@ -1,0 +1,78 @@
+# Rules 20 (bd murmur-64z): an armed MQ-9B at 7,600 m engages a fast boat running west at 5 m/s.
+# Its catalog munition, a Hellfire-class missile (425 m/s, 8,000 m slant range), flies a straight
+# slant line from the aircraft to the effect point, so the effect lands some 18 s after the
+# release. The release comes that time of flight early: once the aircraft is within the missile's
+# slant range of the point (about 2.5 km out on the ground; arrival_m's 150 m no longer applies)
+# and the strike, not the release, falls inside the plan's time tolerance with the boat predicted
+# within the effect radius of the point then. The effect lands at the impact (the boat goes out of
+# play then), and the assessment observes from the impact on. Then the log is forged: the
+# missile's impact moved 10 s later (as if released from farther out); replay recomputes the
+# flight from the releasing picture's inputs and catches it.
+title = "A standoff missile released its time of flight early"
+invariant = "audit"
+attack = "the munition's impact time edited in the log after the fact"
+expect = "done"
+expect_assessment = "ceased"
+tamper = "edit_munition"
+end_s = 200
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "reaper-1"
+platform = "mq9b_armed"     # armed, EO/IR 40 km: it also covers the point for the assessment
+at = [-122.5250, 37.8000]   # off Lands End, west of the bridge
+alt_m = 7600                # its cruise altitude
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8150]   # running west at 5 m/s, inside ez-gate-west
+velocity = [-5.0, 0.0]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "reaper-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"         # a fixed wing's lost-link action
+window_s = 600
+
+[[step]]
+at_s = 2
+action = "expect"
+state = "pending_approval"
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"

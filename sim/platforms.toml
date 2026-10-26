@@ -177,6 +177,11 @@ climb_mps = 10
 turn_dps = 3
 loiter_radius_m = 3500
 endurance_h = 35
+# rules 20 (bd murmur-64z): the munition it launches at an engagement's release, flying a straight
+# slant line from the aircraft to the effect point at a constant speed; range_m is that slant
+# distance at most. From 7,600 m it strikes some 18 s after the release, so the release comes
+# that much before the plan's time, from within about 2.5 km of the point on the ground.
+munition = { name = "Hellfire-class missile", speed_mps = 425, range_m = 8000 }
 link = "satcom"
 space_class = "wgs"
 space_class_alt = "ku-geo"

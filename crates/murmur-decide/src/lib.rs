@@ -237,6 +237,7 @@
 //!         id: "x10".into(), domain: Domain::Air, armed: false, cruise_mps: Some(12.0),
 //!         min_turn_radius_m: None, endurance_h: Some(0.65), autopilot: Some(AutopilotKind::Copter),
 //!         sensors: Vec::new(), climb_mps: None, max_mps: None, expended_by_effect: false,
+//!         munition: None,
 //!     }),
 //!     autopilot: Some(Fact::new(AutopilotKind::Copter, t)),
 //!     nav_ready: Some(Fact::new(true, t)),
@@ -313,11 +314,11 @@ pub use authority::{
     STEP_UP_MAX_AGE_MS, StepUp, StepUpRef,
 };
 pub use audit::RestoreClosure;
-pub use catalog::{AutopilotKind, Catalog, Domain, PlatformFacts, Reaches, SensorFact, SensorReach};
+pub use catalog::{AutopilotKind, Catalog, Domain, MunitionFacts, PlatformFacts, Reaches, SensorFact, SensorReach};
 pub use engage::{
     AssessResult, Assessment, EffectOrder, EffectRecord, EngageOrder, EngagePreview, EngageRules,
     EngageSnapshot, EngageWindow, Engagement, EngagementEvent, Fallback, FallbackOrder,
-    AcceptedBehaving, AcceptedUnknown, EffectAlt, FrozenPlan, Lapse, LapseKind, LapseRecord, LostLinkPreload, ObserveStep, ParamBits, ParamSetting,
+    AcceptedBehaving, AcceptedUnknown, EffectAlt, FrozenPlan, Lapse, LapseKind, LapseRecord, LostLinkPreload, MunitionFlight, ObserveStep, ParamBits, ParamSetting,
     PictureToken, PictureVerdict, PreloadPhase, PreloadRecord, ResetRecord, SignedPicture, StopCause,
     StopRecord, TrackIdentity, VehicleIdentity,
 };
@@ -352,7 +353,7 @@ pub use queue::{
 };
 pub use route::{LegKind, Route, RouteLeg, Segment};
 pub use rules::{
-    ACCEPT_BEHAVING_SINCE, AIRCRAFT_REACH_SINCE, CARRY_FOLLOWUPS_SINCE, CheckResult, LOST_CONTACT_SINCE, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
+    ACCEPT_BEHAVING_SINCE, AIRCRAFT_REACH_SINCE, CARRY_FOLLOWUPS_SINCE, CheckResult, LOST_CONTACT_SINCE, MUNITION_FLIGHT_SINCE, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
     QUEUE_FOLLOWUPS_SINCE, REVIEW_FOLLOWUPS_SINCE, ROUTE_SURFACE_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_VERSION,
     RuleId, RulesConfig, SPACE_FOLLOWUPS_SINCE, SPACE_REPLAY_SINCE, STEP_UP_SCHEMA_SINCE, UnknownEndurance, VELOCITY_SIGMA_SINCE,
 };

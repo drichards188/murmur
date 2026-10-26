@@ -1,7 +1,10 @@
 //! The engagement decision chain (Phase E): nominate, check, preview, authorize, hold the
 //! picture, execute with abort, assess. A C2 decision study, not a weapon model: the effect
-//! is an abstract event (a point, a radius, a time). Nothing here models a munition, a
-//! warhead, blast, lethality, terminal guidance or any optimisation of an aim point.
+//! is an abstract event (a point, a radius, a time). Nothing here models a warhead, blast,
+//! lethality, terminal guidance or any optimisation of an aim point. From rules 20 a standoff
+//! platform's munition is a thing in the picture between its release and its impact (DECISIONS.md
+//! "Munitions shown in flight and strikes animated"): a name, a constant speed along a straight
+//! slant line to the plan's point and a range ([`shot`]), so that the effect lands at the impact.
 //!
 //! ## The chain
 //!
@@ -52,11 +55,15 @@
 //!    recorded fallback is commanded. The effect is released ([`picture`]'s `ready`) when the
 //!    picture holds, the predicted time has come, the platform is at the point and the track
 //!    is estimated inside the effect radius. It is an abstract event, logged and sent to the
-//!    contacts process (truth), which marks contacts inside the radius.
+//!    contacts process (truth), which marks contacts inside the radius. Rules 20: a platform
+//!    with a catalog munition releases it once within the munition's slant range of the point,
+//!    when the strike (now plus its time of flight) falls inside the plan's time tolerance with
+//!    the track predicted inside the effect radius then; the effect lands at the impact
+//!    ([`MunitionFlight`], logged with the `engage.effect`).
 //! 7. **Assess** ([`observe`], [`assess`]): a sensor of ours must cover the effect point
-//!    afterwards. The target track either persists (detected after the effect), ceased (no
-//!    detection while covered for `assess_dwell_s`), or is unknown (not covered long enough
-//!    within `assess_window_s`).
+//!    afterwards (rules 20: after the impact). The target track either persists (detected after
+//!    the effect), ceased (no detection while covered for `assess_dwell_s`), or is unknown (not
+//!    covered long enough within `assess_window_s`).
 //!
 //! Every function here is pure: the engine logs the inputs and the results, and
 //! `murmur-replay` recomputes them.
@@ -66,7 +73,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::areas::{Area, AreaKind};
-use crate::catalog::{AutopilotKind, Domain, SensorFact};
+use crate::catalog::{AutopilotKind, Domain, MunitionFacts, SensorFact};
 use crate::geo::{LonLat, haversine_m};
 use crate::ids::{IntentId, OperatorId, SessionId, Uid};
 use crate::intent::{IntentSpec, Task};
@@ -360,6 +367,13 @@ impl EngageRules {
         self.rules_version >= crate::rules::ACCEPT_BEHAVING_SINCE
     }
 
+    /// The decisions of rules 20 on ([`crate::rules::MUNITION_FLIGHT_SINCE`]): a platform's catalog
+    /// munition is released its time of flight before the plan's time, from within its range,
+    /// and strikes at its impact ([`shot`]).
+    pub fn munition_flight(&self) -> bool {
+        self.rules_version >= crate::rules::MUNITION_FLIGHT_SINCE
+    }
+
     /// The optional keys this section sets, each with the policy schema that introduced it
     /// (or, for an old name, the first schema whose builds read it): a log claiming an
     /// older schema can't carry them (replay checks).
@@ -569,6 +583,41 @@ pub struct EffectRecord {
     pub radius_m: f64,
     /// The predicted time it was planned for.
     pub planned_t: Time,
+}
+
+/// Rules 20: a munition in flight, from its release to its impact ([`shot`]): the engagement's
+/// record (served to the console as `engagement.munition`), the `engage.effect` event's, and the
+/// effect order's. It flies a straight slant line from where the platform reported itself at the
+/// release to the effect point at a constant speed: its position at a time between the two is
+/// linear in longitude, latitude and altitude. Times are engine ms (the effect's clock); the
+/// effect strikes at `impact_t`, `tof_s` after the release (`launch_t`, the effect's `t`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MunitionFlight {
+    pub name: String,
+    pub speed_mps: f64,
+    pub launch_t: Time,
+    pub launch_point: LonLat,
+    /// Metres above mean sea level.
+    pub launch_alt_m: f64,
+    pub impact_t: Time,
+    pub impact_point: LonLat,
+    /// Metres above mean sea level: the target's altitude when the picture ranges it, else the
+    /// sea surface.
+    pub impact_alt_m: f64,
+    pub tof_s: f64,
+}
+
+/// Rules 20: the effect as the assessment reads it: struck at the munition's impact when there is
+/// one (observation starts there), else as released.
+pub fn struck(effect: &EffectRecord, munition: Option<&MunitionFlight>) -> EffectRecord {
+    match munition {
+        Some(m) => EffectRecord {
+            t: m.impact_t,
+            ..effect.clone()
+        },
+        None => effect.clone(),
+    }
 }
 
 /// Who or what stopped an engagement before its effect.
@@ -801,6 +850,10 @@ pub struct Engagement {
     pub watch: Option<PictureVerdict>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effect: Option<EffectRecord>,
+    /// Rules 20: the munition released with the effect, in flight until its impact (none for a
+    /// platform without one, and before the release).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub munition: Option<MunitionFlight>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop: Option<StopRecord>,
     /// Observation after the effect: seconds covered so far, and the last step.
@@ -1684,6 +1737,17 @@ pub struct EffectOrder {
     pub point: LonLat,
     pub radius_m: f64,
     pub t: Time,
+    /// Rules 20: the munition released at `t` (its launch and impact): the truth side applies
+    /// the effect at its impact, not at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub munition: Option<MunitionFlight>,
+}
+
+impl EffectOrder {
+    /// When the effect strikes: the munition's impact, else at once.
+    pub fn strike_t(&self) -> Time {
+        self.munition.as_ref().map_or(self.t, |m| m.impact_t)
+    }
 }
 
 /// What [`crate::Engine::step_engagements`] did, for the bridge to act on.
@@ -4454,12 +4518,10 @@ pub fn picture(
         }
     }
     // the keep-outs at the effect: the plan's time, or now once it has come (a release
-    // waiting for the platform or the track happens now, and everyone kept moving)
-    let effect_at = if ec.v2() {
-        p.effect_t.max(world.t)
-    } else {
-        p.effect_t
-    };
+    // waiting for the platform or the track happens now, and everyone kept moving); rules 20:
+    // a munition strikes a flight later, so the soonest it could strike
+    let flight = strike_lead(uid, p, track, world, &ec);
+    let effect_at = effect_at(p, world, flight.map(|(_, l)| l), &ec);
     let alt = effect_alt(track, world.t, effect_at, p.effect_radius_m, &ec);
     picture_checks.push(keep_out_friendly(
         p.effect_point,
@@ -4470,10 +4532,10 @@ pub fn picture(
         cfg,
         alt,
     ));
-    picture_checks.push(picture_keep_out_tracks(snap, world, cfg));
+    picture_checks.push(picture_keep_out_tracks(uid, snap, world, cfg));
     picture_checks.push(link_check(uid, snap, world));
     picture_checks.push(nav_check(uid, world, cfg));
-    picture_checks.push(window_check(snap, world, &ec, dispatched));
+    picture_checks.push(window_check(snap, world, &ec, dispatched, flight));
     let holds = picture_checks.iter().all(|c| c.outcome == Outcome::Pass);
     let mut out = picture_checks;
     let mut ready = false;
@@ -4489,20 +4551,34 @@ pub fn picture(
     (out, holds, ready)
 }
 
-/// The keep-out of tracks an engagement in play is held to ([`picture`]'s, on `world`): rules
-/// 9 also reads it to find the engagements a revoked declaration changes.
-pub fn picture_keep_out_tracks(snap: &EngageSnapshot, world: &WorldSnapshot, cfg: &RulesConfig) -> CheckResult {
+/// The keep-out of tracks an engagement in play is held to ([`picture`]'s, on `world`, for the
+/// engagement's platform `uid`): rules 9 also reads it to find the engagements a revoked
+/// declaration changes.
+pub fn picture_keep_out_tracks(
+    uid: Option<&Uid>,
+    snap: &EngageSnapshot,
+    world: &WorldSnapshot,
+    cfg: &RulesConfig,
+) -> CheckResult {
     let ec = cfg.engage_rules();
     let p = &snap.preview;
     let track = world.tracks.get(&snap.track_id);
-    // the plan's time, or now once it has come
-    let effect_at = if ec.v2() {
-        p.effect_t.max(world.t)
-    } else {
-        p.effect_t
-    };
+    // the plan's time, or now once it has come (rules 20: the soonest a munition could strike)
+    let lead = strike_lead(uid, p, track, world, &ec).map(|(_, l)| l);
+    let effect_at = effect_at(p, world, lead, &ec);
     let alt = effect_alt(track, world.t, effect_at, p.effect_radius_m, &ec);
     keep_out_tracks(p.effect_point, effect_at, p.keep_out_m, &snap.track_id, world, &ec, alt)
+}
+
+/// When a picture judges the keep-outs at the effect: the plan's time, or (rules 2) now once it
+/// has come; rules 20, a munition's (`lead`: the soonest it could strike, ms): that strike once
+/// it is past the plan's time.
+fn effect_at(p: &EngagePreview, world: &WorldSnapshot, lead: Option<i64>, ec: &EngageRules) -> Time {
+    if ec.v2() {
+        p.effect_t.max(world.t.plus_ms(lead.unwrap_or(0)))
+    } else {
+        p.effect_t
+    }
 }
 
 fn reclass_check(id: &str, then: &TrackFacts, now: &TrackFacts, ec: &EngageRules) -> CheckResult {
@@ -4682,7 +4758,16 @@ fn nav_check(uid: Option<&Uid>, world: &WorldSnapshot, cfg: &RulesConfig) -> Che
     }
 }
 
-fn window_check(snap: &EngageSnapshot, world: &WorldSnapshot, ec: &EngageRules, dispatched: bool) -> CheckResult {
+/// The window open and the platform not late; rules 20, for a platform's munition (`flight`: it
+/// and the soonest it could strike, [`strike_lead`]), judged at that strike: the munition must be
+/// able to strike before the window closes and within `late_s` of the plan's time.
+fn window_check(
+    snap: &EngageSnapshot,
+    world: &WorldSnapshot,
+    ec: &EngageRules,
+    dispatched: bool,
+    flight: Option<(&MunitionFacts, i64)>,
+) -> CheckResult {
     let r = RuleId::EngageWindow;
     let p = &snap.preview;
     if world.t > p.window.until {
@@ -4694,6 +4779,41 @@ fn window_check(snap: &EngageSnapshot, world: &WorldSnapshot, ec: &EngageRules, 
         );
     }
     let late_at = p.effect_t.plus_ms(ms(ec.late_s));
+    if let Some((m, lead)) = flight {
+        let strike = world.t.plus_ms(lead);
+        let fail = if strike > p.window.until {
+            Some(format!(
+                "the window closes {}: the {} could not strike before it ({:.1} s flight)",
+                rel(p.window.until, world.t),
+                m.name,
+                secs(lead)
+            ))
+        } else if dispatched && strike > late_at {
+            Some(format!(
+                "the {} could not strike within {:.0} s of the predicted time ({:.1} s flight)",
+                m.name,
+                ec.late_s,
+                secs(lead)
+            ))
+        } else {
+            None
+        };
+        return match fail {
+            Some(why) => check(r, None, Outcome::Fail, why),
+            None => check(
+                r,
+                None,
+                Outcome::Pass,
+                format!(
+                    "effect predicted {}, window closes {}; the {} strikes {:.1} s after its release",
+                    rel(p.effect_t, world.t),
+                    rel(p.window.until, world.t),
+                    m.name,
+                    secs(lead)
+                ),
+            ),
+        };
+    }
     if dispatched && world.t > late_at {
         return check(
             r,
@@ -4752,9 +4872,26 @@ fn release_checks(
     let ec = &cfg.engage_rules();
     let p = &snap.preview;
     let mut out = Vec::new();
-    // platform at the point
-    let arrival = match uid.and_then(|u| world.vehicles.get(u)).and_then(|v| v.position.as_ref()) {
-        Some(pos) => {
+    // rules 20: a platform's munition, if it were released now
+    let shot = shot(uid, p, track, world, ec);
+    // platform at the point; rules 20: a munition's platform within its slant range of it
+    let arrival = match (&shot, uid.and_then(|u| world.vehicles.get(u)).and_then(|v| v.position.as_ref())) {
+        (Some(Ok(s)), _) => check(
+            RuleId::Arrival,
+            uid,
+            if s.in_range() { Outcome::Pass } else { Outcome::Fail },
+            format!(
+                "platform {:.0} m slant range from the effect point ({:.0} m out, {:.0} m above it): the {} reaches {:.0} m, a {:.1} s flight",
+                s.slant_m,
+                s.ground_m,
+                s.launch_alt_m - s.impact_alt_m,
+                s.munition.name,
+                s.munition.range_m,
+                s.tof_s()
+            ),
+        ),
+        (Some(Err(why)), _) => check(RuleId::Arrival, uid, Outcome::Fail, why.clone()),
+        (None, Some(pos)) => {
             let d = haversine_m(pos.value, p.effect_point);
             let o = if d <= ec.arrival_m { Outcome::Pass } else { Outcome::Fail };
             check(
@@ -4764,36 +4901,45 @@ fn release_checks(
                 format!("platform {d:.0} m from the effect point (within {:.0} m to release)", ec.arrival_m),
             )
         }
-        None => check(RuleId::Arrival, uid, Outcome::Fail, "platform has no position"),
+        (None, None) => check(RuleId::Arrival, uid, Outcome::Fail, "platform has no position"),
     };
     out.push(arrival);
+    // rules 20: the effect strikes a flight after the release: the checks below judge that
+    // instant, not now
+    let flown = shot.as_ref().and_then(|s| s.as_ref().ok());
+    let strike = flown.map_or(world.t, |s| world.t.plus_ms(s.tof_ms));
     // the plan's time, within the same tolerance as its point: a moving target crosses the
     // deviation tolerance in plan_slack_s, so it may be released that much early (or late)
     // when it is at the point; a holding one waits for the time
     let (early, from) = release_from(p, ec);
-    let o = if world.t >= from { Outcome::Pass } else { Outcome::Fail };
+    let o = if strike >= from { Outcome::Pass } else { Outcome::Fail };
     out.push(check(
         RuleId::EffectTime,
         None,
         o,
-        if ec.v2() {
-            format!(
+        match flown {
+            Some(s) => format!(
+                "predicted effect time {}: the {} would strike {} (from {early:.0} s before it)",
+                rel(p.effect_t, world.t),
+                s.munition.name,
+                rel(strike, world.t)
+            ),
+            None if ec.v2() => format!(
                 "predicted effect time {} (released from {early:.0} s before it)",
                 rel(p.effect_t, world.t)
-            )
-        } else {
+            ),
             // rules 1: from the plan's time, no earlier
-            format!("predicted effect time {}", rel(from, world.t))
+            None => format!("predicted effect time {}", rel(from, world.t)),
         },
     ));
-    // released before the plan's time: the keep-outs as they are now (the picture read them at
-    // the plan's time)
-    if ec.v2() && world.t < p.effect_t {
-        let alt = effect_alt(track, world.t, world.t, p.effect_radius_m, ec);
-        out.push(keep_out_friendly(p.effect_point, world.t, p.keep_out_m, uid, world, cfg, alt));
+    // released (rules 20: struck) before the plan's time: the keep-outs as they are then (the
+    // picture read them at the plan's time)
+    if ec.v2() && strike < p.effect_t {
+        let alt = effect_alt(track, world.t, strike, p.effect_radius_m, ec);
+        out.push(keep_out_friendly(p.effect_point, strike, p.keep_out_m, uid, world, cfg, alt));
         out.push(keep_out_tracks(
             p.effect_point,
-            world.t,
+            strike,
             p.keep_out_m,
             &snap.track_id,
             world,
@@ -4803,16 +4949,23 @@ fn release_checks(
     }
     match track {
         Some(t) => {
-            let d = haversine_m(target_at(t, world.t, ec), p.effect_point);
+            let d = haversine_m(target_at(t, strike, ec), p.effect_point);
             let o = if d <= p.effect_radius_m { Outcome::Pass } else { Outcome::Fail };
             out.push(check(
                 RuleId::Alignment,
                 None,
                 o,
-                format!(
-                    "{} estimated {d:.0} m from the effect point (effect radius {:.0} m)",
-                    snap.track_id, p.effect_radius_m
-                ),
+                if flown.is_some() {
+                    format!(
+                        "{} predicted {d:.0} m from the effect point at the strike (effect radius {:.0} m)",
+                        snap.track_id, p.effect_radius_m
+                    )
+                } else {
+                    format!(
+                        "{} estimated {d:.0} m from the effect point (effect radius {:.0} m)",
+                        snap.track_id, p.effect_radius_m
+                    )
+                },
             ));
             out.push(uncertainty_check(&snap.track_id, t, ec, p.effect_radius_m));
         }
@@ -4824,6 +4977,146 @@ fn release_checks(
         )),
     }
     out
+}
+
+// ---- munitions in flight (rules 20) ---------------------------------------------------------
+
+/// Rules 20: the munition the engagement's platform launches at the release (its catalog's,
+/// [`crate::catalog::MunitionFacts`]), when the rules read one; none for a platform that carries
+/// none or is its own (a loitering munition, spent by its own effect), and before rules 20.
+pub fn munition_of<'w>(uid: Option<&Uid>, world: &'w WorldSnapshot, ec: &EngageRules) -> Option<&'w MunitionFacts> {
+    if !ec.munition_flight() {
+        return None;
+    }
+    uid.and_then(|u| world.vehicles.get(u))?
+        .platform
+        .as_ref()?
+        .munition
+        .as_ref()
+}
+
+/// Rules 20: the shot a platform's munition would make if released now ([`shot`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shot {
+    pub munition: MunitionFacts,
+    /// Where the platform reported itself, and its altitude (m above mean sea level).
+    pub launch_point: LonLat,
+    pub launch_alt_m: f64,
+    /// The plan's effect point, and the effect's altitude.
+    pub impact_point: LonLat,
+    pub impact_alt_m: f64,
+    /// The horizontal and the slant distance from the launch to the effect point, m.
+    pub ground_m: f64,
+    pub slant_m: f64,
+    /// The time of flight along the slant, ms.
+    pub tof_ms: i64,
+}
+
+impl Shot {
+    /// Within the munition's range: it may be released.
+    pub fn in_range(&self) -> bool {
+        self.slant_m <= self.munition.range_m
+    }
+
+    pub fn tof_s(&self) -> f64 {
+        secs(self.tof_ms)
+    }
+
+    /// The soonest the munition could strike from now, ms: its time of flight from here, or from
+    /// its range when the platform is farther (it must close to its range first, and closing in
+    /// never brings the strike earlier: a platform flies slower than its munition).
+    pub fn lead_ms(&self) -> i64 {
+        ms(self.slant_m.min(self.munition.range_m) / self.munition.speed_mps)
+    }
+
+    /// The flight of this shot released at `t` (the `engage.effect`'s time).
+    pub fn flight(&self, t: Time) -> MunitionFlight {
+        MunitionFlight {
+            name: self.munition.name.clone(),
+            speed_mps: self.munition.speed_mps,
+            launch_t: t,
+            launch_point: self.launch_point,
+            launch_alt_m: self.launch_alt_m,
+            impact_t: t.plus_ms(self.tof_ms),
+            impact_point: self.impact_point,
+            impact_alt_m: self.impact_alt_m,
+            tof_s: self.tof_s(),
+        }
+    }
+}
+
+/// Rules 20: the shot the engagement's platform would make with its munition if it released now:
+/// from its reported position and altitude, along a straight slant line, to the plan's effect
+/// point at the effect's altitude (the target's when the picture ranges it, as the 3D keep-out
+/// reads it, [`effect_alt`]; else the sea surface, 0 m), at the munition's constant speed. None
+/// when the platform has no munition the rules read ([`munition_of`]): the release is judged as
+/// before. An error (fail closed) when the platform has no position or reports no altitude, or
+/// its munition's facts can't fly.
+pub fn shot(
+    uid: Option<&Uid>,
+    p: &EngagePreview,
+    track: Option<&TrackFacts>,
+    world: &WorldSnapshot,
+    ec: &EngageRules,
+) -> Option<Result<Shot, String>> {
+    let m = munition_of(uid, world, ec)?;
+    let v = uid.and_then(|u| world.vehicles.get(u));
+    let Some(pos) = v.and_then(|v| v.position.as_ref()) else {
+        return Some(Err("platform has no position".into()));
+    };
+    let Some(alt) = v
+        .and_then(|v| v.alt_msl_m.as_ref())
+        .map(|a| a.value)
+        .filter(|a| a.is_finite())
+    else {
+        return Some(Err(format!(
+            "platform reports no altitude: the {}'s slant range to the effect point is unknown",
+            m.name
+        )));
+    };
+    if !(m.speed_mps.is_finite() && m.speed_mps > 0.0 && m.range_m.is_finite() && m.range_m > 0.0) {
+        return Some(Err(format!(
+            "the {}'s facts can't fly ({} m/s, {} m)",
+            m.name, m.speed_mps, m.range_m
+        )));
+    }
+    let impact_alt = effect_alt(track, world.t, world.t, p.effect_radius_m, ec).map_or(0.0, |a| a.alt_m);
+    let ground = haversine_m(pos.value, p.effect_point);
+    let slant = ground.hypot(alt - impact_alt);
+    Some(Ok(Shot {
+        munition: m.clone(),
+        launch_point: pos.value,
+        launch_alt_m: alt,
+        impact_point: p.effect_point,
+        impact_alt_m: impact_alt,
+        ground_m: ground,
+        slant_m: slant,
+        tof_ms: ms(slant / m.speed_mps),
+    }))
+}
+
+/// Rules 20: the munition of the engagement's platform and the soonest it could strike from now,
+/// ms ([`Shot::lead_ms`]), for the picture's window and keep-outs; none without a munition or a
+/// shot (the release's `arrival` check then says why).
+pub fn strike_lead<'w>(
+    uid: Option<&Uid>,
+    p: &EngagePreview,
+    track: Option<&TrackFacts>,
+    world: &'w WorldSnapshot,
+    ec: &EngageRules,
+) -> Option<(&'w MunitionFacts, i64)> {
+    let m = munition_of(uid, world, ec)?;
+    let s = shot(uid, p, track, world, ec)?.ok()?;
+    Some((m, s.lead_ms()))
+}
+
+/// Rules 20: the shot an engagement's release makes, on the world of the picture that released it
+/// (the engine logs its flight with the `engage.effect`, and replay recomputes it from that
+/// picture's inputs); none for a platform without a munition, or without a shot (no such picture
+/// is ready).
+pub fn release_shot(spec: &IntentSpec, snap: &EngageSnapshot, world: &WorldSnapshot, cfg: &RulesConfig) -> Option<Shot> {
+    let ec = cfg.engage_rules();
+    shot(platform_of(spec), &snap.preview, world.tracks.get(&snap.track_id), world, &ec)?.ok()
 }
 
 // ---- assessment -----------------------------------------------------------------------------

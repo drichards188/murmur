@@ -234,8 +234,26 @@ pub enum UnknownEndurance {
 /// travels, not only its waypoints. Version 18 ([`VELOCITY_SIGMA_SINCE`]): a protected track is
 /// predicted with its own velocity error, as the tracker reports it. Version 19
 /// ([`ACCEPT_BEHAVING_SINCE`]): an operator may accept a live track as it is behaving now, and
-/// the acceptance lapses on its own when the track departs from it.
-pub const RULES_VERSION: u32 = ACCEPT_BEHAVING_SINCE;
+/// the acceptance lapses on its own when the track departs from it. Version 20
+/// ([`MUNITION_FLIGHT_SINCE`]): a platform with a catalog munition releases it the time of flight
+/// before the plan's time, from within the munition's range, and the effect lands at its impact.
+pub const RULES_VERSION: u32 = MUNITION_FLIGHT_SINCE;
+
+/// The rules version from which a platform whose catalog gives it a munition (`munition = { name,
+/// speed_mps, range_m }`, [`crate::catalog::MunitionFacts`]) releases it as a munition in flight
+/// (bd murmur-64z, the owner's direction of 2026-10-26, DECISIONS.md "Munitions shown in flight
+/// and strikes animated"): the munition flies a straight slant line from the platform's reported
+/// position and altitude to the effect point at a constant speed, so the effect lands a time of
+/// flight after the release ([`crate::engage::shot`]). The release needs the platform within the
+/// munition's slant range of the effect point instead of `arrival_m` (the `arrival` check), and
+/// the effect time, window and lateness, the target at the point (`alignment`) and the keep-outs
+/// at the release are judged at the predicted impact, not now; the `engage.effect` logs the
+/// munition's flight (name, launch point and altitude, time of flight, impact time, point and
+/// altitude), which replay recomputes from the releasing picture's inputs; the assessment
+/// observes from the impact on. A platform without one (a loitering munition is its own) decides
+/// exactly as before. Every gate of that change reads this constant, never a literal: another
+/// change taking 20 first renumbers it in this one line.
+pub const MUNITION_FLIGHT_SINCE: u32 = 20;
 
 /// The rules version from which an operator with engagement authority may accept one live track
 /// that blocks an engagement's keep-out as it is behaving now (bd murmur-j0x, the owner's
@@ -542,6 +560,12 @@ impl RulesConfig {
     /// Rules 19 ([`ACCEPT_BEHAVING_SINCE`]): a live track may be accepted as behaving now.
     pub fn accept_behaving(&self) -> bool {
         self.rules_version >= ACCEPT_BEHAVING_SINCE
+    }
+
+    /// Rules 20 ([`MUNITION_FLIGHT_SINCE`]): a platform's catalog munition flies to the effect
+    /// point, released its time of flight early.
+    pub fn munition_flight(&self) -> bool {
+        self.rules_version >= MUNITION_FLIGHT_SINCE
     }
 
     /// `[rules.engage]`, or its defaults.

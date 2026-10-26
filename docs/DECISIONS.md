@@ -24,7 +24,17 @@ group. Dates are 2026.
   and the console animates the strike. Effects stay abstract otherwise (a point, a radius, a
   hit-or-miss draw; no warheads, blast or lethality), and every safeguard above stands: no
   autonomous engagement, the authorize step closed to agents in code, armed platforms always
-  needing human approval, DoD Directive 3000.09.
+  needing human approval, DoD Directive 3000.09. Built as decision rules 20 (bd murmur-64z,
+  `MUNITION_FLIGHT_SINCE`): a catalog entry may name the munition a platform launches (`munition =
+  { name, speed_mps, range_m }`; first the armed MQ-9B's Hellfire-class missile, 425 m/s, 8 km),
+  modelled as a constant speed along a straight slant line from the platform to the plan's point,
+  nothing more (no guidance, no seeker, no aim-point choice). The engine releases it once the
+  platform is within its slant range of the point (instead of `arrival_m`) and the strike, a time
+  of flight after the release, falls inside the plan's time tolerance with the target predicted
+  inside the radius then; the keep-outs are judged at the strike. The release logs the flight
+  (replay recomputes it), the truth side applies the effect at the impact, the assessment starts
+  there, and the console is served the flight (`engagement.munition`). A platform spent by its own
+  effect is its own munition and decides as before.
 - **Pitch depth and rigor, not "first"** (10-02). Pressure test found the ideas in closed
   work (RESCHU, IMPACT, Aegis doctrine, Lattice, Legion, Palantir AIP, Thunderforge, DARPA
   ASIMOV) and shallow open versions (AMOS, AeroMind, Pharos, SandTable). Cite them. Engage

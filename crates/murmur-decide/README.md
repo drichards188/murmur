@@ -1823,6 +1823,44 @@ Rules versions:
   `v19-aircraft-accepted-as-behaving-scenario-99.jsonl`,
   `v19-behaving-acceptance-lapses-on-a-jump-scenario-100.jsonl`,
   `v19-behaving-acceptance-lapses-under-way-scenario-105.jsonl`.
+- **20** (bd murmur-64z, the owner's direction of 2026-10-26, DECISIONS.md "Munitions shown in
+  flight and strikes animated"; every gate reads `MUNITION_FLIGHT_SINCE`, so another change taking
+  the number first renumbers it in one line; no policy key changes, schema 7; a v20 log carries
+  every rules 19 behaviour too): *a standoff munition is released its time of flight early and
+  strikes at its impact*. Up to rules 19 the effect applied at the release, which needed the
+  platform within `arrival_m` (at most 2,000 m) of the point: an armed MQ-9B circling no nearer
+  than about 1.75 km could release only under a policy stretched to the limit, and a missile
+  released when the target is at the point lands some 18 s late. From rules 20 a platform whose
+  catalog entry has `munition = { name, speed_mps, range_m }` (`catalog::MunitionFacts`, a
+  platform fact logged with every decision; first `[mq9b_armed]`'s Hellfire-class missile, 425
+  m/s, 8,000 m) launches it at the release along a straight slant line from its reported position
+  and altitude to the plan's effect point at the effect's altitude (the target's when the picture
+  ranges it, else the sea surface), at a constant speed (`engage::shot`): the time of flight is
+  the slant over the speed. The release checks judge the strike, now plus that flight: `arrival`
+  is the slant within the munition's range instead of `arrival_m` (its detail names the slant,
+  the ground distance and height, the range and the flight); `effect_time` is the strike inside
+  the plan's tolerance (`release_window`); the keep-outs at a release before the plan's time are
+  judged at the strike; `alignment` is the track predicted at the strike. The picture judges its
+  keep-outs and `engage_window` at the soonest the munition could strike (`Shot::lead_ms`: its
+  flight from its range when it is farther), so a platform that can't get the munition there
+  before `late_s` stops then. `engage.effect` carries the flight (`munition`: name, speed, launch
+  time, point and altitude, impact time, point and altitude, time of flight;
+  `engage::MunitionFlight`), and so do the engagement's record (`engagement.munition`, the
+  console's) and the effect order (the bridge hands the contacts process the impact on its own
+  clock, `impact_t`, and it applies the effect then). The assessment observes from the impact on
+  (`engage::struck`). A platform without a munition (a loitering munition is its own) decides
+  exactly as under rules 19: scenario 01's log is the same event for event, and the 105
+  scenarios before it end as they did. Replay recomputes the flight from the releasing picture's
+  inputs (`engage::release_shot`; a flight logged before rules 20, or on a platform without one,
+  is caught too), bounds the strike, not the release, by the plan's tolerance, and flags an
+  observation before the impact. Scenarios 106 (a boat running west at 5 m/s, the MQ-9B at 7,600
+  m: released some 33 s before the plan's time, struck 18 s later inside its tolerance, ceased;
+  the impact moved 10 s in the log is caught) and 107 (the MQ-9B at 9,000 m, beyond its missile's
+  slant range even overhead: never released, aborted late by `engage_window`; `--rules 19`
+  releases both over the point); the scenario runner's target leaves the picture at the strike;
+  tamper `edit_munition`. `tests/rules20.rs`. Fixtures (a clean build of the commit that brought
+  rules 20, named in each log's `build`): `tests/data/audit/v20-engagement-scenario-01.jsonl`,
+  `v20-standoff-missile-released-early-scenario-106.jsonl`.
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

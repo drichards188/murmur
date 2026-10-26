@@ -132,6 +132,24 @@ pub struct PlatformFacts {
     /// older logs.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub expended_by_effect: bool,
+    /// Rules 20: the munition the platform launches at an engagement's release (the catalog's
+    /// `munition = { name, speed_mps, range_m }`), which flies to the effect point and strikes
+    /// there a time of flight later ([`crate::engage::shot`]). Absent for a platform that
+    /// carries none and for one spent by its own effect (a loitering munition is its own), and
+    /// in older logs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub munition: Option<MunitionFacts>,
+}
+
+/// Rules 20: a munition from the catalog: what it is called, how fast it flies (a constant
+/// speed along a straight slant line from the platform to the effect point) and how far, the
+/// slant distance from launch to the effect point it reaches.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MunitionFacts {
+    pub name: String,
+    pub speed_mps: f64,
+    pub range_m: f64,
 }
 
 /// One sensor from the catalog: its type (`radar`, `eo_ir`, `ais`, `sonar`, `esm`) and its
@@ -214,6 +232,7 @@ struct RawPlatform {
     max_mps: Option<f64>,
     #[serde(default)]
     expended_by_effect: bool,
+    munition: Option<MunitionFacts>,
     #[serde(default)]
     sensors: Vec<RawSensor>,
     /// Each sensor's reach under the physical model, by its type and the contact's domain
@@ -270,6 +289,19 @@ impl Catalog {
                     }
                 }
             }
+            if let Some(m) = &r.munition {
+                if !(m.speed_mps.is_finite() && m.speed_mps > 0.0 && m.range_m.is_finite() && m.range_m > 0.0) {
+                    return Err(CatalogError::Invalid(format!(
+                        "[{id}] munition: speed_mps and range_m are above 0 (got {} m/s, {} m)",
+                        m.speed_mps, m.range_m
+                    )));
+                }
+                if r.expended_by_effect {
+                    return Err(CatalogError::Invalid(format!(
+                        "[{id}] munition: a platform spent by its own effect is its own munition"
+                    )));
+                }
+            }
             let reach = std::mem::take(&mut r.physical_reach_m);
             if !reach.is_empty() {
                 physical_reach.insert(id.clone(), reach);
@@ -305,6 +337,7 @@ impl Catalog {
                     climb_mps: r.climb_mps.filter(|c| c.is_finite() && *c > 0.0),
                     max_mps: r.max_mps.filter(|c| c.is_finite() && *c > 0.0),
                     expended_by_effect: r.expended_by_effect,
+                    munition: r.munition,
                 };
                 (id, facts)
             })

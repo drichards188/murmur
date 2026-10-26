@@ -358,7 +358,9 @@ contacts `effect.rs`; console `EngagePanel`, `EngageCard`, `engageLayers.ts`):
    (an orbit through the task layer: no homing). Any operator may abort until the effect
    (`POST /api/intents/{id}/abort`); every stop commands the recorded fallback. The effect
    is released when the picture holds, the predicted time has come, the platform is within
-   `arrival_m` and the track is estimated inside the effect radius (`engage.effect`); the
+   `arrival_m` and the track is estimated inside the effect radius (`engage.effect`; rules 20,
+   bd murmur-64z: a platform with a catalog munition releases it within its slant range, its
+   time of flight before the plan's time, and the effect lands at the munition's impact); the
    bridge hands it to the contacts process on the simulation channel, which flags contacts
    inside the radius (`on_effect = "out_of_play"` takes one out of the scenario,
    `"persists"` keeps it) and writes what was inside and any collateral (other contacts, our

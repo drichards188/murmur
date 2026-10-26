@@ -549,6 +549,8 @@ pub enum EventBody {
 
     /// Engage: the abstract effect, at the approval's predicted point (released right after
     /// an `engage.picture` that holds and is ready). Not a weapon: a point, a radius, a time.
+    /// Rules 20: a platform with a catalog munition releases it here, and the effect strikes at
+    /// its impact (`munition`: the flight replay recomputes from that picture's inputs).
     #[serde(rename = "engage.effect")]
     EngageEffect {
         intent: IntentId,
@@ -556,6 +558,8 @@ pub enum EventBody {
         point: LonLat,
         radius_m: f64,
         planned_t: Time,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        munition: Option<crate::engage::MunitionFlight>,
     },
 
     /// Engage: stopped before the effect (before dispatch it is voided, after it aborted),

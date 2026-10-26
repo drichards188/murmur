@@ -237,7 +237,8 @@ fn rule_declaration_off_decides_as_rules_8_did() {
         // anywhere it could turn or speed up to; nor rules 15's: a nomination a failed carry may
         // owe refused, an un-spend; nor rules 16's: a dropped contact still counted; nor rules
         // 17's: a route's legs judged for land and water; nor rules 18's: a track predicted with
-        // its own velocity error; nor rules 19's: a live track accepted as behaving now)
+        // its own velocity error; nor rules 19's: a live track accepted as behaving now; nor rules
+        // 20's: a munition released its time of flight early, from within its range)
         let text = std::fs::read_to_string(&f).unwrap();
         if text.contains("action = \"act\"")
             || text.contains("tracked_s")
@@ -248,6 +249,7 @@ fn rule_declaration_off_decides_as_rules_8_did() {
             || text.starts_with("# Rules 17")
             || text.starts_with("# Rules 18")
             || text.starts_with("# Rules 19")
+            || text.starts_with("# Rules 20")
         {
             continue;
         }

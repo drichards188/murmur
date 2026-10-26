@@ -157,6 +157,8 @@ async fn run() -> Result<(), String> {
     let mut last_error: Option<String> = None;
     // effects applied since the last message (Phase E), for the next one and the log
     let mut applied: Vec<EffectApplied> = Vec::new();
+    // rules 20: effects whose munition is still in flight, applied at its impact
+    let mut in_flight = effect::InFlight::default();
     // rules 9: the scenario second of the last tick (acts in between are committed now)
     let mut prev_s = f64::NEG_INFINITY;
     loop {
@@ -180,6 +182,10 @@ async fn run() -> Result<(), String> {
             if let Some(slot) = slot {
                 slot.report(m.st.lat, m.st.lon, 0.0);
             }
+        }
+        // rules 20: a munition whose impact has come strikes now, before this truth goes out
+        for e in in_flight.due(t0 + s) {
+            applied.push(land(&e, &mut movers, t0 + s));
         }
         seq += 1;
         let mut msg = TruthMessage::build(
@@ -226,21 +232,21 @@ async fn run() -> Result<(), String> {
                     for e in list {
                         match serde_json::from_value::<EffectNotice>(e.clone()) {
                             Ok(e) => {
-                                let r = effect::apply(&e, &mut movers, t0 + s);
-                                println!(
-                                    "effect (intent {}): {} contact(s) inside {:.0} m, intended {} {}, collateral {} contact(s) and {} of ours",
-                                    r.intent,
-                                    r.inside.len(),
-                                    r.radius_m,
-                                    r.target_contact.as_deref().unwrap_or("unknown"),
-                                    if r.target_inside { "inside" } else { "not inside" },
-                                    r.collateral.contacts.len(),
-                                    r.collateral.ours.len()
-                                );
-                                applied.push(r);
+                                if let Some(at) = e.impact_t.filter(|at| *at > t0 + s) {
+                                    println!(
+                                        "effect (intent {}): munition in flight, strikes in {:.1} s",
+                                        e.intent,
+                                        at - (t0 + s)
+                                    );
+                                }
+                                in_flight.hold(e);
                             }
                             Err(err) => println!("effect: unreadable ({err})"),
                         }
+                    }
+                    // at once, unless a munition is still in flight to it (rules 20)
+                    for e in in_flight.due(t0 + s) {
+                        applied.push(land(&e, &mut movers, t0 + s));
                     }
                 }
                 Ok(())
@@ -262,4 +268,20 @@ async fn run() -> Result<(), String> {
             }
         }
     }
+}
+
+/// Apply one effect at scenario time `now` and say what it did.
+fn land(e: &EffectNotice, movers: &mut [Mover], now: f64) -> EffectApplied {
+    let r = effect::apply(e, movers, now);
+    println!(
+        "effect (intent {}): {} contact(s) inside {:.0} m, intended {} {}, collateral {} contact(s) and {} of ours",
+        r.intent,
+        r.inside.len(),
+        r.radius_m,
+        r.target_contact.as_deref().unwrap_or("unknown"),
+        if r.target_inside { "inside" } else { "not inside" },
+        r.collateral.contacts.len(),
+        r.collateral.ours.len()
+    );
+    r
 }

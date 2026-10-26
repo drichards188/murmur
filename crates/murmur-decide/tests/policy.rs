@@ -20,7 +20,7 @@ fn catalog_marks_exactly_the_armed_platforms() {
         .filter(|p| p.armed)
         .map(|p| p.id.clone())
         .collect();
-    assert_eq!(armed, vec!["fpv", "magura", "switchblade", "ugv_armed"]);
+    assert_eq!(armed, vec!["fpv", "magura", "mq9b_armed", "switchblade", "ugv_armed"]);
 }
 
 #[test]

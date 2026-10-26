@@ -847,3 +847,49 @@ fn the_physical_model_is_the_default() {
     let pinned = Tracks::new(catalog(), settings());
     assert_eq!(pinned.model_for(&truth(1.0, Vec::new())), SensingModel::Legacy);
 }
+
+/// Rules 20: an effect a munition carries goes to the contacts process with its impact on the
+/// contacts' own clock (the truth message's time plus the impact's time from now on the bridge's),
+/// with the flight beside it; one without a munition carries no impact time and applies at once.
+#[test]
+fn a_munitions_effect_strikes_at_its_impact_on_the_contacts_clock() {
+    use murmur_decide::{EffectOrder, IntentId, LonLat, MunitionFlight, Time, Uid};
+    let tracks = Tracks::new(catalog(), settings());
+    let point = LonLat::new(-122.495, 37.812);
+    let order = |intent: u64, munition: Option<MunitionFlight>| EffectOrder {
+        intent: IntentId(intent),
+        uid: Uid::new("2"),
+        track: "T-0001".into(),
+        point,
+        radius_m: 75.0,
+        t: Time(1_781_000_024_000),
+        munition,
+    };
+    let flight = MunitionFlight {
+        name: "Hellfire-class missile".into(),
+        speed_mps: 425.0,
+        launch_t: Time(1_781_000_024_000),
+        launch_point: LonLat::new(-122.5116, 37.8075),
+        launch_alt_m: 7600.0,
+        impact_t: Time(1_781_000_042_400),
+        impact_point: point,
+        impact_alt_m: 0.0,
+        tof_s: 18.4,
+    };
+    tracks.queue_effect(&order(1, Some(flight.clone())), Vec::new());
+    tracks.queue_effect(&order(2, None), Vec::new());
+    // the bridge reads the truth at 1_781_000_025.0 (its clock); the contacts' message says
+    // 1_781_200_000.0 (MURMUR_AT elsewhere): the impact is 17.4 s on, on theirs
+    let sent = tracks.take_effects_at(1_781_200_000.0, 1_781_000_025.0);
+    assert_eq!(sent.len(), 2);
+    let impact = sent[0]["impact_t"].as_f64().expect("impact_t");
+    assert!((impact - 1_781_200_017.4).abs() < 1e-6, "{impact}");
+    assert_eq!(sent[0]["munition"]["name"], "Hellfire-class missile");
+    assert_eq!(sent[0]["munition"]["impact_t"], 1_781_000_042_400_i64);
+    assert!(sent[1].get("impact_t").is_none() && sent[1].get("munition").is_none(), "{}", sent[1]);
+    assert!(tracks.take_effects_at(1_781_200_001.0, 1_781_000_026.0).is_empty(), "each once");
+    // handed over after the impact (a late truth message): at once
+    tracks.queue_effect(&order(3, Some(flight)), Vec::new());
+    let late = tracks.take_effects_at(1_781_200_050.0, 1_781_000_045.0);
+    assert_eq!(late[0]["impact_t"].as_f64(), Some(1_781_200_050.0));
+}

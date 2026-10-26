@@ -268,6 +268,15 @@ meaningful.
   The card's `engage.behaving` and the form's `keep_outs.items[].behaving` say what accepting a
   blocker would do; agents see them and can never accept. Scenarios 99-105; the headless
   reviewer's `accept-behaving` preset.
+- Rules 20 (`MUNITION_FLIGHT_SINCE`, bd murmur-64z): a platform whose catalog entry has `munition
+  = { name, speed_mps, range_m }` (only `[mq9b_armed]`) releases it within its slant range of the
+  point (not `arrival_m`; needs the vehicle's `alt_msl_m`, else `arrival` fails), its time of
+  flight before the plan's time: `effect_time`, `alignment`, the release's keep-outs and the
+  window judge the strike (`engage::shot`, `strike_lead`), not now. `engage.effect`,
+  `engagement.munition` and `EffectOrder` carry the flight (engine ms); the bridge hands the
+  contacts process `impact_t` on its own clock and `effect::InFlight` holds the effect until then
+  (live and headless); observation starts at the impact (`engage::struck`). Without a munition
+  nothing changes. Scenarios 106-107; tamper `edit_munition`.
 - Predicted link coverage (docs/LINK-COVERAGE.md, bd murmur-hei): `GET`/`POST
   /api/links/coverage`, `link_coverage` in dry runs and `preview_intent`, the MCP tool
   `get_link_coverage`, the console's Links layer and the order form's dry run (`web/src/

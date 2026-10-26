@@ -119,7 +119,8 @@ tamper = "suppress_void"         # optional log attack replay must catch: propos
                                  # forge_lost_acceptance, hide_reinstatement,
                                  # confirm_by_agent, move_drop, redrop,
                                  # and rules 19: drop_behaving_acceptance,
-                                 # drop_behaving_lapse, behaving_acceptance_by_agent
+                                 # drop_behaving_lapse, behaving_acceptance_by_agent,
+                                 # and rules 20: edit_munition
                                  # (one with nothing to edit in a run's log reports "not
                                  # applicable")
 end_s = 120                      # seconds to run (default: the last step + 10)
@@ -365,3 +366,5 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess).
 | 103-reset-clears-behaving-acceptance | keep_out_tracks | rules 19: the frozen plan an acceptance as behaving was given for is dropped; a signer signs the new one | reset; voided (keep_out_tracks: the acceptance went with the plan) |
 | 104-agent-cannot-accept-behaving | keep_out_tracks | rules 19: an operator without engagement authority, then an agent, accept the aircraft as behaving now | refusals; rejected (keep_out_tracks) |
 | 105-behaving-acceptance-lapses-under-way | keep_out_tracks | rules 19: the accepted aircraft turns back toward the effect point under way; the lapse cut from the log | lapsed (velocity) at the next step, aborted (keep_out_tracks) at that step, fallback return, nothing released; tamper caught |
+| 106-standoff-missile-released-early | audit | rules 20: an armed MQ-9B at 7,600 m engages a boat running west at 5 m/s with its Hellfire-class missile (425 m/s, 8,000 m slant range); the missile's impact moved 10 s later in the log | released within the missile's slant range some 33 s before the plan's time, struck 18 s later inside its tolerance, the boat out of play at the impact, observed from then on, done (ceased); tamper caught (the flight recomputed from the releasing picture); `--rules 19` releases over the point, no munition |
+| 107-standoff-missile-out-of-range | engage_window | rules 20: the MQ-9B at 9,000 m, beyond its missile's slant range even overhead | never released (arrival: the slant range); aborted late (engage_window: the missile could not strike within 60 s of the plan's time), fallback return; `--rules 19` releases over the point |

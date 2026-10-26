@@ -1505,6 +1505,12 @@ struct Tracked {
     /// Engage: the world time of the last picture, if it held and was ready (the release
     /// must follow it, inside the plan's time tolerance).
     ready_t: Option<Time>,
+    /// Engage, rules 20: the shot that picture's world gives the platform's munition (the
+    /// release's munition flight is recomputed from it).
+    ready_shot: Option<engage::Shot>,
+    /// Engage, rules 20: the munition released with the effect (observation starts at its
+    /// impact).
+    munition: Option<engage::MunitionFlight>,
     /// Engage: the stop, with the fallback it released (`Some(None)`: none).
     stop_fallback: Option<Option<Fallback>>,
     /// Engage: vehicle events its platform reported since its last picture (kind, text), the
@@ -1634,6 +1640,8 @@ impl Tracked {
             dispatch_logged: None,
             dispatched: false,
             ready_t: None,
+            ready_shot: None,
+            munition: None,
             stop_fallback: None,
             platform_events: Vec::new(),
             intercept_reports: Vec::new(),
@@ -4107,6 +4115,12 @@ fn replay_inner<S: AsRef<str>>(
                 }
                 tr.ready = h && rd;
                 tr.ready_t = tr.ready.then_some(w.t);
+                // rules 20: the shot a release on this picture makes with the platform's munition
+                tr.ready_shot = if tr.ready {
+                    engage::release_shot(&tr.spec, &snap, &w, &pol.rules)
+                } else {
+                    None
+                };
                 tr.platform_events.clear();
                 tr.intercept_reports.clear();
                 if !h {
@@ -4120,11 +4134,27 @@ fn replay_inner<S: AsRef<str>>(
                 point,
                 radius_m,
                 planned_t,
+                munition,
             } => {
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
                     continue;
                 };
+                // rules 20: the munition's flight is the shot the releasing picture's inputs give,
+                // launched at this event (none for a platform without one, and before rules 20)
+                let flight = tr.ready_shot.as_ref().map(|s| s.flight(e.t));
+                if policy.is_some() && *munition != flight {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "the munition's flight is not the one the releasing picture gives",
+                        json(munition),
+                        json(&flight),
+                    );
+                }
+                // and the plan's time tolerance bounds when it strikes
+                let lead = flight.as_ref().map_or(0, |f| f.impact_t.ms_since(f.launch_t));
                 // rules 6: never on a platform whose lost-link action was not confirmed as the
                 // fallback (the picture's release check says so; this binds it on its own)
                 if policy.as_ref().is_some_and(|p| p.rules.rules_version >= 6)
@@ -4141,7 +4171,8 @@ fn replay_inner<S: AsRef<str>>(
                     );
                 }
                 // released by the platform the engagement was dispatched to (its dispatch is
-                // bound to the nomination's platform), inside the plan's time tolerance
+                // bound to the nomination's platform), inside the plan's time tolerance (rules 20:
+                // struck inside it, a munition's flight after its release)
                 let platform = tr.spec.uids.first();
                 if platform != Some(uid) {
                     bad(
@@ -4157,7 +4188,8 @@ fn replay_inner<S: AsRef<str>>(
                 if let (Some(pol), Some(snap), Some(at)) = (&policy, &tr.snapshot, tr.ready_t) {
                     let (from, until) =
                         engage::release_window(&snap.preview, &pol.rules.engage_rules());
-                    if !(from <= at && at <= until && from <= e.t) {
+                    let (at, struck) = (at.plus_ms(lead), e.t.plus_ms(lead));
+                    if !(from <= at && at <= until && from <= struck) {
                         bad(
                             &mut r,
                             e,
@@ -4205,6 +4237,7 @@ fn replay_inner<S: AsRef<str>>(
                 }
                 tr.ready = false;
                 tr.ready_t = None;
+                tr.ready_shot = None;
                 tr.effect_logged = true;
                 tr.effect = Some(EffectRecord {
                     t: e.t,
@@ -4212,6 +4245,7 @@ fn replay_inner<S: AsRef<str>>(
                     radius_m: *radius_m,
                     planned_t: *planned_t,
                 });
+                tr.munition = munition.clone();
             }
             EventBody::EngageStopped {
                 intent,
@@ -4445,6 +4479,18 @@ fn replay_inner<S: AsRef<str>>(
                         continue;
                     }
                 };
+                // rules 20: a munition strikes at its impact: nothing is observed before it
+                if let Some(m) = tr.munition.as_ref().filter(|m| e.t < m.impact_t) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "observation before the munition's impact",
+                        json(&e.t),
+                        json(&m.impact_t),
+                    );
+                }
+                let effect = engage::struck(&effect, tr.munition.as_ref());
                 let again = engage::observe(&snap, &effect, &w, &pol.rules);
                 let covered = !again.covered_by.is_empty();
                 let sum = tr.covered_s + engage::coverage_increment(tr.last_observe, e.t, covered);
@@ -4473,9 +4519,14 @@ fn replay_inner<S: AsRef<str>>(
                     continue;
                 };
                 let again = match (&tr.snapshot, &tr.effect, &tr.last_step) {
-                    (Some(snap), Some(effect), Some((t, step))) => {
-                        engage::assess(snap, effect, step, tr.covered_s, *t, &pol.rules)
-                    }
+                    (Some(snap), Some(effect), Some((t, step))) => engage::assess(
+                        snap,
+                        &engage::struck(effect, tr.munition.as_ref()),
+                        step,
+                        tr.covered_s,
+                        *t,
+                        &pol.rules,
+                    ),
                     _ => None,
                 };
                 let logged = Some((*result, evidence.clone()));
@@ -6004,7 +6055,7 @@ fn replay_inner<S: AsRef<str>>(
                             .filter_map(|(id, t)| {
                                 let snap: &engage::EngageSnapshot = t.snapshot.as_deref()?;
                                 let w = t.last_picture_world.as_ref()?;
-                                Some((*id, snap.track_id.as_str(), snap, w))
+                                Some((*id, snap.track_id.as_str(), t.spec.uids.first(), snap, w))
                             }),
                         track,
                         &ident,

@@ -11,7 +11,9 @@
 //! draw: it takes the intended contact out (applied as the contacts process applies it) with
 //! probability `p_hit`, else it touches nothing; and a platform spent by its own effect leaves
 //! the world at it. Every effect, its draw and what it did go to [`Contacts::effects`]
-//! (evaluation truth only, never reachable from the bridge's API or the MCP tools).
+//! (evaluation truth only, never reachable from the bridge's API or the MCP tools). Rules 20: an
+//! effect a munition carries is held until its impact (`effect::InFlight`, as the process holds
+//! it) and drawn and applied then.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -81,6 +83,7 @@ fn missed(e: &EffectNotice, movers: &[Mover], now: f64) -> EffectApplied {
         inside,
         out_of_play: Vec::new(),
         collateral: Default::default(),
+        impact_t: e.impact_t,
     }
 }
 
@@ -231,6 +234,8 @@ pub async fn run(
     let mut last = start;
     let mut seq: u64 = 0;
     let mut applied: Vec<EffectApplied> = Vec::new();
+    // rules 20: effects whose munition is still in flight, applied at its impact
+    let mut in_flight = effect::InFlight::default();
     let mut prev_s = f64::NEG_INFINITY;
     loop {
         every.tick().await;
@@ -244,6 +249,10 @@ pub async fn run(
             for m in movers.iter_mut() {
                 let current = water.current(m.st.lat, m.st.lon, t);
                 m.step(s, dt, current);
+            }
+            // a munition whose impact has come strikes now, before this truth goes out
+            for e in in_flight.due(c.t0_unix + s) {
+                applied.push(land(&c, &e, &mut movers, s, fx.as_ref()));
             }
             seq += 1;
             let mut msg = TruthMessage::build(
@@ -294,15 +303,24 @@ pub async fn run(
             let mut movers = c.movers();
             for e in list {
                 if let Ok(e) = serde_json::from_value::<EffectNotice>(e.clone()) {
-                    let (a, record) = apply_effect(&e, &mut movers, c.t0_unix + s, fx.as_ref());
-                    applied.push(a);
-                    if let Some(mut r) = record {
-                        // the contacts' scenario second it was applied at
-                        r["s"] = json!(s);
-                        c.effects.lock().unwrap_or_else(|e| e.into_inner()).push(r);
-                    }
+                    in_flight.hold(e);
                 }
+            }
+            // at once, unless a munition is still in flight to it (rules 20)
+            for e in in_flight.due(c.t0_unix + s) {
+                applied.push(land(&c, &e, &mut movers, s, fx.as_ref()));
             }
         }
     }
+}
+
+/// Apply one effect at the contacts' scenario second `s` (its draw with `fx`), recording it.
+fn land(c: &Contacts, e: &EffectNotice, movers: &mut [Mover], s: f64, fx: Option<&EffectSim>) -> EffectApplied {
+    let (a, record) = apply_effect(e, movers, c.t0_unix + s, fx);
+    if let Some(mut r) = record {
+        // the contacts' scenario second it was applied at
+        r["s"] = json!(s);
+        c.effects.lock().unwrap_or_else(|e| e.into_inner()).push(r);
+    }
+    a
 }

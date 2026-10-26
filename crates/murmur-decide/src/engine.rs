@@ -3923,6 +3923,11 @@ impl Engine {
             let Some(effect) = eng.effect.clone() else {
                 return Ok(None);
             };
+            // rules 20: a munition strikes at its impact: the observation starts there
+            if eng.munition.as_ref().is_some_and(|m| self.now() < m.impact_t) {
+                return Ok(None);
+            }
+            let effect = engage::struck(&effect, eng.munition.as_ref());
             let prev = eng.last_observe;
             let step = engage::observe(&snap, &effect, &inputs, &self.policy.rules);
             let covered = !step.covered_by.is_empty();
@@ -4021,25 +4026,43 @@ impl Engine {
         let Some(uid) = spec.uids.first().cloned() else {
             return Ok(None);
         };
-        let t = self.emit(EventBody::EngageEffect {
-            intent: id,
-            uid: uid.clone(),
-            point: p.effect_point,
-            radius_m: p.effect_radius_m,
-            planned_t: p.effect_t,
-        })?;
-        self.get_mut(id)?.engagement_mut().effect = Some(EffectRecord {
+        // rules 20: the platform's munition, launched now from where the releasing picture had
+        // it, strikes a time of flight later
+        let t = self.now();
+        let munition = engage::release_shot(&spec, &snap, &inputs, &self.policy.rules).map(|s| s.flight(t));
+        let t = self.emit_at(
             t,
-            point: p.effect_point,
-            radius_m: p.effect_radius_m,
-            planned_t: p.effect_t,
-        });
+            EventBody::EngageEffect {
+                intent: id,
+                uid: uid.clone(),
+                point: p.effect_point,
+                radius_m: p.effect_radius_m,
+                planned_t: p.effect_t,
+                munition: munition.clone(),
+            },
+        )?;
+        {
+            let e = self.get_mut(id)?.engagement_mut();
+            e.effect = Some(EffectRecord {
+                t,
+                point: p.effect_point,
+                radius_m: p.effect_radius_m,
+                planned_t: p.effect_t,
+            });
+            e.munition = munition.clone();
+        }
         self.transition(
             id,
             Transition::Release,
             format!(
-                "effect released at ({:.5}, {:.5}), radius {:.0} m",
-                p.effect_point.lon, p.effect_point.lat, p.effect_radius_m
+                "effect released at ({:.5}, {:.5}), radius {:.0} m{}",
+                p.effect_point.lon,
+                p.effect_point.lat,
+                p.effect_radius_m,
+                munition
+                    .as_ref()
+                    .map(|m| format!(": the {} strikes in {:.1} s", m.name, m.tof_s))
+                    .unwrap_or_default()
             ),
         )?;
         // rules 12: a platform spent by its own effect is owed nothing back from now on
@@ -4051,6 +4074,7 @@ impl Engine {
             point: p.effect_point,
             radius_m: p.effect_radius_m,
             t,
+            munition,
         })))
     }
 
@@ -4635,7 +4659,7 @@ impl Engine {
                 .filter_map(|i| {
                     let snap = i.engagement()?.snapshot.as_ref()?;
                     let w = self.last_pictures.get(&i.id())?;
-                    Some((i.id(), snap.track_id.as_str(), snap, w))
+                    Some((i.id(), snap.track_id.as_str(), i.spec().uids.first(), snap, w))
                 }),
             track,
             &self.ident,

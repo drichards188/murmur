@@ -41,7 +41,10 @@
 //! `POST /api/sim/contacts` (`effects`), with the contact the target track was associated
 //! with (the private association, never serialized elsewhere) and where our vehicles
 //! reported themselves, for the evaluation truth log's collateral record. The contacts
-//! process marks the contacts inside the radius; nothing here models damage.
+//! process marks the contacts inside the radius; nothing here models damage. Rules 20: an
+//! effect a munition carries strikes at its impact (`impact_t`, put on the contacts' own
+//! scenario clock as the answer goes out: the truth message's time plus the impact's time from
+//! now), and the contacts process holds it until then.
 //!
 //! Operators may declare a track's affiliation (`POST /api/tracks/{id}/declare`, the
 //! signed-in operator as for intents; a dev run's header). From rules 9 every declaration is
@@ -869,7 +872,7 @@ impl Tracks {
             .iter()
             .find(|(_, t)| **t == e.track)
             .map(|(c, _)| c.clone());
-        inner.effects.push(json!({
+        let mut effect = json!({
             "intent": e.intent.0,
             "track": e.track,
             "target_contact": contact,
@@ -878,13 +881,41 @@ impl Tracks {
             "radius_m": e.radius_m,
             "platform": e.uid.as_str(),
             "ours": ours,
-        }));
+        });
+        // rules 20: the munition in flight (engine times); its impact goes on the contacts'
+        // clock when the effect is handed over (`take_effects_at`)
+        if let Some(m) = &e.munition {
+            effect["munition"] = serde_json::to_value(m).unwrap_or(Value::Null);
+        }
+        inner.effects.push(effect);
     }
 
-    /// The effects to hand the contacts process now (each once).
+    /// The effects to hand the contacts process now (each once), as queued (tests).
+    #[cfg(test)]
     pub(crate) fn take_effects(&self) -> Vec<Value> {
         let mut inner = lock(&self.inner);
         let out: Vec<Value> = std::mem::take(&mut inner.effects);
+        inner.effects_sent.extend(out.iter().cloned());
+        out
+    }
+
+    /// [`Self::take_effects`] in the answer to a truth message of scenario time `truth_t` (unix
+    /// s) read at bridge time `now` (s): rules 20, an effect a munition carries strikes at its
+    /// impact, which the contacts process reads on its own scenario clock (`impact_t`: the
+    /// message's time plus the impact's time from now; at once if it has passed).
+    pub(crate) fn take_effects_at(&self, truth_t: f64, now: f64) -> Vec<Value> {
+        let mut inner = lock(&self.inner);
+        let mut out: Vec<Value> = std::mem::take(&mut inner.effects);
+        for e in &mut out {
+            let impact = e
+                .get("munition")
+                .and_then(|m| m.get("impact_t"))
+                .and_then(Value::as_f64)
+                .map(|ms| ms / 1000.0);
+            if let Some(impact) = impact {
+                e["impact_t"] = json!(truth_t + (impact - now).max(0.0));
+            }
+        }
         inner.effects_sent.extend(out.iter().cloned());
         out
     }
@@ -1227,14 +1258,16 @@ async fn sim_contacts(State(api): State<Api>, request: axum::extract::Request) -
         Ok(m) => m,
         Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, format!("truth message: {e}")),
     };
+    let truth_t = msg.t;
     match api.tracks.on_truth(msg, &api.world) {
         Ok((contacts, detections, tracks)) => Json(json!({
             "ok": true,
             "contacts": contacts,
             "detections": detections,
             "tracks": tracks,
-            // the simulation channel back: abstract effects for the truth side to apply
-            "effects": api.tracks.take_effects(),
+            // the simulation channel back: abstract effects for the truth side to apply (rules
+            // 20: a munition's at its impact, on the truth message's clock)
+            "effects": api.tracks.take_effects_at(truth_t, clock::wall()),
         }))
         .into_response(),
         Err(e) => error(StatusCode::UNPROCESSABLE_ENTITY, e),

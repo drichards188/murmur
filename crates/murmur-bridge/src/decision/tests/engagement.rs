@@ -398,6 +398,9 @@ async fn an_engagement_through_the_bridge_releases_an_abstract_effect() {
         .clone();
     assert_eq!(mine["engage"]["signed"], json!(["op-2", "op-3"]));
     assert!(!mine["engagement"]["effect"].is_null(), "{mine}");
+    // rules 20: the FPV drone is its own munition: no munition in flight, the effect at once
+    assert!(mine["engagement"].get("munition").is_none(), "{mine}");
+    assert!(effects[0].get("impact_t").is_none(), "{effects:?}");
     assert_eq!(msg["operators"]["engage"], json!(["op-2", "op-3"]));
     // rules 12 (murmur-q05): the FPV strike drone is spent by its effect: what was owed back
     // to it is closed right after the release, no restore is tried, the inbox stays quiet,

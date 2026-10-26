@@ -10,10 +10,13 @@
 # false: nothing is nominated on a declaration nobody confirmed). The AI watch officer reads the
 # nomination form's dry run (`get_nomination_options`) and nominates an engagement with an armed
 # platform; two operators with engagement authority sign one frozen plan, never its proposer; the
-# platform is dispatched, the engine releases the effect (an abstract event: a point, a radius, a
-# time) once the platform is at the point and the picture still holds, and assesses it by our
-# sensors' coverage. If no nomination stands by 5:45, the timeline nominates REAPER 1 itself
-# (agent-scripted, a script, saying so), so the chain always reaches an engagement.
+# platform is dispatched, and the engine releases REAPER 1's missile (rules 20: a Hellfire-class
+# missile, 425 m/s, 8 km of slant range) once REAPER 1 is within its range of the point, some 2 to
+# 2.5 km out on the ground from 7,600 m, its time of flight (some 18 s) before the plan's time, the
+# picture still holding. The effect (an abstract event: a point, a radius, a time) lands at the
+# missile's impact, and the engine assesses it by our sensors' coverage from then. If no
+# nomination stands by 5:45, the timeline nominates REAPER 1 itself (agent-scripted, a script,
+# saying so), so the chain always reaches an engagement.
 #
 # Autoplay (the default) grants every request the AI makes: op-auto reads and approves every card
 # from agent-watch or agent-playbook (`[autoplay] grant_agents`), and op-2 and op-3 sign every
@@ -27,9 +30,10 @@
 # the "Acting as" switcher with COSIGNER=you.
 #
 # There is no separate "release" act to script: the two signatures on the frozen plan are the
-# human authorization of the effect, and the engine releases it only when the platform is at the
-# point, the picture still holds and every keep-out passes (crates/murmur-decide, engage.rs);
-# any operator may abort it until then.
+# human authorization of the effect, and the engine releases it only when the platform is within
+# its missile's range, the strike falls inside the plan's time, the picture still holds and every
+# keep-out passes at the strike (crates/murmur-decide, engage.rs); any operator may abort it until
+# then. Once released, the missile is in flight (the console shows it) and lands at its impact.
 #
 # Clock: every `at_s` here, like the events files' and the contacts' `start_s` and acts' `at_s`,
 # counts from the stack's start (the link emulator's); the contacts come a few seconds later. The
@@ -67,10 +71,11 @@ declaration on autoplay (live: you, in the Review list). The watch officer is wo
 declaration (the stronger model) and again when an armed platform passes every nomination check
 (`nomination.possible`); it should nominate REAPER 1 (some 35 s away at 90 m/s; a fixed wing takes
 fallback return) with a rationale. op-2 and op-3 sign the plan within seconds; REAPER 1 is
-dispatched; the engine releases the effect when it is at the point, around 6:30 to 7:30; the boat leaves the
-picture (out of play) and the assessment reads "ceased" some 15 s after, our sensors covering the
-point. If no nomination stands by 5:45, agent-scripted nominates REAPER 1 (the timeline's
-fallback), once it passes the checks.
+dispatched; around 6:30 to 7:30 the engine releases its missile from some 2 to 2.5 km out (within
+its 8 km slant range from 7,600 m), and the missile strikes the boat some 18 s later; the boat
+leaves the picture (out of play) at the impact and the assessment reads "ceased" some 15 s after,
+our sensors covering the point. If no nomination stands by 5:45, agent-scripted nominates REAPER 1
+(the timeline's fallback), once it passes the checks.
 What should not: an engagement nominated before the declaration is confirmed (refused by
 target_declared), a signature by the proposer or by an agent, an effect released with a neutral or
 one of ours inside the keep-out (the yacht off Lands End, the inbound container ship and HUNTER 1
@@ -83,9 +88,11 @@ world = "golden-gate"                         # sim/worlds/golden-gate.toml
 fleet = "sim/fleets/hostile-act-engagement.toml"
 contacts = "sim/scenarios/hostile-act-engagement.toml"
 events = []                                   # no comms or GNSS events: the situation is the chain
-policy = "sim/situations/policies/hostile-act-reaper.toml" # watch.toml with a standoff release distance;
+policy = "sim/situations/policies/watch.toml" # sim/policy.toml + an AI's tasking waits for the operator;
                                               # the shipped engagement tier and [identification]
-                                              # (rule_declaration on, nominate_unconfirmed off)
+                                              # (rule_declaration on, nominate_unconfirmed off);
+                                              # REAPER 1 releases from its missile's range (rules
+                                              # 20), not arrival_m's 150 m
 tidewater = "golden-gate-2026-06"             # real tide, current and terrain (~/tidewater)
 at = "2026-06-14T10:00:00Z"
 rate = 1
@@ -166,7 +173,7 @@ text = "An engagement: the AI may nominate one through its tools, after reading 
 
 [[watch]]
 at_s = 400
-text = "After the second signature the platform is dispatched. The engine releases the effect (an abstract event: a point, a radius, a time) only when the platform is at the point and the picture still holds, every keep-out included; then our sensors' coverage of the point decides the assessment: ceased, persists or unknown."
+text = "After the second signature the platform is dispatched. The engine releases REAPER 1's missile only when it is within the missile's range of the point (some 2 to 2.5 km out) and the picture still holds, every keep-out included, judged at the strike; the missile is in flight some 18 s and the effect (an abstract event: a point, a radius, a time) lands at its impact. Then our sensors' coverage of the point decides the assessment: ceased, persists or unknown."
 
 [[watch]]
 at_s = 600
