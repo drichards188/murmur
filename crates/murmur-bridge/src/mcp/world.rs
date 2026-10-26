@@ -438,7 +438,12 @@ pub async fn tracks(
     domain: Option<&str>,
     include_stale: bool,
 ) -> Result<Value, DecisionError> {
-    let v = mcp.api(Method::GET, "/api/tracks", None).await?;
+    // `GET /api/tracks`'s answer: the store's own (the route's handler) when there is one, not
+    // serialized for the router and parsed back (a large picture's tracks, murmur-4yj)
+    let v = match mcp.decision.tracks() {
+        Some(store) => store.api_json(clock::wall()),
+        None => mcp.api(Method::GET, "/api/tracks", None).await?,
+    };
     let now = v["t"].as_f64().unwrap_or_else(clock::wall);
     let stale_after = v["stale_after_s"].as_f64().unwrap_or(10.0);
     let tracks: Vec<Value> = v["tracks"]

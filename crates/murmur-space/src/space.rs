@@ -769,6 +769,78 @@ impl Space {
         })
     }
 
+    /// [`Self::link_at`] at several points at one instant (a round of a link emulator's
+    /// terminals of one class): one pass over the constellation, each satellite propagated once
+    /// and seen from every point, each answer exactly the one `link_at` gives for its point (the
+    /// same states, geometry, masks and order). The constellation propagated, and a parallel
+    /// pass dispatched, per terminal was most of a large headless episode's SATCOM time
+    /// (murmur-4yj).
+    pub fn links_at(
+        &self,
+        class_id: &str,
+        points: &[Geodetic],
+        t: DateTime<Utc>,
+        tm: &TimeMap,
+    ) -> Result<Vec<LinkSample>, SpaceError> {
+        let cs = self.class(class_id)?;
+        let comms = cs
+            .class
+            .comms
+            .clone()
+            .ok_or_else(|| SpaceError::Invalid(format!("{class_id} has no comms model")))?;
+        let observers: Vec<Observer> = points.iter().map(|p| Observer::new(*p)).collect();
+        let tp = tm.to_prop(t);
+        let (sats, _) = self.usable(cs, tm, t, t);
+        // per satellite, in the constellation's order: the points that see it above its mask
+        // (`access::geometry`'s steps, then `link_at`'s mask), in one parallel pass
+        let seen: Vec<Vec<(usize, LinkSat)>> = sats
+            .par_iter()
+            .map(|sat| {
+                let Ok(st) = sat.state(&tp) else {
+                    return Vec::new();
+                };
+                let alt = st.ecef.norm() - EARTH_MEAN_RADIUS_KM;
+                let mask = comms.min_elevation_for_alt(sat.semi_major_axis_km() - EARTH_MEAN_RADIUS_KM);
+                observers
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, obs)| {
+                        let g = view_geometry(obs, &st.ecef, alt);
+                        (g.elevation_deg >= mask).then(|| {
+                            let s = LinkSat {
+                                norad_id: sat.norad_id,
+                                satellite: sat.name.clone(),
+                                elevation_deg: g.elevation_deg,
+                                azimuth_deg: g.azimuth_deg,
+                                range_km: g.range_km,
+                                latency_ms: one_way_latency_ms(&comms, g.range_km),
+                            };
+                            (i, s)
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut vis: Vec<Vec<LinkSat>> = vec![Vec::new(); points.len()];
+        for (i, s) in seen.into_iter().flatten() {
+            vis[i].push(s);
+        }
+        Ok(vis
+            .into_iter()
+            .map(|vis| {
+                let best = vis
+                    .iter()
+                    .max_by(|a, b| a.elevation_deg.total_cmp(&b.elevation_deg))
+                    .cloned();
+                LinkSample {
+                    t,
+                    visible: vis.len(),
+                    best,
+                }
+            })
+            .collect())
+    }
+
     // ------------------------------------------------------------ GNSS
 
     pub fn gnss(&self, q: &GnssQuery) -> Result<GnssReport, SpaceError> {

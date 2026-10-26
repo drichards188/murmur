@@ -151,6 +151,19 @@ impl Decision {
     pub(super) fn step_identification(&self, core: &mut Core) {
         let Some(tracks) = self.tracks() else { return };
         let acts = tracks.take_acts();
+        // the picture only when something here reads it: an observed act, or a track declared
+        // hostile that another may keep company with (without one the weak-evidence rule finds
+        // nothing). A large fleet's snapshot every second for nothing was a share of a large
+        // headless episode's time (murmur-4yj).
+        let hostile = core
+            .engine
+            .identification()
+            .declarations()
+            .any(|d| d.affiliation == Affiliation::Hostile);
+        if acts.is_empty() && !hostile {
+            self.mirror_identification(core);
+            return;
+        }
         let world = self.snapshot();
         for report in acts {
             let id = report.act.clone();

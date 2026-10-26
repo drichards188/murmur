@@ -140,6 +140,47 @@ impl SpaceSource for CachedSpace {
         Ok(o)
     }
 
+    /// `sample` for each position, the looks not cached computed together (each at its rounded
+    /// position, one per key: two terminals in one cell share it, as one `sample` after the
+    /// other would).
+    fn sample_many(&self, class: &str, positions: &[GeoPoint], unix_s: f64) -> Vec<Result<SatObs, String>> {
+        let keys: Vec<(Key, GeoPoint)> = positions.iter().map(|p| key(class, p, unix_s)).collect();
+        let mut missing: Vec<(Key, GeoPoint)> = Vec::new();
+        {
+            let mem = self.mem.lock().unwrap_or_else(|e| e.into_inner());
+            for (k, at) in &keys {
+                if !mem.contains_key(k) && !missing.iter().any(|(m, _)| m == k) {
+                    missing.push((k.clone(), *at));
+                }
+            }
+        }
+        let at: Vec<GeoPoint> = missing.iter().map(|(_, a)| *a).collect();
+        let mut failed: HashMap<Key, String> = HashMap::new();
+        if !at.is_empty() {
+            let answers = self.inner.sample_many(class, &at, unix_s);
+            let mut new = self.new.lock().unwrap_or_else(|e| e.into_inner());
+            let mut mem = self.mem.lock().unwrap_or_else(|e| e.into_inner());
+            for ((k, _), o) in missing.into_iter().zip(answers) {
+                match o {
+                    Ok(o) => {
+                        new.push(to_json(&k, &o));
+                        mem.insert(k, o);
+                    }
+                    Err(e) => {
+                        failed.insert(k, e);
+                    }
+                }
+            }
+        }
+        let mem = self.mem.lock().unwrap_or_else(|e| e.into_inner());
+        keys.iter()
+            .map(|(k, _)| match mem.get(k) {
+                Some(o) => Ok(o.clone()),
+                None => Err(failed.get(k).cloned().unwrap_or_else(|| "no look".to_string())),
+            })
+            .collect()
+    }
+
     fn outlook(&self, class: &str, pos: &GeoPoint, unix_s: f64, horizon_s: f64) -> Result<Outlook, String> {
         self.inner.outlook(class, pos, unix_s, horizon_s)
     }

@@ -1373,6 +1373,30 @@ playbook; San Diego 115 and 48; the scale world **19 and 9.5**. The scale world 
 episodes take 1.5 minutes (`none`) and 3 (the playbook). Under three or four parallel workers
 the factors were 59 to 128, 33 to 100 and 7 to 14.
 
+**The scale world's speed again** (murmur-4yj, 2026-10-26). After sensing rounds 2 and 3 the
+scale watch ran at 6 to 8 times real time with `none`. Profiled (the simulator's own per-task
+timer, spans added for the run, seed 1, 30 minutes, about 178 s of the simulator's time): the
+bridge built every track's JSON for its WebSocket push three times a second (after each truth
+step, at the tracker's tick and at the ledger's mirror) and its decisions message once, with no
+console ever connected, about 115 s; SATCOM refreshes propagated each constellation once per
+terminal, 31 s on a cold look cache (every newly drawn start time is one); the identification
+step's world snapshot every second for nothing, 4 s; the physical sensing step, 17 s. Fixed
+without changing a record (the same digest before and after on the scale watch with `none` and
+the playbook and on F17 with `none` and the basic oracle; the golden and every test as before):
+the push messages are built only while a client watches (as the frames already were), the
+snapshot only when an act or a hostile declaration needs it, the truth and picture samplers read
+the tracker's association alone, a SATCOM round propagates each constellation once for all its
+terminals (`Space::links_at`, each answer `link_at`'s), `get_tracks` reads the store's answer
+without the router's serialize-and-parse, and the basic v3 oracle parses its contacts' conditions
+once. One episode at a time, cold look cache, before and after: the scale watch with `none` **8.4
+to 46** times real time (215 to 39 s), with the playbook 4.9 to 8.4 (before the `get_tracks`
+change, which then halved its cost per call); F17 (seed 5400, 1,200 s) with `none` 4.7 to 11.7,
+with the basic oracle 3.5 to 6.4 (the host loaded to 20 to 28 by other agents for the last
+three). What is left in the scale watch's 39 s: the physical sensing step 15 s, the lost-contact
+step 3 s (its snapshot 1.7), the link statistics 3 s, the stand-ins 2.5 s, SATCOM 2.5 s; in F17 the
+picture sampler (every track's JSON each second, 16 ms a call) and an agent's `get_tracks` (the
+same JSON, about 50 ms a call with the result's parse) are the most, both `Track::json`'s.
+
 **Found, or left as it is.**
 
 - Corsair, Magura, FVR-90, the airship and the UGVs had no endurance figure when these worlds

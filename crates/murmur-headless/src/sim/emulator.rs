@@ -17,7 +17,7 @@ use murmur_linkemu::geo::Terrain as _;
 use murmur_linkemu::link::{Env, Link as ELink};
 use murmur_linkemu::model::{Cause, Dir};
 use murmur_linkemu::proxy::{Delay, admit, build_links, gauge};
-use murmur_linkemu::sat::{RealSpace, SatShared, SpaceInfo, SpaceSource, refresh};
+use murmur_linkemu::sat::{RealSpace, SatShared, SpaceInfo, SpaceSource, refresh_round};
 use murmur_linkemu::stats::{LinkStats, summary_json};
 use murmur_linkemu::terrain::TidewaterTerrain;
 use murmur_linkemu::timeline::Timeline;
@@ -392,16 +392,16 @@ impl Emulator {
     }
 
     /// SATCOM: every link that follows a constellation refreshed (`sat::refresh`) every
-    /// `interval_s` of scenario time, as `sat::spawn` does at rate 1.
+    /// `interval_s` of scenario time, as `sat::spawn` does at rate 1; one round at one instant,
+    /// each class's constellation propagated once for all its terminals (`sat::refresh_round`:
+    /// the same answers, murmur-4yj).
     pub async fn run_space(self: Arc<Self>) {
         let Some((src, cfg, live)) = &self.space else { return };
         let every = (cfg.interval_s / self.timeline.rate).max(cfg.min_wall_s).max(0.05);
         loop {
             let unix = self.timeline.scenario_unix(self.uptime_s());
             let now_ns = self.now_ns();
-            for s in live {
-                refresh(src.as_ref(), cfg, s, unix, now_ns);
-            }
+            refresh_round(src.as_ref(), cfg, live, unix, now_ns);
             if let Some(info) = &self.space_info {
                 info.rounds.fetch_add(1, Relaxed);
             }

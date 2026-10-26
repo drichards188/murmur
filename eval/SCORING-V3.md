@@ -890,7 +890,11 @@ sensing rounds 2 and 3). WORLD-V3-PLAN 2.8 item 4's 20 times is for 30 vehicles 
 costs 4 to 7 minutes of one core's time, which bounds a scale batch. Where the time goes (the
 record's `perf`, `none`, seed 5400 in the batch: 391 s in the simulator of 450 s): the bridge's
 decision task 119 s, the contacts process with the sensing model 83 s, the picture sampler 58 s,
-the tracker 57 s. Worth profiling before a scale validation.
+the tracker 57 s. Worth profiling before a scale validation. **Profiled and fixed since**
+(murmur-4yj, docs/HEADLESS.md 17.5): the time was mostly the bridge's WebSocket views built for no
+console and the SATCOM refresh, not the sensing; records unchanged. One at a time on seed 5400,
+cold look cache: `none` 4.7 to 11.7 times real time, the basic oracle 3.5 to 6.4 (the host loaded
+to 20 to 28); the scale watch alone 8.4 to 46.
 
 ### 12.4 What next
 

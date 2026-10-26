@@ -426,6 +426,31 @@ fn area_links_match_per_point_links() {
     assert!(area.points.iter().any(|p| p.outages != area.points[0].outages));
 }
 
+/// Several terminals' links at one instant (a link emulator's round) are each exactly what the
+/// terminal's own `link_at` gives: the same satellites in view, the same best, bit for bit.
+#[test]
+fn links_at_several_points_are_each_points_link_at() {
+    let sp = space();
+    let mut points = area_points();
+    points.push(Geodetic::new(GG_BRIDGE.0, GG_BRIDGE.1, 7.6)); // a terminal 7,600 m up
+    let mut compared = 0;
+    for class in ["starlink", "iridium", "wgs", "iss"] {
+        for when in ["2026-10-02T00:00:00Z", "2026-10-02T03:17:05.250Z", "2026-10-02T11:40:00Z"] {
+            let at = t(when);
+            let tm = sp.time_map(EpochMode::Direct, at, at + Duration::hours(1));
+            let many = sp.links_at(class, &points, at, &tm).expect("links_at");
+            assert_eq!(many.len(), points.len());
+            for (p, m) in points.iter().zip(&many) {
+                let one = sp.link_at(class, *p, at, &tm).expect("link_at");
+                assert_eq!(serde_json::to_string(m).expect("json"), serde_json::to_string(&one).expect("json"),
+                           "{class} at {when} from {p:?}");
+                compared += usize::from(one.best.is_some());
+            }
+        }
+    }
+    assert!(compared > 20, "{compared} links with a satellite in view compared");
+}
+
 /// An area GNSS query gives each point what its own GNSS query gives.
 #[test]
 fn area_gnss_matches_per_point_gnss() {

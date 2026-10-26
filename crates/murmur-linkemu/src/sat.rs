@@ -67,6 +67,11 @@ pub trait SpaceSource: Send + Sync {
     /// Whether the class can be used at all at `unix_s` (known, has usable satellites).
     fn check(&self, class: &str, unix_s: f64) -> Result<(), String>;
     fn sample(&self, class: &str, pos: &GeoPoint, unix_s: f64) -> Result<SatObs, String>;
+    /// `sample` at several positions at one instant (a round of one class's terminals), each
+    /// answer the one `sample` gives; a source may share the work between them.
+    fn sample_many(&self, class: &str, positions: &[GeoPoint], unix_s: f64) -> Vec<Result<SatObs, String>> {
+        positions.iter().map(|p| self.sample(class, p, unix_s)).collect()
+    }
     fn outlook(
         &self,
         class: &str,
@@ -89,6 +94,20 @@ fn to_unix(t: DateTime<Utc>) -> f64 {
 /// Scenario unix seconds as an RFC 3339 string.
 pub fn iso(unix_s: f64) -> String {
     to_dt(unix_s).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// What a terminal learns from a link sample.
+fn sat_obs(s: murmur_space::space::LinkSample) -> SatObs {
+    SatObs {
+        visible: s.visible,
+        latency_ms: s.best.as_ref().and_then(|b| b.latency_ms),
+        best: s.best.map(|b| BestSat {
+            norad_id: b.norad_id,
+            name: b.satellite,
+            elevation_deg: b.elevation_deg,
+            range_km: b.range_km,
+        }),
+    }
 }
 
 fn geodetic(p: &GeoPoint) -> Geodetic {
@@ -162,16 +181,17 @@ impl SpaceSource for RealSpace {
             .space
             .link_at(class, geodetic(pos), to_dt(unix_s), &self.tm)
             .map_err(|e| e.to_string())?;
-        Ok(SatObs {
-            visible: s.visible,
-            latency_ms: s.best.as_ref().and_then(|b| b.latency_ms),
-            best: s.best.map(|b| BestSat {
-                norad_id: b.norad_id,
-                name: b.satellite,
-                elevation_deg: b.elevation_deg,
-                range_km: b.range_km,
-            }),
-        })
+        Ok(sat_obs(s))
+    }
+
+    /// The constellation propagated once for all the positions (`Space::links_at`, each answer
+    /// `link_at`'s).
+    fn sample_many(&self, class: &str, positions: &[GeoPoint], unix_s: f64) -> Vec<Result<SatObs, String>> {
+        let points: Vec<Geodetic> = positions.iter().map(geodetic).collect();
+        match self.space.links_at(class, &points, to_dt(unix_s), &self.tm) {
+            Ok(v) => v.into_iter().map(|s| Ok(sat_obs(s))).collect(),
+            Err(e) => positions.iter().map(|_| Err(e.to_string())).collect(),
+        }
     }
 
     fn outlook(
@@ -401,7 +421,56 @@ pub fn refresh(
     now_ns: u64,
 ) {
     let Some(pos) = sat.position() else { return };
-    let obs = match source.sample(&sat.class, &pos, scenario_unix) {
+    let sampled = source.sample(&sat.class, &pos, scenario_unix);
+    apply(source, cfg, sat, pos, sampled, scenario_unix, now_ns);
+}
+
+/// [`refresh`] of several vehicles at one instant (the headless simulator's round): each
+/// class's positions sampled together (`SpaceSource::sample_many`, each answer `sample`'s),
+/// then each vehicle's answer applied in turn as `refresh` applies it. A vehicle with no
+/// position yet is left as `refresh` leaves it.
+pub fn refresh_round(
+    source: &dyn SpaceSource,
+    cfg: &SpaceCfg,
+    sats: &[Arc<SatShared>],
+    scenario_unix: f64,
+    now_ns: u64,
+) {
+    let at: Vec<Option<GeoPoint>> = sats.iter().map(|s| s.position()).collect();
+    let mut sampled: Vec<Option<Result<SatObs, String>>> = vec![None; sats.len()];
+    let mut classes: Vec<&str> = Vec::new();
+    for s in sats {
+        if !classes.contains(&s.class.as_str()) {
+            classes.push(&s.class);
+        }
+    }
+    for class in classes {
+        let idx: Vec<usize> = (0..sats.len())
+            .filter(|&i| sats[i].class == class && at[i].is_some())
+            .collect();
+        let positions: Vec<GeoPoint> = idx.iter().filter_map(|&i| at[i]).collect();
+        for (&i, o) in idx.iter().zip(source.sample_many(class, &positions, scenario_unix)) {
+            sampled[i] = Some(o);
+        }
+    }
+    for ((s, pos), o) in sats.iter().zip(at).zip(sampled) {
+        if let (Some(pos), Some(o)) = (pos, o) {
+            apply(source, cfg, s, pos, o, scenario_unix, now_ns);
+        }
+    }
+}
+
+/// A vehicle's sample at `pos` applied: handovers detected, the look-ahead refreshed when due.
+fn apply(
+    source: &dyn SpaceSource,
+    cfg: &SpaceCfg,
+    sat: &SatShared,
+    pos: GeoPoint,
+    sampled: Result<SatObs, String>,
+    scenario_unix: f64,
+    now_ns: u64,
+) {
+    let obs = match sampled {
         Ok(o) => o,
         Err(e) => {
             sat.with_state(|s| {
@@ -691,6 +760,78 @@ mod tests {
         s.set_static("no cache");
         assert_eq!(effect(&s, 0), (None, None));
         assert_eq!(s.snapshot().mode, SatMode::Static("no cache".into()));
+    }
+
+    /// A source whose answer depends on the class, the terminal's latitude and the time, and
+    /// that records each `sample_many` call.
+    struct ByPlace(M<Vec<(String, usize)>>);
+
+    impl SpaceSource for ByPlace {
+        fn check(&self, _: &str, _: f64) -> Result<(), String> {
+            Ok(())
+        }
+        fn sample(&self, class: &str, p: &GeoPoint, t: f64) -> Result<SatObs, String> {
+            let k = (p.lat * 10.0).round() as u64 + (t / 10.0) as u64 + class.len() as u64;
+            match k % 5 {
+                0 => Err(format!("no answer at {k}")),
+                1 => Ok(none()),
+                _ => Ok(obs(k % 3, 600.0 + p.lat, Some(10.0 + t))),
+            }
+        }
+        fn sample_many(&self, class: &str, ps: &[GeoPoint], t: f64) -> Vec<Result<SatObs, String>> {
+            self.0.lock().expect("lock").push((class.to_string(), ps.len()));
+            ps.iter().map(|p| self.sample(class, p, t)).collect()
+        }
+        fn outlook(&self, _: &str, _: &GeoPoint, t: f64, _: f64) -> Result<Outlook, String> {
+            Ok(Outlook {
+                next_outage_unix: Some(t + 50.0),
+                next_up_unix: None,
+            })
+        }
+    }
+
+    /// murmur-4yj: a round over several vehicles (`refresh_round`, each class sampled in one
+    /// call) leaves every vehicle as one `refresh` each would: states, handovers, errors and the
+    /// look-ahead, and a vehicle with no position untouched.
+    #[test]
+    fn a_round_is_one_refresh_each() {
+        let fleet = || -> Vec<Arc<SatShared>> {
+            let mut v = Vec::new();
+            for (i, class) in ["starlink", "iridium", "starlink", "wgs", "starlink", "iridium"].iter().enumerate() {
+                let s = SatShared::new(class, 2_000_000_000);
+                s.set_position(GeoPoint {
+                    lat: 37.0 + 0.3 * i as f64,
+                    lon: -122.5,
+                    alt_m: 0.0,
+                });
+                v.push(Arc::new(s));
+            }
+            v.push(Arc::new(SatShared::new("starlink", 0))); // never heard: no position
+            v
+        };
+        let cfg = SpaceCfg {
+            outlook_s: 600.0,
+            ..SpaceCfg::default()
+        };
+        let (one, round) = (fleet(), fleet());
+        let src = ByPlace(M::new(Vec::new()));
+        for k in 0..40u64 {
+            let t = 5.0 * k as f64;
+            for s in &one {
+                refresh(&src, &cfg, s, t, k * 5_000_000_000);
+            }
+            refresh_round(&src, &cfg, &round, t, k * 5_000_000_000);
+        }
+        for (a, b) in one.iter().zip(&round) {
+            assert_eq!(format!("{:?}", a.snapshot()), format!("{:?}", b.snapshot()));
+        }
+        let snaps: Vec<SatSnapshot> = round.iter().map(|s| s.snapshot()).collect();
+        assert!(snaps.iter().any(|s| s.handovers > 0) && snaps.iter().any(|s| s.errors > 0));
+        assert_eq!(snaps[6].mode, SatMode::Pending);
+        // one call per class a round, every positioned terminal of the class in it
+        let calls = src.0.lock().expect("lock");
+        assert_eq!(calls[..3], [("starlink".to_string(), 3), ("iridium".to_string(), 2), ("wgs".to_string(), 1)]);
+        assert_eq!(calls.len(), 3 * 40);
     }
 
     #[test]

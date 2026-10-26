@@ -2706,8 +2706,13 @@ impl Decision {
         .to_string()
     }
 
-    /// Push the inbox to WebSocket clients if it changed.
+    /// Push the inbox to WebSocket clients if it changed. Built only while anyone watches, as
+    /// `push::pusher`'s frames are, and for a newcomer at [`Self::subscribe`] (murmur-4yj: the
+    /// headless simulator never has a console).
     pub fn publish(&self) {
+        if self.updates.receiver_count() == 0 {
+            return;
+        }
         let msg = self.message();
         self.updates.send_if_modified(|cur| {
             if **cur == msg {
@@ -2719,8 +2724,12 @@ impl Decision {
         });
     }
 
+    /// A WebSocket client's view of the decisions: the message as of now first (none is built
+    /// while no one watches), then every change.
     pub fn subscribe(&self) -> watch::Receiver<Arc<String>> {
-        self.updates.subscribe()
+        let rx = self.updates.subscribe();
+        self.publish();
+        rx
     }
 }
 

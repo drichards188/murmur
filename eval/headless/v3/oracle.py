@@ -218,6 +218,8 @@ class OracleV3(SessionAgent):
         self.started = False
         self.errors = 0
         self.plans: list[dict[str, Any]] = []
+        # the contacts file's `[conditions]` (`conditions`: read once)
+        self._scenario_conditions: tuple[str, dict[str, Any]] | None = None
         self.privileged = {"truth_reads": 0, "sense_asks": 0, "contacts_file": None,
                            "note": "reads truth (the contacts' routes and states, our vehicles' true state, the "
                                    "tracker's association) and asks the sensing model's predictions: a scoring anchor, "
@@ -235,7 +237,12 @@ class OracleV3(SessionAgent):
                 out[k] = float(c[k])
         path = self.ep.contacts_path or self.ep.e.contacts
         if path:
-            tc = tomllib.loads(Path(path).read_text()).get("conditions") or {}
+            # the contacts file is the episode's, fixed before it starts: read once (parsing it at
+            # every `sense` was a share of a large episode's time, murmur-4yj)
+            if self._scenario_conditions is None or self._scenario_conditions[0] != str(path):
+                tc = tomllib.loads(Path(path).read_text()).get("conditions") or {}
+                self._scenario_conditions = (str(path), tc)
+            tc = self._scenario_conditions[1]
             if tc.get("shipping") is not None:
                 out["shipping"] = float(tc["shipping"])
         return out

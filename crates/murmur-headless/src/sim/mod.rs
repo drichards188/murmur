@@ -173,10 +173,15 @@ impl Episode {
         let out = self.at_once(tool, async move { crate::mcp::tools::call(&mcp, &id, &name, args).await })?;
         match out {
             Ok(result) => {
-                let v = serde_json::to_value(&result).map_err(err("result"))?;
-                let structured = tool_result_json(&v);
+                let is_error = result.is_error.unwrap_or(false);
+                let structured = match result.structured_content {
+                    // what `tool_result_json` takes first, moved rather than copied out of the
+                    // whole result serialized (a large picture's tracks, murmur-4yj)
+                    Some(s) if !s.is_null() => s,
+                    _ => tool_result_json(&serde_json::to_value(&result).map_err(err("result"))?),
+                };
                 Ok(json!({
-                    "is_error": v.get("isError").and_then(Value::as_bool).unwrap_or(false),
+                    "is_error": is_error,
                     "structured": structured,
                 }))
             }
@@ -299,14 +304,14 @@ impl Episode {
                 o
             })
             .collect();
-        let eval = if association { self.tracks.eval_json(now) } else { json!({ "association": null }) };
+        let association = if association { json!(self.tracks.association_json()) } else { Value::Null };
         let effects = self.contacts.as_ref().map(|c| c.effects()).filter(|e| !e.is_empty());
         let mut out = json!({
             "t": self.now_s(),
             "wall": now,
             "contacts": self.contacts.as_ref().map(|c| c.truth()),
             "ours": ours,
-            "association": eval["association"],
+            "association": association,
             "contacts_start_s": self.spec.contacts.as_ref().map(|c| c.start_s),
             "bridge_start_s": self.spec.bridge_start_s,
             "log": log_from.and_then(|i| self.contacts.as_ref().map(|c| c.log_from(i))),
@@ -340,11 +345,9 @@ impl Episode {
         let _g = self.rt.enter();
         let before = Instant::now();
         let now = crate::clock::wall();
-        let ev = self.tracks.eval_json(now);
-        let mut association: Vec<(String, String)> = ev["association"]
-            .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or_default()
+        let mut association: Vec<(String, String)> = self
+            .tracks
+            .association_json()
             .iter()
             .filter_map(|a| Some((a["track_id"].as_str()?.to_string(), a["contact_id"].as_str()?.to_string())))
             .collect();
@@ -372,7 +375,7 @@ impl Episode {
         let mut out = json!({
             "t": self.now_s(),
             "wall": now,
-            "tracks": ev["tracks"],
+            "tracks": self.tracks.tracks_json(now),
             "association": association,
             "alerts": alerts,
             "ours": ours,

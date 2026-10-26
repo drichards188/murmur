@@ -214,6 +214,17 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The tracker's association of contacts to the tracks it holds (evaluation only), in the
+/// store's order.
+fn association_of(inner: &Inner) -> Vec<Value> {
+    inner
+        .by_contact
+        .iter()
+        .filter(|(_, t)| inner.tracks.contains_key(*t))
+        .map(|(c, t)| json!({ "contact_id": c, "track_id": t }))
+        .collect()
+}
+
 impl Tracks {
     #[cfg(test)]
     pub fn new(catalog: SensorCatalog, settings: Settings) -> Tracks {
@@ -741,7 +752,14 @@ impl Tracks {
         .to_string()
     }
 
+    /// Push the tracks to WebSocket clients if they changed. Built only while anyone watches,
+    /// as `push::pusher`'s frames are, and for a newcomer at [`Self::subscribe`]: every track's
+    /// JSON three times a second for no one was most of a large headless episode's time
+    /// (murmur-4yj), where no console ever connects.
     fn publish(&self, now: f64) {
+        if self.updates.receiver_count() == 0 {
+            return;
+        }
         let msg = self.message(now);
         self.updates.send_if_modified(|cur| {
             if **cur == msg {
@@ -753,8 +771,12 @@ impl Tracks {
         });
     }
 
+    /// A WebSocket client's view of the tracks: the message as of now first (none is built
+    /// while no one watches), then every change.
     pub fn subscribe(&self) -> watch::Receiver<Arc<String>> {
-        self.updates.subscribe()
+        let rx = self.updates.subscribe();
+        self.publish(clock::wall());
+        rx
     }
 
     /// Every track's last fix and estimated affiliation, for the console's cluster counts
@@ -869,12 +891,7 @@ impl Tracks {
     /// Evaluation only: truth and perception side by side, with the association.
     pub fn eval_json(&self, now: f64) -> Value {
         let inner = lock(&self.inner);
-        let pairs: Vec<Value> = inner
-            .by_contact
-            .iter()
-            .filter(|(_, t)| inner.tracks.contains_key(*t))
-            .map(|(c, t)| json!({ "contact_id": c, "track_id": t }))
-            .collect();
+        let pairs = association_of(&inner);
         json!({
             "t": round(now, 2),
             "truth": inner.truth.as_ref().map(|(rx, m)| json!({ "received_t": round(*rx, 2), "message": m })),
@@ -885,6 +902,14 @@ impl Tracks {
             // rules 9: every hostile act, observed (and the report it became) or not
             "acts": inner.act_records,
         })
+    }
+
+    /// Evaluation only: [`Self::eval_json`]'s `association` alone, for the headless simulator's
+    /// truth and picture samplers, which read nothing else of it (building every track's JSON
+    /// and the last truth message for them was a share of a large episode's time, murmur-4yj).
+    #[cfg(murmur_headless)]
+    pub fn association_json(&self) -> Vec<Value> {
+        association_of(&lock(&self.inner))
     }
 
     /// The last sensing step, for the headless simulator's evaluation only (never served by the
