@@ -152,6 +152,11 @@ impl Decision {
                 .map_err(engine_err)?
         };
         let mut out = preview_json(&preview, self.tol());
+        // rules 22: the legs the planner routed round land or a no-go area, or could not
+        let routes = self.planned_routes(&task, &uids);
+        if !routes.is_empty() {
+            out["routes"] = super::routes_json(&routes);
+        }
         // information only, after the decision and outside the lock (docs/LINK-COVERAGE.md)
         if !uids.is_empty() {
             out["link_coverage"] = self.link_coverage(&task, &uids).await;

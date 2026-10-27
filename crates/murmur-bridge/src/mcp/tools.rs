@@ -121,9 +121,11 @@ pub struct TaskingParams {
 #[derive(Deserialize, JsonSchema)]
 pub struct IntentParams {
     /// The task kind: orbit, patrol, hold, rtl or track on fleet vehicles; identify (send one
-    /// vehicle with an EO/IR to identify one track, track_id: it orbits the track at its
-    /// camera's standoff, following it, its camera looking for it first, until the track is
-    /// identified, lost or out of time, then goes back to the order it was on); collect
+    /// vehicle with an EO/IR to identify one live track, track_id, an identified one included:
+    /// it orbits the track at its camera's standoff, following it, its camera looking for it
+    /// first, until our own sensors identify it after the order went out (the outcome says
+    /// whether that agrees with the identity before), it is lost or out of time, then goes
+    /// back to the order it was on); collect
     /// (satellite imagery or SAR of an area) or cover (is SATCOM or GNSS service good enough
     /// over an area) on the space segment; engage (nominate an abstract effect on a track
     /// declared hostile, by an operator or by rule, with one armed platform: only human
@@ -554,9 +556,11 @@ pub fn tools() -> Vec<Tool> {
              also returns the preview: the platform's path forward, the predicted effect \
              point and time, the uncertainty ellipse and the keep-out. For a vehicle task it \
              also returns link_coverage, the predicted link along each vehicle's route (as \
-             get_link_coverage answers an order: information only, never a check). Nothing \
-             moves; the preview is logged under your agent id (link_coverage is not). Use it \
-             before propose_intent."
+             get_link_coverage answers an order: information only, never a check), and \
+             routes: by uid, each leg the planner routed round land, water or a no-go area \
+             (the waypoints it adds, how much longer it is, a sentence) or could not (why; \
+             that leg's check fails). Nothing moves; the preview is logged under your agent \
+             id (link_coverage is not). Use it before propose_intent."
                 .into(),
             true,
         ),

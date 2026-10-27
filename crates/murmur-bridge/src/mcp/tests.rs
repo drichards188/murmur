@@ -675,6 +675,12 @@ async fn preview_runs_the_checks_without_creating_an_intent() {
         )
         .await;
     assert_eq!(routed["passed"], true, "{routed}");
+    let legs = routed["routes"]["1"].as_array().expect("its routed legs");
+    assert!(
+        legs.iter().any(|l| l["summary"].as_str().is_some_and(|s| s.contains("routed around no-go alcatraz"))),
+        "{routed}"
+    );
+    assert!(legs.iter().all(|l| l.get("grid").is_none()), "the grid stays in the log");
 
     let intents = r.ok(&planner(), "get_intents", json!({})).await;
     assert_eq!(intents["count"], 0, "nothing was created");
