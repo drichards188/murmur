@@ -1505,6 +1505,37 @@ impl Track {
     /// sonar) over AIS over a family (radar, ESM); combines the sensors consistent with it. Its
     /// level: an EO/IR or sonar kind, or the AIS identity's, is at identification, a radar's or
     /// ESM's family at recognition. From the physical model's looks, [`Self::identity_from_looks`].
+    /// Rules 21: the sensors whose looks identified it, as `"<uid>:<sensor>"` (the physical
+    /// model's looks at identification; else, the legacy model's, the sources of the sensor
+    /// types behind its kind; `"ais"` for an AIS identity's kind alone). None while its identity
+    /// is not at identification.
+    pub fn identified_by(&self) -> Vec<String> {
+        let id = self.identity();
+        if id.level != Some(Level::Identify) {
+            return Vec::new();
+        }
+        let mut by: Vec<String> = self
+            .looks
+            .keys()
+            .filter(|(_, _, l)| *l == Level::Identify)
+            .map(|(u, s, _)| format!("{u}:{}", s.as_str()))
+            .collect();
+        if by.is_empty() {
+            by = self
+                .sources
+                .keys()
+                .filter(|(_, s)| id.supported_by.contains(s))
+                .map(|(u, s)| format!("{u}:{}", s.as_str()))
+                .collect();
+        }
+        if by.is_empty() && id.ais.is_some() {
+            by.push("ais".into());
+        }
+        by.sort();
+        by.dedup();
+        by
+    }
+
     pub fn identity(&self) -> Identity {
         if !self.looks.is_empty() {
             return self.identity_from_looks();

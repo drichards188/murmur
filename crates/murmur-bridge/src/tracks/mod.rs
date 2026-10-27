@@ -397,6 +397,16 @@ impl Tracks {
     pub fn on_truth(&self, msg: TruthMessage, world: &World) -> Result<(usize, usize, usize), String> {
         msg.validate()?;
         let observers = self.observers(world);
+        // rules 21: each vehicle on an identify order cues the contacts behind its track first
+        let looks: Vec<(u64, String)> = observers
+            .iter()
+            .filter_map(|o| world.tasks.task_of(o.uid).and_then(|(_, p)| p.look).map(|t| (o.uid, t)))
+            .collect();
+        let firsts: HashMap<u64, std::collections::BTreeSet<String>> = {
+            let inner = lock(&self.inner);
+            looks.into_iter().map(|(u, t)| (u, Self::contacts_of(&inner, &t))).collect()
+        };
+        lock(&self.physical).set_firsts(firsts);
         let now = clock::wall();
         self.on_truth_with(msg, &observers, now)
     }
@@ -818,6 +828,30 @@ impl Tracks {
             .filter_map(|t| t.ais_identity().map(|a| (t.id.clone(), a)))
             .chain(inner.dropped.iter().filter_map(|(id, (_, a))| a.clone().map(|a| (id.clone(), a))))
             .collect()
+    }
+
+    /// Rules 21: each live track's identity level and the looks that identified it, for
+    /// `WorldSnapshot::track_levels` (what ends an identify order).
+    pub fn levels(&self) -> BTreeMap<String, murmur_decide::identify::TrackLevel> {
+        use murmur_decide::identify::{Level as L, TrackLevel};
+        let inner = lock(&self.inner);
+        inner
+            .tracks
+            .values()
+            .filter_map(|t| {
+                let level = match t.identity().level? {
+                    sensing::Level::Detect => L::Detect,
+                    sensing::Level::Recognise => L::Recognise,
+                    sensing::Level::Identify => L::Identify,
+                };
+                Some((t.id.clone(), TrackLevel { level, by: t.identified_by() }))
+            })
+            .collect()
+    }
+
+    /// Rules 21: the contacts behind track `track` (the truth ids its detections came from).
+    fn contacts_of(inner: &Inner, track: &str) -> std::collections::BTreeSet<String> {
+        inner.by_contact.iter().filter(|(_, t)| t.as_str() == track).map(|(c, _)| c.clone()).collect()
     }
 
     /// Tracks for the CoT exporter.

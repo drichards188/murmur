@@ -284,6 +284,7 @@ impl Erig {
                 accept_lost: Vec::new(),
                 accept_behaving: Vec::new(),
             },
+            standoff_m: None,
             constraints: Constraints::default(),
             rationale: None,
         }

@@ -16,7 +16,8 @@
 //! token, and an engagement's approve quotes it as `"token": <id>`; an approval whose
 //! dispatch would stop an engagement in play needs `"acknowledge_supersede": true`; `abort`
 //! stops an approved or dispatched engagement before its effect, any operator), `GET
-//! /api/inbox`, `GET /api/operators` (who may sign an engagement), `POST /api/engage/options`
+//! /api/inbox`, `GET /api/operators` (who may sign an engagement), `POST /api/identify/options`
+//! (rules 21: the vehicles that could be sent to identify a track, ranked), `POST /api/engage/options`
 //! (the nomination form's dry run: which armed platforms could take it, with checks and
 //! preview; nothing is created or logged), `POST /api/restores/write_off` (rules 12: an
 //! operator writes off a vehicle's lost-link values owed back, or an earlier log whose carry
@@ -85,6 +86,7 @@ pub fn router(app: App) -> Router {
         .route("/api/operator/view", post(operator_view))
         .route("/api/operators", get(operators))
         .route("/api/engage/options", post(engage_options))
+        .route("/api/identify/options", post(identify_options))
         .route("/api/platforms", get(platforms))
         .route("/api/stats", get(stats))
         .route("/api/links/coverage", get(coverage_get).post(coverage_post))
@@ -666,6 +668,21 @@ async fn engage_options(
         Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, e.body_text()),
     };
     match app.decision.engage_options(req).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => decision_error(e),
+    }
+}
+
+/// Rules 21: the vehicles that could be sent to identify a track, ranked (read-only).
+async fn identify_options(
+    State(app): State<App>,
+    body: Result<Json<crate::decision::identify::OptionsRequest>, JsonRejection>,
+) -> Response {
+    let req = match body {
+        Ok(Json(req)) => req,
+        Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, e.body_text()),
+    };
+    match app.decision.identify_options(req).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => decision_error(e),
     }

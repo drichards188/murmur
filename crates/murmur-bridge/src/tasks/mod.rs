@@ -93,6 +93,10 @@ pub struct TaskParams {
     /// uid of the vehicle to track
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<Uid>,
+    /// Rules 21: the track an identify order's camera looks for first (the order is flown as
+    /// this orbit; the physical model's payload manager cues the track ahead of the rest)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub look: Option<String>,
 }
 
 /// POST /api/tasks
@@ -331,6 +335,15 @@ impl TaskManager {
             inner.taskings.pop_front();
         }
         tasking
+    }
+
+    /// Rules 21: `tasking`'s ops replaced by a follow of their own order (an identify order's
+    /// orbit moved, or its look ended): each superseded, done or not, so the map draws only the
+    /// order in force.
+    pub fn retire(&self, tasking: &Tasking, detail: &str) {
+        for op in &tasking.ops {
+            op.retire(detail.to_string());
+        }
     }
 
     /// Newest first.

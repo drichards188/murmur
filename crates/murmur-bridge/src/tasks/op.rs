@@ -127,6 +127,22 @@ impl OpRecord {
         }
         true
     }
+
+    /// Rules 21: an op its own order's follow replaced (an identify order's orbit moved with
+    /// its track, or its look ended): superseded, also once done (an orbit is done once
+    /// established, and would otherwise stay drawn); a failed or replaced one stays as it is.
+    fn retire(&mut self, detail: String) -> bool {
+        if self.state == OpState::Done {
+            self.state = OpState::Superseded;
+            self.history.push(HistoryEntry {
+                state: OpState::Superseded,
+                t: clock::wall(),
+            });
+            self.detail = detail;
+            return true;
+        }
+        self.set(OpState::Superseded, Some(detail))
+    }
 }
 
 pub struct OpCell {
@@ -216,6 +232,15 @@ impl OpCell {
 
     pub fn finished(&self) -> bool {
         self.state().is_terminal()
+    }
+
+    /// Rules 21: stop the executor and mark the op replaced by its own order's follow, done or
+    /// not (`OpRecord::retire`).
+    pub fn retire(&self, detail: String) {
+        if let Some(h) = self.abort.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            h.abort();
+        }
+        self.lock().retire(detail);
     }
 
     /// Stop the executor and mark the op replaced.

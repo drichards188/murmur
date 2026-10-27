@@ -65,6 +65,7 @@ mod civil;
 pub mod engage;
 mod failsafe;
 pub mod ident;
+pub mod identify;
 mod preload;
 pub mod queue;
 pub mod snapshot;
@@ -189,9 +190,13 @@ pub struct IntentRequest {
     /// Collect and cover: area, window, capability or service, ... (see [`space`]).
     #[serde(flatten)]
     pub space: space::SpaceParams,
-    /// Engage: track, effect radius, window, fallback (see [`engage`]).
+    /// Engage: track, effect radius, window, fallback (see [`engage`]). Rules 21: an identify
+    /// order's track is its `track` too.
     #[serde(flatten)]
     pub engage: engage::EngageParams,
+    /// Rules 21, identify: the operator's standoff, metres (absent: the engine's).
+    #[serde(default)]
+    pub standoff_m: Option<f64>,
     #[serde(default)]
     pub constraints: Constraints,
     #[serde(default)]
@@ -206,6 +211,7 @@ impl From<TaskRequest> for IntentRequest {
             params: r.params,
             space: space::SpaceParams::default(),
             engage: engage::EngageParams::default(),
+            standoff_m: None,
             constraints: Constraints::default(),
             rationale: None,
         }
@@ -410,6 +416,9 @@ struct Running {
     tasking: Arc<Tasking>,
     /// op id -> (state, not moving) last written to the log
     reported: HashMap<u64, (OpState, bool)>,
+    /// rules 21: an identify order still looking: its op done (the orbit established) does
+    /// not end it, the engine's step does
+    look: bool,
 }
 
 struct Core {
@@ -1366,19 +1375,7 @@ impl Decision {
         if req.task == "engage" {
             return self.submit_engage(by, &req, step).await;
         }
-        let fleet = self.fleet();
-        let order = TaskRequest {
-            task: req.task.clone(),
-            uids: req.uids.clone(),
-            params: req.params.clone(),
-        };
-        match TaskOrder::new(order, &fleet) {
-            Ok(_) => {}
-            Err(e @ OrderError::UnknownVehicles(_)) => {
-                return Err(DecisionError::new(404, e.to_string()));
-            }
-            Err(e) => return Err(DecisionError::new(400, e.to_string())),
-        }
+        self.check_vehicle_task(&req)?;
         let proposal = proposal(&req)?;
         self.prefetch(&proposal.task, &proposal.uids).await;
         let out = {
@@ -1409,25 +1406,13 @@ impl Decision {
     /// a situation's runner asks before a scripted id submits an opening order, and sends such
     /// an order to a person instead.
     pub async fn operator_dry_run(&self, by: &Actor, req: IntentRequest) -> Result<Value, DecisionError> {
-        if !matches!(req.task.as_str(), "orbit" | "patrol" | "hold" | "rtl" | "track") {
+        if !matches!(req.task.as_str(), "orbit" | "patrol" | "hold" | "rtl" | "track" | "identify") {
             return Err(DecisionError::new(
                 422,
-                "an operator's dry run takes a vehicle task (orbit, patrol, hold, rtl, track)",
+                "an operator's dry run takes a vehicle task (orbit, patrol, hold, rtl, track, identify)",
             ));
         }
-        let fleet = self.fleet();
-        let order = TaskRequest {
-            task: req.task.clone(),
-            uids: req.uids.clone(),
-            params: req.params.clone(),
-        };
-        match TaskOrder::new(order, &fleet) {
-            Ok(_) => {}
-            Err(e @ OrderError::UnknownVehicles(_)) => {
-                return Err(DecisionError::new(404, e.to_string()));
-            }
-            Err(e) => return Err(DecisionError::new(400, e.to_string())),
-        }
+        self.check_vehicle_task(&req)?;
         let proposal = proposal(&req)?;
         self.prefetch(&proposal.task, &proposal.uids).await;
         let (task, uids) = (proposal.task.clone(), proposal.uids.clone());
@@ -1549,6 +1534,25 @@ impl Decision {
     }
 
     /// Every named vehicle is in the fleet (404 otherwise).
+    /// A vehicle task's request, as the task layer would take it (known vehicles, a known
+    /// task, its parameters); rules 21: an identify order's vehicles (its orbit is the
+    /// engine's).
+    fn check_vehicle_task(&self, req: &IntentRequest) -> Result<(), DecisionError> {
+        if req.task == "identify" {
+            return self.check_vehicles(&req.uids);
+        }
+        let order = TaskRequest {
+            task: req.task.clone(),
+            uids: req.uids.clone(),
+            params: req.params.clone(),
+        };
+        match TaskOrder::new(order, &self.fleet()) {
+            Ok(_) => Ok(()),
+            Err(e @ OrderError::UnknownVehicles(_)) => Err(DecisionError::new(404, e.to_string())),
+            Err(e) => Err(DecisionError::new(400, e.to_string())),
+        }
+    }
+
     fn check_vehicles(&self, uids: &[Uid]) -> Result<(), DecisionError> {
         let fleet = self.fleet();
         let missing: Vec<String> = uids
@@ -1908,8 +1912,16 @@ impl Decision {
         if matches!(spec.task, Task::Engage { .. }) {
             return self.dispatch_engage(core, id);
         }
-        // the task layer must accept it before the engine marks it dispatched
-        if let Err(e) = task_request(&spec.task, &spec.uids)
+        // the task layer must accept it before the engine marks it dispatched (rules 21: an
+        // identify order as the orbit its last passing check laid out)
+        let task = match (&spec.task, core.engine.intent(id).and_then(|i| i.identify_plan())) {
+            (Task::Identify { .. }, Some(p)) => Task::Orbit {
+                center: p.center,
+                radius_m: p.radius_m,
+            },
+            _ => spec.task.clone(),
+        };
+        if let Err(e) = task_request(&task, &spec.uids)
             .and_then(|r| TaskOrder::new(r, &fleet).map_err(|e| e.to_string()))
         {
             core.engine
@@ -2307,6 +2319,8 @@ impl Decision {
             // pictures are held (they read the ledger it changes)
             self.step_identification(core);
             self.step_engagements(core);
+            // rules 21: the identify orders' orbits follow their tracks, and their looks end
+            self.step_identify(core);
             self.write_pointer(core);
             self.write_fleet(core);
         }
@@ -2462,6 +2476,10 @@ impl Decision {
                     continue;
                 }
                 run.reported.insert(op.id, key);
+            }
+            // rules 21: an identify order's orbit established is no end of its look
+            if run.look && !snap.ops.is_empty() && snap.ops.iter().all(|o| o.state == OpState::Done) {
+                continue;
             }
             if snap.ops.iter().all(|o| o.state.is_terminal()) {
                 if !snap.ops.is_empty()
@@ -2635,6 +2653,8 @@ impl Decision {
             alerts.extend(self.space_alerts(&core, clock::wall()));
             // rules 17: an rtl that went as ordered though its way home crosses land
             alerts.extend(self.route_alerts(&core, clock::wall()));
+            // rules 21: an identify order lost its track, ran out of time, holds, or can't follow
+            alerts.extend(self.identify_alerts(&core, clock::wall()));
         }
         alerts.sort_by(|a, b| a.severity.cmp(&b.severity).then(a.since_t.total_cmp(&b.since_t)));
         alerts
@@ -2854,10 +2874,21 @@ fn why_human(i: &Intent) -> Vec<String> {
 /// The engine's proposal for a request.
 fn proposal(req: &IntentRequest) -> Result<Proposal, DecisionError> {
     let bad = |m: String| DecisionError::new(400, m);
-    let kind: TaskKind = req.task.parse().map_err(bad)?;
     let p = &req.params;
     let ll = |a: [f64; 2]| LonLat::new(a[0], a[1]);
+    // rules 21: one vehicle to identify one track (the engine lays out its orbit)
+    let kind: Option<TaskKind> = if req.task == "identify" { None } else { Some(req.task.parse().map_err(bad)?) };
     let task = match kind {
+        None => Task::Identify {
+            track: req
+                .engage
+                .track
+                .clone()
+                .filter(|t| !t.trim().is_empty())
+                .ok_or_else(|| bad("identify needs a track (a perception track id)".into()))?,
+            standoff_m: req.standoff_m,
+        },
+        Some(kind) => match kind {
         TaskKind::Orbit => Task::Orbit {
             center: ll(p
                 .center
@@ -2874,6 +2905,7 @@ fn proposal(req: &IntentRequest) -> Result<Proposal, DecisionError> {
                 p.target
                     .ok_or_else(|| bad("track needs a target vehicle".into()))?,
             ),
+        },
         },
     };
     let mut proposal = Proposal::new(task, req.uids.iter().map(|u| duid(*u)).collect());

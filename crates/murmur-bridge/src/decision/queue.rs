@@ -216,6 +216,16 @@ impl Decision {
         order.patience = self.patience(released.task.kind());
         order.requeue = self.requeues(released.task.kind());
         order.resume = resume.clone();
+        // rules 21: an identify order is flown as its orbit, its camera looking for its track
+        // first; never queued (its track moves on)
+        let look = core
+            .engine
+            .intent(id)
+            .and_then(|i| super::identify::track_of(i.spec()).map(str::to_string));
+        if look.is_some() {
+            order.requeue = false;
+            order.params.look = look.clone();
+        }
         // rules 7: each vehicle's start in the audit log before it goes out
         order.ahead = self.write_ahead_hook();
         let tasking = self.world.tasks.dispatch(AuthorizedOrder {
@@ -228,6 +238,7 @@ impl Decision {
             Running {
                 tasking,
                 reported: HashMap::new(),
+                look: look.is_some(),
             },
         );
         self.supersede(core, id, &released.uids);

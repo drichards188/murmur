@@ -361,7 +361,11 @@ against a revisit: it takes the camera at once; a nearer contact of the same cla
 would thrash between two contacts and finish neither), and while the identification keeps getting
 likelier (the contact closing, the light rising) or did within 10 s; then it searches again. Each camera keeps its own history of what it
 identified and what it looked at in vain (a payload manager on its vehicle knows what its camera
-did, not another's). A look in progress survives the slew and zoom. A camera that cannot slew
+did, not another's). Rules 21 (bd murmur-bia, DECISIONS.md "W1 follow-up: an identify order"):
+while a vehicle flies an identify order (its task's `look` names a track), its cameras cue the
+contacts behind that track first, whenever one is a candidate this camera has not identified,
+ahead of the nearest-unidentified rule and of a lock on another contact; the rest of the
+manager is unchanged. A look in progress survives the slew and zoom. A camera that cannot slew
 looks along its vehicle's heading; a panoramic one does not point. The constants are [E].
 
 A cue to an aircraft whose height no sensor measured (a 2D radar's plot, a camera's or ESM's

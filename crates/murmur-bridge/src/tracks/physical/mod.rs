@@ -53,7 +53,7 @@ pub mod signature;
 pub mod sonar;
 pub mod spec;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeSet, BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -432,6 +432,9 @@ pub struct Engine {
     /// vain
     identified: HashMap<(u64, usize), HashMap<String, f64>>,
     looked: HashMap<(u64, usize), HashMap<String, f64>>,
+    /// Rules 21: per vehicle, the contacts behind the track an identify order sends it to,
+    /// which its cameras cue first (set before each step, [`Engine::set_firsts`])
+    firsts: HashMap<u64, BTreeSet<String>>,
 }
 
 impl Engine {
@@ -450,7 +453,14 @@ impl Engine {
             cues: HashMap::new(),
             identified: HashMap::new(),
             looked: HashMap::new(),
+            firsts: HashMap::new(),
         }
+    }
+
+    /// Rules 21: the contacts each vehicle's cameras cue first from now on (the contacts behind
+    /// the track its identify order names; none: the payload manager's own order of cues).
+    pub fn set_firsts(&mut self, firsts: HashMap<u64, BTreeSet<String>>) {
+        self.firsts = firsts;
     }
 
     fn resolve_path(&self, p: &str) -> PathBuf {
@@ -1309,6 +1319,16 @@ impl Engine {
             .collect();
         cands.sort_by(|a, b| a.0.cmp(b.0));
         let unidentified_ = |c: &str| identified.get(c).is_none_or(|t| s - t > REVISIT_S);
+        // rules 21: the track an identify order sends the vehicle to, first, whenever it is a
+        // candidate this camera has not identified (ahead of a lock on another contact)
+        if let Some(first) = self.firsts.get(&key.0)
+            && let Some((c, _, _)) = cands
+                .iter()
+                .filter(|(c, _, _)| first.contains(c.as_str()) && unidentified_(c))
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+        {
+            return Some((*c).clone());
+        }
         let unidentified = cands.iter().filter(|(c, _, _)| unidentified_(c)).min_by(|a, b| a.1.total_cmp(&b.1));
         if let Some(h) = holding {
             // a lock keeps its contact while it is still a candidate, unless a cue of a higher

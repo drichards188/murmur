@@ -153,6 +153,8 @@ pub fn build(
     if let Some(tracks) = tracks {
         snap.tracks = tracks.facts(t.0 as f64 / 1000.0);
         snap.track_ais = tracks.ais();
+        // rules 21: what ends an identify order
+        snap.track_levels = tracks.levels();
     }
     snap
 }

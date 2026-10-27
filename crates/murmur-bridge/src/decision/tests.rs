@@ -226,6 +226,7 @@ fn orbit(uid: Uid) -> IntentRequest {
         },
         space: space::SpaceParams::default(),
         engage: engage::EngageParams::default(),
+        standoff_m: None,
         constraints: Constraints::default(),
         rationale: None,
     }
@@ -238,6 +239,7 @@ fn simple(task: &str, uid: Uid) -> IntentRequest {
         params: TaskParams::default(),
         space: space::SpaceParams::default(),
         engage: engage::EngageParams::default(),
+        standoff_m: None,
         constraints: Constraints::default(),
         rationale: None,
     }
@@ -253,6 +255,7 @@ fn patrol(uid: Uid, route: Vec<[f64; 2]>) -> IntentRequest {
         },
         space: space::SpaceParams::default(),
         engage: engage::EngageParams::default(),
+        standoff_m: None,
         constraints: Constraints::default(),
         rationale: None,
     }
