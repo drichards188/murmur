@@ -93,10 +93,11 @@ function sensorOf(by: string): string {
 
 /** What the engine words an identify order's end from (crates/murmur-decide/src/identify.rs
  *  `outcome` and `then_phrase`):
- *  "track T-1 identified as K by S[, S]" + "; it contradicts|agrees with|differs from its identity
- *  before, W[: conflict]" | "; it was W before" + "; holding: ..." | "; back to ...". */
+ *  "track T-1 identified as K by S[, S]" (rules 23: "by PUMA 1's eo_ir") + "; it contradicts|agrees
+ *  with|differs from its identity before, W[: conflict]" | "; it was W before" + rules 23 "; meanwhile
+ *  HUNTER 1 identified it as K" + "; holding: ..." | "; back to ...". */
 const IDENTIFIED =
-  /^track (\S+) identified as (\S+?)(?: by (.+?))?(?:; it (contradicts|agrees with|differs from) its identity before, ([^:;]+?)(?:: (.+?))?|; it was (.+?) before)?(?:; (holding: .*|back to .*))?$/s
+  /^track (\S+) identified as (\S+?)(?: by (.+?))?(?:; it (contradicts|agrees with|differs from) its identity before, ([^:;]+?)(?:: (.+?))?|; it was (.+?) before)?(?:; meanwhile (.+?))?(?:; (holding: .*|back to .*))?$/s
 
 /** A conflict as tracks word it: "AIS says X (NAME) but S identifies it as Y", or the older
  *  "AIS says X; S identifies Y". */
@@ -120,7 +121,7 @@ export interface ReasonContext {
 function identifyBluf(text: string, ctx: ReasonContext): BlufParts | null {
   const m = IDENTIFIED.exec(text.trim())
   if (!m) return null
-  const [, track, kind, by, rel, was, conflict, wasOnly, then] = m
+  const [, track, kind, by, rel, was, conflict, wasOnly, meanwhile, then] = m
   const sensors = by ? by.split(',').map((s) => s.trim()).filter(Boolean) : []
   const sensor = sensors.length ? sensors.map(sensorOf).join(' and ') : 'our sensors'
   const bullets: string[] = []
@@ -138,6 +139,8 @@ function identifyBluf(text: string, ctx: ReasonContext): BlufParts | null {
     else if (rel === 'differs from') bullets.push(`differs from its earlier identity: ${words(was)}`)
     else if (wasOnly) bullets.push(`was ${wasOnly} before`)
   }
+  // rules 23: what other vehicles identified while it looked (it did not end the look)
+  if (meanwhile) bullets.push(`meanwhile ${words(meanwhile)}`)
   if (then) {
     const who = ctx.who ?? 'vehicle'
     if (then.startsWith('holding: no order to go back to')) bullets.push(`${who} holding (no earlier order)`)
@@ -186,6 +189,11 @@ const ALERT_HEADLINE: Record<string, string> = {
   space_recheck_unknown: 'Satellite task could not be re-checked: decide',
   spent: 'Spent by its own effect but still heard: un-spend or leave',
   path_crosses_land: 'Its way home crosses land: watch it',
+  identify_holding: 'Identified, and holding: it has no order to go back to',
+  identify_lost: 'Identify order ended: its track was lost',
+  identify_timed_out: 'Identify order ended: out of time, not identified',
+  identify_held: "Its orbit can't follow the track: look at it",
+  identify_meanwhile: 'For information: another vehicle identified its track, and its own look goes on',
 }
 
 /** An alert as headline (what it asks), the bridge's detail as up to three bullets, and the

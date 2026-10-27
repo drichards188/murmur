@@ -5873,7 +5873,7 @@ impl Engine {
                         return_inputs: None,
                     })?;
                     out.push(IdentifyEvent::Meanwhile { intent: id, uid: uid.clone(), detail });
-                    run.meanwhile.push((by, kind));
+                    run.meanwhile.push(crate::identify::Noted { by, kind, t: inputs.t });
                     if let Some(r) = self.get_mut(id)?.identify_run_mut() {
                         r.meanwhile = run.meanwhile.clone();
                     }

@@ -1,6 +1,6 @@
 // Checks for bluf.ts (no test runner in web/): node web/src/bluf.check.ts, as make check does.
 // Throws on the first failure, prints "bluf: ok" otherwise. Not part of the bundle.
-import { checksSummary, parseRationale, reasonBluf } from './bluf.ts'
+import { alertParts, checksSummary, parseRationale, reasonBluf } from './bluf.ts'
 
 function eq(a: unknown, b: unknown, what: string) {
   const x = JSON.stringify(a)
@@ -58,4 +58,25 @@ eq(reasonBluf('approved by op-1'), { headline: 'approved by op-1', bullets: [], 
 eq(checksSummary(Array.from({ length: 7 }, () => ({ rule: 'x', outcome: 'pass' as const }))), { text: '7 checks passed', tone: 'ok' }, 'all pass')
 eq(checksSummary([{ rule: 'domain', outcome: 'fail' }, { rule: 'a', outcome: 'pass' }]).text, '1 failed: domain', 'one failed')
 eq(checksSummary([{ rule: 'a', outcome: 'pass' }, { rule: 'link', outcome: 'unverified' }]).tone, 'warn', 'unverified warns')
+
+// rules 23: the vehicle's own look named, and another's meanwhile a bullet; its informational alert
+eq(
+  reasonBluf("track T-0001 identified as cargo_ship by PUMA 1's eo_ir; it agrees with its identity before, cargo_ship (identify); meanwhile HUNTER 1 identified it as cargo_ship; holding: no order to go back to", { who: 'PUMA 1' }),
+  {
+    headline: "T-0001 identified: PUMA 1's eo ir says cargo ship",
+    bullets: ['agrees with its earlier identity: cargo ship (identify)', 'meanwhile HUNTER 1 identified it as cargo ship', 'PUMA 1 holding (no earlier order)'],
+    more: "track T-0001 identified as cargo_ship by PUMA 1's eo_ir; it agrees with its identity before, cargo_ship (identify); meanwhile HUNTER 1 identified it as cargo_ship; holding: no order to go back to",
+  },
+  'own look and meanwhile',
+)
+eq(
+  alertParts({ kind: 'identify_meanwhile', detail: 'HUNTER 1 identified T-0001 as cargo_ship; PUMA 1 continues for its own look' }),
+  {
+    headline: 'For information: another vehicle identified its track, and its own look goes on',
+    bullets: ['HUNTER 1 identified T-0001 as cargo_ship', 'PUMA 1 continues for its own look'],
+    more: 'HUNTER 1 identified T-0001 as cargo_ship; PUMA 1 continues for its own look',
+  },
+  'identify_meanwhile alert',
+)
+
 console.log('bluf: ok')

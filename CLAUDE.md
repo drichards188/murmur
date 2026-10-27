@@ -302,7 +302,9 @@ meaningful.
   the vehicle sent's own identification after it went out (`TrackLevel::own`, by vehicle uid, the
   tracker's `own_identified_t` per observer); another vehicle's is an `identify.step` `meanwhile`
   and the order goes on. A driver that identifies a track by a vehicle's camera sets `own` for
-  that vehicle (the scenario runner does for any `level_by` but `ais`).
+  that vehicle (the scenario runner does for any `level_by` but `ais`). The bridge shows each as an
+  inbox alert `identify_meanwhile` of severity `info` (never a badge; alerts sort high, medium,
+  info).
 - Predicted link coverage (docs/LINK-COVERAGE.md, bd murmur-hei): `GET`/`POST
   /api/links/coverage`, `link_coverage` in dry runs and `preview_intent`, the MCP tool
   `get_link_coverage`, the console's Links layer and the order form's dry run (`web/src/

@@ -179,7 +179,7 @@ fn the_look_ends_identified_lost_or_out_of_time() {
     assert!(why.contains("it contradicts its identity before, ferry (identify)"), "{why}");
     // rules 23: only the vehicle sent's own identification; another's is said, not an end
     let puma = uid("puma-1");
-    let noted = vec![("hunter-1".to_string(), Some("ferry".to_string()))];
+    let noted = vec![identify::Noted { by: "hunter-1".into(), kind: Some("ferry".into()), t: T0.plus_ms(5_000) }];
     let own = |meanwhile| Some(identify::Look { sent_t: sent, before: Some("ferry (identify)"), own: Some(&puma), meanwhile });
     let mut other = fresh.clone();
     other.callsigns.insert(uid("puma-1"), "PUMA 1".into());
@@ -190,7 +190,7 @@ fn the_look_ends_identified_lost_or_out_of_time() {
     l.own.insert("hunter-1".into(), identify::OwnLook { t: T0.plus_ms(5_000), kind: Some("ferry".into()) });
     assert_eq!(identify::outcome("T-0001", &other, deadline, own(&[])), None);
     let due = identify::meanwhile_due("T-0001", &other, &puma, sent, &[]);
-    assert_eq!(due, noted);
+    assert_eq!(due, vec![("hunter-1".to_string(), Some("ferry".to_string()))]);
     assert_eq!(
         identify::meanwhile_detail(&other, "hunter-1", Some("ferry"), &puma),
         "HUNTER 1 identified it as ferry meanwhile; PUMA 1 continues for its own look"

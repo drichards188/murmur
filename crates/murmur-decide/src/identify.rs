@@ -226,8 +226,17 @@ pub struct Run {
     /// Rules 22: when it went out, and the track's identity then.
     pub sent_t: Option<Time>,
     pub before: Option<String>,
-    /// Rules 23: the other vehicles' identifications noted meanwhile, in order: by whom, as what.
-    pub meanwhile: Vec<(String, Option<String>)>,
+    /// Rules 23: the other vehicles' identifications noted meanwhile, in order.
+    pub meanwhile: Vec<Noted>,
+}
+
+/// Rules 23: another vehicle's identification an identify order noted meanwhile: by whom (its
+/// uid), as what, and when it was noted (the step's time; the bridge's inbox alert says it).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Noted {
+    pub by: String,
+    pub kind: Option<String>,
+    pub t: Time,
 }
 
 /// The order's deadline: its dispatch, the time to get there, then [`ON_STATION_S`].
@@ -425,7 +434,7 @@ pub struct Look<'a> {
     pub sent_t: Time,
     pub before: Option<&'a str>,
     pub own: Option<&'a Uid>,
-    pub meanwhile: &'a [(String, Option<String>)],
+    pub meanwhile: &'a [Noted],
 }
 
 impl<'a> Look<'a> {
@@ -465,12 +474,12 @@ pub fn name(world: &WorldSnapshot, uid: &str) -> String {
 
 /// Rules 23: the other vehicles' identifications of `track` on `world` made after `sent_t` that
 /// are not noted yet (a vehicle noted again only when it gives another kind), in uid order.
-pub fn meanwhile_due(track: &str, world: &WorldSnapshot, sent: &Uid, sent_t: Time, noted: &[(String, Option<String>)]) -> Vec<(String, Option<String>)> {
+pub fn meanwhile_due(track: &str, world: &WorldSnapshot, sent: &Uid, sent_t: Time, noted: &[Noted]) -> Vec<(String, Option<String>)> {
     let Some(l) = world.track_levels.get(track) else { return Vec::new() };
     l.own
         .iter()
         .filter(|(by, o)| by.as_str() != sent.as_str() && o.t > sent_t)
-        .filter(|(by, o)| !noted.iter().any(|(b, k)| b == *by && *k == o.kind))
+        .filter(|(by, o)| !noted.iter().any(|n| n.by == **by && n.kind == o.kind))
         .map(|(by, o)| (by.clone(), o.kind.clone()))
         .collect()
 }
@@ -488,13 +497,13 @@ pub fn meanwhile_detail(world: &WorldSnapshot, by: &str, kind: Option<&str>, sen
 
 /// Rules 23: the outcome's note of the identifications made meanwhile ("; meanwhile HUNTER 1
 /// identified it as cargo_ship"), empty when none.
-fn meanwhile_note(world: &WorldSnapshot, noted: &[(String, Option<String>)]) -> String {
+fn meanwhile_note(world: &WorldSnapshot, noted: &[Noted]) -> String {
     if noted.is_empty() {
         return String::new();
     }
     let each: Vec<String> = noted
         .iter()
-        .map(|(by, k)| format!("{} identified it{}", name(world, by), k.as_deref().map(|k| format!(" as {k}")).unwrap_or_default()))
+        .map(|n| format!("{} identified it{}", name(world, &n.by), n.kind.as_deref().map(|k| format!(" as {k}")).unwrap_or_default()))
         .collect();
     format!("; meanwhile {}", each.join(", "))
 }

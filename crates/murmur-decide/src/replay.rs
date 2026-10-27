@@ -6306,7 +6306,7 @@ fn replay_inner<S: AsRef<str>>(
                                 json(&want),
                             );
                         }
-                        run.meanwhile.push((by.clone(), identity.clone()));
+                        run.meanwhile.push(crate::identify::Noted { by: by.clone(), kind: identity.clone(), t: e.t });
                     }
                     crate::identify::Step::Recentred { center, radius_m, checks }
                     | crate::identify::Step::Held { center, radius_m, checks, .. } => {

@@ -663,7 +663,12 @@ group. Dates are 2026.
   step and said in the outcome, and the order goes on. A lost track and the deadline end it as
   before. Judgement calls: any of the vehicle's own sensors counts (a Sea Hunter sent may end it on
   its sonar), since the order asks that vehicle for a look and its sensors are its look; the steps
-  name vehicles by callsign, logged with the step so replay says the same.
+  name vehicles by callsign, logged with the step so replay says the same. While the order
+  looks, the inbox says so too (the owner, 10-27: yes to an alert, no to alarm fatigue): one
+  informational alert per order and vehicle (`identify_meanwhile`, severity `info`: listed after
+  the rest, never a badge or a warning count), "HUNTER 1 identified T-0001 as cargo_ship; PUMA 1
+  continues for its own look", with Fly to and Acknowledge; it is the bridge's, from the engine's
+  record of the order, so no rules version.
 - **A physical sensing model beside the legacy one, the physical model the default since the
   catalog's figures** (10-23, murmur-1z6.1, murmur-1z6.4; WORLD-V3-PLAN sections 2 and 3,
   approved; docs/SENSING.md). Per-sensor physics

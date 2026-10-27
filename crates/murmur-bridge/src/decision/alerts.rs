@@ -20,6 +20,9 @@ use crate::vehicle::{Uid, VehicleCell};
 pub enum Severity {
     High,
     Medium,
+    /// Something the operator may want to know that asks nothing of them (`identify_meanwhile`):
+    /// listed after the rest, never counted as a warning.
+    Info,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -29,7 +32,9 @@ pub struct Alert {
     /// lost_link | not_moving | left_task | task_failed | ack_timeout | may_be_running |
     /// restore_pending (rules 6: a platform's own lost-link failsafe not confirmed back after
     /// an engagement) | path_crosses_land (rules 17: an rtl that went as ordered though its
-    /// way home crosses land)
+    /// way home crosses land) | identify_holding | identify_lost | identify_timed_out |
+    /// identify_held (rules 21) | identify_meanwhile (rules 23: another vehicle identified an
+    /// identify order's track, the order going on; informational)
     pub kind: &'static str,
     pub severity: Severity,
     pub uid: Uid,

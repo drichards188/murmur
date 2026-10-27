@@ -94,6 +94,8 @@
 
 .ix-alert { background: var(--panel-2); border: 1px solid var(--line); border-left: 3px solid var(--warn); border-radius: 4px; padding: 8px 12px; display: flex; flex-direction: column; gap: 5px; outline: none; cursor: pointer; }
 .ix-alert.high { border-left-color: var(--bad); }
+.ix-alert.info { border-left-color: var(--line); }
+.ix-alert.info .ix-akind { color: var(--muted); }
 .ix-alert.sel { background: #1a2532; border-color: #33475d; }
 .ix-alert.muted-card { opacity: 0.6; }
 .ix-akind { font: 700 11.5px var(--mono); letter-spacing: 0.08em; color: var(--warn); }

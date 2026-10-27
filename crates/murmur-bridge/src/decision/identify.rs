@@ -46,6 +46,43 @@ pub(super) fn track_of(spec: &IntentSpec) -> Option<&str> {
     }
 }
 
+/// Rules 23: an identify order's informational alerts while it looks, one for each other vehicle
+/// that identified its track meanwhile (its latest kind), on the order's vehicle: "HUNTER 1
+/// identified T-0001 as cargo_ship; PUMA 1 continues for its own look". `name` gives a vehicle's
+/// callsign by uid. Each says when it was noted, and keeps its id (`identify-meanwhile:<intent>:
+/// <uid>`) so an acknowledgement holds until the order ends.
+pub(super) fn meanwhile_alerts(
+    op: &crate::tasks::OpSnapshot,
+    track: &str,
+    noted: &[murmur_decide::identify::Noted],
+    name: &dyn Fn(&str) -> String,
+    now_wall: f64,
+) -> Vec<alerts::Alert> {
+    let sent = name(&op.uid.to_string());
+    let mut latest: std::collections::BTreeMap<&str, &murmur_decide::identify::Noted> = std::collections::BTreeMap::new();
+    for n in noted {
+        latest.insert(n.by.as_str(), n);
+    }
+    latest
+        .into_values()
+        .map(|n| alerts::Alert {
+            id: format!("identify-meanwhile:{}:{}", op.intent_id, n.by),
+            kind: "identify_meanwhile",
+            severity: alerts::Severity::Info,
+            uid: op.uid,
+            callsign: Some(sent.clone()),
+            detail: format!(
+                "{} identified {track}{}; {sent} continues for its own look",
+                name(&n.by),
+                n.kind.as_deref().map(|k| format!(" as {k}")).unwrap_or_default()
+            ),
+            since_t: (n.t.0 as f64 / 1000.0).min(now_wall),
+            op_id: Some(op.id),
+            intent_id: Some(op.intent_id),
+        })
+        .collect()
+}
+
 impl Decision {
     /// Rules 21: step the identify orders still looking (the engine logs each step before
     /// anything goes out) and send what each step calls for.
@@ -126,25 +163,36 @@ impl Decision {
     /// Rules 21: while a vehicle flies what an identify order sent it after a look that did not
     /// identify its track, or holds for want of an order to go back to, or while its orbit could
     /// not follow its track, an inbox alert says so. It clears when another order replaces it.
+    /// Rules 23: while the order looks, an informational alert for each other vehicle that
+    /// identified its track meanwhile ([`meanwhile_alerts`]).
     pub(super) fn identify_alerts(&self, core: &Core, now_wall: f64) -> Vec<alerts::Alert> {
         if !self.rules.identify() {
             return Vec::new();
         }
         let fleet = self.fleet();
+        let name = |uid: &str| {
+            uid.parse::<crate::vehicle::Uid>()
+                .ok()
+                .and_then(|u| fleet.get(&u))
+                .and_then(|c| alerts::callsign(c))
+                .unwrap_or_else(|| format!("vehicle {uid}"))
+        };
         self.world
             .tasks
             .current_ops()
             .into_iter()
             .filter(|op| !matches!(op.state, OpState::Failed | OpState::Superseded))
-            .filter_map(|op| {
-                let i = core.engine.intent(IntentId(op.intent_id))?;
-                let track = track_of(i.spec())?;
-                let run = i.identify_run()?;
+            .flat_map(|op| {
+                let Some(i) = core.engine.intent(IntentId(op.intent_id)) else { return Vec::new() };
+                let Some(track) = track_of(i.spec()) else { return Vec::new() };
+                let Some(run) = i.identify_run() else { return Vec::new() };
+                // rules 23: while it looks, what other vehicles identified meanwhile
+                let mut out = if run.ended.is_none() { meanwhile_alerts(&op, track, &run.meanwhile, &name, now_wall) } else { Vec::new() };
                 let (kind, severity, detail) = match (&run.ended, &run.held) {
                     (Some((murmur_decide::identify::EndKind::Identified, d)), _) if d.contains("; holding") => {
                         ("identify_holding", alerts::Severity::Medium, format!("identify {track}: {d}"))
                     }
-                    (Some((murmur_decide::identify::EndKind::Identified, _)), _) => return None,
+                    (Some((murmur_decide::identify::EndKind::Identified, _)), _) => return out,
                     (Some((k, d)), _) => (
                         if *k == murmur_decide::identify::EndKind::Lost { "identify_lost" } else { "identify_timed_out" },
                         alerts::Severity::High,
@@ -155,9 +203,9 @@ impl Decision {
                         alerts::Severity::Medium,
                         format!("identify {track}: its orbit can't follow the track ({reason})"),
                     ),
-                    (None, None) => return None,
+                    (None, None) => return out,
                 };
-                Some(alerts::Alert {
+                out.push(alerts::Alert {
                     id: format!("identify:{}", op.intent_id),
                     kind,
                     severity,
@@ -167,7 +215,8 @@ impl Decision {
                     since_t: op.history.first().map_or(now_wall, |h| h.t),
                     op_id: Some(op.id),
                     intent_id: Some(op.intent_id),
-                })
+                });
+                out
             })
             .collect()
     }
@@ -269,5 +318,49 @@ impl Decision {
             "vehicles": out,
             "note": "read-only: nothing was created or logged; passing first, soonest there first",
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use murmur_decide::Time;
+    use murmur_decide::identify::Noted;
+
+    use super::meanwhile_alerts;
+    use crate::decision::alerts::Severity;
+    use crate::tasks::{HistoryEntry, OpSnapshot, OpState, TaskKind};
+
+    /// Rules 23: one informational alert for each other vehicle that identified the order's track
+    /// meanwhile (its latest kind), on the order's vehicle, saying when it was noted.
+    #[test]
+    fn another_vehicles_identification_is_one_informational_alert_per_vehicle() {
+        let op = OpSnapshot {
+            id: 12,
+            tasking: 4,
+            intent_id: 4,
+            task: TaskKind::Orbit,
+            uid: 3,
+            sysid: 3,
+            state: OpState::Active,
+            detail: "orbiting".into(),
+            progress: None,
+            history: vec![HistoryEntry { state: OpState::Active, t: 100.0 }],
+        };
+        let name = |u: &str| match u {
+            "1" => "HUNTER 1".to_string(),
+            "3" => "PUMA 1".to_string(),
+            u => format!("vehicle {u}"),
+        };
+        let noted = [
+            Noted { by: "1".into(), kind: Some("fishing_vessel".into()), t: Time(150_000) },
+            Noted { by: "2".into(), kind: None, t: Time(155_000) },
+            Noted { by: "1".into(), kind: Some("cargo_ship".into()), t: Time(160_000) },
+        ];
+        let a = meanwhile_alerts(&op, "T-0001", &noted, &name, 200.0);
+        assert_eq!(a.len(), 2, "{a:?}");
+        assert_eq!((a[0].kind, a[0].severity, a[0].uid), ("identify_meanwhile", Severity::Info, 3));
+        assert_eq!(a[0].detail, "HUNTER 1 identified T-0001 as cargo_ship; PUMA 1 continues for its own look");
+        assert_eq!((a[0].id.as_str(), a[0].since_t, a[0].intent_id), ("identify-meanwhile:4:1", 160.0, Some(4)));
+        assert_eq!(a[1].detail, "vehicle 2 identified T-0001; PUMA 1 continues for its own look");
     }
 }

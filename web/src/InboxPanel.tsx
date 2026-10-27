@@ -55,9 +55,12 @@ export function InboxButton({ decisions, open, onClick, hiddenAlerts }: { decisi
   const pending = decisions?.inbox.pending.length ?? 0
   const alerts = (decisions?.inbox.alerts ?? []).filter((a) => !hiddenAlerts.has(a.id))
   const high = alerts.filter((a) => a.severity === 'high').length
-  const medium = alerts.length - high
+  const medium = alerts.filter((a) => a.severity === 'medium').length
+  // rules 23: informational alerts ask nothing: in the title, never a badge
+  const info = alerts.filter((a) => a.severity === 'info').length
   const review = decisions?.inbox.counts.review ?? 0
   const parts = [`${pending} pending approval${pending === 1 ? '' : 's'}`, `${high} high alert${high === 1 ? '' : 's'}`, `${medium} medium alert${medium === 1 ? '' : 's'}`, `${review} for review (not blocking)`]
+  if (info > 0) parts.push(`${info} for information`)
   return (
     <button className={`ghost platforms-btn ix-btn ${open ? 'on' : ''}`} onClick={onClick} title={parts.join(', ')} aria-label={`Inbox: ${parts.join(', ')}`}>
       Inbox

@@ -166,7 +166,8 @@ export interface IntentSpace {
   cover?: { points: number; worst: LngLat; coverage_fraction_min?: number; coverage_fraction_mean?: number; outages?: { start: string; end: string }[] }
 }
 
-export type Severity = 'high' | 'medium'
+/** `info` asks nothing of the operator (rules 23's `identify_meanwhile`): never counted as a warning. */
+export type Severity = 'high' | 'medium' | 'info'
 
 export interface Alert {
   id: string // link:<uid>, op:<op id>, restore:<uid>, spent:<uid> or route:<op id>; stable while the condition lasts
@@ -182,6 +183,11 @@ export interface Alert {
     | 'space_recheck_unknown'
     | 'spent'
     | 'path_crosses_land'
+    | 'identify_holding'
+    | 'identify_lost'
+    | 'identify_timed_out'
+    | 'identify_held'
+    | 'identify_meanwhile'
   severity: Severity
   uid: number
   callsign: string | null
@@ -364,6 +370,11 @@ export const ALERT_LABEL: Record<Alert['kind'], string> = {
   space_recheck_unknown: 'SATELLITE RE-CHECK UNKNOWN',
   spent: 'SPENT, STILL HEARD',
   path_crosses_land: 'PATH CROSSES LAND',
+  identify_holding: 'IDENTIFIED, HOLDING',
+  identify_lost: 'IDENTIFY: TRACK LOST',
+  identify_timed_out: 'IDENTIFY: OUT OF TIME',
+  identify_held: 'IDENTIFY: CAN\'T FOLLOW',
+  identify_meanwhile: 'IDENTIFIED MEANWHILE',
 }
 
 // ---- operator ------------------------------------------------------------------------------
