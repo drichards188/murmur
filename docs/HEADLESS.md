@@ -1160,7 +1160,10 @@ the track first on the physical model, and the vehicle goes back to the order it
 the look ends. Nothing in the simulator proposes one yet: no eval preset, playbook play or
 proxy operator uses it, so every episode before it is unchanged but for its audit log naming
 rules 21 and logging each track's identity level with every decision (the golden's digests
-re-taken for that alone).
+re-taken for that alone). From decision rules 22 (bd murmur-n6a) an identify order may go to any
+live track and ends only on our own sensors' identification after it went out; each track level
+logged with a decision carries when our own sensors last identified it (`own_t`) and the
+tracker's identity conflict, the simulator's tracker being the bridge's own.
 
 ### 16.5 Not done, or found
 
@@ -1250,6 +1253,17 @@ for their audit log's `run.started` alone (`rules_version` 17 for 16; the code b
 earlier digests, every other byte the same). Decision rules 18 (murmur-vni: a track predicted with its own
 velocity error) and the air tracker's agreed velocities re-took them again for `rules_version`
 alone (18 for 17): Harbor watch and the v2 episodes have no velocity the change moves.
+
+From decision rules 22 (bd murmur-n6a, `murmur_decide::plan`) a transit or a patrol leg the rule
+or the geofence would refuse is routed round what it meets first, on the same grid the rule reads:
+the simulator's bridge fetches the planner's cells from its world's baked grid as the live bridge
+fetches them from tidewater (the same `prefetch`), so a world with `domain_rule = "grid"` plans
+as live does. Under Harbor watch's pin nothing is planned for a surface vehicle (the rule answers
+nothing), and no Harbor watch order takes an aircraft through a no-go area. The golden episode
+was re-taken for rules 22's audit log alone: `run.started` names 22, and every track level its
+decisions log carries `own_t` and `conflict` (16.4); with those taken out the log is byte for
+byte the one before (its digest `e5c79bc1...` again), the same 145 events, proposals and
+operator decisions. No episode has exercised a routed leg headless yet.
 
 ### 17.3 The bake tool
 
