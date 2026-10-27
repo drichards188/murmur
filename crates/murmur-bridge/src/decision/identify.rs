@@ -29,7 +29,8 @@ use crate::tasks::{OpState, TaskOrder};
 pub struct OptionsRequest {
     /// The perception track id to identify.
     pub track: String,
-    /// Only these vehicles (default: every vehicle with an EO/IR).
+    /// Only these vehicles, each answered whatever it carries (default: every vehicle with an
+    /// EO/IR).
     #[serde(default)]
     pub uids: Option<Vec<crate::vehicle::Uid>>,
     /// An operator's standoff, metres (default: the engine's, from each camera's reach).
@@ -168,7 +169,8 @@ impl Decision {
     }
 
     /// `POST /api/identify/options`: each vehicle that could be sent to identify `req.track`
-    /// (one with an EO/IR whose autopilot takes the order), with the checks an identify order
+    /// (one with an EO/IR whose autopilot takes the order; every vehicle `req.uids` names, so one
+    /// without a camera hears why it can't go), with the checks an identify order
     /// for it would get now (`passed`, the failing ones in words), its plan (`standoff_m`, the
     /// camera's `reach_m`, `transit_s`) and, for one that passes, its predicted link along the
     /// way (`link`: `holds`, `p_failsafe`, its sentence). Passing first, soonest there first.
@@ -183,7 +185,8 @@ impl Decision {
             .iter()
             .filter(|(u, _)| req.uids.as_ref().is_none_or(|l| l.contains(u)))
             .filter(|(_, c)| {
-                c.read(|v| {
+                req.uids.is_some()
+                    || c.read(|v| {
                     v.identity
                         .as_ref()
                         .and_then(|i| i.str("platform"))

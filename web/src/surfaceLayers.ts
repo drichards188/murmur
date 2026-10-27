@@ -30,10 +30,12 @@ export interface SurfaceScale {
 
 /** A drafted orbit or patrol (MapView's Draft) */
 export interface DraftShape {
-  mode: 'orbit' | 'patrol' | null
+  /** `identify` (rules 21): the target's orbit ring at `center`, a line from `from` */
+  mode: 'orbit' | 'patrol' | 'identify' | null
   center: LngLat | null
   radius: number
   route: LngLat[]
+  from?: LngLat | null
 }
 
 export interface SurfaceInput {
@@ -289,6 +291,12 @@ export function buildSurfaceLayers(input: SurfaceInput, scale: SurfaceScale) {
 
   // the draft: its line, and its points numbered (an orbit's centre unnumbered)
   const dr = input.draft
+  // rules 21: an identify order's target: a ring of its orbit on the track, a line from the vehicle
+  if (dr.mode === 'identify' && dr.center) {
+    line(circle(dr.center, dr.radius), DRAFT, 2, [1, 1.5])
+    if (dr.from) line([dr.from, dr.center], DRAFT, 1.5, [2, 2])
+    d.marks.push({ at: at(dr.center), color: DRAFT, radius: 9, stroke: 2 })
+  }
   if (dr.mode === 'orbit' && dr.center) {
     line(circle(dr.center, dr.radius), DRAFT, 2, [1, 1.5])
     d.marks.push({ at: at(dr.center), color: DRAFT, radius: 9, stroke: 2 })

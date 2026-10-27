@@ -14,7 +14,7 @@ import { TaskPanel } from './TaskPanel'
 import { buildTrackLayers } from './trackLayers'
 import { TracksPanel } from './TracksPanel'
 import type { Reveal } from './reveal'
-import { type Track, trackPredicted } from './tracks'
+import { isTrackStale, type Track, trackPredicted } from './tracks'
 import { VehicleDetails } from './VehicleDetails'
 import type { LngLat, Vehicle } from './types'
 import { callsign, DOMAIN_LABEL, domainOf, isStale } from './types'
@@ -193,11 +193,27 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     setTracksCollapsed(false)
     setRevealTrack({ ids: [id] })
   }, [])
+  // rules 21: with one vehicle selected and Identify chosen, a click on a contact makes it the
+  // target (a live one not identified yet; an identified one says why it is not)
+  const identifyRef = useRef<{ on: boolean; tracks: Track[]; staleAfterS: number }>({ on: false, tracks: [], staleAfterS: 10 })
   const onTrackClick = useCallback(
     (id: string) => {
+      const pick = identifyRef.current
+      if (pick.on) {
+        const t = pick.tracks.find((x) => x.id === id)
+        const stale = !t || isTrackStale(t, now(), pick.staleAfterS)
+        const note = stale
+          ? `${id} is not live (no fresh detection): pick a contact our sensors see now`
+          : t.identity.level === 'identify'
+            ? `${id} is identified already (${t.identity.kind ?? 'its kind'}): nothing to send`
+            : null
+        setDraft((d) => (d.mode === 'identify' ? { ...d, track: note ? d.track : id, note } : d))
+        return
+      }
       if (selectedTrackRef.current === id) setSelectedTrack(null)
       else revealTrackId(id)
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [revealTrackId],
   )
   const trackLayers = useCallback<MapLayers>(
@@ -214,6 +230,15 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [tracks, selectedTrack, trackTick, onTrackClick],
   )
+  identifyRef.current = { on: draft.mode === 'identify' && selected.size === 1, tracks: tracks?.tracks ?? [], staleAfterS: tracks?.stale_after_s ?? 10 }
+  // rules 21: the identify draft on the map: its orbit's ring on the target where it is now, a
+  // line from the vehicle
+  const mapDraft = useMemo<Draft>(() => {
+    if (draft.mode !== 'identify' || !draft.track || selected.size !== 1) return draft.mode === 'identify' ? { ...draft, center: null } : draft
+    const t = tracks?.tracks.find((x) => x.id === draft.track)
+    const v = vehicles.find((x) => selected.has(x.uid))
+    return { ...draft, center: t ? trackPredicted(t, now()) : null, from: v?.position ?? null }
+  }, [draft, tracks, vehicles, selected, now])
   // engagements in play (and the form's draft) on the map: paths, effect, keep-out, ellipse
   const allIntents = decisions?.intents
   const impactNowMs = now()
@@ -518,7 +543,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           oneWay={oneWay}
           taskings={taskings}
           selected={selected}
-          draft={draft}
+          draft={mapDraft}
           focus={focus}
           follow={detailsUid}
           onFollowing={setFollowing}

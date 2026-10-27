@@ -33,10 +33,16 @@ import { buildLinkRouteLayers } from './linkLayers'
 import { type Bounds, type MapViewport, visibleVehicles } from './viewport'
 
 export interface Draft {
-  mode: 'orbit' | 'patrol' | null
+  /** `identify` (rules 21): one vehicle sent to identify the track `track`, picked on the map */
+  mode: 'orbit' | 'patrol' | 'identify' | null
   center: LngLat | null
   radius: number
   route: LngLat[]
+  /** identify: the target track's id, and why a click picked none (an identified track) */
+  track?: string | null
+  note?: string | null
+  /** identify, for the map only: the vehicle the line to the target starts at */
+  from?: LngLat | null
 }
 
 interface Props {

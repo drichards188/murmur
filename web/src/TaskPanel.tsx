@@ -11,6 +11,8 @@ import { scenarioNow } from './decisions'
 import { SpaceRunCard } from './SpaceRuns'
 import { sendTask, TaskRefused, type TaskRequest } from './useBridge'
 import { availableTasks, orbitRange, usePlatformLimits } from './taskDefaults'
+import { OptionLine } from './IdentifyForm'
+import { sendIdentify, useIdentifyOptions } from './identify'
 
 interface Props {
   vehicles: Vehicle[]
@@ -32,12 +34,21 @@ interface Props {
   intents?: Intent[]
 }
 
-const TASKS: { kind: TaskKind; label: string; hint: string }[] = [
+/** The task buttons' kinds: the task layer's, and (rules 21) identify, one vehicle sent to
+ *  identify the contact clicked on the map. */
+type PanelKind = TaskKind | 'identify'
+
+const TASKS: { kind: PanelKind; label: string; hint: string }[] = [
   { kind: 'orbit', label: 'Orbit', hint: 'Click the map to set the orbit center.' },
   { kind: 'patrol', label: 'Patrol', hint: 'Click the map to add waypoints. The route loops.' },
   { kind: 'hold', label: 'Hold', hint: 'Planes loiter in place, boats hold position.' },
   { kind: 'rtl', label: 'RTL', hint: 'Return to launch.' },
   { kind: 'track', label: 'Track', hint: 'Select one antenna tracker and the one vehicle it should point at.' },
+  {
+    kind: 'identify',
+    label: 'Identify',
+    hint: "Click the contact to identify on the map. The vehicle orbits it at its camera's standoff, following it, until it is identified, then goes back to what it was doing.",
+  },
 ]
 
 /** How long ago `t` (the bridge's clock, s) was, at `nowMs` (the bridge's clock as the
@@ -87,7 +98,9 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
     if (!e) return t.task.toUpperCase()
     return t.params.look ? `IDENTIFY ${e.track}` : `IDENTIFY ${e.track}, then ${t.task.toUpperCase()}`
   }
-  const [kind, setKind] = useState<TaskKind>('orbit')
+  const [kind, setKind] = useState<PanelKind>('orbit')
+  // rules 21: what sending an identify order said (sent, or waiting in the Inbox)
+  const [idSent, setIdSent] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [outcome, setOutcome] = useState<TaskOutcome | null>(null)
@@ -101,27 +114,42 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
   const orbit = orbitRange(selVehicles, limits)
   const offered = availableTasks(selVehicles, limits)
   const selKey = sel.join(',')
+  // whether the selection can take `k`: identify sends exactly one vehicle (its camera's reach is
+  // the bridge's to judge, below)
+  const can = (k: PanelKind) => (k === 'identify' ? sel.length === 1 : offered == null || offered.has(k))
+  // rules 21: the identify target's answer for the one vehicle selected (why it can't go, or its
+  // orbit, time and link)
+  const idTrack = kind === 'identify' && sel.length === 1 ? (draft.track ?? null) : null
+  const { options: idOptions, error: idError } = useIdentifyOptions(idTrack, idTrack ? sel : undefined)
+  const idOption = idOptions?.find((o) => o.uid === sel[0]) ?? null
+  // the map's ring on the target is the orbit the vehicle would fly
+  const standoff = idOption?.standoff_m ?? null
+  useEffect(() => {
+    if (kind === 'identify' && standoff != null && standoff !== draft.radius) setDraft({ ...draft, radius: standoff })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind, standoff])
 
   // a new selection gets that platform's own defaults: its typical orbit, and a task it can do;
   // none selected, no order to draw, so nothing of one stays on the map
   useEffect(() => {
     if (!sel.length) {
-      setDraft({ ...draft, center: null, route: [] })
+      setDraft({ ...draft, center: null, route: [], track: null, note: null })
       return
     }
-    setDraft({ ...draft, radius: orbit.value })
-    if (offered && !offered.has(kind)) {
-      const next = TASKS.find((t) => offered.has(t.kind))?.kind
+    setDraft({ ...draft, radius: orbit.value, track: null, note: null })
+    if (!can(kind)) {
+      const next = TASKS.find((t) => can(t.kind))?.kind
       if (next) choose(next)
     }
     // only when the selection (or the catalog) changes, not on every draft edit
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selKey, limits])
 
-  const choose = (k: TaskKind) => {
+  const choose = (k: PanelKind) => {
     setKind(k)
     setError(null)
-    setDraft({ ...draft, mode: k === 'orbit' || k === 'patrol' ? k : null })
+    setIdSent(null)
+    setDraft({ ...draft, mode: k === 'orbit' || k === 'patrol' || k === 'identify' ? k : null, track: null, note: null })
   }
 
   const trackers = sel.filter((s) => byUid.get(s)?.kind === 'tracker')
@@ -131,7 +159,7 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
   const radiusOk = draft.radius >= orbit.min
   const ready =
     sel.length > 0 &&
-    (offered == null || offered.has(kind)) &&
+    can(kind) &&
     (kind !== 'orbit' || radiusOk) &&
     (kind === 'orbit'
       ? draft.center != null
@@ -139,7 +167,9 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
         ? draft.route.length >= 2
         : kind === 'track'
           ? trackPair
-          : true)
+          : kind === 'identify'
+            ? draft.track != null && idOption?.passed === true
+            : true)
 
   /** the order as drafted, once it is complete: what Send sends and the dry run asks about */
   const request = useMemo<TaskRequest | null>(
@@ -151,11 +181,12 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
             ...(kind === 'track' ? { target: others[0] } : {}),
             ...(kind === 'orbit' ? { center: draft.center!, radius: draft.radius } : {}),
             ...(kind === 'patrol' ? { route: draft.route } : {}),
+            ...(kind === 'identify' ? { track: draft.track! } : {}),
           }
         : null,
     // the selection by its key; the rest as drafted
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [ready, kind, selKey, draft.center, draft.radius, draft.route],
+    [ready, kind, selKey, draft.center, draft.radius, draft.route, draft.track],
   )
   // the dry run (checks, policy, predicted link) of the order while it stands; information only
   const dry = useDryRun(busy ? null : request, vehicles)
@@ -170,6 +201,20 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
 
   const submit = async () => {
     if (!request) return
+    // rules 21: an identify order goes as an intent with its track (the task layer's route takes none)
+    if (kind === 'identify' && draft.track) {
+      setBusy(true)
+      setError(null)
+      try {
+        setIdSent(await sendIdentify(sel[0], draft.track, callsign(byUid.get(sel[0]) ?? { uid: sel[0], kind: null })))
+        setDraft({ ...draft, track: null, note: null })
+      } catch (e) {
+        setError((e as Error).message)
+      } finally {
+        setBusy(false)
+      }
+      return
+    }
     setBusy(true)
     setError(null)
     setOutcome(null)
@@ -211,15 +256,34 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
                   <button
                     key={t.kind}
                     className={kind === t.kind ? 'on' : ''}
-                    disabled={offered != null && !offered.has(t.kind)}
-                    title={offered != null && !offered.has(t.kind) ? 'Not every selected vehicle can do this' : undefined}
+                    disabled={!can(t.kind)}
+                    title={
+                      can(t.kind)
+                        ? undefined
+                        : t.kind === 'identify'
+                          ? 'Identify sends exactly one vehicle: select one'
+                          : 'Not every selected vehicle can do this'
+                    }
                     onClick={() => choose(t.kind)}
                   >
                     {t.label}
                   </button>
                 ))}
               </div>
-              <p className="hint">{TASKS.find((t) => t.kind === kind)!.hint}</p>
+              <p className="hint">
+                {kind === 'identify' && draft.note
+                  ? draft.note
+                  : kind === 'identify' && draft.track
+                    ? `Target ${draft.track}: click another contact to change it.`
+                    : TASKS.find((t) => t.kind === kind)!.hint}
+              </p>
+              {idTrack && (
+                <p className={`hint ${idOption && !idOption.passed ? 'error' : ''}`}>
+                  {idOption ? <OptionLine o={idOption} name={false} /> : idError ? null : 'Asking the bridge...'}
+                </p>
+              )}
+              {idError && <p className="error">{idError}</p>}
+              {kind === 'identify' && idSent && <p className="muted">{idSent}. Follow it in the command log.</p>}
               {kind === 'orbit' && (
                 <label className="slider">
                   <span>Radius</span>
@@ -255,7 +319,11 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
                   ? trackPair
                     ? `Point ${callsign(byUid.get(trackers[0])!)} at ${callsign(byUid.get(others[0])!)}`
                     : 'Select 1 tracker + 1 vehicle'
-                  : `Send ${kind.toUpperCase()} to ${sel.length} vehicle${sel.length > 1 ? 's' : ''}`}
+                  : kind === 'identify'
+                    ? draft.track
+                      ? `Send IDENTIFY ${draft.track} to ${callsign(byUid.get(sel[0]) ?? { uid: sel[0], kind: null })}`
+                      : 'Click a contact first'
+                    : `Send ${kind.toUpperCase()} to ${sel.length} vehicle${sel.length > 1 ? 's' : ''}`}
               </button>
               </>
             )}
