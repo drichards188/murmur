@@ -15,6 +15,8 @@ import {
   unspendPlatform,
   unspendTarget,
 } from './decisions'
+import { Bluf, BlufReason, ChecksFold } from './Bluf'
+import { alertParts } from './bluf'
 import { EngageCard, EngagementsSection } from './EngageCard'
 import { RationaleText } from './Rationale'
 import { ReviewSection } from './ReviewSection'
@@ -326,21 +328,21 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, eng
       </section>
 
       <section className="ix-checks">
-        <span className="ix-label">
-          Checks ({i.checks.length}) {i.checks.some((c) => c.outcome === 'unverified') && <em>some could not be verified: judge them yourself</em>}
-        </span>
-        {checks.map((c, k) => (
-          <div key={k} className={`ix-check ${c.outcome}`}>
-            <span className="ix-mark">{OUTCOME_MARK[c.outcome]}</span>
-            <span className="ix-text">
-              <span className="ix-rule">
-                {c.rule}
-                {c.uid != null && <i> {nameOf(vehicles, c.uid)}</i>}
+        <span className="ix-label">Checks</span>
+        <ChecksFold checks={i.checks}>
+          {checks.map((c, k) => (
+            <div key={k} className={`ix-check ${c.outcome}`}>
+              <span className="ix-mark">{OUTCOME_MARK[c.outcome]}</span>
+              <span className="ix-text">
+                <span className="ix-rule">
+                  {c.rule}
+                  {c.uid != null && <i> {nameOf(vehicles, c.uid)}</i>}
+                </span>
+                <span className="ix-detail">{c.detail}</span>
               </span>
-              <span className="ix-detail">{c.detail}</span>
-            </span>
-          </div>
-        ))}
+            </div>
+          ))}
+        </ChecksFold>
       </section>
 
       {selfApproval && (
@@ -453,7 +455,7 @@ function AlertCard({
         <span className="ix-who">{a.callsign ?? `vehicle ${a.uid}`}</span>
         <span className="ix-age">{fmtDuration(age)} ago</span>
       </header>
-      <p className="ix-adetail">{a.kind === 'lost_link' ? `No telemetry for ${fmtDuration(age)}` : a.detail}</p>
+      <Bluf className="ix-adetail" parts={alertParts(a, fmtDuration(age))} />
       {a.intent_id != null && <p className="ix-link">from intent i{a.intent_id}</p>}
       <footer className="ix-actions" onClick={(e) => e.stopPropagation()}>
         {muted ? (
@@ -594,7 +596,7 @@ function DecisionRow({ intent: i, vehicles, now }: { intent: Intent; vehicles: V
               <li key={k}>
                 <span className="ix-t">+{fmtDuration((h.t - t0) / 1000)}</span>
                 <b>{h.state.replace('_', ' ')}</b>
-                <span>{h.reason}</span>
+                <BlufReason className="compact" text={h.reason} ctx={{ who: names }} />
               </li>
             ))}
           </ol>

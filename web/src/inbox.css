@@ -101,6 +101,7 @@
 .ix-who { font: 600 13px var(--mono); }
 .ix-age { margin-left: auto; font: 11.5px var(--mono); color: var(--muted); }
 .ix-adetail { margin: 0; font-size: 12.5px; color: #c8d0d9; }
+.ix-trail .bluf-head { color: #aab6c3; }
 .ix-link { margin: 0; font: 11.5px var(--mono); color: var(--muted); }
 .ix-muted { font-size: 12px; }
 
@@ -128,7 +129,7 @@
 .ix-trail { list-style: none; margin: 0; padding: 0; font-size: 12px; }
 .ix-trail li { display: grid; grid-template-columns: 56px 110px 1fr; gap: 6px; padding: 2px 0; border-top: 1px solid #1c2733; }
 .ix-trail .ix-t { font: 11.5px var(--mono); color: var(--muted); }
-.ix-trail span:last-child { color: var(--muted); }
+.ix-trail li > :last-child { color: var(--muted); }
 .ix-note-shown { margin: 0; font-size: 12px; color: #c8d0d9; }
 .ix-dec-checks { margin: 0; padding-left: 16px; font-size: 12px; }
 .ix-dec-checks .fail { color: var(--bad); }

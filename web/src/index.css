@@ -186,8 +186,11 @@ code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); pa
 .op { display: grid; grid-template-columns: 96px 1fr; column-gap: 8px; row-gap: 2px; padding: 4px 0; border-top: 1px solid #1c2733; }
 .op-name { font: 600 12px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .op-detail { grid-column: 2; font-size: 12px; color: var(--muted); }
-.op.failed .op-detail b { color: var(--bad); }
-.op.superseded .op-detail b { color: var(--muted); }
+.op.failed .op-detail .bluf-head { color: var(--bad); }
+.op.superseded .op-detail .bluf-head { color: var(--muted); }
+.op-detail .bluf-head { color: #b4bfcb; }
+.tcard-ended { margin: 0 0 6px; font-size: 12px; color: var(--muted); }
+.tcard-ended .bluf-head { color: var(--text); font-weight: 600; }
 .steps { display: flex; gap: 3px; }
 .step { flex: 1; text-align: center; font: 600 9.5px/1 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; padding: 4px 0; border-radius: 2px; background: #1c2733; color: #4f5d6c; }
 .step.on { background: #23402f; color: var(--ok); }

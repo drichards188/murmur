@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ApproveExtra, Check, Intent } from './decisions'
 import { fmtDuration, fmtZ, getOperator, intentAction, StepUpNeeded, stepsUp, useOperator, useOperators } from './decisions'
 import { reportView } from './operatorView'
+import { ChecksFold } from './Bluf'
 import { RationaleText } from './Rationale'
 import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
@@ -360,7 +361,9 @@ function ChecksList({ checks, live, vehicles }: { checks: Check[]; live?: Check[
     return (k < 0 ? 100 : k) + OUTCOME_ORDER[c.outcome] * 0.01
   }
   const sorted = [...(live ?? checks)].sort((a, b) => rank(a) - rank(b))
+  const changedN = live ? sorted.filter((c) => { const t = atNomination.get(key(c)); return t != null && t.outcome !== c.outcome }).length : 0
   return (
+    <ChecksFold checks={sorted} note={changedN ? `${changedN} changed since nomination` : undefined}>
     <div className="eg-checks">
       {sorted.map((c, k) => {
         const then = live ? atNomination.get(key(c)) : undefined
@@ -380,6 +383,7 @@ function ChecksList({ checks, live, vehicles }: { checks: Check[]; live?: Check[
         )
       })}
     </div>
+    </ChecksFold>
   )
 }
 

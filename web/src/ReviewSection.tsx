@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { stepsUpAct } from './auth'
 import { fmtDuration, StepUpNeeded, useOperator } from './decisions'
+import { Bluf, BlufReason } from './Bluf'
+import { flagParts } from './bluf'
 import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
 import { type Against, type ObservedAct, type Review, type ReviewDeclaration, type ReviewFlag, type ReviewLostClaim, FLAG_LABEL, confirmDeclaration, confirmLostClaim, resolveFlag, revokeDeclaration } from './ident'
@@ -117,7 +119,7 @@ function DeclarationItem({ d, now, onDone, onTrack }: { d: ReviewDeclaration; no
               </dd>
             </dl>
           ) : null}
-          <p className="rv-basis">{d.basis}</p>
+          <BlufReason className="rv-basis" text={d.basis} />
           <div className="rv-actions">
             <button className="ghost mini" disabled={busy} onClick={confirm} title="Confirm the engine's declaration (logged under your session)">
               confirm {d.track} hostile
@@ -186,7 +188,7 @@ function LostClaimItem({ c, onDone, onTrack }: { c: ReviewLostClaim; onDone: Pro
       <header>
         <b>{c.track}</b> <span className="rv-tag flag">claims to be lost contact {c.lost}</span> <span className="muted">MMSI {c.mmsi}</span>
       </header>
-      <p className="rv-basis">{c.evidence}.</p>
+      <BlufReason className="rv-basis" text={c.evidence} />
       {c.blockers.length > 0 && <p className="eg-alarm">Not confirmable: {c.blockers.join('; ')}.</p>}
       <p className="muted rv-hint">
         An AIS identity is what a contact says it is: one may broadcast another&apos;s. Until confirmed, {c.lost} counts in every keep-out beside {c.track}; confirmed, it
@@ -239,7 +241,7 @@ function FlagItem({ f, now, onDone, onTrack }: { f: ReviewFlag; now: () => numbe
         {f.status.status === 'confirmed' && <span className="muted"> confirmed by {f.status.by}</span>}
         <span className="muted"> {age(now, f.t)}</span>
       </header>
-      <p className="rv-basis">{f.evidence}</p>
+      <Bluf className="rv-basis" parts={flagParts(f.flag_kind, f.evidence)} />
       <p className="muted rv-hint">
         {f.tracks.length ? (
           <>

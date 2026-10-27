@@ -5,6 +5,8 @@ import { useDryRun } from './useDryRun'
 import type { Draft } from './MapView'
 import type { TaskKind, Tasking, Vehicle } from './types'
 import { callsign, LIFECYCLE, opEnding } from './types'
+import { Bluf, BlufReason } from './Bluf'
+import { reasonBluf } from './bluf'
 import { TaskResult, type TaskOutcome } from './TaskResult'
 import { tierLabel, type Intent, type SpaceRuns } from './decisions'
 import { scenarioNow } from './decisions'
@@ -371,20 +373,26 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
               <span className="muted right">{age(t.created, now ? now() : Date.now())} ago</span>
             </div>
             {authorized.has(t.id) && <p className="muted">authorized by you ({authorized.get(t.id)})</p>}
-            {identify.get(t.intent_id ?? -1)?.ended && <p className="muted">{identify.get(t.intent_id ?? -1)?.ended}</p>}
+            {identify.get(t.intent_id ?? -1)?.ended && (
+              <BlufReason
+                className="tcard-ended"
+                text={identify.get(t.intent_id ?? -1)?.ended}
+                ctx={{ who: t.ops[0] ? (() => { const v = historyByUid.get(t.ops[0].uid); return v ? callsign(v) : undefined })() : undefined }}
+              />
+            )}
             {t.ops.map((o) => {
               const v = historyByUid.get(o.uid)
+              const ending = opEnding(o)
+              const parts = reasonBluf(o.detail, { who: v ? callsign(v) : undefined })
+              if (ending) parts.headline = !parts.headline ? ending : parts.headline.toLowerCase().includes(ending.toLowerCase()) ? parts.headline : `${ending}: ${parts.headline}`
+              if (o.progress && o.progress !== o.detail) parts.bullets = [...parts.bullets, o.progress]
               return (
                 <div key={o.id} className={`op ${o.state}`}>
                   <span className="op-name" title={v?.identity ? `${v.identity.name} · ${v.identity.role}` : undefined}>
                     {v ? callsign(v) : o.uid}
                   </span>
                   <Lifecycle state={o.state} />
-                  <span className="op-detail">
-                    {opEnding(o) ? <b>{opEnding(o)}: </b> : null}
-                    {o.detail}
-                    {o.progress && o.progress !== o.detail ? ` · ${o.progress}` : ''}
-                  </span>
+                  <Bluf className="op-detail compact" parts={parts} />
                 </div>
               )
             })}
