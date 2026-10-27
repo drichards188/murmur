@@ -290,6 +290,17 @@ meaningful.
   is done once established): only `Engine::step_identify` ends it. The world's `track_levels`
   (the tracker's identity level per track) is what ends it: a driver that sets a track's identity
   sets its level too. Never queued, never carried over a restart.
+- Rules 22 (`ROUTE_PLAN_SINCE`, bd murmur-n6a): a transit (and a patrol's legs) the domain rule
+  or the geofence would refuse is routed round it first (`murmur_decide::plan`, a 40 m grid on the
+  same land/water source, logged with its grid in `route_plans`; replay plans again from it), and
+  refused only with no route ("no route around ..."). The waypoints go out in `intent.dispatched`
+  `via`/`path` and the task layer flies `TaskParams::via` before the task. The return home, an rtl
+  and an engagement's way stay straight. The bridge fetches the grid before the lock (`prefetch`):
+  a new caller of the engine with a planned kind prefetches first, or plans on an empty cache
+  ("no land/water answers for the planner's grid"). `IDENTIFY_SECOND_LOOK_SINCE` (22 too): any
+  live track may be sent a look; it ends only on our own sensors' identification after it went
+  out (`TrackLevel::own_t`, the tracker's `own_identified_t`), so a driver that identifies a track
+  by its camera sets `own_t` (the scenario runner does for any `level_by` but `ais`).
 - Predicted link coverage (docs/LINK-COVERAGE.md, bd murmur-hei): `GET`/`POST
   /api/links/coverage`, `link_coverage` in dry runs and `preview_intent`, the MCP tool
   `get_link_coverage`, the console's Links layer and the order form's dry run (`web/src/

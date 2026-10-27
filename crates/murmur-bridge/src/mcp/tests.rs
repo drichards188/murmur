@@ -648,8 +648,23 @@ async fn preview_runs_the_checks_without_creating_an_intent() {
     assert_eq!(human["would_reach"], "pending_approval", "{human}");
     assert!(human["why_human"].to_string().contains("armed"), "{human}");
 
-    // a patrol straight across Alcatraz
+    // a patrol onto Alcatraz
     let bad = r
+        .ok(
+            &planner(),
+            "preview_intent",
+            json!({
+                "task": "patrol", "uids": [1],
+                "route": [[-122.432, 37.8265], [-122.423, 37.8265]],
+            }),
+        )
+        .await;
+    assert_eq!(bad["passed"], false, "{bad}");
+    assert_eq!(bad["would_reach"], "rejected");
+    assert!(bad["summary"].to_string().contains("alcatraz"), "{bad}");
+
+    // rules 22: one straight across it is routed round it
+    let routed = r
         .ok(
             &planner(),
             "preview_intent",
@@ -659,13 +674,11 @@ async fn preview_runs_the_checks_without_creating_an_intent() {
             }),
         )
         .await;
-    assert_eq!(bad["passed"], false, "{bad}");
-    assert_eq!(bad["would_reach"], "rejected");
-    assert!(bad["summary"].to_string().contains("alcatraz"), "{bad}");
+    assert_eq!(routed["passed"], true, "{routed}");
 
     let intents = r.ok(&planner(), "get_intents", json!({})).await;
     assert_eq!(intents["count"], 0, "nothing was created");
-    assert_eq!(r.actions("intent.preview"), 3);
+    assert_eq!(r.actions("intent.preview"), 4);
     assert_eq!(r.events("intent.created"), 0);
     r.replays();
 }

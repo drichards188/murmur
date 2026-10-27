@@ -550,7 +550,23 @@ async fn the_rules_reject_land_waypoints_and_no_go_crossings() {
         r.reason(boat.id)
     );
 
-    // a patrol straight across Alcatraz
+    // a patrol onto Alcatraz itself
+    let onto =
+        r.d.submit(
+            &op1(),
+            patrol(9, vec![[-122.432, 37.8265], [-122.423, 37.8265]]),
+        )
+        .await
+        .expect("submit");
+    assert_eq!(onto.state, State::Rejected);
+    assert!(
+        r.reason(onto.id).contains("alcatraz"),
+        "{}",
+        r.reason(onto.id)
+    );
+    assert!(r.d.world.tasks.snapshot().is_empty());
+
+    // rules 22: one straight across the island is routed round it, both ways, and flown so
     let across =
         r.d.submit(
             &op1(),
@@ -558,13 +574,10 @@ async fn the_rules_reject_land_waypoints_and_no_go_crossings() {
         )
         .await
         .expect("submit");
-    assert_eq!(across.state, State::Rejected);
-    assert!(
-        r.reason(across.id).contains("alcatraz"),
-        "{}",
-        r.reason(across.id)
-    );
-    assert!(r.d.world.tasks.snapshot().is_empty());
+    assert_eq!(across.state, State::Dispatched, "{}", r.reason(across.id));
+    let tasks = r.d.world.tasks.snapshot();
+    let route = tasks[0].params.route.as_ref().expect("a patrol's route");
+    assert!(route.len() > 2, "routed round the island: {route:?}");
 
     // malformed requests never become intents
     let unknown =

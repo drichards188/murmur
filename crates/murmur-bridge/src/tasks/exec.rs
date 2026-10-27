@@ -1060,6 +1060,12 @@ impl Task<'_> {
             it.p[0] = if self.kind == Kind::Plane { 15.0 } else { 0.0 }; // plane: takeoff pitch
             items.push(it);
         }
+        // rules 22: the transit the decision engine routed round land or a no-go area
+        if let Some(via) = self.ctx.params.via.as_ref().and_then(|m| m.get(&self.v().uid)) {
+            for [lon, lat] in via {
+                items.push(Item::waypoint(*lat, *lon, alt));
+            }
+        }
         items
     }
 

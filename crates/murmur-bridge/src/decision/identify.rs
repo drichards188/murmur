@@ -98,6 +98,8 @@ impl Decision {
         if look {
             order.params.look = track;
         }
+        // rules 22: the way there as the engine routed it
+        order.params.via = super::queue::bridge_via(&o.via);
         order.patience = self.patience(o.task.kind());
         order.requeue = false;
         order.ahead = self.write_ahead_hook();

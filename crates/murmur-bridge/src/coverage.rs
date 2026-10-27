@@ -756,9 +756,13 @@ impl Coverage {
             let ll = |p: murmur_decide::LonLat| (p.lon, p.lat);
             let mut legs = Vec::new();
             if let Some(s) = &route.transit {
-                legs.push((Part::Transit, s.name(), false, vec![ll(s.from), ll(s.to)]));
+                // rules 22: through the waypoints a plan routes it by
+                let mut pts = vec![ll(s.from)];
+                pts.extend(route.transit_via.iter().copied().map(ll));
+                pts.push(ll(s.to));
+                legs.push((Part::Transit, s.name(), false, pts));
             }
-            if let Some(path) = &route.task {
+            if let Some(path) = &route.task_routed() {
                 let mut pts: Vec<(f64, f64)> = path.points.iter().copied().map(ll).collect();
                 if path.closed
                     && let Some(f) = pts.first().copied()

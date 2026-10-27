@@ -97,6 +97,10 @@ pub struct TaskParams {
     /// this orbit; the physical model's payload manager cues the track ahead of the rest)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub look: Option<String>,
+    /// Rules 22: each vehicle's transit waypoints, the route the decision engine planned round
+    /// the wrong surface or a no-go area, flown before the task (`murmur_decide::plan`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via: Option<BTreeMap<Uid, Vec<LngLat>>>,
 }
 
 /// POST /api/tasks

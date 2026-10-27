@@ -52,6 +52,10 @@ const CACHE_TTL_S: f64 = 600.0;
 /// and a shoreline shows as neighbours that disagree.
 const NEAR_FETCH_M: f64 = murmur_decide::engage::TERRAIN_NEAR_M / 2.0;
 const TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The most points one request to tidewater asks (a route planner's grid can be thousands, and
+/// each request has [`TIMEOUT`]).
+const FETCH_CHUNK: usize = 2_000;
 /// After tidewater fails, background fetches wait this long before asking again.
 const BACKOFF_S: f64 = 5.0;
 
@@ -230,7 +234,21 @@ impl Terrain {
         if missing.is_empty() {
             return;
         }
-        let result = client.sample(&missing).await;
+        // in requests of at most FETCH_CHUNK points (rules 22: a planner's grid is thousands)
+        let mut result: Result<Vec<Surface>, String> = Ok(Vec::with_capacity(missing.len()));
+        for chunk in missing.chunks(FETCH_CHUNK) {
+            match client.sample(chunk).await {
+                Ok(s) => {
+                    if let Ok(all) = result.as_mut() {
+                        all.extend(s);
+                    }
+                }
+                Err(e) => {
+                    result = Err(e);
+                    break;
+                }
+            }
+        }
         // one of this store's locks at a time, never one under another: the oracle reads the
         // cache and then the last error, under the decision lock
         match result {

@@ -1428,6 +1428,8 @@ impl Decision {
         v["operator"] = json!(by.operator().as_str());
         v["submission_authorizes"] = json!(preview.would_reach == State::Approved);
         v["note"] = json!("a dry run: nothing was created or logged");
+        // rules 22: the legs the planner routed (or could not), for the map
+        v["routes"] = routes_json(&self.planned_routes(&task, &uids));
         // information only, after the decision and outside the lock (docs/LINK-COVERAGE.md)
         if !uids.is_empty() {
             v["link_coverage"] = self.link_coverage(&task, &uids).await;
@@ -1441,7 +1443,9 @@ impl Decision {
     /// geometry. Information only: read outside the decision lock, never logged, never a check.
     pub async fn link_coverage(&self, task: &Task, uids: &[DUid]) -> Value {
         let spec = Self::prefetch_spec(self.clock.now(), task, uids);
-        let world = self.snapshot().subset_for(&spec);
+        let mut world = self.snapshot().subset_for(&spec);
+        // rules 22: along the legs as the planner routes them
+        world.route_plans = self.planned_routes(task, uids);
         let routes = uids
             .iter()
             .map(|u| crate::coverage::VehicleRoute {
@@ -2146,18 +2150,49 @@ impl Decision {
         if !self.needs_surface(uids) {
             return;
         }
-        if let Some(path) = task.path() {
+        let spec = Self::prefetch_spec(self.clock.now(), task, uids);
+        let world = self.snapshot().subset_for(&spec);
+        // rules 21: an identify order's waypoints are its orbit's, laid out round its track
+        let view = murmur_decide::identify::orbit_view(&spec, &world, &self.rules).into_owned();
+        if let Some(path) = view.task.path() {
             self.terrain.prefetch(&path.points).await;
         }
         // rules 17: the points along each leg the domain rule judges, from where they are now
         // (a vehicle that moves before the decision finds each answered from a sample near it)
         if self.rules.route_surface() {
-            let spec = Self::prefetch_spec(self.clock.now(), task, uids);
-            let points = murmur_decide::route::along_points(&spec, &self.snapshot().subset_for(&spec), &self.rules);
+            let points = murmur_decide::route::along_points(&view, &world, &self.rules);
             if !points.is_empty() {
                 self.terrain.prefetch(&points).await;
             }
         }
+        // rules 22: the cells of the planner's grid for each leg it will route, then the points
+        // along the routed legs, so the engine plans and judges them from the cache under its lock
+        if self.rules.route_plan() {
+            let grid = murmur_decide::plan::grid_points(&view, &world, &self.terrain.oracle(), &self.rules);
+            if !grid.is_empty() {
+                self.terrain.prefetch(&grid).await;
+            }
+            let mut routed = world.clone();
+            routed.route_plans = murmur_decide::plan::plans_for(&view, &world, &self.terrain.oracle(), &self.rules);
+            if !routed.route_plans.is_empty() {
+                let points = murmur_decide::route::along_points(&view, &routed, &self.rules);
+                if !points.is_empty() {
+                    self.terrain.prefetch(&points).await;
+                }
+            }
+        }
+    }
+
+    /// Rules 22: the routes the planner lays out for an order on the world now (read-only, from
+    /// the terrain cache a prefetch filled): what the dry run and the map show.
+    pub(super) fn planned_routes(&self, task: &Task, uids: &[DUid]) -> std::collections::BTreeMap<DUid, Vec<murmur_decide::plan::PlannedLeg>> {
+        if !self.rules.route_plan() {
+            return Default::default();
+        }
+        let spec = Self::prefetch_spec(self.clock.now(), task, uids);
+        let world = self.snapshot().subset_for(&spec);
+        let view = murmur_decide::identify::orbit_view(&spec, &world, &self.rules).into_owned();
+        murmur_decide::plan::plans_for(&view, &world, &self.terrain.oracle(), &self.rules)
     }
 
     /// Whether some of these vehicles must keep to water or land (the catalog's domain).
@@ -2956,4 +2991,31 @@ fn task_request(task: &Task, uids: &[DUid]) -> Result<TaskRequest, String> {
         uids,
         params,
     })
+}
+
+/// Rules 22: the legs the planner routed, or could not, as the dry run, `preview_intent` and the
+/// map read them: by vehicle uid, each leg's ends, what it met, the waypoints it adds, how much
+/// longer it is and a sentence (the grid it was planned on stays in the decision's log).
+pub(super) fn routes_json(plans: &BTreeMap<DUid, Vec<murmur_decide::plan::PlannedLeg>>) -> Value {
+    let mut out = serde_json::Map::new();
+    for (u, legs) in plans {
+        let legs: Vec<Value> = legs
+            .iter()
+            .map(|p| {
+                json!({
+                    "leg": p.leg,
+                    "from": p.from,
+                    "to": p.to,
+                    "met": p.met,
+                    "keeps": p.keeps,
+                    "via": p.via,
+                    "no_route": p.no_route,
+                    "added_m": p.added_m.round(),
+                    "summary": p.summary(),
+                })
+            })
+            .collect();
+        out.insert(u.to_string(), Value::Array(legs));
+    }
+    Value::Object(out)
 }

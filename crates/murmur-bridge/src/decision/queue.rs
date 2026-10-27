@@ -226,6 +226,8 @@ impl Decision {
             order.requeue = false;
             order.params.look = look.clone();
         }
+        // rules 22: each vehicle's transit as the engine routed it
+        order.params.via = bridge_via(&released.via);
         // rules 7: each vehicle's start in the audit log before it goes out
         order.ahead = self.write_ahead_hook();
         let tasking = self.world.tasks.dispatch(AuthorizedOrder {
@@ -893,4 +895,14 @@ pub fn anchors_refuse(log: &str, anchors: &str) -> Option<String> {
         .iter()
         .find(|p| !p.what.starts_with("no shutdown anchor"))
         .map(|p| format!("seq {}: {}", p.seq, p.what))
+}
+
+/// Rules 22: a dispatch's transit waypoints by fleet uid, as the task layer takes them (none when
+/// no leg was routed).
+pub(super) fn bridge_via(via: &std::collections::BTreeMap<murmur_decide::Uid, Vec<murmur_decide::LonLat>>) -> Option<std::collections::BTreeMap<Uid, Vec<[f64; 2]>>> {
+    let out: std::collections::BTreeMap<Uid, Vec<[f64; 2]>> = via
+        .iter()
+        .filter_map(|(u, v)| Some((bridge_uid(u)?, v.iter().map(|p| [p.lon, p.lat]).collect())))
+        .collect();
+    (!out.is_empty()).then_some(out)
 }
