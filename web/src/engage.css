@@ -288,19 +288,24 @@
   font-size: 12px;
   color: #c8d0d9;
 }
-.eg-run {
-  border-left: 3px solid #7fb8ff;
+/* a running or ended engagement: its state pill carries the colour; the border is a full, tinted
+   1px one (no side stripe) */
+.ix-card.eg-run,
+.ix-card.eg-run:hover,
+.ix-card.eg-run.sel {
+  border-left-width: 1px;
+  border-color: #2f4a6b;
 }
-.eg-run.effected {
-  border-left-color: #ff5d5d;
+.ix-card.eg-run.effected {
+  border-color: #6b2f2f;
 }
-.eg-run.aborted,
-.eg-run.voided {
-  border-left-color: #ffb347;
+.ix-card.eg-run.aborted,
+.ix-card.eg-run.voided {
+  border-color: #6b5530;
   opacity: 0.85;
 }
-.eg-run.done {
-  border-left-color: #5fd38d;
+.ix-card.eg-run.done {
+  border-color: #2c5a40;
   opacity: 0.85;
 }
 .eg-state {

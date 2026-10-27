@@ -15,13 +15,13 @@
 .tk-badge.unk { background: var(--warn); color: #1c1505; }
 .tk-badge.n { background: #2c5a40; color: #cdeedb; }
 
-.tk-row { display: grid; grid-template-columns: 30px 1fr auto; column-gap: 8px; align-items: center; text-align: left; width: 100%; background: var(--panel-2); border: 1px solid transparent; border-left: 3px solid var(--line); border-radius: 4px; padding: 6px 8px; cursor: pointer; }
+.tk-row { display: grid; grid-template-columns: 30px 1fr auto; column-gap: 8px; align-items: center; text-align: left; width: 100%; background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; cursor: pointer; }
 .tk-row:hover { border-color: #33475d; }
 .tk-row.sel { background: #1a2532; border-color: #33475d; }
-.tk-row.hostile, .tk-row.suspect { border-left-color: var(--bad); }
-.tk-row.unknown { border-left-color: var(--warn); }
-.tk-row.neutral { border-left-color: var(--ok); }
-.tk-row.assumed_friend { border-left-color: var(--air); }
+/* the affiliation is the row's tag and symbol; a declared or estimated hostile also gets a red-tinted
+   border, all round (no side stripe) */
+.tk-row.hostile { border-color: #6b2f2f; }
+.tk-row.hostile:hover, .tk-row.hostile.sel { border-color: #8a3a3a; }
 .tk-row.stale { opacity: 0.6; }
 .tk-sym { display: flex; justify-content: center; }
 .tk-sym svg { width: 28px; height: auto; }
