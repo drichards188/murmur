@@ -1,14 +1,15 @@
 import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, useEffect, useState } from 'react'
 import { type AiMode, endScenario, isActive, type Launch, type LauncherState, type OperatorMode, type Scenario, type Stage, startScenario } from './launcher'
-import { SwarmBackdrop } from './SwarmBackdrop'
+import { SwarmBackdrop, SwarmLegend } from './SwarmBackdrop'
 import { DOMAIN_LABEL, type Domain } from './types'
 import './menu.css'
 
 /** The main menu (`make start`): the open world first (the default), then the situations, each
  *  with what it has; a situation's operator and AI with its own defaults chosen; the launch's
  *  progress, and the scenario running with Return and End. Over the console, which stays live
- *  behind it while a scenario runs. Behind the menu, a swarm in a strait's cross-section
- *  (SwarmBackdrop): decoration, never a run's vehicles. */
+ *  behind it while a scenario runs. Behind the menu, a coast in cross-section from space to the
+ *  seabed with a node for each kind of vehicle, joined by the networks a force runs, their kinds
+ *  named in the top rail (SwarmBackdrop): decoration, never a run's vehicles. */
 
 const AI_LABEL: Record<AiMode, string> = { claude: 'Claude', codex: 'ChatGPT (Codex)', playbook: 'Playbook', none: 'None' }
 const AI_NOTE: Record<AiMode, string> = {
@@ -95,6 +96,7 @@ interface MenuProps {
 }
 
 export function Menu({ state, received, lost, onUpdate, onReturn }: MenuProps) {
+  const [scene, setScene] = useState('')
   const cur = state.current
   const scenarios = state.scenarios
   const startable = scenarios.filter((s) => s.runnable)
@@ -179,11 +181,17 @@ export function Menu({ state, received, lost, onUpdate, onReturn }: MenuProps) {
 
   return (
     <div className="mm" role="dialog" aria-modal="true" aria-label="Main menu">
-      <SwarmBackdrop />
+      <SwarmBackdrop onScene={setScene} />
       <div className="mm-frame" aria-hidden="true" />
       <header className="mm-top">
         <span className="mm-where">Main menu</span>
+        <SwarmLegend />
         <span className="spacer" />
+        {scene && (
+          <span key={scene} className="mm-scene" aria-hidden="true" title="What the backdrop shows now: decoration, not a run">
+            {scene}
+          </span>
+        )}
         {lost && (
           <span className="mm-lost" role="status">
             The launcher is not answering: is <code>make start</code> still running?
@@ -205,7 +213,7 @@ export function Menu({ state, received, lost, onUpdate, onReturn }: MenuProps) {
       </header>
       <div className="mm-scroll">
         <div className="mm-grid">
-          <div className="mm-left">
+          <div className="mm-left mm-hud">
             <div className="mm-ident">
               <h1 className="mm-word" aria-label="Murmur">
                 {'MURMUR'.split('').map((c, k) => (

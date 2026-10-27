@@ -1,7 +1,7 @@
 /* the main menu (make start, eval/launcher.py): a page over the console, which stays live behind
    it while a scenario runs. The console's own palette and type: amber for what is chosen, what
    starts and what runs; the four domain colours for fleets (and the backdrop, SwarmBackdrop.tsx,
-   which reads them from here); green for running, red for ending and failing. */
+   which reads them, space's and its own from here); green for running, red for ending and failing. */
 .boot { height: 100vh; background: var(--bg); }
 .menu-btn { padding: 4px 8px; margin-right: -8px; font: 600 11px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); border-color: #4a3a1f; }
 .menu-btn:hover { background: #2a2214; }
@@ -13,10 +13,22 @@
   --dom-ground: #c9b98a;
   --dom-surface: #6fe0c4;
   --dom-subsurface: #a397ff;
-  --mm-terrain: #0d141b;
+  --dom-space: #d6deef;
+  /* the backdrop's bands, its nodes' discs, the tether and the buoy's lamp */
+  --mm-space: #05070b;
+  --mm-sky: #0a131d;
+  --mm-sky-low: #11202e;
+  --mm-water: #0b2227;
+  --mm-deep: #0d1325;
+  --mm-land: #201d16;
+  --mm-seabed: #15131f;
+  --mm-disc: rgba(8, 11, 15, 0.8);
+  --mm-tether: #b7c3cf;
+  --mm-lamp: #fff3c4;
   --mm-link: #8aa2bd;
-  --mm-panel: rgba(12, 17, 23, 0.9);
-  --mm-card: rgba(12, 17, 23, 0.92);
+  /* the panels and cards are opaque: the backdrop never shows through what a person reads or clicks */
+  --mm-panel: #0c1117;
+  --mm-card: #10171f;
   --mm-edge: #223142;
   --mm-bracket: #4f6680;
   --mm-ease: cubic-bezier(0.22, 1, 0.36, 1);
@@ -61,56 +73,64 @@ html:has(.mm), html:has(.mm) body { overflow: hidden; }
 .mm-where { display: inline-flex; align-items: center; gap: 10px; font: 600 11px var(--mono); letter-spacing: 0.18em; text-transform: uppercase; color: var(--text); }
 .mm-where::before { content: ''; width: 9px; height: 9px; border: 1.5px solid var(--accent); transform: rotate(45deg); }
 .mm-lost { font-size: 12.5px; color: var(--warn); }
+/* the backdrop's link styles, in the rail's spare room */
+.mm-legend { display: inline-flex; align-items: center; gap: 14px; margin-left: 12px; font: 600 9px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); opacity: 0.85; pointer-events: none; }
+.mm-legend > span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+@media (max-width: 1240px) { .mm-legend { display: none; } }
+/* the backdrop's scene, faintly, fading in with it */
+.mm-scene { font: 600 9.5px var(--mono); letter-spacing: 0.22em; text-transform: uppercase; color: var(--muted); white-space: nowrap; pointer-events: none; animation: mm-scene 2.5s ease-out both; }
+@keyframes mm-scene { from { opacity: 0; } to { opacity: 0.55; } }
+@media (max-width: 700px) { .mm-scene { display: none; } }
 .mm-utc { display: inline-flex; align-items: baseline; gap: 10px; font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
 .mm-utc b { font-weight: 500; font-size: 13px; color: var(--text); letter-spacing: 0.04em; }
 .mm-return { padding: 6px 12px; font-size: 12.5px; color: var(--accent); border-color: #4a3a1f; }
 .mm-return:hover { background: #2a2214; }
 
-.mm-scroll { position: relative; z-index: 1; flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 34px clamp(22px, 3.2vw, 56px) 56px; }
-.mm-grid { max-width: 1480px; margin: 0 auto; display: grid; grid-template-columns: minmax(340px, 456px) minmax(0, 1fr); gap: 36px clamp(28px, 3.6vw, 72px); align-items: start; }
-.mm-left { display: flex; flex-direction: column; gap: 34px; min-width: 0; }
-.mm-right { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+/* compact and centred: as little of the screen as reads well, the rest left to the backdrop */
+.mm-scroll { position: relative; z-index: 1; flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 26px clamp(16px, 2vw, 32px) 40px; }
+.mm-grid { display: grid; grid-template-columns: minmax(320px, 420px) minmax(0, 720px); justify-content: center; gap: 20px 28px; align-items: start; }
+/* the name and the list: one opaque panel, like the chosen scenario's */
+.mm-left { display: flex; flex-direction: column; gap: 22px; min-width: 0; padding: 22px 20px 20px; }
+.mm-right { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 
 /* the name */
 .mm-ident { position: relative; padding-left: 2px; container-type: inline-size; }
-/* the swarm dims behind the name and its words, so they read over it */
-.mm-ident::before { content: ''; position: absolute; inset: -40px -60px -30px -80px; z-index: -1; pointer-events: none; background: radial-gradient(closest-side, rgba(11, 15, 20, 0.82), rgba(11, 15, 20, 0.5) 60%, transparent); }
 .mm-word {
   margin: 0 -0.3em 0 0; font: 600 clamp(40px, 18.2cqi, 84px)/0.92 var(--mono); letter-spacing: 0.3em; color: var(--accent); white-space: nowrap;
   text-shadow: 0 0 34px rgba(255, 179, 71, 0.28);
 }
 .mm-word span { display: inline-block; animation: mm-letter 0.9s var(--mm-ease) both; animation-delay: calc(var(--i) * 60ms + 100ms); }
-.mm-sub { margin: 18px 0 0; font: 600 21px/1.2 var(--sans); letter-spacing: 0.01em; color: var(--text); }
-.mm-pitch { margin: 8px 0 0; max-width: 44ch; font-size: 14.5px; line-height: 1.5; color: #93a1b0; }
+.mm-sub { margin: 12px 0 0; font: 600 18px/1.2 var(--sans); letter-spacing: 0.01em; color: var(--text); }
+.mm-pitch { margin: 6px 0 0; max-width: 46ch; font-size: 13.5px; line-height: 1.5; color: #93a1b0; }
 .mm-sub, .mm-pitch { animation: mm-fade 0.8s ease-out 0.45s both; }
 
 /* the list */
-.mm-h { margin: 26px 0 10px; display: flex; align-items: baseline; gap: 8px; font: 600 11px var(--mono); letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
+.mm-h { margin: 18px 0 8px; display: flex; align-items: baseline; gap: 8px; font: 600 11px var(--mono); letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
 .mm-h:first-child { margin-top: 0; }
 .mm-h span { color: var(--text); letter-spacing: 0.02em; }
 .mm-cards { display: flex; flex-direction: column; gap: 6px; }
 .mm-card {
-  position: relative; width: 100%; display: flex; align-items: center; gap: 16px; padding: 13px 16px; text-align: left;
+  position: relative; width: 100%; display: flex; align-items: center; gap: 14px; padding: 10px 14px; text-align: left;
   background: var(--mm-card); border: 1px solid var(--mm-edge); border-radius: 2px;
   transition: background-color 0.18s var(--mm-ease), border-color 0.18s var(--mm-ease);
   animation: mm-in 0.55s var(--mm-ease) both; animation-delay: calc(min(var(--i), 10) * 45ms + 300ms);
 }
 .mm-card::before { opacity: 0; transition: opacity 0.18s var(--mm-ease); }
-.mm-card:hover { background-color: rgba(20, 28, 37, 0.96); border-color: #33475d; }
+.mm-card:hover { background-color: #141c25; border-color: #33475d; }
 .mm-card:hover::before { opacity: 1; }
-.mm-card.sel { background-color: rgba(30, 24, 14, 0.95); border-color: rgba(255, 179, 71, 0.42); }
+.mm-card.sel { background-color: #1e180e; border-color: rgba(255, 179, 71, 0.42); }
 .mm-card.sel::before { opacity: 1; --bk: var(--accent); }
 .mm .mm-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-.mm-card-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.mm-card-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .mm-card-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.mm-card-title { font: 600 16px/1.2 var(--sans); letter-spacing: 0.01em; color: var(--text); }
-.mm-card.world { padding: 18px 18px; }
-.mm-card.world .mm-card-title { font-size: 19px; }
+.mm-card-title { font: 600 15px/1.2 var(--sans); letter-spacing: 0.01em; color: var(--text); }
+.mm-card.world { padding: 14px 14px; }
+.mm-card.world .mm-card-title { font-size: 17px; }
 .mm-card-facts { display: flex; flex-wrap: wrap; gap: 2px 12px; font: 11px/1.45 var(--mono); color: var(--muted); }
 .mm-card.sel .mm-card-facts { color: #a99877; }
 /* what can't start from here: quieter, no fleet to draw */
-.mm-card.off { padding: 10px 16px; background-color: rgba(12, 17, 23, 0.8); border-style: dashed; }
-.mm-card.off .mm-card-title { font-size: 14.5px; font-weight: 500; color: #a5b1bd; }
+.mm-card.off { padding: 7px 12px; background-color: var(--mm-panel); border-style: dashed; }
+.mm-card.off .mm-card-title { font-size: 13.5px; font-weight: 500; color: #a5b1bd; }
 .mm-card.off .mm-card-facts { font-size: 11px; color: #76838f; overflow-wrap: anywhere; }
 .mm-card.off.sel { border-style: solid; }
 .mm-tag { flex: none; font: 700 9.5px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; padding: 2px 6px; border-radius: 2px; color: #1a1205; background: var(--accent); }
@@ -131,63 +151,63 @@ html:has(.mm), html:has(.mm) body { overflow: hidden; }
 .mm-stratum.none .mm-stratum-k, .mm-stratum.none b { color: #5b6977; }
 
 /* the chosen scenario */
-.mm-detail { padding: 26px 30px 30px; scroll-margin-top: 16px; container-type: inline-size; animation: mm-panel 0.4s var(--mm-ease) both; }
+.mm-detail { padding: 20px 24px 24px; scroll-margin-top: 16px; container-type: inline-size; animation: mm-panel 0.4s var(--mm-ease) both; }
 .mm-detail.off { border-style: dashed; }
 .mm-kicker { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font: 600 11px var(--mono); letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); }
-.mm-kicker code { margin-left: auto; padding: 4px 9px; font-size: 12px; letter-spacing: 0; text-transform: none; color: #b4c0cc; background: rgba(21, 29, 38, 0.9); border: 1px solid var(--mm-edge); border-radius: 2px; }
-.mm-title { margin: 12px 0 24px; font: 600 clamp(28px, 2.5vw, 38px)/1.08 var(--sans); letter-spacing: 0; color: #e8edf2; }
-.mm-sheet { display: grid; gap: 26px; }
-.mm-spec { display: flex; flex-direction: column; gap: 22px; min-width: 0; }
+.mm-kicker code { margin-left: auto; padding: 4px 9px; font-size: 12px; letter-spacing: 0; text-transform: none; color: #b4c0cc; background: #151d26; border: 1px solid var(--mm-edge); border-radius: 2px; }
+.mm-title { margin: 8px 0 16px; font: 600 clamp(24px, 2.1vw, 32px)/1.08 var(--sans); letter-spacing: 0; color: #e8edf2; }
+.mm-sheet { display: grid; gap: 20px; }
+.mm-spec { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
 .mm-facts { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 8px 14px; margin: 0; font-size: 13.5px; line-height: 1.4; }
 .mm-facts dt { font: 500 13px/1.4 var(--sans); letter-spacing: 0.01em; color: var(--muted); }
 .mm-facts dd { margin: 0; color: #cfd6de; }
 .mm-facts b { font: 600 13px var(--mono); color: var(--text); }
 .mm-plan { display: flex; flex-direction: column; min-width: 0; }
 .mm-plan > :first-child { margin-top: 0; padding-top: 0; border-top: 0; }
-.mm-brief { min-width: 0; margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--mm-edge); }
+.mm-brief { min-width: 0; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--mm-edge); }
 .mm-brief .mm-h { margin: 0 0 10px; }
 .mm-brief p { margin: 0 0 11px; max-width: 72ch; font-size: 14px; line-height: 1.55; color: #c3ccd5; }
 .mm-why { margin: 0; padding: 12px 14px; border: 1px dashed var(--mm-edge); border-radius: 2px; font-size: 13.5px; color: #a5b1bd; }
-@container (min-width: 740px) {
-  .mm-sheet { grid-template-columns: minmax(300px, 1fr) minmax(0, 1fr); gap: 34px; }
-  .mm-plan { padding-left: 32px; border-left: 1px solid var(--mm-edge); }
+@container (min-width: 640px) {
+  .mm-sheet { grid-template-columns: minmax(280px, 1fr) minmax(0, 1fr); gap: 24px; }
+  .mm-plan { padding-left: 24px; border-left: 1px solid var(--mm-edge); }
 }
 
 /* a situation's operator and AI */
-.mm-opts { display: grid; gap: 20px; margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--mm-edge); }
+.mm-opts { display: grid; gap: 16px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--mm-edge); }
 .mm-opt { display: flex; flex-direction: column; gap: 9px; margin: 0; padding: 0; border: 0; min-width: 0; }
 .mm-opt legend { margin-bottom: 9px; padding: 0; font: 600 10.5px var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
 /* the choices as chips that wrap, not one bar: a narrow column keeps every one whole */
 .mm-opt .seg { flex-wrap: wrap; gap: 6px; margin: 0; border: 0; border-radius: 0; overflow: visible; }
-.mm-opt .seg button { padding: 8px 14px; font-size: 13.5px; color: #aab6c3; background: rgba(11, 15, 20, 0.6); border: 1px solid #2b3b4d; border-radius: 2px; transition: background-color 0.15s, color 0.15s, border-color 0.15s; }
+.mm-opt .seg button { padding: 8px 14px; font-size: 13.5px; color: #aab6c3; background: #0b0f14; border: 1px solid #2b3b4d; border-radius: 2px; transition: background-color 0.15s, color 0.15s, border-color 0.15s; }
 .mm-opt .seg button + button { border-left: 1px solid #2b3b4d; }
 .mm-opt .seg button:hover:not(:disabled) { color: var(--text); background: var(--panel-2); border-color: #3f566f; }
 .mm-opt .seg button.on, .mm-opt .seg button.on:hover:not(:disabled) { color: #1a1205; background: var(--accent); border-color: var(--accent); }
 .mm-opt .seg button.on { font-weight: 600; }
 .mm-opt .seg button:disabled { opacity: 0.35; }
-.mm-opt .seg button:disabled:hover { background: rgba(11, 15, 20, 0.6); color: #aab6c3; }
+.mm-opt .seg button:disabled:hover { background: #0b0f14; color: #aab6c3; }
 .mm-opt .seg small { margin-left: 7px; font: 10px var(--mono); letter-spacing: 0.04em; opacity: 0.75; }
 .mm .seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .mm-note { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--muted); }
 .mm-warn-inline { color: var(--warn); }
 
 /* Start */
-.mm-go { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--mm-edge); }
+.mm-go { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--mm-edge); }
 .mm .primary { border-radius: 2px; transition: box-shadow 0.2s var(--mm-ease), filter 0.2s var(--mm-ease); }
 .mm .primary:hover:not(:disabled) { filter: brightness(1.06); box-shadow: 0 0 0 3px rgba(255, 179, 71, 0.16), 0 0 28px rgba(255, 179, 71, 0.28); }
 .mm .primary:active:not(:disabled) { filter: brightness(0.94); }
 .mm .primary:focus-visible, .mm .ghost:focus-visible, .mm-danger:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-.mm-start { padding: 14px 30px; font-size: 15px; letter-spacing: 0.06em; }
+.mm-start { padding: 12px 26px; font-size: 15px; letter-spacing: 0.06em; }
 .mm .ghost { border-radius: 2px; }
 .mm .ghost:hover:not(:disabled) { background: var(--panel-2); border-color: #33475d; }
 .mm-again { padding: 9px 14px; font-size: 13px; }
 
 /* the scenario now: starting, running, time up, ending, ended or failed */
-.mm-now { --tone: var(--accent); padding: 18px 24px 22px; animation: mm-panel 0.4s var(--mm-ease) both; }
+.mm-now { --tone: var(--accent); padding: 14px 20px 16px; animation: mm-panel 0.4s var(--mm-ease) both; }
 .mm-now::before { --bk: var(--tone); }
 .mm-now.live { --tone: var(--ok); border-color: #24402f; }
 .mm-now.ended { --tone: var(--warn); }
-.mm-now.bad { --tone: var(--bad); background-color: rgba(28, 16, 19, 0.94); border-color: #4a2328; }
+.mm-now.bad { --tone: var(--bad); background-color: #1c1013; border-color: #4a2328; }
 .mm-now.quiet { --tone: var(--muted); }
 .mm-now.busy { border-color: #3d3220; }
 .mm-now-head { display: flex; align-items: center; gap: 12px; }
@@ -195,11 +215,11 @@ html:has(.mm), html:has(.mm) body { overflow: hidden; }
 .mm-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: mm-ping 1.8s ease-out infinite; }
 .mm-now.quiet .mm-dot, .mm-now.bad .mm-dot { animation: none; }
 .mm-now-clock { font: 500 22px/1 var(--mono); letter-spacing: 0.04em; color: var(--text); font-variant-numeric: tabular-nums; }
-.mm-now h2 { margin: 10px 0 4px; font: 600 24px/1.15 var(--sans); color: #e8edf2; }
+.mm-now h2 { margin: 8px 0 4px; font: 600 21px/1.15 var(--sans); color: #e8edf2; }
 .mm-now-modes { display: flex; flex-wrap: wrap; gap: 2px 14px; font: 11.5px var(--mono); color: var(--muted); }
 
 /* the launch's stages, as the launcher reports them */
-.mm-steps { display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); margin: 22px 0 14px; padding: 0; list-style: none; }
+.mm-steps { display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); margin: 16px 0 10px; padding: 0; list-style: none; }
 .mm-steps li { position: relative; display: flex; flex-direction: column; gap: 7px; padding: 22px 12px 0 0; font: 600 10.5px/1.3 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: #5d6b7a; }
 .mm-step-mark { position: absolute; top: 0; left: 0; width: 12px; height: 12px; border: 1.5px solid #3a4f66; border-radius: 50%; background: var(--bg); }
 .mm-steps li::after { content: ''; position: absolute; top: 5.5px; left: 18px; right: 6px; height: 1px; background: #2b3b4d; }
@@ -219,7 +239,7 @@ html:has(.mm), html:has(.mm) body { overflow: hidden; }
 .mm-danger { padding: 8px 15px; background: none; border: 1px solid #7a3a3a; border-radius: 2px; color: #ff9d9d; font-weight: 700; letter-spacing: 0.04em; transition: background-color 0.15s; }
 .mm-danger:hover:not(:disabled) { background: #2a1416; }
 .mm-danger:disabled { opacity: 0.5; }
-.mm-confirm { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 14px; padding: 12px 14px; background: rgba(28, 16, 19, 0.96); border: 1px solid #5a2a2a; border-radius: 2px; font-size: 13.5px; }
+.mm-confirm { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 14px; padding: 12px 14px; background: #1c1013; border: 1px solid #5a2a2a; border-radius: 2px; font-size: 13.5px; }
 .mm-go .mm-confirm { margin-top: 0; }
 .mm-confirm > span { flex: 1 1 260px; }
 .mm-fail { margin: 10px 0 4px; font-size: 13.5px; color: #ffd6d6; overflow-wrap: anywhere; }
@@ -254,6 +274,8 @@ html:has(.mm), html:has(.mm) body { overflow: hidden; }
 @media (max-width: 1000px) {
   .mm-grid { grid-template-columns: minmax(0, 1fr); }
   .mm-left, .mm-right { display: contents; }
+  .mm-left::before { display: none; }
+  .mm-ident, .mm-list { padding: 18px 18px 16px; background: var(--mm-panel); border: 1px solid var(--mm-edge); border-radius: 2px; }
   .mm-ident { order: 0; }
   .mm-now { order: 1; }
   .mm-list { order: 2; }
