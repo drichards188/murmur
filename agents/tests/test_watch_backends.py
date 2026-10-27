@@ -338,9 +338,10 @@ def test_codex_command_line_is_locked_down(fake_codex, run_dir):
                 "features.memories", "features.hooks", "skills.bundled.enabled"):
         assert keys[off] == "false", off
     assert keys["web_search"] == '"disabled"' and keys["project_doc_max_bytes"] == "0"
-    # finding 13: nothing waits for an approval nobody answers; the image and patch tools off
+    # Nothing waits for an approval nobody answers; image viewing is disabled.
     assert keys["approval_policy"] == '"never"'
-    assert keys["tools.view_image"] == keys["include_apply_patch_tool"] == "false"
+    assert keys["features.view_image"] == "false"
+    assert "include_apply_patch_tool" not in keys, "not a Codex configuration key"
     assert json.loads(keys["developer_instructions"]).startswith("You are the watch officer.\nSay \"no action\"")
     assert "mma_k" not in " ".join(a), "the key stays in the environment"
     r = b.argv_resume("thread-1", "gpt-6-luna", "high")
@@ -364,9 +365,9 @@ def test_codex_disables_every_feature_that_runs_commands_and_confirms_it(fake_co
     assert disabled_in(b.argv_new("m", "high")) == [], "nothing confirmed yet"
     out = run(b.confirm_features())
     want = ["apply_patch_freeform", "apps", "code_mode", "js_repl", "multi_agent", "shell_snapshot", "shell_tool",
-            "skill_mcp_dependency_install", "unified_exec", "web_search_request"]
+            "skill_mcp_dependency_install", "web_search_request"]
     assert out["features_disabled"] == want
-    assert out["features_on"] == ["fast_mode", "personality"], "what is left on runs nothing"
+    assert out["features_on"] == ["code_mode_host", "fast_mode", "personality", "unified_exec"]
     assert disabled_in(b.argv_new("m", "high")) == want and disabled_in(b.argv_resume("t", "m", "high")) == want
     lists = [c["argv"] for c in calls(tmp_path) if c["argv"][-2:] == ["features", "list"]]
     assert len(lists) == 2 and disabled_in(lists[1]) == want
@@ -378,8 +379,21 @@ def test_codex_disables_every_feature_that_runs_commands_and_confirms_it(fake_co
     assert t.stop == "success" and disabled_in(execs[-1]) == want
 
 
+def test_codex_removed_features_do_not_block_preflight(fake_codex, run_dir, monkeypatch):
+    # 0.164 lists historical flags as enabled even though --disable cannot change them.
+    from watch.codex import parse_features
+
+    assert parse_features("realtime_conversation removed true\nshell_tool stable false\n") == {"shell_tool": False}
+    monkeypatch.setenv("FAKE_FEATURE_STUCK", "unified_exec")
+    info = run(codex(fake_codex, run_dir).preflight())
+    assert "shell_tool" in info["features_disabled"]
+    assert "unified_exec" in info["features_on"]
+    assert "code_mode_host" in info["features_on"]
+    assert "code_mode" in info["features_disabled"]
+
+
 @pytest.mark.parametrize("env, says", [
-    ({"FAKE_FEATURE_STUCK": "unified_exec"}, "still shows unified_exec on"),
+    ({"FAKE_FEATURE_STUCK": "shell_tool"}, "still shows shell_tool on"),
     ({"FAKE_FEATURE_GONE": "shell_tool"}, "does not list shell_tool"),
     ({"FAKE_FEATURES_FAIL": "1"}, "`codex features list` failed"),
 ])

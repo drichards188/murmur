@@ -14,26 +14,19 @@ becomes the child's CODEX_HOME: a home of its own keeps the user's global AGENTS
 (log in there once: `CODEX_HOME=<dir> codex login`); without it the user's normal home is
 used and its global AGENTS.md is read.
 
-Before any turn the backend asks the CLI which features it has (`codex features list`, the
-effective state with this run's configuration), disables every one that runs commands or
-model-written code, reads or writes files, or reaches beyond the bridge (`--disable <name>`
-on every exec), and refuses to start unless the list then shows each of them off and shows
-the shell features at all: a read-only sandbox blocks writes and the network, not reads, so
-a shell left on could read the whole disk, and stopping the run on a command item comes
-after the command ran. Everything else is locked down by configuration on the command line
-(`--ignore-user-config`, `--ignore-rules`,
-`--strict-config` so a renamed key fails loudly, read-only sandbox, shell, web search, apps,
-plugins, sub-agents, browser, memories, hooks and skills off, no project docs) with the
-bridge as the only MCP server, its tools approved and exposed directly
-(`features.code_mode.direct_only_tool_namespaces`; without it the model never sees them).
-Tested minimum: 0.161.0 (older versions lack some of these keys and are refused).
+Before any turn the backend checks `codex features list`, disables active features
+matching RISKY_FEATURES, and requires shell_tool to be present and off. Removed flags are
+historical entries. unified_exec ignores user opt-outs in 0.164; shell_tool gates command
+access. code_mode_host must remain available for MCP calls (even with code_mode off).
+The CLI may expose its JavaScript tool orchestrator; disabling its host breaks MCP calls.
+Shell, file-viewing, web, apps, plugins and sub-agent capabilities remain disabled, with a
+read-only sandbox and the bridge as the only configured MCP server. The JSONL event check
+stops on foreign tool calls or unknown item types; it is not a pre-turn tool inventory.
 
-Not run live here (the installed codex is older than 0.161.0): the flags follow the 0.161.0
-documentation and source as the research handed to this work read them, each key marked
-with its source below (some are inferred); the event handling is tested against a stand-in
-CLI. The event stream lists no tools, so a turn that used anything but the Murmur server
-(FORBIDDEN_ITEMS, another MCP server, an item type not listed) raises LockdownBreach and the
-driver stops the run.
+Live verified with Codex 0.164.0 and a ChatGPT login on 2026-10-27: fleet reads, routine
+thread resume, a fresh stronger-model consult, two driver wakes and SIGTERM shutdown.
+See agents/README.md for scope and remaining unverified behavior. --strict-config rejects
+unknown configuration keys rather than silently ignoring them.
 """
 
 from __future__ import annotations
@@ -74,25 +67,16 @@ def toml_str(s: str) -> str:
     return json.dumps(s, ensure_ascii=False)
 
 
-# Where each configuration key comes from, since none could be run here (the installed codex
-# is 0.116.0): "brief" is the research handed to this work (Codex docs and source at tag
-# rust-v0.161.0), "inferred" is this module's own reading of the Codex configuration and may
-# be wrong. `--strict-config` turns a wrong key name into a refusal to start (loud), never a
-# silently weaker lockdown: if Codex refuses one, correct its name here.
-#
-# Features to disable: any `codex features list` shows whose name says it runs commands or
-# model-written code, reads or writes files, or reaches beyond the bridge. Matched by name, so
-# a feature a later Codex adds under such a name is disabled too; disabling one too many costs
-# nothing the watch officer uses. On 0.116 (installed here) it matches 32 of 52, all of which
-# `--disable` accepted and the list then showed off; what it left on (collaboration_modes,
-# enable_request_compression, fast_mode, personality, sqlite, steer) runs nothing. Not
-# matched on purpose: the sandbox's own features (disabling one could weaken the sandbox).
+# "brief" marks the original 0.161 documentation research; "inferred" marks its
+# inferred keys. The remaining keys were accepted by --strict-config in live 0.164 runs.
+# Match capability names conservatively, with explicit infrastructure exceptions below.
+# Sandbox features are deliberately not matched: disabling one could weaken isolation.
 RISKY_FEATURES = re.compile(r"shell|exec|repl|code_mode|patch|agent|apps|plugin|browser|computer|hook|skill|"
                             r"memor|image|artifact|git|undo|fanout|permission|tool_suggest|search|realtime|voice|"
                             r"goal")
 # These must be in the list and off, or the backend does not start (a renamed shell feature
 # cannot be confirmed off).
-REQUIRED_OFF = ("shell_tool", "unified_exec")
+REQUIRED_OFF = ("shell_tool",)
 
 
 def parse_features(text: str) -> dict[str, bool]:
@@ -100,6 +84,9 @@ def parse_features(text: str) -> dict[str, bool]:
     out: dict[str, bool] = {}
     for line in text.splitlines():
         parts = line.split()
+        # Removed flags are immutable historical entries, not available capabilities.
+        if len(parts) >= 3 and parts[1] == "removed":
+            continue
         if len(parts) >= 3 and parts[-1] in ("true", "false") and re.fullmatch(r"[a-z0-9_]+", parts[0]):
             out[parts[0]] = parts[-1] == "true"
     return out
@@ -131,9 +118,8 @@ LOCKDOWN: tuple[tuple[str, str], ...] = (
     # nothing may wait for an approval prompt nobody answers; the Murmur tools are approved
     # by their own server setting
     ("approval_policy", '"never"'),  # inferred (the long-standing approval key)
-    # the image viewer and the patch tool: a read-only sandbox blocks writes, not reads
-    ("tools.view_image", "false"),  # inferred
-    ("include_apply_patch_tool", "false"),  # inferred
+    # Disable image viewing. The read-only sandbox blocks writes; file-change events stop the run.
+    ("features.view_image", "false"),  # verified with Codex 0.164
     ("features.apply_patch_freeform", "false"),  # inferred
 )
 # What a turn's items may be. The event stream carries no list of the tools a session offers,
@@ -141,11 +127,9 @@ LOCKDOWN: tuple[tuple[str, str], ...] = (
 # and not used. Fail closed on the items that act or read outside Murmur (the documented
 # command, file change and web search items, and a call to another MCP server): the run
 # stops. The documented harmless items pass. An item type this module does not know stops the
-# run too, with the raw item in the error: the vocabulary has not been seen live (no 0.161
-# run here) and this is Codex's only check at run time. `--codex-allow-item TYPE` lets a type
-# the user has looked at through (recorded in `unknown_items`, logged as
-# lockdown.unknown_item); once a live run has established the vocabulary, unknown items can
-# be logged and let through instead.
+# run too, with the raw item in the error: future CLI versions may add item types.
+# `--codex-allow-item TYPE` lets a reviewed type through (recorded in `unknown_items`,
+# logged as lockdown.unknown_item). Unknown types remain refused by default.
 ALLOWED_ITEMS = ("agent_message", "reasoning", "todo_list", "error", "plan")
 FORBIDDEN_ITEMS = ("command_execution", "file_change", "web_search", "patch_apply", "image_view")
 MURMUR_SERVERS = ("murmur", "mcp__murmur")
@@ -218,10 +202,6 @@ class CodexBackend:
             ("mcp_servers.murmur.http_headers", "{" + f'"X-Murmur-Agent"={toml_str(self.agent)}' + "}"),  # brief
             ("mcp_servers.murmur.required", "true"),  # brief
             ("mcp_servers.murmur.default_tools_approval_mode", '"approve"'),  # brief
-            # not `features.code_mode.direct_only_tool_namespaces` (brief): code mode runs
-            # model-written code, so it is disabled (RISKY_FEATURES), and with it off the
-            # bridge's tools are offered directly (as before code mode existed; unverified
-            # on 0.161)
         ]
         if self.key:  # the key stays in the environment; the config names the variable
             cfg.append(("mcp_servers.murmur.bearer_token_env_var", toml_str(KEY_ENV)))  # inferred
@@ -270,7 +250,13 @@ class CodexBackend:
                 "(renamed in this Codex?)",
                 "add the new names to REQUIRED_OFF and RISKY_FEATURES in agents/watch/codex.py after checking "
                 "them, " + FALLBACK_HINT)
-        risky = sorted(n for n in listed if RISKY_FEATURES.search(n))
+        # Current Codex ignores unified_exec opt-outs: shell_tool gates all command
+        # execution; unified_exec only selects the resumable implementation.
+        # https://developers.openai.com/codex/config-reference
+        # code_mode_host also hosts direct MCP calls; disabling it makes every tool
+        # return "tool execution host is unavailable". code_mode itself stays off.
+        risky = sorted(n for n in listed if RISKY_FEATURES.search(n)
+                       and n not in ("unified_exec", "code_mode_host"))
         after = await self._features([a for n in risky for a in ("--disable", n)])
         still = [n for n in risky if after.get(n, True)]
         if still:
@@ -292,7 +278,7 @@ class CodexBackend:
         v = version_tuple(self.version)
         if v is None or v < MIN_VERSION:
             raise PreflightError(
-                f"codex {self.version or '?'} is older than {'.'.join(map(str, MIN_VERSION))}, the tested minimum "
+                f"codex {self.version or '?'} is older than {'.'.join(map(str, MIN_VERSION))}, the minimum supported version "
                 "(older versions lack configuration keys the watch officer's lockdown needs)",
                 "update the Codex CLI (npm install -g @openai/codex@latest, or your package manager), "
                 + FALLBACK_HINT)

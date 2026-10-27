@@ -483,41 +483,32 @@ shows. `AI=none`: no AI ("None").
   command ran. So before any turn the backend runs `codex features list` (the effective
   feature states with this run's configuration; no model call), disables every listed
   feature whose name says it runs commands or model-written code, reads or writes files, or
-  reaches beyond the bridge (`shell_tool`, `unified_exec`, `js_repl`, `code_mode`, the patch,
-  apps, plugins, agents, hooks, skills, memories, image, search and others: 32 of the 52 that
-  0.116 lists) with `--disable <name>` on every exec, and refuses to start unless the list
-  then shows each of them off and lists `shell_tool` and `unified_exec` at all (a renamed
-  shell feature cannot be confirmed off). Confirmed on the installed 0.116.0 without a model
-  or a login: the `codex features list` output and its effective state; `--disable
-  <FEATURE>` (and `-c features.<name>=false`, its documented equivalent) on `codex`, `codex
-  exec` and `codex exec resume`, each disabled feature then listed false; an unknown name
-  refused (`Unknown feature flag`). Needing 0.161: `--ignore-user-config`, `--ignore-rules`
-  and `--strict-config` (not in 0.116's `codex exec --help`), the other `-c` keys below
-  (0.116 rejects `agents.enabled`, so its feature check refuses to start, as it should), and
-  whether the bridge's tools are offered directly with code mode off (the backend no longer
-  sets `features.code_mode.direct_only_tool_namespaces`: code mode runs model-written code,
-  so it is disabled). Locked down further by `-c` configuration: `--ignore-user-config --ignore-rules
-  --strict-config`, read-only sandbox, `approval_policy="never"`, the bridge as the only MCP
-  server (required, its tools approved and exposed directly), shell, web search, apps,
-  plugins, sub-agents, browser and computer use, image generation and viewing, the patch
-  tool, goals, memories, hooks, tool suggestions, skills and project docs off, the prompt as
-  `developer_instructions`. Each key is marked in `agents/watch/codex.py` with its source
-  (the research handed to this work, or inferred); `--strict-config` turns a wrong key name
-  into a refusal to start, never a weaker lockdown. The event stream carries no list of the
-  tools a session offers, so the backend checks what the model used instead, failing
-  closed: a command, a file change, a web search, the patch tool, the image viewer or a call
+  reaches beyond the bridge. Removed flags are ignored. The command gate `shell_tool`
+  must be listed and off. Two infrastructure flags are exempt: `unified_exec` ignores
+  user opt-outs in current Codex (command access is gated by `shell_tool`), and
+  `code_mode_host` is needed for MCP calls. Even with `code_mode` off, 0.164 can expose
+  its JavaScript tool orchestrator; disabling the host makes tool calls fail. These
+  distinctions were checked live with 0.164.0 and agree with the command-gate behavior in
+  the [Codex configuration reference](https://developers.openai.com/codex/config-reference).
+  Locked down further with `--ignore-user-config --ignore-rules --strict-config`, a
+  read-only sandbox, `approval_policy="never"`, the bridge as the only configured MCP
+  server (required, its tools approved), and shell, web search, apps, plugins, sub-agents,
+  browser, computer use, image generation/viewing, goals, memories, hooks, tool suggestions,
+  skills and project docs off. The prompt is supplied as `developer_instructions`.
+  `features.view_image=false` is the image-viewer setting; `tools.view_image` and
+  `include_apply_patch_tool` are invalid in 0.164 and have been removed. File writes are
+  blocked by the read-only sandbox; observed file-change or patch events stop the run.
+  The event stream carries no inventory of offered tools, so the backend checks actual
+  tool-use events, failing closed: a command, a file change, a web search, the patch tool, the image viewer or a call
   to another MCP server stops the run as a lockdown breach, and the error carries the items
   as Codex sent them. A call whose server field is missing passes only when it names one of
   the bridge's tools. The documented harmless items (messages, reasoning, a plan or todo
   list, an error notice) pass. An item of a type the backend does not know stops the run
-  too, with the raw item and the way to allow it in the error: the vocabulary has not been
-  seen live here, and this is Codex's only check at run time. `--codex-allow-item TYPE`
+  too, with the raw item and the way to allow it in the error. `--codex-allow-item TYPE`
   (repeatable, never a command, file change, web search, patch, image view or tool call)
   lets a type you have looked at through; it is listed in `run.start` and each use is logged
-  (`lockdown.unknown_item`, with the raw item). Once a live 0.161 run has established the
-  vocabulary, unknown types can be switched to logged and let through, so a new harmless
-  item in a later Codex does not end a good run. Routine model `gpt-6-luna` at reasoning
-  effort `high`. Never `ultra` effort (it spawns sub-agents).
+  (`lockdown.unknown_item`, with the raw item). Unknown types remain refused by default.
+  Routine model `gpt-6-luna` at reasoning effort `high`. Never `ultra` effort (it spawns sub-agents).
 - **The stronger model** (`opus` at `high`; `gpt-6.1-sol` at `high`) takes consequential
   moments, in a fresh short consult process each time: the system prompt and the update,
   not the routine conversation. Resuming or forking the routine session on another model
@@ -700,14 +691,32 @@ out and closing) that op-auto approved, the compact fleet and filtered tracks re
 in the Situation panel, about $0.75 by the CLI's estimate, and the audit log replayed exactly
 with its anchors.
 
-Not verified: Codex, entirely (the CLI installed here is 0.116.0): the configuration keys
-marked inferred in `agents/watch/codex.py`, the order of `exec resume`'s arguments, SIGINT
-ending a turn at the turn cap, and the 0.161.0 event shapes. The Codex event stream carries no
-tool list to check before a turn (the backend checks what was used, after it). A real usage
-limit was not hit (the messages and `rate_limit_event`'s `rejected` status follow the
-documentation). The stronger-model consult was not run live (stand-in only). Both backends are
-tested against stand-in CLIs (`agents/tests/`, in `make check`) that print the documented
-events, limits, errors and crashes. No test calls a model.
+Codex was verified live on **2026-10-27 with CLI 0.164.0**, using the user's existing
+`Logged in using ChatGPT` session and no API-key variables. An isolated bridge, link
+emulator and four unarmed Harbor watch stand-ins were used, with a read-only test brief:
+
+- `gpt-6-luna` at `high` read `get_fleet` and reported four vehicles.
+- A second `exec resume` turn used the same thread, recalled a marker from the first turn,
+  and successfully read the fleet again.
+- `gpt-6.1-sol` at `high` read the fleet in a separate consultation thread.
+- The actual watch-officer driver completed two automatic wakes, then exited 0 on SIGTERM
+  and logged `run.stop` with `reason="signal SIGTERM"`. The bridge and stand-ins shut down.
+
+Local artifacts: `/var/tmp/murmur-codex-live-vlec0hk8/results.json` (backend checks) and
+`/var/tmp/murmur-codex-live-qbuhwhw0/situation.jsonl` (driver). The temporary driver harness
+initially asserted the wrong log kind (`stop` rather than `run.stop`); the log confirms
+successful shutdown. These runs verify subscription inference and integration, not watch
+quality or proposal/approval behavior. They made no proposals or changes to the fleet.
+
+This machine had `/tmp/.git`, which the run-directory guard correctly refuses. Use a clean
+location, for example `TMPDIR=/var/tmp make situation NAME=harbor-watch AI=codex`, or pass
+`--run-dir` outside a repository when launching the officer directly.
+
+Not verified live: Codex interruption at the tool-turn cap, recovery from a real usage
+limit, and a full situation with proposals and operator decisions. The CLI exposes no
+pre-turn tool inventory in its event stream; observed tool use is checked after it occurs.
+Both backends also have stand-in CLI tests in `agents/tests/` (`make check`); those tests
+call no model.
 
 ## Tools
 

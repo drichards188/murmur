@@ -40,8 +40,8 @@ def emit(obj) -> None:
     sys.stdout.flush()
 
 
-# what `codex features list` shows on 0.116 (a subset), name -> on by default
-FEATURES = {"apply_patch_freeform": False, "apps": False, "code_mode": False, "fast_mode": True,
+# Representative Codex feature list, including the 0.164 MCP tool host.
+FEATURES = {"apply_patch_freeform": False, "apps": False, "code_mode": False, "code_mode_host": True, "fast_mode": True,
             "js_repl": False, "multi_agent": True, "personality": True, "shell_snapshot": True,
             "shell_tool": True, "skill_mcp_dependency_install": True, "unified_exec": True,
             "web_search_request": False}
