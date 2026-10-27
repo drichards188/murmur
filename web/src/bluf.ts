@@ -85,10 +85,14 @@ export function parseRationale(text: string): BlufParts {
 
 const words = (s: string) => s.replace(/_/g, ' ')
 
-/** "1:sonar" -> "sonar"; "puma-1:eo_ir" -> "eo ir": the sensor of a source id. */
+/** a sensor as a person names it: an EO/IR turret is a camera */
+const SENSOR_WORD: Record<string, string> = { eo_ir: 'camera', esm: 'ESM' }
+
+/** "1:sonar" -> "sonar"; "puma-1:eo_ir" -> "camera"; "PUMA 1's eo_ir" -> "PUMA 1's camera": the
+ *  sensor of a source id, in plain words. */
 function sensorOf(by: string): string {
   const i = by.indexOf(':')
-  return words(i >= 0 ? by.slice(i + 1) : by)
+  return words((i >= 0 ? by.slice(i + 1) : by).replace(/\b(eo_ir|esm)\b/g, (k) => SENSOR_WORD[k]))
 }
 
 /** What the engine words an identify order's end from (crates/murmur-decide/src/identify.rs

@@ -39,7 +39,7 @@ eq(r.more, live, 'identify keeps the original')
 const old2 = reasonBluf(
   'track T-0001 identified as patrol_boat by puma-1:eo_ir; it contradicts its identity before, fishing_vessel (identify): AIS says fishing_vessel; puma-1:eo_ir identifies patrol_boat; holding: no order to go back to',
 )
-eq(old2.headline, 'T-0001 identity conflict: eo ir says patrol boat, AIS says fishing vessel', 'older conflict wording')
+eq(old2.headline, 'T-0001 identity conflict: camera says patrol boat, AIS says fishing vessel', 'older conflict wording')
 eq(reasonBluf('track T-0001 identified as small_fast_boat by puma-1:eo_ir; holding: no order to go back to').bullets, ['vehicle holding (no earlier order)'], 'plain identify')
 eq(
   reasonBluf("track T-1 identified as ferry by 2:eo_ir; it agrees with its identity before, ferry (identify); back to i3's orbit").bullets,
@@ -63,7 +63,7 @@ eq(checksSummary([{ rule: 'a', outcome: 'pass' }, { rule: 'link', outcome: 'unve
 eq(
   reasonBluf("track T-0001 identified as cargo_ship by PUMA 1's eo_ir; it agrees with its identity before, cargo_ship (identify); meanwhile HUNTER 1 identified it as cargo_ship; holding: no order to go back to", { who: 'PUMA 1' }),
   {
-    headline: "T-0001 identified: PUMA 1's eo ir says cargo ship",
+    headline: "T-0001 identified: PUMA 1's camera says cargo ship",
     bullets: ['agrees with its earlier identity: cargo ship (identify)', 'meanwhile HUNTER 1 identified it as cargo ship', 'PUMA 1 holding (no earlier order)'],
     more: "track T-0001 identified as cargo_ship by PUMA 1's eo_ir; it agrees with its identity before, cargo_ship (identify); meanwhile HUNTER 1 identified it as cargo_ship; holding: no order to go back to",
   },
