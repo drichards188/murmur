@@ -11,7 +11,7 @@
 import { PathLayer, PolygonLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import { circle, distanceM } from './geo'
 import { topLeft } from './spaceLayers'
-import type { LngLat, Tasking } from './types'
+import type { LngLat, Op, Tasking } from './types'
 
 type FC = GeoJSON.FeatureCollection
 type RGBA = [number, number, number, number]
@@ -227,6 +227,26 @@ function layersOf(prefix: string, { lines, fills, marks, labels }: ReturnType<ty
   ]
 }
 
+/** Whether an op's vehicle has since executed a newer tasking (its telemetry showed it active or
+ *  done, now or before), so the op is no longer what the vehicle flies. An orbit's op is done once
+ *  the vehicle settles into the circle and a later order supersedes only ops not yet done, so
+ *  without this an orbit stayed drawn after its vehicle moved on (murmur-wrl). A newer order that
+ *  never ran (an upload that failed) leaves the older one drawn: the vehicle still flies it. */
+function movedOn(taskings: Tasking[]): (t: Tasking, o: Op) => boolean {
+  const ran = (o: Op) => o.history.some((h) => h.state === 'active' || h.state === 'done')
+  const after = (a: Tasking, b: Tasking) => a.created > b.created || (a.created === b.created && a.id > b.id)
+  const newest = new Map<number, Tasking>()
+  for (const t of taskings)
+    for (const o of t.ops) {
+      const n = newest.get(o.uid)
+      if (ran(o) && (!n || after(t, n))) newest.set(o.uid, t)
+    }
+  return (t, o) => {
+    const n = newest.get(o.uid)
+    return n != null && after(n, t)
+  }
+}
+
 /** The taskings, the draft and the space segment's drawings, under the vehicles and tracks. */
 export function buildSurfaceLayers(input: SurfaceInput, scale: SurfaceScale) {
   const { d, at, line, lifted } = drawing(scale)
@@ -246,9 +266,10 @@ export function buildSurfaceLayers(input: SurfaceInput, scale: SurfaceScale) {
   if (input.box) line([...input.box, input.box[0]], SPACE, 1.5, [2, 2])
 
   // taskings: dashed until a vehicle's own telemetry shows it executing (an ACK says it accepted
-  // the order, not that it flies it)
+  // the order, not that it flies it), and gone once the vehicle has executed a newer one
+  const moved = movedOn(input.taskings)
   for (const t of input.taskings) {
-    const live = t.ops.filter((o) => o.state !== 'superseded' && o.state !== 'failed' && o.state !== 'requeued')
+    const live = t.ops.filter((o) => o.state !== 'superseded' && o.state !== 'failed' && o.state !== 'requeued' && !moved(t, o))
     if (live.length === 0) continue
     const confirmed = live.some((o) => ['active', 'done'].includes(o.state))
     const color = t.task === 'orbit' ? ORBIT : t.task === 'patrol' ? PATROL : OTHER
