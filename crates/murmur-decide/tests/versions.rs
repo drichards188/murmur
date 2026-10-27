@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 64] = [
+const LOGS: [(&str, u32); 67] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -183,13 +183,20 @@ const LOGS: [(&str, u32); 64] = [
     // with the effect, struck inside the plan's tolerance and observed from the impact
     ("v20-engagement-scenario-01.jsonl", MUNITION_FLIGHT_SINCE),
     ("v20-standoff-missile-released-early-scenario-106.jsonl", MUNITION_FLIGHT_SINCE),
+    // rules 21 (bd murmur-bia, the identify order; a clean build of 31b3a28): scenario 01 (no
+    // identify order: as rules 20 decided it), 109 (an identify order's orbit moved three times
+    // with a boat at 10 m/s, then identified) and 112 (identified, then back to the patrol it
+    // replaced, re-checked)
+    ("v21-engagement-scenario-01.jsonl", IDENTIFY_SINCE),
+    ("v21-identify-follows-a-moving-boat-scenario-109.jsonl", IDENTIFY_SINCE),
+    ("v21-identify-returns-to-its-patrol-scenario-112.jsonl", IDENTIFY_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v20-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v21-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -541,6 +548,20 @@ fn a_munitions_flight_is_caught_under_older_rules() {
     let w = whats(&r);
     assert!(w.iter().any(|m| m.contains("the munition's flight is not the one")), "{w:?}");
     assert!(w.iter().any(|m| m.contains("picture verdict differs")), "{w:?}");
+}
+
+/// Rules 21: a v21 log claiming rules 20 still carries an identify order, which no rules 20
+/// check passes (replay recomputes its checks and flags them), and steps no rules 20 order has.
+#[test]
+fn an_identify_order_is_caught_under_older_rules() {
+    let mut ls = lines(&fixture("v21-identify-follows-a-moving-boat-scenario-109.jsonl"));
+    let v21 = format!("\"rules_version\":{IDENTIFY_SINCE},");
+    assert!(ls[0].contains(&v21));
+    ls[0] = ls[0].replacen(&v21, &format!("\"rules_version\":{MUNITION_FLIGHT_SINCE},"), 1);
+    let r = with(&rechain(&ls), RulesAccepted::Exactly(MUNITION_FLIGHT_SINCE));
+    let w = whats(&r);
+    assert!(w.iter().any(|m| m.contains("check results differ")), "{w:?}");
+    assert!(w.iter().any(|m| m.contains("identify step of an order not looking")), "{w:?}");
 }
 
 #[test]

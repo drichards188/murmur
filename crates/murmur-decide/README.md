@@ -1893,7 +1893,10 @@ Rules versions:
   inputs, and refuses a completion without an identified end. Scenarios 108 (a holding boat
   identified; a radar-only MQ-9B refused), 109 (the orbit follows a boat at 10 m/s), 110 (the
   track dropped: failed), 111 (the deadline: failed), 112 (back to the patrol it replaced); the
-  runner steps identify orders and takes the order sent afterwards at once.
+  runner steps identify orders and takes the order sent afterwards at once. `tests/rules21.rs`.
+  Fixtures (a clean build of `31b3a28`): `tests/data/audit/v21-engagement-scenario-01.jsonl`,
+  `v21-identify-follows-a-moving-boat-scenario-109.jsonl` (relabelled rules 20, its checks and
+  steps are caught), `v21-identify-returns-to-its-patrol-scenario-112.jsonl`.
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
