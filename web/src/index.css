@@ -51,7 +51,7 @@ code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); pa
 .fleet { grid-area: fleet; border-right: 1px solid var(--line); }
 /* right column: the tracks section (own scroll, as tall as its rows up to half) above the task panel,
    which keeps at least TASK_MIN */
-.rail { grid-area: task; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--line); }
+.rail { grid-area: task; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--line); position: relative; }
 .rail > .tk-slot { flex: 0 1 auto; min-height: 0; display: flex; flex-direction: column; max-height: max(44px, min(50%, calc(100% - 300px))); }
 .rail > .tk-slot > .tk { flex: 1 1 auto; }
 .rail > .tasking { flex: 1 1 0; min-height: 300px; }

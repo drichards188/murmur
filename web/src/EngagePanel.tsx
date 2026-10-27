@@ -1,15 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
+import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { stepsUpAct, useAuth } from './auth'
+import { ChecksFold } from './Bluf'
 import type { Check } from './decisions'
 import { StepUpNeeded, useOperator, useOperators } from './decisions'
+import { DeclarationBlock } from './Declaration'
 import {
   acceptBehavingBody,
   acceptLostBody,
   engageOptions,
   FALLBACK_LABEL,
-  fmtDist,
-  fmtRel,
-  KEEP_OUT_KIND_LABEL,
   nominate,
   type BehavingInfo,
   type EngageOption,
@@ -19,26 +18,49 @@ import {
   type KeepOutLost,
 } from './engage'
 import './engage.css'
+import {
+  blocks,
+  checksLine,
+  checkTitle,
+  clearText,
+  aisText,
+  declFacts,
+  dist,
+  evidenceBullets,
+  nominateReady,
+  platformLine,
+  radiusFor,
+  span,
+  type Step,
+  stepOf,
+  targetState,
+  whyText,
+  windowFor,
+} from './engageSteps'
 import { KeepOutExplain } from './KeepOutExplain'
 import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
-import type { TracksMessage } from './tracks'
+import type { Track, TracksMessage } from './tracks'
 import { kindWithLevel } from './tracks'
-import type { Vehicle } from './types'
-import { callsign } from './types'
+import { callsign, type Vehicle, vehicleNamer } from './types'
 
-/** The nomination form (Phase E): pair a declared-hostile track with one armed platform for
- *  an abstract effect (a point, a radius, a time). The platform list comes from the bridge's
- *  dry run (`POST /api/engage/options`: every check and the preview on the world now, nothing
- *  created), listed by uid: no ranking, no recommendation, nothing preselected; the operator
- *  picks. Nominating puts it in the inbox, where two operators with engagement authority
- *  (never the proposer) decide it. */
+/** The nomination form (Phase E) as a checklist: 1 the target (its declaration, confirmed here
+ *  when the policy needs it), 2 the platform (unranked, each with its one line), 3 the effect
+ *  (radius, window, fallback, in plain words, drawn on the map), 4 the checks in one line (the
+ *  keep-out explanation behind it), 5 a rationale, then Nominate with its consequence. Every check
+ *  the bridge's dry run fails (`POST /api/engage/options`: the checks and the preview on the world
+ *  now, nothing created) is shown at the step that can clear it and keeps Nominate disabled, so
+ *  nothing fails at the end that a step could have shown (engageSteps.ts). Platforms are listed by
+ *  uid, never ranked, and nothing is chosen for the operator: neither the target (unless the form
+ *  was opened from it) nor the platform (unless opened from it). Nominating puts it in the inbox,
+ *  where two operators with engagement authority, never the proposer, decide it. The form sits in
+ *  the right rail, over the tracks and the task panel, so the map and the inbox stay clear. */
 
 interface Props {
   tracks: TracksMessage | null
   vehicles: Vehicle[]
   now: () => number
-  /** what opened the form: a track (from the tracks drawer) or a platform (an armed vehicle) */
+  /** what opened the form: a track (its card) or a platform (an armed vehicle's details) */
   initial: { track?: string; uid?: number }
   /** the selected option's preview, to draw on the map */
   onPreview: (p: EngagePreview | null) => void
@@ -50,27 +72,90 @@ interface Props {
 
 const FALLBACKS: Fallback[] = ['return', 'loiter', 'abort']
 
-function firstFail(checks: Check[]) {
-  return checks.find((c) => c.outcome !== 'pass')
+type StepState = 'done' | 'blocked' | 'todo' | 'optional'
+
+const STATE_WORD: Record<StepState, string> = { done: 'ready', blocked: 'blocked', todo: 'to do', optional: 'optional' }
+
+function StepBox({ n, title, state, status, note, children }: { n: number; title: string; state: StepState; status?: string; note?: string; children: ReactNode }) {
+  return (
+    <li className={`eg-step ${state}`}>
+      <div className="eg-step-head">
+        <span className="eg-num" aria-hidden="true">
+          {state === 'done' ? '✓' : n}
+        </span>
+        <h3>
+          <span className="eg-sr">Step {n}: </span>
+          {title}
+        </h3>
+        {note && <span className="eg-step-note">{note}</span>}
+        <span className="eg-step-status">{status ?? STATE_WORD[state]}</span>
+      </div>
+      <div className="eg-step-body">{children}</div>
+    </li>
+  )
 }
 
-/** One line for an option a keep-out blocks: the worst item and where the platform would
- *  let every keep-out hold, on the picture now. */
-function keepOutLine(o: EngageOption) {
-  const ex = o.keep_outs
-  const worst = ex?.items.find((i) => i.blocks)
-  if (!ex?.blocked || !worst) return null
-  const kind = worst.region ? KEEP_OUT_KIND_LABEL[worst.region.kind] : 'cannot be placed'
-  const short = worst.short_m != null ? `, short ${fmtDist(worst.short_m)}` : ''
-  const mw = ex.move_within
-  const band = mw?.windows.find((w) => w.from_m != null && w.until_m != null)
-  const where =
-    mw?.within_m != null
-      ? `; every keep-out holds within ${fmtDist(mw.within_m)} (on the picture now)`
-      : band && band.from_m != null && band.until_m != null
-        ? `; every keep-out holds ${fmtDist(band.from_m)} to ${fmtDist(band.until_m)} out (on the picture now)`
-        : ''
-  return `keep-out: ${worst.label} ${kind}${short}${where}`
+/** A failing check at its step: what, why, and what would clear it. */
+function Blocker({
+  c,
+  o,
+  platform,
+  now,
+  needsConfirm,
+  action,
+  headless,
+}: {
+  c: Check
+  o: EngageOption | null
+  platform?: string
+  now: number
+  needsConfirm?: boolean
+  action?: ReactNode
+  /** the what and why are already on the line above (a platform's row): only what clears it */
+  headless?: boolean
+}) {
+  const clear = clearText(c, o, { platform, now }, needsConfirm)
+  if (headless && !clear && !action) return null
+  return (
+    <div className="eg-blocker">
+      {!headless && (
+        <p className="eg-blocker-head">
+          {checkTitle(c.rule)}: {whyText(c, o)}
+        </p>
+      )}
+      {clear && <p className="eg-blocker-clear">To clear: {clear}</p>}
+      {action}
+    </div>
+  )
+}
+
+/** The checks list behind the one line: blocking first, each in plain words with the rule's code. */
+function CheckRows({ checks }: { checks: Check[] }) {
+  const order: Step[] = ['target', 'platform', 'effect', 'checks']
+  const sorted = [...checks].sort((a, b) => Number(blocks(b)) - Number(blocks(a)) || order.indexOf(stepOf(a.rule)) - order.indexOf(stepOf(b.rule)))
+  return (
+    <div className="eg-checks">
+      {sorted.map((c, k) => (
+        <div key={k} className={`ix-check ${c.outcome}`}>
+          <span className="ix-mark">{c.outcome === 'pass' ? 'PASS' : c.outcome === 'fail' ? 'BLOCKS' : c.outcome.replace('_', ' ').toUpperCase()}</span>
+          <span className="ix-text">
+            <span className="ix-rule">
+              {checkTitle(c.rule)} <code className="eg-code">{c.rule}</code>
+            </span>
+            <span className="ix-detail">{c.detail}</span>
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** "by rule, not confirmed", "by rule, confirmed by op-1", "by op-1": a declaration's few words. */
+function declShort(t: Track) {
+  const d = t.declared
+  if (!d) return 'not declared'
+  if (d.rule) return d.confirmed_by ? `declared by rule, confirmed by ${d.confirmed_by}` : 'declared by rule, not confirmed'
+  return `declared by ${d.by}`
 }
 
 export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepOuts, onNominated, onClose }: Props) {
@@ -80,8 +165,9 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
   // rules 19: only an operator with engagement authority may accept a live track as behaving
   // now (the bridge refuses the whole nomination otherwise): nobody else is offered the control
   const mayAcceptBehaving = auth.auth === 'credentials' ? auth.engage === true : ops.engage.includes(operator)
-  const hostile = useMemo(() => (tracks?.tracks ?? []).filter((t) => t.affiliation === 'hostile' && t.declared), [tracks])
-  const [track, setTrack] = useState<string>(initial.track ?? hostile[0]?.id ?? '')
+  const hostile = useMemo(() => (tracks?.tracks ?? []).filter((t) => t.affiliation === 'hostile' && t.declared).sort((a, b) => a.id.localeCompare(b.id)), [tracks])
+  // nothing chosen for the operator: the target is the one the form was opened from, or none
+  const [track, setTrack] = useState<string>(initial.track ?? '')
   const [radius, setRadius] = useState(75)
   const [windowS, setWindowS] = useState(600)
   const [fallback, setFallback] = useState<Fallback>('return')
@@ -90,9 +176,9 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
   const [rationale, setRationale] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // why the bridge refused the nomination itself (kept until the next try: the dry run's
-  // refresh clears only its own error)
-  const [refused, setRefused] = useState<string | null>(null)
+  // why the bridge refused the nomination itself, and the step its check belongs to (kept until
+  // the next try: the dry run's refresh clears only its own error)
+  const [refused, setRefused] = useState<{ text: string; step: Step | null } | null>(null)
   const [tick, setTick] = useState(0)
   // rules 16: the lost contacts the operator accepts with the nomination (by track id)
   const [acceptLost, setAcceptLost] = useState<Record<string, KeepOutLost>>({})
@@ -128,15 +214,14 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
     .join(' and ')
   // rules 8 and 10: in a credentials run whose policy lists accept_unknown, accepting a lost
   // contact (rules 19: or a live track as behaving now) takes the operator's step-up (the
-  // password again, or their passkey), as accepting a lost vehicle of ours does; the bridge
-  // refuses the nomination without it
+  // password again, or their passkey); the bridge refuses the nomination without it
   const accepting = lostIds.length > 0 || behavingIds.length > 0
   const stepUp = accepting && stepsUpAct('accept_unknown')
   const [step, setStep] = useStepUp()
   const [stepBad, setStepBad] = useState(false)
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    const onKey = (e: globalThis.KeyboardEvent) => e.key === 'Escape' && onClose()
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
@@ -181,15 +266,35 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
   }, [chosen, onKeepOuts])
   useEffect(() => () => onKeepOuts(null), [onKeepOuts])
 
-  const t = (tracks?.tracks ?? []).find((x) => x.id === track)
-  const reachable = (options ?? []).filter((o) => o.passed)
+  const nowMs = now()
+  const t = (tracks?.tracks ?? []).find((x) => x.id === track) ?? null
+  const targets = t && !hostile.some((h) => h.id === t.id) ? [t, ...hostile] : hostile
+  const decl = t ? declFacts(t) : null
+  const target = targetState(decl, options, !!track)
+  const needsConfirm = target.kind === 'confirm'
+  const vehicleOf = (u: number) => vehicles.find((x) => x.uid === u)
   const nameOf = (u: number) => {
-    const v = vehicles.find((x) => x.uid === u)
-    return v ? `${callsign(v)} (${v.identity?.short ?? v.identity?.platform ?? ''})` : `vehicle ${u}`
+    const v = vehicleOf(u)
+    return v ? callsign(v) : `vehicle ${u}`
   }
+  const modelOf = (u: number) => {
+    const v = vehicleOf(u)
+    return v?.identity?.short ?? v?.identity?.platform ?? ''
+  }
+  const platform = chosen ? nameOf(chosen.uid) : undefined
+  const acc = { lost: acceptLost, behaving: mayAcceptBehaving ? acceptBehaving : {} }
+  const ready = nominateReady({ target, option: chosen, acc, stepUpOk: !stepUp || stepUpReady(step) })
+  const canNominate = ready.ok && !busy
+
+  // the effect step's own checks: the target's accuracy against the radius (the same on every
+  // option) and the fallback the chosen platform must hold
+  const effectFails = (chosen ?? options?.[0])?.checks.filter((c) => blocks(c) && stepOf(c.rule) === 'effect' && (chosen || c.rule === 'target_uncertainty')) ?? []
+  const line = chosen ? checksLine(chosen.checks, chosen, { platform, now: nowMs }, needsConfirm) : null
+  // the chosen platform's own checks that block, said under the list with what would clear them
+  const platformFails = chosen?.checks.filter((c) => blocks(c) && stepOf(c.rule) === 'platform') ?? []
 
   const submit = async () => {
-    if (!track || uid == null) return
+    if (!track || uid == null || !canNominate) return
     if (stepUp && !stepUpReady(step)) {
       setStepBad(true)
       return
@@ -211,135 +316,261 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
       onNominated(i.id)
     } catch (e) {
       setStepBad(e instanceof StepUpNeeded)
-      setRefused((e as Error).message)
+      const text = (e as Error).message
+      const rule = /^([a-z_]+): /.exec(text)?.[1]
+      setRefused({ text, step: rule ? stepOf(rule) : null })
+      setTick((n) => n + 1)
     }
     setStep({ password: '' })
     setBusy(false)
   }
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault()
+      void submit()
+    }
+  }
+  const refusedAt = (s: Step) => refused?.step === s && <p className="eg-refused">Not nominated: {refused.text}</p>
+
+  // ---- the steps' states ------------------------------------------------------------------------
+  const s1: StepState = target.kind === 'ready' ? 'done' : target.kind === 'confirm' || target.kind === 'blocked' ? 'blocked' : 'todo'
+  const s1Status = target.kind === 'confirm' ? 'needs a confirmation' : target.kind === 'checking' ? 'checking' : target.kind === 'none' ? 'choose one' : undefined
+  const pLine = chosen ? platformLine(chosen, nowMs) : null
+  const s2: StepState = !chosen ? 'todo' : pLine?.ok ? 'done' : 'blocked'
+  const s3: StepState = effectFails.length ? 'blocked' : chosen ? 'done' : 'todo'
+  const s4: StepState = !line ? 'todo' : line.tone === 'ok' || ready.onAcceptances ? 'done' : 'blocked'
 
   return (
-    <aside className="eg-panel" aria-label="Nominate an engagement">
+    <aside className="eg-panel" aria-label="Nominate an engagement" onKeyDown={onKeyDown}>
       <header className="eg-top">
         <h2>Nominate an engagement</h2>
-        <button className="ghost mini close" onClick={onClose} aria-label="Close">
+        <span className="eg-as">as {operator}</span>
+        <button className="ghost mini close" onClick={onClose} aria-label="Close" title="Close (Esc)">
           ✕
         </button>
       </header>
-      <p className="eg-abstract">
-        An abstract effect: a point, a radius, a time. As {operator} you nominate; two operators with engagement authority decide, never you. Every check runs again at each signature, and the picture they approve is held until the effect.
-      </p>
-      <div className="eg-form">
-        <label>
-          Track
-          <select value={track} onChange={(e) => setTrack(e.target.value)}>
-            {!hostile.some((h) => h.id === track) && <option value={track}>{track || 'choose a declared-hostile track'}</option>}
-            {hostile.map((h) => (
-              <option key={h.id} value={h.id}>
-                {h.id} {kindWithLevel(h.identity)} (declared hostile by{' '}
-                {h.declared?.rule ? (h.declared.confirmed_by ? `rule, confirmed by ${h.declared.confirmed_by}` : 'rule, not confirmed') : h.declared?.by})
-              </option>
-            ))}
-          </select>
-        </label>
-        {t && !(t.affiliation === 'hostile' && t.declared) && (
-          <p className="eg-hint">
-            {t.id} is {t.affiliation} by estimate. The tracker never infers hostile: an operator declares it (Tracks drawer), or the engine does by rule on a hostile act our sensors observed, before it can be engaged.
-          </p>
-        )}
-        {!hostile.length && <p className="eg-hint">No track is declared hostile. Declare one in the Tracks drawer first.</p>}
-        <div className="eg-row">
-          <label>
-            Effect radius (m)
-            <input type="number" min={10} max={250} step={5} value={radius} onChange={(e) => setRadius(Math.max(1, Number(e.target.value) || 0))} />
-          </label>
-          <label>
-            Window (s)
-            <input type="number" min={30} max={3600} step={30} value={windowS} onChange={(e) => setWindowS(Math.max(30, Number(e.target.value) || 0))} />
-          </label>
-        </div>
-        <fieldset className="eg-fallbacks">
-          <legend>If it stops before the effect (abort, void, link loss)</legend>
-          {FALLBACKS.map((f) => (
-            <label key={f}>
-              <input type="radio" name="fallback" checked={fallback === f} onChange={() => setFallback(f)} />
-              {FALLBACK_LABEL[f]}
-            </label>
-          ))}
-        </fieldset>
-      </div>
-
-      <section className="eg-options">
-        <span className="ix-label">
-          Armed platforms {options ? `(${reachable.length} of ${options.length} pass every check now; listed by uid, not ranked)` : '(checking...)'}
-        </span>
-        {uid == null && options && options.length > 0 && <p className="eg-hint">Pick a platform: nothing is chosen for you.</p>}
-        {(options ?? []).map((o) => {
-          const f = firstFail(o.checks)
-          const ko = keepOutLine(o)
-          return (
-            <button key={o.uid} className={`eg-opt ${o.passed ? 'ok' : 'bad'} ${uid === o.uid ? 'on' : ''}`} onClick={() => setUid(o.uid)}>
-              <b>{nameOf(o.uid)}</b>
-              {o.passed && o.preview ? (
-                <span>
-                  effect {fmtRel(o.preview.effect_t - now())}, {(o.preview.distance_m / 1000).toFixed(2)} km at {o.preview.cruise_mps.toFixed(0)} m/s
-                </span>
-              ) : (
-                <span>{f ? `${f.rule}: ${f.detail}` : 'some check did not pass'}</span>
-              )}
-              {ko && <span className="ko-sum">{ko}</span>}
-            </button>
-          )
-        })}
-        {options && !options.length && <p className="eg-hint">No armed platform in the fleet.</p>}
-      </section>
-
-      {chosen && (
-        <section className="eg-sec">
-          <span className="ix-label">Checks for {nameOf(chosen.uid)} now</span>
-          <div className="eg-checks">
-            {chosen.checks
-              .filter((c) => c.outcome !== 'pass' || ['target_declared', 'keep_out_tracks', 'keep_out_friendly', 'no_strike', 'engagement_zone', 'platform_free', 'reach'].includes(c.rule))
-              .map((c, k) => (
-                <div key={k} className={`ix-check ${c.outcome}`}>
-                  <span className="ix-mark">{c.outcome.toUpperCase()}</span>
-                  <span className="ix-text">
-                    <span className="ix-rule">{c.rule}</span>
-                    <span className="ix-detail">{c.detail}</span>
+      <p className="eg-sub">An abstract effect: a point, a radius, a time. Two operators with engagement authority decide it, never you.</p>
+      <ol className="eg-steps">
+        <StepBox n={1} title="Target" state={s1} status={s1Status}>
+          {targets.length === 0 ? (
+            <p className="eg-muted">No track is declared hostile. A track is declared on its card in Tracks: by an operator, or by the engine's rule on a hostile act our sensors observed.</p>
+          ) : (
+            <div className="eg-picks" role="radiogroup" aria-label="Declared-hostile tracks">
+              {targets.map((h) => (
+                <label key={h.id} className={`eg-pick ${track === h.id ? 'on' : ''}`}>
+                  <input type="radio" name="eg-target" checked={track === h.id} onChange={() => setTrack(h.id)} />
+                  <span className="eg-pick-text">
+                    <span className="eg-pick-name">
+                      <b>{h.id}</b> {kindWithLevel(h.identity)}
+                    </span>
+                    <span className={`eg-pick-line ${h.declared?.rule && !h.declared.confirmed_by ? 'warn' : ''}`}>
+                      {h.affiliation === 'hostile' ? 'hostile' : h.affiliation}, {declShort(h)}
+                    </span>
                   </span>
-                </div>
+                </label>
               ))}
+            </div>
+          )}
+          {track && !t && <p className="eg-blocker-head">{track} is no longer in the picture: choose another target.</p>}
+          {t && target.kind === 'confirm' && (
+            <div className="eg-need">
+              <p className="eg-need-head">The policy needs an operator's confirmation before a nomination. Read the evidence, then confirm or revoke.</p>
+              <DeclarationBlock t={t} vehicles={vehicles} now={now} where="nominate" onChanged={() => setTick((n) => n + 1)} />
+            </div>
+          )}
+          {t && target.kind === 'ready' && t.declared?.evidence && (
+            <details className="bluf-more eg-evidence">
+              <summary>Evidence</summary>
+              <ul className="dc-evidence">
+                {evidenceBullets(t.declared.evidence, vehicleNamer(vehicles), nowMs).map((b) => (
+                  <li key={b}>{b}</li>
+                ))}
+                <li>{aisText(t)}</li>
+              </ul>
+            </details>
+          )}
+          {t && target.kind === 'blocked' && (
+            <>
+              {target.checks.length === 0 && <p className="eg-blocker-head">{t.id} is not declared hostile: an operator declares it on its card in Tracks.</p>}
+              {target.checks.map((c) => (
+                <Blocker key={c.rule} c={c} o={options?.[0] ?? null} now={nowMs} />
+              ))}
+            </>
+          )}
+          {refusedAt('target')}
+        </StepBox>
+
+        <StepBox n={2} title="Platform" state={s2} status={!chosen ? 'choose one' : undefined} note="by uid, not ranked">
+          {!track ? (
+            <p className="eg-muted">Listed once a target is chosen.</p>
+          ) : !options ? (
+            <p className="eg-muted">Checking every armed platform...</p>
+          ) : !options.length ? (
+            <p className="eg-muted">No armed platform in the fleet.</p>
+          ) : (
+            <>
+              {uid == null && <p className="eg-muted">Nothing is chosen for you: pick one.</p>}
+              <div className="eg-picks" role="radiogroup" aria-label="Armed platforms">
+                {options.map((o) => {
+                  const pl = platformLine(o, nowMs)
+                  return (
+                    <label key={o.uid} className={`eg-pick ${uid === o.uid ? 'on' : ''}`}>
+                      <input type="radio" name="eg-platform" checked={uid === o.uid} onChange={() => setUid(o.uid)} />
+                      <span className="eg-pick-text">
+                        <span className="eg-pick-name">
+                          <b>{nameOf(o.uid)}</b> {modelOf(o.uid)}
+                        </span>
+                        <span className={`eg-pick-line ${pl.ok ? 'ok' : 'bad'}`}>
+                          <span aria-hidden="true">{pl.ok ? '✓ ' : '✕ '}</span>
+                          {pl.text}
+                        </span>
+                      </span>
+                    </label>
+                  )
+                })}
+              </div>
+              {platformFails.map((c, k) => {
+                const w = windowFor(c)
+                return (
+                  <Blocker
+                    key={`${c.rule}${c.uid ?? ''}`}
+                    c={c}
+                    o={chosen}
+                    platform={platform}
+                    now={nowMs}
+                    headless={k === 0}
+                    action={
+                      w != null && w <= 3600 && w !== windowS ? (
+                        <button type="button" className="dc-btn" onClick={() => setWindowS(w)}>
+                          Use a {span(w * 1000)} window
+                        </button>
+                      ) : undefined
+                    }
+                  />
+                )
+              })}
+            </>
+          )}
+          {refusedAt('platform')}
+        </StepBox>
+
+        <StepBox n={3} title="Effect" state={s3}>
+          <div className="eg-row">
+            <label>
+              Radius
+              <span className="eg-unit">
+                <input type="number" min={10} max={250} step={5} value={radius} onChange={(e) => setRadius(Math.max(1, Number(e.target.value) || 0))} />m
+              </span>
+            </label>
+            <label>
+              Window
+              <span className="eg-unit">
+                <input type="number" min={0.5} max={60} step={0.5} value={windowS / 60} onChange={(e) => setWindowS(Math.max(30, Math.round((Number(e.target.value) || 0) * 60)))} />
+                min
+              </span>
+            </label>
           </div>
-        </section>
-      )}
-      {chosen?.keep_outs && (
-        <KeepOutExplain
-          ex={chosen.keep_outs}
-          name={nameOf(chosen.uid)}
-          now={now}
-          acceptLost={acceptLost}
-          onAcceptLost={onAcceptLost}
-          acceptBehaving={acceptBehaving}
-          onAcceptBehaving={mayAcceptBehaving ? onAcceptBehaving : undefined}
-        />
-      )}
-      {lostIds.length > 0 && (
-        <p className="eg-alarm" role="status">
-          You accept {lostIds.join(', ')} as lost for this engagement: logged under your session with the nomination, shown to every signer, and
-          the checks leave {lostIds.length > 1 ? 'them' : 'it'} out while out of view since that fix (the dry run above does not).
-        </p>
-      )}
-      {behavingIds.length > 0 && (
-        <p className="eg-alarm" role="status">
-          You accept {behavingIds.join(', ')} as behaving now for this engagement: logged under your session with the nomination and the estimate then, shown
-          to every signer. The keep-out counts {behavingIds.length > 1 ? 'each' : 'it'} along that course, not anywhere it could turn or speed up to (the dry run
-          above does not), and the acceptance lapses on its own if it departs from that course beyond its uncertainty or goes out of view.
-          {behavingShort.length > 0 ? ` Accepting ${behavingShort.join(', ')} would not clear the keep-out.` : ''}
-        </p>
-      )}
-      {stepUp && (
-        <div className="tk-stepup eg-stepup">
+          <fieldset className="eg-fallbacks">
+            <legend>If it stops before the effect (an abort, a void, a lost link)</legend>
+            {FALLBACKS.map((f) => (
+              <label key={f}>
+                <input type="radio" name="fallback" checked={fallback === f} onChange={() => setFallback(f)} />
+                {FALLBACK_LABEL[f]}
+              </label>
+            ))}
+          </fieldset>
+          {effectFails.map((c) => {
+            const r = radiusFor(c)
+            return (
+              <Blocker
+                key={c.rule}
+                c={c}
+                o={chosen}
+                now={nowMs}
+                action={
+                  r != null && r <= 250 && r !== radius ? (
+                    <button type="button" className="dc-btn" onClick={() => setRadius(r)}>
+                      Use {r} m
+                    </button>
+                  ) : undefined
+                }
+              />
+            )
+          })}
+          {chosen?.preview && (
+            <div className="eg-plain">
+              <span className="eg-plain-head">If signed now (drawn on the map)</span>
+              <ul>
+                <li>
+                  {platform} sets off {span(chosen.preview.start_t - chosen.preview.t)} after the last signature and flies {dist(chosen.preview.distance_m)} at {Math.round(chosen.preview.cruise_mps)} m/s
+                </li>
+                <li>
+                  The effect about {span(chosen.preview.effect_t - nowMs)} from now, {Math.round(chosen.preview.effect_radius_m)} m around the marked point
+                </li>
+                <li>It must come within the window, {span(windowS * 1000)} from the nomination</li>
+              </ul>
+            </div>
+          )}
+          {refusedAt('effect')}
+        </StepBox>
+
+        <StepBox n={4} title="Checks" state={s4} status={!line ? 'after step 2' : undefined}>
+          {!chosen || !line ? (
+            <p className="eg-muted">They run once a platform is chosen.</p>
+          ) : (
+            <ChecksFold
+              checks={chosen.checks}
+              line={{ text: line.text, tone: line.tone === 'ok' ? 'ok' : ready.onAcceptances ? 'warn' : 'bad' }}
+              sub={line.clear ? `To clear: ${line.clear}` : undefined}
+              open={line.tone === 'bad' && !!chosen.keep_outs?.blocked}
+            >
+              <CheckRows checks={chosen.checks} />
+              {chosen.keep_outs && (
+                <KeepOutExplain
+                  ex={chosen.keep_outs}
+                  name={nameOf(chosen.uid)}
+                  now={now}
+                  acceptLost={acceptLost}
+                  onAcceptLost={onAcceptLost}
+                  acceptBehaving={acceptBehaving}
+                  onAcceptBehaving={mayAcceptBehaving ? onAcceptBehaving : undefined}
+                />
+              )}
+            </ChecksFold>
+          )}
+          {(lostIds.length > 0 || behavingIds.length > 0) && (
+            <ul className="eg-accepts" role="status">
+              {lostIds.length > 0 && (
+                <li>
+                  You accept {lostIds.join(', ')} as lost for this engagement: logged under your session with the nomination and shown to every signer; the checks leave{' '}
+                  {lostIds.length > 1 ? 'them' : 'it'} out while out of view since that fix.
+                </li>
+              )}
+              {behavingIds.length > 0 && (
+                <li>
+                  You accept {behavingIds.join(', ')} as behaving now: logged with the estimate then and shown to every signer; the keep-out counts{' '}
+                  {behavingIds.length > 1 ? 'each' : 'it'} along that course only, and the acceptance lapses on its own if it departs from it or goes out of view.
+                  {behavingShort.length > 0 ? ` Accepting ${behavingShort.join(', ')} would not clear the keep-out.` : ''}
+                </li>
+              )}
+              {ready.onAcceptances && <li>Your acceptances cover every blocker. The dry run above does not count them; the engine checks with them when you nominate.</li>}
+            </ul>
+          )}
+          {refusedAt('checks')}
+        </StepBox>
+
+        <StepBox n={5} title="Rationale" state="optional">
+          <label className="eg-rationale">
+            <span className="eg-muted">Why this target, this platform, now. The signers read it. Bottom line first.</span>
+            <textarea rows={2} value={rationale} maxLength={500} onChange={(e) => setRationale(e.target.value)} aria-label="Rationale (optional; the signers read it)" />
+          </label>
+        </StepBox>
+      </ol>
+
+      <footer className="eg-go">
+        {stepUp && (
           <StepUpField
-            passwordLabel={`Consequential: your password to accept ${acceptWhat}`}
+            passwordLabel={`Your password, to accept ${acceptWhat}`}
             purpose={`to accept ${acceptWhat} for this engagement`}
             ariaLabel="Your password, to accept for this engagement"
             value={step}
@@ -352,23 +583,25 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
             bad={stepBad}
             onEnter={() => void submit()}
           />
+        )}
+        <p className="eg-consequence">
+          Creates a nomination{t && platform ? ` of ${t.id} with ${platform}` : ''} in the Inbox. Nothing moves until two operators with engagement authority, neither of them you, sign it.
+        </p>
+        {!ready.ok && <p className="eg-missing">Not yet: {ready.missing.join('; ')}.</p>}
+        <div className="eg-go-row">
+          <button className="eg-nominate" disabled={!canNominate} onClick={() => void submit()} title="Ctrl+Enter">
+            {t ? `Nominate ${t.id}` : 'Nominate'}
+          </button>
+          <button className="dc-btn quiet" onClick={onClose} title="Esc">
+            Cancel
+          </button>
+          <span className="eg-keys" aria-hidden="true">
+            Ctrl+Enter
+          </span>
         </div>
-      )}
-
-      <label className="eg-rationale">
-        Rationale (optional for an operator; shown to the approvers)
-        <textarea rows={2} value={rationale} maxLength={500} onChange={(e) => setRationale(e.target.value)} />
-      </label>
-      <footer className="ix-actions">
-        <button className="ghost" onClick={onClose}>
-          Cancel
-        </button>
-        <button className="eg-nominate" disabled={busy || !track || uid == null || (stepUp && !stepUpReady(step))} onClick={submit} title="Creates a nomination in the inbox; nothing moves until two approvers sign">
-          Nominate
-        </button>
+        {refused && !refused.step && <p className="eg-refused">Not nominated: {refused.text}</p>}
+        {error && <p className="error ix-error">{error}</p>}
       </footer>
-      {refused && <p className="error ix-error">Not nominated: {refused}</p>}
-      {error && <p className="error ix-error">{error}</p>}
     </aside>
   )
 }

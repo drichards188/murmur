@@ -51,15 +51,32 @@ export function BlufReason({ text, ctx, className }: { text: string | null | und
 
 /** A checks list folded to its one line ("7 checks passed", "1 failed: domain"); a click opens
  *  the full list. `note` adds to the line (the engagement card says what changed since the
- *  nomination). */
-export function ChecksFold({ checks, note, children }: { checks: { rule: string; outcome: Outcome }[]; note?: string; children: ReactNode }) {
-  const sum = checksSummary(checks)
+ *  nomination). `line`: the caller's own line instead (the engagement screens word their checks in
+ *  plain names, engageSteps.ts); `sub`, a second line under it (what would clear a block);
+ *  `open`, opened at first. */
+export function ChecksFold({
+  checks,
+  note,
+  line,
+  sub,
+  open,
+  children,
+}: {
+  checks: { rule: string; outcome: Outcome }[]
+  note?: string
+  line?: { text: string; tone: 'ok' | 'bad' | 'warn' }
+  sub?: ReactNode
+  open?: boolean
+  children: ReactNode
+}) {
+  const sum = line ?? checksSummary(checks)
   return (
-    <details className={`bluf-checks ${sum.tone}`} onClick={(e) => e.stopPropagation()}>
+    <details className={`bluf-checks ${sum.tone}`} open={open} onClick={(e) => e.stopPropagation()}>
       <summary>
         <span className="bluf-checks-line">
           {sum.text}
           {note ? `; ${note}` : ''}
+          {sub && <span className="bluf-checks-sub">{sub}</span>}
         </span>
       </summary>
       {children}

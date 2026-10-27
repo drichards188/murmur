@@ -20,6 +20,7 @@
 .bluf-checks.bad > summary { color: var(--bad); }
 .bluf-checks.warn > summary { color: var(--warn); }
 .bluf-checks[open] > summary { margin-bottom: 3px; }
+.bluf-checks-sub { display: block; margin-top: 2px; font-weight: 400; font-size: 12px; color: #c8d0d9; }
 .bluf-detail.rich { white-space: normal; }
 .bluf-detail.rich p { margin: 0 0 6px; }
 .bluf-detail.rich p:last-child { margin-bottom: 0; }

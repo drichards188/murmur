@@ -322,7 +322,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   useEffect(() => {
     if (!engageDraft) return
     const ring = circle(engageDraft.effect_point, engageDraft.keep_out_m).filter((_, k) => k % 8 === 0)
-    setFit((f) => ({ points: [...engageDraft.path, ...ring], n: (f?.n ?? 0) + 1, padRight: 430 }))
+    // the form sits in the right rail, beside the map: only an open inbox covers its right edge
+    setFit((f) => ({ points: [...engageDraft.path, ...ring], n: (f?.n ?? 0) + 1, padRight: showInbox ? 430 : 70 }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftKey])
   // silent vehicles' estimates (murmur-4y9): the bridge's motion models evaluated every clock
@@ -665,31 +666,6 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           />
           </ErrorBoundary>
         )}
-        {engageForm && (
-          <ErrorBoundary name="Engagement" className="floating">
-          <EngagePanel
-            tracks={tracks}
-            vehicles={vehicles}
-            now={now}
-            initial={engageForm}
-            onPreview={setEngageDraft}
-            onKeepOuts={setEngageKeepOuts}
-            onNominated={(id) => {
-              setEngageForm(null)
-              setEngageDraft(null)
-              setEngageKeepOuts(null)
-              setShowInbox(true)
-              setInboxTab('inbox')
-              setInboxSel({ kind: 'intent', id })
-            }}
-            onClose={() => {
-              setEngageForm(null)
-              setEngageDraft(null)
-              setEngageKeepOuts(null)
-            }}
-          />
-          </ErrorBoundary>
-        )}
         {detailsUid != null && byUidDetails(vehicles, detailsUid) && (
           <ErrorBoundary name="Vehicle details" className="floating">
           <VehicleDetails
@@ -747,6 +723,32 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         <ErrorBoundary name="Task panel" className="slot tasking">
         <TaskPanel vehicles={vehicles} historyVehicles={allVehicles} selected={selected} draft={draft} setDraft={setDraft} taskings={taskings} pendingIds={pendingIds} onInbox={openIntent} space={spaceRuns} now={now} onLinkRoute={setLinkRoute} intents={allIntents} />
         </ErrorBoundary>
+        {/* the nomination form (Phase E) takes the rail while open: the map keeps its preview and the inbox stays clear */}
+        {engageForm && (
+          <ErrorBoundary name="Engagement" className="floating">
+          <EngagePanel
+            tracks={tracks}
+            vehicles={vehicles}
+            now={now}
+            initial={engageForm}
+            onPreview={setEngageDraft}
+            onKeepOuts={setEngageKeepOuts}
+            onNominated={(id) => {
+              setEngageForm(null)
+              setEngageDraft(null)
+              setEngageKeepOuts(null)
+              setShowInbox(true)
+              setInboxTab('inbox')
+              setInboxSel({ kind: 'intent', id })
+            }}
+            onClose={() => {
+              setEngageForm(null)
+              setEngageDraft(null)
+              setEngageKeepOuts(null)
+            }}
+          />
+          </ErrorBoundary>
+        )}
       </div>
     </div>
   )
