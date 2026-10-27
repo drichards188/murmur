@@ -1,0 +1,47 @@
+# Rules 21 (bd murmur-bia): the boat PUMA 1 is sent to identify comes in from the west at 10 m/s.
+# The orbit the engine laid out around it at the order moves with it: once the boat's predicted
+# position is half the standoff (at least 100 m) from the orbit's centre, the engine logs the
+# moved orbit (`identify.step` recentred, its domain and geofence checks on it) before it goes
+# out as a follow of the order, and the Puma follows. A look identifies the boat at 60 s.
+title = "An identify order's orbit moves with its track"
+invariant = "identify"
+attack = "none: a moving track"
+expect = "done"
+expect_identify = ["recentred to", "recentred to", "ended done: track T-0001 identified as small_fast_boat"]
+end_s = 70
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "puma-1"
+platform = "puma"           # EO/IR 4 km (range_m), a hand-launched fixed wing
+at = [-122.4930, 37.8210]   # west of the bridge, mid-strait
+alt_m = 120
+
+[[track]]
+id = "T-0001"
+at = [-122.5150, 37.8110]   # west of the bridge, inbound
+velocity = [10.0, 0.0]      # east at 10 m/s
+affiliation = "unknown"
+identity = "small_craft"
+identity_confidence = 0.7
+sources = ["3:radar"]
+level = "recognise"
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "identify"
+uids = ["puma-1"]
+track = "T-0001"
+
+[[step]]
+at_s = 60
+action = "track"
+id = "T-0001"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+level = "identify"
+level_by = ["puma-1:eo_ir"]

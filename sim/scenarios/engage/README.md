@@ -243,19 +243,24 @@ Actions (each `[[step]]` has `at_s` and `action`):
 | `look` | `by` | an operator with engagement authority asks for the picture (a picture token: the plan and the track now); their next `approve` quotes it |
 | `approve` | `by` | a signature: through `approve_engagement` if the session has engagement authority (quoting the token from their last `look`, or one asked for now), else `approve` (which the engine refuses for an engagement) |
 | `approve_task` | `by`, `acknowledge` | an operator approves the last `task`; `acknowledge` accepts that its dispatch stops an engagement in play |
-| `task` | `by` or `agent` (+ `rationale`), `task` (`hold`, `rtl`, `orbit` with `center` [lon, lat] and `radius_m`, `patrol` with `route` [[lon, lat], ...]), `uids` | another order on our vehicles; once approved, dispatched if the link reaches them, else queued (rules 5), superseding any engagement on them (no fallback commanded; when queued, from rules 7) |
+| `task` | `by` or `agent` (+ `rationale`), `task` (`hold`, `rtl`, `orbit` with `center` [lon, lat] and `radius_m`, `patrol` with `route` [[lon, lat], ...], rules 21 `identify` with `track` and an optional `standoff_m`), `uids` | another order on our vehicles; once approved, dispatched if the link reaches them, else queued (rules 5), superseding any engagement on them (no fallback commanded; when queued, from rules 7); an identify order is never queued |
 | `stall` | `seconds` | the loop that holds the picture stops for that long (no engagement step) |
 | `reject` | `by` | an operator rejects it |
 | `abort` | `by` | any operator stops it; the fallback is commanded |
 | `agent_approve` | `agent` | an agent "tries" to approve: there is no such method on its port, so it is recorded and the intent must not move |
-| `track` | `id` and any of `at`, `velocity`, `affiliation`, `declared_by`, `undeclare`, `identity`, `identity_confidence`, `sigma_m`, `domain`, `silent`, `velocity_error`, `alt_m`, `tracked_s`, `ais` (rules 16), `velocity_sigma_mps` (rules 18) | a track changes (or appears); `velocity` is how the contact really moves, `velocity_error` how far the tracker's estimate is off it; `tracked_s` (rules 12) when one this step makes was started (0: a new track); `velocity_sigma_mps` the velocity's 1-sigma error the tracker now reports |
+| `track` | `id` and any of `at`, `velocity`, `affiliation`, `declared_by`, `undeclare`, `identity`, `identity_confidence`, `sigma_m`, `domain`, `silent`, `velocity_error`, `alt_m`, `tracked_s`, `ais` (rules 16), `velocity_sigma_mps` (rules 18), `level` and `level_by` (rules 21) | a track changes (or appears); `velocity` is how the contact really moves, `velocity_error` how far the tracker's estimate is off it; `tracked_s` (rules 12) when one this step makes was started (0: a new track); `velocity_sigma_mps` the velocity's 1-sigma error the tracker now reports; `level` (`detect`, `recognise`, `identify`) how specific its identity now is and `level_by` the sensors whose looks identified it (an identify order ends on it) |
 | `write_off` | `by`, `uid` or `log`, `note` | rules 12: an operator writes off the lost-link values owed back to one of our vehicles, saying why (`restore.closed`); rules 15: or an earlier log whose carry failed (`log`) |
 | `unspend` | `by`, `uid`, `note` | rules 15: an operator with engagement authority un-spends a platform spent by its own effect, saying why (`platform.unspent`), once the engagement that spent it ended and it was heard after that and is not silent; without engagement authority it is refused (a scenario has no credentials: no step-up) |
 | `vehicle` | `uid` and any of `at`, `velocity`, `silent`, `report_interval_ms`, `nav` (`gnss`, `dead_reckoning`), `gps_fix` (3: a 3D fix), `gps_glitch`, `circling`, `reported_circle`, `alt_m` | one of ours changes; `silent` cuts its link (both ways: it hears no GCS either) |
 | `expect` | `state`, `rule`, `concurrences`, `task_state`, `task_reason` | check the last nomination now (`task_state`: the last `task` step's intent; `task_reason`: a substring of why it is in that state) |
 
 Approved engagements are dispatched at once (as the bridge does). Every second the runner
-calls `Engine::step_engagements` (hold the picture, release, observe, assess).
+calls `Engine::step_engagements` (hold the picture, release, observe, assess) and, from rules
+21, `Engine::step_identify` (an identify order's orbit moved with its track, flown at once; its
+look ended, and the order sent afterwards taken at once, so the order ends then). A file with
+no nomination ends on its last `task` (`expect`), and `expect_identify` lists what its identify
+orders did, in order (substrings of `t=<s> <id> recentred to [lon, lat]`, `<id> held: ...`,
+`<id> ended done: ...`).
 
 ## The set
 
@@ -368,3 +373,8 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess).
 | 105-behaving-acceptance-lapses-under-way | keep_out_tracks | rules 19: the accepted aircraft turns back toward the effect point under way; the lapse cut from the log | lapsed (velocity) at the next step, aborted (keep_out_tracks) at that step, fallback return, nothing released; tamper caught |
 | 106-standoff-missile-released-early | audit | rules 20: an armed MQ-9B at 7,600 m engages a boat running west at 5 m/s with its Hellfire-class missile (425 m/s, 8,000 m slant range); the missile's impact moved 10 s later in the log | released within the missile's slant range some 33 s before the plan's time, struck 18 s later inside its tolerance, the boat out of play at the impact, observed from then on, done (ceased); tamper caught (the flight recomputed from the releasing picture); `--rules 19` releases over the point, no munition |
 | 107-standoff-missile-out-of-range | engage_window | rules 20: the MQ-9B at 9,000 m, beyond its missile's slant range even overhead | never released (arrival: the slant range); aborted late (engage_window: the missile could not strike within 60 s of the plan's time), fallback return; `--rules 19` releases over the point |
+| 108-identify-a-holding-boat | identify | rules 21: an operator sends PUMA 1 to identify a small boat the radar only recognises; first a radar-only MQ-9B is sent | the MQ-9B refused (no EO/IR); the Puma's order flown as an orbit at its camera's identification standoff, done once a look identifies the boat, the Puma holding (no order to go back to) |
+| 109-identify-follows-a-moving-boat | identify | rules 21: the boat comes in from the west at 10 m/s | the orbit moved with it three times (each logged before it went out), done once identified |
+| 110-identify-track-lost | identify | rules 21: the boat goes unseen and the tracker drops it 180 s later | failed at the drop (a lost contact), the Puma holding |
+| 111-identify-times-out | identify | rules 21: no look identifies the boat | failed at the deadline (the time to get there plus five minutes on station), the Puma holding |
+| 112-identify-returns-to-its-patrol | identify | rules 21: the Puma is sent from a patrol | done once identified, and sent back to the patrol it replaced (re-checked first) |

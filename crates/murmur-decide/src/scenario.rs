@@ -31,7 +31,7 @@ use crate::audit::{EventBody, MemorySink, parse_log};
 use crate::authority::{Grants, OperatorSession, Roster};
 use crate::catalog::{Catalog, Domain, Reaches};
 use crate::engage::{self, EngageWindow, EngagementEvent, Fallback, offset};
-use crate::engine::{Engine, Order, Routed};
+use crate::engine::{Engine, IdentifyEvent, Order, Routed, TaskOutcome};
 use crate::geo::{LonLat, haversine_m};
 use crate::hash::{GENESIS, sha256_hex};
 use crate::ids::{AgentId, IntentId, OperatorId, Uid};
@@ -120,6 +120,11 @@ pub struct Scenario {
     /// (substrings of `t=<s> T-0002 lapsed (velocity): ...`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expect_lapsed: Vec<String>,
+    /// Rules 21: what the identify orders did, in order (substrings of `t=<s> 2 recentred to
+    /// [lon, lat]`, `t=<s> 2 held: ...` or `t=<s> 2 ended: track T-0001 identified as ...; back
+    /// to intent 1's patrol`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect_identify: Vec<String>,
     /// After the run, attack the log and require replay to catch it:
     /// `proposer_approval`, `agent_approval`, `suppress_void`, `edit_snapshot`,
     /// `drop_signature`, `edit_effect`, `strip_approvers`, `drop_reset`, `agent_order_auto`,
@@ -327,6 +332,13 @@ pub struct TrackDef {
     /// and the policy's `track_velocity_sigma_mps` stands in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub velocity_sigma_mps: Option<f64>,
+    /// Rules 21: how specific its identity is (`detect`, `recognise`, `identify`), as the tracker
+    /// settles it ([`WorldSnapshot::track_levels`]), and the sensors whose looks identified it
+    /// (`level_by`). Absent: no level (not classified).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<crate::identify::Level>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub level_by: Vec<String>,
 }
 
 /// Rules 12, scenarios: how long a track is tracked with a velocity estimate before it has an
@@ -483,6 +495,12 @@ pub enum Action {
         /// A patrol's route, `[lon, lat]` each.
         #[serde(default)]
         route: Option<Vec<[f64; 2]>>,
+        /// Rules 21, `identify`: the track to identify, and the operator's standoff (absent: the
+        /// engine's, from the camera's reach).
+        #[serde(default)]
+        track: Option<String>,
+        #[serde(default)]
+        standoff_m: Option<f64>,
     },
     /// The loop stalls: no engagement step for `seconds` (a bridge that stopped holding the
     /// picture).
@@ -535,6 +553,11 @@ pub enum Action {
         /// ([`TrackDef::velocity_sigma_mps`]), until set again.
         #[serde(default)]
         velocity_sigma_mps: Option<f64>,
+        /// Rules 21: its identity's level now ([`TrackDef::level`]), and who identified it.
+        #[serde(default)]
+        level: Option<crate::identify::Level>,
+        #[serde(default)]
+        level_by: Option<Vec<String>>,
     },
     /// One of our vehicles changes: position, velocity, link (silent: no reports; a report
     /// interval: the link class changed), navigation source (`gnss`, `dead_reckoning`).
@@ -979,6 +1002,10 @@ pub struct ScenarioResult {
     /// lapsed (velocity): ...`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub lapsed: Vec<String>,
+    /// Rules 21: what the identify orders did (`t=<s> 2 recentred to [lon, lat]`, `t=<s> 2 held:
+    /// ...`, `t=<s> 2 ended done: ...`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub identify: Vec<String>,
     /// Rules 9: the identification events, in order (`t=<s> declared T-0001 by
     /// rule:hostile_act ...`), and the same with the truth behind each (evaluation labels).
     pub ident_reports: Vec<String>,
@@ -1080,6 +1107,8 @@ struct TrackSim {
     alt_frozen: bool,
     /// rules 9, labels only: what its contact really is
     truth_aff: Affiliation,
+    /// rules 21: its identity's level (the world's `track_levels`)
+    level: Option<crate::identify::TrackLevel>,
 }
 
 fn is_zero(x: &f64) -> bool {
@@ -1524,6 +1553,45 @@ pub fn run(
         for (id, e) in &outcome.errors {
             failures.push(format!("t={s}: step_engagements {id}: {e}"));
         }
+        // rules 21: the identify orders' step, as the bridge's loop steps them
+        match engine.step_identify(&world, &terrain) {
+            Ok(events) => {
+                for ev in events {
+                    match ev {
+                        IdentifyEvent::Recentre(o) => {
+                            if let Task::Orbit { center, .. } = &o.task {
+                                extra
+                                    .identify_reports
+                                    .push(format!("t={s} {} recentred to [{:.4}, {:.4}]", o.intent, center.lon, center.lat));
+                            }
+                            fly(&mut vehicles, &o);
+                        }
+                        IdentifyEvent::Return(o) => {
+                            fly(&mut vehicles, &o);
+                            // the runner's task layer: the order sent afterwards takes at once
+                            match engine.finish(o.intent, TaskOutcome::Done) {
+                                Ok(i) => extra.identify_reports.push(format!(
+                                    "t={s} {} ended {}: {}",
+                                    o.intent,
+                                    state_str(i.state()),
+                                    i.history().last().map(|h| h.reason.clone()).unwrap_or_default()
+                                )),
+                                Err(e) => failures.push(format!("t={s}: finish {}: {e}", o.intent)),
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => failures.push(format!("t={s}: step_identify: {e}")),
+        }
+        for i in engine.intents() {
+            if let Some(held) = i.identify_run().and_then(|r| r.held.clone()) {
+                let line = format!("{} held: {held}", i.id());
+                if !extra.identify_reports.iter().any(|r| r.ends_with(&line)) {
+                    extra.identify_reports.push(format!("t={s} {line}"));
+                }
+            }
+        }
         // rules 19: the acceptances as behaving now that lapsed this second (at the step, a look
         // or a signature)
         for i in engine.intents() {
@@ -1595,8 +1663,8 @@ pub fn run(
         ));
     }
 
-    // the outcome
-    let intent = last.and_then(|id| engine.intent(id));
+    // the outcome: the last nomination's, else (rules 21: an identify scenario) the last task's
+    let intent = last.or(extra.last_task).and_then(|id| engine.intent(id));
     let final_state = intent.map(|i| state_str(i.state()));
     let final_reason = intent.and_then(|i| i.history().last().map(|h| h.reason.clone()));
     let mut failed_rules: Vec<String> = Vec::new();
@@ -1662,6 +1730,7 @@ pub fn run(
             failures.push(format!("expected a refusal containing {want:?}, got {refusals:?}"));
         }
     }
+
     if let Some(want) = &sc.expect_lost_link
         && !extra.lost_link_action.as_deref().is_some_and(|a| a.contains(want.as_str()))
     {
@@ -1737,6 +1806,7 @@ pub fn run(
         (&sc.expect_claimed, &extra.claimed, "claims raised"),
         (&sc.expect_reinstated, &extra.reinstated, "confirmations void"),
         (&sc.expect_lapsed, &extra.lapsed, "acceptances lapsed"),
+        (&sc.expect_identify, &extra.identify_reports, "identify reports"),
     ] {
         let mut it = got.iter();
         for w in want {
@@ -1839,6 +1909,7 @@ pub fn run(
         claimed: extra.claimed.clone(),
         reinstated: extra.reinstated.clone(),
         lapsed: extra.lapsed.clone(),
+        identify: extra.identify_reports.clone(),
         ident_reports,
         ident,
         proxy: extra.proxy.is_some().then_some(extra.proxy_stats),
@@ -2073,6 +2144,7 @@ fn track_sim(t: &TrackDef) -> TrackSim {
         ais: t.ais.clone(),
         silent: t.silent,
         no_velocity: t.no_velocity_estimate,
+        level: t.level.map(|level| crate::identify::TrackLevel { level, by: t.level_by.clone() }),
         alt_frozen: t.alt_age_s > 0.0,
         truth_aff: t.truth.unwrap_or(t.affiliation),
     }
@@ -2149,6 +2221,9 @@ fn snapshot(
         w.tracks.insert(id.clone(), f);
         if let Some(a) = &tr.ais {
             w.track_ais.insert(id.clone(), a.clone());
+        }
+        if let Some(l) = &tr.level {
+            w.track_levels.insert(id.clone(), l.clone());
         }
     }
     w
@@ -2540,8 +2615,17 @@ fn act(
             center,
             radius_m,
             route,
+            track,
+            standoff_m,
         } => {
             let t = match (task.as_str(), center, route) {
+                ("identify", _, _) => match track {
+                    Some(track) => Task::Identify {
+                        track: track.clone(),
+                        standoff_m: *standoff_m,
+                    },
+                    None => return failures.push(format!("t={s}: task identify needs a track")),
+                },
                 ("hold", _, _) => Task::Hold {},
                 ("rtl", _, _) => Task::Rtl {},
                 ("orbit", Some(c), _) => Task::Orbit {
@@ -2553,7 +2637,7 @@ fn act(
                 },
                 (other, _, _) => {
                     return failures.push(format!(
-                        "t={s}: task {other}: hold, rtl, orbit with a center, or patrol with a route"
+                        "t={s}: task {other}: hold, rtl, orbit with a center, patrol with a route, or identify with a track"
                     ));
                 }
             };
@@ -2800,6 +2884,8 @@ fn act(
             tracked_s,
             ais,
             velocity_sigma_mps,
+            level,
+            level_by,
         } => {
             let new = !tracks.contains_key(id);
             let t = tracks.entry(id.clone()).or_insert_with(|| {
@@ -2826,10 +2912,18 @@ fn act(
                     tracked_s: None,
                     ais: None,
                     velocity_sigma_mps: None,
+                    level: None,
+                    level_by: Vec::new(),
                 })
             });
             if let Some(a) = ais {
                 t.ais = Some(a.clone());
+            }
+            if let Some(l) = level {
+                t.level = Some(crate::identify::TrackLevel {
+                    level: *l,
+                    by: level_by.clone().unwrap_or_default(),
+                });
             }
             if let Some(v) = velocity_sigma_mps {
                 t.facts.velocity_sigma_mps = Some(*v);
@@ -3051,6 +3145,8 @@ struct Extra {
     stall_until: u32,
     /// The last `task` step's intent.
     last_task: Option<IntentId>,
+    /// Rules 21: what the identify orders did (`t=<s> <id> recentred ...`, `held`, `ended`).
+    identify_reports: Vec<String>,
     /// The picture token each operator's last `look` got.
     looked: BTreeMap<String, u64>,
     /// Rules 6: each dispatched engagement's lost-link preload as its platform answers it.

@@ -481,6 +481,12 @@ pub struct WorldSnapshot {
     /// (and in logs before rules 16).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub track_ais: BTreeMap<String, AisIdentity>,
+    /// Rules 21: each track's identity level as the tracker settles it (a size class, a family,
+    /// a kind) and the sensors whose looks identified it, by track id: what ends an identify
+    /// order ([`crate::identify`]). Kept apart from [`TrackFacts`], whose shape the tracker's
+    /// comparison copies fix. Absent when none (and in logs before rules 21).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub track_levels: BTreeMap<String, crate::identify::TrackLevel>,
     /// Engine-filled: the intent's vehicles that have an engagement in play (pending,
     /// approved or dispatched), by the engagement's id. An agent's order on one of them
     /// always goes to a human. Absent when empty.
@@ -565,6 +571,9 @@ pub struct LoggedInputs {
     /// The AIS identities heard for its tracks (rules 16; absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub track_ais: BTreeMap<String, AisIdentity>,
+    /// Its tracks' identity levels (rules 21; absent when none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub track_levels: BTreeMap<String, crate::identify::TrackLevel>,
     /// The intent's vehicles with an engagement in play (absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub engaged: BTreeMap<Uid, IntentId>,
@@ -623,6 +632,7 @@ impl LoggedInputs {
             },
             tracks: world.tracks.clone(),
             track_ais: world.track_ais.clone(),
+            track_levels: world.track_levels.clone(),
             engaged: world.engaged.clone(),
             waiting: world.waiting.clone(),
             plan: world.plan.clone(),
@@ -673,6 +683,7 @@ impl LoggedInputs {
             space,
             tracks: self.tracks.clone(),
             track_ais: self.track_ais.clone(),
+            track_levels: self.track_levels.clone(),
             engaged: self.engaged.clone(),
             waiting: self.waiting.clone(),
             plan: self.plan.clone(),
@@ -724,6 +735,7 @@ impl WorldSnapshot {
             // must be replayable against exactly the picture it saw.
             tracks: self.tracks.clone(),
             track_ais: self.track_ais.clone(),
+            track_levels: self.track_levels.clone(),
             // engine-owned: filled from its own intents
             engaged: BTreeMap::new(),
             waiting: BTreeMap::new(),
@@ -775,6 +787,9 @@ impl WorldSnapshot {
         cfg: &RulesConfig,
         plan: Option<&crate::engage::FrozenPlan>,
     ) -> WorldSnapshot {
+        // rules 21: an identify order's terrain is its orbit's (laid out around the track)
+        let orbit = crate::identify::orbit_view(spec, self, cfg);
+        let spec = orbit.as_ref();
         let mut w = self.subset_for(spec);
         w.plan = plan.map(|p| Box::new(p.clone()));
         if matches!(spec.task, Task::Engage { .. }) {

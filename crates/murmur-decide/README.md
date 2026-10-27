@@ -1863,6 +1863,38 @@ Rules versions:
   `v20-standoff-missile-released-early-scenario-106.jsonl` (relabelled rules 19, its flight is
   caught).
 
+- **21** (bd murmur-bia, the owner's direction of 2026-10-27, DECISIONS.md "W1 follow-up: an
+  identify order"; every gate reads `IDENTIFY_SINCE`; no policy key changes, schema 7; a v21 log
+  carries every rules 20 behaviour too): *a vehicle may be ordered to identify a track*. A new
+  intent kind, `identify` (`Task::Identify { track, standoff_m }`, one vehicle), laid out by the
+  engine as an orbit around the track's position now (`identify::plan`): its standoff is 70 % of
+  the vehicle's EO/IR identification reach for the track's domain as slant range, that reach an
+  eighth of the sensor's detection reach (`IDENTIFY_PX_SHARE`, the physical model's pixels for
+  detection over identification), never inside the platform's tightest orbit; an operator's
+  `standoff_m` replaces it. Its checks are a new rule, `identify` (the track live, not a lost
+  contact, not identified yet; an EO/IR that reaches its domain; the plan), then the vehicle
+  rules on that orbit (`identify::orbit_view`: readiness, platform limits, the domain rule on its
+  route, the geofence, reserves; the terrain and the route read the orbit too). The world gains
+  `track_levels` (each track's identity level and the looks that identified it, the tracker's;
+  logged with every decision from rules 21, never before), and an identify decision reads its
+  lost contacts as an engagement does. It is dispatched as that orbit; `intent.dispatched`
+  carries `identify` (the plan, the deadline: the dispatch plus the time to get there plus
+  `ON_STATION_S`, and `resumes`: the vehicle's newest order then, of a kind it can go back to,
+  under way or done). `Engine::step_identify`, each second, ends the look when the track is
+  identified, lost or past the deadline (`identify.step` ended: the outcome, the level, who
+  identified it, and the order sent afterwards, the replaced one re-checked on `return_inputs`
+  or a hold) or moves the orbit with the track (`recentred`, with the domain and geofence checks
+  on it, or `held` once for each reason they fail), each logged before the bridge sends anything
+  (`IdentifyEvent`, under the identify's own id). `Engine::finish` completes it once the order
+  sent afterwards ended, only if its look identified the track (else it fails), and refuses a
+  done report while it looks. An identify order is a vehicle task for its starts logged ahead
+  and for the values owed back (`queue::vehicle_task`), but never queued and never carried over.
+  Replay recomputes the plan at every check, the dispatch's `identify`, every step from its
+  inputs, and refuses a completion without an identified end. Scenarios 108 (a holding boat
+  identified; a radar-only MQ-9B refused), 109 (the orbit follows a boat at 10 m/s), 110 (the
+  track dropped: failed), 111 (the deadline: failed), 112 (back to the patrol it replaced); the
+  runner steps identify orders and takes the order sent afterwards at once.
+
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
 `seen_max_age_s`, an unreleased build's name for it, is still read; **3** adds `[queue]`

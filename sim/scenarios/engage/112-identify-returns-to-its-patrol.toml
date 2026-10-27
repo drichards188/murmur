@@ -1,0 +1,59 @@
+# Rules 21 (bd murmur-bia): PUMA 1 is patrolling north of the strait when an operator sends it to
+# identify a boat west of the bridge. The identify order replaces the patrol on the Puma; once a
+# look identifies the boat, the engine checks the patrol again on the picture then (its route,
+# from where the Puma is now) and, as it passes, sends the Puma back to it: the identify order
+# ends done, back to the patrol.
+title = "An identify order goes back to the order it replaced"
+invariant = "identify"
+attack = "none: an order interrupted and resumed"
+expect = "done"
+expect_identify = ["ended done: track T-0001 identified as fishing_vessel by puma-1:eo_ir; back to i1's patrol"]
+end_s = 50
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "puma-1"
+platform = "puma"           # EO/IR 4 km (range_m), a hand-launched fixed wing
+at = [-122.4930, 37.8210]   # west of the bridge, mid-strait
+alt_m = 120
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]
+affiliation = "unknown"
+identity = "small_craft"
+identity_confidence = 0.7
+sources = ["3:radar"]
+level = "recognise"
+
+[[step]]
+at_s = 0
+action = "task"
+by = "op-1"
+task = "patrol"
+uids = ["puma-1"]
+route = [[-122.4900, 37.8230], [-122.4800, 37.8230]]
+
+[[step]]
+at_s = 1
+action = "expect"
+task_state = "dispatched"
+
+[[step]]
+at_s = 5
+action = "task"
+by = "op-1"
+task = "identify"
+uids = ["puma-1"]
+track = "T-0001"
+
+[[step]]
+at_s = 35
+action = "track"
+id = "T-0001"
+identity = "fishing_vessel"
+identity_confidence = 0.9
+level = "identify"
+level_by = ["puma-1:eo_ir"]

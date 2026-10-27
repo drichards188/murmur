@@ -102,6 +102,9 @@ pub enum RuleId {
     /// Rules 6: the platform's own lost-link action can be the engagement's fallback (at
     /// nomination), and is confirmed preloaded as it (at the release).
     FallbackPreload,
+    /// Rules 21: an identify order's track is live and not identified yet, and the vehicle's
+    /// EO/IR identifies a contact of its domain from an orbit around it ([`crate::identify`]).
+    Identify,
 }
 
 impl RuleId {
@@ -138,6 +141,7 @@ impl RuleId {
             RuleId::PlatformNav => "platform_nav",
             RuleId::PlatformFree => "platform_free",
             RuleId::FallbackPreload => "fallback_preload",
+            RuleId::Identify => "identify",
         }
     }
 }
@@ -180,7 +184,7 @@ pub struct CheckResult {
 }
 
 impl CheckResult {
-    fn new(rule: RuleId, uid: Option<&Uid>, outcome: Outcome, detail: impl Into<String>) -> Self {
+    pub(crate) fn new(rule: RuleId, uid: Option<&Uid>, outcome: Outcome, detail: impl Into<String>) -> Self {
         CheckResult {
             rule,
             uid: uid.cloned(),
@@ -237,7 +241,21 @@ pub enum UnknownEndurance {
 /// the acceptance lapses on its own when the track departs from it. Version 20
 /// ([`MUNITION_FLIGHT_SINCE`]): a platform with a catalog munition releases it the time of flight
 /// before the plan's time, from within the munition's range, and the effect lands at its impact.
-pub const RULES_VERSION: u32 = MUNITION_FLIGHT_SINCE;
+/// Version 21 ([`IDENTIFY_SINCE`]): an operator (or an agent, by policy) may order a vehicle to
+/// identify a track.
+pub const RULES_VERSION: u32 = IDENTIFY_SINCE;
+
+/// The rules version from which a vehicle may be ordered to identify a track (bd murmur-bia, the
+/// owner's direction of 2026-10-27, DECISIONS.md "W1 follow-up: an identify order"): an intent
+/// of kind `identify` names one track and one vehicle; the engine lays it out as an orbit around
+/// the track at a standoff the vehicle's EO/IR identifies from ([`crate::identify::plan`], the
+/// `identify` rule), judges that orbit as any orbit, moves it with the track (`identify.step`
+/// recentred, logged before it goes out), and ends it once the track is identified, lost or out
+/// of time, sending the vehicle back to the order it replaced (re-checked) or holding it. The
+/// vehicle's camera looks for the track first while it is on the order. Earlier versions take no
+/// identify order (the rule fails). Every gate of that change reads this constant, never a
+/// literal: another change taking 21 first renumbers it in this one line.
+pub const IDENTIFY_SINCE: u32 = 21;
 
 /// The rules version from which a platform whose catalog gives it a munition (`munition = { name,
 /// speed_mps, range_m }`, [`crate::catalog::MunitionFacts`]) releases it as a munition in flight
@@ -568,6 +586,11 @@ impl RulesConfig {
         self.rules_version >= MUNITION_FLIGHT_SINCE
     }
 
+    /// Rules 21 ([`IDENTIFY_SINCE`]): a vehicle may be ordered to identify a track.
+    pub fn identify(&self) -> bool {
+        self.rules_version >= IDENTIFY_SINCE
+    }
+
     /// `[rules.engage]`, or its defaults.
     pub fn engage_rules(&self) -> EngageRules {
         let mut e = self.engage.clone().unwrap_or_default();
@@ -599,6 +622,22 @@ impl Default for RulesConfig {
 pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Vec<CheckResult> {
     let mut out = Vec::new();
     match spec.task.targets() {
+        Targets::Vehicles if spec.kind() == TaskKind::Identify => {
+            // rules 21: the identify rule, then the vehicle rules on the orbit it is flown as
+            // (none when there is no plan: the vehicle's own readiness alone)
+            out.extend(capability(spec, world));
+            out.push(crate::identify::check(spec, world, cfg));
+            match crate::identify::orbit_view(spec, world, cfg) {
+                std::borrow::Cow::Owned(orbit) => {
+                    out.extend(readiness(&orbit, world, cfg));
+                    out.extend(platform_limits(&orbit, world, cfg));
+                    out.extend(domain(&orbit, world, cfg));
+                    out.extend(geofence(&orbit, world, cfg));
+                    out.extend(reserves(&orbit, world, cfg));
+                }
+                std::borrow::Cow::Borrowed(_) => out.extend(readiness(spec, world, cfg)),
+            }
+        }
         Targets::Vehicles => {
             out.extend(capability(spec, world));
             out.extend(readiness(spec, world, cfg));

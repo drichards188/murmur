@@ -1,0 +1,41 @@
+# Rules 21 (bd murmur-bia): nothing identifies the boat PUMA 1 is sent to (the night, the haze:
+# the runner's track stays recognised only). The order's deadline is its dispatch, the time to
+# get there at the Puma's cruise speed, and five minutes on station (`identify::ON_STATION_S`);
+# at it the order ends failed, not identified, and the Puma holds.
+title = "An identify order ends failed at its deadline"
+invariant = "identify"
+attack = "no look identifies the track"
+expect = "failed"
+expect_identify = ["ended failed: track T-0001 not identified by the order's deadline; holding: no order to go back to"]
+end_s = 380
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "puma-1"
+platform = "puma"           # EO/IR 4 km (range_m), a hand-launched fixed wing
+at = [-122.4930, 37.8210]   # west of the bridge, mid-strait
+alt_m = 120
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]
+affiliation = "unknown"
+identity = "small_craft"
+identity_confidence = 0.7
+sources = ["3:radar"]
+level = "recognise"
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "identify"
+uids = ["puma-1"]
+track = "T-0001"
+
+[[step]]
+at_s = 200
+action = "expect"
+task_state = "dispatched"

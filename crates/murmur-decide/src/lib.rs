@@ -287,6 +287,7 @@ pub mod engine;
 pub mod geo;
 pub mod hash;
 pub mod ident;
+pub mod identify;
 pub mod ids;
 pub mod intent;
 pub mod keepout;
@@ -323,7 +324,7 @@ pub use engage::{
     StopRecord, TrackIdentity, VehicleIdentity,
 };
 pub use engine::{
-    ActOutcome, AgentPort, Dequeued, DispatchOrder, Engine, EngineError, IdentOutcome, LostStep, Order,
+    ActOutcome, AgentPort, Dequeued, DispatchOrder, Engine, EngineError, IdentOutcome, IdentifyEvent, LostStep, Order,
     PREPARED_SPACE_MAX_AGE_MS, PlatformRestoreReport, PreloadReport, PreparedSpace, Preview,
     Routed, SpaceRecheck, StartCarry, StepOutcome, TaskOutcome, WriteOff, prepare_space,
     prepare_space_at,
@@ -353,7 +354,7 @@ pub use queue::{
 };
 pub use route::{LegKind, Route, RouteLeg, Segment};
 pub use rules::{
-    ACCEPT_BEHAVING_SINCE, AIRCRAFT_REACH_SINCE, CARRY_FOLLOWUPS_SINCE, CheckResult, LOST_CONTACT_SINCE, MUNITION_FLIGHT_SINCE, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
+    ACCEPT_BEHAVING_SINCE, AIRCRAFT_REACH_SINCE, CARRY_FOLLOWUPS_SINCE, CheckResult, IDENTIFY_SINCE, LOST_CONTACT_SINCE, MUNITION_FLIGHT_SINCE, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
     QUEUE_FOLLOWUPS_SINCE, REVIEW_FOLLOWUPS_SINCE, ROUTE_SURFACE_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_VERSION,
     RuleId, RulesConfig, SPACE_FOLLOWUPS_SINCE, SPACE_REPLAY_SINCE, STEP_UP_SCHEMA_SINCE, UnknownEndurance, VELOCITY_SIGMA_SINCE,
 };

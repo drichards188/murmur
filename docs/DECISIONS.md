@@ -577,6 +577,39 @@ group. Dates are 2026.
 
 ## Fleet and simulation
 
+- **W1 follow-up: an identify order** (10-27, the owner: "there needs to be a way to instruct a
+  node to go identify a contact", and the full order over a console-only shortcut; bd
+  murmur-bia; decision rules 21, `IDENTIFY_SINCE`). W1 left cameras to point themselves and
+  named a look target in orders as a later rules version. Before this, the only way to get a
+  contact identified was an orbit over it and a camera that might pick it: a fixed orbit loses a
+  moving contact (Harbor watch's fast boat does 15 m/s) and the payload manager cues the nearest
+  unidentified contact, not the one meant. Now an intent of kind `identify` names one track and
+  one vehicle (`standoff_m` optional). The engine lays it out as an orbit around the track's
+  position at a standoff the vehicle's EO/IR identifies from: an eighth of its detection reach
+  for the track's domain (`identify::IDENTIFY_PX_SHARE`, the physical model's 1.5 over 12 pixels
+  for an even chance to detect and to identify; where blur limits first the camera identifies
+  further out, so this is conservative), 70 % of that as slant range, never inside the
+  platform's tightest orbit. The orbit is judged as any orbit (readiness, the turn radius, the
+  domain rule on its legs, the geofence, reserves) beside its own rule, `identify` (the track is
+  live, not identified yet, and the vehicle carries an EO/IR that reaches its domain). Policy
+  routes it as an orbit: an operator's is automatic inside the approved area, an AI's waits for
+  the operator under the watch policy. Once dispatched the engine steps it every second: the
+  orbit moves with the track once the track is half the standoff (at least 100 m) from its
+  centre, each move logged before it goes out with the picture it read and its domain and
+  geofence checks (`identify.step` recentred, or held once for each reason a moved orbit fails);
+  the look ends when the track's identity reaches identification by any of our sensors (logged
+  with the looks that did it), when the tracker drops it (a lost contact) or at its deadline
+  (the time to get there plus five minutes on station, [E]). The vehicle then goes back to the
+  order the identify replaced on it (the vehicle's newest order at the dispatch, under way or
+  done, of a kind it can go back to) if that order passes its checks again on the picture then,
+  else holds; the identify order is done once that order took (identified) or failed (not).
+  While the vehicle is on it, its camera's payload manager cues the named track first. Judgement
+  calls: an identify order is never queued for a link (its track moves on; it waits in the task
+  layer as any order does) and never carried over a restart; the return re-flies the replaced
+  order's task under the identify's own id (the replaced intent ended superseded as any
+  replaced order does), so a patrol it goes back to keeps the identify dispatched as a patrol
+  would; an AI's proposal of it routes as its orbits do, and no prompt, playbook or score uses it
+  yet.
 - **A physical sensing model beside the legacy one, the physical model the default since the
   catalog's figures** (10-23, murmur-1z6.1, murmur-1z6.4; WORLD-V3-PLAN sections 2 and 3,
   approved; docs/SENSING.md). Per-sensor physics

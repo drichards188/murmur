@@ -198,6 +198,9 @@ pub fn route_for(
     world: &WorldSnapshot,
     cfg: &RulesConfig,
 ) -> Result<Route, String> {
+    // rules 21: an identify order goes where its orbit is laid out around the track
+    let orbit = crate::identify::orbit_view(spec, world, cfg);
+    let spec = orbit.as_ref();
     let task = spec.task.path();
     let engage = matches!(spec.task, Task::Engage { .. });
     let moves = task.is_some() || engage || matches!(spec.task, Task::Rtl {});

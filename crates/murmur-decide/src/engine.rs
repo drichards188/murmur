@@ -466,6 +466,23 @@ pub enum TaskOutcome {
     Failed { detail: String },
 }
 
+/// What [`Engine::step_identify`] hands the bridge, each under the identify order's own id: an
+/// orbit moved with the track, sent as a follow of the order it runs (`Recentre`), or the order
+/// the vehicle flies now its look has ended (`Return`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum IdentifyEvent {
+    Recentre(DispatchOrder),
+    Return(DispatchOrder),
+}
+
+/// Rules 21: what an identify order's moved orbit must pass: the domain rule and the geofence
+/// (the orbit's radius, the vehicle and its reserves are the dispatch's).
+pub(crate) fn recentre_checks(moved: &IntentSpec, world: &WorldSnapshot, cfg: &rules::RulesConfig) -> Vec<rules::CheckResult> {
+    let mut c = rules::domain(moved, world, cfg);
+    c.extend(rules::geofence(moved, world, cfg));
+    c
+}
+
 /// What [`Engine::dispatch_or_queue`] did with an approved intent.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Routed {
@@ -2356,6 +2373,11 @@ impl Engine {
     /// filled into its inputs (nothing for another kind, or before rules 16): those in force
     /// and those whose confirmation its picture (`w.tracks`, identification filled) voids.
     fn fill_lost(&self, spec: &IntentSpec, w: &mut WorldSnapshot) {
+        // rules 21: an identify order reads its track's loss from them too
+        if spec.kind() == TaskKind::Identify && self.policy.rules.identify() && self.policy.rules.lost_contacts() {
+            w.lost_contacts = self.lost.in_force_for(&w.tracks, &self.ident, self.policy.rules.rule_id());
+            return;
+        }
         if spec.kind() != TaskKind::Engage || !self.policy.rules.lost_contacts() {
             return;
         }
@@ -4312,6 +4334,10 @@ impl Engine {
         if !self.policy.rules.lost_contacts() {
             w.track_ais.clear();
         }
+        // rules 21: a track's identity level is a fact only rules 21 read
+        if !self.policy.rules.identify() {
+            w.track_levels.clear();
+        }
     }
 
     /// The world as decisions read it (rules 9: its identification filled from the ledger),
@@ -4912,6 +4938,17 @@ impl Engine {
         }
     }
 
+    /// Rules 21: the order an identify dispatched to `uids` (one vehicle) replaces there and goes
+    /// back to afterwards: that vehicle's newest order, of a kind it can go back to
+    /// ([`crate::identify::resumable`]), under way or done (an orbit is done once established,
+    /// and flown on).
+    fn resumable_on(&self, uids: &[Uid]) -> Option<IntentId> {
+        let [u] = uids else { return None };
+        let id = *self.newest_on.get(u)?;
+        let i = self.intents.get(&id)?;
+        (crate::identify::resumable(i.spec().kind()) && matches!(i.state(), State::Dispatched | State::Done)).then_some(id)
+    }
+
     /// Rules 5: whether dispatching `spec` straight from its approval needs the link's reach
     /// logged with it (a kind the policy's queue holds).
     fn reach_needed(&self, spec: &IntentSpec) -> bool {
@@ -4988,6 +5025,7 @@ impl Engine {
             intent.engagement().and_then(|e| e.snapshot.as_ref()),
             intent.engagement().and_then(|e| e.loiter_radius_m),
             intent.engagement().and_then(|e| e.preload.as_ref()),
+            intent.identify_plan(),
             &self.policy.rules,
         )?;
         let reason = match &order {
@@ -4997,7 +5035,18 @@ impl Engine {
             Order::Engage(_) => "dispatched: platform sent to the effect point",
         };
         let uids = intent.spec().uids.clone();
-        let mut event = dispatched_event(intent.spec(), &order);
+        // rules 21: an identify order's deadline runs from now, and it goes back afterwards to
+        // the order it replaces on its vehicle
+        let t = self.now().max(self.last_t);
+        let identify = match intent.identify_plan() {
+            Some(plan) if intent.spec().kind() == TaskKind::Identify => Some(crate::identify::Dispatch {
+                plan: plan.clone(),
+                deadline_t: crate::identify::deadline(t, plan),
+                resumes: self.resumable_on(&uids),
+            }),
+            _ => None,
+        };
+        let mut event = dispatched_event(intent.spec(), &order, identify.as_ref());
         if let (
             EventBody::IntentDispatched {
                 inputs: logged,
@@ -5010,9 +5059,18 @@ impl Engine {
             *logged = Some(inputs);
             *logged_reach = Some(reach);
         }
-        self.emit(event)?;
+        self.emit_at(t, event)?;
         self.transition(id, Transition::Dispatch, reason.into())?;
         self.get_mut(id)?.mark_dispatched();
+        if let Some(d) = identify {
+            self.get_mut(id)?.set_identify_run(crate::identify::Run {
+                plan: d.plan,
+                deadline_t: d.deadline_t,
+                resumes: d.resumes,
+                held: None,
+                ended: None,
+            });
+        }
         match &order {
             Order::Collect(c) => self.get_mut(id)?.set_space_order(SpaceOrder::Collect(c.clone())),
             Order::Cover(c) => self.get_mut(id)?.set_space_order(SpaceOrder::Cover(c.clone())),
@@ -5702,12 +5760,195 @@ impl Engine {
                 why: "an engagement ends by its effect and assessment, or by an abort".into(),
             });
         }
-        let (tr, reason) = match outcome {
-            TaskOutcome::Done => (Transition::Complete, "done".to_string()),
-            TaskOutcome::Failed { detail } => (Transition::Fail, detail),
+        // rules 21: an identify order is done once its look identified the track and the order
+        // it sent afterwards ended (failed: not identified); while it looks, only a failure ends it
+        let ended = self.get(id)?.identify_run().map(|r| r.ended.clone());
+        let (tr, reason) = match (ended, outcome) {
+            (Some(None), TaskOutcome::Done) => {
+                return Err(EngineError::NotItsOrder {
+                    id,
+                    why: "an identify order ends when its look does (identified, lost or out of time)".into(),
+                });
+            }
+            (Some(Some((kind, detail))), outcome) => {
+                let then = match outcome {
+                    TaskOutcome::Done => String::new(),
+                    TaskOutcome::Failed { detail } => format!("; then: {detail}"),
+                };
+                let tr = if kind == crate::identify::EndKind::Identified { Transition::Complete } else { Transition::Fail };
+                (tr, format!("{detail}{then}"))
+            }
+            (_, TaskOutcome::Done) => (Transition::Complete, "done".to_string()),
+            (_, TaskOutcome::Failed { detail }) => (Transition::Fail, detail),
         };
         self.transition(id, tr, reason)?;
         self.get(id)
+    }
+
+    /// Rules 21: step every dispatched identify order still looking, on `world` (the bridge's
+    /// picture now; `terrain` answers the domain rule): the look ends when its track is
+    /// identified, lost or out of time (`identify.step` ended, with the order sent afterwards:
+    /// the one it replaced, re-checked, else a hold), else its orbit moves with the track once
+    /// the track has moved far enough (`identify.step` recentred, when the moved orbit passes the
+    /// domain rule and the geofence; `held` once for each reason it does not). Each step is
+    /// logged before the bridge sends anything, with the picture it read. An order a newer one
+    /// replaced on its vehicle is not stepped (it fails with its op). Nothing before rules 21.
+    pub fn step_identify(
+        &mut self,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Result<Vec<IdentifyEvent>, EngineError> {
+        if !self.policy.rules.identify() {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<IntentId> = self
+            .intents
+            .values()
+            .filter(|i| {
+                i.spec().kind() == TaskKind::Identify
+                    && i.state() == State::Dispatched
+                    && i.identify_run().is_some_and(|r| r.ended.is_none())
+            })
+            .map(Intent::id)
+            .collect();
+        let mut out = Vec::new();
+        for id in ids {
+            let spec = self.get(id)?.spec().clone();
+            let Some(uid) = spec.uids.first().cloned() else { continue };
+            if self.newest_on.get(&uid) != Some(&id) {
+                continue;
+            }
+            let Some(run) = self.get(id)?.identify_run().cloned() else { continue };
+            let cfg = self.policy.rules.clone();
+            let here = crate::identify::orbit_spec(&spec, run.plan.center, run.plan.radius_m);
+            let mut inputs = world.for_intent_with(&here, terrain, &cfg);
+            self.identify(&mut inputs);
+            self.fill_engine_facts(&spec, &mut inputs);
+            if let Some((kind, detail)) = crate::identify::outcome(&run.plan.track, &inputs, run.deadline_t) {
+                out.push(self.end_identify(&spec, &uid, &run, inputs, kind, detail, world, terrain)?);
+                continue;
+            }
+            let Some(center) = crate::identify::recentre(&run.plan, &inputs, &cfg) else {
+                continue;
+            };
+            let moved = crate::identify::orbit_spec(&spec, center, run.plan.radius_m);
+            let mut mi = world.for_intent_with(&moved, terrain, &cfg);
+            self.identify(&mut mi);
+            self.fill_engine_facts(&spec, &mut mi);
+            let checks = recentre_checks(&moved, &mi, &cfg);
+            if rules::passed(&checks, TaskKind::Orbit) {
+                let logged = self.log_inputs(&mi)?;
+                self.emit(EventBody::IdentifyStep {
+                    intent: id,
+                    uid: uid.clone(),
+                    inputs: logged,
+                    step: crate::identify::Step::Recentred {
+                        center,
+                        radius_m: run.plan.radius_m,
+                        checks,
+                    },
+                    return_inputs: None,
+                })?;
+                if let Some(r) = self.get_mut(id)?.identify_run_mut() {
+                    r.plan.center = center;
+                    r.held = None;
+                }
+                out.push(IdentifyEvent::Recentre(DispatchOrder {
+                    intent: id,
+                    task: moved.task.clone(),
+                    uids: spec.uids.clone(),
+                }));
+            } else {
+                let reason = crate::identify::failing(&checks);
+                if run.held.as_deref() == Some(reason.as_str()) {
+                    continue;
+                }
+                let logged = self.log_inputs(&mi)?;
+                self.emit(EventBody::IdentifyStep {
+                    intent: id,
+                    uid: uid.clone(),
+                    inputs: logged,
+                    step: crate::identify::Step::Held {
+                        center,
+                        radius_m: run.plan.radius_m,
+                        checks,
+                        reason: reason.clone(),
+                    },
+                    return_inputs: None,
+                })?;
+                if let Some(r) = self.get_mut(id)?.identify_run_mut() {
+                    r.held = Some(reason);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Rules 21: the end of identify order `spec`'s look (`kind`, `detail`, judged on
+    /// `inputs`): logged with the order sent afterwards, the one it replaced on the vehicle when
+    /// that passes its checks again on `world` (a hold otherwise).
+    #[allow(clippy::too_many_arguments)]
+    fn end_identify(
+        &mut self,
+        spec: &IntentSpec,
+        uid: &Uid,
+        run: &crate::identify::Run,
+        inputs: WorldSnapshot,
+        kind: crate::identify::EndKind,
+        detail: String,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Result<IdentifyEvent, EngineError> {
+        let id = spec.id;
+        let cfg = self.policy.rules.clone();
+        let back = run
+            .resumes
+            .and_then(|m| self.intents.get(&m))
+            .filter(|m| crate::identify::resumable(m.spec().kind()))
+            .map(|m| crate::identify::return_spec(m.spec(), spec));
+        let (resumes, returns, checks, return_inputs) = match back {
+            Some(back) => {
+                let mut bi = world.for_intent_with(&back, terrain, &cfg);
+                self.identify(&mut bi);
+                self.fill_engine_facts(&back, &mut bi);
+                let checks = rules::evaluate(&back, &bi, &cfg);
+                let logged = self.log_inputs(&bi)?;
+                if rules::passed(&checks, back.kind()) {
+                    (Some(back.id), back.task.clone(), checks, Some(logged))
+                } else {
+                    (None, Task::Hold {}, checks, Some(logged))
+                }
+            }
+            None => (None, Task::Hold {}, Vec::new(), None),
+        };
+        let then = crate::identify::then_phrase(resumes, run.resumes, &returns, &checks);
+        let level = inputs.track_levels.get(&run.plan.track);
+        let step = crate::identify::Step::Ended {
+            outcome: kind,
+            detail: detail.clone(),
+            level: level.map(|l| l.level),
+            identity: inputs.tracks.get(&run.plan.track).and_then(|t| t.identity.clone()),
+            by: level.map(|l| l.by.clone()).unwrap_or_default(),
+            resumes,
+            returns: returns.clone(),
+            checks,
+        };
+        let logged = self.log_inputs(&inputs)?;
+        self.emit(EventBody::IdentifyStep {
+            intent: id,
+            uid: uid.clone(),
+            inputs: logged,
+            step,
+            return_inputs,
+        })?;
+        if let Some(r) = self.get_mut(id)?.identify_run_mut() {
+            r.ended = Some((kind, format!("{detail}; {then}")));
+        }
+        Ok(IdentifyEvent::Return(DispatchOrder {
+            intent: id,
+            task: returns,
+            uids: spec.uids.clone(),
+        }))
     }
 
     pub fn record_vehicle_event(
@@ -5937,6 +6178,11 @@ impl Engine {
         }
         if spec.kind() == TaskKind::Engage {
             intent.engagement_mut().preview = preview;
+        }
+        // rules 21: what an identify order is dispatched with: the plan its passing check laid out
+        if spec.kind() == TaskKind::Identify {
+            let plan = passed.then(|| crate::identify::plan(spec, &inputs, &self.policy.rules).ok()).flatten();
+            self.get_mut(spec.id)?.set_identify_plan(plan);
         }
         Ok((inputs, logged, results, passed))
     }
@@ -6251,6 +6497,7 @@ pub(crate) fn order_for(
     snapshot: Option<&engage::EngageSnapshot>,
     loiter_radius_m: Option<f64>,
     preload: Option<&engage::LostLinkPreload>,
+    identify: Option<&crate::identify::Plan>,
     rules: &crate::rules::RulesConfig,
 ) -> Result<Order, EngineError> {
     let id = spec.id;
@@ -6338,6 +6585,18 @@ pub(crate) fn order_for(
                 },
             })
         }
+        // rules 21: flown as the orbit its last passing check laid out
+        Task::Identify { .. } => {
+            let plan = identify.ok_or_else(|| not("no identify plan from its checks"))?;
+            Order::Vehicles(DispatchOrder {
+                intent: id,
+                task: Task::Orbit {
+                    center: plan.center,
+                    radius_m: plan.radius_m,
+                },
+                uids: spec.uids.clone(),
+            })
+        }
         _ => Order::Vehicles(DispatchOrder {
             intent: id,
             task: spec.task.clone(),
@@ -6348,11 +6607,12 @@ pub(crate) fn order_for(
 
 /// The `intent.dispatched` event for `order`: the approved task and vehicles, and the space
 /// or engagement order handed on.
-pub(crate) fn dispatched_event(spec: &IntentSpec, order: &Order) -> EventBody {
+pub(crate) fn dispatched_event(spec: &IntentSpec, order: &Order, identify: Option<&crate::identify::Dispatch>) -> EventBody {
     EventBody::IntentDispatched {
         intent: spec.id,
         task: spec.task.clone(),
         uids: spec.uids.clone(),
+        identify: identify.filter(|_| spec.kind() == TaskKind::Identify).cloned().map(Box::new),
         space: match order {
             Order::Vehicles(_) | Order::Engage(_) => None,
             Order::Collect(c) => Some(SpaceOrder::Collect(c.clone())),
@@ -6642,7 +6902,7 @@ pub(crate) fn op_state_mismatch(
     if op_state_owner(spec, uid).is_err() {
         return Some("op state for a vehicle or resource the intent was not dispatched to");
     }
-    let vehicle_task = queue::queueable(spec.kind());
+    let vehicle_task = queue::vehicle_task(spec.kind());
     if start.ahead && (!vehicle_task || op != queue::STARTING_OP) {
         return Some("op state logged ahead that is not a vehicle task's start");
     }

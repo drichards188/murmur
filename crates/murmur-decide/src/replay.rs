@@ -451,7 +451,7 @@ impl Restores {
         if spec.kind() == TaskKind::Engage && rules.carry_followups() {
             return self.may_owe_for(spec, now);
         }
-        if !queue::queueable(spec.kind()) {
+        if !queue::vehicle_task(spec.kind()) {
             return BTreeMap::new();
         }
         spec.uids
@@ -1600,6 +1600,10 @@ struct Tracked {
     /// `unconfirmed`, or started): its op never ends `requeued` after that (the bridge ends
     /// it `unconfirmed`: it may be running; a followed one fails).
     start_went_out: BTreeSet<Uid>,
+    /// Rules 21, an identify order: the plan its last passing check lays out, recomputed.
+    identify_plan: Option<crate::identify::Plan>,
+    /// Rules 21: once dispatched, its run as the log has it (orbit, deadline, return, end).
+    identify_run: Option<crate::identify::Run>,
 }
 
 impl Tracked {
@@ -1669,6 +1673,8 @@ impl Tracked {
             confirming: BTreeSet::new(),
             started_ahead: BTreeSet::new(),
             start_went_out: BTreeSet::new(),
+            identify_plan: None,
+            identify_run: None,
             preload: None,
             preload_set: None,
             restore_confirmed: false,
@@ -2669,6 +2675,12 @@ fn replay_inner<S: AsRef<str>>(
                         tr.platforms.insert(u.clone(), p.id.clone());
                     }
                 }
+                // rules 21: what an identify order is dispatched with
+                if tr.spec.kind() == TaskKind::Identify {
+                    tr.identify_plan = again_passed
+                        .then(|| crate::identify::plan(&tr.spec, &inputs, &pol.rules).ok())
+                        .flatten();
+                }
                 tr.last_inputs = Some(Box::new(inputs));
                 tr.check_window = Some((before_t, e.t));
                 tr.last_results = again;
@@ -3165,6 +3177,25 @@ fn replay_inner<S: AsRef<str>>(
                 to,
                 reason,
             } => {
+                // rules 21: an identify order is complete only once its look identified its track,
+                // and ends (complete or failed) by the bridge's report only once its look ended or
+                // by a failure
+                if let Some(tr) = intents.get(intent)
+                    && tr.spec.kind() == TaskKind::Identify
+                    && let Some(run) = &tr.identify_run
+                {
+                    let identified = matches!(run.ended, Some((crate::identify::EndKind::Identified, _)));
+                    if *transition == Transition::Complete && !identified {
+                        bad(
+                            &mut r,
+                            e,
+                            Some(*intent),
+                            "an identify order complete although its look did not identify its track",
+                            json(&run.ended),
+                            "identify.step ended identified".into(),
+                        );
+                    }
+                }
                 // rules 15 (murmur-zq3): a void that says a newer order superseded it names one
                 // the log has, newer, on that vehicle (an engagement's stop is checked by its
                 // cause, `engage.stopped`)
@@ -3477,11 +3508,55 @@ fn replay_inner<S: AsRef<str>>(
                 intent,
                 task,
                 uids,
+                identify: identify_dispatch,
                 space: order,
                 engage: engage_order,
                 inputs: reach_inputs,
                 reach,
             } => {
+                // rules 21: an identify order's plan (its last passing check's), its deadline from
+                // now, and the order it replaces on its vehicle (the newest there, of a kind it
+                // goes back to, under way or done)
+                let identify_want = match intents.get(intent) {
+                    Some(tr) if tr.spec.kind() == TaskKind::Identify => tr.identify_plan.clone().map(|plan| {
+                        let resumes = tr
+                            .spec
+                            .uids
+                            .first()
+                            .and_then(|u| newest_on.get(u))
+                            .copied()
+                            .filter(|m| {
+                                intents.get(m).is_some_and(|mt| {
+                                    crate::identify::resumable(mt.spec.kind()) && matches!(mt.state, State::Dispatched | State::Done)
+                                })
+                            });
+                        crate::identify::Dispatch {
+                            deadline_t: crate::identify::deadline(e.t, &plan),
+                            plan,
+                            resumes,
+                        }
+                    }),
+                    _ => None,
+                };
+                if identify_dispatch.as_deref() != identify_want.as_ref() {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "an identify order's dispatch differs from its plan, deadline or the order it replaces",
+                        json(identify_dispatch),
+                        json(&identify_want),
+                    );
+                }
+                if let Some(tr) = intents.get_mut(intent) {
+                    tr.identify_run = identify_want.map(|d| crate::identify::Run {
+                        plan: d.plan,
+                        deadline_t: d.deadline_t,
+                        resumes: d.resumes,
+                        held: None,
+                        ended: None,
+                    });
+                }
                 if let Some(inputs) = reach_inputs {
                     check_restore_owed(&mut r, e, *intent, &inputs.restore_owed, &intents, &restores, policy.as_ref());
                     check_expended(&mut r, e, *intent, &inputs.expended, &intents, &restores, policy.as_ref());
@@ -6144,6 +6219,153 @@ fn replay_inner<S: AsRef<str>>(
                 r.flags_resolved += 1;
                 ident.step(e.t, &e.body);
             }
+            EventBody::IdentifyStep {
+                intent,
+                uid,
+                inputs,
+                step,
+                return_inputs,
+            } => {
+                check_ident_inputs(&mut r, e, Some(*intent), &inputs.tracks, &ident, policy.as_ref());
+                check_lost_inputs(&mut r, e, *intent, inputs, &lost, &ident, &intents, &mut pictured, policy.as_ref());
+                let Some(pol) = &policy else {
+                    bad(&mut r, e, Some(*intent), "identify step without run.started", String::new(), String::new());
+                    continue;
+                };
+                let Some(tr) = intents.get(intent) else {
+                    bad(&mut r, e, Some(*intent), "identify step of an unknown intent", String::new(), String::new());
+                    continue;
+                };
+                let (spec, run) = (tr.spec.clone(), tr.identify_run.clone());
+                let Some(run) = run.filter(|run| {
+                    spec.kind() == TaskKind::Identify && tr.state == State::Dispatched && run.ended.is_none() && spec.uids.first() == Some(uid)
+                }) else {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "identify step of an order not looking (not a dispatched identify order on that vehicle, or its look ended)",
+                        json(&(tr.state, &tr.identify_run)),
+                        String::new(),
+                    );
+                    continue;
+                };
+                if newest_on.get(uid) != Some(intent) {
+                    bad(&mut r, e, Some(*intent), "identify step of an order a newer one replaced", json(&newest_on.get(uid)), intent.to_string());
+                }
+                let w = match resolve(inputs, &areas, &answers) {
+                    Ok(w) => w,
+                    Err(why) => {
+                        bad(&mut r, e, Some(*intent), why, String::new(), String::new());
+                        continue;
+                    }
+                };
+                let cfg = &pol.rules;
+                let mut run = run;
+                match step {
+                    crate::identify::Step::Recentred { center, radius_m, checks }
+                    | crate::identify::Step::Held { center, radius_m, checks, .. } => {
+                        let held = matches!(step, crate::identify::Step::Held { .. });
+                        let due = crate::identify::recentre(&run.plan, &w, cfg);
+                        if due != Some(*center) || *radius_m != run.plan.radius_m {
+                            bad(
+                                &mut r,
+                                e,
+                                Some(*intent),
+                                "an identify order's orbit moved other than its track's position now",
+                                json(&(center, radius_m)),
+                                json(&(due, run.plan.radius_m)),
+                            );
+                        }
+                        let moved = crate::identify::orbit_spec(&spec, *center, *radius_m);
+                        let again = crate::engine::recentre_checks(&moved, &w, cfg);
+                        let passed = rules::passed(&again, TaskKind::Orbit);
+                        if &again != checks || passed == held {
+                            bad(&mut r, e, Some(*intent), "an identify order's moved orbit's checks differ", json(checks), json(&again));
+                        }
+                        if let crate::identify::Step::Held { reason, .. } = step {
+                            if *reason != crate::identify::failing(&again) {
+                                bad(&mut r, e, Some(*intent), "an identify order held for another reason", reason.clone(), crate::identify::failing(&again));
+                            }
+                            run.held = Some(reason.clone());
+                        } else {
+                            run.plan.center = *center;
+                            run.held = None;
+                        }
+                    }
+                    crate::identify::Step::Ended {
+                        outcome,
+                        detail,
+                        level,
+                        identity,
+                        by,
+                        resumes,
+                        returns,
+                        checks,
+                    } => {
+                        let want = crate::identify::outcome(&run.plan.track, &w, run.deadline_t);
+                        let lv = w.track_levels.get(&run.plan.track);
+                        let facts = (
+                            lv.map(|l| l.level),
+                            w.tracks.get(&run.plan.track).and_then(|t| t.identity.clone()),
+                            lv.map(|l| l.by.clone()).unwrap_or_default(),
+                        );
+                        if want.as_ref() != Some(&(*outcome, detail.clone())) || facts != (*level, identity.clone(), by.clone()) {
+                            bad(
+                                &mut r,
+                                e,
+                                Some(*intent),
+                                "an identify order's look ended other than its picture says",
+                                json(&(outcome, detail, level, identity, by)),
+                                json(&(want, facts)),
+                            );
+                        }
+                        // what it goes back to: the order it replaced, re-checked on the return's
+                        // inputs, else a hold
+                        let back = run
+                            .resumes
+                            .and_then(|m| intents.get(&m))
+                            .filter(|m| crate::identify::resumable(m.spec.kind()))
+                            .map(|m| crate::identify::return_spec(&m.spec, &spec));
+                        let (want_resumes, want_returns, want_checks) = match (&back, return_inputs) {
+                            (Some(b), Some(ri)) => match resolve(ri, &areas, &answers) {
+                                Ok(bw) => {
+                                    let c = rules::evaluate(b, &bw, cfg);
+                                    if rules::passed(&c, b.kind()) {
+                                        (Some(b.id), b.task.clone(), c)
+                                    } else {
+                                        (None, Task::Hold {}, c)
+                                    }
+                                }
+                                Err(why) => {
+                                    bad(&mut r, e, Some(*intent), why, String::new(), String::new());
+                                    (None, Task::Hold {}, Vec::new())
+                                }
+                            },
+                            (Some(_), None) => {
+                                bad(&mut r, e, Some(*intent), "an identify order's return not re-checked", String::new(), "return_inputs".into());
+                                (None, Task::Hold {}, Vec::new())
+                            }
+                            (None, _) => (None, Task::Hold {}, Vec::new()),
+                        };
+                        if (*resumes, returns, checks) != (want_resumes, &want_returns, &want_checks) {
+                            bad(
+                                &mut r,
+                                e,
+                                Some(*intent),
+                                "an identify order went back to other than the order it replaced, re-checked",
+                                json(&(resumes, returns, checks)),
+                                json(&(want_resumes, &want_returns, &want_checks)),
+                            );
+                        }
+                        let then = crate::identify::then_phrase(*resumes, run.resumes, returns, checks);
+                        run.ended = Some((*outcome, format!("{detail}; {then}")));
+                    }
+                }
+                if let Some(tr) = intents.get_mut(intent) {
+                    tr.identify_run = Some(run);
+                }
+            }
             EventBody::AgentAction { .. } => {}
             // a display event decides nothing; it must be under the operator's own session
             // and about an intent the log holds
@@ -8093,9 +8315,10 @@ fn check_dispatch(
         tr.snapshot.as_deref(),
         tr.loiter_radius_m,
         tr.preload.as_ref(),
+        tr.identify_plan.as_ref(),
         &pol.rules,
     ) {
-        Ok(o) => dispatched_event(&tr.spec, &o),
+        Ok(o) => dispatched_event(&tr.spec, &o, None),
         Err(err) => {
             bad(
                 r,
@@ -8679,7 +8902,11 @@ fn check_lost_inputs(
     };
     pictured.read(r, e, Some(id), inputs.t, &inputs.tracks);
     let engage = intents.get(&id).is_some_and(|tr| tr.spec.kind() == TaskKind::Engage);
-    let (want, want_accepted) = if engage {
+    // rules 21: an identify order reads its track's loss from the lost contacts
+    let identify = pol.rules.identify() && intents.get(&id).is_some_and(|tr| tr.spec.kind() == TaskKind::Identify);
+    let (want, want_accepted) = if identify {
+        (lost.in_force_for(&inputs.tracks, ident, pol.rules.rule_id()), BTreeMap::new())
+    } else if engage {
         (
             // in force, and those whose confirmation this picture voids (the claimant gone,
             // suspect or declared in it), logged as reinstated yet or not

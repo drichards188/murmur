@@ -550,15 +550,15 @@ def test_events_files_merge_into_one(tmp_path: Path):
 
 def test_the_watch_policy_is_the_shipped_one_plus_agent_tasking():
     """sim/situations/policies/watch.toml is sim/policy.toml with one tier added before the
-    default: an agent's orbit, patrol or track goes to a human. Everything else, the
-    engagement tier and identification included, is the shipped policy."""
+    default: an agent's orbit, patrol, track or identify order goes to a human. Everything
+    else, the engagement tier and identification included, is the shipped policy."""
     sim = tomllib.loads((REPO / "sim" / "policy.toml").read_text())
     pol = tomllib.loads((S.SITUATIONS / "policies" / "watch.toml").read_text())
     added = [t for t in pol["tier"] if t["name"] == "agent-tasking"]
     assert added == [
         {
             "name": "agent-tasking",
-            "when": {"source": "agent", "kind": ["orbit", "patrol", "track"]},
+            "when": {"source": "agent", "kind": ["orbit", "patrol", "track", "identify"]},
             "tier": "human",
             "reason": "an AI's proposal to move one of our vehicles waits for the operator on watch",
         }

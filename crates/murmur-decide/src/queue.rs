@@ -214,12 +214,20 @@ pub fn queueable(kind: TaskKind) -> bool {
     )
 }
 
+/// A vehicle task whose start the task layer logs ahead of sending it (rules 7) and which a
+/// vehicle owed its own lost-link values waits for: the kinds the queue holds and (rules 21) an
+/// identify order, flown as an orbit but never queued (its track moves on) and never carried over
+/// a restart.
+pub fn vehicle_task(kind: TaskKind) -> bool {
+    queueable(kind) || kind == TaskKind::Identify
+}
+
 /// Whether the task reaches the vehicle as a mission upload (and so needs a link that can
 /// carry one): orbit and patrol, and rtl on a sub (ArduSub has no RTL mode: the task layer
 /// flies a mission home). Hold, rtl elsewhere and track are single commands.
 pub fn needs_mission(kind: TaskKind, autopilot: Option<AutopilotKind>) -> bool {
     match kind {
-        TaskKind::Orbit | TaskKind::Patrol => true,
+        TaskKind::Orbit | TaskKind::Patrol | TaskKind::Identify => true,
         TaskKind::Rtl => autopilot == Some(AutopilotKind::Sub),
         _ => false,
     }

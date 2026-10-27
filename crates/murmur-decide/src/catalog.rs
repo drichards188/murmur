@@ -21,6 +21,17 @@ pub enum Domain {
     Subsurface,
 }
 
+impl Domain {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Domain::Air => "air",
+            Domain::Ground => "ground",
+            Domain::Surface => "surface",
+            Domain::Subsurface => "subsurface",
+        }
+    }
+}
+
 /// Which autopilot a vehicle runs (or imitates), which sets what it can be tasked with.
 /// Mirrors `KINDS` in the Python bridge's `tasks.py`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -48,7 +59,7 @@ impl AutopilotKind {
             | AutopilotKind::Blimp
             | AutopilotKind::Boat
             | AutopilotKind::Ugv
-            | AutopilotKind::Sub => &[Orbit, Patrol, Hold, Rtl, Engage],
+            | AutopilotKind::Sub => &[Orbit, Patrol, Hold, Rtl, Engage, Identify],
             AutopilotKind::Tracker => &[Track, Hold],
             AutopilotKind::Drifter => &[],
         }

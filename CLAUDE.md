@@ -281,6 +281,15 @@ meaningful.
   contacts process `impact_t` on its own clock and `effect::InFlight` holds the effect until then
   (live and headless); observation starts at the impact (`engage::struck`). Without a munition
   nothing changes. Scenarios 106-107; tamper `edit_munition`.
+- Rules 21 (`IDENTIFY_SINCE`, bd murmur-bia): `identify` names one track and one vehicle; the
+  engine flies it as an orbit around the track at its EO/IR's identification standoff
+  (`identify::plan`: an eighth of the detection reach, `IDENTIFY_PX_SHARE`), moves the orbit with
+  the track (`identify.step` recentred, logged before the follow goes out), ends it identified,
+  lost or at its deadline, and sends the vehicle back to the order it replaced, re-checked, or a
+  hold, all under the identify's own id. Its look phase never finishes on an op `done` (an orbit
+  is done once established): only `Engine::step_identify` ends it. The world's `track_levels`
+  (the tracker's identity level per track) is what ends it: a driver that sets a track's identity
+  sets its level too. Never queued, never carried over a restart.
 - Predicted link coverage (docs/LINK-COVERAGE.md, bd murmur-hei): `GET`/`POST
   /api/links/coverage`, `link_coverage` in dry runs and `preview_intent`, the MCP tool
   `get_link_coverage`, the console's Links layer and the order form's dry run (`web/src/

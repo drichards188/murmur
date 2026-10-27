@@ -1,0 +1,47 @@
+# Rules 21 (bd murmur-bia): the boat PUMA 1 is sent to identify goes unseen from 5 s on, and the
+# tracker drops it 180 s later (a lost contact, rules 16). The identify order ends then, failed
+# (the track is a lost contact), before its deadline, and the Puma holds where it is: no order to
+# go back to.
+title = "An identify order ends failed when its track is lost"
+invariant = "identify"
+attack = "the track goes unseen and is dropped"
+expect = "failed"
+expect_identify = ["ended failed: track T-0001 is a lost contact (the tracker dropped it); holding: no order to go back to"]
+end_s = 200
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "puma-1"
+platform = "puma"           # EO/IR 4 km (range_m), a hand-launched fixed wing
+at = [-122.4930, 37.8210]   # west of the bridge, mid-strait
+alt_m = 120
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]
+affiliation = "unknown"
+identity = "small_craft"
+identity_confidence = 0.7
+sources = ["3:radar"]
+level = "recognise"
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "identify"
+uids = ["puma-1"]
+track = "T-0001"
+
+[[step]]
+at_s = 5
+action = "track"
+id = "T-0001"
+silent = true
+
+[[step]]
+at_s = 186                  # 180 s unseen: the tracker drops it
+action = "drop_track"
+track = "T-0001"

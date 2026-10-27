@@ -19,7 +19,9 @@
 # Conditions:
 #   kind = [...]                  task kind is one of: orbit, patrol, hold, rtl, track,
 #                                 collect (satellite imagery/SAR), cover (SATCOM or GNSS),
-#                                 engage (Phase E: an abstract effect on a declared-hostile track)
+#                                 engage (Phase E: an abstract effect on a declared-hostile track),
+#                                 identify (rules 21: one vehicle sent to identify one track,
+#                                 flown as an orbit around it; routed as an orbit is)
 #   armed = true|false            some target / no target is on a platform with armed = true
 #                                 in sim/platforms.toml (unknown platform counts as armed)
 #   leaves_approved_area = bool   some vehicle's route leaves the "approved" areas in

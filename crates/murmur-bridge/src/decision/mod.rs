@@ -2914,6 +2914,10 @@ fn task_request(task: &Task, uids: &[DUid]) -> Result<TaskRequest, String> {
         Task::Engage { .. } => {
             return Err("an engagement runs through its executor (decision::engage)".into());
         }
+        // rules 21: dispatched as the orbit the engine laid out (its DispatchOrder's task)
+        Task::Identify { .. } => {
+            return Err("an identify order is flown as the orbit its dispatch lays out".into());
+        }
     };
     Ok(TaskRequest {
         task: name.into(),

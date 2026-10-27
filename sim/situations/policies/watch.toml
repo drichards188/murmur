@@ -1,6 +1,6 @@
 # The watch policy for situations (sim/situations/README.md): sim/policy.toml with one tier
 # added before the default, `agent-tasking`, so an AI's proposal to move one of our vehicles
-# (an orbit, a patrol, a track) waits for the operator, however routine. Everything else is the
+# (an orbit, a patrol, a track; rules 21: an identify) waits for the operator, however routine. Everything else is the
 # shipped policy, and a test holds them together (eval/tests/test_situation.py): an operator's
 # own order is still approved when sent, hold and rtl are still automatic, the engagement tier
 # and its floor are the shipped ones. A situation that wants the shipped behaviour (an agent's
@@ -27,7 +27,9 @@
 # Conditions:
 #   kind = [...]                  task kind is one of: orbit, patrol, hold, rtl, track,
 #                                 collect (satellite imagery/SAR), cover (SATCOM or GNSS),
-#                                 engage (Phase E: an abstract effect on a declared-hostile track)
+#                                 engage (Phase E: an abstract effect on a declared-hostile track),
+#                                 identify (rules 21: one vehicle sent to identify one track,
+#                                 flown as an orbit around it; routed as an orbit is)
 #   armed = true|false            some target / no target is on a platform with armed = true
 #                                 in sim/platforms.toml (unknown platform counts as armed)
 #   leaves_approved_area = bool   some vehicle's route leaves the "approved" areas in
@@ -261,7 +263,7 @@ submitter_authorizes = true
 
 [[tier]]
 name = "agent-tasking"
-when = { source = "agent", kind = ["orbit", "patrol", "track"] }
+when = { source = "agent", kind = ["orbit", "patrol", "track", "identify"] }
 tier = "human"
 reason = "an AI's proposal to move one of our vehicles waits for the operator on watch"
 

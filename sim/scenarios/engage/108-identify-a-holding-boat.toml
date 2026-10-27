@@ -1,0 +1,73 @@
+# Rules 21 (bd murmur-bia): an operator sends PUMA 1 to identify a small boat holding west of the
+# bridge that the radar only recognises (a small craft, no AIS). The engine lays the order out as
+# an orbit around the boat at a standoff its EO/IR identifies from (an eighth of its 4,000 m reach
+# here, the runner's legacy reaches: about 500 m slant, 70 % of it at 120 m height), judged as
+# any orbit, and dispatches it. Once a look identifies the boat the order ends done, and with no
+# order to go back to the Puma holds where it is. First, the radar-only MQ-9B is refused the same
+# order: it carries no EO/IR to identify with.
+title = "An identify order ends when its track is identified"
+invariant = "identify"
+attack = "none: the order as designed"
+expect = "done"
+expect_identify = ["ended done: track T-0001 identified as fishing_vessel by puma-1:eo_ir; holding: no order to go back to"]
+end_s = 40
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "puma-1"
+platform = "puma"           # EO/IR 4 km (range_m), a hand-launched fixed wing
+at = [-122.4930, 37.8210]   # west of the bridge, mid-strait
+alt_m = 120
+
+[[vehicle]]
+uid = "reaper-r"
+platform = "mq9b_radar"     # the scoring v2 variant: radar and AIS only
+at = [-122.5050, 37.8150]
+alt_m = 3000
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, about 1 km south of the Puma
+affiliation = "unknown"
+identity = "small_craft"
+identity_confidence = 0.7
+sources = ["3:radar"]
+level = "recognise"
+
+[[step]]
+at_s = 0                    # a radar-only aircraft has nothing to identify with
+action = "task"
+by = "op-1"
+task = "identify"
+uids = ["reaper-r"]
+track = "T-0001"
+
+[[step]]
+at_s = 0
+action = "expect"
+task_state = "rejected"
+task_reason = "carries no EO/IR that reaches a contact in the surface domain"
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "identify"
+uids = ["puma-1"]
+track = "T-0001"
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "dispatched"
+
+[[step]]
+at_s = 30                   # a look identifies it
+action = "track"
+id = "T-0001"
+identity = "fishing_vessel"
+identity_confidence = 0.9
+level = "identify"
+level_by = ["puma-1:eo_ir"]

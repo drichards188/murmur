@@ -39,6 +39,11 @@ pub enum TaskKind {
     /// Phase E: pair a declared-hostile track with one armed platform for an abstract effect
     /// (a point, a radius, a time). Consequential: every rule must evaluate.
     Engage,
+    /// Rules 21 ([`crate::rules::IDENTIFY_SINCE`]): send one vehicle to identify one track: it
+    /// orbits the track at a standoff its camera identifies from, following it, its camera
+    /// looking for it first, until the track is identified, lost or out of time
+    /// ([`crate::identify`]); then it goes back to the order it was on.
+    Identify,
 }
 
 impl TaskKind {
@@ -52,6 +57,7 @@ impl TaskKind {
             TaskKind::Collect => "collect",
             TaskKind::Cover => "cover",
             TaskKind::Engage => "engage",
+            TaskKind::Identify => "identify",
         }
     }
 
@@ -141,6 +147,16 @@ pub enum Task {
         window: Option<EngageWindow>,
         fallback: Fallback,
     },
+    /// Rules 21: have the one vehicle in `uids` identify the track `track` (a perception
+    /// track id): the engine lays out an orbit around the track's position at a standoff from
+    /// which the vehicle's EO/IR identifies it (`standoff_m` when an operator sets one), moves it
+    /// with the track, and ends the order once the track is identified, lost or out of time
+    /// ([`crate::identify`]).
+    Identify {
+        track: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        standoff_m: Option<f64>,
+    },
 }
 
 impl Task {
@@ -154,6 +170,7 @@ impl Task {
             Task::Collect { .. } => TaskKind::Collect,
             Task::Cover { .. } => TaskKind::Cover,
             Task::Engage { .. } => TaskKind::Engage,
+            Task::Identify { .. } => TaskKind::Identify,
         }
     }
 
@@ -202,13 +219,15 @@ impl Task {
                 closed: true,
             }),
             // engage: the point is predicted from the world (crate::engage::preview), not
-            // committed to by the spec
+            // committed to by the spec; identify: the orbit is laid out around the track's
+            // position (crate::identify::orbit_spec)
             Task::Hold {}
             | Task::Rtl {}
             | Task::Track { .. }
             | Task::Collect { .. }
             | Task::Cover { .. }
-            | Task::Engage { .. } => None,
+            | Task::Engage { .. }
+            | Task::Identify { .. } => None,
         }
     }
 
@@ -303,6 +322,16 @@ impl Task {
                     && from >= w.until
                 {
                     return bad("engage window must end after it starts");
+                }
+            }
+            Task::Identify { track, standoff_m } => {
+                if track.trim().is_empty() {
+                    return bad("identify needs a track id");
+                }
+                if let Some(r) = standoff_m
+                    && !(r.is_finite() && *r > 0.0)
+                {
+                    return bad("standoff_m must be a positive number of metres");
                 }
             }
             _ => {}
@@ -422,6 +451,11 @@ impl Proposal {
         if matches!(self.task, Task::Engage { .. }) && self.uids.len() != 1 {
             return Err(ProposalError::BadParams(
                 "engage names exactly one armed platform".into(),
+            ));
+        }
+        if matches!(self.task, Task::Identify { .. }) && self.uids.len() != 1 {
+            return Err(ProposalError::BadParams(
+                "identify names exactly one vehicle".into(),
             ));
         }
         if let Task::Track { target } = &self.task
@@ -766,6 +800,14 @@ pub struct Intent {
     ops: BTreeMap<Uid, String>,
     #[serde(skip)]
     op_details: BTreeMap<Uid, String>,
+    /// Rules 21, an identify order: the plan its last passing check laid out (what it is
+    /// dispatched with).
+    #[serde(skip)]
+    identify_plan: Option<Box<crate::identify::Plan>>,
+    /// Rules 21, a dispatched identify order: the orbit it flies, its deadline, the order it
+    /// goes back to, how its look ended.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    identify: Option<Box<crate::identify::Run>>,
 }
 
 /// An intent carried over from the previous run: where from, and each vehicle's last op
@@ -808,6 +850,8 @@ impl Intent {
             start_went_out: BTreeSet::new(),
             ops: BTreeMap::new(),
             op_details: BTreeMap::new(),
+            identify_plan: None,
+            identify: None,
         }
     }
 
@@ -944,6 +988,28 @@ impl Intent {
             .map(|a| a.by)
             .collect()
     }
+    /// Rules 21: the plan an identify order's last passing check laid out.
+    pub fn identify_plan(&self) -> Option<&crate::identify::Plan> {
+        self.identify_plan.as_deref()
+    }
+
+    pub(crate) fn set_identify_plan(&mut self, plan: Option<crate::identify::Plan>) {
+        self.identify_plan = plan.map(Box::new);
+    }
+
+    /// Rules 21: a dispatched identify order's run (its orbit, deadline, return, end).
+    pub fn identify_run(&self) -> Option<&crate::identify::Run> {
+        self.identify.as_deref()
+    }
+
+    pub(crate) fn identify_run_mut(&mut self) -> Option<&mut crate::identify::Run> {
+        self.identify.as_deref_mut()
+    }
+
+    pub(crate) fn set_identify_run(&mut self, run: crate::identify::Run) {
+        self.identify = Some(Box::new(run));
+    }
+
     pub(crate) fn engagement_mut(&mut self) -> &mut Engagement {
         self.engagement.get_or_insert_with(Default::default)
     }

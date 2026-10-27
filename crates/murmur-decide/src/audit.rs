@@ -345,6 +345,10 @@ pub enum EventBody {
         intent: IntentId,
         task: Task,
         uids: Vec<Uid>,
+        /// Rules 21, an identify order: the orbit it is flown as, as its last passing check laid
+        /// it out, its deadline and the order it goes back to (replay recomputes each).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        identify: Option<Box<crate::identify::Dispatch>>,
         /// Collect and cover: the order handed to the bridge (absent for vehicle tasks).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<SpaceOrder>,
@@ -924,6 +928,23 @@ pub enum EventBody {
     /// (`decide`), with what was visible at the time. Additive: replay verifies the chain
     /// through it and makes no decision from it. The evaluation joins it with the approval
     /// events to relate decision latency to the information shown.
+    /// Rules 21 ([`crate::identify`]): a step of dispatched identify order `intent` on its
+    /// vehicle `uid`, on the picture logged here (`inputs`): its orbit moved with the track
+    /// (`recentred`, sent as a follow of the order after this line) or held where it is (`held`,
+    /// a check failed on the moved one), or its look ended (`ended`: identified, lost or out of
+    /// time) and the vehicle sent back to the order it replaced, re-checked on `return_inputs`,
+    /// or held. Replay recomputes each from its inputs.
+    #[serde(rename = "identify.step")]
+    IdentifyStep {
+        intent: IntentId,
+        uid: Uid,
+        inputs: LoggedInputs,
+        #[serde(flatten)]
+        step: crate::identify::Step,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        return_inputs: Option<LoggedInputs>,
+    },
+
     #[serde(rename = "operator.view")]
     OperatorView {
         operator: OperatorId,
