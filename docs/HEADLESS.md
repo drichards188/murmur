@@ -1265,7 +1265,11 @@ nothing), and no Harbor watch order takes an aircraft through a no-go area. The 
 was re-taken for rules 22's audit log alone: `run.started` names 22, and every track level its
 decisions log carries `own_t` and `conflict` (16.4); with those taken out the log is byte for
 byte the one before (its digest `e5c79bc1...` again), the same 145 events, proposals and
-operator decisions. No episode has exercised a routed leg headless yet.
+operator decisions. No episode has exercised a routed leg headless yet. Rules 23 (an identify
+order ends on its own vehicle's look) re-took it again for its log alone: `run.started` names 23,
+and every track level carries each vehicle's own identification (`own`); with those taken out the
+log is the rules 22 one byte for byte (`ab3c2b31...`). Nothing in the episode sends an identify
+order.
 
 ### 17.3 The bake tool
 
