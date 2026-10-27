@@ -50,6 +50,8 @@ fn scene(platform: &str) -> WorldSnapshot {
         TrackLevel {
             level: Level::Recognise,
             by: Vec::new(),
+            own_t: None,
+            conflict: None,
         },
     );
     w
@@ -112,10 +114,17 @@ fn an_operators_standoff_replaces_the_engines() {
 #[test]
 fn the_order_is_refused_saying_why() {
     let why = |w: &WorldSnapshot, c: &RulesConfig| identify::plan(&spec(None), w, c).unwrap_err();
-    // identified already
+    // identified already: refused under rules 21; from rules 22 a second look is an order too
     let mut w = scene("puma");
     w.track_levels.get_mut("T-0001").unwrap().level = Level::Identify;
-    assert!(why(&w, &cfg()).contains("is identified already"), "{}", why(&w, &cfg()));
+    let mut v21 = cfg();
+    v21.rules_version = IDENTIFY_SINCE;
+    assert!(why(&w, &v21).contains("is identified already"), "{}", why(&w, &v21));
+    assert!(identify::plan(&spec(None), &w, &cfg()).is_ok());
+    // rules 22: a contact out of view is not live
+    let mut w = scene("puma");
+    w.t = T0.plus_ms(30_000);
+    assert!(why(&w, &cfg()).contains("is out of view"), "{}", why(&w, &cfg()));
     // not in the picture
     let mut w = scene("puma");
     w.tracks.clear();
@@ -129,7 +138,7 @@ fn the_order_is_refused_saying_why() {
     // the rule says so, and the vehicle rules on the orbit do not run without a plan
     let mut w = scene("puma");
     w.track_levels.get_mut("T-0001").unwrap().level = Level::Identify;
-    let checks = rules::evaluate(&spec(None), &w, &cfg());
+    let checks = rules::evaluate(&spec(None), &w, &v21);
     let r = checks.iter().find(|c| c.rule == RuleId::Identify).unwrap();
     assert_eq!(r.outcome, Outcome::Fail);
     assert!(!checks.iter().any(|c| c.rule == RuleId::Geofence));
@@ -151,24 +160,37 @@ fn a_planned_identify_is_judged_as_its_orbit() {
 fn the_look_ends_identified_lost_or_out_of_time() {
     let deadline = T0.plus_ms(60_000);
     let w = scene("puma");
-    assert_eq!(identify::outcome("T-0001", &w, deadline), None);
+    assert_eq!(identify::outcome("T-0001", &w, deadline, None), None);
+    // rules 22: only a fresh identification by our own sensors, after the order went out
+    let sent = T0.plus_ms(1_000);
+    let mut old = w.clone();
+    old.track_levels.insert("T-0001".into(), TrackLevel { level: Level::Identify, by: vec!["1:ais".into()], own_t: None, conflict: None });
+    assert_eq!(identify::outcome("T-0001", &old, deadline, Some((sent, Some("ferry (identify)")))), None);
+    let mut fresh = old.clone();
+    fresh.track_levels.get_mut("T-0001").unwrap().own_t = Some(T0.plus_ms(5_000));
+    fresh.track_levels.get_mut("T-0001").unwrap().conflict = Some("AIS says passenger but eo_ir classifies it as small_fast_boat".into());
+    let (k, why) = identify::outcome("T-0001", &fresh, deadline, Some((sent, Some("ferry (identify)")))).unwrap();
+    assert_eq!(k, EndKind::Identified);
+    assert!(why.contains("it contradicts its identity before, ferry (identify)"), "{why}");
     let mut done = w.clone();
     done.track_levels.insert(
         "T-0001".into(),
         TrackLevel {
             level: Level::Identify,
             by: vec!["puma-1:eo_ir".into()],
+            own_t: Some(T0),
+            conflict: None,
         },
     );
-    let (k, why) = identify::outcome("T-0001", &done, deadline).unwrap();
+    let (k, why) = identify::outcome("T-0001", &done, deadline, None).unwrap();
     assert_eq!(k, EndKind::Identified);
     assert!(why.contains("by puma-1:eo_ir"), "{why}");
     let mut gone = w.clone();
     gone.tracks.clear();
-    assert_eq!(identify::outcome("T-0001", &gone, deadline).unwrap().0, EndKind::Lost);
+    assert_eq!(identify::outcome("T-0001", &gone, deadline, None).unwrap().0, EndKind::Lost);
     let mut late = w.clone();
     late.t = deadline;
-    assert_eq!(identify::outcome("T-0001", &late, deadline).unwrap().0, EndKind::TimedOut);
+    assert_eq!(identify::outcome("T-0001", &late, deadline, None).unwrap().0, EndKind::TimedOut);
 }
 
 #[test]

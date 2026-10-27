@@ -1,0 +1,37 @@
+# Rules 22 (bd murmur-n6a): a recon UGV on a pier east of the bridge is sent to orbit on a pier to
+# the west; a causeway joins them round the north, and the straight way between them is water. A
+# ground vehicle keeps to land: its transit is routed along the causeway, clear of the water.
+title = "A UGV is routed round the water along the land"
+invariant = "domain"
+attack = "a transit straight across water"
+expect = "dispatched"
+expect_routed = ["routed around water at"]
+end_s = 6
+land = [
+  [[-122.4700, 37.8100], [-122.4660, 37.8100], [-122.4660, 37.8220], [-122.4700, 37.8220]],
+  [[-122.4900, 37.8100], [-122.4860, 37.8100], [-122.4860, 37.8220], [-122.4900, 37.8220]],
+  [[-122.4900, 37.8190], [-122.4660, 37.8190], [-122.4660, 37.8220], [-122.4900, 37.8220]],
+]
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "ugv-1"
+platform = "ugv_recon"
+at = [-122.4680, 37.8120]
+home = [-122.4880, 37.8110]       # its base on the western pier (a return home stays straight)
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["ugv-1"]
+center = [-122.4880, 37.8130]
+radius_m = 60
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "dispatched"

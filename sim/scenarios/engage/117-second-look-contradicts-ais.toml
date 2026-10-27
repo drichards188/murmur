@@ -1,0 +1,56 @@
+# Rules 22 (bd murmur-n6a, the owner's widening of the identify order): any live contact may be
+# looked at again, an identified one included. A boat holding west of the bridge carries AIS that
+# names it a fishing vessel, so the tracker has it identified (by AIS alone); an operator sends
+# PUMA 1 for a look with our own camera. The order does not end on the identity the boat already
+# had: it ends once our own sensors identify it after the order went out. Here the camera calls it
+# a patrol boat, the tracker raises its identity conflict as fusion does, and the order ends done,
+# saying the look contradicts the identity before. `--rules 21` refuses the order (identified
+# already).
+title = "A second look at an AIS-identified boat contradicts its AIS"
+invariant = "identify"
+attack = "none: a second look as designed"
+expect = "done"
+expect_identify = ["ended done: track T-0001 identified as patrol_boat by puma-1:eo_ir; it contradicts its identity before, fishing_vessel (identify): AIS says fishing_vessel; puma-1:eo_ir identifies patrol_boat"]
+end_s = 40
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "puma-1"
+platform = "puma"           # EO/IR 4 km (range_m), a hand-launched fixed wing
+at = [-122.4930, 37.8210]   # west of the bridge, mid-strait
+alt_m = 120
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, about 1 km south of the Puma
+affiliation = "unknown"
+identity = "fishing_vessel"
+identity_confidence = 0.9
+sources = ["ais"]
+level = "identify"
+level_by = ["ais"]          # identified by its AIS alone
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "identify"
+uids = ["puma-1"]
+track = "T-0001"
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "dispatched"
+
+[[step]]
+at_s = 30                   # our camera identifies it, and not as its AIS says
+action = "track"
+id = "T-0001"
+identity = "patrol_boat"
+identity_confidence = 0.8
+level = "identify"
+level_by = ["puma-1:eo_ir"]
+level_conflict = "AIS says fishing_vessel; puma-1:eo_ir identifies patrol_boat"

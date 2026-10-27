@@ -447,6 +447,9 @@ pub struct DispatchOrder {
     pub intent: IntentId,
     pub task: Task,
     pub uids: Vec<Uid>,
+    /// Rules 22: each vehicle's transit waypoints, the route a plan laid around the wrong surface
+    /// or a no-go area (flown before the task; a patrol's own routed legs are in its route).
+    pub via: BTreeMap<Uid, Vec<crate::geo::LonLat>>,
 }
 
 /// What [`Engine::dispatch_order`] hands the bridge: vehicle work for the task manager, or
@@ -4334,9 +4337,16 @@ impl Engine {
         if !self.policy.rules.lost_contacts() {
             w.track_ais.clear();
         }
-        // rules 21: a track's identity level is a fact only rules 21 read
+        // rules 21: a track's identity level is a fact only rules 21 read; rules 22: when our own
+        // sensors identified it and its conflict, facts only rules 22 read
         if !self.policy.rules.identify() {
             w.track_levels.clear();
+        }
+        if !self.policy.rules.identify_second_look() {
+            for l in w.track_levels.values_mut() {
+                l.own_t = None;
+                l.conflict = None;
+            }
         }
     }
 
@@ -5026,6 +5036,7 @@ impl Engine {
             intent.engagement().and_then(|e| e.loiter_radius_m),
             intent.engagement().and_then(|e| e.preload.as_ref()),
             intent.identify_plan(),
+            intent.route_plans(),
             &self.policy.rules,
         )?;
         let reason = match &order {
@@ -5043,6 +5054,14 @@ impl Engine {
                 plan: plan.clone(),
                 deadline_t: crate::identify::deadline(t, plan),
                 resumes: self.resumable_on(&uids),
+                // rules 22: a fresh identification after now ends it, compared with this
+                sent_t: self.policy.rules.identify_second_look().then_some(t),
+                before: if self.policy.rules.identify_second_look() {
+                    intent
+                        .last_check_inputs_identity(&plan.track)
+                } else {
+                    None
+                },
             }),
             _ => None,
         };
@@ -5069,6 +5088,8 @@ impl Engine {
                 resumes: d.resumes,
                 held: None,
                 ended: None,
+                sent_t: d.sent_t,
+                before: d.before,
             });
         }
         match &order {
@@ -5824,7 +5845,8 @@ impl Engine {
             let mut inputs = world.for_intent_with(&here, terrain, &cfg);
             self.identify(&mut inputs);
             self.fill_engine_facts(&spec, &mut inputs);
-            if let Some((kind, detail)) = crate::identify::outcome(&run.plan.track, &inputs, run.deadline_t) {
+            let second = run.sent_t.map(|t| (t, run.before.as_deref()));
+            if let Some((kind, detail)) = crate::identify::outcome(&run.plan.track, &inputs, run.deadline_t, second) {
                 out.push(self.end_identify(&spec, &uid, &run, inputs, kind, detail, world, terrain)?);
                 continue;
             }
@@ -5853,10 +5875,13 @@ impl Engine {
                     r.plan.center = center;
                     r.held = None;
                 }
+                // rules 22: the way to the moved orbit, routed as a transit
+                let (via, _) = crate::plan::dispatch_routes(&moved, &mi.route_plans);
                 out.push(IdentifyEvent::Recentre(DispatchOrder {
                     intent: id,
                     task: moved.task.clone(),
                     uids: spec.uids.clone(),
+                    via,
                 }));
             } else {
                 let reason = crate::identify::failing(&checks);
@@ -5906,6 +5931,8 @@ impl Engine {
             .and_then(|m| self.intents.get(&m))
             .filter(|m| crate::identify::resumable(m.spec().kind()))
             .map(|m| crate::identify::return_spec(m.spec(), spec));
+        let mut return_via = BTreeMap::new();
+        let mut return_task = None;
         let (resumes, returns, checks, return_inputs) = match back {
             Some(back) => {
                 let mut bi = world.for_intent_with(&back, terrain, &cfg);
@@ -5914,6 +5941,10 @@ impl Engine {
                 let checks = rules::evaluate(&back, &bi, &cfg);
                 let logged = self.log_inputs(&bi)?;
                 if rules::passed(&checks, back.kind()) {
+                    // rules 22: the way back routed as its check planned it
+                    let (via, path) = crate::plan::dispatch_routes(&back, &bi.route_plans);
+                    return_via = via;
+                    return_task = path.map(|route| Task::Patrol { route });
                     (Some(back.id), back.task.clone(), checks, Some(logged))
                 } else {
                     (None, Task::Hold {}, checks, Some(logged))
@@ -5946,8 +5977,9 @@ impl Engine {
         }
         Ok(IdentifyEvent::Return(DispatchOrder {
             intent: id,
-            task: returns,
+            task: return_task.unwrap_or(returns),
             uids: spec.uids.clone(),
+            via: return_via,
         }))
     }
 
@@ -6179,10 +6211,18 @@ impl Engine {
         if spec.kind() == TaskKind::Engage {
             intent.engagement_mut().preview = preview;
         }
+        // rules 22: what it is dispatched with: the routed legs its passing check planned
+        if self.policy.rules.route_plan() {
+            let plans = if passed { inputs.route_plans.clone() } else { BTreeMap::new() };
+            self.get_mut(spec.id)?.set_route_plans(plans);
+        }
         // rules 21: what an identify order is dispatched with: the plan its passing check laid out
         if spec.kind() == TaskKind::Identify {
             let plan = passed.then(|| crate::identify::plan(spec, &inputs, &self.policy.rules).ok()).flatten();
+            // rules 22: the identity a fresh identification will be compared with
+            let before = plan.as_ref().and_then(|p| crate::identify::identity_now(&p.track, &inputs));
             self.get_mut(spec.id)?.set_identify_plan(plan);
+            self.get_mut(spec.id)?.set_identity_before(before);
         }
         Ok((inputs, logged, results, passed))
     }
@@ -6491,6 +6531,7 @@ pub(crate) fn is_self_approval(source: &Source, approver: &OperatorId) -> bool {
 /// engagement: the frozen plan's point, time, radius and window, the nomination's platform,
 /// track and fallback). [`Engine::dispatch_order`] logs it as `intent.dispatched`; replay
 /// recomputes it from the same logged facts and requires the logged order to be exactly it.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn order_for(
     spec: &IntentSpec,
     answer: Option<&crate::space::SpaceAnswer>,
@@ -6498,9 +6539,12 @@ pub(crate) fn order_for(
     loiter_radius_m: Option<f64>,
     preload: Option<&engage::LostLinkPreload>,
     identify: Option<&crate::identify::Plan>,
+    plans: &BTreeMap<Uid, Vec<crate::plan::PlannedLeg>>,
     rules: &crate::rules::RulesConfig,
 ) -> Result<Order, EngineError> {
     let id = spec.id;
+    // rules 22: the routes its last passing check planned (none before rules 22)
+    let (via, path) = crate::plan::dispatch_routes(spec, plans);
     let not = |why: &str| EngineError::NotDispatchable {
         id,
         why: why.to_string(),
@@ -6595,12 +6639,17 @@ pub(crate) fn order_for(
                     radius_m: plan.radius_m,
                 },
                 uids: spec.uids.clone(),
+                via,
             })
         }
         _ => Order::Vehicles(DispatchOrder {
             intent: id,
-            task: spec.task.clone(),
+            task: match path {
+                Some(route) => Task::Patrol { route },
+                None => spec.task.clone(),
+            },
             uids: spec.uids.clone(),
+            via,
         }),
     })
 }
@@ -6608,11 +6657,24 @@ pub(crate) fn order_for(
 /// The `intent.dispatched` event for `order`: the approved task and vehicles, and the space
 /// or engagement order handed on.
 pub(crate) fn dispatched_event(spec: &IntentSpec, order: &Order, identify: Option<&crate::identify::Dispatch>) -> EventBody {
+    // rules 22: the routes it carries (each vehicle's transit waypoints; a patrol's routed route)
+    let (via, path) = match order {
+        Order::Vehicles(o) => (
+            o.via.clone(),
+            match (&o.task, &spec.task) {
+                (Task::Patrol { route }, Task::Patrol { route: asked }) if route != asked => Some(route.clone()),
+                _ => None,
+            },
+        ),
+        _ => (BTreeMap::new(), None),
+    };
     EventBody::IntentDispatched {
         intent: spec.id,
         task: spec.task.clone(),
         uids: spec.uids.clone(),
         identify: identify.filter(|_| spec.kind() == TaskKind::Identify).cloned().map(Box::new),
+        via,
+        path,
         space: match order {
             Order::Vehicles(_) | Order::Engage(_) => None,
             Order::Collect(c) => Some(SpaceOrder::Collect(c.clone())),

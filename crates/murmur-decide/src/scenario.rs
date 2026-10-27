@@ -150,6 +150,16 @@ pub struct Scenario {
     /// or `persists`.
     #[serde(default = "out_of_play")]
     pub after_effect: String,
+    /// Rules 22: the land, as polygons of `[lon, lat]` (each closed on its own), instead of the
+    /// runner's two boxes (San Francisco south of 37.800, Marin north of 37.832 west of -122.46);
+    /// everything else in the runner's coverage is water 20 m deep.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub land: Option<Vec<Vec<[f64; 2]>>>,
+    /// Rules 22: the routed legs the decisions must have planned, in order (substrings of each
+    /// passing domain or geofence check's detail, e.g. `"routed around land at"`, or of a failing
+    /// one's, e.g. `"no route around"`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect_routed: Vec<String>,
     /// Rules 6: how the engaging platform answers its lost-link preload at dispatch:
     /// `confirm` (default: read back as set, a second later), `no_answer` (it never answers
     /// the parameter protocol: the bridge reports the error), `mismatch` (it answers with
@@ -246,6 +256,9 @@ pub struct VehicleDef {
     /// not reported, so a keep-out reads it in 2D).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alt_m: Option<f64>,
+    /// Where it goes home to, `[lon, lat]` (default: where it starts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<[f64; 2]>,
     /// Its own lost-link timer, s, as `sim/links.toml` sets it for its link (default 5): what
     /// a preload shortens and a restore puts back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -558,6 +571,10 @@ pub enum Action {
         level: Option<crate::identify::Level>,
         #[serde(default)]
         level_by: Option<Vec<String>>,
+        /// Rules 22: with `level`, the tracker's identity conflict on it now (an AIS identity our
+        /// sensors contradict), as the bridge's fusion raises it.
+        #[serde(default)]
+        level_conflict: Option<String>,
     },
     /// One of our vehicles changes: position, velocity, link (silent: no reports; a report
     /// interval: the link class changed), navigation source (`gnss`, `dead_reckoning`).
@@ -1267,7 +1284,13 @@ pub fn run(
         Box::new(log.clone()),
     )
     .map_err(|e| setup(e.to_string()))?;
-    let terrain = terrain();
+    let terrain = match &sc.land {
+        Some(land) => PolygonTerrain {
+            land: land.iter().map(|r| crate::geo::Polygon::new(r.iter().map(|p| LonLat::new(p[0], p[1])).collect())).collect(),
+            ..terrain()
+        },
+        None => terrain(),
+    };
 
     let mut sessions: BTreeMap<String, OperatorSession> = BTreeMap::new();
     for o in &sc.operators {
@@ -1293,7 +1316,7 @@ pub fn run(
                 circling_flown: false,
                 pos: at,
                 vel: v.velocity,
-                home: at,
+                home: v.home.map_or(at, |h| LonLat::new(h[0], h[1])),
                 silent: v.lost_for_s.is_some(),
                 interval: v.report_interval_ms,
                 last_t: T0.plus_ms(-i64::from(v.lost_for_s.unwrap_or(0)) * 1000),
@@ -1802,7 +1825,16 @@ pub fn run(
     if sc.expect_none_reacquired && !extra.reacquired.is_empty() {
         failures.push(format!("expected no lost contact confirmed, got {:?}", extra.reacquired));
     }
+    // rules 22: what the decisions' routed legs said, in intent order (domain, geofence)
+    let routed: Vec<String> = engine
+        .intents()
+        .flat_map(|i| i.checks().iter())
+        .filter(|c| matches!(c.rule, crate::rules::RuleId::Domain | crate::rules::RuleId::Geofence))
+        .filter(|c| c.detail.contains("routed around") || c.detail.contains("no route around"))
+        .map(|c| c.detail.clone())
+        .collect();
     for (want, got, what) in [
+        (&sc.expect_routed, &routed, "routed legs"),
         (&sc.expect_claimed, &extra.claimed, "claims raised"),
         (&sc.expect_reinstated, &extra.reinstated, "confirmations void"),
         (&sc.expect_lapsed, &extra.lapsed, "acceptances lapsed"),
@@ -2144,7 +2176,13 @@ fn track_sim(t: &TrackDef) -> TrackSim {
         ais: t.ais.clone(),
         silent: t.silent,
         no_velocity: t.no_velocity_estimate,
-        level: t.level.map(|level| crate::identify::TrackLevel { level, by: t.level_by.clone() }),
+        level: t.level.map(|level| crate::identify::TrackLevel {
+            level,
+            by: t.level_by.clone(),
+            // rules 22: our own sensors identified it at its last detection, if one of them did
+            own_t: (level == crate::identify::Level::Identify && t.level_by.iter().any(|b| !b.ends_with("ais"))).then_some(seen),
+            conflict: None,
+        }),
         alt_frozen: t.alt_age_s > 0.0,
         truth_aff: t.truth.unwrap_or(t.affiliation),
     }
@@ -2886,6 +2924,7 @@ fn act(
             velocity_sigma_mps,
             level,
             level_by,
+            level_conflict,
         } => {
             let new = !tracks.contains_key(id);
             let t = tracks.entry(id.clone()).or_insert_with(|| {
@@ -2920,9 +2959,13 @@ fn act(
                 t.ais = Some(a.clone());
             }
             if let Some(l) = level {
+                let by = level_by.clone().unwrap_or_default();
                 t.level = Some(crate::identify::TrackLevel {
                     level: *l,
-                    by: level_by.clone().unwrap_or_default(),
+                    // rules 22: our own sensors identify it now, if one of them does
+                    own_t: (*l == crate::identify::Level::Identify && by.iter().any(|b| !b.ends_with("ais"))).then_some(now),
+                    by,
+                    conflict: level_conflict.clone(),
                 });
             }
             if let Some(v) = velocity_sigma_mps {

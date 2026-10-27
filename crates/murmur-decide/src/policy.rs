@@ -635,7 +635,7 @@ pub fn leaves_approved_area(
         }
     }
     for (uid, route) in &routes {
-        for seg in route.segments() {
+        for seg in &route.segments() {
             if let Some(why) = segment_leaves(seg, &inside, &crosses) {
                 return (true, format!("{uid}: {why}"));
             }

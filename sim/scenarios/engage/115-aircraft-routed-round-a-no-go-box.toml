@@ -1,0 +1,33 @@
+# Rules 22 (bd murmur-n6a): PUMA 1, east of the bridge, is sent to orbit west of it; its straight
+# transit flies through the south tower's no-go box (gg-towers). An aircraft keeps to no surface,
+# only clear of the no-go areas: its transit is routed round the box, keeping 100 m from its edge.
+title = "An aircraft's transit is routed round a no-go box"
+invariant = "geofence"
+attack = "a transit straight through the towers' no-go box"
+expect = "dispatched"
+expect_routed = ["routed around no-go gg-towers"]
+end_s = 6
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "puma-1"
+platform = "puma"
+at = [-122.4650, 37.8105]
+alt_m = 120
+home = [-122.4650, 37.8180]       # its launch point north-east (a return home stays straight)
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["puma-1"]
+center = [-122.4950, 37.8090]
+radius_m = 300
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "dispatched"

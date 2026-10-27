@@ -844,7 +844,17 @@ impl Tracks {
                     sensing::Level::Recognise => L::Recognise,
                     sensing::Level::Identify => L::Identify,
                 };
-                Some((t.id.clone(), TrackLevel { level, by: t.identified_by() }))
+                let id = t.identity();
+                Some((
+                    t.id.clone(),
+                    TrackLevel {
+                        level,
+                        by: t.identified_by(),
+                        // rules 22: when our own sensors last identified it, and its conflict
+                        own_t: t.own_identified_t().map(|s| murmur_decide::Time((s * 1000.0).round() as i64)),
+                        conflict: id.conflict,
+                    },
+                ))
             })
             .collect()
     }

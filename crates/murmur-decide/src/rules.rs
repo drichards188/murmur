@@ -242,8 +242,32 @@ pub enum UnknownEndurance {
 /// ([`MUNITION_FLIGHT_SINCE`]): a platform with a catalog munition releases it the time of flight
 /// before the plan's time, from within the munition's range, and the effect lands at its impact.
 /// Version 21 ([`IDENTIFY_SINCE`]): an operator (or an agent, by policy) may order a vehicle to
-/// identify a track.
-pub const RULES_VERSION: u32 = IDENTIFY_SINCE;
+/// identify a track. Version 22 ([`ROUTE_PLAN_SINCE`]): a leg that meets the wrong surface or a
+/// no-go area is routed around it before the order is refused; and ([`IDENTIFY_SECOND_LOOK_SINCE`])
+/// an identify order may go to any live contact, for a fresh look by our own sensors.
+pub const RULES_VERSION: u32 = ROUTE_PLAN_SINCE;
+
+/// The rules version from which a leg that the domain rule or the geofence would refuse is first
+/// routed around what it meets (bd murmur-n6a, the owner's direction of 2026-10-27, DECISIONS.md
+/// "Route planning before a refusal"): the transit to a task and a patrol's legs (its loop back
+/// included) of a boat, sub or ground vehicle that cross the wrong surface, and of any vehicle that
+/// cross a no-go area, get waypoints from a grid planner ([`crate::plan`]) on the same land/water
+/// source the rule reads, logged with the decision (`route_plans`, the grid with them) so replay
+/// plans again; the routed legs are judged by the same rules, and the order is refused only when
+/// no route exists within the planner's bounds, saying why. A return home, an rtl and an
+/// engagement's way stay straight (the autopilot's own, or a frozen plan's). Every gate of that
+/// change reads this constant, never a literal: another change taking 22 first renumbers it here.
+pub const ROUTE_PLAN_SINCE: u32 = 22;
+
+/// The rules version from which an identify order may go to any live contact, one already
+/// identified included (bd murmur-n6a's second part, the owner's direction of 2026-10-27): an AIS
+/// identity is what a vessel says it is, and an identity our own sensors gave can be wrong, so a
+/// second look is a real task. Such an order ends on a fresh identification by our own sensors,
+/// made after the order went out (not the identity the contact already had), saying whether it
+/// agrees with the identity before or contradicts it (a contradiction raises the tracker's identity
+/// conflict and the review, as fusion does); a stale or lost contact is refused as before. Its own
+/// constant, so it can move on its own.
+pub const IDENTIFY_SECOND_LOOK_SINCE: u32 = 22;
 
 /// The rules version from which a vehicle may be ordered to identify a track (bd murmur-bia, the
 /// owner's direction of 2026-10-27, DECISIONS.md "W1 follow-up: an identify order"): an intent
@@ -589,6 +613,18 @@ impl RulesConfig {
     /// Rules 21 ([`IDENTIFY_SINCE`]): a vehicle may be ordered to identify a track.
     pub fn identify(&self) -> bool {
         self.rules_version >= IDENTIFY_SINCE
+    }
+
+    /// Rules 22 ([`ROUTE_PLAN_SINCE`]): a leg is routed around the wrong surface or a no-go area
+    /// before it is refused.
+    pub fn route_plan(&self) -> bool {
+        self.rules_version >= ROUTE_PLAN_SINCE
+    }
+
+    /// Rules 22 ([`IDENTIFY_SECOND_LOOK_SINCE`]): an identify order may go to any live contact,
+    /// and ends on a fresh identification by our own sensors.
+    pub fn identify_second_look(&self) -> bool {
+        self.rules_version >= IDENTIFY_SECOND_LOOK_SINCE
     }
 
     /// `[rules.engage]`, or its defaults.
@@ -1092,7 +1128,7 @@ fn domain_route(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
                     ("water", _) => "land",
                     _ => "water",
                 };
-                let detail = format!("{} crosses {crosses} at {at}; {} needs {need}", leg.name, platform.id);
+                let detail = format!("{} crosses {crosses} at {at}; {} needs {need}{}", leg.name, platform.id, plan_note(world, uid, false, false));
                 if safety {
                     // the safety command goes as ordered, and a person is told
                     let mut c = res(
@@ -1121,8 +1157,24 @@ fn domain_route(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
             detail.push_str("; ");
             detail.push_str(&e);
         }
+        detail.push_str(&plan_note(world, uid, true, false));
         res(Outcome::Pass, detail)
     })
+}
+
+/// Rules 22: what the plans for vehicle `uid` did, for a check's detail: `routed` the legs
+/// routed around what they met (a passing check), else the ones no route exists for (a failing
+/// one), each `"; <summary>"`; `no_go` the ones round a no-go area (the geofence's), else round
+/// the wrong surface (the domain rule's); empty when none.
+fn plan_note(world: &WorldSnapshot, uid: &Uid, routed: bool, no_go: bool) -> String {
+    world
+        .route_plans
+        .get(uid)
+        .into_iter()
+        .flatten()
+        .filter(|p| p.no_route.is_none() == routed && p.met.starts_with("no-go") == no_go)
+        .map(|p| format!("; {}", p.summary()))
+        .collect()
 }
 
 /// Up to rules 16: boats and subs keep their waypoints on water, UGVs on land.
@@ -1229,21 +1281,22 @@ pub fn geofence(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
             return not_checked("cannot evaluate: no area set loaded".into());
         };
         let no_go: Vec<&Area> = areas.no_go().collect();
-        if let Some(path) = &route.task {
+        // rules 22: through the waypoints a plan routes its legs through
+        if let Some(path) = &route.task_routed() {
             for area in &no_go {
                 if let Some(why) = area.intrusion(path) {
                     return res(
                         Outcome::Fail,
-                        format!("task path: {why} (no-go: {})", area.name),
+                        format!("task path: {why} (no-go: {}){}", area.name, plan_note(world, uid, false, true)),
                     );
                 }
             }
         }
         let mut leaving: Vec<&str> = Vec::new();
-        for seg in route.segments() {
+        for seg in &route.segments() {
             for area in &no_go {
                 if let Some(why) = segment_enters(area, seg) {
-                    return res(Outcome::Fail, format!("{why} (no-go: {})", area.name));
+                    return res(Outcome::Fail, format!("{why} (no-go: {}){}", area.name, plan_note(world, uid, false, true)));
                 }
                 if seg.from_vehicle
                     && area.contains(seg.from)
@@ -1253,7 +1306,7 @@ pub fn geofence(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
                 }
             }
         }
-        let mut detail = format!("clear of {} no-go areas ({})", no_go.len(), route.parts());
+        let mut detail = format!("clear of {} no-go areas ({}){}", no_go.len(), route.parts(), plan_note(world, uid, true, true));
         if !leaving.is_empty() {
             detail.push_str(&format!(
                 "; starts inside {} and leaves it",
@@ -1353,7 +1406,8 @@ pub fn reserves(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
         let on_task_s = (lap_m / cruise)
             .max(f64::from(cfg.task_duration_s))
             .max(f64::from(spec.constraints.duration_s.unwrap_or(0)));
-        let used_s = leg_m(&route.transit) / cruise + on_task_s + leg_m(&route.ret) / cruise;
+        // rules 22: the transit through the waypoints a plan routes it through
+        let used_s = route.transit_m() / cruise + on_task_s + leg_m(&route.ret) / cruise;
         let full_s = endurance_h * 3600.0;
         let left_s = battery / 100.0 * full_s - used_s;
         let reserve_s = reserve_pct / 100.0 * full_s;

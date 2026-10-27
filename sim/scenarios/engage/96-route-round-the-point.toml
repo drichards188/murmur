@@ -4,6 +4,8 @@
 # that rounds the corner, out and back on the water, is accepted (each of its legs judged every
 # 20 m, as are the transit to it and the return home), and so is a nomination whose way to the
 # effect point and home again is on the water: the rule refuses the way, not the boat.
+# From rules 22 the orbit's transit is routed round the corner, but its return home, the
+# autopilot's own straight line, still cuts it: refused for that leg instead.
 title = "A route round the point is accepted where the straight way is refused"
 invariant = "domain"
 attack = "an orbit across the corner of the shore, then a patrol round it, then a nomination on a clear way"
@@ -52,7 +54,7 @@ radius_m = 80
 at_s = 2
 action = "expect"
 task_state = "rejected"
-task_reason = "transit leg (position to waypoint 1) crosses land at"
+task_reason = "crosses land at"
 
 [[step]]
 at_s = 3                    # round the corner into the bay and back, on the water

@@ -81,6 +81,13 @@ pub struct TrackLevel {
     pub level: Level,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub by: Vec<String>,
+    /// Rules 22: when one of our own sensors (not AIS) last identified it (none: none has).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_t: Option<Time>,
+    /// Rules 22: the tracker's identity conflict on it, when it has one (an AIS identity our
+    /// sensors contradict, a kind two sensors disagree on).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<String>,
 }
 
 /// The orbit an identify order is flown as, and what it rests on.
@@ -109,6 +116,12 @@ pub struct Dispatch {
     pub deadline_t: Time,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumes: Option<IntentId>,
+    /// Rules 22: when it went out, and the identity the track had then (its kind and level),
+    /// which a fresh identification is compared with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_t: Option<Time>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
 }
 
 /// How an identify order's look ended.
@@ -182,6 +195,9 @@ pub struct Run {
     pub held: Option<String>,
     /// How the look ended, and what it said.
     pub ended: Option<(EndKind, String)>,
+    /// Rules 22: when it went out, and the track's identity then.
+    pub sent_t: Option<Time>,
+    pub before: Option<String>,
 }
 
 /// The order's deadline: its dispatch, the time to get there, then [`ON_STATION_S`].
@@ -240,8 +256,16 @@ pub fn plan(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Resu
     };
     let v = world.vehicles.get(uid).ok_or("vehicle not in the world model")?;
     let track = live_track(track_id, world)?;
+    // rules 22: any live contact may be looked at again; one out of view is not live
+    if cfg.identify_second_look() && crate::engage::out_of_view(track, world.t, &cfg.engage_rules()) {
+        return Err(format!(
+            "track {track_id} is out of view (unseen for {:.0} s): send it to a contact our sensors see now",
+            world.t.ms_since(track.last_seen_t) as f64 / 1000.0
+        ));
+    }
     if let Some(l) = world.track_levels.get(track_id)
         && l.level == Level::Identify
+        && !cfg.identify_second_look()
     {
         return Err(format!(
             "track {track_id} is identified already ({})",
@@ -356,17 +380,36 @@ pub fn check(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Che
     }
 }
 
-/// Whether the look is over on `world`, and why: identified, lost, or past `deadline_t`.
-pub fn outcome(track: &str, world: &WorldSnapshot, deadline_t: Time) -> Option<(EndKind, String)> {
+/// The identity a track has on `world`, as an identify order compares it: its kind and level.
+pub fn identity_now(track: &str, world: &WorldSnapshot) -> Option<String> {
+    let kind = world.tracks.get(track).and_then(|t| t.identity.clone())?;
+    let level = world.track_levels.get(track).map_or("unclassified", |l| l.level.as_str());
+    Some(format!("{kind} ({level})"))
+}
+
+/// Whether the look is over on `world`, and why: identified, lost, or past `deadline_t`. Rules 22
+/// (`second_look`: when it went out, and the identity before): identified only by our own sensors
+/// after it went out, saying whether that agrees with the identity before or contradicts it.
+pub fn outcome(track: &str, world: &WorldSnapshot, deadline_t: Time, second_look: Option<(Time, Option<&str>)>) -> Option<(EndKind, String)> {
     if let Some(l) = world.track_levels.get(track)
         && l.level == Level::Identify
+        && second_look.is_none_or(|(sent, _)| l.own_t.is_some_and(|t| t > sent))
     {
         let kind = world.tracks.get(track).and_then(|t| t.identity.clone());
         let by = if l.by.is_empty() { String::new() } else { format!(" by {}", l.by.join(", ")) };
-        return Some((
-            EndKind::Identified,
-            format!("track {track} identified as {}{by}", kind.as_deref().unwrap_or("its kind")),
-        ));
+        let mut detail = format!("track {track} identified as {}{by}", kind.as_deref().unwrap_or("its kind"));
+        if let Some((_, before)) = second_look {
+            let was = before.unwrap_or("unclassified");
+            let before_kind = before.and_then(|b| b.split(" (").next());
+            let identified_before = before.is_some_and(|b| b.ends_with("(identify)"));
+            match (&l.conflict, identified_before, before_kind == kind.as_deref()) {
+                (Some(c), _, _) => detail.push_str(&format!("; it contradicts its identity before, {was}: {c}")),
+                (None, true, true) => detail.push_str(&format!("; it agrees with its identity before, {was}")),
+                (None, true, false) => detail.push_str(&format!("; it differs from its identity before, {was}")),
+                (None, false, _) => detail.push_str(&format!("; it was {was} before")),
+            }
+        }
+        return Some((EndKind::Identified, detail));
     }
     if let Err(why) = live_track(track, world) {
         return Some((EndKind::Lost, why));

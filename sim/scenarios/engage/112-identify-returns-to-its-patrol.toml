@@ -7,7 +7,7 @@ title = "An identify order goes back to the order it replaced"
 invariant = "identify"
 attack = "none: an order interrupted and resumed"
 expect = "done"
-expect_identify = ["ended done: track T-0001 identified as fishing_vessel by puma-1:eo_ir; back to i1's patrol"]
+expect_identify = ["ended done: track T-0001 identified as fishing_vessel by puma-1:eo_ir; it was small_craft (recognise) before; back to i1's patrol"]
 end_s = 50
 
 [[operator]]

@@ -1898,6 +1898,53 @@ Rules versions:
   `v21-identify-follows-a-moving-boat-scenario-109.jsonl` (relabelled rules 20, its checks and
   steps are caught), `v21-identify-returns-to-its-patrol-scenario-112.jsonl`.
 
+- **22** (bd murmur-n6a, the owner's order of 2026-10-27 refused at the Gate, DECISIONS.md
+  "Route planning before a refusal" and "A second look at an identified contact"; the gates read
+  `ROUTE_PLAN_SINCE` and `IDENTIFY_SECOND_LOOK_SINCE`, both 22; no policy key changes, schema 7;
+  a v22 log carries every rules 21 behaviour too): *a leg the domain rule or the geofence would
+  refuse is routed around what it meets first*, and *any live contact may be sent a look*. Up to
+  rules 21 an orbit, patrol or identify order whose straight transit touched the wrong surface or
+  a no-go area was refused: HUNTER 1's patrol west of the bridge ran into the south tower's pier
+  though the main span is 1.3 km of open water. From rules 22 the transit to the task, and each
+  of a patrol's legs (a two-point patrol's way back included, `route::Route::legs`), that a boat's
+  or sub's need of water, a UGV's of land, or any vehicle's no-go areas would refuse is planned
+  around it first (`plan`): a grid over the leg's box widened by `plan::MARGIN_M` (1.5 km), cells
+  of `plan::CELL_M` (40 m; coarser past `plan::MAX_CELLS`, 40,000), each cell answered by the
+  same land/water source the domain rule reads (none asked for an aircraft), free on the right
+  surface `plan::SURFACE_CLEARANCE_M` (60 m) from the wrong one and `plan::NOGO_CLEARANCE_M`
+  (100 m) from a no-go area's edge (waived near the leg's own ends); an A* over the free cells
+  (eight neighbours, integer costs, a fixed order: deterministic), pulled straight to at most
+  `plan::MAX_WAYPOINTS` (12) waypoints; all [E]. The decision's inputs log each planned leg
+  (`route_plans`: the leg, what it met, the surface it keeps to, its waypoints or why there is no
+  route, the metres it adds and its grid, run-length coded), the route then reads it
+  (`Route::transit_via`, `path_via`), and the routed legs are judged by every rule as any leg is
+  (the domain rule's points along each part, the geofence, reserves on the longer way). A passing
+  domain or geofence check says what it routed (`...; the transit leg (position to waypoint 1)
+  routed around land at (-122.47572, 37.81350): 1 waypoint, +40 m`); a leg with no route within
+  the bounds refuses the order saying so (`no route around land at (...) for the transit leg
+  (...): no way through water ... within 4.3 x 3.1 km around the leg (the planner's bounds)`).
+  `intent.dispatched` carries `via` (each vehicle's transit waypoints) and `path` (a patrol's
+  route with its routed waypoints), flown in that order; an identify order's moved orbit and the
+  order it goes back to carry the plan their own checks made. The return home, an rtl and an
+  engagement's way stay straight: the first two are the autopilot's own way home (rules 17's
+  `path_crosses_land` warning stands), the last is a frozen plan's; an order whose straight
+  return crosses land is refused for that leg as before (scenarios 95 and 96 now are). Replay
+  plans every logged leg again on its own grid and the no-go areas the decision read (the same
+  waypoints, or no route for the same reason), refuses a plan under older rules, and compares
+  the dispatch's `via` and `path`. Second, the identify rule (rules 21) no longer refuses an
+  identified track: any live one may be sent a look, one out of view (`engage::OUT_OF_VIEW_S`)
+  is refused. `track_levels` gains `own_t` (when one of our own sensors, not AIS, last
+  identified it) and `conflict` (the tracker's identity conflict on it); the dispatch's
+  `identify` gains `sent_t` and `before` (the track's kind and level then); and the look ends
+  identified only on an identification by our own sensors after it went out, its outcome saying
+  whether it agrees with the identity before, differs from it, or contradicts it (the tracker's
+  conflict, which raises its review flag as fusion does), or what it was before. Scenarios 113
+  (the owner's order: routed through the main span), 114 (a UGV round the water), 115 (an
+  aircraft round a no-go box), 116 (no route into an enclosed pool: refused, saying why), 117 (a
+  second look at an AIS-identified boat that contradicts its AIS; `--rules 21`: refused); the
+  runner's `land` polygons, a vehicle's `home`, `expect_routed` and a track's `level_conflict`.
+  `tests/rules.rs` (the geofence's routed legs), `tests/rules21.rs` (the second look).
+
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
 `seen_max_age_s`, an unreleased build's name for it, is still read; **3** adds `[queue]`

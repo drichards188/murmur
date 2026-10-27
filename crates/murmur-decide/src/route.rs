@@ -20,6 +20,8 @@
 //! waypoint is answered exactly, as before; the vehicle is where it is; home is where it came
 //! from).
 
+use std::collections::BTreeMap;
+
 use crate::geo::{LonLat, TaskPath, haversine_m};
 use crate::intent::{IntentSpec, Task};
 use crate::rules::{RulesConfig, fresh, required_surface};
@@ -135,6 +137,19 @@ pub struct Route {
     pub transit: Option<Segment>,
     pub task: Option<TaskPath>,
     pub ret: Option<Segment>,
+    /// Rules 22 ([`crate::plan`]): the waypoints a plan routes the transit through.
+    pub transit_via: Vec<LonLat>,
+    /// Rules 22: the waypoints a plan routes each task path leg through, by the leg's index (the
+    /// leg from point `i` to point `i + 1`, the last one back to the first).
+    pub path_via: BTreeMap<usize, Vec<LonLat>>,
+}
+
+/// One leg split at a plan's waypoints: each part's ends.
+fn parts(from: LonLat, to: LonLat, via: &[LonLat]) -> Vec<(LonLat, LonLat)> {
+    let mut pts = vec![from];
+    pts.extend_from_slice(via);
+    pts.push(to);
+    pts.windows(2).map(|w| (w[0], w[1])).collect()
 }
 
 impl Route {
@@ -142,9 +157,51 @@ impl Route {
         self.transit.is_none() && self.task.is_none() && self.ret.is_none()
     }
 
-    /// The single legs, transit then return.
-    pub fn segments(&self) -> impl Iterator<Item = &Segment> {
-        self.transit.iter().chain(self.ret.iter())
+    /// The single legs, transit (rules 22: each part a plan routes it through) then return.
+    pub fn segments(&self) -> Vec<Segment> {
+        let mut out = Vec::new();
+        if let Some(t) = &self.transit {
+            let ps = parts(t.from, t.to, &self.transit_via);
+            let n = ps.len();
+            for (k, (a, b)) in ps.into_iter().enumerate() {
+                out.push(Segment {
+                    kind: t.kind,
+                    from: a,
+                    to: b,
+                    from_label: if k == 0 { t.from_label.clone() } else { format!("routed waypoint {k}") },
+                    to_label: if k + 1 == n { t.to_label.clone() } else { format!("routed waypoint {}", k + 1) },
+                    from_vehicle: k == 0 && t.from_vehicle,
+                });
+            }
+        }
+        out.extend(self.ret.iter().cloned());
+        out
+    }
+
+    /// Rules 22: the task path with the waypoints a plan routes its legs through (none: the path).
+    pub fn task_routed(&self) -> Option<TaskPath> {
+        let path = self.task.as_ref()?;
+        if self.path_via.is_empty() {
+            return Some(path.clone());
+        }
+        let n = path.points.len();
+        let mut points = Vec::new();
+        for (i, p) in path.points.iter().enumerate() {
+            points.push(*p);
+            if (i + 1 < n || path.closed)
+                && let Some(v) = self.path_via.get(&i)
+            {
+                points.extend_from_slice(v);
+            }
+        }
+        Some(TaskPath { points, closed: path.closed })
+    }
+
+    /// The transit's length, m (rules 22: through a plan's waypoints).
+    pub fn transit_m(&self) -> f64 {
+        self.transit
+            .as_ref()
+            .map_or(0.0, |t| parts(t.from, t.to, &self.transit_via).iter().map(|(a, b)| haversine_m(*a, *b)).sum())
     }
 
     /// Rules 17: every straight leg in travel order: the transit, the task path's legs (the
@@ -157,21 +214,55 @@ impl Route {
             departs: s.from_vehicle,
             arrives_home: s.kind == LegKind::Return,
         };
-        let mut out: Vec<RouteLeg> = self.transit.iter().map(seg).collect();
+        // rules 22: a leg a plan routes is judged part by part
+        let routed = |name: String, from: LonLat, to: LonLat, via: &[LonLat], departs: bool| -> Vec<RouteLeg> {
+            if via.is_empty() {
+                return vec![RouteLeg { name, from, to, departs, arrives_home: false }];
+            }
+            let ps = parts(from, to, via);
+            let n = ps.len();
+            ps.into_iter()
+                .enumerate()
+                .map(|(k, (a, b))| RouteLeg {
+                    name: format!("{name}, routed part {} of {n}", k + 1),
+                    from: a,
+                    to: b,
+                    departs: departs && k == 0,
+                    arrives_home: false,
+                })
+                .collect()
+        };
+        let mut out: Vec<RouteLeg> = Vec::new();
+        if let Some(t) = &self.transit {
+            out.extend(routed(t.name(), t.from, t.to, &self.transit_via, t.from_vehicle));
+        }
         if let Some(path) = &self.task {
             let n = path.points.len();
             for (i, a, b) in path.legs() {
-                out.push(RouteLeg {
-                    name: format!("{} leg {}-{}", LegKind::Task.as_str(), i + 1, (i + 1) % n + 1),
-                    from: a,
-                    to: b,
-                    departs: false,
-                    arrives_home: false,
-                });
+                let name = format!("{} leg {}-{}", LegKind::Task.as_str(), i + 1, (i + 1) % n + 1);
+                let via = self.path_via.get(&i).map_or(&[][..], Vec::as_slice);
+                out.extend(routed(name, a, b, via, false));
+            }
+            // rules 22: a two-point patrol's way back, routed the same way round as its leg
+            if path.closed && n == 2
+                && let Some(via) = self.path_via.get(&1)
+            {
+                let name = format!("{} leg 2-1", LegKind::Task.as_str());
+                out.extend(routed(name, path.points[1], path.points[0], via, false));
             }
         }
         out.extend(self.ret.iter().map(seg));
         out
+    }
+
+    /// Rules 22: the legs as straight, unrouted (what a plan starts from).
+    pub fn straight_legs(&self) -> Vec<RouteLeg> {
+        Route {
+            transit_via: Vec::new(),
+            path_via: BTreeMap::new(),
+            ..self.clone()
+        }
+        .legs()
     }
 
     /// Which parts exist, for pass details: `"transit, task path, return"`.
@@ -235,6 +326,7 @@ pub fn route_for(
                 to_label: "home".into(),
                 from_vehicle: false,
             }),
+            ..Route::default()
         });
     }
     let home_leg = |from: LonLat, from_label: String, from_vehicle: bool| Segment {
@@ -255,7 +347,7 @@ pub fn route_for(
     let (Some(first), Some((end_n, end))) = (path.points.first().copied(), path.end()) else {
         return Err("cannot evaluate: task path has no waypoints".into());
     };
-    Ok(Route {
+    let mut route = Route {
         transit: Some(Segment {
             kind: LegKind::Transit,
             from: pos,
@@ -266,7 +358,30 @@ pub fn route_for(
         }),
         ret: Some(home_leg(end, format!("waypoint {end_n}"), false)),
         task: Some(path),
-    })
+        ..Route::default()
+    };
+    // rules 22: the legs a plan in the world routes (crate::plan, logged with the decision)
+    if cfg.route_plan() && !world.route_plans.is_empty() {
+        if let Some(p) = crate::plan::leg_plan(&world.route_plans, pos, first) {
+            route.transit_via = p.via.clone();
+        }
+        if matches!(spec.task, Task::Patrol { .. })
+            && let Some(path) = &route.task
+        {
+            for (i, a, b) in path.legs() {
+                if let Some(p) = crate::plan::leg_plan(&world.route_plans, a, b).filter(|p| !p.via.is_empty()) {
+                    route.path_via.insert(i, p.via.clone());
+                }
+            }
+            // a patrol of two points flies its one leg back: the way back goes the same way round
+            if path.closed && path.points.len() == 2
+                && let Some(v) = route.path_via.get(&0).cloned()
+            {
+                route.path_via.insert(1, v.into_iter().rev().collect());
+            }
+        }
+    }
+    Ok(route)
 }
 
 /// Rules 17: the legs the domain rule judges for `spec` on `world`: those of each vehicle that

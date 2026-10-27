@@ -1604,6 +1604,10 @@ struct Tracked {
     identify_plan: Option<crate::identify::Plan>,
     /// Rules 21: once dispatched, its run as the log has it (orbit, deadline, return, end).
     identify_run: Option<crate::identify::Run>,
+    /// Rules 22: the routed legs its last passing check planned (what it is dispatched with).
+    route_plans: BTreeMap<Uid, Vec<crate::plan::PlannedLeg>>,
+    /// Rules 22, an identify order: its track's identity at its last passing check.
+    identity_before: Option<String>,
 }
 
 impl Tracked {
@@ -1675,6 +1679,8 @@ impl Tracked {
             start_went_out: BTreeSet::new(),
             identify_plan: None,
             identify_run: None,
+            route_plans: BTreeMap::new(),
+            identity_before: None,
             preload: None,
             preload_set: None,
             restore_confirmed: false,
@@ -2675,11 +2681,16 @@ fn replay_inner<S: AsRef<str>>(
                         tr.platforms.insert(u.clone(), p.id.clone());
                     }
                 }
+                // rules 22: each routed leg planned again from its own grid, and what it is
+                // dispatched with
+                check_plans(&mut r, e, *intent, &inputs, pol);
+                tr.route_plans = if again_passed { inputs.route_plans.clone() } else { BTreeMap::new() };
                 // rules 21: what an identify order is dispatched with
                 if tr.spec.kind() == TaskKind::Identify {
                     tr.identify_plan = again_passed
                         .then(|| crate::identify::plan(&tr.spec, &inputs, &pol.rules).ok())
                         .flatten();
+                    tr.identity_before = tr.identify_plan.as_ref().and_then(|p| crate::identify::identity_now(&p.track, &inputs));
                 }
                 tr.last_inputs = Some(Box::new(inputs));
                 tr.check_window = Some((before_t, e.t));
@@ -3509,6 +3520,8 @@ fn replay_inner<S: AsRef<str>>(
                 task,
                 uids,
                 identify: identify_dispatch,
+                via: dispatch_via,
+                path: dispatch_path,
                 space: order,
                 engage: engage_order,
                 inputs: reach_inputs,
@@ -3530,10 +3543,13 @@ fn replay_inner<S: AsRef<str>>(
                                     crate::identify::resumable(mt.spec.kind()) && matches!(mt.state, State::Dispatched | State::Done)
                                 })
                             });
+                        let second = policy.as_ref().is_some_and(|p| p.rules.identify_second_look());
                         crate::identify::Dispatch {
                             deadline_t: crate::identify::deadline(e.t, &plan),
                             plan,
                             resumes,
+                            sent_t: second.then_some(e.t),
+                            before: if second { tr.identity_before.clone() } else { None },
                         }
                     }),
                     _ => None,
@@ -3555,6 +3571,8 @@ fn replay_inner<S: AsRef<str>>(
                         resumes: d.resumes,
                         held: None,
                         ended: None,
+                        sent_t: d.sent_t,
+                        before: d.before,
                     });
                 }
                 if let Some(inputs) = reach_inputs {
@@ -3743,6 +3761,8 @@ fn replay_inner<S: AsRef<str>>(
                         uids,
                         space: order.as_ref(),
                         engage: engage_order.as_ref(),
+                        via: dispatch_via,
+                        path: dispatch_path.as_ref(),
                     },
                     policy.as_ref(),
                 );
@@ -6261,6 +6281,8 @@ fn replay_inner<S: AsRef<str>>(
                     }
                 };
                 let cfg = &pol.rules;
+                // rules 22: the routed legs its moved orbit's or its return's inputs planned
+                check_plans(&mut r, e, *intent, &w, pol);
                 let mut run = run;
                 match step {
                     crate::identify::Step::Recentred { center, radius_m, checks }
@@ -6303,7 +6325,7 @@ fn replay_inner<S: AsRef<str>>(
                         returns,
                         checks,
                     } => {
-                        let want = crate::identify::outcome(&run.plan.track, &w, run.deadline_t);
+                        let want = crate::identify::outcome(&run.plan.track, &w, run.deadline_t, run.sent_t.map(|t| (t, run.before.as_deref())));
                         let lv = w.track_levels.get(&run.plan.track);
                         let facts = (
                             lv.map(|l| l.level),
@@ -6330,6 +6352,7 @@ fn replay_inner<S: AsRef<str>>(
                         let (want_resumes, want_returns, want_checks) = match (&back, return_inputs) {
                             (Some(b), Some(ri)) => match resolve(ri, &areas, &answers) {
                                 Ok(bw) => {
+                                    check_plans(&mut r, e, *intent, &bw, pol);
                                     let c = rules::evaluate(b, &bw, cfg);
                                     if rules::passed(&c, b.kind()) {
                                         (Some(b.id), b.task.clone(), c)
@@ -8272,13 +8295,40 @@ struct Dispatched<'a> {
     uids: &'a [Uid],
     space: Option<&'a SpaceOrder>,
     engage: Option<&'a EngageOrder>,
+    /// Rules 22: the transit waypoints and a patrol's routed route it carries.
+    via: &'a BTreeMap<Uid, Vec<crate::geo::LonLat>>,
+    path: Option<&'a Vec<crate::geo::LonLat>>,
+}
+
+/// Rules 22: every routed leg in a decision's inputs is what the planner gives on its own logged
+/// grid (and the no-go areas the decision read): the same waypoints, or no route for the same
+/// reason; none before rules 22.
+fn check_plans(r: &mut ReplayReport, e: &Event, id: IntentId, w: &WorldSnapshot, pol: &Policy) {
+    if w.route_plans.is_empty() {
+        return;
+    }
+    if !pol.rules.route_plan() {
+        bad(r, e, Some(id), "a decision with routed legs under rules that plan none", json(&w.route_plans.keys().collect::<Vec<_>>()), String::new());
+        return;
+    }
+    for p in w.route_plans.values().flatten() {
+        let again = crate::plan::replan(p, w);
+        let same = match (&again, &p.no_route) {
+            (Ok(v), None) => v == &p.via,
+            (Err(why), Some(logged)) => why == logged,
+            _ => false,
+        };
+        if !same {
+            bad(r, e, Some(id), "a routed leg differs from its plan on its own grid", json(&(&p.leg, &p.via, &p.no_route)), json(&again));
+        }
+    }
 }
 
 /// An `intent.dispatched` is exactly the approved intent's order, whatever the rules version
 /// (an audit check, not a decision rule): the task and vehicles as approved, and the space or
 /// engagement order that follows from the intent, the space answer its last check read and
 /// (engage) the approval's snapshot, the frozen plan ([`order_for`], what the engine
-/// dispatches).
+/// dispatches); rules 22: and the waypoints its plans route it through.
 fn check_dispatch(
     r: &mut ReplayReport,
     e: &Event,
@@ -8316,6 +8366,7 @@ fn check_dispatch(
         tr.loiter_radius_m,
         tr.preload.as_ref(),
         tr.identify_plan.as_ref(),
+        &tr.route_plans,
         &pol.rules,
     ) {
         Ok(o) => dispatched_event(&tr.spec, &o, None),
@@ -8334,11 +8385,24 @@ fn check_dispatch(
     let EventBody::IntentDispatched {
         space: want_space,
         engage: want_engage,
+        via: want_via,
+        path: want_path,
         ..
     } = want
     else {
         return;
     };
+    // rules 22: the routes its last passing check planned, no other
+    if got.via != &want_via || got.path != want_path.as_ref() {
+        bad(
+            r,
+            e,
+            id,
+            "dispatched with other routed waypoints than its last passing check planned",
+            json(&(got.via, got.path)),
+            json(&(&want_via, &want_path)),
+        );
+    }
     match (got.engage, &want_engage) {
         (None, None) => {}
         (Some(o), None) => bad(

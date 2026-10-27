@@ -705,6 +705,8 @@ struct Classifier {
 struct LookMark {
     label: String,
     confidence: f64,
+    /// Rules 22: when this observer's sensor last looked at it at this level (s).
+    last_t: f64,
 }
 
 /// How specific a look's label is, for identity fusion (docs/SENSING.md, "What a look yields"):
@@ -1472,9 +1474,10 @@ impl Track {
             let m = self
                 .looks
                 .entry((d.uid, d.sensor, look.level))
-                .or_insert(LookMark { label: label.clone(), confidence: 0.0 });
+                .or_insert(LookMark { label: label.clone(), confidence: 0.0, last_t: now });
             m.confidence = if m.label == *label { m.confidence.max(look.confidence) } else { look.confidence };
             m.label = label.clone();
+            m.last_t = now;
         } else if let Some(label) = &d.label {
             // classification dwell per sensor type
             let c = self.classifiers.entry(d.sensor).or_insert(Classifier {
@@ -1534,6 +1537,21 @@ impl Track {
         by.sort();
         by.dedup();
         by
+    }
+
+    /// Rules 22: when one of our own sensors (not AIS) last identified it, s: the physical
+    /// model's latest look at identification, or the legacy model's latest kind-level label (an
+    /// EO/IR's or a sonar's). None while none has.
+    pub fn own_identified_t(&self) -> Option<f64> {
+        let looks = self
+            .looks
+            .iter()
+            .filter(|((_, s, l), _)| *l == Level::Identify && *s != SensorType::Ais)
+            .map(|(_, m)| m.last_t);
+        let classifiers = [SensorType::EoIr, SensorType::Sonar]
+            .into_iter()
+            .filter_map(|s| self.classifiers.get(&s).map(|c| c.last_t));
+        looks.chain(classifiers).fold(None, |a: Option<f64>, t| Some(a.map_or(t, |a| a.max(t))))
     }
 
     pub fn identity(&self) -> Identity {

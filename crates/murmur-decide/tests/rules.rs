@@ -12,6 +12,13 @@ fn cfg() -> RulesConfig {
     policy().rules
 }
 
+/// Rules 21: before route planning (rules 22 routes a leg round a no-go area before refusing it).
+fn v21() -> RulesConfig {
+    let mut c = cfg();
+    c.rules_version = IDENTIFY_SINCE;
+    c
+}
+
 /// Results of one rule for one intent, against `world` with terrain from `oracle`.
 fn run(
     rule: RuleId,
@@ -451,8 +458,11 @@ fn geofence_fail_point_or_leg() {
         LonLat::new(-122.410, 37.8267),
     ];
     let p = Proposal::new(Task::Patrol { route }, vec![uid("sky-1")]);
-    let r = one(RuleId::Geofence, p, &world());
+    let r = one_with(&v21(), RuleId::Geofence, p.clone(), &world());
     assert_outcome(&r, Outcome::Fail, "task path: leg 1-2 crosses alcatraz");
+    // rules 22: the leg (and the loop back) routed round it, keeping clear of its edge
+    let r = one(RuleId::Geofence, p, &world());
+    assert_outcome(&r, Outcome::Pass, "task path leg 1-2 routed around no-go alcatraz");
 }
 
 /// West and east of Alcatraz, on the same latitude: the straight line between crosses it.
@@ -472,17 +482,16 @@ fn geofence_transit_leg_is_checked_and_named() {
     // flight to it is not.
     let mut w = world();
     placed(&mut w, "sky-1", WEST_OF_ALCATRAZ, WEST_OF_ALCATRAZ);
-    let r = one(
-        RuleId::Geofence,
-        orbit(EAST_OF_ALCATRAZ, 150.0, &["sky-1"]),
-        &w,
-    );
+    let r = one_with(&v21(), RuleId::Geofence, orbit(EAST_OF_ALCATRAZ, 150.0, &["sky-1"]), &w);
     assert_outcome(
         &r,
         Outcome::Fail,
         "transit leg (position to waypoint 1) crosses alcatraz (no-go: Alcatraz Island)",
     );
     assert_eq!(r.uid, Some(uid("sky-1")));
+    // rules 22: the transit routed round it; its return home (across it) stays straight: refused
+    let r = one(RuleId::Geofence, orbit(EAST_OF_ALCATRAZ, 150.0, &["sky-1"]), &w);
+    assert_outcome(&r, Outcome::Fail, "return leg (waypoint 1 to home) crosses alcatraz");
 }
 
 #[test]
@@ -585,16 +594,18 @@ fn geofence_is_per_vehicle() {
     let mut w = world();
     placed(&mut w, "sky-1", EAST_OF_ALCATRAZ, EAST_OF_ALCATRAZ);
     placed(&mut w, "hawk-1", WEST_OF_ALCATRAZ, EAST_OF_ALCATRAZ);
-    let v = run(
-        RuleId::Geofence,
-        orbit(EAST_OF_ALCATRAZ, 150.0, &["sky-1", "hawk-1"]),
-        &w,
-        &terrain(),
-    );
+    let s = spec(human(), orbit(EAST_OF_ALCATRAZ, 150.0, &["sky-1", "hawk-1"]));
+    let inputs = w.for_intent(&s, &terrain());
+    let v: Vec<_> = rules::evaluate(&s, &inputs, &v21()).into_iter().filter(|r| r.rule == RuleId::Geofence).collect();
     assert_eq!(v.len(), 2);
     assert_eq!(v[0].outcome, Outcome::Pass, "{v:?}");
     assert_eq!(v[1].uid, Some(uid("hawk-1")));
     assert_outcome(&v[1], Outcome::Fail, "transit leg (position to waypoint 1)");
+    // rules 22: hawk-1's transit routed round it, sky-1's untouched
+    let v = run(RuleId::Geofence, orbit(EAST_OF_ALCATRAZ, 150.0, &["sky-1", "hawk-1"]), &w, &terrain());
+    assert_eq!(v[0].outcome, Outcome::Pass, "{v:?}");
+    assert!(!v[0].detail.contains("routed"), "{v:?}");
+    assert_outcome(&v[1], Outcome::Pass, "transit leg (position to waypoint 1) routed around no-go alcatraz");
 }
 
 #[test]

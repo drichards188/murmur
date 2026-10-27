@@ -1,0 +1,41 @@
+# Rules 22 (bd murmur-n6a): the owner's order in a live Harbor watch run of 2026-10-27 (intent 5).
+# HUNTER 1, a Sea Hunter east of the bridge, is sent on a patrol west of it. The straight transit
+# runs into the south tower's pier (land at -122.47640, 37.81347 in tidewater's grid), which the
+# domain rule refused under rules 21 though the main span is 1.3 km of open water. Now the transit
+# is routed through the span, clear of the pier and of the towers' no-go boxes, and the patrol goes.
+# `--rules 21` refuses it as the run did.
+title = "A patrol west of the bridge is routed through the main span"
+invariant = "domain"
+attack = "a transit straight into the south tower's pier"
+expect = "dispatched"
+expect_routed = ["routed around land at"]
+end_s = 6
+# the Gate as tidewater draws it near the bridge: San Francisco to Lands End, Marin, and the south
+# tower's pier (the ~150 m blob tidewater's grid shows north of the tower, the owner's refusal)
+land = [
+  [[-122.513, 37.700], [-122.300, 37.700], [-122.300, 37.8045], [-122.470, 37.8045], [-122.4772, 37.8098], [-122.4790, 37.8090], [-122.486, 37.802], [-122.497, 37.792], [-122.513, 37.785]],
+  [[-122.600, 37.950], [-122.460, 37.950], [-122.460, 37.832], [-122.475, 37.830], [-122.480, 37.8275], [-122.500, 37.827], [-122.530, 37.825], [-122.600, 37.825]],
+  [[-122.47725, 37.81279], [-122.47555, 37.81279], [-122.47555, 37.81415], [-122.47725, 37.81415]],
+]
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "hunter-1"
+platform = "seahunter"
+at = [-122.4720341, 37.8136534]   # east of the bridge, mid-channel
+home = [-122.4660238, 37.8200010]
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "patrol"
+uids = ["hunter-1"]
+route = [[-122.53574, 37.81098], [-122.52801, 37.77557]]
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "dispatched"

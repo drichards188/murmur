@@ -618,6 +618,8 @@ impl Decision {
                 intent: id,
                 task: spec.task.clone(),
                 uids: spec.uids.clone(),
+                // a follow of what the vehicle already holds: no plan is carried over a restart
+                via: Default::default(),
             };
             self.run_order(core, id, released, &resume);
         }

@@ -487,6 +487,11 @@ pub struct WorldSnapshot {
     /// comparison copies fix. Absent when none (and in logs before rules 21).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub track_levels: BTreeMap<String, crate::identify::TrackLevel>,
+    /// Engine-filled (rules 22, [`crate::plan`]): the legs of the intent's vehicles routed around
+    /// the wrong surface or a no-go area, each with its grid, or why no route exists. The route
+    /// layout follows them ([`crate::route::route_for`]). Absent when none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub route_plans: BTreeMap<Uid, Vec<crate::plan::PlannedLeg>>,
     /// Engine-filled: the intent's vehicles that have an engagement in play (pending,
     /// approved or dispatched), by the engagement's id. An agent's order on one of them
     /// always goes to a human. Absent when empty.
@@ -574,6 +579,9 @@ pub struct LoggedInputs {
     /// Its tracks' identity levels (rules 21; absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub track_levels: BTreeMap<String, crate::identify::TrackLevel>,
+    /// Its vehicles' routed legs (rules 22; absent when none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub route_plans: BTreeMap<Uid, Vec<crate::plan::PlannedLeg>>,
     /// The intent's vehicles with an engagement in play (absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub engaged: BTreeMap<Uid, IntentId>,
@@ -633,6 +641,7 @@ impl LoggedInputs {
             tracks: world.tracks.clone(),
             track_ais: world.track_ais.clone(),
             track_levels: world.track_levels.clone(),
+            route_plans: world.route_plans.clone(),
             engaged: world.engaged.clone(),
             waiting: world.waiting.clone(),
             plan: world.plan.clone(),
@@ -684,6 +693,7 @@ impl LoggedInputs {
             tracks: self.tracks.clone(),
             track_ais: self.track_ais.clone(),
             track_levels: self.track_levels.clone(),
+            route_plans: self.route_plans.clone(),
             engaged: self.engaged.clone(),
             waiting: self.waiting.clone(),
             plan: self.plan.clone(),
@@ -736,6 +746,8 @@ impl WorldSnapshot {
             tracks: self.tracks.clone(),
             track_ais: self.track_ais.clone(),
             track_levels: self.track_levels.clone(),
+            // engine-owned (rules 22): planned for this intent
+            route_plans: BTreeMap::new(),
             // engine-owned: filled from its own intents
             engaged: BTreeMap::new(),
             waiting: BTreeMap::new(),
@@ -822,6 +834,17 @@ impl WorldSnapshot {
             Self::sample_legs(&mut w, spec, oracle, cfg);
             return w;
         }
+        let routed = |w: &mut WorldSnapshot| {
+            // rules 22: legs the domain rule or the geofence would refuse are routed first, and
+            // the points along the routed legs sampled again
+            if cfg.route_plan() && !matches!(w.terrain, TerrainInputs::Unavailable { .. }) {
+                let plans = crate::plan::plans_for(spec, w, oracle, cfg);
+                if !plans.is_empty() {
+                    w.route_plans = plans;
+                    Self::sample_legs(w, spec, oracle, cfg);
+                }
+            }
+        };
         w.terrain = match spec.task.path() {
             Some(path) if needs_terrain(spec, &w) => match oracle.sample(w.t, &path.points) {
                 Ok(answers) if answers.len() == path.points.len() => TerrainInputs::Sampled {
@@ -852,6 +875,7 @@ impl WorldSnapshot {
             _ => TerrainInputs::NotNeeded,
         };
         Self::sample_legs(&mut w, spec, oracle, cfg);
+        routed(&mut w);
         w
     }
 

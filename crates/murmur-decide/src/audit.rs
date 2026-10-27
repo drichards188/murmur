@@ -349,6 +349,13 @@ pub enum EventBody {
         /// it out, its deadline and the order it goes back to (replay recomputes each).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         identify: Option<Box<crate::identify::Dispatch>>,
+        /// Rules 22: each vehicle's transit waypoints, a plan's route around the wrong surface or
+        /// a no-go area (replay recomputes them from the last check's plans).
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        via: BTreeMap<Uid, Vec<crate::geo::LonLat>>,
+        /// Rules 22: a patrol's route with the waypoints its legs are routed through.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<Vec<crate::geo::LonLat>>,
         /// Collect and cover: the order handed to the bridge (absent for vehicle tasks).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<SpaceOrder>,

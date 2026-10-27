@@ -6,6 +6,8 @@
 # Magura ran aground in 34 to 39 of each family's 40 episodes). From rules 17 the rule judges
 # land or water every 20 m along each leg: the orbit is refused for its transit leg, and so is the
 # nomination, each saying where the leg reaches land.
+# From rules 22 the transit is routed round the shore (crate::plan), but its return home, the
+# autopilot's own straight line, still crosses it: the orbit is refused for that leg instead.
 title = "A boat's straight way to the task crosses land"
 invariant = "domain"
 attack = "an orbit and a nomination whose waypoints and effect point are on water, the straight way to them across the shore"
@@ -55,7 +57,7 @@ radius_m = 150
 at_s = 2
 action = "expect"
 task_state = "rejected"
-task_reason = "transit leg (position to waypoint 1) crosses land at"
+task_reason = "crosses land at"
 
 [[step]]
 at_s = 3

@@ -1,0 +1,39 @@
+# Rules 22 (bd murmur-n6a): HUNTER 1 is sent to orbit in a pool enclosed by land on every side (a
+# basin with its gate shut). No route on water reaches it within the planner's bounds, so the order
+# is refused, saying so, at the point where the straight way first meets land.
+title = "An order with no route on water is refused, saying why"
+invariant = "domain"
+attack = "a transit to water no route reaches"
+expect = "rejected"
+expect_rule = "domain"
+expect_routed = ["no route around land at"]
+end_s = 6
+land = [
+  [[-122.4900, 37.8100], [-122.4800, 37.8100], [-122.4800, 37.8115], [-122.4900, 37.8115]],
+  [[-122.4900, 37.8185], [-122.4800, 37.8185], [-122.4800, 37.8200], [-122.4900, 37.8200]],
+  [[-122.4900, 37.8100], [-122.4885, 37.8100], [-122.4885, 37.8200], [-122.4900, 37.8200]],
+  [[-122.4815, 37.8100], [-122.4800, 37.8100], [-122.4800, 37.8200], [-122.4815, 37.8200]],
+]
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "hunter-1"
+platform = "seahunter"
+at = [-122.4700, 37.8150]
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["hunter-1"]
+center = [-122.4850, 37.8150]
+radius_m = 100
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "rejected"
+task_reason = "no route around land at"

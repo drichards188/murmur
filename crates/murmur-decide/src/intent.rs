@@ -808,6 +808,12 @@ pub struct Intent {
     /// goes back to, how its look ended.
     #[serde(skip_serializing_if = "Option::is_none")]
     identify: Option<Box<crate::identify::Run>>,
+    /// Rules 22: the routed legs its last passing check planned (what it is dispatched with).
+    #[serde(skip)]
+    route_plans: BTreeMap<Uid, Vec<crate::plan::PlannedLeg>>,
+    /// Rules 22, an identify order: the identity its track had at its last passing check.
+    #[serde(skip)]
+    identity_before: Option<String>,
 }
 
 /// An intent carried over from the previous run: where from, and each vehicle's last op
@@ -852,6 +858,8 @@ impl Intent {
             op_details: BTreeMap::new(),
             identify_plan: None,
             identify: None,
+            route_plans: BTreeMap::new(),
+            identity_before: None,
         }
     }
 
@@ -988,6 +996,24 @@ impl Intent {
             .map(|a| a.by)
             .collect()
     }
+    /// Rules 22, an identify order: the identity its track had at its last passing check.
+    pub(crate) fn last_check_inputs_identity(&self, _track: &str) -> Option<String> {
+        self.identity_before.clone()
+    }
+
+    pub(crate) fn set_identity_before(&mut self, identity: Option<String>) {
+        self.identity_before = identity;
+    }
+
+    /// Rules 22: the routed legs its last passing check planned.
+    pub fn route_plans(&self) -> &BTreeMap<Uid, Vec<crate::plan::PlannedLeg>> {
+        &self.route_plans
+    }
+
+    pub(crate) fn set_route_plans(&mut self, plans: BTreeMap<Uid, Vec<crate::plan::PlannedLeg>>) {
+        self.route_plans = plans;
+    }
+
     /// Rules 21: the plan an identify order's last passing check laid out.
     pub fn identify_plan(&self) -> Option<&crate::identify::Plan> {
         self.identify_plan.as_deref()

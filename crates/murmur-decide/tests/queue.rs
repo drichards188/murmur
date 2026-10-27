@@ -1134,6 +1134,8 @@ fn replay_catches_a_direct_dispatch_to_a_vehicle_the_link_could_not_reach() {
                         task: orbit_sky().task,
                         uids: vec![uid("sky-1")],
                         identify: None,
+                        via: Default::default(),
+                        path: None,
                         space: None,
                         engage: None,
                         inputs: None,

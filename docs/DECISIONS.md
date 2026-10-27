@@ -610,6 +610,47 @@ group. Dates are 2026.
   replaced order does), so a patrol it goes back to keeps the identify dispatched as a patrol
   would; an AI's proposal of it routes as its orbits do, and no prompt, playbook or score uses it
   yet.
+- **Route planning before a refusal** (10-27, the owner's patrol for HUNTER 1 west of the bridge
+  refused in a live Harbor watch run: its straight transit ran into the south tower's pier with
+  the 1.3 km main span open beside it; bd murmur-n6a; decision rules 22, `ROUTE_PLAN_SINCE`).
+  Rules 17 judged the way a vehicle goes, and refused it; it never looked for another way, so an
+  operator had to draw the detour as a patrol by hand. Now a leg the domain rule or the geofence
+  would refuse is planned around what it meets first, and the order is refused only when no route
+  exists within the planner's bounds, saying why and where the straight way met it. Which legs:
+  the transit to an orbit's, a patrol's or an identify order's task, and each of a patrol's legs
+  (a two-point patrol's way back too). Boats and subs keep to water (water no deeper than 0 counts
+  as shallows; the catalog names no minimum depth for a sub, so it keeps to the water a boat
+  does), UGVs to land, aircraft only clear of the no-go areas. How: a grid planner on the
+  same land/water source the domain rule reads (tidewater live, the baked grid headless), so the
+  plan and the judgement cannot disagree: 40 m cells over the leg's box and 1.5 km round it, at
+  most 40,000 cells (coarser beyond), 60 m from the wrong surface and 100 m from a no-go area's
+  edge, A* with integer costs and a fixed order, pulled straight to at most 12 waypoints; every
+  figure [E], named constants in `murmur_decide::plan`. Why a grid and not a visibility graph or
+  the autopilot's own planner: the land is a sampled raster already (tidewater's cells, the baked
+  grid), a grid search over it is bounded in work and exactly reproducible from the logged cells,
+  and ArduPilot's object avoidance (BendyRuler, Dijkstra's over fences) plans only round its own
+  fences and polygons, not the coastline the domain rule reads. Why logged as it is: replay must
+  judge the routed legs from the log alone, so the grid each leg was planned on goes into the
+  decision's inputs with its plan and replay plans again from it; the added waypoints are checked
+  by every rule that judges a leg, flown as mission waypoints before the task, and carried in
+  `intent.dispatched`. The bridge fetches the grid's cells before taking the engine's lock (in
+  requests of 2,000 points), so the plan under the lock reads the cache. Judgement calls: the
+  return home, an rtl and the lost-link return stay the autopilot's own straight way (it flies
+  them without us; rules 17's warning on an rtl stands), so an order whose straight return
+  crosses land is still refused for that leg; an engagement's way is not planned (its plan is
+  frozen and signed as it is; a routed way would change what two people signed); an orbit's ring
+  is never re-planned (a circle round land is no circle). Not done yet: an identify order's moved
+  orbit is planned on what the cache holds then, without a fetch of its own grid.
+- **A second look at an identified contact** (10-27, the owner widened the identify order: any
+  live contact, identified by AIS or by our own sensors, may be sent a look; bd murmur-n6a;
+  decision rules 22, `IDENTIFY_SECOND_LOOK_SINCE`, numbered with route planning). Rules 21
+  refused an identify order on a track already identified, so an AIS identity, the easiest to
+  spoof, could never be checked by a camera on purpose. Now only a stale or lost contact is
+  refused (out of view: unseen for 10 s). Such an order ends on a fresh identification by our own
+  sensors made after it went out, not on the identity the track already had, and says whether it
+  agrees with the identity before, differs from it, or contradicts it; a contradiction is the
+  tracker's own identity conflict, which raises its review flag as fusion already does (the
+  engine reports it, it raises nothing of its own). A lost track and the deadline end it as before.
 - **A physical sensing model beside the legacy one, the physical model the default since the
   catalog's figures** (10-23, murmur-1z6.1, murmur-1z6.4; WORLD-V3-PLAN sections 2 and 3,
   approved; docs/SENSING.md). Per-sensor physics
