@@ -123,9 +123,10 @@ pub struct IntentParams {
     /// The task kind: orbit, patrol, hold, rtl or track on fleet vehicles; identify (send one
     /// vehicle with an EO/IR to identify one live track, track_id, an identified one included:
     /// it orbits the track at its camera's standoff, following it, its camera looking for it
-    /// first, until our own sensors identify it after the order went out (the outcome says
-    /// whether that agrees with the identity before), it is lost or out of time, then goes
-    /// back to the order it was on); collect
+    /// first, until that vehicle's own sensors identify it after the order went out (the
+    /// outcome says whether that agrees with the identity before, and what another vehicle
+    /// identified meanwhile, which does not end it), it is lost or out of time, then goes back
+    /// to the order it was on); collect
     /// (satellite imagery or SAR of an area) or cover (is SATCOM or GNSS service good enough
     /// over an area) on the space segment; engage (nominate an abstract effect on a track
     /// declared hostile, by an operator or by rule, with one armed platform: only human

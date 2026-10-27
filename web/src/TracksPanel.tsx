@@ -348,7 +348,7 @@ function Detail({ t, nowMs, staleAfterS, vehicles, onFocus, onEngage }: { t: Tra
           <button
             className="ghost mini"
             onClick={() => setIdentifying((v) => !v)}
-            title={`Send a vehicle to identify this track: it orbits the track at its camera's standoff, following it, until our own sensors identify it${t.identity.level === 'identify' ? ' again (saying whether that agrees with what it is now)' : ''}, it is lost or out of time, then goes back to what it was doing`}
+            title={`Send a vehicle to identify this track: it orbits the track at its camera's standoff, following it, until its own sensors identify it${t.identity.level === 'identify' ? ' again (saying whether that agrees with what it is now)' : ''}, it is lost or out of time, then goes back to what it was doing`}
           >
             identify...
           </button>
