@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 67] = [
+const LOGS: [(&str, u32); 71] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -190,13 +190,21 @@ const LOGS: [(&str, u32); 67] = [
     ("v21-engagement-scenario-01.jsonl", IDENTIFY_SINCE),
     ("v21-identify-follows-a-moving-boat-scenario-109.jsonl", IDENTIFY_SINCE),
     ("v21-identify-returns-to-its-patrol-scenario-112.jsonl", IDENTIFY_SINCE),
+    // rules 22 (bd murmur-n6a, route planning and a second look; a clean build of 0a641de):
+    // scenario 01 (nothing routed: as rules 21 decided it), 113 (the owner's patrol, its transit
+    // routed through the Golden Gate's main span), 116 (no route on water into an enclosed pool:
+    // refused, saying why) and 117 (a second look at an AIS-identified boat that contradicts it)
+    ("v22-engagement-scenario-01.jsonl", ROUTE_PLAN_SINCE),
+    ("v22-patrol-routed-through-the-main-span-scenario-113.jsonl", ROUTE_PLAN_SINCE),
+    ("v22-no-route-into-an-enclosed-pool-scenario-116.jsonl", ROUTE_PLAN_SINCE),
+    ("v22-second-look-contradicts-ais-scenario-117.jsonl", IDENTIFY_SECOND_LOOK_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v21-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v22-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -562,6 +570,47 @@ fn an_identify_order_is_caught_under_older_rules() {
     let w = whats(&r);
     assert!(w.iter().any(|m| m.contains("check results differ")), "{w:?}");
     assert!(w.iter().any(|m| m.contains("identify step of an order not looking")), "{w:?}");
+}
+
+/// Rules 22: a v22 log claiming rules 21 still carries a routed leg, which no rules 21 decision
+/// plans; a second look at an identified track, which no rules 21 check passes.
+#[test]
+fn a_routed_leg_and_a_second_look_are_caught_under_older_rules() {
+    let v22 = format!("\"rules_version\":{ROUTE_PLAN_SINCE},");
+    let older = format!("\"rules_version\":{IDENTIFY_SINCE},");
+    let mut ls = lines(&fixture("v22-patrol-routed-through-the-main-span-scenario-113.jsonl"));
+    assert!(ls[0].contains(&v22));
+    ls[0] = ls[0].replacen(&v22, &older, 1);
+    let r = with(&rechain(&ls), RulesAccepted::Exactly(IDENTIFY_SINCE));
+    let w = whats(&r);
+    assert!(w.iter().any(|m| m.contains("a decision with routed legs under rules that plan none")), "{w:?}");
+    let mut ls = lines(&fixture("v22-second-look-contradicts-ais-scenario-117.jsonl"));
+    ls[0] = ls[0].replacen(&v22, &older, 1);
+    let r = with(&rechain(&ls), RulesAccepted::Exactly(IDENTIFY_SINCE));
+    let w = whats(&r);
+    assert!(w.iter().any(|m| m.contains("check results differ")), "{w:?}");
+}
+
+/// Rules 22: a dispatch flown through another waypoint than its check planned, or a plan that is
+/// not the planner's on its own logged grid, is caught.
+#[test]
+fn a_routed_waypoint_moved_in_the_log_is_caught() {
+    let ls = lines(&fixture("v22-patrol-routed-through-the-main-span-scenario-113.jsonl"));
+    let via = "[[-122.4757178917956,37.81493256916996]]";
+    let moved = "[[-122.4757178917956,37.8169]]";
+    // the dispatch's waypoint only
+    let k = ls.iter().position(|l| l.contains("\"type\":\"intent.dispatched\"")).unwrap();
+    let mut a = ls.clone();
+    assert!(a[k].contains(via));
+    a[k] = a[k].replacen(via, moved, 1);
+    let w = whats(&with(&rechain(&a), RulesAccepted::Exactly(ROUTE_PLAN_SINCE))).iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert!(w.iter().any(|m| m.contains("dispatched with other routed waypoints")), "{w:?}");
+    // the plan in the decision's inputs
+    let j = ls.iter().position(|l| l.contains("\"route_plans\"") && l.contains(via)).unwrap();
+    let mut b = ls.clone();
+    b[j] = b[j].replacen(via, moved, 1);
+    let w = whats(&with(&rechain(&b), RulesAccepted::Exactly(ROUTE_PLAN_SINCE))).iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert!(w.iter().any(|m| m.contains("a routed leg differs from its plan on its own grid")), "{w:?}");
 }
 
 #[test]

@@ -1944,6 +1944,12 @@ Rules versions:
   second look at an AIS-identified boat that contradicts its AIS; `--rules 21`: refused); the
   runner's `land` polygons, a vehicle's `home`, `expect_routed` and a track's `level_conflict`.
   `tests/rules.rs` (the geofence's routed legs), `tests/rules21.rs` (the second look).
+  Fixtures (a clean build of `0a641de`): `tests/data/audit/v22-engagement-scenario-01.jsonl`,
+  `v22-patrol-routed-through-the-main-span-scenario-113.jsonl` (relabelled rules 21, its plan
+  is caught; a waypoint moved in its dispatch or its plan is caught),
+  `v22-no-route-into-an-enclosed-pool-scenario-116.jsonl`,
+  `v22-second-look-contradicts-ais-scenario-117.jsonl` (relabelled rules 21, its checks are
+  caught).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
