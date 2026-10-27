@@ -10,6 +10,8 @@ import {
   checksLine,
   declarationLine,
   evidenceBullets,
+  fallbackNote,
+  fallbacksFor,
   nominateReady,
   platformLine,
   radiusFor,
@@ -143,3 +145,10 @@ eq(declarationLine({ affiliation: 'hostile', by: 'op-1', rule: false }), 'Declar
 eq(declarationLine(ruleDecl), "Declared hostile by the engine's rule (act A-1), not confirmed by an operator", 'rule declaration')
 
 console.log('engageSteps: ok')
+
+// fallbacks: a plane can only return (ArduPlane has no lost-link hold), a sub only hold, a boat all three
+eq(fallbacksFor('plane'), ['return'], 'a plane can only return')
+eq(fallbacksFor('sub'), ['abort', 'loiter'], 'a sub cannot return')
+eq(fallbacksFor('unknown'), null, 'an unknown kind is left to the engine')
+eq(fallbackNote('REAPER 1', 'plane'), 'REAPER 1 can only return home if its link is lost: its autopilot has no other lost-link action', 'the plane note')
+eq(fallbackNote('HUNTER 1', 'boat'), null, 'no note when every fallback is offered')

@@ -657,6 +657,17 @@
 .eg-fallbacks input {
   accent-color: var(--accent);
 }
+/* a fallback the chosen platform can't be given: shown, off, the note below saying why */
+.eg-fallbacks label.off {
+  color: var(--muted);
+  opacity: 0.55;
+}
+.eg-fallback-note {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+}
 .eg-plain {
   font-size: 12px;
   line-height: 1.4;

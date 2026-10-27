@@ -27,6 +27,8 @@ import {
   declFacts,
   dist,
   evidenceBullets,
+  fallbackNote,
+  fallbacksFor,
   nominateReady,
   platformLine,
   radiusFor,
@@ -277,6 +279,16 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
     const v = vehicleOf(u)
     return v ? callsign(v) : `vehicle ${u}`
   }
+  // the fallbacks the chosen platform can be given (its own lost-link action): the others are off,
+  // and a choice it can't take moves to one it can, the note saying why
+  const chosenKind = uid != null ? vehicleOf(uid)?.kind : null
+  const canFall = fallbacksFor(chosenKind)
+  const fallNote = uid != null ? fallbackNote(nameOf(uid), chosenKind) : null
+  useEffect(() => {
+    if (canFall?.length && !canFall.includes(fallback)) setFallback(canFall[0])
+    // only when the platform changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uid, chosenKind])
   const modelOf = (u: number) => {
     const v = vehicleOf(u)
     return v?.identity?.short ?? v?.identity?.platform ?? ''
@@ -472,12 +484,16 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
           </div>
           <fieldset className="eg-fallbacks">
             <legend>If it stops before the effect (an abort, a void, a lost link)</legend>
-            {FALLBACKS.map((f) => (
-              <label key={f}>
-                <input type="radio" name="fallback" checked={fallback === f} onChange={() => setFallback(f)} />
-                {FALLBACK_LABEL[f]}
-              </label>
-            ))}
+            {FALLBACKS.map((f) => {
+              const off = canFall != null && !canFall.includes(f)
+              return (
+                <label key={f} className={off ? 'off' : undefined} title={off && fallNote ? fallNote : undefined}>
+                  <input type="radio" name="fallback" checked={fallback === f} disabled={off} onChange={() => setFallback(f)} />
+                  {FALLBACK_LABEL[f]}
+                </label>
+              )
+            })}
+            {fallNote && <p className="eg-fallback-note">{fallNote}</p>}
           </fieldset>
           {effectFails.map((c) => {
             const r = radiusFor(c)

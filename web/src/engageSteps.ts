@@ -12,9 +12,10 @@
 // and named in what keeps Nominate disabled (`nominateReady`).
 import { reasonBluf } from './bluf.ts'
 import type { Check } from './decisions'
-import type { BehavingInfo, EngageOption, KeepOutExplanation, KeepOutItem, KeepOutLost } from './engage'
+import type { BehavingInfo, EngageOption, Fallback, KeepOutExplanation, KeepOutItem, KeepOutLost } from './engage'
 import type { Against, Declaration, RuleEvidence } from './ident'
 import type { Track } from './tracks'
+import type { Kind } from './types'
 
 export type Step = 'target' | 'platform' | 'effect' | 'checks'
 
@@ -304,7 +305,7 @@ export function clearText(c: Check, o: EngageOption | null, ctx: ClearContext, n
     case 'no_strike':
       return 'a smaller radius (step 3), or the point clear of the no-strike area'
     case 'fallback_preload':
-      return 'another fallback (step 3)'
+      return 'a fallback the platform can be given (step 3)'
     default:
       return ''
   }
@@ -415,4 +416,36 @@ export function nominateReady(a: { target: TargetState; option: EngageOption | n
   }
   if (!a.stepUpOk) missing.push('Your password or passkey, for the acceptance')
   return { ok: missing.length === 0, missing, onAcceptances }
+}
+
+/** The fallbacks each autopilot can be given as its own lost-link action, which an engagement's
+ *  fallback is preloaded as (rules 6; crates/murmur-decide/src/engage.rs, the fallback preload:
+ *  change both together). A kind not listed has none; an unknown one is left to the engine's check. */
+const FALLBACKS_BY_KIND: Partial<Record<Kind, Fallback[]>> = {
+  plane: ['return'],
+  vtol: ['return'],
+  copter: ['return', 'abort', 'loiter'],
+  boat: ['return', 'abort', 'loiter'],
+  ugv: ['return', 'abort', 'loiter'],
+  sub: ['abort', 'loiter'],
+  blimp: [],
+  tracker: [],
+}
+
+/** The fallbacks a platform of this kind can be given (null: not known here, all offered). */
+export function fallbacksFor(kind: Kind | null | undefined): Fallback[] | null {
+  if (!kind || kind === 'unknown') return null
+  return FALLBACKS_BY_KIND[kind] ?? []
+}
+
+const FALLBACK_WORDS: Record<Fallback, string> = { return: 'return home', abort: 'hold where it is', loiter: 'orbit where it is' }
+
+/** Why the other fallbacks are off, in plain words ("REAPER 1 can only return home if its link
+ *  is lost: its autopilot has no other lost-link action"), or null when every one is offered. */
+export function fallbackNote(name: string, kind: Kind | null | undefined): string | null {
+  const ok = fallbacksFor(kind)
+  if (!ok || ok.length === 3) return null
+  if (!ok.length) return `${name} has no lost-link action Murmur can set, so it can't be given a fallback`
+  const words = ok.map((f) => FALLBACK_WORDS[f]).join(' or ')
+  return `${name} can only ${words} if its link is lost: its autopilot has no other lost-link action`
 }
