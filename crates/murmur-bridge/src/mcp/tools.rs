@@ -186,7 +186,13 @@ pub struct IntentParams {
     pub fallback: Option<String>,
     /// Why this task, on these vehicles, now. Required for propose_intent (the operator
     /// reads it in the inbox and it goes to the audit log); optional for preview_intent.
-    /// Name the facts you relied on and any that were stale.
+    /// Name the facts you relied on and any that were stale. Shape it so it reads in seconds:
+    /// line 1 is the bottom line (what you want and why now, one short line), then 1 to 4 lines
+    /// each starting "- " (the key facts, with their ages), then, after a blank line, any
+    /// detail. It stays one plain string; the console shows the first line and the bullets, and
+    /// the rest behind a "More" click. Example, three lines: "Orbit PUMA 1 on T-0007 (no AIS)",
+    /// "- 1.5 km west of the bridge, held 4 min (radar, 3 s old)", "- the only unidentified
+    /// contact near the lane".
     pub rationale: Option<String>,
     /// Not an agent's to give (not in the schema): accepting a lost vehicle or a lost contact
     /// for an engagement is an operator's decision. Given, the request is refused (403), as
@@ -575,7 +581,10 @@ pub fn tools() -> Vec<Tool> {
              uids, effect_radius_m, fallback abort, return or loiter, optional window_s; it \
              always waits for two human operators with engagement authority, never its \
              proposer, and the effect is an abstract event), with constraints and a required \
-             rationale. The engine checks it (fail closed) and the policy routes it: an auto \
+             rationale (shaped so the operator reads it in seconds: line 1 the bottom line, \
+             then 1 to 4 lines starting \"- \" with the key facts, then after a blank line \
+             any detail; the console shows the bottom line and the bullets, and keeps the \
+             detail behind a More click). The engine checks it (fail closed) and the policy routes it: an auto \
              tier runs it at once (the response says dispatched true); a human tier puts it \
              in the operator's inbox with your id and rationale, where only a listed human \
              operator can decide it, and it expires if nobody does (a collect, while its \
