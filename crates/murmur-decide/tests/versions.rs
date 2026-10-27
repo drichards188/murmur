@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 71] = [
+const LOGS: [(&str, u32); 73] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -198,13 +198,19 @@ const LOGS: [(&str, u32); 71] = [
     ("v22-patrol-routed-through-the-main-span-scenario-113.jsonl", ROUTE_PLAN_SINCE),
     ("v22-no-route-into-an-enclosed-pool-scenario-116.jsonl", ROUTE_PLAN_SINCE),
     ("v22-second-look-contradicts-ais-scenario-117.jsonl", IDENTIFY_SECOND_LOOK_SINCE),
+    // rules 23 (an identify order ends on its own vehicle's look; a clean build of 5795f45):
+    // scenario 01 (no identify order: as rules 22 decided it) and 118 (HUNTER 1's camera
+    // re-identifies the cargo ship PUMA 1 was sent to: noted meanwhile, the order going on until
+    // PUMA 1's own look)
+    ("v23-engagement-scenario-01.jsonl", IDENTIFY_OWN_LOOK_SINCE),
+    ("v23-own-look-not-ended-by-another-camera-scenario-118.jsonl", IDENTIFY_OWN_LOOK_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v22-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v23-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -611,6 +617,25 @@ fn a_routed_waypoint_moved_in_the_log_is_caught() {
     b[j] = b[j].replacen(via, moved, 1);
     let w = whats(&with(&rechain(&b), RulesAccepted::Exactly(ROUTE_PLAN_SINCE))).iter().map(|s| s.to_string()).collect::<Vec<_>>();
     assert!(w.iter().any(|m| m.contains("a routed leg differs from its plan on its own grid")), "{w:?}");
+}
+
+/// Rules 23: an identification meanwhile cut from the log leaves an end that says it and a
+/// picture that holds it; the log relabelled rules 22 notes one those rules never note, and ends
+/// later than they would.
+#[test]
+fn an_identification_meanwhile_is_caught_when_cut_or_under_older_rules() {
+    let ls = lines(&fixture("v23-own-look-not-ended-by-another-camera-scenario-118.jsonl"));
+    let cut: Vec<String> = ls.iter().filter(|l| !l.contains("\"step\":\"meanwhile\"")).cloned().collect();
+    assert_eq!(cut.len() + 1, ls.len());
+    let w: Vec<String> = whats(&with(&rechain(&cut), RulesAccepted::Exactly(IDENTIFY_OWN_LOOK_SINCE))).iter().map(|s| s.to_string()).collect();
+    assert!(w.iter().any(|m| m.contains("ended with an identification meanwhile not noted")), "{w:?}");
+    assert!(w.iter().any(|m| m.contains("look ended other than its picture says")), "{w:?}");
+    let v23 = format!("\"rules_version\":{IDENTIFY_OWN_LOOK_SINCE},");
+    let mut old = ls.clone();
+    assert!(old[0].contains(&v23));
+    old[0] = old[0].replacen(&v23, &format!("\"rules_version\":{ROUTE_PLAN_SINCE},"), 1);
+    let w: Vec<String> = whats(&with(&rechain(&old), RulesAccepted::Exactly(ROUTE_PLAN_SINCE))).iter().map(|s| s.to_string()).collect();
+    assert!(w.iter().any(|m| m.contains("an identification meanwhile noted under rules that end on any")), "{w:?}");
 }
 
 #[test]

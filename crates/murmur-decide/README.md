@@ -1977,6 +1977,9 @@ Rules versions:
   1's camera re-identifies the cargo ship PUMA 1 was sent to; `--rules 22` ends the order then,
   as the run did); 108, 112 and 117 name the vehicle whose own look identified it; the runner's
   vehicle `callsign` and a `meanwhile` identify report. `tests/rules21.rs` (the own look).
+  Fixtures (a clean build of `5795f45`): `tests/data/audit/v23-engagement-scenario-01.jsonl`,
+  `v23-own-look-not-ended-by-another-camera-scenario-118.jsonl` (its meanwhile step cut is
+  caught; relabelled rules 22, the step is caught).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
