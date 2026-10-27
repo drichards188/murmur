@@ -16,6 +16,7 @@ import type { LngLat } from './types'
  *   tracks-columns      one without (unranged): a dashed column through its plan position
  *   tracks-leaders      stale: a line from the last fix to the dead-reckoned position
  *   tracks-selection    ring around the selected track
+ *   tracks-pickable     while an identify target is picked (rules 21): a ring on each contact it can go to
  *   tracks              the 2525 frame with the estimated affiliation (pickable: onClick)
  *   tracks-ids          "T-0001 · 450 m" right of the frame (its height or depth, or "alt ?"),
  *                       tracks-kinds the estimated kind and its level left of it
@@ -51,6 +52,8 @@ export interface TrackLayerInput {
   selected: string | null
   staleAfterS: number
   onClick?: (id: string) => void
+  /** while an identify target is picked: the contacts it can go to (live, not identified yet) */
+  pickable?: Set<string> | null
   /** what the camera cannot show at its height (aloft.ts) */
   screen?: MapScreen
 }
@@ -68,6 +71,8 @@ const RING: Record<Track['affiliation'], RGBA> = {
 const TEXT: RGBA = [215, 221, 228, 255]
 const OUTLINE: RGBA = [11, 15, 20, 255]
 const ACCENT: RGBA = [255, 179, 71, 255]
+/** an identify target that can be picked */
+const PICK: RGBA = [127, 184, 255, 235]
 const FONT = 'IBM Plex Mono, ui-monospace, monospace'
 const FONT_SETTINGS = { sdf: true, fontSize: 48, buffer: 6 }
 
@@ -120,7 +125,7 @@ function columnDashes(at: LngLat, domain: TrackDomain, color: RGBA, alpha: numbe
   }
 }
 
-export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfterS, onClick, screen = NO_SCREEN }: TrackLayerInput) {
+export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfterS, onClick, pickable = null, screen = NO_SCREEN }: TrackLayerInput) {
   /** the symbol's height, rendered metres: its altitude, else its column's drawing height */
   const symZ = (domain: TrackDomain, alt: number | null) => (alt ?? UNKNOWN_DRAW_M[domain] ?? 0) * HEIGHT_EXAGGERATION
   const z = (t: Track) => symZ(t.domain, t.alt_m)
@@ -252,6 +257,21 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
       getWidth: 1,
       widthUnits: 'pixels',
       updateTriggers: { getTargetPosition: tick, getColor: tick },
+      parameters: onTop,
+    }),
+    new ScatterplotLayer<Track>({
+      id: 'tracks-pickable',
+      data: pickable ? tracks.filter((t) => pickable.has(t.id)) : [],
+      getPosition: at,
+      getRadius: 18,
+      radiusUnits: 'pixels',
+      billboard: true,
+      stroked: true,
+      filled: false,
+      getLineColor: PICK,
+      getLineWidth: 1.5,
+      lineWidthUnits: 'pixels',
+      updateTriggers: { getPosition: tick },
       parameters: onTop,
     }),
     new ScatterplotLayer<Track>({

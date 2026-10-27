@@ -225,10 +225,15 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         selected: selectedTrack,
         staleAfterS: tracks?.stale_after_s ?? 10,
         onClick: onTrackClick,
+        // picking an identify target: ring the contacts it can go to (live, not identified yet)
+        pickable:
+          draft.mode === 'identify' && selected.size === 1
+            ? new Set((tracks?.tracks ?? []).filter((t) => !isTrackStale(t, now(), tracks?.stale_after_s ?? 10) && t.identity.level !== 'identify').map((t) => t.id))
+            : null,
         screen,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tracks, selectedTrack, trackTick, onTrackClick],
+    [tracks, selectedTrack, trackTick, onTrackClick, draft.mode, selected],
   )
   identifyRef.current = { on: draft.mode === 'identify' && selected.size === 1, tracks: tracks?.tracks ?? [], staleAfterS: tracks?.stale_after_s ?? 10 }
   // rules 21: the identify draft on the map: its orbit's ring on the target where it is now, a

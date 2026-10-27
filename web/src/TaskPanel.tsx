@@ -47,7 +47,7 @@ const TASKS: { kind: PanelKind; label: string; hint: string }[] = [
   {
     kind: 'identify',
     label: 'Identify',
-    hint: "Click the contact to identify on the map. The vehicle orbits it at its camera's standoff, following it, until it is identified, then goes back to what it was doing.",
+    hint: "Click a ringed contact on the map (the ones not identified yet). The vehicle orbits it at its camera's standoff, following it, until it is identified, then goes back to what it was doing.",
   },
 ]
 
@@ -271,12 +271,12 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
                 ))}
               </div>
               <p className="hint">
-                {kind === 'identify' && draft.note
-                  ? draft.note
-                  : kind === 'identify' && draft.track
-                    ? `Target ${draft.track}: click another contact to change it.`
-                    : TASKS.find((t) => t.kind === kind)!.hint}
+                {kind === 'identify' && draft.track
+                  ? `Target ${draft.track}: click another ringed contact to change it.`
+                  : TASKS.find((t) => t.kind === kind)!.hint}
               </p>
+              {/* a click that picked nothing: why, where it can't be missed */}
+              {kind === 'identify' && draft.note && <p className="error">{draft.note}</p>}
               {idTrack && (
                 <p className={`hint ${idOption && !idOption.passed ? 'error' : ''}`}>
                   {idOption ? <OptionLine o={idOption} name={false} /> : idError ? null : 'Asking the bridge...'}
