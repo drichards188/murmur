@@ -92,6 +92,8 @@ export function DryRun({ st, vehicles }: { st: DryRunState; vehicles: Vehicle[] 
   const unverified = a ? a.checks.filter((c) => c.outcome === 'unverified').length : 0
   const v = a ? verdictOf(a) : null
   const link = a?.link_coverage
+  // rules 22: the legs the planner routed (one it could not route is a failing check above)
+  const routed = Object.entries(a?.routes ?? {}).flatMap(([uid, legs]) => legs.filter((p) => !p.no_route).map((p) => ({ uid, p })))
   return (
     <div className="dry" aria-label="Dry run" aria-live="polite">
       <div className="dry-head">
@@ -111,6 +113,15 @@ export function DryRun({ st, vehicles }: { st: DryRunState; vehicles: Vehicle[] 
         </ul>
       )}
       {a && unverified > 0 && <p className="muted">{unverified} check{unverified > 1 ? 's' : ''} could not be verified.</p>}
+      {routed.length > 0 && (
+        <ul aria-label="Routed">
+          {routed.map(({ uid, p }, k) => (
+            <li key={k}>
+              <b>routed</b> ({nameOf(uid)}): {p.summary}
+            </li>
+          ))}
+        </ul>
+      )}
       {link && (
         <div className="lk">
           <div className="lk-head">

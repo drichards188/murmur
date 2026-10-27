@@ -363,6 +363,38 @@ export interface OrderShape {
   route?: LngLat[]
 }
 
+/** Rules 22 (`routes` in a dry run): a leg the decision engine's planner routed round land, water
+ *  or a no-go area (`via`, the waypoints it adds), or could not (`no_route`, why). */
+export interface PlannedLegView {
+  /** as the rules name it: "transit leg (position to waypoint 1)", "task path leg 2-1" */
+  leg: string
+  from: LngLat
+  to: LngLat
+  /** what the straight leg met: "land at (-122.47640, 37.81347)", "no-go gg-towers" */
+  met: string
+  keeps?: string | null
+  via?: LngLat[]
+  no_route?: string | null
+  added_m: number
+  summary: string
+}
+
+/** `routes` in a dry run: by vehicle uid. */
+export type PlannedRoutes = Record<string, PlannedLegView[]>
+
+/** The waypoints a plan routes a vehicle's transit through, and each task path leg's (by the
+ *  index of the point it starts at), from its planned legs. */
+function routedVia(plan: PlannedLegView[] | undefined): { transit: LngLat[]; path: Map<number, LngLat[]> } {
+  const out = { transit: [] as LngLat[], path: new Map<number, LngLat[]>() }
+  for (const p of plan ?? []) {
+    if (!p.via?.length) continue
+    if (p.leg.startsWith('transit leg')) out.transit = p.via
+    const m = /^task path leg (\d+)-\d+$/.exec(p.leg)
+    if (m) out.path.set(Number(m[1]) - 1, p.via)
+  }
+  return out
+}
+
 /** Where a vehicle was, and its home, when the dry run was asked. */
 export interface VehicleAt {
   position: LngLat | null
@@ -373,15 +405,23 @@ export interface VehicleAt {
  *  the transit from where it is to the task's first point, the task path (one lap, closed), the
  *  return from where the task ends (its first point, a loop) to home; an rtl's return from where
  *  it is; a hold or a track where it is. The orbit is drawn as the circle the console draws
- *  everywhere (its first point due north of the centre, as the engine's ring of 12 starts). */
-export function legPaths(order: OrderShape, v: VehicleAt): Partial<Record<RoutePart, LngLat[]>> {
+ *  everywhere (its first point due north of the centre, as the engine's ring of 12 starts).
+ *  Rules 22: through the waypoints its `plan` routes the transit and a patrol's legs by. */
+export function legPaths(order: OrderShape, v: VehicleAt, plan?: PlannedLegView[]): Partial<Record<RoutePart, LngLat[]>> {
   const out: Partial<Record<RoutePart, LngLat[]>> = {}
+  const via = routedVia(plan)
   let task: LngLat[] | null = null
   if (order.task === 'orbit' && order.center && order.radius) task = circle(order.center, order.radius, 72)
-  else if (order.task === 'patrol' && order.route && order.route.length >= 2) task = [...order.route, order.route[0]]
+  else if (order.task === 'patrol' && order.route && order.route.length >= 2) {
+    task = []
+    for (const [i, p] of [...order.route, order.route[0]].entries()) {
+      task.push(p)
+      if (i < order.route.length) task.push(...(via.path.get(i) ?? []))
+    }
+  }
   if (task) {
     out.task = task
-    if (v.position) out.transit = [v.position, task[0]]
+    if (v.position) out.transit = [v.position, ...via.transit, task[0]]
     if (v.home) out.return = [task[0], v.home]
   } else if (order.task === 'rtl') {
     if (v.position && v.home) out.return = [v.position, v.home]
@@ -426,8 +466,9 @@ export interface RouteLine {
 
 export interface RouteMark {
   at: LngLat
-  /** where the link first goes down on the way, or where the failsafe trips */
-  kind: 'down' | 'trip'
+  /** where the link first goes down on the way, or where the failsafe trips; rules 22: where a
+   *  refused order's leg meets what refuses it, or a routed leg's first waypoint */
+  kind: 'down' | 'trip' | 'refused' | 'routed'
   text: string
 }
 
@@ -436,11 +477,14 @@ export interface RouteDot {
   state: LinkState
 }
 
-/** What MapView draws for an order's predicted link. */
+/** What MapView draws for an order's predicted link; rules 22: and its planned route (each routed
+ *  leg through its waypoints, drawn with or without a link prediction). */
 export interface LinkRouteDrawing {
   lines: RouteLine[]
   marks: RouteMark[]
   dots: RouteDot[]
+  routed?: LngLat[][]
+  waypoints?: LngLat[]
 }
 
 export const EMPTY_ROUTE: LinkRouteDrawing = { lines: [], marks: [], dots: [] }
@@ -453,14 +497,14 @@ function secs(s: number): string {
  *  bridge measures along the engine's legs; the drawn ones can differ by a few per cent, an
  *  orbit's circle against the engine's ring of 12), with marks where the link first goes down on
  *  the way and where the failsafe trips. */
-export function routeDrawing(answer: OrderLink | null, order: OrderShape, at: Map<number, VehicleAt>): LinkRouteDrawing {
+export function routeDrawing(answer: OrderLink | null, order: OrderShape, at: Map<number, VehicleAt>, routes?: PlannedRoutes | null): LinkRouteDrawing {
   if (!answer?.vehicles?.length) return EMPTY_ROUTE
   const lines: RouteLine[] = []
   const marks: RouteMark[] = []
   const dots: RouteDot[] = []
   for (const v of answer.vehicles) {
     if (v.error || !v.legs) continue
-    const paths = legPaths(order, at.get(v.uid) ?? { position: null, home: null })
+    const paths = legPaths(order, at.get(v.uid) ?? { position: null, home: null }, routes?.[String(v.uid)])
     for (const leg of v.legs) {
       const path = paths[leg.part]
       if (!path?.length) continue
@@ -488,6 +532,45 @@ export function routeDrawing(answer: OrderLink | null, order: OrderShape, at: Ma
 }
 
 const rank = (s: LinkState) => (s === 'down' ? 2 : s === 'degraded' ? 1 : 0)
+
+/** The first "(lon, lat)" in a check's words (the domain rule's "crosses land at (-122.47640,
+ *  37.81347)", the geofence's), or null. */
+export function pointIn(text: string): LngLat | null {
+  const m = /\((-?\d+(?:\.\d+)?), (-?\d+(?:\.\d+)?)\)/.exec(text)
+  if (!m) return null
+  const p: LngLat = [Number(m[1]), Number(m[2])]
+  return Math.abs(p[0]) <= 180 && Math.abs(p[1]) <= 90 ? p : null
+}
+
+/** Rules 22: an order's planned route on the map, with or without a link prediction: each routed
+ *  leg through its waypoints, a mark at its first waypoint saying what it added, and a mark where
+ *  each failing domain or geofence check meets what refuses the order. `name` gives a vehicle's
+ *  callsign by uid. */
+export function planDrawing(
+  routes: PlannedRoutes | null | undefined,
+  failed: { rule: string; uid: string | null; detail: string }[],
+  name: (uid: string | null) => string | null,
+): Pick<LinkRouteDrawing, 'routed' | 'waypoints' | 'marks'> {
+  const routed: LngLat[][] = []
+  const waypoints: LngLat[] = []
+  const marks: RouteMark[] = []
+  for (const [uid, legs] of Object.entries(routes ?? {})) {
+    for (const p of legs) {
+      if (!p.via?.length) continue
+      routed.push([p.from, ...p.via, p.to])
+      waypoints.push(...p.via)
+      const what = p.met.startsWith('no-go') ? p.met : p.met.replace(/ at \(.*\)$/, '')
+      marks.push({ at: p.via[0], kind: 'routed', text: `${name(uid) ?? `uid ${uid}`} · ROUTED ROUND ${what.toUpperCase()} · +${Math.round(p.added_m)} m` })
+    }
+  }
+  for (const c of failed) {
+    if (c.rule !== 'domain' && c.rule !== 'geofence') continue
+    const at = pointIn(c.detail)
+    if (!at) continue
+    marks.push({ at, kind: 'refused', text: `${name(c.uid) ?? 'order'} · REFUSED (${c.rule})` })
+  }
+  return { routed, waypoints, marks }
+}
 
 export function shortReason(r: LinkReason): string {
   return r === 'no_sat' ? 'no satellite' : r === 'loss' ? 'own loss' : r

@@ -1,8 +1,10 @@
 // An order's predicted link on the map (coverage.ts routeDrawing): its legs coloured up, degraded
 // and down, the return leg (the way home, flown only at the end or by the failsafe) dashed, and
-// marks where the link first goes down on the way and where the failsafe trips. Drawn on the
-// surface like the draft it is about (surfaceLayers.ts), over the scene so neither the terrain nor
-// the seabed hides it.
+// marks where the link first goes down on the way and where the failsafe trips. Rules 22: the
+// legs the decision engine's planner routed, thin and white through their waypoints (under the
+// link's colours where there is a prediction), a mark saying what each added, and a mark where a
+// refused order meets what refuses it. Drawn on the surface like the draft it is about
+// (surfaceLayers.ts), over the scene so neither the terrain nor the seabed hides it.
 import { PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import { STATE_RGB, type LinkRouteDrawing, type LinkState, type RouteMark } from './coverage'
 import { dashes, lift, type SurfaceScale } from './surfaceLayers'
@@ -47,7 +49,22 @@ export function buildLinkRouteLayers(d: LinkRouteDrawing, { surfaceZ, mPerPx }: 
   const at = (p: LngLat): XYZ => [p[0], p[1], surfaceZ(p)]
   const marks: Mark[] = d.marks.map((m) => ({ at: at(m.at), mark: m }))
   const dots = d.dots.map((x) => ({ at: at(x.at), color: rgba(x.state) }))
+  const routed = (d.routed ?? []).map((p) => lift(p, surfaceZ))
+  const waypoints = (d.waypoints ?? []).map(at)
+  const markFill = (m: Mark): RGBA => (m.mark.kind === 'trip' || m.mark.kind === 'refused' ? rgba('down') : WHITE)
+  const markLine = (m: Mark): RGBA => (m.mark.kind === 'trip' || m.mark.kind === 'refused' ? WHITE : m.mark.kind === 'routed' ? DARK : rgba('down'))
   return [
+    new PathLayer<XYZ[]>({
+      id: 'link-route-planned',
+      data: routed,
+      getPath: (p) => p,
+      getColor: WHITE,
+      getWidth: 2,
+      widthUnits: 'pixels',
+      capRounded: true,
+      jointRounded: true,
+      parameters: onTop,
+    }),
     new PathLayer<Line>({
       id: 'link-route-casing',
       data: casing,
@@ -88,14 +105,29 @@ export function buildLinkRouteLayers(d: LinkRouteDrawing, { surfaceZ, mPerPx }: 
       id: 'link-route-marks',
       data: marks,
       getPosition: (m) => m.at,
-      getRadius: (m) => (m.mark.kind === 'trip' ? 8 : 6),
+      getRadius: (m) => (m.mark.kind === 'trip' || m.mark.kind === 'refused' ? 8 : 6),
       radiusUnits: 'pixels',
       billboard: true,
       stroked: true,
       filled: true,
-      getFillColor: (m) => (m.mark.kind === 'trip' ? rgba('down') : WHITE),
-      getLineColor: (m) => (m.mark.kind === 'trip' ? WHITE : rgba('down')),
+      getFillColor: markFill,
+      getLineColor: markLine,
       getLineWidth: 2.5,
+      lineWidthUnits: 'pixels',
+      parameters: onTop,
+    }),
+    new ScatterplotLayer<XYZ>({
+      id: 'link-route-waypoints',
+      data: waypoints,
+      getPosition: (x) => x,
+      getRadius: 4,
+      radiusUnits: 'pixels',
+      billboard: true,
+      stroked: true,
+      filled: true,
+      getFillColor: WHITE,
+      getLineColor: DARK,
+      getLineWidth: 1.5,
       lineWidthUnits: 'pixels',
       parameters: onTop,
     }),
@@ -105,7 +137,7 @@ export function buildLinkRouteLayers(d: LinkRouteDrawing, { surfaceZ, mPerPx }: 
       getPosition: (m) => m.at,
       getText: (m) => m.mark.text,
       getSize: 11,
-      getColor: (m) => (m.mark.kind === 'trip' ? [255, 170, 170, 255] : WHITE),
+      getColor: (m) => (m.mark.kind === 'trip' || m.mark.kind === 'refused' ? [255, 170, 170, 255] : WHITE),
       getTextAnchor: 'start',
       getAlignmentBaseline: 'center',
       getPixelOffset: [13, 0],

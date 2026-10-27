@@ -194,7 +194,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     setRevealTrack({ ids: [id] })
   }, [])
   // rules 21: with one vehicle selected and Identify chosen, a click on a contact makes it the
-  // target (a live one not identified yet; an identified one says why it is not)
+  // target (rules 22: any live one, an identified one for a second look; a stale one says why not)
   const identifyRef = useRef<{ on: boolean; tracks: Track[]; staleAfterS: number }>({ on: false, tracks: [], staleAfterS: 10 })
   const onTrackClick = useCallback(
     (id: string) => {
@@ -202,11 +202,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
       if (pick.on) {
         const t = pick.tracks.find((x) => x.id === id)
         const stale = !t || isTrackStale(t, now(), pick.staleAfterS)
-        const note = stale
-          ? `${id} is not live (no fresh detection): pick a contact our sensors see now`
-          : t.identity.level === 'identify'
-            ? `${id} is identified already (${t.identity.kind ?? 'its kind'}): nothing to send`
-            : null
+        const note = stale ? `${id} is not live (no fresh detection): pick a contact our sensors see now` : null
         setDraft((d) => (d.mode === 'identify' ? { ...d, track: note ? d.track : id, note } : d))
         return
       }
@@ -225,10 +221,10 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         selected: selectedTrack,
         staleAfterS: tracks?.stale_after_s ?? 10,
         onClick: onTrackClick,
-        // picking an identify target: ring the contacts it can go to (live, not identified yet)
+        // picking an identify target: ring the contacts it can go to (every live one)
         pickable:
           draft.mode === 'identify' && selected.size === 1
-            ? new Set((tracks?.tracks ?? []).filter((t) => !isTrackStale(t, now(), tracks?.stale_after_s ?? 10) && t.identity.level !== 'identify').map((t) => t.id))
+            ? new Set((tracks?.tracks ?? []).filter((t) => !isTrackStale(t, now(), tracks?.stale_after_s ?? 10)).map((t) => t.id))
             : null,
         screen,
       }),

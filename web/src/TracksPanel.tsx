@@ -128,7 +128,7 @@ function Row({ t, nowMs, staleAfterS, sel, onClick }: { t: Track; nowMs: number;
 
 const DECLARABLE: Affiliation[] = ['hostile', 'suspect', 'neutral', 'unknown']
 
-function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: number; vehicles: Vehicle[]; onFocus: () => void; onEngage?: () => void }) {
+function Detail({ t, nowMs, staleAfterS, vehicles, onFocus, onEngage }: { t: Track; nowMs: number; staleAfterS: number; vehicles: Vehicle[]; onFocus: () => void; onEngage?: () => void }) {
   const [busy, setBusy] = useState<Affiliation | null>(null)
   const [err, setErr] = useState<string | null>(null)
   // rules 8: when the policy lists declare_hostile, a hostile declaration takes the
@@ -143,8 +143,9 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
   const [revoking, setRevoking] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [asking, setAsking] = useState(false)
-  // rules 21: the form that sends a vehicle to identify it
+  // rules 21: the form that sends a vehicle to identify it (rules 22: while the track is live)
   const [identifying, setIdentifying] = useState(false)
+  const live = !isTrackStale(t, nowMs, staleAfterS)
   // rules 10: the password again, or the passkey (where the run asks for one)
   const [step, setStep] = useStepUp()
   const [stepUpError, setStepUpError] = useState(false)
@@ -342,8 +343,13 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
         <button className="ghost mini" onClick={onFocus}>
           fly to
         </button>
-        {t.identity.level !== 'identify' && (
-          <button className="ghost mini" onClick={() => setIdentifying((v) => !v)} title="Send a vehicle to identify this track: it orbits the track at its camera's standoff, following it, until it is identified, lost or out of time, then goes back to what it was doing">
+        {/* rules 22: any live track, an identified one for a second look by our own sensors */}
+        {live && (
+          <button
+            className="ghost mini"
+            onClick={() => setIdentifying((v) => !v)}
+            title={`Send a vehicle to identify this track: it orbits the track at its camera's standoff, following it, until our own sensors identify it${t.identity.level === 'identify' ? ' again (saying whether that agrees with what it is now)' : ''}, it is lost or out of time, then goes back to what it was doing`}
+          >
             identify...
           </button>
         )}
@@ -392,7 +398,7 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
           </button>
         </div>
       )}
-      {identifying && t.identity.level !== 'identify' && <IdentifyForm track={t.id} vehicles={vehicles} onClose={() => setIdentifying(false)} />}
+      {identifying && live && <IdentifyForm track={t.id} vehicles={vehicles} onClose={() => setIdentifying(false)} />}
       {err && <p className="tk-err">{err}</p>}
     </div>
   )
@@ -441,7 +447,7 @@ export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus
         {list.map((t) => (
           <div key={t.id} data-track-id={t.id} className={flash === t.id ? 'tk-flash' : undefined}>
             <Row t={t} nowMs={nowMs} staleAfterS={staleAfterS} sel={selected === t.id} onClick={() => onSelect(selected === t.id ? null : t.id)} />
-            {selected === t.id && <Detail t={t} nowMs={nowMs} vehicles={vehicles} onFocus={() => onFocus(t)} onEngage={onEngage ? () => onEngage(t.id) : undefined} />}
+            {selected === t.id && <Detail t={t} nowMs={nowMs} staleAfterS={staleAfterS} vehicles={vehicles} onFocus={() => onFocus(t)} onEngage={onEngage ? () => onEngage(t.id) : undefined} />}
           </div>
         ))}
         {(tracks?.lost ?? []).length > 0 && (

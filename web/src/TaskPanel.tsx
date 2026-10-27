@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { EMPTY_ROUTE, routeDrawing, type LinkRouteDrawing } from './coverage'
+import { EMPTY_ROUTE, planDrawing, routeDrawing, type LinkRouteDrawing } from './coverage'
 import { DryRun } from './DryRun'
 import { useDryRun } from './useDryRun'
 import type { Draft } from './MapView'
@@ -190,12 +190,23 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
   )
   // the dry run (checks, policy, predicted link) of the order while it stands; information only
   const dry = useDryRun(busy ? null : request, vehicles)
-  const linkRoute = useMemo(
-    () => (dry.answer?.link_coverage && dry.order ? routeDrawing(dry.answer.link_coverage, dry.order, dry.at) : EMPTY_ROUTE),
-    [dry.answer, dry.order, dry.at],
-  )
+  const linkRoute = useMemo(() => {
+    const a = dry.answer
+    const link = a?.link_coverage && dry.order ? routeDrawing(a.link_coverage, dry.order, dry.at, a.routes) : EMPTY_ROUTE
+    if (!a) return link
+    // rules 22: the planned route, and where a refusal meets what refuses it
+    const name = (uid: string | null) => {
+      const v = uid == null ? null : byUid.get(Number(uid))
+      return v ? callsign(v) : null
+    }
+    const plan = planDrawing(a.routes, a.checks.filter((c) => c.outcome === 'fail'), name)
+    if (!plan.routed?.length && !plan.marks.length) return link
+    return { ...link, routed: plan.routed, waypoints: plan.waypoints, marks: [...link.marks, ...plan.marks] }
+    // byUid follows the vehicles; the answer is what changes the drawing
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dry.answer, dry.order, dry.at])
   useEffect(() => {
-    onLinkRoute?.(linkRoute.lines.length || linkRoute.dots.length || linkRoute.marks.length ? linkRoute : null)
+    onLinkRoute?.(linkRoute.lines.length || linkRoute.dots.length || linkRoute.marks.length || linkRoute.routed?.length ? linkRoute : null)
   }, [linkRoute, onLinkRoute])
   useEffect(() => () => onLinkRoute?.(null), [onLinkRoute])
 

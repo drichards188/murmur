@@ -2,7 +2,7 @@
 // which strips the types itself (make check does this):
 //   node web/src/coverage.check.ts
 // Throws on the first failure, prints "coverage: ok" otherwise. Not part of the bundle.
-import { cellAt, gridPixels, gridRequest, legPaths, routeDrawing, slicePath, cumulative, GRID_BUDGET, type CoverageGrid, type OrderLink } from './coverage.ts'
+import { cellAt, gridPixels, gridRequest, legPaths, planDrawing, pointIn, routeDrawing, slicePath, cumulative, GRID_BUDGET, type CoverageGrid, type OrderLink, type PlannedLegView } from './coverage.ts'
 import { distanceM } from './geo.ts'
 import type { LngLat } from './types.ts'
 
@@ -89,5 +89,25 @@ check(nearM(d.lines[0].path[d.lines[0].path.length - 1], mid, 5), 'the change at
 check(nearM(d.lines[1].path[d.lines[1].path.length - 1], paths.task![0], 1), 'down to its end')
 check(d.marks.length === 1 && d.marks[0].kind === 'trip' && d.marks[0].text.includes('FAILSAFE TRIPS'), 'one mark where it goes down and trips')
 check(routeDrawing({ predicted: true, vehicles: [{ uid: 3, error: 'no position' }] }, orbit, new Map()).lines.length === 0, 'an error draws nothing')
+
+// --- rules 22: a planned route through its waypoints, and where a refusal meets what refuses it
+const owner = { task: 'patrol' as const, route: [[-122.53574, 37.81098], [-122.52801, 37.77557]] as LngLat[] }
+const hunter: LngLat = [-122.4720341, 37.8136534]
+const span: LngLat = [-122.4785, 37.8155]
+const back: LngLat = [-122.531, 37.79]
+const plan: PlannedLegView[] = [
+  { leg: 'transit leg (position to waypoint 1)', from: hunter, to: owner.route[0], met: 'land at (-122.47640, 37.81347)', keeps: 'water', via: [span], added_m: 40, summary: '...' },
+  { leg: 'task path leg 2-1', from: owner.route[1], to: owner.route[0], met: 'land at (-122.53, 37.79)', keeps: 'water', via: [back], added_m: 12, summary: '...' },
+]
+const routed = legPaths(owner, { position: hunter, home: null }, plan)
+check(routed.transit?.length === 3 && routed.transit[1] === span, 'the transit goes through its waypoint')
+check(routed.task?.length === 4 && routed.task[2] === back && routed.task[3] === owner.route[0], "a two-point patrol's way back through its own")
+check(legPaths(owner, { position: hunter, home: null }).transit?.length === 2, 'without a plan: straight')
+check(JSON.stringify(pointIn('crosses land at (-122.47640, 37.81347): a boat keeps to water')) === '[-122.4764,37.81347]', 'the point in a check')
+check(pointIn('no point here (3 m)') === null, 'and none where there is none')
+const pd = planDrawing({ '7': plan.slice(0, 1) }, [{ rule: 'domain', uid: '8', detail: 'no route around land at (-122.4900, 37.8150) for the transit' }], (u) => (u === '7' ? 'HUNTER 1' : null))
+check(pd.routed?.length === 1 && pd.routed[0].length === 3 && pd.waypoints?.length === 1, 'the routed leg and its waypoint')
+check(pd.marks.length === 2 && pd.marks[0].kind === 'routed' && pd.marks[0].text === 'HUNTER 1 · ROUTED ROUND LAND · +40 m', `a mark for what it added (${pd.marks[0]?.text})`)
+check(pd.marks[1].kind === 'refused' && pd.marks[1].at[0] === -122.49, 'a mark where the refusal meets land')
 
 console.log('coverage: ok')

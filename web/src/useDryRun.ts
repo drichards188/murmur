@@ -1,18 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
 import { operatorFetch, operatorHeaders } from './auth'
 import { getOperator, type Check, type PolicyDecision } from './decisions'
-import type { OrderLink, OrderShape, VehicleAt } from './coverage'
+import type { OrderLink, OrderShape, PlannedRoutes, VehicleAt } from './coverage'
 import type { Vehicle } from './types'
 import type { TaskRequest } from './useBridge'
 
-/** `POST /api/intents/preview`: the checks and the policy now, nothing created or logged, and
- *  the predicted link along each vehicle's route (`link_coverage`, information only). */
+/** `POST /api/intents/preview`: the checks and the policy now, nothing created or logged, the
+ *  legs the planner routes (rules 22, `routes`) and the predicted link along each vehicle's route
+ *  (`link_coverage`, information only). */
 export interface DryRunAnswer {
   checks: Check[]
   passed: boolean
   policy: PolicyDecision | null
   would_reach: string
   submission_authorizes?: boolean
+  routes?: PlannedRoutes
   link_coverage?: OrderLink
 }
 
