@@ -3,6 +3,9 @@ import type { ApproveExtra, Check, Intent } from './decisions'
 import { fmtDuration, fmtZ, getOperator, intentAction, StepUpNeeded, stepsUp, useOperator, useOperators } from './decisions'
 import { reportView } from './operatorView'
 import { ChecksFold } from './Bluf'
+import { checksLine, checkTitle, declarationLine, declFactsOf, span } from './engageSteps'
+import { focusInView } from './reveal'
+import { scriptedBadge } from './situationIds'
 import { RationaleText } from './Rationale'
 import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
@@ -33,7 +36,7 @@ import {
 import './engage.css'
 import { distanceM } from './geo'
 import { secondsToImpact } from './munition'
-import { declarationBasis, unconfirmedRule } from './ident'
+import { unconfirmedRule } from './ident'
 import { stepsUpAct } from './auth'
 import type { Vehicle } from './types'
 import { callsign } from './types'
@@ -46,7 +49,7 @@ import { callsign } from './types'
  *  press. The effect is an abstract event: a point, a radius, a time. */
 
 const OUTCOME_ORDER: Record<Check['outcome'], number> = { fail: 0, unverified: 1, not_evaluated: 2, pass: 3 }
-const MARK: Record<Check['outcome'], string> = { pass: 'PASS', fail: 'FAIL', unverified: 'UNVERIFIED', not_evaluated: 'NOT EVALUATED' }
+const MARK: Record<Check['outcome'], string> = { pass: 'PASS', fail: 'BLOCKS', unverified: 'UNVERIFIED', not_evaluated: 'NOT EVALUATED' }
 
 /** Engage checks first (their order is the chain), then the generic vehicle rules. */
 const ENGAGE_RULES = [
@@ -350,20 +353,27 @@ function ll(p: [number, number]) {
 }
 
 /** The checks as the bridge last ran them on the world now (`live`), each with what it was at
- *  the nomination; without a live run, the nomination's. An engagement check is matched by
- *  rule alone (its subject changes: a keep-out names the vehicle that fails it), the
- *  generic vehicle rules by rule and vehicle. */
-function ChecksList({ checks, live, vehicles }: { checks: Check[]; live?: Check[]; vehicles: Vehicle[] }) {
+ *  the nomination; without a live run, the nomination's. Folded to one line in plain words ("All
+ *  18 pass on the world now", "1 blocks: ..."), the list behind it. An engagement check is matched
+ *  by rule alone (its subject changes: a keep-out names the vehicle that fails it), the generic
+ *  vehicle rules by rule and vehicle. */
+function ChecksList({ checks, live, vehicles, now }: { checks: Check[]; live?: Check[]; vehicles: Vehicle[]; now: number }) {
   const key = (c: Check) => (ENGAGE_RULES.includes(c.rule) ? c.rule : `${c.rule}|${c.uid ?? ''}`)
   const atNomination = new Map(checks.map((c) => [key(c), c]))
   const rank = (c: Check) => {
     const k = ENGAGE_RULES.indexOf(c.rule)
     return (k < 0 ? 100 : k) + OUTCOME_ORDER[c.outcome] * 0.01
   }
-  const sorted = [...(live ?? checks)].sort((a, b) => rank(a) - rank(b))
+  const sorted = [...(live ?? checks)].sort((a, b) => OUTCOME_ORDER[a.outcome] - OUTCOME_ORDER[b.outcome] || rank(a) - rank(b))
   const changedN = live ? sorted.filter((c) => { const t = atNomination.get(key(c)); return t != null && t.outcome !== c.outcome }).length : 0
+  const line = checksLine(sorted, null, { now }, false, live ? 'on the world now' : 'at the nomination')
   return (
-    <ChecksFold checks={sorted} note={changedN ? `${changedN} changed since nomination` : undefined}>
+    <ChecksFold
+      checks={sorted}
+      line={{ text: line.text, tone: line.tone === 'ok' ? 'ok' : 'bad' }}
+      note={changedN ? `${changedN} changed since the nomination` : undefined}
+      sub={line.clear ? `To clear: ${line.clear}` : undefined}
+    >
     <div className="eg-checks">
       {sorted.map((c, k) => {
         const then = live ? atNomination.get(key(c)) : undefined
@@ -373,7 +383,7 @@ function ChecksList({ checks, live, vehicles }: { checks: Check[]; live?: Check[
             <span className="ix-mark">{MARK[c.outcome]}</span>
             <span className="ix-text">
               <span className="ix-rule">
-                {c.rule}
+                {checkTitle(c.rule)} <code className="eg-code">{c.rule}</code>
                 {c.uid != null && <i> {nameOf(vehicles, c.uid)}</i>}
                 {changed && <em className="eg-was"> was {MARK[then.outcome].toLowerCase()} at nomination</em>}
               </span>
@@ -433,7 +443,85 @@ interface CardProps {
   onDone: (text: string, tone: 'ok' | 'bad') => void
 }
 
-/** A pending engagement nomination. */
+/** What changed since the nomination, said before anything is signed (docs/PRODUCT.md "Say what
+ *  changed"): a check that got worse, signatures dropped with their plan, the target drifting from
+ *  the nomination's preview; and, quietly, a check that got better, or nothing. The bridge
+ *  compares with the nomination (`live.changed`); once a first signature froze the plan, every
+ *  later signer signs that plan and the live checks are run on it. */
+function Changes({ view, now }: { view: Intent['engage']; now: () => number }) {
+  const live = view?.live
+  const worse = (live?.changed ?? []).filter((c) => c.worse)
+  const better = (live?.changed ?? []).filter((c) => !c.worse)
+  const drift = live?.track_drift_m ?? null
+  const drifted = drift != null && drift > 25
+  const reset = view?.reset ?? null
+  if (!live && !reset) return null
+  if (!worse.length && !reset && !better.length && !drifted) return <p className="eg-nochange">Nothing changed since the nomination.</p>
+  return (
+    <div className={worse.length || reset ? 'eg-alarm' : 'eg-changes'} role={worse.length || reset ? 'alert' : undefined}>
+      <b>Changed since the nomination</b>
+      <ul>
+        {reset && (
+          <li>
+            Signatures of {reset.dropped.join(', ')} dropped {fmtRel(reset.t - now())}: {reset.reason}. They must sign again on the picture as it is now.
+          </li>
+        )}
+        {worse.map((c, k) => (
+          <li key={`w${k}`}>
+            {checkTitle(c.rule)} now {c.now === 'pass' ? 'passes' : 'blocks'}: {c.detail}
+          </li>
+        ))}
+        {drifted && <li>The target is {Math.round(drift)} m from where the nomination's preview put it now.</li>}
+        {better.map((c, k) => (
+          <li key={`b${k}`} className="eg-better">
+            {checkTitle(c.rule)} now {c.now === 'pass' ? 'passes' : c.now}
+            {c.was ? ` (was ${c.was})` : ''}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+/** The signatures as slots: who signed and when, who still may, and why the proposer cannot. */
+function Signatures({ view, needed, now, agent }: { view: Intent['engage']; needed: number; now: () => number; agent: boolean }) {
+  const sigs = view?.signatures ?? []
+  const signed = view?.signed ?? []
+  const still = (view?.eligible ?? []).filter((x) => !signed.includes(x))
+  const proposer = view?.proposer
+  const agentProposed = agent
+  return (
+    <>
+      <div className="eg-sigs" role="list" aria-label={`Signatures, ${signed.length} of ${needed}`}>
+        {Array.from({ length: needed }, (_, k) => {
+          const s = sigs[k] ?? (signed[k] ? { by: signed[k], t: null } : null)
+          return (
+            <div key={k} role="listitem" className={`eg-sig ${s ? 'on' : ''}`}>
+              <span className="eg-sig-n">{k + 1}</span>
+              {s ? (
+                <span>
+                  <b>{s.by}</b> signed{s.t != null ? ` ${span(now() - s.t)} ago` : ''}
+                  {'self_accepted' in s && s.self_accepted ? ', with an acceptance of their own' : ''}
+                </span>
+              ) : (
+                <span className="muted">waiting</span>
+              )}
+            </div>
+          )
+        })}
+      </div>
+      <p className="eg-who">
+        {still.length ? `May still sign: ${still.join(', ')}` : 'Nobody else listed may sign'}
+        {proposer ? (agentProposed ? `. Not ${proposer}: it proposed this, and an agent never signs.` : `. Not ${proposer}: the proposer never signs (two-person rule).`) : '.'}
+      </p>
+    </>
+  )
+}
+
+/** A pending engagement nomination: what a signature would be on (a headline and bullets), what
+ *  changed, the checks in one line, the proposer's rationale, the signatures, and the decision:
+ *  Reject and "Show the plan to sign" alike, side by side; the plan the engine shows, then Sign
+ *  inside it, never where the first button was. */
 export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardProps) {
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
@@ -460,7 +548,6 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
   const canSign = hasAuthority && !isProposer && !alreadySigned
   const expired = i.expires_t != null && i.expires_t <= now()
   const worse = (live?.changed ?? []).filter((c) => c.worse)
-  const drift = live?.track_drift_m ?? null
   // how old the live checks on screen are; the signature itself quotes a picture token the
   // engine issues when asked (look, then sign)
   const ageS = live ? (now() - live.t) / 1000 : null
@@ -469,6 +556,13 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
   const plan = view?.plan ?? null
   const [shown, setShown] = useState<PictureToken | null>(null)
   const shownLeft = shown ? (shown.expires_t - now()) / 1000 : 0
+  // the plan shown is this operator's (a token bound to their session): another operator acting
+  // at this console (the dev switcher) looks again
+  const [shownFor, setShownFor] = useState(operator)
+  if (shownFor !== operator) {
+    setShownFor(operator)
+    setShown(null)
+  }
   // rules 19: an acceptance as behaving now given, revoked or lapsed while a picture is shown
   // makes the signature on it refused (409): drop it and say to look again. Only on a change of
   // the card's acceptances, so a card a moment behind the token never drops a fresh one.
@@ -482,23 +576,27 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
     }
   }
   const lapses = (view?.lapsed?.length ?? 0) > 0
+  const final = signed.length + 1 >= needed
+  const consequence = final
+    ? `Your signature (${signed.length + 1} of ${needed}) authorizes it: ${platform} is sent at once, and the engine releases the effect only while the picture still holds.`
+    : plan
+      ? `Your signature (${signed.length + 1} of ${needed}) is on the plan ${plan.by} froze; ${needed - signed.length - 1} more must sign it.`
+      : `Your signature (${signed.length + 1} of ${needed}) freezes this plan: every later signer signs exactly it.`
   const signHint = isProposer
-    ? `You (${operator}) proposed this: the proposer may not approve it (two-person rule).`
+    ? `You (${operator}) proposed this: the proposer may not sign it (two-person rule). You may reject it.`
     : !hasAuthority
       ? stepUp
         ? `${operator} has no engagement authority. Operators who may sign: ${(view?.eligible ?? []).join(', ') || 'none listed'}; each signs at their own console with their own password.`
         : `${operator} has no engagement authority (MURMUR_ENGAGE_OPERATORS). Act as one of: ${(view?.eligible ?? []).join(', ') || 'none listed'}.`
       : alreadySigned
-        ? `You (${operator}) already signed; another operator with engagement authority must.`
+        ? `You (${operator}) signed; another operator with engagement authority must.`
         : !live
-          ? 'No live picture from the bridge yet: wait for it before signing.'
+          ? 'Waiting for a live picture from the bridge before anyone can sign.'
           : !livePasses
-            ? 'Some check fails on the world now: it cannot be signed as it stands.'
+            ? 'A check blocks on the world now: it cannot be signed as it stands.'
             : stale
-              ? `The checks on screen are ${Math.round(ageS ?? 0)} s old: wait for fresh ones.`
-              : plan
-                ? `Signing as ${operator}: signature ${signed.length + 1} of ${needed}, on the plan ${plan.by} froze. Look first: the engine shows you exactly what you sign.`
-                : `Signing as ${operator}: signature 1 of ${needed}; your signature freezes the plan you are shown. Look first.`
+              ? `The checks on screen are ${Math.round(ageS ?? 0)} s old: waiting for fresh ones.`
+              : consequence
   const canApprove = canSign && livePasses && !stale
   // evaluation instrumentation (operatorView.ts), as on the approval card
   const viewed = useRef({ openedAt: performance.now(), decided: false })
@@ -549,6 +647,15 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
     }
   }
 
+  // what a signature is on: the frozen plan once there is one, else the preview on the world now
+  const point = plan?.effect_point ?? pv?.effect_point ?? null
+  const effectT = plan?.effect_t ?? pv?.effect_t ?? null
+  const radiusM = plan?.effect_radius_m ?? pv?.effect_radius_m ?? p.effect_radius_m
+  const tn = view?.track_now ?? null
+  const decl = tn?.declaration ? declarationLine(declFactsOf(tn.declaration)) : tn?.declared_by ? `Declared by ${tn.declared_by}` : 'Not declared'
+  const kind = tn?.identity ? tn.identity.replace(/_/g, ' ') : 'unclassified'
+  const windowUntil = p.window ? Math.min(p.window.until, i.expires_t ?? p.window.until) : null
+
   return (
     <article
       className={`ix-card eg-card ${selected ? 'sel' : ''} ${worse.length || lapses ? 'eg-warn' : ''}`}
@@ -557,120 +664,109 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
       onKeyDown={(e) => {
         if (e.key === 'Enter' && e.target === e.currentTarget) onFocus()
       }}
+      aria-label={`Engagement nomination i${i.id}: ${p.track} with ${platform}`}
     >
       <header className="ix-head">
         <strong className="ix-kind eg-kind">ENGAGE</strong>
         <span className="ix-id">i{i.id}</span>
-        <span className={`ix-src ${i.source.kind}`} title={i.source.kind === 'agent' ? 'nominated by an AI agent' : 'nominated by a human operator'}>
-          {i.source.kind} {i.source.id}
-        </span>
+        {scriptedBadge(i.source.id) ? (
+          <span className="ix-src scripted" title={`${i.source.id}: a situation's script, not a person and not the AI`}>
+            {scriptedBadge(i.source.id)} {i.source.id}
+          </span>
+        ) : (
+          <span className={`ix-src ${i.source.kind}`} title={i.source.kind === 'agent' ? 'nominated by an AI agent' : 'nominated by a human operator'}>
+            {i.source.kind === 'agent' ? 'AI agent' : 'operator'} {i.source.id}
+          </span>
+        )}
         {p.window && <WindowCountdown until={Math.min(p.window.until, i.expires_t ?? p.window.until)} start={i.created_t} now={now} />}
       </header>
-      <p className="eg-abstract">Abstract effect: a point, a radius, a time. Two operators with engagement authority decide; never the proposer.</p>
 
-      {worse.length > 0 && (
-        <div className="eg-alarm" role="alert">
-          <b>Picture changed since the nomination</b>
-          <ul>
-            {worse.map((c, k) => (
-              <li key={k}>
-                {c.rule}: {c.detail}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      <BehavingLapses intent={i} now={now} />
-      {drift != null && drift > 25 && (
-        <p className="eg-drift">
-          The track is {Math.round(drift)} m from where the nomination's preview put it now.
+      <div className="eg-what">
+        <p className="eg-what-head">
+          Engage {p.track} ({kind}) with {platform}
+        </p>
+        <ul className="eg-what-list">
+          <li>
+            <span className="eg-k">Target</span>
+            {tn ? (
+              <span className={unconfirmedRule(tn.declaration) || tn.affiliation !== 'hostile' ? 'warn' : ''}>
+                {tn.affiliation !== 'hostile' ? `now ${tn.affiliation}: ` : ''}
+                {decl}; seen {tn.age_s.toFixed(0)} s ago, ±{Math.round(tn.pos_sigma_m)} m
+              </span>
+            ) : (
+              <span className="bad">no longer in the picture</span>
+            )}
+          </li>
+          <li>
+            <span className="eg-k">Platform</span>
+            <span>
+              {platform}
+              {pv ? `, ${km(pv.distance_m)} out at ${pv.cruise_mps.toFixed(0)} m/s; sets off ${fmtDuration((pv.start_t - pv.t) / 1000)} after the last signature` : ''}
+            </span>
+          </li>
+          <li>
+            <span className="eg-k">Point</span>
+            <span>{point ? `${Math.round(radiusM)} m around ${ll(point)} (on the map)` : 'no intercept: see the checks'}</span>
+          </li>
+          <li>
+            <span className="eg-k">Time</span>
+            <span>
+              {effectT != null ? `effect ${fmtRel(effectT - now())}${plan ? ' (the frozen plan)' : ' if signed now'}` : 'no effect time'}
+              {windowUntil != null ? `; window closes ${fmtRel(windowUntil - now())}` : ''}
+            </span>
+          </li>
+          <li>
+            <span className="eg-k">Fallback</span>
+            <span>{FALLBACK_LABEL[p.fallback]}, if it stops before the effect</span>
+          </li>
+        </ul>
+        {pv && (
+          <details className="bluf-more" onClick={(e) => e.stopPropagation()}>
+            <summary>Preview details</summary>
+            <div className="bluf-detail rich">
+              <PreviewFacts p={pv} now={now} platform={platform} />
+              <p className="muted">
+                {live?.preview ? `On the world now, computed ${Math.max(0, Math.round(ageS ?? 0))} s ago${stale ? ' (stale)' : ''}.` : 'At the nomination.'}
+              </p>
+            </div>
+          </details>
+        )}
+      </div>
+
+      {plan && (
+        <p className="eg-plan">
+          Plan frozen by {plan.by}&apos;s signature {span(now() - plan.t)} ago: every signature is on exactly this plan; if it stops holding, all of them are dropped.
         </p>
       )}
+      <Changes view={view} now={now} />
+      <BehavingLapses intent={i} now={now} />
+
+      <section className="eg-sec">
+        <span className="ix-label">Checks</span>
+        <ChecksList checks={i.checks} live={live?.checks} vehicles={vehicles} now={now()} />
+      </section>
 
       {i.rationale && (
         <blockquote className="ix-rationale">
-          <span className="ix-label">{i.source.kind === 'agent' ? 'Agent rationale' : 'Rationale'}</span>
+          <span className="ix-label">{i.source.kind === 'agent' ? `Rationale from ${i.source.id} (an agent)` : `${i.source.id}'s rationale`}</span>
           <RationaleText rationale={i.rationale} source={i.source} />
         </blockquote>
       )}
 
-      <section className="eg-sec">
-        <span className="ix-label">Target</span>
-        <div className="eg-target">
-          <b>{p.track}</b>
-          {view?.track_now ? (
-            <span>
-              {view.track_now.affiliation}
-              {view.track_now.declaration ? (
-                <span className={unconfirmedRule(view.track_now.declaration) ? 'eg-alarm' : ''}> ({declarationBasis(view.track_now.declaration)})</span>
-              ) : view.track_now.declared_by ? (
-                ` (declared by ${view.track_now.declared_by})`
-              ) : (
-                ' (not declared)'
-              )}
-              , {view.track_now.identity ?? 'unclassified'}{' '}
-              {Math.round(100 * view.track_now.identity_confidence)}%, last seen {view.track_now.age_s.toFixed(1)} s ago, 1-sigma {Math.round(view.track_now.pos_sigma_m)} m
-            </span>
-          ) : (
-            <span className="bad">no longer in the picture</span>
-          )}
-        </div>
-      </section>
-
-      <section className="eg-sec">
-        <span className="ix-label">
-          Preview {live?.preview ? `(on the world now, computed ${Math.max(0, Math.round(ageS ?? 0))} s ago)` : '(at nomination)'}
-          {live?.preview && stale && <em className="eg-was"> stale</em>}
-        </span>
-        {pv ? <PreviewFacts p={pv} now={now} platform={platform} /> : <p className="bad">No intercept: see the reach check.</p>}
-        <p className="eg-fallback">
-          If stopped before the effect (abort, void, link loss): <b>{FALLBACK_LABEL[p.fallback]}</b>
-        </p>
-      </section>
-
-      <section className="eg-sec">
-        <span className="ix-label">
-          Checks {live ? (live.passed ? '(all pass now)' : '(some fail now)') : ''}
-        </span>
-        <ChecksList checks={i.checks} live={live?.checks} vehicles={vehicles} />
-      </section>
+      <Acceptances intent={i} vehicles={vehicles} now={now} onDone={onDone} signing />
+      {signed.length === 0 && <AcceptLostHere intent={i} now={now} onDone={onDone} />}
+      <AcceptBehavingHere intent={i} onDone={onDone} />
 
       <section className="eg-sec eg-sign">
         <span className="ix-label">
-          Approvals {signed.length} of {needed}
+          Signatures {signed.length} of {needed}
         </span>
-        {view?.reset && (
-          <p className="eg-alarm" role="status">
-            Signatures of {view.reset.dropped.join(', ')} dropped {fmtRel(view.reset.t - now())}: {view.reset.reason}. They must sign again on the picture as it is now.
-          </p>
-        )}
-        <Acceptances intent={i} vehicles={vehicles} now={now} onDone={onDone} signing />
-        {signed.length === 0 && <AcceptLostHere intent={i} now={now} onDone={onDone} />}
-        <AcceptBehavingHere intent={i} onDone={onDone} />
-        {plan && (
-          <p className="eg-plan">
-            Plan frozen by {plan.by}&apos;s signature {fmtRel(plan.t - now())}: effect at {ll(plan.effect_point)} {fmtRel(plan.effect_t - now())}, radius {Math.round(plan.effect_radius_m)} m, on {plan.track.id} ({plan.track.identity ?? 'unclassified'}, {declarationBasis(plan.track.declaration, plan.track.declared_by)}). Every signature is on this exact plan; if it stops holding, the signatures are dropped.
-          </p>
-        )}
-        {(view?.signatures ?? []).map((s) => (
-          <p key={s.by} className="muted">
-            {s.by} signed {fmtRel(s.t - now())} on the effect point {ll(s.effect_point)}
-            {s.self_accepted ? ', having also made an acceptance for it (a lost vehicle or contact, or a track as behaving now)' : ''}.
-          </p>
-        ))}
-        <p>
-          {signed.length ? `Signed: ${signed.join(', ')}. ` : ''}
-          May sign: {(view?.eligible ?? []).join(', ') || 'nobody listed'}
-          {view?.proposer ? `; not ${view.proposer} (proposer)` : ''}.
-        </p>
-        <p className={canApprove ? 'muted' : 'eg-hint'}>{signHint}</p>
+        <Signatures view={view} needed={needed} now={now} agent={i.source.kind === 'agent'} />
       </section>
 
-      <footer className="ix-actions" onClick={(e) => e.stopPropagation()}>
-        <input className="ix-note" placeholder="Note (optional)" value={note} maxLength={300} disabled={busy} onChange={(e) => setNote(e.target.value)} aria-label="Decision note" />
-        <button className="ix-reject" disabled={busy || expired} onClick={() => act('reject')}>
-          Reject
-        </button>
+      <footer className="eg-decision" onClick={(e) => e.stopPropagation()}>
+        <p className={canApprove ? 'eg-you' : 'eg-you eg-hint'}>{signHint}</p>
+        <input className="ix-note" placeholder="Note (optional, logged with your decision)" value={note} maxLength={300} disabled={busy} onChange={(e) => setNote(e.target.value)} aria-label="Decision note" />
         {canSign && stepUp && (
           <StepUpField
             passwordLabel="Your password, to sign"
@@ -682,41 +778,68 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
             bad={stepUpError}
           />
         )}
-        {shown ? (
-          <button className="ix-approve eg-approve" disabled={busy || expired || !canApprove || shownLeft <= 0 || (stepUp && !stepUpReady(step))} onClick={() => act('approve')} title={signHint}>
-            Sign this plan {signed.length + 1}/{needed}
+        <div className="eg-decide">
+          <button type="button" className="eg-btn reject" disabled={busy || expired} onClick={() => void act('reject')}>
+            Reject
           </button>
-        ) : (
-          <button className="ix-approve eg-approve" disabled={busy || expired || !canApprove} onClick={look} title={signHint}>
-            Look to sign {signed.length + 1}/{needed}
+          <button type="button" className="eg-btn sign" disabled={busy || expired || !canApprove || shown != null} onClick={() => void look()} title="The engine shows exactly the plan your signature would be on (valid a few seconds)">
+            {shown ? 'Plan shown below' : 'Show the plan to sign'}
           </button>
-        )}
+        </div>
         {shown && (
-          <div className="eg-shown" role="status">
-            <b>You would sign</b>: effect at {ll(shown.plan.effect_point)} {fmtRel(shown.plan.effect_t - now())}, radius {Math.round(shown.plan.effect_radius_m)} m, {platform}, fallback {FALLBACK_LABEL[p.fallback]}; {shown.track.id} {shown.track.identity ?? 'unclassified'}, {shown.track.affiliation} {declarationBasis(shown.track.declaration, shown.track.declared_by)}.{' '}
-            {shown.frozen ? `The plan ${plan?.by ?? ''} froze.` : 'Your signature freezes this plan.'}{' '}
-            {Object.entries(shown.unknown_accepted ?? {}).map(([uid, a]) => (
-              <span key={uid} className="eg-alarm">
-                It covers {nameOf(vehicles, uid)} accepted as lost by {a.by}
-                {a.since == null ? ' (it never reported a position)' : ` (position unknown since ${fmtRel(a.since - now())})`}.{' '}
-              </span>
-            ))}
-            {Object.entries(shown.lost_accepted ?? {}).map(([track, a]) => (
-              <span key={`lost-${track}`} className="eg-alarm">
-                It covers lost contact {track} accepted by {a.by}
-                {a.since == null ? '' : ` (out of view since ${fmtRel(a.since - now())})`}.{' '}
-              </span>
-            ))}
-            {Object.entries(shown.behaving_accepted ?? {}).map(([track, a]) => (
-              <span key={`behaving-${track}`} className="eg-alarm">
-                It covers {track} accepted as behaving now by {a.by} {fmtRel(a.t - now())} ({courseText(a.facts.velocity_mps ?? null)} on its estimate at{' '}
-                {fmtZ(a.facts.position.t)}).{' '}
-              </span>
-            ))}
-            {shownLeft > 0 ? `Valid ${Math.ceil(shownLeft)} s.` : 'Expired: look again.'}{' '}
-            <button className="ghost mini" onClick={() => setShown(null)}>
-              Cancel
-            </button>
+          <div
+            className="eg-shown"
+            role="group"
+            aria-label="The plan you would sign"
+            tabIndex={-1}
+            ref={focusInView}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.stopPropagation()
+                setShown(null)
+              }
+            }}
+          >
+            <p className="eg-shown-head">
+              You would sign <span className={`eg-valid ${shownLeft <= 5 ? 'low' : ''}`}>{shownLeft > 0 ? `valid ${Math.ceil(shownLeft)} s` : 'expired: show it again'}</span>
+            </p>
+            <ul>
+              <li>
+                Effect {Math.round(shown.plan.effect_radius_m)} m around {ll(shown.plan.effect_point)}, {fmtRel(shown.plan.effect_t - now())}
+              </li>
+              <li>
+                {platform}; if it stops before the effect: {FALLBACK_LABEL[p.fallback]}
+              </li>
+              <li>
+                {shown.track.id} {(shown.track.identity ?? 'unclassified').replace(/_/g, ' ')}, {shown.track.affiliation}: {shown.track.declaration ? declarationLine(declFactsOf(shown.track.declaration)) : shown.track.declared_by ? `declared by ${shown.track.declared_by}` : 'not declared'}
+              </li>
+              {Object.entries(shown.unknown_accepted ?? {}).map(([uid, a]) => (
+                <li key={uid} className="warn">
+                  It covers {nameOf(vehicles, uid)} accepted as lost by {a.by}
+                  {a.since == null ? ' (it never reported a position)' : ` (position unknown since ${fmtRel(a.since - now())})`}
+                </li>
+              ))}
+              {Object.entries(shown.lost_accepted ?? {}).map(([track, a]) => (
+                <li key={`lost-${track}`} className="warn">
+                  It covers lost contact {track} accepted by {a.by}
+                  {a.since == null ? '' : ` (out of view since ${fmtRel(a.since - now())})`}
+                </li>
+              ))}
+              {Object.entries(shown.behaving_accepted ?? {}).map(([track, a]) => (
+                <li key={`behaving-${track}`} className="warn">
+                  It covers {track} accepted as behaving now by {a.by} {fmtRel(a.t - now())} ({courseText(a.facts.velocity_mps ?? null)} on its estimate at {fmtZ(a.facts.position.t)})
+                </li>
+              ))}
+            </ul>
+            <p className="eg-shown-foot">{shown.frozen ? `The plan ${plan?.by ?? ''} froze. ` : 'Your signature freezes this plan. '}{final ? `It is the last signature: ${platform} goes at once.` : ''}</p>
+            <div className="eg-decide">
+              <button type="button" className="eg-btn sign" disabled={busy || expired || !canApprove || shownLeft <= 0 || (stepUp && !stepUpReady(step))} onClick={() => void act('approve')}>
+                Sign this plan ({signed.length + 1} of {needed})
+              </button>
+              <button type="button" className="eg-btn quiet" disabled={busy} onClick={() => setShown(null)}>
+                Cancel
+              </button>
+            </div>
           </div>
         )}
         {error && <p className="error ix-error">{error}</p>}
