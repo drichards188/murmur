@@ -1151,7 +1151,18 @@ s): auto at 61.2 s, watching (9 to 10 satellites at the worst of 9 sample points
 1.67), fewest in view 9 at 10:06:01Z, ended at 10:11:01Z, done. Every one replays exactly, and the
 engagement and the cover, each run twice on one seed, gave the same record twice.
 
-### 16.4 Not done, or found
+### 16.4 Identify orders (rules 21, bd murmur-bia)
+
+An identify order (an operator's or an agent's: one vehicle sent to identify one track) runs
+headless as on the live bridge, because it is the bridge's own decision layer: the tick steps
+it (`Engine::step_identify`), its orbit moves with the track, its camera's payload manager cues
+the track first on the physical model, and the vehicle goes back to the order it replaced once
+the look ends. Nothing in the simulator proposes one yet: no eval preset, playbook play or
+proxy operator uses it, so every episode before it is unchanged but for its audit log naming
+rules 21 and logging each track's identity level with every decision (the golden's digests
+re-taken for that alone).
+
+### 16.5 Not done, or found
 
 - **Boat and UGV engagements** (`magura`, `ugv_armed`) are refused headless until the land and
   water grid lands (H1): the domain rule answers "not evaluated", which blocks a consequential
