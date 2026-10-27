@@ -1554,6 +1554,33 @@ impl Track {
         looks.chain(classifiers).fold(None, |a: Option<f64>, t| Some(a.map_or(t, |a| a.max(t))))
     }
 
+    /// Rules 23: each of our vehicles' latest identification by its own sensors (not AIS), by its
+    /// uid: when (s) and the kind it gave. The physical model's looks at identification; the
+    /// legacy model's EO/IR and sonar sources, each with its sensor type's kind (its classifiers
+    /// pool per type, not per observer).
+    pub fn own_identifications(&self) -> BTreeMap<u64, (f64, String)> {
+        let mut out: BTreeMap<u64, (f64, String)> = BTreeMap::new();
+        let mut note = |u: u64, t: f64, label: &str| {
+            let e = out.entry(u).or_insert((t, label.to_string()));
+            if t > e.0 {
+                *e = (t, label.to_string());
+            }
+        };
+        for ((u, s, l), m) in &self.looks {
+            if *l == Level::Identify && *s != SensorType::Ais {
+                note(*u, m.last_t, &m.label);
+            }
+        }
+        if self.looks.is_empty() {
+            for ((u, s), src) in &self.sources {
+                if let Some(c) = self.classifiers.get(s).filter(|_| matches!(s, SensorType::EoIr | SensorType::Sonar)) {
+                    note(*u, src.last_t, &c.label);
+                }
+            }
+        }
+        out
+    }
+
     pub fn identity(&self) -> Identity {
         if !self.looks.is_empty() {
             return self.identity_from_looks();

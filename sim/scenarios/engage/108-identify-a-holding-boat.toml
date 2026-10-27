@@ -5,11 +5,12 @@
 # any orbit, and dispatches it. Once a look identifies the boat the order ends done, and with no
 # order to go back to the Puma holds where it is. First, the radar-only MQ-9B is refused the same
 # order: it carries no EO/IR to identify with.
+# From rules 23 the outcome names the vehicle whose own look identified it (puma-1's eo_ir).
 title = "An identify order ends when its track is identified"
 invariant = "identify"
 attack = "none: the order as designed"
 expect = "done"
-expect_identify = ["ended done: track T-0001 identified as fishing_vessel by puma-1:eo_ir; it was small_craft (recognise) before; holding: no order to go back to"]
+expect_identify = ["ended done: track T-0001 identified as fishing_vessel by puma-1's eo_ir; it was small_craft (recognise) before; holding: no order to go back to"]
 end_s = 40
 
 [[operator]]

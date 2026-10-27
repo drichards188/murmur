@@ -3,11 +3,12 @@
 # look identifies the boat, the engine checks the patrol again on the picture then (its route,
 # from where the Puma is now) and, as it passes, sends the Puma back to it: the identify order
 # ends done, back to the patrol.
+# From rules 23 the outcome names the vehicle whose own look identified it (puma-1's eo_ir).
 title = "An identify order goes back to the order it replaced"
 invariant = "identify"
 attack = "none: an order interrupted and resumed"
 expect = "done"
-expect_identify = ["ended done: track T-0001 identified as fishing_vessel by puma-1:eo_ir; it was small_craft (recognise) before; back to i1's patrol"]
+expect_identify = ["ended done: track T-0001 identified as fishing_vessel by puma-1's eo_ir; it was small_craft (recognise) before; back to i1's patrol"]
 end_s = 50
 
 [[operator]]

@@ -3573,6 +3573,7 @@ fn replay_inner<S: AsRef<str>>(
                         ended: None,
                         sent_t: d.sent_t,
                         before: d.before,
+                        meanwhile: Vec::new(),
                     });
                 }
                 if let Some(inputs) = reach_inputs {
@@ -6284,7 +6285,29 @@ fn replay_inner<S: AsRef<str>>(
                 // rules 22: the routed legs its moved orbit's or its return's inputs planned
                 check_plans(&mut r, e, *intent, &w, pol);
                 let mut run = run;
+                // rules 23: the other vehicles' identifications not yet noted, as the engine notes
+                // them before it judges the look (none before rules 23)
+                let due = match (cfg.identify_own_look(), run.sent_t) {
+                    (true, Some(sent_t)) => crate::identify::meanwhile_due(&run.plan.track, &w, uid, sent_t, &run.meanwhile),
+                    _ => Vec::new(),
+                };
                 match step {
+                    crate::identify::Step::Meanwhile { by, identity, detail } => {
+                        let want = due.first().map(|(b, k)| (b.clone(), k.clone(), crate::identify::meanwhile_detail(&w, b, k.as_deref(), uid)));
+                        if !cfg.identify_own_look() {
+                            bad(&mut r, e, Some(*intent), "an identification meanwhile noted under rules that end on any", json(&(by, identity)), String::new());
+                        } else if want.as_ref() != Some(&(by.clone(), identity.clone(), detail.clone())) {
+                            bad(
+                                &mut r,
+                                e,
+                                Some(*intent),
+                                "an identification meanwhile other than its picture says",
+                                json(&(by, identity, detail)),
+                                json(&want),
+                            );
+                        }
+                        run.meanwhile.push((by.clone(), identity.clone()));
+                    }
                     crate::identify::Step::Recentred { center, radius_m, checks }
                     | crate::identify::Step::Held { center, radius_m, checks, .. } => {
                         let held = matches!(step, crate::identify::Step::Held { .. });
@@ -6325,7 +6348,10 @@ fn replay_inner<S: AsRef<str>>(
                         returns,
                         checks,
                     } => {
-                        let want = crate::identify::outcome(&run.plan.track, &w, run.deadline_t, run.sent_t.map(|t| (t, run.before.as_deref())));
+                        if !due.is_empty() {
+                            bad(&mut r, e, Some(*intent), "an identify order's look ended with an identification meanwhile not noted", json(&due), String::new());
+                        }
+                        let want = crate::identify::outcome(&run.plan.track, &w, run.deadline_t, crate::identify::Look::of(&run, uid, cfg));
                         let lv = w.track_levels.get(&run.plan.track);
                         let facts = (
                             lv.map(|l| l.level),

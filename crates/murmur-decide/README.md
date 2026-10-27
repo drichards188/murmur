@@ -1951,6 +1951,33 @@ Rules versions:
   `v22-second-look-contradicts-ais-scenario-117.jsonl` (relabelled rules 21, its checks are
   caught).
 
+- **23** (the owner's Harbor watch run of 2026-10-27 17:11Z: "we didn't have perfect info and
+  yet my ask to inspect was canceled"; DECISIONS.md "An identify order ends on its own vehicle's
+  look"; every gate reads `IDENTIFY_OWN_LOOK_SINCE`; no policy key changes, schema 7; a v23 log
+  carries every rules 22 behaviour too): *an identify order's look ends identified only on an
+  identification by the vehicle sent, with its own sensors, made after the order went out*. Under
+  rules 22 any of our sensors' identification after the dispatch ended it, and a vehicle that
+  holds a contact re-identifies it every few seconds: in that run PUMA 1's order on a cargo ship
+  ended 0.9 s after it went out on HUNTER 1's camera, and three more ended on another vehicle's
+  identification (HUNTER 1's camera once, its sonar twice; the last was the AI's proposal to
+  check the very conflict that sonar call raised, ended 0.9 s after it went out).
+  `track_levels` gains `own` (each of our vehicles' latest identification of the track by its
+  own sensors, not AIS: when, and the kind it gave; the bridge's tracker per observer, the legacy
+  model's per EO/IR or sonar source). Another vehicle's identification after the dispatch no
+  longer ends the look: it is logged as a step (`identify.step` `meanwhile`: `by`, `identity` and
+  "HUNTER 1 identified it as cargo_ship meanwhile; PUMA 1 continues for its own look"), once for
+  each vehicle and kind, before the look is judged, and said in the outcome ("track T-0001
+  identified as cargo_ship by PUMA 1's eo_ir; it agrees with its identity before, cargo_ship
+  (identify); meanwhile HUNTER 1 identified it as cargo_ship", and on a lost track or the deadline
+  too); a lost track and the deadline end it as before. The words name our vehicles by the
+  callsigns the step logs (`callsigns` in its inputs, from the bridge's identities: the vehicle
+  sent and those that identified the track; replay reads them from the log). Replay requires
+  each `meanwhile` to be the next one its picture makes due and says as it does, refuses one
+  under older rules, and refuses an end whose picture holds one not noted. Scenario 118 (HUNTER
+  1's camera re-identifies the cargo ship PUMA 1 was sent to; `--rules 22` ends the order then,
+  as the run did); 108, 112 and 117 name the vehicle whose own look identified it; the runner's
+  vehicle `callsign` and a `meanwhile` identify report. `tests/rules21.rs` (the own look).
+
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
 `seen_max_age_s`, an unreleased build's name for it, is still read; **3** adds `[queue]`

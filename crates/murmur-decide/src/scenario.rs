@@ -121,7 +121,8 @@ pub struct Scenario {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expect_lapsed: Vec<String>,
     /// Rules 21: what the identify orders did, in order (substrings of `t=<s> 2 recentred to
-    /// [lon, lat]`, `t=<s> 2 held: ...` or `t=<s> 2 ended: track T-0001 identified as ...; back
+    /// [lon, lat]`, `t=<s> 2 held: ...`, rules 23 `t=<s> 2 meanwhile: HUNTER 1 identified it as
+    /// ...` or `t=<s> 2 ended: track T-0001 identified as ...; back
     /// to intent 1's patrol`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expect_identify: Vec<String>,
@@ -259,6 +260,9 @@ pub struct VehicleDef {
     /// Where it goes home to, `[lon, lat]` (default: where it starts).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home: Option<[f64; 2]>,
+    /// Its callsign, as the bridge would name it (default: its uid).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callsign: Option<String>,
     /// Its own lost-link timer, s, as `sim/links.toml` sets it for its link (default 5): what
     /// a preload shortens and a restore puts back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1602,6 +1606,10 @@ pub fn run(
                                 Err(e) => failures.push(format!("t={s}: finish {}: {e}", o.intent)),
                             }
                         }
+                        // rules 23: another vehicle's identification meanwhile; the order goes on
+                        IdentifyEvent::Meanwhile { intent, detail, .. } => {
+                            extra.identify_reports.push(format!("t={s} {intent} meanwhile: {detail}"));
+                        }
                     }
                 }
             }
@@ -2182,10 +2190,30 @@ fn track_sim(t: &TrackDef) -> TrackSim {
             // rules 22: our own sensors identified it at its last detection, if one of them did
             own_t: (level == crate::identify::Level::Identify && t.level_by.iter().any(|b| !b.ends_with("ais"))).then_some(seen),
             conflict: None,
+            // rules 23: and which of our vehicles did, as what
+            own: own_looks(level, &t.level_by, seen, t.identity.as_deref(), BTreeMap::new()),
         }),
         alt_frozen: t.alt_age_s > 0.0,
         truth_aff: t.truth.unwrap_or(t.affiliation),
     }
+}
+
+/// Rules 23: `before` with the identifications `by` gives at `t` (each label but an AIS one, its
+/// vehicle the uid before the colon), as `kind`, when `level` is identification.
+fn own_looks(
+    level: crate::identify::Level,
+    by: &[String],
+    t: Time,
+    kind: Option<&str>,
+    mut before: BTreeMap<String, crate::identify::OwnLook>,
+) -> BTreeMap<String, crate::identify::OwnLook> {
+    if level == crate::identify::Level::Identify {
+        for b in by.iter().filter(|b| !b.ends_with("ais")) {
+            let who = b.split(':').next().unwrap_or(b).to_string();
+            before.insert(who, crate::identify::OwnLook { t, kind: kind.map(str::to_string) });
+        }
+    }
+    before
 }
 
 fn state_str(s: State) -> String {
@@ -2244,7 +2272,7 @@ fn snapshot(
             Uid::new(uid),
             crate::engage::VehicleIdentity {
                 platform: Some(v.def.platform.clone()),
-                callsign: Some(uid.clone()),
+                callsign: Some(v.def.callsign.clone().unwrap_or_else(|| uid.clone())),
                 sysid: None,
                 home: Some(v.home),
             },
@@ -2960,10 +2988,14 @@ fn act(
             }
             if let Some(l) = level {
                 let by = level_by.clone().unwrap_or_default();
+                // rules 23: each vehicle's own identification, kept until another replaces it
+                let before = t.level.as_ref().map(|l| l.own.clone()).unwrap_or_default();
+                let kind = identity.clone().or_else(|| t.facts.identity.clone());
                 t.level = Some(crate::identify::TrackLevel {
                     level: *l,
                     // rules 22: our own sensors identify it now, if one of them does
                     own_t: (*l == crate::identify::Level::Identify && by.iter().any(|b| !b.ends_with("ais"))).then_some(now),
+                    own: own_looks(*l, &by, now, kind.as_deref(), before),
                     by,
                     conflict: level_conflict.clone(),
                 });

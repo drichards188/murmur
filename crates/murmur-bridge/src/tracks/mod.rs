@@ -853,6 +853,15 @@ impl Tracks {
                         // rules 22: when our own sensors last identified it, and its conflict
                         own_t: t.own_identified_t().map(|s| murmur_decide::Time((s * 1000.0).round() as i64)),
                         conflict: id.conflict,
+                        // rules 23: and each of our vehicles' own latest identification
+                        own: t
+                            .own_identifications()
+                            .into_iter()
+                            .map(|(u, (s, kind))| {
+                                let at = murmur_decide::Time((s * 1000.0).round() as i64);
+                                (u.to_string(), murmur_decide::identify::OwnLook { t: at, kind: Some(kind) })
+                            })
+                            .collect(),
                     },
                 ))
             })

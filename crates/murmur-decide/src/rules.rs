@@ -244,8 +244,10 @@ pub enum UnknownEndurance {
 /// Version 21 ([`IDENTIFY_SINCE`]): an operator (or an agent, by policy) may order a vehicle to
 /// identify a track. Version 22 ([`ROUTE_PLAN_SINCE`]): a leg that meets the wrong surface or a
 /// no-go area is routed around it before the order is refused; and ([`IDENTIFY_SECOND_LOOK_SINCE`])
-/// an identify order may go to any live contact, for a fresh look by our own sensors.
-pub const RULES_VERSION: u32 = ROUTE_PLAN_SINCE;
+/// an identify order may go to any live contact, for a fresh look by our own sensors. Version 23
+/// ([`IDENTIFY_OWN_LOOK_SINCE`]): an identify order's look ends only on the vehicle sent's own
+/// identification.
+pub const RULES_VERSION: u32 = IDENTIFY_OWN_LOOK_SINCE;
 
 /// The rules version from which a leg that the domain rule or the geofence would refuse is first
 /// routed around what it meets (bd murmur-n6a, the owner's direction of 2026-10-27, DECISIONS.md
@@ -268,6 +270,17 @@ pub const ROUTE_PLAN_SINCE: u32 = 22;
 /// conflict and the review, as fusion does); a stale or lost contact is refused as before. Its own
 /// constant, so it can move on its own.
 pub const IDENTIFY_SECOND_LOOK_SINCE: u32 = 22;
+
+/// The rules version from which an identify order's look ends identified only on an
+/// identification by the vehicle sent, with its own sensors, made after the order went out (the
+/// owner's Harbor watch run of 2026-10-27 17:11Z: "we didn't have perfect info and yet my ask to
+/// inspect was canceled"; four identify orders there ended within a second or two on another
+/// vehicle's camera or sonar re-identifying a contact it already held). Another vehicle's
+/// identification meanwhile is logged as a step (`identify.step` meanwhile, once for each vehicle
+/// and kind) and said in the outcome, and the order goes on; a lost track and the deadline end it
+/// as before. The steps that say so name our vehicles by the callsigns they log
+/// (`WorldSnapshot::callsigns`). Every gate reads this constant, never a literal.
+pub const IDENTIFY_OWN_LOOK_SINCE: u32 = 23;
 
 /// The rules version from which a vehicle may be ordered to identify a track (bd murmur-bia, the
 /// owner's direction of 2026-10-27, DECISIONS.md "W1 follow-up: an identify order"): an intent
@@ -625,6 +638,12 @@ impl RulesConfig {
     /// and ends on a fresh identification by our own sensors.
     pub fn identify_second_look(&self) -> bool {
         self.rules_version >= IDENTIFY_SECOND_LOOK_SINCE
+    }
+
+    /// Rules 23 ([`IDENTIFY_OWN_LOOK_SINCE`]): an identify order's look ends identified only on
+    /// the vehicle sent's own identification.
+    pub fn identify_own_look(&self) -> bool {
+        self.rules_version >= IDENTIFY_OWN_LOOK_SINCE
     }
 
     /// `[rules.engage]`, or its defaults.

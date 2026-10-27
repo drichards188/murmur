@@ -254,6 +254,7 @@ fn rule_declaration_off_decides_as_rules_8_did() {
             || text.starts_with("# Rules 20")
             || text.starts_with("# Rules 21")
             || text.starts_with("# Rules 22")
+            || text.starts_with("# Rules 23")
         {
             continue;
         }

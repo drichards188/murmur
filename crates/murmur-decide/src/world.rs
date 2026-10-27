@@ -536,6 +536,11 @@ pub struct WorldSnapshot {
     /// where the caller gives none (scenarios, tests): carried values then hold.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub identities: BTreeMap<Uid, crate::engage::VehicleIdentity>,
+    /// Engine-filled for an identify order's steps (rules 23): the callsigns of the vehicle sent
+    /// and of the vehicles that identified its track, from [`Self::identities`], so the step's
+    /// words can name them and replay says the same. Absent otherwise.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub callsigns: BTreeMap<Uid, String>,
     /// Engine-filled for an engagement's checks (rules 16, [`crate::lost`]): the contacts the
     /// tracker dropped that the engine still holds as lost (`track.dropped`, not retired by
     /// `track.reacquired`), by the track id they were dropped under, each with its facts at the
@@ -582,6 +587,9 @@ pub struct LoggedInputs {
     /// Its vehicles' routed legs (rules 22; absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub route_plans: BTreeMap<Uid, Vec<crate::plan::PlannedLeg>>,
+    /// An identify step's callsigns (rules 23; absent otherwise).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub callsigns: BTreeMap<Uid, String>,
     /// The intent's vehicles with an engagement in play (absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub engaged: BTreeMap<Uid, IntentId>,
@@ -642,6 +650,7 @@ impl LoggedInputs {
             track_ais: world.track_ais.clone(),
             track_levels: world.track_levels.clone(),
             route_plans: world.route_plans.clone(),
+            callsigns: world.callsigns.clone(),
             engaged: world.engaged.clone(),
             waiting: world.waiting.clone(),
             plan: world.plan.clone(),
@@ -694,6 +703,7 @@ impl LoggedInputs {
             track_ais: self.track_ais.clone(),
             track_levels: self.track_levels.clone(),
             route_plans: self.route_plans.clone(),
+            callsigns: self.callsigns.clone(),
             engaged: self.engaged.clone(),
             waiting: self.waiting.clone(),
             plan: self.plan.clone(),
@@ -763,6 +773,8 @@ impl WorldSnapshot {
                 .iter()
                 .filter_map(|u| self.identities.get(u).map(|i| (u.clone(), i.clone())))
                 .collect(),
+            // engine-owned (rules 23): filled for an identify order's steps
+            callsigns: BTreeMap::new(),
             // engine-owned (rules 16): filled from its ledger of lost contacts
             lost_contacts: BTreeMap::new(),
             lost_accepted: BTreeMap::new(),

@@ -1,0 +1,74 @@
+# Rules 23 (the owner's Harbor watch run of 2026-10-27 17:11Z, intent 4: "we didn't have perfect
+# info and yet my ask to inspect was canceled"). A cargo ship west of the bridge that HUNTER 1's
+# camera has identified already; the operator sends PUMA 1 for a look of its own. Two seconds
+# later HUNTER 1's camera identifies the ship again (it keeps looking at what it holds). Under
+# rules 22 that ended PUMA 1's order at once, as it did in the run; now only PUMA 1's own
+# identification ends it: HUNTER 1's is logged as a step and said in the outcome, and PUMA 1 flies
+# on until its camera identifies the ship. `--rules 22` ends the order on HUNTER 1's look.
+title = "An identify order is not ended by another vehicle's camera"
+invariant = "identify"
+attack = "another vehicle re-identifies the contact the moment the order goes out"
+expect = "done"
+expect_identify = [
+  "meanwhile: HUNTER 1 identified it as cargo_ship meanwhile; PUMA 1 continues for its own look",
+  "ended done: track T-0001 identified as cargo_ship by PUMA 1's eo_ir; it agrees with its identity before, cargo_ship (identify); meanwhile HUNTER 1 identified it as cargo_ship; holding: no order to go back to",
+]
+end_s = 40
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "puma-1"
+callsign = "PUMA 1"
+platform = "puma"           # EO/IR 4 km (range_m), a hand-launched fixed wing
+at = [-122.4930, 37.8210]   # west of the bridge, mid-strait
+alt_m = 120
+
+[[vehicle]]
+uid = "hunter-1"
+callsign = "HUNTER 1"
+platform = "seahunter"      # radar, EO/IR, AIS, sonar
+at = [-122.4660, 37.8200]   # east of the bridge
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, about 1 km south of the Puma
+affiliation = "neutral"
+identity = "cargo_ship"
+identity_confidence = 0.9
+sources = ["hunter-1:radar", "hunter-1:eo_ir"]
+level = "identify"
+level_by = ["hunter-1:eo_ir"]   # HUNTER 1's camera identified it before the order
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "identify"
+uids = ["puma-1"]
+track = "T-0001"
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "dispatched"
+
+[[step]]
+at_s = 3                    # HUNTER 1's camera identifies it again
+action = "track"
+id = "T-0001"
+level = "identify"
+level_by = ["hunter-1:eo_ir"]
+
+[[step]]
+at_s = 5
+action = "expect"
+task_state = "dispatched"   # PUMA 1 flies on for its own look
+
+[[step]]
+at_s = 30                   # PUMA 1's camera identifies it
+action = "track"
+id = "T-0001"
+level = "identify"
+level_by = ["hunter-1:eo_ir", "puma-1:eo_ir"]

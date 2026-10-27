@@ -471,11 +471,13 @@ pub enum TaskOutcome {
 
 /// What [`Engine::step_identify`] hands the bridge, each under the identify order's own id: an
 /// orbit moved with the track, sent as a follow of the order it runs (`Recentre`), or the order
-/// the vehicle flies now its look has ended (`Return`).
+/// the vehicle flies now its look has ended (`Return`); rules 23, another vehicle's
+/// identification noted meanwhile, the order going on (`Meanwhile`: nothing to send).
 #[derive(Clone, Debug, PartialEq)]
 pub enum IdentifyEvent {
     Recentre(DispatchOrder),
     Return(DispatchOrder),
+    Meanwhile { intent: IntentId, uid: Uid, detail: String },
 }
 
 /// Rules 21: what an identify order's moved orbit must pass: the domain rule and the geofence
@@ -4348,6 +4350,12 @@ impl Engine {
                 l.conflict = None;
             }
         }
+        // rules 23: each vehicle's own identification, a fact only rules 23 read
+        if !self.policy.rules.identify_own_look() {
+            for l in w.track_levels.values_mut() {
+                l.own.clear();
+            }
+        }
     }
 
     /// The world as decisions read it (rules 9: its identification filled from the ledger),
@@ -5090,6 +5098,7 @@ impl Engine {
                 ended: None,
                 sent_t: d.sent_t,
                 before: d.before,
+                meanwhile: Vec::new(),
             });
         }
         match &order {
@@ -5845,8 +5854,33 @@ impl Engine {
             let mut inputs = world.for_intent_with(&here, terrain, &cfg);
             self.identify(&mut inputs);
             self.fill_engine_facts(&spec, &mut inputs);
-            let second = run.sent_t.map(|t| (t, run.before.as_deref()));
-            if let Some((kind, detail)) = crate::identify::outcome(&run.plan.track, &inputs, run.deadline_t, second) {
+            let mut run = run;
+            if cfg.identify_own_look()
+                && let Some(sent_t) = run.sent_t
+            {
+                // rules 23: the vehicle sent and those that identified its track, by callsign
+                inputs.callsigns = crate::identify::callsigns(world, &uid, inputs.track_levels.get(&run.plan.track));
+                // another vehicle's identification meanwhile: logged, and the order goes on
+                let due = crate::identify::meanwhile_due(&run.plan.track, &inputs, &uid, sent_t, &run.meanwhile);
+                for (by, kind) in due {
+                    let logged = self.log_inputs(&inputs)?;
+                    let detail = crate::identify::meanwhile_detail(&inputs, &by, kind.as_deref(), &uid);
+                    self.emit(EventBody::IdentifyStep {
+                        intent: id,
+                        uid: uid.clone(),
+                        inputs: logged,
+                        step: crate::identify::Step::Meanwhile { by: by.clone(), identity: kind.clone(), detail: detail.clone() },
+                        return_inputs: None,
+                    })?;
+                    out.push(IdentifyEvent::Meanwhile { intent: id, uid: uid.clone(), detail });
+                    run.meanwhile.push((by, kind));
+                    if let Some(r) = self.get_mut(id)?.identify_run_mut() {
+                        r.meanwhile = run.meanwhile.clone();
+                    }
+                }
+            }
+            let look = crate::identify::Look::of(&run, &uid, &cfg);
+            if let Some((kind, detail)) = crate::identify::outcome(&run.plan.track, &inputs, run.deadline_t, look) {
                 out.push(self.end_identify(&spec, &uid, &run, inputs, kind, detail, world, terrain)?);
                 continue;
             }

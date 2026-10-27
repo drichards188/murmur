@@ -12,14 +12,21 @@
 //! is on it, its camera's payload manager looks for the track first (docs/SENSING.md,
 //! "Pointing"). Every step is logged with the picture it read (`identify.step`), so replay
 //! recomputes it.
+//!
+//! Rules 23 ([`crate::rules::IDENTIFY_OWN_LOOK_SINCE`], the owner's Harbor watch run of
+//! 2026-10-27 17:11Z, whose identify orders another vehicle's camera ended): the look ends identified
+//! only on an identification by the vehicle sent, with its own sensors, made after the order went
+//! out ([`TrackLevel::own`]). Another vehicle's identification meanwhile is logged as a step
+//! ([`Step::Meanwhile`], [`meanwhile_due`]) and said in the outcome; the order goes on.
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::Domain;
 use crate::geo::{LonLat, haversine_m};
-use crate::ids::IntentId;
+use crate::ids::{IntentId, Uid};
 use crate::intent::{IntentSpec, Task, TaskKind};
 use crate::rules::{CheckResult, Outcome, RuleId, RulesConfig};
 use crate::time::Time;
@@ -88,6 +95,19 @@ pub struct TrackLevel {
     /// sensors contradict, a kind two sensors disagree on).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conflict: Option<String>,
+    /// Rules 23: each of our vehicles' latest identification of it with its own sensors (not
+    /// AIS), by the vehicle's uid: when, and the kind it gave.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub own: BTreeMap<String, OwnLook>,
+}
+
+/// Rules 23: one vehicle's latest identification of a track by its own sensors.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnLook {
+    pub t: Time,
+    /// The kind it identified it as (none where the tracker can't say).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 /// The orbit an identify order is flown as, and what it rests on.
@@ -164,6 +184,14 @@ pub enum Step {
         checks: Vec<CheckResult>,
         reason: String,
     },
+    /// Rules 23: another of our vehicles identified the track after the order went out; the order
+    /// goes on for its own vehicle's look. Logged once for each vehicle and kind.
+    Meanwhile {
+        by: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        identity: Option<String>,
+        detail: String,
+    },
     /// The look ended; the vehicle goes back to `resumes`'s task when that passed its checks
     /// again (`checks`), else holds (`returns` is the task sent).
     Ended {
@@ -198,6 +226,8 @@ pub struct Run {
     /// Rules 22: when it went out, and the track's identity then.
     pub sent_t: Option<Time>,
     pub before: Option<String>,
+    /// Rules 23: the other vehicles' identifications noted meanwhile, in order: by whom, as what.
+    pub meanwhile: Vec<(String, Option<String>)>,
 }
 
 /// The order's deadline: its dispatch, the time to get there, then [`ON_STATION_S`].
@@ -387,18 +417,122 @@ pub fn identity_now(track: &str, world: &WorldSnapshot) -> Option<String> {
     Some(format!("{kind} ({level})"))
 }
 
+/// Rules 22 and 23: what a look is judged against: when the order went out and the track's
+/// identity then; rules 23, the vehicle sent (only its own identification ends the look) and the
+/// other vehicles' identifications noted meanwhile.
+#[derive(Clone, Copy, Debug)]
+pub struct Look<'a> {
+    pub sent_t: Time,
+    pub before: Option<&'a str>,
+    pub own: Option<&'a Uid>,
+    pub meanwhile: &'a [(String, Option<String>)],
+}
+
+impl<'a> Look<'a> {
+    /// The look of `run` (none before rules 22), by `uid` from rules 23.
+    pub fn of(run: &'a Run, uid: &'a Uid, cfg: &RulesConfig) -> Option<Look<'a>> {
+        Some(Look {
+            sent_t: run.sent_t?,
+            before: run.before.as_deref(),
+            own: cfg.identify_own_look().then_some(uid),
+            meanwhile: &run.meanwhile,
+        })
+    }
+}
+
+/// Rules 23: the callsigns an identify step logs (the bridge's identities on `world`): the vehicle
+/// sent, `uid`, and every vehicle that identified the track (`level`).
+pub fn callsigns(world: &WorldSnapshot, uid: &Uid, level: Option<&TrackLevel>) -> BTreeMap<Uid, String> {
+    let mut uids = vec![uid.clone()];
+    uids.extend(level.into_iter().flat_map(|l| l.own.keys().map(Uid::new)));
+    uids.into_iter()
+        .filter_map(|u| {
+            let c = world.identities.get(&u)?.callsign.clone()?;
+            Some((u, c))
+        })
+        .collect()
+}
+
+/// Rules 23: what to call one of our vehicles in an identify order's words: its callsign as the
+/// step logged it, else `vehicle <uid>`.
+pub fn name(world: &WorldSnapshot, uid: &str) -> String {
+    world
+        .callsigns
+        .get(&Uid::new(uid))
+        .cloned()
+        .unwrap_or_else(|| format!("vehicle {uid}"))
+}
+
+/// Rules 23: the other vehicles' identifications of `track` on `world` made after `sent_t` that
+/// are not noted yet (a vehicle noted again only when it gives another kind), in uid order.
+pub fn meanwhile_due(track: &str, world: &WorldSnapshot, sent: &Uid, sent_t: Time, noted: &[(String, Option<String>)]) -> Vec<(String, Option<String>)> {
+    let Some(l) = world.track_levels.get(track) else { return Vec::new() };
+    l.own
+        .iter()
+        .filter(|(by, o)| by.as_str() != sent.as_str() && o.t > sent_t)
+        .filter(|(by, o)| !noted.iter().any(|(b, k)| b == *by && *k == o.kind))
+        .map(|(by, o)| (by.clone(), o.kind.clone()))
+        .collect()
+}
+
+/// Rules 23: a [`Step::Meanwhile`]'s words: "HUNTER 1 identified it as cargo_ship meanwhile;
+/// PUMA 1 continues for its own look".
+pub fn meanwhile_detail(world: &WorldSnapshot, by: &str, kind: Option<&str>, sent: &Uid) -> String {
+    format!(
+        "{} identified it{} meanwhile; {} continues for its own look",
+        name(world, by),
+        kind.map(|k| format!(" as {k}")).unwrap_or_default(),
+        name(world, sent.as_str())
+    )
+}
+
+/// Rules 23: the outcome's note of the identifications made meanwhile ("; meanwhile HUNTER 1
+/// identified it as cargo_ship"), empty when none.
+fn meanwhile_note(world: &WorldSnapshot, noted: &[(String, Option<String>)]) -> String {
+    if noted.is_empty() {
+        return String::new();
+    }
+    let each: Vec<String> = noted
+        .iter()
+        .map(|(by, k)| format!("{} identified it{}", name(world, by), k.as_deref().map(|k| format!(" as {k}")).unwrap_or_default()))
+        .collect();
+    format!("; meanwhile {}", each.join(", "))
+}
+
 /// Whether the look is over on `world`, and why: identified, lost, or past `deadline_t`. Rules 22
-/// (`second_look`: when it went out, and the identity before): identified only by our own sensors
-/// after it went out, saying whether that agrees with the identity before or contradicts it.
-pub fn outcome(track: &str, world: &WorldSnapshot, deadline_t: Time, second_look: Option<(Time, Option<&str>)>) -> Option<(EndKind, String)> {
+/// (`look`: when it went out, and the identity before): identified only by our own sensors after
+/// it went out, saying whether that agrees with the identity before or contradicts it. Rules 23
+/// (`look.own`): only by the vehicle sent, with its own sensors, the identifications of others
+/// meanwhile said.
+pub fn outcome(track: &str, world: &WorldSnapshot, deadline_t: Time, look: Option<Look<'_>>) -> Option<(EndKind, String)> {
+    let note = look.map(|k| meanwhile_note(world, k.meanwhile)).unwrap_or_default();
+    // rules 23: the vehicle's own identification, after it went out
+    fn own<'l>(l: &'l TrackLevel, k: &Look<'_>) -> Option<&'l OwnLook> {
+        k.own.and_then(|u| l.own.get(u.as_str())).filter(|o| o.t > k.sent_t)
+    }
     if let Some(l) = world.track_levels.get(track)
-        && l.level == Level::Identify
-        && second_look.is_none_or(|(sent, _)| l.own_t.is_some_and(|t| t > sent))
+        && match look {
+            None => l.level == Level::Identify,
+            Some(k) if k.own.is_some() => own(l, &k).is_some(),
+            Some(k) => l.level == Level::Identify && l.own_t.is_some_and(|t| t > k.sent_t),
+        }
     {
-        let kind = world.tracks.get(track).and_then(|t| t.identity.clone());
-        let by = if l.by.is_empty() { String::new() } else { format!(" by {}", l.by.join(", ")) };
+        let kind = match look.and_then(|k| own(l, &k)) {
+            Some(o) => o.kind.clone().or_else(|| world.tracks.get(track).and_then(|t| t.identity.clone())),
+            None => world.tracks.get(track).and_then(|t| t.identity.clone()),
+        };
+        let by = match look.and_then(|k| k.own) {
+            // rules 23: by the vehicle sent, and with which of its sensors
+            Some(u) => {
+                let sensors: Vec<&str> = l.by.iter().filter_map(|b| b.strip_prefix(&format!("{u}:"))).collect();
+                let whose = name(world, u.as_str());
+                if sensors.is_empty() { format!(" by {whose}") } else { format!(" by {whose}'s {}", sensors.join(", ")) }
+            }
+            None if l.by.is_empty() => String::new(),
+            None => format!(" by {}", l.by.join(", ")),
+        };
         let mut detail = format!("track {track} identified as {}{by}", kind.as_deref().unwrap_or("its kind"));
-        if let Some((_, before)) = second_look {
+        if let Some(Look { before, .. }) = look {
             let was = before.unwrap_or("unclassified");
             let before_kind = before.and_then(|b| b.split(" (").next());
             let identified_before = before.is_some_and(|b| b.ends_with("(identify)"));
@@ -409,13 +543,13 @@ pub fn outcome(track: &str, world: &WorldSnapshot, deadline_t: Time, second_look
                 (None, false, _) => detail.push_str(&format!("; it was {was} before")),
             }
         }
-        return Some((EndKind::Identified, detail));
+        return Some((EndKind::Identified, format!("{detail}{note}")));
     }
     if let Err(why) = live_track(track, world) {
-        return Some((EndKind::Lost, why));
+        return Some((EndKind::Lost, format!("{why}{note}")));
     }
     if world.t >= deadline_t {
-        return Some((EndKind::TimedOut, format!("track {track} not identified by the order's deadline")));
+        return Some((EndKind::TimedOut, format!("track {track} not identified by the order's deadline{note}")));
     }
     None
 }

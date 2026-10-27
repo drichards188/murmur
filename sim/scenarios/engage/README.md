@@ -188,6 +188,7 @@ alt_m = 7000                     # rules 6: altitude MSL it reports (absent: non
 lost_link_s = 30                 # its own lost-link timer (default 5): what a preload shortens
 lost_for_s = 60                  # lost before the run: silent, last reported this long before
 home = [-122.4660, 37.8200]      # where it goes home to (default: where it starts)
+callsign = "HUNTER 1"            # rules 23: what the bridge would call it (default: its uid)
 
 [[track]]                        # a perception track (not truth)
 id = "T-0001"
@@ -256,7 +257,7 @@ Actions (each `[[step]]` has `at_s` and `action`):
 | `reject` | `by` | an operator rejects it |
 | `abort` | `by` | any operator stops it; the fallback is commanded |
 | `agent_approve` | `agent` | an agent "tries" to approve: there is no such method on its port, so it is recorded and the intent must not move |
-| `track` | `id` and any of `at`, `velocity`, `affiliation`, `declared_by`, `undeclare`, `identity`, `identity_confidence`, `sigma_m`, `domain`, `silent`, `velocity_error`, `alt_m`, `tracked_s`, `ais` (rules 16), `velocity_sigma_mps` (rules 18), `level` and `level_by` (rules 21), `level_conflict` (rules 22) | a track changes (or appears); `velocity` is how the contact really moves, `velocity_error` how far the tracker's estimate is off it; `tracked_s` (rules 12) when one this step makes was started (0: a new track); `velocity_sigma_mps` the velocity's 1-sigma error the tracker now reports; `level` (`detect`, `recognise`, `identify`) how specific its identity now is and `level_by` the sensors whose looks identified it (an identify order ends on it; from rules 22 only on one of our own sensors, not `ais`, after the order went out), `level_conflict` the tracker's identity conflict on it then |
+| `track` | `id` and any of `at`, `velocity`, `affiliation`, `declared_by`, `undeclare`, `identity`, `identity_confidence`, `sigma_m`, `domain`, `silent`, `velocity_error`, `alt_m`, `tracked_s`, `ais` (rules 16), `velocity_sigma_mps` (rules 18), `level` and `level_by` (rules 21), `level_conflict` (rules 22) | a track changes (or appears); `velocity` is how the contact really moves, `velocity_error` how far the tracker's estimate is off it; `tracked_s` (rules 12) when one this step makes was started (0: a new track); `velocity_sigma_mps` the velocity's 1-sigma error the tracker now reports; `level` (`detect`, `recognise`, `identify`) how specific its identity now is and `level_by` the sensors whose looks identified it (an identify order ends on it; from rules 22 only on one of our own sensors, not `ais`, after the order went out; from rules 23 only on the vehicle sent's own, its uid before the colon), `level_conflict` the tracker's identity conflict on it then |
 | `write_off` | `by`, `uid` or `log`, `note` | rules 12: an operator writes off the lost-link values owed back to one of our vehicles, saying why (`restore.closed`); rules 15: or an earlier log whose carry failed (`log`) |
 | `unspend` | `by`, `uid`, `note` | rules 15: an operator with engagement authority un-spends a platform spent by its own effect, saying why (`platform.unspent`), once the engagement that spent it ended and it was heard after that and is not silent; without engagement authority it is refused (a scenario has no credentials: no step-up) |
 | `vehicle` | `uid` and any of `at`, `velocity`, `silent`, `report_interval_ms`, `nav` (`gnss`, `dead_reckoning`), `gps_fix` (3: a 3D fix), `gps_glitch`, `circling`, `reported_circle`, `alt_m` | one of ours changes; `silent` cuts its link (both ways: it hears no GCS either) |
@@ -268,7 +269,7 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess) an
 look ended, and the order sent afterwards taken at once, so the order ends then). A file with
 no nomination ends on its last `task` (`expect`), and `expect_identify` lists what its identify
 orders did, in order (substrings of `t=<s> <id> recentred to [lon, lat]`, `<id> held: ...`,
-`<id> ended done: ...`).
+rules 23 `<id> meanwhile: ...`, `<id> ended done: ...`).
 
 ## The set
 
@@ -391,3 +392,4 @@ orders did, in order (substrings of `t=<s> <id> recentred to [lon, lat]`, `<id> 
 | 115-aircraft-routed-round-a-no-go-box | geofence | rules 22: PUMA 1 east of the bridge sent to orbit west of it, its straight transit through the south tower's no-go box | dispatched, the transit routed round the box 100 m clear of its edge (1 waypoint, +16 m) |
 | 116-no-route-into-an-enclosed-pool | domain | rules 22: HUNTER 1 sent to orbit in a pool land encloses | rejected (domain: `no route around land at ...`, where the straight way first meets land, and why) |
 | 117-second-look-contradicts-ais | identify | rules 22, the owner's widening: PUMA 1 sent to identify a boat its AIS has identified already; our camera calls it a patrol boat, the tracker's identity conflict raised | dispatched (`--rules 21`: refused, identified already), done once our own sensor identified it after the order went out, saying it contradicts the identity before |
+| 118-own-look-not-ended-by-another-camera | identify | rules 23, the owner's run of 10-27 17:11Z (intent 4): PUMA 1 sent to a cargo ship HUNTER 1's camera has identified already; HUNTER 1's camera identifies it again 2 s later | the order goes on (an `identify.step` meanwhile: "HUNTER 1 identified it as cargo_ship meanwhile; PUMA 1 continues for its own look"), done once PUMA 1's camera identifies it, the outcome saying both; `--rules 22` ends it on HUNTER 1's look, as the run did |

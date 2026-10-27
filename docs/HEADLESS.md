@@ -1163,7 +1163,9 @@ rules 21 and logging each track's identity level with every decision (the golden
 re-taken for that alone). From decision rules 22 (bd murmur-n6a) an identify order may go to any
 live track and ends only on our own sensors' identification after it went out; each track level
 logged with a decision carries when our own sensors last identified it (`own_t`) and the
-tracker's identity conflict, the simulator's tracker being the bridge's own.
+tracker's identity conflict, the simulator's tracker being the bridge's own. From rules 23 it ends
+only on the vehicle sent's own identification (another vehicle's is logged as a step), and each
+track level carries every vehicle's own latest identification (`own`).
 
 ### 16.5 Not done, or found
 

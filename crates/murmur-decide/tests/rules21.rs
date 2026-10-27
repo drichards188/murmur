@@ -52,6 +52,7 @@ fn scene(platform: &str) -> WorldSnapshot {
             by: Vec::new(),
             own_t: None,
             conflict: None,
+            own: Default::default(),
         },
     );
     w
@@ -163,15 +164,53 @@ fn the_look_ends_identified_lost_or_out_of_time() {
     assert_eq!(identify::outcome("T-0001", &w, deadline, None), None);
     // rules 22: only a fresh identification by our own sensors, after the order went out
     let sent = T0.plus_ms(1_000);
+    let second = |before| Some(identify::Look { sent_t: sent, before, own: None, meanwhile: &[] });
     let mut old = w.clone();
-    old.track_levels.insert("T-0001".into(), TrackLevel { level: Level::Identify, by: vec!["1:ais".into()], own_t: None, conflict: None });
-    assert_eq!(identify::outcome("T-0001", &old, deadline, Some((sent, Some("ferry (identify)")))), None);
+    old.track_levels.insert(
+        "T-0001".into(),
+        TrackLevel { level: Level::Identify, by: vec!["1:ais".into()], own_t: None, conflict: None, own: Default::default() },
+    );
+    assert_eq!(identify::outcome("T-0001", &old, deadline, second(Some("ferry (identify)"))), None);
     let mut fresh = old.clone();
     fresh.track_levels.get_mut("T-0001").unwrap().own_t = Some(T0.plus_ms(5_000));
     fresh.track_levels.get_mut("T-0001").unwrap().conflict = Some("AIS says passenger but eo_ir classifies it as small_fast_boat".into());
-    let (k, why) = identify::outcome("T-0001", &fresh, deadline, Some((sent, Some("ferry (identify)")))).unwrap();
+    let (k, why) = identify::outcome("T-0001", &fresh, deadline, second(Some("ferry (identify)"))).unwrap();
     assert_eq!(k, EndKind::Identified);
     assert!(why.contains("it contradicts its identity before, ferry (identify)"), "{why}");
+    // rules 23: only the vehicle sent's own identification; another's is said, not an end
+    let puma = uid("puma-1");
+    let noted = vec![("hunter-1".to_string(), Some("ferry".to_string()))];
+    let own = |meanwhile| Some(identify::Look { sent_t: sent, before: Some("ferry (identify)"), own: Some(&puma), meanwhile });
+    let mut other = fresh.clone();
+    other.callsigns.insert(uid("puma-1"), "PUMA 1".into());
+    other.callsigns.insert(uid("hunter-1"), "HUNTER 1".into());
+    let l = other.track_levels.get_mut("T-0001").unwrap();
+    l.by = vec!["hunter-1:eo_ir".into()];
+    l.conflict = None;
+    l.own.insert("hunter-1".into(), identify::OwnLook { t: T0.plus_ms(5_000), kind: Some("ferry".into()) });
+    assert_eq!(identify::outcome("T-0001", &other, deadline, own(&[])), None);
+    let due = identify::meanwhile_due("T-0001", &other, &puma, sent, &[]);
+    assert_eq!(due, noted);
+    assert_eq!(
+        identify::meanwhile_detail(&other, "hunter-1", Some("ferry"), &puma),
+        "HUNTER 1 identified it as ferry meanwhile; PUMA 1 continues for its own look"
+    );
+    assert!(identify::meanwhile_due("T-0001", &other, &puma, sent, &noted).is_empty(), "noted once");
+    let mut then = other.clone();
+    let l = then.track_levels.get_mut("T-0001").unwrap();
+    l.by.push("puma-1:eo_ir".into());
+    l.own.insert("puma-1".into(), identify::OwnLook { t: T0.plus_ms(9_000), kind: Some("ferry".into()) });
+    let (k, why) = identify::outcome("T-0001", &then, deadline, own(&noted)).unwrap();
+    assert_eq!(k, EndKind::Identified);
+    assert_eq!(
+        why,
+        "track T-0001 identified as ferry by PUMA 1's eo_ir; it agrees with its identity before, ferry (identify); meanwhile HUNTER 1 identified it as ferry"
+    );
+    let mut late_too = other.clone();
+    late_too.t = deadline;
+    let (k, why) = identify::outcome("T-0001", &late_too, deadline, own(&noted)).unwrap();
+    assert_eq!(k, EndKind::TimedOut);
+    assert!(why.ends_with("by the order's deadline; meanwhile HUNTER 1 identified it as ferry"), "{why}");
     let mut done = w.clone();
     done.track_levels.insert(
         "T-0001".into(),
@@ -180,6 +219,7 @@ fn the_look_ends_identified_lost_or_out_of_time() {
             by: vec!["puma-1:eo_ir".into()],
             own_t: Some(T0),
             conflict: None,
+            own: Default::default(),
         },
     );
     let (k, why) = identify::outcome("T-0001", &done, deadline, None).unwrap();

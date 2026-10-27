@@ -6,11 +6,12 @@
 # a patrol boat, the tracker raises its identity conflict as fusion does, and the order ends done,
 # saying the look contradicts the identity before. `--rules 21` refuses the order (identified
 # already).
+# From rules 23 the outcome names the vehicle whose own look identified it (puma-1's eo_ir).
 title = "A second look at an AIS-identified boat contradicts its AIS"
 invariant = "identify"
 attack = "none: a second look as designed"
 expect = "done"
-expect_identify = ["ended done: track T-0001 identified as patrol_boat by puma-1:eo_ir; it contradicts its identity before, fishing_vessel (identify): AIS says fishing_vessel; puma-1:eo_ir identifies patrol_boat"]
+expect_identify = ["ended done: track T-0001 identified as patrol_boat by puma-1's eo_ir; it contradicts its identity before, fishing_vessel (identify): AIS says fishing_vessel; puma-1:eo_ir identifies patrol_boat"]
 end_s = 40
 
 [[operator]]

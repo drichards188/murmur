@@ -651,6 +651,19 @@ group. Dates are 2026.
   agrees with the identity before, differs from it, or contradicts it; a contradiction is the
   tracker's own identity conflict, which raises its review flag as fusion already does (the
   engine reports it, it raises nothing of its own). A lost track and the deadline end it as before.
+- **An identify order ends on its own vehicle's look** (10-27, the owner after a Harbor watch run:
+  "we didn't have perfect info and yet my ask to inspect was canceled"; decision rules 23,
+  `IDENTIFY_OWN_LOOK_SINCE`). Rules 22 ended a look on any identification by our own sensors made
+  after the order went out. A vehicle that holds a contact keeps re-identifying it (its camera
+  and its sonar look again every few seconds), so in that run PUMA 1's order on a cargo ship ended
+  0.9 s after it went out, on HUNTER 1's camera, and three more ended on another vehicle's
+  identification: two on HUNTER 1's sonar call that made a coast guard cutter suspect, the second
+  of them the AI's proposal to check that very call. Now only an identification by the vehicle sent, with its own sensors, made
+  after the order went out ends the look identified; another vehicle's meanwhile is logged as a
+  step and said in the outcome, and the order goes on. A lost track and the deadline end it as
+  before. Judgement calls: any of the vehicle's own sensors counts (a Sea Hunter sent may end it on
+  its sonar), since the order asks that vehicle for a look and its sensors are its look; the steps
+  name vehicles by callsign, logged with the step so replay says the same.
 - **A physical sensing model beside the legacy one, the physical model the default since the
   catalog's figures** (10-23, murmur-1z6.1, murmur-1z6.4; WORLD-V3-PLAN sections 2 and 3,
   approved; docs/SENSING.md). Per-sensor physics

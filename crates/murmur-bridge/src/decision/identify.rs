@@ -74,6 +74,8 @@ impl Decision {
             match ev {
                 IdentifyEvent::Recentre(o) => self.follow_identify(core, o, true, "its orbit moved with its track"),
                 IdentifyEvent::Return(o) => self.follow_identify(core, o, false, "its look ended"),
+                // rules 23: another vehicle identified its track; the order goes on (logged)
+                IdentifyEvent::Meanwhile { .. } => {}
             }
         }
     }

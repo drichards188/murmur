@@ -486,6 +486,21 @@ fn looks_are_kept_per_observer_and_a_closer_look_corrects_a_wrong_call() {
     assert_eq!(r.identity().kind.as_deref(), Some("small_surface"));
 }
 
+/// Rules 23: each observer's own latest identification, when and as what (an identify order ends
+/// only on its own vehicle's); a recognition is none, and a later look moves its time.
+#[test]
+fn each_observer_keeps_its_own_latest_identification() {
+    let mut t = Track::new("T-0001".into(), 1, &look(1, SensorType::EoIr, Level::Recognise, "large_vessel", 0.8), 1_000.0);
+    assert!(t.own_identifications().is_empty());
+    t.update(&look(1, SensorType::Sonar, Level::Identify, "fishing_vessel", 0.6), 1_001.0);
+    t.update(&look(3, SensorType::EoIr, Level::Identify, "patrol_boat", 0.7), 1_002.0);
+    t.update(&look(1, SensorType::Sonar, Level::Identify, "fishing_vessel", 0.6), 1_005.0);
+    let own = t.own_identifications();
+    assert_eq!(own.get(&1), Some(&(1_005.0, "fishing_vessel".to_string())));
+    assert_eq!(own.get(&3), Some(&(1_002.0, "patrol_boat".to_string())));
+    assert_eq!(own.len(), 2);
+}
+
 /// [`look`] of a contact in `domain`.
 fn look_in(domain: Domain, uid: u64, sensor: SensorType, level: Level, label: &str, confidence: f64) -> Detection {
     Detection { domain, ..look(uid, sensor, level, label, confidence) }

@@ -298,9 +298,11 @@ meaningful.
   and an engagement's way stay straight. The bridge fetches the grid before the lock (`prefetch`):
   a new caller of the engine with a planned kind prefetches first, or plans on an empty cache
   ("no land/water answers for the planner's grid"). `IDENTIFY_SECOND_LOOK_SINCE` (22 too): any
-  live track may be sent a look; it ends only on our own sensors' identification after it went
-  out (`TrackLevel::own_t`, the tracker's `own_identified_t`), so a driver that identifies a track
-  by its camera sets `own_t` (the scenario runner does for any `level_by` but `ais`).
+  live track may be sent a look. Rules 23 (`IDENTIFY_OWN_LOOK_SINCE`): it ends identified only on
+  the vehicle sent's own identification after it went out (`TrackLevel::own`, by vehicle uid, the
+  tracker's `own_identified_t` per observer); another vehicle's is an `identify.step` `meanwhile`
+  and the order goes on. A driver that identifies a track by a vehicle's camera sets `own` for
+  that vehicle (the scenario runner does for any `level_by` but `ais`).
 - Predicted link coverage (docs/LINK-COVERAGE.md, bd murmur-hei): `GET`/`POST
   /api/links/coverage`, `link_coverage` in dry runs and `preview_intent`, the MCP tool
   `get_link_coverage`, the console's Links layer and the order form's dry run (`web/src/
