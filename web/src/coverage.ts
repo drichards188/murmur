@@ -356,7 +356,8 @@ export function cellDetail(c: NonNullable<ReturnType<typeof cellAt>>): string {
 
 /** The order the dry run was asked about, as the task panel sends it. */
 export interface OrderShape {
-  task: TaskKind
+  /** rules 21: an identify order's orbit is the engine's (none drawn from the request) */
+  task: TaskKind | 'identify'
   center?: LngLat
   radius?: number
   route?: LngLat[]

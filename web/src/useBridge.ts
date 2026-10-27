@@ -153,12 +153,15 @@ function sameList(a: number[], b: number[]) {
 }
 
 export interface TaskRequest {
-  task: TaskKind
+  /** rules 21: `identify` names a `track` (the engine lays out its orbit) */
+  task: TaskKind | 'identify'
   uids: number[]
   center?: LngLat
   radius?: number
   route?: LngLat[]
   target?: number
+  track?: string
+  standoff_m?: number
 }
 
 /** What POST /api/tasks answers: 200 dispatched (with `authorization` when the task was in

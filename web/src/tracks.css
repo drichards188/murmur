@@ -54,6 +54,13 @@
 .tk-actions .ghost.hostile { color: var(--bad); border-color: #5a2a2a; }
 .tk-actions .ghost.on { background: var(--accent); color: #1a1205; border-color: var(--accent); }
 .tk-err { margin: 6px 0 0; color: var(--bad); font-size: 12px; }
+/* rules 21: the form that sends a vehicle to identify a track */
+.tk-identify { margin-top: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 2px; display: flex; flex-direction: column; gap: 6px; }
+.tk-identify-head { display: flex; align-items: center; justify-content: space-between; }
+.tk-identify-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+.tk-identify-list li.off { opacity: 0.55; }
+.tk-identify-list label { display: flex; align-items: baseline; gap: 4px; cursor: pointer; }
+.tk-identify-list .warn { color: var(--warn, #f2c14e); }
 /* rules 9: a declaration by the engine's rule, not yet confirmed; review flags on a track */
 .vrow-standin.tk-rule { color: var(--warn); border-color: var(--warn); border-style: solid; }
 .vrow-standin.tk-review { color: var(--warn); border-color: var(--warn); }

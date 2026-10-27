@@ -26,6 +26,7 @@ import { StepUpNeeded } from './decisions'
 import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
 import { FLAG_LABEL, confirmDeclaration, resolveFlag, revokeDeclaration } from './ident'
+import { IdentifyForm } from './IdentifyForm'
 
 /** The tracks section, pinned above the task panel (Phase C2): every contact our sensors hold, ranked hostile, suspect,
  *  unknown first; click a row for what the estimate rests on (sources, confidence, age,
@@ -142,6 +143,8 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
   const [revoking, setRevoking] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [asking, setAsking] = useState(false)
+  // rules 21: the form that sends a vehicle to identify it
+  const [identifying, setIdentifying] = useState(false)
   // rules 10: the password again, or the passkey (where the run asks for one)
   const [step, setStep] = useStepUp()
   const [stepUpError, setStepUpError] = useState(false)
@@ -339,6 +342,11 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
         <button className="ghost mini" onClick={onFocus}>
           fly to
         </button>
+        {t.identity.level !== 'identify' && (
+          <button className="ghost mini" onClick={() => setIdentifying((v) => !v)} title="Send a vehicle to identify this track: it orbits the track at its camera's standoff, following it, until it is identified, lost or out of time, then goes back to what it was doing">
+            identify...
+          </button>
+        )}
         {onEngage && t.affiliation === 'hostile' && t.declared && (
           <button className="ghost mini eg-engage-btn" onClick={onEngage} title="Nominate an engagement on this declared-hostile track (two operators with engagement authority decide)">
             engage...
@@ -384,6 +392,7 @@ function Detail({ t, nowMs, vehicles, onFocus, onEngage }: { t: Track; nowMs: nu
           </button>
         </div>
       )}
+      {identifying && t.identity.level !== 'identify' && <IdentifyForm track={t.id} vehicles={vehicles} onClose={() => setIdentifying(false)} />}
       {err && <p className="tk-err">{err}</p>}
     </div>
   )

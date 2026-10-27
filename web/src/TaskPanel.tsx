@@ -6,7 +6,7 @@ import type { Draft } from './MapView'
 import type { TaskKind, Tasking, Vehicle } from './types'
 import { callsign, LIFECYCLE, opEnding } from './types'
 import { TaskResult, type TaskOutcome } from './TaskResult'
-import { tierLabel, type SpaceRuns } from './decisions'
+import { tierLabel, type Intent, type SpaceRuns } from './decisions'
 import { scenarioNow } from './decisions'
 import { SpaceRunCard } from './SpaceRuns'
 import { sendTask, TaskRefused, type TaskRequest } from './useBridge'
@@ -28,6 +28,8 @@ interface Props {
   now?: () => number
   /** the drafted order's predicted link, for the map (the dry run's `link_coverage`) */
   onLinkRoute?: (d: LinkRouteDrawing | null) => void
+  /** the run's latest intents: how an identify order's look ended (rules 21) */
+  intents?: Intent[]
 }
 
 const TASKS: { kind: TaskKind; label: string; hint: string }[] = [
@@ -59,9 +61,32 @@ function Lifecycle({ state }: { state: string }) {
   )
 }
 
-export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draft, setDraft, taskings, pendingIds, onInbox, space, now, onLinkRoute }: Props) {
+export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draft, setDraft, taskings, pendingIds, onInbox, space, now, onLinkRoute, intents }: Props) {
   const runs = space?.runs ?? []
   const scen = now ? scenarioNow(space, now) : null
+  // rules 21: an identify order's taskings (its orbit each time it moved with its track, then the
+  // order it went back to) as one card, the newest, saying how its look ended
+  const identify = new Map<number, { track: string; newest: number; moved: number; ended: string | null }>()
+  for (const t of taskings) {
+    if (t.intent_id == null || !t.params.look) continue
+    const e = identify.get(t.intent_id) ?? { track: t.params.look, newest: t.id, moved: -1, ended: null }
+    e.moved += 1
+    identify.set(t.intent_id, e)
+  }
+  for (const t of taskings) {
+    const e = t.intent_id != null ? identify.get(t.intent_id) : undefined
+    if (e && t.id > e.newest) e.newest = t.id
+  }
+  for (const i of intents ?? []) {
+    const e = identify.get(i.id)
+    const last = i.history[i.history.length - 1]
+    if (e && i.kind === 'identify' && last && (i.state === 'done' || i.state === 'failed' || /identified|not identified|lost contact|not in the picture/.test(last.reason))) e.ended = last.reason
+  }
+  const identifyLabel = (t: Tasking) => {
+    const e = t.intent_id != null ? identify.get(t.intent_id) : undefined
+    if (!e) return t.task.toUpperCase()
+    return t.params.look ? `IDENTIFY ${e.track}` : `IDENTIFY ${e.track}, then ${t.task.toUpperCase()}`
+  }
   const [kind, setKind] = useState<TaskKind>('orbit')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -258,14 +283,16 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
         {space &&
           scen != null &&
           runs.map((r) => <SpaceRunCard key={`s${r.intent_id}`} run={r} map={space.clock} scen={scen} onOpen={onInbox} cancellable={space.cancellable ?? false} />)}
-        {taskings.map((t) => (
+        {taskings.filter((t) => !identify.has(t.intent_id ?? -1) || identify.get(t.intent_id ?? -1)?.newest === t.id).map((t) => (
           <section key={t.id} className="tcard">
             <div className="tcard-head">
-              <strong>{t.task.toUpperCase()}</strong>
+              <strong>{identifyLabel(t)}</strong>
               <span className="muted">#{t.id}</span>
+              {(identify.get(t.intent_id ?? -1)?.moved ?? 0) > 0 && <span className="muted">moved {identify.get(t.intent_id ?? -1)?.moved}x with it</span>}
               <span className="muted right">{age(t.created, now ? now() : Date.now())} ago</span>
             </div>
             {authorized.has(t.id) && <p className="muted">authorized by you ({authorized.get(t.id)})</p>}
+            {identify.get(t.intent_id ?? -1)?.ended && <p className="muted">{identify.get(t.intent_id ?? -1)?.ended}</p>}
             {t.ops.map((o) => {
               const v = historyByUid.get(o.uid)
               return (

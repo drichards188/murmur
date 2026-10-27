@@ -719,7 +719,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           </ErrorBoundary>
         </div>
         <ErrorBoundary name="Task panel" className="slot tasking">
-        <TaskPanel vehicles={vehicles} historyVehicles={allVehicles} selected={selected} draft={draft} setDraft={setDraft} taskings={taskings} pendingIds={pendingIds} onInbox={openIntent} space={spaceRuns} now={now} onLinkRoute={setLinkRoute} />
+        <TaskPanel vehicles={vehicles} historyVehicles={allVehicles} selected={selected} draft={draft} setDraft={setDraft} taskings={taskings} pendingIds={pendingIds} onInbox={openIntent} space={spaceRuns} now={now} onLinkRoute={setLinkRoute} intents={allIntents} />
         </ErrorBoundary>
       </div>
     </div>

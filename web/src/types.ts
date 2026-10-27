@@ -167,8 +167,12 @@ export type TaskKind = 'orbit' | 'patrol' | 'hold' | 'rtl' | 'track'
 
 export interface Tasking {
   id: number
+  /** the intent it carries out */
+  intent_id?: number
   task: TaskKind
-  params: { center?: LngLat; radius?: number; route?: LngLat[]; target?: number /* uid */ }
+  /** `look` (rules 21): the track an identify order's camera looks for first (the order is
+   *  flown as this orbit) */
+  params: { center?: LngLat; radius?: number; route?: LngLat[]; target?: number /* uid */; look?: string }
   created: number
   ops: Op[]
 }
