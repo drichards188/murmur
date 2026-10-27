@@ -1,0 +1,42 @@
+/* A track's declaration (Declaration.tsx): evidence first, then the acts, each question inline with
+   its consequence. Quiet by default; colour only where the state needs it (amber: the engine's
+   declaration waits for a person; red: hostile). Buttons are alike on purpose: confirm and revoke
+   carry the same weight, and the permissive act is never the easier one. */
+.dc { display: flex; flex-direction: column; gap: 5px; }
+.dc-head { margin: 0; font-size: 13px; font-weight: 600; line-height: 1.35; }
+.dc-head.warn { color: var(--warn); }
+.dc-head.bad { color: #ff8a8a; }
+.dc-evidence { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 1px; font-size: 12px; color: #c8d0d9; }
+.dc-evidence li { overflow-wrap: anywhere; }
+.dc-evidence li.warn { color: var(--warn); }
+.dc-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+
+.dc-btn { background: transparent; color: var(--text); border: 1px solid #3a4a5c; border-radius: 3px; padding: 5px 11px; font-size: 12.5px; font-weight: 600; line-height: 1.2; }
+.dc-btn:hover:not(:disabled) { border-color: #6a7f95; background: #1a2532; }
+.dc-btn:focus-visible, .dc-mark:focus-visible, .dc-ask:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.dc-btn:disabled { opacity: 0.45; }
+.dc-btn.hostile { color: #ff9d9d; border-color: #7a3a3a; }
+.dc-btn.hostile:hover:not(:disabled) { border-color: var(--bad); background: #2a1416; }
+.dc-btn.engage { color: var(--accent); border-color: #6b5530; }
+.dc-btn.engage:hover:not(:disabled) { border-color: var(--accent); background: #241c10; }
+.dc-btn.quiet { color: var(--muted); border-color: transparent; font-weight: 500; }
+.dc-btn.quiet:hover:not(:disabled) { color: var(--text); border-color: var(--line); }
+
+.dc-ask { margin-top: 4px; padding: 8px 10px; border: 1px solid #3a4a5c; border-radius: 4px; background: rgba(0, 0, 0, 0.22); display: flex; flex-direction: column; gap: 5px; outline: none; }
+.dc-ask-head { margin: 0; font-size: 13px; font-weight: 600; }
+.dc-note { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 3px; padding: 5px 7px; font: 12px var(--sans); }
+.dc-err { margin: 2px 0 0; color: var(--bad); font-size: 12px; }
+
+/* declaring by hand: hostile apart, the restrictive marks as one quiet group */
+.dc-declare { display: flex; flex-direction: column; gap: 6px; }
+.dc-declare-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.dc-lbl { font: 600 10px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+.dc-lbl.soft { letter-spacing: 0.04em; text-transform: none; font: 11.5px var(--sans); }
+.dc-marks { display: inline-flex; align-items: center; gap: 0; margin-left: auto; }
+.dc-marks .dc-lbl { margin-right: 6px; }
+.dc-mark { background: transparent; color: #aab6c3; border: 1px solid var(--line); padding: 3px 8px; font-size: 11.5px; }
+.dc-mark + .dc-mark { border-left: 0; }
+.dc-mark:first-of-type { border-radius: 3px 0 0 3px; }
+.dc-mark:last-of-type { border-radius: 0 3px 3px 0; }
+.dc-mark:hover:not(:disabled) { color: var(--text); background: #1a2532; }
+.dc-mark.on { color: var(--text); background: #1c2733; box-shadow: inset 0 -2px 0 #6a7f95; }

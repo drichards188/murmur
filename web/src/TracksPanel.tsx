@@ -1,14 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import './tracks.css'
 import { type Reveal, scrollSpanIntoView, useFlash } from './reveal'
 import {
   AFFILIATION_LABEL,
-  type Affiliation,
   LEVEL_LABEL,
   SENSOR_LABEL,
   type Track,
   type TracksMessage,
-  declareTrack,
   fmtAge,
   isTrackStale,
   kindLabel,
@@ -21,12 +19,9 @@ import {
 } from './tracks'
 import type { Vehicle } from './types'
 import { callsign } from './types'
-import { stepsUpAct } from './auth'
-import { StepUpNeeded } from './decisions'
-import { StepUpField } from './StepUp'
-import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
-import { FLAG_LABEL, confirmDeclaration, resolveFlag, revokeDeclaration } from './ident'
+import { FLAG_LABEL, resolveFlag } from './ident'
 import { IdentifyForm } from './IdentifyForm'
+import { DeclarationBlock, DeclareControls } from './Declaration'
 
 /** The tracks section, pinned above the task panel (Phase C2): every contact our sensors hold, ranked hostile, suspect,
  *  unknown first; click a row for what the estimate rests on (sources, confidence, age,
@@ -126,219 +121,104 @@ function Row({ t, nowMs, staleAfterS, sel, onClick }: { t: Track; nowMs: number;
   )
 }
 
-const DECLARABLE: Affiliation[] = ['hostile', 'suspect', 'neutral', 'unknown']
-
-function Detail({ t, nowMs, staleAfterS, vehicles, onFocus, onEngage }: { t: Track; nowMs: number; staleAfterS: number; vehicles: Vehicle[]; onFocus: () => void; onEngage?: () => void }) {
-  const [busy, setBusy] = useState<Affiliation | null>(null)
+/** A track's card: what it is and why it is shown so (its declaration and the evidence first, then
+ *  the estimate's), then the acts that fit (Declaration.tsx: confirm or revoke the engine's
+ *  declaration, nominate on a declared hostile, declare by hand), then the track's numbers. */
+function Detail({ t, nowMs, now, staleAfterS, vehicles, onFocus, onEngage }: { t: Track; nowMs: number; now: () => number; staleAfterS: number; vehicles: Vehicle[]; onFocus: () => void; onEngage?: () => void }) {
+  const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-  // rules 8: when the policy lists declare_hostile, a hostile declaration takes the
-  // operator's password again (a step-up); asked for here, sent once, never kept
-  const stepUp = stepsUpAct('declare_hostile')
-  // rules 9: confirming a rule declaration steps up only where the policy lists it (off by
-  // default: the user chose minimal approval)
-  const confirmStepUp = stepsUpAct('confirm_declaration')
-  const [confirming, setConfirming] = useState(false)
-  // revoking takes a second, deliberate click (it stops every engagement in play on the track);
-  // so does confirming (the permissive act is never the easier one)
-  const [revoking, setRevoking] = useState(false)
-  const [confirmOpen, setConfirmOpen] = useState(false)
-  const [asking, setAsking] = useState(false)
   // rules 21: the form that sends a vehicle to identify it (rules 22: while the track is live)
   const [identifying, setIdentifying] = useState(false)
   const live = !isTrackStale(t, nowMs, staleAfterS)
-  // rules 10: the password again, or the passkey (where the run asks for one)
-  const [step, setStep] = useStepUp()
-  const [stepUpError, setStepUpError] = useState(false)
   const age = trackAge(t, nowMs)
   const sigma = trackSigma(t, nowMs)
   const who = (uid: number) => {
     const v = vehicles.find((x) => x.uid === uid)
     return v ? callsign(v) : `uid ${uid}`
   }
-  const declare = async (a: Affiliation) => {
-    if (a === 'hostile' && stepUp && !stepUpReady(step)) {
-      setAsking(true)
-      return
-    }
-    setBusy(a)
-    setErr(null)
-    setStepUpError(false)
-    // a hostile declaration on a track with one flag in force answers that flag
-    const flag = a === 'hostile' && t.review?.length === 1 ? t.review[0].flag : undefined
-    try {
-      const proof = a === 'hostile' && stepUp ? await stepUpProof(step, { act: 'declare_hostile', track: t.id }) : {}
-      setStep({ password: '' })
-      await declareTrack(t.id, a, undefined, proof.password, flag, proof.passkey)
-      setAsking(false)
-    } catch (e) {
-      setStepUpError(e instanceof StepUpNeeded)
-      if (e instanceof StepUpNeeded) setAsking(true)
-      setErr((e as Error).message)
-    } finally {
-      setBusy(null)
-    }
-  }
   const act = async (name: string, f: () => Promise<unknown>) => {
-    setBusy('unknown')
+    setBusy(true)
     setErr(null)
     try {
       await f()
-      return true
     } catch (e) {
-      if (e instanceof StepUpNeeded) setConfirming(true)
       setErr(`${name}: ${(e as Error).message}`)
-      return false
     } finally {
-      setBusy(null)
+      setBusy(false)
     }
   }
-  const confirm = async () => {
-    if (confirmStepUp && !stepUpReady(step)) {
-      setConfirming(true)
-      return
-    }
-    const ok = await act('confirm', async () => {
-      const proof = confirmStepUp ? await stepUpProof(step, { act: 'confirm_declaration', track: t.id }) : {}
-      setStep({ password: '' })
-      return confirmDeclaration(t.id, proof)
-    })
-    if (ok) setConfirming(false)
-  }
-  const unconfirmed = t.declared?.rule && !t.declared.confirmed_by
+  const aff = AFFILIATION_LABEL[t.affiliation].toLowerCase()
   return (
     <div className="tk-detail">
-      <dl>
-        <dt>Affiliation</dt>
-        <dd>
-          {AFFILIATION_LABEL[t.affiliation]} ({pct(t.affiliation_confidence)})
-          <br />
-          <span className={t.affiliation === 'suspect' || t.affiliation === 'hostile' ? 'bad' : ''}>{t.affiliation_reason}</span>
-        </dd>
+      {t.declared ? (
+        <DeclarationBlock t={t} vehicles={vehicles} now={now} onEngage={onEngage} where="track" />
+      ) : (
+        <p className={`tk-status ${t.affiliation === 'suspect' ? 'bad' : ''}`}>
+          Not declared: {aff} by estimate ({pct(t.affiliation_confidence)})
+        </p>
+      )}
+      <dl className="tk-why">
+        {/* declared, the reason is the declaration's basis, which the block above words */}
+        {!t.declared && (
+          <>
+            <dt>Estimate</dt>
+            <dd className={t.affiliation === 'suspect' || t.affiliation === 'hostile' ? 'bad' : ''}>{t.affiliation_reason.replace(/_/g, ' ')}</dd>
+          </>
+        )}
         <dt>Identity</dt>
         <dd>
           {kindWithLevel(t.identity)} ({pct(t.identity.confidence)})
-          {t.identity.supported_by.length ? ` by ${t.identity.supported_by.map((s) => SENSOR_LABEL[s]).join(', ')}` : ''}
-          {t.identity.ais && (
-            <>
-              <br />
-              AIS {t.identity.ais.name} · MMSI {t.identity.ais.mmsi} · {t.identity.ais.ship_type}
-            </>
-          )}
-          {t.identity.conflict && (
-            <>
-              <br />
-              <span className="warn">{t.identity.conflict}</span>
-            </>
-          )}
+          {t.identity.supported_by.length ? `, by ${t.identity.supported_by.map((s) => SENSOR_LABEL[s]).join(', ')}` : ''}
         </dd>
-        <dt>Last seen</dt>
+        <dt>AIS</dt>
+        <dd>{t.identity.ais ? `${t.identity.ais.name}, MMSI ${t.identity.ais.mmsi}, ${t.identity.ais.ship_type}` : 'none received'}</dd>
+        {t.identity.conflict && (
+          <>
+            <dt>Conflict</dt>
+            <dd className="warn">{t.identity.conflict}</dd>
+          </>
+        )}
+        <dt>Seen by</dt>
         <dd>
-          {fmtAge(age)} ago · {t.hits} detection{t.hits === 1 ? '' : 's'} since {fmtAge(nowMs / 1000 - t.first_seen_t)} ago
-        </dd>
-        <dt>Confidence</dt>
-        <dd>
-          track {pct(trackConfidence(t, nowMs))} (decays while unseen)
-        </dd>
-        <dt>Uncertainty</dt>
-        <dd>
-          1 sigma {sigma.toFixed(0)} m now ({t.pos_sigma_m.toFixed(0)} m at the last fix, growing {t.sigma_growth_mps.toFixed(1)} m/s)
-        </dd>
-        <dt>Motion</dt>
-        <dd>
-          {t.course_deg != null ? `${t.course_deg.toFixed(0)}° at ` : ''}
-          {t.speed_mps.toFixed(1)} m/s
-          {t.alt_m != null && t.domain !== 'surface' ? ` · ${t.domain === 'subsurface' ? `${Math.max(0, -t.alt_m).toFixed(0)} m depth` : `${t.alt_m.toFixed(0)} m`}` : ''}
-        </dd>
-        <dt>Sources</dt>
-        <dd>
-          {t.sources.map((s) => (
-            <span className="tk-src" key={`${s.uid}-${s.sensor}`} title={`${s.hits} detections, last ${fmtAge(Math.max(0, nowMs / 1000 - s.last_t))} ago`}>
-              {who(s.uid)} {SENSOR_LABEL[s.sensor]} ×{s.hits}
+          {/* one line a vehicle of ours, its sensors and detections */}
+          {[...new Set(t.sources.map((s) => s.uid))].map((uid) => (
+            <span className="tk-src" key={uid}>
+              <b>{who(uid)}</b>{' '}
+              {t.sources
+                .filter((s) => s.uid === uid)
+                .map((s) => (
+                  <span key={s.sensor} title={`${s.hits} detections, last ${fmtAge(Math.max(0, nowMs / 1000 - s.last_t))} ago`}>
+                    {SENSOR_LABEL[s.sensor]} ×{s.hits}
+                  </span>
+                ))
+                .reduce<ReactNode[]>((acc, el, k) => (k ? [...acc, ' · ', el] : [el]), [])}
             </span>
           ))}
         </dd>
-        {t.declared && (
-          <>
-            <dt>Declared</dt>
-            <dd>
-              {t.declared.basis ? (
-                <span className={unconfirmed ? 'warn' : ''}>{t.declared.basis}</span>
-              ) : (
-                <>
-                  {AFFILIATION_LABEL[t.declared.affiliation]} by {t.declared.by}
-                </>
-              )}
-              {t.declared.note ? `: ${t.declared.note}` : ''}
-              {unconfirmed && !revoking && (
-                <span className="tk-decl-actions">
-                  {!confirmOpen ? (
-                    <button className="ghost mini" disabled={busy != null} onClick={() => setConfirmOpen(true)} title="Confirm the engine's declaration on its basis above (any operator; logged under your session)">
-                      confirm...
-                    </button>
-                  ) : (
-                    <>
-                      <span className="rv-warn tk-plain">Confirm {t.id} hostile on the basis above?</span>
-                      <button className="ghost mini" disabled={busy != null} onClick={() => void confirm().then(() => setConfirmOpen(false))}>
-                        confirm {t.id}
-                      </button>
-                      <button className="ghost mini" disabled={busy != null} onClick={() => setConfirmOpen(false)}>
-                        cancel
-                      </button>
-                    </>
-                  )}
-                </span>
-              )}
-              <span className="tk-decl-actions tk-revoke">
-                {!revoking ? (
-                  <button className="ghost mini rv-danger" disabled={busy != null} onClick={() => setRevoking(true)} title="Revoke this declaration (any operator): every engagement in play on the track stops first, with its fallback">
-                    revoke...
-                  </button>
-                ) : (
-                  <>
-                    <span className="rv-warn">Revoke it? Every engagement in play on {t.id} stops first.</span>
-                    <button
-                      className="ghost mini rv-danger"
-                      disabled={busy != null}
-                      onClick={() => void act('revoke', () => revokeDeclaration(t.id)).then(() => setRevoking(false))}
-                    >
-                      revoke {t.id}
-                    </button>
-                    <button className="ghost mini" disabled={busy != null} onClick={() => setRevoking(false)}>
-                      cancel
-                    </button>
-                  </>
-                )}
-              </span>
-            </dd>
-          </>
-        )}
-        {(t.review?.length ?? 0) > 0 && (
-          <>
-            <dt>Review</dt>
-            <dd>
-              {t.review?.map((f) => (
-                <div key={f.flag} className="tk-flag">
-                  <b>
-                    F-{f.flag} {FLAG_LABEL[f.kind] ?? f.kind}
-                    {f.status === 'confirmed' ? ' (confirmed)' : ''}
-                  </b>
-                  : {f.evidence}
-                  <span className="tk-decl-actions">
-                    {f.status === 'open' && (
-                      <button className="ghost mini" disabled={busy != null} onClick={() => void act('confirm flag', () => resolveFlag(f.flag, 'confirmed'))} title="The concern stands (logged under your session); the track is not declared by this">
-                        confirm
-                      </button>
-                    )}
-                    <button className="ghost mini" disabled={busy != null} onClick={() => void act('dismiss flag', () => resolveFlag(f.flag, 'dismissed'))} title="Dismiss the concern (logged under your session)">
-                      dismiss
-                    </button>
-                  </span>
-                </div>
-              ))}
-            </dd>
-          </>
-        )}
       </dl>
+      {(t.review?.length ?? 0) > 0 && (
+        <div className="tk-flags">
+          {t.review?.map((f) => (
+            <div key={f.flag} className="tk-flag">
+              <b>
+                Review F-{f.flag}: {FLAG_LABEL[f.kind] ?? f.kind}
+                {f.status === 'confirmed' ? ' (confirmed)' : ''}
+              </b>{' '}
+              {f.evidence}
+              <span className="tk-decl-actions">
+                {f.status === 'open' && (
+                  <button className="ghost mini" disabled={busy} onClick={() => void act('confirm flag', () => resolveFlag(f.flag, 'confirmed'))} title="The concern stands (logged under your session); the track is not declared by this">
+                    confirm
+                  </button>
+                )}
+                <button className="ghost mini" disabled={busy} onClick={() => void act('dismiss flag', () => resolveFlag(f.flag, 'dismissed'))} title="Dismiss the concern (logged under your session)">
+                  dismiss
+                </button>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="tk-actions">
         <button className="ghost mini" onClick={onFocus}>
           fly to
@@ -353,52 +233,27 @@ function Detail({ t, nowMs, staleAfterS, vehicles, onFocus, onEngage }: { t: Tra
             identify...
           </button>
         )}
-        {onEngage && t.affiliation === 'hostile' && t.declared && (
-          <button className="ghost mini eg-engage-btn" onClick={onEngage} title="Nominate an engagement on this declared-hostile track (two operators with engagement authority decide)">
-            engage...
-          </button>
-        )}
-        <span className="lbl">declare</span>
-        {DECLARABLE.map((a) => (
-          <button key={a} className={`ghost mini ${a} ${t.declared?.affiliation === a ? 'on' : ''}`} disabled={busy != null} onClick={() => declare(a)} title={`Declare this track ${AFFILIATION_LABEL[a].toLowerCase()} (an operator action, logged)`}>
-            {AFFILIATION_LABEL[a].toLowerCase()}
-          </button>
-        ))}
       </div>
-      {asking && (
-        <div className="tk-stepup">
-          <StepUpField
-            passwordLabel={`Consequential: your password to declare ${t.id} hostile`}
-            purpose={`to declare ${t.id} hostile`}
-            ariaLabel="Your password, to declare this track hostile"
-            value={step}
-            onChange={setStep}
-            busy={busy != null}
-            bad={stepUpError}
-            onEnter={() => void declare('hostile')}
-          />
-          <button className="ghost mini hostile" disabled={!stepUpReady(step) || busy != null} onClick={() => void declare('hostile')}>
-            declare hostile
-          </button>
-        </div>
-      )}
-      {confirming && confirmStepUp && (
-        <div className="tk-stepup">
-          <StepUpField
-            passwordLabel={`Consequential: your password to confirm the engine's declaration of ${t.id}`}
-            purpose={`to confirm the engine's declaration of ${t.id}`}
-            ariaLabel="Your password, to confirm this declaration"
-            value={step}
-            onChange={setStep}
-            busy={busy != null}
-            onEnter={() => void confirm()}
-          />
-          <button className="ghost mini" disabled={!stepUpReady(step) || busy != null} onClick={() => void confirm()}>
-            confirm
-          </button>
-        </div>
-      )}
       {identifying && live && <IdentifyForm track={t.id} vehicles={vehicles} onClose={() => setIdentifying(false)} />}
+      <DeclareControls t={t} />
+      <dl className="tk-facts">
+        <dt>Last seen</dt>
+        <dd>
+          {fmtAge(age)} ago · {t.hits} detection{t.hits === 1 ? '' : 's'} since {fmtAge(nowMs / 1000 - t.first_seen_t)} ago
+        </dd>
+        <dt>Confidence</dt>
+        <dd>track {pct(trackConfidence(t, nowMs))} (decays while unseen)</dd>
+        <dt>Uncertainty</dt>
+        <dd>
+          1 sigma {sigma.toFixed(0)} m now ({t.pos_sigma_m.toFixed(0)} m at the last fix, growing {t.sigma_growth_mps.toFixed(1)} m/s)
+        </dd>
+        <dt>Motion</dt>
+        <dd>
+          {t.course_deg != null ? `${t.course_deg.toFixed(0)}° at ` : ''}
+          {t.speed_mps.toFixed(1)} m/s
+          {t.alt_m != null && t.domain !== 'surface' ? ` · ${t.domain === 'subsurface' ? `${Math.max(0, -t.alt_m).toFixed(0)} m depth` : `${t.alt_m.toFixed(0)} m`}` : ''}
+        </dd>
+      </dl>
       {err && <p className="tk-err">{err}</p>}
     </div>
   )
@@ -447,7 +302,7 @@ export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus
         {list.map((t) => (
           <div key={t.id} data-track-id={t.id} className={flash === t.id ? 'tk-flash' : undefined}>
             <Row t={t} nowMs={nowMs} staleAfterS={staleAfterS} sel={selected === t.id} onClick={() => onSelect(selected === t.id ? null : t.id)} />
-            {selected === t.id && <Detail t={t} nowMs={nowMs} staleAfterS={staleAfterS} vehicles={vehicles} onFocus={() => onFocus(t)} onEngage={onEngage ? () => onEngage(t.id) : undefined} />}
+            {selected === t.id && <Detail t={t} nowMs={nowMs} now={now} staleAfterS={staleAfterS} vehicles={vehicles} onFocus={() => onFocus(t)} onEngage={onEngage ? () => onEngage(t.id) : undefined} />}
           </div>
         ))}
         {(tracks?.lost ?? []).length > 0 && (

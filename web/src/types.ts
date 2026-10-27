@@ -248,6 +248,14 @@ export function callsign(v: Pick<Vehicle, 'uid' | 'kind'> & { sysid?: number; id
   return v.identity?.callsign ?? `${PREFIX[v.kind ?? 'unknown']} ${String(v.sysid ?? v.uid).padStart(2, '0')}`
 }
 
+/** A vehicle's name by its uid as the engine's evidence carries it ("1" -> "HUNTER 1"). */
+export function vehicleNamer(vehicles: Vehicle[]) {
+  return (uid: string) => {
+    const v = vehicles.find((x) => String(x.uid) === uid)
+    return v ? callsign(v) : `vehicle ${uid}`
+  }
+}
+
 const DOMAIN_BY_KIND: Record<Kind, Domain> = {
   plane: 'air',
   vtol: 'air',

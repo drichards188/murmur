@@ -30,6 +30,21 @@ export function scrollSpanIntoView(box: HTMLElement, top: number, height: number
   if (to !== box.scrollTop) box.scrollTo({ top: Math.max(0, to), behavior: scrollBehavior() })
 }
 
+/** A ref for a question or a plan that opens on a person's click (the engagement screens): it
+ *  takes the focus, so the Enter that opened it does not also answer it, and comes into view
+ *  inside its own scroll box, never scrolling the page. A plain function, so a ref with it runs
+ *  on mount alone and a live re-render never takes the focus back. */
+export function focusInView(el: HTMLElement | null) {
+  if (!el) return
+  el.focus({ preventScroll: true })
+  let box = el.parentElement
+  while (box && !/(auto|scroll)/.test(getComputedStyle(box).overflowY)) box = box.parentElement
+  if (!box) return
+  const top = el.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop
+  // with a little room under it, so its last button is not at the very edge
+  scrollSpanIntoView(box, top, Math.min(el.offsetHeight + 16, box.clientHeight))
+}
+
 /** The id marked after each reveal request (the one `pick` chooses), cleared after FLASH_MS. */
 export function useFlash(reveal: Reveal | null, pick: (ids: string[]) => string | null): string | null {
   const [flash, setFlash] = useState<string | null>(null)

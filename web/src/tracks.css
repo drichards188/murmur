@@ -42,14 +42,22 @@
 .tk-conf i { display: block; height: 100%; background: var(--muted); }
 .tk-conf.id i { background: var(--accent); }
 
-.tk-detail { background: var(--panel-2); border: 1px solid #33475d; border-top: 0; border-radius: 0 0 4px 4px; margin: -4px 0 4px; padding: 8px 10px 10px; font-size: 12px; }
+.tk-detail { background: var(--panel-2); border: 1px solid #33475d; border-top: 0; border-radius: 0 0 4px 4px; margin: -4px 0 4px; padding: 8px 10px 10px; font-size: 12px; display: flex; flex-direction: column; gap: 8px; }
+/* the card's order: its declaration and evidence, the acts, then the track's numbers (quieter) */
+.tk-status { margin: 0; font-size: 13px; font-weight: 600; }
+.tk-status.bad { color: #ff8a8a; }
+.tk-detail dl.tk-why dd { font-family: var(--sans); font-size: 12px; }
+.tk-detail dl.tk-facts { padding-top: 6px; border-top: 1px solid var(--line); opacity: 0.85; }
+.tk-detail dl.tk-facts dt, .tk-detail dl.tk-facts dd { font-size: 11px; }
+.tk-flags { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
 .tk-detail dl { display: grid; grid-template-columns: 92px 1fr; gap: 3px 10px; margin: 0; }
 .tk-detail dt { color: var(--muted); }
 .tk-detail dd { margin: 0; font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; }
 .tk-detail .warn { color: var(--warn); }
 .tk-detail .bad { color: var(--bad); }
-.tk-src { display: inline-block; font: 500 10.5px var(--mono); padding: 1px 6px; margin: 0 4px 3px 0; border-radius: 10px; background: #1c2733; color: #aab6c3; }
-.tk-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
+.tk-src { display: inline-block; font: 500 10.5px var(--mono); padding: 1px 6px; margin: 0 4px 3px 0; border-radius: 3px; background: #1c2733; color: #aab6c3; }
+.tk-src b { font-weight: 600; color: var(--text); }
+.tk-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .tk-actions .lbl { font: 600 10px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin-right: 2px; }
 .tk-actions .ghost.hostile { color: var(--bad); border-color: #5a2a2a; }
 .tk-actions .ghost.on { background: var(--accent); color: #1a1205; border-color: var(--accent); }
