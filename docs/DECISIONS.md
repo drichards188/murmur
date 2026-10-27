@@ -2453,6 +2453,15 @@ group. Dates are 2026.
   no file could carry is a mismatch.
 - **Reclassification is any change of identity** (10-03, Phase E review), unclassified to a
   kind included: the approvers judged the track as it was classified then.
+- **Kept, and an open question for the evaluation: a refinement aborts too** (10-27, owner).
+  In a live run an approved engagement on T-0008 aborted when its identity went from small
+  craft to small fast boat, more specific and consistent, and the AI renominated it at once for
+  two fresh signatures. A refinement that stays in force, shown as a change, was proposed and
+  declined: "a strike is serious. a change in class could be important." Whether a refinement
+  should abort is one of the answers Murmur exists to find, so it is measured, not settled by
+  argument: how often an approved engagement aborts on a refinement against a contradiction,
+  how fast and how often the same plan is signed again, and whether re-signing grows quicker
+  and less read (a sign of the habit the two signatures are there to prevent). bd murmur-1bt.
 - **An engagement's effect point may take a near terrain sample, logged** (10-03, Phase E
   review). The effect point moves with its track every second, so its land/water answer may
   come from the nearest cached sample within 50 m; the logged sample says where it was taken
