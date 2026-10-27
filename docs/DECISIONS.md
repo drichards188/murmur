@@ -802,6 +802,22 @@ group. Dates are 2026.
   unchanged (F15 0 true, 6 false, 10 declarations right; F16 5 and 4, 7 right); F8's spoofer in
   conflict 99 % of its seconds as before; the honest ceiling 1 need more in F2 and in F8 of 10.
   Details: docs/SENSING.md, "Identity fusion".
+- **One credible call against an AIS identity may raise suspect, whatever the AIS claims**
+  (10-27, the owner, after a coast guard cutter turned suspect in Harbor watch: "yes I think in
+  general you can designate any node that you don't control. operators need freedom to operate.
+  especially in a world of spoofing"). No change to the identity fusion: a sensor's
+  identification that counts (0.3) against the AIS identity's kind stays a conflict until
+  agreeing looks outweigh it, and a conflict shows the track suspect (`Track::estimate`), whether
+  the AIS says law enforcement, military or SAR, since a spoofer can claim any of them. The case:
+  in both Harbor watch runs of 10-27 (12:39Z under rules 20, build 30fc0c6, before any identify
+  order existed; 17:11Z under rules 22) T-0007, the cutter CGC TERN (AIS law_enforcement, assumed
+  friend), turned suspect when HUNTER 1's sonar identified it as a fishing vessel at about 0.62
+  to 0.64, the same seeded wrong call each time. In the first it was suspect from at most 238 s to
+  at least 304 s and assumed friend again by 371 s, once REAPER 1's and PUMA 1's cameras had looked;
+  in the second from 200 s to about 464 s, longer because rules 22 let that same sonar call end the
+  identify orders sent to check it (rules 23 keeps them going). The operator keeps the last word:
+  any operator may declare any contact in the picture, whatever it broadcasts
+  (`Engine::declare_track`, `POST /api/tracks/{id}/declare`), and revoke a declaration.
 - **W1: cameras point themselves; orders name no look target** (10-23, approved). Each EO/IR
   sensor has a simulated payload manager on its vehicle: it searches the task area (an orbit's
   circle, a patrol's route, else around the vehicle) in the wide field, cues to the nearest
