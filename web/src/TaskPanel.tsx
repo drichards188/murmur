@@ -77,8 +77,13 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
   const offered = availableTasks(selVehicles, limits)
   const selKey = sel.join(',')
 
-  // a new selection gets that platform's own defaults: its typical orbit, and a task it can do
+  // a new selection gets that platform's own defaults: its typical orbit, and a task it can do;
+  // none selected, no order to draw, so nothing of one stays on the map
   useEffect(() => {
+    if (!sel.length) {
+      setDraft({ ...draft, center: null, route: [] })
+      return
+    }
     setDraft({ ...draft, radius: orbit.value })
     if (offered && !offered.has(kind)) {
       const next = TASKS.find((t) => offered.has(t.kind))?.kind
@@ -166,76 +171,83 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
 
   return (
     <aside className="panel tasking">
-      <header className="panel-head">
-        <h2>Task</h2>
-        <span className="muted">{sel.length ? sel.map((s) => callsign(byUid.get(s) ?? { uid: s, kind: null })).join(' · ') : 'no group selected'}</span>
-      </header>
-      <div className="taskform">
-        <div className="seg wide">
-          {TASKS.map((t) => (
-            <button
-              key={t.kind}
-              className={kind === t.kind ? 'on' : ''}
-              disabled={offered != null && !offered.has(t.kind)}
-              title={offered != null && !offered.has(t.kind) ? 'Not every selected vehicle can do this' : undefined}
-              onClick={() => choose(t.kind)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-        <p className="hint">{TASKS.find((t) => t.kind === kind)!.hint}</p>
-        {kind === 'orbit' && (
-          <label className="slider">
-            <span>Radius</span>
-            <input
-              type="range"
-              min={orbit.min}
-              max={orbit.max}
-              step={orbit.step}
-              value={Math.min(orbit.max, Math.max(orbit.min, draft.radius))}
-              onChange={(e) => setDraft({ ...draft, radius: Number(e.target.value) })}
-            />
-            <output>{draft.radius >= 10000 ? `${(draft.radius / 1000).toFixed(1)} km` : `${draft.radius} m`}</output>
-          </label>
-        )}
-        {kind === 'orbit' && orbit.limitedBy && (
-          <p className={`hint ${radiusOk ? '' : 'error'}`}>
-            Minimum {orbit.min} m ({orbit.limitedBy} x {1.1}).
-          </p>
-        )}
-        {kind === 'patrol' && (
-          <div className="row">
-            <span className="muted">{draft.route.length} waypoint{draft.route.length === 1 ? '' : 's'}</span>
-            <button className="ghost" disabled={!draft.route.length} onClick={() => setDraft({ ...draft, route: draft.route.slice(0, -1) })}>
-              Undo
-            </button>
-            <button className="ghost" disabled={!draft.route.length} onClick={() => setDraft({ ...draft, route: [] })}>
-              Clear
-            </button>
+      {/* the order form only while vehicles are selected (an order's outcome stays until dismissed) */}
+      {(sel.length > 0 || outcome) && (
+        <>
+          <header className="panel-head">
+            <h2>Task</h2>
+            <span className="muted">{sel.map((s) => callsign(byUid.get(s) ?? { uid: s, kind: null })).join(' · ')}</span>
+          </header>
+          <div className="taskform">
+            {sel.length > 0 && (
+              <>
+              <div className="seg wide">
+                {TASKS.map((t) => (
+                  <button
+                    key={t.kind}
+                    className={kind === t.kind ? 'on' : ''}
+                    disabled={offered != null && !offered.has(t.kind)}
+                    title={offered != null && !offered.has(t.kind) ? 'Not every selected vehicle can do this' : undefined}
+                    onClick={() => choose(t.kind)}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+              <p className="hint">{TASKS.find((t) => t.kind === kind)!.hint}</p>
+              {kind === 'orbit' && (
+                <label className="slider">
+                  <span>Radius</span>
+                  <input
+                    type="range"
+                    min={orbit.min}
+                    max={orbit.max}
+                    step={orbit.step}
+                    value={Math.min(orbit.max, Math.max(orbit.min, draft.radius))}
+                    onChange={(e) => setDraft({ ...draft, radius: Number(e.target.value) })}
+                  />
+                  <output>{draft.radius >= 10000 ? `${(draft.radius / 1000).toFixed(1)} km` : `${draft.radius} m`}</output>
+                </label>
+              )}
+              {kind === 'orbit' && orbit.limitedBy && (
+                <p className={`hint ${radiusOk ? '' : 'error'}`}>
+                  Minimum {orbit.min} m ({orbit.limitedBy} x {1.1}).
+                </p>
+              )}
+              {kind === 'patrol' && (
+                <div className="row">
+                  <span className="muted">{draft.route.length} waypoint{draft.route.length === 1 ? '' : 's'}</span>
+                  <button className="ghost" disabled={!draft.route.length} onClick={() => setDraft({ ...draft, route: draft.route.slice(0, -1) })}>
+                    Undo
+                  </button>
+                  <button className="ghost" disabled={!draft.route.length} onClick={() => setDraft({ ...draft, route: [] })}>
+                    Clear
+                  </button>
+                </div>
+              )}
+              <button className="primary" disabled={!ready || busy} onClick={submit}>
+                {kind === 'track'
+                  ? trackPair
+                    ? `Point ${callsign(byUid.get(trackers[0])!)} at ${callsign(byUid.get(others[0])!)}`
+                    : 'Select 1 tracker + 1 vehicle'
+                  : `Send ${kind.toUpperCase()} to ${sel.length} vehicle${sel.length > 1 ? 's' : ''}`}
+              </button>
+              </>
+            )}
+            {error && <p className="error">{error}</p>}
+            {request && !outcome && <DryRun st={dry} vehicles={vehicles} />}
+            {outcome && (
+              <TaskResult
+                outcome={outcome}
+                vehicles={vehicles}
+                stillPending={outcome.kind === 'wait' && (pendingIds?.has(outcome.intentId) ?? false)}
+                onInbox={(id) => onInbox?.(id)}
+                onDismiss={() => setOutcome(null)}
+              />
+            )}
           </div>
-        )}
-        <button className="primary" disabled={!ready || busy} onClick={submit}>
-          {sel.length === 0
-            ? 'Select vehicles first'
-            : kind === 'track'
-              ? trackPair
-                ? `Point ${callsign(byUid.get(trackers[0])!)} at ${callsign(byUid.get(others[0])!)}`
-                : 'Select 1 tracker + 1 vehicle'
-              : `Send ${kind.toUpperCase()} to ${sel.length} vehicle${sel.length > 1 ? 's' : ''}`}
-        </button>
-        {error && <p className="error">{error}</p>}
-        {request && !outcome && <DryRun st={dry} vehicles={vehicles} />}
-        {outcome && (
-          <TaskResult
-            outcome={outcome}
-            vehicles={vehicles}
-            stillPending={outcome.kind === 'wait' && (pendingIds?.has(outcome.intentId) ?? false)}
-            onInbox={(id) => onInbox?.(id)}
-            onDismiss={() => setOutcome(null)}
-          />
-        )}
-      </div>
+        </>
+      )}
 
       <header className="panel-head sub">
         <h2>Command log</h2>

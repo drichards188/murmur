@@ -432,9 +432,11 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         ])
         return setDrawing(null)
       }
+      // an orbit's centre or a patrol's waypoint is for the vehicles selected: none, no draft
+      if (selected.size === 0) return
       setDraft((d) => (d.mode === 'orbit' ? { ...d, center: p } : d.mode === 'patrol' ? { ...d, route: [...d.route, p] } : d))
     },
-    [drawing],
+    [drawing, selected],
   )
 
   // last effect of the tree for this state: children's effects (map, list) have run
