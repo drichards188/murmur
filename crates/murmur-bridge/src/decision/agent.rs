@@ -432,6 +432,11 @@ impl Decision {
                 req.rationale.as_deref(),
             );
         }
+        // rules 21: an identify order's vehicles; its orbit is the engine's
+        if req.task == "identify" {
+            self.check_vehicles(&req.uids)?;
+            return proposal(req);
+        }
         let fleet = self.fleet();
         let order = TaskRequest {
             task: req.task.clone(),

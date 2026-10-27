@@ -120,11 +120,14 @@ pub struct TaskingParams {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct IntentParams {
-    /// The task kind: orbit, patrol, hold, rtl or track on fleet vehicles; collect (satellite
-    /// imagery or SAR of an area) or cover (is SATCOM or GNSS service good enough over an
-    /// area) on the space segment; engage (nominate an abstract effect on a track declared
-    /// hostile, by an operator or by rule, with one armed platform: only human operators with
-    /// engagement authority can decide it, never its proposer).
+    /// The task kind: orbit, patrol, hold, rtl or track on fleet vehicles; identify (send one
+    /// vehicle with an EO/IR to identify one track, track_id: it orbits the track at its
+    /// camera's standoff, following it, its camera looking for it first, until the track is
+    /// identified, lost or out of time, then goes back to the order it was on); collect
+    /// (satellite imagery or SAR of an area) or cover (is SATCOM or GNSS service good enough
+    /// over an area) on the space segment; engage (nominate an abstract effect on a track
+    /// declared hostile, by an operator or by rule, with one armed platform: only human
+    /// operators with engagement authority can decide it, never its proposer).
     pub task: String,
     /// Fleet uids of the vehicles to task (from get_fleet): at least one for a vehicle task,
     /// none for collect and cover.
@@ -167,8 +170,11 @@ pub struct IntentParams {
     /// cover: the level required, a fraction of the window with SATCOM coverage (default
     /// 0.99) or satellites in view at every GNSS sample (default 4).
     pub min_level: Option<f64>,
-    /// engage: the track id (from get_tracks) declared hostile (by an operator or by rule).
+    /// engage: the track id (from get_tracks) declared hostile (by an operator or by rule);
+    /// identify: the track id to identify.
     pub track_id: Option<String>,
+    /// identify: the orbit's radius in metres (default the engine's, from the camera's reach).
+    pub standoff_m: Option<f64>,
     /// engage: the effect radius in metres (the policy caps it).
     pub effect_radius_m: Option<f64>,
     /// engage: the window closes this many seconds from now (default from the policy).
@@ -269,6 +275,16 @@ pub struct NominationOptionsParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct IdentifyOptionsParams {
+    /// The track id (from get_tracks) to identify.
+    pub track_id: String,
+    /// Only these fleet uids (default: every vehicle with an EO/IR).
+    pub uids: Option<Vec<u64>>,
+    /// The orbit's radius in metres (default the engine's, from each camera's reach).
+    pub standoff_m: Option<f64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct ChangesParams {
     /// The cursor of your last get_changes answer (a string, "<feed>:<n>"); omit it on the
     /// first call (the answer is then a cursor to start from and no changes).
@@ -322,6 +338,7 @@ impl IntentParams {
         put("service", self.service);
         put("min_level", self.min_level.map(|v| json!(v)));
         put("track", self.track_id.map(Value::String));
+        put("standoff_m", self.standoff_m.map(|v| json!(v)));
         put("effect_radius_m", self.effect_radius_m.map(|v| json!(v)));
         put("window_s", self.window_s.map(|v| json!(v)));
         put("fallback", self.fallback.map(Value::String));
@@ -606,6 +623,19 @@ pub fn tools() -> Vec<Tool> {
             ),
             true,
         ),
+        tool::<IdentifyOptionsParams>(
+            "get_identify_options",
+            format!(
+                "Rank the vehicles that could be sent to identify a track (read-only: nothing is \
+                 created or logged): each vehicle with an EO/IR, whether an identify order for \
+                 it passes its checks now (and the failing ones in words), its orbit's standoff \
+                 (from its camera's identification reach), the camera's reach, the time to get \
+                 there and, for one that passes, its predicted link along the way. Passing first, \
+                 soonest there first. Propose one with propose_intent (task identify, uids [its \
+                 uid], track_id). At most one call a second per agent. {STALE_NOTE}"
+            ),
+            true,
+        ),
         tool::<IdParams>(
             "explain_intent",
             "Explain one intent: every check with its outcome and detail, the policy tier \
@@ -743,6 +773,24 @@ pub async fn call(
                     fallback: p.fallback,
                     uids: p.uids,
                     passed_only: p.passed_only.unwrap_or(false),
+                })
+                .await
+        }
+        "get_identify_options" => {
+            let p = params!(IdentifyOptionsParams);
+            if let Err(wait) = mcp.dry_run_slot(agent) {
+                return Ok(CallToolResult::structured_error(json!({
+                    "error": format!(
+                        "get_identify_options runs each candidate's checks: at most one call a second per agent; try again in {} ms",
+                        wait.as_millis()
+                    ),
+                })));
+            }
+            mcp.decision
+                .identify_options(crate::decision::identify::OptionsRequest {
+                    track: p.track_id,
+                    uids: p.uids,
+                    standoff_m: p.standoff_m,
                 })
                 .await
         }
