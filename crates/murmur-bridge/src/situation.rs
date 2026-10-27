@@ -54,7 +54,7 @@ const LOG_TITLE_CHARS: usize = 80;
 /// `phase_detail` and `problems` are the runner's own fixed messages (it never puts a step's or
 /// the director's text in them); they are kept only as strings.
 pub const BLIND_KEYS: &[&str] = &[
-    "schema", "name", "title", "brief", "reveal", "modes", "scripted", "phase", "phase_detail", "clock",
+    "schema", "name", "title", "brief", "summary", "reveal", "modes", "scripted", "phase", "phase_detail", "clock",
     "orders", "timeline", "watch", "agent", "autoplay", "run", "problems",
 ];
 

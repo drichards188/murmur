@@ -97,7 +97,7 @@ SITUATION_PORTS = {
 }
 
 TOP_KEYS = {
-    "title", "brief", "director", "todo", "world", "fleet", "contacts", "events", "policy", "duration_s",
+    "title", "brief", "summary", "director", "todo", "world", "fleet", "contacts", "events", "policy", "duration_s",
     "rate", "at", "tidewater", "operator", "ai", "cosigner", "reveal", "seed", "ready_timeout_s", "ai_start_s",
     "order", "step", "watch", "playbook", "storyline", "autoplay", "headless",
 }
@@ -152,7 +152,7 @@ HEADLESS_STEP_KEYS = {
     "current": {"east_mps", "north_mps", "duration_s"},
 }
 STEP_KEYS.update(HEADLESS_STEP_KEYS)
-WATCH_KEYS = {"at_s", "text", "director"}
+WATCH_KEYS = {"at_s", "text", "director", "headline", "bullets"}
 TIDEWATER_HOME = Path(os.environ.get("TIDEWATER_HOME", Path.home() / "tidewater"))
 
 
@@ -178,6 +178,10 @@ class Watch:
     text: str
     # shown only when revealed (the bridge strips it from a blinded status too)
     director: bool = False
+    # optional glance at `text` (a few words, then 1 to 3 short bullets), shown first with the
+    # time and `text` behind a click; display only (the AI never reads a watch item)
+    headline: str = ""
+    bullets: tuple[str, ...] = ()
 
 
 @dataclass
@@ -188,6 +192,9 @@ class Situation:
     brief: str
     director: str
     todo: bool
+    # the operator's glance at the brief: a headline and a few bullets (`[summary]`), shown first
+    # with the whole brief behind a click. Display only: the AI is given the brief, never this.
+    summary: dict[str, Any] | None = None
     # the world it runs in (sim/worlds/<world>.toml; eval/world.py): its fleet, `at` and
     # tidewater scenario are the situation's unless it names its own
     world: str = "golden-gate"
@@ -421,6 +428,37 @@ def tidewater_scenario(v: Any) -> tuple[str, Path | None]:
     return name, (p if p.exists() else None)
 
 
+WATCH_BULLETS_MAX = 3
+SUMMARY_KEYS = {"headline", "bullets"}
+SUMMARY_BULLETS_MAX = 5
+
+
+def _summary(raw: Any, path: Path) -> dict[str, Any] | None:
+    """`[summary]`: `headline` (one line) and `bullets` (1 to 5 short lines), what the panel and
+    the menu show first. Optional; display only (the AI is given the brief, byte for byte)."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or set(raw) - SUMMARY_KEYS:
+        raise SituationError(f"{path}: summary is a table with headline and bullets only")
+    headline = raw.get("headline")
+    bullets = raw.get("bullets")
+    if not isinstance(headline, str) or not headline.strip() or "\n" in headline.strip():
+        raise SituationError(f"{path}: summary.headline is one line of text")
+    if not isinstance(bullets, list) or not 1 <= len(bullets) <= SUMMARY_BULLETS_MAX or not all(isinstance(b, str) and b.strip() for b in bullets):
+        raise SituationError(f"{path}: summary.bullets is 1 to {SUMMARY_BULLETS_MAX} lines of text")
+    return {"headline": headline.strip(), "bullets": [b.strip() for b in bullets]}
+
+
+def _watch_doc(w: Watch) -> dict[str, Any]:
+    """A watch item as the status document carries it: the glance (`headline`, `bullets`) only
+    when the file wrote one."""
+    d: dict[str, Any] = {"at_s": w.at_s, "text": w.text, "director": w.director}
+    if w.headline:
+        d["headline"] = w.headline
+        d["bullets"] = list(w.bullets)
+    return d
+
+
 def load_situation(path_or_name: str | Path) -> Situation:
     path = find_situation(str(path_or_name))
     try:
@@ -434,6 +472,7 @@ def load_situation(path_or_name: str | Path) -> Situation:
     brief = str(raw.get("brief", "")).strip()
     if not title or not brief:
         raise SituationError(f"{path}: needs a title and a brief")
+    summary = _summary(raw.get("summary"), path)
     base = path.parent
     sit = Situation(
         path=path,
@@ -442,6 +481,7 @@ def load_situation(path_or_name: str | Path) -> Situation:
         brief=brief,
         director=str(raw.get("director", "")).strip(),
         todo=bool(raw.get("todo", False)),
+        summary=summary,
         raw=raw,
     )
     if sit.todo:
@@ -532,7 +572,23 @@ def load_situation(path_or_name: str | Path) -> Situation:
             raise SituationError(f"{path}: watch {i + 1} needs text and at_s from 0 to before duration_s")
         if not isinstance(w.get("director", False), bool):
             raise SituationError(f"{path}: watch {i + 1}: director is true or false")
-        sit.watch.append(Watch(at_s=at_s, text=str(w["text"]).strip(), director=bool(w.get("director", False))))
+        headline = w.get("headline", "")
+        bullets = w.get("bullets", [])
+        if not isinstance(headline, str) or "\n" in headline.strip():
+            raise SituationError(f"{path}: watch {i + 1}: headline is one line of text")
+        if not isinstance(bullets, list) or len(bullets) > WATCH_BULLETS_MAX or not all(isinstance(b, str) and b.strip() for b in bullets):
+            raise SituationError(f"{path}: watch {i + 1}: bullets is up to {WATCH_BULLETS_MAX} lines of text")
+        if bullets and not headline.strip():
+            raise SituationError(f"{path}: watch {i + 1}: bullets need a headline")
+        sit.watch.append(
+            Watch(
+                at_s=at_s,
+                text=str(w["text"]).strip(),
+                director=bool(w.get("director", False)),
+                headline=headline.strip(),
+                bullets=tuple(b.strip() for b in bullets),
+            )
+        )
     sit.watch.sort(key=lambda w: w.at_s)
     sit.playbook = _playbook(raw.get("playbook"), path)
     story = _table(raw.get("storyline"), "[storyline]", path)
@@ -753,6 +809,7 @@ def status_doc(
         "name": sit.name,
         "title": sit.title,
         "brief": sit.brief,
+        **({"summary": sit.summary} if sit.summary else {}),
         "reveal": reveal,
         "modes": {
             k: modes.get(k)
@@ -768,7 +825,7 @@ def status_doc(
         },
         "orders": orders,
         "timeline": {"done": shown[-40:]},
-        "watch": [{"at_s": w.at_s, "text": w.text, "director": w.director} for w in watch if el is not None and w.at_s <= el],
+        "watch": [_watch_doc(w) for w in watch if el is not None and w.at_s <= el],
         "agent": agent,
         "autoplay": autoplay,
         "run": run,
@@ -785,7 +842,7 @@ def status_doc(
             for s in sit.steps
             if s.id not in done_steps
         ]
-        doc["watch_upcoming"] = [{"at_s": w.at_s, "text": w.text, "director": w.director} for w in watch if el is None or w.at_s > el]
+        doc["watch_upcoming"] = [_watch_doc(w) for w in watch if el is None or w.at_s > el]
     return doc
 
 

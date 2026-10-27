@@ -224,7 +224,7 @@ def situation_entry(path: Path, loaded: dict[str, Situation] | None = None) -> d
     except SituationError as e:
         entry["why_not"] = f"does not load: {e}"
         return entry
-    entry.update(title=sit.title, brief=sit.brief, cli=f"make situation NAME={name}")
+    entry.update(title=sit.title, brief=sit.brief, summary=sit.summary, cli=f"make situation NAME={name}")
     if sit.todo:
         entry["why_not"] = "a draft: only its title and brief are written yet"
         return entry

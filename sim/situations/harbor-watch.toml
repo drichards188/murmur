@@ -57,6 +57,16 @@ reveal = false
 seed = 1
 world = "golden-gate"                         # sim/worlds/golden-gate.toml
 
+# What the panel and the menu show first (display only: the AI is given the brief above, not this).
+[summary]
+headline = "Keep the Gate under watch: classify what approaches it and keep our four vehicles on task."
+bullets = [
+  "Four of ours on station: HUNTER 1 (sensor ship), REAPER 1 and PUMA 2 (drones), PUMA 1 in reserve.",
+  "Opening orders come from op-setup (a script, not a person); any it routes to a person wait in your Inbox for 120 s.",
+  "The AI watch officer may propose tasking; an orbit, patrol or track waits for you, a hold or rtl goes at once.",
+  "It cannot approve anything. Engagements are not authorized on this watch.",
+]
+
 # The headless simulator as before world v3, pinned: G1's reference, the golden episode and every
 # v1 and v2 family (built on this file) hold today's results. No terrain source for the domain rule
 # (HUNTER 1's patrol shows "not evaluated", as live without tidewater) and still water.
@@ -110,35 +120,51 @@ director = true
 # ---- what to watch for, shown in the console's Situation panel as each comes due
 [[watch]]
 at_s = 0
+headline = "Stack up: four of ours at the Gate"
+bullets = ["Opening orders go out by policy (op-setup, a script)", "HUNTER 1 patrols east, REAPER 1 orbits the bay entrance, PUMA 2 off Lime Point", "PUMA 1 waits in reserve west of the bridge"]
 text = "The stack comes up: four of ours at the Gate. The setup script's opening orders go out by policy: HUNTER 1 on patrol east of the bridge, REAPER 1 on a wide orbit over the bay entrance, PUMA 2 on station off Lime Point. PUMA 1 waits in reserve west of the bridge."
 
 [[watch]]
 at_s = 45
+headline = "Normal traffic, all on AIS"
+bullets = ["Ferries, the lane, a trawler, a coast guard cutter", "Tracks drawer shows them neutral (the cutter assumed friend) and why"]
 text = "Normal traffic: ferries, the shipping lane, a trawler, a coast guard cutter. Each broadcasts AIS, so the Tracks drawer shows them neutral (the cutter assumed friend) and says why."
 
 [[watch]]
 at_s = 120
+headline = "A drifting boat with no AIS is not a threat"
+bullets = ["Small craft need not carry AIS", "Once a camera classifies it the C2 shows it neutral, at lower confidence", "Nothing to do"]
 text = "A small boat drifting off Mile Rock has no AIS. Small craft need not carry it: once a camera classifies it the C2 shows it neutral, at a lower confidence. Nothing to do."
 director = true                               # it answers a question the watch should ask itself
 
 [[watch]]
 at_s = 240
+headline = "How contacts are labelled"
+bullets = ["AIS: neutral (cutter assumed friend)", "No AIS: unknown until a sensor classifies it, then neutral or suspect", "Never hostile on its own: an operator or the engine's rule on an observed act declares it"]
 text = "How the C2 labels a contact: one broadcasting AIS is neutral (a coast guard cutter assumed friend); one without AIS is unknown until a sensor classifies it, then neutral or suspect by what it is. Never hostile on its own: hostile takes an operator's declaration or the engine's rule on an observed hostile act."
 
 [[watch]]
 at_s = 330
+headline = "The AI may propose a sensor orbit"
+bullets = ["It lands in your Inbox with its rationale and checks", "The AI cannot approve anything"]
 text = "The AI reads the same picture through its tools. If it proposes a sensor orbit, the watch policy puts it in your Inbox with its rationale and checks. The AI cannot approve anything."
 
 [[watch]]
 at_s = 450
+headline = "After a decision: who, how long, what it added"
+bullets = ["Who approved (you, or op-auto on autoplay)", "How long it waited", "What a sensor sent closer adds to the track's identity"]
 text = "After a decision on an AI's proposal: who approved it (you, or op-auto on autoplay), how long it waited, and what a sensor sent closer adds to a track's identity."
 
 [[watch]]
 at_s = 420
+headline = "A short dropout sends a small drone home"
+bullets = ["5 s lost-link timer, then RTL on its own failsafe", "An orbit behind the Presidio bluffs can trigger it", "Inbox alerts, fleet list shows RTL, map shows where it probably is"]
 text = "Our small drones' radio links have a 5 s lost-link timer: a short dropout (a burst of loss, or an orbit dipping behind the Presidio bluffs as seen from the ground station at Crissy Field) sends one home on its own failsafe (RTL). The inbox alerts, the fleet list shows RTL, and the map shows where a silent one probably is."
 
 [[watch]]
 at_s = 600
+headline = "Two minutes left"
+bullets = ["The audit log holds every order, proposal and decision", "The runner prints the replay command at the end"]
 text = "Two minutes left. The audit log holds every order, proposal and decision; the runner prints the replay command at the end."
 
 # ---- the playbook engine (AI=playbook, and the shadow beside a model): agents/playbook/. Only

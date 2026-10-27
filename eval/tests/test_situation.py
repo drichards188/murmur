@@ -157,6 +157,19 @@ def test_bad_situations_are_refused(tmp_path: Path, body: str):
         S.load_situation(_write(tmp_path, "bad", body))
 
 
+def test_the_summary_and_watch_glances_are_checked_and_leave_the_brief_alone():
+    """`[summary]` and a watch item's `headline`/`bullets` are the person's glance: loaded as
+    written, bounded, and never part of the brief the AI is given."""
+    for name in ("harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition"):
+        sit = S.load_situation(name)
+        assert sit.summary and sit.summary["headline"] and 1 <= len(sit.summary["bullets"]) <= 5
+        assert all(w.headline and 1 <= len(w.bullets) <= 3 for w in sit.watch)
+        assert sit.summary["headline"] not in S.brief_text(sit)
+    for bad in ('[summary]\nheadline = "H"\nbullets = []\n', '[summary]\nheadline = "H"\nbullets = ["a", "b", "c", "d", "e", "f"]\n', '[summary]\nbullets = ["a"]\n', '[summary]\nheadline = "H"\nbullets = ["a"]\nx = 1\n'):
+        with pytest.raises(S.SituationError):
+            S._summary(tomllib.loads(bad)["summary"], Path("x.toml"))
+
+
 def test_an_opening_order_for_an_armed_platform_is_refused(tmp_path: Path):
     """An opening order is a script's: one for an armed platform would be a human decision it
     is not (and an engagement is never an order kind)."""

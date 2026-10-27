@@ -101,6 +101,17 @@ cosigner = "scripted"                         # live: a scripted operator adds t
 reveal = false
 seed = 1
 
+# What the panel and the menu show first (display only: the AI is given the brief above, not this).
+[summary]
+headline = "Watch for a hostile act on our vessels; an engagement takes two operators, and the AI can only nominate."
+bullets = [
+  "Three of ours on station: HUNTER 1 (sensor ship), REAPER 1 (drone) and BLADE 1 (loitering munition, armed).",
+  "Armed platforms get no opening order; every order for one waits for a person.",
+  "A track is declared hostile by an operator or by rule on an observed hostile act; you confirm or revoke it, and nothing is nominated on it until confirmed.",
+  "An effect needs two operators with engagement authority, neither its proposer; it is allowed only in the zone west of the bridge, clear of no-strike areas.",
+  "The AI watch officer may nominate an engagement and can never sign one.",
+]
+
 # ---- opening orders, once the fleet is ready: issued by the setup script (op-setup); never for
 # an armed platform (refused at load), so BLADE 1 loiters where it is. Both platforms here have
 # endurance figures: the orders go out by policy (the default tier).
@@ -160,30 +171,44 @@ text = "Timeline fallback at 5:45: agent-scripted nominates BLADE 1 unless a nom
 # ---- what to watch for, shown in the console's Situation panel as each comes due
 [[watch]]
 at_s = 0
+headline = "Stack up: three of ours at the Gate"
+bullets = ["HUNTER 1 patrols east, REAPER 1 orbits high over the bay (orders by policy)", "BLADE 1 is armed: no script orders it"]
 text = "The stack comes up: three of ours at the Gate. The setup script's opening orders go out by policy: HUNTER 1 on patrol east of the bridge, REAPER 1 on a high orbit over the bay. BLADE 1 is armed: no script orders it."
 
 [[watch]]
 at_s = 40
+headline = "Normal traffic"
+bullets = ["Ferries, the lane, a trawler, a sport fishing boat, a yacht", "No AIS means unknown until a sensor classifies it; the Tracks drawer says why"]
 text = "Normal traffic: ferries, the shipping lane, a trawler, a sport fishing boat and a sailing yacht. A contact without AIS is unknown until a sensor classifies it; the Tracks drawer says why each is shown as it is."
 
 [[watch]]
 at_s = 180
+headline = "Hostile act: the engine may declare by rule"
+bullets = ["Needs an observed act against one of ours, clearly attributed to one track", "Review list shows the act, sensors and attribution; you confirm or revoke", "An unsure case is flagged for review, never declared"]
 text = "Hostile acts: when our sensors observe a hostile act against one of ours, clearly attributed to one track, the engine declares that track hostile by rule; the Review list shows the act, the sensors and the attribution, and an operator confirms or revokes it. An unsure case is flagged for review, never declared."
 
 [[watch]]
 at_s = 240
+headline = "Engagement: AI nominates, two operators sign"
+bullets = ["The AI reads the nomination form's dry run first", "Two operators with engagement authority sign one frozen plan, never its proposer", "Autoplay: op-2 and op-3 sign (scripted); op-auto grants the AI's requests"]
 text = "An engagement: the AI may nominate one through its tools, after reading the nomination form's dry run (every armed platform's checks, and which track or vehicle blocks a keep-out). Two operators with engagement authority sign one frozen plan, never its proposer. On autoplay op-2 and op-3 sign (scripted), and op-auto grants every request the AI makes."
 
 [[watch]]
 at_s = 400
+headline = "After two signatures: dispatch, release, assessment"
+bullets = ["Platform is dispatched", "Effect released only when the platform is at the point, picture holding, every keep-out passing", "Then sensor coverage decides: ceased, persists or unknown"]
 text = "After the second signature the platform is dispatched. The engine releases the effect (an abstract event: a point, a radius, a time) only when the platform is at the point and the picture still holds, every keep-out included; then our sensors' coverage of the point decides the assessment: ceased, persists or unknown."
 
 [[watch]]
 at_s = 600
+headline = "Two minutes left"
+bullets = ["The audit log holds every act, declaration, nomination, signature and the effect", "The runner prints the replay command at the end"]
 text = "Two minutes left. The audit log holds every act, declaration, nomination, signature and the effect; the runner prints the replay command at the end."
 
 [[watch]]
 at_s = 200
+headline = "The fast boat has fired on HUNTER 1 (truth)"
+bullets = ["The chain from here: act observed, rule declaration, confirmation", "Then nomination, two signatures, dispatch, effect, assessment"]
 text = "The fast boat has fired on HUNTER 1 (truth). The chain from here: the act observed, the rule declaration, a confirmation, a nomination, two signatures, the dispatch, the effect, the assessment."
 director = true
 

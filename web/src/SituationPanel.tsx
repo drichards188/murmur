@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Decisions, Intent } from './decisions'
+import { Bluf } from './Bluf'
+import { watchParts } from './bluf'
 import { RationaleText } from './Rationale'
 import { setScriptedBadges } from './situationIds'
 import { usePoll } from './space'
@@ -19,6 +21,15 @@ interface Entry {
   director?: boolean
 }
 
+/** A watch item: `headline` and `bullets` (a few words, 1 to 3 lines) when the file wrote them, `text` whole. */
+export interface WatchItem {
+  at_s: number
+  text: string
+  director?: boolean
+  headline?: string
+  bullets?: string[]
+}
+
 interface Activity {
   t: number
   /** situation time (s), stamped by the runner */
@@ -31,6 +42,8 @@ export interface SituationStatus {
   name: string
   title: string
   brief: string
+  /** the file's glance at the brief (`[summary]`), when it wrote one */
+  summary?: { headline: string; bullets: string[] }
   director?: string
   reveal: boolean
   modes: {
@@ -49,8 +62,8 @@ export interface SituationStatus {
   clock: { t: number; elapsed_s: number | null; duration_s: number; remaining_s: number | null }
   orders: { id: string; task: string; vehicles?: string[]; by?: string; routed?: string; intent_id?: number; state?: string; error?: string }[]
   timeline: { done: Entry[]; upcoming?: { at_s: number; id: string; kind: string; text: string }[] }
-  watch: { at_s: number; text: string; director?: boolean }[]
-  watch_upcoming?: { at_s: number; text: string; director?: boolean }[]
+  watch: WatchItem[]
+  watch_upcoming?: WatchItem[]
   agent: {
     kind: string
     label: string
@@ -217,12 +230,24 @@ export function SituationPanel({ decisions }: { decisions: Decisions | null }) {
       )}
       {s.modes.evidence_note && <p className="sit-warn">{s.modes.evidence_note}</p>}
       <div className="sit-scroll">
-        <details className="sit-brief" open>
-          <summary>Brief</summary>
-          {s.brief.split(/\n\s*\n/).map((p, k) => (
-            <p key={k}>{p}</p>
-          ))}
-        </details>
+        {s.summary ? (
+          <section className="sit-brief sit-summary">
+            <span className="sit-label">Brief</span>
+            <Bluf
+              parts={{ headline: s.summary.headline, bullets: s.summary.bullets, more: s.brief }}
+              detail={s.brief.split(/\n\s*\n/).map((p, k) => (
+                <p key={k}>{p}</p>
+              ))}
+            />
+          </section>
+        ) : (
+          <details className="sit-brief" open>
+            <summary>Brief</summary>
+            {s.brief.split(/\n\s*\n/).map((p, k) => (
+              <p key={k}>{p}</p>
+            ))}
+          </details>
+        )}
 
         <h3 className="sit-h">
           Watch for <span>{watch.length}</span>
@@ -232,8 +257,7 @@ export function SituationPanel({ decisions }: { decisions: Decisions | null }) {
           {watch.map((w, k) => (
             <li key={`${w.at_s}-${k}`} className={`${fresh(w.at_s) ? 'new' : ''}${w.director ? ' sit-director' : ''}`}>
               <time>{clock(w.at_s)}</time>
-              {w.text}
-              {w.director && <small> (director, revealed)</small>}
+              <Bluf parts={watchParts(w)}>{w.director && <small className="sit-dir-tag">(director, revealed)</small>}</Bluf>
             </li>
           ))}
         </ul>

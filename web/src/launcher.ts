@@ -19,6 +19,8 @@ export interface Scenario {
   default: boolean
   title: string
   brief: string
+  /** a headline and a few bullets for the brief (a situation's `[summary]`), when it has one */
+  summary?: { headline: string; bullets: string[] } | null
   runnable: boolean
   /** why it can't start from the menu (headless only, a draft) */
   why_not: string | null

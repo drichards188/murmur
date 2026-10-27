@@ -1,3 +1,4 @@
+import { Bluf } from './Bluf'
 import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, useEffect, useState } from 'react'
 import { type AiMode, endScenario, isActive, type Launch, type LauncherState, type OperatorMode, type Scenario, type Stage, startScenario } from './launcher'
 import { SwarmBackdrop, SwarmLegend } from './SwarmBackdrop'
@@ -562,9 +563,16 @@ function Detail({
           {error && <p className="mm-fail">{error}</p>}
           <div className="mm-brief">
             <h3 className="mm-h">{situation ? 'Brief' : 'What it is'}</h3>
-            {s.brief.split(/\n\s*\n/).map((p, k) => (
-              <p key={k}>{p}</p>
-            ))}
+            {s.summary ? (
+              <Bluf
+                parts={{ headline: s.summary.headline, bullets: s.summary.bullets, more: s.brief }}
+                detail={s.brief.split(/\n\s*\n/).map((p, k) => (
+                  <p key={k}>{p}</p>
+                ))}
+              />
+            ) : (
+              s.brief.split(/\n\s*\n/).map((p, k) => <p key={k}>{p}</p>)
+            )}
           </div>
         </div>
       </div>

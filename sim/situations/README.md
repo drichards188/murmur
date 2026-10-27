@@ -237,6 +237,10 @@ the AI is given it (title and brief only)."""
 director = """Truth and intent, for whoever runs the situation: shown only when revealed."""
 todo = false                                  # true: a stub (title and brief only); not runnable
 
+[summary]                                     # optional, display only (the AI gets the brief, not this):
+headline = "One line, the bottom line"        # the panel and the menu show it first, the whole brief
+bullets = ["1 to 5 short lines"]              # behind a More click. Write it from the brief alone.
+
 world = "golden-gate"                         # sim/worlds/<world>.toml (default golden-gate): its fleet,
                                               # tidewater, at and traffic unless named here
 fleet = "sim/fleets/harbor-watch.toml"        # sim/fleets format (stand-ins start in seconds)
@@ -285,6 +289,8 @@ director = true                               # shown only when revealed
 [[watch]]                                     # what to watch for, shown as each comes due
 at_s = 240
 text = "How the C2 labels a contact without AIS."   # what to look at, never the answer
+headline = "How contacts are labelled"        # optional glance, shown first with the time: a few words,
+bullets = ["AIS: neutral", "No AIS: unknown until classified"]   # and 1 to 3 short lines; `text` is behind More
 director = false                              # true: shown only when revealed
 
 [playbook]                                    # the playbook engine (AI=playbook, and the shadow)
