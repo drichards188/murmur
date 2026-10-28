@@ -4,7 +4,12 @@ The Golden Gate world's grids (sim/worlds/golden-gate.toml), sampled once from `
 so `make check` and every episode run without tidewater. Each has a provenance file beside it
 (tidewater's commit and `/v1/info`, the scenario, the box, the spacing, the time sampled, the
 date, the command, the file's SHA-256), which `eval/headless/tests/test_labels_families.py`
-checks against the file.
+checks against the file. Tidewater was a repository of its own when these were baked: the
+commit they cite, 3a531c9, came into this repository with its history as the `tidewater/`
+directory, tree `d1b2531e9f159e2fe06f90d03a88a81be1876bd8` (a tree hash survives rebases; the
+commit hash does not). A grid baked since records this repository's commit, its `tidewater/`
+tree and whether `tidewater/` had uncommitted changes (`repo_commit`, `tree`, `dirty`) in place
+of `commit`.
 
 | file | what | read by |
 | --- | --- | --- |
@@ -24,7 +29,7 @@ bake_world.py); bake_world.py rebuilt it on 2026-10-23 from the same tidewater c
 bake a world's grids (a new tidewater DEM, another place or spacing):
 
 ```
-~/tidewater/.venv/bin/tidewater serve ~/tidewater/scenarios/golden-gate-2026-06.toml --port 9570 &
+.venv/bin/tidewater serve tidewater/scenarios/golden-gate-2026-06.toml --port 9570 &
 .venv/bin/python -m eval.headless.bake_world golden-gate --url http://127.0.0.1:9570
 .venv/bin/python -m eval.headless.bake_world golden-gate --out /tmp/rebake    # elsewhere, to compare
 ```

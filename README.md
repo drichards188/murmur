@@ -41,7 +41,7 @@ make goldengate GG_FLEET=full-spectrum AT=2026-06-14T10:00:00Z   # with real tid
 ## Run it
 
 ```bash
-make setup   # once: .venv, Rust release build, ArduPilot SITL in ~/ardupilot, npm install (~10 min)
+make setup   # once: .venv with tidewater and its Golden Gate data, Rust release build, ArduPilot SITL with Murmur's patches in ~/ardupilot, npm install (~30 min, a third of it the Golden Gate's model currents)
 make start   # the main menu: open http://localhost:5173, pick a scenario, Start
 ```
 
@@ -79,10 +79,11 @@ An engagement then needs two of them with engagement authority, each re-entering
 password at the moment they sign; the evaluation's study mode always runs this way.
 
 **Real conditions:** `make goldengate AT=2026-06-14T10:00:00Z` starts the swarm at the Golden
-Gate from the [tidewater](../tidewater) sibling repo's scenario. `scripts/up.sh` starts
+Gate from [tidewater](tidewater/README.md)'s scenario (`tidewater/`, installed into `.venv` by
+`make setup`, which also fetches the scenario's data). `scripts/up.sh` starts
 `tidewater serve` on :8770 (or reuses one already there) for the bridge and the stand-ins, and
 `tidewater drive` so each SITL vehicle gets the real tide current and wind at its position for
-that date and time (run `tidewater fetch` there first). Both stop with the stack.
+that date and time. Both stop with the stack.
 
 **Degraded links by default:** every vehicle's link runs through the link emulator
 ([`crates/murmur-linkemu`](crates/murmur-linkemu/README.md)): vehicle i sends to
@@ -123,7 +124,7 @@ altitude (or depth, for subs) and spread around orbit circles.
 | blimp | Blimp | orbit, patrol, hold, RTL | slow: ~0.3 m/s in SITL |
 | boat | ArduRover (motorboat) | orbit, patrol, hold, RTL | |
 | sub | ArduSub | orbit, patrol, hold, RTL | 5 m depth; no RTL mode, so RTL is a mission home |
-| tracker | AntennaTracker | track, hold | **Track**: select the tracker + one vehicle; the bridge relays that vehicle's position to it. Needs the ArduPilot patches in `sim/patches/ardupilot/` and `~/tidewater/patches/ardupilot/`; the SITL mount then turns +/-170 deg about its spawn heading, and a target in the 20 deg gap behind it gets the nearest limit. |
+| tracker | AntennaTracker | track, hold | **Track**: select the tracker + one vehicle; the bridge relays that vehicle's position to it. Needs the ArduPilot patches in `sim/patches/ardupilot/` and `tidewater/patches/ardupilot/` (`make setup` applies them to a fresh clone); the SITL mount then turns +/-170 deg about its spawn heading, and a target in the 20 deg gap behind it gets the nearest limit. |
 
 Tasks wait in `queued` until the vehicle's EKF has a usable position (a GPS fix arrives seconds
 earlier, and autopilots refuse AUTO until the EKF is ready). `make down` stops a running stack.
@@ -174,7 +175,8 @@ the next outage or pass.
 - `sim/swarm.py`: launches SITL binaries directly (one UDP link per vehicle) and the stand-in engine; `sim/params/` layers params on ArduPilot defaults.
 - `crates/murmur-bridge/`: the bridge: UDP links and link stats, tasking and lifecycle, the decision layer (rules, policy, audit log, inbox), REST + WebSocket.
 - `crates/murmur-standins/`: the stand-in engine, one behavior per imitated ArduPilot autopilot.
-- `scripts/`: `up.sh` (the stack), `measure.py` (load numbers), `scale_fleet.py` (load-test fleets).
+- `tidewater/`: real-world conditions (land/water, depth, tide, current, wind) for a place and time, served to the stack and driven into SITL ([its README](tidewater/README.md)).
+- `scripts/`: `setup.sh` (once), `up.sh` (the stack), `ardupilot-patches.sh` (the ArduPilot patches, in order), `measure.py` (load numbers), `scale_fleet.py` (load-test fleets).
 - `web/src/`: `MapView.tsx`, `FleetPanel.tsx`, `TaskPanel.tsx`, `useBridge.ts`.
 
 REST is usable without the UI. Vehicles are addressed by `uid` (fleet-unique, from
@@ -192,4 +194,5 @@ Work items are tracked in `bd` (`bd ready`).
 Murmur is free software under the [GNU Affero General Public License v3.0](LICENSE) or later:
 use it, study it and extend it, and anyone who runs a modified version for others, over a
 network included, must offer them its source under the same terms. The ArduPilot patches in
-`sim/patches/ardupilot/` modify ArduPilot and are under its license, GPL-3.0.
+`sim/patches/ardupilot/` and `tidewater/patches/ardupilot/` modify ArduPilot and are under its
+license, GPL-3.0.

@@ -4,7 +4,7 @@
 # 1100-1900 us and YAW_RANGE 360 the sim only reached +/-136 deg, and the firmware, believing
 # it had +/-180, drove into that stop and stalled ~45 deg short of targets east of it
 # (murmur-9bf). The model can't reach a 20 deg gap behind the mount: due east with stock
-# ArduPilot, behind the start heading with ~/tidewater/patches/ardupilot/0002 (fleet spawn heading).
+# ArduPilot, behind the start heading with tidewater/patches/ardupilot/0002 (fleet spawn heading).
 YAW_RANGE 340
 SERVO1_MIN 1000
 SERVO1_MAX 2000

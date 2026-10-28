@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from . import REPO
+from . import REPO, TIDEWATER_HOME
 from .spec import Step, _check_step
 
 SITUATIONS = REPO / "sim" / "situations"
@@ -153,7 +153,6 @@ HEADLESS_STEP_KEYS = {
 }
 STEP_KEYS.update(HEADLESS_STEP_KEYS)
 WATCH_KEYS = {"at_s", "text", "director", "headline", "bullets"}
-TIDEWATER_HOME = Path(os.environ.get("TIDEWATER_HOME", Path.home() / "tidewater"))
 
 
 class SituationError(ValueError):
@@ -414,7 +413,7 @@ def headless_steps(sit: Situation) -> list[Step]:
 
 
 def tidewater_scenario(v: Any) -> tuple[str, Path | None]:
-    """`tidewater = "<scenario>"` (a name under ~/tidewater/scenarios, or a path: a relative one
+    """`tidewater = "<scenario>"` (a name under tidewater/scenarios, or a path: a relative one
     is this repository's, as San Diego's sim/worlds/san-diego.tidewater.toml) or "none": what
     was asked and the file, when it exists here."""
     if v is None or v == "none":

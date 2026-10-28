@@ -36,7 +36,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from . import PYTHON, REPO
+from . import PYTHON, REPO, TIDEWATER_BIN, TIDEWATER_HOME
 from .agent import make_proposer
 from .arms import ARMS, Arm, arm as get_arm
 from .bridge import Bridge
@@ -57,8 +57,7 @@ from .storyline import Log, Storyline, TruthSampler, World
 
 SCENARIOS = REPO / "eval" / "scenarios"
 RESULTS = REPO / "eval" / "results"
-TIDEWATER_SCENARIO = Path(os.environ.get("TIDEWATER_HOME", Path.home() / "tidewater")) / "scenarios" / "golden-gate-2026-06.toml"
-TIDEWATER_BIN = Path(os.environ.get("TIDEWATER_HOME", Path.home() / "tidewater")) / ".venv" / "bin" / "tidewater"
+TIDEWATER_SCENARIO = TIDEWATER_HOME / "scenarios" / "golden-gate-2026-06.toml"
 
 
 def now_id() -> str:

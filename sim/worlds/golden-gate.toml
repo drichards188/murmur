@@ -5,7 +5,7 @@ name = "golden-gate"
 title = "Golden Gate"
 fleet = "sim/fleets/harbor-watch.toml"        # Harbor watch's four stand-ins
 areas = "sim/areas"                           # the bridge's MURMUR_AREAS default: golden-gate.geojson
-tidewater = "golden-gate-2026-06"             # ~/tidewater/scenarios: spring tides, 13-16 June 2026
+tidewater = "golden-gate-2026-06"             # tidewater/scenarios: spring tides, 13-16 June 2026
 at = "2026-06-14T10:00:00Z"
 # The operating area and a margin (the oracle's link map covers it: eval/headless/agents_v2.py).
 operating_box = { lat_min = 37.74, lat_max = 37.90, lon_min = -122.57, lon_max = -122.35 }

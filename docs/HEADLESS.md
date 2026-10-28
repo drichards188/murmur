@@ -1281,7 +1281,11 @@ conditions. Rebuilt on 2026-10-23 from tidewater 3a531c9, the Golden Gate's surf
 byte for byte the grid baked on 2026-10-09 (SHA-256 9153e1a4...), so it and its provenance stay
 as they were; its land/water grid (583 KB) and current field (325 KB, 50 x 65 points, 73 hours,
 fastest 2.29 m/s) are new; the wind at the bridge over the window, 2.98 to 7.76 m/s, is the
-world's `wind_mps`.
+world's `wind_mps`. Tidewater was a repository of its own then: 3a531c9, which every grid's
+provenance cites, came into this repository with its history as the `tidewater/` directory,
+tree `d1b2531e9f159e2fe06f90d03a88a81be1876bd8` (a tree hash survives rebases; a commit hash
+does not). A grid baked since records the repository's commit, its `tidewater/` tree and a
+dirty flag (`sim/headless/terrain/README.md`).
 
 ### 17.4 Faults and timelines (H4)
 

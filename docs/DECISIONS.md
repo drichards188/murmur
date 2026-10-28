@@ -1186,7 +1186,7 @@ group. Dates are 2026.
   its first consumer. Golden Gate, 13-16 June 2026 spring tides. Past windows replay
   **observed** water level (predictions ran 18 cm low).
 - **ArduPilot patch `SIM_WATER_DEPTH`** (10-01), branch `tidewater-water-depth` in
-  `~/ardupilot`, patch file in `~/tidewater/patches/ardupilot/`. Lesson: stop vehicles with
+  `~/ardupilot`, patch file in `tidewater/patches/ardupilot/`. Lesson: stop vehicles with
   forces the simulated IMU feels; kinematic stops (zeroing velocity, clamping position)
   diverge the EKF.
 

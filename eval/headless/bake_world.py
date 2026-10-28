@@ -1,13 +1,14 @@
 """Bake a world's grids from a running `tidewater serve` (world v3, H1 and H5): what the headless
 simulator reads instead of tidewater, so `make check` and every episode run without it.
 
-    ~/tidewater/.venv/bin/tidewater serve ~/tidewater/scenarios/golden-gate-2026-06.toml --port 9570 &
+    .venv/bin/tidewater serve tidewater/scenarios/golden-gate-2026-06.toml --port 9570 &
     .venv/bin/python -m eval.headless.bake_world golden-gate --url http://127.0.0.1:9570
     .venv/bin/python -m eval.headless.bake_world golden-gate --out /tmp/rebake   # elsewhere, to compare
 
-Three files, each with a provenance file beside it (`<stem>.provenance.json`: tidewater's commit
-and `/v1/info`, the scenario, the box, the spacing, the time sampled, the date, this command,
-the file's SHA-256), at the paths the world file names (sim/worlds/<name>.toml):
+Three files, each with a provenance file beside it (`<stem>.provenance.json`: which tidewater
+(`tidewater_commit()`) and its `/v1/info`, the scenario, the box, the spacing, the time sampled,
+the date, this command, the file's SHA-256), at the paths the world file names
+(sim/worlds/<name>.toml):
 
 - `[terrain] surface`: the surface height the link emulator's terrain line of sight reads,
   `max(elevation, water level)` as tidewater's `/v1/sample` answers the emulator, at the
@@ -32,7 +33,7 @@ the file's SHA-256), at the paths the world file names (sim/worlds/<name>.toml):
   read it (crates/murmur-headless/src/sim/water.rs).
 
 Without a `[terrain] box` the grids cover the tidewater scenario's own bounds (`/v1/info`). A
-world's `tidewater` is the scenario's name (under ~/tidewater/scenarios) or the path of its file
+world's `tidewater` is the scenario's name (under tidewater/scenarios) or the path of its file
 (San Diego's is in this repository: `sim/worlds/san-diego.tidewater.toml`); the server must
 serve that scenario.
 The tool also prints the wind's range at the mission's centre, hourly over the currents'
@@ -119,10 +120,22 @@ def provenance_path(grid: Path) -> Path:
     return grid.with_name(name + ".provenance.json")
 
 
-def tidewater_commit() -> str | None:
-    tw = Path.home() / "tidewater"
-    out = subprocess.run(["git", "-C", str(tw), "rev-parse", "HEAD"], capture_output=True, text=True)
-    return out.stdout.strip() or None
+def _git(*args: str) -> str:
+    out = subprocess.run(["git", "-C", str(REPO), *args], capture_output=True, text=True)
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def tidewater_commit() -> dict[str, Any]:
+    """Which tidewater baked: its directory in this repository, as the repository's commit, the
+    `tidewater/` tree at that commit (the same hash wherever the commit is rebased; tidewater's
+    own commit 3a531c9, from before it joined the repository, has tree d1b2531) and whether
+    tidewater/ had changes not committed. Grids baked before then record tidewater's own
+    `commit` here instead."""
+    return {
+        "repo_commit": _git("rev-parse", "HEAD") or None,
+        "tree": _git("rev-parse", "HEAD:tidewater") or None,
+        "dirty": bool(_git("status", "--porcelain", "--", "tidewater")),
+    }
 
 
 def target(world_path: Path | None, out: Path | None) -> Path | None:
@@ -147,7 +160,7 @@ def bake(w: World, url: str, what: set[str], out: Path | None, batch: int, comma
         raise SystemExit(f"tidewater serves {info.get('name')!r}, the world names {w.tidewater!r}")
     b = info["bounds"]
     scenario_box = {"lat_min": b["south"], "lat_max": b["north"], "lon_min": b["west"], "lon_max": b["east"]}
-    common = {"tidewater": {"commit": tidewater_commit(), "info": info}, "scenario": w.tidewater, "world": w.name,
+    common = {"tidewater": {**tidewater_commit(), "info": info}, "scenario": w.tidewater, "world": w.name,
               "baked": dt.datetime.now(dt.timezone.utc).date().isoformat(), "command": command}
     done: dict[str, Any] = {}
     if what & {"surface", "land_water", "bathymetry"}:

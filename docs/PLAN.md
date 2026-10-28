@@ -42,7 +42,7 @@ Before Phase C the bridge went straight from a REST task to MAVLink (the Python 
 - **Foundation**: bridge (Python at first, Rust since R.4/R.5), console (`web/`), sim launcher
   (`sim/swarm.py`). Command lifecycle sent -> acked -> active -> done judged from telemetry;
   "left task" and "NOT MOVING" detection; link health per vehicle; 2D/3D map.
-- **Tidewater** (sibling repo `~/tidewater`): real tide, current, depth, wind for a place and
+- **Tidewater** (`tidewater/`): real tide, current, depth, wind for a place and
   time; ArduPilot patch `SIM_WATER_DEPTH` (boats ground, subs get seabed and currents).
 - **Phase A, scale**: 22-type platform catalog (`sim/platforms.toml`), fleets
   (`sim/fleets/*.toml`, default `full-spectrum` = one of each), stand-ins, telemetry plan,

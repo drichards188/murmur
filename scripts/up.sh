@@ -127,10 +127,12 @@ cleanup() {
 trap cleanup EXIT
 trap 'cleanup; exit 0' INT TERM  # a requested stop (Ctrl-C, make down) is a clean exit
 
-# real-world conditions from a tidewater scenario (sibling repo), if one is set
-TIDEWATER="${TIDEWATER_HOME:-$HOME/tidewater}/.venv/bin/tidewater"
+# real-world conditions from a tidewater scenario (tidewater/scenarios), if one is set; the
+# tidewater CLI is installed editable into .venv (make setup)
+TIDEWATER=.venv/bin/tidewater
 if [ -n "${MURMUR_SCENARIO:-}" ]; then
   : "${MURMUR_AT:?set MURMUR_AT, e.g. 2026-06-14T10:00:00Z}"
+  [ -x "$TIDEWATER" ] || { echo "no $TIDEWATER: run make setup (it installs tidewater/ into .venv)" >&2; exit 1; }
   tw_port="${MURMUR_TIDEWATER_PORT:-8770}"
   export MURMUR_TIDEWATER_URL="${MURMUR_TIDEWATER_URL:-http://127.0.0.1:$tw_port}"
   if curl -sf -m 2 "$MURMUR_TIDEWATER_URL/v1/info" > /dev/null; then

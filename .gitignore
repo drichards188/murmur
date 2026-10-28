@@ -14,6 +14,11 @@ target/
 .claude/worktrees/
 sim/space/cache/
 
+# tidewater (tidewater/): each scenario's fetched data (`tidewater fetch`), and the egg-info
+# its editable install into .venv leaves
+tidewater/data/cache
+*.egg-info/
+
 # evaluation batches (eval/run.py); reports are published by hand
 eval/results/
 

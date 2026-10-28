@@ -3,9 +3,9 @@
 # The tidewater scenario of Murmur's San Diego world (sim/worlds/san-diego.toml): kept in this
 # repository because tidewater's `Scenario.load` takes a file path. Fetch once, then it runs
 # offline (tidewater caches under its own data/cache/san-diego-2026-06/):
-#   ~/tidewater/.venv/bin/tidewater fetch sim/worlds/san-diego.tidewater.toml
+#   .venv/bin/tidewater fetch sim/worlds/san-diego.tidewater.toml
 # and bake the world's grids from it (sim/worlds/README.md):
-#   ~/tidewater/.venv/bin/tidewater serve sim/worlds/san-diego.tidewater.toml --port 9571 &
+#   .venv/bin/tidewater serve sim/worlds/san-diego.tidewater.toml --port 9571 &
 #   .venv/bin/python -m eval.headless.bake_world san-diego --url http://127.0.0.1:9571
 name = "san-diego-2026-06"
 title = "San Diego Bay and approaches, spring tides, 13-16 June 2026"

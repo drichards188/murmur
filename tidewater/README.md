@@ -8,6 +8,13 @@ Most open simulators use a hand-built world with constant or random conditions. 
 answers "what is it like **here**, **now**": a boat crossing the Golden Gate at max ebb
 gets pushed out to sea at 1.8 m/s; the same route at slack water doesn't.
 
+Tidewater is part of [Murmur](../README.md): it gives Murmur's vehicles, contacts and link
+emulator the real conditions of the place and time a scenario names. It is a Python package of
+its own (`tidewater/` in Murmur's repository, installed editable into Murmur's `.venv` by
+`make setup`) and is under the repository's license, the
+[GNU Affero General Public License v3.0](../LICENSE) or later; its ArduPilot patches
+(`patches/ardupilot/`) modify ArduPilot and are under ArduPilot's license, GPL-3.0.
+
 ```
                 ┌──────────── data core (simulator-agnostic) ────────────┐
  NOAA DEM  ───▶ │ terrain   land/water + depth (topobathy grid)          │
@@ -19,22 +26,26 @@ gets pushed out to sea at 1.8 m/s; the same route at slack water doesn't.
 
 ## Quick start
 
-```bash
-uv venv .venv --python 3.12 && uv pip install --python .venv/bin/python -e ".[dev]"
-.venv/bin/tidewater fetch scenarios/golden-gate-2026-06.toml      # ~1 min, then offline
-.venv/bin/tidewater probe scenarios/golden-gate-2026-06.toml --at 2026-06-14T10:00Z
-.venv/bin/tidewater probe scenarios/golden-gate-2026-06.toml --at 2026-06-14T10:00Z --lat 37.8199 --lon -122.4783
-```
-
-With [Murmur](../murmur) (sibling repo) running a swarm at the same place:
+From the root of Murmur's repository, after `make setup` (which installs tidewater into
+`.venv` and fetches the Golden Gate scenario):
 
 ```bash
-cd ../murmur && make goldengate AT=2026-06-14T10:00Z
+.venv/bin/tidewater fetch tidewater/scenarios/golden-gate-2026-06.toml      # ~1 min once, then offline
+.venv/bin/tidewater probe tidewater/scenarios/golden-gate-2026-06.toml --at 2026-06-14T10:00Z
+.venv/bin/tidewater probe tidewater/scenarios/golden-gate-2026-06.toml --at 2026-06-14T10:00Z --lat 37.8199 --lon -122.4783
+.venv/bin/python -m pytest -q tidewater/tests                                # make check runs these
 ```
 
-That launches 13 ArduPilot SITL vehicles from the scenario's `[spawn]` points and runs
-`tidewater drive`, which sets each vehicle's simulated wind and current from the
-conditions at its own position, every 2 s, on the scenario clock.
+To run Murmur's swarm at the same place:
+
+```bash
+make goldengate AT=2026-06-14T10:00:00Z
+```
+
+That launches the full-spectrum fleet at the Golden Gate (its ArduPilot SITL vehicles and
+Murmur's Rust stand-ins) with `tidewater serve` for the bridge, the stand-ins and the link
+emulator, and `tidewater drive`, which sets each SITL vehicle's simulated wind and current
+from the conditions at its own position, every 2 s, on the scenario clock.
 
 ## Model currents (SFBOFS)
 
@@ -50,8 +61,8 @@ margin_deg = 0.02     # optional: mesh kept beyond the area box
 ```
 
 ```bash
-uv pip install --python .venv/bin/python -e ".[sfbofs]"      # h5py, only needed to fetch
-.venv/bin/tidewater fetch scenarios/golden-gate-2026-06.toml  # SFBOFS adds 10 to 20 min for 3 days
+uv pip install --python .venv/bin/python -e "./tidewater[sfbofs]"      # h5py, only needed to fetch (make setup does)
+.venv/bin/tidewater fetch tidewater/scenarios/golden-gate-2026-06.toml  # SFBOFS adds 10 to 20 min for 3 days
 ```
 
 The fetch reads the hourly nowcast files from the AWS Open Data archive
@@ -74,7 +85,7 @@ Accuracy against meters is in [the validation report](docs/validation-golden-gat
 For clients that can't import tidewater (Murmur's Rust engine):
 
 ```bash
-.venv/bin/tidewater serve scenarios/golden-gate-2026-06.toml [--host 127.0.0.1] [--port 8770]
+.venv/bin/tidewater serve tidewater/scenarios/golden-gate-2026-06.toml [--host 127.0.0.1] [--port 8770]
 curl -s localhost:8770/v1/info
 curl -s -XPOST localhost:8770/v1/sample -d '{"t": 1781431200, "points": [[37.828, -122.470, null], [37.830, -122.469, 20.0]]}'
 ```
@@ -130,8 +141,9 @@ with GPS: an EKF failsafe for the boat, a diverging depth estimate for the sub.
 - **Tide** comes from one station and is applied across the area; real tides lag and
   change size across a bay.
 - **Stock SITL** applies current only to the motorboat model, only while armed, and never
-  enforces land; subs ignore current. The patch in `patches/ardupilot/` fixes this (apply with
-  `scripts/patch-ardupilot.sh`); without it, tidewater still drives wind and boat currents.
+  enforces land; subs ignore current. The patch in `patches/ardupilot/` fixes this (Murmur's
+  `make setup` applies it to a fresh ArduPilot clone with Murmur's own patches,
+  `scripts/ardupilot-patches.sh`); without it, tidewater still drives wind and boat currents.
   `0002` (from Murmur) centres the SITL antenna tracker's mount on its start heading and applies
   its limits after the rates; it doesn't touch the water model.
 - **Vertical datums** are assumed consistent (NAVD88 DEM, NAVD tide predictions). True for
@@ -140,4 +152,4 @@ with GPS: an EKF failsafe for the boat, a diverging depth estimate for the sub.
   meters nearby are inside the Bay, not at the Gate, so Gate accuracy is inferred.
 
 See [docs/design.md](docs/design.md) for the architecture and roadmap. Work is tracked
-in `bd` (`bd ready`).
+in Murmur's `bd` (`bd ready`).

@@ -89,7 +89,7 @@ events = []                                   # no comms or GNSS events: the sit
 policy = "sim/situations/policies/watch.toml" # sim/policy.toml + an AI's tasking waits for the operator;
                                               # the shipped engagement tier and [identification]
                                               # (rule_declaration on, nominate_unconfirmed off)
-tidewater = "golden-gate-2026-06"             # real tide, current and terrain (~/tidewater)
+tidewater = "golden-gate-2026-06"             # real tide, current and terrain (tidewater/)
 at = "2026-06-14T10:00:00Z"
 rate = 1
 duration_s = 720                              # 12 minutes of situation time

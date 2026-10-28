@@ -29,7 +29,7 @@ episode: `sim/situations/golden-gate-v3-watch.toml`, `san-diego-watch.toml`,
 | `areas` | the operator's areas: a directory of `*.geojson` (the bridge's `MURMUR_AREAS`; a world's own areas go in a directory of their own, never in `sim/areas` itself, which every Golden Gate stack loads: San Diego's are `sim/areas/san-diego/`) |
 | `traffic` | the background contacts a situation takes unless it names its own (`contacts`; `contacts = ""` for none): a contacts scenario (sim/scenarios) whose `[sensing]` names the model and the world's grids |
 | `space` | the pinned satellite element sets an episode reads (`sim/headless/space/<space>/`, eval/headless/space.py) unless the batch names others (`--space-snapshot`) |
-| `tidewater`, `at` | the tidewater scenario (a name under ~/tidewater/scenarios, or the path of its file in this repository) and the scenario time a situation takes unless it names its own |
+| `tidewater`, `at` | the tidewater scenario (a name under tidewater/scenarios, or the path of its file elsewhere in this repository) and the scenario time a situation takes unless it names its own |
 | `operating_box` | the operating area and a margin, `{lat_min, lat_max, lon_min, lon_max}` (the oracle's link map covers it) |
 | `[terrain]` | the baked grids: `surface` (surface heights, the link emulator's line of sight and the sensing model's terrain), `land_water` (water depth, the domain rule and our vehicles' depth), `bathymetry` (optional: the seabed's height, the sonar's water depth), and the `box`, `spacing_m` and `sampled_at` they were baked on (without a box: the tidewater scenario's own bounds) |
 | `[currents]` | the baked current field: `field`, its `box`, `spacing_m`, and `from`, `to`, `step_s` |
@@ -134,10 +134,10 @@ from it (`eval/headless/bake_world.py`, which also prints the wind's recorded ra
 `[conditions]`), and pin its element sets:
 
 ```
-~/tidewater/.venv/bin/tidewater serve ~/tidewater/scenarios/<scenario>.toml --port 9570 &
+.venv/bin/tidewater serve tidewater/scenarios/<scenario>.toml --port 9570 &
 .venv/bin/python -m eval.headless.bake_world <world> --url http://127.0.0.1:9570
 .venv/bin/python -m eval.headless.space snapshot --world <world> --cache sim/space/cache --note "<source>"
 ```
 
-San Diego's: `~/tidewater/.venv/bin/tidewater fetch sim/worlds/san-diego.tidewater.toml`, then
+San Diego's: `.venv/bin/tidewater fetch sim/worlds/san-diego.tidewater.toml`, then
 the same with `serve sim/worlds/san-diego.tidewater.toml`.

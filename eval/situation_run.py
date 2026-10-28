@@ -1221,7 +1221,7 @@ def preflight(sit: Situation, modes: dict[str, Any], env: dict[str, str]) -> dic
             if lo <= eph[1] and hi >= eph[0]:
                 say(f"warning: {key} {lo}-{hi} reaches into the ephemeral port range {eph[0]}-{eph[1]} (collisions at random; CLAUDE.md)")
     if sit.tidewater_wanted != "none" and sit.tidewater is None:
-        say(f"warning: tidewater scenario {sit.tidewater_wanted!r} not found (TIDEWATER_HOME): running without real conditions")
+        say(f"warning: tidewater scenario {sit.tidewater_wanted!r} not found (tidewater/scenarios, or TIDEWATER_HOME's): running without real conditions")
     return pf
 
 

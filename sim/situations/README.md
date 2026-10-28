@@ -248,7 +248,7 @@ contacts = "sim/scenarios/harbor-watch.toml"  # crates/murmur-contacts format; o
                                               # world's traffic, if it names one; "" for none)
 events = []                                   # link and GNSS event files, merged; optional
 policy = "sim/situations/policies/watch.toml" # default sim/policy.toml
-tidewater = "golden-gate-2026-06"             # a scenario in ~/tidewater/scenarios, a path, or "none"
+tidewater = "golden-gate-2026-06"             # a scenario in tidewater/scenarios, a path, or "none"
 at = "2026-06-14T10:00:00Z"                   # the scenario clock (RFC 3339)
 rate = 1
 duration_s = 720                              # situation time, from the stack's start

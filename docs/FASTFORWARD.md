@@ -46,7 +46,7 @@ of it waiting for the fast boat.
   replay, stand-ins, contacts, link emulator, `up.sh`, the situation runner, the console; about 8
   to 10 working days plus review rounds. Phase 2, SITL fleets: `sim/swarm.py` sets `SIM_SPEEDUP`
   live on a simulation port and steers each SITL to the schedule, `tidewater drive` follows the
-  schedule (a change in `~/tidewater`, on a branch); about 3 days (section 11).
+  schedule (a change in `tidewater/`, on a branch); about 3 days (section 11).
 
 ## 2. Three times
 
@@ -219,7 +219,7 @@ the tightest and the most consequential, refuse fast forward altogether.
 | console | the rate control, rate-aware clocks | 1 |
 | watch officer | one comparison fixed (section 9) | 1 |
 | `sim/swarm.py` | `SIM_SPEEDUP` on each SITL's SERIAL2, steered to the schedule | 2 |
-| `tidewater drive` (`~/tidewater`) | calendar time from the schedule | 2 |
+| `tidewater drive` (`tidewater/`) | calendar time from the schedule | 2 |
 | `tidewater serve` | none (it answers for the time it is asked) | |
 | evaluation, headless simulator | none: no clock file, so 1x and today's code paths | |
 
@@ -308,8 +308,8 @@ that cannot keep up even steered is what the governor acts on. SERIAL2's stream 
 everyone's. Change: a `--clock-file` option whose `Clock.now()` reads calendar time from the
 schedule (the format above, documented in tidewater as a small contract, no Murmur import). Its push
 period stays wall time: conditions then update every period times the rate in world seconds,
-fine for tides and wind. Done on a branch of `~/tidewater` in a worktree, never in the working
-tree the live stacks run from. Harbor watch has no SITL vehicle, so `up.sh` does not start
+fine for tides and wind. Done on a branch in a worktree, never in the working tree the live
+stacks run from. Harbor watch has no SITL vehicle, so `up.sh` does not start
 `tidewater drive` for it, and phase 1 does not need this.
 
 ### 5.8 `scripts/up.sh`

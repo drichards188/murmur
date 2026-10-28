@@ -1,5 +1,6 @@
 # Python side of Murmur: the fleet launcher (sim/swarm.py), test and measurement scripts.
-# The bridge and the stand-in engine are Rust (crates/); tidewater has its own venv.
+# The bridge and the stand-in engine are Rust (crates/); tidewater (tidewater/) goes in this
+# venv too, editable, with its own dependencies (make setup: pip install -e './tidewater[sfbofs]').
 pymavlink>=2.4.40
 websockets>=12
 # the official MCP SDK, for agents/scripted_agent.py (Phase F; the server is in the bridge)

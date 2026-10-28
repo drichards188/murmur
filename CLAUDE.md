@@ -11,8 +11,10 @@ meaningful.
 2. `bd ready` for open work (see AGENTS.md for bd usage). Done: R (Rust core), C (intents, rules,
    policy, audit, inbox), C2 (contacts, sensing, tracks), F (MCP for agents). Current: **E**
    (engagement decision chain) and **G** (evaluation harness).
-3. Sibling repo `~/tidewater` (real-world conditions). ArduPilot at `~/ardupilot`, branch
-   `tidewater-water-depth`.
+3. `tidewater/` (real-world conditions; its own Python package, own README). ArduPilot at
+   `~/ardupilot`, branch `tidewater-water-depth`: the commit `scripts/setup.sh` pins plus the
+   patches `scripts/ardupilot-patches.sh` applies in order (`sim/patches/ardupilot/`,
+   `tidewater/patches/ardupilot/`).
 
 ## Run and verify
 
@@ -60,8 +62,9 @@ meaningful.
   this run's `sim/run/fleet.json` (`swarm.py --manifest-only`) before the emulator and the
   bridge start, in both link modes; the bridge logs which manifest it read and its age
   (flagged past a minute, a previous run's).
-- `make check` (typecheck, lint, py_compile, `cargo clippy` and `cargo test` for the workspace;
-  toolchain in `~/.cargo/bin`). Tidewater: `cd ~/tidewater && .venv/bin/pytest`.
+- `make check` (typecheck, lint, py_compile, `cargo clippy` and `cargo test` for the workspace,
+  tidewater's tests; toolchain in `~/.cargo/bin`). Tidewater alone:
+  `.venv/bin/python -m pytest -q tidewater/tests`.
 - `scripts/measure.py` measures bridge and stand-in load; `scripts/scale_fleet.py N` writes an
   N-node stand-in fleet. Logs in `logs/`, SITL and stand-in logs in `sim/run/`.
 - Links go through `crates/murmur-linkemu` by default (`MURMUR_LINKEMU=0` bypasses):
@@ -104,7 +107,11 @@ meaningful.
   comma list: ArduPilot drops `MAV1_*` from an earlier file in the list (murmur-yjq; `swarm.py` merges).
 - In SITL, stop vehicles with forces the IMU feels, never by zeroing velocity or clamping
   position (the EKF diverges).
-- tidewater is installed editable in `.venv`; a scenario needs `tidewater fetch` once.
+- tidewater (`tidewater/`) is installed editable in Murmur's `.venv` (`make setup`, with its
+  `sfbofs` extra); a scenario needs `tidewater fetch` once (setup fetches the Golden Gate's),
+  cached in `tidewater/data/cache/` (untracked). `TIDEWATER_HOME` points the scenarios at
+  another tidewater tree. A worktree has neither: make its own `.venv` with `-e ./tidewater`, and
+  symlink the main checkout's `tidewater/data/cache`.
 - `murmur-replay` accepts only the current decision-rules version by default: replay older logs with
   `--rules N` / `--min-rules N` (versions and changelog in `crates/murmur-decide/README.md`). The bridge
   writes run-time anchors to `logs/anchors/<run>.anchors`; verify with `murmur-replay <log> --anchors <file>`.

@@ -1,8 +1,11 @@
 # ArduPilot patches (non-physics)
 
-Fixes to ArduPilot itself that Murmur relies on, on branch `fix/sitl-tracker-streams` of
-`~/ardupilot` (from `tidewater-water-depth`). SITL physics patches live in
-`~/tidewater/patches/ardupilot/` instead. Apply with `git am` and rebuild (see CLAUDE.md).
+Fixes to ArduPilot itself that Murmur relies on. SITL physics patches live in
+`tidewater/patches/ardupilot/` instead. `make setup` applies both sets to a fresh ArduPilot
+clone of the commit it pins, on branch `tidewater-water-depth`, in the order
+`scripts/ardupilot-patches.sh` lists (tidewater's 0001, these two, tidewater's 0002);
+`scripts/ardupilot-patches.sh check <dir>` names any an existing checkout lacks. Rebuild after
+applying (see CLAUDE.md).
 
 - `0001-AP_Param-...`: a `--defaults a.parm,b.parm` list kept only the last file's "all names
   found" flag, so MAVn_* stream rates set in an earlier file missed the MAVLink channels and they
