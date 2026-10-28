@@ -401,4 +401,6 @@ meaningful.
     (`worktree-agent-...`) appears in the history.
   - A commit that test data or a document cites by hash (a fixture's `build`, a results
     note) is never rewritten after it is pushed; before a push, keep its tree identical and say
-    which hash it stands for.
+    which hash it stands for. The history was rewritten once, on 2026-10-28, for authorship
+    only (every tree identical): a hash cited before then is an old one, and
+    `docs/COMMIT-MAP.tsv` gives the commit it names now.
