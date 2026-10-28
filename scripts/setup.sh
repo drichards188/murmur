@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # One-time setup: Python venv (fleet launcher, test scripts, ArduPilot build deps, tidewater
-# and its scenarios' data), the Rust bridge and stand-in engine (release), ArduPilot SITL with
-# Murmur's patches, web deps.
-# No sudo needed: build deps go in .venv instead of install-prereqs-ubuntu.sh.
+# and its scenarios' data), the Rust binaries a run starts (release, as make build, so the first
+# start compiles nothing), ArduPilot SITL with Murmur's patches, web deps.
+# No sudo needed: build deps go in .venv instead of install-prereqs-ubuntu.sh. The system
+# prerequisites (git, uv, Rust, Node 22.18+, gcc/g++/make, pkg-config and OpenSSL's headers)
+# are what `make doctor` checks.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ARDUPILOT_HOME="${ARDUPILOT_HOME:-$HOME/ardupilot}"
@@ -30,10 +32,10 @@ for sc in "${TIDEWATER_SCENARIOS[@]}"; do
   .venv/bin/tidewater fetch "$sc"
 done
 
-echo "== Rust: murmur-bridge, murmur-standins (release)"
+echo "== Rust: the bridge, stand-ins, link emulator, contacts, murmur-replay and murmur-auth (release, as make build)"
 cargo="$(command -v cargo || echo "$HOME/.cargo/bin/cargo")"
 [ -x "$cargo" ] || { echo "install Rust first: https://rustup.rs/"; exit 1; }
-"$cargo" build --release -p murmur-bridge -p murmur-standins
+"$cargo" build --release -p murmur-bridge -p murmur-standins -p murmur-linkemu -p murmur-decide -p murmur-contacts -p murmur-auth
 
 echo "== ArduPilot SITL at $ARDUPILOT_HOME"
 if [ ! -d "$ARDUPILOT_HOME" ]; then

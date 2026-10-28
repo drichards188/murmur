@@ -51,7 +51,9 @@ STORYLINE_PROPOSERS = ("agent", "operator")
 # engagement authority. The AI is agent-watch (Claude or Codex) or agent-playbook (the
 # playbook engine); the timeline's MCP proposals come from agent-scripted, and an opening order that
 # would be authorized by its own submission is proposed by agent-setup so a person (or op-auto)
-# decides it.
+# decides it. agent-planner is the person's own agent (the harness they opened in the checkout,
+# AGENTS.md "Helping someone use Murmur"), as on the default stack: no script acts as it, and it
+# is not the situation's AI.
 CONSOLE_OPERATOR = "op-1"
 SETUP_OPERATOR = "op-setup"
 AUTOPLAY_OPERATOR = "op-auto"
@@ -63,7 +65,8 @@ WATCH_AGENT = "agent-watch"
 PLAYBOOK_AGENT = "agent-playbook"
 STORYLINE_AGENT = "agent-scripted"
 SETUP_AGENT = "agent-setup"
-AGENTS = [WATCH_AGENT, PLAYBOOK_AGENT, STORYLINE_AGENT, SETUP_AGENT]
+OWN_AGENT = "agent-planner"
+AGENTS = [WATCH_AGENT, PLAYBOOK_AGENT, STORYLINE_AGENT, SETUP_AGENT, OWN_AGENT]
 # how every scripted act announces itself in the audit log (notes, rationales)
 SCRIPTED_SETUP = "situation setup (scripted, not a person)"
 SCRIPTED_TIMELINE = "situation timeline (scripted, not a person)"

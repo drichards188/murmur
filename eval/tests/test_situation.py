@@ -241,7 +241,7 @@ def test_resolve_modes_and_who_is_scripted(tmp_path: Path):
     assert m["scripted_badges"]["agent-setup"] == m["scripted_badges"]["op-setup"] == "situation setup (scripted)"
     assert "op-1" not in m["scripted_badges"] and set(m["scripted_operators"]) <= set(m["scripted_badges"])
     assert S.ENGAGE_OPERATORS == ["op-1", "op-2", "op-3"]
-    assert {"agent-watch", "agent-playbook", "agent-scripted", "agent-setup"} == set(S.AGENTS)
+    assert {"agent-watch", "agent-playbook", "agent-scripted", "agent-setup", "agent-planner"} == set(S.AGENTS)
 
 
 # ---- the status document -------------------------------------------------------------------------
@@ -818,7 +818,7 @@ def test_the_runner_makes_a_fresh_station_and_a_dev_roster(tmp_path: Path, monke
     e = runner.stack_env()
     assert e["MURMUR_AUTH"] == "dev" and e["MURMUR_RESUME"] == "0" and e["MURMUR_RUN_ID"] == runner.run_id
     assert e["MURMUR_OPERATORS"] == "op-1,op-2,op-3,op-auto,op-setup,op-planner" and e["MURMUR_ENGAGE_OPERATORS"] == "op-1,op-2,op-3"
-    assert e["MURMUR_AGENTS"] == "agent-watch,agent-playbook,agent-scripted,agent-setup"
+    assert e["MURMUR_AGENTS"] == "agent-watch,agent-playbook,agent-scripted,agent-setup,agent-planner"
     # its own block's ports where none is set, and its own tidewater (not another stack's)
     assert e["MURMUR_HTTP_PORT"] == "9065" and e["MURMUR_WEB_PORT"] == "5673" and e["MURMUR_TIDEWATER_PORT"] == "9270"
     assert "MURMUR_TIDEWATER_URL" not in e

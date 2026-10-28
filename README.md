@@ -44,13 +44,19 @@ tuned to rounded public figures ("-class"), and the point is to study the person
 
 Linux or WSL2 (developed on WSL2 Ubuntu; macOS is untested). You need git,
 [uv](https://docs.astral.sh/uv/), [Rust](https://rustup.rs/), Node 22.18 or later, a C++
-toolchain for ArduPilot's simulator, a network connection and several GB of disk.
+toolchain for ArduPilot's simulator (on Ubuntu: `build-essential pkg-config libssl-dev`), a
+network connection and about 8 GB of disk. `make doctor` checks all of it and says what to fix.
 
 ```bash
 git clone https://github.com/drichards188/murmur && cd murmur
+make doctor  # what is missing, each with the command that fixes it
 make setup   # once, about 30 minutes (see Run it below)
 make start   # open http://localhost:5173 and pick a scenario
 ```
+
+Or open Claude Code or Codex in the clone and ask it to set Murmur up and show you around: it
+reads [AGENTS.md](AGENTS.md), which tells it how to check, set up, start and explain a
+scenario, and which decisions stay yours.
 
 ## How it fits together
 

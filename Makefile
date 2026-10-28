@@ -1,7 +1,10 @@
-.PHONY: setup build start up goldengate situation down sim bridge web eval headless check
+.PHONY: doctor setup build start up goldengate situation down sim bridge web eval headless check
 
 FLEET ?= sandiego   # any sim/fleets/*.toml: sandiego, canaveral, golden-gate, ...
 CARGO ?= $(shell command -v cargo || echo $(HOME)/.cargo/bin/cargo)
+
+doctor:  ## is this machine ready? prerequisites, setup state, ports, optional AI CLIs (OK / MISSING / WARN; exit 1 if anything is missing)
+	@./scripts/doctor.sh
 
 setup:   ## one-time: venv, Rust release build, ArduPilot SITL build, npm install
 	./scripts/setup.sh

@@ -125,6 +125,7 @@ Who is who in a situation's run:
 | `op-planner` | the timeline's second station (`declare` steps, autoplay only; proposals with `[storyline] proposer = "operator"`) |
 | `agent-scripted` | the timeline's proposals (MCP) |
 | `agent-watch`, `agent-playbook` | the AI: Claude or Codex, or the playbook engine |
+| `agent-planner` | your own agent, if you connect one (the harness you opened in the checkout, AGENTS.md); never a script, and not the situation's AI |
 
 Every scripted act says so in the audit log: an opening order's rationale begins "situation
 setup (scripted, not a person)", a timeline proposal's or declaration's "situation timeline
@@ -171,7 +172,7 @@ run the bridge has no mark for a scripted operator: which ids the runner drove i
    situation's fleet, contacts, events (merged into one file, `events.toml` in the run directory),
    policy, tidewater scenario and scenario clock; a roster of
    `op-1,op-2,op-3,op-auto,op-setup,op-planner` (`MURMUR_OPERATORS`), engagement authority for
-   `op-1,op-2,op-3`, agents `agent-watch,agent-playbook,agent-scripted,agent-setup`; this run's id
+   `op-1,op-2,op-3`, agents `agent-watch,agent-playbook,agent-scripted,agent-setup,agent-planner`; this run's id
    (`MURMUR_RUN_ID=situation-<name>-<UTC time>`) and its own simulation-channel token. No truth
    endpoint (`MURMUR_EVAL_TRUTH` is off).
 4. Waits for the stack, takes the situation clock's zero, waits until every vehicle is

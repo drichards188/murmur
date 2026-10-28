@@ -1,5 +1,10 @@
 # Murmur
 
+**Using or trying Murmur rather than changing its code?** Follow "Helping someone use Murmur"
+in AGENTS.md (loaded here) and skip the rest of this file, which is the developer's notebook.
+
+@AGENTS.md
+
 Open-source C2 testbed: one operator supervising ~100 autonomous air, ground, surface and
 subsurface nodes, built to measure whether human judgment over consequential decisions stays
 meaningful.
