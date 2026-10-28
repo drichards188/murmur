@@ -45,6 +45,12 @@ make setup   # once: .venv with tidewater and its Golden Gate data, Rust release
 make start   # the main menu: open http://localhost:5173, pick a scenario, Start
 ```
 
+The first `make setup` takes about half an hour and needs a network connection: about 19
+minutes of it is downloading the Golden Gate's real conditions (NOAA's bay current model alone
+is some 730 MB, kept as a 26 MB cache), the rest the ArduPilot and Rust builds. It is done once:
+runs read the cache in `tidewater/data/cache/` and never download. If setup is interrupted, run
+it again; it keeps what it already fetched and built.
+
 **The main menu** is how to open Murmur. `make start` runs the launcher (`eval/launcher.py`),
 which serves the console and starts one scenario at a time from its menu: the **open world**
 first, the default (the Golden Gate with the full-spectrum fleet, real tide, current and wind and
