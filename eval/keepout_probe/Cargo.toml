@@ -2,6 +2,7 @@
 name = "murmur-keepout-probe"
 version = "0.1.0"
 edition.workspace = true
+license.workspace = true
 publish = false
 description = "Evaluation only (eval/keepout.py): generated engagement situations through murmur-decide's own nomination checks, and the bridge's own tracker by path, read-only"
 

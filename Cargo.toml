@@ -4,6 +4,7 @@ members = ["crates/*", "eval/keepout_probe"]
 
 [workspace.package]
 edition = "2024"
+license = "AGPL-3.0-or-later"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

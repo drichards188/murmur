@@ -186,3 +186,10 @@ curl -XPOST localhost:8765/api/tasks -H 'content-type: application/json' \
 ```
 
 Work items are tracked in `bd` (`bd ready`).
+
+## License
+
+Murmur is free software under the [GNU Affero General Public License v3.0](LICENSE) or later:
+use it, study it and extend it, and anyone who runs a modified version for others, over a
+network included, must offer them its source under the same terms. The ArduPilot patches in
+`sim/patches/ardupilot/` modify ArduPilot and are under its license, GPL-3.0.
