@@ -1,11 +1,58 @@
 # Murmur
 
-Multi-domain swarm command console. Thirteen simulated vehicles covering every ArduPilot
-firmware run in SITL: 4 fixed-wing planes and 1 VTOL QuadPlane (Plane), 2 quadcopters (Copter),
-1 airship (Blimp), 3 motorboats (Rover), 1 ROV/sub (Sub) and 1 antenna tracker
-(AntennaTracker). A Rust bridge speaks MAVLink to each vehicle over its own
-UDP link and streams JSON over a WebSocket to a React + MapLibre console with MIL-STD-2525
-symbols (milsymbol).
+**When one operator supervises a hundred autonomous air, ground, surface and undersea vehicles,
+does human judgment over the decisions that matter stay meaningful? And how would you know?**
+
+Murmur is an open-source command-and-control testbed built to answer that with evidence instead
+of assurances. AI agents and autonomy are moving into command and control, and the public case
+for them is scale. Very little is said, and less is measured, about whether the person nominally
+in charge still understands and decides what they approve. Murmur makes that measurable: a
+realistic world, a console a person can actually run, AI watch officers that propose orders, and
+a decision layer that records who decided what, on which picture, and why.
+
+**Status: a working draft.** The testbed runs end to end. The evaluation that would answer the
+question is still being validated, so there are no findings to quote yet. Expect sharp edges.
+
+## What's in it
+
+- **Vehicles.** 22 platform types across air, ground, surface and undersea, from HALE drones to
+  AUVs. Those ArduPilot can fly run its real firmware (SITL); the rest are Rust stand-ins that
+  speak MAVLink like ArduPilot, light enough for fleets of thousands.
+- **A real place and time.** The Golden Gate with real tide, currents, wind, depth and terrain
+  from NOAA data ([tidewater](tidewater/README.md)), and the harbor's traffic around you.
+- **Links that fail.** Every vehicle's link runs through an emulator: loss, latency, terrain
+  line of sight, satellite passes, acoustic modems under water, scripted jamming.
+- **Sensing, not truth.** Radar, EO/IR and AIS models feed a calibrated tracker; the operator and
+  the AI see tracks, with their uncertainty, never the simulator's ground truth.
+- **Agents decide, they don't drive.** Every action, from a person or an AI, is an intent. A
+  deterministic engine checks it fail-closed, a policy routes it to go at once or wait for a
+  person, and an append-only, replayable audit log records every step. AI agents connect over
+  MCP and can propose and explain; the approve step is closed to them in code.
+- **The engagement chain.** A hostile declaration, a nomination, then two signatures from
+  operators with engagement authority, neither of them its proposer, each re-entering a password
+  or passkey at the moment they sign when sign-in is on. Keep-outs protect friendly and neutral
+  traffic.
+- **AI watch officers.** Claude or ChatGPT (Codex) through your own CLI and subscription (Murmur
+  never sees your credentials), or a scripted playbook that needs no account.
+- **Situations and evaluation.** Pre-built situations to run live or on autoplay, and a headless
+  simulator for running batches of scored episodes.
+
+What it is not: a weapon, or connected to anything real. Every platform is a simulated stand-in
+tuned to rounded public figures ("-class"), and the point is to study the person, not the strike.
+
+## Quick start
+
+Linux or WSL2 (developed on WSL2 Ubuntu; macOS is untested). You need git,
+[uv](https://docs.astral.sh/uv/), [Rust](https://rustup.rs/), Node 22.18 or later, a C++
+toolchain for ArduPilot's simulator, a network connection and several GB of disk.
+
+```bash
+git clone https://github.com/drichards188/murmur && cd murmur
+make setup   # once, about 30 minutes (see Run it below)
+make start   # open http://localhost:5173 and pick a scenario
+```
+
+## How it fits together
 
 ```
  SITL vehicles  ──UDP 14560+i──▶ murmur-bridge (Rust) ──/ws, /api──▶ web (Vite, React, MapLibre)
@@ -30,7 +77,7 @@ load-test fleets do). Stand-in boats, buoys and subs get real currents, drift an
 seabed from tidewater. Stand-ins are badged STAND-IN in the console.
 
 Fleets (`sim/fleets/*.toml`) say which platforms, how many and where they start:
-`sandiego`, `canaveral`, `golden-gate`, `full-spectrum` (30 vehicles, every type). Every
+`sandiego`, `canaveral`, `golden-gate`, `full-spectrum` (22 vehicles, one of each type). Every
 vehicle gets a callsign (HAWK 1, VIPER 2...) and the console shows callsign, model and role.
 
 ```bash
@@ -183,7 +230,12 @@ the next outage or pass.
 - `crates/murmur-standins/`: the stand-in engine, one behavior per imitated ArduPilot autopilot.
 - `tidewater/`: real-world conditions (land/water, depth, tide, current, wind) for a place and time, served to the stack and driven into SITL ([its README](tidewater/README.md)).
 - `scripts/`: `setup.sh` (once), `up.sh` (the stack), `ardupilot-patches.sh` (the ArduPilot patches, in order), `measure.py` (load numbers), `scale_fleet.py` (load-test fleets).
-- `web/src/`: `MapView.tsx`, `FleetPanel.tsx`, `TaskPanel.tsx`, `useBridge.ts`.
+- `crates/murmur-decide/`: the decision engine (intents, checks, policy, engagements, audit log) and `murmur-replay`, which re-derives every decision from a log.
+- `crates/murmur-linkemu/`, `murmur-contacts/`, `murmur-space/`, `murmur-auth/`, `murmur-headless/`: the link emulator, the traffic and sensing world, satellites, operator credentials and passkeys, and the headless simulator.
+- `agents/`: the AI watch officers and the scripted playbook, over MCP ([agents/README.md](agents/README.md)).
+- `eval/`: the launcher, situations and the evaluation harness ([eval/README.md](eval/README.md)).
+- `web/`: the console (React, MapLibre, deck.gl, MIL-STD-2525 symbols).
+- `docs/`: the plan ([PLAN.md](docs/PLAN.md)) and what was decided and why ([DECISIONS.md](docs/DECISIONS.md)).
 
 REST is usable without the UI. Vehicles are addressed by `uid` (fleet-unique, from
 `sim/run/fleet.json`); the MAVLink `sysid` is unique only per link and wraps above 250.
