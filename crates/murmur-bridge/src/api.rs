@@ -19,7 +19,9 @@
 //! /api/inbox`, `GET /api/operators` (who may sign an engagement), `POST /api/identify/options`
 //! (rules 21: the vehicles that could be sent to identify a track, ranked), `POST /api/engage/options`
 //! (the nomination form's dry run: which armed platforms could take it, with checks and
-//! preview; nothing is created or logged), `POST /api/restores/write_off` (rules 12: an
+//! preview; nothing is created or logged; murmur-8xe: `replaces`, a pending nomination the
+//! console is replacing, judges as if it were gone, and the answer's `replaces` says whether it
+//! was), `POST /api/restores/write_off` (rules 12: an
 //! operator writes off a vehicle's lost-link values owed back, or an earlier log whose carry
 //! failed, saying why). Who acts is `crate::auth`'s answer: the operator
 //! signed in on this browser (the session cookie; `POST /api/auth/login`), or in a dev run

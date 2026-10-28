@@ -47,6 +47,10 @@ interface Props {
   onClose: () => void
   /** rules 9: open a track in the tracks drawer (from a review item) */
   onTrack?: (id: string) => void
+  /** murmur-8xe: an engagement card's Replace (opens the nomination form on its plan) */
+  onReplace?: (i: Intent) => void
+  /** a notice from elsewhere in the console to show with the inbox's own (once per `n`) */
+  notice?: Notice | null
 }
 
 // ---- top bar button -------------------------------------------------------------------------
@@ -662,8 +666,13 @@ interface Notice {
   tone: 'ok' | 'bad'
 }
 
-export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, onFocus, onClose, onTrack, mem, hidden }: Props & { mem: ReturnType<typeof useAlertMemory>; hidden: Set<string> }) {
-  const [notices, setNotices] = useState<Notice[]>([])
+export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, onFocus, onClose, onTrack, onReplace, notice, mem, hidden }: Props & { mem: ReturnType<typeof useAlertMemory>; hidden: Set<string> }) {
+  const [notices, setNotices] = useState<Notice[]>(notice ? [notice] : [])
+  const [noticeSeen, setNoticeSeen] = useState(notice?.n ?? null)
+  if (notice && notice.n !== noticeSeen) {
+    setNoticeSeen(notice.n)
+    setNotices((ns) => [...ns, notice])
+  }
   const [showHidden, setShowHidden] = useState(false)
   const pending = decisions?.inbox.pending ?? []
   const alerts = decisions?.inbox.alerts ?? []
@@ -743,6 +752,7 @@ export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, o
                   selected={selection?.kind === 'intent' && selection.id === i.id}
                   onFocus={() => onFocus({ kind: 'intent', id: i.id }, uidsOf(i), i)}
                   onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])}
+                  onReplace={onReplace}
                 />
               ) : (
               <ApprovalCard

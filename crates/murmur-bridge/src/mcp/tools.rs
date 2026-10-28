@@ -787,6 +787,8 @@ pub async fn call(
                     fallback: p.fallback,
                     uids: p.uids,
                     passed_only: p.passed_only.unwrap_or(false),
+                    // murmur-8xe: agents cannot reject, so they are never offered a replace
+                    replaces: None,
                 })
                 .await
         }

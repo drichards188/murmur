@@ -2564,6 +2564,12 @@ pub struct OptionsRequest {
     /// explanation, which is the costly part (a watcher that wakes someone when one passes).
     #[serde(default)]
     pub passed_only: bool,
+    /// Murmur-8xe: the console's Replace (reject this pending nomination, then nominate):
+    /// judge as if it were gone, its platform free of it. Ignored, and said so in the answer's
+    /// `replaces`, when it is not an engagement nomination waiting for signatures. Not offered
+    /// to agents (they cannot reject).
+    #[serde(default)]
+    pub replaces: Option<u64>,
 }
 
 impl Decision {
@@ -2622,6 +2628,14 @@ impl Decision {
             memory: self.tracks.as_ref().map_or_else(Default::default, |t| t.memory()),
             names,
         });
+        // murmur-8xe: whether the nomination it replaces still waits for its signatures (it may
+        // be signed through or rejected meanwhile: then the answer is as without it)
+        let replaces = req.replaces.map(IntentId);
+        let mut applied = replaces.is_some_and(|r| {
+            self.lock().engine.intent(r).is_some_and(|i| {
+                matches!(i.spec().task, Task::Engage { .. }) && i.state() == State::PendingApproval
+            })
+        });
         let mut out = Vec::new();
         for uid in armed {
             let spec = murmur_decide::IntentSpec {
@@ -2644,9 +2658,16 @@ impl Decision {
             // the inputs a decision on it would read now, as the engine fills them (rules 9
             // identification; the engagements in play and, rules 12, the spent platforms),
             // nothing logged
+            // murmur-8xe: replacing a pending nomination, as if it were gone
             let inputs = {
                 let w = self.snapshot();
-                self.lock().engine.dry_run_inputs(&spec, &w, &self.terrain.oracle())
+                let core = self.lock();
+                let oracle = self.terrain.oracle();
+                let replacing = replaces.filter(|_| applied).and_then(|r| core.engine.dry_run_inputs_replacing(&spec, &w, &oracle, r));
+                if replacing.is_none() {
+                    applied = false;
+                }
+                replacing.unwrap_or_else(|| core.engine.dry_run_inputs(&spec, &w, &oracle))
             };
             let checks = murmur_decide::rules::evaluate(&spec, &inputs, &self.rules);
             let passed = murmur_decide::rules::passed(&checks, murmur_decide::TaskKind::Engage);
@@ -2686,14 +2707,27 @@ impl Decision {
             }));
         }
         // by uid (the fleet's order): no "best" first
-        Ok(json!({
+        let mut answer = json!({
             "t": now,
             "track": req.track,
             "options": out,
             "note": "listed by uid; not a ranking or a recommendation. keep_outs explains each \
                      keep-out that blocks or nearly blocks (read-only: the checks decide, and \
                      nothing here relaxes one)",
-        }))
+        });
+        // murmur-8xe: only when asked (an answer without it stays as it was, byte for byte)
+        if let Some(r) = replaces {
+            answer["replaces"] = json!({
+                "id": r.0,
+                "applied": applied,
+                "note": if applied {
+                    "judged as if this pending nomination were gone (rejected): its platform is free of it"
+                } else {
+                    "not a nomination waiting for its signatures: judged as without it"
+                },
+            });
+        }
+        Ok(answer)
     }
 
     /// Every engagement intent, newest first, as the console and agents see it (the intent

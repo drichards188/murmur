@@ -441,6 +441,9 @@ interface CardProps {
   selected: boolean
   onFocus: () => void
   onDone: (text: string, tone: 'ok' | 'bad') => void
+  /** murmur-8xe: open the nomination form to replace this nomination (reject it, then nominate a
+   *  changed plan in its place) */
+  onReplace?: (i: Intent) => void
 }
 
 /** What changed since the nomination, said before anything is signed (docs/PRODUCT.md "Say what
@@ -522,7 +525,7 @@ function Signatures({ view, needed, now, agent }: { view: Intent['engage']; need
  *  changed, the checks in one line, the proposer's rationale, the signatures, and the decision:
  *  Reject and "Show the plan to sign" alike, side by side; the plan the engine shows, then Sign
  *  inside it, never where the first button was. */
-export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardProps) {
+export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone, onReplace }: CardProps) {
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -598,6 +601,8 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
               ? `The checks on screen are ${Math.round(ageS ?? 0)} s old: waiting for fresh ones.`
               : consequence
   const canApprove = canSign && livePasses && !stale
+  // murmur-8xe: Replace leads when a check blocks on the world now (it cannot be signed as it stands)
+  const blocksNow = live != null && !livePasses
   // evaluation instrumentation (operatorView.ts), as on the approval card
   const viewed = useRef({ openedAt: performance.now(), decided: false })
   useEffect(() => {
@@ -782,6 +787,17 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
           <button type="button" className="eg-btn reject" disabled={busy || expired} onClick={() => void act('reject')}>
             Reject
           </button>
+          {onReplace && !expired && i.state === 'pending_approval' && (
+            <button
+              type="button"
+              className={`eg-btn replace ${blocksNow ? 'primary' : ''}`}
+              disabled={busy}
+              onClick={() => onReplace(i)}
+              title={`Open the nomination form with i${i.id}'s plan to change; submitting it rejects i${i.id} and nominates the new plan in its place`}
+            >
+              Replace…
+            </button>
+          )}
           <button type="button" className="eg-btn sign" disabled={busy || expired || !canApprove || shown != null} onClick={() => void look()} title="The engine shows exactly the plan your signature would be on (valid a few seconds)">
             {shown ? 'Plan shown below' : 'Show the plan to sign'}
           </button>

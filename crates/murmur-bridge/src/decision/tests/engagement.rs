@@ -498,6 +498,56 @@ async fn the_dry_run_sees_a_platform_spent_by_its_effect() {
     assert_eq!(e.r.log.lines().len(), lines, "a dry run logs nothing");
 }
 
+/// Murmur-8xe: the console's Replace judges the new plan as if the pending nomination it
+/// replaces were gone: the platform it holds is free of it for that dry run alone.
+#[tokio::test(start_paused = true)]
+async fn a_dry_run_replacing_a_pending_nomination_frees_its_platform() {
+    let e = engage_rig();
+    e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+    sleep(Duration::from_millis(500)).await;
+    e.picture().await;
+    let out = e.r.d.submit(&op("op-1"), e.nomination("return")).await.expect("nominated");
+    assert_eq!(out.state, State::PendingApproval, "{}", out.intent);
+    let id = out.id;
+    let lines = e.r.log.lines().len();
+    let free = |v: &Value| {
+        v["options"][0]["checks"]
+            .as_array()
+            .expect("checks")
+            .iter()
+            .find(|c| c["rule"] == "platform_free")
+            .map(|c| (c["outcome"].as_str().unwrap_or("").to_string(), c["detail"].as_str().unwrap_or("").to_string()))
+            .expect("platform_free")
+    };
+    let dry = |replaces: Option<u64>| {
+        e.r.d.engage_options(engage::OptionsRequest {
+            track: "T-0001".into(),
+            effect_radius_m: 100.0,
+            window_s: Some(300),
+            fallback: Some("loiter".into()),
+            uids: Some(vec![1]),
+            passed_only: false,
+            replaces,
+        })
+    };
+    let held = dry(None).await.expect("options");
+    let (outcome, detail) = free(&held);
+    assert_eq!(outcome, "fail", "{held}");
+    assert!(detail.contains(&format!("engagement {id} in play")), "{detail}");
+    assert!(held["replaces"].is_null(), "{held}");
+    let replacing = dry(Some(id.0)).await.expect("options");
+    assert_eq!(free(&replacing).0, "pass", "{replacing}");
+    assert_eq!(replacing["replaces"]["applied"], true, "{replacing}");
+    // an id that is no nomination waiting for signatures: answered as without it
+    let other = dry(Some(id.0 + 100)).await.expect("options");
+    assert_eq!(free(&other).0, "fail", "{other}");
+    assert_eq!(other["replaces"]["applied"], false, "{other}");
+    // nothing changed or logged: the nomination still waits and holds its platform
+    assert_eq!(e.r.state(id), State::PendingApproval);
+    assert_eq!(free(&dry(None).await.expect("options")).0, "fail");
+    assert_eq!(e.r.log.lines().len(), lines, "a dry run logs nothing");
+}
+
 #[tokio::test(start_paused = true)]
 async fn an_operator_abort_commands_the_recorded_fallback() {
     let e = engage_rig();
@@ -2818,6 +2868,7 @@ async fn only_engagement_authority_accepts_a_live_track_as_behaving_now() {
             fallback: Some("return".into()),
             uids: Some(vec![1]),
             passed_only: false,
+            replaces: None,
         })
         .await
         .expect("options");

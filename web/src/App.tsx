@@ -128,7 +128,10 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const [spaceSel, setSpaceSel] = useState<SpaceSelection>({ scene: null, norad: null })
   // the engagement nomination form (Phase E), opened from a declared-hostile track or an
   // armed platform, and the preview of the platform it would use
-  const [engageForm, setEngageForm] = useState<{ track?: string; uid?: number } | null>(null)
+  // the nomination form: opened from a track, a platform, or (murmur-8xe) a pending nomination to replace
+  const [engageForm, setEngageForm] = useState<{ track?: string; uid?: number; replaces?: number } | null>(null)
+  // a notice for the inbox from the form ("i5 replaced by i6")
+  const [inboxNotice, setInboxNotice] = useState<{ n: number; text: string; tone: 'ok' | 'bad' } | null>(null)
   const [engageDraft, setEngageDraft] = useState<EngagePreview | null>(null)
   // murmur-12e: why the chosen platform's keep-out blocks (its regions on the map)
   const [engageKeepOuts, setEngageKeepOuts] = useState<KeepOutExplanation | null>(null)
@@ -641,6 +644,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             onClose={() => setShowInbox(false)}
             mem={alertMem}
             hidden={hiddenAlerts}
+            notice={inboxNotice}
+            onReplace={(i) => setEngageForm({ replaces: i.id })}
             onTrack={(id) => {
               setShowInbox(false)
               revealTrackId(id)
@@ -727,13 +732,17 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         {engageForm && (
           <ErrorBoundary name="Engagement" className="floating">
           <EngagePanel
+            // a Replace from a card starts the form afresh on that nomination's plan
+            key={engageForm.replaces != null ? `replace-${engageForm.replaces}` : 'nominate'}
             tracks={tracks}
             vehicles={vehicles}
             now={now}
             initial={engageForm}
+            intents={allIntents ?? []}
             onPreview={setEngageDraft}
             onKeepOuts={setEngageKeepOuts}
-            onNominated={(id) => {
+            onNominated={(id, replaced) => {
+              if (replaced != null) setInboxNotice({ n: Date.now(), text: `i${replaced} replaced by i${id}`, tone: 'ok' })
               setEngageForm(null)
               setEngageDraft(null)
               setEngageKeepOuts(null)

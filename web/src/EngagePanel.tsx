@@ -1,13 +1,14 @@
-import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { Fragment, type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { stepsUpAct, useAuth } from './auth'
 import { ChecksFold } from './Bluf'
-import type { Check } from './decisions'
-import { StepUpNeeded, useOperator, useOperators } from './decisions'
+import type { Check, Intent } from './decisions'
+import { intentAction, StepUpNeeded, useOperator, useOperators } from './decisions'
 import { DeclarationBlock } from './Declaration'
 import {
   acceptBehavingBody,
   acceptLostBody,
   engageOptions,
+  engageParams,
   FALLBACK_LABEL,
   nominate,
   type BehavingInfo,
@@ -56,19 +57,30 @@ import { callsign, type Vehicle, vehicleNamer } from './types'
  *  uid, never ranked, and nothing is chosen for the operator: neither the target (unless the form
  *  was opened from it) nor the platform (unless opened from it). Nominating puts it in the inbox,
  *  where two operators with engagement authority, never the proposer, decide it. The form sits in
- *  the right rail, over the tracks and the task panel, so the map and the inbox stay clear. */
+ *  the right rail, over the tracks and the task panel, so the map and the inbox stay clear.
+ *
+ *  Murmur-8xe, replace mode: opened by Replace on a pending nomination's card, or by "Replace iN"
+ *  on a platform iN holds, the form takes iN's plan and, on submit, rejects iN and then nominates
+ *  this plan in its place (two acts, in that order; nothing new in the engine). Every dry run
+ *  passes `replaces`, so the checks read the platform as free of iN; they still gate the submit
+ *  exactly as for any nomination. */
 
 interface Props {
   tracks: TracksMessage | null
   vehicles: Vehicle[]
   now: () => number
-  /** what opened the form: a track (its card) or a platform (an armed vehicle's details) */
-  initial: { track?: string; uid?: number }
+  /** what opened the form: a track (its card), a platform (an armed vehicle's details), or a
+   *  pending nomination to replace (its card's Replace) */
+  initial: { track?: string; uid?: number; replaces?: number }
+  /** every intent the console knows (the bridge's view): a nomination being replaced, or one
+   *  that holds a platform, is found here */
+  intents: Intent[]
   /** the selected option's preview, to draw on the map */
   onPreview: (p: EngagePreview | null) => void
   /** murmur-12e: the selected option's keep-out explanation, to draw its regions on the map */
   onKeepOuts: (ex: KeepOutExplanation | null) => void
-  onNominated: (intentId: number) => void
+  /** `replaced`: the nomination this one replaced (rejected just before) */
+  onNominated: (intentId: number, replaced?: number) => void
   onClose: () => void
 }
 
@@ -152,6 +164,20 @@ function CheckRows({ checks }: { checks: Check[] }) {
   )
 }
 
+/** A nomination's window as the form sets it: its length from the nomination, to 30 s. */
+function windowOf(i: Intent): number {
+  const w = engageParams(i).window
+  if (!w) return 600
+  return Math.max(30, Math.round((w.until - (w.from ?? i.created_t)) / 30_000) * 30)
+}
+
+/** Murmur-8xe: the id of the engagement a platform_free check says holds the platform. */
+function holderOf(c: Check): number | null {
+  if (c.rule !== 'platform_free' || !blocks(c)) return null
+  const m = /engagement i(\d+) in play/.exec(c.detail)
+  return m ? Number(m[1]) : null
+}
+
 /** "by rule, not confirmed", "by rule, confirmed by op-1", "by op-1": a declaration's few words. */
 function declShort(t: Track) {
   const d = t.declared
@@ -160,7 +186,7 @@ function declShort(t: Track) {
   return `declared by ${d.by}`
 }
 
-export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepOuts, onNominated, onClose }: Props) {
+export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview, onKeepOuts, onNominated, onClose }: Props) {
   const [operator] = useOperator()
   const auth = useAuth()
   const ops = useOperators()
@@ -168,14 +194,38 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
   // now (the bridge refuses the whole nomination otherwise): nobody else is offered the control
   const mayAcceptBehaving = auth.auth === 'credentials' ? auth.engage === true : ops.engage.includes(operator)
   const hostile = useMemo(() => (tracks?.tracks ?? []).filter((t) => t.affiliation === 'hostile' && t.declared).sort((a, b) => a.id.localeCompare(b.id)), [tracks])
+  // murmur-8xe: opened to replace a pending nomination: its plan, to change
+  const [base] = useState(() => (initial.replaces != null ? (intents.find((x) => x.id === initial.replaces) ?? null) : null))
   // nothing chosen for the operator: the target is the one the form was opened from, or none
-  const [track, setTrack] = useState<string>(initial.track ?? '')
-  const [radius, setRadius] = useState(75)
-  const [windowS, setWindowS] = useState(600)
-  const [fallback, setFallback] = useState<Fallback>('return')
+  const [track, setTrack] = useState<string>(base ? engageParams(base).track : (initial.track ?? ''))
+  const [radius, setRadius] = useState(base ? Math.round(engageParams(base).effect_radius_m) : 75)
+  const [windowS, setWindowS] = useState(base ? windowOf(base) : 600)
+  const [fallback, setFallback] = useState<Fallback>(base ? engageParams(base).fallback : 'return')
   const [options, setOptions] = useState<EngageOption[] | null>(null)
-  const [uid, setUid] = useState<number | null>(initial.uid ?? null)
-  const [rationale, setRationale] = useState('')
+  const [uid, setUid] = useState<number | null>(base ? Number(base.uids[0]) : (initial.uid ?? null))
+  const [rationale, setRationale] = useState(base?.rationale ?? '')
+  // murmur-8xe: the pending nomination this one replaces (rejected on submit, just before it is
+  // nominated), the one rejected here when the nomination after it was refused, and a one-line
+  // note when replace mode ended on its own
+  const [replaces, setReplaces] = useState<number | null>(base ? base.id : null)
+  const [rejectedHere, setRejectedHere] = useState<number | null>(null)
+  const [replaceNote, setReplaceNote] = useState<string | null>(null)
+  // the reject this form sent, while it is under way (its own state change is not "ended on its own")
+  const rejecting = useRef<number | null>(null)
+  const old = replaces != null ? (intents.find((x) => x.id === replaces) ?? null) : null
+  const takePlanOf = (i: Intent) => {
+    // the operator's target stays; the rest is the nomination's
+    const p = engageParams(i)
+    setUid(Number(i.uids[0]))
+    setRadius(Math.round(p.effect_radius_m))
+    setWindowS(windowOf(i))
+    setFallback(p.fallback)
+    setRationale(i.rationale ?? '')
+    setReplaces(i.id)
+    setRejectedHere(null)
+    setReplaceNote(null)
+    setRefused(null)
+  }
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // why the bridge refused the nomination itself, and the step its check belongs to (kept until
@@ -236,7 +286,7 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
     }
     let gone = false
     const id = window.setTimeout(() => {
-      engageOptions(track, radius, windowS, fallback)
+      engageOptions(track, radius, windowS, fallback, replaces)
         .then((o) => {
           if (gone) return
           setOptions(o)
@@ -251,7 +301,22 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
       window.clearTimeout(again)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [track, radius, windowS, fallback, tick])
+  }, [track, radius, windowS, fallback, replaces, tick])
+
+  // murmur-8xe: the nomination being replaced ended on its own (expired, rejected or signed by
+  // someone else): this is a plain nomination now, said in one line
+  const oldGone =
+    replaces != null &&
+    rejecting.current !== replaces &&
+    (old == null ? intents.length > 0 : old.state !== 'pending_approval' || (old.expires_t != null && old.expires_t <= now()))
+  useEffect(() => {
+    if (!oldGone || replaces == null) return
+    const last = old?.history[old.history.length - 1]
+    const why = old?.state === 'pending_approval' ? 'its window closed' : (last?.reason ?? old?.state ?? 'it is gone')
+    setReplaces(null)
+    setReplaceNote(`i${replaces} no longer waits for signatures (${why}): submitting now makes a new nomination and rejects nothing.`)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [oldGone])
 
   const chosen = options?.find((o) => o.uid === uid) ?? null
   // rules 19: the ticked tracks that accepting would not clear, on the latest dry run
@@ -305,6 +370,41 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
   // the chosen platform's own checks that block, said under the list with what would clear them
   const platformFails = chosen?.checks.filter((c) => blocks(c) && stepOf(c.rule) === 'platform') ?? []
 
+  // murmur-8xe: what replacing means, and what changed from the plan replaced
+  const oldP = old ? engageParams(old) : null
+  const oldSigs = old?.engage?.signed?.length ?? 0
+  const mayStill = old ? (old.engage?.engage_operators ?? ops.engage).filter((x) => x !== operator) : []
+  const oldAccepted = [...(old?.engage?.accepted_lost ?? []).map((a) => `${a.track} as lost`), ...(old?.engage?.accepted_behaving ?? []).map((a) => `${a.track} as behaving now`)]
+  const changed: string[] = []
+  if (old && oldP) {
+    const oldUid = Number(old.uids[0])
+    if (track !== oldP.track) changed.push(`target ${oldP.track} → ${track || 'none'}`)
+    if (uid !== oldUid) changed.push(`platform ${nameOf(oldUid)} → ${uid != null ? nameOf(uid) : 'none'}`)
+    if (radius !== Math.round(oldP.effect_radius_m)) changed.push(`radius ${Math.round(oldP.effect_radius_m)} → ${radius} m`)
+    if (windowS !== windowOf(old)) changed.push(`window ${span(windowOf(old) * 1000)} → ${span(windowS * 1000)}`)
+    if (fallback !== oldP.fallback) changed.push(`fallback ${FALLBACK_LABEL[oldP.fallback]} → ${FALLBACK_LABEL[fallback]}`)
+    if (rationale.trim() !== (old.rationale ?? '').trim()) changed.push('rationale edited')
+  }
+  // a platform held by another engagement: a pending one can be replaced from here, one signed
+  // and under way only aborted from its card
+  const holderAction = (o: EngageOption) => {
+    const id = o.checks.map(holderOf).find((x) => x != null) ?? null
+    if (id == null || id === replaces) return null
+    const h = intents.find((x) => x.id === id)
+    if (h?.state === 'pending_approval')
+      return (
+        <div className="eg-pick-act">
+          <button type="button" className="dc-btn" disabled={busy} onClick={() => takePlanOf(h)} title={`Take i${id}'s plan here; submitting rejects i${id} and nominates this one in its place`}>
+            Replace i{id}
+          </button>
+          <span className="eg-muted">takes its plan; i{id} is rejected only when you submit</span>
+        </div>
+      )
+    if (h && (h.state === 'approved' || h.state === 'dispatched'))
+      return <p className="eg-pick-act eg-muted">i{id} is signed and under way: only Abort on its card stops it.</p>
+    return null
+  }
+
   const submit = async () => {
     if (!track || uid == null || !canNominate) return
     if (stepUp && !stepUpReady(step)) {
@@ -313,6 +413,9 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
     }
     setBusy(true)
     setRefused(null)
+    // murmur-8xe: replacing, the old nomination is rejected first, and nothing is nominated if
+    // that fails
+    const replacing = old?.state === 'pending_approval' ? old.id : null
     try {
       const list = Object.values(acceptLost)
       const proof = stepUp
@@ -323,9 +426,24 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
             ...(behavingIds.length ? { accept_behaving: acceptBehavingBody(behavingIds) } : {}),
           })
         : undefined
+      if (replacing != null) {
+        rejecting.current = replacing
+        try {
+          await intentAction(replacing, 'reject', `Replaced by a new nomination from ${operator}`)
+        } catch (e) {
+          rejecting.current = null
+          setRefused({ text: `i${replacing} could not be rejected: ${(e as Error).message}`, step: null })
+          setBusy(false)
+          return
+        }
+        // from here this is a plain nomination: if it is refused, the form keeps every value
+        setReplaces(null)
+        setRejectedHere(replacing)
+        rejecting.current = null
+      }
       const i = await nominate({ track, uid, radius, windowS, fallback, rationale, acceptLost: list, acceptBehaving: behavingIds, proof })
       setStepBad(false)
-      onNominated(i.id)
+      onNominated(i.id, replacing ?? undefined)
     } catch (e) {
       setStepBad(e instanceof StepUpNeeded)
       const text = (e as Error).message
@@ -344,6 +462,8 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
   }
   const refusedAt = (s: Step) => refused?.step === s && <p className="eg-refused">Not nominated: {refused.text}</p>
 
+  const title = replaces != null ? `Replace i${replaces}` : rejectedHere != null ? `Nominate an engagement (i${rejectedHere} rejected)` : 'Nominate an engagement'
+
   // ---- the steps' states ------------------------------------------------------------------------
   const s1: StepState = target.kind === 'ready' ? 'done' : target.kind === 'confirm' || target.kind === 'blocked' ? 'blocked' : 'todo'
   const s1Status = target.kind === 'confirm' ? 'needs a confirmation' : target.kind === 'checking' ? 'checking' : target.kind === 'none' ? 'choose one' : undefined
@@ -353,15 +473,46 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
   const s4: StepState = !line ? 'todo' : line.tone === 'ok' || ready.onAcceptances ? 'done' : 'blocked'
 
   return (
-    <aside className="eg-panel" aria-label="Nominate an engagement" onKeyDown={onKeyDown}>
+    <aside className="eg-panel" aria-label={title} onKeyDown={onKeyDown}>
       <header className="eg-top">
-        <h2>Nominate an engagement</h2>
+        <h2>{title}</h2>
         <span className="eg-as">as {operator}</span>
         <button className="ghost mini close" onClick={onClose} aria-label="Close" title="Close (Esc)">
           ✕
         </button>
       </header>
       <p className="eg-sub">An abstract effect: a point, a radius, a time. Two operators with engagement authority decide it, never you.</p>
+      {replaces != null && (
+        <div className="eg-replace" role="note" aria-label={`Replacing i${replaces}`}>
+          <p className="eg-replace-head">
+            Submitting rejects i{replaces}
+            {oldSigs > 0 ? ` and drops its ${oldSigs === 1 ? 'signature' : `${oldSigs} signatures`}` : ''}, then nominates this plan in its place.
+          </p>
+          <p>
+            It needs fresh signatures. You become its proposer, so you cannot sign it. {mayStill.length ? `May sign: ${mayStill.join(', ')}.` : 'Nobody else listed may sign.'}
+          </p>
+          {oldAccepted.length > 0 && <p>What i{replaces} accepted ({oldAccepted.join(', ')}) does not carry over: accept again at step 4 if you still need it.</p>}
+          <p className={`eg-replace-diff ${changed.length ? '' : 'same'}`} aria-live="polite">
+            {changed.length ? (
+              <>
+                <span className="eg-k">Changed from i{replaces}</span> {changed.join('; ')}
+              </>
+            ) : (
+              `Same plan as i${replaces}: it meets the checks i${replaces} meets now, so change something above if one blocks.`
+            )}
+          </p>
+        </div>
+      )}
+      {replaces == null && rejectedHere != null && (
+        <p className="eg-replace-note" role="status">
+          i{rejectedHere} is rejected, and this plan was not nominated: fix what the refusal says and nominate it again.
+        </p>
+      )}
+      {replaces == null && rejectedHere == null && replaceNote && (
+        <p className="eg-replace-note" role="status">
+          {replaceNote}
+        </p>
+      )}
       <ol className="eg-steps">
         <StepBox n={1} title="Target" state={s1} status={s1Status}>
           {targets.length === 0 ? (
@@ -426,18 +577,21 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
                 {options.map((o) => {
                   const pl = platformLine(o, nowMs)
                   return (
-                    <label key={o.uid} className={`eg-pick ${uid === o.uid ? 'on' : ''}`}>
-                      <input type="radio" name="eg-platform" checked={uid === o.uid} onChange={() => setUid(o.uid)} />
-                      <span className="eg-pick-text">
-                        <span className="eg-pick-name">
-                          <b>{nameOf(o.uid)}</b> {modelOf(o.uid)}
+                    <Fragment key={o.uid}>
+                      <label className={`eg-pick ${uid === o.uid ? 'on' : ''}`}>
+                        <input type="radio" name="eg-platform" checked={uid === o.uid} onChange={() => setUid(o.uid)} />
+                        <span className="eg-pick-text">
+                          <span className="eg-pick-name">
+                            <b>{nameOf(o.uid)}</b> {modelOf(o.uid)}
+                          </span>
+                          <span className={`eg-pick-line ${pl.ok ? 'ok' : 'bad'}`}>
+                            <span aria-hidden="true">{pl.ok ? '✓ ' : '✕ '}</span>
+                            {pl.text}
+                          </span>
                         </span>
-                        <span className={`eg-pick-line ${pl.ok ? 'ok' : 'bad'}`}>
-                          <span aria-hidden="true">{pl.ok ? '✓ ' : '✕ '}</span>
-                          {pl.text}
-                        </span>
-                      </span>
-                    </label>
+                      </label>
+                      {holderAction(o)}
+                    </Fragment>
                   )
                 })}
               </div>
@@ -601,12 +755,13 @@ export function EngagePanel({ tracks, vehicles, now, initial, onPreview, onKeepO
           />
         )}
         <p className="eg-consequence">
-          Creates a nomination{t && platform ? ` of ${t.id} with ${platform}` : ''} in the Inbox. Nothing moves until two operators with engagement authority, neither of them you, sign it.
+          {replaces != null ? `Rejects i${replaces}, then creates` : 'Creates'} a nomination{t && platform ? ` of ${t.id} with ${platform}` : ''} in the Inbox
+          {replaces != null ? ' in its place' : ''}. Nothing moves until two operators with engagement authority, neither of them you, sign it.
         </p>
         {!ready.ok && <p className="eg-missing">Not yet: {ready.missing.join('; ')}.</p>}
         <div className="eg-go-row">
           <button className="eg-nominate" disabled={!canNominate} onClick={() => void submit()} title="Ctrl+Enter">
-            {t ? `Nominate ${t.id}` : 'Nominate'}
+            {replaces != null ? `Replace i${replaces}` : t ? `Nominate ${t.id}` : 'Nominate'}
           </button>
           <button className="dc-btn quiet" onClick={onClose} title="Esc">
             Cancel

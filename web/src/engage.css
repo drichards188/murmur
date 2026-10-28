@@ -948,3 +948,72 @@
   font-size: 11px;
   color: #e0a8a8;
 }
+
+/* murmur-8xe: replacing a pending nomination: what submitting does, and what changed from it */
+.eg-replace {
+  margin: 8px 14px 0;
+  padding: 8px 10px;
+  border: 1px solid #3a4f73;
+  border-radius: 4px;
+  background: rgba(138, 180, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #c8d0d9;
+}
+.eg-replace p {
+  margin: 0;
+}
+.eg-replace-head {
+  font-weight: 600;
+  color: var(--text);
+}
+.eg-replace-diff {
+  padding-top: 4px;
+  border-top: 1px solid #2c3a52;
+  color: var(--text);
+}
+.eg-replace-diff.same {
+  color: var(--warn);
+}
+.eg-replace-diff .eg-k {
+  font: 600 10px var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-right: 4px;
+}
+.eg-replace-note {
+  margin: 8px 14px 0;
+  font-size: 12px;
+  color: var(--warn);
+}
+/* a platform held by another engagement: what can be done about it, under its row */
+.eg-pick-act {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 2px 28px;
+  font-size: 12px;
+}
+/* the card's Replace: primary when a check blocks on the world now, quiet otherwise */
+.eg-btn.replace {
+  color: #c8d0d9;
+  border-color: #3a4a5c;
+  font-weight: 600;
+}
+.eg-btn.replace:hover:not(:disabled) {
+  background: #1a2532;
+  border-color: #6a7f95;
+}
+.eg-btn.replace.primary {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: #241c10;
+  font-weight: 700;
+}
+.eg-btn.replace.primary:hover:not(:disabled) {
+  background: #33270f;
+}

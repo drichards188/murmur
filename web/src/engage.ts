@@ -485,8 +485,11 @@ export function fmtDist(m: number) {
 }
 
 /** The nomination form's dry run: which armed platforms could take it now (read-only). */
-export async function engageOptions(track: string, radius: number, windowS: number, fallback: Fallback): Promise<EngageOption[]> {
-  const b = await post('/api/engage/options', { track, effect_radius_m: radius, window_s: windowS, fallback })
+/** The nomination form's dry run. murmur-8xe: `replaces`, a pending nomination the operator is
+ *  replacing (rejected, then this one nominated): judged as if it were gone, its platform free of
+ *  it (the bridge answers as without it once it no longer waits for signatures). */
+export async function engageOptions(track: string, radius: number, windowS: number, fallback: Fallback, replaces?: number | null): Promise<EngageOption[]> {
+  const b = await post('/api/engage/options', { track, effect_radius_m: radius, window_s: windowS, fallback, ...(replaces != null ? { replaces } : {}) })
   return b.options ?? []
 }
 

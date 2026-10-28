@@ -4380,6 +4380,35 @@ impl Engine {
         inputs
     }
 
+    /// Murmur-8xe: [`Engine::dry_run_inputs`] as if the pending engagement nomination `replaces`
+    /// were gone, for the nomination form replacing it (the console rejects it, then nominates
+    /// the new plan): its platform is free of it, so `engaged` leaves it out, the one fact a
+    /// pending nomination puts into another decision's inputs. Read-only like the dry run; the
+    /// nomination itself is judged on the world as it is when it comes. `None` when `replaces`
+    /// is not an engagement nomination waiting for its signatures (approved or under way, it is
+    /// stopped only by an abort, and the caller answers as without it).
+    pub fn dry_run_inputs_replacing(
+        &self,
+        spec: &IntentSpec,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+        replaces: IntentId,
+    ) -> Option<WorldSnapshot> {
+        let old = self.intents.get(&replaces)?;
+        if old.spec().kind() != TaskKind::Engage || old.state() != State::PendingApproval {
+            return None;
+        }
+        let mut inputs = self.dry_run_inputs(spec, world, terrain);
+        inputs.engaged = engaged_vehicles(
+            self.intents
+                .values()
+                .filter(|i| i.id() != replaces)
+                .map(|i| (i.id(), i.spec(), i.state())),
+            spec,
+        );
+        Some(inputs)
+    }
+
     /// What the engine fills into a decision's inputs from its own state, after the world's part,
     /// the identification and a space task's answer: the engagements in play and the approved
     /// orders waiting on its vehicles, their own lost-link values still owed back (rules 7 and

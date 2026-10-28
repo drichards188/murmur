@@ -480,6 +480,21 @@ group. Dates are 2026.
   another engagement in play is rejected (`platform_free`), since its dispatch would stop
   the first without anyone acknowledging it; the scenario runner models the bridge's
   superseding too, and flags any engagement found in play at a dispatch.
+- **Replacing a pending nomination is a reject, then a nomination, in the console** (10-28,
+  murmur-8xe). A pending nomination whose checks block holds its platform until someone
+  rejects it or its window closes, and the form could only say so. Replace (on the card, or
+  "Replace iN" under a platform iN holds in the form) opens the form on iN's plan; submitting
+  rejects iN (note "Replaced by a new nomination from <operator>") and then nominates the new
+  plan, with fresh signatures and the replacer as its proposer. The form's dry run takes a
+  read-only `replaces` (`POST /api/engage/options`) that judges as if iN were gone (its
+  platform free of it), so every check still gates the new plan; agents are not offered it,
+  since they cannot reject. Not an edit in place: signers sign exactly the plan they saw (One
+  frozen plan for every signature above). Not an automatic release of a blocked nomination
+  either: the engine would be dropping a human's pending decision, and blocks are often
+  transient. Not offered once iN is approved or under way (only an abort stops it). Known gap:
+  the reject can succeed and the nomination then be refused; the form keeps every value, says
+  iN is rejected, and shows the refusal. An atomic engine replace with a logged link between
+  the two would close it, and needs a new decision-rules version (and replay of it).
 - **A signer signs what the engine showed them** (10-03, second review). Before signing,
   the console asks for the picture (`POST /api/intents/{id}/picture`): the engine issues a
   token bound to the operator's session, with the plan (the frozen one, or the preview the
