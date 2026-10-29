@@ -54,6 +54,7 @@ fn offset(lat: f64, lon: f64, east_m: f64, north_m: f64) -> (f64, f64) {
 impl Mover {
     pub fn new(contact: Contact, seed: u64, index: u64) -> Mover {
         let (lon, lat) = match &contact.motion {
+            Motion::Recorded { samples, .. } => (samples[0].position[0], samples[0].position[1]),
             Motion::Route { points, .. } | Motion::Transit { points } => {
                 (points[0][0], points[0][1])
             }
@@ -120,10 +121,48 @@ impl Mover {
     fn advance(&mut self, s: f64, dt: f64, current: Option<(f64, f64)>) -> bool {
         let c = &self.contact;
         self.st.exists = !self.out_of_play && s >= c.start_s && c.end_s.is_none_or(|e| s < e);
+        // Recorded motion reads the absolute scenario clock, even on a zero-length step.
+        // It must neither accumulate dt error nor bridge missing observations.
+        if let Motion::Recorded { samples, max_gap_s } = &c.motion {
+            if !self.st.exists || !s.is_finite() {
+                self.st.exists = false;
+                return false;
+            }
+            let next = samples.partition_point(|p| p.at_s <= s);
+            if next == 0 {
+                self.st.exists = false;
+                return false;
+            }
+            let a = &samples[next - 1];
+            let b = samples.get(next).filter(|b| b.at_s - a.at_s <= *max_gap_s);
+            if let Some(b) = b {
+                let span = b.at_s - a.at_s;
+                let f = (s - a.at_s) / span;
+                self.st.lon = wrap180(a.position[0] + wrap180(b.position[0] - a.position[0]) * f);
+                self.st.lat = a.position[1] + (b.position[1] - a.position[1]) * f;
+                let speed = distance_m(a.position[1], a.position[0], b.position[1], b.position[0]) / span;
+                let course = bearing_deg(a.position[1], a.position[0], b.position[1], b.position[0]);
+                let va = a.speed_mps.unwrap_or(speed);
+                let vb = b.speed_mps.unwrap_or(speed);
+                self.st.speed_mps = va + (vb - va) * f;
+                let ca = a.course_deg.unwrap_or(course);
+                let cb = b.course_deg.unwrap_or(course);
+                self.st.course_deg = (ca + wrap180(cb - ca) * f).rem_euclid(360.0);
+            } else if s - a.at_s < 1.0 {
+                self.st.lon = a.position[0];
+                self.st.lat = a.position[1];
+                self.st.speed_mps = a.speed_mps.unwrap_or(0.0);
+                self.st.course_deg = a.course_deg.unwrap_or(0.0);
+            } else {
+                self.st.exists = false;
+            }
+            return self.st.exists;
+        }
         if !self.st.exists || dt <= 0.0 {
             return self.st.exists;
         }
         match &c.motion {
+            Motion::Recorded { .. } => unreachable!("recorded motion is evaluated by timestamp above"),
             Motion::Route {
                 points,
                 reverse,
@@ -234,7 +273,84 @@ impl Mover {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scenario::{Affiliation, Domain};
+    use crate::scenario::{Affiliation, Domain, RecordedPoint, Scenario};
+
+    fn recorded() -> Mover {
+        let sample = |at_s, lon, course| RecordedPoint {
+            at_s, position: [lon, 37.8], speed_mps: Some(4.0), course_deg: Some(course),
+        };
+        Mover::new(contact(Motion::Recorded {
+            samples: vec![sample(10.0, -122.5, 350.0), sample(70.0, -122.49, 10.0),
+                          sample(500.0, -122.4, 90.0)],
+            max_gap_s: 300.0,
+        }, 0.0), 1, 0)
+    }
+
+    #[test]
+    fn recorded_motion_uses_timestamps_and_preserves_gaps() {
+        let mut m = recorded();
+        assert!(!m.step(9.9, 1.0, None));
+        assert!(m.step(10.0, 0.0, None));
+        assert_eq!(m.st.lon, -122.5);
+        assert!(m.step(40.0, 0.0, Some((100.0, 100.0))));
+        assert!((m.st.lon + 122.495).abs() < 1e-10);
+        assert!(m.st.course_deg.abs() < 1e-10, "course takes the short arc through north");
+        assert_eq!(m.st.speed_mps, 4.0);
+        let mut jumped = recorded();
+        assert!(jumped.step(40.0, 1000.0, None));
+        assert_eq!(jumped.st.lon, m.st.lon, "rate and step history cannot move a recorded fix");
+        assert!(m.step(70.5, 1.0, None));
+        assert_eq!(m.st.lon, -122.49);
+        assert!(!m.step(71.0, 1.0, None));
+        assert!(!m.step(499.9, 1.0, None));
+        assert!(m.step(500.0, 1.0, None));
+        assert_eq!(m.st.lon, -122.4);
+        assert!(!m.step(501.0, 1.0, None));
+        assert!(!m.step(3600.0, 1.0, None), "never loops or extrapolates");
+        m.out_of_play = true;
+        assert!(!m.step(40.0, 1.0, None), "effects still remove a recorded contact");
+    }
+
+    #[test]
+    fn recorded_missing_velocity_is_inferred_only_on_supported_segments() {
+        let mut m = recorded();
+        if let Motion::Recorded { samples, .. } = &mut m.contact.motion {
+            for p in samples { p.speed_mps = None; p.course_deg = None; }
+        }
+        assert!(m.step(40.0, 1.0, None));
+        assert!(m.st.speed_mps > 10.0 && m.st.speed_mps < 20.0);
+        assert!((m.st.course_deg - 90.0).abs() < 0.01);
+        assert!(m.step(500.0, 1.0, None));
+        assert_eq!(m.st.speed_mps, 0.0);
+        m.contact.start_s = 50.0;
+        assert!(!m.step(40.0, 1.0, None));
+        m.contact.end_s = Some(500.0);
+        assert!(!m.step(500.0, 1.0, None));
+    }
+
+    #[test]
+    fn bundled_morning_watch_replays_every_source_fix_without_looping() {
+        let scenario = Scenario::from_toml(include_str!("../../../sim/scenarios/morning-harbor-watch.toml"))
+            .expect("bundled recording parses");
+        let contacts = scenario.contacts().expect("bundled contacts validate");
+        assert_eq!(contacts.len(), 109);
+        assert!(scenario.acts.is_empty());
+        let mut count = 0;
+        for c in contacts {
+            assert_eq!(c.affiliation, Affiliation::Neutral);
+            let Motion::Recorded { samples, .. } = &c.motion else { panic!("recorded contacts only") };
+            let samples = samples.clone();
+            let mut m = Mover::new(c, 11, 0);
+            for p in samples {
+                assert!(m.step(p.at_s, 0.0, None));
+                assert!((m.st.lon - p.position[0]).abs() < 1e-10);
+                assert!((m.st.lat - p.position[1]).abs() < 1e-10);
+                count += 1;
+            }
+            assert!(!m.step(3600.0, 1.0, None));
+        }
+        assert_eq!(count, 2126);
+    }
 
     fn contact(motion: Motion, speed: f64) -> Contact {
         Contact {

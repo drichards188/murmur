@@ -36,7 +36,7 @@ def test_the_open_world_comes_first_then_the_situations(menu):
     files = {p.stem for p in S.SITUATIONS.glob("*.toml")}
     assert {e["id"] for e in entries[1:]} == files
     runnable = [e["id"] for e in entries[1:] if e["runnable"]]
-    assert runnable == ["fog-watch", "harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition", "tutorial"]
+    assert runnable == ["fog-watch", "harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition", "morning-harbor-watch", "tutorial"]
     assert [e["id"] for e in entries if e.get("tutorial")] == ["tutorial"], "one tutorial, which the menu offers apart"
     assert sorted(loaded) == runnable
     # every runnable one before the rest, each of the rest saying why not
@@ -48,6 +48,8 @@ def test_the_open_world_comes_first_then_the_situations(menu):
     hae = next(e for e in entries if e["id"] == "hostile-act-engagement")
     assert (hae["operator"], hae["ai"], hae["vehicles"], hae["sitl"], hae["duration_s"]) == ("autoplay", "claude", 2, 0, 720.0)
     assert hae["operators"] == ["live", "autoplay"] and hae["ais"] == list(S.AI_MODES) and hae["typical_s"] == [5, 20]
+    morning = next(e for e in entries if e["id"] == "morning-harbor-watch")
+    assert (morning["operator"], morning["ai"], morning["vehicles"], morning["contacts"], morning["duration_s"]) == ("live", "playbook", 8, 109, 3600)
     # each fleet by domain, every vehicle counted once: the full spectrum has all four
     for e in entries:
         if e["runnable"]:

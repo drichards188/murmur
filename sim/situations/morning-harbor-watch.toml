@@ -1,0 +1,160 @@
+title = "Morning Harbor Watch"
+brief = """
+Keep the Golden Gate and northern waterfront under observation from 08:00 to 09:00 PDT on
+14 June 2024. Eight simulated, unarmed vehicles are yours: two HUNTER sensor ships, two
+REAPER surveillance aircraft and four PUMA small aircraft. Six receive opening patrol or
+orbit orders; PUMA 1 and PUMA 4 remain available for a closer look.
+
+Background traffic follows 2,126 recorded NOAA AIS reports from 109 vessel identities across
+the hour. That is not 109 vessels present at once, nor a census of everything on the water.
+Ferries, a tanker, pilot traffic and mostly stationary small craft share the approaches.
+The source is clipped to the entrance and northern bay. No hostile event is scripted.
+
+Your job is to maintain the picture, investigate uncertain tracks and keep the observers on
+task. Missing AIS and high speed alone do not establish hostile intent. The playbook watch
+officer reads the same sensor picture as you. Its orbit, patrol and track proposals wait in
+your Inbox; hold and rtl go out by policy. It cannot approve anything. Opening orders come
+from op-setup, a script, and any that need a person wait in your Inbox for 120 seconds.
+Engagements are not authorized on this watch.
+
+This is a recorded-traffic simulation, not a live feed or a reconstruction of actual sensor
+coverage. Recorded fixes drive simulated contacts; the console sees simulated detections.
+Positions are interpolated only across gaps of five minutes or less. Outside those spans a
+fix appears for one second; longer gaps remain absent. A missing contact may be missing data.
+Wind follows NOAA station 9414290's six-minute observations, assumed uniform across the
+scene for sensing and the Weather display. Visibility and sea state are assumptions.
+No historical tide or current forcing is applied; land/water
+route checks and live terrain radio shadows are not evaluated without a terrain service.
+"""
+director = """
+Recorded background, all neutral scenario affiliations. BOW KISO is outbound in the first
+27 minutes; PV GOLDEN GATE crosses the clip from about 08:21 to 08:44. SONOMA and SAN FRANCISCO
+move toward the city; CARNIVAL MIRACLE reports stationary near the waterfront. These are
+source observations, not an inference of intent. AIS type mappings and sensor signatures
+are coarse simulation assumptions, not verified specifications for those vessels.
+The raw clip, transformations and NOAA wind/tide context are in sim/data/morning-harbor-watch/.
+Any future hostile variant must use a separate fictional identity and explicitly label its
+changes. This baseline contains no declarations, nominations or scripted human decisions.
+"""
+
+world = "golden-gate"
+fleet = "sim/fleets/morning-harbor-watch.toml"
+contacts = "sim/scenarios/morning-harbor-watch.toml"
+policy = "sim/situations/policies/watch.toml"
+events = []
+tidewater = "none"
+at = "2024-06-14T15:00:00Z"
+rate = 1
+duration_s = 3600
+ai_start_s = 45
+operator = "live"
+ai = "playbook"
+cosigner = "you"
+reveal = false
+seed = 11
+
+[summary]
+headline = "An hour of recorded harbor traffic, eight simulated observers, your watch."
+bullets = [
+  "14 June 2024, 08:00-09:00 PDT: 2,126 AIS reports, 109 identities over the hour.",
+  "Two sensor ships, two surveillance aircraft, four small aircraft; all simulated and unarmed.",
+  "Maintain the picture and investigate uncertainty. No hostile event is scripted.",
+  "Playbook AI needs no account; its movement proposals wait for you in the Inbox.",
+  "Recorded traffic and station wind, simulated sensing; gaps preserved. No historical tide/current forcing.",
+]
+
+[headless]
+domain_rule = "not_evaluated"
+currents = "none"
+conditions = "none"
+
+[[order]]
+id = "gate-patrol"
+task = "patrol"
+vehicles = { callsign = "HUNTER 1" }
+route = [[-122.4720, 37.8135], [-122.4720, 37.8250]]
+note = "Opening watch: patrol the channel east of the bridge"
+
+[[order]]
+id = "bay-patrol"
+task = "patrol"
+vehicles = { callsign = "HUNTER 2" }
+route = [[-122.4300, 37.8170], [-122.4300, 37.8350]]
+note = "Opening watch: observe the northern waterfront approaches"
+
+[[order]]
+id = "entrance-orbit"
+task = "orbit"
+vehicles = { callsign = "REAPER 1" }
+center = [-122.5050, 37.8150]
+radius_m = 2000
+note = "Opening watch: wide surveillance orbit over the entrance"
+
+[[order]]
+id = "bay-orbit"
+task = "orbit"
+vehicles = { callsign = "REAPER 2" }
+center = [-122.4200, 37.8400]
+radius_m = 2000
+note = "Opening watch: wide surveillance orbit over the bay"
+
+[[order]]
+id = "north-station"
+task = "orbit"
+vehicles = { callsign = "PUMA 2" }
+center = [-122.4680, 37.8240]
+radius_m = 300
+note = "Opening watch: observe the northern bridge approach"
+
+[[order]]
+id = "waterfront-station"
+task = "orbit"
+vehicles = { callsign = "PUMA 3" }
+center = [-122.4300, 37.8170]
+radius_m = 300
+note = "Opening watch: observe the waterfront approaches"
+
+[[watch]]
+at_s = 0
+headline = "08:00 PDT: take the morning watch"
+bullets = ["Eight simulated observers; six opening orders, two aircraft available", "Traffic is a recording from 14 June 2024", "Tracks appear as simulated sensors acquire them"]
+text = "Take the watch. The setup script assigns six observers; PUMA 1 and PUMA 4 are available for closer looks. The traffic is recorded, but our vehicles, sensing and links are simulated. No hostile event is scripted."
+
+[[watch]]
+at_s = 300
+headline = "Read what supports each track"
+bullets = ["AIS is a reported identity, not proof of intent", "Look at sources, classification and uncertainty", "The source contains moving traffic and many stationary craft"]
+text = "Review sources and uncertainty in the Tracks drawer. AIS supplies a reported identity. A ferry moving quickly or a contact with incomplete reports is not evidence of hostility."
+
+[[watch]]
+at_s = 1200
+headline = "08:20 PDT: distinguish missing reports from events"
+bullets = ["The data is clipped in space and time", "Gaps longer than five minutes are not filled", "Lost tracks retain the tracker's normal uncertainty"]
+text = "Vessels can enter or leave the clip, and AIS reports can stop. Long source gaps are left absent rather than extrapolated. The tracker still handles detections and lost contacts normally; absence is not a scripted hostile maneuver."
+
+[[watch]]
+at_s = 2400
+headline = "08:40 PDT: check the observers as well as the traffic"
+bullets = ["Review fuel, links and assigned tasks", "Use available aircraft for a closer look if warranted", "AI tasking proposals wait for your decision"]
+text = "Check endurance, links and tasks across the eight observers. Judge whether an AI proposal adds useful information before deciding it. Nothing in this baseline requires an engagement."
+
+[[watch]]
+at_s = 3480
+headline = "Two minutes to the end of the recording"
+bullets = ["The source ends at 09:00 PDT and does not loop", "The stack remains available for inspection", "The audit log records orders, proposals and decisions"]
+text = "The clip ends at 09:00 PDT. Traffic is not looped or carried forward beyond its recorded coverage. The stack stays up for inspection; End or make down stops it."
+
+[playbook]
+sensor_platform = "puma"
+
+[[playbook.watch_area]]
+name = "the Golden Gate approaches"
+center = [-122.4783, 37.8199]
+radius_m = 3000
+
+[[playbook.protected]]
+name = "the Golden Gate Bridge"
+point = [-122.4783, 37.8199]
+
+[autoplay]
+preset = "default"

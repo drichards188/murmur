@@ -1,0 +1,98 @@
+{
+  "schema": 1,
+  "source": "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?begin_date=20240614+15%3A00&end_date=20240614+16%3A00&station=9414290&time_zone=gmt&units=metric&format=json&application=MurmurScenarioResearch&product=wind",
+  "model": "NOAA CO-OPS 9414290 mean wind; assumed uniform across this scene",
+  "fetched_at": "2026-10-29",
+  "raw_sha256": "338696ff9497317fae8b2d645e1f338690fcfa0ad3383aa152dc60b35e2906da",
+  "bounds": [
+    -122.57,
+    37.74,
+    -122.35,
+    37.9
+  ],
+  "points": [
+    {
+      "lat": 37.8063,
+      "lon": -122.4659,
+      "rows": [
+        {
+          "t": 1718377200.0,
+          "values": {
+            "wind_east_mps": 1.430782013429653,
+            "wind_north_mps": 2.2897298596223505
+          }
+        },
+        {
+          "t": 1718377560.0,
+          "values": {
+            "wind_east_mps": 2.006491028788965,
+            "wind_north_mps": 1.806652637168917
+          }
+        },
+        {
+          "t": 1718377920.0,
+          "values": {
+            "wind_east_mps": 2.139689329569448,
+            "wind_north_mps": 2.6422962689537006
+          }
+        },
+        {
+          "t": 1718378280.0,
+          "values": {
+            "wind_east_mps": 0.7607128711332587,
+            "wind_north_mps": 1.6313540166659701
+          }
+        },
+        {
+          "t": 1718378640.0,
+          "values": {
+            "wind_east_mps": 3.56486156198668,
+            "wind_north_mps": 2.4045294849242103
+          }
+        },
+        {
+          "t": 1718379000.0,
+          "values": {
+            "wind_east_mps": 2.1063525810321693,
+            "wind_north_mps": 2.795224285165525
+          }
+        },
+        {
+          "t": 1718379360.0,
+          "values": {
+            "wind_east_mps": 1.8369652811734196,
+            "wind_north_mps": 2.113186824623762
+          }
+        },
+        {
+          "t": 1718379720.0,
+          "values": {
+            "wind_east_mps": 3.150342775709159,
+            "wind_north_mps": 2.124933033188837
+          }
+        },
+        {
+          "t": 1718380080.0,
+          "values": {
+            "wind_east_mps": 2.292372622514691,
+            "wind_north_mps": 2.3738213411175484
+          }
+        },
+        {
+          "t": 1718380440.0,
+          "values": {
+            "wind_east_mps": 2.4905416147351476,
+            "wind_north_mps": 2.1649947956686737
+          }
+        },
+        {
+          "t": 1718380800.0,
+          "values": {
+            "wind_east_mps": 2.8365557267979504,
+            "wind_north_mps": 0.9767044633714699
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -14,7 +14,7 @@
 //! domain = "surface"            # air | surface | subsurface | ground
 //! kind = "ferry"                # see KINDS for the defaults each kind carries
 //! speed_mps = 11
-//! motion = "route"              # route | transit | loiter | station | drift
+//! motion = "route"              # recorded | route | transit | loiter | station | drift
 //! route = [[-122.3920, 37.7960], [-122.4790, 37.8560]]   # [lon, lat] (GeoJSON order)
 //! reverse = true                # back and forth (default: loop back to the first point)
 //! dwell_s = 300                 # wait at each end
@@ -39,6 +39,9 @@
 //! detecting it; `"persists"` keeps it moving, flagged). `transit` moves once from `route[0]` to the last point
 //! and holds there; `loiter` needs `center` and `radius_m`; `station` and `drift` need
 //! `at`. Drift follows the tidewater current when the contacts process has conditions.
+//! `recorded` needs `max_gap_s` and timestamped `samples` (`at_s`, `position = [lon, lat]`,
+//! optional `speed_mps` and `course_deg`); no constant speed or route is required. It
+//! interpolates only across supported gaps, with one-second bins for isolated/final fixes.
 //!
 //! A contact may carry a weapon (docs/OPPONENT-WEAPONS.md): `weapon = { name = "ATGM-class
 //! missile", kind = "atgm", speed_mps = 250, range_m = 5000 }` (and `fly_m`, its flight height
@@ -339,6 +342,11 @@ pub struct ContactSpec {
     pub motion: String,
     #[serde(default)]
     pub route: Vec<[f64; 2]>,
+    /// Timestamped observations for `recorded` motion, in scenario seconds.
+    #[serde(default)]
+    pub samples: Vec<RecordedPoint>,
+    #[serde(default)]
+    pub max_gap_s: Option<f64>,
     #[serde(default)]
     pub reverse: bool,
     #[serde(default)]
@@ -363,8 +371,22 @@ pub struct ContactSpec {
     pub physical: SignatureFields,
 }
 
+/// An observed fix. Missing speed/course are inferred from a supported segment, or zero
+/// for an isolated fix; they are never filled with an AIS unavailable-value sentinel.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordedPoint {
+    pub at_s: f64,
+    pub position: [f64; 2],
+    pub speed_mps: Option<f64>,
+    pub course_deg: Option<f64>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Motion {
+    /// Interpolate only between fixes separated by at most `max_gap_s`. An isolated or
+    /// final fix occupies its one-second report bin; no extrapolation or looping.
+    Recorded { samples: Vec<RecordedPoint>, max_gap_s: f64 },
     /// Waypoints `[lon, lat]`; back to the first point, or back and forth with `reverse`.
     Route {
         points: Vec<[f64; 2]>,
@@ -438,6 +460,18 @@ impl ContactSpec {
             Ok(p)
         };
         let motion = match self.motion.as_str() {
+            "recorded" => {
+                let gap = self.max_gap_s.filter(|g| g.is_finite() && *g >= 1.0)
+                    .ok_or_else(|| bad("recorded needs finite max_gap_s >= 1".into()))?;
+                if self.samples.is_empty() || self.samples.iter().any(|p| {
+                    !p.at_s.is_finite() || p.at_s < 0.0 || !valid(&p.position)
+                        || p.speed_mps.is_some_and(|v| !v.is_finite() || v < 0.0)
+                        || p.course_deg.is_some_and(|v| !(0.0..360.0).contains(&v))
+                }) || self.samples.windows(2).any(|w| w[0].at_s >= w[1].at_s) {
+                    return Err(bad("recorded needs valid fixes in strictly increasing timestamp order".into()));
+                }
+                Motion::Recorded { samples: self.samples.clone(), max_gap_s: gap }
+            }
             "route" => Motion::Route {
                 points: points(2)?,
                 reverse: self.reverse,
@@ -459,11 +493,11 @@ impl ContactSpec {
             },
             other => {
                 return Err(bad(format!(
-                    "unknown motion {other:?} (route, transit, loiter, station, drift)"
+                    "unknown motion {other:?} (recorded, route, transit, loiter, station, drift)"
                 )));
             }
         };
-        let moving = !matches!(motion, Motion::Station { .. } | Motion::Drift { .. });
+        let moving = !matches!(motion, Motion::Recorded { .. } | Motion::Station { .. } | Motion::Drift { .. });
         if moving && (self.speed_mps <= 0.0 || !self.speed_mps.is_finite()) {
             return Err(bad(format!("motion {:?} needs speed_mps > 0", self.motion)));
         }
@@ -647,6 +681,37 @@ impl Scenario {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recorded_motion_refuses_unusable_samples() {
+        let parse = |samples: &str, gap: &str| {
+            Scenario::from_toml(&format!(r#"
+                title = "recording"
+                [[contact]]
+                id = "c"
+                affiliation = "neutral"
+                domain = "surface"
+                kind = "ferry"
+                motion = "recorded"
+                max_gap_s = {gap}
+                samples = {samples}
+            "#)).and_then(|s| s.contacts())
+        };
+        let fix = "{at_s=0, position=[0,0]}";
+        assert!(parse(&format!("[{fix}]"), "300").is_ok(), "single reports and missing velocity are valid");
+        for bad in ["[]", "[{at_s=-1, position=[0,0]}]", "[{at_s=nan, position=[0,0]}]",
+                    "[{at_s=0, position=[181,0]}]", "[{at_s=0, position=[0,nan]}]",
+                    "[{at_s=0, position=[0,0], speed_mps=-1}]",
+                    "[{at_s=0, position=[0,0], course_deg=360}]",
+                    "[{at_s=0, position=[0,0], course_deg=nan}]",
+                    "[{at_s=1, position=[0,0]}, {at_s=0, position=[0,0]}]"] {
+            assert!(parse(bad, "300").is_err(), "{bad}");
+        }
+        assert!(parse(&format!("[{fix}, {fix}]"), "300").is_err());
+        for gap in ["0", "-1", "nan", "inf"] {
+            assert!(parse(&format!("[{fix}]"), gap).is_err());
+        }
+    }
 
     #[test]
     fn parses_and_fills_defaults() {

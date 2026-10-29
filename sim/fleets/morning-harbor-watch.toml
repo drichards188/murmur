@@ -1,0 +1,43 @@
+# Eight simulated, unarmed observers. All have catalog endurance longer than this watch.
+# Callsigns are numbered per platform in unit order: two HUNTERs, two REAPERs, four PUMAs.
+title = "Morning harbor watch: eight observers"
+
+[[unit]]
+platform = "seahunter"
+sim = "standin"
+spawn = [37.8200, -122.4660, 0, 270]
+
+[[unit]]
+platform = "seahunter"
+sim = "standin"
+spawn = [37.8250, -122.4300, 0, 180]
+
+[[unit]]
+platform = "mq9b"
+sim = "standin"
+spawn = [37.8150, -122.4950, 3000, 270]
+
+[[unit]]
+platform = "mq9b"
+sim = "standin"
+spawn = [37.8400, -122.4150, 3000, 180]
+
+[[unit]]
+platform = "puma"
+sim = "standin"
+spawn = [37.8210, -122.4930, 120, 270]
+
+[[unit]]
+platform = "puma"
+sim = "standin"
+spawn = [37.8240, -122.4680, 120, 0]
+
+[[unit]]
+platform = "puma"
+sim = "standin"
+spawn = [37.8170, -122.4300, 120, 90]
+
+[[unit]]
+platform = "puma"
+sim = "standin"
+spawn = [37.8330, -122.4400, 120, 180]

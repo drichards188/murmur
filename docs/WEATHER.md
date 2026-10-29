@@ -124,7 +124,14 @@ new data. Old evaluation worlds do not acquire weather implicitly.
 | Gust, precipitation, cloud cover, temperature, humidity, pressure | Display and agent context only. No gust dynamics, rain fade, icing or new sensor physics. |
 | Terrain, tide, current | Existing terrain and NOAA tide/SFBOFS layers, independent of this change. |
 
-Mean wind is at 10 m, not wind aloft. Visibility remains the existing model's surface visibility
+HRRR mean wind is at 10 m, not wind aloft. Morning Harbor Watch instead uses NOAA CO-OPS
+station 9414290's six-minute mean wind from its recorded hour, assumed uniform across the
+scene for sensing and display. It is station wind, without a height correction or an aloft
+profile; its six-minute gusts are retained as source data rather than presented as hourly
+gusts. [The scenario's provenance](../sim/data/morning-harbor-watch/README.md) describes those
+assumptions and the absence of historical tide/current forcing.
+
+Visibility remains the existing model's surface visibility
 parameter; there is no vertically resolved cloud/fog layer or integration through a weather
 volume. Sampling at the observer approximates conditions along its line of sight. Satellite
 optical collection results are **not** newly cloud-masked by this feature. Radar is not turned
