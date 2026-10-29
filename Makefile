@@ -50,8 +50,8 @@ headless: ## headless simulator batch (docs/HEADLESS.md): SITUATION=harbor-watch
 	$(CARGO) build --release -p murmur-headless
 	.venv/bin/python -m eval.headless.batch --no-build $(if $(FAMILIES),--families $(FAMILIES)) $(if $(SITUATION),--situation $(SITUATION)) --seeds $(or $(SEEDS),1-10) $(if $(WORKERS),--workers $(WORKERS)) $(if $(AGENT),--agent $(AGENT))
 
-check:   ## typecheck + lint + glide, sea, coverage, munition, bluf, engageSteps and tutorial checks (node 22.18+: it runs the .ts directly) + Rust lint and tests + evaluation and watch officer unit tests (stand-in CLIs, no model) + tidewater's tests
-	cd web && npx tsc -b && npx oxlint src && node src/glide.check.ts && node src/sea.check.ts && node src/coverage.check.ts && node src/munition.check.ts && node src/bluf.check.ts && node src/engageSteps.check.ts && node src/tutorial.check.ts
+check:   ## typecheck + lint + glide, sea, coverage, munition, hostileAct, bluf, engageSteps and tutorial checks (node 22.18+: it runs the .ts directly) + Rust lint and tests + evaluation and watch officer unit tests (stand-in CLIs, no model) + tidewater's tests
+	cd web && npx tsc -b && npx oxlint src && node src/glide.check.ts && node src/sea.check.ts && node src/coverage.check.ts && node src/munition.check.ts && node src/hostileAct.check.ts && node src/bluf.check.ts && node src/engageSteps.check.ts && node src/tutorial.check.ts
 	.venv/bin/python -m py_compile sim/swarm.py sim/tests/*.py scripts/*.py agents/*.py agents/watch/*.py agents/playbook/*.py agents/playbook/plays/*.py agents/tests/*.py eval/*.py eval/tests/*.py eval/headless/*.py eval/headless/v2/*.py eval/headless/v3/*.py eval/headless/tests/*.py
 	.venv/bin/python -m pytest -q eval/tests
 	.venv/bin/python -m pytest -q agents/tests

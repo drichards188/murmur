@@ -17,13 +17,18 @@ import type { Reveal } from './reveal'
 import { isTrackStale, type Track, trackPredicted } from './tracks'
 import { VehicleDetails } from './VehicleDetails'
 import type { LngLat, Vehicle } from './types'
-import { callsign, DOMAIN_LABEL, domainOf, isStale } from './types'
+import { callsign, DOMAIN_LABEL, domainOf, isStale, vehicleNamer } from './types'
 import { useBridge } from './useBridge'
 import { ErrorBoundary } from './ErrorBoundary'
 import { EngagePanel } from './EngagePanel'
 import { isEngage, previewOf, RUNNING, type EngagePreview, type KeepOutExplanation } from './engage'
 import { buildEngageLayers, buildKeepOutLayers, type EngageDrawing } from './engageLayers'
 import { IMPACT_STATUS_MS, type ImpactEvent } from './impact'
+import { actDrawings, bannerAct, bannerLine, type ActDrawing, type Seen, type Victim } from './hostileAct'
+import type { Against } from './ident'
+import { span } from './engageSteps'
+import { shownAlt } from './drawn'
+import './act.css'
 import { secondsToImpact } from './munition'
 import { usePlatformLimits } from './taskDefaults'
 import { estimated } from './estimate'
@@ -288,6 +293,39 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   // has the line once nothing is in flight
   const flyingImpact = impacts.filter((x) => x.munition && impactNowMs >= x.munition.launch_t && impactNowMs < x.t).sort((a, b) => a.t - b.t)[0]
   const visibleImpact = flyingImpact ? undefined : impacts.filter((impact) => impactNowMs >= impact.t && impactNowMs - impact.t < IMPACT_STATUS_MS).sort((a, b) => b.t - a.t)[0]
+  // Hostile acts our sensors observed (rules 9), as fire events on the map (hostileAct.ts): from
+  // where our sensors placed each act's author to its victim, where this console had the victim
+  // when it first saw the act. Recomputed when the inbox's acts change; the vehicles and tracks
+  // are read as they are then.
+  const actsSeen = useRef(new Map<string, Seen>())
+  const victimsRef = useRef({ vehicles: allVehicles, tracks: tracks?.tracks ?? [] })
+  victimsRef.current = { vehicles: allVehicles, tracks: tracks?.tracks ?? [] }
+  const inboxActs = decisions?.inbox.acts
+  const actDraws = useMemo<ActDrawing[]>(() => {
+    const { vehicles: vs, tracks: ts } = victimsRef.current
+    const victimAt = (a: Against, t: number): Victim | null => {
+      if (a.kind === 'vehicle') {
+        const v = vs.find((x) => String(x.uid) === a.uid)
+        return v?.position ? { at: v.position, alt: shownAlt(v) } : null
+      }
+      if (a.kind === 'track') {
+        const tr = ts.find((x) => x.id === a.track)
+        return tr ? { at: trackPredicted(tr, t), alt: 0 } : null
+      }
+      return null
+    }
+    return actDrawings(inboxActs ?? [], actsSeen.current, now(), victimAt, vehicleNamer(vs))
+  }, [inboxActs, now])
+  // Dismiss: the acts drawn so far leave the map (and the banner) before their minute is up
+  const [actsDismissedAt, setActsDismissedAt] = useState<number | null>(null)
+  const actBanner = bannerAct(actDraws, impactNowMs, actsDismissedAt)
+  /** frame an act: its author's fix with room for its error, and its victim */
+  const focusAct = useCallback((d: ActDrawing) => {
+    const ring = circle(d.author, Math.max(d.sigma_m * 3, 300)).filter((_, k) => k % 8 === 0)
+    const points = d.victim ? [d.author, d.victim.at, ...ring] : [d.author, ...ring]
+    const aloft: [number, number, number][] | undefined = d.victim && d.victim.alt > 50 ? [[d.victim.at[0], d.victim.at[1], d.victim.alt]] : undefined
+    setFit((f) => ({ points, aloft, n: (f?.n ?? 0) + 1, padRight: showInbox ? 430 : 70 }))
+  }, [showInbox])
   // platforms that are their own munition (catalog expended_by_effect) on their way: tagged on
   // the map, so the operator sees what is on the way (bd murmur-64z)
   const platformCatalog = usePlatformLimits()
@@ -547,6 +585,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           impactNowMs={impactNowMs}
           bridgeNow={now}
           oneWay={oneWay}
+          acts={actDraws}
+          actsDismissedAt={actsDismissedAt}
           taskings={taskings}
           selected={selected}
           draft={mapDraft}
@@ -601,6 +641,15 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
                 : visibleImpact.assessment?.result === 'unknown' ? 'Outcome unknown'
                 : 'Sensor assessment pending'}</span>
             <button onClick={() => focusImpact(visibleImpact)}>View impact</button>
+          </div>
+        )}
+        {actBanner && (
+          <div className={`act-status${flyingImpact?.munition || visibleImpact ? ' below' : ''}`} role="status" data-act={actBanner.d.act}>
+            <span><strong>HOSTILE ACT OBSERVED</strong>
+              {' · '}{bannerLine(actBanner.d)}{' · '}act {actBanner.d.act}, {span(impactNowMs - actBanner.d.observedT)} ago
+              {actBanner.others ? ` · ${actBanner.others} more in the last minute` : ''}</span>
+            <button onClick={() => focusAct(actBanner.d)}>View</button>
+            <button className="act-dismiss" onClick={() => setActsDismissedAt(impactNowMs)} title="Take the acts drawn so far off the map (the Inbox's Review keeps them)">Dismiss</button>
           </div>
         )}
         {showGlobe && (

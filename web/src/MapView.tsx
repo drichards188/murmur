@@ -14,6 +14,8 @@ import { declutter } from './declutter'
 import { advanceDrawn, drawnAlt, drawnPosition, drawnPositionOf, drawnTick, glidingCount, isGliding, noteAltitudes, observeVehicles, resetDrawn, setSmoothing, snapAllDrawn } from './drawn'
 import { LAUNCH_FLASH_MS, munitionShown } from './munition'
 import { buildMunitionLayers } from './munitionLayers'
+import { buildActLayers } from './actLayers'
+import { type ActDrawing, animating, visibleActs } from './hostileAct'
 import { GLIDE_LAYER_IDS } from './orderLayers'
 import { buildTrailLayers } from './trailLayers'
 import { perfWatchDeck } from './perf'
@@ -55,6 +57,10 @@ interface Props {
   bridgeNow?: () => number
   /** platforms that are their own munition, on their way: tagged (vehicleLayers.ts) */
   oneWay?: ReadonlySet<number>
+  /** hostile acts our sensors observed (hostileAct.ts), drawn as fire events on the clock of
+   *  `bridgeNow`; those started at or before `actsDismissedAt` are no longer drawn */
+  acts?: ActDrawing[]
+  actsDismissedAt?: number | null
   taskings: Tasking[]
   selected: Set<number>
   draft: Draft
@@ -108,6 +114,7 @@ const START: LngLat = [-117.2, 32.703]
 type FC = GeoJSON.FeatureCollection
 const empty: FC = { type: 'FeatureCollection', features: [] }
 const noImpacts: ImpactEvent[] = []
+const noActs: ActDrawing[] = []
 
 // antenna trackers: a beam along the yaw the tracker reports (where it is actually pointing)
 function beamFeatures(vehicles: Vehicle[]): FC {
@@ -271,7 +278,7 @@ function surfacePoint(m: maplibregl.Map, e: maplibregl.MapMouseEvent): LngLat {
   return water ? [water.lng, water.lat] : [ground.lng, ground.lat]
 }
 
-export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, bridgeNow, oneWay, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, linkRoute = null }: Props) {
+export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, bridgeNow, oneWay, acts = noActs, actsDismissedAt = null, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, linkRoute = null }: Props) {
   const vehicles = useMemo(() => hiddenUids?.size ? allVehicles.filter((v) => !hiddenUids.has(v.uid)) : allVehicles, [allVehicles, hiddenUids])
   // the top view (pitch 0, looking straight down) and the pitch to tilt back to from it
   const [top, setTop] = useState(false)
@@ -331,6 +338,10 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   const syncedAt = useRef(0)
   // munitions were drawn in the last layers built
   const munitionsDrawn = useRef(false)
+  // the observed acts, the last dismissal, and whether any was drawn in the last layers built
+  const actsRef = useRef(acts)
+  const actsDismissed = useRef(actsDismissedAt)
+  const actsDrawn = useRef(false)
   const ready = useRef(false)
   // centroid we last zoomed to; refit when the swarm shows up somewhere else (new --location)
   const fitAt = useRef<LngLat | null>(null)
@@ -431,6 +442,8 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       ...(frame ? ext.map((l) => (l instanceof Layer && GLIDE_LAYER_IDS.includes(l.id) ? l.clone({ updateTriggers: { ...l.props.updateTriggers, getPosition: tick } } as never) : l)) : ext),
       ...clusterLayers,
       ...buildVehicleLayers({ vehicles: vs, selected: sel, bare, aloft, oneWay: ow }),
+      // hostile acts our sensors observed: the fire event, then what lingers of it
+      ...actLayers(),
       // munitions in flight over everything: what is on the way
       ...munitionLayers(),
     ]
@@ -452,6 +465,23 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     munitionsDrawn.current = live.length > 0
     return live.length ? buildMunitionLayers(live, t!, screenNow(), reducedNow) : []
   }
+  /** the observed acts drawn at `t` (hostileAct.ts visibleActs) */
+  const actsAt = (t: number) => visibleActs(actsRef.current, t, actsDismissed.current)
+  /** Animation frames are wanted for an act: its streak, a flash or its label's fade is under
+   *  way. Never with reduced motion (the console's tick steps it). */
+  const actsAnimating = () => {
+    const t = clockRef.current?.()
+    if (t == null || reducedNow) return false
+    return actsAt(t).some((d) => animating(t - d.start))
+  }
+  const actLayers = (): LayersList => {
+    const t = clockRef.current?.()
+    const live = t == null ? [] : actsAt(t)
+    actsDrawn.current = live.length > 0
+    return live.length ? buildActLayers(live, t!, reducedNow) : []
+  }
+  /** a munition or an act wants animation frames */
+  const animated = () => munitionsFlying() || actsAnimating()
   const pushLayers = () => overlay.current?.setProps({ layers: deckLayers() })
 
   /** the inbox preview's transit lines start at a vehicle: that end follows the drawn position */
@@ -478,11 +508,12 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   // camera follows a vehicle: the camera aims at the pose of every display frame, and deck.gl
   // must draw that same pose or the followed symbol shakes against the view.
   //
-  // The same frames draw a munition in flight (munitionLayers.ts), smoothing on or off: then they
-  // run while one flies, and step only the glides there are (none: no vehicle is re-positioned).
+  // The same frames draw a munition in flight (munitionLayers.ts) and an observed act's fire event
+  // (actLayers.ts), smoothing on or off: then they run while one flies or fires, and step only the
+  // glides there are (none: no vehicle is re-positioned).
   const glideFrame = (t: number) => {
     frameId.current = 0
-    const flying = munitionsFlying()
+    const flying = animated()
     if ((!smoothRef.current && !flying) || lostRef.current || !overlay.current) return
     const every = latest.current.vehicles.length > GLIDE_MANY ? 1000 / 30 : 1000 / 60
     if (!following.current && t - lastGlideFrame.current < every - 2) {
@@ -507,11 +538,11 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     }
     // a munition that has just landed: its strike starts this frame, not at the next tick
     if (flying && clockRef.current) syncImpacts(clockRef.current())
-    if (n > 0 || munitionsFlying()) frameId.current = requestAnimationFrame(glideFrame)
+    if (n > 0 || animated()) frameId.current = requestAnimationFrame(glideFrame)
   }
   const wakeGlide = () => {
     if (frameId.current || document.visibilityState !== 'visible') return
-    if ((smoothRef.current && glidingCount() > 0) || munitionsFlying()) frameId.current = requestAnimationFrame(glideFrame)
+    if ((smoothRef.current && glidingCount() > 0) || animated()) frameId.current = requestAnimationFrame(glideFrame)
   }
 
   useEffect(() => {
@@ -876,15 +907,18 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   }
   useEffect(() => {
     impactsRef.current = impacts
+    actsRef.current = acts
+    actsDismissed.current = actsDismissedAt
     clockRef.current = bridgeNow
     syncImpacts(impactNowMs)
-    // a munition in flight: animation frames; none (reduced motion), a step at each tick instead,
-    // and one more to take off one that has landed (or was left drawn while the tab was hidden)
-    if (munitionsFlying()) wakeGlide()
-    else if (overlay.current && (munitionsDrawn.current || (reducedNow && munitionsAt(impactNowMs).length))) overlay.current.setProps({ layers: deckLayers(true) })
+    // a munition in flight or an act firing: animation frames; none (reduced motion), a step at
+    // each tick instead, and one more to take off one that has landed (or was left drawn while
+    // the tab was hidden); an act's lingering line and marker fade at the tick
+    if (animated()) wakeGlide()
+    else if (overlay.current && (munitionsDrawn.current || actsDrawn.current || actsAt(impactNowMs).length || (reducedNow && munitionsAt(impactNowMs).length))) overlay.current.setProps({ layers: deckLayers(true) })
     // syncImpacts, wakeGlide and deckLayers read refs only
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [impacts, impactNowMs, bridgeNow, styleGen, mapGen])
+  }, [impacts, acts, actsDismissedAt, impactNowMs, bridgeNow, styleGen, mapGen])
 
   // the smooth toggle: remembered, and every vehicle is drawn as reported until its next report
   useEffect(() => {

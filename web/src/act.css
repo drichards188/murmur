@@ -1,0 +1,26 @@
+/* The banner of a hostile act our sensors observed (hostileAct.ts): the strike banner's shape
+   (impact.css) in the hostile red; below it when a strike's banner is up. */
+.act-status {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+  z-index: 8; display: flex; align-items: center; gap: 10px;
+  width: max-content; max-width: min(720px, calc(100% - 32px)); padding: 10px 13px;
+  color: #ffe9e9; background: rgba(40, 12, 14, .96); border: 1px solid var(--bad);
+  border-radius: 5px; box-shadow: 0 4px 24px rgba(0, 0, 0, .6), 0 0 16px rgba(255, 93, 93, .35);
+  font: 600 13px/1.25 var(--mono);
+  animation: act-status-in 1.2s ease-out both;
+}
+.act-status.below { top: 64px; }
+.act-status span { margin-right: 4px; }
+.act-status strong { color: #ff8c8c; }
+.act-status button { flex: none; border: 1px solid #ff8c8c; color: inherit; background: #4a1a1d; border-radius: 3px; padding: 5px 8px; font: inherit; }
+.act-status button:hover { background: #6d2328; }
+.act-status button.act-dismiss { border-color: #7a3a3a; background: transparent; color: #ffc4c4; }
+.act-status button.act-dismiss:hover { background: #2a1416; }
+/* a short glow as it comes up, so a banner that replaces another is noticed */
+@keyframes act-status-in {
+  0% { box-shadow: 0 4px 24px rgba(0, 0, 0, .6), 0 0 34px rgba(255, 93, 93, .95); }
+  100% { box-shadow: 0 4px 24px rgba(0, 0, 0, .6), 0 0 16px rgba(255, 93, 93, .35); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .act-status { animation: none; }
+}
