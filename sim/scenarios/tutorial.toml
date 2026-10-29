@@ -5,7 +5,8 @@
 # Everything here is truth: the console only ever sees what our sensors make of it.
 #
 # What differs from hostile-act-engagement's traffic, and why (the rules, the policy and the
-# fleet are the same):
+# platforms are the same; the situation runs by day and HUNTER 1 patrols nearer the boat,
+# sim/fleets/tutorial.toml):
 # - The fast boat starts 800 m short of its holding point instead of 2.7 km out at sea, and holds
 #   from about 1:00 instead of 3:03.
 # - It fires on HUNTER 1 from 1:20, then every minute to the end (19 acts instead of 3): whenever
@@ -22,7 +23,7 @@
 #
 # Times (`start_s`, an act's `at_s`) count from the contacts process's start, a few seconds after
 # the situation's clock (the link emulator's start). uids are the fleet's
-# (sim/fleets/hostile-act-engagement.toml): 1 is HUNTER 1.
+# (sim/fleets/tutorial.toml, in hostile-act-engagement's order): 1 is HUNTER 1.
 title = "Tutorial traffic"
 seed = 17
 
@@ -32,7 +33,7 @@ misclassification_rate = 0.0     # deterministic identities: the tutorial is abo
 # ---------------------------------------------------------------- the hostile
 # A short run in at 15 m/s (29 kn), no AIS, to its holding point mid-strait 1.5 km west of the
 # bridge, inside the engagement zone (sim/areas: ez-gate-west), where it holds from about 1:00;
-# HUNTER 1 patrols 2 km east of it.
+# HUNTER 1 patrols 0.9 to 1.2 km east of it.
 [[contact]]
 id = "fastboat-raider"
 name = "Fast boat without AIS, holding mid-strait west of the bridge"

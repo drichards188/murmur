@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { useBridgeClock, useHiddenAlerts, type Intent } from './decisions'
+import { type Check, useBridgeClock, useHiddenAlerts, type Intent } from './decisions'
 import { FleetPanel } from './FleetPanel'
 import { GlobeInset } from './GlobeInset'
 import { InboxButton, InboxPanel, type InboxSelection, type InboxTab } from './InboxPanel'
@@ -141,6 +141,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const [engageDraft, setEngageDraft] = useState<EngagePreview | null>(null)
   // murmur-12e: why the chosen platform's keep-out blocks (its regions on the map)
   const [engageKeepOuts, setEngageKeepOuts] = useState<KeepOutExplanation | null>(null)
+  // the nomination form's latest checks on its target, for the tutorial's coach card
+  const [engageChecks, setEngageChecks] = useState<{ track: string; checks: Check[] } | null>(null)
 
   // space data is fetched only while a space view is open
   const spaceOn = showSpace || showGlobe
@@ -622,7 +624,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         </ErrorBoundary>
         {/* the tutorial's coach card (sim/situations/tutorial.toml): only while the situation running is the tutorial */}
         <ErrorBoundary name="Tutorial" className="floating">
-          <Tutorial decisions={decisions} tracks={tracks} now={now} onMenu={onMenu} />
+          <Tutorial decisions={decisions} tracks={tracks} now={now} onMenu={onMenu} formChecks={engageChecks} />
         </ErrorBoundary>
         {flyingImpact?.munition && (
           <div className="impact-status" role="status" data-tutorial="impact-status">
@@ -795,6 +797,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             intents={allIntents ?? []}
             onPreview={setEngageDraft}
             onKeepOuts={setEngageKeepOuts}
+            onChecks={setEngageChecks}
             onNominated={(id, replaced) => {
               if (replaced != null) setInboxNotice({ n: Date.now(), text: `i${replaced} replaced by i${id}`, tone: 'ok' })
               setEngageForm(null)

@@ -1,9 +1,9 @@
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
-import type { Decisions } from './decisions'
+import type { Check, Decisions } from './decisions'
 import type { SituationStatus } from './SituationPanel'
 import { usePoll } from './space'
-import type { TracksMessage } from './tracks'
-import { CONSOLE_OPERATOR, type Facts, resumeAt, STEPS, stepDone, type StepId, tutorialFacts } from './tutorial'
+import { kindLabel, type TracksMessage } from './tracks'
+import { CONSOLE_OPERATOR, type Facts, type IdentityCheck, resumeAt, STEPS, stepDone, type StepId, tutorialFacts } from './tutorial'
 import './tutorial.css'
 
 /** The tutorial's coach card (sim/situations/tutorial.toml): shown only while the running
@@ -26,6 +26,8 @@ interface Props {
   now: () => number
   /** the launcher's main menu, when the console has one */
   onMenu?: () => void
+  /** the nomination form's latest dry run on its target, while it is open */
+  formChecks?: { track: string; checks: Check[] } | null
 }
 
 /** how long a done step shows its tick before the walk moves on (ms) */
@@ -65,8 +67,25 @@ const mmss = (s: number) => {
 
 const q = (target: string, extra = '') => `[data-tutorial="${target}"]${extra}`
 
+const n2 = (x: number) => x.toFixed(2)
+
+/** What our sensors hold of the boat, in the words of its level: the form's target-identity check. */
+function heldAs(T: string, c: IdentityCheck) {
+  const k = kindLabel(c.kind)
+  switch (c.level) {
+    case 'detect':
+      return `only detected ${T} as a ${k} (its size class) at ${n2(c.confidence)}`
+    case 'recognise':
+      return `only recognised ${T}'s family (${k}) at ${n2(c.confidence)}`
+    case 'identify':
+      return `identified ${T} as a ${k}, but only at ${n2(c.confidence)}`
+    default:
+      return `hold ${T} as ${k} at ${n2(c.confidence)}`
+  }
+}
+
 /** What each step says, and which parts of the console it rings (the first one shown wins). */
-function stepView(id: StepId, f: Facts, nowMs: number): { title: string; body: ReactNode; live?: ReactNode; targets: string[] } {
+function stepView(id: StepId, f: Facts, nowMs: number, sawIdentityBlock = false): { title: string; body: ReactNode; live?: ReactNode; targets: string[] } {
   const T = f.boat?.id ?? 'the boat'
   const row = f.boat ? [q('track-row', `[data-track-id="${f.boat.id}"]`)] : []
   const N = f.nomination ? `i${f.nomination.id}` : 'your nomination'
@@ -103,7 +122,7 @@ function stepView(id: StepId, f: Facts, nowMs: number): { title: string; body: R
             <p>Two of ours, listed on the left and drawn on the map:</p>
             <ul>
               <li>
-                <b>HUNTER 1</b>, a sensor ship (radar and a camera) patrolling the channel east of the Golden Gate Bridge;
+                <b>HUNTER 1</b>, a sensor ship (radar and a camera) patrolling the channel just west of the Golden Gate Bridge;
               </li>
               <li>
                 <b>REAPER 1</b>, an armed drone loitering at 7,600 m off Lands End, west of the bridge.
@@ -203,12 +222,25 @@ function stepView(id: StepId, f: Facts, nowMs: number): { title: string; body: R
             </p>
           </>
         ),
-        live: f.nominationEnded ? (
-          <>
-            {N} was {f.nominationEnded.state}
-            {f.nominationEnded.reason ? `: ${f.nominationEnded.reason}` : ''}. Nominate again from {T}&apos;s card.
-          </>
-        ) : undefined,
+        live:
+          f.identity && !f.identity.passed ? (
+            // the form blocks on the target's identity: what it means, and what clears it
+            <>
+              The form blocks on <b>target identity</b>: our sensors have {heldAs(T, f.identity)}, and the policy needs {n2(f.identity.needed)} to nominate. Each
+              look adds evidence: wait a few seconds for more looks, or send one of ours for a closer look (<i>identify…</i> on {T}&apos;s track card). The check
+              clears by itself; then nominate.
+            </>
+          ) : f.nominationEnded ? (
+            <>
+              {N} was {f.nominationEnded.state}
+              {f.nominationEnded.reason ? `: ${f.nominationEnded.reason}` : ''}. Nominate again from {T}&apos;s card.
+            </>
+          ) : f.identity?.passed && sawIdentityBlock ? (
+            <>
+              Target identity clears: {T} held as {kindLabel(f.identity.kind)} at {n2(f.identity.confidence)} (the policy needs {n2(f.identity.needed)}). You can
+              nominate.
+            </>
+          ) : undefined,
         targets: [q('engage-nominate'), q('nominate'), ...row, q('tracks')],
       }
     case 'sign':
@@ -334,18 +366,21 @@ function Ring({ targets }: { targets: string[] }) {
   return <div className="tut-ring" aria-hidden="true" style={{ top: box.top - pad, left: box.left - pad, width: box.width + 2 * pad, height: box.height + 2 * pad }} />
 }
 
-export function Tutorial({ decisions, tracks, now, onMenu }: Props) {
+export function Tutorial({ decisions, tracks, now, onMenu, formChecks = null }: Props) {
   const { data } = usePoll<Envelope>('/api/situation', 2000)
   const s = data?.situation
   const on = !!s?.modes?.tutorial
   const runKey = on && s?.run?.id ? `murmur.tutorial.${s.run.id}` : null
   const nowMs = now()
   const f = useMemo(
-    () => tutorialFacts(tracks?.tracks ?? [], decisions?.inbox.review, decisions?.inbox.acts, decisions?.intents ?? [], nowMs, decisions?.inbox.pending),
+    () => tutorialFacts(tracks?.tracks ?? [], decisions?.inbox.review, decisions?.inbox.acts, decisions?.intents ?? [], nowMs, decisions?.inbox.pending, formChecks),
     // the bridge clock moves every render; the facts that read it (the impact) are re-read each second
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tracks, decisions, Math.floor(nowMs / 1000)],
+    [tracks, decisions, formChecks, Math.floor(nowMs / 1000)],
   )
+  // the form blocked on the target's identity at some point on this console: say so when it clears
+  const [sawIdentityBlock, setSawIdentityBlock] = useState(false)
+  if (f.identity && !f.identity.passed && !sawIdentityBlock) setSawIdentityBlock(true)
   const [saved, setSaved] = useState<Saved | null>(null)
   // a step reached with Back does not move on by itself (the person is re-reading it)
   const [cameBack, setCameBack] = useState(false)
@@ -385,7 +420,7 @@ export function Tutorial({ decisions, tracks, now, onMenu }: Props) {
         TUTORIAL <b>{idx + 1}</b>/{STEPS.length}
       </button>
     )
-  const v = stepView(step.id, f, nowMs)
+  const v = stepView(step.id, f, nowMs, sawIdentityBlock)
   const last = step.id === 'done'
   return (
     <>

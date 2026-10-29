@@ -12,13 +12,25 @@
 # the dispatch, the missile's release from some 2 to 2.5 km out (rules 20), its flight (some 18 s);
 # and the assessment. About 8 minutes for a person reading at a normal pace.
 #
-# Same fleet, policy, engine and rules as hostile-act-engagement; only the timeline is
-# compressed (sim/scenarios/tutorial.toml): the boat starts 800 m short of its holding point and
-# holds from about 1:00, and it fires on HUNTER 1 from about 1:20 and again every minute to the
-# end, so whenever the person reaches the step that waits for an act, one has come or comes within
-# a minute. The run is 20 minutes for a slow reader. Nothing is fast-forwarded: rate 1, the
-# shipped checks and tiers (no rules or policy change), and nothing nominates for the person (no
-# AI, no timeline fallback).
+# Same platforms, policy, engine and rules as hostile-act-engagement; the timeline is compressed
+# (sim/scenarios/tutorial.toml): the boat starts 800 m short of its holding point and holds from
+# about 1:00, and it fires on HUNTER 1 from about 1:20 and again every minute to the end, so
+# whenever the person reaches the step that waits for an act, one has come or comes within a
+# minute. The run is 20 minutes for a slow reader. Nothing is fast-forwarded: rate 1, the shipped
+# checks and tiers (no rules or policy change), and nothing nominates for the person (no AI, no
+# timeline fallback).
+#
+# Two more differences, so that the boat's identity clears the nomination's target-identity check
+# (0.60) with room to spare for the whole time a person nominates in, not by luck: it runs by day
+# (10:00 local; hostile-act-engagement's clock is 03:00 local, by night), and HUNTER 1 patrols a
+# leg 0.9 to 1.2 km east of the boat, just west of the bridge, instead of 2.0 to 2.5 km east of it
+# beyond the bridge (sim/fleets/tutorial.toml, which gives the measurements). There its panoramic
+# camera identifies the boat at 0.87 to 0.91; it is the only one of ours whose camera always has
+# the boat in view (REAPER 1's points only where its payload manager cues it, and with no order
+# it may not look at the boat for minutes). Measured 2026-10-29 from the first act to 10:00: 0.87
+# or more in each of three runs as now; by night from 2 km, 0.02 to 0.66 and below 0.60 30 % of
+# the time; by day from 2 km, 0.26 to 0.44. The coach card explains a target-identity block if
+# one ever comes (web/src/Tutorial.tsx).
 #
 # Fixed modes (`tutorial = true`; the runner refuses OPERATOR, AI, COSIGNER or REVEAL): live (the
 # person is op-1), no AI, `cosigner = "scripted-pair"` (op-2 and op-3 sign only a nomination op-1
@@ -33,7 +45,7 @@ title = "Tutorial: hostile act to engagement"
 brief = """
 You have the watch at the Golden Gate on a June morning. Intelligence warns of a possible attack on
 our vessels by small craft. Two of ours are on station: HUNTER 1, a sensor ship patrolling the
-channel east of the bridge; and REAPER 1, an armed long-endurance drone loitering high off Lands
+channel just west of the bridge; and REAPER 1, an armed long-endurance drone loitering high off Lands
 End, west of the bridge, its weapons stations loaded. Traffic is normal: ferries, a ship in the
 lane, fishing boats, a sailing yacht.
 
@@ -52,7 +64,7 @@ director = """
 Truth: a small fast boat with no AIS (truth affiliation: hostile) runs in from 800 m west of its
 holding point at 15 m/s from about 0:08 and holds mid-strait at [-122.4950, 37.8120], 1.5 km west
 of the bridge and inside the engagement zone, from about 1:00. At about 1:25 it fires on HUNTER 1,
-patrolling 2 km east of it (an abstract act), and again every minute to the end. Nothing else is
+patrolling 0.9 to 1.2 km east of it (an abstract act), and again every minute to the end. Nothing else is
 hostile.
 What should happen: our sensors observe the first act; the engine attributes it to the boat's track
 at 0.9 or more and declares the track hostile by rule (a loose fix is flagged instead, and the next
@@ -65,18 +77,19 @@ km out, the strike lands some 18 s later, the boat leaves the picture and the as
 What should not: a nomination before the declaration is confirmed (refused by target_declared), a
 signature by the person on their own nomination (refused: the proposer never signs), a scripted
 signature on anything but the person's nomination, or an effect released with a neutral or one of
-ours inside the keep-out (the yacht, the container ship and HUNTER 1 stay clear of it by a
-kilometre or more for the whole 20 minutes).
+ours inside the keep-out (the yacht and the container ship stay clear of it by a kilometre or more
+for the whole 20 minutes, HUNTER 1 by 400 m or more: it patrols 0.9 km or more from the point).
 """
 
 world = "golden-gate"                         # sim/worlds/golden-gate.toml
-fleet = "sim/fleets/hostile-act-engagement.toml"
+fleet = "sim/fleets/tutorial.toml"            # hostile-act-engagement's, HUNTER 1 nearer the boat
 contacts = "sim/scenarios/tutorial.toml"      # hostile-act-engagement's, compressed
 events = []
 policy = "sim/situations/policies/watch.toml" # the shipped tiers and [identification], as
                                               # hostile-act-engagement's
 tidewater = "golden-gate-2026-06"
-at = "2026-06-14T10:00:00Z"
+at = "2026-06-14T17:00:00Z"                   # 10:00 local, by day: the cameras' visible channels
+                                              # see (hostile-act-engagement's 10:00Z is 03:00 local)
 rate = 1
 duration_s = 1200                             # 20 minutes: room for a slow reader
 
@@ -103,8 +116,8 @@ bullets = [
 id = "gate-patrol"
 task = "patrol"
 vehicles = { callsign = "HUNTER 1" }
-route = [[-122.4720, 37.8135], [-122.4720, 37.8250]]
-note = "Opening order: patrol the channel east of the bridge"
+route = [[-122.4850, 37.8130], [-122.4850, 37.8190]]
+note = "Opening order: patrol the channel west of the bridge"
 
 # ---- the timeline: the boat and its acts are scripted in the contacts; these mark them for the
 # situation's log (director's notes: the panel of this blinded run never shows them)

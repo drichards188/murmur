@@ -79,6 +79,9 @@ interface Props {
   onPreview: (p: EngagePreview | null) => void
   /** murmur-12e: the selected option's keep-out explanation, to draw its regions on the map */
   onKeepOuts: (ex: KeepOutExplanation | null) => void
+  /** the latest dry run's checks on the form's target (the selected option's, else the first
+   *  option's), for the tutorial's coach card; display only */
+  onChecks?: (v: { track: string; checks: Check[] } | null) => void
   /** `replaced`: the nomination this one replaced (rejected just before) */
   onNominated: (intentId: number, replaced?: number) => void
   onClose: () => void
@@ -186,7 +189,7 @@ function declShort(t: Track) {
   return `declared by ${d.by}`
 }
 
-export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview, onKeepOuts, onNominated, onClose }: Props) {
+export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview, onKeepOuts, onChecks, onNominated, onClose }: Props) {
   const [operator] = useOperator()
   const auth = useAuth()
   const ops = useOperators()
@@ -332,6 +335,12 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
     onKeepOuts(chosen?.keep_outs ?? null)
   }, [chosen, onKeepOuts])
   useEffect(() => () => onKeepOuts(null), [onKeepOuts])
+  // the target's checks (the same for every platform: declared, identity, recency, uncertainty)
+  const shown = chosen ?? options?.[0] ?? null
+  useEffect(() => {
+    onChecks?.(track && shown ? { track, checks: shown.checks } : null)
+  }, [track, shown, onChecks])
+  useEffect(() => () => onChecks?.(null), [onChecks])
 
   const nowMs = now()
   const t = (tracks?.tracks ?? []).find((x) => x.id === track) ?? null

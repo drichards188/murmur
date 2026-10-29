@@ -764,14 +764,28 @@ def test_the_scripted_pair_signs_the_persons_nomination_through_picture_tokens()
 
 
 def test_the_tutorial_is_live_with_fixed_modes(tmp_path: Path):
-    """The tutorial: hostile-act-engagement's fleet and policy, its own compressed contacts, the
+    """The tutorial: hostile-act-engagement's platforms and policy, its own compressed contacts, the
     person live with no AI and the scripted pair signing; its modes can't be overridden, and no
-    timeline step nominates for the person."""
+    timeline step nominates for the person. By day, with HUNTER 1 patrolling about a kilometre from
+    the boat, so the boat's identity clears the nomination's threshold (sim/fleets/tutorial.toml)."""
     sit = S.load_situation("tutorial")
     hae = S.load_situation("hostile-act-engagement")
     assert sit.tutorial and not hae.tutorial
     assert (sit.operator, sit.ai, sit.cosigner, sit.reveal, sit.rate) == ("live", "none", "scripted-pair", False, 1)
-    assert (sit.fleet, sit.policy) == (hae.fleet, hae.policy) and sit.contacts != hae.contacts
+    assert sit.policy == hae.policy and sit.contacts != hae.contacts
+    # the same platforms in the same order (uid 1 HUNTER 1, the act's victim), REAPER 1 where it is
+    # there; HUNTER 1 spawns on its patrol leg, every point of it 0.85 to 1.3 km from the boat
+    units, hae_units = (tomllib.loads(f.read_text())["unit"] for f in (sit.fleet, hae.fleet))
+    assert [u["platform"] for u in units] == [u["platform"] for u in hae_units] and units[1] == hae_units[1]
+    from eval.storyline import haversine_m
+
+    hold = tomllib.loads(sit.contacts.read_text())["contact"][0]["route"][-1]
+    patrol = next(o for o in sit.orders if o.id == "gate-patrol")
+    spawn = units[0]["spawn"]
+    for p in [*patrol.params["route"], [spawn[1], spawn[0]]]:
+        assert 850 <= haversine_m(*p, *hold) <= 1300, p
+    # by day at the Gate (UTC-7 in June): the cameras' visible channels see
+    assert 9 <= (int(sit.at[11:13]) - 7) % 24 <= 15, sit.at
     assert not [s for s in sit.steps if s.kind in ("engage", "propose", "declare", "flood")], "nothing nominates or declares for the person"
     m = S.resolve_modes(sit)
     assert m["tutorial"] is True and m["scripted_operators"] == ["op-setup", "op-2", "op-3"] and m["agent"] is None
@@ -784,8 +798,6 @@ def test_the_tutorial_is_live_with_fixed_modes(tmp_path: Path):
     assert doc["modes"]["tutorial"] is True and doc["modes"]["cosigner"] == "scripted-pair"
     # the contacts: the boat holds before its first act, and fires every minute to the end
     raw = tomllib.loads(sit.contacts.read_text())
-    from eval.storyline import haversine_m
-
     boat = next(c for c in raw["contact"] if c["affiliation"] == "hostile")
     run_s = sum(haversine_m(*a, *b) for a, b in zip(boat["route"], boat["route"][1:])) / boat["speed_mps"]
     times = [a["at_s"] for a in raw["act"]]

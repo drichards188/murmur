@@ -2,12 +2,12 @@
 // does. The claim: the walk-through advances on what the bridge shows, one step at a time through
 // the engagement chain (a declaration, its confirmation, the person's nomination, both signatures,
 // the impact, the assessment), and says so when the chain goes sideways (an act flagged instead of
-// declared, a nomination that ended without an effect) instead of moving on. Throws on the first
-// failure, prints "tutorial: ok" otherwise.
+// declared, the nomination form blocked on the target's identity, a nomination that ended without
+// an effect) instead of moving on. Throws on the first failure, prints "tutorial: ok" otherwise.
 import type { Intent } from './decisions'
 import type { ObservedAct, Review } from './ident'
 import type { Track } from './tracks'
-import { CONSOLE_OPERATOR, findBoat, HOLD, resumeAt, STEPS, stepDone, type StepId, tutorialFacts } from './tutorial.ts'
+import { CONSOLE_OPERATOR, findBoat, HOLD, identityCheck, resumeAt, STEPS, stepDone, type StepId, tutorialFacts } from './tutorial.ts'
 
 function eq(a: unknown, b: unknown, what: string) {
   const x = JSON.stringify(a)
@@ -73,6 +73,21 @@ const confirmed = { ...ruled, declared: { ...ruled.declared!, confirmed_by: 'op-
 f = facts([ferry, confirmed])
 eq([at(f), f.confirmedBy], ['nominate', 'op-1'], 'confirmed: on to the nomination')
 eq(resumeAt(f), STEPS.findIndex((s) => s.id === 'nominate'), 'a reload after the confirmation resumes at the nomination')
+
+// the nomination form blocks on the target's identity: the card reads the form's own check, says
+// how sure our sensors are against the policy's threshold, and the walk stays on the nomination
+const idCheck = (outcome: 'pass' | 'fail', detail: string) => ({ rule: 'target_identity', uid: null, outcome, detail })
+const recognised = { ...confirmed, identity: { ...confirmed.identity, kind: 'small_craft', level: 'recognise', confidence: 0.58 } } as Track
+const blockedForm = { track: recognised.id, checks: [idCheck('fail', `${recognised.id} identity small_craft at 0.58 is below 0.60`)] }
+f = tutorialFacts([recognised], undefined, undefined, [], 0, [], blockedForm)
+eq([at(f), f.identity], ['nominate', { passed: false, kind: 'small_craft', confidence: 0.58, needed: 0.6, level: 'recognise' }], 'the form blocks on identity: still nominating, and why')
+const clearedForm = { track: recognised.id, checks: [idCheck('pass', `${recognised.id} identity small_fast_boat at 0.93 (>= 0.60), existence 0.99 (>= 0.50), 3 source(s)`)] }
+f = tutorialFacts([recognised], undefined, undefined, [], 0, [], clearedForm)
+eq([at(f), f.identity?.passed, f.identity?.kind, f.identity?.confidence], ['nominate', true, 'small_fast_boat', 0.93], 'the identity clears: nominate')
+f = tutorialFacts([recognised, ferry], undefined, undefined, [], 0, [], { track: ferry.id, checks: blockedForm.checks })
+eq(f.identity, null, 'a form open on another track says nothing about the boat')
+eq(identityCheck([idCheck('fail', 'T-0003 existence confidence 0.41 is below 0.50')]), null, 'an existence shortfall is not an identity block')
+eq(tutorialFacts([recognised], undefined, undefined, [], 0).identity, null, 'no form open: nothing to say')
 
 // only the person's own nomination counts; one that ended without an effect sends them back
 f = facts([confirmed], [engage(7, 'pending_approval', {}, 'agent-scripted')])

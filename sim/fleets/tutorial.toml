@@ -1,0 +1,34 @@
+# The tutorial's fleet (sim/situations/tutorial.toml): hostile-act-engagement's two stand-ins
+# (sim/fleets/hostile-act-engagement.toml), REAPER 1 as there, HUNTER 1 nearer the boat.
+#
+# uids follow the unit order (sim/swarm.py): 1 HUNTER 1, 2 REAPER 1, as in hostile-act-engagement,
+# so the tutorial's contacts name HUNTER 1 by the same uid (the hostile act's victim).
+#
+# Why HUNTER 1 is moved (measured 2026-10-29, the tutorial's own live runs, physical sensing):
+# the nomination's target-identity check needs the boat's identity at 0.60, and the identity is
+# the most specific level our sensors reach, at that level's confidence. HUNTER 1's camera is a
+# fixed panoramic ring (no zoom), the only one of ours that always has the boat in view; REAPER
+# 1's points only where its payload manager cues it, and with no order it may not look at the
+# boat for minutes (by night its wide field detects a small boat from 7,600 m only 10 to 18 % of
+# the time). With HUNTER 1 patrolling 2.0 to 2.5 km east of the boat, by night (as
+# hostile-act-engagement's 03:00 local): the identity fell from 0.98 (detection) to 0.38 when the
+# sonar recognised the boat, held 0.49 to 0.66, dropped to 0.02 for 95 s when the thermal channel
+# identified it, and rose to 0.87 only when REAPER 1 happened to look, at 8:01; below 0.60 30 % of
+# the time from the first act to 10:00. By day from there: 0.26 to 0.44 the whole time (the
+# visible channel identifies it, but only so well from 2 km), REAPER 1 never looking. By day from
+# the leg here, 0.9 to 1.2 km east of the boat just west of the bridge: 0.87 or more from the
+# first act to 10:00 in each of three runs, 1.00 once REAPER 1 looks (at 1:36 and 1:39 in two of
+# them: HUNTER 1's closer fixes cue its camera well). HUNTER 1 stays out of an engagement's
+# keep-out there (the effect radius plus 200 m, and its own growth over the prediction) by some
+# 400 m or more.
+title = "Tutorial: two stand-ins at the Gate, one armed"
+
+[[unit]]
+platform = "seahunter"                 # sensor ship (MUSV): radar 40 km, EO/IR 15 km, AIS 50 km; 1000 h
+sim = "standin"
+spawn = [37.8130, -122.4850, 0, 0]     # west of the bridge, mid-channel, at its patrol leg's south end
+
+[[unit]]
+platform = "mq9b_armed"                # armed MALE ISR/strike: radar 100 km, EO/IR 40 km; 35 h
+sim = "standin"
+spawn = [37.8000, -122.5250, 7600, 0]  # off Lands End, west of the bridge, at its cruise altitude
