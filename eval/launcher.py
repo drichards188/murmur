@@ -14,6 +14,8 @@ scenario at a time when the menu asks:
 - a situation (sim/situations/*.toml): what `make situation NAME=... OPERATOR=... AI=...` runs
   (`eval.situation_run` itself: a fresh station, the opening orders, the AI through the user's
   own CLI, the Situation panel), on the situation's own port block (bridge 9265 and the rest).
+  A situation marked `tutorial = true` is listed with its own modes only (the menu offers it at
+  the top and starts it in one click; the console walks the person through it).
 
 Each runs exactly as its command runs from a terminal, with two differences: `scripts/up.sh`
 starts no console of its own (MURMUR_WEB=0, MURMUR_WEB_PORT the launcher's, so the bridge
@@ -218,7 +220,7 @@ def situation_entry(path: Path, loaded: dict[str, Situation] | None = None) -> d
     name = path.stem
     if not NAME_RE.match(name):
         return None
-    entry: dict[str, Any] = {"id": name, "kind": "situation", "default": False, "title": name, "brief": "", "runnable": False}
+    entry: dict[str, Any] = {"id": name, "kind": "situation", "default": False, "tutorial": False, "title": name, "brief": "", "runnable": False}
     try:
         sit = load_situation(path)
     except SituationError as e:
@@ -252,7 +254,9 @@ def situation_entry(path: Path, loaded: dict[str, Situation] | None = None) -> d
         operator=sit.operator,
         ai=sit.ai,
         operators=operators,
-        ais=list(AI_MODES),
+        # a tutorial runs with its own modes only (the console walks through them)
+        ais=[sit.ai] if sit.tutorial else list(AI_MODES),
+        tutorial=sit.tutorial,
         orders=len(sit.orders),
         steps=len(sit.steps),
         watch=len(sit.watch),

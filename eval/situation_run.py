@@ -66,6 +66,7 @@ from .situation import (
     EngagementChain,
     AUTOPLAY_OPERATOR,
     CONSOLE_OPERATOR,
+    COSIGNERS,
     ENGAGE_OPERATORS,
     OPERATORS,
     SCRIPTED_SETUP,
@@ -103,6 +104,11 @@ PUBLISH_S = 2.0
 SIM_TOKEN_HEADER = "X-Murmur-Sim-Token"
 # the audit events that are a person's (or a script's) decision on an intent
 DECISION_EVENTS = ("approval.at_submission", "approval.granted", "approval.concurred", "approval.rejected")
+# live: the scripted signers a cosigner mode runs, as the status document names them
+LIVE_SIGNERS_MODE = {"scripted": "cosigner", "scripted-pair": "signers"}
+# the scripted pair reads a nomination this long before each signature (EngagementSigners' read_s):
+# a colleague reading the card, so the person sees the two signatures arrive one at a time
+PAIR_READ_S = 8.0
 
 
 class _SessionCloseAccepted(logging.Filter):
@@ -531,7 +537,7 @@ class Runner:
         }
         autoplay = None
         if self.modes["scripted_operators"]:
-            mode = "autoplay" if self.modes["operator"] == "autoplay" else ("cosigner" if self.modes["cosigner"] == "scripted" else "setup")
+            mode = "autoplay" if self.modes["operator"] == "autoplay" else LIVE_SIGNERS_MODE.get(self.modes["cosigner"], "setup")
             autoplay = {
                 "operators": self.modes["scripted_operators"],
                 "mode": mode,
@@ -950,7 +956,8 @@ class Runner:
 
     def scripted(self) -> Any:
         """The autoplay operator (op-auto, the proxy model, with op-2 and op-3 signing
-        engagements) or, live with a scripted cosigner, the cosigner alone; else nothing."""
+        engagements) or, live, the scripted cosigner alone (after the person's signature) or the
+        scripted pair alone (both signatures on a nomination the person made); else nothing."""
         label = f"scripted (situation {self.sit.name}, {self.modes['operator']})"
         if self.modes["operator"] == "autoplay":
             signers = EngagementSigners(self.bridge, list(SCRIPTED_SIGNERS), mode="sign", label=label, log=self.autoplay_log)
@@ -968,6 +975,13 @@ class Runner:
         if self.modes["cosigner"] == "scripted":
             signers = EngagementSigners(self.bridge, list(SCRIPTED_SIGNERS), mode="cosign", label=label, log=self.autoplay_log)
             self.record("cosigner_start", describe=signers.describe())
+            return signers
+        if self.modes["cosigner"] == "scripted-pair":
+            signers = EngagementSigners(
+                self.bridge, list(SCRIPTED_SIGNERS), mode="pair", label=label, log=self.autoplay_log, proposers=[CONSOLE_OPERATOR],
+                read_s=PAIR_READ_S,
+            )
+            self.record("signers_start", describe=signers.describe())
             return signers
         return None
 
@@ -1030,7 +1044,7 @@ class Runner:
             self.set_phase("running", "the situation runs")
             scripted = self.scripted()
             if scripted is not None:
-                name = "the autoplay operator" if self.modes["operator"] == "autoplay" else "the scripted cosigner"
+                name = "the autoplay operator" if self.modes["operator"] == "autoplay" else f"the scripted {LIVE_SIGNERS_MODE[self.modes['cosigner']]}"
                 tasks.append(self.watch_task(name, scripted.run(story_stop)))
             story, _ = self.storyline()
             if story is not None:
@@ -1144,7 +1158,7 @@ class Runner:
             lines.append(f"    intent {i['id']} {i.get('kind')} for vehicles {','.join(str(u) for u in i.get('uids') or [])}: {i.get('state')} (tier {(i.get('policy') or {}).get('rule')}{who})")
             if i.get("rationale"):
                 lines.append(f"      rationale: {str(i['rationale'])[:220]}")
-        if self.modes["operator"] == "autoplay" or self.modes["cosigner"] == "scripted":
+        if self.modes["operator"] == "autoplay" or self.modes["cosigner"] in LIVE_SIGNERS_MODE:
             acts = ("approve", "reject", "sign", "confirm")
             ok = [d for d in self.autoplay_log if d.get("action") in acts and not str(d.get("result") or "").startswith("error")]
             failed = [d for d in self.autoplay_log if d not in ok and d.get("action") in (*acts, "sign_failed", "error")]
@@ -1230,7 +1244,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("name", help="a situation in sim/situations (name or path)")
     ap.add_argument("--operator", choices=["live", "autoplay"], help="who decides at the console (default: the situation's)")
     ap.add_argument("--ai", choices=["claude", "codex", "playbook", "none"], help="the AI watch officer (default: the situation's)")
-    ap.add_argument("--cosigner", choices=["you", "scripted"], help="live mode: who makes an engagement's second signature")
+    ap.add_argument("--cosigner", choices=list(COSIGNERS), help="live mode: who signs an engagement besides you (sim/situations/README.md)")
     ap.add_argument("--reveal", choices=["0", "1"], help="show the director's notes and the timeline to come (default: the situation's)")
     args = ap.parse_args(argv)
     logging.getLogger("mcp.client.streamable_http").addFilter(_SessionCloseAccepted())
@@ -1246,7 +1260,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     runner = Runner(sit, modes, env, pf)
     p = runner.ports
-    cosigner = modes["cosigner"] + (f" ({', '.join(SCRIPTED_SIGNERS)})" if modes["cosigner"] == "scripted" and modes["operator"] == "live" else "")
+    cosigner = modes["cosigner"] + (f" ({', '.join(SCRIPTED_SIGNERS)})" if modes["cosigner"] in LIVE_SIGNERS_MODE and modes["operator"] == "live" else "")
     say(f"{sit.title}: operator {modes['operator']}, AI {modes['ai_label']}, cosigner {cosigner}, reveal {'on' if modes['reveal'] else 'off'}; run {runner.run_id}")
     say(f"scripted ids (not people): {', '.join(modes['scripted_operators']) or 'none'}; {CONSOLE_OPERATOR} is the person at the console")
     if modes.get("evidence_note"):

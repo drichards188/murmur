@@ -26,7 +26,7 @@ goldengate: ## Golden Gate with real tide/current/wind and traffic: tidewater se
 # a situation's settings come from make's command line only: a shell may export NAME or AI for
 # something else
 sit_arg = $(if $(filter command line,$(origin $(1))),$($(1)))
-situation: ## a pre-built situation (sim/situations/README.md): NAME=harbor-watch, OPERATOR=live|autoplay, AI=claude|codex|playbook|none, COSIGNER=you|scripted, REVEAL=0|1; the stack stays up after it: make down
+situation: ## a pre-built situation (sim/situations/README.md): NAME=harbor-watch, OPERATOR=live|autoplay, AI=claude|codex|playbook|none, COSIGNER=you|scripted|scripted-pair, REVEAL=0|1; the stack stays up after it: make down
 	.venv/bin/python -m eval.situation_run $(or $(call sit_arg,NAME),harbor-watch) $(if $(call sit_arg,OPERATOR),--operator $(call sit_arg,OPERATOR)) $(if $(call sit_arg,AI),--ai $(call sit_arg,AI)) $(if $(call sit_arg,COSIGNER),--cosigner $(call sit_arg,COSIGNER)) $(if $(call sit_arg,REVEAL),--reveal $(call sit_arg,REVEAL))
 
 down:    ## stop a stack started with make up (e.g. from another terminal)
@@ -50,8 +50,8 @@ headless: ## headless simulator batch (docs/HEADLESS.md): SITUATION=harbor-watch
 	$(CARGO) build --release -p murmur-headless
 	.venv/bin/python -m eval.headless.batch --no-build $(if $(FAMILIES),--families $(FAMILIES)) $(if $(SITUATION),--situation $(SITUATION)) --seeds $(or $(SEEDS),1-10) $(if $(WORKERS),--workers $(WORKERS)) $(if $(AGENT),--agent $(AGENT))
 
-check:   ## typecheck + lint + glide, sea, coverage, munition, bluf and engageSteps checks (node 22.18+: it runs the .ts directly) + Rust lint and tests + evaluation and watch officer unit tests (stand-in CLIs, no model) + tidewater's tests
-	cd web && npx tsc -b && npx oxlint src && node src/glide.check.ts && node src/sea.check.ts && node src/coverage.check.ts && node src/munition.check.ts && node src/bluf.check.ts && node src/engageSteps.check.ts
+check:   ## typecheck + lint + glide, sea, coverage, munition, bluf, engageSteps and tutorial checks (node 22.18+: it runs the .ts directly) + Rust lint and tests + evaluation and watch officer unit tests (stand-in CLIs, no model) + tidewater's tests
+	cd web && npx tsc -b && npx oxlint src && node src/glide.check.ts && node src/sea.check.ts && node src/coverage.check.ts && node src/munition.check.ts && node src/bluf.check.ts && node src/engageSteps.check.ts && node src/tutorial.check.ts
 	.venv/bin/python -m py_compile sim/swarm.py sim/tests/*.py scripts/*.py agents/*.py agents/watch/*.py agents/playbook/*.py agents/playbook/plays/*.py agents/tests/*.py eval/*.py eval/tests/*.py eval/headless/*.py eval/headless/v2/*.py eval/headless/v3/*.py eval/headless/tests/*.py
 	.venv/bin/python -m pytest -q eval/tests
 	.venv/bin/python -m pytest -q agents/tests

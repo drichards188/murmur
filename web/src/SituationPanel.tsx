@@ -50,12 +50,14 @@ export interface SituationStatus {
     operator: 'live' | 'autoplay'
     ai: 'claude' | 'codex' | 'playbook' | 'none'
     ai_label: string
-    cosigner: 'you' | 'scripted'
+    cosigner: 'you' | 'scripted' | 'scripted-pair'
     console_operator: string
     autoplay_operator?: string | null
     scripted_operators: string[]
     /** set when what the AI did is no evidence about it (a revealed run with a model AI) */
     evidence_note?: string | null
+    /** the console's guided tutorial runs over this situation (Tutorial.tsx) */
+    tutorial?: boolean
   }
   phase: string
   phase_detail: string
@@ -74,7 +76,7 @@ export interface SituationStatus {
   }
   autoplay: null | {
     operators: string[]
-    mode: 'autoplay' | 'cosigner' | 'setup'
+    mode: 'autoplay' | 'cosigner' | 'signers' | 'setup'
     /** an intent's approval, rejection or signature; or (`declaration`, `track`) a rule
      * declaration's confirmation; `granted`: an approval by the setting that grants every AI request */
     decisions: {
@@ -109,6 +111,7 @@ const STALE_S = 10
 const DECIDES: Record<string, string> = {
   autoplay: 'autoplay: not people',
   cosigner: 'cosign only, never first',
+  signers: "sign only your nominations: scripts, not people",
   setup: 'live: setup and timeline only, they never decide',
 }
 
@@ -139,7 +142,8 @@ function who(i: Intent) {
 
 export function SituationPanel({ decisions }: { decisions: Decisions | null }) {
   const { data } = usePoll<Envelope>('/api/situation', 2000)
-  const [open, setOpen] = useState(true)
+  // open unless the tutorial runs (its coach card walks the person; the panel is a click away)
+  const [openSet, setOpen] = useState<boolean | null>(null)
   const [showAll, setShowAll] = useState(false)
   // this console's clock (s), ticking each second: the situation clock is extrapolated from it
   const [nowS, setNowS] = useState(() => Date.now() / 1000)
@@ -162,6 +166,7 @@ export function SituationPanel({ decisions }: { decisions: Decisions | null }) {
     setAnchor({ posts, elapsed: postedElapsed, at: nowS })
   }
   if (!s) return null
+  const open = openSet ?? !s.modes.tutorial
   const sincePost = anchor ? Math.max(0, nowS - anchor.at) : 0
   const stale = (s.phase === 'running' || s.phase === 'starting') && sincePost > STALE_S
   const running = s.phase === 'running' && !stale
@@ -208,6 +213,11 @@ export function SituationPanel({ decisions }: { decisions: Decisions | null }) {
         {s.modes.operator === 'live' && s.modes.cosigner === 'scripted' && (
           <span className="sit-mode scripted" title="A scripted operator adds an engagement's second signature, never the first">
             cosigner: scripted
+          </span>
+        )}
+        {s.modes.operator === 'live' && s.modes.cosigner === 'scripted-pair' && (
+          <span className="sit-mode scripted" title="op-2 and op-3, scripts, sign a nomination you made: a proposer never signs their own">
+            signers: op-2, op-3 (scripted)
           </span>
         )}
         {s.reveal && <span className="sit-mode reveal" title="Director's notes and the timeline to come are shown">revealed</span>}

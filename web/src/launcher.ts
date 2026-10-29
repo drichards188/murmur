@@ -17,6 +17,9 @@ export interface Scenario {
   id: string
   kind: 'open_world' | 'situation'
   default: boolean
+  /** the guided tutorial (a situation with `tutorial = true`): offered apart, at the top of the
+   *  menu, started with its own modes in one click; the console walks through it (Tutorial.tsx) */
+  tutorial?: boolean
   title: string
   brief: string
   /** a headline and a few bullets for the brief (a situation's `[summary]`), when it has one */

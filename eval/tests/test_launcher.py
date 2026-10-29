@@ -36,7 +36,8 @@ def test_the_open_world_comes_first_then_the_situations(menu):
     files = {p.stem for p in S.SITUATIONS.glob("*.toml")}
     assert {e["id"] for e in entries[1:]} == files
     runnable = [e["id"] for e in entries[1:] if e["runnable"]]
-    assert runnable == ["harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition"]
+    assert runnable == ["harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition", "tutorial"]
+    assert [e["id"] for e in entries if e.get("tutorial")] == ["tutorial"], "one tutorial, which the menu offers apart"
     assert sorted(loaded) == runnable
     # every runnable one before the rest, each of the rest saying why not
     kinds = [e["runnable"] for e in entries]
@@ -123,6 +124,26 @@ def test_a_start_request_names_only_the_menus_scenarios_and_options(menu):
     for body in bad:
         with pytest.raises(L.BadRequest):
             v(body)
+
+
+def test_the_tutorial_starts_with_its_own_modes_only(menu):
+    """The menu's Tutorial starts it in one click with the file's modes (you live, no AI, op-2 and
+    op-3 signing your nomination), as `make situation NAME=tutorial` does; nothing else is offered
+    or taken, so the console's walk-through always meets the run it was written for."""
+    entries, loaded = menu
+    tut = next(e for e in entries if e["id"] == "tutorial")
+    assert tut["runnable"] and tut["tutorial"] and (tut["operator"], tut["ai"]) == ("live", "none")
+    assert tut["operators"] == ["live"] and tut["ais"] == ["none"]
+    assert (tut["vehicles"], tut["sitl"], tut["duration_s"]) == (2, 0, 1200.0)
+    v = lambda body: L.validate_start(body, entries, loaded)  # noqa: E731
+    choice = v({"scenario": "tutorial"})
+    assert choice == L.Choice("tutorial", "situation", "live", "none")
+    assert v({"scenario": "tutorial", "operator": "live", "ai": "none"}) == choice
+    assert L.command(choice, python="/py") == ["/py", "-m", "eval.situation_run", "tutorial", "--operator", "live", "--ai", "none"]
+    for body in ({"scenario": "tutorial", "operator": "autoplay"}, {"scenario": "tutorial", "ai": "claude"}, {"scenario": "tutorial", "ai": "playbook"}):
+        with pytest.raises(L.BadRequest):
+            v(body)
+    assert not any(e.get("tutorial") for e in entries if e["id"] != "tutorial")
 
 
 def test_a_post_from_another_origin_is_refused():

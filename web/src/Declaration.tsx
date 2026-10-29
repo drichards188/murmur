@@ -107,12 +107,12 @@ export function DeclarationBlock({
       {ask === 'none' && (
         <div className="dc-actions">
           {unconfirmed && (
-            <button type="button" className="dc-btn" disabled={busy} onClick={() => setAsk('confirm')}>
+            <button type="button" className="dc-btn" disabled={busy} onClick={() => setAsk('confirm')} data-tutorial="confirm-declaration">
               Confirm {aff}…
             </button>
           )}
           {!unconfirmed && d.affiliation === 'hostile' && onEngage && (
-            <button type="button" className="dc-btn engage" onClick={onEngage}>
+            <button type="button" className="dc-btn engage" onClick={onEngage} data-tutorial="nominate">
               Nominate an engagement…
             </button>
           )}

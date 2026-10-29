@@ -82,7 +82,7 @@ function DeclarationItem({ d, now, onDone, onTrack }: { d: ReviewDeclaration; no
     })
   }
   return (
-    <article className="ix-card rv-card rv-decl" aria-label={`Rule declaration ${d.id} on ${d.track}`}>
+    <article className="ix-card rv-card rv-decl" aria-label={`Rule declaration ${d.id} on ${d.track}`} data-tutorial="review-declaration" data-track-id={d.track}>
       <header>
         <b>{d.track}</b> <span className="rv-tag">BY RULE</span> <span className="muted">{d.id}, {age(now, d.t)}</span>
         {onTrack && (

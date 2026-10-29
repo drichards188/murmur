@@ -139,6 +139,30 @@ html:has(.mm), html:has(.mm) body { overflow: hidden; }
 .mm-card-state.ended { color: var(--warn); }
 .mm-card.now.live:not(.sel) { border-color: #2c5a40; }
 
+/* the tutorial, apart at the top of the list: amber-edged, with its own Start. Until this browser
+   has started it once (`flash`) it glows and pulses; with reduced motion the glow stays still (the
+   rule at the end stops every animation in the menu) */
+.mm-tut {
+  position: relative; display: flex; flex-direction: column; gap: 8px; margin: 0 0 4px; padding: 14px 16px 16px;
+  background: linear-gradient(180deg, #1e180e, var(--mm-card) 70%); border: 1px solid rgba(255, 179, 71, 0.42); border-radius: 2px;
+  animation: mm-in 0.55s var(--mm-ease) 0.25s both;
+}
+.mm-tut::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--accent); }
+.mm-tut.flash { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(255, 179, 71, 0.35), 0 0 26px rgba(255, 179, 71, 0.3); animation: mm-in 0.55s var(--mm-ease) 0.25s both, mm-tut-pulse 2.2s ease-in-out 0.9s infinite; }
+.mm-tut-head { display: flex; align-items: center; gap: 10px; }
+.mm-tut-k { font: 600 11px var(--mono); letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); }
+.mm-tut-time { margin-left: auto; font: 11px var(--mono); color: #a99877; }
+.mm-tut-title { margin: 0; font: 600 17px/1.2 var(--sans); color: #e8edf2; }
+.mm-tut-text { margin: 0; font-size: 13px; line-height: 1.5; color: #b9c3cd; }
+.mm-tut-go { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 4px; }
+.mm-tut-start { padding: 9px 18px; font-size: 14px; letter-spacing: 0.04em; }
+.mm-tut-more { padding: 8px 12px; font-size: 12.5px; }
+.mm-tut .mm-confirm { margin-top: 4px; }
+@keyframes mm-tut-pulse {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(255, 179, 71, 0.35), 0 0 18px rgba(255, 179, 71, 0.18); }
+  50% { box-shadow: 0 0 0 3px rgba(255, 179, 71, 0.55), 0 0 36px rgba(255, 179, 71, 0.45); }
+}
+
 /* a fleet by domain: a row each, air on top */
 .mm-strata { flex: none; display: inline-flex; flex-direction: column; gap: 4px; padding: 2px 0; }
 .mm-stratum { display: flex; align-items: center; gap: 10px; color: var(--c); }

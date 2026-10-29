@@ -278,7 +278,7 @@ export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reveal, collapsed])
   return (
-    <aside className={`tk ${collapsed ? 'collapsed' : ''}`} aria-label="Tracks">
+    <aside className={`tk ${collapsed ? 'collapsed' : ''}`} aria-label="Tracks" data-tutorial="tracks">
       <header className="tk-top">
         <h2>Tracks</h2>
         <TrackBadges tracks={tracks} now={now} />
@@ -300,7 +300,7 @@ export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus
         )}
         {!!tracks?.lost?.length && <p className="tk-note">Red rings on the map show the possible area of a lost hostile contact. They remain in engagement keep-out checks after the contact leaves sensor view.</p>}
         {list.map((t) => (
-          <div key={t.id} data-track-id={t.id} className={flash === t.id ? 'tk-flash' : undefined}>
+          <div key={t.id} data-track-id={t.id} data-tutorial="track-row" className={flash === t.id ? 'tk-flash' : undefined}>
             <Row t={t} nowMs={nowMs} staleAfterS={staleAfterS} sel={selected === t.id} onClick={() => onSelect(selected === t.id ? null : t.id)} />
             {selected === t.id && <Detail t={t} nowMs={nowMs} now={now} staleAfterS={staleAfterS} vehicles={vehicles} onFocus={() => onFocus(t)} onEngage={onEngage ? () => onEngage(t.id) : undefined} />}
           </div>

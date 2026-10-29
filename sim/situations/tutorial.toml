@@ -1,0 +1,136 @@
+# Tutorial: the engagement decision chain, walked step by step (sim/situations/README.md).
+#   make situation NAME=tutorial          (the main menu's Tutorial starts the same)
+#
+# Hostile act to engagement with the dead time cut out and the person making every human
+# decision, for someone who has never used the console. The console's coach card
+# (web/src/Tutorial.tsx) walks them through it as it happens and advances on what the bridge
+# shows: the map and the Tracks drawer; an observed hostile act and the engine's declaration by
+# rule (rules 9); their confirmation of it in the Review list (the threat designation); their own
+# nomination of an engagement with REAPER 1 in the nomination form (the dry run, the keep-out
+# explanation, radius, fallback, rationale); the two signatures, by op-2 and op-3, scripts standing
+# in for two other operators (a proposer never signs their own nomination, so the person cannot);
+# the dispatch, the missile's release from some 2 to 2.5 km out (rules 20), its flight (some 18 s);
+# and the assessment. About 8 minutes for a person reading at a normal pace.
+#
+# Same fleet, policy, engine and rules as hostile-act-engagement; only the timeline is
+# compressed (sim/scenarios/tutorial.toml): the boat starts 800 m short of its holding point and
+# holds from about 1:00, and it fires on HUNTER 1 from about 1:20 and again every minute to the
+# end, so whenever the person reaches the step that waits for an act, one has come or comes within
+# a minute. The run is 20 minutes for a slow reader. Nothing is fast-forwarded: rate 1, the
+# shipped checks and tiers (no rules or policy change), and nothing nominates for the person (no
+# AI, no timeline fallback).
+#
+# Fixed modes (`tutorial = true`; the runner refuses OPERATOR, AI, COSIGNER or REVEAL): live (the
+# person is op-1), no AI, `cosigner = "scripted-pair"` (op-2 and op-3 sign only a nomination op-1
+# made, each looking at the engine's picture first and reading the nomination again before it
+# signs; never an agent's or a script's nomination). Their notes say "scripted", and the panel and
+# the summary list them: the run is a training run, never evidence about people.
+#
+# Clock: every `at_s` here, like the contacts' `start_s` and acts' `at_s`, counts from the stack's
+# start (the link emulator's); the contacts come a few seconds later. The fleet is ready and on
+# its opening order some 10 to 30 s in.
+title = "Tutorial: hostile act to engagement"
+brief = """
+You have the watch at the Golden Gate on a June morning. Intelligence warns of a possible attack on
+our vessels by small craft. Two of ours are on station: HUNTER 1, a sensor ship patrolling the
+channel east of the bridge; and REAPER 1, an armed long-endurance drone loitering high off Lands
+End, west of the bridge, its weapons stations loaded. Traffic is normal: ferries, a ship in the
+lane, fishing boats, a sailing yacht.
+
+The opening order comes from the setup script (op-setup, not a person) and goes out by policy. An
+armed platform gets no opening order: every order for one waits for a person.
+
+The rules of engagement authorize an effect against a contact declared hostile, inside the
+engagement zone west of the bridge, clear of every no-strike area and of anyone we protect. A
+track is declared hostile by an operator, or by the engine's rule when our sensors observe a
+hostile act against one of ours clearly attributed to it; an operator confirms or revokes such a
+declaration, and until it is confirmed no engagement can be nominated on it. Any engagement needs
+two operators with engagement authority, neither of them its proposer. In this tutorial you
+confirm and you nominate; op-2 and op-3, two scripted operators standing in for colleagues, sign.
+"""
+director = """
+Truth: a small fast boat with no AIS (truth affiliation: hostile) runs in from 800 m west of its
+holding point at 15 m/s from about 0:08 and holds mid-strait at [-122.4950, 37.8120], 1.5 km west
+of the bridge and inside the engagement zone, from about 1:00. At about 1:25 it fires on HUNTER 1,
+patrolling 2 km east of it (an abstract act), and again every minute to the end. Nothing else is
+hostile.
+What should happen: our sensors observe the first act; the engine attributes it to the boat's track
+at 0.9 or more and declares the track hostile by rule (a loose fix is flagged instead, and the next
+act a minute later is another chance); the person confirms the declaration in the Review list (or
+on the track's card), opens the nomination form from the track's card, picks REAPER 1 (some 35 s
+away at 90 m/s; a fixed wing takes fallback return), reads the checks and nominates; op-2 and op-3
+sign within seconds; REAPER 1 is dispatched and the engine releases its missile from some 2 to 2.5
+km out, the strike lands some 18 s later, the boat leaves the picture and the assessment reads
+"ceased" some 15 s after.
+What should not: a nomination before the declaration is confirmed (refused by target_declared), a
+signature by the person on their own nomination (refused: the proposer never signs), a scripted
+signature on anything but the person's nomination, or an effect released with a neutral or one of
+ours inside the keep-out (the yacht, the container ship and HUNTER 1 stay clear of it by a
+kilometre or more for the whole 20 minutes).
+"""
+
+world = "golden-gate"                         # sim/worlds/golden-gate.toml
+fleet = "sim/fleets/hostile-act-engagement.toml"
+contacts = "sim/scenarios/tutorial.toml"      # hostile-act-engagement's, compressed
+events = []
+policy = "sim/situations/policies/watch.toml" # the shipped tiers and [identification], as
+                                              # hostile-act-engagement's
+tidewater = "golden-gate-2026-06"
+at = "2026-06-14T10:00:00Z"
+rate = 1
+duration_s = 1200                             # 20 minutes: room for a slow reader
+
+tutorial = true                               # the console's walk-through; these modes are fixed
+operator = "live"
+ai = "none"
+cosigner = "scripted-pair"                    # op-2 and op-3 sign the person's nomination
+reveal = false
+seed = 1
+
+[summary]
+headline = "A guided walk through the engagement chain: you confirm the threat and nominate; two scripted colleagues sign."
+bullets = [
+  "About 8 minutes, step by step, with a coach card on the console.",
+  "A fast boat fires on one of ours; the engine declares it hostile by rule, and you confirm it.",
+  "You nominate an engagement with REAPER 1 in the nomination form and read its checks.",
+  "op-2 and op-3 (scripts) sign: a proposer never signs their own nomination.",
+  "Then the dispatch, the missile's release and flight, and the assessment.",
+]
+
+# ---- the opening order, once the fleet is ready: the setup script's (op-setup), by policy; none
+# for REAPER 1, armed, which loiters high where it spawns off Lands End
+[[order]]
+id = "gate-patrol"
+task = "patrol"
+vehicles = { callsign = "HUNTER 1" }
+route = [[-122.4720, 37.8135], [-122.4720, 37.8250]]
+note = "Opening order: patrol the channel east of the bridge"
+
+# ---- the timeline: the boat and its acts are scripted in the contacts; these mark them for the
+# situation's log (director's notes: the panel of this blinded run never shows them)
+[[step]]
+id = "boat-runs-in"
+at_s = 10
+kind = "note"
+text = "A fast boat without AIS runs in to its holding point west of the bridge (truth: hostile)"
+director = true
+
+[[step]]
+id = "boat-fires"
+at_s = 85
+kind = "note"
+text = "The fast boat fires on HUNTER 1 (truth; again every minute)"
+director = true
+
+# ---- what to watch for, in the Situation panel (the coach card walks the person through it)
+[[watch]]
+at_s = 0
+headline = "Tutorial: follow the coach card"
+bullets = ["It advances as things happen", "Next and Back move through the reading steps"]
+text = "The coach card at the map's bottom left walks you through the engagement chain. It advances on what the bridge shows; Next and Back move through the steps you only read."
+
+[[watch]]
+at_s = 1080
+headline = "Two minutes left"
+bullets = ["The stack stays up after the end, until you end it from the menu"]
+text = "Two minutes left. The stack stays up after the end for inspection, until you end it from the menu (or make down)."

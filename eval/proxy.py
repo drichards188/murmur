@@ -66,8 +66,11 @@ and quotes its token, never the proposer, never twice, only while the engine's l
 of the nomination passes its checks. It never refuses: a script, not a judgment, and every
 note it leaves says so. A `ProxyOperator` given signers leaves engagement cards to them (a
 plain approve is refused for an engagement anyway). Situations (`sim/situations/`) run them
-in autoplay, or as the cosigner of a person at the console (`mode = "cosign"`: never the first
-signature); the evaluation's arms do not use them yet (`eval/engage.py`).
+in autoplay, as the cosigner of a person at the console (`mode = "cosign"`: never the first
+signature), or as the two signers of a nomination the person at the console made (`mode =
+"pair"`: the tutorial's, where a proposer may never sign their own nomination; they sign
+only a nomination one of `proposers` made, never an agent's or a script's); the evaluation's
+arms do not use them yet (`eval/engage.py`).
 """
 
 from __future__ import annotations
@@ -419,7 +422,9 @@ class EngagementSigners:
     """Scripted engagement signers (see the module docstring). `operators` are distinct ids
     with engagement authority, tried in order. `mode = "sign"` supplies every signature the
     tier needs; `mode = "cosign"` signs only after someone who is not one of them signed
-    first, so a person at the console always makes the first signature. On a bridge that
+    first, so a person at the console always makes the first signature; `mode = "pair"`
+    supplies every signature, but only on a nomination whose proposer is one of `proposers`
+    (the person at the console), never on one an agent or a script made. On a bridge that
     authenticates each operator must be logged in on `bridge` and its step-up password given
     in `passwords`; on a dev bridge the header names it."""
 
@@ -433,13 +438,18 @@ class EngagementSigners:
         period_s: float = 3.0,
         passwords: dict[str, str] | None = None,
         log: list[dict[str, Any]] | None = None,
+        proposers: list[str] | None = None,
     ):
-        if mode not in ("sign", "cosign"):
-            raise ValueError("mode must be sign or cosign")
+        if mode not in ("sign", "cosign", "pair"):
+            raise ValueError("mode must be sign, cosign or pair")
         if not operators or len(set(operators)) != len(operators):
             raise ValueError("engagement signers are distinct operators")
-        if mode == "sign" and len(operators) < 2:
+        if mode in ("sign", "pair") and len(operators) < 2:
             raise ValueError("signing an engagement alone takes two distinct operators")
+        if mode == "pair" and (not proposers or set(proposers) & set(operators)):
+            raise ValueError("pair signs only nominations of named proposers, none of them a signer")
+        if mode != "pair" and proposers:
+            raise ValueError("proposers is pair mode's")
         self.bridge = bridge
         self.operators = list(operators)
         self.mode = mode
@@ -447,12 +457,16 @@ class EngagementSigners:
         self.read_s = read_s
         self.period_s = period_s
         self.passwords = dict(passwords or {})
+        self.proposers = list(proposers or [])
         self.decisions: list[dict[str, Any]] = log if log is not None else []
         # intent -> what was said last, so a waiting nomination is recorded once per reason
         self._said: dict[int, str] = {}
 
     def describe(self) -> dict[str, Any]:
-        return {"operators": self.operators, "mode": self.mode, "label": self.label, "read_s": self.read_s, "scripted": True}
+        out = {"operators": self.operators, "mode": self.mode, "label": self.label, "read_s": self.read_s, "scripted": True}
+        if self.proposers:
+            out["proposers"] = self.proposers
+        return out
 
     def _record(self, rec: dict[str, Any]) -> None:
         self.decisions.append({"t": time.time(), **rec})
@@ -482,11 +496,16 @@ class EngagementSigners:
     def next_signer(self, view: dict[str, Any], source: dict[str, Any]) -> tuple[str | None, str]:
         """Who of these operators signs next on this nomination (the engine's `engage` view),
         or None and why not (pure, for tests). A cosigner signs only on a plan a signer who is
-        not one of them froze, and at most once per nomination."""
+        not one of them froze, and at most once per nomination; a pair signs only a nomination one
+        of its proposers made."""
         needed = int(view.get("approvers_needed") or 2)
         signed = list(view.get("signed") or [])
         if len(signed) >= needed:
             return None, "every signature it needs is given"
+        proposer = view.get("proposer") or (source.get("id") if source.get("kind") == "human" else None)
+        if self.mode == "pair" and proposer not in self.proposers:
+            who = proposer or f"{source.get('kind') or 'an agent'} {source.get('id') or ''}".strip()
+            return None, f"the scripted pair signs only a nomination {' or '.join(self.proposers)} made, not {who}'s"
         if self.mode == "cosign":
             if not any(s not in self.operators for s in signed):
                 return None, "waiting for a person to sign first (the scripted cosigner never makes the first signature)"
@@ -495,7 +514,6 @@ class EngagementSigners:
                 return None, "no plan a person froze: the scripted cosigner signs only a plan a person signed first"
             if any(s in self.operators for s in signed):
                 return None, "the scripted cosigner signs once per nomination"
-        proposer = view.get("proposer") or (source.get("id") if source.get("kind") == "human" else None)
         eligible = view.get("eligible") or view.get("engage_operators")
         for op in self.operators:
             if op in signed or op == proposer:

@@ -102,7 +102,15 @@ export function Menu({ state, received, lost, onUpdate, onReturn }: MenuProps) {
   const scenarios = state.scenarios
   const startable = scenarios.filter((s) => s.runnable)
   const openWorld = startable.filter((s) => s.kind === 'open_world')
-  const situations = startable.filter((s) => s.kind === 'situation')
+  // the tutorial is offered apart, at the top; the rest of the situations below the open world
+  const tutorial = startable.find((s) => s.tutorial)
+  // whether this browser has started the tutorial once: the offer pulses until it has
+  const [tutSeen, setTutSeen] = useState(tutorialSeen)
+  const tutStarted = () => {
+    markTutorialSeen()
+    setTutSeen(true)
+  }
+  const situations = startable.filter((s) => s.kind === 'situation' && !s.tutorial)
   const others = scenarios.filter((s) => !s.runnable)
   // chosen: the scenario running, else the default (the open world)
   const [selId, setSelId] = useState(() => (isActive(cur) ? cur.scenario : (scenarios.find((s) => s.default)?.id ?? scenarios[0]?.id)))
@@ -227,6 +235,7 @@ export function Menu({ state, received, lost, onUpdate, onReturn }: MenuProps) {
               <p className="mm-pitch">One operator over autonomous vehicles in the air, on the ground, on and under the water: built to measure whether human judgment over consequential decisions stays meaningful.</p>
             </div>
             <nav className="mm-list" aria-label="Scenarios" onKeyDown={onListKey}>
+              {tutorial && <TutorialOffer s={tutorial} cur={cur} seen={tutSeen} onStarted={tutStarted} onUpdate={onUpdate} onReturn={onReturn} onDetails={() => setSelId(tutorial.id)} />}
               <h2 className="mm-h">Open world</h2>
               <div className="mm-cards">{openWorld.map(card)}</div>
               <h2 className="mm-h">
@@ -245,11 +254,120 @@ export function Menu({ state, received, lost, onUpdate, onReturn }: MenuProps) {
           </div>
           <div className="mm-right">
             {cur && <Now key={cur.id} launch={cur} now={now} onUpdate={onUpdate} onReturn={onReturn} />}
-            {sel && <Detail key={sel.id} s={sel} cur={cur} aiCli={state.ai_cli} onUpdate={onUpdate} onReturn={onReturn} />}
+            {sel && <Detail key={sel.id} s={sel} cur={cur} aiCli={state.ai_cli} onUpdate={onUpdate} onReturn={onReturn} onStarted={sel.tutorial ? tutStarted : undefined} />}
           </div>
         </div>
       </div>
     </div>
+  )
+}
+
+// ---- the tutorial: offered first, flashing until it has been started once ------------------------
+
+/** this browser's mark that the tutorial was started once (the menu stops flashing it); a storage
+ *  that can't be read counts as never started, so the offer flashes */
+const TUTORIAL_SEEN_KEY = 'murmur.tutorial.started'
+
+function tutorialSeen(): boolean {
+  try {
+    return window.localStorage.getItem(TUTORIAL_SEEN_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function markTutorialSeen() {
+  try {
+    window.localStorage.setItem(TUTORIAL_SEEN_KEY, '1')
+  } catch {
+    // no storage: it keeps flashing, which only says "start here"
+  }
+}
+
+/** The tutorial at the top of the list, apart from the scenarios: one click starts it with its own
+ *  modes (you live, no AI, op-2 and op-3 signing); a guided walk-through in the console follows it
+ *  (Tutorial.tsx). It pulses until this browser has started it once (a still highlight with
+ *  reduced motion). */
+function TutorialOffer({
+  s,
+  cur,
+  seen,
+  onStarted,
+  onUpdate,
+  onReturn,
+  onDetails,
+}: {
+  s: Scenario
+  cur: Launch | null
+  seen: boolean
+  onStarted: () => void
+  onUpdate: (c: Launch | null) => void
+  onReturn?: () => void
+  onDetails: () => void
+}) {
+  const [confirm, setConfirm] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const running = isActive(cur) ? cur : null
+  const mine = running?.scenario === s.id ? running : null
+  const start = async (replace: boolean) => {
+    setBusy(true)
+    setError(null)
+    try {
+      onUpdate(await startScenario({ scenario: s.id, operator: s.operator, ai: s.ai, replace }))
+      onStarted()
+      setConfirm(false)
+    } catch (e) {
+      setError((e as Error).message)
+    }
+    setBusy(false)
+  }
+  return (
+    <section className={`mm-tut${seen ? '' : ' flash'}`} aria-label="Tutorial" data-tutorial="menu-tutorial">
+      <div className="mm-tut-head">
+        <span className="mm-tut-k">Tutorial</span>
+        {!seen && <span className="mm-tag">Start here</span>}
+        <span className="mm-tut-time">about 8 min, guided</span>
+      </div>
+      <h2 className="mm-tut-title">Your first engagement, step by step</h2>
+      <p className="mm-tut-text">
+        A fast boat fires on one of ours. You confirm the threat, nominate a strike by an armed drone, then watch two colleagues sign it, the missile fly and the
+        assessment come in. A coach card in the console walks you through each step.
+      </p>
+      {confirm && running ? (
+        <div className="mm-confirm" role="alertdialog" aria-label="End the running scenario first">
+          <span>
+            {running.title} is {running.stage === 'ended' ? 'still up' : 'running'}. End it and start the tutorial?
+          </span>
+          <button className="primary" disabled={busy} onClick={() => start(true)}>
+            {busy ? 'Starting…' : 'End it and start'}
+          </button>
+          <button className="ghost" disabled={busy} onClick={() => setConfirm(false)}>
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <div className="mm-tut-go">
+          {mine ? (
+            mine.stack_up && onReturn ? (
+              <button className="primary mm-tut-start" onClick={onReturn}>
+                Return to the tutorial
+              </button>
+            ) : (
+              <span className="mm-note">{mine.stage === 'stopping' ? 'Ending: see the right.' : 'Starting: its progress is on the right.'}</span>
+            )
+          ) : (
+            <button className="primary mm-tut-start" disabled={busy || running?.stage === 'stopping'} onClick={() => (running ? setConfirm(true) : start(false))}>
+              {busy ? 'Starting…' : 'Start the tutorial'}
+            </button>
+          )}
+          <button className="ghost mm-tut-more" onClick={onDetails}>
+            What it runs
+          </button>
+        </div>
+      )}
+      {error && <p className="mm-fail">{error}</p>}
+    </section>
   )
 }
 
@@ -412,12 +530,15 @@ function Detail({
   aiCli,
   onUpdate,
   onReturn,
+  onStarted,
 }: {
   s: Scenario
   cur: Launch | null
   aiCli: Record<string, boolean>
   onUpdate: (c: Launch | null) => void
   onReturn?: () => void
+  /** a start that went through (the tutorial's: the menu stops flashing it) */
+  onStarted?: () => void
 }) {
   const running = isActive(cur) ? cur : null
   // the situation's own defaults, or what the run of it now was started with
@@ -435,6 +556,7 @@ function Detail({
     setError(null)
     try {
       onUpdate(await startScenario({ scenario: s.id, ...(situation ? { operator, ai } : {}), replace }))
+      onStarted?.()
       setConfirm(false)
     } catch (e) {
       setError((e as Error).message)
@@ -445,7 +567,7 @@ function Detail({
   return (
     <section id="mm-detail" className={`mm-detail mm-hud${s.runnable ? '' : ' off'}`} aria-label={s.title}>
       <div className="mm-kicker">
-        <span>{situation ? 'Situation' : 'Open world'}</span>
+        <span>{s.tutorial ? 'Tutorial' : situation ? 'Situation' : 'Open world'}</span>
         {s.default && <span className="mm-tag">Default</span>}
         {s.cli && <code title="The same from a terminal">{s.cli}</code>}
       </div>

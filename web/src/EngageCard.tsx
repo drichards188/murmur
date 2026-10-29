@@ -664,6 +664,8 @@ export function EngageCard({ intent: i, vehicles, now, selected, onFocus, onDone
   return (
     <article
       className={`ix-card eg-card ${selected ? 'sel' : ''} ${worse.length || lapses ? 'eg-warn' : ''}`}
+      data-tutorial="engage-card"
+      data-intent-id={i.id}
       tabIndex={0}
       onClick={onFocus}
       onKeyDown={(e) => {
@@ -891,7 +893,7 @@ function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardPr
   }
   const lapses = (i.engage?.lapsed?.length ?? 0) > 0
   return (
-    <article className={`ix-card eg-run ${i.state} ${selected ? 'sel' : ''} ${lapses ? 'eg-warn' : ''}`} tabIndex={0} onClick={onFocus}>
+    <article className={`ix-card eg-run ${i.state} ${selected ? 'sel' : ''} ${lapses ? 'eg-warn' : ''}`} tabIndex={0} onClick={onFocus} data-tutorial="engage-run" data-intent-id={i.id}>
       <header className="ix-head">
         <strong className="ix-kind eg-kind">ENGAGE</strong>
         <span className="ix-id">i{i.id}</span>

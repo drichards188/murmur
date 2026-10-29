@@ -66,7 +66,7 @@ export function InboxButton({ decisions, open, onClick, hiddenAlerts }: { decisi
   const parts = [`${pending} pending approval${pending === 1 ? '' : 's'}`, `${high} high alert${high === 1 ? '' : 's'}`, `${medium} medium alert${medium === 1 ? '' : 's'}`, `${review} for review (not blocking)`]
   if (info > 0) parts.push(`${info} for information`)
   return (
-    <button className={`ghost platforms-btn ix-btn ${open ? 'on' : ''}`} onClick={onClick} title={parts.join(', ')} aria-label={`Inbox: ${parts.join(', ')}`}>
+    <button data-tutorial="inbox-button" className={`ghost platforms-btn ix-btn ${open ? 'on' : ''}`} onClick={onClick} title={parts.join(', ')} aria-label={`Inbox: ${parts.join(', ')}`}>
       Inbox
       {pending > 0 && <span className="ix-badge pend">{pending}</span>}
       {high > 0 && <span className="ix-badge high">{high}</span>}

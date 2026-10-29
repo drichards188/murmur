@@ -43,7 +43,7 @@ def test_every_situation_loads():
         assert sit.title and sit.brief, p
         # fault-drill and world v3's watches run in the headless simulator only (the faults are the
         # simulator's; so is a world's conditions draw)
-        if p.stem not in ("harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition", "fault-drill", *WATCHES_V3):
+        if p.stem not in ("harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition", "tutorial", "fault-drill", *WATCHES_V3):
             assert sit.todo, f"{p.stem} is a stub until the AI work lands"
     assert S.headless_steps(S.load_situation("fault-drill"))
     for name in WATCHES_V3:
@@ -613,6 +613,23 @@ def test_who_signs_next():
         EngagementSigners(None, ["op-2"])  # type: ignore[arg-type]
     with pytest.raises(ValueError):
         EngagementSigners(None, ["op-2", "op-2"], mode="cosign")  # type: ignore[arg-type]
+    # the tutorial's pair: both signatures, only on a nomination the person at the console made
+    pair = EngagementSigners(None, ["op-2", "op-3"], mode="pair", proposers=["op-1"])  # type: ignore[arg-type]
+    mine = {**view, "proposer": "op-1"}
+    assert pair.next_signer(mine, {"kind": "human", "id": "op-1"}) == ("op-2", "")
+    assert pair.next_signer({**mine, "signed": ["op-2"], "plan": {"by": "op-2"}}, {"kind": "human", "id": "op-1"})[0] == "op-3"
+    assert pair.next_signer({**mine, "signed": ["op-2", "op-3"]}, {})[0] is None
+    who, why = pair.next_signer(view, {"kind": "agent", "id": "agent-watch"})
+    assert who is None and "op-1 made" in why and "agent-watch" in why, "never an agent's nomination"
+    assert pair.next_signer({**view, "proposer": "op-planner"}, {"kind": "human", "id": "op-planner"})[0] is None, "nor a script's"
+    assert pair.next_signer({**mine, "eligible": ["op-1"]}, {})[0] is None, "never one without engagement authority"
+    for bad in ({"proposers": None}, {"proposers": ["op-2"]}):
+        with pytest.raises(ValueError):
+            EngagementSigners(None, ["op-2", "op-3"], mode="pair", **bad)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        EngagementSigners(None, ["op-2"], mode="pair", proposers=["op-1"])  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        EngagementSigners(None, ["op-2", "op-3"], mode="sign", proposers=["op-1"])  # type: ignore[arg-type]
 
 
 class FakeBridge:
@@ -725,6 +742,59 @@ def test_a_scripted_cosigner_signs_once_and_only_a_plan_a_person_froze():
     b = FakeBridge(signed=["op-1"], plan_by="op-3")
     co = EngagementSigners(b, ["op-2", "op-3"], mode="cosign", read_s=0.0)  # type: ignore[arg-type]
     assert asyncio.run(co.consider(b.inbox_item())) == [] and b.calls == []
+
+
+def test_the_scripted_pair_signs_the_persons_nomination_through_picture_tokens():
+    b = FakeBridge()
+    b.intent_json = lambda: {  # type: ignore[method-assign]
+        "id": 5, "kind": "engage", "state": "dispatched" if len(b.signed) >= b.needed else "pending_approval", "source": {"kind": "human", "id": "op-1"},
+    }
+    orig = b.inbox_item
+    b.inbox_item = lambda: {**orig(), "engage": {**orig()["engage"], "proposer": "op-1"}}  # type: ignore[method-assign]
+    pair = EngagementSigners(b, ["op-2", "op-3"], mode="pair", proposers=["op-1"], read_s=0.0)  # type: ignore[arg-type]
+    made = asyncio.run(pair.consider(b.inbox_item()))
+    assert _acts(b) == [("picture", "op-2"), ("approve", "op-2"), ("picture", "op-3"), ("approve", "op-3")]
+    assert [m["by"] for m in made] == ["op-2", "op-3"] and made[-1]["dispatched"]
+    # an agent's nomination (FakeBridge's own): no look, no signature, and it says why
+    b = FakeBridge()
+    log: list[dict[str, Any]] = []
+    pair = EngagementSigners(b, ["op-2", "op-3"], mode="pair", proposers=["op-1"], read_s=0.0, log=log)  # type: ignore[arg-type]
+    assert asyncio.run(pair.consider(b.inbox_item())) == [] and b.calls == []
+    assert log[-1]["action"] == "wait" and "op-1 made" in log[-1]["reason"]
+
+
+def test_the_tutorial_is_live_with_fixed_modes(tmp_path: Path):
+    """The tutorial: hostile-act-engagement's fleet and policy, its own compressed contacts, the
+    person live with no AI and the scripted pair signing; its modes can't be overridden, and no
+    timeline step nominates for the person."""
+    sit = S.load_situation("tutorial")
+    hae = S.load_situation("hostile-act-engagement")
+    assert sit.tutorial and not hae.tutorial
+    assert (sit.operator, sit.ai, sit.cosigner, sit.reveal, sit.rate) == ("live", "none", "scripted-pair", False, 1)
+    assert (sit.fleet, sit.policy) == (hae.fleet, hae.policy) and sit.contacts != hae.contacts
+    assert not [s for s in sit.steps if s.kind in ("engage", "propose", "declare", "flood")], "nothing nominates or declares for the person"
+    m = S.resolve_modes(sit)
+    assert m["tutorial"] is True and m["scripted_operators"] == ["op-setup", "op-2", "op-3"] and m["agent"] is None
+    assert S.resolve_modes(hae)["tutorial"] is False
+    for override in ({"operator": "autoplay"}, {"ai": "claude"}, {"cosigner": "you"}, {"reveal": True}):
+        with pytest.raises(S.SituationError, match="a tutorial runs with its own modes"):
+            S.resolve_modes(sit, **override)
+    # the status document carries the flag the console keys the walk-through on
+    doc = S.status_doc(sit, m, phase="running", elapsed_s=1.0, now=0.0, entries=[], done_steps=set(), orders=[], agent={}, autoplay=None, run={})
+    assert doc["modes"]["tutorial"] is True and doc["modes"]["cosigner"] == "scripted-pair"
+    # the contacts: the boat holds before its first act, and fires every minute to the end
+    raw = tomllib.loads(sit.contacts.read_text())
+    from eval.storyline import haversine_m
+
+    boat = next(c for c in raw["contact"] if c["affiliation"] == "hostile")
+    run_s = sum(haversine_m(*a, *b) for a, b in zip(boat["route"], boat["route"][1:])) / boat["speed_mps"]
+    times = [a["at_s"] for a in raw["act"]]
+    assert boat.get("start_s", 0) + run_s + 15 < times[0] <= 90
+    assert all(b - a == 60 for a, b in zip(times, times[1:])) and times[-1] < sit.duration_s <= times[-1] + 60
+    # a tutorial is live and blinded: a file that says otherwise is refused
+    for extra in ('tutorial = true\noperator = "autoplay"\n', 'tutorial = true\nreveal = true\n', 'tutorial = "yes"\n'):
+        with pytest.raises(S.SituationError):
+            S.load_situation(_write(tmp_path, "tut", BASE + extra))
 
 
 def test_a_signer_rereads_the_nomination_before_it_signs():

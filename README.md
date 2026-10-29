@@ -51,7 +51,7 @@ network connection and about 8 GB of disk. `make doctor` checks all of it and sa
 git clone https://github.com/drichards188/murmur && cd murmur
 make doctor  # what is missing, each with the command that fixes it
 make setup   # once, about 30 minutes (see Run it below)
-make start   # open http://localhost:5173 and pick a scenario
+make start   # open http://localhost:5173: start with the Tutorial at the top of the menu
 ```
 
 Or open Claude Code or Codex in the clone and ask it to set Murmur up and show you around: it
@@ -105,8 +105,12 @@ runs read the cache in `tidewater/data/cache/` and never download. If setup is i
 it again; it keeps what it already fetched and built.
 
 **The main menu** is how to open Murmur. `make start` runs the launcher (`eval/launcher.py`),
-which serves the console and starts one scenario at a time from its menu: the **open world**
-first, the default (the Golden Gate with the full-spectrum fleet, real tide, current and wind and
+which serves the console and starts one scenario at a time from its menu. At the top, apart from
+the rest, the **Tutorial** (`sim/situations/tutorial.toml`, about 8 minutes) starts in one click and
+walks a newcomer through the engagement chain with a coach card in the console: a hostile act,
+their confirmation of the engine's declaration, their own nomination, two scripted colleagues'
+signatures, the strike and its assessment. It glows until it has been started once in that
+browser. Then the **open world**, the default (the Golden Gate with the full-spectrum fleet, real tide, current and wind and
 the harbor's traffic: what `make goldengate` runs; you command freely, nothing is scripted or
 scored), then each situation in `sim/situations/` with its brief, fleet and duration, and its
 operator (you, or autoplay) and AI watch officer (Claude, Codex, Playbook or None) with the

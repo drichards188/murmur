@@ -40,7 +40,10 @@ AI_LABEL = {
     "playbook": "Playbook (deterministic)",
     "none": "None",
 }
-COSIGNERS = ("you", "scripted")
+# who signs an engagement in live mode: you (both signatures, through the "Acting as" switcher),
+# scripted (op-2 or op-3 adds the second after yours), scripted-pair (op-2 and op-3 sign a
+# nomination you made: the tutorial's, where the proposer may never sign)
+COSIGNERS = ("you", "scripted", "scripted-pair")
 ORDER_TASKS = ("orbit", "patrol", "hold", "rtl", "track")
 STORYLINE_PROPOSERS = ("agent", "operator")
 
@@ -102,7 +105,7 @@ SITUATION_PORTS = {
 TOP_KEYS = {
     "title", "brief", "summary", "director", "todo", "world", "fleet", "contacts", "events", "policy", "duration_s",
     "rate", "at", "tidewater", "operator", "ai", "cosigner", "reveal", "seed", "ready_timeout_s", "ai_start_s",
-    "order", "step", "watch", "playbook", "storyline", "autoplay", "headless",
+    "order", "step", "watch", "playbook", "storyline", "autoplay", "headless", "tutorial",
 }
 # `[headless]`: what the headless simulator takes from the world (docs/HEADLESS.md, worlds); a
 # live run reads tidewater itself and ignores the table. `domain_rule`: "grid", the world's baked
@@ -213,6 +216,9 @@ class Situation:
     ai: str = "claude"
     cosigner: str = "you"
     reveal: bool = False
+    # the console's guided tutorial runs on it (web/src/Tutorial.tsx): its modes are fixed (live,
+    # the file's AI and cosigner, never revealed) and the menu offers it apart, at the top
+    tutorial: bool = False
     seed: int = 1
     ready_timeout_s: float = 180.0
     ai_start_s: float = 30.0
@@ -546,6 +552,11 @@ def load_situation(path_or_name: str | Path) -> Situation:
     if not isinstance(raw.get("reveal", False), bool):
         raise SituationError(f"{path}: reveal is true or false")
     sit.reveal = bool(raw.get("reveal", False))
+    if not isinstance(raw.get("tutorial", False), bool):
+        raise SituationError(f"{path}: tutorial is true or false")
+    sit.tutorial = bool(raw.get("tutorial", False))
+    if sit.tutorial and (sit.operator != "live" or sit.reveal):
+        raise SituationError(f"{path}: a tutorial is live (the person makes every human decision) and never revealed")
     sit.seed = _num(raw.get("seed", 1), "seed", path, int)
     sit.ready_timeout_s = _num(raw.get("ready_timeout_s", 180), "ready_timeout_s", path)
     sit.ai_start_s = _num(raw.get("ai_start_s", 30), "ai_start_s", path)
@@ -697,6 +708,12 @@ def resolve_modes(sit: Situation, operator: str | None = None, ai: str | None = 
     if co not in COSIGNERS:
         raise SituationError(f"cosigner {co!r}: one of {', '.join(COSIGNERS)}")
     rv = sit.reveal if reveal is None else bool(reveal)
+    if sit.tutorial and (op, a, co, rv) != (sit.operator, sit.ai, sit.cosigner, sit.reveal):
+        raise SituationError(
+            f"{sit.name}: a tutorial runs with its own modes (operator {sit.operator}, AI {sit.ai}, cosigner "
+            f"{sit.cosigner}, not revealed), which the console's walk-through follows. Start it without OPERATOR, AI, "
+            "COSIGNER or REVEAL."
+        )
     faults = sorted({s.kind for s in headless_steps(sit)})
     if faults:
         raise SituationError(
@@ -722,7 +739,7 @@ def resolve_modes(sit: Situation, operator: str | None = None, ai: str | None = 
         scripted.append(SETUP_OPERATOR)
     if op == "autoplay":
         scripted += [AUTOPLAY_OPERATOR, *SCRIPTED_SIGNERS]
-    elif co == "scripted":
+    elif co in ("scripted", "scripted-pair"):
         scripted += list(SCRIPTED_SIGNERS)
     if uses_planner(sit):
         scripted.append(STORYLINE_OPERATOR)
@@ -738,6 +755,8 @@ def resolve_modes(sit: Situation, operator: str | None = None, ai: str | None = 
         "ai_label": AI_LABEL[a],
         "cosigner": co,
         "reveal": rv,
+        # the console's guided walk-through runs over this situation (web/src/Tutorial.tsx)
+        "tutorial": sit.tutorial,
         "console_operator": CONSOLE_OPERATOR,
         "autoplay_operator": AUTOPLAY_OPERATOR if op == "autoplay" else None,
         "scripted_operators": scripted,
@@ -815,7 +834,7 @@ def status_doc(
         "reveal": reveal,
         "modes": {
             k: modes.get(k)
-            for k in ("operator", "ai", "ai_label", "cosigner", "console_operator", "autoplay_operator", "scripted_operators", "evidence_note")
+            for k in ("operator", "ai", "ai_label", "cosigner", "console_operator", "autoplay_operator", "scripted_operators", "evidence_note", "tutorial")
         },
         "phase": phase,
         "phase_detail": phase_detail,

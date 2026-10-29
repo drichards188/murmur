@@ -1,0 +1,259 @@
+# Tutorial traffic (sim/situations/tutorial.toml): hostile-act-engagement's Golden Gate with the
+# dead time cut out, so a person walked through the engagement chain meets each step soon after
+# they reach it. Run by crates/murmur-contacts; format in crates/murmur-contacts/src/scenario.rs.
+# Points are [lon, lat]. Fictional names and MMSIs, as in sim/scenarios/hostile-act-engagement.toml.
+# Everything here is truth: the console only ever sees what our sensors make of it.
+#
+# What differs from hostile-act-engagement's traffic, and why (the rules, the policy and the
+# fleet are the same):
+# - The fast boat starts 800 m short of its holding point instead of 2.7 km out at sea, and holds
+#   from about 1:00 instead of 3:03.
+# - It fires on HUNTER 1 from 1:20, then every minute to the end (19 acts instead of 3): whenever
+#   the person reaches the step that waits for an act, one has come or comes within a minute.
+#   An act is attributed from what our sensors see; one attributed below the policy's threshold
+#   is flagged for review, not declared, and the next is another chance. Once the boat is
+#   declared, the engine only records the rest; once it is struck it leaves the scenario
+#   (`on_effect = "out_of_play"`, the default) and an author that does not exist commits nothing.
+# - The run is 20 minutes, not 12, for a slow reader, so the traffic that would come near the
+#   boat inside that time is moved or left out: the inbound container ship starts 5.7 km further
+#   out at sea (at the holding area after some 29 minutes, not 15), the trawler leaves Fisherman's
+#   Wharf at 6:00 (at the bridge after some 25 minutes), and the outbound bulk carrier (at the
+#   bridge at 16 minutes) is not in it.
+#
+# Times (`start_s`, an act's `at_s`) count from the contacts process's start, a few seconds after
+# the situation's clock (the link emulator's start). uids are the fleet's
+# (sim/fleets/hostile-act-engagement.toml): 1 is HUNTER 1.
+title = "Tutorial traffic"
+seed = 17
+
+[sensing]
+misclassification_rate = 0.0     # deterministic identities: the tutorial is about the chain
+
+# ---------------------------------------------------------------- the hostile
+# A short run in at 15 m/s (29 kn), no AIS, to its holding point mid-strait 1.5 km west of the
+# bridge, inside the engagement zone (sim/areas: ez-gate-west), where it holds from about 1:00;
+# HUNTER 1 patrols 2 km east of it.
+[[contact]]
+id = "fastboat-raider"
+name = "Fast boat without AIS, holding mid-strait west of the bridge"
+affiliation = "hostile"
+domain = "surface"
+kind = "small_fast_boat"
+speed_mps = 15
+motion = "transit"
+route = [[-122.5040, 37.8105], [-122.4950, 37.8120]]
+start_s = 5
+
+[[act]]
+id = "act-1"
+at_s = 80
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on the sensor ship (HUNTER 1)"
+
+[[act]]
+id = "act-2"
+at_s = 140
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 again"
+
+[[act]]
+id = "act-3"
+at_s = 200
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 again"
+
+[[act]]
+id = "act-4"
+at_s = 260
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 again"
+
+[[act]]
+id = "act-5"
+at_s = 320
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 again"
+
+[[act]]
+id = "act-6"
+at_s = 380
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 again"
+
+[[act]]
+id = "act-7"
+at_s = 440
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 again"
+
+[[act]]
+id = "act-8"
+at_s = 500
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 again"
+
+[[act]]
+id = "act-9"
+at_s = 560
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 again"
+
+[[act]]
+id = "act-10"
+at_s = 620
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 again"
+
+[[act]]
+id = "act-11"
+at_s = 680
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 again"
+
+[[act]]
+id = "act-12"
+at_s = 740
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 again"
+
+[[act]]
+id = "act-13"
+at_s = 800
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 again"
+
+[[act]]
+id = "act-14"
+at_s = 860
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 again"
+
+[[act]]
+id = "act-15"
+at_s = 920
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 again"
+
+[[act]]
+id = "act-16"
+at_s = 980
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 again"
+
+[[act]]
+id = "act-17"
+at_s = 1040
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 again"
+
+[[act]]
+id = "act-18"
+at_s = 1100
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 again"
+
+[[act]]
+id = "act-19"
+at_s = 1160
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 again"
+
+# ---------------------------------------------------------------- ferries (AIS, neutral)
+[[contact]]
+id = "ferry-sausalito"
+name = "Sausalito ferry (Ferry Building to Sausalito)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 10
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.4120, 37.8130], [-122.4400, 37.8220], [-122.4620, 37.8390], [-122.4770, 37.8560]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999101", name = "MV GOLDEN BEAR", ship_type = "passenger" }
+
+[[contact]]
+id = "ferry-larkspur"
+name = "Larkspur ferry (Ferry Building to Larkspur via Raccoon Strait)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 12
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.4120, 37.8180], [-122.4170, 37.8380], [-122.4500, 37.8600], [-122.4480, 37.8740], [-122.4700, 37.8880], [-122.4950, 37.9300], [-122.5070, 37.9440]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999102", name = "MV MARIN CREST", ship_type = "passenger" }
+
+# ---------------------------------------------------------------- shipping lane (AIS, neutral)
+# The inbound container ship, as in hostile-act-engagement but from 5.7 km further out: some
+# 4 km from the holding area at 20:00, closing at 7 m/s.
+[[contact]]
+id = "cargo-inbound"
+name = "Container ship inbound to Oakland"
+affiliation = "neutral"
+domain = "surface"
+kind = "cargo_ship"
+speed_mps = 7
+motion = "transit"
+route = [[-122.6200, 37.7710], [-122.5600, 37.7900], [-122.5100, 37.8060], [-122.4790, 37.8180], [-122.4300, 37.8360], [-122.4000, 37.8220], [-122.3830, 37.8030], [-122.3550, 37.8080], [-122.3420, 37.8100]]
+ais = { mmsi = "366999201", name = "MSC AURELIA", ship_type = "cargo" }
+
+# ---------------------------------------------------------------- fishing and leisure
+# The trawler leaves the wharf at 6:00: at the bridge, 1.5 km from the holding area, after some
+# 25 minutes.
+[[contact]]
+id = "fishing-wharf"
+name = "Trawler from Fisherman's Wharf to the grounds (AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+speed_mps = 5
+motion = "route"
+route = [[-122.4150, 37.8120], [-122.4600, 37.8230], [-122.4790, 37.8190], [-122.5500, 37.7800]]
+reverse = true
+dwell_s = 900
+start_s = 360
+ais = { mmsi = "366999301", name = "F/V ANNA MARIE", ship_type = "fishing" }
+
+[[contact]]
+id = "fishing-milerock"
+name = "Sport fishing boat drifting off Mile Rock (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+motion = "drift"
+at = [-122.5200, 37.7850]
+
+# A sailing yacht tacking offshore of Lands End, about 4 km southwest of the holding area at its
+# nearest (room for the engagement check's uncertain future reach when the tracker has no
+# velocity estimate for it).
+[[contact]]
+id = "yacht-landsend"
+name = "Sailing yacht tacking off Lands End (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "sailboat"
+speed_mps = 3
+motion = "loiter"
+center = [-122.5350, 37.7900]
+radius_m = 250

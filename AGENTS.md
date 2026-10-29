@@ -73,14 +73,22 @@ ends it; `{"scenario": "open-world"}` takes no operator or AI.
 
 ## What to suggest first
 
-1. **`hostile-act-engagement`, `OPERATOR=autoplay AI=playbook`**: no account, nothing to do but
+1. **The tutorial** (`make start`, then the glowing Tutorial at the top of the menu; or `make
+   situation NAME=tutorial`, console on 5673): for anyone new, about 8 minutes, no account. A coach
+   card in the console walks the person through the engagement chain as it happens: a fast boat
+   fires on one of ours, the engine declares it hostile by rule, the person confirms that in the
+   Review list and nominates an engagement with REAPER 1 themselves, op-2 and op-3 (scripts, since a
+   proposer never signs their own nomination) sign, then the strike and its assessment. Its modes
+   are fixed (live, no AI). Every human decision in it is the person's: you start it and point
+   them at the card, nothing more.
+2. **`hostile-act-engagement`, `OPERATOR=autoplay AI=playbook`**: no account, nothing to do but
    watch, about 8 minutes for the whole engagement chain (a fast boat fires on a ship about 3:30
    in, the engine declares it hostile, a nomination, two signatures by scripts standing in for
    people, the strike, its assessment by 7 to 8 minutes). The Situation panel (top left) narrates.
-2. **`harbor-watch`, `OPERATOR=live`**: the person at the console as `op-1`; an unknown fast
+3. **`harbor-watch`, `OPERATOR=live`**: the person at the console as `op-1`; an unknown fast
    boat near the bridge, the AI proposes, the person decides. Its AI defaults to Claude through
    their own CLI login; `AI=playbook` if they have neither Claude Code nor Codex.
-3. **The open world**: 22 platform types, real conditions and traffic, nothing scripted.
+4. **The open world**: 22 platform types, real conditions and traffic, nothing scripted.
 
 More in sim/situations/README.md. `AI=claude` or `codex` runs the person's own CLI and login;
 Murmur never sees their credentials.
@@ -130,7 +138,8 @@ with the person at the console. In a dev run (the default) the bridge believes w
 operator a request names (`X-Murmur-Operator`), so the code will not stop you: this rule must.
 Never send that header and never POST to the bridge's `/api` as an operator (an operator's
 order counts as that person's own approval). If asked, say why not and point to the card in
-the console. In autoplay the scripted operators (`op-auto`, `op-2`, `op-3`) decide; that is
+the console. In autoplay the scripted operators (`op-auto`, `op-2`, `op-3`) decide, and in the
+tutorial `op-2` and `op-3` sign the person's nomination; that is
 the situation's script, not you.
 
 ## Stop

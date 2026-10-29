@@ -37,6 +37,7 @@ import { noteFocusedIntent, noteTrackViewed } from './operatorView'
 import { refreshAuth, useAuth } from './auth'
 import { EnrollScreen, LoginScreen, OperatorBadge } from './Login'
 import { SituationPanel } from './SituationPanel'
+import { Tutorial } from './Tutorial'
 import { CoverageControl } from './CoverageControl'
 import { gridImage, type CoverageGrid, type LinkRouteDrawing } from './coverage'
 
@@ -579,8 +580,12 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         <ErrorBoundary name="Situation" className="floating">
           <SituationPanel decisions={decisions} />
         </ErrorBoundary>
+        {/* the tutorial's coach card (sim/situations/tutorial.toml): only while the situation running is the tutorial */}
+        <ErrorBoundary name="Tutorial" className="floating">
+          <Tutorial decisions={decisions} tracks={tracks} now={now} onMenu={onMenu} />
+        </ErrorBoundary>
         {flyingImpact?.munition && (
-          <div className="impact-status" role="status">
+          <div className="impact-status" role="status" data-tutorial="impact-status">
             <span><strong>MUNITION IN FLIGHT</strong>
               {' · '}{flyingImpact.munition.name} from {flyingImpact.platform ?? `ENGAGE i${flyingImpact.intentId}`}{flyingImpact.track ? ` on ${flyingImpact.track}` : ''}{' · '}
               impact in {secondsToImpact(flyingImpact.munition, impactNowMs)} s</span>
@@ -588,7 +593,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           </div>
         )}
         {visibleImpact && (
-          <div className="impact-status" role="status">
+          <div className="impact-status" role="status" data-tutorial="impact-status">
             <span><strong>{visibleImpact.assessment ? `ASSESSMENT: ${visibleImpact.assessment.result.toUpperCase()}` : 'STRIKE · IMPACT'}</strong>
               {' · '}{visibleImpact.platform ?? `ENGAGE i${visibleImpact.intentId}`}{visibleImpact.track ? ` on ${visibleImpact.track}` : ''}{' · '}
               {visibleImpact.assessment?.result === 'ceased' ? 'No target detected where expected'

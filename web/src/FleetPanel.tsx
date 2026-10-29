@@ -234,7 +234,7 @@ export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails
   for (let i = from; i < items.length && items[i].top < scroll.top + scroll.height + OVERSCAN_PX; i++) shown.push(items[i])
 
   return (
-    <aside className="panel fleet">
+    <aside className="panel fleet" data-tutorial="fleet">
       <header className="panel-head">
         <h2>Fleet</h2>
         <div className="seg">

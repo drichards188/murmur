@@ -473,7 +473,7 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
   const s4: StepState = !line ? 'todo' : line.tone === 'ok' || ready.onAcceptances ? 'done' : 'blocked'
 
   return (
-    <aside className="eg-panel" aria-label={title} onKeyDown={onKeyDown}>
+    <aside className="eg-panel" aria-label={title} onKeyDown={onKeyDown} data-tutorial="engage-form">
       <header className="eg-top">
         <h2>{title}</h2>
         <span className="eg-as">as {operator}</span>
@@ -573,7 +573,7 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
           ) : (
             <>
               {uid == null && <p className="eg-muted">Nothing is chosen for you: pick one.</p>}
-              <div className="eg-picks" role="radiogroup" aria-label="Armed platforms">
+              <div className="eg-picks" role="radiogroup" aria-label="Armed platforms" data-tutorial="engage-platforms">
                 {options.map((o) => {
                   const pl = platformLine(o, nowMs)
                   return (
@@ -760,7 +760,7 @@ export function EngagePanel({ tracks, vehicles, now, initial, intents, onPreview
         </p>
         {!ready.ok && <p className="eg-missing">Not yet: {ready.missing.join('; ')}.</p>}
         <div className="eg-go-row">
-          <button className="eg-nominate" disabled={!canNominate} onClick={() => void submit()} title="Ctrl+Enter">
+          <button className="eg-nominate" data-tutorial="engage-nominate" disabled={!canNominate} onClick={() => void submit()} title="Ctrl+Enter">
             {replaces != null ? `Replace i${replaces}` : t ? `Nominate ${t.id}` : 'Nominate'}
           </button>
           <button className="dc-btn quiet" onClick={onClose} title="Esc">
