@@ -161,10 +161,74 @@ pub struct TruthMessage {
     /// decides which of our sensors observe each, `sensing::observe_act`).
     #[serde(default)]
     pub acts: Vec<ActTruth>,
+    /// Opponent weapons (docs/OPPONENT-WEAPONS.md): our vehicles the scenario's weapons may be
+    /// aimed at (the answer carries where they are, `ours`), the weapons in flight during the
+    /// second up to this message, and the strikes since the last. Absent without weapons.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aim_at: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub weapons: Vec<WeaponTruth>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub impacts: Vec<ImpactTruth>,
 }
 
-/// Rules 9: one abstract hostile act (a time, an author, a victim; no weapon), as the contacts
-/// process scripts it. Truth: never served except on the evaluation endpoint.
+/// One opponent weapon's flight (truth, the contacts process's `weapon`): a straight line at
+/// constant speed from `from` to `to` (`[lon, lat, metres above the sea]`), `launch_t` to
+/// `impact_t` on the truth message's clock.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WeaponTruth {
+    pub id: String,
+    pub act: String,
+    pub by: String,
+    pub name: String,
+    pub kind: String,
+    pub speed_mps: f64,
+    pub launch_t: f64,
+    pub impact_t: f64,
+    pub from: [f64; 3],
+    pub to: [f64; 3],
+    #[serde(default)]
+    pub against_vehicle: Option<u64>,
+    #[serde(default)]
+    pub against_contact: Option<String>,
+}
+
+impl WeaponTruth {
+    /// Where it is at `t` (held at either end): `[lon, lat, alt]`.
+    pub fn at(&self, t: f64) -> [f64; 3] {
+        let span = self.impact_t - self.launch_t;
+        let f = if span > 0.0 { ((t - self.launch_t) / span).clamp(0.0, 1.0) } else { 1.0 };
+        [0, 1, 2].map(|i| self.from[i] + (self.to[i] - self.from[i]) * f)
+    }
+
+    /// Its velocity, m/s east and north.
+    pub fn velocity(&self) -> (f64, f64) {
+        let span = (self.impact_t - self.launch_t).max(1e-3);
+        let m = super::physical::geometry::M_PER_DEG;
+        (
+            (self.to[0] - self.from[0]) * m * self.from[1].to_radians().cos() / span,
+            (self.to[1] - self.from[1]) * m / span,
+        )
+    }
+}
+
+/// A weapon's strike (truth), on the truth message's clock. Nothing about the victim changes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImpactTruth {
+    pub weapon: String,
+    pub act: String,
+    pub t: f64,
+    pub lat: f64,
+    pub lon: f64,
+    #[serde(default)]
+    pub against_vehicle: Option<u64>,
+    #[serde(default)]
+    pub against_contact: Option<String>,
+}
+
+/// Rules 9: one hostile act as the contacts process scripts it: abstract (a time, an author, a
+/// victim), or the launch of its author's weapon (`weapon`), or held (`held`: it did not
+/// happen). Truth: never served except on the evaluation endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActTruth {
     pub id: String,
@@ -182,6 +246,10 @@ pub struct ActTruth {
     pub against_contact: Option<String>,
     #[serde(default)]
     pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weapon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<String>,
 }
 
 impl TruthMessage {
@@ -198,6 +266,12 @@ impl TruthMessage {
             }
             if !(c.lat.is_finite() && c.lon.is_finite() && c.lat.abs() <= 90.0 && c.lon.abs() <= 180.0) {
                 return Err(format!("contact {}: bad position", c.id));
+            }
+        }
+        for w in &self.weapons {
+            let fine = |p: &[f64; 3]| p.iter().all(|x| x.is_finite()) && p[1].abs() <= 90.0 && p[0].abs() <= 180.0;
+            if !(fine(&w.from) && fine(&w.to) && w.launch_t.is_finite() && w.impact_t >= w.launch_t && w.speed_mps > 0.0) {
+                return Err(format!("weapon {}: bad flight", w.id));
             }
         }
         Ok(())

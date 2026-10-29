@@ -288,7 +288,7 @@ pub struct LoiterCircle {
 /// Something the vehicle did or said that belongs in the audit log.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VehicleEvent {
-    /// "mode", "failsafe" or "statustext"
+    /// "mode", "failsafe", "statustext" or "struck" (an opponent weapon's strike)
     pub kind: &'static str,
     pub text: String,
 }
@@ -559,6 +559,12 @@ impl Vehicle {
             }
             NavSource::None => false,
         }
+    }
+
+    /// Opponent weapons (docs/OPPONENT-WEAPONS.md): this vehicle reports it was struck (the
+    /// bridge's weapon picture hands it over); logged as its `vehicle.event` of kind `struck`.
+    pub fn report_struck(&mut self, text: String) {
+        self.push_event("struck", text);
     }
 
     fn push_event(&mut self, kind: &'static str, text: String) {

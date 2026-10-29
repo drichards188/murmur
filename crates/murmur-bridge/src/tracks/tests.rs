@@ -21,6 +21,8 @@ mod calib_ground;
 mod catalog;
 mod physical;
 mod reaches;
+mod weapon_probe;
+mod weapons;
 
 fn catalog() -> SensorCatalog {
     SensorCatalog::from_toml(include_str!("../../../../sim/platforms.toml")).expect("catalog")
@@ -104,6 +106,7 @@ fn truth(s: f64, contacts: Vec<ContactTruth>) -> TruthMessage {
         },
         contacts,
         acts: Vec::new(),
+        aim_at: Vec::new(), weapons: Vec::new(), impacts: Vec::new(),
     }
 }
 
@@ -550,6 +553,7 @@ fn a_hostile_act_is_observed_by_the_sensors_that_could_see_its_author() {
         against_vehicle: Some(1),
         against_contact: None,
         label: None,
+        weapon: None, held: None,
     };
     let mut msg = truth(3.0, vec![boat.clone(), far.clone()]);
     msg.acts = vec![act("act-1", "raider", lat, lon), act("act-2", "far", flat, flon)];

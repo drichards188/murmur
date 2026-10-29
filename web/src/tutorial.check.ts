@@ -7,7 +7,8 @@
 import type { Intent } from './decisions'
 import type { ObservedAct, Review } from './ident'
 import type { Track } from './tracks'
-import { CONSOLE_OPERATOR, findBoat, HOLD, identityCheck, resumeAt, STEPS, stepDone, type StepId, tutorialFacts } from './tutorial.ts'
+import { ATTACK_READ_MS, CONSOLE_OPERATOR, findBoat, HOLD, identityCheck, resumeAt, STEPS, stepDone, type StepId, tutorialFacts } from './tutorial.ts'
+import type { WeaponTrack } from './weapon.ts'
 
 function eq(a: unknown, b: unknown, what: string) {
   const x = JSON.stringify(a)
@@ -69,6 +70,19 @@ eq([at(f), f.acts, f.lastActNot], ['act', 1, 'flagged for review: attribution 0.
 const ruled = { ...boat, declared: { affiliation: 'hostile', by: 'rule:hostile_act', t: 1, note: null, rule: true, evidence: { act: 'act-2' } } } as Track
 f = facts([ferry, ruled])
 eq([at(f), f.byRule, f.confirmed, f.declarationAct], ['confirm', true, false, 'act-2'], 'a rule declaration waits for a confirmation')
+// a modelled weapon's attack: the act step holds while it flies and for a few seconds after its
+// strike (its timeline is read), then moves on to the confirmation
+const shot = (struckT: number | null) =>
+  ({
+    id: 'W-1', report: 'A-1', class: 'ATGM-class missile', speed_mps: 250, aimed_at: '1',
+    launch: { t: 1000, point: HOLD, sigma_m: 20, sensors: ['1:eo_ir'] }, fixes: [],
+    status: struckT == null ? 'in_flight' : 'expended', ended_t: struckT, struck: struckT == null ? null : { uid: '1', t: struckT },
+    eta_t: 5000, first_cue_t: 1000, warning_s: struckT == null ? null : (struckT - 1000) / 1000,
+  }) as WeaponTrack
+eq(at(tutorialFacts([ferry, ruled], undefined, undefined, [], 3000, [], null, [shot(null)])), 'act', 'declared while the missile flies: the attack is still on')
+eq(at(tutorialFacts([ferry, ruled], undefined, undefined, [], 6000, [], null, [shot(5000)])), 'act', 'just struck: its timeline is read first')
+const settled = tutorialFacts([ferry, ruled], undefined, undefined, [], 5000 + ATTACK_READ_MS, [], null, [shot(5000)])
+eq([at(settled), settled.attack?.id, settled.attacks], ['confirm', 'W-1', 1], 'then on to the confirmation')
 const confirmed = { ...ruled, declared: { ...ruled.declared!, confirmed_by: 'op-1' } } as Track
 f = facts([ferry, confirmed])
 eq([at(f), f.confirmedBy], ['nominate', 'op-1'], 'confirmed: on to the nomination')

@@ -25,3 +25,4 @@ pub mod effect;
 pub mod motion;
 pub mod scenario;
 pub mod truth;
+pub mod weapon;

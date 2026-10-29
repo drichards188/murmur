@@ -52,6 +52,7 @@ pub mod rf;
 pub mod signature;
 pub mod sonar;
 pub mod spec;
+pub mod weapon;
 
 use std::collections::{BTreeSet, BTreeMap, HashMap};
 use std::path::{Path, PathBuf};

@@ -2691,6 +2691,11 @@ impl Decision {
             // rules 21: an identify order lost its track, ran out of time, holds, or can't follow
             alerts.extend(self.identify_alerts(&core, clock::wall()));
         }
+        // opponent weapons: a strike one of ours reported (high when no sensor saw the launch)
+        if let Some(t) = self.tracks() {
+            let fleet = self.fleet();
+            alerts.extend(t.strike_alerts(&|uid| fleet.get(&uid).and_then(|c| alerts::callsign(c))));
+        }
         alerts.sort_by(|a, b| a.severity.cmp(&b.severity).then(a.since_t.total_cmp(&b.since_t)));
         alerts
     }

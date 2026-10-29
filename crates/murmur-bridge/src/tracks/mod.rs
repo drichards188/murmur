@@ -59,6 +59,7 @@ pub mod sensing;
 #[cfg(test)]
 mod tests;
 pub mod truth;
+pub mod weapons;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -77,7 +78,7 @@ use serde_json::{Value, json};
 use tokio::sync::watch;
 
 use self::model::{Declared, Track};
-use self::sensing::{Detection, Observer, Params, SearchArea, SensorCatalog, misclassify_draw};
+use self::sensing::{ActObservation, Detection, Observer, Params, SearchArea, SensorCatalog, misclassify_draw};
 use self::truth::{SensingModel, TruthMessage};
 use crate::clock::{self, round};
 use crate::decision::Decision;
@@ -179,6 +180,22 @@ struct Inner {
     /// each observer's uid, position and navigation error ([`Tracks::last_step_json`]).
     #[cfg(murmur_headless)]
     last_step: (Vec<Detection>, Vec<StepObserver>),
+    /// Opponent weapons (docs/OPPONENT-WEAPONS.md): the weapon picture, apart from the tracks;
+    /// the strikes our vehicles report, waiting to go to their vehicles' events; where each
+    /// observer was at the last truth message (a launch's expected strike)
+    weapons: weapons::Picture,
+    strikes: Vec<(u64, String)>,
+    ours_at: HashMap<u64, (f64, f64)>,
+}
+
+/// Opponent weapons' sensing state, kept with the physical model's (locked only while it is):
+/// the last truth message's clock (each message covers the second since), each camera's
+/// evidence on each weapon, and whether the legacy model's word on weapons was said.
+#[derive(Default)]
+struct WeaponSense {
+    prev_t: Option<f64>,
+    cams: HashMap<(String, u64, usize), physical::weapon::EoWeapon>,
+    noted_legacy: bool,
 }
 
 /// An observer of the last sensing step: its uid, where it sensed from (lat, lon), its
@@ -193,6 +210,7 @@ pub struct Tracks {
     /// The physical sensing model's state across truth messages (pointing, looks, scans, the
     /// terrain), its grid paths relative to the repository.
     physical: Mutex<physical::Engine>,
+    weapon_sense: Mutex<WeaponSense>,
     /// The sensing model the last message ran on (said when it changes).
     last_model: Mutex<Option<SensingModel>>,
     /// The headless simulator's word that a vehicle has left the world (a platform spent by
@@ -240,6 +258,7 @@ impl Tracks {
             catalog,
             settings,
             physical: Mutex::new(physical::Engine::new(root)),
+            weapon_sense: Mutex::new(WeaponSense::default()),
             last_model: Mutex::new(None),
             #[cfg(murmur_headless)]
             gone: OnceLock::new(),
@@ -260,6 +279,9 @@ impl Tracks {
                 lost: Vec::new(),
                 #[cfg(murmur_headless)]
                 last_step: (Vec::new(), Vec::new()),
+                weapons: weapons::Picture::default(),
+                strikes: Vec::new(),
+                ours_at: HashMap::new(),
             }),
             updates: watch::channel(Arc::new(String::new())).0,
         };
@@ -408,7 +430,35 @@ impl Tracks {
         };
         lock(&self.physical).set_firsts(firsts);
         let now = clock::wall();
-        self.on_truth_with(msg, &observers, now)
+        let out = self.on_truth_with(msg, &observers, now);
+        // opponent weapons: a strike is its victim's own report, logged as its vehicle event
+        let strikes = std::mem::take(&mut lock(&self.inner).strikes);
+        for (uid, text) in strikes {
+            if let Some(cell) = world.vehicles().into_iter().find(|c| c.uid == uid) {
+                cell.write(|v| v.report_struck(text));
+            }
+        }
+        out
+    }
+
+    /// Opponent weapons: where the vehicles a truth message names (`aim_at`) are now, for the
+    /// simulation channel's answer (`ours`): position, height and velocity, as each reports it.
+    pub fn ours_for(&self, world: &World, uids: &[u64]) -> Vec<Value> {
+        if uids.is_empty() {
+            return Vec::new();
+        }
+        world
+            .vehicles()
+            .into_iter()
+            .filter(|c| uids.contains(&c.uid))
+            .filter_map(|c| {
+                c.read(|v| {
+                    let (lat, lon) = v.pos?;
+                    let [ve, vn] = v.vel_en.unwrap_or([0.0, 0.0]);
+                    Some(json!({ "uid": c.uid, "lat": lat, "lon": lon, "alt_m": v.alt_msl.unwrap_or(0.0), "ve": ve, "vn": vn }))
+                })
+            })
+            .collect()
     }
 
     /// The sensing step with explicit observers and clock (tests drive this directly).
@@ -430,10 +480,22 @@ impl Tracks {
         let seed = params.seed;
         let rate = params.misclassification_rate;
         let model = self.model_for(&msg);
+        // opponent weapons (docs/OPPONENT-WEAPONS.md): under the physical model, each launch our
+        // cameras saw and each fix of a weapon in flight, after the contacts' step (whose pointing
+        // they read, never change)
+        let mut launches: HashMap<String, ActObservation> = HashMap::new();
+        let mut weapon_fixes: Vec<physical::weapon::WeaponFix> = Vec::new();
         let mut detections = match model {
-            SensingModel::Legacy => sensing::detect(params, observers, &msg.contacts, &|contact, sensor| {
-                misclassify_draw(seed, contact, sensor, rate)
-            }),
+            SensingModel::Legacy => {
+                if !msg.weapons.is_empty() {
+                    let mut ws = lock(&self.weapon_sense);
+                    if !ws.noted_legacy {
+                        ws.noted_legacy = true;
+                        println!("sensing: opponent weapons need the physical model: under the legacy one their acts are sensed as abstract acts, the weapons not at all");
+                    }
+                }
+                sensing::detect(params, observers, &msg.contacts, &|contact, sensor| misclassify_draw(seed, contact, sensor, rate))
+            }
             SensingModel::Physical => {
                 let mut engine = lock(&self.physical);
                 engine.configure(&msg.sensing);
@@ -445,7 +507,25 @@ impl Tracks {
                     misclassification_rate: rate,
                     sensing: &msg.sensing,
                 };
-                engine.step(&step, observers, &msg.contacts)
+                let dets = engine.step(&step, observers, &msg.contacts);
+                if !msg.weapons.is_empty() || msg.acts.iter().any(|a| a.weapon.is_some()) {
+                    for a in msg.acts.iter().filter(|a| a.held.is_none()) {
+                        let Some(w) = a.weapon.as_ref().and_then(|id| msg.weapons.iter().find(|w| w.id == *id)) else { continue };
+                        let Some(shooter) = msg.contacts.iter().find(|c| c.id == a.by) else { continue };
+                        let mut shooter = shooter.clone();
+                        (shooter.lat, shooter.lon) = (a.lat, a.lon);
+                        if let Some(o) = engine.observe_launch(&step, observers, &shooter, &a.id, &w.kind) {
+                            launches.insert(a.id.clone(), o);
+                        }
+                    }
+                    let mut ws = lock(&self.weapon_sense);
+                    let prev_t = ws.prev_t.unwrap_or(f64::NEG_INFINITY);
+                    weapon_fixes = engine.sense_weapons(&step, prev_t, observers, &msg.weapons, &mut ws.cams);
+                    let live: std::collections::HashSet<&str> = msg.weapons.iter().map(|w| w.id.as_str()).collect();
+                    ws.cams.retain(|k, _| live.contains(k.0.as_str()));
+                }
+                lock(&self.weapon_sense).prev_t = Some(msg.t);
+                dets
             }
         };
         // each fix dated by the clock of the truth it was drawn from: the filter's intervals
@@ -467,8 +547,10 @@ impl Tracks {
             self.fold(&mut inner, &detections, now);
             // rules 9: the hostile acts of this tick, as our sensors observe them (after the
             // fold: an act by a contact first seen this tick is attributed to its new track)
-            let physical = (model == SensingModel::Physical).then_some(detections.as_slice());
+            let physical = (model == SensingModel::Physical).then_some((detections.as_slice(), &launches));
             self.sense_acts(&mut inner, params, observers, &msg, now, physical);
+            // opponent weapons: the weapon picture takes this second's fixes and strikes
+            self.sense_strikes(&mut inner, observers, &msg, &weapon_fixes, now);
             inner.truth = Some((now, msg));
             inner.last_detections = detections.len();
             self.drop_old(&mut inner, now);
@@ -518,15 +600,38 @@ impl Tracks {
     /// is kept for the evaluation view with the truth behind it. Under the physical model
     /// (`physical`: this tick's detections) the sensors that detected the act's author this
     /// tick observed it (`physical::observe_act`).
-    fn sense_acts(&self, inner: &mut Inner, params: Params, observers: &[Observer], msg: &TruthMessage, now: f64, physical: Option<&[Detection]>) {
+    ///
+    /// Opponent weapons (docs/OPPONENT-WEAPONS.md): under the physical model an act that launched
+    /// a weapon is observed by the cameras that saw the launch (`physical`'s second part,
+    /// `physical::Engine::observe_launch`), not by whatever detected its author; its report joins
+    /// the weapon picture. An act held (its author did not fire) is not sensed at all.
+    fn sense_acts(
+        &self,
+        inner: &mut Inner,
+        params: Params,
+        observers: &[Observer],
+        msg: &TruthMessage,
+        now: f64,
+        physical: Option<(&[Detection], &HashMap<String, ActObservation>)>,
+    ) {
         for a in &msg.acts {
             if !inner.acts_seen.insert(a.id.clone()) {
                 continue;
             }
-            let actor = msg.contacts.iter().find(|c| c.id == a.by);
             let actor_track = inner.by_contact.get(&a.by).cloned();
+            if let Some(why) = &a.held {
+                inner.act_records.push(json!({
+                    "act": a.id, "s": a.s, "by": a.by, "by_track": actor_track,
+                    "against_vehicle": a.against_vehicle, "against_contact": a.against_contact,
+                    "observed": false, "held": why,
+                }));
+                continue;
+            }
+            let weapon = a.weapon.as_ref().and_then(|id| msg.weapons.iter().find(|w| w.id == *id));
+            let actor = msg.contacts.iter().find(|c| c.id == a.by);
             let observed = actor.and_then(|c| match physical {
-                Some(dets) => physical::observe_act(dets, &c.id),
+                Some((_, launches)) if weapon.is_some() => launches.get(&a.id).cloned(),
+                Some((dets, _)) => physical::observe_act(dets, &c.id),
                 None => {
                     // the author where the act happened (the contacts process says where)
                     let mut c = c.clone();
@@ -539,7 +644,7 @@ impl Tracks {
                 inner.act_records.push(json!({
                     "act": a.id, "s": a.s, "by": a.by, "by_track": actor_track,
                     "against_vehicle": a.against_vehicle, "against_contact": a.against_contact,
-                    "observed": false,
+                    "observed": false, "weapon": a.weapon,
                 }));
                 continue;
             };
@@ -579,10 +684,106 @@ impl Tracks {
                 "act": a.id, "s": a.s, "by": a.by, "by_track": actor_track,
                 "against_vehicle": a.against_vehicle, "against_contact": a.against_contact,
                 "observed": true, "report": report_id, "sensors": obs.sensors,
-                "sigma_m": obs.sigma_m, "observed_t": report.observed_t.0,
+                "sigma_m": obs.sigma_m, "observed_t": report.observed_t.0, "weapon": a.weapon,
             }));
+            // a seen launch: what it reports (by construction: the weapon's class, its nominal
+            // speed, which of ours it heads for) joins the weapon picture
+            if let (Some(w), Some(_)) = (weapon, physical) {
+                inner.weapons.launch_seen(&w.id, now, &obs, &report_id, &w.name, w.speed_mps, w.against_vehicle);
+            }
             inner.acts.push(report);
         }
+    }
+
+    /// Opponent weapons: this message's weapon fixes and strikes into the weapon picture (at the
+    /// bridge's time: `now` less each instant's age in the truth's clock). A strike on one of ours
+    /// waits for its vehicle's events (`Tracks::on_truth`); the picture ages.
+    fn sense_strikes(&self, inner: &mut Inner, observers: &[Observer], msg: &TruthMessage, fixes: &[physical::weapon::WeaponFix], now: f64) {
+        for o in observers {
+            inner.ours_at.insert(o.uid, (o.lat, o.lon));
+        }
+        let offset = now - msg.t;
+        inner.weapons.fixes(fixes, offset);
+        for i in &msg.impacts {
+            let Some(uid) = i.against_vehicle else { continue };
+            let w = inner.weapons.struck(&i.weapon, uid, i.t + offset);
+            let text = match (&w.launch, w.first_cue_t()) {
+                (Some(l), Some(first)) => format!(
+                    "struck ({}): launch seen by {} {:.1} s before; no damage is modelled",
+                    w.id,
+                    l.sensors.join(", "),
+                    i.t + offset - first
+                ),
+                (None, Some(first)) => format!(
+                    "struck ({}): no sensor saw the launch; the weapon was fixed {:.1} s before; no damage is modelled",
+                    w.id,
+                    i.t + offset - first
+                ),
+                _ => format!("struck ({}): no sensor saw the launch or the weapon; no damage is modelled", w.id),
+            };
+            println!("weapons: vehicle {uid} {text}");
+            inner.strikes.push((uid, text));
+        }
+        inner.weapons.age(now);
+    }
+
+    /// Opponent weapons: the inbox's alerts for the strikes in the weapon picture (shown while it
+    /// shows them, a minute): high when no sensor saw the launch (no author placed: the rule can
+    /// declare nothing, a person must), else medium. `name`: a vehicle's callsign.
+    pub fn strike_alerts(&self, name: &dyn Fn(u64) -> Option<String>) -> Vec<crate::decision::alerts::Alert> {
+        use crate::decision::alerts::{Alert, Severity};
+        lock(&self.inner)
+            .weapons
+            .tracks
+            .iter()
+            .filter_map(|w| {
+                let (uid, t) = w.struck?;
+                let callsign = name(uid);
+                let who = callsign.clone().unwrap_or_else(|| format!("vehicle {uid}"));
+                // "1:eo_ir" as "HUNTER 1 EO/IR"
+                let seen = |ss: &[String]| {
+                    ss.iter()
+                        .map(|s| {
+                            let (u, k) = s.split_once(':').unwrap_or(("", s));
+                            let k = if k == "eo_ir" { "EO/IR".to_string() } else { k.replace('_', " ") };
+                            let who = u.parse::<u64>().ok().and_then(name).unwrap_or_else(|| format!("vehicle {u}"));
+                            format!("{who} {k}")
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                let (severity, detail) = match (&w.launch, &w.report) {
+                    (Some(l), Some(r)) => (
+                        Severity::Medium,
+                        format!(
+                            "{who} struck ({}): the launch was seen by {} ({r}){}",
+                            w.id,
+                            seen(&l.sensors),
+                            w.warning_s().map(|s| format!(", {s:.1} s of warning")).unwrap_or_default()
+                        ),
+                    ),
+                    _ => (
+                        Severity::High,
+                        format!(
+                            "{who} struck ({}): no sensor saw the launch, so no shooter is placed and the rule declares nothing; declare by hand if you know who fired{}",
+                            w.id,
+                            w.warning_s().map(|s| format!(" (the weapon was fixed {s:.1} s before)")).unwrap_or_default()
+                        ),
+                    ),
+                };
+                Some(Alert {
+                    id: format!("struck:{}", w.id),
+                    kind: "struck",
+                    severity,
+                    uid,
+                    callsign,
+                    detail,
+                    since_t: t,
+                    op_id: None,
+                    intent_id: None,
+                })
+            })
+            .collect()
     }
 
     /// Rules 9: the acts observed since the last call, for the decision engine (each once).
@@ -712,6 +913,7 @@ impl Tracks {
         {
             let mut inner = lock(&self.inner);
             self.drop_old(&mut inner, now);
+            inner.weapons.age(now);
         }
         self.publish(now);
     }
@@ -812,14 +1014,22 @@ impl Tracks {
 
     /// The WebSocket message, `{"type": "tracks", ...}`.
     fn message(&self, now: f64) -> String {
-        json!({
+        let mut msg = json!({
             "type": "tracks",
             "t": round(now, 2),
             "stale_after_s": model::STALE_S,
             "tracks": self.tracks_json(now),
             "lost": self.lost_json(),
-        })
-        .to_string()
+        });
+        // opponent weapons: the weapon picture, when there is one (absent otherwise)
+        let weapons = {
+            let inner = lock(&self.inner);
+            inner.weapons.json(|u| inner.ours_at.get(&u).copied())
+        };
+        if !weapons.is_empty() {
+            msg["weapons"] = Value::Array(weapons);
+        }
+        msg.to_string()
     }
 
     /// Push the tracks to WebSocket clients if they changed. Built only while anyone watches,
@@ -1369,17 +1579,24 @@ async fn sim_contacts(State(api): State<Api>, request: axum::extract::Request) -
         Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, format!("truth message: {e}")),
     };
     let truth_t = msg.t;
+    let aim_at = msg.aim_at.clone();
     match api.tracks.on_truth(msg, &api.world) {
-        Ok((contacts, detections, tracks)) => Json(json!({
-            "ok": true,
-            "contacts": contacts,
-            "detections": detections,
-            "tracks": tracks,
-            // the simulation channel back: abstract effects for the truth side to apply (rules
-            // 20: a munition's at its impact, on the truth message's clock)
-            "effects": api.tracks.take_effects_at(truth_t, clock::wall()),
-        }))
-        .into_response(),
+        Ok((contacts, detections, tracks)) => {
+            let mut answer = json!({
+                "ok": true,
+                "contacts": contacts,
+                "detections": detections,
+                "tracks": tracks,
+                // the simulation channel back: abstract effects for the truth side to apply (rules
+                // 20: a munition's at its impact, on the truth message's clock)
+                "effects": api.tracks.take_effects_at(truth_t, clock::wall()),
+            });
+            // opponent weapons: where the vehicles they may be aimed at are (only when asked)
+            if !aim_at.is_empty() {
+                answer["ours"] = Value::Array(api.tracks.ours_for(&api.world, &aim_at));
+            }
+            Json(answer).into_response()
+        }
         Err(e) => error(StatusCode::UNPROCESSABLE_ENTITY, e),
     }
 }

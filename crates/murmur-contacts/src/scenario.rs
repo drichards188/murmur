@@ -39,6 +39,13 @@
 //! detecting it; `"persists"` keeps it moving, flagged). `transit` moves once from `route[0]` to the last point
 //! and holds there; `loiter` needs `center` and `radius_m`; `station` and `drift` need
 //! `at`. Drift follows the tidewater current when the contacts process has conditions.
+//!
+//! A contact may carry a weapon (docs/OPPONENT-WEAPONS.md): `weapon = { name = "ATGM-class
+//! missile", kind = "atgm", speed_mps = 250, range_m = 5000 }` (and `fly_m`, its flight height
+//! above the sea, default 4). Every act by such a contact launches it ([`crate::weapon`]); the
+//! acts of any other contact stay abstract. Weapons need the physical sensing model: a file that
+//! names the legacy one and a weapon is refused, as is an act against a contact the weapon cannot
+//! reach at the act's second.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -234,9 +241,10 @@ pub struct Scenario {
     pub acts: Vec<ActSpec>,
 }
 
-/// Rules 9: an abstract hostile act a contact commits at a scenario second, against one of
-/// our vehicles (`against_vehicle`, its fleet uid) or another contact (`against_contact`).
-/// No weapon of any kind is modelled: an act is a time, an author and a victim. It is truth:
+/// Rules 9: a hostile act a contact commits at a scenario second, against one of our vehicles
+/// (`against_vehicle`, its fleet uid) or another contact (`against_contact`). By a contact
+/// without a weapon it is abstract: a time, an author and a victim. By one with a weapon it
+/// launches it (docs/OPPONENT-WEAPONS.md, [`crate::weapon`]). It is truth:
 /// the C2 learns of it only through its sensors (the bridge's sensing model decides which of
 /// ours observe it, and where they place its author).
 ///
@@ -260,6 +268,49 @@ pub struct ActSpec {
     pub against_contact: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+}
+
+/// The weapon kinds the bridge's sensing model has figures for (its `tracks::physical::weapon`).
+pub const WEAPON_KINDS: &[&str] = &["atgm"];
+
+/// A contact's weapon (docs/OPPONENT-WEAPONS.md): kinematics only, a straight flight at
+/// constant speed from the shooter to a lead point on its victim; no guidance, no miss, no
+/// damage. Rounded public figures, "-class" naming as the catalog's munitions.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WeaponSpec {
+    pub name: String,
+    pub kind: String,
+    pub speed_mps: f64,
+    pub range_m: f64,
+    /// Its flight height above the sea, m.
+    #[serde(default = "default_fly_m")]
+    pub fly_m: f64,
+}
+
+fn default_fly_m() -> f64 {
+    4.0
+}
+
+impl WeaponSpec {
+    fn validate(&self) -> Result<(), String> {
+        if self.name.trim().is_empty() {
+            return Err("weapon needs a name".into());
+        }
+        if !WEAPON_KINDS.contains(&self.kind.as_str()) {
+            return Err(format!("weapon kind {:?} is none the sensing model knows ({})", self.kind, WEAPON_KINDS.join(", ")));
+        }
+        if !(self.speed_mps.is_finite() && self.speed_mps > 0.0) {
+            return Err("weapon speed_mps must be above 0".into());
+        }
+        if !(self.range_m.is_finite() && self.range_m > 0.0) {
+            return Err("weapon range_m must be above 0".into());
+        }
+        if !(self.fly_m.is_finite() && (0.0..=100.0).contains(&self.fly_m)) {
+            return Err("weapon fly_m must be within 0..100".into());
+        }
+        Ok(())
+    }
 }
 
 /// One contact as written in the file (flat fields; [`Motion`] is derived and validated).
@@ -304,6 +355,9 @@ pub struct ContactSpec {
     pub end_s: Option<f64>,
     #[serde(default)]
     pub on_effect: OnEffect,
+    /// Its weapon: every act it commits launches it (docs/OPPONENT-WEAPONS.md).
+    #[serde(default)]
+    pub weapon: Option<WeaponSpec>,
     /// The physical sensing model's per-contact signature (`dc_m`, `rcs_m2`, ...).
     #[serde(flatten)]
     pub physical: SignatureFields,
@@ -354,6 +408,7 @@ pub struct Contact {
     pub start_s: f64,
     pub end_s: Option<f64>,
     pub on_effect: OnEffect,
+    pub weapon: Option<WeaponSpec>,
 }
 
 impl ContactSpec {
@@ -424,6 +479,9 @@ impl ContactSpec {
                 self.kind, d.domain, self.domain
             )));
         }
+        if let Some(w) = &self.weapon {
+            w.validate().map_err(bad)?;
+        }
         let default_alt = match self.domain {
             Domain::Air => 300.0,
             Domain::Subsurface => -30.0,
@@ -469,6 +527,7 @@ impl ContactSpec {
             start_s: self.start_s.max(0.0),
             end_s: self.end_s,
             on_effect: self.on_effect,
+            weapon: self.weapon.clone(),
         })
     }
 }
@@ -514,7 +573,63 @@ impl Scenario {
                 return Err(format!("act {:?}: at_s must be a scenario second", a.id));
             }
         }
+        if s.contacts.iter().any(|c| c.weapon.is_some()) {
+            if s.sensing.model == Some(SensingModel::Legacy) {
+                return Err("weapons need the physical sensing model: this file names the legacy one".into());
+            }
+            s.weapon_ranges()?;
+        }
         Ok(s)
+    }
+
+    /// Every act by an armed contact against another contact is within its weapon's range at
+    /// the act's second (both positions are truth, the motion stepped at 1 Hz without a current
+    /// as the contacts process steps it). An act against one of our vehicles is checked at its
+    /// second instead (where the vehicle is is known only then: [`crate::weapon`]).
+    pub fn weapon_ranges(&self) -> Result<(), String> {
+        let armed: Vec<&ActSpec> = self
+            .acts
+            .iter()
+            .filter(|a| a.against_contact.is_some() && self.contacts.iter().any(|c| c.id == a.by && c.weapon.is_some()))
+            .collect();
+        if armed.is_empty() {
+            return Ok(());
+        }
+        let mut movers: Vec<crate::motion::Mover> = self
+            .contacts()?
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| crate::motion::Mover::new(c, self.seed, i as u64))
+            .collect();
+        let mut armed = armed;
+        armed.sort_by(|a, b| a.at_s.total_cmp(&b.at_s));
+        let mut s = 0.0;
+        let mut prev = 0.0;
+        for a in armed {
+            while s < a.at_s {
+                s = (s + 1.0).min(a.at_s);
+                for m in &mut movers {
+                    m.step(s, s - prev, None);
+                }
+                prev = s;
+            }
+            let at = |id: &str| movers.iter().find(|m| m.contact.id == id).map(|m| (m.st.lat, m.st.lon));
+            let (Some(p), Some(q)) = (at(&a.by), a.against_contact.as_deref().and_then(at)) else { continue };
+            let w = self.contacts.iter().find(|c| c.id == a.by).and_then(|c| c.weapon.as_ref()).expect("armed");
+            let d = murmur_standins::geo::distance_m(p.0, p.1, q.0, q.1);
+            if d > w.range_m {
+                return Err(format!(
+                    "act {:?}: its victim is {:.1} km from {:?} at {} s, beyond its {}'s {:.1} km",
+                    a.id,
+                    d / 1000.0,
+                    a.by,
+                    a.at_s,
+                    w.name,
+                    w.range_m / 1000.0
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub fn load(path: &Path) -> Result<Scenario, String> {

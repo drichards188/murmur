@@ -21,6 +21,10 @@
   0% { box-shadow: 0 4px 24px rgba(0, 0, 0, .6), 0 0 34px rgba(255, 93, 93, .95); }
   100% { box-shadow: 0 4px 24px rgba(0, 0, 0, .6), 0 0 16px rgba(255, 93, 93, .35); }
 }
+/* an opponent weapon (weapon.ts): INCOMING while one of ours is under a detected attack, then its
+   strike; the same red, a stronger edge while it flies */
+.act-status.weapon-status.incoming { border-width: 2px; background: rgba(58, 10, 14, .97); }
+.act-status.weapon-status.incoming strong { color: #ffd0d0; letter-spacing: .06em; }
 @media (prefers-reduced-motion: reduce) {
   .act-status { animation: none; }
 }

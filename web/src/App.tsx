@@ -29,6 +29,7 @@ import type { Against } from './ident'
 import { span } from './engageSteps'
 import { shownAlt } from './drawn'
 import './act.css'
+import { ESTIMATE_NOTE, weaponBanner, weaponReports, type WeaponTrack } from './weapon'
 import { secondsToImpact } from './munition'
 import { usePlatformLimits } from './taskDefaults'
 import { estimated } from './estimate'
@@ -311,6 +312,24 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const victimsRef = useRef({ vehicles: allVehicles, tracks: tracks?.tracks ?? [] })
   victimsRef.current = { vehicles: allVehicles, tracks: tracks?.tracks ?? [] }
   const inboxActs = decisions?.inbox.acts
+  // Opponent weapons (weapon.ts, docs/OPPONENT-WEAPONS.md), from the bridge's weapon picture: the
+  // vehicle each heads for (the estimate's end) is kept where this console first had it, as an
+  // act's victim is; a struck one where it was struck
+  const weapons = useMemo<WeaponTrack[]>(() => tracks?.weapons ?? [], [tracks?.weapons])
+  const weaponActsKey = [...weaponReports(weapons)].sort().join()
+  const weaponActs = useMemo(() => new Set(weaponActsKey ? weaponActsKey.split(',') : []), [weaponActsKey])
+  const weaponVictims = useRef(new Map<string, LngLat>())
+  const weaponVictim = useCallback((w: WeaponTrack): LngLat | null => {
+    const key = `${w.id}@${w.launch?.t ?? w.first_cue_t ?? w.struck?.t ?? 0}`
+    const kept = weaponVictims.current.get(key)
+    if (kept) return kept
+    const uid = w.aimed_at ?? w.struck?.uid
+    const v = uid ? victimsRef.current.vehicles.find((x) => String(x.uid) === uid) : undefined
+    if (!v?.position) return null
+    weaponVictims.current.set(key, v.position)
+    return v.position
+  }, [])
+  const nameOf = useCallback((uid: string) => vehicleNamer(victimsRef.current.vehicles)(uid), [])
   const actDraws = useMemo<ActDrawing[]>(() => {
     const { vehicles: vs, tracks: ts } = victimsRef.current
     const victimAt = (a: Against, t: number): Victim | null => {
@@ -324,11 +343,13 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
       }
       return null
     }
-    return actDrawings(inboxActs ?? [], actsSeen.current, now(), victimAt, vehicleNamer(vs))
-  }, [inboxActs, now])
+    return actDrawings(inboxActs ?? [], actsSeen.current, now(), victimAt, vehicleNamer(vs), weaponActs)
+  }, [inboxActs, now, weaponActs])
   // Dismiss: the acts drawn so far leave the map (and the banner) before their minute is up
   const [actsDismissedAt, setActsDismissedAt] = useState<number | null>(null)
-  const actBanner = bannerAct(actDraws, impactNowMs, actsDismissedAt)
+  // a weapon's banner (INCOMING, then the strike) before an act's: it says more
+  const weaponBan = weaponBanner(weapons, impactNowMs, nameOf, weaponVictim)
+  const actBanner = weaponBan ? null : bannerAct(actDraws, impactNowMs, actsDismissedAt)
   /** frame an act: its author's fix with room for its error, and its victim */
   const focusAct = useCallback((d: ActDrawing) => {
     const ring = circle(d.author, Math.max(d.sigma_m * 3, 300)).filter((_, k) => k % 8 === 0)
@@ -598,6 +619,9 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           oneWay={oneWay}
           acts={actDraws}
           actsDismissedAt={actsDismissedAt}
+          weapons={weapons}
+          weaponVictim={weaponVictim}
+          nameOf={nameOf}
           taskings={taskings}
           selected={selected}
           draft={mapDraft}
@@ -638,7 +662,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         </ErrorBoundary>
         {/* the tutorial's coach card (sim/situations/tutorial.toml): only while the situation running is the tutorial */}
         <ErrorBoundary name="Tutorial" className="floating">
-          <Tutorial decisions={decisions} tracks={tracks} now={now} onMenu={onMenu} formChecks={engageChecks} />
+          <Tutorial decisions={decisions} tracks={tracks} now={now} onMenu={onMenu} formChecks={engageChecks} nameOf={nameOf} />
         </ErrorBoundary>
         {flyingImpact?.munition && (
           <div className="impact-status" role="status" data-tutorial="impact-status">
@@ -659,9 +683,19 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             <button onClick={() => focusImpact(visibleImpact)}>View impact</button>
           </div>
         )}
+        {weaponBan && (
+          <div className={`act-status weapon-status ${weaponBan.tone}${flyingImpact?.munition || visibleImpact ? ' below' : ''}`} role="status" data-weapon={weaponBan.w.id} data-tutorial="weapon-status" title={ESTIMATE_NOTE}>
+            <span><strong>{weaponBan.head}</strong>{' · '}{weaponBan.text}</span>
+            <button onClick={() => {
+              const at = weaponVictim(weaponBan.w)
+              const from = weaponBan.w.launch?.point ?? weaponBan.w.fixes[0]?.point ?? at
+              if (from) setFit((f) => ({ points: at ? [from, at, ...circle(from, 300).filter((_, k) => k % 8 === 0)] : [from], n: (f?.n ?? 0) + 1, padRight: showInbox ? 430 : 70 }))
+            }}>View</button>
+          </div>
+        )}
         {actBanner && (
           <div className={`act-status${flyingImpact?.munition || visibleImpact ? ' below' : ''}`} role="status" data-act={actBanner.d.act}>
-            <span><strong>HOSTILE ACT OBSERVED</strong>
+            <span><strong>{actBanner.d.weapon ? 'HOSTILE ACT OBSERVED' : 'HOSTILE ACT REPORTED'}</strong>
               {' · '}{bannerLine(actBanner.d)}{' · '}act {actBanner.d.act}, {span(impactNowMs - actBanner.d.observedT)} ago
               {actBanner.others ? ` · ${actBanner.others} more in the last minute` : ''}</span>
             <button onClick={() => focusAct(actBanner.d)}>View</button>

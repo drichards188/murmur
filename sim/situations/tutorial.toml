@@ -14,9 +14,10 @@
 #
 # Same platforms, policy, engine and rules as hostile-act-engagement; the timeline is compressed
 # (sim/scenarios/tutorial.toml): the boat starts 800 m short of its holding point and holds from
-# about 1:00, and it fires on HUNTER 1 from about 1:20 and again every minute to the end, so
-# whenever the person reaches the step that waits for an act, one has come or comes within a
-# minute. The run is 20 minutes for a slow reader. Nothing is fast-forwarded: rate 1, the shipped
+# about 1:00, and it fires a missile at HUNTER 1 from about 1:20 and again every 90 s to the end,
+# so whenever the person reaches the step that waits for an attack, one has come or comes within a
+# minute and a half. The missile is modelled (docs/OPPONENT-WEAPONS.md): our sensors may see its
+# launch, the missile in flight and its strike, and the coach card says which did and when. The run is 20 minutes for a slow reader. Nothing is fast-forwarded: rate 1, the shipped
 # checks and tiers (no rules or policy change), and nothing nominates for the person (no AI, no
 # timeline fallback).
 #
@@ -63,12 +64,14 @@ confirm and you nominate; op-2 and op-3, two scripted operators standing in for 
 director = """
 Truth: a small fast boat with no AIS (truth affiliation: hostile) runs in from 800 m west of its
 holding point at 15 m/s from about 0:08 and holds mid-strait at [-122.4950, 37.8120], 1.5 km west
-of the bridge and inside the engagement zone, from about 1:00. At about 1:25 it fires on HUNTER 1,
-patrolling 0.9 to 1.2 km east of it (an abstract act), and again every minute to the end. Nothing else is
+of the bridge and inside the engagement zone, from about 1:00. At about 1:25 it fires an ATGM-class
+missile (250 m/s, 5 km) at HUNTER 1, patrolling 0.9 to 1.2 km east of it, and again every 90 s to
+the end. Each strikes HUNTER 1 3.6 to 4.8 s after its launch; no damage is modelled. Nothing else is
 hostile.
-What should happen: our sensors observe the first act; the engine attributes it to the boat's track
-at 0.9 or more and declares the track hostile by rule (a loose fix is flagged instead, and the next
-act a minute later is another chance); the person confirms the declaration in the Review list (or
+What should happen: HUNTER 1's ring camera sees the first launch and places the shooter; the engine
+attributes the act to the boat's track at 0.9 or more and declares the track hostile by rule (a
+loose fix is flagged instead, and the next attack 90 s later is another chance); REAPER 1's radar
+or HUNTER 1's camera may fix the missile in flight; HUNTER 1 reports the strike; the person confirms the declaration in the Review list (or
 on the track's card), opens the nomination form from the track's card, picks REAPER 1 (some 35 s
 away at 90 m/s; a fixed wing takes fallback return), reads the checks and nominates; op-2 and op-3
 sign within seconds; REAPER 1 is dispatched and the engine releases its missile from some 2 to 2.5
@@ -104,7 +107,7 @@ seed = 1
 headline = "A guided walk through the engagement chain: you confirm the threat and nominate; two scripted colleagues sign."
 bullets = [
   "About 8 minutes, step by step, with a coach card on the console.",
-  "A fast boat fires on one of ours; the engine declares it hostile by rule, and you confirm it.",
+  "A fast boat fires a missile at one of ours: see when and how we know; the engine declares it hostile by rule, and you confirm it.",
   "You nominate an engagement with REAPER 1 in the nomination form and read its checks.",
   "op-2 and op-3 (scripts) sign: a proposer never signs their own nomination.",
   "Then the dispatch, the missile's release and flight, and the assessment.",
@@ -132,7 +135,7 @@ director = true
 id = "boat-fires"
 at_s = 85
 kind = "note"
-text = "The fast boat fires on HUNTER 1 (truth; again every minute)"
+text = "The fast boat fires a missile at HUNTER 1 (truth; again every 90 s)"
 director = true
 
 # ---- what to watch for, in the Situation panel (the coach card walks the person through it)

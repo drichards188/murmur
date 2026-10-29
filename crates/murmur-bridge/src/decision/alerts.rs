@@ -34,7 +34,8 @@ pub struct Alert {
     /// an engagement) | path_crosses_land (rules 17: an rtl that went as ordered though its
     /// way home crosses land) | identify_holding | identify_lost | identify_timed_out |
     /// identify_held (rules 21) | identify_meanwhile (rules 23: another vehicle identified an
-    /// identify order's track, the order going on; informational)
+    /// identify order's track, the order going on; informational) | struck (an opponent weapon
+    /// struck one of ours: docs/OPPONENT-WEAPONS.md)
     pub kind: &'static str,
     pub severity: Severity,
     pub uid: Uid,

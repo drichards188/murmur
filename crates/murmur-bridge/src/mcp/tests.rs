@@ -1092,6 +1092,7 @@ async fn tracks_are_perception_with_age_and_never_truth() {
             sensing: Sensing { misclassification_rate: 0.0, model: Some(SensingModel::Legacy), ..Default::default() },
             contacts: vec![contact.clone()],
             acts: Vec::new(),
+            aim_at: Vec::new(), weapons: Vec::new(), impacts: Vec::new(),
         };
         r.tracks
             .on_truth_with(msg, std::slice::from_ref(&observer), now - 60.0 + f64::from(s))
@@ -1779,6 +1780,7 @@ fn hostile_track(r: &Rig) {
             sensing: Sensing { misclassification_rate: 0.0, model: Some(SensingModel::Legacy), ..Default::default() },
             contacts: vec![contact.clone()],
             acts: Vec::new(),
+            aim_at: Vec::new(), weapons: Vec::new(), impacts: Vec::new(),
         };
         r.tracks
             .on_truth_with(msg, std::slice::from_ref(&observer), now - 90.0 + f64::from(s))
@@ -1845,6 +1847,7 @@ fn neutral_alongside(r: &Rig) {
                 contact("fisher", TruthAffiliation::Neutral, "fishing_vessel", 37.8138),
             ],
             acts: Vec::new(),
+            aim_at: Vec::new(), weapons: Vec::new(), impacts: Vec::new(),
         };
         r.tracks
             .on_truth_with(msg, std::slice::from_ref(&observer), now - 90.0 + f64::from(s))
@@ -1912,6 +1915,7 @@ fn lost_alongside(r: &Rig) {
             sensing: Sensing { misclassification_rate: 0.0, model: Some(SensingModel::Legacy), ..Default::default() },
             contacts,
             acts: Vec::new(),
+            aim_at: Vec::new(), weapons: Vec::new(), impacts: Vec::new(),
         };
         r.tracks
             .on_truth_with(msg, std::slice::from_ref(&observer), now - 400.0 + f64::from(s))

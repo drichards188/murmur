@@ -245,6 +245,7 @@ impl Erig {
             },
             contacts,
             acts: Vec::new(),
+            aim_at: Vec::new(), weapons: Vec::new(), impacts: Vec::new(),
         };
         self.tracks
             .on_truth_with(msg, std::slice::from_ref(&observer), now_s)
@@ -2792,6 +2793,7 @@ async fn the_decision_facts_carry_the_reaches_of_the_sensing_model_in_force() {
             sensing: Sensing { misclassification_rate: 0.0, model: Some(model), ..Default::default() },
             contacts: Vec::new(),
             acts: Vec::new(),
+            aim_at: Vec::new(), weapons: Vec::new(), impacts: Vec::new(),
         };
         e.tracks.on_truth_with(msg, &[], e.now_s()).expect("sensing");
     };

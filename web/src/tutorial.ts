@@ -6,6 +6,7 @@
 // only: nothing here decides or sends anything.
 import type { Check, Intent } from './decisions'
 import type { ObservedAct, Review, ReviewFlag } from './ident'
+import type { WeaponTrack } from './weapon'
 import type { IdentityLevel, Track } from './tracks'
 
 /** where the tutorial's boat holds, mid-strait 1.5 km west of the bridge ([lon, lat]) */
@@ -50,8 +51,15 @@ export interface Facts {
   confirmed: boolean
   /** who confirmed it */
   confirmedBy: string | null
-  /** the act the rule declaration rests on */
+  /** the act the rule declaration rests on, and its attribution */
   declarationAct: string | null
+  declarationAttribution: number | null
+  /** the latest attack as our sensors know it (the weapon picture: weapon.ts), and how many we know of */
+  attack: WeaponTrack | null
+  attacks: number
+  /** the latest attack is over and its timeline has been up a few seconds (ATTACK_READ_MS since
+   *  its strike), or there is none: the act step may move on */
+  attackSettled: boolean
   /** acts our sensors observed so far */
   acts: number
   /** the latest act's verdict when it was not a declaration: flagged (why) or only recorded */
@@ -132,6 +140,9 @@ export function findBoat(tracks: Track[]): Track | null {
 
 const isEngage = (i: Intent) => i.kind === 'engage'
 
+/** the act step holds an attack's timeline this long after its strike before it moves on, ms */
+export const ATTACK_READ_MS = 8000
+
 /** What the walk-through reads, from what the console holds now. `nowMs`: the bridge's clock.
  *  `pending`: the inbox's waiting items, whose engagement view (who signed, the live picture) is
  *  the one the Inbox's card shows; the intents list may carry an older one. */
@@ -144,6 +155,8 @@ export function tutorialFacts(
   pending: Intent[] = [],
   /** the nomination form's latest dry run on its target (null with the form closed) */
   form: { track: string; checks: Check[] } | null = null,
+  /** the opponent's weapons as our sensors know them (the tracks feed's `weapons`) */
+  weapons: WeaponTrack[] = [],
 ): Facts {
   const boat = findBoat(tracks)
   const d = boat?.declared ?? null
@@ -163,6 +176,9 @@ export function tutorialFacts(
   const live = view?.live
   const e = nomination?.engagement
   const impactT = e?.munition ? e.munition.impact_t : (e?.effect?.t ?? null)
+  const declaring = (acts ?? []).find((a) => a.verdict.verdict === 'declare' && a.act.act === d?.evidence?.act)
+  const cue = (w: WeaponTrack) => w.first_cue_t ?? w.struck?.t ?? 0
+  const attack = [...weapons].sort((a, b) => cue(b) - cue(a))[0] ?? null
   return {
     boat,
     declared,
@@ -170,6 +186,10 @@ export function tutorialFacts(
     confirmed,
     confirmedBy: d?.confirmed_by ?? (declared && !d?.rule ? (d?.by ?? null) : null),
     declarationAct: d?.evidence?.act ?? null,
+    declarationAttribution: declaring && declaring.verdict.verdict === 'declare' ? declaring.verdict.attribution : null,
+    attack,
+    attacks: weapons.length,
+    attackSettled: !attack || attack.status === 'lost' || (!!attack.struck && nowMs - attack.struck.t >= ATTACK_READ_MS),
     acts: acts?.length ?? 0,
     lastActNot,
     flag,
@@ -195,7 +215,8 @@ export function stepDone(id: StepId, f: Facts): boolean {
   const nominated = f.nomination != null && f.nominationEnded == null
   switch (id) {
     case 'act':
-      return f.declared || nominated
+      // declared, and the attack it came from is over and read (its strike, the warning)
+      return (f.declared && f.attackSettled) || nominated
     case 'confirm':
       return f.confirmed || nominated
     case 'nominate':

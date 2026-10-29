@@ -1,10 +1,12 @@
-// Hostile acts our sensors observed (rules 9), drawn on the map as a fire event: a fast streak
-// from where our sensors placed the act's author to the victim, a flash on the victim, a label
-// that fades, then a faint dashed line and the author's marker kept for a minute. Only what the
-// console already receives is drawn: the observed acts in the inbox (`inbox.acts`, the bridge's
-// latest twenty), each with its author's fix and that fix's 1-sigma error, never the
-// simulator's truth. An act carries no weapon, range or speed, so none is drawn: the streak is a
-// display convention, the same for every act.
+// Hostile acts our sensors observed (rules 9), drawn on the map as reports: a burst where our
+// sensors placed the act's author, a label that fades, the author's marker kept for a minute, and,
+// for an abstract act (no weapon modelled), a dashed "fired on" arrow to the victim. Nothing flies:
+// an abstract act carries no weapon, range or speed, so no path is drawn for one. An act that
+// launched a modelled weapon (docs/OPPONENT-WEAPONS.md) draws no arrow: its weapon is drawn from the
+// weapon picture instead (weapon.ts, weaponLayers.ts), its estimated flight and its fixes. Only what
+// the console already receives is drawn: the observed acts in the inbox (`inbox.acts`, the
+// bridge's latest twenty), each with its author's fix and that fix's 1-sigma error, never the
+// simulator's truth.
 //
 // The victim is drawn where the console had it when the act first came in (our vehicle's
 // reported position, or a protected track's predicted one at the act's time); the bridge
@@ -47,19 +49,14 @@ export interface ActDrawing {
   victimName: string
   /** "HUNTER 1 EO/IR and sonar; REAPER 1 EO/IR" */
   seenBy: string
+  /** it launched a modelled weapon (its report is a weapon track's): no arrow, the weapon is drawn */
+  weapon: boolean
 }
 
 // ---- timing ------------------------------------------------------------------------------------
 
-/** the streak's head goes from the author to the victim in this long, ms */
-export const TRAVEL_MS = 700
-/** its tail follows this far behind, so the whole streak is gone after TRAVEL_MS + TAIL_LAG_MS */
-export const TAIL_LAG_MS = 300
-export const STREAK_MS = TRAVEL_MS + TAIL_LAG_MS
-/** the flash where the author fired */
+/** the burst where the author fired */
 export const MUZZLE_MS = 600
-/** the flash on the victim, from the streak's arrival */
-export const HIT_MS = 1500
 /** the full label: held, then faded out */
 export const LABEL_HOLD_MS = 6000
 export const LABEL_FADE_MS = 3000
@@ -81,22 +78,12 @@ export function animStart(observedT: number, firstSeen: number): number {
   return firstSeen - observedT <= FRESH_MS ? Math.max(observedT, firstSeen) : observedT
 }
 
-/** The streak at `age` ms from the start, as fractions of the way from the author to the victim:
- *  [tail, head]; null before or after it. */
-export function streakSpan(age: number): [number, number] | null {
-  if (!(age >= 0 && age < STREAK_MS)) return null
-  const head = Math.min(1, age / TRAVEL_MS)
-  const tail = Math.max(0, Math.min(1, (age - TAIL_LAG_MS) / TRAVEL_MS))
-  return head > tail ? [tail, head] : null
-}
-
 /** A flash's progress, 0 as it starts to 1 as it ends; null outside it. */
 function flash(age: number, from: number, span: number): number | null {
   const p = (age - from) / span
   return p >= 0 && p < 1 ? p : null
 }
 export const muzzleFlash = (age: number) => flash(age, 0, MUZZLE_MS)
-export const hitFlash = (age: number) => flash(age, TRAVEL_MS, HIT_MS)
 
 /** The full label's opacity: 1, then down to 0 over LABEL_FADE_MS. */
 export function labelAlpha(age: number): number {
@@ -111,7 +98,7 @@ export function lingerAlpha(age: number): number {
   return Math.min(1, (LINGER_MS - age) / LINGER_FADE_MS)
 }
 
-/** Animation frames are wanted: its streak, a flash or the label's fade is under way. */
+/** Animation frames are wanted: its burst or the label's fade is under way. */
 export function animating(age: number): boolean {
   return age >= 0 && age < LABEL_HOLD_MS + LABEL_FADE_MS
 }
@@ -131,15 +118,21 @@ export function dashes(a: Pt3, b: Pt3, n = 14): [Pt3, Pt3][] {
   return out
 }
 
-/** The streak's points at `age`, tail first, `n` + 1 of them (per-point colour and width fade
- *  along it); empty when there is no streak or no victim to fly to. */
-export function streakPoints(a: Pt3, b: Pt3, age: number, n = 6): Pt3[] {
-  const s = streakSpan(age)
-  if (!s) return []
-  const [f0, f1] = s
-  const out: Pt3[] = []
-  for (let k = 0; k <= n; k++) out.push(along(a, b, f0 + ((f1 - f0) * k) / n))
-  return out
+/** The "fired on" arrow's head at `b`, coming from `a`: two short strokes back from the tip, `len`
+ *  of the line's length each (at most `max_m`), 25 degrees either side; empty for a point. */
+export function arrowHead(a: Pt3, b: Pt3, len = 0.12, max_m = 180): [Pt3, Pt3][] {
+  const k = 111_320 * Math.cos((b[1] * Math.PI) / 180)
+  const dx = (a[0] - b[0]) * k
+  const dy = (a[1] - b[1]) * 111_320
+  const d = Math.hypot(dx, dy)
+  if (!(d > 1)) return []
+  const l = Math.min(d * len, max_m)
+  return [25, -25].map((deg): [Pt3, Pt3] => {
+    const r = (deg * Math.PI) / 180
+    const ux = (dx * Math.cos(r) - dy * Math.sin(r)) / d
+    const uy = (dx * Math.sin(r) + dy * Math.cos(r)) / d
+    return [b, [b[0] + (ux * l) / k, b[1] + (uy * l) / 111_320, b[2]]]
+  })
 }
 
 // ---- what is drawn -----------------------------------------------------------------------------
@@ -170,9 +163,10 @@ export function bannerAct(ds: ActDrawing[], now: number, dismissedAt: number | n
 
 // ---- words -------------------------------------------------------------------------------------
 
-/** "fires on HUNTER 1" */
+/** "Act A-1: fires on HUNTER 1" (a modelled weapon's launch), "Act A-1: reported fire on HUNTER 1"
+ *  (an abstract act: a report, nothing modelled flew) */
 export function headline(d: ActDrawing): string {
-  return `Act ${d.act}: fires on ${d.victimName}`
+  return d.weapon ? `Act ${d.act}: launch at ${d.victimName}` : `Act ${d.act}: reported fire on ${d.victimName}`
 }
 
 /** "from T-0006 (0.97) · seen by HUNTER 1 EO/IR and sonar", or "author unattributed (flag F-2) · ..." */
@@ -188,7 +182,8 @@ export function mapLabel(d: ActDrawing): string {
   return `${headline(d)}\n${subline(d)}`
 }
 
-/** the banner's line: "T-0006 fired on HUNTER 1", "Unattributed fire on HUNTER 1" */
+/** the banner's line: "T-0006 fired on HUNTER 1", "Unattributed fire on HUNTER 1" (an abstract
+ *  act's banner says it is a report: App.tsx) */
 export function bannerLine(d: ActDrawing): string {
   return d.authorTrack ? `${d.authorTrack} fired on ${d.victimName}` : `Unattributed fire on ${d.victimName}`
 }
@@ -221,6 +216,7 @@ export function actDrawings(
   now: number,
   victimAt: (a: Against, t: number) => Victim | null,
   nameOf: (uid: string) => string,
+  weaponActs: ReadonlySet<string> = new Set(),
 ): ActDrawing[] {
   const out: ActDrawing[] = []
   for (const a of acts) {
@@ -245,6 +241,7 @@ export function actDrawings(
       victim: s.victim,
       victimName: r.against.kind === 'vehicle' ? nameOf(r.against.uid) : r.against.kind === 'track' ? `protected track ${r.against.track}` : 'something we hold no track of',
       seenBy: sensorsText(r.sensors, nameOf),
+      weapon: weaponActs.has(r.act),
     })
   }
   return out

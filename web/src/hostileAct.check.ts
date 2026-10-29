@@ -1,6 +1,7 @@
 // Checks for hostileAct.ts (no test runner in web/): node web/src/hostileAct.check.ts, as make
-// check does. The claims: an observed act's fire event plays once, about a second, from when the
-// console first saw it (never replayed for an act seen late); its label fades after some seconds
+// check does. The claims: an observed act's burst plays once, from when the console first saw it
+// (never replayed for an act seen late); an abstract act is drawn as a report (a dashed arrow, no
+// streak), a weapon act without an arrow (its weapon is drawn); its label fades after some seconds
 // and its line and marker after a minute or a dismissal; at most a few are drawn and labelled at
 // once; the author is drawn where our sensors placed it and named only when the engine attributed
 // the act; the victim stays where it was when the act came in. Throws on the first failure,
@@ -10,6 +11,7 @@ import {
   actDrawings,
   animating,
   animStart,
+  arrowHead,
   attributionOf,
   bannerAct,
   bannerLine,
@@ -17,7 +19,6 @@ import {
   dashes,
   FRESH_MS,
   headline,
-  hitFlash,
   LABEL_FADE_MS,
   LABEL_HOLD_MS,
   labelAlpha,
@@ -28,11 +29,7 @@ import {
   MAX_DRAWN,
   MAX_LABELS,
   muzzleFlash,
-  STREAK_MS,
-  streakPoints,
-  streakSpan,
   subline,
-  TRAVEL_MS,
   visibleActs,
   type ActDrawing,
   type Pt3,
@@ -50,29 +47,16 @@ check(animStart(10_000, 11_200) === 11_200, 'an act seen a moment after it was o
 check(animStart(10_000, 9_900) === 10_000, 'never before its observation')
 check(animStart(10_000, 10_000 + FRESH_MS + 1) === 10_000, 'an act seen late is placed at its observation, not replayed')
 
-// ---- the streak, about a second --------------------------------------------------------------
-check(near(STREAK_MS, 1000), 'the streak lasts about a second')
-check(streakSpan(-1) === null && streakSpan(0) === null, 'no streak before it starts (nor at the instant, nothing to draw)')
-const mid = streakSpan(TRAVEL_MS / 2)!
-check(near(mid[1], 0.5) && mid[0] < mid[1] && mid[0] >= 0, `half way the head is half way: ${mid}`)
-const arrived = streakSpan(TRAVEL_MS)!
-check(near(arrived[1], 1) && arrived[0] > 0, 'the head reaches the victim at TRAVEL_MS, the tail behind it')
-check(streakSpan(STREAK_MS - 1) != null && streakSpan(STREAK_MS) === null, 'gone once the tail arrives')
-for (let age = 1; age < STREAK_MS; age += 37) {
-  const s = streakSpan(age)
-  check(s != null && s[0] < s[1] && s[0] >= 0 && s[1] <= 1, `a span inside the line at ${age}: ${s}`)
-}
+// ---- a burst where it fired; the arrow's head at the victim ------------------------------------
 const a: Pt3 = [-122.495, 37.812, 0]
 const b: Pt3 = [-122.47, 37.81, 30]
-const pts = streakPoints(a, b, TRAVEL_MS / 2)
-check(pts.length === 7, 'n + 1 points')
-check(near(pts[6][0], a[0] + (b[0] - a[0]) * 0.5) && near(pts[6][2], 15), 'the head half way, heights between the ends')
-check(streakPoints(a, b, STREAK_MS).length === 0, 'no points after it')
-
-// ---- flashes: where it fired, then on the victim as the streak arrives ------------------------
-check(muzzleFlash(0) === 0 && muzzleFlash(-1) === null && muzzleFlash(10_000) === null, 'the muzzle flash starts with the act')
-check(hitFlash(TRAVEL_MS - 1) === null && hitFlash(TRAVEL_MS) === 0, 'the hit flash starts as the streak arrives')
-check(hitFlash(TRAVEL_MS + 10_000) === null, 'and ends')
+check(muzzleFlash(0) === 0 && muzzleFlash(-1) === null && muzzleFlash(10_000) === null, 'the burst starts with the act')
+const head = arrowHead(a, b)
+check(head.length === 2 && head.every(([tip, end]) => tip === b && end[2] === b[2]), 'two strokes back from the tip, at its height')
+const back = head.map(([, e]) => Math.hypot((e[0] - b[0]) * 88_000, (e[1] - b[1]) * 111_320))
+check(back.every((m) => m > 100 && m <= 181), `each stroke at most 180 m: ${back}`)
+check(head.every(([, e]) => e[0] < b[0]), 'pointing back toward the author')
+check(arrowHead(a, a).length === 0, 'no head for a point')
 
 // ---- the label fades, the line and marker linger a minute --------------------------------------
 check(labelAlpha(0) === 1 && labelAlpha(LABEL_HOLD_MS - 1) === 1, 'the label is held')
@@ -113,7 +97,9 @@ let ds = actDrawings([declared], seen, 101_000, victimAt, nameOf)
 check(ds.length === 1 && ds[0].start === 101_000, 'it plays from when it is first seen')
 check(ds[0].author[0] === -122.495 && ds[0].sigma_m === 42, 'the author where our sensors placed it, with its error')
 check(ds[0].victim?.at[0] === -122.47, 'the victim where it was')
-check(headline(ds[0]) === 'Act A-1: fires on HUNTER 1', headline(ds[0]))
+check(headline(ds[0]) === 'Act A-1: reported fire on HUNTER 1' && !ds[0].weapon, headline(ds[0]))
+const shot = actDrawings([declared], new Map(), 101_000, victimAt, nameOf, new Set(['A-1']))[0]
+check(shot.weapon && headline(shot) === 'Act A-1: launch at HUNTER 1', 'a weapon act: its launch, drawn as its weapon')
 check(subline(ds[0]) === 'from T-0006 (0.97) · seen by HUNTER 1 EO/IR and sonar; REAPER 1 EO/IR', subline(ds[0]))
 check(bannerLine(ds[0]) === 'T-0006 fired on HUNTER 1', bannerLine(ds[0]))
 // the victim moves on: the act still ends where it was hit, and does not start again
@@ -136,7 +122,7 @@ check(bannerLine(fl) === 'Unattributed fire on HUNTER 1', bannerLine(fl))
 const no = actDrawings([nobody], new Map(), 280_500, () => null, nameOf)[0]
 check(no.victim === null && no.authorTrack === null, 'no victim position, unattributed: still drawn at the author')
 const onTrack = actDrawings([act(6, 0, { verdict: 'recorded', why: '' }, { act: { ...declared.act, act: 'A-6', against: { kind: 'track', track: 'T-0003' } } })], new Map(), 0, victimAt, nameOf)[0]
-check(headline(onTrack) === 'Act A-6: fires on protected track T-0003', headline(onTrack))
+check(headline(onTrack) === 'Act A-6: reported fire on protected track T-0003', headline(onTrack))
 
 // ---- many acts: legible ----------------------------------------------------------------------
 const many: ActDrawing[] = Array.from({ length: 12 }, (_, k) => ({ ...ds[0], key: `A-${k}`, act: `A-${k}`, start: 1_000_000 + k * 5000 }))

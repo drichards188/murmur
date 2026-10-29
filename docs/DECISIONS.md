@@ -35,6 +35,24 @@ group. Dates are 2026.
   (replay recomputes it), the truth side applies the effect at the impact, the assessment starts
   there, and the console is served the flight (`engagement.munition`). A platform spent by its own
   effect is its own munition and decides as before.
+- **The opponent's weapon is modelled, and how we know of an attack is sensed** (10-29, the owner on
+  the tutorial: "setup the opponent in that tutorial with a weapon it deploys instead of the
+  abstract. same as the hellfire model it in a way that safeguards dont trip ... how and when is it
+  known that our unit has been attacked"). A contacts scenario may arm a contact (`weapon = { name,
+  kind, speed_mps, range_m }`; first the tutorial boat's ATGM-class missile, 250 m/s, 5 km); each of
+  its acts launches it, kinematics only (a straight line to a lead point on its victim; no guidance,
+  miss or damage). We learn of it through the physical sensing model's three cues: the launch, seen
+  by a camera with the shooter in its field (the act's observation, as an abstract act's was by
+  whatever detected its author); the weapon in flight, plotted by radars and cameras (a weapon
+  picture apart from the track picture, so a weapon is never a lost contact, a keep-out item or an
+  attribution candidate); and the strike, reported by the victim (`vehicle.event` `struck`, an
+  inbox alert, high when no sensor saw the launch). The engine decides nothing differently: no
+  rules version. Accepted shortcuts (bd murmur-ju1h, murmur-3nkc, murmur-nl15): weapons are told
+  from contacts by construction, a seen launch reports the class, speed and heading by construction
+  (the console's estimated flight), the strike report skips the victim's link, the flash is scored
+  as a camera look. Not in the engine's review: a strike with no seen launch (the inbox alert
+  only), and attribution from a weapon track's back-track (a line, not a point). Headless worlds
+  refuse weapons and agents do not see the weapon picture yet (murmur-mmxk). docs/OPPONENT-WEAPONS.md.
 - **Pitch depth and rigor, not "first"** (10-02). Pressure test found the ideas in closed
   work (RESCHU, IMPACT, Aegis doctrine, Lattice, Legion, Palantir AIP, Thunderforge, DARPA
   ASIMOV) and shallow open versions (AMOS, AeroMind, Pharos, SandTable). Cite them. Engage

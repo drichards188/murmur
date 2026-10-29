@@ -21,6 +21,7 @@ use murmur_contacts::effect::{self, EffectApplied, EffectNotice};
 use murmur_contacts::motion::Mover;
 use murmur_contacts::scenario::{Motion, Scenario};
 use murmur_contacts::truth::TruthMessage;
+use murmur_contacts::weapon::{self, Armory, OursAt};
 use murmur_standins::conditions::{self, Slot};
 
 fn env(key: &str) -> Option<String> {
@@ -169,6 +170,12 @@ async fn run() -> Result<(), String> {
     let mut in_flight = effect::InFlight::default();
     // rules 9: the scenario second of the last tick (acts in between are committed now)
     let mut prev_s = f64::NEG_INFINITY;
+    // opponent weapons (docs/OPPONENT-WEAPONS.md): those in flight, the vehicles they may be aimed
+    // at, and where the bridge last said those were
+    let mut armory = Armory::default();
+    let aim_at = weapon::aim_at(&scenario);
+    let mut ours: std::collections::BTreeMap<u64, OursAt> = std::collections::BTreeMap::new();
+    let mut prev_t = f64::NEG_INFINITY;
     loop {
         tokio::select! {
             _ = every.tick() => {}
@@ -208,9 +215,14 @@ async fn run() -> Result<(), String> {
         msg.effects = std::mem::take(&mut applied);
         // rules 9: the hostile acts of this tick (truth; each once)
         msg.acts = TruthMessage::acts_between(&scenario.acts, prev_s, s, t0, &movers);
+        // an armed author launches its weapon (or holds its fire)
+        armory.launch(&scenario, &mut msg.acts, &movers, &ours);
+        msg.aim_at = aim_at.clone();
+        msg.weapons = armory.in_flight(prev_t, msg.t);
+        msg.impacts = armory.impacts(msg.t);
         for a in &msg.acts {
             println!(
-                "act {} at {:.0} s: {} against {}{}",
+                "act {} at {:.0} s: {} against {}{}{}",
                 a.id,
                 a.s,
                 a.by,
@@ -218,10 +230,24 @@ async fn run() -> Result<(), String> {
                     .map(|u| format!("our vehicle {u}"))
                     .or_else(|| a.against_contact.clone())
                     .unwrap_or_default(),
-                a.label.as_deref().map(|l| format!(" ({l})")).unwrap_or_default()
+                a.label.as_deref().map(|l| format!(" ({l})")).unwrap_or_default(),
+                match (&a.weapon, &a.held) {
+                    (Some(w), _) => msg
+                        .weapons
+                        .iter()
+                        .find(|f| f.id == *w)
+                        .map(|f| format!(": {} launched, strikes in {:.1} s", f.name, f.impact_t - f.launch_t))
+                        .unwrap_or_default(),
+                    (None, Some(h)) => format!(": held its fire ({h})"),
+                    _ => String::new(),
+                }
             );
         }
+        for i in &msg.impacts {
+            println!("weapon {} struck {} at {:.1}", i.weapon, i.against_vehicle.map(|u| format!("our vehicle {u}")).or_else(|| i.against_contact.clone()).unwrap_or_default(), i.t - t0);
+        }
         prev_s = s;
+        prev_t = msg.t;
         if let Ok(line) = serde_json::to_string(&msg) {
             let _ = writeln!(log, "{line}");
             let _ = log.flush();
@@ -234,9 +260,16 @@ async fn run() -> Result<(), String> {
         let outcome = match r {
             Ok(resp) if resp.status().is_success() => {
                 // the simulation channel back: engagement effects to apply (Phase E)
-                if let Ok(answer) = resp.json::<serde_json::Value>().await
-                    && let Some(list) = answer.get("effects").and_then(|e| e.as_array())
-                {
+                let answer = resp.json::<serde_json::Value>().await.ok();
+                // opponent weapons: where the vehicles they may be aimed at are now
+                if let Some(list) = answer.as_ref().and_then(|a| a.get("ours")).and_then(|o| o.as_array()) {
+                    for o in list {
+                        if let Ok(o) = serde_json::from_value::<OursAt>(o.clone()) {
+                            ours.insert(o.uid, o);
+                        }
+                    }
+                }
+                if let Some(list) = answer.as_ref().and_then(|a| a.get("effects")).and_then(|e| e.as_array()) {
                     for e in list {
                         match serde_json::from_value::<EffectNotice>(e.clone()) {
                             Ok(e) => {

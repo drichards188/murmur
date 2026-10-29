@@ -784,6 +784,13 @@ def test_the_tutorial_is_live_with_fixed_modes(tmp_path: Path):
     spawn = units[0]["spawn"]
     for p in [*patrol.params["route"], [spawn[1], spawn[0]]]:
         assert 850 <= haversine_m(*p, *hold) <= 1300, p
+    # the boat's missile (docs/OPPONENT-WEAPONS.md) reaches all of that leg with room to spare, so
+    # no attack is ever held for range; every act is a shot at HUNTER 1
+    contacts = tomllib.loads(sit.contacts.read_text())
+    weapon = contacts["contact"][0]["weapon"]
+    assert weapon["kind"] == "atgm" and weapon["range_m"] >= 3 * 1300
+    acts = contacts["act"]
+    assert all(a["by"] == contacts["contact"][0]["id"] and a["against_vehicle"] == 1 for a in acts)
     # by day at the Gate (UTC-7 in June): the cameras' visible channels see
     assert 9 <= (int(sit.at[11:13]) - 7) % 24 <= 15, sit.at
     assert not [s for s in sit.steps if s.kind in ("engage", "propose", "declare", "flood")], "nothing nominates or declares for the person"
@@ -796,13 +803,13 @@ def test_the_tutorial_is_live_with_fixed_modes(tmp_path: Path):
     # the status document carries the flag the console keys the walk-through on
     doc = S.status_doc(sit, m, phase="running", elapsed_s=1.0, now=0.0, entries=[], done_steps=set(), orders=[], agent={}, autoplay=None, run={})
     assert doc["modes"]["tutorial"] is True and doc["modes"]["cosigner"] == "scripted-pair"
-    # the contacts: the boat holds before its first act, and fires every minute to the end
+    # the contacts: the boat holds before its first act, and fires every 90 s to the end
     raw = tomllib.loads(sit.contacts.read_text())
     boat = next(c for c in raw["contact"] if c["affiliation"] == "hostile")
     run_s = sum(haversine_m(*a, *b) for a, b in zip(boat["route"], boat["route"][1:])) / boat["speed_mps"]
     times = [a["at_s"] for a in raw["act"]]
     assert boat.get("start_s", 0) + run_s + 15 < times[0] <= 90
-    assert all(b - a == 60 for a, b in zip(times, times[1:])) and times[-1] < sit.duration_s <= times[-1] + 60
+    assert all(b - a == 90 for a, b in zip(times, times[1:])) and times[-1] < sit.duration_s <= times[-1] + 90
     # a tutorial is live and blinded: a file that says otherwise is refused
     for extra in ('tutorial = true\noperator = "autoplay"\n', 'tutorial = true\nreveal = true\n', 'tutorial = "yes"\n'):
         with pytest.raises(S.SituationError):

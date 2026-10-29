@@ -4,6 +4,7 @@ import type { SituationStatus } from './SituationPanel'
 import { usePoll } from './space'
 import { kindLabel, type TracksMessage } from './tracks'
 import { CONSOLE_OPERATOR, type Facts, type IdentityCheck, resumeAt, STEPS, stepDone, type StepId, tutorialFacts } from './tutorial'
+import { timeline } from './weapon'
 import './tutorial.css'
 
 /** The tutorial's coach card (sim/situations/tutorial.toml): shown only while the running
@@ -28,6 +29,8 @@ interface Props {
   onMenu?: () => void
   /** the nomination form's latest dry run on its target, while it is open */
   formChecks?: { track: string; checks: Check[] } | null
+  /** a vehicle's callsign by uid */
+  nameOf?: (uid: string) => string
 }
 
 /** how long a done step shows its tick before the walk moves on (ms) */
@@ -85,7 +88,14 @@ function heldAs(T: string, c: IdentityCheck) {
 }
 
 /** What each step says, and which parts of the console it rings (the first one shown wins). */
-function stepView(id: StepId, f: Facts, nowMs: number, sawIdentityBlock = false): { title: string; body: ReactNode; live?: ReactNode; targets: string[] } {
+function stepView(
+  id: StepId,
+  f: Facts,
+  nowMs: number,
+  sawIdentityBlock = false,
+  nameOf: (uid: string) => string = (u) => `vehicle ${u}`,
+  runStart: number | null = null,
+): { title: string; body: ReactNode; live?: ReactNode; targets: string[] } {
   const T = f.boat?.id ?? 'the boat'
   const row = f.boat ? [q('track-row', `[data-track-id="${f.boat.id}"]`)] : []
   const N = f.nomination ? `i${f.nomination.id}` : 'your nomination'
@@ -99,7 +109,7 @@ function stepView(id: StepId, f: Facts, nowMs: number, sawIdentityBlock = false)
               You are <b>{CONSOLE_OPERATOR}</b>, the operator at this console. In about 8 minutes you take one engagement through Murmur&apos;s decision chain:
             </p>
             <ol>
-              <li>a hostile act is observed, and the engine declares its author hostile;</li>
+              <li>a boat fires a missile at one of ours: you see when and how we know, and the engine declares the boat hostile;</li>
               <li>you confirm that declaration: the threat designation;</li>
               <li>you nominate an engagement with an armed drone;</li>
               <li>two other operators sign it (you cannot sign your own);</li>
@@ -109,7 +119,10 @@ function stepView(id: StepId, f: Facts, nowMs: number, sawIdentityBlock = false)
               This card moves on by itself when something happens. <b>Next</b> and <b>Back</b> step through the parts you only read. The map stays live underneath: pan and zoom
               as you like.
             </p>
-            <p className="tut-small">Nothing here is real: simulated vehicles, and an abstract effect (a point, a radius, a time). The two signers are scripts, labeled scripted.</p>
+            <p className="tut-small">
+              Nothing here is real: simulated vehicles, an abstract effect for ours (a point, a radius, a time), and the boat&apos;s missile is kinematics only (no damage is
+              modelled). The two signers are scripts, labeled scripted.
+            </p>
           </>
         ),
         targets: [],
@@ -155,30 +168,59 @@ function stepView(id: StepId, f: Facts, nowMs: number, sawIdentityBlock = false)
       }
     case 'act':
       return {
-        title: 'Watch for the act',
+        title: 'Watch for the attack',
         body: (
           <>
             <p>
-              Intelligence warned of an attack by small craft. If the boat fires on one of ours (an abstract act here: a time, an author, a victim), our sensors observe it
-              and place its author.
+              Intelligence warned of an attack by small craft. The boat carries an ATGM-class missile (some 250 m/s: from a kilometre it strikes in about 4 s). Three things can
+              tell us it fired:
+            </p>
+            <ol>
+              <li>
+                <b>the launch</b>: a camera with the boat in view sees the flash. HUNTER 1&apos;s ring camera always has it in view, so by day it sees every launch and places
+                the shooter;
+              </li>
+              <li>
+                <b>the missile in flight</b>, a small fast object: REAPER 1&apos;s radar plots it about two flights in five, HUNTER 1&apos;s camera about one in three, mostly
+                in its last second. HUNTER 1&apos;s navigation radar never does: a missile coming nose-on is smaller than the sea clutter around it;
+              </li>
+              <li>
+                <b>the strike</b>: HUNTER 1 knows it was hit (no damage is modelled here).
+              </li>
+            </ol>
+            <p>
+              The earliest cue is when we know; from it to the strike is our warning. A seen launch draws the missile&apos;s estimated flight on the map, dashed, with a
+              countdown; its real fixes are solid marks.
             </p>
             <p>
-              When they attribute the act to one track at 0.9 or more, the engine declares that track hostile by rule. Speed, closeness or a missing AIS never declare
-              anything.
+              The launch the camera saw is the act&apos;s observation: attributed to one track at 0.9 or more, the engine declares that track hostile by rule. Speed,
+              closeness or a missing AIS never declare anything.
             </p>
           </>
         ),
-        live: f.declared ? (
-          <>The engine declared {T} hostile by rule.</>
-        ) : f.lastActNot ? (
+        live: (
           <>
-            An act came, but it was {f.lastActNot}. On an unsure attribution the engine declares nothing. The boat fires again within a minute: the next act is another
-            chance.
+            {f.attack ? (
+              <span className="tut-attack" data-tutorial="attack-timeline">
+                {f.attack.status === 'in_flight' && !f.attack.struck ? 'Under attack now: ' : 'Last attack: '}
+                {timeline(f.attack, nameOf, runStart)}.
+              </span>
+            ) : null}
+            {f.declared ? (
+              <>The engine declared {T} hostile by rule{f.declarationAttribution != null ? `, the launch attributed to it at ${n2(f.declarationAttribution)}` : ''}.</>
+            ) : f.lastActNot ? (
+              <>
+                An act came, but it was {f.lastActNot}. On an unsure attribution the engine declares nothing. The boat fires again within 90 s: the next launch is another
+                chance.
+              </>
+            ) : f.attack && !f.attack.launch && f.attack.struck ? (
+              <>No sensor saw that launch, so no shooter was placed and the rule could declare nothing. The boat fires again within 90 s.</>
+            ) : (
+              <>Watching. In this tutorial the boat fires about every 90 s.</>
+            )}
           </>
-        ) : (
-          <>Watching. In this tutorial the boat fires about once a minute.</>
         ),
-        targets: [...row, q('tracks')],
+        targets: [...row, q('weapon-status'), q('tracks')],
       }
     case 'confirm':
       return {
@@ -197,7 +239,13 @@ function stepView(id: StepId, f: Facts, nowMs: number, sawIdentityBlock = false)
             <p className="tut-small">If it does not hold, revoke it: the next act may declare it again.</p>
           </>
         ),
-        live: f.confirmed ? <>Confirmed by {f.confirmedBy}.</> : !f.declared ? <>No declaration stands on {T} now. The next act may declare it again.</> : undefined,
+        live: f.confirmed ? (
+          <>Confirmed by {f.confirmedBy}.</>
+        ) : !f.declared ? (
+          <>No declaration stands on {T} now. The next act may declare it again.</>
+        ) : f.attack ? (
+          <span className="tut-attack">The latest attack: {timeline(f.attack, nameOf, runStart)}.</span>
+        ) : undefined,
         targets: [q('review-declaration', f.boat ? `[data-track-id="${f.boat.id}"]` : ''), q('confirm-declaration'), q('inbox-button')],
       }
     case 'nominate':
@@ -366,14 +414,16 @@ function Ring({ targets }: { targets: string[] }) {
   return <div className="tut-ring" aria-hidden="true" style={{ top: box.top - pad, left: box.left - pad, width: box.width + 2 * pad, height: box.height + 2 * pad }} />
 }
 
-export function Tutorial({ decisions, tracks, now, onMenu, formChecks = null }: Props) {
+const someVehicle = (uid: string) => `vehicle ${uid}`
+
+export function Tutorial({ decisions, tracks, now, onMenu, formChecks = null, nameOf: nameOfVehicle = someVehicle }: Props) {
   const { data } = usePoll<Envelope>('/api/situation', 2000)
   const s = data?.situation
   const on = !!s?.modes?.tutorial
   const runKey = on && s?.run?.id ? `murmur.tutorial.${s.run.id}` : null
   const nowMs = now()
   const f = useMemo(
-    () => tutorialFacts(tracks?.tracks ?? [], decisions?.inbox.review, decisions?.inbox.acts, decisions?.intents ?? [], nowMs, decisions?.inbox.pending, formChecks),
+    () => tutorialFacts(tracks?.tracks ?? [], decisions?.inbox.review, decisions?.inbox.acts, decisions?.intents ?? [], nowMs, decisions?.inbox.pending, formChecks, tracks?.weapons ?? []),
     // the bridge clock moves every render; the facts that read it (the impact) are re-read each second
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [tracks, decisions, formChecks, Math.floor(nowMs / 1000)],
@@ -420,7 +470,9 @@ export function Tutorial({ decisions, tracks, now, onMenu, formChecks = null }: 
         TUTORIAL <b>{idx + 1}</b>/{STEPS.length}
       </button>
     )
-  const v = stepView(step.id, f, nowMs, sawIdentityBlock)
+  // the run's start on the bridge's clock, for the attack's timeline ("1:20.4")
+  const runStart = s?.clock && s.clock.elapsed_s != null ? (s.clock.t - s.clock.elapsed_s) * 1000 : null
+  const v = stepView(step.id, f, nowMs, sawIdentityBlock, nameOfVehicle, runStart)
   const last = step.id === 'done'
   return (
     <>

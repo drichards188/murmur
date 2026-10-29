@@ -317,6 +317,17 @@ meaningful.
   that vehicle (the scenario runner does for any `level_by` but `ais`). The bridge shows each as an
   inbox alert `identify_meanwhile` of severity `info` (never a badge; alerts sort high, medium,
   info).
+- Opponent weapons (docs/OPPONENT-WEAPONS.md, bd murmur-wcvp; no rules version): a contact's
+  `weapon = { name, kind, speed_mps, range_m }` (kinds the bridge has figures for:
+  `tracks::physical::weapon::weapon_signature`, `atgm`) makes each of its acts a launch, flown by
+  `murmur_contacts::weapon` to a lead point on the victim (the truth asks the bridge where our
+  victims are: `aim_at` in, `ours` out). Under the physical model only (a legacy run senses the act
+  as abstract): a weapon act is observed by the cameras that saw the launch (`observe_launch`), not
+  by radar or sonar; the weapon's fixes go to the weapon picture (`tracks::weapons`, `W-<n>`,
+  `weapons` on the tracks feed), never the track picture; the strike is the victim's
+  `vehicle.event` `struck` and an inbox alert. Weapon sensing reads the payload managers' state and
+  never writes it: contact detections are the same with a weapon in the truth (tested). Headless
+  refuses weapons. The tutorial's boat carries one (every 90 s).
 - Predicted link coverage (docs/LINK-COVERAGE.md, bd murmur-hei): `GET`/`POST
   /api/links/coverage`, `link_coverage` in dry runs and `preview_intent`, the MCP tool
   `get_link_coverage`, the console's Links layer and the order form's dry run (`web/src/

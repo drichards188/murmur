@@ -91,6 +91,7 @@ pub(super) fn truth_with(e: &Erig, now_s: f64, scen_s: f64, acts: Vec<ActTruth>)
         },
         contacts: vec![boat()],
         acts,
+        aim_at: Vec::new(), weapons: Vec::new(), impacts: Vec::new(),
     };
     e.tracks
         .on_truth_with(msg, std::slice::from_ref(&observer), now_s)
@@ -109,6 +110,7 @@ pub(super) fn act(id: &str, now_s: f64, against_contact: Option<&str>) -> ActTru
         against_vehicle: against_contact.is_none().then_some(1),
         against_contact: against_contact.map(str::to_string),
         label: Some("fired on".into()),
+        weapon: None, held: None,
     }
 }
 

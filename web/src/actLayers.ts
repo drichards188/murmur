@@ -1,40 +1,28 @@
 // Observed hostile acts on the map (hostileAct.ts): for each act drawn, in the hostile red of the
 // track symbols (trackLayers.ts), at its height (drawn twice over, as everything is: map3d.ts):
 //
-//   act-lines     the faint dashed line from the author's fix to the victim, once the streak is over
+//   act-lines     an abstract act's dashed "fired on" arrow from the author's fix to the victim (a
+//                 report: nothing modelled flew); none for an act that launched a modelled weapon,
+//                 whose weapon is drawn instead (weaponLayers.ts)
 //   act-sigma     the author's fix with its 1-sigma circle (metres): where our sensors placed it
-//   act-streak    the fire event: a bright streak from the author to the victim, a second long
-//   act-flash     a flash where the author fired, and one on the victim as the streak arrives
-//   act-victim    a ring where the victim was, while the act is drawn
+//   act-flash     a burst where the author fired
+//   act-victim    a ring where an abstract act's victim was, while the act is drawn
 //   act-author    a dot at the author's fix
-//   act-labels    "Act A-1: fires on HUNTER 1" and who saw it, above the author's fix, fading
-//                 after some seconds
+//   act-labels    "Act A-1: reported fire on HUNTER 1" (or "launch at") and who saw it, above the
+//                 author's fix, fading after some seconds
 //   act-tags      "A-1" under the author's fix once its label is gone (a track's own labels are
 //                 left and right of its symbol)
 //
-// MapView builds these on every animation frame while an act's streak, flash or label fade is
-// under way, and at the console's tick otherwise (and always under reduced motion, without the
-// streak or the flashes: a static line and markers).
+// MapView builds these on every animation frame while an act's burst or label fade is under way,
+// and at the console's tick otherwise (and always under reduced motion, without the burst: a
+// static arrow and markers).
 import { PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import { z } from './map3d'
-import {
-  type ActDrawing,
-  dashes,
-  hitFlash,
-  labelAlpha,
-  labelledKeys,
-  lingerAlpha,
-  mapLabel,
-  muzzleFlash,
-  type Pt3,
-  STREAK_MS,
-  streakPoints,
-} from './hostileAct'
+import { type ActDrawing, arrowHead, dashes, labelAlpha, labelledKeys, lingerAlpha, mapLabel, muzzleFlash, type Pt3 } from './hostileAct'
 
 type RGBA = [number, number, number, number]
 /** a hostile track's red (trackLayers.ts AFF_COLOR) */
 const RED: [number, number, number] = [255, 93, 93]
-const HOT: [number, number, number] = [255, 236, 214]
 const OUTLINE: RGBA = [11, 15, 20, 255]
 const FONT = 'IBM Plex Mono, ui-monospace, monospace'
 const FONT_SETTINGS = { sdf: true, fontSize: 48, buffer: 6 }
@@ -54,11 +42,10 @@ interface FlashAt {
   at: Pt3
   p: number
   ring: boolean
-  hit: boolean
 }
 
 /** The acts `visible` (hostileAct.ts visibleActs, newest first) at `nowMs` (the bridge's clock),
- *  as deck.gl layers. `reduced`: prefers-reduced-motion, no streak or flash. */
+ *  as deck.gl layers. `reduced`: prefers-reduced-motion, no burst. */
 export function buildActLayers(visible: ActDrawing[], nowMs: number, reduced: boolean) {
   if (!visible.length) return []
   const onTop = { depthCompare: 'always' as const, depthWriteEnabled: false }
@@ -66,33 +53,26 @@ export function buildActLayers(visible: ActDrawing[], nowMs: number, reduced: bo
     d,
     age: nowMs - d.start,
     from: [d.author[0], d.author[1], z(0)],
-    to: d.victim ? [d.victim.at[0], d.victim.at[1], z(d.victim.alt)] : null,
+    // an act that launched a modelled weapon has no arrow: its weapon is drawn
+    to: d.victim && !d.weapon ? [d.victim.at[0], d.victim.at[1], z(d.victim.alt)] : null,
     linger: lingerAlpha(nowMs - d.start),
   }))
   const labelled = labelledKeys(visible, nowMs)
   const lines: { path: Pt3[]; a: number }[] = []
-  const streaks: Pt3[][] = []
   const flashes: FlashAt[] = []
   for (const x of drawn) {
-    const streaking = !reduced && x.age < STREAK_MS
-    if (x.to && !streaking) {
-      // brighter while its label is on, then faint
+    if (x.to) {
+      // the report's arrow: brighter while its label is on, then faint
       const a = (0.35 + 0.45 * labelAlpha(x.age)) * x.linger
       for (const [p, q] of dashes(x.from, x.to)) lines.push({ path: [p, q], a })
+      for (const [p, q] of arrowHead(x.from, x.to)) lines.push({ path: [p, q], a })
     }
     if (reduced) continue
-    if (x.to) {
-      const s = streakPoints(x.from, x.to, x.age)
-      if (s.length > 1) streaks.push(s)
-      const h = hitFlash(x.age)
-      if (h != null) flashes.push({ at: x.to, p: h, ring: true, hit: true }, { at: x.to, p: h, ring: false, hit: true })
-    }
     const m = muzzleFlash(x.age)
-    if (m != null) flashes.push({ at: x.from, p: m, ring: true, hit: false }, { at: x.from, p: m, ring: false, hit: false })
+    if (m != null) flashes.push({ at: x.from, p: m, ring: true }, { at: x.from, p: m, ring: false })
   }
   const labels = drawn.filter((x) => labelled.has(x.d.key)).map((x) => ({ x, a: labelAlpha(x.age) }))
   const tags = drawn.filter((x) => !labelled.has(x.d.key))
-  const n = (k: number, len: number) => k / Math.max(1, len - 1)
   return [
     new PathLayer<{ path: Pt3[]; a: number }>({
       id: 'act-lines',
@@ -119,23 +99,11 @@ export function buildActLayers(visible: ActDrawing[], nowMs: number, reduced: bo
       updateTriggers: { getFillColor: nowMs, getLineColor: nowMs },
       parameters: onTop,
     }),
-    new PathLayer<Pt3[]>({
-      id: 'act-streak',
-      data: streaks,
-      getPath: (s) => s,
-      // per point: red and thin at the tail, white-hot and wide at the head
-      getColor: (s) => s.map((_, k) => (n(k, s.length) > 0.75 ? rgba(HOT, 255) : rgba(RED, 70 + 185 * n(k, s.length)))),
-      getWidth: (s) => s.map((_, k) => 2 + 5 * n(k, s.length)),
-      widthUnits: 'pixels',
-      capRounded: true,
-      jointRounded: true,
-      parameters: onTop,
-    }),
     new ScatterplotLayer<FlashAt>({
       id: 'act-flash',
       data: flashes,
       getPosition: (f) => f.at,
-      getRadius: (f) => (f.ring ? (f.hit ? 10 + 42 * f.p : 6 + 18 * f.p) : (f.hit ? 6 + 11 * (1 - f.p) : 3 + 6 * (1 - f.p))),
+      getRadius: (f) => (f.ring ? 6 + 18 * f.p : 3 + 6 * (1 - f.p)),
       radiusUnits: 'pixels',
       stroked: true,
       filled: true,
@@ -147,7 +115,7 @@ export function buildActLayers(visible: ActDrawing[], nowMs: number, reduced: bo
     }),
     new ScatterplotLayer<Drawn>({
       id: 'act-victim',
-      data: drawn.filter((x) => x.to && (reduced || x.age >= STREAK_MS - 300)),
+      data: drawn.filter((x) => x.to),
       getPosition: (x) => x.to!,
       getRadius: 9,
       radiusUnits: 'pixels',

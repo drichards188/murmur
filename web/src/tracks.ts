@@ -101,6 +101,8 @@ export interface TracksMessage {
   tracks: Track[]
   /** rules 16: the engine's lost contacts */
   lost?: LostContact[]
+  /** opponent weapons as our sensors know them (weapon.ts; absent when there are none) */
+  weapons?: import('./weapon').WeaponTrack[]
 }
 
 /** Rules 16: a lost contact's map symbol: its affiliation and domain, anticipated (dashed),

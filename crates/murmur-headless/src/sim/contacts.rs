@@ -140,6 +140,11 @@ impl Contacts {
         if let Some(w) = &mut scenario.sensing.weather { w.pin_archive(root)?; }
         let seed = seed.unwrap_or(scenario.seed);
         let contacts = scenario.contacts()?;
+        // opponent weapons run live only for now (docs/OPPONENT-WEAPONS.md, bd murmur-mmxk): the
+        // simulator does not hand the truth side its vehicles' positions to aim at
+        if let Some(c) = contacts.iter().find(|c| c.weapon.is_some()) {
+            return Err(format!("{}: contact {:?} carries a weapon: opponent weapons run live only (murmur-mmxk)", path.display(), c.id));
+        }
         if contacts.is_empty() {
             return Err(format!("{}: no contacts", path.display()));
         }

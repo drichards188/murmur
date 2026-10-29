@@ -59,10 +59,66 @@ pub struct TruthMessage {
     /// model decides which of our sensors observe each), with where the author was.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub acts: Vec<ActTruth>,
+    /// Opponent weapons (docs/OPPONENT-WEAPONS.md): our vehicles the scenario's weapons may be
+    /// aimed at, whose positions the bridge's answer carries (`ours`); absent without weapons.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aim_at: Vec<u64>,
+    /// Weapons in flight during the second up to this message (each from its launch to the
+    /// message at or after its impact).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub weapons: Vec<WeaponTruth>,
+    /// Weapons that struck since the last message, each once.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub impacts: Vec<ImpactTruth>,
 }
 
-/// Rules 9: one scripted hostile act as it happens (an abstract event: a time, an author, a
-/// victim; no weapon).
+/// One weapon's flight (truth): a straight line at constant speed from its launch point to its
+/// lead point, `[lon, lat, metres above the sea]`, from `launch_t` to `impact_t` (scenario unix
+/// s). Its position at any instant follows ([`WeaponTruth::at`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WeaponTruth {
+    pub id: String,
+    pub act: String,
+    pub by: String,
+    pub name: String,
+    pub kind: String,
+    pub speed_mps: f64,
+    pub launch_t: f64,
+    pub impact_t: f64,
+    pub from: [f64; 3],
+    pub to: [f64; 3],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub against_vehicle: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub against_contact: Option<String>,
+}
+
+impl WeaponTruth {
+    /// Where it is at `t` (held at either end): `[lon, lat, alt]`.
+    pub fn at(&self, t: f64) -> [f64; 3] {
+        let span = self.impact_t - self.launch_t;
+        let f = if span > 0.0 { ((t - self.launch_t) / span).clamp(0.0, 1.0) } else { 1.0 };
+        [0, 1, 2].map(|i| self.from[i] + (self.to[i] - self.from[i]) * f)
+    }
+}
+
+/// A weapon's strike (truth): when and where, on whom. Nothing about the victim changes (no
+/// damage is modelled); the bridge reports it as the victim's own.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImpactTruth {
+    pub weapon: String,
+    pub act: String,
+    pub t: f64,
+    pub lat: f64,
+    pub lon: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub against_vehicle: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub against_contact: Option<String>,
+}
+
+/// Rules 9: one scripted hostile act as it happens: a time, an author, a victim, and the weapon
+/// it launched if its author carries one (or why it held its fire).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActTruth {
     pub id: String,
@@ -79,6 +135,13 @@ pub struct ActTruth {
     pub against_contact: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// The weapon it launched (`WeaponTruth::id`); none: an abstract act.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weapon: Option<String>,
+    /// The author held its fire (its victim beyond its weapon's range, or nowhere known): the act
+    /// did not happen, and the bridge senses nothing of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<String>,
 }
 
 fn round(x: f64, digits: i32) -> f64 {
@@ -125,6 +188,9 @@ impl TruthMessage {
                 .collect(),
             effects: Vec::new(),
             acts: Vec::new(),
+            aim_at: Vec::new(),
+            weapons: Vec::new(),
+            impacts: Vec::new(),
         }
     }
 
@@ -151,6 +217,8 @@ impl TruthMessage {
                     against_vehicle: a.against_vehicle,
                     against_contact: a.against_contact.clone(),
                     label: a.label.clone(),
+                    weapon: None,
+                    held: None,
                 })
             })
             .collect()

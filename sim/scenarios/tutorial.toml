@@ -9,12 +9,20 @@
 # sim/fleets/tutorial.toml):
 # - The fast boat starts 800 m short of its holding point instead of 2.7 km out at sea, and holds
 #   from about 1:00 instead of 3:03.
-# - It fires on HUNTER 1 from 1:20, then every minute to the end (19 acts instead of 3): whenever
-#   the person reaches the step that waits for an act, one has come or comes within a minute.
-#   An act is attributed from what our sensors see; one attributed below the policy's threshold
-#   is flagged for review, not declared, and the next is another chance. Once the boat is
-#   declared, the engine only records the rest; once it is struck it leaves the scenario
-#   (`on_effect = "out_of_play"`, the default) and an author that does not exist commits nothing.
+# - It carries a weapon, an ATGM-class missile (docs/OPPONENT-WEAPONS.md: 250 m/s, 5 km), and
+#   every act launches it at HUNTER 1: the act is a modelled shot, not an abstract one. Our
+#   sensors may see the launch (HUNTER 1's ring camera always has the boat in view: by day it
+#   sees every launch from its 0.9 to 1.2 km), the missile in flight (REAPER 1's radar about two
+#   flights in five, HUNTER 1's camera about one in three, mostly in its last second; HUNTER 1's
+#   navigation radar never, the nose-on missile under the sea clutter), and HUNTER 1 knows it was
+#   struck 3.6 to 4.8 s after the launch. No damage is modelled.
+# - It fires from 1:20, then every 90 s to the end (13 attacks instead of 3): whenever the person
+#   reaches the step that waits for one, one has come or comes within a minute and a half. A seen
+#   launch is attributed from where the camera placed it; one attributed below the policy's
+#   threshold is flagged for review, not declared, and the next is another chance. Once the boat
+#   is declared, the engine only records the rest; once it is struck it leaves the scenario
+#   (`on_effect = "out_of_play"`, the default) and an author that does not exist fires nothing (a
+#   missile already in flight flies on).
 # - The run is 20 minutes, not 12, for a slow reader, so the traffic that would come near the
 #   boat inside that time is moved or left out: the inbound container ship starts 5.7 km further
 #   out at sea (at the holding area after some 29 minutes, not 15), the trawler leaves Fisherman's
@@ -33,7 +41,8 @@ misclassification_rate = 0.0     # deterministic identities: the tutorial is abo
 # ---------------------------------------------------------------- the hostile
 # A short run in at 15 m/s (29 kn), no AIS, to its holding point mid-strait 1.5 km west of the
 # bridge, inside the engagement zone (sim/areas: ez-gate-west), where it holds from about 1:00;
-# HUNTER 1 patrols 0.9 to 1.2 km east of it.
+# HUNTER 1 patrols 0.9 to 1.2 km east of it, well inside its missile's 5 km (tested:
+# eval/tests/test_situation.py, the tutorial's test).
 [[contact]]
 id = "fastboat-raider"
 name = "Fast boat without AIS, holding mid-strait west of the bridge"
@@ -44,139 +53,98 @@ speed_mps = 15
 motion = "transit"
 route = [[-122.5040, 37.8105], [-122.4950, 37.8120]]
 start_s = 5
+weapon = { name = "ATGM-class missile", kind = "atgm", speed_mps = 250, range_m = 5000 }
 
 [[act]]
 id = "act-1"
 at_s = 80
 by = "fastboat-raider"
 against_vehicle = 1
-label = "fires on the sensor ship (HUNTER 1)"
+label = "fires a missile at the sensor ship (HUNTER 1)"
 
 [[act]]
 id = "act-2"
-at_s = 140
+at_s = 170
 by = "fastboat-raider"
 against_vehicle = 1
-label = "fires on HUNTER 1 again"
+label = "fires a missile at HUNTER 1 again"
 
 [[act]]
 id = "act-3"
-at_s = 200
-by = "fastboat-raider"
-against_vehicle = 1
-label = "fires on HUNTER 1 again"
-
-[[act]]
-id = "act-4"
 at_s = 260
 by = "fastboat-raider"
 against_vehicle = 1
-label = "fires on HUNTER 1 again"
+label = "fires a missile at HUNTER 1 again"
+
+[[act]]
+id = "act-4"
+at_s = 350
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires a missile at HUNTER 1 again"
 
 [[act]]
 id = "act-5"
-at_s = 320
-by = "fastboat-raider"
-against_vehicle = 1
-label = "fires on HUNTER 1 again"
-
-[[act]]
-id = "act-6"
-at_s = 380
-by = "fastboat-raider"
-against_vehicle = 1
-label = "fires on HUNTER 1 again"
-
-[[act]]
-id = "act-7"
 at_s = 440
 by = "fastboat-raider"
 against_vehicle = 1
-label = "fires on HUNTER 1 again"
+label = "fires a missile at HUNTER 1 again"
 
 [[act]]
-id = "act-8"
-at_s = 500
+id = "act-6"
+at_s = 530
 by = "fastboat-raider"
 against_vehicle = 1
-label = "fires on HUNTER 1 again"
+label = "fires a missile at HUNTER 1 again"
 
 [[act]]
-id = "act-9"
-at_s = 560
-by = "fastboat-raider"
-against_vehicle = 1
-label = "fires on HUNTER 1 again"
-
-[[act]]
-id = "act-10"
+id = "act-7"
 at_s = 620
 by = "fastboat-raider"
 against_vehicle = 1
-label = "fires on HUNTER 1 again"
+label = "fires a missile at HUNTER 1 again"
 
 [[act]]
-id = "act-11"
-at_s = 680
+id = "act-8"
+at_s = 710
 by = "fastboat-raider"
 against_vehicle = 1
-label = "fires on HUNTER 1 again"
+label = "fires a missile at HUNTER 1 again"
 
 [[act]]
-id = "act-12"
-at_s = 740
-by = "fastboat-raider"
-against_vehicle = 1
-label = "fires on HUNTER 1 again"
-
-[[act]]
-id = "act-13"
+id = "act-9"
 at_s = 800
 by = "fastboat-raider"
 against_vehicle = 1
-label = "fires on HUNTER 1 again"
+label = "fires a missile at HUNTER 1 again"
 
 [[act]]
-id = "act-14"
-at_s = 860
+id = "act-10"
+at_s = 890
 by = "fastboat-raider"
 against_vehicle = 1
-label = "fires on HUNTER 1 again"
+label = "fires a missile at HUNTER 1 again"
 
 [[act]]
-id = "act-15"
-at_s = 920
-by = "fastboat-raider"
-against_vehicle = 1
-label = "fires on HUNTER 1 again"
-
-[[act]]
-id = "act-16"
+id = "act-11"
 at_s = 980
 by = "fastboat-raider"
 against_vehicle = 1
-label = "fires on HUNTER 1 again"
+label = "fires a missile at HUNTER 1 again"
 
 [[act]]
-id = "act-17"
-at_s = 1040
+id = "act-12"
+at_s = 1070
 by = "fastboat-raider"
 against_vehicle = 1
-label = "fires on HUNTER 1 again"
+label = "fires a missile at HUNTER 1 again"
 
 [[act]]
-id = "act-18"
-at_s = 1100
-by = "fastboat-raider"
-against_vehicle = 1
-label = "fires on HUNTER 1 again"
-
-[[act]]
-id = "act-19"
+id = "act-13"
 at_s = 1160
 by = "fastboat-raider"
 against_vehicle = 1
-label = "fires on HUNTER 1 again"
+label = "fires a missile at HUNTER 1 again"
 
 # ---------------------------------------------------------------- ferries (AIS, neutral)
 [[contact]]
