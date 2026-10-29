@@ -13,6 +13,17 @@ a decision layer that records who decided what, on which picture, and why.
 **Status: a working draft.** The testbed runs end to end. The evaluation that would answer the
 question is still being validated, so there are no findings to quote yet. Expect sharp edges.
 
+## Why this exists
+
+On 30 September 2026 the Pentagon announced AUTOWARCOM, a four-star command for autonomous
+warfare. I started Murmur the next day with two questions: how would that work, and how should
+it? The pitch for systems like this is scale: one person supervising a hundred drones, boats and
+ground robots. Whether that person still understands and decides what they approve is something
+the public cannot check. The command-and-control software for it, such as Anduril's Lattice, is
+proprietary, and how it is tested is not public. US policy asks for "appropriate levels of human
+judgment over the use of force" (DoD Directive 3000.09). Murmur is an attempt to turn that phrase
+into something anyone can run, inspect and measure.
+
 ## What's in it
 
 - **Vehicles.** 22 platform types across air, ground, surface and undersea, from HALE drones to
