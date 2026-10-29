@@ -30,6 +30,7 @@ import type { Cluster, Clusters, LngLat, Tasking, Vehicle } from './types'
 import { callsign } from './types'
 import { buildVehicleLayers, heightLabel, VEHICLE_PICK_LAYERS } from './vehicleLayers'
 import { buildClusterLayers, CLUSTER_PICK_LAYERS } from './clusterLayers'
+import type { WeatherImage } from './weather'
 import { cellAt, cellDetail, type CoverageImage, type LinkRouteDrawing } from './coverage'
 import { buildLinkRouteLayers } from './linkLayers'
 import { type Bounds, type MapViewport, visibleVehicles } from './viewport'
@@ -98,6 +99,7 @@ interface Props {
   /** predicted link coverage (coverage.ts): one image draped on the terrain under the labels,
    *  its cell under the pointer said in a tooltip */
   coverage?: CoverageImage | null
+  weather?: WeatherImage | null
   /** the drafted order's legs coloured by predicted link, on the surface like the draft */
   linkRoute?: LinkRouteDrawing | null
 }
@@ -107,6 +109,7 @@ export type MapLayers = (screen: MapScreen) => LayersList
 /** a transparent pixel: the coverage image source's placeholder while the layer is off */
 const BLANK_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 const COVERAGE = 'link-coverage'
+const WEATHER = 'weather-field'
 
 const STYLE = 'https://tiles.openfreemap.org/styles/dark'
 const START: LngLat = [-117.2, 32.703]
@@ -278,7 +281,7 @@ function surfacePoint(m: maplibregl.Map, e: maplibregl.MapMouseEvent): LngLat {
   return water ? [water.lng, water.lat] : [ground.lng, ground.lat]
 }
 
-export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, bridgeNow, oneWay, acts = noActs, actsDismissedAt = null, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, linkRoute = null }: Props) {
+export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, bridgeNow, oneWay, acts = noActs, actsDismissedAt = null, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, weather = null, linkRoute = null }: Props) {
   const vehicles = useMemo(() => hiddenUids?.size ? allVehicles.filter((v) => !hiddenUids.has(v.uid)) : allVehicles, [allVehicles, hiddenUids])
   // the top view (pitch 0, looking straight down) and the pitch to tilt back to from it
   const [top, setTop] = useState(false)
@@ -768,6 +771,10 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
         },
         firstSymbol,
       )
+      // Environmental raster below labels and every vehicle/track layer. Fog never masks facts.
+      m.addSource(WEATHER, { type: 'image', url: BLANK_PNG, coordinates: [[-0.001, 0.001], [0.001, 0.001], [0.001, -0.001], [-0.001, -0.001]] })
+      m.addLayer({ id: WEATHER, type: 'raster', source: WEATHER, layout: { visibility: 'none' },
+        paint: { 'raster-opacity': 1, 'raster-resampling': 'nearest', 'raster-fade-duration': 300 } }, firstSymbol)
       m.addSource('beams', { type: 'geojson', data: empty })
       m.addLayer({
         id: 'beams',
@@ -1048,6 +1055,16 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       m.setLayoutProperty(COVERAGE, 'visibility', 'visible')
     } else m.setLayoutProperty(COVERAGE, 'visibility', 'none')
   }, [coverage, styleGen])
+
+  useEffect(() => {
+    const m = map.current
+    if (!m || !ready.current || !m.getLayer(WEATHER)) return
+    const src = m.getSource(WEATHER) as maplibregl.ImageSource | undefined
+    if (weather && src) {
+      src.updateImage({ url: weather.url, coordinates: weather.coordinates })
+      m.setLayoutProperty(WEATHER, 'visibility', 'visible')
+    } else m.setLayoutProperty(WEATHER, 'visibility', 'none')
+  }, [weather, styleGen])
 
   // the drafted order's predicted link
   useEffect(() => {

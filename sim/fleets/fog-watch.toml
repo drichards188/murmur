@@ -1,0 +1,6 @@
+title = "Fog watch: one camera aircraft"
+# No radar or AIS receiver: lost camera visibility cannot be silently replaced by radar.
+[[unit]]
+platform = "puma"
+sim = "standin"
+spawn = [37.8200, -122.4600, 120, 90]

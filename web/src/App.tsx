@@ -41,6 +41,10 @@ import { buildOrderLayers } from './orderLayers'
 import { noteFocusedIntent, noteTrackViewed } from './operatorView'
 import { refreshAuth, useAuth } from './auth'
 import { EnrollScreen, LoginScreen, OperatorBadge } from './Login'
+import { WeatherPanel } from './WeatherPanel'
+import { WeatherLegend } from './WeatherLayer'
+import { useWeatherGrid } from './useWeatherGrid'
+import { weatherImage, type WeatherMode } from './weather'
 import { SituationPanel } from './SituationPanel'
 import { Tutorial } from './Tutorial'
 import { CoverageControl } from './CoverageControl'
@@ -105,6 +109,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const [showPlatforms, setShowPlatforms] = useState(false)
   const [focus, setFocus] = useState<{ uid: number; n: number } | null>(null)
   const [draft, setDraft] = useState<Draft>({ mode: 'orbit', center: null, radius: 250, route: [] })
+  const [showWeather, setShowWeather] = useState(false)
   const [showSpace, setShowSpace] = useState(false)
   const [showInbox, setShowInbox] = useState(false)
   // rules 5: orders held for vehicles the link can't reach now
@@ -129,6 +134,9 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const coverageImage = useMemo(() => (showCoverage && coverageGrid ? gridImage(coverageGrid) : null), [showCoverage, coverageGrid])
   const [linkRoute, setLinkRoute] = useState<LinkRouteDrawing | null>(null)
   const [mapView, setMapView] = useState<{ center: LngLat; bounds: [number, number, number, number]; zoom: number } | null>(null)
+  const [weatherMode, setWeatherMode] = useState<WeatherMode>('visibility')
+  const weatherField = useWeatherGrid(mapView?.bounds ?? null, weatherMode !== 'off')
+  const weatherRaster = useMemo(() => weatherMode !== 'off' && weatherField.grid ? weatherImage(weatherField.grid, weatherMode) : null, [weatherField.grid, weatherMode])
   const [drawing, setDrawing] = useState<LngLat | 'start' | null>(null)
   const [box, setBox] = useState<LngLat[] | null>(null)
   const [spaceSel, setSpaceSel] = useState<SpaceSelection>({ scene: null, norad: null })
@@ -542,6 +550,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         <span className={`pill ${status}`}>{status === 'live' ? 'BRIDGE LIVE' : status === 'down' ? 'BRIDGE DOWN' : 'CONNECTING'}</span>
         <InboxButton decisions={decisions} open={showInbox} hiddenAlerts={hiddenAlerts} onClick={() => setShowInbox((v) => !v)} />
         <QueueButton decisions={decisions} open={showQueue} onClick={() => setShowQueue((v) => !v)} />
+        <button className={`ghost platforms-btn ${showWeather ? 'on' : ''}`} onClick={() => setShowWeather(v => !v)}>Weather</button>
         <button className={`ghost platforms-btn ${showSpace ? 'on' : ''}`} onClick={() => setShowSpace((v) => !v)} title="Space timeline: imaging access, SATCOM, GNSS">
           Space
         </button>
@@ -605,6 +614,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           layers={mapLayers}
           clusters={state?.clusters ?? null}
           coverage={coverageImage}
+          weather={showCoverage ? null : weatherRaster}
           linkRoute={linkRoute}
         />
         </ErrorBoundary>
@@ -618,6 +628,10 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             />
           </ErrorBoundary>
         )}
+        <WeatherLegend mode={weatherMode} onMode={m => { setWeatherMode(m); setShowCoverage(false) }} grid={weatherField.grid} error={showCoverage ? 'Links layer shown; choose a weather field to show its layer' : weatherField.error} onDetails={() => setShowWeather(true)} />
+        {showWeather && <ErrorBoundary name="Weather" className="floating">
+          <WeatherPanel center={mapView?.center ?? [-122.4783, 37.8199]} vehicle={selected.size === 1 ? vehicles.find(v => selected.has(v.uid)) ?? null : null} onClose={() => setShowWeather(false)} />
+        </ErrorBoundary>}
         {/* a situation runner's status (make situation): shown only while one has posted it */}
         <ErrorBoundary name="Situation" className="floating">
           <SituationPanel decisions={decisions} />

@@ -125,6 +125,8 @@ impl std::str::FromStr for SensingModel {
 /// contact's signature overrides by contact id.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Sensing {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weather: Option<murmur_weather::Config>,
     #[serde(default)]
     pub misclassification_rate: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -184,6 +186,9 @@ pub struct ActTruth {
 
 impl TruthMessage {
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(w) = &self.sensing.weather {
+            w.validate()?;
+        }
         if !self.t.is_finite() {
             return Err("t must be a finite unix time".into());
         }

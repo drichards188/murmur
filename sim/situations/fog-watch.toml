@@ -1,0 +1,77 @@
+title = "Fog watch"
+brief = """
+A small boat is circling east of the Golden Gate. PUMA 1 watches with its camera. Open Weather
+and Tracks. Watch the contact's last-seen age and uncertainty as visibility changes, and compare
+that with PUMA 1's link. A connected aircraft does not necessarily have a usable view.
+
+This is a nine-minute scripted weather demonstration, not a historical incident. Visibility
+changes affect the camera model; cloud percentage is displayed but does not itself block sensors.
+There is no hostile act and no engagement. The opening orbit comes from the setup script.
+"""
+director = """
+The boat loops at 4 m/s. From 2:30 to 3:00, visibility falls to 50 m. At 3:30 the boat accelerates
+to 12 m/s and heads east, without broadcasting AIS. Nothing tells the tracker where it went.
+At 7:00 visibility begins recovering, reaching 20 km at 7:30. Reacquisition depends on the camera's
+search. A new track need not be identified as the old contact. Links have no scripted outage;
+ordinary link geometry and packet loss still apply. Timing is relative to the contacts process,
+a few seconds after the situation clock. This demonstration is not an evaluation finding.
+"""
+fleet = "sim/fleets/fog-watch.toml"
+contacts = "sim/scenarios/fog-watch.toml"
+events = []
+policy = "sim/situations/policies/watch.toml"
+tidewater = "golden-gate-fog-watch"
+at = "2026-06-14T19:00:00Z"
+rate = 1
+duration_s = 540
+operator = "live"
+ai = "none"
+cosigner = "you"
+reveal = false
+seed = 611
+world = "golden-gate-v3"
+
+[summary]
+headline = "A working radio cannot see through fog."
+bullets = ["Open Weather and Tracks; select PUMA 1 for local weather.", "Compare visibility, last-seen age and contact uncertainty with the aircraft's link.", "Synthetic fog over archived surface weather; nine minutes, no account or engagement."]
+
+[[order]]
+id = "camera-watch"
+task = "orbit"
+vehicles = { callsign = "PUMA 1" }
+center = [-122.4600, 37.8210]
+radius_m = 400
+note = "Opening order: camera watch east of the bridge"
+
+[[watch]]
+at_s = 0
+headline = "Watch the loop while visibility is good"
+bullets = ["Open Weather; select PUMA 1.", "Open Tracks and watch fixes accumulate.", "This aircraft has a camera, no radar or AIS receiver."]
+text = "Let the camera build a track. An estimated motion is supported by sightings, not a promise about the boat's next turn."
+
+[[watch]]
+at_s = 150
+headline = "Visibility is falling"
+bullets = ["Weather shows the scripted fog moving in.", "Watch last-seen age and uncertainty, not just the marker.", "Check that the aircraft is still sending telemetry."]
+text = "The fog reduces camera visibility. Radio connectivity and sensor visibility are different facts."
+
+[[watch]]
+at_s = 240
+headline = "What do we still know?"
+bullets = ["A coasting track is a prediction from the last observation.", "An unseen boat may have changed course or speed.", "Loss of a sighting does not mean the boat stopped or disappeared."]
+text = "Compare the age of the last fix with its uncertainty. The display must not report an unseen maneuver as an observation."
+
+[[watch]]
+at_s = 420
+headline = "Visibility begins to recover"
+bullets = ["A camera still has to search, point and dwell.", "Reacquisition is a sensor result; the script does not create a fix.", "A newly seen boat is not automatically confirmed as the old contact."]
+text = "Weather is clearing. Watch what the camera actually finds and what remains uncertain."
+
+[[watch]]
+at_s = 510
+headline = "Compare observation with connectivity"
+bullets = ["The weather impaired the view without a scripted radio outage.", "Radar, optical imagery and communications respond differently to weather.", "Replay with the fog timeline removed for a clear-weather comparison."]
+text = "The demonstration concerns observation quality. Golden Gate communications are not guaranteed: terrain, antenna obstructions, link capacity and outages still matter."
+
+[autoplay]
+preset = "default"

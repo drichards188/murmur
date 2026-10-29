@@ -152,6 +152,13 @@ MURMUR_AUTH=credentials make up                # open the console and sign in
 An engagement then needs two of them with engagement authority, each re-entering their
 password at the moment they sign; the evaluation's study mode always runs this way.
 
+**Weather:** the open world replays archived HRRR surface weather, rendered on the tactical map
+with visibility, wind arrows, cloud and precipitation layers. Open **Weather** for the
+selected vehicle or map center. Try `make situation NAME=fog-watch`: a circling boat changes
+speed and route while scripted fog interrupts camera sightings, with no scripted radio outage.
+[Sources, effects, replay and limits](docs/WEATHER.md). Existing installs can fetch the new layer
+with `.venv/bin/tidewater fetch tidewater/scenarios/golden-gate-weather.toml`.
+
 **Real conditions:** `make goldengate AT=2026-06-14T10:00:00Z` starts the swarm at the Golden
 Gate from [tidewater](tidewater/README.md)'s scenario (`tidewater/`, installed into `.venv` by
 `make setup`, which also fetches the scenario's data). `scripts/up.sh` starts

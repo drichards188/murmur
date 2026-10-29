@@ -32,6 +32,8 @@ from eval.headless.episode import Episode, Options
 from eval.headless.sim import BINARY, HeadlessSession, Sim
 from eval.headless.situations import Calibration, from_situation, process_spec
 
+# Weather (murmur-sgok): compared with a separate af45c04 build. The only normalized
+# golden-record change is get_weather added to agent_log[0].tools; audit and behavior match.
 GOLDEN = Path(__file__).with_name("golden-harbor-watch-s1.json")
 FIXTURE = REPO / "agents" / "tests" / "fixtures" / "playbook" / "harbor-watch-reads.json"
 

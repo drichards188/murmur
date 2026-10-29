@@ -201,4 +201,7 @@ def fetch_all(sc: Scenario, log=print):
     layers = [fetch_terrain, fetch_tide, fetch_currents]  # station predictions are also SFBOFS's fallback
     if sc.currents.get("source", "coops-predictions") == "sfbofs":
         layers.append(fetch_sfbofs)
+    if sc.weather.get("enabled", False) and not sc.weather.get("archive"):
+        from .weather import fetch_weather
+        layers.append(fetch_weather)
     return [f(sc, log) for f in layers + [fetch_wind]]

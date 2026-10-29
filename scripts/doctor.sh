@@ -99,7 +99,7 @@ if [ -x .venv/bin/python ] && [ -x .venv/bin/tidewater ]; then ok "python venv: 
 
 gg=tidewater/data/cache/golden-gate-2026-06
 gaps=()
-for f in terrain.npz tide.json currents.json sfbofs_currents.npz wind.json; do [ -s "$gg/$f" ] || gaps+=("$f"); done
+for f in terrain.npz tide.json currents.json sfbofs_currents.npz wind.json weather.json; do [ -s "$gg/$f" ] || gaps+=("$f"); done
 if [ ${#gaps[@]} -eq 0 ]; then ok "golden gate data: $gg"; else setup_miss "golden gate data: $gg lacks ${gaps[*]}"; fi
 
 bins=(murmur-bridge murmur-standins murmur-linkemu murmur-contacts murmur-auth murmur-replay)

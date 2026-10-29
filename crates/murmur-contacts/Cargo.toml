@@ -6,6 +6,7 @@ license.workspace = true
 description = "Scenario contacts that are not ours: simulated truth, published to the bridge on its simulation channel and to an evaluation log"
 
 [dependencies]
+murmur-weather = { path = "../murmur-weather" }
 # tidewater conditions client (surface craft drift with the real current) and geo helpers
 murmur-standins = { path = "../murmur-standins" }
 reqwest = { version = "0.13", default-features = false, features = ["json"] }

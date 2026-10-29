@@ -52,7 +52,15 @@ async fn run() -> Result<(), String> {
             .unwrap_or_default()
             .join("sim/scenarios/golden-gate.toml")
     });
-    let scenario = Scenario::load(&path)?;
+    let mut scenario = Scenario::load(&path)?;
+    if scenario.sensing.weather.is_none() && scenario.conditions.is_none()
+        && let Some(archive) = env("MURMUR_WEATHER_ARCHIVE")
+    {
+        scenario.sensing.weather = Some(murmur_weather::Config { archive: Some(archive), ..Default::default() });
+    }
+    if let Some(w) = &mut scenario.sensing.weather {
+        w.pin_archive(root.as_deref().unwrap_or_else(|| std::path::Path::new(".")))?;
+    }
     let seed = env("MURMUR_CONTACTS_SEED")
         .and_then(|s| s.parse().ok())
         .unwrap_or(scenario.seed);

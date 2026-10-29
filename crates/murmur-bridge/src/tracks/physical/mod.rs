@@ -416,6 +416,7 @@ struct GridSlot {
 
 /// The physical model's state across ticks.
 pub struct Engine {
+    pub weather: murmur_weather::Store,
     root: Option<PathBuf>,
     terrain: GridSlot,
     bathymetry: GridSlot,
@@ -441,6 +442,7 @@ impl Engine {
     /// `root`: what relative grid paths are relative to (the repository).
     pub fn new(root: Option<PathBuf>) -> Engine {
         Engine {
+            weather: murmur_weather::Store::default(),
             root,
             terrain: GridSlot { path: None, grid: None },
             bathymetry: GridSlot { path: None, grid: None },
@@ -492,6 +494,7 @@ impl Engine {
 
     /// Read the scenario's grids (on a change of path), and say once that there is no terrain.
     pub fn configure(&mut self, sensing: &Sensing) {
+        self.weather.configure(sensing.weather.as_ref(), self.root.as_deref());
         let mut t = std::mem::replace(&mut self.terrain, GridSlot { path: None, grid: None });
         let before = t.path.clone();
         self.load(&mut t, sensing.terrain.as_deref(), "terrain");
@@ -549,6 +552,20 @@ impl Engine {
         Some(obstruction)
     }
 
+    fn context<'a>(&self, st: &'a Step<'a>, o: &Observer, sun: f64) -> Ctx<'a> {
+        let mut cond = st.sensing.conditions.unwrap_or_default().sane();
+        if st.sensing.weather.is_none() { return Ctx { st, cond, sun }; }
+        let w = self.weather.at(o.lat, o.lon, st.t, st.s).values;
+        if let Some(v) = w.visibility_m {
+            cond.visibility_m = v;
+        }
+        if let Some(v) = w.wind_mps() {
+            cond.wind_mps = v;
+        }
+        let cond = cond.sane();
+        Ctx { st, cond, sun }
+    }
+
     /// One tick: every observer's every sensor against every contact.
     pub fn step(&mut self, st: &Step, observers: &[Observer], contacts: &[ContactTruth]) -> Vec<Detection> {
         let cond = st.sensing.conditions.unwrap_or_default().sane();
@@ -561,10 +578,10 @@ impl Engine {
             .or_else(|| contacts.first().map(|c| (c.lat, c.lon)))
             .unwrap_or((0.0, 0.0));
         let sun = cond.sun_at(st.t, lat0, lon0);
-        let ctx = Ctx { st, cond, sun };
         let mut out = Vec::new();
         // the scanning and listening sensors first: their fixes cue this tick's cameras
         for o in observers {
+            let ctx = self.context(st, o, sun);
             let h_s = sensor_height_m(o);
             for (si, s) in o.sensors.iter().enumerate() {
                 if o.submerged && s.kind != SensorType::Sonar {
@@ -592,6 +609,7 @@ impl Engine {
             if o.submerged {
                 continue;
             }
+            let ctx = self.context(st, o, sun);
             let h_s = sensor_height_m(o);
             for (si, s) in o.sensors.iter().enumerate() {
                 if let Resolved::EoIr(eo) = resolve(s, h_s > 20.0) {

@@ -1,0 +1,712 @@
+{
+  "schema": 1,
+  "source": "https://historical-forecast-api.open-meteo.com/v1/forecast",
+  "model": "gfs_hrrr",
+  "fetched_at": "2026-10-29T19:17:58.817240+00:00",
+  "raw_sha256": "9d95a54e220e4c029a5423e76bb0e667be89efcc962b7a6f1c9bbd92d7047047",
+  "bounds": [
+    -122.56,
+    37.77,
+    -122.38,
+    37.88
+  ],
+  "points": [
+    {
+      "lat": 37.77,
+      "lon": -122.56,
+      "rows": [
+        {
+          "t": 1781463600.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 4.9,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 100,
+            "temperature_c": 13.3,
+            "humidity_pct": 99,
+            "pressure_hpa": 1015.2,
+            "wind_east_mps": 1.6889470624176854,
+            "wind_north_mps": 0.2675029352187951
+          }
+        },
+        {
+          "t": 1781467200.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 5.7,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 100,
+            "temperature_c": 13.3,
+            "humidity_pct": 99,
+            "pressure_hpa": 1015.2,
+            "wind_east_mps": 3.830834317270553,
+            "wind_north_mps": -2.123466136678957
+          }
+        }
+      ]
+    },
+    {
+      "lat": 37.77,
+      "lon": -122.515,
+      "rows": [
+        {
+          "t": 1781463600.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 5.6,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 82,
+            "temperature_c": 16.9,
+            "humidity_pct": 96,
+            "pressure_hpa": 1015.1,
+            "wind_east_mps": 3.2466043048596953,
+            "wind_north_mps": 2.536525278341711
+          }
+        },
+        {
+          "t": 1781467200.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 7.3,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 100,
+            "temperature_c": 15.8,
+            "humidity_pct": 99,
+            "pressure_hpa": 1015.0,
+            "wind_east_mps": 4.71459422029628,
+            "wind_north_mps": 0.578879381174449
+          }
+        }
+      ]
+    },
+    {
+      "lat": 37.77,
+      "lon": -122.47,
+      "rows": [
+        {
+          "t": 1781463600.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 5.6,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 82,
+            "temperature_c": 16.4,
+            "humidity_pct": 96,
+            "pressure_hpa": 1005.9,
+            "wind_east_mps": 3.2466043048596953,
+            "wind_north_mps": 2.536525278341711
+          }
+        },
+        {
+          "t": 1781467200.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 7.3,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 100,
+            "temperature_c": 15.3,
+            "humidity_pct": 99,
+            "pressure_hpa": 1005.8,
+            "wind_east_mps": 4.71459422029628,
+            "wind_north_mps": 0.578879381174449
+          }
+        }
+      ]
+    },
+    {
+      "lat": 37.77,
+      "lon": -122.425,
+      "rows": [
+        {
+          "t": 1781463600.0,
+          "values": {
+            "visibility_m": 15200.0,
+            "gust_mps": 5.1,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 48,
+            "temperature_c": 19.2,
+            "humidity_pct": 83,
+            "pressure_hpa": 1010.7,
+            "wind_east_mps": 3.7820781946403677,
+            "wind_north_mps": 1.6838897023338122
+          }
+        },
+        {
+          "t": 1781467200.0,
+          "values": {
+            "visibility_m": 15700.0,
+            "gust_mps": 6.9,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 17,
+            "temperature_c": 19.3,
+            "humidity_pct": 80,
+            "pressure_hpa": 1010.6,
+            "wind_east_mps": 4.924700965970555,
+            "wind_north_mps": 2.090411537417615
+          }
+        }
+      ]
+    },
+    {
+      "lat": 37.77,
+      "lon": -122.38,
+      "rows": [
+        {
+          "t": 1781463600.0,
+          "values": {
+            "visibility_m": 15200.0,
+            "gust_mps": 5.1,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 48,
+            "temperature_c": 19.4,
+            "humidity_pct": 83,
+            "pressure_hpa": 1015.0,
+            "wind_east_mps": 3.7820781946403677,
+            "wind_north_mps": 1.6838897023338122
+          }
+        },
+        {
+          "t": 1781467200.0,
+          "values": {
+            "visibility_m": 15700.0,
+            "gust_mps": 6.9,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 17,
+            "temperature_c": 19.6,
+            "humidity_pct": 80,
+            "pressure_hpa": 1014.9,
+            "wind_east_mps": 4.924700965970555,
+            "wind_north_mps": 2.090411537417615
+          }
+        }
+      ]
+    },
+    {
+      "lat": 37.80666666666667,
+      "lon": -122.56,
+      "rows": [
+        {
+          "t": 1781463600.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 4.4,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 100,
+            "temperature_c": 15.6,
+            "humidity_pct": 94,
+            "pressure_hpa": 1015.0,
+            "wind_east_mps": 3.602425773033397,
+            "wind_north_mps": 1.2404146684817667
+          }
+        },
+        {
+          "t": 1781467200.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 7.6,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 100,
+            "temperature_c": 14.8,
+            "humidity_pct": 100,
+            "pressure_hpa": 1015.0,
+            "wind_east_mps": 5.1,
+            "wind_north_mps": 9.36854801347725e-16
+          }
+        }
+      ]
+    },
+    {
+      "lat": 37.80666666666667,
+      "lon": -122.515,
+      "rows": [
+        {
+          "t": 1781463600.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 5.6,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 77,
+            "temperature_c": 16.5,
+            "humidity_pct": 93,
+            "pressure_hpa": 1015.0,
+            "wind_east_mps": 4.042132730183459,
+            "wind_north_mps": 1.8848774473635184
+          }
+        },
+        {
+          "t": 1781467200.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 8.6,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 100,
+            "temperature_c": 16.1,
+            "humidity_pct": 93,
+            "pressure_hpa": 1015.0,
+            "wind_east_mps": 6.2654879408201225,
+            "wind_north_mps": 0.6585293185862161
+          }
+        }
+      ]
+    },
+    {
+      "lat": 37.80666666666667,
+      "lon": -122.47,
+      "rows": [
+        {
+          "t": 1781463600.0,
+          "values": {
+            "visibility_m": 13200.0,
+            "gust_mps": 5.6,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 38,
+            "temperature_c": 18.4,
+            "humidity_pct": 90,
+            "pressure_hpa": 1014.5,
+            "wind_east_mps": 3.8077359517423526,
+            "wind_north_mps": 2.3793374964070906
+          }
+        },
+        {
+          "t": 1781467200.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 7.6,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 78,
+            "temperature_c": 17.4,
+            "humidity_pct": 93,
+            "pressure_hpa": 1014.4,
+            "wind_east_mps": 4.945493884734798,
+            "wind_north_mps": 1.6068883707497275
+          }
+        }
+      ]
+    },
+    {
+      "lat": 37.80666666666667,
+      "lon": -122.425,
+      "rows": [
+        {
+          "t": 1781463600.0,
+          "values": {
+            "visibility_m": 14500.0,
+            "gust_mps": 4.8,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 47,
+            "temperature_c": 19.1,
+            "humidity_pct": 88,
+            "pressure_hpa": 1015.0,
+            "wind_east_mps": 3.6175840740680902,
+            "wind_north_mps": 1.5355733349628462
+          }
+        },
+        {
+          "t": 1781467200.0,
+          "values": {
+            "visibility_m": 14800.0,
+            "gust_mps": 7.0,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 50,
+            "temperature_c": 19.2,
+            "humidity_pct": 84,
+            "pressure_hpa": 1014.9,
+            "wind_east_mps": 5.040599536364313,
+            "wind_north_mps": 1.6377900701872221
+          }
+        }
+      ]
+    },
+    {
+      "lat": 37.80666666666667,
+      "lon": -122.38,
+      "rows": [
+        {
+          "t": 1781463600.0,
+          "values": {
+            "visibility_m": 14500.0,
+            "gust_mps": 4.8,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 47,
+            "temperature_c": 19.1,
+            "humidity_pct": 88,
+            "pressure_hpa": 1015.0,
+            "wind_east_mps": 3.6175840740680902,
+            "wind_north_mps": 1.5355733349628462
+          }
+        },
+        {
+          "t": 1781467200.0,
+          "values": {
+            "visibility_m": 14800.0,
+            "gust_mps": 7.0,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 50,
+            "temperature_c": 19.2,
+            "humidity_pct": 84,
+            "pressure_hpa": 1014.9,
+            "wind_east_mps": 5.040599536364313,
+            "wind_north_mps": 1.6377900701872221
+          }
+        }
+      ]
+    },
+    {
+      "lat": 37.843333333333334,
+      "lon": -122.56,
+      "rows": [
+        {
+          "t": 1781463600.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 4.4,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 100,
+            "temperature_c": 15.6,
+            "humidity_pct": 94,
+            "pressure_hpa": 1015.0,
+            "wind_east_mps": 3.602425773033397,
+            "wind_north_mps": 1.2404146684817667
+          }
+        },
+        {
+          "t": 1781467200.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 7.6,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 100,
+            "temperature_c": 14.8,
+            "humidity_pct": 100,
+            "pressure_hpa": 1015.0,
+            "wind_east_mps": 5.1,
+            "wind_north_mps": 9.36854801347725e-16
+          }
+        }
+      ]
+    },
+    {
+      "lat": 37.843333333333334,
+      "lon": -122.515,
+      "rows": [
+        {
+          "t": 1781463600.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 5.6,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 77,
+            "temperature_c": 16.3,
+            "humidity_pct": 93,
+            "pressure_hpa": 1010.8,
+            "wind_east_mps": 4.042132730183459,
+            "wind_north_mps": 1.8848774473635184
+          }
+        },
+        {
+          "t": 1781467200.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 8.6,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 100,
+            "temperature_c": 15.9,
+            "humidity_pct": 93,
+            "pressure_hpa": 1010.8,
+            "wind_east_mps": 6.2654879408201225,
+            "wind_north_mps": 0.6585293185862161
+          }
+        }
+      ]
+    },
+    {
+      "lat": 37.843333333333334,
+      "lon": -122.47,
+      "rows": [
+        {
+          "t": 1781463600.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 5.6,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 77,
+            "temperature_c": 16.5,
+            "humidity_pct": 93,
+            "pressure_hpa": 1015.0,
+            "wind_east_mps": 4.042132730183459,
+            "wind_north_mps": 1.8848774473635184
+          }
+        },
+        {
+          "t": 1781467200.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 8.6,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 100,
+            "temperature_c": 16.1,
+            "humidity_pct": 93,
+            "pressure_hpa": 1015.0,
+            "wind_east_mps": 6.2654879408201225,
+            "wind_north_mps": 0.6585293185862161
+          }
+        }
+      ]
+    },
+    {
+      "lat": 37.843333333333334,
+      "lon": -122.425,
+      "rows": [
+        {
+          "t": 1781463600.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 7.1,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 35,
+            "temperature_c": 13.5,
+            "humidity_pct": 92,
+            "pressure_hpa": 1014.9,
+            "wind_east_mps": 5.164904077017911,
+            "wind_north_mps": 3.4837717886227515
+          }
+        },
+        {
+          "t": 1781467200.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 9.0,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 99,
+            "temperature_c": 13.4,
+            "humidity_pct": 91,
+            "pressure_hpa": 1014.8,
+            "wind_east_mps": 6.550120931297449,
+            "wind_north_mps": 2.916301730853487
+          }
+        }
+      ]
+    },
+    {
+      "lat": 37.843333333333334,
+      "lon": -122.38,
+      "rows": [
+        {
+          "t": 1781463600.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 6.3,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 52,
+            "temperature_c": 13.5,
+            "humidity_pct": 93,
+            "pressure_hpa": 1014.8,
+            "wind_east_mps": 4.941889944840977,
+            "wind_north_mps": 1.9966531429068126
+          }
+        },
+        {
+          "t": 1781467200.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 8.3,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 75,
+            "temperature_c": 13.3,
+            "humidity_pct": 94,
+            "pressure_hpa": 1014.6,
+            "wind_east_mps": 6.024719962567122,
+            "wind_north_mps": 1.8419417397532436
+          }
+        }
+      ]
+    },
+    {
+      "lat": 37.88,
+      "lon": -122.56,
+      "rows": [
+        {
+          "t": 1781463600.0,
+          "values": {
+            "visibility_m": 12500.0,
+            "gust_mps": 6.9,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 50,
+            "temperature_c": 16.5,
+            "humidity_pct": 93,
+            "pressure_hpa": 992.2,
+            "wind_east_mps": 4.432396916151813,
+            "wind_north_mps": 2.356747245185171
+          }
+        },
+        {
+          "t": 1781467200.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 8.6,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 100,
+            "temperature_c": 15.4,
+            "humidity_pct": 100,
+            "pressure_hpa": 992.0,
+            "wind_east_mps": 5.600982123886497,
+            "wind_north_mps": 2.6117808575575205
+          }
+        }
+      ]
+    },
+    {
+      "lat": 37.88,
+      "lon": -122.515,
+      "rows": [
+        {
+          "t": 1781463600.0,
+          "values": {
+            "visibility_m": 19700.0,
+            "gust_mps": 7.6,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 9,
+            "temperature_c": 20.3,
+            "humidity_pct": 72,
+            "pressure_hpa": 1014.3,
+            "wind_east_mps": 4.431612559603445,
+            "wind_north_mps": 3.103048520659161
+          }
+        },
+        {
+          "t": 1781467200.0,
+          "values": {
+            "visibility_m": 15300.0,
+            "gust_mps": 9.1,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 17,
+            "temperature_c": 19.5,
+            "humidity_pct": 81,
+            "pressure_hpa": 1014.3,
+            "wind_east_mps": 5.826090420594646,
+            "wind_north_mps": 3.6405453452821184
+          }
+        }
+      ]
+    },
+    {
+      "lat": 37.88,
+      "lon": -122.47,
+      "rows": [
+        {
+          "t": 1781463600.0,
+          "values": {
+            "visibility_m": 20400.0,
+            "gust_mps": 6.6,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 22,
+            "temperature_c": 20.6,
+            "humidity_pct": 73,
+            "pressure_hpa": 1014.9,
+            "wind_east_mps": 3.028072718677493,
+            "wind_north_mps": 3.2472104351891176
+          }
+        },
+        {
+          "t": 1781467200.0,
+          "values": {
+            "visibility_m": 17900.0,
+            "gust_mps": 8.0,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 19,
+            "temperature_c": 20.6,
+            "humidity_pct": 77,
+            "pressure_hpa": 1014.8,
+            "wind_east_mps": 4.7651100968684394,
+            "wind_north_mps": 3.4620551360026672
+          }
+        }
+      ]
+    },
+    {
+      "lat": 37.88,
+      "lon": -122.425,
+      "rows": [
+        {
+          "t": 1781463600.0,
+          "values": {
+            "visibility_m": 12200.0,
+            "gust_mps": 7.1,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 50,
+            "temperature_c": 13.4,
+            "humidity_pct": 91,
+            "pressure_hpa": 1014.8,
+            "wind_east_mps": 3.9297935836531375,
+            "wind_north_mps": 4.5207103855344055
+          }
+        },
+        {
+          "t": 1781467200.0,
+          "values": {
+            "visibility_m": 12600.0,
+            "gust_mps": 8.6,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 50,
+            "temperature_c": 13.4,
+            "humidity_pct": 90,
+            "pressure_hpa": 1014.7,
+            "wind_east_mps": 4.756126883055324,
+            "wind_north_mps": 4.282435880696692
+          }
+        }
+      ]
+    },
+    {
+      "lat": 37.88,
+      "lon": -122.38,
+      "rows": [
+        {
+          "t": 1781463600.0,
+          "values": {
+            "visibility_m": 13900.0,
+            "gust_mps": 5.6,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 50,
+            "temperature_c": 18.0,
+            "humidity_pct": 89,
+            "pressure_hpa": 1014.6,
+            "wind_east_mps": 2.7254194650709267,
+            "wind_north_mps": 3.248028438824467
+          }
+        },
+        {
+          "t": 1781467200.0,
+          "values": {
+            "visibility_m": 14200.0,
+            "gust_mps": 6.8,
+            "precipitation_mm": 0.0,
+            "cloud_cover_pct": 20,
+            "temperature_c": 18.4,
+            "humidity_pct": 87,
+            "pressure_hpa": 1014.5,
+            "wind_east_mps": 3.0980747074415134,
+            "wind_north_mps": 3.4407605419603353
+          }
+        }
+      ]
+    }
+  ],
+  "request": {
+    "latitude": "37.7700,37.7700,37.7700,37.7700,37.7700,37.8067,37.8067,37.8067,37.8067,37.8067,37.8433,37.8433,37.8433,37.8433,37.8433,37.8800,37.8800,37.8800,37.8800,37.8800",
+    "longitude": "-122.5600,-122.5150,-122.4700,-122.4250,-122.3800,-122.5600,-122.5150,-122.4700,-122.4250,-122.3800,-122.5600,-122.5150,-122.4700,-122.4250,-122.3800,-122.5600,-122.5150,-122.4700,-122.4250,-122.3800",
+    "start_date": "2026-06-13",
+    "end_date": "2026-06-16",
+    "hourly": "visibility,wind_gusts_10m,precipitation,cloud_cover,temperature_2m,relative_humidity_2m,surface_pressure,wind_speed_10m,wind_direction_10m",
+    "wind_speed_unit": "ms",
+    "timezone": "GMT",
+    "models": "gfs_hrrr"
+  },
+  "attribution": "Weather data by Open-Meteo.com; NOAA HRRR",
+  "sampling": "nearest requested grid point; linear instantaneous fields; precipitation preceding hour",
+  "parent_sha256": "0c84fdb45ae505d053d21599799ae8d7505101d226fd12d7b235a239d36817a9",
+  "replay_window": [
+    1781463600.0,
+    1781464200.0
+  ]
+}

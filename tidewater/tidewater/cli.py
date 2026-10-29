@@ -14,6 +14,12 @@ def cmd_fetch(args):
         print(f"  ok {p.name}")
 
 
+def cmd_weather_snapshot(args):
+    from .weather import snapshot
+    snapshot(args.source, args.output, parse_time(args.start).timestamp(), parse_time(args.end).timestamp())
+    print(args.output)
+
+
 def cmd_probe(args):
     from .conditions import Conditions
 
@@ -33,8 +39,9 @@ def cmd_probe(args):
         cs, cd = s.current
         ws, wd = s.wind
         ground = f"water {s.water_depth_m:6.1f} m deep" if s.wet else f"land  {-s.water_depth_m:6.1f} m above water"
+        wind = f"wind {ws:4.1f} m/s toward {wd:3.0f}" if ws is not None else "wind unavailable"
         print(f"{label:14} {ground} | tide {s.water_level_m:+.2f} m | "
-              f"current {cs:4.2f} m/s toward {cd:3.0f} | wind {ws:4.1f} m/s toward {wd:3.0f}")
+              f"current {cs:4.2f} m/s toward {cd:3.0f} | {wind}")
 
 
 def cmd_validate(args):
@@ -67,6 +74,13 @@ def main(argv=None):
     p = sub.add_parser("fetch", help="download and cache a scenario's data")
     p.add_argument("scenario")
     p.set_defaults(fn=cmd_fetch)
+
+    p = sub.add_parser("weather-snapshot", help="pin cached weather around a replay time window")
+    p.add_argument("source")
+    p.add_argument("output")
+    p.add_argument("--start", required=True)
+    p.add_argument("--end", required=True)
+    p.set_defaults(fn=cmd_weather_snapshot)
 
     p = sub.add_parser("probe", help="print conditions at a point (or at every spawn point)")
     p.add_argument("scenario")

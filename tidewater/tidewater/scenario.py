@@ -47,6 +47,7 @@ class Scenario:
     spawn: dict = field(default_factory=dict)
     validation: dict = field(default_factory=dict)
     path: Path | None = None
+    weather: dict = field(default_factory=dict)
 
     @classmethod
     def load(cls, path) -> "Scenario":
@@ -64,6 +65,7 @@ class Scenario:
             spawn={k: tuple(v) for k, v in raw.get("spawn", {}).items()},
             validation=raw.get("validation", {}),
             path=path,
+            weather=raw.get("weather", {}),
         )
 
     @property

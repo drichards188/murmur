@@ -11,6 +11,7 @@ description = "Evaluation only (eval/keepout.py): generated engagement situation
 # `cargo build --release -p murmur-keepout-probe`.
 
 [dependencies]
+murmur-weather = { path = "../../crates/murmur-weather" }
 murmur-decide = { path = "../../crates/murmur-decide" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }

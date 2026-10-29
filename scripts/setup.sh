@@ -17,7 +17,7 @@ ARDUPILOT_PIN=e8de77a80535df7a78ff78564b35781fba6a5b2f
 # live situation (sim/situations, through sim/worlds/golden-gate.toml). San Diego's
 # (sim/worlds/san-diego.tidewater.toml) only re-bakes its world's headless grids
 # (sim/worlds/README.md), so it is not fetched here.
-TIDEWATER_SCENARIOS=(tidewater/scenarios/golden-gate-2026-06.toml)
+TIDEWATER_SCENARIOS=(tidewater/scenarios/golden-gate-weather.toml)
 
 echo "== python venv"
 command -v uv >/dev/null || { echo "install uv first: https://docs.astral.sh/uv/"; exit 1; }

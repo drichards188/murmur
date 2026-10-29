@@ -137,10 +137,13 @@ def apply(feed: VehicleFeed, cond: Conditions, t):
     if not s.in_area:
         feed.status = "outside scenario area"
         return
-    ws, wfrom = from_dir(s.wind_east, s.wind_north)
-    feed.set_param("SIM_WIND_SPD", ws, MIN_SPEED_CHANGE)
-    feed.set_param("SIM_WIND_DIR", wfrom, MIN_DIR_CHANGE)
     notes = []
+    if s.wind_east is not None and s.wind_north is not None:
+        ws, wfrom = from_dir(s.wind_east, s.wind_north)
+        feed.set_param("SIM_WIND_SPD", ws, MIN_SPEED_CHANGE)
+        feed.set_param("SIM_WIND_DIR", wfrom, MIN_DIR_CHANGE)
+    else:
+        notes.append("wind unavailable; holding last simulator wind")
     if feed.kind == "boat":
         cs, cfrom = from_dir(s.current_east, s.current_north)
         feed.set_param("SIM_TIDE_SPEED", cs, MIN_SPEED_CHANGE)
@@ -197,5 +200,6 @@ def run(args):
                 cs, cd = s.current
                 ws, wd = s.wind
                 cur = f"current {cs:4.2f} m/s -> {cd:3.0f}" if s.wet else "on land"
-                print(f"  sysid {f.sysid:2} {f.kind:12} {cur} | wind {ws:4.1f} m/s -> {wd:3.0f} | {f.status}")
+                wind = f"wind {ws:4.1f} m/s -> {wd:3.0f}" if ws is not None else "wind unavailable"
+                print(f"  sysid {f.sysid:2} {f.kind:12} {cur} | {wind} | {f.status}")
         time.sleep(args.period)

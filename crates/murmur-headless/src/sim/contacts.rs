@@ -135,8 +135,9 @@ pub struct Contacts {
 }
 
 impl Contacts {
-    pub fn load(path: &std::path::Path, seed: Option<u64>, t0_unix: f64) -> Result<Contacts, String> {
-        let scenario = Scenario::load(path)?;
+    pub fn load(path: &std::path::Path, seed: Option<u64>, t0_unix: f64, root: &std::path::Path) -> Result<Contacts, String> {
+        let mut scenario = Scenario::load(path)?;
+        if let Some(w) = &mut scenario.sensing.weather { w.pin_archive(root)?; }
         let seed = seed.unwrap_or(scenario.seed);
         let contacts = scenario.contacts()?;
         if contacts.is_empty() {

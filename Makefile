@@ -19,7 +19,8 @@ up:      ## swarm + link emulator + bridge + web (MURMUR_LINKEMU=0 bypasses the 
 	./scripts/up.sh --fleet $(FLEET) $(ARGS)
 
 goldengate: ## Golden Gate with real tide/current/wind and traffic: tidewater serve + drive (AT= start time, EVENTS= scripted events file (comms and GNSS), CONTACTS= contacts scenario, "" for none)
-	MURMUR_SCENARIO=$(or $(TIDEWATER_HOME),$(CURDIR)/tidewater)/scenarios/golden-gate-2026-06.toml MURMUR_AT=$(or $(AT),2026-06-14T10:00:00Z) \
+	MURMUR_SCENARIO=$(or $(TIDEWATER_HOME),$(CURDIR)/tidewater)/scenarios/$(if $(filter 0,$(WEATHER)),golden-gate-2026-06.toml,golden-gate-weather.toml) MURMUR_AT=$(or $(AT),2026-06-14T10:00:00Z) \
+	  MURMUR_WEATHER_ARCHIVE=$(if $(filter 0,$(WEATHER)),,$(or $(TIDEWATER_HOME),$(CURDIR)/tidewater)/data/cache/golden-gate-2026-06/weather.json) \
 	  MURMUR_CONTACTS=$(if $(filter undefined,$(origin CONTACTS)),sim/scenarios/golden-gate.toml,$(CONTACTS)) \
 	  $(if $(EVENTS),MURMUR_LINK_EVENTS=$(EVENTS)) ./scripts/up.sh --fleet $(or $(GG_FLEET),full-spectrum) $(ARGS)
 
@@ -51,7 +52,7 @@ headless: ## headless simulator batch (docs/HEADLESS.md): SITUATION=harbor-watch
 	.venv/bin/python -m eval.headless.batch --no-build $(if $(FAMILIES),--families $(FAMILIES)) $(if $(SITUATION),--situation $(SITUATION)) --seeds $(or $(SEEDS),1-10) $(if $(WORKERS),--workers $(WORKERS)) $(if $(AGENT),--agent $(AGENT))
 
 check:   ## typecheck + lint + glide, sea, coverage, munition, hostileAct, bluf, engageSteps and tutorial checks (node 22.18+: it runs the .ts directly) + Rust lint and tests + evaluation and watch officer unit tests (stand-in CLIs, no model) + tidewater's tests
-	cd web && npx tsc -b && npx oxlint src && node src/glide.check.ts && node src/sea.check.ts && node src/coverage.check.ts && node src/munition.check.ts && node src/hostileAct.check.ts && node src/bluf.check.ts && node src/engageSteps.check.ts && node src/tutorial.check.ts
+	cd web && npx tsc -b && npx oxlint src && node src/glide.check.ts && node src/sea.check.ts && node src/coverage.check.ts && node src/weather.check.ts && node src/munition.check.ts && node src/hostileAct.check.ts && node src/bluf.check.ts && node src/engageSteps.check.ts && node src/tutorial.check.ts
 	.venv/bin/python -m py_compile sim/swarm.py sim/tests/*.py scripts/*.py agents/*.py agents/watch/*.py agents/playbook/*.py agents/playbook/plays/*.py agents/tests/*.py eval/*.py eval/tests/*.py eval/headless/*.py eval/headless/v2/*.py eval/headless/v3/*.py eval/headless/tests/*.py
 	.venv/bin/python -m pytest -q eval/tests
 	.venv/bin/python -m pytest -q agents/tests

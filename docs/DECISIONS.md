@@ -3122,3 +3122,23 @@ group. Dates are 2026.
 - **bd issues exported to `.beads/issues.jsonl` by the pre-commit hook** (10-02): the Dolt
   database isn't in git.
 - **No AI attribution in commits; no em dashes in prose** (user's global CLAUDE.md).
+
+## 2026-10-29: Replayable weather and Fog watch (murmur-sgok)
+
+The owner asked for weather and a demonstration where a looping boat changes speed and route
+while fog reduces observation. Use archived NOAA HRRR through Open-Meteo, with cached provenance,
+and the physical model's existing visibility and surface-wind inputs. Keep the old situations'
+forcing fixed. The open world opts into the shared weather archive; Fog watch pins a small slice
+and labels its uniform fog overrides synthetic. Public reads return only current environmental
+samples, never contact truth or the future weather schedule.
+
+Render weather on the tactical map by default, beneath labels, vehicles and track uncertainty.
+Visibility, surface-wind arrows, cloud cover and precipitation share the sensing sampler's
+current instant. Missing cells are hatched and stale weather is hidden. A legend and local
+details panel explain the field; weather and predicted radio coverage use separate raster views.
+
+No new cloud-layer, satellite optical-cloud occlusion, gust dynamics or RF rain attenuation model
+is claimed. Fog changes camera visibility without a scripted radio outage. Radar remains governed
+by its own model. Reacquisition is produced by the camera, and an unseen maneuver is never given
+to the tracker. Mean-wind overrides stay out of the timeline so vehicle forcing and sensing keep
+one source. [WEATHER.md](WEATHER.md) records implementation limits and data terms.

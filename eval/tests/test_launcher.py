@@ -36,7 +36,7 @@ def test_the_open_world_comes_first_then_the_situations(menu):
     files = {p.stem for p in S.SITUATIONS.glob("*.toml")}
     assert {e["id"] for e in entries[1:]} == files
     runnable = [e["id"] for e in entries[1:] if e["runnable"]]
-    assert runnable == ["harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition", "tutorial"]
+    assert runnable == ["fog-watch", "harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition", "tutorial"]
     assert [e["id"] for e in entries if e.get("tutorial")] == ["tutorial"], "one tutorial, which the menu offers apart"
     assert sorted(loaded) == runnable
     # every runnable one before the rest, each of the rest saying why not

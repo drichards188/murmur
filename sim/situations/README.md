@@ -4,6 +4,7 @@ Pre-built, pre-tasked scenarios you start with one command, to watch the C2 work
 respond: with you live at the console, or with a scripted operator on autoplay.
 
 ```
+make situation NAME=fog-watch                                     # camera visibility, no account, nine minutes
 make situation NAME=harbor-watch                                  # you at the console, AI claude
 make situation NAME=harbor-watch OPERATOR=autoplay AI=playbook    # watch it run, no account needed
 make situation NAME=harbor-watch AI=codex REVEAL=1                # ChatGPT (Codex), director's view
@@ -396,3 +397,10 @@ geometry against the areas and keep-outs, the tutorial's fixed modes and act tim
 confirm settings, the engagement chain read from the audit log, the fallback nomination); the
 walk-through's steps in `node web/src/tutorial.check.ts`; the bridge's side in `cargo test -p
 murmur-bridge situation` (blinding, the operator's dry run, what an agent can read).
+
+## Fog watch
+
+`fog-watch` is a runnable camera-only watch with scripted fog and a boat that leaves its loop
+while unseen. Open Weather and Tracks. The links keep their ordinary behavior; no outage is
+scripted. [Weather documentation](../../docs/WEATHER.md) explains the timeline, comparison,
+pinned data and model limits. No hostile act or engagement occurs.

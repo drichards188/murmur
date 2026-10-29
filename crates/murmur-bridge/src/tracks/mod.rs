@@ -739,6 +739,63 @@ impl Tracks {
         lock(&self.inner).lost.clone()
     }
 
+    /// Public environmental sample only. Never serialize the truth message or its schedule.
+    pub fn weather_json(&self, lat: f64, lon: f64, now: f64) -> Value {
+        let stamp = {
+            let inner = lock(&self.inner);
+            inner
+                .truth
+                .as_ref()
+                .map(|(rx, m)| (*rx, m.t, m.s, m.sensing.conditions))
+        };
+        let Some((rx, t, s, fixed)) = stamp else {
+            return json!({"available": false, "note": "Waiting for scenario weather"});
+        };
+        let weather = lock(&self.physical).weather.at(lat, lon, t, s);
+        let baseline = fixed.unwrap_or_default().sane();
+        let effective = physical::conditions::Conditions {
+            visibility_m: weather.values.visibility_m.unwrap_or(baseline.visibility_m),
+            wind_mps: weather.values.wind_mps().unwrap_or(baseline.wind_mps),
+            ..baseline
+        }.sane();
+        json!({"available": weather.values != murmur_weather::Values::default(),
+            "lat": lat, "lon": lon, "t": t, "age_s": (now-rx).max(0.0), "stale": now-rx > 10.0,
+            "weather": weather,
+            "sensing_model": self.sensing_model().as_str(),
+            "sensing": {"visibility_m": effective.visibility_m, "wind_mps": effective.wind_mps},
+            "hourly_interval_end_t": (t / 3600.0).ceil() * 3600.0,
+            "note": "Scenario surface weather, not an operational observation or forecast. Nearest weather grid point; visibility and mean wind affect physical sensing. Missing inputs use the stated fixed sensing baseline. Clouds, rain and gusts are information only; no cloud-layer occlusion or weather-driven communications loss."})
+    }
+
+    /// A bounded environmental raster at one simulation instant, south row first.
+    pub fn weather_grid_json(&self, bounds: [f64; 4], now: f64) -> Value {
+        let stamp = {
+            let inner = lock(&self.inner);
+            inner.truth.as_ref().map(|(rx, m)| (*rx, m.t, m.s))
+        };
+        let Some((rx, t, s)) = stamp else {
+            return json!({"available": false, "note": "Waiting for scenario weather"});
+        };
+        let (nlon, nlat) = (32, 24);
+        let [w, south, e, n] = bounds;
+        let engine = lock(&self.physical);
+        let meta = engine.weather.at((south+n)/2.0, (w+e)/2.0, t, s);
+        let mut cells = Vec::with_capacity(nlon*nlat);
+        for row in 0..nlat {
+            for col in 0..nlon {
+                let lat = south + (row as f64+0.5)*(n-south)/nlat as f64;
+                let lon = w + (col as f64+0.5)*(e-w)/nlon as f64;
+                cells.push(engine.weather.at(lat,lon,t,s).values);
+            }
+        }
+        json!({"available": cells.iter().any(|v| *v != murmur_weather::Values::default()),
+            "bounds": bounds, "nlon": nlon, "nlat": nlat, "cells": cells,
+            "t": t, "age_s": (now-rx).max(0.0), "stale": now-rx > 10.0,
+            "source": meta.source, "model": meta.model, "synthetic": meta.synthetic,
+            "archive_sha256": meta.archive_sha256,
+            "note": "Current surface-weather model. Nearest archived grid point; uniform scripted weather. Current values only; no contact data."})
+    }
+
     /// `GET /api/tracks`.
     pub fn api_json(&self, now: f64) -> Value {
         let tracks = self.tracks_json(now);

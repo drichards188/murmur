@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "source": "test fixture",
+  "model": "synthetic",
+  "fetched_at": "2026-06-14T00:00:00Z",
+  "raw_sha256": "fixture",
+  "bounds": [
+    -123,
+    37,
+    -122,
+    38
+  ],
+  "points": [
+    {
+      "lat": 37.5,
+      "lon": -122.5,
+      "rows": [
+        {
+          "t": 0,
+          "values": {
+            "visibility_m": 10000,
+            "wind_east_mps": 2,
+            "wind_north_mps": 0,
+            "precipitation_mm": 1,
+            "humidity_pct": 50
+          }
+        },
+        {
+          "t": 3600,
+          "values": {
+            "visibility_m": 1000,
+            "wind_east_mps": 0,
+            "wind_north_mps": 2,
+            "precipitation_mm": 4,
+            "humidity_pct": null
+          }
+        },
+        {
+          "t": 7200,
+          "values": {
+            "visibility_m": 20000,
+            "wind_east_mps": -2,
+            "wind_north_mps": 0,
+            "precipitation_mm": 0,
+            "humidity_pct": 60
+          }
+        }
+      ]
+    }
+  ]
+}

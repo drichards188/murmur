@@ -21,6 +21,7 @@ test = false
 # The bridge's dependencies, as crates/murmur-bridge/Cargo.toml has them (build.rs fails, naming
 # the difference, if they drift), then the simulator's own.
 [dependencies]
+murmur-weather = { path = "../murmur-weather" }
 axum = { version = "0.8.9", features = ["ws"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 murmur-space = { path = "../murmur-space" }

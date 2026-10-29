@@ -33,6 +33,12 @@ it, and no rule accepts it as a position.";
 pub struct NoParams {}
 
 #[derive(Deserialize, JsonSchema)]
+pub struct WeatherParams {
+    pub lat: f64,
+    pub lon: f64,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct FleetParams {
     /// Only these fleet uids (default: every vehicle).
     pub uids: Option<Vec<u64>>,
@@ -452,6 +458,11 @@ pub fn tools() -> Vec<Tool> {
              moving, vehicles that left their task, failed tasks, ACK timeouts). Pending \
              items can be decided only by a human operator.",
         ),
+        tool::<WeatherParams>(
+            "get_weather",
+            "Read current scenario surface weather at lat/lon, with source, age, missing fields and the sensing baseline. Scripted weather is labelled. This is simulation weather, not a forecast. No future weather or contact truth is exposed.".into(),
+            true,
+        ),
         tool::<TracksParams>(
             "get_tracks",
             format!(
@@ -817,6 +828,20 @@ pub async fn call(
         "get_changes" => {
             let p = params!(ChangesParams);
             mcp.changes.read(mcp, agent, p.since, p.limit).await
+        }
+        "get_weather" => {
+            let p = params!(WeatherParams);
+            if !murmur_weather::valid_point(p.lat, p.lon) {
+                return Err(rmcp::ErrorData::invalid_params(
+                    "lat/lon out of range",
+                    None,
+                ));
+            }
+            mcp.api(
+                axum::http::Method::GET,
+                &format!("/api/weather?lat={}&lon={}", p.lat, p.lon),
+                None,
+            ).await
         }
         "get_tracks" => {
             let p = params!(TracksParams);

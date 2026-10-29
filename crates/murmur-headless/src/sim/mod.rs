@@ -631,10 +631,17 @@ async fn assemble(spec: &Spec) -> Result<Parts, String> {
         return Err(format!("{} stand-ins for {} vehicles: every vehicle must be a stand-in", cfgs.len(), vspecs.len()));
     }
     // world v3: the world's water (still without one), and the GNSS events of the events files
-    let water = Arc::new(match &spec.water {
+    let mut water = match &spec.water {
         Some(w) => water::Water::load(w, grid.clone())?,
         None => water::Water::still(),
-    });
+    };
+    if let Some(c) = &spec.contacts {
+        let scenario = murmur_contacts::scenario::Scenario::load(&spec.root.join(&c.scenario))?;
+        if let Some(weather) = scenario.sensing.weather.as_ref() {
+            water.set_weather(weather, &spec.root);
+        }
+    }
+    let water = Arc::new(water);
     let conditions = spec.water.as_ref().map(|_| (&*water, spec.epoch + spec.standins_start_s.max(0.0)));
     let fleet = Arc::new(Fleet::new(cfgs, spec.seed, &spec.battery_pct, conditions)?);
     if let Some(env) = faults::from_events(spec)? {
@@ -725,7 +732,7 @@ async fn assemble(spec: &Spec) -> Result<Parts, String> {
     let contacts = match &spec.contacts {
         Some(c) => {
             let path = if c.scenario.is_absolute() { c.scenario.clone() } else { spec.root.join(&c.scenario) };
-            let ct = Arc::new(Contacts::load(&path, c.seed, spec.epoch)?);
+            let ct = Arc::new(Contacts::load(&path, c.seed, spec.epoch, &spec.root)?);
             let token = std::env::var("MURMUR_SIM_TOKEN").ok().filter(|t| !t.trim().is_empty());
             let fx = effect_sim(spec, &platforms, &emu.uids, &fleet)?;
             tokio::spawn(perf::timed("contacts", contacts::run(

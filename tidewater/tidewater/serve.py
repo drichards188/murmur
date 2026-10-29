@@ -42,6 +42,9 @@ class Service:
         return {
             "name": self.scenario.name,
             "title": self.scenario.title,
+            "weather": {"enabled": bool(self.cond.weather),
+                        "archive": self.scenario.weather.get("archive"),
+                        "model": self.cond.weather.data["model"] if self.cond.weather else None},
             "bounds": {"west": a.west, "south": a.south, "east": a.east, "north": a.north},
             "time_range": {
                 "start": self.scenario.start.isoformat(),
@@ -78,7 +81,8 @@ class Service:
             if not (-90 <= lat[i] <= 90 and -180 <= lon[i] <= 180):
                 raise BadRequest(f"points[{i}] lat/lon out of range")
         batch = self.cond.sample_many(lat, lon, t, depth)
-        return {"t": body["t"], "samples": batch.to_dicts()}
+        samples = batch.to_dicts()
+        return {"t": body["t"], "samples": samples}
 
 
 def make_handler(service: Service):

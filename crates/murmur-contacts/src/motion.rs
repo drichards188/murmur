@@ -24,6 +24,7 @@ pub struct State {
 }
 
 pub struct Mover {
+    next_maneuver: usize,
     pub contact: Contact,
     pub st: State,
     /// route: index of the waypoint being steered for
@@ -71,6 +72,7 @@ impl Mover {
         };
         let alt_m = contact.alt_m;
         Mover {
+            next_maneuver: 0,
             st: State {
                 lat,
                 lon,
@@ -95,6 +97,27 @@ impl Mover {
     /// start). `current` is the water's (east, north) velocity in m/s at the contact, if
     /// known. Returns false while the contact doesn't exist (before `start_s`, after `end_s`).
     pub fn step(&mut self, s: f64, dt: f64, current: Option<(f64, f64)>) -> bool {
+        if self.contact.maneuvers.get(self.next_maneuver).is_none() {
+            return self.advance(s, dt, current);
+        }
+        let mut cursor = s - dt.max(0.0);
+        while let Some(m) = self.contact.maneuvers.get(self.next_maneuver).cloned() {
+            if m.at_s > s {
+                break;
+            }
+            self.advance(m.at_s.max(cursor), (m.at_s - cursor).max(0.0), current);
+            cursor = cursor.max(m.at_s);
+            self.contact.motion = Motion::Transit { points: m.route };
+            self.contact.speed_mps = m.speed_mps;
+            self.leg = 0;
+            self.holding = false;
+            self.dwell_left = 0.0;
+            self.next_maneuver += 1;
+        }
+        self.advance(s, (s - cursor).max(0.0), current)
+    }
+
+    fn advance(&mut self, s: f64, dt: f64, current: Option<(f64, f64)>) -> bool {
         let c = &self.contact;
         self.st.exists = !self.out_of_play && s >= c.start_s && c.end_s.is_none_or(|e| s < e);
         if !self.st.exists || dt <= 0.0 {
@@ -215,6 +238,7 @@ mod tests {
 
     fn contact(motion: Motion, speed: f64) -> Contact {
         Contact {
+            maneuvers: Vec::new(),
             id: "c".into(),
             name: "c".into(),
             affiliation: Affiliation::Neutral,
@@ -337,5 +361,33 @@ mod tests {
         assert!(!m.step(5.0, 1.0, None));
         assert!(m.step(10.0, 1.0, None));
         assert!(!m.step(20.0, 1.0, None));
+    }
+}
+
+#[cfg(test)]
+mod maneuver_tests {
+    use super::*;
+    use crate::scenario::Scenario;
+    #[test]
+    fn fog_boat_changes_speed_and_route_without_teleporting() {
+        let scenario = Scenario::from_toml(include_str!("../../../sim/scenarios/fog-watch.toml"))
+            .expect("fog scenario");
+        let mut m = Mover::new(scenario.contacts().expect("contacts").remove(0), 611, 0);
+        for s in 1..210 {
+            m.step(s as f64, 1.0, None);
+        }
+        let before = m.st.clone();
+        m.step(211.0, 2.0, None); // a step straddling the maneuver, including the old motion
+        assert!(distance_m(before.lat, before.lon, m.st.lat, m.st.lon) < 12.0);
+        assert!(m.st.speed_mps > 4.0 && m.st.speed_mps <= 5.0);
+        for s in 212..420 {
+            m.step(s as f64, 1.0, None);
+        }
+        assert!(
+            m.st.lon > -122.445,
+            "the boat left the old loop: {:?}",
+            m.st
+        );
+        assert_eq!(m.next_maneuver, 1);
     }
 }

@@ -94,7 +94,7 @@ CONSOLE_PORT = 5173  # MURMUR_WEB_PORT, as up.sh's
 # describe it in the menu, and eval/tests/test_launcher.py holds them to the Makefile)
 OPEN_WORLD_FLEET = "full-spectrum"
 OPEN_WORLD_CONTACTS = "sim/scenarios/golden-gate.toml"
-OPEN_WORLD_TIDEWATER = "golden-gate-2026-06"
+OPEN_WORLD_TIDEWATER = "golden-gate-weather"
 OPEN_WORLD_AT = "2026-06-14T10:00:00Z"
 # the default stack's ports (scripts/up.sh's defaults; each MURMUR_* variable overrides one)
 DEFAULT_PORTS = {
@@ -108,7 +108,7 @@ DEFAULT_PORTS = {
 # export one for something else, and it would change what the menu's choice runs
 MAKE_VARS = (
     "MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEOVERRIDES",
-    "AT", "EVENTS", "CONTACTS", "GG_FLEET", "ARGS", "FLEET", "NAME", "OPERATOR", "AI", "COSIGNER", "REVEAL",
+    "AT", "EVENTS", "CONTACTS", "GG_FLEET", "WEATHER", "ARGS", "FLEET", "NAME", "OPERATOR", "AI", "COSIGNER", "REVEAL",
 )
 START_KEYS = {"scenario", "operator", "ai", "replace"}
 DOMAINS = ("air", "ground", "surface", "subsurface")  # sim/platforms.toml's, in the menu's order

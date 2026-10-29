@@ -63,6 +63,13 @@ Grid paths are relative to the repository. The grid format is `sim/headless/terr
 scenario clock, `MURMUR_AT` plus elapsed time) with the Astronomical Almanac's low-precision
 formula, refraction ignored.
 
+Weather-enabled scenarios can supply an archived surface-weather field and a scripted
+visibility timeline through `[sensing.weather]`. The physical model samples visibility and
+mean wind at each observer; the console renders those same fields on the map. Missing values
+fall back to the fixed conditions above and are labelled unavailable in the UI. Cloud cover
+and precipitation are context only. See [Weather](WEATHER.md) for replay, provenance and
+model limits.
+
 ## What the catalog gives it
 
 `sim/platforms.toml`'s sensor entries keep `type` and `range_m` (the legacy model's reach, and

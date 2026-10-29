@@ -1,0 +1,41 @@
+title = "Fog watch: a loop, lost observation, a changed route"
+seed = 611
+[sensing]
+model = "physical"
+misclassification_rate = 0.0
+terrain = "sim/headless/terrain/golden-gate.grid.gz"
+[sensing.weather]
+# Uniform synthetic fog; it is not a claim about June 14's actual weather.
+# No wind override: vehicles and sensing can use the archived surface wind.
+archive = "sim/headless/weather/fog-watch.json"
+[[sensing.weather.timeline]]
+at_s = 0
+values = { visibility_m = 20000, cloud_cover_pct = 10, humidity_pct = 65 }
+[[sensing.weather.timeline]]
+at_s = 150
+values = { visibility_m = 20000, cloud_cover_pct = 10, humidity_pct = 65 }
+[[sensing.weather.timeline]]
+at_s = 180
+values = { visibility_m = 50, cloud_cover_pct = 100, humidity_pct = 100 }
+[[sensing.weather.timeline]]
+at_s = 420
+values = { visibility_m = 50, cloud_cover_pct = 100, humidity_pct = 100 }
+[[sensing.weather.timeline]]
+at_s = 450
+values = { visibility_m = 20000, cloud_cover_pct = 10, humidity_pct = 65 }
+
+[[contact]]
+id = "looping-boat"
+name = "Unannounced route change"
+affiliation = "unknown"
+domain = "surface"
+kind = "small_fast_boat"
+emits = false
+speed_mps = 4
+motion = "loiter"
+center = [-122.4600, 37.8210]
+radius_m = 90
+[[contact.maneuver]]
+at_s = 210
+speed_mps = 12
+route = [[-122.4520, 37.8220], [-122.4430, 37.8240]]

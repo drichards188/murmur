@@ -77,6 +77,8 @@ pub struct App {
 pub fn router(app: App) -> Router {
     Router::new()
         .route("/api/state", get(state))
+        .route("/api/weather", get(weather))
+        .route("/api/weather/grid", get(weather_grid))
         .route("/api/tasks", post(tasks))
         .route("/api/intents", post(create_intent).get(list_intents))
         .route("/api/intents/preview", post(preview_intent))
@@ -821,4 +823,32 @@ async fn client(mut socket: WebSocket, app: App, lod: bool) {
             },
         }
     }
+}
+
+#[derive(Deserialize)]
+struct WeatherQuery {
+    lat: f64,
+    lon: f64,
+}
+async fn weather(State(app): State<App>, Query(q): Query<WeatherQuery>) -> Response {
+    if !murmur_weather::valid_point(q.lat, q.lon) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "lat/lon out of range"})),
+        )
+            .into_response();
+    }
+    Json(app.tracks.weather_json(q.lat, q.lon, clock::wall())).into_response()
+}
+
+#[derive(Deserialize)]
+struct WeatherGridQuery { bbox: String }
+async fn weather_grid(State(app): State<App>, Query(q): Query<WeatherGridQuery>) -> Response {
+    let bounds = q.bbox.split(',').map(str::parse::<f64>).collect::<Result<Vec<_>,_>>();
+    if let Ok(b) = bounds && let Ok([w,s,e,n]) = <[f64;4]>::try_from(b)
+        && murmur_weather::valid_point(s,w) && murmur_weather::valid_point(n,e) && w < e && s < n
+    {
+        return Json(app.tracks.weather_grid_json([w,s,e,n], clock::wall())).into_response();
+    }
+    (StatusCode::BAD_REQUEST, Json(json!({"error": "bbox must be west,south,east,north within lat/lon bounds"}))).into_response()
 }

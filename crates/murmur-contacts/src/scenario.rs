@@ -197,6 +197,8 @@ impl SignatureFields {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Sensing {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weather: Option<murmur_weather::Config>,
     /// Probability, per track, that a classifying sensor reports the wrong kind.
     #[serde(default)]
     pub misclassification_rate: f64,
@@ -263,6 +265,8 @@ pub struct ActSpec {
 /// One contact as written in the file (flat fields; [`Motion`] is derived and validated).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ContactSpec {
+    #[serde(default, rename = "maneuver")]
+    pub maneuvers: Vec<Maneuver>,
     pub id: String,
     #[serde(default)]
     pub name: Option<String>,
@@ -321,9 +325,20 @@ pub enum Motion {
     Drift { at: [f64; 2] },
 }
 
+/// At a scenario second, steer from the current position to these waypoints at a new speed.
+/// This is simulation truth; it is never an order or a reported sensor observation.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Maneuver {
+    pub at_s: f64,
+    pub speed_mps: f64,
+    pub route: Vec<[f64; 2]>,
+}
+
 /// A validated contact with every default filled in.
 #[derive(Debug, Clone)]
 pub struct Contact {
+    pub maneuvers: Vec<Maneuver>,
     pub id: String,
     pub name: String,
     pub affiliation: Affiliation,
@@ -414,7 +429,25 @@ impl ContactSpec {
             Domain::Subsurface => -30.0,
             Domain::Surface | Domain::Ground => 0.0,
         };
+        let mut last = -1.0;
+        for m in &self.maneuvers {
+            if !m.at_s.is_finite()
+                || m.at_s < self.start_s
+                || m.at_s <= last
+                || !m.speed_mps.is_finite()
+                || m.speed_mps <= 0.0
+                || m.route.is_empty()
+                || m.route.iter().any(|p| !valid(p))
+            {
+                return Err(bad(
+                    "maneuver needs increasing at_s, positive speed_mps and valid route points"
+                        .into(),
+                ));
+            }
+            last = m.at_s;
+        }
         Ok(Contact {
+            maneuvers: self.maneuvers.clone(),
             id: self.id.clone(),
             name: self.name.clone().unwrap_or_else(|| self.id.clone()),
             affiliation: self.affiliation,
@@ -446,6 +479,7 @@ impl Scenario {
         if !(0.0..=1.0).contains(&s.sensing.misclassification_rate) {
             return Err("sensing.misclassification_rate must be within 0..1".into());
         }
+        if let Some(w) = &s.sensing.weather { w.validate()?; }
         // the physical model's conditions and signatures ride in the sensing section
         s.sensing.conditions = s.conditions;
         s.sensing.signatures = s

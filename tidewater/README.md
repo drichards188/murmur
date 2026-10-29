@@ -153,3 +153,15 @@ with GPS: an EKF failsafe for the boat, a diverging depth estimate for the sub.
 
 See [docs/design.md](docs/design.md) for the architecture and roadmap. Work is tracked
 in Murmur's `bd` (`bd ready`).
+
+## Surface weather replay
+
+`scenarios/golden-gate-weather.toml` enables the archived HRRR weather layer in addition to the
+existing Golden Gate conditions. `tidewater fetch` caches it once. `weather.json` uses the
+same normalized schema as Rust's `murmur-weather`; the raw response is retained separately.
+Visibility, wind, gust, precipitation, cloud cover, temperature, humidity and pressure are
+available in each sample's optional `weather` object. Wind for vehicle clients comes from
+that same archive. Scenarios without `[weather] enabled = true` retain the original wind layer.
+
+[Weather in Murmur](../docs/WEATHER.md) covers attribution, noncommercial API terms, snapshots,
+missing data, interpolation and the distinction between simulation forcing and a forecast.

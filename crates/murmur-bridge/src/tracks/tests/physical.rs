@@ -955,3 +955,57 @@ fn the_payload_manager_points_from_where_its_vehicle_believes_it_is() {
     let want = (-1_000f64).atan2(2_000.0);
     assert!((az - want).abs() < 1e-3, "{:.1} degrees, not {:.1}", az.to_degrees(), want.to_degrees());
 }
+
+/// A weather transition removes optical sightings, not a radar fix. Clearing lets the
+/// camera acquire again through its own dwell model, never an injected detection.
+#[test]
+fn fog_weather_blinds_a_camera_but_not_radar() {
+    let fixed: SensorSpec = toml::from_str::<toml::Table>(
+        "s = { type = \"eo_ir\", range_m = 6000, slew_dps = 0, channels = [{ band = \"day\", wide_deg = 20, px = 1920 }] }",
+    ).expect("toml")["s"].clone().try_into().expect("spec");
+    let camera = Observer {
+        heading_deg: Some(0.0),
+        ..usv(1, BASE.0, BASE.1, vec![fixed])
+    };
+    let radar = usv(2, BASE.0, BASE.1, radar_only());
+    let (lat, lon) = at(BASE.0, BASE.1, 0.0, 1500.0);
+    let boat = contact("weather-test", "small_fast_boat", Domain::Surface, lat, lon);
+    let mut sensing = day();
+    sensing.weather = Some(murmur_weather::Config {
+        archive: None,
+        archive_sha256: None,
+        timeline: [
+            (0.0, 20000.0),
+            (60.0, 20000.0),
+            (61.0, 50.0),
+            (180.0, 50.0),
+            (181.0, 20000.0),
+        ]
+        .into_iter()
+        .map(|(at_s, visibility)| murmur_weather::Frame {
+            at_s,
+            values: murmur_weather::Values {
+                visibility_m: Some(visibility),
+                ..Default::default()
+            },
+        })
+        .collect(),
+    });
+    let mut e = Engine::new(None);
+    e.configure(&sensing);
+    let obs = [camera, radar];
+    let contacts = [boat];
+    let clear = run(&mut e, &sensing, &obs, &contacts, 0, 60);
+    let fog = run(&mut e, &sensing, &obs, &contacts, 65, 110);
+    let recovered = run(&mut e, &sensing, &obs, &contacts, 185, 90);
+    assert!(clear.iter().any(|d| d.uid == 1));
+    assert!(
+        !fog.iter().any(|d| d.uid == 1),
+        "no optical sightings through dense fog"
+    );
+    assert!(
+        fog.iter().any(|d| d.uid == 2),
+        "fog does not turn radar off"
+    );
+    assert!(recovered.iter().any(|d| d.uid == 1));
+}

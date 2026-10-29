@@ -362,10 +362,16 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: Re-taken for decision rules 19 (bd murmur-j0x, a live track accepted as behaving now): each record
 #: is the earlier one but for its audit log's `run.started` (`rules_version` 19 for 18): with that one
 #: number put back, each gives the digest before it.
+#: Re-taken for archived weather (murmur-sgok). A separate af45c04 build already differed
+#: from the rules-19 fixture: before-weather digests were 4c08b140...e66d42f (model harbor),
+#: 3a73c175...4e63d7c (playbook v2), c3e155ea...19f4a2d (model v2). Comparing those complete
+#: normalized records with this change, only get_weather in tool lists and the model's
+#: prompt sizes/token estimates differ; every motion, observation, order and audit event
+#: is identical. The prior fixture drift is tracked as murmur-yi9n.
 PAUSED = {
-    "model harbor-watch s1": "d840387bee3770bed07d334131c5ad39173f2178fb41c589b276950fa821ed6c",
-    "playbook v2 fast-unknown 1000": "9ca9ec9ea94e3ec575eca28cd786f245f6e0b6c672106308afbe32a9aa0295fb",
-    "model v2 fast-unknown 1000": "164c3e3201c62d085fec2631195df3b2d5c292b522d2a8d9d866c0163ca041c3",
+    "model harbor-watch s1": "51b890f1d75e620b35832a803bb43f338ca3059f401f12b0768d15b08ea3e906",
+    "playbook v2 fast-unknown 1000": "58352e1f543edb430c2d57f22bc8925ad206030cf14e14f2c148d7aceddf7db1",
+    "model v2 fast-unknown 1000": "bc24ac516eadfa324a15dda2db326274067eff76c23f96a79005a30b53d4bc15",
 }
 
 

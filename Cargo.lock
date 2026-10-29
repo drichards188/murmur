@@ -1430,6 +1430,7 @@ dependencies = [
  "murmur-decide",
  "murmur-linkemu",
  "murmur-space",
+ "murmur-weather",
  "quick-xml 0.42.0",
  "rmcp",
  "schemars",
@@ -1446,6 +1447,7 @@ name = "murmur-contacts"
 version = "0.1.0"
 dependencies = [
  "murmur-standins",
+ "murmur-weather",
  "reqwest",
  "serde",
  "serde_json",
@@ -1484,6 +1486,7 @@ dependencies = [
  "murmur-linkemu",
  "murmur-space",
  "murmur-standins",
+ "murmur-weather",
  "quick-xml 0.42.0",
  "rmcp",
  "schemars",
@@ -1502,6 +1505,7 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "murmur-decide",
+ "murmur-weather",
  "serde",
  "serde_json",
  "toml",
@@ -1551,6 +1555,15 @@ dependencies = [
  "socket2",
  "tokio",
  "toml",
+]
+
+[[package]]
+name = "murmur-weather"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]

@@ -43,7 +43,7 @@ def test_every_situation_loads():
         assert sit.title and sit.brief, p
         # fault-drill and world v3's watches run in the headless simulator only (the faults are the
         # simulator's; so is a world's conditions draw)
-        if p.stem not in ("harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition", "tutorial", "fault-drill", *WATCHES_V3):
+        if p.stem not in ("fog-watch", "harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition", "tutorial", "fault-drill", *WATCHES_V3):
             assert sit.todo, f"{p.stem} is a stub until the AI work lands"
     assert S.headless_steps(S.load_situation("fault-drill"))
     for name in WATCHES_V3:

@@ -114,6 +114,7 @@ struct Uniform {
 }
 
 pub struct Water {
+    weather: Option<murmur_weather::Store>,
     field: Option<CurrentField>,
     surface: Option<Arc<Grid>>,
     depth: Option<Arc<Grid>>,
@@ -124,7 +125,7 @@ pub struct Water {
 impl Water {
     /// Still water: no field, no grids (a `current` fault may still set one).
     pub fn still() -> Water {
-        Water { field: None, surface: None, depth: None, wind_en: None, uniform: Mutex::new(None) }
+        Water { weather: None, field: None, surface: None, depth: None, wind_en: None, uniform: Mutex::new(None) }
     }
 
     /// The world's water (`spec.water`): its current field, its land/water grid, the drawn wind;
@@ -132,7 +133,13 @@ impl Water {
     pub fn load(spec: &super::spec::WaterSpec, surface: Option<Arc<Grid>>) -> Result<Water, String> {
         let field = spec.currents.as_deref().map(CurrentField::load).transpose()?;
         let depth = spec.land_water.as_deref().map(Grid::load).transpose()?.map(Arc::new);
-        Ok(Water { field, surface, depth, wind_en: spec.wind_en, uniform: Mutex::new(None) })
+        Ok(Water { weather: None, field, surface, depth, wind_en: spec.wind_en, uniform: Mutex::new(None) })
+    }
+
+    pub fn set_weather(&mut self, config: &murmur_weather::Config, root: &Path) {
+        let mut store = murmur_weather::Store::default();
+        store.configure(Some(config), Some(root));
+        self.weather = Some(store);
     }
 
     /// A uniform current from `from` (scenario unix s) for `duration_s` (none: to the end), in
@@ -168,6 +175,7 @@ impl Water {
             (Some(d), None) => (Some(-d), Some(0.0)),
         };
         let current = if depth.is_some_and(|d| d > 0.0) { self.current(lat, lon, t).unwrap_or((0.0, 0.0)) } else { (0.0, 0.0) };
+        let weather = self.weather.as_ref().map(|w| w.at(lat,lon,t,0.0).values);
         Sample {
             lat,
             lon,
@@ -176,8 +184,8 @@ impl Water {
             water_depth_m: depth,
             current_east: Some(current.0),
             current_north: Some(current.1),
-            wind_east: self.wind_en.map(|w| w[0]),
-            wind_north: self.wind_en.map(|w| w[1]),
+            wind_east: weather.and_then(|w| w.wind_east_mps).or(self.wind_en.map(|w| w[0])),
+            wind_north: weather.and_then(|w| w.wind_north_mps).or(self.wind_en.map(|w| w[1])),
         }
     }
 }
