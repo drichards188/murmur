@@ -445,6 +445,9 @@ meaningful.
     (`worktree-agent-...`) appears in the history.
   - A commit that test data or a document cites by hash (a fixture's `build`, a results
     note) is never rewritten after it is pushed; before a push, keep its tree identical and say
-    which hash it stands for. The history was rewritten once, on 2026-10-28, for authorship
-    only (every tree identical): a hash cited before then is an old one, and
-    `docs/COMMIT-MAP.tsv` gives the commit it names now.
+    which hash it stands for. The history was rewritten twice: on 2026-10-28 for authorship
+    only (every tree identical), and on 2026-10-30 to remove a work email from file contents
+    (only the `.beads` issue files and the ArduPilot patches' `From:` lines changed; short
+    hashes in commit messages were updated). A hash cited in a file before 2026-10-30 is an
+    old one, and `docs/COMMIT-MAP.tsv` gives the commit it names now. Only the noreply
+    address appears anywhere (git, bd's Dolt store, `dolt config --global`): keep it so.
