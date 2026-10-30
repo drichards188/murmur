@@ -35,6 +35,10 @@ into something anyone can run, inspect and measure.
   line of sight, satellite passes, acoustic modems under water, scripted jamming.
 - **Sensing, not truth.** Radar, EO/IR and AIS models feed a calibrated tracker; the operator and
   the AI see tracks, with their uncertainty, never the simulator's ground truth.
+- **Weather and light that matter.** Archived surface weather and the sun change what cameras,
+  radar and sonar can sense. The map animates wind, fog, rain and cloud, and shows each
+  vehicle's sensor reach now against a clear day, so it is plain what the conditions are doing
+  to which vehicles.
 - **Agents decide, they don't drive.** Every action, from a person or an AI, is an intent. A
   deterministic engine checks it fail-closed, a policy routes it to go at once or wait for a
   person, and an append-only, replayable audit log records every step. AI agents connect over
@@ -45,8 +49,9 @@ into something anyone can run, inspect and measure.
   traffic.
 - **AI watch officers.** Claude or ChatGPT (Codex) through your own CLI and subscription (Murmur
   never sees your credentials), or a scripted playbook that needs no account.
-- **Situations and evaluation.** Pre-built situations to run live or on autoplay, and a headless
-  simulator for running batches of scored episodes.
+- **Situations and evaluation.** Pre-built situations to run live or on autoplay (a guided
+  tutorial, a harbor watch, a hostile act through to an engagement, a fog watch, a morning of
+  recorded harbor traffic), and a headless simulator for running batches of scored episodes.
 
 What it is not: a weapon, or connected to anything real. Every platform is a simulated stand-in
 tuned to rounded public figures ("-class"), and the point is to study the person, not the strike.
@@ -72,9 +77,12 @@ scenario, and which decisions stay yours.
 ## How it fits together
 
 ```
- SITL vehicles  ──UDP 14560+i──▶ murmur-bridge (Rust) ──/ws, /api──▶ web (Vite, React, MapLibre)
- Rust stand-ins                   :8765                               :5173
- tidewater serve :8770 ──conditions──▶ bridge, stand-ins;  tidewater drive ──▶ SITL
+ SITL vehicles  ─┐                                                        ┌─/ws, /api─▶ console :5173
+                 ├─UDP 14560+i─▶ murmur-linkemu ─UDP 15560+i─▶ murmur-bridge ┤   (React, MapLibre, deck.gl)
+ Rust stand-ins ─┘               (link emulator)               :8765       └─/mcp──────▶ AI watch officers
+ murmur-contacts ──traffic and hostile acts (truth)──▶ bridge sensing ──tracks──▶ console, AI
+ tidewater serve :8770 ──terrain, depth, tide, current, wind──▶ bridge, stand-ins, contacts
+ tidewater drive ──▶ SITL;   make start: the launcher's menu (:8760) runs one scenario at a time
 ```
 
 ## Fleets and platforms
@@ -94,7 +102,8 @@ load-test fleets do). Stand-in boats, buoys and subs get real currents, drift an
 seabed from tidewater. Stand-ins are badged STAND-IN in the console.
 
 Fleets (`sim/fleets/*.toml`) say which platforms, how many and where they start:
-`sandiego`, `canaveral`, `golden-gate`, `full-spectrum` (22 vehicles, one of each type). Every
+`sandiego`, `canaveral`, `golden-gate`, `full-spectrum` (22 vehicles, one of each type), and
+each situation's own. Every
 vehicle gets a callsign (HAWK 1, VIPER 2...) and the console shows callsign, model and role.
 
 ```bash
@@ -123,7 +132,7 @@ their confirmation of the engine's declaration, their own nomination, two script
 signatures, the strike and its assessment. It glows until it has been started once in that
 browser. Then the **open world**, the default (the Golden Gate with the full-spectrum fleet, real tide, current and wind and
 the harbor's traffic: what `make goldengate` runs; you command freely, nothing is scripted or
-scored), then each situation in `sim/situations/` with its brief, fleet and duration, and its
+scored), then the situations from `sim/situations/`, each with its brief, fleet and duration, and its
 operator (you, or autoplay) and AI watch officer (Claude, Codex, Playbook or None) with the
 situation's own defaults chosen. The menu shows the launch's progress (vehicles take 30 to 60 s
 in the open world, seconds in a stand-in situation) and opens the console on it; the console's
@@ -150,14 +159,20 @@ MURMUR_AUTH=credentials make up                # open the console and sign in
 ```
 
 An engagement then needs two of them with engagement authority, each re-entering their
-password at the moment they sign; the evaluation's study mode always runs this way.
+password (or using a registered passkey) at the moment they sign; the evaluation's study mode
+always runs this way.
 
-**Weather:** the open world replays archived HRRR surface weather, rendered on the tactical map
-with visibility, wind arrows, cloud and precipitation layers. Open **Weather** for the
-selected vehicle or map center. Try `make situation NAME=fog-watch`: a circling boat changes
-speed and route while scripted fog interrupts camera sightings, with no scripted radio outage.
-[Sources, effects, replay and limits](docs/WEATHER.md). Existing installs can fetch the new layer
-with `.venv/bin/tidewater fetch tidewater/scenarios/golden-gate-weather.toml`.
+**Weather:** the open world replays archived HRRR surface weather. The map animates it:
+streaks for the wind, drifting haze where visibility is low, falling rain and drifting cloud
+shadows, each drawn per weather model point as the simulation samples it, with a toggle each in
+the legend (an optional colour field shows one value at a time). Visibility, wind and daylight
+change what cameras, radar and sonar sense; rain and cloud are display only. Selected vehicles
+show rings for their sensors' detect and identify reach now beside the clear-day reach, and a
+vehicle whose reach is under half its clear day's gets a badge such as `EO 18% · fog`. Open
+**Weather** for the selected vehicle or map center. Try `make situation NAME=fog-watch`: a
+circling boat changes speed and route while scripted fog interrupts camera sightings, with no
+scripted radio outage. [Sources, effects, replay and limits](docs/WEATHER.md). Existing installs
+can fetch the weather with `.venv/bin/tidewater fetch tidewater/scenarios/golden-gate-weather.toml`.
 
 **Real conditions:** `make goldengate AT=2026-06-14T10:00:00Z` starts the swarm at the Golden
 Gate from [tidewater](tidewater/README.md)'s scenario (`tidewater/`, installed into `.venv` by
@@ -191,8 +206,12 @@ in three terminals (no emulator then). A second stack can run beside the default
 
 1. Select vehicles: click rows in the Fleet panel or symbols on the map, or use All / Air / Sea.
 2. Pick a task. **Orbit**: click the map for the center and set the radius. **Patrol**: click
-   waypoints (the route loops). **Hold** and **RTL** need no geometry.
-3. Send. The command log tracks every vehicle through `sent → acked → active → done`.
+   waypoints (the route loops). **Hold** and **RTL** need no geometry. **Track** points an
+   antenna tracker at a vehicle; **Identify** sends a camera vehicle to circle a track at its
+   identification standoff.
+3. Send. The decision engine checks the order and the policy sends it at once or puts it in the
+   **Inbox** for a person to approve; an order the link can't carry yet waits in the **Queue**.
+   The command log tracks every vehicle through `sent → acked → active → done`.
 
 Aircraft on the ground take off automatically as part of orbit and patrol (runway takeoff for
 planes, vertical for the VTOL and copters). Vehicles of one kind sharing a task are stacked in
@@ -210,15 +229,16 @@ altitude (or depth, for subs) and spread around orbit circles.
 Tasks wait in `queued` until the vehicle's EKF has a usable position (a GPS fix arrives seconds
 earlier, and autopilots refuse AUTO until the EKF is ready). `make down` stops a running stack.
 
-## 2D and 3D
+## The 3D map
 
-The **2D / 3D** toggle on the map switches views; the choice is remembered. 3D tilts the
-camera over real terrain and seabed (Terrarium elevation tiles, which include bathymetry) and
-draws every vehicle at its true altitude or depth with a stem to sea level and 3D trails. The
-water (sea, lakes, ponds and rivers) is tinted on the terrain at whatever height it lies, and the
-trails and stems of submerged vehicles are drawn as seen through it. Heights are exaggerated
-×2 (terrain and vehicles alike) so 80 m altitudes read at bay scale. Right-drag to orbit the
-camera. Tasking works the same in both views; in 3D, clicking a vehicle selects it.
+The map is 3D: the camera starts tilted over real terrain and seabed (Terrarium elevation tiles,
+which include bathymetry), north up, and every vehicle is drawn at its true altitude or depth
+with a stem to sea level and 3D trails. The water (sea, lakes, ponds and rivers) is tinted on the
+terrain at whatever height it lies, and the trails and stems of submerged vehicles are drawn as
+seen through it. Heights are exaggerated ×2 (terrain and vehicles alike) so 80 m altitudes read
+at bay scale. Middle-drag spins and tilts the camera; **top view** (or T) looks straight down and
+offers to tilt back; **smooth** turns display smoothing of vehicle motion on or off (the choice
+is remembered). Clicking a vehicle selects it.
 
 The 3D layers use deck.gl on MapLibre. MapLibre is pinned to v5 because deck.gl 9.4's adapter
 relies on map internals (`map.transform`, `getFreeCameraOptions`) that MapLibre v6 removed.
@@ -259,7 +279,7 @@ the next outage or pass.
 - `tidewater/`: real-world conditions (land/water, depth, tide, current, wind) for a place and time, served to the stack and driven into SITL ([its README](tidewater/README.md)).
 - `scripts/`: `setup.sh` (once), `up.sh` (the stack), `ardupilot-patches.sh` (the ArduPilot patches, in order), `measure.py` (load numbers), `scale_fleet.py` (load-test fleets).
 - `crates/murmur-decide/`: the decision engine (intents, checks, policy, engagements, audit log) and `murmur-replay`, which re-derives every decision from a log.
-- `crates/murmur-linkemu/`, `murmur-contacts/`, `murmur-space/`, `murmur-auth/`, `murmur-headless/`: the link emulator, the traffic and sensing world, satellites, operator credentials and passkeys, and the headless simulator.
+- `crates/murmur-linkemu/`, `murmur-contacts/`, `murmur-space/`, `murmur-weather/`, `murmur-auth/`, `murmur-headless/`: the link emulator, the traffic and sensing world, satellites, the replayable weather sampler, operator credentials and passkeys, and the headless simulator.
 - `agents/`: the AI watch officers and the scripted playbook, over MCP ([agents/README.md](agents/README.md)).
 - `eval/`: the launcher, situations and the evaluation harness ([eval/README.md](eval/README.md)).
 - `web/`: the console (React, MapLibre, deck.gl, MIL-STD-2525 symbols).
