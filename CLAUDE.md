@@ -103,7 +103,12 @@ meaningful.
   clone needs `-c core.autocrlf=false` or its python shebangs break.
 - The Playwright browser renders WebGL in **software** (SwiftShader): 3D fps there is
   meaningless (use `?perf` on a real GPU). After many reloads it loses the WebGL context:
-  `browser_close` and reopen.
+  `browser_close` and reopen. A full-screen shader (the weather layer) runs at 1 to 8 fps
+  there: give screenshots a long timeout. Playwright MCP writes files only under
+  `~/murmur` (not the scratchpad): keep screenshots in a gitignored `logs/` dir.
+- A checkout runs one stack at a time: `make start` started in a worktree shares that
+  checkout's `logs/up.pid`, so a `make situation` there refuses and `make down` there stops the
+  menu's scenario. Run the owner's menu and an agent's test stack from different checkouts.
 - Dev-only globals for debugging the console: `window.murmurMap`, `murmurBridges`, `murmurPerf`.
 - MapLibre is pinned to **v5** (deck.gl 9.4 breaks on v6). Don't upgrade.
 - After changing SITL code or its param table, rebuild all firmwares:
@@ -338,6 +343,23 @@ meaningful.
   world's); without either it is not checked and the answer says so. It predicts at the
   order's altitude: a vehicle flying lower sits in another 10 m band and can lose its link
   sooner than predicted.
+- Weather on the map and sensor reach (docs/WEATHER.md, bd murmur-sgok, murmur-4tq,
+  murmur-vr17): `GET /api/sensing/reach` and MCP `get_sensor_reach` (read-only, never logged,
+  never a check) predict each sensor's reach under the conditions where the vehicle is. They
+  and the running model share one merge of scenario conditions and weather
+  (`physical::Engine::conditions_at`), and the reach display and the catalog's
+  `physical_reach_m` generator share one reference contact (`tracks::reach`): change either
+  in one place. The decision engine still reads the clear-day `physical_reach_m` (bd
+  murmur-ahss), so in fog the display shows less reach than the checks assume. The map draws
+  each archived model point's region flat (the samplers' nearest-point rule, from
+  `/api/weather/grid` `regions`), never a spatial interpolation; `regions.scripted` names the
+  fields the timeline sets. Draw anything on the water with deck.gl at the surface: a MapLibre
+  line drapes on the terrain, which under water is the seabed (heights x2), and sits visibly
+  off its vehicle in a pitched view. A MapLibre image source's blob URL can stall behind the
+  tile queue (the weather uses a custom WebGL layer), and terrain fog only shows from pitch
+  60. A new MCP tool changes the tool lists in the headless golden and paused digests
+  (`eval/headless/tests/test_episode.py`, `test_charged_clock.py`): re-take them and check that
+  the code without the tool gives the old digests.
 - The tracker is a two-model IMM; changes must pass `tracks::tests::calib`. Its held-out seeds
   (66-95) are not for tuning: write a new held-out set if you tune on them. Aircraft have their
   own calibration (`tracks::tests::calib_air`: held-out seeds 221-250, run once, its two misses
@@ -402,7 +424,13 @@ meaningful.
 
 ## Conventions
 
-- bd for all task tracking; the pre-commit hook exports issues to `.beads/issues.jsonl`.
+- bd for all task tracking; the pre-commit hook exports issues to `.beads/issues.jsonl`. bd
+  can't open its database from a worktree: create and close issues from the main checkout.
+  `bd dolt push` has no remote configured; the exported file in git is what is shared.
+- Landing a branch while main holds someone's staged, uncommitted work: save it (`git diff
+  --cached --binary` and `git stash create`), check it applies on the new tip in a temporary
+  index (`GIT_INDEX_FILE=... git read-tree <tip>; git apply --cached --check`), then reset main
+  to the tip and `git apply --index` it. Commit only your own paths (`git commit -- <paths>`).
 - Commit and push to `origin` (GitHub) when work lands; `~/git/murmur.git` is stale.
 - No AI attribution in commits; no em dashes in prose (global CLAUDE.md).
 - The history is public and read by people judging the work, so write it for them:
