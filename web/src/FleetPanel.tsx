@@ -17,6 +17,8 @@ interface Props {
   onSelect: (uids: number[]) => void
   /** vehicles just selected from outside the list: scroll to the first and mark it */
   reveal?: Reveal | null
+  /** bd murmur-4tq: vehicles whose sensor reach is under half its clear day's ("EO 18% · fog") */
+  reachBadges?: Map<number, { text: string; title: string }>
 }
 
 function linkClass(v: Vehicle) {
@@ -40,10 +42,11 @@ interface RowProps {
   onToggle: Props['onToggle']
   onDeselect: Props['onDeselect']
   onDetails: Props['onDetails']
+  reach?: { text: string; title: string }
 }
 
 /** Two controls: the left strip selects the vehicle for tasking; the rest opens its details. */
-function Row({ v, selected, open, flash, onToggle, onDeselect, onDetails }: RowProps) {
+function Row({ v, selected, open, flash, onToggle, onDeselect, onDetails, reach }: RowProps) {
   const stale = isStale(v)
   const lc = linkClass(v)
   return (
@@ -104,6 +107,11 @@ function Row({ v, selected, open, flash, onToggle, onDeselect, onDetails }: RowP
               motors on
             </em>
           ) : null}
+          {reach && (
+            <span className="vrow-standin vrow-reach" title={reach.title}>
+              {reach.text}
+            </span>
+          )}
         </span>
       </span>
       <span className="vrow-kin">
@@ -181,7 +189,7 @@ function firstBelow(items: Item[], y: number) {
   return lo
 }
 
-export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails, detailsUid, onSelect, reveal = null }: Props) {
+export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails, detailsUid, onSelect, reveal = null, reachBadges }: Props) {
   const ids = (pred: (v: Vehicle) => boolean) => vehicles.filter(pred).map((v) => v.uid)
   const list = useRef<HTMLDivElement>(null)
   const [scroll, setScroll] = useState({ top: 0, height: 800 })
@@ -268,6 +276,7 @@ export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails
                     onToggle={onToggle}
                     onDeselect={onDeselect}
                     onDetails={onDetails}
+                    reach={reachBadges?.get(it.v.uid)}
                   />
                 </div>
               ),

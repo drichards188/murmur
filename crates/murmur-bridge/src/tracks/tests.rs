@@ -20,6 +20,7 @@ mod calib_air;
 mod calib_ground;
 mod catalog;
 mod physical;
+mod reach;
 mod reaches;
 mod weapon_probe;
 mod weapons;

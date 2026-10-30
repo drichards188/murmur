@@ -15,3 +15,22 @@
 .weather-scale { display: flex; gap: 10px; align-items: center; margin-top: 7px; font-variant-numeric: tabular-nums; }
 .weather-scale span { display: inline-flex; gap: 4px; align-items: center; }
 .weather-scale i { width: 22px; height: 12px; display: inline-block; border: 1px solid #6f839855; }
+.weather-sun { margin-top: 6px; }
+.weather-sun .light-day { color: #ffe08a; }
+.weather-sun .light-twilight { color: #f0a868; }
+.weather-sun .light-night { color: #9fb2ff; }
+.reach-legend { margin-top: 8px; padding-top: 7px; border-top: 1px solid #2e3f52; }
+.reach-legend > div:first-child { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.reach-legend select { background: #1c2b3c; color: #e3edf8; border: 1px solid #455e77; border-radius: 4px; margin-left: 6px; padding: 3px; }
+.reach-key { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
+.reach-key span { display: inline-flex; gap: 5px; align-items: center; }
+.reach-key .ring { width: 18px; height: 0; display: inline-block; border-top: 2px solid #dbe5ef; }
+.reach-key .ring.dashed { border-top-style: dashed; }
+.reach-key .ring.faint { border-top-width: 1px; opacity: 0.45; }
+.reach-key .swatch { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.weather-reach { margin-top: 10px; border-top: 1px solid #2e3f52; padding-top: 8px; }
+.weather-reach h4 { margin: 0 0 6px; font-size: 12px; color: #c7d5e3; }
+.weather-reach ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.weather-reach li { line-height: 1.4; }
+.weather-reach .bar { height: 5px; background: #24364a; border-radius: 3px; overflow: hidden; margin-top: 3px; }
+.weather-reach .bar i { display: block; height: 100%; }

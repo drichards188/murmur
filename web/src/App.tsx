@@ -46,6 +46,7 @@ import { WeatherPanel } from './WeatherPanel'
 import { WeatherLegend } from './WeatherLayer'
 import { useWeatherGrid } from './useWeatherGrid'
 import { weatherImage, type WeatherMode } from './weather'
+import { reachBadge, reachFeatures, type DomainChoice, type ReachAnswer, type ReachMode } from './sensorReach'
 import { SituationPanel } from './SituationPanel'
 import { Tutorial } from './Tutorial'
 import { CoverageControl } from './CoverageControl'
@@ -138,6 +139,11 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const [weatherMode, setWeatherMode] = useState<WeatherMode>('visibility')
   const weatherField = useWeatherGrid(mapView?.bounds ?? null, weatherMode !== 'off')
   const weatherRaster = useMemo(() => weatherMode !== 'off' && weatherField.grid ? weatherImage(weatherField.grid, weatherMode) : null, [weatherField.grid, weatherMode])
+  // sensor reach now (bd murmur-4tq, sensorReach.ts): rings on the map for the selected vehicles
+  // (or all, or none) and a badge on each vehicle whose reach is under half its clear day's
+  const [reachMode, setReachMode] = useState<ReachMode>('selected')
+  const [reachDomain, setReachDomain] = useState<DomainChoice>('auto')
+  const reach = usePoll<ReachAnswer>('/api/sensing/reach', 3000)
   const [drawing, setDrawing] = useState<LngLat | 'start' | null>(null)
   const [box, setBox] = useState<LngLat[] | null>(null)
   const [spaceSel, setSpaceSel] = useState<SpaceSelection>({ scene: null, norad: null })
@@ -192,6 +198,21 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const allVehicles = useMemo(() => state?.vehicles ?? [], [state?.vehicles])
   const spent = useMemo(() => new Set(decisions?.spent ?? []), [decisions?.spent])
   const vehicles = useMemo(() => spent.size ? allVehicles.filter((v) => !spent.has(v.uid)) : allVehicles, [allVehicles, spent])
+  const reachRings = useMemo(() => {
+    if (reachMode === 'off' || (reachMode === 'selected' && selected.size === 0)) return null
+    const positions = new Map<number, LngLat>()
+    for (const v of vehicles) if (v.position) positions.set(v.uid, v.position)
+    return reachFeatures(reach.data, positions, reachMode === 'selected' ? selected : null, reachDomain)
+  }, [reach.data, vehicles, selected, reachMode, reachDomain])
+  const reachBadges = useMemo(() => {
+    const out = new Map<number, { text: string; title: string }>()
+    if (!reach.data?.available || reach.data.stale) return out
+    for (const v of reach.data.vehicles) {
+      const b = reachBadge(v, reachDomain)
+      if (b) out.set(v.uid, b)
+    }
+    return out
+  }, [reach.data, reachDomain])
   useEffect(() => {
     if (!spent.size) return
     setSelected((prev) => {
@@ -593,7 +614,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         <span className="clock">{clock}</span>
       </header>
       <ErrorBoundary name="Fleet list" className="slot fleet">
-      <FleetPanel vehicles={vehicles} selected={selected} onToggle={toggle}
+      <FleetPanel vehicles={vehicles} selected={selected} onToggle={toggle} reachBadges={reachBadges}
         onDeselect={deselect}
         detailsUid={detailsUid}
         onDetails={(uid) => {
@@ -639,6 +660,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           clusters={state?.clusters ?? null}
           coverage={coverageImage}
           weather={showCoverage ? null : weatherRaster}
+          reach={reachRings}
           linkRoute={linkRoute}
         />
         </ErrorBoundary>
@@ -652,7 +674,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             />
           </ErrorBoundary>
         )}
-        <WeatherLegend mode={weatherMode} onMode={m => { setWeatherMode(m); setShowCoverage(false) }} grid={weatherField.grid} error={showCoverage ? 'Links layer shown; choose a weather field to show its layer' : weatherField.error} onDetails={() => setShowWeather(true)} />
+        <WeatherLegend mode={weatherMode} onMode={m => { setWeatherMode(m); setShowCoverage(false) }} grid={weatherField.grid} error={showCoverage ? 'Links layer shown; choose a weather field to show its layer' : weatherField.error} onDetails={() => setShowWeather(true)}
+          reach={{ mode: reachMode, onMode: setReachMode, domain: reachDomain, onDomain: setReachDomain, answer: reach.data, error: reach.error, selected: selected.size }} />
         {showWeather && <ErrorBoundary name="Weather" className="floating">
           <WeatherPanel center={mapView?.center ?? [-122.4783, 37.8199]} vehicle={selected.size === 1 ? vehicles.find(v => selected.has(v.uid)) ?? null : null} onClose={() => setShowWeather(false)} />
         </ErrorBoundary>}

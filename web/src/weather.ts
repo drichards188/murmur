@@ -10,6 +10,9 @@ export interface WeatherGrid {
   available: boolean; bounds: [number, number, number, number]; nlon: number; nlat: number
   cells: WeatherValues[]; t: number; age_s: number; stale: boolean
   source: string; model: string | null; synthetic: boolean
+  /** the sun's elevation at the grid's centre now (the scenario clock, or the scenario's stated
+   *  sun), degrees */
+  sun_elevation_deg?: number | null
 }
 export interface WeatherImage { url: string; coordinates: [LngLat, LngLat, LngLat, LngLat] }
 export const WEATHER_FIELDS: Record<WeatherField, { label: string; unit: string; ticks: number[] }> = {

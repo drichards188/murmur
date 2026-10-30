@@ -36,6 +36,11 @@
 //! (`class` or `uid`, `alt`, `bbox`, `res`: a grid; or `point`) and `POST /api/links/coverage`
 //! (the same as JSON, a `route`, an `order` as the dry run takes it, or `queries`); the dry run
 //! carries the order's answer as `link_coverage`.
+//!
+//! Sensor reach now (`crate::tracks::reach`, bd murmur-4tq, information only: never logged,
+//! never a check): `GET /api/sensing/reach` (optional `uid`): each vehicle's radar, EO/IR and
+//! sonar reach per domain against a reference contact in the conditions where it is (weather,
+//! the sun), beside the catalog's clear-day reach, and what keeps it short (`limited_by`).
 
 use std::sync::Arc;
 
@@ -79,6 +84,7 @@ pub fn router(app: App) -> Router {
         .route("/api/state", get(state))
         .route("/api/weather", get(weather))
         .route("/api/weather/grid", get(weather_grid))
+        .route("/api/sensing/reach", get(sensing_reach))
         .route("/api/tasks", post(tasks))
         .route("/api/intents", post(create_intent).get(list_intents))
         .route("/api/intents/preview", post(preview_intent))
@@ -839,6 +845,20 @@ async fn weather(State(app): State<App>, Query(q): Query<WeatherQuery>) -> Respo
             .into_response();
     }
     Json(app.tracks.weather_json(q.lat, q.lon, clock::wall())).into_response()
+}
+
+#[derive(Deserialize)]
+struct ReachQuery {
+    uid: Option<u64>,
+}
+/// bd murmur-4tq: each vehicle's sensor reach now (`Tracks::reach_json`), computed off the
+/// async workers (a vehicle's answer whose cache has lapsed takes a few milliseconds).
+async fn sensing_reach(State(app): State<App>, Query(q): Query<ReachQuery>) -> Response {
+    let (tracks, world) = (app.tracks.clone(), app.world.clone());
+    match tokio::task::spawn_blocking(move || tracks.reach_json(&world, q.uid, clock::wall())).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, format!("sensor reach: {e}")),
+    }
 }
 
 #[derive(Deserialize)]

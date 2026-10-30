@@ -1,7 +1,37 @@
 import { usePoll } from './space'
 import type { LngLat, Vehicle } from './types'
 import { callsign } from './types'
+import { DOMAIN_WORDS, km, lightState, sensorColor, sensorShort, type ReachAnswer, type VehicleReach } from './sensorReach'
 import './weather.css'
+
+/** bd murmur-4tq: what the weather and the light do to the sampled vehicle's sensors now, against
+ *  a clear day (the catalog's reach). Information only. */
+function SensorEffect({ uid }: { uid: number }) {
+  const { data, error } = usePoll<ReachAnswer>(`/api/sensing/reach?uid=${uid}`, 3000)
+  const v: VehicleReach | undefined = data?.vehicles.find((x) => x.uid === uid)
+  return <section className="weather-reach" aria-label="Effect on sensors">
+    <h4>Effect on sensors</h4>
+    {error && <p className="weather-warning">Unavailable: {error}</p>}
+    {data?.model === 'legacy' && <p>Legacy sensing: weather and light do not change detections.</p>}
+    {data && data.model !== 'legacy' && !v && <p>{data.available ? 'No sensor of this vehicle confirms contacts (or its link is stale).' : data.note}</p>}
+    {v && <>
+      <p>Sun {v.conditions.sun_elevation_deg.toFixed(0)}° ({lightState(v.conditions.sun_elevation_deg)}) · visibility {km(v.conditions.visibility_m)} · wind {v.conditions.wind_mps.toFixed(1)} m/s{v.submerged ? ' · submerged' : ''}</p>
+      <ul>{v.sensors.map((s) => {
+        const d = s.domains.find((x) => x.domain === s.primary_domain) ?? s.domains[0]
+        if (!d) return null
+        const pct = d.ratio == null ? null : Math.round(d.ratio * 100)
+        return <li key={s.type}>
+          <b style={{ color: sensorColor(s.type) }}>{sensorShort(s.type)}</b> · {DOMAIN_WORDS[d.domain].toLowerCase()} contact: detect {km(d.detect_m)}
+          {d.clear_day_m != null && <> of {km(d.clear_day_m)} clear day ({pct}%)</>}
+          {d.identify_m > 0 && <>, identify {km(d.identify_m)}</>}
+          {d.limited_by && <span className={pct != null && pct < 50 ? 'weather-warning' : ''}> · {d.limited_by}</span>}
+          {d.clear_day_m != null && <div className="bar"><i style={{ width: `${Math.min(100, pct ?? 0)}%`, background: sensorColor(s.type) }} /></div>}
+        </li>
+      })}</ul>
+      <p>A reference contact, no terrain. The engine's checks still assume the clear-day reach.</p>
+    </>}
+  </section>
+}
 
 type Values = Record<string, number | null>
 interface Weather {
@@ -39,8 +69,9 @@ export function WeatherPanel({ center, vehicle, onClose }: { center: LngLat; veh
       </dl>
       {w?.error && <p className="weather-warning">{w.error}</p>}
       {!data.available && <p>No weather data at this point. Fixed sensing conditions apply.</p>}
-      {data.sensing_model === 'physical' && data.sensing && <p>Sensor inputs: visibility {Math.round(data.sensing.visibility_m)} m; mean wind {data.sensing.wind_mps.toFixed(1)} m/s.</p>}
+      {!vehicle && data.sensing_model === 'physical' && data.sensing && <p>Sensor inputs: visibility {Math.round(data.sensing.visibility_m)} m; mean wind {data.sensing.wind_mps.toFixed(1)} m/s.</p>}
       {data.sensing_model === 'legacy' && <p>Legacy sensing: weather does not change detections.</p>}
+      {vehicle && <SensorEffect uid={vehicle.uid} />}
       <details><summary>Source and limits</summary>
         <p>{data.note}</p><p>{w?.source} {w?.model}</p>
         {w?.model && <p><a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Weather data by Open-Meteo</a> · NOAA HRRR</p>}

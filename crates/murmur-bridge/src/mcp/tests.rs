@@ -2344,3 +2344,17 @@ async fn link_coverage_is_read_only_and_rides_in_the_preview() {
     r.replays();
 }
 
+
+/// bd murmur-4tq: `get_sensor_reach` answers what `GET /api/sensing/reach` does (before the first
+/// sensing step: nothing yet, and saying why), for every vehicle or one.
+#[tokio::test(start_paused = true)]
+async fn the_sensor_reach_reads_the_bridges_answer() {
+    let r = rig();
+    r.vehicle(1, Firmware::Copter, "x10", (LAT, LON));
+    sleep(Duration::from_millis(500)).await;
+    let all = r.ok(&planner(), "get_sensor_reach", json!({})).await;
+    assert_eq!(all["available"], false, "{all}");
+    assert!(all["note"].as_str().is_some_and(|n| n.contains("sensing step")), "{all}");
+    let one = r.ok(&planner(), "get_sensor_reach", json!({ "uid": 1 })).await;
+    assert_eq!(one["vehicles"], json!([]));
+}

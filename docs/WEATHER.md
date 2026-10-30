@@ -123,6 +123,79 @@ this release: change the shared archive to keep sensing and vehicle forcing cons
 Without weather, existing `[conditions]` values and defaults remain in force. The legacy
 sensing model does not read weather.
 
+## Seeing the effect on sensors
+
+The weather layer shows the conditions; **Sensor reach** shows what they do to our sensors now
+(bd murmur-4tq). Its controls sit under the weather legend: rings for the selected vehicles (the
+default), for every vehicle, or none, and the domain they show (Auto, or Air, Ground, Surface,
+Subsurface for every sensor at once). For each radar, EO/IR and sonar of a vehicle shown, the map
+draws, centred on the vehicle and following it:
+
+- a solid ring at the distance it detects a reference contact now,
+- a dashed ring at the distance it identifies one now,
+- a faint ring at the clear-day reference, so shrinkage is visible at a glance.
+
+Auto shows a sonar's reach under water, a ground vehicle's on the ground and every other sensor's
+at the surface (the harbour's boats). A vehicle whose sensor detects at under half its clear-day
+reach carries a badge in the fleet list, such as `EO 18% · fog`. The legend gives the sun's state
+(day, twilight or night: the sun up, up to 6 degrees down, or lower, as a day camera's light in
+the model), and the Weather panel's **Effect on sensors** gives the sampled vehicle's reaches,
+their share of a clear day and why.
+
+Agents read the same with `get_sensor_reach {uid?}`; the console and HTTP clients with
+`GET /api/sensing/reach` (optional `uid`). Each vehicle's answer gives, per sensor and domain,
+`detect_m`, `recognise_m`, `identify_m`, `clear_day_m` (the catalog's `physical_reach_m`),
+`ratio`, `limited_by`, `factors` and `horizon_limited`, with the conditions it used (visibility,
+sun elevation and light, wind, sea state, and whether the weather is scripted and its source).
+
+How it is computed:
+
+- **The same prediction as the catalog's reach.** `tracks::reach` asks the physical model's
+  prediction (`physical::predict`) for the reference contact the catalog's `physical_reach_m`
+  generator uses (`tracks/tests/reaches.rs`, which now takes it from `tracks::reach`): a contact
+  of no known kind, an aircraft 300 m up, a submarine 30 m down, otherwise at the surface, the
+  sensor pointed at it. The detection reach is the generator's: how far out it is detected at
+  least half the time all the way. Recognition and identification are where those chances fall to
+  one half. On the reference day at the platform's operating height this is the catalog's reach
+  for every sensor and domain (a test holds them within 10 m).
+- **The conditions where the vehicle is.** The vehicle's own position and height, and the
+  conditions the running model would sense in there: the scenario's `[conditions]` with the
+  observer's local weather sample (the same merge, `Engine::conditions_at`), the sun from the
+  scenario clock (or the scenario's stated sun).
+- **`limited_by` from the model's inputs.** The detection reach is computed again with one input
+  at its clear-day value: visibility 20 km and the sun 45 degrees up for a camera; sea state 2 and
+  5 m/s of wind for a radar against a surface contact; 5 m/s of wind and moderate shipping, or
+  50 m of water, for a sonar. Each that gives back at least a tenth more (and 20 m) is a factor;
+  the one that gives back the most is `limited_by`: `fog` (visibility under 1 km) or `haze`,
+  `night`, `twilight` or `low sun` (the thermal crossover), `sea clutter`, `sea noise`, `shallow
+  water`. With none of those, a reach under nine tenths of the reference that ends where the line
+  of sight does is `horizon` (the vehicle lower than the catalog's operating height). A submerged
+  vehicle's sensors other than sonar are `submerged`.
+- **A disc.** No terrain: each ring is a disc, and the answer says so. A hill between a camera
+  and a boat still blocks it in the simulation. The sonar's water is the scenario's stated depth,
+  not the bathymetry.
+
+It is information only, with the posture of predicted link coverage: never logged, never a
+check, and nothing that decides reads it. **The decision engine's assessment still reads the
+catalog's clear-day `physical_reach_m`** (no rules change here), so in fog or at night the reach
+shown can be much shorter than the one the engine assumes when it judges an engagement's
+assessment or a sensor's coverage (bd murmur-ahss). Under the legacy sensing model the
+answer is `model: "legacy"` with no reaches: weather and light change no detection there. No
+contact truth and no future weather are in it.
+
+Cost: each vehicle's answer is kept and computed again after 5 s, or at once when its height
+moves 10 m (or 5 %), its visibility 5 %, its wind 0.5 m/s or the sun half a degree. It is
+computed off the bridge's async workers, holding no lock but its own cache's (the physical
+model's only to read the weather samples). At 100 vehicles (125 sensors, in fog, rough sea and
+twilight so that every comparison is computed) a call that computes every answer took 29 ms and
+one from the cache 1.4 ms (release build, this machine;
+`cargo test --release -p murmur-bridge --bin murmur-bridge reach_cost -- --ignored --nocapture`).
+
+In Fog watch, select PUMA 1: before the fog its camera's surface ring is the clear-day ring
+(14.5 km); from 2:30 the solid ring closes in, and at 50 m visibility it is about 140 m, about the
+slant range to the surface below the aircraft, with the badge `EO 1% · fog`; it opens out again
+from 7:00.
+
 ## Communications and satellite imagery
 
 Clouds can obstruct optical satellite imagery. Radar imagery is much less affected by clouds,

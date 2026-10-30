@@ -44,7 +44,8 @@
 pub mod conditions;
 pub mod eo;
 pub mod geometry;
-// the headless simulator serves it to Python (`sense`); the bridge itself does not call it
+// the headless simulator serves it to Python (`sense`); the bridge calls `predict` for the
+// reach display (`tracks::reach`), not `ranges`
 #[allow(dead_code)]
 pub mod predict;
 pub mod radar;
@@ -554,17 +555,26 @@ impl Engine {
     }
 
     fn context<'a>(&self, st: &'a Step<'a>, o: &Observer, sun: f64) -> Ctx<'a> {
-        let mut cond = st.sensing.conditions.unwrap_or_default().sane();
-        if st.sensing.weather.is_none() { return Ctx { st, cond, sun }; }
-        let w = self.weather.at(o.lat, o.lon, st.t, st.s).values;
-        if let Some(v) = w.visibility_m {
+        Ctx { st, cond: self.conditions_at(st.sensing, o.lat, o.lon, st.t, st.s).0, sun }
+    }
+
+    /// The conditions an observer at `lat`, `lon` senses in at scenario clock `t` (`s` seconds
+    /// in): the scenario's `[conditions]` with its own weather sample's visibility and mean wind
+    /// where the scenario has weather, and that sample (none without weather). The one merge the
+    /// running model and the reach display (`tracks::reach`, bd murmur-4tq) both use.
+    pub fn conditions_at(&self, sensing: &Sensing, lat: f64, lon: f64, t: f64, s: f64) -> (Conditions, Option<murmur_weather::Sample>) {
+        let mut cond = sensing.conditions.unwrap_or_default().sane();
+        if sensing.weather.is_none() {
+            return (cond, None);
+        }
+        let sample = self.weather.at(lat, lon, t, s);
+        if let Some(v) = sample.values.visibility_m {
             cond.visibility_m = v;
         }
-        if let Some(v) = w.wind_mps() {
+        if let Some(v) = sample.values.wind_mps() {
             cond.wind_mps = v;
         }
-        let cond = cond.sane();
-        Ctx { st, cond, sun }
+        (cond.sane(), Some(sample))
     }
 
     /// One tick: every observer's every sensor against every contact.

@@ -28,8 +28,7 @@ const SCR_MIN: f64 = 10.0;
 /// A radar's minimum range, m from the antenna: a navigation radar must detect a buoy from 40 m
 /// out (IMO MSC.192(79) 5.4.1 [19]). The model itself does not cut there; the decision engine's
 /// reaches start there (`tracks::tests::reaches`: nearer, a contact is alongside, under the
-/// antenna, where the sea's specular glare is).
-#[cfg(test)]
+/// antenna, where the sea's specular glare is), and so do the reach display's (`tracks::reach`).
 pub const MIN_RANGE_M: f64 = 40.0;
 /// The band the research's sigma0 table is for, GHz (X band): other bands are shifted from it by
 /// the NRL model's frequency dependence.

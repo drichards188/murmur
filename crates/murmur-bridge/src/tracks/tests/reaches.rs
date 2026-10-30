@@ -21,7 +21,6 @@ use std::path::Path;
 
 use murmur_decide::Domain as DDomain;
 
-use super::super::physical::conditions::Conditions;
 use super::super::physical::predict::{self, Ask};
 use super::super::physical::radar;
 use super::super::sensing::{Observer, SensorCatalog, SensorSpec, SensorType};
@@ -33,39 +32,12 @@ const PLATFORMS: &str = include_str!("../../../../../sim/platforms.toml");
 /// The catalog key the reaches are written under.
 const KEY: &str = "physical_reach_m";
 
-/// The reference contact's kind: none the physical model knows, so it takes its domain's
-/// signature for a contact of no known kind (`signature::kind_signature`).
-const REFERENCE_KIND: &str = "unknown";
-
-/// Each domain the engine assesses in, the decision layer's name for it, and the reference
-/// contact's height: where the contacts process puts a contact that names no altitude
-/// (`murmur-contacts` scenario: 300 m for an aircraft, 30 m deep under water, else at the
-/// surface).
-const DOMAINS: [(Domain, DDomain, f64); 4] = [
-    (Domain::Air, DDomain::Air, 300.0),
-    (Domain::Ground, DDomain::Ground, 0.0),
-    (Domain::Surface, DDomain::Surface, 0.0),
-    (Domain::Subsurface, DDomain::Subsurface, -30.0),
-];
-
-/// The reference conditions: the catalog table's (`catalog::catalog_table`): a clear day (20 km
-/// visibility) with the sun 45 degrees up, sea state 2, the sonar's reference environment (50 m
-/// of water, 5 m/s of wind, moderate shipping), no terrain.
-fn conditions() -> Conditions {
-    Conditions { sun_elevation_deg: Some(45.0), ..Conditions::default() }
-}
+// The reference contact (its kind and each domain's height) and the reference conditions are the
+// reach display's (`tracks::reach`, bd murmur-4tq), so the two answer for the same contact.
+use super::super::reach::{DOMAINS, REFERENCE_KIND, domain_name as name, reference_conditions as conditions};
 
 /// The scenario clock the predictions are asked at (the sun is the conditions' own).
 const T: f64 = 1_781_467_800.0;
-
-fn name(d: DDomain) -> &'static str {
-    match d {
-        DDomain::Air => "air",
-        DDomain::Ground => "ground",
-        DDomain::Surface => "surface",
-        DDomain::Subsurface => "subsurface",
-    }
-}
 
 /// A platform's operating height and domain from the catalog: a stand-in's `alt_m`, else the
 /// SITL platform's `typical_alt_m` (as the catalog table's).

@@ -368,10 +368,14 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: normalized records with this change, only get_weather in tool lists and the model's
 #: prompt sizes/token estimates differ; every motion, observation, order and audit event
 #: is identical. The prior fixture drift is tracked as murmur-yi9n.
+#: Re-taken for the sensor reach display (bd murmur-4tq): with `get_sensor_reach` left out of the
+#: tool list, this code gave the earlier digests (51b890f1..., 58352e1f..., bc24ac51...) byte for
+#: byte, so the only change in each record is that tool in the tool lists (and the model's prompt
+#: sizes and token estimates with it).
 PAUSED = {
-    "model harbor-watch s1": "51b890f1d75e620b35832a803bb43f338ca3059f401f12b0768d15b08ea3e906",
-    "playbook v2 fast-unknown 1000": "58352e1f543edb430c2d57f22bc8925ad206030cf14e14f2c148d7aceddf7db1",
-    "model v2 fast-unknown 1000": "bc24ac516eadfa324a15dda2db326274067eff76c23f96a79005a30b53d4bc15",
+    "model harbor-watch s1": "5d6f292d2c7d8abf240ec19351ed005940482aa7fca536d5084b86fdddf98305",
+    "playbook v2 fast-unknown 1000": "7c0407c26111b440a1cbcd8ebf538ed251fb557945c182ad6d40e3e60f395599",
+    "model v2 fast-unknown 1000": "51ecd4c0af7eefba7990a8f6c386801d8e31a0d751b61c1ab7326757b0f843e4",
 }
 
 

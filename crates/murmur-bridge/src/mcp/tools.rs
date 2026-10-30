@@ -38,6 +38,13 @@ pub struct WeatherParams {
     pub lon: f64,
 }
 
+/// `get_sensor_reach`'s arguments (bd murmur-4tq).
+#[derive(Deserialize, JsonSchema)]
+pub struct SensorReachParams {
+    /// One vehicle's uid; none: every vehicle that senses.
+    pub uid: Option<u64>,
+}
+
 #[derive(Deserialize, JsonSchema)]
 pub struct FleetParams {
     /// Only these fleet uids (default: every vehicle).
@@ -463,6 +470,23 @@ pub fn tools() -> Vec<Tool> {
             "Read current scenario surface weather at lat/lon, with source, age, missing fields and the sensing baseline. Scripted weather is labelled. This is simulation weather, not a forecast. No future weather or contact truth is exposed.".into(),
             true,
         ),
+        tool::<SensorReachParams>(
+            "get_sensor_reach",
+            "Read each vehicle's sensor reach now (or one vehicle's, by uid): for every radar, EO/IR \
+             and sonar and each domain it sees (air, ground, surface, subsurface), how far it \
+             detects, recognises and identifies a reference contact of no known kind (an \
+             aircraft 300 m up, a submarine 30 m down, else at the surface), from where the \
+             vehicle is and at its height, in the conditions there (its weather sample's \
+             visibility and wind, the sun from the scenario clock), beside the clear-day reach \
+             the catalog gives (clear_day_m, and the ratio). limited_by says what keeps it short \
+             (fog, haze, night, twilight, low sun, sea clutter, sea noise, shallow water, \
+             horizon, submerged), found by computing it again with that input at its clear-day \
+             value. Information only: never logged and never a check, and the decision engine's \
+             own checks still assume the clear-day reach. No terrain (each reach is a disc), no \
+             contact truth, no future weather. Under the legacy sensing model there are no \
+             reaches (weather changes no detection there).".into(),
+            true,
+        ),
         tool::<TracksParams>(
             "get_tracks",
             format!(
@@ -842,6 +866,11 @@ pub async fn call(
                 &format!("/api/weather?lat={}&lon={}", p.lat, p.lon),
                 None,
             ).await
+        }
+        "get_sensor_reach" => {
+            let p = params!(SensorReachParams);
+            let q = query(&[("uid", p.uid.map(|u| u.to_string()))]);
+            mcp.api(axum::http::Method::GET, &format!("/api/sensing/reach{q}"), None).await
         }
         "get_tracks" => {
             let p = params!(TracksParams);

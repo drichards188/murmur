@@ -107,6 +107,9 @@ interface Props {
    *  its cell under the pointer said in a tooltip */
   coverage?: CoverageImage | null
   weather?: WeatherImage | null
+  /** bd murmur-4tq: sensor reach rings (sensorReach.ts reachFeatures), on the surface under the
+   *  labels and the vehicles: detect now (solid), identify now (dashed), clear day (faint) */
+  reach?: GeoJSON.FeatureCollection | null
   /** the drafted order's legs coloured by predicted link, on the surface like the draft */
   linkRoute?: LinkRouteDrawing | null
 }
@@ -117,6 +120,7 @@ export type MapLayers = (screen: MapScreen) => LayersList
 const BLANK_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 const COVERAGE = 'link-coverage'
 const WEATHER = 'weather-field'
+const REACH = 'sensor-reach'
 
 const STYLE = 'https://tiles.openfreemap.org/styles/dark'
 const START: LngLat = [-117.2, 32.703]
@@ -291,7 +295,7 @@ function surfacePoint(m: maplibregl.Map, e: maplibregl.MapMouseEvent): LngLat {
   return water ? [water.lng, water.lat] : [ground.lng, ground.lat]
 }
 
-export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, bridgeNow, oneWay, acts = noActs, actsDismissedAt = null, weapons = noWeapons, weaponVictim = noVictim, nameOf = noName, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, weather = null, linkRoute = null }: Props) {
+export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, bridgeNow, oneWay, acts = noActs, actsDismissedAt = null, weapons = noWeapons, weaponVictim = noVictim, nameOf = noName, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, weather = null, reach = null, linkRoute = null }: Props) {
   const vehicles = useMemo(() => hiddenUids?.size ? allVehicles.filter((v) => !hiddenUids.has(v.uid)) : allVehicles, [allVehicles, hiddenUids])
   // the top view (pitch 0, looking straight down) and the pitch to tilt back to from it
   const [top, setTop] = useState(false)
@@ -805,6 +809,17 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       m.addSource(WEATHER, { type: 'image', url: BLANK_PNG, coordinates: [[-0.001, 0.001], [0.001, 0.001], [0.001, -0.001], [-0.001, -0.001]] })
       m.addLayer({ id: WEATHER, type: 'raster', source: WEATHER, layout: { visibility: 'none' },
         paint: { 'raster-opacity': 1, 'raster-resampling': 'nearest', 'raster-fade-duration': 300 } }, firstSymbol)
+      // sensor reach rings (bd murmur-4tq): above the weather, under the labels and every vehicle
+      m.addSource(REACH, { type: 'geojson', data: empty })
+      // a dark casing under every ring, so a ring reads over the fog's pale shading too
+      m.addLayer({ id: `${REACH}-casing`, type: 'line', source: REACH,
+        paint: { 'line-color': '#0b1520', 'line-width': 4, 'line-opacity': 0.45 } }, firstSymbol)
+      m.addLayer({ id: `${REACH}-clear`, type: 'line', source: REACH, filter: ['==', ['get', 'kind'], 'clear'],
+        paint: { 'line-color': ['get', 'color'], 'line-width': 1.2, 'line-opacity': 0.5 } }, firstSymbol)
+      m.addLayer({ id: `${REACH}-detect`, type: 'line', source: REACH, filter: ['==', ['get', 'kind'], 'detect'],
+        paint: { 'line-color': ['get', 'color'], 'line-width': 2.2, 'line-opacity': 0.95 } }, firstSymbol)
+      m.addLayer({ id: `${REACH}-identify`, type: 'line', source: REACH, filter: ['==', ['get', 'kind'], 'identify'],
+        paint: { 'line-color': ['get', 'color'], 'line-width': 1.6, 'line-opacity': 0.9, 'line-dasharray': [3, 2] } }, firstSymbol)
       m.addSource('beams', { type: 'geojson', data: empty })
       m.addLayer({
         id: 'beams',
@@ -1098,6 +1113,14 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       m.setLayoutProperty(WEATHER, 'visibility', 'visible')
     } else m.setLayoutProperty(WEATHER, 'visibility', 'none')
   }, [weather, styleGen])
+
+  // sensor reach rings: the source's data swapped in place (empty while the layer is off)
+  useEffect(() => {
+    const m = map.current
+    if (!m || !ready.current) return
+    const src = m.getSource(REACH) as maplibregl.GeoJSONSource | undefined
+    src?.setData(reach ?? empty)
+  }, [reach, styleGen])
 
   // the drafted order's predicted link
   useEffect(() => {
