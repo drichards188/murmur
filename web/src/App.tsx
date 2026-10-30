@@ -45,7 +45,10 @@ import { EnrollScreen, LoginScreen, OperatorBadge } from './Login'
 import { WeatherPanel } from './WeatherPanel'
 import { WeatherLegend } from './WeatherLayer'
 import { useWeatherGrid } from './useWeatherGrid'
-import { weatherImage, type WeatherMode } from './weather'
+import type { WeatherMode } from './weather'
+import { regionsOf } from './weatherField'
+import type { Effects, WeatherView } from './weatherMap'
+import { saveEffects, savedEffects } from './weatherPrefs'
 import { reachBadge, reachFeatures, type DomainChoice, type ReachAnswer, type ReachMode } from './sensorReach'
 import { SituationPanel } from './SituationPanel'
 import { Tutorial } from './Tutorial'
@@ -136,9 +139,16 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const coverageImage = useMemo(() => (showCoverage && coverageGrid ? gridImage(coverageGrid) : null), [showCoverage, coverageGrid])
   const [linkRoute, setLinkRoute] = useState<LinkRouteDrawing | null>(null)
   const [mapView, setMapView] = useState<{ center: LngLat; bounds: [number, number, number, number]; zoom: number } | null>(null)
-  const [weatherMode, setWeatherMode] = useState<WeatherMode>('visibility')
-  const weatherField = useWeatherGrid(mapView?.bounds ?? null, weatherMode !== 'off')
-  const weatherRaster = useMemo(() => weatherMode !== 'off' && weatherField.grid ? weatherImage(weatherField.grid, weatherMode) : null, [weatherField.grid, weatherMode])
+  // bd murmur-vr17: every animated effect at once by default (each its own toggle), and a colour
+  // field as an extra, off by default; the regions (weatherField.ts) drawn by the map (weatherMap.ts)
+  const [weatherMode, setWeatherMode] = useState<WeatherMode>('off')
+  const [weatherEffects, setWeatherEffects] = useState<Effects>(savedEffects)
+  const weatherOn = weatherMode !== 'off' || Object.values(weatherEffects).some(Boolean)
+  const weatherField = useWeatherGrid(mapView?.bounds ?? null, weatherOn)
+  const weatherView = useMemo<WeatherView | null>(() => {
+    const regions = weatherOn ? regionsOf(weatherField.grid) : null
+    return regions ? { regions, effects: weatherEffects, field: weatherMode === 'off' ? null : weatherMode } : null
+  }, [weatherField.grid, weatherMode, weatherEffects, weatherOn])
   // sensor reach now (bd murmur-4tq, sensorReach.ts): rings on the map for the selected vehicles
   // (or all, or none) and a badge on each vehicle whose reach is under half its clear day's
   const [reachMode, setReachMode] = useState<ReachMode>('selected')
@@ -659,7 +669,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           layers={mapLayers}
           clusters={state?.clusters ?? null}
           coverage={coverageImage}
-          weather={showCoverage ? null : weatherRaster}
+          weather={showCoverage ? null : weatherView}
           reach={reachRings}
           linkRoute={linkRoute}
         />
@@ -674,7 +684,9 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             />
           </ErrorBoundary>
         )}
-        <WeatherLegend mode={weatherMode} onMode={m => { setWeatherMode(m); setShowCoverage(false) }} grid={weatherField.grid} error={showCoverage ? 'Links layer shown; choose a weather field to show its layer' : weatherField.error} onDetails={() => setShowWeather(true)}
+        <WeatherLegend mode={weatherMode} onMode={m => { setWeatherMode(m); setShowCoverage(false) }}
+          effects={weatherEffects} onEffects={fx => { setWeatherEffects(fx); saveEffects(fx); setShowCoverage(false) }}
+          grid={weatherField.grid} error={showCoverage ? 'Links layer shown; turn on a weather effect to show the weather' : weatherField.error} onDetails={() => setShowWeather(true)}
           reach={{ mode: reachMode, onMode: setReachMode, domain: reachDomain, onDomain: setReachDomain, answer: reach.data, error: reach.error, selected: selected.size }} />
         {showWeather && <ErrorBoundary name="Weather" className="floating">
           <WeatherPanel center={mapView?.center ?? [-122.4783, 37.8199]} vehicle={selected.size === 1 ? vehicles.find(v => selected.has(v.uid)) ?? null : null} onClose={() => setShowWeather(false)} />

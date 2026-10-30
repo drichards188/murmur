@@ -32,7 +32,8 @@ import type { Cluster, Clusters, LngLat, Tasking, Vehicle } from './types'
 import { callsign } from './types'
 import { buildVehicleLayers, heightLabel, VEHICLE_PICK_LAYERS } from './vehicleLayers'
 import { buildClusterLayers, CLUSTER_PICK_LAYERS } from './clusterLayers'
-import type { WeatherImage } from './weather'
+import { WeatherMap, type WeatherView } from './weatherMap'
+import { buildReachLayers } from './reachLayers'
 import { cellAt, cellDetail, type CoverageImage, type LinkRouteDrawing } from './coverage'
 import { buildLinkRouteLayers } from './linkLayers'
 import { type Bounds, type MapViewport, visibleVehicles } from './viewport'
@@ -106,7 +107,9 @@ interface Props {
   /** predicted link coverage (coverage.ts): one image draped on the terrain under the labels,
    *  its cell under the pointer said in a tooltip */
   coverage?: CoverageImage | null
-  weather?: WeatherImage | null
+  /** bd murmur-vr17: the weather field shown and its regions now (weatherMap.ts draws the field
+   *  under the labels, the wind's streaks over it and the haze), or null for none */
+  weather?: WeatherView | null
   /** bd murmur-4tq: sensor reach rings (sensorReach.ts reachFeatures), on the surface under the
    *  labels and the vehicles: detect now (solid), identify now (dashed), clear day (faint) */
   reach?: GeoJSON.FeatureCollection | null
@@ -119,8 +122,7 @@ export type MapLayers = (screen: MapScreen) => LayersList
 /** a transparent pixel: the coverage image source's placeholder while the layer is off */
 const BLANK_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 const COVERAGE = 'link-coverage'
-const WEATHER = 'weather-field'
-const REACH = 'sensor-reach'
+
 
 const STYLE = 'https://tiles.openfreemap.org/styles/dark'
 const START: LngLat = [-117.2, 32.703]
@@ -310,6 +312,18 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   const lastGeneration = useRef<number | undefined>(undefined)
   const previewGliding = useRef(false)
   const overlay = useRef<MapboxOverlay | null>(null)
+  // the deck.gl layers last built (deckLayers), so a wind frame swaps only its own
+  const lastDeck = useRef<LayersList | null>(null)
+  // the weather layer (weatherMap.ts): made once, attached to each map as its style loads
+  const weatherMap = useRef<WeatherMap | null>(null)
+  weatherMap.current ??= new WeatherMap(
+    () => {
+      if (!overlay.current) return
+      if (lastDeck.current) overlay.current.setProps({ layers: [...lastDeck.current, ...(weatherMap.current?.layers() ?? [])] })
+      else pushLayers()
+    },
+    () => (map.current && ready.current ? surfaceScale(map.current) : null),
+  )
   const bridges = useRef<LiftedBridge[]>([])
   const latest = useRef({ vehicles, selected, bare: new Set<number>(), aloft: new Map<number, number>(), clusters, oneWay })
   // the surface drawings' inputs (surfaceLayers.ts), and what they were last built from
@@ -319,6 +333,9 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   // the drafted order's predicted link (linkLayers.ts), and what it was last built from
   const linkRouteRef = useRef(linkRoute)
   const linkMemo = useRef<{ key: unknown[]; layers: LayersList } | null>(null)
+  // the sensor reach rings (reachLayers.ts), and what they were last built from
+  const reachRef = useRef(reach)
+  const reachMemo = useRef<{ key: unknown[]; layers: LayersList } | null>(null)
   // the coverage grid under the pointer (its tooltip)
   const coverageRef = useRef(coverage)
   const covTip = useRef<HTMLDivElement>(null)
@@ -425,6 +442,19 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
    *  extension layers (the `layers` prop), then the vehicles on top. `frame`: an animation frame
    *  of a glide, which rebuilds only what is attached to a vehicle and reuses the rest as it was
    *  (the inbox preview too while one of its vehicles glides: `previewToo`). */
+  /** the sensor reach rings: rebuilt when they change, the terrain under them does, or the zoom
+   *  (the identify ring's dashes are in pixels) */
+  const reachLayers = (m: maplibregl.Map | null): LayersList => {
+    const fc = reachRef.current
+    if (!m || !fc?.features.length) return []
+    const key = [fc, terrainGen.current, Math.round(m.getZoom() * 4)]
+    const memo = reachMemo.current
+    if (memo && memo.key.every((k, i) => k === key[i])) return memo.layers
+    const layers = buildReachLayers(fc, surfaceScale(m))
+    reachMemo.current = { key, layers }
+    return layers
+  }
+
   const deckLayers = (frame = false, previewToo = false): LayersList => {
     const { vehicles: vs, selected: sel, bare, aloft, clusters: cl, oneWay: ow } = latest.current
     const m = ready.current ? map.current : null
@@ -453,6 +483,8 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       ...surface,
       ...previewLayers,
       ...link,
+      // the sensor reach rings, on the surface too (reachLayers.ts)
+      ...reachLayers(m),
       // what is above or on the water: bridge decks, the other trails and stems, sea-level shadows
       ...three.decks,
       ...three.over,
@@ -471,7 +503,9 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       // munitions in flight over everything: what is on the way
       ...munitionLayers(),
     ]
-    return layers
+    lastDeck.current = layers
+    // the wind's streaks (weatherMap.ts): under the labels by their own beforeId
+    return [...layers, ...(weatherMap.current?.layers() ?? [])]
   }
 
   /** the munitions in flight, or flashing at their launch, at `t` (the bridge's clock) */
@@ -637,6 +671,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     // is gone, and on restore build a fresh overlay and its layers on the restored style.
     m.on('webglcontextlost', () => {
       ready.current = false
+      weatherMap.current?.detach()
       lostRef.current = true
       m.stop()
       camera.current = { center: m.getCenter(), zoom: m.getZoom(), bearing: m.getBearing(), pitch: m.getPitch() }
@@ -806,20 +841,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
         firstSymbol,
       )
       // Environmental raster below labels and every vehicle/track layer. Fog never masks facts.
-      m.addSource(WEATHER, { type: 'image', url: BLANK_PNG, coordinates: [[-0.001, 0.001], [0.001, 0.001], [0.001, -0.001], [-0.001, -0.001]] })
-      m.addLayer({ id: WEATHER, type: 'raster', source: WEATHER, layout: { visibility: 'none' },
-        paint: { 'raster-opacity': 1, 'raster-resampling': 'nearest', 'raster-fade-duration': 300 } }, firstSymbol)
-      // sensor reach rings (bd murmur-4tq): above the weather, under the labels and every vehicle
-      m.addSource(REACH, { type: 'geojson', data: empty })
-      // a dark casing under every ring, so a ring reads over the fog's pale shading too
-      m.addLayer({ id: `${REACH}-casing`, type: 'line', source: REACH,
-        paint: { 'line-color': '#0b1520', 'line-width': 4, 'line-opacity': 0.45 } }, firstSymbol)
-      m.addLayer({ id: `${REACH}-clear`, type: 'line', source: REACH, filter: ['==', ['get', 'kind'], 'clear'],
-        paint: { 'line-color': ['get', 'color'], 'line-width': 1.2, 'line-opacity': 0.5 } }, firstSymbol)
-      m.addLayer({ id: `${REACH}-detect`, type: 'line', source: REACH, filter: ['==', ['get', 'kind'], 'detect'],
-        paint: { 'line-color': ['get', 'color'], 'line-width': 2.2, 'line-opacity': 0.95 } }, firstSymbol)
-      m.addLayer({ id: `${REACH}-identify`, type: 'line', source: REACH, filter: ['==', ['get', 'kind'], 'identify'],
-        paint: { 'line-color': ['get', 'color'], 'line-width': 1.6, 'line-opacity': 0.9, 'line-dasharray': [3, 2] } }, firstSymbol)
+      weatherMap.current?.attach(m, firstSymbol)
       m.addSource('beams', { type: 'geojson', data: empty })
       m.addLayer({
         id: 'beams',
@@ -901,6 +923,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     map.current = m
     return () => {
       ready.current = false
+      weatherMap.current?.detach()
       for (const marker of markers.values()) marker.remove()
       markers.clear()
       overlay.current = null
@@ -1104,23 +1127,19 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     } else m.setLayoutProperty(COVERAGE, 'visibility', 'none')
   }, [coverage, styleGen])
 
+  // the weather layer: new regions, another field, or none
   useEffect(() => {
-    const m = map.current
-    if (!m || !ready.current || !m.getLayer(WEATHER)) return
-    const src = m.getSource(WEATHER) as maplibregl.ImageSource | undefined
-    if (weather && src) {
-      src.updateImage({ url: weather.url, coordinates: weather.coordinates })
-      m.setLayoutProperty(WEATHER, 'visibility', 'visible')
-    } else m.setLayoutProperty(WEATHER, 'visibility', 'none')
+    weatherMap.current?.update(weather)
   }, [weather, styleGen])
 
-  // sensor reach rings: the source's data swapped in place (empty while the layer is off)
+  // sensor reach rings: drawn by deck.gl on the surface (reachLayers.ts)
   useEffect(() => {
-    const m = map.current
-    if (!m || !ready.current) return
-    const src = m.getSource(REACH) as maplibregl.GeoJSONSource | undefined
-    src?.setData(reach ?? empty)
-  }, [reach, styleGen])
+    if (reachRef.current === reach) return
+    reachRef.current = reach
+    pushLayers()
+    // pushLayers reads refs only
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reach])
 
   // the drafted order's predicted link
   useEffect(() => {

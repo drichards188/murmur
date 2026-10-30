@@ -1,18 +1,38 @@
 # Weather and observation
 
-Murmur replays archived surface weather offline. A weather raster is drawn on the tactical map
-by default, beneath labels, vehicles, tracks and their uncertainty. The legend switches between
-visibility, surface wind (with arrows pointing toward travel), cloud cover and precipitation,
-or turns the layer off. Shading updates with the scenario clock; missing cells are hatched and
-stale layers are hidden. The legend names the source and labels scenarios with scripted weather. Link
-coverage and weather use separate raster views to avoid mixing their colors.
+Murmur replays archived surface weather offline. The tactical map animates it by default, every
+effect at once, beneath labels, vehicles, tracks and their uncertainty: wind streaks, fog, rain
+and cloud shadows, each with its own toggle in the legend, which also gives each field's values
+now, where they come from, and what the simulation does with them. A color field (visibility,
+surface wind, cloud cover or precipitation on a continuous ramp) is an extra, off by default.
+The map draws what the simulation senses: the samplers give a position its nearest model point's
+values (no interpolation in space), so every effect takes each model point's region's own values
+with the region's true edges, and a field the scenario scripts (Fog watch's fog) is the same
+everywhere and is called scripted only while the timeline sets it. Fog is a drifting haze whose
+mean opacity grows as visibility falls; in a tilted view of 60 degrees or more MapLibre's sky and
+terrain fog follow the visibility at the view's centre, so the far side closes in (an impression,
+not to scale), and the map's labels take a pale halo while the fog there is thick. Cloud shadows
+cover each region's cloud cover; rain falls where precipitation is above zero, as densely as its
+amount, slanted by the wind; both are display only, as the legend says. Streaks are carried
+toward where the wind blows. The shapes of the haze and clouds are a texture, every drift and
+streak's pace is exaggerated and follows its own region's wind (so a shape can shear where two
+regions meet; a scripted field drifts as one sheet with the wind at the view's centre), and all
+of it is kept faint and slow beside the symbols. Under reduced
+motion the map holds a still frame with static wind arrows, and nothing animates while the layer
+is off or the tab is hidden. Changes between polls blend in as the scenario clock moves; the
+archive's bounds are a faint dashed outline, missing values in the color field are faintly
+hatched, and stale layers are hidden. Link coverage and weather use separate raster views to
+avoid mixing their colors.
 
 **Weather** in the console samples the selected
 vehicle's position, or the map center. `GET /api/weather?lat=37.821&lon=-122.460` and the agent's
 `get_weather {lat, lon}` return the same current sample: source, model, artifact checksum, age,
 missing values, synthetic status and the inputs the physical sensing model uses. They expose no
 future schedule or contact truth. The map uses `GET /api/weather/grid?bbox=west,south,east,north`,
-a bounded 32 by 24 raster sampled at one instant. These are simulation conditions, not a forecast or an
+a bounded 32 by 24 raster sampled at one instant, with `regions`: each archived model point and
+its values now, the archive's bounds, the values outside them (the samplers' own answer
+everywhere; the console draws the regions from it), and `scripted`, the names of the fields the
+scenario's timeline sets now (names only; no value or later frame). These are simulation conditions, not a forecast or an
 operational weather observation.
 
 ## Try the fog situation
@@ -129,7 +149,8 @@ The weather layer shows the conditions; **Sensor reach** shows what they do to o
 (bd murmur-4tq). Its controls sit under the weather legend: rings for the selected vehicles (the
 default), for every vehicle, or none, and the domain they show (Auto, or Air, Ground, Surface,
 Subsurface for every sensor at once). For each radar, EO/IR and sonar of a vehicle shown, the map
-draws, centred on the vehicle and following it:
+draws, centred on the vehicle's ground point (the foot of its height stem) on the surface, sea
+level over the water and the ground over land, and following it:
 
 - a solid ring at the distance it detects a reference contact now,
 - a dashed ring at the distance it identifies one now,

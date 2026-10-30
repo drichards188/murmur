@@ -22,6 +22,8 @@ export function PerfOverlay() {
       <br />
       deck: attrs <b>{f1(s.attrs.mean)}</b> ms <span className="muted">(p95 {f1(s.attrs.p95)}, n {s.attrs.n}; glide frames and 4 Hz updates)</span> · cpu <b>{f1(s.deckCpu.mean)}</b> ms
       <br />
+      weather frame <b>{f1(s.weatherFrame.mean)}</b> ms <span className="muted">(p95 {f1(s.weatherFrame.p95)}, n {s.weatherFrame.n})</span>
+      <br />
       long tasks <b>{Math.round(s.longTaskMsPerS)}</b> ms/s
     </div>
   )

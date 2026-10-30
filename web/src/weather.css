@@ -12,9 +12,24 @@
 .weather-legend > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .weather-legend select { background: #1c2b3c; color: #e3edf8; border: 1px solid #455e77; border-radius: 4px; margin-left: 8px; padding: 3px; }
 .weather-legend p { margin: 5px 0 0; line-height: 1.4; color: #b6c6d7; }
-.weather-scale { display: flex; gap: 10px; align-items: center; margin-top: 7px; font-variant-numeric: tabular-nums; }
-.weather-scale span { display: inline-flex; gap: 4px; align-items: center; }
-.weather-scale i { width: 22px; height: 12px; display: inline-block; border: 1px solid #6f839855; }
+.weather-title { font-weight: 600; }
+.weather-toggles { display: inline-flex; gap: 3px; margin-right: auto; }
+.weather-toggles .chip { background: #16222f; color: #8fa2b6; border: 1px solid #3a4e63; border-radius: 10px; padding: 1px 7px; font-size: 10.5px; cursor: pointer; }
+.weather-toggles .chip.on { background: #24425c; color: #e3f0fb; border-color: #5f8db5; }
+.weather-now { display: grid; grid-template-columns: 1fr; gap: 1px; margin: 6px 0 0; }
+.weather-now > div { display: flex; gap: 6px; min-width: 0; }
+.weather-now dt { color: #e3edf8; flex: none; width: 36px; }
+.weather-now dd { margin: 0; color: #b6c6d7; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.weather-now dd span { color: #7f93a8; }
+.weather-field { margin-top: 6px; padding-top: 6px; border-top: 1px solid #2e3f52; }
+.weather-ramp { display: flex; align-items: flex-start; gap: 8px; margin-top: 7px; font-variant-numeric: tabular-nums; color: #b6c6d7; }
+.weather-ramp .scale { flex: 1; min-width: 0; padding: 0 10px; }
+.weather-ramp .bar { display: block; height: 9px; border-radius: 2px; border: 1px solid #6f839866; background-color: #0b1520; }
+.weather-ramp .ticks { position: relative; height: 13px; margin-top: 2px; }
+.weather-ramp .ticks span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
+.weather-ramp .unit { white-space: nowrap; }
+.weather-ramp .none { display: inline-flex; flex-direction: column; align-items: center; gap: 2px; }
+.weather-ramp .hatch { width: 18px; height: 9px; border: 1px solid #6f839866; border-radius: 2px; background: repeating-linear-gradient(135deg, rgba(150, 168, 194, 0.55) 0 1.5px, rgba(120, 133, 150, 0.08) 1.5px 6px); }
 .weather-sun { margin-top: 6px; }
 .weather-sun .light-day { color: #ffe08a; }
 .weather-sun .light-twilight { color: #f0a868; }

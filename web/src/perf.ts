@@ -13,6 +13,8 @@
 //               positions of every vehicle in the attached layers. Not visible in the JS the
 //               glide loop itself runs (advance and setProps), which deck.gl defers to its render
 //   deckCpu     deck.gl's CPU time per frame ("CPU Time" stat from luma.gl)
+//   weatherFrame  one frame of every weather effect together (weatherMap.ts): drift, pack the
+//               shader's uniforms, step the wind and rain particles and build their layers
 //
 // window.murmurPerfStats() returns a snapshot; the ?perf overlay shows the same numbers.
 
@@ -39,7 +41,7 @@ class Ring {
   }
 }
 
-const rings = { applyDelta: new Ring(), render: new Ring(), latency: new Ring(), frame: new Ring(), attrs: new Ring(), deckCpu: new Ring() }
+const rings = { applyDelta: new Ring(), render: new Ring(), latency: new Ring(), frame: new Ring(), attrs: new Ring(), deckCpu: new Ring(), weatherFrame: new Ring() }
 export type PerfName = keyof typeof rings
 
 export function perfPush(name: PerfName, ms: number) {
@@ -154,6 +156,7 @@ export function perfStats() {
     latency: rings.latency.stats(),
     attrs: rings.attrs.stats(),
     deckCpu: rings.deckCpu.stats(),
+    weatherFrame: rings.weatherFrame.stats(),
     longTaskMsPerS: secs > 0 ? longMs / secs : 0,
     longTasks: longCount,
     windowS: secs,

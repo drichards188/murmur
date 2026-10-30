@@ -1071,8 +1071,12 @@ impl Tracks {
                 cells.push(engine.weather.at(lat,lon,t,s).values);
             }
         }
+        // bd murmur-vr17: the field as the sampler answers it everywhere (each archived point's
+        // values now, its region the positions it is nearest to), so the map draws the regions'
+        // true edges instead of this raster's blocks. A few dozen points; no contact data.
+        let regions = engine.weather.regions(t, s);
         json!({"available": cells.iter().any(|v| *v != murmur_weather::Values::default()),
-            "bounds": bounds, "nlon": nlon, "nlat": nlat, "cells": cells,
+            "bounds": bounds, "nlon": nlon, "nlat": nlat, "cells": cells, "regions": regions,
             "t": t, "age_s": (now-rx).max(0.0), "stale": now-rx > 10.0,
             "source": meta.source, "model": meta.model, "synthetic": meta.synthetic,
             "archive_sha256": meta.archive_sha256,

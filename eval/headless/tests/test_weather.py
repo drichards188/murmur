@@ -37,8 +37,14 @@ class WeatherEpisode(Episode):
             code, grid = self.sim.api('GET', '/api/weather/grid?bbox=-122.47,37.81,-122.44,37.83')
             assert code == 200 and grid['available'] and len(grid['cells']) == 32*24
             assert grid['t'] == w['t'] and grid['archive_sha256'] == w['weather']['archive_sha256']
+            # bd murmur-vr17: the regions the map draws, one per archived point
+            regions = grid['regions']
+            assert len(regions['points']) == 20 and regions['bounds'] == [-122.56, 37.77, -122.38, 37.88]
             if w['weather']['synthetic']:
                 assert all(c['visibility_m'] == 50 for c in grid['cells'])
+                assert all(p['values']['visibility_m'] == 50 for p in regions['points'])
+                assert regions['outside']['visibility_m'] == 50
+                assert regions['scripted'] == ['visibility_m', 'cloud_cover_pct', 'humidity_pct'], 'names only, the fields scripted now'
             assert not any(secret in json.dumps(grid) for secret in ('looping-boat', 'timeline', 'route'))
             assert self.sim.api('GET', '/api/weather/grid?bbox=0,0,0,1')[0] == 400
             assert 'get_weather' in [t['name'] for t in self.sim.tool_defs()]
