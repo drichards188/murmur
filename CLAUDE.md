@@ -86,8 +86,9 @@ meaningful.
   :5173; tidewater serve :8770; SITL SERIAL1 TCP 5762+10*instance (tidewater driver). A second
   stack beside the default one: set `MURMUR_BASE_PORT`, `MURMUR_BRIDGE_BASE_PORT`,
   `MURMUR_LINKEMU_PORT`, `MURMUR_HTTP_PORT`, `MURMUR_WEB_PORT`, `MURMUR_TIDEWATER_PORT`,
-  `MURMUR_SITL_INSTANCE_BASE` (header of `scripts/up.sh`). `MURMUR_WEB_PORT` also tells the
-  bridge which console origin to accept; the session cookie is named per HTTP port.
+  `MURMUR_SITL_INSTANCE_BASE`, and for thousands of stand-ins `MURMUR_STANDIN_SRC_BASE` (header
+  of `scripts/up.sh`). `MURMUR_WEB_PORT` also tells the bridge which console origin to accept;
+  the session cookie is named per HTTP port.
   `make situation` has its own block (UDP 33000+ and 34000+, bridge :9265, linkemu :9266,
   console :5673, tidewater :9270, SITL from instance 160; each variable overrides one).
 
@@ -129,13 +130,27 @@ meaningful.
   `MURMUR_ENGAGE_OPERATORS` (each also in `MURMUR_OPERATORS`, or the bridge refuses to start; both
   lists are logged as the run's roster); in a credentials run the credential file's engagement flag
   (`murmur-auth engage <id> on`). Scenarios: `murmur-scenarios` (`sim/scenarios/engage/`).
-- Stand-ins each take one ephemeral UDP port (`net.ipv4.ip_local_port_range`, ~4,000 here,
-  shared with everything else on the host): that, not CPU, caps a stand-in fleet near 4,000.
-- A stack uses two UDP ranges now (vehicle base + N and bridge base + N): pick both clear of
-  every other stack's ranges, including a large load test's (a 3,000-node test spans 3,000
-  ports from its base). A bridge that finds a port taken drops it for good.
-- Keep fixed port bases (vehicle, bridge) below the ephemeral range: stand-ins and clients draw
-  from it, and a fixed base inside it collides at random. It can change between boots: check
+- Stand-ins take an ephemeral UDP port each unless `MURMUR_STANDIN_SRC_BASE` is set (then
+  stand-in i sends from base + i; one whose port is taken falls back to an ephemeral one,
+  logged). The ephemeral range (`net.ipv4.ip_local_port_range`, ~4,000 here, shared by the whole
+  host) capped a fleet near 4,000 before; set the base for thousands. The link emulator takes no
+  ephemeral port (it answers the bridge from its listening port, murmur-z07i).
+- A stack uses two UDP ranges (vehicle base + N and bridge base + N), three with
+  `MURMUR_STANDIN_SRC_BASE`: pick each clear of every other stack's ranges, including a large
+  load test's (a 3,000-node test spans 3,000 ports from its base). A bridge that finds a port
+  taken drops it for good.
+- WSL here runs mirrored networking (`wslinfo --networking-mode`): 127.0.0.1 is routed out
+  through `loopback0`, a virtual NIC to Windows and back (`ip route get 127.0.0.1`), not `lo`.
+  At a few thousand vehicles its queues drop packets (`tc -s qdisc show dev loopback0`: 37
+  million of 391 million since boot; `Udp: SndbufErrors` 18,000/s with two 3,600 stacks up) and
+  loopback TCP stalls for seconds (SYN retries), so HTTP calls between processes time out now
+  and then; any other 127.x (127.0.0.2) stays on `lo`: `MURMUR_LINK_HOST=127.0.0.2` puts a
+  stack's UDP links there. A UDP socket bound to
+  0.0.0.0 and connected to 127.0.0.1 stopped getting replies at about 1,700 of them (stand-ins
+  bind the loopback address now). A port Windows holds is taken in Linux too, though `ss` does
+  not show it (UDP 10010 is): probe a new fixed range by binding it before trusting it.
+- Keep fixed port bases (vehicle, bridge, stand-in source) below the ephemeral range: clients
+  draw from it, and a fixed base inside it collides at random. It can change between boots: check
   `sysctl net.ipv4.ip_local_port_range` (39160-43255 as of 2026-10-08; was 37795-41890 on 10-04).
 - Headless worlds (`sim/worlds/`, docs/HEADLESS.md 17): Harbor watch's `[headless]` pin
   (`domain_rule = "not_evaluated"`, `currents = "none"`) holds every v1 and v2 result and the

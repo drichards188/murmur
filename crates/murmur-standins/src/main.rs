@@ -72,14 +72,38 @@ async fn run(path: &str) -> Result<(), String> {
         .collect();
     let gnss = Arc::new(murmur_standins::gnss::Env::from_env(&homes));
 
+    // fixed source ports (MURMUR_STANDIN_SRC_BASE + index), or ephemeral ones as before
+    let src_base = std::env::var("MURMUR_STANDIN_SRC_BASE").ok();
+    if let Some(b) = src_base.as_deref().filter(|b| !b.trim().is_empty()) {
+        println!(
+            "source ports: fixed from MURMUR_STANDIN_SRC_BASE={b} ({} ports)",
+            fleet.vehicles.len()
+        );
+    }
     let mut vehicles = Vec::with_capacity(fleet.vehicles.len());
     let mut slots = Vec::new();
-    for cfg in fleet.vehicles {
-        let sock = link::connect(&host, cfg.port)
-            .map_err(|e| format!("{}: udp {}: {e}", cfg.callsign, cfg.port))?;
+    let mut taken = Vec::new();
+    for (i, cfg) in fleet.vehicles.into_iter().enumerate() {
+        let mut src = link::src_port(src_base.as_deref(), i)?;
+        let sock = match link::connect(&host, cfg.port, src) {
+            // a fixed port something else holds (under WSL's mirrored networking, Windows' own
+            // listeners count too): this one vehicle sends from an ephemeral port instead. No
+            // other process reads a stand-in's source port: the emulator and the bridge answer
+            // whatever address a vehicle's packets come from.
+            Err(e) if src.is_some() && e.kind() == std::io::ErrorKind::AddrInUse => {
+                taken.extend(src.take());
+                link::connect(&host, cfg.port, None)
+            }
+            r => r,
+        }
+        .map_err(|e| format!("{}: udp {}: {e}", cfg.callsign, cfg.port))?;
         let line = format!(
-            "{:12} sysid {:3} {} -> udp {}",
-            cfg.callsign, cfg.sysid, cfg.spec.name, cfg.port
+            "{:12} sysid {:3} {} -> udp {}{}",
+            cfg.callsign,
+            cfg.sysid,
+            cfg.spec.name,
+            cfg.port,
+            src.map(|p| format!(" from {p}")).unwrap_or_default()
         );
         let mut v = Vehicle::new(cfg, sock, None)?;
         v.gnss = Some(gnss.clone());
@@ -93,6 +117,14 @@ async fn run(path: &str) -> Result<(), String> {
         vehicles.push(v);
     }
     println!("{} stand-ins", vehicles.len());
+    if !taken.is_empty() {
+        let list: Vec<String> = taken.iter().map(u16::to_string).collect();
+        println!(
+            "source ports: {} taken by another process, those stand-ins send from an ephemeral port: {}",
+            taken.len(),
+            list.join(", ")
+        );
+    }
     if let Some(cfg) = tidewater
         && !slots.is_empty()
     {

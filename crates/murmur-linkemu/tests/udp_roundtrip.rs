@@ -54,6 +54,8 @@ async fn latency_both_ways_and_reply_returns_to_the_vehicle() {
         .expect("timeout")
         .expect("recv");
     assert_eq!(&buf[..n], b"ping");
+    // sent from the link's own vehicle-facing port: the emulator takes no other port per link
+    assert_eq!(from.port(), 19901);
     let up = t0.elapsed();
     assert!(
         up >= Duration::from_millis(58) && up < Duration::from_millis(150),

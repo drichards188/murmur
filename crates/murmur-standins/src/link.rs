@@ -129,9 +129,12 @@ pub enum Inbound {
     },
 }
 
-/// A UDP socket connected to the bridge's port for this vehicle. No explicit bind: an explicit
-/// bind to port 0 took ~12 ms each here (small ephemeral range), connect's autobind is instant.
-pub fn connect(host: &str, port: u16) -> std::io::Result<UdpSocket> {
+/// A UDP socket connected to the bridge's port for this vehicle, sending from `src_port` when
+/// given (a fixed source port, [`src_port`]), else from an ephemeral one. No explicit bind
+/// without one: an explicit bind to port 0 took ~12 ms each here (small ephemeral range),
+/// connect's autobind is instant. A fixed port takes nothing from the host's ephemeral range,
+/// which every autobound stand-in shares with everything else (about 4,000 ports here).
+pub fn connect(host: &str, port: u16, src_port: Option<u16>) -> std::io::Result<UdpSocket> {
     use std::net::ToSocketAddrs;
     let addr = (host, port).to_socket_addrs()?.next().ok_or_else(|| {
         std::io::Error::new(
@@ -144,9 +147,34 @@ pub fn connect(host: &str, port: u16) -> std::io::Result<UdpSocket> {
         socket2::Type::DGRAM,
         None,
     )?;
+    if let Some(src) = src_port {
+        // the address connect's autobind would take: loopback to a loopback peer, else any
+        let local: std::net::SocketAddr = match addr.ip() {
+            ip if ip.is_loopback() => (ip, src).into(),
+            std::net::IpAddr::V4(_) => (std::net::Ipv4Addr::UNSPECIFIED, src).into(),
+            std::net::IpAddr::V6(_) => (std::net::Ipv6Addr::UNSPECIFIED, src).into(),
+        };
+        sock.bind(&local.into())
+            .map_err(|e| std::io::Error::new(e.kind(), format!("bind source port {src}: {e}")))?;
+    }
     sock.connect(&addr.into())?;
     sock.set_nonblocking(true)?;
     UdpSocket::from_std(sock.into())
+}
+
+/// The fixed source port of the `index`th stand-in (0-based, in the file's order) when
+/// `MURMUR_STANDIN_SRC_BASE` is set: base + index. None (unset or empty): an ephemeral port, as
+/// before. A base that is not a port, or a range past 65535, is an error.
+pub fn src_port(base: Option<&str>, index: usize) -> Result<Option<u16>, String> {
+    let Some(base) = base.map(str::trim).filter(|b| !b.is_empty()) else {
+        return Ok(None);
+    };
+    let b: u16 = base
+        .parse()
+        .map_err(|_| format!("MURMUR_STANDIN_SRC_BASE={base}: not a UDP port"))?;
+    u16::try_from(usize::from(b) + index).map(Some).map_err(|_| {
+        format!("MURMUR_STANDIN_SRC_BASE={base}: stand-in {index} would be past port 65535")
+    })
 }
 
 /// Every MAVLink message in one datagram. Garbage and unknown message ids are skipped.
@@ -202,4 +230,37 @@ pub fn parse_all(datagram: &[u8]) -> Vec<Inbound> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod src_tests {
+    use super::*;
+
+    #[test]
+    fn source_ports_are_base_plus_index_or_ephemeral() {
+        assert_eq!(src_port(None, 3), Ok(None));
+        assert_eq!(src_port(Some(" "), 3), Ok(None));
+        assert_eq!(src_port(Some("10000"), 0), Ok(Some(10000)));
+        assert_eq!(src_port(Some("10000"), 3599), Ok(Some(13599)));
+        assert!(src_port(Some("ten"), 0).is_err());
+        assert!(src_port(Some("65000"), 600).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_fixed_source_port_is_what_the_far_end_sees() {
+        let far = std::net::UdpSocket::bind("127.0.0.1:0").expect("far end");
+        let to = far.local_addr().expect("addr").port();
+        // a free port to use as the fixed source: bound, then released
+        let src = std::net::UdpSocket::bind("127.0.0.1:0")
+            .and_then(|s| s.local_addr())
+            .expect("probe")
+            .port();
+        let sock = connect("127.0.0.1", to, Some(src)).expect("connect");
+        sock.send(b"x").await.expect("send");
+        let mut buf = [0u8; 4];
+        let (_, from) = far.recv_from(&mut buf).expect("recv");
+        assert_eq!(from.port(), src);
+        // the port is the stand-in's while it holds it
+        assert!(connect("127.0.0.1", to, Some(src)).is_err());
+    }
 }

@@ -1,5 +1,5 @@
-//! The sockets: one task per link, owning the vehicle-facing socket, the bridge-facing socket
-//! and a delay queue per direction.
+//! The sockets: one task per link, owning its one socket (the vehicle-facing port, which also
+//! sends to and hears from the bridge) and a delay queue per direction.
 
 use crate::config::{Config, VehicleSpec};
 use crate::link::{Env, Link, LinkMeta, LosState};
@@ -146,34 +146,47 @@ pub fn build_links(
 }
 
 /// Binds every socket and spawns the link tasks. Returns the stats handles.
+///
+/// One socket per link, the vehicle-facing one (`A+i`): the emulator sends to the bridge from
+/// it too, so the bridge's replies come back to it and are told from the vehicle's packets by
+/// their source (the bridge's port for this link, [`from_bridge`]). Before, each link had a
+/// second, bridge-facing socket on an ephemeral port, which with the stand-ins' own capped a
+/// host near 4,000 vehicles (the ephemeral range) and left the emulator unusable at 3,000.
 pub async fn start(
     links: Vec<Link>,
     opts: &Options,
     start: Instant,
 ) -> Result<Vec<Arc<LinkStats>>, String> {
+    use std::net::ToSocketAddrs;
     let mut all = Vec::new();
     for link in links {
         let port = link.meta.port;
         let bport = bridge_port(port, opts.vehicle_base, opts.bridge_base)?;
-        let vsock = UdpSocket::bind((opts.listen_host.as_str(), port))
+        let bridge = (opts.bridge_host.as_str(), bport)
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut a| a.next())
+            .ok_or_else(|| format!("no address for {}:{bport}", opts.bridge_host))?;
+        let sock = UdpSocket::bind((opts.listen_host.as_str(), port))
             .await
             .map_err(|e| format!("bind {}:{port}: {e}", opts.listen_host))?;
-        let usock = UdpSocket::bind((opts.listen_host.as_str(), 0))
-            .await
-            .map_err(|e| format!("bind upstream: {e}"))?;
-        usock
-            .connect((opts.bridge_host.as_str(), bport))
-            .await
-            .map_err(|e| format!("connect {}:{bport}: {e}", opts.bridge_host))?;
         let stats = Arc::new(
             LinkStats::new(link.meta.clone())
                 .with_sat(link.sat_shared(), link.params().latency_ns as f64 / 1e6)
                 .with_nominal(link.nominal_json()),
         );
         all.push(stats.clone());
-        tokio::spawn(run_link(link, vsock, usock, stats, start));
+        tokio::spawn(run_link(link, sock, bridge, stats, start));
     }
     Ok(all)
+}
+
+/// Whether a datagram from `from` is the bridge's (its port for this link, from its address
+/// or, when the bridge is on loopback, from any loopback address); anything else is the
+/// vehicle's. The bridge holds its port bound, so no vehicle on this host can send from it.
+pub fn from_bridge(from: SocketAddr, bridge: SocketAddr) -> bool {
+    from.port() == bridge.port()
+        && (from.ip() == bridge.ip() || (from.ip().is_loopback() && bridge.ip().is_loopback()))
 }
 
 fn now_ns(start: Instant) -> u64 {
@@ -182,13 +195,12 @@ fn now_ns(start: Instant) -> u64 {
 
 async fn run_link(
     mut link: Link,
-    vsock: UdpSocket,
-    usock: UdpSocket,
+    sock: UdpSocket,
+    bridge: SocketAddr,
     stats: Arc<LinkStats>,
     start: Instant,
 ) {
-    let mut vbuf = vec![0u8; 2048];
-    let mut ubuf = vec![0u8; 2048];
+    let mut buf = vec![0u8; 2048];
     let mut peer: Option<SocketAddr> = None;
     let mut delay: [Delay; 2] = Default::default();
     let mut last_gauge = 0u64;
@@ -205,29 +217,30 @@ async fn run_link(
             }
         };
         tokio::select! {
-            r = vsock.recv_from(&mut vbuf) => {
+            r = sock.recv_from(&mut buf) => {
                 if let Ok((n, from)) = r {
-                    peer = Some(from);
                     let now = now_ns(start);
-                    link.observe_up(&vbuf[..n]);
-                    if let Some(p) = link.position() {
-                        for (i, v) in [p.lat, p.lon, p.alt_m].into_iter().enumerate() {
-                            stats.pos[i].store(v.to_bits(), Relaxed);
+                    if from_bridge(from, bridge) {
+                        if peer.is_none() {
+                            let d = stats.d(Dir::Down);
+                            d.in_pkts.fetch_add(1, Relaxed);
+                            d.in_bytes.fetch_add(n as u64, Relaxed);
+                            d.dropped[Cause::NoPeer.idx()].fetch_add(1, Relaxed);
+                        } else {
+                            admit(&mut link, &stats, &mut delay[1], Dir::Down, &buf[..n], now);
                         }
-                    }
-                    admit(&mut link, &stats, &mut delay[0], Dir::Up, &vbuf[..n], now);
-                }
-            }
-            r = usock.recv(&mut ubuf) => {
-                if let Ok(n) = r {
-                    let now = now_ns(start);
-                    if peer.is_none() {
-                        let d = stats.d(Dir::Down);
-                        d.in_pkts.fetch_add(1, Relaxed);
-                        d.in_bytes.fetch_add(n as u64, Relaxed);
-                        d.dropped[Cause::NoPeer.idx()].fetch_add(1, Relaxed);
                     } else {
-                        admit(&mut link, &stats, &mut delay[1], Dir::Down, &ubuf[..n], now);
+                        if peer != Some(from) {
+                            stats.set_vehicle_addr(from);
+                        }
+                        peer = Some(from);
+                        link.observe_up(&buf[..n]);
+                        if let Some(p) = link.position() {
+                            for (i, v) in [p.lat, p.lon, p.alt_m].into_iter().enumerate() {
+                                stats.pos[i].store(v.to_bits(), Relaxed);
+                            }
+                        }
+                        admit(&mut link, &stats, &mut delay[0], Dir::Up, &buf[..n], now);
                     }
                 }
             }
@@ -241,12 +254,13 @@ async fn run_link(
                 let Some(p) = dl.heap.pop() else { break };
                 dl.bytes -= p.data.len() as u64;
                 let d = stats.d(dir);
-                let sent = match dir {
-                    Dir::Up => usock.send(&p.data).await.is_ok(),
-                    Dir::Down => match peer {
-                        Some(to) => vsock.send_to(&p.data, to).await.is_ok(),
-                        None => false,
-                    },
+                let to = match dir {
+                    Dir::Up => Some(bridge),
+                    Dir::Down => peer,
+                };
+                let sent = match to {
+                    Some(to) => sock.send_to(&p.data, to).await.is_ok(),
+                    None => false,
                 };
                 if sent {
                     d.out_pkts.fetch_add(1, Relaxed);
@@ -319,5 +333,25 @@ pub fn admit(link: &mut Link, stats: &LinkStats, dl: &mut Delay, dir: Dir, data:
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_bridge_is_told_from_the_vehicle_by_its_port() {
+        let at = |s: &str| s.parse::<SocketAddr>().expect("addr");
+        let bridge = at("127.0.0.1:29000");
+        assert!(from_bridge(at("127.0.0.1:29000"), bridge));
+        // loopback is loopback, whichever address the reply's source took
+        assert!(from_bridge(at("127.0.0.2:29000"), bridge));
+        // a vehicle on any other port: a stand-in's fixed one, a SITL's ephemeral one
+        assert!(!from_bridge(at("127.0.0.1:10000"), bridge));
+        assert!(!from_bridge(at("127.0.0.1:41000"), bridge));
+        // the bridge's port number on another host is a vehicle there
+        assert!(!from_bridge(at("10.0.0.5:29000"), bridge));
+        assert!(from_bridge(at("10.0.0.5:29000"), at("10.0.0.5:29000")));
     }
 }

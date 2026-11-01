@@ -5,14 +5,17 @@ bridge and degrades each vehicle's link according to its link class, with no roo
 `tc netem`. See `docs/DECISIONS.md` for why.
 
 ```
-vehicle i  --UDP-->  [emulator listens on A+i]  --UDP-->  bridge listens on B+i
-           <--UDP--  [one task per vehicle     ]  <--UDP--
+vehicle i  --UDP-->  [emulator on A+i      ]  --UDP-->  bridge listens on B+i
+           <--UDP--  [one task, one socket ]  <--UDP--  (to A+i)
 ```
 
-Each vehicle gets its own task, vehicle-facing socket (port `A+i`), bridge-facing socket
-(its own source port, so the bridge's replies come back to it) and a delay queue per
-direction. The vehicle's source address is learned from its first packet; bridge replies go
-back to it. Packets are never modified. Nothing crosses between links.
+Each vehicle gets its own task, one socket (port `A+i`) and a delay queue per direction. The
+emulator forwards to the bridge from that same socket, so the bridge's replies come back to
+`A+i`, and tells them from the vehicle's packets by their source (the bridge's port `B+i`).
+It takes no ephemeral port: before 2026-11 each link had a second, bridge-facing socket on
+one, and at 3,000 vehicles those and the stand-ins' own ran out of the host's ephemeral range
+(murmur-z07i). The vehicle's source address is learned from its first packet; bridge replies
+go back to it. Packets are never modified. Nothing crosses between links.
 
 ## Wiring
 

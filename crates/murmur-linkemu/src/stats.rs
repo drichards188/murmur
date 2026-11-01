@@ -80,6 +80,10 @@ pub struct LinkStats {
     pub events: Mutex<Vec<String>>,
     /// 1 while the depth gate has moved the traffic to the profile's `gated_profile`.
     pub on_gated: AtomicU64,
+    /// Where the bridge's packets go: the address the vehicle's last packet came from, and how
+    /// often it changed (a vehicle that restarts, or something else sending to its port).
+    pub vehicle_addr: Mutex<Option<std::net::SocketAddr>>,
+    pub vehicle_addr_changes: AtomicU64,
 }
 
 pub const LOS_NAMES: [&str; 4] = ["off", "unknown", "clear", "obstructed"];
@@ -104,7 +108,15 @@ impl LinkStats {
             nominal: Value::Null,
             events: Mutex::new(Vec::new()),
             on_gated: AtomicU64::new(0),
+            vehicle_addr: Mutex::new(None),
+            vehicle_addr_changes: AtomicU64::new(0),
         }
+    }
+
+    /// The vehicle's packets now come from `from` (called only when it differs).
+    pub fn set_vehicle_addr(&self, from: std::net::SocketAddr) {
+        *self.vehicle_addr.lock().unwrap_or_else(|e| e.into_inner()) = Some(from);
+        self.vehicle_addr_changes.fetch_add(1, Relaxed);
     }
 
     pub fn with_nominal(mut self, nominal: Value) -> LinkStats {
@@ -161,6 +173,8 @@ impl LinkStats {
             "domain": self.meta.domain,
             "platform": self.meta.platform,
             "blocked": blocked,
+            "vehicle_addr": self.vehicle_addr.lock().unwrap_or_else(|e| e.into_inner()).map(|a| a.to_string()),
+            "vehicle_addr_changes": self.vehicle_addr_changes.load(Relaxed),
             "depth_state": depth,
             "los": {
                 "state": LOS_NAMES[self.los_state.load(Relaxed).min(3) as usize],

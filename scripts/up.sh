@@ -25,6 +25,19 @@
 #   MURMUR_WEB_PORT          5173   console (vite)
 #   MURMUR_TIDEWATER_PORT    8770   tidewater serve (reused if one already answers there)
 #   MURMUR_SITL_INSTANCE_BASE 0     first SITL instance (TCP 5760 + 10*instance)
+#   MURMUR_STANDIN_SRC_BASE  unset  stand-in i (in sim/run/standins.json's order) sends from UDP
+#                                   base + i; unset, from an ephemeral port as before. Set it for
+#                                   a fleet of thousands: the ephemeral range (~4,000 here, shared
+#                                   by the whole host) is what capped one. The emulator takes no
+#                                   port but its listening ones (it answers the bridge from them).
+#   MURMUR_LINK_HOST         127.0.0.1  the address the vehicles, the emulator and the bridge's
+#                                   links talk on (the emulator listens there; the bridge
+#                                   listens on every address). Under WSL's mirrored networking
+#                                   127.0.0.1 goes out through a virtual NIC (loopback0) whose
+#                                   queues drop packets at a few thousand vehicles; another
+#                                   127.x address (127.0.0.2) stays on lo.
+# Keep every fixed range (vehicle, bridge, stand-in source; each as wide as the fleet) below
+# `sysctl net.ipv4.ip_local_port_range` and clear of the other stacks' ranges.
 # MURMUR_WEB=0 starts no console: the launcher's (`make start`, eval/launcher.py) already serves
 # one on MURMUR_WEB_PORT, whose origin the bridge still accepts.
 # MURMUR_TIDEWATER_URL overrides the port with any running `tidewater serve`. The scenario
@@ -46,6 +59,7 @@ case "${MURMUR_WEB:-1}" in 0|off|false|no) web=0 ;; *) web=1 ;; esac
 vehicle_base="$MURMUR_BASE_PORT"
 bridge_base="${MURMUR_BRIDGE_BASE_PORT:-$((vehicle_base + 1000))}"
 emu_port="${MURMUR_LINKEMU_PORT:-8766}"
+link_host="${MURMUR_LINK_HOST:-127.0.0.1}"
 # one scripted-events file drives both the link emulator (comms) and the stand-ins (GNSS
 # jamming/spoofing); either variable name works
 MURMUR_LINK_EVENTS="${MURMUR_LINK_EVENTS:-${MURMUR_EVENTS:-}}"
@@ -158,11 +172,12 @@ fi
 # compares the previous run's open orders against this run's fleet; started beside swarm.py
 # it could read the previous run's sim/run/fleet.json, murmur-0u7). swarm.py leaves it as it
 # is when it launches the vehicles. The bridge logs which manifest it read and how old it was.
-.venv/bin/python sim/swarm.py --base-port "$vehicle_base" "$@" --manifest-only
+.venv/bin/python sim/swarm.py --base-port "$vehicle_base" --bridge-host "$link_host" "$@" --manifest-only
 bridge_env=()
 if [ "$linkemu" = 1 ]; then
   emu_args=(--fleet sim/run/fleet.json --config "${MURMUR_LINKS:-sim/links.toml}" --vehicle-base "$vehicle_base"
             --bridge-base "$bridge_base" --manifest-out sim/run/bridge-fleet.json
+            --listen-host "$link_host" --bridge-host "$link_host"
             --http "127.0.0.1:$emu_port" --log-interval 10)
   [ -n "${MURMUR_LINK_EVENTS:-}" ] && emu_args+=(--scenario "$MURMUR_LINK_EVENTS")
   [ -n "${MURMUR_LINKEMU_SEED:-}" ] && emu_args+=(--seed "$MURMUR_LINKEMU_SEED")
@@ -188,7 +203,7 @@ else
 fi
 
 # exec in each subshell so the tracked pid is the real process and cleanup reaches it
-.venv/bin/python sim/swarm.py --base-port "$vehicle_base" "$@" > logs/sim.log 2>&1 & pids+=($!)
+.venv/bin/python sim/swarm.py --base-port "$vehicle_base" --bridge-host "$link_host" "$@" > logs/sim.log 2>&1 & pids+=($!)
 env "${bridge_env[@]}" MURMUR_SIM_TOKEN="$sim_token" target/release/murmur-bridge > logs/bridge.log 2>&1 & pids+=($!)
 if [ "$web" = 1 ]; then
   (cd web && exec node_modules/.bin/vite --host 127.0.0.1 --port "$web_port" --strictPort) > logs/web.log 2>&1 & pids+=($!)

@@ -650,11 +650,12 @@ pub fn spawn(
             let unix = timeline.scenario_unix(t0.elapsed().as_secs_f64());
             let now_ns = t0.elapsed().as_nanos() as u64;
             let (src, cfg2, batch) = (src.clone(), cfg.clone(), live.clone());
-            // SGP4 over thousands of satellites: off the async workers.
+            // SGP4 over thousands of satellites: off the async workers, and each constellation
+            // propagated once for all its terminals (`refresh_round`, each answer `refresh`'s).
+            // Once per terminal, a 3,600-node fleet's 1,368 SATCOM terminals kept every core
+            // busy and the emulator behind (murmur-z07i).
             let _ = tokio::task::spawn_blocking(move || {
-                for s in &batch {
-                    refresh(src.as_ref(), &cfg2, s, unix, now_ns);
-                }
+                refresh_round(src.as_ref(), &cfg2, &batch, unix, now_ns);
             })
             .await;
             let ms = started.elapsed().as_millis() as u64;
