@@ -151,6 +151,10 @@ function beamFeatures(vehicles: Vehicle[]): FC {
 }
 
 const MAX_PITCH = 85
+/** the device pixel ratio the map is drawn at while the camera moves, and how long it is still
+ *  before the map is drawn at its own ratio again */
+const MOVING_PIXEL_RATIO = 1
+const SHARP_AFTER_MS = 150
 
 // deck.gl keeps the SDF font atlases of the last 3 font settings (fontFamily, fontWeight, size,
 // buffer) and rebuilds one from scratch when a TextLayer asks for an evicted one. The console's
@@ -691,6 +695,18 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       m.fire('move')
     })
     m.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'bottom-right')
+    // A camera moved by jumpTo every frame (the follow camera, the middle-drag orbit, a script)
+    // ends a move every frame: a moveend within 250 ms of the last one is one of such a stream,
+    // and what follows a moveend is done at the view timer's pace for those (registered first, so
+    // the handlers below read it for this moveend).
+    let lastEnd = -Infinity
+    let inStream = false
+    m.on('moveend', () => {
+      const now = performance.now()
+      inStream = now - lastEnd < 250
+      lastEnd = now
+    })
+
     // The scale bar. MapLibre's control re-measures it on every move event, unprojecting two
     // screen points through the terrain, a synchronous readPixels of its coordinates each time
     // (3.65 ms a frame while the camera moved). It is measured here once the camera has stopped,
@@ -720,7 +736,48 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       }, 250)
     })
     m.on('moveend', (e: { follow?: boolean }) => {
-      if (!e.follow) scaleWhenDrawn()
+      if (!e.follow && !inStream) scaleWhenDrawn()
+    })
+
+    // While the camera moves (an ease, a flight, a gesture), the map is drawn at a device pixel
+    // ratio of 1, and at its own again (1.5 on a 150 % display) once it has been still for
+    // SHARP_AFTER_MS: a third fewer pixels for every layer while nobody can read them. The canvas is
+    // resized through MapLibre's own resize, without its events (Map.setPixelRatio fires
+    // movestart and moveend and stops the camera, a drag included, when no ease runs), on the
+    // first move event, which MapLibre fires inside its render before it paints, so that frame is
+    // drawn at the new size; the way back is drawn at once (redraw). deck.gl draws into the same
+    // canvas and takes its pixel ratio from luma.gl's drawing buffer size, which does not see
+    // MapLibre's resize: it is told. Tiles stay as they are (the CSS size does not change).
+    const mr = m as unknown as { _overridePixelRatio: number | null | undefined; _resizeInternal(): void }
+    let held: { ratio: number | null | undefined } | null = null
+    let sharpTimer: number | undefined
+    const drawAt = (ratio: number | null | undefined) => {
+      mr._overridePixelRatio = ratio
+      mr._resizeInternal()
+      const c = m.getCanvas()
+      type Sized = { setDrawingBufferSize?: (w: number, h: number) => void }
+      const ctx = (overlay.current as unknown as { _deck?: { device?: { canvasContext?: Sized } } } | null)?._deck?.device?.canvasContext
+      ctx?.setDrawingBufferSize?.(c.width, c.height)
+    }
+    m.on('move', () => {
+      if (held || !m.isMoving() || lostRef.current || m.getPixelRatio() <= MOVING_PIXEL_RATIO) return
+      window.clearTimeout(sharpTimer)
+      held = { ratio: mr._overridePixelRatio }
+      drawAt(MOVING_PIXEL_RATIO)
+    })
+    m.on('moveend', () => {
+      if (!held) return
+      window.clearTimeout(sharpTimer)
+      sharpTimer = window.setTimeout(() => {
+        // moving again: that move's moveend comes back here
+        if (!held || m.isMoving() || lostRef.current || map.current !== m) return
+        const { ratio } = held
+        held = null
+        drawAt(ratio)
+        // the scale bar measured at the ratio it shows at
+        scaleWhenDrawn()
+        m.redraw()
+      }, SHARP_AFTER_MS)
     })
 
     // murmur-s8w: a lost WebGL context took the page down (deck.gl asked the map for its
@@ -976,9 +1033,12 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     m.on('move', reportViewSoon)
     m.on('moveend', refreshBridges)
     m.on('moveend', (e: { follow?: boolean }) => {
-      if (e.follow) {
-        // the follow camera ends a move every frame: report and redo the declutter at the
-        // timer's pace (4 Hz), not per frame, or App renders and every layer is rebuilt each frame
+      if (e.follow || inStream) {
+        // the follow camera, or any camera moved by jumpTo every frame, ends a move every frame:
+        // report and redo the declutter at the timer's pace (4 Hz), not per frame, or App renders,
+        // every layer is rebuilt and a view goes to the bridge each frame; the timer reads the
+        // camera when it fires, so the last view goes out within 250 ms of the last move. A move
+        // that ends on its own (an ease, a flight, a gesture, one jump) reports at once, below.
         followMoved = true
         reportViewSoon()
         return
@@ -1011,6 +1071,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       window.clearTimeout(bridgeTimer)
       window.clearTimeout(viewTimer)
       window.clearTimeout(scaleTimer)
+      window.clearTimeout(sharpTimer)
       if (map.current === m) map.current = null
       if (following.current) {
         following.current = null

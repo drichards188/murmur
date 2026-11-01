@@ -288,3 +288,37 @@ bar's domain counts, the fleet list's layout, the task panel's map by uid), whic
 with the fleet; the map's share (layers, declutter, trails) is now bounded by what is in view.
 Screenshots: `.playwright-mcp/and/` (small fleet unchanged; 1,000 and 3,000 as clusters and
 zoomed in).
+
+## Console with the camera moving, on a real GPU (2026-10-31)
+
+Windows Chrome 156 (ANGLE on D3D11, an RTX 4070, a 60 Hz display at 150 %), driven over CDP
+from WSL; production build of the console; stand-ins only, no link emulator, no tidewater, no
+contacts (so no weather layer). One lap per row: the same 32 s path of eases over the Bay (pan
+14 km at zoom 12.6, out to the whole Bay and its clusters, back to the Golden Gate, orbit 120
+degrees, tilt 55 to 72 to 40), measured from every animation frame. The harness
+(`scripts/console_stress.py`) was not yet in the tree when this was written. A trace at 3,000
+nodes found the main thread, not the GPU, the limit; on this evening the host ran the
+unchanged console faster than in that trace (56 fps, not 45), so "before" is this evening's.
+
+| moving lap | fps | p95 / p99 frame | frames > 50 / > 100 ms | update latency mean (p95) | GPU util mean | GPU process CPU |
+|---|---|---|---|---|---|---|
+| 3,000, before (two laps) | 55.5 to 56.2 | 16.8 / 83 ms | 20 / 12 to 14 | 9 ms (30) | 35 % | 42 to 44 % |
+| 3,000, round 1 | 59.5 | 16.8 / 17 ms | 1 / 1 | 3 ms (10) | 35 % | 21 % |
+| 3,600, round 1 | 59.5 | 16.9 / 21 ms | 2 / 0 | 4 ms (13) | 36 % | 22 % |
+| no vehicles, round 1 | 59.9 | 16.8 / 17 ms | 1 / 0 | n/a | 44 % | 20 % |
+| 3,000, round 2 | 60.0 | 16.8 / 17 ms | 0 / 0 | 3 ms (11) | 35 % | 22 % |
+| 3,600, round 2 | 59.4 | 16.8 / 20 ms | 4 / 0 | 3 ms (12) | 36 % | 22 % |
+| no vehicles, round 2 | 60.0 | 16.8 / 17 ms | 0 / 0 | n/a | 36 % | 19 % |
+
+Round 1 removed work nothing on screen needed: the bridge decks were re-lifted throughout a
+move (each vertex's terrain query recomputed the tiles covering the view, in 100 to 300 ms
+chunks: the hitches), the scale bar read the terrain back from the GPU on every move event,
+and the labels' four font settings evicted each other from deck.gl's three-entry atlas cache.
+Round 2 draws the map at a device pixel ratio of 1 while the camera moves (1166 x 999 instead
+of 1749 x 1498 pixels here), back to 1.5 once it is still, and throttles the view feed of a
+camera moved by `jumpTo` every frame to the view timer's 4 a second: 36 views in 10 s of such
+a camera instead of 304, and the bridge's deltas back to its 7.6 a second from 34. The lap is
+now at the display's 60 Hz at every size measured, with no frame over 100 ms; the pitch cap
+considered next (85 to 75 degrees) was not needed. At a still camera the bridge decks, labels
+and map are the same as before; the scale bar there sits where 500 m and 1 km meet, and shows
+either, before and after, as its terrain read-back varies by about 1 %.
