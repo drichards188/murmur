@@ -4,6 +4,7 @@ import type { Engagement, EngageView } from './engage'
 import type { TaskOption } from './space'
 import type { LngLat } from './types'
 import type { ObservedAct, Review } from './ident'
+import type { SwarmAlert } from './swarmsModel'
 
 /** The decision layer as the bridge serves it: GET /api/inbox, GET /api/intents and the
  *  WebSocket `{"type":"decisions"}` message. Intent times are wall-clock milliseconds on the
@@ -195,6 +196,8 @@ export interface Alert {
   since_t: number
   op_id?: number
   intent_id?: number
+  /** folded into this swarm alert (`Inbox.swarm_alerts`): the Inbox shows it inside that card only */
+  folded_into?: string
 }
 
 export interface Inbox {
@@ -207,6 +210,9 @@ export interface Inbox {
   review?: Review
   /** rules 9: the latest acts our sensors observed and what the engine made of each */
   acts?: ObservedAct[]
+  /** a swarm's member alerts of one kind folded into one (swarmsModel.ts); each member alert folded
+   *  into one says so (`Alert.folded_into`). A view: the bridge logs none of it. */
+  swarm_alerts?: SwarmAlert[]
   counts: { pending: number; alerts: number; queued?: number; review?: number }
 }
 

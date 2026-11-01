@@ -1,0 +1,37 @@
+/* swarms (docs/DECISIONS.md, "Swarm units"): the Swarms drawer, a drawer like the inbox and the
+   queue; the swarm cards in the Inbox; the fleet list's swarm headers */
+.ix.sw { z-index: 5; }
+.ix-badge.sw-badge { background: var(--warn); color: #1c1505; }
+.sw-missing { color: var(--warn); }
+.sw-group { display: flex; flex-direction: column; gap: 4px; }
+.sw-row { display: grid; grid-template-columns: 6px 1fr auto; gap: 10px; align-items: center; text-align: left; background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 7px 10px 7px 7px; }
+.sw-row:hover { border-color: #33475d; }
+.sw-row.sel { background: #1a2532; border-color: var(--accent); }
+.sw-row:focus-visible { box-shadow: 0 0 0 2px var(--accent); outline: none; }
+.sw-chip { align-self: stretch; border-radius: 2px; }
+.sw-row.warn .sw-chip { box-shadow: 0 0 0 1px var(--warn); }
+.sw-row.bad .sw-chip { box-shadow: 0 0 0 1px var(--bad); }
+.sw-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sw-name { font-size: 13px; color: #c6cfd9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sw-name b { font: 600 12.5px var(--mono); color: var(--text); margin-right: 4px; }
+.sw-alerts { margin-left: 6px; font: 600 10.5px var(--mono); color: var(--warn); border: 1px solid #5a4a1c; border-radius: 3px; padding: 0 5px; }
+.sw-task { font: 11.5px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sw-nums { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; font: 11px var(--mono); color: var(--muted); white-space: nowrap; }
+.sw-nums b { color: var(--text); font-weight: 600; }
+.sw-nums .dim b { color: var(--muted); font-weight: 400; }
+.sw-nums .bad, .sw-nums .bad b { color: var(--bad); }
+.sw-nums .warn, .sw-nums .warn b { color: var(--warn); }
+
+/* a swarm alert in the Inbox: one card for many members */
+.ix-alert.sw-card .ix-who b { font: 600 12px var(--mono); }
+.sw-count { font: 12px var(--mono); color: #c6cfd9; }
+.sw-count b { color: var(--text); }
+.sw-causes { list-style: none; margin: 0; padding: 0; font: 11.5px var(--mono); color: var(--muted); }
+.sw-members { list-style: none; margin: 2px 0 0; padding: 6px 0 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow-y: auto; font: 11.5px var(--mono); }
+.sw-members li { display: flex; gap: 8px; }
+.sw-members b { color: var(--text); font-weight: 600; min-width: 92px; }
+.sw-members span { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* the fleet list's swarm headers: the swarm's colour before its id */
+.vlist h3.sw-head { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0.08em; }
+.vlist h3.sw-head i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; flex: none; }

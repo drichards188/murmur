@@ -16,6 +16,8 @@ export interface Identity {
   sim: 'sitl' | 'standin'
   /** Carries an effect (`armed = true` in the catalog): any task needs a human. Not the MAVLink arm state. */
   armed?: boolean | null
+  /** The swarm it belongs to (the fleet file's [[swarm]], swarmsModel.ts), or none. */
+  swarm?: string | null
 }
 
 export const AIR_KINDS: Kind[] = ['plane', 'vtol', 'copter', 'blimp']
@@ -64,6 +66,8 @@ export interface Vehicle {
    *  absent or `full` is the whole snapshot at 4 Hz. */
   lod?: 'full' | 'lite'
   identity: Identity | null
+  /** The swarm it belongs to, as /api/state names it (swarmsModel.ts `swarmOf`). */
+  swarm?: string | null
   kind: Kind | null
   mode: string | null
   armed: boolean

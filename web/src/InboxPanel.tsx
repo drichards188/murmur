@@ -26,6 +26,8 @@ import { reportView } from './operatorView'
 import { scriptedBadge } from './situationIds'
 import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
+import { alertLabel } from './swarms'
+import { causeLines, foldedInto, type SwarmAlert, unfolded } from './swarmsModel'
 import type { LngLat, Vehicle } from './types'
 import { callsign } from './types'
 import './inbox.css'
@@ -57,7 +59,11 @@ interface Props {
 
 export function InboxButton({ decisions, open, onClick, hiddenAlerts }: { decisions: Decisions | null; open: boolean; onClick: () => void; hiddenAlerts: Set<string> }) {
   const pending = decisions?.inbox.pending.length ?? 0
-  const alerts = (decisions?.inbox.alerts ?? []).filter((a) => !hiddenAlerts.has(a.id))
+  // a swarm's folded member alerts count once, as its swarm alert
+  const alerts: { severity: Alert['severity'] }[] = [
+    ...unfolded(decisions?.inbox.alerts ?? []).filter((a) => !hiddenAlerts.has(a.id)),
+    ...(decisions?.inbox.swarm_alerts ?? []),
+  ]
   const high = alerts.filter((a) => a.severity === 'high').length
   const medium = alerts.filter((a) => a.severity === 'medium').length
   // rules 23: informational alerts ask nothing: in the title, never a badge
@@ -553,6 +559,65 @@ function AlertCard({
   )
 }
 
+// ---- a swarm alert ------------------------------------------------------------------------------
+
+/** One card for a swarm's members' alerts of one kind (the bridge folds them: `swarm_alerts`),
+ *  instead of one card per member; opened, it lists the members and each one's own alert. A view:
+ *  acknowledging or snoozing it is this browser's, as for any alert. */
+function SwarmAlertCard({ alert: a, members, vehicles, now, selected, onFocus }: {
+  alert: SwarmAlert
+  members: Map<number, Alert[]>
+  vehicles: Vehicle[]
+  now: () => number
+  selected: boolean
+  onFocus: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const age = Math.max(0, now() / 1000 - a.since_t)
+  const causes = causeLines(a.causes)
+  const uids = a.uids.length ? a.uids : [...members.keys()]
+  return (
+    <article className={`ix-alert sw-card ${a.severity} ${selected ? 'sel' : ''}`} tabIndex={0} onClick={onFocus} onKeyDown={(e) => e.key === 'Enter' && e.target === e.currentTarget && onFocus()}>
+      <header className="ix-head">
+        <strong className="ix-akind">{alertLabel(a.kind)}</strong>
+        <span className="ix-who">
+          swarm <b>{a.swarm}</b>
+        </span>
+        <span className="ix-age">{fmtDuration(age)} ago</span>
+      </header>
+      <p className="sw-count">
+        <b>{a.count}</b> of {a.of} members
+      </p>
+      {causes.length > 0 && (
+        <ul className="sw-causes">
+          {causes.map((c, k) => (
+            <li key={k}>{c}</li>
+          ))}
+        </ul>
+      )}
+      {open && (
+        <ul className="sw-members" onClick={(e) => e.stopPropagation()}>
+          {uids.map((u) => (
+            <li key={u}>
+              <b>{nameOf(vehicles, String(u))}</b>
+              <span>{(members.get(u) ?? []).map((m) => m.detail).join('; ') || 'no member alert of its own'}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <footer className="ix-actions" onClick={(e) => e.stopPropagation()}>
+        <button className="ghost" onClick={onFocus}>
+          Select and fly to
+        </button>
+        <span className="spacer" />
+        <button className="ghost" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+          {open ? 'Hide members' : `Show ${uids.length} members`}
+        </button>
+      </footer>
+    </article>
+  )
+}
+
 // ---- decisions list -----------------------------------------------------------------------------
 
 function median(xs: number[]) {
@@ -675,9 +740,12 @@ export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, o
   }
   const [showHidden, setShowHidden] = useState(false)
   const pending = decisions?.inbox.pending ?? []
-  const alerts = decisions?.inbox.alerts ?? []
+  const allAlerts = decisions?.inbox.alerts ?? []
+  // a member alert folded into a swarm alert is shown inside that swarm's card, not on its own
+  const alerts = unfolded(allAlerts)
   const live = alerts.filter((a) => !hidden.has(a.id))
   const muted = alerts.filter((a) => hidden.has(a.id))
+  const swarmAlerts = decisions?.inbox.swarm_alerts ?? []
 
   useEffect(() => {
     if (!notices.length) return
@@ -697,7 +765,7 @@ export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, o
         <h2>Inbox</h2>
         <div className="seg">
           <button className={tab === 'inbox' ? 'on' : ''} onClick={() => setTab('inbox')}>
-            Pending{pending.length + live.length ? ` (${pending.length + live.length})` : ''}
+            Pending{pending.length + live.length + swarmAlerts.length ? ` (${pending.length + live.length + swarmAlerts.length})` : ''}
           </button>
           <button className={tab === 'decisions' ? 'on' : ''} onClick={() => setTab('decisions')}>
             Decisions
@@ -768,6 +836,25 @@ export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, o
                 onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])}
               />
               ),
+            )}
+            {swarmAlerts.length > 0 && (
+              <>
+                <h3 className="ix-h">
+                  Swarm alerts <span>{swarmAlerts.length}</span>
+                  <small>one card for a swarm's members</small>
+                </h3>
+                {swarmAlerts.map((a) => (
+                  <SwarmAlertCard
+                    key={a.id}
+                    alert={a}
+                    members={foldedInto(allAlerts, a.id)}
+                    vehicles={vehicles}
+                    now={now}
+                    selected={selection?.kind === 'alert' && selection.id === a.id}
+                    onFocus={() => onFocus({ kind: 'alert', id: a.id }, a.uids, null)}
+                  />
+                ))}
+              </>
             )}
             <h3 className="ix-h">
               Alerts <span>{live.length}</span>

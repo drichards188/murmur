@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { emuCause } from './linkEmu'
 import { type Reveal, scrollSpanIntoView, useFlash } from './reveal'
 import { symbolSvg } from './symbols'
+import { type Swarm, swarmColor, swarmGroups } from './swarmsModel'
+import './swarms.css'
 import type { Vehicle } from './types'
 import { callsign, domainOf, isStale, staleMs } from './types'
 
@@ -19,6 +21,9 @@ interface Props {
   reveal?: Reveal | null
   /** bd murmur-4tq: vehicles whose sensor reach is under half its clear day's ("EO 18% · fog") */
   reachBadges?: Map<number, { text: string; title: string }>
+  /** the bridge's swarm summary (swarmsModel.ts), for the groups' order, names and colours: a fleet
+   *  with swarms is listed swarm by swarm */
+  swarms?: Pick<Swarm, 'id' | 'name' | 'color' | 'role'>[]
 }
 
 function linkClass(v: Vehicle) {
@@ -158,15 +163,21 @@ export const ROW_H = 84
 export const HEAD_H = 32
 const OVERSCAN_PX = 400
 
-type Item = { kind: 'head'; title: string; count: number; top: number } | { kind: 'row'; v: Vehicle; top: number }
+type Item = { kind: 'head'; title: string; count: number; top: number; color?: string } | { kind: 'row'; v: Vehicle; top: number }
 
-function layout(vehicles: Vehicle[]): { items: Item[]; height: number } {
+/** The rows and headers, top to bottom: by swarm when the fleet has swarms (swarmGroups), else by
+ *  domain. */
+function layout(vehicles: Vehicle[], swarms: Props['swarms']): { items: Item[]; height: number } {
   const items: Item[] = []
   let top = 0
-  for (const { title, match } of GROUPS) {
-    const group = vehicles.filter(match)
+  const bySwarm = swarmGroups(vehicles, swarms)
+  const colors = new Map((swarms ?? []).map((s) => [s.id, swarmColor(s)]))
+  const groups = bySwarm
+    ? bySwarm.map((g) => ({ title: g.title, group: g.vehicles, color: g.id ? (colors.get(g.id) ?? '#7d8b9a') : undefined }))
+    : GROUPS.map(({ title, match }) => ({ title, group: vehicles.filter(match), color: undefined }))
+  for (const { title, group, color } of groups) {
     if (!group.length) continue
-    items.push({ kind: 'head', title, count: group.length, top })
+    items.push({ kind: 'head', title, count: group.length, top, color })
     top += HEAD_H
     for (const v of group) {
       items.push({ kind: 'row', v, top })
@@ -189,11 +200,11 @@ function firstBelow(items: Item[], y: number) {
   return lo
 }
 
-export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails, detailsUid, onSelect, reveal = null, reachBadges }: Props) {
+export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails, detailsUid, onSelect, reveal = null, reachBadges, swarms }: Props) {
   const ids = (pred: (v: Vehicle) => boolean) => vehicles.filter(pred).map((v) => v.uid)
   const list = useRef<HTMLDivElement>(null)
   const [scroll, setScroll] = useState({ top: 0, height: 800 })
-  const { items, height } = useMemo(() => layout(vehicles), [vehicles])
+  const { items, height } = useMemo(() => layout(vehicles, swarms), [vehicles, swarms])
   // the list element exists only once there are vehicles
   const hasList = vehicles.length > 0
 
@@ -263,7 +274,8 @@ export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails
           <div className="vlist-inner" style={{ height }}>
             {shown.map((it) =>
               it.kind === 'head' ? (
-                <h3 key={`h:${it.title}`} className="vlist-head" style={{ top: it.top }}>
+                <h3 key={`h:${it.title}`} className={`vlist-head${it.color ? ' sw-head' : ''}`} style={{ top: it.top }} title={it.title}>
+                  {it.color && <i style={{ background: it.color }} aria-hidden />}
                   {it.title} <span>{it.count}</span>
                 </h3>
               ) : (

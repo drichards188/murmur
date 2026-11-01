@@ -54,6 +54,9 @@ import { SituationPanel } from './SituationPanel'
 import { Tutorial } from './Tutorial'
 import { CoverageControl } from './CoverageControl'
 import { gridImage, type CoverageGrid, type LinkRouteDrawing } from './coverage'
+import { buildSwarmLayers, useSwarms } from './swarms'
+import { selectedSwarm, swarmOf, unfolded } from './swarmsModel'
+import { SwarmsButton, SwarmsPanel } from './SwarmsPanel'
 
 function useUtcClock() {
   const [now, setNow] = useState(() => new Date())
@@ -119,6 +122,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const [showInbox, setShowInbox] = useState(false)
   // rules 5: orders held for vehicles the link can't reach now
   const [showQueue, setShowQueue] = useState(false)
+  // swarms (docs/DECISIONS.md, "Swarm units"): the Swarms drawer
+  const [showSwarms, setShowSwarms] = useState(false)
   const [inboxTab, setInboxTab] = useState<InboxTab>('inbox')
   const [inboxSel, setInboxSel] = useState<InboxSelection>(null)
   // evaluation instrumentation: a track opened is attributed to the selected inbox card only
@@ -208,6 +213,12 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const allVehicles = useMemo(() => state?.vehicles ?? [], [state?.vehicles])
   const spent = useMemo(() => new Set(decisions?.spent ?? []), [decisions?.spent])
   const vehicles = useMemo(() => spent.size ? allVehicles.filter((v) => !spent.has(v.uid)) : allVehicles, [allVehicles, spent])
+  // the swarm summary (GET /api/swarms, about once a second) while the fleet has swarms or the
+  // drawer is open; its outlines on the map are rebuilt only when a new summary comes
+  const hasSwarms = useMemo(() => allVehicles.some((v) => swarmOf(v) != null), [allVehicles])
+  const swarmFeed = useSwarms(hasSwarms || showSwarms)
+  const swarmSel = useMemo(() => selectedSwarm(swarmFeed.doc?.swarms, selected), [swarmFeed.doc, selected])
+  const swarmLayers = useMemo(() => buildSwarmLayers(swarmFeed.doc, swarmSel), [swarmFeed.doc, swarmSel])
   const reachRings = useMemo(() => {
     if (reachMode === 'off' || (reachMode === 'selected' && selected.size === 0)) return null
     const positions = new Map<number, LngLat>()
@@ -457,9 +468,12 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
       ...keepOutLayers,
       ...(engageDrawings.length ? buildEngageLayers(engageDrawings, now()) : []),
       ...buildOrderLayers({ queued: queuedIntents ?? [], intents: allIntents ?? [], taskings: state?.taskings ?? [], vehicles, nowMs: now() }),
+      // the swarms' outlines and labels last, over the tracks' uncertainty (hundreds of contacts'
+      // rings would hide them) and under the vehicles
+      ...swarmLayers,
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [estimateLayers, trackLayers, keepOutLayers, engageDrawings, queuedIntents, allIntents, state?.taskings, vehicles, orderTick],
+    [swarmLayers, estimateLayers, trackLayers, keepOutLayers, engageDrawings, queuedIntents, allIntents, state?.taskings, vehicles, orderTick],
   )
   const focusTrack = useCallback(
     (t: Track) => setFit((f) => ({ points: [trackPredicted(t, now())], n: (f?.n ?? 0) + 1, padRight: 400 })),
@@ -479,7 +493,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     // re-check when the link is back, are about them
     for (const i of [...(pending ?? []), ...(queuedIntents ?? [])])
       for (const u of i.uids) if (Number.isFinite(Number(u))) set.add(Number(u))
-    for (const a of alerts ?? []) set.add(a.uid)
+    // (a member alert folded into a swarm alert is the swarm card's: not a pin of its own)
+    for (const a of unfolded(alerts ?? [])) set.add(a.uid)
     return [...set].filter((uid) => !spent.has(uid)).sort((a, b) => a - b)
   }, [selected, detailsUid, pending, queuedIntents, alerts, spent])
   useEffect(() => {
@@ -602,6 +617,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         <span className={`pill ${status}`}>{status === 'live' ? 'BRIDGE LIVE' : status === 'down' ? 'BRIDGE DOWN' : 'CONNECTING'}</span>
         <InboxButton decisions={decisions} open={showInbox} hiddenAlerts={hiddenAlerts} onClick={() => setShowInbox((v) => !v)} />
         <QueueButton decisions={decisions} open={showQueue} onClick={() => setShowQueue((v) => !v)} />
+        {(hasSwarms || swarmFeed.status === 'ok') && <SwarmsButton feed={swarmFeed} open={showSwarms} onClick={() => setShowSwarms((v) => !v)} />}
         <button className={`ghost platforms-btn ${showWeather ? 'on' : ''}`} onClick={() => setShowWeather(v => !v)}>Weather</button>
         <button className={`ghost platforms-btn ${showSpace ? 'on' : ''}`} onClick={() => setShowSpace((v) => !v)} title="Space timeline: imaging access, SATCOM, GNSS">
           Space
@@ -637,6 +653,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         }}
         onSelect={(ids) => setSelected(new Set(ids))}
         reveal={revealVeh}
+        swarms={swarmFeed.doc?.swarms}
       />
       </ErrorBoundary>
       <main className={`mapwrap ${showSpace ? 'space-open' : ''}`}>
@@ -807,6 +824,23 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
               if (pts.length) setFit((f) => ({ points: pts, n: (f?.n ?? 0) + 1, padRight: 430 }))
             }}
             onClose={() => setShowQueue(false)}
+          />
+          </ErrorBoundary>
+        )}
+        {showSwarms && (
+          <ErrorBoundary name="Swarms" className="floating">
+          <SwarmsPanel
+            feed={swarmFeed}
+            selected={swarmSel}
+            alerts={decisions?.inbox.swarm_alerts ?? []}
+            onSelect={(sw) => {
+              // every member, so the order form sends one intent to the whole swarm
+              setSelected(new Set(sw.members))
+              revealVehicles(sw.members)
+              const pts = sw.hull && sw.hull.length ? sw.hull : sw.centroid ? [sw.centroid] : []
+              if (pts.length) setFit((f) => ({ points: pts, n: (f?.n ?? 0) + 1, padRight: 430 }))
+            }}
+            onClose={() => setShowSwarms(false)}
           />
           </ErrorBoundary>
         )}
