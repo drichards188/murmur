@@ -209,6 +209,10 @@ struct Carrier {
 /// A vehicle's reach answer is computed again at least this often, s.
 pub const REACH_MAX_AGE_S: f64 = 5.0;
 
+/// The console feed's sources and looks per track, at most (`Track::json_with`): the latest
+/// heard sources and the surest looks, with the totals beside them.
+pub const FEED_SOURCES: usize = 16;
+
 /// What a vehicle's reach answer was computed from.
 #[derive(Debug, Clone, PartialEq)]
 struct ReachKey {
@@ -566,6 +570,7 @@ impl Tracks {
         // they read, never change)
         let mut launches: HashMap<String, ActObservation> = HashMap::new();
         let mut weapon_fixes: Vec<physical::weapon::WeaponFix> = Vec::new();
+        let sense_start = std::time::Instant::now();
         let mut detections = match model {
             SensingModel::Legacy => {
                 if !msg.weapons.is_empty() {
@@ -615,7 +620,9 @@ impl Tracks {
         for d in &mut detections {
             d.measured_t = Some(msg.t);
         }
+        crate::perf::record("sense", sense_start, sense_start.elapsed());
         let n_contacts = msg.contacts.len();
+        let fold_start = std::time::Instant::now();
         let n_tracks = {
             let mut inner = lock(&self.inner);
             #[cfg(murmur_headless)]
@@ -638,6 +645,7 @@ impl Tracks {
             inner.tracks.len()
         };
         self.publish(now);
+        crate::perf::record("track_fold", fold_start, fold_start.elapsed());
         Ok((n_contacts, detections.len(), n_tracks))
     }
 
@@ -1004,7 +1012,7 @@ impl Tracks {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
-            self.tick();
+            crate::perf::time("tracker_tick", || self.tick());
         }
     }
 
@@ -1014,6 +1022,17 @@ impl Tracks {
             .tracks
             .values()
             .map(|t| t.json(now))
+            .collect()
+    }
+
+    /// The console feed's tracks: [`Self::tracks_json`] with each track's sources and looks
+    /// capped at [`FEED_SOURCES`] (`Track::json_with`). `/api/tracks` and the agents' tools keep
+    /// them all.
+    fn feed_tracks_json(&self, now: f64) -> Vec<Value> {
+        lock(&self.inner)
+            .tracks
+            .values()
+            .map(|t| t.json_with(now, Some(FEED_SOURCES)))
             .collect()
     }
 
@@ -1215,7 +1234,7 @@ impl Tracks {
             "type": "tracks",
             "t": round(now, 2),
             "stale_after_s": model::STALE_S,
-            "tracks": self.tracks_json(now),
+            "tracks": self.feed_tracks_json(now),
             "lost": self.lost_json(),
         });
         // opponent weapons: the weapon picture, when there is one (absent otherwise)
@@ -1237,7 +1256,7 @@ impl Tracks {
         if self.updates.receiver_count() == 0 {
             return;
         }
-        let msg = self.message(now);
+        let msg = crate::perf::time("tracks_message", || self.message(now));
         self.updates.send_if_modified(|cur| {
             if **cur == msg {
                 false

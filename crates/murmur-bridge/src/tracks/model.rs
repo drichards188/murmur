@@ -1915,6 +1915,27 @@ impl Track {
     /// it called the contact and the surest it has been, which the identity combines; so a reader
     /// can tell which sensor reached which level. The legacy model has no looks.
     pub fn json(&self, now: f64) -> Value {
+        self.json_with(now, None)
+    }
+
+    /// [`Self::json`], with at most `cap` sources (the latest heard) and `cap` looks (the
+    /// surest), each kept in its usual order, and `sources_total` / `identity.looks_total`
+    /// saying how many there were when some were left out; `None`, or no more than `cap` of
+    /// either, gives `json`'s answer exactly. For the console's feed (`Tracks::message`): at
+    /// Saturation's 3,602 vehicles a quadcopter swarm's track was seen by up to 1,918 sensors,
+    /// and every track's whole list made each feed message 5 MB (murmur-z07i).
+    pub fn json_with(&self, now: f64, cap: Option<usize>) -> Value {
+        // the indices kept of `n` items ranked by `key` (higher first), in their own order
+        fn keep<T>(items: &[T], cap: Option<usize>, key: impl Fn(&T) -> f64) -> Option<Vec<bool>> {
+            let cap = cap.filter(|c| items.len() > *c)?;
+            let mut order: Vec<usize> = (0..items.len()).collect();
+            order.sort_by(|&a, &b| key(&items[b]).total_cmp(&key(&items[a])).then(a.cmp(&b)));
+            let mut kept = vec![false; items.len()];
+            for &i in &order[..cap] {
+                kept[i] = true;
+            }
+            Some(kept)
+        }
         let id = self.identity();
         let (aff, aff_conf, why) = self.affiliation();
         let mut identity = json!({
@@ -1926,15 +1947,23 @@ impl Track {
             "supported_by": id.supported_by,
         });
         if !self.looks.is_empty() {
-            identity["looks"] = self
-                .looks
+            let looks: Vec<_> = self.looks.iter().collect();
+            let kept = keep(&looks, cap, |(_, m)| m.confidence);
+            identity["looks"] = looks
                 .iter()
-                .map(|((uid, sensor, level), m)| {
+                .enumerate()
+                .filter(|(i, _)| kept.as_ref().is_none_or(|k| k[*i]))
+                .map(|(_, ((uid, sensor, level), m))| {
                     json!({ "uid": uid, "sensor": sensor.as_str(), "level": level, "label": m.label, "confidence": round(m.confidence, 3) })
                 })
                 .collect();
+            if kept.is_some() {
+                identity["looks_total"] = json!(looks.len());
+            }
         }
-        json!({
+        let sources: Vec<&Source> = self.sources.values().collect();
+        let kept_sources = keep(&sources, cap, |s| s.last_t);
+        let mut out = json!({
             "id": self.id,
             "domain": self.domain.as_str(),
             "position": [round(self.lon, 6), round(self.lat, 6)],
@@ -1950,9 +1979,11 @@ impl Track {
             "affiliation_confidence": round(aff_conf, 3),
             "affiliation_reason": why,
             "identity": identity,
-            "sources": self.sources.values().map(|s| json!({
-                "uid": s.uid, "sensor": s.sensor.as_str(), "hits": s.hits, "last_t": round(s.last_t, 2),
-            })).collect::<Vec<_>>(),
+            "sources": sources.iter().enumerate()
+                .filter(|(i, _)| kept_sources.as_ref().is_none_or(|k| k[*i]))
+                .map(|(_, s)| json!({
+                    "uid": s.uid, "sensor": s.sensor.as_str(), "hits": s.hits, "last_t": round(s.last_t, 2),
+                })).collect::<Vec<_>>(),
             "first_seen_t": round(self.first_seen_t, 2),
             "last_seen_t": round(self.last_seen_t, 2),
             "hits": self.hits,
@@ -1960,7 +1991,11 @@ impl Track {
             "declared": self.declared,
             "review": self.review,
             "sidc": self.sidc(now),
-        })
+        });
+        if kept_sources.is_some() {
+            out["sources_total"] = json!(sources.len());
+        }
+        out
     }
 
     /// The decision layer's view (`WorldSnapshot.tracks`), at engine time `t` (wall ms): the

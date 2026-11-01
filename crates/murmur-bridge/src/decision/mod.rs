@@ -2277,7 +2277,7 @@ impl Decision {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
-            self.tick();
+            crate::perf::time("decision_tick", || self.tick());
         }
     }
 
@@ -2830,7 +2830,7 @@ impl Decision {
         if self.updates.receiver_count() == 0 {
             return;
         }
-        let msg = self.message();
+        let msg = crate::perf::time("decisions_message", || self.message());
         self.updates.send_if_modified(|cur| {
             if **cur == msg {
                 false

@@ -46,6 +46,7 @@ mod heartbeat;
 mod link;
 mod mav;
 mod mcp;
+mod perf;
 mod platforms;
 mod push;
 mod situation;
@@ -289,6 +290,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         heartbeat::PERIOD.as_secs_f64()
     );
     tokio::spawn(heartbeat::report(beats));
+    // how long the periodic work takes and how regularly it runs: a line a minute, and
+    // /api/stats `loops`
+    tokio::spawn(perf::report());
     tokio::spawn(world.clone().housekeeping());
     tokio::spawn(decision.clone().run());
     tokio::spawn(tracks.clone().run());

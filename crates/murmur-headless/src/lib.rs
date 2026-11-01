@@ -68,6 +68,10 @@ mod mav;
 mod mcp;
 #[cfg(not(test))]
 #[allow(dead_code)]
+#[path = "../../murmur-bridge/src/perf.rs"]
+mod perf;
+#[cfg(not(test))]
+#[allow(dead_code)]
 #[path = "../../murmur-bridge/src/platforms.rs"]
 mod platforms;
 #[cfg(not(test))]

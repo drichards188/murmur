@@ -898,3 +898,58 @@ fn a_munitions_effect_strikes_at_its_impact_on_the_contacts_clock() {
     let late = tracks.take_effects_at(1_781_200_050.0, 1_781_000_045.0);
     assert_eq!(late[0]["impact_t"].as_f64(), Some(1_781_200_050.0));
 }
+
+/// murmur-z07i: the console feed's track carries at most `cap` sources (the latest heard, in
+/// their usual order) and says how many there were; at or under the cap it is `json`'s own.
+#[test]
+fn the_feed_caps_a_tracks_sources_and_keeps_json_whole() {
+    use super::model::Track;
+    use super::sensing::Detection;
+    let det = |uid: u64, t: f64| Detection {
+        contact_id: "c".into(),
+        uid,
+        sensor: SensorType::Radar,
+        lat: 37.8,
+        lon: -122.47,
+        alt_m: Some(80.0),
+        sigma_m: 30.0,
+        range_m: 3_000.0,
+        velocity_mps: None,
+        label: Some("small_air".into()),
+        ais: None,
+        domain: Domain::Air,
+        measured_t: Some(t),
+        slant_from: None,
+        look: None,
+        scan_s: None,
+    };
+    let t0 = 1_000_000.0;
+    let mut track = Track::new("T-0001".into(), 1, &det(1, t0), t0);
+    for uid in 2..=40u64 {
+        track.update(&det(uid, t0 + uid as f64 * 0.1), t0 + uid as f64 * 0.1);
+    }
+    let now = t0 + 5.0;
+    let whole = track.json(now);
+    assert_eq!(whole["sources"].as_array().map(Vec::len), Some(40));
+    assert!(whole.get("sources_total").is_none());
+    assert_eq!(track.json_with(now, None), whole);
+    assert_eq!(track.json_with(now, Some(40)), whole);
+    let fed = track.json_with(now, Some(16));
+    assert_eq!(fed["sources_total"], 40);
+    let uids: Vec<u64> = fed["sources"]
+        .as_array()
+        .expect("sources")
+        .iter()
+        .map(|s| s["uid"].as_u64().expect("uid"))
+        .collect();
+    // the 16 heard last (25 to 40), in uid order
+    assert_eq!(uids, (25..=40).collect::<Vec<u64>>());
+    // everything else as json says
+    let (mut a, mut b) = (whole.clone(), fed.clone());
+    for v in [&mut a, &mut b] {
+        let o = v.as_object_mut().expect("object");
+        o.remove("sources");
+        o.remove("sources_total");
+    }
+    assert_eq!(a, b);
+}

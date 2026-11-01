@@ -736,7 +736,9 @@ async fn stats(State(app): State<App>) -> Response {
         .collect();
     // the heartbeat thread's jitter: worst send delay and longest gap per minute
     let heartbeat = crate::heartbeat::stats().map_or(Value::Null, |s| s.json());
-    Json(json!({ "t": clock::wall(), "vehicles": vehicles, "gcs_heartbeat": heartbeat }))
+    // how long the periodic work takes and how regularly it runs (`crate::perf`)
+    let loops = crate::perf::json();
+    Json(json!({ "t": clock::wall(), "vehicles": vehicles, "gcs_heartbeat": heartbeat, "loops": loops }))
         .into_response()
 }
 

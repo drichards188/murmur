@@ -908,7 +908,8 @@ pub async fn pusher(world: Arc<World>, frames: Arc<watch::Sender<Option<Arc<Push
     loop {
         interval.tick().await;
         if frames.receiver_count() > 0 {
-            frames.send_replace(Some(Arc::new(build_frame(&world, &mut cache))));
+            let frame = crate::perf::time("push_frame", || build_frame(&world, &mut cache));
+            frames.send_replace(Some(Arc::new(frame)));
         }
     }
 }
