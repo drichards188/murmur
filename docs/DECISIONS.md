@@ -3160,3 +3160,20 @@ is claimed. Fog changes camera visibility without a scripted radio outage. Radar
 by its own model. Reacquisition is produced by the camera, and an unseen maneuver is never given
 to the tracker. Mean-wind overrides stay out of the timeline so vehicle forcing and sensing keep
 one source. [WEATHER.md](WEATHER.md) records implementation limits and data terms.
+
+## 2026-11-01: Swarm units (murmur-ji4n, murmur-abac)
+
+One operator over some 3,600 drones (the Saturation situation) cannot work vehicle by vehicle.
+The unit of work is the swarm: a fleet-level grouping in the fleet file (`[[swarm]]`, sim/swarm.py),
+each vehicle's manifest entry naming its swarm and the manifest listing the swarms (id, name, role,
+colour). A swarm is not a new kind of order and not a new actor: an order to a swarm is one intent
+whose `uids` are all its members, with today's kinds (an orbit makes a ring picket, a patrol a lane,
+a hold a station), checked and routed by the engine and the policy as any intent with those uids.
+The console selects a swarm's members with one click so the existing order form sends that intent;
+a distributed task ("each member its own lane or slot") is a follow-up, not part of this.
+
+Swarm alerts are a view, not a record: the bridge folds its members' alerts (lost link, left task,
+low battery) into one alert per swarm and cause for the Inbox, marking each folded member alert
+`folded_into`, and `/api/swarms` summarises each swarm about once a second. Neither is logged or
+read by the decision engine; the member alerts and every intent stay what the audit log holds, so
+replay and the engine's checks never depend on how the view groups them.

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -88,7 +89,8 @@ SCRIPTED_BADGE = {
 # 8865, 5273, 8866, 8870), the evaluation's blocks (UDP 35000-36999, HTTP 10600-10699) and the
 # host's ephemeral range (39160-43255 here as of 2026-10-08; it moves between boots), so its
 # fresh station never touches another station's restore or resume pointer. Its two UDP ranges
-# hold up to 1000 vehicles each (`port_problems` refuses a larger fleet on them).
+# hold up to 1000 vehicles each (`port_problems` refuses a larger fleet on them): a larger
+# situation names its own block (`[ports]`, PORT_KEYS below).
 # The evaluation's fixed UDP block (eval/ports.py): never a situation's.
 EVAL_UDP = range(35000, 37000)
 
@@ -102,10 +104,30 @@ SITUATION_PORTS = {
     "MURMUR_SITL_INSTANCE_BASE": "160",
 }
 
+# A situation may name its own port block (`[ports]`, each key one `scripts/up.sh` variable) in
+# place of SITUATION_PORTS, for a fleet the common block can't carry (Saturation's 3,602 vehicles:
+# its two UDP ranges hold 1,000 each). A key it leaves out is the common block's; an exported
+# variable still overrides either. `standin_src_base` is the stand-ins' fixed source ports
+# (MURMUR_STANDIN_SRC_BASE: one UDP port each from there, not from the host's ephemeral range).
+# `link_host`, the one key that is not a port, moves the stack's UDP links to another loopback
+# address (MURMUR_LINK_HOST): under WSL's mirrored networking 127.0.0.1 crosses a virtual NIC that
+# drops packets at thousands of links, and 127.0.0.2 stays on `lo` (docs/load-test.md, Saturation).
+PORT_KEYS = {
+    "vehicle_base": "MURMUR_BASE_PORT",
+    "bridge_base": "MURMUR_BRIDGE_BASE_PORT",
+    "standin_src_base": "MURMUR_STANDIN_SRC_BASE",
+    "http": "MURMUR_HTTP_PORT",
+    "linkemu": "MURMUR_LINKEMU_PORT",
+    "web": "MURMUR_WEB_PORT",
+    "tidewater": "MURMUR_TIDEWATER_PORT",
+    "sitl_instance_base": "MURMUR_SITL_INSTANCE_BASE",
+    "link_host": "MURMUR_LINK_HOST",
+}
+
 TOP_KEYS = {
     "title", "brief", "summary", "director", "todo", "world", "fleet", "contacts", "events", "policy", "duration_s",
     "rate", "at", "tidewater", "operator", "ai", "cosigner", "reveal", "seed", "ready_timeout_s", "ai_start_s",
-    "order", "step", "watch", "playbook", "storyline", "autoplay", "headless", "tutorial",
+    "order", "step", "watch", "playbook", "storyline", "autoplay", "headless", "tutorial", "areas", "ports",
 }
 # `[headless]`: what the headless simulator takes from the world (docs/HEADLESS.md, worlds); a
 # live run reads tidewater itself and ignores the table. `domain_rule`: "grid", the world's baked
@@ -207,6 +229,10 @@ class Situation:
     contacts: Path | None = None
     events: list[Path] = field(default_factory=list)
     policy: Path | None = None
+    # the operator's areas, a directory of *.geojson (the bridge's MURMUR_AREAS); None: sim/areas
+    areas: Path | None = None
+    # its own port block (`[ports]`: up.sh variable -> port), over SITUATION_PORTS
+    ports: dict[str, str] = field(default_factory=dict)
     duration_s: float = 600.0
     rate: float = 1.0
     at: str = "2026-06-14T10:00:00Z"
@@ -292,7 +318,9 @@ def _order(i: int, raw: Any, sit: Path) -> Order:
     if task not in ORDER_TASKS:
         raise SituationError(f"{sit}: order {oid!r}: task {task!r} not in {ORDER_TASKS}")
     if "vehicles" not in raw:
-        raise SituationError(f"{sit}: order {oid!r}: needs vehicles ({{callsign = ...}}, {{platform = ...}} or {{uids = [...]}})")
+        raise SituationError(
+            f"{sit}: order {oid!r}: needs vehicles ({{callsign = ...}}, {{platform = ...}}, {{uids = [...]}} or {{swarm = ...}})"
+        )
     params = {k: raw[k] for k in ("center", "radius_m", "route", "target", "reserve_pct", "duration_s") if k in raw}
     if task == "orbit":
         if not _lonlat(params.get("center")) or not isinstance(params.get("radius_m"), (int, float)) or params["radius_m"] <= 0:
@@ -532,6 +560,20 @@ def load_situation(path_or_name: str | Path) -> Situation:
         raise SituationError(f"{path}: events is a file or a list of files")
     sit.events = [_path(e, base, "events", path) for e in events]
     sit.policy = _path(raw.get("policy", "sim/policy.toml"), base, "policy", path)
+    if "areas" in raw:
+        sit.areas = _path(raw["areas"], base, "areas", path)
+        if not sit.areas.is_dir() or not any(sit.areas.glob("*.geojson")):
+            raise SituationError(f"{path}: areas is a directory of *.geojson (the bridge's MURMUR_AREAS)")
+    ports = _table(raw.get("ports"), "[ports]", path)
+    if set(ports) - set(PORT_KEYS):
+        raise SituationError(f"{path}: [ports] takes {sorted(PORT_KEYS)}, not {sorted(set(ports) - set(PORT_KEYS))}")
+    for k, v in ports.items():
+        if k == "link_host":
+            if not isinstance(v, str) or not re.fullmatch(r"127(\.\d{1,3}){3}", v):
+                raise SituationError(f"{path}: [ports] link_host is a loopback address (127.x.y.z), not {v!r}")
+        elif isinstance(v, bool) or not isinstance(v, int) or not 0 < v < 65536:
+            raise SituationError(f"{path}: [ports] {k} is a port number, not {v!r}")
+    sit.ports = {PORT_KEYS[k]: str(v) for k, v in ports.items()}
     sit.duration_s = _num(raw.get("duration_s", 600), "duration_s", path)
     if not sit.duration_s > 0:
         raise SituationError(f"{path}: duration_s must be > 0")
@@ -651,7 +693,19 @@ def _planned_fleet(fleet: Path) -> list[dict[str, Any]]:
     return vehicles
 
 
+def swarm_uids(sel: Any, vehicles: list[dict[str, Any]]) -> list[int] | None:
+    """`{swarm = "<id>"}`: the uids of that swarm's members as the fleet plans them (sim/swarm.py;
+    every member, in uid order), so an opening order goes to the whole swarm as one intent. None
+    for any other selector."""
+    if not (isinstance(sel, dict) and set(sel) == {"swarm"}):
+        return None
+    return [int(v["uid"]) for v in vehicles if v.get("swarm") == sel["swarm"]]
+
+
 def _select_planned(sel: Any, vehicles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    swarm = swarm_uids(sel, vehicles)
+    if swarm is not None:
+        return [v for v in vehicles if v["uid"] in set(swarm)]
     if isinstance(sel, dict) and "uids" in sel:
         want = {int(u) for u in sel["uids"]}
         return [v for v in vehicles if v["uid"] in want]
@@ -1003,22 +1057,24 @@ def brief_text(sit: Situation) -> str:
 # ---- the stack's ports -----------------------------------------------------------------------
 
 
-def situation_env(env: dict[str, str]) -> dict[str, str]:
+def situation_env(env: dict[str, str], sit: Situation | None = None) -> dict[str, str]:
     """The environment with the situation's port block filled in where a `MURMUR_*` port
-    variable is not set (each one set overrides its port)."""
+    variable is not set (each one set overrides its port): the situation's own `[ports]` where it
+    names them, else the common block (SITUATION_PORTS)."""
     out = dict(env)
-    for k, v in SITUATION_PORTS.items():
+    block = {**SITUATION_PORTS, **(sit.ports if sit is not None else {})}
+    for k, v in block.items():
         if not (out.get(k) or "").strip():
             out[k] = v
     return out
 
 
-def stack_ports(env: dict[str, str]) -> dict[str, int]:
+def stack_ports(env: dict[str, str], sit: Situation | None = None) -> dict[str, int]:
     """The ports `scripts/up.sh` will use, from the same variables (the situation's block
-    where one is not set, `situation_env`)."""
-    env = situation_env(env)
+    where one is not set, `situation_env`). `standin_src_base` only when one is set."""
+    env = situation_env(env, sit)
     base = int(env["MURMUR_BASE_PORT"])
-    return {
+    out = {
         "vehicle_base": base,
         "bridge_base": int(env.get("MURMUR_BRIDGE_BASE_PORT") or base + 1000),
         "http": int(env["MURMUR_HTTP_PORT"]),
@@ -1027,6 +1083,17 @@ def stack_ports(env: dict[str, str]) -> dict[str, int]:
         "tidewater": int(env["MURMUR_TIDEWATER_PORT"]),
         "sitl_instance_base": int(env["MURMUR_SITL_INSTANCE_BASE"]),
     }
+    if (env.get("MURMUR_STANDIN_SRC_BASE") or "").strip():
+        out["standin_src_base"] = int(env["MURMUR_STANDIN_SRC_BASE"])
+    return out
+
+
+# the UDP ranges a stack takes, one port per vehicle from each base (`stack_ports`' keys)
+UDP_RANGES = (
+    ("vehicle_base", "MURMUR_BASE_PORT"),
+    ("bridge_base", "MURMUR_BRIDGE_BASE_PORT"),
+    ("standin_src_base", "MURMUR_STANDIN_SRC_BASE"),
+)
 
 
 def up_starts_console(env: dict[str, str]) -> bool:
@@ -1073,13 +1140,15 @@ def range_problems(ports: dict[str, int], vehicles: int) -> list[str]:
     fleet larger than the gap between their bases), or one reaches into the evaluation's block."""
     out: list[str] = []
     n = max(1, vehicles)
-    vb, bb = ports["vehicle_base"], ports["bridge_base"]
-    if abs(bb - vb) < n:
-        out.append(
-            f"{vehicles} vehicles do not fit: the vehicle range {vb}-{vb + n - 1} and the bridge range {bb}-{bb + n - 1} "
-            "overlap (MURMUR_BASE_PORT, MURMUR_BRIDGE_BASE_PORT)"
-        )
-    for name, base in (("MURMUR_BASE_PORT", vb), ("MURMUR_BRIDGE_BASE_PORT", bb)):
+    ranges = [(var, ports[key]) for key, var in UDP_RANGES if key in ports]
+    for i, (va, a) in enumerate(ranges):
+        for vb_, b in ranges[i + 1:]:
+            if abs(b - a) < n:
+                out.append(
+                    f"{vehicles} vehicles do not fit: the {va} range {a}-{a + n - 1} and the {vb_} range {b}-{b + n - 1} "
+                    "overlap"
+                )
+    for name, base in ranges:
         if base < EVAL_UDP.stop and base + n > EVAL_UDP.start:
             out.append(f"{name} range {base}-{base + n - 1} reaches into the evaluation's UDP {EVAL_UDP.start}-{EVAL_UDP.stop - 1}")
     return out
@@ -1105,7 +1174,9 @@ def port_problems(ports: dict[str, int], vehicles: int, sitl: int, root: Path = 
     ):
         if key not in skip and tcp_answers(ports[key]):
             out.append(f"something answers on {var}={ports[key]}")
-    for key, var in (("vehicle_base", "MURMUR_BASE_PORT"), ("bridge_base", "MURMUR_BRIDGE_BASE_PORT")):
+    for key, var in UDP_RANGES:
+        if key not in ports:
+            continue
         taken = [p for p in range(ports[key], ports[key] + max(1, vehicles)) if udp_taken(p)]
         if taken:
             out.append(f"UDP {', '.join(str(p) for p in taken[:5])}{' ...' if len(taken) > 5 else ''} in the {var} range ({ports[key]}+{vehicles}) is held")

@@ -1,0 +1,37 @@
+# Saturation's jammer (sim/situations/swarm-saturation.toml): RF jamming over the Gate's north
+# approach for three minutes, from 4:00 to 7:00 on the situation's clock (the link emulator's,
+# `at_s` seconds since it started; format in sim/link-events/golden-gate.toml and sim/links.toml).
+#
+# The circle, 1.8 km round a point off Fort Baker, takes in the three picket rings there
+# (PICKET-1 over Lime Point, PICKET-7 off the Sausalito shore, PICKET-8 off Yellow Bluff: 300
+# X10s on the mesh radio) and the Sausalito shore PICKET-7 launched from, so its failsafe takes it
+# home into the jam, while PICKET-1's and PICKET-8's take them home to Crissy Field, out of it. No
+# other swarm's station is inside it (eval/tests/test_swarm.py checks the rings). Radio links only, one event
+# per jammable class, as golden-gate.toml's jammer: a tether or an acoustic modem is not jammed by
+# RF, and a SATCOM terminal looking up loses half (a GUESS), which matters only for a USV passing
+# through.
+#
+# RF only, no GNSS jammer: a GNSS jam takes a stand-in's fix and its EKF failsafe lands a copter
+# for good (sim/events/golden-gate-gnss.toml), while a lost link starts the GCS failsafe (10 s on
+# the mesh profile, then RTL), which the operator can see and undo once the link is back.
+[[event]]
+name = "jammer over the Gate's north approach (mesh)"
+at_s = 240
+duration_s = 180
+class = "mesh"
+circle = { lat = 37.8470, lon = -122.4720, radius_m = 1800 }
+
+[[event]]
+name = "jammer over the Gate's north approach (LOS)"
+at_s = 240
+duration_s = 180
+class = "los"
+circle = { lat = 37.8470, lon = -122.4720, radius_m = 1800 }
+
+[[event]]
+name = "jammer over the Gate's north approach (SATCOM)"
+at_s = 240
+duration_s = 180
+class = "satcom"
+circle = { lat = 37.8470, lon = -122.4720, radius_m = 1800 }
+loss = 0.5

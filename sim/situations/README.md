@@ -27,7 +27,9 @@ tidewater 9270, SITL instances from 160 (`SITUATION_PORTS` in `eval/situation.py
 `scripts/up.sh` port variable (`MURMUR_BASE_PORT`, `MURMUR_HTTP_PORT` and the rest) overrides its
 port; an exported `MURMUR_TIDEWATER_URL` is not passed on (the situation's tidewater runs on its
 own port). Each UDP range holds up to the gap between the two bases (1000 vehicles in the
-block): a larger fleet, or a range reaching into the evaluation's block, is refused. The fresh
+block): a larger fleet, or a range reaching into the evaluation's block, is refused. A situation
+too large for the block names its own (`[ports]`, below; Saturation's 3,602 vehicles), which the
+runner and the menu both use. The fresh
 station deletes only pointers that name a situation's log (`situation-*`): if the HTTP port's
 `.last-run-<port>` or `.resume-<port>.json` names any other log (an exported `MURMUR_HTTP_PORT`
 that is another stack's), the runner refuses to start and says so. The runner prints the console's address (`http://127.0.0.1:5673` by default); the
@@ -48,6 +50,7 @@ scripted operators, the summary), then the stack, as `make down` does.
 | `harbor-watch.toml` | runs | Four of ours on station at the Golden Gate, normal traffic, and an unknown fast boat without AIS that comes in from the west and holds near the bridge. The AI should notice it and propose a sensor orbit; the watch policy puts that in front of the operator. Every platform has an endurance figure, so the three opening orders go out by policy. 12 minutes at rate 1. Its `[playbook]`: a 3 km watch area and the bridge as the protected point, Pumas preferred. |
 | `hostile-act-engagement.toml` | runs | The engagement decision chain end to end, on autoplay by default (`make situation NAME=hostile-act-engagement` plays out with nothing to do but watch). Two of ours (HUNTER 1, a sensor ship; REAPER 1, an armed MQ-9B high overhead), normal traffic (ferries, the shipping lane, fishing boats, a yacht), and a fast boat without AIS that runs in from the sea, holds mid-strait west of the bridge inside the engagement zone and, from about 3:30, fires on HUNTER 1 (an abstract act). Our sensors observe the act, the engine declares the boat hostile by rule (rules 9), op-auto confirms the declaration (scripted), the AI nominates an engagement with REAPER 1, op-2 and op-3 sign it (scripted), REAPER 1 is dispatched, the engine releases its missile (rules 20) some 2 km out, the strike (an abstract effect) lands some 18 s later, and the engine assesses it ("ceased"), by about 7 to 8 minutes. If no nomination stands by 5:45, the timeline nominates REAPER 1 (agent-scripted, saying so): with `AI=playbook` (no engagement play) or `AI=none` it is always the timeline. Its autoplay grants every request the AI makes (`grant_agents`), so a run shows what the AI does when it gets everything it asks for; the engine's checks and the policy's tiers are the shipped ones. 12 minutes at rate 1. |
 | `tutorial.toml` | runs | The guided tutorial (`tutorial = true`): hostile-act-engagement's platforms, policy and engine with the dead time cut out (`sim/scenarios/tutorial.toml`: the fast boat starts 800 m short of its holding point and holds from about 1:00, and fires an ATGM-class missile at HUNTER 1 from about 1:20 and every 90 s to the end, so the person never waits long for an attack (the missile is modelled: our sensors may see its launch, the missile in flight and its strike, docs/OPPONENT-WEAPONS.md); the traffic that would reach the boat within 20 minutes is moved further out or left out), by day (10:00 local, not 03:00) with HUNTER 1 patrolling 0.9 to 1.2 km from the boat just west of the bridge (`sim/fleets/tutorial.toml`), so its camera identifies the boat at 0.87 or more and the nomination's target-identity check (0.60) passes with room to spare, not by luck as from 2 km by night (`sim/fleets/tutorial.toml` gives the measurements); the person live with no AI and `cosigner = "scripted-pair"`. The console's coach card (`web/src/Tutorial.tsx`, `web/src/tutorial.ts`) walks them through it and advances on what the bridge shows: the map and Tracks, the attack (when and how we knew: the launch, the missile in flight, the strike, the warning time) and the rule declaration, their confirmation in Review, their nomination of REAPER 1 in the form (saying what a target-identity block means and what clears it, should one come), op-2's and op-3's signatures, the release, the flight and the assessment (about 8 minutes from Start for a person reading at a normal pace). Its modes are fixed: the runner refuses `OPERATOR`, `AI`, `COSIGNER` and `REVEAL`. The menu offers it at the top, apart from the list, glowing until it has been started once in that browser. 20 minutes at rate 1. |
+| `swarm-saturation.toml` | runs | One operator over 3,602 stand-ins in 37 swarms at the Golden Gate (`sim/fleets/swarm-saturation.toml`, `[[swarm]]` tables): 17 picket rings of X10-class quadcopters, 10 search swarms of Puma-class fixed wings on lanes over the inner Gulf of the Farallones, a relay chain of 300 more Pumas flying back and forth along the Presidio shore and out to sea (a relay in role and place only: the link emulator links every vehicle to the ground station directly), 2 swarms of Saildrones and 3 of Corsair-class USVs, 100 REMUS-class AUVs under the bridge, and the 2 armed MQ-9Bs in reserve, which get no opening order. One opening order per swarm, to all its members as one intent (`vehicles = { swarm = ... }`). RF jamming over the Gate's north approach from 4:00 to 7:00 takes the links of three picket rings (300 X10s, whose failsafe sends them home); 500 hostile quadcopters in five swarms (`sim/scenarios/swarm-saturation.toml`, written by `scripts/threat_swarms.py`): a recon swarm probing the Gate's rings, a wave of 180 crossing the bridge at about 6:00, a decoy swarm circling over the jammed sector at the same time, and two attack swarms coming down on our surface groups; from about 10:00 one quadcopter the recon swarm left hovering in the engagement zone fires on a USV of SURFACE-3. The person confirms the engine's rule declaration and decides whether to nominate the reserve on that one small air track (scripted cosigner), which the keep-out allows only once every other swarm is 7 km off (about 11:30; rules 14 counts an undeclared aircraft anywhere it could reach); nothing scripted nominates, so on autoplay the chain stops at op-auto's confirmation. Live, no AI by default, no `[playbook]` (its plays look with one free sensor at a time, and every sensor here is tasked in a swarm). Its own areas (the operating area widened over the gulf) and its own port block (`[ports]`: vehicles UDP 16000+, bridge UDP 29000+, the stand-ins' sources UDP 5100+, all on 127.0.0.2, bridge 9365, link emulator 9366, console 5773, tidewater 9370). 15 minutes at rate 1. |
 | `fault-drill.toml` | headless only | Every fault of the headless simulator once on a timeline (docs/HEADLESS.md section 17): a current, a GNSS jammer over Crissy Field (the UGV loses its fix and holds), a battery drop and a heavier draw on PUMA 1, a spoofer on HUNTER 1, HUNTER 1's autopilot rebooting, a link cut, a timeline proposal, a stopped UGV. Its fleet is a boat, a Puma, a drifting buoy and a UGV. `.venv/bin/python -m eval.headless.batch --situation fault-drill --seeds 1-10`; the live runner refuses it. |
 | `golden-gate-v3-watch.toml` | headless only | World v3's Golden Gate (`sim/worlds/golden-gate-v3.toml`) on an ordinary day, nothing scripted: 20 of ours in every domain (air, surface, subsurface, ground, the antenna tracker), the world's traffic in every domain under the physical sensing model, the world's land/water grid and currents, each episode's conditions drawn from the world's ranges by its seed (day or night, fog to clear, wind, sea state). The base world v3's families build on at the Gate. 30 minutes. |
 | `san-diego-watch.toml` | headless only | The same in San Diego (`sim/worlds/san-diego.toml`): 24 of ours, the bay entrance, North Island, the bay and the approaches, its traffic (the Coronado ferry, Navy ships, airliners on the airport's approach, ...). 30 minutes. |
@@ -259,6 +262,8 @@ contacts = "sim/scenarios/harbor-watch.toml"  # crates/murmur-contacts format; o
                                               # world's traffic, if it names one; "" for none)
 events = []                                   # link and GNSS event files, merged; optional
 policy = "sim/situations/policies/watch.toml" # default sim/policy.toml
+areas = "sim/situations/areas/swarm-saturation"   # optional: a directory of *.geojson, the bridge's
+                                              # MURMUR_AREAS (default sim/areas)
 tidewater = "golden-gate-2026-06"             # a scenario in tidewater/scenarios, a path, or "none"
 at = "2026-06-14T10:00:00Z"                   # the scenario clock (RFC 3339)
 rate = 1
@@ -275,6 +280,18 @@ tutorial = false                              # true: the console's guided walk-
                                               # live and blinded, its modes fixed (no overrides), and
                                               # the menu offers it apart, at the top
 
+[ports]                                       # optional: its own port block in place of the common
+vehicle_base = 16000                          # one (a fleet the common block's 1,000-port ranges
+bridge_base = 29000                           # can't carry); each key one scripts/up.sh variable:
+standin_src_base = 5100                      # MURMUR_BASE_PORT, MURMUR_BRIDGE_BASE_PORT,
+http = 9365                                   # MURMUR_STANDIN_SRC_BASE (the stand-ins' fixed source
+linkemu = 9366                                # ports), MURMUR_HTTP_PORT, MURMUR_LINKEMU_PORT,
+web = 5773                                    # MURMUR_WEB_PORT, MURMUR_TIDEWATER_PORT,
+tidewater = 9370                              # MURMUR_SITL_INSTANCE_BASE; one left out is the common
+sitl_instance_base = 200                      # block's, an exported variable overrides either
+link_host = "127.0.0.2"                       # not a port: MURMUR_LINK_HOST, the stack's UDP links
+                                              # on another loopback address (WSL: off loopback0)
+
 [headless]                                    # the headless simulator only (docs/HEADLESS.md 17)
 domain_rule = "grid"                          # grid: the world's land/water grid answers the domain
                                               # rule (default); not_evaluated: no terrain source
@@ -288,7 +305,8 @@ conditions = "none"                           # world: each episode's start, vis
                                               # (never for an armed platform; see above)
 id = "gate-patrol"
 task = "patrol"                               # orbit | patrol | hold | rtl | track
-vehicles = { callsign = "HUNTER 1" }          # {callsign}, {platform (, index, all)}, {uids = [..]}
+vehicles = { callsign = "HUNTER 1" }          # {callsign}, {platform (, index, all)}, {uids = [..]},
+                                              # {swarm = "PICKET-1"}: all its members, one intent
 route = [[-122.4720, 37.8135], [-122.4720, 37.8250]]   # orbit: center = [lon, lat], radius_m
 note = "Patrol the channel east of the bridge"          # the order's rationale in the log
 
@@ -396,8 +414,11 @@ environment, its process group, the preflight, the port block and check, the aud
 watch policy, who acts as whom and the opening orders' dry run, the scripted signers against the
 bridge's shapes, the scripted pair, concurrent timeline proposals, the hostile act situation's
 geometry against the areas and keep-outs, the tutorial's fixed modes and act timing, the grant and
-confirm settings, the engagement chain read from the audit log, the fallback nomination); the
-walk-through's steps in `node web/src/tutorial.check.ts`; the bridge's side in `cargo test -p
+confirm settings, the engagement chain read from the audit log, the fallback nomination); Saturation's
+fleet, orders and threat in `eval/tests/test_swarm.py` (spawns on the baked grids, every way clear of
+the no-go areas and in water where it must be, every station clear of the strike point, the
+jammer's three rings, the swarms 7 km off the shooter by 11:30, the threat file regenerated byte for
+byte; the console's swarm views in `node web/src/swarms.check.ts`); the walk-through's steps in `node web/src/tutorial.check.ts`; the bridge's side in `cargo test -p
 murmur-bridge situation` (blinding, the operator's dry run, what an agent can read).
 
 ## Fog watch

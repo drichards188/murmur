@@ -36,7 +36,7 @@ def test_the_open_world_comes_first_then_the_situations(menu):
     files = {p.stem for p in S.SITUATIONS.glob("*.toml")}
     assert {e["id"] for e in entries[1:]} == files
     runnable = [e["id"] for e in entries[1:] if e["runnable"]]
-    assert runnable == ["fog-watch", "harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition", "morning-harbor-watch", "tutorial"]
+    assert runnable == ["fog-watch", "harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition", "morning-harbor-watch", "swarm-saturation", "tutorial"]
     assert [e["id"] for e in entries if e.get("tutorial")] == ["tutorial"], "one tutorial, which the menu offers apart"
     assert sorted(loaded) == runnable
     # every runnable one before the rest, each of the rest saying why not
@@ -94,6 +94,16 @@ def test_a_situation_runs_as_make_situation_does():
     env = S.situation_env(L.launch_env({"PATH": "/bin"}, 5173))
     ports = L.stack_ports_for(choice, env)
     assert (ports["http"], ports["web"], ports["vehicle_base"], ports["sitl_instance_base"]) == (9265, 5173, 33000, 160)
+    # a situation with its own block ([ports]: Saturation's 3,602 vehicles) runs on it, the console
+    # still the launcher's
+    sat = S.load_situation("swarm-saturation")
+    env = S.situation_env(L.launch_env({"PATH": "/bin"}, 5173), sat)
+    ports = L.stack_ports_for(L.Choice("swarm-saturation", "situation", operator="live", ai="none"), env)
+    assert (ports["http"], ports["web"], ports["vehicle_base"], ports["bridge_base"], ports["standin_src_base"]) == (9365, 5173, 16000, 29000, 5100)
+    assert S.range_problems(ports, 3602) == []
+    assert env["MURMUR_LINK_HOST"] == "127.0.0.2"           # its links on lo, off WSL's loopback0
+    assert "MURMUR_LINK_HOST" not in S.situation_env({"PATH": "/bin"})
+    assert any("MURMUR_STANDIN_SRC_BASE" in p for p in S.range_problems({**ports, "standin_src_base": 18000}, 3602))
     with pytest.raises(L.BadRequest):
         L.command(L.Choice("--help", "situation", operator="live", ai="none"))
     with pytest.raises(L.BadRequest):

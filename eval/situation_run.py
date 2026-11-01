@@ -42,6 +42,7 @@ import datetime as dt
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -95,6 +96,7 @@ from .situation import (
     stack_ports,
     status_doc,
     step_text,
+    swarm_uids,
     up_starts_console,
 )
 from .stack import _swarm
@@ -173,6 +175,26 @@ async def operator_dry_run(bridge: Bridge, body: dict[str, Any], operator: str) 
     policy decision now, and whether the submission would be its own approval. Nothing is
     created or logged. Raises BridgeError."""
     return await asyncio.to_thread(bridge.post, "/api/intents/preview", body, operator)
+
+
+_STALE = re.compile(r"cannot evaluate: .*(s old \(limit|no \w+ (status|level)? ?reported)")
+
+
+def stale_only(preview: dict[str, Any]) -> bool:
+    """A dry run refused only because some vehicle's facts were too old to judge ("cannot
+    evaluate: navigation status is 12 s old"): with a hundred vehicles on one order, one late
+    report refuses the whole order, and the next report clears it. Worth asking again."""
+    if preview.get("would_reach") != "rejected":
+        return False
+    bad = [c for c in preview.get("checks") or [] if c.get("outcome") != "pass"]
+    return bool(bad) and all(_STALE.search(str(c.get("detail") or "")) for c in bad)
+
+
+# an order to a swarm: the dry run's attempts while it fails only on stale facts, and the wait
+# between them; and how long one request to the bridge may take (a hundred vehicles' checks)
+STALE_RETRIES = 6
+STALE_RETRY_S = 5.0
+SWARM_ORDER_TIMEOUT_S = 60.0
 
 
 def submits_itself(preview: dict[str, Any]) -> bool:
@@ -432,9 +454,9 @@ class Runner:
     ):
         self.sit = sit
         self.modes = modes
-        self.env = situation_env(env)
+        self.env = situation_env(env, sit)
         self.preflight = preflight
-        self.ports = stack_ports(self.env)
+        self.ports = stack_ports(self.env, sit)
         self.run_id = f"situation-{sit.name}-{utc_stamp()}"
         self.out = out_dir or REPO / "logs" / "situations" / self.run_id
         self.out.mkdir(parents=True, exist_ok=True)
@@ -470,6 +492,7 @@ class Runner:
         # the engagement chain as the audit log has it (acts, declarations, nominations,
         # signatures, the effect, the assessment), for the panel, situation.jsonl and the summary
         planned, _ = plan_counts(sit.fleet) if sit.fleet else ([], 0)
+        self.planned = planned
         self.chain = EngagementChain({str(v["uid"]): v["callsign"] for v in planned})
         self.publish_errors = 0
         self.stop = asyncio.Event()
@@ -700,6 +723,8 @@ class Runner:
                 "PYTHONUNBUFFERED": "1",
             }
         )
+        if sit.areas:
+            env["MURMUR_AREAS"] = str(sit.areas)
         if sit.contacts:
             env["MURMUR_CONTACTS"] = str(sit.contacts)
         if sit.tidewater:
@@ -774,14 +799,27 @@ class Runner:
         the intent is cancelled if it has not gone out."""
         rec: dict[str, Any] = {"id": o.id, "task": o.task}
         try:
-            chosen = select_vehicles(o.vehicles, vehicles)
+            # a swarm: all its members as the fleet plans them (the bridge's identities may not say)
+            members = swarm_uids(o.vehicles, self.planned)
+            if members is not None:
+                rec["swarm"] = o.vehicles["swarm"]
+            chosen = select_vehicles(o.vehicles if members is None else {"uids": members}, vehicles)
             if not chosen:
                 raise SituationError(f"no vehicle matches {o.vehicles!r}")
             rec["vehicles"] = [(v.get("identity") or {}).get("callsign") or str(v["uid"]) for v in chosen]
             req = {"task": o.task, "uids": [v["uid"] for v in chosen], **dict(o.params)}
             note = o.note or f"opening order of situation {self.sit.name}"
             body = _rest_body(req, labelled(SCRIPTED_SETUP, note))
-            preview = await operator_dry_run(self.bridge, body, SETUP_OPERATOR)
+            # a swarm's order: its hundred vehicles' checks take the bridge longer, and one late
+            # report among them refuses it for a moment (stale_only): ask again before routing it
+            bridge = Bridge(self.bridge_url, timeout=SWARM_ORDER_TIMEOUT_S) if members is not None else self.bridge
+            preview = await operator_dry_run(bridge, body, SETUP_OPERATOR)
+            for _ in range(STALE_RETRIES if members is not None else 0):
+                if not stale_only(preview) or self.stop.is_set():
+                    break
+                rec["stale_retries"] = rec.get("stale_retries", 0) + 1
+                await asyncio.sleep(STALE_RETRY_S)
+                preview = await operator_dry_run(bridge, body, SETUP_OPERATOR)
             dry = dry_run_summary(preview)
             rec["dry_run"] = dry
             if not submits_itself(preview):
@@ -793,7 +831,7 @@ class Runner:
                 if out.get("refused"):
                     rec["error"] = str(out["refused"])
             else:
-                out = await asyncio.to_thread(self.bridge.submit, body, SETUP_OPERATOR)
+                out = await asyncio.to_thread(bridge.submit, body, SETUP_OPERATOR)
                 intent = out.get("intent") or {}
                 rec.update(by=SETUP_OPERATOR, intent_id=intent.get("id"), state=intent.get("state"), dispatched=bool(out.get("dispatched")))
                 ap = self_authorized(out, self.scripted_ids)
@@ -823,7 +861,10 @@ class Runner:
             rec = await self.issue_order(o, vehicles, setup_agent)
             self.orders.append(rec)
             self.record("order", **rec)
-            what = f"opening order {o.id}: {o.task} for {', '.join(rec.get('vehicles') or ['?'])}"
+            names = rec.get("vehicles") or ["?"]
+            if isinstance(o.vehicles, dict) and "swarm" in o.vehicles:
+                names = [f"swarm {o.vehicles['swarm']} ({len(rec.get('vehicles') or [])} vehicles)"]
+            what = f"opening order {o.id}: {o.task} for {', '.join(names)}"
             how = f" by {rec['by']} (scripted)" if rec.get("by") else ""
             waits = ""
             if rec.get("routed") and rec.get("state") == "pending_approval":
@@ -1143,7 +1184,9 @@ class Runner:
             now = intents.get(o.get("intent_id"), {}).get("state")
             by = f" by {o['by']}" if o.get("by") else ""
             routed = f" [{o['routed']}]" if o.get("routed") else ""
-            lines.append(f"  opening order {o['id']} ({o['task']} for {', '.join(o.get('vehicles') or ['?'])}){by}: intent {o.get('intent_id')} {now or o.get('state') or o.get('error')}{routed}")
+            # a swarm's order by its swarm, not a hundred callsigns
+            names = f"swarm {o['swarm']} ({len(o.get('vehicles') or [])} vehicles)" if o.get("swarm") else ", ".join(o.get("vehicles") or ["?"])
+            lines.append(f"  opening order {o['id']} ({o['task']} for {names}){by}: intent {o.get('intent_id')} {now or o.get('state') or o.get('error')}{routed}")
         lines.append(
             "  decisions in the audit log by: "
             + (", ".join(f"{k} {n}" for k, n in sorted(decided.items())) or "nobody")
@@ -1215,7 +1258,7 @@ def preflight(sit: Situation, modes: dict[str, Any], env: dict[str, str]) -> dic
             "logged as dev, never evidence about people). Unset MURMUR_AUTH for a situation."
         )
     pf = ai_preflight(modes["ai"])
-    ports = stack_ports(env)
+    ports = stack_ports(env, sit)
     vehicles, sitl = plan_counts(sit.fleet)  # type: ignore[arg-type]
     # the console's port is the launcher's own when it started this run (MURMUR_WEB=0)
     problems = port_problems(ports, len(vehicles), sitl, skip=() if up_starts_console(env) else ("web",))
@@ -1230,7 +1273,9 @@ def preflight(sit: Situation, modes: dict[str, Any], env: dict[str, str]) -> dic
         raise SituationError("refusing to start: " + "; ".join(pointers) + ".")
     eph = ephemeral_range()
     if eph:
-        for key in ("vehicle_base", "bridge_base"):
+        for key in ("vehicle_base", "bridge_base", "standin_src_base"):
+            if key not in ports:
+                continue
             lo, hi = ports[key], ports[key] + len(vehicles)
             if lo <= eph[1] and hi >= eph[0]:
                 say(f"warning: {key} {lo}-{hi} reaches into the ephemeral port range {eph[0]}-{eph[1]} (collisions at random; CLAUDE.md)")
@@ -1253,7 +1298,7 @@ def main(argv: list[str] | None = None) -> int:
         if sit.todo:
             raise SituationError(f"{sit.name} is a stub (todo = true): only its title and brief are written yet")
         modes = resolve_modes(sit, args.operator, args.ai, args.cosigner, None if args.reveal is None else args.reveal == "1")
-        env = situation_env(dict(os.environ))
+        env = situation_env(dict(os.environ), sit)
         pf = preflight(sit, modes, env)
     except SituationError as e:
         print(f"situation: {e}", file=sys.stderr)

@@ -1,0 +1,595 @@
+# Saturation (sim/situations/swarm-saturation.toml): 3,602 stand-ins in 37 swarms at the Golden
+# Gate, one operator. Each [[swarm]] table is one swarm and its members (sim/swarm.py, "swarms"):
+# uids follow the swarms in this order, each swarm's members in its layout's order. Every member
+# is a stand-in (`sim = "standin"`), so the whole force runs in one engine process.
+#
+# What each swarm is, and why that type (the figures are sim/platforms.toml's and sim/links.toml's;
+# the situation runs 15 minutes, with a minute or two of setup before it):
+# - PICKET-1 to -17, 1,700 X10-class quadcopters. Why: a small unarmed ISR copter (EO/IR 1.5 km),
+#   endurance_h 0.65 (39 min: 15 min on station plus the transit leaves the policy's 20 % reserve),
+#   cruise 12 m/s, and it hovers on a ring. Its link is the mesh class: 5 km clean, 12 km at most
+#   from the ground station at Crissy Field, and blocked by terrain: the bridge's predicted
+#   coverage (/api/links/coverage) reaches the strait and the bay north of the city, nothing
+#   south of the Presidio's hills. So every ring is over the strait or the bay, inside that
+#   coverage at 100 m, and every launch field inside it at the ground; a ring the radio does not
+#   reach would never hear its order. Not the FPV strike quadcopter: armed (and 9 min of
+#   endurance_h 0.15), and a script may not order an armed platform. Copters start on the ground,
+#   so each picket launches from a flat field on land (a block 8 m apart), at the baked grid's
+#   height there (eval/tests/test_swarm.py checks it).
+# - SEARCH-1 to -10, 1,000 Puma 3 AE-class fixed wings. Why: EO/IR 4 km, cruise 20 m/s to cover a
+#   lane, endurance_h 2.5, and the LOS radio, the small-UAS link that reaches furthest (15 km
+#   clean, 25 km at most): the lanes over the inner Gulf of the Farallones are 9 to 17 km west of
+#   the ground station. They start aloft over the sea along their lanes, 1,000 to 1,300 m up, and
+#   fly them from 800 m: below about 600 m the Presidio's and Lands End's hills hide the gulf from
+#   the ground station (the predicted coverage). Real Pumas fly far lower; with one ground station
+#   at Crissy Field, height is what keeps them in reach (the relay the chain stands for would).
+# - RELAY-1 to -3, 300 more Pumas flying a chain along the Presidio shore and out over the sea
+#   toward the lanes, back and forth along it (a patrol), from 800 m. Why:
+#   a relay chain is a line of small UAS, each holding long enough (endurance_h 2.5 against 15
+#   minutes) on the radio that reaches furthest (LOS, above), launched aloft like the search
+#   swarms. Not airships: no force fields them in hundreds. Not X10s: a copter starts on the
+#   ground and a hold keeps it there, and the mesh class ends 12 km out. What the chain does not
+#   do: the link emulator (crates/murmur-linkemu, sim/links.toml) links every vehicle straight to
+#   the ground station and carries no vehicle's traffic through another, whatever its profile, so
+#   the chain is a relay in role and place only, and the search lanes stay inside the LOS radio's
+#   own reach.
+# - SURFACE-1 and -2, 200 Saildrone Explorer-class USVs. Why: unarmed, wind-powered (2 m/s,
+#   endurance_h 8760), SATCOM (Starlink), the ocean picket type: rings at sea off Ocean Beach and
+#   off Point Bonita. SURFACE-3 to -5, 300 Corsair-class USVs. Why: unarmed, EO/IR 8 km, AIS and
+#   ESM, 8 m/s, endurance_h 64, SATCOM: two rings in the strait and the central bay, and a lane
+#   north of Alcatraz. Not Magura V5s: armed. They start at sea in blocks 30 m apart.
+# - UNDERSEA-1, 100 REMUS 600-class AUVs. Why: the catalog's survey AUV (active sonar, 2 m/s,
+#   endurance_h 24, acoustic modem with SATCOM on the surface): a ring under the bridge, where the
+#   channel is deepest. They start at the surface east of it.
+# - RESERVE, the two armed MQ-9Bs (mq9b_armed: radar, EO/IR, a Hellfire-class missile of 8 km
+#   slant range, endurance_h 35), loitering at 7,600 m off Lands End, west of the bridge so their
+#   way to the strait crosses no no-go area (as in hostile-act-engagement). No script orders them;
+#   every task for them waits for a person.
+#
+# Opening orders (one per swarm but the reserve, to all its members as one intent):
+# sim/situations/swarm-saturation.toml.
+title = "Saturation: 3,602 stand-ins in 37 swarms at the Golden Gate"
+
+# ---------------------------------------------------------------- air pickets (X10, rings)
+# Each launches from a flat field inside the mesh radio's coverage at the ground (the bridge's
+# predicted coverage, /api/links/coverage, every 250 m cell round it up: Crissy Field, the
+# Marina, Fort Mason and a spot on the Sausalito shore; south of the Presidio's hills nothing
+# on the ground reaches the ground station), its ring inside the coverage at 100 m, the way
+# there and back clear of Alcatraz (eval/tests/test_swarm.py).
+[[swarm]]
+id = "PICKET-1"
+name = "Gate north approach (Lime Point)"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # Crissy Field, by the beach
+center = { lat = 37.80908, lon = -122.46600 }
+columns = 10
+spacing_m = 8
+alt_m = 4
+
+[[swarm]]
+id = "PICKET-2"
+name = "Crissy Field west"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # Crissy Field, west
+center = { lat = 37.80672, lon = -122.46273 }
+columns = 10
+spacing_m = 8
+alt_m = 27
+
+[[swarm]]
+id = "PICKET-3"
+name = "Crissy Field east"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # Crissy Field, east
+center = { lat = 37.80700, lon = -122.44500 }
+columns = 10
+spacing_m = 8
+alt_m = 5
+
+[[swarm]]
+id = "PICKET-4"
+name = "Fort Mason"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # Fort Mason
+center = { lat = 37.80656, lon = -122.42850 }
+columns = 10
+spacing_m = 8
+alt_m = 17
+
+[[swarm]]
+id = "PICKET-5"
+name = "West of Alcatraz"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # the Marina Green
+center = { lat = 37.80700, lon = -122.43900 }
+columns = 10
+spacing_m = 8
+alt_m = 5
+
+[[swarm]]
+id = "PICKET-6"
+name = "Mid-strait, east"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # Crissy Field, middle
+center = { lat = 37.80736, lon = -122.45500 }
+columns = 10
+spacing_m = 8
+alt_m = 10
+
+[[swarm]]
+id = "PICKET-7"
+name = "Sausalito shore"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # the Sausalito shore
+center = { lat = 37.85100, lon = -122.47920 }
+columns = 10
+spacing_m = 8
+alt_m = 2
+
+[[swarm]]
+id = "PICKET-8"
+name = "Off Yellow Bluff"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # Crissy Field, west end
+center = { lat = 37.81040, lon = -122.46900 }
+columns = 10
+spacing_m = 8
+alt_m = 3
+
+[[swarm]]
+id = "PICKET-9"
+name = "Strait east of the bridge"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # Crissy Field, by the Presidio
+center = { lat = 37.80600, lon = -122.46000 }
+columns = 10
+spacing_m = 8
+alt_m = 22
+
+[[swarm]]
+id = "PICKET-10"
+name = "North of Alcatraz, west"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # the Marina Green, east
+center = { lat = 37.80700, lon = -122.43500 }
+columns = 10
+spacing_m = 8
+alt_m = 9
+
+[[swarm]]
+id = "PICKET-11"
+name = "South of Angel Island"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # the Marina Green, west
+center = { lat = 37.80700, lon = -122.44091 }
+columns = 10
+spacing_m = 8
+alt_m = 5
+
+[[swarm]]
+id = "PICKET-12"
+name = "Aquatic Park"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # Fort Mason, east
+center = { lat = 37.80656, lon = -122.42645 }
+columns = 10
+spacing_m = 8
+alt_m = 22
+
+[[swarm]]
+id = "PICKET-13"
+name = "North Beach waterfront"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # Fort Mason, south
+center = { lat = 37.80513, lon = -122.42700 }
+columns = 10
+spacing_m = 8
+alt_m = 19
+
+[[swarm]]
+id = "PICKET-14"
+name = "Toward Treasure Island"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # Crissy Field, middle
+center = { lat = 37.80564, lon = -122.45000 }
+columns = 10
+spacing_m = 8
+alt_m = 10
+
+[[swarm]]
+id = "PICKET-15"
+name = "East of Alcatraz, north"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # Fort Mason, west
+center = { lat = 37.80613, lon = -122.43018 }
+columns = 10
+spacing_m = 8
+alt_m = 15
+
+[[swarm]]
+id = "PICKET-16"
+name = "Angel Island's south shore"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # the Marina, by the harbour
+center = { lat = 37.80556, lon = -122.44000 }
+columns = 10
+spacing_m = 8
+alt_m = 7
+
+[[swarm]]
+id = "PICKET-17"
+name = "Central bay, east"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # Fort Mason, the Marina side
+center = { lat = 37.80900, lon = -122.43200 }
+columns = 10
+spacing_m = 8
+alt_m = 8
+
+# ---------------------------------------------------------------- search (Puma, lanes in the gulf)
+# Ten lanes from 37.790 to 37.850 north, 0.01 degrees (880 m) apart from -122.555 west; each
+# swarm starts aloft along its lane, 1,000 to 1,300 m up, over the sea, and flies it from 800 m:
+# lower, the hills of the Presidio and Lands End hide the gulf from the ground station's LOS radio
+# (the bridge's predicted coverage: down at 300 m, degraded at 450 m, up from 600 m). A stand-in
+# fixed wing that starts aloft glides down until its first order, hence the margin.
+[[swarm]]
+id = "SEARCH-1"
+name = "Gulf lane 1"
+role = "search"
+color = "#f2c14e"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 800
+layout = "line"
+from = { lat = 37.790, lon = -122.555 }
+to = { lat = 37.850, lon = -122.555 }
+alt_m = [1000, 1300]
+
+[[swarm]]
+id = "SEARCH-2"
+name = "Gulf lane 2"
+role = "search"
+color = "#f2c14e"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 800
+layout = "line"
+from = { lat = 37.790, lon = -122.565 }
+to = { lat = 37.850, lon = -122.565 }
+alt_m = [1000, 1300]
+
+[[swarm]]
+id = "SEARCH-3"
+name = "Gulf lane 3"
+role = "search"
+color = "#f2c14e"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 800
+layout = "line"
+from = { lat = 37.790, lon = -122.575 }
+to = { lat = 37.850, lon = -122.575 }
+alt_m = [1000, 1300]
+
+[[swarm]]
+id = "SEARCH-4"
+name = "Gulf lane 4"
+role = "search"
+color = "#f2c14e"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 800
+layout = "line"
+from = { lat = 37.790, lon = -122.585 }
+to = { lat = 37.850, lon = -122.585 }
+alt_m = [1000, 1300]
+
+[[swarm]]
+id = "SEARCH-5"
+name = "Gulf lane 5"
+role = "search"
+color = "#f2c14e"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 800
+layout = "line"
+from = { lat = 37.790, lon = -122.595 }
+to = { lat = 37.850, lon = -122.595 }
+alt_m = [1000, 1300]
+
+[[swarm]]
+id = "SEARCH-6"
+name = "Gulf lane 6"
+role = "search"
+color = "#f2c14e"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 800
+layout = "line"
+from = { lat = 37.790, lon = -122.605 }
+to = { lat = 37.850, lon = -122.605 }
+alt_m = [1000, 1300]
+
+[[swarm]]
+id = "SEARCH-7"
+name = "Gulf lane 7"
+role = "search"
+color = "#f2c14e"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 800
+layout = "line"
+from = { lat = 37.790, lon = -122.615 }
+to = { lat = 37.850, lon = -122.615 }
+alt_m = [1000, 1300]
+
+[[swarm]]
+id = "SEARCH-8"
+name = "Gulf lane 8"
+role = "search"
+color = "#f2c14e"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 800
+layout = "line"
+from = { lat = 37.790, lon = -122.625 }
+to = { lat = 37.850, lon = -122.625 }
+alt_m = [1000, 1300]
+
+[[swarm]]
+id = "SEARCH-9"
+name = "Gulf lane 9"
+role = "search"
+color = "#f2c14e"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 800
+layout = "line"
+from = { lat = 37.790, lon = -122.635 }
+to = { lat = 37.850, lon = -122.635 }
+alt_m = [1000, 1300]
+
+[[swarm]]
+id = "SEARCH-10"
+name = "Gulf lane 10"
+role = "search"
+color = "#f2c14e"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 800
+layout = "line"
+from = { lat = 37.790, lon = -122.645 }
+to = { lat = 37.850, lon = -122.645 }
+alt_m = [1000, 1300]
+
+# ---------------------------------------------------------------- relay chain (Puma, flying the chain)
+[[swarm]]
+id = "RELAY-1"
+name = "Relay chain: Presidio shore"
+role = "relay"
+color = "#c49bff"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 800
+layout = "line"
+from = { lat = 37.8040, lon = -122.4560 }
+to = { lat = 37.7860, lon = -122.5050 }
+alt_m = [1000, 1200]
+
+[[swarm]]
+id = "RELAY-2"
+name = "Relay chain: off Ocean Beach"
+role = "relay"
+color = "#c49bff"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 800
+layout = "line"
+from = { lat = 37.7950, lon = -122.5150 }
+to = { lat = 37.8000, lon = -122.5900 }
+alt_m = [1000, 1200]
+
+[[swarm]]
+id = "RELAY-3"
+name = "Relay chain: out to the lanes"
+role = "relay"
+color = "#c49bff"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 800
+layout = "line"
+from = { lat = 37.8020, lon = -122.5950 }
+to = { lat = 37.8100, lon = -122.6550 }
+alt_m = [1000, 1200]
+
+# ---------------------------------------------------------------- surface (Saildrone, Corsair)
+[[swarm]]
+id = "SURFACE-1"
+name = "Saildrones off Ocean Beach"
+role = "surface"
+color = "#4fd1c5"
+platform = "saildrone"
+count = 100
+sim = "standin"
+layout = "block"
+center = { lat = 37.7870, lon = -122.5400 }
+columns = 10
+spacing_m = 30
+
+[[swarm]]
+id = "SURFACE-2"
+name = "Saildrones off Point Bonita"
+role = "surface"
+color = "#4fd1c5"
+platform = "saildrone"
+count = 100
+sim = "standin"
+layout = "block"
+center = { lat = 37.8240, lon = -122.5400 }
+columns = 10
+spacing_m = 30
+
+[[swarm]]
+id = "SURFACE-3"
+name = "USVs in the strait, east of the bridge"
+role = "surface"
+color = "#4fd1c5"
+platform = "corsair"
+count = 100
+sim = "standin"
+layout = "block"
+center = { lat = 37.8150, lon = -122.4620 }
+columns = 10
+spacing_m = 30
+
+[[swarm]]
+id = "SURFACE-4"
+name = "USVs in the central bay"
+role = "surface"
+color = "#4fd1c5"
+platform = "corsair"
+count = 100
+sim = "standin"
+layout = "block"
+center = { lat = 37.8180, lon = -122.4450 }
+columns = 10
+spacing_m = 30
+
+[[swarm]]
+id = "SURFACE-5"
+name = "USVs north of Alcatraz"
+role = "surface"
+color = "#4fd1c5"
+platform = "corsair"
+count = 100
+sim = "standin"
+layout = "block"
+center = { lat = 37.8400, lon = -122.4400 }
+columns = 10
+spacing_m = 30
+
+# ---------------------------------------------------------------- undersea (REMUS)
+[[swarm]]
+id = "UNDERSEA-1"
+name = "AUVs under the bridge"
+role = "undersea"
+color = "#5b8cff"
+platform = "remus"
+count = 100
+sim = "standin"
+layout = "block"
+center = { lat = 37.8225, lon = -122.4690 }
+columns = 10
+spacing_m = 30
+
+# ---------------------------------------------------------------- the armed reserve (no orders)
+[[swarm]]
+id = "RESERVE"
+name = "Armed reserve"
+role = "reserve"
+color = "#ff6b6b"
+platform = "mq9b_armed"
+count = 2
+sim = "standin"
+layout = "line"
+from = { lat = 37.8000, lon = -122.5250 }
+to = { lat = 37.7900, lon = -122.5600 }
+alt_m = 7600

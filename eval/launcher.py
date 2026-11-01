@@ -536,7 +536,8 @@ class Launch:
         self.title = entry["title"]
         self.env = launch_env(dict(os.environ), launcher.console_port)
         if choice.kind == "situation":
-            self.env = situation_env(self.env)
+            # its own block when the file names one ([ports]), else the common one
+            self.env = situation_env(self.env, launcher.situations.get(choice.scenario))
         self.ports = stack_ports_for(choice, self.env)
         self.argv = command(choice)
         self.log = launcher.log_dir / f"{self.id}.log"
