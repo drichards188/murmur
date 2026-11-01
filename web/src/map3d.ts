@@ -47,6 +47,22 @@ export function drawnHeight(v: Vehicle) {
  *  and aircraft, sea-level shadows and the screen-space overlays. A stem runs from sea level to
  *  its vehicle, so it lies wholly on one side of the surface. */
 
+/** The bridge decks at their estimated height (see bridges.ts), over the water: never tinted.
+ *  MapView swaps just this layer when new decks are lifted. */
+export function bridgeDeckLayer(bridges: LiftedBridge[]) {
+  return new PathLayer<LiftedBridge>({
+    id: 'bridge-decks',
+    data: bridges,
+    getPath: (b) => b.path,
+    getColor: (b) => (b.major ? [58, 64, 74, 255] : [44, 49, 57, 255]),
+    getWidth: (b) => (b.major ? 14 : 8),
+    widthUnits: 'meters',
+    widthMinPixels: 2,
+    capRounded: true,
+    jointRounded: true,
+  })
+}
+
 /** Trails and bridge decks: nothing here moves with a glide (display smoothing, drawn.ts), so
  *  MapView builds them when the data changes and reuses them between frames. `under`: the
  *  trails of what is under water, seen through it; `over` the rest. */
@@ -67,20 +83,7 @@ export function build3dStatic(vehicles: Vehicle[], bridges: LiftedBridge[] = [])
     })
   return {
     under: [trails('trails-3d-under', trailed.filter(underWater), true)],
-    decks: [
-      // bridge decks at estimated height (see bridges.ts), over the water: never tinted
-      new PathLayer<LiftedBridge>({
-        id: 'bridge-decks',
-        data: bridges,
-        getPath: (b) => b.path,
-        getColor: (b) => (b.major ? [58, 64, 74, 255] : [44, 49, 57, 255]),
-        getWidth: (b) => (b.major ? 14 : 8),
-        widthUnits: 'meters',
-        widthMinPixels: 2,
-        capRounded: true,
-        jointRounded: true,
-      }),
-    ],
+    decks: [bridgeDeckLayer(bridges)],
     over: [trails('trails-3d', trailed.filter((v) => !underWater(v)))],
   }
 }

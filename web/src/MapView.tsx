@@ -3,13 +3,14 @@ import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import './impact.css'
 import { Layer, WebMercatorViewport, type LayersList, type PickingInfo, type Viewport } from '@deck.gl/core'
+import { TextLayer } from '@deck.gl/layers'
 import { MapboxOverlay } from '@deck.gl/mapbox'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { distanceM } from './geo'
 import { IMPACT_ANIMATION_MS, impactElement, type ImpactEvent } from './impact'
 import { mapScreen, NO_SCREEN, type MapScreen } from './aloft'
-import { BRIDGE_FILTER, liftBridges, type LiftedBridge } from './bridges'
-import { build3dGlide, build3dStatic, drawnHeight, DEM_TILES, HEIGHT_EXAGGERATION, z } from './map3d'
+import { BRIDGE_FILTER, bridgeLifter, type LiftedBridge } from './bridges'
+import { bridgeDeckLayer, build3dGlide, build3dStatic, drawnHeight, DEM_TILES, HEIGHT_EXAGGERATION, z } from './map3d'
 import { declutter } from './declutter'
 import { advanceDrawn, drawnAlt, drawnPosition, drawnPositionOf, drawnTick, glidingCount, isGliding, noteAltitudes, observeVehicles, resetDrawn, setSmoothing, snapAllDrawn } from './drawn'
 import { LAUNCH_FLASH_MS, munitionShown } from './munition'
@@ -150,6 +151,13 @@ function beamFeatures(vehicles: Vehicle[]): FC {
 }
 
 const MAX_PITCH = 85
+
+// deck.gl keeps the SDF font atlases of the last 3 font settings (fontFamily, fontWeight, size,
+// buffer) and rebuilds one from scratch when a TextLayer asks for an evicted one. The console's
+// labels use 4 (IBM Plex Mono at weights normal, 600 and 700, and the SATCOM rays' labels,
+// spaceLayers.ts), so they evicted each other: some 120 rebuilds a second while the camera
+// moved. Room for all of them, and a few to spare: the atlases are the same, only kept.
+TextLayer.fontAtlasCacheLimit = 8
 /** The camera an operator starts with: tilted enough that heights and depths read (the stems,
  *  the columns), not so far that the far side of the bay flattens into the horizon; north up,
  *  so the map reads as a chart. Top view (the button, or T) looks straight down from there. */
@@ -555,6 +563,25 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   const animated = () => munitionsFlying() || actsAnimating() || weaponsMoving()
   const pushLayers = () => overlay.current?.setProps({ layers: deckLayers() })
 
+  /** new bridge decks (bridges.current): only their layer is swapped, in the layers last built and
+   *  in the ones a glide's frames reuse */
+  const swapBridges = () => {
+    const s = staticLayers.current
+    if (!overlay.current || !s || !lastDeck.current) return pushLayers()
+    const decks = bridgeDeckLayer(bridges.current)
+    s.three = { ...s.three, decks: [decks] }
+    lastDeck.current = lastDeck.current.map((l) => (l instanceof Layer && l.id === decks.id ? decks : l))
+    overlay.current.setProps({ layers: [...lastDeck.current, ...(weatherMap.current?.layers() ?? [])] })
+  }
+  /** something drawn now follows the terrain's heights (surfaceScale): the taskings, the draft, the
+   *  space segment's drawings, the inbox preview, the predicted link, the reach rings */
+  const followsTerrain = () => {
+    const s = staticLayers.current
+    const any = (ls: LayersList | undefined): boolean =>
+      (ls ?? []).some((l) => (Array.isArray(l) ? any(l) : l instanceof Layer && (!Array.isArray(l.props.data) || l.props.data.length > 0)))
+    return any(s?.surface) || any(s?.preview) || any(s?.link) || (!!reachRef.current?.features.length && any(reachMemo.current?.layers))
+  }
+
   /** the inbox preview's transit lines start at a vehicle: that end follows the drawn position */
   const previewData = (): FC => {
     const base = previewRef.current
@@ -664,7 +691,37 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       m.fire('move')
     })
     m.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'bottom-right')
-    m.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left')
+    // The scale bar. MapLibre's control re-measures it on every move event, unprojecting two
+    // screen points through the terrain, a synchronous readPixels of its coordinates each time
+    // (3.65 ms a frame while the camera moved). It is measured here once the camera has stopped,
+    // after the frame that draws the camera there, and at most 4 times a second for the moves of a
+    // camera MapLibre does not count as moving (the follow camera's per-frame jumps, the terrain
+    // under a still camera arriving), and again when the elevation tiles have loaded: the same
+    // measure, so the same bar on a still camera.
+    const scale = new maplibregl.ScaleControl({ unit: 'metric' })
+    m.addControl(scale, 'bottom-left')
+    const measureScale = (scale as unknown as { _onMove: () => void })._onMove
+    m.off('move', measureScale)
+    let scaleQueued = false
+    const scaleWhenDrawn = () => {
+      if (scaleQueued) return
+      scaleQueued = true
+      m.once('render', () => {
+        scaleQueued = false
+        if (map.current === m && !lostRef.current) measureScale()
+      })
+    }
+    let scaleTimer: number | undefined
+    m.on('move', () => {
+      if (m.isMoving() || scaleTimer) return
+      scaleTimer = window.setTimeout(() => {
+        scaleTimer = undefined
+        scaleWhenDrawn()
+      }, 250)
+    })
+    m.on('moveend', (e: { follow?: boolean }) => {
+      if (!e.follow) scaleWhenDrawn()
+    })
 
     // murmur-s8w: a lost WebGL context took the page down (deck.gl asked the map for its
     // projection, but MapLibre drops its style on context loss). Detach deck.gl while the context
@@ -857,24 +914,39 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       reportView()
       setStyleGen((n) => n + 1)
     })
-    // re-estimate bridge decks when the camera stops or new map/terrain tiles arrive.
+    // Re-estimate the bridge decks when the camera stops or new map or terrain tiles arrive, once
+    // the camera is still. Never while it moves: tiles arrive all through a move, and each lift
+    // read the ground under every bridge vertex and pushed every layer, in chunks of 100 to 300 ms
+    // between its frames; the move's moveend asks again. The lifter keeps the decks while the
+    // bridges and the ground under them are the same (a new tile elsewhere), and new decks swap
+    // only their own layer. The drawings that follow the terrain (the taskings, the draft, the
+    // inbox preview, the predicted link, the reach rings) follow new terrain at the same moment,
+    // with every layer pushed, as before, when there are any.
     // (Not 'idle': live vehicle updates repaint the map several times a second, so it never is.)
+    const lift = bridgeLifter()
+    let demChanged = true
     let bridgeTimer: number | undefined
     const refreshBridges = () => {
       window.clearTimeout(bridgeTimer)
       bridgeTimer = window.setTimeout(() => {
-        if (!ready.current || !m.getTerrain()) return
+        if (!ready.current || !m.getTerrain() || m.isMoving()) return
         const t0 = performance.now()
-        bridges.current = liftBridges(m)
-        // and the surface drawings follow the terrain that came
-        terrainGen.current++
+        const next = lift(m)
+        const changed = next !== bridges.current
+        bridges.current = next
         if (import.meta.env.DEV) {
           const w = window as unknown as { murmurPerf: Record<string, number[]> }
           w.murmurPerf ??= {}
           ;(w.murmurPerf.liftBridges ??= []).push(performance.now() - t0)
         }
         if (import.meta.env.DEV) (window as unknown as { murmurBridges: LiftedBridge[] }).murmurBridges = bridges.current
-        pushLayers()
+        if (demChanged) {
+          demChanged = false
+          // the surface drawings follow the terrain that came
+          terrainGen.current++
+          if (followsTerrain()) return pushLayers()
+        }
+        if (changed) swapBridges()
       }, 400)
     }
     const reportView = () => {
@@ -918,6 +990,11 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       setMoved((n) => n + 1)
     })
     m.on('sourcedata', (e) => {
+      if (e.sourceId === 'dem') {
+        demChanged = true
+        // the terrain the scale bar measures through has come: measure it again
+        if (e.isSourceLoaded && !m.isMoving()) scaleWhenDrawn()
+      }
       if (e.isSourceLoaded && (e.sourceId === 'openmaptiles' || e.sourceId === 'dem')) refreshBridges()
     })
     map.current = m
@@ -933,6 +1010,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       window.removeEventListener('mouseup', onUp)
       window.clearTimeout(bridgeTimer)
       window.clearTimeout(viewTimer)
+      window.clearTimeout(scaleTimer)
       if (map.current === m) map.current = null
       if (following.current) {
         following.current = null
