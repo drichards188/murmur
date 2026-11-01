@@ -89,6 +89,11 @@ fn close() -> Option<String> {
         .map(|(k, l)| {
             let w = std::mem::take(&mut l.open);
             l.closed = Some(w);
+            (k, w)
+        })
+        // a loop's parts (`decision.follow_ops`) only in /api/stats, not in the log's line
+        .filter(|(k, _)| !k.contains('.'))
+        .map(|(k, w)| {
             let j = w.json();
             format!(
                 "{k} {}x mean {} worst {} gap {} ms",
@@ -97,6 +102,26 @@ fn close() -> Option<String> {
         })
         .collect();
     (!parts.is_empty()).then(|| parts.join("; "))
+}
+
+/// Each request's time, by route (`http./api/state`, `http./mcp`): in /api/stats only. Route
+/// names are interned once each (the routes are a fixed set).
+pub async fn http(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    static NAMES: Mutex<BTreeMap<String, &'static str>> = Mutex::new(BTreeMap::new());
+    let route = req
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map_or("other", |p| p.as_str())
+        .to_string();
+    let name = *NAMES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(route)
+        .or_insert_with_key(|r| Box::leak(format!("http.{r}").into_boxed_str()));
+    let start = Instant::now();
+    let response = next.run(req).await;
+    record(name, start, start.elapsed());
+    response
 }
 
 /// A line a minute in the bridge's log: each loop's runs, mean and worst busy time and

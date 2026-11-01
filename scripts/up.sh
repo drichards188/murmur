@@ -204,7 +204,10 @@ fi
 
 # exec in each subshell so the tracked pid is the real process and cleanup reaches it
 .venv/bin/python sim/swarm.py --base-port "$vehicle_base" --bridge-host "$link_host" "$@" > logs/sim.log 2>&1 & pids+=($!)
-env "${bridge_env[@]}" MURMUR_SIM_TOKEN="$sim_token" target/release/murmur-bridge > logs/bridge.log 2>&1 & pids+=($!)
+# two glibc malloc arenas, not one per thread: at 3,602 vehicles against 507 contacts the bridge
+# held 3.4 GB after 13 minutes with the default and 0.8 GB with two, its loops as fast
+# (docs/load-test.md); MALLOC_ARENA_MAX in the environment wins
+env "${bridge_env[@]}" MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}" MURMUR_SIM_TOKEN="$sim_token" target/release/murmur-bridge > logs/bridge.log 2>&1 & pids+=($!)
 if [ "$web" = 1 ]; then
   (cd web && exec node_modules/.bin/vite --host 127.0.0.1 --port "$web_port" --strictPort) > logs/web.log 2>&1 & pids+=($!)
   starting="swarm, bridge (:$MURMUR_HTTP_PORT) and web"

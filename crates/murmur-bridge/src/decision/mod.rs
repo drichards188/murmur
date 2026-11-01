@@ -2344,25 +2344,25 @@ impl Decision {
             let core = &mut *guard;
             // rules 16: the tracker's drops first: no decision of this tick reads a picture
             // without them
-            self.step_lost(core);
+            crate::perf::time("decision.step_lost", || self.step_lost(core));
             if let Err(e) = core.engine.expire_due() {
                 eprintln!("decision: expire: {e}");
             }
-            self.log_reboots(core);
-            self.log_vehicle_events(core);
-            self.void_lost(core);
-            self.follow_queue(core);
-            self.follow_resumed(core);
-            self.follow_ops(core);
-            self.follow_space(core);
+            crate::perf::time("decision.log_reboots", || self.log_reboots(core));
+            crate::perf::time("decision.log_vehicle_events", || self.log_vehicle_events(core));
+            crate::perf::time("decision.void_lost", || self.void_lost(core));
+            crate::perf::time("decision.follow_queue", || self.follow_queue(core));
+            crate::perf::time("decision.follow_resumed", || self.follow_resumed(core));
+            crate::perf::time("decision.follow_ops", || self.follow_ops(core));
+            crate::perf::time("decision.follow_space", || self.follow_space(core));
             // rules 9: observed acts to the engine, the weak-evidence rule, before the
             // pictures are held (they read the ledger it changes)
-            self.step_identification(core);
-            self.step_engagements(core);
+            crate::perf::time("decision.step_identification", || self.step_identification(core));
+            crate::perf::time("decision.step_engagements", || self.step_engagements(core));
             // rules 21: the identify orders' orbits follow their tracks, and their looks end
-            self.step_identify(core);
-            self.write_pointer(core);
-            self.write_fleet(core);
+            crate::perf::time("decision.step_identify", || self.step_identify(core));
+            crate::perf::time("decision.write_pointer", || self.write_pointer(core));
+            crate::perf::time("decision.write_fleet", || self.write_fleet(core));
         }
         self.publish();
     }

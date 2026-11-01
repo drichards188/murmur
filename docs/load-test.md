@@ -125,9 +125,10 @@ Each stand-in has its own UDP socket on an ephemeral port, and `net.ipv4.ip_loca
 here is 39160 to 43255: 4,096 ports for every ephemeral socket on the host. With 3,000
 stand-ins running, 3,023 of them were in use, leaving about 1,070. The bridge binds one fixed
 port per vehicle from `MURMUR_BASE_PORT` (outside that range, so it doesn't compete as long as
-`base + N` stays below 39160). So the practical ceiling is about **4,000 stand-ins per host**
+`base + N` stays below 39160). So the practical ceiling was about **4,000 stand-ins per host**
 without widening the range (not changed here; `sysctl net.ipv4.ip_local_port_range` would, or
-stand-ins could bind fixed ports like the bridge does). CPU and memory are far from limits:
+stand-ins could bind fixed ports like the bridge does; since murmur-z07i they can, and the
+emulator takes no ephemeral port: Saturation, below). CPU and memory are far from limits:
 at 3,000 the bridge used under a third of one core and the engine a sixth. The next limit
 after ports is the browser feed, 5 MB/s and an 8 MB initial state at 3,000, which would need
 viewport filtering or level of detail before 10,000 nodes.
@@ -322,3 +323,101 @@ now at the display's 60 Hz at every size measured, with no frame over 100 ms; th
 considered next (85 to 75 degrees) was not needed. At a still camera the bridge decks, labels
 and map are the same as before; the scale bar there sits where 500 m and 1 km meet, and shows
 either, before and after, as its terrain read-back varies by about 1 %.
+
+## Saturation: 3,602 drones against 507 contacts, link emulator on (murmur-z07i, 2026-11-01)
+
+What was run: Saturation's fleet (`sim/fleets/swarm-saturation.toml`, 37 swarms: 1,700 X10-class
+quadcopters, 1,300 Puma-class fixed wings, 200 Saildrones, 300 Corsair-class USVs, 100 REMUS AUVs,
+2 armed MQ-9Bs, every one a stand-in) against its threat (`sim/scenarios/swarm-saturation.toml`:
+500 `small_drone` contacts in five swarms and 7 harbour contacts, the physical sensing model with
+no terrain grid), tidewater conditions, the link emulator with the situation's jammer, in the
+situation's port block (vehicles UDP 16000+, bridge 29000+, stand-in sources 10000+, since moved
+to 5100+). The same 28-core, 12 GB WSL2 host as above, under mirrored networking, shared with
+other agents' work all afternoon (see the last part). Bridge loop figures are the bridge's own
+(`/api/stats` `loops`, `crates/murmur-bridge/src/perf.rs`): runs, mean and worst busy time and
+the longest gap between two starts, per minute. CPU is percent of one core over 60 s.
+
+**Ports.** Each stand-in had an ephemeral UDP port and each emulator link a second one: 7,200
+of the host's 4,096 for 3,600 vehicles. Now (`MURMUR_STANDIN_SRC_BASE`; the emulator answers the
+bridge from its listening port) `ss` showed 3,602 stand-in sockets on their fixed ports, 3,602
+emulator and 3,602 bridge sockets, and no ephemeral one (one, while Windows held UDP 10010). A
+UDP bind takes about 11 ms here (mirrored networking, sequential or not), so the emulator binds
+its 3,602 ports in 38 to 85 s and the bridge serves 2.5 to 3.5 minutes after `up.sh` starts.
+Stand-in sockets bound to 0.0.0.0 lost every reply past about 1,700 of them; bound to the
+loopback address (what connect's autobind takes) all answer. In the run with no orders, 3,542
+of 3,602 were navigation-ready 24 s after the bridge served and 3,543 at 113 s; the rest stayed behind terrain
+from the ground station (X10s on the ground at their launch fields, low Pumas): the emulator's
+terrain rule, not a fault.
+
+**Loopback.** 127.0.0.1 is routed through `loopback0`, a virtual NIC to Windows and back. With
+the stack's links there (and no other stack up), its queues dropped about 87,000 of 7.9 million
+packets in 6 minutes, TCP retransmitted 3.7 segments a second, a loopback HTTP request stalled up
+to 10.5 s in a 30 s probe, and truth messages reached the bridge up to 15 s apart. With
+`MURMUR_LINK_HOST=127.0.0.2` (on `lo`): no drops, no retransmits, truth at most 1.15 s apart.
+With another 3,600-node stack on 127.0.0.1 beside it, `Udp: SndbufErrors` ran at 18,000 a second.
+Every figure below is on 127.0.0.2.
+
+**Emulator.** Its SATCOM refresh propagated each constellation once per terminal: at a Bay-wide
+3,600 fleet (1,368 SATCOM terminals) it ran at 190 to 370 % continuously and its stats endpoint
+timed out. A round now propagates each constellation once for all its terminals: 22 to 24 %.
+At Saturation (502 SATCOM terminals, 44,000 to 48,000 packets a second) it averages 48 to 90 %,
+with a burst of about 5 s at 440 % once a minute: each terminal's 30-minute outage outlook,
+all due in the same round.
+
+**Bridge, fleet idle on station** (no orders), 13 minutes:
+
+| | no console | one console client (lod feed, Golden Gate view) |
+|---|---|---|
+| Sensing step (`sense`), per truth message | 99 to 117 ms mean, worst 136 to 176 | 112 ms, worst 151 |
+| Truth messages | 60 a minute, gap at most 1.16 s | 60 a minute |
+| Tracker fold / tick | 1.5 to 4.3 ms / 0.0 | 17 to 22 ms / 27 to 37 (worst 72) |
+| Decision tick | 4.5 ms at start, 47 to 84 at 13 min (alerts grow to 2,000), worst 125 | 52 to 65 ms, worst 112 |
+| Push frame | | 36 to 39 ms, worst 73, 217 to 239 a minute |
+| To the client | | deltas 4.00 a second (longest gap 0.35 s), 1.8 MB/s |
+| Tracks message / decisions message | | 20 to 30 ms (worst 71) / 17 to 19 ms |
+| `/api/swarms` | 3 ms to make, 1.5 to 4.6 ms a request, 30 KB for 37 swarms | |
+| CPU | emulator 90 %, bridge 35 %, stand-ins 18 %, contacts 0.1 % | bridge 27 % |
+
+Before the console's tracks message was capped (16 sources and 16 looks a track, with the
+totals): a swarm's track was seen by up to 1,918 sensors, each message was 5.3 MB, the client
+took 7.3 MB/s, its deltas fell to 1.6 a second with 30 s gaps, and the fold, the tracker's tick
+and the decision tick averaged 179, 169 and 380 ms (worst 349, 294, 596).
+
+**Memory.** With glibc's default malloc arenas the bridge held 3.1 GB at 7 minutes and 3.4 GB at
+13; with two (`MALLOC_ARENA_MAX=2`, now `up.sh`'s default for the bridge) 0.73 GB at 5 and 0.81
+GB at 11. The loops ran slower in the two-arena run (the decision tick with a client 204 to 233
+ms against 52 to 65), but the host was also busier then; on this host memory, not CPU, is what
+ran out (below).
+
+**The tracker against the swarms.** Association is by the simulation's contact id (the stated
+simplification in `tracks/mod.rs`), so there were 500 air tracks for 500 quadcopters and 507
+for 507 contacts: no track swaps or merges can happen. The density shows as position error: an
+active air track was a median 211 to 316 m from the nearest quadcopter, 90 % within 1.47 km, its
+own 1-sigma a median 2.65 km; at one moment 28 of the 500 air tracks were stale.
+
+**The situation end to end** (its runner, autoplay with the playbook AI, on a merge of the
+situation's branch). The 36 opening orders went out within about two minutes of the fleet being
+ready. Some were refused (one member's navigation status 52 s old refuses its swarm's whole
+100-vehicle order; the runner retries a stale one) and some failed (one member's failsafe RTL
+ends its swarm's order). While they went out the decision tick reached 1.6 to 3.2 s for a minute
+or two, then averaged 120 ms; with the fleet spread over its rings the sensing step averaged 340
+to 490 ms (worst 700) and the truth handler 550 ms (worst 1.2 s). The bridge used 1 to 5 cores:
+the loops above are about one; the rest is the 3,602 links' packets (44,000 a second) and 3,600
+orders' watchers. The shooter's act at 10:00 was observed by about 40 of SURFACE-3's cameras and
+the rule declared its track hostile 0.7 s later. No `vehicle.rebooted` in three runs.
+
+**Where it fell over.** Eight minutes into one run the host went into swap (9.6 GB in use, about
+100,000 pages a second in and out; other agents' five Chromium GPU processes at 2 to 3.4 cores
+each and node jobs with 6 GB heaps; load 55 with this stack stopped). The bridge's GCS heartbeat
+thread, which runs on its own, went 6.8 s between rounds; the vehicles' GCS failsafes fired
+(failsafe events from 4,700 to 12,000 in a minute), 23 orders failed, the inbox held 2,217
+alerts and the decision tick took 42 s. That is the collapse seen in the situation's own full
+run (load about 60). On a host that does not swap, the numbers above hold real time with the
+sensing step, at about half a core, the largest single-threaded cost; it is the one to
+parallelise next (a shard of state per observer, merged in observer order).
+
+**Spurious reboots.** None here. The likely mechanism behind the 3,907 `vehicle.rebooted` of
+the situation's full run, on the same swapping host: a stand-in engine stalled for more than a second skips the ticks it
+missed, so its time since boot fell behind the bridge's clock by every stall, and once that
+passed 30 s the bridge read a reboot (`BOOT_JUMP_S`) and ended the vehicle's order. A stand-in's
+time since boot now counts the skipped ticks.

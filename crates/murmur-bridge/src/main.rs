@@ -380,4 +380,6 @@ fn app_router(
         .layer(axum::middleware::from_fn_with_state(auth, auth::require_agent_key));
     api.merge(mcp)
         .layer(axum::middleware::from_fn_with_state(origins, auth::check_origin))
+        // each request's time by route, for /api/stats `loops` (`perf::http`)
+        .layer(axum::middleware::from_fn(perf::http))
 }
