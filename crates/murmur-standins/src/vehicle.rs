@@ -44,6 +44,11 @@ pub struct Vehicle {
     pub link: Link,
     pub started: Instant,
     pub tick: u64,
+    /// Ticks of an engine stall the physics skipped ([`skip_to`]): the time since boot still
+    /// counts them, as an autopilot's clock runs whatever its GCS's host does. Without them a
+    /// vehicle's time since boot fell behind the bridge's clock by every stall, and past 30 s
+    /// the bridge took it for a reboot (`BOOT_JUMP_S`) and ended its order.
+    pub skipped_ticks: u64,
     pub water: Option<Arc<Slot>>,
     /// GNSS geometry, jammers and spoofers (None: open sky, `Sky::LEGACY`)
     pub gnss: Option<Arc<gnss::Env>>,
@@ -162,6 +167,7 @@ impl Vehicle {
             link,
             started: Instant::now(),
             tick: 0,
+            skipped_ticks: 0,
             water,
             gnss: None,
             rx,
@@ -194,7 +200,7 @@ impl Vehicle {
     }
 
     pub fn time_boot_ms(&self) -> u64 {
-        self.tick * 1000 / u64::from(PHYSICS_HZ)
+        (self.tick + self.skipped_ticks) * 1000 / u64::from(PHYSICS_HZ)
     }
 
     pub fn capacity_mah(&self) -> f64 {
@@ -513,6 +519,13 @@ pub fn skip_to(due: tokio::time::Instant, late: Duration) -> Option<tokio::time:
     Some(due + TICK * u32::try_from(ticks).unwrap_or(u32::MAX))
 }
 
+/// The ticks a skip from `due` to `next` ([`skip_to`]) leaves out: those between the late one,
+/// run now, and `next`.
+pub fn skipped_ticks(due: tokio::time::Instant, next: tokio::time::Instant) -> u64 {
+    let n = next.saturating_duration_since(due).as_nanos() / TICK.as_nanos();
+    u64::try_from(n.saturating_sub(1)).unwrap_or(u64::MAX)
+}
+
 /// Run one vehicle forever: 10 Hz physics and telemetry, and answer whatever the GCS sends
 /// as soon as it arrives. `phase` (within one tick) offsets this vehicle's ticks from the
 /// others': real autopilots are not in lockstep, and thousands of links sending in the same
@@ -527,6 +540,7 @@ pub async fn run(mut v: Vehicle, phase: Duration) {
                 let late = tokio::time::Instant::now().saturating_duration_since(due);
                 if let Some(next) = skip_to(due, late) {
                     every.reset_at(next);
+                    v.skipped_ticks += skipped_ticks(due, next);
                     STALL_SKIPS.fetch_add(1, Ordering::Relaxed);
                     STALL_MAX_MS.fetch_max(late.as_millis() as u64, Ordering::Relaxed);
                 }
@@ -557,5 +571,8 @@ mod tests {
             skip_to(due, Duration::from_millis(7_050)),
             Some(due + Duration::from_millis(7_100))
         );
+        // the 70 ticks left out still count in the time since boot (murmur-z07i)
+        assert_eq!(skipped_ticks(due, due + Duration::from_millis(7_100)), 70);
+        assert_eq!(skipped_ticks(due, due + TICK), 0);
     }
 }
