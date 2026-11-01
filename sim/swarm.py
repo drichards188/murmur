@@ -3,7 +3,9 @@
 
 A fleet file (sim/fleets/*.toml) lists units: a platform from sim/platforms.toml, a count
 and a start point (and, for a stand-in boat or ROV at a pier, `moored = true`: the current
-leaves it where it is until it first arms). Platforms ArduPilot can fly run as real SITL processes; the rest
+leaves it where it is until it first arms), and may group them into swarms (`[[swarm]]`
+tables, "swarms" below: a swarm's members laid out as a block, a ring or a line, each vehicle's
+manifest entry naming its swarm). Platforms ArduPilot can fly run as real SITL processes; the rest
 (HALE/MALE aircraft, AUVs, large ships, drifters) run as MAVLink-speaking stand-ins in
 one process: the Rust engine, crates/murmur-standins (target/release/murmur-standins, built
 here if cargo is around; MURMUR_STANDINS_BIN overrides the binary). It reads tidewater
@@ -24,6 +26,7 @@ import argparse
 import json
 import math
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -85,11 +88,173 @@ def load_fleet(name_or_path):
     return tomllib.loads(p.read_text())
 
 
+# ---- swarms -------------------------------------------------------------------------------
+# A fleet file may group its vehicles into swarms (docs/DECISIONS.md, "Swarm units"): a
+# `[[swarm]]` table is one swarm and, with a `count` and a layout, its members too, expanded here
+# into one unit per member after the file's `[[unit]]` tables (uids follow that order: the
+# units first, then each swarm's members in file order). A plain `[[unit]]` may name a declared
+# swarm with `swarm = "<id>"`.
+#
+#   [[swarm]]
+#   id = "PICKET-1"                  # unique; what the bridge, the console and orders name
+#   name = "Gate north ring"         # what the console shows beside it
+#   role = "picket"                  # picket | search | relay | surface | undersea | reserve | other
+#   color = "#7fb8ff"                # optional
+#   platform = "x10"                 # one platform for every member, with `count`, or
+#   # mix = [{ platform = "saildrone", count = 60 }, { platform = "corsair", count = 40 }]
+#   count = 100
+#   sim = "standin"                  # as a unit's: optional, forces stand-ins
+#   cruise_alt_m = 100               # as a unit's: optional
+#   moored = true                    # as a unit's: optional (boats tied up until they first arm)
+#   layout = "block"                 # where the members start (below)
+#
+# Layouts, every point an inline table `{ lat, lon }` and every altitude in metres above MSL
+# (`alt_m`: one number, or `[low, high]`, a band the members spread across in order):
+#   block  `center`, `columns`, `spacing_m`, `heading_deg` (default 0): rows of `columns`
+#          members `spacing_m` apart, centred on `center`, rows across `heading_deg`; for a
+#          launch site on the ground or a mooring field. Members face `heading_deg`.
+#   ring   `center`, `radius_m`: evenly round the circle from north, clockwise, each facing
+#          along it (clockwise).
+#   line   `from`, `to`: evenly from one end to the other, facing along it.
+# Spawns are checked as every fleet's are (boats in water, ground vehicles on land, aircraft on
+# the ground at a launch site or aloft): eval/tests/test_swarm.py does it for the swarm fleets.
+SWARM_ROLES = ("picket", "search", "relay", "surface", "undersea", "reserve", "other")
+SWARM_LAYOUTS = ("block", "ring", "line")
+SWARM_KEYS = {
+    "id", "name", "role", "color", "platform", "mix", "count", "sim", "cruise_alt_m", "moored", "layout",
+    "center", "columns", "spacing_m", "heading_deg", "radius_m", "from", "to", "alt_m",
+}
+# what a swarm passes on to each member unit
+SWARM_UNIT_KEYS = ("sim", "cruise_alt_m", "moored")
+_SWARM_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$")
+_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _swarm_point(sw, key):
+    p = sw.get(key)
+    if not (isinstance(p, dict) and set(p) == {"lat", "lon"} and all(isinstance(p[k], (int, float)) for k in p)):
+        sys.exit(f"swarm {sw.get('id')!r}: {key} is {{ lat = ..., lon = ... }}")
+    return float(p["lat"]), float(p["lon"])
+
+
+def _swarm_alts(sw, n):
+    alt = sw.get("alt_m", 0)
+    if isinstance(alt, (int, float)) and not isinstance(alt, bool):
+        return [float(alt)] * n
+    if isinstance(alt, list) and len(alt) == 2 and all(isinstance(a, (int, float)) for a in alt):
+        lo, hi = float(alt[0]), float(alt[1])
+        return [lo + (hi - lo) * (k / (n - 1) if n > 1 else 0.0) for k in range(n)]
+    sys.exit(f"swarm {sw.get('id')!r}: alt_m is a number or [low, high]")
+
+
+def _bearing(a, b):
+    """Degrees clockwise from north, from a to b ((lat, lon) each), flat earth."""
+    north = (b[0] - a[0]) * 111_320.0
+    east = (b[1] - a[1]) * 111_320.0 * math.cos(math.radians((a[0] + b[0]) / 2))
+    return math.degrees(math.atan2(east, north)) % 360
+
+
+def swarm_spawns(sw, n):
+    """[lat, lon, alt, heading] for each of a swarm's n members, from its layout."""
+    layout = sw.get("layout")
+    alts = _swarm_alts(sw, n)
+    out = []
+    if layout == "block":
+        lat0, lon0 = _swarm_point(sw, "center")
+        cols = int(sw.get("columns", 10))
+        step = float(sw.get("spacing_m", 10.0))
+        hdg = float(sw.get("heading_deg", 0.0))
+        if cols < 1 or step <= 0:
+            sys.exit(f"swarm {sw['id']!r}: a block needs columns >= 1 and spacing_m > 0")
+        rows = math.ceil(n / cols)
+        h = math.radians(hdg)
+        for k in range(n):
+            r, c = divmod(k, cols)
+            across = (c - (cols - 1) / 2) * step  # along the row, to the right of the heading
+            ahead = ((rows - 1) / 2 - r) * step  # rows from the front back
+            north = ahead * math.cos(h) - across * math.sin(h)
+            east = ahead * math.sin(h) + across * math.cos(h)
+            lat, lon = offset(lat0, lon0, north, east)
+            out.append([lat, lon, alts[k], hdg])
+    elif layout == "ring":
+        lat0, lon0 = _swarm_point(sw, "center")
+        radius = float(sw.get("radius_m", 0))
+        if radius <= 0:
+            sys.exit(f"swarm {sw['id']!r}: a ring needs radius_m > 0")
+        for k in range(n):
+            a = 2 * math.pi * k / n
+            lat, lon = offset(lat0, lon0, radius * math.cos(a), radius * math.sin(a))
+            out.append([lat, lon, alts[k], (math.degrees(a) + 90) % 360])
+    elif layout == "line":
+        a, b = _swarm_point(sw, "from"), _swarm_point(sw, "to")
+        hdg = _bearing(a, b)
+        for k in range(n):
+            f = k / (n - 1) if n > 1 else 0.0
+            out.append([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, alts[k], hdg])
+    else:
+        sys.exit(f"swarm {sw.get('id')!r}: layout is one of {', '.join(SWARM_LAYOUTS)}")
+    return [[round(lat, 7), round(lon, 7), round(alt, 1), round(hdg, 1)] for lat, lon, alt, hdg in out]
+
+
+def fleet_swarms(fleet):
+    """The fleet's swarms as the manifest lists them: id, name, role, color (None when not
+    given), in file order; checked (unique ids, known roles, a color as #rrggbb)."""
+    out = []
+    for sw in fleet.get("swarm", []):
+        unknown = set(sw) - SWARM_KEYS
+        if unknown:
+            sys.exit(f"swarm {sw.get('id')!r}: unknown keys {sorted(unknown)}")
+        sid = sw.get("id")
+        if not isinstance(sid, str) or not _SWARM_ID.match(sid):
+            sys.exit(f"swarm id {sid!r}: letters, digits, '-', '_' or '.', up to 32")
+        if any(s["id"] == sid for s in out):
+            sys.exit(f"swarm {sid!r} is declared twice")
+        role = sw.get("role", "other")
+        if role not in SWARM_ROLES:
+            sys.exit(f"swarm {sid!r}: role {role!r} is one of {', '.join(SWARM_ROLES)}")
+        color = sw.get("color")
+        if color is not None and not (isinstance(color, str) and _COLOR.match(color)):
+            sys.exit(f"swarm {sid!r}: color is \"#rrggbb\"")
+        out.append({"id": sid, "name": str(sw.get("name") or sid), "role": role, "color": color})
+    return out
+
+
+def swarm_units(fleet):
+    """The fleet's units: its `[[unit]]` tables, then one unit per member of each swarm that
+    has a count (its platform, or its mix in order, laid out by its layout)."""
+    declared = {s["id"] for s in fleet_swarms(fleet)}
+    units = list(fleet.get("unit", []))
+    for u in units:
+        if "swarm" in u and u["swarm"] not in declared:
+            sys.exit(f"a unit names swarm {u['swarm']!r}, which no [[swarm]] table declares")
+    for sw in fleet.get("swarm", []):
+        if "mix" in sw:
+            if "platform" in sw:
+                sys.exit(f"swarm {sw['id']!r}: platform or mix, not both")
+            mix = sw["mix"]
+            if not (isinstance(mix, list) and mix and all(isinstance(m, dict) and set(m) == {"platform", "count"} for m in mix)):
+                sys.exit(f"swarm {sw['id']!r}: mix is [{{ platform = ..., count = ... }}, ...]")
+            members = [m["platform"] for m in mix for _ in range(int(m["count"]))]
+            if "count" in sw and int(sw["count"]) != len(members):
+                sys.exit(f"swarm {sw['id']!r}: count {sw['count']} is not its mix's {len(members)}")
+        elif "platform" in sw:
+            members = [sw["platform"]] * int(sw.get("count", 1))
+        else:
+            continue  # a declaration only: its members are [[unit]] tables naming it
+        if not members:
+            continue
+        for pid, spawn in zip(members, swarm_spawns(sw, len(members))):
+            unit = {"platform": pid, "spawn": spawn, "swarm": sw["id"]}
+            unit.update({k: sw[k] for k in SWARM_UNIT_KEYS if k in sw})
+            units.append(unit)
+    return units
+
+
 def plan(fleet, platforms):
-    """Expand units into vehicles with callsign and start pose."""
+    """Expand units (and swarms, `swarm_units`) into vehicles with callsign and start pose."""
     vehicles = []
     numbering = {}
-    for unit in fleet["unit"]:
+    for unit in swarm_units(fleet):
         pid = unit["platform"]
         if pid not in platforms:
             sys.exit(f"unknown platform {pid!r}; see sim/platforms.toml")
@@ -123,6 +288,10 @@ def plan(fleet, platforms):
                 # a stand-in tied up at its pier until it first arms (crates/murmur-standins
                 # config.rs `moored`): only when the unit says so, so every other entry is as before
                 vehicles[-1]["moored"] = True
+            if unit.get("swarm"):
+                # the swarm it belongs to (fleet_swarms): only when it has one, so a fleet without
+                # swarms writes the manifest it always did
+                vehicles[-1]["swarm"] = unit["swarm"]
     return vehicles
 
 
@@ -226,7 +395,16 @@ def sitl_command(v, spec, args, workdir):
     return cmd
 
 
-def write_manifest(vehicles, replace):
+def manifest_doc(vehicles, swarms=()):
+    """The manifest: the vehicles, and the fleet's swarms (`fleet_swarms`) when it has any (a
+    fleet without swarms writes exactly what it always did)."""
+    doc = {"vehicles": vehicles}
+    if swarms:
+        doc["swarms"] = list(swarms)
+    return doc
+
+
+def write_manifest(vehicles, replace, swarms=()):
     """sim/run/fleet.json, replaced in one step (the bridge re-reads it whenever its mtime
     changes and must never see half of it). `replace`: write it even when it already says
     the same, so its mtime says it is this run's (`--manifest-only`, which up.sh and the
@@ -234,7 +412,7 @@ def write_manifest(vehicles, replace):
     older than a minute as a previous run's); the full launch after it leaves an identical
     file alone, so the bridge doesn't re-read it."""
     manifest = RUN / "fleet.json"
-    text = json.dumps({"vehicles": vehicles}, indent=1)
+    text = json.dumps(manifest_doc(vehicles, swarms), indent=1)
     if not replace and manifest.exists() and manifest.read_text() == text:
         return
     tmp = manifest.with_name("fleet.json.tmp")
@@ -279,7 +457,9 @@ def main():
     args = ap.parse_args()
 
     platforms = load_platforms()
-    vehicles = plan(load_fleet(args.location or args.fleet), platforms)
+    fleet = load_fleet(args.location or args.fleet)
+    vehicles = plan(fleet, platforms)
+    swarms = fleet_swarms(fleet)
     for i, v in enumerate(vehicles):
         # uid: unique across the fleet, what the API and console key on. sysid: the MAVLink system
         # ID, one byte and unique only per link (each vehicle has its own port), so it wraps.
@@ -300,7 +480,7 @@ def main():
         return
 
     RUN.mkdir(exist_ok=True)
-    write_manifest(vehicles, replace=args.manifest_only)
+    write_manifest(vehicles, replace=args.manifest_only, swarms=swarms)
     if args.manifest_only:
         return
 
