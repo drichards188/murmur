@@ -404,6 +404,39 @@ pub fn nominations(mcp: &Mcp, agent: &AgentId, mine: bool, state: Option<&str>) 
     })
 }
 
+/// `get_swarms` (murmur-z07i): `/api/swarms`'s summary, narrowed to `ids`, members' uids and
+/// hulls only when asked for.
+pub fn swarms(mcp: &Mcp, ids: Option<&[String]>, members: bool, hull: bool) -> Value {
+    let all = crate::swarms::api_json(&mcp.world, mcp.decision.reserve_pct());
+    let t_ms = all["t"].as_f64().unwrap_or(0.0);
+    let list: Vec<Value> = all["swarms"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|s| ids.is_none_or(|ids| ids.iter().any(|i| s["id"].as_str() == Some(i.as_str()))))
+        .map(|s| {
+            let mut s = s.clone();
+            if let Some(o) = s.as_object_mut() {
+                if !members {
+                    o.remove("members");
+                }
+                if !hull {
+                    o.remove("hull");
+                }
+            }
+            s
+        })
+        .collect();
+    json!({
+        "t": t_ms / 1000.0,
+        "age_s": age(clock::wall(), t_ms / 1000.0),
+        "count": list.len(),
+        "low_battery_below_pct": all["low_battery_below_pct"],
+        "note": "A summary of the fleet's swarms, at most a second old. ready: heard, link up and navigation ready; lost_link: silent past the link's stale threshold; unheard: never heard; low_battery: below the policy's reserve. A hull is open: its first point is not repeated.",
+        "swarms": list,
+    })
+}
+
 /// `get_inbox`: pending approvals and alerts, each with its age.
 pub fn inbox(mcp: &Mcp) -> Value {
     let now = clock::wall();

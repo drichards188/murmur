@@ -372,10 +372,14 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: tool list, this code gave the earlier digests (51b890f1..., 58352e1f..., bc24ac51...) byte for
 #: byte, so the only change in each record is that tool in the tool lists (and the model's prompt
 #: sizes and token estimates with it).
+#: Re-taken for the swarm summary (murmur-z07i): with `get_swarms` left out of the tool list, this
+#: code gave the earlier digests (5d6f292d..., 7c0407c2..., 51ecd4c0...) byte for byte, so the only
+#: change in each record is that tool in the tool lists (and the model's prompt sizes and token
+#: estimates with it).
 PAUSED = {
-    "model harbor-watch s1": "5d6f292d2c7d8abf240ec19351ed005940482aa7fca536d5084b86fdddf98305",
-    "playbook v2 fast-unknown 1000": "7c0407c26111b440a1cbcd8ebf538ed251fb557945c182ad6d40e3e60f395599",
-    "model v2 fast-unknown 1000": "51ecd4c0af7eefba7990a8f6c386801d8e31a0d751b61c1ab7326757b0f843e4",
+    "model harbor-watch s1": "c4acc4f541aa2cbd3fff0d84b2f12cb2f0dc933afc9c4a8b5b6f292d35d9e4e8",
+    "playbook v2 fast-unknown 1000": "7a8f043f9155cbbf6bbd5ccc0c676a2a5563b6dfbcf99505de23a1f4c33bcf41",
+    "model v2 fast-unknown 1000": "ede2cb892bc5f631238288dae21fdaa81d6a2e48c53a41fc2e8c9b031d6e181d",
 }
 
 

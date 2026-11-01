@@ -91,6 +91,7 @@ pub fn router(app: App) -> Router {
         .route("/api/intents/{id}", get(get_intent))
         .route("/api/intents/{id}/{action}", post(intent_action))
         .route("/api/inbox", get(inbox))
+        .route("/api/swarms", get(swarms))
         .route("/api/restores/write_off", post(write_off))
         .route("/api/restores/unspend", post(unspend))
         .route("/api/operator/view", post(operator_view))
@@ -544,6 +545,14 @@ fn lost_contact(body: &[u8]) -> bool {
 
 async fn inbox(State(app): State<App>) -> Response {
     Json(app.decision.inbox_json()).into_response()
+}
+
+/// `GET /api/swarms` (murmur-z07i): each swarm the fleet manifest names, with its members'
+/// readiness, lost links, low batteries, centroid, hull and tasks (`crate::swarms`), made at
+/// most once a second. Read-only, never logged.
+async fn swarms(State(app): State<App>) -> Response {
+    let v = crate::swarms::api_json(&app.world, app.decision.reserve_pct());
+    Json(v.as_ref().clone()).into_response()
 }
 
 /// `POST /api/restores/write_off` (rules 12): an operator writes off what is owed back: a

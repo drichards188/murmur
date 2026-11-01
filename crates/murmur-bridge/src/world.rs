@@ -70,12 +70,18 @@ pub struct Manifest {
     pub identities: BTreeMap<Uid, Arc<Identity>>,
     /// udp port -> (uid, sysid)
     pub ports: HashMap<u16, (Uid, u8)>,
+    /// Its swarms (`crate::swarms`); none in a manifest from before Saturation.
+    pub swarms: Arc<crate::swarms::Swarms>,
 }
 
 impl Manifest {
     pub fn parse(data: &Value) -> (Manifest, Vec<u16>) {
         let mut m = Manifest::default();
         let mut ports = Vec::new();
+        m.swarms = Arc::new(crate::swarms::Swarms::parse(data));
+        // a manifest with swarms gives every identity a `swarm` (its id, or null); one without
+        // leaves the identities as they always were
+        let with_swarm = m.swarms.any();
         for v in data
             .get("vehicles")
             .and_then(Value::as_array)
@@ -88,8 +94,14 @@ impl Manifest {
             };
             // manifests from before uid existed: sysid was unique then
             let uid = entry.get("uid").and_then(Value::as_u64).unwrap_or(sysid);
-            m.identities
-                .insert(uid, Arc::new(Identity::from_manifest(entry)));
+            let mut identity = Identity::from_manifest(entry);
+            if with_swarm {
+                identity.0.insert(
+                    "swarm".into(),
+                    m.swarms.of.get(&uid).map_or(Value::Null, |s| Value::String(s.clone())),
+                );
+            }
+            m.identities.insert(uid, Arc::new(identity));
             if let Some(port) = entry
                 .get("port")
                 .and_then(Value::as_u64)
@@ -128,6 +140,8 @@ pub struct World {
     pub tasks: TaskManager,
     /// The water sampler's drift tracks (`crate::estimate`).
     pub water: crate::estimate::WaterTracks,
+    /// `/api/swarms`'s answer, made at most once a second (`crate::swarms`).
+    pub swarm_cache: crate::swarms::Cache,
     /// Predicted link coverage (`crate::coverage`), made on first use from the environment
     /// unless set first (the headless simulator sets its episode's).
     coverage: OnceLock<Arc<crate::coverage::Coverage>>,
@@ -150,6 +164,7 @@ impl World {
             wanted_ports: Mutex::new(wanted),
             tasks: TaskManager::default(),
             water: crate::estimate::WaterTracks::default(),
+            swarm_cache: crate::swarms::Cache::default(),
             coverage: OnceLock::new(),
         })
     }

@@ -67,12 +67,17 @@ struct Rig {
 
 /// The sim policy as shipped.
 fn rig() -> Rig {
+    rig_with_manifest(root().join("sim/run/no-such-manifest.json"))
+}
+
+/// [`rig`] reading the fleet manifest at `manifest`.
+fn rig_with_manifest(manifest: PathBuf) -> Rig {
     let root = root();
     let world = World::new(Config {
         base_port: 0,
         http_port: 0,
         default_ports: 0,
-        manifest: root.join("sim/run/no-such-manifest.json"),
+        manifest,
         platforms: root.join("sim/platforms.toml"),
         root: root.clone(),
     });
@@ -264,6 +269,10 @@ const FORBIDDEN_NAME_STEMS: &[&str] = &[
     "accept", "acknowledg", "waive",
 ];
 
+/// Whole words of a tool name that hold a stem above and mean nothing of the kind: a swarm is a
+/// group of vehicles (murmur-z07i), not something armed.
+const BENIGN_NAME_WORDS: &[&str] = &["swarm", "swarms"];
+
 /// Phrases no tool description may contain: the tool, as the subject, approving, deciding
 /// or driving. Descriptions may say what humans or policy do.
 const FORBIDDEN_PHRASES: &[&str] = &[
@@ -283,11 +292,13 @@ fn no_tool_implies_approval_or_control() {
     assert!(tools.len() >= 10);
     for t in &tools {
         let name = t.name.to_lowercase();
-        for stem in FORBIDDEN_NAME_STEMS {
-            assert!(
-                !name.contains(stem),
-                "tool name {name:?} contains {stem:?}: it implies approval or control"
-            );
+        for word in name.split('_').filter(|w| !BENIGN_NAME_WORDS.contains(w)) {
+            for stem in FORBIDDEN_NAME_STEMS {
+                assert!(
+                    !word.contains(stem),
+                    "tool name {name:?} contains {stem:?}: it implies approval or control"
+                );
+            }
         }
         let description = t
             .description
@@ -2357,4 +2368,148 @@ async fn the_sensor_reach_reads_the_bridges_answer() {
     assert!(all["note"].as_str().is_some_and(|n| n.contains("sensing step")), "{all}");
     let one = r.ok(&planner(), "get_sensor_reach", json!({ "uid": 1 })).await;
     assert_eq!(one["vehicles"], json!([]));
+}
+
+/// murmur-z07i: a fleet manifest written to a fresh temporary file, and a rig reading it with
+/// one fake vehicle per entry (its identity the manifest's).
+fn rig_with_fleet(name: &str, manifest: Value) -> Rig {
+    let dir = std::env::temp_dir().join(format!("murmur-swarms-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let path = dir.join("fleet.json");
+    std::fs::write(&path, manifest.to_string()).expect("manifest");
+    let r = rig_with_manifest(path);
+    r.world.load_manifest();
+    for (i, v) in manifest["vehicles"].as_array().expect("vehicles").iter().enumerate() {
+        let uid = v["uid"].as_u64().expect("uid");
+        let cell = spawn_fake(uid, Firmware::Copter, LAT + 0.001 * i as f64, LON, quick());
+        let identity = r.world.manifest().identities.get(&uid).cloned();
+        cell.write(|v| v.identity = identity);
+        r.world.insert_vehicle(cell);
+    }
+    r
+}
+
+async fn get_json(r: &Rig, uri: &str) -> Value {
+    let req = Request::builder().uri(uri).body(Body::empty()).expect("request");
+    let resp = r.api.clone().oneshot(req).await.expect("response");
+    assert_eq!(resp.status(), StatusCode::OK, "{uri}");
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 24).await.expect("body");
+    serde_json::from_slice(&bytes).expect("json")
+}
+
+fn lost(uid: Uid) -> crate::decision::alerts::Alert {
+    crate::decision::alerts::Alert {
+        id: format!("link:{uid}"),
+        kind: "lost_link",
+        severity: crate::decision::alerts::Severity::High,
+        uid,
+        callsign: None,
+        detail: "no telemetry".into(),
+        since_t: 100.0 + uid as f64,
+        op_id: None,
+        intent_id: None,
+    }
+}
+
+/// murmur-z07i: a manifest without swarms (every one before Saturation) changes nothing: no
+/// `swarm` in any identity, no `swarm_alerts` or `folded_into` in the inbox however many
+/// vehicles lose their link, and the swarm views answer an empty list.
+#[tokio::test(start_paused = true)]
+async fn an_old_manifest_has_no_swarms_anywhere() {
+    let vehicles: Vec<Value> = (1..=6)
+        .map(|u| json!({"uid": u, "sysid": u, "port": 14560 + u, "callsign": format!("HAWK {u}"), "platform": "x10", "domain": "air"}))
+        .collect();
+    let r = rig_with_fleet("old", json!({ "vehicles": vehicles }));
+    sleep(Duration::from_millis(500)).await;
+    for (u, entry) in (1..=6u64).zip(&vehicles) {
+        let id = r.world.manifest().identities.get(&u).cloned().expect("identity");
+        assert_eq!(id.0, Identity::from_manifest(entry.as_object().expect("entry")).0);
+        assert!(!id.0.contains_key("swarm"));
+    }
+    let inbox = r.d.inbox_json();
+    assert!(inbox.get("swarm_alerts").is_none(), "{inbox}");
+    assert!(inbox["counts"].get("swarm_alerts").is_none());
+    let alerts: Vec<_> = (1..=6).map(lost).collect();
+    assert!(crate::swarms::inbox_view(&r.world, &alerts).is_none());
+    let api = get_json(&r, "/api/swarms").await;
+    assert_eq!(api["swarms"], json!([]));
+    let tool = r.ok(&planner(), "get_swarms", json!({})).await;
+    assert_eq!(tool["swarms"], json!([]));
+    assert_eq!(tool["count"], 0);
+}
+
+/// murmur-z07i: a manifest with swarms: each identity names its swarm (null for none), the
+/// summary counts each swarm's members, and three members' lost links fold into one swarm
+/// alert while every member's alert stays as it was, marked.
+#[tokio::test(start_paused = true)]
+async fn a_swarm_manifest_names_members_and_folds_their_alerts() {
+    let vehicles: Vec<Value> = (1..=6)
+        .map(|u| {
+            let swarm = if u <= 4 {
+                json!("PICKET-1")
+            } else if u == 5 {
+                json!("RELAY-1")
+            } else {
+                Value::Null
+            };
+            json!({"uid": u, "sysid": u, "port": 14560 + u, "callsign": format!("HAWK {u}"), "platform": "x10", "domain": "air", "swarm": swarm})
+        })
+        .collect();
+    let r = rig_with_fleet(
+        "new",
+        json!({
+            "swarms": [
+                {"id": "PICKET-1", "name": "Picket 1", "role": "picket", "color": "#ff8800"},
+                {"id": "RELAY-1", "name": "Relay 1", "role": "relay"},
+            ],
+            "vehicles": vehicles,
+        }),
+    );
+    sleep(Duration::from_millis(500)).await;
+    let swarm_of = |u: u64| r.world.manifest().identities[&u].0.get("swarm").cloned();
+    assert_eq!(swarm_of(1), Some(json!("PICKET-1")));
+    assert_eq!(swarm_of(5), Some(json!("RELAY-1")));
+    assert_eq!(swarm_of(6), Some(Value::Null));
+
+    let api = get_json(&r, "/api/swarms").await;
+    assert_eq!(api["hull_closed"], false);
+    let list = api["swarms"].as_array().expect("swarms");
+    assert_eq!(list.len(), 2);
+    let picket = &list[0];
+    assert_eq!(picket["id"], "PICKET-1");
+    assert_eq!(picket["role"], "picket");
+    assert_eq!(picket["color"], "#ff8800");
+    assert_eq!(picket["count"], 4);
+    assert_eq!(picket["members"], json!([1, 2, 3, 4]));
+    assert_eq!(picket["lost_link"], 0);
+    assert!(picket["centroid"].is_array(), "{picket}");
+    assert_eq!(picket["hull"].as_array().map(Vec::len), Some(2), "four fakes on one meridian: {picket}");
+    let tool = r.ok(&planner(), "get_swarms", json!({ "ids": ["RELAY-1"] })).await;
+    assert_eq!(tool["count"], 1);
+    assert_eq!(tool["swarms"][0]["count"], 1);
+    assert!(tool["swarms"][0].get("members").is_none() && tool["swarms"][0].get("hull").is_none());
+    let tool = r.ok(&planner(), "get_swarms", json!({ "members": true, "hull": true })).await;
+    assert_eq!(tool["swarms"][0]["members"], json!([1, 2, 3, 4]));
+    assert!(tool["swarms"][0]["hull"].is_array());
+
+    // three of PICKET-1's four lose their link (the threshold is 3), RELAY-1's one and the
+    // vehicle in no swarm too: one swarm alert, and those three alerts point at it
+    let alerts: Vec<_> = [1, 2, 3, 5, 6].into_iter().map(lost).collect();
+    let (list, folds) = crate::swarms::inbox_view(&r.world, &alerts).expect("swarms");
+    assert_eq!(folds.len(), 1, "{folds:?}");
+    assert_eq!(folds[0].id, "swarm:PICKET-1:lost_link");
+    assert_eq!((folds[0].count, folds[0].of), (3, 4));
+    assert_eq!(folds[0].causes.get("unknown"), Some(&3));
+    assert_eq!(list.len(), 5);
+    for (a, v) in alerts.iter().zip(&list) {
+        let mut plain = serde_json::to_value(a).expect("alert");
+        if a.uid <= 3 {
+            assert_eq!(v["folded_into"], "swarm:PICKET-1:lost_link");
+            plain["folded_into"] = v["folded_into"].clone();
+        }
+        assert_eq!(*v, plain, "an alert is as it was but for folded_into");
+    }
+    let inbox = r.d.inbox_json();
+    assert_eq!(inbox["swarm_alerts"], json!([]), "no alert in force here: {inbox}");
+    assert_eq!(inbox["counts"]["swarm_alerts"], 0);
 }

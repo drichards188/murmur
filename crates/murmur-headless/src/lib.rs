@@ -88,6 +88,10 @@ mod situation;
 mod space;
 #[cfg(not(test))]
 #[allow(dead_code)]
+#[path = "../../murmur-bridge/src/swarms.rs"]
+mod swarms;
+#[cfg(not(test))]
+#[allow(dead_code)]
 #[path = "../../murmur-bridge/src/tasks/mod.rs"]
 mod tasks;
 #[cfg(not(test))]

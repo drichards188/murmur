@@ -37,6 +37,9 @@ from eval.headless.situations import Calibration, from_situation, process_spec
 # Sensor reach (bd murmur-4tq): with get_sensor_reach left out of the tool list the code gave the
 # earlier record digest (3256024c...); the only change is that tool in agent_log[0].tools, and the
 # audit log's digest is unchanged.
+# Swarms (murmur-z07i): with get_swarms left out of the tool list the code gave the earlier record
+# digest (175530b6...); the only change is that tool in agent_log[0].tools, and the audit log's
+# digest is unchanged.
 GOLDEN = Path(__file__).with_name("golden-harbor-watch-s1.json")
 FIXTURE = REPO / "agents" / "tests" / "fixtures" / "playbook" / "harbor-watch-reads.json"
 

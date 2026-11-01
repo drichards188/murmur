@@ -55,6 +55,18 @@ pub struct FleetParams {
     pub compact: Option<bool>,
 }
 
+/// `get_swarms`'s arguments (murmur-z07i).
+#[derive(Deserialize, JsonSchema)]
+pub struct SwarmsParams {
+    /// Only these swarm ids (default: every swarm).
+    pub ids: Option<Vec<String>>,
+    /// Each swarm's member uids too. Default false (a large fleet's are thousands).
+    pub members: Option<bool>,
+    /// Each swarm's hull too: the convex hull of its members' positions, [lon, lat] points,
+    /// open (the first not repeated). Default false.
+    pub hull: Option<bool>,
+}
+
 #[derive(Deserialize, JsonSchema)]
 pub struct VehicleParams {
     /// The vehicle's fleet uid (from get_fleet).
@@ -465,6 +477,21 @@ pub fn tools() -> Vec<Tool> {
              moving, vehicles that left their task, failed tasks, ACK timeouts). Pending \
              items can be decided only by a human operator.",
         ),
+        tool::<SwarmsParams>(
+            "get_swarms",
+            "Read the fleet's swarms, the groups its vehicles are organised in (none when it has \
+             none): for each its id, name, role (picket, search, relay, surface, undersea, reserve, ...), how \
+             many members, how many are ready (heard, link up, navigation ready), have lost \
+             their link, have never been heard, or are below the policy's battery reserve, \
+             where it is (the centroid of its members' positions, [lon, lat]), and the tasks \
+             its members are on (each intent and kind with how many members). Pass ids for \
+             some swarms, members for their uids (then get_fleet with those uids for the \
+             facts), hull for the area they cover. Made at most once a second from the same \
+             facts as get_fleet; get_inbox's swarm_alerts fold many members' alerts of one \
+             kind into one. Read-only, never logged."
+                .into(),
+            true,
+        ),
         tool::<WeatherParams>(
             "get_weather",
             "Read current scenario surface weather at lat/lon, with source, age, missing fields and the sensing baseline. Scripted weather is labelled. This is simulation weather, not a forecast. No future weather or contact truth is exposed.".into(),
@@ -795,6 +822,15 @@ pub async fn call(
             ))
         }
         "get_inbox" => Ok(world::inbox(mcp)),
+        "get_swarms" => {
+            let p = params!(SwarmsParams);
+            Ok(world::swarms(
+                mcp,
+                p.ids.as_deref(),
+                p.members.unwrap_or(false),
+                p.hull.unwrap_or(false),
+            ))
+        }
         "get_nominations" => {
             let p = params!(NominationsParams);
             Ok(world::nominations(

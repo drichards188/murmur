@@ -1261,6 +1261,11 @@ impl Decision {
         v
     }
 
+    /// The policy's battery reserve, percent (`[rules] reserve_pct`): the swarms' low battery.
+    pub fn reserve_pct(&self) -> f64 {
+        self.rules.reserve_pct
+    }
+
     fn fleet(&self) -> BTreeMap<Uid, Arc<VehicleCell>> {
         self.world
             .vehicles()
@@ -2745,7 +2750,15 @@ impl Decision {
         let n_review = review["counts"]["declarations"].as_u64().unwrap_or(0)
             + review["counts"]["flags"].as_u64().unwrap_or(0)
             + review["counts"]["lost_claims"].as_u64().unwrap_or(0);
-        json!({
+        let n_alerts = alerts.len();
+        // swarms (murmur-z07i): many members' alerts of one kind fold into one card, a view
+        // only (each member's alert stays, marked `folded_into`); a manifest without swarms
+        // leaves the inbox as it was
+        let (alerts, swarm_alerts) = match crate::swarms::inbox_view(&self.world, &alerts) {
+            Some((list, folds)) => (json!(list), Some(folds)),
+            None => (json!(alerts), None),
+        };
+        let mut v = json!({
             "pending": pending,
             "alerts": alerts,
             "queued": queued,
@@ -2753,11 +2766,16 @@ impl Decision {
             "acts": acts,
             "counts": {
                 "pending": pending.len(),
-                "alerts": alerts.len(),
+                "alerts": n_alerts,
                 "queued": queued.len(),
                 "review": n_review,
             },
-        })
+        });
+        if let Some(folds) = swarm_alerts {
+            v["counts"]["swarm_alerts"] = json!(folds.len());
+            v["swarm_alerts"] = json!(folds);
+        }
+        v
     }
 
     /// The WebSocket message (`type: "decisions"`): the inbox and the latest intents.

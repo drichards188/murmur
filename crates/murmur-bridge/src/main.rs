@@ -51,6 +51,7 @@ mod platforms;
 mod push;
 mod situation;
 mod space;
+mod swarms;
 mod tasks;
 mod telemetry;
 mod tracks;
