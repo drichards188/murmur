@@ -380,6 +380,12 @@ impl EngageRules {
         self.rules_version >= crate::rules::LOADOUT_SINCE
     }
 
+    /// The decisions of rules 25 on ([`crate::rules::DAMAGE_SINCE`]): a damaged platform's weapons
+    /// refused, and the weapon's catalog figures shown in the weapon check.
+    pub fn damage(&self) -> bool {
+        self.rules_version >= crate::rules::DAMAGE_SINCE
+    }
+
     /// The optional keys this section sets, each with the policy schema that introduced it
     /// (or, for an old name, the first schema whose builds read it): a log claiming an
     /// older schema can't carry them (replay checks).
@@ -1757,6 +1763,12 @@ pub struct EffectOrder {
     /// the effect at its impact, not at once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub munition: Option<MunitionFlight>,
+    /// Rules 24: the loadout weapon released (its catalog facts, from the releasing picture's
+    /// platform), for the truth side: its warhead and its hit and damage figures decide what the
+    /// effect does there (bd murmur-lbw8.2). Not logged as such (`engage.effect` logs its name,
+    /// kind and rounds left). None for a platform without a loadout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weapon: Option<Box<crate::catalog::WeaponFacts>>,
 }
 
 impl EffectOrder {
@@ -1960,11 +1972,24 @@ pub fn weapon_for(
         return None;
     }
     let uid = uid?;
-    let p = world.vehicles.get(uid)?.platform.as_ref()?;
+    let v = world.vehicles.get(uid)?;
+    let p = v.platform.as_ref()?;
     if p.loadout.is_empty() && named.is_none() {
         return None;
     }
-    Some(crate::loadout::choose(named, p, world.rounds.get(uid), track.map(|t| t.domain)))
+    // rules 25: the vehicle's own damage report, and the weapon's figures against the target's
+    // estimated kind
+    let r25 = if ec.damage() {
+        crate::loadout::Rules25 {
+            damage: v.damage.as_ref(),
+            kind: track.and_then(|t| t.identity.as_deref()),
+            now: Some(world.t),
+            figures: true,
+        }
+    } else {
+        crate::loadout::Rules25::default()
+    };
+    Some(crate::loadout::choose_with(named, p, world.rounds.get(uid), track.map(|t| t.domain), &r25))
 }
 
 /// Rules 24: the `weapon` check on [`weapon_for`] (none where it is none).

@@ -2058,6 +2058,7 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (rules::LOADOUT_SINCE, "\"weapon\":{", "a loadout weapon released, and its rounds left"),
     (rules::LOADOUT_SINCE, "\"rounds\":{", "a platform's rounds (a decision's fact)"),
     (rules::LOADOUT_SINCE, "\"rounds\":[", "the rounds an earlier log had released, carried over"),
+    (rules::DAMAGE_SINCE, "\"damage\":{\"value\":", "a vehicle's own damage report (a decision's fact)"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.

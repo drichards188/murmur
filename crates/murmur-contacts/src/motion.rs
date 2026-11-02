@@ -4,7 +4,8 @@
 
 use murmur_standins::geo::{Gauss, M_PER_DEG, bearing_deg, distance_m, wrap180};
 
-use crate::scenario::{Contact, Motion};
+use crate::damage::DamageState;
+use crate::scenario::{Contact, Domain, Motion};
 
 /// Close enough to a waypoint to take the next one.
 const WAYPOINT_RADIUS_M: f64 = 25.0;
@@ -42,6 +43,10 @@ pub struct Mover {
     pub effect_t: Option<f64>,
     /// Taken out of the scenario by an effect (`on_effect = "out_of_play"`).
     pub out_of_play: bool,
+    /// The damage model's worst state put on it so far (none: never damaged), and when.
+    pub damage: Option<(DamageState, f64)>,
+    /// Its weapon is out of action (a firepower kill): its acts launch nothing.
+    pub disarmed: bool,
 }
 
 fn offset(lat: f64, lon: f64, east_m: f64, north_m: f64) -> (f64, f64) {
@@ -90,8 +95,56 @@ impl Mover {
             rng: Gauss::new(seed.wrapping_mul(0x9E37_79B9).wrapping_add(index + 1)),
             effect_t: None,
             out_of_play: false,
+            damage: None,
+            disarmed: false,
             contact,
         }
+    }
+
+    /// The damage model's `state` put on it at scenario time `now` (unix s): destroyed takes it
+    /// out of play (as an abstract effect does); its propulsion lost stops it where it is (a boat
+    /// or a submerged contact drifts with the water from there, a ground contact stands, an
+    /// aircraft flies on at half its speed [E: slowed, as a damaged engine]); its weapons out of
+    /// action silence its acts' launches. A state no worse than one it has changes nothing.
+    /// Returns whether it changed anything.
+    pub fn damage(&mut self, state: DamageState, now: f64) -> bool {
+        if state == DamageState::Undamaged {
+            return false;
+        }
+        let worse = match self.damage {
+            Some((DamageState::Destroyed, _)) => false,
+            Some((had, _)) if had == state => false,
+            _ => true,
+        };
+        if !worse {
+            return false;
+        }
+        match state {
+            DamageState::Undamaged => {}
+            DamageState::Destroyed => {
+                self.out_of_play = true;
+                self.st.exists = false;
+            }
+            DamageState::Mobility => {
+                self.contact.maneuvers.clear();
+                self.next_maneuver = 0;
+                let at = [self.st.lon, self.st.lat];
+                match self.contact.domain {
+                    Domain::Air => self.contact.speed_mps *= 0.5,
+                    Domain::Ground => self.contact.motion = Motion::Station { at },
+                    Domain::Surface | Domain::Subsurface => self.contact.motion = Motion::Drift { at },
+                }
+                if self.contact.domain != Domain::Air {
+                    self.st.speed_mps = 0.0;
+                    self.holding = false;
+                    self.dwell_left = 0.0;
+                }
+            }
+            DamageState::Firepower => self.disarmed = true,
+        }
+        // the latest (a mobility kill then a firepower kill leaves it both stopped and disarmed)
+        self.damage = Some((state, now));
+        true
     }
 
     /// Advance by `dt` scenario seconds at scenario time `s` (seconds since the scenario

@@ -735,6 +735,11 @@ async fn assemble(spec: &Spec) -> Result<Parts, String> {
             let ct = Arc::new(Contacts::load(&path, c.seed, spec.epoch, &spec.root)?);
             let token = std::env::var("MURMUR_SIM_TOKEN").ok().filter(|t| !t.trim().is_empty());
             let fx = effect_sim(spec, &platforms, &emu.uids, &fleet)?;
+            let ours = contacts::Ours {
+                fleet: fleet.clone(),
+                by_uid: emu.uids.iter().enumerate().map(|(i, u)| (u.to_string(), i)).collect(),
+                seed: spec.seed,
+            };
             tokio::spawn(perf::timed("contacts", contacts::run(
                 ct.clone(),
                 api.clone(),
@@ -743,6 +748,7 @@ async fn assemble(spec: &Spec) -> Result<Parts, String> {
                 bridge_up,
                 fx,
                 (water.clone(), zero, spec.epoch),
+                ours,
             )));
             Some(ct)
         }
@@ -757,8 +763,10 @@ fn effect_sim(spec: &Spec, platforms: &std::path::Path, uids: &[u32], fleet: &Ar
     let Some(cfg) = spec.effects.clone() else {
         return Ok(None);
     };
-    if !(0.0..=1.0).contains(&cfg.p_hit) {
-        return Err(format!("effects: p_hit {} is not a probability", cfg.p_hit));
+    if let Some(p) = cfg.p_hit
+        && !(0.0..=1.0).contains(&p)
+    {
+        return Err(format!("effects: p_hit {p} is not a probability"));
     }
     let catalog = murmur_decide::Catalog::load(platforms).map_err(err("effects: the platform catalog"))?;
     let mut expended = std::collections::BTreeMap::new();

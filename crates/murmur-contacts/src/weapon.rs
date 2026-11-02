@@ -2,8 +2,11 @@
 //! (`scenario::WeaponSpec`); every act it commits launches it at the act's second, from where it
 //! is, at a lead point on its victim: the victim's position plus its velocity times the time of
 //! flight. The weapon flies a straight line at constant speed and strikes the lead point at a
-//! time fixed at launch. Kinematics only: no guidance, no seeker, no miss and no damage; the
-//! strike is a time and a place.
+//! time fixed at launch. No guidance and no seeker: the strike is a time and a place. A weapon
+//! that lists figures (`effects`) is drawn at its strike by the damage model ([`strike`], bd
+//! murmur-lbw8.2): a miss, or the victim's damage (one of ours: handed back for the vehicle
+//! simulation; a contact: put on it). A shooter whose weapon is out of action (a firepower
+//! kill) holds its fire.
 //!
 //! The contacts process does not know where our vehicles are: a truth message names the ones
 //! its weapons may be aimed at (`aim_at`), and the bridge's answer carries where they are
@@ -17,13 +20,16 @@ use std::collections::BTreeMap;
 use murmur_standins::geo::{M_PER_DEG, distance_m};
 use serde::{Deserialize, Serialize};
 
+use crate::damage::{self, Conditions, DamageState, Target};
+use crate::effect::{DamageCtx, OursDamaged};
 use crate::motion::Mover;
 use crate::scenario::Scenario;
 use crate::truth::{ActTruth, ImpactTruth, WeaponTruth};
 
 /// One of our vehicles as the bridge last heard it (its answer's `ours`): where it is and its
-/// velocity over the ground, m/s east and north.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// velocity over the ground, m/s east and north; and what the damage model reads of it (its
+/// catalog platform, domain and whether it is armed).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OursAt {
     pub uid: u64,
     pub lat: f64,
@@ -34,6 +40,12 @@ pub struct OursAt {
     pub ve: f64,
     #[serde(default)]
     pub vn: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub armed: bool,
 }
 
 /// Our vehicles the scenario's weapons may be aimed at (the truth message's `aim_at`): each
@@ -80,6 +92,10 @@ impl Armory {
             let Some(w) = scenario.contacts.iter().find(|c| c.id == a.by).and_then(|c| c.weapon.as_ref()) else {
                 continue;
             };
+            if movers.iter().any(|m| m.contact.id == a.by && m.disarmed) {
+                a.held = Some(format!("its {} is out of action (a firepower kill)", w.name));
+                continue;
+            }
             let victim = match (a.against_vehicle, &a.against_contact) {
                 (Some(uid), _) => ours.get(&uid).map(|o| ((o.lat, o.lon), (o.ve, o.vn))),
                 (None, Some(c)) => movers.iter().find(|m| m.contact.id == *c && m.st.exists).map(|m| {
@@ -136,6 +152,7 @@ impl Armory {
                 lon: f.to[0],
                 against_vehicle: f.against_vehicle,
                 against_contact: f.against_contact,
+                damage: None,
             })
             .collect()
     }
@@ -143,6 +160,60 @@ impl Armory {
     pub fn is_empty(&self) -> bool {
         self.flights.is_empty()
     }
+}
+
+/// The damage model on each strike in `impacts` whose weapon lists figures (bd murmur-lbw8.2):
+/// a hit draw against the victim's kind in the conditions, then the damage draw, on the act's own
+/// stream (`act:<id>`), recorded in the impact (`damage`, truth only). A contact victim takes its
+/// state here; ours are returned (each hurt one) for the vehicle simulation. `ours`: where the
+/// bridge last said our vehicles were and what they are.
+pub fn strike(
+    scenario: &Scenario,
+    impacts: &mut [ImpactTruth],
+    movers: &mut [Mover],
+    ours: &BTreeMap<u64, OursAt>,
+    ctx: &DamageCtx,
+) -> Vec<OursDamaged> {
+    let mut hurt = Vec::new();
+    for i in impacts.iter_mut() {
+        let Some(by) = scenario.acts.iter().find(|a| a.id == i.act).map(|a| a.by.as_str()) else {
+            continue;
+        };
+        let Some(w) = scenario.contacts.iter().find(|c| c.id == by).and_then(|c| c.weapon.as_ref()).and_then(|w| w.damage()) else {
+            continue;
+        };
+        let c = Conditions::at(ctx.conditions.as_ref(), i.t, i.lat, i.lon);
+        let stream = format!("act:{}", i.act);
+        match (i.against_vehicle, &i.against_contact) {
+            (Some(uid), _) => {
+                let o = ours.get(&uid);
+                let kind = damage::ours_kind(o.and_then(|o| o.platform.as_deref()), o.and_then(|o| o.domain.as_deref()));
+                let target = Target {
+                    kind,
+                    speed_mps: o.map_or(0.0, |o| o.ve.hypot(o.vn)),
+                    armed: o.is_some_and(|o| o.armed),
+                    surface: o.and_then(|o| o.domain.as_deref()) == Some("surface"),
+                };
+                let mut r = damage::shot(ctx.seed, &stream, &format!("ours:{uid}"), &w, &target, &c, None);
+                if r.state != DamageState::Undamaged {
+                    r.applied = true;
+                    hurt.push(OursDamaged { uid: uid.to_string(), state: r.state, cause: format!("struck by {} ({})", w.name, i.act) });
+                }
+                i.damage = Some(r);
+            }
+            (None, Some(id)) => {
+                let Some(m) = movers.iter_mut().find(|m| m.contact.id == *id && m.st.exists) else {
+                    continue;
+                };
+                let target = crate::effect::target_of(m);
+                let mut r = damage::shot(ctx.seed, &stream, id, &w, &target, &c, None);
+                crate::effect::put(m, &mut r, i.t);
+                i.damage = Some(r);
+            }
+            _ => {}
+        }
+    }
+    hurt
 }
 
 #[cfg(test)]
@@ -178,7 +249,7 @@ mod tests {
         let s = Scenario::from_toml(&format!("{ARMED}[[act]]\nid = \"a1\"\nat_s = 10\nby = \"boat\"\nagainst_vehicle = 1\n")).expect("parses");
         assert_eq!(aim_at(&s), vec![1]);
         let (vlat, vlon) = (37.8120, -122.4950 + 1000.0 / (M_PER_DEG * 37.812f64.to_radians().cos()));
-        let ours = BTreeMap::from([(1, OursAt { uid: 1, lat: vlat, lon: vlon, alt_m: 0.0, ve: 0.0, vn: 5.0 })]);
+        let ours = BTreeMap::from([(1, OursAt { uid: 1, lat: vlat, lon: vlon, alt_m: 0.0, ve: 0.0, vn: 5.0, platform: None, domain: None, armed: false })]);
         let mut armory = Armory::default();
         let mut acts = vec![act("a1", 1000.0, 1)];
         armory.launch(&s, &mut acts, &[], &ours);
@@ -205,7 +276,7 @@ mod tests {
     #[test]
     fn a_launch_out_of_range_or_blind_is_held() {
         let s = Scenario::from_toml(ARMED).expect("parses");
-        let far = BTreeMap::from([(1, OursAt { uid: 1, lat: 37.8120 + 6000.0 / M_PER_DEG, lon: -122.4950, alt_m: 0.0, ve: 0.0, vn: 0.0 })]);
+        let far = BTreeMap::from([(1, OursAt { uid: 1, lat: 37.8120 + 6000.0 / M_PER_DEG, lon: -122.4950, alt_m: 0.0, ve: 0.0, vn: 0.0, platform: None, domain: None, armed: false })]);
         let mut armory = Armory::default();
         let mut acts = vec![act("a1", 10.0, 1), act("a2", 10.0, 2)];
         armory.launch(&s, &mut acts, &[], &far);
@@ -236,5 +307,59 @@ mod tests {
         assert!(e.contains("beyond"), "{e}");
         assert!(Scenario::from_toml(&ARMED.replace("\"atgm\"", "\"railgun\"")).and_then(|s| s.contacts()).is_err());
         assert!(Scenario::from_toml(&format!("{ARMED}[sensing]\nmodel = \"legacy\"\n")).is_err());
+    }
+
+    /// With figures, a strike on one of ours is drawn on the act's stream: a certain hit with a
+    /// certain mobility kill hands HUNTER 1 back as stopped; a certain miss hands nothing back.
+    /// A shooter whose weapon a strike put out of action holds its next act's fire. Without
+    /// figures the impact carries no damage (the bytes as before).
+    #[test]
+    fn a_strike_with_figures_damages_its_victim() {
+        let with = |figs: &str| {
+            ARMED.replace(
+                "range_m = 5000 }",
+                &format!("range_m = 5000, warhead_kg = 9, guidance = \"semi_active_laser\", effects = {{ small_fast_boat = {figs} }} }}"),
+            )
+        };
+        let acts = "[[act]]\nid = \"a1\"\nat_s = 10\nby = \"boat\"\nagainst_vehicle = 1\n";
+        let ours = BTreeMap::from([(
+            1,
+            OursAt { uid: 1, lat: 37.8120, lon: -122.4836, alt_m: 0.0, ve: 0.0, vn: 0.0, platform: Some("seahunter".into()), domain: Some("surface".into()), armed: false },
+        )]);
+        let ctx = DamageCtx { seed: 17, conditions: None, hit_override: None };
+        let run = |toml: &str| {
+            let s = Scenario::from_toml(&format!("{toml}{acts}")).expect("parses");
+            let mut movers: Vec<Mover> = s.contacts().expect("valid").into_iter().enumerate().map(|(i, c)| Mover::new(c, 1, i as u64)).collect();
+            for m in &mut movers {
+                m.step(1.0, 1.0, None);
+            }
+            let mut armory = Armory::default();
+            let mut a = vec![act("a1", 1000.0, 1)];
+            armory.launch(&s, &mut a, &movers, &ours);
+            let mut hits = armory.impacts(1010.0);
+            let hurt = strike(&s, &mut hits, &mut movers, &ours, &ctx);
+            (hits, hurt)
+        };
+        // the Sea Hunter counts as a fishing boat: figures for small_fast_boat only, so no hit
+        let (hits, hurt) = run(&with("{ p_hit = 1.0, p_mobility = 1.0 }"));
+        assert!(hurt.is_empty() && hits[0].damage.as_ref().is_some_and(|d| !d.hit && d.figures.is_none()));
+        let fishing = |figs: &str| with(figs).replace("small_fast_boat = {", "fishing_vessel = {");
+        let (hits, hurt) = run(&fishing("{ p_hit = 1.0, p_mobility = 1.0 }"));
+        assert_eq!(hurt, vec![OursDamaged { uid: "1".into(), state: DamageState::Mobility, cause: "struck by ATGM-class missile (a1)".into() }]);
+        assert!(hits[0].damage.as_ref().is_some_and(|d| d.hit && d.applied && d.who == "ours:1"));
+        let (_, hurt) = run(&fishing("{ p_hit = 0.0, p_kill = 1.0 }"));
+        assert!(hurt.is_empty());
+        let (hits, hurt) = run(ARMED);
+        assert!(hurt.is_empty() && hits[0].damage.is_none());
+        assert!(!serde_json::to_string(&hits[0]).expect("json").contains("damage"));
+        // a disarmed shooter holds its fire
+        let s = Scenario::from_toml(&format!("{ARMED}{acts}")).expect("parses");
+        let mut movers: Vec<Mover> = s.contacts().expect("valid").into_iter().enumerate().map(|(i, c)| Mover::new(c, 1, i as u64)).collect();
+        movers[0].damage(DamageState::Firepower, 900.0);
+        let mut armory = Armory::default();
+        let mut a = vec![act("a1", 1000.0, 1)];
+        armory.launch(&s, &mut a, &movers, &ours);
+        assert!(a[0].held.as_deref().is_some_and(|h| h.contains("out of action")), "{:?}", a[0].held);
+        assert!(armory.is_empty());
     }
 }

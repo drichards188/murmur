@@ -616,6 +616,10 @@ pub enum Action {
         /// Its altitude above mean sea level, m (reported with its position).
         #[serde(default)]
         alt_m: Option<f64>,
+        /// Rules 25: it reports damage of its own (`{ mobility = true }`, `{ firepower = true }`):
+        /// the bridge's `damage` fact, stamped now; it never heals.
+        #[serde(default)]
+        damage: Option<crate::world::VehicleDamage>,
     },
     /// Rules 9: an abstract hostile act (no weapon of any kind: a time, a victim and where its
     /// author appeared to be). The contact behind track `by_track` (or an untracked contact at
@@ -1117,6 +1121,8 @@ struct VehicleSim {
     alt: Option<f64>,
     /// when its link was cut (it then hears no GCS either)
     silent_since: Option<u32>,
+    /// rules 25: the damage it reported of itself, and when
+    damage: Option<Fact<crate::world::VehicleDamage>>,
 }
 
 struct TrackSim {
@@ -1337,6 +1343,7 @@ pub fn run(
                 orbit: false,
                 alt: v.alt_m,
                 silent_since: v.lost_for_s.map(|_| 0),
+                damage: None,
             },
         );
     }
@@ -2273,6 +2280,7 @@ fn snapshot(
                 alt_msl_m: v.alt.map(|a| Fact::new(a, t)),
                 platform: p,
                 booted_t: None,
+                damage: v.damage.clone(),
             },
         );
         // who it is, as the bridge would say (rules 12: a carried hold; rules 15: an un-spend),
@@ -3115,12 +3123,21 @@ fn act(
             circling,
             reported_circle,
             alt_m,
+            damage,
         } => {
             let Some(v) = vehicles.get_mut(uid) else {
                 return failures.push(format!("t={s}: unknown vehicle {uid}"));
             };
             if let Some(a) = alt_m {
                 v.alt = Some(*a);
+            }
+            if let Some(d) = damage {
+                let was = v.damage.take().map(|f| f.value).unwrap_or_default();
+                let d = crate::world::VehicleDamage {
+                    mobility: was.mobility || d.mobility,
+                    firepower: was.firepower || d.firepower,
+                };
+                v.damage = Some(Fact::new(d, now));
             }
             if let Some(p) = at {
                 v.pos = LonLat::new(p[0], p[1]);
@@ -4402,6 +4419,29 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
             if !done {
                 return Err("no counted weapon released to edit".into());
+            }
+        }
+        "drop_damage" => {
+            // rules 25: a platform's own damage report hidden from every decision that logged it
+            // (as if its weapons had been in action)
+            let mut done = false;
+            for e in &mut events {
+                let inputs = match &mut e.body {
+                    EventBody::CheckResult { inputs, .. }
+                    | EventBody::PolicyDecision { inputs, .. }
+                    | EventBody::IntentQueued { inputs, .. }
+                    | EventBody::EngagePicture { inputs, .. } => Some(inputs),
+                    EventBody::IntentDispatched { inputs, .. } => inputs.as_mut(),
+                    _ => None,
+                };
+                for v in inputs.into_iter().flat_map(|i| i.vehicles.values_mut()) {
+                    if v.damage.take().is_some() {
+                        done = true;
+                    }
+                }
+            }
+            if !done {
+                return Err("no damage report in any decision's inputs".into());
             }
         }
         "edit_munition" => {

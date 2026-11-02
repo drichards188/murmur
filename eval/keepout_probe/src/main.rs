@@ -220,6 +220,7 @@ pub fn vehicle(catalog: &Catalog, platform: &str, at: [f64; 2], velocity: [f64; 
         alt_msl_m: None,
         platform: Some(p),
         booted_t: None,
+        damage: None,
     })
 }
 

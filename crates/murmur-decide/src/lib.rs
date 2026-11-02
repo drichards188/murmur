@@ -253,6 +253,7 @@
 //!     circling: None,
 //!     alt_msl_m: None,
 //!     booted_t: None,
+//!     damage: None,
 //! });
 //!
 //! // An agent proposes; policy sends it to the inbox.
@@ -360,7 +361,7 @@ pub use queue::{
 };
 pub use route::{LegKind, Route, RouteLeg, Segment};
 pub use rules::{
-    ACCEPT_BEHAVING_SINCE, AIRCRAFT_REACH_SINCE, CARRY_FOLLOWUPS_SINCE, CheckResult, IDENTIFY_OWN_LOOK_SINCE, IDENTIFY_SECOND_LOOK_SINCE, IDENTIFY_SINCE, LOADOUT_SINCE, LOST_CONTACT_SINCE, MUNITION_FLIGHT_SINCE, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
+    ACCEPT_BEHAVING_SINCE, AIRCRAFT_REACH_SINCE, CARRY_FOLLOWUPS_SINCE, CheckResult, DAMAGE_SINCE, IDENTIFY_OWN_LOOK_SINCE, IDENTIFY_SECOND_LOOK_SINCE, IDENTIFY_SINCE, LOADOUT_SINCE, LOST_CONTACT_SINCE, MUNITION_FLIGHT_SINCE, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
     QUEUE_FOLLOWUPS_SINCE, REVIEW_FOLLOWUPS_SINCE, ROUTE_PLAN_SINCE, ROUTE_SURFACE_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_VERSION,
     RuleId, RulesConfig, SPACE_FOLLOWUPS_SINCE, SPACE_REPLAY_SINCE, STEP_UP_SCHEMA_SINCE, UnknownEndurance, VELOCITY_SIGMA_SINCE,
 };
@@ -373,5 +374,5 @@ pub use terrain::{NearSample, NoTerrain, PolygonTerrain, Surface, TerrainOracle}
 pub use time::{Clock, ManualClock, SystemClock, Time};
 pub use world::{
     AisIdentity, Affiliation, Circle, CircleSource, Fact, GpsFixFrom, LegSurfaces, LoggedInputs, Manoeuvre, LoggedSpace, SpaceInputs, TerrainInputs, TrackFacts,
-    VehicleFacts, WorldSnapshot,
+    VehicleDamage, VehicleFacts, WorldSnapshot,
 };

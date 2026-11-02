@@ -1006,7 +1006,20 @@ rules 15 alert (spent, still heard) follows once the engagement is over. Every e
 whether it hit and whether the platform left are in truth's `effects` and the record's
 `effects.applied` (evaluation only: nothing of it reaches the bridge's API or the MCP tools).
 Without `effects` an effect is applied as the contacts process applies it and the platform
-flies on, as before.
+flies on, as before. **The damage model** (bd murmur-lbw8.2, DECISIONS.md "Warheads and
+damage"): an effect whose weapon lists hit and damage figures (the catalog's `effects`: every
+usable weapon of the loadouts, so the v3 worlds' armed MQ-9B; never the v1 and v2 worlds, which
+fly no loadout) is drawn as the contacts process draws it (crates/murmur-contacts `damage.rs`,
+seeded by the episode seed and the intent, as the evaluation's full stack seeds its contacts
+process, so the same outcome there and here): a hit against
+the target's kind in the scenario's conditions, then destroyed (out of play), propulsion lost
+(it drifts or stands, still in the picture), weapons out or undamaged, and collateral draws
+within the warhead's blast radius, ours included (a vehicle of ours destroyed leaves the world,
+one whose propulsion is lost steps unpowered, and each that can reports it itself). With
+`effects` set, such an effect's record says so (`model`: `damage`; an abstract effect's record is
+as before), and a `p_hit` given there replaces the target's hit chance (an evaluation's knob,
+recorded as a factor of the draw; the damage given a hit and the collateral stay the model's);
+without one the weapon's figures decide.
 
 **The signers** (`Options.signers = {"preset": ..., ...}`). eval/proxy.py's
 `EngagementSigners` on simulated time, its own `next_signer` deciding who signs next (never the

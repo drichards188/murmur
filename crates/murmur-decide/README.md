@@ -2037,6 +2037,41 @@ Rules versions:
   `tests/data/audit/v24-engagement-scenario-01.jsonl`,
   `v24-rounds-spent-then-another-weapon-scenario-119.jsonl` (relabelled rules 23, its weapons
   are caught).
+- **25** (bd murmur-lbw8.2, the owner's direction of 2026-11-02, DECISIONS.md "Warheads and
+  damage"; every gate reads `DAMAGE_SINCE`; no policy key changes, schema 7; a v25 log carries
+  every rules 24 behaviour too): *a weapon's strike is a hit draw and a damage outcome on the
+  truth side, and the engine reads only what our own vehicles report of themselves*. The draw
+  never enters the engine (crates/murmur-contacts `damage`, the catalog's `effects` by target
+  kind: `p_hit`, then given a hit `p_kill`, `p_mobility`, `p_firepower`; `catalog::KIND_ALIASES`
+  maps the other contact kinds onto those the figures name, the truth side's table the same).
+  Two things change here. A vehicle's own damage report is a fact (`VehicleFacts::damage`,
+  `{ mobility, firepower }` stamped with its latest report; the bridge fills it from the
+  vehicle's STATUSTEXT `DAMAGE mobility: ...` or `DAMAGE firepower: ...`): the `weapon` check
+  refuses every weapon of a platform whose vehicle reported its weapons out of action ("the
+  vehicle reported its weapons out of action (reported 7 s ago): no weapon of mq9b_armed's
+  loadout can be used", with ": the nomination names X" when it names one), and a platform that
+  is its own weapon (`self`) whose vehicle reported its propulsion lost ("Switchblade 600 is the
+  platform itself, whose vehicle reported its propulsion lost (...): it can't reach a target");
+  it runs where rules 24's does (the nomination, each signature on the frozen plan, every
+  picture), so a report after dispatch stops the engagement with its fallback. And the check's
+  detail, when it passes, shows the weapon's figures against the track's estimated kind ("against
+  a small_fast_boat, as estimated: a hit 0.75 in good conditions, and given a hit destroyed 0.85,
+  propulsion lost 0.10, weapons out 0.05"; an alias's under its own name, "(the cargo_ship
+  figures)"; "no hit or damage figures against a small_drone (the weapon can't engage one)"; "the
+  target's kind is not estimated, ..."), so a person reads what the weapon is expected to do
+  before signing. The engine drops the damage fact before logging under older rules (no build of
+  theirs logged one), and a log claiming rules 24 or older can't carry one (marker
+  `"damage":{"value":`). Replay recomputes the check from each decision's logged inputs.
+  `EffectOrder::weapon` hands the bridge the released weapon's catalog facts for the truth side
+  (not logged). Scenarios 121 (the MQ-9B nominated, the Hellfire picked with its figures shown;
+  it reports its weapons out of action before the first signature, which the re-checked plan then
+  refuses; a new nomination refused at once; tamper `drop_damage`, the report hidden from every
+  decision, is caught) and 122 (a Switchblade that lost its propulsion is refused). The scenario
+  runner's `vehicle` step takes `damage = { mobility = true }` or `{ firepower = true }`.
+  `tests/rules25.rs`. Fixtures (a clean build of the branch):
+  `tests/data/audit/v25-engagement-scenario-01.jsonl`,
+  `v25-weapons-out-of-action-scenario-121.jsonl` (relabelled rules 24, its damage report is
+  caught).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

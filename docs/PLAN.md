@@ -277,7 +277,8 @@ Exit: the 30%-loss write-up (murmur-t7d), with numbers.
 
 ## Phase E: engagement decision chain
 
-Effects are abstract events (a point, a radius, a time, a hit-or-miss draw). Since 2026-10-26
+Effects were abstract events (a point, a radius, a time, a hit-or-miss draw) until stage 2 of the
+real weapons below gave them a damage model. Since 2026-10-26
 (the owner: "key to situational awareness") a munition is shown in flight from its release to its
 impact and the strike is animated, so an operator sees what is on the way and when it lands. Since
 2026-11-02 (the owner: real weapons on every platform armed in real life, bd murmur-lbw8) armed
@@ -285,9 +286,14 @@ platforms carry their real loadouts in four stages: stage 1, built as decision r
 (murmur-lbw8.1): named weapons with their public figures (count, minimum and maximum range,
 speed, profile, guidance, warhead, target domains), an engagement's weapon named or picked by
 the engine and frozen with the plan, released within that weapon's own ranges, and rounds
-counted per release, replayed and carried over a restart; stage 2 (murmur-lbw8.2) a hit chance
-by weapon and target and a damage model; stage 3 (murmur-lbw8.3) guns; stage 4 (murmur-lbw8.4)
-mines. No autonomous engagement, two human signatures, the authorize step closed to agents in
+counted per release, replayed and carried over a restart; stage 2, built (murmur-lbw8.2, the
+truth side's damage model and decision rules 25): a hit draw by weapon and target kind in the
+conditions, then destroyed, propulsion lost, weapons out of action or undamaged, with collateral
+draws within the warhead's blast radius, seeded per strike so a scenario reruns the same; the C2
+senses the result (a stopped boat stays in the picture, a sunk one leaves) and the engine reads
+only our vehicles' own damage reports (weapons out of action refuse the loadout); the weapon
+check shows the weapon's figures against the target's estimated kind; stage 3 (murmur-lbw8.3)
+guns; stage 4 (murmur-lbw8.4) mines. No autonomous engagement, two human signatures, the authorize step closed to agents in
 code, every order to an armed platform waiting for a person; no terminal guidance or aim-point
 optimisation.
 

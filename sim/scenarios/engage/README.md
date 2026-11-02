@@ -120,7 +120,9 @@ tamper = "suppress_void"         # optional log attack replay must catch: propos
                                  # confirm_by_agent, move_drop, redrop,
                                  # and rules 19: drop_behaving_acceptance,
                                  # drop_behaving_lapse, behaving_acceptance_by_agent,
-                                 # and rules 20: edit_munition
+                                 # and rules 20: edit_munition,
+                                 # and rules 24: edit_rounds,
+                                 # and rules 25: drop_damage
                                  # (one with nothing to edit in a run's log reports "not
                                  # applicable")
 end_s = 120                      # seconds to run (default: the last step + 10)
@@ -260,7 +262,7 @@ Actions (each `[[step]]` has `at_s` and `action`):
 | `track` | `id` and any of `at`, `velocity`, `affiliation`, `declared_by`, `undeclare`, `identity`, `identity_confidence`, `sigma_m`, `domain`, `silent`, `velocity_error`, `alt_m`, `tracked_s`, `ais` (rules 16), `velocity_sigma_mps` (rules 18), `level` and `level_by` (rules 21), `level_conflict` (rules 22) | a track changes (or appears); `velocity` is how the contact really moves, `velocity_error` how far the tracker's estimate is off it; `tracked_s` (rules 12) when one this step makes was started (0: a new track); `velocity_sigma_mps` the velocity's 1-sigma error the tracker now reports; `level` (`detect`, `recognise`, `identify`) how specific its identity now is and `level_by` the sensors whose looks identified it (an identify order ends on it; from rules 22 only on one of our own sensors, not `ais`, after the order went out; from rules 23 only on the vehicle sent's own, its uid before the colon), `level_conflict` the tracker's identity conflict on it then |
 | `write_off` | `by`, `uid` or `log`, `note` | rules 12: an operator writes off the lost-link values owed back to one of our vehicles, saying why (`restore.closed`); rules 15: or an earlier log whose carry failed (`log`) |
 | `unspend` | `by`, `uid`, `note` | rules 15: an operator with engagement authority un-spends a platform spent by its own effect, saying why (`platform.unspent`), once the engagement that spent it ended and it was heard after that and is not silent; without engagement authority it is refused (a scenario has no credentials: no step-up) |
-| `vehicle` | `uid` and any of `at`, `velocity`, `silent`, `report_interval_ms`, `nav` (`gnss`, `dead_reckoning`), `gps_fix` (3: a 3D fix), `gps_glitch`, `circling`, `reported_circle`, `alt_m` | one of ours changes; `silent` cuts its link (both ways: it hears no GCS either) |
+| `vehicle` | `uid` and any of `at`, `velocity`, `silent`, `report_interval_ms`, `nav` (`gnss`, `dead_reckoning`), `gps_fix` (3: a 3D fix), `gps_glitch`, `circling`, `reported_circle`, `alt_m`, `damage` (rules 25: `{ mobility = true }`, `{ firepower = true }`) | one of ours changes; `silent` cuts its link (both ways: it hears no GCS either); `damage` is a damage report of its own (never healed) |
 | `expect` | `state`, `rule`, `concurrences`, `task_state`, `task_reason` | check the last nomination now (`task_state`: the last `task` step's intent; `task_reason`: a substring of why it is in that state) |
 
 Approved engagements are dispatched at once (as the bridge does). Every second the runner

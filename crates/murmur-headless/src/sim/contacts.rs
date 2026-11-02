@@ -14,6 +14,14 @@
 //! (evaluation truth only, never reachable from the bridge's API or the MCP tools). Rules 20: an
 //! effect a munition carries is held until its impact (`effect::InFlight`, as the process holds
 //! it) and drawn and applied then.
+//!
+//! The damage model (bd murmur-lbw8.2): an effect whose weapon lists hit and damage figures is
+//! drawn as the contacts process draws it (`effect::apply_with`, on the episode seed and the
+//! intent: the evaluation's full stack gives its contacts process the episode seed,
+//! `MURMUR_CONTACTS_SEED`, so the same outcomes there and here), unless the episode's `effects` give a `p_hit`: then
+//! that is the target's hit chance (an evaluation's override, recorded), the damage given a hit
+//! and the collateral still the model's. Our vehicles it hurt take their damage in the fleet
+//! ([`Ours`]): a lost propulsion steps unpowered, a destroyed one leaves the world.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -21,7 +29,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Method, Request, header};
-use murmur_contacts::effect::{self, EffectApplied, EffectNotice};
+use murmur_contacts::effect::{self, DamageCtx, EffectApplied, EffectNotice, OursDamaged};
 use murmur_contacts::motion::Mover;
 use murmur_contacts::scenario::Scenario;
 use murmur_contacts::truth::TruthMessage;
@@ -42,6 +50,28 @@ pub struct EffectSim {
     /// The fleet's platforms whose catalog says `expended_by_effect`: uid -> stand-in index.
     pub expended: BTreeMap<String, usize>,
     pub fleet: Arc<Fleet>,
+}
+
+/// Our vehicles, for the damage model's damage to them: the fleet and each uid's stand-in; and the
+/// episode seed, which the model's draws read.
+pub struct Ours {
+    pub fleet: Arc<Fleet>,
+    pub by_uid: BTreeMap<String, usize>,
+    pub seed: u64,
+}
+
+impl Ours {
+    /// Put each hurt vehicle's damage on its stand-in (destroyed: it leaves the world).
+    fn take(&self, hurt: &[OursDamaged]) {
+        for h in hurt {
+            let Some(&i) = self.by_uid.get(&h.uid) else { continue };
+            let Some(state) = murmur_standins::damage::State::parse(h.state.as_str()) else { continue };
+            if state == murmur_standins::damage::State::Destroyed {
+                self.fleet.remove(i);
+            }
+            self.fleet.write(i, |v| v.take_damage(state));
+        }
+    }
 }
 
 /// A uniform in [0, 1) from (seed, intent): splitmix64 over the two, so an effect's draw
@@ -84,19 +114,31 @@ fn missed(e: &EffectNotice, movers: &[Mover], now: f64) -> EffectApplied {
         out_of_play: Vec::new(),
         collateral: Default::default(),
         impact_t: e.impact_t,
+        weapon: None,
+        damage: Vec::new(),
+        ours_damaged: Vec::new(),
     }
 }
 
-/// Apply one effect: as the contacts process does without `fx`; with it, the draw decides
-/// whether it hits, and a platform spent by its own effect leaves the world. Returns what was
-/// applied and, with `fx`, the record of the draw.
-fn apply_effect(e: &EffectNotice, movers: &mut [Mover], now: f64, fx: Option<&EffectSim>) -> (EffectApplied, Option<Value>) {
+/// Apply one effect: as the contacts process does without `fx` (the damage model's draw when its
+/// weapon lists figures); with it, an abstract effect's hit is the episode's draw, and a platform
+/// spent by its own effect leaves the world. Returns what was applied and, with `fx`, the record
+/// of the draw.
+fn apply_effect(e: &EffectNotice, movers: &mut [Mover], now: f64, fx: Option<&EffectSim>, ctx: &DamageCtx) -> (EffectApplied, Option<Value>) {
     let Some(fx) = fx else {
-        return (effect::apply(e, movers, now), None);
+        return (effect::apply_with(e, movers, now, Some(ctx)), None);
     };
-    let u = effect_draw(fx.seed, e.intent);
-    let hit = u < fx.cfg.p_hit;
-    let applied = if hit { effect::apply(e, movers, now) } else { missed(e, movers, now) };
+    let modelled = e.weapon.as_ref().is_some_and(|w| w.modelled());
+    let (u, hit, applied) = if modelled {
+        let ctx = DamageCtx { hit_override: fx.cfg.p_hit, ..*ctx };
+        let a = effect::apply_with(e, movers, now, Some(&ctx));
+        let target = a.damage.iter().find(|d| d.role == "target");
+        (target.map_or(1.0, |d| d.u_hit), target.is_some_and(|d| d.hit), a)
+    } else {
+        let u = effect_draw(fx.seed, e.intent);
+        let hit = u < fx.cfg.p_hit.unwrap_or(1.0);
+        (u, hit, if hit { effect::apply(e, movers, now) } else { missed(e, movers, now) })
+    };
     let spent = e.platform.as_ref().and_then(|p| fx.expended.get(p).map(|i| (p.clone(), *i)));
     let removed = match &spent {
         Some((_, i)) if fx.cfg.spend_expended && (hit || !fx.cfg.survives_miss) => {
@@ -105,18 +147,22 @@ fn apply_effect(e: &EffectNotice, movers: &mut [Mover], now: f64, fx: Option<&Ef
         }
         _ => false,
     };
-    let record = json!({
+    let mut record = json!({
         "intent": e.intent,
         "track": e.track,
         "target_contact": e.target_contact,
         "platform": e.platform,
-        "p_hit": fx.cfg.p_hit,
+        "p_hit": if modelled { json!(fx.cfg.p_hit) } else { json!(fx.cfg.p_hit.unwrap_or(1.0)) },
         "u": u,
         "hit": hit,
         "expended_by_effect": spent.is_some(),
         "platform_removed": removed,
         "applied": serde_json::to_value(&applied).unwrap_or(Value::Null),
     });
+    // the damage model drew it (an abstract effect's record is as before)
+    if modelled {
+        record["model"] = json!("damage");
+    }
     (applied, Some(record))
 }
 
@@ -223,6 +269,7 @@ impl Contacts {
 /// The process's loop from `start`: a message every second, the first at once. A message before
 /// `bridge_up` is lost (no bridge answers yet: the live process logs the error and goes on).
 /// `water`: the episode's water, its zero and epoch (its scenario time is the situation's).
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     c: Arc<Contacts>,
     api: axum::Router,
@@ -231,8 +278,10 @@ pub async fn run(
     bridge_up: Instant,
     fx: Option<EffectSim>,
     water: (Arc<Water>, Instant, f64),
+    ours: Ours,
 ) {
     let (water, zero, epoch) = water;
+    let ctx = DamageCtx { seed: ours.seed, conditions: c.scenario.conditions, hit_override: None };
     let period = Duration::from_secs(1);
     tokio::time::sleep_until(start).await;
     let mut every = tokio::time::interval(period);
@@ -258,7 +307,7 @@ pub async fn run(
             }
             // a munition whose impact has come strikes now, before this truth goes out
             for e in in_flight.due(c.t0_unix + s) {
-                applied.push(land(&c, &e, &mut movers, s, fx.as_ref()));
+                applied.push(land(&c, &e, &mut movers, s, fx.as_ref(), &ctx, &ours));
             }
             seq += 1;
             let mut msg = TruthMessage::build(
@@ -314,15 +363,18 @@ pub async fn run(
             }
             // at once, unless a munition is still in flight to it (rules 20)
             for e in in_flight.due(c.t0_unix + s) {
-                applied.push(land(&c, &e, &mut movers, s, fx.as_ref()));
+                applied.push(land(&c, &e, &mut movers, s, fx.as_ref(), &ctx, &ours));
             }
         }
     }
 }
 
-/// Apply one effect at the contacts' scenario second `s` (its draw with `fx`), recording it.
-fn land(c: &Contacts, e: &EffectNotice, movers: &mut [Mover], s: f64, fx: Option<&EffectSim>) -> EffectApplied {
-    let (a, record) = apply_effect(e, movers, c.t0_unix + s, fx);
+/// Apply one effect at the contacts' scenario second `s` (its draw with `fx`), recording it; our
+/// vehicles it hurt take their damage.
+#[allow(clippy::too_many_arguments)]
+fn land(c: &Contacts, e: &EffectNotice, movers: &mut [Mover], s: f64, fx: Option<&EffectSim>, ctx: &DamageCtx, ours: &Ours) -> EffectApplied {
+    let (a, record) = apply_effect(e, movers, c.t0_unix + s, fx, ctx);
+    ours.take(&a.ours_damaged);
     if let Some(mut r) = record {
         // the contacts' scenario second it was applied at
         r["s"] = json!(s);

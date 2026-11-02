@@ -223,6 +223,11 @@ pub struct Vehicle {
     pub seen: FactTimes,
     /// Events for the audit log (`vehicle.event`), oldest first.
     pub events: VecDeque<VehicleEvent>,
+    /// Rules 25: the damage the vehicle reported of itself after a strike (its STATUSTEXT
+    /// `DAMAGE mobility: ...`, `DAMAGE firepower: ...`, as a stand-in reports what the truth
+    /// side's damage model did to it; bd murmur-lbw8.2). Never healed in a run. None: none
+    /// reported.
+    pub damage: Option<DamageReport>,
     system_status: Option<apm::MavState>,
     /// When anything was last heard from it (monotonic s, the tokio clock): the task layer
     /// tells a lost link mid-exchange from a vehicle that refuses.
@@ -288,9 +293,43 @@ pub struct LoiterCircle {
 /// Something the vehicle did or said that belongs in the audit log.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VehicleEvent {
-    /// "mode", "failsafe", "statustext" or "struck" (an opponent weapon's strike)
+    /// "mode", "failsafe", "statustext", "struck" (an opponent weapon's strike) or "damage"
+    /// (its own report of damage after a strike: propulsion lost, weapons out of action)
     pub kind: &'static str,
     pub text: String,
+}
+
+/// Rules 25: what a vehicle reported damaged in itself, and when (the bridge's clock, s): first
+/// and latest (a damaged vehicle repeats its report every 30 s).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct DamageReport {
+    pub mobility: bool,
+    pub firepower: bool,
+    pub since: f64,
+    pub last: f64,
+}
+
+impl DamageReport {
+    /// The damage a STATUSTEXT reports, if it is a damage report (`DAMAGE mobility: ...`,
+    /// `DAMAGE firepower: ...`): (mobility, firepower).
+    pub fn parse(text: &str) -> Option<(bool, bool)> {
+        let rest = text.strip_prefix("DAMAGE ")?;
+        let word = rest.split(|c: char| c == ':' || c.is_whitespace()).next()?;
+        match word {
+            "mobility" => Some((true, false)),
+            "firepower" => Some((false, true)),
+            _ => None,
+        }
+    }
+
+    pub fn describe(&self) -> &'static str {
+        match (self.mobility, self.firepower) {
+            (true, true) => "propulsion lost and weapons out of action",
+            (true, false) => "propulsion lost",
+            (false, true) => "weapons out of action",
+            (false, false) => "no damage",
+        }
+    }
 }
 
 /// A reboot the bridge saw: the time since boot before and after (ms), the new boot instant
@@ -467,16 +506,32 @@ impl Vehicle {
             }
             MavMessage::MISSION_CURRENT(m) => self.mission_seq = Some(m.seq),
             MavMessage::STATUSTEXT(m) => {
+                let text = mav::chars_to_string(&m.text);
+                // rules 25: a damage report: a new kind of damage is a `damage` event, a repeat
+                // only refreshes it
+                if let Some((mobility, firepower)) = DamageReport::parse(&text) {
+                    let now = clock::wall();
+                    let d = self.damage.get_or_insert(DamageReport { since: now, ..DamageReport::default() });
+                    let new = (mobility && !d.mobility) || (firepower && !d.firepower);
+                    d.mobility |= mobility;
+                    d.firepower |= firepower;
+                    d.last = now;
+                    if !new {
+                        return true;
+                    }
+                    let what = d.describe();
+                    self.push_event("damage", format!("[severity {}] {text}: reports {what}", m.severity as u8));
+                } else {
+                    let kind = if text.to_ascii_lowercase().contains("failsafe") {
+                        "failsafe"
+                    } else {
+                        "statustext"
+                    };
+                    self.push_event(kind, format!("[severity {}] {text}", m.severity as u8));
+                }
                 if self.statustext.len() == STATUSTEXT_KEEP {
                     self.statustext.pop_front();
                 }
-                let text = mav::chars_to_string(&m.text);
-                let kind = if text.to_ascii_lowercase().contains("failsafe") {
-                    "failsafe"
-                } else {
-                    "statustext"
-                };
-                self.push_event(kind, format!("[severity {}] {text}", m.severity as u8));
                 self.statustext.push_back(StatusText {
                     t: clock::wall(),
                     severity: m.severity as u8,
@@ -975,6 +1030,31 @@ mod tests {
             hdg: 9000,
             ..Default::default()
         })
+    }
+
+    /// Rules 25: a vehicle's own damage report (a stand-in's STATUSTEXT) becomes its damage fact
+    /// and one `damage` event per new kind of damage; a repeat only refreshes it, and an ordinary
+    /// text is an ordinary event.
+    #[test]
+    fn a_damage_report_is_a_fact_and_an_event_once() {
+        let text = |s: &str| {
+            MavMessage::STATUSTEXT(apm::STATUSTEXT_DATA {
+                severity: apm::MavSeverity::MAV_SEVERITY_CRITICAL,
+                text: mav::char_array(s),
+                ..Default::default()
+            })
+        };
+        let mut v = Vehicle::default();
+        v.apply(&text("DAMAGE mobility: propulsion lost"), &[], 0.0);
+        v.apply(&text("DAMAGE mobility: propulsion lost"), &[], 30.0);
+        let d = v.damage.expect("reported");
+        assert!(d.mobility && !d.firepower && d.last >= d.since);
+        v.apply(&text("DAMAGE firepower: weapons out of action"), &[], 31.0);
+        v.apply(&text("PreArm: battery low"), &[], 32.0);
+        let kinds: Vec<(&str, bool)> = v.events.iter().map(|e| (e.kind, e.text.contains("reports"))).collect();
+        assert_eq!(kinds, vec![("damage", true), ("damage", true), ("statustext", false)]);
+        assert!(v.events[1].text.ends_with("reports propulsion lost and weapons out of action"), "{}", v.events[1].text);
+        assert_eq!(DamageReport::parse("DAMAGE destroyed"), None);
     }
 
     #[test]

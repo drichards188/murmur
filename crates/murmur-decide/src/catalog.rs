@@ -254,9 +254,15 @@ pub struct Warhead {
     pub mass_kg: f64,
 }
 
-/// Rules 24, read from stage 2 on (bd murmur-lbw8.2), inert now: a weapon's chances against one
-/// kind of target, by the target kind (a domain, or a finer kind stage 2 names): of a hit, and of
-/// the damage a hit does. The catalog may carry it; nothing in stage 1 reads it.
+/// A weapon's figures against one kind of target (the catalog's `effects`, keyed by a contact
+/// kind such as `small_fast_boat`; [`target_kind`] maps the other kinds onto these): the chance of
+/// a hit on one shot in a valid engagement (day, clear, sea state 3 or less), and given a hit the
+/// chance of each damage, `p_kill` destroyed, `p_mobility` its propulsion lost, `p_firepower` its
+/// weapons out of action (armed targets only); the rest of a hit leaves it undamaged. Public,
+/// game-level figures (docs/research/weapons.md section 10, each [E] or sourced in the catalog).
+/// Rules 24 listed the key, inert; from stage 2 (bd murmur-lbw8.2) the truth side draws on it
+/// (crates/murmur-contacts `damage`) and, from rules 25 ([`crate::rules::DAMAGE_SINCE`]), the
+/// weapon check shows it. The engine decides nothing on it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WeaponEffect {
@@ -264,6 +270,35 @@ pub struct WeaponEffect {
     pub p_hit: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub p_kill: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p_mobility: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p_firepower: Option<f64>,
+}
+
+/// Contact kinds the catalog's `effects` do not name, and the kind whose figures stand for each
+/// (docs/research/weapons.md 10.3 and 10.4 give rows for a small fast boat, a fishing boat, a
+/// sailboat, a cargo ship, a car, a truck, a small drone, a light aircraft, a UUV and a person):
+/// each an estimate [E] by size and speed. The truth side keeps the same table
+/// (crates/murmur-contacts `damage::KIND_ALIASES`; crates/murmur-headless tests that they agree).
+pub const KIND_ALIASES: &[(&str, &str)] = &[
+    // a tanker is a cargo ship's size and speed
+    ("tanker", "cargo_ship"),
+    // a bay ferry of hundreds of tonnes is nearer a ship than a 20 m fishing boat for a 9 kg warhead
+    ("ferry", "cargo_ship"),
+    // small, fast and armed
+    ("patrol_boat", "small_fast_boat"),
+    ("helicopter", "light_aircraft"),
+    ("unknown_uas", "small_drone"),
+    // no row for a crewed submarine: the UUV's (only torpedoes reach either)
+    ("submarine", "uuv"),
+    ("periscope", "uuv"),
+    ("diver", "person"),
+];
+
+/// The kind whose figures stand for a contact of `kind` ([`KIND_ALIASES`]; itself otherwise).
+pub fn target_kind(kind: &str) -> &str {
+    KIND_ALIASES.iter().find(|(k, _)| *k == kind).map_or(kind, |(_, to)| to)
 }
 
 /// Rules 24 ([`crate::rules::LOADOUT_SINCE`]): one weapon of a platform's loadout, as the
@@ -351,13 +386,26 @@ impl WeaponFacts {
             return Some(format!("{n}: warhead.mass_kg is 0 or more"));
         }
         for (k, e) in &self.effects {
-            for p in [e.p_hit, e.p_kill].into_iter().flatten() {
+            for p in [e.p_hit, e.p_kill, e.p_mobility, e.p_firepower].into_iter().flatten() {
                 if !(0.0..=1.0).contains(&p) {
                     return Some(format!("{n}: effects.{k}: a chance is between 0 and 1, got {p}"));
                 }
             }
+            let given_hit: f64 = [e.p_kill, e.p_mobility, e.p_firepower].into_iter().flatten().sum();
+            if given_hit > 1.0 + 1e-9 {
+                return Some(format!(
+                    "{n}: effects.{k}: p_kill, p_mobility and p_firepower are shares of a hit, summing to 1 at most (got {given_hit})"
+                ));
+            }
         }
         None
+    }
+
+    /// Rules 25: its figures against a target of `kind` (a contact kind, as the tracker estimates
+    /// it), through [`target_kind`]: the key they are listed under and the figures, if listed.
+    pub fn effect_for(&self, kind: &str) -> Option<(&str, &WeaponEffect)> {
+        let k = target_kind(kind);
+        self.effects.get_key_value(k).map(|(k, e)| (k.as_str(), e))
     }
 }
 

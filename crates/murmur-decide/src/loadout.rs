@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use crate::catalog::{Domain, PlatformFacts, WeaponFacts, WeaponKind};
 use crate::engage::VehicleIdentity;
 use crate::ids::Uid;
+use crate::time::Time;
+use crate::world::{Fact, VehicleDamage};
 
 /// Rules 24: a platform's rounds as a decision reads them (the engine's `rounds` fact, for an
 /// engagement's platform): the rounds of each weapon released in this run, those released in
@@ -118,6 +120,79 @@ pub struct WeaponChoice {
     pub detail: String,
 }
 
+/// Rules 25 ([`crate::rules::DAMAGE_SINCE`]): what a choice reads beside rules 24's: the damage
+/// the platform's vehicle reported of itself (its weapons out of action refuse every weapon; its
+/// propulsion lost refuses a platform that is its own weapon), the target's estimated kind (the
+/// detail shows the weapon's figures against it) and the decision's time. Under older rules it is
+/// [`Rules25::default`]: nothing read.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Rules25<'a> {
+    pub damage: Option<&'a Fact<VehicleDamage>>,
+    pub kind: Option<&'a str>,
+    pub now: Option<Time>,
+    /// Show the weapon's figures (rules 25 on).
+    pub figures: bool,
+}
+
+impl Rules25<'_> {
+    fn reported(&self) -> String {
+        match (self.damage, self.now) {
+            (Some(d), Some(now)) => format!(" (reported {:.0} s ago)", (now.ms_since(d.t) as f64 / 1000.0).max(0.0)),
+            _ => String::new(),
+        }
+    }
+}
+
+/// Rules 25: why no weapon of the platform can be used, its vehicle having reported its weapons
+/// out of action, if it did.
+fn disarmed(id: &str, r: &Rules25) -> Option<String> {
+    r.damage.filter(|d| d.value.firepower).map(|_| {
+        format!(
+            "the vehicle reported its weapons out of action{}: no weapon of {id}'s loadout can be used",
+            r.reported()
+        )
+    })
+}
+
+/// Rules 25: why `w` can't be used by a platform whose vehicle reported its propulsion lost, if
+/// it can't: a platform that is its own weapon can't reach a target.
+fn immobile(w: &WeaponFacts, r: &Rules25) -> Option<String> {
+    let d = &r.damage?.value;
+    (d.mobility && w.kind == WeaponKind::SelfStrike).then(|| {
+        format!(
+            "{} is the platform itself, whose vehicle reported its propulsion lost{}: it can't reach a target",
+            w.name,
+            r.reported()
+        )
+    })
+}
+
+/// Rules 25: the weapon's catalog figures against the target's estimated kind, for the check's
+/// detail (empty for a weapon that lists none).
+pub fn figures(w: &WeaponFacts, kind: Option<&str>) -> String {
+    if w.effects.is_empty() {
+        return String::new();
+    }
+    let Some(kind) = kind else {
+        return "; the target's kind is not estimated, so no hit or damage figures are shown".into();
+    };
+    let Some((key, e)) = w.effect_for(kind) else {
+        return format!("; no hit or damage figures against a {kind} (the weapon can't engage one)");
+    };
+    let mut given = Vec::new();
+    for (p, what) in [(e.p_kill, "destroyed"), (e.p_mobility, "propulsion lost"), (e.p_firepower, "weapons out")] {
+        if let Some(p) = p.filter(|p| *p > 0.0) {
+            given.push(format!("{what} {p:.2}"));
+        }
+    }
+    let as_ = if key == kind { String::new() } else { format!(" (the {key} figures)") };
+    format!(
+        "; against a {kind}{as_}, as estimated: a hit {:.2} in good conditions, and given a hit {}",
+        e.p_hit.unwrap_or(0.0),
+        if given.is_empty() { "no damage".to_string() } else { given.join(", ") }
+    )
+}
+
 /// Why `w` can't be used against a target in `domain` now, if it can't.
 fn unusable(w: &WeaponFacts, rounds: Option<&PlatformRounds>, domain: Option<Domain>) -> Option<String> {
     if let Some(why) = w.kind.inert_why() {
@@ -175,7 +250,28 @@ pub fn choose(
     rounds: Option<&PlatformRounds>,
     domain: Option<Domain>,
 ) -> Result<WeaponChoice, String> {
+    choose_with(named, platform, rounds, domain, &Rules25::default())
+}
+
+/// [`choose`], and from rules 25 what [`Rules25`] reads: a weapon the platform's reported damage
+/// puts out of action is refused (named) or passed over (picked), and the detail of the one used
+/// shows its figures against the target's estimated kind.
+pub fn choose_with(
+    named: Option<&str>,
+    platform: &PlatformFacts,
+    rounds: Option<&PlatformRounds>,
+    domain: Option<Domain>,
+    r25: &Rules25,
+) -> Result<WeaponChoice, String> {
     let id = &platform.id;
+    if let Some(why) = disarmed(id, r25) {
+        return Err(match named {
+            Some(n) => format!("{why}: the nomination names {n}"),
+            None => why,
+        });
+    }
+    let out_of_use = |w: &WeaponFacts| immobile(w, r25).or_else(|| unusable(w, rounds, domain));
+    let shown = |w: &WeaponFacts| if r25.figures { figures(w, r25.kind) } else { String::new() };
     if let Some(n) = named {
         let Some(w) = platform.loadout.iter().find(|w| w.name == n) else {
             return Err(if platform.loadout.is_empty() {
@@ -187,7 +283,7 @@ pub fn choose(
                 )
             });
         };
-        if let Some(why) = unusable(w, rounds, domain) {
+        if let Some(why) = out_of_use(w) {
             return Err(format!("{why}: the nomination names it"));
         }
         let left = left(w, rounds);
@@ -195,12 +291,12 @@ pub fn choose(
             weapon: w.clone(),
             picked: false,
             left,
-            detail: format!("named: {}", describe(w, left)),
+            detail: format!("named: {}{}", describe(w, left), shown(w)),
         });
     }
     let mut passed = Vec::new();
     for w in &platform.loadout {
-        match unusable(w, rounds, domain) {
+        match out_of_use(w) {
             Some(why) => passed.push(why),
             None => {
                 let left = left(w, rounds);
@@ -215,8 +311,9 @@ pub fn choose(
                     picked: true,
                     left,
                     detail: format!(
-                        "picked (none named): {}; the first of {id}'s loadout usable{target} with a round left{over}",
-                        describe(w, left)
+                        "picked (none named): {}; the first of {id}'s loadout usable{target} with a round left{over}{}",
+                        describe(w, left),
+                        shown(w)
                     ),
                 });
             }

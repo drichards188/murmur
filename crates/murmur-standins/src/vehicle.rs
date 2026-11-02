@@ -74,6 +74,14 @@ pub struct Vehicle {
     home_followed: f64,
     rng: Gauss,
     out: Vec<Out>,
+    /// The damage the truth side's damage model put on it ([`crate::damage`]), read from the
+    /// board (None: no damage file followed) when its generation changes.
+    pub damage_board: Option<Arc<crate::damage::Board>>,
+    damage_generation: u64,
+    /// The damage it has taken (never healed).
+    pub damage: Vec<crate::damage::State>,
+    /// When it next repeats its damage report (sim seconds).
+    damage_report_next: f64,
 }
 
 impl Vehicle {
@@ -183,7 +191,57 @@ impl Vehicle {
             home_followed: f64::NEG_INFINITY,
             rng,
             out: Vec::new(),
+            damage_board: None,
+            damage_generation: 0,
+            damage: Vec::new(),
+            damage_report_next: 0.0,
         })
+    }
+
+    /// The truth side's damage model hurt it ([`crate::damage`]): its propulsion lost (it steps
+    /// unpowered from now on), its weapons out of action (nothing moves differently), or
+    /// destroyed (silent from now on). A vehicle that can still talk reports it at once, as an
+    /// autopilot reports a fault, and every [`crate::damage::REPORT_EVERY_S`] after.
+    pub fn take_damage(&mut self, state: crate::damage::State) {
+        if self.damage.contains(&state) {
+            return;
+        }
+        self.damage.push(state);
+        if !self.destroyed() {
+            for text in self.damage.iter().filter_map(|s| s.report()).collect::<Vec<_>>() {
+                self.text(MavSeverity::MAV_SEVERITY_CRITICAL, text);
+            }
+            self.damage_report_next = self.now() + crate::damage::REPORT_EVERY_S;
+        }
+    }
+
+    /// Destroyed by a strike: it neither steps, sends nor answers.
+    pub fn destroyed(&self) -> bool {
+        self.damage.contains(&crate::damage::State::Destroyed)
+    }
+
+    /// Its propulsion lost to a strike: it steps unpowered.
+    pub fn immobile(&self) -> bool {
+        self.damage.contains(&crate::damage::State::Mobility)
+    }
+
+    /// New damage on the board for it, and its report repeated when due.
+    fn damage_tick(&mut self, now: f64) {
+        if let Some(b) = &self.damage_board
+            && b.generation() != self.damage_generation
+        {
+            self.damage_generation = b.generation();
+            let states = b.of(u64::from(self.cfg.uid()));
+            for s in states {
+                self.take_damage(s);
+            }
+        }
+        if !self.damage.is_empty() && !self.destroyed() && now >= self.damage_report_next {
+            self.damage_report_next = now + crate::damage::REPORT_EVERY_S;
+            for text in self.damage.iter().filter_map(|s| s.report()).collect::<Vec<_>>() {
+                self.text(MavSeverity::MAV_SEVERITY_CRITICAL, text);
+            }
+        }
     }
 
     pub fn sysid(&self) -> u8 {
@@ -288,6 +346,10 @@ impl Vehicle {
     pub fn step(&mut self) {
         let dt = 1.0 / f64::from(PHYSICS_HZ);
         let now = self.now();
+        self.damage_tick(now);
+        if self.destroyed() {
+            return;
+        }
         let spec = &self.cfg.spec;
         self.mission.cfg = NavCfg {
             firmware: self.firmware,
@@ -317,8 +379,9 @@ impl Vehicle {
         }
         self.check_failsafes(now);
 
-        // a flat battery drives nothing: the behavior sees an unpowered vehicle
-        let flat = self.flat();
+        // a flat battery drives nothing: the behavior sees an unpowered vehicle (and so does a
+        // vehicle whose propulsion a strike destroyed)
+        let flat = self.flat() || self.immobile();
         let armed = self.st.armed;
         let was_airborne = self.airborne();
         if flat {
@@ -463,6 +526,9 @@ impl Vehicle {
     }
 
     pub fn on_datagram(&mut self, data: &[u8]) {
+        if self.destroyed() {
+            return;
+        }
         for m in link::parse_all(data) {
             match m {
                 Inbound::Msg(h, msg) => self.handle_from(&h, &msg),
@@ -482,6 +548,10 @@ impl Vehicle {
     }
 
     pub fn handle_from(&mut self, header: &mavlink::MavHeader, msg: &MavMessage) {
+        // destroyed by a strike: it answers nothing
+        if self.destroyed() {
+            return;
+        }
         crate::commands::handle(self, header, msg);
     }
 }

@@ -16,7 +16,8 @@ group. Dates are 2026.
   decision-system problem; effects are abstract events. No autonomous engagement: agents
   nominate and explain, the authorize step is closed to them in code. Armed platforms always
   need human approval. Stays inside DoD Directive 3000.09 (appropriate human judgment over use
-  of force).
+  of force). (Effects stopped being abstract on 11-02: see "Warheads and damage" below; the
+  safeguards here stand unchanged.)
 - **Munitions shown in flight and strikes animated** (10-26, the owner: "I want to see munitions
   on the way and an animation when they strike. its key to situational awareness"). Amends the
   entry above: a munition released by a standoff platform is a thing in the picture from release
@@ -34,7 +35,8 @@ group. Dates are 2026.
   inside the radius then; the keep-outs are judged at the strike. The release logs the flight
   (replay recomputes it), the truth side applies the effect at the impact, the assessment starts
   there, and the console is served the flight (`engagement.munition`). A platform spent by its own
-  effect is its own munition and decides as before.
+  effect is its own munition and decides as before. (The line "no warheads, blast or lethality"
+  was reversed on 11-02: see "Warheads and damage" below.)
 - **The opponent's weapon is modelled, and how we know of an attack is sensed** (10-29, the owner on
   the tutorial: "setup the opponent in that tutorial with a weapon it deploys instead of the
   abstract. same as the hellfire model it in a way that safeguards dont trip ... how and when is it
@@ -81,11 +83,48 @@ group. Dates are 2026.
   hostile-act-loitering-munition (the loitering munition's chain, with the MQ-9B as its sensor).
   Waiting for stage 2 (bd murmur-lbw8.2): a hit draw by weapon and target kind and a damage model
   (undamaged, mobility, firepower, destroyed; docs/research/weapons.md section 10); the flight
-  profiles are recorded, not yet flown; the warhead is shown, not yet read. Stage 3 (murmur-lbw8.3):
+  profiles are recorded, not yet flown; the warhead is shown, not yet read (stage 2 built, 11-02:
+  "Warheads and damage" below; the profiles are still not flown). Stage 3 (murmur-lbw8.3):
   guns, bursts from a round count. Stage 4 (murmur-lbw8.4): mines, laid and persistent. Every
   safeguard stands exactly: no autonomous engagement, two human signatures, the authorize step
   closed to agents in code, every order to an armed platform waiting for a human, DoD Directive
   3000.09. An agent may name a weapon in a nomination it proposes; it still signs nothing.
+- **Warheads and damage** (11-02, the owner: "I want all nodes that are supposed to carry weapons
+  in real life to have the war thunder level of real weapons equipped"; asked how far, the owner
+  chose a damage model: loadouts, flight, a hit chance by target, and warheads and damage).
+  Reverses the munitions entry's (10-26) "no warheads, blast or lethality": a strike now has a
+  hit draw and a damage outcome. Stage 2 of bd murmur-lbw8 (murmur-lbw8.2). What it is:
+  game-level, Command: Modern Operations for the draw and War Thunder for the outcome
+  (docs/research/weapons.md section 10). Each weapon of the catalog lists its published or
+  estimated figures by target kind (`effects`: the chance of a hit, then given a hit the shares
+  destroyed, propulsion lost, weapons out of action), each with its source or an [E]; the truth
+  side (crates/murmur-contacts `damage`) draws the hit from them, times the conditions' factors
+  where the research gives one (night and fog by guidance, a rough sea against a small boat, a
+  missile's range, points off for a fast target), then the damage; anything else within the
+  warhead's blast radius (4 m per cube root of its kilograms, [E]) draws for collateral damage,
+  ours included. A destroyed contact leaves play; one whose propulsion is lost stops (a boat
+  drifts) and stays on the water and in the picture; one whose weapon is out stops firing. Every
+  draw is seeded by the run's seed and the strike (the intent, or the act), so a scenario reruns
+  the same, live and headless; the record goes to the evaluation truth log only. Opponent weapons
+  damage ours the same way when their scenario lists figures. The C2 senses results and never
+  reads them: the assessment still reads only our sensors (a stopped boat persists, a sunk one
+  ceases), and of our own vehicles the engine reads only what each reports of itself (rules 25,
+  `DAMAGE_SINCE`: one whose weapons are out of action can't use its loadout, one that is its own
+  weapon can't strike without its propulsion; a destroyed one goes silent). The weapon check
+  shows a person the weapon's figures against the target's estimated kind before they sign; no
+  decision of the engine reads the figures. Rules 16 is unchanged: a destroyed target is a declared hostile,
+  which a lost-contact keep-out already exempts; a destroyed neutral caught in a blast leaves the
+  picture and, once dropped, counts as a lost contact until an operator who saw the strike
+  accepts it for one engagement, which is honest (our sensors cannot tell sunk from out of view).
+  Frozen worlds keep their behaviour: the v1 and v2 worlds fly no loadout, an effect without
+  figures stays abstract (everything inside the radius out of play), and their episodes are the
+  same (the golden's and the paused records' only change is `run.started`'s rules version). Accepted shortcuts: weather from the archive does not reach the truth side's conditions
+  (the scenario's `[conditions]` and the sun do); our vehicles' positions for collateral are what
+  they last reported; SITL vehicles do not act damage out (stand-ins and the headless simulator
+  do); jamming is not a factor yet. Every safeguard stands exactly: no autonomous engagement, two
+  human signatures, the authorize step closed to agents in code, every order to an armed platform
+  waiting for a human, DoD Directive 3000.09. The damage model changes what happens after a
+  person decides, never who decides.
 - **Pitch depth and rigor, not "first"** (10-02). Pressure test found the ideas in closed
   work (RESCHU, IMPACT, Aegis doctrine, Lattice, Legion, Palantir AIP, Thunderforge, DARPA
   ASIMOV) and shallow open versions (AMOS, AeroMind, Pharos, SandTable). Cite them. Engage

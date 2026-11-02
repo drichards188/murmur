@@ -135,3 +135,43 @@ fn a_cached_look_is_the_look_it_would_have_computed() {
     assert_ne!(z, x);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The truth side's and the decision core's tables of the contact kinds each weapon's figures
+/// stand for are one table (bd murmur-lbw8.2): the figures the weapon check shows are the ones a
+/// strike draws on.
+#[test]
+fn the_kind_alias_tables_agree() {
+    assert_eq!(murmur_contacts::damage::KIND_ALIASES, murmur_decide::catalog::KIND_ALIASES);
+}
+
+/// What the bridge hands the truth side with a strike reads there as it was meant (bd
+/// murmur-lbw8.2): the catalog's weapon facts as a weapon with its figures, and the engine's
+/// munition flight as a launch and an impact.
+#[test]
+fn the_catalog_weapon_and_flight_read_on_the_truth_side() {
+    let catalog = murmur_decide::Catalog::load(&repo().join("sim/platforms.toml")).expect("catalog");
+    let hellfire = catalog.get("mq9b_armed").expect("mq9b_armed").loadout[0].clone();
+    let w: murmur_contacts::damage::WeaponDamage = serde_json::from_value(serde_json::to_value(&hellfire).expect("json")).expect("reads");
+    assert!(w.modelled() && w.kind == "missile" && w.guidance == "semi_active_laser");
+    assert_eq!(w.warhead.as_ref().map(|h| h.mass_kg), Some(9.0));
+    let (k, f) = w.figures_for("ferry").expect("a ferry reads the cargo ship's figures");
+    assert_eq!((k, f.p_hit), ("cargo_ship", Some(0.95)));
+    let flight = murmur_decide::engage::MunitionFlight {
+        name: hellfire.name.clone(),
+        speed_mps: 425.0,
+        launch_t: murmur_decide::Time(0),
+        launch_point: murmur_decide::LonLat::new(-122.5116, 37.8075),
+        launch_alt_m: 7600.0,
+        impact_t: murmur_decide::Time(18_400),
+        impact_point: murmur_decide::LonLat::new(-122.495, 37.812),
+        impact_alt_m: 0.0,
+        tof_s: 18.4,
+    };
+    let f: murmur_contacts::effect::Flight = serde_json::from_value(serde_json::to_value(&flight).expect("json")).expect("reads");
+    // 1.5 km over the ground from 7,600 m up: well inside half the 8 km range, no range factor
+    let out = f.ground_m().expect("over the ground");
+    assert!((1400.0..1600.0).contains(&out), "{out}");
+    let target = murmur_contacts::damage::Target { kind: "small_fast_boat", speed_mps: 0.0, armed: true, surface: true };
+    let day = murmur_contacts::damage::Conditions { visibility_m: 20_000.0, sea_state: 2.0, sun_elevation_deg: 40.0 };
+    assert_eq!(murmur_contacts::damage::hit_chance(&w, &target, &day, Some(out)).3, 0.75);
+}

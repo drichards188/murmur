@@ -1985,7 +1985,20 @@ impl Decision {
             .filter(|(uid, _)| **uid != e.uid)
             .map(|(uid, v)| {
                 let p = v.position.as_ref().map(|p| p.value);
-                json!({ "uid": uid, "lon": p.map(|p| p.lon), "lat": p.map(|p| p.lat) })
+                let mut o = json!({ "uid": uid, "lon": p.map(|p| p.lon), "lat": p.map(|p| p.lat) });
+                // what the truth side's damage model reads of a vehicle near a strike: its height
+                // and what it is
+                if let Some(a) = v.alt_msl_m.as_ref() {
+                    o["alt_m"] = json!(a.value);
+                }
+                if let Some(pf) = &v.platform {
+                    o["platform"] = json!(pf.id);
+                    o["domain"] = json!(pf.domain.as_str());
+                    if pf.armed {
+                        o["armed"] = json!(true);
+                    }
+                }
+                o
             })
             .collect();
         if let Some(t) = self.tracks() {

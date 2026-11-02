@@ -89,6 +89,37 @@ pub struct VehicleFacts {
     /// Absent before rules 5.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub booted_t: Option<Time>,
+    /// Rules 25 ([`crate::rules::DAMAGE_SINCE`]): the damage the vehicle reported of itself after
+    /// a strike (its propulsion lost, its weapons out of action), stamped with its latest report.
+    /// A report, never truth: the bridge fills it from what the vehicle said over its link; a
+    /// vehicle destroyed says nothing (it goes silent). Damage never heals in a run. The engine
+    /// drops it before logging under older rules. Absent: none reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub damage: Option<Fact<VehicleDamage>>,
+}
+
+/// Rules 25: what a vehicle reported damaged in itself ([`VehicleFacts::damage`]). `mobility`: its
+/// propulsion is lost (it cannot move: a boat drifts, a ground vehicle stands, an aircraft comes
+/// down); `firepower`: its weapons are out of action (its loadout can't be used). Either or both.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VehicleDamage {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mobility: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub firepower: bool,
+}
+
+impl VehicleDamage {
+    /// What it reported, in words.
+    pub fn describe(&self) -> String {
+        match (self.mobility, self.firepower) {
+            (true, true) => "its propulsion lost and its weapons out of action".into(),
+            (true, false) => "its propulsion lost".into(),
+            (false, true) => "its weapons out of action".into(),
+            (false, false) => "no damage".into(),
+        }
+    }
 }
 
 impl VehicleFacts {

@@ -85,10 +85,10 @@ const tracked = weaponBanner([{ ...w, fixes: struck.fixes }], T0 + 82_400, nameO
 check(tracked.text.endsWith('weapon fixed by REAPER 1 radar'), tracked.text)
 const hit = weaponBanner([struck], T0 + 86_000, nameOf, at)!
 check(hit.tone === 'struck' && hit.head === 'HUNTER 1 STRUCK', hit.head)
-check(hit.text === 'launch seen by HUNTER 1 EO/IR · 4.1 s of warning · no damage is modelled', hit.text)
+check(hit.text === 'launch seen by HUNTER 1 EO/IR · 4.1 s of warning · any damage is its own report (Inbox)', hit.text)
 check(weaponBanner([struck], T0 + 84_500 + STRUCK_BANNER_MS, nameOf, at) === null, 'the strike banner goes')
 const blind: WeaponTrack = { ...struck, id: 'W-3', report: null, class: null, speed_mps: null, aimed_at: null, launch: null, fixes: [], first_cue_t: null, warning_s: null }
-check(weaponBanner([blind], T0 + 86_000, nameOf, at)!.text === 'no sensor saw the launch or the weapon · no damage is modelled', 'an unseen strike')
+check(weaponBanner([blind], T0 + 86_000, nameOf, at)!.text === 'no sensor saw the launch or the weapon · any damage is its own report (Inbox)', 'an unseen strike')
 check(weaponBanner([{ ...blind, status: 'in_flight', struck: null, ended_t: null }], T0 + 86_000, nameOf, at) === null, 'nothing known yet: no banner')
 
 // ---- the timeline ----------------------------------------------------------------------------

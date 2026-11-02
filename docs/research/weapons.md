@@ -14,7 +14,15 @@ on the owner's choices of 2026-11-02 (docs/DECISIONS.md, "Real weapon loadouts o
 platforms"): the MQ-9B's 4 AGM-114R and 2 GBU-12, the CCA's 2 AIM-120C, the Magura V5 (the boat
 its own charge), the Switchblade 600, the FPV with a PG-7VL, the armed UGV's M2 (inert) and
 Javelin, the Orca's 4 Hammerheads and the mine-laying UGV's 20 TM-62M (both inert, both unarmed
-until stage 4). The damage model (section 10) waits for stage 2 (murmur-lbw8.2).
+until stage 4). The damage model (section 10) was taken in stage 2 (murmur-lbw8.2, decision rules
+25): 10.3's hit chances and 10.4's outcomes as each usable weapon's `effects` in the catalog (the
+FPV's duds taken out of its damage shares; the Magura's hit chances [E] there, as 10.3 has no
+column for an explosive boat), 10.5's multipliers in crates/murmur-contacts `damage.rs` (night and
+fog by guidance, a rough sea against a small boat, a missile's range over the ground rather than
+the slant [E: a missile released from an aircraft's height trades it for energy], points off for a
+fast target in 5 m/s bands [E]; jamming is not a factor yet), and section 11's suggestion of one
+table keyed by weapon class taken instead as per-weapon tables, so the logged weapon facts carry
+their own figures.
 
 ## 0. What changes the plan (read first)
 

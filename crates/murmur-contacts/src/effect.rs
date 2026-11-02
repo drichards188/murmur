@@ -7,8 +7,20 @@
 //! record of what was inside, whether the intended contact was, and any collateral (another
 //! contact, or one of our vehicles, inside the radius; one of ours with no reported position
 //! is listed as unknown) goes to the evaluation truth log only: the C2 never sees it. The
-//! engaging platform is named apart, never counted as collateral. No damage, blast or
-//! lethality is modelled: a flag and a time.
+//! engaging platform is named apart, never counted as collateral. An effect whose weapon lists
+//! no hit or damage figures (an abstract effect, every one before the damage model) does nothing
+//! more: a flag and a time.
+//!
+//! The damage model (bd murmur-lbw8.2, [`crate::damage`]): an effect that comes with its weapon
+//! (`weapon`, the catalog's facts of the loadout weapon released) and figures for it is a strike.
+//! The intended contact, if it is inside the radius at the strike, is a shot: a hit draw against
+//! its kind in the conditions, then a damage draw (destroyed: out of play; its propulsion lost:
+//! it stops or drifts; its weapons out: its acts launch nothing; or undamaged). Every other
+//! contact, and every vehicle of ours, within the warhead's blast radius of the point draws for
+//! collateral damage. Only a destroyed contact leaves the scenario; one inside the radius but
+//! unhurt goes on, flagged. What happened to ours is handed back ([`EffectApplied::ours_damaged`])
+//! for the vehicle simulation to act on. Each draw is seeded by the run's seed and the intent
+//! ([`DamageCtx`]), so a run repeats.
 //!
 //! Rules 20 (a munition in flight): an effect may come with its impact time (`impact_t`, on this
 //! process's scenario clock); it is held ([`InFlight`]) and applied at the effect point once
@@ -17,11 +29,13 @@
 use murmur_standins::geo::distance_m;
 use serde::{Deserialize, Serialize};
 
+use crate::damage::{self, Conditions, DamageRecord, DamageState, Target, WeaponDamage};
 use crate::motion::Mover;
-use crate::scenario::OnEffect;
+use crate::scenario::{self, Domain, OnEffect};
 
 /// One of our vehicles as the bridge last heard it (its reported position; none if it has
-/// never reported one).
+/// never reported one), and what the damage model reads of it: its height, its catalog platform,
+/// domain and whether it is armed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Ours {
     pub uid: String,
@@ -29,6 +43,56 @@ pub struct Ours {
     pub lon: Option<f64>,
     #[serde(default)]
     pub lat: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alt_m: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub armed: bool,
+}
+
+/// Rules 20: the munition's flight as the bridge hands it over (the engine's `MunitionFlight`):
+/// where it was launched from and where it strikes, which the damage model's range rule reads.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Flight {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_point: Option<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_alt_m: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub impact_point: Option<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub impact_alt_m: Option<f64>,
+}
+
+impl Flight {
+    /// The distance over the ground from the launch to the strike, m, when both are known: what
+    /// the damage model's range rule reads ([`damage::hit_chance`]).
+    pub fn ground_m(&self) -> Option<f64> {
+        let (a, b) = (self.launch_point?, self.impact_point?);
+        Some(distance_m(a[1], a[0], b[1], b[0]))
+    }
+}
+
+/// What the damage model needs beside the effect: the run's seed (each draw's stream is the
+/// intent's, [`damage::uniform`]) and the scenario's conditions; and, for an evaluation only (the
+/// headless episode's `effects.p_hit`), a hit chance that replaces the target's (none live).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DamageCtx {
+    pub seed: u64,
+    pub conditions: Option<scenario::Conditions>,
+    pub hit_override: Option<f64>,
+}
+
+/// One of ours the damage model hurt, for the vehicle simulation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OursDamaged {
+    pub uid: String,
+    pub state: DamageState,
+    /// What did it, for the record.
+    pub cause: String,
 }
 
 /// The effect as the bridge sends it.
@@ -53,6 +117,13 @@ pub struct EffectNotice {
     /// held until then ([`InFlight`]). None: at once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub impact_t: Option<f64>,
+    /// Rules 20: the munition's flight (its launch and impact points), as the bridge hands it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub munition: Option<Flight>,
+    /// The loadout weapon released (the catalog's facts), whose figures make it a strike for the
+    /// damage model. None, or a weapon without figures: an abstract effect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weapon: Option<WeaponDamage>,
 }
 
 /// Rules 20: the effects whose munition is still in flight, held until their impact time and
@@ -122,10 +193,29 @@ pub struct EffectApplied {
     /// receipt).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub impact_t: Option<f64>,
+    /// The damage model: the weapon that struck, and every draw it made (the target's shot, each
+    /// collateral within the blast radius). Absent for an abstract effect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weapon: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub damage: Vec<DamageRecord>,
+    /// Ours the damage model hurt, for the vehicle simulation (and the record).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ours_damaged: Vec<OursDamaged>,
 }
 
-/// Apply one effect at scenario time `now` (unix s).
+/// Apply one effect at scenario time `now` (unix s), abstractly: every contact inside the radius
+/// flagged, out of play unless its scenario says `persists`.
 pub fn apply(e: &EffectNotice, movers: &mut [Mover], now: f64) -> EffectApplied {
+    apply_with(e, movers, now, None)
+}
+
+/// [`apply`], and with `ctx` an effect whose weapon lists figures is a strike for the damage
+/// model (the module doc).
+pub fn apply_with(e: &EffectNotice, movers: &mut [Mover], now: f64, ctx: Option<&DamageCtx>) -> EffectApplied {
+    if let (Some(ctx), Some(w)) = (ctx, e.weapon.as_ref().filter(|w| w.modelled())) {
+        return strike(e, w, movers, now, ctx);
+    }
     let [lon, lat] = e.point;
     let mut inside = Vec::new();
     let mut out = Vec::new();
@@ -173,6 +263,162 @@ pub fn apply(e: &EffectNotice, movers: &mut [Mover], now: f64) -> EffectApplied 
         out_of_play: out,
         collateral,
         impact_t: e.impact_t,
+        weapon: None,
+        damage: Vec::new(),
+        ours_damaged: Vec::new(),
+    }
+}
+
+/// The ours of `e` inside its radius (2D) as collateral, and those with no position as unknown
+/// (the platform itself never).
+fn ours_inside(e: &EffectNotice) -> Collateral {
+    let [lon, lat] = e.point;
+    let mut c = Collateral::default();
+    for o in e.ours.iter().filter(|o| e.platform.as_ref() != Some(&o.uid)) {
+        match o.lat.zip(o.lon) {
+            Some((olat, olon)) if distance_m(lat, lon, olat, olon) <= e.radius_m => c.ours.push(o.uid.clone()),
+            Some(_) => {}
+            None => c.ours_unknown.push(o.uid.clone()),
+        }
+    }
+    c
+}
+
+/// A contact's facts as the damage model reads them.
+pub(crate) fn target_of(m: &Mover) -> Target<'_> {
+    Target {
+        kind: &m.contact.kind,
+        speed_mps: m.st.speed_mps,
+        armed: m.contact.weapon.is_some(),
+        surface: m.contact.domain == Domain::Surface,
+    }
+}
+
+/// Put a draw's state on a contact (unless its scenario keeps it in play), saying so in the record.
+pub(crate) fn put(m: &mut Mover, r: &mut DamageRecord, now: f64) {
+    if r.state == DamageState::Undamaged {
+        return;
+    }
+    if m.contact.on_effect == OnEffect::Persists {
+        r.note = Some("its scenario says persists: kept in play, unchanged".into());
+        return;
+    }
+    r.applied = m.damage(r.state, now);
+}
+
+fn tenth(x: f64) -> f64 {
+    (x * 10.0).round() / 10.0
+}
+
+/// The damage model's strike (the module doc).
+fn strike(e: &EffectNotice, w: &WeaponDamage, movers: &mut [Mover], now: f64, ctx: &DamageCtx) -> EffectApplied {
+    let [lon, lat] = e.point;
+    let stream = format!("effect:{}", e.intent);
+    let mut inside = Vec::new();
+    let mut collateral = ours_inside(e);
+    for m in movers.iter_mut().filter(|m| m.st.exists) {
+        let d = distance_m(lat, lon, m.st.lat, m.st.lon);
+        if d > e.radius_m {
+            continue;
+        }
+        inside.push((m.contact.id.clone(), tenth(d)));
+        m.effect_t = Some(now);
+        if e.target_contact.as_deref() != Some(m.contact.id.as_str()) {
+            collateral.contacts.push(m.contact.id.clone());
+        }
+    }
+    let c = Conditions::at(ctx.conditions.as_ref(), now, lat, lon);
+    let out = e.munition.as_ref().and_then(Flight::ground_m);
+    let mut records = Vec::new();
+    // the shot at the intended contact, if it is inside the radius
+    let target = e
+        .target_contact
+        .as_ref()
+        .and_then(|t| movers.iter().position(|m| m.st.exists && m.contact.id == *t));
+    let target_inside = target.is_some_and(|i| inside.iter().any(|(id, _)| *id == movers[i].contact.id));
+    let mut z0 = e.munition.as_ref().and_then(|f| f.impact_alt_m).unwrap_or(0.0);
+    if let Some(i) = target {
+        let m = &mut movers[i];
+        let d = tenth(distance_m(lat, lon, m.st.lat, m.st.lon));
+        if target_inside {
+            z0 = m.st.alt_m;
+            let mut r = damage::shot_with(ctx.seed, &format!("{stream}:target"), &m.contact.id, w, &target_of(m), &c, out, ctx.hit_override);
+            r.distance_m = Some(d);
+            put(m, &mut r, now);
+            records.push(r);
+        } else {
+            records.push(DamageRecord {
+                who: m.contact.id.clone(),
+                role: "target".into(),
+                kind: m.contact.kind.clone(),
+                figures: None,
+                distance_m: Some(d),
+                p_hit: 0.0,
+                factors: Vec::new(),
+                u_hit: 1.0,
+                hit: false,
+                u_damage: None,
+                state: DamageState::Undamaged,
+                applied: false,
+                note: Some(format!("not inside the {:.0} m radius at the strike: missed", e.radius_m)),
+            });
+        }
+    }
+    // collateral within the blast radius: every other contact, and ours
+    for (i, m) in movers.iter_mut().enumerate() {
+        if !m.st.exists || Some(i) == target {
+            continue;
+        }
+        let d = distance_m(lat, lon, m.st.lat, m.st.lon).hypot(m.st.alt_m - z0);
+        let t = target_of(m);
+        let stream = format!("{stream}:contact:{}", m.contact.id);
+        let Some(mut r) = damage::near(ctx.seed, &stream, &m.contact.id, w, t.kind, t.armed, d) else {
+            continue;
+        };
+        put(m, &mut r, now);
+        records.push(r);
+    }
+    let mut ours_damaged = Vec::new();
+    for o in e.ours.iter().filter(|o| e.platform.as_ref() != Some(&o.uid)) {
+        let Some((olat, olon)) = o.lat.zip(o.lon) else { continue };
+        let d = distance_m(lat, lon, olat, olon).hypot(o.alt_m.unwrap_or(0.0) - z0);
+        let kind = damage::ours_kind(o.platform.as_deref(), o.domain.as_deref());
+        let who = format!("ours:{}", o.uid);
+        let Some(mut r) = damage::near(ctx.seed, &format!("{stream}:{who}"), &who, w, kind, o.armed, d) else {
+            continue;
+        };
+        if r.state != DamageState::Undamaged {
+            r.applied = true;
+            ours_damaged.push(OursDamaged {
+                uid: o.uid.clone(),
+                state: r.state,
+                cause: format!("caught in the effect of intent {} ({})", e.intent, w.name),
+            });
+        }
+        records.push(r);
+    }
+    let out = records
+        .iter()
+        .filter(|r| r.applied && r.state == DamageState::Destroyed && !r.who.starts_with("ours:"))
+        .map(|r| r.who.clone())
+        .collect();
+    EffectApplied {
+        intent: e.intent,
+        track: e.track.clone(),
+        t: e.t,
+        applied_t: now,
+        point: e.point,
+        radius_m: e.radius_m,
+        target_contact: e.target_contact.clone(),
+        platform: e.platform.clone(),
+        target_inside,
+        inside,
+        out_of_play: out,
+        collateral,
+        impact_t: e.impact_t,
+        weapon: Some(w.name.clone()),
+        damage: records,
+        ours_damaged,
     }
 }
 
@@ -180,6 +426,10 @@ pub fn apply(e: &EffectNotice, movers: &mut [Mover], now: f64) -> EffectApplied 
 mod tests {
     use super::*;
     use crate::scenario::Scenario;
+
+    fn ours(uid: &str, lon: Option<f64>, lat: Option<f64>) -> Ours {
+        Ours { uid: uid.into(), lon, lat, alt_m: None, platform: None, domain: None, armed: false }
+    }
 
     #[test]
     fn contacts_inside_the_radius_are_flagged_and_the_rest_untouched() {
@@ -230,13 +480,15 @@ mod tests {
             radius_m: 75.0,
             platform: Some("9".into()),
             ours: vec![
-                Ours { uid: "1".into(), lon: Some(-122.4951), lat: Some(37.8121) },
-                Ours { uid: "2".into(), lon: Some(-122.4700), lat: Some(37.8160) },
-                Ours { uid: "3".into(), lon: None, lat: None },
+                ours("1", Some(-122.4951), Some(37.8121)),
+                ours("2", Some(-122.4700), Some(37.8160)),
+                ours("3", None, None),
                 // the platform itself, if a bridge sent it: never collateral
-                Ours { uid: "9".into(), lon: Some(-122.4950), lat: Some(37.8120) },
+                ours("9", Some(-122.4950), Some(37.8120)),
             ],
             impact_t: None,
+            munition: None,
+            weapon: None,
         };
         let r = apply(&e, &mut movers, 101.0);
         assert!(r.target_inside);
@@ -266,6 +518,8 @@ mod tests {
             platform: None,
             ours: Vec::new(),
             impact_t,
+            munition: None,
+            weapon: None,
         }
     }
 
@@ -297,5 +551,185 @@ mod tests {
         assert!(serde_json::to_string(&r).expect("json").contains("\"impact_t\":118.4"));
         let r = apply(&notice(5, None), &mut movers, 101.0);
         assert!(!serde_json::to_string(&r).expect("json").contains("impact_t"));
+    }
+
+    // ---- the damage model (bd murmur-lbw8.2) ------------------------------------------------
+
+    const SCENE: &str = r#"
+        title = "t"
+        [[contact]]
+        id = "boat"
+        affiliation = "hostile"
+        domain = "surface"
+        kind = "small_fast_boat"
+        motion = "route"
+        speed_mps = 8
+        route = [[-122.4950, 37.8120], [-122.4700, 37.8120]]
+        weapon = { name = "ATGM-class missile", kind = "atgm", speed_mps = 250, range_m = 5000 }
+        [[contact]]
+        id = "skiff"
+        affiliation = "neutral"
+        domain = "surface"
+        kind = "sailboat"
+        motion = "station"
+        at = [-122.49502, 37.81201]
+        [[contact]]
+        id = "yacht"
+        affiliation = "neutral"
+        domain = "surface"
+        kind = "sailboat"
+        motion = "station"
+        at = [-122.4950, 37.8124]
+    "#;
+
+    /// The scene a second in: the boat under way at the point, a skiff about 2 m from it, a
+    /// yacht 44 m off (inside the 75 m radius, outside a 9 kg warhead's blast).
+    fn scene() -> Vec<Mover> {
+        let sc = Scenario::from_toml(SCENE).expect("scenario");
+        let mut movers: Vec<Mover> = sc
+            .contacts()
+            .expect("contacts")
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| Mover::new(c, 1, i as u64))
+            .collect();
+        for m in &mut movers {
+            m.step(1.0, 1.0, None);
+        }
+        movers
+    }
+
+    /// A weapon whose figures against a small fast boat are `boat` (a 9 kg warhead).
+    fn weapon(boat: serde_json::Value) -> WeaponDamage {
+        serde_json::from_value(serde_json::json!({
+            "name": "AGM-114R Hellfire II", "kind": "missile", "guidance": "semi_active_laser",
+            "warhead": { "class": "multi_function", "mass_kg": 9.0 }, "max_range_m": 8000.0,
+            "effects": { "small_fast_boat": boat, "sailboat": { "p_hit": 0.85, "p_kill": 0.65, "p_mobility": 0.30 } },
+        }))
+        .expect("weapon")
+    }
+
+    fn strike_notice(intent: u64, w: WeaponDamage, ours: Vec<Ours>) -> EffectNotice {
+        EffectNotice {
+            weapon: Some(w),
+            ours,
+            target_contact: Some("boat".into()),
+            platform: Some("9".into()),
+            ..notice(intent, None)
+        }
+    }
+
+    const CTX: DamageCtx = DamageCtx { seed: 17, conditions: None, hit_override: None };
+
+    fn target(r: &EffectApplied) -> &DamageRecord {
+        r.damage.iter().find(|d| d.role == "target").expect("the target's draw")
+    }
+
+    /// A certain hit destroys, stops or disarms by the figures; a certain miss leaves the boat as
+    /// it was. Each lands on the boat as the model says: destroyed out of play, stopped still on
+    /// the water (still detected), disarmed holding its fire.
+    #[test]
+    fn a_hit_or_a_miss_and_each_damage_state() {
+        let cases = [
+            (serde_json::json!({ "p_hit": 1.0, "p_kill": 1.0 }), true, DamageState::Destroyed),
+            (serde_json::json!({ "p_hit": 1.0, "p_mobility": 1.0 }), true, DamageState::Mobility),
+            (serde_json::json!({ "p_hit": 1.0, "p_firepower": 1.0 }), true, DamageState::Firepower),
+            (serde_json::json!({ "p_hit": 1.0 }), true, DamageState::Undamaged),
+            (serde_json::json!({ "p_hit": 0.0, "p_kill": 1.0 }), false, DamageState::Undamaged),
+        ];
+        for (figs, hit, state) in cases {
+            let mut movers = scene();
+            let r = apply_with(&strike_notice(7, weapon(figs), Vec::new()), &mut movers, 101.0, Some(&CTX));
+            let t = target(&r);
+            assert_eq!((t.hit, t.state), (hit, state), "{t:?}");
+            assert_eq!(r.weapon.as_deref(), Some("AGM-114R Hellfire II"));
+            let boat = &mut movers[0];
+            for s in 2..10 {
+                boat.step(f64::from(s), 1.0, None);
+            }
+            match state {
+                DamageState::Destroyed => {
+                    assert!(!boat.st.exists && r.out_of_play == vec!["boat".to_string()]);
+                }
+                DamageState::Mobility => {
+                    assert!(boat.st.exists, "a stopped boat is still on the water, still detected");
+                    assert!(boat.st.speed_mps < 0.1, "{}", boat.st.speed_mps);
+                    assert!(matches!(boat.contact.motion, crate::scenario::Motion::Drift { .. }));
+                    assert!(r.out_of_play.is_empty());
+                }
+                DamageState::Firepower => assert!(boat.st.exists && boat.disarmed && boat.st.speed_mps > 1.0),
+                DamageState::Undamaged => assert!(boat.st.exists && boat.damage.is_none() && boat.st.speed_mps > 1.0),
+            }
+            // only the destroyed leave: the yacht inside the radius, outside the blast, goes on
+            assert!(movers[2].st.exists && movers[2].effect_t == Some(101.0) && movers[2].damage.is_none());
+        }
+    }
+
+    /// Collateral: a skiff 2 m from the point draws (its chance near 1), the yacht 44 m off does
+    /// not; one of ours on the point draws too and is handed back, the platform itself never, one
+    /// of ours 3 km up never (3D distance).
+    #[test]
+    fn collateral_within_the_blast_draws_contacts_and_ours() {
+        let mut movers = scene();
+        let ours = vec![
+            Ours { uid: "4".into(), lon: Some(-122.4950), lat: Some(37.8120), alt_m: Some(0.5), platform: Some("ugv_armed".into()), domain: Some("ground".into()), armed: true },
+            Ours { uid: "5".into(), lon: Some(-122.4950), lat: Some(37.8120), alt_m: Some(3000.0), platform: Some("mq9b_armed".into()), domain: Some("air".into()), armed: true },
+            Ours { uid: "9".into(), lon: Some(-122.4950), lat: Some(37.8120), alt_m: None, platform: None, domain: None, armed: false },
+        ];
+        let r = apply_with(&strike_notice(7, weapon(serde_json::json!({ "p_hit": 0.0 })), ours), &mut movers, 101.0, Some(&CTX));
+        let who: Vec<&str> = r.damage.iter().map(|d| d.who.as_str()).collect();
+        assert_eq!(who, vec!["boat", "skiff", "ours:4"], "{:#?}", r.damage);
+        let skiff = &r.damage[1];
+        assert_eq!(skiff.role, "collateral");
+        assert!(skiff.p_hit > 0.6 && skiff.distance_m.is_some_and(|d| d < 3.0), "{skiff:?}");
+        let ours4 = &r.damage[2];
+        assert_eq!((ours4.kind.as_str(), ours4.figures.as_deref()), ("vehicle", None));
+        if ours4.state != DamageState::Undamaged {
+            assert_eq!(r.ours_damaged, vec![OursDamaged { uid: "4".into(), state: ours4.state, cause: "caught in the effect of intent 7 (AGM-114R Hellfire II)".into() }]);
+        }
+        // a hit on the skiff lands on it (a sailboat's figures: destroyed or stopped, or nothing)
+        assert_eq!(movers[1].damage.map(|(s, _)| s), (skiff.state != DamageState::Undamaged).then_some(skiff.state));
+    }
+
+    /// The same scenario, seed and intent draw the same, every time; another intent draws on its
+    /// own stream. Across 400 intents a 0.75 figure hits about three times in four.
+    #[test]
+    fn the_seeded_draw_reruns_identically() {
+        let w = weapon(serde_json::json!({ "p_hit": 0.75, "p_kill": 0.85, "p_mobility": 0.10, "p_firepower": 0.05 }));
+        let run = |intent: u64| {
+            let mut movers = scene();
+            let r = apply_with(&strike_notice(intent, w.clone(), Vec::new()), &mut movers, 101.0, Some(&CTX));
+            serde_json::to_string(&r).expect("json")
+        };
+        assert_eq!(run(7), run(7));
+        let hits = (0..400u64)
+            .filter(|i| {
+                let mut movers = scene();
+                let r = apply_with(&strike_notice(*i, w.clone(), Vec::new()), &mut movers, 101.0, Some(&CTX));
+                target(&r).hit
+            })
+            .count();
+        assert!((270..=330).contains(&hits), "{hits} of 400");
+    }
+
+    /// Without figures (no weapon, or one listing none) the effect is the abstract one exactly:
+    /// everything inside the radius out of play, the same record bytes as before.
+    #[test]
+    fn without_figures_the_effect_is_abstract_as_before() {
+        let mut a = scene();
+        let mut b = scene();
+        let plain = EffectNotice { target_contact: Some("boat".into()), ..notice(7, None) };
+        let bare = EffectNotice {
+            weapon: Some(WeaponDamage { effects: Default::default(), ..weapon(serde_json::json!({})) }),
+            ..plain.clone()
+        };
+        let ra = apply(&plain, &mut a, 101.0);
+        let rb = apply_with(&bare, &mut b, 101.0, Some(&CTX));
+        assert_eq!(serde_json::to_string(&ra).expect("json"), serde_json::to_string(&rb).expect("json"));
+        assert_eq!(ra.out_of_play, vec!["boat".to_string(), "skiff".to_string(), "yacht".to_string()]);
+        let json = serde_json::to_string(&ra).expect("json");
+        for k in ["damage", "weapon", "ours_damaged"] {
+            assert!(!json.contains(k), "{k} in {json}");
+        }
     }
 }

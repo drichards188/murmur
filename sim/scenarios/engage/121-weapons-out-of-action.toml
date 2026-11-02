@@ -1,0 +1,110 @@
+# Rules 25 (bd murmur-lbw8.2): a platform whose vehicle reports its weapons out of action can't
+# engage. The armed MQ-9B is nominated against a boat holding west of the bridge, naming no weapon:
+# the engine picks the Hellfire and the weapon check shows the catalog's figures against the
+# track's estimated kind (a hit 0.75 in good conditions; given a hit, destroyed 0.85). Before the
+# first signature the MQ-9B reports a strike put its weapons out of action (its own STATUSTEXT
+# on the bridge, the vehicle's `damage` fact here). The signature re-checks the frozen plan: the
+# weapon check now fails, so the nomination can't be signed. A new nomination is refused at once,
+# saying when the platform reported it. Then the log is forged so that no decision saw the damage
+# report: replay recomputes the weapon check from the inputs and the logged refusals no longer
+# follow, so it is caught. Under rules 24 (`--rules 24`) the damage report is not read: the weapon
+# check passes both nominations (the second then waits on the first, platform_free).
+title = "A platform reporting its weapons out of action can't engage"
+invariant = "weapon"
+attack = "a nomination for a platform whose weapons a strike put out of action"
+expect = "rejected"
+expect_rule = "weapon"
+tamper = "drop_damage"
+end_s = 30
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "reaper-1"
+platform = "mq9b_armed"     # 4 x AGM-114R, 2 x GBU-12; EO/IR 40 km covers the point
+at = [-122.5250, 37.8000]   # off Lands End, west of the bridge
+alt_m = 7600                # its cruise altitude
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[track]]
+id = "T-0002"
+at = [-122.5050, 37.8200]   # holding 1.3 km north-west of it
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0002"
+affiliation = "hostile"
+by = "op-1"
+
+# none named: the Hellfire picked, its figures against a small fast boat shown
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "reaper-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 2
+action = "expect"
+state = "pending_approval"
+weapon = "against a small_fast_boat, as estimated: a hit 0.75 in good conditions, and given a hit destroyed 0.85, propulsion lost 0.10, weapons out 0.05"
+
+# a strike puts its weapons out of action: it says so itself
+[[step]]
+at_s = 3
+action = "vehicle"
+uid = "reaper-1"
+damage = { firepower = true }
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+# a new nomination: refused at once
+[[step]]
+at_s = 10
+action = "nominate"
+by = "op-1"
+platform = "reaper-1"
+track = "T-0002"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 11
+action = "expect"
+state = "rejected"
+rule = "weapon"
+weapon = "the vehicle reported its weapons out of action (reported 7 s ago): no weapon of mq9b_armed's loadout can be used"

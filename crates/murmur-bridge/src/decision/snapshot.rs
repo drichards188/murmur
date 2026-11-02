@@ -117,6 +117,13 @@ pub fn vehicle_facts(
         alt_msl_m: v.alt_msl.and_then(|a| fact(a, v.seen.position)),
         // when it booted (rules 5): a queued order approved before a reboot is looked at again
         booted_t: v.booted_wall.map(ms),
+        // rules 25: the damage it reported of itself, stamped with its latest report
+        damage: v.damage.map(|d| {
+            Fact::new(
+                murmur_decide::VehicleDamage { mobility: d.mobility, firepower: d.firepower },
+                ms(d.last),
+            )
+        }),
         platform,
     }
 }

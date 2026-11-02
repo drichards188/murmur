@@ -181,7 +181,7 @@ export function weaponBanner(ws: WeaponTrack[], now: number, nameOf: (uid: strin
         ? `launch not seen; weapon fixed by ${fixedBy(struck, nameOf)}`
         : 'no sensor saw the launch or the weapon'
     const warning = struck.warning_s != null ? ` · ${struck.warning_s.toFixed(1)} s of warning` : ''
-    return { tone: 'struck', w: struck, head: `${who.toUpperCase()} STRUCK`, text: `${how}${warning} · no damage is modelled` }
+    return { tone: 'struck', w: struck, head: `${who.toUpperCase()} STRUCK`, text: `${how}${warning} · any damage is its own report (Inbox)` }
   }
   return null
 }

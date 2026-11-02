@@ -253,8 +253,25 @@ pub enum UnknownEndurance {
 /// ([`IDENTIFY_OWN_LOOK_SINCE`]): an identify order's look ends only on the vehicle sent's own
 /// identification. Version 24 ([`LOADOUT_SINCE`]): an armed platform's catalog loadout; the
 /// engagement uses one of its weapons, named or picked, with its own ranges and speed, and each
-/// release spends a round.
-pub const RULES_VERSION: u32 = LOADOUT_SINCE;
+/// release spends a round. Version 25 ([`DAMAGE_SINCE`]): a platform whose vehicle reports its
+/// weapons out of action (a damage model's firepower kill) can't use its loadout, and the weapon
+/// check shows the weapon's published hit and damage figures against the target's estimated kind.
+pub const RULES_VERSION: u32 = DAMAGE_SINCE;
+
+/// The rules version from which a weapon's effect is a hit draw and a damage outcome on the truth
+/// side, and the engine reads what our own damaged vehicles report (bd murmur-lbw8.2, the owner's
+/// direction of 2026-11-02, DECISIONS.md "Warheads and damage"). The draw itself never enters the
+/// engine (the C2 senses a result, never reads it); two things do. A vehicle's own damage report
+/// ([`crate::world::VehicleDamage`], the `damage` vehicle fact the bridge fills from the vehicle's
+/// report): one whose weapons are out of action (`firepower`) can't use any weapon of its loadout,
+/// and a platform that is its own weapon (`self`) and has lost its propulsion (`mobility`) can't
+/// strike, so the `weapon` check refuses either, saying when it was reported (a nomination, each
+/// signature and every picture: a release waits on it). And the `weapon` check's detail shows the
+/// weapon's catalog figures against the track's estimated kind (`effects`: the chance of a hit,
+/// and of each damage given one), so a person reads what the weapon is expected to do before
+/// signing; they decide nothing. A log of older rules carries no damage fact (the engine drops it
+/// before logging under them). Every gate of that change reads this constant, never a literal.
+pub const DAMAGE_SINCE: u32 = 25;
 
 /// The rules version from which an armed platform carries a loadout of named weapons with rounds
 /// (bd murmur-lbw8.1, the owner's direction of 2026-11-02, DECISIONS.md "Real weapon loadouts on
@@ -675,6 +692,12 @@ impl RulesConfig {
     /// rounds counted.
     pub fn loadouts(&self) -> bool {
         self.rules_version >= LOADOUT_SINCE
+    }
+
+    /// Rules 25 ([`DAMAGE_SINCE`]): our vehicles' damage reports in the weapon check, and the
+    /// weapon's figures shown.
+    pub fn damage(&self) -> bool {
+        self.rules_version >= DAMAGE_SINCE
     }
 
     /// `[rules.engage]`, or its defaults.

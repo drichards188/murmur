@@ -35,7 +35,8 @@ pub struct Alert {
     /// way home crosses land) | identify_holding | identify_lost | identify_timed_out |
     /// identify_held (rules 21) | identify_meanwhile (rules 23: another vehicle identified an
     /// identify order's track, the order going on; informational) | struck (an opponent weapon
-    /// struck one of ours: docs/OPPONENT-WEAPONS.md)
+    /// struck one of ours: docs/OPPONENT-WEAPONS.md) | damaged (one of ours reports damage of
+    /// its own after a strike: its propulsion lost, its weapons out of action; rules 25)
     pub kind: &'static str,
     pub severity: Severity,
     pub uid: Uid,
@@ -81,6 +82,27 @@ pub fn alerts(
 ) -> Vec<Alert> {
     let mut out = Vec::new();
     for cell in vehicles {
+        // rules 25: a vehicle that reported damage of its own, while the run lasts
+        if let Some(d) = cell.read(|v| v.damage) {
+            let mut detail = format!("reports {} since t={:.1}", d.describe(), d.since);
+            if d.mobility {
+                detail.push_str(": it cannot move, so an order will not move it");
+            }
+            if d.firepower {
+                detail.push_str(if d.mobility { "; its weapons can't be used" } else { ": its weapons can't be used" });
+            }
+            out.push(Alert {
+                id: format!("damaged:{}", cell.uid),
+                kind: "damaged",
+                severity: Severity::High,
+                uid: cell.uid,
+                callsign: callsign(cell),
+                detail,
+                since_t: d.since,
+                op_id: None,
+                intent_id: None,
+            });
+        }
         let link = cell.link_snapshot(crate::clock::mono());
         if let Some(last) = link.last_rx_t
             && now_wall - last > link.stale_after_s()

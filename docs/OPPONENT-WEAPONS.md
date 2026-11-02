@@ -21,10 +21,11 @@ how, or when, the C2 learns that one of ours was attacked.
 
 ## 2. The decision in short
 
-A contact may carry a weapon, and each act it commits launches it. The weapon is kinematics
-only: it flies straight from the shooter to its victim at its speed, and the strike is a time and
-a report (no warhead, blast, damage or miss, as our own Hellfire-class munition). Three cues can
-tell us, each through the physical sensing model:
+A contact may carry a weapon, and each act it commits launches it. It flies straight from the
+shooter to its victim at its speed, and the strike is a time and a report. Without figures (as
+built on 10-29, and still the tutorial's boat) that is all: no warhead, blast, damage or miss.
+With figures it is drawn by the damage model (section 13, 2026-11-02). Three cues can tell us,
+each through the physical sensing model:
 
 1. **the launch**, seen by an EO/IR channel that has the shooter in its field;
 2. **the weapon in flight**, a small fast object our radars and cameras may plot;
@@ -187,7 +188,9 @@ when empty) and joined into the inbox's acts as each attack's timeline (`attack`
 - **The legacy model.** A contacts file that names the legacy model and a weapon is refused at
   load; with `MURMUR_SENSE_MODEL=legacy` forced (the eval stacks), the bridge says once that it
   senses weapon acts as abstract ones, and does.
-- **No damage.** The strike changes nothing about the victim; the card and the docs say so.
+- **No damage without figures.** A weapon whose scenario lists no `effects` changes nothing
+  about its victim; one that does is drawn by the damage model (section 13), and the victim
+  learns of its damage only by its own report.
 
 ## 7. The rules version: unchanged, and what would change it
 
@@ -217,8 +220,9 @@ for the owner (section 11):
   the fixes, if any, and the strike at the victim. The strike: a flash and a ring on the victim.
 - **The banner**, while one of ours is under a detected attack: "INCOMING · ATGM at HUNTER 1,
   strike expected in 2.0 s · launch seen by HUNTER 1 EO/IR · weapon fixed by REAPER 1 radar";
-  after, "HUNTER 1 STRUCK · launch seen by HUNTER 1 EO/IR · 4.1 s of warning · no damage is
-  modelled", held 45 s as the act banner is.
+  after, "HUNTER 1 STRUCK · launch seen by HUNTER 1 EO/IR · 4.1 s of warning · any damage is its
+  own report (Inbox)", held 45 s as the act banner is (it said "no damage is modelled" until the
+  damage model, 2026-11-02).
 - **Abstract acts drawn as reports:** a burst at the author's fix and a dashed "fired on" arrow to
   the victim, labelled "Act A-1: reported fire on HUNTER 1", the banner "HOSTILE ACT REPORTED"; the
   streak is gone. A weapon act draws no arrow ("Act A-1: launch at HUNTER 1"): its weapon is drawn.
@@ -303,3 +307,43 @@ nominated REAPER 1 while a weapon was in flight and another had just struck: the
 checks and both signatures' 20 passed, the engagement released, struck and was assessed "ceased";
 the audit log holds no weapon track in any picture, only the `struck` vehicle events.
 `murmur-replay --anchors` on both logs: "ANCHORS OK", "every decision reproduced exactly".
+
+## 13. Damage (2026-11-02, bd murmur-lbw8.2)
+
+The owner reversed "no damage" (docs/DECISIONS.md "Warheads and damage"). A contact's weapon may
+list figures, in the catalog's shape, by the kind of what it strikes:
+
+```toml
+weapon = { name = "ATGM-class missile", kind = "atgm", speed_mps = 250, range_m = 5000,
+           guidance = "semi_active_laser", warhead_kg = 9,
+           effects = { small_fast_boat = { p_hit = 0.75, p_kill = 0.85, p_mobility = 0.10, p_firepower = 0.05 } } }
+```
+
+Our vehicles count as a kind by platform and domain (`damage::ours_kind`, [E]: the large
+aircraft a light aircraft, other aircraft a small drone, the Sea Hunter a fishing boat, the
+Saildrone a sailboat, other boats a small fast boat, a UGV a car, under water a UUV); the bridge's
+answer (`ours`) says what each is. At the strike, on the act's own stream of the run's seed, the
+truth side draws a hit against that kind's figure in the conditions (`damage::hit_chance`), then
+the damage: destroyed, propulsion lost (`mobility`), weapons out of action (`firepower`, an armed
+victim only), or none. The record is the impact's `damage` in the truth log; the bridge never
+reads it.
+
+What the victim does then is the vehicle simulation's: the contacts process appends the damage to
+`sim/run/damage-<http port>.jsonl` (`MURMUR_DAMAGE_FILE`), which the stand-in engine follows. A
+stand-in whose propulsion is lost steps unpowered (a boat drifts, a UGV stops, an aircraft comes
+down), one whose weapons are out moves as before, and each says so itself over its link, a
+STATUSTEXT `DAMAGE mobility: propulsion lost` or `DAMAGE firepower: weapons out of action`, at once
+and every 30 s; a destroyed one goes silent. The bridge turns the report into a `vehicle.event` of
+kind `damage`, an inbox alert `damaged` (high, while the run lasts) and the vehicle's `damage`
+fact, which the engine's weapon check reads (rules 25: weapons out of action refuse the loadout;
+a one-way platform without its propulsion can't strike). A destroyed vehicle reports nothing: the
+operator has the strike report and then its silence (the lost-link alert), as with a real loss.
+
+**What SITL lacks.** A SITL vehicle does not read the damage file: no hook in this pass makes
+ArduPilot lose its propulsion (SITL's `SIM_ENGINE_FAIL` and `SIM_ENGINE_MUL` exist for planes
+and copters, nothing equivalent for rovers, boats and subs), go silent or send the report. Its
+strike is drawn and recorded, and nothing else follows. The headless simulator refuses opponent
+weapons still (murmur-mmxk), so there only our own strikes' collateral damages ours.
+
+The shipped scenarios' weapons list no figures (the tutorial's boat fires every 90 s at HUNTER
+1, which would not survive the tutorial with them): their strikes change nothing, as before.

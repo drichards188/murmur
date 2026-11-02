@@ -10,6 +10,9 @@
 //!   MURMUR_CONTACTS_SEED     overrides the scenario's seed
 //!   MURMUR_SIM_TOKEN         the stack's simulation-channel token (up.sh and the evaluation's
 //!                            runner generate one per stack): the bridge refuses truth without it
+//!   MURMUR_DAMAGE_FILE       where a strike's damage to our vehicles goes for the stand-ins
+//!                            (default $MURMUR_ROOT/sim/run/damage-<MURMUR_HTTP_PORT>.jsonl;
+//!                            murmur_standins::damage), emptied at the start
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -17,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use murmur_contacts::effect::{self, EffectApplied, EffectNotice};
+use murmur_contacts::effect::{self, DamageCtx, EffectApplied, EffectNotice, OursDamaged};
 use murmur_contacts::motion::Mover;
 use murmur_contacts::scenario::{Motion, Scenario};
 use murmur_contacts::truth::TruthMessage;
@@ -108,6 +111,17 @@ async fn run() -> Result<(), String> {
     let mut log = BufWriter::new(
         File::create(&log_path).map_err(|e| format!("{}: {e}", log_path.display()))?,
     );
+    // the damage model (bd murmur-lbw8.2): each draw seeded by this run's seed (MURMUR_CONTACTS_SEED,
+    // the episode's in the evaluation's stacks, else the scenario's) and the strike;
+    // what it does to our vehicles goes to the stand-ins through a file, started empty
+    let damage_ctx = DamageCtx { seed, conditions: scenario.conditions, hit_override: None };
+    let damage_path = murmur_standins::damage::path();
+    if let Some(dir) = damage_path.parent()
+        && !dir.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let mut damage_out = File::create(&damage_path).map_err(|e| format!("{}: {e}", damage_path.display()))?;
     let hz: f64 = env("MURMUR_CONTACTS_HZ")
         .and_then(|s| s.parse().ok())
         .filter(|h: &f64| *h > 0.0 && *h <= 20.0)
@@ -200,7 +214,7 @@ async fn run() -> Result<(), String> {
         }
         // rules 20: a munition whose impact has come strikes now, before this truth goes out
         for e in in_flight.due(t0 + s) {
-            applied.push(land(&e, &mut movers, t0 + s));
+            applied.push(land(&e, &mut movers, t0 + s, &damage_ctx, &mut damage_out));
         }
         seq += 1;
         let mut msg = TruthMessage::build(
@@ -220,6 +234,9 @@ async fn run() -> Result<(), String> {
         msg.aim_at = aim_at.clone();
         msg.weapons = armory.in_flight(prev_t, msg.t);
         msg.impacts = armory.impacts(msg.t);
+        // the damage model on each strike whose weapon lists figures
+        let hurt = weapon::strike(&scenario, &mut msg.impacts, &mut movers, &ours, &damage_ctx);
+        hand_over(&hurt, msg.t, &mut damage_out);
         for a in &msg.acts {
             println!(
                 "act {} at {:.0} s: {} against {}{}{}",
@@ -244,7 +261,16 @@ async fn run() -> Result<(), String> {
             );
         }
         for i in &msg.impacts {
-            println!("weapon {} struck {} at {:.1}", i.weapon, i.against_vehicle.map(|u| format!("our vehicle {u}")).or_else(|| i.against_contact.clone()).unwrap_or_default(), i.t - t0);
+            println!(
+                "weapon {} struck {} at {:.1}{}",
+                i.weapon,
+                i.against_vehicle.map(|u| format!("our vehicle {u}")).or_else(|| i.against_contact.clone()).unwrap_or_default(),
+                i.t - t0,
+                i.damage
+                    .as_ref()
+                    .map(|d| if d.hit { format!(": hit, {}", d.state.as_str()) } else { format!(": missed (p {:.2})", d.p_hit) })
+                    .unwrap_or_default()
+            );
         }
         prev_s = s;
         prev_t = msg.t;
@@ -287,7 +313,7 @@ async fn run() -> Result<(), String> {
                     }
                     // at once, unless a munition is still in flight to it (rules 20)
                     for e in in_flight.due(t0 + s) {
-                        applied.push(land(&e, &mut movers, t0 + s));
+                        applied.push(land(&e, &mut movers, t0 + s, &damage_ctx, &mut damage_out));
                     }
                 }
                 Ok(())
@@ -311,9 +337,36 @@ async fn run() -> Result<(), String> {
     }
 }
 
-/// Apply one effect at scenario time `now` and say what it did.
-fn land(e: &EffectNotice, movers: &mut [Mover], now: f64) -> EffectApplied {
-    let r = effect::apply(e, movers, now);
+/// Our vehicles a strike hurt, to the stand-ins (murmur_standins::damage): one line each.
+fn hand_over(hurt: &[OursDamaged], t: f64, out: &mut File) {
+    for h in hurt {
+        let Some(state) = murmur_standins::damage::State::parse(h.state.as_str()) else { continue };
+        let Ok(uid) = h.uid.parse::<u64>() else { continue };
+        let order = murmur_standins::damage::Order { uid, state, t, cause: h.cause.clone() };
+        println!("damage: our vehicle {uid} {} ({})", h.state.as_str(), h.cause);
+        if let Ok(line) = serde_json::to_string(&order) {
+            let _ = writeln!(out, "{line}");
+            let _ = out.flush();
+        }
+    }
+}
+
+/// Apply one effect at scenario time `now` and say what it did (with the damage model, when its
+/// weapon lists figures).
+fn land(e: &EffectNotice, movers: &mut [Mover], now: f64, ctx: &DamageCtx, out: &mut File) -> EffectApplied {
+    let r = effect::apply_with(e, movers, now, Some(ctx));
+    for d in &r.damage {
+        println!(
+            "effect (intent {}): {} {} {}: {}{}",
+            r.intent,
+            d.role,
+            d.who,
+            d.kind,
+            if d.hit { format!("hit (p {:.2}), {}", d.p_hit, d.state.as_str()) } else { format!("not hit (p {:.2})", d.p_hit) },
+            d.note.as_deref().map(|n| format!("; {n}")).unwrap_or_default()
+        );
+    }
+    hand_over(&r.ours_damaged, now, out);
     println!(
         "effect (intent {}): {} contact(s) inside {:.0} m, intended {} {}, collateral {} contact(s) and {} of ours",
         r.intent,

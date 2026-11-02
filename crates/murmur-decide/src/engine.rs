@@ -4119,6 +4119,15 @@ impl Engine {
         )?;
         // rules 12: a platform spent by its own effect is owed nothing back from now on
         self.close_expended(id, &uid, &inputs)?;
+        // the released weapon's catalog facts, for the truth side's hit draw and damage
+        let weapon_facts = weapon.as_ref().and_then(|w| {
+            inputs
+                .vehicles
+                .get(&uid)
+                .and_then(|v| v.platform.as_ref())
+                .and_then(|p| p.loadout.iter().find(|l| l.name == w.name))
+                .map(|l| Box::new(l.clone()))
+        });
         Ok(Some(EngagementEvent::Effect(EffectOrder {
             intent: id,
             uid,
@@ -4127,6 +4136,7 @@ impl Engine {
             radius_m: p.effect_radius_m,
             t,
             munition,
+            weapon: weapon_facts,
         })))
     }
 
@@ -6134,6 +6144,19 @@ impl Engine {
 
     /// [`Self::log_inputs`], its events logged at `at` when given (else at the clock).
     fn log_inputs_at(&mut self, inputs: &WorldSnapshot, at: Option<Time>) -> Result<LoggedInputs, EngineError> {
+        // rules 25: no build of older rules logged a vehicle's damage report (and none of their
+        // decisions reads it)
+        let stripped;
+        let inputs = if !self.policy.rules.damage() && inputs.vehicles.values().any(|v| v.damage.is_some()) {
+            let mut w = inputs.clone();
+            for v in w.vehicles.values_mut() {
+                v.damage = None;
+            }
+            stripped = w;
+            &stripped
+        } else {
+            inputs
+        };
         if let SpaceInputs::Answered { sha256, answer, .. } = &inputs.space
             && !self.logged_space.contains(sha256)
         {

@@ -102,8 +102,10 @@ impl WeaponTruth {
     }
 }
 
-/// A weapon's strike (truth): when and where, on whom. Nothing about the victim changes (no
-/// damage is modelled); the bridge reports it as the victim's own.
+/// A weapon's strike (truth): when and where, on whom; the bridge reports it as the victim's
+/// own. With the weapon's figures (the scenario's `effects`) the damage model draws it
+/// (`damage`, the evaluation's record: the C2 never reads it); without them nothing about the
+/// victim changes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImpactTruth {
     pub weapon: String,
@@ -115,6 +117,8 @@ pub struct ImpactTruth {
     pub against_vehicle: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub against_contact: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub damage: Option<crate::damage::DamageRecord>,
 }
 
 /// Rules 9: one scripted hostile act as it happens: a time, an author, a victim, and the weapon

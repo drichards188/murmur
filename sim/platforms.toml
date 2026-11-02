@@ -38,10 +38,18 @@
 #        bomb or torpedo flies rules 20's straight slant line at that speed (the profile is
 #        recorded, not modelled yet); `self` is the platform itself (a one-way strike, spent by
 #        its own effect). Guns and mines are listed but inert until bd murmur-lbw8.3 and .4: no
-#        nomination may use one. Later stages' optional keys: effects = { <target kind> =
-#        { p_hit, p_kill } } (murmur-lbw8.2), burst_rounds and rate_rpm (guns), persist_h and
-#        trigger (mines). Figures carry a source: [n] a reference of docs/research/weapons.md,
-#        [E] an estimate with its basis.
+#        nomination may use one. effects = { <target kind> = { p_hit, p_kill, p_mobility,
+#        p_firepower } } (bd murmur-lbw8.2): the chance of a hit on one shot in good conditions,
+#        then given a hit the chance it destroys, stops (propulsion lost) or disarms (weapons
+#        out, armed targets only) the target; the rest of a hit does no damage. Keyed by contact
+#        kind (small_fast_boat, fishing_vessel, sailboat, cargo_ship, vehicle, truck, small_drone,
+#        light_aircraft, uuv, person; the other kinds use one of these: catalog.rs
+#        KIND_ALIASES); a kind not listed is one the weapon can't engage (no hit). The truth side
+#        draws on them (crates/murmur-contacts damage.rs, with the conditions' multipliers); the
+#        weapon check shows them (rules 25). Without effects a weapon's effect stays abstract
+#        (everything inside the radius out of play). Later stages' optional keys: burst_rounds
+#        and rate_rpm (guns), persist_h and trigger (mines). Figures carry a source: [n] a
+#        reference of docs/research/weapons.md, [E] an estimate with its basis.
 # munition: rules 20's single munition (`{ name, speed_mps, range_m }`), read under rules 20 to 23
 #        only (replay of their logs, and runs pinned to them); rules 24 reads the loadout instead.
 #
@@ -213,9 +221,15 @@ munition = { name = "Hellfire-class missile", speed_mps = 425, range_m = 8000 }
 #     average from 7,600 m [E: a free fall of some 40 s]; free fall, then a terminal glide [7];
 #     semi-active laser [7]; a Mk 82, 241 kg (87 to 89 kg of tritonal) [10]; ships, boats,
 #     vehicles, buildings.
+# effects (bd murmur-lbw8.2): docs/research/weapons.md 10.3 (hit, one shot) and 10.4 (damage
+# given a hit), all [E] on the anchors there: the Hellfire's the missile column and the ~9 kg
+# warhead's row (Brimstone and Longbow trials against small boats [49,50]; a ship of thousands of
+# tonnes only damaged); the GBU-12's the laser bomb column (Vietnam's ~50% direct hits [47], a
+# 1.1 m CEP [7]; slow to correct against a mover) and the Mk 82's row (destroys anything smaller
+# than a ship).
 loadout = [
-  { name = "AGM-114R Hellfire II", kind = "missile", count = 4, min_range_m = 500, max_range_m = 8000, speed_mps = 425, profile = "direct", guidance = "semi_active_laser", warhead = { class = "multi_function", mass_kg = 9 }, targets = ["surface", "ground"] },
-  { name = "GBU-12 Paveway II", kind = "bomb", count = 2, min_range_m = 1000, max_range_m = 14800, speed_mps = 200, profile = "glide", guidance = "semi_active_laser", warhead = { class = "general_purpose_blast", mass_kg = 241 }, targets = ["surface", "ground"] },
+  { name = "AGM-114R Hellfire II", kind = "missile", count = 4, min_range_m = 500, max_range_m = 8000, speed_mps = 425, profile = "direct", guidance = "semi_active_laser", warhead = { class = "multi_function", mass_kg = 9 }, targets = ["surface", "ground"], effects = { small_fast_boat = { p_hit = 0.75, p_kill = 0.85, p_mobility = 0.10, p_firepower = 0.05 }, fishing_vessel = { p_hit = 0.90, p_kill = 0.55, p_mobility = 0.40 }, sailboat = { p_hit = 0.85, p_kill = 0.65, p_mobility = 0.30 }, cargo_ship = { p_hit = 0.95, p_mobility = 0.45 }, vehicle = { p_hit = 0.85, p_kill = 0.90, p_mobility = 0.10 }, truck = { p_hit = 0.90, p_kill = 0.80, p_mobility = 0.15, p_firepower = 0.05 }, person = { p_hit = 0.80, p_kill = 1.0 } } },
+  { name = "GBU-12 Paveway II", kind = "bomb", count = 2, min_range_m = 1000, max_range_m = 14800, speed_mps = 200, profile = "glide", guidance = "semi_active_laser", warhead = { class = "general_purpose_blast", mass_kg = 241 }, targets = ["surface", "ground"], effects = { small_fast_boat = { p_hit = 0.30, p_kill = 1.0 }, fishing_vessel = { p_hit = 0.70, p_kill = 0.95, p_mobility = 0.05 }, sailboat = { p_hit = 0.70, p_kill = 1.0 }, cargo_ship = { p_hit = 0.90, p_kill = 0.10, p_mobility = 0.60 }, vehicle = { p_hit = 0.45, p_kill = 1.0 }, truck = { p_hit = 0.55, p_kill = 1.0 }, person = { p_hit = 0.70, p_kill = 1.0 } } },
 ]
 link = "satcom"
 space_class = "wgs"
@@ -245,9 +259,13 @@ role = "Jet combat UAS"
 #     average [E: below its Mach 4 peak, about 1,370 [18]]; lofted, then an active terminal [18];
 #     INS and datalink midcourse, active radar terminal [18]; 20 kg blast-fragmentation with a
 #     proximity fuze [18]; aircraft and drones.
+#   effects (bd murmur-lbw8.2): docs/research/weapons.md 10.3 and 10.4, [E]: no reliable public
+#     combat figure for the AIM-120 [E]; 0.6 against a small drone's tiny radar and IR signature,
+#     0.8 against a light aircraft that does not manoeuvre; a 20 kg blast-fragmentation warhead
+#     destroys either nearly always.
 armed = true
 loadout = [
-  { name = "AIM-120C AMRAAM", kind = "missile", count = 2, min_range_m = 1000, max_range_m = 90000, speed_mps = 1000, profile = "lofted", guidance = "active_radar", warhead = { class = "blast_fragmentation", mass_kg = 20 }, targets = ["air"] },
+  { name = "AIM-120C AMRAAM", kind = "missile", count = 2, min_range_m = 1000, max_range_m = 90000, speed_mps = 1000, profile = "lofted", guidance = "active_radar", warhead = { class = "blast_fragmentation", mass_kg = 20 }, targets = ["air"], effects = { small_drone = { p_hit = 0.60, p_kill = 0.95 }, light_aircraft = { p_hit = 0.80, p_kill = 0.80, p_mobility = 0.15 } } },
 ]
 domain = "air"
 sim = "standin"
@@ -385,9 +403,13 @@ endurance_h = 0.7
 # a relay) [31,33]; dash 51 m/s (loiter 31) [31]; a terminal dive, waved off until about 4 s
 # before impact [33]; operator video, EO/IR with an aided tracker, secure GPS [31]; an
 # anti-armour, Javelin-derived warhead [33], about 8 kg [E: the Javelin's 8.4 kg tandem HEAT
-# [30]; no figure published]; armour, vehicles, boats [31,33].
+# [30]; no figure published]; armour, vehicles, boats [31,33]. Guidance "operator_video_eo_ir":
+# the operator's video from its EO/IR [31] (by night it loses little). effects (bd murmur-lbw8.2):
+# docs/research/weapons.md 10.3's loitering munition column (operator in the loop to the last
+# 4 s [33], a slower dive than a missile: below missiles, above FPVs; no public hit rate) and
+# 10.4's 600 row (as the missile's ~9 kg warhead, a ship only damaged), all [E].
 loadout = [
-  { name = "Switchblade 600", kind = "self", count = 1, min_range_m = 0, max_range_m = 40000, speed_mps = 51, profile = "dive", guidance = "operator_video", warhead = { class = "tandem_heat", mass_kg = 8 }, targets = ["ground", "surface"] },
+  { name = "Switchblade 600", kind = "self", count = 1, min_range_m = 0, max_range_m = 40000, speed_mps = 51, profile = "dive", guidance = "operator_video_eo_ir", warhead = { class = "tandem_heat", mass_kg = 8 }, targets = ["ground", "surface"], effects = { small_fast_boat = { p_hit = 0.55, p_kill = 0.85, p_mobility = 0.10, p_firepower = 0.05 }, fishing_vessel = { p_hit = 0.75, p_kill = 0.55, p_mobility = 0.40 }, sailboat = { p_hit = 0.75, p_kill = 0.65, p_mobility = 0.30 }, cargo_ship = { p_hit = 0.90, p_mobility = 0.40 }, vehicle = { p_hit = 0.70, p_kill = 0.90, p_mobility = 0.10 }, truck = { p_hit = 0.75, p_kill = 0.80, p_mobility = 0.15, p_firepower = 0.05 }, person = { p_hit = 0.65, p_kill = 1.0 } } },
 ]
 [x10]
 name = "Skydio X10-class quadcopter"
@@ -446,9 +468,13 @@ endurance_h = 0.15
 # munition, one round. No single maker: 10,000 m by radio [35] (10 to 20 km [35; E]); 28 to 44 m/s
 # at most [35], 35 here [E: the middle]; a low run in and a dive [E]; operator video [36; E]; the
 # research's default, a PG-7VL (RPG-7) grenade head, 2.6 kg (0.73 kg of HMX), single HEAT [34];
-# vehicles and boats.
+# vehicles and boats. Guidance "operator_video_day": the operator's video from a day camera [E]
+# (by night it loses half its hits, docs/research/weapons.md 10.5). effects (bd murmur-lbw8.2):
+# 10.3's FPV column (20-40% effective, both sides [36], its middle; boats and ships bigger and
+# slower than vehicles) and 10.4's PG-7VL row, with the ~10% of hits that fail to detonate [37]
+# taken out of each damage share (0.9 of the row's figure), all [E] but [36,37].
 loadout = [
-  { name = "PG-7VL warhead (FPV)", kind = "self", count = 1, min_range_m = 0, max_range_m = 10000, speed_mps = 35, profile = "direct", guidance = "operator_video", warhead = { class = "heat", mass_kg = 2.6 }, targets = ["ground", "surface"] },
+  { name = "PG-7VL warhead (FPV)", kind = "self", count = 1, min_range_m = 0, max_range_m = 10000, speed_mps = 35, profile = "direct", guidance = "operator_video_day", warhead = { class = "heat", mass_kg = 2.6 }, targets = ["ground", "surface"], effects = { small_fast_boat = { p_hit = 0.30, p_kill = 0.41, p_mobility = 0.32, p_firepower = 0.09 }, fishing_vessel = { p_hit = 0.40, p_kill = 0.18, p_mobility = 0.45 }, sailboat = { p_hit = 0.40, p_kill = 0.23, p_mobility = 0.41 }, cargo_ship = { p_hit = 0.50, p_mobility = 0.05 }, vehicle = { p_hit = 0.35, p_kill = 0.54, p_mobility = 0.32 }, truck = { p_hit = 0.40, p_kill = 0.36, p_mobility = 0.36, p_firepower = 0.05 }, person = { p_hit = 0.30, p_kill = 0.72 } } },
 ]
 [lta]
 name = "Small airship (LTA)"
@@ -543,10 +569,12 @@ endurance_h = 15
 #   FGM-148 Javelin: one ready, reloaded by hand [E: the R400 shows one launcher [23]]; 65 [E:
 #     published minimums vary] to 4,750 m from a vehicle [30]; about 150 m/s on average [E: some
 #     30 s to 4.75 km]; top attack or direct [30]; IR imaging, fire-and-forget [30]; 8.4 kg tandem
-#     HEAT [30]; armour, vehicles, boats.
+#     HEAT [30]; armour, vehicles, boats. effects (bd murmur-lbw8.2): the Hellfire's, as
+#     docs/research/weapons.md 10.3 and 10.4 give one column and one row to the ~9 kg missiles
+#     (the maker's >94% "engagement success" against far lower combat kill rates [51]), [E].
 loadout = [
   { name = "M2 .50 HMG", kind = "gun", count = 500, min_range_m = 0, max_range_m = 1800, speed_mps = 910, profile = "ballistic", guidance = "stabilised_sight", warhead = { class = "ball_ap_12_7mm", mass_kg = 0.043 }, targets = ["ground", "surface", "air"], burst_rounds = 6, rate_rpm = 525 },
-  { name = "FGM-148 Javelin", kind = "missile", count = 1, min_range_m = 65, max_range_m = 4750, speed_mps = 150, profile = "lofted", guidance = "imaging_infrared", warhead = { class = "tandem_heat", mass_kg = 8.4 }, targets = ["ground", "surface"] },
+  { name = "FGM-148 Javelin", kind = "missile", count = 1, min_range_m = 65, max_range_m = 4750, speed_mps = 150, profile = "lofted", guidance = "imaging_infrared", warhead = { class = "tandem_heat", mass_kg = 8.4 }, targets = ["ground", "surface"], effects = { small_fast_boat = { p_hit = 0.75, p_kill = 0.85, p_mobility = 0.10, p_firepower = 0.05 }, fishing_vessel = { p_hit = 0.90, p_kill = 0.55, p_mobility = 0.40 }, sailboat = { p_hit = 0.85, p_kill = 0.65, p_mobility = 0.30 }, cargo_ship = { p_hit = 0.95, p_mobility = 0.45 }, vehicle = { p_hit = 0.85, p_kill = 0.90, p_mobility = 0.10 }, truck = { p_hit = 0.90, p_kill = 0.80, p_mobility = 0.15, p_firepower = 0.05 }, person = { p_hit = 0.80, p_kill = 1.0 } } },
 ]
 [ugv_mines]
 name = "Mine-laying UGV"
@@ -663,9 +691,16 @@ endurance_h = 20
 # 22 m/s at most [19]; at the waterline [19]; operator video and GNSS/INS with an EO tracker
 # [19,20]; a contact-fuzed charge of up to 300 kg [19] (a 320 kg load [20]); ships, boats, piers.
 # The Sea Dragon (two R-73) and the V7 (two AIM-9 or a gun) [19] are other loadouts, not this one.
+# Guidance "operator_video_eo_tracker": the operator's video and its EO tracker [19,20], a camera
+# low on the water (by night it keeps a third of its hits, docs/research/weapons.md 10.5).
+# effects (bd murmur-lbw8.2): docs/research/weapons.md 10.3 has no column for an explosive boat,
+# so the hit chances are [E] from the FPV's (an operator steering by video to the last second
+# [36]): a ship 0.50 (the public sinkings each took several boats [19]), a fishing boat or a
+# sailboat 0.40, a fast boat 0.20 (it outruns a 22 m/s boat that is not already on it); 10.4's
+# 300 kg row: anything smaller than a ship destroyed, a ship crippled or sunk [19; E].
 expended_by_effect = true
 loadout = [
-  { name = "Magura V5 charge", kind = "self", count = 1, min_range_m = 0, max_range_m = 800000, speed_mps = 22, profile = "waterborne", guidance = "operator_video", warhead = { class = "blast_contact", mass_kg = 300 }, targets = ["surface"] },
+  { name = "Magura V5 charge", kind = "self", count = 1, min_range_m = 0, max_range_m = 800000, speed_mps = 22, profile = "waterborne", guidance = "operator_video_eo_tracker", warhead = { class = "blast_contact", mass_kg = 300 }, targets = ["surface"], effects = { small_fast_boat = { p_hit = 0.20, p_kill = 1.0 }, fishing_vessel = { p_hit = 0.40, p_kill = 1.0 }, sailboat = { p_hit = 0.40, p_kill = 1.0 }, cargo_ship = { p_hit = 0.50, p_kill = 0.45, p_mobility = 0.50 } } },
 ]
 
 # The Magura as catalogued before rules 24 (bd murmur-lbw8.1): armed, with no loadout and not

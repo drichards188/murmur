@@ -34,9 +34,10 @@
 //! radar or transponder an ESM receiver can hear; default per kind), `signature` (detection
 //! range multiplier, the legacy model's; default per kind), `turn_dps`, `start_s` and `end_s` (scenario seconds
 //! the contact exists), `ais.spoofed = true` (the AIS identity is false: a suspect boat
-//! claiming to be a fishing vessel), `on_effect` (what an engagement's abstract effect does
-//! to it: `"out_of_play"`, the default, removes it from the scenario, so our sensors stop
-//! detecting it; `"persists"` keeps it moving, flagged). `transit` moves once from `route[0]` to the last point
+//! claiming to be a fishing vessel), `on_effect` (what an engagement's effect does to it:
+//! `"out_of_play"`, the default, removes it from the scenario when an abstract effect reaches it,
+//! or when the damage model destroys it, so our sensors stop detecting it; `"persists"` keeps it
+//! moving, flagged, whatever the draw). `transit` moves once from `route[0]` to the last point
 //! and holds there; `loiter` needs `center` and `radius_m`; `station` and `drift` need
 //! `at`. Drift follows the tidewater current when the contacts process has conditions.
 //! `recorded` needs `max_gap_s` and timestamped `samples` (`at_s`, `position = [lon, lat]`,
@@ -45,8 +46,9 @@
 //!
 //! A contact may carry a weapon (docs/OPPONENT-WEAPONS.md): `weapon = { name = "ATGM-class
 //! missile", kind = "atgm", speed_mps = 250, range_m = 5000 }` (and `fly_m`, its flight height
-//! above the sea, default 4). Every act by such a contact launches it ([`crate::weapon`]); the
-//! acts of any other contact stay abstract. Weapons need the physical sensing model: a file that
+//! above the sea, default 4; `guidance`, `warhead_kg` and `effects`, its hit and damage figures
+//! for the damage model, [`crate::damage`]). Every act by such a contact launches it
+//! ([`crate::weapon`]); the acts of any other contact stay abstract. Weapons need the physical sensing model: a file that
 //! names the legacy one and a weapon is refused, as is an act against a contact the weapon cannot
 //! reach at the act's second.
 
@@ -126,9 +128,11 @@ pub fn kind_defaults(kind: &str) -> Option<&'static KindDefaults> {
     KINDS.iter().find(|k| k.kind == kind)
 }
 
-/// What an engagement's abstract effect (Phase E) does to a contact inside its radius: a
-/// flag and a time, and either out of play (no longer in the truth, so our sensors stop
-/// detecting it) or unchanged. No damage, blast or lethality is modelled.
+/// What an engagement's effect (Phase E) does to a contact inside its radius: a flag and a time,
+/// and either out of play (no longer in the truth, so our sensors stop detecting it) or
+/// unchanged. An abstract effect (a weapon without hit and damage figures) takes every contact
+/// inside the radius out of play unless it `persists`; with figures, only the damage model's
+/// `destroyed` does, and `persists` keeps a contact in play whatever the draw ([`crate::damage`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum OnEffect {
@@ -276,9 +280,12 @@ pub struct ActSpec {
 /// The weapon kinds the bridge's sensing model has figures for (its `tracks::physical::weapon`).
 pub const WEAPON_KINDS: &[&str] = &["atgm"];
 
-/// A contact's weapon (docs/OPPONENT-WEAPONS.md): kinematics only, a straight flight at
-/// constant speed from the shooter to a lead point on its victim; no guidance, no miss, no
-/// damage. Rounded public figures, "-class" naming as the catalog's munitions.
+/// A contact's weapon (docs/OPPONENT-WEAPONS.md): a straight flight at constant speed from the
+/// shooter to a lead point on its victim, no guidance. Rounded public figures, "-class" naming
+/// as the catalog's munitions. With `effects` (the catalog's shape: `{ <target kind> = { p_hit,
+/// p_kill, p_mobility, p_firepower } }`, our vehicles' kinds by `damage::ours_kind`), its
+/// `guidance` and `warhead_kg`, each strike is drawn by the damage model (bd murmur-lbw8.2): a
+/// miss, or damage to the victim; without them a strike changes nothing about its victim.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WeaponSpec {
@@ -289,6 +296,12 @@ pub struct WeaponSpec {
     /// Its flight height above the sea, m.
     #[serde(default = "default_fly_m")]
     pub fly_m: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guidance: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warhead_kg: Option<f64>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub effects: std::collections::BTreeMap<String, crate::damage::Figures>,
 }
 
 fn default_fly_m() -> f64 {
@@ -312,7 +325,23 @@ impl WeaponSpec {
         if !(self.fly_m.is_finite() && (0.0..=100.0).contains(&self.fly_m)) {
             return Err("weapon fly_m must be within 0..100".into());
         }
-        Ok(())
+        if self.warhead_kg.is_some_and(|k| !(k.is_finite() && k >= 0.0)) {
+            return Err("weapon warhead_kg must be 0 or more".into());
+        }
+        self.damage().map_or(Ok(()), |d| d.check())
+    }
+
+    /// The weapon as the damage model reads it, when it lists figures (none: a strike does no
+    /// damage).
+    pub fn damage(&self) -> Option<crate::damage::WeaponDamage> {
+        (!self.effects.is_empty()).then(|| crate::damage::WeaponDamage {
+            name: self.name.clone(),
+            kind: self.kind.clone(),
+            guidance: self.guidance.clone().unwrap_or_default(),
+            warhead: self.warhead_kg.map(|mass_kg| crate::damage::Warhead { class: String::new(), mass_kg }),
+            max_range_m: Some(self.range_m),
+            effects: self.effects.clone(),
+        })
     }
 }
 

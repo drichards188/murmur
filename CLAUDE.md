@@ -354,6 +354,22 @@ meaningful.
   morning-harbor-watch and hostile-act-loitering-munition (an unarmed MQ-9B is their premise).
   Scenarios that need a Magura surviving its own effect name `magura_pre_loadout`. Scenarios
   119-120; tamper `edit_rounds`.
+- Damage model and rules 25 (`DAMAGE_SINCE`, bd murmur-lbw8.2, DECISIONS.md "Warheads and
+  damage"): the truth side draws every strike (crates/murmur-contacts `damage.rs`): a hit from the
+  weapon's catalog `effects` for the target kind (`KIND_ALIASES` maps other kinds; decide's
+  `catalog::KIND_ALIASES` is the same table, a headless test checks) times the conditions'
+  factors, then destroyed / mobility / firepower / undamaged, plus collateral within 4 m per cube
+  root of the warhead's kg; each draw seeded by the contacts' seed and the strike (`effect:<intent>`,
+  `act:<id>`). A weapon without `effects` (or no weapon: the v1/v2 worlds) stays abstract exactly
+  as before. Our damaged vehicles: `sim/run/damage-<http port>.jsonl` (`MURMUR_DAMAGE_FILE`,
+  emptied by the contacts process at start) to the stand-ins (`murmur_standins::damage`), which
+  step unpowered, go silent, or report `DAMAGE mobility|firepower` STATUSTEXT every 30 s; the
+  bridge makes that the `damage` vehicle fact, a `damage` event and a `damaged` alert. SITL reads
+  none of it. The engine reads only that fact (weapons out of action refuse the loadout; a `self`
+  platform without propulsion can't strike) and drops it from logs of older rules; the weapon
+  check shows the figures. Headless: an episode's `effects.p_hit`, when given, replaces the
+  target's hit chance (an evaluation's knob; absent, the figures decide). Scenarios 121-122;
+  tamper `drop_damage`.
 - Opponent weapons (docs/OPPONENT-WEAPONS.md, bd murmur-wcvp; no rules version): a contact's
   `weapon = { name, kind, speed_mps, range_m }` (kinds the bridge has figures for:
   `tracks::physical::weapon::weapon_signature`, `atgm`) makes each of its acts a launch, flown by

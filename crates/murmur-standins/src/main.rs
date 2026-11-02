@@ -71,6 +71,11 @@ async fn run(path: &str) -> Result<(), String> {
         .map(|v| (v.home[0], v.home[1]))
         .collect();
     let gnss = Arc::new(murmur_standins::gnss::Env::from_env(&homes));
+    // a strike's damage to ours, from the truth side's damage model (crates/murmur-contacts)
+    let damage = Arc::new(murmur_standins::damage::Board::default());
+    let damage_path = murmur_standins::damage::path();
+    println!("damage: following {}", damage_path.display());
+    tokio::spawn(murmur_standins::damage::watch(damage_path, damage.clone()));
 
     // fixed source ports (MURMUR_STANDIN_SRC_BASE + index), or ephemeral ones as before
     let src_base = std::env::var("MURMUR_STANDIN_SRC_BASE").ok();
@@ -107,6 +112,7 @@ async fn run(path: &str) -> Result<(), String> {
         );
         let mut v = Vehicle::new(cfg, sock, None)?;
         v.gnss = Some(gnss.clone());
+        v.damage_board = Some(damage.clone());
         if tidewater.is_some() && v.behavior.wants_conditions() {
             let slot = Arc::new(Slot::default());
             slot.report(v.st.lat, v.st.lon, v.st.depth());

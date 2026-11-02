@@ -120,8 +120,8 @@ function stepView(
               as you like.
             </p>
             <p className="tut-small">
-              Nothing here is real: simulated vehicles, an abstract effect for ours (a point, a radius, a time), and the boat&apos;s missile is kinematics only (no damage is
-              modelled). The two signers are scripts, labeled scripted.
+              Nothing here is real: simulated vehicles, a game-level damage model for our missile (a published hit chance, then a damage draw), and the boat&apos;s missile
+              is kinematics only (no damage is modelled for it). The two signers are scripts, labeled scripted.
             </p>
           </>
         ),
@@ -355,13 +355,16 @@ function stepView(
         title: 'Impact and assessment',
         body: (
           <>
-            <p>The effect landed at the missile&apos;s impact. Our sensors now look at the point, and the engine assesses the result from what they see:</p>
+            <p>
+              The missile struck at its impact. A hit is not certain: the Hellfire&apos;s published chance against a fast boat is about three in four, and a hit may only
+              stop the boat rather than sink it. Our sensors now look at the point, and the engine assesses the result from what they see, never from the simulation:
+            </p>
             <ul>
               <li>
                 <b>ceased</b>: no target detected where expected;
               </li>
               <li>
-                <b>persists</b>: the target is still detected;
+                <b>persists</b>: the target is still detected (a miss, or a boat that is stopped but afloat); another nomination may follow;
               </li>
               <li>
                 <b>unknown</b>: none of ours covers the point.

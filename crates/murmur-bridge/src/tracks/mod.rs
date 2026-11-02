@@ -540,7 +540,14 @@ impl Tracks {
                 c.read(|v| {
                     let (lat, lon) = v.pos?;
                     let [ve, vn] = v.vel_en.unwrap_or([0.0, 0.0]);
-                    Some(json!({ "uid": c.uid, "lat": lat, "lon": lon, "alt_m": v.alt_msl.unwrap_or(0.0), "ve": ve, "vn": vn }))
+                    let mut o = json!({ "uid": c.uid, "lat": lat, "lon": lon, "alt_m": v.alt_msl.unwrap_or(0.0), "ve": ve, "vn": vn });
+                    // what the truth side's damage model reads of the victim: what it is
+                    if let Some(i) = &v.identity {
+                        o["platform"] = json!(i.str("platform"));
+                        o["domain"] = json!(i.str("domain"));
+                        o["armed"] = json!(i.0.get("armed").and_then(Value::as_bool).unwrap_or(false));
+                    }
+                    Some(o)
                 })
             })
             .collect()
@@ -798,17 +805,17 @@ impl Tracks {
             let w = inner.weapons.struck(&i.weapon, uid, i.t + offset);
             let text = match (&w.launch, w.first_cue_t()) {
                 (Some(l), Some(first)) => format!(
-                    "struck ({}): launch seen by {} {:.1} s before; no damage is modelled",
+                    "struck ({}): launch seen by {} {:.1} s before",
                     w.id,
                     l.sensors.join(", "),
                     i.t + offset - first
                 ),
                 (None, Some(first)) => format!(
-                    "struck ({}): no sensor saw the launch; the weapon was fixed {:.1} s before; no damage is modelled",
+                    "struck ({}): no sensor saw the launch; the weapon was fixed {:.1} s before",
                     w.id,
                     i.t + offset - first
                 ),
-                _ => format!("struck ({}): no sensor saw the launch or the weapon; no damage is modelled", w.id),
+                _ => format!("struck ({}): no sensor saw the launch or the weapon", w.id),
             };
             println!("weapons: vehicle {uid} {text}");
             inner.strikes.push((uid, text));
@@ -1422,6 +1429,11 @@ impl Tracks {
         // clock when the effect is handed over (`take_effects_at`)
         if let Some(m) = &e.munition {
             effect["munition"] = serde_json::to_value(m).unwrap_or(Value::Null);
+        }
+        // the weapon released (its warhead and its hit and damage figures), for the truth side's
+        // damage model (bd murmur-lbw8.2)
+        if let Some(w) = &e.weapon {
+            effect["weapon"] = serde_json::to_value(w).unwrap_or(Value::Null);
         }
         inner.effects.push(effect);
     }

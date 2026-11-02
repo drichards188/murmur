@@ -102,18 +102,21 @@ pub struct WaterSpec {
     pub wind_en: Option<[f64; 2]>,
 }
 
-/// An engagement's effect in the simulation (docs/HEADLESS.md, engagements). The effect stays
-/// abstract (a point, a radius, a time): whether it takes the intended contact out is a draw,
-/// and a platform its catalog says is spent by its own effect (`expended_by_effect`) leaves the
-/// world.
+/// An engagement's effect in the simulation (docs/HEADLESS.md, engagements). An abstract effect
+/// (a point, a radius, a time): whether it takes the intended contact out is a draw; one whose
+/// weapon lists hit and damage figures is the damage model's (crates/murmur-contacts `damage`).
+/// A platform its catalog says is spent by its own effect (`expended_by_effect`) leaves the world.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Effects {
-    /// The probability that an effect takes the intended contact out of play (as the contacts
-    /// process does for every contact inside the radius); drawn once per effect from the episode
-    /// seed and the intent. On a miss nothing inside the radius is touched.
-    #[serde(default = "one")]
-    pub p_hit: f64,
+    /// An abstract effect: the probability that it takes the intended contact out of play (as
+    /// the contacts process does for every contact inside the radius); drawn once per effect from
+    /// the episode seed and the intent (absent: 1). On a miss nothing inside the radius is
+    /// touched. With the damage model, when given, the evaluation's override of the target's hit
+    /// chance (the damage draw given a hit, and collateral, stay the model's); absent, the
+    /// weapon's figures decide.
+    #[serde(default)]
+    pub p_hit: Option<f64>,
     /// A platform spent by its own effect goes silent at the effect (its stand-in stops: no
     /// frames out, none answered). With `survives_miss`, one whose effect missed flies on
     /// (rules 15's "spent, still heard": an operator may un-spend it).
@@ -121,10 +124,6 @@ pub struct Effects {
     pub spend_expended: bool,
     #[serde(default)]
     pub survives_miss: bool,
-}
-
-fn one() -> f64 {
-    1.0
 }
 
 fn yes() -> bool {

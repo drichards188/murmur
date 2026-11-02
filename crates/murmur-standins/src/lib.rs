@@ -11,13 +11,15 @@
 //! when, link-aware), `failsafe` (GCS, battery and EKF), `battery`, `gnss` (the GPS
 //! receiver: constellation geometry, jamming, spoofing), `nav` (the EKF and the navigation
 //! error: truth vs reported), `truth` (the truth log), `kinematics` (shared physics steps),
-//! `conditions` (tidewater client), `behavior/*` (one file per imitated autopilot).
+//! `conditions` (tidewater client), `damage` (a strike's damage to one of ours, from the truth
+//! side's damage model), `behavior/*` (one file per imitated autopilot).
 
 pub mod battery;
 pub mod behavior;
 pub mod commands;
 pub mod conditions;
 pub mod config;
+pub mod damage;
 pub mod failsafe;
 pub mod geo;
 pub mod gnss;

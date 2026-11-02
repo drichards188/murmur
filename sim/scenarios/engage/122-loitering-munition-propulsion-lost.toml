@@ -1,0 +1,63 @@
+# Rules 25 (bd murmur-lbw8.2): a platform that is its own weapon can't strike once it has lost its
+# propulsion. The Switchblade 600 (the airframe is the munition) reports a strike took its
+# propulsion (its own STATUSTEXT on the bridge, the vehicle's `damage` fact here). A nomination
+# for it is refused by the weapon check: it can't reach a target. A platform whose weapon flies
+# from it is not stopped by a mobility kill alone (121 is the firepower kill).
+title = "A loitering munition that lost its propulsion can't strike"
+invariant = "weapon"
+attack = "a nomination for a one-way strike platform that can no longer fly to its target"
+expect = "rejected"
+expect_rule = "weapon"
+end_s = 20
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "vehicle"
+uid = "blade-1"
+damage = { mobility = true }
+
+[[step]]
+at_s = 2
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 3
+action = "expect"
+state = "rejected"
+rule = "weapon"
+weapon = "Switchblade 600 is the platform itself, whose vehicle reported its propulsion lost (reported 1 s ago): it can't reach a target"
