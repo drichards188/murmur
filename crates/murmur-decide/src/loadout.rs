@@ -145,6 +145,8 @@ pub struct Rules25<'a> {
     pub figures: bool,
     /// Rules 26 ([`crate::rules::GUN_SINCE`]): a gun is usable.
     pub guns: bool,
+    /// Rules 27 ([`crate::rules::MINE_SINCE`]): a mine is usable, by a lay order only.
+    pub mines: bool,
 }
 
 impl Rules25<'_> {
@@ -207,9 +209,14 @@ pub fn figures(w: &WeaponFacts, kind: Option<&str>) -> String {
 }
 
 /// Why `w` can't be used against a target in `domain` now, if it can't.
-fn unusable(w: &WeaponFacts, rounds: Option<&PlatformRounds>, domain: Option<Domain>, guns: bool) -> Option<String> {
-    if let Some(why) = w.kind.inert_why(guns) {
+fn unusable(w: &WeaponFacts, rounds: Option<&PlatformRounds>, domain: Option<Domain>, guns: bool, mines: bool) -> Option<String> {
+    if let Some(why) = w.kind.inert_why(guns, mines) {
         return Some(format!("{} is a {}: {why}", w.name, w.kind.as_str()));
+    }
+    // rules 27: a mine is laid by a lay order and chooses its victim by its trigger; an
+    // engagement never releases one at a target
+    if w.kind == WeaponKind::Mine {
+        return Some(format!("{} is a mine: a lay order lays it (rules 27), an engagement never releases one at a target", w.name));
     }
     if let Some(d) = domain
         && !w.for_target(d)
@@ -293,7 +300,7 @@ pub fn choose_with(
             None => why,
         });
     }
-    let out_of_use = |w: &WeaponFacts| immobile(w, r25).or_else(|| unusable(w, rounds, domain, r25.guns));
+    let out_of_use = |w: &WeaponFacts| immobile(w, r25).or_else(|| unusable(w, rounds, domain, r25.guns, r25.mines));
     let shown = |w: &WeaponFacts| if r25.figures { figures(w, r25.kind) } else { String::new() };
     if let Some(n) = named {
         let Some(w) = platform.loadout.iter().find(|w| w.name == n) else {
@@ -377,6 +384,8 @@ mod tests {
             burst_interval_s: None,
             persist_h: None,
             trigger: None,
+            trigger_m: None,
+            arm_s: None,
         }
     }
 

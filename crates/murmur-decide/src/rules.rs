@@ -112,6 +112,10 @@ pub enum RuleId {
     /// Rules 26: a gun's burst: the line from the platform to the target is clear of our other
     /// vehicles and of protected tracks ([`crate::engage::LINE_OF_FIRE_M`] either side).
     LineOfFire,
+    /// Rules 27: a lay order's field: nothing but a declared hostile could set it off that the
+    /// engine can see (protected tracks of the mine's target domains, ours, the layer after each
+    /// mine arms, the no-strike areas: [`crate::mines`]).
+    Minefield,
 }
 
 impl RuleId {
@@ -151,6 +155,7 @@ impl RuleId {
             RuleId::Identify => "identify",
             RuleId::Weapon => "weapon",
             RuleId::LineOfFire => "line_of_fire",
+            RuleId::Minefield => "minefield",
         }
     }
 }
@@ -261,8 +266,29 @@ pub enum UnknownEndurance {
 /// weapons out of action (a damage model's firepower kill) can't use its loadout, and the weapon
 /// check shows the weapon's published hit and damage figures against the target's estimated kind.
 /// Version 26 ([`GUN_SINCE`]): a gun is usable: its engagement fires bursts from a counted
-/// magazine through a firing window, each burst re-checked and its rounds counted.
-pub const RULES_VERSION: u32 = GUN_SINCE;
+/// magazine through a firing window, each burst re-checked and its rounds counted. Version 27
+/// ([`MINE_SINCE`]): a minefield is laid on an engagement's two signatures, logged mine by mine as
+/// the record the law asks for, live for the period the nomination sets, and a keep-out for our
+/// own vehicles while it is.
+pub const RULES_VERSION: u32 = MINE_SINCE;
+
+/// The rules version from which a mine of a platform's loadout is usable (bd murmur-lbw8.4, the
+/// owner's direction of 2026-11-02, DECISIONS.md "Mines: laid on two signatures, recorded, live
+/// for a set period"). A mine chooses its victim later, by its trigger, so the human judgement is
+/// made at the laying: a lay order (`Task::Lay`: the line, the number of mines, the hours they
+/// stay live, and the mine) goes through an engagement's chain (a nomination, the engine's checks,
+/// two distinct signers with engagement authority, never its proposer, the authorize step closed
+/// to agents in code) without a declared target. Its `minefield` check judges what else could set
+/// the field off ([`crate::mines`]): protected tracks of a domain the mine is triggered by, now
+/// and on their course, our own vehicles of those domains (where they are, their homes and the
+/// orders they are on), the layer itself after each mine arms, and the policy's no-strike areas.
+/// Each mine laid is logged (`mine.laid`: its position, the hours it is live, the round it
+/// spends) and carried over a restart; a field whose period is over is logged inert
+/// (`minefield.inert`). While a field of ours is live it is a no-go area for our vehicles of the
+/// domains it is triggered by: the route planner routes round it, the geofence refuses a mission
+/// or nomination across it, and an rtl across it goes with a warning. Every gate of that change
+/// reads this constant, never a literal.
+pub const MINE_SINCE: u32 = 27;
 
 /// The rules version from which a gun of a platform's loadout is usable (bd murmur-lbw8.3, the
 /// owner's direction of 2026-11-02, DECISIONS.md "Guns: bursts from a counted magazine"). A gun's
@@ -727,6 +753,12 @@ impl RulesConfig {
         self.rules_version >= GUN_SINCE
     }
 
+    /// Rules 27 ([`MINE_SINCE`]): a mine is usable, laid on two signatures; our live fields are
+    /// keep-outs for our own vehicles.
+    pub fn mines(&self) -> bool {
+        self.rules_version >= MINE_SINCE
+    }
+
     /// `[rules.engage]`, or its defaults.
     pub fn engage_rules(&self) -> EngageRules {
         let mut e = self.engage.clone().unwrap_or_default();
@@ -783,6 +815,8 @@ pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
             out.extend(reserves(spec, world, cfg));
             // engage: the engagement checks (crate::engage), after the vehicle rules
             out.extend(crate::engage::evaluate(spec, world, cfg));
+            // rules 27: a lay order's (crate::mines)
+            out.extend(crate::mines::evaluate(spec, world, cfg));
         }
         Targets::Space => {
             out.extend(space_query(spec, world, cfg));
@@ -887,7 +921,9 @@ pub fn capability(spec: &IntentSpec, world: &WorldSnapshot) -> Vec<CheckResult> 
             return fail("cannot evaluate: autopilot type unknown (no heartbeat yet)".into());
         };
         let ap = ap.value;
-        if !ap.supports(kind) {
+        // rules 27: a ground vehicle or a sub lays mines (a lay order exists from rules 27 only)
+        let lays = kind == TaskKind::Lay && matches!(ap, AutopilotKind::Ugv | AutopilotKind::Sub);
+        if !ap.supports(kind) && !lays {
             let list: Vec<_> = ap.tasks().iter().map(|k| k.as_str()).collect();
             let can = if list.is_empty() {
                 "nothing".to_string()
@@ -1380,7 +1416,19 @@ pub fn geofence(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
         let Some(areas) = &world.areas else {
             return not_checked("cannot evaluate: no area set loaded".into());
         };
-        let no_go: Vec<&Area> = areas.no_go().collect();
+        // rules 27: our live minefields this vehicle could set off are no-go areas for it
+        let fields = crate::mines::field_areas(world, uid, cfg);
+        let no_go: Vec<&Area> = areas.no_go().chain(fields.iter()).collect();
+        // rules 27: an rtl across one of our fields goes as ordered (the safety command), and a
+        // person is told
+        let field_warning = |area: &Area, why: String| {
+            let mut c = res(
+                Outcome::Pass,
+                format!("{why} ({}): the rtl goes as ordered (a safety command)", area.name),
+            );
+            c.warning = Some(format!("rtl path crosses {}: {why}; send a safer order", area.name));
+            c
+        };
         // rules 22: through the waypoints a plan routes its legs through
         if let Some(path) = &route.task_routed() {
             for area in &no_go {
@@ -1396,6 +1444,9 @@ pub fn geofence(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
         for seg in &route.segments() {
             for area in &no_go {
                 if let Some(why) = segment_enters(area, seg) {
+                    if kind == TaskKind::Rtl && crate::mines::is_field(area) {
+                        return field_warning(area, why);
+                    }
                     return res(Outcome::Fail, format!("{why} (no-go: {}){}", area.name, plan_note(world, uid, false, true)));
                 }
                 if seg.from_vehicle
@@ -1406,7 +1457,12 @@ pub fn geofence(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
                 }
             }
         }
-        let mut detail = format!("clear of {} no-go areas ({}){}", no_go.len(), route.parts(), plan_note(world, uid, true, true));
+        let fields_note = if fields.is_empty() {
+            String::new()
+        } else {
+            format!(", {} of them our minefields", fields.len())
+        };
+        let mut detail = format!("clear of {} no-go areas{fields_note} ({}){}", no_go.len(), route.parts(), plan_note(world, uid, true, true));
         if !leaving.is_empty() {
             detail.push_str(&format!(
                 "; starts inside {} and leaves it",

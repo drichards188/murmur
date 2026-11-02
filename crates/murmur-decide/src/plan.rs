@@ -341,7 +341,7 @@ pub fn plan_leg(from: LonLat, to: LonLat, keeps: Option<char>, grid: &PlanGrid, 
 /// Why a straight leg needs a plan: the first point along it on the wrong surface (past its
 /// departure's allowance, as the domain rule judges it), else the first no-go area it crosses.
 /// None when it is clear, or when planning can't help (its end is inside a no-go area).
-fn met(leg: &RouteLeg, need: Option<&str>, world: &WorldSnapshot, oracle: &dyn TerrainOracle) -> Option<String> {
+fn met(leg: &RouteLeg, need: Option<&str>, world: &WorldSnapshot, oracle: &dyn TerrainOracle, fields: &[Area]) -> Option<String> {
     if let Some(need) = need
         && let Some(pts) = along(leg.from, leg.to)
         && !pts.is_empty()
@@ -359,7 +359,8 @@ fn met(leg: &RouteLeg, need: Option<&str>, world: &WorldSnapshot, oracle: &dyn T
         }
     }
     let areas = world.areas.as_ref()?;
-    for a in areas.no_go() {
+    // rules 27: and our live minefields the vehicle could set off ([`crate::mines::field_areas`])
+    for a in areas.no_go().chain(fields.iter()) {
         if a.contains(leg.to) {
             return None;
         }
@@ -373,12 +374,14 @@ fn met(leg: &RouteLeg, need: Option<&str>, world: &WorldSnapshot, oracle: &dyn T
 /// The legs of `spec`'s vehicles a plan may route: a vehicle's transit and, for a patrol, its
 /// legs, each with what it met and the surface it keeps to.
 fn needing(spec: &IntentSpec, world: &WorldSnapshot, oracle: &dyn TerrainOracle, cfg: &RulesConfig) -> Vec<(Uid, RouteLeg, String, Option<&'static str>)> {
-    if !cfg.route_plan() || !matches!(spec.task, Task::Orbit { .. } | Task::Patrol { .. }) {
+    // rules 27: a lay order's transit too (its line is the operator's)
+    if !cfg.route_plan() || !matches!(spec.task, Task::Orbit { .. } | Task::Patrol { .. } | Task::Lay { .. }) {
         return Vec::new();
     }
     let mut out = Vec::new();
     for uid in &spec.uids {
         let Some(v) = world.vehicles.get(uid) else { continue };
+        let fields = crate::mines::field_areas(world, uid, cfg);
         let need = v.platform.as_ref().and_then(|p| required_surface(p.domain, p.autopilot));
         let Ok(route) = route_for(spec, v, world, cfg) else { continue };
         let patrol = matches!(spec.task, Task::Patrol { .. });
@@ -388,7 +391,7 @@ fn needing(spec: &IntentSpec, world: &WorldSnapshot, oracle: &dyn TerrainOracle,
             if !plannable {
                 continue;
             }
-            if let Some(m) = met(&leg, need, world, oracle) {
+            if let Some(m) = met(&leg, need, world, oracle, &fields) {
                 out.push((uid.clone(), leg, m, need));
             }
         }
@@ -411,8 +414,10 @@ pub fn grid_points(spec: &IntentSpec, world: &WorldSnapshot, oracle: &dyn Terrai
 /// that needs one, routed or not. Empty under older rules and when every leg is clear.
 pub fn plans_for(spec: &IntentSpec, world: &WorldSnapshot, oracle: &dyn TerrainOracle, cfg: &RulesConfig) -> BTreeMap<Uid, Vec<PlannedLeg>> {
     let mut out: BTreeMap<Uid, Vec<PlannedLeg>> = BTreeMap::new();
-    let no_go: Vec<&Area> = world.areas.as_ref().map(|a| a.no_go().collect()).unwrap_or_default();
     for (uid, leg, met, need) in needing(spec, world, oracle, cfg) {
+        // rules 27: round our live minefields the vehicle could set off too
+        let fields = crate::mines::field_areas(world, &uid, cfg);
+        let no_go: Vec<&Area> = world.areas.as_ref().map(|a| a.no_go().chain(fields.iter()).collect()).unwrap_or_default();
         let mut grid = geometry(leg.from, leg.to);
         let keeps = need.map(|n| if n == "water" { 'w' } else { 'l' });
         let sampled = match need {
@@ -454,9 +459,11 @@ pub fn plans_for(spec: &IntentSpec, world: &WorldSnapshot, oracle: &dyn TerrainO
 }
 
 /// Replay: the waypoints `p` adds, planned again from its own logged grid (and the no-go areas
-/// the decision read), or why there is no route.
-pub fn replan(p: &PlannedLeg, world: &WorldSnapshot) -> Result<Vec<LonLat>, String> {
-    let no_go: Vec<&Area> = world.areas.as_ref().map(|a| a.no_go().collect()).unwrap_or_default();
+/// the decision read, rules 27: with our live minefields vehicle `uid` could set off), or why
+/// there is no route.
+pub fn replan(p: &PlannedLeg, world: &WorldSnapshot, uid: &Uid, cfg: &RulesConfig) -> Result<Vec<LonLat>, String> {
+    let fields = crate::mines::field_areas(world, uid, cfg);
+    let no_go: Vec<&Area> = world.areas.as_ref().map(|a| a.no_go().chain(fields.iter()).collect()).unwrap_or_default();
     let keeps = p.keeps.as_deref().map(|n| if n == "water" { 'w' } else { 'l' });
     plan_leg(p.from, p.to, keeps, &p.grid, &no_go)
 }

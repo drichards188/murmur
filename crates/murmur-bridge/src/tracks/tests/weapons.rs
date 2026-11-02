@@ -60,7 +60,7 @@ fn msg(s: f64) -> TruthMessage {
         acts: Vec::new(),
         aim_at: vec![1],
         weapons: Vec::new(),
-        impacts: Vec::new(),
+        impacts: Vec::new(), mines_live: Vec::new(),
     }
 }
 

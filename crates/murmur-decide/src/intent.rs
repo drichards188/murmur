@@ -44,6 +44,10 @@ pub enum TaskKind {
     /// looking for it first, until the track is identified, lost or out of time
     /// ([`crate::identify`]); then it goes back to the order it was on.
     Identify,
+    /// Rules 27 ([`crate::rules::MINE_SINCE`]): lay a minefield with one platform: its mines
+    /// along a line, live for the hours the order sets ([`crate::mines`]). Consequential: it is
+    /// signed as an engagement is, by two operators with engagement authority.
+    Lay,
 }
 
 impl TaskKind {
@@ -58,6 +62,7 @@ impl TaskKind {
             TaskKind::Cover => "cover",
             TaskKind::Engage => "engage",
             TaskKind::Identify => "identify",
+            TaskKind::Lay => "lay",
         }
     }
 
@@ -70,9 +75,15 @@ impl TaskKind {
     }
 
     /// Kinds for which every rule must actually evaluate (a "not evaluated" or "unverified"
-    /// outcome blocks): engage.
+    /// outcome blocks): engage, and (rules 27) lay.
     pub fn is_consequential(self) -> bool {
-        matches!(self, TaskKind::Engage)
+        matches!(self, TaskKind::Engage | TaskKind::Lay)
+    }
+
+    /// Rules 27: the kinds an engagement's chain signs (two operators with engagement authority,
+    /// never the proposer): engage and lay.
+    pub fn needs_engagement_authority(self) -> bool {
+        matches!(self, TaskKind::Engage | TaskKind::Lay)
     }
 }
 
@@ -162,6 +173,19 @@ pub enum Task {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         standoff_m: Option<f64>,
     },
+    /// Rules 27 ([`crate::rules::MINE_SINCE`]): have the one platform in `uids` lay `count` mines
+    /// evenly along the line through `points` (one point: one mine there), each live for
+    /// `live_h` hours from its laying and inert after: the record the law asks for (amended CCW
+    /// Protocol II, Hague VIII; DECISIONS.md "Mines"), so the period is mandatory. `weapon` is
+    /// the loadout mine by name (absent: the platform's first mine). The vehicle drives the line
+    /// once; the engine lays each mine as it passes ([`crate::mines`]).
+    Lay {
+        points: Vec<LonLat>,
+        count: u32,
+        live_h: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weapon: Option<String>,
+    },
 }
 
 impl Task {
@@ -176,6 +200,7 @@ impl Task {
             Task::Cover { .. } => TaskKind::Cover,
             Task::Engage { .. } => TaskKind::Engage,
             Task::Identify { .. } => TaskKind::Identify,
+            Task::Lay { .. } => TaskKind::Lay,
         }
     }
 
@@ -222,6 +247,11 @@ impl Task {
             Task::Patrol { route } => Some(TaskPath {
                 points: route.clone(),
                 closed: true,
+            }),
+            // rules 27: the line, driven once
+            Task::Lay { points, .. } => Some(TaskPath {
+                points: points.clone(),
+                closed: false,
             }),
             // engage: the point is predicted from the world (crate::engage::preview), not
             // committed to by the spec; identify: the orbit is laid out around the track's
@@ -331,6 +361,31 @@ impl Task {
                     && from >= w.until
                 {
                     return bad("engage window must end after it starts");
+                }
+            }
+            Task::Lay {
+                points,
+                count,
+                live_h,
+                weapon,
+            } => {
+                if points.is_empty() || points.len() > crate::mines::MAX_LINE_POINTS {
+                    return bad("lay needs a line of 1 to 20 points [lon, lat]");
+                }
+                if !points.iter().all(LonLat::is_valid) {
+                    return bad("lay point out of range");
+                }
+                if *count == 0 || *count > crate::mines::MAX_MINES {
+                    return bad("lay's count is 1 to 100 mines");
+                }
+                if points.len() == 1 && *count != 1 {
+                    return bad("lay at one point lays one mine; give a line of two points or more for more");
+                }
+                if !(live_h.is_finite() && *live_h > 0.0) {
+                    return bad("lay's live_h (the hours its mines stay live, then inert) is mandatory and above 0");
+                }
+                if weapon.as_ref().is_some_and(|w| w.trim().is_empty()) {
+                    return bad("lay's weapon is a loadout mine's name, or left out for the platform's first mine");
                 }
             }
             Task::Identify { track, standoff_m } => {

@@ -170,6 +170,10 @@ pub struct TruthMessage {
     pub weapons: Vec<WeaponTruth>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub impacts: Vec<ImpactTruth>,
+    /// Rules 27: the domains the truth side's live mines are set off by (absent: none live): the
+    /// answer then carries where ours of them are (`ours`), since a mine is set off by ours too.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mines_live: Vec<String>,
 }
 
 /// One opponent weapon's flight (truth, the contacts process's `weapon`): a straight line at

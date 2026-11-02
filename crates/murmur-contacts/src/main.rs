@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use murmur_contacts::effect::{self, DamageCtx, EffectApplied, EffectNotice, OursDamaged};
+use murmur_contacts::mine::{MineNotice, Minefields};
 use murmur_contacts::motion::Mover;
 use murmur_contacts::scenario::{Motion, Scenario};
 use murmur_contacts::truth::TruthMessage;
@@ -190,6 +191,8 @@ async fn run() -> Result<(), String> {
     let aim_at = weapon::aim_at(&scenario);
     let mut ours: std::collections::BTreeMap<u64, OursAt> = std::collections::BTreeMap::new();
     let mut prev_t = f64::NEG_INFINITY;
+    // rules 27: our minefields, laid by the decision engine and handed over by the bridge
+    let mut fields = Minefields::default();
     loop {
         tokio::select! {
             _ = every.tick() => {}
@@ -216,6 +219,18 @@ async fn run() -> Result<(), String> {
         for e in in_flight.due(t0 + s) {
             applied.push(land(&e, &mut movers, t0 + s, &damage_ctx, &mut damage_out));
         }
+        // rules 27: every live mine against what moved this second
+        let mined = fields.step(t0 + s, dt, &mut movers, &ours, &damage_ctx);
+        for ev in &mined.events {
+            println!(
+                "mine {} {}{}{}",
+                ev.mine,
+                ev.what,
+                ev.who.as_deref().map(|w| format!(" by {w}")).unwrap_or_default(),
+                ev.damage.first().map(|d| if d.hit { format!(": {}", d.state.as_str()) } else { format!(": not set off (p {:.2})", d.p_hit) }).unwrap_or_default()
+            );
+        }
+        hand_over(&mined.ours_damaged, t0 + s, &mut damage_out);
         seq += 1;
         let mut msg = TruthMessage::build(
             t0 + s,
@@ -234,6 +249,10 @@ async fn run() -> Result<(), String> {
         msg.aim_at = aim_at.clone();
         msg.weapons = armory.in_flight(prev_t, msg.t);
         msg.impacts = armory.impacts(msg.t);
+        // rules 27: ours struck by a mine report it as any strike; the rest is the record
+        msg.impacts.extend(mined.impacts);
+        msg.mine_events = mined.events;
+        msg.mines_live = fields.live_domains(msg.t);
         // the damage model on each strike whose weapon lists figures
         let hurt = weapon::strike(&scenario, &mut msg.impacts, &mut movers, &ours, &damage_ctx);
         hand_over(&hurt, msg.t, &mut damage_out);
@@ -287,6 +306,18 @@ async fn run() -> Result<(), String> {
             Ok(resp) if resp.status().is_success() => {
                 // the simulation channel back: engagement effects to apply (Phase E)
                 let answer = resp.json::<serde_json::Value>().await.ok();
+                // rules 27: the mines laid since
+                if let Some(list) = answer.as_ref().and_then(|a| a.get("mines")).and_then(|m| m.as_array()) {
+                    for m in list {
+                        match serde_json::from_value::<MineNotice>(m.clone()) {
+                            Ok(m) => {
+                                println!("mine {} laid ({}), arms in {:.0} s", m.id(), m.weapon.name, m.arms_t - (t0 + s));
+                                fields.lay(m);
+                            }
+                            Err(err) => println!("mine: unreadable ({err})"),
+                        }
+                    }
+                }
                 // opponent weapons: where the vehicles they may be aimed at are now
                 if let Some(list) = answer.as_ref().and_then(|a| a.get("ours")).and_then(|o| o.as_array()) {
                     for o in list {

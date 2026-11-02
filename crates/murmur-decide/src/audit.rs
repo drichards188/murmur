@@ -604,6 +604,41 @@ pub enum EventBody {
         detail: String,
     },
 
+    /// Rules 27 ([`crate::rules::MINE_SINCE`]): one mine of a dispatched lay order laid, the
+    /// record the law asks for (amended CCW Protocol II, Technical Annex; Hague VIII): the field
+    /// (its lay order), the layer, its number of the order's count, its place on the line, the
+    /// layer's reported position it was laid from (within [`crate::mines::LAY_AT_M`]), the mine
+    /// with the rounds of it left (the ledger counts the round), what sets it off and how near,
+    /// the domains it is set off by, when it arms and when it goes inert (engine time). Replay
+    /// recomputes each from the lay order and the layer's position.
+    #[serde(rename = "mine.laid")]
+    MineLaid {
+        intent: IntentId,
+        uid: Uid,
+        n: u32,
+        of: u32,
+        at: LonLat,
+        by: crate::world::Fact<LonLat>,
+        weapon: crate::loadout::WeaponRelease,
+        trigger: String,
+        reach_m: f64,
+        targets: Vec<crate::catalog::Domain>,
+        arms_t: Time,
+        inert_t: Time,
+    },
+
+    /// Rules 27: a field of ours went inert, its live period over (every mine of it past its
+    /// `inert_t`, its lay order no longer laying): it is a keep-out no more. `from`: the earlier
+    /// log a field carried over at the start was laid in.
+    #[serde(rename = "minefield.inert")]
+    MinefieldInert {
+        intent: IntentId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
+        mines: u32,
+        inert_t: Time,
+    },
+
     /// Engage: stopped before the effect (before dispatch it is voided, after it aborted),
     /// and the fallback commanded. Rules 26: a gun's fire stopped after its release (the
     /// engagement stays effected and is assessed).

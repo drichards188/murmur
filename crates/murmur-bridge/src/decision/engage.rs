@@ -419,6 +419,8 @@ fn carry_chain(
                 // rules 24: the rounds it had released stay spent (the engine drops them under
                 // older rules)
                 entry.rounds = debts.rounds;
+                // rules 27: its live minefields stay live (the engine drops them under older rules)
+                entry.fields = debts.fields;
             }
         }
         out.push(entry);
@@ -2605,7 +2607,7 @@ pub struct OptionsRequest {
 /// carried over onto this vehicle; the platform itself has one, gone once it is `spent`) and
 /// whether it is `inert` (mines, until their stage; guns before rules 26, `guns` false), in the
 /// catalog's order; a gun says its bursts (`burst_rounds`, `burst_interval_s`).
-pub fn loadout_json(p: &murmur_decide::PlatformFacts, rounds: &murmur_decide::PlatformRounds, spent: bool, guns: bool) -> Value {
+pub fn loadout_json(p: &murmur_decide::PlatformFacts, rounds: &murmur_decide::PlatformRounds, spent: bool, guns: bool, mines: bool) -> Value {
     let weapons: Vec<Value> = p
         .loadout
         .iter()
@@ -2616,7 +2618,7 @@ pub fn loadout_json(p: &murmur_decide::PlatformFacts, rounds: &murmur_decide::Pl
                 "kind": w.kind.as_str(),
                 "count": w.count,
                 "left": left,
-                "inert": !w.kind.usable_at(guns),
+                "inert": !w.kind.usable_at(guns, mines),
                 "min_range_m": w.min_range_m,
                 "max_range_m": w.max_range_m,
                 "speed_mps": w.speed_mps,
@@ -2629,6 +2631,15 @@ pub fn loadout_json(p: &murmur_decide::PlatformFacts, rounds: &murmur_decide::Pl
             if let (Some(b), Some(o)) = (w.burst_rounds, v.as_object_mut()) {
                 o.insert("burst_rounds".into(), json!(b));
                 o.insert("burst_interval_s".into(), json!(w.burst_interval_s));
+            }
+            // rules 27: a mine's trigger, reach, arming delay and longest live period
+            if w.kind == murmur_decide::WeaponKind::Mine
+                && let Some(o) = v.as_object_mut()
+            {
+                o.insert("trigger".into(), json!(w.trigger));
+                o.insert("trigger_m".into(), json!(w.trigger_reach_m()));
+                o.insert("arm_s".into(), json!(w.arm_s));
+                o.insert("persist_h".into(), json!(w.persist_h));
             }
             v
         })
@@ -2653,7 +2664,7 @@ impl Decision {
         let core = self.lock();
         let rounds = core.engine.platform_rounds(&duid(uid), Some(identity));
         let spent = core.engine.expended_by(&duid(uid)).is_some();
-        Some(loadout_json(&p, &rounds, spent, self.rules.guns()))
+        Some(loadout_json(&p, &rounds, spent, self.rules.guns(), self.rules.mines()))
     }
 
     /// Rules 24: every fleet vehicle that carries a loadout, by uid with its callsign and

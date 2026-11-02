@@ -86,7 +86,9 @@ group. Dates are 2026.
   profiles are recorded, not yet flown; the warhead is shown, not yet read (stage 2 built, 11-02:
   "Warheads and damage" below; the profiles are still not flown). Stage 3 (murmur-lbw8.3):
   guns, bursts from a round count (built 11-02: "Guns: bursts from a counted magazine" below).
-  Stage 4 (murmur-lbw8.4): mines, laid and persistent. Every
+  Stage 4 (murmur-lbw8.4): mines, laid and persistent (built 11-02: "Mines: laid on two
+  signatures, recorded, live for a set period" below; the Orca and the mine-laying UGV are now
+  armed). Every
   safeguard stands exactly: no autonomous engagement, two human signatures, the authorize step
   closed to agents in code, every order to an armed platform waiting for a human, DoD Directive
   3000.09. An agent may name a weapon in a nomination it proposes; it still signs nothing.
@@ -159,6 +161,57 @@ group. Dates are 2026.
   keep a fleeing target in range: the plan's circle bounds the fire). Every safeguard stands
   exactly: no autonomous engagement, two human signatures, the authorize step closed to agents in
   code, every order to an armed platform waiting for a human, DoD Directive 3000.09.
+- **Mines: laid on two signatures, recorded, live for a set period** (11-02, the owner: "I want
+  all nodes that are supposed to carry weapons in real life to have the war thunder level of real
+  weapons equipped"; "All of it now", mines included). Stage 4 of bd murmur-lbw8 (murmur-lbw8.4),
+  built as decision rules 27 (`MINE_SINCE`); amends "Real weapon loadouts on armed platforms"
+  above, whose mines were listed but inert. What is decided, and when: a mine chooses its victim
+  later, by its trigger, so the human judgement has to be made at the laying. Laying a minefield
+  is an engagement decision: a lay order (the platform, a line, the number of mines spaced along
+  it, the hours they stay live, the mine) goes through an engagement's chain, a nomination by an
+  operator or an agent, the engine's checks, and two distinct signatures by operators with
+  engagement authority, never the proposer, the authorize step closed to agents in code, every
+  signature re-checked on the world now. It needs no declared hostile track, since there is no
+  target yet; instead its `minefield` check judges what else could set the field off, in the form
+  the engine can honestly give: only the domains the mine is set off by (a TM-62M by ground
+  vehicles, a Hammerhead by subsurface contacts), and of them every live track not declared
+  hostile where it is now and on its course now for ten minutes [E] (a field's hours are past any
+  prediction, and the pass says it judged no more), every lost contact of them that could be in the
+  field by now at its domain's top speed, every vehicle of ours of them where it is, its home and
+  the order it is on, the layer itself after each mine arms along the rest of its line and its way
+  home, and the policy's no-strike areas; recorded lanes and roads are not loaded in Murmur, and
+  the pass says so. A failure names what is in the way and by how much, as the keep-outs do. The
+  record, as the law asks: amended CCW Protocol II (Article 9 and its Technical Annex) requires
+  the location of minefields recorded, and Hague VIII (Articles 1 and 3) governs naval mines,
+  which must become harmless when control is lost or within a limited time, and torpedoes that
+  miss. So the audit log is the record: each mine laid is logged (`mine.laid`: its place on the
+  line, the time, when it arms, when it goes inert, the round it spends, the layer's reported
+  position), carried over a restart and replayed; the live period is mandatory at laying and no
+  longer than the mine's catalog `persist_h` (72 h for the TM-62M, 720 h for the Hammerhead, both
+  [E]: the TM-62M has no self-neutraliser in real life, so Murmur's mandatory period stands in for
+  one); a field whose period is over is logged inert, and a mine's torpedo that misses goes inert.
+  No anti-personnel mine is in the catalog, and none is to be added. On the truth side (the
+  contacts process and the headless simulator alike) each mine waits for its trigger and draws
+  stage 2's hit and damage on its own stream: a TM-62M is set off by a ground vehicle of a kind it
+  lists figures for passing within its reach (a wheel or a track over it on a pass, 0.25 for a
+  car, 0.30 for a truck; never a person), a Hammerhead by a subsurface contact within the 1,000 m
+  it hears [E] (its Mk 54's 9,100 m run is how far it chases, not how far it listens), whose
+  torpedo then chases its target. A mine sets off ours too. The C2 learns of a detonation only
+  through its sensors or a struck report from one of ours, never from truth. While a field of ours
+  is live it is a keep-out for our own vehicles of the domains it catches: the route planner
+  (rules 22) routes round it with a margin (50 m past the trigger reach [E], and the planner's 100 m
+  clearance), the geofence refuses a mission or nomination across it, and an rtl across it goes as
+  ordered with a warning and an inbox alert (`path_crosses_minefield`), as rules 17 does for land;
+  the console draws the fields and agents read them (`get_areas`). The Orca and the mine-laying
+  UGV are now armed, so every order to them waits for a person; no situation and no headless
+  world flies either, and no fleet gives them an opening order. Accepted shortcuts: a mine is
+  recorded at its place on the ordered line (the layer's reported position, within 25 m, beside
+  it), the truth side takes that place, a mine never drifts or is swept, a pressure fuze has no
+  magnetic option, the field's danger area is the same for every vehicle of its domains, and a
+  Hammerhead classifies by the catalog's kinds (no friend-or-foe; our subs are kept out of its
+  danger area instead). Every safeguard stands exactly: no autonomous engagement, two human
+  signatures, the authorize step closed to agents in code, every order to an armed platform
+  waiting for a human, DoD Directive 3000.09.
 - **Pitch depth and rigor, not "first"** (10-02). Pressure test found the ideas in closed
   work (RESCHU, IMPACT, Aegis doctrine, Lattice, Legion, Palantir AIP, Thunderforge, DARPA
   ASIMOV) and shallow open versions (AMOS, AeroMind, Pharos, SandTable). Cite them. Engage

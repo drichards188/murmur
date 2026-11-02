@@ -22,6 +22,12 @@
 //! that is the target's hit chance (an evaluation's override, recorded), the damage given a hit
 //! and the collateral still the model's. Our vehicles it hurt take their damage in the fleet
 //! ([`Ours`]): a lost propulsion steps unpowered, a destroyed one leaves the world.
+//!
+//! Rules 27 (bd murmur-lbw8.4): the mines the bridge hands over (`mines` in its answer) are held
+//! and stepped as the contacts process holds them (`murmur_contacts::mine`), against the contacts
+//! and against ours where the bridge says they are (`ours`, which it answers while mines are
+//! live); what they do goes to [`Contacts::effects`] (evaluation truth), ours hurt take it in the
+//! fleet, and ours struck report it (`impacts`).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -30,6 +36,8 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Method, Request, header};
 use murmur_contacts::effect::{self, DamageCtx, EffectApplied, EffectNotice, OursDamaged};
+use murmur_contacts::mine::{MineNotice, Minefields};
+use murmur_contacts::weapon::OursAt;
 use murmur_contacts::motion::Mover;
 use murmur_contacts::scenario::Scenario;
 use murmur_contacts::truth::TruthMessage;
@@ -293,6 +301,9 @@ pub async fn run(
     // rules 20: effects whose munition is still in flight, applied at its impact
     let mut in_flight = effect::InFlight::default();
     let mut prev_s = f64::NEG_INFINITY;
+    // rules 27: our mines, and where the bridge last said ours of their domains were
+    let mut fields = Minefields::default();
+    let mut ours_at: BTreeMap<u64, OursAt> = BTreeMap::new();
     loop {
         every.tick().await;
         let now = Instant::now();
@@ -310,6 +321,15 @@ pub async fn run(
             for e in in_flight.due(c.t0_unix + s) {
                 applied.push(land(&c, &e, &mut movers, s, fx.as_ref(), &ctx, &ours));
             }
+            // rules 27: every live mine against what moved this second
+            let mined = fields.step(c.t0_unix + s, dt, &mut movers, &ours_at, &ctx);
+            ours.take(&mined.ours_damaged);
+            if !mined.events.is_empty() {
+                let mut fx = c.effects.lock().unwrap_or_else(|e| e.into_inner());
+                for ev in &mined.events {
+                    fx.push(json!({ "s": s, "mine": ev }));
+                }
+            }
             seq += 1;
             let mut msg = TruthMessage::build(
                 c.t0_unix + s,
@@ -321,6 +341,9 @@ pub async fn run(
                 &movers,
             );
             msg.acts = TruthMessage::acts_between(&c.scenario.acts, prev_s, s, c.t0_unix, &movers);
+            msg.impacts.extend(mined.impacts);
+            msg.mine_events = mined.events;
+            msg.mines_live = fields.live_domains(msg.t);
             msg
         };
         *c.s.lock().unwrap_or_else(|e| e.into_inner()) = Some(s);
@@ -353,9 +376,23 @@ pub async fn run(
         let Ok(bytes) = axum::body::to_bytes(resp.into_body(), 16 << 20).await else {
             continue;
         };
-        if let Ok(answer) = serde_json::from_slice::<Value>(&bytes)
-            && let Some(list) = answer.get("effects").and_then(|e| e.as_array())
-        {
+        let answer = serde_json::from_slice::<Value>(&bytes).ok();
+        // rules 27: the mines laid since, and where ours of their domains are
+        if let Some(list) = answer.as_ref().and_then(|a| a.get("mines")).and_then(|m| m.as_array()) {
+            for m in list {
+                if let Ok(m) = serde_json::from_value::<MineNotice>(m.clone()) {
+                    fields.lay(m);
+                }
+            }
+        }
+        if let Some(list) = answer.as_ref().and_then(|a| a.get("ours")).and_then(|o| o.as_array()) {
+            for o in list {
+                if let Ok(o) = serde_json::from_value::<OursAt>(o.clone()) {
+                    ours_at.insert(o.uid, o);
+                }
+            }
+        }
+        if let Some(list) = answer.as_ref().and_then(|a| a.get("effects")).and_then(|e| e.as_array()) {
             let mut movers = c.movers();
             for e in list {
                 if let Ok(e) = serde_json::from_value::<EffectNotice>(e.clone()) {

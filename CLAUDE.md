@@ -344,8 +344,8 @@ meaningful.
   loadout, in the catalog's order, usable against the track's domain with a round left
   (`loadout::choose`; the `weapon` check says why); the preview's `weapon` is frozen with the
   plan. A missile, bomb or torpedo is released between its minimum and maximum slant range; `self`
-  is the platform (spent with it, never counted); mines are listed but inert until murmur-lbw8.4
-  (the Orca and the mine-laying UGV stay unarmed until then); guns fire from rules 26. Each release
+  is the platform (spent with it, never counted); mines are laid from rules 27 (a lay order, never
+  an engagement's release; the Orca and the mine-laying UGV are armed); guns fire from rules 26. Each release
   logs `weapon` (rounds `left`, the vehicle) on the `engage.effect`; every engagement decision
   logs the `rounds` fact (`Restores`' ledger, as spent marks); `run.started`'s `carried_from`
   carries `rounds`, on the same vehicle only. Rounds left: `GET /api/loadouts`, MCP `get_fleet`'s
@@ -393,6 +393,32 @@ meaningful.
   the muzzle speed, about 3 with drag [E]: inside the keep-out's margins). Scenarios 123-127; tamper `burst_after_stop`
   (`edit_rounds` covers bursts too); runner keys `cease_at_burst`, `expect_bursts`,
   `expect_fire_end`, `expect_rounds_left`.
+- Rules 27 (`MINE_SINCE`, bd murmur-lbw8.4, DECISIONS.md "Mines: laid on two signatures,
+  recorded, live for a set period"): `Task::Lay { points, count, live_h, weapon }` (REST and MCP
+  `task = "lay"` with `route`, `count`, `live_h`, `weapon`; the runner's `lay` step) on the Orca
+  (Hammerhead) or the mine-laying UGV (TM-62M), both now `armed`. `TaskKind::needs_engagement_
+  authority`: signed only by `Engine::approve_lay` with an `EngagementAuthority` (the generic
+  `approve` refuses it; the policy's engagement floor applies, two signers, never the proposer; no
+  picture token: the order is what is signed). Checks after the vehicle rules (`mines::evaluate`):
+  `platform_armed`, `weapon` (a mine of the loadout, rounds >= count, `live_h` <= its `persist_h`),
+  `platform_free`, `minefield` (what the field could catch beside a declared hostile: tracks of the
+  mine's `targets` domains now and on their course for `mines::TRACK_HORIZON_S`, lost contacts,
+  ours and their `orders_in_play`, the layer after each mine's `arm_s`, no-strike areas). Dispatched
+  as a vehicle order flown once along the line (the bridge's task kind `lay`); `Engine::step_lays`
+  (the bridge's tick, before `follow_ops`) lays each mine the layer reached (`mines::due`:
+  `LAY_AT_M`, `LAY_AHEAD_M`) as `mine.laid` (the record; spends a round in rules 24's ledger) and
+  logs `minefield.inert` once a field's period is over. Fields live in `Restores` (engine and
+  replay), go into decisions as `minefields` (set before the route plans read them:
+  `Engine::with_fields`), carry in `run.started`'s `carried_from` (`fields`), and are no-go areas
+  (`mines::field_areas`) for our vehicles of their domains in the geofence and the planner; an rtl
+  across one passes with a `warning` (inbox alert `path_crosses_minefield`). The truth side:
+  `murmur_contacts::mine` (contacts process and headless): `mines` in the simulation channel's
+  answer, `mines_live` in the truth message (the answer then carries `ours` of those domains),
+  pressure passes drawn on `mine:<field>:<n>:<who>:<pass>`, a Hammerhead's torpedo run on
+  `mine:<field>:<n>:run`; ours struck come back as `impacts` (a struck report). `GET
+  /api/minefields`, MCP `get_areas`' `minefields` (only when there is one), the console's map (red
+  outlines with the reach rings). Scenarios 128-130; tampers `move_mine`, `hide_lay_signature`;
+  runner key `expect_mines_laid`.
 - Opponent weapons (docs/OPPONENT-WEAPONS.md, bd murmur-wcvp; no rules version): a contact's
   `weapon = { name, kind, speed_mps, range_m }` (kinds the bridge has figures for:
   `tracks::physical::weapon::weapon_signature`, `atgm`) makes each of its acts a launch, flown by

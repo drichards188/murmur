@@ -155,7 +155,9 @@ pub struct IntentParams {
     /// (satellite imagery or SAR of an area) or cover (is SATCOM or GNSS service good enough
     /// over an area) on the space segment; engage (nominate an abstract effect on a track
     /// declared hostile, by an operator or by rule, with one armed platform: only human
-    /// operators with engagement authority can decide it, never its proposer).
+    /// operators with engagement authority can decide it, never its proposer); lay (lay a
+    /// minefield with one mine-laying platform along route: count mines live for live_h hours,
+    /// decided as an engagement is).
     pub task: String,
     /// Fleet uids of the vehicles to task (from get_fleet): at least one for a vehicle task,
     /// none for collect and cover.
@@ -214,6 +216,10 @@ pub struct IntentParams {
     /// platform.loadout lists each weapon and its rounds left); omitted, the engine picks the
     /// first of the loadout usable against the target with a round left and says why.
     pub weapon: Option<String>,
+    /// lay: the number of mines, spaced evenly along route (its line, driven once).
+    pub count: Option<u32>,
+    /// lay: the hours each mine stays live before it goes inert (mandatory).
+    pub live_h: Option<f64>,
     /// Why this task, on these vehicles, now. Required for propose_intent (the operator
     /// reads it in the inbox and it goes to the audit log); optional for preview_intent.
     /// Name the facts you relied on and any that were stale. Shape it so it reads in seconds:
@@ -384,6 +390,8 @@ impl IntentParams {
         put("window_s", self.window_s.map(|v| json!(v)));
         put("fallback", self.fallback.map(Value::String));
         put("weapon", self.weapon.map(Value::String));
+        put("count", self.count.map(|v| json!(v)));
+        put("live_h", self.live_h.map(|v| json!(v)));
         put(
             "constraints",
             Some(json!(Constraints {

@@ -53,9 +53,11 @@ impl Caps {
     }
 }
 
-use TaskKind::{Hold, Orbit, Patrol, Rtl, Track};
+use TaskKind::{Hold, Lay, Orbit, Patrol, Rtl, Track};
 
 const MOVERS: &[TaskKind] = &[Orbit, Patrol, Hold, Rtl];
+/// Rules 27: a ground vehicle and a sub also drive a lay order's line.
+const LAYERS: &[TaskKind] = &[Orbit, Patrol, Hold, Rtl, Lay];
 
 // Hold modes, checked against ArduPilot 4.8 with no RC input:
 // - Plane, VTOL: LOITER circles the point where it was entered at the current altitude (the
@@ -125,12 +127,14 @@ static BOAT: Caps = Caps {
     home_tol: 15.0,
 };
 static UGV: Caps = Caps {
+    tasks: LAYERS,
     hold: "HOLD",
     arm: "HOLD",
     home_tol: 10.0,
     ..BOAT
 };
 static SUB: Caps = Caps {
+    tasks: LAYERS,
     rtl: None,
     hold: "POSHOLD",
     arm: "POSHOLD",

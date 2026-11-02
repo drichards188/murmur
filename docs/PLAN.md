@@ -297,8 +297,15 @@ decision rules 26 (murmur-lbw8.3): a gun (the armed UGV's M2) fires bursts from 
 magazine through a firing window opened by its release, from a firing position within its range,
 each burst re-checked (the picture as before an effect, the target in range and seen since the
 last burst, the line of fire clear), counted, drawn on its own and assessed from the last, until
-the target ceases, the rounds or the window run out, or it is stopped; stage 4 (murmur-lbw8.4)
-mines. No autonomous engagement, two human signatures, the authorize step closed to agents in
+the target ceases, the rounds or the window run out, or it is stopped; stage 4, built as decision
+rules 27 (murmur-lbw8.4): mines, laid by the Orca (Hammerheads) and the mine-laying UGV (TM-62Ms),
+now armed; a lay order (a line, a count, a mandatory live period) is signed as an engagement is,
+two signers with engagement authority, its `minefield` check judging what else the field could
+catch (protected tracks of its domains now and on their course, ours, the layer after each mine
+arms, the no-strike areas); each mine laid is logged as the record the law asks for, carried over a
+restart and logged inert at its period's end; the truth side sets a mine off by its trigger and
+draws stage 2's hit and damage; and our live fields are keep-outs for our own vehicles (routed
+round, refused across, an rtl warned). No autonomous engagement, two human signatures, the authorize step closed to agents in
 code, every order to an armed platform waiting for a person; no terminal guidance or aim-point
 optimisation.
 

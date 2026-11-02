@@ -596,6 +596,16 @@ pub struct WorldSnapshot {
     /// the acceptance holds on this picture ([`crate::engage::behaving_lapse`]). Absent when none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub behaving_accepted: BTreeMap<String, crate::engage::AcceptedBehaving>,
+    /// Engine-filled (rules 27, [`crate::mines`]): our live minefields the decision reads, those a
+    /// vehicle of the intent could set off (every one for a lay order): no-go areas for the
+    /// geofence and the route planner. The bridge may give them for its own planning (a prefetch);
+    /// the engine's ledger replaces them. Absent when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub minefields: Vec<crate::mines::Minefield>,
+    /// Engine-filled for a lay order's checks (rules 27): the order in play on each of our other
+    /// vehicles, which its field must not catch. Absent when none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub orders_in_play: BTreeMap<Uid, crate::mines::InPlayOrder>,
 }
 
 /// A decision's inputs as logged: the [`WorldSnapshot`] with the area set replaced by its
@@ -664,6 +674,12 @@ pub struct LoggedInputs {
     /// The live tracks accepted for this engagement as behaving now (rules 19; absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub behaving_accepted: BTreeMap<String, crate::engage::AcceptedBehaving>,
+    /// Our live minefields the decision read (rules 27; absent when none).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub minefields: Vec<crate::mines::Minefield>,
+    /// A lay order's view of the orders in play on our other vehicles (rules 27; absent when none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub orders_in_play: BTreeMap<Uid, crate::mines::InPlayOrder>,
 }
 
 impl LoggedInputs {
@@ -702,6 +718,8 @@ impl LoggedInputs {
             lost_contacts: world.lost_contacts.clone(),
             lost_accepted: world.lost_accepted.clone(),
             behaving_accepted: world.behaving_accepted.clone(),
+            minefields: world.minefields.clone(),
+            orders_in_play: world.orders_in_play.clone(),
         }
     }
 
@@ -757,6 +775,8 @@ impl LoggedInputs {
             lost_contacts: self.lost_contacts.clone(),
             lost_accepted: self.lost_accepted.clone(),
             behaving_accepted: self.behaving_accepted.clone(),
+            minefields: self.minefields.clone(),
+            orders_in_play: self.orders_in_play.clone(),
         }
     }
 }
@@ -777,8 +797,9 @@ impl WorldSnapshot {
         if let Task::Track { target } = &spec.task {
             wanted.push(target);
         }
-        // an engagement's keep-out reads every vehicle of ours
-        let vehicles = if matches!(spec.task, Task::Engage { .. }) {
+        // an engagement's keep-out reads every vehicle of ours (rules 27: a lay order's field
+        // judges them too)
+        let vehicles = if matches!(spec.task, Task::Engage { .. } | Task::Lay { .. }) {
             self.vehicles.clone()
         } else {
             wanted
@@ -824,6 +845,9 @@ impl WorldSnapshot {
             lost_accepted: BTreeMap::new(),
             // engine-owned (rules 19): filled from its engagement's acceptances
             behaving_accepted: BTreeMap::new(),
+            // engine-owned (rules 27): our live fields, set before the route plans read them
+            minefields: self.minefields.clone(),
+            orders_in_play: BTreeMap::new(),
         }
     }
 

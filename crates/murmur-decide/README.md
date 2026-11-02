@@ -2127,6 +2127,66 @@ Rules versions:
   Fixtures (a clean build of the branch): `tests/data/audit/v26-engagement-scenario-01.jsonl`,
   `v26-gun-bursts-until-the-target-ceases-scenario-123.jsonl` (relabelled rules 25, its bursts are
   caught).
+- **27** (bd murmur-lbw8.4, the owner's direction of 2026-11-02, DECISIONS.md "Mines: laid on two
+  signatures, recorded, live for a set period"; every gate reads `MINE_SINCE`; no policy key
+  changes, schema 7; a v27 log carries every rules 26 behaviour too): *a minefield is laid on an
+  engagement's two signatures, recorded mine by mine, live for the period the order sets, and a
+  keep-out for our own vehicles while it is*. Up to rules 26 a mine was listed in a loadout and
+  inert, and the Orca and the mine-laying UGV were unarmed. From rules 27 a mine is usable, by a lay
+  order only (`Task::Lay { points, count, live_h, weapon }`, `TaskKind::Lay`, consequential; an
+  engagement passes over a mine, saying "a lay order lays it"), and both platforms are `armed`. The
+  catalog's mine names `persist_h` (its longest live period), `arm_s` (its arming delay) and
+  `trigger`, and may name `trigger_m` (how near it is set off; else `max_range_m`): the TM-62M 72 h,
+  60 s, pressure within 1 m; the Hammerhead 720 h, 1,800 s, acoustic within 1,000 m (its torpedo's
+  9,100 m run is how far it chases); both with `effects` (all [E]). A lay order is signed as an
+  engagement is (`TaskKind::needs_engagement_authority`): only `Engine::approve_lay` with an
+  `EngagementAuthority` signs it (`approve` refuses it, logged), the policy's engagement floor
+  applies (never auto, never at submission, never the proposer, two signers, a step-up in a
+  credentials run), each signature re-runs the checks on the world now (a failure voids it), and
+  replay holds every signature to engagement authority. There is no plan to freeze and no picture
+  token: the order itself is what each signer signs. Its checks after the vehicle rules (the line is
+  its task path, driven once, `TaskPath::closed` false: capability for a ground vehicle or a sub,
+  readiness, the domain rule along the line, the geofence, reserves): `platform_armed`, `weapon` (the
+  mine named, or the platform's first; its rounds left at least the count; the order's `live_h` no
+  longer than the mine's `persist_h`; a vehicle that reported its weapons out of action can't),
+  `platform_free`, and `minefield` (new, `mines::evaluate`): the field as planned (`count` mines
+  evenly along the line, `mines::mine_points`) judged against the domains its mine is set off by:
+  every live track not declared hostile where it is now (twice its position error) and on its
+  course now for `TRACK_HORIZON_S` (600 s), every lost contact that could be in the field by now,
+  every vehicle of ours there (where it is, its home, the order it is on: the decision's new
+  `orders_in_play` fact), the layer itself after each mine arms along the rest of its line and its
+  way home at cruise, and the policy's no-strike areas, each within the danger area (the trigger
+  reach plus `FIELD_MARGIN_M`, 50 m); a failure names each and how far short it is, a pass says what
+  it judged and what it can't (recorded lanes and roads, any course past the horizon). Dispatched as
+  a vehicle order (its transit planned by rules 22), the bridge flies the line once; each step
+  (`Engine::step_lays`) lays the mines the layer has reached on its fresh reported position
+  (`mines::due`: within `LAY_AT_M`, 25 m, of the mine's place and, after the first, within
+  `LAY_AHEAD_M` along the line), each logged as `mine.laid` (the intent, the layer, its number of
+  the count, its place on the line, the layer's position fact, the mine with its rounds left, its
+  trigger, reach and domains, when it arms and goes inert: the record CCW Protocol II and Hague VIII
+  ask for) and spending a round in rules 24's ledger; a field whose every mine is past its inert
+  time and whose order is no longer laying is logged `minefield.inert`. The fields live in the
+  ledger (`replay::Restores`, engine and replay alike) and go into every vehicle decision as the
+  `minefields` fact (the live fields a vehicle of the intent could set off, every one for a lay
+  order), set before the route plans read them (`Engine::with_fields`): our live field is a no-go
+  area (`mines::field_areas`, a capsule round each run of mines) for our vehicles of its domains in
+  the geofence and the planner (`plan::met`, `plans_for`, `replan`), so a transit is routed round it,
+  a mission or nomination across it is refused, and an rtl across it passes with a `warning` (the
+  bridge's inbox alert `path_crosses_minefield`). A start carries the fields an earlier log had not
+  logged inert in `run.started`'s `carried_from` (`fields`, with the log it came from). Replay
+  recomputes every `mine.laid` (its order, its place, the layer's position reaching it, its weapon
+  and rounds left from the ledger, its trigger and times), every `minefield.inert` (its period over,
+  its order no longer laying), each decision's `minefields` and `orders_in_play` from its own
+  ledger, and each carried entry's `fields` from the log it names. A log claiming rules 26 or older
+  can't carry a lay order, a mine, a field or the check (markers). Scenarios 128 (laid on two
+  signatures and recorded, inert at its period's end; tamper `move_mine`), 129 (refused for a
+  neutral car on its line), 130 (an rtl across our field warned, a transit routed round it); the
+  runner's `lay` step, `expect_mines_laid`, tamper `hide_lay_signature`. `tests/rules27.rs` (the
+  carry over a restart, replayed with its earlier log; rules 26 logs replay unchanged; a lay under
+  rules 26 refused). Fixtures (a clean build of the branch):
+  `tests/data/audit/v27-engagement-scenario-01.jsonl`,
+  `v27-minefield-laid-on-two-signatures-scenario-128.jsonl` (relabelled rules 26, its lay order and
+  mines are caught).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

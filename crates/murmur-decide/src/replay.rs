@@ -201,6 +201,9 @@ pub struct ReplayReport {
     pub assessments: usize,
     /// Rules 26: a gun's bursts after its release (`engage.burst`).
     pub bursts: usize,
+    /// Rules 27: mines laid (`mine.laid`).
+    #[serde(default)]
+    pub mines_laid: usize,
     /// Rules 6: platforms whose own lost-link values a preload replaced and that were still
     /// owed back when the log ended (no confirmed restore): the next run carries them over
     /// (`platform.restore`), but the operator should know. Not decision mismatches.
@@ -397,6 +400,12 @@ pub(crate) struct Restores {
     /// Rules 24: rounds released in earlier runs, carried over at the start (`run.started`'s
     /// `carried_from`, `rounds`; `from`: the log that released them).
     rounds_carried: Vec<crate::loadout::RoundsSpent>,
+    /// Rules 27: our minefields laid in this run (`mine.laid`), by lay order, until logged inert
+    /// (`minefield.inert`).
+    fields: BTreeMap<IntentId, crate::mines::Minefield>,
+    /// Rules 27: our minefields laid in earlier runs, carried over at the start (`run.started`'s
+    /// `carried_from`, `fields`; `from`: the log that laid them), until logged inert.
+    fields_carried: Vec<crate::mines::Minefield>,
 }
 
 /// Rules 12: a platform spent by its own effect in this run: the engagement whose release spent
@@ -591,6 +600,15 @@ impl Restores {
                 rs.from.get_or_insert_with(|| c.log.clone());
                 if !self.rounds_carried.contains(&rs) {
                     self.rounds_carried.push(rs);
+                }
+            }
+            // rules 27: the minefields it had laid and that were not inert yet (its own, or
+            // carried into it)
+            for f in &c.fields {
+                let mut f = f.clone();
+                f.from.get_or_insert_with(|| c.log.clone());
+                if !self.fields_carried.iter().any(|g| g.intent == f.intent && g.from == f.from) {
+                    self.fields_carried.push(f);
                 }
             }
         }
@@ -803,18 +821,81 @@ impl Restores {
         e.1 = w.vehicle.clone();
     }
 
+    /// Rules 27: a mine laid (`mine.laid`, logged at `t`): the round it spends, and the mine in
+    /// its field.
+    fn lay(&mut self, t: Time, body: &EventBody) {
+        let EventBody::MineLaid {
+            intent,
+            uid,
+            n,
+            at,
+            weapon,
+            trigger,
+            reach_m,
+            targets,
+            arms_t,
+            inert_t,
+            ..
+        } = body
+        else {
+            return;
+        };
+        self.release(uid, weapon);
+        let f = self.fields.entry(*intent).or_insert_with(|| crate::mines::Minefield {
+            intent: *intent,
+            uid: uid.clone(),
+            weapon: weapon.name.clone(),
+            trigger: trigger.clone(),
+            reach_m: *reach_m,
+            targets: targets.clone(),
+            mines: Vec::new(),
+            from: None,
+        });
+        f.mines.push(crate::mines::Mine {
+            n: *n,
+            at: *at,
+            laid_t: t,
+            arms_t: *arms_t,
+            inert_t: *inert_t,
+        });
+    }
+
+    /// Rules 27: the mines laid so far by lay order `id` in this run.
+    pub(crate) fn laid(&self, id: IntentId) -> usize {
+        self.fields.get(&id).map_or(0, |f| f.mines.len())
+    }
+
+    /// Rules 27: every field of ours not logged inert: this run's, then those carried over.
+    pub(crate) fn all_fields(&self) -> Vec<crate::mines::Minefield> {
+        self.fields.values().cloned().chain(self.fields_carried.iter().cloned()).collect()
+    }
+
+    /// Rules 27: the live fields a decision on `spec` reads on `world` ([`crate::mines::fields_for`]).
+    pub(crate) fn minefields_for(
+        &self,
+        spec: &IntentSpec,
+        world: &crate::world::WorldSnapshot,
+        rules: &crate::rules::RulesConfig,
+    ) -> Vec<crate::mines::Minefield> {
+        if !rules.mines() {
+            return Vec::new();
+        }
+        crate::mines::fields_for(spec, world, &self.all_fields(), rules)
+    }
+
     /// Rules 24: the rounds of `spec`'s platform (an engagement's) as a decision reads them: this
     /// run's releases, and the earlier runs' carried over with the vehicle under the uid now
     /// (`now`, the bridge's identities as the decision read them): those count unless it is known
     /// to be another vehicle. Empty before rules 24, for any other kind, and when there is nothing
-    /// to say.
+    /// to say. Rules 27: a lay order's platform's too.
     pub(crate) fn rounds_for(
         &self,
         spec: &IntentSpec,
         rules: &crate::rules::RulesConfig,
         now: &BTreeMap<Uid, engage::VehicleIdentity>,
     ) -> BTreeMap<Uid, crate::loadout::PlatformRounds> {
-        if !rules.loadouts() || spec.kind() != TaskKind::Engage {
+        let lay = spec.kind() == TaskKind::Lay && rules.mines();
+        if !rules.loadouts() || (spec.kind() != TaskKind::Engage && !lay) {
             return BTreeMap::new();
         }
         spec.uids
@@ -1046,6 +1127,13 @@ impl Restores {
             } => self.release(uid, w),
             EventBody::EngageBurst { uid, weapon, .. } => self.release(uid, weapon),
             EventBody::IntentState { intent, to, .. } if to.is_terminal() => self.intent_ended(*intent),
+            // rules 27: a field gone inert (a mine laid is stepped with its time, `step_at`)
+            EventBody::MinefieldInert { intent, from: None, .. } => {
+                self.fields.remove(intent);
+            }
+            EventBody::MinefieldInert { intent, from: Some(log), .. } => {
+                self.fields_carried.retain(|f| !(f.intent == *intent && f.from.as_deref() == Some(log.as_str())));
+            }
             _ => {}
         }
     }
@@ -1061,6 +1149,8 @@ impl Restores {
                 closed_by: crate::audit::RestoreClosure::Expended { intent },
                 ..
             } => self.close(uid.as_ref(), log.as_deref(), Some(*intent), Some(t)),
+            // rules 27: a mine laid at `t`
+            EventBody::MineLaid { .. } => self.lay(t, body),
             _ => self.step_body(body),
         }
     }
@@ -1153,6 +1243,10 @@ pub struct CarriedFrom {
     /// weapon, with the vehicle they were released from: still spent in this run on that vehicle.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rounds: Vec<crate::loadout::RoundsSpent>,
+    /// Rules 27: the minefields of ours it had laid (its own, `from` none, and those carried into
+    /// it) that it had not logged inert: live in this run until their period is over.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<crate::mines::Minefield>,
 }
 
 /// Rules 12: what a log still owes when it ends: the platforms' own lost-link values never
@@ -1170,6 +1264,8 @@ pub struct Debts {
     pub pending_may_owe: BTreeMap<String, Vec<OwedRestore>>,
     /// Rules 24: the rounds it released and those carried into it ([`crate::loadout::RoundsSpent`]).
     pub rounds: Vec<crate::loadout::RoundsSpent>,
+    /// Rules 27: the minefields it laid and those carried into it, not logged inert.
+    pub fields: Vec<crate::mines::Minefield>,
 }
 
 /// Rules 15 ([`crate::rules::CARRY_FOLLOWUPS_SINCE`], murmur-zq3): a platform spent by its own
@@ -1383,6 +1479,7 @@ pub fn owed_debts(text: &str) -> Debts {
             .collect(),
         spent: restores.spent(),
         rounds: restores.rounds_spent(),
+        fields: restores.all_fields(),
         owed: restores
             .owed
             .into_iter()
@@ -2083,6 +2180,13 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (rules::GUN_SINCE, "\"type\":\"engage.fire_ended\"", "a gun's firing window ended"),
     (rules::GUN_SINCE, "\"fire_from\":[", "a gun's firing position (a plan's, an order's)"),
     (rules::GUN_SINCE, "\"rule\":\"line_of_fire\"", "a gun's line of fire checked"),
+    (rules::MINE_SINCE, "\"kind\":\"lay\"", "a lay order"),
+    (rules::MINE_SINCE, "\"type\":\"mine.laid\"", "a mine laid"),
+    (rules::MINE_SINCE, "\"type\":\"minefield.inert\"", "a minefield gone inert"),
+    (rules::MINE_SINCE, "\"minefields\":[", "our live minefields (a decision's fact)"),
+    (rules::MINE_SINCE, "\"orders_in_play\":{", "the orders in play a lay order's field is judged against"),
+    (rules::MINE_SINCE, "\"fields\":[", "the minefields an earlier log had laid, carried over"),
+    (rules::MINE_SINCE, "\"rule\":\"minefield\"", "a lay order's minefield check"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -2711,6 +2815,7 @@ fn replay_inner<S: AsRef<str>>(
                 check_expended(&mut r, e, *intent, &inputs.expended, &intents, &restores, policy.as_ref());
                 check_spent_carried(&mut r, e, *intent, &inputs.spent_carried, &intents, &restores, policy.as_ref());
                 check_rounds(&mut r, e, *intent, &inputs.rounds, &intents, &restores, policy.as_ref());
+                check_minefields(&mut r, e, *intent, inputs, &intents, &restores, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(
                         &mut r,
@@ -2860,6 +2965,7 @@ fn replay_inner<S: AsRef<str>>(
                 check_expended(&mut r, e, *intent, &inputs.expended, &intents, &restores, policy.as_ref());
                 check_spent_carried(&mut r, e, *intent, &inputs.spent_carried, &intents, &restores, policy.as_ref());
                 check_rounds(&mut r, e, *intent, &inputs.rounds, &intents, &restores, policy.as_ref());
+                check_minefields(&mut r, e, *intent, inputs, &intents, &restores, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(
                         &mut r,
@@ -4815,6 +4921,106 @@ fn replay_inner<S: AsRef<str>>(
                 tr.ready = false;
                 tr.ready_t = None;
                 r.bursts += 1;
+            }
+            EventBody::MineLaid {
+                intent,
+                uid,
+                n,
+                of,
+                at,
+                by,
+                weapon,
+                trigger,
+                reach_m,
+                targets,
+                arms_t,
+                inert_t,
+            } => {
+                let Some(tr) = intents.get(intent) else {
+                    bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
+                    continue;
+                };
+                let mut why: Vec<&str> = Vec::new();
+                if !policy.as_ref().is_some_and(|p| p.rules.mines()) {
+                    why.push("a mine laid under rules that lay none");
+                }
+                if tr.spec.kind() != TaskKind::Lay || tr.state != State::Dispatched {
+                    why.push("a mine laid by something but a dispatched lay order");
+                }
+                if tr.spec.uids.first() != Some(uid) {
+                    why.push("a mine laid by another vehicle than the lay order's platform");
+                }
+                let laid = restores.laid(*intent);
+                let want = crate::mines::params(&tr.spec).map(|(points, count, live_h, named)| {
+                    (crate::mines::mine_points(points, count), count, live_h, named)
+                });
+                let platform = tr
+                    .last_inputs
+                    .as_ref()
+                    .and_then(|w| w.vehicles.get(uid))
+                    .and_then(|v| v.platform.clone());
+                let mine = platform.as_ref().and_then(|p| crate::mines::mine_of(p, want.as_ref().and_then(|w| w.3)).ok().cloned());
+                match (&want, &mine) {
+                    (Some((planned, count, live_h, _)), Some(w)) => {
+                        if *n as usize != laid + 1 || *of != *count {
+                            why.push("a mine out of order, or of another count than the order's");
+                        }
+                        if planned.get(laid) != Some(at) {
+                            why.push("a mine laid elsewhere than its place on the order's line");
+                        }
+                        if by.t > e.t || crate::mines::due(planned, laid, by.value) == 0 {
+                            why.push("a mine laid before the layer's reported position reached its place");
+                        }
+                        let rounds = restores.rounds_of(uid, weapon.vehicle.as_ref());
+                        let left = crate::loadout::left(w, Some(&rounds)).unwrap_or(0);
+                        let release = crate::loadout::WeaponRelease {
+                            name: w.name.clone(),
+                            kind: w.kind,
+                            left: Some(left.saturating_sub(1)),
+                            vehicle: weapon.vehicle.clone(),
+                            rounds: None,
+                        };
+                        if left == 0 || *weapon != release {
+                            why.push("the mine's weapon (or its rounds left) is not the one the order and the ledger give");
+                        }
+                        if *trigger != w.trigger.clone().unwrap_or_default() || *reach_m != w.trigger_reach_m() || *targets != w.targets {
+                            why.push("the mine's trigger, reach or target domains are not its catalog's");
+                        }
+                        let live_ms = (live_h * 3_600_000.0).round() as i64;
+                        if *arms_t != e.t.plus_ms(w.arm_ms()) || *inert_t != e.t.plus_ms(live_ms) {
+                            why.push("the mine's arming or inert time is not its laying plus the catalog's arming delay and the order's live period");
+                        }
+                    }
+                    _ => why.push("a mine laid by an order or platform with no mine to lay"),
+                }
+                for w in why {
+                    bad(&mut r, e, Some(*intent), w, json(&(n, at, weapon, arms_t, inert_t)), json(&want.as_ref().map(|w| w.0.get(laid))));
+                }
+                restores.step_at(e.t, &e.body);
+                r.mines_laid += 1;
+            }
+            EventBody::MinefieldInert { intent, from, mines, inert_t } => {
+                if !policy.as_ref().is_some_and(|p| p.rules.mines()) {
+                    bad(&mut r, e, Some(*intent), "a minefield gone inert under rules that lay none", String::new(), String::new());
+                }
+                let field = restores.all_fields().into_iter().find(|f| f.intent == *intent && f.from == *from);
+                match field {
+                    None => bad(&mut r, e, Some(*intent), "a minefield gone inert that the ledger does not hold", json(&(intent, from)), String::new()),
+                    Some(f) => {
+                        let laying = from.is_none() && intents.get(intent).is_some_and(|t| t.state == State::Dispatched);
+                        if f.live_at(e.t) || laying || f.inert_t() != *inert_t || f.mines.len() != *mines as usize {
+                            bad(
+                                &mut r,
+                                e,
+                                Some(*intent),
+                                "a minefield logged inert before its live period was over, while it was being laid, or for other mines than it holds",
+                                json(&(mines, inert_t)),
+                                json(&(f.mines.len(), f.inert_t(), laying)),
+                            );
+                        }
+                    }
+                }
+                restores.step_at(e.t, &e.body);
             }
             EventBody::EngageFireEnded { intent, why, detail } => {
                 let Some(tr) = intents.get_mut(intent) else {
@@ -6943,6 +7149,40 @@ fn check_rounds(
     }
 }
 
+/// Rules 27: a decision's `minefields` fact (our live fields it read) against the log's ledger,
+/// and a lay order's `orders_in_play` against the orders replay holds in play.
+fn check_minefields(
+    r: &mut ReplayReport,
+    e: &Event,
+    id: IntentId,
+    inputs: &LoggedInputs,
+    intents: &BTreeMap<IntentId, Tracked>,
+    restores: &Restores,
+    policy: Option<&Policy>,
+) {
+    let (Some(tr), Some(pol)) = (intents.get(&id), policy) else { return };
+    let fields = restores.all_fields();
+    if !(fields.is_empty() && inputs.minefields.is_empty()) {
+        // what `mines::fields_for` reads: the decision's time and its vehicles' platforms
+        let mut world = crate::world::WorldSnapshot::new(inputs.t);
+        world.vehicles = inputs.vehicles.clone();
+        let want = if pol.rules.mines() { crate::mines::fields_for(&tr.spec, &world, &fields, &pol.rules) } else { Vec::new() };
+        if inputs.minefields != want {
+            bad(r, e, Some(id), "our minefields differ from the log's ledger (rules 27)", json(&inputs.minefields), json(&want));
+        }
+    }
+    if tr.spec.kind() == TaskKind::Lay || !inputs.orders_in_play.is_empty() {
+        let want = if pol.rules.mines() {
+            crate::mines::orders_in_play(intents.iter().map(|(i, t)| (*i, &t.spec, t.play_state())), &tr.spec)
+        } else {
+            BTreeMap::new()
+        };
+        if inputs.orders_in_play != want {
+            bad(r, e, Some(id), "the orders in play a lay order read differ from the log's (rules 27)", json(&inputs.orders_in_play), json(&want));
+        }
+    }
+}
+
 /// Rules 15: the identities of the vehicles now a decision's `spent_carried` fact names.
 fn spent_identities(spent: &BTreeMap<Uid, queue::CarriedSpent>) -> BTreeMap<Uid, engage::VehicleIdentity> {
     spent
@@ -8555,7 +8795,8 @@ fn check_signature(
 ) {
     match sessions.get(&session) {
         Some((op, grants)) if op == by => {
-            if tr.spec.kind() == TaskKind::Engage && !grants.engage {
+            // rules 27: a lay order is signed as an engagement is
+            if tr.spec.kind().needs_engagement_authority() && !grants.engage {
                 bad(
                     r,
                     e,
@@ -8694,8 +8935,8 @@ fn check_plans(r: &mut ReplayReport, e: &Event, id: IntentId, w: &WorldSnapshot,
         bad(r, e, Some(id), "a decision with routed legs under rules that plan none", json(&w.route_plans.keys().collect::<Vec<_>>()), String::new());
         return;
     }
-    for p in w.route_plans.values().flatten() {
-        let again = crate::plan::replan(p, w);
+    for (uid, p) in w.route_plans.iter().flat_map(|(u, ps)| ps.iter().map(move |p| (u, p))) {
+        let again = crate::plan::replan(p, w, uid, &pol.rules);
         let same = match (&again, &p.no_route) {
             (Ok(v), None) => v == &p.via,
             (Err(why), Some(logged)) => why == logged,

@@ -267,7 +267,7 @@ fn the_endpoint_reads_the_weather_where_the_vehicle_is() {
         acts: Vec::new(),
         aim_at: Vec::new(),
         weapons: Vec::new(),
-        impacts: Vec::new(),
+        impacts: Vec::new(), mines_live: Vec::new(),
     };
     let now = crate::clock::wall();
     assert_eq!(tracks.reach_json(&world, None, now)["available"], false, "before the first sensing step");
@@ -328,7 +328,7 @@ fn reach_cost_at_100_vehicles() {
     let tracks = Tracks::new(catalog(), settings).with_clear_day(PLATFORMS).expect("clear day");
     let cond = Conditions { visibility_m: 300.0, wind_mps: 12.0, sea_state: 5.0, sun_elevation_deg: Some(-3.0), ..Conditions::default() };
     let sensing = Sensing { conditions: Some(cond), ..Default::default() };
-    let msg = TruthMessage { t: T, s: 1.0, seq: 1, scenario: "test".into(), seed: 1, sensing, contacts: Vec::new(), acts: Vec::new(), aim_at: Vec::new(), weapons: Vec::new(), impacts: Vec::new() };
+    let msg = TruthMessage { t: T, s: 1.0, seq: 1, scenario: "test".into(), seed: 1, sensing, contacts: Vec::new(), acts: Vec::new(), aim_at: Vec::new(), weapons: Vec::new(), impacts: Vec::new(), mines_live: Vec::new() };
     let now = crate::clock::wall();
     tracks.on_truth_with(msg, &[], now).expect("truth");
     let t0 = std::time::Instant::now();

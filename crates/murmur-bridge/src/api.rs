@@ -100,6 +100,8 @@ pub fn router(app: App) -> Router {
         .route("/api/identify/options", post(identify_options))
         .route("/api/platforms", get(platforms))
         .route("/api/loadouts", get(loadouts))
+        // rules 27: our minefields not yet inert (read-only)
+        .route("/api/minefields", get(minefields))
         .route("/api/stats", get(stats))
         .route("/api/links/coverage", get(coverage_get).post(coverage_post))
         .route("/ws", get(ws))
@@ -725,6 +727,10 @@ async fn space_runs(State(app): State<App>) -> Response {
 /// Read-only, no identity needed.
 async fn loadouts(State(app): State<App>) -> Response {
     Json(app.decision.loadouts()).into_response()
+}
+
+async fn minefields(State(app): State<App>) -> Response {
+    Json(serde_json::json!({ "minefields": app.decision.minefields_json() })).into_response()
 }
 
 async fn platforms(State(app): State<App>) -> Response {

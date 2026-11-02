@@ -1,0 +1,83 @@
+# Rules 27 (bd murmur-lbw8.4): a minefield is laid on two signatures and recorded mine by mine.
+# The mine-laying UGV stands on the Presidio (the runner's land: south of 37.800). op-1, who has no
+# engagement authority, orders a row of 10 TM-62M mines along 88 m of track to its east, live for
+# 0.05 h (three minutes, so the run sees the field go inert). The engine's checks pass: the UGV is
+# armed, 20 mines are left, nothing of the ground domain is near the row, and the UGV is clear of
+# each mine before it arms (60 s after laying). An agent's attempt to sign has no path; op-1 may not
+# sign their own order; op-2 and op-3, with engagement authority, sign it. Dispatched, the UGV drives
+# the row once and the engine lays each mine as it passes its place (`mine.laid`: its place, when it
+# arms and goes inert, the round it spends). Three minutes after the last mine the field is logged
+# inert. Then the log is forged so that the first mine lies 40 m off the order's line: replay
+# recomputes every mine's place from the order and catches it.
+title = "A minefield is laid on two signatures and recorded"
+invariant = "audit"
+attack = "a mine recorded elsewhere than it was laid"
+expect = "done"
+expect_mines_laid = 10
+tamper = "move_mine"
+end_s = 300
+
+[[operator]]
+id = "op-1"                 # orders the field; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[agent]]
+id = "agent-planner"
+
+[[vehicle]]
+uid = "mole-1"
+platform = "ugv_mines"      # 20 TM-62M mines, 2 m/s
+at = [-122.4600, 37.7950]   # on the Presidio, south of the shore
+home = [-122.4570, 37.7950] # east of the row's end: its way home leaves the row behind it
+
+[[step]]
+at_s = 1
+action = "lay"
+by = "op-1"
+platform = "mole-1"
+points = [[-122.4595, 37.7950], [-122.4585, 37.7950]]
+count = 10
+live_h = 0.05
+weapon = "TM-62M mine"
+
+[[step]]
+at_s = 2
+action = "expect"
+state = "pending_approval"
+weapon = "named: TM-62M mine, a mine for ground targets, set off by pressure 150-550 kg within 1 m, arms 60 s after laying, live at most 72 h; 20 of 20 left; the order lays 10, live 0.05 h each"
+
+[[step]]
+at_s = 3
+action = "agent_approve"
+agent = "agent-planner"
+
+[[step]]
+at_s = 4
+action = "approve"
+by = "op-1"
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 6
+action = "expect"
+state = "pending_approval"
+concurrences = 1
+
+[[step]]
+at_s = 7
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 8
+action = "expect"
+state = "dispatched"

@@ -666,7 +666,8 @@ fn segment_leaves(
 
 pub fn decide(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> PolicyDecision {
     let mut d = decide_by_file(spec, world, policy);
-    if spec.kind() != TaskKind::Engage {
+    // rules 27: a lay order is signed as an engagement is (a lay exists from rules 27 only)
+    if !spec.kind().needs_engagement_authority() {
         // An agent's order on a vehicle with an engagement in play (pending, approved or
         // dispatched) goes to a human: a hold or an rtl would otherwise run on its own and
         // supersede, so stop, the engagement. An operator's own order is a human decision.
@@ -717,6 +718,13 @@ pub fn decide(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> Poli
         );
         d.rule = "(engage)".into();
         d.tier = Tier::Human;
+    }
+    // rules 27: a minefield's floor is an engagement's, and says so
+    if spec.kind() == TaskKind::Lay && d.rule != "engagement" {
+        d.reason = format!(
+            "{}; a minefield is laid on an engagement's two signatures: its mines choose their victims later, so the judgement is made now (DoD Directive 3000.09)",
+            d.reason
+        );
     }
     d.submitter_authorizes = false;
     d.proposer_excluded = true;

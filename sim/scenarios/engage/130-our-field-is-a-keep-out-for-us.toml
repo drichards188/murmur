@@ -1,0 +1,93 @@
+# Rules 27 (bd murmur-lbw8.4): our own live minefield is a keep-out for our own vehicles. The
+# mine-laying UGV lays a row of 10 TM-62M mines on the Presidio, live for an hour, on two
+# signatures (as scenario 128). Once it is laid: a logistics UGV north of the row is sent home, and
+# its home lies south of the row: an rtl is the safety command, so it goes as ordered, its geofence
+# check passing with a warning (the bridge raises the inbox alert `path_crosses_minefield`). Then a
+# recon UGV south of the row is sent to orbit north of it, near its home: its straight transit
+# would cross the row, so the route planner routes it round the field's danger area and its
+# clearance (a straight return home across the row would still be refused, as rules 22 keeps it).
+title = "Our live minefield is a keep-out for our own vehicles"
+invariant = "geofence"
+attack = "a transit across our own field"
+expect = "done"
+expect_mines_laid = 10
+expect_routed = ["routed around no-go minefield MF-1"]
+end_s = 96
+
+[[operator]]
+id = "op-1"
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "mole-1"
+platform = "ugv_mines"
+at = [-122.4600, 37.7950]
+home = [-122.4570, 37.7950]   # east of the row's end: its way home leaves the row behind it
+
+[[vehicle]]
+uid = "mule-1"
+platform = "ugv_logistics"
+at = [-122.4590, 37.7975]     # 280 m north of the row
+home = [-122.4590, 37.7930]   # 220 m south of it
+
+[[vehicle]]
+uid = "ferret-1"
+platform = "ugv_recon"
+at = [-122.4590, 37.7935]     # 170 m south of the row
+home = [-122.4590, 37.7990]   # north of it (a return home stays straight, rules 22)
+
+[[step]]
+at_s = 1
+action = "lay"
+by = "op-1"
+platform = "mole-1"
+points = [[-122.4595, 37.7950], [-122.4585, 37.7950]]
+count = 10
+live_h = 1
+weapon = "TM-62M mine"
+
+[[step]]
+at_s = 3
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 4
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 5
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 90
+action = "task"
+by = "op-1"
+task = "rtl"
+uids = ["mule-1"]
+
+[[step]]
+at_s = 91
+action = "expect"
+task_state = "dispatched"
+
+[[step]]
+at_s = 92
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["ferret-1"]
+center = [-122.4590, 37.7980]
+radius_m = 40
+
+[[step]]
+at_s = 93
+action = "expect"
+task_state = "dispatched"

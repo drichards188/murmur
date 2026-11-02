@@ -22,7 +22,12 @@ const STYLE: Record<string, { width: number; alpha: number; dash?: [number, numb
   clear: { width: 1.2, alpha: 0.5 },
   detect: { width: 2.2, alpha: 0.95 },
   identify: { width: 1.6, alpha: 0.9, dash: [3, 2] },
+  // rules 27: our minefields (minefields.ts): the danger area's outline, a ring on each mine
+  minefield: { width: 2, alpha: 0.9, dash: [5, 3] },
+  mine: { width: 1.5, alpha: 0.95 },
 }
+/** our minefields' colour, a warning red apart from the sensors' */
+const MINE_RGB: [number, number, number] = [235, 87, 87]
 const onTop = { depthCompare: 'always' as const, depthWriteEnabled: false }
 
 /** The rings as paths on the surface, each over a dark casing. */
@@ -33,7 +38,7 @@ export function reachPaths(fc: GeoJSON.FeatureCollection | null, scale: SurfaceS
     const kind = String(f.properties?.kind ?? '')
     const st = STYLE[kind]
     if (!st) continue
-    const [r, g, b] = SENSOR_RGB[String(f.properties?.sensor ?? '')] ?? [210, 210, 210]
+    const [r, g, b] = kind === 'minefield' || kind === 'mine' ? MINE_RGB : SENSOR_RGB[String(f.properties?.sensor ?? '')] ?? [210, 210, 210]
     const lifted = lift(f.geometry.coordinates as LngLat[], scale.surfaceZ)
     casings.push({ path: lifted, color: [11, 21, 32, 115], width: 4 })
     const color: RGBA = [r, g, b, Math.round(255 * st.alpha)]

@@ -123,7 +123,8 @@ tamper = "suppress_void"         # optional log attack replay must catch: propos
                                  # and rules 20: edit_munition,
                                  # and rules 24: edit_rounds (rules 26: a gun's bursts too),
                                  # and rules 25: drop_damage,
-                                 # and rules 26: burst_after_stop
+                                 # and rules 26: burst_after_stop,
+                                 # and rules 27: move_mine, hide_lay_signature
                                  # (one with nothing to edit in a run's log reports "not
                                  # applicable")
 end_s = 120                      # seconds to run (default: the last step + 10)
@@ -134,6 +135,7 @@ expect_bursts = 3                # rules 26, optional: the bursts the gun fired 
 expect_fire_end = "ceased"       # rules 26, optional: how its fire ended: ceased, unknown,
                                  # rounds_out, window_closed, stopped
 expect_rounds_left = 482         # rules 26, optional: its rounds left after its last burst
+expect_mines_laid = 10           # rules 27, optional: the mines every lay order laid (mine.laid)
 preload = "confirm"              # rules 6: how the platform answers its lost-link preload:
                                  # confirm (default), no_answer, mismatch (another action read
                                  # back), never (nothing reported), changed (confirmed, then
@@ -252,6 +254,7 @@ Actions (each `[[step]]` has `at_s` and `action`):
 | `resolve_flag` | `by`, `track`, `flag` (optional: its number; default the newest on the track), `resolution` (`confirmed`, `dismissed`) | rules 9: an operator resolves a review flag |
 | `agent_declare` | `agent`, `track` | rules 9: an agent "tries" to declare: its port has no such method; recorded, nothing may change |
 | `nominate` | `by` or `agent` (+ `rationale`), `platform`, `track`, `radius_m`, `fallback` (`abort`, `return`, `loiter`), `window_s`, `accept` (rules 6: vehicles the operator accepts as lost, each since its last report), `accept_lost` (rules 16: lost contacts the operator accepts, each since its last fix), `accept_behaving` (rules 19: live tracks the operator accepts as they are behaving now, each with its facts then) | a nomination; becomes "the last nomination" the other steps act on |
+| `lay` | `by` or `agent` (+ `rationale`), `platform`, `points` (its line, `[lon, lat]` each), `count`, `live_h` (mandatory), `weapon` (the mine by name; absent: the platform's first) | rules 27: a lay order; becomes "the last nomination": `approve` signs it as an engagement's signers do, with no picture to look at; dispatched, the runner drives the layer along its transit's waypoints and the line once, steps the lays every second, and finishes the order at the line's end |
 | `accept` | `by`, `uid` or (rules 16) `track` or (rules 19) `behaving`, `since_s` (optional: another report or fix than the last, which the engine refuses) | rules 6: an operator with engagement authority accepts a lost vehicle (rules 16: a lost contact; rules 19: a live track as it is behaving now) for the last nomination while it waits with no signature (without it: refused) |
 | `revoke` | `by`, `uid` or (rules 16) `track` or (rules 19) `behaving` | rules 6: any operator withdraws an acceptance from the last nomination (pending or under way) |
 | `drop_track` | `track` | rules 16: the tracker drops it (its facts and AIS now go to the engine, `track.dropped`); from then on it is a lost contact |
@@ -411,3 +414,6 @@ rules 23 `<id> meanwhile: ...`, `<id> ended done: ...`).
 | 125-gun-stopped-mid-fire | abort | rules 26: op-1 stops the gun after its second burst; tamper `burst_after_stop` | done (persists): the fire stopped with the fallback (hold), no burst after it |
 | 126-gun-superseded-mid-fire | engagement_in_play | rules 26: op-1 orders the firing UGV to hold | done (persists): superseded, no fallback, no burst after it |
 | 127-gun-line-of-fire-and-keep-out | keep_out_friendly | rules 26: a protected sailboat crosses the line of fire, then one of ours enters the keep-out | done (persists): fire held while the sailboat is on the line, then stopped for the picture (keep_out_friendly), 3 bursts |
+| 128-minefield-laid-on-two-signatures | audit | rules 27: the mine-laying UGV ordered to lay 10 TM-62M mines along 88 m, live 0.05 h; an agent and the orderer (no engagement authority) can't sign; tamper `move_mine` | done: op-2's signature leaves it waiting, op-3's approves it; 10 mines laid in order as the UGV passes, each arming 60 s and going inert 180 s after its laying, 10 of 20 left; the field logged inert once its period is over; a mine moved 40 m off the line in the log caught |
+| 129-minefield-refused-for-traffic-on-its-line | minefield | rules 27: the same row, a neutral car driving north 150 m short of it at 3 m/s | rejected (minefield): the car on its course now passes the row within the field's danger area, how soon and how far short; `--rules 26` refuses the lay order outright |
+| 130-our-field-is-a-keep-out-for-us | geofence | rules 27: the row laid, live an hour; a logistics UGV across it sent home, a recon UGV across it sent to orbit beyond it | done: the rtl goes with a geofence warning (path_crosses_minefield), the orbit's transit routed round no-go minefield MF-1 |

@@ -232,6 +232,7 @@ async fn run_inner(ctx: &OpCtx) -> Result {
         TaskKind::Rtl => t.rtl().await,
         TaskKind::Hold => t.hold().await,
         TaskKind::Track => t.track().await,
+        TaskKind::Lay => t.lay().await,
     }
 }
 
@@ -1363,6 +1364,41 @@ impl Task<'_> {
         .await?;
         self.op().set_progress(Some("patrolling".into()));
         Ok(())
+    }
+
+    /// Rules 27: a lay order's line, driven once from its first point to its last (no jump
+    /// back): done within `murmur_decide::mines::LINE_END_M` of the last point, where the vehicle
+    /// stops (its mission's end). The decision engine lays each mine as the vehicle passes its
+    /// place, and every one left at the line's end (`Decision::step_lays`, before the op's end
+    /// finishes the order).
+    async fn lay(&self) -> Result {
+        let route = self.ctx.params.route.clone().unwrap_or_default();
+        let alt = self.task_alt();
+        let build = |takeoff: bool| {
+            let mut items = self.mission_prefix(alt, takeoff);
+            for [lon, lat] in &route {
+                items.push(Item::waypoint(*lat, *lon, alt));
+            }
+            items
+        };
+        let items = build(self.needs_takeoff());
+        let candidates = self.takeoff_choices().into_iter().map(build).collect();
+        let first = items.len() - route.len();
+        let last_wp = (items.len() - 1) as u16;
+        let Some([end_lon, end_lat]) = route.last().copied() else {
+            return fail("lay needs its line".to_string());
+        };
+        // the engine lays every mine left within this of the line's end
+        let tol = murmur_decide::mines::LINE_END_M;
+        let done = move |v: &Vehicle| {
+            v.mission_seq.is_some_and(|s| s >= last_wp) && v.distance_to(end_lat, end_lon).is_some_and(|d| d <= tol)
+        };
+        let n = route.len();
+        let progress = move |v: &Vehicle| match v.mission_seq {
+            Some(seq) if usize::from(seq) >= first => format!("laying: point {}/{n}", usize::from(seq) - first + 1),
+            _ => "en route to the line".into(),
+        };
+        self.run_mission(items, candidates, done, "the line laid".into(), progress).await
     }
 
     /// After a bridge restart, for an order that is a mode (hold, rtl): whether the vehicle

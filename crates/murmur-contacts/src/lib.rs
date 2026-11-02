@@ -23,6 +23,7 @@
 
 pub mod damage;
 pub mod effect;
+pub mod mine;
 pub mod motion;
 pub mod scenario;
 pub mod truth;

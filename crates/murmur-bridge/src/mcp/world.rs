@@ -326,14 +326,21 @@ pub async fn platforms(mcp: &Mcp) -> Result<Value, DecisionError> {
 pub fn areas(mcp: &Mcp) -> Value {
     let set = mcp.decision.areas();
     let now = clock::wall();
-    json!({
+    let mut v = json!({
         "t": now,
         "source": set.source,
         "as_of": set.loaded_t.0 as f64 / 1000.0,
         "age_s": age(now, set.loaded_t.0 as f64 / 1000.0),
         "note": "approved: where the operator has approved operations (a route leaving it needs a human). no_go: no route may enter (the geofence check fails). engagement_zone: an engagement's whole effect circle must lie inside one. no_strike: an engagement's effect circle must stay clear of every one. Polygons are rings of [lon, lat].",
         "areas": set.areas,
-    })
+    });
+    // rules 27: our live minefields, no-go areas for our vehicles of the domains they catch
+    let fields = mcp.decision.minefields_json();
+    if !fields.is_empty() {
+        v["minefields"] = Value::Array(fields);
+        v["minefields_note"] = json!("Our minefields, each a no-go area (danger_m round its mines) for our vehicles of the domains that set it off (targets): the route planner goes round it, the geofence refuses a route across it, and an rtl across it goes with a warning. A lay order (task lay) is decided as an engagement is.");
+    }
+    v
 }
 
 /// `get_policy`.

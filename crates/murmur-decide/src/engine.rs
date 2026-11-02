@@ -65,7 +65,7 @@ pub enum EngineError {
     NotACollect(IntentId),
     #[error("intent {0} is an engagement: dispatch it with dispatch_order")]
     EngageIntent(IntentId),
-    #[error("intent {0} is an engagement: only an operator with engagement authority may approve it")]
+    #[error("intent {0} is an engagement (or, rules 27, a lay order): only an operator with engagement authority may approve it")]
     EngagementNeedsAuthority(IntentId),
     #[error("intent {0} is not an engagement")]
     NotAnEngagement(IntentId),
@@ -661,6 +661,12 @@ impl Engine {
         if !policy.rules.loadouts() {
             for c in &mut carried_from {
                 c.rounds.clear();
+            }
+        }
+        // rules 27: the minefields earlier runs laid (no build of older rules logged one)
+        if !policy.rules.mines() {
+            for c in &mut carried_from {
+                c.fields.clear();
             }
         }
         if let Some(p) = &pointer
@@ -2389,6 +2395,11 @@ impl Engine {
             w.lost_contacts = self.lost.in_force_for(&w.tracks, &self.ident, self.policy.rules.rule_id());
             return;
         }
+        // rules 27: a lay order's field judges the lost contacts that could be in it
+        if spec.kind() == TaskKind::Lay && self.policy.rules.mines() && self.policy.rules.lost_contacts() {
+            w.lost_contacts = self.lost.in_force_for(&w.tracks, &self.ident, self.policy.rules.rule_id());
+            return;
+        }
         if spec.kind() != TaskKind::Engage || !self.policy.rules.lost_contacts() {
             return;
         }
@@ -2887,7 +2898,8 @@ impl Engine {
         world: &WorldSnapshot,
         terrain: &dyn TerrainOracle,
     ) -> Result<&Intent, EngineError> {
-        if self.get(id)?.spec().kind() == TaskKind::Engage {
+        // rules 27: a lay order is signed as an engagement is
+        if self.get(id)?.spec().kind().needs_engagement_authority() {
             self.refuse(
                 by.operator(),
                 by.session(),
@@ -2897,6 +2909,32 @@ impl Engine {
             return Err(EngineError::EngagementNeedsAuthority(id));
         }
         self.sign(id, by.operator(), by.session(), note, acknowledge, step, world, terrain)
+    }
+
+    /// Rules 27 ([`crate::rules::MINE_SINCE`]): sign a lay order. As an engagement's signature:
+    /// an [`EngagementAuthority`] only (a session opened with engagement authority), never the
+    /// proposer's, as many distinct signers as the tier asks (at least two), each re-running the
+    /// checks on the world now (a failure voids the order), and in a credentials run each quoting
+    /// the signer's step-up ([`Engine::step_up`]). There is no plan to freeze: the order itself
+    /// (its line, count, live period and mine) is what every signer signs. The last signature
+    /// approves it; it is dispatched as a vehicle order and its mines are laid as the platform
+    /// passes their places ([`Engine::step_lays`]).
+    pub fn approve_lay(
+        &mut self,
+        id: IntentId,
+        by: &EngagementAuthority,
+        note: Option<String>,
+        step: Option<StepUp>,
+        world: &WorldSnapshot,
+        terrain: &dyn TerrainOracle,
+    ) -> Result<&Intent, EngineError> {
+        if self.get(id)?.spec().kind() != TaskKind::Lay {
+            return Err(EngineError::NotItsOrder {
+                id,
+                why: "not a lay order: an engagement is signed with approve_engagement, any other order with approve".into(),
+            });
+        }
+        self.sign(id, by.operator(), by.session(), note, false, step, world, terrain)
     }
 
     /// Show a signer the picture they would sign ([`PictureToken`], logged as
@@ -4590,6 +4628,7 @@ impl Engine {
     /// agents' `get_nomination_options`): nothing is logged or changed. A space task's answer is
     /// not asked for.
     pub fn dry_run_inputs(&self, spec: &IntentSpec, world: &WorldSnapshot, terrain: &dyn TerrainOracle) -> WorldSnapshot {
+        let world = self.with_fields(spec, world);
         let mut inputs = world.for_intent_with(spec, terrain, &self.policy.rules);
         self.identify(&mut inputs);
         // (a new nomination has no acceptances yet)
@@ -4641,12 +4680,47 @@ impl Engine {
         inputs.restore_owed = self.restore_owed_for(spec, &inputs.identities);
         inputs.expended = self.restores.expended_for(spec, &self.policy.rules);
         inputs.spent_carried = self.restores.spent_carried_for(spec, &self.policy.rules, &inputs.identities);
-        // rules 24: an engagement's platform's rounds
+        // rules 24: an engagement's platform's rounds (rules 27: a lay order's)
         inputs.rounds = self.restores.rounds_for(spec, &self.policy.rules, &inputs.identities);
         if spec.kind() == TaskKind::Engage {
             inputs.unknown_accepted = self.accepted_for(spec.id);
         }
+        // rules 27: our live fields (set before the plans read them, the same again here) and a
+        // lay order's view of our other vehicles' orders
+        inputs.minefields = self.restores.minefields_for(spec, inputs, &self.policy.rules);
+        if self.policy.rules.mines() {
+            inputs.orders_in_play = crate::mines::orders_in_play(
+                self.intents.values().map(|i| (i.id(), i.spec(), i.play_state())),
+                spec,
+            );
+        }
         self.fill_lost(spec, inputs);
+    }
+
+    /// Rules 27: `world` with our live fields a decision on `spec` reads in it (the ledger's,
+    /// never the caller's), so that the route plans and the geofence read them: the world itself
+    /// when they are the same (no field: no copy).
+    fn with_fields<'w>(&self, spec: &IntentSpec, world: &'w WorldSnapshot) -> std::borrow::Cow<'w, WorldSnapshot> {
+        let fields = self.restores.minefields_for(spec, world, &self.policy.rules);
+        if fields == world.minefields {
+            return std::borrow::Cow::Borrowed(world);
+        }
+        let mut w = world.clone();
+        w.minefields = fields;
+        std::borrow::Cow::Owned(w)
+    }
+
+    /// Rules 27: every field of ours not logged inert (this run's and those carried over), for the
+    /// console's map and the agents' reads; and the live ones a vehicle of `domain` could set off.
+    pub fn minefields(&self) -> Vec<crate::mines::Minefield> {
+        self.restores.all_fields()
+    }
+
+    /// Rules 27: the live fields a decision on `spec` would read on `world` (its `minefields`
+    /// fact): for the bridge's own planning before a decision (the planner's grid it prefetches,
+    /// the routes the dry run shows), read-only.
+    pub fn minefields_for(&self, spec: &IntentSpec, world: &WorldSnapshot) -> Vec<crate::mines::Minefield> {
+        self.restores.minefields_for(spec, world, &self.policy.rules)
     }
 
     /// Rules 9: the identification ledger (declarations in force, flags, acts seen).
@@ -6065,6 +6139,101 @@ impl Engine {
         self.get(id)
     }
 
+    /// Rules 27 ([`crate::rules::MINE_SINCE`]): step every dispatched lay order on `world` (the
+    /// bridge's picture now): each mine whose place the layer has reached ([`crate::mines::due`],
+    /// on its fresh reported position) is laid, in order, logged as `mine.laid` (the record: its
+    /// place, the time, when it arms and goes inert, the round it spends, the layer's position)
+    /// before the bridge hands it to the truth side; then every field of ours whose period is over
+    /// and whose lay order is no longer laying is logged inert (`minefield.inert`). A layer with
+    /// no round of the mine left lays no more. Nothing before rules 27.
+    pub fn step_lays(&mut self, world: &WorldSnapshot) -> Result<crate::mines::LayStep, EngineError> {
+        let mut out = crate::mines::LayStep::default();
+        if !self.policy.rules.mines() {
+            return Ok(out);
+        }
+        let lays: Vec<(IntentId, IntentSpec)> = self
+            .intents
+            .values()
+            .filter(|i| i.spec().kind() == TaskKind::Lay && i.state() == State::Dispatched)
+            .map(|i| (i.id(), i.spec().clone()))
+            .collect();
+        for (id, spec) in &lays {
+            let (Some(uid), Some((points, count, live_h, named))) = (spec.uids.first(), crate::mines::params(spec)) else {
+                continue;
+            };
+            let Some(pos) = crate::mines::layer_at(world, uid, &self.policy.rules).cloned() else {
+                continue;
+            };
+            let Some(platform) = world.vehicles.get(uid).and_then(|v| v.platform.clone()) else {
+                continue;
+            };
+            let Ok(w) = crate::mines::mine_of(&platform, named).cloned() else {
+                continue;
+            };
+            let planned = crate::mines::mine_points(points, count);
+            let laid = self.restores.laid(*id);
+            let due = crate::mines::due(&planned, laid, pos.value);
+            let live_ms = (live_h * 3_600_000.0).round() as i64;
+            for (i, at) in planned.iter().enumerate().skip(laid).take(due) {
+                let identity = world.identities.get(uid).cloned();
+                let rounds = self.restores.rounds_of(uid, identity.as_ref());
+                let left = crate::loadout::left(&w, Some(&rounds)).unwrap_or(0);
+                if left == 0 {
+                    break;
+                }
+                let t = self.now().max(self.last_t);
+                let body = EventBody::MineLaid {
+                    intent: *id,
+                    uid: uid.clone(),
+                    n: i as u32 + 1,
+                    of: count,
+                    at: *at,
+                    by: pos.clone(),
+                    weapon: crate::loadout::WeaponRelease {
+                        name: w.name.clone(),
+                        kind: w.kind,
+                        left: Some(left - 1),
+                        vehicle: identity,
+                        rounds: None,
+                    },
+                    trigger: w.trigger.clone().unwrap_or_default(),
+                    reach_m: w.trigger_reach_m(),
+                    targets: w.targets.clone(),
+                    arms_t: t.plus_ms(w.arm_ms()),
+                    inert_t: t.plus_ms(live_ms),
+                };
+                let t = self.emit_at(t, body.clone())?;
+                self.restores.step_at(t, &body);
+                out.laid.push(crate::mines::MineOrder {
+                    intent: *id,
+                    uid: uid.clone(),
+                    n: i as u32 + 1,
+                    at: *at,
+                    weapon: w.clone(),
+                    arms_t: t.plus_ms(w.arm_ms()),
+                    inert_t: t.plus_ms(live_ms),
+                });
+            }
+        }
+        let laying: BTreeSet<IntentId> = lays.iter().map(|(id, _)| *id).collect();
+        let now = self.now().max(self.last_t);
+        for f in self.restores.all_fields() {
+            if f.live_at(now) || (f.from.is_none() && laying.contains(&f.intent)) {
+                continue;
+            }
+            let body = EventBody::MinefieldInert {
+                intent: f.intent,
+                from: f.from.clone(),
+                mines: u32::try_from(f.mines.len()).unwrap_or(u32::MAX),
+                inert_t: f.inert_t(),
+            };
+            let t = self.emit_at(now, body.clone())?;
+            self.restores.step_at(t, &body);
+            out.inert.push(f.id());
+        }
+        Ok(out)
+    }
+
     /// Rules 21: step every dispatched identify order still looking, on `world` (the bridge's
     /// picture now; `terrain` answers the domain rule): the look ends when its track is
     /// identified, lost or out of time (`identify.step` ended, with the order sent afterwards:
@@ -6463,6 +6632,8 @@ impl Engine {
         plan: Option<&FrozenPlan>,
         at: Option<Time>,
     ) -> Result<(WorldSnapshot, LoggedInputs, Vec<CheckResult>, bool), EngineError> {
+        // rules 27: our live fields go in before the route plans read them
+        let world = self.with_fields(spec, world);
         let mut inputs = world.for_intent_plan(spec, terrain, &self.policy.rules, plan);
         self.identify(&mut inputs);
         if spec.task.is_space() {
@@ -6658,6 +6829,12 @@ impl Engine {
         terrain: &dyn TerrainOracle,
     ) -> Result<IntentId, EngineError> {
         proposal.validate()?;
+        // rules 27: no build of older rules took a lay order
+        if proposal.task.kind() == TaskKind::Lay && !self.policy.rules.mines() {
+            return Err(EngineError::Proposal(ProposalError::BadParams(
+                "these decision rules lay no mines (rules 27)".into(),
+            )));
+        }
         let id = IntentId(self.next_intent);
         let created_t = self.now();
         let spec = IntentSpec {

@@ -374,13 +374,13 @@ fn the_catalog_lists_the_loadouts_and_the_cca_fights_only_in_the_air() {
     let c = catalog();
     let with: Vec<&str> = c.platforms.iter().filter(|(_, p)| !p.loadout.is_empty()).map(|(id, _)| id.as_str()).collect();
     assert_eq!(with, vec!["cca", "fpv", "magura", "mq9b_armed", "orca", "switchblade", "ugv_armed", "ugv_mines"]);
-    // armed and usable now, or listed and inert (not armed until stage 4)
+    // armed and usable now (rules 27: the mines too, so the Orca and the mine-laying UGV are armed)
     for (id, p) in &c.platforms {
         if p.loadout.iter().any(|w| w.kind.usable()) {
             assert!(p.armed, "{id}: a usable weapon on an unarmed platform");
         }
     }
-    assert!(!c.get("orca").unwrap().armed && !c.get("ugv_mines").unwrap().armed);
+    assert!(c.get("orca").unwrap().armed && c.get("ugv_mines").unwrap().armed);
     // the frozen worlds' platforms keep no loadout
     for id in ["mq9b", "mq9b_radar", "seahunter", "seahunter_radar", "puma", "magura_pre_loadout"] {
         assert!(c.get(id).unwrap().loadout.is_empty(), "{id}");

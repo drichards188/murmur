@@ -607,13 +607,20 @@ typical_alt_m = 0
 # mines): 40 km on four 73 Ah 20S batteries ([64]) at the catalog's 2 m/s, 5.6 h.
 endurance_h = 5.5
 # rules 24 (bd murmur-lbw8.1; [n]: docs/research/weapons.md's references): the TerMIT 2.0's
-# module, 20 TM-62 anti-tank mines a run, laid one every 1 to 4 m [43]. Listed but inert until
-# mines come (bd murmur-lbw8.4), and `armed` stays unset until then: an inert loadout carries no
-# effect, so arming it now would only send its every order to a person. TM-62M: 9.5 kg, 7.5 kg of
+# module, 20 TM-62 anti-tank mines a run, laid one every 1 to 4 m [43]. TM-62M: 9.5 kg, 7.5 kg of
 # TNT [44]; a pressure fuze of 150 to 550 kg or a full-width magnetic one [44]; vehicles, never a
 # person on foot [44]. Its reach is the wheel or track over it, 1 m here [E].
+# rules 27 (bd murmur-lbw8.4): usable, so the platform is armed and every order to it waits for a
+# person. A lay order sets how long its mines stay live, at most persist_h: 72 h [E: Murmur's
+# bound, not the mine's; the TM-62M's MVCh-62 fuze has no self-neutraliser, and amended CCW
+# Protocol II asks one of a remotely delivered anti-vehicle mine "to the extent feasible", so
+# Murmur's mandatory period stands in for it (docs/DECISIONS.md "Mines")]. arm_s 60 [E: a
+# mechanical fuze's arming delay; the UGV is 120 m on at 2 m/s]. effects (docs/research/weapons.md
+# 10.3's mine column and 10.4's TM-62 row, [E]): a car's or a truck's wheel or track over it on a
+# pass (0.25, 0.30), then destroyed or immobilised; no figures for a person (150 kg minimum [44]).
+armed = true
 loadout = [
-  { name = "TM-62M mine", kind = "mine", count = 20, min_range_m = 0, max_range_m = 1, speed_mps = 0, profile = "laid", guidance = "pressure_fuze", warhead = { class = "blast", mass_kg = 9.5 }, targets = ["ground"], trigger = "pressure 150-550 kg" },
+  { name = "TM-62M mine", kind = "mine", count = 20, min_range_m = 0, max_range_m = 1, speed_mps = 0, profile = "laid", guidance = "pressure_fuze", warhead = { class = "blast", mass_kg = 9.5 }, targets = ["ground"], trigger = "pressure 150-550 kg", persist_h = 72, arm_s = 60, effects = { vehicle = { p_hit = 0.25, p_kill = 0.95, p_mobility = 0.05 }, truck = { p_hit = 0.30, p_kill = 0.60, p_mobility = 0.40 } } },
 ]
 [ugv_recon]
 name = "Small recon UGV"
@@ -958,13 +965,21 @@ authenticity = "Same as REMUS"
 authenticity_blocker = "UMAA data-model availability"
 # rules 24 (bd murmur-lbw8.1; [n]: docs/research/weapons.md's references): its 34 ft, 8 t payload
 # module is a minelayer first [38,39], for Hammerhead, a seabed capsule that releases a Mk 54
-# torpedo at a submarine [40]. Listed but inert until mines come (bd murmur-lbw8.4), and `armed`
-# stays unset until then: an inert loadout carries no effect. Four [E: an 8 t module; a Mk 54 is
-# 276 kg [12], each capsule with its mooring and sensors about 1.5 to 2 t, a guess]; its torpedo
-# runs to about 9,100 m [12] at over 20 m/s [12]; it lies on the seabed and listens [40]; acoustic
-# homing [12]; 43.9 kg of PBXN-103 [12]; submarines and large UUVs [40].
+# torpedo at a submarine [40]. Four [E: an 8 t module; a Mk 54 is 276 kg [12], each capsule with
+# its mooring and sensors about 1.5 to 2 t, a guess]; its torpedo runs to about 9,100 m [12] at
+# over 20 m/s [12]; it lies on the seabed and listens [40]; acoustic homing [12]; 43.9 kg of
+# PBXN-103 [12]; submarines and large UUVs [40].
+# rules 27 (bd murmur-lbw8.4): usable, so the platform is armed and every order to it waits for a
+# person. trigger_m 1,000 [E: how far the capsule hears a submarine to launch at it; nothing is
+# published, and the torpedo's 9,100 m run is how far it chases, not how far the capsule
+# listens: a field 9 km across would close the bay to every sub of ours and to its own layer].
+# arm_s 1,800 [E: the Orca at 1.5 m/s is 2.7 km off by then]; persist_h 720 [E: 30 days; Hague
+# VIII asks mines be made harmless "within a limited time"]. A torpedo that misses its mark goes
+# inert (Hague VIII Article 1). effects (docs/research/weapons.md 10.3's torpedo column and 10.4's
+# torpedo row against a UUV, which also stand for a submarine, [E]).
+armed = true
 loadout = [
-  { name = "Hammerhead (encapsulated Mk 54)", kind = "mine", count = 4, min_range_m = 0, max_range_m = 9100, speed_mps = 20, profile = "laid", guidance = "acoustic_homing", warhead = { class = "blast", mass_kg = 43.9 }, targets = ["subsurface"], trigger = "acoustic" },
+  { name = "Hammerhead (encapsulated Mk 54)", kind = "mine", count = 4, min_range_m = 0, max_range_m = 9100, speed_mps = 20, profile = "laid", guidance = "acoustic_homing", warhead = { class = "blast", mass_kg = 43.9 }, targets = ["subsurface"], trigger = "acoustic", trigger_m = 1000, persist_h = 720, arm_s = 1800, effects = { uuv = { p_hit = 0.50, p_kill = 0.95, p_mobility = 0.05 } } },
 ]
 
 # ---------------------------------------------------------------- scoring v2 variants

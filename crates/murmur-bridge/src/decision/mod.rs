@@ -66,6 +66,7 @@ pub mod engage;
 mod failsafe;
 pub mod ident;
 pub mod identify;
+mod mines;
 mod preload;
 pub mod queue;
 pub mod snapshot;
@@ -197,6 +198,12 @@ pub struct IntentRequest {
     /// Rules 21, identify: the operator's standoff, metres (absent: the engine's).
     #[serde(default)]
     pub standoff_m: Option<f64>,
+    /// Rules 27, lay: the number of mines, spaced evenly along its line (`route`).
+    #[serde(default)]
+    pub count: Option<u32>,
+    /// Rules 27, lay: the hours each mine stays live after its laying, then inert (mandatory).
+    #[serde(default)]
+    pub live_h: Option<f64>,
     #[serde(default)]
     pub constraints: Constraints,
     #[serde(default)]
@@ -212,6 +219,8 @@ impl From<TaskRequest> for IntentRequest {
             space: space::SpaceParams::default(),
             engage: engage::EngageParams::default(),
             standoff_m: None,
+            count: None,
+            live_h: None,
             constraints: Constraints::default(),
             rationale: None,
         }
@@ -452,6 +461,8 @@ struct Core {
     acts: Vec<Value>,
     /// rules 16: the claims on lost contacts as of the last tick (the review list)
     lost_claims: Vec<Value>,
+    /// rules 27: the fields carried over from the last run went to the truth side again
+    mines_resent: bool,
 }
 
 /// `operator.view` events an operator may log: a burst of this many, refilled at
@@ -814,6 +825,7 @@ impl Decision {
                 fleet_looked: None,
                 acts: Vec::new(),
                 lost_claims: Vec::new(),
+                mines_resent: false,
             }),
             updates: watch::channel(Arc::new(String::new())).0,
             recent: agent::RecentEvents::default(),
@@ -1719,7 +1731,14 @@ impl Decision {
             // under its session, for this signature to quote
             let step = Self::mint_step(&mut core.engine, session, by, step)?;
             let oracle = self.terrain.oracle();
-            let r = if matches!(task, Task::Engage { .. }) {
+            let r = if matches!(task, Task::Lay { .. }) {
+                // rules 27: a lay order is signed as an engagement is, by an operator with
+                // engagement authority (the engine refuses anyone else, logged)
+                match session.engagement_authority() {
+                    Some(auth) => core.engine.approve_lay(id, auth, note, step, &world, &oracle).map(|_| ()),
+                    None => core.engine.approve(id, session.authority(), note, &world, &oracle).map(|_| ()),
+                }
+            } else if matches!(task, Task::Engage { .. }) {
                 match (session.engagement_authority(), token, step) {
                     (Some(auth), Some(token), Some(s)) => core
                         .engine
@@ -2120,15 +2139,15 @@ impl Decision {
             .filter_map(|op| {
                 let i = core.engine.intent(IntentId(op.intent_id))?;
                 let u = duid(op.uid);
-                let warning = i
+                // rules 27: an rtl across one of our minefields (the geofence's warning) too
+                let (rule, warning) = i
                     .checks()
                     .iter()
-                    .find(|c| c.rule == rules::RuleId::Domain && c.uid.as_ref() == Some(&u))?
-                    .warning
-                    .clone()?;
+                    .filter(|c| matches!(c.rule, rules::RuleId::Domain | rules::RuleId::Geofence) && c.uid.as_ref() == Some(&u))
+                    .find_map(|c| Some((c.rule, c.warning.clone()?)))?;
                 Some(alerts::Alert {
-                    id: format!("route:{}", op.id),
-                    kind: "path_crosses_land",
+                    id: if rule == rules::RuleId::Geofence { format!("route:{}:minefield", op.id) } else { format!("route:{}", op.id) },
+                    kind: if rule == rules::RuleId::Geofence { "path_crosses_minefield" } else { "path_crosses_land" },
                     severity: alerts::Severity::High,
                     uid: op.uid,
                     callsign: fleet.get(&op.uid).and_then(|c| alerts::callsign(c)),
@@ -2156,7 +2175,9 @@ impl Decision {
             return;
         }
         let spec = Self::prefetch_spec(self.clock.now(), task, uids);
-        let world = self.snapshot().subset_for(&spec);
+        let mut world = self.snapshot().subset_for(&spec);
+        // rules 27: our live fields, which the planner routes round as the decision will
+        world.minefields = self.lock().engine.minefields_for(&spec, &world);
         // rules 21: an identify order's waypoints are its orbit's, laid out round its track
         let view = murmur_decide::identify::orbit_view(&spec, &world, &self.rules).into_owned();
         if let Some(path) = view.task.path() {
@@ -2195,7 +2216,9 @@ impl Decision {
             return Default::default();
         }
         let spec = Self::prefetch_spec(self.clock.now(), task, uids);
-        let world = self.snapshot().subset_for(&spec);
+        let mut world = self.snapshot().subset_for(&spec);
+        // rules 27: round our live fields, as the decision plans
+        world.minefields = self.lock().engine.minefields_for(&spec, &world);
         let view = murmur_decide::identify::orbit_view(&spec, &world, &self.rules).into_owned();
         murmur_decide::plan::plans_for(&view, &world, &self.terrain.oracle(), &self.rules)
     }
@@ -2353,6 +2376,8 @@ impl Decision {
             crate::perf::time("decision.void_lost", || self.void_lost(core));
             crate::perf::time("decision.follow_queue", || self.follow_queue(core));
             crate::perf::time("decision.follow_resumed", || self.follow_resumed(core));
+            // rules 27: the mines the layers reached are laid before their ops' ends finish them
+            crate::perf::time("decision.step_lays", || self.step_lays(core));
             crate::perf::time("decision.follow_ops", || self.follow_ops(core));
             crate::perf::time("decision.follow_space", || self.follow_space(core));
             // rules 9: observed acts to the engine, the weak-evidence rule, before the
@@ -2964,6 +2989,16 @@ fn proposal(req: &IntentRequest) -> Result<Proposal, DecisionError> {
                     .ok_or_else(|| bad("track needs a target vehicle".into()))?,
             ),
         },
+        // rules 27: a lay order: its line (`route`), the mines' count and live hours (both
+        // mandatory) and the mine by name (`weapon`; absent: the platform's first)
+        TaskKind::Lay => Task::Lay {
+            points: p.route.iter().flatten().copied().map(ll).collect(),
+            count: req.count.ok_or_else(|| bad("lay needs count, the number of mines".into()))?,
+            live_h: req
+                .live_h
+                .ok_or_else(|| bad("lay needs live_h, the hours its mines stay live before they go inert (the record the law asks for)".into()))?,
+            weapon: req.engage.weapon.clone().filter(|w| !w.trim().is_empty()),
+        },
         },
     };
     let mut proposal = Proposal::new(task, req.uids.iter().map(|u| duid(*u)).collect());
@@ -2999,6 +3034,11 @@ fn task_request(task: &Task, uids: &[DUid]) -> Result<TaskRequest, String> {
         Task::Track { target } => {
             params.target = Some(uid(target)?);
             "track"
+        }
+        // rules 27: the line, driven once (the engine lays its mines)
+        Task::Lay { points, .. } => {
+            params.route = Some(points.iter().map(|p| [p.lon, p.lat]).collect());
+            "lay"
         }
         Task::Collect { .. } | Task::Cover { .. } => return Err(SPACE_NOT_VEHICLES.into()),
         Task::Engage { .. } => {

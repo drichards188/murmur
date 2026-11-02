@@ -91,7 +91,7 @@ pub(super) fn truth_with(e: &Erig, now_s: f64, scen_s: f64, acts: Vec<ActTruth>)
         },
         contacts: vec![boat()],
         acts,
-        aim_at: Vec::new(), weapons: Vec::new(), impacts: Vec::new(),
+        aim_at: Vec::new(), weapons: Vec::new(), impacts: Vec::new(), mines_live: Vec::new(),
     };
     e.tracks
         .on_truth_with(msg, std::slice::from_ref(&observer), now_s)

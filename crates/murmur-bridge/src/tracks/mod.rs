@@ -166,6 +166,8 @@ struct Inner {
     /// ones already handed over (evaluation view)
     effects: Vec<Value>,
     effects_sent: Vec<Value>,
+    /// Rules 27: mines the engine laid, for the contacts process (each once; engine times).
+    mines: Vec<Value>,
     /// rules 9: hostile acts our sensors observed, waiting for the decision engine (its loop
     /// takes them), the truth acts already sensed, and what became of each (evaluation view:
     /// the truth act, its author's contact and track, the report it became, or unobserved)
@@ -329,6 +331,7 @@ impl Tracks {
                 last_detections: 0,
                 effects: Vec::new(),
                 effects_sent: Vec::new(),
+                mines: Vec::new(),
                 acts: Vec::new(),
                 acts_seen: std::collections::BTreeSet::new(),
                 act_records: Vec::new(),
@@ -1442,6 +1445,63 @@ impl Tracks {
         inner.effects.push(effect);
     }
 
+    /// Rules 27: a mine the engine laid (`mine.laid`), for the contacts process: where it lies,
+    /// the field it is of, the mine's catalog facts (its trigger, reach, figures and, for one that
+    /// launches a torpedo, the torpedo's speed and run), when it arms and goes inert (engine ms,
+    /// put on the contacts' clock when handed over, [`Self::take_mines_at`]) and its layer.
+    pub fn queue_mine(&self, m: &murmur_decide::MineOrder) {
+        let w = &m.weapon;
+        let mine = json!({
+            "field": m.intent.0,
+            "n": m.n,
+            "point": [m.at.lon, m.at.lat],
+            "layer": m.uid.as_str(),
+            "weapon": {
+                "name": w.name,
+                "kind": w.kind.as_str(),
+                "guidance": w.guidance,
+                "warhead": w.warhead,
+                "max_range_m": w.max_range_m,
+                "effects": w.effects,
+            },
+            "trigger": w.trigger,
+            "trigger_m": w.trigger_reach_m(),
+            "speed_mps": w.speed_mps,
+            "targets": w.targets,
+            "arms_ms": m.arms_t.0,
+            "inert_ms": m.inert_t.0,
+        });
+        lock(&self.inner).mines.push(mine);
+    }
+
+    /// Rules 27: the mines to hand the contacts process in the answer to a truth message of
+    /// scenario time `truth_t` (unix s) read at bridge time `now` (s), each once: their arming
+    /// and inert times on the contacts' own clock (`arms_t`, `inert_t`: the message's time plus
+    /// each one's time from now).
+    pub(crate) fn take_mines_at(&self, truth_t: f64, now: f64) -> Vec<Value> {
+        let mut out: Vec<Value> = std::mem::take(&mut lock(&self.inner).mines);
+        for m in &mut out {
+            for (ms, key) in [("arms_ms", "arms_t"), ("inert_ms", "inert_t")] {
+                if let Some(t) = m.get(ms).and_then(Value::as_f64) {
+                    m[key] = json!(truth_t + (t / 1000.0 - now));
+                }
+            }
+        }
+        out
+    }
+
+    /// Rules 27: where every vehicle of ours of `domains` is now, for the contacts process while
+    /// it holds live mines (a mine is set off by ours too), as [`Self::ours_for`] gives them.
+    pub fn ours_in(&self, world: &World, domains: &[&str]) -> Vec<Value> {
+        let uids: Vec<u64> = world
+            .vehicles()
+            .into_iter()
+            .filter(|c| c.read(|v| v.identity.as_ref().and_then(|i| i.str("domain")).is_some_and(|d| domains.contains(&d))))
+            .map(|c| c.uid)
+            .collect();
+        self.ours_for(world, &uids)
+    }
+
     /// The effects to hand the contacts process now (each once), as queued (tests).
     #[cfg(test)]
     pub(crate) fn take_effects(&self) -> Vec<Value> {
@@ -1812,6 +1872,8 @@ async fn sim_contacts(State(api): State<Api>, request: axum::extract::Request) -
     };
     let truth_t = msg.t;
     let aim_at = msg.aim_at.clone();
+    // rules 27: the truth side holds live mines: where ours of the domains they catch are
+    let mines_live = msg.mines_live.clone();
     match api.tracks.on_truth(msg, &api.world) {
         Ok((contacts, detections, tracks)) => {
             let mut answer = json!({
@@ -1823,9 +1885,24 @@ async fn sim_contacts(State(api): State<Api>, request: axum::extract::Request) -
                 // 20: a munition's at its impact, on the truth message's clock)
                 "effects": api.tracks.take_effects_at(truth_t, clock::wall()),
             });
-            // opponent weapons: where the vehicles they may be aimed at are (only when asked)
-            if !aim_at.is_empty() {
-                answer["ours"] = Value::Array(api.tracks.ours_for(&api.world, &aim_at));
+            // rules 27: the mines laid since, for the truth side to hold
+            let mines = api.tracks.take_mines_at(truth_t, clock::wall());
+            if !mines.is_empty() {
+                answer["mines"] = Value::Array(mines);
+            }
+            // opponent weapons: where the vehicles they may be aimed at are (only when asked);
+            // rules 27: and ours of the domains live mines catch
+            let mut ours = if aim_at.is_empty() { Vec::new() } else { api.tracks.ours_for(&api.world, &aim_at) };
+            if !mines_live.is_empty() {
+                let domains: Vec<&str> = mines_live.iter().map(String::as_str).collect();
+                for o in api.tracks.ours_in(&api.world, &domains) {
+                    if !ours.iter().any(|x| x["uid"] == o["uid"]) {
+                        ours.push(o);
+                    }
+                }
+            }
+            if !aim_at.is_empty() || !mines_live.is_empty() {
+                answer["ours"] = Value::Array(ours);
             }
             Json(answer).into_response()
         }

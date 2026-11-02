@@ -45,6 +45,9 @@ pub enum TaskKind {
     Hold,
     Rtl,
     Track,
+    /// Rules 27: drive a lay order's line once, its first point to its last (the decision engine
+    /// lays each mine as the vehicle passes its place, `murmur_decide::mines`).
+    Lay,
 }
 
 impl TaskKind {
@@ -55,6 +58,7 @@ impl TaskKind {
             TaskKind::Hold => "hold",
             TaskKind::Rtl => "rtl",
             TaskKind::Track => "track",
+            TaskKind::Lay => "lay",
         }
     }
 }
@@ -68,6 +72,7 @@ impl FromStr for TaskKind {
             "hold" => TaskKind::Hold,
             "rtl" => TaskKind::Rtl,
             "track" => TaskKind::Track,
+            "lay" => TaskKind::Lay,
             _ => return Err(format!("unknown task {s}")),
         })
     }
@@ -179,6 +184,9 @@ impl TaskOrder {
             }
             TaskKind::Patrol if p.route.as_ref().is_none_or(|r| r.len() < 2) => {
                 return invalid("patrol needs a route of at least 2 points");
+            }
+            TaskKind::Lay if p.route.as_ref().is_none_or(Vec::is_empty) => {
+                return invalid("lay needs its line, a route of at least 1 point");
             }
             _ => {}
         }

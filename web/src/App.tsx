@@ -50,6 +50,7 @@ import { regionsOf } from './weatherField'
 import type { Effects, WeatherView } from './weatherMap'
 import { saveEffects, savedEffects } from './weatherPrefs'
 import { reachBadge, reachFeatures, type DomainChoice, type ReachAnswer, type ReachMode } from './sensorReach'
+import { minefieldFeatures, type MinefieldsAnswer } from './minefields'
 import { SituationPanel } from './SituationPanel'
 import { Tutorial } from './Tutorial'
 import { CoverageControl } from './CoverageControl'
@@ -159,6 +160,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const [reachMode, setReachMode] = useState<ReachMode>('selected')
   const [reachDomain, setReachDomain] = useState<DomainChoice>('auto')
   const reach = usePoll<ReachAnswer>('/api/sensing/reach', 3000)
+  // rules 27: our minefields not yet inert (minefields.ts), drawn with the reach rings
+  const minefields = usePoll<MinefieldsAnswer>('/api/minefields', 5000)
   const [drawing, setDrawing] = useState<LngLat | 'start' | null>(null)
   const [box, setBox] = useState<LngLat[] | null>(null)
   const [spaceSel, setSpaceSel] = useState<SpaceSelection>({ scene: null, norad: null })
@@ -220,11 +223,16 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const swarmSel = useMemo(() => selectedSwarm(swarmFeed.doc?.swarms, selected), [swarmFeed.doc, selected])
   const swarmLayers = useMemo(() => buildSwarmLayers(swarmFeed.doc, swarmSel), [swarmFeed.doc, swarmSel])
   const reachRings = useMemo(() => {
-    if (reachMode === 'off' || (reachMode === 'selected' && selected.size === 0)) return null
+    const fields = minefieldFeatures(minefields.data)
+    if (reachMode === 'off' || (reachMode === 'selected' && selected.size === 0)) {
+      return fields.length ? { type: 'FeatureCollection' as const, features: fields } : null
+    }
     const positions = new Map<number, LngLat>()
     for (const v of vehicles) if (v.position) positions.set(v.uid, v.position)
-    return reachFeatures(reach.data, positions, reachMode === 'selected' ? selected : null, reachDomain)
-  }, [reach.data, vehicles, selected, reachMode, reachDomain])
+    const rings = reachFeatures(reach.data, positions, reachMode === 'selected' ? selected : null, reachDomain)
+    if (!fields.length) return rings
+    return { type: 'FeatureCollection' as const, features: [...(rings?.features ?? []), ...fields] }
+  }, [reach.data, minefields.data, vehicles, selected, reachMode, reachDomain])
   const reachBadges = useMemo(() => {
     const out = new Map<number, { text: string; title: string }>()
     if (!reach.data?.available || reach.data.stale) return out

@@ -293,6 +293,7 @@ pub mod ids;
 pub mod intent;
 pub mod keepout;
 pub mod loadout;
+pub mod mines;
 pub mod lost;
 pub mod plan;
 pub mod passkey;
@@ -323,6 +324,7 @@ pub use catalog::{
     WeaponEffect, WeaponFacts, WeaponKind,
 };
 pub use loadout::{CarriedRounds, PlatformRounds, RoundsSpent, WeaponChoice, WeaponRelease};
+pub use mines::{InPlayOrder, LayStep, Mine, MineOrder, Minefield};
 pub use engage::{
     AssessResult, Assessment, EffectOrder, EffectRecord, EngageOrder, EngagePreview, EngageRules,
     EngageSnapshot, EngageWindow, Engagement, EngagementEvent, Fallback, FallbackOrder,
@@ -361,7 +363,7 @@ pub use queue::{
 };
 pub use route::{LegKind, Route, RouteLeg, Segment};
 pub use rules::{
-    ACCEPT_BEHAVING_SINCE, AIRCRAFT_REACH_SINCE, CARRY_FOLLOWUPS_SINCE, CheckResult, DAMAGE_SINCE, GUN_SINCE, IDENTIFY_OWN_LOOK_SINCE, IDENTIFY_SECOND_LOOK_SINCE, IDENTIFY_SINCE, LOADOUT_SINCE, LOST_CONTACT_SINCE, MUNITION_FLIGHT_SINCE, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
+    ACCEPT_BEHAVING_SINCE, AIRCRAFT_REACH_SINCE, CARRY_FOLLOWUPS_SINCE, CheckResult, DAMAGE_SINCE, GUN_SINCE, MINE_SINCE, IDENTIFY_OWN_LOOK_SINCE, IDENTIFY_SECOND_LOOK_SINCE, IDENTIFY_SINCE, LOADOUT_SINCE, LOST_CONTACT_SINCE, MUNITION_FLIGHT_SINCE, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
     QUEUE_FOLLOWUPS_SINCE, REVIEW_FOLLOWUPS_SINCE, ROUTE_PLAN_SINCE, ROUTE_SURFACE_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_VERSION,
     RuleId, RulesConfig, SPACE_FOLLOWUPS_SINCE, SPACE_REPLAY_SINCE, STEP_UP_SCHEMA_SINCE, UnknownEndurance, VELOCITY_SIGMA_SINCE,
 };

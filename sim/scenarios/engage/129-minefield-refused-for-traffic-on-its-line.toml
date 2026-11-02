@@ -1,0 +1,46 @@
+# Rules 27 (bd murmur-lbw8.4): a lay order is refused for what the field could catch. The same row
+# of TM-62M mines as scenario 128, but a car (a neutral ground track) is driving north at 3 m/s on a
+# road 150 m south of the row: on its course now it crosses the row in under a minute, so the field
+# could be set off by more than a declared hostile. The `minefield` check fails at the order,
+# naming the car, how near and how soon, and how far short of the field's danger area it is; the
+# order is rejected before anyone signs. `--rules 26`: no build of rules 26 takes a lay order.
+title = "A lay order is refused for traffic on its line"
+invariant = "minefield"
+attack = "a field laid across a neutral car's way"
+expect = "rejected"
+expect_rule = "minefield"
+end_s = 4
+
+[[operator]]
+id = "op-1"
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "mole-1"
+platform = "ugv_mines"
+at = [-122.4600, 37.7950]
+home = [-122.4570, 37.7950]
+
+[[track]]
+id = "T-0001"
+at = [-122.4590, 37.7937]   # 150 m south of the row, driving north
+velocity = [0.0, 3.0]
+affiliation = "neutral"
+identity = "vehicle"
+domain = "ground"
+sources = ["2:eo_ir"]
+
+[[step]]
+at_s = 1
+action = "lay"
+by = "op-1"
+platform = "mole-1"
+points = [[-122.4595, 37.7950], [-122.4585, 37.7950]]
+count = 10
+live_h = 1
+weapon = "TM-62M mine"

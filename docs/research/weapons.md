@@ -29,6 +29,20 @@ says, so no dispersion is modelled apart), bursts of 6 [26] at 525 rpm [26], one
 rounds a minute, the M2's rapid rate of 40 or more [59]], and 10.5's guns rows in `damage.rs` (20
 points a 5 m/s band past 15 m/s, x0.6 in fog, x0.6 against a boat in sea state 4-5); a round's
 flight (some 2 s to 1,800 m at the muzzle speed [26], about 3 with drag [E]) is not modelled.
+Mines were taken in stage 4 (murmur-lbw8.4, decision rules 27): sections 7 and 8's loadouts made
+usable (both platforms now armed), with 10.3's mine column and 10.4's TM-62 row as the TM-62M's
+`effects` (a car's or a truck's pass, 0.25 and 0.30; given a hit destroyed 0.95 and 0.60,
+immobilised 0.05 and 0.40; no figures for a person, [44]'s 150 kg minimum), 10.3's torpedo column
+and 10.4's torpedo row against a UUV as the Hammerhead's (0.50; 0.95 destroyed, 0.05 immobilised;
+a submarine reads the UUV's figures), and these figures the research does not give, each [E] in
+`sim/platforms.toml`: the Hammerhead's hearing, 1,000 m (the Mk 54's 9,100 m [12] is how far it
+chases once launched, not how far the capsule listens; nothing on the capsule's sensors is public
+[40]); the arming delays, 60 s for the TM-62M and 1,800 s for the Hammerhead; and the longest live
+periods, 72 h and 720 h, which are Murmur's bounds and not the mines' (the TM-62M's MVCh-62 fuze
+has no self-neutraliser; a lay order's live period, mandatory, stands in for one, docs/DECISIONS.md
+"Mines"). A TM-62M is set off by a pass within its 1 m reach plus a vehicle's half-width, 1 m [E];
+the magnetic fuze option [44] is not modelled. Section 8's spacing (1 to 4 m [43]) is the lay
+order's to choose: its mines go evenly along its line.
 
 ## 0. What changes the plan (read first)
 

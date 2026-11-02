@@ -166,8 +166,8 @@ pub struct PlatformFacts {
 /// munition, an FPV drone, an explosive boat), spent by its own effect as rules 12 already
 /// counts it. Guns (bd murmur-lbw8.3) are usable from rules 26 ([`crate::rules::GUN_SINCE`]):
 /// a gun fires bursts from its counted magazine through a firing window (`crate::engage`).
-/// Mines (bd murmur-lbw8.4) are listed in the catalog so that a platform's loadout is whole, but
-/// stay inert until their stage: no nomination may use one ([`WeaponKind::usable`]).
+/// Mines (bd murmur-lbw8.4) are usable from rules 27 ([`crate::rules::MINE_SINCE`]): a lay order
+/// lays them ([`crate::mines`]); an engagement never releases one at a target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WeaponKind {
@@ -192,17 +192,20 @@ impl WeaponKind {
         }
     }
 
-    /// Whether a nomination may use it under the current rules ([`crate::rules::RULES_VERSION`]):
-    /// missiles, bombs, torpedoes, the platform itself and (rules 26) guns. Mines wait for their
-    /// stage (inert).
+    /// Whether it can be used under the current rules ([`crate::rules::RULES_VERSION`]):
+    /// missiles, bombs, torpedoes, the platform itself, (rules 26) guns and (rules 27) mines, which
+    /// a lay order lays.
     pub fn usable(self) -> bool {
-        self.usable_at(crate::rules::RULES_VERSION >= crate::rules::GUN_SINCE)
+        self.usable_at(
+            crate::rules::RULES_VERSION >= crate::rules::GUN_SINCE,
+            crate::rules::RULES_VERSION >= crate::rules::MINE_SINCE,
+        )
     }
 
-    /// Whether a nomination may use it under rules that do (`guns`: rules 26 on) or do not take
-    /// guns.
-    pub fn usable_at(self, guns: bool) -> bool {
-        self.inert_why(guns).is_none()
+    /// Whether it can be used under rules that do (`guns`: rules 26 on; `mines`: rules 27 on) or
+    /// do not take guns and mines.
+    pub fn usable_at(self, guns: bool, mines: bool) -> bool {
+        self.inert_why(guns, mines).is_none()
     }
 
     /// Whether it flies from the platform to the effect point (rules 20's flight): a missile, a
@@ -218,12 +221,12 @@ impl WeaponKind {
         self != WeaponKind::SelfStrike
     }
 
-    /// Why a nomination may not use it yet, if it may not (`guns`: under rules 26 on, which take
-    /// guns).
-    pub fn inert_why(self, guns: bool) -> Option<&'static str> {
+    /// Why it can't be used yet, if it can't (`guns`: under rules 26 on, which take guns;
+    /// `mines`: under rules 27 on, which take mines).
+    pub fn inert_why(self, guns: bool, mines: bool) -> Option<&'static str> {
         match self {
             WeaponKind::Gun if !guns => Some("guns are listed in the loadout but not usable before their stage (bd murmur-lbw8.3)"),
-            WeaponKind::Mine => Some("mines are listed in the loadout but not usable before their stage (bd murmur-lbw8.4)"),
+            WeaponKind::Mine if !mines => Some("mines are listed in the loadout but not usable before their stage (bd murmur-lbw8.4)"),
             _ => None,
         }
     }
@@ -341,10 +344,21 @@ pub struct WeaponFacts {
     /// window, not its cyclic rate, `rate_rpm`, which a burst fires at).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub burst_interval_s: Option<f64>,
+    /// Rules 27: a mine's longest live period, hours: a lay order sets its own period, at most
+    /// this (the hours after which every mine of it is inert).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persist_h: Option<f64>,
+    /// Rules 27: what sets a mine off, in words (`"pressure 150-550 kg"`, `"acoustic"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger: Option<String>,
+    /// Rules 27: how far from a mine a contact of its target domains sets it off, m (a pressure
+    /// mine's the wheel or track over it; an acoustic one's how far it hears a target to launch
+    /// at). Absent: its `max_range_m`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_m: Option<f64>,
+    /// Rules 27: how long after it is laid a mine arms, s (its layer is clear of it by then).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arm_s: Option<f64>,
 }
 
 impl WeaponFacts {
@@ -403,6 +417,19 @@ impl WeaponFacts {
                 ));
             }
         }
+        // rules 27: a mine names its longest live period, how soon it arms, what sets it off and
+        // how near
+        if self.kind == WeaponKind::Mine {
+            let persist_ok = self.persist_h.is_some_and(|h| h.is_finite() && h > 0.0);
+            let arm_ok = self.arm_s.is_some_and(|a| a.is_finite() && a >= 0.0);
+            let trigger_ok = self.trigger.as_ref().is_some_and(|t| !t.trim().is_empty());
+            let reach_ok = self.trigger_m.is_none_or(|r| r.is_finite() && r > 0.0 && r <= self.max_range_m);
+            if !(persist_ok && arm_ok && trigger_ok && reach_ok) {
+                return Some(format!(
+                    "{n}: a mine names persist_h (above 0), arm_s (0 or more), trigger, and trigger_m (above 0, at most max_range_m) if any"
+                ));
+            }
+        }
         if self.guidance.trim().is_empty() || self.warhead.class.trim().is_empty() {
             return Some(format!("{n}: guidance and warhead.class are named"));
         }
@@ -439,6 +466,17 @@ impl WeaponFacts {
     /// Rules 26: a gun's seconds between bursts (1 s at least, its catalog figure).
     pub fn burst_every_s(&self) -> f64 {
         self.burst_interval_s.unwrap_or(1.0).max(1.0)
+    }
+
+    /// Rules 27: how near a mine a contact of its target domains sets it off, m (`trigger_m`, else
+    /// `max_range_m`).
+    pub fn trigger_reach_m(&self) -> f64 {
+        self.trigger_m.unwrap_or(self.max_range_m)
+    }
+
+    /// Rules 27: how long after it is laid a mine arms, ms.
+    pub fn arm_ms(&self) -> i64 {
+        (self.arm_s.unwrap_or(0.0).max(0.0) * 1000.0).round() as i64
     }
 
     /// Rules 25: its figures against a target of `kind` (a contact kind, as the tracker estimates

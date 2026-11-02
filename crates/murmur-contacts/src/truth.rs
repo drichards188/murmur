@@ -70,6 +70,13 @@ pub struct TruthMessage {
     /// Weapons that struck since the last message, each once.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub impacts: Vec<ImpactTruth>,
+    /// Rules 27: the domains our live mines are set off by (the bridge answers with where ours of
+    /// them are, `ours`), and what the mines did since the last message (truth, the evaluation's;
+    /// the C2 learns of a detonation only through its sensors and our vehicles' struck reports).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mines_live: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mine_events: Vec<crate::mine::MineEvent>,
 }
 
 /// One weapon's flight (truth): a straight line at constant speed from its launch point to its
@@ -195,6 +202,8 @@ impl TruthMessage {
             aim_at: Vec::new(),
             weapons: Vec::new(),
             impacts: Vec::new(),
+            mines_live: Vec::new(),
+            mine_events: Vec::new(),
         }
     }
 

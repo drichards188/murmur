@@ -167,6 +167,9 @@ pub struct Scenario {
     /// Rules 26: the gun's rounds left after its last burst.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expect_rounds_left: Option<u32>,
+    /// Rules 27: the mines the run must have laid (`mine.laid`), every lay order's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect_mines_laid: Option<u32>,
     /// Rules 22: the land, as polygons of `[lon, lat]` (each closed on its own), instead of the
     /// runner's two boxes (San Francisco south of 37.800, Marin north of 37.832 west of -122.46);
     /// everything else in the runner's coverage is water 20 m deep.
@@ -496,6 +499,24 @@ pub enum Action {
     /// Rules 16: an agent "tries" to confirm a claim: its port has no such method; recorded,
     /// and nothing may change.
     AgentConfirm { agent: String, track: String },
+    /// Rules 27: an operator (`by`) or an agent (`agent`, with a rationale) orders a minefield
+    /// laid: the platform, its line (`points`, `[lon, lat]` each), the mines' count and live
+    /// hours, and the mine by name (absent: the platform's first). It becomes the last
+    /// nomination: `approve` signs it as an engagement's signers do.
+    Lay {
+        #[serde(default)]
+        by: Option<String>,
+        #[serde(default)]
+        agent: Option<String>,
+        #[serde(default)]
+        rationale: Option<String>,
+        platform: String,
+        points: Vec<[f64; 2]>,
+        count: u32,
+        live_h: f64,
+        #[serde(default)]
+        weapon: Option<String>,
+    },
     /// An operator with engagement authority asks for the picture of the last nomination
     /// (a picture token, as the console does before a signature); the next `approve` by them
     /// quotes it.
@@ -1055,6 +1076,12 @@ pub struct ScenarioResult {
     /// ...`, `t=<s> 2 ended done: ...`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub identify: Vec<String>,
+    /// Rules 27: the mines laid (`t=<s> MF-<id> mine <n> at [lon, lat]`) and the fields gone
+    /// inert (`t=<s> MF-<id> inert`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mines: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub inert: Vec<String>,
     /// Rules 9: the identification events, in order (`t=<s> declared T-0001 by
     /// rule:hostile_act ...`), and the same with the truth behind each (evaluation labels).
     pub ident_reports: Vec<String>,
@@ -1138,6 +1165,8 @@ struct VehicleSim {
     silent_since: Option<u32>,
     /// rules 25: the damage it reported of itself, and when
     damage: Option<Fact<crate::world::VehicleDamage>>,
+    /// rules 27: the waypoints after its goal, in order (a lay order's line)
+    route: Vec<LonLat>,
 }
 
 struct TrackSim {
@@ -1359,6 +1388,7 @@ pub fn run(
                 alt: v.alt_m,
                 silent_since: v.lost_for_s.map(|_| 0),
                 damage: None,
+                route: Vec::new(),
             },
         );
     }
@@ -1494,7 +1524,8 @@ pub fn run(
                 } else {
                     v.vel = [0.0, 0.0];
                     if !v.orbit {
-                        v.goal = None;
+                        // rules 27: on to the next waypoint of its line
+                        v.goal = (!v.route.is_empty()).then(|| v.route.remove(0));
                     }
                 }
             } else if let Some((c, radius)) = v.circling.filter(|_| s > 0 && v.circling_flown) {
@@ -1706,7 +1737,38 @@ pub fn run(
         }
         // anything approved goes out at once, as on the bridge
         let world = snapshot(&vehicles, &tracks, &catalog, &areas, now);
-        dispatch_approved(&mut engine, &world, &mut vehicles, &mut engaging, &mut failures, s);
+        dispatch_approved(&mut engine, &world, &mut vehicles, &mut engaging, &mut extra.laying, &mut failures, s);
+        // rules 27: the lays' step, as the bridge's loop steps them: the mines the layers passed,
+        // the fields gone inert; a layer at the end of its line has done its order
+        let world = snapshot(&vehicles, &tracks, &catalog, &areas, now);
+        match engine.step_lays(&world) {
+            Ok(step) => {
+                for m in step.laid {
+                    extra.mines.push(format!("t={s} MF-{} mine {} at [{:.6}, {:.6}]", m.intent.0, m.n, m.at.lon, m.at.lat));
+                }
+                for f in step.inert {
+                    extra.inert.push(format!("t={s} {f} inert"));
+                }
+            }
+            Err(e) => failures.push(format!("t={s}: step_lays: {e}")),
+        }
+        let done: Vec<IntentId> = extra
+            .laying
+            .iter()
+            .filter(|(id, u)| {
+                vehicles.get(u.as_str()).is_some_and(|v| v.goal.is_none() && v.route.is_empty())
+                    || engine.intent(**id).is_none_or(|i| i.state() != State::Dispatched)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in done {
+            extra.laying.remove(&id);
+            if engine.intent(id).is_some_and(|i| i.state() == State::Dispatched)
+                && let Err(e) = engine.finish(id, TaskOutcome::Done)
+            {
+                failures.push(format!("t={s}: finish {id}: {e}"));
+            }
+        }
         follow_queue(&mut engine, &world, &terrain, &mut vehicles, &mut engaging, &mut failures, s);
         for (id, (uid, _)) in &engaging {
             extra.preloads.entry(*id).or_insert_with(|| PreloadSim {
@@ -1808,6 +1870,12 @@ pub fn run(
         && fire.and_then(|f| f.left) != Some(n)
     {
         failures.push(format!("expected {n} rounds left, got {:?}", fire.and_then(|f| f.left)));
+    }
+    // rules 27: the mines laid
+    if let Some(n) = sc.expect_mines_laid
+        && extra.mines.len() != n as usize
+    {
+        failures.push(format!("expected {n} mines laid, got {} ({:?})", extra.mines.len(), extra.mines));
     }
     if let Some(a) = &sc.expect_assessment
         && assessment.as_deref() != Some(a.as_str())
@@ -2011,6 +2079,8 @@ pub fn run(
         reinstated: extra.reinstated.clone(),
         lapsed: extra.lapsed.clone(),
         identify: extra.identify_reports.clone(),
+        mines: extra.mines.clone(),
+        inert: extra.inert.clone(),
         ident_reports,
         ident,
         proxy: extra.proxy.is_some().then_some(extra.proxy_stats),
@@ -2686,6 +2756,43 @@ fn act(
                 Err(e) => refusals.push(e.to_string()),
             }
         }
+        Action::Lay {
+            by,
+            agent,
+            rationale,
+            platform,
+            points,
+            count,
+            live_h,
+            weapon,
+        } => {
+            let task = Task::Lay {
+                points: points.iter().map(|p| LonLat::new(p[0], p[1])).collect(),
+                count: *count,
+                live_h: *live_h,
+                weapon: weapon.clone(),
+            };
+            let proposal = Proposal::new(task, vec![Uid::new(platform)]);
+            let w = world(tracks, vehicles);
+            let out = match (by, agent) {
+                (Some(by), _) => match session(by) {
+                    Some(sess) => engine.submit(sess.authority(), proposal, &w, terrain).map(|i| i.id()),
+                    None => return failures.push(format!("t={s}: unknown operator {by}")),
+                },
+                (None, Some(agent)) => {
+                    let Ok(r) = Rationale::new(rationale.clone().unwrap_or_default()) else {
+                        refusals.push("an agent's proposal needs a rationale".into());
+                        return;
+                    };
+                    engine.agent_port(AgentId::new(agent)).propose(proposal, r, &w, terrain).map(|i| i.id())
+                }
+                (None, None) => return failures.push(format!("t={s}: lay needs by or agent")),
+            };
+            match out {
+                Ok(id) => *last = Some(id),
+                Err(e) => refusals.push(e.to_string()),
+            }
+        }
         Action::Look { by } => {
             let (Some(id), Some(sess)) = (*last, session(by)) else {
                 return failures.push(format!("t={s}: look: no nomination or unknown operator {by}"));
@@ -2707,7 +2814,10 @@ fn act(
                 return failures.push(format!("t={s}: approve: no nomination or unknown operator {by}"));
             };
             let w = world(tracks, vehicles);
+            let lay = engine.intent(id).is_some_and(|i| i.spec().kind() == crate::intent::TaskKind::Lay);
             let r = match sess.engagement_authority() {
+                // rules 27: a lay order is signed as an engagement is, with no plan to look at
+                Some(auth) if lay => engine.approve_lay(id, auth, None, None, &w, terrain).map(|_| ()),
                 Some(auth) => {
                     // the picture from their last look, or one now
                     let token = match extra.looked.remove(by) {
@@ -3356,6 +3466,11 @@ struct Extra {
     /// passed by the run's clock (a clock that steps back), dropped once it has, each with the
     /// second of its step; one still waiting at the end of the run fails it.
     drops_due: BTreeMap<String, u32>,
+    /// Rules 27: the lay orders under way (their layer), the mines laid
+    /// (`t=<s> MF-<id> mine <n> at [lon, lat]`) and the fields gone inert.
+    laying: BTreeMap<IntentId, String>,
+    mines: Vec<String>,
+    inert: Vec<String>,
 }
 
 impl Extra {
@@ -3987,11 +4102,13 @@ fn follow(v: &mut VehicleSim, f: Fallback) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dispatch_approved(
     engine: &mut Engine,
     world: &WorldSnapshot,
     vehicles: &mut BTreeMap<String, VehicleSim>,
     engaging: &mut BTreeMap<IntentId, (String, LonLat)>,
+    laying: &mut BTreeMap<IntentId, String>,
     failures: &mut Vec<String>,
     s: u32,
 ) {
@@ -4009,6 +4126,10 @@ fn dispatch_approved(
                 Ok(Routed::Dispatched(Order::Vehicles(o))) => {
                     supersede_engagements(engine, id, &uids, engaging, failures, s);
                     fly(vehicles, &o);
+                    // rules 27: a lay order's layer (its line done: the order is)
+                    if let (Task::Lay { .. }, Some(u)) = (&o.task, o.uids.first()) {
+                        laying.insert(id, u.to_string());
+                    }
                 }
                 Ok(Routed::Dispatched(_)) => failures.push(format!("t={s}: {id} dispatched as something else")),
                 Ok(Routed::Queued { .. }) => {
@@ -4127,6 +4248,14 @@ fn fly(vehicles: &mut BTreeMap<String, VehicleSim>, o: &crate::engine::DispatchO
                     v.goal = Some(route[0]);
                     v.orbit = false;
                 }
+                // rules 27: a lay order's line, its transit's waypoints first, driven once
+                Task::Lay { points, .. } if !points.is_empty() => {
+                    let mut way: Vec<LonLat> = o.via.get(u).cloned().unwrap_or_default();
+                    way.extend(points.iter().copied());
+                    v.goal = Some(way.remove(0));
+                    v.route = way;
+                    v.orbit = false;
+                }
                 _ => {
                     v.goal = None;
                     v.vel = [0.0, 0.0];
@@ -4229,6 +4358,45 @@ pub fn tamper(text: &str, kind: &str) -> Result<Tampered, String> {
 
 fn forge(text: &str, kind: &str) -> Result<String, String> {
     let mut events = parse_log(text).map_err(|e| format!("log: {e}"))?;
+    // rules 27: a lay order's record forged (no engagement needed)
+    if kind == "move_mine" {
+        // the first mine's place recorded 40 m east of where the order's line puts it
+        let mut done = false;
+        for e in &mut events {
+            if let EventBody::MineLaid { at, .. } = &mut e.body {
+                *at = engage::offset(*at, 40.0, 0.0);
+                done = true;
+                break;
+            }
+        }
+        if !done {
+            return Err("no mine.laid to forge".into());
+        }
+        return rechained(&mut events);
+    }
+    if kind == "hide_lay_signature" {
+        // a lay order that needed two signatures dispatched on one: the first concurrence gone
+        let before = events.len();
+        let lay: Option<IntentId> = events.iter().find_map(|e| match &e.body {
+            EventBody::IntentCreated { intent, .. } if matches!(intent.task, Task::Lay { .. }) => Some(intent.id),
+            _ => None,
+        });
+        let Some(lay) = lay else {
+            return Err("no lay order in the log".into());
+        };
+        let mut gone = false;
+        events.retain(|e| {
+            if !gone && matches!(&e.body, EventBody::ApprovalConcurred { intent, .. } if *intent == lay) {
+                gone = true;
+                return false;
+            }
+            true
+        });
+        if events.len() == before {
+            return Err("no concurrence on the lay order to drop".into());
+        }
+        return rechained(&mut events);
+    }
     let engage_intent = events.iter().find_map(|e| match &e.body {
         EventBody::IntentCreated { intent, .. } if matches!(intent.task, Task::Engage { .. }) => {
             Some(intent.clone())
@@ -5099,7 +5267,11 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
         }
         other => return Err(format!("unknown tamper {other:?}")),
     }
-    // renumber and re-chain
+    rechained(&mut events)
+}
+
+/// The forged events renumbered and re-chained, as one log.
+fn rechained(events: &mut [crate::audit::Event]) -> Result<String, String> {
     let mut prev = GENESIS.to_string();
     let mut out = String::new();
     for (i, e) in events.iter_mut().enumerate() {

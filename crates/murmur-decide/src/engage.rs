@@ -398,6 +398,12 @@ impl EngageRules {
         self.rules_version >= crate::rules::GUN_SINCE
     }
 
+    /// The decisions of rules 27 on ([`crate::rules::MINE_SINCE`]): a mine is laid by a lay order;
+    /// an engagement passes over it.
+    pub fn mines(&self) -> bool {
+        self.rules_version >= crate::rules::MINE_SINCE
+    }
+
     /// The optional keys this section sets, each with the policy schema that introduced it
     /// (or, for an old name, the first schema whose builds read it): a log claiming an
     /// older schema can't carry them (replay checks).
@@ -2179,6 +2185,7 @@ pub fn weapon_for(
             now: Some(world.t),
             figures: true,
             guns: ec.guns(),
+            mines: ec.mines(),
         }
     } else {
         crate::loadout::Rules25::default()
@@ -2512,7 +2519,7 @@ pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
 /// One engagement per platform: a platform with another engagement in play (pending,
 /// approved or under way, `engaged` as the engine logs it) can't take a second one, whose
 /// dispatch would stop the first.
-fn free_check(uid: Option<&Uid>, world: &WorldSnapshot) -> CheckResult {
+pub(crate) fn free_check(uid: Option<&Uid>, world: &WorldSnapshot) -> CheckResult {
     let r = RuleId::PlatformFree;
     match uid.and_then(|u| world.engaged.get(u)) {
         Some(other) => check(
@@ -4210,7 +4217,7 @@ pub fn lost_standing(
     }
 }
 
-fn armed_check(uid: Option<&Uid>, world: &WorldSnapshot) -> CheckResult {
+pub(crate) fn armed_check(uid: Option<&Uid>, world: &WorldSnapshot) -> CheckResult {
     let r = RuleId::PlatformArmed;
     let Some(uid) = uid else {
         return check(r, None, Outcome::Fail, "no platform named");

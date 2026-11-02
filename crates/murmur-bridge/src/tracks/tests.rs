@@ -107,7 +107,7 @@ fn truth(s: f64, contacts: Vec<ContactTruth>) -> TruthMessage {
         },
         contacts,
         acts: Vec::new(),
-        aim_at: Vec::new(), weapons: Vec::new(), impacts: Vec::new(),
+        aim_at: Vec::new(), weapons: Vec::new(), impacts: Vec::new(), mines_live: Vec::new(),
     }
 }
 
@@ -904,6 +904,36 @@ fn a_munitions_effect_strikes_at_its_impact_on_the_contacts_clock() {
     tracks.queue_effect(&EffectOrder { burst: Some(3), burst_rounds: Some(6), ..order(4, None) }, Vec::new());
     let b = tracks.take_effects_at(1_781_200_051.0, 1_781_000_046.0);
     assert_eq!((b[0]["burst"].as_u64(), b[0].get("impact_t")), (Some(3), None), "{}", b[0]);
+}
+
+/// Rules 27: a mine the engine laid goes to the contacts process once, its arming and inert times
+/// put on the contacts' clock, in the shape the contacts process reads (its catalog facts: the
+/// trigger reach, the figures, the domains it is set off by).
+#[test]
+fn a_laid_mine_goes_to_the_truth_side_on_its_clock() {
+    use murmur_decide::{IntentId, LonLat, MineOrder, Time, Uid};
+    let tracks = Tracks::new(catalog(), settings());
+    let c = murmur_decide::Catalog::load(&std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../sim/platforms.toml")).expect("catalog");
+    let w = c.get("ugv_mines").expect("ugv_mines").loadout[0].clone();
+    tracks.queue_mine(&MineOrder {
+        intent: IntentId(4),
+        uid: Uid::new("9"),
+        n: 2,
+        at: LonLat::new(-122.4590, 37.7950),
+        weapon: w,
+        arms_t: Time(1_781_000_085_000),
+        inert_t: Time(1_781_003_625_000),
+    });
+    // the bridge reads the truth at 1_781_000_025.0; the contacts' message says 1_781_200_000.0
+    let sent = tracks.take_mines_at(1_781_200_000.0, 1_781_000_025.0);
+    assert_eq!(sent.len(), 1);
+    assert!(tracks.take_mines_at(1_781_200_001.0, 1_781_000_026.0).is_empty(), "each once");
+    let m = &sent[0];
+    assert_eq!((m["field"].as_u64(), m["n"].as_u64(), m["trigger_m"].as_f64()), (Some(4), Some(2), Some(1.0)), "{m}");
+    assert_eq!(m["targets"], serde_json::json!(["ground"]));
+    let (arms, inert) = (m["arms_t"].as_f64().expect("arms_t"), m["inert_t"].as_f64().expect("inert_t"));
+    assert!((arms - 1_781_200_060.0).abs() < 1e-6 && (inert - 1_781_203_600.0).abs() < 1e-6, "{m}");
+    assert_eq!((m["weapon"]["name"].as_str(), m["weapon"]["effects"]["truck"]["p_hit"].as_f64()), (Some("TM-62M mine"), Some(0.30)));
 }
 
 /// murmur-z07i: the console feed's track carries at most `cap` sources (the latest heard, in
