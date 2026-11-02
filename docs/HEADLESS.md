@@ -1285,7 +1285,10 @@ log is the rules 22 one byte for byte (`ab3c2b31...`). Nothing in the episode se
 order. Rules 24 (loadouts, bd murmur-lbw8.1) re-took it for `run.started` alone: with
 `RULES_VERSION` put back to 23 the code gave the earlier digests (record `9136eaf2...`, audit
 `d768f7a1...`) byte for byte; Harbor watch's fleet keeps the unarmed MQ-9B, so no decision logs a
-loadout, a weapon or rounds.
+loadout, a weapon or rounds. Rules 25 (the damage model, bd murmur-lbw8.2) re-took it for
+`run.started` alone: with `RULES_VERSION` put back to 24 the code gave the earlier digests
+(record `aeff71f8...`, audit `e07a551a...`) byte for byte; no strike is drawn in the episode (no
+weapon with figures) and no vehicle reports damage.
 
 ### 17.3 The bake tool
 

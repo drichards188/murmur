@@ -382,10 +382,14 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: the audit log's `run.started` (`rules_version` 24 for 23) and, for the model, the longer
 #: `propose_intent`, `preview_intent` and `get_nomination_options` schemas in its prompt sizes and
 #: token estimates. No fleet here carries a loadout.
+#: Re-taken for decision rules 25 (bd murmur-lbw8.2, the damage model): with `RULES_VERSION` put
+#: back to 24, this code gave the earlier digests (a288cbb3..., dac5ddce..., 74c9ac32...) byte for
+#: byte, so the only change is the audit log's `run.started` (`rules_version` 25 for 24). No fleet
+#: here carries a loadout, so no strike is drawn and no tool changed.
 PAUSED = {
-    "model harbor-watch s1": "a288cbb34a8c89c0b5890e2001e41b8f18ed5515edc37cc8e3139dcef1e73695",
-    "playbook v2 fast-unknown 1000": "dac5ddce9a31f437ecc6a30dd568181e6519347bc7740630c269f5e84dc9ae97",
-    "model v2 fast-unknown 1000": "74c9ac32bc0739ff7018bc04069187e29127d21f93466dc20e0e747a7a95e972",
+    "model harbor-watch s1": "7fb5576763b3be606d7fad8178bad39e8fab8c7c9c69c76ba25080c744b94dee",
+    "playbook v2 fast-unknown 1000": "92e15f29b7815821b55f78c050a0beccb1077ffad0859d9d059046b68688e523",
+    "model v2 fast-unknown 1000": "678e4d88c0f1e254e7e23efdb6182dae8e90ea13ec450b50f31bc04f0dd686c7",
 }
 
 

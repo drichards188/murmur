@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 75] = [
+const LOGS: [(&str, u32); 77] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -210,13 +210,19 @@ const LOGS: [(&str, u32); 75] = [
     // picked)
     ("v24-engagement-scenario-01.jsonl", LOADOUT_SINCE),
     ("v24-rounds-spent-then-another-weapon-scenario-119.jsonl", LOADOUT_SINCE),
+    // rules 25 (a vehicle's own damage report read by the weapon check, the weapon's figures shown;
+    // a clean build of 0682b8c on the branch of bd murmur-lbw8.2): scenario 01 (the switchblade,
+    // its figures against a small fast boat shown) and 121 (the MQ-9B reports its weapons out of
+    // action before the first signature, then a nomination refused)
+    ("v25-engagement-scenario-01.jsonl", DAMAGE_SINCE),
+    ("v25-weapons-out-of-action-scenario-121.jsonl", DAMAGE_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v24-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v25-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -1951,4 +1957,23 @@ fn a_loadout_weapon_is_caught_under_older_rules_and_its_rounds_when_edited() {
     a[k] = a[k].replacen("\"left\":1", "\"left\":2", 1);
     let w: Vec<String> = whats(&with(&rechain(&a), RulesAccepted::Exactly(LOADOUT_SINCE))).iter().map(|s| s.to_string()).collect();
     assert!(w.iter().any(|m| m.contains("rounds left")), "{w:?}");
+}
+
+/// Rules 25: scenario 121's log relabelled rules 24 carries what no build of rules 24 logged (a
+/// vehicle's own damage report) and is caught; the report taken out of every decision that read
+/// it is caught under its own rules (the weapon check's refusals no longer follow from the inputs).
+#[test]
+fn a_damage_report_is_caught_under_older_rules_and_when_hidden() {
+    let ls = lines(&fixture("v25-weapons-out-of-action-scenario-121.jsonl"));
+    let v25 = format!("\"rules_version\":{DAMAGE_SINCE},");
+    let mut old = ls.clone();
+    assert!(old[0].contains(&v25));
+    old[0] = old[0].replacen(&v25, &format!("\"rules_version\":{LOADOUT_SINCE},"), 1);
+    let w: Vec<String> = whats(&with(&rechain(&old), RulesAccepted::Exactly(LOADOUT_SINCE))).iter().map(|s| s.to_string()).collect();
+    assert!(w.iter().any(|m| m.contains("damage report")), "{w:?}");
+    let report = ",\"damage\":{\"value\":{\"firepower\":true},\"t\":1781000003000}";
+    let hidden: Vec<String> = ls.iter().map(|l| l.replace(report, "")).collect();
+    assert_ne!(hidden, ls);
+    let r = with(&rechain(&hidden), RulesAccepted::Exactly(DAMAGE_SINCE));
+    assert!(!r.ok(), "the refusals stand on a report the log no longer holds");
 }
