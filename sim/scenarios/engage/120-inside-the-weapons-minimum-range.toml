@@ -1,0 +1,75 @@
+# Rules 24 (bd murmur-lbw8.1): a weapon has a minimum range as well as a maximum. The armed MQ-9B,
+# flying low at 300 m, is sent to a boat holding west of the bridge with the Hellfire named (500 to
+# 8,000 m of slant range). It loiters over the point, never more than its altitude from it: inside
+# the missile's minimum range, so the `arrival` check fails on the slant ("reaches from 500 to 8000
+# m") and nothing is released; the engagement is stopped late with its fallback (`engage_window`).
+# Rules 23 (`--rules 23`) knew no minimum range: there it releases the catalog's munition over the
+# point. (107, beyond the maximum range, still aborts the same way under rules 24.)
+title = "A weapon inside its minimum range is never released"
+invariant = "engage_window"
+attack = "a release from inside the weapon's minimum range"
+expect = "aborted"
+expect_rule = "engage_window"
+end_s = 200
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "reaper-1"
+platform = "mq9b_armed"
+at = [-122.5050, 37.8120]   # 900 m west of the boat
+alt_m = 300                 # low: over the point, inside the Hellfire's 500 m minimum
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "reaper-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+weapon = "AGM-114R Hellfire II"
+
+[[step]]
+at_s = 2
+action = "expect"
+state = "pending_approval"
+weapon = "named: AGM-114R Hellfire II"
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"

@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { LINKS, PROTOCOLS, type Protocol } from './catalogLabels'
 import { BASIS_LABEL, estimateAt, failsafeAt, flatBearing, flatDistance, regionText } from './estimate'
 import { type EmuDir, emuCause, fmtBps, fmtDuration, useEmuLink } from './linkEmu'
@@ -51,6 +51,59 @@ function Item({ k, children, title }: { k: string; children: React.ReactNode; ti
 }
 
 const pct = (x: number | null | undefined, digits = 0) => (x == null ? '–' : `${(x * 100).toFixed(digits)}%`)
+
+/** Rules 24 (bd murmur-lbw8.1): one weapon of an armed platform's loadout, as /api/loadouts
+ *  serves it (the engine's rounds left). */
+interface Weapon {
+  name: string
+  kind: string
+  count: number
+  left: number
+  inert: boolean
+  min_range_m: number
+  max_range_m: number
+  speed_mps: number
+  targets: string[]
+}
+
+/** The platform's loadout with each weapon's rounds left (polled from /api/loadouts while the
+ *  details are open). Nothing for a vehicle without one. */
+function LoadoutItems({ uid }: { uid: number }) {
+  const [weapons, setWeapons] = useState<{ uid: number; w: Weapon[] } | null>(null)
+  useEffect(() => {
+    let live = true
+    const load = async () => {
+      try {
+        const res = await fetch('/api/loadouts')
+        const body = (await res.json()) as { vehicles?: { uid: number; weapons: Weapon[] }[] }
+        const mine = body.vehicles?.find((x) => x.uid === uid)
+        if (live) setWeapons({ uid, w: mine?.weapons ?? [] })
+      } catch {
+        if (live) setWeapons({ uid, w: [] })
+      }
+    }
+    void load()
+    const t = window.setInterval(load, 5000)
+    return () => {
+      live = false
+      window.clearInterval(t)
+    }
+  }, [uid])
+  const ws = weapons && weapons.uid === uid ? weapons.w : []
+  if (!ws.length) return null
+  return (
+    <Item k="Loadout" title="Rounds left of each weapon (the engine's count: each release spends one). Guns and mines are listed but not usable yet.">
+      {ws.map((w, i) => (
+        <span key={w.name} className={w.inert ? 'muted' : w.left === 0 ? 'bad' : ''}
+          title={`${w.kind}, ${fmt(w.min_range_m)} to ${fmt(w.max_range_m, 0, ' m')} at ${fmt(w.speed_mps, 0, ' m/s')}; for ${w.targets.join(', ')} targets${w.inert ? '; inert until its stage' : ''}`}>
+          {i > 0 ? ' · ' : ''}
+          {w.name} {w.left}/{w.count}
+          {w.inert ? ' (inert)' : ''}
+        </span>
+      ))}
+    </Item>
+  )
+}
 
 function dirLine(d: EmuDir) {
   return d.pkts ? `${pct(d.loss)} loss, ${fmt(d.latency_ms, 0, ' ms')}` : 'no packets'
@@ -340,6 +393,7 @@ export function VehicleDetails({ v, taskings, now, selected, onToggleSelect, onC
             {p.min_turn_radius_m != null && <Item k="Turn radius">{fmt(p.min_turn_radius_m, 0, ' m')}</Item>}
             {p.endurance_h != null && <Item k="Endurance">{fmt(p.endurance_h, p.endurance_h < 10 ? 1 : 0, ' h')}</Item>}
             {p.alt_m != null && <Item k="Typical alt.">{fmt(p.alt_m, 0, ' m')}</Item>}
+            <LoadoutItems uid={v.uid} />
             {p.protocol && (
               <Item k="Real protocol" title="How a C2 reaches the real platform">
                 <span title={p.protocol_note}>{PROTOCOLS[p.protocol as Protocol] ?? p.protocol}</span>

@@ -279,15 +279,25 @@ Exit: the 30%-loss write-up (murmur-t7d), with numbers.
 
 Effects are abstract events (a point, a radius, a time, a hit-or-miss draw). Since 2026-10-26
 (the owner: "key to situational awareness") a munition is shown in flight from its release to its
-impact and the strike is animated, so an operator sees what is on the way and when it lands. No
-autonomous engagement; no warheads, blast, lethality, terminal guidance or aim-point optimisation.
+impact and the strike is animated, so an operator sees what is on the way and when it lands. Since
+2026-11-02 (the owner: real weapons on every platform armed in real life, bd murmur-lbw8) armed
+platforms carry their real loadouts in four stages: stage 1, built as decision rules 24
+(murmur-lbw8.1): named weapons with their public figures (count, minimum and maximum range,
+speed, profile, guidance, warhead, target domains), an engagement's weapon named or picked by
+the engine and frozen with the plan, released within that weapon's own ranges, and rounds
+counted per release, replayed and carried over a restart; stage 2 (murmur-lbw8.2) a hit chance
+by weapon and target and a damage model; stage 3 (murmur-lbw8.3) guns; stage 4 (murmur-lbw8.4)
+mines. No autonomous engagement, two human signatures, the authorize step closed to agents in
+code, every order to an armed platform waiting for a person; no terminal guidance or aim-point
+optimisation.
 
 Built (`crates/murmur-decide/src/engage.rs`, `scenario.rs`; bridge `decision/engage.rs`;
 contacts `effect.rs`; console `EngagePanel`, `EngageCard`, `engageLayers.ts`):
 
 1. **Nominate**: intent kind `engage` = (perception track id, one armed platform in `uids`,
    `effect_radius_m`, optional window, link-loss `fallback`: `abort` = hold where it is,
-   `return` = RTL, `loiter` = orbit where it is). From a human (`POST /api/intents`, the
+   `return` = RTL, `loiter` = orbit where it is; rules 24: an optional `weapon` of the
+   platform's loadout, else the engine's pick). From a human (`POST /api/intents`, the
    console's Engage action on a declared-hostile track or an armed platform) or an agent
    (MCP `propose_intent` with `task: "engage"`, rationale required). A missing window is
    written into the spec as `default_window_s` from creation.

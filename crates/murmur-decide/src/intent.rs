@@ -137,7 +137,8 @@ pub enum Task {
     /// operator must have declared hostile), the one armed platform in `uids`, an effect
     /// radius, an optional time window, and what the platform does if the engagement stops
     /// before the effect (operator abort, a void, link loss). The effect is an abstract event
-    /// at a point and time the engine predicts; nothing here models a weapon.
+    /// at a point and time the engine predicts. Rules 24: the weapon of the platform's loadout
+    /// it uses, by name (`weapon`); none named, the engine picks one ([`crate::loadout::choose`]).
     Engage {
         track: String,
         effect_radius_m: f64,
@@ -146,6 +147,10 @@ pub enum Task {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         window: Option<EngageWindow>,
         fallback: Fallback,
+        /// Rules 24: the loadout weapon named by the nomination (absent: the engine picks one,
+        /// and in older logs).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weapon: Option<String>,
     },
     /// Rules 21: have the one vehicle in `uids` identify the track `track` (a perception
     /// track id): the engine lays out an orbit around the track's position at a standoff from
@@ -309,10 +314,14 @@ impl Task {
                 track,
                 effect_radius_m,
                 window,
+                weapon,
                 ..
             } => {
                 if track.trim().is_empty() {
                     return bad("engage needs a track id");
+                }
+                if weapon.as_ref().is_some_and(|w| w.trim().is_empty()) {
+                    return bad("engage's weapon is a loadout weapon's name, or left out for the engine to pick");
                 }
                 if !(effect_radius_m.is_finite() && *effect_radius_m > 0.0) {
                     return bad("effect_radius_m must be a positive number of metres");

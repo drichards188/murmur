@@ -725,7 +725,7 @@ rules' freshness limit for that vehicle's link):
 
 | tool | what |
 |---|---|
-| `get_fleet`, `get_vehicle` | identity, platform limits and tasks, position, nav readiness and source, the GPS glitch flag (`nav.gps_glitch`, with its age: the navigation filter rejects the fix, as a jammed or spoofed receiver looks), battery, home, link health, current task. `get_fleet` takes `uids` (only those) and `compact` (one short entry per vehicle: identity, mode, position and its age, navigation, GPS glitch, battery, link, current task, and which facts are stale, the GPS glitch flag's own included; about a quarter of the size, 32 494 characters for 100 vehicles against 131 650) |
+| `get_fleet`, `get_vehicle` | identity, platform limits and tasks (an armed platform's `platform.loadout` too: each weapon, its kind, ranges, speed, targets, whether it is inert, and its rounds left; rules 24), position, nav readiness and source, the GPS glitch flag (`nav.gps_glitch`, with its age: the navigation filter rejects the fix, as a jammed or spoofed receiver looks), battery, home, link health, current task. `get_fleet` takes `uids` (only those) and `compact` (one short entry per vehicle: identity, mode, position and its age, navigation, GPS glitch, battery, link, current task, and which facts are stale, the GPS glitch flag's own included; about a quarter of the size, 32 494 characters for 100 vehicles against 131 650) |
 | `get_tracks` | contacts that are not ours, as our sensors see them (perception only): position and its uncertainty carried to now, existence confidence, the identity estimate, the affiliation estimate with its reason, any declaration and review flags, the sources, and `lost` (dropped contacts every engagement keep-out still counts). `identity.kind` comes with `identity.level`, how specific it is: `detect`, only a size class (`small_air`, `large_surface`, ...) or, from ESM alone, the domain (`aircraft`, `vessel`, `ground_vehicle`, `submerged`); `recognise`, a family (`small_uas`, `aircraft`, `small_craft`, ...); `identify`, a kind (`unknown_uas`, `fishing_vessel`, ...), from a sensor's identification or, with none, the AIS identity. `identity.confidence` is that level's: `small_air` at 0.99 is a sure size class, not an identified contact. `identity.conflict` is a call that disagrees and is not yet outweighed (two agreeing looks as sure as it outweigh it), or the AIS identity contradicted by what our sensors settle on (docs/SENSING.md, identity fusion) |
 | `get_platforms` | the catalog: limits, link class, `armed`, tasks per kind, fleet members |
 | `get_areas` | approved, no-go, engagement-zone and no-strike areas as `[lon, lat]` polygons |
@@ -756,8 +756,11 @@ An engagement (Phase E) is nominated with `propose_intent`, `task = "engage"`: `
 track declared hostile: by a human operator, or from rules 9 by the engine's rule on a
 hostile act our sensors observed, which the track's `declared` names with its evidence and
 whether an operator confirmed it), one armed platform in `uids`, `effect_radius_m`,
-`fallback` (`abort`, `return` or `loiter`), optional `window_s`, and the rationale. The effect
-is an abstract event (a point, a radius, a time). It always waits for two human operators
+`fallback` (`abort`, `return` or `loiter`), optional `window_s`, optional `weapon` (rules 24:
+one of the platform's loadout by name, as `get_fleet`'s `platform.loadout` lists them with their
+rounds left; omitted, the engine picks one and its `weapon` check says which and why), and the
+rationale. The effect is an abstract event at a point (rules 20 and 24: the weapon's flight to
+it shown). It always waits for two human operators
 with engagement authority; the agent can preview it and follow it (`get_nominations`,
 `explain_intent`) and withdraw it while it waits, never sign, stop or release it: no such
 tool exists, and the engine's agent port has no such method. While an engagement is in play

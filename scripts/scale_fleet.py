@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # per 1,000 nodes: air 440, ground 140, surface 280, subsurface 140
 MIX = {
-    "rq4": 20, "mq9b": 40, "cca": 40, "fvr90": 50, "puma": 60, "switchblade": 50, "x10": 80,
+    "rq4": 20, "mq9b_armed": 40, "cca": 40, "fvr90": 50, "puma": 60, "switchblade": 50, "x10": 80,
     "fpv": 80, "lta": 20,
     "ugv_logistics": 40, "ugv_armed": 30, "ugv_mines": 20, "ugv_recon": 40, "tracker": 10,
     "magura": 70, "corsair": 40, "seahunter": 30, "saildrone": 60, "buoy": 80,
@@ -40,7 +40,7 @@ OFFSHORE = [(lat, lon) for lat in (37.56, 37.62, 37.68, 37.74, 37.80, 37.85)
 # the whole area, for aircraft on station
 AREA = [(lat, lon) for lat in (37.45, 37.60, 37.75, 37.90, 38.05) for lon in (-123.0, -122.75, -122.5, -122.25, -122.0)]
 
-ON_STATION = {"rq4", "mq9b", "cca"}  # HALE/MALE/CCA start airborne at cruise altitude
+ON_STATION = {"rq4", "mq9b_armed", "cca"}  # HALE/MALE/CCA start airborne at cruise altitude (the MQ-9B armed: rules 24)
 OFFSHORE_ONLY = {"remus", "orca"}  # AUVs need depth
 
 

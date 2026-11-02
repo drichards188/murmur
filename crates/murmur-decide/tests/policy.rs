@@ -20,7 +20,12 @@ fn catalog_marks_exactly_the_armed_platforms() {
         .filter(|p| p.armed)
         .map(|p| p.id.clone())
         .collect();
-    assert_eq!(armed, vec!["fpv", "magura", "mq9b_armed", "switchblade", "ugv_armed"]);
+    // rules 24 (bd murmur-lbw8.1): the CCA is armed in real life; magura_pre_loadout is the
+    // Magura as the engagement scenarios before rules 24 had it
+    assert_eq!(
+        armed,
+        vec!["cca", "fpv", "magura", "magura_pre_loadout", "mq9b_armed", "switchblade", "ugv_armed"]
+    );
 }
 
 #[test]

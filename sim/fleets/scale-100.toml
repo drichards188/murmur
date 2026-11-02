@@ -9,7 +9,7 @@ platform = "rq4"
 count = 1
 spawn = [37.7500, -122.7500, 18000, 0]    # offshore, on station
 [[unit]]
-platform = "mq9b"
+platform = "mq9b_armed"
 count = 2
 spawn = [37.8800, -122.6000, 7600, 90]    # over Marin
 spacing_m = 6000
@@ -103,7 +103,7 @@ count = 1
 spawn = [37.7800, -122.5500, 0, 0]        # offshore, deeper water
 
 [[unit]]
-platform = "mq9b"
+platform = "mq9b_armed"
 count = 10
 spawn = [37.95, -122.75, 7600, 90]
 spacing_m = 4000

@@ -81,7 +81,10 @@ fn vehicle_json(
     });
     let link_age = last_rx_t.map(|last| age(now_wall, last));
     let lost_after = v.link.stale_after_s();
-    json!({
+    // rules 24: an armed platform's loadout and its rounds left (only where there is one, so a
+    // fleet without one reads as before)
+    let loadout = mcp.decision.loadout(v.uid);
+    let mut out = json!({
         "uid": v.uid,
         "sysid": v.sysid,
         "callsign": id("callsign"),
@@ -167,7 +170,11 @@ fn vehicle_json(
             "progress": o.progress,
             "since_t": o.history.last().map(|h| h.t),
         })),
-    })
+    });
+    if let Some(l) = loadout {
+        out["platform"]["loadout"] = l["weapons"].clone();
+    }
+    out
 }
 
 fn vehicles(mcp: &Mcp, only: Option<&[u64]>) -> (f64, Vec<Value>) {

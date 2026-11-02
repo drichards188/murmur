@@ -141,7 +141,8 @@ pub struct Scenario {
     /// 19 `drop_behaving_acceptance` (an acceptance of a live track as behaving now cut),
     /// `drop_behaving_lapse` (its lapse cut) and `behaving_acceptance_by_agent` (the acceptance
     /// credited to an agent's session), and for rules 20 `edit_munition` (the released munition's
-    /// impact moved 10 s later).
+    /// impact moved 10 s later), and for rules 24 `edit_rounds` (every release logged with one
+    /// more round left than it spent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tamper: Option<String>,
     /// Seconds to run (default: the last step plus 10).
@@ -425,6 +426,10 @@ pub enum Action {
         /// (each with its facts at the nomination).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         accept_behaving: Vec<String>,
+        /// Rules 24: the platform's loadout weapon the nomination names (absent: the engine
+        /// picks one).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weapon: Option<String>,
     },
     /// Rules 6: an operator with engagement authority accepts, for the last nomination while
     /// it waits with no signature, that one of our vehicles is lost since its last report
@@ -684,6 +689,10 @@ pub enum Action {
         /// A substring of the reason the last `task` step's intent is in its state.
         #[serde(default)]
         task_reason: Option<String>,
+        /// Rules 24: a substring of the last nomination's `weapon` check detail (its checks, or
+        /// its last picture's), passed or failed.
+        #[serde(default)]
+        weapon: Option<String>,
     },
 }
 
@@ -2534,6 +2543,7 @@ fn act(
             accept,
             accept_lost,
             accept_behaving,
+            weapon,
         } => {
             let task = Task::Engage {
                 track: track.clone(),
@@ -2543,6 +2553,7 @@ fn act(
                     until: now.plus_ms(i64::from(w) * 1000),
                 }),
                 fallback: *fallback,
+                weapon: weapon.clone(),
             };
             let mut proposal = Proposal::new(task, vec![Uid::new(platform)]);
             let w = world(tracks, vehicles);
@@ -3153,7 +3164,29 @@ fn act(
             concurrences,
             task_state,
             task_reason,
+            weapon,
         } => {
+            if let Some(want) = weapon {
+                let i = last.and_then(|id| engine.intent(id));
+                let details: Vec<String> = i
+                    .map(|i| {
+                        i.checks()
+                            .iter()
+                            .chain(
+                                i.engagement()
+                                    .and_then(|e| e.watch.as_ref())
+                                    .map(|w| w.results.as_slice())
+                                    .unwrap_or(&[]),
+                            )
+                            .filter(|c| c.rule == crate::rules::RuleId::Weapon)
+                            .map(|c| format!("{:?}: {}", c.outcome, c.detail))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !details.iter().any(|d| d.contains(want.as_str())) {
+                    failures.push(format!("t={s}: expected the weapon check to say {want:?}, it says {details:?}"));
+                }
+            }
             if let Some(want) = task_reason {
                 let got = extra
                     .last_task
@@ -3547,6 +3580,7 @@ fn proxies(
                 accept: Vec::new(),
                 accept_lost: Vec::new(),
                 accept_behaving: Vec::new(),
+                weapon: None,
             },
             engine, sessions, tracks, vehicles, catalog, areas, now, terrain, last, refusals, fallback_seen, failures,
             engaging, extra, s,
@@ -4350,6 +4384,24 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
             if !done {
                 return Err(format!("nothing to {kind}"));
+            }
+        }
+        "edit_rounds" => {
+            // rules 24: a release logged as if it had not spent its round (one more left)
+            let mut done = false;
+            for e in &mut events {
+                if let EventBody::EngageEffect {
+                    weapon: Some(w),
+                    ..
+                } = &mut e.body
+                    && let Some(n) = w.left.as_mut()
+                {
+                    *n += 1;
+                    done = true;
+                }
+            }
+            if !done {
+                return Err("no counted weapon released to edit".into());
             }
         }
         "edit_munition" => {

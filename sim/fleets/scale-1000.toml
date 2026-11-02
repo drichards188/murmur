@@ -18,28 +18,28 @@ spawn = [38.0500, -122.5000, 18000, 0]
 spacing_m = 3000
 
 [[unit]]
-platform = "mq9b"
+platform = "mq9b_armed"
 count = 10
 sim = "standin"
 spawn = [38.0500, -122.2500, 7600, 0]
 spacing_m = 3000
 
 [[unit]]
-platform = "mq9b"
+platform = "mq9b_armed"
 count = 10
 sim = "standin"
 spawn = [38.0500, -122.0000, 7600, 0]
 spacing_m = 3000
 
 [[unit]]
-platform = "mq9b"
+platform = "mq9b_armed"
 count = 10
 sim = "standin"
 spawn = [37.4500, -123.0000, 7600, 0]
 spacing_m = 3000
 
 [[unit]]
-platform = "mq9b"
+platform = "mq9b_armed"
 count = 10
 sim = "standin"
 spawn = [37.4500, -122.7500, 7600, 0]

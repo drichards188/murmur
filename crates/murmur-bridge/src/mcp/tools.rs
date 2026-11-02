@@ -210,6 +210,10 @@ pub struct IntentParams {
     /// engage: what the platform does if the engagement stops before its effect: abort
     /// (hold where it is), return (home) or loiter (orbit where it is).
     pub fallback: Option<String>,
+    /// engage: the weapon of the platform's loadout to use, by its name (get_fleet's
+    /// platform.loadout lists each weapon and its rounds left); omitted, the engine picks the
+    /// first of the loadout usable against the target with a round left and says why.
+    pub weapon: Option<String>,
     /// Why this task, on these vehicles, now. Required for propose_intent (the operator
     /// reads it in the inbox and it goes to the audit log); optional for preview_intent.
     /// Name the facts you relied on and any that were stale. Shape it so it reads in seconds:
@@ -303,6 +307,9 @@ pub struct NominationOptionsParams {
     pub fallback: Option<String>,
     /// Only these fleet uids (default: every armed vehicle).
     pub uids: Option<Vec<u64>>,
+    /// The loadout weapon to judge each platform with, by name (default: the engine picks one
+    /// per platform and says why in its weapon check).
+    pub weapon: Option<String>,
     /// Only whether each passes (uid, callsign, passed), without the checks, preview and
     /// keep-out explanation: small and quick, for watching whether one passes. Default false.
     pub passed_only: Option<bool>,
@@ -376,6 +383,7 @@ impl IntentParams {
         put("effect_radius_m", self.effect_radius_m.map(|v| json!(v)));
         put("window_s", self.window_s.map(|v| json!(v)));
         put("fallback", self.fallback.map(Value::String));
+        put("weapon", self.weapon.map(Value::String));
         put(
             "constraints",
             Some(json!(Constraints {
@@ -860,6 +868,7 @@ pub async fn call(
                     passed_only: p.passed_only.unwrap_or(false),
                     // murmur-8xe: agents cannot reject, so they are never offered a replace
                     replaces: None,
+                    weapon: p.weapon,
                 })
                 .await
         }

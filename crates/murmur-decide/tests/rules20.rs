@@ -38,6 +38,15 @@ fn v19() -> RunOptions {
     }
 }
 
+/// Rules 23, the last that reads the catalog's `munition` line: rules 24 reads the platform's
+/// loadout instead (tests/rules24.rs).
+fn v23() -> RunOptions {
+    RunOptions {
+        rules_version: Some(IDENTIFY_OWN_LOOK_SINCE),
+        ..RunOptions::default()
+    }
+}
+
 /// The run's `engage.effect` (its time, planned time and munition), the approval's plan, and the
 /// times of every `engage.observe` and of the `engage.assessed`.
 struct Released {
@@ -83,7 +92,7 @@ fn released(log: &str) -> Released {
 #[test]
 fn every_munition_scenario_ends_as_designed_replays_and_catches_its_tamper() {
     for name in [RELEASED_EARLY, OUT_OF_RANGE] {
-        let r = run(name, &RunOptions::default());
+        let r = run(name, &v23());
         assert!(r.ok, "{name}: {:?}", r.failures);
         assert!(r.replay_ok, "{name}: {:?}", r.replay_mismatches);
         if r.tamper.is_some() {
@@ -103,7 +112,7 @@ fn every_munition_scenario_ends_as_designed_replays_and_catches_its_tamper() {
 /// impact and the assessment comes after it.
 #[test]
 fn a_standoff_missile_is_released_its_flight_early_and_strikes_inside_the_plan() {
-    let r = run(RELEASED_EARLY, &RunOptions::default());
+    let r = run(RELEASED_EARLY, &v23());
     assert_eq!(r.final_state.as_deref(), Some("done"), "{:?}", r.final_reason);
     let rel = released(&r.log);
     let m = rel.munition.expect("the munition's flight");
@@ -154,7 +163,7 @@ fn a_standoff_missile_is_released_its_flight_early_and_strikes_inside_the_plan()
 /// a time of flight or so later; from 9,000 m too, which rules 20 never releases (107).
 #[test]
 fn before_rules_20_the_platform_releases_at_the_point_with_no_munition() {
-    let now = released(&run(RELEASED_EARLY, &RunOptions::default()).log);
+    let now = released(&run(RELEASED_EARLY, &v23()).log);
     let r19 = run(RELEASED_EARLY, &v19());
     assert!(r19.replay_ok, "{:?}", r19.replay_mismatches);
     assert_eq!(r19.final_state.as_deref(), Some("done"));
@@ -181,7 +190,7 @@ fn a_platform_without_a_munition_decides_as_before() {
             .map(|e| serde_json::to_value((e.t, &e.body)).unwrap())
             .collect()
     };
-    let (now, then) = (bodies(&RunOptions::default()), bodies(&v19()));
+    let (now, then) = (bodies(&v23()), bodies(&v19()));
     assert!(!now.is_empty());
     assert_eq!(now, then);
 }
@@ -191,7 +200,7 @@ fn a_platform_without_a_munition_decides_as_before() {
 /// rules before 20, has none.
 #[test]
 fn the_shot_is_the_slant_at_the_munitions_speed_and_fails_closed() {
-    let r = run(RELEASED_EARLY, &RunOptions::default());
+    let r = run(RELEASED_EARLY, &v23());
     let plan = released(&r.log).plan;
     let ec = EngageRules {
         rules_version: MUNITION_FLIGHT_SINCE,

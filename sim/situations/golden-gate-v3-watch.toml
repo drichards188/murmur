@@ -8,8 +8,8 @@
 # Headless only: the live runner has no tidewater conditions draw and runs the fleet as given.
 title = "Golden Gate v3 watch"
 brief = """
-You have the watch at the Golden Gate with twenty of ours: REAPER 1 orbits wide over the
-bay entrance and HAWK 1 far offshore; PUMA 2 holds station off Lime Point, KESTREL 1 over the
+You have the watch at the Golden Gate with twenty of ours: REAPER 1, armed, circles on station
+west of the Gate (an order for it waits for you) and HAWK 1 orbits far offshore; PUMA 2 holds station off Lime Point, KESTREL 1 over the
 approaches, SKY 2 over Horseshoe Bay and the airship over the Marin Headlands; PUMA 1 and SKY 1
 wait at Crissy Field. HUNTER 1 patrols west of the Gate, MARLIN 1 the channel east of the
 bridge, ALBATROSS 1 sails its station off Point Bonita, VIPER 1 waits armed in Horseshoe Bay.
@@ -38,13 +38,9 @@ currents = "world"
 conditions = "world"
 
 # ---- the opening orders (op-setup: by policy, or through agent-setup to the inbox)
-[[order]]
-id = "entrance-orbit"
-task = "orbit"
-vehicles = { callsign = "REAPER 1" }
-center = [-122.5050, 37.8150]
-radius_m = 4000
-note = "Opening order: orbit wide over the bay entrance"
+# REAPER 1 is armed from rules 24 (bd murmur-lbw8.1: its loadout, as every armed platform in the
+# v3 worlds) and gets no opening order: a script never orders an armed platform. Its "orbit wide
+# over the bay entrance" (4 km round [-122.5050, 37.8150]) is gone; it circles where it spawns.
 
 [[order]]
 id = "far-orbit"

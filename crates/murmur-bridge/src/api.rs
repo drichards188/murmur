@@ -99,6 +99,7 @@ pub fn router(app: App) -> Router {
         .route("/api/engage/options", post(engage_options))
         .route("/api/identify/options", post(identify_options))
         .route("/api/platforms", get(platforms))
+        .route("/api/loadouts", get(loadouts))
         .route("/api/stats", get(stats))
         .route("/api/links/coverage", get(coverage_get).post(coverage_post))
         .route("/ws", get(ws))
@@ -718,6 +719,12 @@ async fn operators(State(app): State<App>) -> Response {
 /// WebSocket `decisions` message as `space`).
 async fn space_runs(State(app): State<App>) -> Response {
     Json(app.decision.space_runs_json()).into_response()
+}
+
+/// Rules 24 (bd murmur-lbw8.1): each armed vehicle's loadout and the rounds of each weapon left.
+/// Read-only, no identity needed.
+async fn loadouts(State(app): State<App>) -> Response {
+    Json(app.decision.loadouts()).into_response()
 }
 
 async fn platforms(State(app): State<App>) -> Response {

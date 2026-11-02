@@ -657,6 +657,12 @@ impl Engine {
                 c.pointer_failed = None;
             }
         }
+        // rules 24: the rounds earlier runs released (no build of older rules logged them)
+        if !policy.rules.loadouts() {
+            for c in &mut carried_from {
+                c.rounds.clear();
+            }
+        }
         if let Some(p) = &pointer
             && !crate::replay::is_pointer_name(p)
         {
@@ -2617,6 +2623,17 @@ impl Engine {
         self.restores.pending()
     }
 
+    /// Rules 24: `uid`'s rounds released in this run and carried over from earlier runs, by
+    /// weapon, with `now` the vehicle under the uid (carried rounds count unless it is known to be
+    /// another): what the console and the agents read beside the platform's loadout
+    /// ([`crate::loadout::left`]). Empty before rules 24.
+    pub fn platform_rounds(&self, uid: &Uid, now: Option<&engage::VehicleIdentity>) -> crate::loadout::PlatformRounds {
+        if !self.policy.rules.loadouts() {
+            return crate::loadout::PlatformRounds::default();
+        }
+        self.restores.rounds_of(uid, now)
+    }
+
     /// Rules 12: the engagement whose effect spent `uid`, if one did: no order or nomination
     /// for it is taken any more.
     pub fn expended_by(&self, uid: &Uid) -> Option<IntentId> {
@@ -3931,6 +3948,7 @@ impl Engine {
             self.identify(&mut inputs);
             inputs.unknown_accepted = eng.accepted.clone();
             self.fill_lost(&spec, &mut inputs);
+            inputs.rounds = self.restores.rounds_for(&spec, &self.policy.rules, &inputs.identities);
             let results = engage::evaluate(&spec, &inputs, &self.policy.rules);
             if results.iter().any(|c| c.outcome != Outcome::Pass) {
                 let logged = self.log_inputs(&inputs)?;
@@ -3943,6 +3961,10 @@ impl Engine {
         self.identify(&mut inputs);
         inputs.unknown_accepted = eng.accepted.clone();
         self.fill_lost(&spec, &mut inputs);
+        // rules 24: the platform's rounds (the picture's weapon check and the release read them)
+        if state != State::Effected {
+            inputs.rounds = self.restores.rounds_for(&spec, &self.policy.rules, &inputs.identities);
+        }
         let Some(snap) = eng.snapshot.clone() else {
             return Ok(None);
         };
@@ -4057,17 +4079,19 @@ impl Engine {
         // it, strikes a time of flight later
         let t = self.now();
         let munition = engage::release_shot(&spec, &snap, &inputs, &self.policy.rules).map(|s| s.flight(t));
-        let t = self.emit_at(
-            t,
-            EventBody::EngageEffect {
-                intent: id,
-                uid: uid.clone(),
-                point: p.effect_point,
-                radius_m: p.effect_radius_m,
-                planned_t: p.effect_t,
-                munition: munition.clone(),
-            },
-        )?;
+        // rules 24: the plan's weapon, a round of it spent
+        let weapon = engage::release_weapon(&spec, &snap, &inputs, &self.policy.rules);
+        let body = EventBody::EngageEffect {
+            intent: id,
+            uid: uid.clone(),
+            point: p.effect_point,
+            radius_m: p.effect_radius_m,
+            planned_t: p.effect_t,
+            munition: munition.clone(),
+            weapon: weapon.clone(),
+        };
+        let t = self.emit_at(t, body.clone())?;
+        self.restores.step_at(t, &body);
         {
             let e = self.get_mut(id)?.engagement_mut();
             e.effect = Some(EffectRecord {
@@ -4077,6 +4101,7 @@ impl Engine {
                 planned_t: p.effect_t,
             });
             e.munition = munition.clone();
+            e.weapon = weapon.clone();
         }
         self.transition(
             id,
@@ -4424,6 +4449,8 @@ impl Engine {
         inputs.restore_owed = self.restore_owed_for(spec, &inputs.identities);
         inputs.expended = self.restores.expended_for(spec, &self.policy.rules);
         inputs.spent_carried = self.restores.spent_carried_for(spec, &self.policy.rules, &inputs.identities);
+        // rules 24: an engagement's platform's rounds
+        inputs.rounds = self.restores.rounds_for(spec, &self.policy.rules, &inputs.identities);
         if spec.kind() == TaskKind::Engage {
             inputs.unknown_accepted = self.accepted_for(spec.id);
         }
@@ -6361,23 +6388,29 @@ impl Engine {
 
     /// An engagement without a window gets the default one, written into its spec (so the
     /// log, the deadline and every check read the same window). Other tasks as given.
+    /// Rules 24: a weapon named under older rules, which have no loadout, is dropped (no build of
+    /// theirs logged one).
     fn normalized(&self, task: Task, created_t: Time) -> Task {
         match task {
             Task::Engage {
                 track,
                 effect_radius_m,
-                window: None,
+                window,
                 fallback,
+                weapon,
             } => Task::Engage {
                 track,
                 effect_radius_m,
-                window: Some(EngageWindow {
-                    from: None,
-                    until: created_t.plus_ms(
-                        i64::from(self.policy.rules.engage_rules().default_window_s) * 1000,
-                    ),
+                window: window.or_else(|| {
+                    Some(EngageWindow {
+                        from: None,
+                        until: created_t.plus_ms(
+                            i64::from(self.policy.rules.engage_rules().default_window_s) * 1000,
+                        ),
+                    })
                 }),
                 fallback,
+                weapon: weapon.filter(|_| self.policy.rules.loadouts()),
             },
             t => t,
         }

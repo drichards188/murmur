@@ -242,6 +242,7 @@ fn nomination() -> Proposal {
             effect_radius_m: 75.0,
             window: None,
             fallback: Fallback::Return,
+            weapon: None,
         },
         vec![uid("blade-1")],
     )

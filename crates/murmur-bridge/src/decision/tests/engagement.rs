@@ -284,6 +284,7 @@ impl Erig {
                 accept_unknown: Vec::new(),
                 accept_lost: Vec::new(),
                 accept_behaving: Vec::new(),
+                weapon: None,
             },
             standoff_m: None,
             constraints: Constraints::default(),
@@ -529,6 +530,7 @@ async fn a_dry_run_replacing_a_pending_nomination_frees_its_platform() {
             uids: Some(vec![1]),
             passed_only: false,
             replaces,
+            weapon: None,
         })
     };
     let held = dry(None).await.expect("options");
@@ -2871,6 +2873,7 @@ async fn only_engagement_authority_accepts_a_live_track_as_behaving_now() {
             uids: Some(vec![1]),
             passed_only: false,
             replaces: None,
+            weapon: None,
         })
         .await
         .expect("options");
@@ -2912,4 +2915,37 @@ async fn only_engagement_authority_accepts_a_live_track_as_behaving_now() {
     assert_eq!((e.r.events("engage.accepted"), e.r.events("engage.acceptance_revoked")), (2, 1));
     let rep = replay::replay_str(&e.r.log.text()).expect("parses");
     assert!(rep.ok(), "{:?}", rep.mismatches);
+}
+
+/// Rules 24 (bd murmur-lbw8.1): the console's and the agents' loadout readout. The rig's FPV
+/// carries its warhead, one round that is the drone itself: left before the release, gone once
+/// it is spent. A counted weapon reads its rounds from the engine's ledger (the MQ-9B's GBU-12
+/// after one release), and a gun is listed inert.
+#[tokio::test(start_paused = true)]
+async fn a_loadout_reads_each_weapons_rounds_left() {
+    let e = engage_rig();
+    let id = e.approved("return").await;
+    let before = e.r.d.loadout(1).expect("the FPV's loadout");
+    assert_eq!(before["armed"], true);
+    let w = &before["weapons"][0];
+    assert_eq!((w["name"].as_str(), w["kind"].as_str(), w["left"].as_u64()), (Some("PG-7VL warhead (FPV)"), Some("self"), Some(1)));
+    let all = e.r.d.loadouts();
+    assert_eq!(all["vehicles"][0]["uid"], 1, "{all}");
+    for _ in 0..4 {
+        e.tick(true).await;
+        if e.r.state(id) == State::Effected {
+            break;
+        }
+    }
+    assert_eq!(e.r.state(id), State::Effected, "{}", e.r.reason(id));
+    assert_eq!(e.r.d.loadout(1).expect("still listed")["weapons"][0]["left"], 0, "spent with the drone");
+    // a counted weapon and an inert one, on the catalog's facts
+    let c = Catalog::load(&root().join("sim/platforms.toml")).expect("catalog");
+    let mut rounds = murmur_decide::PlatformRounds::default();
+    rounds.used.insert("GBU-12 Paveway II".into(), 1);
+    let v = engage::loadout_json(c.get("mq9b_armed").expect("mq9b_armed"), &rounds, false);
+    let left: Vec<u64> = v["weapons"].as_array().expect("weapons").iter().filter_map(|w| w["left"].as_u64()).collect();
+    assert_eq!(left, vec![4, 1]);
+    let ugv = engage::loadout_json(c.get("ugv_armed").expect("ugv_armed"), &Default::default(), false);
+    assert_eq!((ugv["weapons"][0]["inert"].as_bool(), ugv["weapons"][1]["inert"].as_bool()), (Some(true), Some(false)));
 }

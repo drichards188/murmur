@@ -150,6 +150,215 @@ pub struct PlatformFacts {
     /// in older logs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub munition: Option<MunitionFacts>,
+    /// Rules 24 ([`crate::rules::LOADOUT_SINCE`]): the weapons the platform carries (the
+    /// catalog's `loadout`), in the catalog's order, which is the order the engine picks one in
+    /// when a nomination names none ([`crate::loadout::choose`]). From rules 24 the loadout
+    /// replaces `munition`: the weapon a nomination uses is one of these, its rounds are counted,
+    /// and a missile, bomb or torpedo flies as rules 20's munition did, with its own figures.
+    /// Absent for a platform that carries none, and in older logs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loadout: Vec<WeaponFacts>,
+}
+
+/// Rules 24: what kind of weapon a loadout entry is. Missiles, bombs and torpedoes fly from the
+/// platform to the effect point (rules 20's straight slant line at a constant speed, with the
+/// weapon's own speed and ranges); `self` is the platform itself, a one-way strike (a loitering
+/// munition, an FPV drone, an explosive boat), spent by its own effect as rules 12 already
+/// counts it. Guns (bd murmur-lbw8.3) and mines (bd murmur-lbw8.4) are listed in the catalog so
+/// that a platform's loadout is whole, but stay inert until their stages: no nomination may
+/// use one ([`WeaponKind::usable`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WeaponKind {
+    Missile,
+    Bomb,
+    Torpedo,
+    #[serde(rename = "self")]
+    SelfStrike,
+    Gun,
+    Mine,
+}
+
+impl WeaponKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WeaponKind::Missile => "missile",
+            WeaponKind::Bomb => "bomb",
+            WeaponKind::Torpedo => "torpedo",
+            WeaponKind::SelfStrike => "self",
+            WeaponKind::Gun => "gun",
+            WeaponKind::Mine => "mine",
+        }
+    }
+
+    /// Whether a nomination may use it in this stage: missiles, bombs, torpedoes and the
+    /// platform itself. Guns and mines wait for their stages (inert).
+    pub fn usable(self) -> bool {
+        !matches!(self, WeaponKind::Gun | WeaponKind::Mine)
+    }
+
+    /// Whether it flies from the platform to the effect point (rules 20's flight): a missile, a
+    /// bomb or a torpedo. The platform itself goes there (`self`: released within `arrival_m`,
+    /// as a platform without a munition always was).
+    pub fn flies(self) -> bool {
+        matches!(self, WeaponKind::Missile | WeaponKind::Bomb | WeaponKind::Torpedo)
+    }
+
+    /// Whether its rounds are counted per release ([`crate::loadout`]): every kind but `self`,
+    /// whose one round is the platform (spent and un-spent with it, rules 12 and 15).
+    pub fn counted(self) -> bool {
+        self != WeaponKind::SelfStrike
+    }
+
+    /// Why a nomination may not use it yet, if it may not.
+    pub fn inert_why(self) -> Option<&'static str> {
+        match self {
+            WeaponKind::Gun => Some("guns are listed in the loadout but not usable before their stage (bd murmur-lbw8.3)"),
+            WeaponKind::Mine => Some("mines are listed in the loadout but not usable before their stage (bd murmur-lbw8.4)"),
+            _ => None,
+        }
+    }
+}
+
+/// Rules 24: how a weapon flies to its target, as the public record describes it. Logged with
+/// the weapon; stage 1 flies every one the same way (rules 20's straight slant line at the
+/// weapon's average speed), so the profile is a fact for the reader and for later stages, not
+/// yet a model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlightProfile {
+    /// A direct line to the target (a missile's direct-attack mode, an FPV's run in).
+    Direct,
+    /// Climbs after launch and dives on the target (a lofted or top-attack mode).
+    Lofted,
+    /// A guided bomb's unpowered glide.
+    Glide,
+    /// An unguided fall, or a gun's round.
+    Ballistic,
+    /// A loitering munition's terminal dive.
+    Dive,
+    /// An anti-ship missile low over the water.
+    SeaSkimming,
+    /// A surface or underwater run (an explosive boat, a torpedo).
+    Waterborne,
+    /// A mine, laid and waiting.
+    Laid,
+}
+
+/// Rules 24: a warhead's class (blast-fragmentation, shaped charge, ...) and its mass, kg, as
+/// published. Logged and shown; stage 2 (bd murmur-lbw8.2) reads it for damage.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Warhead {
+    pub class: String,
+    pub mass_kg: f64,
+}
+
+/// Rules 24, read from stage 2 on (bd murmur-lbw8.2), inert now: a weapon's chances against one
+/// kind of target, by the target kind (a domain, or a finer kind stage 2 names): of a hit, and of
+/// the damage a hit does. The catalog may carry it; nothing in stage 1 reads it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WeaponEffect {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p_hit: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p_kill: Option<f64>,
+}
+
+/// Rules 24 ([`crate::rules::LOADOUT_SINCE`]): one weapon of a platform's loadout, as the
+/// catalog gives it and every decision logs it (a platform fact): its name (the one a nomination
+/// names), kind, how many rounds the platform carries, its minimum and maximum range (the slant
+/// distance from the launch to the effect point), its average speed, flight profile, guidance,
+/// warhead and the kinds of target it is for (domains). The optional fields are the later
+/// stages' and inert now: `effects` (stage 2: hit and kill chances by target kind),
+/// `burst_rounds` and `rate_rpm` (stage 3: a gun's bursts from its round count), `persist_h` and
+/// `trigger` (stage 4: a mine laid and waiting).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WeaponFacts {
+    pub name: String,
+    pub kind: WeaponKind,
+    pub count: u32,
+    pub min_range_m: f64,
+    pub max_range_m: f64,
+    pub speed_mps: f64,
+    pub profile: FlightProfile,
+    pub guidance: String,
+    pub warhead: Warhead,
+    pub targets: Vec<Domain>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub effects: BTreeMap<String, WeaponEffect>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub burst_rounds: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_rpm: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persist_h: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<String>,
+}
+
+impl WeaponFacts {
+    /// Whether it is meant for a target in `domain`.
+    pub fn for_target(&self, domain: Domain) -> bool {
+        self.targets.contains(&domain)
+    }
+
+    /// The facts rules 20's flight reads ([`crate::engage::shot`]): its name, speed and maximum
+    /// range.
+    pub fn munition(&self) -> MunitionFacts {
+        MunitionFacts {
+            name: self.name.clone(),
+            speed_mps: self.speed_mps,
+            range_m: self.max_range_m,
+        }
+    }
+
+    /// Why the catalog's entry can't stand, if it can't.
+    fn invalid(&self) -> Option<String> {
+        let n = &self.name;
+        if n.trim().is_empty() {
+            return Some("a weapon has no name".into());
+        }
+        if self.count == 0 {
+            return Some(format!("{n}: count is at least 1"));
+        }
+        if !(self.min_range_m.is_finite()
+            && self.min_range_m >= 0.0
+            && self.max_range_m.is_finite()
+            && self.max_range_m > self.min_range_m)
+        {
+            return Some(format!(
+                "{n}: ranges are 0 <= min_range_m < max_range_m (got {} m, {} m)",
+                self.min_range_m, self.max_range_m
+            ));
+        }
+        let still = self.kind == WeaponKind::Mine;
+        if !(self.speed_mps.is_finite() && (self.speed_mps > 0.0 || (still && self.speed_mps == 0.0))) {
+            return Some(format!("{n}: speed_mps is above 0 (0 for a mine), got {}", self.speed_mps));
+        }
+        if self.kind == WeaponKind::SelfStrike && self.count != 1 {
+            return Some(format!("{n}: a self strike is the platform itself, count 1"));
+        }
+        if self.targets.is_empty() {
+            return Some(format!("{n}: targets names at least one domain"));
+        }
+        if self.guidance.trim().is_empty() || self.warhead.class.trim().is_empty() {
+            return Some(format!("{n}: guidance and warhead.class are named"));
+        }
+        if !(self.warhead.mass_kg.is_finite() && self.warhead.mass_kg >= 0.0) {
+            return Some(format!("{n}: warhead.mass_kg is 0 or more"));
+        }
+        for (k, e) in &self.effects {
+            for p in [e.p_hit, e.p_kill].into_iter().flatten() {
+                if !(0.0..=1.0).contains(&p) {
+                    return Some(format!("{n}: effects.{k}: a chance is between 0 and 1, got {p}"));
+                }
+            }
+        }
+        None
+    }
 }
 
 /// Rules 20: a munition from the catalog: what it is called, how fast it flies (a constant
@@ -245,6 +454,8 @@ struct RawPlatform {
     expended_by_effect: bool,
     munition: Option<MunitionFacts>,
     #[serde(default)]
+    loadout: Vec<WeaponFacts>,
+    #[serde(default)]
     sensors: Vec<RawSensor>,
     /// Each sensor's reach under the physical model, by its type and the contact's domain
     /// (generated: docs/SENSING.md, "The decision engine's reaches").
@@ -313,6 +524,23 @@ impl Catalog {
                     )));
                 }
             }
+            // rules 24: each weapon whole and named once; the platform itself only on a platform
+            // spent by its own effect, and once
+            let mut names = std::collections::BTreeSet::new();
+            for w in &r.loadout {
+                if let Some(why) = w.invalid() {
+                    return Err(CatalogError::Invalid(format!("[{id}] loadout: {why}")));
+                }
+                if !names.insert(w.name.as_str()) {
+                    return Err(CatalogError::Invalid(format!("[{id}] loadout: {} is named twice", w.name)));
+                }
+            }
+            let selves = r.loadout.iter().filter(|w| w.kind == WeaponKind::SelfStrike).count();
+            if selves > 1 || (selves == 1 && !r.expended_by_effect) {
+                return Err(CatalogError::Invalid(format!(
+                    "[{id}] loadout: a self strike is one, on a platform spent by its own effect (expended_by_effect)"
+                )));
+            }
             let reach = std::mem::take(&mut r.physical_reach_m);
             if !reach.is_empty() {
                 physical_reach.insert(id.clone(), reach);
@@ -349,6 +577,7 @@ impl Catalog {
                     max_mps: r.max_mps.filter(|c| c.is_finite() && *c > 0.0),
                     expended_by_effect: r.expended_by_effect,
                     munition: r.munition,
+                    loadout: r.loadout,
                 };
                 (id, facts)
             })

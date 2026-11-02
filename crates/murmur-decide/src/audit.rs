@@ -571,6 +571,12 @@ pub enum EventBody {
         planned_t: Time,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         munition: Option<crate::engage::MunitionFlight>,
+        /// Rules 24: the loadout weapon released, the rounds of it left after this release and
+        /// the vehicle it was released from (the ledger counts the round; replay recomputes it
+        /// from the releasing picture's inputs). Absent for a platform without a loadout, and in
+        /// older logs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weapon: Option<crate::loadout::WeaponRelease>,
     },
 
     /// Engage: stopped before the effect (before dispatch it is voided, after it aborted),

@@ -5,11 +5,12 @@
 # (WORLD-V3-PLAN H6, family F17), and the world's smoke and real-time factor
 # (eval/headless/tests/test_worlds_v3.py):
 #   .venv/bin/python -m eval.headless.batch --situation golden-gate-scale-watch --seeds 1-2 --agent none playbook
-# Headless only. The opening orders (54) were laid out on the world's grids from the fleet as
-# planned: the MQ-9Bs and RQ-4s on wide and far orbits, eight Pumas, ten X10s, three FVR-90s and
-# the airships on station, four Sea Hunters and half the Corsairs on patrol, the Saildrones on
-# their stations, the AUVs on survey lines, the ROVs inspecting their piers, the recon UGVs on
-# patrol; the rest wait (the armed Maguras tied up: no opening order may move an armed platform).
+# Headless only. The opening orders (50; 54 before rules 24 armed the four MQ-9Bs) were laid out
+# on the world's grids from the fleet as planned: the RQ-4s on far orbits, eight Pumas, ten X10s,
+# three FVR-90s and the airships on station, four Sea Hunters and half the Corsairs on patrol, the
+# Saildrones on their stations, the AUVs on survey lines, the ROVs inspecting their piers, the
+# recon UGVs on patrol; the rest wait (the armed MQ-9Bs on station where they spawn, the armed
+# Maguras tied up: no opening order may move an armed platform).
 title = "Golden Gate scale watch"
 brief = """
 You have the watch at the Golden Gate with a hundred of ours in the air, on and under the water
@@ -37,37 +38,10 @@ currents = "world"
 conditions = "world"
 
 # ---- the opening orders (op-setup: by policy, or through agent-setup to the inbox)
-[[order]]
-id = "orbit-reaper-1"
-task = "orbit"
-vehicles = { callsign = "REAPER 1" }
-center = [-122.505, 37.815]
-radius_m = 4000
-note = "Opening order: a wide orbit"
-
-[[order]]
-id = "orbit-reaper-2"
-task = "orbit"
-vehicles = { callsign = "REAPER 2" }
-center = [-122.48, 37.87]
-radius_m = 4000
-note = "Opening order: a wide orbit"
-
-[[order]]
-id = "orbit-reaper-3"
-task = "orbit"
-vehicles = { callsign = "REAPER 3" }
-center = [-122.43, 37.77]
-radius_m = 3000
-note = "Opening order: a wide orbit"
-
-[[order]]
-id = "orbit-reaper-4"
-task = "orbit"
-vehicles = { callsign = "REAPER 4" }
-center = [-122.55, 37.79]
-radius_m = 4000
-note = "Opening order: a wide orbit"
+# The four MQ-9Bs are armed from rules 24 (bd murmur-lbw8.1: their loadout, as every armed
+# platform in the v3 worlds) and get no opening order: a script never orders an armed platform.
+# Their wide orbits (4 km round [-122.505, 37.815], [-122.48, 37.87] and [-122.55, 37.79], 3 km
+# round [-122.43, 37.77]) are gone; each circles where it spawns.
 
 [[order]]
 id = "orbit-hawk-1"

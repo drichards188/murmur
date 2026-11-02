@@ -12,22 +12,22 @@
 title = "Golden Gate scale: 100 stand-ins across every domain"
 
 [[unit]]
-platform = "mq9b"                    # on station from its base, airborne
+platform = "mq9b_armed"              # on station from its base, airborne
 sim = "standin"
 spawn = [37.80500, -122.54000, 3000, 90]
 
 [[unit]]
-platform = "mq9b"                    # on station from its base, airborne
+platform = "mq9b_armed"              # on station from its base, airborne
 sim = "standin"
 spawn = [37.84000, -122.52000, 3500, 90]
 
 [[unit]]
-platform = "mq9b"                    # on station from its base, airborne
+platform = "mq9b_armed"              # on station from its base, airborne
 sim = "standin"
 spawn = [37.78000, -122.45000, 4000, 90]
 
 [[unit]]
-platform = "mq9b"                    # on station from its base, airborne
+platform = "mq9b_armed"              # on station from its base, airborne
 sim = "standin"
 spawn = [37.86000, -122.42000, 4500, 90]
 

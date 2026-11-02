@@ -61,7 +61,7 @@ arms, as a hull with its motors stopped and its lines on would stay. The small a
 their missions at a fleet unit's `cruise_alt_m` (Pumas and the FVR-90 at 150 m, X10s at 100 m),
 the MQ-9B and the RQ-4 at their catalog altitudes.
 
-**Golden Gate v3.** The plan's list exactly, 20 stand-ins: air REAPER 1 (MQ-9B, on station),
+**Golden Gate v3.** The plan's list exactly, 20 stand-ins: air REAPER 1 (MQ-9B, on station; armed with its loadout from rules 24, so no opening order),
 HAWK 1 (RQ-4, a far orbit 30 km offshore), PUMA 1 and 2, SKY 1 and 2, KESTREL 1 (FVR-90) on the
 ground at Crissy Field and Fort Baker, ZEP 1 (the airship) aloft over the Marin Headlands;
 surface HUNTER 1 (Sea Hunter) at a mooring off the Marina, MARLIN 1 (Corsair) and VIPER 1
@@ -116,7 +116,7 @@ Cabrillo. Its element sets are the Golden Gate snapshot's (CelesTrak, imported 2
 pinned for San Diego with its named areas (`san-diego`, `sd-bay-entrance` in
 sim/space/areas.toml).
 
-**The scale world.** 100 stand-ins laid out on the grids: 43 air (four MQ-9Bs and two RQ-4s on
+**The scale world.** 100 stand-ins laid out on the grids: 43 air (four MQ-9Bs (armed from rules 24: on station where they spawn, no opening order) and two RQ-4s on
 station, four airships aloft, twelve Pumas, fifteen X10s and six FVR-90s on the ground at Crissy
 Field, Fort Baker and Fort Mason), 20 surface (four Sea Hunters at moorings off the Marina, eight
 Corsairs and four Maguras tied up at Horseshoe Bay and off the Fort Mason piers, four

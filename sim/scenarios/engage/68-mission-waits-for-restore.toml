@@ -27,7 +27,7 @@ engage = true
 
 [[vehicle]]
 uid = "viper-1"
-platform = "magura"         # armed USV (ArduRover), LEO SATCOM: a 30 s lost-link timer
+platform = "magura_pre_loadout" # armed USV (the Magura before rules 24, surviving its effect; ArduRover), LEO SATCOM: a 30 s lost-link timer
 at = [-122.4700, 37.8160]
 lost_link_s = 30
 

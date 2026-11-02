@@ -36,7 +36,7 @@ sim = "standin"
 count = 1
 spawn = [37.8055, -122.4480, 5, 0]
 [[unit]]
-platform = "mq9b"                      # one of ours, MALE, on station over the target area
+platform = "mq9b_armed"                # one of ours, MALE, on station over the target area
 sim = "standin"
 count = 1
 spawn = [37.8120, -122.4950, 9000, 90] # loitering 3.5 km around the holding point

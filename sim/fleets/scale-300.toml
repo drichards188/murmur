@@ -4,7 +4,7 @@
 title = "Scale test: 300 stand-ins"
 
 [[unit]]
-platform = "mq9b"
+platform = "mq9b_armed"
 count = 40
 spawn = [37.95, -122.95, 7600, 90]
 spacing_m = 2500

@@ -20,7 +20,7 @@ title = "Golden Gate v3: 20 stand-ins across every domain"
 
 # ---- air
 [[unit]]
-platform = "mq9b"                      # MALE ISR, full kit (radar, EO/IR, AIS); on station from its base
+platform = "mq9b_armed"                # MALE ISR, full kit (radar, EO/IR, AIS); on station from its base
 sim = "standin"
 spawn = [37.8050, -122.5400, 3000, 90] # west of the Gate, airborne at 3000 m
 

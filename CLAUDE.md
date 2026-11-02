@@ -337,6 +337,23 @@ meaningful.
   that vehicle (the scenario runner does for any `level_by` but `ais`). The bridge shows each as an
   inbox alert `identify_meanwhile` of severity `info` (never a badge; alerts sort high, medium,
   info).
+- Rules 24 (`LOADOUT_SINCE`, bd murmur-lbw8.1): a catalog entry's `loadout` (`catalog::
+  WeaponFacts`, a logged platform fact; figures in docs/research/weapons.md) replaces rules 20's
+  `munition` line, which only rules 20 to 23 read. An engagement names its weapon (`weapon`, by
+  name: REST, MCP and the scenario runner's `nominate`) or the engine picks the first of the
+  loadout, in the catalog's order, usable against the track's domain with a round left
+  (`loadout::choose`; the `weapon` check says why); the preview's `weapon` is frozen with the
+  plan. A missile, bomb or torpedo is released between its minimum and maximum slant range; `self`
+  is the platform (spent with it, never counted); guns and mines are listed but inert until
+  murmur-lbw8.3 and .4 (the Orca and the mine-laying UGV stay unarmed until then). Each release
+  logs `weapon` (rounds `left`, the vehicle) on the `engage.effect`; every engagement decision
+  logs the `rounds` fact (`Restores`' ledger, as spent marks); `run.started`'s `carried_from`
+  carries `rounds`, on the same vehicle only. Rounds left: `GET /api/loadouts`, MCP `get_fleet`'s
+  `platform.loadout`, the vehicle details' Loadout row. The v1/v2 worlds keep the unarmed `mq9b`;
+  live fleets and the v3 worlds fly `mq9b_armed` (no opening order for it), except
+  morning-harbor-watch and hostile-act-loitering-munition (an unarmed MQ-9B is their premise).
+  Scenarios that need a Magura surviving its own effect name `magura_pre_loadout`. Scenarios
+  119-120; tamper `edit_rounds`.
 - Opponent weapons (docs/OPPONENT-WEAPONS.md, bd murmur-wcvp; no rules version): a contact's
   `weapon = { name, kind, speed_mps, range_m }` (kinds the bridge has figures for:
   `tracks::physical::weapon::weapon_signature`, `atgm`) makes each of its acts a launch, flown by

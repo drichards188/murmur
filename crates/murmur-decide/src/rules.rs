@@ -105,6 +105,10 @@ pub enum RuleId {
     /// Rules 21: an identify order's track is live and not identified yet, and the vehicle's
     /// EO/IR identifies a contact of its domain from an orbit around it ([`crate::identify`]).
     Identify,
+    /// Rules 24: the weapon of the platform's loadout the engagement uses (the one it names, or
+    /// the one the engine picks) is usable against the target and has a round left
+    /// ([`crate::loadout`]).
+    Weapon,
 }
 
 impl RuleId {
@@ -142,6 +146,7 @@ impl RuleId {
             RuleId::PlatformFree => "platform_free",
             RuleId::FallbackPreload => "fallback_preload",
             RuleId::Identify => "identify",
+            RuleId::Weapon => "weapon",
         }
     }
 }
@@ -246,8 +251,28 @@ pub enum UnknownEndurance {
 /// no-go area is routed around it before the order is refused; and ([`IDENTIFY_SECOND_LOOK_SINCE`])
 /// an identify order may go to any live contact, for a fresh look by our own sensors. Version 23
 /// ([`IDENTIFY_OWN_LOOK_SINCE`]): an identify order's look ends only on the vehicle sent's own
-/// identification.
-pub const RULES_VERSION: u32 = IDENTIFY_OWN_LOOK_SINCE;
+/// identification. Version 24 ([`LOADOUT_SINCE`]): an armed platform's catalog loadout; the
+/// engagement uses one of its weapons, named or picked, with its own ranges and speed, and each
+/// release spends a round.
+pub const RULES_VERSION: u32 = LOADOUT_SINCE;
+
+/// The rules version from which an armed platform carries a loadout of named weapons with rounds
+/// (bd murmur-lbw8.1, the owner's direction of 2026-11-02, DECISIONS.md "Real weapon loadouts on
+/// armed platforms"): the catalog's `loadout` ([`crate::catalog::WeaponFacts`], a platform fact
+/// logged with every decision) replaces rules 20's single `munition`. An engagement names the
+/// weapon it uses (`Task::Engage::weapon`), or the engine picks the first of the loadout, in the
+/// catalog's order, that is usable now, meant for the target's domain and has a round left,
+/// saying why ([`crate::loadout::choose`], the `weapon` check, the preview's `weapon`, frozen with
+/// the plan); a missile, bomb or torpedo is released within its minimum and maximum slant range
+/// at its own speed (rules 20's flight); the platform itself (`self`) is released as before.
+/// Each release of a counted weapon spends one round, logged with the `engage.effect` (`weapon`:
+/// the rounds left, the vehicle) and as a decision fact (`rounds`, recomputed by replay from the
+/// log's ledger), and carried over a restart onto the same vehicle as rules 15's spent mark is
+/// (`run.started`'s `carried_from`, `rounds`). A weapon with no round left refuses the
+/// nomination, and holds no picture. Guns and mines are listed but inert. Every gate of that
+/// change reads this constant, never a literal: another change taking 24 first renumbers it in
+/// this one line.
+pub const LOADOUT_SINCE: u32 = 24;
 
 /// The rules version from which a leg that the domain rule or the geofence would refuse is first
 /// routed around what it meets (bd murmur-n6a, the owner's direction of 2026-10-27, DECISIONS.md
@@ -644,6 +669,12 @@ impl RulesConfig {
     /// the vehicle sent's own identification.
     pub fn identify_own_look(&self) -> bool {
         self.rules_version >= IDENTIFY_OWN_LOOK_SINCE
+    }
+
+    /// Rules 24 ([`LOADOUT_SINCE`]): an armed platform's loadout, a weapon per engagement and its
+    /// rounds counted.
+    pub fn loadouts(&self) -> bool {
+        self.rules_version >= LOADOUT_SINCE
     }
 
     /// `[rules.engage]`, or its defaults.

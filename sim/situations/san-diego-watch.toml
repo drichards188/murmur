@@ -8,8 +8,8 @@
 # Headless only (the live runner has no conditions draw and no San Diego stack).
 title = "San Diego watch"
 brief = """
-You have the watch at the entrance to San Diego Bay with twenty-four of ours: REAPER 1 orbits
-over the approaches and HAWK 1 far offshore; PUMA 2 holds station over the entrance, PUMA 3 over
+You have the watch at the entrance to San Diego Bay with twenty-four of ours: REAPER 1, armed,
+circles on station (an order for it waits for you) and HAWK 1 orbits far offshore; PUMA 2 holds station over the entrance, PUMA 3 over
 the central bay, KESTREL 1 over the approaches, SKY 2 over Shelter Island and the airship over
 North Island; PUMA 1, PUMA 4 and SKY 1 wait at North Island. HUNTER 1 patrols the outer channel,
 MARLIN 1 the channel past North Island, MARLIN 2 the central bay; MARLIN 3 waits at the carrier
@@ -42,13 +42,10 @@ conditions = "world"
 
 # ---- the opening orders (op-setup: by policy, or through agent-setup to the inbox). A patrol
 # loops (its last waypoint back to its first), so a patrol along a channel retraces its way back.
-[[order]]
-id = "approaches-wide-orbit"
-task = "orbit"
-vehicles = { callsign = "REAPER 1" }
-center = [-117.2400, 32.6700]
-radius_m = 4000
-note = "Opening order: orbit wide over the entrance and the approaches"
+# REAPER 1 is armed from rules 24 (bd murmur-lbw8.1: its loadout, as every armed platform in the
+# v3 worlds) and gets no opening order: a script never orders an armed platform. Its "orbit wide
+# over the entrance and the approaches" (4 km round [-117.2400, 32.6700]) is gone; it circles
+# where it spawns.
 
 [[order]]
 id = "far-orbit"

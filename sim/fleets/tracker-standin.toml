@@ -8,6 +8,6 @@ count = 1
 sim = "standin"                          # the catalog says SITL; force the stand-in
 spawn = [37.8105, -122.4770, 10, 0]      # Fort Point
 [[unit]]
-platform = "mq9b"
+platform = "mq9b_armed"
 count = 1
 spawn = [37.8300, -122.4000, 7600, 90]   # NE of the tracker, on station

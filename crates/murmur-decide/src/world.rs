@@ -529,6 +529,12 @@ pub struct WorldSnapshot {
     /// be another takes no order or nomination (`readiness` fails). Absent when none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub spent_carried: BTreeMap<Uid, crate::queue::CarriedSpent>,
+    /// Engine-filled (rules 24) for an engagement's checks: its platform's rounds released in this
+    /// run and carried over from earlier runs, by weapon, with the vehicle under the uid now
+    /// ([`crate::loadout::PlatformRounds`]): a weapon with no round left can't be used. Absent
+    /// when none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub rounds: BTreeMap<Uid, crate::loadout::PlatformRounds>,
     /// Rules 12, the bridge's: each fleet vehicle's identity as it knows it now (platform,
     /// callsign, system id, home). Never logged as such: the engine copies the identity of a
     /// vehicle still owed values carried over from an earlier run into that fact
@@ -615,6 +621,9 @@ pub struct LoggedInputs {
     /// none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub spent_carried: BTreeMap<Uid, crate::queue::CarriedSpent>,
+    /// An engagement's platform's rounds (rules 24; absent when none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub rounds: BTreeMap<Uid, crate::loadout::PlatformRounds>,
     /// An engagement's lost contacts (rules 16; absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub lost_contacts: BTreeMap<String, crate::lost::LostContact>,
@@ -658,6 +667,7 @@ impl LoggedInputs {
             restore_owed: world.restore_owed.clone(),
             expended: world.expended.clone(),
             spent_carried: world.spent_carried.clone(),
+            rounds: world.rounds.clone(),
             lost_contacts: world.lost_contacts.clone(),
             lost_accepted: world.lost_accepted.clone(),
             behaving_accepted: world.behaving_accepted.clone(),
@@ -711,6 +721,7 @@ impl LoggedInputs {
             restore_owed: self.restore_owed.clone(),
             expended: self.expended.clone(),
             spent_carried: self.spent_carried.clone(),
+            rounds: self.rounds.clone(),
             identities: BTreeMap::new(),
             lost_contacts: self.lost_contacts.clone(),
             lost_accepted: self.lost_accepted.clone(),
@@ -766,6 +777,8 @@ impl WorldSnapshot {
             restore_owed: BTreeMap::new(),
             expended: BTreeMap::new(),
             spent_carried: BTreeMap::new(),
+            // engine-owned (rules 24): filled from its ledger of rounds
+            rounds: BTreeMap::new(),
             // rules 12: the bridge's identities of the intent's vehicles (a carried restore's
             // hold reads them)
             identities: spec

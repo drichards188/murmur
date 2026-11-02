@@ -53,6 +53,39 @@ group. Dates are 2026.
   as a camera look. Not in the engine's review: a strike with no seen launch (the inbox alert
   only), and attribution from a weapon track's back-track (a line, not a point). Headless worlds
   refuse weapons and agents do not see the weapon picture yet (murmur-mmxk). docs/OPPONENT-WEAPONS.md.
+- **Real weapon loadouts on armed platforms** (11-02, the owner: "I want all nodes that are
+  supposed to carry weapons in real life to have the war thunder level of real weapons
+  equipped"). Amends the munitions entry above (10-26): effects stop being one abstract munition
+  per platform. The owner's decisions: real named loadouts, their flight, a hit chance by target
+  and a damage model; every platform armed in real life carries its loadout in every live fleet
+  and in the v3 worlds, while the frozen v1 and v2 headless worlds and their goldens keep their
+  unarmed entries; guns and mines come in later stages. Built in four stages (bd murmur-lbw8).
+  Stage 1, built as decision rules 24 (bd murmur-lbw8.1, `LOADOUT_SINCE`): a catalog entry lists
+  its weapons (`loadout`: name, kind, count, minimum and maximum range, speed, flight profile,
+  guidance, warhead class and mass, target domains; public figures, each with its source in
+  docs/research/weapons.md or an [E] estimate), an engagement names the one it uses or the engine
+  picks the first of the loadout usable against the target's domain with a round left and says
+  why, the release judges that weapon's own ranges and speed (rules 20's straight-line flight,
+  minimum range included), and each release spends a round, logged, replayed and carried over a
+  restart onto the same vehicle as a spent platform is. Loadouts: the MQ-9B four AGM-114R and two
+  GBU-12 (no torpedo: no public source); the CCA two AIM-120C, air targets only (the CCA is now
+  armed); the Magura V5 its charge (the boat is the weapon, now spent by its own effect; the Sea
+  Dragon and V7 variants are not in this pass); the Switchblade 600 and the FPV (a PG-7VL-class
+  warhead) themselves; the armed UGV an EOS R400-class station's M2 (inert) and one Javelin
+  (usable); the Orca's Hammerheads and the mine-laying UGV's TM-62s listed, inert, and neither is
+  armed until stage 4 can lay them. Where an armed MQ-9B now stands in a live fleet or a v3 world
+  (`mq9b_armed`), every order for it waits for a person and a script gives it no opening order:
+  the v3 watch situations lost their MQ-9B orbits (sim/situations: golden-gate-v3-watch,
+  san-diego-watch, golden-gate-scale-watch). Two live situations keep the unarmed `mq9b`, as their
+  premise is an unarmed one: morning-harbor-watch (unarmed observers over recorded traffic) and
+  hostile-act-loitering-munition (the loitering munition's chain, with the MQ-9B as its sensor).
+  Waiting for stage 2 (bd murmur-lbw8.2): a hit draw by weapon and target kind and a damage model
+  (undamaged, mobility, firepower, destroyed; docs/research/weapons.md section 10); the flight
+  profiles are recorded, not yet flown; the warhead is shown, not yet read. Stage 3 (murmur-lbw8.3):
+  guns, bursts from a round count. Stage 4 (murmur-lbw8.4): mines, laid and persistent. Every
+  safeguard stands exactly: no autonomous engagement, two human signatures, the authorize step
+  closed to agents in code, every order to an armed platform waiting for a human, DoD Directive
+  3000.09. An agent may name a weapon in a nomination it proposes; it still signs nothing.
 - **Pitch depth and rigor, not "first"** (10-02). Pressure test found the ideas in closed
   work (RESCHU, IMPACT, Aegis doctrine, Lattice, Legion, Palantir AIP, Thunderforge, DARPA
   ASIMOV) and shallow open versions (AMOS, AeroMind, Pharos, SandTable). Cite them. Engage

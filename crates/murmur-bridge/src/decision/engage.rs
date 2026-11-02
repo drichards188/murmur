@@ -99,6 +99,10 @@ pub struct EngageParams {
     /// authority only.
     #[serde(default)]
     pub accept_behaving: Vec<AcceptBehaving>,
+    /// Rules 24: the weapon of the platform's loadout the nomination uses, by its name
+    /// (`GET /api/loadouts`); absent: the engine picks one and says why.
+    #[serde(default)]
+    pub weapon: Option<String>,
 }
 
 /// Rules 19: "track `track`, as it is behaving now: accept" (its estimate at the acceptance).
@@ -412,6 +416,9 @@ fn carry_chain(
                 if r.rules15 {
                     entry.spent = debts.spent;
                 }
+                // rules 24: the rounds it had released stay spent (the engine drops them under
+                // older rules)
+                entry.rounds = debts.rounds;
             }
         }
         out.push(entry);
@@ -825,6 +832,7 @@ pub(super) fn proposal(req: &IntentRequest, now: Time) -> Result<Proposal, Decis
             effect_radius_m: radius,
             window,
             fallback,
+            weapon: p.weapon.clone().filter(|w| !w.trim().is_empty()),
         },
         req.uids.iter().map(|u| duid(*u)).collect(),
     );
@@ -2570,9 +2578,81 @@ pub struct OptionsRequest {
     /// to agents (they cannot reject).
     #[serde(default)]
     pub replaces: Option<u64>,
+    /// Rules 24: the loadout weapon to judge each platform with (absent: the engine picks one).
+    #[serde(default)]
+    pub weapon: Option<String>,
+}
+
+/// Rules 24 (bd murmur-lbw8.1): a platform's loadout as the console and the agents read it: each
+/// weapon's facts, its rounds left (`rounds`: the engine's ledger, this run's releases and those
+/// carried over onto this vehicle; the platform itself has one, gone once it is `spent`) and
+/// whether it is `inert` (guns and mines, until their stages), in the catalog's order.
+pub fn loadout_json(p: &murmur_decide::PlatformFacts, rounds: &murmur_decide::PlatformRounds, spent: bool) -> Value {
+    let weapons: Vec<Value> = p
+        .loadout
+        .iter()
+        .map(|w| {
+            let left = murmur_decide::loadout::left(w, Some(rounds)).unwrap_or(u32::from(!spent));
+            json!({
+                "name": w.name,
+                "kind": w.kind.as_str(),
+                "count": w.count,
+                "left": left,
+                "inert": !w.kind.usable(),
+                "min_range_m": w.min_range_m,
+                "max_range_m": w.max_range_m,
+                "speed_mps": w.speed_mps,
+                "profile": w.profile,
+                "guidance": w.guidance,
+                "warhead": w.warhead,
+                "targets": w.targets,
+            })
+        })
+        .collect();
+    json!({ "armed": p.armed, "weapons": weapons })
 }
 
 impl Decision {
+    /// Rules 24: fleet vehicle `uid`'s loadout ([`loadout_json`]) on the catalog the decision
+    /// facts come from, its rounds from the engine; none for a platform that carries none.
+    /// Read-only, not logged.
+    pub fn loadout(&self, uid: crate::vehicle::Uid) -> Option<Value> {
+        let cell = self.world.vehicles().into_iter().find(|v| v.uid == uid)?;
+        self.loadout_of(uid, &identity_of(&cell))
+    }
+
+    fn loadout_of(&self, uid: crate::vehicle::Uid, identity: &murmur_decide::VehicleIdentity) -> Option<Value> {
+        let p = self.facts_catalog().get(identity.platform.as_deref()?)?.clone();
+        if p.loadout.is_empty() {
+            return None;
+        }
+        let core = self.lock();
+        let rounds = core.engine.platform_rounds(&duid(uid), Some(identity));
+        let spent = core.engine.expended_by(&duid(uid)).is_some();
+        Some(loadout_json(&p, &rounds, spent))
+    }
+
+    /// Rules 24: every fleet vehicle that carries a loadout, by uid with its callsign and
+    /// platform (`GET /api/loadouts`).
+    pub fn loadouts(&self) -> Value {
+        let fleet = self.fleet();
+        let out: Vec<Value> = fleet
+            .iter()
+            .filter_map(|(uid, cell)| {
+                let i = identity_of(cell);
+                let l = self.loadout_of(*uid, &i)?;
+                Some(json!({
+                    "uid": uid,
+                    "callsign": i.callsign,
+                    "platform": i.platform,
+                    "armed": l["armed"],
+                    "weapons": l["weapons"],
+                }))
+            })
+            .collect();
+        json!({ "vehicles": out })
+    }
+
     /// A dry run for the nomination form (read-only, not a decision, not logged): for each
     /// armed vehicle, the checks a nomination with it would get on the world now, and its
     /// preview. Listed by uid, with no ranking and no recommendation: the operator picks.
@@ -2649,6 +2729,7 @@ impl Decision {
                     effect_radius_m: req.effect_radius_m,
                     window: Some(window),
                     fallback,
+                    weapon: req.weapon.clone(),
                 },
                 uids: vec![duid(uid)],
                 constraints: murmur_decide::Constraints::default(),

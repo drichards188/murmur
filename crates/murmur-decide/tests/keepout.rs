@@ -145,6 +145,7 @@ fn nomination(platform: &str) -> IntentSpec {
                 until: T0.plus_ms(600_000),
             }),
             fallback: Fallback::Return,
+            weapon: None,
         },
         uids: vec![uid(platform)],
         constraints: Constraints::default(),

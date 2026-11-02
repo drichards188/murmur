@@ -374,6 +374,12 @@ impl EngageRules {
         self.rules_version >= crate::rules::MUNITION_FLIGHT_SINCE
     }
 
+    /// The decisions of rules 24 on ([`crate::rules::LOADOUT_SINCE`]): the platform's loadout, the
+    /// engagement's weapon (named or picked) and its rounds ([`crate::loadout`]).
+    pub fn loadouts(&self) -> bool {
+        self.rules_version >= crate::rules::LOADOUT_SINCE
+    }
+
     /// The optional keys this section sets, each with the policy schema that introduced it
     /// (or, for an old name, the first schema whose builds read it): a log claiming an
     /// older schema can't carry them (replay checks).
@@ -554,6 +560,12 @@ pub struct EngagePreview {
     /// course (the tracker's growth law along, half of it across).
     pub track_sigma_m: f64,
     pub ellipse: Ellipse,
+    /// Rules 24: the weapon of the platform's loadout the engagement uses, the one named or the
+    /// one the engine picks ([`weapon_for`]): frozen with the plan, released at the effect. Absent
+    /// when the platform has no loadout or none can be used (the `weapon` check says why), and in
+    /// older logs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weapon: Option<String>,
 }
 
 /// The picture an approval rests on: what the approver saw, held against everything after.
@@ -854,6 +866,10 @@ pub struct Engagement {
     /// platform without one, and before the release).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub munition: Option<MunitionFlight>,
+    /// Rules 24: the weapon released with the effect and the rounds of it left (none before the
+    /// release, and for a platform without a loadout).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weapon: Option<crate::loadout::WeaponRelease>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop: Option<StopRecord>,
     /// Observation after the effect: seconds covered so far, and the last step.
@@ -1915,9 +1931,80 @@ pub fn params(spec: &IntentSpec) -> Option<(&str, f64, Option<EngageWindow>, Fal
             effect_radius_m,
             window,
             fallback,
+            ..
         } => Some((track.as_str(), *effect_radius_m, *window, *fallback)),
         _ => None,
     }
+}
+
+/// Rules 24: the weapon an engagement's nomination names (none: the engine picks one).
+pub fn named_weapon(spec: &IntentSpec) -> Option<&str> {
+    match &spec.task {
+        Task::Engage { weapon, .. } => weapon.as_deref(),
+        _ => None,
+    }
+}
+
+/// Rules 24: the weapon of `uid`'s loadout an engagement uses against `track` on `world` (the one
+/// `named`, or the one the engine picks, [`crate::loadout::choose`], with the platform's rounds
+/// as the engine filled them); none before rules 24, and for a platform without a loadout when
+/// none is named (it decides as rules 23 did: an abstract effect released at the point).
+pub fn weapon_for(
+    uid: Option<&Uid>,
+    named: Option<&str>,
+    track: Option<&TrackFacts>,
+    world: &WorldSnapshot,
+    ec: &EngageRules,
+) -> Option<Result<crate::loadout::WeaponChoice, String>> {
+    if !ec.loadouts() {
+        return None;
+    }
+    let uid = uid?;
+    let p = world.vehicles.get(uid)?.platform.as_ref()?;
+    if p.loadout.is_empty() && named.is_none() {
+        return None;
+    }
+    Some(crate::loadout::choose(named, p, world.rounds.get(uid), track.map(|t| t.domain)))
+}
+
+/// Rules 24: the `weapon` check on [`weapon_for`] (none where it is none).
+fn weapon_check(
+    uid: Option<&Uid>,
+    named: Option<&str>,
+    track: Option<&TrackFacts>,
+    world: &WorldSnapshot,
+    ec: &EngageRules,
+) -> Option<CheckResult> {
+    Some(match weapon_for(uid, named, track, world, ec)? {
+        Ok(c) => check(RuleId::Weapon, uid, Outcome::Pass, c.detail),
+        Err(why) => check(RuleId::Weapon, uid, Outcome::Fail, why),
+    })
+}
+
+/// Rules 24: the weapon an engagement releases on the releasing picture's `world` (its plan's,
+/// frozen with the first signature): its name and kind, the rounds of it left after this release
+/// (none for the platform itself) and the vehicle under the uid now. The engine logs it with the
+/// `engage.effect` and its ledger counts the round; replay recomputes it from that picture.
+pub fn release_weapon(
+    spec: &IntentSpec,
+    snap: &EngageSnapshot,
+    world: &WorldSnapshot,
+    cfg: &RulesConfig,
+) -> Option<crate::loadout::WeaponRelease> {
+    if !cfg.engage_rules().loadouts() {
+        return None;
+    }
+    let uid = platform_of(spec)?;
+    let name = snap.preview.weapon.as_deref()?;
+    let p = world.vehicles.get(uid)?.platform.as_ref()?;
+    let w = p.loadout.iter().find(|w| w.name == name)?;
+    let rounds = world.rounds.get(uid);
+    Some(crate::loadout::WeaponRelease {
+        name: w.name.clone(),
+        kind: w.kind,
+        left: crate::loadout::left(w, rounds).map(|n| n.saturating_sub(1)),
+        vehicle: rounds.and_then(|r| r.now.clone()),
+    })
 }
 
 /// The window in force: the nomination's, or `default_window_s` from its creation.
@@ -2052,6 +2139,10 @@ pub fn preview(
             semi_minor_m: minor,
             bearing_deg: bearing,
         },
+        // rules 24: the weapon it uses (the `weapon` check says why when there is none)
+        weapon: weapon_for(Some(uid), named_weapon(spec), Some(track), world, &ec)
+            .and_then(Result::ok)
+            .map(|c| c.weapon.name),
     })
 }
 
@@ -2097,6 +2188,9 @@ pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
     out.extend(target_checks(track_id, track, world, &ec, radius));
     if let Some(plan) = &world.plan {
         out.extend(plan_checks(spec, plan, world, cfg));
+        // rules 24: the plan's weapon still usable, a round of it left
+        let named = plan.preview.weapon.as_deref().or(named_weapon(spec));
+        out.extend(weapon_check(uid, named, track, world, &ec));
         return out;
     }
     let pv = preview(spec, world, cfg);
@@ -2157,6 +2251,8 @@ pub fn evaluate(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
         }
     }
     out.push(armed_check(uid, world));
+    // rules 24: the weapon it uses, named or picked, a round of it left
+    out.extend(weapon_check(uid, named_weapon(spec), track, world, &ec));
     if ec.v2() {
         out.push(free_check(uid, world));
     }
@@ -4521,7 +4617,7 @@ pub fn picture(
     // waiting for the platform or the track happens now, and everyone kept moving); rules 20:
     // a munition strikes a flight later, so the soonest it could strike
     let flight = strike_lead(uid, p, track, world, &ec);
-    let effect_at = effect_at(p, world, flight.map(|(_, l)| l), &ec);
+    let effect_at = effect_at(p, world, flight.as_ref().map(|(_, l)| *l), &ec);
     let alt = effect_alt(track, world.t, effect_at, p.effect_radius_m, &ec);
     picture_checks.push(keep_out_friendly(
         p.effect_point,
@@ -4535,7 +4631,10 @@ pub fn picture(
     picture_checks.push(picture_keep_out_tracks(uid, snap, world, cfg));
     picture_checks.push(link_check(uid, snap, world));
     picture_checks.push(nav_check(uid, world, cfg));
-    picture_checks.push(window_check(snap, world, &ec, dispatched, flight));
+    // rules 24: the plan's weapon, a round of it left
+    let named = p.weapon.as_deref().or(named_weapon(spec));
+    picture_checks.extend(weapon_check(uid, named, track, world, &ec));
+    picture_checks.push(window_check(snap, world, &ec, dispatched, flight.as_ref().map(|(m, l)| (m, *l))));
     let holds = picture_checks.iter().all(|c| c.outcome == Outcome::Pass);
     let mut out = picture_checks;
     let mut ready = false;
@@ -4881,12 +4980,17 @@ fn release_checks(
             uid,
             if s.in_range() { Outcome::Pass } else { Outcome::Fail },
             format!(
-                "platform {:.0} m slant range from the effect point ({:.0} m out, {:.0} m above it): the {} reaches {:.0} m, a {:.1} s flight",
+                "platform {:.0} m slant range from the effect point ({:.0} m out, {:.0} m above it): the {} reaches {}, a {:.1} s flight",
                 s.slant_m,
                 s.ground_m,
                 s.launch_alt_m - s.impact_alt_m,
                 s.munition.name,
-                s.munition.range_m,
+                // rules 24: a weapon with a minimum range says it (rules 20's munition has none)
+                if s.min_range_m > 0.0 {
+                    format!("from {:.0} to {:.0} m", s.min_range_m, s.munition.range_m)
+                } else {
+                    format!("{:.0} m", s.munition.range_m)
+                },
                 s.tof_s()
             ),
         ),
@@ -4982,23 +5086,31 @@ fn release_checks(
 // ---- munitions in flight (rules 20) ---------------------------------------------------------
 
 /// Rules 20: the munition the engagement's platform launches at the release (its catalog's,
-/// [`crate::catalog::MunitionFacts`]), when the rules read one; none for a platform that carries
-/// none or is its own (a loitering munition, spent by its own effect), and before rules 20.
-pub fn munition_of<'w>(uid: Option<&Uid>, world: &'w WorldSnapshot, ec: &EngageRules) -> Option<&'w MunitionFacts> {
+/// [`crate::catalog::MunitionFacts`]), when the rules read one, and its minimum slant range;
+/// none for a platform that carries none or is its own (a loitering munition, spent by its own
+/// effect), and before rules 20. Rules 24: the plan's weapon (`p.weapon`) of the platform's
+/// loadout when it flies (a missile, bomb or torpedo, with its own speed and its minimum and
+/// maximum range), none for the platform itself or a plan without a weapon; the catalog's
+/// `munition` line is no longer read.
+pub fn munition_of(uid: Option<&Uid>, p: &EngagePreview, world: &WorldSnapshot, ec: &EngageRules) -> Option<(MunitionFacts, f64)> {
     if !ec.munition_flight() {
         return None;
     }
-    uid.and_then(|u| world.vehicles.get(u))?
-        .platform
-        .as_ref()?
-        .munition
-        .as_ref()
+    let platform = uid.and_then(|u| world.vehicles.get(u))?.platform.as_ref()?;
+    if ec.loadouts() {
+        let name = p.weapon.as_deref()?;
+        let w = platform.loadout.iter().find(|w| w.name == name)?;
+        return w.kind.flies().then(|| (w.munition(), w.min_range_m));
+    }
+    platform.munition.clone().map(|m| (m, 0.0))
 }
 
 /// Rules 20: the shot a platform's munition would make if released now ([`shot`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shot {
     pub munition: MunitionFacts,
+    /// Rules 24: the weapon's minimum slant range, m (0 for rules 20's munition).
+    pub min_range_m: f64,
     /// Where the platform reported itself, and its altitude (m above mean sea level).
     pub launch_point: LonLat,
     pub launch_alt_m: f64,
@@ -5013,9 +5125,9 @@ pub struct Shot {
 }
 
 impl Shot {
-    /// Within the munition's range: it may be released.
+    /// Within the munition's range (rules 24: and outside its minimum range): it may be released.
     pub fn in_range(&self) -> bool {
-        self.slant_m <= self.munition.range_m
+        self.slant_m <= self.munition.range_m && self.slant_m >= self.min_range_m
     }
 
     pub fn tof_s(&self) -> f64 {
@@ -5024,9 +5136,10 @@ impl Shot {
 
     /// The soonest the munition could strike from now, ms: its time of flight from here, or from
     /// its range when the platform is farther (it must close to its range first, and closing in
-    /// never brings the strike earlier: a platform flies slower than its munition).
+    /// never brings the strike earlier: a platform flies slower than its munition). Rules 24: from
+    /// its minimum range when the platform is nearer (it must open to it first).
     pub fn lead_ms(&self) -> i64 {
-        ms(self.slant_m.min(self.munition.range_m) / self.munition.speed_mps)
+        ms(self.slant_m.min(self.munition.range_m).max(self.min_range_m) / self.munition.speed_mps)
     }
 
     /// The flight of this shot released at `t` (the `engage.effect`'s time).
@@ -5059,7 +5172,7 @@ pub fn shot(
     world: &WorldSnapshot,
     ec: &EngageRules,
 ) -> Option<Result<Shot, String>> {
-    let m = munition_of(uid, world, ec)?;
+    let (m, min_range_m) = munition_of(uid, p, world, ec)?;
     let v = uid.and_then(|u| world.vehicles.get(u));
     let Some(pos) = v.and_then(|v| v.position.as_ref()) else {
         return Some(Err("platform has no position".into()));
@@ -5083,31 +5196,33 @@ pub fn shot(
     let impact_alt = effect_alt(track, world.t, world.t, p.effect_radius_m, ec).map_or(0.0, |a| a.alt_m);
     let ground = haversine_m(pos.value, p.effect_point);
     let slant = ground.hypot(alt - impact_alt);
+    let tof_ms = ms(slant / m.speed_mps);
     Some(Ok(Shot {
-        munition: m.clone(),
+        munition: m,
+        min_range_m,
         launch_point: pos.value,
         launch_alt_m: alt,
         impact_point: p.effect_point,
         impact_alt_m: impact_alt,
         ground_m: ground,
         slant_m: slant,
-        tof_ms: ms(slant / m.speed_mps),
+        tof_ms,
     }))
 }
 
 /// Rules 20: the munition of the engagement's platform and the soonest it could strike from now,
 /// ms ([`Shot::lead_ms`]), for the picture's window and keep-outs; none without a munition or a
 /// shot (the release's `arrival` check then says why).
-pub fn strike_lead<'w>(
+pub fn strike_lead(
     uid: Option<&Uid>,
     p: &EngagePreview,
     track: Option<&TrackFacts>,
-    world: &'w WorldSnapshot,
+    world: &WorldSnapshot,
     ec: &EngageRules,
-) -> Option<(&'w MunitionFacts, i64)> {
-    let m = munition_of(uid, world, ec)?;
+) -> Option<(MunitionFacts, i64)> {
     let s = shot(uid, p, track, world, ec)?.ok()?;
-    Some((m, s.lead_ms()))
+    let lead = s.lead_ms();
+    Some((s.munition, lead))
 }
 
 /// Rules 20: the shot an engagement's release makes, on the world of the picture that released it

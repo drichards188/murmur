@@ -1981,6 +1981,63 @@ Rules versions:
   `v23-own-look-not-ended-by-another-camera-scenario-118.jsonl` (its meanwhile step cut is
   caught; relabelled rules 22, the step is caught).
 
+- **24** (bd murmur-lbw8.1, the owner's direction of 2026-11-02, DECISIONS.md "Real weapon
+  loadouts on armed platforms"; every gate reads `LOADOUT_SINCE`, so another change taking the
+  number first renumbers it in one line; no policy key changes, schema 7; a v24 log carries every
+  rules 23 behaviour too): *an armed platform carries its real loadout, an engagement uses one of
+  its weapons, and each release spends a round*. Up to rules 23 a platform had at most one
+  munition (`munition = { name, speed_mps, range_m }`, rules 20) and fired it without end. From
+  rules 24 a catalog entry lists its weapons (`loadout`, `catalog::WeaponFacts`, a platform fact
+  logged with every decision: name, kind among missile, bomb, torpedo, self, gun and mine, count,
+  minimum and maximum slant range, average speed, flight profile, guidance, warhead class and
+  mass, target domains; and, inert until their stages, `effects` (hit and kill chances by target
+  kind, murmur-lbw8.2), `burst_rounds` and `rate_rpm` (guns, murmur-lbw8.3), `persist_h` and
+  `trigger` (mines, murmur-lbw8.4)), and the `munition` line is no longer read. An engagement
+  names its weapon (`Task::Engage::weapon`, by the loadout's name), or the engine picks the first
+  of the loadout, in the catalog's order, that is usable now (not a gun or a mine), meant for the
+  target's domain and has a round left (`loadout::choose`). A new check, `weapon`, says which and
+  why ("named: ...; 2 of 2 rounds left", "picked (none named): ...; the first of mq9b_armed's
+  loadout usable against a surface target with a round left (passed over: ...)") or refuses
+  ("GBU-12 Paveway II has no round left (2 of 2 released): the nomination names it", "AIM-120C
+  AMRAAM is for air targets, not surface"); it runs at the nomination, on the frozen plan at each
+  signature and hold, and in every picture (a weapon whose rounds are gone holds no picture). The
+  preview carries the weapon (`EngagePreview::weapon`), so the first signature freezes it with the
+  plan. A missile, bomb or torpedo flies rules 20's straight slant line at its own speed and is
+  released only between its minimum and maximum slant range (`Shot::min_range_m`; the `arrival`
+  detail says "reaches from 500 to 8000 m" where there is a minimum, and is worded as rules 20's
+  where there is none); the platform itself (`self`) is released within `arrival_m` as a platform
+  without a munition always was, and is spent with the platform (rules 12 and 15), never counted.
+  Each release of a counted weapon spends a round: the `engage.effect` logs `weapon` (`name`,
+  `kind`, `left`: the rounds left after it, `vehicle`: the bridge's identity of the platform), the
+  engine's ledger (`replay::Restores`, as rules 15's spent marks) counts it, and every engagement
+  decision logs the platform's rounds as a fact (`rounds`: this run's releases by weapon, the
+  rounds carried over from earlier runs with the vehicle each was released from, and the vehicle
+  under the uid now). A start carries the rounds the log it reads had released (and those carried
+  into it) in `run.started`'s `carried_from` (`rounds`), counted on the same vehicle only (another
+  under the uid, known by platform, callsign or system id, does not count them). Replay recomputes
+  the release's weapon from the releasing picture (the plan's weapon, the rounds left less one),
+  each decision's `rounds` from its own ledger, and each carried entry's `rounds` from the log it
+  names; a log claiming rules 23 or older can't carry a weapon or rounds (markers). The armed
+  platforms' loadouts (DECISIONS.md, docs/research/weapons.md): the MQ-9B four AGM-114R and two
+  GBU-12, the CCA two AIM-120C (air targets only, and now `armed`), the Magura V5 its charge (the
+  boat, now `expended_by_effect`), the Switchblade 600 and the FPV themselves, the armed UGV an M2
+  (inert) and a Javelin; the Orca's Hammerheads and the mine-laying UGV's TM-62s are listed, inert,
+  and those two stay unarmed until stage 4. Scenarios 119 (two GBU-12 named and released, 2 then
+  1 of 2 left; a third naming it refused; none named, the Hellfire picked; tamper `edit_rounds`, a
+  release logged with one more round left, is caught) and 120 (the MQ-9B at 300 m over the point,
+  inside the Hellfire's 500 m minimum: never released, aborted late by `engage_window`; `--rules
+  23` releases rules 20's munition over the point). 106 and 107 now run on the MQ-9B's loadout
+  (the Hellfire picked, the same figures as rules 20's munition) and end as before; rules 20's
+  tests pin rules 23. The engagement scenarios written against a Magura that survives its own
+  effect (08, 67 to 71, 81, 82, 85, 95, 96) name `magura_pre_loadout`, the Magura as catalogued
+  before (armed, no loadout, not spent by its effect), and end as before. The scenario runner's
+  `nominate` takes `weapon`, `expect` takes `weapon` (a substring of the weapon check's detail).
+  `tests/rules24.rs` (the carry over a restart, on the same vehicle only, replayed with its
+  earlier log; a rules 23 log replays unchanged). Fixtures (a clean build of the branch):
+  `tests/data/audit/v24-engagement-scenario-01.jsonl`,
+  `v24-rounds-spent-then-another-weapon-scenario-119.jsonl` (relabelled rules 23, its weapons
+  are caught).
+
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
 `seen_max_age_s`, an unreleased build's name for it, is still read; **3** adds `[queue]`

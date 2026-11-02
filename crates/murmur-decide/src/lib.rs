@@ -237,7 +237,7 @@
 //!         id: "x10".into(), domain: Domain::Air, armed: false, cruise_mps: Some(12.0),
 //!         min_turn_radius_m: None, endurance_h: Some(0.65), autopilot: Some(AutopilotKind::Copter),
 //!         sensors: Vec::new(), climb_mps: None, max_mps: None, expended_by_effect: false,
-//!         munition: None,
+//!         munition: None, loadout: Vec::new(),
 //!     }),
 //!     autopilot: Some(Fact::new(AutopilotKind::Copter, t)),
 //!     nav_ready: Some(Fact::new(true, t)),
@@ -291,6 +291,7 @@ pub mod identify;
 pub mod ids;
 pub mod intent;
 pub mod keepout;
+pub mod loadout;
 pub mod lost;
 pub mod plan;
 pub mod passkey;
@@ -316,7 +317,11 @@ pub use authority::{
     STEP_UP_MAX_AGE_MS, StepUp, StepUpRef,
 };
 pub use audit::RestoreClosure;
-pub use catalog::{AutopilotKind, Catalog, Domain, MunitionFacts, PlatformFacts, Reaches, SensorFact, SensorReach};
+pub use catalog::{
+    AutopilotKind, Catalog, Domain, FlightProfile, MunitionFacts, PlatformFacts, Reaches, SensorFact, SensorReach, Warhead,
+    WeaponEffect, WeaponFacts, WeaponKind,
+};
+pub use loadout::{CarriedRounds, PlatformRounds, RoundsSpent, WeaponChoice, WeaponRelease};
 pub use engage::{
     AssessResult, Assessment, EffectOrder, EffectRecord, EngageOrder, EngagePreview, EngageRules,
     EngageSnapshot, EngageWindow, Engagement, EngagementEvent, Fallback, FallbackOrder,
@@ -355,7 +360,7 @@ pub use queue::{
 };
 pub use route::{LegKind, Route, RouteLeg, Segment};
 pub use rules::{
-    ACCEPT_BEHAVING_SINCE, AIRCRAFT_REACH_SINCE, CARRY_FOLLOWUPS_SINCE, CheckResult, IDENTIFY_OWN_LOOK_SINCE, IDENTIFY_SECOND_LOOK_SINCE, IDENTIFY_SINCE, LOST_CONTACT_SINCE, MUNITION_FLIGHT_SINCE, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
+    ACCEPT_BEHAVING_SINCE, AIRCRAFT_REACH_SINCE, CARRY_FOLLOWUPS_SINCE, CheckResult, IDENTIFY_OWN_LOOK_SINCE, IDENTIFY_SECOND_LOOK_SINCE, IDENTIFY_SINCE, LOADOUT_SINCE, LOST_CONTACT_SINCE, MUNITION_FLIGHT_SINCE, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
     QUEUE_FOLLOWUPS_SINCE, REVIEW_FOLLOWUPS_SINCE, ROUTE_PLAN_SINCE, ROUTE_SURFACE_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_VERSION,
     RuleId, RulesConfig, SPACE_FOLLOWUPS_SINCE, SPACE_REPLAY_SINCE, STEP_UP_SCHEMA_SINCE, UnknownEndurance, VELOCITY_SIGMA_SINCE,
 };

@@ -240,7 +240,7 @@ fn rule_declaration_off_decides_as_rules_8_did() {
         // its own velocity error; nor rules 19's: a live track accepted as behaving now; nor rules
         // 20's: a munition released its time of flight early, from within its range; nor rules
         // 21's: an identify order, which no earlier rules take; nor rules 22's: a leg routed round
-        // land or a no-go area)
+        // land or a no-go area; nor rules 24's: a platform's loadout, its rounds counted)
         let text = std::fs::read_to_string(&f).unwrap();
         if text.contains("action = \"act\"")
             || text.contains("tracked_s")
@@ -255,6 +255,7 @@ fn rule_declaration_off_decides_as_rules_8_did() {
             || text.starts_with("# Rules 21")
             || text.starts_with("# Rules 22")
             || text.starts_with("# Rules 23")
+            || text.starts_with("# Rules 24")
         {
             continue;
         }

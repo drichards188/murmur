@@ -25,6 +25,25 @@
 # short: compact model label shown on the map symbol.
 # armed: true for platforms that carry an effect; any task on them needs a human
 #        (sim/policy.toml). Omitted means false.
+# loadout: the weapons the platform carries in real life (decision rules 24, bd murmur-lbw8.1;
+#        crates/murmur-decide/src/catalog.rs `WeaponFacts`), one inline table each, in the order
+#        the engine picks one when a nomination names none (the first usable against the target's
+#        domain with a round left):
+#          { name, kind = "missile"|"bomb"|"torpedo"|"self"|"gun"|"mine", count, min_range_m,
+#            max_range_m, speed_mps, profile = "direct"|"lofted"|"glide"|"ballistic"|"dive"|
+#            "sea_skimming"|"waterborne"|"laid", guidance, warhead = { class, mass_kg },
+#            targets = [domains] }
+#        count is rounds per load (each release spends one; a gun's rounds, not bursts); ranges
+#        are the slant distance from launch to the effect point, speed an average. A missile,
+#        bomb or torpedo flies rules 20's straight slant line at that speed (the profile is
+#        recorded, not modelled yet); `self` is the platform itself (a one-way strike, spent by
+#        its own effect). Guns and mines are listed but inert until bd murmur-lbw8.3 and .4: no
+#        nomination may use one. Later stages' optional keys: effects = { <target kind> =
+#        { p_hit, p_kill } } (murmur-lbw8.2), burst_rounds and rate_rpm (guns), persist_h and
+#        trigger (mines). Figures carry a source: [n] a reference of docs/research/weapons.md,
+#        [E] an estimate with its basis.
+# munition: rules 20's single munition (`{ name, speed_mps, range_m }`), read under rules 20 to 23
+#        only (replay of their logs, and runs pinned to them); rules 24 reads the loadout instead.
 #
 # protocol: how a C2 reaches the real platform: mavlink | stanag4586 | uci | jaus | umaa |
 #        proprietary | rc | telemetry. Every node speaks MAVLink in the sim whatever this says;
@@ -182,6 +201,22 @@ endurance_h = 35
 # distance at most. From 7,600 m it strikes some 18 s after the release, so the release comes
 # that much before the plan's time, from within about 2.5 km of the point on the ground.
 munition = { name = "Hellfire-class missile", speed_mps = 425, range_m = 8000 }
+# rules 24 (bd murmur-lbw8.1): its loadout ([n]: docs/research/weapons.md's references), the
+# research's default for maritime engagements [E]:
+# four AGM-114R on two dual rails [2; E: the MQ-9A's usual mix with bombs] and two GBU-12 on the
+# middle stations [E: 230 kg [7] within their 270 kg [2]]. No torpedo: no public source arms
+# the MQ-9B with one ([11,12]).
+#   AGM-114R Hellfire II: 500 to 8,000 m [6]; 425 m/s (Mach 1.3, about 440 [6]); direct or lofted
+#     [6]; semi-active laser [6]; a multi-function warhead, about 9 kg [E: the K's tandem HEAT is
+#     9 kg [6], the R's mass is not published]; vehicles, boats, people.
+#   GBU-12 Paveway II: 1,000 [E: time to acquire the laser spot] to 14,800 m [7]; about 200 m/s on
+#     average from 7,600 m [E: a free fall of some 40 s]; free fall, then a terminal glide [7];
+#     semi-active laser [7]; a Mk 82, 241 kg (87 to 89 kg of tritonal) [10]; ships, boats,
+#     vehicles, buildings.
+loadout = [
+  { name = "AGM-114R Hellfire II", kind = "missile", count = 4, min_range_m = 500, max_range_m = 8000, speed_mps = 425, profile = "direct", guidance = "semi_active_laser", warhead = { class = "multi_function", mass_kg = 9 }, targets = ["surface", "ground"] },
+  { name = "GBU-12 Paveway II", kind = "bomb", count = 2, min_range_m = 1000, max_range_m = 14800, speed_mps = 200, profile = "glide", guidance = "semi_active_laser", warhead = { class = "general_purpose_blast", mass_kg = 241 }, targets = ["surface", "ground"] },
+]
 link = "satcom"
 space_class = "wgs"
 space_class_alt = "ku-geo"
@@ -202,6 +237,18 @@ authenticity_blocker = "Proprietary flight software"
 name = "Collaborative Combat Aircraft (YFQ-42A/44A-class)"
 short = "CCA"
 role = "Jet combat UAS"
+# Armed in real life (rules 24, bd murmur-lbw8.1; [n]: docs/research/weapons.md's references):
+# both Increment 1 aircraft carry two AIM-120,
+# the YFQ-42A in its bay [13,14], the YFQ-44A under its wings, fired live in July 2026 [15,16].
+# Air-to-air only: the engine refuses it against anything but an air track.
+#   AIM-120C AMRAAM: 1,000 [E: arming and guidance start] to 90,000 m (the C) [18]; 1,000 m/s on
+#     average [E: below its Mach 4 peak, about 1,370 [18]]; lofted, then an active terminal [18];
+#     INS and datalink midcourse, active radar terminal [18]; 20 kg blast-fragmentation with a
+#     proximity fuze [18]; aircraft and drones.
+armed = true
+loadout = [
+  { name = "AIM-120C AMRAAM", kind = "missile", count = 2, min_range_m = 1000, max_range_m = 90000, speed_mps = 1000, profile = "lofted", guidance = "active_radar", warhead = { class = "blast_fragmentation", mass_kg = 20 }, targets = ["air"] },
+]
 domain = "air"
 sim = "standin"
 behavior = "plane"
@@ -333,6 +380,15 @@ behavior = "plane"
 cruise_mps = 28
 typical_alt_m = 80
 endurance_h = 0.7
+# rules 24 (bd murmur-lbw8.1; [n]: docs/research/weapons.md's references): the munition is the
+# airframe itself, one round, spent by its own effect. Switchblade 600: 40,000 m out (90,000 with
+# a relay) [31,33]; dash 51 m/s (loiter 31) [31]; a terminal dive, waved off until about 4 s
+# before impact [33]; operator video, EO/IR with an aided tracker, secure GPS [31]; an
+# anti-armour, Javelin-derived warhead [33], about 8 kg [E: the Javelin's 8.4 kg tandem HEAT
+# [30]; no figure published]; armour, vehicles, boats [31,33].
+loadout = [
+  { name = "Switchblade 600", kind = "self", count = 1, min_range_m = 0, max_range_m = 40000, speed_mps = 51, profile = "dive", guidance = "operator_video", warhead = { class = "tandem_heat", mass_kg = 8 }, targets = ["ground", "surface"] },
+]
 [x10]
 name = "Skydio X10-class quadcopter"
 short = "QUAD"
@@ -386,6 +442,14 @@ cruise_mps = 25
 climb_mps = 2.5
 typical_alt_m = 30
 endurance_h = 0.15
+# rules 24 (bd murmur-lbw8.1; [n]: docs/research/weapons.md's references): the drone is the
+# munition, one round. No single maker: 10,000 m by radio [35] (10 to 20 km [35; E]); 28 to 44 m/s
+# at most [35], 35 here [E: the middle]; a low run in and a dive [E]; operator video [36; E]; the
+# research's default, a PG-7VL (RPG-7) grenade head, 2.6 kg (0.73 kg of HMX), single HEAT [34];
+# vehicles and boats.
+loadout = [
+  { name = "PG-7VL warhead (FPV)", kind = "self", count = 1, min_range_m = 0, max_range_m = 10000, speed_mps = 35, profile = "direct", guidance = "operator_video", warhead = { class = "heat", mass_kg = 2.6 }, targets = ["ground", "surface"] },
+]
 [lta]
 name = "Small airship (LTA)"
 short = "LTA"
@@ -469,6 +533,21 @@ cruise_mps = 4
 typical_alt_m = 0
 # endurance: [E] the same THeMIS carrying a remote weapon station ([62]): 15 h hybrid.
 endurance_h = 15
+# rules 24 (bd murmur-lbw8.1; [n]: docs/research/weapons.md's references): EOS's R400 in its dual
+# fit, an M2 and one Javelin, the station drawn on THeMIS [23] (Kongsberg's Protector fired the
+# same pair from it in 2019 [24]). The M2 is listed but inert until guns come (bd murmur-lbw8.3):
+# no nomination may use it; the Javelin is usable now.
+#   M2 .50 (12.7 mm): 500 rounds [23]; 1,800 m effective (7,400 at most) [26]; 890 to 930 m/s at
+#     the muzzle [26], 910 here; bursts of 5 to 7 [26], 6 here, at 450 to 600 rpm [26]; a <1 mrad
+#     stabilised sight [23]; 12.7 x 99 ball and AP [26] (a round's mass, 0.043 kg [E]).
+#   FGM-148 Javelin: one ready, reloaded by hand [E: the R400 shows one launcher [23]]; 65 [E:
+#     published minimums vary] to 4,750 m from a vehicle [30]; about 150 m/s on average [E: some
+#     30 s to 4.75 km]; top attack or direct [30]; IR imaging, fire-and-forget [30]; 8.4 kg tandem
+#     HEAT [30]; armour, vehicles, boats.
+loadout = [
+  { name = "M2 .50 HMG", kind = "gun", count = 500, min_range_m = 0, max_range_m = 1800, speed_mps = 910, profile = "ballistic", guidance = "stabilised_sight", warhead = { class = "ball_ap_12_7mm", mass_kg = 0.043 }, targets = ["ground", "surface", "air"], burst_rounds = 6, rate_rpm = 525 },
+  { name = "FGM-148 Javelin", kind = "missile", count = 1, min_range_m = 65, max_range_m = 4750, speed_mps = 150, profile = "lofted", guidance = "imaging_infrared", warhead = { class = "tandem_heat", mass_kg = 8.4 }, targets = ["ground", "surface"] },
+]
 [ugv_mines]
 name = "Mine-laying UGV"
 short = "UGV-M"
@@ -494,6 +573,15 @@ typical_alt_m = 0
 # endurance: [E] a comparable vehicle's, Tencore's TerMIT 2.0 (tracked; a module laying 20 TM-62
 # mines): 40 km on four 73 Ah 20S batteries ([64]) at the catalog's 2 m/s, 5.6 h.
 endurance_h = 5.5
+# rules 24 (bd murmur-lbw8.1; [n]: docs/research/weapons.md's references): the TerMIT 2.0's
+# module, 20 TM-62 anti-tank mines a run, laid one every 1 to 4 m [43]. Listed but inert until
+# mines come (bd murmur-lbw8.4), and `armed` stays unset until then: an inert loadout carries no
+# effect, so arming it now would only send its every order to a person. TM-62M: 9.5 kg, 7.5 kg of
+# TNT [44]; a pressure fuze of 150 to 550 kg or a full-width magnetic one [44]; vehicles, never a
+# person on foot [44]. Its reach is the wheel or track over it, 1 m here [E].
+loadout = [
+  { name = "TM-62M mine", kind = "mine", count = 20, min_range_m = 0, max_range_m = 1, speed_mps = 0, profile = "laid", guidance = "pressure_fuze", warhead = { class = "blast", mass_kg = 9.5 }, targets = ["ground"], trigger = "pressure 150-550 kg" },
+]
 [ugv_recon]
 name = "Small recon UGV"
 short = "UGV-R"
@@ -568,6 +656,46 @@ typical_alt_m = 0
 # endurance: [E] the declared 450 nmi at its declared 22 kt cruise ([66]; the Eurosatory 2024
 # brochure's 960 km at 45 km/h [67] gives 21 h), 20 h. The "60 hours" often quoted for it is a
 # 2022 figure for an unnamed drone ([68]).
+endurance_h = 20
+# rules 24 (bd murmur-lbw8.1; [n]: docs/research/weapons.md's references): the V5 is a one-way
+# weapon by design, the boat and its charge [19,20]: spent by its own effect (as the switchblade
+# and the FPV; under rules 12 nothing is owed back to it after its release). Up to 800,000 m [19];
+# 22 m/s at most [19]; at the waterline [19]; operator video and GNSS/INS with an EO tracker
+# [19,20]; a contact-fuzed charge of up to 300 kg [19] (a 320 kg load [20]); ships, boats, piers.
+# The Sea Dragon (two R-73) and the V7 (two AIM-9 or a gun) [19] are other loadouts, not this one.
+expended_by_effect = true
+loadout = [
+  { name = "Magura V5 charge", kind = "self", count = 1, min_range_m = 0, max_range_m = 800000, speed_mps = 22, profile = "waterborne", guidance = "operator_video", warhead = { class = "blast_contact", mass_kg = 300 }, targets = ["surface"] },
+]
+
+# The Magura as catalogued before rules 24 (bd murmur-lbw8.1): armed, with no loadout and not
+# spent by its own effect, so an engagement by it is an abstract effect it survives. Kept only for
+# the engagement scenarios written against that boat (sim/scenarios/engage 08, 67 to 71, 81, 82,
+# 85, 95, 96), whose restores and queued orders need an armed boat that survives its own effect;
+# no fleet uses it. Every other field is [magura]'s.
+[magura_pre_loadout]
+name = "Magura V5-class naval drone (as before rules 24)"
+short = "USV-S"
+role = "Small fast attack USV"
+armed = true
+domain = "surface"
+sim = "sitl"
+vehicle = "boat"
+callsign = "VIPER"
+link = "satcom"
+space_class = "starlink"
+sidc = "SFSP-----------"
+sensors = [{ type = "eo_ir", range_m = 5000, guess = true, slew_dps = 0, channels = [{ band = "day", wide_deg = 20, px = 1920 }] }, { type = "ais", range_m = 15000, guess = true }]
+physical_reach_m = { eo_ir = { air = 10460, ground = 7330, surface = 10080 } }
+mast_m = 1.5
+protocol = "proprietary"
+protocol_note = "Control software is proprietary; MAVLink in the sim, labelled as such"
+authenticity = "Planing-hull dynamics (Gazebo/VRX) plus a satellite link model"
+authenticity_blocker = "Control software proprietary"
+params = { CRUISE_SPEED = 12, WP_SPEED = 12 }
+behavior = "boat"
+cruise_mps = 12
+typical_alt_m = 0
 endurance_h = 20
 [corsair]
 name = "Corsair-class autonomous surface vessel"
@@ -788,6 +916,16 @@ protocol = "umaa"
 protocol_note = "Navy programs use UMAA over DDS; JANUS (STANAG 4748) for the acoustic link"
 authenticity = "Same as REMUS"
 authenticity_blocker = "UMAA data-model availability"
+# rules 24 (bd murmur-lbw8.1; [n]: docs/research/weapons.md's references): its 34 ft, 8 t payload
+# module is a minelayer first [38,39], for Hammerhead, a seabed capsule that releases a Mk 54
+# torpedo at a submarine [40]. Listed but inert until mines come (bd murmur-lbw8.4), and `armed`
+# stays unset until then: an inert loadout carries no effect. Four [E: an 8 t module; a Mk 54 is
+# 276 kg [12], each capsule with its mooring and sensors about 1.5 to 2 t, a guess]; its torpedo
+# runs to about 9,100 m [12] at over 20 m/s [12]; it lies on the seabed and listens [40]; acoustic
+# homing [12]; 43.9 kg of PBXN-103 [12]; submarines and large UUVs [40].
+loadout = [
+  { name = "Hammerhead (encapsulated Mk 54)", kind = "mine", count = 4, min_range_m = 0, max_range_m = 9100, speed_mps = 20, profile = "laid", guidance = "acoustic_homing", warhead = { class = "blast", mass_kg = 43.9 }, targets = ["subsurface"], trigger = "acoustic" },
+]
 
 # ---------------------------------------------------------------- scoring v2 variants
 # Why these exist: eval/SCORING-V2.md, section 0 (decision D8). In Harbor watch, REAPER 1's

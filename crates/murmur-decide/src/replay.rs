@@ -389,6 +389,12 @@ pub(crate) struct Restores {
     /// When the run started (`run.started`): a platform spent in an earlier run and heard since
     /// was heard after its effect.
     started_t: Option<Time>,
+    /// Rules 24: the rounds of each counted weapon released in this run (`engage.effect`'s
+    /// `weapon`), by platform and weapon, with the vehicle the last one was released from.
+    rounds: BTreeMap<Uid, BTreeMap<String, (u32, Option<engage::VehicleIdentity>)>>,
+    /// Rules 24: rounds released in earlier runs, carried over at the start (`run.started`'s
+    /// `carried_from`, `rounds`; `from`: the log that released them).
+    rounds_carried: Vec<crate::loadout::RoundsSpent>,
 }
 
 /// Rules 12: a platform spent by its own effect in this run: the engagement whose release spent
@@ -576,6 +582,14 @@ impl Restores {
                 let mut sp = sp.clone();
                 sp.from.get_or_insert_with(|| c.log.clone());
                 self.spent_carried.insert(sp.uid.clone(), sp);
+            }
+            // rules 24: the rounds each log read had released (its own, or carried into it)
+            for rs in &c.rounds {
+                let mut rs = rs.clone();
+                rs.from.get_or_insert_with(|| c.log.clone());
+                if !self.rounds_carried.contains(&rs) {
+                    self.rounds_carried.push(rs);
+                }
             }
         }
         for c in from.iter().rev() {
@@ -776,6 +790,86 @@ impl Restores {
         self.spent_carried.contains_key(uid)
     }
 
+    /// Rules 24: a release of a counted weapon from `uid` (an `engage.effect`'s `weapon`): one
+    /// round spent.
+    fn release(&mut self, uid: &Uid, w: &crate::loadout::WeaponRelease) {
+        if !w.kind.counted() {
+            return;
+        }
+        let e = self.rounds.entry(uid.clone()).or_default().entry(w.name.clone()).or_insert((0, None));
+        e.0 += 1;
+        e.1 = w.vehicle.clone();
+    }
+
+    /// Rules 24: the rounds of `spec`'s platform (an engagement's) as a decision reads them: this
+    /// run's releases, and the earlier runs' carried over with the vehicle under the uid now
+    /// (`now`, the bridge's identities as the decision read them): those count unless it is known
+    /// to be another vehicle. Empty before rules 24, for any other kind, and when there is nothing
+    /// to say.
+    pub(crate) fn rounds_for(
+        &self,
+        spec: &IntentSpec,
+        rules: &crate::rules::RulesConfig,
+        now: &BTreeMap<Uid, engage::VehicleIdentity>,
+    ) -> BTreeMap<Uid, crate::loadout::PlatformRounds> {
+        if !rules.loadouts() || spec.kind() != TaskKind::Engage {
+            return BTreeMap::new();
+        }
+        spec.uids
+            .iter()
+            .take(1)
+            .filter_map(|u| {
+                let r = self.rounds_of(u, now.get(u));
+                (!r.is_empty()).then(|| (u.clone(), r))
+            })
+            .collect()
+    }
+
+    /// Rules 24: `u`'s rounds, with `is` the vehicle under the uid now ([`Self::rounds_for`]).
+    pub(crate) fn rounds_of(&self, u: &Uid, is: Option<&engage::VehicleIdentity>) -> crate::loadout::PlatformRounds {
+        crate::loadout::PlatformRounds {
+            used: self
+                .rounds
+                .get(u)
+                .map(|m| m.iter().map(|(w, (n, _))| (w.clone(), *n)).collect())
+                .unwrap_or_default(),
+            carried: self
+                .rounds_carried
+                .iter()
+                .filter(|c| &c.uid == u)
+                .map(|c| crate::loadout::CarriedRounds {
+                    from: c.from.clone().unwrap_or_default(),
+                    weapon: c.weapon.clone(),
+                    used: c.used,
+                    released_on: c.vehicle.clone(),
+                    other_vehicle: match (&c.vehicle, is) {
+                        (Some(was), Some(is)) => was.differs(is),
+                        _ => None,
+                    },
+                })
+                .collect(),
+            now: is.cloned(),
+        }
+    }
+
+    /// Rules 24: the rounds this log released (`from` none) and those carried into it, by
+    /// platform and weapon: what a later start carries over.
+    pub(crate) fn rounds_spent(&self) -> Vec<crate::loadout::RoundsSpent> {
+        self.rounds
+            .iter()
+            .flat_map(|(u, m)| {
+                m.iter().map(|(w, (n, v))| crate::loadout::RoundsSpent {
+                    uid: u.clone(),
+                    weapon: w.clone(),
+                    used: *n,
+                    from: None,
+                    vehicle: v.clone(),
+                })
+            })
+            .chain(self.rounds_carried.iter().cloned())
+            .collect()
+    }
+
     /// Rules 12 and 15: the platforms spent by their own effect, this run's (`from` none) and
     /// those carried over.
     pub(crate) fn spent(&self) -> Vec<SpentPlatform> {
@@ -945,6 +1039,9 @@ impl Restores {
                 None,
             ),
             EventBody::PlatformUnspent { uid, .. } => self.unspend(uid),
+            EventBody::EngageEffect {
+                uid, weapon: Some(w), ..
+            } => self.release(uid, w),
             EventBody::IntentState { intent, to, .. } if to.is_terminal() => self.intent_ended(*intent),
             _ => {}
         }
@@ -1049,6 +1146,10 @@ pub struct CarriedFrom {
     /// entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pointer_failed: Option<String>,
+    /// Rules 24: the rounds it had released (its own, and those carried into it), by platform and
+    /// weapon, with the vehicle they were released from: still spent in this run on that vehicle.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rounds: Vec<crate::loadout::RoundsSpent>,
 }
 
 /// Rules 12: what a log still owes when it ends: the platforms' own lost-link values never
@@ -1064,6 +1165,8 @@ pub struct Debts {
     /// owing (`may_owe`): a later start that retries it and can't read its fleet file either
     /// records the same list (the vehicles stay held).
     pub pending_may_owe: BTreeMap<String, Vec<OwedRestore>>,
+    /// Rules 24: the rounds it released and those carried into it ([`crate::loadout::RoundsSpent`]).
+    pub rounds: Vec<crate::loadout::RoundsSpent>,
 }
 
 /// Rules 15 ([`crate::rules::CARRY_FOLLOWUPS_SINCE`], murmur-zq3): a platform spent by its own
@@ -1276,6 +1379,7 @@ pub fn owed_debts(text: &str) -> Debts {
             .map(|(l, p)| (l.clone(), p.may_owe.clone()))
             .collect(),
         spent: restores.spent(),
+        rounds: restores.rounds_spent(),
         owed: restores
             .owed
             .into_iter()
@@ -1508,6 +1612,9 @@ struct Tracked {
     /// Engage, rules 20: the shot that picture's world gives the platform's munition (the
     /// release's munition flight is recomputed from it).
     ready_shot: Option<engage::Shot>,
+    /// Engage, rules 24: the weapon a release on that picture's world makes (its plan's, the
+    /// rounds of it left after it and the vehicle).
+    ready_weapon: Option<crate::loadout::WeaponRelease>,
     /// Engage, rules 20: the munition released with the effect (observation starts at its
     /// impact).
     munition: Option<engage::MunitionFlight>,
@@ -1649,6 +1756,7 @@ impl Tracked {
             dispatched: false,
             ready_t: None,
             ready_shot: None,
+            ready_weapon: None,
             munition: None,
             stop_fallback: None,
             platform_events: Vec::new(),
@@ -1946,6 +2054,10 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (rules::ACCEPT_BEHAVING_SINCE, "\"type\":\"engage.acceptance_lapsed\"", "a lapsed acceptance of a live track as behaving now"),
     (rules::ACCEPT_BEHAVING_SINCE, "\"behaving_accepted\":{", "a live track accepted as behaving now (decision inputs, a picture token)"),
     (rules::ACCEPT_BEHAVING_SINCE, "\"behaving\":{", "an acceptance of a live track as behaving now"),
+    (rules::LOADOUT_SINCE, "\"weapon\":\"", "an engagement's loadout weapon (a nomination's or a preview's)"),
+    (rules::LOADOUT_SINCE, "\"weapon\":{", "a loadout weapon released, and its rounds left"),
+    (rules::LOADOUT_SINCE, "\"rounds\":{", "a platform's rounds (a decision's fact)"),
+    (rules::LOADOUT_SINCE, "\"rounds\":[", "the rounds an earlier log had released, carried over"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -2573,6 +2685,7 @@ fn replay_inner<S: AsRef<str>>(
                 check_restore_owed(&mut r, e, *intent, &inputs.restore_owed, &intents, &restores, policy.as_ref());
                 check_expended(&mut r, e, *intent, &inputs.expended, &intents, &restores, policy.as_ref());
                 check_spent_carried(&mut r, e, *intent, &inputs.spent_carried, &intents, &restores, policy.as_ref());
+                check_rounds(&mut r, e, *intent, &inputs.rounds, &intents, &restores, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(
                         &mut r,
@@ -2721,6 +2834,7 @@ fn replay_inner<S: AsRef<str>>(
                 check_restore_owed(&mut r, e, *intent, &inputs.restore_owed, &intents, &restores, policy.as_ref());
                 check_expended(&mut r, e, *intent, &inputs.expended, &intents, &restores, policy.as_ref());
                 check_spent_carried(&mut r, e, *intent, &inputs.spent_carried, &intents, &restores, policy.as_ref());
+                check_rounds(&mut r, e, *intent, &inputs.rounds, &intents, &restores, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(
                         &mut r,
@@ -3580,6 +3694,7 @@ fn replay_inner<S: AsRef<str>>(
                     check_restore_owed(&mut r, e, *intent, &inputs.restore_owed, &intents, &restores, policy.as_ref());
                     check_expended(&mut r, e, *intent, &inputs.expended, &intents, &restores, policy.as_ref());
                     check_spent_carried(&mut r, e, *intent, &inputs.spent_carried, &intents, &restores, policy.as_ref());
+                    check_rounds(&mut r, e, *intent, &inputs.rounds, &intents, &restores, policy.as_ref());
                     check_ident_inputs(&mut r, e, Some(*intent), &inputs.tracks, &ident, policy.as_ref());
                     check_lost_inputs(&mut r, e, *intent, inputs, &lost, &ident, &intents, &mut pictured, policy.as_ref());
                 }
@@ -4118,6 +4233,8 @@ fn replay_inner<S: AsRef<str>>(
                         }
                     }
                 }
+                // rules 24: the platform's rounds, as the log's ledger has them
+                check_rounds(&mut r, e, *intent, &inputs.rounds, &intents, &restores, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(
                         &mut r,
@@ -4217,6 +4334,12 @@ fn replay_inner<S: AsRef<str>>(
                 } else {
                     None
                 };
+                // rules 24: and the weapon it releases, a round of it spent
+                tr.ready_weapon = if tr.ready {
+                    engage::release_weapon(&tr.spec, &snap, &w, &pol.rules)
+                } else {
+                    None
+                };
                 tr.platform_events.clear();
                 tr.intercept_reports.clear();
                 if !h {
@@ -4231,6 +4354,7 @@ fn replay_inner<S: AsRef<str>>(
                 radius_m,
                 planned_t,
                 munition,
+                weapon,
             } => {
                 let Some(tr) = intents.get_mut(intent) else {
                     bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
@@ -4248,6 +4372,23 @@ fn replay_inner<S: AsRef<str>>(
                         json(munition),
                         json(&flight),
                     );
+                }
+                // rules 24: the weapon released is the plan's, its rounds left the releasing
+                // picture's less this one (none for a platform without a loadout, and before
+                // rules 24); the ledger counts it
+                if policy.is_some() && *weapon != tr.ready_weapon {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "the weapon released (or its rounds left) is not the one the releasing picture gives",
+                        json(weapon),
+                        json(&tr.ready_weapon),
+                    );
+                }
+                tr.ready_weapon = None;
+                if let Some(w) = weapon {
+                    restores.release(uid, w);
                 }
                 // and the plan's time tolerance bounds when it strikes
                 let lead = flight.as_ref().map_or(0, |f| f.impact_t.ms_since(f.launch_t));
@@ -5352,6 +5493,7 @@ fn replay_inner<S: AsRef<str>>(
                 check_restore_owed(&mut r, e, *intent, &inputs.restore_owed, &intents, &restores, policy.as_ref());
                 check_expended(&mut r, e, *intent, &inputs.expended, &intents, &restores, policy.as_ref());
                 check_spent_carried(&mut r, e, *intent, &inputs.spent_carried, &intents, &restores, policy.as_ref());
+                check_rounds(&mut r, e, *intent, &inputs.rounds, &intents, &restores, policy.as_ref());
                 check_ident_inputs(&mut r, e, Some(*intent), &inputs.tracks, &ident, policy.as_ref());
                 check_lost_inputs(&mut r, e, *intent, inputs, &lost, &ident, &intents, &mut pictured, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
@@ -6601,6 +6743,26 @@ fn check_spent_carried(
     }
 }
 
+/// Rules 24: a decision's `rounds` fact against the log's ledger (this run's releases and the
+/// rounds carried over), on the identity of the vehicle now that the fact logs.
+fn check_rounds(
+    r: &mut ReplayReport,
+    e: &Event,
+    id: IntentId,
+    logged: &BTreeMap<Uid, crate::loadout::PlatformRounds>,
+    intents: &BTreeMap<IntentId, Tracked>,
+    restores: &Restores,
+    policy: Option<&Policy>,
+) {
+    let (Some(tr), Some(pol)) = (intents.get(&id), policy) else { return };
+    let now: BTreeMap<Uid, engage::VehicleIdentity> =
+        logged.iter().filter_map(|(u, p)| Some((u.clone(), p.now.clone()?))).collect();
+    let want = restores.rounds_for(&tr.spec, &pol.rules, &now);
+    if *logged != want {
+        bad(r, e, Some(id), "a platform's rounds differ from the log's ledger (rules 24)", json(logged), json(&want));
+    }
+}
+
 /// Rules 15: the identities of the vehicles now a decision's `spent_carried` fact names.
 fn spent_identities(spent: &BTreeMap<Uid, queue::CarriedSpent>) -> BTreeMap<Uid, engage::VehicleIdentity> {
     spent
@@ -6963,6 +7125,7 @@ fn check_carried_from(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptio
     // rules 15: what a start carries also says what each log had spent, the fleet file a failed
     // carry read, and a fallback from a pointer that could not be read
     let rules15 = rules_version.unwrap_or(1) >= rules::CARRY_FOLLOWUPS_SINCE;
+    let rules24 = rules_version.unwrap_or(1) >= rules::LOADOUT_SINCE;
     let mut named: Vec<&str> = Vec::new();
     for (i, c) in carried_from.iter().enumerate() {
         if !is_log_file_name(&c.log) {
@@ -6993,6 +7156,7 @@ fn check_carried_from(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptio
                 || !c.owed.is_empty()
                 || !c.pending.is_empty()
                 || !c.spent.is_empty()
+                || !c.rounds.is_empty()
                 || (c.pointer_failed.is_some() && !rules15))
         {
             bad(r, first, None, "a carried-over log that could not be read carries what it owed", c.log.clone(), String::new());
@@ -7121,7 +7285,7 @@ fn check_carried_from(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptio
             }
             let readable = text
                 .and_then(|t| parse_log(t).ok().filter(|ev| !ev.is_empty()).map(|_| owed_debts(t)))
-                .filter(|d| !d.is_empty() || (rules15 && !d.spent.is_empty()));
+                .filter(|d| !d.is_empty() || (rules15 && !d.spent.is_empty()) || (rules24 && !d.rounds.is_empty()));
             if let Some(d) = readable
                 && !opts.trust_resumed
                 && !refused_fallback
@@ -7165,7 +7329,9 @@ fn check_carried_from(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptio
                 fleet_checked: None,
                 spent: c.spent.iter().map(|sp| sp.uid.to_string()).collect(),
             });
-            if !opts.trust_resumed && (!c.owed.is_empty() || !c.pending.is_empty() || !c.spent.is_empty()) {
+            if !opts.trust_resumed
+                && (!c.owed.is_empty() || !c.pending.is_empty() || !c.spent.is_empty() || !c.rounds.is_empty())
+            {
                 bad(
                     r,
                     first,
@@ -7244,6 +7410,17 @@ fn check_carried_from(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptio
                 "the platforms carried as spent differ from the ones the log had spent (rules 15)",
                 json(&c.spent),
                 json(&debts.spent),
+            );
+        }
+        // rules 24: the rounds it had released (and had carried in), every one of them
+        if rules24 && debts.rounds != c.rounds {
+            bad(
+                r,
+                first,
+                None,
+                "the rounds carried as released differ from the ones the log had released (rules 24)",
+                json(&c.rounds),
+                json(&debts.rounds),
             );
         }
         // rules 15: a log carried from in place of a pointer is the station's own

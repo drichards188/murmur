@@ -23,7 +23,7 @@ engage = true
 
 [[vehicle]]
 uid = "viper-1"
-platform = "magura"         # armed USV (ArduRover), 12 m/s
+platform = "magura_pre_loadout" # armed USV (the Magura before rules 24, surviving its effect; ArduRover), 12 m/s
 at = [-122.4700, 37.8160]   # in the strait, east of the bridge
 
 [[track]]

@@ -26,7 +26,7 @@ engage = true
 
 [[vehicle]]
 uid = "viper-1"
-platform = "magura"         # armed USV (ArduRover), 12 m/s
+platform = "magura_pre_loadout" # armed USV (the Magura before rules 24, surviving its effect; ArduRover), 12 m/s
 at = [-122.4500, 37.8450]   # Richardson Bay, east of the Marin shore's corner
 
 [[track]]

@@ -22,7 +22,7 @@ title = "San Diego: 24 stand-ins across every domain"
 
 # ---- air
 [[unit]]
-platform = "mq9b"                      # on station from its base
+platform = "mq9b_armed"                # on station from its base
 sim = "standin"
 spawn = [32.6500, -117.2700, 3000, 0]  # over the approaches off Point Loma, airborne at 3000 m
 

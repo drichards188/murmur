@@ -473,6 +473,7 @@ fn an_airships_fallback_refusal_says_its_failsafe_only_disarms() {
             effect_radius_m: 75.0,
             window: None,
             fallback: Fallback::Return,
+            weapon: None,
         },
         vec![uid("lta-1")],
     );
