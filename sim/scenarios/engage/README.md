@@ -121,12 +121,19 @@ tamper = "suppress_void"         # optional log attack replay must catch: propos
                                  # and rules 19: drop_behaving_acceptance,
                                  # drop_behaving_lapse, behaving_acceptance_by_agent,
                                  # and rules 20: edit_munition,
-                                 # and rules 24: edit_rounds,
-                                 # and rules 25: drop_damage
+                                 # and rules 24: edit_rounds (rules 26: a gun's bursts too),
+                                 # and rules 25: drop_damage,
+                                 # and rules 26: burst_after_stop
                                  # (one with nothing to edit in a run's log reports "not
                                  # applicable")
 end_s = 120                      # seconds to run (default: the last step + 10)
 after_effect = "out_of_play"     # or "persists"
+cease_at_burst = 3               # rules 26, optional: a gun's target leaves play at this burst
+                                 # (default 1, its release)
+expect_bursts = 3                # rules 26, optional: the bursts the gun fired (the release is 1)
+expect_fire_end = "ceased"       # rules 26, optional: how its fire ended: ceased, unknown,
+                                 # rounds_out, window_closed, stopped
+expect_rounds_left = 482         # rules 26, optional: its rounds left after its last burst
 preload = "confirm"              # rules 6: how the platform answers its lost-link preload:
                                  # confirm (default), no_answer, mismatch (another action read
                                  # back), never (nothing reported), changed (confirmed, then
@@ -395,3 +402,12 @@ rules 23 `<id> meanwhile: ...`, `<id> ended done: ...`).
 | 116-no-route-into-an-enclosed-pool | domain | rules 22: HUNTER 1 sent to orbit in a pool land encloses | rejected (domain: `no route around land at ...`, where the straight way first meets land, and why) |
 | 117-second-look-contradicts-ais | identify | rules 22, the owner's widening: PUMA 1 sent to identify a boat its AIS has identified already; our camera calls it a patrol boat, the tracker's identity conflict raised | dispatched (`--rules 21`: refused, identified already), done once our own sensor identified it after the order went out, saying it contradicts the identity before |
 | 118-own-look-not-ended-by-another-camera | identify | rules 23, the owner's run of 10-27 17:11Z (intent 4): PUMA 1 sent to a cargo ship HUNTER 1's camera has identified already; HUNTER 1's camera identifies it again 2 s later | the order goes on (an `identify.step` meanwhile: "HUNTER 1 identified it as cargo_ship meanwhile; PUMA 1 continues for its own look"), done once PUMA 1's camera identifies it, the outcome saying both; `--rules 22` ends it on HUNTER 1's look, as the run did |
+| 119-rounds-spent-then-another-weapon | audit | rules 24: two GBU-12 named and released, a third named; tamper `edit_rounds` | the third refused (no round left); none named: the Hellfire picked |
+| 120-inside-the-weapons-minimum-range | weapon | rules 24: the MQ-9B 300 m over the point, inside the Hellfire's 500 m minimum | aborted late (never released) |
+| 121-weapons-out-of-action | weapon | rules 25: the MQ-9B reports its weapons out of action before the first signature; tamper `drop_damage` | rejected (weapon) |
+| 122-loitering-munition-propulsion-lost | weapon | rules 25: a Switchblade that lost its propulsion is nominated | rejected (weapon) |
+| 123-gun-bursts-until-the-target-ceases | audit | rules 26: the armed UGV's M2 at a boat 1,450 m off; the boat leaves play at the third burst; tamper `edit_rounds` | done (ceased): 3 bursts of 6, a burst every 5 s, fire held on a target not seen since the last burst, 482 of 500 left |
+| 124-gun-rounds-run-out | weapon | rules 26: the UGV 2,000 m off goes 275 m to its firing position; the boat persists | the 84th burst fires the last 2 rounds, the fire ends (rounds_out), assessed persists; a new nomination naming the M2 rejected (no round left) |
+| 125-gun-stopped-mid-fire | abort | rules 26: op-1 stops the gun after its second burst; tamper `burst_after_stop` | done (persists): the fire stopped with the fallback (hold), no burst after it |
+| 126-gun-superseded-mid-fire | engagement_in_play | rules 26: op-1 orders the firing UGV to hold | done (persists): superseded, no fallback, no burst after it |
+| 127-gun-line-of-fire-and-keep-out | keep_out_friendly | rules 26: a protected sailboat crosses the line of fire, then one of ours enters the keep-out | done (persists): fire held while the sailboat is on the line, then stopped for the picture (keep_out_friendly), 3 bursts |

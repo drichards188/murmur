@@ -98,6 +98,17 @@ pub struct WeaponRelease {
     pub left: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vehicle: Option<VehicleIdentity>,
+    /// Rules 26: the rounds this release spent when it is not one (a gun's burst: its
+    /// `burst_rounds`, or the rest of the magazine for the last). Absent: one round.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rounds: Option<u32>,
+}
+
+impl WeaponRelease {
+    /// The rounds this release spent (one unless it says otherwise).
+    pub fn spent(&self) -> u32 {
+        self.rounds.unwrap_or(1)
+    }
 }
 
 /// Rules 24: the rounds of `w` left on a platform whose rounds are `rounds`; none for the platform
@@ -132,6 +143,8 @@ pub struct Rules25<'a> {
     pub now: Option<Time>,
     /// Show the weapon's figures (rules 25 on).
     pub figures: bool,
+    /// Rules 26 ([`crate::rules::GUN_SINCE`]): a gun is usable.
+    pub guns: bool,
 }
 
 impl Rules25<'_> {
@@ -194,8 +207,8 @@ pub fn figures(w: &WeaponFacts, kind: Option<&str>) -> String {
 }
 
 /// Why `w` can't be used against a target in `domain` now, if it can't.
-fn unusable(w: &WeaponFacts, rounds: Option<&PlatformRounds>, domain: Option<Domain>) -> Option<String> {
-    if let Some(why) = w.kind.inert_why() {
+fn unusable(w: &WeaponFacts, rounds: Option<&PlatformRounds>, domain: Option<Domain>, guns: bool) -> Option<String> {
+    if let Some(why) = w.kind.inert_why(guns) {
         return Some(format!("{} is a {}: {why}", w.name, w.kind.as_str()));
     }
     if let Some(d) = domain
@@ -222,6 +235,16 @@ fn names(d: &[Domain]) -> String {
 fn describe(w: &WeaponFacts, left: Option<u32>) -> String {
     let what = match w.kind {
         WeaponKind::SelfStrike => format!("{}, the platform itself (spent by its own effect)", w.name),
+        // rules 26: a gun's bursts
+        WeaponKind::Gun => format!(
+            "{}, a gun for {} targets, {:.0} to {:.0} m, bursts of {} rounds every {:.0} s",
+            w.name,
+            names(&w.targets),
+            w.min_range_m,
+            w.max_range_m,
+            w.burst_rounds.unwrap_or(1),
+            w.burst_every_s()
+        ),
         k => format!(
             "{}, a {} for {} targets, {:.0} to {:.0} m at {:.0} m/s",
             w.name,
@@ -270,7 +293,7 @@ pub fn choose_with(
             None => why,
         });
     }
-    let out_of_use = |w: &WeaponFacts| immobile(w, r25).or_else(|| unusable(w, rounds, domain));
+    let out_of_use = |w: &WeaponFacts| immobile(w, r25).or_else(|| unusable(w, rounds, domain, r25.guns));
     let shown = |w: &WeaponFacts| if r25.figures { figures(w, r25.kind) } else { String::new() };
     if let Some(n) = named {
         let Some(w) = platform.loadout.iter().find(|w| w.name == n) else {
@@ -351,6 +374,7 @@ mod tests {
             effects: BTreeMap::new(),
             burst_rounds: None,
             rate_rpm: None,
+            burst_interval_s: None,
             persist_h: None,
             trigger: None,
         }

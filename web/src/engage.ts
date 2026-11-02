@@ -84,11 +84,51 @@ export interface Engagement {
   /** a standoff platform's munition from the release on (bd murmur-64z, munition.ts); none for
    *  a platform spent by its own effect, nor before the release */
   munition?: Munition
+  /** rules 24: the weapon of the last release (rules 26: of a gun's last burst) and its rounds
+   *  left */
+  weapon?: { name: string; kind: string; left?: number; rounds?: number }
+  /** rules 26 (bd murmur-lbw8.3): a gun's firing window from its release (burst 1): its bursts
+   *  and rounds so far, the last burst's time (engine ms), its rounds left, and why it ended
+   *  (none while it fires) */
+  fire?: Fire
   stop?: { t: number; cause: { kind: 'operator' | 'picture' | 'system' | 'superseded' | 'revoked'; by?: string | number; track?: string; declaration?: number }; reason: string; fallback?: Fallback | null }
   plan?: { t: number; by: string; preview: EngagePreview; track: TrackIdentity }
   observe?: { covered_by: string[]; track_present: boolean; seen_after_effect_t?: number }
   covered_s: number
   assessment?: { t: number; result: 'persists' | 'ceased' | 'unknown'; evidence: string; covered_s: number }
+}
+
+/** Rules 26: a gun engagement's firing window (the engine's `FireRecord`). */
+export interface Fire {
+  weapon: string
+  bursts: number
+  rounds: number
+  opened_t: number
+  last_t: number
+  left?: number
+  every_s: number
+  ended?: { t: number; why: 'ceased' | 'unknown' | 'rounds_out' | 'window_closed' | 'stopped'; detail: string }
+}
+
+/** Rules 26: whether a gun still fires after its release (an operator may stop it then). */
+export function firing(e: Engagement | undefined): boolean {
+  return !!e?.fire && !e.fire.ended
+}
+
+/** Rules 26: a gun's firing window in a line: its bursts, rounds and rounds left, and how it
+ *  ended. */
+export function fireLine(f: Fire): string {
+  const left = f.left == null ? '' : `, ${f.left} left`
+  const what = `${f.weapon}: ${f.bursts} burst${f.bursts === 1 ? '' : 's'}, ${f.rounds} rounds fired${left}`
+  if (!f.ended) return `Firing ${what}; a burst every ${Math.round(f.every_s)} s while the picture holds`
+  const why: Record<string, string> = {
+    ceased: 'the target ceased',
+    unknown: 'the assessment could not tell',
+    rounds_out: 'no round left',
+    window_closed: 'the approved window closed',
+    stopped: 'stopped',
+  }
+  return `Fire ended (${why[f.ended.why] ?? f.ended.why}): ${what}`
 }
 
 /** The bridge's view of an engagement for the console: signatures, and for a pending one

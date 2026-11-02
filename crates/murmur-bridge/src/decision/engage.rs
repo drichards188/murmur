@@ -896,7 +896,7 @@ impl Decision {
             .intent(id)
             .and_then(Intent::engagement)
             .and_then(|e| e.snapshot.as_ref())
-            .map(|s| s.preview.effect_point);
+            .map(|s| s.preview.goal());
         let Some(point) = preview_point else {
             core.engine
                 .void(id, "no approval snapshot")
@@ -935,7 +935,9 @@ impl Decision {
                 ..TaskParams::default()
             },
         };
-        let order = match TaskOrder::new(request([o.effect_point.lon, o.effect_point.lat]), &fleet) {
+        // rules 26: a gun's platform goes to its firing position and holds there to fire
+        let goal = o.fire_from.unwrap_or(o.effect_point);
+        let order = match TaskOrder::new(request([goal.lon, goal.lat]), &fleet) {
             Ok(order) => order,
             Err(e) => {
                 let why = format!("the task layer refused the intercept: {e}");
@@ -1212,7 +1214,7 @@ impl Decision {
         let now = self.clock.now();
         // engagements that ended before their set started: nothing to set or report
         for (id, run) in core.engagements.iter_mut() {
-            let under_way = core.engine.intent(*id).map(Intent::state) == Some(State::Dispatched);
+            let under_way = core.engine.intent(*id).map(Intent::play_state) == Some(State::Dispatched);
             if run.want_set && !under_way {
                 run.want_set = false;
                 run.preload_reported = true;
@@ -1236,7 +1238,8 @@ impl Decision {
                 .iter()
                 .filter(|(id, r)| {
                     r.platform == Some(uid)
-                        && (r.want_set || core.engine.intent(**id).map(Intent::state) == Some(State::Dispatched))
+                        // rules 26: and a gun firing after its release
+                        && (r.want_set || core.engine.intent(**id).map(Intent::play_state) == Some(State::Dispatched))
                 })
                 .map(|(id, _)| *id)
                 .collect();
@@ -1824,8 +1827,9 @@ impl Decision {
             .intents()
             .filter(|i| {
                 i.id() != id
+                    // rules 26: and a gun still firing after its release
                     && matches!(
-                        i.state(),
+                        i.play_state(),
                         State::PendingApproval | State::Approved | State::Dispatched
                     )
                     && matches!(i.spec().task, Task::Engage { .. })
@@ -1857,7 +1861,7 @@ impl Decision {
                 ..
             } = core;
             for (id, run) in engagements.iter_mut() {
-                let dispatched = engine.intent(*id).map(Intent::state) == Some(State::Dispatched);
+                let dispatched = engine.intent(*id).map(Intent::play_state) == Some(State::Dispatched);
                 for (tasking, is_intercept) in [(&run.intercept, true), (&run.fallback, false)] {
                     let Some(t) = tasking else { continue };
                     for op in t.snapshot().ops {
@@ -2599,19 +2603,20 @@ pub struct OptionsRequest {
 /// Rules 24 (bd murmur-lbw8.1): a platform's loadout as the console and the agents read it: each
 /// weapon's facts, its rounds left (`rounds`: the engine's ledger, this run's releases and those
 /// carried over onto this vehicle; the platform itself has one, gone once it is `spent`) and
-/// whether it is `inert` (guns and mines, until their stages), in the catalog's order.
-pub fn loadout_json(p: &murmur_decide::PlatformFacts, rounds: &murmur_decide::PlatformRounds, spent: bool) -> Value {
+/// whether it is `inert` (mines, until their stage; guns before rules 26, `guns` false), in the
+/// catalog's order; a gun says its bursts (`burst_rounds`, `burst_interval_s`).
+pub fn loadout_json(p: &murmur_decide::PlatformFacts, rounds: &murmur_decide::PlatformRounds, spent: bool, guns: bool) -> Value {
     let weapons: Vec<Value> = p
         .loadout
         .iter()
         .map(|w| {
             let left = murmur_decide::loadout::left(w, Some(rounds)).unwrap_or(u32::from(!spent));
-            json!({
+            let mut v = json!({
                 "name": w.name,
                 "kind": w.kind.as_str(),
                 "count": w.count,
                 "left": left,
-                "inert": !w.kind.usable(),
+                "inert": !w.kind.usable_at(guns),
                 "min_range_m": w.min_range_m,
                 "max_range_m": w.max_range_m,
                 "speed_mps": w.speed_mps,
@@ -2619,7 +2624,13 @@ pub fn loadout_json(p: &murmur_decide::PlatformFacts, rounds: &murmur_decide::Pl
                 "guidance": w.guidance,
                 "warhead": w.warhead,
                 "targets": w.targets,
-            })
+            });
+            // rules 26: a gun's bursts
+            if let (Some(b), Some(o)) = (w.burst_rounds, v.as_object_mut()) {
+                o.insert("burst_rounds".into(), json!(b));
+                o.insert("burst_interval_s".into(), json!(w.burst_interval_s));
+            }
+            v
         })
         .collect();
     json!({ "armed": p.armed, "weapons": weapons })
@@ -2642,7 +2653,7 @@ impl Decision {
         let core = self.lock();
         let rounds = core.engine.platform_rounds(&duid(uid), Some(identity));
         let spent = core.engine.expended_by(&duid(uid)).is_some();
-        Some(loadout_json(&p, &rounds, spent))
+        Some(loadout_json(&p, &rounds, spent, self.rules.guns()))
     }
 
     /// Rules 24: every fleet vehicle that carries a loadout, by uid with its callsign and

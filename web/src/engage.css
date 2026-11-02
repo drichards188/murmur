@@ -338,6 +338,7 @@
 }
 .eg-effect,
 .eg-munition,
+.eg-fire,
 .eg-stop,
 .eg-assess {
   font-size: 12px;
@@ -345,6 +346,10 @@
 }
 /* a munition on its way (bd murmur-64z): the impact marker's orange */
 .eg-munition.flying {
+  color: #ffc987;
+}
+/* a gun firing its bursts (rules 26): the same orange */
+.eg-fire.firing {
   color: #ffc987;
 }
 .eg-assess.ceased {

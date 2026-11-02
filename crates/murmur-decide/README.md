@@ -2072,6 +2072,61 @@ Rules versions:
   `tests/data/audit/v25-engagement-scenario-01.jsonl`,
   `v25-weapons-out-of-action-scenario-121.jsonl` (relabelled rules 24, its damage report is
   caught).
+- **26** (bd murmur-lbw8.3, the owner's direction of 2026-11-02, DECISIONS.md "Guns: bursts from
+  a counted magazine"; every gate reads `GUN_SINCE`; no policy key changes, schema 7; a v26 log
+  carries every rules 25 behaviour too): *a gun fires bursts from its counted magazine through a
+  firing window, each burst re-checked and counted*. Up to rules 25 a gun was listed in a loadout
+  and inert (`WeaponKind::inert_why`). From rules 26 it is usable (the catalog gives it
+  `burst_rounds`, `rate_rpm` and `burst_interval_s`, which it must; today only `[ugv_armed]`'s M2:
+  6 rounds at 525 rpm every 5 s, with per-burst `effects`). A plan whose weapon is a gun sends
+  the platform to a firing position (`EngagePreview::fire_from`: on the line from the predicted
+  point back to the platform, the gun's range less the effect radius out, or where the platform
+  stands if nearer, the intercept solved against that standoff), which the path, `reach` (its
+  surface, endurance and way home), `plan`'s reach, the domain rule's legs, the terrain sample and
+  the order (`EngageOrder::fire_from`, bound by replay) use instead of the effect point. Its
+  release checks are a gun's: `arrival` is the target, as estimated now, within the gun's range
+  of the platform; `line_of_fire` (new) samples the line from the platform to the target every
+  `LINE_OF_FIRE_M` (50 m) and judges each sample as a keep-out of that half-width by the
+  keep-outs' own judgement of our other vehicles and of tracks (3D where the platform reports its
+  altitude); the rest as for a platform without a munition (no flight). The release is burst 1
+  (`engage.effect`'s `weapon` carries `rounds`, the burst's) and opens the engagement's firing
+  window (`Engagement::fire`, `FireRecord`). While it is open, every step (`Engine::step_fire`):
+  the observation runs first, from the last burst (`engage::observed_from`; each burst starts its
+  coverage again), and ceased or unknown ends the fire and is the assessment, while persists is
+  no verdict until the fire is over; then the fire ends on its own (`engage.fire_ended`,
+  `engage::fire_over`: no round left, or the approved window closed); else `engage.picture` holds
+  the picture (`picture(.., last_burst)`: as before the release, without the release's lateness,
+  and with the target unseen (`target_recency`, or gone from the picture) holding fire rather than
+  failing it), a failed picture stopping the fire with the fallback (`engage.stopped`, cause
+  picture); a picture that holds and is ready (the burst checks above, the preload read back, and
+  the target seen since the last burst) fires a burst once `burst_interval_s` has passed
+  (`engage.burst`: its number, the gun's release with `rounds` and `left`, its `duration_s` at
+  the cyclic rate), counted in the ledger (`Restores::release` adds a release's `rounds`) and
+  handed to the bridge as an `EffectOrder` with `burst` (the truth side draws it on
+  `effect:<intent>:<burst>`). An operator's stop, a supersede or a system stop while it fires
+  logs `engage.stopped` (the fallback as for a dispatched engagement, none for a supersede) with
+  no transition: the engagement stays effected and is assessed; a declaration revoked while it
+  fires stops it at the next picture (`target_declared` fails, cause picture), before any burst. A
+  firing gun counts as dispatched wherever a platform is held (`engage::play_state`,
+  `Intent::play_state`: the `engaged` fact, supersedes, aborts, the lost-link preload, which
+  `preload_verify_due` re-reads all through the window, and the restore, which waits for the fire
+  to end). Replay recomputes each firing picture, binds each burst to the same step's picture
+  that held and was ready (its weapon and rounds left recomputed, its number, the gun's interval
+  since the last, the approved window, its length) and each `engage.fire_ended` to
+  `engage::fire_over`, flags a picture held after the fire was over and a persisting verdict
+  while it fires, and counts each burst's rounds in its ledger (the decisions' `rounds` facts and
+  the carry). A log claiming rules 25 or older can't carry a burst, a fire's end, a firing
+  position or a line of fire check (markers). Scenarios 123 (bursts until the target ceases: 3
+  bursts, the fire held on a target not seen since; tamper `edit_rounds` on the bursts), 124
+  (the UGV 275 m to its firing position; the 84th burst fires the last 2 rounds; a nomination
+  naming the M2 then refused), 125 (an operator stops it mid-fire; tamper `burst_after_stop`),
+  126 (an operator's hold supersedes it mid-fire), 127 (a protected sailboat on the line of fire
+  holds the fire; one of ours in the keep-out stops it). The runner's keys `cease_at_burst`,
+  `expect_bursts`, `expect_fire_end`, `expect_rounds_left`. `tests/rules26.rs` (the carry over a
+  restart; rules 24 and 25 logs replay unchanged, a scenario run under rules 25 refuses the gun).
+  Fixtures (a clean build of the branch): `tests/data/audit/v26-engagement-scenario-01.jsonl`,
+  `v26-gun-bursts-until-the-target-ceases-scenario-123.jsonl` (relabelled rules 25, its bursts are
+  caught).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

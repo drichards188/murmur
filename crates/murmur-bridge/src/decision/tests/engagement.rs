@@ -2943,9 +2943,12 @@ async fn a_loadout_reads_each_weapons_rounds_left() {
     let c = Catalog::load(&root().join("sim/platforms.toml")).expect("catalog");
     let mut rounds = murmur_decide::PlatformRounds::default();
     rounds.used.insert("GBU-12 Paveway II".into(), 1);
-    let v = engage::loadout_json(c.get("mq9b_armed").expect("mq9b_armed"), &rounds, false);
+    let v = engage::loadout_json(c.get("mq9b_armed").expect("mq9b_armed"), &rounds, false, true);
     let left: Vec<u64> = v["weapons"].as_array().expect("weapons").iter().filter_map(|w| w["left"].as_u64()).collect();
     assert_eq!(left, vec![4, 1]);
-    let ugv = engage::loadout_json(c.get("ugv_armed").expect("ugv_armed"), &Default::default(), false);
+    // the M2 inert before rules 26, usable from it; the Javelin usable either way
+    let ugv = engage::loadout_json(c.get("ugv_armed").expect("ugv_armed"), &Default::default(), false, false);
     assert_eq!((ugv["weapons"][0]["inert"].as_bool(), ugv["weapons"][1]["inert"].as_bool()), (Some(true), Some(false)));
+    let ugv = engage::loadout_json(c.get("ugv_armed").expect("ugv_armed"), &Default::default(), false, true);
+    assert_eq!((ugv["weapons"][0]["inert"].as_bool(), ugv["weapons"][0]["burst_rounds"].as_u64()), (Some(false), Some(6)));
 }

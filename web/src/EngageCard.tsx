@@ -17,6 +17,8 @@ import {
   courseText,
   engageParams,
   FALLBACK_LABEL,
+  fireLine,
+  firing,
   fmtDist,
   fmtRel,
   isEngage,
@@ -877,7 +879,9 @@ function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardPr
   const toPoint = v?.position && p ? distanceM(v.position, p.effect_point) : null
   const watch = e?.watch
   const failing = (watch?.results ?? []).filter((c) => c.outcome !== 'pass')
-  const abortable = i.state === 'approved' || i.state === 'dispatched'
+  // rules 26: a gun still firing after its release may be stopped too
+  const gunFiring = i.state === 'effected' && firing(e)
+  const abortable = i.state === 'approved' || i.state === 'dispatched' || gunFiring
   const last = i.history[i.history.length - 1]
   const abort = async () => {
     setBusy(true)
@@ -934,6 +938,12 @@ function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardPr
             <b>Impact at {fmtZ(e.munition.impact_t)}</b> ({e.munition.name}, {Math.round(e.munition.tof_s)} s from its launch at {fmtZ(e.munition.launch_t)})
           </p>
         ))}
+      {e?.fire && (
+        <p className={`eg-fire ${e.fire.ended ? '' : 'firing'}`} title={e.fire.ended?.detail}>
+          <b>{fireLine(e.fire)}</b>
+          {!e.fire.ended && ` (last burst ${fmtRel(e.fire.last_t - now())})`}
+        </p>
+      )}
       {i.state === 'effected' && !(e?.munition && now() < e.munition.impact_t) && (
         <p className="muted">
           Assessing: the effect point covered for {e?.covered_s.toFixed(0) ?? 0} s{e?.observe?.covered_by.length ? ` by ${e.observe.covered_by.join(', ')}` : ' (no sensor of ours covers it)'}
@@ -946,7 +956,7 @@ function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardPr
       )}
       {e?.stop && (
         <p className="eg-stop">
-          <b>{i.state === 'aborted' ? 'Aborted' : 'Voided'}</b>: {e.stop.reason}
+          <b>{i.state === 'aborted' ? 'Aborted' : i.state === 'voided' ? 'Voided' : 'Fire stopped'}</b>: {e.stop.reason}
           {e.stop.cause.kind === 'superseded' ? ` (superseded by i${e.stop.cause.by})` : ''}
           {e.stop.fallback ? `; fallback ${e.stop.fallback} commanded` : ''}
         </p>
@@ -954,9 +964,11 @@ function RunCard({ intent: i, vehicles, now, selected, onFocus, onDone }: CardPr
       {!e?.stop && !e?.assessment && !abortable && i.state !== 'effected' && last && <p className="muted">{last.reason}</p>}
       {abortable && (
         <footer className="ix-actions" onClick={(ev) => ev.stopPropagation()}>
-          <span className="muted">Any operator may abort until the effect.</span>
+          <span className="muted">
+            {gunFiring ? 'Any operator may stop the fire; the assessment goes on.' : 'Any operator may abort until the effect.'}
+          </span>
           <button className="eg-abort" disabled={busy} onClick={abort}>
-            Abort
+            {gunFiring ? 'Cease fire' : 'Abort'}
           </button>
           {error && <p className="error ix-error">{error}</p>}
         </footer>

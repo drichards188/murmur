@@ -85,7 +85,8 @@ group. Dates are 2026.
   (undamaged, mobility, firepower, destroyed; docs/research/weapons.md section 10); the flight
   profiles are recorded, not yet flown; the warhead is shown, not yet read (stage 2 built, 11-02:
   "Warheads and damage" below; the profiles are still not flown). Stage 3 (murmur-lbw8.3):
-  guns, bursts from a round count. Stage 4 (murmur-lbw8.4): mines, laid and persistent. Every
+  guns, bursts from a round count (built 11-02: "Guns: bursts from a counted magazine" below).
+  Stage 4 (murmur-lbw8.4): mines, laid and persistent. Every
   safeguard stands exactly: no autonomous engagement, two human signatures, the authorize step
   closed to agents in code, every order to an armed platform waiting for a human, DoD Directive
   3000.09. An agent may name a weapon in a nomination it proposes; it still signs nothing.
@@ -125,6 +126,39 @@ group. Dates are 2026.
   human signatures, the authorize step closed to agents in code, every order to an armed platform
   waiting for a human, DoD Directive 3000.09. The damage model changes what happens after a
   person decides, never who decides.
+- **Guns: bursts from a counted magazine** (11-02, the owner: "I want all nodes that are
+  supposed to carry weapons in real life to have the war thunder level of real weapons
+  equipped"; "All of it now", guns included). Stage 3 of bd murmur-lbw8 (murmur-lbw8.3), built as
+  decision rules 26 (`GUN_SINCE`); amends "Real weapon loadouts on armed platforms" above, whose
+  guns were listed but inert. A gun (today only the armed UGV's M2: 500 rounds, bursts of 6 at
+  525 rpm, one every 5 s [E], 1,800 m; its per-burst hit and damage figures are the research's
+  12.7 mm column and row, docs/research/weapons.md 10.3 and 10.4, all [E]) is usable. What a gun
+  engagement is: one nomination, two human signatures on one frozen plan, then a firing window,
+  not one effect. The plan sends the platform to a firing position (the gun's range less the
+  effect radius from the predicted point, or where it stands if nearer) instead of onto the point,
+  so a ground gun stands on land and shoots at a boat on the water. Its release is the first
+  burst; after it a burst goes out every `burst_interval_s` while everything that held the
+  release still holds, each spending its rounds in the ledger rules 24 keeps (logged, replayed,
+  carried over a restart on the same vehicle) and each drawn on the truth side as a strike of its
+  own (`effect:<intent>:<burst>`). Decided: no new human step per burst (the signers approved the
+  window, as they approve a missile's flight), and every safeguard per burst. Each second while
+  it fires the picture is held exactly as before an effect (target declared, identity unchanged,
+  deviation from the frozen plan, keep-outs at the point, link, navigation, the weapon's rounds,
+  the approved window), and its failure stops the fire with the recorded fallback; an operator's
+  stop and another order's supersede stop it at once (the firing platform counts as under way
+  wherever a platform is held: engaged facts, supersede, the lost-link preload, which is re-read
+  all through the window); a burst also needs the target within the gun's range, seen since the
+  last burst, inside the plan's circle, its uncertainty bounded, and the line of fire clear of
+  ours and of protected tracks (50 m either side [E]), each failing check holding fire without
+  ending it. The fire ends on its own when the assessment, judged from the last burst, says ceased
+  or unknown (a target seen again is not a verdict while it fires), when the rounds are gone, or
+  when the approved window closes; a stopped fire is assessed too. Accepted shortcuts: no flight
+  for a round (some 2 s to 1,800 m, inside the keep-outs' margins), no dispersion model beyond
+  the per-burst figures (the research folds a burst's spread into its hit chance), no terrain
+  masking of the line of fire, the platform holds at its firing position (it does not move to
+  keep a fleeing target in range: the plan's circle bounds the fire). Every safeguard stands
+  exactly: no autonomous engagement, two human signatures, the authorize step closed to agents in
+  code, every order to an armed platform waiting for a human, DoD Directive 3000.09.
 - **Pitch depth and rigor, not "first"** (10-02). Pressure test found the ideas in closed
   work (RESCHU, IMPACT, Aegis doctrine, Lattice, Legion, Palantir AIP, Thunderforge, DARPA
   ASIMOV) and shallow open versions (AMOS, AeroMind, Pharos, SandTable). Cite them. Engage

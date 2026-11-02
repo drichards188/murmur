@@ -129,6 +129,11 @@ impl WeaponDamage {
         matches!(self.kind.as_str(), "missile" | "atgm")
     }
 
+    /// Rules 26: a gun (each burst a shot).
+    fn gun(&self) -> bool {
+        self.kind == "gun"
+    }
+
     /// Its figures' errors, if any.
     pub fn check(&self) -> Result<(), String> {
         for (k, f) in &self.effects {
@@ -250,23 +255,25 @@ fn night_factor(guidance: &str) -> f64 {
 }
 
 /// The hit chance's factor in fog, by guidance (10.5): a laser spot is lost in it (0.3 [48; E]),
-/// an IR seeker or an operator's video sees half as well (0.5 [E]), radar and GPS not at all.
+/// an IR seeker or an operator's video sees half as well (0.5 [E]), a gun's stabilised sight 0.6
+/// (10.5's guns [E]), radar and GPS not at all.
 fn fog_factor(guidance: &str) -> f64 {
     match guidance {
         "semi_active_laser" => 0.3,
+        "stabilised_sight" => 0.6,
         "imaging_infrared" | "operator_video_eo_ir" | "operator_video_day" | "operator_video" | "operator_video_eo_tracker" => 0.5,
         _ => 1.0,
     }
 }
 
 /// Points off the hit chance for each 5 m/s band of the target's speed over 15 m/s, by guidance
-/// (10.5, Command's rule [52,53]: 10 for laser missiles and loitering munitions, 20 for FPVs; the
-/// band's width and the rest [E]). Bombs and radar missiles: none (their figures already price a
-/// mover, or they are built for one).
+/// (10.5, Command's rule [52,53]: 10 for laser missiles and loitering munitions, 20 for FPVs and
+/// (rules 26) a gun's stabilised sight; the band's width and the rest [E]). Bombs and radar
+/// missiles: none (their figures already price a mover, or they are built for one).
 fn speed_points(guidance: &str) -> f64 {
     match guidance {
         "semi_active_laser" | "imaging_infrared" | "operator_video_eo_ir" => 0.10,
-        "operator_video_day" | "operator_video" | "operator_video_eo_tracker" => 0.20,
+        "operator_video_day" | "operator_video" | "operator_video_eo_tracker" | "stabilised_sight" => 0.20,
         _ => 0.0,
     }
 }
@@ -306,7 +313,8 @@ pub fn hit_chance(w: &WeaponDamage, target: &Target, c: &Conditions, out_m: Opti
     let base = figs.p_hit.unwrap_or(0.0);
     let mut factors = Vec::new();
     let mut p = base;
-    let guided_run = w.missile() || w.kind == "self";
+    // rules 26: a gun's burst too (10.5: 20 points a band for guns)
+    let guided_run = w.missile() || w.kind == "self" || w.gun();
     if guided_run && target.speed_mps > 15.0 {
         let per = speed_points(&w.guidance);
         if per > 0.0 {
@@ -335,6 +343,9 @@ pub fn hit_chance(w: &WeaponDamage, target: &Target, c: &Conditions, out_m: Opti
     if target.surface && small_boat(target.kind) && c.sea_state >= 4.0 {
         let x = if c.sea_state > 5.0 {
             0.0
+        } else if w.gun() {
+            // 10.5: guns from a vessel or against a boat
+            0.6
         } else if w.kind == "self" {
             0.8
         } else {

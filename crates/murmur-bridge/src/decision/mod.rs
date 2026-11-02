@@ -1699,11 +1699,11 @@ impl Decision {
                     .intent(id)
                     .and_then(|i| i.engagement())
                     .and_then(|e| e.plan.as_ref())
-                    .map(|p| p.preview.effect_point)
+                    .map(|p| p.preview.goal())
                     .or_else(|| {
                         token
                             .and_then(|t| core.engine.picture_token(t))
-                            .map(|t| t.plan.effect_point)
+                            .map(|t| t.plan.goal())
                     })
             };
             self.prefetch_engage(&task, &uids, plan).await;
@@ -2307,7 +2307,7 @@ impl Decision {
                 let plan = i
                     .engagement()
                     .and_then(|e| e.plan.as_ref())
-                    .map(|p| p.preview.effect_point);
+                    .map(|p| p.preview.goal());
                 (i.spec().clone(), plan)
             })
             .collect();
@@ -2409,7 +2409,7 @@ impl Decision {
                 .intents()
                 .filter(|i| {
                     matches!(i.spec().task, Task::Engage { .. })
-                        && i.state() == State::Dispatched
+                        && i.play_state() == State::Dispatched
                         && i.spec().uids.contains(&uid)
                 })
                 .map(Intent::id)
@@ -2431,7 +2431,7 @@ impl Decision {
                 .intents()
                 .filter(|i| {
                     matches!(i.spec().task, Task::Engage { .. })
-                        && matches!(i.state(), State::Approved | State::Dispatched)
+                        && matches!(i.play_state(), State::Approved | State::Dispatched)
                         && i.spec().uids.contains(&uid)
                 })
                 .map(Intent::id)

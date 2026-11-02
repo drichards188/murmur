@@ -164,9 +164,10 @@ pub struct PlatformFacts {
 /// platform to the effect point (rules 20's straight slant line at a constant speed, with the
 /// weapon's own speed and ranges); `self` is the platform itself, a one-way strike (a loitering
 /// munition, an FPV drone, an explosive boat), spent by its own effect as rules 12 already
-/// counts it. Guns (bd murmur-lbw8.3) and mines (bd murmur-lbw8.4) are listed in the catalog so
-/// that a platform's loadout is whole, but stay inert until their stages: no nomination may
-/// use one ([`WeaponKind::usable`]).
+/// counts it. Guns (bd murmur-lbw8.3) are usable from rules 26 ([`crate::rules::GUN_SINCE`]):
+/// a gun fires bursts from its counted magazine through a firing window (`crate::engage`).
+/// Mines (bd murmur-lbw8.4) are listed in the catalog so that a platform's loadout is whole, but
+/// stay inert until their stage: no nomination may use one ([`WeaponKind::usable`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WeaponKind {
@@ -191,10 +192,17 @@ impl WeaponKind {
         }
     }
 
-    /// Whether a nomination may use it in this stage: missiles, bombs, torpedoes and the
-    /// platform itself. Guns and mines wait for their stages (inert).
+    /// Whether a nomination may use it under the current rules ([`crate::rules::RULES_VERSION`]):
+    /// missiles, bombs, torpedoes, the platform itself and (rules 26) guns. Mines wait for their
+    /// stage (inert).
     pub fn usable(self) -> bool {
-        !matches!(self, WeaponKind::Gun | WeaponKind::Mine)
+        self.usable_at(crate::rules::RULES_VERSION >= crate::rules::GUN_SINCE)
+    }
+
+    /// Whether a nomination may use it under rules that do (`guns`: rules 26 on) or do not take
+    /// guns.
+    pub fn usable_at(self, guns: bool) -> bool {
+        self.inert_why(guns).is_none()
     }
 
     /// Whether it flies from the platform to the effect point (rules 20's flight): a missile, a
@@ -210,10 +218,11 @@ impl WeaponKind {
         self != WeaponKind::SelfStrike
     }
 
-    /// Why a nomination may not use it yet, if it may not.
-    pub fn inert_why(self) -> Option<&'static str> {
+    /// Why a nomination may not use it yet, if it may not (`guns`: under rules 26 on, which take
+    /// guns).
+    pub fn inert_why(self, guns: bool) -> Option<&'static str> {
         match self {
-            WeaponKind::Gun => Some("guns are listed in the loadout but not usable before their stage (bd murmur-lbw8.3)"),
+            WeaponKind::Gun if !guns => Some("guns are listed in the loadout but not usable before their stage (bd murmur-lbw8.3)"),
             WeaponKind::Mine => Some("mines are listed in the loadout but not usable before their stage (bd murmur-lbw8.4)"),
             _ => None,
         }
@@ -328,6 +337,10 @@ pub struct WeaponFacts {
     pub burst_rounds: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_rpm: Option<f64>,
+    /// Rules 26: a gun's seconds from one burst to the next (the rate it holds through a firing
+    /// window, not its cyclic rate, `rate_rpm`, which a burst fires at).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub burst_interval_s: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persist_h: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -379,6 +392,17 @@ impl WeaponFacts {
         if self.targets.is_empty() {
             return Some(format!("{n}: targets names at least one domain"));
         }
+        // rules 26: a gun fires bursts: their rounds, its cyclic rate and the time between them
+        if self.kind == WeaponKind::Gun {
+            let rounds_ok = self.burst_rounds.is_some_and(|b| b >= 1 && b <= self.count);
+            let rate_ok = self.rate_rpm.is_some_and(|r| r.is_finite() && r > 0.0);
+            let every_ok = self.burst_interval_s.is_some_and(|i| i.is_finite() && i >= 1.0);
+            if !(rounds_ok && rate_ok && every_ok) {
+                return Some(format!(
+                    "{n}: a gun names burst_rounds (1 to its count), rate_rpm (above 0) and burst_interval_s (1 s or more)"
+                ));
+            }
+        }
         if self.guidance.trim().is_empty() || self.warhead.class.trim().is_empty() {
             return Some(format!("{n}: guidance and warhead.class are named"));
         }
@@ -399,6 +423,22 @@ impl WeaponFacts {
             }
         }
         None
+    }
+
+    /// Rules 26: the rounds a gun's next burst fires with `left` rounds in its magazine: its
+    /// `burst_rounds`, or what is left for the last; none for any other kind.
+    pub fn burst_of(&self, left: u32) -> Option<u32> {
+        (self.kind == WeaponKind::Gun).then(|| self.burst_rounds.unwrap_or(1).max(1).min(left))
+    }
+
+    /// Rules 26: how long a gun's burst of `rounds` lasts at its cyclic rate, s.
+    pub fn burst_duration_s(&self, rounds: u32) -> f64 {
+        self.rate_rpm.filter(|r| *r > 0.0).map_or(0.0, |r| f64::from(rounds) * 60.0 / r)
+    }
+
+    /// Rules 26: a gun's seconds between bursts (1 s at least, its catalog figure).
+    pub fn burst_every_s(&self) -> f64 {
+        self.burst_interval_s.unwrap_or(1.0).max(1.0)
     }
 
     /// Rules 25: its figures against a target of `kind` (a contact kind, as the tracker estimates

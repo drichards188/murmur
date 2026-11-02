@@ -395,14 +395,19 @@ fn the_catalog_lists_the_loadouts_and_the_cca_fights_only_in_the_air() {
     plane.domain = Domain::Air;
     let ok = weapon_for(Some(&uid("fury-1")), None, Some(&plane), &w, &ec).unwrap().unwrap();
     assert_eq!(ok.weapon.name, "AIM-120C AMRAAM");
-    // the armed UGV: its gun inert, its Javelin used
+    // the armed UGV under rules 24 and 25: its gun inert, its Javelin used (rules 26 fires the gun:
+    // tests/rules26.rs)
+    let ec25 = EngageRules {
+        rules_version: DAMAGE_SINCE,
+        ..EngageRules::default()
+    };
     w.vehicles.insert(uid("bull-1"), vehicle("ugv_armed", CRISSY));
     let mut truck = boat();
     truck.domain = Domain::Ground;
-    let j = weapon_for(Some(&uid("bull-1")), None, Some(&truck), &w, &ec).unwrap().unwrap();
+    let j = weapon_for(Some(&uid("bull-1")), None, Some(&truck), &w, &ec25).unwrap().unwrap();
     assert_eq!(j.weapon.name, "FGM-148 Javelin");
     assert!(j.detail.contains("passed over: M2 .50 HMG is a gun"), "{}", j.detail);
-    let g = weapon_for(Some(&uid("bull-1")), Some("M2 .50 HMG"), Some(&truck), &w, &ec).unwrap().unwrap_err();
+    let g = weapon_for(Some(&uid("bull-1")), Some("M2 .50 HMG"), Some(&truck), &w, &ec25).unwrap().unwrap_err();
     assert!(g.contains("murmur-lbw8.3"), "{g}");
     // a platform without a loadout and none named: no weapon check (rules 23's abstract effect)
     w.vehicles.insert(uid("viper-1"), vehicle("magura_pre_loadout", BAY));

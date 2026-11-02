@@ -109,6 +109,9 @@ pub enum RuleId {
     /// the one the engine picks) is usable against the target and has a round left
     /// ([`crate::loadout`]).
     Weapon,
+    /// Rules 26: a gun's burst: the line from the platform to the target is clear of our other
+    /// vehicles and of protected tracks ([`crate::engage::LINE_OF_FIRE_M`] either side).
+    LineOfFire,
 }
 
 impl RuleId {
@@ -147,6 +150,7 @@ impl RuleId {
             RuleId::FallbackPreload => "fallback_preload",
             RuleId::Identify => "identify",
             RuleId::Weapon => "weapon",
+            RuleId::LineOfFire => "line_of_fire",
         }
     }
 }
@@ -256,7 +260,25 @@ pub enum UnknownEndurance {
 /// release spends a round. Version 25 ([`DAMAGE_SINCE`]): a platform whose vehicle reports its
 /// weapons out of action (a damage model's firepower kill) can't use its loadout, and the weapon
 /// check shows the weapon's published hit and damage figures against the target's estimated kind.
-pub const RULES_VERSION: u32 = DAMAGE_SINCE;
+/// Version 26 ([`GUN_SINCE`]): a gun is usable: its engagement fires bursts from a counted
+/// magazine through a firing window, each burst re-checked and its rounds counted.
+pub const RULES_VERSION: u32 = GUN_SINCE;
+
+/// The rules version from which a gun of a platform's loadout is usable (bd murmur-lbw8.3, the
+/// owner's direction of 2026-11-02, DECISIONS.md "Guns: bursts from a counted magazine"). A gun's
+/// plan sends the platform to a firing position within the gun's range of the predicted target
+/// (`EngagePreview::fire_from`, not the effect point); its release is the first burst, judged by
+/// the gun's own checks (the target within the gun's range, the line of fire clear of ours and of
+/// protected tracks, the target inside the plan's circle), and opens a firing window: every second
+/// the picture is held as before an effect, and a burst (`engage.burst`: `burst_rounds` rounds,
+/// the rest of the magazine for the last) goes out each `burst_interval_s` while it holds and the
+/// burst checks pass, each spending its rounds in rules 24's ledger. The fire ends when the
+/// assessment, judged from the last burst, says ceased or unknown, when the rounds are gone or the
+/// approved window closes (`engage.fire_ended`), or when it is stopped, superseded or the picture
+/// fails (`engage.stopped`, with the fallback but for a supersede); the target unseen holds fire
+/// without ending it. The platform holds its lost-link preload while it fires. Every gate of that
+/// change reads this constant, never a literal.
+pub const GUN_SINCE: u32 = 26;
 
 /// The rules version from which a weapon's effect is a hit draw and a damage outcome on the truth
 /// side, and the engine reads what our own damaged vehicles report (bd murmur-lbw8.2, the owner's
@@ -698,6 +720,11 @@ impl RulesConfig {
     /// weapon's figures shown.
     pub fn damage(&self) -> bool {
         self.rules_version >= DAMAGE_SINCE
+    }
+
+    /// Rules 26 ([`GUN_SINCE`]): a gun is usable, its engagement fires bursts.
+    pub fn guns(&self) -> bool {
+        self.rules_version >= GUN_SINCE
     }
 
     /// `[rules.engage]`, or its defaults.

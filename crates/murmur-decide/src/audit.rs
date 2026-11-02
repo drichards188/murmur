@@ -579,8 +579,34 @@ pub enum EventBody {
         weapon: Option<crate::loadout::WeaponRelease>,
     },
 
+    /// Engage, rules 26: one burst of a gun engagement's firing window after its release (the
+    /// release, `engage.effect`, is burst 1): its number, the platform, the gun with the rounds
+    /// it fired and those left (the ledger counts them), and how long it lasted at the gun's
+    /// cyclic rate. It follows, in the same step, an `engage.picture` that held and was ready;
+    /// replay recomputes the weapon from that picture and binds the burst to the gun's interval
+    /// and the approved window. The truth side draws its hit and damage on its own stream.
+    #[serde(rename = "engage.burst")]
+    EngageBurst {
+        intent: IntentId,
+        uid: Uid,
+        burst: u32,
+        weapon: crate::loadout::WeaponRelease,
+        duration_s: f64,
+    },
+
+    /// Engage, rules 26: a gun's firing window ended on its own (`rounds_out`: no round left;
+    /// `window_closed`: the approved window closed); the assessment goes on from the last burst.
+    /// An assessment of ceased or unknown, and a stop (`engage.stopped`), end it too.
+    #[serde(rename = "engage.fire_ended")]
+    EngageFireEnded {
+        intent: IntentId,
+        why: crate::engage::FireEndKind,
+        detail: String,
+    },
+
     /// Engage: stopped before the effect (before dispatch it is voided, after it aborted),
-    /// and the fallback commanded.
+    /// and the fallback commanded. Rules 26: a gun's fire stopped after its release (the
+    /// engagement stays effected and is assessed).
     #[serde(rename = "engage.stopped")]
     EngageStopped {
         intent: IntentId,

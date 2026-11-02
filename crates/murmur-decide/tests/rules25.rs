@@ -139,7 +139,7 @@ fn every_usable_weapon_lists_its_figures() {
             n += 1;
         }
     }
-    assert_eq!(n, 7, "the Hellfire, the GBU-12, the AMRAAM, the Javelin and the three one-way platforms");
+    assert_eq!(n, 8, "the Hellfire, the GBU-12, the AMRAAM, the Javelin, the three one-way platforms and (rules 26) the M2");
     let base = "[x]\ndomain = \"air\"\nsim = \"standin\"\narmed = true\n";
     let w = |effects: &str| {
         format!("{base}loadout = [{{ name = \"m\", kind = \"missile\", count = 2, min_range_m = 0, max_range_m = 1000, speed_mps = 100, profile = \"direct\", guidance = \"laser\", warhead = {{ class = \"heat\", mass_kg = 9 }}, targets = [\"surface\"], effects = {effects} }}]\n")

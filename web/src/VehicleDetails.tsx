@@ -60,6 +60,9 @@ interface Weapon {
   count: number
   left: number
   inert: boolean
+  /** rules 26: a gun's burst and the seconds between bursts */
+  burst_rounds?: number | null
+  burst_interval_s?: number | null
   min_range_m: number
   max_range_m: number
   speed_mps: number
@@ -92,10 +95,10 @@ function LoadoutItems({ uid }: { uid: number }) {
   const ws = weapons && weapons.uid === uid ? weapons.w : []
   if (!ws.length) return null
   return (
-    <Item k="Loadout" title="Rounds left of each weapon (the engine's count: each release spends one). Guns and mines are listed but not usable yet.">
+    <Item k="Loadout" title="Rounds left of each weapon (the engine's count: each release spends one round, each burst of a gun its rounds). Mines are listed but not usable yet.">
       {ws.map((w, i) => (
         <span key={w.name} className={w.inert ? 'muted' : w.left === 0 ? 'bad' : ''}
-          title={`${w.kind}, ${fmt(w.min_range_m)} to ${fmt(w.max_range_m, 0, ' m')} at ${fmt(w.speed_mps, 0, ' m/s')}; for ${w.targets.join(', ')} targets${w.inert ? '; inert until its stage' : ''}`}>
+          title={`${w.kind}, ${fmt(w.min_range_m)} to ${fmt(w.max_range_m, 0, ' m')} at ${fmt(w.speed_mps, 0, ' m/s')}; for ${w.targets.join(', ')} targets${w.burst_rounds ? `; bursts of ${w.burst_rounds} every ${fmt(w.burst_interval_s ?? 0, 0, ' s')}` : ''}${w.inert ? '; inert until its stage' : ''}`}>
           {i > 0 ? ' · ' : ''}
           {w.name} {w.left}/{w.count}
           {w.inert ? ' (inert)' : ''}

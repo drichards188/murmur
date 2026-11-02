@@ -763,6 +763,7 @@ fn an_unclassified_target_classified_after_approval_voids() {
         false,
         T0,
         None,
+        None,
     );
     assert!(!ok, "{results:?}");
     assert!(

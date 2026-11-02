@@ -22,7 +22,13 @@ fog by guidance, a rough sea against a small boat, a missile's range over the gr
 the slant [E: a missile released from an aircraft's height trades it for energy], points off for a
 fast target in 5 m/s bands [E]; jamming is not a factor yet), and section 11's suggestion of one
 table keyed by weapon class taken instead as per-weapon tables, so the logged weapon facts carry
-their own figures.
+their own figures. Guns were taken in stage 3 (murmur-lbw8.3, decision rules 26): the M2's 10.3
+column and 10.4 row for a 12.7 mm burst as its per-burst `effects` (one burst is one shot of the
+damage model; a burst's spread is folded into its hit chance, as 10.3's reasoning for the column
+says, so no dispersion is modelled apart), bursts of 6 [26] at 525 rpm [26], one every 5 s [E: 72
+rounds a minute, the M2's rapid rate of 40 or more [59]], and 10.5's guns rows in `damage.rs` (20
+points a 5 m/s band past 15 m/s, x0.6 in fog, x0.6 against a boat in sea state 4-5); a round's
+flight (some 2 s to 1,800 m at the muzzle speed [26], about 3 with drag [E]) is not modelled.
 
 ## 0. What changes the plan (read first)
 
@@ -407,3 +413,4 @@ platform), so a change to the damage model is one place.
 56. Defense Daily, "Saronic introduces Corsair" (24 ft, 1,000 lb payload, 35+ kn, "kinetic and non-kinetic effects"). https://defensedaily.com/saronic-introduces-corsair-an-asv-with-range-and-speed-to-keep-pace-with-surface-fleet/unmanned-systems
 57. Military Times, "This unmanned submarine chaser is closer to reality", 2018-02-05 (Sea Hunter not designed to carry weapons). https://www.militarytimes.com/unmanned/uas/2018/02/05/this-unmanned-submarine-chaser-is-closer-to-reality
 58. Standard public descriptions of the type (maker pages and Wikipedia: RQ-4 Global Hawk, L3Harris FVR-90, AeroVironment Puma 3 AE, Skydio X10D, Saildrone Explorer, Blue Robotics BlueROV2, HII REMUS 600); not re-read in this session, as each is an ISR, survey or hobby type with no weapon option offered.
+59. US Army FM 3-21.8 (2007), the M2's rates of fire (sustained under 40 rounds a minute, rapid 40 or more, cyclic 450 to 550), seen in a search summary of its specifications table, 2026-11-02; the manual itself not read. https://www.marines.mil/Portals/1/Publications/FM%203-21.8%20%20The%20Infantry%20Rifle%20Platoon%20and%20Squad_7.pdf

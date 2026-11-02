@@ -141,7 +141,8 @@ pub struct Scenario {
     /// 19 `drop_behaving_acceptance` (an acceptance of a live track as behaving now cut),
     /// `drop_behaving_lapse` (its lapse cut) and `behaving_acceptance_by_agent` (the acceptance
     /// credited to an agent's session), and for rules 20 `edit_munition` (the released munition's
-    /// impact moved 10 s later), and for rules 24 `edit_rounds` (every release logged with one
+    /// impact moved 10 s later), and for rules 26 `burst_after_stop` (a gun's last burst logged
+    /// again after its fire was stopped), and for rules 24 `edit_rounds` (every release logged with one
     /// more round left than it spent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tamper: Option<String>,
@@ -152,6 +153,20 @@ pub struct Scenario {
     /// or `persists`.
     #[serde(default = "out_of_play")]
     pub after_effect: String,
+    /// Rules 26: a gun's target leaves play (`after_effect = "out_of_play"`) at this burst
+    /// (default 1, the release).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cease_at_burst: Option<u32>,
+    /// Rules 26: the bursts the gun must have fired (the release counts as the first).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect_bursts: Option<u32>,
+    /// Rules 26: how its fire must have ended: `ceased`, `unknown`, `rounds_out`,
+    /// `window_closed` or `stopped`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect_fire_end: Option<String>,
+    /// Rules 26: the gun's rounds left after its last burst.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect_rounds_left: Option<u32>,
     /// Rules 22: the land, as polygons of `[lon, lat]` (each closed on its own), instead of the
     /// runner's two boxes (San Francisco south of 37.800, Marin north of 37.832 west of -122.46);
     /// everything else in the runner's coverage is water 20 m deep.
@@ -1674,8 +1689,14 @@ pub fn run(
                             engaging.remove(&f.intent);
                         }
                         EngagementEvent::Effect(e) => {
-                            if sc.after_effect != "persists" {
+                            // rules 26: a gun's target leaves at the burst the scenario names
+                            // (the first by default)
+                            let ceases = e.burst.is_none_or(|b| b == sc.cease_at_burst.unwrap_or(1));
+                            if sc.after_effect != "persists" && ceases {
                                 target_out = Some((e.track.clone(), e.strike_t()));
+                            }
+                            if let Some(b) = e.burst {
+                                extra.bursts.push(format!("t={s} burst {b}: {} rounds", e.burst_rounds.unwrap_or(0)));
                             }
                         }
                         EngagementEvent::Voided { .. } | EngagementEvent::Assessed { .. } => {}
@@ -1763,6 +1784,30 @@ pub fn run(
             "expected check {rule} to fail, failed: [{}]",
             failed_rules.join(", ")
         ));
+    }
+    // rules 26: a gun's bursts and how its fire ended (the last engagement that fired one)
+    let fire = engine.intents().filter_map(|i| i.engagement().and_then(|e| e.fire.as_ref())).last();
+    if let Some(n) = sc.expect_bursts
+        && fire.map(|f| f.bursts) != Some(n)
+    {
+        failures.push(format!(
+            "expected {n} bursts, got {:?} ({:?})",
+            fire.map(|f| f.bursts),
+            extra.bursts
+        ));
+    }
+    if let Some(w) = &sc.expect_fire_end
+        && fire.and_then(|f| f.ended.as_ref()).map(|e| e.why.as_str()) != Some(w.as_str())
+    {
+        failures.push(format!(
+            "expected the fire to end {w}, got {:?}",
+            fire.and_then(|f| f.ended.as_ref()).map(|e| (e.why.as_str(), e.detail.clone()))
+        ));
+    }
+    if let Some(n) = sc.expect_rounds_left
+        && fire.and_then(|f| f.left) != Some(n)
+    {
+        failures.push(format!("expected {n} rounds left, got {:?}", fire.and_then(|f| f.left)));
     }
     if let Some(a) = &sc.expect_assessment
         && assessment.as_deref() != Some(a.as_str())
@@ -3268,6 +3313,8 @@ fn act(
 struct Extra {
     /// No engagement step before this second.
     stall_until: u32,
+    /// Rules 26: a gun's bursts as they went out (`t=<s> burst <n>: <rounds> rounds`).
+    bursts: Vec<String>,
     /// The last `task` step's intent.
     last_task: Option<IntentId>,
     /// Rules 21: what the identify orders did (`t=<s> <id> recentred ...`, `held`, `ended`).
@@ -3696,7 +3743,8 @@ fn preloads(
     let ids: Vec<IntentId> = extra.preloads.keys().copied().collect();
     for id in ids {
         let Some(intent) = engine.intent(id) else { continue };
-        let state = intent.state();
+        // (rules 26: a gun firing after its release is under way, as dispatched)
+        let state = intent.play_state();
         let Some(preload) = intent.engagement().and_then(|e| e.preload.clone()) else {
             continue;
         };
@@ -3980,7 +4028,8 @@ fn dispatch_approved(
         match engine.dispatch_order(id) {
             Ok(Order::Engage(o)) => {
                 if let Some(v) = vehicles.get_mut(o.uid.as_str()) {
-                    v.goal = Some(o.effect_point);
+                    // rules 26: a gun's platform goes to its firing position
+                    v.goal = Some(o.fire_from.unwrap_or(o.effect_point));
                     v.orbit = true;
                 }
                 // as the bridge does, any other engagement in play on it first, in the dispatch's step (none can be:
@@ -3990,7 +4039,7 @@ fn dispatch_approved(
                     .filter(|i| {
                         i.id() != id
                             && matches!(i.spec().task, Task::Engage { .. })
-                            && matches!(i.state(), State::PendingApproval | State::Approved | State::Dispatched)
+                            && matches!(i.play_state(), State::PendingApproval | State::Approved | State::Dispatched)
                             && i.spec().uids.contains(&o.uid)
                     })
                     .map(|i| i.id())
@@ -4042,8 +4091,9 @@ fn supersede_engagements(
         .filter(|i| {
             i.id() != id
                 && matches!(i.spec().task, Task::Engage { .. })
+                // rules 26: and a gun still firing after its release
                 && matches!(
-                    i.state(),
+                    i.play_state(),
                     State::PendingApproval | State::Approved | State::Dispatched
                 )
                 && i.spec().uids.iter().any(|u| uids.contains(u))
@@ -4404,15 +4454,16 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             }
         }
         "edit_rounds" => {
-            // rules 24: a release logged as if it had not spent its round (one more left)
+            // rules 24: a release logged as if it had not spent its round (one more left); rules
+            // 26: and each of a gun's bursts
             let mut done = false;
             for e in &mut events {
-                if let EventBody::EngageEffect {
-                    weapon: Some(w),
-                    ..
-                } = &mut e.body
-                    && let Some(n) = w.left.as_mut()
-                {
+                let w = match &mut e.body {
+                    EventBody::EngageEffect { weapon: Some(w), .. } => w,
+                    EventBody::EngageBurst { weapon, .. } => weapon,
+                    _ => continue,
+                };
+                if let Some(n) = w.left.as_mut() {
                     *n += 1;
                     done = true;
                 }
@@ -4420,6 +4471,25 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             if !done {
                 return Err("no counted weapon released to edit".into());
             }
+        }
+        "burst_after_stop" => {
+            // rules 26: a gun's last burst logged again after its fire was stopped
+            let stop = events
+                .iter()
+                .position(|e| matches!(&e.body, EventBody::EngageStopped { .. }))
+                .ok_or("no engage.stopped")?;
+            let last = events[..stop]
+                .iter()
+                .rposition(|e| matches!(&e.body, EventBody::EngageBurst { .. }))
+                .ok_or("no engage.burst before the stop")?;
+            let mut again = events[last].clone();
+            again.t = events[stop].t.plus_ms(1000).max(again.t.plus_ms(5000));
+            if let EventBody::EngageBurst { burst, weapon, .. } = &mut again.body {
+                *burst += 1;
+                weapon.left = weapon.left.map(|n| n.saturating_sub(weapon.spent()));
+            }
+            let at = events.iter().position(|e| e.t > again.t).unwrap_or(events.len());
+            events.insert(at, again);
         }
         "drop_damage" => {
             // rules 25: a platform's own damage report hidden from every decision that logged it

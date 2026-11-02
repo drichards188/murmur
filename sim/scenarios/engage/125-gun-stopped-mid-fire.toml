@@ -1,0 +1,85 @@
+# Rules 26 (bd murmur-lbw8.3): an operator stops a gun mid-fire. As scenario 123, but the boat
+# persists. The release (burst 1, 25 s) and burst 2 (30 s) go out; at 32 s op-1 stops the
+# engagement (any operator may, as before the effect). The fire ends at once (`engage.stopped`,
+# cause operator, the recorded fallback commanded: hold), no burst follows, and the engagement
+# stays effected and is assessed from its last burst: the boat is seen again, persists. 488 of
+# 500 rounds left. Then the log is forged so that a third burst goes out after the stop: replay
+# finds no open firing window for it and catches it.
+title = "An operator stops a gun mid-fire"
+invariant = "abort"
+attack = "a burst after the engagement was stopped"
+expect = "done"
+expect_assessment = "persists"
+expect_stop = "operator"
+expect_bursts = 2
+expect_fire_end = "stopped"
+expect_rounds_left = 488
+after_effect = "persists"
+tamper = "burst_after_stop"
+end_s = 60
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "bull-1"
+platform = "ugv_armed"      # an M2 (500 rounds, 1,800 m) and a Javelin; its sight covers the point
+at = [-122.4950, 37.7990]   # on the shore (the runner's land: south of 37.800)
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west, 1,450 m north
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "bull-1"
+track = "T-0001"
+radius_m = 75
+fallback = "abort"          # hold where it is
+window_s = 600
+weapon = "M2 .50 HMG"
+
+[[step]]
+at_s = 2
+action = "expect"
+state = "pending_approval"
+weapon = "named: M2 .50 HMG, a gun for ground and surface and air targets, 0 to 1800 m, bursts of 6 rounds every 5 s; 500 of 500 rounds left; against a small_fast_boat, as estimated: a hit 0.20 in good conditions"
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 32
+action = "abort"
+by = "op-1"

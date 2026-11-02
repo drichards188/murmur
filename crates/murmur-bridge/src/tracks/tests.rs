@@ -870,6 +870,8 @@ fn a_munitions_effect_strikes_at_its_impact_on_the_contacts_clock() {
         t: Time(1_781_000_024_000),
         munition,
         weapon: None,
+        burst: None,
+        burst_rounds: None,
     };
     let flight = MunitionFlight {
         name: "Hellfire-class missile".into(),
@@ -898,6 +900,10 @@ fn a_munitions_effect_strikes_at_its_impact_on_the_contacts_clock() {
     tracks.queue_effect(&order(3, Some(flight)), Vec::new());
     let late = tracks.take_effects_at(1_781_200_050.0, 1_781_000_045.0);
     assert_eq!(late[0]["impact_t"].as_f64(), Some(1_781_200_050.0));
+    // rules 26: a gun's burst goes with its number (the truth side draws it on its own stream)
+    tracks.queue_effect(&EffectOrder { burst: Some(3), burst_rounds: Some(6), ..order(4, None) }, Vec::new());
+    let b = tracks.take_effects_at(1_781_200_051.0, 1_781_000_046.0);
+    assert_eq!((b[0]["burst"].as_u64(), b[0].get("impact_t")), (Some(3), None), "{}", b[0]);
 }
 
 /// murmur-z07i: the console feed's track carries at most `cap` sources (the latest heard, in

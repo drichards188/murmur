@@ -305,24 +305,26 @@ pub fn route_for(
         .ok_or("cannot evaluate: no home position")?
         .value;
     if engage {
-        // engage: to the predicted effect point (crate::engage::preview), then home
+        // engage: to the predicted effect point (crate::engage::preview), then home; rules 26: a
+        // gun's platform to its firing position
         let p = crate::engage::preview(spec, world, cfg)
             .map_err(|e| format!("cannot evaluate: no preview ({e})"))?;
+        let label = if p.fire_from.is_some() { "firing position" } else { "effect point" };
         return Ok(Route {
             transit: Some(Segment {
                 kind: LegKind::Transit,
                 from: pos,
-                to: p.effect_point,
+                to: p.goal(),
                 from_label: "position".into(),
-                to_label: "effect point".into(),
+                to_label: label.into(),
                 from_vehicle: true,
             }),
             task: None,
             ret: Some(Segment {
                 kind: LegKind::Return,
-                from: p.effect_point,
+                from: p.goal(),
                 to: home,
-                from_label: "effect point".into(),
+                from_label: label.into(),
                 to_label: "home".into(),
                 from_vehicle: false,
             }),

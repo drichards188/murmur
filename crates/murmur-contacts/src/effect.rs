@@ -124,6 +124,20 @@ pub struct EffectNotice {
     /// damage model. None, or a weapon without figures: an abstract effect.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weapon: Option<WeaponDamage>,
+    /// Rules 26: a gun's burst number (1: its release): each burst is drawn on its own stream
+    /// (`effect:<intent>:<burst>`). None for any other weapon (`effect:<intent>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub burst: Option<u32>,
+}
+
+impl EffectNotice {
+    /// The stream its draws are named by: the intent's, and a gun's burst's (rules 26).
+    pub fn stream(&self) -> String {
+        match self.burst {
+            Some(b) => format!("effect:{}:{b}", self.intent),
+            None => format!("effect:{}", self.intent),
+        }
+    }
 }
 
 /// Rules 20: the effects whose munition is still in flight, held until their impact time and
@@ -202,6 +216,9 @@ pub struct EffectApplied {
     /// Ours the damage model hurt, for the vehicle simulation (and the record).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ours_damaged: Vec<OursDamaged>,
+    /// Rules 26: a gun's burst it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub burst: Option<u32>,
 }
 
 /// Apply one effect at scenario time `now` (unix s), abstractly: every contact inside the radius
@@ -266,6 +283,7 @@ pub fn apply_with(e: &EffectNotice, movers: &mut [Mover], now: f64, ctx: Option<
         weapon: None,
         damage: Vec::new(),
         ours_damaged: Vec::new(),
+        burst: e.burst,
     }
 }
 
@@ -313,7 +331,8 @@ fn tenth(x: f64) -> f64 {
 /// The damage model's strike (the module doc).
 fn strike(e: &EffectNotice, w: &WeaponDamage, movers: &mut [Mover], now: f64, ctx: &DamageCtx) -> EffectApplied {
     let [lon, lat] = e.point;
-    let stream = format!("effect:{}", e.intent);
+    // rules 26: each of a gun's bursts on its own stream
+    let stream = e.stream();
     let mut inside = Vec::new();
     let mut collateral = ours_inside(e);
     for m in movers.iter_mut().filter(|m| m.st.exists) {
@@ -392,7 +411,10 @@ fn strike(e: &EffectNotice, w: &WeaponDamage, movers: &mut [Mover], now: f64, ct
             ours_damaged.push(OursDamaged {
                 uid: o.uid.clone(),
                 state: r.state,
-                cause: format!("caught in the effect of intent {} ({})", e.intent, w.name),
+                cause: match e.burst {
+                    Some(b) => format!("caught in burst {b} of intent {} ({})", e.intent, w.name),
+                    None => format!("caught in the effect of intent {} ({})", e.intent, w.name),
+                },
             });
         }
         records.push(r);
@@ -419,6 +441,7 @@ fn strike(e: &EffectNotice, w: &WeaponDamage, movers: &mut [Mover], now: f64, ct
         weapon: Some(w.name.clone()),
         damage: records,
         ours_damaged,
+        burst: e.burst,
     }
 }
 
@@ -489,6 +512,7 @@ mod tests {
             impact_t: None,
             munition: None,
             weapon: None,
+            burst: None,
         };
         let r = apply(&e, &mut movers, 101.0);
         assert!(r.target_inside);
@@ -520,6 +544,7 @@ mod tests {
             impact_t,
             munition: None,
             weapon: None,
+            burst: None,
         }
     }
 
@@ -663,6 +688,43 @@ mod tests {
             // only the destroyed leave: the yacht inside the radius, outside the blast, goes on
             assert!(movers[2].st.exists && movers[2].effect_t == Some(101.0) && movers[2].damage.is_none());
         }
+    }
+
+    /// Rules 26: each of a gun's bursts is a shot of its own, drawn on its own stream (the release,
+    /// burst 1, as much as any later one): two bursts of a 50-50 gun do not repeat one draw, the
+    /// same burst reruns the same, and the record names the burst. A gun loses 20 points a 5 m/s
+    /// band past 15 m/s and fires at 0.6 in fog through its stabilised sight (10.5).
+    #[test]
+    fn each_burst_of_a_gun_draws_on_its_own_stream() {
+        let gun: WeaponDamage = serde_json::from_value(serde_json::json!({
+            "name": "M2 .50 HMG", "kind": "gun", "guidance": "stabilised_sight",
+            "warhead": { "class": "ball_ap_12_7mm", "mass_kg": 0.043 }, "max_range_m": 1800.0,
+            "effects": { "small_fast_boat": { "p_hit": 0.5, "p_mobility": 1.0 } },
+        }))
+        .expect("gun");
+        let burst = |b: u32| {
+            let mut movers = scene();
+            let e = EffectNotice { burst: Some(b), ..strike_notice(7, gun.clone(), Vec::new()) };
+            apply_with(&e, &mut movers, 101.0, Some(&CTX))
+        };
+        let us: Vec<f64> = (1..=8).map(|b| target(&burst(b)).u_hit).collect();
+        assert!(us.windows(2).any(|w| w[0] != w[1]), "{us:?}");
+        assert_eq!(target(&burst(3)).u_hit, us[2], "a burst reruns the same");
+        assert_eq!(burst(3).burst, Some(3));
+        // no burst: the intent's own stream, as every effect before rules 26
+        let mut movers = scene();
+        let plain = apply_with(&strike_notice(7, gun.clone(), Vec::new()), &mut movers, 101.0, Some(&CTX));
+        assert_eq!(target(&plain).u_hit, damage::uniform(17, "effect:7:target:hit"));
+        assert_eq!(target(&burst(2)).u_hit, damage::uniform(17, "effect:7:2:target:hit"));
+        // the gun's factors
+        let fast = Target { kind: "small_fast_boat", speed_mps: 22.0, armed: false, surface: true };
+        let clear = Conditions { visibility_m: 20_000.0, sea_state: 2.0, sun_elevation_deg: 40.0 };
+        let (_, _, _, p) = damage::hit_chance(&gun, &fast, &clear, None);
+        assert!((p - 0.1).abs() < 1e-9, "two bands at 20 points: {p}");
+        let fog = Conditions { visibility_m: 500.0, ..clear };
+        let slow = Target { speed_mps: 3.0, ..fast };
+        let (_, _, _, p) = damage::hit_chance(&gun, &slow, &fog, None);
+        assert!((p - 0.3).abs() < 1e-9, "x0.6 in fog: {p}");
     }
 
     /// Collateral: a skiff 2 m from the point draws (its chance near 1), the yacht 44 m off does

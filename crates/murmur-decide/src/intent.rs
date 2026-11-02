@@ -881,6 +881,11 @@ impl Intent {
     pub fn state(&self) -> State {
         self.state
     }
+    /// The state as what holds a platform reads it: a gun engagement still firing after its
+    /// release (rules 26) is under way as a dispatched one is ([`crate::engage::play_state`]).
+    pub fn play_state(&self) -> State {
+        crate::engage::play_state(self.state, self.engagement().is_some_and(crate::engage::firing))
+    }
     pub fn checks(&self) -> &[CheckResult] {
         &self.checks
     }

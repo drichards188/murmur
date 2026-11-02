@@ -292,8 +292,13 @@ conditions, then destroyed, propulsion lost, weapons out of action or undamaged,
 draws within the warhead's blast radius, seeded per strike so a scenario reruns the same; the C2
 senses the result (a stopped boat stays in the picture, a sunk one leaves) and the engine reads
 only our vehicles' own damage reports (weapons out of action refuse the loadout); the weapon
-check shows the weapon's figures against the target's estimated kind; stage 3 (murmur-lbw8.3)
-guns; stage 4 (murmur-lbw8.4) mines. No autonomous engagement, two human signatures, the authorize step closed to agents in
+check shows the weapon's figures against the target's estimated kind; stage 3, built as
+decision rules 26 (murmur-lbw8.3): a gun (the armed UGV's M2) fires bursts from its counted
+magazine through a firing window opened by its release, from a firing position within its range,
+each burst re-checked (the picture as before an effect, the target in range and seen since the
+last burst, the line of fire clear), counted, drawn on its own and assessed from the last, until
+the target ceases, the rounds or the window run out, or it is stopped; stage 4 (murmur-lbw8.4)
+mines. No autonomous engagement, two human signatures, the authorize step closed to agents in
 code, every order to an armed platform waiting for a person; no terminal guidance or aim-point
 optimisation.
 

@@ -2447,7 +2447,7 @@ impl Engine {
         let other_holds = self.engaged_elsewhere(id, &report.uid);
         if let Some(why) = preload_mismatch(
             intent.spec(),
-            intent.state(),
+            intent.play_state(),
             dispatched,
             eng.preload.as_ref(),
             eng.intended.as_ref().map(|r| &r.before),
@@ -2490,7 +2490,7 @@ impl Engine {
             confirmed,
             detail: verdict.clone().err().unwrap_or_default(),
         };
-        let state = self.get(id)?.state();
+        let state = self.get(id)?.play_state();
         let e = self.get_mut(id)?.engagement_mut();
         match report.phase {
             engage::PreloadPhase::Intent => e.intended = Some(record),
@@ -2814,7 +2814,7 @@ impl Engine {
             .find(|i| {
                 Some(i.id()) != except
                     && i.spec().kind() == TaskKind::Engage
-                    && i.state() == State::Dispatched
+                    && i.play_state() == State::Dispatched
                     && i.spec().uids.first() == Some(uid)
             })
             .map(Intent::id)
@@ -3832,11 +3832,20 @@ impl Engine {
         let superseded = matches!(cause, StopCause::Superseded { .. });
         // rules 9: a revoked declaration stops a nomination still waiting for signatures too
         let revoked = matches!(cause, StopCause::Revoked { .. });
+        // rules 26: a gun still firing after its release stops firing; it stays effected and is
+        // assessed (no transition), its fallback commanded as under way
+        let firing = intent.engagement().is_some_and(engage::firing);
         let (transition, fallback) = match state {
-            State::PendingApproval if superseded || revoked => (Transition::Void, None),
-            State::Approved => (Transition::Void, None),
+            State::PendingApproval if superseded || revoked => (Some(Transition::Void), None),
+            State::Approved => (Some(Transition::Void), None),
             State::Dispatched => (
-                Transition::Abort,
+                Some(Transition::Abort),
+                engage::params(intent.spec())
+                    .map(|p| p.3)
+                    .filter(|_| command_fallback),
+            ),
+            State::Effected if firing => (
+                None,
                 engage::params(intent.spec())
                     .map(|p| p.3)
                     .filter(|_| command_fallback),
@@ -3858,17 +3867,29 @@ impl Engine {
             reason: reason.clone(),
             fallback,
         })?;
-        self.get_mut(id)?.engagement_mut().stop = Some(StopRecord {
-            t,
-            cause,
-            reason: reason.clone(),
-            fallback,
-        });
+        {
+            let e = self.get_mut(id)?.engagement_mut();
+            e.stop = Some(StopRecord {
+                t,
+                cause,
+                reason: reason.clone(),
+                fallback,
+            });
+            if let Some(f) = e.fire.as_mut().filter(|f| f.open()) {
+                f.ended = Some(engage::FireEnd {
+                    t,
+                    why: engage::FireEndKind::Stopped,
+                    detail: reason.clone(),
+                });
+            }
+        }
         let reason = match fallback {
             Some(f) => format!("{reason}; fallback {}", f.as_str()),
             None => reason,
         };
-        self.transition(id, transition, reason.clone())?;
+        if let Some(transition) = transition {
+            self.transition(id, transition, reason.clone())?;
+        }
         Ok(match (fallback, uid) {
             (Some(fallback), Some(uid)) => Some(FallbackOrder {
                 intent: id,
@@ -3927,8 +3948,9 @@ impl Engine {
         // rules 19: the acceptances as behaving now this picture lapses go first (logged, dropped
         // for good), so the step reads only those that hold; a pending nomination with one is
         // stepped for this alone until a signature freezes a plan
+        // (rules 26: a gun firing after its release as one under way)
         if matches!(
-            self.get(id)?.state(),
+            self.get(id)?.play_state(),
             State::PendingApproval | State::Approved | State::Dispatched
         ) {
             self.lapse_behaving(id, world)?;
@@ -3976,7 +3998,9 @@ impl Engine {
             if eng.munition.as_ref().is_some_and(|m| self.now() < m.impact_t) {
                 return Ok(None);
             }
-            let effect = engage::struck(&effect, eng.munition.as_ref());
+            // rules 26: a gun's observation runs from its last burst
+            let firing = engage::firing(&eng);
+            let effect = engage::observed_from(&effect, eng.munition.as_ref(), eng.fire.as_ref());
             let prev = eng.last_observe;
             let step = engage::observe(&snap, &effect, &inputs, &self.policy.rules);
             let covered = !step.covered_by.is_empty();
@@ -3999,7 +4023,14 @@ impl Engine {
                 e.covered_s = covered_s;
                 e.last_observe = Some((t, covered));
             }
+            // rules 26: while the gun fires a target seen again is no verdict (the next burst
+            // is due); ceased or unknown ends the fire
+            let verdict = verdict.filter(|(r, _)| !firing || *r != engage::AssessResult::Persists);
             let Some((result, evidence)) = verdict else {
+                if firing {
+                    inputs.rounds = self.restores.rounds_for(&spec, &self.policy.rules, &inputs.identities);
+                    return self.step_fire(id, &spec, &eng, &snap, &inputs);
+                }
                 return Ok(None);
             };
             let t = self.emit(EventBody::EngageAssessed {
@@ -4008,12 +4039,27 @@ impl Engine {
                 evidence: evidence.clone(),
                 covered_s,
             })?;
-            self.get_mut(id)?.engagement_mut().assessment = Some(engage::Assessment {
-                t,
-                result,
-                evidence: evidence.clone(),
-                covered_s,
-            });
+            {
+                let e = self.get_mut(id)?.engagement_mut();
+                e.assessment = Some(engage::Assessment {
+                    t,
+                    result,
+                    evidence: evidence.clone(),
+                    covered_s,
+                });
+                // rules 26: the assessment ends a gun's fire
+                if let Some(f) = e.fire.as_mut().filter(|f| f.open()) {
+                    f.ended = Some(engage::FireEnd {
+                        t,
+                        why: if result == engage::AssessResult::Ceased {
+                            engage::FireEndKind::Ceased
+                        } else {
+                            engage::FireEndKind::Unknown
+                        },
+                        detail: evidence.clone(),
+                    });
+                }
+            }
             self.transition(
                 id,
                 Transition::Complete,
@@ -4037,6 +4083,7 @@ impl Engine {
             dispatched,
             prev_t,
             preloaded,
+            None,
         );
         let logged = self.log_inputs(&inputs)?;
         let t = self.emit_at(
@@ -4092,6 +4139,9 @@ impl Engine {
         };
         let t = self.emit_at(t, body.clone())?;
         self.restores.step_at(t, &body);
+        // rules 26: a gun's release is its first burst, and opens its firing window
+        let gun = engage::gun_of(Some(&uid), p, &inputs, &self.policy.rules.engage_rules()).cloned();
+        let burst = gun.as_ref().and(weapon.as_ref()).and_then(|w| w.rounds);
         {
             let e = self.get_mut(id)?.engagement_mut();
             e.effect = Some(EffectRecord {
@@ -4102,6 +4152,18 @@ impl Engine {
             });
             e.munition = munition.clone();
             e.weapon = weapon.clone();
+            if let (Some(g), Some(w)) = (&gun, &weapon) {
+                e.fire = Some(engage::FireRecord {
+                    weapon: g.name.clone(),
+                    bursts: 1,
+                    rounds: w.spent(),
+                    opened_t: t,
+                    last_t: t,
+                    left: w.left,
+                    every_s: g.burst_every_s(),
+                    ended: None,
+                });
+            }
         }
         self.transition(
             id,
@@ -4137,6 +4199,126 @@ impl Engine {
             t,
             munition,
             weapon: weapon_facts,
+            burst: burst.map(|_| 1),
+            burst_rounds: burst,
+        })))
+    }
+
+    /// Rules 26: a gun's firing window after its release, one step (after its observation gave
+    /// no verdict that ends it): the fire ends when no round is left or the approved window has
+    /// closed (`engage.fire_ended`); else the picture is held as before the release
+    /// (`engage.picture`, firing), and a picture that fails stops the fire with the fallback
+    /// (`engage.stopped`); one that holds, with the burst checks passing and a burst due, fires
+    /// one (`engage.burst`), its rounds counted in the ledger and its own draw on the truth side.
+    fn step_fire(
+        &mut self,
+        id: IntentId,
+        spec: &IntentSpec,
+        eng: &engage::Engagement,
+        snap: &engage::EngageSnapshot,
+        inputs: &WorldSnapshot,
+    ) -> Result<Option<EngagementEvent>, EngineError> {
+        let Some(fire) = eng.fire.clone() else {
+            return Ok(None);
+        };
+        let Some(uid) = spec.uids.first().cloned() else {
+            return Ok(None);
+        };
+        let now = self.now();
+        let p = &snap.preview;
+        if let Some((why, detail)) = engage::fire_over(&fire, p, now) {
+            let t = self.emit_at(
+                now,
+                EventBody::EngageFireEnded {
+                    intent: id,
+                    why,
+                    detail: detail.clone(),
+                },
+            )?;
+            if let Some(f) = self.get_mut(id)?.engagement_mut().fire.as_mut() {
+                f.ended = Some(engage::FireEnd { t, why, detail });
+            }
+            return Ok(None);
+        }
+        let prev_t = eng.watch.as_ref().map_or(snap.t, |w| w.t);
+        let preloaded = eng.preload.as_ref().zip(engage::preload_confirmed_at(eng));
+        let (results, holds, ready) =
+            engage::picture(spec, snap, inputs, &self.policy.rules, true, prev_t, preloaded, Some(fire.last_t));
+        let logged = self.log_inputs(inputs)?;
+        let t = self.emit_at(
+            inputs.t.max(self.last_t),
+            EventBody::EngagePicture {
+                intent: id,
+                inputs: logged,
+                results: results.clone(),
+                holds,
+                ready,
+            },
+        )?;
+        if self.policy.rules.rule_id() {
+            self.last_pictures.insert(id, inputs.clone());
+        }
+        let why = summarize_failures(&results);
+        self.get_mut(id)?.engagement_mut().watch = Some(PictureVerdict {
+            t,
+            holds,
+            ready,
+            results,
+        });
+        if !holds {
+            let reason = format!("picture changed: {why}");
+            return Ok(self
+                .stop_engagement(id, StopCause::Picture, reason, true)?
+                .map(EngagementEvent::Stopped));
+        }
+        let t = self.now();
+        if !(ready && fire.due(t)) {
+            return Ok(None);
+        }
+        let Some(weapon) = engage::release_weapon(spec, snap, inputs, &self.policy.rules) else {
+            return Ok(None);
+        };
+        let facts = inputs
+            .vehicles
+            .get(&uid)
+            .and_then(|v| v.platform.as_ref())
+            .and_then(|pf| pf.loadout.iter().find(|l| l.name == weapon.name))
+            .cloned();
+        let n = weapon.spent();
+        let burst = fire.bursts + 1;
+        let body = EventBody::EngageBurst {
+            intent: id,
+            uid: uid.clone(),
+            burst,
+            weapon: weapon.clone(),
+            duration_s: facts.as_ref().map_or(0.0, |f| engage::burst_duration(f, n)),
+        };
+        let t = self.emit_at(t, body.clone())?;
+        self.restores.step_at(t, &body);
+        {
+            let e = self.get_mut(id)?.engagement_mut();
+            if let Some(f) = e.fire.as_mut() {
+                f.bursts = burst;
+                f.rounds += n;
+                f.last_t = t;
+                f.left = weapon.left;
+            }
+            // the assessment runs from this burst: its coverage starts again
+            e.covered_s = 0.0;
+            e.last_observe = None;
+            e.weapon = Some(weapon);
+        }
+        Ok(Some(EngagementEvent::Effect(EffectOrder {
+            intent: id,
+            uid,
+            track: snap.track_id.clone(),
+            point: p.effect_point,
+            radius_m: p.effect_radius_m,
+            t,
+            munition: None,
+            weapon: facts.map(Box::new),
+            burst: Some(burst),
+            burst_rounds: Some(n),
         })))
     }
 
@@ -4144,7 +4326,7 @@ impl Engine {
     /// than `spec` itself: a fact the engine logs with each decision (`engaged`).
     fn engaged_for(&self, spec: &IntentSpec) -> BTreeMap<Uid, IntentId> {
         engaged_vehicles(
-            self.intents.values().map(|i| (i.id(), i.spec(), i.state())),
+            self.intents.values().map(|i| (i.id(), i.spec(), i.play_state())),
             spec,
         )
     }
@@ -4438,7 +4620,7 @@ impl Engine {
             self.intents
                 .values()
                 .filter(|i| i.id() != replaces)
-                .map(|i| (i.id(), i.spec(), i.state())),
+                .map(|i| (i.id(), i.spec(), i.play_state())),
             spec,
         );
         Some(inputs)
@@ -5117,6 +5299,8 @@ impl Engine {
             Order::Vehicles(_) => "dispatched to the task layer",
             Order::Collect(_) => "dispatched: satellite tasking request",
             Order::Cover(_) => "dispatched: coverage watch",
+            // rules 26: a gun's platform goes to its firing position
+            Order::Engage(o) if o.fire_from.is_some() => "dispatched: platform sent to its firing position",
             Order::Engage(_) => "dispatched: platform sent to the effect point",
         };
         let uids = intent.spec().uids.clone();
@@ -6746,6 +6930,8 @@ pub(crate) fn order_for(
                 } else {
                     None
                 },
+                // rules 26: a gun's firing position
+                fire_from: snap.preview.fire_from,
             })
         }
         // rules 21: flown as the orbit its last passing check laid out

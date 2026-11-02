@@ -60,6 +60,12 @@
 //!    when the strike (now plus its time of flight) falls inside the plan's time tolerance with
 //!    the track predicted inside the effect radius then; the effect lands at the impact
 //!    ([`MunitionFlight`], logged with the `engage.effect`).
+//!    Rules 26: a gun's platform goes to a firing position within the gun's range
+//!    ([`EngagePreview::fire_from`]); its release is its first burst and opens a firing window
+//!    ([`FireRecord`]) in which a burst goes out every `burst_interval_s` while the picture holds
+//!    and the burst's checks pass (the target in range and seen since the last burst, the line
+//!    of fire clear), until the assessment from the last burst says ceased or unknown, the
+//!    rounds or the window run out, or it is stopped.
 //! 7. **Assess** ([`observe`], [`assess`]): a sensor of ours must cover the effect point
 //!    afterwards (rules 20: after the impact). The target track either persists (detected after
 //!    the effect), ceased (no detection while covered for `assess_dwell_s`), or is unknown (not
@@ -386,6 +392,12 @@ impl EngageRules {
         self.rules_version >= crate::rules::DAMAGE_SINCE
     }
 
+    /// The decisions of rules 26 on ([`crate::rules::GUN_SINCE`]): a gun is usable; its plan
+    /// goes to a firing position and its engagement fires bursts through a firing window.
+    pub fn guns(&self) -> bool {
+        self.rules_version >= crate::rules::GUN_SINCE
+    }
+
     /// The optional keys this section sets, each with the policy schema that introduced it
     /// (or, for an old name, the first schema whose builds read it): a log claiming an
     /// older schema can't carry them (replay checks).
@@ -572,6 +584,18 @@ pub struct EngagePreview {
     /// older logs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weapon: Option<String>,
+    /// Rules 26: a gun's firing position, where the platform goes and holds to fire (within the
+    /// gun's range of the predicted target, [`preview`]); the path ends there, not at the effect
+    /// point. Absent for every other plan, and in older logs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fire_from: Option<LonLat>,
+}
+
+impl EngagePreview {
+    /// Where the platform goes: a gun's firing position (rules 26), else the effect point.
+    pub fn goal(&self) -> LonLat {
+        self.fire_from.unwrap_or(self.effect_point)
+    }
 }
 
 /// The picture an approval rests on: what the approver saw, held against everything after.
@@ -876,6 +900,10 @@ pub struct Engagement {
     /// release, and for a platform without a loadout).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub weapon: Option<crate::loadout::WeaponRelease>,
+    /// Rules 26: a gun's firing window, opened by its release (the first burst): its bursts so
+    /// far, its rounds left, and why it ended (none while it fires).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fire: Option<FireRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop: Option<StopRecord>,
     /// Observation after the effect: seconds covered so far, and the last step.
@@ -919,6 +947,160 @@ pub struct Engagement {
     /// and the card are shown them).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub lapsed: Vec<LapseRecord>,
+}
+
+/// Rules 26 ([`crate::rules::GUN_SINCE`]): a gun engagement's firing window, from its release (the
+/// first burst) to its end: the gun, its bursts and rounds so far, the last burst's time (the
+/// assessment observes from it), the rounds left after it, the seconds between bursts, and why
+/// it ended.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FireRecord {
+    pub weapon: String,
+    pub bursts: u32,
+    pub rounds: u32,
+    pub opened_t: Time,
+    pub last_t: Time,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left: Option<u32>,
+    pub every_s: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<FireEnd>,
+}
+
+impl FireRecord {
+    /// Whether it still fires.
+    pub fn open(&self) -> bool {
+        self.ended.is_none()
+    }
+
+    /// Whether a burst is due at `t`: `every_s` since the last.
+    pub fn due(&self, t: Time) -> bool {
+        t.ms_since(self.last_t) >= ms(self.every_s)
+    }
+}
+
+/// Rules 26: why a gun's firing window ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FireEndKind {
+    /// The assessment, from the last burst, said ceased.
+    Ceased,
+    /// The assessment, from the last burst, said unknown (not covered long enough).
+    Unknown,
+    /// No round left (`engage.fire_ended`).
+    RoundsOut,
+    /// The approved window closed (`engage.fire_ended`).
+    WindowClosed,
+    /// Stopped (`engage.stopped`: an operator, the picture, the system, a supersede, a revoked
+    /// declaration).
+    Stopped,
+}
+
+impl FireEndKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FireEndKind::Ceased => "ceased",
+            FireEndKind::Unknown => "unknown",
+            FireEndKind::RoundsOut => "rounds_out",
+            FireEndKind::WindowClosed => "window_closed",
+            FireEndKind::Stopped => "stopped",
+        }
+    }
+}
+
+/// Rules 26: when and why a gun's fire ended.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FireEnd {
+    pub t: Time,
+    pub why: FireEndKind,
+    pub detail: String,
+}
+
+/// Rules 26: whether an engagement's gun still fires (its firing window open): it holds its
+/// platform as a dispatched engagement does (an order to it supersedes it, an operator may stop
+/// it, its lost-link preload stays).
+pub fn firing(e: &Engagement) -> bool {
+    e.fire.as_ref().is_some_and(FireRecord::open)
+}
+
+/// Rules 26: an engagement's state as what holds a platform reads it (the engagements in play on a
+/// vehicle, the one holding its lost-link preload, what an order to it supersedes): a gun still
+/// firing after its release (`firing`) counts as dispatched, under way.
+pub fn play_state(state: crate::intent::State, firing: bool) -> crate::intent::State {
+    if firing && state == crate::intent::State::Effected {
+        crate::intent::State::Dispatched
+    } else {
+        state
+    }
+}
+
+/// Rules 20 and 26: the effect as the assessment reads it: a gun's from its last burst (its
+/// verdict is on what that burst left), else [`struck`].
+pub fn observed_from(effect: &EffectRecord, munition: Option<&MunitionFlight>, fire: Option<&FireRecord>) -> EffectRecord {
+    match fire {
+        Some(f) => EffectRecord {
+            t: f.last_t,
+            ..effect.clone()
+        },
+        None => struck(effect, munition),
+    }
+}
+
+/// Rules 26: whether a gun's fire is over on its own at `now`, and why: no round left after its
+/// last burst, or the approved window closed (`engage.fire_ended`; replay binds both).
+pub fn fire_over(fire: &FireRecord, p: &EngagePreview, now: Time) -> Option<(FireEndKind, String)> {
+    if fire.left == Some(0) {
+        return Some((
+            FireEndKind::RoundsOut,
+            format!(
+                "no round of the {} left: {} bursts, {} rounds fired",
+                fire.weapon, fire.bursts, fire.rounds
+            ),
+        ));
+    }
+    (now > p.window.until).then(|| {
+        (
+            FireEndKind::WindowClosed,
+            format!(
+                "the approved window closed: {} bursts, {} rounds of the {} fired",
+                fire.bursts, fire.rounds, fire.weapon
+            ),
+        )
+    })
+}
+
+/// Rules 26: how long a burst of `rounds` lasts at the gun's cyclic rate, s, to a hundredth (as
+/// `engage.burst` logs it).
+pub fn burst_duration(gun: &crate::catalog::WeaponFacts, rounds: u32) -> f64 {
+    (gun.burst_duration_s(rounds) * 100.0).round() / 100.0
+}
+
+/// Rules 26: the half-width of a gun's line of fire, m: none of our other vehicles and no
+/// protected track may be within it of the line from the platform to the target at a burst [E:
+/// a 12.7 mm burst from a stabilised sight of under 1 mrad (docs/research/weapons.md section 4,
+/// [23]) spreads a couple of metres at 1,800 m; the rest is for ricochet and for the positions'
+/// own errors].
+pub const LINE_OF_FIRE_M: f64 = 50.0;
+
+/// Rules 26: the gun of a plan, when its weapon is one (under rules that take guns).
+pub fn gun_of<'w>(
+    uid: Option<&Uid>,
+    p: &EngagePreview,
+    world: &'w WorldSnapshot,
+    ec: &EngageRules,
+) -> Option<&'w crate::catalog::WeaponFacts> {
+    if !ec.guns() {
+        return None;
+    }
+    let name = p.weapon.as_deref()?;
+    let w = uid
+        .and_then(|u| world.vehicles.get(u))?
+        .platform
+        .as_ref()?
+        .loadout
+        .iter()
+        .find(|w| w.name == name)?;
+    (w.kind == crate::catalog::WeaponKind::Gun).then_some(w)
 }
 
 /// Rules 6: an operator's explicit acceptance that one of our vehicles is lost (its
@@ -1362,6 +1544,10 @@ pub struct EngageOrder {
     /// until the platform confirms it (`engage.preload`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preload: Option<Box<LostLinkPreload>>,
+    /// Rules 26: a gun's firing position (the plan's): the platform goes there and holds to fire,
+    /// instead of loitering at the effect point. Absent for every other engagement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fire_from: Option<LonLat>,
 }
 
 /// The radius `uid` loiters at over an effect point: the rules' margin over its catalog
@@ -1686,7 +1872,8 @@ pub fn preload_verify_due(e: &Engagement, now: Time, cfg: &RulesConfig) -> bool 
     }
     let Some(snap) = &e.snapshot else { return false };
     let (from, until) = release_window(&snap.preview, &cfg.engage_rules());
-    if now < from.plus_ms(-ms(PRELOAD_VERIFY_LEAD_S)) || now > until {
+    // rules 26: a gun's every burst reads it, so it is read again all through its firing window
+    if !firing(e) && (now < from.plus_ms(-ms(PRELOAD_VERIFY_LEAD_S)) || now > until) {
         return false;
     }
     let last = e.verified.as_ref().or(e.preloaded.as_ref()).map(|r| r.t);
@@ -1769,6 +1956,12 @@ pub struct EffectOrder {
     /// kind and rounds left). None for a platform without a loadout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weapon: Option<Box<crate::catalog::WeaponFacts>>,
+    /// Rules 26: a gun's burst number (1: the release), and its rounds: the truth side draws each
+    /// burst on its own stream (`effect:<intent>:<burst>`). None for any other weapon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub burst: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub burst_rounds: Option<u32>,
 }
 
 impl EffectOrder {
@@ -1985,6 +2178,7 @@ pub fn weapon_for(
             kind: track.and_then(|t| t.identity.as_deref()),
             now: Some(world.t),
             figures: true,
+            guns: ec.guns(),
         }
     } else {
         crate::loadout::Rules25::default()
@@ -2024,11 +2218,16 @@ pub fn release_weapon(
     let p = world.vehicles.get(uid)?.platform.as_ref()?;
     let w = p.loadout.iter().find(|w| w.name == name)?;
     let rounds = world.rounds.get(uid);
+    let before = crate::loadout::left(w, rounds);
+    // rules 26: a gun's release, and each of its bursts, fires a burst's rounds (the rest for the
+    // last); anything else one round
+    let burst = before.and_then(|b| w.burst_of(b)).filter(|_| cfg.guns());
     Some(crate::loadout::WeaponRelease {
         name: w.name.clone(),
         kind: w.kind,
-        left: crate::loadout::left(w, rounds).map(|n| n.saturating_sub(1)),
+        left: before.map(|n| n.saturating_sub(burst.unwrap_or(1))),
         vehicle: rounds.and_then(|r| r.now.clone()),
+        rounds: burst,
     })
 }
 
@@ -2088,11 +2287,24 @@ pub fn preview(
     let at_start = target_at(track, start_t, &ec);
     let (rx, ry) = enu(start, at_start);
     let [ve, vn] = target_velocity(track, &ec);
-    // |r0 + v tau| = cruise tau, smallest tau >= 0
+    // rules 24: the weapon it uses (the `weapon` check says why when there is none)
+    let weapon = weapon_for(Some(uid), named_weapon(spec), Some(track), world, &ec)
+        .and_then(Result::ok)
+        .map(|c| c.weapon);
+    // rules 26: a gun fires from a position within its range of the target, not from the point:
+    // the platform closes to the standoff (its range less the effect radius, so a target anywhere
+    // in the plan's circle is within range) and holds there
+    let standoff = weapon
+        .as_ref()
+        .filter(|w| ec.guns() && w.kind == crate::catalog::WeaponKind::Gun)
+        .map(|w| (w.max_range_m - radius).max(w.min_range_m).max(0.0));
+    let s0 = standoff.unwrap_or(0.0);
+    // |r0 + v tau| = s0 + cruise tau, smallest tau >= 0 (s0 = 0: the point itself)
     let a = ve * ve + vn * vn - cruise * cruise;
-    let b = 2.0 * (rx * ve + ry * vn);
-    let c = rx * rx + ry * ry;
-    let tau = if c == 0.0 {
+    let b = 2.0 * (rx * ve + ry * vn) - 2.0 * s0 * cruise;
+    let c = rx * rx + ry * ry - s0 * s0;
+    // (rules 26: a gun already within its standoff fires from where it is)
+    let tau = if c == 0.0 || (standoff.is_some() && c < 0.0) {
         Some(0.0)
     } else if a.abs() < 1e-9 {
         (b < 0.0).then(|| -c / b)
@@ -2123,7 +2335,18 @@ pub fn preview(
         effect_t = from;
     }
     let effect_point = target_at(track, effect_t, &ec);
-    let distance_m = haversine_m(start, effect_point);
+    // rules 26: the gun's firing position: on the line from the point back to the platform, the
+    // standoff out (where it is, when that is nearer)
+    let fire_from = standoff.map(|s| {
+        let d = haversine_m(start, effect_point);
+        if d <= s || d <= 0.0 {
+            start
+        } else {
+            let (e, n) = enu(effect_point, start);
+            offset(effect_point, e * s / d, n * s / d)
+        }
+    });
+    let distance_m = haversine_m(start, fire_from.unwrap_or(effect_point));
     let can_reach = distance_m <= cruise * secs(effect_t.ms_since(start_t)) + 1.0;
     if !can_reach {
         return Err(format!(
@@ -2149,7 +2372,7 @@ pub fn preview(
         start,
         start_t,
         cruise_mps: cruise,
-        path: vec![start, effect_point],
+        path: vec![start, fire_from.unwrap_or(effect_point)],
         distance_m,
         track_path: vec![target_at(track, world.t, &ec), effect_point],
         track_speed_mps: spd,
@@ -2164,10 +2387,8 @@ pub fn preview(
             semi_minor_m: minor,
             bearing_deg: bearing,
         },
-        // rules 24: the weapon it uses (the `weapon` check says why when there is none)
-        weapon: weapon_for(Some(uid), named_weapon(spec), Some(track), world, &ec)
-            .and_then(Result::ok)
-            .map(|c| c.weapon.name),
+        weapon: weapon.map(|w| w.name),
+        fire_from,
     })
 }
 
@@ -4045,7 +4266,7 @@ fn reach_check(
             ec.max_transit_s
         ));
     }
-    let tail = match endurance_and_surface(uid, v, platform, p.effect_point, p.distance_m, p.cruise_mps, transit, world, cfg, ec) {
+    let tail = match endurance_and_surface(uid, v, platform, p, p.distance_m, p.cruise_mps, transit, world, cfg, ec) {
         Ok(t) => t,
         Err(c) => return c,
     };
@@ -4072,7 +4293,7 @@ fn endurance_and_surface(
     uid: Option<&Uid>,
     v: &crate::world::VehicleFacts,
     platform: &crate::catalog::PlatformFacts,
-    point: LonLat,
+    p: &EngagePreview,
     distance_m: f64,
     cruise_mps: f64,
     transit: f64,
@@ -4082,6 +4303,10 @@ fn endurance_and_surface(
 ) -> Result<String, CheckResult> {
     let r = RuleId::Reach;
     let fail = |d: String| check(r, uid, Outcome::Fail, d);
+    // rules 26: a gun's platform goes to its firing position, which is where it must be able to
+    // stand and from where it goes home
+    let point = p.goal();
+    let what = if p.fire_from.is_some() { "firing position" } else { "effect point" };
     let battery = match fresh(&v.battery_pct, v, "battery level", world, cfg) {
         Ok(b) => *b,
         Err(e) => return Err(fail(e)),
@@ -4130,19 +4355,19 @@ fn endurance_and_surface(
         None => String::new(),
         Some(need) => match &world.terrain {
             TerrainInputs::Sampled { .. } => match world.terrain.lookup(point) {
-                Some(Surface::Land) if need == "land" => "; effect point on land".into(),
+                Some(Surface::Land) if need == "land" => format!("; {what} on land"),
                 Some(Surface::Water { depth_m }) if need == "water" && *depth_m > 0.0 => {
-                    "; effect point on water".into()
+                    format!("; {what} on water")
                 }
                 Some(Surface::OutsideCoverage) | None => {
                     return Err(fail(format!(
-                        "cannot evaluate: no terrain answer for the effect point ({:.5}, {:.5})",
+                        "cannot evaluate: no terrain answer for the {what} ({:.5}, {:.5})",
                         point.lon, point.lat
                     )));
                 }
                 Some(_) => {
                     return Err(fail(format!(
-                        "the effect point ({:.5}, {:.5}) is not {need}; {} needs {need}",
+                        "the {what} ({:.5}, {:.5}) is not {need}; {} needs {need}",
                         point.lon, point.lat, platform.id
                     )));
                 }
@@ -4153,15 +4378,13 @@ fn endurance_and_surface(
                     uid,
                     Outcome::NotEvaluated,
                     format!(
-                        "terrain unavailable ({reason}): {} needs the effect point on {need}",
+                        "terrain unavailable ({reason}): {} needs the {what} on {need}",
                         platform.id
                     ),
                 ));
             }
             TerrainInputs::NotQueried | TerrainInputs::NotNeeded => {
-                return Err(fail(
-                    "cannot evaluate: terrain was not sampled for the effect point".into(),
-                ));
+                return Err(fail(format!("cannot evaluate: terrain was not sampled for the {what}")));
             }
         },
     };
@@ -4415,7 +4638,8 @@ fn plan_reach_check(
         Err(e) => return fail(e),
     };
     let cruise = p.cruise_mps;
-    let distance = haversine_m(pos, p.effect_point);
+    // rules 26: a gun's platform goes to its firing position
+    let distance = haversine_m(pos, p.goal());
     let arrive = world.t.plus_ms(ms(distance / cruise));
     let slack = plan_slack_s(p, ec) + waiting_allowance_s(v, cfg, cruise);
     if p.effect_t > p.window.until {
@@ -4439,7 +4663,7 @@ fn plan_reach_check(
             ec.max_transit_s
         ));
     }
-    let tail = match endurance_and_surface(uid, v, platform, p.effect_point, distance, cruise, transit, world, cfg, ec) {
+    let tail = match endurance_and_surface(uid, v, platform, p, distance, cruise, transit, world, cfg, ec) {
         Ok(t) => t,
         Err(c) => return c,
     };
@@ -4536,7 +4760,8 @@ pub fn surface_needed(spec: &IntentSpec, world: &WorldSnapshot) -> bool {
         .is_some_and(|p| required_surface(p.domain, p.autopilot).is_some())
 }
 
-/// Whether the platform needs a land or water answer for the effect point, and the point.
+/// Whether the platform needs a land or water answer for the effect point (rules 26: a gun's
+/// firing position), and the point.
 pub fn terrain_point(
     spec: &IntentSpec,
     world: &WorldSnapshot,
@@ -4545,10 +4770,11 @@ pub fn terrain_point(
     let uid = platform_of(spec)?;
     let p = world.vehicles.get(uid)?.platform.as_ref()?;
     required_surface(p.domain, p.autopilot)?;
+    // rules 26: a gun's platform stands at its firing position
     if let Some(plan) = &world.plan {
-        return Some(plan.preview.effect_point);
+        return Some(plan.preview.goal());
     }
-    preview(spec, world, cfg).ok().map(|p| p.effect_point)
+    preview(spec, world, cfg).ok().map(|p| p.goal())
 }
 
 // ---- the snapshot and the picture -----------------------------------------------------------
@@ -4592,6 +4818,15 @@ pub fn snapshot(
 /// `preloaded` (rules 6) is the lost-link preload and when the platform last confirmed it by
 /// reading it back (`engage.preload` set or verify), none until then: the release needs a
 /// read-back at most [`PRELOAD_FRESH_MS`] old.
+///
+/// `last_burst` (rules 26): a gun's firing window is open (after its release), its last burst at
+/// that time. The picture is held as before the release, with two differences: the release's
+/// lateness no longer counts (only the approved window), and the target unseen
+/// (`target_recency`, or no longer in the picture) holds fire without failing the picture (the
+/// assessment, from the last burst, judges it). `ready` is then a burst's release checks, and
+/// the target must have been seen again since the last burst (no burst on the picture the last
+/// one left).
+#[allow(clippy::too_many_arguments)]
 pub fn picture(
     spec: &IntentSpec,
     snap: &EngageSnapshot,
@@ -4600,8 +4835,10 @@ pub fn picture(
     dispatched: bool,
     prev_t: Time,
     preloaded: Option<(&LostLinkPreload, Time)>,
+    last_burst: Option<Time>,
 ) -> (Vec<CheckResult>, bool, bool) {
     let ec = cfg.engage_rules();
+    let firing = last_burst.is_some();
     let p = &snap.preview;
     let uid = platform_of(spec);
     let mut picture_checks = Vec::new();
@@ -4621,9 +4858,12 @@ pub fn picture(
     ));
     let track = world.tracks.get(&snap.track_id);
     let id = snap.track_id.as_str();
+    // rules 26: while a gun fires, the target unseen holds fire (these checks), it does not end it
+    let mut unseen: Vec<usize> = Vec::new();
     // declared, reclassified, recency
     match track {
         None => {
+            unseen.push(picture_checks.len());
             picture_checks.push(check(
                 RuleId::TargetDeclared,
                 None,
@@ -4634,6 +4874,7 @@ pub fn picture(
         Some(t) => {
             picture_checks.push(declared_check(id, t, &ec));
             picture_checks.push(reclass_check(id, &snap.track, t, &ec));
+            unseen.push(picture_checks.len());
             picture_checks.push(recency_check(id, t, world, &ec));
             picture_checks.push(deviation_check(id, snap, t, world, &ec));
         }
@@ -4659,15 +4900,35 @@ pub fn picture(
     // rules 24: the plan's weapon, a round of it left
     let named = p.weapon.as_deref().or(named_weapon(spec));
     picture_checks.extend(weapon_check(uid, named, track, world, &ec));
-    picture_checks.push(window_check(snap, world, &ec, dispatched, flight.as_ref().map(|(m, l)| (m, *l))));
-    let holds = picture_checks.iter().all(|c| c.outcome == Outcome::Pass);
+    // rules 26: after a gun's release only the approved window bounds its bursts
+    picture_checks.push(window_check(snap, world, &ec, dispatched && !firing, flight.as_ref().map(|(m, l)| (m, *l))));
+    let unseen_now = firing && unseen.iter().any(|i| picture_checks[*i].outcome != Outcome::Pass);
+    let holds = picture_checks
+        .iter()
+        .enumerate()
+        .all(|(i, c)| c.outcome == Outcome::Pass || (firing && unseen.contains(&i)));
     let mut out = picture_checks;
     let mut ready = false;
-    if dispatched && holds {
+    if dispatched && holds && !unseen_now {
         let mut release = release_checks(uid, snap, track, world, cfg);
         // rules 6: the fallback is the platform's own lost-link action, read back
         if ec.v6() {
             release.push(preloaded_check(uid, preloaded, world.t));
+        }
+        // rules 26: a burst only on a target seen since the last one
+        if let (Some(last), Some(t)) = (last_burst, track) {
+            let o = if t.last_seen_t > last { Outcome::Pass } else { Outcome::Fail };
+            release.push(check(
+                RuleId::TargetRecency,
+                None,
+                o,
+                format!(
+                    "{id} last seen {}, the last burst {}: {}",
+                    rel(t.last_seen_t, world.t),
+                    rel(last, world.t),
+                    if o == Outcome::Pass { "seen since" } else { "not seen since: fire held" }
+                ),
+            ));
         }
         ready = release.iter().all(|c| c.outcome == Outcome::Pass);
         out.extend(release);
@@ -4996,10 +5257,31 @@ fn release_checks(
     let ec = &cfg.engage_rules();
     let p = &snap.preview;
     let mut out = Vec::new();
+    // rules 26: a gun's burst (its release is the first): no flight
+    let gun = gun_of(uid, p, world, ec);
     // rules 20: a platform's munition, if it were released now
-    let shot = shot(uid, p, track, world, ec);
+    let shot = if gun.is_some() { None } else { shot(uid, p, track, world, ec) };
+    let pos = uid.and_then(|u| world.vehicles.get(u)).and_then(|v| v.position.as_ref());
     // platform at the point; rules 20: a munition's platform within its slant range of it
-    let arrival = match (&shot, uid.and_then(|u| world.vehicles.get(u)).and_then(|v| v.position.as_ref())) {
+    let arrival = match (&shot, pos) {
+        (_, None) if gun.is_some() => check(RuleId::Arrival, uid, Outcome::Fail, "platform has no position"),
+        // rules 26: the target, as estimated now, within the gun's range of the platform
+        (_, Some(pos)) if let Some(g) = gun => match track {
+            Some(t) => {
+                let d = haversine_m(pos.value, target_at(t, world.t, ec));
+                let o = if d >= g.min_range_m && d <= g.max_range_m { Outcome::Pass } else { Outcome::Fail };
+                check(
+                    RuleId::Arrival,
+                    uid,
+                    o,
+                    format!(
+                        "platform {d:.0} m from {} as estimated now: the {} reaches {:.0} to {:.0} m",
+                        snap.track_id, g.name, g.min_range_m, g.max_range_m
+                    ),
+                )
+            }
+            None => check(RuleId::Arrival, uid, Outcome::Fail, format!("{} is not in the picture", snap.track_id)),
+        },
         (Some(Ok(s)), _) => check(
             RuleId::Arrival,
             uid,
@@ -5033,6 +5315,10 @@ fn release_checks(
         (None, None) => check(RuleId::Arrival, uid, Outcome::Fail, "platform has no position"),
     };
     out.push(arrival);
+    // rules 26: the line from the gun to the target clear of ours and of protected tracks
+    if let Some(g) = gun {
+        out.push(line_of_fire(uid, snap, track, world, cfg, g));
+    }
     // rules 20: the effect strikes a flight after the release: the checks below judge that
     // instant, not now
     let flown = shot.as_ref().and_then(|s| s.as_ref().ok());
@@ -5106,6 +5392,75 @@ fn release_checks(
         )),
     }
     out
+}
+
+/// Rules 26: a gun's line of fire at a burst: the line from the platform to the target as
+/// estimated now, sampled every [`LINE_OF_FIRE_M`], each sample judged as a keep-out of that
+/// half-width (a little more, so the whole corridor is covered) by the keep-outs' own judgement
+/// of our vehicles and of tracks (the target and declared hostiles exempt), now (a burst has no
+/// flight). In 3D where the platform reports its altitude: the line runs from it to the target's
+/// (or its own, the flat fire of a ground gun), so an aircraft well above it is clear.
+fn line_of_fire(
+    uid: Option<&Uid>,
+    snap: &EngageSnapshot,
+    track: Option<&TrackFacts>,
+    world: &WorldSnapshot,
+    cfg: &RulesConfig,
+    gun: &crate::catalog::WeaponFacts,
+) -> CheckResult {
+    let ec = cfg.engage_rules();
+    let r = RuleId::LineOfFire;
+    let v = uid.and_then(|u| world.vehicles.get(u));
+    let Some(from) = v.and_then(|v| v.position.as_ref()).map(|p| p.value) else {
+        return check(r, uid, Outcome::Fail, "platform has no position");
+    };
+    let Some(t) = track else {
+        return check(r, uid, Outcome::Fail, format!("{} is not in the picture", snap.track_id));
+    };
+    let to = target_at(t, world.t, &ec);
+    let len = haversine_m(from, to);
+    let n = (len / LINE_OF_FIRE_M).ceil().max(1.0) as u32;
+    let half = LINE_OF_FIRE_M * 1.25f64.sqrt();
+    let from_alt = v.and_then(|v| v.alt_msl_m.as_ref()).map(|a| a.value).filter(|a| a.is_finite());
+    let to_alt = effect_alt(track, world.t, world.t, snap.preview.effect_radius_m, &ec).map(|a| a.alt_m);
+    let (e, nn) = enu(from, to);
+    for i in 0..=n {
+        let k = f64::from(i) / f64::from(n);
+        let at = offset(from, e * k, nn * k);
+        let alt = from_alt.map(|a| EffectAlt {
+            alt_m: a + (to_alt.unwrap_or(a) - a) * k,
+            margin_m: 0.0,
+            half_height_m: half,
+        });
+        for c in [
+            keep_out_friendly(at, world.t, half, uid, world, cfg, alt),
+            keep_out_tracks(at, world.t, half, &snap.track_id, world, &ec, alt),
+        ] {
+            if c.outcome != Outcome::Pass {
+                return check(
+                    r,
+                    c.uid.as_ref().or(uid),
+                    c.outcome,
+                    format!(
+                        "the {}'s line of fire to {} ({len:.0} m), {:.0} m out: {}",
+                        gun.name,
+                        snap.track_id,
+                        len * k,
+                        c.detail
+                    ),
+                );
+            }
+        }
+    }
+    check(
+        r,
+        uid,
+        Outcome::Pass,
+        format!(
+            "the {}'s line of fire to {} ({len:.0} m) is clear of our other vehicles and of protected tracks by {LINE_OF_FIRE_M:.0} m",
+            gun.name, snap.track_id
+        ),
+    )
 }
 
 // ---- munitions in flight (rules 20) ---------------------------------------------------------

@@ -344,8 +344,8 @@ meaningful.
   loadout, in the catalog's order, usable against the track's domain with a round left
   (`loadout::choose`; the `weapon` check says why); the preview's `weapon` is frozen with the
   plan. A missile, bomb or torpedo is released between its minimum and maximum slant range; `self`
-  is the platform (spent with it, never counted); guns and mines are listed but inert until
-  murmur-lbw8.3 and .4 (the Orca and the mine-laying UGV stay unarmed until then). Each release
+  is the platform (spent with it, never counted); mines are listed but inert until murmur-lbw8.4
+  (the Orca and the mine-laying UGV stay unarmed until then); guns fire from rules 26. Each release
   logs `weapon` (rounds `left`, the vehicle) on the `engage.effect`; every engagement decision
   logs the `rounds` fact (`Restores`' ledger, as spent marks); `run.started`'s `carried_from`
   carries `rounds`, on the same vehicle only. Rounds left: `GET /api/loadouts`, MCP `get_fleet`'s
@@ -370,6 +370,29 @@ meaningful.
   check shows the figures. Headless: an episode's `effects.p_hit`, when given, replaces the
   target's hit chance (an evaluation's knob; absent, the figures decide). Scenarios 121-122;
   tamper `drop_damage`.
+- Rules 26 (`GUN_SINCE`, bd murmur-lbw8.3, DECISIONS.md "Guns: bursts from a counted magazine"):
+  a gun (`kind = "gun"`, its `burst_rounds`, `rate_rpm` and `burst_interval_s`; only the armed
+  UGV's M2) is usable. Its plan sends the platform to a firing position (`EngagePreview::
+  fire_from`, `EngageOrder::fire_from`: the gun's range less the effect radius from the point,
+  or where it stands), which reach, the domain rule and the bridge's intercept use instead of the
+  effect point. Its release is burst 1 (`engage.effect`, `weapon.rounds`) and opens a firing
+  window (`Engagement::fire`, `engage::firing`): each second the observation (from the last
+  burst) runs first, then `engine.step_fire` ends the fire on its own (`engage.fire_ended`:
+  rounds out, the approved window closed), holds the picture (`engage::picture(.., last_burst)`:
+  no lateness, the target unseen holds fire rather than failing it) and, holding, ready and
+  `burst_interval_s` after the last, fires `engage.burst` (rounds, left, `duration_s`), counted in
+  rules 24's ledger. Burst checks: the target within the gun's range of the platform, seen since
+  the last burst (`target_recency`), the line of fire clear (`line_of_fire`, 50 m either side,
+  `engage::LINE_OF_FIRE_M`), alignment, uncertainty, the preload read back (re-read all through
+  the window). Ceased or unknown from the last burst ends it (persists does not while it fires);
+  a stop, a supersede or a failed picture ends it with `engage.stopped` and no transition (it
+  stays effected and is assessed). A firing gun counts as dispatched wherever a platform is held
+  (`Intent::play_state`, `engage::play_state`: engaged facts, supersede, abort, preload holding).
+  The truth side draws each burst on `effect:<intent>:<burst>` (guns: 20 points a band past
+  15 m/s, x0.6 in fog, x0.6 against a boat in sea state 4-5). No munition flight (2 s to 1,800 m at
+  the muzzle speed, about 3 with drag [E]: inside the keep-out's margins). Scenarios 123-127; tamper `burst_after_stop`
+  (`edit_rounds` covers bursts too); runner keys `cease_at_burst`, `expect_bursts`,
+  `expect_fire_end`, `expect_rounds_left`.
 - Opponent weapons (docs/OPPONENT-WEAPONS.md, bd murmur-wcvp; no rules version): a contact's
   `weapon = { name, kind, speed_mps, range_m }` (kinds the bridge has figures for:
   `tracks::physical::weapon::weapon_signature`, `atgm`) makes each of its acts a launch, flown by

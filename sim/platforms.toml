@@ -561,11 +561,16 @@ typical_alt_m = 0
 endurance_h = 15
 # rules 24 (bd murmur-lbw8.1; [n]: docs/research/weapons.md's references): EOS's R400 in its dual
 # fit, an M2 and one Javelin, the station drawn on THeMIS [23] (Kongsberg's Protector fired the
-# same pair from it in 2019 [24]). The M2 is listed but inert until guns come (bd murmur-lbw8.3):
-# no nomination may use it; the Javelin is usable now.
+# same pair from it in 2019 [24]). The M2 is usable from rules 26 (bd murmur-lbw8.3): its
+# engagement fires bursts from its counted magazine; the Javelin is usable since rules 24.
 #   M2 .50 (12.7 mm): 500 rounds [23]; 1,800 m effective (7,400 at most) [26]; 890 to 930 m/s at
 #     the muzzle [26], 910 here; bursts of 5 to 7 [26], 6 here, at 450 to 600 rpm [26]; a <1 mrad
-#     stabilised sight [23]; 12.7 x 99 ball and AP [26] (a round's mass, 0.043 kg [E]).
+#     stabilised sight [23]; 12.7 x 99 ball and AP [26] (a round's mass, 0.043 kg [E]). A burst
+#     every 5 s [E: one 6-round burst every 5 s is 72 rounds a minute, the M2's rapid rate (40 or
+#     more a minute [59]), which a gunner holds through an engagement of a minute or two; about
+#     80 bursts empty the magazine]. effects (docs/research/weapons.md 10.3 and 10.4, the column
+#     and row of a 12.7 mm burst from a weapon station, all [E]): per burst, the chance of a hit
+#     and, given one, the shares destroyed, propulsion lost and weapons out.
 #   FGM-148 Javelin: one ready, reloaded by hand [E: the R400 shows one launcher [23]]; 65 [E:
 #     published minimums vary] to 4,750 m from a vehicle [30]; about 150 m/s on average [E: some
 #     30 s to 4.75 km]; top attack or direct [30]; IR imaging, fire-and-forget [30]; 8.4 kg tandem
@@ -573,7 +578,7 @@ endurance_h = 15
 #     docs/research/weapons.md 10.3 and 10.4 give one column and one row to the ~9 kg missiles
 #     (the maker's >94% "engagement success" against far lower combat kill rates [51]), [E].
 loadout = [
-  { name = "M2 .50 HMG", kind = "gun", count = 500, min_range_m = 0, max_range_m = 1800, speed_mps = 910, profile = "ballistic", guidance = "stabilised_sight", warhead = { class = "ball_ap_12_7mm", mass_kg = 0.043 }, targets = ["ground", "surface", "air"], burst_rounds = 6, rate_rpm = 525 },
+  { name = "M2 .50 HMG", kind = "gun", count = 500, min_range_m = 0, max_range_m = 1800, speed_mps = 910, profile = "ballistic", guidance = "stabilised_sight", warhead = { class = "ball_ap_12_7mm", mass_kg = 0.043 }, targets = ["ground", "surface", "air"], burst_rounds = 6, rate_rpm = 525, burst_interval_s = 5, effects = { small_fast_boat = { p_hit = 0.20, p_kill = 0.10, p_mobility = 0.30, p_firepower = 0.15 }, fishing_vessel = { p_hit = 0.50, p_kill = 0.03, p_mobility = 0.17 }, sailboat = { p_hit = 0.50, p_kill = 0.02, p_mobility = 0.13 }, cargo_ship = { p_hit = 0.90, p_mobility = 0.01 }, vehicle = { p_hit = 0.40, p_kill = 0.20, p_mobility = 0.40 }, truck = { p_hit = 0.50, p_kill = 0.10, p_mobility = 0.30, p_firepower = 0.10 }, small_drone = { p_hit = 0.03, p_kill = 0.90 }, light_aircraft = { p_hit = 0.05, p_kill = 0.30, p_mobility = 0.40 }, person = { p_hit = 0.30, p_kill = 0.80 } } },
   { name = "FGM-148 Javelin", kind = "missile", count = 1, min_range_m = 65, max_range_m = 4750, speed_mps = 150, profile = "lofted", guidance = "imaging_infrared", warhead = { class = "tandem_heat", mass_kg = 8.4 }, targets = ["ground", "surface"], effects = { small_fast_boat = { p_hit = 0.75, p_kill = 0.85, p_mobility = 0.10, p_firepower = 0.05 }, fishing_vessel = { p_hit = 0.90, p_kill = 0.55, p_mobility = 0.40 }, sailboat = { p_hit = 0.85, p_kill = 0.65, p_mobility = 0.30 }, cargo_ship = { p_hit = 0.95, p_mobility = 0.45 }, vehicle = { p_hit = 0.85, p_kill = 0.90, p_mobility = 0.10 }, truck = { p_hit = 0.90, p_kill = 0.80, p_mobility = 0.15, p_firepower = 0.05 }, person = { p_hit = 0.80, p_kill = 1.0 } } },
 ]
 [ugv_mines]

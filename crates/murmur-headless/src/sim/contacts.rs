@@ -117,6 +117,7 @@ fn missed(e: &EffectNotice, movers: &[Mover], now: f64) -> EffectApplied {
         weapon: None,
         damage: Vec::new(),
         ours_damaged: Vec::new(),
+        burst: e.burst,
     }
 }
 

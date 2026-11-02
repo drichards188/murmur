@@ -199,6 +199,8 @@ pub struct ReplayReport {
     pub effects: usize,
     pub aborts: usize,
     pub assessments: usize,
+    /// Rules 26: a gun's bursts after its release (`engage.burst`).
+    pub bursts: usize,
     /// Rules 6: platforms whose own lost-link values a preload replaced and that were still
     /// owed back when the log ended (no confirmed restore): the next run carries them over
     /// (`platform.restore`), but the operator should know. Not decision mismatches.
@@ -791,13 +793,13 @@ impl Restores {
     }
 
     /// Rules 24: a release of a counted weapon from `uid` (an `engage.effect`'s `weapon`): one
-    /// round spent.
+    /// round spent; rules 26: a gun's burst (its release, an `engage.burst`) the rounds it fired.
     fn release(&mut self, uid: &Uid, w: &crate::loadout::WeaponRelease) {
         if !w.kind.counted() {
             return;
         }
         let e = self.rounds.entry(uid.clone()).or_default().entry(w.name.clone()).or_insert((0, None));
-        e.0 += 1;
+        e.0 += w.spent();
         e.1 = w.vehicle.clone();
     }
 
@@ -1042,6 +1044,7 @@ impl Restores {
             EventBody::EngageEffect {
                 uid, weapon: Some(w), ..
             } => self.release(uid, w),
+            EventBody::EngageBurst { uid, weapon, .. } => self.release(uid, weapon),
             EventBody::IntentState { intent, to, .. } if to.is_terminal() => self.intent_ended(*intent),
             _ => {}
         }
@@ -1465,7 +1468,7 @@ fn holding(intents: &BTreeMap<IntentId, Tracked>, uid: &Uid, except: Option<Inte
         .find(|(id, tr)| {
             Some(**id) != except
                 && tr.spec.kind() == TaskKind::Engage
-                && tr.state == State::Dispatched
+                && tr.play_state() == State::Dispatched
                 && tr.spec.uids.first() == Some(uid)
         })
         .map(|(id, _)| *id)
@@ -1615,6 +1618,11 @@ struct Tracked {
     /// Engage, rules 24: the weapon a release on that picture's world makes (its plan's, the
     /// rounds of it left after it and the vehicle).
     ready_weapon: Option<crate::loadout::WeaponRelease>,
+    /// Engage, rules 26: the gun of the plan on that picture's world (its facts: the interval and
+    /// the cyclic rate a burst is bound by), when the plan's weapon is one.
+    ready_gun: Option<crate::catalog::WeaponFacts>,
+    /// Engage, rules 26: a gun's firing window, from its release (as the engine keeps it).
+    fire: Option<engage::FireRecord>,
     /// Engage, rules 20: the munition released with the effect (observation starts at its
     /// impact).
     munition: Option<engage::MunitionFlight>,
@@ -1718,6 +1726,16 @@ struct Tracked {
 }
 
 impl Tracked {
+    /// Rules 26: whether its gun still fires after its release.
+    fn firing(&self) -> bool {
+        self.fire.as_ref().is_some_and(engage::FireRecord::open)
+    }
+
+    /// Rules 26: its state as what holds a platform reads it ([`engage::play_state`]).
+    fn play_state(&self) -> State {
+        engage::play_state(self.state, self.firing())
+    }
+
     fn new(spec: IntentSpec, state: State) -> Tracked {
         Tracked {
             spec,
@@ -1757,6 +1775,8 @@ impl Tracked {
             ready_t: None,
             ready_shot: None,
             ready_weapon: None,
+            ready_gun: None,
+            fire: None,
             munition: None,
             stop_fallback: None,
             platform_events: Vec::new(),
@@ -2059,6 +2079,10 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (rules::LOADOUT_SINCE, "\"rounds\":{", "a platform's rounds (a decision's fact)"),
     (rules::LOADOUT_SINCE, "\"rounds\":[", "the rounds an earlier log had released, carried over"),
     (rules::DAMAGE_SINCE, "\"damage\":{\"value\":", "a vehicle's own damage report (a decision's fact)"),
+    (rules::GUN_SINCE, "\"type\":\"engage.burst\"", "a gun's burst"),
+    (rules::GUN_SINCE, "\"type\":\"engage.fire_ended\"", "a gun's firing window ended"),
+    (rules::GUN_SINCE, "\"fire_from\":[", "a gun's firing position (a plan's, an order's)"),
+    (rules::GUN_SINCE, "\"rule\":\"line_of_fire\"", "a gun's line of fire checked"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -3370,7 +3394,7 @@ fn replay_inner<S: AsRef<str>>(
                             && !reason.starts_with("system: spent platform:") =>
                     {
                         let owed = restores.owed_for(&tr.spec, &p.rules, &BTreeMap::new());
-                        let all = || intents.iter().map(|(i, t)| (*i, &t.spec, t.state));
+                        let all = || intents.iter().map(|(i, t)| (*i, &t.spec, t.play_state()));
                         let engaged: BTreeSet<IntentId> = engaged_vehicles(all(), &tr.spec).into_values().collect();
                         let standing = queued_on(all(), &tr.spec);
                         let note = if tr.maybe_started.is_empty() {
@@ -4267,7 +4291,9 @@ fn replay_inner<S: AsRef<str>>(
                         "engage.stopped".into(),
                     );
                 }
-                if !matches!(tr.state, State::Approved | State::Dispatched) {
+                // rules 26: and a gun's, while it fires after its release
+                let firing = tr.firing();
+                if !matches!(tr.play_state(), State::Approved | State::Dispatched) {
                     bad(
                         &mut r,
                         e,
@@ -4295,8 +4321,20 @@ fn replay_inner<S: AsRef<str>>(
                         continue;
                     }
                 };
-                let dispatched = tr.state == State::Dispatched;
+                let dispatched = tr.play_state() == State::Dispatched;
                 let prev_t = tr.last_picture_t.unwrap_or(snap.t);
+                // rules 26: the engine ends a gun's fire on its own (its rounds gone, the window
+                // closed) before it would hold another picture
+                if let Some((why, _)) = tr.fire.as_ref().filter(|_| firing).and_then(|f| engage::fire_over(f, &snap.preview, e.t)) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "a gun's picture held after its fire was over (no engage.fire_ended)",
+                        json(&e.t),
+                        why.as_str().into(),
+                    );
+                }
                 // rules 6: the release needs the platform's preload confirmed
                 let preloaded = tr.preload.as_ref().zip(
                     tr.preload_read
@@ -4311,6 +4349,7 @@ fn replay_inner<S: AsRef<str>>(
                     dispatched,
                     prev_t,
                     preloaded,
+                    tr.fire.as_ref().filter(|_| firing).map(|f| f.last_t),
                 );
                 tr.last_picture_t = Some(e.t);
                 if pol.rules.rule_id() {
@@ -4338,6 +4377,12 @@ fn replay_inner<S: AsRef<str>>(
                 // rules 24: and the weapon it releases, a round of it spent
                 tr.ready_weapon = if tr.ready {
                     engage::release_weapon(&tr.spec, &snap, &w, &pol.rules)
+                } else {
+                    None
+                };
+                // rules 26: and the plan's gun, when it is one
+                tr.ready_gun = if tr.ready {
+                    engage::gun_of(tr.spec.uids.first(), &snap.preview, &w, &pol.rules.engage_rules()).cloned()
                 } else {
                     None
                 };
@@ -4386,6 +4431,19 @@ fn replay_inner<S: AsRef<str>>(
                         json(weapon),
                         json(&tr.ready_weapon),
                     );
+                }
+                // rules 26: a gun's release is its first burst and opens its firing window
+                if let (Some(g), Some(w)) = (tr.ready_gun.take(), weapon.as_ref()) {
+                    tr.fire = Some(engage::FireRecord {
+                        weapon: g.name.clone(),
+                        bursts: 1,
+                        rounds: w.spent(),
+                        opened_t: e.t,
+                        last_t: e.t,
+                        left: w.left,
+                        every_s: g.burst_every_s(),
+                        ended: None,
+                    });
                 }
                 tr.ready_weapon = None;
                 if let Some(w) = weapon {
@@ -4668,7 +4726,8 @@ fn replay_inner<S: AsRef<str>>(
                     );
                 }
                 tr.stop_fallback = Some(*fallback);
-                let want = match tr.state {
+                // (rules 26: a gun firing after its release as one under way)
+                let want = match tr.play_state() {
                     State::Dispatched if !superseded => engage::params(&tr.spec).map(|p| p.3),
                     _ => None,
                 };
@@ -4684,7 +4743,105 @@ fn replay_inner<S: AsRef<str>>(
                 }
                 tr.stop_due = None;
                 tr.ready = false;
-                tr.stopped = true;
+                // rules 26: a gun stopped while it fires stays effected (no transition follows)
+                if let Some(f) = tr.fire.as_mut().filter(|f| f.open()) {
+                    f.ended = Some(engage::FireEnd {
+                        t: e.t,
+                        why: engage::FireEndKind::Stopped,
+                        detail: reason.clone(),
+                    });
+                } else {
+                    tr.stopped = true;
+                }
+            }
+            EventBody::EngageBurst {
+                intent,
+                uid,
+                burst,
+                weapon,
+                duration_s,
+            } => {
+                let Some(tr) = intents.get_mut(intent) else {
+                    bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
+                    continue;
+                };
+                let snap = tr.snapshot.clone();
+                let gun = tr.ready_gun.take();
+                let want_weapon = tr.ready_weapon.take();
+                let fire = tr.fire.clone();
+                let mut why: Vec<&str> = Vec::new();
+                if !policy.as_ref().is_some_and(|p| p.rules.guns()) {
+                    why.push("a burst under rules that take no gun");
+                }
+                if tr.state != State::Effected || !tr.firing() {
+                    why.push("a burst outside a gun's open firing window");
+                }
+                if !tr.ready || tr.last_picture_t.is_none_or(|p| e.t.ms_since(p) > 1000) {
+                    why.push("a burst without a picture that held and was ready in the same step");
+                }
+                if tr.spec.uids.first() != Some(uid) {
+                    why.push("a burst from another vehicle than the engagement's platform");
+                }
+                if let Some(f) = &fire {
+                    if *burst != f.bursts + 1 {
+                        why.push("a burst out of order");
+                    }
+                    if !f.due(e.t) {
+                        why.push("a burst sooner after the last than the gun's interval");
+                    }
+                }
+                if snap.as_ref().is_some_and(|s| e.t > s.preview.window.until) {
+                    why.push("a burst after the approved window closed");
+                }
+                if Some(weapon) != want_weapon.as_ref() {
+                    why.push("the burst's weapon (or its rounds left) is not the one the picture gives");
+                }
+                if gun.as_ref().map(|g| engage::burst_duration(g, weapon.spent())) != Some(*duration_s) {
+                    why.push("the burst's length is not its rounds at the gun's cyclic rate");
+                }
+                for w in why {
+                    bad(&mut r, e, Some(*intent), w, json(&(burst, weapon, duration_s)), json(&(&fire, &want_weapon)));
+                }
+                restores.release(uid, weapon);
+                if let Some(f) = tr.fire.as_mut() {
+                    f.bursts = *burst;
+                    f.rounds += weapon.spent();
+                    f.last_t = e.t;
+                    f.left = weapon.left;
+                }
+                // the assessment runs from this burst
+                tr.covered_s = 0.0;
+                tr.last_observe = None;
+                tr.ready = false;
+                tr.ready_t = None;
+                r.bursts += 1;
+            }
+            EventBody::EngageFireEnded { intent, why, detail } => {
+                let Some(tr) = intents.get_mut(intent) else {
+                    bad(&mut r, e, Some(*intent), "unknown intent", String::new(), String::new());
+                    continue;
+                };
+                let want = match (&tr.fire, &tr.snapshot) {
+                    (Some(f), Some(s)) if f.open() => engage::fire_over(f, &s.preview, e.t),
+                    _ => None,
+                };
+                if want.as_ref() != Some(&(*why, detail.clone())) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "a gun's fire ended for another reason than its rounds or window give",
+                        json(&(why, detail)),
+                        json(&want),
+                    );
+                }
+                if let Some(f) = tr.fire.as_mut().filter(|f| f.open()) {
+                    f.ended = Some(engage::FireEnd {
+                        t: e.t,
+                        why: *why,
+                        detail: detail.clone(),
+                    });
+                }
             }
             EventBody::EngageObserve {
                 intent,
@@ -4728,7 +4885,7 @@ fn replay_inner<S: AsRef<str>>(
                         json(&m.impact_t),
                     );
                 }
-                let effect = engage::struck(&effect, tr.munition.as_ref());
+                let effect = engage::observed_from(&effect, tr.munition.as_ref(), tr.fire.as_ref());
                 let again = engage::observe(&snap, &effect, &w, &pol.rules);
                 let covered = !again.covered_by.is_empty();
                 let sum = tr.covered_s + engage::coverage_increment(tr.last_observe, e.t, covered);
@@ -4759,7 +4916,7 @@ fn replay_inner<S: AsRef<str>>(
                 let again = match (&tr.snapshot, &tr.effect, &tr.last_step) {
                     (Some(snap), Some(effect), Some((t, step))) => engage::assess(
                         snap,
-                        &engage::struck(effect, tr.munition.as_ref()),
+                        &engage::observed_from(effect, tr.munition.as_ref(), tr.fire.as_ref()),
                         step,
                         tr.covered_s,
                         *t,
@@ -4767,6 +4924,28 @@ fn replay_inner<S: AsRef<str>>(
                     ),
                     _ => None,
                 };
+                // rules 26: while a gun fires, a target seen again is no verdict
+                if tr.firing() && *result == engage::AssessResult::Persists {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(*intent),
+                        "a gun's engagement assessed as persisting while it still fires",
+                        json(result),
+                        "ceased|unknown, or the next burst".into(),
+                    );
+                }
+                if let Some(f) = tr.fire.as_mut().filter(|f| f.open()) {
+                    f.ended = Some(engage::FireEnd {
+                        t: e.t,
+                        why: if *result == engage::AssessResult::Ceased {
+                            engage::FireEndKind::Ceased
+                        } else {
+                            engage::FireEndKind::Unknown
+                        },
+                        detail: evidence.clone(),
+                    });
+                }
                 let logged = Some((*result, evidence.clone()));
                 if again != logged || *covered_s != tr.covered_s {
                     bad(
@@ -5395,7 +5574,7 @@ fn replay_inner<S: AsRef<str>>(
                 };
                 if let Some(why) = preload_mismatch(
                     &tr.spec,
-                    tr.state,
+                    tr.play_state(),
                     tr.dispatched,
                     tr.preload.as_ref(),
                     tr.preload_intent.as_ref(),
@@ -8678,6 +8857,16 @@ fn check_dispatch(
                     json(&w.loiter_radius_m),
                 );
             }
+            if o.fire_from != w.fire_from {
+                bad(
+                    r,
+                    e,
+                    id,
+                    "engagement order's firing position is not the approved plan's",
+                    json(&o.fire_from),
+                    json(&w.fire_from),
+                );
+            }
             if o.preload != w.preload {
                 bad(
                     r,
@@ -9010,7 +9199,7 @@ fn check_engaged(
     intents: &BTreeMap<IntentId, Tracked>,
 ) {
     let Some(tr) = intents.get(&id) else { return };
-    let want = engaged_vehicles(intents.iter().map(|(i, t)| (*i, &t.spec, t.state)), &tr.spec);
+    let want = engaged_vehicles(intents.iter().map(|(i, t)| (*i, &t.spec, t.play_state())), &tr.spec);
     if *logged != want {
         bad(
             r,

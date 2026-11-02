@@ -1435,6 +1435,10 @@ impl Tracks {
         if let Some(w) = &e.weapon {
             effect["weapon"] = serde_json::to_value(w).unwrap_or(Value::Null);
         }
+        // rules 26: a gun's burst, drawn on its own stream
+        if let Some(b) = e.burst {
+            effect["burst"] = json!(b);
+        }
         inner.effects.push(effect);
     }
 
