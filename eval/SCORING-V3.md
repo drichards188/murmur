@@ -13,7 +13,9 @@ picture leaves an honest agent little room, and the honest ceiling's fixes (sect
 owner's decision of that day (section 9): the ceiling is `oracle-v3-shown`, `oracle-v3` the
 foreknowledge ceiling, reported, and the ladder rebuilt on the new ceiling (10.1, 13); F3 version 2
 (its transponder off) and F6 version 2 (its vehicle appears outside the circle) (6), and their smoke
-(section 16). The validation, the pre-registration and the blind check are D's. **Scoring v2 is
+(section 16). **2026-11-02**: a development score for improving the playbook, its three kinds of
+situation and the families sorted into them (section 17, a draft for the owner). The validation, the
+pre-registration and the blind check are D's. **Scoring v2 is
 frozen**: its labels (version 2), its families, its oracle and every v1 and v2 golden and record are
 unchanged; v3 is built beside it (`eval/headless/v3/`), importing v2's code where it is unchanged.
 
@@ -1485,3 +1487,133 @@ only.
   16 of 20 on F3 version 1, whose aircraft ESM showed at once; whether version 2 (first shown by radar,
   its family unnamed) changes how it plans the aircraft, or five seeds a world simply differ, this
   smoke cannot say: the cell to watch in the next dev batch.
+
+## 17. A development score for the playbook (draft for the owner, 2026-11-02)
+
+**Status: a draft, nothing built, nothing judged.** The owner's aim for now (2026-11-02): "a score
+system in order to build and improve the ai playbook", later applied to people so their scores can be
+compared. This section is that development score. It is lighter than the validation of sections 10
+and 13 (no pre-registration, no guard: those are for claims) and reuses their machinery: the anchors
+(5), the labels (2.5), the causes (10.4) and the families (6, 6.1). It came from a review of military
+test and evaluation practice and a pressure test of the first plan; what that test changed is said
+where it applies.
+
+### 17.1 Three kinds of situation, fixed by design
+
+| kind | what happens | what it tests | scored on |
+|---|---|---|---|
+| **must act** | a real threat whose way passes outside what the standing fleet can see in time | that the agent acts, well and fast | catch (17.2) |
+| **must hold** | nothing hostile: the traffic alone, or look-alikes of neutral truth (a boat with odd AIS, a fast fisherman) | that the agent does not treat everything as a threat | false alarms (17.2) |
+| **already covered** | a real threat the standing fleet serves on its own | that the agent leaves what works alone | catch, judged "not worse than `none`" (v2 0.5 b's 5-point margin) |
+
+- **The kind is the situation's design, written into the family before any run**, never read off
+  outcomes. A situation labelled "must act" because `none` failed it would carry `none`'s bad luck
+  (one observer's drawn wrong call is 5 to 10 %, 11.5) into the agent's lead: selection on a noisy
+  baseline inflates the agent's room. A must-act element is checked against the standing fleet's
+  predicted coverage when drawn (the sensing model's reach for each standing sensor under the drawn
+  conditions, as the ceiling's feasibility already computes, 13.2). Results confirm a kind per family
+  and world (the room test, 10.1), never per seed.
+- **Matched pairs**: most must-hold look-alikes are drawn as the twin of a must-act element (the same
+  opening: way, speed, time, conditions), only the truth flipped, and one a sensor can tell apart by
+  the deadline (else the pair tests luck). Check: an agent's actions over the first 60 s are the same
+  in both halves of a pair.
+- **The mix need not match deployment.** Threats are rare in deployment, but a training set of 95 %
+  quiet watch would measure almost nothing about acting. Each kind gets enough situations to measure
+  its own line; realism lives in each situation, and the base rate enters through 17.2's per-hour
+  limits, not the mix.
+
+### 17.2 The scorecard: three lines, reported apart
+
+1. **Catch** (must act, already covered): need served (3.1, per domain 3.1b) and **time share**, each
+   eligible need's time to serve over its own grace, an unserved need counting 1 (the RMST of 3.2
+   divided by the grace, so domains with different graces pool; lower is better). Time is never scored
+   alone (it would reward rushing).
+2. **False alarms** (every situation; the must-hold line on must-hold situations), **per hour of
+   watch**: useless actions not justified on the picture (2.5 item 6's second count), escalations
+   beyond the evidence (an armed task, a nomination or a human-tier card on a track the picture showed
+   neutral or assumed friend, or below the rule book's `C_MIN` 0.5), cards to the human, and repeat
+   looks (2.5's redundant). An action justified on the picture is not a false alarm: looking at a
+   contact the picture shows in doubt is good practice even when it turns out harmless; penalising it
+   would teach the agent never to look (the pressure test's change).
+3. **Hard fails** (every situation): an engagement of anything but a declared hostile, harmful (a) and
+   (b) (2.5 item 2), an order breaching a reserve, a vehicle lost to an order.
+
+**The decision rule** (the owner's limits, 17.5 item 1): a change is better when it has no hard fail,
+its false alarms and cards an hour stay under the limits, and its catch rises (served up, or time
+share down at equal served), or its catch holds and its false alarms fall. A change that buys catch
+with false alarms inside the limits is reported as a trade, with both lines.
+
+### 17.3 Practice and exam
+
+- **Practice**: golden-gate-v3, seeds 6000-6599 (unassigned in 0.1), run as often as wanted.
+- **Exam**: san-diego, seeds 6700-6999 (unassigned in 0.1), run only after a batch of changes; a
+  practice gain the exam does not show is the map learned, not the job. Holding back seeds alone is
+  not enough: two worlds and a few families are few, and a playbook tuned on one world's geography
+  carries it. golden-gate-scale (F17) is a second exam once the playbook covers its domains.
+- The validation's seeds (0.1: dev-validate, model pilot, test) are never used to tune.
+
+### 17.4 The loop
+
+Run the practice set; read each miss by its cause (10.4's key: `not_tracked`, `misidentified:<p>`,
+`looked:<p>@<light>`, `no_look`); change a play, with a reason stated in operational terms (a change
+that only wins on the numbers is suspect: 94 % of the honest ceiling's losses were the cameras', 15,
+so a play tuned hard on them learns the sensing model's quirks); repeat; the exam now and then. Each
+result opens with section 0's coverage statement.
+
+### 17.5 For the owner
+
+1. **The limits**: the false alarms and cards an hour 17.2 allows. Suggested start: the playbook's own
+   budget (agents/playbook/CRITERIA.md: at most one human-tier card per 30 s after a burst of 2, at most
+   2 pending), and no more than `random-valid`'s 4 to 6 useless orders an episode on F18 (11.5).
+2. **Tuning the thresholds**: CRITERIA.md says every threshold comes "from doctrine, the shipped policy
+   and the research, never from Harbor watch". *Either* keep that, and improve only by adding or fixing
+   plays, *or* allow tuning to this score with a dated note there. **Recommend** keeping it: a
+   threshold tuned to the simulator's cameras would not transfer.
+3. **Reopen 15 (d)?** One wrong look holds a track in conflict for good; 32 % of neutral contacts within
+   4 km were shown suspect or in conflict (15). Left standing on 2026-10-26; for tuning a playbook it
+   matters, since a playbook scored against that picture learns to ignore doubt. **Recommend** fixing
+   it (a sensing-model change, A1's) before the first practice batch.
+
+### 17.6 The families sorted (from the dev results above; provisional)
+
+Most room figures were measured against the basic oracle (11, 14) or the foreknowledge ceiling
+(13.7), not the reachable ceiling, which has run only on F2, F3 and F6 (15, 16). The playbook itself
+has run headless only on F13 version 2 (14.2). Its reach matters: `isr.investigate` tasks only
+unarmed aircraft with an imaging sensor (agents/playbook/plays/isr.py `sensor_capable`, the Puma
+first in the watch configuration), and no play asks for space collects, nominates or tasks a sonar.
+Arming the MQ-9B and the CCA (bd murmur-lbw8) takes two more aircraft out of its reach: the sort is
+checked again once that lands.
+
+| family | kind by design | what the dev results show | for the playbook now |
+|---|---|---|---|
+| F1 fast boat | must act at night, covered by day | `none` 22 of 28 by day, 6 of 25 at night (11.5); room +41 pooled against the foreknowledge ceiling (13.7) | **yes**, the light a stratum |
+| F2 drone (v3) | must act | `none` 0 of 20, honest ceiling 6, ceiling 7 (15); a Puma identifies a drone at 0.6 only within about 1 km by day (13.6 item 1) | **yes**; little room the cameras leave |
+| F3 aircraft (v2) | covered at the Golden Gate; open in San Diego | the rings serve 4 of 5 for every agent at the Golden Gate; San Diego +40 on 5 seeds (16); pooled +0 on version 1 (13.7) | not yet: a fresh batch first |
+| F4 UUV (v2) | covered | `none` 82 to 90 %, the oracle the same (11.1), by the sonar dwell rule (11.2, a model quirk) | no: out of the playbook's reach, and not for tuning |
+| F5 diver | covered (San Diego), mixed (Golden Gate) | `none` 100 % and 67 % (11.1); the Horseshoe Bay pier `no_time` (13.6 item 3) | no: as F4 |
+| F6 vehicle (v2) | must act at the Golden Gate, partly covered in San Diego | version 1 `none` 10 % and 50 % (11.1); version 2's smoke `none` 4 of 10, ceiling 7 (16) | after a fresh batch |
+| F7 three at once | mixed: a priority test | `none` 61 %, oracle 80 %; the open need is the aircraft at night (14.3) | exam only |
+| F8 decoys, AIS spoofing | must hold (look-alikes); its need covered | the spoofer served in 4 of 5 by every agent; orders at look-alikes `none` 0, oracle 4, `random-valid` 43 in 40 situations (14.3) | **yes**, the false-alarm line; not paired yet (17.1) |
+| F9 night and fog | must act | `none` 30 %, oracle 60 %; fog by day defeats nearly everyone (14.3) | **yes** |
+| F10 sea state | mostly covered | `none` 63 %, oracle 70 %, no gradient with the sea (14.3) | low value |
+| F11 link trouble | must act (links) | the basic oracle no better than `none` under the jammer: it knows no jammer (14.3); no ceiling yet | not yet: a ceiling that knows jammers first |
+| F12 GNSS jam or spoof | must act, plus vehicle safety | `none` 55 %, oracle 78 %; SKY 2 landed away in 9 of 28 jammed situations, any agent (14.3) | **yes**, with the hard-fail line (`nav.suspect_exclude`) |
+| F13 faults (v2) | must act (the fault needs) | fault needs met: anchors 0, the playbook 17 of 40 (14.2) | **yes**, the safety plays |
+| F14 space | must act | `none` 0, oracle 90 to 100 % (12.1) | no: no play asks for a collect or a cover |
+| F15 engagement | must act, with a must-hold escort (p 0.35) | engagement right 0 of 10 for every agent, the oracle too (12.1; keep-outs, bd murmur-e3b) | no: blocked by murmur-e3b, and changed by murmur-lbw8 |
+| F16 review load | the reviewer's (a person's) work | 75 to 87 % right (12.1) | no: for the human study |
+| F17 scale | a mix of F1 to F6, their kinds | `none` 55 %, oracle 61 % (12.1); golden-gate-scale only | exam only |
+| F18 quiet | must hold | the oracle orders nothing; `random-valid` 4 to 6 useless orders an episode (11.5) | **yes** |
+
+**Usable now**: must act F1 at night, F2, F9, F12, F13; must hold F18 and F8's look-alikes; already
+covered F1 by day. **Need work first**: F3 and F6 (a fresh batch), F11 (a ceiling), F7 and F17 (exam
+sets). **Out of the playbook's reach or blocked**: F4, F5, F14, F15, F16.
+
+### 17.7 What it needs built
+
+Mostly there: the anchors, the labels with "justified on the picture", the causes, F18, F8's
+look-alikes, `+pull-off` (breaking what works), RMST per domain (3.2), the playbook's card budget. New:
+the predicted-coverage check that makes an element must act (17.1); the paired look-alike draw; the
+kind as a field of each family and situation; the time share and the per-hour false-alarm line in the
+report; the practice and exam sets (17.3); a playbook run beside the anchors in every family it can
+reach (today only F13 has one).
