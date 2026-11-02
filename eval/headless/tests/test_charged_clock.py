@@ -386,10 +386,14 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: back to 24, this code gave the earlier digests (a288cbb3..., dac5ddce..., 74c9ac32...) byte for
 #: byte, so the only change is the audit log's `run.started` (`rules_version` 25 for 24). No fleet
 #: here carries a loadout, so no strike is drawn and no tool changed.
+#: Re-taken for decision rules 26 (bd murmur-lbw8.3, guns): with `RULES_VERSION` put back to 25,
+#: this code gave the earlier digests (7fb55767..., 92e15f29..., 678e4d88...) byte for byte, so the
+#: only change is the audit log's `run.started` (`rules_version` 26 for 25). No fleet here carries
+#: a gun, and no tool changed.
 PAUSED = {
-    "model harbor-watch s1": "7fb5576763b3be606d7fad8178bad39e8fab8c7c9c69c76ba25080c744b94dee",
-    "playbook v2 fast-unknown 1000": "92e15f29b7815821b55f78c050a0beccb1077ffad0859d9d059046b68688e523",
-    "model v2 fast-unknown 1000": "678e4d88c0f1e254e7e23efdb6182dae8e90ea13ec450b50f31bc04f0dd686c7",
+    "model harbor-watch s1": "d7f6a21d698c23013a554145db1eeac7ec020ed4872a7c67891b3fcbe68862a0",
+    "playbook v2 fast-unknown 1000": "413c56ba6a952d3eb71babb51f8be548458e5a036241f356a9fcad891747fb74",
+    "model v2 fast-unknown 1000": "1108c0d24369f24f04caa6fc307e82b63e724635229ab2c408a63491523df963",
 }
 
 

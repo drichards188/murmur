@@ -1288,7 +1288,9 @@ order. Rules 24 (loadouts, bd murmur-lbw8.1) re-took it for `run.started` alone:
 loadout, a weapon or rounds. Rules 25 (the damage model, bd murmur-lbw8.2) re-took it for
 `run.started` alone: with `RULES_VERSION` put back to 24 the code gave the earlier digests
 (record `aeff71f8...`, audit `e07a551a...`) byte for byte; no strike is drawn in the episode (no
-weapon with figures) and no vehicle reports damage.
+weapon with figures) and no vehicle reports damage. Rules 26 (guns, bd murmur-lbw8.3) re-took it for `run.started`
+alone: with `RULES_VERSION` put back to 25 the code gave the earlier digests (record
+`ccb22ba8...`, audit `c4ba5d23...`) byte for byte; no fleet in the episode carries a gun.
 
 ### 17.3 The bake tool
 

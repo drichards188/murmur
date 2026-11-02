@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 77] = [
+const LOGS: [(&str, u32); 79] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -216,13 +216,18 @@ const LOGS: [(&str, u32); 77] = [
     // action before the first signature, then a nomination refused)
     ("v25-engagement-scenario-01.jsonl", DAMAGE_SINCE),
     ("v25-weapons-out-of-action-scenario-121.jsonl", DAMAGE_SINCE),
+    // rules 26 (a gun's bursts from a counted magazine; a clean build of 32013c2 on the branch of
+    // bd murmur-lbw8.3): scenario 01 (the switchblade, unchanged) and 123 (the armed UGV's M2: the
+    // release and two bursts of 6, the fire held on a target not seen since, assessed ceased)
+    ("v26-engagement-scenario-01.jsonl", GUN_SINCE),
+    ("v26-gun-bursts-until-the-target-ceases-scenario-123.jsonl", GUN_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v25-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v26-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -1976,4 +1981,25 @@ fn a_damage_report_is_caught_under_older_rules_and_when_hidden() {
     assert_ne!(hidden, ls);
     let r = with(&rechain(&hidden), RulesAccepted::Exactly(DAMAGE_SINCE));
     assert!(!r.ok(), "the refusals stand on a report the log no longer holds");
+}
+
+/// Rules 26: scenario 123's log relabelled rules 25 carries what no build of rules 25 logged (a
+/// gun's bursts, its firing position, its line of fire) and is caught; a burst renumbered out of
+/// order is caught under its own rules.
+#[test]
+fn a_guns_bursts_are_caught_under_older_rules_and_when_renumbered() {
+    let ls = lines(&fixture("v26-gun-bursts-until-the-target-ceases-scenario-123.jsonl"));
+    let v26 = format!("\"rules_version\":{GUN_SINCE},");
+    let mut old = ls.clone();
+    assert!(old[0].contains(&v26));
+    old[0] = old[0].replacen(&v26, &format!("\"rules_version\":{DAMAGE_SINCE},"), 1);
+    let w: Vec<String> = whats(&with(&rechain(&old), RulesAccepted::Exactly(DAMAGE_SINCE))).iter().map(|s| s.to_string()).collect();
+    assert!(w.iter().any(|m| m.contains("a gun's burst")), "{w:?}");
+    let renumbered: Vec<String> = ls
+        .iter()
+        .map(|l| if l.contains("\"type\":\"engage.burst\"") { l.replacen("\"burst\":3,", "\"burst\":4,", 1) } else { l.clone() })
+        .collect();
+    assert_ne!(renumbered, ls);
+    let w: Vec<String> = whats(&with(&rechain(&renumbered), RulesAccepted::Exactly(GUN_SINCE))).iter().map(|s| s.to_string()).collect();
+    assert!(w.iter().any(|m| m.contains("a burst out of order")), "{w:?}");
 }
