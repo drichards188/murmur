@@ -1269,7 +1269,10 @@ operator decisions. No episode has exercised a routed leg headless yet. Rules 23
 order ends on its own vehicle's look) re-took it again for its log alone: `run.started` names 23,
 and every track level carries each vehicle's own identification (`own`); with those taken out the
 log is the rules 22 one byte for byte (`ab3c2b31...`). Nothing in the episode sends an identify
-order.
+order. Rules 24 (loadouts, bd murmur-lbw8.1) re-took it for `run.started` alone: with
+`RULES_VERSION` put back to 23 the code gave the earlier digests (record `9136eaf2...`, audit
+`d768f7a1...`) byte for byte; Harbor watch's fleet keeps the unarmed MQ-9B, so no decision logs a
+loadout, a weapon or rounds.
 
 ### 17.3 The bake tool
 

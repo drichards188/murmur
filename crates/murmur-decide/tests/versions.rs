@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 73] = [
+const LOGS: [(&str, u32); 75] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -204,13 +204,19 @@ const LOGS: [(&str, u32); 73] = [
     // PUMA 1's own look)
     ("v23-engagement-scenario-01.jsonl", IDENTIFY_OWN_LOOK_SINCE),
     ("v23-own-look-not-ended-by-another-camera-scenario-118.jsonl", IDENTIFY_OWN_LOOK_SINCE),
+    // rules 24 (an armed platform's loadout, its rounds counted; a clean build of 7932aa6 on
+    // the branch of bd murmur-lbw8.1): scenario 01 (the switchblade, its own one round, picked)
+    // and 119 (two GBU-12 named and released, 2 then 1 of 2 left, a third refused, the Hellfire
+    // picked)
+    ("v24-engagement-scenario-01.jsonl", LOADOUT_SINCE),
+    ("v24-rounds-spent-then-another-weapon-scenario-119.jsonl", LOADOUT_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v23-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v24-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -1925,4 +1931,24 @@ fn the_rules_18_logs_read_a_tracks_velocity_error_and_cannot_claim_rules_17() {
         let r = with(&rechain(&ls), RulesAccepted::Exactly(before));
         assert!(whats(&r).iter().any(|w| w.contains(differs)), "{name}: {:?}", whats(&r));
     }
+}
+
+/// Rules 24: scenario 119's log relabelled rules 23 carries what no build of rules 23 logged (a
+/// nomination's weapon, a release's rounds left, a decision's rounds) and is caught; a release
+/// logged with one more round left than it spent is caught under its own rules.
+#[test]
+fn a_loadout_weapon_is_caught_under_older_rules_and_its_rounds_when_edited() {
+    let ls = lines(&fixture("v24-rounds-spent-then-another-weapon-scenario-119.jsonl"));
+    let v24 = format!("\"rules_version\":{LOADOUT_SINCE},");
+    let mut old = ls.clone();
+    assert!(old[0].contains(&v24));
+    old[0] = old[0].replacen(&v24, &format!("\"rules_version\":{IDENTIFY_OWN_LOOK_SINCE},"), 1);
+    let w: Vec<String> = whats(&with(&rechain(&old), RulesAccepted::Exactly(IDENTIFY_OWN_LOOK_SINCE))).iter().map(|s| s.to_string()).collect();
+    assert!(w.iter().any(|m| m.contains("loadout weapon")), "{w:?}");
+    let k = ls.iter().position(|l| l.contains("\"type\":\"engage.effect\"")).unwrap();
+    let mut a = ls.clone();
+    assert!(a[k].contains("\"left\":1"), "{}", a[k]);
+    a[k] = a[k].replacen("\"left\":1", "\"left\":2", 1);
+    let w: Vec<String> = whats(&with(&rechain(&a), RulesAccepted::Exactly(LOADOUT_SINCE))).iter().map(|s| s.to_string()).collect();
+    assert!(w.iter().any(|m| m.contains("rounds left")), "{w:?}");
 }

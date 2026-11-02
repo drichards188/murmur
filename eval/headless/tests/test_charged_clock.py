@@ -376,10 +376,16 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: code gave the earlier digests (5d6f292d..., 7c0407c2..., 51ecd4c0...) byte for byte, so the only
 #: change in each record is that tool in the tool lists (and the model's prompt sizes and token
 #: estimates with it).
+#: Re-taken for decision rules 24 (bd murmur-lbw8.1, loadouts): with `RULES_VERSION` put back to 23
+#: and the nomination's new `weapon` argument left out of the tool schemas, this code gave the
+#: earlier digests (c4acc4f5..., 7a8f043f..., ede2cb89...) byte for byte, so the only changes are
+#: the audit log's `run.started` (`rules_version` 24 for 23) and, for the model, the longer
+#: `propose_intent`, `preview_intent` and `get_nomination_options` schemas in its prompt sizes and
+#: token estimates. No fleet here carries a loadout.
 PAUSED = {
-    "model harbor-watch s1": "c4acc4f541aa2cbd3fff0d84b2f12cb2f0dc933afc9c4a8b5b6f292d35d9e4e8",
-    "playbook v2 fast-unknown 1000": "7a8f043f9155cbbf6bbd5ccc0c676a2a5563b6dfbcf99505de23a1f4c33bcf41",
-    "model v2 fast-unknown 1000": "ede2cb892bc5f631238288dae21fdaa81d6a2e48c53a41fc2e8c9b031d6e181d",
+    "model harbor-watch s1": "a288cbb34a8c89c0b5890e2001e41b8f18ed5515edc37cc8e3139dcef1e73695",
+    "playbook v2 fast-unknown 1000": "dac5ddce9a31f437ecc6a30dd568181e6519347bc7740630c269f5e84dc9ae97",
+    "model v2 fast-unknown 1000": "74c9ac32bc0739ff7018bc04069187e29127d21f93466dc20e0e747a7a95e972",
 }
 
 
