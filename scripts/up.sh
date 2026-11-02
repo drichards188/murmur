@@ -39,7 +39,8 @@
 # Keep every fixed range (vehicle, bridge, stand-in source; each as wide as the fleet) below
 # `sysctl net.ipv4.ip_local_port_range` and clear of the other stacks' ranges.
 # MURMUR_WEB=0 starts no console: the launcher's (`make start`, eval/launcher.py) already serves
-# one on MURMUR_WEB_PORT, whose origin the bridge still accepts.
+# one on MURMUR_WEB_PORT, whose origin the bridge still accepts. MURMUR_WEB=preview builds the
+# console and serves the production build instead of the dev server (make stress).
 # MURMUR_TIDEWATER_URL overrides the port with any running `tidewater serve`. The scenario
 # clock (MURMUR_AT, MURMUR_RATE) goes to the stand-ins, tidewater drive, the emulator and
 # the contacts process; a MURMUR_RATE other than 1 needs MURMUR_AT (refused otherwise).
@@ -55,7 +56,7 @@ export MURMUR_HTTP_PORT="${MURMUR_HTTP_PORT:-8765}"
 web_port="${MURMUR_WEB_PORT:-5173}"
 export MURMUR_BRIDGE_URL="http://127.0.0.1:$MURMUR_HTTP_PORT"  # vite proxies here
 case "${MURMUR_LINKEMU:-1}" in 0|off|false|no) linkemu=0 ;; *) linkemu=1 ;; esac
-case "${MURMUR_WEB:-1}" in 0|off|false|no) web=0 ;; *) web=1 ;; esac
+case "${MURMUR_WEB:-1}" in 0|off|false|no) web=0 ;; preview) web=preview ;; *) web=1 ;; esac
 vehicle_base="$MURMUR_BASE_PORT"
 bridge_base="${MURMUR_BRIDGE_BASE_PORT:-$((vehicle_base + 1000))}"
 emu_port="${MURMUR_LINKEMU_PORT:-8766}"
@@ -211,6 +212,11 @@ env "${bridge_env[@]}" MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}" MURMUR_SIM_TOKE
 if [ "$web" = 1 ]; then
   (cd web && exec node_modules/.bin/vite --host 127.0.0.1 --port "$web_port" --strictPort) > logs/web.log 2>&1 & pids+=($!)
   starting="swarm, bridge (:$MURMUR_HTTP_PORT) and web"
+elif [ "$web" = preview ]; then
+  # the production build (what load measurements use: React's development build is slower)
+  (cd web && node_modules/.bin/vite build --logLevel warn \
+     && exec node_modules/.bin/vite preview --host 127.0.0.1 --port "$web_port" --strictPort) > logs/web.log 2>&1 & pids+=($!)
+  starting="swarm, bridge (:$MURMUR_HTTP_PORT) and the production console (built first)"
 else
   echo "web: not started (MURMUR_WEB=0): the launcher's console on :$web_port serves this stack"
   starting="swarm and bridge (:$MURMUR_HTTP_PORT)"

@@ -21,7 +21,7 @@ import { shownWeapons, type WeaponTrack } from './weapon'
 import { type ActDrawing, animating, visibleActs } from './hostileAct'
 import { GLIDE_LAYER_IDS } from './orderLayers'
 import { buildTrailLayers } from './trailLayers'
-import { perfWatchDeck } from './perf'
+import { PERF_ON, perfWatchDeck } from './perf'
 import { reducedMotion } from './reveal'
 import { drapedWater } from './sea'
 import { vehiclesGeneration } from './useBridge'
@@ -660,7 +660,8 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       attributionControl: { compact: true },
       maxPitch: MAX_PITCH,
     })
-    if (import.meta.env.DEV) (window as unknown as { murmurMap: maplibregl.Map }).murmurMap = m
+    // ?perf exposes it in a production build too, so scripts/console_stress.py can drive the camera
+    if (import.meta.env.DEV || PERF_ON) (window as unknown as { murmurMap: maplibregl.Map }).murmurMap = m
 
     // Bare symbols (decluttered) show their callsign on hover; any vehicle shows a pointer.
     const onHover = (info: PickingInfo) => {

@@ -1,4 +1,4 @@
-.PHONY: doctor setup build start up goldengate situation down sim bridge web eval headless check
+.PHONY: doctor setup build start up goldengate situation stress down sim bridge web eval headless check
 
 FLEET ?= sandiego   # any sim/fleets/*.toml: sandiego, canaveral, golden-gate, ...
 CARGO ?= $(shell command -v cargo || echo $(HOME)/.cargo/bin/cargo)
@@ -29,6 +29,9 @@ goldengate: ## Golden Gate with real tide/current/wind and traffic: tidewater se
 sit_arg = $(if $(filter command line,$(origin $(1))),$($(1)))
 situation: ## a pre-built situation (sim/situations/README.md): NAME=harbor-watch, OPERATOR=live|autoplay, AI=claude|codex|playbook|none, COSIGNER=you|scripted|scripted-pair, REVEAL=0|1; the stack stays up after it: make down
 	.venv/bin/python -m eval.situation_run $(or $(call sit_arg,NAME),harbor-watch) $(if $(call sit_arg,OPERATOR),--operator $(call sit_arg,OPERATOR)) $(if $(call sit_arg,AI),--ai $(call sit_arg,AI)) $(if $(call sit_arg,COSIGNER),--cosigner $(call sit_arg,COSIGNER)) $(if $(call sit_arg,REVEAL),--reveal $(call sit_arg,REVEAL))
+
+stress:  ## the console under load, to watch: N=3600 stand-ins over the Bay (default), SWARM=1 a dense swarm, N=0 the map with no vehicles; production console, no link emulator or tidewater, default ports; open http://localhost:5173/?perf; make down stops it
+	./scripts/stress.sh $(or $(call sit_arg,N),3600) $(if $(filter 1,$(call sit_arg,SWARM)),--swarm)
 
 down:    ## stop a stack started with make up (e.g. from another terminal)
 	@# TERM, not INT: a shell started in the background ignores SIGINT and can't trap it
