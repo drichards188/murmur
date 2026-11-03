@@ -21,6 +21,10 @@
 //! record of each draw goes to the evaluation truth log only; the C2 learns of a result only
 //! through its sensors (a contact that stops, or is no longer seen) and our vehicles' own reports.
 //!
+//! A contact whose scenario says `strike_outcome` (a training aid, the tutorial's boat only:
+//! DECISIONS.md 11-03) draws nothing when a strike is aimed at it: the outcome its scenario names
+//! is recorded, marked `pinned` ([`pinned`]). Collateral around it is drawn as ever.
+//!
 //! A weapon without figures (`effects` empty) does none of this: its effect stays abstract, as
 //! before (crates/murmur-contacts `effect::apply`).
 
@@ -420,7 +424,8 @@ pub struct DamageRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub distance_m: Option<f64>,
     /// The chance it was hit (a target: the hit chance with its factors; collateral: caught in
-    /// the blast) and the draw against it.
+    /// the blast) and the draw against it (a pinned record's is no draw: 0 for its hit, 1 for its
+    /// miss).
     pub p_hit: f64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub factors: Vec<Factor>,
@@ -432,8 +437,40 @@ pub struct DamageRecord {
     /// Whether the state was put on it (a contact whose scenario says `persists` keeps going;
     /// a state no worse than it had changes nothing).
     pub applied: bool,
+    /// The outcome was pinned by the target's scenario (`strike_outcome`, a training aid), not
+    /// drawn ([`pinned`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+}
+
+/// A shot at a target whose scenario pins every strike on it (`strike_outcome`, [`crate::scenario::StrikeOutcome`]):
+/// a hit with `state`, or a miss (none), drawing nothing, and saying so (`pinned`, a factor and the
+/// note) so no one reads it as a draw.
+pub fn pinned(who: &str, w: &WeaponDamage, target: &Target, outcome: crate::scenario::StrikeOutcome) -> DamageRecord {
+    let state = outcome.state();
+    let hit = state.is_some();
+    DamageRecord {
+        who: who.into(),
+        role: "target".into(),
+        kind: target.kind.into(),
+        figures: w.figures_for(target.kind).map(|(k, _)| k.to_string()),
+        distance_m: None,
+        p_hit: if hit { 1.0 } else { 0.0 },
+        factors: vec![Factor {
+            what: format!("pinned by the scenario: strike_outcome = \"{}\", not drawn", outcome.as_str()),
+            x: None,
+            minus: None,
+        }],
+        u_hit: if hit { 0.0 } else { 1.0 },
+        hit,
+        u_damage: None,
+        state: state.unwrap_or(DamageState::Undamaged),
+        applied: false,
+        pinned: true,
+        note: Some("its scenario pins every strike on it (a training aid): no hit or damage draw".into()),
+    }
 }
 
 /// A shot at a target: the hit draw, then (on a hit) the damage draw, on `stream`.
@@ -485,6 +522,7 @@ pub fn shot_with(
         u_damage,
         state,
         applied: false,
+        pinned: false,
     }
 }
 
@@ -519,6 +557,7 @@ pub fn near(seed: u64, stream: &str, who: &str, w: &WeaponDamage, kind: &str, ar
         u_damage,
         state,
         applied: false,
+        pinned: false,
         note: figs.is_none().then(|| "no figures for its kind: a blast's generic split [E]".into()),
     })
 }

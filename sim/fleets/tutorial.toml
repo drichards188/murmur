@@ -1,5 +1,6 @@
 # The tutorial's fleet (sim/situations/tutorial.toml): hostile-act-engagement's two stand-ins
-# (sim/fleets/hostile-act-engagement.toml), REAPER 1 as there, HUNTER 1 nearer the boat.
+# (sim/fleets/hostile-act-engagement.toml), both as there: HUNTER 1's leg nearer the boat was the
+# tutorial's first, and hostile-act-engagement took it on 11-03 (bd murmur-9sxm).
 #
 # uids follow the unit order (sim/swarm.py): 1 HUNTER 1, 2 REAPER 1, as in hostile-act-engagement,
 # so the tutorial's contacts name HUNTER 1 by the same uid (the hostile act's victim).

@@ -423,6 +423,7 @@ mod tests {
             start_s: 0.0,
             end_s: None,
             on_effect: crate::scenario::OnEffect::OutOfPlay,
+            strike_outcome: None,
             weapon: None,
         }
     }

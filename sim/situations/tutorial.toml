@@ -21,13 +21,19 @@
 # checks and tiers (no rules or policy change), and nothing nominates for the person (no AI, no
 # timeline fallback).
 #
-# Two more differences, so that the boat's identity clears the nomination's target-identity check
-# (0.60) with room to spare for the whole time a person nominates in, not by luck: it runs by day
-# (10:00 local; hostile-act-engagement's clock is 03:00 local, by night), and HUNTER 1 patrols a
-# leg 0.9 to 1.2 km east of the boat, just west of the bridge, instead of 2.0 to 2.5 km east of it
-# beyond the bridge (sim/fleets/tutorial.toml, which gives the measurements). There its panoramic
-# camera identifies the boat at 0.87 to 0.91; it is the only one of ours whose camera always has
-# the boat in view (REAPER 1's points only where its payload manager cues it, and with no order
+# Every strike on the boat hits and destroys it (`strike_outcome = "destroyed"` in its contacts, the
+# owner's "pin as full kill", docs/DECISIONS.md 11-03): the person nominates, so the intent and the
+# weapon vary and no seed could pin the damage model's draws, and a first-timer should see the chain
+# end in "ceased". A training aid, here only; the coach card says once that elsewhere a weapon can
+# miss or only damage.
+#
+# Two more choices, so that the boat's identity clears the nomination's target-identity check
+# (0.60) with room to spare for the whole time a person nominates in, not by luck (made here first,
+# then for hostile-act-engagement too on 11-03, bd murmur-9sxm): it runs by day (10:00 local, not
+# 03:00 by night), and HUNTER 1 patrols a leg 0.9 to 1.2 km east of the boat, just west of the
+# bridge, instead of 2.0 to 2.5 km east of it beyond the bridge (sim/fleets/tutorial.toml, which
+# gives the measurements). There its panoramic camera identifies the boat at 0.87 to 0.91; it is
+# the only one of ours whose camera always has the boat in view (REAPER 1's points only where its payload manager cues it, and with no order
 # it may not look at the boat for minutes). Measured 2026-10-29 from the first act to 10:00: 0.87
 # or more in each of three runs as now; by night from 2 km, 0.02 to 0.66 and below 0.60 30 % of
 # the time; by day from 2 km, 0.26 to 0.44. The coach card explains a target-identity block if
@@ -75,8 +81,9 @@ or HUNTER 1's camera may fix the missile in flight; HUNTER 1 reports the strike;
 on the track's card), opens the nomination form from the track's card, picks REAPER 1 (some 35 s
 away at 90 m/s; a fixed wing takes fallback return), reads the checks and nominates; op-2 and op-3
 sign within seconds; REAPER 1 is dispatched and the engine releases its missile from some 2 to 2.5
-km out, the strike lands some 18 s later, the boat leaves the picture and the assessment reads
-"ceased" some 15 s after.
+km out, the strike lands some 18 s later and destroys the boat (its contacts pin every strike on
+it as a kill, a training aid: no hit or damage draw), the boat leaves the picture and the
+assessment reads "ceased" some 15 s after.
 What should not: a nomination before the declaration is confirmed (refused by target_declared), a
 signature by the person on their own nomination (refused: the proposer never signs), a scripted
 signature on anything but the person's nomination, or an effect released with a neutral or one of
@@ -85,14 +92,16 @@ for the whole 20 minutes, HUNTER 1 by 400 m or more: it patrols 0.9 km or more f
 """
 
 world = "golden-gate"                         # sim/worlds/golden-gate.toml
-fleet = "sim/fleets/tutorial.toml"            # hostile-act-engagement's, HUNTER 1 nearer the boat
-contacts = "sim/scenarios/tutorial.toml"      # hostile-act-engagement's, compressed
+fleet = "sim/fleets/tutorial.toml"            # hostile-act-engagement's: the same platforms,
+                                              # spawns and patrol leg (since 11-03)
+contacts = "sim/scenarios/tutorial.toml"      # hostile-act-engagement's, compressed, the boat's
+                                              # strikes pinned as kills
 events = []
 policy = "sim/situations/policies/watch.toml" # the shipped tiers and [identification], as
                                               # hostile-act-engagement's
 tidewater = "golden-gate-2026-06"
 at = "2026-06-14T17:00:00Z"                   # 10:00 local, by day: the cameras' visible channels
-                                              # see (hostile-act-engagement's 10:00Z is 03:00 local)
+                                              # see (as hostile-act-engagement's, since 11-03)
 rate = 1
 duration_s = 1200                             # 20 minutes: room for a slow reader
 

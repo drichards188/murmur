@@ -4,9 +4,8 @@
 # Points are [lon, lat]. Fictional names and MMSIs, as in sim/scenarios/hostile-act-engagement.toml.
 # Everything here is truth: the console only ever sees what our sensors make of it.
 #
-# What differs from hostile-act-engagement's traffic, and why (the rules, the policy and the
-# platforms are the same; the situation runs by day and HUNTER 1 patrols nearer the boat,
-# sim/fleets/tutorial.toml):
+# What differs from hostile-act-engagement's traffic, and why (the rules, the policy, the
+# platforms, the daylight clock and HUNTER 1's patrol leg are the same, sim/fleets/tutorial.toml):
 # - The fast boat starts 800 m short of its holding point instead of 2.7 km out at sea, and holds
 #   from about 1:00 instead of 3:03.
 # - It carries a weapon, an ATGM-class missile (docs/OPPONENT-WEAPONS.md: 250 m/s, 5 km), and
@@ -20,9 +19,15 @@
 #   reaches the step that waits for one, one has come or comes within a minute and a half. A seen
 #   launch is attributed from where the camera placed it; one attributed below the policy's
 #   threshold is flagged for review, not declared, and the next is another chance. Once the boat
-#   is declared, the engine only records the rest; once it is struck it leaves the scenario
+#   is declared, the engine only records the rest; once it is destroyed it leaves the scenario
 #   (`on_effect = "out_of_play"`, the default) and an author that does not exist fires nothing (a
 #   missile already in flight flies on).
+# - Every strike on the boat destroys it (`strike_outcome = "destroyed"`, the owner's "pin as full
+#   kill", docs/DECISIONS.md 11-03): the person nominates, so the intent and even the weapon
+#   (REAPER 1 carries Hellfires and GBU-12s) vary, and no seed could pin the damage model's draws
+#   (with seed 17 the default run's Hellfire only took the boat's propulsion, and on other intents
+#   a strike can miss). A training
+#   aid, here only: the truth log marks the strike `pinned`; the collateral around it is drawn.
 # - The run is 20 minutes, not 12, for a slow reader, so the traffic that would come near the
 #   boat inside that time is moved or left out: the inbound container ship starts 5.7 km further
 #   out at sea (at the holding area after some 29 minutes, not 15), the trawler leaves Fisherman's
@@ -53,6 +58,7 @@ speed_mps = 15
 motion = "transit"
 route = [[-122.5040, 37.8105], [-122.4950, 37.8120]]
 start_s = 5
+strike_outcome = "destroyed"     # every strike on it hits and destroys it (a training aid, above)
 weapon = { name = "ATGM-class missile", kind = "atgm", speed_mps = 250, range_m = 5000 }
 
 [[act]]

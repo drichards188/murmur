@@ -798,6 +798,11 @@ def test_the_tutorial_is_live_with_fixed_modes(tmp_path: Path):
     assert weapon["kind"] == "atgm" and weapon["range_m"] >= 3 * 1300
     acts = contacts["act"]
     assert all(a["by"] == contacts["contact"][0]["id"] and a["against_vehicle"] == 1 for a in acts)
+    # every strike on the boat destroys it, whatever the person's intent and weapon (the owner's
+    # "pin as full kill", DECISIONS.md 11-03): a training aid on the boat alone
+    assert [c["id"] for c in contacts["contact"] if "strike_outcome" in c] == [contacts["contact"][0]["id"]]
+    assert contacts["contact"][0]["strike_outcome"] == "destroyed"
+    assert contacts["contact"][0].get("on_effect", "out_of_play") == "out_of_play"
     # by day at the Gate (UTC-7 in June): the cameras' visible channels see
     assert 9 <= (int(sit.at[11:13]) - 7) % 24 <= 15, sit.at
     assert not [s for s in sit.steps if s.kind in ("engage", "propose", "declare", "flood")], "nothing nominates or declares for the person"

@@ -128,6 +128,11 @@ group. Dates are 2026.
   human signatures, the authorize step closed to agents in code, every order to an armed platform
   waiting for a human, DoD Directive 3000.09. The damage model changes what happens after a
   person decides, never who decides.
+  11-03, the owner on the tutorial's strike: "pin as full kill". A contacts scenario may pin the
+  outcome of every strike aimed at a contact (`strike_outcome`; truth side only, no rules
+  version): no hit or damage draw, the truth log's record marked `pinned`, collateral still
+  drawn. A training aid, used by the tutorial's boat only (the person nominates, so neither the
+  intent nor the weapon, and so no seed, could fix the draw); never in a situation that measures.
 - **Guns: bursts from a counted magazine** (11-02, the owner: "I want all nodes that are
   supposed to carry weapons in real life to have the war thunder level of real weapons
   equipped"; "All of it now", guns included). Stage 3 of bd murmur-lbw8 (murmur-lbw8.3), built as

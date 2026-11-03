@@ -37,8 +37,13 @@
 //! claiming to be a fishing vessel), `on_effect` (what an engagement's effect does to it:
 //! `"out_of_play"`, the default, removes it from the scenario when an abstract effect reaches it,
 //! or when the damage model destroys it, so our sensors stop detecting it; `"persists"` keeps it
-//! moving, flagged, whatever the draw). `transit` moves once from `route[0]` to the last point
-//! and holds there; `loiter` needs `center` and `radius_m`; `station` and `drift` need
+//! moving, flagged, whatever the draw), `strike_outcome` (pins what every strike aimed at it
+//! does, in place of the damage model's hit and damage draws: `"destroyed"`, `"mobility"`,
+//! `"firepower"` (an armed contact only), `"undamaged"` (a hit that does nothing) or `"miss"`; a
+//! training aid, used by the tutorial's boat only (DECISIONS.md 11-03), refused beside
+//! `on_effect = "persists"`; the truth log's record of the strike says `pinned`; an abstract
+//! effect, whose weapon lists no figures, and collateral draws ignore it). `transit` moves once
+//! from `route[0]` to the last point and holds there; `loiter` needs `center` and `radius_m`; `station` and `drift` need
 //! `at`. Drift follows the tidewater current when the contacts process has conditions.
 //! `recorded` needs `max_gap_s` and timestamped `samples` (`at_s`, `position = [lon, lat]`,
 //! optional `speed_mps` and `course_deg`); no constant speed or route is required. It
@@ -139,6 +144,39 @@ pub enum OnEffect {
     #[default]
     OutOfPlay,
     Persists,
+}
+
+/// What every strike the damage model makes on a contact does to it when its scenario pins it
+/// (`strike_outcome`, a training aid: the tutorial's boat, DECISIONS.md 11-03): a hit with that
+/// damage state, or a miss, in place of the hit and damage draws. It pins only a strike aimed at
+/// the contact (the effect's target contact); caught in the blast of a strike on another, it
+/// draws as any other does ([`crate::effect`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StrikeOutcome {
+    Destroyed,
+    Mobility,
+    Firepower,
+    Undamaged,
+    Miss,
+}
+
+impl StrikeOutcome {
+    /// The damage state it pins (none: a miss).
+    pub fn state(self) -> Option<crate::damage::DamageState> {
+        use crate::damage::DamageState;
+        match self {
+            StrikeOutcome::Destroyed => Some(DamageState::Destroyed),
+            StrikeOutcome::Mobility => Some(DamageState::Mobility),
+            StrikeOutcome::Firepower => Some(DamageState::Firepower),
+            StrikeOutcome::Undamaged => Some(DamageState::Undamaged),
+            StrikeOutcome::Miss => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        self.state().map_or("miss", |s| s.as_str())
+    }
 }
 
 /// The bridge's sensing models (`murmur-bridge` `tracks::truth::SensingModel`).
@@ -392,6 +430,9 @@ pub struct ContactSpec {
     pub end_s: Option<f64>,
     #[serde(default)]
     pub on_effect: OnEffect,
+    /// Pins what every strike aimed at it does ([`StrikeOutcome`]; none: drawn).
+    #[serde(default)]
+    pub strike_outcome: Option<StrikeOutcome>,
     /// Its weapon: every act it commits launches it (docs/OPPONENT-WEAPONS.md).
     #[serde(default)]
     pub weapon: Option<WeaponSpec>,
@@ -459,6 +500,7 @@ pub struct Contact {
     pub start_s: f64,
     pub end_s: Option<f64>,
     pub on_effect: OnEffect,
+    pub strike_outcome: Option<StrikeOutcome>,
     pub weapon: Option<WeaponSpec>,
 }
 
@@ -545,6 +587,15 @@ impl ContactSpec {
         if let Some(w) = &self.weapon {
             w.validate().map_err(bad)?;
         }
+        match self.strike_outcome {
+            Some(o) if self.on_effect == OnEffect::Persists => {
+                return Err(bad(format!("strike_outcome {:?} contradicts on_effect \"persists\"", o.as_str())));
+            }
+            Some(StrikeOutcome::Firepower) if self.weapon.is_none() => {
+                return Err(bad("strike_outcome \"firepower\" needs a weapon to put out of action".into()));
+            }
+            _ => {}
+        }
         let default_alt = match self.domain {
             Domain::Air => 300.0,
             Domain::Subsurface => -30.0,
@@ -590,6 +641,7 @@ impl ContactSpec {
             start_s: self.start_s.max(0.0),
             end_s: self.end_s,
             on_effect: self.on_effect,
+            strike_outcome: self.strike_outcome,
             weapon: self.weapon.clone(),
         })
     }
@@ -901,5 +953,32 @@ mod tests {
         }
         let dup = format!("{two}[[act]]\nid = \"a\"\nat_s = 1\nby = \"boat\"\nagainst_vehicle = 1\n[[act]]\nid = \"a\"\nat_s = 2\nby = \"boat\"\nagainst_vehicle = 1\n");
         assert!(Scenario::from_toml(&dup).is_err());
+    }
+
+    /// `strike_outcome` (a training aid): one of the five outcomes, never beside `persists`, and
+    /// `firepower` only on an armed contact; absent, none.
+    #[test]
+    fn a_pinned_strike_outcome_is_checked_at_load() {
+        let boat = |extra: &str| {
+            Scenario::from_toml(&format!(
+                "title = \"t\"\n[[contact]]\nid = \"boat\"\naffiliation = \"hostile\"\ndomain = \"surface\"\nkind = \"small_fast_boat\"\nmotion = \"station\"\nat = [-122.5, 37.8]\n{extra}"
+            ))
+            .and_then(|s| s.contacts())
+        };
+        assert_eq!(boat("").expect("valid")[0].strike_outcome, None);
+        for (o, want) in [
+            ("destroyed", StrikeOutcome::Destroyed),
+            ("mobility", StrikeOutcome::Mobility),
+            ("undamaged", StrikeOutcome::Undamaged),
+            ("miss", StrikeOutcome::Miss),
+        ] {
+            let c = boat(&format!("strike_outcome = \"{o}\"\n")).expect("valid");
+            assert_eq!((c[0].strike_outcome, want.as_str()), (Some(want), o));
+        }
+        let armed = "weapon = { name = \"ATGM-class missile\", kind = \"atgm\", speed_mps = 250, range_m = 5000 }\n";
+        assert!(boat(&format!("strike_outcome = \"firepower\"\n{armed}")).is_ok());
+        for bad in ["strike_outcome = \"firepower\"\n", "strike_outcome = \"sunk\"\n", "strike_outcome = true\n", "strike_outcome = \"destroyed\"\non_effect = \"persists\"\n"] {
+            assert!(boat(bad).is_err(), "{bad}");
+        }
     }
 }

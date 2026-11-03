@@ -20,7 +20,10 @@
 //! collateral damage. Only a destroyed contact leaves the scenario; one inside the radius but
 //! unhurt goes on, flagged. What happened to ours is handed back ([`EffectApplied::ours_damaged`])
 //! for the vehicle simulation to act on. Each draw is seeded by the run's seed and the intent
-//! ([`DamageCtx`]), so a run repeats.
+//! ([`DamageCtx`]), so a run repeats. An intended contact whose scenario pins the outcome
+//! (`strike_outcome`, a training aid: the tutorial's boat) draws nothing: the pinned outcome
+//! lands on it, inside the radius or not, ahead of an evaluation's hit chance, recorded as pinned
+//! ([`damage::pinned`]); the collateral around it is drawn as ever.
 //!
 //! Rules 20 (a munition in flight): an effect may come with its impact time (`impact_t`, on this
 //! process's scenario clock); it is held ([`InFlight`]) and applied at the effect point once
@@ -359,7 +362,22 @@ fn strike(e: &EffectNotice, w: &WeaponDamage, movers: &mut [Mover], now: f64, ct
     if let Some(i) = target {
         let m = &mut movers[i];
         let d = tenth(distance_m(lat, lon, m.st.lat, m.st.lon));
-        if target_inside {
+        if let Some(pin) = m.contact.strike_outcome {
+            // its scenario pins every strike on it (a training aid): no draw, wherever it is
+            if target_inside {
+                z0 = m.st.alt_m;
+            }
+            let mut r = damage::pinned(&m.contact.id, w, &target_of(m), pin);
+            r.distance_m = Some(d);
+            if !target_inside {
+                r.note = Some(format!(
+                    "its scenario pins every strike on it (a training aid): no hit or damage draw, though not inside the {:.0} m radius at the strike",
+                    e.radius_m
+                ));
+            }
+            put(m, &mut r, now);
+            records.push(r);
+        } else if target_inside {
             z0 = m.st.alt_m;
             let mut r = damage::shot_with(ctx.seed, &format!("{stream}:target"), &m.contact.id, w, &target_of(m), &c, out, ctx.hit_override);
             r.distance_m = Some(d);
@@ -379,6 +397,7 @@ fn strike(e: &EffectNotice, w: &WeaponDamage, movers: &mut [Mover], now: f64, ct
                 u_damage: None,
                 state: DamageState::Undamaged,
                 applied: false,
+                pinned: false,
                 note: Some(format!("not inside the {:.0} m radius at the strike: missed", e.radius_m)),
             });
         }
@@ -772,6 +791,97 @@ mod tests {
             })
             .count();
         assert!((270..=330).contains(&hits), "{hits} of 400");
+    }
+
+    /// REAPER 1's weapons as the catalog lists them (sim/platforms.toml, `mq9b_armed`'s loadout).
+    fn reaper_weapons() -> Vec<WeaponDamage> {
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../sim/platforms.toml")).expect("the catalog");
+        let cat: toml::Value = toml::from_str(&text).expect("toml");
+        cat["mq9b_armed"]["loadout"]
+            .as_array()
+            .expect("a loadout")
+            .iter()
+            .map(|w| serde_json::from_value(serde_json::to_value(w).expect("json")).expect("a weapon"))
+            .collect()
+    }
+
+    /// [`scene`] with the boat's `strike_outcome` pinned to `o`.
+    fn pinned_scene(o: &str) -> Vec<Mover> {
+        let text = SCENE.replacen("weapon = {", &format!("strike_outcome = \"{o}\"\n        weapon = {{"), 1);
+        let mut movers: Vec<Mover> = Scenario::from_toml(&text)
+            .expect("scenario")
+            .contacts()
+            .expect("contacts")
+            .into_iter()
+            .enumerate()
+            .map(|(i, c)| Mover::new(c, 1, i as u64))
+            .collect();
+        for m in &mut movers {
+            m.step(1.0, 1.0, None);
+        }
+        movers
+    }
+
+    /// A target whose scenario pins `strike_outcome = "destroyed"` (the tutorial's boat) is
+    /// destroyed by every strike of either of REAPER 1's weapons, whatever the seed, the intent or
+    /// the burst (the same strikes unpinned miss or only damage it now and then), ahead of an
+    /// evaluation's hit chance and outside the radius too; its record says pinned and draws
+    /// nothing, and the collateral around it is drawn exactly as without the pin.
+    #[test]
+    fn a_pinned_target_takes_its_outcome_whatever_the_draw() {
+        let ws = reaper_weapons();
+        let names: Vec<&str> = ws.iter().map(|w| w.name.as_str()).collect();
+        assert_eq!(names, ["AGM-114R Hellfire II", "GBU-12 Paveway II"]);
+        for w in &ws {
+            assert!(w.modelled(), "{}", w.name);
+            let mut drawn = std::collections::BTreeSet::new();
+            for seed in [1, 17, 4242] {
+                for intent in 1..=30u64 {
+                    let ctx = DamageCtx { seed, ..CTX };
+                    let e = EffectNotice { burst: (intent % 3 == 0).then_some(2), ..strike_notice(intent, w.clone(), Vec::new()) };
+                    let mut movers = pinned_scene("destroyed");
+                    let r = apply_with(&e, &mut movers, 101.0, Some(&ctx));
+                    let t = target(&r);
+                    assert!(t.pinned && t.hit && t.applied && t.u_damage.is_none(), "{t:?}");
+                    assert_eq!((t.state, t.p_hit), (DamageState::Destroyed, 1.0));
+                    assert!(t.factors[0].what.contains("pinned by the scenario"), "{t:?}");
+                    assert_eq!(r.out_of_play.first().map(String::as_str), Some("boat"));
+                    assert!(!movers[0].st.exists);
+                    let mut plain = scene();
+                    let rp = apply_with(&e, &mut plain, 101.0, Some(&ctx));
+                    assert_eq!(r.damage[1..], rp.damage[1..], "collateral as without the pin");
+                    let tp = target(&rp);
+                    assert!(!tp.pinned);
+                    drawn.insert((tp.hit, tp.state));
+                }
+            }
+            assert!(drawn.len() > 1 && drawn.iter().any(|d| *d != (true, DamageState::Destroyed)), "{}: {drawn:?}", w.name);
+        }
+        let hellfire = ws[0].clone();
+        // an evaluation's hit chance does not move it; a strike outside the radius lands on it too
+        let mut movers = pinned_scene("destroyed");
+        let r = apply_with(&strike_notice(3, hellfire.clone(), Vec::new()), &mut movers, 101.0, Some(&DamageCtx { hit_override: Some(0.0), ..CTX }));
+        assert_eq!(target(&r).state, DamageState::Destroyed);
+        let mut movers = pinned_scene("destroyed");
+        let off = EffectNotice { point: [-122.4850, 37.8120], ..strike_notice(3, hellfire.clone(), Vec::new()) };
+        let r = apply_with(&off, &mut movers, 101.0, Some(&CTX));
+        assert!(!r.target_inside && target(&r).state == DamageState::Destroyed && !movers[0].st.exists);
+        assert!(target(&r).note.as_deref().is_some_and(|n| n.contains("not inside")));
+        // the other outcomes land as pinned
+        for (o, hit, state) in [("mobility", true, DamageState::Mobility), ("undamaged", true, DamageState::Undamaged), ("miss", false, DamageState::Undamaged)] {
+            let mut movers = pinned_scene(o);
+            let r = apply_with(&strike_notice(3, hellfire.clone(), Vec::new()), &mut movers, 101.0, Some(&CTX));
+            let t = target(&r);
+            assert_eq!((t.hit, t.state, t.pinned), (hit, state, true), "{o}");
+            assert!(movers[0].st.exists, "{o}");
+        }
+        // the truth log's record says so; an unpinned one has no such key
+        let mut movers = pinned_scene("destroyed");
+        let json = serde_json::to_string(&apply_with(&strike_notice(3, hellfire.clone(), Vec::new()), &mut movers, 101.0, Some(&CTX))).expect("json");
+        assert!(json.contains("\"pinned\":true"), "{json}");
+        let mut movers = scene();
+        let json = serde_json::to_string(&apply_with(&strike_notice(3, hellfire, Vec::new()), &mut movers, 101.0, Some(&CTX))).expect("json");
+        assert!(!json.contains("pinned"), "{json}");
     }
 
     /// Without figures (no weapon, or one listing none) the effect is the abstract one exactly:
