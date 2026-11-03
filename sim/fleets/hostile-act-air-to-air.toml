@@ -1,0 +1,28 @@
+# Hostile act to engagement air to air (sim/situations/hostile-act-air-to-air.toml): two stand-ins
+# at the Gate, one armed: FURY 1, a CCA with two AIM-120C (air targets only).
+#
+# uids follow the unit order (sim/swarm.py): 1 HUNTER 1, 2 FURY 1. The contacts name HUNTER 1 by
+# its uid (the hostile act's victim); the orders and the timeline select by callsign.
+#
+# Where each one is, and why:
+# - HUNTER 1, the sensor ship, patrols the tutorial's leg 0.9 to 1.2 km east of the drone's
+#   station, just west of the bridge (sim/fleets/tutorial.toml gives the measurements): its
+#   panoramic camera and radar hold the drone at 300 m the whole time, so the track is
+#   identified before anyone nominates (bd murmur-9sxm) and seen within the 5 s the engagement
+#   checks ask for. It stays out of the keep-out (the effect radius plus 200 m) by some 500 m.
+# - FURY 1, the CCA, circles at its 11,000 m cruise altitude off the coast to the southwest where
+#   it spawns (an armed platform gets no script's order; its loiter circle is 6 km), some 6 to 12
+#   km from the drone. Its own radar and camera see the drone too. The AIM-120C is
+#   released once FURY 1 is within 1 to 90 km of slant range and the missile's flight (about 1,000
+#   m/s on average) lands inside the plan's time.
+title = "Hostile act to engagement air to air: two stand-ins at the Gate, one armed"
+
+[[unit]]
+platform = "seahunter"                 # sensor ship (MUSV): radar 40 km, EO/IR 15 km, AIS 50 km; 1000 h
+sim = "standin"
+spawn = [37.8130, -122.4850, 0, 0]     # west of the bridge, mid-channel, at its patrol leg's south end
+
+[[unit]]
+platform = "cca"                       # armed jet UAS: two AIM-120C, air targets only; 3 h
+sim = "standin"
+spawn = [37.7900, -122.5500, 11000, 0] # off the coast southwest of Lands End, at its cruise altitude

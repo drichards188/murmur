@@ -1,0 +1,155 @@
+# FPV strike traffic (sim/situations/hostile-act-fpv.toml): the tutorial's fast boat without AIS,
+# here firing abstract shots at our sensor ship, and the tutorial's Golden Gate traffic around it
+# (sim/scenarios/tutorial.toml says how it is kept clear of the holding area). Run by
+# crates/murmur-contacts; format in crates/murmur-contacts/src/scenario.rs. Points are [lon, lat].
+# Fictional names and MMSIs. Everything here is truth: the console only ever sees what our sensors
+# make of it.
+#
+# The target is a small fast boat (`small_fast_boat`), what an FPV strike drone with a PG-7VL-class
+# warhead is used against at sea. Against it the FPV hits 0.30 of the time and, given a hit,
+# destroys it 0.41, stops it (propulsion lost) 0.32 and puts its weapon out 0.09 (sim/platforms.toml
+# `fpv`, docs/research/weapons.md 10.3 and 10.4: 20 to 40 % of FPV strikes effective, a tenth of
+# the hits failing to detonate; all estimates). It holds still once on station, so the speed
+# penalty a fast target takes does not apply.
+#
+# Seed 108504 (the damage draw, crates/murmur-contacts damage.rs, depends on the run's seed and the
+# strike's intent only): an FPV strike by any engagement intent from 1 to 6 hits the boat and
+# destroys it (hit draws 0.01 to 0.28 against 0.30, damage draws 0.07 to 0.35 against 0.41), so the
+# default run (the opening order is intent 1, the timeline's nomination intent 2) and a run where an
+# AI's proposals come first both show it. Most FPV strikes do not do that: past intent 6, or with
+# another seed, it most often misses, and the situation's brief says so.
+#
+# Times (`start_s`, an act's `at_s`) count from the contacts process's start, a few seconds after
+# the situation's clock (the link emulator's start). uids are the fleet's
+# (sim/fleets/hostile-act-fpv.toml): 1 is HUNTER 1.
+title = "FPV strike traffic"
+seed = 108504
+
+[sensing]
+misclassification_rate = 0.0     # deterministic identities: the situation is about the chain
+
+# ---------------------------------------------------------------- the hostile
+# As the tutorial's: a short run in at 15 m/s (29 kn), no AIS, from 800 m west of its holding point
+# mid-strait, 1.5 km west of the bridge inside the engagement zone (sim/areas: ez-gate-west), where
+# it holds from about 1:00. It fires on HUNTER 1, patrolling 0.9 to 1.2 km east of it, from about
+# 1:30 and again every minute (an abstract act: each one is another chance for our sensors to
+# observe it).
+[[contact]]
+id = "fastboat-raider"
+name = "Fast boat without AIS, holding mid-strait west of the bridge"
+affiliation = "hostile"
+domain = "surface"
+kind = "small_fast_boat"
+speed_mps = 15
+motion = "transit"
+route = [[-122.5040, 37.8105], [-122.4950, 37.8120]]
+start_s = 5
+
+[[act]]
+id = "act-1"
+at_s = 90
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on the sensor ship (HUNTER 1)"
+
+[[act]]
+id = "act-2"
+at_s = 150
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 again"
+
+[[act]]
+id = "act-3"
+at_s = 210
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 a third time"
+
+[[act]]
+id = "act-4"
+at_s = 270
+by = "fastboat-raider"
+against_vehicle = 1
+label = "fires on HUNTER 1 a fourth time"
+
+# ---------------------------------------------------------------- ferries (AIS, neutral)
+[[contact]]
+id = "ferry-sausalito"
+name = "Sausalito ferry (Ferry Building to Sausalito)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 10
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.4120, 37.8130], [-122.4400, 37.8220], [-122.4620, 37.8390], [-122.4770, 37.8560]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999101", name = "MV GOLDEN BEAR", ship_type = "passenger" }
+
+[[contact]]
+id = "ferry-larkspur"
+name = "Larkspur ferry (Ferry Building to Larkspur via Raccoon Strait)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 12
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.4120, 37.8180], [-122.4170, 37.8380], [-122.4500, 37.8600], [-122.4480, 37.8740], [-122.4700, 37.8880], [-122.4950, 37.9300], [-122.5070, 37.9440]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999102", name = "MV MARIN CREST", ship_type = "passenger" }
+
+# ---------------------------------------------------------------- shipping lane (AIS, neutral)
+# The inbound container ship, as in hostile-act-engagement but from 5.7 km further out: some
+# 4 km from the holding area at 20:00, closing at 7 m/s.
+[[contact]]
+id = "cargo-inbound"
+name = "Container ship inbound to Oakland"
+affiliation = "neutral"
+domain = "surface"
+kind = "cargo_ship"
+speed_mps = 7
+motion = "transit"
+route = [[-122.6200, 37.7710], [-122.5600, 37.7900], [-122.5100, 37.8060], [-122.4790, 37.8180], [-122.4300, 37.8360], [-122.4000, 37.8220], [-122.3830, 37.8030], [-122.3550, 37.8080], [-122.3420, 37.8100]]
+ais = { mmsi = "366999201", name = "MSC AURELIA", ship_type = "cargo" }
+
+# ---------------------------------------------------------------- fishing and leisure
+# The trawler leaves the wharf at 6:00: at the bridge, 1.5 km from the holding area, after some
+# 25 minutes.
+[[contact]]
+id = "fishing-wharf"
+name = "Trawler from Fisherman's Wharf to the grounds (AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+speed_mps = 5
+motion = "route"
+route = [[-122.4150, 37.8120], [-122.4600, 37.8230], [-122.4790, 37.8190], [-122.5500, 37.7800]]
+reverse = true
+dwell_s = 900
+start_s = 360
+ais = { mmsi = "366999301", name = "F/V ANNA MARIE", ship_type = "fishing" }
+
+[[contact]]
+id = "fishing-milerock"
+name = "Sport fishing boat drifting off Mile Rock (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+motion = "drift"
+at = [-122.5200, 37.7850]
+
+# A sailing yacht tacking offshore of Lands End, about 4 km southwest of the holding area at its
+# nearest (room for the engagement check's uncertain future reach when the tracker has no
+# velocity estimate for it).
+[[contact]]
+id = "yacht-landsend"
+name = "Sailing yacht tacking off Lands End (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "sailboat"
+speed_mps = 3
+motion = "loiter"
+center = [-122.5350, 37.7900]
+radius_m = 250

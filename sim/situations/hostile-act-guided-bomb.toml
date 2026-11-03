@@ -1,0 +1,220 @@
+# Hostile act to engagement with a guided bomb: the engagement decision chain end to end with the
+# MQ-9B's GBU-12 Paveway II (sim/situations/README.md).
+#   make situation NAME=hostile-act-guided-bomb                       (autoplay, playbook AI: watch it)
+#   make situation NAME=hostile-act-guided-bomb OPERATOR=live         (you confirm and sign)
+#   make situation NAME=hostile-act-guided-bomb AI=claude             (the AI may nominate first)
+#
+# Two of ours at the Golden Gate, by day, one of them armed (REAPER 1, the MQ-9B with four AGM-114R
+# and two GBU-12), and normal traffic. A coaster (a small freighter) without AIS comes in from the
+# sea, anchors mid-strait west of the bridge and fires on HUNTER 1. Our sensors observe the act;
+# the engine declares the coaster hostile by rule (rules 9); op-auto confirms the declaration
+# (live: you).
+# The timeline nominates REAPER 1 naming the GBU-12 (agent-scripted, a script, saying so) unless a
+# nomination already stands; op-2 and op-3 sign (live: you, and a scripted cosigner); the engine
+# releases the bomb once REAPER 1 is within its 1 to 14.8 km of slant range and its fall (about
+# 200 m/s on average) lands inside the plan's time, the picture still holding (rules 20 and 24);
+# the truth side draws the hit and the damage (rules 25); our sensors assess the point.
+#
+# Why the GBU-12: the target is ship-sized, against which the Hellfire's 9 kg warhead never sinks
+# what it hits and stops it less than half the time, while the Mk 82's 241 kg stops it 0.60 and
+# sinks it 0.10 of its hits (sim/scenarios/hostile-act-guided-bomb.toml gives the figures). The
+# brief gives that as the commander's guidance, and the weapon check shows the named weapon's
+# figures against the track's estimated kind before anyone signs. A nomination that names no
+# weapon gets the engine's pick, the first of the loadout usable against a surface target with a
+# round left: the Hellfire. The target is a ship rather than a trawler because a fishing vessel
+# without AIS reads as neutral to the tracker, so an act by one is flagged for review, never
+# declared by rule.
+#
+# Fixes for bd murmur-9sxm, as the tutorial's: the clock is 10:00 local (17:00Z), by day, and
+# HUNTER 1 patrols 0.9 to 1.2 km from the target (sim/fleets/hostile-act-guided-bomb.toml), so the
+# target is identified before it is nominated and a signed plan is not stopped by a
+# reclassification.
+#
+# Clock: every `at_s` here, like the contacts' `start_s` and acts' `at_s`, counts from the stack's
+# start (the link emulator's); the contacts come a few seconds later. The fleet is ready and on
+# its opening order some 10 to 30 s in.
+title = "Hostile act to engagement (guided bomb)"
+brief = """
+You have the watch at the Golden Gate on a June morning. Intelligence warns that a small merchant
+ship may be used to attack our vessels. Two of ours are on station: HUNTER 1, a sensor
+ship patrolling the channel just west of the bridge; and REAPER 1, an armed long-endurance drone
+loitering high off Lands End, west of the bridge, loaded with four AGM-114R Hellfire missiles and
+two GBU-12 Paveway II laser-guided bombs. Traffic is normal: ferries, a ship in the lane, fishing
+boats, a sailing yacht.
+
+The opening order comes from the setup script (op-setup, not a person) and goes out by policy. An
+armed platform gets no opening order: every order for one waits for a person.
+
+The rules of engagement authorize an effect against a contact declared hostile, inside the
+engagement zone west of the bridge, clear of every no-strike area and of anyone we protect. A
+track is declared hostile by an operator, or by the engine's rule when our sensors observe a
+hostile act against one of ours clearly attributed to it; an operator confirms or revokes such a
+declaration, and until it is confirmed no engagement can be nominated on it. Any engagement needs
+two operators with engagement authority, neither of them its proposer; the AI watch officer may
+nominate one and can never sign it. An AI's proposal to move one of our vehicles (an orbit, a
+patrol, a track) waits for the operator in the Inbox.
+
+Commander's guidance on weapons: keep the Hellfires for small fast craft. Against a ship, nominate
+the GBU-12: the Hellfire's 9 kg warhead rarely stops a ship and never sinks one, while the GBU-12's
+241 kg stops one more often than not. The nomination names its weapon, and the form's weapon check
+shows what it is expected to do against the target before anyone signs. Any weapon can miss, and a
+hit can leave a target damaged rather than destroyed: our sensors' assessment afterwards says
+which.
+"""
+director = """
+Truth: a coaster (a small freighter) with no AIS (truth affiliation: hostile, kind cargo_ship) comes
+in from 630 m west of its holding point at 5 m/s from about 0:08 and anchors mid-strait at
+[-122.4950, 37.8120], 1.5 km west of the bridge and inside the engagement zone, from about 2:15. At
+about 2:45 it fires a rocket at HUNTER 1, patrolling 0.9 to 1.2 km east of it (an abstract act), and
+again every minute to 5:45. Nothing else is hostile.
+What should happen: HUNTER 1's camera identifies the coaster as it comes in and observes the first
+act; the engine attributes it to the coaster's track at 0.9 or more and declares it hostile by rule
+(a loose fix is flagged instead, and the next act is another chance); op-auto confirms the
+declaration on autoplay (live: you, in the Review list). At 3:50 the timeline nominates REAPER 1
+with the GBU-12 Paveway II (agent-scripted), unless a nomination stands; op-2 and op-3 sign the
+plan within seconds; REAPER 1 is dispatched, and the engine releases the bomb once it is within
+its slant range of the point and its fall lands inside the plan's time; the contacts' seed 76818
+makes the strike a hit that sinks the coaster for any intent from 1 to 6 (on the default run the
+nomination is intent 2); the coaster leaves the picture and the assessment reads "ceased" some 15
+s later, our sensors covering the point. REAPER 1 has one GBU-12 left.
+What should not: a nomination before the declaration is confirmed (refused by target_declared), a
+signature by the proposer or by an agent, or an effect released with a neutral or one of ours
+inside the keep-out (the yacht, the container ship and the trawler from the wharf stay a kilometre
+or more clear, HUNTER 1 some 500 m or more).
+"""
+
+world = "golden-gate"                         # sim/worlds/golden-gate.toml
+fleet = "sim/fleets/hostile-act-guided-bomb.toml"
+contacts = "sim/scenarios/hostile-act-guided-bomb.toml"
+events = []                                   # no comms or GNSS events: the situation is the chain
+policy = "sim/situations/policies/watch.toml" # the shipped tiers and [identification], as
+                                              # hostile-act-engagement's
+tidewater = "golden-gate-2026-06"             # real tide, current and terrain (tidewater/)
+at = "2026-06-14T17:00:00Z"                   # 10:00 local, by day (bd murmur-9sxm)
+rate = 1
+duration_s = 720                              # 12 minutes of situation time
+ai_start_s = 30
+
+operator = "autoplay"
+ai = "playbook"                               # no account needed; the playbook has no engagement
+                                              # play, so the timeline nominates
+cosigner = "scripted"                         # live: a scripted operator adds the second signature
+reveal = false
+seed = 1
+
+[summary]
+headline = "Watch for a hostile act; an engagement with REAPER 1's GBU-12 takes two operators, and the AI can only nominate."
+bullets = [
+  "Two of ours on station: HUNTER 1 (sensor ship) and REAPER 1 (armed drone: four Hellfires, two GBU-12 bombs).",
+  "A track is declared hostile by an operator or by rule on an observed hostile act; you confirm or revoke it.",
+  "Commander's guidance: the GBU-12 against a ship, the Hellfires for small craft; the weapon check shows the odds.",
+  "An effect needs two operators with engagement authority, neither its proposer, in the zone west of the bridge.",
+  "Any weapon can miss: our sensors' assessment afterwards says what the strike did.",
+]
+
+[[order]]
+id = "gate-patrol"
+task = "patrol"
+vehicles = { callsign = "HUNTER 1" }
+route = [[-122.4850, 37.8130], [-122.4850, 37.8190]]
+note = "Opening order: patrol the channel west of the bridge"
+
+[[step]]
+id = "coaster-comes-in"
+at_s = 10
+kind = "note"
+text = "A coaster without AIS comes in from the sea toward the Gate (truth: hostile)"
+director = true
+
+[[step]]
+id = "coaster-fires"
+at_s = 165
+kind = "note"
+text = "The coaster fires a rocket at HUNTER 1 (truth; again every minute)"
+director = true
+
+# The nomination naming the GBU-12, unless one stands on the track by 3:50 (whoever made it, the
+# AI's included), once the form's dry run says REAPER 1 passes every check with that weapon
+# (waiting up to 4 minutes). In autoplay op-2 and op-3 sign it; live, you sign first and a
+# scripted cosigner second. Its rationale begins "situation timeline (scripted, not a person)".
+[[step]]
+id = "gbu12-nomination"
+at_s = 230
+kind = "engage"
+track = { select = "most_suspicious", affiliation = ["hostile"], near = [-122.4950, 37.8120], radius_km = 3 }
+vehicles = { callsign = "REAPER 1" }
+weapon = "GBU-12 Paveway II"
+effect_radius_m = 75
+window_s = 600
+fallback = "return"                           # a fixed wing's only lost-link action
+unless_nominated = true
+wait_s = 240
+retry_s = 20
+rationale = "{track} is declared hostile ({kind}, {affiliation} {confidence}, seen {age} ago): a ship, so by the commander's guidance the GBU-12 Paveway II, not a Hellfire. {callsign} passes every nomination check with it now (the form's dry run): effect radius 75 m, fallback return."
+text = "At 3:50 agent-scripted nominates REAPER 1 with the GBU-12 unless a nomination stands"
+
+[[watch]]
+at_s = 0
+headline = "Stack up: two of ours at the Gate"
+bullets = ["HUNTER 1 patrols just west of the bridge (order by policy)", "REAPER 1 is armed: no script orders it, it loiters high off Lands End"]
+text = "The stack comes up: two of ours at the Gate. The setup script's opening order goes out by policy: HUNTER 1 on patrol just west of the bridge. REAPER 1 is armed: no script orders it, so it loiters high off Lands End."
+
+[[watch]]
+at_s = 40
+headline = "Normal traffic"
+bullets = ["Ferries, the lane, fishing boats, a yacht", "No AIS means unknown until a sensor classifies it; the Tracks drawer says why"]
+text = "Normal traffic: ferries, the shipping lane, fishing boats and a sailing yacht. A contact without AIS is unknown until a sensor classifies it; the Tracks drawer says why each is shown as it is."
+
+[[watch]]
+at_s = 140
+headline = "Hostile act: the engine may declare by rule"
+bullets = ["Needs an observed act against one of ours, clearly attributed to one track", "Review list shows the act, sensors and attribution; you confirm or revoke"]
+text = "Hostile acts: when our sensors observe a hostile act against one of ours, clearly attributed to one track, the engine declares that track hostile by rule; the Review list shows the act, the sensors and the attribution, and an operator confirms or revokes it. An unsure case is flagged for review, never declared."
+
+[[watch]]
+at_s = 200
+headline = "Engagement: the weapon is named in the nomination"
+bullets = ["The form's weapon check shows the named weapon's odds against the track's estimated kind", "Two operators with engagement authority sign one frozen plan, never its proposer", "Autoplay: op-2 and op-3 sign (scripted)"]
+text = "An engagement names its weapon from the platform's loadout, or the engine picks the first usable one and says why. The form's weapon check shows the weapon's chance of a hit and of each kind of damage against the track's estimated kind. Two operators with engagement authority sign one frozen plan, never its proposer; on autoplay op-2 and op-3 sign (scripted)."
+
+[[watch]]
+at_s = 260
+headline = "After two signatures: release, fall, hit or miss, assessment"
+bullets = ["The bomb is released only within its 1 to 14.8 km of slant range, its fall landing inside the plan's time", "A hit and the damage are drawn on the truth side; the C2 learns of them only from its sensors", "Then sensor coverage decides: ceased, persists or unknown"]
+text = "After the second signature REAPER 1 is dispatched. The engine releases the GBU-12 only when REAPER 1 is within its slant range of the point (1 to 14.8 km) and the bomb's fall, some 40 s, lands inside the plan's time, the picture still holding, every keep-out judged at the strike. The hit and the damage are drawn on the truth side; the C2 learns of them only from its sensors: our coverage of the point decides the assessment, ceased, persists or unknown. REAPER 1's details show its rounds left."
+
+[[watch]]
+at_s = 600
+headline = "Two minutes left"
+bullets = ["The audit log holds the act, declaration, nomination with its weapon, signatures, release and assessment"]
+text = "Two minutes left. The audit log holds every act, declaration, nomination (with its weapon), signature, the release and the assessment; the runner prints the replay command at the end."
+
+[[watch]]
+at_s = 170
+headline = "The coaster has fired on HUNTER 1 (truth)"
+bullets = ["The chain from here: act observed, rule declaration, confirmation", "Then the GBU-12 nomination, two signatures, release, fall, assessment"]
+text = "The coaster has fired on HUNTER 1 (truth). The chain from here: the act observed, the rule declaration, a confirmation, the nomination with the GBU-12, two signatures, the release, the bomb's fall, the hit draw, the assessment."
+director = true
+
+# ---- the playbook engine (AI=playbook, the default, and the shadow beside a model): where to
+# watch and what to protect; the fleet has no free unarmed sensor aircraft, and the playbook has
+# no engagement play, so the timeline nominates
+[playbook]
+
+[[playbook.watch_area]]
+name = "the Golden Gate approaches"
+center = [-122.4783, 37.8199]                 # the Golden Gate Bridge, mid-span
+radius_m = 3000
+
+[[playbook.protected]]
+name = "the Golden Gate Bridge"
+point = [-122.4783, 37.8199]                  # mid-span
+
+# ---- the scripted operator on autoplay (eval/proxy.py), as hostile-act-engagement's
+[autoplay]
+preset = "default"
+attend_s = 4.0
+read_s = 3.0
+read_per_check_s = 0.3
+grant_agents = ["agent-watch", "agent-playbook"]
+confirm_rule_declarations = true

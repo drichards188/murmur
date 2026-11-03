@@ -1,0 +1,209 @@
+# Hostile act to engagement with a naval drone: the engagement decision chain end to end with a
+# Magura V5-class naval drone, a boat that is its own 300 kg charge, spent by its own effect
+# (sim/situations/README.md).
+#   make situation NAME=hostile-act-naval-drone                       (autoplay, playbook AI: watch it)
+#   make situation NAME=hostile-act-naval-drone OPERATOR=live         (you confirm and sign)
+#   make situation NAME=hostile-act-naval-drone AI=claude             (the AI may nominate first)
+#
+# Two of ours at the Golden Gate, by day, one of them armed (VIPER 1, a Magura moored in the strait
+# west of the bridge), and normal traffic. An auxiliary tanker without AIS comes in from the sea,
+# anchors mid-strait west of the bridge and fires on HUNTER 1. Our sensors observe the act; the
+# engine declares the tanker hostile by rule (rules 9); op-auto confirms the declaration (live:
+# you). The timeline nominates VIPER 1 naming its charge (agent-scripted, a script, saying so)
+# unless a nomination already stands; op-2 and op-3 sign (live: you, and a scripted cosigner);
+# VIPER 1 runs straight to the point, 1.1 km, and is released within the policy's arrival
+# distance of it, the picture still holding (the platform is the weapon: rules 12 and 24); the
+# truth side draws the hit and the damage (rules 25); our sensors assess the point; VIPER 1 is
+# spent.
+#
+# By day (17:00Z, 10:00 local) and with HUNTER 1 0.9 to 1.2 km from the target, as the tutorial, so
+# the target is identified before it is nominated (bd murmur-9sxm). A Magura strike hits a ship
+# half the time and sinks it in under half of its hits: the contacts' seed makes the default run's
+# strike a hit that sinks the tanker (sim/scenarios/hostile-act-naval-drone.toml says for which
+# intents), and the brief says it can go otherwise.
+#
+# Clock: every `at_s` here, like the contacts' `start_s` and acts' `at_s`, counts from the stack's
+# start (the link emulator's); the contacts come a few seconds later. The fleet is ready and on
+# its opening order some 10 to 30 s in.
+title = "Hostile act to engagement (naval drone)"
+brief = """
+You have the watch at the Golden Gate on a June morning. Intelligence warns that an enemy
+auxiliary ship may try to attack our vessels. Two of ours are on station: HUNTER 1, a sensor ship
+patrolling the channel just west of the bridge; and VIPER 1, a Magura V5-class naval drone moored
+in the strait west of the bridge. VIPER 1 is its own weapon: a fast boat carrying a 300 kg contact
+charge, for surface targets only, spent by its strike. Traffic is normal: ferries, a ship in the
+lane, fishing boats, a sailing yacht.
+
+The opening order comes from the setup script (op-setup, not a person) and goes out by policy. An
+armed platform gets no opening order: every order for one waits for a person.
+
+The rules of engagement authorize an effect against a contact declared hostile, inside the
+engagement zone west of the bridge, clear of every no-strike area and of anyone we protect. A
+track is declared hostile by an operator, or by the engine's rule when our sensors observe a
+hostile act against one of ours clearly attributed to it; an operator confirms or revokes such a
+declaration, and until it is confirmed no engagement can be nominated on it. Any engagement needs
+two operators with engagement authority, neither of them its proposer; the AI watch officer may
+nominate one and can never sign it. An AI's proposal to move one of our vehicles (an orbit, a
+patrol, a track) waits for the operator in the Inbox.
+
+A nomination names its weapon from the platform's loadout, and the form's weapon check shows what
+it is expected to do against the target before anyone signs. A naval drone's strike can miss, and
+a hit can leave a ship stopped rather than sunk: our sensors' assessment afterwards says which.
+"""
+director = """
+Truth: an auxiliary tanker with no AIS (truth affiliation: hostile, kind tanker) comes in from 630
+m west of its holding point at 5 m/s from about 0:08 and anchors mid-strait at [-122.4950,
+37.8120], 1.5 km west of the bridge and inside the engagement zone, from about 2:15. At about 2:45
+it fires a rocket at HUNTER 1, patrolling 0.9 to 1.2 km east of it (an abstract act), and again
+every minute to 5:45. Nothing else is hostile.
+What should happen: HUNTER 1's camera identifies the tanker as it comes in and observes the first
+act; the engine attributes it to the tanker's track at 0.9 or more and declares it hostile by rule
+(a loose fix is flagged instead, and the next act is another chance); op-auto confirms the
+declaration on autoplay (live: you, in the Review list). At 3:50 the timeline nominates VIPER 1
+with its charge (agent-scripted), unless a nomination stands; op-2 and op-3 sign the plan within
+seconds; VIPER 1 is dispatched, casts off and runs the 1.1 km to the point at 12 m/s, and is
+released within 150 m of it some 1.5 minutes after the dispatch; the
+contacts' seed 231926 makes the strike a hit that sinks the tanker for any intent from 1 to 8 (on
+the default run the nomination is intent 2); the tanker leaves the picture and the assessment
+reads "ceased" some 15 s later, HUNTER 1 covering the point; VIPER 1 is spent: the engine takes no
+order or nomination for it again.
+What should not: a nomination before the declaration is confirmed (refused by target_declared), a
+signature by the proposer or by an agent, or an effect released with a neutral or one of ours
+inside the keep-out (the yacht, the container ship and the trawler from the wharf stay a kilometre
+or more clear, HUNTER 1 some 500 m or more).
+"""
+
+world = "golden-gate"                         # sim/worlds/golden-gate.toml
+fleet = "sim/fleets/hostile-act-naval-drone.toml"
+contacts = "sim/scenarios/hostile-act-naval-drone.toml"
+events = []                                   # no comms or GNSS events: the situation is the chain
+policy = "sim/situations/policies/watch.toml" # the shipped tiers and [identification], as
+                                              # hostile-act-engagement's
+tidewater = "golden-gate-2026-06"             # real tide, current and terrain (tidewater/)
+at = "2026-06-14T17:00:00Z"                   # 10:00 local, by day (bd murmur-9sxm)
+rate = 1
+duration_s = 720                              # 12 minutes of situation time
+ai_start_s = 30
+
+operator = "autoplay"
+ai = "playbook"                               # no account needed; the playbook has no engagement
+                                              # play, so the timeline nominates
+cosigner = "scripted"                         # live: a scripted operator adds the second signature
+reveal = false
+seed = 1
+
+[summary]
+headline = "Watch for a hostile act; an engagement with VIPER 1, a naval drone, takes two operators, and the AI can only nominate."
+bullets = [
+  "Two of ours on station: HUNTER 1 (sensor ship) and VIPER 1 (Magura naval drone, its own 300 kg charge).",
+  "A track is declared hostile by an operator or by rule on an observed hostile act; you confirm or revoke it.",
+  "The nomination names its weapon; the weapon check shows its odds against the target before anyone signs.",
+  "An effect needs two operators with engagement authority, neither its proposer, in the zone west of the bridge.",
+  "A naval drone's strike can miss or only stop a ship: our sensors' assessment afterwards says what it did.",
+]
+
+[[order]]
+id = "gate-patrol"
+task = "patrol"
+vehicles = { callsign = "HUNTER 1" }
+route = [[-122.4850, 37.8130], [-122.4850, 37.8190]]
+note = "Opening order: patrol the channel west of the bridge"
+
+[[step]]
+id = "tanker-comes-in"
+at_s = 10
+kind = "note"
+text = "An auxiliary tanker without AIS comes in from the sea toward the Gate (truth: hostile)"
+director = true
+
+[[step]]
+id = "tanker-fires"
+at_s = 165
+kind = "note"
+text = "The tanker fires a rocket at HUNTER 1 (truth; again every minute)"
+director = true
+
+# The nomination naming the Magura's charge, unless one stands on the track by 3:50 (whoever made
+# it, the AI's included), once the form's dry run says VIPER 1 passes every check with it (waiting
+# up to 4 minutes). In autoplay op-2 and op-3 sign it; live, you sign first and a scripted cosigner
+# second. Its rationale begins "situation timeline (scripted, not a person)". The fallback is
+# `abort` (hold where it is).
+[[step]]
+id = "magura-nomination"
+at_s = 230
+kind = "engage"
+track = { select = "most_suspicious", affiliation = ["hostile"], near = [-122.4950, 37.8120], radius_km = 3 }
+vehicles = { callsign = "VIPER 1" }
+weapon = "Magura V5 charge"
+effect_radius_m = 75
+window_s = 600
+fallback = "abort"
+unless_nominated = true
+wait_s = 240
+retry_s = 20
+rationale = "{track} is declared hostile ({kind}, {affiliation} {confidence}, seen {age} ago): a ship at anchor, a naval drone's target. {callsign} passes every nomination check with its charge now (the form's dry run): effect radius 75 m, fallback abort."
+text = "At 3:50 agent-scripted nominates VIPER 1 with its charge unless a nomination stands"
+
+[[watch]]
+at_s = 0
+headline = "Stack up: two of ours at the Gate"
+bullets = ["HUNTER 1 patrols just west of the bridge (order by policy)", "VIPER 1 is armed: no script orders it, it waits moored west of the bridge"]
+text = "The stack comes up: two of ours at the Gate. The setup script's opening order goes out by policy: HUNTER 1 on patrol just west of the bridge. VIPER 1 is armed: no script orders it, so it waits moored in the strait west of the bridge, north of the channel."
+
+[[watch]]
+at_s = 40
+headline = "Normal traffic"
+bullets = ["Ferries, the lane, fishing boats, a yacht", "No AIS means unknown until a sensor classifies it; the Tracks drawer says why"]
+text = "Normal traffic: ferries, the shipping lane, fishing boats and a sailing yacht. A contact without AIS is unknown until a sensor classifies it; the Tracks drawer says why each is shown as it is."
+
+[[watch]]
+at_s = 140
+headline = "Hostile act: the engine may declare by rule"
+bullets = ["Needs an observed act against one of ours, clearly attributed to one track", "Review list shows the act, sensors and attribution; you confirm or revoke"]
+text = "Hostile acts: when our sensors observe a hostile act against one of ours, clearly attributed to one track, the engine declares that track hostile by rule; the Review list shows the act, the sensors and the attribution, and an operator confirms or revokes it. An unsure case is flagged for review, never declared."
+
+[[watch]]
+at_s = 200
+headline = "Engagement: the weapon is named in the nomination"
+bullets = ["The weapon check shows the charge's odds against the track's estimated kind", "A naval drone is for surface targets only", "Two operators sign one frozen plan, never its proposer"]
+text = "An engagement names its weapon from the platform's loadout, or the engine picks the first usable one and says why; the weapon check refuses a weapon meant for another domain. It shows the weapon's chance of a hit and of each kind of damage against the track's estimated kind. Two operators with engagement authority sign one frozen plan, never its proposer; on autoplay op-2 and op-3 sign (scripted)."
+
+[[watch]]
+at_s = 260
+headline = "After two signatures: the run in, the strike, the assessment"
+bullets = ["VIPER 1 casts off and runs straight to the point; it is released only there, the picture still holding", "A hit and the damage are drawn on the truth side; the C2 learns of them only from its sensors", "VIPER 1 is spent by its own strike"]
+text = "After the second signature VIPER 1 is dispatched: it casts off and runs straight to the point at 12 m/s. The engine releases the effect only when it is there and the picture still holds, every keep-out included. The hit and the damage are drawn on the truth side; the C2 learns of them only from its sensors: our coverage of the point decides the assessment, ceased, persists or unknown. VIPER 1 is spent by its own strike."
+
+[[watch]]
+at_s = 600
+headline = "Two minutes left"
+bullets = ["The audit log holds the act, declaration, nomination with its weapon, signatures, release and assessment"]
+text = "Two minutes left. The audit log holds every act, declaration, nomination (with its weapon), signature, the release and the assessment; the runner prints the replay command at the end."
+
+[[watch]]
+at_s = 170
+headline = "The tanker has fired on HUNTER 1 (truth)"
+bullets = ["The chain from here: act observed, rule declaration, confirmation", "Then VIPER 1's nomination, two signatures, the run in, strike, assessment"]
+text = "The tanker has fired on HUNTER 1 (truth). The chain from here: the act observed, the rule declaration, a confirmation, VIPER 1's nomination, two signatures, the run in, the strike, the hit draw, the assessment."
+director = true
+
+# ---- the playbook engine (AI=playbook, the default, and the shadow beside a model)
+[playbook]
+
+[[playbook.watch_area]]
+name = "the Golden Gate approaches"
+center = [-122.4783, 37.8199]                 # the Golden Gate Bridge, mid-span
+radius_m = 3000
+
+[[playbook.protected]]
+name = "the Golden Gate Bridge"
+point = [-122.4783, 37.8199]                  # mid-span
+
+# ---- the scripted operator on autoplay (eval/proxy.py), as hostile-act-engagement's
+[autoplay]
+preset = "default"
+attend_s = 4.0
+read_s = 3.0
+read_per_check_s = 0.3
+grant_agents = ["agent-watch", "agent-playbook"]
+confirm_rule_declarations = true

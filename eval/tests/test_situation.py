@@ -32,6 +32,13 @@ from eval.proxy import EngagementSigners, ProxyOperator, ProxyParams
 
 #: world v3's watch situations, one per world (sim/worlds/README.md): headless only
 WATCHES_V3 = ("golden-gate-v3-watch", "san-diego-watch", "golden-gate-scale-watch")
+#: the situations that each show one weapon of a loadout used end to end, and the weapon they name
+WEAPON_SITUATIONS = {
+    "hostile-act-guided-bomb": "GBU-12 Paveway II",
+    "hostile-act-air-to-air": "AIM-120C AMRAAM",
+    "hostile-act-fpv": "PG-7VL warhead (FPV)",
+    "hostile-act-naval-drone": "Magura V5 charge",
+}
 
 
 def test_every_situation_loads():
@@ -43,7 +50,7 @@ def test_every_situation_loads():
         assert sit.title and sit.brief, p
         # fault-drill and world v3's watches run in the headless simulator only (the faults are the
         # simulator's; so is a world's conditions draw)
-        if p.stem not in ("fog-watch", "harbor-watch", "morning-harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition", "tutorial", "fault-drill", "swarm-saturation", *WATCHES_V3):
+        if p.stem not in ("fog-watch", "harbor-watch", "morning-harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition", *WEAPON_SITUATIONS, "tutorial", "fault-drill", "swarm-saturation", *WATCHES_V3):
             assert sit.todo, f"{p.stem} is a stub until the AI work lands"
     assert S.headless_steps(S.load_situation("fault-drill"))
     for name in WATCHES_V3:
@@ -1458,6 +1465,9 @@ def test_hostile_act_engagement_fits_the_chain():
         '[[step]]\nkind = "engage"\ntrack = {select = "most_suspicious"}\nvehicles = {callsign = "PUMA 1"}\nunless_nominated = "yes"\n',
         '[[step]]\nkind = "engage"\ntrack = {select = "most_suspicious"}\nvehicles = {callsign = "PUMA 1"}\nwait_s = -1\n',
         '[[step]]\nkind = "engage"\ntrack = {select = "most_suspicious"}\nvehicles = {callsign = "PUMA 1"}\nfallback = "continue"\n',
+        '[[step]]\nkind = "engage"\ntrack = {select = "most_suspicious"}\nvehicles = {callsign = "PUMA 1"}\nweapon = 3\n',
+        '[[step]]\nkind = "engage"\ntrack = {select = "most_suspicious"}\nvehicles = {callsign = "PUMA 1"}\nweapon = " "\n',
+        '[[step]]\nkind = "propose"\ntask = "orbit"\nvehicles = {callsign = "PUMA 1"}\nweapon = "AGM-114R Hellfire II"\n',
     ],
 )
 def test_the_new_keys_are_checked_at_load(tmp_path: Path, extra: str):
@@ -1701,7 +1711,116 @@ def test_the_fallback_nominates_only_when_no_nomination_stands():
     # without the new keys an engage step nominates at once, as before
     story = FallbackStory([ai], [blocked])
     rec = asyncio.run(adapter.run_step(story, _fallback_step()))
-    assert rec["kind"] == "propose" and story.posts == []
+    assert rec["kind"] == "propose" and story.posts == [] and "weapon" not in story.proposed[0]["extra"]
+    # a step that names its weapon (rules 24): the dry run judges that weapon, and the nomination
+    # names it, as the bridge and the MCP tool take it
+    story = FallbackStory([], [passing])
+    rec = asyncio.run(adapter.run_step(story, _fallback_step(wait_s=10, weapon="GBU-12 Paveway II")))
+    assert rec["kind"] == "propose" and story.posts[0][1]["weapon"] == "GBU-12 Paveway II"
+    assert story.proposed[0]["extra"]["weapon"] == "GBU-12 Paveway II"
+    assert _mcp_args(story.proposed[0])["weapon"] == "GBU-12 Paveway II"
+
+
+def test_the_chain_names_the_weapon_nominated_and_released():
+    """Rules 24: a nomination's named weapon and the released weapon's rounds and flight, from the
+    audit log's `intent.created` and `engage.effect`; an effect logged without a weapon (rules 23
+    or older) stays an abstract event."""
+    chain = S.EngagementChain({"2": "REAPER 1"})
+    lines = chain.feed([
+        {"type": "intent.created", "t": _ms(10), "intent": {"id": 2, "kind": "engage", "source": {"kind": "agent", "id": "agent-scripted"},
+         "params": {"track": "T-0006", "effect_radius_m": 75.0, "fallback": "return", "weapon": "GBU-12 Paveway II"}, "uids": ["2"]}},
+        {"type": "engage.effect", "t": _ms(40), "intent": 2, "point": [-122.495, 37.812], "radius_m": 75.0,
+         "munition": {"name": "GBU-12 Paveway II", "tof_s": 39.4}, "weapon": {"name": "GBU-12 Paveway II", "kind": "bomb", "left": 1}},
+    ])
+    assert "weapon GBU-12 Paveway II" in lines[0]["text"]
+    assert "(GBU-12 Paveway II, bomb, 1 left, in flight 39 s)" in lines[1]["text"]
+    summary = "\n".join(chain.summary_lines())
+    assert "weapon GBU-12 Paveway II" in summary and "effect released: yes (GBU-12 Paveway II, bomb, 1 left, in flight 39 s)" in summary
+    assert S.weapon_text({"name": "Switchblade 600", "kind": "self"}, {}) == "Switchblade 600, the platform itself"
+    assert S.weapon_text({}, {}) == "an abstract event"
+
+
+def _uniform(seed: int, stream: str) -> float:
+    """crates/murmur-contacts damage.rs `uniform`, the damage draw (splitmix64 over the seed and the
+    stream's FNV-1a hash), to read what a situation's contacts seed draws."""
+    m = (1 << 64) - 1
+    h = 0xCBF29CE484222325
+    for b in stream.encode():
+        h = ((h ^ b) * 0x100000001B3) & m
+    z = ((seed ^ h) + 0x9E3779B97F4A7C15) & m
+    z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & m
+    z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & m
+    return ((z ^ (z >> 31)) >> 11) / float(1 << 53)
+
+
+def test_the_damage_draw_replica_matches_the_truth_side():
+    """A live run's truth log (2026-11-03, hostile-act-engagement's seed 17, intent 2): u_hit
+    0.7044693255874082, u_damage 0.9076217001306721."""
+    assert _uniform(17, "effect:2:target:hit") == 0.7044693255874082
+    assert _uniform(17, "effect:2:target:damage") == 0.9076217001306721
+
+
+@pytest.mark.parametrize("name", sorted(WEAPON_SITUATIONS))
+def test_each_weapon_situation_uses_its_weapon_against_a_fitting_target(name: str):
+    """The weapon situations (one per weapon of a loadout not shown elsewhere): an armed platform
+    whose loadout has the weapon the timeline's nomination names; a hostile of a kind the weapon has
+    figures for, in a domain it is for, that the tracker reads as suspect (an act by a contact it
+    reads as neutral is flagged, never declared by rule), holding inside the engagement zone clear
+    of every no-strike area before its first act against one of ours; HUNTER 1 on the tutorial's
+    leg by day (bd murmur-9sxm); the nomination after the first act, a fallback that waits for the
+    checks; the default modes need no account; the contacts' seed makes the strike a hit that
+    destroys the target for every intent from 1 to 6 (the default run's is 2); and the brief says
+    the weapon can miss, and names no truth."""
+    from eval.storyline import haversine_m
+
+    sit = S.load_situation(name)
+    weapon = WEAPON_SITUATIONS[name]
+    assert (sit.operator, sit.ai, sit.cosigner, sit.reveal, sit.rate) == ("autoplay", "playbook", "scripted", False, 1)
+    assert sit.policy == (S.SITUATIONS / "policies" / "watch.toml").resolve() and sit.duration_s == 720
+    assert 9 <= (int(sit.at[11:13]) - 7) % 24 <= 15, "by day at the Gate (UTC-7 in June)"
+    platforms = tomllib.loads((REPO / "sim" / "platforms.toml").read_text())
+    planned = {v["callsign"]: v for v in S._planned_fleet(sit.fleet)}
+    armed = [c for c, v in planned.items() if platforms[v["platform"]].get("armed")]
+    (step,) = [s for s in sit.steps if s.kind == "engage"]
+    assert armed == [step.params["vehicles"]["callsign"]] and step.params["weapon"] == weapon
+    assert {o.vehicles["callsign"] for o in sit.orders} == {"HUNTER 1"}
+    (w,) = [x for x in platforms[planned[armed[0]]["platform"]]["loadout"] if x["name"] == weapon]
+    # the target: one hostile of a fitting kind, holding before its first act, acts at HUNTER 1
+    raw = tomllib.loads(sit.contacts.read_text())
+    (hostile,) = [c for c in raw["contact"] if c["affiliation"] == "hostile"]
+    aliases = {"tanker": "cargo_ship", "ferry": "cargo_ship", "patrol_boat": "small_fast_boat", "helicopter": "light_aircraft", "unknown_uas": "small_drone"}
+    figures = w["effects"][aliases.get(hostile["kind"], hostile["kind"])]
+    assert hostile["domain"] in w["targets"] and "ais" not in hostile and hostile["motion"] == "transit"
+    assert hostile["kind"] not in ("fishing_vessel", "sailboat", "light_aircraft", "helicopter"), "read as neutral: flagged, not declared"
+    assert "conditions" not in raw, "the hit chance is the figures' own: no fog or sea state"
+    hold = hostile["route"][-1]
+    route = hostile["route"]
+    run_s = sum(haversine_m(*a, *b) for a, b in zip(route, route[1:])) / hostile["speed_mps"]
+    acts = raw["act"]
+    assert all(a["by"] == hostile["id"] and a["against_vehicle"] == 1 for a in acts) and planned["HUNTER 1"]["uid"] == 1
+    assert hostile.get("start_s", 0) + run_s + 15 < min(a["at_s"] for a in acts) < step.at_s
+    radius = float(step.params["effect_radius_m"])
+    zone = next(f for f in _areas() if f["properties"]["kind"] == "engagement_zone")["geometry"]["coordinates"][0]
+    assert _inside(hold, zone) and _ring_distance_m(hold, zone) > radius + 200
+    for f in _areas():
+        if f["properties"]["kind"] == "no_strike":
+            g = f["geometry"]
+            for ring in [g["coordinates"][0]] if g["type"] == "Polygon" else [p[0] for p in g["coordinates"]]:
+                assert not _inside(hold, ring) and _ring_distance_m(hold, ring) > radius + 200, f["properties"]["id"]
+    patrol = next(o for o in sit.orders if o.id == "gate-patrol")
+    for p in patrol.params["route"]:
+        assert 850 <= haversine_m(*p, *hold) <= 1300
+    assert step.params["unless_nominated"] is True and float(step.params["wait_s"]) > 0
+    # the default run's strike: a hit that destroys, for intents 1 to 6 (an AI's proposals before it)
+    for intent in range(1, 7):
+        stream = f"effect:{intent}:target"
+        assert _uniform(raw["seed"], stream + ":hit") < figures["p_hit"], intent
+        assert _uniform(raw["seed"], stream + ":damage") < figures.get("p_kill", 0.0), intent
+    brief = " ".join(S.brief_text(sit).split())
+    assert "can miss" in brief and "may nominate one and can never sign it" in brief
+    for truth in (hostile["id"], "-122.4950", "fires on", "seed"):
+        assert truth not in brief, truth
+    assert all(s.params.get("director") for s in sit.steps if s.kind == "note"), "the truth notes are the director's"
 
 
 def test_the_runner_shows_the_chain_confirmations_and_grants(tmp_path: Path):

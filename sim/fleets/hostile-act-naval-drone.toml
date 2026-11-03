@@ -1,0 +1,36 @@
+# Hostile act to engagement with a naval drone (sim/situations/hostile-act-naval-drone.toml): two
+# stand-ins at the Gate, one armed: VIPER 1, a Magura V5-class naval drone that is its own weapon
+# (a 300 kg contact charge, spent by its own effect).
+#
+# uids follow the unit order (sim/swarm.py): 1 HUNTER 1, 2 VIPER 1. The contacts name HUNTER 1 by
+# its uid (the hostile act's victim); the orders and the timeline select by callsign.
+#
+# Where each one is, and why:
+# - HUNTER 1, the sensor ship, patrols the tutorial's leg 0.9 to 1.2 km east of the tanker's
+#   holding point, just west of the bridge (sim/fleets/tutorial.toml gives the measurements): by
+#   day its panoramic camera identifies a ship there well above the nomination's 0.60 before
+#   anyone nominates (bd murmur-9sxm). It stays out of the keep-out (the effect radius plus 200 m)
+#   by some 600 m.
+# - VIPER 1, the Magura, waits moored in the strait west of the bridge, on the north side of the
+#   channel, 1.1 km northwest of the holding point: an armed boat gets no script's order, and an
+#   unmoored stand-in boat with no order drifts on the tide (`moored`: tied up until it first arms,
+#   sim/swarm.py). At its 12 m/s it reaches the point some 1.5 minutes after the dispatch, along a
+#   straight way (an engagement's way always is: rules 22 routes transits only) that is water all
+#   the way, 54 m deep or more on the baked grid. Nearer is needed, not just tidier: the keep-out
+#   counts HUNTER 1, patrolling about 900 m from the point, along its velocity with an uncertainty
+#   that grows until the effect, so a run of 3.5 minutes from a mooring east of the bridge stopped
+#   the dispatched engagement 22 s in (keep_out_friendly: HUNTER 1 could be 238 m from the point,
+#   inside the 275 m keep-out; 2026-11-03), where the FPV's 2 minutes from Torpedo Wharf passed.
+#   Its link is Starlink-class SATCOM, so distance is no concern.
+title = "Hostile act to engagement with a naval drone: two stand-ins at the Gate, one armed"
+
+[[unit]]
+platform = "seahunter"                 # sensor ship (MUSV): radar 40 km, EO/IR 15 km, AIS 50 km; 1000 h
+sim = "standin"
+spawn = [37.8130, -122.4850, 0, 0]     # west of the bridge, mid-channel, at its patrol leg's south end
+
+[[unit]]
+platform = "magura"                    # armed naval drone: its own 300 kg contact charge; 20 h
+sim = "standin"
+spawn = [37.8190, -122.5040, 0, 135]   # in the strait west of the bridge, north of the channel, bow southeast
+moored = true                          # tied up until it first arms: no drift on the tide

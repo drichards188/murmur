@@ -1,0 +1,29 @@
+# Hostile act to engagement with a guided bomb (sim/situations/hostile-act-guided-bomb.toml): the
+# tutorial's two stand-ins (sim/fleets/tutorial.toml), REAPER 1 armed with its loadout of four
+# AGM-114R and two GBU-12.
+#
+# uids follow the unit order (sim/swarm.py): 1 HUNTER 1, 2 REAPER 1. The contacts name HUNTER 1
+# by its uid (the hostile act's victim); the orders and the timeline select by callsign.
+#
+# Where each one is, and why:
+# - HUNTER 1, the sensor ship, patrols a leg 0.9 to 1.2 km east of the coaster's holding point,
+#   just west of the bridge, as in the tutorial: by day its panoramic camera identifies a vessel
+#   there well above the nomination's 0.60 (the tutorial's fleet gives the measurements), so the
+#   target is identified before anyone nominates and the identity does not change under a signed
+#   plan (bd murmur-9sxm). It stays out of the keep-out (the effect radius plus 200 m) by some
+#   500 m or more.
+# - REAPER 1, the armed MQ-9B, loiters at its 7,600 m cruise altitude off Lands End where it
+#   spawns (an armed platform gets no script's order). The engine releases the GBU-12 once the
+#   bomb's fall, some 40 s at about 200 m/s on average, lands inside the plan's time: on the run of
+#   2026-11-03, 2.1 km out on the ground, 7.9 km of slant range (its reach is 1 to 14.8 km).
+title = "Hostile act to engagement with a guided bomb: two stand-ins at the Gate, one armed"
+
+[[unit]]
+platform = "seahunter"                 # sensor ship (MUSV): radar 40 km, EO/IR 15 km, AIS 50 km; 1000 h
+sim = "standin"
+spawn = [37.8130, -122.4850, 0, 0]     # west of the bridge, mid-channel, at its patrol leg's south end
+
+[[unit]]
+platform = "mq9b_armed"                # armed MALE ISR/strike: four AGM-114R, two GBU-12; 35 h
+sim = "standin"
+spawn = [37.8000, -122.5250, 7600, 0]  # off Lands End, west of the bridge, at its cruise altitude

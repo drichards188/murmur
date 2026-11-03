@@ -22,8 +22,9 @@ violation.
 
 **Live engagement steps.** A storyline step `kind = "engage"` nominates an armed platform
 against a track on the live stack through the run's proposer (the bridge takes `task =
-"engage"` with `track`, `effect_radius_m`, `window_s`, `fallback` on `POST /api/intents`, and
-`track_id` for the track on the MCP `propose_intent`). An engagement needs two operators
+"engage"` with `track`, `effect_radius_m`, `window_s`, `fallback` and, where the step names one,
+the loadout `weapon` (rules 24) on `POST /api/intents`, and `track_id` for the track on the MCP
+`propose_intent`). An engagement needs two operators
 with engagement authority (`MURMUR_ENGAGE_OPERATORS`), each asking for a picture token (`POST
 /api/intents/{id}/picture`) and approving with it (`{"token": id}`). `eval/proxy.py`
 `EngagementSigners` does that as two scripted operators; a situation (`sim/situations/`)
@@ -252,6 +253,8 @@ class EngageAdapter:
         """The platform's option in the nomination form's dry run now (its checks)."""
         x = req["extra"]
         body = {"track": x["track"], "effect_radius_m": x["effect_radius_m"], "window_s": x["window_s"], "fallback": x["fallback"], "uids": req["uids"]}
+        if x.get("weapon"):
+            body["weapon"] = x["weapon"]
         out = await asyncio.to_thread(story.bridge.post, "/api/engage/options", body)
         want = {str(u) for u in req["uids"]}
         return next((o for o in (out or {}).get("options", []) if str(o.get("uid")) in want), None)
@@ -263,17 +266,18 @@ class EngageAdapter:
 
     @staticmethod
     def request(p: dict[str, Any], uids: list[int], track: dict[str, Any]) -> dict[str, Any]:
-        """The nomination as the bridge takes it (`POST /api/intents`, MCP `propose_intent`)."""
-        return {
-            "task": "engage",
-            "uids": uids,
-            "extra": {
-                "track": track.get("track_id"),
-                "effect_radius_m": float(p.get("effect_radius_m", 50)),
-                "window_s": int(p.get("window_s", 600)),
-                "fallback": p.get("fallback", "abort"),
-            },
+        """The nomination as the bridge takes it (`POST /api/intents`, MCP `propose_intent`). A
+        step's `weapon` names the loadout weapon it uses (rules 24); without one the engine picks
+        the first usable against the target and says why."""
+        extra: dict[str, Any] = {
+            "track": track.get("track_id"),
+            "effect_radius_m": float(p.get("effect_radius_m", 50)),
+            "window_s": int(p.get("window_s", 600)),
+            "fallback": p.get("fallback", "abort"),
         }
+        if p.get("weapon"):
+            extra["weapon"] = str(p["weapon"])
+        return {"task": "engage", "uids": uids, "extra": extra}
 
     async def run_step(self, story: Any, step: Step) -> dict[str, Any]:
         p = dict(step.params)

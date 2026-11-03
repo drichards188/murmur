@@ -1,0 +1,208 @@
+# Hostile act to engagement with an FPV strike drone: the engagement decision chain end to end with
+# an FPV quadcopter carrying a PG-7VL-class warhead, spent by its own effect (sim/situations/README.md).
+#   make situation NAME=hostile-act-fpv                               (autoplay, playbook AI: watch it)
+#   make situation NAME=hostile-act-fpv OPERATOR=live                 (you confirm and sign)
+#   make situation NAME=hostile-act-fpv AI=claude                     (the AI may nominate first)
+#
+# Two of ours at the Golden Gate, by day, one of them armed (WASP 1, an FPV strike drone waiting on
+# the ground at a launch site on the Presidio shore), and normal traffic. A fast boat without AIS
+# runs in from the sea, holds mid-strait west of the bridge and fires on HUNTER 1. Our sensors
+# observe the act; the engine declares the boat hostile by rule (rules 9); op-auto confirms the
+# declaration (live: you). The timeline nominates WASP 1 naming its warhead (agent-scripted, a
+# script, saying so) unless a nomination already stands; op-2 and op-3 sign (live: you, and a
+# scripted cosigner); WASP 1 takes off, flies to the point and is released within the policy's
+# arrival distance of it, the picture still holding (the platform is the weapon: rules 12 and 24);
+# the truth side draws the hit and the damage (rules 25); our sensors assess the point; WASP 1 is
+# spent.
+#
+# By day (17:00Z, 10:00 local) and with HUNTER 1 0.9 to 1.2 km from the target, as the tutorial, so
+# the target is identified before it is nominated (bd murmur-9sxm). Most FPV strikes miss or only
+# damage (0.30 to hit a small fast boat, 0.41 of hits destroying it): the contacts' seed makes the
+# default run's strike a hit that destroys the boat (sim/scenarios/hostile-act-fpv.toml says for
+# which intents), and the brief says it can go otherwise.
+#
+# Clock: every `at_s` here, like the contacts' `start_s` and acts' `at_s`, counts from the stack's
+# start (the link emulator's); the contacts come a few seconds later. The fleet is ready and on
+# its opening order some 10 to 30 s in.
+title = "Hostile act to engagement (FPV strike drone)"
+brief = """
+You have the watch at the Golden Gate on a June morning. Intelligence warns of a possible attack on
+our vessels by small craft. Two of ours are on station: HUNTER 1, a sensor ship patrolling the
+channel just west of the bridge; and WASP 1, an FPV strike drone waiting on the ground at a launch
+site on the Presidio shore at Torpedo Wharf, east of the bridge. WASP 1 is its own weapon: it
+carries an RPG-class (PG-7VL) warhead, flies some 10 km on a nine-minute battery, and is spent by
+its strike. Traffic is normal: ferries, a ship in the lane, fishing boats, a sailing yacht.
+
+The opening order comes from the setup script (op-setup, not a person) and goes out by policy. An
+armed platform gets no opening order: every order for one waits for a person.
+
+The rules of engagement authorize an effect against a contact declared hostile, inside the
+engagement zone west of the bridge, clear of every no-strike area and of anyone we protect. A
+track is declared hostile by an operator, or by the engine's rule when our sensors observe a
+hostile act against one of ours clearly attributed to it; an operator confirms or revokes such a
+declaration, and until it is confirmed no engagement can be nominated on it. Any engagement needs
+two operators with engagement authority, neither of them its proposer; the AI watch officer may
+nominate one and can never sign it. An AI's proposal to move one of our vehicles (an orbit, a
+patrol, a track) waits for the operator in the Inbox.
+
+A nomination names its weapon from the platform's loadout, and the form's weapon check shows what
+it is expected to do against the target before anyone signs. An FPV strike can miss, and misses
+more often than it hits; a hit can leave a target damaged rather than destroyed: our sensors'
+assessment afterwards says which.
+"""
+director = """
+Truth: a small fast boat with no AIS (truth affiliation: hostile) runs in from 800 m west of its
+holding point at 15 m/s from about 0:08 and holds mid-strait at [-122.4950, 37.8120], 1.5 km west
+of the bridge and inside the engagement zone, from about 1:05. At about 1:35 it fires on HUNTER 1,
+patrolling 0.9 to 1.2 km east of it (an abstract act), and again every minute to 4:35. Nothing else
+is hostile.
+What should happen: HUNTER 1's camera identifies the boat as it comes in and observes the first act;
+the engine attributes it to the boat's track at 0.9 or more and declares it hostile by rule (a loose
+fix is flagged instead, and the next act is another chance); op-auto confirms the declaration on
+autoplay (live: you, in the Review list). At 2:40 the timeline nominates WASP 1 with its PG-7VL
+warhead (agent-scripted), unless a nomination stands; op-2 and op-3 sign the plan within seconds;
+WASP 1 is dispatched, takes off to 120 m, flies the 2.4 km to the point and is released within 150
+m of it, some 2 minutes after the dispatch; the contacts' seed 108504 makes the strike a hit that
+destroys the boat for any intent from 1 to 6 (on the default run the nomination is intent 2); the
+boat leaves the picture and the assessment reads "ceased" some 15 s later, HUNTER 1 covering the
+point; WASP 1 is spent: the engine takes no order or nomination for it again.
+What should not: a nomination before the declaration is confirmed (refused by target_declared), a
+signature by the proposer or by an agent, or an effect released with a neutral or one of ours
+inside the keep-out (the yacht, the container ship and the trawler from the wharf stay a kilometre
+or more clear, HUNTER 1 some 500 m or more).
+"""
+
+world = "golden-gate"                         # sim/worlds/golden-gate.toml
+fleet = "sim/fleets/hostile-act-fpv.toml"
+contacts = "sim/scenarios/hostile-act-fpv.toml"
+events = []                                   # no comms or GNSS events: the situation is the chain
+policy = "sim/situations/policies/watch.toml" # the shipped tiers and [identification], as
+                                              # hostile-act-engagement's
+tidewater = "golden-gate-2026-06"             # real tide, current and terrain (tidewater/)
+at = "2026-06-14T17:00:00Z"                   # 10:00 local, by day (bd murmur-9sxm)
+rate = 1
+duration_s = 720                              # 12 minutes of situation time
+ai_start_s = 30
+
+operator = "autoplay"
+ai = "playbook"                               # no account needed; the playbook has no engagement
+                                              # play, so the timeline nominates
+cosigner = "scripted"                         # live: a scripted operator adds the second signature
+reveal = false
+seed = 1
+
+[summary]
+headline = "Watch for a hostile act; an engagement with WASP 1, an FPV strike drone, takes two operators, and the AI can only nominate."
+bullets = [
+  "Two of ours on station: HUNTER 1 (sensor ship) and WASP 1 (FPV strike drone on the ground, its own warhead).",
+  "A track is declared hostile by an operator or by rule on an observed hostile act; you confirm or revoke it.",
+  "The nomination names its weapon; the weapon check shows its odds against the target before anyone signs.",
+  "An effect needs two operators with engagement authority, neither its proposer, in the zone west of the bridge.",
+  "An FPV strike misses more often than it hits: our sensors' assessment afterwards says what it did.",
+]
+
+[[order]]
+id = "gate-patrol"
+task = "patrol"
+vehicles = { callsign = "HUNTER 1" }
+route = [[-122.4850, 37.8130], [-122.4850, 37.8190]]
+note = "Opening order: patrol the channel west of the bridge"
+
+[[step]]
+id = "boat-runs-in"
+at_s = 10
+kind = "note"
+text = "A fast boat without AIS runs in to its holding point west of the bridge (truth: hostile)"
+director = true
+
+[[step]]
+id = "boat-fires"
+at_s = 95
+kind = "note"
+text = "The fast boat fires on HUNTER 1 (truth; again every minute)"
+director = true
+
+# The nomination naming the FPV's warhead, unless one stands on the track by 2:40 (whoever made it,
+# the AI's included), once the form's dry run says WASP 1 passes every check with it (waiting up to
+# 4 minutes). In autoplay op-2 and op-3 sign it; live, you sign first and a scripted cosigner
+# second. Its rationale begins "situation timeline (scripted, not a person)". The fallback is
+# `abort` (hold where it is), a copter's own lost-link hold.
+[[step]]
+id = "fpv-nomination"
+at_s = 160
+kind = "engage"
+track = { select = "most_suspicious", affiliation = ["hostile"], near = [-122.4950, 37.8120], radius_km = 3 }
+vehicles = { callsign = "WASP 1" }
+weapon = "PG-7VL warhead (FPV)"
+effect_radius_m = 75
+window_s = 600
+fallback = "abort"
+unless_nominated = true
+wait_s = 240
+retry_s = 20
+rationale = "{track} is declared hostile ({kind}, {affiliation} {confidence}, seen {age} ago): a small boat holding still, in the FPV's reach. {callsign} passes every nomination check with its PG-7VL warhead now (the form's dry run): effect radius 75 m, fallback abort."
+text = "At 2:40 agent-scripted nominates WASP 1 with its warhead unless a nomination stands"
+
+[[watch]]
+at_s = 0
+headline = "Stack up: two of ours at the Gate"
+bullets = ["HUNTER 1 patrols just west of the bridge (order by policy)", "WASP 1 is armed: no script orders it, it waits on the ground"]
+text = "The stack comes up: two of ours at the Gate. The setup script's opening order goes out by policy: HUNTER 1 on patrol just west of the bridge. WASP 1 is armed: no script orders it, so it waits on the ground at its launch site."
+
+[[watch]]
+at_s = 40
+headline = "Normal traffic"
+bullets = ["Ferries, the lane, fishing boats, a yacht", "No AIS means unknown until a sensor classifies it; the Tracks drawer says why"]
+text = "Normal traffic: ferries, the shipping lane, fishing boats and a sailing yacht. A contact without AIS is unknown until a sensor classifies it; the Tracks drawer says why each is shown as it is."
+
+[[watch]]
+at_s = 80
+headline = "Hostile act: the engine may declare by rule"
+bullets = ["Needs an observed act against one of ours, clearly attributed to one track", "Review list shows the act, sensors and attribution; you confirm or revoke"]
+text = "Hostile acts: when our sensors observe a hostile act against one of ours, clearly attributed to one track, the engine declares that track hostile by rule; the Review list shows the act, the sensors and the attribution, and an operator confirms or revokes it. An unsure case is flagged for review, never declared."
+
+[[watch]]
+at_s = 130
+headline = "Engagement: the weapon is named in the nomination"
+bullets = ["The weapon check shows the FPV warhead's odds against the track's estimated kind", "Two operators with engagement authority sign one frozen plan, never its proposer", "Autoplay: op-2 and op-3 sign (scripted)"]
+text = "An engagement names its weapon from the platform's loadout, or the engine picks the first usable one and says why. The weapon check shows the weapon's chance of a hit and of each kind of damage against the track's estimated kind. Two operators with engagement authority sign one frozen plan, never its proposer; on autoplay op-2 and op-3 sign (scripted)."
+
+[[watch]]
+at_s = 190
+headline = "After two signatures: takeoff, run in, strike, assessment"
+bullets = ["WASP 1 takes off and flies to the point; it is released only there, the picture still holding", "A hit and the damage are drawn on the truth side; the C2 learns of them only from its sensors", "WASP 1 is spent by its own strike"]
+text = "After the second signature WASP 1 is dispatched: it takes off, climbs to 120 m and flies to the point. The engine releases the effect only when it is there and the picture still holds, every keep-out included. The hit and the damage are drawn on the truth side; the C2 learns of them only from its sensors: our coverage of the point decides the assessment, ceased, persists or unknown. WASP 1 is spent by its own strike."
+
+[[watch]]
+at_s = 600
+headline = "Two minutes left"
+bullets = ["The audit log holds the act, declaration, nomination with its weapon, signatures, release and assessment"]
+text = "Two minutes left. The audit log holds every act, declaration, nomination (with its weapon), signature, the release and the assessment; the runner prints the replay command at the end."
+
+[[watch]]
+at_s = 100
+headline = "The fast boat has fired on HUNTER 1 (truth)"
+bullets = ["The chain from here: act observed, rule declaration, confirmation", "Then WASP 1's nomination, two signatures, takeoff, strike, assessment"]
+text = "The fast boat has fired on HUNTER 1 (truth). The chain from here: the act observed, the rule declaration, a confirmation, WASP 1's nomination, two signatures, the takeoff, the run in, the strike, the hit draw, the assessment."
+director = true
+
+# ---- the playbook engine (AI=playbook, the default, and the shadow beside a model)
+[playbook]
+
+[[playbook.watch_area]]
+name = "the Golden Gate approaches"
+center = [-122.4783, 37.8199]                 # the Golden Gate Bridge, mid-span
+radius_m = 3000
+
+[[playbook.protected]]
+name = "the Golden Gate Bridge"
+point = [-122.4783, 37.8199]                  # mid-span
+
+# ---- the scripted operator on autoplay (eval/proxy.py), as hostile-act-engagement's
+[autoplay]
+preset = "default"
+attend_s = 4.0
+read_s = 3.0
+read_per_check_s = 0.3
+grant_agents = ["agent-watch", "agent-playbook"]
+confirm_rule_declarations = true

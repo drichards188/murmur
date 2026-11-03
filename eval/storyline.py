@@ -29,7 +29,9 @@ Steps (`[[step]]` in a spec; `at_s` counts from the moment the fleet is ready):
     kind = "engage"             Phase E: nominate an armed platform against a track through
                                 eval/engage.py (a situation's, with signers; logged as skipped
                                 in the evaluation's arms, which do not sign yet); a situation's
-                                may say unless_nominated = true and wait_s (eval/engage.py)
+                                may say unless_nominated = true and wait_s (eval/engage.py), and
+                                weapon = "<a loadout weapon's name>" (rules 24; without it the
+                                engine picks the first usable one)
 
 Track selectors `{track = {...}}` and `declare.track`:
     {id = "T-0001"} | {contact = "id"} (through the evaluation-only association) |

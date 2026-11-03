@@ -1,0 +1,158 @@
+# Guided bomb traffic (sim/situations/hostile-act-guided-bomb.toml): a hostile coaster (a small
+# freighter) without AIS that fires on our sensor ship, and the tutorial's Golden Gate traffic
+# around it (the ships and the trawler from the wharf moved or held off so nothing neutral comes
+# within some 1.5 km of the holding area in the situation's 12 minutes; sim/scenarios/tutorial.toml
+# says how). Run by crates/murmur-contacts; format in crates/murmur-contacts/src/scenario.rs.
+# Points are [lon, lat]. Fictional names and MMSIs. Everything here is truth: the console only ever
+# sees what our sensors make of it.
+#
+# The target is ship-sized (`cargo_ship`), which is what the GBU-12 Paveway II is for here. Against
+# it the MQ-9B's AGM-114R hits 0.95 of the time but its 9 kg warhead never sinks it and stops it
+# (propulsion lost) only 0.45 of its hits; the GBU-12's 241 kg Mk 82 hits 0.90 and, given a hit,
+# sinks it 0.10 and stops it 0.60 (sim/platforms.toml `mq9b_armed`, docs/research/weapons.md 10.3
+# and 10.4, all estimates). The weapon check shows the operator both before anyone signs. Only a
+# ship-sized target without AIS reads as suspect to the tracker: a fishing vessel or a sailboat
+# without AIS reads as neutral (small craft need not carry it), and the engine then flags an act by
+# it for review instead of declaring it ("conflicting evidence": a trawler here, 2026-11-03).
+#
+# Seed 76818 (the damage draw, crates/murmur-contacts damage.rs, depends on the run's seed and the
+# strike's intent only): a GBU-12 strike by any engagement intent from 1 to 6 hits the coaster and
+# sinks it (hit draws 0.04 to 0.72 against 0.90, damage draws 0.01 to 0.10 against 0.10), so the
+# default run (the opening order is intent 1, the timeline's nomination intent 2) and a run where
+# an AI's proposals come first both show the bomb sinking it. Past intent 6, or with another seed,
+# the bomb most often only stops the ship, and it can miss; the situation's brief says so.
+#
+# Times (`start_s`, an act's `at_s`) count from the contacts process's start, a few seconds after
+# the situation's clock (the link emulator's start). uids are the fleet's
+# (sim/fleets/hostile-act-guided-bomb.toml): 1 is HUNTER 1.
+title = "Guided bomb traffic"
+seed = 76818
+
+[sensing]
+misclassification_rate = 0.0     # deterministic identities: the situation is about the chain
+
+# ---------------------------------------------------------------- the hostile
+# A coaster without AIS steams in at 5 m/s from some 630 m west of its holding point mid-strait,
+# 1.5 km west of the bridge inside the engagement zone (sim/areas: ez-gate-west), and anchors there
+# from about 2:10 (a holding target's plan is stable). It fires a rocket at HUNTER 1, patrolling 0.9
+# to 1.2 km east of it, from about 2:40 and again every minute (an abstract act: each one is
+# another chance for our sensors to observe it).
+[[contact]]
+id = "coaster-raider"
+name = "Coaster without AIS (a small freighter), anchored mid-strait west of the bridge"
+affiliation = "hostile"
+domain = "surface"
+kind = "cargo_ship"
+speed_mps = 5
+motion = "transit"
+route = [[-122.5020, 37.8108], [-122.4950, 37.8120]]
+start_s = 5
+
+[[act]]
+id = "act-1"
+at_s = 160
+by = "coaster-raider"
+against_vehicle = 1
+label = "fires a rocket at the sensor ship (HUNTER 1)"
+
+[[act]]
+id = "act-2"
+at_s = 220
+by = "coaster-raider"
+against_vehicle = 1
+label = "fires a rocket at HUNTER 1 again"
+
+[[act]]
+id = "act-3"
+at_s = 280
+by = "coaster-raider"
+against_vehicle = 1
+label = "fires a rocket at HUNTER 1 a third time"
+
+[[act]]
+id = "act-4"
+at_s = 340
+by = "coaster-raider"
+against_vehicle = 1
+label = "fires a rocket at HUNTER 1 a fourth time"
+
+# ---------------------------------------------------------------- ferries (AIS, neutral)
+[[contact]]
+id = "ferry-sausalito"
+name = "Sausalito ferry (Ferry Building to Sausalito)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 10
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.4120, 37.8130], [-122.4400, 37.8220], [-122.4620, 37.8390], [-122.4770, 37.8560]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999101", name = "MV GOLDEN BEAR", ship_type = "passenger" }
+
+[[contact]]
+id = "ferry-larkspur"
+name = "Larkspur ferry (Ferry Building to Larkspur via Raccoon Strait)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 12
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.4120, 37.8180], [-122.4170, 37.8380], [-122.4500, 37.8600], [-122.4480, 37.8740], [-122.4700, 37.8880], [-122.4950, 37.9300], [-122.5070, 37.9440]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999102", name = "MV MARIN CREST", ship_type = "passenger" }
+
+# ---------------------------------------------------------------- shipping lane (AIS, neutral)
+# The inbound container ship, as in hostile-act-engagement but from 5.7 km further out: some
+# 4 km from the holding area at 20:00, closing at 7 m/s.
+[[contact]]
+id = "cargo-inbound"
+name = "Container ship inbound to Oakland"
+affiliation = "neutral"
+domain = "surface"
+kind = "cargo_ship"
+speed_mps = 7
+motion = "transit"
+route = [[-122.6200, 37.7710], [-122.5600, 37.7900], [-122.5100, 37.8060], [-122.4790, 37.8180], [-122.4300, 37.8360], [-122.4000, 37.8220], [-122.3830, 37.8030], [-122.3550, 37.8080], [-122.3420, 37.8100]]
+ais = { mmsi = "366999201", name = "MSC AURELIA", ship_type = "cargo" }
+
+# ---------------------------------------------------------------- fishing and leisure
+# The trawler leaves the wharf at 6:00: at the bridge, 1.5 km from the holding area, after some
+# 25 minutes.
+[[contact]]
+id = "fishing-wharf"
+name = "Trawler from Fisherman's Wharf to the grounds (AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+speed_mps = 5
+motion = "route"
+route = [[-122.4150, 37.8120], [-122.4600, 37.8230], [-122.4790, 37.8190], [-122.5500, 37.7800]]
+reverse = true
+dwell_s = 900
+start_s = 360
+ais = { mmsi = "366999301", name = "F/V ANNA MARIE", ship_type = "fishing" }
+
+[[contact]]
+id = "fishing-milerock"
+name = "Sport fishing boat drifting off Mile Rock (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+motion = "drift"
+at = [-122.5200, 37.7850]
+
+# A sailing yacht tacking offshore of Lands End, about 4 km southwest of the holding area at its
+# nearest (room for the engagement check's uncertain future reach when the tracker has no
+# velocity estimate for it).
+[[contact]]
+id = "yacht-landsend"
+name = "Sailing yacht tacking off Lands End (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "sailboat"
+speed_mps = 3
+motion = "loiter"
+center = [-122.5350, 37.7900]
+radius_m = 250

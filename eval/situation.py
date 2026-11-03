@@ -153,9 +153,11 @@ STEP_KEYS = {
     "declare": {"affiliation", "track", "note"},
     "link": {"vehicles", "cut", "loss", "extra_latency_ms", "duration_s", "delay_s"},
     # unless_nominated: skipped while a nomination on the track stands, whoever made it;
-    # wait_s: wait this long for the platform to pass every nomination check (the form's dry run)
+    # wait_s: wait this long for the platform to pass every nomination check (the form's dry run);
+    # weapon: the loadout weapon the nomination names, by its name (rules 24; absent: the engine
+    # picks the first usable one and says why)
     "engage": {"track", "vehicles", "effect_radius_m", "window_s", "fallback", "rationale", "label", "reason", "retry_s",
-               "unless_nominated", "wait_s"},
+               "unless_nominated", "wait_s", "weapon"},
 }
 # the faults only the headless simulator makes (docs/HEADLESS.md, faults and timelines; each
 # modelled as the stand-ins or ArduPilot behave): the live runner refuses a situation with one
@@ -366,6 +368,8 @@ def _steps(raw: list[Any], sit: Path, duration_s: float) -> list[Step]:
             raise SituationError(f"{sit}: step {sid!r}: wait_s is from 0 to the situation's duration")
         if kind == "engage" and s.get("fallback", "abort") not in ("abort", "return", "loiter"):
             raise SituationError(f"{sit}: step {sid!r}: fallback is abort, return or loiter")
+        if "weapon" in s and not (isinstance(s["weapon"], str) and s["weapon"].strip()):
+            raise SituationError(f"{sit}: step {sid!r}: weapon is the name of a weapon of the platform's loadout")
         if kind == "flood":
             for k, t in enumerate(s.get("templates") or []):
                 if not isinstance(t, dict):
@@ -1342,13 +1346,16 @@ class EngagementChain:
                     "platform": ", ".join(self._who(u) for u in uids),
                     "effect_radius_m": p.get("effect_radius_m"),
                     "fallback": p.get("fallback"),
+                    "weapon": p.get("weapon"),
                     "signed": [],
                     "state": "proposed",
                 }
                 self.engagements[int(i.get("id", 0))] = rec
+                # rules 24: the loadout weapon it names (none named: the engine picks one)
+                named = f", weapon {p['weapon']}" if p.get("weapon") else ""
                 line(
                     e, "nominated",
-                    f"engagement nominated by {src.get('kind')} {src.get('id')}: intent {i.get('id')}, {rec['platform']} on {p.get('track')}, "
+                    f"engagement nominated by {src.get('kind')} {src.get('id')}: intent {i.get('id')}, {rec['platform']} on {p.get('track')}{named}, "
                     f"effect radius {p.get('effect_radius_m')} m, fallback {p.get('fallback')}",
                     intent=i.get("id"),
                 )
@@ -1376,12 +1383,16 @@ class EngagementChain:
                 line(e, "dispatched", f"intent {e.get('intent')} dispatched: {self._who(eng.get('uid'))} to the effect point", intent=e.get("intent"))
             elif kind == "engage.effect":
                 rec = self.engagements.get(int(e.get("intent", 0)))
+                w = e.get("weapon") or {}
+                fired = weapon_text(w, e.get("munition") or {})
                 if rec is not None:
                     rec["effect_t"] = round(float(e.get("t", 0)) / 1000.0, 3)
                     rec["effect_point"] = e.get("point")
+                    if w.get("name"):
+                        rec["released"] = fired
                 pt = e.get("point") or [None, None]
                 where = f"[{pt[0]:.5f}, {pt[1]:.5f}]" if all(isinstance(x, (int, float)) for x in pt) else "?"
-                line(e, "effect", f"effect released by intent {e.get('intent')} (an abstract event): {where}, radius {e.get('radius_m')} m", intent=e.get("intent"))
+                line(e, "effect", f"effect released by intent {e.get('intent')} ({fired}): {where}, radius {e.get('radius_m')} m", intent=e.get("intent"))
             elif kind == "engage.assessed":
                 rec = self.engagements.get(int(e.get("intent", 0)))
                 if rec is not None:
@@ -1412,17 +1423,37 @@ class EngagementChain:
             conf = f", confirmed by {d['confirmed_by']}" if d.get("confirmed_by") else (", not confirmed" if by.get("kind") == "rule" else "")
             lines.append(f"  declared {d['track']} {d['affiliation']} {how}{conf}")
         for iid, r in sorted(self.engagements.items()):
-            lines.append(f"  engagement intent {iid}: nominated by {r['by']} ({r['platform']} on {r['track']}, radius {r['effect_radius_m']} m, fallback {r['fallback']}): {r['state']}")
+            named = f", weapon {r['weapon']}" if r.get("weapon") else ""
+            lines.append(f"  engagement intent {iid}: nominated by {r['by']} ({r['platform']} on {r['track']}{named}, radius {r['effect_radius_m']} m, fallback {r['fallback']}): {r['state']}")
             lines.append(f"    signed by: {', '.join(str(s) for s in r['signed']) or 'nobody'}")
             if r.get("dispatched_t") is not None:
                 lines.append("    dispatched: yes")
             if r.get("effect_t") is not None:
-                lines.append(f"    effect released: yes, at {r.get('effect_point')}")
+                fired = f" ({r['released']})" if r.get("released") else ""
+                lines.append(f"    effect released: yes{fired}, at {r.get('effect_point')}")
             if r.get("assessed"):
                 lines.append(f"    assessed: {r['assessed']} ({str(r.get('evidence') or '')[:200]})")
             if r.get("stopped"):
                 lines.append(f"    stopped: {r['stopped'][:200]}")
         return lines
+
+
+def weapon_text(weapon: dict[str, Any], munition: dict[str, Any]) -> str:
+    """What an `engage.effect` released, in words: the loadout weapon (rules 24) with its rounds
+    left or as the platform itself, and its flight (rules 20) where it has one; an effect logged
+    without a weapon (rules 23 or older) is an abstract event."""
+    name = weapon.get("name")
+    if not name:
+        return "an abstract event"
+    if weapon.get("kind") == "self":
+        text = f"{name}, the platform itself"
+    else:
+        left = weapon.get("left")
+        text = f"{name}, {weapon.get('kind')}" + (f", {left} left" if isinstance(left, int) else "")
+    tof = munition.get("tof_s")
+    if isinstance(tof, (int, float)):
+        text += f", in flight {tof:.0f} s"
+    return text
 
 
 def decision_text(d: dict[str, Any]) -> str:

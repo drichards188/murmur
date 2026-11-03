@@ -400,9 +400,10 @@ class Script:
         if "wait_s" in p:
             s = HeadlessSession(sim, STORYLINE_AGENT, "0.1")
             x = req["extra"]
+            named = {"weapon": x["weapon"]} if x.get("weapon") else {}
             form = self.ep.run_async(s.call("get_nomination_options", track_id=x["track"],
                                             effect_radius_m=x["effect_radius_m"], window_s=x["window_s"],
-                                            fallback=x["fallback"], uids=uids))
+                                            fallback=x["fallback"], uids=uids, **named))
             want = {str(u) for u in uids}
             failing = failing_checks(next((o for o in form.get("options") or [] if str(o.get("uid")) in want), None))
             if failing:
