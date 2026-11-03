@@ -714,12 +714,15 @@ def test_a_live_aircraft_is_accepted_as_behaving_now_for_a_waiting_nomination_on
     accepted = first(evs, "engage.accepted", intent=iid)
     assert (accepted["track"], accepted["by"]) == (plane, "op-2")
     assert accepted["behaving"]["domain"] == "air" and accepted["behaving"]["velocity_mps"] is not None
-    # each look at a blocker that clears accepts it (one the engine refuses then, its velocity gone
-    # for a moment, is recorded so); an acceptance lapses when the estimate leaves its accepted path
-    # (a young track's velocity still settling), and is given again by the reviewer, never by itself
+    # each look at a blocker that clears accepts it (one the engine refuses then, the young track
+    # without a velocity estimate yet or its velocity gone for a moment, is recorded so: from
+    # 2026-11-03, with HUNTER 1 on the tutorial's leg, the first two looks come before the track has
+    # one); an acceptance lapses when the estimate leaves its accepted path (a young track's
+    # velocity still settling), and is given again by the reviewer, never by itself
     decided = [d for d in rec["review"]["decisions"] if d["kind"] == "live_blocker"]
     assert decided and all((d["action"], d["track"], d["by"]) == ("accept", plane, "op-2") for d in decided), decided
-    assert decided[0]["result"] == "done" and decided[-1]["result"] == "done", decided
+    assert decided[-1]["result"] == "done", decided
+    assert all(d["result"] == "done" or "has no velocity estimate" in str(d["result"]) for d in decided), decided
     lapses = [e for e in evs if e["type"] == "engage.acceptance_lapsed" and e["intent"] == iid]
     assert all(e["kind"] in ("position", "velocity", "out_of_view", "gone") for e in lapses), lapses
     assert len([e for e in evs if e["type"] == "engage.accepted" and e["intent"] == iid]) == \

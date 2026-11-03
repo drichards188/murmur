@@ -7,10 +7,14 @@
 # select them by callsign.
 #
 # Where each one is, and why (the engagement checks read every one of ours):
-# - HUNTER 1, the sensor ship (radar 40 km, EO/IR 15 km), patrols the channel east of the bridge,
-#   about 2 km from the holding area west of it: close enough for its EO/IR to classify a small
-#   boat there and place an act's author within a few tens of metres, far enough to stay out of
-#   an engagement's keep-out there.
+# - HUNTER 1, the sensor ship (radar 40 km, EO/IR 15 km), patrols the tutorial's leg just west of
+#   the bridge, 0.9 to 1.2 km east of the holding area (sim/fleets/tutorial.toml gives the
+#   measurements): by day its panoramic camera identifies the boat there at 0.87 or more before
+#   anyone nominates, so a signed plan is not stopped when a closer camera first identifies it
+#   (bd murmur-9sxm: from 2 km east of the bridge, by night, the boat was nominated on its family,
+#   small craft, and the engagement stopped as "reclassified" when REAPER 1's camera identified
+#   it). It places an act's author within a few tens of metres and stays out of an engagement's
+#   keep-out by some 500 m.
 # - REAPER 1, the armed MALE drone (mq9b_armed: radar 100 km, EO/IR 40 km, weapons stations
 #   loaded), at its 7,600 m cruise altitude off Lands End, west of the bridge: its radar keeps every
 #   contact of the picture in view (a track out of view counts anywhere it could reach in every
@@ -36,7 +40,7 @@ title = "Hostile act to engagement: two stand-ins at the Gate, one armed"
 [[unit]]
 platform = "seahunter"                 # sensor ship (MUSV): radar 40 km, EO/IR 15 km, AIS 50 km; 1000 h
 sim = "standin"
-spawn = [37.8200, -122.4660, 0, 270]   # east of the bridge, mid-channel
+spawn = [37.8130, -122.4850, 0, 0]     # west of the bridge, mid-channel, at its patrol leg's south end
 
 [[unit]]
 platform = "mq9b_armed"                # armed MALE ISR/strike: radar 100 km, EO/IR 40 km; 35 h

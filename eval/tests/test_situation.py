@@ -1406,14 +1406,19 @@ def test_hostile_act_engagement_fits_the_chain():
         for ring in rings:
             assert not _inside(hold, ring) and _ring_distance_m(hold, ring) > radius + 200, f["properties"]["id"]
     # our vehicles start (and the sensor ship patrols) well outside a keep-out; REAPER 1's circle
-    # (a circling friendly counts anywhere on its disc) too
+    # (a circling friendly counts anywhere on its disc) too. The sensor ship patrols the tutorial's
+    # leg, 0.85 to 1.3 km from the boat (bd murmur-9sxm: near enough by day to identify the boat
+    # before anyone nominates), the rest start 1.5 km off or more
     for u in tomllib.loads(sit.fleet.read_text())["unit"]:
         lat, lon = u["spawn"][0], u["spawn"][1]
-        if u["platform"] != "switchblade":
+        if u["platform"] == "seahunter":
+            assert 850 <= haversine_m(lon, lat, *hold) <= 1300
+        elif u["platform"] != "switchblade":
             assert haversine_m(lon, lat, *hold) > 1500, u["platform"]
     orders = {o.id: o for o in sit.orders}
     for p in orders["gate-patrol"].params["route"]:
-        assert haversine_m(*p, *hold) > 1500
+        assert 850 <= haversine_m(*p, *hold) <= 1300
+    assert 9 <= (int(sit.at[11:13]) - 7) % 24 <= 15, "by day at the Gate (UTC-7 in June)"
     orbit = orders["bay-orbit"].params
     assert haversine_m(*orbit["center"], *hold) - orbit["radius_m"] > 1500
     # A neutral without a usable velocity estimate may reach anywhere at 25 m/s until

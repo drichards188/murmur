@@ -34,6 +34,14 @@
 # its missile's range, the strike falls inside the plan's time, the picture still holds and every
 # keep-out passes at the strike (crates/murmur-decide, engage.rs); any operator may abort it until
 # then. Once released, the missile is in flight (the console shows it) and lands at its impact.
+# From rules 24 the missile is the AGM-114R Hellfire II of REAPER 1's loadout (the engine's pick:
+# none is named), and from rules 25 its strike is a hit draw and a damage outcome on the truth side.
+#
+# By day (17:00Z, 10:00 local) and with HUNTER 1 on the tutorial's leg, 0.9 to 1.2 km from the
+# boat (bd murmur-9sxm, sim/fleets/hostile-act-engagement.toml), as the tutorial: at 03:00 local
+# with HUNTER 1 2 km east of the bridge the boat's identity was below the nomination's 0.60 a
+# third of the time, and a plan signed on its family (small craft) stopped as "reclassified" when a
+# closer camera first identified it (hostile-act-loitering-munition, 2026-11-03).
 #
 # Clock: every `at_s` here, like the events files' and the contacts' `start_s` and acts' `at_s`,
 # counts from the stack's start (the link emulator's); the contacts come a few seconds later. The
@@ -42,9 +50,9 @@ title = "Hostile act to engagement"
 brief = """
 You have the watch at the Golden Gate on a June morning. Intelligence warns of a possible attack on
 our vessels by small craft. Two of ours are on station: HUNTER 1, a sensor ship patrolling the
-channel east of the bridge; and REAPER 1, an armed long-endurance drone loitering high off Lands
-End, west of the bridge, its weapons stations loaded. Traffic is normal: ferries, ships in the lane,
-fishing boats, a sailing yacht.
+channel just west of the bridge; and REAPER 1, an armed long-endurance drone loitering high off
+Lands End, west of the bridge, its weapons stations loaded. Traffic is normal: ferries, ships in the
+lane, fishing boats, a sailing yacht.
 
 The opening orders come from the setup script (op-setup, not a person) and go out by policy. An
 armed platform gets no opening order: every order for one waits for a person.
@@ -57,13 +65,14 @@ declaration, and until it is confirmed no engagement can be nominated on it. Any
 two operators with engagement authority, neither of them its proposer; the AI watch officer may
 nominate one and can never sign it. An AI's proposal to move one of our vehicles (an orbit, a
 patrol, a track) waits for the operator in the Inbox; a hold or a return home (rtl) goes out at
-once, as every hold and rtl does under the policy.
+once, as every hold and rtl does under the policy. Any weapon can miss, and a hit can leave a
+target damaged rather than destroyed: our sensors' assessment afterwards says which.
 """
 director = """
 Truth: a small fast boat with no AIS (truth affiliation: hostile) runs in from the sea at 15 m/s
 from about 0:08 and holds mid-strait at [-122.4950, 37.8120], 1.5 km west of the bridge and inside
-the engagement zone, from about 3:05. At about 3:30 it fires on HUNTER 1, patrolling 2 km east of
-it (an abstract act), and again at about 4:30 and 5:30. Nothing else is hostile.
+the engagement zone, from about 3:05. At about 3:30 it fires on HUNTER 1, patrolling 0.9 to 1.2 km
+east of it (an abstract act), and again at about 4:30 and 5:30. Nothing else is hostile.
 What should happen: our sensors observe the first act (HUNTER 1's and REAPER 1's EO/IR among them);
 the engine attributes it to the boat's track at 0.9 or more and declares the track hostile by rule
 (a loose fix is flagged instead, and the next act is another chance); op-auto confirms the
@@ -72,16 +81,21 @@ declaration (the stronger model) and again when an armed platform passes every n
 (`nomination.possible`); it should nominate REAPER 1 (some 35 s away at 90 m/s; a fixed wing takes
 fallback return) with a rationale. op-2 and op-3 sign the plan within seconds; REAPER 1 is
 dispatched; around 6:30 to 7:30 the engine releases its missile from some 2 to 2.5 km out (within
-its 8 km slant range from 7,600 m), and the missile strikes the boat some 18 s later; the boat
-leaves the picture (out of play) at the impact and the assessment reads "ceased" some 15 s after,
-our sensors covering the point. If no nomination stands by 5:45, agent-scripted nominates REAPER 1
-(the timeline's fallback), once it passes the checks.
+its 8 km slant range from 7,600 m), and the missile strikes the boat some 18 s later. The truth
+side draws the AGM-114R's hit (0.75 against a small fast boat) and damage (0.85 of hits destroying
+it, 0.10 taking its propulsion): with the contacts' seed 17 an engagement intent 2 (the default
+run's with AI=playbook or none: the opening order, then the fallback) hits and takes the boat's
+propulsion, so it stops, stays in the picture and the assessment reads "persists" (2026-11-03);
+an intent 3, 5, 6, 7 or 8 (an AI's proposals before it) hits and destroys it, the boat leaves the
+picture at the impact and the assessment reads "ceased" some 15 s after, our sensors covering the
+point. If no nomination stands by 5:45, agent-scripted nominates REAPER 1 (the timeline's
+fallback), once it passes the checks.
 What should not: an engagement nominated before the declaration is confirmed (refused by
 target_declared), a signature by the proposer or by an agent, an effect released with a neutral or
-one of ours inside the keep-out (the yacht off Lands End, the inbound container ship and HUNTER 1
-are all clear of it by a kilometre or more), or a sensor of ours sent to orbit the boat closely (a
-circling friendly counts anywhere on its disc: such an orbit blocks every engagement there until
-it moves, and the form's keep-out explanation says so).
+one of ours inside the keep-out (the yacht off Lands End and the inbound container ship are clear
+of it by a kilometre or more, HUNTER 1 by some 500 m), or a sensor of ours sent to orbit the boat
+closely (a circling friendly counts anywhere on its disc: such an orbit blocks every engagement
+there until it moves, and the form's keep-out explanation says so).
 """
 
 world = "golden-gate"                         # sim/worlds/golden-gate.toml
@@ -94,7 +108,7 @@ policy = "sim/situations/policies/watch.toml" # sim/policy.toml + an AI's taskin
                                               # REAPER 1 releases from its missile's range (rules
                                               # 20), not arrival_m's 150 m
 tidewater = "golden-gate-2026-06"             # real tide, current and terrain (tidewater/)
-at = "2026-06-14T10:00:00Z"
+at = "2026-06-14T17:00:00Z"                   # 10:00 local, by day (bd murmur-9sxm; 10:00Z was 03:00)
 rate = 1
 duration_s = 720                              # 12 minutes of situation time
 ai_start_s = 30                               # the AI comes on watch as the boat runs in
@@ -124,8 +138,8 @@ bullets = [
 id = "gate-patrol"
 task = "patrol"
 vehicles = { callsign = "HUNTER 1" }
-route = [[-122.4720, 37.8135], [-122.4720, 37.8250]]
-note = "Opening order: patrol the channel east of the bridge"
+route = [[-122.4850, 37.8130], [-122.4850, 37.8190]]
+note = "Opening order: patrol the channel west of the bridge"
 
 # ---- the timeline: the boat and its acts are scripted in the contacts; these mark them for a
 # revealed run, and the fallback nominates if no one has
@@ -169,8 +183,8 @@ text = "Timeline fallback at 5:45: agent-scripted nominates REAPER 1 unless a no
 [[watch]]
 at_s = 0
 headline = "Stack up: two of ours at the Gate"
-bullets = ["HUNTER 1 patrols east of the bridge (order by policy)", "REAPER 1 is armed: no script orders it, it loiters high off Lands End"]
-text = "The stack comes up: two of ours at the Gate. The setup script's opening order goes out by policy: HUNTER 1 on patrol east of the bridge. REAPER 1 is armed: no script orders it, so it loiters high off Lands End."
+bullets = ["HUNTER 1 patrols just west of the bridge (order by policy)", "REAPER 1 is armed: no script orders it, it loiters high off Lands End"]
+text = "The stack comes up: two of ours at the Gate. The setup script's opening order goes out by policy: HUNTER 1 on patrol just west of the bridge. REAPER 1 is armed: no script orders it, so it loiters high off Lands End."
 
 [[watch]]
 at_s = 40
