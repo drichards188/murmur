@@ -164,7 +164,17 @@ meaningful.
   are `op-setup`, `op-auto`, `op-2`, `op-3`, `op-planner`, `agent-setup`, `agent-scripted`.
   op-setup submits only what its dry run (`POST /api/intents/preview`) says is auto or waits for
   someone else; the rest goes through agent-setup to the inbox. The AI starts in an empty temp
-  dir, MCP tools only.
+  dir, MCP tools only. A timeline `propose` step may be a lay order (`task = "lay"`, `count`,
+  `live_h`, `weapon`) and an `engage` step may name its `weapon`; op-2 and op-3 sign a lay order
+  as a nomination, without a picture token (`EngagementSigners.consider_lay`). Hit draws are
+  seeded by the contacts' `seed` and the intent's number (`effect:<intent>:target`, a burst's
+  `effect:<intent>:<burst>:target`, a mine's `mine:<intent>:<n>:<contact>:<pass>` or
+  `...:run`): a weapon situation picks its seed for the default run's intent numbers.
+- A stand-in UGV's altitude is its fleet `spawn` altitude plus the terrain's rise from there: spawn
+  it at the DEM's height (tidewater's `terrain.npz`), or it reports 0 m and the link emulator
+  judges its line of sight to the Crissy Field radios from sea level, under the hill (its mesh
+  link down by terrain, its telemetry stale, every check "cannot evaluate"). The Presidio's hills
+  block the radios from most of the bluffs west of the bridge's south end.
 - Rules 5 queue: an order for a vehicle the link can't carry it to now waits in the Queue
   (console button; `GET /api/inbox` `queued`), it is not an error; one whose link drops
   before the vehicle started it comes back there (`intent.requeued`). A human's approval is

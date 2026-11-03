@@ -1,16 +1,39 @@
 """What the situation runner does for the weapon situations: a scripted lay order (rules 27)
 proposed by the timeline and signed by the scripted signers like an engagement, a scripted
 nomination naming its weapon, and the chain the audit log tells of a lay, its mines and a gun's
-bursts."""
+bursts; and the weapon situations themselves (sim/situations: shore-battery, road-mines,
+hammerhead-line)."""
 
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import Any
 
 from eval import situation as S
 from eval.engage import EngageAdapter
 from eval.proxy import EngagementSigners, ProxyOperator, ProxyParams, lay_view
+
+
+def _m(a: list[float], b: list[float]) -> float:
+    dx = (b[0] - a[0]) * 111_320 * math.cos(math.radians(a[1]))
+    dy = (b[1] - a[1]) * 111_320
+    return math.hypot(dx, dy)
+
+
+def test_the_weapon_situations_load_with_their_scripted_steps():
+    shore = S.load_situation("shore-battery")
+    engage = [s for s in shore.steps if s.kind == "engage"]
+    assert [s.params["weapon"] for s in engage] == ["FGM-148 Javelin", "M2 .50 HMG"]
+    assert all(s.params["vehicles"] == {"callsign": "BULL 1"} and s.params["unless_nominated"] for s in engage)
+    for name, mine, count in (("road-mines", "TM-62M mine", 10), ("hammerhead-line", "Hammerhead (encapsulated Mk 54)", 2)):
+        sit = S.load_situation(name)
+        (lay,) = [s for s in sit.steps if s.params.get("task") == "lay"]
+        assert lay.kind == "propose" and lay.params["weapon"] == mine and lay.params["count"] == count
+        assert sit.operator == "autoplay" and sit.ai == "none" and sit.cosigner == "scripted"
+    # a Hammerhead arms 30 minutes after it is laid: the line's watch runs at the real clock
+    hl = S.load_situation("hammerhead-line")
+    assert hl.rate == 1 and hl.duration_s > 1800 + 15 * 60
 
 
 def test_a_lay_step_needs_its_line_count_and_live_period(tmp_path):
@@ -160,3 +183,21 @@ def test_the_chain_tells_of_a_lay_its_mines_and_a_guns_bursts():
     assert any("fire ended (ceased)" in t for t in texts)
     summary = "\n".join(chain.summary_lines())
     assert "lay order intent 2" in summary and "signed by: op-2, op-3" in summary and "mines laid: 1" in summary
+
+
+def test_the_shore_battery_fires_from_where_bull_stands():
+    """BULL 1's spawn is inside both weapons' bands of the boats' holding points (rules 28: a
+    missile's firing position is where it stands; rules 26: a gun's), so it never moves."""
+    import tomllib
+
+    from eval import REPO
+
+    fleet = tomllib.loads((REPO / "sim/fleets/shore-battery.toml").read_text())
+    bull = next(u for u in fleet["unit"] if u["platform"] == "ugv_armed")
+    lat, lon, alt, _ = bull["spawn"]
+    assert alt > 50, "spawned at the ground's height, so the link emulator sees it above the hill"
+    contacts = tomllib.loads((REPO / "sim/scenarios/shore-battery.toml").read_text())
+    holds = {c["id"]: c["route"][-1] for c in contacts["contact"] if c["affiliation"] == "hostile"}
+    first, second = _m([lon, lat], holds["fastboat-first"]), _m([lon, lat], holds["fastboat-second"])
+    assert 65 + 50 < first < 4750 - 50, "the Javelin's band"
+    assert 65 + 50 < second < 1800 - 50, "the Javelin's band and the M2's reach less the effect radius"

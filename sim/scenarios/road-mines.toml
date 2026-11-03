@@ -1,0 +1,62 @@
+# Road mines traffic (sim/situations/road-mines.toml): the Presidio road closed to traffic, a truck
+# that comes down it toward the bridge, and the ferries on the bay. Run by crates/murmur-contacts;
+# format in crates/murmur-contacts/src/scenario.rs. Points are [lon, lat].
+#
+# Times (`start_s`) count from the contacts process's start, a few seconds after the situation's
+# clock (the link emulator's).
+#
+# The seed: every TM-62M pass is a draw (a truck's wheel or track over the mine, 0.30, then
+# destroyed 0.60 or immobilised 0.40 given a hit), seeded by it and the pass's stream,
+# `mine:<lay order's intent>:<mine>:<contact>:<pass>` (crates/murmur-contacts mine.rs). 91 is
+# chosen so that on the default run (the lay order intent 2) the truck sets off the first mine it
+# crosses and is destroyed, and the same if one or two more orders come first (intents 3 and 4).
+# Another run may number it otherwise: the truck may cross a mine or two before one goes off, be
+# only immobilised, or cross the whole row.
+title = "Road mines traffic"
+seed = 91
+
+[sensing]
+misclassification_rate = 0.0
+
+# ---------------------------------------------------------------- the hostile
+# A truck without markings comes east along the Presidio road toward the bridge's south end at
+# 8 m/s from about 7:00: it reaches the row's west end (704 m on) at about 8:30, after every mine
+# has armed. Its way runs exactly along the row's line, so its wheels pass over every mine it
+# reaches until one goes off.
+[[contact]]
+id = "truck-raider"
+name = "Truck without markings, east along the Presidio road toward the bridge"
+affiliation = "hostile"
+domain = "ground"
+kind = "truck"
+speed_mps = 8
+motion = "transit"
+route = [[-122.4720, 37.8000], [-122.4560, 37.8000]]
+start_s = 420
+
+# ---------------------------------------------------------------- ferries (AIS, neutral)
+[[contact]]
+id = "ferry-sausalito"
+name = "Sausalito ferry (Ferry Building to Sausalito)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 10
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.4120, 37.8130], [-122.4400, 37.8220], [-122.4620, 37.8390], [-122.4770, 37.8560]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999101", name = "MV GOLDEN BEAR", ship_type = "passenger" }
+
+[[contact]]
+id = "ferry-larkspur"
+name = "Larkspur ferry (Ferry Building to Larkspur via Raccoon Strait)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 12
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.4120, 37.8180], [-122.4170, 37.8380], [-122.4500, 37.8600], [-122.4480, 37.8740], [-122.4700, 37.8880], [-122.4950, 37.9300], [-122.5070, 37.9440]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999102", name = "MV MARIN CREST", ship_type = "passenger" }

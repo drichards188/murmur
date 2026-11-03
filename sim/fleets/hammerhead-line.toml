@@ -1,0 +1,32 @@
+# Hammerhead line (sim/situations/hammerhead-line.toml): the Orca XLUUV and a sensor ship at the
+# Golden Gate. Stand-ins only, so the situation starts in seconds and needs no ArduPilot build.
+#
+# uids follow the unit order (sim/swarm.py): 1 HUNTER 1, 2 ORCA 1. The situation's opening order
+# and timeline select them by callsign.
+#
+# Where each one is, and why (the minefield check reads every one of ours of the subsurface domain:
+# where it is, its home and the order it is on):
+# - HUNTER 1, the sensor ship (radar 40 km, EO/IR 15 km, a hull sonar), patrols the channel east of
+#   the bridge. A Hammerhead is set off by subsurface contacts only, so a ship is never in its
+#   field's danger area.
+# - ORCA 1, the Orca XLUUV (orca: four Hammerhead encapsulated Mk 54 mines, 1.5 m/s, a passive
+#   array), surfaced mid-strait some 1,200 m east of the line it will lay: its home must stand
+#   outside the field's danger area (the Hammerhead's 1,000 m hearing plus 50 m) from every mine,
+#   since the minefield check judges where the layer goes home to once each mine arms. So its way
+#   to the line is some 1,200 m (13 minutes at its 1.5 m/s cruise; some 20, diving first, on the
+#   runs). Surfaced it is on its mast's satellite radio (the order's upload goes quickly); under
+#   way it dives to its cruise depth and is on its 300 bps acoustic modem, reporting about every
+#   20 s. Armed: no script gives it an order; its lay order waits for two operators with
+#   engagement authority.
+#   make situation NAME=hammerhead-line   (or make up FLEET=hammerhead-line)
+title = "Hammerhead line: the Orca XLUUV and a sensor ship at the Gate"
+
+[[unit]]
+platform = "seahunter"                 # sensor ship (MUSV): radar 40 km, EO/IR 15 km, AIS 50 km; 1000 h
+sim = "standin"
+spawn = [37.8200, -122.4660, 0, 270]   # east of the bridge, mid-channel
+
+[[unit]]
+platform = "orca"                      # Orca XLUUV: four Hammerhead mines; 1000 h
+sim = "standin"
+spawn = [37.8118, -122.4915, 0, 270]   # surfaced mid-strait west of the bridge, 1,200 m east of the line

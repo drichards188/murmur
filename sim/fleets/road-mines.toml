@@ -1,0 +1,34 @@
+# Road mines (sim/situations/road-mines.toml): the mine-laying UGV and a recon UGV in the Presidio,
+# south of the Golden Gate Bridge. Stand-ins only, so the situation starts in seconds and needs no
+# ArduPilot build.
+#
+# uids follow the unit order (sim/swarm.py): 1 MOLE 1, 2 FERRET 1. The situation's timeline selects
+# them by callsign.
+#
+# Where each one is, and why (the minefield check reads every one of ours of the ground domain:
+# where it is, its home and the order it is on):
+# - MOLE 1, the mine-laying UGV (ugv_mines: 20 TM-62M anti-vehicle mines, 2 m/s), parked some 240 m
+#   south-east of the row's east end: its way to the row and its way home from the row's east end
+#   both stay more than the field's danger area (the trigger reach plus 50 m) off every mine once
+#   it has armed. Armed: no script gives it an order; its lay order waits for two operators with
+#   engagement authority.
+# - FERRET 1, the small recon UGV (ugv_recon: an uncooled EO/IR mast, unarmed), patrolling a short
+#   leg 130 m north of the row, where its sight covers the road the row closes. Its opening order is
+#   clear of the field, so the minefield check passes; later the timeline sends it south across the
+#   road, over the row's east end, and the route planner takes it round the field.
+# Both stand where the mesh radios at Crissy Field see them (sim/links.toml's ground station): the
+# Presidio's hills block the link a few hundred metres further west or south. Each spawns at the
+# ground's altitude (the DEM's): a stand-in UGV follows the terrain from its home's altitude, and the
+# link emulator judges its line of sight from the altitude it reports.
+#   make situation NAME=road-mines   (or make up FLEET=road-mines)
+title = "Road mines: the mine-laying UGV and a recon UGV in the Presidio"
+
+[[unit]]
+platform = "ugv_mines"                 # mine-laying UGV: 20 TM-62M; 5.5 h
+sim = "standin"
+spawn = [37.7985, -122.4600, 96, 270]  # in the Presidio, south-east of the row (the DEM's 96 m)
+
+[[unit]]
+platform = "ugv_recon"                 # recon UGV: EO/IR mast, unarmed
+sim = "standin"
+spawn = [37.8012, -122.4630, 89, 90]   # in the Presidio, north of the row (the DEM's 89 m)

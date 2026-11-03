@@ -1,0 +1,75 @@
+# Hammerhead line traffic (sim/situations/hammerhead-line.toml): ordinary traffic at the Golden
+# Gate and a submarine that comes in from the sea after the field has armed. Run by
+# crates/murmur-contacts; format in crates/murmur-contacts/src/scenario.rs. Points are [lon, lat].
+#
+# Times (`start_s`) count from the contacts process's start, a few seconds after the situation's
+# clock (the link emulator's).
+#
+# The seed: a Hammerhead that hears a submarine within 1,000 m launches its Mk 54, which chases it
+# at 20 m/s and strikes within 10 m; the hit (0.50 against a submarine, the UUV figures) and the
+# damage (destroyed 0.95 given a hit) are drawn on `mine:<lay order's intent>:<mine>:run`
+# (crates/murmur-contacts mine.rs). 17540 is chosen so that every mine of the line (1 to 4) of a
+# lay order numbered 1 to 3 hits and destroys: on the default run (the lay order intent 2) the first
+# torpedo sinks the submarine. Another run may number it otherwise and miss: a torpedo that misses
+# goes inert (Hague VIII), and the submarine may set off the next mine.
+title = "Hammerhead line traffic"
+seed = 17540
+
+[sensing]
+misclassification_rate = 0.0
+
+# ---------------------------------------------------------------- the hostile
+# A submarine (truth affiliation: hostile) comes in from the sea at 3 m/s from about 30:00, at 40 m,
+# along the middle of the channel toward the bridge: it comes within 1,000 m of the line's first
+# mine at about 52:00 and stays within it some 11 minutes, so the mine, laid at about 23:00, hears
+# it once it arms 30 minutes later.
+[[contact]]
+id = "submarine-raider"
+name = "Submarine inbound through the Gate, submerged"
+affiliation = "hostile"
+domain = "subsurface"
+kind = "submarine"
+speed_mps = 3
+alt_m = -40
+motion = "transit"
+route = [[-122.5600, 37.8000], [-122.5050, 37.8118], [-122.4700, 37.8200]]
+start_s = 1800
+
+# ---------------------------------------------------------------- ferries and shipping (AIS, neutral)
+[[contact]]
+id = "ferry-sausalito"
+name = "Sausalito ferry (Ferry Building to Sausalito)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 10
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.4120, 37.8130], [-122.4400, 37.8220], [-122.4620, 37.8390], [-122.4770, 37.8560]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999101", name = "MV GOLDEN BEAR", ship_type = "passenger" }
+
+[[contact]]
+id = "ferry-larkspur"
+name = "Larkspur ferry (Ferry Building to Larkspur via Raccoon Strait)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 12
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.4120, 37.8180], [-122.4170, 37.8380], [-122.4500, 37.8600], [-122.4480, 37.8740], [-122.4700, 37.8880], [-122.4950, 37.9300], [-122.5070, 37.9440]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999102", name = "MV MARIN CREST", ship_type = "passenger" }
+
+# Ships pass over the field: a Hammerhead hears only what is under the water.
+[[contact]]
+id = "cargo-outbound"
+name = "Bulk carrier outbound from Richmond"
+affiliation = "neutral"
+domain = "surface"
+kind = "cargo_ship"
+speed_mps = 6
+motion = "transit"
+route = [[-122.4200, 37.8450], [-122.4600, 37.8260], [-122.4790, 37.8170], [-122.5500, 37.7950], [-122.6800, 37.7500]]
+ais = { mmsi = "366999202", name = "PACIFIC HARVESTER", ship_type = "cargo" }

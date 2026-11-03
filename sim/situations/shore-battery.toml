@@ -1,0 +1,242 @@
+# Shore battery: the armed UGV's two weapons, a missile and a gun, each used against a boat that
+# fired on one of ours (sim/situations/README.md).
+#   make situation NAME=shore-battery                       (autoplay, no AI: watch it)
+#   make situation NAME=shore-battery OPERATOR=live         (you confirm and sign; a script cosigns)
+#   make situation NAME=shore-battery AI=playbook           (the playbook engine on watch too)
+#
+# Two of ours at the Golden Gate: HUNTER 1, a sensor ship patrolling just west of the bridge, and BULL 1,
+# the armed UGV on the high ground at the bridge's south end (an M2 .50 and one FGM-148
+# Javelin). A fast boat without AIS runs in, holds mid-strait and fires on HUNTER 1; the engine
+# declares it hostile by rule, an operator confirms, the timeline nominates BULL 1 with its Javelin
+# (unless someone nominated already), two operators sign, and the missile is launched from where
+# BULL 1 stands (rules 28: a ground platform's missile from a firing position within its band, 65
+# m plus the effect radius to 4,750 m less it), a 12 s flight. A second boat follows and fires; BULL
+# 1's one Javelin is spent, so the timeline names the M2 (a gun is never picked unnamed): two
+# signatures open a firing window and the gun fires a 6-round burst every 5 s (rules 26), each
+# re-checked and counted, until the assessment from the last burst says the boat is gone. Every
+# hit is a seeded draw on the truth side (the contacts' seed and the intent's number), so a run
+# that numbers its orders otherwise can miss: the brief says so.
+#
+# Autoplay: op-auto confirms the engine's rule declarations (`confirm_rule_declarations`), op-2 and
+# op-3 sign every nomination (scripted). Live: you confirm in the Review list and sign first; op-2
+# adds the second signature (`cosigner = "scripted"`), or you sign twice through the "Acting as"
+# switcher with COSIGNER=you, and the engagement card's Cease fire stops the M2's fire at once.
+#
+# Clock: every `at_s` here, like the contacts' `start_s` and acts' `at_s`, counts from the stack's
+# start (the link emulator's); the contacts come a few seconds later.
+title = "Shore battery"
+brief = """
+You have the watch at the Golden Gate on a June morning. Intelligence warns of attacks on our
+vessels by small craft. Two of ours are on station: HUNTER 1, a sensor ship patrolling mid-channel
+just west of the bridge; and BULL 1, an armed unmanned ground vehicle dug in on the high ground at the
+bridge's south end, its remote weapon station loaded: an M2 .50 heavy machine gun (500 rounds,
+fired in 6-round bursts, 1,800 m) and one FGM-148 Javelin missile (65 to 4,750 m). Traffic is
+normal: ferries, a bulk carrier coming down from Richmond, a fishing boat, a sailing yacht.
+
+The opening order comes from the setup script (op-setup, not a person) and goes out by policy. An
+armed platform gets no opening order: every order for one waits for a person.
+
+The rules of engagement authorize an effect against a contact declared hostile, inside the
+engagement zone west of the bridge, clear of every no-strike area and of anyone we protect. A
+track is declared hostile by an operator, or by the engine's rule when our sensors observe a
+hostile act against one of ours clearly attributed to it; an operator confirms or revokes such a
+declaration, and until it is confirmed no engagement can be nominated on it. Any engagement needs
+two operators with engagement authority, neither of them its proposer. BULL 1 fires from where it
+stands: its missile and its gun both reach the strait from the high ground. A missile is one shot; the
+gun fires bursts while the picture holds, each re-checked, until the target is gone, the rounds run
+out or someone ceases fire. Every hit is a draw: a missile can miss, and a burst usually does.
+"""
+director = """
+Truth: two small fast boats with no AIS (truth affiliation: hostile). The first runs in from the sea
+at 15 m/s from about 0:08 and holds mid-strait at [-122.4950, 37.8120] from about 3:00, 1,740 m from
+BULL 1, inside the engagement zone. At about 3:25 it fires on HUNTER 1 (an abstract act), and again
+at 4:25 and 5:25. The second runs in along the south side of the strait from about 5:05 and holds at
+[-122.4900, 37.8075], 1,190 m from BULL 1, from about 7:35, and fires on HUNTER 1 at about 7:55, 8:55
+and 9:55. Nothing else is hostile.
+What should happen: our sensors observe the first act; the engine declares the first boat hostile by
+rule; op-auto confirms (live: you, in the Review list). At 3:40 the timeline nominates BULL 1 with
+its Javelin once the form's dry run passes (unless someone nominated already); op-2 and op-3 sign
+(live: you, then op-2); the plan's firing position is where BULL 1 stands, so it does not move; the
+engine releases the Javelin some 20 s after the dispatch, a 12 s flight, and on the default run the
+draw destroys the boat: the assessment reads ceased. The same for the second boat from about 8:05,
+with the M2 named: two signatures, then a burst every 5 s, each re-checked (the line of fire clear
+of ours and of protected tracks 50 m either side); on the default run the third burst destroys it,
+the fire ends on the ceased assessment, some 18 rounds spent of 500. Another run can miss: a missed
+Javelin leaves the boat in the picture (persists), and the gun keeps firing while the picture holds.
+What should not: a nomination before the declaration is confirmed (target_declared), a signature by
+its proposer or by an agent, BULL 1 driven toward the water (rules 27 did: refused for the domain),
+a burst with one of ours or a neutral on the line of fire.
+"""
+
+world = "golden-gate"                         # sim/worlds/golden-gate.toml
+fleet = "sim/fleets/shore-battery.toml"
+contacts = "sim/scenarios/shore-battery.toml"
+events = []                                   # no comms or GNSS events: the situation is the weapons
+policy = "sim/situations/policies/watch.toml" # sim/policy.toml + an AI's tasking waits for the operator;
+                                              # the shipped engagement tier and [identification]
+tidewater = "golden-gate-2026-06"             # real tide, current and terrain (tidewater/)
+at = "2026-06-14T17:00:00Z"                   # 10:00 local, by day: the sight's day camera
+rate = 1
+duration_s = 720                              # 12 minutes of situation time
+ai_start_s = 30
+
+operator = "autoplay"
+ai = "none"                                   # the timeline nominates; any AI may be added
+cosigner = "scripted"                         # live: a scripted operator adds the second signature
+reveal = false
+seed = 1
+
+[summary]
+headline = "Two boats fire on our sensor ship; the armed UGV on the high ground answers with its missile, then its gun."
+bullets = [
+  "HUNTER 1 (sensor ship) patrols just west of the bridge; BULL 1 (armed UGV: an M2 .50 and one Javelin) holds the high ground at its south end.",
+  "A track is declared hostile by an operator or by rule on an observed hostile act; it is confirmed before any nomination.",
+  "Each engagement needs two operators with engagement authority, neither its proposer.",
+  "The Javelin is one shot from where BULL 1 stands; the M2 fires 6-round bursts every 5 s, each re-checked, until the target is gone or fire ceases.",
+  "Every hit is a seeded draw: a missile can miss, a burst usually does.",
+]
+
+# ---- opening order, once the fleet is ready: issued by the setup script (op-setup); never for an
+# armed platform (refused at load), so BULL 1 stays where it spawns.
+[[order]]
+id = "gate-patrol"
+task = "patrol"
+vehicles = { callsign = "HUNTER 1" }
+route = [[-122.4840, 37.8140], [-122.4840, 37.8210]]
+note = "Opening order: patrol mid-channel just west of the bridge"
+
+# ---- the timeline: the boats and their acts are scripted in the contacts; these mark them for a
+# revealed run, and nominate if no one has
+[[step]]
+id = "first-boat-runs-in"
+at_s = 10
+kind = "note"
+text = "A fast boat without AIS runs in from the sea toward the Gate (truth: hostile)"
+director = true
+
+[[step]]
+id = "first-boat-fires"
+at_s = 205
+kind = "note"
+text = "The first fast boat fires on HUNTER 1 (truth)"
+director = true
+
+# BULL 1's Javelin on the first boat, once the form's dry run says it passes every check (the
+# declaration confirmed among them), unless a nomination on the track stands. agent-scripted
+# proposes it; in autoplay op-2 and op-3 sign it, live you do. Its rationale begins "situation
+# timeline (scripted, not a person)".
+[[step]]
+id = "javelin-nomination"
+at_s = 220
+kind = "engage"
+track = { select = "most_suspicious", affiliation = ["hostile"], near = [-122.4950, 37.8120], radius_km = 0.8 }
+vehicles = { callsign = "BULL 1" }
+weapon = "FGM-148 Javelin"
+effect_radius_m = 50
+window_s = 300
+fallback = "abort"                            # a UGV holds where it is
+unless_nominated = true
+wait_s = 180
+retry_s = 30
+rationale = "{track}, declared hostile ({kind}, {affiliation} {confidence}, seen {age} ago), fired on HUNTER 1. {callsign} passes every nomination check now (the form's dry run): its FGM-148 Javelin from where it stands, effect radius 50 m, fallback hold."
+text = "Timeline at 3:40: agent-scripted nominates BULL 1's Javelin on the first boat unless a nomination stands"
+
+[[step]]
+id = "second-boat-runs-in"
+at_s = 305
+kind = "note"
+text = "A second fast boat without AIS runs in along the south side of the strait (truth: hostile)"
+director = true
+
+[[step]]
+id = "second-boat-fires"
+at_s = 475
+kind = "note"
+text = "The second fast boat fires on HUNTER 1 (truth)"
+director = true
+
+# The M2 on the second boat (BULL 1's one Javelin is spent): named, since the engine never picks a
+# gun unnamed.
+[[step]]
+id = "m2-nomination"
+at_s = 490
+kind = "engage"
+track = { select = "most_suspicious", affiliation = ["hostile"], near = [-122.4900, 37.8075], radius_km = 0.4 }
+vehicles = { callsign = "BULL 1" }
+weapon = "M2 .50 HMG"
+effect_radius_m = 50
+window_s = 600
+fallback = "abort"
+unless_nominated = true
+wait_s = 180
+retry_s = 30
+rationale = "{track}, declared hostile ({kind}, {affiliation} {confidence}, seen {age} ago), fired on HUNTER 1. {callsign}'s Javelin is spent; its M2 .50 passes every nomination check now (the form's dry run), firing from where it stands, effect radius 50 m, fallback hold."
+text = "Timeline at 8:10: agent-scripted nominates BULL 1's M2 on the second boat unless a nomination stands"
+
+# ---- what to watch for, shown in the console's Situation panel as each comes due
+[[watch]]
+at_s = 0
+headline = "Stack up: a sensor ship and the armed UGV"
+bullets = ["HUNTER 1 patrols just west of the bridge (order by policy)", "BULL 1 is armed: no script orders it; it holds the high ground"]
+text = "The stack comes up: two of ours at the Gate. The setup script's opening order goes out by policy: HUNTER 1 on patrol mid-channel just west of the bridge. BULL 1 is armed: no script orders it, so it holds the high ground at the bridge's south end. Its loadout is in the vehicle details (Loadout)."
+
+[[watch]]
+at_s = 180
+headline = "Hostile act: the engine may declare by rule"
+bullets = ["Needs an observed act against one of ours, clearly attributed to one track", "The Review list shows the act, the sensors and the attribution; confirm or revoke"]
+text = "Hostile acts: when our sensors observe a hostile act against one of ours, clearly attributed to one track, the engine declares that track hostile by rule; the Review list shows the act, the sensors and the attribution, and an operator confirms or revokes it. Until it is confirmed, nothing can be nominated on it."
+
+[[watch]]
+at_s = 230
+headline = "A missile from the shore"
+bullets = ["The plan's firing position is where BULL 1 stands: the boat is inside the Javelin's band", "Two signatures, then the release and a short flight", "Its hit is a draw: it can miss"]
+text = "An engagement with BULL 1's Javelin: the plan's firing position is where BULL 1 stands (the boat is inside the missile's band, its minimum range plus the effect radius to its maximum range less it), so the UGV does not move. After two signatures the engine releases the missile once its strike falls inside the plan's time and every keep-out passes at the strike; the flight is a few seconds. Then our sensors' coverage of the point decides the assessment: ceased, persists or unknown."
+
+[[watch]]
+at_s = 480
+headline = "A gun: bursts through a firing window"
+bullets = ["The Javelin is spent: the M2 is named", "A 6-round burst every 5 s, each re-checked (line of fire, range, the target seen)", "Live: Cease fire on the engagement card stops it at once"]
+text = "The second boat: BULL 1's Javelin is spent, so the nomination names its M2 (the engine never picks a gun unnamed). Two signatures open a firing window: a 6-round burst every 5 s while the picture holds, each re-checked (the target within range and seen since the last burst, the line of fire clear of ours and of protected tracks), each counted against the 500 rounds. The fire ends when the assessment from the last burst says ceased or unknown, the rounds run out or the window closes; any operator can cease fire on the engagement card."
+
+[[watch]]
+at_s = 600
+headline = "Two minutes left"
+bullets = ["The audit log holds each act, declaration, signature, release and burst", "The runner prints the replay command at the end"]
+text = "Two minutes left. The audit log holds every act, declaration, nomination, signature, the missile's release and each burst with its rounds; the runner prints the replay command at the end."
+
+[[watch]]
+at_s = 200
+headline = "The first boat has fired on HUNTER 1 (truth)"
+bullets = ["The chain from here: act observed, rule declaration, confirmation", "Then nomination, two signatures, the Javelin, the assessment"]
+text = "The first fast boat has fired on HUNTER 1 (truth). On the default run the Javelin's draw destroys it."
+director = true
+
+[[watch]]
+at_s = 470
+headline = "The second boat has fired on HUNTER 1 (truth)"
+bullets = ["The M2 this time", "On the default run its third burst destroys the boat"]
+text = "The second fast boat has fired on HUNTER 1 (truth). On the default run the M2's third burst destroys it."
+director = true
+
+# ---- the playbook engine (AI=playbook, and the shadow beside a model): where to watch and what
+# to protect; every threshold is the engine's shipped default. It has no engagement play: the
+# timeline nominates.
+[playbook]
+
+[[playbook.watch_area]]
+name = "the Golden Gate approaches"
+center = [-122.4783, 37.8199]
+radius_m = 3000
+
+[[playbook.protected]]
+name = "the Golden Gate Bridge"
+point = [-122.4783, 37.8199]
+
+# ---- the scripted operator on autoplay (eval/proxy.py): quick looks, every rule declaration
+# confirmed (read first). An engagement is never its own (op-2 and op-3 sign).
+[autoplay]
+preset = "default"
+attend_s = 4.0
+read_s = 3.0
+read_per_check_s = 0.3
+confirm_rule_declarations = true

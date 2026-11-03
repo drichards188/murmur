@@ -1,0 +1,172 @@
+# Hammerhead line: two Hammerhead mines laid by the Orca XLUUV across the Golden Gate on two
+# signatures, armed half an hour later, and a submarine that comes in after they have (sim/situations
+# /README.md).
+#   make situation NAME=hammerhead-line                  (autoplay, no AI: watch it, an hour)
+#   make situation NAME=hammerhead-line OPERATOR=live    (you sign the lay order first; a script cosigns)
+#
+# Two of ours at the Gate: HUNTER 1, a sensor ship patrolling east of the bridge, and ORCA 1, the
+# Orca XLUUV, surfaced mid-strait west of it. The timeline proposes a lay order (agent-scripted, a
+# script saying so): ORCA 1 to lay two Hammerhead encapsulated Mk 54 mines along 400 m across the
+# channel, live a day. A lay order is an engagement decision (rules 27): its `minefield` check judges
+# what else could set the field off (subsurface tracks not declared hostile, now and on their course;
+# our own subs, their homes and their orders; the Orca itself once each mine arms; the no-strike
+# areas, 1,050 m off), and two operators with engagement authority sign it, never its proposer
+# (autoplay: op-2 and op-3, scripted; live: you, then op-2). ORCA 1 dives and runs some 1,200 m to
+# the line (about 20 minutes: it made about 1 m/s under way, slack water or not), lays each mine as it passes its place (`mine.laid`, the
+# record) and goes home.
+#
+# Why an hour at the real clock: a Hammerhead arms 30 minutes after it is laid (the catalog's
+# `arm_s`, an estimate), and nothing here is sped up. A faster scenario clock (MURMUR_RATE) moves
+# the sun, the tide and the satellites, not the engine's clock, which times the arming; a field
+# laid before the start would not be a decision anyone made in this run. So the Orca lays at about
+# 23 and 30 minutes, the mines arm at about 53 and 60, and the submarine comes within the first
+# mine's 1,000 m at about 52 and stays within it some 11 minutes: the mine launches its torpedo once it arms, which chases it at 20 m/s and strikes
+# within about a minute, a seeded draw (on the default run it sinks the submarine).
+#
+# Clock: every `at_s` here, like the contacts' `start_s`, counts from the stack's start (the link
+# emulator's); the contacts come a few seconds later.
+title = "Hammerhead line"
+brief = """
+You have the watch at the Golden Gate on a June morning. Intelligence warns that a hostile submarine
+may try the Gate in the next hour. Two of ours are on station: HUNTER 1, a sensor ship patrolling
+the channel east of the bridge; and ORCA 1, an extra-large unmanned undersea vehicle surfaced
+mid-strait west of it, carrying four Hammerhead mines: seabed capsules that listen and, when they
+hear a submarine within about a kilometre, release a Mk 54 torpedo that chases it.
+
+The opening order comes from the setup script (op-setup, not a person) and goes out by policy.
+ORCA 1 is armed: no script gives it an order, and every order for it waits for a person.
+
+A line of mines is an engagement decision made in advance: a mine picks its victim later, by what
+it hears. So a lay order names the mines, the line and how many hours they stay live; the engine
+checks what else could set the field off (anything under the water not declared hostile, now and
+on its course; our own undersea vehicles, their homes and their orders; the layer itself once each
+mine arms; the no-strike areas); and two operators with engagement authority sign it, neither of
+them its proposer. Each mine laid is recorded where and when it went down, when it arms and when it
+goes inert. A Hammerhead arms half an hour after it is laid, so this watch runs nearly an hour at
+the real clock. Its torpedo can miss, and one that misses goes inert.
+"""
+director = """
+Truth: a submarine (truth affiliation: hostile) comes in from the sea at 3 m/s, 40 m down, from about
+30:00 along the middle of the channel toward the bridge, through the line's middle. Nothing else is
+under the water but ORCA 1.
+What should happen: at 1:30 agent-scripted proposes the lay order (two Hammerheads along [-122.5050,
+37.8100] to [-122.5050, 37.8136], live 24 h); its checks pass (the minefield check says what it judged
+and what it can't); op-2 and op-3 sign it (live: you, then op-2); ORCA 1 dives and runs to the
+line's south end, lays mine 1 there at about 23:00 and mine 2 at the north end some 7 minutes later
+(each logged with its place and when it arms, 30 minutes on), then goes home. The submarine comes
+within 1,000 m of mine 1 at about 52:00 and is still within it when the mine arms at about 53:00: the mine launches its torpedo, which strikes
+within about a minute; on the default run it sinks the submarine (the contacts log says "struck by
+submarine-raider: destroyed"). The C2 learns of it only through its sensors: ORCA 1's passive array
+may hear the submarine and then hear nothing.
+What should not: a signature by the proposer or an agent; a mine launching at one of ours (ORCA 1's
+home is 1,200 m from both mines, outside their 1,000 m).
+"""
+
+world = "golden-gate"
+fleet = "sim/fleets/hammerhead-line.toml"
+contacts = "sim/scenarios/hammerhead-line.toml"
+events = []
+policy = "sim/situations/policies/watch.toml" # sim/policy.toml + an AI's tasking waits for the operator;
+                                              # the engagement floor signs a lay order
+tidewater = "golden-gate-2026-06"
+at = "2026-06-14T20:40:00Z"                   # 13:40 local, slack water at the Gate: the flood
+                                              # (1 m/s through the line at 17:00Z) slowed the
+                                              # Orca to 0.6 m/s on the first run
+rate = 1                                      # real time: the arming delay is the engine's clock
+duration_s = 3600                             # an hour: a Hammerhead arms 30 minutes after it is laid
+ai_start_s = 30
+ready_timeout_s = 180
+
+operator = "autoplay"
+ai = "none"                                   # the timeline proposes; any AI may be added
+cosigner = "scripted"                         # live: a scripted operator adds the second signature
+reveal = false
+seed = 1
+
+[summary]
+headline = "Two operators sign a line of Hammerhead mines across the Gate; half an hour later a submarine comes in."
+bullets = [
+  "ORCA 1 (Orca XLUUV, four Hammerhead mines) and HUNTER 1 (sensor ship) at the Gate.",
+  "A lay order names the mines, the line and how long they stay live; two operators with engagement authority sign it.",
+  "The engine checks what else could set the field off before anyone signs.",
+  "A Hammerhead arms 30 minutes after it is laid: this watch runs an hour at the real clock.",
+  "Its torpedo is a seeded draw: it can miss, and then goes inert.",
+]
+
+# ---- opening order: HUNTER 1's patrol (op-setup, by policy); never for an armed platform, so ORCA 1
+# stays surfaced where it spawns.
+[[order]]
+id = "gate-patrol"
+task = "patrol"
+vehicles = { callsign = "HUNTER 1" }
+route = [[-122.4720, 37.8135], [-122.4720, 37.8250]]
+note = "Opening order: patrol the channel east of the bridge"
+
+# ---- the timeline
+# The lay order at 1:30, once ORCA 1 has reported its home over its satellite radio (proposed at
+# 0:40, a run once found no home yet: domain, geofence and reserves cannot evaluate, rejected).
+[[step]]
+id = "lay-order"
+at_s = 90
+kind = "propose"
+task = "lay"
+vehicles = { callsign = "ORCA 1" }
+route = [[-122.5050, 37.8100], [-122.5050, 37.8136]]
+count = 2
+live_h = 24
+weapon = "Hammerhead (encapsulated Mk 54)"
+rationale = "Intelligence warns of a hostile submarine trying the Gate within the hour. {callsign} to lay two Hammerhead mines across the channel west of the bridge, live 24 h: nothing of ours under the water but {callsign}, whose home stays outside their hearing."
+text = "Timeline at 1:30: agent-scripted proposes ORCA 1's lay order (two Hammerheads, live 24 h)"
+
+[[step]]
+id = "submarine-comes"
+at_s = 1805
+kind = "note"
+text = "A submarine comes in from the sea toward the Gate, submerged (truth: hostile)"
+director = true
+
+# ---- what to watch for
+[[watch]]
+at_s = 0
+headline = "Stack up: a sensor ship and the Orca"
+bullets = ["HUNTER 1 patrols east of the bridge (order by policy)", "ORCA 1 is armed: no script orders it"]
+text = "The stack comes up: two of ours at the Gate. The setup script's opening order goes out by policy: HUNTER 1 on patrol east of the bridge. ORCA 1 carries four Hammerhead mines (its Loadout): it is armed, so no script orders it."
+
+[[watch]]
+at_s = 90
+headline = "A lay order waits for two signatures"
+bullets = ["The minefield check: what else could set the field off, and what it can't judge", "Two operators with engagement authority, neither the proposer"]
+text = "A lay order in the Inbox: ORCA 1 to lay two Hammerheads across the channel, live 24 hours. Read its minefield check: what else could set the field off (subsurface tracks not declared hostile, our own undersea vehicles with their homes and orders, the layer itself once each mine arms, the no-strike areas within the field's 1,050 m danger area) and what it cannot judge. It needs two operators with engagement authority, neither its proposer."
+
+[[watch]]
+at_s = 600
+headline = "Under way on an acoustic modem"
+bullets = ["ORCA 1 reports about every 20 s while submerged", "Each mine is logged as it goes down, with when it arms"]
+text = "ORCA 1 is under way to the line on its 300 bps acoustic modem, reporting about every 20 s. Each mine is logged as it goes down: its place, when it arms (30 minutes on) and when it goes inert. The map draws the field."
+
+[[watch]]
+at_s = 1500
+headline = "The field arms half an hour after each mine"
+bullets = ["Until then a Hammerhead hears nothing", "Live, it is a keep-out for our own undersea vehicles"]
+text = "A Hammerhead arms 30 minutes after it is laid (the catalog's estimate) and stays live for the order's period; until it arms it does nothing. While the field is live it is a no-go area for our own undersea vehicles."
+
+[[watch]]
+at_s = 3000
+headline = "The C2 sees only what its sensors see"
+bullets = ["A torpedo run is never reported by the truth", "A contact heard, then not, is what our sensors show"]
+text = "If something sets a mine off, the C2 learns of it only through its sensors (a contact heard, then not) or a struck report from one of ours; nothing of the truth reaches it."
+
+[[watch]]
+at_s = 3120
+headline = "A submarine within the first mine's hearing (truth)"
+bullets = ["Its torpedo runs some 50 s at 20 m/s", "On the default run it sinks the submarine"]
+text = "The submarine is within 1,000 m of mine 1 (truth): the mine launches its Mk 54, which strikes within about a minute; on the default run the draw sinks it."
+director = true
+
+# ---- the scripted operator on autoplay (eval/proxy.py): quick looks; a lay order is never its own
+# (op-2 and op-3 sign).
+[autoplay]
+preset = "default"
+attend_s = 4.0
+read_s = 3.0
+read_per_check_s = 0.3

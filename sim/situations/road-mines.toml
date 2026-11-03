@@ -1,0 +1,181 @@
+# Road mines: a row of TM-62M anti-vehicle mines laid on two signatures across the Presidio road,
+# a keep-out for our own vehicles while it is live, and a truck that sets one off
+# (sim/situations/README.md).
+#   make situation NAME=road-mines                    (autoplay, no AI: watch it)
+#   make situation NAME=road-mines OPERATOR=live      (you sign the lay order first; a script cosigns)
+#
+# Two of ours in the Presidio, south of the bridge: MOLE 1, the mine-laying UGV, and FERRET 1, a
+# recon UGV on a short patrol north of the row. The timeline proposes a lay order (agent-scripted, a
+# script saying so): MOLE 1 to lay ten TM-62M mines along 176 m of the road, live one hour. A lay
+# order is an engagement decision (rules 27): it needs no declared target, so its `minefield` check
+# judges what else could set the field off (ground tracks not declared hostile, now and on their
+# course; our own ground vehicles, their homes and their orders; MOLE 1 itself once each mine arms;
+# the no-strike areas), and two operators with engagement authority sign it, never its proposer
+# (autoplay: op-2 and op-3, scripted; live: you, then op-2). MOLE 1 drives to the row and lays the
+# mines one by one as it passes each place; each is logged (`mine.laid`: its place, when it arms,
+# when it goes inert), the record the law asks for. The map draws the field. Once it is laid the
+# timeline sends FERRET 1 south across the road past the row's east end: the route planner takes it
+# round the field (rules 22 and 27). A truck comes down the road from about 7:00 and reaches the row at
+# about 8:30, after every mine has armed; its wheels pass over the first mine, a seeded draw: on
+# the default run it goes off and destroys the truck. The C2 learns of it only through its sensors
+# (FERRET 1's sight sees the truck stop or vanish): nothing of the truth reaches it.
+#
+# Clock: every `at_s` here, like the contacts' `start_s`, counts from the stack's start (the link
+# emulator's); the contacts come a few seconds later.
+title = "Road mines"
+brief = """
+You have the watch at the Golden Gate on a June morning. Intelligence warns that a vehicle attack
+may come along the Presidio road toward the bridge's south end. The road is closed to traffic.
+Two of ours are in the Presidio: MOLE 1, an unmanned ground vehicle that lays anti-vehicle mines
+(20 TM-62M on board), parked south-east of the road; and FERRET 1, a small recon UGV patrolling
+north of it.
+
+The opening order comes from the setup script (op-setup, not a person) and goes out by policy.
+MOLE 1 is armed: no script gives it an order, and every order for it waits for a person.
+
+A row of mines is an engagement decision made in advance: a mine picks its victim later, by its
+trigger. So a lay order names the mines, the line they go along and how many hours they stay
+live; the engine checks what else could set the field off (anything on the ground not declared
+hostile, now and on its course; our own vehicles, their homes and their orders; the layer itself
+once each mine arms; the no-strike areas); and two operators with engagement authority sign it,
+neither of them its proposer. Each mine laid is recorded where and when it went down, when it arms
+and when it goes inert. While the field is live our own ground vehicles are routed round it.
+A TM-62M goes off under a vehicle's wheel or track, not every time a wheel passes: it can be
+crossed.
+"""
+director = """
+Truth: a truck without markings (truth affiliation: hostile) comes east along the Presidio road at
+8 m/s from about 7:00, along exactly the row's line, and reaches its west end at about 8:30.
+Nothing else moves on the ground but ours.
+What should happen: at 0:40 agent-scripted proposes the lay order (ten TM-62M along [-122.4640,
+37.8000] to [-122.4620, 37.8000], live 1 h); its checks pass (the minefield check names what it
+judged and what it can't: recorded roads); op-2 and op-3 sign it (live: you, then op-2); MOLE 1
+drives some 400 m to the row's west end and lays a mine every 20 m going east, each arming 60 s
+after it is laid; the field shows on the map. At about 6:10 the timeline proposes FERRET 1 a patrol
+south across the road over the row's east end; op-auto approves it (live: you) and the planner routes it round
+the field. The truck's wheels pass over mine 1 at about 8:30: on the default run it goes off and
+destroys the truck (the contacts log says "detonated by truck-raider: destroyed"); the C2 sees the
+track stop being detected. Another run can see the truck cross a mine or two first, or only
+immobilise it.
+What should not: a signature by the proposer or an agent; a mine set off by one of ours; FERRET 1
+sent across the field.
+"""
+
+world = "golden-gate"
+fleet = "sim/fleets/road-mines.toml"
+contacts = "sim/scenarios/road-mines.toml"
+events = []
+policy = "sim/situations/policies/watch.toml" # sim/policy.toml + an AI's tasking waits for the operator;
+                                              # the engagement floor signs a lay order
+tidewater = "golden-gate-2026-06"             # real terrain: the domain rule along every leg
+at = "2026-06-14T17:00:00Z"                   # 10:00 local, by day
+rate = 1
+duration_s = 720                              # 12 minutes of situation time
+ai_start_s = 30
+
+operator = "autoplay"
+ai = "none"                                   # the timeline proposes; any AI may be added
+cosigner = "scripted"                         # live: a scripted operator adds the second signature
+reveal = false
+seed = 1
+
+[summary]
+headline = "Two operators sign a row of anti-vehicle mines across a closed road; our own vehicles are routed round it."
+bullets = [
+  "MOLE 1 (mine-laying UGV, 20 TM-62M) and FERRET 1 (recon UGV) in the Presidio.",
+  "A lay order names the mines, the line and how long they stay live; two operators with engagement authority sign it.",
+  "The engine checks what else could set the field off before anyone signs.",
+  "Each mine is recorded where and when it went down; the map draws the field and our routes go round it.",
+  "A mine goes off under a vehicle's wheel only by a draw: it can be crossed.",
+]
+
+# ---- opening order, once the fleet is ready: issued by the setup script (op-setup); never for an
+# armed platform (refused at load), so MOLE 1 stays parked.
+[[order]]
+id = "ferret-patrol"
+task = "patrol"
+vehicles = { callsign = "FERRET 1" }
+route = [[-122.4655, 37.8012], [-122.4600, 37.8012]]
+note = "Opening order: patrol the ridge north of the Presidio road"
+
+# ---- the timeline
+# The lay order: agent-scripted proposes it (a script, never a signer); it waits in the Inbox for two
+# operators with engagement authority (autoplay: op-2 and op-3; live: you, then op-2).
+[[step]]
+id = "lay-order"
+at_s = 40
+kind = "propose"
+task = "lay"
+vehicles = { callsign = "MOLE 1" }
+route = [[-122.4640, 37.8000], [-122.4620, 37.8000]]
+count = 10
+live_h = 1
+weapon = "TM-62M mine"
+rationale = "Intelligence warns of a vehicle attack along the Presidio road toward the bridge, which is closed to traffic. {callsign} to lay ten TM-62M mines across 176 m of the road, live one hour: nothing on the ground but ours, and ours clear of the row."
+text = "Timeline at 0:40: agent-scripted proposes MOLE 1's lay order (ten TM-62M, live 1 h)"
+
+[[step]]
+id = "truck-comes"
+at_s = 425
+kind = "note"
+text = "A truck without markings comes east along the Presidio road toward the row (truth: hostile)"
+director = true
+
+# FERRET 1 south across the road, its straight leg over the row's east end: the planner routes it
+# round the live field (each end some 170 m from the row, outside the field's no-go area and the
+# planner's clearance, and where the Crissy Field radios see it).
+[[step]]
+id = "ferret-east"
+at_s = 370
+kind = "propose"
+task = "patrol"
+vehicles = { callsign = "FERRET 1" }
+route = [[-122.4630, 37.8015], [-122.4605, 37.7990]]
+rationale = "Watch the road's south side past the row: {callsign} south across the road (the route planner takes it round our field)."
+text = "Timeline at 6:10: agent-scripted proposes FERRET 1 a patrol south across the road, past the row's east end"
+
+# ---- what to watch for
+[[watch]]
+at_s = 0
+headline = "Stack up: two UGVs in the Presidio"
+bullets = ["FERRET 1 patrols north of the road (order by policy)", "MOLE 1 is armed: no script orders it"]
+text = "The stack comes up: two of ours in the Presidio. The setup script's opening order goes out by policy: FERRET 1 on a short patrol north of the road. MOLE 1 carries 20 TM-62M anti-vehicle mines (its Loadout): it is armed, so no script orders it."
+
+[[watch]]
+at_s = 40
+headline = "A lay order waits for two signatures"
+bullets = ["The minefield check: what else could set the field off, and what it can't judge", "Two operators with engagement authority, neither the proposer", "No target is declared: the decision is made at the laying"]
+text = "A lay order in the Inbox: MOLE 1 to lay ten TM-62M mines along the road, live one hour. Read its minefield check: what else could set the field off now and on its course (ground tracks not declared hostile, our own ground vehicles with their homes and orders, the layer itself once each mine arms, the no-strike areas) and what it cannot judge (recorded roads, any course past ten minutes). It needs two operators with engagement authority, neither its proposer."
+
+[[watch]]
+at_s = 150
+headline = "Mines go down one by one"
+bullets = ["Each logged: its place, when it arms (60 s), when it goes inert", "The map draws the field and its reach"]
+text = "MOLE 1 lays the row as it drives along the line: each mine is logged where and when it went down, when it arms (60 s after) and when it goes inert (the order's live period). The map draws the field with its danger area."
+
+[[watch]]
+at_s = 380
+headline = "Our own vehicles go round the field"
+bullets = ["FERRET 1 is sent south across the road, over the row's end", "The planner routes it round the live field"]
+text = "While the field is live it is a no-go area for our own ground vehicles: FERRET 1's patrol south across the road is routed round it (the order's planned path), and an order straight across it would be refused."
+
+[[watch]]
+at_s = 480
+headline = "The C2 sees only what its sensors see"
+bullets = ["A detonation is never reported by the truth", "A track that stops or vanishes is what our sensors show"]
+text = "If something sets a mine off, the C2 learns of it only through its sensors (a track that stops, or vanishes) or a struck report from one of ours; nothing of the truth reaches it."
+
+[[watch]]
+at_s = 425
+headline = "A truck comes down the road (truth)"
+bullets = ["It reaches the row at about 8:30", "On the default run the first mine goes off and destroys it"]
+text = "A hostile truck comes east along the road (truth); on the default run the first mine it crosses goes off and destroys it."
+director = true
+
+# ---- the scripted operator on autoplay (eval/proxy.py): quick looks; a lay order is never its own
+# (op-2 and op-3 sign).
+[autoplay]
+preset = "default"
+attend_s = 4.0
+read_s = 3.0
+read_per_check_s = 0.3

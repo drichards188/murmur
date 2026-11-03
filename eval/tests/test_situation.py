@@ -50,7 +50,7 @@ def test_every_situation_loads():
         assert sit.title and sit.brief, p
         # fault-drill and world v3's watches run in the headless simulator only (the faults are the
         # simulator's; so is a world's conditions draw)
-        if p.stem not in ("fog-watch", "harbor-watch", "morning-harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition", *WEAPON_SITUATIONS, "tutorial", "fault-drill", "swarm-saturation", *WATCHES_V3):
+        if p.stem not in ("fog-watch", "harbor-watch", "morning-harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition", *WEAPON_SITUATIONS, "tutorial", "fault-drill", "swarm-saturation", "shore-battery", "road-mines", "hammerhead-line", *WATCHES_V3):
             assert sit.todo, f"{p.stem} is a stub until the AI work lands"
     assert S.headless_steps(S.load_situation("fault-drill"))
     for name in WATCHES_V3:
@@ -167,7 +167,7 @@ def test_bad_situations_are_refused(tmp_path: Path, body: str):
 def test_the_summary_and_watch_glances_are_checked_and_leave_the_brief_alone():
     """`[summary]` and a watch item's `headline`/`bullets` are the person's glance: loaded as
     written, bounded, and never part of the brief the AI is given."""
-    for name in ("harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition"):
+    for name in ("harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition", "shore-battery", "road-mines", "hammerhead-line"):
         sit = S.load_situation(name)
         assert sit.summary and sit.summary["headline"] and 1 <= len(sit.summary["bullets"]) <= 5
         assert all(w.headline and 1 <= len(w.bullets) <= 3 for w in sit.watch)

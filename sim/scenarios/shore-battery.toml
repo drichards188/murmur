@@ -1,0 +1,160 @@
+# Shore battery traffic (sim/situations/shore-battery.toml): ordinary traffic at the Golden Gate and
+# two fast boats that fire on one of ours, one after the other. Run by crates/murmur-contacts;
+# format in crates/murmur-contacts/src/scenario.rs. Points are [lon, lat]. Routes and identities
+# as in sim/scenarios/hostile-act-engagement.toml (fictional names and MMSIs), without the inbound
+# container ship, whose lane crosses both holding points during the watch.
+#
+# Times (`start_s`, an act's `at_s`) count from the contacts process's start, a few seconds after
+# the situation's clock (the link emulator's). uids are the fleet's (sim/fleets/shore-battery.toml):
+# 1 is HUNTER 1, 2 is BULL 1.
+#
+# Each act is an abstract event (a time, an author, a victim): the engine learns of it only
+# through our sensors and declares its author hostile by rule when it is attributed to one track at
+# the policy's threshold (0.9) or more.
+#
+# The seed: every hit and damage draw of our weapons is seeded by it and the strike (the intent's
+# number, and a burst's: `effect:<intent>:target`, `effect:<intent>:<burst>:target`),
+# crates/murmur-contacts damage.rs. 98921 is chosen so that on the default run (autoplay, no AI:
+# the Javelin's nomination is intent 2, the M2's intent 3) the Javelin destroys the first boat and
+# the M2's third burst destroys the second, and the same holds if one or two more orders come
+# before them (intents 3 and 4, or 4 and 5). Another run, an AI's own nominations among them, may
+# number them otherwise: the Javelin may miss or only stop the boat (the first run, on another
+# seed, left it drifting without propulsion), and the gun may take many bursts.
+title = "Shore battery traffic"
+seed = 98921
+
+[sensing]
+misclassification_rate = 0.0     # deterministic identities: the situation is about the weapons
+
+# ---------------------------------------------------------------- the hostiles
+# RAIDER (truth label only; the C2 calls it by its track): runs in from the sea at 15 m/s (29 kn),
+# no AIS, and holds mid-strait 1.5 km west of the bridge, inside the engagement zone
+# (sim/areas: ez-gate-west), from about 3:00, 1,740 m from BULL 1. Then it fires on HUNTER 1, and
+# again a minute later, and again, in case an act is attributed below the threshold.
+[[contact]]
+id = "fastboat-first"
+name = "First fast boat without AIS, holding mid-strait west of the bridge"
+affiliation = "hostile"
+domain = "surface"
+kind = "small_fast_boat"
+speed_mps = 15
+motion = "transit"
+route = [[-122.5250, 37.8080], [-122.4950, 37.8120]]
+start_s = 5
+
+[[act]]
+id = "act-1"
+at_s = 200
+by = "fastboat-first"
+against_vehicle = 1
+label = "fires on the sensor ship (HUNTER 1)"
+
+[[act]]
+id = "act-2"
+at_s = 260
+by = "fastboat-first"
+against_vehicle = 1
+label = "fires on HUNTER 1 again"
+
+[[act]]
+id = "act-3"
+at_s = 320
+by = "fastboat-first"
+against_vehicle = 1
+label = "fires on HUNTER 1 a third time"
+
+# The second boat comes in from 5:00 along the south side of the strait and holds 1,190 m from
+# BULL 1, nearer the shore, from about 7:30. It fires on HUNTER 1 from about 7:50.
+[[contact]]
+id = "fastboat-second"
+name = "Second fast boat without AIS, holding near the south shore west of the bridge"
+affiliation = "hostile"
+domain = "surface"
+kind = "small_fast_boat"
+speed_mps = 15
+motion = "transit"
+route = [[-122.5150, 37.8050], [-122.4900, 37.8075]]
+start_s = 300
+
+[[act]]
+id = "act-4"
+at_s = 470
+by = "fastboat-second"
+against_vehicle = 1
+label = "fires on HUNTER 1"
+
+[[act]]
+id = "act-5"
+at_s = 530
+by = "fastboat-second"
+against_vehicle = 1
+label = "fires on HUNTER 1 again"
+
+[[act]]
+id = "act-6"
+at_s = 590
+by = "fastboat-second"
+against_vehicle = 1
+label = "fires on HUNTER 1 a third time"
+
+# ---------------------------------------------------------------- ferries (AIS, neutral)
+[[contact]]
+id = "ferry-sausalito"
+name = "Sausalito ferry (Ferry Building to Sausalito)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 10
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.4120, 37.8130], [-122.4400, 37.8220], [-122.4620, 37.8390], [-122.4770, 37.8560]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999101", name = "MV GOLDEN BEAR", ship_type = "passenger" }
+
+[[contact]]
+id = "ferry-larkspur"
+name = "Larkspur ferry (Ferry Building to Larkspur via Raccoon Strait)"
+affiliation = "neutral"
+domain = "surface"
+kind = "ferry"
+speed_mps = 12
+motion = "route"
+route = [[-122.3905, 37.7960], [-122.4120, 37.8180], [-122.4170, 37.8380], [-122.4500, 37.8600], [-122.4480, 37.8740], [-122.4700, 37.8880], [-122.4950, 37.9300], [-122.5070, 37.9440]]
+reverse = true
+dwell_s = 600
+ais = { mmsi = "366999102", name = "MV MARIN CREST", ship_type = "passenger" }
+
+# ---------------------------------------------------------------- shipping (AIS, neutral)
+# The outbound bulk carrier comes down from Angel Island toward the Gate at 6 m/s: at the bridge
+# only after the watch (about 16 minutes in).
+[[contact]]
+id = "cargo-outbound"
+name = "Bulk carrier outbound from Richmond"
+affiliation = "neutral"
+domain = "surface"
+kind = "cargo_ship"
+speed_mps = 6
+motion = "transit"
+route = [[-122.4200, 37.8450], [-122.4600, 37.8260], [-122.4790, 37.8170], [-122.5500, 37.7950], [-122.6800, 37.7500]]
+ais = { mmsi = "366999202", name = "PACIFIC HARVESTER", ship_type = "cargo" }
+
+# ---------------------------------------------------------------- fishing and leisure
+[[contact]]
+id = "fishing-milerock"
+name = "Sport fishing boat drifting off Mile Rock (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "fishing_vessel"
+motion = "drift"
+at = [-122.5200, 37.7850]
+
+[[contact]]
+id = "yacht-landsend"
+name = "Sailing yacht tacking off Lands End (no AIS)"
+affiliation = "neutral"
+domain = "surface"
+kind = "sailboat"
+speed_mps = 3
+motion = "loiter"
+center = [-122.5350, 37.7900]
+radius_m = 250
