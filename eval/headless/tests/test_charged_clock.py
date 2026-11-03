@@ -390,10 +390,16 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: this code gave the earlier digests (7fb55767..., 92e15f29..., 678e4d88...) byte for byte, so the
 #: only change is the audit log's `run.started` (`rules_version` 26 for 25). No fleet here carries
 #: a gun, and no tool changed.
+#: Re-taken for decision rules 27 (bd murmur-lbw8.4, minefields): with `RULES_VERSION` put back to
+#: 26 and the lay order's new `count` and `live_h` arguments (and the word on `task = "lay"`) left out
+#: of the tool schemas, this code gave the earlier digests (d7f6a21d..., 413c56ba..., 1108c0d2...)
+#: byte for byte, so the only changes are the audit log's `run.started` (`rules_version` 27 for 26)
+#: and, for the model, the longer `propose_intent` and `preview_intent` schemas in its prompt sizes
+#: and token estimates. No fleet here carries a mine.
 PAUSED = {
-    "model harbor-watch s1": "d7f6a21d698c23013a554145db1eeac7ec020ed4872a7c67891b3fcbe68862a0",
-    "playbook v2 fast-unknown 1000": "413c56ba6a952d3eb71babb51f8be548458e5a036241f356a9fcad891747fb74",
-    "model v2 fast-unknown 1000": "1108c0d24369f24f04caa6fc307e82b63e724635229ab2c408a63491523df963",
+    "model harbor-watch s1": "0ead6f3f68462898934e9d1be93abc35b8a46c83fd7fed1e4f4074685b53529c",
+    "playbook v2 fast-unknown 1000": "8656883a2f69cfe7985d8cd36fabe60f339db503ef5080dda39e5fc785571b60",
+    "model v2 fast-unknown 1000": "7ac942f48ef4f0e28176e5cc33ff0d4959045e765db24bd63542f6f734b542d9",
 }
 
 

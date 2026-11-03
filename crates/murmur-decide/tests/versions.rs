@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 79] = [
+const LOGS: [(&str, u32); 81] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -221,13 +221,18 @@ const LOGS: [(&str, u32); 79] = [
     // release and two bursts of 6, the fire held on a target not seen since, assessed ceased)
     ("v26-engagement-scenario-01.jsonl", GUN_SINCE),
     ("v26-gun-bursts-until-the-target-ceases-scenario-123.jsonl", GUN_SINCE),
+    // rules 27 (minefields; a clean build of 1744054 on the branch of bd murmur-lbw8.4): scenario 01
+    // (the switchblade, unchanged) and 128 (the mine-laying UGV's row of 10 TM-62M mines laid on two
+    // signatures, recorded mine by mine, logged inert at its period's end)
+    ("v27-engagement-scenario-01.jsonl", MINE_SINCE),
+    ("v27-minefield-laid-on-two-signatures-scenario-128.jsonl", MINE_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v26-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v27-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -2002,4 +2007,27 @@ fn a_guns_bursts_are_caught_under_older_rules_and_when_renumbered() {
     assert_ne!(renumbered, ls);
     let w: Vec<String> = whats(&with(&rechain(&renumbered), RulesAccepted::Exactly(GUN_SINCE))).iter().map(|s| s.to_string()).collect();
     assert!(w.iter().any(|m| m.contains("a burst out of order")), "{w:?}");
+}
+
+/// Rules 27: scenario 128's log relabelled rules 26 carries what no build of rules 26 logged (a lay
+/// order, its mines, its field gone inert, the minefield check) and is caught; a mine renumbered
+/// out of order is caught under its own rules.
+#[test]
+fn a_minefield_is_caught_under_older_rules_and_when_renumbered() {
+    let ls = lines(&fixture("v27-minefield-laid-on-two-signatures-scenario-128.jsonl"));
+    let v27 = format!("\"rules_version\":{MINE_SINCE},");
+    let mut old = ls.clone();
+    assert!(old[0].contains(&v27));
+    old[0] = old[0].replacen(&v27, &format!("\"rules_version\":{GUN_SINCE},"), 1);
+    let w: Vec<String> = whats(&with(&rechain(&old), RulesAccepted::Exactly(GUN_SINCE))).iter().map(|s| s.to_string()).collect();
+    for what in ["a lay order", "a mine laid", "a minefield gone inert", "a lay order's minefield check"] {
+        assert!(w.iter().any(|m| m.starts_with(what)), "{what}: {w:?}");
+    }
+    let renumbered: Vec<String> = ls
+        .iter()
+        .map(|l| if l.contains("\"type\":\"mine.laid\"") { l.replacen("\"n\":3,", "\"n\":4,", 1) } else { l.clone() })
+        .collect();
+    assert_ne!(renumbered, ls);
+    let w: Vec<String> = whats(&with(&rechain(&renumbered), RulesAccepted::Exactly(MINE_SINCE))).iter().map(|s| s.to_string()).collect();
+    assert!(w.iter().any(|m| m.contains("a mine out of order")), "{w:?}");
 }

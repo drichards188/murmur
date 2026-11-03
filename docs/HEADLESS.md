@@ -1290,7 +1290,11 @@ loadout, a weapon or rounds. Rules 25 (the damage model, bd murmur-lbw8.2) re-to
 (record `aeff71f8...`, audit `e07a551a...`) byte for byte; no strike is drawn in the episode (no
 weapon with figures) and no vehicle reports damage. Rules 26 (guns, bd murmur-lbw8.3) re-took it for `run.started`
 alone: with `RULES_VERSION` put back to 25 the code gave the earlier digests (record
-`ccb22ba8...`, audit `c4ba5d23...`) byte for byte; no fleet in the episode carries a gun.
+`ccb22ba8...`, audit `c4ba5d23...`) byte for byte; no fleet in the episode carries a gun. Rules 27
+(minefields, bd murmur-lbw8.4) re-took it for `run.started` alone: with `RULES_VERSION` put back to
+26 (and the lay order's arguments left out of the tool schemas) the code gave the earlier digests
+(record `cb36d65e...`, audit `7928e232...`) byte for byte, and the new audit log with its
+`rules_version` put back to 26 hashes to `7928e232...` too; no fleet in the episode carries a mine.
 
 ### 17.3 The bake tool
 
