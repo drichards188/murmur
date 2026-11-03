@@ -3,7 +3,7 @@
 Steps (`[[step]]` in a spec; `at_s` counts from the moment the fleet is ready):
 
     kind = "propose"            a proposal through the arm's proposer
-      task = "orbit"            orbit | patrol | hold | rtl | track
+      task = "orbit"            orbit | patrol | hold | rtl | track | lay
       vehicles = {...}          {uids = [..]} | {platform = "cca"} (first of that platform,
                                 or all with all = true) | {callsign = "BLADE 1"}
       center = ...              [lon, lat] | {contact = "id", offset_m = [east, north]}
@@ -20,6 +20,8 @@ Steps (`[[step]]` in a spec; `at_s` counts from the moment the fleet is ready):
       withdraw_after_s = 40     the proposer withdraws it if still waiting (override metric)
       retry_s = 20              keep trying this long if a track or vehicle it names is not
                                 there yet (default 20; 0 inside a flood)
+      count, live_h, weapon     a lay order's (rules 27): mines evenly along `route`, the hours
+                                they stay live, the mine by name (default the platform's first)
     kind = "flood"              count proposals, interval_s apart, cycling templates
     kind = "declare"            an operator declares a track's affiliation (operator.action)
     kind = "link"               a link effect on named vehicles from now (delay_s) for
@@ -308,7 +310,7 @@ def aim_context(center: list[float] | None, radius_m: float | None, tracks: list
 SAME_POINT_M = 1.0
 # the request fields each task kind carries in the intent (`params`); a field the actual task
 # does not carry (a radius on a patrol) is not an adjustment
-CARRIES = {"orbit": ("center", "radius_m"), "patrol": ("route",), "track": ("target",), "hold": (), "rtl": ()}
+CARRIES = {"orbit": ("center", "radius_m"), "patrol": ("route",), "track": ("target",), "hold": (), "rtl": (), "lay": ("route",)}
 REQUEST_FIELDS = ("task", "uids", "center", "radius_m", "route", "target", "reserve_pct", "duration_s", "extra")
 
 
@@ -672,6 +674,10 @@ class Storyline:
         for k in ("reserve_pct", "duration_s"):
             if p.get(k) is not None:
                 req[k] = p[k]
+        # a lay order's own keys (rules 27), passed through as the bridge takes them
+        lay = {k: p[k] for k in ("count", "live_h", "weapon") if p.get(k) is not None}
+        if lay:
+            req["extra"] = lay
         rationale = self.fill(str(p.get("rationale", "")), target, lead) or f"{p['task']} on {lead.get('uid')}"
         return req, rationale, target, lead
 

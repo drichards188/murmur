@@ -70,7 +70,11 @@ in autoplay, as the cosigner of a person at the console (`mode = "cosign"`: neve
 signature), or as the two signers of a nomination the person at the console made (`mode =
 "pair"`: the tutorial's, where a proposer may never sign their own nomination; they sign
 only a nomination one of `proposers` made, never an agent's or a script's); the evaluation's
-arms do not use them yet (`eval/engage.py`).
+arms do not use them yet (`eval/engage.py`). They sign a lay order (rules 27: a minefield, signed
+as an engagement is, by two operators with engagement authority) the same way, without a picture
+token (the engine has none for it: the order itself is what each signer signs, and it re-runs
+its checks at each signature): each reads the order again before signing it, never the proposer,
+and a cosigner only after a person signed first.
 """
 
 from __future__ import annotations
@@ -84,6 +88,25 @@ from typing import Any
 
 from .bridge import Bridge, BridgeError
 from .evidence import C_MIN, RULEBOOK_VERSION, evidence, near_aim
+
+# the cards only operators with engagement authority sign: an engagement nomination, and from
+# rules 27 a lay order
+SIGNED_KINDS = ("engage", "lay")
+
+
+def lay_view(intent: dict[str, Any]) -> dict[str, Any]:
+    """A lay order's signatures as `EngagementSigners.next_signer` reads an engagement's view:
+    who signed (the concurrences, then the approval), how many it needs, its proposer."""
+    signed = [str(c.get("by")) for c in intent.get("concurrences") or []]
+    if (intent.get("approval") or {}).get("by"):
+        signed.append(str(intent["approval"]["by"]))
+    src = intent.get("source") or {}
+    return {
+        "lay": True,
+        "approvers_needed": int((intent.get("policy") or {}).get("approvers") or 2),
+        "signed": signed,
+        "proposer": src.get("id") if src.get("kind") == "human" else None,
+    }
 
 @dataclass
 class ProxyParams:
@@ -302,8 +325,9 @@ class ProxyOperator(Supervisor):
             inbox = await asyncio.to_thread(self.bridge.try_get, "/api/inbox")
             pending = sorted((inbox or {}).get("pending", []), key=lambda i: i.get("expires_t") or 0)
             if self.signers is not None:
-                # engagement nominations are the signers' (picture tokens, two operators)
-                pending = [i for i in pending if i.get("kind") != "engage"]
+                # engagement nominations and lay orders are the signers' (two operators with
+                # engagement authority; picture tokens for a nomination)
+                pending = [i for i in pending if i.get("kind") not in SIGNED_KINDS]
             queue = len(pending)
             for i in pending:
                 if stop.is_set():
@@ -482,9 +506,9 @@ class EngagementSigners:
             for i in (inbox or {}).get("pending", []):
                 if stop.is_set():
                     return
-                if i.get("kind") == "engage":
+                if i.get("kind") in SIGNED_KINDS:
                     try:
-                        await self.consider(i)
+                        await (self.consider_lay(i) if i.get("kind") == "lay" else self.consider(i))
                     except Exception as e:  # noqa: BLE001 (recorded and said; the loop goes on)
                         self._record({"intent_id": i.get("id"), "action": "error", "reason": f"{e!r}"})
                         print(f"engagement signers: intent {i.get('id')}: {e!r}", flush=True)
@@ -509,8 +533,9 @@ class EngagementSigners:
         if self.mode == "cosign":
             if not any(s not in self.operators for s in signed):
                 return None, "waiting for a person to sign first (the scripted cosigner never makes the first signature)"
+            # (a lay order has no plan to freeze: the order is what each signer signs)
             frozen_by = (view.get("plan") or {}).get("by")
-            if frozen_by is None or frozen_by in self.operators:
+            if not view.get("lay") and (frozen_by is None or frozen_by in self.operators):
                 return None, "no plan a person froze: the scripted cosigner signs only a plan a person signed first"
             if any(s in self.operators for s in signed):
                 return None, "the scripted cosigner signs once per nomination"
@@ -592,6 +617,53 @@ class EngagementSigners:
                 return made
             # the next signer reads the nomination as the inbox serves it now (the plan the
             # first signature froze, who signed)
+            cur = await self.view_of(iid)
+        return made
+
+    def _lay_blocked(self, cur: dict[str, Any] | None) -> tuple[str | None, str]:
+        """Who signs a lay order next (`next_signer` on its `lay_view`), and why not."""
+        if cur is None or cur.get("state") != "pending_approval":
+            return None, "no longer waiting"
+        return self.next_signer(lay_view(cur), cur.get("source") or {})
+
+    async def consider_lay(self, intent: dict[str, Any]) -> list[dict[str, Any]]:
+        """Sign what can be signed on this lay order now (rules 27); returns the signatures made.
+        No picture token: each signer reads the order (`read_s`), reads it again as the inbox
+        serves it, and signs it as it stands; the engine re-runs its checks at the signature and
+        refuses it if they fail."""
+        iid = int(intent["id"])
+        made: list[dict[str, Any]] = []
+        cur: dict[str, Any] | None = intent
+        for _ in range(len(self.operators)):
+            op, why = self._lay_blocked(cur)
+            if op is None:
+                if why != "no longer waiting":
+                    self._wait(iid, why)
+                return made
+            await asyncio.sleep(self.read_s)
+            fresh = await self.view_of(iid)
+            again, why = self._lay_blocked(fresh)
+            if again != op:
+                self._wait(iid, f"changed while {op} read it: {why or f'{again} would sign now'}")
+                return made
+            p = (fresh or {}).get("params") or ((fresh or {}).get("task") or {}).get("params") or {}
+            body: dict[str, Any] = {
+                "note": f"{self.label} signer {op} (not a person): signed the lay order as it stands ({p.get('count')} x {p.get('weapon') or 'mine'}, live {p.get('live_h')} h)",
+            }
+            if op in self.passwords:
+                body["password"] = self.passwords[op]
+            try:
+                out = await asyncio.to_thread(self.bridge.post, f"/api/intents/{iid}/approve", body, op)
+            except BridgeError as e:
+                detail = e.body.get("detail") if isinstance(e.body, dict) else e.body
+                self._record({"intent_id": iid, "action": "sign_failed", "by": op, "result": f"error {e.status}: {detail}"})
+                return made
+            rec = {"intent_id": iid, "action": "sign", "by": op, "lay": True, "result": (out.get("intent") or {}).get("state"), "dispatched": bool(out.get("dispatched"))}
+            self._record(rec)
+            made.append(rec)
+            self._said.pop(iid, None)
+            if self.mode == "cosign":
+                return made
             cur = await self.view_of(iid)
         return made
 

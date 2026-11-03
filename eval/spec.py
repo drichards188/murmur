@@ -61,7 +61,9 @@ from . import REPO
 
 STEP_KINDS = ("propose", "flood", "declare", "link", "note", "engage")
 LABELS = ("legitimate", "should_reject", "should_void", "derived")
-TASKS = ("orbit", "patrol", "hold", "rtl", "track")
+# rules 27: a lay order (`route`, `count`, `live_h`, `weapon`) is proposed like any other order and
+# signed as an engagement is, by two operators with engagement authority
+TASKS = ("orbit", "patrol", "hold", "rtl", "track", "lay")
 # what a step's `premise` may assert about the proposal, checked against what the run
 # recorded (eval/metrics.py `check_premise`): the label truth gives it, whether what the C2
 # showed at proposal speaks against it, and what the targeted track showed
@@ -148,6 +150,8 @@ def _check_step(s: Step) -> None:
                 raise SpecError(f"step {s.id!r}: task {p.get('task')!r} not in {TASKS}")
             if "vehicles" not in p:
                 raise SpecError(f"step {s.id!r}: needs vehicles")
+            if p.get("task") == "lay" and not all(k in p for k in ("route", "count", "live_h")):
+                raise SpecError(f"step {s.id!r}: a lay order needs route, count and live_h")
         else:
             if not isinstance(p.get("templates"), list) or not p["templates"]:
                 raise SpecError(f"step {s.id!r}: flood needs a list of templates")

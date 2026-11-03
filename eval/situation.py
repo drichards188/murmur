@@ -145,10 +145,14 @@ CONDITIONS = ("world", "none")
 ORDER_KEYS = {"id", "task", "vehicles", "center", "radius_m", "route", "target", "reserve_pct", "duration_s", "note"}
 # what each step kind may carry (eval/storyline.py's docstring), besides id, at_s and kind
 STEP_COMMON = {"text", "director"}
+# a lay order's own keys on a propose step (rules 27)
+LAY_KEYS = {"count", "live_h", "weapon"}
 STEP_KEYS = {
     "note": set(),
+    # (a lay order, rules 27: its line as route, count, live_h, and the mine as weapon: LAY_KEYS,
+    # refused on any other proposal)
     "propose": {"task", "vehicles", "center", "radius_m", "route", "target", "reserve_pct", "duration_s",
-                "rationale", "label", "reason", "premise", "withdraw_after_s", "retry_s"},
+                "rationale", "label", "reason", "premise", "withdraw_after_s", "retry_s", "count", "live_h", "weapon"},
     "flood": {"count", "interval_s", "templates", "label"},
     "declare": {"affiliation", "track", "note"},
     "link": {"vehicles", "cut", "loss", "extra_latency_ms", "duration_s", "delay_s"},
@@ -356,6 +360,8 @@ def _steps(raw: list[Any], sit: Path, duration_s: float) -> list[Step]:
         if kind not in STEP_KEYS:
             raise SituationError(f"{sit}: step {sid!r}: kind {kind!r} not in {sorted(STEP_KEYS)}")
         unknown = set(s) - STEP_KEYS[kind] - STEP_COMMON
+        if kind == "propose" and s.get("task") != "lay":
+            unknown |= set(s) & LAY_KEYS
         if unknown:
             raise SituationError(f"{sit}: step {sid!r}: a {kind} step takes no {sorted(unknown)}")
         if not 0 <= at_s < duration_s:
@@ -1330,6 +1336,53 @@ class EngagementChain:
                 line(e, "confirmed", f"{e.get('by')} confirmed the rule declaration D-{e.get('declaration')} on {e.get('track')}")
             elif kind == "ident.revoked":
                 line(e, "revoked", f"{e.get('by')} revoked the declaration D-{e.get('declaration')} on {e.get('track')}")
+            elif kind == "intent.created" and (e.get("intent") or {}).get("kind") == "lay":
+                # rules 27: a lay order, signed as an engagement is
+                i = e.get("intent") or {}
+                src = i.get("source") or {}
+                p = i.get("params") or {}
+                platform = ", ".join(self._who(u) for u in i.get("uids") or [])
+                self.engagements[int(i.get("id", 0))] = {
+                    "intent": i.get("id"),
+                    "lay": True,
+                    "t": round(float(e.get("t", 0)) / 1000.0, 3),
+                    "by": f"{src.get('kind')} {src.get('id')}",
+                    "source": src,
+                    "platform": platform,
+                    "count": p.get("count"),
+                    "live_h": p.get("live_h"),
+                    "weapon": p.get("weapon"),
+                    "signed": [],
+                    "laid": 0,
+                    "state": "proposed",
+                }
+                line(
+                    e, "nominated",
+                    f"lay order proposed by {src.get('kind')} {src.get('id')}: intent {i.get('id')}, {platform} to lay {p.get('count')} "
+                    f"{p.get('weapon') or 'mines'} along its line, live {p.get('live_h')} h",
+                    intent=i.get("id"),
+                )
+            elif kind == "mine.laid":
+                rec = self.engagements.get(int(e.get("intent", 0)))
+                if rec is not None:
+                    rec["laid"] = int(rec.get("laid") or 0) + 1
+                at = e.get("at") or [None, None]
+                where = f"[{at[0]:.5f}, {at[1]:.5f}]" if all(isinstance(x, (int, float)) for x in at) else "?"
+                arms = (float(e.get("arms_t", 0)) - float(e.get("t", 0))) / 1000.0
+                line(e, "mine", f"mine {e.get('n')} of {e.get('of')} laid by intent {e.get('intent')} at {where} ({(e.get('weapon') or {}).get('name')}, arms in {arms:.0f} s)", intent=e.get("intent"))
+            elif kind == "minefield.inert":
+                line(e, "inert", f"the minefield of intent {e.get('intent')} is inert ({e.get('mines')} mines)", intent=e.get("intent"))
+            elif kind == "engage.burst":
+                rec = self.engagements.get(int(e.get("intent", 0)))
+                w = e.get("weapon") or {}
+                if rec is not None:
+                    rec["bursts"] = int(e.get("burst") or 0)
+                line(e, "burst", f"burst {e.get('burst')} of intent {e.get('intent')}: {w.get('name')}, {w.get('rounds')} rounds, {w.get('left')} left", intent=e.get("intent"))
+            elif kind == "engage.fire_ended":
+                rec = self.engagements.get(int(e.get("intent", 0)))
+                if rec is not None:
+                    rec["fire_ended"] = f"{e.get('why')}: {str(e.get('detail', ''))[:200]}"
+                line(e, "fire_ended", f"intent {e.get('intent')}'s fire ended ({e.get('why')}): {str(e.get('detail', ''))[:240]}", intent=e.get("intent"))
             elif kind == "intent.created":
                 i = e.get("intent") or {}
                 if i.get("kind") != "engage":
@@ -1380,7 +1433,13 @@ class EngagementChain:
                     continue
                 eng = e.get("engage") or {}
                 rec["dispatched_t"] = round(float(e.get("t", 0)) / 1000.0, 3)
-                line(e, "dispatched", f"intent {e.get('intent')} dispatched: {self._who(eng.get('uid'))} to the effect point", intent=e.get("intent"))
+                if rec.get("lay"):
+                    where = f"{rec['platform']} to lay along its line"
+                else:
+                    # rules 26 and 28: a gun's or a ground or surface platform's missile's firing position
+                    to = "its firing position" if eng.get("fire_from") else "the effect point"
+                    where = f"{self._who(eng.get('uid'))} to {to}"
+                line(e, "dispatched", f"intent {e.get('intent')} dispatched: {where}", intent=e.get("intent"))
             elif kind == "engage.effect":
                 rec = self.engagements.get(int(e.get("intent", 0)))
                 w = e.get("weapon") or {}
@@ -1423,6 +1482,11 @@ class EngagementChain:
             conf = f", confirmed by {d['confirmed_by']}" if d.get("confirmed_by") else (", not confirmed" if by.get("kind") == "rule" else "")
             lines.append(f"  declared {d['track']} {d['affiliation']} {how}{conf}")
         for iid, r in sorted(self.engagements.items()):
+            if r.get("lay"):
+                lines.append(f"  lay order intent {iid}: proposed by {r['by']} ({r['platform']}, {r['count']} x {r.get('weapon') or 'mine'}, live {r['live_h']} h): {r['state']}")
+                lines.append(f"    signed by: {', '.join(str(s) for s in r['signed']) or 'nobody'}")
+                lines.append(f"    mines laid: {r.get('laid', 0)}")
+                continue
             named = f", weapon {r['weapon']}" if r.get("weapon") else ""
             lines.append(f"  engagement intent {iid}: nominated by {r['by']} ({r['platform']} on {r['track']}{named}, radius {r['effect_radius_m']} m, fallback {r['fallback']}): {r['state']}")
             lines.append(f"    signed by: {', '.join(str(s) for s in r['signed']) or 'nobody'}")
@@ -1431,6 +1495,10 @@ class EngagementChain:
             if r.get("effect_t") is not None:
                 fired = f" ({r['released']})" if r.get("released") else ""
                 lines.append(f"    effect released: yes{fired}, at {r.get('effect_point')}")
+            if r.get("bursts"):
+                lines.append(f"    bursts fired: {r['bursts']} (the release the first)")
+            if r.get("fire_ended"):
+                lines.append(f"    fire ended: {r['fire_ended']}")
             if r.get("assessed"):
                 lines.append(f"    assessed: {r['assessed']} ({str(r.get('evidence') or '')[:200]})")
             if r.get("stopped"):
