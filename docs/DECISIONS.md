@@ -217,6 +217,22 @@ group. Dates are 2026.
   danger area instead). Every safeguard stands exactly: no autonomous engagement, two human
   signatures, the authorize step closed to agents in code, every order to an armed platform
   waiting for a human, DoD Directive 3000.09.
+- **A missile from a ground or surface platform fires from a firing position** (11-03, the owner:
+  "make scenarios so that each weapon is able to properly be used in at least one"). Built as
+  decision rules 28 (bd murmur-9001, `MISSILE_STANDOFF_SINCE`); amends "Real weapon loadouts on
+  armed platforms" above, whose missiles flew rules 20's model, written for an aircraft passing
+  over its target: the plan drove the platform onto the effect point and released once the point
+  was within the missile's slant range. For the armed UGV's Javelin that meant never (it could
+  only be inside its 65 m minimum range of a holding target) and no target on the water at all
+  (the UGV refused by the domain rule). Decided: such a missile's plan sends its platform to a
+  firing position as a gun's does (rules 26): where it stands when the predicted point is within
+  the missile's band (its minimum range plus the effect radius, to its maximum range less it),
+  else on the line to the point at the band's nearer edge, closing in or opening out; the release
+  is judged as any missile's (the slant range, the strike's time, the keep-outs at the strike).
+  Aircraft keep rules 20's model. Accepted shortcut: a platform opening to the near edge takes the
+  target as holding for that short move (the reach check follows it). Every safeguard stands
+  exactly: no autonomous engagement, two human signatures, the authorize step closed to agents in
+  code, every order to an armed platform waiting for a human, DoD Directive 3000.09.
 - **Pitch depth and rigor, not "first"** (10-02). Pressure test found the ideas in closed
   work (RESCHU, IMPACT, Aegis doctrine, Lattice, Legion, Palantir AIP, Thunderforge, DARPA
   ASIMOV) and shallow open versions (AMOS, AeroMind, Pharos, SandTable). Cite them. Engage

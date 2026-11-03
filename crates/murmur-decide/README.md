@@ -2187,6 +2187,34 @@ Rules versions:
   `tests/data/audit/v27-engagement-scenario-01.jsonl`,
   `v27-minefield-laid-on-two-signatures-scenario-128.jsonl` (relabelled rules 26, its lay order and
   mines are caught).
+- **28** (bd murmur-9001, the owner's direction of 2026-11-03: "make scenarios so that each weapon
+  is able to properly be used in at least one"; every gate reads `MISSILE_STANDOFF_SINCE`; no
+  policy key changes, schema 7; a v28 log carries every rules 27 behaviour too): *a missile on a
+  ground or surface platform is launched from a firing position within its range band, not driven
+  onto its target*. Up to rules 27 a missile's plan drove its platform onto the effect point (rules
+  20's flight, written for an aircraft passing over its target): the armed UGV's Javelin could be
+  released only inside its 65 m minimum range of a holding target, so never, and a UGV was refused
+  every target on the water by the domain rule (its transit and reach to the point). From rules 28
+  `engage::preview` gives such a missile a firing position as rules 26 gave a gun
+  (`EngagePreview::fire_from`, `EngageOrder::fire_from`): its band is the missile's minimum range
+  plus the effect radius to its maximum range less it, so a target anywhere in the plan's circle is
+  within range; a platform whose predicted point lies inside the band launches from where it
+  stands, one beyond it closes on the line to the point to the band's far edge (the intercept
+  solved against that standoff, as a gun's), and one inside it opens on the line from the point
+  through the platform to the band's near edge (a target taken as holding for that short move, the
+  reach check after it); the plan's effect time is the platform's arrival there plus the missile's
+  flight from that edge. The path, `reach`, the domain rule's legs, the terrain sample and the order
+  go to the firing position, as for a gun; the release is judged as any missile's (rules 20 and
+  24: the slant range to the point within the minimum and maximum, the strike its flight after the
+  release inside the plan's time tolerance, alignment and the keep-outs at the strike). Aircraft,
+  guns, bombs, torpedoes and `self` decide as before. Replay recomputes the plan, so a v28 log
+  relabelled rules 27 is caught at its first plan. Scenarios 131 (the UGV on the shore 1,450 m from
+  a boat: launched where it stands, ceased; `--rules 27` refuses it for the domain), 132 (a truck 55
+  m from the UGV: it opens 60 m to the band's near edge, 115 m with a 50 m radius, then launches;
+  `--rules 27` drives onto the truck and never releases, aborted late by `engage_window`) and 133
+  (a boat 5,230 m off: the UGV closes 555 m to the band's far edge, 4,675 m, and launches, a 31 s
+  flight; assessed unknown, nothing of ours covering the point). `tests/rules28.rs` (the firing
+  positions and launch points; rules 27 logs replay unchanged).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

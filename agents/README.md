@@ -764,7 +764,9 @@ it shown). Rules 26: a gun (the armed UGV's M2) is released as its first burst a
 burst every few seconds while the picture holds, from a firing position within its range;
 `get_nominations` and `explain_intent` show `engagement.fire` (its bursts, rounds fired and left,
 the last burst's time, and why the fire ended) and `engagement.weapon` (the last burst's rounds
-left). An agent can neither start nor stop the fire. It always waits for two human operators
+left). An agent can neither start nor stop the fire. Rules 28: a missile on a ground or surface
+platform (the armed UGV's Javelin) is launched from a firing position within its range too (the
+plan's `fire_from`), not from the effect point. It always waits for two human operators
 with engagement authority; the agent can preview it and follow it (`get_nominations`,
 `explain_intent`) and withdraw it while it waits, never sign, stop or release it: no such
 tool exists, and the engine's agent port has no such method. While an engagement is in play

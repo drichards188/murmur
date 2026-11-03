@@ -1,0 +1,77 @@
+# Rules 28 (bd murmur-9001): a missile on a ground platform is launched from the shore, not driven
+# onto its target. The armed UGV stands on the shore south of the bridge, 1,450 m from a boat
+# holding inside ez-gate-west, declared hostile. op-1 nominates it naming its Javelin (65 to 4,750
+# m): the point is within the missile's band (its minimum range plus the 75 m effect radius, to its
+# maximum range less it), so the plan's firing position is where the UGV stands and it goes
+# nowhere. Two signatures; the release comes the missile's flight (some 10 s) before the plan's
+# time, the strike lands at its impact, and the UGV's sight covers the point for the assessment:
+# ceased. 0 of 1 Javelin left. Rules 27 (`--rules 27`) drove the UGV onto the point on the water:
+# the nomination is refused by the domain rule.
+title = "A missile launched from the shore"
+invariant = "domain"
+attack = "a ground platform sent across the water to launch its missile"
+expect = "done"
+expect_assessment = "ceased"
+end_s = 120
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "bull-1"
+platform = "ugv_armed"      # an M2 and one Javelin; its sight covers the point
+at = [-122.4950, 37.7990]   # on the shore (the runner's land: south of 37.800)
+alt_m = 20                  # its altitude, for the missile's slant range
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west, 1,450 m north
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "bull-1"
+track = "T-0001"
+radius_m = 75
+fallback = "abort"          # hold where it is
+window_s = 600
+weapon = "FGM-148 Javelin"
+
+[[step]]
+at_s = 2
+action = "expect"
+state = "pending_approval"
+weapon = "named: FGM-148 Javelin, a missile for ground and surface targets, 65 to 4750 m at 150 m/s; 1 of 1 rounds left"
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"

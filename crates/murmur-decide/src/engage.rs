@@ -404,6 +404,13 @@ impl EngageRules {
         self.rules_version >= crate::rules::MINE_SINCE
     }
 
+    /// The decisions of rules 28 on ([`crate::rules::MISSILE_STANDOFF_SINCE`]): a missile on a
+    /// ground or surface platform is launched from a firing position within its range band of the
+    /// target ([`preview`]).
+    pub fn missile_standoff(&self) -> bool {
+        self.rules_version >= crate::rules::MISSILE_STANDOFF_SINCE
+    }
+
     /// The optional keys this section sets, each with the policy schema that introduced it
     /// (or, for an old name, the first schema whose builds read it): a log claiming an
     /// older schema can't carry them (replay checks).
@@ -592,13 +599,16 @@ pub struct EngagePreview {
     pub weapon: Option<String>,
     /// Rules 26: a gun's firing position, where the platform goes and holds to fire (within the
     /// gun's range of the predicted target, [`preview`]); the path ends there, not at the effect
-    /// point. Absent for every other plan, and in older logs.
+    /// point. Rules 28: a missile's on a ground or surface platform too, where it launches from
+    /// (within the missile's range band of the predicted point). Absent for every other plan, and
+    /// in older logs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fire_from: Option<LonLat>,
 }
 
 impl EngagePreview {
-    /// Where the platform goes: a gun's firing position (rules 26), else the effect point.
+    /// Where the platform goes: a gun's firing position (rules 26) or a ground or surface
+    /// platform's missile's (rules 28), else the effect point.
     pub fn goal(&self) -> LonLat {
         self.fire_from.unwrap_or(self.effect_point)
     }
@@ -2305,13 +2315,34 @@ pub fn preview(
         .as_ref()
         .filter(|w| ec.guns() && w.kind == crate::catalog::WeaponKind::Gun)
         .map(|w| (w.max_range_m - radius).max(w.min_range_m).max(0.0));
+    // rules 28: a missile on a ground or surface platform is launched from within its range band
+    // of the target (its minimum range plus the effect radius, to its maximum range less it), so a
+    // target anywhere in the plan's circle is within its range: the platform closes to the band's
+    // far edge, opens to its near edge, or launches from where it stands inside it
+    let band = weapon
+        .as_ref()
+        .filter(|w| {
+            ec.missile_standoff()
+                && w.kind == crate::catalog::WeaponKind::Missile
+                && matches!(platform.domain, Domain::Ground | Domain::Surface)
+        })
+        .map(|w| {
+            let near = w.min_range_m.max(0.0) + radius;
+            (near, (w.max_range_m - radius).max(near), w.speed_mps)
+        });
+    let d0 = rx.hypot(ry);
+    let standoff = standoff.or(band.map(|(_, far, _)| far));
     let s0 = standoff.unwrap_or(0.0);
     // |r0 + v tau| = s0 + cruise tau, smallest tau >= 0 (s0 = 0: the point itself)
     let a = ve * ve + vn * vn - cruise * cruise;
     let b = 2.0 * (rx * ve + ry * vn) - 2.0 * s0 * cruise;
     let c = rx * rx + ry * ry - s0 * s0;
-    // (rules 26: a gun already within its standoff fires from where it is)
-    let tau = if c == 0.0 || (standoff.is_some() && c < 0.0) {
+    // (rules 26: a gun already within its standoff fires from where it is; rules 28: a missile's
+    // platform inside its band launches from where it is, and one inside the band's near edge
+    // opens to it first, a slow target taken as holding for that short move)
+    let tau = if let Some((near, _, _)) = band.filter(|_| c <= 0.0) {
+        Some(((near - d0) / cruise).max(0.0))
+    } else if c == 0.0 || (standoff.is_some() && c < 0.0) {
         Some(0.0)
     } else if a.abs() < 1e-9 {
         (b < 0.0).then(|| -c / b)
@@ -2335,26 +2366,46 @@ pub fn preview(
             ve.hypot(vn)
         )
     })?;
-    let mut effect_t = start_t.plus_ms(ms(tau));
+    // rules 28: a missile's flight from the band's edge it launches from (from where it stands
+    // inside the band), after the platform's arrival there
+    let flight_ms = band.map_or(0, |(near, far, speed)| ms(d0.clamp(near, far) / speed));
+    let mut effect_t = start_t.plus_ms(ms(tau) + flight_ms);
     if let Some(from) = window.from
         && from > effect_t
     {
         effect_t = from;
     }
     let effect_point = target_at(track, effect_t, &ec);
-    // rules 26: the gun's firing position: on the line from the point back to the platform, the
-    // standoff out (where it is, when that is nearer)
-    let fire_from = standoff.map(|s| {
-        let d = haversine_m(start, effect_point);
-        if d <= s || d <= 0.0 {
-            start
-        } else {
+    let fire_from = match band {
+        // rules 28: on the line from the point to the platform, at the band's nearer edge (where
+        // it stands, inside the band)
+        Some((near, far, _)) => {
+            let d = haversine_m(start, effect_point);
+            if d <= 0.0 {
+                return Err(format!(
+                    "the platform stands on the predicted point: no way to open to the {}'s minimum range",
+                    weapon.as_ref().map_or("missile", |w| w.name.as_str())
+                ));
+            }
+            let s = d.clamp(near, far);
             let (e, n) = enu(effect_point, start);
-            offset(effect_point, e * s / d, n * s / d)
+            Some(if s == d { start } else { offset(effect_point, e * s / d, n * s / d) })
         }
-    });
+        // rules 26: the gun's firing position: on the line from the point back to the platform,
+        // the standoff out (where it is, when that is nearer)
+        None => standoff.map(|s| {
+            let d = haversine_m(start, effect_point);
+            if d <= s || d <= 0.0 {
+                start
+            } else {
+                let (e, n) = enu(effect_point, start);
+                offset(effect_point, e * s / d, n * s / d)
+            }
+        }),
+    };
     let distance_m = haversine_m(start, fire_from.unwrap_or(effect_point));
-    let can_reach = distance_m <= cruise * secs(effect_t.ms_since(start_t)) + 1.0;
+    // (rules 28: the platform is at its firing position the missile's flight before the effect)
+    let can_reach = distance_m <= cruise * secs(effect_t.ms_since(start_t) - flight_ms) + 1.0;
     if !can_reach {
         return Err(format!(
             "no intercept: the track is predicted {distance_m:.0} m away when the window opens, beyond reach at {cruise:.1} m/s"

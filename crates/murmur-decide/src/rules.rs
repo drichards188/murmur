@@ -269,8 +269,27 @@ pub enum UnknownEndurance {
 /// magazine through a firing window, each burst re-checked and its rounds counted. Version 27
 /// ([`MINE_SINCE`]): a minefield is laid on an engagement's two signatures, logged mine by mine as
 /// the record the law asks for, live for the period the nomination sets, and a keep-out for our
-/// own vehicles while it is.
-pub const RULES_VERSION: u32 = MINE_SINCE;
+/// own vehicles while it is. Version 28 ([`MISSILE_STANDOFF_SINCE`]): a missile on a ground or
+/// surface platform is launched from a firing position within its range band of the target, not
+/// from the effect point.
+pub const RULES_VERSION: u32 = MISSILE_STANDOFF_SINCE;
+
+/// The rules version from which a missile on a ground or surface platform is launched from a
+/// firing position (bd murmur-9001, the owner's direction of 2026-11-03: "make scenarios so that
+/// each weapon is able to properly be used in at least one"). Up to rules 27 a missile's plan drove
+/// its platform onto the effect point, as an aircraft flies over its target: a UGV's Javelin could
+/// release only inside its 65 m minimum range of a holding target, and a UGV was refused any target
+/// on the water by the domain rule. From this version a missile on a ground or surface platform
+/// gets a firing position as rules 26 gave a gun (`EngagePreview::fire_from`): where it stands when
+/// the predicted point is within its range band (the minimum range plus the effect radius, to the
+/// maximum range less it), else on the line from the point to the platform at the band's nearer
+/// edge, closing in or opening out; the plan's effect time is the platform's arrival there plus
+/// the missile's flight from that edge. The path, reach, the domain rule's legs, the terrain sample
+/// and the order go to the firing position; the release is judged as rules 20 and 24 judge a
+/// missile (its slant range to the point within the band, the strike its flight after the release,
+/// the keep-outs at the strike). Aircraft and every other weapon kind decide as before. Every gate
+/// of that change reads this constant, never a literal.
+pub const MISSILE_STANDOFF_SINCE: u32 = 28;
 
 /// The rules version from which a mine of a platform's loadout is usable (bd murmur-lbw8.4, the
 /// owner's direction of 2026-11-02, DECISIONS.md "Mines: laid on two signatures, recorded, live
@@ -757,6 +776,12 @@ impl RulesConfig {
     /// keep-outs for our own vehicles.
     pub fn mines(&self) -> bool {
         self.rules_version >= MINE_SINCE
+    }
+
+    /// Rules 28 ([`MISSILE_STANDOFF_SINCE`]): a missile on a ground or surface platform is launched
+    /// from a firing position within its range band of the target.
+    pub fn missile_standoff(&self) -> bool {
+        self.rules_version >= MISSILE_STANDOFF_SINCE
     }
 
     /// `[rules.engage]`, or its defaults.

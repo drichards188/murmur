@@ -1,0 +1,74 @@
+# Rules 28 (bd murmur-9001): a missile on a ground platform beyond its range closes to it, and no
+# further. The armed UGV stands inland, 5,230 m south of a boat holding inside ez-gate-west, beyond
+# its Javelin's 4,750 m. The plan's firing position is on the line to the boat at the band's far
+# edge, the missile's range less the 75 m effect radius (4,675 m from the boat), 555 m north of
+# the UGV, still on land: it drives there (some 140 s at 4 m/s) and launches, the missile flying
+# some 31 s. Nothing of ours covers the point that far out, so the assessment is unknown. Rules 27
+# (`--rules 27`) drove the UGV onto the point on the water: refused by the domain rule.
+title = "A missile's platform closes to its range"
+invariant = "domain"
+attack = "a ground platform sent past its firing position onto the water"
+expect = "done"
+expect_assessment = "unknown"
+end_s = 360
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "bull-1"
+platform = "ugv_armed"      # an M2 and one Javelin
+at = [-122.4950, 37.7650]   # inland (the runner's land: south of 37.800), 5,230 m south of the boat
+alt_m = 20
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "bull-1"
+track = "T-0001"
+radius_m = 75
+fallback = "abort"          # hold where it is
+window_s = 600
+weapon = "FGM-148 Javelin"
+
+[[step]]
+at_s = 2
+action = "expect"
+state = "pending_approval"
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "expect"
+state = "dispatched"

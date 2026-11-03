@@ -419,6 +419,14 @@ meaningful.
   /api/minefields`, MCP `get_areas`' `minefields` (only when there is one), the console's map (red
   outlines with the reach rings). Scenarios 128-130; tampers `move_mine`, `hide_lay_signature`;
   runner key `expect_mines_laid`.
+- Rules 28 (`MISSILE_STANDOFF_SINCE`, bd murmur-9001): a missile on a ground or surface platform
+  (today the armed UGV's Javelin) gets a firing position as a gun does (`EngagePreview::
+  fire_from`): where it stands when the point is within its band (minimum range plus the effect
+  radius, to maximum range less it), else on the line to the point at the band's nearer edge
+  (closing in or opening out); the plan's effect time is its arrival there plus the flight from
+  that edge. The release is judged as any missile's (slant range in the band, the strike's time,
+  keep-outs at the strike), so a UGV on land launches at a boat on the water. Aircraft and other
+  kinds unchanged. Scenarios 131-133 (`tests/rules28.rs`).
 - Opponent weapons (docs/OPPONENT-WEAPONS.md, bd murmur-wcvp; no rules version): a contact's
   `weapon = { name, kind, speed_mps, range_m }` (kinds the bridge has figures for:
   `tracks::physical::weapon::weapon_signature`, `atgm`) makes each of its acts a launch, flown by
