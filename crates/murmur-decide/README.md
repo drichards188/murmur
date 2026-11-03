@@ -2214,7 +2214,9 @@ Rules versions:
   `--rules 27` drives onto the truck and never releases, aborted late by `engage_window`) and 133
   (a boat 5,230 m off: the UGV closes 555 m to the band's far edge, 4,675 m, and launches, a 31 s
   flight; assessed unknown, nothing of ours covering the point). `tests/rules28.rs` (the firing
-  positions and launch points; rules 27 logs replay unchanged).
+  positions and launch points; rules 27 logs replay unchanged). Fixtures (a clean build of the
+  branch, f2d66fa): `tests/data/audit/v28-engagement-scenario-01.jsonl`,
+  `v28-missile-from-the-shore-scenario-131.jsonl` (relabelled rules 27, its plan is caught).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

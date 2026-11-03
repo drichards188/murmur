@@ -1294,7 +1294,11 @@ alone: with `RULES_VERSION` put back to 25 the code gave the earlier digests (re
 (minefields, bd murmur-lbw8.4) re-took it for `run.started` alone: with `RULES_VERSION` put back to
 26 (and the lay order's arguments left out of the tool schemas) the code gave the earlier digests
 (record `cb36d65e...`, audit `7928e232...`) byte for byte, and the new audit log with its
-`rules_version` put back to 26 hashes to `7928e232...` too; no fleet in the episode carries a mine.
+`rules_version` put back to 26 hashes to `7928e232...` too; no fleet in the episode carries a mine. Rules 28
+(a missile on a ground or surface platform launched from a firing position, bd murmur-9001) re-took it
+for `run.started` alone: with `RULES_VERSION` put back to 27 the code gave the earlier digests (record
+`40d4fb38...`, audit `329a6d4e...`) byte for byte, and the new audit log with its `rules_version` put
+back to 27 hashes to `329a6d4e...` too; no fleet in the episode carries such a missile.
 
 ### 17.3 The bake tool
 

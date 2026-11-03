@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 81] = [
+const LOGS: [(&str, u32); 83] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -226,13 +226,18 @@ const LOGS: [(&str, u32); 81] = [
     // signatures, recorded mine by mine, logged inert at its period's end)
     ("v27-engagement-scenario-01.jsonl", MINE_SINCE),
     ("v27-minefield-laid-on-two-signatures-scenario-128.jsonl", MINE_SINCE),
+    // rules 28 (a missile from a ground or surface platform launched from a firing position; a clean
+    // build of f2d66fa on the branch of bd murmur-9001): scenario 01 (the switchblade, unchanged) and
+    // 131 (the armed UGV's Javelin launched from the shore at a boat 1,450 m off, where it stands)
+    ("v28-engagement-scenario-01.jsonl", MISSILE_STANDOFF_SINCE),
+    ("v28-missile-from-the-shore-scenario-131.jsonl", MISSILE_STANDOFF_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v27-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v28-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -2030,4 +2035,19 @@ fn a_minefield_is_caught_under_older_rules_and_when_renumbered() {
     assert_ne!(renumbered, ls);
     let w: Vec<String> = whats(&with(&rechain(&renumbered), RulesAccepted::Exactly(MINE_SINCE))).iter().map(|s| s.to_string()).collect();
     assert!(w.iter().any(|m| m.contains("a mine out of order")), "{w:?}");
+}
+
+/// Rules 28: scenario 131's log relabelled rules 27 carries a plan no build of rules 27 made (the
+/// UGV's Javelin launched from where it stands, not from the point on the water) and is caught; under
+/// its own rules it replays.
+#[test]
+fn a_missiles_firing_position_is_caught_under_older_rules() {
+    let ls = lines(&fixture("v28-missile-from-the-shore-scenario-131.jsonl"));
+    let v28 = format!("\"rules_version\":{MISSILE_STANDOFF_SINCE},");
+    let mut old = ls.clone();
+    assert!(old[0].contains(&v28));
+    assert!(ls.iter().any(|l| l.contains("\"fire_from\":[")), "the plan's firing position is logged");
+    old[0] = old[0].replacen(&v28, &format!("\"rules_version\":{MINE_SINCE},"), 1);
+    assert!(!with(&rechain(&old), RulesAccepted::Exactly(MINE_SINCE)).ok());
+    assert!(with(&rechain(&ls), RulesAccepted::Exactly(MISSILE_STANDOFF_SINCE)).ok());
 }

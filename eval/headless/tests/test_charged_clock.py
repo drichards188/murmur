@@ -396,10 +396,15 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: byte for byte, so the only changes are the audit log's `run.started` (`rules_version` 27 for 26)
 #: and, for the model, the longer `propose_intent` and `preview_intent` schemas in its prompt sizes
 #: and token estimates. No fleet here carries a mine.
+#: Re-taken for decision rules 28 (bd murmur-9001, a missile on a ground or surface platform launched
+#: from a firing position): with `RULES_VERSION` put back to 27 this code gave the earlier digests
+#: (0ead6f3f..., 8656883a..., 7ac942f4...) byte for byte, so the only change is the audit log's
+#: `run.started` (`rules_version` 28 for 27). No fleet here carries a missile on a ground or surface
+#: platform, and no tool changed.
 PAUSED = {
-    "model harbor-watch s1": "0ead6f3f68462898934e9d1be93abc35b8a46c83fd7fed1e4f4074685b53529c",
-    "playbook v2 fast-unknown 1000": "8656883a2f69cfe7985d8cd36fabe60f339db503ef5080dda39e5fc785571b60",
-    "model v2 fast-unknown 1000": "7ac942f48ef4f0e28176e5cc33ff0d4959045e765db24bd63542f6f734b542d9",
+    "model harbor-watch s1": "09d1987d544fb9cf308782d1c793ceff8eae97e5c2bde9d7417acbbbdc4ea3c1",
+    "playbook v2 fast-unknown 1000": "9eab26cb10ce8abed98f46b92f1229a92c30e175b30bf4cde5b7b760c11120e1",
+    "model v2 fast-unknown 1000": "aa303738c212b8b4473be63f6b7b77fcd50744159e22c4f3b70f0422fdd28d0a",
 }
 
 
