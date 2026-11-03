@@ -228,8 +228,10 @@ impl Decision {
         }
         // rules 22: each vehicle's transit as the engine routed it
         order.params.via = bridge_via(&released.via);
-        // rules 7: each vehicle's start in the audit log before it goes out
-        order.ahead = self.write_ahead_hook();
+        // rules 7: each vehicle's start in the audit log before it goes out, for the kinds the
+        // engine takes a start ahead for (`queue::vehicle_task`): rules 27's lay order is not one
+        // of them, and the engine refuses its start logged ahead, so a lay went out failed
+        order.ahead = if murmur_decide::queue::vehicle_task(released.task.kind()) { self.write_ahead_hook() } else { None };
         let tasking = self.world.tasks.dispatch(AuthorizedOrder {
             intent: released.intent,
             order,

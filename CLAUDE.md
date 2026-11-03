@@ -404,7 +404,8 @@ meaningful.
   `platform_free`, `minefield` (what the field could catch beside a declared hostile: tracks of the
   mine's `targets` domains now and on their course for `mines::TRACK_HORIZON_S`, lost contacts,
   ours and their `orders_in_play`, the layer after each mine's `arm_s`, no-strike areas). Dispatched
-  as a vehicle order flown once along the line (the bridge's task kind `lay`); `Engine::step_lays`
+  as a vehicle order flown once along the line, then home (the bridge's task kind `lay`; no start
+  logged ahead: rules 7 covers `queue::vehicle_task`'s kinds only); `Engine::step_lays`
   (the bridge's tick, before `follow_ops`) lays each mine the layer reached (`mines::due`:
   `LAY_AT_M`, `LAY_AHEAD_M`) as `mine.laid` (the record; spends a round in rules 24's ledger) and
   logs `minefield.inert` once a field's period is over. Fields live in `Restores` (engine and

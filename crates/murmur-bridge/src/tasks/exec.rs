@@ -1374,31 +1374,47 @@ impl Task<'_> {
     async fn lay(&self) -> Result {
         let route = self.ctx.params.route.clone().unwrap_or_default();
         let alt = self.task_alt();
+        // the way home after the line, as the engine's checks judge the order (the domain rule's
+        // and the geofence's return leg, the minefield check's layer once each mine arms): left at
+        // the line's end, the layer stood on its last mine when it armed (the road-mines
+        // situation's first run, 2026-11-03)
+        let home = self.v().read(|s| s.home);
         let build = |takeoff: bool| {
             let mut items = self.mission_prefix(alt, takeoff);
             for [lon, lat] in &route {
                 items.push(Item::waypoint(*lat, *lon, alt));
             }
+            if let Some((hla, hlo)) = home {
+                items.push(Item::waypoint(hla, hlo, alt));
+            }
             items
         };
         let items = build(self.needs_takeoff());
         let candidates = self.takeoff_choices().into_iter().map(build).collect();
-        let first = items.len() - route.len();
+        let first = items.len() - route.len() - usize::from(home.is_some());
         let last_wp = (items.len() - 1) as u16;
         let Some([end_lon, end_lat]) = route.last().copied() else {
             return fail("lay needs its line".to_string());
         };
-        // the engine lays every mine left within this of the line's end
+        // done at home once the line is laid (the vehicle stops there), or without a home at the
+        // line's end, within the distance the engine lays every mine left at
+        let caps = self.caps;
         let tol = murmur_decide::mines::LINE_END_M;
         let done = move |v: &Vehicle| {
-            v.mission_seq.is_some_and(|s| s >= last_wp) && v.distance_to(end_lat, end_lon).is_some_and(|d| d <= tol)
+            v.mission_seq.is_some_and(|s| s >= last_wp)
+                && match home {
+                    Some((hla, hlo)) => v.distance_to(hla, hlo).is_some_and(|d| d < caps.home_radius(v).max(tol)),
+                    None => v.distance_to(end_lat, end_lon).is_some_and(|d| d <= tol),
+                }
         };
         let n = route.len();
         let progress = move |v: &Vehicle| match v.mission_seq {
+            Some(seq) if usize::from(seq) >= first + n => "the line laid: returning home".into(),
             Some(seq) if usize::from(seq) >= first => format!("laying: point {}/{n}", usize::from(seq) - first + 1),
             _ => "en route to the line".into(),
         };
-        self.run_mission(items, candidates, done, "the line laid".into(), progress).await
+        let what = if home.is_some() { "the line laid, home" } else { "the line laid" };
+        self.run_mission(items, candidates, done, what.into(), progress).await
     }
 
     /// After a bridge restart, for an order that is a mode (hold, rtl): whether the vehicle

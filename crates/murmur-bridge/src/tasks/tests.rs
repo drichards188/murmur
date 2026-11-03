@@ -43,6 +43,8 @@ impl Transmit for FakeTx {
 pub(crate) enum Firmware {
     Copter,
     Rover,
+    /// ArduRover as a ground vehicle (the Rover above is its boat frame)
+    Ugv,
     Sub,
     Tracker,
 }
@@ -52,6 +54,7 @@ impl Firmware {
         match self {
             Firmware::Copter => apm::MavType::MAV_TYPE_QUADROTOR,
             Firmware::Rover => apm::MavType::MAV_TYPE_SURFACE_BOAT,
+            Firmware::Ugv => apm::MavType::MAV_TYPE_GROUND_ROVER,
             Firmware::Sub => apm::MavType::MAV_TYPE_SUBMARINE,
             Firmware::Tracker => apm::MavType::MAV_TYPE_ANTENNA_TRACKER,
         }

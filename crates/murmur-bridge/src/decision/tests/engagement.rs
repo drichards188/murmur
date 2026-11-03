@@ -2954,3 +2954,51 @@ async fn a_loadout_reads_each_weapons_rounds_left() {
     let ugv = engage::loadout_json(c.get("ugv_armed").expect("ugv_armed"), &Default::default(), false, true, true);
     assert_eq!((ugv["weapons"][0]["inert"].as_bool(), ugv["weapons"][0]["burst_rounds"].as_u64()), (Some(false), Some(6)));
 }
+
+/// Rules 27 on the bridge: a lay order is signed as an engagement is and then sent as a vehicle
+/// order, but its start is not one the engine takes logged ahead (rules 7 covers the kinds of
+/// `queue::vehicle_task`, which a lay is not): the task layer sends it without the write-ahead.
+/// With it, the engine refused the start and the order failed as it went out (the road-mines
+/// situation's first run, 2026-11-03: "its start could not be logged ahead of sending it").
+#[tokio::test(start_paused = true)]
+async fn a_lay_order_goes_out_without_a_start_logged_ahead() {
+    let e = engage_rig();
+    // the mine-laying UGV on the rig's land (the Presidio box), south-east of its row
+    e.r.vehicle(1, Firmware::Ugv, "ugv_mines", (37.7985, -122.4600));
+    sleep(Duration::from_millis(500)).await;
+    let mut req = simple("lay", 1);
+    req.params.route = Some(vec![[-122.4640, 37.8000], [-122.4620, 37.8000]]);
+    req.count = Some(3);
+    req.live_h = Some(1.0);
+    req.engage.weapon = Some("TM-62M mine".into());
+    let out = e.r.d.submit(&op("op-1"), req).await.expect("proposed");
+    assert_eq!(out.state, State::PendingApproval, "{}", out.intent);
+    let o = e.r.d.approve(&op("op-2"), out.id.0, None).await.expect("signs");
+    assert_eq!(o.state, State::PendingApproval);
+    let o = e.r.d.approve(&op("op-3"), out.id.0, None).await.expect("signs");
+    assert_eq!(o.state, State::Dispatched, "{}", o.intent);
+    for _ in 0..10 {
+        e.tick(false).await;
+    }
+    assert_eq!(e.r.state(out.id), State::Dispatched, "{}", e.r.reason(out.id));
+    // the line flown and every mine laid, then home, as the minefield check judged the layer
+    // (left at the line's end, it stood on its last mine when that armed)
+    for _ in 0..900 {
+        e.tick(false).await;
+        if e.r.state(out.id).is_terminal() {
+            break;
+        }
+    }
+    assert_eq!(e.r.state(out.id), State::Done, "{}", e.r.reason(out.id));
+    assert_eq!(e.r.events("mine.laid"), 3);
+    let at = e.r.world.vehicles().into_iter().find(|v| v.uid == 1).and_then(|c| c.read(|v| v.distance_to(37.7985, -122.4600)));
+    assert!(at.is_some_and(|d| d < 15.0), "home: {at:?}");
+    let text = e.r.log.text();
+    assert!(!text.contains("could not be logged ahead"), "{text}");
+    assert!(
+        text.lines().filter(|l| l.contains("\"type\":\"op.state\"")).all(|l| !l.contains("\"ahead\":true")),
+        "no lay start logged ahead"
+    );
+    let rep = replay::replay_str(&text).expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+}
