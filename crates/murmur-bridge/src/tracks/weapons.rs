@@ -1,22 +1,30 @@
 //! The weapon picture (docs/OPPONENT-WEAPONS.md): each opponent weapon as our sensors know it,
 //! kept apart from the track picture, and known by stages as a crew learns it (bd murmur-ju1h):
 //!
-//! 1. **launch**: a camera saw a launch's flash. The launch is a time, the shooter's place as the
-//!    cue fixes it and the bearing from the observer; no class, no speed, no target. The shooter
-//!    is the live track nearest the flash's fix within its gate, when there is one.
+//! 1. **launch**: a camera saw a launch's flash (or a sonar heard a torpedo's launch transient).
+//!    The launch is a time, the shooter's place as the cue fixes it, the bearing from the observer
+//!    and, when the sensor told it, what kind of launch it was (`physical::weapon::LaunchLook`: a
+//!    missile's, a rocket's, a gun's muzzle flash, a launch transient); no class, no speed, no
+//!    target. The shooter is the live track nearest the cue's fix within its gate, when there is
+//!    one. A gun's burst is a launch of its own, each under its firing episode's act report.
 //! 2. **weapon**: fixes whose kinematics say "weapon": a speed over its domain's threshold
-//!    ([`weapon_speed_mps`]) measured from the fixes (with the launch's flash, when the fixes
-//!    associate with one), and either the launch as its origin or a line closing on one of ours
-//!    ([`closing`]). Fixes associate with a weapon track by gating on position and velocity
+//!    ([`weapon_speed_mps`]: under water when a sonar heard it, in the air when a measured height
+//!    puts it over [`AIR_FROM_M`], else at the surface) measured from the fixes (with the launch's
+//!    flash, when the fixes associate with one), and either the launch as its origin or a line
+//!    closing on one of ours ([`closing`], in three dimensions where a height was measured).
+//!    Fixes associate with a weapon track by gating on position and velocity
 //!    ([`Picture::plots`]), never by the truth's weapon id. A contact track the tracker holds that
 //!    passes the same test (speed over its domain's threshold, closing on one of ours) is taken
 //!    for a weapon too ([`Picture::contacts`]): a fast aircraft running at one of ours is, as a
 //!    crew's threat warning would take it. Type unknown.
-//! 3. **class**: assessed only on evidence, named in the feed ([`Assessed::evidence`]): the
-//!    measured speed (known within [`SPEED_EVIDENCE_SHARE`]) and, where measured, height fitting
-//!    exactly one class of the threat library (`physical::weapon::threat_library`), and/or the
-//!    shooter identified as a kind known to carry it ([`carried_by`]). An assessment once made
-//!    holds.
+//! 3. **class**: assessed only on evidence, named in the feed ([`Assessed::evidence`]), among the
+//!    classes of the threat library (`physical::weapon::threat_library`) that travel where it was
+//!    sensed (the water or the air): the launch's kind when told, the measured speed (known within
+//!    [`SPEED_EVIDENCE_SHARE`]) and, where measured, height, and the shooter identified as a kind
+//!    our side believes may carry the class ([`carried_by`], which may name several). A class is
+//!    named only when the evidence leaves exactly one: the shooter alone pins one only if the
+//!    launch's kind leaves one of those it may carry, and a speed inside two classes' bands (an
+//!    ATGM's and a rocket's overlap) names none. An assessment once made holds.
 //! 4. **type** (the exact weapon) is out of reach: nothing we model tells it (no seeker emitter
 //!    library, no laser warning, no debris). Not served.
 //!
@@ -38,7 +46,9 @@
 //! **Still by construction** (docs/OPPONENT-WEAPONS.md section 11 item 3): the plot streams are
 //! split by the truth: a weapon's own fixes come to this picture and never to the contact tracker,
 //! contacts' detections go to the tracker, whose tracks this picture reads. A strike is reported at
-//! the truth tick at or after it, not over the victim's link (bd murmur-3nkc).
+//! the truth tick at or after it, not over the victim's link (bd murmur-3nkc). The truth's weapon
+//! `kind` chooses the physics a launch and a flight are sensed by (section 15), and so what our
+//! sensors could make of them; nothing here reads it.
 //!
 //! Times are the bridge's clock (seconds here, engine ms in the feed): a truth instant is
 //! placed at the bridge's receipt of its message less its age then.
@@ -47,7 +57,7 @@ use std::collections::HashMap;
 
 use serde_json::{Value, json};
 
-use super::physical::weapon::{ClassSig, threat_library};
+use super::physical::weapon::{ClassSig, LaunchLook, threat_library};
 use super::truth::Domain;
 use crate::geo::{bearing_deg, haversine_m};
 
@@ -76,6 +86,9 @@ pub const CLOSING_HORIZON_S: f64 = 60.0;
 pub const SPEED_EVIDENCE_SHARE: f64 = 0.25;
 /// Two fixes this close in time give no velocity, s.
 const MIN_SPAN_S: f64 = 0.3;
+/// A weapon whose measured height puts it this far over the sea is judged in the air (its speed
+/// against the air's threshold), m [E: over the sea-skimming band and any craft's height].
+pub const AIR_FROM_M: f64 = 50.0;
 /// A strike is put on a weapon track whose last cue is at most this old, s.
 const STRIKE_LINK_S: f64 = 30.0;
 
@@ -94,12 +107,23 @@ pub fn weapon_speed_mps(domain: Domain) -> f64 {
     }
 }
 
-/// The classes a contact identified as `kind` is known to carry: the threat library's order of
-/// battle, not what this contact carries (the truth's weapon is never read) [E]. Small fast
-/// craft have fired anti-tank guided missiles at ships.
+/// The classes our side believes a contact identified as `kind` may carry: the threat library's
+/// order of battle (docs/OPPONENT-WEAPONS.md section 15, [E] on docs/research/opponent-weapons.md's
+/// public cases), not what this contact carries (the truth's weapon is never read). An armed
+/// craft is identified only as its look-alike (decision D3), so this is a belief about every
+/// craft of the kind: small fast craft have fired anti-tank missiles, RPGs, rockets and machine
+/// guns at ships [8, 9, 10]; merchant hulls have carried containerised launchers and improvised
+/// guns and cannon [7, 16, 20], tankers machine guns against drone boats [18]; coast guard boats
+/// carry machine guns [13]; pickups are the technicals' [17]; Group 3 UAS carry light missiles
+/// [12]; a submarine (or its periscope) carries torpedoes [15]. A quadcopter's dropped munition
+/// and a one-way drone are no launch: none.
 pub fn carried_by(kind: &str) -> &'static [&'static str] {
     match kind {
-        "small_fast_boat" => &["ATGM-class"],
+        "small_fast_boat" => &["ATGM-class", "Rocket-class", "Gun-class"],
+        "cargo_ship" => &["Rocket-class", "Gun-class"],
+        "tanker" | "patrol_boat" | "truck" => &["Gun-class"],
+        "unknown_uas" => &["Air missile-class"],
+        "submarine" | "periscope" => &["Torpedo-class"],
         _ => &[],
     }
 }
@@ -116,9 +140,19 @@ pub struct Launch {
     pub sigma_m: f64,
     pub sensors: Vec<String>,
     pub observer: Option<(u64, f64, f64)>,
+    /// what kind of launch it was, when the sensor told it
+    pub look: Option<LaunchLook>,
 }
 
-/// One fix in the weapon channel (no weapon id: it is associated by gating).
+impl Launch {
+    /// Heard by a sonar (a torpedo's launch transient): in the water.
+    fn heard(&self) -> bool {
+        self.sensors.iter().any(|s| s.ends_with(":sonar"))
+    }
+}
+
+/// One fix in the weapon channel (no weapon id: it is associated by gating), with the height a
+/// height-finding radar measured (none from any other sensor).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fix {
     pub t: f64,
@@ -127,10 +161,12 @@ pub struct Fix {
     pub sigma_m: f64,
     /// `"<uid>:<sensor>"`
     pub sensor: String,
+    pub alt_m: Option<f64>,
 }
 
 /// A measured line: where (at `t`, with its 1-sigma) and the velocity, m/s east and north, its
-/// speed and that speed's 1-sigma; the height when a sensor measured it.
+/// speed and that speed's 1-sigma; the height when a sensor measured it, and its rate (0 from
+/// a single height).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Kin {
     pub t: f64,
@@ -142,20 +178,22 @@ pub struct Kin {
     pub speed: f64,
     pub speed_sigma: f64,
     pub alt_m: Option<f64>,
+    pub vz: f64,
 }
 
-/// Why it was taken for a weapon: its measured speed over the threshold, and its origin at a seen
-/// launch or its line closing on one of ours.
+/// Why it was taken for a weapon: its measured speed over the threshold of the domain it was
+/// judged in, and its origin at a seen launch or its line closing on one of ours.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WeaponBasis {
     pub speed_mps: f64,
     pub over_mps: f64,
+    pub domain: Domain,
     pub from_launch: bool,
     pub closing_on: Option<u64>,
 }
 
-/// One piece of a class's evidence: its basis (`speed`, `height`, `reach`, `shooter`), a short
-/// form for a label ("243 m/s", "from T-0004") and a sentence.
+/// One piece of a class's evidence: its basis (`speed`, `height`, `launch`, `shooter`), a short
+/// form for a label ("243 m/s", "muzzle flash", "from T-0004") and a sentence.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Evidence {
     pub basis: &'static str,
@@ -288,6 +326,31 @@ impl WeaponTrack {
         Some(self.struck?.1 - self.first_cue_t()?)
     }
 
+    /// In the water: its launch heard by a sonar, or a fix of it by one (a contact track taken for
+    /// a weapon: its own domain's).
+    pub fn in_water(&self) -> bool {
+        match (&self.weapon, &self.track) {
+            (Some(b), Some(_)) => b.domain == Domain::Subsurface,
+            _ => self.launch.as_ref().is_some_and(Launch::heard) || self.fixes.iter().any(|f| f.sensor.ends_with(":sonar")),
+        }
+    }
+
+    /// The domain its speed is judged in: under water when heard there, in the air when a
+    /// measured height puts it over [`AIR_FROM_M`], else at the surface (the lower threshold, so
+    /// a low weapon is not missed for want of a height).
+    pub fn domain(&self) -> Domain {
+        if let (Some(b), Some(_)) = (&self.weapon, &self.track) {
+            return b.domain;
+        }
+        if self.in_water() {
+            Domain::Subsurface
+        } else if self.kin.and_then(|k| k.alt_m).is_some_and(|a| a >= AIR_FROM_M) {
+            Domain::Air
+        } else {
+            Domain::Surface
+        }
+    }
+
     /// Its points in time order: the launch's flash (when the weapon left the shooter), then its
     /// fixes: (t, lat, lon, sigma).
     fn points(&self) -> Vec<(f64, f64, f64, f64)> {
@@ -378,7 +441,26 @@ pub fn fit(points: &[(f64, f64, f64, f64)]) -> Option<Kin> {
         speed: ve.hypot(vn),
         speed_sigma: v_sigma,
         alt_m: None,
+        vz: 0.0,
     })
+}
+
+/// A line's height from the fixes that measured one: at `k.t`, and its rate (a straight line
+/// through two or more over [`MIN_SPAN_S`]; one alone, held).
+fn with_height(mut k: Kin, fixes: &[Fix]) -> Kin {
+    let h: Vec<(f64, f64)> = fixes.iter().filter_map(|f| f.alt_m.map(|a| (f.t, a))).collect();
+    let Some(&(t_last, a_last)) = h.last() else { return k };
+    if h.len() < 2 || t_last - h[0].0 < MIN_SPAN_S {
+        (k.alt_m, k.vz) = (Some(a_last), 0.0);
+        return k;
+    }
+    let n = h.len() as f64;
+    let tb = h.iter().map(|x| x.0).sum::<f64>() / n;
+    let ab = h.iter().map(|x| x.1).sum::<f64>() / n;
+    let stt: f64 = h.iter().map(|x| (x.0 - tb).powi(2)).sum();
+    let vz = h.iter().map(|x| (x.0 - tb) * (x.1 - ab)).sum::<f64>() / stt;
+    (k.alt_m, k.vz) = (Some(ab + vz * (k.t - tb)), vz);
+    k
 }
 
 /// One of ours as this picture knows it: where it believes it is, its height, its velocity from
@@ -414,7 +496,8 @@ pub struct ContactView {
 /// The one of ours a line (`k`) closes on, at `t` (ours' time): the one whose closest approach,
 /// ahead and within [`CLOSING_HORIZON_S`], passes nearest relative to its gate (within
 /// [`AIM_MISS_M`] or twice the line's error there): (uid, its time to the closest approach, the
-/// miss). Without the line's height, the miss is judged across the ground.
+/// miss). With the line's height (and its rate), the miss counts the heights at the closest
+/// approach; without, it is judged across the ground.
 pub fn closing(k: &Kin, ours: &[Ours], t: f64) -> Option<(u64, f64, f64)> {
     let lead = t - k.t;
     let (wlat, wlon) = off(k.lat, k.lon, k.ve * lead, k.vn * lead);
@@ -431,7 +514,7 @@ pub fn closing(k: &Kin, ours: &[Ours], t: f64) -> Option<(u64, f64, f64)> {
                 return None;
             }
             let miss_h = (re + ue * tc).hypot(rn + un * tc);
-            let miss = miss_h.hypot(k.alt_m.map_or(0.0, |a| a - o.alt_m));
+            let miss = miss_h.hypot(k.alt_m.map_or(0.0, |a| a + k.vz * (tc + lead) - o.alt_m));
             let sigma = (k.sigma_m.powi(2) + (k.speed_sigma * (tc + lead)).powi(2)).sqrt();
             let gate = AIM_MISS_M.max(2.0 * sigma);
             (miss <= gate).then_some((o.uid, tc, miss, miss / gate))
@@ -485,12 +568,13 @@ impl Picture {
         self.ours_t = t;
     }
 
-    /// A launch our cameras saw, reported as `report`, its shooter the contact track `shooter`
-    /// when one was placed on it: a new weapon track at the launch stage.
-    pub fn launch_seen(&mut self, launch: Launch, report: &str, shooter: Option<String>) {
+    /// A launch our sensors caught, reported as `report` (its act's report; a gun's later bursts
+    /// share their episode's), its shooter the contact track `shooter` when one was placed on it:
+    /// a new weapon track at the launch stage.
+    pub fn launch_seen(&mut self, launch: Launch, report: Option<String>, shooter: Option<String>) {
         let w = self.push();
         w.launch = Some(launch);
-        w.report = Some(report.to_string());
+        w.report = report;
         w.shooter = shooter;
     }
 
@@ -514,7 +598,7 @@ impl Picture {
             };
             w.fixes.push(Fix { sigma_m: r1(f.sigma_m), ..f.clone() });
             if w.track.is_none() {
-                w.kin = fit(&w.points());
+                w.kin = fit(&w.points()).map(|k| with_height(k, &w.fixes));
             }
         }
     }
@@ -534,6 +618,7 @@ impl Picture {
                 speed: v.ve.hypot(v.vn),
                 speed_sigma: v.vel_sigma,
                 alt_m: v.alt_m,
+                vz: 0.0,
             };
             let over = weapon_speed_mps(v.domain);
             if k.speed < over {
@@ -547,9 +632,9 @@ impl Picture {
             };
             w.track = Some(v.id.clone());
             w.kin = Some(k);
-            w.weapon = Some(WeaponBasis { speed_mps: k.speed, over_mps: over, from_launch: false, closing_on: Some(uid) });
+            w.weapon = Some(WeaponBasis { speed_mps: k.speed, over_mps: over, domain: v.domain, from_launch: false, closing_on: Some(uid) });
             if w.fixes.last().is_none_or(|f| f.t < v.t) {
-                w.fixes.push(Fix { t: v.t, lat: v.lat, lon: v.lon, sigma_m: r1(v.sigma_m), sensor: v.sensor.clone() });
+                w.fixes.push(Fix { t: v.t, lat: v.lat, lon: v.lon, sigma_m: r1(v.sigma_m), sensor: v.sensor.clone(), alt_m: v.alt_m });
             }
         }
     }
@@ -564,9 +649,10 @@ impl Picture {
             if w.weapon.is_none()
                 && let Some(k) = &w.kin
             {
-                let over = weapon_speed_mps(Domain::Surface);
+                let domain = w.domain();
+                let over = weapon_speed_mps(domain);
                 if k.speed >= over && (w.launch.is_some() || close.is_some()) {
-                    w.weapon = Some(WeaponBasis { speed_mps: k.speed, over_mps: over, from_launch: w.launch.is_some(), closing_on: close.map(|c| c.0) });
+                    w.weapon = Some(WeaponBasis { speed_mps: k.speed, over_mps: over, domain, from_launch: w.launch.is_some(), closing_on: close.map(|c| c.0) });
                 }
             }
             if w.weapon.is_some()
@@ -574,15 +660,24 @@ impl Picture {
             {
                 w.aim = Some(Aim { uid, eta_t: t_now + tc, basis: "track" });
             }
-            // the class: the measured speed (and height) against the library, and the shooter
+            // the class: among the classes that travel where it was sensed (the water or the air)
+            // and, when told, launch as it did; the measured speed (and height) against the
+            // library and the shooter's kind against what our side believes it may carry
+            let water = w.in_water();
+            let look = w.launch.as_ref().and_then(|l| l.look);
+            let lib: Vec<ClassSig> = library
+                .iter()
+                .filter(|c| (c.medium == Domain::Subsurface) == water)
+                .filter(|c| look.is_none_or(|lk| c.launch == lk))
+                .copied()
+                .collect();
             let reach = |c: &ClassSig| match (&w.launch, w.aim.and_then(|a| ours.iter().find(|o| o.uid == a.uid))) {
                 (Some(l), Some(o)) => haversine_m(l.lat, l.lon, o.lat, o.lon) <= c.range_m,
                 _ => true,
             };
             let speed_fit: Option<Vec<ClassSig>> = match (&w.weapon, &w.kin) {
                 (Some(_), Some(k)) if k.speed_sigma <= SPEED_EVIDENCE_SHARE * k.speed => Some(
-                    library
-                        .iter()
+                    lib.iter()
                         .filter(|c| (c.speed_mps.0..=c.speed_mps.1).contains(&k.speed))
                         .filter(|c| k.alt_m.is_none_or(|a| (c.height_m.0..=c.height_m.1).contains(&a)))
                         .filter(|c| reach(c))
@@ -593,12 +688,16 @@ impl Picture {
             };
             let shooter = w.shooter.as_deref().and_then(|s| identified(s).map(|kind| (s.to_string(), kind)));
             let carried: Vec<&str> = shooter.as_ref().map(|(_, kind)| carried_by(kind).to_vec()).unwrap_or_default();
-            let candidates: Vec<ClassSig> = match &speed_fit {
-                Some(f) if !carried.is_empty() => f.iter().filter(|c| carried.contains(&c.class)).copied().collect(),
-                Some(f) => f.clone(),
-                None => library.iter().filter(|c| carried.contains(&c.class)).copied().collect(),
-            };
-            if let [c] = candidates.as_slice()
+            let mut candidates = lib.clone();
+            if let Some(f) = &speed_fit {
+                candidates.retain(|c| f.contains(c));
+            }
+            if !carried.is_empty() {
+                candidates.retain(|c| carried.contains(&c.class));
+            }
+            let evidenced = speed_fit.is_some() || !carried.is_empty() || look.is_some();
+            if evidenced
+                && let [c] = candidates.as_slice()
                 && w.class.as_ref().is_none_or(|a| a.class.class == c.class)
             {
                 let mut evidence = Vec::new();
@@ -619,11 +718,18 @@ impl Picture {
                         });
                     }
                 }
+                if let Some((lk, l)) = look.zip(w.launch.as_ref()) {
+                    evidence.push(Evidence {
+                        basis: "launch",
+                        short: lk.short().to_string(),
+                        text: format!("{} told it as {}", l.sensors.join(", "), lk.text()),
+                    });
+                }
                 if let Some((s, kind)) = shooter.as_ref().filter(|_| !carried.is_empty()) {
                     evidence.push(Evidence {
                         basis: "shooter",
                         short: format!("from {s}"),
-                        text: format!("launched from {s}, identified as {kind}, which is known to carry the {}", c.class),
+                        text: format!("launched from {s}, identified as {kind}, which our side believes may carry the {}", c.class),
                     });
                 }
                 w.class = Some(Assessed { class: *c, evidence });
@@ -721,7 +827,7 @@ impl Picture {
                         "basis": e.basis, "short": e.short, "text": e.text,
                     })).collect::<Vec<_>>()).unwrap_or_default(),
                     "weapon_by": w.weapon.map(|b| json!({
-                        "speed_mps": r1(b.speed_mps), "over_mps": b.over_mps,
+                        "speed_mps": r1(b.speed_mps), "over_mps": b.over_mps, "domain": b.domain.as_str(),
                         "from_launch": b.from_launch, "closing_on": b.closing_on.map(|u| u.to_string()),
                     })),
                     "speed_mps": w.kin.map(|k| r1(k.speed)),
@@ -740,9 +846,11 @@ impl Picture {
                         "sensors": l.sensors,
                         "observer": l.observer.map(|(u, lat, lon)| json!({ "uid": u.to_string(), "point": [lon, lat] })),
                         "bearing_deg": l.observer.map(|(_, lat, lon)| bearing_deg(lat, lon, l.lat, l.lon).round()),
+                        "look": l.look.map(LaunchLook::as_str),
                     })),
                     "fixes": w.fixes.iter().map(|f| json!({
                         "t": ms(f.t), "point": [f.lon, f.lat], "sigma_m": f.sigma_m, "sensor": f.sensor,
+                        "alt_m": f.alt_m.map(r1),
                     })).collect::<Vec<_>>(),
                     "status": w.status.as_str(),
                     "ended_t": w.ended_t.map(ms),
@@ -768,44 +876,77 @@ mod tests {
         off(BOAT.0, BOAT.1, m, 0.0)
     }
 
-    fn picture() -> Picture {
-        let mut p = Picture::default();
+    fn ours() -> Vec<(u64, f64, f64, f64, Option<Domain>)> {
         let (hlat, hlon) = east(1_000.0);
         let (rlat, rlon) = off(BOAT.0, BOAT.1, -3_000.0, -2_000.0);
-        let ours = [(1, hlat, hlon, 0.0, Some(Domain::Surface)), (2, rlat, rlon, 7_600.0, Some(Domain::Air))];
-        p.set_ours(T - 1.0, &ours);
-        p.set_ours(T, &ours);
+        vec![(1, hlat, hlon, 0.0, Some(Domain::Surface)), (2, rlat, rlon, 7_600.0, Some(Domain::Air))]
+    }
+
+    fn picture_with(ours: &[(u64, f64, f64, f64, Option<Domain>)]) -> Picture {
+        let mut p = Picture::default();
+        p.set_ours(T - 1.0, ours);
+        p.set_ours(T, ours);
         p
     }
 
+    fn picture() -> Picture {
+        picture_with(&ours())
+    }
+
+    /// A launch HUNTER 1's camera saw at the boat, told as `look` (None: seen, not told).
+    fn launch_told(look: Option<LaunchLook>) -> Launch {
+        Launch { t: T + 0.6, flash_t: T + 0.2, lat: BOAT.0, lon: BOAT.1, sigma_m: 20.0, sensors: vec!["1:eo_ir".into()], observer: Some((1, east(1_000.0).0, east(1_000.0).1)), look }
+    }
+
+    /// The tutorial's launch: a missile's, told.
     fn launch() -> Launch {
-        Launch { t: T + 0.6, flash_t: T + 0.2, lat: BOAT.0, lon: BOAT.1, sigma_m: 20.0, sensors: vec!["1:eo_ir".into()], observer: Some((1, east(1_000.0).0, east(1_000.0).1)) }
+        launch_told(Some(LaunchLook::Missile))
     }
 
     /// the weapon at `t` (flash at T + 0.2, 250 m/s east), fixed by `sensor` with `sigma`
     fn fix(t: f64, sigma: f64, sensor: &str) -> Fix {
         let (lat, lon) = east(250.0 * (t - T - 0.2));
-        Fix { t, lat, lon, sigma_m: sigma, sensor: sensor.into() }
+        Fix { t, lat, lon, sigma_m: sigma, sensor: sensor.into(), alt_m: None }
+    }
+
+    /// Something at `speed` m/s east from `x0` m east of the boat at T, fixed by `sensor` each
+    /// `every` s from T + 1 to T + `until` with `sigma`, at the height `alt` when measured.
+    fn run(speed: f64, x0: f64, every: f64, until: f64, sigma: f64, sensor: &str, alt: Option<f64>) -> Vec<Fix> {
+        let mut out = Vec::new();
+        let mut dt = 1.0;
+        while dt <= until + 1e-9 {
+            let (lat, lon) = east(x0 + speed * dt);
+            out.push(Fix { t: T + dt, lat, lon, sigma_m: sigma, sensor: sensor.into(), alt_m: alt });
+            dt += every;
+        }
+        out
     }
 
     const NOBODY: &dyn Fn(&str) -> Option<String> = &|_| None;
+    const BOAT_ID: &dyn Fn(&str) -> Option<String> = &|t| (t == "T-0004").then(|| "small_fast_boat".into());
+
+    fn bases(w: &WeaponTrack) -> Vec<&'static str> {
+        w.class.as_ref().map(|a| a.evidence.iter().map(|e| e.basis).collect()).unwrap_or_default()
+    }
 
     /// A seen launch is a launch and nothing more (no class, speed or target); a camera's fix two
     /// seconds on joins it by gating, its speed from the flash says weapon, and that speed, known
-    /// to some 5 %, fits the ATGM-class alone: the class with its evidence, the line closing on
-    /// HUNTER 1 (not on REAPER 1 overhead), the strike expected at the flash plus 4 s; the strike
-    /// HUNTER 1 reports is put on it.
+    /// to some 5 %, with the launch told as a missile's, fits the ATGM-class alone (a rocket's
+    /// band holds the speed too, a rocket's launch does not look like this): the class with its
+    /// evidence, the line closing on HUNTER 1 (not on REAPER 1 overhead), the strike expected at
+    /// the flash plus 4 s; the strike HUNTER 1 reports is put on it.
     #[test]
     fn a_launch_then_fixes_climb_the_ladder() {
         let mut p = picture();
-        p.launch_seen(launch(), "A-1", None);
+        p.launch_seen(launch(), Some("A-1".into()), None);
         p.assess(NOBODY);
         let w = &p.tracks[0];
         assert_eq!((w.stage(), w.kin, w.aim, w.class.is_some()), (Stage::Launch, None, None, false));
         let j = &p.json()[0];
         assert_eq!((j["class"].clone(), j["aimed_at"].clone(), j["speed_mps"].clone()), (Value::Null, Value::Null, Value::Null));
         assert_eq!(j["launch"]["bearing_deg"], 270.0, "from HUNTER 1, the flash due west");
-        p.set_ours(T + 2.2, &[(1, east(1_000.0).0, east(1_000.0).1, 0.0, Some(Domain::Surface)), (2, off(BOAT.0, BOAT.1, -3_000.0, -2_000.0).0, off(BOAT.0, BOAT.1, -3_000.0, -2_000.0).1, 7_600.0, Some(Domain::Air))]);
+        assert_eq!(j["launch"]["look"], "missile");
+        p.set_ours(T + 2.2, &ours());
         p.plots(&[fix(T + 2.2, 22.0, "1:eo_ir")]);
         p.assess(NOBODY);
         assert_eq!(p.tracks.len(), 1, "the fix joined the launch");
@@ -813,8 +954,10 @@ mod tests {
         let k = w.kin.expect("a line");
         assert!((k.speed - 250.0).abs() < 1.0 && k.speed_sigma < 20.0, "{k:?}");
         assert_eq!(w.stage(), Stage::Class);
+        assert_eq!(w.weapon.map(|b| (b.domain, b.over_mps)), Some((Domain::Surface, 60.0)), "no height measured: judged at the surface");
         let a = w.class.as_ref().expect("class");
         assert_eq!((a.class.class, a.evidence[0].basis, a.evidence[0].short.as_str()), ("ATGM-class", "speed", "250 m/s"));
+        assert_eq!(bases(w), vec!["speed", "launch"]);
         let aim = w.aim.expect("aimed");
         assert_eq!((aim.uid, aim.basis), (1, "track"));
         assert!((aim.eta_t - (T + 4.2)).abs() < 0.1, "{aim:?}");
@@ -823,44 +966,87 @@ mod tests {
     }
 
     /// A class only on evidence: one radar plot from afar (150 m) puts the speed at some 35 %, a
-    /// weapon but no class; an identified shooter known to carry the ATGM-class names it (and,
-    /// with no line, its reach picks HUNTER 1, the only one of ours on the water within 5.5 km);
-    /// a shooter merely detected names nothing.
+    /// weapon but no class (a missile's launch is an ATGM's or an air-launched one's); an
+    /// identified shooter our side believes may carry ATGMs (and rockets and guns: of those, only
+    /// the ATGM launches like a missile) names it (and, with no line, its reach picks HUNTER 1, the
+    /// only one of ours on the water within 5.5 km); a shooter merely detected, or of a kind
+    /// believed to carry nothing, names nothing.
     #[test]
     fn a_class_needs_evidence() {
         let mut p = picture();
-        p.launch_seen(launch(), "A-1", Some("T-0004".into()));
+        p.launch_seen(launch(), Some("A-1".into()), Some("T-0004".into()));
         p.plots(&[fix(T + 2.0, 150.0, "2:radar")]);
         p.assess(NOBODY);
         let w = &p.tracks[0];
         assert_eq!(w.stage(), Stage::Weapon, "{:?}", w.kin);
         assert!(w.class.is_none());
-        p.assess(&|t| (t == "T-0004").then(|| "small_fast_boat".into()));
-        let a = p.tracks[0].class.as_ref().expect("by its shooter");
-        assert_eq!((a.class.class, a.evidence.len(), a.evidence[0].basis, a.evidence[0].short.as_str()), ("ATGM-class", 1, "shooter", "from T-0004"));
+        p.assess(BOAT_ID);
+        let a = p.tracks[0].class.as_ref().expect("by its shooter and its launch");
+        assert_eq!(a.class.class, "ATGM-class");
+        assert_eq!(bases(&p.tracks[0]), vec!["launch", "shooter"]);
+        assert_eq!(a.evidence[1].short, "from T-0004");
         // a launch alone from an identified shooter: the class, and the target by reach
         let mut q = picture();
-        q.launch_seen(launch(), "A-1", Some("T-0004".into()));
-        q.assess(&|_| Some("small_fast_boat".into()));
+        q.launch_seen(launch(), Some("A-1".into()), Some("T-0004".into()));
+        q.assess(BOAT_ID);
         let aim = q.tracks[0].aim.expect("by reach");
         assert_eq!((q.tracks[0].stage(), aim.uid, aim.basis), (Stage::Class, 1, "reach"));
         assert!((aim.eta_t - (T + 4.2)).abs() < 0.1);
-        // a shooter not identified (or of a kind known to carry nothing): no class
+        // a shooter not identified (or of a kind believed to carry nothing): no class
         let mut r = picture();
-        r.launch_seen(launch(), "A-1", Some("T-0004".into()));
+        r.launch_seen(launch(), Some("A-1".into()), Some("T-0004".into()));
         r.assess(&|_| None);
         r.assess(&|_| Some("fishing_vessel".into()));
         assert_eq!((r.tracks[0].stage(), r.tracks[0].aim), (Stage::Launch, None));
     }
 
+    /// With D3 an armed boat is identified only as a small fast boat, which our side believes may
+    /// carry ATGMs, rockets and guns: a launch from one not told waits (launch, then a weapon of
+    /// unknown type once a camera's fix gives 250 m/s, a speed inside both the ATGM's and the
+    /// rocket's bands); told, the launch's kind leaves one: a muzzle flash is the gun at once
+    /// (aimed by its reach), a rocket's launch the rocket.
+    #[test]
+    fn an_identified_small_fast_boat_waits_for_evidence() {
+        let mut p = picture();
+        p.launch_seen(launch_told(None), Some("A-1".into()), Some("T-0004".into()));
+        p.assess(BOAT_ID);
+        assert_eq!((p.tracks[0].stage(), p.tracks[0].aim), (Stage::Launch, None), "three classes it may carry, nothing to choose");
+        p.plots(&[fix(T + 2.2, 22.0, "1:eo_ir")]);
+        p.assess(BOAT_ID);
+        let w = &p.tracks[0];
+        assert!(w.kin.is_some_and(|k| k.speed_sigma < 0.1 * k.speed), "{:?}", w.kin);
+        assert_eq!((w.stage(), w.class.is_none()), (Stage::Weapon, true), "250 m/s: an ATGM's or a rocket's");
+        for (look, class) in [(LaunchLook::Muzzle, "Gun-class"), (LaunchLook::Rocket, "Rocket-class"), (LaunchLook::Missile, "ATGM-class")] {
+            let mut q = picture();
+            q.launch_seen(launch_told(Some(look)), Some("A-1".into()), Some("T-0004".into()));
+            q.assess(BOAT_ID);
+            let w = &q.tracks[0];
+            assert_eq!((w.stage(), w.class.as_ref().map(|a| a.class.class)), (Stage::Class, Some(class)), "{look:?}");
+            assert_eq!(bases(w), vec!["launch", "shooter"]);
+        }
+        // the gun by reach: HUNTER 1 1 km off, its round at the nominal 800 m/s
+        let mut g = picture();
+        g.launch_seen(launch_told(Some(LaunchLook::Muzzle)), Some("A-1".into()), Some("T-0004".into()));
+        g.assess(BOAT_ID);
+        let aim = g.tracks[0].aim.expect("by reach");
+        assert_eq!((aim.uid, aim.basis), (1, "reach"));
+        assert!((aim.eta_t - (T + 0.2 + 1_000.0 / 800.0)).abs() < 0.05, "{aim:?}");
+        // a muzzle flash names the gun by itself: nothing else launches so
+        let mut m = picture();
+        m.launch_seen(launch_told(Some(LaunchLook::Muzzle)), Some("A-1".into()), None);
+        m.assess(NOBODY);
+        assert_eq!((m.tracks[0].class.as_ref().map(|a| a.class.class), bases(&m.tracks[0])), (Some("Gun-class"), vec!["launch"]));
+    }
+
     /// With its shooter's track not identified, an operator sees each rung in turn: the launch
     /// (bearing, no class or target), then a weapon of unknown type once a distant radar's plot
-    /// gives a loose speed, then the class from the speed alone once a camera's fix pins it.
+    /// gives a loose speed, then the class from the speed with the launch's kind once a camera's
+    /// fix pins it.
     #[test]
     fn an_unidentified_shooter_leaves_the_class_to_the_speed() {
         let mut p = picture();
         let detected_only: &dyn Fn(&str) -> Option<String> = &|_| None;
-        p.launch_seen(launch(), "A-1", Some("T-0004".into()));
+        p.launch_seen(launch(), Some("A-1".into()), Some("T-0004".into()));
         p.assess(detected_only);
         assert_eq!((p.tracks[0].stage(), p.tracks[0].aim), (Stage::Launch, None));
         p.plots(&[fix(T + 1.6, 150.0, "2:radar")]);
@@ -871,13 +1057,76 @@ mod tests {
         let w = &p.tracks[0];
         let a = w.class.as_ref().expect("by its speed");
         assert_eq!((p.tracks.len(), w.stage(), a.class.class), (1, Stage::Class, "ATGM-class"));
-        assert_eq!(a.evidence.iter().map(|e| e.basis).collect::<Vec<_>>(), vec!["speed"], "no shooter evidence");
+        assert_eq!(bases(w), vec!["speed", "launch"], "no shooter evidence");
+    }
+
+    /// The threat library's bands make a speed fit a choice: with no launch seen and no shooter,
+    /// three tight fixes closing on HUNTER 1 at 510 m/s are an air-launched missile, at 380 a
+    /// rocket, at 160 an ATGM, at 250 a weapon of unknown type (inside both the ATGM's and the
+    /// rocket's bands). A sonar's fixes of something running at 23 m/s are a torpedo: over the
+    /// water's threshold (20 m/s), in the torpedo's band, and only the torpedo runs in the water;
+    /// the same speed seen above the water is no weapon (under the surface's 60).
+    #[test]
+    fn a_speed_fit_chooses_between_classes() {
+        for (speed, want) in [(510.0, Some("Air missile-class")), (380.0, Some("Rocket-class")), (160.0, Some("ATGM-class")), (250.0, None)] {
+            let mut p = picture();
+            p.plots(&run(speed, -2_000.0, 1.0, 3.0, 10.0, "1:eo_ir", None));
+            p.assess(NOBODY);
+            assert_eq!(p.tracks.len(), 1, "{speed}");
+            let w = &p.tracks[0];
+            assert_eq!(w.weapon.map(|b| b.closing_on), Some(Some(1)), "{speed}: {:?}", w.kin);
+            assert_eq!(w.class.as_ref().map(|a| a.class.class), want, "{speed}");
+            if want.is_some() {
+                assert_eq!(bases(w), vec!["speed"], "{speed}");
+            }
+        }
+        // half a minute of a sonar's fixes, judged when the last came in
+        let mut p = picture();
+        p.plots(&run(23.0, -500.0, 1.0, 30.0, 150.0, "1:sonar", None));
+        p.set_ours(T + 30.0, &ours());
+        p.assess(NOBODY);
+        let w = &p.tracks[0];
+        assert_eq!((p.tracks.len(), w.in_water(), w.weapon.map(|b| (b.domain, b.over_mps))), (1, true, Some((Domain::Subsurface, 20.0))));
+        assert_eq!(w.class.as_ref().map(|a| (a.class.class, a.class.symbol)), Some(("Torpedo-class", "torpedo")), "{:?}", w.kin);
+        let mut q = picture();
+        q.plots(&run(23.0, -500.0, 1.0, 30.0, 150.0, "2:radar", None));
+        q.set_ours(T + 30.0, &ours());
+        q.assess(NOBODY);
+        assert!(q.tracks[0].weapon.is_none(), "23 m/s on the water is a boat's speed");
+    }
+
+    /// A missile at an aircraft's height, plotted by a height-finding radar at 3 km up and 500 m/s,
+    /// passes the air's weapon test (150 m/s), closes on the aircraft at its height and not on
+    /// HUNTER 1 3 km below its line, and its speed and height make it an air-launched missile.
+    /// At 120 m/s the same line is no weapon in the air, though without its height it would be
+    /// one at the surface's threshold (60 m/s), closing on HUNTER 1 across the ground.
+    #[test]
+    fn a_missile_at_an_aircraft_height_passes_the_air_weapon_test() {
+        let mut ours = ours();
+        let (alat, alon) = east(3_000.0);
+        ours.push((3, alat, alon, 3_000.0, Some(Domain::Air)));
+        let mut p = picture_with(&ours);
+        p.plots(&run(500.0, -2_000.0, 1.0, 3.0, 30.0, "4:radar", Some(3_000.0)));
+        p.assess(NOBODY);
+        let w = &p.tracks[0];
+        assert_eq!(w.weapon.map(|b| (b.domain, b.over_mps, b.closing_on)), Some((Domain::Air, 150.0, Some(3))), "{:?}", w.kin);
+        assert_eq!(w.aim.map(|a| a.uid), Some(3));
+        assert_eq!(w.class.as_ref().map(|a| a.class.class), Some("Air missile-class"));
+        assert_eq!(bases(w), vec!["speed", "height"]);
+        let mut slow = picture_with(&ours);
+        slow.plots(&run(120.0, -2_000.0, 1.0, 3.0, 30.0, "4:radar", Some(3_000.0)));
+        slow.assess(NOBODY);
+        assert!(slow.tracks[0].weapon.is_none(), "{:?}", slow.tracks[0].weapon);
+        let mut flat = picture_with(&ours);
+        flat.plots(&run(120.0, -2_000.0, 1.0, 3.0, 30.0, "2:radar", None));
+        flat.assess(NOBODY);
+        assert_eq!(flat.tracks[0].weapon.map(|b| (b.domain, b.closing_on)), Some((Domain::Surface, Some(1))));
     }
 
     /// The honest confusion: a jet the tracker holds at 220 m/s with no height (a 2D radar's),
-    /// running at HUNTER 1, is taken for a weapon, and its speed fits the ATGM-class; the same
-    /// jet 3 km up, or at 90 m/s, is not. Two fixes of a weapon with no launch seen are a weapon
-    /// only once they close on one of ours.
+    /// running at HUNTER 1, is taken for a weapon of unknown type (its speed inside both the
+    /// ATGM's and the rocket's bands names neither); the same jet 3 km up, or at 90 m/s, is not.
+    /// Two fixes of a weapon with no launch seen are a weapon only once they close on one of ours.
     #[test]
     fn a_fast_aircraft_running_at_ours_is_taken_for_a_weapon() {
         let jet = |alt: Option<f64>, speed: f64| {
@@ -888,8 +1137,8 @@ mod tests {
         p.contacts(&[jet(None, 220.0)]);
         p.assess(NOBODY);
         let w = &p.tracks[0];
-        assert_eq!((w.track.as_deref(), w.stage(), w.aim.map(|a| a.uid)), (Some("T-0009"), Stage::Class, Some(1)));
-        assert_eq!(w.class.as_ref().map(|a| a.class.class), Some("ATGM-class"), "heightless, its speed fits");
+        assert_eq!((w.track.as_deref(), w.stage(), w.aim.map(|a| a.uid)), (Some("T-0009"), Stage::Weapon, Some(1)));
+        assert!(w.class.is_none(), "heightless, its speed fits two classes: {:?}", w.class);
         let mut q = picture();
         q.contacts(&[jet(Some(3_000.0), 220.0), jet(None, 90.0)]);
         assert!(q.tracks.is_empty(), "{:?}", q.tracks);

@@ -440,20 +440,26 @@ meaningful.
   kinds unchanged. Scenarios 131-133 (`tests/rules28.rs`).
 - Opponent weapons (docs/OPPONENT-WEAPONS.md, bd murmur-wcvp; no rules version): a contact's
   `weapon = { name, kind, speed_mps, range_m }` (kinds the bridge has figures for:
-  `tracks::physical::weapon::weapon_signature`, `atgm`) makes each of its acts a launch, flown by
-  `murmur_contacts::weapon` to a lead point on the victim (the truth asks the bridge where our
-  victims are: `aim_at` in, `ours` out). Under the physical model only (a legacy run senses the act
-  as abstract): a weapon act is observed by the cameras that saw the launch (`observe_launch`), not
-  by radar or sonar; the weapon's fixes go to the weapon picture (`tracks::weapons`, `W-<n>`,
-  `weapons` on the tracks feed and `GET /api/tracks`), never the track picture; the strike is the
-  victim's `vehicle.event` `struck` and an inbox alert. The picture knows a weapon by stages (bd
-  murmur-ju1h, section 14): `launch` (the flash: place, bearing; nothing else), `weapon` (fixes
-  gated together, not by truth id, whose measured speed passes `weapons::weapon_speed_mps` from a
-  launch or closing on ours; a contact track that passes is taken for one too), `class` (only on
-  `evidence`: speed in the threat library's band, `weapon_signature`'s `threat`, or an identified
-  shooter `carried_by` it); target and `eta_t` derived or absent; never the type. Nothing in it may
-  read the truth's weapon name, speed or victim. Weapon sensing reads the payload managers' state and
-  never writes it: contact detections are the same with a weapon in the truth (tested). Headless
+  `tracks::physical::weapon::weapon_signature`: `atgm`, `rocket`, `air_missile`, `gun`, `torpedo`,
+  the contact catalog's `sense`; section 15) makes each of its acts a launch, flown by
+  `murmur_contacts::weapon` to a lead point on the victim, in 3D (the truth asks the bridge where
+  our victims are: `aim_at` in, `ours` out; a node's `look` asks for ours within its reach, answered
+  in the same `ours`). The truth's `kind` only picks the physics. Under the physical model only (a
+  legacy run senses the act as abstract): a weapon act is observed by the sensors that caught the
+  launch (`observe_launch`: cameras; a torpedo's transient a listening sonar), never by radar; a
+  gun's episode is one act whose bursts are each a weapon (`rounds`), reported at the first burst
+  caught. The weapon's fixes go to the weapon picture (`tracks::weapons`, `W-<n>`, `weapons` on the
+  tracks feed and `GET /api/tracks`), never the track picture; a gun's rounds are never fixed; the
+  strike is the victim's `vehicle.event` `struck` and an inbox alert. The picture knows a weapon by
+  stages (bd murmur-ju1h, section 14): `launch` (the flash: place, bearing, and its kind when told:
+  missile, rocket, muzzle, transient; nothing else), `weapon` (fixes gated together, not by truth
+  id, whose measured speed passes `weapons::weapon_speed_mps` for its domain (water by sonar, air by
+  a measured height) from a launch or closing on ours; a contact track that passes is taken for one
+  too), `class` (only on `evidence` leaving one class: the launch's kind, speed in the threat
+  library's band, `weapon_signature`'s `threat`, an identified shooter `carried_by` it, which may
+  name several); target and `eta_t` derived or absent; never the type. Nothing in it may read the
+  truth's weapon kind, name, speed or victim. Weapon sensing reads the payload managers' state and
+  never writes it: contact detections are the same with any class in the truth (tested). Headless
   refuses weapons. The tutorial's boat carries one (every 90 s).
 - Predicted link coverage (docs/LINK-COVERAGE.md, bd murmur-hei): `GET`/`POST
   /api/links/coverage`, `link_coverage` in dry runs and `preview_intent`, the MCP tool

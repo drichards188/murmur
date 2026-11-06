@@ -174,11 +174,44 @@ pub struct TruthMessage {
     /// answer then carries where ours of them are (`ours`), since a mine is set off by ours too.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mines_live: Vec<String>,
+    /// Autonomous nodes (docs/AUTONOMOUS-NODES.md 2.4, decision D2): each node with an order that
+    /// needs a target asks where ours are within its reach of it; the answer's `ours` then carries
+    /// every one of ours within any look's reach (beside those `aim_at` names). Absent when empty.
+    /// The node itself keeps those its own sensors and the radio horizon allow; the bridge answers
+    /// by reach alone, from where our vehicles report they are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub look: Vec<LookTruth>,
+}
+
+/// One node's look (truth side, `murmur-contacts`): where it is (`alt_m` above the sea, negative
+/// under it) and how far it looks, m.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LookTruth {
+    pub node: String,
+    pub lat: f64,
+    pub lon: f64,
+    #[serde(default)]
+    pub alt_m: f64,
+    pub reach_m: f64,
+}
+
+impl LookTruth {
+    /// Whether a point (lat, lon, metres above the sea) is within this look's reach: the
+    /// straight-line distance, heights included.
+    pub fn reaches(&self, lat: f64, lon: f64, alt_m: f64) -> bool {
+        crate::geo::haversine_m(self.lat, self.lon, lat, lon).hypot(alt_m - self.alt_m) <= self.reach_m
+    }
 }
 
 /// One opponent weapon's flight (truth, the contacts process's `weapon`): a straight line at
-/// constant speed from `from` to `to` (`[lon, lat, metres above the sea]`), `launch_t` to
-/// `impact_t` on the truth message's clock.
+/// constant speed from `from` to `to` (`[lon, lat, metres above the sea]`, negative under it: a
+/// flight in three dimensions, from or at an aircraft as well as along the water), `launch_t` to
+/// `impact_t` on the truth message's clock. `kind` is the physics our sensors see it by
+/// (`physical::weapon::weapon_signature`: `atgm`, `rocket`, `air_missile`, `gun`, `torpedo`): it
+/// selects which physics applies to what is sensed and nothing else; its name, speed, victim and
+/// kind are never served or used to classify it (`tracks::weapons`). A gun's burst is one flight
+/// (muzzle to aim point at the round's speed), each burst of one firing episode its own under the
+/// same `act`, with the `rounds` it fired.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WeaponTruth {
     pub id: String,
@@ -195,6 +228,10 @@ pub struct WeaponTruth {
     pub against_vehicle: Option<u64>,
     #[serde(default)]
     pub against_contact: Option<String>,
+    /// A gun's burst: the rounds it fired (absent for anything else). Truth: parsed, never read
+    /// by the sensing (a burst is one flash however many rounds it holds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rounds: Option<u32>,
 }
 
 impl WeaponTruth {
@@ -205,13 +242,14 @@ impl WeaponTruth {
         [0, 1, 2].map(|i| self.from[i] + (self.to[i] - self.from[i]) * f)
     }
 
-    /// Its velocity, m/s east and north.
-    pub fn velocity(&self) -> (f64, f64) {
+    /// Its velocity, m/s east, north and up.
+    pub fn velocity3(&self) -> (f64, f64, f64) {
         let span = (self.impact_t - self.launch_t).max(1e-3);
         let m = super::physical::geometry::M_PER_DEG;
         (
             (self.to[0] - self.from[0]) * m * self.from[1].to_radians().cos() / span,
             (self.to[1] - self.from[1]) * m / span,
+            (self.to[2] - self.from[2]) / span,
         )
     }
 }
@@ -276,6 +314,12 @@ impl TruthMessage {
             let fine = |p: &[f64; 3]| p.iter().all(|x| x.is_finite()) && p[1].abs() <= 90.0 && p[0].abs() <= 180.0;
             if !(fine(&w.from) && fine(&w.to) && w.launch_t.is_finite() && w.impact_t >= w.launch_t && w.speed_mps > 0.0) {
                 return Err(format!("weapon {}: bad flight", w.id));
+            }
+        }
+        for l in &self.look {
+            let fine = l.lat.is_finite() && l.lon.is_finite() && l.lat.abs() <= 90.0 && l.lon.abs() <= 180.0;
+            if !(fine && l.alt_m.is_finite() && l.reach_m.is_finite() && l.reach_m >= 0.0) {
+                return Err(format!("look of {}: bad position or reach", l.node));
             }
         }
         Ok(())

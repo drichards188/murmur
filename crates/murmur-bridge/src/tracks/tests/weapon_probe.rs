@@ -324,6 +324,7 @@ fn weapon_pipeline_probe() {
             to: [hlon, hlat, 4.0],
             against_vehicle: Some(1),
             against_contact: None,
+            rounds: None,
         };
         for s in 0..(launch as i64 + 6) {
             let s = s as f64;
@@ -349,7 +350,7 @@ fn weapon_pipeline_probe() {
                 acts: Vec::new(),
                 aim_at: vec![1],
                 weapons: Vec::new(),
-                impacts: Vec::new(), mines_live: Vec::new(),
+                impacts: Vec::new(), mines_live: Vec::new(), look: Vec::new(),
             };
             if s == launch {
                 m.acts = vec![ActTruth {
@@ -409,4 +410,120 @@ fn weapon_pipeline_probe() {
         "{n} attacks: launch seen {seen} (REAPER 1's camera among them {by_reaper}); weapon fixed in flight {any_fix} (radar {radar_fix}, camera {eo_fix}); first fix before the strike, s: {first_fix_lead:?}"
     );
     println!("stages at the strike: {stages:?}");
+}
+
+/// Every class of the threat library (docs/OPPONENT-WEAPONS.md section 15), as built: from a
+/// shooter `d` metres west of HUNTER 1 (a boat on the water, a UAS 300 m up, a submarine 30 m
+/// down), by day, 200 seeds: how often HUNTER 1's sensors catch the launch and tell its kind
+/// (`observe_launch`), and how often its own and REAPER 1's (7,600 m up, 4 km south of the
+/// flight's middle; its camera with no payload manager's pointing, so its fixed look only) fix the
+/// weapon in flight (`sense_weapons`).
+#[test]
+#[ignore = "a probe: prints the as-built measurement of every class"]
+fn classes_probe() {
+    use super::super::physical::weapon::{EoWeapon, weapon_signature};
+    use super::super::truth::WeaponTruth;
+    use std::collections::HashMap;
+    let cat = catalog();
+    let sensing = Sensing { conditions: Some(Conditions { sun_elevation_deg: Some(45.0), ..Conditions::default() }), ..Sensing::default() };
+    let t0 = 1_781_431_200.0;
+    let hunter = Observer {
+        uid: 1,
+        lat: BOAT.0,
+        lon: BOAT.1,
+        mast_m: cat.get("seahunter").expect("seahunter").mast_m,
+        sensors: cat.get("seahunter").expect("seahunter").sensors.clone(),
+        heading_deg: Some(0.0),
+        ..Observer::default()
+    };
+    for (kind, domain, alt, speed) in [
+        ("atgm", Domain::Surface, 4.0, 250.0),
+        ("rocket", Domain::Surface, 4.0, 300.0),
+        ("air_missile", Domain::Air, 300.0, 510.0),
+        ("gun", Domain::Surface, 3.0, 850.0),
+        ("torpedo", Domain::Subsurface, -30.0, 23.0),
+    ] {
+        let sig = weapon_signature(kind).expect(kind);
+        for d in [500.0, 1000.0, 2000.0, 4000.0] {
+            let (slat, slon) = at(BOAT.0, BOAT.1, -d, 0.0);
+            let (rlat, rlon) = at(BOAT.0, BOAT.1, -d / 2.0, -4000.0);
+            let shooter = ContactTruth {
+                id: "shooter".into(),
+                name: "shooter".into(),
+                affiliation: TruthAffiliation::Hostile,
+                domain,
+                kind: match domain {
+                    Domain::Air => "unknown_uas",
+                    Domain::Subsurface => "submarine",
+                    _ => "small_fast_boat",
+                }
+                .into(),
+                lat: slat,
+                lon: slon,
+                alt_m: alt,
+                speed_mps: 0.0,
+                course_deg: 0.0,
+                emits: false,
+                signature: 0.35,
+                ais: None,
+            };
+            let reaper = Observer {
+                uid: 2,
+                lat: rlat,
+                lon: rlon,
+                alt_msl: 7600.0,
+                sensors: cat.get("mq9b_armed").expect("mq9b").sensors.clone(),
+                heading_deg: Some(0.0),
+                ..Observer::default()
+            };
+            let tof = d.hypot(alt - 4.0) / speed;
+            let (mut seen, mut told, mut by) = (0, 0, std::collections::BTreeMap::<String, u32>::new());
+            let n = 200u64;
+            for seed in 1..=n {
+                let e = Engine::new(None);
+                let st = Step { seed, tick: 100, s: 100.0, t: t0 + 100.0, misclassification_rate: 0.0, sensing: &sensing };
+                if let Some(l) = e.observe_launch(&st, std::slice::from_ref(&hunter), &shooter, "a", kind) {
+                    seen += 1;
+                    told += usize::from(l.look.is_some());
+                }
+                let w = WeaponTruth {
+                    id: "w".into(),
+                    act: "a".into(),
+                    by: "shooter".into(),
+                    name: String::new(),
+                    kind: kind.into(),
+                    speed_mps: speed,
+                    launch_t: t0 + 100.0,
+                    impact_t: t0 + 100.0 + tof,
+                    from: [slon, slat, alt],
+                    to: [BOAT.1, BOAT.0, if kind == "torpedo" { -3.0 } else { 4.0 }],
+                    against_vehicle: Some(1),
+                    against_contact: None,
+                    rounds: None,
+                };
+                let mut cams: HashMap<(String, u64, usize), EoWeapon> = HashMap::new();
+                let mut kinds = std::collections::BTreeSet::new();
+                let mut s = 101.0;
+                while s <= 100.0 + tof.ceil() {
+                    let st = Step { seed, tick: s as i64, s, t: t0 + s, misclassification_rate: 0.0, sensing: &sensing };
+                    for f in e.sense_weapons(&st, t0 + s - 1.0, &[hunter.clone(), reaper.clone()], std::slice::from_ref(&w), &mut cams) {
+                        kinds.insert(format!("{}:{}", f.uid, f.sensor.as_str()));
+                    }
+                    s += 1.0;
+                }
+                for k in kinds {
+                    *by.entry(k).or_insert(0) += 1;
+                }
+            }
+            println!(
+                "{kind} at {d:.0} m ({tof:.1} s; plume {:?}, rcs {}, sound {:?}/{:?}): launch caught {:.2}, told {:.2}; fixed in flight by {by:?} of {n}",
+                sig.plume,
+                sig.rcs_m2,
+                sig.launch_db,
+                sig.run_db,
+                seen as f64 / n as f64,
+                told as f64 / n as f64
+            );
+        }
+    }
 }

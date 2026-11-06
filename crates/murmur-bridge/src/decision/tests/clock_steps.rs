@@ -165,7 +165,7 @@ fn sense_mover(e: &Erig, s: u32) {
             ais: None,
         }],
         acts: Vec::new(),
-        aim_at: Vec::new(), weapons: Vec::new(), impacts: Vec::new(), mines_live: Vec::new(),
+        aim_at: Vec::new(), weapons: Vec::new(), impacts: Vec::new(), mines_live: Vec::new(), look: Vec::new(),
     };
     let observer = Observer {
         uid: 9,

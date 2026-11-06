@@ -405,12 +405,13 @@ truth a name, speed and victim of its own and finds none of them served).
 3. **class**: only on evidence, each piece named in the feed's `evidence`: the measured speed,
    known within 25 % (1-sigma), inside exactly one class's band of the threat library, with its
    measured height (when a sensor measured one) inside the class's and the shot's length within its
-   reach (`physical::weapon::weapon_signature`'s `threat`: today the ATGM-class, 150 to 350 m/s, 0
-   to 50 m up, 5.5 km, at boats and vehicles, all [E]); and/or the shooter's track identified (the
-   tracker's identity level `identify`) as a kind our order of battle says carries the class
-   (`carried_by`: a small fast boat carries ATGM-class missiles, [E]: a table of what our side
-   believes such craft carry, not the contact's truth). Both present, they must agree; the speed
-   fitting no class, or two, names none unless the shooter narrows it. An assessment once made holds.
+   reach (`physical::weapon::weapon_signature`'s `threat`: then the ATGM-class, 150 to 350 m/s, 0
+   to 50 m up, 5.5 km, at boats and vehicles, all [E]; five classes since section 15); and/or the
+   shooter's track identified (the tracker's identity level `identify`) as a kind our order of
+   battle says carries the class (`carried_by`: a small fast boat carries ATGM-class missiles, [E]:
+   a table of what our side believes such craft carry, not the contact's truth; several classes
+   since section 15). Both present, they must agree; the speed fitting no class, or two, names none
+   unless the shooter narrows it. An assessment once made holds.
    A launch from an identified shooter is classed at once, before any fix: the launch stage itself
    carries no class.
 4. **type**: out of reach and not served. Nothing modelled tells it: no seeker emitter library, no
@@ -441,9 +442,8 @@ scenario: one weapon in flight at a time).
   judged across the ground.
 - Still by construction: the plot streams are split by the truth (a weapon's own fixes come only to
   this picture, never to the contact tracker; contacts' detections only to the tracker, whose
-  tracks this picture reads), and the flash's instant is the truth's. The threat library holds one
-  class, so a speed fit is a fit, not yet a choice between classes (the code names a class only
-  when exactly one fits; with one in the library that path is untried).
+  tracks this picture reads), and the flash's instant is the truth's. The threat library held one
+  class, so a speed fit was a fit, not yet a choice between classes; section 15 makes it one.
 
 **Unchanged.** The act observation (`observe_launch`, the `ActReport`, the `ident.act` it logs),
 every decision input and every logged event's shape; no rules version. Contact detections with a
@@ -475,3 +475,172 @@ small fast boat by HUNTER 1's camera, radar and sonar before the first launch; s
 
 The strikes' vehicle events read as before ("struck (W-2): launch seen by 1:eo_ir 4.2 s before");
 `murmur-replay --anchors`: "ANCHORS OK", "every decision reproduced exactly".
+
+## 15. Every class (2026-11-06, bd murmur-y85j.3)
+
+docs/AUTONOMOUS-NODES.md stage 3 (section 5) and section 2.7 items 3 and 6: the contact catalog
+(`sim/contacts.toml`, stage 1) arms every kind that is armed in real life, and its loadouts name
+five ways our sensors may see a shot (`sense`): `atgm`, `rocket`, `air_missile`, `gun`, `torpedo`.
+The bridge had figures for the first only. It now has them for all five
+(`crates/murmur-bridge/src/tracks/physical/weapon.rs` `weapon_signature`), judges every flight in
+three dimensions (the contacts side's flights carry real heights from stage 2: from or at an
+aircraft, under the water), keeps a threat library of five classes, and answers a node's `look`.
+
+**The rule that holds it together.** The truth's weapon `kind` selects which physics applies to
+what is sensed (a plume, a muzzle flash, a launch transient; a body a radar can plot or not), as
+`atgm` did. Nothing else of the truth's weapon is read: its kind, name, speed and victim are never
+served and never used to classify it. The weapon picture knows only what the physics gave it: a
+launch, and what kind of launch the sensor told it was; fixes; the shooter's track and its
+identity. A test gives the truth a name of its own and finds neither it nor any `kind` in the feed.
+
+### 15.1 What each class shows, and to which sensor
+
+Every figure is [E] with its basis beside it in the code, on the public figures of
+docs/research/opponent-weapons.md (its source numbers in brackets).
+
+| class (`sense`) | the launch | in flight | figures |
+|---|---|---|---|
+| `atgm` (section 3) | flash, plume and smoke, 2 m at 300 K; told as a missile's at the recognition level | radar 0.01 m^2; camera head-on 0.15 m at 30 K, side-on 0.4 m at 100 K | unchanged |
+| `rocket` (an RPG-7's PG-7VL, a 107 mm rocket) | a booster's blast and smoke cloud and a motor's flash, as the ATGM's (the RPG's smoke cloud gives the shooter away [5]); told as a rocket's at the recognition level | radar 0.005 m^2 (a 93 to 107 mm body [5, 7] nose-on); head-on 0.1 m at 30 K (a nose at 250 to 300 m/s heats some v^2/2c_p = 30 to 45 K); side-on 0.3 m at 60 K (the motor burns out early: the RPG's sustainer lights 10 m out [5], the 107 mm's top speed is its burnout's [7]) | |
+| `air_missile` (the LMM-class, from a UAS) | a motor lighting off the rail, as the ATGM's; told as a missile's | radar 0.005 m^2 (a 76 mm body [12]); head-on 0.08 m at 60 K (510 m/s [12] heats its nose some 130 K); side-on 0.31 m at 150 K (sqrt(0.076 x 1.3 m) [12], its two-stage motor's plume [12] in view) | |
+| `gun` (7.62 to 23 mm, a burst) | a muzzle flash, 0.5 m at 200 K, one look a burst (each flash about a millisecond, six to ten in under a second, with their smoke; a camera's frame averages each down from a thousand kelvin and more); told as gunfire as soon as caught (its rhythm) | nothing: a round's some 1e-4 m^2 is under every radar of ours, and a tracer is seen, not placed | |
+| `torpedo` (the 53-65-class) | a launch transient at 155 dB re 1 uPa at 1 m (a tube's impulse and the motor's start), heard by a listening sonar; told as one when heard; nothing for a camera | running at 45 kn [14], 145 dB (above a UUV's 124 and a submarine on battery's 100, a little under a fast boat's 150 at speed: `physical/signature.rs`); a listening sonar's draw a second, a passive fix (50 m plus 10 % of range, no depth); nothing for a radar or a camera | the source levels have no public figure (a ship's sonar hears a torpedo late, US patent 4,313,181; flow noise grows 1.5 to 2 dB a knot past 10 to 20 kn, a sonar course's rule for ships): the least sourced figures here |
+
+What each of our sensors can and cannot see:
+
+| sensor | the launch | the weapon in flight |
+|---|---|---|
+| EO/IR camera (a panoramic ring always; a gimbal where its payload manager points, not slewing) | a missile's, a rocket's, a gun's (the flash in its field and in optical line of sight); never a torpedo's | an ATGM, a rocket, an air-launched missile (accrued as a look, head-on or side-on by the angle off its nose in 3D); never a gun's rounds or a torpedo |
+| radar | never (it sees the shooter, not the shot) | an ATGM, a rocket, an air-launched missile above the water: within 15 m of the sea (`SEA_SKIM_M`) against the clutter in its cell, as a boat (a Doppler radar clear of the clutter's band by its radial speed in 3D), above it as an air target; never a gun's rounds or anything under water |
+| sonar that listens (passive, or an active sonar's passive mode) | a torpedo's launch transient | a torpedo running |
+| active sonar without a passive mode, AIS, ESM | never | never |
+
+**Three dimensions.** Slant ranges, both heights, the horizon (`visible_height_m` at k = 7/6 and
+4/3) and the terrain at every instant judged; a camera's head-on test is the angle between the
+weapon's 3D velocity and the line to the observer. A height-finding radar measures the weapon's
+height (30 m 1-sigma, as a contact's) and lays its plot at the true ground range; a 2D radar lays
+its slant range off as if the weapon were on the sea's surface (an airborne radar's plot of a
+weapon at height falls short by what its height takes off the slant, an error the plot's sigma
+does not carry). A sonar's range is the slant through the water, observer's depth to the weapon's.
+
+**The launch's kind** (`physical::weapon::LaunchLook`). One draw per observer and sensor decides
+both: under the channel's detection probability the launch is caught, under its recognition
+probability (never more) the kind of motor launch is told: a missile's (a plume that flies off and
+burns on as it is steered) or a rocket's (a booster's blast, a motor that burns out early). A gun's
+flashes are told as soon as caught, by their rhythm (milliseconds each at the gun's rate, nothing
+flying off); a sonar's transient is a launch transient when heard at all. Johnson's recognition
+criterion stands in for "watching the plume fly", a shortcut.
+
+**A gun's episode.** The contacts side sends one act per firing episode, each burst its own flight
+under it with the `rounds` it fired. Each burst's launch is sensed on its own (the act's own weapon
+on its act's stream and where the act placed its author; later bursts on their own stream, from
+their muzzle). The act is reported once, as before: at its first burst, or, when no sensor caught
+that one, at the first later burst caught (the record says which: `seen_at`; an act unseen is kept
+ten minutes for this). Each burst caught is a launch in the weapon picture under the act's one
+report; each burst's strike is the victim's report, put on the burst heading for it. The bridge
+never reads `rounds`: a burst is one flash however many rounds it holds.
+
+**A `self` weapon** (a one-way drone, an explosive boat) has no flight: the contacts side commits an
+abstract act at its strike (sensed as one, by whatever detects its author that second) and an
+impact. The picture puts the strike on a weapon track of its own, with no launch or fix.
+
+### 15.2 The threat library and `carried_by`
+
+| class | speed band, nominal, m/s | heights, m | reach, m | fired at | travels | its launch |
+|---|---|---|---|---|---|---|
+| ATGM-class | 150 to 350, 250 | 0 to 50 | 5,500 | boats, vehicles | air | missile |
+| Rocket-class | 180 to 420, 300 (the RPG's 115 to 295 [5], the 107 mm's 385 at burnout [7]) | 0 to 2,000 (laid at 8 km a 107 mm arcs to 1 to 2 km) | 8,050 [7] | boats, vehicles | air | rocket |
+| Air missile-class | 400 to 750, 510 [12] (the Hellfire class's 425, our catalog) | 0 to 6,000 | 8,000 (over 6 km [12], the Hellfire class 8) | boats, vehicles, aircraft [12] | air | missile |
+| Gun-class | 600 to 1,000, 800 (825 to 970 at the muzzle [2, 3, 4, 6, 16, 23], 500 to 600 at 2 km) | 0 to 2,000 | 2,000 [2, 3, 4, 16] | boats, vehicles, aircraft | air | muzzle |
+| Torpedo-class | 15 to 35, 23 [14] | -300 to 0 | 19,000 [14] | ships, submarines | water | transient |
+
+The bands overlap where real weapons do: a measured 250 m/s is an ATGM's or a rocket's and names
+neither; 510 is only the air-launched missile's, 380 only the rocket's, 160 only the ATGM's, 23 in
+the water only the torpedo's. A class is named only when the evidence leaves exactly one, among the
+classes that travel where the weapon was sensed (a sonar's fixes or transient: the water) and that
+launch as it was told to: the launch's kind, the speed and height in a band, and the shooter's
+identity. A muzzle flash or a launch transient names its class by itself; a missile's launch needs
+the speed or the shooter (an ATGM's or an air-launched missile's).
+
+`carried_by` (`tracks/weapons.rs`) is our side's belief about a kind, [E] on the research note's
+public cases, never the contact's truth. With decision D3 an armed craft is identified only as its
+look-alike, so the belief covers every craft of the kind:
+
+| identified as | may carry | basis |
+|---|---|---|
+| small fast boat | ATGM-class, Rocket-class, Gun-class | small craft have fired anti-tank missiles, RPGs, rockets and machine guns at ships [8, 9, 10] |
+| cargo ship | Rocket-class, Gun-class | containerised launchers on merchant hulls [20]; improvised rocket and cannon mounts [7, 16] |
+| tanker, patrol boat, truck | Gun-class | machine guns against drone boats [18]; coast guard boats [13]; technicals [17] |
+| unknown UAS | Air missile-class | Group 3 UAS carry light missiles [12] |
+| submarine, periscope | Torpedo-class | [15] |
+
+So the shooter alone pins a class only if the launch's kind leaves one of those it may carry: a
+small fast boat's missile launch is the ATGM-class, its muzzle flash the Gun-class, its rocket
+launch the Rocket-class; its launch caught but not told waits for the speed, and a speed of 250
+m/s (both an ATGM's and a rocket's) leaves it at "weapon, type unknown".
+
+**The weapon test by domain.** A weapon track is judged under water when a sonar heard it (20 m/s),
+in the air when a measured height puts it over 50 m (`AIR_FROM_M`, 150 m/s), else at the surface
+(60 m/s, the lower of the two, so a low weapon is not missed for want of a height). With a measured
+height (and its rate from two or more), a line's closest approach to one of ours counts the heights
+there: a missile 3 km up does not close on a boat below its line.
+
+### 15.3 The answer to a node's look
+
+A truth message may carry `look: [{ node, lat, lon, alt_m, reach_m }]` (absent when empty); the
+answer's `ours` then carries every one of ours within any look's reach, the straight line with
+heights, where each reports it is (`Tracks::ours_looked_at`), as well as those `aim_at` names and,
+under live mines, ours of their domains: the union, each once (`Tracks::ours_answer`). The node
+keeps what its own sensors and the radio horizon allow (docs/AUTONOMOUS-NODES.md 2.4); the bridge
+answers by reach alone. `node_events` and a contact's `variant` are never read (serde ignores them,
+tested).
+
+### 15.4 Measured
+
+The ignored `classes_probe` (`tracks/tests/weapon_probe.rs`): a shooter `d` west of HUNTER 1 (a boat
+on the water, a UAS 300 m up, a submarine 30 m down), by day, sun 45 degrees, 200 seeds; REAPER 1
+7,600 m up 4 km south of the flight's middle, its camera never on it (no payload manager in the
+probe), so only its radar counts.
+
+| class | HUNTER 1 at 500 / 1,000 / 2,000 / 4,000 m: launch caught, told | fixed in flight at 1,000 m (of 200 flights) |
+|---|---|---|
+| ATGM-class | 1.00, 1.00 / 1.00, 0.95 / 1.00, 0.46 / 0.95, 0.04 | HUNTER 1 camera 102, REAPER 1 radar 79 |
+| Rocket-class | the same (the same launch figures) | HUNTER 1 camera 74, REAPER 1 radar 45 |
+| Air missile-class, from 300 m | the same | HUNTER 1 radar 149 (an air target, clear of the clutter), camera 32, REAPER 1 radar 29 |
+| Gun-class | 1.00 / 0.95 / 0.46 / 0.04, each told when caught | none, by design |
+| Torpedo-class, from 30 m down | 0.98 / 0.94 / 0.86 / 0.72 by its hull sonar's passive mode | HUNTER 1 sonar in all 200 |
+
+So in the tutorial's geometry (0.9 to 1.2 km) a small fast boat's ATGM launch is told as a
+missile's about 95 % of the time and, the boat identified, classed at once as before; the other 5
+% wait for a speed that, at 250 m/s, names neither of the ATGM and the rocket. Its HMG bursts (stage
+6) are caught about 95 % of the time at 1 km, each the Gun-class at once.
+
+### 15.5 Shortcuts, stated
+
+- The truth splits the streams (section 14) and picks the physics by the weapon's kind; a launch's
+  kind is told by a Johnson recognition draw standing in for watching its plume fly.
+- A burst is one flash however many rounds it fired; a gun's rounds are never fixed, so a gun's
+  speed band is never met by a measured speed.
+- A 2D radar's plot of a weapon at height is laid off on the sea's surface, short of it.
+- A torpedo's launch and running source levels have no public figure; an active sonar without a
+  passive mode hears neither, and nothing pings a torpedo.
+- The console draws every weapon at 4 m over the water (`FLY_ALT_M`), an air-launched one too:
+  the picture's launch fix has no height, and only a height-finding radar's fixes carry one (served
+  as `alt_m`, not yet drawn).
+
+**Unchanged.** No rules version; no decision input or logged event: a weapon act's report is the
+same `ActReport` (a test round-trips it through the engine's own type, which refuses unknown
+fields) and logs the same `ident.act`; contact detections and the track picture are the same, second
+by second, with each class in the truth (tested); the tracker and the legacy model untouched;
+headless still refuses weapons (stage 5).
+
+**Checked.** `tracks::weapons::tests`: a speed fit chooses between classes; an identified small
+fast boat waits for evidence until its launch is told; a missile at an aircraft's height passes the
+air's test and closes on the aircraft, not on the boat below; the rungs and the jet's confusion as
+before. `tracks::tests::weapons`: every class leaves the detections and the track picture as they
+were and is caught by its own sensors (the camera; the sonar for the torpedo); a gun's episode is
+one act, its bursts launches with no fixes; a gun act unseen at its first burst is reported at a
+later one; a torpedo is heard and never seen; a look is answered with ours in reach and the union
+with `aim_at`; the truth message reads `look` and `rounds` and ignores `node_events`. Console:
+`weaponSymbols.check.ts` (the classes' kinds fly as missiles), `weapon.check.ts` (every class's
+short name, a gun's burst classed by its muzzle flash).

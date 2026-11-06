@@ -107,7 +107,7 @@ fn truth(s: f64, contacts: Vec<ContactTruth>) -> TruthMessage {
         },
         contacts,
         acts: Vec::new(),
-        aim_at: Vec::new(), weapons: Vec::new(), impacts: Vec::new(), mines_live: Vec::new(),
+        aim_at: Vec::new(), weapons: Vec::new(), impacts: Vec::new(), mines_live: Vec::new(), look: Vec::new(),
     }
 }
 
