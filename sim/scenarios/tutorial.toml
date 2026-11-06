@@ -8,33 +8,42 @@
 # platforms, the daylight clock and HUNTER 1's patrol leg are the same, sim/fleets/tutorial.toml):
 # - The fast boat starts 800 m short of its holding point instead of 2.7 km out at sea, and holds
 #   from about 1:00 instead of 3:03.
-# - It carries a weapon, an ATGM-class missile (docs/OPPONENT-WEAPONS.md: 250 m/s, 5 km), and
-#   every act launches it at HUNTER 1: the act is a modelled shot, not an abstract one. Our
-#   sensors may see the launch (HUNTER 1's ring camera always has the boat in view: by day it
-#   sees every launch from its 0.9 to 1.2 km), the missile in flight (REAPER 1's radar about two
-#   flights in five, HUNTER 1's camera about one in three, mostly in its last second; HUNTER 1's
-#   navigation radar never, the nose-on missile under the sea clutter), and HUNTER 1 knows it was
-#   struck 3.6 to 4.8 s after the launch. No damage is modelled.
-# - It fires from 1:20, then every 90 s to the end (13 attacks instead of 3): whenever the person
-#   reaches the step that waits for one, one has come or comes within a minute and a half. A seen
-#   launch is attributed from where the camera placed it; one attributed below the policy's
-#   threshold is flagged for review, not declared, and the next is another chance. Once the boat
-#   is declared, the engine only records the rest; once it is destroyed it leaves the scenario
-#   (`on_effect = "out_of_play"`, the default) and an author that does not exist fires nothing (a
-#   missile already in flight flies on).
-# - Every strike on the boat destroys it (`strike_outcome = "destroyed"`, the owner's "pin as full
-#   kill", docs/DECISIONS.md 11-03): the person nominates, so the intent and even the weapon
-#   (REAPER 1 carries Hellfires and GBU-12s) vary, and no seed could pin the damage model's draws
-#   (with seed 17 the default run's Hellfire only took the boat's propulsion, and on other intents
-#   a strike can miss). A training
-#   aid, here only: the truth log marks the strike `pinned`; the collateral around it is drawn.
+# - It is a fast inshore attack craft (sim/contacts.toml `armed_fast_boat`: it looks like a small
+#   fast boat to our sensors until it fires), and it fires what it carries, by its own fire control
+#   (docs/AUTONOMOUS-NODES.md, bd murmur-y85j.6): four ATGM-class missiles (250 m/s, 100 m to 5.5
+#   km, 30 s to reload) and a 12.7 mm heavy machine gun (500 rounds in bursts of 6, 2 km). This
+#   file only times its orders: at 1:15 it attacks HUNTER 1 with one missile, and again every 90 s
+#   (13 orders to 19:15): its four missiles first, then two-burst episodes of its machine gun, from
+#   where it holds (`stay`). Whenever the person reaches the step that waits for an attack, one has
+#   come or comes within a minute and a half, from a real magazine (it never runs out in 20
+#   minutes: 108 of its 500 rounds). Each missile is one act; each gun episode is one act (its
+#   bursts within 30 s of each other). Our sensors may see a launch (HUNTER 1's ring camera always
+#   has the boat in view: by day it sees nearly every launch and muzzle flash from its 0.9 to 1.2
+#   km), a missile in flight (REAPER 1's radar about two flights in five, HUNTER 1's camera about
+#   one in three, mostly in its last second; a gun's rounds never), and HUNTER 1 knows it was struck
+#   3.6 to 4.8 s after a missile's launch, a second or two after a burst. A seen launch is attributed
+#   from where the camera placed it; one attributed below the policy's threshold is flagged for
+#   review, not declared, and the next is another chance. Once the boat is declared, the engine only
+#   records the rest; once it is destroyed it leaves the scenario (`on_effect = "out_of_play"`, the
+#   default) and a node that does not exist fires nothing (a missile already in flight flies on).
+# - Two training aids, here only (`[training]`, refused in any other situation; docs/DECISIONS.md
+#   11-03 and docs/AUTONOMOUS-NODES.md decision D5):
+#   - every strike on the boat destroys it (`strike_outcome`, the owner's "pin as full kill"): the
+#     person nominates, so the intent and even the weapon (REAPER 1 carries Hellfires and GBU-12s)
+#     vary, and no seed could pin the damage model's draws (with seed 17 the default run's
+#     Hellfire only took the boat's propulsion, and on other intents a strike can miss). The truth
+#     log marks the strike `pinned`; the collateral around it is drawn;
+#   - every strike on HUNTER 1 is drawn by the damage model with the boat's own figures and
+#     recorded, never applied (`spared`): HUNTER 1 learns it was struck and goes on, so a person
+#     new to the chain is not first taught a lost sensor ship. In any other situation the same
+#     strikes can stop or sink it.
 # - The run is 20 minutes, not 12, for a slow reader, so the traffic that would come near the
 #   boat inside that time is moved or left out: the inbound container ship starts 5.7 km further
 #   out at sea (at the holding area after some 29 minutes, not 15), the trawler leaves Fisherman's
 #   Wharf at 6:00 (at the bridge after some 25 minutes), and the outbound bulk carrier (at the
 #   bridge at 16 minutes) is not in it.
 #
-# Times (`start_s`, an act's `at_s`) count from the contacts process's start, a few seconds after
+# Times (`start_s`, an order's `at_s`) count from the contacts process's start, a few seconds after
 # the situation's clock (the link emulator's start). uids are the fleet's
 # (sim/fleets/tutorial.toml, in hostile-act-engagement's order): 1 is HUNTER 1.
 title = "Tutorial traffic"
@@ -43,114 +52,160 @@ seed = 17
 [sensing]
 misclassification_rate = 0.0     # deterministic identities: the tutorial is about the chain
 
+[training]
+strike_outcome = { fastboat-raider = "destroyed" }   # every strike on the boat destroys it
+spared = [1]                                         # HUNTER 1: struck, drawn, never applied
+
 # ---------------------------------------------------------------- the hostile
 # A short run in at 15 m/s (29 kn), no AIS, to its holding point mid-strait 1.5 km west of the
 # bridge, inside the engagement zone (sim/areas: ez-gate-west), where it holds from about 1:00;
-# HUNTER 1 patrols 0.9 to 1.2 km east of it, well inside its missile's 5 km (tested:
+# HUNTER 1 patrols 0.9 to 1.2 km east of it, inside both its missile's band (100 m to 5.5 km) and
+# its machine gun's (2 km), so it never holds its fire for range (tested:
 # eval/tests/test_situation.py, the tutorial's test).
 [[contact]]
 id = "fastboat-raider"
-name = "Fast boat without AIS, holding mid-strait west of the bridge"
+name = "Fast inshore attack craft without AIS, holding mid-strait west of the bridge"
 affiliation = "hostile"
 domain = "surface"
-kind = "small_fast_boat"
+kind = "armed_fast_boat"
 speed_mps = 15
 motion = "transit"
 route = [[-122.5040, 37.8105], [-122.4950, 37.8120]]
 start_s = 5
-strike_outcome = "destroyed"     # every strike on it hits and destroys it (a training aid, above)
-weapon = { name = "ATGM-class missile", kind = "atgm", speed_mps = 250, range_m = 5000 }
 
-[[act]]
-id = "act-1"
-at_s = 80
-by = "fastboat-raider"
-against_vehicle = 1
+# Its orders: attack HUNTER 1 every 90 s from where it holds, a missile at a time while it has
+# them, then two bursts of its machine gun (12 rounds) at a time. It fires once it perceives HUNTER
+# 1 (within its 5 km lookout reach and the horizon) and its weapon is ready: a second or two after
+# each order.
+[[order]]
+at_s = 75
+node = "fastboat-raider"
+do = "attack"
+target = { vehicle = 1 }
+weapon = "ATGM-class missile"
+rounds = 1
+stay = true
 label = "fires a missile at the sensor ship (HUNTER 1)"
 
-[[act]]
-id = "act-2"
-at_s = 170
-by = "fastboat-raider"
-against_vehicle = 1
+[[order]]
+at_s = 165
+node = "fastboat-raider"
+do = "attack"
+target = { vehicle = 1 }
+weapon = "ATGM-class missile"
+rounds = 1
+stay = true
 label = "fires a missile at HUNTER 1 again"
 
-[[act]]
-id = "act-3"
-at_s = 260
-by = "fastboat-raider"
-against_vehicle = 1
+[[order]]
+at_s = 255
+node = "fastboat-raider"
+do = "attack"
+target = { vehicle = 1 }
+weapon = "ATGM-class missile"
+rounds = 1
+stay = true
 label = "fires a missile at HUNTER 1 again"
 
-[[act]]
-id = "act-4"
-at_s = 350
-by = "fastboat-raider"
-against_vehicle = 1
-label = "fires a missile at HUNTER 1 again"
+[[order]]
+at_s = 345
+node = "fastboat-raider"
+do = "attack"
+target = { vehicle = 1 }
+weapon = "ATGM-class missile"
+rounds = 1
+stay = true
+label = "fires its last missile at HUNTER 1"
 
-[[act]]
-id = "act-5"
-at_s = 440
-by = "fastboat-raider"
-against_vehicle = 1
-label = "fires a missile at HUNTER 1 again"
+[[order]]
+at_s = 435
+node = "fastboat-raider"
+do = "attack"
+target = { vehicle = 1 }
+weapon = "12.7 mm HMG (DShK/NSV-class)"
+rounds = 12
+stay = true
+label = "opens fire on HUNTER 1 with its machine gun"
 
-[[act]]
-id = "act-6"
-at_s = 530
-by = "fastboat-raider"
-against_vehicle = 1
-label = "fires a missile at HUNTER 1 again"
+[[order]]
+at_s = 525
+node = "fastboat-raider"
+do = "attack"
+target = { vehicle = 1 }
+weapon = "12.7 mm HMG (DShK/NSV-class)"
+rounds = 12
+stay = true
+label = "fires on HUNTER 1 with its machine gun again"
 
-[[act]]
-id = "act-7"
-at_s = 620
-by = "fastboat-raider"
-against_vehicle = 1
-label = "fires a missile at HUNTER 1 again"
+[[order]]
+at_s = 615
+node = "fastboat-raider"
+do = "attack"
+target = { vehicle = 1 }
+weapon = "12.7 mm HMG (DShK/NSV-class)"
+rounds = 12
+stay = true
+label = "fires on HUNTER 1 with its machine gun again"
 
-[[act]]
-id = "act-8"
-at_s = 710
-by = "fastboat-raider"
-against_vehicle = 1
-label = "fires a missile at HUNTER 1 again"
+[[order]]
+at_s = 705
+node = "fastboat-raider"
+do = "attack"
+target = { vehicle = 1 }
+weapon = "12.7 mm HMG (DShK/NSV-class)"
+rounds = 12
+stay = true
+label = "fires on HUNTER 1 with its machine gun again"
 
-[[act]]
-id = "act-9"
-at_s = 800
-by = "fastboat-raider"
-against_vehicle = 1
-label = "fires a missile at HUNTER 1 again"
+[[order]]
+at_s = 795
+node = "fastboat-raider"
+do = "attack"
+target = { vehicle = 1 }
+weapon = "12.7 mm HMG (DShK/NSV-class)"
+rounds = 12
+stay = true
+label = "fires on HUNTER 1 with its machine gun again"
 
-[[act]]
-id = "act-10"
-at_s = 890
-by = "fastboat-raider"
-against_vehicle = 1
-label = "fires a missile at HUNTER 1 again"
+[[order]]
+at_s = 885
+node = "fastboat-raider"
+do = "attack"
+target = { vehicle = 1 }
+weapon = "12.7 mm HMG (DShK/NSV-class)"
+rounds = 12
+stay = true
+label = "fires on HUNTER 1 with its machine gun again"
 
-[[act]]
-id = "act-11"
-at_s = 980
-by = "fastboat-raider"
-against_vehicle = 1
-label = "fires a missile at HUNTER 1 again"
+[[order]]
+at_s = 975
+node = "fastboat-raider"
+do = "attack"
+target = { vehicle = 1 }
+weapon = "12.7 mm HMG (DShK/NSV-class)"
+rounds = 12
+stay = true
+label = "fires on HUNTER 1 with its machine gun again"
 
-[[act]]
-id = "act-12"
-at_s = 1070
-by = "fastboat-raider"
-against_vehicle = 1
-label = "fires a missile at HUNTER 1 again"
+[[order]]
+at_s = 1065
+node = "fastboat-raider"
+do = "attack"
+target = { vehicle = 1 }
+weapon = "12.7 mm HMG (DShK/NSV-class)"
+rounds = 12
+stay = true
+label = "fires on HUNTER 1 with its machine gun again"
 
-[[act]]
-id = "act-13"
-at_s = 1160
-by = "fastboat-raider"
-against_vehicle = 1
-label = "fires a missile at HUNTER 1 again"
+[[order]]
+at_s = 1155
+node = "fastboat-raider"
+do = "attack"
+target = { vehicle = 1 }
+weapon = "12.7 mm HMG (DShK/NSV-class)"
+rounds = 12
+stay = true
+label = "fires on HUNTER 1 with its machine gun again"
 
 # ---------------------------------------------------------------- ferries (AIS, neutral)
 [[contact]]

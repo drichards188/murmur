@@ -1553,7 +1553,7 @@ mod tests {
     use super::*;
     use crate::damage::DamageState;
     use crate::effect::{DamageCtx, OursDamaged};
-    use crate::weapon::strike_by;
+    use crate::weapon::{OursLedger, strike_by};
 
     /// 2026-06-14 19:00Z, local noon at the Gate: a clear day, no night factor in a draw.
     const T0: f64 = 1_781_463_600.0;
@@ -1616,6 +1616,7 @@ mod tests {
         movers: Vec<Mover>,
         nodes: Nodes,
         armory: Armory,
+        ledger: OursLedger,
         s: f64,
     }
 
@@ -1628,7 +1629,8 @@ mod tests {
             if let Some(g) = grid {
                 nodes = nodes.with_grid(g);
             }
-            World { movers, nodes, armory: Armory::default(), s: 0.0 }
+            let ledger = OursLedger::sparing(scenario.training.map(|t| t.spared).unwrap_or_default());
+            World { movers, nodes, armory: Armory::default(), ledger, s: 0.0 }
         }
 
         /// `secs` seconds, our vehicles each second as the bridge would answer them.
@@ -1653,7 +1655,7 @@ mod tests {
                 impacts.extend(tick.impacts);
                 let map: BTreeMap<u64, OursAt> = now.iter().map(|o| (o.uid, o.clone())).collect();
                 let armory = &mut self.armory;
-                log.hurt.extend(strike_by(&mut impacts, &mut self.movers, &map, &ctx, |i| armory.take(&i.weapon)));
+                log.hurt.extend(strike_by(&mut impacts, &mut self.movers, &map, &ctx, &mut self.ledger, |i| armory.take(&i.weapon)));
                 log.acts.extend(tick.acts);
                 log.impacts.extend(impacts);
                 log.events.extend(tick.events);

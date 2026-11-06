@@ -473,6 +473,27 @@ pub fn pinned(who: &str, w: &WeaponDamage, target: &Target, outcome: crate::scen
     }
 }
 
+/// A strike on one of ours an earlier strike destroyed (bd murmur-o72k): recorded, nothing drawn
+/// (`u_hit` 1, as a pinned miss's), its state still `destroyed` and nothing applied.
+pub fn already_destroyed(who: &str, kind: &str, w: &WeaponDamage) -> DamageRecord {
+    DamageRecord {
+        who: who.into(),
+        role: "target".into(),
+        kind: kind.into(),
+        figures: w.figures_for(kind).map(|(k, _)| k.to_string()),
+        distance_m: None,
+        p_hit: 0.0,
+        factors: Vec::new(),
+        u_hit: 1.0,
+        hit: false,
+        u_damage: None,
+        state: DamageState::Destroyed,
+        applied: false,
+        pinned: false,
+        note: Some("already destroyed by an earlier strike: not drawn again".into()),
+    }
+}
+
 /// A shot at a target: the hit draw, then (on a hit) the damage draw, on `stream`.
 pub fn shot(seed: u64, stream: &str, who: &str, w: &WeaponDamage, target: &Target, c: &Conditions, out_m: Option<f64>) -> DamageRecord {
     shot_with(seed, stream, who, w, target, c, out_m, None)

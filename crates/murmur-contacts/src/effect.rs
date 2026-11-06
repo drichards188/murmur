@@ -806,9 +806,9 @@ mod tests {
             .collect()
     }
 
-    /// [`scene`] with the boat's `strike_outcome` pinned to `o`.
+    /// [`scene`] with the boat's `strike_outcome` pinned to `o` (`[training]`).
     fn pinned_scene(o: &str) -> Vec<Mover> {
-        let text = SCENE.replacen("weapon = {", &format!("strike_outcome = \"{o}\"\n        weapon = {{"), 1);
+        let text = format!("{SCENE}\n[training]\nstrike_outcome = {{ boat = \"{o}\" }}\n");
         let mut movers: Vec<Mover> = Scenario::from_toml(&text)
             .expect("scenario")
             .contacts()

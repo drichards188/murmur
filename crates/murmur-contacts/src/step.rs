@@ -28,7 +28,7 @@ use crate::motion::Mover;
 use crate::node::{LandWater, Nodes};
 use crate::scenario::Scenario;
 use crate::truth::TruthMessage;
-use crate::weapon::{self, Armory, OursAt};
+use crate::weapon::{self, Armory, OursAt, OursLedger};
 
 /// Our vehicles from a bridge answer older than this (s) are no longer what a node perceives.
 pub const OURS_FRESH_S: f64 = 5.0;
@@ -83,6 +83,9 @@ pub struct Step {
     ours_now_t: f64,
     /// Our vehicles a scripted armed author's acts name (`aim_at`).
     aim_at: Vec<u64>,
+    /// Ours the damage model destroyed (never drawn again, bd murmur-o72k) and ours a training
+    /// aid spares (`[training] spared`).
+    ledger: OursLedger,
 }
 
 /// What one second gave: its truth message, and our vehicles hurt in it (by a mine, at the
@@ -110,7 +113,13 @@ impl Step {
             ours_now: Vec::new(),
             ours_now_t: f64::NEG_INFINITY,
             aim_at: weapon::aim_at(scenario),
+            ledger: OursLedger::sparing(scenario.training.as_ref().map(|t| t.spared.clone()).unwrap_or_default()),
         }
+    }
+
+    /// Ours the damage model has destroyed so far, and ours a training aid spares.
+    pub fn ledger(&self) -> &OursLedger {
+        &self.ledger
     }
 
     /// Ours as a node may perceive them at unix time `t`: the bridge's latest answer, unless it
@@ -138,8 +147,21 @@ impl Step {
             let a = land(&e, movers, s);
             self.applied.push(a);
         }
-        // rules 27: every live mine against what moved this second
-        let mined = self.fields.step(now, dt, movers, &self.ours, ctx);
+        // rules 27: every live mine against what moved this second (a wreck of ours sets off nothing)
+        let mined = if self.ledger.destroyed.is_empty() {
+            self.fields.step(now, dt, movers, &self.ours, ctx)
+        } else {
+            let alive: BTreeMap<u64, OursAt> =
+                self.ours.iter().filter(|(u, _)| !self.ledger.destroyed.contains(u)).map(|(u, o)| (*u, o.clone())).collect();
+            self.fields.step(now, dt, movers, &alive, ctx)
+        };
+        for d in &mined.ours_damaged {
+            if d.state == crate::damage::DamageState::Destroyed
+                && let Ok(u) = d.uid.parse::<u64>()
+            {
+                self.ledger.destroyed.insert(u);
+            }
+        }
         // every node with an order runs it: its shots fly from here, its steering is the next step's
         let tick = nodes.tick(s, now, movers, fresh(&self.ours_now, self.ours_now_t, now), &mut self.armory);
         self.seq += 1;
@@ -164,7 +186,7 @@ impl Step {
         // the damage model on each strike whose weapon lists figures (a node's catalog weapon, or
         // a scripted act's author's)
         let armory = &mut self.armory;
-        let struck = weapon::strike_by(&mut msg.impacts, movers, &self.ours, ctx, |i| {
+        let struck = weapon::strike_by(&mut msg.impacts, movers, &self.ours, ctx, &mut self.ledger, |i| {
             armory.take(&i.weapon).or_else(|| weapon::scripted(scenario, i))
         });
         self.prev_s = s;

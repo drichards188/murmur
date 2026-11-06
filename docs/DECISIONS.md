@@ -133,6 +133,11 @@ group. Dates are 2026.
   version): no hit or damage draw, the truth log's record marked `pinned`, collateral still
   drawn. A training aid, used by the tutorial's boat only (the person nominates, so neither the
   intent nor the weapon, and so no seed, could fix the draw); never in a situation that measures.
+  11-06 (docs/AUTONOMOUS-NODES.md decision D5, bd murmur-y85j.6): training aids live under a
+  contacts file's `[training]` table (`strike_outcome = { <contact> = "destroyed" }`, and
+  `spared = [<uid>]`: every strike on one of ours drawn and recorded, never applied), and a
+  situation that is not a tutorial is refused one; the tutorial's boat now fires its own
+  catalog weapons by orders, and HUNTER 1 is spared them.
 - **Guns: bursts from a counted magazine** (11-02, the owner: "I want all nodes that are
   supposed to carry weapons in real life to have the war thunder level of real weapons
   equipped"; "All of it now", guns included). Stage 3 of bd murmur-lbw8 (murmur-lbw8.3), built as

@@ -37,12 +37,7 @@
 //! claiming to be a fishing vessel), `on_effect` (what an engagement's effect does to it:
 //! `"out_of_play"`, the default, removes it from the scenario when an abstract effect reaches it,
 //! or when the damage model destroys it, so our sensors stop detecting it; `"persists"` keeps it
-//! moving, flagged, whatever the draw), `strike_outcome` (pins what every strike aimed at it
-//! does, in place of the damage model's hit and damage draws: `"destroyed"`, `"mobility"`,
-//! `"firepower"` (an armed contact only), `"undamaged"` (a hit that does nothing) or `"miss"`; a
-//! training aid, used by the tutorial's boat only (DECISIONS.md 11-03), refused beside
-//! `on_effect = "persists"`; the truth log's record of the strike says `pinned`; an abstract
-//! effect, whose weapon lists no figures, and collateral draws ignore it). `transit` moves once
+//! moving, flagged, whatever the draw). `transit` moves once
 //! from `route[0]` to the last point and holds there; `loiter` needs `center` and `radius_m`; `station` and `drift` need
 //! `at`. Drift follows the tidewater current when the contacts process has conditions.
 //! `recorded` needs `max_gap_s` and timestamped `samples` (`at_s`, `position = [lon, lat]`,
@@ -79,6 +74,15 @@
 //! second) and `stay`; `flee` a `from` (a target) and `speed_mps`; `break_off` and `resume`
 //! nothing. An attack needs an armed kind with sensors and the physical sensing model; a recorded
 //! contact, or one with a `weapon = {...}` of its own (the scripted path), takes no order.
+//!
+//! Training aids (the tutorial's only, [`Training`]): a top-level `[training]` table pins what
+//! every strike aimed at a contact does (`strike_outcome = { <contact> = "destroyed" }`, in place
+//! of the damage model's hit and damage draws: `"destroyed"`, `"mobility"`, `"firepower"` (an
+//! armed contact only), `"undamaged"` (a hit that does nothing) or `"miss"`; refused beside the
+//! contact's `on_effect = "persists"`; the truth log's record of the strike says `pinned`; an
+//! abstract effect, whose weapon lists no figures, and collateral draws ignore it), and spares
+//! our vehicles (`spared = [<uid>, ...]`: every strike on one by the contacts' weapons drawn and
+//! recorded, never applied). `strike_outcome` on a contact itself is refused.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -277,6 +281,34 @@ pub struct Scenario {
     /// Orders to the contacts (`[[order]]`, [`crate::node`]), in file order.
     #[serde(default, rename = "order")]
     pub orders: Vec<crate::node::OrderSpec>,
+    /// Training aids (`[training]`, [`Training`]): the tutorial's only.
+    #[serde(default)]
+    pub training: Option<Training>,
+}
+
+/// `[training]`: the training aids a scenario may carry, the tutorial's only (DECISIONS.md 11-03,
+/// docs/AUTONOMOUS-NODES.md decision D5; eval/situation.py refuses a situation that is not a
+/// tutorial whose contacts file has this table). Each bends the truth on purpose, so it is
+/// named apart from everything that is drawn, and every record it touches says so.
+///
+/// ```toml
+/// [training]
+/// strike_outcome = { fastboat-raider = "destroyed" }   # every strike aimed at that contact
+/// spared = [1]                                         # our vehicles (fleet uids)
+/// ```
+///
+/// - `strike_outcome`: by contact id, what every strike aimed at it does in place of the damage
+///   model's draws ([`StrikeOutcome`]; the truth log's record says `pinned`).
+/// - `spared`: our vehicles whose strikes by the contacts' weapons are drawn and recorded but
+///   never applied (the record's note says so): the vehicle learns it was struck and goes on as
+///   it was ([`crate::weapon::OursLedger`]).
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Training {
+    #[serde(default)]
+    pub strike_outcome: BTreeMap<String, StrikeOutcome>,
+    #[serde(default)]
+    pub spared: Vec<u64>,
 }
 
 /// Rules 9: a hostile act a contact commits at a scenario second, against one of our vehicles
@@ -423,7 +455,8 @@ pub struct ContactSpec {
     pub end_s: Option<f64>,
     #[serde(default)]
     pub on_effect: OnEffect,
-    /// Pins what every strike aimed at it does ([`StrikeOutcome`]; none: drawn).
+    /// Pins what every strike aimed at it does ([`StrikeOutcome`]; none: drawn): set from the
+    /// scenario's `[training] strike_outcome` at load (the key on a contact itself is refused).
     #[serde(default)]
     pub strike_outcome: Option<StrikeOutcome>,
     /// Its weapon: every act it commits launches it (docs/OPPONENT-WEAPONS.md).
@@ -682,6 +715,12 @@ impl Scenario {
             if !seen.insert(c.id.as_str()) {
                 return Err(format!("duplicate contact id {:?}", c.id));
             }
+            if c.strike_outcome.is_some() {
+                return Err(format!(
+                    "contact {:?}: strike_outcome is a training aid: name it under [training] (strike_outcome = {{ {} = ... }})",
+                    c.id, c.id
+                ));
+            }
         }
         let mut acts = std::collections::BTreeSet::new();
         for a in &s.acts {
@@ -701,6 +740,21 @@ impl Scenario {
             }
             if !(a.at_s.is_finite() && a.at_s >= 0.0) {
                 return Err(format!("act {:?}: at_s must be a scenario second", a.id));
+            }
+        }
+        // the training aids (the tutorial's): each pinned outcome onto its contact
+        if let Some(t) = s.training.clone() {
+            for (id, o) in &t.strike_outcome {
+                let c = s
+                    .contacts
+                    .iter_mut()
+                    .find(|c| c.id == *id)
+                    .ok_or_else(|| format!("[training] strike_outcome: {id:?} is no contact of the scenario"))?;
+                c.strike_outcome = Some(*o);
+            }
+            let mut spared = std::collections::BTreeSet::new();
+            if let Some(u) = t.spared.iter().find(|u| !spared.insert(**u)) {
+                return Err(format!("[training] spared: vehicle {u} named twice"));
             }
         }
         if s.contacts.iter().any(|c| c.weapon.is_some()) {
@@ -971,30 +1025,42 @@ mod tests {
         assert!(Scenario::from_toml(&dup).is_err());
     }
 
-    /// `strike_outcome` (a training aid): one of the five outcomes, never beside `persists`, and
-    /// `firepower` only on an armed contact; absent, none.
+    /// `[training] strike_outcome` (a training aid): one of the five outcomes for a contact of the
+    /// scenario, never beside its `persists`, and `firepower` only on an armed contact; absent,
+    /// none. On a contact itself the key is refused. `spared` names each of ours once.
     #[test]
     fn a_pinned_strike_outcome_is_checked_at_load() {
-        let boat = |extra: &str| {
+        let boat = |kind: &str, contact: &str, training: &str| {
             Scenario::from_toml(&format!(
-                "title = \"t\"\n[[contact]]\nid = \"boat\"\naffiliation = \"hostile\"\ndomain = \"surface\"\nkind = \"small_fast_boat\"\nmotion = \"station\"\nat = [-122.5, 37.8]\n{extra}"
+                "title = \"t\"\n[[contact]]\nid = \"boat\"\naffiliation = \"hostile\"\ndomain = \"surface\"\nkind = \"{kind}\"\nmotion = \"station\"\nat = [-122.5, 37.8]\n{contact}\n{training}"
             ))
-            .and_then(|s| s.contacts())
+            .and_then(|s| s.contacts().map(|c| (s, c)))
         };
-        assert_eq!(boat("").expect("valid")[0].strike_outcome, None);
+        let pin = |o: &str| format!("[training]\nstrike_outcome = {{ boat = \"{o}\" }}\n");
+        let (s, c) = boat("small_fast_boat", "", "").expect("valid");
+        assert_eq!((c[0].strike_outcome, s.training), (None, None));
         for (o, want) in [
             ("destroyed", StrikeOutcome::Destroyed),
             ("mobility", StrikeOutcome::Mobility),
             ("undamaged", StrikeOutcome::Undamaged),
             ("miss", StrikeOutcome::Miss),
         ] {
-            let c = boat(&format!("strike_outcome = \"{o}\"\n")).expect("valid");
+            let (_, c) = boat("small_fast_boat", "", &pin(o)).expect("valid");
             assert_eq!((c[0].strike_outcome, want.as_str()), (Some(want), o));
         }
-        let armed = "weapon = { name = \"ATGM-class missile\", kind = \"atgm\", speed_mps = 250, range_m = 5000 }\n";
-        assert!(boat(&format!("strike_outcome = \"firepower\"\n{armed}")).is_ok());
-        for bad in ["strike_outcome = \"firepower\"\n", "strike_outcome = \"sunk\"\n", "strike_outcome = true\n", "strike_outcome = \"destroyed\"\non_effect = \"persists\"\n"] {
-            assert!(boat(bad).is_err(), "{bad}");
+        assert!(boat("armed_fast_boat", "", &pin("firepower")).is_ok());
+        let (s, _) = boat("small_fast_boat", "", "[training]\nspared = [1, 3]\n").expect("valid");
+        assert_eq!(s.training.map(|t| t.spared), Some(vec![1, 3]));
+        for (contact, training) in [
+            ("", pin("firepower")),
+            ("", pin("sunk")),
+            ("on_effect = \"persists\"", pin("destroyed")),
+            ("", "[training]\nstrike_outcome = { nobody = \"destroyed\" }\n".into()),
+            ("", "[training]\nspared = [1, 1]\n".into()),
+            ("", "[training]\nmoon = true\n".into()),
+            ("strike_outcome = \"destroyed\"", String::new()),
+        ] {
+            assert!(boat("small_fast_boat", contact, &training).is_err(), "{contact} {training}");
         }
     }
 }

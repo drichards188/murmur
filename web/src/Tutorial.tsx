@@ -109,7 +109,7 @@ function stepView(
               You are <b>{CONSOLE_OPERATOR}</b>, the operator at this console. In about 8 minutes you take one engagement through Murmur&apos;s decision chain:
             </p>
             <ol>
-              <li>a boat fires a missile at one of ours: you see when and how we know, and the engine declares the boat hostile;</li>
+              <li>a boat attacks one of ours (missiles, then a machine gun): you see when and how we know, and the engine declares the boat hostile;</li>
               <li>you confirm that declaration: the threat designation;</li>
               <li>you nominate an engagement with an armed drone;</li>
               <li>two other operators sign it (you cannot sign your own);</li>
@@ -120,8 +120,9 @@ function stepView(
               as you like.
             </p>
             <p className="tut-small">
-              Nothing here is real: simulated vehicles and weapons. Our missile is set to destroy the boat in this tutorial, and the boat&apos;s missile is kinematics only
-              (no damage is modelled for it). The two signers are scripts, labeled scripted.
+              Nothing here is real: simulated vehicles and weapons. Two training aids, in this tutorial only: our missile is set to destroy the boat, and the
+              boat&apos;s strikes on HUNTER 1 are drawn and recorded but do it no harm (elsewhere they can stop or sink it). The two signers are scripts, labeled
+              scripted.
             </p>
           </>
         ),
@@ -172,28 +173,30 @@ function stepView(
         body: (
           <>
             <p>
-              Intelligence warned of an attack by small craft, which are known to carry ATGM-class missiles (some 250 m/s: from a kilometre one strikes in about 4 s).
-              Three things can tell us it fired:
+              Intelligence warned of an attack by small craft, which are known to carry ATGM-class missiles (some 250 m/s: from a kilometre one strikes in about 4 s)
+              and heavy machine guns. This boat fires its missiles first, then bursts of its machine gun. Three things can tell us it fired:
             </p>
             <ol>
               <li>
-                <b>the launch</b>: a camera with the boat in view sees the flash. HUNTER 1&apos;s ring camera always has it in view, so by day it sees every launch and places
-                the shooter;
+                <b>the launch</b>: a camera with the boat in view sees the flash, a missile&apos;s or a gun&apos;s muzzle flash. HUNTER 1&apos;s ring camera always has it
+                in view, so by day it sees nearly every one and places the shooter;
               </li>
               <li>
                 <b>the missile in flight</b>, a small fast object: REAPER 1&apos;s radar plots it about two flights in five, HUNTER 1&apos;s camera about one in three, mostly
-                in its last second. HUNTER 1&apos;s navigation radar never does: a missile coming nose-on is smaller than the sea clutter around it;
+                in its last second. HUNTER 1&apos;s navigation radar never does: a missile coming nose-on is smaller than the sea clutter around it. A gun&apos;s rounds are
+                never seen in flight;
               </li>
               <li>
-                <b>the strike</b>: HUNTER 1 knows it was hit (no damage is modelled here).
+                <b>the strike</b>: HUNTER 1 knows it was hit (here the hit is drawn and recorded but does it no harm, a training aid).
               </li>
             </ol>
             <p>
               The earliest cue is when we know; from it to the strike is our warning. The map and the banner show what we know, stage by stage, as a crew learns it: a{' '}
               <b>launch</b> (where the camera placed the shooter, the bearing from HUNTER 1: no type, speed or target yet); a <b>weapon</b> once fixes measure a speed no
-              boat makes (its type unknown); its <b>class</b> only on named evidence: that speed fitting the ATGM-class, or the boat identified as a kind known to carry
-              one. The estimated flight is drawn dashed, with a countdown, only once its target and timing have a basis; its real fixes are solid marks. The exact
-              weapon is never named: nothing here could tell it.
+              boat makes (its type unknown); its <b>class</b> only on named evidence: the boat identified as a kind known to carry missiles and the camera telling the
+              launch as a missile&apos;s (from a kilometre, about 19 times in 20), or a speed fitting one class alone (some 250 m/s fits an ATGM and a rocket, and names
+              neither). A muzzle flash is gunfire at once. The estimated flight is drawn dashed, with a countdown, only once its target and timing have a basis; its real
+              fixes are solid marks. The exact weapon is never named: nothing here could tell it.
             </p>
             <p>
               The launch the camera saw is the act&apos;s observation: attributed to one track at 0.9 or more, the engine declares that track hostile by rule. Speed,

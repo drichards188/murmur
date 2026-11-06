@@ -224,7 +224,7 @@ pub fn strike(
     ours: &BTreeMap<u64, OursAt>,
     ctx: &DamageCtx,
 ) -> Vec<OursDamaged> {
-    strike_by(impacts, movers, ours, ctx, |i| scripted(scenario, i))
+    strike_by(impacts, movers, ours, ctx, &mut OursLedger::default(), |i| scripted(scenario, i))
 }
 
 /// What the damage model reads of a scripted act's strike (its author's `weapon`, when it lists
@@ -235,13 +235,34 @@ pub fn scripted(scenario: &Scenario, i: &ImpactTruth) -> Option<Strike> {
     Some(Strike { weapon: w, stream: format!("act:{}", i.act), out_m: None })
 }
 
+/// What the truth side keeps of our vehicles from one strike to the next: those its damage model
+/// destroyed (a later strike on one is recorded and never drawn again, bd murmur-o72k: its
+/// shooter may still fire at where it last perceived it, but a wreck takes no second outcome),
+/// and those a training aid spares (the tutorial's `[training] spared`, DECISIONS.md 11-03 and
+/// docs/AUTONOMOUS-NODES.md decision D5: each strike on one is drawn and recorded, never
+/// applied, so the vehicle goes on as it was).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct OursLedger {
+    pub destroyed: std::collections::BTreeSet<u64>,
+    pub spared: std::collections::BTreeSet<u64>,
+}
+
+impl OursLedger {
+    /// A ledger that spares `spared` (fleet uids) and has destroyed none yet.
+    pub fn sparing(spared: impl IntoIterator<Item = u64>) -> OursLedger {
+        OursLedger { destroyed: Default::default(), spared: spared.into_iter().collect() }
+    }
+}
+
 /// [`strike`] with each strike's weapon, stream and range from `lookup` (none: not drawn): a
-/// node's from the [`Armory`] ([`Armory::take`]), a scripted act's by [`scripted`].
+/// node's from the [`Armory`] ([`Armory::take`]), a scripted act's by [`scripted`]. `ledger`:
+/// ours destroyed so far (never drawn again; each one newly destroyed is added) and ours spared.
 pub fn strike_by(
     impacts: &mut [ImpactTruth],
     movers: &mut [Mover],
     ours: &BTreeMap<u64, OursAt>,
     ctx: &DamageCtx,
+    ledger: &mut OursLedger,
     mut lookup: impl FnMut(&ImpactTruth) -> Option<Strike>,
 ) -> Vec<OursDamaged> {
     let mut hurt = Vec::new();
@@ -254,6 +275,10 @@ pub fn strike_by(
             (Some(uid), _) => {
                 let o = ours.get(&uid);
                 let kind = damage::ours_kind(o.and_then(|o| o.platform.as_deref()), o.and_then(|o| o.domain.as_deref()));
+                if ledger.destroyed.contains(&uid) {
+                    i.damage = Some(damage::already_destroyed(&format!("ours:{uid}"), kind, &w));
+                    continue;
+                }
                 let target = Target {
                     kind,
                     speed_mps: o.map_or(0.0, |o| o.ve.hypot(o.vn)),
@@ -262,8 +287,15 @@ pub fn strike_by(
                 };
                 let mut r = damage::shot(ctx.seed, &stream, &format!("ours:{uid}"), &w, &target, &c, out_m);
                 if r.state != DamageState::Undamaged {
-                    r.applied = true;
-                    hurt.push(OursDamaged { uid: uid.to_string(), state: r.state, cause: format!("struck by {} ({})", w.name, i.act) });
+                    if ledger.spared.contains(&uid) {
+                        r.note = Some("spared by a training aid ([training] spared): drawn and recorded, not applied".into());
+                    } else {
+                        r.applied = true;
+                        if r.state == DamageState::Destroyed {
+                            ledger.destroyed.insert(uid);
+                        }
+                        hurt.push(OursDamaged { uid: uid.to_string(), state: r.state, cause: format!("struck by {} ({})", w.name, i.act) });
+                    }
                 }
                 i.damage = Some(r);
             }
@@ -427,5 +459,47 @@ mod tests {
         armory.launch(&s, &mut a, &movers, &ours);
         assert!(a[0].held.as_deref().is_some_and(|h| h.contains("out of action")), "{:?}", a[0].held);
         assert!(armory.is_empty());
+    }
+
+    /// bd murmur-o72k: one of ours a strike destroyed takes no second draw (a later strike on it
+    /// is recorded as already destroyed and hands nothing back); a spared one (the tutorial's
+    /// training aid) has every strike drawn and recorded, and none handed back.
+    #[test]
+    fn a_wreck_is_not_drawn_again_and_a_spared_vehicle_is_never_hurt() {
+        let kill = ARMED.replace(
+            "range_m = 5000 }",
+            "range_m = 5000, warhead_kg = 9, effects = { fishing_vessel = { p_hit = 1.0, p_kill = 1.0 } } }",
+        );
+        let acts = "[[act]]\nid = \"a1\"\nat_s = 10\nby = \"boat\"\nagainst_vehicle = 1\n[[act]]\nid = \"a2\"\nat_s = 11\nby = \"boat\"\nagainst_vehicle = 1\n";
+        let s = Scenario::from_toml(&format!("{kill}{acts}")).expect("parses");
+        let ours = BTreeMap::from([(
+            1,
+            OursAt { uid: 1, lat: 37.8120, lon: -122.4836, alt_m: 0.0, ve: 0.0, vn: 0.0, platform: Some("seahunter".into()), domain: Some("surface".into()), armed: false },
+        )]);
+        let ctx = DamageCtx { seed: 17, conditions: None, hit_override: None };
+        let mut movers: Vec<Mover> = s.contacts().expect("valid").into_iter().enumerate().map(|(i, c)| Mover::new(c, 1, i as u64)).collect();
+        let mut run = |ledger: &mut OursLedger| {
+            let mut armory = Armory::default();
+            let mut a = vec![act("a1", 1000.0, 1), act("a2", 1001.0, 1)];
+            armory.launch(&s, &mut a, &movers, &ours);
+            let mut hits = armory.impacts(1010.0);
+            let hurt = strike_by(&mut hits, &mut movers, &ours, &ctx, ledger, |i| scripted(&s, i));
+            (hits, hurt)
+        };
+        let mut ledger = OursLedger::default();
+        let (hits, hurt) = run(&mut ledger);
+        assert_eq!(hurt, vec![OursDamaged { uid: "1".into(), state: DamageState::Destroyed, cause: "struck by ATGM-class missile (a1)".into() }]);
+        let again = hits[1].damage.as_ref().expect("recorded");
+        assert!(!again.hit && again.u_hit == 1.0 && again.state == DamageState::Destroyed && !again.applied, "{again:?}");
+        assert!(again.note.as_deref().is_some_and(|n| n.contains("already destroyed")));
+        assert_eq!(ledger.destroyed, [1].into());
+        let mut spared = OursLedger::sparing([1]);
+        let (hits, hurt) = run(&mut spared);
+        assert!(hurt.is_empty() && spared.destroyed.is_empty());
+        for h in &hits {
+            let d = h.damage.as_ref().expect("drawn");
+            assert!(d.hit && d.state == DamageState::Destroyed && !d.applied, "{d:?}");
+            assert!(d.note.as_deref().is_some_and(|n| n.contains("spared")));
+        }
     }
 }

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import socket
 import subprocess
@@ -109,6 +110,31 @@ def _write(tmp_path: Path, name: str, body: str) -> Path:
     p = tmp_path / f"{name}.toml"
     p.write_text(body)
     return p
+
+
+def _catalog() -> dict[str, Any]:
+    """The contact catalog (sim/contacts.toml): what each kind of contact is and carries."""
+    return tomllib.loads((REPO / "sim" / "contacts.toml").read_text())
+
+
+def _attack_orders(raw: dict[str, Any], node: str) -> list[dict[str, Any]]:
+    """A contacts file's `[[order]]`s to `node` to attack, in file order (docs/AUTONOMOUS-NODES.md
+    2.5: the file times each order; the node runs its own fire control)."""
+    return [o for o in raw.get("order", []) if o["node"] == node and o["do"] == "attack"]
+
+
+def _in_band(raw: dict[str, Any], node: str, order: dict[str, Any], victim: list[float]) -> bool:
+    """Whether `victim` ([lon, lat] on the surface) is inside the band of the weapon `order` names
+    (or the first of the node's loadout meant for a surface target), from where the node holds
+    (its route's last point, its `at` or its loiter's centre)."""
+    from eval.storyline import haversine_m
+
+    c = next(c for c in raw["contact"] if c["id"] == node)
+    at = c["route"][-1] if "route" in c else c.get("at") or c["center"]
+    kind = _catalog()[c["kind"]]
+    w = next(w for w in kind["loadout"] if w["name"] == order.get("weapon", w["name"]) and "surface" in w["targets"])
+    d = math.hypot(haversine_m(*at, *victim), c.get("alt_m", kind.get("alt_m", 0.0)))
+    return w["min_range_m"] < d < w["max_range_m"]
 
 
 BASE = 'title = "T"\nbrief = "B"\nfleet = "sim/fleets/harbor-watch.toml"\n'
@@ -925,18 +951,31 @@ def test_the_tutorial_is_live_with_fixed_modes(tmp_path: Path):
     spawn = units[0]["spawn"]
     for p in [*patrol.params["route"], [spawn[1], spawn[0]]]:
         assert 850 <= haversine_m(*p, *hold) <= 1300, p
-    # the boat's missile (docs/OPPONENT-WEAPONS.md) reaches all of that leg with room to spare, so
-    # no attack is ever held for range; every act is a shot at HUNTER 1
+    # the boat is an armed kind (sim/contacts.toml) and its orders only say when it attacks: each at
+    # HUNTER 1 from where it holds, with a weapon it carries whose band takes in all of that leg, so
+    # no attack is held for range (docs/AUTONOMOUS-NODES.md, bd murmur-y85j.6)
     contacts = tomllib.loads(sit.contacts.read_text())
-    weapon = contacts["contact"][0]["weapon"]
-    assert weapon["kind"] == "atgm" and weapon["range_m"] >= 3 * 1300
-    acts = contacts["act"]
-    assert all(a["by"] == contacts["contact"][0]["id"] and a["against_vehicle"] == 1 for a in acts)
-    # every strike on the boat destroys it, whatever the person's intent and weapon (the owner's
-    # "pin as full kill", DECISIONS.md 11-03): a training aid on the boat alone
-    assert [c["id"] for c in contacts["contact"] if "strike_outcome" in c] == [contacts["contact"][0]["id"]]
-    assert contacts["contact"][0]["strike_outcome"] == "destroyed"
-    assert contacts["contact"][0].get("on_effect", "out_of_play") == "out_of_play"
+    boat = contacts["contact"][0]
+    attacks = _attack_orders(contacts, boat["id"])
+    kind = _catalog()[boat["kind"]]
+    assert "act" not in contacts and attacks == contacts["order"] and kind["looks_like"] == "small_fast_boat"
+    for o in attacks:
+        assert o["target"] == {"vehicle": 1} and o["stay"] is True
+        (w,) = [x for x in kind["loadout"] if x["name"] == o["weapon"]]
+        assert w["min_range_m"] < 850 and 1300 < w["max_range_m"], w["name"]
+    # from a real magazine: no more of a weapon than it carries, so it never runs out (and never
+    # turns for home: its kind's `on_empty`); its missiles first, then its machine gun
+    assert [o["weapon"] for o in attacks[:4]] == ["ATGM-class missile"] * 4
+    for w in kind["loadout"]:
+        assert sum(o.get("rounds", 0) for o in attacks if o["weapon"] == w["name"]) <= w["count"]
+    # the training aids (a tutorial's only, refused elsewhere: below): every strike on the boat
+    # destroys it, whatever the person's intent and weapon (the owner's "pin as full kill",
+    # DECISIONS.md 11-03), and every strike on HUNTER 1 is drawn but never applied (decision D5)
+    assert contacts["training"] == {"strike_outcome": {boat["id"]: "destroyed"}, "spared": [1]}
+    assert boat.get("on_effect", "out_of_play") == "out_of_play"
+    contacts_copy = _write(tmp_path, "trained-contacts", sit.contacts.read_text())
+    with pytest.raises(S.SituationError, match="training aids"):
+        S.load_situation(_write(tmp_path, "trained", BASE + f'contacts = "{contacts_copy}"\n'))
     # by day at the Gate (UTC-7 in June): the cameras' visible channels see
     assert 9 <= (int(sit.at[11:13]) - 7) % 24 <= 15, sit.at
     assert not [s for s in sit.steps if s.kind in ("engage", "propose", "declare", "flood")], "nothing nominates or declares for the person"
@@ -949,11 +988,9 @@ def test_the_tutorial_is_live_with_fixed_modes(tmp_path: Path):
     # the status document carries the flag the console keys the walk-through on
     doc = S.status_doc(sit, m, phase="running", elapsed_s=1.0, now=0.0, entries=[], done_steps=set(), orders=[], agent={}, autoplay=None, run={})
     assert doc["modes"]["tutorial"] is True and doc["modes"]["cosigner"] == "scripted-pair"
-    # the contacts: the boat holds before its first act, and fires every 90 s to the end
-    raw = tomllib.loads(sit.contacts.read_text())
-    boat = next(c for c in raw["contact"] if c["affiliation"] == "hostile")
+    # the contacts: the boat holds before its first order, and an order comes every 90 s to the end
     run_s = sum(haversine_m(*a, *b) for a, b in zip(boat["route"], boat["route"][1:])) / boat["speed_mps"]
-    times = [a["at_s"] for a in raw["act"]]
+    times = [o["at_s"] for o in attacks]
     assert boat.get("start_s", 0) + run_s + 15 < times[0] <= 90
     assert all(b - a == 90 for a, b in zip(times, times[1:])) and times[-1] < sit.duration_s <= times[-1] + 90
     # a tutorial is live and blinded: a file that says otherwise is refused

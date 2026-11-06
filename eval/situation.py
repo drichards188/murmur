@@ -494,6 +494,23 @@ def _contact_ids(contacts: Path | None) -> set[str] | None:
     return {str(c.get("id")) for c in raw.get("contact", []) if isinstance(c, dict)}
 
 
+def _training_only_in_a_tutorial(sit: "Situation", path: Path) -> None:
+    """A contacts file's training aids (`[training]`: a strike outcome pinned on a contact, ours
+    spared their strikes; crates/murmur-contacts scenario.rs `Training`, docs/AUTONOMOUS-NODES.md
+    decision D5) bend the truth on purpose, for a person new to the chain: refused in any situation
+    that is not a tutorial (bd murmur-y85j.6; stage 7 adds the general guard)."""
+    if sit.tutorial or sit.contacts is None:
+        return
+    try:
+        raw = tomllib.loads(sit.contacts.read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return
+    if "training" in raw:
+        keys = ", ".join(sorted(raw["training"])) if isinstance(raw["training"], dict) else "?"
+        raise SituationError(f"{path}: its contacts file {sit.contacts.name} carries training aids ([training]: {keys}), "
+                             "which only a tutorial may")
+
+
 def _red_step(sid: str, s: dict[str, Any], sit: Path, contacts: Path | None) -> None:
     """A red step's order (RED_TAKES): a contact of the situation's contacts file, an order kind,
     only the keys it takes and those it needs, each of its shape. What only the running contacts
@@ -713,6 +730,7 @@ def load_situation(path_or_name: str | Path) -> Situation:
     sit.tutorial = bool(raw.get("tutorial", False))
     if sit.tutorial and (sit.operator != "live" or sit.reveal):
         raise SituationError(f"{path}: a tutorial is live (the person makes every human decision) and never revealed")
+    _training_only_in_a_tutorial(sit, path)
     sit.seed = _num(raw.get("seed", 1), "seed", path, int)
     sit.ready_timeout_s = _num(raw.get("ready_timeout_s", 180), "ready_timeout_s", path)
     sit.ai_start_s = _num(raw.get("ai_start_s", 30), "ai_start_s", path)
