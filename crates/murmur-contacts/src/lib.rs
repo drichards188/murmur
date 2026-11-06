@@ -11,6 +11,8 @@
 //! - [`node`] runs the orders a scenario gives its contacts (`[[order]]`: transit, hold, orbit,
 //!   track, attack, break off, flee, resume), each by its catalog kind: steering, perception and
 //!   fire control inside the node (docs/AUTONOMOUS-NODES.md);
+//! - [`step`] is one second of all of it, after the movers stepped, and the bridge's answer read
+//!   back: the contacts process and the headless simulator both run it, so the two cannot drift;
 //! - [`truth`] is the message shape published to the bridge's simulation channel
 //!   (`POST /api/sim/contacts`) and written to the evaluation log (JSON lines);
 //! - [`api`] is the process's own API on `MURMUR_CONTACTS_PORT`: orders to the nodes and what
@@ -35,5 +37,6 @@ pub mod mine;
 pub mod motion;
 pub mod node;
 pub mod scenario;
+pub mod step;
 pub mod truth;
 pub mod weapon;

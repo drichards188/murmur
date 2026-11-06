@@ -2,6 +2,14 @@
 //! movers and steps, the same truth message to the bridge's simulation channel
 //! (`POST /api/sim/contacts` with the stack's token, through the bridge's own router), the
 //! effects from its answer applied the same way, at the same 1 Hz from the process's own start.
+//! Every second after the movers stepped is the process's own code (`murmur_contacts::step`,
+//! which `main.rs` runs too): the munitions due, the mines, the nodes' orders and fire control,
+//! the scripted acts and an armed author's launch, the weapons in flight and their strikes drawn
+//! by the damage model; and the answer read back the same way, so a node's `look` gets the
+//! bridge's own `ours` (docs/AUTONOMOUS-NODES.md stage 5, bd murmur-y85j.5, murmur-mmxk). Our
+//! vehicles that a node's or a scripted weapon's strike hurts take it in the fleet, as a mine's.
+//! A timeline's `red` step goes to the intake the process's own API uses
+//! (`murmur_contacts::api::Desk`, [`Contacts::order`]), between ticks as there.
 //! Its scenario clock starts at `MURMUR_AT` at its own start, as every process's does. Each
 //! contact steps with the water's current at its position (world v3: the world's baked field or
 //! a `current` fault, `water.rs`; only a drifting contact moves with it), as the process does
@@ -29,17 +37,18 @@
 //! live); what they do goes to [`Contacts::effects`] (evaluation truth), ours hurt take it in the
 //! fleet, and ours struck report it (`impacts`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Method, Request, header};
+use murmur_contacts::api::{Desk, Here};
 use murmur_contacts::effect::{self, DamageCtx, EffectApplied, EffectNotice, OursDamaged};
-use murmur_contacts::mine::{MineNotice, Minefields};
-use murmur_contacts::weapon::OursAt;
 use murmur_contacts::motion::Mover;
-use murmur_contacts::scenario::Scenario;
+use murmur_contacts::node::Nodes;
+use murmur_contacts::scenario::{Scenario, SensingModel};
+use murmur_contacts::step::{self, Step};
 use murmur_contacts::truth::TruthMessage;
 use serde_json::{Value, json};
 use tokio::time::{Instant, MissedTickBehavior};
@@ -181,6 +190,15 @@ pub struct Contacts {
     /// MURMUR_AT: the scenario clock at the process's start.
     pub t0_unix: f64,
     pub movers: Mutex<Vec<Mover>>,
+    /// The nodes and the orders still to come (docs/AUTONOMOUS-NODES.md).
+    nodes: Mutex<Nodes>,
+    /// The truth side from one second to the next (`murmur_contacts::step`, as live).
+    step: Mutex<Step>,
+    /// The intake of orders between ticks and their record, as the process's own API keeps
+    /// them (`murmur_contacts::api::Desk`): a timeline's `red` step comes here ([`Contacts::order`]).
+    desk: Mutex<Desk>,
+    /// When the loop started (the contacts' scenario second 0); none before.
+    started: Mutex<Option<Instant>>,
     /// The last message's scenario second (None before the first).
     pub s: Mutex<Option<f64>>,
     /// Every step's truth (`log_step`).
@@ -190,37 +208,77 @@ pub struct Contacts {
 }
 
 impl Contacts {
-    pub fn load(path: &std::path::Path, seed: Option<u64>, t0_unix: f64, root: &std::path::Path) -> Result<Contacts, String> {
+    /// The contacts of the scenario at `path` (its seed, else the scenario's), their clock from
+    /// `t0_unix`; `fleet`: the run's vehicle uids, against which an order's vehicle target is
+    /// checked (as the process checks its fleet manifest).
+    pub fn load(
+        path: &std::path::Path,
+        seed: Option<u64>,
+        t0_unix: f64,
+        root: &std::path::Path,
+        fleet: Option<BTreeSet<u64>>,
+    ) -> Result<Contacts, String> {
         let mut scenario = Scenario::load(path)?;
         if let Some(w) = &mut scenario.sensing.weather { w.pin_archive(root)?; }
         let seed = seed.unwrap_or(scenario.seed);
         let contacts = scenario.contacts()?;
-        // opponent weapons run live only for now (docs/OPPONENT-WEAPONS.md, bd murmur-mmxk): the
-        // simulator does not hand the truth side its vehicles' positions to aim at
-        if let Some(c) = contacts.iter().find(|c| c.weapon.is_some()) {
-            return Err(format!("{}: contact {:?} carries a weapon: opponent weapons run live only (murmur-mmxk)", path.display(), c.id));
-        }
-        // nor do the nodes' orders yet (docs/AUTONOMOUS-NODES.md stage 5): refused, never ignored
-        if let Some(o) = scenario.orders.first() {
-            return Err(format!("{}: an order to {:?}: contacts' orders run live only (murmur-mmxk)", path.display(), o.node));
-        }
         if contacts.is_empty() {
             return Err(format!("{}: no contacts", path.display()));
         }
-        let movers = contacts
+        let movers: Vec<Mover> = contacts
             .into_iter()
             .enumerate()
             .map(|(i, c)| Mover::new(c, seed, i as u64))
             .collect();
+        // the nodes and their orders, on the land/water grid the scenario names, as the contacts
+        // process has them with its API on (`step::nodes`): a timeline's order can come at any
+        // second
+        let (nodes, _) = step::nodes(&scenario, &movers, root, true);
+        // the bridge's sensing model, as the process reads it: under legacy an attack is refused
+        let legacy = match std::env::var("MURMUR_SENSE_MODEL").ok().as_deref().map(str::trim) {
+            Some("legacy") => true,
+            Some("physical") => false,
+            _ => scenario.sensing.model == Some(SensingModel::Legacy),
+        };
+        let desk = Desk::new(&nodes, fleet, legacy);
+        let step = Step::new(&scenario, seed, t0_unix);
         Ok(Contacts {
             scenario,
             seed,
             t0_unix,
             movers: Mutex::new(movers),
+            nodes: Mutex::new(nodes),
+            step: Mutex::new(step),
+            desk: Mutex::new(desk),
+            started: Mutex::new(None),
             s: Mutex::new(None),
             log: Mutex::new(Vec::new()),
             effects: Mutex::new(Vec::new()),
         })
+    }
+
+    /// The nodes (the contacts of armed kinds and those an order names) and the orders to come.
+    pub fn nodes(&self) -> MutexGuard<'_, Nodes> {
+        self.nodes.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// One order to the contacts (a timeline's `red` step, docs/AUTONOMOUS-NODES.md 2.5) at the
+    /// instant `now`, through the intake the process's own API puts `POST /orders` through
+    /// ([`Desk::order_json`]), between ticks as there: `{status, answer}` (`{id, accepted}`, or
+    /// `{refused, code}`), as the live runner records it; `{error}` before the contacts started
+    /// (live: no process answers yet).
+    pub fn order(&self, body: Value, now: Instant) -> Value {
+        let Some(start) = *self.started.lock().unwrap_or_else(|e| e.into_inner()) else {
+            return json!({ "error": "the contacts have not started: no answer" });
+        };
+        let s = now.saturating_duration_since(start).as_secs_f64();
+        let t = self.t0_unix + s;
+        let movers = self.movers();
+        let mut nodes = self.nodes();
+        let step = self.step.lock().unwrap_or_else(|e| e.into_inner());
+        let mut here = Here { scenario: &self.scenario, nodes: &mut nodes, movers: &movers, ours: step.perceived(t), s, t };
+        let reply = self.desk.lock().unwrap_or_else(|e| e.into_inner()).order_json(body, &mut here);
+        json!({ "status": reply.status, "answer": reply.body })
     }
 
     /// Every effect applied with the episode's `effects`, in order (evaluation only).
@@ -233,9 +291,11 @@ impl Contacts {
     }
 
     /// The truth log, as the contacts process writes `contacts-truth.jsonl`: one line per step,
-    /// its scenario second `s` and every contact `[id, lon, lat, speed, exists]` (evaluation only).
-    fn log_step(&self, s: f64) {
-        let line = {
+    /// its scenario second `s` and every contact `[id, lon, lat, speed, exists]`, and, each only
+    /// when the second has any, its message's acts, the weapons in flight, the strikes (with the
+    /// damage model's draws) and what the nodes decided (evaluation only).
+    fn log_step(&self, s: f64, msg: &TruthMessage) {
+        let mut line = {
             let movers = self.movers();
             json!({
                 "s": s,
@@ -244,6 +304,19 @@ impl Contacts {
                 ])).collect::<Vec<_>>(),
             })
         };
+        let parts = [
+            ("acts", serde_json::to_value(&msg.acts)),
+            ("weapons", serde_json::to_value(&msg.weapons)),
+            ("impacts", serde_json::to_value(&msg.impacts)),
+            ("node_events", serde_json::to_value(&msg.node_events)),
+        ];
+        for (key, v) in parts {
+            if let Ok(v) = v
+                && v.as_array().is_some_and(|a| !a.is_empty())
+            {
+                line[key] = v;
+            }
+        }
         self.log.lock().unwrap_or_else(|e| e.into_inner()).push(line);
     }
 
@@ -279,7 +352,8 @@ impl Contacts {
     }
 }
 
-/// The process's loop from `start`: a message every second, the first at once. A message before
+/// The process's loop from `start`: a message every second, the first at once, each second
+/// stepped by the contacts process's own [`Step`] (the same truth as live). A message before
 /// `bridge_up` is lost (no bridge answers yet: the live process logs the error and goes on).
 /// `water`: the episode's water, its zero and epoch (its scenario time is the situation's).
 #[allow(clippy::too_many_arguments)]
@@ -300,60 +374,43 @@ pub async fn run(
     let mut every = tokio::time::interval(period);
     every.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut last = start;
-    let mut seq: u64 = 0;
-    let mut applied: Vec<EffectApplied> = Vec::new();
-    // rules 20: effects whose munition is still in flight, applied at its impact
-    let mut in_flight = effect::InFlight::default();
-    let mut prev_s = f64::NEG_INFINITY;
-    // rules 27: our mines, and where the bridge last said ours of their domains were
-    let mut fields = Minefields::default();
-    let mut ours_at: BTreeMap<u64, OursAt> = BTreeMap::new();
+    *c.started.lock().unwrap_or_else(|e| e.into_inner()) = Some(start);
     loop {
         every.tick().await;
         let now = Instant::now();
         let dt = now.saturating_duration_since(last).as_secs_f64();
         last = now;
         let s = now.saturating_duration_since(start).as_secs_f64();
-        let mut msg = {
+        let msg = {
             let mut movers = c.movers();
+            let mut nodes = c.nodes();
+            // effects, munitions in flight, opponent weapons, our mines, where the bridge last said
+            // ours were: the truth side from one second to the next, as live
+            let mut step = c.step.lock().unwrap_or_else(|e| e.into_inner());
             let t = epoch + now.saturating_duration_since(zero).as_secs_f64();
             for m in movers.iter_mut() {
                 let current = water.current(m.st.lat, m.st.lon, t);
                 m.step(s, dt, current);
             }
-            // a munition whose impact has come strikes now, before this truth goes out
-            for e in in_flight.due(c.t0_unix + s) {
-                applied.push(land(&c, &e, &mut movers, s, fx.as_ref(), &ctx, &ours));
-            }
-            // rules 27: every live mine against what moved this second
-            let mined = fields.step(c.t0_unix + s, dt, &mut movers, &ours_at, &ctx);
-            ours.take(&mined.ours_damaged);
-            if !mined.events.is_empty() {
+            let second = step.tick(&c.scenario, s, dt, &mut movers, &mut nodes, &ctx, &mut |e, movers, s| {
+                land(&c, e, movers, s, fx.as_ref(), &ctx, &ours)
+            });
+            // what the nodes said this second, for the record of every order (as live)
+            c.desk.lock().unwrap_or_else(|e| e.into_inner()).record(&second.msg.node_events);
+            // ours hurt by a mine, then by a strike, take it in the fleet
+            ours.take(&second.mined);
+            ours.take(&second.struck);
+            // rules 27: what the mines did, with the effects (evaluation truth)
+            if !second.msg.mine_events.is_empty() {
                 let mut fx = c.effects.lock().unwrap_or_else(|e| e.into_inner());
-                for ev in &mined.events {
+                for ev in &second.msg.mine_events {
                     fx.push(json!({ "s": s, "mine": ev }));
                 }
             }
-            seq += 1;
-            let mut msg = TruthMessage::build(
-                c.t0_unix + s,
-                s,
-                seq,
-                &c.scenario.title,
-                c.seed,
-                c.scenario.sensing.clone(),
-                &movers,
-            );
-            msg.acts = TruthMessage::acts_between(&c.scenario.acts, prev_s, s, c.t0_unix, &movers);
-            msg.impacts.extend(mined.impacts);
-            msg.mine_events = mined.events;
-            msg.mines_live = fields.live_domains(msg.t);
-            msg
+            second.msg
         };
         *c.s.lock().unwrap_or_else(|e| e.into_inner()) = Some(s);
-        c.log_step(s);
-        msg.effects = std::mem::take(&mut applied);
-        prev_s = s;
+        c.log_step(s, &msg);
         if now < bridge_up {
             continue;
         }
@@ -380,33 +437,19 @@ pub async fn run(
         let Ok(bytes) = axum::body::to_bytes(resp.into_body(), 16 << 20).await else {
             continue;
         };
-        let answer = serde_json::from_slice::<Value>(&bytes).ok();
-        // rules 27: the mines laid since, and where ours of their domains are
-        if let Some(list) = answer.as_ref().and_then(|a| a.get("mines")).and_then(|m| m.as_array()) {
-            for m in list {
-                if let Ok(m) = serde_json::from_value::<MineNotice>(m.clone()) {
-                    fields.lay(m);
-                }
-            }
-        }
-        if let Some(list) = answer.as_ref().and_then(|a| a.get("ours")).and_then(|o| o.as_array()) {
-            for o in list {
-                if let Ok(o) = serde_json::from_value::<OursAt>(o.clone()) {
-                    ours_at.insert(o.uid, o);
-                }
-            }
-        }
-        if let Some(list) = answer.as_ref().and_then(|a| a.get("effects")).and_then(|e| e.as_array()) {
+        // the simulation channel back, read as live: the mines laid since, where ours are (the
+        // bridge's own answer to the message's `aim_at`, `mines_live` and the nodes' `look`), the
+        // effects to apply
+        if let Ok(answer) = serde_json::from_slice::<Value>(&bytes) {
             let mut movers = c.movers();
-            for e in list {
-                if let Ok(e) = serde_json::from_value::<EffectNotice>(e.clone()) {
-                    in_flight.hold(e);
-                }
-            }
-            // at once, unless a munition is still in flight to it (rules 20)
-            for e in in_flight.due(c.t0_unix + s) {
-                applied.push(land(&c, &e, &mut movers, s, fx.as_ref(), &ctx, &ours));
-            }
+            let mut step = c.step.lock().unwrap_or_else(|e| e.into_inner());
+            step.answer(
+                &answer,
+                s,
+                &mut movers,
+                &mut |e, movers, s| land(&c, e, movers, s, fx.as_ref(), &ctx, &ours),
+                &mut |_| {},
+            );
         }
     }
 }

@@ -212,3 +212,132 @@ fn the_catalog_weapon_and_flight_read_on_the_truth_side() {
     let day = murmur_contacts::damage::Conditions { visibility_m: 20_000.0, sea_state: 2.0, sun_elevation_deg: 40.0 };
     assert_eq!(murmur_contacts::damage::hit_chance(&w, &target, &day, Some(out)).3, 0.75);
 }
+
+/// An armed boat holding mid-strait under an order to attack our vehicle 1 from second 2 with
+/// its missiles, from where it is.
+const ATTACK: &str = r#"title = "headless step"
+seed = 17
+[[contact]]
+id = "raider"
+affiliation = "hostile"
+domain = "surface"
+kind = "armed_fast_boat"
+motion = "station"
+at = [-122.4950, 37.8120]
+[[order]]
+at_s = 2
+node = "raider"
+do = "attack"
+target = { vehicle = 1 }
+weapon = "ATGM-class missile"
+stay = true
+"#;
+
+/// The bridge's answer to a truth message, as `sim_contacts` gives it: `ours` only when the
+/// message asks (a node's look), our vehicle 1 still on the water 1.5 km east of the boat.
+fn bridge_answer(msg: &serde_json::Value) -> serde_json::Value {
+    use serde_json::json;
+    let mut a = json!({"ok": true, "contacts": 1, "detections": 0, "tracks": 0, "effects": []});
+    if msg.get("look").and_then(|l| l.as_array()).is_some_and(|l| !l.is_empty()) {
+        a["ours"] = json!([{"uid": 1, "lat": 37.8120, "lon": -122.47797, "alt_m": 0.0, "ve": 0.0, "vn": 0.0,
+                            "platform": "seahunter", "domain": "surface"}]);
+    }
+    a
+}
+
+/// Live and headless give the same truth (docs/AUTONOMOUS-NODES.md stage 5, bd murmur-y85j.5):
+/// the simulator's contacts loop, on the paused clock and posting through a router, sends exactly
+/// the messages the shared step (`murmur_contacts::step`) gives when driven second by second as
+/// the contacts process's `main.rs` drives it, with the same answers from the bridge. The boat
+/// takes its order, looks, perceives our vehicle 1 in the answer, fires its catalog missile at
+/// its reload, and each strike is drawn by the damage model, the same both ways.
+#[test]
+fn the_simulators_contacts_loop_is_the_contacts_process_step() {
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    use murmur_contacts::effect::{self, DamageCtx};
+    use murmur_contacts::motion::Mover;
+    use murmur_contacts::scenario::Scenario;
+    use murmur_contacts::step::{self, Step};
+    use murmur_headless::sim::contacts::{self as hc, Contacts, Ours};
+    use murmur_headless::sim::fleet::Fleet;
+    use murmur_headless::sim::water::Water;
+    use serde_json::Value;
+
+    const SECONDS: u32 = 40;
+    const SEED: u64 = 5;
+    let t0 = 1_781_463_600.0; // 2026-06-14 19:00Z, local noon at the Gate
+    let path = std::env::temp_dir().join(format!("murmur-headless-step-{}.toml", std::process::id()));
+    std::fs::write(&path, ATTACK).expect("the scenario");
+
+    // the contacts process's loop as main.rs runs it: the movers step (no current), then the
+    // shared step; the bridge's answer read back
+    let scenario = Scenario::load(&path).expect("loads");
+    let mut movers: Vec<Mover> =
+        scenario.contacts().expect("contacts").into_iter().enumerate().map(|(i, c)| Mover::new(c, SEED, i as u64)).collect();
+    let (mut nodes, _) = step::nodes(&scenario, &movers, &repo(), true);
+    let mut live = Step::new(&scenario, SEED, t0);
+    let ctx = DamageCtx { seed: SEED, conditions: scenario.conditions, hit_override: None };
+    let mut land = |e: &effect::EffectNotice, movers: &mut [Mover], s: f64| effect::apply_with(e, movers, t0 + s, Some(&ctx));
+    let mut want: Vec<Value> = Vec::new();
+    for k in 0..=SECONDS {
+        let (s, dt) = (f64::from(k), if k == 0 { 0.0 } else { 1.0 });
+        for m in &mut movers {
+            m.step(s, dt, None);
+        }
+        let msg = serde_json::to_value(live.tick(&scenario, s, dt, &mut movers, &mut nodes, &ctx, &mut land).msg).expect("json");
+        live.answer(&bridge_answer(&msg), s, &mut movers, &mut land, &mut |_| {});
+        want.push(msg);
+    }
+
+    // the simulator's loop on the paused clock, the bridge a router answering the same way
+    let posted: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().start_paused(true).build().expect("runtime");
+    rt.block_on(async {
+        let p = posted.clone();
+        let api = axum::Router::new().route(
+            "/api/sim/contacts",
+            axum::routing::post(move |body: String| {
+                let p = p.clone();
+                async move {
+                    let msg: Value = serde_json::from_str(&body).expect("a truth message");
+                    let a = bridge_answer(&msg);
+                    p.lock().expect("posted").push(msg);
+                    axum::Json(a)
+                }
+            }),
+        );
+        let c = Arc::new(Contacts::load(&path, Some(SEED), t0, &repo(), None).expect("the simulator loads it"));
+        let fleet = Arc::new(Fleet::new(Vec::new(), SEED, &BTreeMap::new(), None).expect("fleet"));
+        let ours = Ours { fleet, by_uid: BTreeMap::new(), seed: SEED };
+        let start = tokio::time::Instant::now();
+        let water = (Arc::new(Water::still()), start, t0);
+        let task = tokio::spawn(hc::run(c, api, None, start, start, None, water, ours));
+        tokio::time::sleep(Duration::from_secs_f64(f64::from(SECONDS) + 0.5)).await;
+        task.abort();
+    });
+    let _ = std::fs::remove_file(&path);
+    let got = posted.lock().expect("posted").clone();
+    assert_eq!(got.len(), want.len());
+    for (k, (g, w)) in got.iter().zip(&want).enumerate() {
+        assert_eq!(g, w, "second {k}");
+    }
+    // what both ways did: the order taken, a look answered, the catalog's missile at its 30 s
+    // reload, each strike on our vehicle 1 drawn by the damage model
+    let all = |key: &str| want.iter().flat_map(|m| m[key].as_array().cloned().unwrap_or_default()).collect::<Vec<_>>();
+    assert!(all("node_events").iter().any(|e| e["what"] == "order" && e["node"] == "raider"));
+    assert!(all("look").iter().any(|l| l["node"] == "raider"));
+    let mut launched: Vec<(String, f64)> = all("weapons")
+        .iter()
+        .map(|w| (w["name"].as_str().unwrap_or_default().to_string(), w["launch_t"].as_f64().unwrap_or_default()))
+        .collect();
+    launched.dedup();
+    assert_eq!(launched.len(), 2, "{launched:?}");
+    assert!(launched.iter().all(|(n, _)| n == "ATGM-class missile"));
+    assert!((launched[1].1 - launched[0].1 - 30.0).abs() < 1e-6, "{launched:?}");
+    let impacts = all("impacts");
+    assert_eq!(impacts.len(), 2);
+    assert!(impacts.iter().all(|i| i["against_vehicle"] == 1 && i["damage"]["figures"] == "fishing_vessel"));
+}

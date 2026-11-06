@@ -40,7 +40,7 @@ a model of the bridge but the bridge:
 | the operator's REST answers | the bridge's own axum router (`api::router`, with `emu` and `situation` merged as `main.rs` merges them), called in process (`tower::ServiceExt::oneshot`) |
 | our vehicles | `murmur_standins::vehicle::Vehicle::seeded` stepped at its 10 Hz, frames handed to `on_datagram` and taken back from its link |
 | loss, latency, jitter, bandwidth and queues, range, terrain line of sight, SATCOM visibility, scripted link cuts | murmur-linkemu's own model per vehicle: `Link::decide`, the proxy's `admit`, `Delay` and `gauge`, its `TidewaterTerrain` cache, `sat::refresh`, its event schedule, `LinkStats` and `summary_json` |
-| contacts (truth) | `murmur_contacts::motion::Mover::step` and `truth::TruthMessage::build`, at the contacts process's 1 Hz |
+| contacts (truth) | `murmur_contacts::motion::Mover::step`, then the contacts process's own second (`step::Step`: munitions due, mines, the nodes' orders and fire control, opponent weapons, `truth::TruthMessage::build`) and its reading of the bridge's answer, at the contacts process's 1 Hz (section 16.6) |
 
 The playbook runs **unchanged** in Python: `agents/playbook/engine.py`'s `Engine` is handed a
 session adapter with `AgentSession`'s surface. Nothing in `agents/playbook/` changed.
@@ -91,11 +91,11 @@ replayed with its anchors.
 | `src/sim/fleet.rs` | the stand-ins: `Vehicle::seeded` from the episode seed, a 10 Hz task each with the stand-in engine's phase offsets, a stop fault (cruise and maximum speed to zero), a vehicle leaving the world (`remove`: a munition spent by its own effect); world v3's battery draw, reboot and GNSS environment, and the conditions poller (section 17) |
 | `src/sim/faults.rs` | world v3's faults (section 17): gnss jam and spoof, battery, reboot, current; the events files' GNSS events for the stand-ins |
 | `src/sim/water.rs` | world v3's water (section 17): the world's current field, and the tidewater samples our vehicles that take conditions get |
-| `src/sim/contacts.rs` | the contacts loop of `murmur-contacts` on the simulated clock, each contact with the water's current at it (none in still water, section 17); with `effects`, each engagement effect's draw and a spent platform's removal (section 16.1) |
+| `src/sim/contacts.rs` | the contacts loop of `murmur-contacts` on the simulated clock, each contact with the water's current at it (none in still water, section 17), each second the process's own `step::Step` (its nodes' orders and opponent weapons too, section 16.6); with `effects`, each engagement effect's draw and a spent platform's removal (section 16.1) |
 | `src/sim/terrain.rs` | the world's baked surface-height grid (read with the bridge's own `decision::terrain::Grid`) as the emulator's terrain sampler (section 12), and the height of an airborne spawn's home (section 8) |
 | `src/sim/space_cache.rs` | the SATCOM look cache (section 12) |
 | `src/sim/perf.rs` | computer time per task and per request kind (diagnostics only) |
-| `tests/pieces.rs` | the grid answers tidewater's heights; a cached SATCOM look equals the look it would have computed |
+| `tests/pieces.rs` | the grid answers tidewater's heights; a cached SATCOM look equals the look it would have computed; the contacts loop posts the messages the contacts process's step gives (section 16.6) |
 
 ### 3.2 Python: `eval/headless/`
 
@@ -696,7 +696,10 @@ none of it. `test_worlds_v3.py` (section 17.5): world v3's three worlds against 
 grids (every spawn, every opening order's way, the traffic on its medium, AIS on surface contacts
 only), their pinned element sets and San Diego's provenance, the conditions drawing day and
 night and reaching the sensing model, and one short episode per world on the binary; the moored
-hull is the stand-ins' own test (`tests/mooring.rs`).
+hull is the stand-ins' own test (`tests/mooring.rs`). `test_nodes.py` (section 16.6): an armed
+node under an attack order on the binary, firing by its catalog, its strikes drawn, the log
+replayed with its anchors, and the same order as a timeline's `red` step doing the same; beside it `tests/pieces.rs`'s check that the contacts loop posts what
+the contacts process's step gives.
 
 ## 14. Step 2: how it plugs in
 
@@ -984,7 +987,7 @@ no passkeys (credentials mode is out of scope here).
 
 | step | who | how (the paths a person or an agent uses) |
 |---|---|---|
-| a hostile act | the contacts scenario's `[[act]]` | truth on the simulation channel; our sensors observe it and the engine declares the track hostile by rule (rules 9, `ident.act`, `ident.declared`) |
+| a hostile act | the contacts scenario's `[[act]]`, or a node's own shot under an order (section 16.6) | truth on the simulation channel; our sensors observe it and the engine declares the track hostile by rule (rules 9, `ident.act`, `ident.declared`) |
 | the review | the reviewer (`review.py`) | `GET /api/review`, then `POST /api/tracks/{id}/confirm` (`ident.confirmed`) |
 | the nomination | the scripted agent (`scripted.py`, `agent-scripted`) | MCP `get_tracks` (affiliation hostile), `get_nominations` (none stands on it), `get_nomination_options` (at most once a second, as the tool allows), `propose_intent` task engage with the first platform that passes every check |
 | two signatures | the signers (`signers.py`, `op-2` and `op-3`) | `GET /api/inbox` (the nomination's `engage` view), `POST /api/intents/{id}/picture` (a token), then `POST .../approve` with `{"token"}` |
@@ -1208,6 +1211,86 @@ track level carries every vehicle's own latest identification (`own`).
   at the effect may still report the target for its stale age (seen in the miss: `3:eo_ir` at
   +3.8 s). That is the sensor model's (A1's), not changed here.
 - The engagement, collect and cover outcomes are not yet labels or metrics (H7, C1).
+
+### 16.6 Opponent nodes and weapons (docs/AUTONOMOUS-NODES.md stage 5, bd murmur-y85j.5)
+
+Built 2026-11-06 (the headless half of murmur-mmxk). Before, the simulator refused a contacts
+file in which a contact carries a `weapon` or that gives an `[[order]]`. It now runs both as the
+contacts process does, because it runs the same code: every second after the movers stepped is
+`murmur_contacts::step::Step` (crates/murmur-contacts `step.rs`), which the process's `main.rs`
+runs too: the effects whose munition has come, the mines, every node's order and fire control
+(`node::Nodes::tick`, on the land/water grid the scenario's `[sensing] terrain` names, read by
+`step::nodes`), the scripted acts and an armed author's launch, the nodes' own shots and looks,
+the weapons in flight and the strikes, each drawn by the damage model; and `Step::answer` reads
+the bridge's answer the same way. A node's `look` is answered by the bridge's own
+`sim_contacts` through its router (`ours` within the look's reach, where each reports it is), so
+a node perceives what it would live. Our vehicles a strike hurts take it in the fleet, as a
+mine's do: propulsion lost, it steps unpowered; destroyed, it leaves the world.
+
+**Orders from the timeline.** A situation's `red` step (an order to one of the contacts,
+docs/AUTONOMOUS-NODES.md 2.5) reaches the simulator with the rest of its timeline. The live
+runner posts it at its second to the contacts process's own API (`POST /orders`, no `at_s`);
+here `script.py` sends it (`red`) at its second to the same intake in process
+(`Contacts::order`: `murmur_contacts::api::Desk::order_json`, with the episode's fleet as the
+fleet manifest and `MURMUR_SENSE_MODEL` as the process reads it), between the contacts' ticks as
+there. It is taken at their next tick or refused with the code live gives (`node_gone`,
+`weapon_not_carried`, `legacy_sensing`, ...), and the answer goes to the record's `script` as the
+live runner records it (`status`, `answer`). The node events feed the desk's record of every
+order each tick, as live. Steering reads the scenario's land/water grid whenever it names one, as
+the process does with its API on.
+
+**The same truth as live, and how that is checked.** For one file, seed and clock the two give
+the same messages: `tests/pieces.rs` runs the simulator's contacts loop on the paused clock,
+posting through a router, and compares every message with the step driven second by second as
+`main.rs` drives it, with the same answers (an armed boat ordered to attack: its look answered,
+two missiles at its 30 s reload, both strikes drawn). A running contacts process steps on wall
+time (its seconds are not whole), so it is not compared byte for byte; the full-stack comparison
+(`fullstack.py`) was not pointed at such a file. What differs is only around the step, as before:
+a drifting contact's current (tidewater live, the episode's water here), the delivery (HTTP, or
+the router in process; a message before the bridge is up is lost either way), an effect's draw
+with `effects` (section 16.1), and the damage model's seed: the episode seed here, as the
+evaluation's full stack sets `MURMUR_CONTACTS_SEED`, where a situation run live without it draws
+on its contacts file's seed.
+
+**The record.** The simulator's truth log lines carry each second's acts, weapons in flight,
+strikes and node events when it has any (as `contacts-truth.jsonl` does), and the record's
+`truth.opponent` (`episode.py` `opponent_record`; evaluation truth) keeps what the contacts did
+with their orders and weapons: every node event, each weapon's flight once, each of their strikes
+with its damage draw, and the acts that launched or held a weapon or that a node committed. It
+is there only when there is one: a scripted abstract act or a strike by one of our mines (in
+`effects`) adds nothing, so every record before is as it was (no world uses orders or weapons
+yet: the golden and the paused digests stand).
+
+**The smoke episode** (`tests/test_nodes.py`, seed 1): `hostile-act-loitering-munition`'s fleet
+and opening orders with a contacts file of its own, its raider an `armed_fast_boat` ordered at
+200 s to attack HUNTER 1 with its ATGM from where it holds; 330 s, no agent. The boat took the
+order at 200 s and held (`not_perceived`: its look not answered yet), saw HUNTER 1 in the answer
+and fired at 201 s (974 m, 3.9 s of flight), then at 231, 261 and 291 s, and ended
+`out_of_rounds`. The strikes drew, at the Sea Hunter's figures (0.70): a miss, destroyed,
+mobility, a miss. HUNTER 1's EO/IR saw the first launch (`ident.act` A-1, attributed at 0.80:
+flagged) and the second (A-2), which declared the boat hostile by rule; `op-auto` confirmed it.
+The audit log replays, every decision, anchors OK. The same attack as a `red` step at 200 s in
+place of the file's order was accepted (`{id: 1, accepted: true}`), taken at the contacts' same
+tick, and the node did exactly the same (the record's `truth.opponent` equal). The test runs both
+on the physical sensing model (`world = "v3"` in its spec), as the situation runs live.
+
+Not done, or found:
+
+- **The legacy pin.** A situation in the Golden Gate's default world runs headless as v1, so on
+  the legacy sensing model (`situations.py` `process_spec`), though it runs on the physical one
+  live; there the bridge senses a weapon's act as an abstract act (by detections of its author,
+  radar included) and keeps no weapon picture. A file's attack order is not refused there (the
+  file names no model); a `red` attack step is, `legacy_sensing`, as the contacts API refuses it
+  under `MURMUR_SENSE_MODEL=legacy`. `hostile-act-loitering-munition`'s smoke episodes (section
+  16.3) are such episodes: once its contacts file, shared with hostile-act-engagement, migrates to
+  an ordered armed boat (docs/AUTONOMOUS-NODES.md stage 6), its headless episodes either run on
+  the physical model or check the legacy path knowingly.
+- An MCP agent still does not see the weapon picture (murmur-mmxk's other half); no tool was
+  added.
+- A vehicle of ours that is destroyed is still fired at while its last report lingers in the
+  bridge (the perception shortcut of docs/AUTONOMOUS-NODES.md 2.4), and the truth side draws each
+  strike on it again: in the smoke episode the boat's last two missiles flew at HUNTER 1's last
+  report after the second had destroyed it, and the third drew "mobility".
 
 ## 17. World v3: worlds, land and water, faults and timelines
 

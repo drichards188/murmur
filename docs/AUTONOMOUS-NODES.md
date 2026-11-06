@@ -247,8 +247,10 @@ Unchanged machinery: a strike with figures is drawn by the damage model against 
 (`murmur_standins::damage`: unpowered, silent, or a `DAMAGE` STATUSTEXT every 30 s) and reported to
 the C2 by the vehicle itself (rules 25). **SITL ignores the damage file**: its strike is drawn and
 recorded and nothing else follows (stage 8 is the optional fix, `SIM_ENGINE_FAIL` for planes and
-copters; nothing equivalent for rovers, boats and subs). The headless simulator refuses opponent
-weapons (`crates/murmur-headless/src/sim/contacts.rs:198-201`, murmur-mmxk): stage 5.
+copters; nothing equivalent for rovers, boats and subs). The headless simulator runs orders and
+opponent weapons with the contacts process's own step since stage 5 (`crates/murmur-contacts/src/
+step.rs`, both call it; docs/HEADLESS.md 16.6): ours a strike hurts take it in the episode's
+fleet, and a timeline's `red` step goes to the API's own intake (`api::Desk`) in process.
 
 ### 2.7 What the bridge senses, and the claim that the rules do not change
 
@@ -293,7 +295,7 @@ All keep their fleets, policies, engagement steps and scripted operators. "Order
 | situation (contacts file) | today | becomes | timing and narration | seeds, expectations |
 |---|---|---|---|---|
 | tutorial (`tutorial.toml`) | per-contact ATGM, 13 launches every 90 s, no damage, our strike pinned as a kill | `armed_fast_boat`; order at 75 s: `attack` HUNTER 1 (0.9 to 1.2 km, in band), `stay = true` | ATGMs at `reload_s`, then HMG episodes at 0.9 to 1.2 km (in the gun's band): attacks keep coming while the person reads, from a real magazine. Coach card's act step gains the gun's muzzle flash. | Decision D5 (the pin, damage to HUNTER 1). Re-take the tutorial's range test as a band test. |
-| hostile-act-engagement (`hostile-act-engagement.toml`, shared with loitering-munition) | boat, 3 abstract acts 205-325 s at HUNTER 1 2 km off | `armed_fast_boat`; order at 200 s: `attack` HUNTER 1 with the ATGM, `stay` | note at 210 s stands (the first launch within a second or two of 200 s) | Our Hellfire's seed 17 (`test_situation.py:1761`) untouched. New: the boat's strikes on HUNTER 1 are drawn; check the default run still declares and engages; if HUNTER 1 can be lost first, the brief says so (D4). Headless smoke (`eval/headless/tests/test_engage_space.py`) needs stage 5 or D6. |
+| hostile-act-engagement (`hostile-act-engagement.toml`, shared with loitering-munition) | boat, 3 abstract acts 205-325 s at HUNTER 1 2 km off | `armed_fast_boat`; order at 200 s: `attack` HUNTER 1 with the ATGM, `stay` | note at 210 s stands (the first launch within a second or two of 200 s) | Our Hellfire's seed 17 (`test_situation.py:1761`) untouched. New: the boat's strikes on HUNTER 1 are drawn; check the default run still declares and engages; if HUNTER 1 can be lost first, the brief says so (D4). Headless smoke (`eval/headless/tests/test_engage_space.py`) needs stage 5 or D6; with stage 5 built, note that its episodes run on the legacy sensing model (the default world's v1 pin, docs/HEADLESS.md 16.6), where a weapon's act is sensed as an abstract one. |
 | hostile-act-loitering-munition | same file | same | same | as above |
 | hostile-act-fpv | boat, 4 acts 90-270 s | as hostile-act-engagement, order at 85 s | note at 95 s stands | seed 108504 (our FPV) untouched |
 | hostile-act-naval-drone | "auxiliary tanker" fires rockets, 160-340 s | `naval_auxiliary`; order at 155 s: `attack` HUNTER 1 with its gun [R] | needs the bridge's gun sensing (stage 3); note text "fires a rocket" becomes what the kind carries | seed 231926 (our Magura) untouched |

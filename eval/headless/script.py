@@ -35,8 +35,11 @@ Each item is `{"at_s": t, "kind": ...}` or waits for a trigger:
   (`get_nomination_options`) asked every 3 s until the platform passes every check, skipped with
   the failing checks if it never does; then `agent-scripted` nominates it over MCP. Who signs it
   is the episode's (`Options.signers`, signers.py, docs/HEADLESS.md section 16); without signers
-  the nomination waits and expires, as live with no one at the console. A `note` is the panel's
-  and never reaches the script.
+  the nomination waits and expires, as live with no one at the console. A `red` step (an order
+  to one of the contacts, docs/AUTONOMOUS-NODES.md 2.5) goes, as the live runner posts it to the
+  contacts process's own API, to the same intake in process (crates/murmur-headless
+  `Contacts::order`): taken at the contacts' next tick, or refused with the code live gives; the
+  answer goes to the log. A `note` is the panel's and never reaches the script.
 
 **The first look** (`first_look`; eval/SCORING-V2.md 4.5): the first intent, by its dispatch
 time, that an agent proposed (any agent but the scripted ones, `agent-setup`'s opening orders and
@@ -55,7 +58,14 @@ import sys
 from typing import Any
 
 from eval.agent import _mcp_args
-from eval.situation import SCRIPTED_TIMELINE, SETUP_AGENT, STORYLINE_AGENT, STORYLINE_OPERATOR, _select_planned
+from eval.situation import (
+    SCRIPTED_TIMELINE,
+    SETUP_AGENT,
+    STEP_COMMON,
+    STORYLINE_AGENT,
+    STORYLINE_OPERATOR,
+    _select_planned,
+)
 from eval.situation_run import labelled
 from eval.storyline import StepError, offset, select_track, select_vehicles, target_record
 
@@ -317,6 +327,13 @@ class Script:
                        result=((out or {}).get("declared") or {}).get("affiliation"))
         elif kind == "engage":
             return self._engage(now, it, rec)
+        elif kind == "red":
+            # an order to one of the contacts, as the live runner posts it to the contacts process's
+            # own API (eval/situation_run.py RedSteps): no `at_s` (now, at the contacts' next tick),
+            # through the same intake in process; the answer as the live runner records it
+            order = {k: v for k, v in p.items() if k not in STEP_COMMON}
+            out = sim.rpc({"op": "red", "order": order})
+            rec.update(order=order, **{k: out[k] for k in ("status", "answer", "error") if k in out})
         else:
             rec["error"] = f"unknown step kind {kind!r}"
         return None

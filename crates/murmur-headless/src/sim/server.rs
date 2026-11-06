@@ -99,6 +99,7 @@ fn handle(ep: &mut Episode, req: &Value) -> Result<Value, String> {
         Some("misclassify") => super::misclassify(req),
         Some("sense") => super::sense::sense(req, &ep.spec.root),
         Some("fault") => ep.fault(req),
+        Some("red") => ep.red(&req["order"]),
         Some("tools") if req["defs"].as_bool() == Some(true) => {
             Ok(json!({ "tools": ep.tools(), "defs": ep.tool_defs()? }))
         }

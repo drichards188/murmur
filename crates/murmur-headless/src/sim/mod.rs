@@ -420,6 +420,16 @@ impl Episode {
         Ok(out)
     }
 
+    /// A timeline's order to the contacts (a `red` step, docs/AUTONOMOUS-NODES.md 2.5), at this
+    /// instant, through the intake the contacts process's own API uses (`contacts::Contacts::order`;
+    /// never through the bridge): `{status, answer}` as the live runner records it, or `{error}`.
+    pub fn red(&mut self, order: &Value) -> Result<Value, String> {
+        let _g = self.rt.enter();
+        let c = self.contacts.as_ref().ok_or("red: the episode has no contacts to order")?;
+        // taken at the contacts' next tick, as live
+        Ok(c.order(order.clone(), Instant::now()))
+    }
+
     /// A scripted fault, outside the bridge: a link event (the emulator's own `[[event]]`
     /// schema), or a stand-in that stops making way (its cruise and top speed set to zero, as a
     /// fouled propeller would; nothing goes through the bridge), or one of world v3's
@@ -732,7 +742,9 @@ async fn assemble(spec: &Spec) -> Result<Parts, String> {
     let contacts = match &spec.contacts {
         Some(c) => {
             let path = if c.scenario.is_absolute() { c.scenario.clone() } else { spec.root.join(&c.scenario) };
-            let ct = Arc::new(Contacts::load(&path, c.seed, spec.epoch, &spec.root)?);
+            // the fleet an order's vehicle target is checked against: this episode's manifest's
+            let uids = emu.uids.iter().map(|u| u64::from(*u)).collect();
+            let ct = Arc::new(Contacts::load(&path, c.seed, spec.epoch, &spec.root, Some(uids))?);
             let token = std::env::var("MURMUR_SIM_TOKEN").ok().filter(|t| !t.trim().is_empty());
             let fx = effect_sim(spec, &platforms, &emu.uids, &fleet)?;
             let ours = contacts::Ours {

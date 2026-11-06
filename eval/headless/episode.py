@@ -412,6 +412,8 @@ class Episode:
         self.agent: Any = None  # PlaybookAgent, officer.WatchOfficer or None
         self.script: Any = None
         self.truth_samples: list[dict[str, Any]] = []
+        # what the contacts did with their orders and weapons (truth_log); None when nothing
+        self.opponent: dict[str, Any] | None = None
         self.ours_samples: list[dict[str, Any]] = []
         self.contacts_meta: list[dict[str, Any]] = []
         self.association: dict[str, str] = {}
@@ -611,6 +613,7 @@ class Episode:
              "ours": []}
             for ln in final.get("log") or []
         ]
+        self.opponent = opponent_record(final.get("log") or [])
 
     def record(self, spec: dict[str, Any], runner: Runner, audit_text: str, cfg: Any) -> dict[str, Any]:
         lines = self.agent.lines if self.agent else []
@@ -640,6 +643,10 @@ class Episode:
             "audit": audit_summary(audit_text),
             "audit_text": audit_text,
         }
+        if self.opponent is not None:
+            # only when a contact had an order or a weapon (docs/HEADLESS.md 16.6): a record
+            # without them is as before
+            rec["truth"]["opponent"] = self.opponent
         world = self.e.world_record()
         if world is not None:
             # world v3 only (eval/world.py): the world and what the simulator took from it; a
@@ -771,6 +778,28 @@ def audit_summary(text: str) -> dict[str, Any]:
         except ValueError:
             head = None
     return {"events": len(lines), "head": head, "sha256": hashlib.sha256(text.encode()).hexdigest()}
+
+
+def opponent_record(log: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """What the contacts did with their orders and weapons, from the simulator's truth log
+    (docs/HEADLESS.md 16.6; evaluation truth): every node event, each weapon's flight once, each
+    strike of theirs with its damage draw, and the acts that launched or held a weapon or that a
+    node committed (a scripted abstract act is not one: the audit log has what our sensors made of
+    it; nor is a strike by one of our mines: the effects have it). None when there is nothing, so
+    a record without orders or weapons is as before."""
+    events = [e for ln in log for e in ln.get("node_events") or []]
+    weapons: dict[str, dict[str, Any]] = {}
+    for ln in log:
+        for w in ln.get("weapons") or []:
+            weapons.setdefault(w["id"], w)
+    by_nodes = {e["act"] for e in events if e.get("act")}
+    acts = [a for ln in log for a in ln.get("acts") or []
+            if a.get("weapon") or a.get("held") or a.get("id") in by_nodes]
+    theirs = by_nodes | {a["id"] for a in acts}
+    impacts = [i for ln in log for i in ln.get("impacts") or [] if i.get("weapon") in weapons or i.get("act") in theirs]
+    if not (events or impacts or weapons or acts):
+        return None
+    return {"node_events": events, "acts": acts, "weapons": list(weapons.values()), "impacts": impacts}
 
 
 _PROV: dict[tuple[str | None, str | None], dict[str, Any]] = {}
