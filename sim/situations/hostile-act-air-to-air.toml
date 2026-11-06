@@ -4,13 +4,16 @@
 #   make situation NAME=hostile-act-air-to-air OPERATOR=live          (you confirm and sign)
 #   make situation NAME=hostile-act-air-to-air AI=claude              (the AI may nominate first)
 #
-# Two of ours at the Golden Gate, by day, one of them armed (FURY 1, a CCA with two AIM-120C, air
+# Three of ours at the Golden Gate, by day, one of them armed (FURY 1, a CCA with two AIM-120C, air
 # targets only), and normal surface traffic, with no other aircraft. A large drone (a VTOL UAS)
 # without a transponder comes in from the sea at 300 m, hovers over mid-strait west of the bridge
-# and fires on HUNTER 1 (an armed kind ordered to attack: it fires its own two light missiles by
-# its own fire control, each strike drawn by the damage model, docs/AUTONOMOUS-NODES.md). On the
-# default run the first missile sinks HUNTER 1 and the chain stops short of a nomination (the
-# director's notes say why; the brief says ours can be sunk). Our sensors observe the act; the engine declares the drone hostile by
+# and fires on HUNTER 2, the picket off Lands End (an armed kind ordered to attack: it fires its own
+# two light missiles by its own fire control, each strike drawn by the damage model,
+# docs/AUTONOMOUS-NODES.md). Its target is HUNTER 2, not HUNTER 1, the sensor ship 1 km from it
+# (bd murmur-qese): a lost HUNTER 1 would stop the chain (its last report counts in the keep-out
+# and its camera holds the drone's identity), while HUNTER 2 is 3.5 km from where the keep-out
+# falls, so the chain goes on whatever the missiles do to it; on the default run the first sinks it.
+# Our sensors observe the act; the engine declares the drone hostile by
 # rule (rules 9); op-auto confirms the declaration (live: you). The timeline nominates FURY 1 naming
 # the AIM-120C (agent-scripted, a script, saying so) unless a nomination already stands; op-2 and
 # op-3 sign (live: you, and a scripted cosigner); the engine releases the missile once FURY 1 is
@@ -34,12 +37,13 @@
 title = "Hostile act to engagement (air to air)"
 brief = """
 You have the watch at the Golden Gate on a June morning. Intelligence warns of a possible attack on
-our vessels by unmanned aircraft. Two of ours are on station: HUNTER 1, a sensor ship patrolling
-the channel just west of the bridge; and FURY 1, a collaborative combat aircraft circling high off
-the coast to the southwest, armed with two AIM-120C AMRAAM air-to-air missiles, for air targets
-only. Surface traffic is normal: ferries, a ship in the lane, fishing boats, a sailing yacht.
+our vessels by unmanned aircraft. Three of ours are on station: HUNTER 1, a sensor ship patrolling
+the channel just west of the bridge; HUNTER 2, a second sensor ship on picket off Lands End; and
+FURY 1, a collaborative combat aircraft circling high off the coast to the southwest, armed with
+two AIM-120C AMRAAM air-to-air missiles, for air targets only. Surface traffic is normal: ferries,
+a ship in the lane, fishing boats, a sailing yacht.
 
-The opening order comes from the setup script (op-setup, not a person) and goes out by policy. An
+The opening orders come from the setup script (op-setup, not a person) and go out by policy. An
 armed platform gets no opening order: every order for one waits for a person.
 
 The rules of engagement authorize an effect against a contact declared hostile, inside the
@@ -61,34 +65,36 @@ Truth: a large VTOL drone some 3 m across, with no transponder (truth affiliatio
 armed_uas, two LMM-class light missiles, looking like an unknown UAS to our sensors) comes in from
 the sea at 300 m and 30 m/s from about 0:08 and hovers over mid-strait at [-122.4950, 37.8120], 1.5
 km west of the bridge and inside the engagement zone, from about 1:35. Its contacts file orders it
-at about 2:00 to fire a missile at HUNTER 1, patrolling 0.9 to 1.2 km east of it, by its own fire
-control, and its second at about 3:00; out of missiles it turns for home along its way in. Each
-missile can hit HUNTER 1 (0.90), and a hit can stop it (0.45 of hits) or sink it (0.20). Nothing
-else is hostile, and nothing else flies but ours.
+at about 2:00 to fire a missile at HUNTER 2, on picket 3.5 to 3.9 km southwest of it, by its own
+fire control, and its second at about 3:00; out of missiles it turns for home along its way in.
+Each missile can hit HUNTER 2 (0.90), and a hit can stop it (0.45 of hits) or sink it (0.20).
+Nothing else is hostile, and nothing else flies but ours.
+Why HUNTER 2 (bd murmur-qese): the chain needs HUNTER 1, 1 km from the drone, whose camera holds
+its identity and fix; sunk, HUNTER 1 would also stay in the keep-out (its last report counts
+anywhere it could have gone until an operator accepts it as lost, which no script does), and the
+chain would stop after the declaration (when the drone fired at HUNTER 1 it did whenever a missile
+sank it: 7 of seeds 1 to 20 headless, and seed 127). HUNTER 2, sunk 3.5 km from the effect point,
+reaches it at its 6 m/s cruise only some nine minutes later, after the strike; stopped, it still
+reports where it is.
 The default run (the contacts' seed 127, measured headless 2026-11-06): the first missile hits
-and sinks HUNTER 1 some 3 s after its launch. HUNTER 1's camera saw the launch first: the engine
-attributes the act to the drone's track at 0.99, declares it hostile by rule, and op-auto confirms.
-Then the chain stops: HUNTER 1 is silent, so its last report counts anywhere it could have gone
-(the keep-out cannot clear it until an operator accepts it as lost, which no script does), and
-with the camera that held the drone gone its identity falls below the nomination's 0.60 and its
-fix loosens past the effect's limit. FURY 1 never passes the checks, and the timeline's nomination
-at 3:20 gives up after four minutes, saying which checks failed. On another seed, or a run whose
-missiles draw otherwise, HUNTER 1 survives a missile some four times in five; then:
-HUNTER 1's panoramic camera holds the drone (it observed every act on the run of 2026-11-03), and
-FURY 1's camera from far off; the engine attributes the first act to its track at 0.9 or more and
-declares it hostile by rule (a loose fix is flagged instead, and the next act is another chance);
-op-auto confirms the declaration on autoplay (live: you, in the Review list). At 3:20 the timeline
-nominates FURY 1 with the AIM-120C AMRAAM (agent-scripted), unless a nomination stands; op-2 and
-op-3 sign the plan within seconds; FURY 1 is dispatched, and the engine releases the missile once
-FURY 1 is within its slant range and its flight lands inside the plan's time (on that run 6.6 km
-out on the ground, 12.6 km of slant range, 13 s of flight); the contacts' seed 127 makes the
-strike a hit that destroys the drone for any intent from 1 to 8 (the nomination is intent 2); the
-drone leaves the picture and the assessment reads "ceased" some 15 s later, our sensors covering
-the point. FURY 1 has one AIM-120C left.
+and sinks HUNTER 2 some 7 s after its launch (its second strikes the wreck: recorded, never drawn
+again). HUNTER 1's camera saw the launch (and HUNTER 2's): the engine attributes the act to the
+drone's track at 0.99, declares it hostile by rule at about 1:57, and op-auto confirms within
+seconds (live: you, in the Review list). HUNTER 1's panoramic camera holds the drone, and FURY 1's
+camera from far off. At 3:20 the timeline nominates FURY 1 with the AIM-120C AMRAAM
+(agent-scripted), unless a nomination stands; op-2 and op-3 sign the plan within seconds; FURY 1
+is dispatched, and the engine releases the missile at about 3:48 once FURY 1 is within its slant
+range and its flight lands inside the plan's time (7.5 km out on the ground, 13.1 km of slant
+range, 13 s of flight); the contacts' seed 127 makes the strike a hit that destroys the drone for
+any intent from 1 to 8 (the nomination is intent 3, after the two opening orders); the drone leaves
+the picture and the assessment reads "ceased" at about 4:17, our sensors covering the point. FURY
+1 has one AIM-120C left. Over seeds 1 to 20 (headless) the chain ran to its assessment every time;
+HUNTER 2 was sunk in 7 of them, and the AIM-120C missed in 8 ("persists"), as its 0.60 hit chance
+says it can.
 What should not: a nomination before the declaration is confirmed (refused by target_declared), a
 signature by the proposer or by an agent, or an effect released with a neutral or one of ours
 inside the keep-out (the surface traffic stays a kilometre or more clear, HUNTER 1 some 500 m or
-more).
+more, HUNTER 2 3.5 km).
 """
 
 world = "golden-gate"                         # sim/worlds/golden-gate.toml
@@ -113,7 +119,7 @@ seed = 1
 [summary]
 headline = "Watch for a hostile act from the air; an engagement with FURY 1's AIM-120C takes two operators, and the AI can only nominate."
 bullets = [
-  "Two of ours on station: HUNTER 1 (sensor ship) and FURY 1 (armed jet drone: two AIM-120C, air targets only).",
+  "Three of ours on station: HUNTER 1 and HUNTER 2 (sensor ships) and FURY 1 (armed jet drone: two AIM-120C, air targets only).",
   "A track is declared hostile by an operator or by rule on an observed hostile act; you confirm or revoke it.",
   "The nomination names its weapon; the weapon check shows its odds against the target before anyone signs.",
   "An effect needs two operators with engagement authority, neither its proposer, in the zone west of the bridge.",
@@ -127,6 +133,13 @@ vehicles = { callsign = "HUNTER 1" }
 route = [[-122.4850, 37.8130], [-122.4850, 37.8190]]
 note = "Opening order: patrol the channel west of the bridge"
 
+[[order]]
+id = "picket-patrol"
+task = "patrol"
+vehicles = { callsign = "HUNTER 2" }
+route = [[-122.5270, 37.7880], [-122.5270, 37.7930]]
+note = "Opening order: picket the approach off Lands End"
+
 [[step]]
 id = "drone-comes-in"
 at_s = 10
@@ -138,7 +151,7 @@ director = true
 id = "drone-fires"
 at_s = 125
 kind = "note"
-text = "The drone fires a missile at HUNTER 1 (truth; its second a minute later)"
+text = "The drone fires a missile at HUNTER 2 (truth; its second a minute later)"
 director = true
 
 # The nomination naming the AIM-120C, unless one stands on the track by 3:20 (whoever made it, the
@@ -163,9 +176,9 @@ text = "At 3:20 agent-scripted nominates FURY 1 with the AIM-120C unless a nomin
 
 [[watch]]
 at_s = 0
-headline = "Stack up: two of ours at the Gate"
-bullets = ["HUNTER 1 patrols just west of the bridge (order by policy)", "FURY 1 is armed: no script orders it, it circles high to the southwest"]
-text = "The stack comes up: two of ours at the Gate. The setup script's opening order goes out by policy: HUNTER 1 on patrol just west of the bridge. FURY 1 is armed: no script orders it, so it circles high off the coast to the southwest."
+headline = "Stack up: three of ours at the Gate"
+bullets = ["HUNTER 1 patrols just west of the bridge, HUNTER 2 pickets off Lands End (orders by policy)", "FURY 1 is armed: no script orders it, it circles high to the southwest"]
+text = "The stack comes up: three of ours at the Gate. The setup script's opening orders go out by policy: HUNTER 1 on patrol just west of the bridge, HUNTER 2 on picket off Lands End. FURY 1 is armed: no script orders it, so it circles high off the coast to the southwest."
 
 [[watch]]
 at_s = 40
@@ -199,9 +212,9 @@ text = "Two minutes left. The audit log holds every act, declaration, nomination
 
 [[watch]]
 at_s = 130
-headline = "The drone has fired on HUNTER 1 (truth)"
+headline = "The drone has fired on HUNTER 2 (truth)"
 bullets = ["The chain from here: act observed, rule declaration, confirmation", "Then the AIM-120C nomination, two signatures, release, flight, assessment"]
-text = "The drone has fired on HUNTER 1 (truth). The chain from here: the act observed, the rule declaration, a confirmation, the nomination with the AIM-120C, two signatures, the release, the missile's flight, the hit draw, the assessment."
+text = "The drone has fired on HUNTER 2 (truth). The chain from here: the act observed, the rule declaration, a confirmation, the nomination with the AIM-120C, two signatures, the release, the missile's flight, the hit draw, the assessment."
 director = true
 
 # ---- the playbook engine (AI=playbook, the default, and the shadow beside a model)

@@ -1989,7 +1989,9 @@ def test_each_weapon_situation_uses_its_weapon_against_a_fitting_target(name: st
     armed = [c for c, v in planned.items() if platforms[v["platform"]].get("armed")]
     (step,) = [s for s in sit.steps if s.kind == "engage"]
     assert armed == [step.params["vehicles"]["callsign"]] and step.params["weapon"] == weapon
-    assert {o.vehicles["callsign"] for o in sit.orders} == {"HUNTER 1"}
+    # the opening orders: HUNTER 1's patrol, and air-to-air's picket for HUNTER 2, the drone's target
+    pickets = {"hostile-act-air-to-air": "HUNTER 2"}
+    assert {o.vehicles["callsign"] for o in sit.orders} == {"HUNTER 1", *([pickets[name]] if name in pickets else [])}
     (w,) = [x for x in platforms[planned[armed[0]]["platform"]]["loadout"] if x["name"] == weapon]
     # the target: one hostile of an armed kind (sim/contacts.toml) whose look-alike, the kind our
     # sensors and the damage model read, the weapon has figures for; holding before its first order;
@@ -2008,7 +2010,9 @@ def test_each_weapon_situation_uses_its_weapon_against_a_fitting_target(name: st
     route = hostile["route"]
     run_s = sum(haversine_m(*a, *b) for a, b in zip(route, route[1:])) / hostile["speed_mps"]
     attacks = _attack_orders(raw, hostile["id"])
-    assert attacks and all(o["target"] == {"vehicle": 1} and o["stay"] for o in attacks) and planned["HUNTER 1"]["uid"] == 1
+    victim = pickets.get(name, "HUNTER 1")
+    assert planned["HUNTER 1"]["uid"] == 1
+    assert attacks and all(o["target"] == {"vehicle": planned[victim]["uid"]} and o["stay"] for o in attacks)
     assert hostile.get("start_s", 0) + run_s + 15 < min(o["at_s"] for o in attacks) < step.at_s
     # from a real magazine: no more of a weapon than it carries
     for x in kind["loadout"]:
@@ -2024,8 +2028,18 @@ def test_each_weapon_situation_uses_its_weapon_against_a_fitting_target(name: st
     patrol = next(o for o in sit.orders if o.id == "gate-patrol")
     for p in patrol.params["route"]:
         assert 850 <= haversine_m(*p, *hold) <= 1300
-        # the weapon each order names reaches all of HUNTER 1's leg: no attack held for range
+    # the weapon each order names reaches all of its target's leg: no attack held for range
+    leg = next(o for o in sit.orders if o.vehicles["callsign"] == victim)
+    for p in leg.params["route"]:
         assert all(_in_band(raw, hostile["id"], o, p) for o in attacks), p
+    if victim != "HUNTER 1":
+        # a picket the chain does not need (bd murmur-qese): sunk at the first order, its last report
+        # (counted anywhere its cruise speed takes it, rules 6) stays clear of the keep-out until the
+        # timeline's nomination has given up waiting
+        cruise = platforms[planned[victim]["platform"]]["cruise_mps"]
+        span = step.at_s + float(step.params["wait_s"]) - min(o["at_s"] for o in attacks)
+        for p in leg.params["route"]:
+            assert haversine_m(*p, *hold) - radius - 200 > cruise * span, p
     assert step.params["unless_nominated"] is True and float(step.params["wait_s"]) > 0
     # the default run's strike: a hit that destroys, for intents 1 to 6 (an AI's proposals before it;
     # chosen among the model's draws for our weapon, docs/AUTONOMOUS-NODES.md decision D4: the

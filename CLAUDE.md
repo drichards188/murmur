@@ -475,7 +475,8 @@ meaningful.
   never writes it: contact detections are the same with any class in the truth (tested). Every
   live situation's attacker is an armed catalog kind fired by its own orders (bd murmur-y85j.6);
   the tutorial's boat is ordered every 90 s, and its contacts' `[training]` (a tutorial's only)
-  spares HUNTER 1.
+  spares HUNTER 1. A situation's attack aims at a vessel whose loss leaves the chain standing:
+  air-to-air's drone fires at HUNTER 2, 3.5 km off, not HUNTER 1, whose camera the chain needs.
 - Predicted link coverage (docs/LINK-COVERAGE.md, bd murmur-hei): `GET`/`POST
   /api/links/coverage`, `link_coverage` in dry runs and `preview_intent`, the MCP tool
   `get_link_coverage`, the console's Links layer and the order form's dry run (`web/src/

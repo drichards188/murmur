@@ -1,8 +1,9 @@
 # Autonomous nodes: every node acts from its type and its orders
 
 Status: **approved 2026-11-06 (section 7); stages 1 to 7 built** (bd epic murmur-y85j; section 8
-says what stage 6, the migration, did and found; section 9 the guards). Stage 8 (SITL vehicles
-taking damage) is being built apart; what else remains is in section 9.
+says what stage 6, the migration, did and found; section 9 the guards and the air-to-air
+redesign). Stage 8 (SITL vehicles taking damage) is being built apart; what else remains is in
+section 9.
 
 The owner, 2026-11-06: "I fundamentally [want] the nodes to act correctly in all usages. we
 create resources that are combined in situations and they act correctly based on their coding.
@@ -403,7 +404,7 @@ The tutorial, whose HUNTER 1 is spared, fires its missiles.
 | hostile-act-fpv | `armed_fast_boat` | two HMG bursts at 85, 145, 205, 265 s | headless (seed 108504): declared on A-1 (0.993); a burst took HUNTER 1's propulsion; WASP 1 nominated 2:40, effect 4:43, "ceased" |
 | hostile-act-guided-bomb | `armed_coaster` (looks like `cargo_ship`) | one 107 mm rocket at 155, 215, 275, 335 s | headless (seed 76818): three rockets, all missed; declared on A-1; the GBU-12 at 4:32, "ceased"; the fourth order refused (`node_gone`) |
 | hostile-act-naval-drone | `naval_auxiliary` (looks like `tanker`: guns, no rockets) | two HMG bursts at 155, 215, 275, 335 s | headless (seed 231926): five bursts hit HUNTER 1, none did damage; declared on A-1; VIPER 1 at 5:43, "ceased" |
-| hostile-act-air-to-air | `armed_uas` (looks like `unknown_uas`) | one LMM at 115 s, its second at 175 s | headless (seed 127): the first missile sinks HUNTER 1 (hit 0.78 of 0.90, then destroyed); declared by rule on its launch and confirmed; then **no nomination**: FURY 1 never passes (lost HUNTER 1 in the keep-out, the drone's identity 0.59 of 0.60, its fix 149 m of 37.5 m), and the timeline's step gives up at 7:20. The second missile flew at HUNTER 1's last report and was not drawn (o72k) |
+| hostile-act-air-to-air | `armed_uas` (looks like `unknown_uas`) | one LMM at 115 s, its second at 175 s | headless (seed 127): the first missile sinks HUNTER 1 (hit 0.78 of 0.90, then destroyed); declared by rule on its launch and confirmed; then **no nomination**: FURY 1 never passes (lost HUNTER 1 in the keep-out, the drone's identity 0.59 of 0.60, its fix 149 m of 37.5 m), and the timeline's step gives up at 7:20. The second missile flew at HUNTER 1's last report and was not drawn (o72k). Redesigned in stage 7: section 9 |
 | shore-battery | two `armed_fast_boat` | two HMG bursts at 195, 255, 315 s and at 465, 525, 585 s | headless (seed 98921): a burst took HUNTER 1's propulsion; the Javelin "ceased" at 4:30, the M2 "ceased" at 8:55 |
 | swarm-saturation (`scripts/threat_swarms.py`) | recon, wave, decoy `small_drone`; the attack swarms `oneway_drone`; the shooter `armed_uas` | one LMM at USV 3201 at 595 s, its second at 655 s; then it turns for home (`on_empty`) | headless (seed 23; 3,602 vehicles run at about a third of real time): A-1 at 9:57, seen by over a hundred cameras of ours, declared by rule at once; A-2 at 10:57; both missiles missed USV 3201. The load was not measured live again: what changed is 181 nodes with no order (their way-in crumbs) and one look a second, its answer every one of ours within 8 km |
 | golden-gate-ident (`make goldengate` demo) | `armed_fast_boat`; the skiff `armed_skiff` | the boat: an ATGM at the Magura at 240 and 360 s (2.8 km: beyond its gun); the skiff: two PKM bursts at the Corsair at 300 s | not run: a demo. The crab boat and the skiff were 2 km from the Corsair, beyond the skiff's 1 km, so they were moved to 780 m (the author moved them, never the figures) |
@@ -445,7 +446,7 @@ reads the impact, not the draw (stage 3's shortcut; a miss would at most be a ne
 (3) A gun episode is one act, so a continuous burst sequence offers one chance at a declaration;
 these situations order separate episodes, as a real crew's bursts would come.
 
-## 9. Stage 7 as built: the guards (2026-11-06, bd murmur-y85j.7)
+## 9. Stage 7 as built: the guards, and air-to-air redesigned (2026-11-06, bd murmur-y85j.7, murmur-qese)
 
 **The guard lives on both sides, each holding what it can know.**
 
@@ -479,9 +480,41 @@ these situations order separate episodes, as a real crew's bursts would come.
 A contact's own `weapon = {...}` is behind the same marker rather than gone (section 3 had it
 refused once nothing uses it): only the scripted path's own tests use it now.
 
+**hostile-act-air-to-air redesigned (bd murmur-qese).** Section 8's finding 1: the drone's first
+missile sank HUNTER 1 and the chain stopped. The owner chose to redesign the target. Weighed:
+
+- *A sturdier vessel of ours*: there is none. The Sea Hunter, our largest, reads as a fishing
+  vessel to the damage model (an LMM sinks it 0.18 a missile); a sturdier class would be a new
+  platform with figures of its own, which an author may not make up for a situation.
+- *Another sensor holding custody of the drone*: not enough. A sunk HUNTER 1, 1 km from the
+  effect point, counts in the keep-out from its last report (rules 6) until a person accepts the
+  loss, whoever holds the drone.
+- *A farther target*: chosen. A second Sea Hunter, HUNTER 2 (uid 3), pickets the approach off
+  Lands End 3.5 to 3.9 km southwest of the drone, inside the operating area, on its own opening
+  order (a patrol by policy); the drone's two orders name it. HUNTER 1 keeps the tutorial's leg
+  and its camera on the drone. Sunk, HUNTER 2's last report reaches the keep-out (75 m plus 200 m)
+  at its 6 m/s cruise only some nine minutes later, after the strike; the situation's test checks
+  that it cannot before the timeline's nomination has stopped waiting (3:20 plus 240 s). The
+  drone's catalog, the figures and the seed are unchanged, and the strikes draw on the same
+  streams (`act:drone-raider-<n>` depends on the act, not the victim), so the default run's first
+  missile sinks HUNTER 2 as it sank HUNTER 1: the loss is shown, and the chain goes on.
+
+Measured headless (physical model, world v3 on the situation's map, autoplay with the playbook,
+the scripted signers, the episode seed as the contacts' seed; every audit log replayed with its
+anchors: "every decision reproduced exactly", "ANCHORS OK"):
+
+| | the drone at HUNTER 1 (before) | at HUNTER 2 (now) |
+|---|---|---|
+| seed 127, the default | HUNTER 1 sunk; declared at 1:57 and confirmed; no nomination | HUNTER 2 sunk at 2:04; declared at 1:57 (0.99, the launch seen by HUNTER 1's and HUNTER 2's cameras), confirmed at 1:59; FURY 1 nominated at 3:20 (intent 3), signed and dispatched at 3:27, released at 3:48 (7.5 km out, 13.1 km of slant range, 13 s of flight), "ceased" at 4:17 |
+| seeds 1 to 20 | to the assessment in 13; stopped in the 7 where a missile sank HUNTER 1 | to the assessment in 20; HUNTER 2 sunk in 7; "ceased" in 12, "persists" (the AIM-120C's miss, 0.60 a hit) in 8 |
+
+Where headless differs from live: still water (a stopped HUNTER 2 holds still headless and drifts
+with the tide live, reporting where it is), no tidewater terrain, and the release time follows
+where FURY 1 is on its circle.
+
 **What remains.** Stage 8 (SITL vehicles taking damage) is being built apart. Losing a node (bd
-murmur-zb1d) is the chain going on after a confirmed loss of the sensor it needs; section 8's
-finding 1 (air-to-air) is the owner's (bd murmur-qese). The shortcuts section 8 found stand: a
-shooter fires at a destroyed vehicle's last report until its order ends, and every strike, a miss
-included, reaches the C2 as "struck". Retiring a contact's own `weapon = {...}` (and the scripted
-path's tests with it) is the owner's call.
+murmur-zb1d) is the chain going on after a confirmed loss of the sensor it needs; air-to-air's
+old geometry is its case. The shortcuts section 8 found stand: a shooter fires at a destroyed
+vehicle's last report until its order ends, and every strike, a miss included, reaches the C2 as
+"struck". Retiring a contact's own `weapon = {...}` (and the scripted path's tests with it) is the
+owner's call.
