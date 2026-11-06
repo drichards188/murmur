@@ -102,6 +102,7 @@ DEFAULT_PORTS = {
     "MURMUR_HTTP_PORT": 8765,
     "MURMUR_LINKEMU_PORT": 8766,
     "MURMUR_TIDEWATER_PORT": 8770,
+    "MURMUR_CONTACTS_PORT": 8767,
     "MURMUR_SITL_INSTANCE_BASE": 0,
 }
 # make's own variables and the Makefile's settings for goldengate and situation: a shell may
@@ -364,6 +365,7 @@ def stack_ports_for(choice: Choice, env: dict[str, str]) -> dict[str, int]:
         "web": int(env["MURMUR_WEB_PORT"]),
         "linkemu": port("MURMUR_LINKEMU_PORT"),
         "tidewater": port("MURMUR_TIDEWATER_PORT"),
+        "contacts": port("MURMUR_CONTACTS_PORT"),
         "sitl_instance_base": port("MURMUR_SITL_INSTANCE_BASE"),
     }
 

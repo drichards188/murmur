@@ -24,6 +24,9 @@
 #   MURMUR_HTTP_PORT         8765   bridge REST + WebSocket
 #   MURMUR_WEB_PORT          5173   console (vite)
 #   MURMUR_TIDEWATER_PORT    8770   tidewater serve (reused if one already answers there)
+#   MURMUR_CONTACTS_PORT     8767   the contacts process's own API (with MURMUR_CONTACTS): orders
+#                                   to its nodes and what they perceive, every request with the
+#                                   stack's simulation token (crates/murmur-contacts src/api.rs)
 #   MURMUR_SITL_INSTANCE_BASE 0     first SITL instance (TCP 5760 + 10*instance)
 #   MURMUR_STANDIN_SRC_BASE  unset  stand-in i (in sim/run/standins.json's order) sends from UDP
 #                                   base + i; unset, from an ephemeral port as before. Set it for
@@ -45,7 +48,9 @@
 # clock (MURMUR_AT, MURMUR_RATE) goes to the stand-ins, tidewater drive, the emulator and
 # the contacts process; a MURMUR_RATE other than 1 needs MURMUR_AT (refused otherwise).
 # MURMUR_CONTACTS=sim/scenarios/<name>.toml also runs the contacts process (contacts that
-# are not ours, Phase C2; truth to the bridge's simulation channel and logs/contacts-truth.jsonl).
+# are not ours, Phase C2; truth to the bridge's simulation channel and logs/contacts-truth.jsonl),
+# with its own API on MURMUR_CONTACTS_PORT (docs/AUTONOMOUS-NODES.md 2.5): pass MURMUR_SIM_TOKEN
+# in to use it by hand (the situation runner does), since the one made here is never shown.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p logs
@@ -60,6 +65,7 @@ case "${MURMUR_WEB:-1}" in 0|off|false|no) web=0 ;; preview) web=preview ;; *) w
 vehicle_base="$MURMUR_BASE_PORT"
 bridge_base="${MURMUR_BRIDGE_BASE_PORT:-$((vehicle_base + 1000))}"
 emu_port="${MURMUR_LINKEMU_PORT:-8766}"
+contacts_port="${MURMUR_CONTACTS_PORT:-8767}"
 link_host="${MURMUR_LINK_HOST:-127.0.0.1}"
 # one scripted-events file drives both the link emulator (comms) and the stand-ins (GNSS
 # jamming/spoofing); either variable name works
@@ -222,9 +228,12 @@ else
   starting="swarm and bridge (:$MURMUR_HTTP_PORT)"
 fi
 if [ -n "${MURMUR_CONTACTS:-}" ]; then
-  # contacts that are not ours: truth goes only to the bridge's simulation channel
-  MURMUR_SIM_TOKEN="$sim_token" target/release/murmur-contacts "$MURMUR_CONTACTS" > logs/contacts.log 2>&1 & pids+=($!)
-  echo "contacts: $MURMUR_CONTACTS (logs/contacts.log, truth in logs/contacts-truth.jsonl)"
+  # contacts that are not ours: truth goes only to the bridge's simulation channel; orders to
+  # them come in on their own API (127.0.0.1 only, the same token), checked against this run's
+  # fleet manifest
+  MURMUR_SIM_TOKEN="$sim_token" MURMUR_CONTACTS_PORT="$contacts_port" MURMUR_FLEET_MANIFEST="$PWD/sim/run/fleet.json" \
+    target/release/murmur-contacts "$MURMUR_CONTACTS" > logs/contacts.log 2>&1 & pids+=($!)
+  echo "contacts: $MURMUR_CONTACTS (logs/contacts.log, truth in logs/contacts-truth.jsonl, orders on :$contacts_port)"
 fi
 
 if [ -n "${MURMUR_SCENARIO:-}" ]; then

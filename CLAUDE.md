@@ -83,14 +83,22 @@ meaningful.
   (`docs/HEADLESS.md`).
 - Ports: vehicles UDP 14560+i -> linkemu -> bridge UDP 15560+i (`MURMUR_BRIDGE_BASE_PORT`,
   default base + 1000); linkemu stats HTTP :8766 (`MURMUR_LINKEMU_PORT`); bridge :8765; console
-  :5173; tidewater serve :8770; SITL SERIAL1 TCP 5762+10*instance (tidewater driver). A second
+  :5173; tidewater serve :8770; the contacts process's API :8767 (`MURMUR_CONTACTS_PORT`, with a
+  contacts scenario); SITL SERIAL1 TCP 5762+10*instance (tidewater driver). A second
   stack beside the default one: set `MURMUR_BASE_PORT`, `MURMUR_BRIDGE_BASE_PORT`,
   `MURMUR_LINKEMU_PORT`, `MURMUR_HTTP_PORT`, `MURMUR_WEB_PORT`, `MURMUR_TIDEWATER_PORT`,
-  `MURMUR_SITL_INSTANCE_BASE`, and for thousands of stand-ins `MURMUR_STANDIN_SRC_BASE` (header
-  of `scripts/up.sh`). `MURMUR_WEB_PORT` also tells the bridge which console origin to accept;
+  `MURMUR_CONTACTS_PORT`, `MURMUR_SITL_INSTANCE_BASE`, and for thousands of stand-ins
+  `MURMUR_STANDIN_SRC_BASE` (header of `scripts/up.sh`). `MURMUR_WEB_PORT` also tells the bridge which console origin to accept;
   the session cookie is named per HTTP port.
   `make situation` has its own block (UDP 33000+ and 34000+, bridge :9265, linkemu :9266,
-  console :5673, tidewater :9270, SITL from instance 160; each variable overrides one).
+  contacts API :9267, console :5673, tidewater :9270, SITL from instance 160; each variable
+  overrides one); an eval stack's contacts API is 10660+block (`eval/ports.py`).
+- Contacts API (docs/AUTONOMOUS-NODES.md 2.5, decision D1, bd murmur-y85j.4): `murmur-contacts`
+  takes orders for its nodes itself (`crates/murmur-contacts/src/api.rs`: `POST /orders`, `GET
+  /orders[/{id}]`, `GET /nodes`, 127.0.0.1 only), every request with the stack's
+  `X-Murmur-Sim-Token`; our bridge never relays a red order. A situation's `red` step posts there
+  (the runner made the token); by hand, pass your own `MURMUR_SIM_TOKEN` to `make goldengate`
+  (up.sh's own is never shown). Without `MURMUR_CONTACTS_PORT` the process serves nothing.
 
 ## Gotchas (each cost real time)
 

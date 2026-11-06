@@ -190,6 +190,9 @@ def test_port_blocks_stay_in_their_ranges():
             assert 10600 <= port <= 10699
     assert all(10600 <= p <= 10699 for p in P.TIDEWATER_PORTS)
     assert not set(P.TIDEWATER_PORTS) & {p for i in range(P.MAX_BLOCKS) for p in P.PortBlock(i).tcp_ports()}
+    # every TCP port of every block its own (the contacts API's among them)
+    tcp = [p for i in range(P.MAX_BLOCKS) for p in P.PortBlock(i).tcp_ports()]
+    assert len(tcp) == len(set(tcp)) == 4 * P.MAX_BLOCKS
 
 
 def test_allocator_never_hands_out_a_block_twice(monkeypatch, tmp_path: Path):

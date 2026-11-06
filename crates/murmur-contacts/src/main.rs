@@ -13,6 +13,13 @@
 //!   MURMUR_DAMAGE_FILE       where a strike's damage to our vehicles goes for the stand-ins
 //!                            (default $MURMUR_ROOT/sim/run/damage-<MURMUR_HTTP_PORT>.jsonl;
 //!                            murmur_standins::damage), emptied at the start
+//!   MURMUR_CONTACTS_PORT     this process's own API on 127.0.0.1 (orders to the nodes, what
+//!                            they do and perceive; murmur_contacts::api), every request with
+//!                            MURMUR_SIM_TOKEN; unset, no API. A port it cannot listen on stops it
+//!   MURMUR_FLEET_MANIFEST    this run's fleet (sim/run/fleet.json): the API refuses an order at
+//!                            a vehicle not in it (unset: a vehicle target is not checked)
+//!   MURMUR_SENSE_MODEL       the bridge's sensing model when set (else the scenario's): under
+//!                            `legacy` the API refuses an attack, as a file's orders are
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -20,11 +27,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use murmur_contacts::api::{self, Desk, Here};
 use murmur_contacts::effect::{self, DamageCtx, EffectApplied, EffectNotice, OursDamaged};
 use murmur_contacts::mine::{MineNotice, Minefields};
 use murmur_contacts::motion::Mover;
 use murmur_contacts::node::{LandWater, Nodes};
-use murmur_contacts::scenario::{Motion, Scenario};
+use murmur_contacts::scenario::{Motion, Scenario, SensingModel};
 use murmur_contacts::truth::TruthMessage;
 use murmur_contacts::weapon::{self, Armory, OursAt};
 use murmur_standins::conditions::{self, Slot};
@@ -201,7 +209,19 @@ async fn run() -> Result<(), String> {
     // scenario's orders name, steering on the land/water grid it names; and our vehicles as the
     // bridge's latest answer gave them (what a node may perceive), with when
     let mut nodes = Nodes::new(&scenario, &movers);
-    if !scenario.orders.is_empty() {
+    // the process's own API (docs/AUTONOMOUS-NODES.md 2.5, decision D1): orders and what the nodes
+    // perceive, answered by this loop between its ticks; the channel stays open without it
+    let (api_tx, mut api_rx) = tokio::sync::mpsc::channel::<api::Request>(64);
+    let api_port = match env("MURMUR_CONTACTS_PORT") {
+        Some(p) => Some(p.trim().parse::<u16>().map_err(|_| format!("MURMUR_CONTACTS_PORT={p}: not a port"))?),
+        None => None,
+    };
+    if let Some(port) = api_port {
+        let addr = api::serve(port, sim_token.clone(), api_tx.clone()).await?;
+        println!("api: orders and nodes on http://{addr} (POST /orders, GET /orders/{{id}}, GET /nodes; X-Murmur-Sim-Token)");
+    }
+    // orders can come from the file or, with the API, at any second: steer on the grid for either
+    if !scenario.orders.is_empty() || api_port.is_some() {
         match &scenario.sensing.terrain {
             Some(t) => match LandWater::load(&root.clone().unwrap_or_default().join(t)) {
                 Ok(g) => {
@@ -213,11 +233,32 @@ async fn run() -> Result<(), String> {
             None => println!("nodes: the scenario names no [sensing] terrain: steering is not checked against land and water"),
         }
     }
+    let fleet = env("MURMUR_FLEET_MANIFEST").and_then(|p| match api::fleet_uids(std::path::Path::new(&p)) {
+        Ok(f) => Some(f),
+        Err(e) => {
+            println!("api: {e}: an order's vehicle target is not checked against the fleet");
+            None
+        }
+    });
+    let legacy = match env("MURMUR_SENSE_MODEL").as_deref().map(str::trim) {
+        Some("legacy") => true,
+        Some("physical") => false,
+        _ => scenario.sensing.model == Some(SensingModel::Legacy),
+    };
+    let mut desk = Desk::new(&nodes, fleet, legacy);
     let mut ours_now: Vec<OursAt> = Vec::new();
     let mut ours_now_t = f64::NEG_INFINITY;
     loop {
         tokio::select! {
             _ = every.tick() => {}
+            Some(req) = api_rx.recv() => {
+                // an API request between ticks, on the clock now and what the nodes have now
+                let s = Instant::now().duration_since(wall0).as_secs_f64() * rate;
+                let fresh: &[OursAt] = if t0 + s - ours_now_t <= OURS_FRESH_S { &ours_now } else { &[] };
+                let mut here = Here { scenario: &scenario, nodes: &mut nodes, movers: &movers, ours: fresh, s, t: t0 + s };
+                let _ = req.reply.send(desk.answer(req.ask, &mut here));
+                continue;
+            }
             _ = tokio::signal::ctrl_c() => {
                 let _ = log.flush();
                 return Ok(());
@@ -256,6 +297,7 @@ async fn run() -> Result<(), String> {
         // every node with an order runs it: its shots fly from here, its steering is the next step's
         let fresh: &[OursAt] = if t0 + s - ours_now_t <= OURS_FRESH_S { &ours_now } else { &[] };
         let tick = nodes.tick(s, t0 + s, &mut movers, fresh, &mut armory);
+        desk.record(&tick.events);
         seq += 1;
         let mut msg = TruthMessage::build(
             t0 + s,

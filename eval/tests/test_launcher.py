@@ -78,7 +78,8 @@ def test_the_open_world_is_what_make_goldengate_runs():
     assert env == {"PATH": "/bin", "HOME": "/h", "MURMUR_WEB": "0", "MURMUR_WEB_PORT": "5173", "PYTHONUNBUFFERED": "1"}
     assert not S.up_starts_console(env) and S.up_starts_console({}) and S.up_starts_console({"MURMUR_WEB": "1"})
     ports = L.stack_ports_for(choice, env)
-    assert ports == {"vehicle_base": 14560, "bridge_base": 15560, "http": 8765, "web": 5173, "linkemu": 8766, "tidewater": 8770, "sitl_instance_base": 0}
+    assert ports == {"vehicle_base": 14560, "bridge_base": 15560, "http": 8765, "web": 5173, "linkemu": 8766, "tidewater": 8770,
+                     "contacts": 8767, "sitl_instance_base": 0}
     # each MURMUR_* port variable overrides one, as up.sh reads them
     moved = L.stack_ports_for(choice, {**env, "MURMUR_HTTP_PORT": "8865", "MURMUR_BASE_PORT": "24560"})
     assert (moved["http"], moved["vehicle_base"], moved["bridge_base"]) == (8865, 24560, 25560)
@@ -100,6 +101,7 @@ def test_a_situation_runs_as_make_situation_does():
     env = S.situation_env(L.launch_env({"PATH": "/bin"}, 5173), sat)
     ports = L.stack_ports_for(L.Choice("swarm-saturation", "situation", operator="live", ai="none"), env)
     assert (ports["http"], ports["web"], ports["vehicle_base"], ports["bridge_base"], ports["standin_src_base"]) == (9365, 5173, 16000, 29000, 5100)
+    assert ports["contacts"] == 9367  # its contacts API in its own block too
     assert S.range_problems(ports, 3602) == []
     assert env["MURMUR_LINK_HOST"] == "127.0.0.2"           # its links on lo, off WSL's loopback0
     assert "MURMUR_LINK_HOST" not in S.situation_env({"PATH": "/bin"})

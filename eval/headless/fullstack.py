@@ -41,6 +41,7 @@ PORTS = {
     "MURMUR_WEB_PORT": "5973",
     "MURMUR_TIDEWATER_PORT": "9570",
     "MURMUR_SITL_INSTANCE_BASE": "220",
+    "MURMUR_CONTACTS_PORT": "9567",
 }
 SITUATION = REPO / "sim" / "situations" / "harbor-watch.toml"
 CLK_TCK = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
@@ -54,7 +55,7 @@ def say(msg: str) -> None:
 
 def listening(n_vehicles: int = 4) -> list[str]:
     """What answers on this block's ports now."""
-    tcp = {int(PORTS[k]) for k in ("MURMUR_HTTP_PORT", "MURMUR_LINKEMU_PORT", "MURMUR_WEB_PORT", "MURMUR_TIDEWATER_PORT")}
+    tcp = {int(PORTS[k]) for k in ("MURMUR_HTTP_PORT", "MURMUR_LINKEMU_PORT", "MURMUR_WEB_PORT", "MURMUR_TIDEWATER_PORT", "MURMUR_CONTACTS_PORT")}
     udp = {int(PORTS["MURMUR_BASE_PORT"]) + i for i in range(n_vehicles)} | \
           {int(PORTS["MURMUR_BRIDGE_BASE_PORT"]) + i for i in range(n_vehicles)}
     busy = []

@@ -130,7 +130,7 @@ answers() { timeout 1 bash -c "exec 3<>/dev/tcp/127.0.0.1/$1" 2>/dev/null; }
 # probe every port at once (a filtered port takes the whole second), then read the answers
 probed="$(mktemp -d)"
 trap 'rm -rf "$probed"' EXIT
-for p in 5173 8760 8761 8765 8766 8770 5673 9265 9266 9270; do
+for p in 5173 8760 8761 8765 8766 8767 8770 5673 9265 9266 9267 9270; do
   { answers "$p" && touch "$probed/$p"; } &
 done
 wait
@@ -157,10 +157,10 @@ check_ports() {
     warn "$label: in use: ${joined%, }; if that is Murmur, $stop"
   fi
 }
-check_ports "ports, open world and menu (5173 8760 8761 8765 8766 8770)" "make down stops a stack and Ctrl-C in its terminal the menu (or kill \$(cat logs/launcher.pid))" \
-  5173:console 8760:launcher 8761:launcher-relay 8765:bridge 8766:link-emulator 8770:tidewater
-check_ports "ports, situations (5673 9265 9266 9270)" "make down stops it" \
-  5673:console 9265:bridge 9266:link-emulator 9270:tidewater
+check_ports "ports, open world and menu (5173 8760 8761 8765 8766 8767 8770)" "make down stops a stack and Ctrl-C in its terminal the menu (or kill \$(cat logs/launcher.pid))" \
+  5173:console 8760:launcher 8761:launcher-relay 8765:bridge 8766:link-emulator 8767:contacts-api 8770:tidewater
+check_ports "ports, situations (5673 9265 9266 9267 9270)" "make down stops it" \
+  5673:console 9265:bridge 9266:link-emulator 9267:contacts-api 9270:tidewater
 if [ -f logs/up.pid ] && kill -0 "$(cat logs/up.pid)" 2>/dev/null; then
   warn "stack: one started from this checkout is running (pid $(cat logs/up.pid)); make down stops it"
 fi

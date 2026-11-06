@@ -12,7 +12,9 @@
 //!   track, attack, break off, flee, resume), each by its catalog kind: steering, perception and
 //!   fire control inside the node (docs/AUTONOMOUS-NODES.md);
 //! - [`truth`] is the message shape published to the bridge's simulation channel
-//!   (`POST /api/sim/contacts`) and written to the evaluation log (JSON lines).
+//!   (`POST /api/sim/contacts`) and written to the evaluation log (JSON lines);
+//! - [`api`] is the process's own API on `MURMUR_CONTACTS_PORT`: orders to the nodes and what
+//!   they do and perceive, behind the stack's simulation token (docs/AUTONOMOUS-NODES.md 2.5).
 //!
 //! Why its own binary and not a stand-in: stand-ins are *our* vehicles and speak their real
 //! protocol to the bridge (docs/AUTHENTICITY.md). Contacts are not ours and have no protocol
@@ -25,6 +27,7 @@
 //! runs from `MURMUR_AT` at `MURMUR_RATE`, so a run with the same scenario, seed and clock
 //! produces the same truth.
 
+pub mod api;
 pub mod catalog;
 pub mod damage;
 pub mod effect;

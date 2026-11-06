@@ -15,8 +15,10 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 import tomllib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -202,6 +204,134 @@ def test_a_situation_step_needs_no_truth_label(tmp_path: Path):
     sit = S.load_situation(p)
     assert [s.id for s in sit.steps] == ["n", "p"]
     assert "reason" not in sit.steps[1].params
+
+
+RED_BASE = BASE + 'contacts = "sim/scenarios/hostile-act-engagement.toml"\n'
+RED_STEPS = (
+    '[[step]]\nid = "atk"\nat_s = 200\nkind = "red"\nnode = "fastboat-raider"\ndo = "attack"\ntarget = { vehicle = 1 }\n'
+    'stay = true\nlabel = "attacks HUNTER 1"\ntext = "the boat attacks"\n'
+    '[[step]]\nid = "go"\nat_s = 30\nkind = "red"\nnode = "fishing-wharf"\ndo = "transit"\nroute = [[-122.47, 37.81]]\ndirector = false\n'
+)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'node = "nobody"\ndo = "hold"\n',  # no such contact
+        'do = "hold"\n',  # no node
+        'node = "fastboat-raider"\ndo = "explode"\n',  # no such order
+        'node = "fastboat-raider"\ndo = "hold"\nradius_m = 300\n',  # a key hold does not take
+        'node = "fastboat-raider"\ndo = "hold"\nfuel = 3\n',  # a key no order takes
+        'node = "fastboat-raider"\ndo = "attack"\n',  # an attack needs a target
+        'node = "fastboat-raider"\ndo = "attack"\ntarget = { contact = "nobody" }\n',
+        'node = "fastboat-raider"\ndo = "attack"\ntarget = { contact = "fastboat-raider" }\n',
+        'node = "fastboat-raider"\ndo = "attack"\ntarget = { vehicle = "one" }\n',
+        'node = "fastboat-raider"\ndo = "attack"\ntarget = { vehicle = 1 }\nrounds = 0\n',
+        'node = "fastboat-raider"\ndo = "attack"\ntarget = { vehicle = 1 }\nstay = "yes"\n',
+        'node = "fastboat-raider"\ndo = "orbit"\ncenter = [-122.47, 37.81]\nradius_m = 0\n',
+        'node = "fastboat-raider"\ndo = "orbit"\ncenter = [-122.47, 37.81]\n',
+        'node = "fastboat-raider"\ndo = "transit"\nroute = [[-122.47]]\n',
+    ],
+)
+def test_a_bad_red_step_is_refused_at_load(tmp_path: Path, body: str):
+    with pytest.raises(S.SituationError):
+        S.load_situation(_write(tmp_path, "badred", RED_BASE + '[[step]]\nat_s = 10\nkind = "red"\n' + body))
+
+
+def test_a_red_step_is_an_order_to_a_contact(tmp_path: Path):
+    """A `red` step (docs/AUTONOMOUS-NODES.md 2.5) is a contacts file's `[[order]]` at the step's
+    second: a contact of the situation's contacts file, an order kind, its own keys. Truth, so the
+    director's unless it says otherwise; it posts the order with no `at_s` (now); the storyline
+    never runs it; it needs a contacts file to order."""
+    sit = S.load_situation(_write(tmp_path, "red", RED_BASE + RED_STEPS))
+    red = S.red_steps(sit)
+    assert [s.id for s in red] == ["go", "atk"]
+    assert red[1].params["director"] is True and red[0].params["director"] is False
+    assert S.red_order(red[1]) == {"node": "fastboat-raider", "do": "attack", "target": {"vehicle": 1}, "stay": True, "label": "attacks HUNTER 1"}
+    assert S.red_order(red[0]) == {"node": "fishing-wharf", "do": "transit", "route": [[-122.47, 37.81]]}
+    with pytest.raises(S.SituationError, match="no contacts"):
+        S.load_situation(_write(tmp_path, "nocontacts", BASE + 'contacts = ""\n[[step]]\nkind = "red"\nnode = "x"\ndo = "hold"\n'))
+    # a blinded panel never shows what is to come, a revealed one names it
+    upcoming = S.status_doc(sit, {**S.resolve_modes(sit), "reveal": True}, phase="running", elapsed_s=0.0, now=time.time(), entries=[],
+                            done_steps=set(), orders=[], agent={}, autoplay=None, run={})["timeline"]["upcoming"]
+    assert [u["id"] for u in upcoming] == ["go", "atk"]
+
+
+class _ContactsApi(BaseHTTPRequestHandler):
+    """A stand-in for the contacts process's API: `POST /orders` with the stack's token."""
+
+    got: list[tuple[float, str, str | None, dict[str, Any]]] = []
+    token = ""
+
+    def do_POST(self) -> None:  # noqa: N802 (http.server's name)
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        token = self.headers.get("X-Murmur-Sim-Token")
+        self.got.append((time.time(), self.path, token, body))
+        if not self.token or token != self.token:
+            code, out = 401, {"error": "wrong simulation token"}
+        elif body["node"] == "fishing-wharf":
+            code, out = 422, {"refused": "node \"fishing-wharf\" is destroyed, spent or gone from the scenario", "code": "node_gone"}
+        else:
+            code, out = 200, {"id": 7, "accepted": True}
+        data = json.dumps(out).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *args: Any) -> None:
+        pass
+
+
+def test_the_runner_posts_each_red_step_at_its_second_to_the_contacts_api(tmp_path: Path):
+    """The runner posts each red step's order at its second to the contacts process's own API (the
+    port of its block), with the stack's token it made, and records the answer, accepted or
+    refused, in situation.jsonl and as the panel's line (the director's unless the step says
+    otherwise). The storyline is given the other steps only."""
+    from eval import situation_run as R
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _ContactsApi)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    _ContactsApi.got = []
+    body = RED_BASE.replace('fleet = "sim/fleets/harbor-watch.toml"', 'fleet = "sim/fleets/harbor-watch.toml"\nduration_s = 60')
+    steps = (
+        '[[step]]\nid = "go"\nat_s = 0.8\nkind = "red"\nnode = "fishing-wharf"\ndo = "hold"\ndirector = false\n'
+        '[[step]]\nid = "atk"\nat_s = 0.3\nkind = "red"\nnode = "fastboat-raider"\ndo = "attack"\ntarget = { vehicle = 1 }\n'
+        '[[step]]\nid = "n"\nat_s = 50\nkind = "note"\ntext = "a note"\n'
+    )
+    sit = S.load_situation(_write(tmp_path, "red", body + steps))
+    port = srv.server_address[1]
+
+    async def go() -> Any:
+        runner = R.Runner(sit, S.resolve_modes(sit, operator="autoplay", ai="none"), {"MURMUR_CONTACTS_PORT": str(port), "PATH": "/bin"},
+                          {"checked": False}, out_dir=tmp_path / "run")
+        story, _ = runner.storyline()
+        assert story is not None and [s.id for s in story.spec.steps] == ["n"], "the storyline never sees a red step"
+        _ContactsApi.token = runner.token
+        runner.zero = time.time()
+        await runner.red().run(asyncio.Event())
+        return runner
+
+    try:
+        runner = asyncio.run(go())
+    finally:
+        srv.shutdown()
+    got = _ContactsApi.got
+    assert [(p, tok, b["node"]) for _, p, tok, b in got] == [("/orders", runner.token, "fastboat-raider"), ("/orders", runner.token, "fishing-wharf")]
+    assert got[0][3] == {"node": "fastboat-raider", "do": "attack", "target": {"vehicle": 1}}
+    assert got[0][0] >= runner.zero + 0.3 and got[1][0] >= runner.zero + 0.8, "each at its second"
+    recs = [json.loads(line) for line in runner.log_path.read_text().splitlines()]
+    red = {r["step"]: r for r in recs if r.get("event") == "step" and r.get("kind") == "red"}
+    assert red["atk"]["status"] == 200 and red["atk"]["answer"] == {"id": 7, "accepted": True}
+    assert red["go"]["status"] == 422 and red["go"]["answer"]["code"] == "node_gone"
+    lines = {e["step"]: e for e in runner.entries if e.get("kind_detail") == "red"}
+    assert lines["atk"]["director"] is True and lines["go"]["director"] is False
+    assert "order 7 accepted" in lines["atk"]["text"] and "refused (node_gone)" in lines["go"]["text"]
+    assert runner.done_steps == {"atk", "go"}
+    # a contacts process that never answers is recorded as such, not lost
+    dead = R.RedSteps([], f"http://127.0.0.1:{_free_tcp()}", "tok", time.time(), print, print, retry_s=0.0)
+    assert "did not answer" in dead.post({"node": "x", "do": "hold"})["error"]
 
 
 def test_resolve_modes_and_who_is_scripted(tmp_path: Path):
@@ -481,13 +611,14 @@ def test_a_situation_has_its_own_port_block():
     from eval.ports import ephemeral_range
 
     p = S.stack_ports({})
-    assert p == {"vehicle_base": 33000, "bridge_base": 34000, "http": 9265, "web": 5673, "linkemu": 9266, "tidewater": 9270, "sitl_instance_base": 160}
+    assert p == {"vehicle_base": 33000, "bridge_base": 34000, "http": 9265, "web": 5673, "linkemu": 9266, "tidewater": 9270,
+                 "contacts": 9267, "sitl_instance_base": 160}
     udp = [range(p["vehicle_base"], p["vehicle_base"] + 1000), range(p["bridge_base"], p["bridge_base"] + 1000)]
-    tcp = [p["http"], p["web"], p["linkemu"], p["tidewater"]]
+    tcp = [p["http"], p["web"], p["linkemu"], p["tidewater"], p["contacts"]]
     taken_udp = [range(14560, 16560), range(24560, 26560), range(35000, 37000)]
-    taken_tcp = {8765, 8766, 5173, 8770, 8865, 8866, 5273, 8870, *range(10600, 10700)}
+    taken_tcp = {8765, 8766, 8767, 5173, 8770, 8865, 8866, 8867, 5273, 8870, *range(10600, 10700)}
     assert not any(set(a) & set(b) for a in udp for b in taken_udp)
-    assert not set(tcp) & taken_tcp
+    assert not set(tcp) & taken_tcp and len(set(tcp)) == len(tcp)
     eph = ephemeral_range()
     if eph:
         assert all(r.stop - 1 < eph[0] for r in udp), f"below the ephemeral range {eph}"
@@ -503,7 +634,7 @@ def test_a_situation_has_its_own_port_block():
     assert any("MURMUR_BRIDGE_BASE_PORT" in q and "evaluation" in q for q in ev) and not any("MURMUR_BASE_PORT range" in q for q in ev)
     assert any("evaluation" in q for q in S.range_problems({"vehicle_base": 34990, "bridge_base": 33000}, 20))
     # port_problems says them first, without looking at a port
-    assert S.port_problems({"vehicle_base": 33000, "bridge_base": 34000, "http": 1, "web": 1, "linkemu": 1, "tidewater": 1, "sitl_instance_base": 0}, 1001, 0) == big
+    assert S.port_problems({"vehicle_base": 33000, "bridge_base": 34000, "http": 1, "web": 1, "linkemu": 1, "tidewater": 1, "contacts": 1, "sitl_instance_base": 0}, 1001, 0) == big
     env = S.situation_env({"MURMUR_WEB_PORT": "5473", "PATH": "/bin"})
     assert env["MURMUR_WEB_PORT"] == "5473" and env["MURMUR_HTTP_PORT"] == "9265" and env["PATH"] == "/bin"
 
@@ -516,10 +647,13 @@ def test_a_busy_port_or_a_running_stack_is_reported(tmp_path: Path):
     udp.bind(("0.0.0.0", 0))
     try:
         ports = {"vehicle_base": udp.getsockname()[1], "bridge_base": _free_tcp(), "http": listener.getsockname()[1],
-                 "web": _free_tcp(), "linkemu": _free_tcp(), "tidewater": _free_tcp(), "sitl_instance_base": 0}
+                 "web": _free_tcp(), "linkemu": _free_tcp(), "tidewater": _free_tcp(), "contacts": _free_tcp(), "sitl_instance_base": 0}
         problems = S.port_problems(ports, 1, 0, root=tmp_path)
         assert any("MURMUR_HTTP_PORT" in p for p in problems), problems
         assert any("MURMUR_BASE_PORT" in p for p in problems), problems
+        # the contacts process's API port too
+        problems = S.port_problems({**ports, "http": _free_tcp(), "contacts": listener.getsockname()[1]}, 1, 0, root=tmp_path)
+        assert any("MURMUR_CONTACTS_PORT" in p for p in problems), problems
         (tmp_path / "logs").mkdir()
         (tmp_path / "logs" / "up.pid").write_text(str(os.getpid()))
         assert any("logs/up.pid" in p for p in S.port_problems(ports, 1, 0, root=tmp_path))
@@ -528,7 +662,7 @@ def test_a_busy_port_or_a_running_stack_is_reported(tmp_path: Path):
         udp.close()
     (tmp_path / "logs" / "up.pid").write_text("999999999")
     free = {"sitl_instance_base": 0}
-    for key in ("vehicle_base", "bridge_base", "http", "web", "linkemu", "tidewater"):
+    for key in ("vehicle_base", "bridge_base", "http", "web", "linkemu", "tidewater", "contacts"):
         port = _free_tcp()
         while port in free.values():
             port = _free_tcp()
@@ -922,6 +1056,7 @@ def test_the_runner_makes_a_fresh_station_and_a_dev_roster(tmp_path: Path, monke
     assert e["MURMUR_AGENTS"] == "agent-watch,agent-playbook,agent-scripted,agent-setup,agent-planner"
     # its own block's ports where none is set, and its own tidewater (not another stack's)
     assert e["MURMUR_HTTP_PORT"] == "9065" and e["MURMUR_WEB_PORT"] == "5673" and e["MURMUR_TIDEWATER_PORT"] == "9270"
+    assert e["MURMUR_CONTACTS_PORT"] == "9267" and runner.contacts_url == "http://127.0.0.1:9267"
     assert "MURMUR_TIDEWATER_URL" not in e
     assert e["MURMUR_SIM_TOKEN"] == runner.token != "theirs"
     assert "MURMUR_EVAL_TRUTH" not in e, "no truth endpoint in a situation"

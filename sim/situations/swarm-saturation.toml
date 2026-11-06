@@ -126,6 +126,7 @@ http = 9365
 linkemu = 9366
 web = 5773
 tidewater = 9370
+contacts = 9367
 sitl_instance_base = 200
 link_host = "127.0.0.2"                        # its links on lo, off WSL's loopback0 (docs/load-test.md)
 

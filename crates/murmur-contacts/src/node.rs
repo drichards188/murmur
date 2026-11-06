@@ -7,12 +7,12 @@
 //! hits.
 //!
 //! - **Orders** ([`OrderSpec`]): `transit`, `hold`, `orbit`, `track`, `attack`, `break_off`,
-//!   `flee`, `resume`, from a file's `[[order]]` (checked at load, [`check`]) or, from stage 4,
-//!   the contacts process's own API ([`Nodes::order`]). One at a time: a new one supersedes the
-//!   one running. An order ends saying why (`target_lost`, `out_of_rounds`, `no_weapon`,
-//!   `salvo_fired`, `until`, `no_way`, `done`, `superseded`, `break_off`, `destroyed`,
-//!   `expended`), and the node then holds where it is, or, out of rounds altogether, follows its
-//!   kind's `on_empty` (default: it flees along its way in).
+//!   `flee`, `resume`, from a file's `[[order]]` (checked at load, [`check`]) or the contacts
+//!   process's own API ([`crate::api`], into [`Nodes::order`]). One at a time: a new one
+//!   supersedes the one running. An order ends saying why (`target_lost`, `out_of_rounds`,
+//!   `no_weapon`, `salvo_fired`, `until`, `no_way`, `done`, `superseded`, `break_off`,
+//!   `destroyed`, `expended`), and the node then holds where it is, or, out of rounds altogether,
+//!   follows its kind's `on_empty` (default: it flees along its way in).
 //! - **Steering** ([`crate::motion::Steer`]): with the kind's turn rate, at its `max_mps` closing,
 //!   opening out and fleeing, its `cruise_mps` otherwise. A straight leg over the wrong surface for
 //!   its domain, by the land/water grid the scenario names (`[sensing] terrain`, [`LandWater`]), is
@@ -133,7 +133,7 @@ impl Do {
     }
 
     /// The keys besides `at_s`, `node`, `do` and `label` an order of this kind takes.
-    fn takes(self) -> &'static [&'static str] {
+    pub fn takes(self) -> &'static [&'static str] {
         match self {
             Do::Transit => &["route", "speed_mps"],
             Do::Hold => &["at"],
@@ -171,7 +171,7 @@ impl TargetRef {
     }
 }
 
-/// One order as a file's `[[order]]` writes it (and, from stage 4, the contacts process's API
+/// One order as a file's `[[order]]` writes it (and the contacts process's API, [`crate::api`],
 /// takes it as JSON, `at_s` absent meaning now). Points are `[lon, lat]`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -256,6 +256,13 @@ impl OrderSpec {
         ]
     }
 
+    /// The first key it gives that its kind of order does not take (`at_s`, `node`, `do` and
+    /// `label` aside), if any: the refusal [`check`] makes first.
+    pub fn stray_key(&self) -> Option<&'static str> {
+        let takes = self.what.takes();
+        self.given().into_iter().find(|(k, g)| *g && !takes.contains(k)).map(|(k, _)| k)
+    }
+
     fn describe(&self) -> String {
         let mut d = self.what.as_str().to_string();
         if let Some(t) = &self.target {
@@ -300,7 +307,7 @@ pub fn check(o: &OrderSpec, s: &Scenario, file: bool) -> Result<(), String> {
     }
     let kind = Catalog::shipped().get(&c.kind);
     let takes = o.what.takes();
-    if let Some((k, _)) = o.given().into_iter().find(|(k, g)| *g && !takes.contains(k)) {
+    if let Some(k) = o.stray_key() {
         let list = if takes.is_empty() { "nothing".to_string() } else { takes.join(", ") };
         return Err(format!("{} takes {list} (and label), not {k}", o.what.as_str()));
     }
@@ -667,6 +674,22 @@ impl Running {
     }
 }
 
+/// The order a node runs, as it stands (read only).
+#[derive(Debug, Clone, Copy)]
+pub struct RunningView<'a> {
+    pub id: u64,
+    pub spec: &'a OrderSpec,
+    /// The scenario second it was taken at.
+    pub since_s: f64,
+    /// When it last perceived its target, and as what.
+    pub seen_s: Option<f64>,
+    pub last: Option<Seen>,
+    /// Rounds fired under it.
+    pub fired: u32,
+    /// What it last said it was doing, and why (`closing`, `out_of_range`; `fired`).
+    pub status: Option<(&'a str, Option<&'a str>)>,
+}
+
 /// A gun's firing episode: one act, its bursts.
 struct Episode {
     act: String,
@@ -836,8 +859,38 @@ impl Node {
         self.order.as_ref().map(|o| (o.id, o.spec.what))
     }
 
-    fn sensors(&self) -> Sensors {
+    /// Its sensors' reaches (its kind's; none listed: none).
+    pub fn sensors(&self) -> Sensors {
         self.kind.and_then(|k| k.sensors).unwrap_or_default()
+    }
+
+    /// Its contact's index among the movers.
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// Its catalog kind's entry, if the catalog lists it.
+    pub fn kind(&self) -> Option<&'static Kind> {
+        self.kind
+    }
+
+    /// Gone for good: spent as its own weapon (it leaves the scenario at the next tick), or
+    /// already left.
+    pub fn gone(&self) -> bool {
+        self.gone || self.expended
+    }
+
+    /// The order it runs as it stands (the contacts process's API reads it: `GET /nodes`).
+    pub fn running(&self) -> Option<RunningView<'_>> {
+        self.order.as_ref().map(|o| RunningView {
+            id: o.id,
+            spec: &o.spec,
+            since_s: o.since_s,
+            seen_s: o.seen_s,
+            last: o.last,
+            fired: o.fired,
+            status: o.status.as_ref().map(|(w, y)| (w.as_str(), y.as_deref())),
+        })
     }
 
     /// Its cruise and top speeds (its kind's; the steering halves them with its propulsion
@@ -1389,6 +1442,16 @@ impl Nodes {
 
     pub fn node(&self, id: &str) -> Option<&Node> {
         self.nodes.iter().find(|n| n.id == id)
+    }
+
+    /// Every node so far (a contact an order names becomes one when it takes it).
+    pub fn nodes(&self) -> &[Node] {
+        &self.nodes
+    }
+
+    /// The orders still to come, in the order they will be taken: each one's id and order.
+    pub fn pending(&self) -> impl Iterator<Item = (u64, &OrderSpec)> {
+        self.pending.iter().map(|p| (p.id, &p.spec))
     }
 
     /// An order to come (none `at_s`: at the next tick), checked by the caller ([`check`]); its

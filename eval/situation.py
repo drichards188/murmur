@@ -85,8 +85,9 @@ SCRIPTED_BADGE = {
 }
 
 # A situation's own port block by default (scripts/up.sh's variables override each): clear of
-# the default stack (14560+, 15560+, 8765, 8766, 5173, 8770), a second stack (24560+, 25560+,
-# 8865, 5273, 8866, 8870), the evaluation's blocks (UDP 35000-36999, HTTP 10600-10699) and the
+# the default stack (14560+, 15560+, 8765, 8766, 8767, 5173, 8770), a second stack (24560+,
+# 25560+, 8865, 5273, 8866, 8867, 8870), the evaluation's blocks (UDP 35000-36999, HTTP
+# 10600-10699) and the
 # host's ephemeral range (39160-43255 here as of 2026-10-08; it moves between boots), so its
 # fresh station never touches another station's restore or resume pointer. Its two UDP ranges
 # hold up to 1000 vehicles each (`port_problems` refuses a larger fleet on them): a larger
@@ -102,6 +103,8 @@ SITUATION_PORTS = {
     "MURMUR_WEB_PORT": "5673",
     "MURMUR_TIDEWATER_PORT": "9270",
     "MURMUR_SITL_INSTANCE_BASE": "160",
+    # the contacts process's own API (orders to its nodes: the timeline's `red` steps)
+    "MURMUR_CONTACTS_PORT": "9267",
 }
 
 # A situation may name its own port block (`[ports]`, each key one `scripts/up.sh` variable) in
@@ -120,6 +123,7 @@ PORT_KEYS = {
     "linkemu": "MURMUR_LINKEMU_PORT",
     "web": "MURMUR_WEB_PORT",
     "tidewater": "MURMUR_TIDEWATER_PORT",
+    "contacts": "MURMUR_CONTACTS_PORT",
     "sitl_instance_base": "MURMUR_SITL_INSTANCE_BASE",
     "link_host": "MURMUR_LINK_HOST",
 }
@@ -186,6 +190,25 @@ HEADLESS_STEP_KEYS = {
     "current": {"east_mps", "north_mps", "duration_s"},
 }
 STEP_KEYS.update(HEADLESS_STEP_KEYS)
+# An order to one of the contacts (docs/AUTONOMOUS-NODES.md 2.5, bd murmur-y85j.4): the runner
+# posts it to the contacts process's own API (`POST /orders`, never through the bridge) at the
+# step's second, as an order with no `at_s` (now), and records the answer. Its keys are a
+# contacts file's `[[order]]`'s: `node` (a contact id), `do` and the keys that kind of order takes
+# (RED_TAKES, crates/murmur-contacts `node::Do::takes`); the node then runs it by its catalog kind.
+# It is truth, so its panel line is the director's unless the step says `director = false`.
+# Fixed scripts belong in the contacts file; a red step is for an order that depends on the run.
+RED_TAKES = {
+    "transit": {"route", "speed_mps"},
+    "hold": {"at"},
+    "orbit": {"center", "radius_m", "speed_mps"},
+    "track": {"target", "standoff_m"},
+    "attack": {"target", "weapon", "rounds", "until_s", "stay"},
+    "break_off": set(),
+    "flee": {"from", "speed_mps"},
+    "resume": set(),
+}
+RED_NEEDS = {"transit": ("route",), "orbit": ("center", "radius_m"), "track": ("target", "standoff_m"), "attack": ("target",)}
+STEP_KEYS["red"] = {"node", "do", "label"} | set().union(*RED_TAKES.values())
 WATCH_KEYS = {"at_s", "text", "director", "headline", "bullets"}
 
 
@@ -340,11 +363,12 @@ def _order(i: int, raw: Any, sit: Path) -> Order:
     return Order(id=oid, task=str(task), vehicles=raw["vehicles"], params=params, note=str(raw.get("note", "")))
 
 
-def _steps(raw: list[Any], sit: Path, duration_s: float) -> list[Step]:
+def _steps(raw: list[Any], sit: Path, duration_s: float, contacts: Path | None = None) -> list[Step]:
     """The timeline: the storyline's steps (eval/storyline.py), checked as the evaluation
     checks them, each kind with its own keys only. A situation proposal carries no truth
     label, so the evaluation's `reason` may be left out; `text` (what the panel says when the
-    step is done) and `director` (shown only when revealed) are the situation's own."""
+    step is done) and `director` (shown only when revealed) are the situation's own. A `red`
+    step (an order to a contact, `_red_step`) is checked against the contacts file."""
     steps: list[Step] = []
     seen: set[str] = set()
     for i, s in enumerate(raw):
@@ -395,6 +419,11 @@ def _steps(raw: list[Any], sit: Path, duration_s: float) -> list[Step]:
             )
         if kind in HEADLESS_STEP_KEYS:
             _headless_step(sid, kind, s, sit)
+            steps.append(Step(id=sid, kind=kind, at_s=at_s, params=s))
+            continue
+        if kind == "red":
+            _red_step(sid, s, sit, contacts)
+            s.setdefault("director", True)
             steps.append(Step(id=sid, kind=kind, at_s=at_s, params=s))
             continue
         try:
@@ -452,6 +481,81 @@ def _headless_step(sid: str, kind: str, s: dict[str, Any], sit: Path) -> None:
     elif kind == "current":
         if num("east_mps", -10.0, 10.0) is None or num("north_mps", -10.0, 10.0) is None:
             raise SituationError(f"{sit}: step {sid!r}: a current step needs east_mps and north_mps")
+
+
+def _contact_ids(contacts: Path | None) -> set[str] | None:
+    """The contact ids of a contacts file (`[[contact]]` id), or None when it can't be read."""
+    if contacts is None:
+        return None
+    try:
+        raw = tomllib.loads(contacts.read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    return {str(c.get("id")) for c in raw.get("contact", []) if isinstance(c, dict)}
+
+
+def _red_step(sid: str, s: dict[str, Any], sit: Path, contacts: Path | None) -> None:
+    """A red step's order (RED_TAKES): a contact of the situation's contacts file, an order kind,
+    only the keys it takes and those it needs, each of its shape. What only the running contacts
+    process knows (the node still in play, its weapon, the vehicle in the fleet) is its answer,
+    recorded when the step runs."""
+    where = f"{sit}: step {sid!r}"
+    if contacts is None:
+        raise SituationError(f"{where}: a red step orders a contact, and the situation names no contacts file")
+    node, do = s.get("node"), s.get("do")
+    if not isinstance(node, str) or not node.strip():
+        raise SituationError(f"{where}: a red step needs node, a contact's id")
+    ids = _contact_ids(contacts)
+    if ids is not None and node not in ids:
+        raise SituationError(f"{where}: node {node!r} is no contact of {contacts.name}")
+    if do not in RED_TAKES:
+        raise SituationError(f"{where}: do is one of {sorted(RED_TAKES)}, not {do!r}")
+    stray = set(s) - {"node", "do", "label"} - STEP_COMMON - RED_TAKES[do]
+    if stray:
+        takes = ", ".join(sorted(RED_TAKES[do])) or "nothing"
+        raise SituationError(f"{where}: {do} takes {takes} (and label), not {sorted(stray)}")
+    missing = [k for k in RED_NEEDS.get(do, ()) if k not in s]
+    if missing:
+        raise SituationError(f"{where}: {do} needs {', '.join(missing)}")
+    for k in ("target", "from"):
+        if k not in s:
+            continue
+        t = s[k]
+        ok = isinstance(t, dict) and len(t) == 1 and (
+            (isinstance(t.get("vehicle"), int) and not isinstance(t.get("vehicle"), bool))
+            or (isinstance(t.get("contact"), str) and t["contact"].strip())
+        )
+        if not ok:
+            raise SituationError(f"{where}: {k} is {{ vehicle = <uid> }} or {{ contact = \"<id>\" }}")
+        if "contact" in t and ids is not None and (t["contact"] not in ids or t["contact"] == node):
+            raise SituationError(f"{where}: {k} contact {t['contact']!r} is no other contact of {contacts.name}")
+    if "route" in s and not (isinstance(s["route"], list) and s["route"] and all(_lonlat(p) for p in s["route"])):
+        raise SituationError(f"{where}: route is [[lon, lat], ...]")
+    for k in ("at", "center"):
+        if k in s and not _lonlat(s[k]):
+            raise SituationError(f"{where}: {k} is [lon, lat]")
+    for k in ("radius_m", "standoff_m", "speed_mps"):
+        if k in s and not _num(s[k], f"step {sid!r}: {k}", sit) > 0:
+            raise SituationError(f"{where}: {k} is above 0")
+    if "rounds" in s and not (isinstance(s["rounds"], int) and not isinstance(s["rounds"], bool) and s["rounds"] >= 1):
+        raise SituationError(f"{where}: rounds is a whole number from 1")
+    if "until_s" in s:
+        _num(s["until_s"], f"step {sid!r}: until_s", sit)
+    if "stay" in s and not isinstance(s["stay"], bool):
+        raise SituationError(f"{where}: stay is true or false")
+    if "label" in s and not isinstance(s["label"], str):
+        raise SituationError(f"{where}: label is text")
+
+
+def red_order(step: Step) -> dict[str, Any]:
+    """The order a red step posts to the contacts process (`POST /orders`): its order's keys, no
+    `at_s` (now, on the contacts' clock)."""
+    return {k: v for k, v in step.params.items() if k not in STEP_COMMON}
+
+
+def red_steps(sit: Situation) -> list[Step]:
+    """The timeline's orders to the contacts, which the runner posts itself (not the storyline)."""
+    return [s for s in sit.steps if s.kind == "red"]
 
 
 def headless_steps(sit: Situation) -> list[Step]:
@@ -625,7 +729,7 @@ def load_situation(path_or_name: str | Path) -> Situation:
     steps = raw.get("step", [])
     if not isinstance(steps, list):
         raise SituationError(f"{path}: [[step]] is a list of tables")
-    sit.steps = _steps(steps, path, sit.duration_s)
+    sit.steps = _steps(steps, path, sit.duration_s, sit.contacts)
     watch = raw.get("watch", [])
     if not isinstance(watch, list):
         raise SituationError(f"{path}: [[watch]] is a list of tables")
@@ -854,6 +958,16 @@ def step_text(rec: dict[str, Any], step: Step | None) -> str:
         detail = f"{what} on {', '.join(str(c) for c in rec.get('callsigns') or [])}"
     elif kind == "declare":
         detail = f"{rec.get('operator')} declared {(rec.get('target') or {}).get('track_id')} {rec.get('affiliation')}"
+    elif kind == "red":
+        order = rec.get("order") or {}
+        answer = rec.get("answer") if isinstance(rec.get("answer"), dict) else {}
+        if answer.get("accepted"):
+            said = f"order {answer.get('id')} accepted"
+        elif answer.get("refused"):
+            said = f"refused ({answer.get('code')}): {answer.get('refused')}"
+        else:
+            said = str(rec.get("error") or f"answered {rec.get('status')}: {rec.get('answer')}")
+        detail = f"{order.get('node')} ordered to {order.get('do')}: {said}"
     elif kind == "skipped":
         detail = f"step {rec.get('step')} skipped: {rec.get('reason')}"
     elif kind == "error":
@@ -1091,6 +1205,7 @@ def stack_ports(env: dict[str, str], sit: Situation | None = None) -> dict[str, 
         "web": int(env["MURMUR_WEB_PORT"]),
         "linkemu": int(env["MURMUR_LINKEMU_PORT"]),
         "tidewater": int(env["MURMUR_TIDEWATER_PORT"]),
+        "contacts": int(env["MURMUR_CONTACTS_PORT"]),
         "sitl_instance_base": int(env["MURMUR_SITL_INSTANCE_BASE"]),
     }
     if (env.get("MURMUR_STANDIN_SRC_BASE") or "").strip():
@@ -1181,8 +1296,9 @@ def port_problems(ports: dict[str, int], vehicles: int, sitl: int, root: Path = 
         ("web", "MURMUR_WEB_PORT"),
         ("linkemu", "MURMUR_LINKEMU_PORT"),
         ("tidewater", "MURMUR_TIDEWATER_PORT"),
+        ("contacts", "MURMUR_CONTACTS_PORT"),
     ):
-        if key not in skip and tcp_answers(ports[key]):
+        if key in ports and key not in skip and tcp_answers(ports[key]):
             out.append(f"something answers on {var}={ports[key]}")
     for key, var in UDP_RANGES:
         if key not in ports:

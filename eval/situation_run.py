@@ -25,7 +25,9 @@
    agents/README.md, "In a situation: the launch contract"), the autoplay operator
    (`eval/proxy.py`'s `ProxyOperator` as op-auto with `EngagementSigners` op-2 and op-3, all
    scripted) or the scripted cosigner, and the timeline (`eval/storyline.py`; its proposals
-   and declarations say they are a script's).
+   and declarations say they are a script's). Its `red` steps, orders to the contacts, go to
+   the contacts process's own API (`RedSteps`: `POST /orders` with the stack's simulation
+   token, which the runner made and gives only to up.sh; never through the bridge).
 6. Every 2 s posts the status document to the bridge (`POST /api/sim/situation`, display
    only) for the console's Situation panel, and writes everything it did to
    `logs/situations/<run id>/situation.jsonl`.
@@ -38,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import datetime as dt
 import json
 import logging
@@ -88,6 +91,8 @@ from .situation import (
     load_situation,
     playbook_json,
     merge_events,
+    red_order,
+    red_steps,
     pointer_names_situation,
     pointer_problems,
     port_problems,
@@ -408,6 +413,67 @@ class ScriptedOperatorProposer(HumanProposer):
         return await super().withdraw(id, labelled(self.label, reason))
 
 
+class RedSteps:
+    """The timeline's orders to the contacts (`red` steps, docs/AUTONOMOUS-NODES.md 2.5): each
+    posted at its second (`zero + at_s`, on its own task) to the contacts process's own API,
+    `POST /orders` with the stack's simulation token (never through the bridge), as an order
+    with no `at_s` (now, at the contacts' next tick). Each answer (`{id, accepted}` or
+    `{refused, code}`, or why it never got one) goes to `record` (situation.jsonl) and `entry`
+    (the panel's line, the director's unless the step says otherwise). A connection refused is
+    tried again for `retry_s` (the contacts process starts after the bridge); an answer is final."""
+
+    def __init__(self, steps: list[Any], url: str, token: str, zero: float, record: Any, entry: Any, retry_s: float = 15.0):
+        self.steps = steps
+        self.url = url.rstrip("/")
+        self.token = token
+        self.zero = zero
+        self.record = record
+        self.entry = entry
+        self.retry_s = retry_s
+
+    async def run(self, stop: asyncio.Event) -> None:
+        await asyncio.gather(*(self._at(s, stop) for s in self.steps))
+
+    async def _at(self, step: Any, stop: asyncio.Event) -> None:
+        due = self.zero + step.at_s
+        while not stop.is_set() and time.time() < due:
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=min(1.0, max(0.0, due - time.time())))
+            except asyncio.TimeoutError:
+                pass
+        if stop.is_set():
+            return
+        order = red_order(step)
+        t = time.time()
+        out = await asyncio.to_thread(self.post, order)
+        rec = {"kind": "red", "step": step.id, "t_rel": round(t - self.zero, 1), "order": order, **out}
+        self.record(rec)
+        self.entry(step, rec)
+
+    def post(self, order: dict[str, Any]) -> dict[str, Any]:
+        """One order to the contacts process: `{"status", "answer"}`, or `{"error"}` when none came."""
+        data = json.dumps(order).encode()
+        deadline = time.monotonic() + self.retry_s
+        while True:
+            req = urllib.request.Request(
+                self.url + "/orders", method="POST", data=data,
+                headers={"Content-Type": "application/json", SIM_TOKEN_HEADER: self.token},
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    return {"status": r.status, "answer": json.loads(r.read() or b"null")}
+            except urllib.error.HTTPError as e:
+                try:
+                    body = json.loads(e.read() or b"null")
+                except ValueError:
+                    body = None
+                return {"status": e.code, "answer": body}
+            except (urllib.error.URLError, OSError, ValueError) as e:
+                if time.monotonic() >= deadline:
+                    return {"error": f"the contacts API did not answer: {e}"}
+                time.sleep(1.0)
+
+
 class TimelineBridge(Bridge):
     """The bridge as the timeline uses it: a declaration's note says it is a script's."""
 
@@ -468,6 +534,8 @@ class Runner:
         self.bridge_url = f"http://127.0.0.1:{self.ports['http']}"
         self.bridge = Bridge(self.bridge_url)
         self.emu_url = f"http://127.0.0.1:{self.ports['linkemu']}"
+        # the contacts process's own API (red steps go there, with self.token)
+        self.contacts_url = f"http://127.0.0.1:{self.ports['contacts']}"
         self.linkemu = (self.env.get("MURMUR_LINKEMU") or "1").lower() not in ("0", "off", "false", "no")
         self.steps = {s.id: s for s in sit.steps}
         self.done_steps: set[str] = set()
@@ -1027,16 +1095,18 @@ class Runner:
         return None
 
     def storyline(self) -> tuple[Storyline | None, Any]:
-        if not self.sit.steps:
+        # the red steps are the runner's own (`red_steps`): the storyline never sees them
+        steps = [s for s in self.sit.steps if s.kind != "red"]
+        if not steps:
             return None, None
-        kinds = {s.kind for s in self.sit.steps}
+        kinds = {s.kind for s in steps}
         proposer: Any
         if self.sit.storyline_proposer == "operator":
             proposer = ScriptedOperatorProposer(self.bridge, STORYLINE_OPERATOR, SCRIPTED_TIMELINE, self.scripted_ids, alarm=self.problem)
         else:
             proposer = FreshAgentProposer(f"{self.bridge_url}/mcp", agent=STORYLINE_AGENT, label=SCRIPTED_TIMELINE)
         story = Storyline(
-            self.sit,  # type: ignore[arg-type]  (a Situation has the spec's steps)
+            dataclasses.replace(self.sit, steps=steps),  # type: ignore[arg-type]  (a Situation has the spec's steps)
             TimelineBridge(self.bridge_url),
             proposer,
             World(self.bridge, self.out),
@@ -1050,6 +1120,17 @@ class Runner:
         )
         needs_proposer = bool(kinds & {"propose", "flood", "engage"})
         return story, (proposer if needs_proposer else None)
+
+    def red(self) -> RedSteps | None:
+        """The timeline's orders to the contacts, posted by the runner itself."""
+        steps = red_steps(self.sit)
+        if not steps:
+            return None
+        return RedSteps(steps, self.contacts_url, self.token, self.zero or time.time(), lambda rec: self.record("step", **rec), self.red_entry)
+
+    def red_entry(self, step: Any, rec: dict[str, Any]) -> None:
+        self.done_steps.add(step.id)
+        self.entry("step", step_text(rec, step), director=bool(step.params.get("director", True)), step=step.id, kind_detail="red")
 
     # ---- the run -----------------------------------------------------------------------------
 
@@ -1090,6 +1171,9 @@ class Runner:
             story, _ = self.storyline()
             if story is not None:
                 tasks.append(self.watch_task("the timeline", story.run(story_stop)))
+            red = self.red()
+            if red is not None:
+                tasks.append(self.watch_task("the timeline's orders to the contacts", red.run(story_stop)))
             say(f"running: console http://127.0.0.1:{self.ports['web']} (Situation panel), {self.sit.duration_s:.0f} s of situation time from the stack's start")
             assert self.zero is not None
             end = self.zero + self.sit.duration_s
@@ -1223,7 +1307,7 @@ class Runner:
         lines.append(f"  timeline: {len(steps)} step records, {len(self.done_steps)} of {len(self.sit.steps)} steps run")
         for e in steps:
             s = self.steps.get(str(e.get("step")))
-            if s is not None and s.kind == "engage":
+            if s is not None and s.kind in ("engage", "red"):
                 lines.append(f"    step {s.id} at {e['t_s']:.0f} s: {e['text'][:300]}")
         alarms = [p for p in self.problems if p.startswith("SCRIPT AUTHORIZED")]
         if alarms:

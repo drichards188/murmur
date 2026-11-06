@@ -603,6 +603,12 @@ class Stack:
                 MURMUR_CONTACTS_SEED=str(self.seed),
                 MURMUR_CONTACTS_HZ="1",
                 MURMUR_SIM_TOKEN=self.sim_token,
+                # its own API (orders to its nodes) on the block's port, vehicles checked
+                # against this run's fleet
+                MURMUR_CONTACTS_PORT=str(self.block.contacts),
+                MURMUR_FLEET_MANIFEST=str(self.fleet_json),
+                # the bridge's model, so the API refuses an attack as a file's orders are
+                MURMUR_SENSE_MODEL="legacy",
             ),
         )
         t0 = time.monotonic()

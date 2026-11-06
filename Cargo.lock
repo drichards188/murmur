@@ -1446,14 +1446,18 @@ dependencies = [
 name = "murmur-contacts"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "flate2",
  "murmur-standins",
  "murmur-weather",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "subtle",
  "tokio",
  "toml",
+ "tower",
 ]
 
 [[package]]

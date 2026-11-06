@@ -1,12 +1,13 @@
 """Port blocks for isolated stacks, reserved with lock files.
 
 Each stack takes one block: 100 vehicle UDP ports, 100 bridge UDP ports, one HTTP port for
-the bridge, one for the link emulator's stats, one for the console (study mode only).
+the bridge, one for the link emulator's stats, one for the console (study mode only), one for
+the contacts process's own API (orders to its nodes, crates/murmur-contacts src/api.rs).
 Ranges: vehicle bases 35000-35999, bridge bases 36000-36999 (inside the 35000-38999 the
 evaluation was given); bridge HTTP 10600-10609, link emulator stats 10620-10629, console
-10640-10649; a batch's own `tidewater serve` on one of 10690-10699 (all inside 10600-10699,
-the evaluation's HTTP range). Clear of the default stack (14560+, 15560+, 8765, 8766,
-5173, 8770).
+10640-10649, contacts API 10660-10669; a batch's own `tidewater serve` on one of 10690-10699
+(all inside 10600-10699, the evaluation's HTTP range). Clear of the default stack (14560+,
+15560+, 8765, 8766, 8767, 5173, 8770).
 
 A block is handed out only when (1) its lock file can be locked (`flock`, exclusive, held
 for the run's life, so two batches, or a batch and a single run, never share a block), (2)
@@ -33,6 +34,7 @@ MAX_BLOCKS = 10
 HTTP_BASE = 10600
 EMU_BASE = 10620
 WEB_BASE = 10640
+CONTACTS_BASE = 10660
 TIDEWATER_PORTS = range(10690, 10700)
 LOCK_DIR = Path(os.environ.get("MURMUR_EVAL_LOCK_DIR", "/tmp/murmur-eval-locks"))
 
@@ -61,6 +63,10 @@ class PortBlock:
     def web(self) -> int:
         return WEB_BASE + self.index
 
+    @property
+    def contacts(self) -> int:
+        return CONTACTS_BASE + self.index
+
     def udp_ports(self) -> range:
         return range(self.vehicle_base, self.vehicle_base + BLOCK)
 
@@ -68,7 +74,7 @@ class PortBlock:
         return range(self.bridge_base, self.bridge_base + BLOCK)
 
     def tcp_ports(self) -> tuple[int, ...]:
-        return (self.http, self.emu, self.web)
+        return (self.http, self.emu, self.web, self.contacts)
 
     def as_dict(self) -> dict[str, int]:
         return {
@@ -78,6 +84,7 @@ class PortBlock:
             "http": self.http,
             "emu": self.emu,
             "web": self.web,
+            "contacts": self.contacts,
         }
 
 
