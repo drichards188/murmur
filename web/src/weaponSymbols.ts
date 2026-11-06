@@ -36,11 +36,19 @@ export const WEAPON_COLORS: Record<WeaponAffiliation, { main: string; deep: stri
   unknown: { main: '#ffff80', deep: '#857a00', rgba: [255, 255, 128, 255], pale: [255, 255, 200, 255] },
 }
 
+/** the threat library's classes that fly as a missile does (the bridge's `physical::weapon`
+ *  kinds, docs/OPPONENT-WEAPONS.md section 15): an ATGM, an air-launched missile and an unguided
+ *  rocket share the missile's silhouette (at map scale a rocket's lack of control fins is not
+ *  worth a shape of its own; its label names the class) */
+const MISSILE_LIKE = ['atgm', 'air_missile', 'rocket']
+
 /** the symbol kind for a catalog weapon kind ("missile", "bomb", "torpedo", "gun", "self",
- *  "mine"...): the four that fly as themselves; anything else (and nothing reported) is a weapon
- *  of a kind not known */
+ *  "mine"...) or a threat-library class's kind ("atgm", "air_missile", "rocket": a missile): the
+ *  four that fly as themselves; anything else (and nothing reported) is a weapon of a kind not
+ *  known */
 export function weaponSymbolKind(kind: string | null | undefined): WeaponSymbolKind {
   const k = (kind ?? '').trim().toLowerCase()
+  if (MISSILE_LIKE.includes(k)) return 'missile'
   return k === 'missile' || k === 'bomb' || k === 'torpedo' || k === 'gun' ? k : 'unknown'
 }
 

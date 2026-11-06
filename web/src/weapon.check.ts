@@ -132,6 +132,30 @@ check(
 )
 check(estimate(classed, null) === null && estimate({ ...classed, eta_t: null }, hunter) === null, 'nor without the victim or a strike time')
 check(weaponShort('ATGM-class') === 'ATGM' && weaponShort(null) === 'WEAPON', 'short names')
+// every class of the threat library (section 15): its short name, and a gun's burst told by its
+// muzzle flash, classed at its launch, aimed by its reach
+check(
+  weaponShort('Air missile-class') === 'AIR MISSILE' && weaponShort('Rocket-class') === 'ROCKET' && weaponShort('Gun-class') === 'GUN' && weaponShort('Torpedo-class') === 'TORPEDO',
+  'every class short',
+)
+const burst: WeaponTrack = {
+  ...seen,
+  id: 'W-5',
+  stage: 'class',
+  class: 'Gun-class',
+  class_symbol: 'gun',
+  evidence: [
+    { basis: 'launch', short: 'muzzle flash', text: '1:eo_ir told it as gunfire, a muzzle flash and no plume' },
+    { basis: 'shooter', short: 'from T-0004', text: 'launched from T-0004' },
+  ],
+  launch: { ...seen.launch!, look: 'muzzle' },
+  aimed_at: '1',
+  aim_basis: 'reach',
+  eta_t: T0 + 80_000 + 1250,
+  nominal_mps: 800,
+}
+check(classText(burst) === 'Gun-class: muzzle flash, from T-0004', classText(burst)!)
+check(estimate(burst, hunter) != null && estimateMapLabel(estimate(burst, hunter)!, burst, T0 + 80_000) === 'EST. GUN · 1.3 s', estimateMapLabel(estimate(burst, hunter)!, burst, T0 + 80_000))
 const inc = weaponBanner([classed], T0 + 82_000, nameOf, at)!
 check(
   inc.text === 'ATGM-class: 250 m/s, from T-0004 at HUNTER 1, strike expected in 2.0 s · seen by HUNTER 1 EO/IR · fixed by REAPER 1 radar',

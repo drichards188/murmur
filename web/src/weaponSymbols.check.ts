@@ -13,6 +13,8 @@ check(weaponSymbolKind('missile') === 'missile', 'missile')
 check(weaponSymbolKind('Torpedo') === 'torpedo', 'case')
 check(weaponSymbolKind('bomb') === 'bomb' && weaponSymbolKind('gun') === 'gun', 'bomb, gun')
 check(weaponSymbolKind('self') === 'unknown' && weaponSymbolKind('mine') === 'unknown', 'self, mine')
+// the threat library's classes (the weapon picture's `class_symbol` is already one of the four)
+check(weaponSymbolKind('atgm') === 'missile' && weaponSymbolKind('air_missile') === 'missile' && weaponSymbolKind('Rocket') === 'missile', 'atgm, air missile, rocket fly as missiles')
 check(weaponSymbolKind(undefined) === 'unknown' && weaponSymbolKind(null) === 'unknown' && weaponSymbolKind('') === 'unknown', 'none')
 
 // every variant: its own id, a drawing of its own, the contract's shape; the same object again

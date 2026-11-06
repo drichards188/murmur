@@ -2,12 +2,16 @@
 // weapon picture (the tracks feed's `weapons`), never from the simulator's truth, and only as far as
 // its identity has come (bd murmur-ju1h; the stages are the bridge's, tracks/weapons.rs):
 //
-// - **launch**: a camera saw a launch's flash: a marker where it placed the shooter and the bearing
-//   from the observer that saw it. No class, no speed, no target.
+// - **launch**: a camera saw a launch's flash (or a sonar heard a torpedo's launch transient): a
+//   marker where it placed the shooter and the bearing from the observer that caught it, and, when
+//   told, what kind of launch it was (a missile's, a rocket's, a gun's muzzle flash, a transient).
+//   No class, no speed, no target. A gun's burst is a launch of its own.
 // - **weapon**: fixes whose measured speed and origin (or line closing on one of ours) say weapon:
 //   a hostile weapon symbol of unknown kind ("weapon, type unknown") with its measured speed. A fast
 //   aircraft running at one of ours can be taken for one (`track` names its contact track).
-// - **class**: a class assessed on named evidence: "ATGM-class: 250 m/s, from T-0004".
+// - **class**: a class assessed on named evidence: "ATGM-class: 250 m/s, missile launch, from
+//   T-0004", "Gun-class: muzzle flash"; its symbol is the bridge's `class_symbol` (missile for the
+//   ATGM, rocket and air-launched classes, gun, torpedo).
 // - the exact type is never shown: nothing modelled can tell it.
 //
 // The estimated flight is drawn only on a basis: a target and expected strike the bridge derived
@@ -26,7 +30,13 @@ export interface WeaponFix {
   sigma_m: number
   /** `"<uid>:<sensor>"` */
   sensor: string
+  /** the height a height-finding radar measured, m (null from any other sensor) */
+  alt_m?: number | null
 }
+
+/** what kind of launch the sensor that caught it told it as: a missile's, a rocket's, a gun's
+ *  muzzle flash, a torpedo's launch transient */
+export type LaunchLook = 'missile' | 'rocket' | 'muzzle' | 'transient'
 
 export interface WeaponLaunch {
   /** when it was reported (the act report's time) */
@@ -41,6 +51,8 @@ export interface WeaponLaunch {
   observer: { uid: string; point: LngLat } | null
   /** from that observer to the launch, degrees true */
   bearing_deg: number | null
+  /** what kind of launch it was, when told (null: a launch, no more) */
+  look?: LaunchLook | null
 }
 
 /** How far a weapon's identity has come: a lone fix (not called a weapon), a seen launch, a weapon by
@@ -49,7 +61,7 @@ export type WeaponStage = 'plot' | 'launch' | 'weapon' | 'class'
 
 /** One piece of a class's evidence: its basis, a short form for labels, a sentence. */
 export interface WeaponEvidence {
-  basis: 'speed' | 'height' | 'reach' | 'shooter'
+  basis: 'speed' | 'height' | 'launch' | 'reach' | 'shooter'
   short: string
   text: string
 }
@@ -60,15 +72,17 @@ export interface WeaponTrack {
   /** the act report the seen launch became (`A-3`) */
   report: string | null
   stage: WeaponStage
-  /** the class assessed (the threat library's name, "ATGM-class"); null below the class stage */
+  /** the class assessed (the threat library's name: "ATGM-class", "Rocket-class", "Air
+   *  missile-class", "Gun-class", "Torpedo-class"); null below the class stage */
   class: string | null
   /** its symbol kind (weaponSymbols.ts: missile, bomb, torpedo, gun) */
   class_symbol: string | null
   /** what the class rests on, each named */
   evidence: WeaponEvidence[]
-  /** why it was taken for a weapon: its measured speed over its domain's threshold, from a seen
+  /** why it was taken for a weapon: its measured speed over the threshold of the domain it was
+   *  judged in (under water, in the air at a measured height, else at the surface), from a seen
    *  launch or closing on one of ours */
-  weapon_by: { speed_mps: number; over_mps: number; from_launch: boolean; closing_on: string | null } | null
+  weapon_by: { speed_mps: number; over_mps: number; domain?: 'air' | 'surface' | 'subsurface' | 'ground'; from_launch: boolean; closing_on: string | null } | null
   /** its measured speed and that speed's 1-sigma, m/s; velocity east and north; where and when the
    *  measured line puts it (null without two points in time) */
   speed_mps: number | null
@@ -106,9 +120,9 @@ export const STRIKE_FLASH_MS = 1500
 /** a measured velocity with no target is drawn this far ahead of its last point, ms */
 export const HEADING_AHEAD_MS = 3000
 
-/** "ATGM-class" -> "ATGM"; no class, "WEAPON" */
+/** "ATGM-class" -> "ATGM", "Air missile-class" -> "AIR MISSILE"; no class, "WEAPON" */
 export function weaponShort(name: string | null): string {
-  return name ? (name.trim().split(/[\s-]/)[0] || name).toUpperCase() : 'WEAPON'
+  return name ? (name.trim().replace(/-class$/i, '') || name).toUpperCase() : 'WEAPON'
 }
 
 /** "ATGM-class: 250 m/s, from T-0004" (the class with its evidence); null below the class stage */
