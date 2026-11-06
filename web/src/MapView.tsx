@@ -13,8 +13,8 @@ import { BRIDGE_FILTER, bridgeLifter, type LiftedBridge } from './bridges'
 import { bridgeDeckLayer, build3dGlide, build3dStatic, drawnHeight, DEM_TILES, HEIGHT_EXAGGERATION, z } from './map3d'
 import { declutter } from './declutter'
 import { advanceDrawn, drawnAlt, drawnPosition, drawnPositionOf, drawnTick, glidingCount, isGliding, noteAltitudes, observeVehicles, resetDrawn, setSmoothing, snapAllDrawn } from './drawn'
-import { LAUNCH_FLASH_MS, munitionShown } from './munition'
-import { buildMunitionLayers } from './munitionLayers'
+import { burstShown, LAUNCH_FLASH_MS, munitionShown, type BurstFire, type MunitionFlight } from './munition'
+import { buildMunitionLayers, buildTracerLayers, type Tracer } from './munitionLayers'
 import { buildActLayers } from './actLayers'
 import { buildWeaponLayers, weaponsAnimating } from './weaponLayers'
 import { shownWeapons, type WeaponTrack } from './weapon'
@@ -52,6 +52,15 @@ export interface Draft {
   from?: LngLat | null
 }
 
+/** a gun's last reported burst and where it goes (bd murmur-ma92): the firing platform by uid (drawn
+ *  where the map draws it) and the target track's fix, [lon, lat] and metres above mean sea level */
+export interface TracerSpec {
+  fire: BurstFire
+  uid: number
+  to: LngLat
+  toAlt: number
+}
+
 interface Props {
   vehicles: Vehicle[]
   hiddenUids?: ReadonlySet<number>
@@ -60,8 +69,10 @@ interface Props {
   /** the console's clock (the bridge's, as `impactNowMs` is): where a munition in flight is drawn
    *  on each animation frame (munitionLayers.ts) and when its strike starts */
   bridgeNow?: () => number
-  /** platforms that are their own munition, on their way: tagged (vehicleLayers.ts) */
-  oneWay?: ReadonlySet<number>
+  /** platforms that are their own munition, on their way, each with its tag (vehicleLayers.ts) */
+  oneWay?: ReadonlyMap<number, string>
+  /** gun bursts the bridge reported (rules 26), drawn as tracers on the clock of `bridgeNow` */
+  tracers?: TracerSpec[]
   /** hostile acts our sensors observed (hostileAct.ts), drawn as fire events on the clock of
    *  `bridgeNow`; those started at or before `actsDismissedAt` are no longer drawn */
   acts?: ActDrawing[]
@@ -131,6 +142,7 @@ const START: LngLat = [-117.2, 32.703]
 type FC = GeoJSON.FeatureCollection
 const empty: FC = { type: 'FeatureCollection', features: [] }
 const noImpacts: ImpactEvent[] = []
+const noTracers: TracerSpec[] = []
 const noActs: ActDrawing[] = []
 const noWeapons: WeaponTrack[] = []
 const noVictim = (): LngLat | null => null
@@ -309,7 +321,7 @@ function surfacePoint(m: maplibregl.Map, e: maplibregl.MapMouseEvent): LngLat {
   return water ? [water.lng, water.lat] : [ground.lng, ground.lat]
 }
 
-export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, bridgeNow, oneWay, acts = noActs, actsDismissedAt = null, weapons = noWeapons, weaponVictim = noVictim, nameOf = noName, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, weather = null, reach = null, linkRoute = null }: Props) {
+export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, bridgeNow, oneWay, tracers = noTracers, acts = noActs, actsDismissedAt = null, weapons = noWeapons, weaponVictim = noVictim, nameOf = noName, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, weather = null, reach = null, linkRoute = null }: Props) {
   const vehicles = useMemo(() => hiddenUids?.size ? allVehicles.filter((v) => !hiddenUids.has(v.uid)) : allVehicles, [allVehicles, hiddenUids])
   // the top view (pitch 0, looking straight down) and the pitch to tilt back to from it
   const [top, setTop] = useState(false)
@@ -384,6 +396,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   const syncedAt = useRef(0)
   // munitions were drawn in the last layers built
   const munitionsDrawn = useRef(false)
+  const tracersRef = useRef(tracers)
   // the observed acts, the last dismissal, and whether any was drawn in the last layers built
   const actsRef = useRef(acts)
   const actsDismissed = useRef(actsDismissedAt)
@@ -521,19 +534,30 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   }
 
   /** the munitions in flight, or flashing at their launch, at `t` (the bridge's clock) */
-  const munitionsAt = (t: number) => impactsRef.current.flatMap((i) => (i.munition && munitionShown(i.munition, t) ? [i.munition] : []))
+  const munitionsAt = (t: number): MunitionFlight[] =>
+    impactsRef.current.flatMap((i) => (i.munition && munitionShown(i.munition, t) ? [{ m: i.munition, kind: i.kind, launcher: i.platform, target: i.track }] : []))
+  /** the gun bursts to draw at `t`, with the platform's drawn place and the target's fix */
+  const tracersAt = (t: number): Tracer[] =>
+    tracersRef.current.flatMap((s) => {
+      if (!burstShown(s.fire, t)) return []
+      const v = latest.current.vehicles.find((x) => x.uid === s.uid)
+      const p = v?.position ? drawnPosition(v) : null
+      if (!v || !p) return []
+      return [{ fire: s.fire, from: [p[0], p[1], z(drawnAlt(v))], to: [s.to[0], s.to[1], z(s.toAlt)] }]
+    })
   /** Animation frames are wanted for a munition: one is in flight or flashing at its launch, or
    *  is to be launched within a second. Never with reduced motion (the console's tick steps it). */
   const munitionsFlying = () => {
     const t = clockRef.current?.()
     if (t == null || reducedNow) return false
-    return impactsRef.current.some(({ munition: m }) => m && t >= m.launch_t - 1000 && (t < m.impact_t || t < m.launch_t + LAUNCH_FLASH_MS))
+    return impactsRef.current.some(({ munition: m }) => m && t >= m.launch_t - 1000 && (t < m.impact_t || t < m.launch_t + LAUNCH_FLASH_MS)) || tracersRef.current.some((s) => burstShown(s.fire, t))
   }
   const munitionLayers = (): LayersList => {
     const t = clockRef.current?.()
     const live = t == null ? [] : munitionsAt(t)
-    munitionsDrawn.current = live.length > 0
-    return live.length ? buildMunitionLayers(live, t!, screenNow(), reducedNow) : []
+    const bursts = t == null ? [] : tracersAt(t)
+    munitionsDrawn.current = live.length > 0 || bursts.length > 0
+    return [...(live.length ? buildMunitionLayers(live, t!, screenNow(), reducedNow) : []), ...(bursts.length ? buildTracerLayers(bursts, t!, reducedNow) : [])]
   }
   /** the observed acts drawn at `t` (hostileAct.ts visibleActs) */
   const actsAt = (t: number) => visibleActs(actsRef.current, t, actsDismissed.current)
@@ -1122,6 +1146,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   }
   useEffect(() => {
     impactsRef.current = impacts
+    tracersRef.current = tracers
     actsRef.current = acts
     actsDismissed.current = actsDismissedAt
     weaponsRef.current = weapons
@@ -1136,7 +1161,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     else if (overlay.current && (munitionsDrawn.current || actsDrawn.current || weaponsDrawn.current || actsAt(impactNowMs).length || weaponsAt(impactNowMs).length || (reducedNow && munitionsAt(impactNowMs).length))) overlay.current.setProps({ layers: deckLayers(true) })
     // syncImpacts, wakeGlide and deckLayers read refs only
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [impacts, acts, actsDismissedAt, weapons, weaponVictim, nameOf, impactNowMs, bridgeNow, styleGen, mapGen])
+  }, [impacts, tracers, acts, actsDismissedAt, weapons, weaponVictim, nameOf, impactNowMs, bridgeNow, styleGen, mapGen])
 
   // the smooth toggle: remembered, and every vehicle is drawn as reported until its next report
   useEffect(() => {

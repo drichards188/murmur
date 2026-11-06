@@ -12,7 +12,8 @@
 //                     label left of it: only for the decluttered labelled set (declutter.ts),
 //                     which is bounded by the screen, not the fleet
 //   vehicle-lost      "LOST 12s" under vehicles whose link is stale
-//   vehicle-oneway    "ONE-WAY MUNITION" over a platform that is its own munition, on its way
+//   vehicle-oneway    "ONE-WAY > T-12" ("STRIKING > T-12" from its release) over a platform that is its
+//                     own munition, on its way
 //                     to its engagement's effect (bd murmur-64z)
 //   vehicle-aloft     "▲ HAWK 1 · 18000 m" at the foot of the stem of one drawn above the view
 //                     (aloft.ts), its selection ring there too
@@ -37,8 +38,9 @@ const OUTLINE: RGBA = [11, 15, 20, 255]
 const ACCENT: RGBA = [255, 179, 71, 255]
 const ACCENT_HALO: RGBA = [255, 179, 71, 46]
 const BAD: RGBA = [255, 93, 93, 255]
-/** the munitions' orange (munitionLayers.ts), deep enough for white text */
-const MUNITION: RGBA = [196, 84, 18, 240]
+/** a platform that is its own munition is ours: the friendly blue (weaponSymbols.ts), deep enough
+ *  for white text */
+const MUNITION: RGBA = [11, 100, 140, 240]
 const WHITE: RGBA = [255, 255, 255, 255]
 const OPAQUE: RGBA = [255, 255, 255, 255]
 const FADED: RGBA = [255, 255, 255, 140]
@@ -77,7 +79,7 @@ export interface VehicleLayerInput {
   aloft: Map<number, number>
   /** platforms that are their own munition (catalog `expended_by_effect`) and whose engagement is
    *  dispatched: tagged, so the operator sees what is on the way */
-  oneWay?: ReadonlySet<number>
+  oneWay?: ReadonlyMap<number, string>
 }
 
 interface Parts {
@@ -87,16 +89,18 @@ interface Parts {
   lost: Vehicle[]
   aloft: Vehicle[]
   oneWay: Vehicle[]
+  /** each one's tag, by uid */
+  oneWayTags: ReadonlyMap<number, string>
 }
 
 // The partition is rebuilt only when its inputs change, so that the animation frames of a
 // glide (same vehicles, new drawn positions) hand deck.gl the same data arrays and only
 // getPosition is recomputed, not every attribute.
-let memo: { vehicles: Vehicle[]; selected: Set<number>; bare: Set<number>; aloft: Map<number, number>; oneWay?: ReadonlySet<number>; parts: Parts } | null = null
+let memo: { vehicles: Vehicle[]; selected: Set<number>; bare: Set<number>; aloft: Map<number, number>; oneWay?: ReadonlyMap<number, string>; parts: Parts } | null = null
 
 function partition({ vehicles, selected, bare, aloft, oneWay }: VehicleLayerInput): Parts {
   if (memo && memo.vehicles === vehicles && memo.selected === selected && memo.bare === bare && memo.aloft === aloft && memo.oneWay === oneWay) return memo.parts
-  const parts: Parts = { placed: [], labelled: [], ringed: [], lost: [], aloft: [], oneWay: [] }
+  const parts: Parts = { placed: [], labelled: [], ringed: [], lost: [], aloft: [], oneWay: [], oneWayTags: oneWay ?? new Map() }
   for (const v of vehicles) {
     // no position, nowhere to draw it (the fleet list still shows it); no altitude is no reason
     if (!v.position) continue
@@ -112,7 +116,7 @@ function partition({ vehicles, selected, bare, aloft, oneWay }: VehicleLayerInpu
 }
 
 export function buildVehicleLayers(input: VehicleLayerInput) {
-  const { placed, labelled, ringed, lost, aloft, oneWay } = partition(input)
+  const { placed, labelled, ringed, lost, aloft, oneWay, oneWayTags } = partition(input)
   // where each vehicle is drawn: its glide (drawn.ts) or, with smoothing off, its report
   const smooth = smoothing()
   const at = smooth
@@ -236,7 +240,7 @@ export function buildVehicleLayers(input: VehicleLayerInput) {
       id: 'vehicle-oneway',
       data: oneWay,
       getPosition: at,
-      getText: () => 'ONE-WAY MUNITION',
+      getText: (v) => oneWayTags.get(v.uid) ?? 'ONE-WAY MUNITION',
       getSize: 10,
       getColor: WHITE,
       getTextAnchor: 'middle',

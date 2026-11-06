@@ -113,3 +113,61 @@ export function dashesAhead(m: Munition, t: number): [Pt3, Pt3][] {
 export function screenAngle(dx: number, dy: number): number {
   return (Math.atan2(-dx, -dy) * 180) / Math.PI
 }
+
+/** A munition with what the console knows of it besides its flight (bd murmur-ma92): the
+ *  weapon's catalog kind (`engagement.weapon.kind`), the launcher's callsign and the target
+ *  track, so it is drawn and labelled as what it is. */
+export interface MunitionFlight {
+  m: Munition
+  kind?: string | null
+  launcher?: string
+  target?: string
+}
+
+/** Its label on the map: "HELLFIRE · REAPER 1 > T-12 · 9 s PRED". No munition of ours reports
+ *  its position in flight: where it is drawn is the model's, and the label says so (PRED). */
+export function flightLabel(f: MunitionFlight, t: number): string {
+  const who = f.launcher ? (f.target ? `${f.launcher} > ${f.target}` : f.launcher) : f.target
+  return [munitionShort(f.m.name), who, `${secondsToImpact(f.m, t)} s PRED`].filter(Boolean).join(' · ')
+}
+
+// ---- gun bursts (rules 26) ----
+
+/** how long a burst lasts, s: the M2's 6 rounds at its 525 rounds a minute (about 0.7 s). The
+ *  intent record carries no burst duration (`engage.burst` logs `duration_s`, the feed does
+ *  not), so the console assumes the one gun there is. */
+export const BURST_S = 0.7
+/** how long a tracer round takes to cross the line, s: the drawing's, not the bullet's */
+export const TRACER_FLIGHT_S = 0.3
+
+/** the gun's last reported burst, as `engagement.fire` gives it */
+export interface BurstFire {
+  bursts: number
+  rounds: number
+  last_t: number
+}
+
+/** Tracer rounds on the line from the gun to its target at `t`: each a fraction along the line
+ *  (0 muzzle, 1 target), its head; the burst's rounds leave evenly over BURST_S from `last_t`.
+ *  Empty when no burst has been reported or the last one is over: nothing is drawn for a burst
+ *  the bridge did not report. `still` (reduced motion): the line shows for the burst's duration
+ *  as one round at the middle. */
+export function tracerHeads(f: BurstFire, t: number, still = false): number[] {
+  if (!(f.bursts > 0) || !(f.rounds > 0)) return []
+  const age = (t - f.last_t) / 1000
+  if (age < 0 || age >= BURST_S + TRACER_FLIGHT_S) return []
+  if (still) return age < BURST_S ? [0.5] : []
+  const n = Math.max(1, Math.min(6, Math.round(f.rounds / f.bursts)))
+  const out: number[] = []
+  for (let k = 0; k < n; k++) {
+    const p = (age - (k * BURST_S) / n) / TRACER_FLIGHT_S
+    if (p >= 0 && p < 1) out.push(p)
+  }
+  return out
+}
+
+/** a burst is drawn now or within a second (for animation frames) */
+export function burstShown(f: BurstFire, t: number): boolean {
+  const age = (t - f.last_t) / 1000
+  return f.bursts > 0 && age >= -1 && age < BURST_S + TRACER_FLIGHT_S
+}

@@ -4,7 +4,7 @@ import { FleetPanel } from './FleetPanel'
 import { GlobeInset } from './GlobeInset'
 import { InboxButton, InboxPanel, type InboxSelection, type InboxTab } from './InboxPanel'
 import { EMPTY_PREVIEW, intentPoints, previewFeatures } from './inboxPreview'
-import { MapView, type Draft, type MapLayers } from './MapView'
+import { MapView, type Draft, type MapLayers, type TracerSpec } from './MapView'
 import { PlatformsPanel } from './PlatformsPanel'
 import type { Catalog, LinksNow, Overhead, SpaceOverlay } from './space'
 import { usePoll } from './space'
@@ -321,7 +321,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     const m = i.engagement?.munition
     const platform = allVehicles.find((v) => v.uid === Number(i.uids[0]))
     const t = m ? m.impact_t : effect?.t
-    return effect && t != null ? [{ key: `i${i.id}@${t}`, intentId: i.id, point: m ? m.impact_point : effect.point, t, radius_m: effect.radius_m, munition: m,
+    return effect && t != null ? [{ key: `i${i.id}@${t}`, intentId: i.id, point: m ? m.impact_point : effect.point, t, radius_m: effect.radius_m, munition: m, kind: i.engagement?.weapon?.kind,
       platform: platform ? callsign(platform) : undefined, track: i.engagement?.snapshot?.track_id ?? i.engage?.track,
       assessment: i.engagement?.assessment }] : []
   }), [allIntents, allVehicles])
@@ -410,16 +410,34 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   // platforms that are their own munition (catalog expended_by_effect) on their way: tagged on
   // the map, so the operator sees what is on the way (bd murmur-64z)
   const platformCatalog = usePlatformLimits()
-  const oneWayKey = (allIntents ?? [])
-    .filter((i) => isEngage(i) && i.state === 'dispatched')
-    .map((i) => Number(i.uids[0]))
-    .filter((uid) => {
-      const platform = allVehicles.find((v) => v.uid === uid)?.identity?.platform
-      return platform != null && !!platformCatalog?.get(platform)?.expended_by_effect
-    })
-    .sort((a, b) => a - b)
-    .join()
-  const oneWay = useMemo(() => new Set(oneWayKey ? oneWayKey.split(',').map(Number) : []), [oneWayKey])
+  // its tag says what it is doing to which track: "ONE-WAY > T-12" on its way, "STRIKING > T-12"
+  // from the engine's release (the engagement's `effect`) to its strike
+  const oneWayKey = JSON.stringify(
+    (allIntents ?? [])
+      .filter((i) => isEngage(i) && i.state === 'dispatched')
+      .flatMap((i): [number, string][] => {
+        const uid = Number(i.uids[0])
+        const platform = allVehicles.find((v) => v.uid === uid)?.identity?.platform
+        if (platform == null || !platformCatalog?.get(platform)?.expended_by_effect) return []
+        const track = i.engagement?.snapshot?.track_id ?? i.engage?.track
+        return [[uid, `${i.engagement?.effect ? 'STRIKING' : 'ONE-WAY'}${track ? ` > ${track}` : ''}`]]
+      })
+      .sort((a, b) => a[0] - b[0]),
+  )
+  const oneWay = useMemo(() => new Map<number, string>(JSON.parse(oneWayKey) as [number, string][]), [oneWayKey])
+  // Gun bursts (rules 26): the last burst the bridge reported for each gun engagement, from its
+  // platform to the target track's latest fix; nothing for a burst not reported
+  const tracers = useMemo<TracerSpec[]>(
+    () =>
+      (allIntents ?? []).flatMap((i) => {
+        const fire = i.engagement?.fire
+        const id = i.engagement?.snapshot?.track_id ?? i.engage?.track
+        const tr = id ? tracks?.tracks.find((x) => x.id === id) : undefined
+        if (!isEngage(i) || !fire || !(fire.bursts > 0) || !tr) return []
+        return [{ fire: { bursts: fire.bursts, rounds: fire.rounds, last_t: fire.last_t }, uid: Number(i.uids[0]), to: tr.position, toAlt: tr.alt_m ?? 0 }]
+      }),
+    [allIntents, tracks],
+  )
   const engageDrawings = useMemo<EngageDrawing[]>(() => {
     const out: EngageDrawing[] = []
     const nowMs = now()
@@ -673,6 +691,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           impactNowMs={impactNowMs}
           bridgeNow={now}
           oneWay={oneWay}
+          tracers={tracers}
           acts={actDraws}
           actsDismissedAt={actsDismissedAt}
           weapons={weapons}

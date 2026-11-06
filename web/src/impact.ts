@@ -11,6 +11,8 @@ export interface ImpactEvent {
   t: number
   /** the munition on its way to this strike, if the platform launched one */
   munition?: Munition
+  /** the weapon's catalog kind (missile, bomb, torpedo...), for its symbol */
+  kind?: string
   radius_m: number
   platform?: string
   track?: string
