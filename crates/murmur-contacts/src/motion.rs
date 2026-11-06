@@ -18,6 +18,9 @@ const WAYPOINT_RADIUS_M: f64 = 25.0;
 const ACCEL_MPS2: f64 = 0.5;
 /// An orbit steering this far off its circle heads for it first.
 const ORBIT_JOIN_M: f64 = 30.0;
+/// A node slowing to turn onto a point inside its turning circle goes no slower than this [E]
+/// (bd murmur-9js0).
+const MIN_TURN_MPS: f64 = 0.5;
 
 /// Where a contact is right now (truth).
 #[derive(Debug, Clone)]
@@ -400,7 +403,16 @@ impl Mover {
     /// the next point). Returns whether it is there.
     fn head(&mut self, lat: f64, lon: f64, speed: f64, alt: Option<f64>, dt: f64, stop: bool) -> bool {
         let d = distance_m(self.st.lat, self.st.lon, lat, lon);
-        let v = (self.st.speed_mps + ACCEL_MPS2 * dt).min(self.told(speed)).max(0.0);
+        let want = bearing_deg(self.st.lat, self.st.lon, lat, lon);
+        let mut v = (self.st.speed_mps + ACCEL_MPS2 * dt).min(self.told(speed)).max(0.0);
+        // bd murmur-9js0: a point inside its turning circle is never reached at speed (it circles
+        // it for ever): slow so the circle through here, tangent to its course, that passes through
+        // the point (radius d / (2 sin off)) is one its turn rate can fly
+        let off = wrap180(want - self.st.course_deg).abs().to_radians();
+        if off > 1e-6 {
+            let fits = self.contact.turn_dps.to_radians() * d / (2.0 * off.sin().max(1e-6));
+            v = v.min(fits.max(MIN_TURN_MPS));
+        }
         if d <= (v * dt).max(1.0) {
             if stop {
                 self.st.lat = lat;
@@ -412,7 +424,6 @@ impl Mover {
             }
             return true;
         }
-        let want = bearing_deg(self.st.lat, self.st.lon, lat, lon);
         let max_turn = self.contact.turn_dps * dt;
         let delta = wrap180(want - self.st.course_deg).clamp(-max_turn, max_turn);
         self.st.course_deg = (self.st.course_deg + delta).rem_euclid(360.0);
@@ -596,6 +607,38 @@ mod tests {
             on_effect: crate::scenario::OnEffect::OutOfPlay,
             strike_outcome: None,
             weapon: None,
+        }
+    }
+
+    /// bd murmur-9js0: a fishing vessel at 4 m/s turning 4 degrees a second (a 57 m turning
+    /// radius) told to go to a point 88 m abeam reaches it (it slows to turn onto it) instead of
+    /// circling it for ever; a point well off its turning circle it takes at full speed.
+    #[test]
+    fn a_point_inside_the_turning_circle_is_reached() {
+        let at = [-122.45, 37.80];
+        let mut m = Mover::new(contact(Motion::Station { at }, 0.0), 1, 0);
+        m.contact.turn_dps = 4.0;
+        m.st.course_deg = 0.0;
+        m.st.speed_mps = 4.0;
+        let (lat, lon) = offset(at[1], at[0], 88.0, 0.0);
+        m.steer = Some(Steer::To { lat, lon, speed_mps: 4.0, alt_m: None });
+        let mut slowest: f64 = 4.0;
+        let there = (1..=120).find(|s| {
+            m.step(f64::from(*s), 1.0, None);
+            slowest = slowest.min(m.st.speed_mps);
+            distance_m(m.st.lat, m.st.lon, lat, lon) < 1.0
+        });
+        assert!(there.is_some_and(|s| s < 90), "{there:?}, {:?}", m.st);
+        assert!(slowest < 4.0);
+        // far ahead and a little off its course: no slowing
+        let mut m = Mover::new(contact(Motion::Station { at }, 0.0), 1, 0);
+        m.contact.turn_dps = 4.0;
+        m.st.speed_mps = 4.0;
+        let (lat, lon) = offset(at[1], at[0], 200.0, 2000.0);
+        m.steer = Some(Steer::To { lat, lon, speed_mps: 4.0, alt_m: None });
+        for s in 1..=10 {
+            m.step(f64::from(s), 1.0, None);
+            assert_eq!(m.st.speed_mps, 4.0);
         }
     }
 
