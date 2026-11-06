@@ -1,0 +1,499 @@
+# Contact catalog: what each kind of contact that is not ours is, and what it carries (bd
+# murmur-y85j.1, docs/AUTONOMOUS-NODES.md section 2.1). Read by crates/murmur-contacts
+# (`catalog.rs`, compiled in); a scenario's `[[contact]]` names one of these kinds in `kind`.
+#
+# Names use "-class", as sim/platforms.toml does: game-level stand-ins for a class of craft or
+# weapon, tuned to rounded public figures, not models of a particular one.
+#
+# name         what the kind is, in words (truth only).
+# domain       air | surface | subsurface | ground.
+# looks_like   the kind our sensors and the C2 see (decision D3): an armed variant passes for its
+#              civilian twin until it acts. The contacts process publishes the look-alike as the
+#              truth message's `kind` and this kind as its truth-only `variant`. Absent: itself.
+# signature, emits, turn_dps, alt_m
+#              the defaults a contact of the kind takes when its scenario gives none: the legacy
+#              sensing model's detection-range multiplier (the physical model reads the bridge's
+#              own signature table by kind, tracks/physical/signature.rs), whether it has a radar
+#              or transponder an ESM receiver hears, its turn rate, its height (negative: depth).
+#              Moved here unchanged from the `KINDS` table this file replaces; rounded and
+#              indicative (an armed variant takes its look-alike's).
+# cruise_mps, max_mps
+#              its usual and top speed through the water, over the ground or in the air: what a
+#              node's own steering will read (stage 2: closing on a target, fleeing).
+# sensors      what the node itself sees (decision D2: our vehicles within this reach and above
+#              the radio horizon), m: `eye_m` (lookouts, a sight or a camera), `radar_m`, `sonar_m`.
+#              Given for every armed kind (an attack order needs a target it perceives).
+# armed        true for a kind with a loadout (and only then).
+# expended_by_effect
+#              true for a kind that is its own weapon (a `self` loadout entry: a one-way drone, an
+#              explosive boat), as sim/platforms.toml.
+# loadout      the weapons it carries, in the order its fire control picks one when an order names
+#              none (the first meant for the target's domain with rounds left), each in the shape
+#              of our catalog's (crates/murmur-decide catalog.rs `WeaponFacts`; sim/platforms.toml
+#              says what each key means), plus two truth-side keys:
+#                reload_s  seconds from one shot of a missile, rocket or torpedo to the next (a
+#                          gun has `burst_interval_s` instead; `self` neither);
+#                sense     which of the bridge's weapon signatures our sensors see it by: `atgm`
+#                          (the only one with figures today, tracks/physical/weapon.rs), `rocket`,
+#                          `air_missile`, `gun`, `torpedo` (stage 3 adds their figures). None for
+#                          `self`: the node itself is what is seen.
+#              `effects` are keyed by contact kind as ours are: our vehicles read as one of them
+#              (crates/murmur-contacts damage.rs `ours_kind`: the Sea Hunter a fishing vessel, the
+#              Saildrone a sailboat, other boats a small fast boat, UGVs a vehicle, large aircraft
+#              a light aircraft, other aircraft a small drone, under water a UUV).
+# sources      one tag per figure, as docs/research/opponent-weapons.md gives it: [n] a reference
+#              there, [E] an estimate with its basis there. Keys: `cruise_mps`, `max_mps`,
+#              `sensors`, and per weapon (by name) every figure it lists: `count`, `min_range_m`,
+#              `max_range_m`, `speed_mps`, `guidance`, `warhead`, `effects`, and each of
+#              `burst_rounds`, `rate_rpm`, `burst_interval_s`, `reload_s` it has. A test fails a
+#              figure without one.
+#
+# Nothing fires from this file yet: stage 2 (bd murmur-y85j.2) gives the nodes their fire control.
+# Never author a node's figures to make a situation work (docs/AUTONOMOUS-NODES.md 2.1, as
+# decision W3 for our sensors): an author moves the node or times its order instead.
+
+# ================================================================ surface
+
+[cargo_ship]
+name = "Cargo ship or coaster"
+domain = "surface"
+signature = 1.6
+emits = true
+turn_dps = 1.0
+alt_m = 0.0
+cruise_mps = 6.0
+max_mps = 8.0
+sources = { cruise_mps = "[E]", max_mps = "[E]" }
+
+[tanker]
+name = "Tanker"
+domain = "surface"
+signature = 1.6
+emits = true
+turn_dps = 0.8
+alt_m = 0.0
+cruise_mps = 6.0
+max_mps = 7.5
+sources = { cruise_mps = "[E]", max_mps = "[E]" }
+
+[ferry]
+name = "Passenger ferry"
+domain = "surface"
+signature = 1.2
+emits = true
+turn_dps = 3.0
+alt_m = 0.0
+cruise_mps = 11.0
+max_mps = 18.0
+sources = { cruise_mps = "[E]", max_mps = "[E]" }
+
+[patrol_boat]
+name = "Patrol boat, unarmed (harbour police, pilot, fireboat)"
+domain = "surface"
+signature = 0.9
+emits = true
+turn_dps = 5.0
+alt_m = 0.0
+cruise_mps = 10.0
+max_mps = 15.0
+sources = { cruise_mps = "[E]", max_mps = "[E]" }
+
+[fishing_vessel]
+name = "Fishing vessel"
+domain = "surface"
+signature = 0.7
+emits = true
+turn_dps = 4.0
+alt_m = 0.0
+cruise_mps = 4.0
+max_mps = 5.5
+sources = { cruise_mps = "[E]", max_mps = "[E]" }
+
+[sailboat]
+name = "Sailboat"
+domain = "surface"
+signature = 0.5
+emits = false
+turn_dps = 6.0
+alt_m = 0.0
+cruise_mps = 3.0
+max_mps = 4.5
+sources = { cruise_mps = "[E]", max_mps = "[E]" }
+
+[small_fast_boat]
+name = "Small fast boat, unarmed (a speedboat, a RIB)"
+domain = "surface"
+signature = 0.35
+emits = false
+turn_dps = 12.0
+alt_m = 0.0
+cruise_mps = 12.0
+max_mps = 20.0
+sources = { cruise_mps = "[E]", max_mps = "[E]" }
+
+[armed_fast_boat]
+name = "Fast inshore attack craft (an ATGM team and a heavy machine gun)"
+looks_like = "small_fast_boat"
+domain = "surface"
+signature = 0.35
+emits = false
+turn_dps = 12.0
+alt_m = 0.0
+cruise_mps = 15.0
+max_mps = 23.0
+sensors = { eye_m = 5000 }
+armed = true
+loadout = [
+  { name = "ATGM-class missile", kind = "missile", count = 4, min_range_m = 100, max_range_m = 5500, speed_mps = 250, profile = "direct", guidance = "saclos_laser_beam", warhead = { class = "tandem_heat", mass_kg = 4.6 }, targets = ["surface", "ground"], reload_s = 30, sense = "atgm", effects = { small_fast_boat = { p_hit = 0.60, p_kill = 0.75, p_mobility = 0.15, p_firepower = 0.05 }, fishing_vessel = { p_hit = 0.70, p_kill = 0.35, p_mobility = 0.40 }, sailboat = { p_hit = 0.70, p_kill = 0.50, p_mobility = 0.35 }, cargo_ship = { p_hit = 0.75, p_mobility = 0.30 }, vehicle = { p_hit = 0.70, p_kill = 0.85, p_mobility = 0.10 }, truck = { p_hit = 0.70, p_kill = 0.75, p_mobility = 0.15, p_firepower = 0.05 }, person = { p_hit = 0.65, p_kill = 0.90 } } },
+  { name = "12.7 mm HMG (DShK/NSV-class)", kind = "gun", count = 500, min_range_m = 0, max_range_m = 2000, speed_mps = 850, profile = "ballistic", guidance = "open_sights", warhead = { class = "ball_api_12_7mm", mass_kg = 0.048 }, targets = ["surface", "ground", "air"], burst_rounds = 6, rate_rpm = 600, burst_interval_s = 5, sense = "gun", effects = { small_fast_boat = { p_hit = 0.10, p_kill = 0.10, p_mobility = 0.30, p_firepower = 0.15 }, fishing_vessel = { p_hit = 0.25, p_kill = 0.03, p_mobility = 0.17 }, sailboat = { p_hit = 0.25, p_kill = 0.02, p_mobility = 0.13 }, cargo_ship = { p_hit = 0.45, p_mobility = 0.01 }, vehicle = { p_hit = 0.20, p_kill = 0.20, p_mobility = 0.40 }, truck = { p_hit = 0.25, p_kill = 0.10, p_mobility = 0.30, p_firepower = 0.10 }, small_drone = { p_hit = 0.015, p_kill = 0.90 }, light_aircraft = { p_hit = 0.025, p_kill = 0.30, p_mobility = 0.40 }, person = { p_hit = 0.15, p_kill = 0.80 } } },
+]
+
+[armed_fast_boat.sources]
+cruise_mps = "[E]"
+max_mps = "[8]"
+sensors = "[E]"
+"ATGM-class missile" = { count = "[E]", min_range_m = "[1]", max_range_m = "[1]", speed_mps = "[1]", guidance = "[1]", warhead = "[1]", reload_s = "[22; E]", effects = "[E]" }
+"12.7 mm HMG (DShK/NSV-class)" = { count = "[2, 3; E]", min_range_m = "[E]", max_range_m = "[2, 3]", speed_mps = "[2, 3]", guidance = "[E]", warhead = "[E]", burst_rounds = "[23; E]", rate_rpm = "[3]", burst_interval_s = "[E]", effects = "[E]" }
+
+[armed_skiff]
+name = "Skiff with an RPG team and a machine gun"
+looks_like = "small_fast_boat"
+domain = "surface"
+signature = 0.35
+emits = false
+turn_dps = 12.0
+alt_m = 0.0
+cruise_mps = 9.0
+max_mps = 13.0
+sensors = { eye_m = 4000 }
+armed = true
+loadout = [
+  { name = "RPG-7-class grenade launcher (PG-7VL)", kind = "missile", count = 4, min_range_m = 10, max_range_m = 330, speed_mps = 250, profile = "direct", guidance = "unguided", warhead = { class = "heat", mass_kg = 2.6 }, targets = ["surface", "ground"], reload_s = 10, sense = "rocket", effects = { small_fast_boat = { p_hit = 0.30, p_kill = 0.45, p_mobility = 0.35, p_firepower = 0.10 }, fishing_vessel = { p_hit = 0.50, p_kill = 0.20, p_mobility = 0.50 }, sailboat = { p_hit = 0.45, p_kill = 0.25, p_mobility = 0.45 }, cargo_ship = { p_hit = 0.70, p_mobility = 0.05 }, vehicle = { p_hit = 0.40, p_kill = 0.60, p_mobility = 0.35 }, truck = { p_hit = 0.45, p_kill = 0.40, p_mobility = 0.40, p_firepower = 0.05 }, person = { p_hit = 0.20, p_kill = 0.80 } } },
+  { name = "7.62 mm GPMG (PKM-class)", kind = "gun", count = 600, min_range_m = 0, max_range_m = 1000, speed_mps = 825, profile = "ballistic", guidance = "open_sights", warhead = { class = "ball_7_62mm", mass_kg = 0.0096 }, targets = ["surface", "ground", "air"], burst_rounds = 8, rate_rpm = 650, burst_interval_s = 5, sense = "gun", effects = { small_fast_boat = { p_hit = 0.10, p_kill = 0.05, p_mobility = 0.20, p_firepower = 0.10 }, fishing_vessel = { p_hit = 0.25, p_kill = 0.01, p_mobility = 0.10 }, sailboat = { p_hit = 0.25, p_kill = 0.01, p_mobility = 0.08 }, cargo_ship = { p_hit = 0.45 }, vehicle = { p_hit = 0.20, p_kill = 0.10, p_mobility = 0.30 }, truck = { p_hit = 0.25, p_kill = 0.05, p_mobility = 0.20, p_firepower = 0.05 }, small_drone = { p_hit = 0.015, p_kill = 0.90 }, light_aircraft = { p_hit = 0.025, p_kill = 0.20, p_mobility = 0.30 }, person = { p_hit = 0.15, p_kill = 0.80 } } },
+]
+
+[armed_skiff.sources]
+cruise_mps = "[E]"
+max_mps = "[E]"
+sensors = "[E]"
+"RPG-7-class grenade launcher (PG-7VL)" = { count = "[E]", min_range_m = "[E]", max_range_m = "[5]", speed_mps = "[5; E]", guidance = "[5]", warhead = "[5]", reload_s = "[E]", effects = "[5; E]" }
+"7.62 mm GPMG (PKM-class)" = { count = "[6; E]", min_range_m = "[E]", max_range_m = "[6]", speed_mps = "[6]", guidance = "[E]", warhead = "[E]", burst_rounds = "[E]", rate_rpm = "[6]", burst_interval_s = "[E]", effects = "[E]" }
+
+[explosive_boat]
+name = "Explosive drone boat (a waterborne IED, Toofan-1-class)"
+looks_like = "small_fast_boat"
+domain = "surface"
+signature = 0.35
+emits = false
+turn_dps = 12.0
+alt_m = 0.0
+cruise_mps = 15.0
+max_mps = 18.0
+sensors = { eye_m = 3000 }
+armed = true
+expended_by_effect = true
+loadout = [
+  { name = "WBIED charge (Toofan-1-class)", kind = "self", count = 1, min_range_m = 0, max_range_m = 100000, speed_mps = 18, profile = "waterborne", guidance = "operator_video", warhead = { class = "blast_contact", mass_kg = 150 }, targets = ["surface"], effects = { small_fast_boat = { p_hit = 0.20, p_kill = 1.0 }, fishing_vessel = { p_hit = 0.40, p_kill = 0.95, p_mobility = 0.05 }, sailboat = { p_hit = 0.40, p_kill = 1.0 }, cargo_ship = { p_hit = 0.50, p_kill = 0.25, p_mobility = 0.55 } } },
+]
+
+[explosive_boat.sources]
+cruise_mps = "[E]"
+max_mps = "[21]"
+sensors = "[E]"
+"WBIED charge (Toofan-1-class)" = { count = "[21]", min_range_m = "[E]", max_range_m = "[E]", speed_mps = "[21]", guidance = "[E]", warhead = "[21]", effects = "[E]" }
+
+[armed_coaster]
+name = "Coaster with a deck-mounted rocket launcher and a twin cannon"
+looks_like = "cargo_ship"
+domain = "surface"
+signature = 1.6
+emits = true
+turn_dps = 1.0
+alt_m = 0.0
+cruise_mps = 5.0
+max_mps = 6.5
+sensors = { eye_m = 10000, radar_m = 12000 }
+armed = true
+loadout = [
+  { name = "107 mm rocket launcher (Type 63-class, 12 tubes)", kind = "missile", count = 12, min_range_m = 300, max_range_m = 8050, speed_mps = 300, profile = "ballistic", guidance = "unguided", warhead = { class = "he_frag", mass_kg = 1.3 }, targets = ["surface", "ground"], reload_s = 1, sense = "rocket", effects = { small_fast_boat = { p_hit = 0.03, p_kill = 0.30, p_mobility = 0.35, p_firepower = 0.10 }, fishing_vessel = { p_hit = 0.10, p_kill = 0.05, p_mobility = 0.35 }, sailboat = { p_hit = 0.08, p_kill = 0.10, p_mobility = 0.35 }, cargo_ship = { p_hit = 0.25, p_mobility = 0.05 }, vehicle = { p_hit = 0.05, p_kill = 0.40, p_mobility = 0.40 }, truck = { p_hit = 0.07, p_kill = 0.20, p_mobility = 0.40, p_firepower = 0.10 }, person = { p_hit = 0.05, p_kill = 0.80 } } },
+  { name = "23 mm twin cannon (ZU-23-2-class)", kind = "gun", count = 400, min_range_m = 0, max_range_m = 2000, speed_mps = 970, profile = "ballistic", guidance = "optical_sight", warhead = { class = "hei_23mm", mass_kg = 0.19 }, targets = ["surface", "ground", "air"], burst_rounds = 10, rate_rpm = 2000, burst_interval_s = 5, sense = "gun", effects = { small_fast_boat = { p_hit = 0.20, p_kill = 0.30, p_mobility = 0.35, p_firepower = 0.15 }, fishing_vessel = { p_hit = 0.40, p_kill = 0.10, p_mobility = 0.40 }, sailboat = { p_hit = 0.40, p_kill = 0.08, p_mobility = 0.32 }, cargo_ship = { p_hit = 0.65, p_mobility = 0.05 }, vehicle = { p_hit = 0.35, p_kill = 0.50, p_mobility = 0.40 }, truck = { p_hit = 0.40, p_kill = 0.30, p_mobility = 0.40, p_firepower = 0.10 }, small_drone = { p_hit = 0.10, p_kill = 0.95 }, light_aircraft = { p_hit = 0.10, p_kill = 0.60, p_mobility = 0.30 }, person = { p_hit = 0.30, p_kill = 0.90 } } },
+]
+
+[armed_coaster.sources]
+cruise_mps = "[E]"
+max_mps = "[E]"
+sensors = "[E]"
+"107 mm rocket launcher (Type 63-class, 12 tubes)" = { count = "[7]", min_range_m = "[E]", max_range_m = "[7]", speed_mps = "[7; E]", guidance = "[7]", warhead = "[7]", reload_s = "[E]", effects = "[E]" }
+"23 mm twin cannon (ZU-23-2-class)" = { count = "[16; E]", min_range_m = "[E]", max_range_m = "[16]", speed_mps = "[16]", guidance = "[E]", warhead = "[E]", burst_rounds = "[E]", rate_rpm = "[16]", burst_interval_s = "[E]", effects = "[E]" }
+
+[naval_auxiliary]
+name = "Naval auxiliary tanker with defensive heavy machine guns"
+looks_like = "tanker"
+domain = "surface"
+signature = 1.6
+emits = true
+turn_dps = 0.8
+alt_m = 0.0
+cruise_mps = 5.0
+max_mps = 6.2
+sensors = { eye_m = 12000, radar_m = 15000 }
+armed = true
+loadout = [
+  { name = "12.7 mm HMG (Kord-class)", kind = "gun", count = 1000, min_range_m = 0, max_range_m = 2000, speed_mps = 860, profile = "ballistic", guidance = "open_sights", warhead = { class = "ball_api_12_7mm", mass_kg = 0.048 }, targets = ["surface", "air", "ground"], burst_rounds = 6, rate_rpm = 625, burst_interval_s = 5, sense = "gun", effects = { small_fast_boat = { p_hit = 0.15, p_kill = 0.10, p_mobility = 0.30, p_firepower = 0.15 }, fishing_vessel = { p_hit = 0.38, p_kill = 0.03, p_mobility = 0.17 }, sailboat = { p_hit = 0.38, p_kill = 0.02, p_mobility = 0.13 }, cargo_ship = { p_hit = 0.68, p_mobility = 0.01 }, vehicle = { p_hit = 0.30, p_kill = 0.20, p_mobility = 0.40 }, truck = { p_hit = 0.38, p_kill = 0.10, p_mobility = 0.30, p_firepower = 0.10 }, small_drone = { p_hit = 0.02, p_kill = 0.90 }, light_aircraft = { p_hit = 0.04, p_kill = 0.30, p_mobility = 0.40 }, person = { p_hit = 0.22, p_kill = 0.80 } } },
+]
+
+[naval_auxiliary.sources]
+cruise_mps = "[E]"
+max_mps = "[19]"
+sensors = "[E]"
+"12.7 mm HMG (Kord-class)" = { count = "[4, 18; E]", min_range_m = "[E]", max_range_m = "[4]", speed_mps = "[4]", guidance = "[18; E]", warhead = "[E]", burst_rounds = "[23; E]", rate_rpm = "[4]", burst_interval_s = "[E]", effects = "[E]" }
+
+[cutter]
+name = "Coast guard patrol boat (Marine Protector-class, two heavy machine guns)"
+looks_like = "patrol_boat"
+domain = "surface"
+signature = 0.9
+emits = true
+turn_dps = 5.0
+alt_m = 0.0
+cruise_mps = 10.0
+max_mps = 13.0
+sensors = { eye_m = 8000, radar_m = 12000 }
+armed = true
+loadout = [
+  { name = "M2 .50 HMG (pintle)", kind = "gun", count = 1000, min_range_m = 0, max_range_m = 1800, speed_mps = 910, profile = "ballistic", guidance = "open_sights", warhead = { class = "ball_ap_12_7mm", mass_kg = 0.043 }, targets = ["surface", "ground", "air"], burst_rounds = 6, rate_rpm = 525, burst_interval_s = 5, sense = "gun", effects = { small_fast_boat = { p_hit = 0.15, p_kill = 0.10, p_mobility = 0.30, p_firepower = 0.15 }, fishing_vessel = { p_hit = 0.38, p_kill = 0.03, p_mobility = 0.17 }, sailboat = { p_hit = 0.38, p_kill = 0.02, p_mobility = 0.13 }, cargo_ship = { p_hit = 0.68, p_mobility = 0.01 }, vehicle = { p_hit = 0.30, p_kill = 0.20, p_mobility = 0.40 }, truck = { p_hit = 0.38, p_kill = 0.10, p_mobility = 0.30, p_firepower = 0.10 }, small_drone = { p_hit = 0.02, p_kill = 0.90 }, light_aircraft = { p_hit = 0.04, p_kill = 0.30, p_mobility = 0.40 }, person = { p_hit = 0.22, p_kill = 0.80 } } },
+]
+
+[cutter.sources]
+cruise_mps = "[E]"
+max_mps = "[13]"
+sensors = "[E]"
+"M2 .50 HMG (pintle)" = { count = "[13; E]", min_range_m = "[E]", max_range_m = "[23]", speed_mps = "[23]", guidance = "[E]", warhead = "[23; E]", burst_rounds = "[23]", rate_rpm = "[23]", burst_interval_s = "[E]", effects = "[E]" }
+
+# ================================================================ air
+
+[light_aircraft]
+name = "Light aircraft"
+domain = "air"
+signature = 0.6
+emits = true
+turn_dps = 6.0
+alt_m = 300.0
+cruise_mps = 55.0
+max_mps = 65.0
+sources = { cruise_mps = "[E]", max_mps = "[E]" }
+
+[helicopter]
+name = "Helicopter, unarmed (civil, medical, coast guard)"
+domain = "air"
+signature = 0.7
+emits = true
+turn_dps = 10.0
+alt_m = 200.0
+cruise_mps = 60.0
+max_mps = 75.0
+sources = { cruise_mps = "[E]", max_mps = "[E]" }
+
+[unknown_uas]
+name = "Unmanned aircraft of unknown type, unarmed"
+domain = "air"
+signature = 0.15
+emits = false
+turn_dps = 20.0
+alt_m = 120.0
+cruise_mps = 25.0
+max_mps = 35.0
+sources = { cruise_mps = "[E]", max_mps = "[E]" }
+
+[armed_uas]
+name = "Armed VTOL UAS (two light multirole missiles)"
+looks_like = "unknown_uas"
+domain = "air"
+signature = 0.15
+emits = false
+turn_dps = 20.0
+alt_m = 120.0
+cruise_mps = 28.0
+max_mps = 45.0
+sensors = { eye_m = 8000 }
+armed = true
+loadout = [
+  { name = "LMM-class light missile", kind = "missile", count = 2, min_range_m = 400, max_range_m = 6000, speed_mps = 510, profile = "direct", guidance = "laser_beam_riding", warhead = { class = "blast_frag", mass_kg = 3 }, targets = ["surface", "ground", "air"], reload_s = 5, sense = "air_missile", effects = { small_fast_boat = { p_hit = 0.75, p_kill = 0.60, p_mobility = 0.25, p_firepower = 0.10 }, fishing_vessel = { p_hit = 0.90, p_kill = 0.20, p_mobility = 0.45 }, sailboat = { p_hit = 0.85, p_kill = 0.30, p_mobility = 0.40 }, cargo_ship = { p_hit = 0.95, p_mobility = 0.15 }, vehicle = { p_hit = 0.85, p_kill = 0.70, p_mobility = 0.20 }, truck = { p_hit = 0.90, p_kill = 0.50, p_mobility = 0.30, p_firepower = 0.10 }, small_drone = { p_hit = 0.30, p_kill = 0.95 }, light_aircraft = { p_hit = 0.50, p_kill = 0.70, p_mobility = 0.20 }, person = { p_hit = 0.80, p_kill = 1.0 } } },
+]
+
+[armed_uas.sources]
+cruise_mps = "[E]"
+max_mps = "[E]"
+sensors = "[E]"
+"LMM-class light missile" = { count = "[12]", min_range_m = "[12]", max_range_m = "[12]", speed_mps = "[12]", guidance = "[12]", warhead = "[12]", reload_s = "[E]", effects = "[12; E]" }
+
+[oneway_uas]
+name = "One-way attack drone (Shahed-136-class)"
+looks_like = "unknown_uas"
+domain = "air"
+signature = 0.15
+emits = false
+turn_dps = 20.0
+alt_m = 120.0
+cruise_mps = 45.0
+max_mps = 51.0
+sensors = { eye_m = 1000 }
+armed = true
+expended_by_effect = true
+loadout = [
+  { name = "Shahed-136-class warhead", kind = "self", count = 1, min_range_m = 0, max_range_m = 2500000, speed_mps = 51, profile = "dive", guidance = "gnss_ins", warhead = { class = "blast_frag", mass_kg = 50 }, targets = ["ground", "surface"], effects = { small_fast_boat = { p_hit = 0.02, p_kill = 0.95, p_mobility = 0.05 }, fishing_vessel = { p_hit = 0.30, p_kill = 0.70, p_mobility = 0.30 }, sailboat = { p_hit = 0.30, p_kill = 0.80, p_mobility = 0.20 }, cargo_ship = { p_hit = 0.80, p_mobility = 0.45 }, vehicle = { p_hit = 0.05, p_kill = 1.0 }, truck = { p_hit = 0.05, p_kill = 0.95, p_mobility = 0.05 } } },
+]
+
+[oneway_uas.sources]
+cruise_mps = "[E]"
+max_mps = "[11]"
+sensors = "[E]"
+"Shahed-136-class warhead" = { count = "[11]", min_range_m = "[E]", max_range_m = "[11]", speed_mps = "[11]", guidance = "[11]", warhead = "[11]", effects = "[E]" }
+
+[small_drone]
+name = "Small drone (a quadcopter), unarmed"
+domain = "air"
+signature = 0.15
+emits = false
+turn_dps = 30.0
+alt_m = 80.0
+cruise_mps = 15.0
+max_mps = 20.0
+sources = { cruise_mps = "[E]", max_mps = "[E]" }
+
+[oneway_drone]
+name = "One-way FPV attack drone (an RPG warhead)"
+looks_like = "small_drone"
+domain = "air"
+signature = 0.15
+emits = false
+turn_dps = 30.0
+alt_m = 80.0
+cruise_mps = 25.0
+max_mps = 40.0
+sensors = { eye_m = 2000 }
+armed = true
+expended_by_effect = true
+loadout = [
+  { name = "PG-7VL warhead (FPV)", kind = "self", count = 1, min_range_m = 0, max_range_m = 10000, speed_mps = 35, profile = "direct", guidance = "operator_video_day", warhead = { class = "heat", mass_kg = 2.6 }, targets = ["ground", "surface"], effects = { small_fast_boat = { p_hit = 0.30, p_kill = 0.41, p_mobility = 0.32, p_firepower = 0.09 }, fishing_vessel = { p_hit = 0.40, p_kill = 0.18, p_mobility = 0.45 }, sailboat = { p_hit = 0.40, p_kill = 0.23, p_mobility = 0.41 }, cargo_ship = { p_hit = 0.50, p_mobility = 0.05 }, vehicle = { p_hit = 0.35, p_kill = 0.54, p_mobility = 0.32 }, truck = { p_hit = 0.40, p_kill = 0.36, p_mobility = 0.36, p_firepower = 0.05 }, person = { p_hit = 0.30, p_kill = 0.72 } } },
+]
+
+[oneway_drone.sources]
+cruise_mps = "[24]"
+max_mps = "[24]"
+sensors = "[E]"
+"PG-7VL warhead (FPV)" = { count = "[24]", min_range_m = "[E]", max_range_m = "[24]", speed_mps = "[24]", guidance = "[24]", warhead = "[5, 24]", effects = "[24; E]" }
+
+# ================================================================ subsurface
+
+[submarine]
+name = "Diesel-electric attack submarine (Kilo-class)"
+domain = "subsurface"
+signature = 0.3
+emits = false
+turn_dps = 2.0
+alt_m = -50.0
+cruise_mps = 2.5
+max_mps = 10.0
+sensors = { eye_m = 8000, sonar_m = 10000 }
+armed = true
+loadout = [
+  { name = "533 mm heavyweight torpedo (53-65-class)", kind = "torpedo", count = 18, min_range_m = 500, max_range_m = 19000, speed_mps = 23, profile = "waterborne", guidance = "wake_homing", warhead = { class = "blast", mass_kg = 307.6 }, targets = ["surface"], reload_s = 15, sense = "torpedo", effects = { small_fast_boat = { p_hit = 0.10, p_kill = 1.0 }, fishing_vessel = { p_hit = 0.70, p_kill = 1.0 }, sailboat = { p_hit = 0.50, p_kill = 1.0 }, cargo_ship = { p_hit = 0.85, p_kill = 0.70, p_mobility = 0.30 } } },
+]
+
+[submarine.sources]
+cruise_mps = "[E]"
+max_mps = "[15]"
+sensors = "[E]"
+"533 mm heavyweight torpedo (53-65-class)" = { count = "[15]", min_range_m = "[E]", max_range_m = "[14]", speed_mps = "[14]", guidance = "[14]", warhead = "[14]", reload_s = "[15; E]", effects = "[E]" }
+
+[uuv]
+name = "Unmanned undersea vehicle, unarmed"
+domain = "subsurface"
+signature = 0.15
+emits = false
+turn_dps = 8.0
+alt_m = -20.0
+cruise_mps = 2.0
+max_mps = 2.5
+sources = { cruise_mps = "[E]", max_mps = "[E]" }
+
+# the physical sensing model's kinds (WORLD-V3-PLAN 2.1): a periscope and a diver
+[periscope]
+name = "Periscope (a submarine at periscope depth, as our sensors see it)"
+domain = "subsurface"
+signature = 0.2
+emits = false
+turn_dps = 2.0
+alt_m = -15.0
+cruise_mps = 2.5
+max_mps = 5.0
+sources = { cruise_mps = "[E]", max_mps = "[E]" }
+
+[diver]
+name = "Diver"
+domain = "subsurface"
+signature = 0.05
+emits = false
+turn_dps = 20.0
+alt_m = -5.0
+cruise_mps = 0.5
+max_mps = 1.0
+sources = { cruise_mps = "[E]", max_mps = "[E]" }
+
+# ================================================================ ground
+
+[vehicle]
+name = "Car"
+domain = "ground"
+signature = 0.5
+emits = false
+turn_dps = 15.0
+alt_m = 0.0
+cruise_mps = 12.0
+max_mps = 30.0
+sources = { cruise_mps = "[E]", max_mps = "[E]" }
+
+[truck]
+name = "Truck, unarmed"
+domain = "ground"
+signature = 0.8
+emits = false
+turn_dps = 10.0
+alt_m = 0.0
+cruise_mps = 10.0
+max_mps = 25.0
+sources = { cruise_mps = "[E]", max_mps = "[E]" }
+
+[technical]
+name = "Technical (a pickup with a heavy machine gun)"
+looks_like = "truck"
+domain = "ground"
+signature = 0.8
+emits = false
+turn_dps = 10.0
+alt_m = 0.0
+cruise_mps = 12.0
+max_mps = 30.0
+sensors = { eye_m = 3000 }
+armed = true
+loadout = [
+  { name = "12.7 mm HMG (DShK-class)", kind = "gun", count = 300, min_range_m = 0, max_range_m = 2000, speed_mps = 850, profile = "ballistic", guidance = "open_sights", warhead = { class = "ball_api_12_7mm", mass_kg = 0.048 }, targets = ["ground", "surface", "air"], burst_rounds = 6, rate_rpm = 600, burst_interval_s = 5, sense = "gun", effects = { small_fast_boat = { p_hit = 0.15, p_kill = 0.10, p_mobility = 0.30, p_firepower = 0.15 }, fishing_vessel = { p_hit = 0.38, p_kill = 0.03, p_mobility = 0.17 }, sailboat = { p_hit = 0.38, p_kill = 0.02, p_mobility = 0.13 }, cargo_ship = { p_hit = 0.68, p_mobility = 0.01 }, vehicle = { p_hit = 0.30, p_kill = 0.20, p_mobility = 0.40 }, truck = { p_hit = 0.38, p_kill = 0.10, p_mobility = 0.30, p_firepower = 0.10 }, small_drone = { p_hit = 0.02, p_kill = 0.90 }, light_aircraft = { p_hit = 0.04, p_kill = 0.30, p_mobility = 0.40 }, person = { p_hit = 0.22, p_kill = 0.80 } } },
+]
+
+[technical.sources]
+cruise_mps = "[E]"
+max_mps = "[E]"
+sensors = "[E]"
+"12.7 mm HMG (DShK-class)" = { count = "[3; E]", min_range_m = "[E]", max_range_m = "[3]", speed_mps = "[3]", guidance = "[17; E]", warhead = "[E]", burst_rounds = "[23; E]", rate_rpm = "[3]", burst_interval_s = "[E]", effects = "[E]" }
+
+[person]
+name = "Person on foot"
+domain = "ground"
+signature = 0.2
+emits = false
+turn_dps = 60.0
+alt_m = 0.0
+cruise_mps = 1.4
+max_mps = 5.0
+sources = { cruise_mps = "[E]", max_mps = "[E]" }

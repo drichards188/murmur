@@ -144,6 +144,43 @@ fn the_kind_alias_tables_agree() {
     assert_eq!(murmur_contacts::damage::KIND_ALIASES, murmur_decide::catalog::KIND_ALIASES);
 }
 
+/// The contact catalog's loadouts are the decision core's weapon facts (bd murmur-y85j.1): each
+/// entry, less the truth side's own keys (`reload_s`, `sense`), is read and validated by the
+/// decision core's own catalog parser, and reads back field for field as the truth side reads it.
+#[test]
+fn the_contact_catalog_loadouts_are_weapon_facts() {
+    let text = std::fs::read_to_string(repo().join("sim/contacts.toml")).expect("sim/contacts.toml");
+    let ours = murmur_contacts::catalog::Catalog::from_toml(&text).expect("the truth side reads it");
+    let mut raw: toml::Table = toml::from_str(&text).expect("toml");
+    for (_, kind) in raw.iter_mut() {
+        let kind = kind.as_table_mut().expect("a kind is a table");
+        // what the platform catalog needs of a platform, and none of the node's own sensors
+        // (a reach each, not our catalog's sensor list)
+        kind.insert("sim".into(), "contact".into());
+        kind.remove("sensors");
+        for w in kind.get_mut("loadout").and_then(|l| l.as_array_mut()).into_iter().flatten() {
+            let w = w.as_table_mut().expect("a weapon is a table");
+            w.remove("reload_s");
+            w.remove("sense");
+        }
+    }
+    let facts = murmur_decide::Catalog::from_toml(&toml::to_string(&raw).expect("toml")).expect("the decision core reads every loadout");
+    let mut weapons = 0;
+    for (id, k) in &ours.kinds {
+        let theirs = &facts.get(id).expect(id).loadout;
+        assert_eq!(theirs.len(), k.loadout.len(), "{id}");
+        for (w, f) in k.loadout.iter().zip(theirs) {
+            let mut w = serde_json::to_value(w).expect("json");
+            let w = w.as_object_mut().expect("object");
+            w.remove("reload_s");
+            w.remove("sense");
+            assert_eq!(serde_json::Value::Object(w.clone()), serde_json::to_value(f).expect("json"), "{id}");
+            weapons += 1;
+        }
+    }
+    assert!(weapons >= 10, "the catalog's weapons: {weapons}");
+}
+
 /// What the bridge hands the truth side with a strike reads there as it was meant (bd
 /// murmur-lbw8.2): the catalog's weapon facts as a weapon with its figures, and the engine's
 /// munition flight as a launch and an impact.

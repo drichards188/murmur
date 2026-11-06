@@ -28,6 +28,11 @@ pub struct ContactTruth {
     pub affiliation: Affiliation,
     pub domain: Domain,
     pub kind: String,
+    /// The catalog kind, when the contact passes for another (`kind` is then the look-alike,
+    /// sim/contacts.toml `looks_like`): truth only, for the evaluation log; the bridge never
+    /// reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
     pub lat: f64,
     pub lon: f64,
     pub alt_m: f64,
@@ -186,6 +191,7 @@ impl TruthMessage {
                     affiliation: m.contact.affiliation,
                     domain: m.contact.domain,
                     kind: m.contact.kind.clone(),
+                    variant: m.contact.variant.clone(),
                     lat: round(m.st.lat, 7),
                     lon: round(m.st.lon, 7),
                     alt_m: round(m.st.alt_m, 1),

@@ -12,7 +12,7 @@
 //! name = "Sausalito ferry"      # truth-side label (the C2 never sees it)
 //! affiliation = "neutral"       # hostile | suspect | neutral | unknown | assumed_friend
 //! domain = "surface"            # air | surface | subsurface | ground
-//! kind = "ferry"                # see KINDS for the defaults each kind carries
+//! kind = "ferry"                # sim/contacts.toml: the defaults each kind carries
 //! speed_mps = 11
 //! motion = "route"              # recorded | route | transit | loiter | station | drift
 //! route = [[-122.3920, 37.7960], [-122.4790, 37.8560]]   # [lon, lat] (GeoJSON order)
@@ -93,44 +93,11 @@ pub struct Ais {
     pub spoofed: bool,
 }
 
-/// What a kind of contact is like by default: radar/EO signature relative to a nominal
-/// contact, whether it emits (navigation radar, transponder) and how fast it turns.
-pub struct KindDefaults {
-    pub kind: &'static str,
-    pub domain: Domain,
-    pub signature: f64,
-    pub emits: bool,
-    pub turn_dps: f64,
-    pub alt_m: f64,
-}
-
-/// Rounded, indicative figures: a cargo ship is a big radar target, a small fast boat or a
-/// small UAS a poor one, a submarine quiet. Not models of specific vessels.
-pub const KINDS: &[KindDefaults] = &[
-    KindDefaults { kind: "cargo_ship", domain: Domain::Surface, signature: 1.6, emits: true, turn_dps: 1.0, alt_m: 0.0 },
-    KindDefaults { kind: "tanker", domain: Domain::Surface, signature: 1.6, emits: true, turn_dps: 0.8, alt_m: 0.0 },
-    KindDefaults { kind: "ferry", domain: Domain::Surface, signature: 1.2, emits: true, turn_dps: 3.0, alt_m: 0.0 },
-    KindDefaults { kind: "patrol_boat", domain: Domain::Surface, signature: 0.9, emits: true, turn_dps: 5.0, alt_m: 0.0 },
-    KindDefaults { kind: "fishing_vessel", domain: Domain::Surface, signature: 0.7, emits: true, turn_dps: 4.0, alt_m: 0.0 },
-    KindDefaults { kind: "sailboat", domain: Domain::Surface, signature: 0.5, emits: false, turn_dps: 6.0, alt_m: 0.0 },
-    KindDefaults { kind: "small_fast_boat", domain: Domain::Surface, signature: 0.35, emits: false, turn_dps: 12.0, alt_m: 0.0 },
-    KindDefaults { kind: "light_aircraft", domain: Domain::Air, signature: 0.6, emits: true, turn_dps: 6.0, alt_m: 300.0 },
-    KindDefaults { kind: "helicopter", domain: Domain::Air, signature: 0.7, emits: true, turn_dps: 10.0, alt_m: 200.0 },
-    KindDefaults { kind: "unknown_uas", domain: Domain::Air, signature: 0.15, emits: false, turn_dps: 20.0, alt_m: 120.0 },
-    KindDefaults { kind: "submarine", domain: Domain::Subsurface, signature: 0.3, emits: false, turn_dps: 2.0, alt_m: -50.0 },
-    KindDefaults { kind: "uuv", domain: Domain::Subsurface, signature: 0.15, emits: false, turn_dps: 8.0, alt_m: -20.0 },
-    KindDefaults { kind: "vehicle", domain: Domain::Ground, signature: 0.5, emits: false, turn_dps: 15.0, alt_m: 0.0 },
-    KindDefaults { kind: "truck", domain: Domain::Ground, signature: 0.8, emits: false, turn_dps: 10.0, alt_m: 0.0 },
-    // the physical sensing model's kinds (WORLD-V3-PLAN 2.1): their signatures are the bridge's
-    // table (tracks/physical/signature.rs); these multipliers only serve a legacy run
-    KindDefaults { kind: "small_drone", domain: Domain::Air, signature: 0.15, emits: false, turn_dps: 30.0, alt_m: 80.0 },
-    KindDefaults { kind: "periscope", domain: Domain::Subsurface, signature: 0.2, emits: false, turn_dps: 2.0, alt_m: -15.0 },
-    KindDefaults { kind: "diver", domain: Domain::Subsurface, signature: 0.05, emits: false, turn_dps: 20.0, alt_m: -5.0 },
-    KindDefaults { kind: "person", domain: Domain::Ground, signature: 0.2, emits: false, turn_dps: 60.0, alt_m: 0.0 },
-];
-
-pub fn kind_defaults(kind: &str) -> Option<&'static KindDefaults> {
-    KINDS.iter().find(|k| k.kind == kind)
+/// What a kind of contact is like by default (its radar/EO signature relative to a nominal
+/// contact, whether it emits, how fast it turns, its height): its entry in the contact catalog
+/// (`sim/contacts.toml`, [`crate::catalog`]), which replaced the `KINDS` table that was here.
+pub fn kind_defaults(kind: &str) -> Option<&'static crate::catalog::Kind> {
+    crate::catalog::Catalog::shipped().get(kind)
 }
 
 /// What an engagement's effect (Phase E) does to a contact inside its radius: a flag and a time,
@@ -489,7 +456,11 @@ pub struct Contact {
     pub name: String,
     pub affiliation: Affiliation,
     pub domain: Domain,
+    /// The kind our sensors see it as: its catalog kind's `looks_like`, or the kind itself.
     pub kind: String,
+    /// The catalog kind its file names, when it passes for another (`kind` is then the
+    /// look-alike; decision D3): truth only.
+    pub variant: Option<String>,
     pub ais: Option<Ais>,
     pub emits: bool,
     pub signature: f64,
@@ -624,7 +595,8 @@ impl ContactSpec {
             name: self.name.clone().unwrap_or_else(|| self.id.clone()),
             affiliation: self.affiliation,
             domain: self.domain,
-            kind: self.kind.clone(),
+            kind: d.and_then(|d| d.looks_like.clone()).unwrap_or_else(|| self.kind.clone()),
+            variant: d.and_then(|d| d.looks_like.as_ref()).map(|_| self.kind.clone()),
             ais: self.ais.clone(),
             emits: self.emits.unwrap_or(d.is_some_and(|d| d.emits)),
             signature: self

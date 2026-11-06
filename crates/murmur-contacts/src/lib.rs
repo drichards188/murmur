@@ -5,6 +5,7 @@
 //! separate processes and on a separate, labelled channel:
 //!
 //! - `sim/scenarios/<name>.toml` lists the contacts and their motion ([`scenario`]);
+//! - `sim/contacts.toml` says what each kind of contact is and carries ([`catalog`]);
 //! - [`motion`] moves them: waypoint routes (looping or back and forth, with dwell at the
 //!   ends), transits, loiters, station keeping, and drift with the tidewater current;
 //! - [`truth`] is the message shape published to the bridge's simulation channel
@@ -21,6 +22,7 @@
 //! runs from `MURMUR_AT` at `MURMUR_RATE`, so a run with the same scenario, seed and clock
 //! produces the same truth.
 
+pub mod catalog;
 pub mod damage;
 pub mod effect;
 pub mod mine;

@@ -413,6 +413,7 @@ mod tests {
             affiliation: Affiliation::Neutral,
             domain: Domain::Surface,
             kind: "ferry".into(),
+            variant: None,
             ais: None,
             emits: true,
             signature: 1.0,
