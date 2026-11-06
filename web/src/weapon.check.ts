@@ -1,17 +1,21 @@
 // Checks for weapon.ts (no test runner in web/): node web/src/weapon.check.ts, as make check does.
-// The claims: a seen launch gives an estimated flight from the launch fix to the vehicle it heads
-// for at the class's speed, labelled as an estimate with a countdown, ending at the reported strike
-// once there is one; no launch seen, no estimate (only fixes and the strike); the banner says
-// INCOMING while a detected weapon flies, then the strike with its warning; the timeline names each
-// cue and when. Throws on the first failure, prints "weapon: ok" otherwise.
+// The claims (bd murmur-ju1h): a weapon is shown only as far as its identity has come; a launch is a
+// launch (its bearing, no class, speed, target or estimate); a weapon is "type unknown" with its
+// measured speed, and with a measured line but no target only its heading is drawn; a class is
+// shown with its evidence; the estimated flight needs a derived target and strike time, ends at the
+// reported strike once there is one, and counts down; the banner and the timeline say only what the
+// stage knows; a lone fix is not called a weapon. Throws on the first failure, prints "weapon: ok".
 import {
+  classText,
   clockText,
   countdownS,
   estimate,
   estimateMapLabel,
   estimateText,
+  heading,
   shownWeapons,
   SHOWN_MS,
+  stageText,
   STRUCK_BANNER_MS,
   strikeFlash,
   timeline,
@@ -30,73 +34,136 @@ const names: Record<string, string> = { '1': 'HUNTER 1', '2': 'REAPER 1' }
 const nameOf = (uid: string) => names[uid] ?? `vehicle ${uid}`
 const T0 = 1_781_431_200_000
 const boat: [number, number] = [-122.495, 37.812]
+const mPerLon = 111_320 * Math.cos((37.812 * Math.PI) / 180)
 // HUNTER 1 1 km east of the boat
-const hunter: [number, number] = [-122.495 + 1000 / (111_320 * Math.cos((37.812 * Math.PI) / 180)), 37.812]
-const w: WeaponTrack = {
+const hunter: [number, number] = [-122.495 + 1000 / mPerLon, 37.812]
+const at = () => hunter
+
+// ---- the launch stage: where and the bearing, nothing more ----------------------------------------
+const seen: WeaponTrack = {
   id: 'W-1',
   report: 'A-1',
-  class: 'ATGM-class missile',
-  speed_mps: 250,
-  aimed_at: '1',
-  launch: { t: T0 + 80_400, point: boat, sigma_m: 20, sensors: ['1:eo_ir'] },
+  stage: 'launch',
+  class: null,
+  class_symbol: null,
+  evidence: [],
+  weapon_by: null,
+  speed_mps: null,
+  speed_sigma_mps: null,
+  velocity_mps: null,
+  kin_t: null,
+  kin_point: null,
+  track: null,
+  shooter: 'T-0004',
+  aimed_at: null,
+  aim_basis: null,
+  eta_t: null,
+  nominal_mps: null,
+  launch: { t: T0 + 80_400, flash_t: T0 + 80_000, point: boat, sigma_m: 20, sensors: ['1:eo_ir'], observer: { uid: '1', point: hunter }, bearing_deg: 270 },
   fixes: [],
   status: 'in_flight',
   ended_t: null,
   struck: null,
-  eta_t: T0 + 84_400,
   first_cue_t: T0 + 80_400,
   warning_s: null,
 }
+check(stageText(seen, nameOf) === 'launch, bearing 270° from HUNTER 1', stageText(seen, nameOf))
+check(estimate(seen, hunter) === null && heading(seen, T0 + 81_000) === null && classText(seen) === null, 'a launch: no estimate, heading or class')
+const launchBanner = weaponBanner([seen], T0 + 81_000, nameOf, at)!
+check(launchBanner.head === 'LAUNCH', launchBanner.head)
+check(
+  launchBanner.text === 'launch, bearing 270° from HUNTER 1 from T-0004 · seen by HUNTER 1 EO/IR · weapon not yet tracked: type, speed and target unknown',
+  launchBanner.text,
+)
 
-// ---- the estimate ----------------------------------------------------------------------------
-const est = estimate(w, hunter)!
-check(est != null && near(est.tof_s, 4, 0.01), `1 km at 250 m/s: ${est?.tof_s}`)
-check(est.launch_point === boat && est.impact_point === hunter, 'from the launch fix to the vehicle it heads for')
-check(near(est.impact_t, T0 + 84_400, 5), 'its expected strike')
-check(countdownS(est, w, T0 + 82_400) === 2 && countdownS(est, w, T0 + 90_000) === 0, 'a countdown that stops at 0')
-check(estimateMapLabel(est, w, T0 + 82_400) === 'EST. ATGM · 2.0 s', estimateMapLabel(est, w, T0 + 82_400))
-check(estimateMapLabel(est, w, T0 + 85_000) === 'EST. ATGM · due', 'due once past')
-check(estimateText(w, est, nameOf) === 'estimated from the launch seen by HUNTER 1 EO/IR: ATGM-class missile, about 4 s', estimateText(w, est, nameOf))
-check(estimate({ ...w, launch: null }, hunter) === null, 'no launch seen: no estimate')
-check(estimate(w, null) === null && estimate({ ...w, speed_mps: null }, hunter) === null, 'nor without the victim or a speed')
-check(weaponShort('ATGM-class missile') === 'ATGM' && weaponShort(null) === 'WEAPON', 'short names')
+// ---- the weapon stage: type unknown, its measured speed, its heading with no target -------------
+const fix = { t: T0 + 82_000, point: [-122.495 + 500 / mPerLon, 37.812] as [number, number], sigma_m: 150, sensor: '2:radar' }
+const weapon: WeaponTrack = {
+  ...seen,
+  stage: 'weapon',
+  weapon_by: { speed_mps: 243, over_mps: 60, from_launch: true, closing_on: null },
+  speed_mps: 243,
+  speed_sigma_mps: 84,
+  velocity_mps: [243, 0],
+  kin_t: fix.t,
+  kin_point: fix.point,
+  fixes: [fix],
+}
+check(stageText(weapon, nameOf) === 'weapon, type unknown, 243 m/s', stageText(weapon, nameOf))
+const h = heading(weapon, T0 + 83_000)!
+check(h != null && near((h.at[0] - fix.point[0]) * mPerLon, 243, 0.5), `its heading a second on: ${h && (h.at[0] - fix.point[0]) * mPerLon}`)
+check(near((heading(weapon, T0 + 99_000)!.at[0] - fix.point[0]) * mPerLon, 729, 1), 'no further than 3 s ahead')
+check(estimate(weapon, hunter) === null, 'no target derived: no estimated flight')
+const wb = weaponBanner([weapon], T0 + 82_400, nameOf, at)!
+check(wb.head === 'INCOMING' && wb.text === 'weapon, type unknown, 243 m/s · seen by HUNTER 1 EO/IR · fixed by REAPER 1 radar', wb.text)
+const jet: WeaponTrack = { ...weapon, id: 'W-2', report: null, launch: null, shooter: null, track: 'T-0009', speed_mps: 220, weapon_by: { speed_mps: 220, over_mps: 150, from_launch: false, closing_on: '1' } }
+check(stageText(jet, nameOf) === 'weapon, type unknown, 220 m/s (track T-0009)', 'a contact track taken for a weapon names its track')
+
+// ---- the class stage: the class with its evidence, the estimate on a derived target ----------------
+const classed: WeaponTrack = {
+  ...weapon,
+  stage: 'class',
+  class: 'ATGM-class',
+  class_symbol: 'missile',
+  evidence: [
+    { basis: 'speed', short: '250 m/s', text: 'measured 250 m/s' },
+    { basis: 'shooter', short: 'from T-0004', text: 'launched from T-0004' },
+  ],
+  speed_mps: 250,
+  aimed_at: '1',
+  aim_basis: 'track',
+  eta_t: T0 + 84_000,
+  nominal_mps: 250,
+}
+check(classText(classed) === 'ATGM-class: 250 m/s, from T-0004', classText(classed)!)
+check(stageText(classed, nameOf) === 'ATGM-class: 250 m/s, from T-0004', 'the class stage says its evidence')
+const est = estimate(classed, hunter)!
+check(est != null && near(est.tof_s, 4, 0.01) && near(est.speed_mps, 250, 0.5), `from the flash to the strike time: ${est?.tof_s} s at ${est?.speed_mps}`)
+check(est.launch_point === boat && est.impact_point === hunter && est.launch_t === T0 + 80_000, 'from the launch fix at the flash to the vehicle it heads for')
+check(heading(classed, T0 + 82_500) === null, 'a target: the estimate, not a heading')
+check(countdownS(est, classed, T0 + 82_000) === 2 && countdownS(est, classed, T0 + 90_000) === 0, 'a countdown that stops at 0')
+check(estimateMapLabel(est, classed, T0 + 82_000) === 'EST. ATGM · 2.0 s', estimateMapLabel(est, classed, T0 + 82_000))
+check(estimateMapLabel(est, { ...classed, class: null }, T0 + 85_000) === 'EST. WEAPON · due', 'due once past; WEAPON without a class')
+check(estimateText(classed, est, nameOf).startsWith('heading for HUNTER 1 on its measured line'), estimateText(classed, est, nameOf))
+const reach = { ...classed, aim_basis: 'reach' as const }
+check(
+  estimateText(reach, estimate(reach, hunter), nameOf) === "heading for HUNTER 1, the only one of ours within the ATGM-class's reach of the launch, at its nominal 250 m/s",
+  estimateText(reach, estimate(reach, hunter), nameOf),
+)
+check(estimate(classed, null) === null && estimate({ ...classed, eta_t: null }, hunter) === null, 'nor without the victim or a strike time')
+check(weaponShort('ATGM-class') === 'ATGM' && weaponShort(null) === 'WEAPON', 'short names')
+const inc = weaponBanner([classed], T0 + 82_000, nameOf, at)!
+check(
+  inc.text === 'ATGM-class: 250 m/s, from T-0004 at HUNTER 1, strike expected in 2.0 s · seen by HUNTER 1 EO/IR · fixed by REAPER 1 radar',
+  inc.text,
+)
+
+// ---- a lone fix is not a weapon -------------------------------------------------------------------
+const plot: WeaponTrack = { ...weapon, id: 'W-3', report: null, stage: 'plot', launch: null, shooter: null, weapon_by: null, speed_mps: null, velocity_mps: null, kin_point: null, kin_t: null }
+check(weaponBanner([plot], T0 + 82_400, nameOf, at) === null, 'a lone fix: no banner')
 
 // ---- the strike ------------------------------------------------------------------------------
-const struck: WeaponTrack = {
-  ...w,
-  fixes: [{ t: T0 + 82_000, point: [-122.489, 37.812], sigma_m: 75, sensor: '2:radar' }],
-  status: 'expended',
-  ended_t: T0 + 84_500,
-  struck: { uid: '1', t: T0 + 84_500 },
-  warning_s: 4.1,
-}
+const struck: WeaponTrack = { ...classed, status: 'expended', ended_t: T0 + 84_500, struck: { uid: '1', t: T0 + 84_500 }, warning_s: 4.1 }
 const est2 = estimate(struck, hunter)!
 check(est2.impact_t === T0 + 84_500 && countdownS(est2, struck, T0 + 84_000) === null, 'struck: the estimate ends at the reported strike, no countdown')
-check(strikeFlash(struck, T0 + 84_500) === 0 && strikeFlash(struck, T0 + 90_000) === null && strikeFlash(w, T0 + 84_500) === null, 'a flash at the strike')
+check(strikeFlash(struck, T0 + 84_500) === 0 && strikeFlash(struck, T0 + 90_000) === null && strikeFlash(seen, T0 + 84_500) === null, 'a flash at the strike')
 check(shownWeapons([struck], T0 + 84_500 + SHOWN_MS - 1).length === 1 && shownWeapons([struck], T0 + 84_500 + SHOWN_MS).length === 0, 'shown a minute after it ended')
-check(weaponReports([w, { ...w, id: 'W-2', report: null }]).has('A-1') && weaponReports([w]).size === 1, 'the acts that launched a weapon')
-
-// ---- the banner ------------------------------------------------------------------------------
-const at = () => hunter
-const inc = weaponBanner([w], T0 + 82_400, nameOf, at)!
-check(inc.tone === 'incoming' && inc.head === 'INCOMING', 'INCOMING while it flies')
-check(inc.text === 'ATGM at HUNTER 1, strike expected in 2.0 s · launch seen by HUNTER 1 EO/IR · weapon not tracked', inc.text)
-const tracked = weaponBanner([{ ...w, fixes: struck.fixes }], T0 + 82_400, nameOf, at)!
-check(tracked.text.endsWith('weapon fixed by REAPER 1 radar'), tracked.text)
+check(weaponReports([seen, { ...seen, id: 'W-2', report: null }]).has('A-1') && weaponReports([seen]).size === 1, 'the acts that launched a weapon')
 const hit = weaponBanner([struck], T0 + 86_000, nameOf, at)!
 check(hit.tone === 'struck' && hit.head === 'HUNTER 1 STRUCK', hit.head)
-check(hit.text === 'launch seen by HUNTER 1 EO/IR · 4.1 s of warning · any damage is its own report (Inbox)', hit.text)
+check(hit.text === 'launch seen by HUNTER 1 EO/IR · ATGM-class: 250 m/s, from T-0004 · 4.1 s of warning · any damage is its own report (Inbox)', hit.text)
 check(weaponBanner([struck], T0 + 84_500 + STRUCK_BANNER_MS, nameOf, at) === null, 'the strike banner goes')
-const blind: WeaponTrack = { ...struck, id: 'W-3', report: null, class: null, speed_mps: null, aimed_at: null, launch: null, fixes: [], first_cue_t: null, warning_s: null }
+const blind: WeaponTrack = { ...plot, id: 'W-4', fixes: [], status: 'expended', ended_t: T0 + 84_500, struck: { uid: '1', t: T0 + 84_500 }, first_cue_t: null, warning_s: null }
 check(weaponBanner([blind], T0 + 86_000, nameOf, at)!.text === 'no sensor saw the launch or the weapon · any damage is its own report (Inbox)', 'an unseen strike')
-check(weaponBanner([{ ...blind, status: 'in_flight', struck: null, ended_t: null }], T0 + 86_000, nameOf, at) === null, 'nothing known yet: no banner')
 
 // ---- the timeline ----------------------------------------------------------------------------
 check(clockText(T0 + 80_400, T0) === '1:20.4' && clockText(T0 + 9_000, T0) === '0:09.0', 'the run clock')
 check(
-  timeline(struck, nameOf, T0) === 'launch seen by HUNTER 1 EO/IR at 1:20.4; weapon fixed by REAPER 1 radar from 1:22.0; HUNTER 1 struck at 1:24.5; 4.1 s of warning',
+  timeline(struck, nameOf, T0) ===
+    'launch seen by HUNTER 1 EO/IR at 1:20.4; weapon fixed by REAPER 1 radar from 1:22.0; assessed ATGM-class: 250 m/s, from T-0004; HUNTER 1 struck at 1:24.5; 4.1 s of warning',
   timeline(struck, nameOf, T0),
 )
+check(timeline(seen, nameOf, T0) === 'launch seen by HUNTER 1 EO/IR at 1:20.4; weapon not fixed in flight; strike to come', timeline(seen, nameOf, T0))
 check(timeline(blind, nameOf, T0) === 'launch not seen; weapon not fixed in flight; HUNTER 1 struck at 1:24.5', timeline(blind, nameOf, T0))
 
 console.log('weapon: ok')

@@ -74,11 +74,11 @@ eq([at(f), f.byRule, f.confirmed, f.declarationAct], ['confirm', true, false, 'a
 // strike (its timeline is read), then moves on to the confirmation
 const shot = (struckT: number | null) =>
   ({
-    id: 'W-1', report: 'A-1', class: 'ATGM-class missile', speed_mps: 250, aimed_at: '1',
-    launch: { t: 1000, point: HOLD, sigma_m: 20, sensors: ['1:eo_ir'] }, fixes: [],
+    id: 'W-1', report: 'A-1', stage: 'launch', class: null, evidence: [], speed_mps: null, aimed_at: null,
+    launch: { t: 1000, flash_t: 900, point: HOLD, sigma_m: 20, sensors: ['1:eo_ir'], observer: null, bearing_deg: null }, fixes: [],
     status: struckT == null ? 'in_flight' : 'expended', ended_t: struckT, struck: struckT == null ? null : { uid: '1', t: struckT },
     eta_t: 5000, first_cue_t: 1000, warning_s: struckT == null ? null : (struckT - 1000) / 1000,
-  }) as WeaponTrack
+  }) as unknown as WeaponTrack
 eq(at(tutorialFacts([ferry, ruled], undefined, undefined, [], 3000, [], null, [shot(null)])), 'act', 'declared while the missile flies: the attack is still on')
 eq(at(tutorialFacts([ferry, ruled], undefined, undefined, [], 6000, [], null, [shot(5000)])), 'act', 'just struck: its timeline is read first')
 const settled = tutorialFacts([ferry, ruled], undefined, undefined, [], 5000 + ATTACK_READ_MS, [], null, [shot(5000)])

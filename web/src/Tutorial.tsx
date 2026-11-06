@@ -172,8 +172,8 @@ function stepView(
         body: (
           <>
             <p>
-              Intelligence warned of an attack by small craft. The boat carries an ATGM-class missile (some 250 m/s: from a kilometre it strikes in about 4 s). Three things can
-              tell us it fired:
+              Intelligence warned of an attack by small craft, which are known to carry ATGM-class missiles (some 250 m/s: from a kilometre one strikes in about 4 s).
+              Three things can tell us it fired:
             </p>
             <ol>
               <li>
@@ -189,8 +189,11 @@ function stepView(
               </li>
             </ol>
             <p>
-              The earliest cue is when we know; from it to the strike is our warning. A seen launch draws the missile&apos;s estimated flight on the map, dashed, with a
-              countdown; its real fixes are solid marks.
+              The earliest cue is when we know; from it to the strike is our warning. The map and the banner show what we know, stage by stage, as a crew learns it: a{' '}
+              <b>launch</b> (where the camera placed the shooter, the bearing from HUNTER 1: no type, speed or target yet); a <b>weapon</b> once fixes measure a speed no
+              boat makes (its type unknown); its <b>class</b> only on named evidence: that speed fitting the ATGM-class, or the boat identified as a kind known to carry
+              one. The estimated flight is drawn dashed, with a countdown, only once its target and timing have a basis; its real fixes are solid marks. The exact
+              weapon is never named: nothing here could tell it.
             </p>
             <p>
               The launch the camera saw is the act&apos;s observation: attributed to one track at 0.9 or more, the engine declares that track hostile by rule. Speed,
