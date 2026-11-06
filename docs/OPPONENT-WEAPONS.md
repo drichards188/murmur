@@ -6,6 +6,12 @@ design's measurement and the as-built one are ignored probes in
 `crates/murmur-bridge/src/tracks/tests/weapon_probe.rs`; section 12 records what was built and how
 it was checked.
 
+Since 2026-11-06 (docs/AUTONOMOUS-NODES.md, bd murmur-y85j) a contact's weapons are its catalog
+kind's (`sim/contacts.toml`) and it fires them by its own fire control when an `[[order]]` tells it
+to attack (section 16). The per-contact `weapon = {...}` and the scripted `[[act]]` this document
+began with are the old path: loaded only from a file that says why (`scripted_acts`), never in a
+situation. Everything below about how a shot is flown, sensed and drawn holds for both.
+
 ## 1. Why
 
 The owner, on the tutorial: "setup the opponent in that tutorial with a weapon it deploys instead
@@ -23,7 +29,7 @@ how, or when, the C2 learns that one of ours was attacked.
 
 A contact may carry a weapon, and each act it commits launches it. It flies straight from the
 shooter to its victim at its speed, and the strike is a time and a report. Without figures (as
-built on 10-29, and still the tutorial's boat) that is all: no warhead, blast, damage or miss.
+built on 10-29) that is all: no warhead, blast, damage or miss.
 With figures it is drawn by the damage model (section 13, 2026-11-02). Three cues can tell us,
 each through the physical sensing model:
 
@@ -38,7 +44,8 @@ nothing differently and **the rules version does not change** (section 7).
 ## 3. Truth (`crates/murmur-contacts`)
 
 **The file.** Opt-in per contact; an act by an armed contact launches its weapon, any other act
-stays abstract and behaves byte for byte as today:
+stays abstract and behaves byte for byte as today (since 2026-11-06 the old path, loaded only under
+a top-level `scripted_acts = "<why>"`; a live node is armed by its kind and ordered, section 16):
 
 ```toml
 [[contact]]
@@ -249,6 +256,13 @@ for the owner (section 11):
 
 ## 9. The tutorial
 
+Since 2026-11-06 (docs/AUTONOMOUS-NODES.md section 8) the boat is an `armed_fast_boat` with its
+kind's real magazine, ordered to attack HUNTER 1 every 90 s from 1:15 (its contacts file's
+`[[order]]`s): its four ATGMs one at a time, then two HMG bursts each time. Every strike on HUNTER 1
+is drawn and recorded and never applied, and every strike on the boat destroys it: training aids
+under the contacts file's `[training]` (`spared`, `strike_outcome`), refused anywhere but a
+tutorial. The bullets below are the design of 10-29.
+
 - The boat carries the ATGM-class missile and fires on HUNTER 1 from 1:20, then **every 90 s**
   (13 attacks to 20:00, instead of 19 acts a minute apart): each is visible, so a person waiting at
   the step meets one within a minute and a half. HUNTER 1's leg (0.9 to 1.2 km) is well inside the
@@ -288,7 +302,8 @@ flight, the banner and the card's act step.
    the first truth tick at or after the impact, not through the link emulator (latency, loss).
 5. **Shortcut: the flash is scored as a camera look** (bd murmur-nl15): the Johnson-pixel model on
    a 2 m, 300 K plume, not a point source's radiometry. Fine at the tutorial's 1 to 10 km.
-6. **Headless worlds refuse weapons, and MCP agents do not see the weapon picture** (follow-up bd
+6. **Headless worlds refuse weapons (they run them since docs/AUTONOMOUS-NODES.md stage 5), and
+   MCP agents do not see the weapon picture** (follow-up bd
    murmur-mmxk).
 7. **No back-track attribution.** A weapon track's line back to its origin is a line, not a point,
    without the launch time; when the launch is seen the flash places the shooter better anyway.
@@ -365,8 +380,11 @@ and copters, nothing equivalent for rovers, boats and subs), go silent or send t
 strike is drawn and recorded, and nothing else follows. The headless simulator refuses opponent
 weapons still (murmur-mmxk), so there only our own strikes' collateral damages ours.
 
-The shipped scenarios' weapons list no figures (the tutorial's boat fires every 90 s at HUNTER
-1, which would not survive the tutorial with them): their strikes change nothing, as before.
+The shipped scenarios' weapons listed no figures on 11-02 (the tutorial's boat fired every 90 s at
+HUNTER 1, which would not have survived the tutorial with them). Since 2026-11-06 every attacker
+fires its catalog kind's weapons, with figures, so every strike on ours is drawn (the tutorial's
+HUNTER 1 is spared by its `[training]`), and the headless simulator runs opponent weapons too
+(docs/AUTONOMOUS-NODES.md stage 5), its strikes on ours taken by the episode's fleet.
 
 ## 14. Identity by stages (2026-11-06, bd murmur-ju1h)
 
@@ -632,7 +650,7 @@ missile's about 95 % of the time and, the boat identified, classed at once as be
 same `ActReport` (a test round-trips it through the engine's own type, which refuses unknown
 fields) and logs the same `ident.act`; contact detections and the track picture are the same, second
 by second, with each class in the truth (tested); the tracker and the legacy model untouched;
-headless still refuses weapons (stage 5).
+headless refused weapons until stage 5 (built since: section 16).
 
 **Checked.** `tracks::weapons::tests`: a speed fit chooses between classes; an identified small
 fast boat waits for evidence until its launch is told; a missile at an aircraft's height passes the
@@ -644,3 +662,44 @@ later one; a torpedo is heard and never seen; a look is answered with ours in re
 with `aim_at`; the truth message reads `look` and `rounds` and ignores `node_events`. Console:
 `weaponSymbols.check.ts` (the classes' kinds fly as missiles), `weapon.check.ts` (every class's
 short name, a gun's burst classed by its muzzle flash).
+
+## 16. Orders: how a node fires (2026-11-06, docs/AUTONOMOUS-NODES.md stages 1 to 7)
+
+The live path since bd murmur-y85j. A contact of an armed kind (`sim/contacts.toml`: its
+`loadout` in the shape of our catalog's `WeaponFacts`, each figure sourced in
+docs/research/opponent-weapons.md) carries its kind's weapons and rounds; it fires only when an
+order tells it to attack, and then by its own fire control (`crates/murmur-contacts/src/node.rs`):
+the target perceived (our vehicles as our C2 hears them within its sensors' reach and horizon,
+asked for in the truth message's `look`), the weapon named or the first of its loadout for the
+target's domain with rounds left, the range band, the reload or burst interval, the rounds. Out of
+band it closes (or holds, with `stay`); out of rounds it follows its kind's `on_empty`; unseen for
+60 s the order ends `target_lost`. Each shot is a launch as in sections 3 to 5, its act id
+`<contact>-<n>` in firing order, so the damage draws (`act:<id>`) stay the same from run to run.
+
+A file times the order; it never creates a weapon in the air, sets where one flies or decides what
+it hits:
+
+```toml
+[[order]]
+at_s = 200                       # the contacts' clock, as an act's was
+node = "fastboat-raider"
+do = "attack"                    # transit | hold | orbit | track | attack | break_off | flee | resume
+target = { vehicle = 1 }         # or { contact = "<id>" }
+weapon = "ATGM-class missile"    # optional: else the first of its loadout for the target's domain
+rounds = 1                       # optional: a salvo's cap
+stay = true                      # fire only from where it is
+label = "attacks the sensor ship (HUNTER 1)"   # truth-side note
+```
+
+The same order reaches a running stack through the contacts process's own API (`POST /orders` on
+`MURMUR_CONTACTS_PORT`, `X-Murmur-Sim-Token`; `crates/murmur-contacts/src/api.rs`) or a
+situation's timeline `red` step; never through the bridge. Headless runs the same code in process
+(`murmur_contacts::step`, AUTONOMOUS-NODES stage 5).
+
+**The old path, guarded** (stage 7, bd murmur-y85j.7). An `[[act]]` or a contact's own
+`weapon = {...}` loads only from a file with a top-level `scripted_acts = "<why>"`, refused
+otherwise by the contacts crate wherever the file is loaded (`scenario.rs` `old_path`); and a
+situation refuses its contacts file if it keeps the old path at all, marked or not
+(`eval/situation.py` `_contacts_guard`). What stays on it, and why, is AUTONOMOUS-NODES.md
+section 9's table: engine scenarios and the ident evaluation (which never reach the contacts
+crate), two headless operations families, and the crate's own tests of the scripted path.

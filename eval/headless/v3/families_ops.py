@@ -392,11 +392,17 @@ def _f15_engage(d: Any) -> None:
     d.post.append(post)
 
 
+#: why these families' episode contacts keep the old path (crates/murmur-contacts scenario.rs
+#: `old_path`, docs/AUTONOMOUS-NODES.md section 3): a top-level key, so it heads the file
+SCRIPTED_ACTS = ("headless evaluation (eval/headless/v3/families_ops.py F15, F16): abstract acts timed by the family's "
+                 "draws, frozen with its results")
+
+
 def append_acts(path: Path, acts: list[dict[str, Any]]) -> Path:
-    """The situation's contacts file with its `[[act]]`s added."""
+    """The situation's contacts file with its `[[act]]`s added, marked as the old path."""
     from ..families import _toml_value
 
-    out = [path.read_text().rstrip("\n"), ""]
+    out = [f"scripted_acts = {_toml_value(SCRIPTED_ACTS)}", path.read_text().rstrip("\n"), ""]
     for a in acts:
         out += ["[[act]]"] + [f"{k} = {_toml_value(v)}" for k, v in a.items()] + [""]
     path.write_text("\n".join(out))

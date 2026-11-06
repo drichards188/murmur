@@ -319,7 +319,7 @@ mod tests {
     use super::*;
     use crate::truth::TruthMessage;
 
-    const ARMED: &str = "title = \"t\"\n\
+    const ARMED: &str = "title = \"t\"\nscripted_acts = \"the scripted path's own tests\"\n\
         [[contact]]\nid = \"boat\"\naffiliation = \"hostile\"\ndomain = \"surface\"\nkind = \"small_fast_boat\"\nmotion = \"station\"\nat = [-122.4950, 37.8120]\n\
         weapon = { name = \"ATGM-class missile\", kind = \"atgm\", speed_mps = 250, range_m = 5000 }\n\
         [[contact]]\nid = \"ferry\"\naffiliation = \"neutral\"\ndomain = \"surface\"\nkind = \"ferry\"\nmotion = \"station\"\nat = [-122.4836, 37.8120]\n";

@@ -494,16 +494,41 @@ def _contact_ids(contacts: Path | None) -> set[str] | None:
     return {str(c.get("id")) for c in raw.get("contact", []) if isinstance(c, dict)}
 
 
-def _training_only_in_a_tutorial(sit: "Situation", path: Path) -> None:
-    """A contacts file's training aids (`[training]`: a strike outcome pinned on a contact, ours
-    spared their strikes; crates/murmur-contacts scenario.rs `Training`, docs/AUTONOMOUS-NODES.md
-    decision D5) bend the truth on purpose, for a person new to the chain: refused in any situation
-    that is not a tutorial (bd murmur-y85j.6; stage 7 adds the general guard)."""
-    if sit.tutorial or sit.contacts is None:
+def old_path(raw: dict[str, Any]) -> list[str]:
+    """What of the old path a contacts file (parsed) keeps: scripted acts (`[[act]]`), a
+    contact's own `weapon = {...}`, the `scripted_acts` marker that lets the contacts crate load
+    either (crates/murmur-contacts scenario.rs `old_path`); empty when none."""
+    found = []
+    if raw.get("act"):
+        found.append(f"{len(raw['act'])} scripted act(s) ([[act]])")
+    armed = [str(c.get("id")) for c in raw.get("contact", []) if isinstance(c, dict) and "weapon" in c]
+    if armed:
+        found.append(f"a weapon of its own on {', '.join(armed)}")
+    if "scripted_acts" in raw:
+        found.append(f"scripted_acts = {raw['scripted_acts']!r}")
+    return found
+
+
+def _contacts_guard(sit: "Situation", path: Path) -> None:
+    """What a situation's contacts file may not carry (docs/AUTONOMOUS-NODES.md section 3, bd
+    murmur-y85j.7). The old path, marked or not: a situation's attack is an armed catalog kind
+    firing at its `[[order]]` (or a timeline's `red` step), never a scripted act or a weapon the
+    file hands a contact; the contacts crate refuses the old path unmarked wherever a file is
+    loaded, and this refuses it in a live situation even when marked. And training aids
+    (`[training]`: a strike outcome pinned on a contact, ours spared their strikes; scenario.rs
+    `Training`, decision D5), which bend the truth on purpose for a person new to the chain: a
+    tutorial's only (bd murmur-y85j.6)."""
+    if sit.contacts is None:
         return
     try:
         raw = tomllib.loads(sit.contacts.read_text())
     except (OSError, tomllib.TOMLDecodeError):
+        return
+    found = old_path(raw)
+    if found:
+        raise SituationError(f"{path}: its contacts file {sit.contacts.name} keeps the old path ({'; '.join(found)}): "
+                             "a situation's attacks are armed nodes' [[order]]s (docs/AUTONOMOUS-NODES.md)")
+    if sit.tutorial:
         return
     if "training" in raw:
         keys = ", ".join(sorted(raw["training"])) if isinstance(raw["training"], dict) else "?"
@@ -730,7 +755,7 @@ def load_situation(path_or_name: str | Path) -> Situation:
     sit.tutorial = bool(raw.get("tutorial", False))
     if sit.tutorial and (sit.operator != "live" or sit.reveal):
         raise SituationError(f"{path}: a tutorial is live (the person makes every human decision) and never revealed")
-    _training_only_in_a_tutorial(sit, path)
+    _contacts_guard(sit, path)
     sit.seed = _num(raw.get("seed", 1), "seed", path, int)
     sit.ready_timeout_s = _num(raw.get("ready_timeout_s", 180), "ready_timeout_s", path)
     sit.ai_start_s = _num(raw.get("ai_start_s", 30), "ai_start_s", path)

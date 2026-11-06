@@ -174,6 +174,11 @@ async fn run() -> Result<(), String> {
             m.contact.name
         );
     }
+    // the old path (scripted acts, a contact's own weapon) only in a file that says why
+    // (scenario.rs `old_path`); never a situation's (eval/situation.py)
+    if let Some(why) = &scenario.scripted_acts {
+        println!("  the old path: {} scripted act(s), contacts' own weapons: {why}", scenario.acts.len());
+    }
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))

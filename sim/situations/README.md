@@ -426,6 +426,13 @@ the vehicle in the fleet) is in its answer. A fixed script belongs in the contac
 (`[[order]]`); a red step is for an order that depends on the run. In the headless simulator red
 steps are stage 5's (bd murmur-y85j.5).
 
+**What a situation's contacts file may not carry** (docs/AUTONOMOUS-NODES.md section 9, bd
+murmur-y85j.7). The old path: a scripted `[[act]]` or a contact's own `weapon = {...}`, which the
+contacts crate loads only under a top-level `scripted_acts = "<why>"`; a situation refuses it
+marked or not, so every attack in one is an armed node's order. And training aids (`[training]`):
+a tutorial's only. `eval/tests/test_situation.py` checks every situation's contacts file and every
+shipped one in `sim/scenarios`.
+
 **Headless.** The headless simulator runs a situation's timeline too (docs/HEADLESS.md section
 17): `propose`, `flood`, `link`, `declare` and `engage` as above on its simulated clock (an
 `engage` step's nomination is signed by the episode's scripted signers, section 16, when it has

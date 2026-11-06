@@ -447,10 +447,14 @@ meaningful.
   that edge. The release is judged as any missile's (slant range in the band, the strike's time,
   keep-outs at the strike), so a UGV on land launches at a boat on the water. Aircraft and other
   kinds unchanged. Scenarios 131-133 (`tests/rules28.rs`).
-- Opponent weapons (docs/OPPONENT-WEAPONS.md, bd murmur-wcvp; no rules version): a contact's
-  `weapon = { name, kind, speed_mps, range_m }` (kinds the bridge has figures for:
-  `tracks::physical::weapon::weapon_signature`: `atgm`, `rocket`, `air_missile`, `gun`, `torpedo`,
-  the contact catalog's `sense`; section 15) makes each of its acts a launch, flown by
+- Opponent weapons (docs/OPPONENT-WEAPONS.md, bd murmur-wcvp; no rules version): a node fires its
+  catalog kind's loadout (`sim/contacts.toml`) by its own fire control at an `[[order]]` (the
+  contacts file, the contacts process's `POST /orders`, a situation's `red` step;
+  docs/AUTONOMOUS-NODES.md 2.5). The old path (an `[[act]]`, a contact's own `weapon = {...}`)
+  loads only under a top-level `scripted_acts = "<why>"` (`scenario.rs` `old_path`) and never in a
+  situation, marked or not (`eval/situation.py` `_contacts_guard`; bd murmur-y85j.7). Each shot's
+  weapon kind (bridge figures: `tracks::physical::weapon::weapon_signature`: `atgm`, `rocket`,
+  `air_missile`, `gun`, `torpedo`, the catalog's `sense`; section 15) makes it a launch, flown by
   `murmur_contacts::weapon` to a lead point on the victim, in 3D (the truth asks the bridge where
   our victims are: `aim_at` in, `ours` out; a node's `look` asks for ours within its reach, answered
   in the same `ours`). The truth's `kind` only picks the physics. Under the physical model only (a
@@ -470,7 +474,8 @@ meaningful.
   truth's weapon kind, name, speed or victim. Weapon sensing reads the payload managers' state and
   never writes it: contact detections are the same with any class in the truth (tested). Every
   live situation's attacker is an armed catalog kind fired by its own orders (bd murmur-y85j.6);
-  the tutorial's boat is ordered every 90 s, and its contacts' `[training]` spares HUNTER 1.
+  the tutorial's boat is ordered every 90 s, and its contacts' `[training]` (a tutorial's only)
+  spares HUNTER 1.
 - Predicted link coverage (docs/LINK-COVERAGE.md, bd murmur-hei): `GET`/`POST
   /api/links/coverage`, `link_coverage` in dry runs and `preview_intent`, the MCP tool
   `get_link_coverage`, the console's Links layer and the order form's dry run (`web/src/

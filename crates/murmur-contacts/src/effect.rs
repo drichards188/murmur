@@ -602,6 +602,7 @@ mod tests {
 
     const SCENE: &str = r#"
         title = "t"
+        scripted_acts = "a contact's own weapon: the damage model's unit fixture"
         [[contact]]
         id = "boat"
         affiliation = "hostile"

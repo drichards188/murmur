@@ -86,6 +86,30 @@ def test_every_situation_loads():
     assert "15 m/s" in hw.director and "15 m/s" not in S.brief_text(hw)
 
 
+def test_no_live_contacts_file_keeps_the_old_path_or_a_training_aid(tmp_path: Path):
+    """docs/AUTONOMOUS-NODES.md section 3 (bd murmur-y85j.7): every situation's contacts file, and
+    every contacts file a live stack may load (sim/scenarios: the open world and its demos), has no
+    scripted act, no contact with a weapon of its own and no `scripted_acts` marker, so every
+    attack is an armed node's order; training aids are the tutorial's alone. A copy marked for the
+    old path, which the contacts crate would load, is refused as a situation's."""
+    files: dict[Path, bool] = {}
+    for p in sorted(S.SITUATIONS.glob("*.toml")):
+        sit = S.load_situation(p)
+        if sit.contacts is not None:
+            files[sit.contacts] = files.get(sit.contacts, False) or sit.tutorial
+    files.update({p.resolve(): files.get(p.resolve(), False) for p in (REPO / "sim" / "scenarios").glob("*.toml")})
+    assert len(files) >= 20 and any(files.values())
+    for f, tutorial in sorted(files.items()):
+        raw = tomllib.loads(f.read_text())
+        assert S.old_path(raw) == [], f
+        assert "training" not in raw or tutorial, f
+    marked = _write(tmp_path, "marked-contacts", "scripted_acts = \"an engine fixture\"\n"
+                    + (REPO / "sim" / "scenarios" / "hostile-act-engagement.toml").read_text()
+                    + "\n[[act]]\nid = \"a1\"\nat_s = 200\nby = \"fastboat-raider\"\nagainst_vehicle = 1\n")
+    with pytest.raises(S.SituationError, match=r"keeps the old path \(1 scripted act.*scripted_acts"):
+        S.load_situation(_write(tmp_path, "marked", BASE + f'contacts = "{marked}"\n'))
+
+
 def test_harbor_watch_contacts_and_fleet_fit_the_story():
     """The fast boat is the only contact without AIS near the Gate, it comes after the fleet is
     up, and the reserve Puma is the first Puma (the playbook's sensor)."""

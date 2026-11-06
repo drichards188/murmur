@@ -44,13 +44,18 @@
 //! optional `speed_mps` and `course_deg`); no constant speed or route is required. It
 //! interpolates only across supported gaps, with one-second bins for isolated/final fixes.
 //!
-//! A contact may carry a weapon (docs/OPPONENT-WEAPONS.md): `weapon = { name = "ATGM-class
-//! missile", kind = "atgm", speed_mps = 250, range_m = 5000 }` (and `fly_m`, its flight height
-//! above the sea, default 4, negative under it; `guidance`, `warhead_kg` and `effects`, its hit
-//! and damage figures for the damage model, [`crate::damage`]). Every act by such a contact
-//! launches it ([`crate::weapon`]); the acts of any other contact stay abstract. Weapons need the
-//! physical sensing model: a file that names the legacy one and a weapon is refused, as is an act
-//! against a contact the weapon cannot reach at the act's second.
+//! **The old path: scripted acts** (rules 9, docs/OPPONENT-WEAPONS.md, kept for frozen and
+//! diagnostic uses, docs/AUTONOMOUS-NODES.md section 3). An `[[act]]` ([`ActSpec`]) is a second,
+//! an author and a victim; a contact may carry a weapon of its own, `weapon = { name =
+//! "ATGM-class missile", kind = "atgm", speed_mps = 250, range_m = 5000 }` (and `fly_m`, its
+//! flight height above the sea, default 4, negative under it; `guidance`, `warhead_kg` and
+//! `effects`, its hit and damage figures for the damage model, [`crate::damage`]), and every act
+//! by such a contact launches it ([`crate::weapon`]); the acts of any other contact stay abstract.
+//! A file on this path says why in a top-level `scripted_acts = "<why>"`, or it is refused at
+//! load (a marker on a file with neither is refused too): a live attack is an armed catalog kind
+//! and an `[[order]]`, below, and eval/situation.py refuses the old path in any situation, marked
+//! or not. Weapons need the physical sensing model: a file that names the legacy one and a weapon
+//! is refused, as is an act against a contact the weapon cannot reach at the act's second.
 //!
 //! Orders (docs/AUTONOMOUS-NODES.md 2.2 and 2.5, [`crate::node`]): a top-level `[[order]]` tells a
 //! contact (a node) what to do from a second on the contacts' clock, and the node does it by its
@@ -284,6 +289,10 @@ pub struct Scenario {
     /// Training aids (`[training]`, [`Training`]): the tutorial's only.
     #[serde(default)]
     pub training: Option<Training>,
+    /// Why this file scripts acts or hands a contact a weapon of its own (the old path, module
+    /// doc): required with either, refused without them.
+    #[serde(default)]
+    pub scripted_acts: Option<String>,
 }
 
 /// `[training]`: the training aids a scenario may carry, the tutorial's only (DECISIONS.md 11-03,
@@ -722,6 +731,7 @@ impl Scenario {
                 ));
             }
         }
+        s.old_path()?;
         let mut acts = std::collections::BTreeSet::new();
         for a in &s.acts {
             if a.id.trim().is_empty() || !acts.insert(a.id.as_str()) {
@@ -765,6 +775,33 @@ impl Scenario {
         }
         crate::node::check_file(&s)?;
         Ok(s)
+    }
+
+    /// The old path (module doc) only where a file says why: an `[[act]]` or a contact's own
+    /// `weapon = {...}` needs a top-level `scripted_acts = "<why>"`, and the marker needs one of
+    /// them (docs/AUTONOMOUS-NODES.md section 3, bd murmur-y85j.7). Every loader passes here: the
+    /// live contacts process, the headless simulator and the tests.
+    fn old_path(&self) -> Result<(), String> {
+        let armed: Vec<&str> = self.contacts.iter().filter(|c| c.weapon.is_some()).map(|c| c.id.as_str()).collect();
+        let mut what = Vec::new();
+        if !self.acts.is_empty() {
+            what.push(format!("{} scripted act(s) ([[act]])", self.acts.len()));
+        }
+        if !armed.is_empty() {
+            what.push(format!("a weapon of its own (`weapon = {{...}}`) on {}", armed.join(", ")));
+        }
+        match self.scripted_acts.as_deref().map(str::trim) {
+            Some("") => Err("scripted_acts must say why this file keeps the old path".into()),
+            Some(_) if what.is_empty() => {
+                Err("scripted_acts marks the old path, and this file has no [[act]] and no contact with a weapon of its own: drop it".into())
+            }
+            None if !what.is_empty() => Err(format!(
+                "{}: the old path, kept only for frozen and diagnostic uses. A node attacks by its catalog kind and an [[order]] \
+                 (docs/AUTONOMOUS-NODES.md); a file that must keep the old path says why in a top-level scripted_acts = \"<why>\"",
+                what.join(" and ")
+            )),
+            _ => Ok(()),
+        }
     }
 
     /// Every act by an armed contact against another contact is within its weapon's range at
@@ -982,7 +1019,8 @@ mod tests {
 
     /// Every contacts scenario that ships loads, its contacts and orders valid; since stage 6 (bd
     /// murmur-y85j.6) none scripts an act or hands a contact a weapon of its own: every attack is
-    /// a node's, by its catalog kind and an order.
+    /// a node's, by its catalog kind and an order. Since stage 7 (bd murmur-y85j.7) none is marked
+    /// for the old path, and training aids are the tutorial's alone.
     #[test]
     fn the_shipped_scenarios_load() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sim/scenarios");
@@ -993,6 +1031,9 @@ mod tests {
                 let s = Scenario::load(&p).expect("loads");
                 s.contacts().unwrap_or_else(|e| panic!("{}: {e}", p.display()));
                 assert!(s.acts.is_empty() && s.contacts.iter().all(|c| c.weapon.is_none()), "{}", p.display());
+                // none keeps the old path, marked or not, and only the tutorial's has training aids
+                assert!(s.scripted_acts.is_none(), "{}", p.display());
+                assert!(s.training.is_none() || p.file_stem().is_some_and(|f| f == "tutorial"), "{}", p.display());
                 n += 1;
             }
         }
@@ -1001,11 +1042,35 @@ mod tests {
         assert_eq!(ident.orders.len(), 3);
     }
 
+    /// The old path only where a file says why (bd murmur-y85j.7): an `[[act]]` or a contact's
+    /// own weapon without `scripted_acts` is refused, naming the order path; a blank reason, or a
+    /// marker on a file with neither, is refused too.
+    #[test]
+    fn the_old_path_needs_a_reason() {
+        let boat = "[[contact]]\nid = \"boat\"\naffiliation = \"hostile\"\ndomain = \"surface\"\nkind = \"small_fast_boat\"\nmotion = \"station\"\nat = [-122.5, 37.8]\n";
+        let act = "[[act]]\nid = \"a1\"\nat_s = 30\nby = \"boat\"\nagainst_vehicle = 3\n";
+        let weapon = "weapon = { name = \"ATGM-class missile\", kind = \"atgm\", speed_mps = 250, range_m = 5000 }\n";
+        let file = |head: &str, body: &str| Scenario::from_toml(&format!("title = \"t\"\n{head}{boat}{body}"));
+        for (body, what) in [
+            (act.to_string(), "1 scripted act(s)"),
+            (weapon.to_string(), "a weapon of its own"),
+            (format!("{weapon}{act}"), " and "),
+        ] {
+            let e = file("", &body).expect_err(what);
+            assert!(e.contains(what) && e.contains("[[order]]") && e.contains("scripted_acts"), "{e}");
+            let s = file("scripted_acts = \"an engine fixture\"\n", &body).expect(what);
+            assert_eq!(s.scripted_acts.as_deref(), Some("an engine fixture"));
+            assert!(file("scripted_acts = \"  \"\n", &body).expect_err("blank").contains("say why"));
+        }
+        assert!(file("scripted_acts = \"why\"\n", "").expect_err("stray").contains("drop it"));
+        assert_eq!(file("", "").expect("no old path").scripted_acts, None);
+    }
+
     /// Rules 9: scripted acts name an author and exactly one victim among the scenario's
     /// contacts or our vehicles; anything else fails to load.
     #[test]
     fn acts_name_an_author_and_one_victim() {
-        let two = "title = \"t\"\n\
+        let two = "title = \"t\"\nscripted_acts = \"rules 9's own test\"\n\
             [[contact]]\nid = \"boat\"\naffiliation = \"hostile\"\ndomain = \"surface\"\nkind = \"small_fast_boat\"\nmotion = \"station\"\nat = [-122.5, 37.8]\n\
             [[contact]]\nid = \"ferry\"\naffiliation = \"neutral\"\ndomain = \"surface\"\nkind = \"ferry\"\nmotion = \"station\"\nat = [-122.49, 37.8]\n";
         let with = |act: &str| Scenario::from_toml(&format!("{two}[[act]]\n{act}"));

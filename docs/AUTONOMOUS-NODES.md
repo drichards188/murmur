@@ -1,7 +1,8 @@
 # Autonomous nodes: every node acts from its type and its orders
 
-Status: **approved 2026-11-06 (section 7); stages 1 to 6 built** (bd epic murmur-y85j; section 8
-says what stage 6, the migration, did and found).
+Status: **approved 2026-11-06 (section 7); stages 1 to 7 built** (bd epic murmur-y85j; section 8
+says what stage 6, the migration, did and found; section 9 the guards). Stage 8 (SITL vehicles
+taking damage) is being built apart; what else remains is in section 9.
 
 The owner, 2026-11-06: "I fundamentally [want] the nodes to act correctly in all usages. we
 create resources that are combined in situations and they act correctly based on their coding.
@@ -285,7 +286,8 @@ top-level `scripted_acts = "<why>"`, or it is refused at load; `strike_outcome` 
 training aid only under a `[training]` table, refused anywhere but the tutorial
 (`eval/tests/test_situation.py`, one test over `sim/situations`). `weapon = {...}` on a contact is
 refused once nothing uses it. A file without orders, `[[act]]` or armed kinds sends the same truth
-as today: the existing golden is the check.
+as today: the existing golden is the check. As built (section 9): the marker covers a contact's
+own weapon too, and a situation refuses the old path even marked.
 
 ## 4. Migration, situation by situation
 
@@ -442,3 +444,44 @@ on one of ours is reported to the C2 as "struck" (`vehicle.event`), a miss inclu
 reads the impact, not the draw (stage 3's shortcut; a miss would at most be a near miss heard).
 (3) A gun episode is one act, so a continuous burst sequence offers one chance at a declaration;
 these situations order separate episodes, as a real crew's bursts would come.
+
+## 9. Stage 7 as built: the guards (2026-11-06, bd murmur-y85j.7)
+
+**The guard lives on both sides, each holding what it can know.**
+
+- **The contacts crate's load** (`Scenario::from_toml`, `scenario.rs` `old_path`): an `[[act]]` or
+  a contact's own `weapon = {...}` without a top-level `scripted_acts = "<why>"` is refused, the
+  error naming the order path; a blank reason, or the marker on a file with neither, is refused
+  too. Every loader passes here (the live contacts process, the headless simulator, the crate's
+  tests), so no file reaches a stack on the old path by accident, whoever names it
+  (`make goldengate CONTACTS=...` included); the process prints the reason at start.
+- **The situation side** (`eval/situation.py` `_contacts_guard`, in `load_situation`, which the
+  runner, the launcher and the headless `from_situation` all call): a situation's contacts file
+  that keeps the old path at all, marked or not, is refused, and training aids outside a tutorial
+  as before. A live situation never runs the old path, even deliberately.
+- **Why both:** the crate cannot tell a live situation from an evaluation (both start the same
+  code), and the situation side never sees a file a person hands the open world. The open world's
+  and demos' files are held by tests: the crate's `the_shipped_scenarios_load` (no act, contact
+  weapon or marker in `sim/scenarios/*.toml`; training aids in `tutorial.toml` only) and
+  `test_no_live_contacts_file_keeps_the_old_path_or_a_training_aid` in `eval/tests/test_situation.py`
+  (every situation's contacts file and every shipped scenario; a marked copy refused as a
+  situation's).
+
+**What stays on the old path, and how each keeps working.**
+
+| use | loaded by | here |
+|---|---|---|
+| Engine scenarios (`sim/scenarios/engage/*.toml`, `action = "act"`) and the ident evaluation (`eval/ident.py`'s engine-level act steps) | `murmur-scenarios`, the decision engine's runner | never reach the contacts crate: untouched |
+| Headless operations families F15 and F16 (`eval/headless/v3/families_ops.py` `append_acts`: abstract acts timed by the family's draws) | the headless simulator (`Scenario::load`) | `append_acts` heads the episode's copy with `scripted_acts` (`SCRIPTED_ACTS`) when it adds acts |
+| v1 and v2 worlds, the golden, the paused digests | the headless simulator | carry no act and no contact weapon: unchanged bytes |
+| The crate's own fixtures of the scripted path (`weapon.rs`, `effect.rs`, rules 9's tests) | `Scenario::from_toml` | each marked |
+
+A contact's own `weapon = {...}` is behind the same marker rather than gone (section 3 had it
+refused once nothing uses it): only the scripted path's own tests use it now.
+
+**What remains.** Stage 8 (SITL vehicles taking damage) is being built apart. Losing a node (bd
+murmur-zb1d) is the chain going on after a confirmed loss of the sensor it needs; section 8's
+finding 1 (air-to-air) is the owner's (bd murmur-qese). The shortcuts section 8 found stand: a
+shooter fires at a destroyed vehicle's last report until its order ends, and every strike, a miss
+included, reaches the C2 as "struck". Retiring a contact's own `weapon = {...}` (and the scripted
+path's tests with it) is the owner's call.
