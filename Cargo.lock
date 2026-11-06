@@ -1446,6 +1446,7 @@ dependencies = [
 name = "murmur-contacts"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "murmur-standins",
  "murmur-weather",
  "reqwest",

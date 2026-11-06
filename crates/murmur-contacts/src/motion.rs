@@ -1,6 +1,11 @@
 //! Simple, deterministic motion for contacts: heading-limited turns toward waypoints at a
 //! constant speed, circles, station keeping, and drift with the current. Flat-earth
 //! integration (`M_PER_DEG`), as the stand-ins do.
+//!
+//! A node's order ([`crate::node`]) moves a contact instead of its file's motion while it runs:
+//! the node sets [`Mover::steer`] (hold, head for a point, a route, an orbit, or back to the
+//! file's motion) and the step drives it with the same turn rate and acceleration. Without one
+//! the file's motion runs exactly as before.
 
 use murmur_standins::geo::{Gauss, M_PER_DEG, bearing_deg, distance_m, wrap180};
 
@@ -11,6 +16,8 @@ use crate::scenario::{Contact, Domain, Motion};
 const WAYPOINT_RADIUS_M: f64 = 25.0;
 /// Speed-up from a dwell or spawn.
 const ACCEL_MPS2: f64 = 0.5;
+/// An orbit steering this far off its circle heads for it first.
+const ORBIT_JOIN_M: f64 = 30.0;
 
 /// Where a contact is right now (truth).
 #[derive(Debug, Clone)]
@@ -47,9 +54,39 @@ pub struct Mover {
     pub damage: Option<(DamageState, f64)>,
     /// Its weapon is out of action (a firepower kill): its acts launch nothing.
     pub disarmed: bool,
+    /// Its propulsion is lost (a mobility kill): a boat drifts, a ground contact stands, an
+    /// aircraft flies on slowed; a node's order can no longer move it (an aircraft: at half speed).
+    pub crippled: bool,
+    /// What a node's order makes it do instead of its file's motion (none: the file's motion).
+    pub steer: Option<Steer>,
 }
 
-fn offset(lat: f64, lon: f64, east_m: f64, north_m: f64) -> (f64, f64) {
+/// A node's steering ([`crate::node`]), driven by [`Mover::step`] in place of the file's motion.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Steer {
+    /// Stop where it is and stay there (a boat keeps station against the current: no drift; an
+    /// aircraft hovers, a stated simplification).
+    Hold,
+    /// Head for a point at a speed and stop on it; with `alt_m`, change height in proportion as
+    /// it closes (a dive onto its target).
+    To { lat: f64, lon: f64, speed_mps: f64, alt_m: Option<f64> },
+    /// Once along the points (`[lon, lat]`) at a speed, then hold at the last (`done`).
+    Route { points: Vec<[f64; 2]>, speed_mps: f64, leg: usize, done: bool },
+    /// Circle a centre (`[lon, lat]`) clockwise, joining the circle at its nearest point first.
+    Orbit { center: [f64; 2], radius_m: f64, speed_mps: f64 },
+    /// Back to the file's motion: to this point first, then the file's motion from there (a
+    /// loiter at this angle round its centre).
+    Rejoin { lat: f64, lon: f64, speed_mps: f64, phase_deg: Option<f64> },
+}
+
+impl Steer {
+    /// A route steering's end reached.
+    pub fn done(&self) -> bool {
+        matches!(self, Steer::Route { done: true, .. })
+    }
+}
+
+pub(crate) fn offset(lat: f64, lon: f64, east_m: f64, north_m: f64) -> (f64, f64) {
     (
         lat + north_m / M_PER_DEG,
         lon + east_m / (M_PER_DEG * lat.to_radians().cos()),
@@ -97,7 +134,30 @@ impl Mover {
             out_of_play: false,
             damage: None,
             disarmed: false,
+            crippled: false,
+            steer: None,
             contact,
+        }
+    }
+
+    /// The steering that takes it back to its file's motion after an order moved it, at
+    /// `speed_mps`: to a station's point, a finished transit's last point, or the nearest point
+    /// of a loiter's circle (and on round it from that angle); none where the file's motion
+    /// carries on from anywhere (a route, a transit under way, a drift).
+    pub fn rejoin(&self, speed_mps: f64) -> Option<Steer> {
+        match &self.contact.motion {
+            Motion::Station { at } => Some(Steer::Rejoin { lat: at[1], lon: at[0], speed_mps, phase_deg: None }),
+            Motion::Transit { points } if self.holding => {
+                let p = points[points.len() - 1];
+                Some(Steer::Rejoin { lat: p[1], lon: p[0], speed_mps, phase_deg: None })
+            }
+            Motion::Loiter { center, radius_m } => {
+                let b = bearing_deg(center[1], center[0], self.st.lat, self.st.lon);
+                let a = b.to_radians();
+                let (lat, lon) = offset(center[1], center[0], radius_m * a.sin(), radius_m * a.cos());
+                Some(Steer::Rejoin { lat, lon, speed_mps, phase_deg: Some(b) })
+            }
+            _ => None,
         }
     }
 
@@ -126,6 +186,10 @@ impl Mover {
                 self.st.exists = false;
             }
             DamageState::Mobility => {
+                self.crippled = true;
+                if self.contact.domain != Domain::Air {
+                    self.steer = None;
+                }
                 self.contact.maneuvers.clear();
                 self.next_maneuver = 0;
                 let at = [self.st.lon, self.st.lat];
@@ -214,6 +278,11 @@ impl Mover {
         if !self.st.exists || dt <= 0.0 {
             return self.st.exists;
         }
+        // a node's order steers it instead of its file's motion (crate::node)
+        if let Some(steer) = self.steer.take() {
+            self.steer = self.drive(steer, dt);
+            return true;
+        }
         match &c.motion {
             Motion::Recorded { .. } => unreachable!("recorded motion is evaluated by timestamp above"),
             Motion::Route {
@@ -261,6 +330,107 @@ impl Mover {
             }
         }
         true
+    }
+
+    /// One step of a node's steering; what it steers by next (none: back on the file's motion).
+    /// Its propulsion damaged (only an aircraft is still steered), at half the speed it is told
+    /// ([`Mover::told`]).
+    fn drive(&mut self, steer: Steer, dt: f64) -> Option<Steer> {
+        match steer {
+            Steer::Hold => {
+                self.st.speed_mps = 0.0;
+                Some(Steer::Hold)
+            }
+            Steer::To { lat, lon, speed_mps, alt_m } => {
+                self.head(lat, lon, speed_mps, alt_m, dt, true);
+                Some(Steer::To { lat, lon, speed_mps, alt_m })
+            }
+            Steer::Route { points, speed_mps, mut leg, mut done } => {
+                if done {
+                    self.st.speed_mps = 0.0;
+                } else {
+                    let last = points.len() - 1;
+                    let wp = points[leg];
+                    if self.head(wp[1], wp[0], speed_mps, None, dt, leg == last) {
+                        if leg == last {
+                            done = true;
+                        } else {
+                            leg += 1;
+                            let wp = points[leg];
+                            self.head(wp[1], wp[0], speed_mps, None, dt, leg == last);
+                        }
+                    }
+                }
+                Some(Steer::Route { points, speed_mps, leg, done })
+            }
+            Steer::Orbit { center, radius_m, speed_mps } => {
+                let d = distance_m(self.st.lat, self.st.lon, center[1], center[0]);
+                let b = if d > 1.0 { bearing_deg(center[1], center[0], self.st.lat, self.st.lon) } else { self.st.course_deg };
+                if (d - radius_m).abs() > ORBIT_JOIN_M {
+                    let a = b.to_radians();
+                    let (lat, lon) = offset(center[1], center[0], radius_m * a.sin(), radius_m * a.cos());
+                    self.head(lat, lon, speed_mps, None, dt, false);
+                } else {
+                    // clockwise along the circle, as a loiter
+                    let v = self.accelerate(self.told(speed_mps), dt);
+                    let to = b + (v / radius_m).to_degrees() * dt;
+                    let a = to.to_radians();
+                    let (lat, lon) = offset(center[1], center[0], radius_m * a.sin(), radius_m * a.cos());
+                    self.st.lat = lat;
+                    self.st.lon = lon;
+                    self.st.course_deg = (to + 90.0).rem_euclid(360.0);
+                }
+                Some(Steer::Orbit { center, radius_m, speed_mps })
+            }
+            Steer::Rejoin { lat, lon, speed_mps, phase_deg } => {
+                if self.head(lat, lon, speed_mps, None, dt, true) {
+                    if let Some(p) = phase_deg {
+                        self.phase_deg = p;
+                    }
+                    return None;
+                }
+                Some(Steer::Rejoin { lat, lon, speed_mps, phase_deg })
+            }
+        }
+    }
+
+    /// Steer for a point with the kind's turn rate at up to `speed`; with `alt`, the height goes
+    /// to it in proportion to the ground covered. Within this step's reach it is there: with
+    /// `stop` it stands on the point, stopped; without, it has not moved yet (the caller takes
+    /// the next point). Returns whether it is there.
+    fn head(&mut self, lat: f64, lon: f64, speed: f64, alt: Option<f64>, dt: f64, stop: bool) -> bool {
+        let d = distance_m(self.st.lat, self.st.lon, lat, lon);
+        let v = (self.st.speed_mps + ACCEL_MPS2 * dt).min(self.told(speed)).max(0.0);
+        if d <= (v * dt).max(1.0) {
+            if stop {
+                self.st.lat = lat;
+                self.st.lon = lon;
+                self.st.speed_mps = 0.0;
+                if let Some(a) = alt {
+                    self.st.alt_m = a;
+                }
+            }
+            return true;
+        }
+        let want = bearing_deg(self.st.lat, self.st.lon, lat, lon);
+        let max_turn = self.contact.turn_dps * dt;
+        let delta = wrap180(want - self.st.course_deg).clamp(-max_turn, max_turn);
+        self.st.course_deg = (self.st.course_deg + delta).rem_euclid(360.0);
+        self.st.speed_mps = v;
+        let a = self.st.course_deg.to_radians();
+        let (nlat, nlon) = offset(self.st.lat, self.st.lon, v * a.sin() * dt, v * a.cos() * dt);
+        self.st.lat = nlat;
+        self.st.lon = nlon;
+        if let Some(to) = alt {
+            self.st.alt_m += (to - self.st.alt_m) * (v * dt / d).min(1.0);
+        }
+        false
+    }
+
+    /// The speed a steering's `speed` makes good: half with its propulsion damaged (an aircraft
+    /// flies on slowed, as its file's motion does).
+    fn told(&self, speed: f64) -> f64 {
+        if self.crippled { speed * 0.5 } else { speed }
     }
 
     fn accelerate(&mut self, target: f64, dt: f64) -> f64 {

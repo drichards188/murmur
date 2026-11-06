@@ -13,6 +13,11 @@
 //! (`ours`, [`OursAt`]). A launch at a victim beyond the weapon's range, or with no position
 //! for it yet, is held: the act does not happen (`ActTruth::held` says why).
 //!
+//! A node's own shots (docs/AUTONOMOUS-NODES.md 2.3, [`crate::node`]) fly here too: its fire
+//! control hands each flight to the [`Armory`] with what the damage model reads at its strike
+//! ([`Strike`]: the catalog weapon's figures, the draw's stream, the launch's distance), and
+//! [`strike_by`] draws every strike, the scripted ones as before.
+//!
 //! Shared by the contacts process and (refused for now) the headless simulator.
 
 use std::collections::BTreeMap;
@@ -20,7 +25,7 @@ use std::collections::BTreeMap;
 use murmur_standins::geo::{M_PER_DEG, distance_m};
 use serde::{Deserialize, Serialize};
 
-use crate::damage::{self, Conditions, DamageState, Target};
+use crate::damage::{self, Conditions, DamageState, Target, WeaponDamage};
 use crate::effect::{DamageCtx, OursDamaged};
 use crate::motion::Mover;
 use crate::scenario::Scenario;
@@ -77,13 +82,57 @@ pub fn lead(from: (f64, f64), at: (f64, f64), v: (f64, f64), speed: f64) -> ((f6
     (p, tof)
 }
 
-/// The weapons launched and not yet struck.
+/// The lead point in three dimensions: from `from` (`[lat, lon, metres above the sea]`) at
+/// `speed`, on a victim at `at` (`[lat, lon, alt]`) moving (`ve`, `vn`) m/s over the ground, its
+/// height held: the time of flight from the slant distance, solved by three fixed-point steps as
+/// [`lead`]. Returns the lead point (`[lat, lon, alt]`) and the time of flight, s.
+pub fn lead3(from: [f64; 3], at: [f64; 3], v: (f64, f64), speed: f64) -> ([f64; 3], f64) {
+    let slant = |p: [f64; 3]| distance_m(from[0], from[1], p[0], p[1]).hypot(p[2] - from[2]);
+    let mut tof = slant(at) / speed;
+    let mut p = at;
+    for _ in 0..3 {
+        p = [at[0] + v.1 * tof / M_PER_DEG, at[1] + v.0 * tof / (M_PER_DEG * at[0].to_radians().cos()), at[2]];
+        tof = slant(p) / speed;
+    }
+    (p, tof)
+}
+
+/// What the damage model reads of one strike: the weapon's figures, the stream its draws are
+/// named by (`act:<id>`, a gun's burst `act:<id>:<burst>`), and the launch's distance over the
+/// ground for the range rule (none: not known, as a scripted act's).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Strike {
+    pub weapon: WeaponDamage,
+    pub stream: String,
+    pub out_m: Option<f64>,
+}
+
+/// The weapons launched and not yet struck, and what the damage model reads of a node's
+/// strikes (by weapon id) until they are drawn.
 #[derive(Debug, Default)]
 pub struct Armory {
     flights: Vec<WeaponTruth>,
+    strikes: BTreeMap<String, Strike>,
 }
 
 impl Armory {
+    /// A node's shot: its flight, struck like any other ([`Armory::impacts`]), and what the
+    /// damage model reads at its strike.
+    pub fn fly(&mut self, flight: WeaponTruth, strike: Strike) {
+        self.strikes.insert(flight.id.clone(), strike);
+        self.flights.push(flight);
+    }
+
+    /// What the damage model reads of a strike with no flight (a node's `self` strike).
+    pub fn note(&mut self, weapon: &str, strike: Strike) {
+        self.strikes.insert(weapon.to_string(), strike);
+    }
+
+    /// What the damage model reads of a node's strike by weapon `id`, once.
+    pub fn take(&mut self, id: &str) -> Option<Strike> {
+        self.strikes.remove(id)
+    }
+
     /// Launch the weapon of each act in `acts` whose author carries one (an abstract act is left
     /// as it is), at the act's own time: sets the act's `weapon`, or `held` with why. `ours`: our
     /// vehicles where the bridge last said they were.
@@ -127,6 +176,7 @@ impl Armory {
                 to: [round(p.1, 7), round(p.0, 7), w.fly_m],
                 against_vehicle: a.against_vehicle,
                 against_contact: a.against_contact.clone(),
+                rounds: None,
             };
             a.weapon = Some(f.id.clone());
             self.flights.push(f);
@@ -174,16 +224,32 @@ pub fn strike(
     ours: &BTreeMap<u64, OursAt>,
     ctx: &DamageCtx,
 ) -> Vec<OursDamaged> {
+    strike_by(impacts, movers, ours, ctx, |i| scripted(scenario, i))
+}
+
+/// What the damage model reads of a scripted act's strike (its author's `weapon`, when it lists
+/// figures), on the act's stream.
+pub fn scripted(scenario: &Scenario, i: &ImpactTruth) -> Option<Strike> {
+    let by = scenario.acts.iter().find(|a| a.id == i.act).map(|a| a.by.as_str())?;
+    let w = scenario.contacts.iter().find(|c| c.id == by).and_then(|c| c.weapon.as_ref()).and_then(|w| w.damage())?;
+    Some(Strike { weapon: w, stream: format!("act:{}", i.act), out_m: None })
+}
+
+/// [`strike`] with each strike's weapon, stream and range from `lookup` (none: not drawn): a
+/// node's from the [`Armory`] ([`Armory::take`]), a scripted act's by [`scripted`].
+pub fn strike_by(
+    impacts: &mut [ImpactTruth],
+    movers: &mut [Mover],
+    ours: &BTreeMap<u64, OursAt>,
+    ctx: &DamageCtx,
+    mut lookup: impl FnMut(&ImpactTruth) -> Option<Strike>,
+) -> Vec<OursDamaged> {
     let mut hurt = Vec::new();
     for i in impacts.iter_mut() {
-        let Some(by) = scenario.acts.iter().find(|a| a.id == i.act).map(|a| a.by.as_str()) else {
-            continue;
-        };
-        let Some(w) = scenario.contacts.iter().find(|c| c.id == by).and_then(|c| c.weapon.as_ref()).and_then(|w| w.damage()) else {
+        let Some(Strike { weapon: w, stream, out_m }) = lookup(i) else {
             continue;
         };
         let c = Conditions::at(ctx.conditions.as_ref(), i.t, i.lat, i.lon);
-        let stream = format!("act:{}", i.act);
         match (i.against_vehicle, &i.against_contact) {
             (Some(uid), _) => {
                 let o = ours.get(&uid);
@@ -194,7 +260,7 @@ pub fn strike(
                     armed: o.is_some_and(|o| o.armed),
                     surface: o.and_then(|o| o.domain.as_deref()) == Some("surface"),
                 };
-                let mut r = damage::shot(ctx.seed, &stream, &format!("ours:{uid}"), &w, &target, &c, None);
+                let mut r = damage::shot(ctx.seed, &stream, &format!("ours:{uid}"), &w, &target, &c, out_m);
                 if r.state != DamageState::Undamaged {
                     r.applied = true;
                     hurt.push(OursDamaged { uid: uid.to_string(), state: r.state, cause: format!("struck by {} ({})", w.name, i.act) });
@@ -206,7 +272,7 @@ pub fn strike(
                     continue;
                 };
                 let target = crate::effect::target_of(m);
-                let mut r = damage::shot(ctx.seed, &stream, id, &w, &target, &c, None);
+                let mut r = damage::shot(ctx.seed, &stream, id, &w, &target, &c, out_m);
                 crate::effect::put(m, &mut r, i.t);
                 i.damage = Some(r);
             }
@@ -298,7 +364,7 @@ mod tests {
         let movers: Vec<Mover> = plain.contacts().expect("valid").into_iter().map(|c| Mover::new(c, 1, 0)).collect();
         let msg = TruthMessage::build(1.0, 1.0, 1, "t", 1, plain.sensing.clone(), &movers);
         let json = serde_json::to_string(&msg).expect("json");
-        for k in ["aim_at", "weapons", "impacts", "weapon", "held"] {
+        for k in ["aim_at", "weapons", "impacts", "weapon", "held", "look", "node_events", "rounds"] {
             assert!(!json.contains(k), "{k} in {json}");
         }
         assert!(Scenario::from_toml(&format!("{ARMED}[[act]]\nid = \"a\"\nat_s = 5\nby = \"boat\"\nagainst_contact = \"ferry\"\n")).is_ok());

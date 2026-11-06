@@ -200,6 +200,10 @@ impl Contacts {
         if let Some(c) = contacts.iter().find(|c| c.weapon.is_some()) {
             return Err(format!("{}: contact {:?} carries a weapon: opponent weapons run live only (murmur-mmxk)", path.display(), c.id));
         }
+        // nor do the nodes' orders yet (docs/AUTONOMOUS-NODES.md stage 5): refused, never ignored
+        if let Some(o) = scenario.orders.first() {
+            return Err(format!("{}: an order to {:?}: contacts' orders run live only (murmur-mmxk)", path.display(), o.node));
+        }
         if contacts.is_empty() {
             return Err(format!("{}: no contacts", path.display()));
         }

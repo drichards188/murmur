@@ -9,10 +9,11 @@
 //! publishes the look-alike as its truth `kind` and its own kind as the truth-only `variant`, so
 //! the bridge's sensing, tracker and identification see exactly what they saw before.
 //!
-//! The loadouts are read by nothing yet: stage 2 (bd murmur-y85j.2) gives the nodes their fire
-//! control. Each entry is the decision core's `WeaponFacts` (crates/murmur-decide catalog.rs) plus
-//! two truth-side keys, `reload_s` and `sense`; crates/murmur-headless tests that the decision
-//! core reads every entry as its own.
+//! The loadouts are what a node's fire control fires (stage 2, bd murmur-y85j.2, [`crate::node`]),
+//! its `sensors` what it perceives a target by, its speeds how it closes and flees. Each loadout
+//! entry is the decision core's `WeaponFacts` (crates/murmur-decide catalog.rs) plus two
+//! truth-side keys, `reload_s` and `sense`; crates/murmur-headless tests that the decision core
+//! reads every entry as its own.
 //!
 //! The file is compiled in ([`Catalog::shipped`]), as the table it replaces was: the contacts
 //! process, the headless simulator and every test read the same catalog without a path.
@@ -190,6 +191,17 @@ impl Weapon {
     }
 }
 
+/// What a node does once it has no round left ([`Kind::on_empty`]): away along its way in at its
+/// top speed (the default), stop where it is, or back to its file's motion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnEmpty {
+    #[default]
+    Flee,
+    Hold,
+    Resume,
+}
+
 /// A source tag (`"[3]"`, `"[2, 3; E]"`, `"[E]"`) or, for a weapon, its figures' tags by name.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -219,6 +231,10 @@ pub struct Kind {
     pub armed: bool,
     #[serde(default)]
     pub expended_by_effect: bool,
+    /// What a node of the kind does once an order has spent its last round (stage 2,
+    /// docs/AUTONOMOUS-NODES.md 2.3): none is [`OnEmpty::Flee`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_empty: Option<OnEmpty>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub loadout: Vec<Weapon>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

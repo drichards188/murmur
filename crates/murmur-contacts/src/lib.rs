@@ -8,6 +8,9 @@
 //! - `sim/contacts.toml` says what each kind of contact is and carries ([`catalog`]);
 //! - [`motion`] moves them: waypoint routes (looping or back and forth, with dwell at the
 //!   ends), transits, loiters, station keeping, and drift with the tidewater current;
+//! - [`node`] runs the orders a scenario gives its contacts (`[[order]]`: transit, hold, orbit,
+//!   track, attack, break off, flee, resume), each by its catalog kind: steering, perception and
+//!   fire control inside the node (docs/AUTONOMOUS-NODES.md);
 //! - [`truth`] is the message shape published to the bridge's simulation channel
 //!   (`POST /api/sim/contacts`) and written to the evaluation log (JSON lines).
 //!
@@ -27,6 +30,7 @@ pub mod damage;
 pub mod effect;
 pub mod mine;
 pub mod motion;
+pub mod node;
 pub mod scenario;
 pub mod truth;
 pub mod weapon;

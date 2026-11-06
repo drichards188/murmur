@@ -82,11 +82,34 @@ pub struct TruthMessage {
     pub mines_live: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mine_events: Vec<crate::mine::MineEvent>,
+    /// Autonomous nodes (docs/AUTONOMOUS-NODES.md 2.4): one per node with an order that needs a
+    /// target, where it is and its sensors' reach; the bridge's answer then carries our vehicles
+    /// within any look's reach (`ours`), of which the node keeps what its kind can see.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub look: Vec<Look>,
+    /// What each node decided since the last message (order taken, closing, fired, held and why,
+    /// ended and why): the evaluation's record. The bridge never reads it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub node_events: Vec<crate::node::NodeEvent>,
+}
+
+/// A node's look ([`TruthMessage::look`]): where it is (its height in metres above the sea,
+/// negative under it) and the farthest any of its sensors reaches, m.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Look {
+    pub node: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub alt_m: f64,
+    pub reach_m: f64,
 }
 
 /// One weapon's flight (truth): a straight line at constant speed from its launch point to its
-/// lead point, `[lon, lat, metres above the sea]`, from `launch_t` to `impact_t` (scenario unix
-/// s). Its position at any instant follows ([`WeaponTruth::at`]).
+/// lead point, `[lon, lat, metres above the sea]` (negative under it: a torpedo), from `launch_t`
+/// to `impact_t` (scenario unix s). Its position at any instant follows ([`WeaponTruth::at`]).
+/// `kind` is the signature our sensors see it by (the catalog's `sense`: `atgm`, `rocket`,
+/// `air_missile`, `gun`, `torpedo`). A gun's burst is one flight (`rounds` in it), muzzle to aim
+/// point at the round's speed; every burst of a firing episode names the episode's act.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WeaponTruth {
     pub id: String,
@@ -103,6 +126,9 @@ pub struct WeaponTruth {
     pub against_vehicle: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub against_contact: Option<String>,
+    /// A gun's burst: how many rounds it is (none for any other weapon).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rounds: Option<u32>,
 }
 
 impl WeaponTruth {
@@ -115,9 +141,10 @@ impl WeaponTruth {
 }
 
 /// A weapon's strike (truth): when and where, on whom; the bridge reports it as the victim's
-/// own. With the weapon's figures (the scenario's `effects`) the damage model draws it
-/// (`damage`, the evaluation's record: the C2 never reads it); without them nothing about the
-/// victim changes.
+/// own. With the weapon's figures (the scenario's `effects`, or a node's catalog weapon) the
+/// damage model draws it (`damage`, the evaluation's record: the C2 never reads it); without
+/// them nothing about the victim changes. A node that is its own weapon (a one-way drone, an
+/// explosive boat) strikes with no flight: `weapon` is then `<contact>-self`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImpactTruth {
     pub weapon: String,
@@ -133,8 +160,10 @@ pub struct ImpactTruth {
     pub damage: Option<crate::damage::DamageRecord>,
 }
 
-/// Rules 9: one scripted hostile act as it happens: a time, an author, a victim, and the weapon
-/// it launched if its author carries one (or why it held its fire).
+/// Rules 9: one hostile act as it happens: a time, an author, a victim, and the weapon it
+/// launched if its author carries one (or why it held its fire). Scripted (`[[act]]`, its id the
+/// file's), or a node's own shot under an order ([`crate::node`]: its id `<contact>-<n>` in firing
+/// order; a gun's firing episode is one act; a `self` strike is abstract, at the strike).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActTruth {
     pub id: String,
@@ -210,6 +239,8 @@ impl TruthMessage {
             impacts: Vec::new(),
             mines_live: Vec::new(),
             mine_events: Vec::new(),
+            look: Vec::new(),
+            node_events: Vec::new(),
         }
     }
 

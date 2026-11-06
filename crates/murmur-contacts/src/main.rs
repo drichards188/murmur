@@ -23,10 +23,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use murmur_contacts::effect::{self, DamageCtx, EffectApplied, EffectNotice, OursDamaged};
 use murmur_contacts::mine::{MineNotice, Minefields};
 use murmur_contacts::motion::Mover;
+use murmur_contacts::node::{LandWater, Nodes};
 use murmur_contacts::scenario::{Motion, Scenario};
 use murmur_contacts::truth::TruthMessage;
 use murmur_contacts::weapon::{self, Armory, OursAt};
 use murmur_standins::conditions::{self, Slot};
+
+/// Our vehicles from a bridge answer older than this (s) are no longer what a node perceives.
+const OURS_FRESH_S: f64 = 5.0;
 
 fn env(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|s| !s.trim().is_empty())
@@ -193,6 +197,24 @@ async fn run() -> Result<(), String> {
     let mut prev_t = f64::NEG_INFINITY;
     // rules 27: our minefields, laid by the decision engine and handed over by the bridge
     let mut fields = Minefields::default();
+    // autonomous nodes (docs/AUTONOMOUS-NODES.md): the contacts of armed kinds and those the
+    // scenario's orders name, steering on the land/water grid it names; and our vehicles as the
+    // bridge's latest answer gave them (what a node may perceive), with when
+    let mut nodes = Nodes::new(&scenario, &movers);
+    if !scenario.orders.is_empty() {
+        match &scenario.sensing.terrain {
+            Some(t) => match LandWater::load(&root.clone().unwrap_or_default().join(t)) {
+                Ok(g) => {
+                    println!("nodes: steering keeps to the land/water grid {}", g.source);
+                    nodes = nodes.with_grid(g);
+                }
+                Err(e) => println!("nodes: no land/water grid ({e}): steering is not checked against it"),
+            },
+            None => println!("nodes: the scenario names no [sensing] terrain: steering is not checked against land and water"),
+        }
+    }
+    let mut ours_now: Vec<OursAt> = Vec::new();
+    let mut ours_now_t = f64::NEG_INFINITY;
     loop {
         tokio::select! {
             _ = every.tick() => {}
@@ -231,6 +253,9 @@ async fn run() -> Result<(), String> {
             );
         }
         hand_over(&mined.ours_damaged, t0 + s, &mut damage_out);
+        // every node with an order runs it: its shots fly from here, its steering is the next step's
+        let fresh: &[OursAt] = if t0 + s - ours_now_t <= OURS_FRESH_S { &ours_now } else { &[] };
+        let tick = nodes.tick(s, t0 + s, &mut movers, fresh, &mut armory);
         seq += 1;
         let mut msg = TruthMessage::build(
             t0 + s,
@@ -246,16 +271,34 @@ async fn run() -> Result<(), String> {
         msg.acts = TruthMessage::acts_between(&scenario.acts, prev_s, s, t0, &movers);
         // an armed author launches its weapon (or holds its fire)
         armory.launch(&scenario, &mut msg.acts, &movers, &ours);
+        // the nodes' own shots (their flights are in the armory) and what they decided
+        msg.acts.extend(tick.acts);
+        msg.node_events = tick.events;
+        msg.look = nodes.looks(&movers);
         msg.aim_at = aim_at.clone();
         msg.weapons = armory.in_flight(prev_t, msg.t);
         msg.impacts = armory.impacts(msg.t);
+        msg.impacts.extend(tick.impacts);
         // rules 27: ours struck by a mine report it as any strike; the rest is the record
         msg.impacts.extend(mined.impacts);
         msg.mine_events = mined.events;
         msg.mines_live = fields.live_domains(msg.t);
-        // the damage model on each strike whose weapon lists figures
-        let hurt = weapon::strike(&scenario, &mut msg.impacts, &mut movers, &ours, &damage_ctx);
+        // the damage model on each strike whose weapon lists figures (a node's catalog weapon, or
+        // a scripted act's author's)
+        let hurt = weapon::strike_by(&mut msg.impacts, &mut movers, &ours, &damage_ctx, |i| {
+            armory.take(&i.weapon).or_else(|| weapon::scripted(&scenario, i))
+        });
         hand_over(&hurt, msg.t, &mut damage_out);
+        for e in &msg.node_events {
+            println!(
+                "node {} {}{}{}{}",
+                e.node,
+                e.what,
+                e.why.as_deref().map(|w| format!(" ({w})")).unwrap_or_default(),
+                e.act.as_deref().map(|a| format!(" {a}")).unwrap_or_default(),
+                e.note.as_deref().map(|n| format!(": {n}")).unwrap_or_default()
+            );
+        }
         for a in &msg.acts {
             println!(
                 "act {} at {:.0} s: {} against {}{}{}",
@@ -318,11 +361,15 @@ async fn run() -> Result<(), String> {
                         }
                     }
                 }
-                // opponent weapons: where the vehicles they may be aimed at are now
+                // opponent weapons: where the vehicles they may be aimed at are now (and, for the
+                // nodes' looks, those within reach of one)
                 if let Some(list) = answer.as_ref().and_then(|a| a.get("ours")).and_then(|o| o.as_array()) {
+                    ours_now.clear();
+                    ours_now_t = t0 + s;
                     for o in list {
                         if let Ok(o) = serde_json::from_value::<OursAt>(o.clone()) {
-                            ours.insert(o.uid, o);
+                            ours.insert(o.uid, o.clone());
+                            ours_now.push(o);
                         }
                     }
                 }

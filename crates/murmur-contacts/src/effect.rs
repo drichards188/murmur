@@ -305,12 +305,13 @@ fn ours_inside(e: &EffectNotice) -> Collateral {
     c
 }
 
-/// A contact's facts as the damage model reads them.
+/// A contact's facts as the damage model reads them: its kind as our sensors see it, and armed
+/// when its catalog kind is (sim/contacts.toml) or its scenario gives it a weapon.
 pub(crate) fn target_of(m: &Mover) -> Target<'_> {
     Target {
         kind: &m.contact.kind,
         speed_mps: m.st.speed_mps,
-        armed: m.contact.weapon.is_some(),
+        armed: m.contact.weapon.is_some() || m.contact.armed_kind(),
         surface: m.contact.domain == Domain::Surface,
     }
 }

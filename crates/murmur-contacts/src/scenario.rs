@@ -51,11 +51,34 @@
 //!
 //! A contact may carry a weapon (docs/OPPONENT-WEAPONS.md): `weapon = { name = "ATGM-class
 //! missile", kind = "atgm", speed_mps = 250, range_m = 5000 }` (and `fly_m`, its flight height
-//! above the sea, default 4; `guidance`, `warhead_kg` and `effects`, its hit and damage figures
-//! for the damage model, [`crate::damage`]). Every act by such a contact launches it
-//! ([`crate::weapon`]); the acts of any other contact stay abstract. Weapons need the physical sensing model: a file that
-//! names the legacy one and a weapon is refused, as is an act against a contact the weapon cannot
-//! reach at the act's second.
+//! above the sea, default 4, negative under it; `guidance`, `warhead_kg` and `effects`, its hit
+//! and damage figures for the damage model, [`crate::damage`]). Every act by such a contact
+//! launches it ([`crate::weapon`]); the acts of any other contact stay abstract. Weapons need the
+//! physical sensing model: a file that names the legacy one and a weapon is refused, as is an act
+//! against a contact the weapon cannot reach at the act's second.
+//!
+//! Orders (docs/AUTONOMOUS-NODES.md 2.2 and 2.5, [`crate::node`]): a top-level `[[order]]` tells a
+//! contact (a node) what to do from a second on the contacts' clock, and the node does it by its
+//! catalog kind: what it carries, its range bands, intervals, rounds and speeds. The file times
+//! the order; it never creates a weapon in the air, sets where one flies or decides what it hits.
+//!
+//! ```toml
+//! [[order]]
+//! at_s = 200
+//! node = "fastboat-raider"
+//! do = "attack"                  # transit | hold | orbit | track | attack | break_off | flee | resume
+//! target = { vehicle = 1 }       # or { contact = "<id>" }
+//! weapon = "ATGM-class missile"  # optional: else the first of its loadout for the target's domain
+//! stay = true                    # fire only from where it is
+//! label = "attacks the sensor ship (HUNTER 1)"   # truth-side note
+//! ```
+//!
+//! Each order takes its own keys ([`crate::node::check`]): `transit` a `route` and `speed_mps`;
+//! `hold` an `at`; `orbit` a `center`, `radius_m` and `speed_mps`; `track` a `target` and
+//! `standoff_m`; `attack` a `target`, `weapon`, `rounds` (a salvo's cap), `until_s` (a scenario
+//! second) and `stay`; `flee` a `from` (a target) and `speed_mps`; `break_off` and `resume`
+//! nothing. An attack needs an armed kind with sensors and the physical sensing model; a recorded
+//! contact, or one with a `weapon = {...}` of its own (the scripted path), takes no order.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -251,6 +274,9 @@ pub struct Scenario {
     /// Rules 9: scripted hostile acts (`[[act]]`), truth only.
     #[serde(default, rename = "act")]
     pub acts: Vec<ActSpec>,
+    /// Orders to the contacts (`[[order]]`, [`crate::node`]), in file order.
+    #[serde(default, rename = "order")]
+    pub orders: Vec<crate::node::OrderSpec>,
 }
 
 /// Rules 9: a hostile act a contact commits at a scenario second, against one of our vehicles
@@ -298,7 +324,7 @@ pub struct WeaponSpec {
     pub kind: String,
     pub speed_mps: f64,
     pub range_m: f64,
-    /// Its flight height above the sea, m.
+    /// Its flight height above the sea, m (negative under it).
     #[serde(default = "default_fly_m")]
     pub fly_m: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -327,8 +353,8 @@ impl WeaponSpec {
         if !(self.range_m.is_finite() && self.range_m > 0.0) {
             return Err("weapon range_m must be above 0".into());
         }
-        if !(self.fly_m.is_finite() && (0.0..=100.0).contains(&self.fly_m)) {
-            return Err("weapon fly_m must be within 0..100".into());
+        if !self.fly_m.is_finite() {
+            return Err("weapon fly_m must be a height in metres".into());
         }
         if self.warhead_kg.is_some_and(|k| !(k.is_finite() && k >= 0.0)) {
             return Err("weapon warhead_kg must be 0 or more".into());
@@ -475,6 +501,23 @@ pub struct Contact {
     pub weapon: Option<WeaponSpec>,
 }
 
+impl Contact {
+    /// Its catalog kind (sim/contacts.toml): the variant it is, or its kind.
+    pub fn catalog_kind(&self) -> &str {
+        self.variant.as_deref().unwrap_or(&self.kind)
+    }
+
+    /// Its catalog kind's entry, if the catalog has one.
+    pub fn entry(&self) -> Option<&'static crate::catalog::Kind> {
+        crate::catalog::Catalog::shipped().get(self.catalog_kind())
+    }
+
+    /// Its catalog kind carries weapons.
+    pub fn armed_kind(&self) -> bool {
+        self.entry().is_some_and(|k| k.armed)
+    }
+}
+
 impl ContactSpec {
     pub fn validate(&self) -> Result<Contact, String> {
         let bad = |m: String| format!("contact {:?}: {m}", self.id);
@@ -562,7 +605,7 @@ impl ContactSpec {
             Some(o) if self.on_effect == OnEffect::Persists => {
                 return Err(bad(format!("strike_outcome {:?} contradicts on_effect \"persists\"", o.as_str())));
             }
-            Some(StrikeOutcome::Firepower) if self.weapon.is_none() => {
+            Some(StrikeOutcome::Firepower) if self.weapon.is_none() && !d.is_some_and(|d| d.armed) => {
                 return Err(bad("strike_outcome \"firepower\" needs a weapon to put out of action".into()));
             }
             _ => {}
@@ -666,6 +709,7 @@ impl Scenario {
             }
             s.weapon_ranges()?;
         }
+        crate::node::check_file(&s)?;
         Ok(s)
     }
 
