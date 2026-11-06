@@ -20,6 +20,11 @@ ports); `--manifest-only` writes the manifest and exits. up.sh runs it first in 
 so the emulator binds the vehicle ports before any vehicle starts and the bridge, which
 checks a previous run's carried-over orders against this run's fleet, reads this run's
 manifest and not the last one's.
+
+Beside the SITL vehicles it follows the damage file the contacts process writes when a strike
+hurts one of ours (sim/sitl_damage.py), so a SITL vehicle acts out its damage as a stand-in does:
+propulsion lost through SITL's own SIM_ENGINE_FAIL, the DAMAGE report over its own link, and a
+destroyed one's process stopped (silent; continued at shutdown so it can exit).
 """
 
 import argparse
@@ -448,7 +453,9 @@ def main():
                     help="first SITL instance number (its TCP ports are 5760 + 10*instance); "
                          "a second stack beside the default one needs its own range")
     ap.add_argument("--speedup", type=float, default=1.0)
-    ap.add_argument("--keep-eeprom", action="store_true", help="keep params/missions between runs")
+    ap.add_argument("--keep-eeprom", action="store_true",
+                    help="keep params/missions between runs (a SITL vehicle a strike left without "
+                         "propulsion keeps its SIM_ENGINE_FAIL too: sim/sitl_damage.py)")
     ap.add_argument("--count-only", action="store_true", help="print the number of vehicles and exit")
     ap.add_argument("--manifest-only", action="store_true",
                     help="write sim/run/fleet.json and exit (for the link emulator, before the vehicles start)")
@@ -489,7 +496,9 @@ def main():
             sys.exit(f"missing {BIN / b}; build with: make setup")
     engine = standins_engine() if standins else None
 
+    started_ns = time.time_ns()  # a damage file not written since is a previous run's
     procs = []
+    sitl_procs = {}
     for v in sitl:
         spec = platforms[v["platform"]]
         workdir = RUN / f"{v['sysid']:03d}-{v['platform']}"
@@ -497,7 +506,16 @@ def main():
         log = open(workdir / "sitl.log", "w")
         procs.append(subprocess.Popen(sitl_command(v, spec, args, workdir), cwd=workdir, stdout=log,
                                       stderr=subprocess.STDOUT, start_new_session=True))
+        sitl_procs[v["uid"]] = procs[-1]
         print(f"sysid {v['sysid']:3d}  {v['callsign']:12s} {v['name']}  (SITL, udp {v['port']})")
+    if sitl:
+        # a strike's damage to a SITL vehicle, acted out as the stand-ins act it out
+        # (sim/sitl_damage.py: propulsion lost through SITL's SIM_ENGINE_FAIL, the DAMAGE report,
+        # a destroyed vehicle's process stopped)
+        import sitl_damage
+
+        sitl_damage.start([{**v, "kind": platforms[v["platform"]]["vehicle"]} for v in sitl], sitl_procs,
+                          started_ns=started_ns)
 
     if standins:
         cfg = RUN / "standins.json"
@@ -515,10 +533,13 @@ def main():
 
     def shutdown(*_):
         for p in procs:
-            try:
-                os.killpg(p.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+            # CONT after TERM: a destroyed vehicle's SITL is stopped (sim/sitl_damage.py) and acts
+            # on its TERM only once continued
+            for sig in (signal.SIGTERM, signal.SIGCONT):
+                try:
+                    os.killpg(p.pid, sig)
+                except ProcessLookupError:
+                    pass
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)

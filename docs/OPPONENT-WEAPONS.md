@@ -374,11 +374,16 @@ fact, which the engine's weapon check reads (rules 25: weapons out of action ref
 a one-way platform without its propulsion can't strike). A destroyed vehicle reports nothing: the
 operator has the strike report and then its silence (the lost-link alert), as with a real loss.
 
-**What SITL lacks.** A SITL vehicle does not read the damage file: no hook in this pass makes
-ArduPilot lose its propulsion (SITL's `SIM_ENGINE_FAIL` and `SIM_ENGINE_MUL` exist for planes
-and copters, nothing equivalent for rovers, boats and subs), go silent or send the report. Its
-strike is drawn and recorded, and nothing else follows. The headless simulator refuses opponent
-weapons still (murmur-mmxk), so there only our own strikes' collateral damages ours.
+**SITL vehicles.** On 11-02 a SITL vehicle read nothing of the damage file: its strike was drawn
+and recorded, and nothing else followed. Since 2026-11-06 (stage 8, docs/AUTONOMOUS-NODES.md
+section 10) `sim/sitl_damage.py`, a thread of `sim/swarm.py`, acts the file out for them as far as
+SITL allows: propulsion lost through SITL's own `SIM_ENGINE_FAIL` (with `SIM_ENGINE_MUL` 0) on the
+kind's propulsion outputs, which serves rovers, boats and subs as well as planes and copters (a
+plane glides down, a copter falls, a UGV and a boat stop, a sub rises), the same `DAMAGE` report
+over the vehicle's own link, and a destroyed vehicle's process stopped, so it goes silent. A
+sailboat (its sail draws on the wind) and an antenna tracker only report. On 11-02 the headless
+simulator refused opponent weapons (murmur-mmxk), so there only our own strikes' collateral
+damaged ours.
 
 The shipped scenarios' weapons listed no figures on 11-02 (the tutorial's boat fired every 90 s at
 HUNTER 1, which would not have survived the tutorial with them). Since 2026-11-06 every attacker

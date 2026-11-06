@@ -18,8 +18,8 @@
 //! {"uid": 3, "state": "mobility", "t": 1781463600.0, "cause": "struck by ATGM-class missile (act-2)"}
 //! ```
 //!
-//! SITL vehicles read none of it (docs/OPPONENT-WEAPONS.md, "Damage"): only stand-ins and the
-//! headless simulator act damage out.
+//! SITL vehicles act out the same file through `sim/sitl_damage.py` (docs/AUTONOMOUS-NODES.md
+//! section 10); the headless simulator acts it out in process.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

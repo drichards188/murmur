@@ -1,9 +1,8 @@
 # Autonomous nodes: every node acts from its type and its orders
 
-Status: **approved 2026-11-06 (section 7); stages 1 to 7 built** (bd epic murmur-y85j; section 8
+Status: **approved 2026-11-06 (section 7); stages 1 to 8 built** (bd epic murmur-y85j; section 8
 says what stage 6, the migration, did and found; section 9 the guards and the air-to-air
-redesign). Stage 8 (SITL vehicles taking damage) is being built apart; what else remains is in
-section 9.
+redesign; section 10 SITL vehicles taking damage). What else remains is in section 9.
 
 The owner, 2026-11-06: "I fundamentally [want] the nodes to act correctly in all usages. we
 create resources that are combined in situations and they act correctly based on their coding.
@@ -94,7 +93,7 @@ One gap on our side that the owner's "act correctly in all usages" covers: **SIT
 damage** (docs/OPPONENT-WEAPONS.md section 13). Sixteen catalog entries are SITL, among them
 `ugv_armed`, `magura`, `corsair`, `fpv`, `switchblade`. Today every opponent shot is aimed at
 HUNTER 1 (a stand-in, `seahunter`), so no situation hits this yet; once nodes choose targets
-themselves, one will. Stage 8.
+themselves, one will. Stage 8 closed it, as far as SITL allows (section 10).
 
 ## 2. The model
 
@@ -247,9 +246,11 @@ Unchanged machinery: a strike with figures is drawn by the damage model against 
 (`damage::ours_kind`, `damage.rs:172`: the Sea Hunter reads as a fishing vessel), written to
 `sim/run/damage-<http port>.jsonl` (`MURMUR_DAMAGE_FILE`), acted out by the stand-ins
 (`murmur_standins::damage`: unpowered, silent, or a `DAMAGE` STATUSTEXT every 30 s) and reported to
-the C2 by the vehicle itself (rules 25). **SITL ignores the damage file**: its strike is drawn and
-recorded and nothing else follows (stage 8 is the optional fix, `SIM_ENGINE_FAIL` for planes and
-copters; nothing equivalent for rovers, boats and subs). The headless simulator runs orders and
+the C2 by the vehicle itself (rules 25). **SITL vehicles act it out too** since stage 8
+(section 10, `sim/sitl_damage.py`, a thread of `sim/swarm.py`): mobility through SITL's own
+`SIM_ENGINE_FAIL` on the kind's propulsion outputs, the same `DAMAGE` report over the vehicle's own
+link, a destroyed vehicle's process stopped (silent). A sailboat and an antenna tracker only
+report. The headless simulator runs orders and
 opponent weapons with the contacts process's own step since stage 5 (`crates/murmur-contacts/src/
 step.rs`, both call it; docs/HEADLESS.md 16.6): ours a strike hurts take it in the episode's
 fleet, and a timeline's `red` step goes to the API's own intake (`api::Desk`) in process.
@@ -325,7 +326,7 @@ migrated situation, `murmur-replay --anchors` clean.
 | 5. Headless weapons (murmur-mmxk) | M | `crates/murmur-headless/src/sim/contacts.rs`: weapons and orders in process | one headless episode with an attack replays with its anchors; the golden stands | 2 | with 3 and 4 |
 | 6. Migration | L | section 4: `sim/scenarios/*`, `sim/situations/*`, `scripts/threat_swarms.py`, `eval/tests/test_situation.py`, the tutorial's coach (`web/src/tutorial.ts`) | per situation: its tests rewritten to orders and bands; one live autoplay run to the end; replay clean | 2, 3; 5 before the shared hostile-act-engagement file | one agent, situation by situation (they share the test file) |
 | 7. Guards and documents | S | the load checks of section 3; docs/OPPONENT-WEAPONS.md, `sim/situations/README.md`, CLAUDE.md's gotcha line | one test: no live situation's contacts file has an unmarked `[[act]]` or a training aid outside the tutorial | 6 | |
-| 8. SITL damage (optional) | M | `sim/swarm.py`, the SITL parameters: propulsion loss for planes and copters | one SITL plane hit loses its engine | none | anytime |
+| 8. SITL damage (optional; built, section 10) | M | `sim/swarm.py`, the SITL parameters: propulsion loss for planes and copters | one SITL plane hit loses its engine | none | anytime |
 
 Order: 1, then 2, 3 and 5 in parallel (disjoint crates), 4 after 2, then 6, then 7. Stage 8 apart.
 
@@ -512,9 +513,107 @@ Where headless differs from live: still water (a stopped HUNTER 2 holds still he
 with the tide live, reporting where it is), no tidewater terrain, and the release time follows
 where FURY 1 is on its circle.
 
-**What remains.** Stage 8 (SITL vehicles taking damage) is being built apart. Losing a node (bd
-murmur-zb1d) is the chain going on after a confirmed loss of the sensor it needs; air-to-air's
-old geometry is its case. The shortcuts section 8 found stand: a shooter fires at a destroyed
+**What remains.** Stage 8 (SITL vehicles taking damage) is built since (section 10). Losing a
+node (bd murmur-zb1d) is the chain going on after a confirmed loss of the sensor it needs;
+air-to-air's old geometry is its case. The shortcuts section 8 found stand: a shooter fires at a destroyed
 vehicle's last report until its order ends, and every strike, a miss included, reaches the C2 as
 "struck". Retiring a contact's own `weapon = {...}` (and the scripted path's tests with it) is the
 owner's call.
+
+## 10. Stage 8 as built: SITL damage (2026-11-06, bd murmur-y85j.8)
+
+Our SITL vehicles now act out the damage file as the stand-ins do (section 2.6), as far as SITL
+allows. `sim/sitl_damage.py` runs as a thread of `sim/swarm.py`, beside the SITL processes it
+starts (so `scripts/up.sh` is unchanged). It follows the file the stand-ins read
+(`MURMUR_DAMAGE_FILE`, else `sim/run/damage-<http port>.jsonl`), skips records already there when
+the fleet started and not written since (a previous run's: the contacts process empties the file
+when it starts, which is after the fleet), and acts per vehicle:
+
+| damage | the SITL vehicle | how |
+|---|---|---|
+| mobility | loses its propulsion; its autopilot flies on unaware, as one whose motor has died | `SIM_ENGINE_MUL` 0, then `SIM_ENGINE_FAIL` set to the kind's propulsion outputs (below), by PARAM_SET until echoed. SITL scales those outputs before its physics model reads them (`libraries/AP_HAL_SITL/SITL_State.cpp`, the `engine_fail` loop), so the vehicle comes down or to a stop by forces its IMU feels. And the report |
+| firepower | moves as before | the report |
+| destroyed | silent: neither steps, sends nor answers | its SITL process stopped (SIGSTOP). Its sockets stay open, so the link emulator and the bridge meet silence (the bridge's `lost_link` alert), never an error. A killed process would refuse the emulator's datagrams and drop the tidewater driver's TCP link, whose failed reconnect the driver does not catch (and `up.sh` stops the stack when any of its processes exits). `swarm.py`'s shutdown sends CONT after TERM so it exits |
+
+The report is the stand-in's words (`DAMAGE mobility: propulsion lost`, `DAMAGE firepower: weapons
+out of action`, severity CRITICAL), at once and every 30 s while the vehicle can talk. It enters on
+the vehicle's SERIAL2 (TCP 5763 + 10 x instance; the tidewater driver has SERIAL1) from the
+vehicle's own system id as its onboard computer (component 191: ArduPilot drops a message bearing
+its own system and component as a loop), and ArduPilot's MAVLink routing forwards it, as any
+broadcast, on every link where it has heard a ground station: the bridge's among them. The bridge
+reads a STATUSTEXT from any component of a vehicle's system, so its `damage` fact, `damage` event
+and `damaged` alert follow as from a stand-in. The PARAM_SETs make ArduPilot echo `SIM_ENGINE_*`
+PARAM_VALUEs on every link, as it echoes the tidewater driver's `SIM_WIND_*` and `SIM_TIDE_*`; the
+bridge reads none of them. No rules version, no engine change, no firmware patch.
+
+The propulsion outputs, from each frame's ArduPilot defaults and SITL model (a failed output goes
+to 1000 us, ArduRover's to 1500, its neutral; `PROPULSION` in `sim/sitl_damage.py`):
+
+| SITL kind (catalog entries) | outputs failed | what follows |
+|---|---|---|
+| plane (`puma`, `switchblade`) | SERVO3, the throttle | glides down |
+| vtol (`fvr90`) | SERVO3 and SERVO5-8, the lift motors | glides or falls |
+| copter (`x10`, `fpv`) | SERVO1-4 | falls |
+| blimp (`lta`) | SERVO1-4, the fins (SIM_Blimp's thrust comes from fin speed: held still they push nothing) | drifts on the wind |
+| boat (`magura`, `corsair`) | SERVO3, the throttle, and SERVO1, the steering: our boats steer by their thrust (waterjet or outboard), where SITL's rudder would still turn the boat on what way it has left | coasts to a stop, then drifts on the current (tidewater's; without it the motorboat defaults' `SIM_TIDE_SPEED` 0.5 m/s from the north) |
+| ugv (`ugv_logistics`, `ugv_armed`, `ugv_mines`, `ugv_recon`) | SERVO1 and SERVO3, left and right throttle | stops |
+| sub (`bluerov`) | SERVO1-6, the thrusters: 1000 us is outside the band SIM_Submarine takes as thrust | rises on its slight positive buoyancy |
+| sailboat (`saildrone`) | none | sails on: reports only |
+| tracker (`tracker`) | none | does not travel: reports only |
+
+**What SITL cannot do, and the gaps.** (1) A sailboat's sail draws on the wind, and no SIM
+parameter takes that away: a failed mainsail servo holds the sail at a fixed angle, which still
+sails. A saildrone hit for mobility reports it and sails on; closing it needs a SITL patch (a
+sail failure parameter) and every firmware rebuilt. (2) A sub's thrusters held at 1000 us draw
+SITL's full simulated current, 15 A each (SIM_Submarine counts current from the output, not the
+thrust), so its reported current reads 90 A and its voltage sags about 3 V after a mobility hit;
+SITL's battery has unlimited capacity by default, so nothing runs down. SITL maps a failed output
+around 1500 us for ArduRover only, so no `SIM_ENGINE_MUL` gives a sub zero thrust at neutral
+current. (3) The autopilot's own logic stays: a copter that has fallen may sit armed in GUIDED at
+full commanded throttle where a stand-in rests unpowered, and ArduCopter adds its own "Potential
+Thrust Loss" text; the C2 has the damage report either way. (4) Destroyed freezes the vehicle
+where it was hit, in the air if it was flying. A destroyed stand-in does the same, and nothing in the stack reads a
+SITL vehicle but through its link (the bridge, the link emulator, the truth side through the
+bridge), so a fall nobody hears would change nothing. (5) `--keep-eeprom` keeps a damaged
+vehicle's `SIM_ENGINE_FAIL` into the next run (PARAM_SET saves). (6) Found on the way, not fixed
+here: the stand-in engine reads the damage file from its start when it starts, and nothing
+empties the file in a stack without a contacts process, so a previous run's records on the same
+HTTP port (a `make goldengate` with `CONTACTS=` that hurt ours, then one without) damage this
+run's stand-ins of the same uids; with a contacts process it is a race the contacts process
+usually wins. The SITL watcher skips such records.
+
+**Checked live** (`sim/tests/sitl_damage_live.py`: the fleet started by `swarm.py`, the bridge
+talking to the vehicles directly, the records appended by hand; telemetry from each vehicle's
+SERIAL1 and the bridge's view kept in `logs/stage8/` of the worktree):
+
+- **Air** (a Puma at 150 m and 20 m/s in TAKEOFF mode, an X10 holding 40 m in GUIDED; mobility on
+  both at 77.9 s). The Puma's autopilot went to full throttle (SERVO3 2000 us) and the aircraft
+  came down: 145.8 m at 80 s, 100.2 m at 100 s, 42.5 m at 130 s, 13.6 m at 145 s, near the stall
+  (8 to 12 m/s). The X10's motors went to about 1,940 us and it fell: 24.5 m at 80.2 s, SITL's
+  "Hit ground at 16.1 m/s" at 81.8 s, ArduCopter's own "Potential Thrust Loss" twice. Both EKFs
+  stayed healthy throughout (flags 831, velocity and position variances 0.06 or less). Each
+  reported `DAMAGE mobility: propulsion lost` at 78.2 s (0.3 s after the record) and again at
+  108.2 and 138.3 s; the bridge logged a `vehicle.event` `damage` for each and raised both
+  `damaged` alerts. Firepower on the X10 at 138.4 s: both reports from 139.2 s, the alert now
+  "propulsion lost and weapons out of action". The Puma destroyed at 146.4 s: its last telemetry at
+  147.1 s, then the bridge's `lost_link` alert ("no telemetry since ..."), nothing logged as an
+  error. At the stop every SITL port was free, the stopped Puma's included. Repeated with the
+  script as committed: the Puma from 150 to 27 m in the minute after the hit, the X10 on the
+  ground 3.8 s after it ("Hit ground at 16.1 m/s"), the same reports, alerts and silence.
+- **Surface** (a recon UGV at 4.0 m/s and a Corsair at 8.0 m/s in GUIDED, a BlueROV holding
+  12 m down in GUIDED; mobility on all three at 66.4 s). The UGV stopped (0.13 m/s at 68.1 s,
+  0.03 by 76 s) with its autopilot at full throttle on both tracks. The Corsair coasted to 0.08
+  m/s by 76 s at full throttle, then drifted astern at 0.47 m/s on the motorboat defaults' current
+  (no tidewater in the check). The BlueROV rose on its buoyancy at 0.10 m/s (11.98 m down at
+  68.1 s, 6.35 m at 126 s, 1.66 m at 174 s) while its autopilot drove its vertical thrusters at
+  1,900 us; its reported current went from 5.6 to 90 A and its voltage from 12.4 to 9.6 V (gap
+  2; no battery failsafe fired). All three reported at 67.2 s and every 30 s after, with the
+  bridge's `damage` events and alerts; firepower on the Corsair joined its report; the UGV
+  destroyed at 135.0 s went silent at once (last telemetry 135.1 s, then `lost_link`). EKFs
+  healthy throughout; every SITL port free at the stop. A first run with only the boat's throttle
+  failed turned it on its remaining way under full rudder (heading 1 to 277 degrees) before it
+  drifted, which is why the steering goes too.
+
+Not run live: the quadplane and the blimp (their outputs read from SIM_QuadPlane's motor offset
+and SIM_Blimp's fin model), the sailboat and the tracker (reports only, the firepower path). The
+watcher's mapping and its file handling have unit tests (`eval/tests/test_sitl_damage.py`).

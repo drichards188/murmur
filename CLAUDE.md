@@ -126,6 +126,13 @@ meaningful.
   comma list: ArduPilot drops `MAV1_*` from an earlier file in the list (murmur-yjq; `swarm.py` merges).
 - In SITL, stop vehicles with forces the IMU feels, never by zeroing velocity or clamping
   position (the EKF diverges).
+- A strike's damage reaches SITL vehicles through `sim/sitl_damage.py` (a thread of `swarm.py`,
+  following the damage file; bd murmur-y85j.8): mobility sets `SIM_ENGINE_MUL` 0 and
+  `SIM_ENGINE_FAIL` to the kind's propulsion outputs over the vehicle's SERIAL2 (TCP
+  5763+10*instance; tidewater has SERIAL1), the `DAMAGE` STATUSTEXT goes in there from its sysid
+  as component 191 and ArduPilot routes it to the bridge, and destroyed SIGSTOPs the SITL process
+  (`swarm.py`'s shutdown sends CONT after TERM). A sailboat and a tracker only report. Test with
+  `sim/tests/sitl_damage_live.py` (its own ports).
 - tidewater (`tidewater/`) is installed editable in Murmur's `.venv` (`make setup`, with its
   `sfbofs` extra); a scenario needs `tidewater fetch` once (setup fetches the Golden Gate's),
   cached in `tidewater/data/cache/` (untracked). `TIDEWATER_HOME` points the scenarios at
@@ -383,10 +390,10 @@ meaningful.
   as before. Our damaged vehicles: `sim/run/damage-<http port>.jsonl` (`MURMUR_DAMAGE_FILE`,
   emptied by the contacts process at start) to the stand-ins (`murmur_standins::damage`), which
   step unpowered, go silent, or report `DAMAGE mobility|firepower` STATUSTEXT every 30 s; the
-  bridge makes that the `damage` vehicle fact, a `damage` event and a `damaged` alert. SITL reads
-  none of it. The engine reads only that fact (weapons out of action refuse the loadout; a `self`
-  platform without propulsion can't strike) and drops it from logs of older rules; the weapon
-  check shows the figures. Headless: an episode's `effects.p_hit`, when given, replaces the
+  bridge makes that the `damage` vehicle fact, a `damage` event and a `damaged` alert. SITL
+  vehicles act it out too (`sim/sitl_damage.py`, the SITL gotcha above). The engine reads only
+  that fact (weapons out of action refuse the loadout; a `self` platform without propulsion can't
+  strike) and drops it from logs of older rules; the weapon check shows the figures. Headless: an episode's `effects.p_hit`, when given, replaces the
   target's hit chance (an evaluation's knob; absent, the figures decide). Scenarios 121-122;
   tamper `drop_damage`.
 - Rules 26 (`GUN_SINCE`, bd murmur-lbw8.3, DECISIONS.md "Guns: bursts from a counted magazine"):
