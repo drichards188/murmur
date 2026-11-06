@@ -1565,18 +1565,21 @@ def test_hostile_act_engagement_fits_the_chain():
     assert planned["BLADE 1"]["cruise_alt_m"] == 120, "the engagement mission must keep its radio above terrain"
     assert {o.vehicles["callsign"] for o in sit.orders} == {"HUNTER 1", "REAPER 1"}
     assert all(platforms[v["platform"]].get("endurance_h") for v in planned.values())
-    # the contacts: one hostile without AIS that holds, and acts against one of ours
+    # the contacts: one hostile without AIS, of an armed kind, that holds; no scripted act: its
+    # orders attack one of ours from where it holds, and it fires by its own fire control
+    # (docs/AUTONOMOUS-NODES.md; the chain it starts is checked headless, test_engage_space.py)
     raw = tomllib.loads(sit.contacts.read_text())
     hostile = [c for c in raw["contact"] if c["affiliation"] == "hostile"]
     assert len(hostile) == 1 and "ais" not in hostile[0] and hostile[0]["motion"] == "transit"
+    assert _catalog()[hostile[0]["kind"]].get("armed") and "act" not in raw
     hold = hostile[0]["route"][-1]
-    acts = raw["act"]
+    attacks = _attack_orders(raw, hostile[0]["id"])
     uids = {int(v["uid"]) for v in planned.values()}
-    assert len(acts) >= 2 and all(a["by"] == hostile[0]["id"] and a.get("against_vehicle") in uids for a in acts)
-    # the boat holds well before the first act (a holding target's plan is stable)
+    assert len(attacks) >= 2 and all(o["target"].get("vehicle") in uids and o["stay"] for o in attacks)
+    # the boat holds well before its first order (a holding target's plan is stable)
     route = hostile[0]["route"]
     run_s = sum(haversine_m(*a, *b) for a, b in zip(route, route[1:])) / hostile[0]["speed_mps"]
-    assert hostile[0].get("start_s", 0) + run_s + 15 < min(a["at_s"] for a in acts)
+    assert hostile[0].get("start_s", 0) + run_s + 15 < min(o["at_s"] for o in attacks)
     # the effect: inside the engagement zone and clear of every no-strike area, with room
     step = next(s for s in sit.steps if s.kind == "engage")
     radius = float(step.params["effect_radius_m"])
@@ -1602,6 +1605,8 @@ def test_hostile_act_engagement_fits_the_chain():
     orders = {o.id: o for o in sit.orders}
     for p in orders["gate-patrol"].params["route"]:
         assert 850 <= haversine_m(*p, *hold) <= 1300
+        # the weapon each order names reaches all of the sensor ship's leg: no attack held for range
+        assert all(_in_band(raw, hostile[0]["id"], o, p) for o in attacks if o["target"] == {"vehicle": 1})
     assert 9 <= (int(sit.at[11:13]) - 7) % 24 <= 15, "by day at the Gate (UTC-7 in June)"
     orbit = orders["bay-orbit"].params
     assert haversine_m(*orbit["center"], *hold) - orbit["radius_m"] > 1500
@@ -1614,10 +1619,10 @@ def test_hostile_act_engagement_fits_the_chain():
             assert haversine_m(*c["center"], *hold) - c["radius_m"] > uncertain_clearance, c["id"]
         if c["motion"] in ("drift", "station"):
             assert haversine_m(*c["at"], *hold) > uncertain_clearance, c["id"]
-    # the fallback: after the acts, only when no nomination stands, waiting for the checks
+    # the fallback: after the attacks, only when no nomination stands, waiting for the checks
     assert step.params["vehicles"] == {"callsign": "BLADE 1"} and step.params["fallback"] == "return"
     assert step.params["unless_nominated"] is True and float(step.params["wait_s"]) > 0
-    assert max(a["at_s"] for a in acts) < step.at_s <= 8 * 60
+    assert max(o["at_s"] for o in attacks) < step.at_s <= 8 * 60
     assert "hostile" in step.params["track"]["affiliation"]
     # autoplay grants every AI request and confirms rule declarations; nothing else is relaxed
     p = proxy_params(sit.autoplay)
@@ -1962,20 +1967,28 @@ def test_each_weapon_situation_uses_its_weapon_against_a_fitting_target(name: st
     assert armed == [step.params["vehicles"]["callsign"]] and step.params["weapon"] == weapon
     assert {o.vehicles["callsign"] for o in sit.orders} == {"HUNTER 1"}
     (w,) = [x for x in platforms[planned[armed[0]]["platform"]]["loadout"] if x["name"] == weapon]
-    # the target: one hostile of a fitting kind, holding before its first act, acts at HUNTER 1
+    # the target: one hostile of an armed kind (sim/contacts.toml) whose look-alike, the kind our
+    # sensors and the damage model read, the weapon has figures for; holding before its first order;
+    # no scripted act: its orders attack HUNTER 1 from where it holds, by its own fire control
     raw = tomllib.loads(sit.contacts.read_text())
     (hostile,) = [c for c in raw["contact"] if c["affiliation"] == "hostile"]
+    kind = _catalog()[hostile["kind"]]
+    looks = kind.get("looks_like", hostile["kind"])
+    assert kind.get("armed") and "act" not in raw
     aliases = {"tanker": "cargo_ship", "ferry": "cargo_ship", "patrol_boat": "small_fast_boat", "helicopter": "light_aircraft", "unknown_uas": "small_drone"}
-    figures = w["effects"][aliases.get(hostile["kind"], hostile["kind"])]
+    figures = w["effects"][aliases.get(looks, looks)]
     assert hostile["domain"] in w["targets"] and "ais" not in hostile and hostile["motion"] == "transit"
-    assert hostile["kind"] not in ("fishing_vessel", "sailboat", "light_aircraft", "helicopter"), "read as neutral: flagged, not declared"
+    assert looks not in ("fishing_vessel", "sailboat", "light_aircraft", "helicopter"), "read as neutral: flagged, not declared"
     assert "conditions" not in raw, "the hit chance is the figures' own: no fog or sea state"
     hold = hostile["route"][-1]
     route = hostile["route"]
     run_s = sum(haversine_m(*a, *b) for a, b in zip(route, route[1:])) / hostile["speed_mps"]
-    acts = raw["act"]
-    assert all(a["by"] == hostile["id"] and a["against_vehicle"] == 1 for a in acts) and planned["HUNTER 1"]["uid"] == 1
-    assert hostile.get("start_s", 0) + run_s + 15 < min(a["at_s"] for a in acts) < step.at_s
+    attacks = _attack_orders(raw, hostile["id"])
+    assert attacks and all(o["target"] == {"vehicle": 1} and o["stay"] for o in attacks) and planned["HUNTER 1"]["uid"] == 1
+    assert hostile.get("start_s", 0) + run_s + 15 < min(o["at_s"] for o in attacks) < step.at_s
+    # from a real magazine: no more of a weapon than it carries
+    for x in kind["loadout"]:
+        assert sum(o.get("rounds", x["count"]) for o in attacks if o.get("weapon") == x["name"]) <= x["count"], x["name"]
     radius = float(step.params["effect_radius_m"])
     zone = next(f for f in _areas() if f["properties"]["kind"] == "engagement_zone")["geometry"]["coordinates"][0]
     assert _inside(hold, zone) and _ring_distance_m(hold, zone) > radius + 200
@@ -1987,8 +2000,12 @@ def test_each_weapon_situation_uses_its_weapon_against_a_fitting_target(name: st
     patrol = next(o for o in sit.orders if o.id == "gate-patrol")
     for p in patrol.params["route"]:
         assert 850 <= haversine_m(*p, *hold) <= 1300
+        # the weapon each order names reaches all of HUNTER 1's leg: no attack held for range
+        assert all(_in_band(raw, hostile["id"], o, p) for o in attacks), p
     assert step.params["unless_nominated"] is True and float(step.params["wait_s"]) > 0
-    # the default run's strike: a hit that destroys, for intents 1 to 6 (an AI's proposals before it)
+    # the default run's strike: a hit that destroys, for intents 1 to 6 (an AI's proposals before it;
+    # chosen among the model's draws for our weapon, docs/AUTONOMOUS-NODES.md decision D4: the
+    # target's own strikes on HUNTER 1 are drawn on their acts' streams, which no seed was chosen for)
     for intent in range(1, 7):
         stream = f"effect:{intent}:target"
         assert _uniform(raw["seed"], stream + ":hit") < figures["p_hit"], intent

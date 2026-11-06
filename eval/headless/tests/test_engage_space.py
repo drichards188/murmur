@@ -8,7 +8,10 @@ declaration, its review, the nomination, two signatures, the effect, the assessm
 owed back), its abort (the fallback and the restore), its miss (a munition that survives and an
 operator who un-spends it), a lost contact that blocks until its AIS claim is confirmed, a
 collect and a cover on the pinned snapshot, each audit log replayed with its anchors; and two
-runs of one seed the same record.
+runs of one seed the same record. The chain's own episodes run on the physical sensing model, as
+the situation runs live (its boat fires its own machine gun by its catalog kind and orders,
+docs/AUTONOMOUS-NODES.md, bd murmur-y85j.6); the review, lost-contact and blocker episodes keep
+the v1 world's legacy pin their added contacts are timed to (`with_contacts` says why).
 """
 
 from __future__ import annotations
@@ -356,11 +359,23 @@ def binary() -> Path:
     return BINARY
 
 
+def physical(e: Any) -> Any:
+    """A situation's episode on the physical sensing model (world v3 on its own map), as the
+    situation runs live: its contacts' nodes fire their catalog weapons, which the v1 world's legacy
+    pin (eval/headless/situations.py `process_spec`) would sense only as abstract acts
+    (docs/AUTONOMOUS-NODES.md stage 6, bd murmur-y85j.6)."""
+    import dataclasses
+
+    return dataclasses.replace(e, world="v3")
+
+
 def episode(situation: str, keep: Path, duration_s: float | None = None, seed: int = 1, **opts: Any) -> dict[str, Any]:
     from eval.headless.episode import Episode, Options
     from eval.headless.situations import Calibration, from_situation
 
     e = from_situation(situation)
+    if situation == "hostile-act-loitering-munition":
+        e = physical(e)
     if duration_s is not None:
         e.duration_s = duration_s
     with tempfile.TemporaryDirectory(prefix="engage-space-") as td:
@@ -424,9 +439,11 @@ def test_the_engagement_chain_runs_end_to_end(binary: Path, tmp_path: Path):
     back closed (the munition is spent by its own effect); the log replays, every decision."""
     rec = episode("hostile-act-loitering-munition", tmp_path / "a", **ENGAGE)
     evs = events(rec)
-    act = first(evs, "ident.act")
+    # the boat fires its own gun in episodes a minute apart (one act each); an act attributed
+    # below the threshold is flagged, and a later one may declare
     decl = first(evs, "ident.declared")
-    assert decl["declaration"]["by"]["kind"] == "rule" and decl["declaration"]["by"]["evidence"]["act"] == act["act"]["act"]
+    assert decl["declaration"]["by"]["kind"] == "rule"
+    act = next(e for e in evs if e["type"] == "ident.act" and e["act"]["act"] == decl["declaration"]["by"]["evidence"]["act"])
     conf = first(evs, "ident.confirmed")
     assert conf["by"] == "op-auto" and conf["track"] == decl["declaration"]["track"]
     nom = next(e for e in evs if e["type"] == "intent.created" and e["intent"]["kind"] == "engage")
@@ -562,7 +579,12 @@ def test_a_lost_contact_blocks_until_its_ais_claim_is_confirmed(binary: Path, tm
 
 
 def with_contacts(tmp_path: Path, extra: str, duration_s: float, **opts: Any) -> dict[str, Any]:
-    """`hostile-act-loitering-munition` with contacts added to its scenario, kept in `tmp_path / "a"`."""
+    """`hostile-act-loitering-munition` with contacts added to its scenario, kept in `tmp_path / "a"`.
+    On the v1 world's legacy sensing model, unlike the chain's own episodes above: these test the
+    review list, lost contacts and accepted blockers (rules 16 and 19), each added contact timed to
+    the first act's declaration as the legacy model makes it (the boat's gun episodes sensed as
+    abstract acts, the first from 3:21); the physical model may flag that act and declare on the
+    next a minute later, past those timings (bd murmur-y85j.6: retune them there as a follow-up)."""
     from eval.headless.episode import Episode, Options
     from eval.headless.situations import Calibration, from_situation
 

@@ -6,7 +6,9 @@
 #
 # Two of ours at the Golden Gate: HUNTER 1, a sensor ship patrolling just west of the bridge, and BULL 1,
 # the armed UGV on the high ground at the bridge's south end (an M2 .50 and one FGM-148
-# Javelin). A fast boat without AIS runs in, holds mid-strait and fires on HUNTER 1; the engine
+# Javelin). A fast boat without AIS runs in, holds mid-strait and fires on HUNTER 1 (an armed kind
+# ordered to attack: it fires its own machine gun by its own fire control, its strikes drawn by the
+# damage model, docs/AUTONOMOUS-NODES.md; the brief says ours can be stopped or sunk); the engine
 # declares it hostile by rule, an operator confirms, the timeline nominates BULL 1 with its Javelin
 # (unless someone nominated already), two operators sign, and the missile is launched from where
 # BULL 1 stands (rules 28: a ground platform's missile from a firing position within its band, 65
@@ -22,7 +24,7 @@
 # adds the second signature (`cosigner = "scripted"`), or you sign twice through the "Acting as"
 # switcher with COSIGNER=you, and the engagement card's Cease fire stops the M2's fire at once.
 #
-# Clock: every `at_s` here, like the contacts' `start_s` and acts' `at_s`, counts from the stack's
+# Clock: every `at_s` here, like the contacts' `start_s` and orders' `at_s`, counts from the stack's
 # start (the link emulator's); the contacts come a few seconds later.
 title = "Shore battery"
 brief = """
@@ -45,14 +47,21 @@ two operators with engagement authority, neither of them its proposer. BULL 1 fi
 stands: its missile and its gun both reach the strait from the high ground. A missile is one shot; the
 gun fires bursts while the picture holds, each re-checked, until the target is gone, the rounds run
 out or someone ceases fire. Every hit is a draw: a missile can miss, and a burst usually does.
+Ours can be struck too: a hit can stop one of our vessels or sink it.
 """
 director = """
-Truth: two small fast boats with no AIS (truth affiliation: hostile). The first runs in from the sea
-at 15 m/s from about 0:08 and holds mid-strait at [-122.4950, 37.8120] from about 3:00, 1,740 m from
-BULL 1, inside the engagement zone. At about 3:25 it fires on HUNTER 1 (an abstract act), and again
-at 4:25 and 5:25. The second runs in along the south side of the strait from about 5:05 and holds at
-[-122.4900, 37.8075], 1,190 m from BULL 1, from about 7:35, and fires on HUNTER 1 at about 7:55, 8:55
-and 9:55. Nothing else is hostile.
+Truth: two fast inshore attack craft with no AIS (truth affiliation: hostile; each four ATGM-class
+missiles and a 12.7 mm machine gun, looking like small fast boats to our sensors). The first runs
+in from the sea at 15 m/s from about 0:08 and holds mid-strait at [-122.4950, 37.8120] from about
+3:00, 1,740 m from BULL 1, inside the engagement zone. Its contacts file orders it at about 3:20 to
+open fire on HUNTER 1, some 1 km east of it: two 6-round bursts of its machine gun five seconds
+apart, by its own fire control, and again at 4:20 and 5:20 so long as it is afloat. The second
+runs in along the south side of the strait from about 5:05 and holds at [-122.4900, 37.8075], 1,190
+m from BULL 1 and some 900 m from HUNTER 1, from about 7:35, and is ordered to open fire on HUNTER 1
+at about 7:50, 8:50 and 9:50 the same way. Their missiles are never ordered. Each burst can hit
+HUNTER 1 (0.25), and a hit can stop it (0.17 of hits) or sink it (0.03); with the contacts' seed
+98921 the first boat's first burst takes HUNTER 1's propulsion (it drifts, still reporting), and
+nothing sinks it. Nothing else is hostile.
 What should happen: our sensors observe the first act; the engine declares the first boat hostile by
 rule; op-auto confirms (live: you, in the Review list). At 3:40 the timeline nominates BULL 1 with
 its Javelin once the form's dry run passes (unless someone nominated already); op-2 and op-3 sign
@@ -105,8 +114,8 @@ vehicles = { callsign = "HUNTER 1" }
 route = [[-122.4840, 37.8140], [-122.4840, 37.8210]]
 note = "Opening order: patrol mid-channel just west of the bridge"
 
-# ---- the timeline: the boats and their acts are scripted in the contacts; these mark them for a
-# revealed run, and nominate if no one has
+# ---- the timeline: the boats and their orders are in the contacts; these mark them for a revealed
+# run, and nominate if no one has
 [[step]]
 id = "first-boat-runs-in"
 at_s = 10
@@ -118,7 +127,7 @@ director = true
 id = "first-boat-fires"
 at_s = 205
 kind = "note"
-text = "The first fast boat fires on HUNTER 1 (truth)"
+text = "The first fast boat opens fire on HUNTER 1 with its machine gun (truth)"
 director = true
 
 # BULL 1's Javelin on the first boat, once the form's dry run says it passes every check (the
@@ -152,7 +161,7 @@ director = true
 id = "second-boat-fires"
 at_s = 475
 kind = "note"
-text = "The second fast boat fires on HUNTER 1 (truth)"
+text = "The second fast boat opens fire on HUNTER 1 with its machine gun (truth)"
 director = true
 
 # The M2 on the second boat (BULL 1's one Javelin is spent): named, since the engine never picks a

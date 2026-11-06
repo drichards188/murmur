@@ -980,7 +980,9 @@ mod tests {
         assert!(Scenario::from_toml("title = \"t\"\n[sensing]\nsignatures = {}\n").is_err());
     }
 
-    /// Every contacts scenario that ships loads, its contacts and acts valid.
+    /// Every contacts scenario that ships loads, its contacts and orders valid; since stage 6 (bd
+    /// murmur-y85j.6) none scripts an act or hands a contact a weapon of its own: every attack is
+    /// a node's, by its catalog kind and an order.
     #[test]
     fn the_shipped_scenarios_load() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sim/scenarios");
@@ -990,12 +992,13 @@ mod tests {
             if p.extension().is_some_and(|x| x == "toml") {
                 let s = Scenario::load(&p).expect("loads");
                 s.contacts().unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+                assert!(s.acts.is_empty() && s.contacts.iter().all(|c| c.weapon.is_none()), "{}", p.display());
                 n += 1;
             }
         }
         assert!(n >= 4, "{n} scenarios");
         let ident = Scenario::load(&dir.join("golden-gate-ident.toml")).expect("loads");
-        assert_eq!(ident.acts.len(), 3);
+        assert_eq!(ident.orders.len(), 3);
     }
 
     /// Rules 9: scripted acts name an author and exactly one victim among the scenario's

@@ -1,5 +1,5 @@
-# Air-to-air traffic (sim/situations/hostile-act-air-to-air.toml): a large hostile drone without a
-# transponder that fires on our sensor ship, and the tutorial's Golden Gate surface
+# Air-to-air traffic (sim/situations/hostile-act-air-to-air.toml): a large armed hostile drone
+# without a transponder that fires on our sensor ship, and the tutorial's Golden Gate surface
 # traffic (sim/scenarios/tutorial.toml says how it is kept clear of the holding area). No other
 # aircraft: an air track not declared hostile counts in an engagement's keep-out anywhere it could
 # reach while it is out of view (rules 14 and 16), so a sky with airliners or other drones in it
@@ -8,25 +8,34 @@
 # crates/murmur-contacts/src/scenario.rs. Points are [lon, lat]. Fictional names and MMSIs.
 # Everything here is truth: the console only ever sees what our sensors make of it.
 #
-# The target is a large VTOL drone, some 3 m across (kind `unknown_uas`, the physical model's
-# small drone signature made larger: `dc_m` 3, `height_m` 1, `rcs_m2` 0.5 and `thermal_k` 10, all
-# [E] for a Group 3 rotorcraft with a combustion engine; its hit and damage figures are the small
-# drone's: crates/murmur-decide catalog.rs KIND_ALIASES). Against it the CCA's AIM-120C hits 0.60 of
-# the time and, given a hit, destroys it 0.95 (sim/platforms.toml `cca`, docs/research/weapons.md
-# 10.3 and 10.4, all estimates). It is a drone rather than a helicopter or a light aircraft because
-# the tracker reads those, without a transponder, as neutral (they need not carry one), and the
-# engine then flags an act by one for review instead of declaring it by rule; a UAS without a
-# transponder reads as suspect. It hovers once on station, so the engine's constant-velocity
-# prediction holds for a signed plan.
+# The target is a large armed VTOL drone, some 3 m across (sim/contacts.toml `armed_uas`, looking
+# like an `unknown_uas`: the physical model's small drone signature made larger, `dc_m` 3,
+# `height_m` 1, `rcs_m2` 0.5 and `thermal_k` 10, all [E] for a Group 3 rotorcraft with a combustion
+# engine; its hit and damage figures are the small drone's: crates/murmur-decide catalog.rs
+# KIND_ALIASES). Against it the CCA's AIM-120C hits 0.60 of the time and, given a hit, destroys it
+# 0.95 (sim/platforms.toml `cca`, docs/research/weapons.md 10.3 and 10.4, all estimates). It is a
+# drone rather than a helicopter or a light aircraft because the tracker reads those, without a
+# transponder, as neutral (they need not carry one), and the engine then flags an act by one for
+# review instead of declaring it by rule; a UAS without a transponder reads as suspect. It hovers
+# once on station, so the engine's constant-velocity prediction holds for a signed plan.
 #
 # Seed 127 (the damage draw, crates/murmur-contacts damage.rs, depends on the run's seed and the
 # strike's intent only): an AIM-120C strike by any engagement intent from 1 to 8 hits and destroys
 # the drone (hit draws 0.02 to 0.49 against 0.60, damage draws 0.12 to 0.76 against 0.95), so the
 # default run (the opening order is intent 1, the timeline's nomination intent 2) and a run where an
 # AI's proposals come first both show a hit. Past intent 8, or with another seed, the missile can
-# miss, and the situation's brief says it can.
+# miss, and the situation's brief says it can. The drone's own strikes on HUNTER 1 draw on their
+# acts' streams (`act:drone-raider-<n>`), which the seed was not chosen for (docs/AUTONOMOUS-NODES.md
+# decision D4: nothing is chosen to spare ours).
 #
-# Times (`start_s`, an act's `at_s`) count from the contacts process's start, a few seconds after
+# The drone fires by its own fire control (docs/AUTONOMOUS-NODES.md, bd murmur-y85j.6): it carries
+# two LMM-class light missiles (510 m/s, 400 m to 6 km, from or at the air), its whole loadout. This
+# file orders it to fire one at HUNTER 1, and the other a minute later. Each is one act, and each
+# is dangerous: against a fishing-vessel-sized sensor ship it hits 0.90 of the time and of its hits
+# 0.20 sink HUNTER 1 and 0.45 stop it. Out of missiles it turns for home along its way in (its
+# kind's `on_empty`).
+#
+# Times (`start_s`, an order's `at_s`) count from the contacts process's start, a few seconds after
 # the situation's clock (the link emulator's start). uids are the fleet's
 # (sim/fleets/hostile-act-air-to-air.toml): 1 is HUNTER 1.
 title = "Air-to-air traffic"
@@ -38,15 +47,14 @@ misclassification_rate = 0.0     # deterministic identities: the situation is ab
 # ---------------------------------------------------------------- the hostile
 # The drone comes in from the sea at 300 m and 30 m/s, from 2.7 km west of its station over
 # mid-strait, 1.5 km west of the bridge inside the engagement zone (sim/areas: ez-gate-west), and
-# hovers there from about 1:35. It fires on HUNTER 1, patrolling 0.9 to 1.2 km east of it, from
-# about 2:00 and again every minute (an abstract act: each one is another chance for our sensors
-# to observe it).
+# hovers there from about 1:35. At 1:55 it is ordered to fire a missile at HUNTER 1, patrolling 0.9
+# to 1.2 km east of it, from where it hovers, and a minute later its second.
 [[contact]]
 id = "drone-raider"
-name = "Large VTOL drone without a transponder, hovering over mid-strait west of the bridge"
+name = "Large armed VTOL drone without a transponder, hovering over mid-strait west of the bridge"
 affiliation = "hostile"
 domain = "air"
-kind = "unknown_uas"
+kind = "armed_uas"
 alt_m = 300
 dc_m = 3.0
 height_m = 1.0
@@ -57,33 +65,25 @@ motion = "transit"
 route = [[-122.5250, 37.8080], [-122.4950, 37.8120]]
 start_s = 5
 
-[[act]]
-id = "act-1"
-at_s = 120
-by = "drone-raider"
-against_vehicle = 1
+[[order]]
+at_s = 115
+node = "drone-raider"
+do = "attack"
+target = { vehicle = 1 }
+weapon = "LMM-class light missile"
+rounds = 1
+stay = true
 label = "fires a missile at the sensor ship (HUNTER 1)"
 
-[[act]]
-id = "act-2"
-at_s = 180
-by = "drone-raider"
-against_vehicle = 1
-label = "fires at HUNTER 1 again"
-
-[[act]]
-id = "act-3"
-at_s = 240
-by = "drone-raider"
-against_vehicle = 1
-label = "fires at HUNTER 1 a third time"
-
-[[act]]
-id = "act-4"
-at_s = 300
-by = "drone-raider"
-against_vehicle = 1
-label = "fires at HUNTER 1 a fourth time"
+[[order]]
+at_s = 175
+node = "drone-raider"
+do = "attack"
+target = { vehicle = 1 }
+weapon = "LMM-class light missile"
+rounds = 1
+stay = true
+label = "fires its second missile at HUNTER 1"
 
 # ---------------------------------------------------------------- ferries (AIS, neutral)
 [[contact]]

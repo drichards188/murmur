@@ -1,27 +1,35 @@
 # Naval drone traffic (sim/situations/hostile-act-naval-drone.toml): a hostile auxiliary tanker
-# without AIS that fires on our sensor ship, and the tutorial's Golden Gate traffic around it
-# (sim/scenarios/tutorial.toml says how it is kept clear of the holding area). Run by
-# crates/murmur-contacts; format in crates/murmur-contacts/src/scenario.rs. Points are [lon, lat].
-# Fictional names and MMSIs. Everything here is truth: the console only ever sees what our sensors
-# make of it.
+# without AIS, with defensive heavy machine guns, that fires on our sensor ship, and the tutorial's
+# Golden Gate traffic around it (sim/scenarios/tutorial.toml says how it is kept clear of the
+# holding area). Run by crates/murmur-contacts; format in crates/murmur-contacts/src/scenario.rs.
+# Points are [lon, lat]. Fictional names and MMSIs. Everything here is truth: the console only ever
+# sees what our sensors make of it.
 #
-# The target is a ship (kind `tanker`, whose hit and damage figures are the cargo ship's:
-# crates/murmur-decide catalog.rs KIND_ALIASES), what a Magura V5-class naval drone is used against:
-# the public sinkings were of warships and auxiliaries, each taking several boats. Against it the
-# Magura's 300 kg contact charge hits 0.50 of the time and, given a hit, sinks it 0.45 and stops it
-# (propulsion lost) 0.50 (sim/platforms.toml `magura`, docs/research/weapons.md 10.3 and 10.4, all
-# estimates). A ship without AIS reads as suspect to the tracker, so an act by it is declared by
-# rule; a fishing vessel or a sailboat without AIS reads as neutral and its act is flagged for
-# review instead.
+# The target is a naval auxiliary (sim/contacts.toml `naval_auxiliary`, looking like a `tanker`,
+# whose hit and damage figures are the cargo ship's: crates/murmur-decide catalog.rs KIND_ALIASES),
+# what a Magura V5-class naval drone is used against: the public sinkings were of warships and
+# auxiliaries, each taking several boats. Against it the Magura's 300 kg contact charge hits 0.50 of
+# the time and, given a hit, sinks it 0.45 and stops it (propulsion lost) 0.50 (sim/platforms.toml
+# `magura`, docs/research/weapons.md 10.3 and 10.4, all estimates). A ship without AIS reads as
+# suspect to the tracker, so an act by it is declared by rule; a fishing vessel or a sailboat
+# without AIS reads as neutral and its act is flagged for review instead.
 #
 # Seed 231926 (the damage draw, crates/murmur-contacts damage.rs, depends on the run's seed and the
 # strike's intent only): a Magura strike by any engagement intent from 1 to 8 hits the tanker and
 # sinks it (hit draws 0.01 to 0.41 against 0.50, damage draws 0.03 to 0.31 against 0.45), so the
 # default run (the opening order is intent 1, the timeline's nomination intent 2) and a run where an
 # AI's proposals come first both show it. Past intent 8, or with another seed, it can miss or only
-# stop the ship, and the situation's brief says so.
+# stop the ship, and the situation's brief says so. The tanker's own strikes on HUNTER 1 draw on
+# their acts' streams (`act:tanker-raider-<n>:<burst>`), which the seed was not chosen for
+# (docs/AUTONOMOUS-NODES.md decision D4: nothing is chosen to spare ours).
 #
-# Times (`start_s`, an act's `at_s`) count from the contacts process's start, a few seconds after
+# The tanker fires by its own fire control (docs/AUTONOMOUS-NODES.md, bd murmur-y85j.6): its only
+# weapon is a 12.7 mm heavy machine gun (1,000 rounds, 2 km; a naval auxiliary carries guns, not
+# rockets). This file orders it to fire two bursts at HUNTER 1 a minute, four times (each burst a
+# hit 0.38 of the time against a fishing-vessel-sized sensor ship from a ship's steadier mount; of
+# its hits 0.03 sink HUNTER 1 and 0.17 stop it). Each two-burst episode is one act.
+#
+# Times (`start_s`, an order's `at_s`) count from the contacts process's start, a few seconds after
 # the situation's clock (the link emulator's start). uids are the fleet's
 # (sim/fleets/hostile-act-naval-drone.toml): 1 is HUNTER 1.
 title = "Naval drone traffic"
@@ -33,47 +41,60 @@ misclassification_rate = 0.0     # deterministic identities: the situation is ab
 # ---------------------------------------------------------------- the hostile
 # An auxiliary tanker without AIS steams in at 5 m/s from some 630 m west of its holding point
 # mid-strait, 1.5 km west of the bridge inside the engagement zone (sim/areas: ez-gate-west), and
-# anchors there from about 2:10 (a holding target's plan is stable). It fires on HUNTER 1,
-# patrolling 0.9 to 1.2 km east of it, from about 2:40 and again every minute (an abstract act:
-# each one is another chance for our sensors to observe it).
+# anchors there from about 2:10 (a holding target's plan is stable). At 2:35 it is ordered to open
+# fire on HUNTER 1, patrolling 0.9 to 1.2 km east of it (inside its gun's 2 km), from where it
+# lies, and again every minute: each firing episode is another chance for our sensors to observe
+# an act.
 [[contact]]
 id = "tanker-raider"
-name = "Auxiliary tanker without AIS, anchored mid-strait west of the bridge"
+name = "Auxiliary tanker without AIS, anchored mid-strait west of the bridge, its machine guns manned"
 affiliation = "hostile"
 domain = "surface"
-kind = "tanker"
+kind = "naval_auxiliary"
 speed_mps = 5
 motion = "transit"
 route = [[-122.5020, 37.8108], [-122.4950, 37.8120]]
 start_s = 5
 
-[[act]]
-id = "act-1"
-at_s = 160
-by = "tanker-raider"
-against_vehicle = 1
-label = "fires a rocket at the sensor ship (HUNTER 1)"
+[[order]]
+at_s = 155
+node = "tanker-raider"
+do = "attack"
+target = { vehicle = 1 }
+weapon = "12.7 mm HMG (Kord-class)"
+rounds = 12
+stay = true
+label = "opens fire on the sensor ship (HUNTER 1) with its machine gun"
 
-[[act]]
-id = "act-2"
-at_s = 220
-by = "tanker-raider"
-against_vehicle = 1
-label = "fires a rocket at HUNTER 1 again"
+[[order]]
+at_s = 215
+node = "tanker-raider"
+do = "attack"
+target = { vehicle = 1 }
+weapon = "12.7 mm HMG (Kord-class)"
+rounds = 12
+stay = true
+label = "fires on HUNTER 1 again"
 
-[[act]]
-id = "act-3"
-at_s = 280
-by = "tanker-raider"
-against_vehicle = 1
-label = "fires a rocket at HUNTER 1 a third time"
+[[order]]
+at_s = 275
+node = "tanker-raider"
+do = "attack"
+target = { vehicle = 1 }
+weapon = "12.7 mm HMG (Kord-class)"
+rounds = 12
+stay = true
+label = "fires on HUNTER 1 a third time"
 
-[[act]]
-id = "act-4"
-at_s = 340
-by = "tanker-raider"
-against_vehicle = 1
-label = "fires a rocket at HUNTER 1 a fourth time"
+[[order]]
+at_s = 335
+node = "tanker-raider"
+do = "attack"
+target = { vehicle = 1 }
+weapon = "12.7 mm HMG (Kord-class)"
+rounds = 12
+stay = true
+label = "fires on HUNTER 1 a fourth time"
 
 # ---------------------------------------------------------------- ferries (AIS, neutral)
 [[contact]]

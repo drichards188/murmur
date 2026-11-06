@@ -6,7 +6,9 @@
 #
 # Two of ours at the Golden Gate, by day, one of them armed (REAPER 1, the MQ-9B with four AGM-114R
 # and two GBU-12), and normal traffic. A coaster (a small freighter) without AIS comes in from the
-# sea, anchors mid-strait west of the bridge and fires on HUNTER 1. Our sensors observe the act;
+# sea, anchors mid-strait west of the bridge and fires on HUNTER 1 (an armed kind ordered to attack:
+# it fires rockets from its own launcher by its own fire control, each strike drawn by the damage
+# model, docs/AUTONOMOUS-NODES.md; the brief says ours can be stopped or sunk). Our sensors observe the act;
 # the engine declares the coaster hostile by rule (rules 9); op-auto confirms the declaration
 # (live: you).
 # The timeline nominates REAPER 1 naming the GBU-12 (agent-scripted, a script, saying so) unless a
@@ -30,7 +32,7 @@
 # target is identified before it is nominated and a signed plan is not stopped by a
 # reclassification.
 #
-# Clock: every `at_s` here, like the contacts' `start_s` and acts' `at_s`, counts from the stack's
+# Clock: every `at_s` here, like the contacts' `start_s` and orders' `at_s`, counts from the stack's
 # start (the link emulator's); the contacts come a few seconds later. The fleet is ready and on
 # its opening order some 10 to 30 s in.
 title = "Hostile act to engagement (guided bomb)"
@@ -59,14 +61,18 @@ the GBU-12: the Hellfire's 9 kg warhead rarely stops a ship and never sinks one,
 241 kg stops one more often than not. The nomination names its weapon, and the form's weapon check
 shows what it is expected to do against the target before anyone signs. Any weapon can miss, and a
 hit can leave a target damaged rather than destroyed: our sensors' assessment afterwards says
-which.
+which. Ours can be struck too: a hit can stop one of our vessels or sink it.
 """
 director = """
-Truth: a coaster (a small freighter) with no AIS (truth affiliation: hostile, kind cargo_ship) comes
-in from 630 m west of its holding point at 5 m/s from about 0:08 and anchors mid-strait at
-[-122.4950, 37.8120], 1.5 km west of the bridge and inside the engagement zone, from about 2:15. At
-about 2:45 it fires a rocket at HUNTER 1, patrolling 0.9 to 1.2 km east of it (an abstract act), and
-again every minute to 5:45. Nothing else is hostile.
+Truth: a coaster (a small freighter) with no AIS (truth affiliation: hostile; kind armed_coaster, a
+12-tube 107 mm rocket launcher and a 23 mm twin cannon, looking like a cargo ship to our sensors)
+comes in from 630 m west of its holding point at 5 m/s from about 0:08 and anchors mid-strait at
+[-122.4950, 37.8120], 1.5 km west of the bridge and inside the engagement zone, from about 2:15. Its
+contacts file orders it at about 2:40 to fire one rocket at HUNTER 1, patrolling 0.9 to 1.2 km east
+of it, by its own fire control, and again every minute to 5:40, so long as it is afloat (its cannon
+is never ordered). Each rocket can hit HUNTER 1 (0.10), and a hit can stop it (0.35 of hits) or
+sink it (0.05); with the contacts' seed 76818 the coaster's rockets all miss. Nothing else is
+hostile.
 What should happen: HUNTER 1's camera identifies the coaster as it comes in and observes the first
 act; the engine attributes it to the coaster's track at 0.9 or more and declares it hostile by rule
 (a loose fix is flagged instead, and the next act is another chance); op-auto confirms the
@@ -130,7 +136,7 @@ director = true
 id = "coaster-fires"
 at_s = 165
 kind = "note"
-text = "The coaster fires a rocket at HUNTER 1 (truth; again every minute)"
+text = "The coaster fires a rocket at HUNTER 1 from its launcher (truth; ordered again every minute)"
 director = true
 
 # The nomination naming the GBU-12, unless one stands on the track by 3:50 (whoever made it, the

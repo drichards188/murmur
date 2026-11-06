@@ -6,7 +6,9 @@
 #
 # Two of ours at the Golden Gate, by day, one of them armed (WASP 1, an FPV strike drone waiting on
 # the ground at a launch site on the Presidio shore), and normal traffic. A fast boat without AIS
-# runs in from the sea, holds mid-strait west of the bridge and fires on HUNTER 1. Our sensors
+# runs in from the sea, holds mid-strait west of the bridge and fires on HUNTER 1 (an armed kind
+# ordered to attack: it fires its own machine gun by its own fire control, its strikes drawn by the
+# damage model, docs/AUTONOMOUS-NODES.md; the brief says ours can be stopped or sunk). Our sensors
 # observe the act; the engine declares the boat hostile by rule (rules 9); op-auto confirms the
 # declaration (live: you). The timeline nominates WASP 1 naming its warhead (agent-scripted, a
 # script, saying so) unless a nomination already stands; op-2 and op-3 sign (live: you, and a
@@ -21,7 +23,7 @@
 # default run's strike a hit that destroys the boat (sim/scenarios/hostile-act-fpv.toml says for
 # which intents), and the brief says it can go otherwise.
 #
-# Clock: every `at_s` here, like the contacts' `start_s` and acts' `at_s`, counts from the stack's
+# Clock: every `at_s` here, like the contacts' `start_s` and orders' `at_s`, counts from the stack's
 # start (the link emulator's); the contacts come a few seconds later. The fleet is ready and on
 # its opening order some 10 to 30 s in.
 title = "Hostile act to engagement (FPV strike drone)"
@@ -48,13 +50,19 @@ patrol, a track) waits for the operator in the Inbox.
 A nomination names its weapon from the platform's loadout, and the form's weapon check shows what
 it is expected to do against the target before anyone signs. An FPV strike can miss, and misses
 more often than it hits; a hit can leave a target damaged rather than destroyed: our sensors'
-assessment afterwards says which.
+assessment afterwards says which. Ours can be struck too: a hit can stop one of our vessels or
+sink it.
 """
 director = """
-Truth: a small fast boat with no AIS (truth affiliation: hostile) runs in from 800 m west of its
-holding point at 15 m/s from about 0:08 and holds mid-strait at [-122.4950, 37.8120], 1.5 km west
-of the bridge and inside the engagement zone, from about 1:05. At about 1:35 it fires on HUNTER 1,
-patrolling 0.9 to 1.2 km east of it (an abstract act), and again every minute to 4:35. Nothing else
+Truth: a fast inshore attack craft with no AIS (truth affiliation: hostile; four ATGM-class
+missiles and a 12.7 mm machine gun; it looks like a small fast boat to our sensors) runs in from
+800 m west of its holding point at 15 m/s from about 0:08 and holds mid-strait at [-122.4950,
+37.8120], 1.5 km west of the bridge and inside the engagement zone, from about 1:05. Its contacts
+file orders it at about 1:30 to open fire on HUNTER 1, patrolling 0.9 to 1.2 km east of it: two
+6-round bursts of its machine gun five seconds apart, by its own fire control, and again every
+minute to 4:30 (its missiles are never ordered). Each burst can hit HUNTER 1 (0.25), and a hit can
+stop it (0.17 of hits) or sink it (0.03); with the contacts' seed 108504 the first episode's second
+burst takes HUNTER 1's propulsion (it drifts, still reporting), and nothing sinks it. Nothing else
 is hostile.
 What should happen: HUNTER 1's camera identifies the boat as it comes in and observes the first act;
 the engine attributes it to the boat's track at 0.9 or more and declares it hostile by rule (a loose
@@ -119,7 +127,7 @@ director = true
 id = "boat-fires"
 at_s = 95
 kind = "note"
-text = "The fast boat fires on HUNTER 1 (truth; again every minute)"
+text = "The fast boat opens fire on HUNTER 1 with its machine gun (truth; ordered again every minute)"
 director = true
 
 # The nomination naming the FPV's warhead, unless one stands on the track by 2:40 (whoever made it,

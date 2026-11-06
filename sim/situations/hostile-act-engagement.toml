@@ -4,7 +4,9 @@
 #   make situation NAME=hostile-act-engagement OPERATOR=live      (you confirm and sign)
 #
 # Two of ours at the Golden Gate, one of them armed (REAPER 1), and normal traffic. A fast boat without AIS
-# runs in from the sea, holds mid-strait west of the bridge and fires on HUNTER 1, one of ours. Our
+# runs in from the sea, holds mid-strait west of the bridge and fires on HUNTER 1, one of ours (an
+# armed kind ordered to attack: it fires its own machine gun by its own fire control, its strikes
+# drawn by the damage model, docs/AUTONOMOUS-NODES.md; the brief says ours can be stopped or sunk). Our
 # sensors observe the act; the engine attributes it to the boat's track and declares it hostile by
 # rule (rules 9); an operator confirms the declaration (the policy's `nominate_unconfirmed` stays
 # false: nothing is nominated on a declaration nobody confirmed). The AI watch officer reads the
@@ -43,7 +45,7 @@
 # third of the time, and a plan signed on its family (small craft) stopped as "reclassified" when a
 # closer camera first identified it (hostile-act-loitering-munition, 2026-11-03).
 #
-# Clock: every `at_s` here, like the events files' and the contacts' `start_s` and acts' `at_s`,
+# Clock: every `at_s` here, like the events files' and the contacts' `start_s` and orders' `at_s`,
 # counts from the stack's start (the link emulator's); the contacts come a few seconds later. The
 # fleet is ready and on its opening orders some 10 to 30 s in.
 title = "Hostile act to engagement"
@@ -66,14 +68,20 @@ two operators with engagement authority, neither of them its proposer; the AI wa
 nominate one and can never sign it. An AI's proposal to move one of our vehicles (an orbit, a
 patrol, a track) waits for the operator in the Inbox; a hold or a return home (rtl) goes out at
 once, as every hold and rtl does under the policy. Any weapon can miss, and a hit can leave a
-target damaged rather than destroyed: our sensors' assessment afterwards says which.
+target damaged rather than destroyed: our sensors' assessment afterwards says which. Ours can be
+struck too: a hit can stop one of our vessels or sink it.
 """
 director = """
-Truth: a small fast boat with no AIS (truth affiliation: hostile) runs in from the sea at 15 m/s
-from about 0:08 and holds mid-strait at [-122.4950, 37.8120], 1.5 km west of the bridge and inside
-the engagement zone, from about 3:05. At about 3:30 it fires on HUNTER 1, patrolling 0.9 to 1.2 km
-east of it (an abstract act), and again at about 4:30 and 5:30. Nothing else is hostile.
-What should happen: our sensors observe the first act (HUNTER 1's and REAPER 1's EO/IR among them);
+Truth: a fast inshore attack craft with no AIS (truth affiliation: hostile; four ATGM-class
+missiles and a 12.7 mm machine gun; it looks like a small fast boat to our sensors) runs in from
+the sea at 15 m/s from about 0:08 and holds mid-strait at [-122.4950, 37.8120], 1.5 km west of the
+bridge and inside the engagement zone, from about 3:05. Its contacts file orders it at about 3:25
+to open fire on HUNTER 1, patrolling 0.9 to 1.2 km east of it: two 6-round bursts of its machine
+gun five seconds apart, by its own fire control, and again at about 4:25 and 5:25 (its missiles
+are never ordered). Each burst can hit HUNTER 1 (0.25), and a hit can stop it (0.17 of hits) or
+sink it (0.03); with the contacts' seed 17 the first episode's second burst takes HUNTER 1's
+propulsion (it drifts, still reporting), and nothing sinks it. Nothing else is hostile.
+What should happen: our sensors observe the first act (HUNTER 1's EO/IR sees the muzzle flash);
 the engine attributes it to the boat's track at 0.9 or more and declares the track hostile by rule
 (a loose fix is flagged instead, and the next act is another chance); op-auto confirms the
 declaration on autoplay (live: you, in the Review list). The watch officer is woken by the hostile
@@ -141,8 +149,8 @@ vehicles = { callsign = "HUNTER 1" }
 route = [[-122.4850, 37.8130], [-122.4850, 37.8190]]
 note = "Opening order: patrol the channel west of the bridge"
 
-# ---- the timeline: the boat and its acts are scripted in the contacts; these mark them for a
-# revealed run, and the fallback nominates if no one has
+# ---- the timeline: the boat and its orders are in the contacts; these mark them for a revealed
+# run, and the fallback nominates if no one has
 [[step]]
 id = "boat-runs-in"
 at_s = 10
@@ -154,7 +162,7 @@ director = true
 id = "boat-fires"
 at_s = 210
 kind = "note"
-text = "The fast boat fires on HUNTER 1 (truth; it fires again a minute later, and again)"
+text = "The fast boat opens fire on HUNTER 1 with its machine gun (truth; ordered again a minute later, and again)"
 director = true
 
 # The fallback: if no nomination on the hostile track stands by 5:45 (whoever made it, the AI's

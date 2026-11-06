@@ -161,12 +161,15 @@ kind = "small_fast_boat"
 motion = "station"
 at = [-122.4900, 37.7950]
 
+# A fast inshore attack craft (sim/contacts.toml `armed_fast_boat`, looking like a small fast boat
+# to our sensors) and a submarine, armed as such craft are (docs/AUTONOMOUS-NODES.md); no order
+# sends either to attack, so neither ever fires.
 [[contact]]
 id = "fastboat-richardson"
 name = "Fast boat out of Richardson Bay with a spoofed fishing-vessel AIS"
 affiliation = "hostile"
 domain = "surface"
-kind = "small_fast_boat"
+kind = "armed_fast_boat"
 speed_mps = 15
 motion = "route"
 route = [[-122.4760, 37.8560], [-122.4740, 37.8360], [-122.4790, 37.8230], [-122.4900, 37.8100]]
@@ -187,12 +190,14 @@ motion = "transit"
 route = [[-122.5600, 37.8000], [-122.5000, 37.8080], [-122.4850, 37.8150], [-122.4700, 37.8220]]
 
 # ---------------------------------------------------------------- not ours but friendly
+# A coast guard patrol boat carries heavy machine guns (sim/contacts.toml `cutter`, looking like a
+# patrol boat to our sensors); an assumed friend, no order ever sends it to fire.
 [[contact]]
 id = "uscg-cutter"
 name = "Coast guard patrol boat on station in the central bay (AIS)"
 affiliation = "assumed_friend"
 domain = "surface"
-kind = "patrol_boat"
+kind = "cutter"
 speed_mps = 6
 motion = "loiter"
 center = [-122.4350, 37.8200]

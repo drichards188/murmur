@@ -1,7 +1,7 @@
 # Autonomous nodes: every node acts from its type and its orders
 
-Status: **proposal, 2026-11-06, for the owner's approval before anything is built** (bd epic
-murmur-y85j). Nothing here is built yet.
+Status: **approved 2026-11-06 (section 7); stages 1 to 6 built** (bd epic murmur-y85j; section 8
+says what stage 6, the migration, did and found).
 
 The owner, 2026-11-06: "I fundamentally [want] the nodes to act correctly in all usages. we
 create resources that are combined in situations and they act correctly based on their coding.
@@ -370,3 +370,75 @@ Order: 1, then 2, 3 and 5 in parallel (disjoint crates), 4 after 2, then 6, then
   order ("at 3:20 the boat attacks HUNTER 1", or "starts its firing sequence now"), and the node
   then runs its own sequence: its weapon, range band, interval, rounds and flight. A scenario never
   creates a weapon in the air, sets where one flies, or decides what it hits.
+
+## 8. Stage 6 as built: the migration (2026-11-06, bd murmur-y85j.6)
+
+Every live situation's attacker is now an armed catalog kind (section 2.1) and every attack an
+`[[order]]` in its contacts file: no shipped contacts file (`sim/scenarios/*.toml`) scripts an act
+or hands a contact a weapon of its own (`scenario.rs` `the_shipped_scenarios_load` checks it).
+Engine scenarios (`sim/scenarios/engage/`), the ident evaluation, the v1 and v2 worlds and the
+headless golden are untouched (section 3).
+
+**The orders are the author's, and one choice departs from section 4.** Section 4 had the fast
+boats fire their ATGMs. Against HUNTER 1 at 0.9 to 1.2 km each missile hits 0.70 and sinks it in
+0.35 of its hits, so a salvo of four sinks it in about two runs in three, whatever the seed; and a
+sunk HUNTER 1 stops every chain built on it (no script accepts a lost friendly, so the keep-out
+never clears, and the boat's identity and fix fall below the nomination's limits without HUNTER
+1's camera: the air-to-air run below shows it). These situations exist to show the chain, so each
+boat is ordered instead to fire two bursts of its heavy machine gun a minute, at the old acts'
+seconds, from where it holds (`stay`): one firing episode (one act) each, three or four chances at
+a declaration, about one run in twenty that sinks HUNTER 1. That is a choice of which weapon and
+how much to fire, on the design's odds over every seed (with seed 17 the boat's first missile
+would have sunk HUNTER 1, which is what drew attention to it), never of the figures or the seed:
+decision D4 holds, no seed is chosen to spare ours, and the gun's own draws stand as they fall.
+The tutorial, whose HUNTER 1 is spared, fires its missiles.
+
+| situation (contacts file) | attacker now | its orders (contacts' clock) | default run, as measured |
+|---|---|---|---|
+| tutorial | `armed_fast_boat` | attack HUNTER 1 every 90 s from 75 s to 1155 s: one ATGM at a time (four), then two HMG bursts (nine times, 108 of 500 rounds) | live, 7.5 min to a clean stop: each order fired within a second; missile 1 declared by rule at 0.99; HUNTER 1's strikes drawn (destroyed, mobility, mobility, a miss, the bursts missed) and spared; the bursts were classed Gun-class by their muzzle flash; replay and anchors clean |
+| hostile-act-engagement | `armed_fast_boat` | two HMG bursts at HUNTER 1 at 200, 260, 320 s | headless (physical, seed 17): A-1 flagged (0.82), A-2 declared (0.996), confirmed; a burst took HUNTER 1's propulsion (it holds still headless, drifts live); the fallback nominates REAPER 1 at 5:45, signed, the Hellfire at 7:09, "persists" (as documented for intent 2). Live (autoplay, `AI=playbook`, to 12:00): the same, second for second (A-1 at 0.83, A-2 at 0.996, the effect at 7:09, "persists" at 7:32); replay and anchors clean |
+| hostile-act-loitering-munition | the same file | the same | headless (physical, seed 17): declared on A-2, BLADE 1 nominated 5:57, effect 8:12, "ceased" |
+| hostile-act-fpv | `armed_fast_boat` | two HMG bursts at 85, 145, 205, 265 s | headless (seed 108504): declared on A-1 (0.993); a burst took HUNTER 1's propulsion; WASP 1 nominated 2:40, effect 4:43, "ceased" |
+| hostile-act-guided-bomb | `armed_coaster` (looks like `cargo_ship`) | one 107 mm rocket at 155, 215, 275, 335 s | headless (seed 76818): three rockets, all missed; declared on A-1; the GBU-12 at 4:32, "ceased"; the fourth order refused (`node_gone`) |
+| hostile-act-naval-drone | `naval_auxiliary` (looks like `tanker`: guns, no rockets) | two HMG bursts at 155, 215, 275, 335 s | headless (seed 231926): five bursts hit HUNTER 1, none did damage; declared on A-1; VIPER 1 at 5:43, "ceased" |
+| hostile-act-air-to-air | `armed_uas` (looks like `unknown_uas`) | one LMM at 115 s, its second at 175 s | headless (seed 127): the first missile sinks HUNTER 1 (hit 0.78 of 0.90, then destroyed); declared by rule on its launch and confirmed; then **no nomination**: FURY 1 never passes (lost HUNTER 1 in the keep-out, the drone's identity 0.59 of 0.60, its fix 149 m of 37.5 m), and the timeline's step gives up at 7:20. The second missile flew at HUNTER 1's last report and was not drawn (o72k) |
+| shore-battery | two `armed_fast_boat` | two HMG bursts at 195, 255, 315 s and at 465, 525, 585 s | headless (seed 98921): a burst took HUNTER 1's propulsion; the Javelin "ceased" at 4:30, the M2 "ceased" at 8:55 |
+| swarm-saturation (`scripts/threat_swarms.py`) | recon, wave, decoy `small_drone`; the attack swarms `oneway_drone`; the shooter `armed_uas` | one LMM at USV 3201 at 595 s, its second at 655 s; then it turns for home (`on_empty`) | headless (seed 23; 3,602 vehicles run at about a third of real time): A-1 at 9:57, seen by over a hundred cameras of ours, declared by rule at once; A-2 at 10:57; both missiles missed USV 3201. The load was not measured live again: what changed is 181 nodes with no order (their way-in crumbs) and one look a second, its answer every one of ours within 8 km |
+| golden-gate-ident (`make goldengate` demo) | `armed_fast_boat`; the skiff `armed_skiff` | the boat: an ATGM at the Magura at 240 and 360 s (2.8 km: beyond its gun); the skiff: two PKM bursts at the Corsair at 300 s | not run: a demo. The crab boat and the skiff were 2 km from the Corsair, beyond the skiff's 1 km, so they were moved to 780 m (the author moved them, never the figures) |
+| golden-gate, -engage, -engage-keepout, -lost | hostile fast boats `armed_fast_boat`, the USCG boat `cutter` | none | unchanged but for the truth's `variant` |
+
+Headless runs are the physical model on the situation's own map (world v3, as
+`eval/headless/tests/test_nodes.py`), autoplay with `AI=playbook`, the episode seed set to the
+contacts file's seed so the damage draws are the ones a live run makes (`logs/stage6/` in the
+worktree kept each summary). Where headless differs from live: still water (a stopped HUNTER 1
+holds still headless and drifts with the tide live), and no tidewater terrain.
+
+**Not migrated, and why.** `fog-watch`'s `[[contact.maneuver]]` stays: an unarmed unknown changing
+route, an order in all but name, which the headless weather tests read as it is. road-mines' truck
+(unarmed, `truck`, the premise) and hammerhead-line's submarine (armed by kind, `submarine`) keep
+their file `transit`: the transit path an order would give them, their mine draws and timings
+authored around it (H9). The v3 and San Diego traffic (headless worlds) keep their patrol boats
+unarmed, US Navy and USCG ones included: a follow-up, with their own evaluation. No migrated file
+names `[sensing] terrain`: no node in them steers (every attack is `stay`; the one flight home is
+an aircraft's, which the grid never checks), so the grid would only have switched on the bridge's
+terrain line of sight for sensing, unasked.
+
+**Training aids** (decision D5): a contacts file's `[training]` holds `strike_outcome` (by contact;
+the per-contact key is refused) and `spared` (our uids: every strike drawn and recorded, never
+applied); eval/situation.py refuses a situation that is not a tutorial whose contacts carry one.
+
+**Fixed on the way.** bd murmur-o72k: the truth side keeps the ours it destroyed
+(`weapon::OursLedger`, held by `step::Step`); a later strike on one is recorded "already
+destroyed", never drawn again, and a mine is never set off by a wreck. The shooter still fires at
+what it last perceived until its order ends (the bridge keeps answering a silent vehicle's last
+report): left as it is, a shortcut of its perception. bd murmur-9js0: a node heading for a point
+inside its turning circle slows until the circle it can fly passes through it (`motion.rs` `head`).
+
+**Found, for the owner.** (1) hostile-act-air-to-air's default run loses HUNTER 1 to the first
+missile and its chain stops; its brief and director's notes say so. Options: accept it as the
+situation's honest default; give the drone another victim or a farther one (an author's change of
+fleet or geometry); or make it the one place a seed is chosen, which D4 forbids. (2) Every strike
+on one of ours is reported to the C2 as "struck" (`vehicle.event`), a miss included: the bridge
+reads the impact, not the draw (stage 3's shortcut; a miss would at most be a near miss heard).
+(3) A gun episode is one act, so a continuous burst sequence offers one chance at a declaration;
+these situations order separate episodes, as a real crew's bursts would come.

@@ -7,7 +7,10 @@
 #
 # Two of ours at the Golden Gate, by day, one of them armed (VIPER 1, a Magura moored in the strait
 # west of the bridge), and normal traffic. An auxiliary tanker without AIS comes in from the sea,
-# anchors mid-strait west of the bridge and fires on HUNTER 1. Our sensors observe the act; the
+# anchors mid-strait west of the bridge and fires on HUNTER 1 (an armed kind ordered to attack: a
+# naval auxiliary fires its own machine gun, not rockets, by its own fire control, each burst's
+# strike drawn by the damage model, docs/AUTONOMOUS-NODES.md; the brief says ours can be stopped or
+# sunk). Our sensors observe the act; the
 # engine declares the tanker hostile by rule (rules 9); op-auto confirms the declaration (live:
 # you). The timeline nominates VIPER 1 naming its charge (agent-scripted, a script, saying so)
 # unless a nomination already stands; op-2 and op-3 sign (live: you, and a scripted cosigner);
@@ -22,7 +25,7 @@
 # strike a hit that sinks the tanker (sim/scenarios/hostile-act-naval-drone.toml says for which
 # intents), and the brief says it can go otherwise.
 #
-# Clock: every `at_s` here, like the contacts' `start_s` and acts' `at_s`, counts from the stack's
+# Clock: every `at_s` here, like the contacts' `start_s` and orders' `at_s`, counts from the stack's
 # start (the link emulator's); the contacts come a few seconds later. The fleet is ready and on
 # its opening order some 10 to 30 s in.
 title = "Hostile act to engagement (naval drone)"
@@ -49,13 +52,17 @@ patrol, a track) waits for the operator in the Inbox.
 A nomination names its weapon from the platform's loadout, and the form's weapon check shows what
 it is expected to do against the target before anyone signs. A naval drone's strike can miss, and
 a hit can leave a ship stopped rather than sunk: our sensors' assessment afterwards says which.
+Ours can be struck too: a hit can stop one of our vessels or sink it.
 """
 director = """
-Truth: an auxiliary tanker with no AIS (truth affiliation: hostile, kind tanker) comes in from 630
-m west of its holding point at 5 m/s from about 0:08 and anchors mid-strait at [-122.4950,
-37.8120], 1.5 km west of the bridge and inside the engagement zone, from about 2:15. At about 2:45
-it fires a rocket at HUNTER 1, patrolling 0.9 to 1.2 km east of it (an abstract act), and again
-every minute to 5:45. Nothing else is hostile.
+Truth: an auxiliary tanker with no AIS (truth affiliation: hostile; kind naval_auxiliary, with a
+12.7 mm machine gun, looking like a tanker to our sensors) comes in from 630 m west of its holding
+point at 5 m/s from about 0:08 and anchors mid-strait at [-122.4950, 37.8120], 1.5 km west of the
+bridge and inside the engagement zone, from about 2:15. Its contacts file orders it at about 2:40
+to open fire on HUNTER 1, patrolling 0.9 to 1.2 km east of it: two 6-round bursts five seconds
+apart, by its own fire control, and again every minute to 5:40, so long as it is afloat. Each burst
+can hit HUNTER 1 (0.38), and a hit can stop it (0.17 of hits) or sink it (0.03); with the contacts'
+seed 231926 several bursts hit and none does damage. Nothing else is hostile.
 What should happen: HUNTER 1's camera identifies the tanker as it comes in and observes the first
 act; the engine attributes it to the tanker's track at 0.9 or more and declares it hostile by rule
 (a loose fix is flagged instead, and the next act is another chance); op-auto confirms the
@@ -120,7 +127,7 @@ director = true
 id = "tanker-fires"
 at_s = 165
 kind = "note"
-text = "The tanker fires a rocket at HUNTER 1 (truth; again every minute)"
+text = "The tanker opens fire on HUNTER 1 with its machine gun (truth; ordered again every minute)"
 director = true
 
 # The nomination naming the Magura's charge, unless one stands on the track by 3:50 (whoever made

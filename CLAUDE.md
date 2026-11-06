@@ -214,7 +214,8 @@ meaningful.
   observed hostile act against ours clearly attributed to one track, and flags unsure cases
   for review; effect release and accepting a lost friendly stay human. `[identification]` in
   `sim/policy.toml` (`rule_declaration` on, `nominate_unconfirmed` off, `corroboration`);
-  acts are `[[act]]` in contacts scenarios; review at `GET /api/review`. Live demo:
+  acts are a node's own shots under its contacts file's `[[order]]` (docs/AUTONOMOUS-NODES.md;
+  no shipped contacts file scripts an `[[act]]` any more); review at `GET /api/review`. Live demo:
   `make goldengate GG_FLEET=engage-demo CONTACTS=sim/scenarios/golden-gate-ident.toml` (the
   Makefile sets `MURMUR_CONTACTS` from `CONTACTS=`; an exported `MURMUR_CONTACTS` is ignored).
   Eval: `.venv/bin/python -m eval.run ident --seeds 1 2 3 4 5 6 7 8 9 10 --situations 20
@@ -467,8 +468,9 @@ meaningful.
   library's band, `weapon_signature`'s `threat`, an identified shooter `carried_by` it, which may
   name several); target and `eta_t` derived or absent; never the type. Nothing in it may read the
   truth's weapon kind, name, speed or victim. Weapon sensing reads the payload managers' state and
-  never writes it: contact detections are the same with any class in the truth (tested). Headless
-  refuses weapons. The tutorial's boat carries one (every 90 s).
+  never writes it: contact detections are the same with any class in the truth (tested). Every
+  live situation's attacker is an armed catalog kind fired by its own orders (bd murmur-y85j.6);
+  the tutorial's boat is ordered every 90 s, and its contacts' `[training]` spares HUNTER 1.
 - Predicted link coverage (docs/LINK-COVERAGE.md, bd murmur-hei): `GET`/`POST
   /api/links/coverage`, `link_coverage` in dry runs and `preview_intent`, the MCP tool
   `get_link_coverage`, the console's Links layer and the order form's dry run (`web/src/

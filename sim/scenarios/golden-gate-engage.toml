@@ -14,12 +14,15 @@ seed = 11
 misclassification_rate = 0.0     # deterministic identities for the demo
 
 # ---------------------------------------------------------------- the suspect
+# A fast inshore attack craft (sim/contacts.toml `armed_fast_boat`, looking like a small fast boat
+# to our sensors), armed as such a boat is; no order sends it to attack, so it never fires
+# (docs/AUTONOMOUS-NODES.md).
 [[contact]]
 id = "fastboat-richardson"
 name = "Fast boat out of Richardson Bay with a spoofed fishing-vessel AIS"
 affiliation = "hostile"
 domain = "surface"
-kind = "small_fast_boat"
+kind = "armed_fast_boat"
 speed_mps = 15
 motion = "route"
 route = [[-122.4760, 37.8560], [-122.4740, 37.8360], [-122.4790, 37.8230], [-122.4950, 37.8120]]
@@ -85,12 +88,14 @@ alt_m = 450
 motion = "route"
 route = [[-122.3700, 37.7600], [-122.4500, 37.8100], [-122.4400, 37.8700]]
 
+# A coast guard patrol boat carries heavy machine guns (sim/contacts.toml `cutter`, looking like a
+# patrol boat to our sensors); an assumed friend, no order ever sends it to fire.
 [[contact]]
 id = "uscg-cutter"
 name = "Coast guard patrol boat on station in the central bay (AIS)"
 affiliation = "assumed_friend"
 domain = "surface"
-kind = "patrol_boat"
+kind = "cutter"
 speed_mps = 6
 motion = "loiter"
 center = [-122.4350, 37.8200]

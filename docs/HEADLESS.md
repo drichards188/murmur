@@ -1282,15 +1282,20 @@ Not done, or found:
   radar included) and keeps no weapon picture. A file's attack order is not refused there (the
   file names no model); a `red` attack step is, `legacy_sensing`, as the contacts API refuses it
   under `MURMUR_SENSE_MODEL=legacy`. `hostile-act-loitering-munition`'s smoke episodes (section
-  16.3) are such episodes: once its contacts file, shared with hostile-act-engagement, migrates to
-  an ordered armed boat (docs/AUTONOMOUS-NODES.md stage 6), its headless episodes either run on
-  the physical model or check the legacy path knowingly.
+  16.3) are such episodes. Since stage 6 (docs/AUTONOMOUS-NODES.md, bd murmur-y85j.6) its contacts
+  file, shared with hostile-act-engagement, is an armed boat ordered to fire its machine gun, and
+  the chain's own episodes (end to end, the abort, the miss) run on the physical model (`world =
+  "v3"`, `test_engage_space.py` `physical`), as the situation runs live; the review, lost-contact
+  and blocker episodes keep the legacy pin their added contacts are timed to, knowingly (on the
+  physical model seed 1's first gun episode is attributed at 0.79 and flagged, and the boat is
+  declared on the second, a minute past those timings).
 - An MCP agent still does not see the weapon picture (murmur-mmxk's other half); no tool was
   added.
 - A vehicle of ours that is destroyed is still fired at while its last report lingers in the
-  bridge (the perception shortcut of docs/AUTONOMOUS-NODES.md 2.4), and the truth side draws each
-  strike on it again: in the smoke episode the boat's last two missiles flew at HUNTER 1's last
-  report after the second had destroyed it, and the third drew "mobility".
+  bridge (the perception shortcut of docs/AUTONOMOUS-NODES.md 2.4). Until stage 6 the truth side
+  drew each strike on it again (in the smoke episode the third missile drew "mobility" on a
+  destroyed HUNTER 1); since bd murmur-o72k a later strike on one of ours already destroyed is
+  recorded as such and never drawn (`weapon::OursLedger`, kept by `step::Step`).
 
 ## 17. World v3: worlds, land and water, faults and timelines
 

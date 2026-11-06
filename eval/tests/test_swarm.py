@@ -278,15 +278,29 @@ def test_saturation_leaves_the_strike_point_clear_and_jams_three_pickets(saturat
 
 
 def test_saturation_threat_is_500_quadcopters_clear_of_the_shooter_by_11_30(saturation):
-    """The contacts (scripts/threat_swarms.py): 500 hostile quadcopters, one of them the shooter,
-    whose acts are against SURFACE-3's first USV; by 11:30 every other one is 7 km or more from
-    the shooter's holding point (an engagement's keep-out counts any air track not declared by an
-    operator anywhere it could reach, rules 14), and the file is what the script writes."""
+    """The contacts (scripts/threat_swarms.py): 500 hostile drones, armed as their kinds are
+    (sim/contacts.toml, docs/AUTONOMOUS-NODES.md decision D7): unarmed quadcopters in the recon,
+    wave and decoy swarms, one-way attack drones in the two attack swarms (no order sends them in),
+    and the shooter, an armed UAS flying with the recon swarm, ordered to attack SURFACE-3's first
+    USV from where it hovers, its two missiles a minute apart (no scripted act); by 11:30 every
+    other one is 7 km or more from the shooter's holding point (an engagement's keep-out counts any
+    air track not declared by an operator anywhere it could reach, rules 14), and the file is what
+    the script writes."""
     raw = tomllib.loads(saturation.sit.contacts.read_text())
-    quads = [c for c in raw["contact"] if c.get("kind") == "small_drone"]
-    assert len(quads) == 500 and all(c["affiliation"] == "hostile" and 15 <= c["speed_mps"] <= 28 for c in quads)
-    assert {a["by"] for a in raw["act"]} == {"recon-shooter"} and {a["against_vehicle"] for a in raw["act"]} == {3201}
-    shooter = next(c for c in quads if c["id"] == "recon-shooter")["route"][-1]
+    drones = [c for c in raw["contact"] if c["domain"] == "air"]
+    assert len(drones) == 500 and all(c["affiliation"] == "hostile" and 15 <= c["speed_mps"] <= 28 for c in drones)
+    kinds = {(c["id"].rsplit("-", 1)[0], c["kind"]) for c in drones if c["id"] != "recon-shooter"}
+    assert kinds == {("recon", "small_drone"), ("wave", "small_drone"), ("decoy", "small_drone"), ("attack-east", "oneway_drone"),
+                     ("attack-west", "oneway_drone")} and "act" not in raw
+    catalog = tomllib.loads((saturation.sit.contacts.parents[2] / "sim" / "contacts.toml").read_text())
+    (sc,) = [c for c in drones if c["id"] == "recon-shooter"]
+    assert sc["kind"] == "armed_uas" and catalog["armed_uas"]["looks_like"] == "unknown_uas"
+    orders = raw["order"]
+    assert all(o["node"] == "recon-shooter" and o["do"] == "attack" and o["target"] == {"vehicle": 3201} and o["stay"] for o in orders)
+    (w,) = [w for w in catalog["armed_uas"]["loadout"] if w["name"] == orders[0]["weapon"]]
+    assert sum(o["rounds"] for o in orders) <= w["count"] and "surface" in w["targets"]
+    shooter = sc["route"][-1]
+    quads = drones
 
     def at(c: dict, t: float) -> list[float]:
         left = max(0.0, t - c.get("start_s", 0)) * c["speed_mps"]
