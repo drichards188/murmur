@@ -445,8 +445,14 @@ meaningful.
   victims are: `aim_at` in, `ours` out). Under the physical model only (a legacy run senses the act
   as abstract): a weapon act is observed by the cameras that saw the launch (`observe_launch`), not
   by radar or sonar; the weapon's fixes go to the weapon picture (`tracks::weapons`, `W-<n>`,
-  `weapons` on the tracks feed), never the track picture; the strike is the victim's
-  `vehicle.event` `struck` and an inbox alert. Weapon sensing reads the payload managers' state and
+  `weapons` on the tracks feed and `GET /api/tracks`), never the track picture; the strike is the
+  victim's `vehicle.event` `struck` and an inbox alert. The picture knows a weapon by stages (bd
+  murmur-ju1h, section 14): `launch` (the flash: place, bearing; nothing else), `weapon` (fixes
+  gated together, not by truth id, whose measured speed passes `weapons::weapon_speed_mps` from a
+  launch or closing on ours; a contact track that passes is taken for one too), `class` (only on
+  `evidence`: speed in the threat library's band, `weapon_signature`'s `threat`, or an identified
+  shooter `carried_by` it); target and `eta_t` derived or absent; never the type. Nothing in it may
+  read the truth's weapon name, speed or victim. Weapon sensing reads the payload managers' state and
   never writes it: contact detections are the same with a weapon in the truth (tested). Headless
   refuses weapons. The tutorial's boat carries one (every 90 s).
 - Predicted link coverage (docs/LINK-COVERAGE.md, bd murmur-hei): `GET`/`POST

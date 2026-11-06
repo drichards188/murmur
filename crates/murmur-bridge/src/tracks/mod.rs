@@ -184,11 +184,11 @@ struct Inner {
     #[cfg(murmur_headless)]
     last_step: (Vec<Detection>, Vec<StepObserver>),
     /// Opponent weapons (docs/OPPONENT-WEAPONS.md): the weapon picture, apart from the tracks;
-    /// the strikes our vehicles report, waiting to go to their vehicles' events; where each
-    /// observer was at the last truth message (a launch's expected strike)
+    /// the strikes our vehicles report, waiting to go to their vehicles' events; each of ours'
+    /// domain (what a weapon class is fired at)
     weapons: weapons::Picture,
     strikes: Vec<(u64, String)>,
-    ours_at: HashMap<u64, (f64, f64)>,
+    ours_domain: HashMap<u64, truth::Domain>,
 }
 
 /// Opponent weapons' sensing state, kept with the physical model's (locked only while it is):
@@ -341,7 +341,7 @@ impl Tracks {
                 last_step: (Vec::new(), Vec::new()),
                 weapons: weapons::Picture::default(),
                 strikes: Vec::new(),
-                ours_at: HashMap::new(),
+                ours_domain: HashMap::new(),
             }),
             updates: watch::channel(Arc::new(String::new())).0,
         };
@@ -413,7 +413,9 @@ impl Tracks {
 
     /// Our vehicles as sensor carriers: those with a position and a live link, each where it
     /// says it is, or (the headless simulator, which knows its navigation error) at its truth
-    /// with that error, for its fixes (`sensing::Observer`).
+    /// with that error, for its fixes (`sensing::Observer`). (`on_truth` takes them with their
+    /// carriers.)
+    #[cfg(test)]
     fn observers(&self, world: &World) -> Vec<Observer> {
         self.carriers(world).into_iter().map(|(o, _)| o).collect()
     }
@@ -506,7 +508,22 @@ impl Tracks {
     /// detections in. Returns (contacts, detections, tracks).
     pub fn on_truth(&self, msg: TruthMessage, world: &World) -> Result<(usize, usize, usize), String> {
         msg.validate()?;
-        let observers = self.observers(world);
+        let (observers, carriers): (Vec<Observer>, Vec<Carrier>) = self.carriers(world).into_iter().unzip();
+        // opponent weapons: what each of ours is (a weapon class's targets)
+        lock(&self.inner).ours_domain = observers
+            .iter()
+            .zip(&carriers)
+            .filter_map(|(o, c)| {
+                let d = match c.domain.as_str() {
+                    "air" => truth::Domain::Air,
+                    "surface" => truth::Domain::Surface,
+                    "subsurface" => truth::Domain::Subsurface,
+                    "ground" => truth::Domain::Ground,
+                    _ => return None,
+                };
+                Some((o.uid, d))
+            })
+            .collect();
         // rules 21: each vehicle on an identify order cues the contacts behind its track first
         let looks: Vec<(u64, String)> = observers
             .iter()
@@ -648,7 +665,7 @@ impl Tracks {
             let physical = (model == SensingModel::Physical).then_some((detections.as_slice(), &launches));
             self.sense_acts(&mut inner, params, observers, &msg, now, physical);
             // opponent weapons: the weapon picture takes this second's fixes and strikes
-            self.sense_strikes(&mut inner, observers, &msg, &weapon_fixes, now);
+            self.sense_strikes(&mut inner, observers, &msg, &weapon_fixes, now, model == SensingModel::Physical);
             inner.truth = Some((now, msg));
             inner.last_detections = detections.len();
             self.drop_old(&mut inner, now);
@@ -785,10 +802,43 @@ impl Tracks {
                 "observed": true, "report": report_id, "sensors": obs.sensors,
                 "sigma_m": obs.sigma_m, "observed_t": report.observed_t.0, "weapon": a.weapon,
             }));
-            // a seen launch: what it reports (by construction: the weapon's class, its nominal
-            // speed, which of ours it heads for) joins the weapon picture
-            if let (Some(w), Some(_)) = (weapon, physical) {
-                inner.weapons.launch_seen(&w.id, now, &obs, &report_id, &w.name, w.speed_mps, w.against_vehicle);
+            // a seen launch joins the weapon picture as what the cameras saw: when, where they
+            // placed the shooter and from which of ours, and the live track nearest that fix
+            // (the shooter) when one is within its gate. Nothing of the truth's weapon (its class,
+            // speed or victim) goes with it (bd murmur-ju1h).
+            if weapon.is_some() && physical.is_some() {
+                let primary = obs
+                    .sensors
+                    .iter()
+                    .filter_map(|s| s.split_once(':').and_then(|(u, _)| u.parse::<u64>().ok()))
+                    .find(|u| !obs.fixes.iter().any(|f| f.observer == *u));
+                let observer = primary.and_then(|u| observers.iter().find(|o| o.uid == u)).map(|o| {
+                    let (lat, lon) = o.believed();
+                    (o.uid, lat, lon)
+                });
+                let shooter = inner
+                    .tracks
+                    .values()
+                    .filter(|t| !t.is_stale(now))
+                    .map(|t| {
+                        let (lat, lon) = t.predicted(now);
+                        let d = crate::geo::haversine_m(obs.lat, obs.lon, lat, lon);
+                        (t.id.clone(), d / (3.0 * obs.sigma_m.hypot(t.sigma_at(now)) + 25.0))
+                    })
+                    .filter(|(_, r)| *r <= 1.0)
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(id, _)| id);
+                let launch = weapons::Launch {
+                    t: now,
+                    // the flash's own instant (the camera's frame), within the second before
+                    flash_t: if a.t > 0.0 { (a.t + (now - msg.t)).min(now) } else { now },
+                    lat: obs.lat,
+                    lon: obs.lon,
+                    sigma_m: obs.sigma_m,
+                    sensors: obs.sensors.clone(),
+                    observer,
+                };
+                inner.weapons.launch_seen(launch, &report_id, shooter);
             }
             inner.acts.push(report);
         }
@@ -797,15 +847,70 @@ impl Tracks {
     /// Opponent weapons: this message's weapon fixes and strikes into the weapon picture (at the
     /// bridge's time: `now` less each instant's age in the truth's clock). A strike on one of ours
     /// waits for its vehicle's events (`Tracks::on_truth`); the picture ages.
-    fn sense_strikes(&self, inner: &mut Inner, observers: &[Observer], msg: &TruthMessage, fixes: &[physical::weapon::WeaponFix], now: f64) {
-        for o in observers {
-            inner.ours_at.insert(o.uid, (o.lat, o.lon));
-        }
+    ///
+    /// The weapon picture's stages (bd murmur-ju1h, `weapons`): the fixes go in without the
+    /// truth's weapon id, associated by gating; under the physical model the contact tracks fast
+    /// enough to be weapons are put to the same test; each weapon track is then assessed (the
+    /// shooter's identity read from its track); a strike is put on a track by its victim and time.
+    fn sense_strikes(&self, inner: &mut Inner, observers: &[Observer], msg: &TruthMessage, fixes: &[physical::weapon::WeaponFix], now: f64, physical: bool) {
+        let ours: Vec<(u64, f64, f64, f64, Option<truth::Domain>)> = observers
+            .iter()
+            .map(|o| {
+                let (lat, lon) = o.believed();
+                // without a world (tests), an aircraft by its height, else on the water or ground
+                let guess = if o.submerged {
+                    Some(truth::Domain::Subsurface)
+                } else if o.alt_msl > 300.0 {
+                    Some(truth::Domain::Air)
+                } else {
+                    None
+                };
+                let d = inner.ours_domain.get(&o.uid).copied().or(guess);
+                (o.uid, lat, lon, o.alt_msl, d)
+            })
+            .collect();
+        let Inner { weapons, tracks, .. } = inner;
+        weapons.set_ours(now, &ours);
         let offset = now - msg.t;
-        inner.weapons.fixes(fixes, offset);
+        let plots: Vec<weapons::Fix> = fixes
+            .iter()
+            .map(|f| weapons::Fix { t: f.t + offset, lat: f.lat, lon: f.lon, sigma_m: f.sigma_m, sensor: format!("{}:{}", f.uid, f.sensor.as_str()) })
+            .collect();
+        weapons.plots(&plots);
+        if physical {
+            let views: Vec<weapons::ContactView> = tracks
+                .values()
+                .filter(|t| !t.is_stale(now))
+                .filter_map(|t| {
+                    let (ve, vn) = t.vel?;
+                    if ve.hypot(vn) < weapons::weapon_speed_mps(t.domain) {
+                        return None;
+                    }
+                    let src = t.sources.values().max_by(|a, b| a.last_t.total_cmp(&b.last_t))?;
+                    Some(weapons::ContactView {
+                        id: t.id.clone(),
+                        t: t.last_seen_t,
+                        lat: t.lat,
+                        lon: t.lon,
+                        alt_m: t.alt_m,
+                        ve,
+                        vn,
+                        vel_sigma: t.vel_sigma_mps(),
+                        sigma_m: t.sigma_m,
+                        domain: t.domain,
+                        sensor: format!("{}:{}", src.uid, src.sensor.as_str()),
+                    })
+                })
+                .collect();
+            weapons.contacts(&views);
+        }
+        weapons.assess(&|id| {
+            let i = tracks.get(id)?.identity();
+            (i.level == Some(sensing::Level::Identify)).then_some(i.kind).flatten()
+        });
         for i in &msg.impacts {
             let Some(uid) = i.against_vehicle else { continue };
-            let w = inner.weapons.struck(&i.weapon, uid, i.t + offset);
+            let w = inner.weapons.struck(uid, i.t + offset);
             let text = match (&w.launch, w.first_cue_t()) {
                 (Some(l), Some(first)) => format!(
                     "struck ({}): launch seen by {} {:.1} s before",
@@ -1227,7 +1332,7 @@ impl Tracks {
     /// `GET /api/tracks`.
     pub fn api_json(&self, now: f64) -> Value {
         let tracks = self.tracks_json(now);
-        json!({
+        let mut v = json!({
             "t": round(now, 2),
             "count": tracks.len(),
             "stale_after_s": model::STALE_S,
@@ -1235,7 +1340,15 @@ impl Tracks {
             "tracks": tracks,
             // rules 16: contacts the tracker dropped that the keep-outs still count
             "lost": self.lost_json(),
-        })
+        });
+        // opponent weapons: the weapon picture, when there is one (absent otherwise; the agents'
+        // `get_tracks` builds its own answer from `tracks` and `lost`, so they do not see it,
+        // bd murmur-mmxk)
+        let weapons = lock(&self.inner).weapons.json();
+        if !weapons.is_empty() {
+            v["weapons"] = Value::Array(weapons);
+        }
+        v
     }
 
     /// The WebSocket message, `{"type": "tracks", ...}`.
@@ -1248,10 +1361,7 @@ impl Tracks {
             "lost": self.lost_json(),
         });
         // opponent weapons: the weapon picture, when there is one (absent otherwise)
-        let weapons = {
-            let inner = lock(&self.inner);
-            inner.weapons.json(|u| inner.ours_at.get(&u).copied())
-        };
+        let weapons = lock(&self.inner).weapons.json();
         if !weapons.is_empty() {
             msg["weapons"] = Value::Array(weapons);
         }

@@ -143,19 +143,30 @@ fog the ring camera's reach is the question (not measured here).
 
 ## 5. The weapon picture (bridge)
 
-A weapon track `W-<n>` per weapon (`crates/murmur-bridge/src/tracks/weapons.rs`), its fixes and
-its strike associated by the truth's weapon id, as the tracker associates detections by contact id
-(by construction, shortcut 3 below). It holds the launch fix (time, point, error, the cameras) if
-seen, and what the launch reports by construction: the weapon's class, its nominal speed and which
-of ours it heads for, so the expected strike (`eta_t`) is the launch time plus the distance at that
-speed; then its own fixes. It ends **expended** at its victim's strike report (a weapon nobody saw
-gets a track at its strike, so the strike is in the picture), else **lost** 10 s after its last cue;
-either way it is shown for a minute, then forgotten. The feed carries each track's first cue and
-its warning (strike less first cue).
+A weapon track `W-<n>` (`crates/murmur-bridge/src/tracks/weapons.rs`) is known by stages, as a
+crew learns it (section 14, 2026-11-06, which replaced the class, speed and target the launch used to
+report by construction): a launch, then a weapon, then a class, each on evidence our sensors
+gathered; its fixes are associated by gating, never by the truth's weapon id. It ends **expended**
+when one of ours reports a strike and the strike is put on it (section 14), else **lost** 10 s after
+its last cue; either way it is shown for a minute, then forgotten. The feed carries each track's
+first cue and its warning (strike less first cue).
+
+The feed's fields (`weapons[]`, engine ms): `id`, `report` (the act report the seen launch
+became), `stage` (`plot`, `launch`, `weapon`, `class`), `class` (the threat library's name, null
+below the class stage), `class_symbol`, `evidence` (`{basis, short, text}`: `speed`, `height`,
+`shooter`), `weapon_by` (`{speed_mps, over_mps, from_launch, closing_on}`: why it is taken for a
+weapon), `speed_mps` and `speed_sigma_mps` (measured, null without two points in time),
+`velocity_mps`, `kin_t` and `kin_point` (where and when the measured line puts it), `track` (the
+contact track it is, when one of the tracker's passed the weapon test), `shooter` (the contact
+track the launch was placed on), `aimed_at`, `aim_basis` (`track` or `reach`) and `eta_t` (null
+without a basis), `nominal_mps` (the class's), `launch` (`t` reported, `flash_t`, `point`,
+`sigma_m`, `sensors`, `observer {uid, point}`, `bearing_deg`), `fixes`, `status`, `ended_t`,
+`struck`, `first_cue_t`, `warning_s`.
 
 It never enters `TrackFacts`, the decision facts, the keep-outs, the attribution, the escort
-rule, the lost contacts or MCP `get_tracks`. It is served on the tracks feed as `weapons` (absent
-when empty) and joined into the inbox's acts as each attack's timeline (`attack`).
+rule, the lost contacts or MCP `get_tracks`. It is served on the tracks feed and on `GET
+/api/tracks` as `weapons` (absent when empty; the agents' `get_tracks` builds its own answer
+without it) and joined into the inbox's acts as each attack's timeline (`attack`).
 
 ## 6. Safeguards, and how each is kept
 
@@ -210,19 +221,26 @@ for the owner (section 11):
 ## 8. The console
 
 - **The weapon in flight** (`web/src/weapon.ts`, `weaponLayers.ts`), from the weapon picture only,
-  never from truth. The owner asked to *see* it like our Hellfire, and a weapon track is usually
-  zero to two fixes, so (the coordinator's change, 10-29): when a launch was seen, an **estimated
-  flight** is drawn from the launch fix to the vehicle the launch heads for, dashed and labelled as
-  an estimate ("EST. ATGM · 2.1 s", a countdown to the expected strike), with a weapon glyph moving
-  along it as our munition's does; the class and speed come with the launch observation (by
-  construction, shortcut 3; the banner's tooltip says so). The weapon's own fixes are solid marks
-  (each with its 1-sigma circle, joined from the launch fix) when they come. No launch seen: only
-  the fixes, if any, and the strike at the victim. The strike: a flash and a ring on the victim.
-- **The banner**, while one of ours is under a detected attack: "INCOMING · ATGM at HUNTER 1,
-  strike expected in 2.0 s · launch seen by HUNTER 1 EO/IR · weapon fixed by REAPER 1 radar";
-  after, "HUNTER 1 STRUCK · launch seen by HUNTER 1 EO/IR · 4.1 s of warning · any damage is its
-  own report (Inbox)", held 45 s as the act banner is (it said "no damage is modelled" until the
-  damage model, 2026-11-02).
+  never from truth, and only as far as its stage (section 14; until 2026-11-06 the launch brought
+  the class, speed and target by construction): a seen **launch** is a flash and a marker where the
+  camera placed the shooter, with the dashed bearing line from the observer that saw it ("LAUNCH ·
+  bearing 270° from HUNTER 1"); a **weapon** is the hostile weapon symbol of unknown kind
+  (`weaponSymbols.ts`) with its measured speed ("WEAPON? · 243 m/s"); a **class** is the class's
+  symbol with its evidence ("ATGM-class: 250 m/s, from T-0004"). The symbol is dashed (predicted)
+  where its place is an estimate and solid at a fix. The owner asked to *see* it like our Hellfire
+  (10-29), so an **estimated flight** is drawn, dashed, with the symbol moving along it and a
+  countdown ("EST. ATGM · 2.1 s"), but only on a basis: a target and strike time the bridge derived
+  from the measured line, or, with a class and no line, from its reach and nominal speed. A measured
+  line with no target is drawn as its heading 3 s ahead. The weapon's own fixes are solid marks
+  (each with its 1-sigma circle, joined from the launch fix). A lone fix (`plot`) is not drawn as a
+  weapon. The strike: a flash and a ring on the victim.
+- **The banner**, while one of ours may be under attack: "LAUNCH · launch, bearing 270° from HUNTER
+  1 from T-0004 · seen by HUNTER 1 EO/IR · weapon not yet tracked: type, speed and target unknown";
+  then "INCOMING · weapon, type unknown, 243 m/s · ..." or "INCOMING · ATGM-class: 250 m/s, from
+  T-0004 at HUNTER 1, strike expected in 2.0 s · seen by HUNTER 1 EO/IR · fixed by REAPER 1 radar";
+  after, "HUNTER 1 STRUCK · launch seen by HUNTER 1 EO/IR · ATGM-class: ... · 4.1 s of warning · any
+  damage is its own report (Inbox)", held 45 s as the act banner is (it said "no damage is
+  modelled" until the damage model, 2026-11-02). Its tooltip explains the stages.
 - **Abstract acts drawn as reports:** a burst at the author's fix and a dashed "fired on" arrow to
   the victim, labelled "Act A-1: reported fire on HUNTER 1", the banner "HOSTILE ACT REPORTED"; the
   streak is gone. A weapon act draws no arrow ("Act A-1: launch at HUNTER 1"): its weapon is drawn.
@@ -259,11 +277,13 @@ flight, the banner and the card's act step.
    rules version; the golden is not re-taken.
 2. **The nose-on RCS stays 0.01 m^2.** HUNTER 1's navigation radar not seeing an ATGM-class weapon
    in the sea clutter is the honest answer; the coach card says so.
-3. **Shortcut: classification by construction** (bd murmur-ju1h). The weapon picture is fed apart
-   from the contact tracker by the truth's lists and associated by the weapon's truth id; a seen
-   launch reports the class, nominal speed and heading (the console's estimate). It stands for a
-   threat-warning channel that tells a weapon by its speed and origin; a fast aircraft taken for a
-   weapon, or a weapon missed as one, is not modelled.
+3. **Classification by construction: replaced by identity by stages** (bd murmur-ju1h, 2026-11-06,
+   section 14). It was: the weapon picture associated by the weapon's truth id, and a seen launch
+   reported the class, nominal speed and heading. Now a launch is a launch, a weapon is told by its
+   measured kinematics and associated by gating, a class needs named evidence, and the type is out
+   of reach. What remains by construction is narrower: the plot streams are split by the truth (a
+   weapon's own fixes come only to the weapon picture, contacts' detections only to the tracker,
+   whose tracks the weapon picture reads), and the flash's instant is the truth's.
 4. **Shortcut: the strike report skips the victim's link** (bd murmur-3nkc). It reaches the C2 at
    the first truth tick at or after the impact, not through the link emulator (latency, loss).
 5. **Shortcut: the flash is scored as a camera look** (bd murmur-nl15): the Johnson-pixel model on
@@ -347,3 +367,111 @@ weapons still (murmur-mmxk), so there only our own strikes' collateral damages o
 
 The shipped scenarios' weapons list no figures (the tutorial's boat fires every 90 s at HUNTER
 1, which would not survive the tutorial with them): their strikes change nothing, as before.
+
+## 14. Identity by stages (2026-11-06, bd murmur-ju1h)
+
+The owner asked how a real crew learns what is coming at it, then asked for that to be modelled.
+A crew's call is by class and time to impact ("missile, bearing 245, four seconds"); the exact type
+comes, if at all, from an emitter library, a known shooter, or debris afterwards. Until this date
+the weapon picture classified by construction (section 11 item 3): the launch handed it the
+weapon's class, nominal speed and victim from the truth, and the console showed `EST. ATGM` at once.
+Now the picture (`crates/murmur-bridge/src/tracks/weapons.rs`) knows a weapon only as far as our
+sensors take it, and nothing in it reads the truth's weapon name, speed or victim (a test gives the
+truth a name, speed and victim of its own and finds none of them served).
+
+**The ladder.**
+
+1. **launch**: a camera saw the flash (section 4.1, unchanged). The weapon track holds the time
+   reported, the flash's instant, where the cue placed the shooter (its 1-sigma), the cameras, and
+   the observer that made the fix (the bearing from it is served). The shooter is the live contact
+   track nearest the flash's fix within 3 sigma of the two errors plus 25 m, if any. No class,
+   speed or target.
+2. **weapon**: fixes our sensors made of the weapon join a weapon track by **gating**: on a track
+   with a measured line, within 3 sigma of the predicted position (its speed taken as no surer
+   than 25 % of itself: a weapon boosts, and a line from two or three fixes is less sure than its
+   formal error) plus 30 m; on a single earlier point (a flash, a lone fix), within 1,200 m/s
+   times the interval plus 3 sigma (`V_MAX_MPS`, over any weapon here and a supersonic missile's
+   average). The line is a weighted least-squares constant velocity through the flash and the
+   fixes. It is taken for a weapon when its measured speed passes its domain's threshold
+   (`weapon_speed_mps`, [E]: 60 m/s at the surface or on the ground, faster than any boat or road
+   vehicle; 150 m/s in the air, faster than helicopters, light aircraft and airliners near the
+   ground; 20 m/s under water; a fix without a height is judged at the surface threshold) and it
+   either came from a seen launch or closes on one of ours: its closest approach to one of ours,
+   ahead within 60 s, passes within 200 m (or twice its own error there). A fix that joins
+   nothing starts a `plot` track: not called a weapon, not drawn as one, but kept so a strike can
+   be put on it. The **contact tracks** the tracker holds are put to the same test each second
+   (read only; the tracker is untouched): one whose estimated speed passes its domain's threshold
+   and whose line closes on one of ours is a weapon track too, `track` naming it.
+3. **class**: only on evidence, each piece named in the feed's `evidence`: the measured speed,
+   known within 25 % (1-sigma), inside exactly one class's band of the threat library, with its
+   measured height (when a sensor measured one) inside the class's and the shot's length within its
+   reach (`physical::weapon::weapon_signature`'s `threat`: today the ATGM-class, 150 to 350 m/s, 0
+   to 50 m up, 5.5 km, at boats and vehicles, all [E]); and/or the shooter's track identified (the
+   tracker's identity level `identify`) as a kind our order of battle says carries the class
+   (`carried_by`: a small fast boat carries ATGM-class missiles, [E]: a table of what our side
+   believes such craft carry, not the contact's truth). Both present, they must agree; the speed
+   fitting no class, or two, names none unless the shooter narrows it. An assessment once made holds.
+   A launch from an identified shooter is classed at once, before any fix: the launch stage itself
+   carries no class.
+4. **type**: out of reach and not served. Nothing modelled tells it: no seeker emitter library, no
+   laser warning receiver, no debris. That is the next step if it is wanted (an ESM channel
+   against a guided weapon's seeker, a laser warner against a laser-guided one).
+
+**Target and strike time.** Derived or absent: from the measured line, the one of ours its closest
+approach passes nearest within the gate above (`aim_basis` `track`, `eta_t` the closest approach);
+with a class and no line, the only one of ours of the class's target domains within its reach of
+the launch, at its nominal speed (`reach`; two such vehicles, none). A **strike** one of ours reports
+is put on the weapon track heading for it (expected strike nearest), else on the one whose last
+cue, within 30 s, could have reached it, else on a new track. The strike's vehicle event keeps its
+text ("struck (W-1): launch seen by 1:eo_ir 4.3 s before"); its W number and warning are the
+picture's, as before, so they match the old ones whenever the association does (every shipped
+scenario: one weapon in flight at a time).
+
+**What can be confused, and what is still a shortcut.**
+
+- A fast jet running at one of ours is taken for a weapon, and, without a measured height (a 2D
+  radar's track), its speed fits the ATGM-class: the honest confusion of a speed-and-geometry
+  threat warning. No shipped contact flies faster than 90 m/s, so none is taken today.
+- A weapon is missed as one when it gets no second point in time (a launch unseen and one fix), or
+  its measured speed falls under the threshold, or, launched unseen, its line closes on nothing.
+  A slow one-way drone (40 to 60 m/s) is never taken for a weapon: it stays an air contact.
+- Two weapons in flight at once may swap fixes where their gates overlap, and a strike may be put on
+  the wrong one: the picture's association, not the truth's.
+- A fix without a height cannot tell one of ours overhead from one below: its closest approach is
+  judged across the ground.
+- Still by construction: the plot streams are split by the truth (a weapon's own fixes come only to
+  this picture, never to the contact tracker; contacts' detections only to the tracker, whose
+  tracks this picture reads), and the flash's instant is the truth's. The threat library holds one
+  class, so a speed fit is a fit, not yet a choice between classes (the code names a class only
+  when exactly one fits; with one in the library that path is untried).
+
+**Unchanged.** The act observation (`observe_launch`, the `ActReport`, the `ident.act` it logs),
+every decision input and every logged event's shape; no rules version. Contact detections with a
+weapon in the truth are the same as without. MCP agents still do not see the picture (murmur-mmxk);
+headless still refuses weapons; the legacy model is as it was.
+
+**Checked.** Unit tests (`tracks::weapons::tests`): a launch then fixes climb the ladder; a class
+needs evidence (a loose radar speed names none, an identified shooter does, an unidentified one
+does not); an unidentified shooter leaves the class to the speed (launch, weapon, then class);
+a fast aircraft running at ours is taken for a weapon, the same aircraft 3 km up or at 90 m/s is
+not; two fixes with no launch become a weapon only closing on ours. Through the bridge
+(`tracks::tests::weapons`): nothing of the truth's weapon is served, the strike's event text is as
+before, the track picture is the same as a run without the shot. The ignored `weapon_pipeline_probe`
+(50 attacks, the tutorial's geometry by day, the boat identified by then): all 50 at the class
+stage at the strike, 21 with speed evidence beside the shooter's, 29 on the shooter alone (19 of
+them never fixed in flight); the target from the line in 22, from the reach in 28; every attack's
+fixes on one track. Read from the same tallies, without the shooter's identification about 21
+would reach the class by speed, about 10 stop at weapon and 19 at the launch (not run as such).
+
+**Live** (the tutorial on this worktree's situation ports, 2026-11-06, the boat identified as a
+small fast boat by HUNTER 1's camera, radar and sonar before the first launch; snapshots of `GET
+/api/tracks` `weapons` every 0.25 s):
+
+| attack | at the launch | then | strike, warning |
+|---|---|---|---|
+| W-1 | class ATGM-class from T-0001, bearing 244° from HUNTER 1, aimed at HUNTER 1 by reach, strike expected in 4.1 s | +2.8 s HUNTER 1 EO/IR fix: 251 ± 9 m/s, evidence speed and shooter, aimed by its line | struck, 4.3 s |
+| W-2 | the same, bearing 230° | +2.7 s REAPER 1 radar fix (180 m): 263 ± 75 m/s, too loose to be evidence; aimed by its line | struck, 4.2 s |
+| W-3 | the same, bearing 258° | +3.0 s HUNTER 1 EO/IR fix: 246 ± 8 m/s, evidence speed and shooter | struck, 3.8 s |
+
+The strikes' vehicle events read as before ("struck (W-2): launch seen by 1:eo_ir 4.2 s before");
+`murmur-replay --anchors`: "ANCHORS OK", "every decision reproduced exactly".

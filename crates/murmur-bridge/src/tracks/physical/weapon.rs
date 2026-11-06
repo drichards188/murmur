@@ -29,7 +29,7 @@ use super::spec::{EoSensor, Resolved, resolve};
 use super::{Engine, Step, Target, eo, in_field, pair, radar, salt, sensor_height_m, sight};
 use crate::geo::haversine_m;
 use crate::tracks::sensing::{ActFix, ActObservation, Observer, SensorType, normal, uniform};
-use crate::tracks::truth::{ContactTruth, WeaponTruth};
+use crate::tracks::truth::{ContactTruth, Domain, WeaponTruth};
 
 /// A weapon kind's figures (docs/OPPONENT-WEAPONS.md, every one [E here]): its radar
 /// cross-section, its critical dimension and thermal contrast head-on (as its victim sees it)
@@ -40,16 +40,61 @@ pub struct WeaponSig {
     pub head_on: (f64, f64),
     pub side_on: (f64, f64),
     pub plume: (f64, f64),
+    /// What our threat library says the class looks like in flight (the weapon picture's class
+    /// stage, `tracks::weapons`); the sensing here never reads it.
+    pub threat: ClassSig,
 }
 
-/// The kinds the contacts process may launch (`murmur-contacts` `WEAPON_KINDS`).
+/// A weapon class as our threat library has it (docs/OPPONENT-WEAPONS.md section 11 item 3, every
+/// figure [E here]): its name and drawn kind, the speeds it averages over a flight and its nominal
+/// one, the heights it flies at, its reach and what it is fired at. The weapon picture assesses a
+/// class only when what our sensors measured fits these (or its shooter is known to carry it); the
+/// truth's own weapon figures are never read there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClassSig {
+    pub class: &'static str,
+    /// the console's symbol kind (`missile`, `bomb`, `torpedo`, `gun`)
+    pub symbol: &'static str,
+    pub speed_mps: (f64, f64),
+    pub nominal_mps: f64,
+    pub height_m: (f64, f64),
+    pub range_m: f64,
+    pub targets: &'static [Domain],
+}
+
+/// The kinds the contacts process may launch (`murmur-contacts` `WEAPON_KINDS`), which are also
+/// the threat library's classes ([`threat_library`]).
 pub fn weapon_signature(kind: &str) -> Option<WeaponSig> {
     match kind {
         // a 150 mm body 1.2 m long: nose-on 0.01 m^2; sqrt(0.15 x 1.2) side-on, its motor's plume
-        // in view; a boost motor's flash and plume
-        "atgm" => Some(WeaponSig { rcs_m2: 0.01, head_on: (0.15, 30.0), side_on: (0.4, 100.0), plume: (2.0, 300.0) }),
+        // in view; a boost motor's flash and plume. In flight: the Kornet and Konkurs classes
+        // average 200 to 275 m/s over a flight (150 to 350 taken, for boost and glide), fly a few
+        // metres to tens of metres up, reach 4 to 5.5 km, at boats and vehicles
+        "atgm" => Some(WeaponSig {
+            rcs_m2: 0.01,
+            head_on: (0.15, 30.0),
+            side_on: (0.4, 100.0),
+            plume: (2.0, 300.0),
+            threat: ClassSig {
+                class: "ATGM-class",
+                symbol: "missile",
+                speed_mps: (150.0, 350.0),
+                nominal_mps: 250.0,
+                height_m: (0.0, 50.0),
+                range_m: 5_500.0,
+                targets: &[Domain::Surface, Domain::Ground],
+            },
+        }),
         _ => None,
     }
+}
+
+/// The kinds of the threat library (today the one the contacts process can launch).
+pub const THREAT_KINDS: &[&str] = &["atgm"];
+
+/// Every class of the threat library.
+pub fn threat_library() -> Vec<ClassSig> {
+    THREAT_KINDS.iter().filter_map(|k| weapon_signature(k)).map(|s| s.threat).collect()
 }
 
 /// One observer's best fix of a launch (lat, lon, its 1-sigma, m) and its cameras that saw it.
@@ -61,7 +106,8 @@ const HEAD_ON_RAD: f64 = 0.35;
 /// A camera's accrual on a weapon is stepped this finely, s.
 const EO_STEP_S: f64 = 0.1;
 
-/// One fix of a weapon in flight: the weapon (its truth id: the association, never served),
+/// One fix of a weapon in flight: the weapon (its truth id: the cameras' accrual and the probe
+/// key on it; the weapon picture never reads it, it associates fixes by gating),
 /// who and which sensor, when (the truth message's clock) and where, with its 1-sigma, m.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WeaponFix {

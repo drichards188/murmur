@@ -297,6 +297,7 @@ fn weapon_pipeline_probe() {
     };
     let t0 = 1_781_431_200.0;
     let (mut seen, mut by_reaper, mut any_fix, mut radar_fix, mut eo_fix) = (0, 0, 0, 0, 0);
+    let mut stages: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
     let mut first_fix_lead = Vec::new();
     let n = 50u64;
     for seed in 1..=n {
@@ -392,9 +393,20 @@ fn weapon_pipeline_probe() {
         if wt.fixes.iter().any(|f| f.sensor.ends_with("eo_ir")) {
             eo_fix += 1;
         }
+        // the stages (bd murmur-ju1h): how far each attack got, on what evidence, and whether
+        // its fixes all joined the one track
+        let ev: Vec<&str> = wt.class.as_ref().map(|a| a.evidence.iter().map(|e| e.basis).collect()).unwrap_or_default();
+        let key = format!("{} [{}] aim {}{}", wt.stage().as_str(), ev.join("+"), wt.aim.map_or("none", |a| a.basis), if inner.weapons.tracks.len() > 1 { " SPLIT" } else { "" });
+        if inner.weapons.tracks.len() > 1 {
+            for t in &inner.weapons.tracks {
+                println!("seed {seed} split: {} launch {:?} fixes {:?} kin {:?}", t.id, t.launch.as_ref().map(|l| (l.flash_t - t0, l.t - t0)), t.fixes.iter().map(|f| (f.t - t0, f.sigma_m, f.sensor.clone())).collect::<Vec<_>>(), t.kin);
+            }
+        }
+        *stages.entry(key).or_insert(0) += 1;
     }
     first_fix_lead.sort_by(f64::total_cmp);
     println!(
         "{n} attacks: launch seen {seen} (REAPER 1's camera among them {by_reaper}); weapon fixed in flight {any_fix} (radar {radar_fix}, camera {eo_fix}); first fix before the strike, s: {first_fix_lead:?}"
     );
+    println!("stages at the strike: {stages:?}");
 }

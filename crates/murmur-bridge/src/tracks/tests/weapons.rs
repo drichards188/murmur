@@ -64,21 +64,23 @@ fn msg(s: f64) -> TruthMessage {
     }
 }
 
-/// The flight from the boat to HUNTER 1, launched at second 20: 1 km at 250 m/s.
+/// The flight from the boat to HUNTER 1, launched at second 20: 1 km at 250 m/s. Its name, its
+/// stated speed and its stated victim are ones only the truth knows (the weapon picture must not
+/// show them: bd murmur-ju1h); its flight (from, to, the times) is what the sensors see.
 fn flight() -> WeaponTruth {
     let o = hunter();
     WeaponTruth {
         id: "act-1:weapon".into(),
         act: "act-1".into(),
         by: "fastboat-raider".into(),
-        name: "ATGM-class missile".into(),
+        name: "TRUTH-ONLY NAME".into(),
         kind: "atgm".into(),
-        speed_mps: 250.0,
+        speed_mps: 251.5,
         launch_t: T0 + 20.0,
         impact_t: T0 + 24.0,
         from: [BOAT.1, BOAT.0, 4.0],
         to: [o.lon, o.lat, 4.0],
-        against_vehicle: Some(1),
+        against_vehicle: Some(77),
         against_contact: None,
     }
 }
@@ -139,14 +141,21 @@ fn a_weapon_is_seen_launched_and_strikes_without_entering_the_track_picture() {
     assert_eq!(w["status"], "expended");
     assert_eq!(w["report"], "A-1");
     assert_eq!(w["struck"]["uid"], "1");
-    assert_eq!(w["aimed_at"], "1");
-    assert_eq!(w["class"], "ATGM-class missile");
     assert!((w["warning_s"].as_f64().expect("warning") - 4.0).abs() < 1e-6, "{w}");
+    // nothing of the truth's weapon is in the picture: not its name, its stated speed or victim;
+    // a class only from the threat library, a target only one of ours derived from what was seen
+    let text = msg["weapons"].to_string();
+    assert!(!text.contains("TRUTH-ONLY") && !text.contains("251.5") && !text.contains("\"77\""), "{text}");
+    assert!(w["class"].is_null() || w["class"] == "ATGM-class", "{w}");
+    assert!(w["aimed_at"].is_null() || w["aimed_at"] == "1", "{w}");
+    assert_ne!(w["stage"], "plot", "{w}");
     let alerts = tracks.strike_alerts(&|_| Some("HUNTER 1".into()));
     assert_eq!(alerts.len(), 1);
     assert_eq!(alerts[0].kind, "struck");
     assert_eq!(alerts[0].severity, crate::decision::alerts::Severity::Medium);
-    assert_eq!(std::mem::take(&mut super::super::lock(&tracks.inner).strikes).len(), 1, "the strike waits for its vehicle's events");
+    // the strike's vehicle event, as it was logged before the stages (put on W-1 by its victim)
+    let strikes = std::mem::take(&mut super::super::lock(&tracks.inner).strikes);
+    assert_eq!(strikes, vec![(1, "struck (W-1): launch seen by 1:eo_ir 4.0 s before".to_string())], "the strike waits for its vehicle's events");
     // the track picture: the boat's track alone, second by second as if the boat never fired
     let (_, quiet) = run(false);
     assert_eq!(facts, quiet);
