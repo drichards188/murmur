@@ -4,6 +4,7 @@ import type { Engagement, EngageView } from './engage'
 import type { TaskOption } from './space'
 import type { LngLat } from './types'
 import type { ObservedAct, Review } from './ident'
+import type { Blocking } from './blocking'
 import type { SwarmAlert } from './swarmsModel'
 
 /** The decision layer as the bridge serves it: GET /api/inbox, GET /api/intents and the
@@ -205,15 +206,18 @@ export interface Inbox {
   alerts: Alert[]
   /** rules 5: approved orders held for vehicles the link can't carry them to now */
   queued?: Intent[]
-  /** rules 9: what the identification asks of a human, none of it blocking: rule
-   *  declarations to confirm or revoke, flags to confirm or dismiss */
+  /** rules 9: what the identification asks of a human: rule declarations to confirm or
+   *  revoke, flags to confirm or dismiss (none of it stops anything in play) */
   review?: Review
+  /** the review items that alone hold up a nomination now (blocking.ts; absent when none):
+   *  shown as urgent, decided only on their cards */
+  blocking?: Blocking[]
   /** rules 9: the latest acts our sensors observed and what the engine made of each */
   acts?: ObservedAct[]
   /** a swarm's member alerts of one kind folded into one (swarmsModel.ts); each member alert folded
    *  into one says so (`Alert.folded_into`). A view: the bridge logs none of it. */
   swarm_alerts?: SwarmAlert[]
-  counts: { pending: number; alerts: number; queued?: number; review?: number }
+  counts: { pending: number; alerts: number; queued?: number; review?: number; blocking?: number }
 }
 
 export interface Decisions {

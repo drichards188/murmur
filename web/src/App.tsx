@@ -52,6 +52,8 @@ import { saveEffects, savedEffects } from './weatherPrefs'
 import { reachBadge, reachFeatures, type DomainChoice, type ReachAnswer, type ReachMode } from './sensorReach'
 import { minefieldFeatures, type MinefieldsAnswer } from './minefields'
 import { SituationPanel } from './SituationPanel'
+import { waitingItems } from './blocking'
+import { WaitingStrip } from './WaitingStrip'
 import { Tutorial } from './Tutorial'
 import { CoverageControl } from './CoverageControl'
 import { gridImage, type CoverageGrid, type LinkRouteDrawing } from './coverage'
@@ -546,6 +548,16 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     },
     [state?.vehicles, revealVehicles],
   )
+  // what a person alone is holding up (blocking.ts): the strip, and the links that open its card
+  const waiting = useMemo(() => waitingItems(decisions?.inbox.blocking), [decisions?.inbox.blocking])
+  const [reviewFocus, setReviewFocus] = useState<{ id: string; n: number } | null>(null)
+  /** the strip's and the Situation panel's link: the item's card in the Inbox, in view (the person
+   *  decides there; nothing here decides) */
+  const openWaiting = useCallback((id: string) => {
+    setShowInbox(true)
+    setInboxTab('inbox')
+    setReviewFocus((f) => ({ id, n: (f?.n ?? 0) + 1 }))
+  }, [])
   /** the task panel's link: the pending intent in the inbox, or a finished one in Decisions */
   const openIntent = useCallback(
     (id: number) => {
@@ -621,7 +633,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   if (auth.auth === 'credentials' && !auth.signed_in) return <LoginScreen />
 
   return (
-    <div className="app">
+    <div className={`app${waiting.length ? ' waiting' : ''}`}>
       <PerfMark />
       <header className={`topbar${onMenu ? ' has-menu' : ''}`}>
         {onMenu && (
@@ -665,6 +677,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         <OperatorBadge />
         <span className="clock">{clock}</span>
       </header>
+      {waiting.length > 0 && <WaitingStrip items={waiting} now={now} onOpen={openWaiting} />}
       <ErrorBoundary name="Fleet list" className="slot fleet">
       <FleetPanel vehicles={vehicles} selected={selected} onToggle={toggle} reachBadges={reachBadges}
         onDeselect={deselect}
@@ -737,7 +750,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         </ErrorBoundary>}
         {/* a situation runner's status (make situation): shown only while one has posted it */}
         <ErrorBoundary name="Situation" className="floating">
-          <SituationPanel decisions={decisions} />
+          <SituationPanel decisions={decisions} now={now} onWaiting={openWaiting} />
         </ErrorBoundary>
         {/* the tutorial's coach card (sim/situations/tutorial.toml): only while the situation running is the tutorial */}
         <ErrorBoundary name="Tutorial" className="floating">
@@ -828,6 +841,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             mem={alertMem}
             hidden={hiddenAlerts}
             notice={inboxNotice}
+            focus={reviewFocus}
             onReplace={(i) => setEngageForm({ replaces: i.id })}
             onTrack={(id) => {
               setShowInbox(false)
@@ -922,6 +936,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             onCollapse={() => setTracksCollapsed((v) => !v)}
             reveal={revealTrack}
             onEngage={(track) => setEngageForm({ track })}
+            blocking={decisions?.inbox.blocking}
           />
           </ErrorBoundary>
         </div>

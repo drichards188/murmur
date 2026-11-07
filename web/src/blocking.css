@@ -1,0 +1,82 @@
+/* What a person alone is holding up (blocking.ts): a review item on which a nomination fails and
+   nothing else. Its own colour wherever it appears, apart from the yellow of an ordinary review
+   item, the red of a hostile act and the violet of an approval: the strip across the top, its
+   badge on the Inbox button, its card first in the Review, its track's declaration, an officer's
+   note that names it. Every one of them only points to the card; none decides. */
+:root {
+  --urgent: #ff4f9a;
+  --urgent-bg: #2a0f1f;
+  --urgent-line: #8a2c5a;
+  --urgent-text: #ffe3f0;
+  --urgent-soft: #e2adc6;
+}
+
+/* the strip: a row of its own under the top bar while anything waits (the map keeps its size
+   below it, so nothing on the map is covered) */
+.app.waiting {
+  grid-template-rows: 44px auto 1fr;
+  grid-template-areas: 'top top top' 'wait wait wait' 'fleet map task';
+}
+.wait-strip {
+  grid-area: wait; display: flex; align-items: center; gap: 12px; min-width: 0;
+  padding: 6px 16px 6px 12px; color: var(--urgent-text); background: var(--urgent-bg);
+  border-bottom: 1px solid var(--urgent-line); box-shadow: inset 4px 0 0 var(--urgent);
+  font-size: 13px; line-height: 1.3;
+}
+.wait-tag {
+  flex: none; font: 700 11px var(--mono); letter-spacing: 0.12em; color: #1c0712;
+  background: var(--urgent); padding: 3px 7px; border-radius: 3px;
+  animation: wait-pulse 2.4s ease-in-out infinite;
+}
+.wait-line { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wait-line b { font-family: var(--mono); color: var(--urgent); margin-right: 6px; }
+.wait-line strong { color: #fff; font-weight: 600; }
+.wait-time { flex: none; font: 600 13px var(--mono); color: var(--urgent); }
+.wait-more { flex: none; font: 12px var(--mono); color: var(--urgent-soft); }
+.wait-open {
+  flex: none; border: 1px solid var(--urgent); background: #3d1530; color: var(--urgent-text);
+  border-radius: 3px; padding: 4px 10px; font: 600 12.5px var(--sans); cursor: pointer;
+}
+.wait-open:hover { background: #5a1d45; }
+.wait-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.wait-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+@keyframes wait-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 79, 154, 0); }
+  50% { box-shadow: 0 0 0 4px rgba(255, 79, 154, 0.35); }
+}
+
+/* the Inbox: its badge first, the Review's heading, the card */
+.ix-badge.wait { background: var(--urgent); color: #1c0712; }
+.ix-h.ix-h-urgent { color: var(--urgent); }
+.ix-h.ix-h-urgent small { color: var(--urgent-soft); }
+.ix-card.rv-card.rv-urgent,
+.ix-card.rv-card.rv-urgent:hover { border-color: var(--urgent-line); border-left: 3px solid var(--urgent); background: #1d1420; }
+.rv-holding {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; margin: 2px 0;
+  padding: 6px 8px; border: 1px solid var(--urgent-line); border-radius: 3px; background: rgba(255, 79, 154, 0.08);
+}
+.rv-holding-tag { font: 700 10px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--urgent); }
+.rv-holding-time { margin-left: auto; font: 600 12px var(--mono); color: var(--urgent); }
+.rv-holding-text { flex-basis: 100%; margin: 0; font-size: 13px; font-weight: 600; color: var(--urgent-text); }
+.rv-holding-how { flex-basis: 100%; margin: 0; font-size: 11.5px; color: var(--urgent-soft); }
+.rv-flash { animation: rv-flash 1.2s ease-out; }
+@keyframes rv-flash {
+  0% { box-shadow: 0 0 0 3px var(--urgent); }
+  100% { box-shadow: 0 0 0 0 rgba(255, 79, 154, 0); }
+}
+
+/* a track's declaration that holds up a nomination (Declaration.tsx) */
+.dc-holding { margin: 0; padding: 5px 8px; border-left: 3px solid var(--urgent); background: rgba(255, 79, 154, 0.08); font-size: 12px; color: var(--urgent-text); }
+.dc-holding b { color: var(--urgent); font: 700 10px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; margin-right: 6px; }
+
+/* the Situation panel: an officer's note that names an item waiting on the person */
+.sit-log li.sit-urgent { display: block; -webkit-line-clamp: unset; color: var(--urgent-text); padding: 4px 6px; border-left: 3px solid var(--urgent); background: rgba(255, 79, 154, 0.08); border-radius: 2px; }
+.sit-log li.sit-urgent b { color: var(--urgent); }
+.sit-wait-go { margin: 3px 0 0; display: flex; align-items: center; gap: 6px; font: 600 10.5px var(--mono); color: var(--urgent); letter-spacing: 0.06em; }
+.sit-wait-go button { border: 1px solid var(--urgent); background: #3d1530; color: var(--urgent-text); border-radius: 3px; padding: 1px 7px; font: 600 11px var(--sans); letter-spacing: 0; cursor: pointer; }
+.sit-wait-go button:hover { background: #5a1d45; }
+
+@media (prefers-reduced-motion: reduce) {
+  .wait-tag { animation: none; }
+  .rv-flash { animation: none; box-shadow: 0 0 0 2px var(--urgent); }
+}

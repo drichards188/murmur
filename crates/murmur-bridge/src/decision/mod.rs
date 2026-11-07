@@ -61,6 +61,7 @@
 
 pub mod agent;
 pub(crate) mod alerts;
+pub mod blocking;
 mod civil;
 pub mod engage;
 mod failsafe;
@@ -507,6 +508,8 @@ pub struct Decision {
     /// Itself, for the task layer's write-ahead of a vehicle start (rules 7: the op logs it
     /// through the decision lock before sending it).
     me: std::sync::Weak<Decision>,
+    /// What a person alone is holding up, as of the last look ([`blocking`]; display only).
+    blocking: Mutex<blocking::Cache>,
 }
 
 /// Everything [`Decision::from_parts`] needs (tests pass a memory sink and a manual clock).
@@ -834,6 +837,7 @@ impl Decision {
             queue_cfg,
             pointer: std::sync::OnceLock::new(),
             fleet_file: std::sync::OnceLock::new(),
+            blocking: Mutex::new(blocking::Cache::default()),
         });
         d.publish();
         Ok(d)
@@ -2762,7 +2766,7 @@ impl Decision {
         // rules 9: identification review items (non-blocking: a rule declaration to confirm or
         // revoke, a flag to confirm or dismiss), and the acts the rule only recorded (rule
         // declaration off: an operator declares)
-        let (review, acts) = {
+        let (review, acts, blocking) = {
             let core = self.lock();
             let mut review = ident::review_of(core.engine.identification());
             // rules 16: claims on lost contacts, and those confirmed
@@ -2770,7 +2774,10 @@ impl Decision {
             review["counts"]["lost_claims"] = json!(claims.len());
             review["lost_claims"] = json!(claims);
             review["lost_confirmed"] = json!(confirmed);
-            (review, self.recorded_acts(&core))
+            // what a person alone is holding up (display only; `blocking`)
+            let blocking = self.blocking_now(&core);
+            blocking::add_to(&mut review, &blocking);
+            (review, self.recorded_acts(&core), blocking)
         };
         let n_review = review["counts"]["declarations"].as_u64().unwrap_or(0)
             + review["counts"]["flags"].as_u64().unwrap_or(0)
@@ -2800,6 +2807,8 @@ impl Decision {
             v["counts"]["swarm_alerts"] = json!(folds.len());
             v["swarm_alerts"] = json!(folds);
         }
+        // the review items that alone hold up a nomination, beside the review they are in
+        blocking::add_to(&mut v, &blocking);
         v
     }
 

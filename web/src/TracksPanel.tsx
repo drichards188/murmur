@@ -22,6 +22,7 @@ import { callsign } from './types'
 import { FLAG_LABEL, resolveFlag } from './ident'
 import { IdentifyForm } from './IdentifyForm'
 import { DeclarationBlock, DeclareControls } from './Declaration'
+import { type Blocking, waited } from './blocking'
 
 /** The tracks section, pinned above the task panel (Phase C2): every contact our sensors hold, ranked hostile, suspect,
  *  unknown first; click a row for what the estimate rests on (sources, confidence, age,
@@ -47,6 +48,8 @@ interface Props {
   reveal?: Reveal | null
   /** open the engagement nomination form for a declared-hostile track (Phase E) */
   onEngage?: (trackId: string) => void
+  /** the review items that alone hold up a nomination (blocking.ts): said on their track's card */
+  blocking?: Blocking[]
 }
 
 /** hot, unknown and other counts of the live tracks, as badges */
@@ -124,7 +127,7 @@ function Row({ t, nowMs, staleAfterS, sel, onClick }: { t: Track; nowMs: number;
 /** A track's card: what it is and why it is shown so (its declaration and the evidence first, then
  *  the estimate's), then the acts that fit (Declaration.tsx: confirm or revoke the engine's
  *  declaration, nominate on a declared hostile, declare by hand), then the track's numbers. */
-function Detail({ t, nowMs, now, staleAfterS, vehicles, onFocus, onEngage }: { t: Track; nowMs: number; now: () => number; staleAfterS: number; vehicles: Vehicle[]; onFocus: () => void; onEngage?: () => void }) {
+function Detail({ t, nowMs, now, staleAfterS, vehicles, onFocus, onEngage, holding }: { t: Track; nowMs: number; now: () => number; staleAfterS: number; vehicles: Vehicle[]; onFocus: () => void; onEngage?: () => void; holding?: Blocking }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   // rules 21: the form that sends a vehicle to identify it (rules 22: while the track is live)
@@ -151,10 +154,17 @@ function Detail({ t, nowMs, now, staleAfterS, vehicles, onFocus, onEngage }: { t
   return (
     <div className="tk-detail">
       {t.declared ? (
-        <DeclarationBlock t={t} vehicles={vehicles} now={now} onEngage={onEngage} where="track" />
+        <DeclarationBlock t={t} vehicles={vehicles} now={now} onEngage={onEngage} where="track" holding={holding} />
       ) : (
         <p className={`tk-status ${t.affiliation === 'suspect' ? 'bad' : ''}`}>
           Not declared: {aff} by estimate ({pct(t.affiliation_confidence)})
+        </p>
+      )}
+      {/* a flag on an act against ours, nothing declared: what the track's declaration would let go on */}
+      {!t.declared && holding && (
+        <p className="dc-holding" role="note">
+          <b>Waiting on you {waited(holding, nowMs)}</b>
+          {holding.id}: {holding.waits_for}. {holding.text} {holding.unblocks}
         </p>
       )}
       <dl className="tk-why">
@@ -259,7 +269,7 @@ function Detail({ t, nowMs, now, staleAfterS, vehicles, onFocus, onEngage }: { t
   )
 }
 
-export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus, collapsed, onCollapse, reveal = null, onEngage }: Props) {
+export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus, collapsed, onCollapse, reveal = null, onEngage, blocking }: Props) {
   const nowMs = now()
   const staleAfterS = tracks?.stale_after_s ?? 10
   const list = sortTracks(tracks?.tracks ?? [])
@@ -302,7 +312,7 @@ export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus
         {list.map((t) => (
           <div key={t.id} data-track-id={t.id} data-tutorial="track-row" className={flash === t.id ? 'tk-flash' : undefined}>
             <Row t={t} nowMs={nowMs} staleAfterS={staleAfterS} sel={selected === t.id} onClick={() => onSelect(selected === t.id ? null : t.id)} />
-            {selected === t.id && <Detail t={t} nowMs={nowMs} now={now} staleAfterS={staleAfterS} vehicles={vehicles} onFocus={() => onFocus(t)} onEngage={onEngage ? () => onEngage(t.id) : undefined} />}
+            {selected === t.id && <Detail t={t} nowMs={nowMs} now={now} staleAfterS={staleAfterS} vehicles={vehicles} onFocus={() => onFocus(t)} onEngage={onEngage ? () => onEngage(t.id) : undefined} holding={(blocking ?? []).find((b) => b.track === t.id)} />}
           </div>
         ))}
         {(tracks?.lost ?? []).length > 0 && (

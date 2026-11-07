@@ -26,6 +26,9 @@ pub(super) fn rule_on(p: &mut Policy, nominate_unconfirmed: bool) {
         nominate_unconfirmed: Some(nominate_unconfirmed),
         ..IdentConfig::default()
     });
+    // the bridge's own copy of the rules reads it too (the nomination form's dry run), as a
+    // policy loaded from its file has it
+    p.sync();
 }
 
 /// The engagement rig (a dev run) with rule declaration on.
@@ -116,7 +119,12 @@ pub(super) fn act(id: &str, now_s: f64, against_contact: Option<&str>) -> ActTru
 
 /// Our armed platform on the target, a minute and a half of detections (nobody declares).
 pub(super) async fn picture(e: &Erig) {
-    e.r.vehicle(1, Firmware::Copter, "fpv", TARGET);
+    picture_of(e, "fpv", TARGET).await;
+}
+
+/// [`picture`] with our vehicle 1 a `platform` at `at` (lat, lon).
+async fn picture_of(e: &Erig, platform: &str, at: (f64, f64)) {
+    e.r.vehicle(1, Firmware::Copter, platform, at);
     sleep(Duration::from_millis(500)).await;
     e.r.clock.set(snapshot::ms(clock::wall()));
     let now = e.now_s();
@@ -321,4 +329,151 @@ async fn an_act_against_a_vehicle_not_in_our_fleet_is_flagged_not_declared() {
     let rep = replay::replay_str(&e.r.log.text()).expect("parses");
     assert!(rep.ok(), "{:?}", rep.mismatches);
     assert_eq!((rep.rule_declarations, rep.flags), (0, 1));
+}
+
+// ---- what a person alone is holding up (decision/blocking.rs; display only) -----------------
+
+/// The policy's identification with a second observation wanted: one act is flagged
+/// (uncorroborated), never declared.
+fn rig_corroborated() -> Erig {
+    engage_rig_auth_policy(None, PathBuf::from("memory"), murmur_decide::AuthMode::Dev, |p| {
+        p.identification = Some(IdentConfig {
+            rule_declaration: true,
+            nominate_unconfirmed: Some(false),
+            corroboration: Some(murmur_decide::ident::Corroboration::SecondObservation),
+            ..IdentConfig::default()
+        });
+        p.sync();
+    })
+}
+
+/// A rule declaration nobody confirmed, on a track our armed platform passes every other check
+/// on, holds up its nomination: the inbox and the review say so (the platform, the track, since
+/// when), nothing is logged, and once an operator confirms it it is gone at once.
+#[tokio::test(start_paused = true)]
+async fn an_unconfirmed_rule_declaration_is_shown_holding_up_the_nomination() {
+    let e = rig(false);
+    picture(&e).await;
+    act_now(&e, None);
+    assert!(e.r.d.inbox_json()["blocking"].is_null(), "not looked yet");
+    let lines = e.r.log.lines().len();
+    e.r.d.refresh_blocking().await;
+    let inbox = e.r.d.inbox_json();
+    let b = &inbox["blocking"][0];
+    assert_eq!(
+        (b["id"].as_str(), b["kind"].as_str(), b["track"].as_str()),
+        (Some("D-1"), Some("declaration"), Some("T-0001")),
+        "{inbox}"
+    );
+    assert_eq!(b["platforms"], json!([{ "uid": 1, "callsign": "fpv 1" }]), "{inbox}");
+    assert_eq!(b["holds_up"], "nomination");
+    assert_eq!(b["text"], "Holding up: fpv 1's nomination on T-0001. Every other check passes.");
+    assert!(b["failing"].as_str().expect("failing").contains("confirmation"), "{b}");
+    assert!(b["unblocks"].as_str().expect("unblocks").starts_with("Confirming D-1"), "{b}");
+    assert_eq!(inbox["counts"]["blocking"], 1, "{inbox}");
+    let since = b["since_t"].as_f64().expect("since");
+    assert_eq!(since, e.now_s(), "{b}");
+    assert_eq!(e.r.d.review_json()["blocking"][0]["id"], "D-1");
+    // the same item a look later keeps its since
+    e.r.clock.advance_ms(2000);
+    e.r.d.refresh_blocking().await;
+    assert_eq!(e.r.d.inbox_json()["blocking"][0]["since_t"].as_f64(), Some(since));
+    assert_eq!(e.r.log.lines().len(), lines, "the looks log nothing");
+    // confirmed: gone at once, before the next look, and after it
+    e.r.d.confirm(&op("op-1"), None, "T-0001").expect("confirmed");
+    let inbox = e.r.d.inbox_json();
+    assert!(inbox["blocking"].is_null() && inbox["counts"]["blocking"].is_null(), "{inbox}");
+    e.r.d.refresh_blocking().await;
+    assert!(e.r.d.inbox_json()["blocking"].is_null());
+    assert!(e.r.d.review_json()["blocking"].is_null());
+}
+
+/// Where the policy lets a rule declaration be nominated before a confirmation, nothing waits
+/// on a person: no item holds anything up.
+#[tokio::test(start_paused = true)]
+async fn a_rule_declaration_the_policy_lets_be_nominated_holds_nothing_up() {
+    let e = rig(true);
+    picture(&e).await;
+    act_now(&e, None);
+    e.r.d.refresh_blocking().await;
+    let inbox = e.r.d.inbox_json();
+    assert_eq!(inbox["counts"]["review"], 1, "still a review item: {inbox}");
+    assert!(inbox["blocking"].is_null(), "{inbox}");
+}
+
+/// A flag on an act against ours (one observation where the policy wants two), the track not
+/// declared: only an operator's declaration lets a nomination go ahead, and the item says
+/// confirming the flag declares nothing. An operator's declaration ends it.
+#[tokio::test(start_paused = true)]
+async fn a_flagged_act_against_ours_is_shown_holding_up_until_an_operator_declares() {
+    let e = rig_corroborated();
+    picture(&e).await;
+    act_now(&e, None);
+    assert!(track(&e)["declared"].is_null(), "{}", track(&e));
+    assert_eq!(e.r.d.review_json()["flags"][0]["flag_kind"], "uncorroborated");
+    e.r.d.refresh_blocking().await;
+    let inbox = e.r.d.inbox_json();
+    let b = &inbox["blocking"][0];
+    assert_eq!(
+        (b["id"].as_str(), b["kind"].as_str(), b["track"].as_str()),
+        (Some("F-1"), Some("flag"), Some("T-0001")),
+        "{inbox}"
+    );
+    assert_eq!(b["act"], "A-1");
+    assert!(b["waits_for"].as_str().expect("waits_for").contains("against fpv 1"), "{b}");
+    assert!(b["unblocks"].as_str().expect("unblocks").contains("declares nothing"), "{b}");
+    // a confirmed flag still waits for a declaration
+    e.r.d.resolve_flag(&op("op-2"), 1, FlagResolution::Confirmed, None).expect("confirmed");
+    e.r.d.refresh_blocking().await;
+    assert_eq!(e.r.d.inbox_json()["blocking"][0]["id"], "F-1");
+    // an operator declares the track: nothing waits
+    e.r.d
+        .declare(&op("op-1"), None, "T-0001", Affiliation::Hostile, None, Some(1))
+        .expect("declared");
+    assert!(e.r.d.inbox_json()["blocking"].is_null(), "gone at once");
+    e.r.d.refresh_blocking().await;
+    assert!(e.r.d.inbox_json()["blocking"].is_null());
+}
+
+/// Not blocking: no armed platform to nominate with; an armed one another check fails on (out
+/// of its reach).
+#[tokio::test(start_paused = true)]
+async fn no_armed_platform_or_another_failing_check_holds_nothing_up() {
+    // a reconnaissance quadcopter, unarmed
+    let e = rig(false);
+    picture_of(&e, "x10", TARGET).await;
+    act_now(&e, None);
+    assert_eq!(e.r.d.review_json()["declarations"][0]["id"], "D-1");
+    e.r.d.refresh_blocking().await;
+    assert!(e.r.d.inbox_json()["blocking"].is_null(), "{}", e.r.d.inbox_json());
+    // an armed one, but far beyond its reach: another check fails too
+    let e = rig(false);
+    picture_of(&e, "fpv", (38.40, -121.60)).await;
+    act_now(&e, None);
+    assert_eq!(e.r.d.review_json()["declarations"][0]["id"], "D-1");
+    let opts = e
+        .r
+        .d
+        .engage_options(engage::OptionsRequest {
+            track: "T-0001".into(),
+            effect_radius_m: crate::decision::blocking::EFFECT_RADIUS_M,
+            window_s: None,
+            fallback: None,
+            uids: Some(vec![1]),
+            passed_only: false,
+            replaces: None,
+            weapon: None,
+        })
+        .await
+        .expect("options");
+    let failing: Vec<&str> = opts["options"][0]["checks"]
+        .as_array()
+        .expect("checks")
+        .iter()
+        .filter(|c| c["outcome"] != "pass")
+        .filter_map(|c| c["rule"].as_str())
+        .collect();
+    assert!(failing.contains(&"target_declared") && failing.len() > 1, "{failing:?}");
+    e.r.d.refresh_blocking().await;
+    assert!(e.r.d.inbox_json()["blocking"].is_null(), "{}", e.r.d.inbox_json());
 }

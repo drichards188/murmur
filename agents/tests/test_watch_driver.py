@@ -81,6 +81,8 @@ class ScriptedPoller:
         self.cursor = 0
         self.session = FakeSession()
         self.closed = False
+        self.waiting: list[dict] = []
+        self.blocking_from: float | None = None
 
     async def open(self):
         self.t0 = time.time()
@@ -95,6 +97,10 @@ class ScriptedPoller:
 
     async def nominations(self):
         return []
+
+    async def blocking(self):
+        # what waits for a person alone, from `blocking_from` on (s after the start)
+        return self.waiting if self.blocking_from is not None and time.time() - self.t0 >= self.blocking_from else []
 
     async def mine(self):
         return [{"id": 41, "kind": "hold", "uids": [1], "state": "pending_approval", "expires_in_s": 90.0,
@@ -180,6 +186,28 @@ def test_a_watch_wakes_escalates_and_tells_the_routine_model(fake_claude, tmp_pa
     assert wakes[1]["text"] == "watch officer woken (opus, escalated: a track was declared): a track was declared"
     assert turns[0]["text"] == "Proposed #41."
     assert all(len(x["text"]) <= 400 for x in log if x["kind"] != "turn")
+    assert not any("Waiting on the operator" in w["update"] for w in wakes), "nothing waited on a person"
+    assert not any("blocking" in t for t in turns)
+
+
+def test_what_waits_for_a_person_is_told_and_ties_the_note(fake_claude, tmp_path):
+    """A review item that alone holds up a nomination (the bridge's `blocking`): the update names
+    it, and the turn that ends while it still waits carries its id, so the Situation panel ties
+    the officer's note to it."""
+    script = [(0.8, {"kind": "track.declared", "track": "T-0009", "declared": "hostile", "by": "rule:hostile_act"})]
+    o = officer(tmp_path, fake_claude, script, "--no-escalation", seconds=3.0)
+    o.poller.waiting = [{"id": "D-1", "kind": "declaration", "track": "T-0009", "since_t": time.time(),
+                         "platforms": [{"uid": 4, "callsign": "REAPER 1"}],
+                         "waits_for": "T-0009 declared hostile by the engine's rule on A-1, not confirmed by an operator"}]
+    o.poller.blocking_from = 0.5
+    assert asyncio.run(o.run()) == "until"
+    log = lines(tmp_path)
+    wakes = [x for x in log if x["kind"] == "wake"]
+    turns = [x for x in log if x["kind"] == "turn"]
+    assert len(wakes) >= 2 and len(turns) == len(wakes)
+    assert "Waiting on the operator" not in wakes[0]["update"], "the start: nothing waits yet"
+    assert "- D-1 on track T-0009:" in wakes[-1]["update"] and "name it by its id" in wakes[-1]["update"]
+    assert turns[-1]["blocking"] == ["D-1"], turns[-1]
 
 
 def test_a_limit_with_an_early_reset_waits_resumes_and_tells_the_model_again(fake_claude, tmp_path, monkeypatch):

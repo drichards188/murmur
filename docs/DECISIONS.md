@@ -3226,6 +3226,20 @@ group. Dates are 2026.
   false`: the engine declares what is clear and a person confirms before it becomes a target;
   `eval/policy/minimal.toml` drops that confirmation and every optional step-up, to measure
   what minimal approval costs.
+- **A review item that alone holds up a nomination is shown as urgent, never decided for the
+  person** (11-07, owner's request after a live hostile-act-engagement run: D-1 waited 38 s,
+  listed "not blocking", while the watch officer's "I can't nominate ... until you confirm" was
+  a plain note). The bridge looks every 2 s, only while a candidate is in force, with the
+  nomination form's own dry run on the armed platforms nearest the track: a rule declaration
+  nobody confirmed, or a flag on an act against ours with nothing declared, holds up a
+  nomination when `target_declared` fails and every other check passes. Display only
+  (`blocking` on the inbox, the review and MCP `get_inbox`; never logged, no rules change). The
+  console shows it in its own colour wherever it appears (a strip under the top bar, the Inbox
+  badge, its card first in the Review, its track's card, an officer's note that names it), and
+  every way in only opens the card, whose buttons are unchanged: confirming stays as deliberate
+  as above. An engagement waiting for its signatures is not shown so: it is already an Inbox
+  card with its signatures and expiry, and the signature is the decision itself; an urgent
+  banner would press on the act Murmur measures.
 - **Still placeholders, stated** (10-03; revised 10-04 by rules 8, 10-05 by rules 10). Who
   holds engagement authority is now each person's credential, not a header (above), and a
   consequential act can require that person's passkey (rules 10; a study always does). What is

@@ -19,6 +19,7 @@ import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
 import { AFFILIATION_LABEL, type Affiliation, declareTrack, type Track } from './tracks'
 import { type Vehicle, vehicleNamer } from './types'
 import { focusInView } from './reveal'
+import { type Blocking, waited } from './blocking'
 import './declaration.css'
 
 type Ask = 'none' | 'confirm' | 'revoke'
@@ -41,6 +42,7 @@ export function DeclarationBlock({
   onEngage,
   where,
   onChanged,
+  holding,
 }: {
   t: Track
   vehicles: Vehicle[]
@@ -50,6 +52,8 @@ export function DeclarationBlock({
   where: 'track' | 'nominate'
   /** after a confirmation or revocation the bridge accepted */
   onChanged?: (what: 'confirmed' | 'revoked') => void
+  /** the bridge's reading that this declaration alone holds up a nomination (blocking.ts) */
+  holding?: Blocking
 }) {
   const [operator] = useOperator()
   const [ask, setAsk] = useState<Ask>('none')
@@ -95,6 +99,12 @@ export function DeclarationBlock({
       <p className={`dc-head ${tone}`}>
         {unconfirmed ? `Declared ${aff} by the engine's rule: not confirmed by an operator` : declarationLine(facts)}
       </p>
+      {unconfirmed && holding && holding.kind === 'declaration' && (
+        <p className="dc-holding" role="note">
+          <b>Waiting on you {waited(holding, now())}</b>
+          {holding.text}
+        </p>
+      )}
       {(evidence.length > 0 || d.note) && (
         <ul className="dc-evidence">
           {evidence.map((b) => (

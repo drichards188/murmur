@@ -281,6 +281,15 @@ meaningful.
   (`engage::track_standing`, `friendly_standing`, `circle_holding`): changing those changes
   decisions. The dry run fills what the engine fills (`Engine::dry_run_inputs`). More
   pictures: `MURMUR_KO_SEED=N MURMUR_KO_WORLDS=1500 cargo test -p murmur-decide --test keepout`.
+- What a person alone holds up (`decision/blocking.rs`; display only, never logged, no rules
+  change): the live bridge (`main.rs`; the headless simulator does not look) looks every 2 s,
+  only while a rule declaration nobody confirmed or a flag on an act against ours is in force,
+  with the nomination form's dry run (75 m, the policy's window, return) on the 12 armed
+  platforms nearest the track; an item on which a nomination fails `target_declared` alone is
+  `blocking` on `/api/inbox`, `/api/review` and MCP `get_inbox` (only when any). The console
+  shows it urgent (`WaitingStrip.tsx`, `blocking.ts`); the watch officer's driver names it in
+  the update and attaches its id to the turn. A test rig that changes the policy's
+  `[identification]` calls `p.sync()`, or the bridge's own rules (the dry run's) keep the file's.
 - Keep-out measurement: `.venv/bin/python -m eval.run keepout --seeds 1 2 3 4 5 6 7 8 9 10
   --situations 100` (every variant, ~16 min; `--variants radar all` for less). `eval/keepout_probe`
   is a workspace member that compiles the bridge's `tracks/{model,sensing,truth}.rs` by path, so

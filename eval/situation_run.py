@@ -291,6 +291,19 @@ def panel_kind(line: dict[str, Any]) -> str | None:
     return PANEL_KINDS.get(kind)
 
 
+#: a review item's id as the bridge names it (`D-<n>`, `F-<n>`)
+REVIEW_ID = re.compile(r"[DF]-[0-9]{1,6}")
+
+
+def note_blocking(line: dict[str, Any]) -> list[str]:
+    """The review items an AI log line says held up a nomination as its turn ended (the watch
+    officer's `turn` `blocking`), as ids the panel can match: at most five, nothing else."""
+    raw = line.get("blocking")
+    if not isinstance(raw, list):
+        return []
+    return [x for x in raw if isinstance(x, str) and REVIEW_ID.fullmatch(x)][:5]
+
+
 def ai_env(env: dict[str, str]) -> dict[str, str]:
     """The AI's environment: the runner's minus every `MURMUR_*` variable (no simulation
     token, no agent key from elsewhere, no other stack's ports), so the user's own CLI login
@@ -704,6 +717,11 @@ class Runner:
                 "kind": kind,
                 "text": str(n.get("text", ""))[:400],
             }
+            # the review items that alone held up a nomination as the AI's turn ended (its
+            # driver's reading of the bridge's `blocking`): the panel ties the note to them
+            held = note_blocking(n)
+            if held:
+                note["blocking"] = held
             self.ai_notes.append(note)
             self.record("ai_note", **note)
         while self.autoplay_seen < len(self.autoplay_log):

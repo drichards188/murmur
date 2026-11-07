@@ -1413,6 +1413,13 @@ def test_the_ai_starts_in_an_empty_directory_of_its_own(tmp_path: Path, monkeypa
     (cwd / "agent.jsonl").write_text(json.dumps({"t": 1.0, "kind": "note", "text": "on watch"}) + "\n")
     runner.refresh()
     assert runner.ai_notes[-1]["text"] == "on watch"
+    assert "blocking" not in runner.ai_notes[-1], "nothing waited on a person"
+    # a turn that ended while a review item alone held up a nomination: the note carries its id
+    with (cwd / "agent.jsonl").open("a") as f:
+        f.write(json.dumps({"t": 2.0, "kind": "turn", "text": "I can't nominate until you confirm D-1.",
+                            "blocking": ["D-1", "F-22", "rm -rf", 7]}) + "\n")
+    runner.refresh()
+    assert runner.ai_notes[-1]["blocking"] == ["D-1", "F-22"], "review ids only"
     runner.ai_pgid = None  # (no group to stop: the process was a fake)
     runner.finish_ai_dir()
     assert not cwd.exists() and (runner.out / "agent.jsonl").exists()

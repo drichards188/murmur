@@ -467,6 +467,15 @@ pub fn inbox(mcp: &Mcp) -> Value {
             }
         }
     }
+    // what a person alone is holding up (`decision::blocking`, only when any): how long each
+    // has waited; the agent can only name it
+    if let Some(items) = v["blocking"].as_array_mut() {
+        for b in items {
+            if let Some(since) = b["since_t"].as_f64() {
+                b["waiting_s"] = json!(age(now, since));
+            }
+        }
+    }
     v["t"] = json!(now);
     v["note"] = json!(
         "Pending intents wait for a human operator; an agent cannot decide them. Alerts are \

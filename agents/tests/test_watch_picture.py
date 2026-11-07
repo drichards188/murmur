@@ -205,3 +205,39 @@ def test_a_bridge_without_get_changes_is_refused():
     s = FakeAgentSession([], tools=[t for t in TOOLS if t != "get_changes"])
     with pytest.raises(NoChangesTool, match="rebuild it"):
         run(Poller(lambda: s).open())
+
+
+def test_the_blocking_read_is_the_inboxs_and_never_fails_the_update():
+    """What waits for a person alone (the bridge's `blocking` on `get_inbox`): its items, none on
+    a bridge without it, none when the read fails; and the update says them only when there are
+    some, naming each item by id with what it holds up."""
+    from watch.picture import compose
+
+    item = {"id": "D-1", "kind": "declaration", "track": "T-0008", "since_t": 100.0,
+            "platforms": [{"uid": 3, "callsign": "REAPER 1"}],
+            "waits_for": "T-0008 declared hostile by the engine's rule on A-2, not confirmed by an operator"}
+    s = FakeAgentSession([{"pending": [], "blocking": [item, {"no": "id"}]}, {"pending": []}, RuntimeError("down")])
+
+    async def call(name, **args):
+        s.calls.append((name, args))
+        got = s.feed.pop(0)
+        if isinstance(got, Exception):
+            raise got
+        return got
+
+    s.call = call
+    p = Poller(lambda: s)
+    p.session = s
+    assert run(p.blocking()) == [item], "only items with an id"
+    assert run(p.blocking()) == [], "a bridge without it"
+    assert run(p.blocking()) == [], "a failed read"
+    assert [n for n, _ in s.calls] == ["get_inbox"] * 3
+    wake = SimpleNamespace(n=4, reason="changes", why=["a track was declared"], changes=[], notes_dropped=0, held=[])
+    plain = compose(wake, [], "Budget.", [], 141.0)
+    told = compose(wake, [], "Budget.", [], 141.0, blocking=[item])
+    assert "Waiting on the operator" not in plain and compose(wake, [], "Budget.", [], 141.0, blocking=[]) == plain
+    assert ("- D-1 on track T-0008: T-0008 declared hostile by the engine's rule on A-2, not confirmed by an "
+            "operator; it alone holds up a nomination with uid 3 REAPER 1 (every other check passes), for 41 s") in told
+    assert "name it by its id (for example D-1)" in told and "you cannot" in told
+    part = next(x for x in told.split("\n\n") if x.startswith("Waiting on the operator"))
+    assert told.replace("\n\n" + part, "") == plain, "one part added, nothing else changed"

@@ -17,6 +17,7 @@ import {
 } from './decisions'
 import { Bluf, BlufReason, ChecksFold } from './Bluf'
 import { alertParts } from './bluf'
+import { waitingItems } from './blocking'
 import { EngageCard, EngagementsSection } from './EngageCard'
 import { RationaleText } from './Rationale'
 import { ReviewSection } from './ReviewSection'
@@ -53,6 +54,8 @@ interface Props {
   onReplace?: (i: Intent) => void
   /** a notice from elsewhere in the console to show with the inbox's own (once per `n`) */
   notice?: Notice | null
+  /** bring a review item into view (the strip's or the Situation panel's link), once per `n` */
+  focus?: { id: string; n: number } | null
 }
 
 // ---- top bar button -------------------------------------------------------------------------
@@ -69,11 +72,15 @@ export function InboxButton({ decisions, open, onClick, hiddenAlerts }: { decisi
   // rules 23: informational alerts ask nothing: in the title, never a badge
   const info = alerts.filter((a) => a.severity === 'info').length
   const review = decisions?.inbox.counts.review ?? 0
-  const parts = [`${pending} pending approval${pending === 1 ? '' : 's'}`, `${high} high alert${high === 1 ? '' : 's'}`, `${medium} medium alert${medium === 1 ? '' : 's'}`, `${review} for review (not blocking)`]
+  // review items that alone hold up a nomination (blocking.ts): counted apart, first
+  const waiting = waitingItems(decisions?.inbox.blocking).length
+  const parts = [`${pending} pending approval${pending === 1 ? '' : 's'}`, `${high} high alert${high === 1 ? '' : 's'}`, `${medium} medium alert${medium === 1 ? '' : 's'}`, `${review} for review`]
+  if (waiting > 0) parts.unshift(`${waiting} waiting on you (holding up a nomination)`)
   if (info > 0) parts.push(`${info} for information`)
   return (
     <button data-tutorial="inbox-button" className={`ghost platforms-btn ix-btn ${open ? 'on' : ''}`} onClick={onClick} title={parts.join(', ')} aria-label={`Inbox: ${parts.join(', ')}`}>
       Inbox
+      {waiting > 0 && <span className="ix-badge wait">{waiting}</span>}
       {pending > 0 && <span className="ix-badge pend">{pending}</span>}
       {high > 0 && <span className="ix-badge high">{high}</span>}
       {medium > 0 && <span className="ix-badge med">{medium}</span>}
@@ -731,7 +738,7 @@ interface Notice {
   tone: 'ok' | 'bad'
 }
 
-export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, onFocus, onClose, onTrack, onReplace, notice, mem, hidden }: Props & { mem: ReturnType<typeof useAlertMemory>; hidden: Set<string> }) {
+export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, onFocus, onClose, onTrack, onReplace, notice, focus, mem, hidden }: Props & { mem: ReturnType<typeof useAlertMemory>; hidden: Set<string> }) {
   const [notices, setNotices] = useState<Notice[]>(notice ? [notice] : [])
   const [noticeSeen, setNoticeSeen] = useState(notice?.n ?? null)
   if (notice && notice.n !== noticeSeen) {
@@ -746,6 +753,32 @@ export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, o
   const live = alerts.filter((a) => !hidden.has(a.id))
   const muted = alerts.filter((a) => hidden.has(a.id))
   const swarmAlerts = decisions?.inbox.swarm_alerts ?? []
+  const blocking = decisions?.inbox.blocking
+  const waiting = waitingItems(blocking).length > 0
+  // (the strip's and the Situation panel's links open the Pending tab themselves: App.tsx)
+  const engagements = (
+    <EngagementsSection
+      key="engagements"
+      intents={decisions?.intents ?? []}
+      vehicles={vehicles}
+      now={now}
+      selection={selection}
+      onFocus={(i) => onFocus({ kind: 'intent', id: i.id }, i.uids.map(Number).filter((n) => Number.isFinite(n)), i)}
+      onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])}
+    />
+  )
+  const review = (
+    <ReviewSection
+      key="review"
+      review={decisions?.inbox.review}
+      acts={decisions?.inbox.acts}
+      now={now}
+      onTrack={onTrack}
+      blocking={blocking}
+      focus={focus}
+      onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])}
+    />
+  )
 
   useEffect(() => {
     if (!notices.length) return
@@ -790,21 +823,9 @@ export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, o
           <DecisionsList intents={decisions?.intents ?? []} vehicles={vehicles} now={now} />
         ) : (
           <>
-            <EngagementsSection
-              intents={decisions?.intents ?? []}
-              vehicles={vehicles}
-              now={now}
-              selection={selection}
-              onFocus={(i) => onFocus({ kind: 'intent', id: i.id }, uidsOf(i), i)}
-              onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])}
-            />
-            <ReviewSection
-              review={decisions?.inbox.review}
-              acts={decisions?.inbox.acts}
-              now={now}
-              onTrack={onTrack}
-              onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])}
-            />
+            {/* a review item that alone holds up a nomination: the Review first, that item first in
+                it (keyed, so moving it keeps what a card has open or typed) */}
+            {(waiting ? [review, engagements] : [engagements, review])}
             <h3 className="ix-h">
               Approvals <span>{pending.length}</span>
               <small>soonest expiry first</small>

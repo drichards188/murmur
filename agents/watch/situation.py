@@ -13,7 +13,8 @@ Every line has `t` (Unix seconds), `iso` (UTC), `source`, `run` (this driver's r
                       (exactly what the model was told), the changes behind it
     turn              n, model, its tool calls (name, input, result excerpt), its final
                       message (`text`: its note for the operator), usage, cost estimate,
-                      duration, stop, intents it proposed
+                      duration, stop, intents it proposed, and `blocking` (the review items
+                      that alone held up a nomination as it ended, by id; only when any)
     shadow            what the deterministic playbook would have proposed (never proposed)
     budget.deferred   a wake held back by the hourly cap
     budget.exhausted  the run's wake cap is spent; the run ends

@@ -360,7 +360,10 @@ class Officer:
         except Exception:  # noqa: BLE001 (the update goes out without the list)
             mine = ["(could not read your intents: use get_intents with mine)"]
         notes = [] if escalate else list(self.consult_notes)
-        text = compose(wake, mine, self.budget_line(wake), notes, now, first=wake.reason == "start")
+        # what waits for a person alone (the bridge's `blocking`): told, so the note can name it
+        blocking = await self.blocking()
+        text = compose(wake, mine, self.budget_line(wake), notes, now, first=wake.reason == "start",
+                       blocking=blocking)
         if escalate:
             text = CONSULT_HEAD.format(why="; ".join(wake.escalate_why), agent=self.args.agent) + text
         cfg = self.backend.cfg
@@ -401,7 +404,10 @@ class Officer:
             return None
         self.turns += 1
         self.proposed += turn.proposals()
-        self.log.write("turn", n=wake.n, escalated=escalate, **turn.as_dict())
+        # what still waits for a person alone as the turn ends: the note is tied to it (the
+        # Situation panel shows it urgent, with a link to the item, while it still waits)
+        held = [b["id"] for b in await self.blocking()]
+        self.log.write("turn", n=wake.n, escalated=escalate, **turn.as_dict(), **({"blocking": held} if held else {}))
         for r in turn.refused:
             self.log.write("lockdown.refused", n=wake.n, tool=r.get("name"), input=r.get("input"),
                            text=f"the model asked for {r.get('name')}, outside the Murmur server; the CLI refused it")
@@ -443,6 +449,14 @@ class Officer:
                            max_budget_usd=cap)
             return "budget"
         return None
+
+    async def blocking(self) -> list[dict]:
+        """The review items that alone hold up a nomination now (`Poller.blocking`), or none
+        when the read fails: an update and a note go out without them."""
+        try:
+            return await self.poller.blocking()
+        except Exception:  # noqa: BLE001
+            return []
 
     def mcp_ok(self) -> bool:
         init = self.backend.init or {}

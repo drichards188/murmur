@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { Decisions, Intent } from './decisions'
 import { Bluf } from './Bluf'
 import { watchParts } from './bluf'
+import { namedBlocking, waited } from './blocking'
 import { RationaleText } from './Rationale'
 import { setScriptedBadges } from './situationIds'
 import { usePoll } from './space'
@@ -72,7 +73,9 @@ export interface SituationStatus {
     id: string | null
     status: string
     activity: Activity[]
-    notes: { t: number | null; t_s: number | null; kind: string; text: string }[]
+    /** `blocking`: the review items holding up a nomination when the AI's turn ended (its
+     *  driver's reading of the bridge's `blocking`), so the note is tied to them */
+    notes: { t: number | null; t_s: number | null; kind: string; text: string; blocking?: string[] }[]
   }
   autoplay: null | {
     operators: string[]
@@ -140,7 +143,7 @@ function who(i: Intent) {
   return `${a.at_submission ? 'authorized' : 'approved'} by ${a.by}`
 }
 
-export function SituationPanel({ decisions }: { decisions: Decisions | null }) {
+export function SituationPanel({ decisions, now, onWaiting }: { decisions: Decisions | null; now?: () => number; onWaiting?: (id: string) => void }) {
   const { data } = usePoll<Envelope>('/api/situation', 2000)
   // open unless the tutorial runs (its coach card walks the person; the panel is a click away)
   const [openSet, setOpen] = useState<boolean | null>(null)
@@ -310,12 +313,27 @@ export function SituationPanel({ decisions }: { decisions: Decisions | null }) {
         )}
         {s.agent.notes.length > 0 && (
           <ul className="sit-log notes">
-            {[...s.agent.notes].reverse().slice(0, 4).map((n, k) => (
-              <li key={k}>
-                <time>{n.t_s != null ? clock(n.t_s) : ''}</time>
-                <b>{n.kind}</b> {n.text}
-              </li>
-            ))}
+            {[...s.agent.notes].reverse().slice(0, 4).map((n, k) => {
+              // a note naming an item that alone holds up a nomination now (blocking.ts): urgent,
+              // with a link to its card (the person decides there)
+              const named = namedBlocking(n, decisions?.inbox.blocking)
+              return (
+                <li key={k} className={named.length ? 'sit-urgent' : undefined}>
+                  <time>{n.t_s != null ? clock(n.t_s) : ''}</time>
+                  <b>{n.kind}</b> {n.text}
+                  {named.length > 0 && (
+                    <span className="sit-wait-go">
+                      waiting on you{now ? ` ${waited(named[0], now())}` : ''}:
+                      {named.map((b) => (
+                        <button key={b.id} onClick={() => onWaiting?.(b.id)} disabled={!onWaiting} title={`${b.text} Open its card in the Inbox: you decide there.`}>
+                          open {b.id}
+                        </button>
+                      ))}
+                    </span>
+                  )}
+                </li>
+              )
+            })}
           </ul>
         )}
         {s.modes.ai !== 'none' && agentIntents.length === 0 && s.agent.activity.length === 0 && s.agent.notes.length === 0 && (

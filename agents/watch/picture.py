@@ -4,7 +4,10 @@ The driver reads as the same agent the model acts as, over MCP (the agent's key 
 credentials run): `get_changes` every couple of seconds for what changed, and, while a track
 is declared hostile, `get_nomination_options` now and then to see whether a nomination has
 become possible (a `nomination.possible` change), for the armed platforms that could pass
-only and asking only whether each passes. Nothing it reads is logged by the bridge.
+only and asking only whether each passes. Around each wake the live driver reads `get_inbox`'s
+`blocking` (`Poller.blocking`: the review items that alone hold up a nomination, which only a
+person can decide), tells the model of them in the update and ties its note to them. Nothing it
+reads is logged by the bridge.
 """
 
 from __future__ import annotations
@@ -190,6 +193,17 @@ class Poller:
     async def mine(self) -> list[dict]:
         return await self.session.intents(mine=True)
 
+    async def blocking(self) -> list[dict]:
+        """The review items that alone hold up a nomination now: `get_inbox`'s `blocking`, the
+        bridge's display-only reading (absent when none; a bridge without it has none). What a
+        person must decide; the model can only name them. Nothing here is logged."""
+        try:
+            inbox = await self.session.call("get_inbox")
+        except Exception:  # noqa: BLE001 (the update goes out without it)
+            return []
+        items = inbox.get("blocking") if isinstance(inbox, dict) else None
+        return [b for b in items or [] if isinstance(b, dict) and isinstance(b.get("id"), str)]
+
 
 def _content(result) -> dict:
     import json
@@ -363,12 +377,29 @@ def render_mine(intents: list[dict], now: float) -> list[str]:
     return lines
 
 
+def render_blocking(items: list[dict], now: float) -> str:
+    """The update's part on what waits for a person alone (`Poller.blocking`): each item, what it
+    holds up and for how long, and that the model can only name it."""
+    lines = []
+    for b in items:
+        ps = ", ".join(f"uid {p.get('uid')} {p.get('callsign') or ''}".strip() for p in b.get("platforms") or [])
+        since = b.get("since_t")
+        held = f", for {max(0.0, now - since):.0f} s" if isinstance(since, (int, float)) else ""
+        lines.append(f"- {b.get('id')} on track {b.get('track')}: {' '.join(str(b.get('waits_for', '')).split())}; "
+                     f"it alone holds up a nomination with {ps or '?'} (every other check passes){held}")
+    return ("Waiting on the operator (the bridge's reading: only a person can act on these, and you cannot):\n"
+            + "\n".join(lines)
+            + "\nIf what you would do next waits on one of these, say so in your note and name it by its id "
+              f"(for example {items[0].get('id')}): the console shows your note beside it.")
+
+
 MAX_LINES = 60
 
 
 def compose(wake, mine: list[str], budget_line: str, consult_notes: list[str], now: float,
-            first: bool = False) -> str:
-    """The update the model is woken with."""
+            first: bool = False, blocking: list[dict] | None = None) -> str:
+    """The update the model is woken with (`blocking`: what waits for a person alone, said when
+    there is any, so an update without it is as it was)."""
     head = f"Watch update {wake.n} at {hms(now)} ({wake.reason})."
     parts = [head]
     if first:
@@ -397,6 +428,8 @@ def compose(wake, mine: list[str], budget_line: str, consult_notes: list[str], n
                      "(each wakes you when its interval ends): " + "; ".join(held) + ".")
     for note in consult_notes:
         parts.append(note)
+    if blocking:
+        parts.append(render_blocking(blocking, now))
     parts.append("Your proposals: " + ("; ".join(mine) if mine else "none open."))
     parts.append(budget_line)
     parts.append("Read what you need with the tools, then act or say no action. End with your "

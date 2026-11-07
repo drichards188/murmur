@@ -1,14 +1,16 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { stepsUpAct } from './auth'
+import { type Blocking, holdingFor, waited } from './blocking'
 import { fmtDuration, StepUpNeeded, useOperator } from './decisions'
 import { Bluf, BlufReason } from './Bluf'
 import { flagParts } from './bluf'
+import { FLASH_MS, focusInView } from './reveal'
 import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
 import { type Against, type ObservedAct, type Review, type ReviewDeclaration, type ReviewFlag, type ReviewLostClaim, FLAG_LABEL, confirmDeclaration, confirmLostClaim, resolveFlag, revokeDeclaration } from './ident'
 
-/** The inbox's Review (rules 9): what the identification asks of a human, none of it
- *  blocking. A rule declaration is the engine's (an observed hostile act attributed to the
+/** The inbox's Review (rules 9): what the identification asks of a human, none of it stopping
+ *  anything in play. A rule declaration is the engine's (an observed hostile act attributed to the
  *  track above the policy's threshold, nothing conflicting): it stands until an operator
  *  revokes it, and any operator confirms it. A flag is what the engine was unsure of (an
  *  attribution below threshold, conflicting evidence, no track, a victim not ours, one
@@ -18,7 +20,12 @@ import { type Against, type ObservedAct, type Review, type ReviewDeclaration, ty
  *  it there). Every action is logged under the operator's session. A declarer is told when
  *  someone else revoked their declaration. The observed acts list shows what the sensors saw
  *  and what the engine made of each (with rule declaration off, an operator declares from
- *  these). */
+ *  these).
+ *
+ *  An item that alone holds up a nomination (the bridge's `blocking`, blocking.ts: every other
+ *  check on an armed platform passes) comes first, in the urgent style, saying what it holds up,
+ *  for how long and what the person's act does. Its buttons are the same as any item's: the
+ *  urgency only points, it never makes the permissive act easier. */
 
 interface Props {
   review: Review | undefined
@@ -28,6 +35,44 @@ interface Props {
   onDone: (text: string, tone: 'ok' | 'bad') => void
   /** fly to and select a track */
   onTrack?: (id: string) => void
+  /** the items that alone hold up a nomination (the inbox's `blocking`) */
+  blocking?: Blocking[]
+  /** bring this item into view and focus it (the strip's or the Situation panel's link) */
+  focus?: { id: string; n: number } | null
+}
+
+/** What an item holds up, how long, and what the person's act does: information beside the
+ *  card's own buttons, never a button itself. */
+function Holding({ b, now }: { b: Blocking; now: () => number }) {
+  return (
+    <div className="rv-holding" role="note">
+      <span className="rv-holding-tag">Waiting on you</span>
+      <span className="rv-holding-time" title="How long it has held up the nomination (the bridge's reading)">
+        {waited(b, now())}
+      </span>
+      <p className="rv-holding-text">{b.text}</p>
+      <p className="rv-holding-how">{b.unblocks}</p>
+    </div>
+  )
+}
+
+/** A card the strip or the Situation panel points to: in view, focused and marked a moment, on
+ *  each new request (`n`). */
+function useFocused(focusN: number | undefined) {
+  const ref = useRef<HTMLElement | null>(null)
+  const [flash, setFlash] = useState(false)
+  useEffect(() => {
+    if (!focusN) return
+    focusInView(ref.current)
+    // marked on the next frame (as reveal.ts's useFlash), so a repeat restarts it
+    const raf = requestAnimationFrame(() => setFlash(true))
+    const t = window.setTimeout(() => setFlash(false), FLASH_MS)
+    return () => {
+      cancelAnimationFrame(raf)
+      window.clearTimeout(t)
+    }
+  }, [focusN])
+  return { ref, flash }
 }
 
 function age(now: () => number, t: number) {
@@ -45,7 +90,22 @@ function againstText(a: Against) {
  *  against, which sensors saw it, the attribution against the threshold), and confirm sits
  *  there, as plain as revoke. Revoking (the brake: it stops every engagement in play on the
  *  track first) takes no more than confirming: open it, then revoke, with an optional note. */
-function DeclarationItem({ d, now, onDone, onTrack }: { d: ReviewDeclaration; now: () => number; onDone: Props['onDone']; onTrack?: Props['onTrack'] }) {
+function DeclarationItem({
+  d,
+  now,
+  onDone,
+  onTrack,
+  holding,
+  focusN,
+}: {
+  d: ReviewDeclaration
+  now: () => number
+  onDone: Props['onDone']
+  onTrack?: Props['onTrack']
+  holding?: Blocking
+  focusN?: number
+}) {
+  const { ref, flash } = useFocused(focusN)
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState('')
   // each takes a second, deliberate click: confirm after the evidence, revoke after its warning
@@ -82,7 +142,15 @@ function DeclarationItem({ d, now, onDone, onTrack }: { d: ReviewDeclaration; no
     })
   }
   return (
-    <article className="ix-card rv-card rv-decl" aria-label={`Rule declaration ${d.id} on ${d.track}`} data-tutorial="review-declaration" data-track-id={d.track}>
+    <article
+      ref={ref}
+      tabIndex={-1}
+      className={`ix-card rv-card rv-decl${holding ? ' rv-urgent' : ''}${flash ? ' rv-flash' : ''}`}
+      aria-label={`Rule declaration ${d.id} on ${d.track}${holding ? ', holding up a nomination' : ''}`}
+      data-tutorial="review-declaration"
+      data-track-id={d.track}
+      data-review-id={d.id}
+    >
       <header>
         <b>{d.track}</b> <span className="rv-tag">BY RULE</span> <span className="muted">{d.id}, {age(now, d.t)}</span>
         {onTrack && (
@@ -91,6 +159,7 @@ function DeclarationItem({ d, now, onDone, onTrack }: { d: ReviewDeclaration; no
           </button>
         )}
       </header>
+      {holding && <Holding b={holding} now={now} />}
       <p className="rv-basis">Declared hostile by rule on act {ev?.act ?? 'unknown'}; it stands until revoked.</p>
       {open === 'none' && (
         <div className="rv-actions">
@@ -220,7 +289,22 @@ function LostClaimItem({ c, onDone, onTrack }: { c: ReviewLostClaim; onDone: Pro
   )
 }
 
-function FlagItem({ f, now, onDone, onTrack }: { f: ReviewFlag; now: () => number; onDone: Props['onDone']; onTrack?: Props['onTrack'] }) {
+function FlagItem({
+  f,
+  now,
+  onDone,
+  onTrack,
+  holding,
+  focusN,
+}: {
+  f: ReviewFlag
+  now: () => number
+  onDone: Props['onDone']
+  onTrack?: Props['onTrack']
+  holding?: Blocking
+  focusN?: number
+}) {
+  const { ref, flash } = useFocused(focusN)
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState('')
   const run = async (what: string, fn: () => Promise<unknown>) => {
@@ -235,12 +319,19 @@ function FlagItem({ f, now, onDone, onTrack }: { f: ReviewFlag; now: () => numbe
     }
   }
   return (
-    <article className="ix-card rv-card rv-flag" aria-label={`Review flag ${f.id}`}>
+    <article
+      ref={ref}
+      tabIndex={-1}
+      className={`ix-card rv-card rv-flag${holding ? ' rv-urgent' : ''}${flash ? ' rv-flash' : ''}`}
+      aria-label={`Review flag ${f.id}${holding ? ', holding up a nomination' : ''}`}
+      data-review-id={f.id}
+    >
       <header>
         <b>{f.id}</b> <span className="rv-tag flag">{FLAG_LABEL[f.flag_kind] ?? f.flag_kind}</span>
         {f.status.status === 'confirmed' && <span className="muted"> confirmed by {f.status.by}</span>}
         <span className="muted"> {age(now, f.t)}</span>
       </header>
+      {holding && <Holding b={holding} now={now} />}
       <Bluf className="rv-basis" parts={flagParts(f.flag_kind, f.evidence)} />
       <p className="muted rv-hint">
         {f.tracks.length ? (
@@ -281,7 +372,7 @@ function verdictText(a: ObservedAct) {
   return `recorded: ${v.why}`
 }
 
-export function ReviewSection({ review, acts, now, onDone, onTrack }: Props) {
+export function ReviewSection({ review, acts, now, onDone, onTrack, blocking, focus }: Props) {
   const [showActs, setShowActs] = useState(false)
   const [operator] = useOperator()
   const decls = review?.declarations ?? []
@@ -291,11 +382,24 @@ export function ReviewSection({ review, acts, now, onDone, onTrack }: Props) {
   // a declarer's notice: their declaration revoked by someone else
   const notices = (review?.revocations ?? []).filter((r) => r.notify && r.notify === operator).slice(0, 5)
   const n = decls.length + flags.length + claims.length
+  const holding = new Set((blocking ?? []).map((b) => b.id))
+  const focusN = (id: string) => (focus && focus.id === id ? focus.n : undefined)
+  // what holds up a nomination first (declarations, then flags), then the rest as sent
+  const urgentFlags = flags.filter((f) => holding.has(f.id))
+  const otherFlags = flags.filter((f) => !holding.has(f.id))
+  const urgentDecls = decls.filter((d) => holding.has(d.id))
+  const otherDecls = decls.filter((d) => !holding.has(d.id))
   return (
     <>
-      <h3 className="ix-h">
+      <h3 className={`ix-h${holding.size ? ' ix-h-urgent' : ''}`}>
         Review <span>{n}</span>
-        <small>not blocking: the engine decided; confirm, dismiss or revoke</small>
+        {holding.size ? (
+          <small>
+            {holding.size} holding up a nomination: {holding.size === 1 ? 'it is' : 'they are'} first
+          </small>
+        ) : (
+          <small>the engine decided; confirm, dismiss or revoke</small>
+        )}
       </h3>
       {notices.map((r) => (
         <p key={`${r.id}-${r.t}`} className="rv-notice" role="status">
@@ -304,12 +408,15 @@ export function ReviewSection({ review, acts, now, onDone, onTrack }: Props) {
         </p>
       ))}
       {n === 0 && <p className="empty">Nothing for review.</p>}
-      {decls.map((d) => (
-        <DeclarationItem key={d.id} d={d} now={now} onDone={onDone} onTrack={onTrack} />
-      ))}
-      {flags.map((f) => (
-        <FlagItem key={f.id} f={f} now={now} onDone={onDone} onTrack={onTrack} />
-      ))}
+      {/* one keyed list, so an item that starts or stops holding something up moves and keeps
+          what its card has open or typed */}
+      {[...urgentDecls, ...urgentFlags, ...otherDecls, ...otherFlags].map((x) =>
+        x.kind === 'declaration' ? (
+          <DeclarationItem key={x.id} d={x} now={now} onDone={onDone} onTrack={onTrack} holding={holdingFor(blocking, x.id)} focusN={focusN(x.id)} />
+        ) : (
+          <FlagItem key={x.id} f={x} now={now} onDone={onDone} onTrack={onTrack} holding={holdingFor(blocking, x.id)} focusN={focusN(x.id)} />
+        ),
+      )}
       {claims.map((c) => (
         <LostClaimItem key={c.id} c={c} onDone={onDone} onTrack={onTrack} />
       ))}

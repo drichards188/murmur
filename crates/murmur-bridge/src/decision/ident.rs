@@ -206,10 +206,11 @@ impl Decision {
         core.acts.iter().rev().cloned().collect()
     }
 
-    /// `GET /api/review` (and the inbox's `review`): what the identification asks of a human,
-    /// none of it blocking: every rule declaration in force not yet confirmed (confirm or
-    /// revoke), every flag open or confirmed (confirm, dismiss, or declare the track), and the
-    /// latest resolved ones.
+    /// `GET /api/review` (and the inbox's `review`): what the identification asks of a human:
+    /// every rule declaration in force not yet confirmed (confirm or revoke), every flag open or
+    /// confirmed (confirm, dismiss, or declare the track), and the latest resolved ones. None of
+    /// it stops anything in play; `blocking` (when any) names the items that alone hold up a
+    /// nomination (`super::blocking`, display only).
     pub fn review_json(&self) -> Value {
         let core = self.lock();
         let mut review = review_of(core.engine.identification());
@@ -218,6 +219,7 @@ impl Decision {
         review["counts"]["lost_claims"] = json!(claims.len());
         review["lost_claims"] = json!(claims);
         review["lost_confirmed"] = json!(confirmed);
+        super::blocking::add_to(&mut review, &self.blocking_now(&core));
         review
     }
 }
