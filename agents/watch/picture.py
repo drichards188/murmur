@@ -130,6 +130,11 @@ class Poller:
             k = c.get("kind")
             if k == "track.declared" and c.get("declared") == "hostile":
                 self.hostile.add(c["track"])
+            elif k == "track.declaration_confirmed" and c.get("track") in self.hostile:
+                # a rule declaration is nominable only once confirmed (the policy's
+                # `nominate_unconfirmed`): read it at the next poll, not up to
+                # `nomination_every_s` later (a live run waited 15 s of 33 here)
+                self.checked.pop(c["track"], None)
             elif k in ("track.declaration_revoked", "track.dropped") or (
                     k == "track.declared" and c.get("declared") != "hostile"):
                 self.hostile.discard(c.get("track"))

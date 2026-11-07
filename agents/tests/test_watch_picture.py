@@ -126,6 +126,23 @@ def test_nominations_open_and_close():
     assert [a for n, a in s.calls if n == "get_platforms"] == [{}], "the catalog read once"
 
 
+def test_a_confirmed_declaration_is_read_again_at_once():
+    """A rule declaration fails every check until an operator confirms it; the confirmation
+    must not wait out the 15 s between reads of the track (a live run's watch officer heard
+    of the nomination 15 s after the confirmation)."""
+    unconfirmed = {"options": [{"uid": 2, "callsign": "FPV 2", "passed": False}]}
+    passing = {"options": [{"uid": 2, "callsign": "FPV 2", "passed": True}]}
+    confirmed = {"cursor": 11, "changes": [{"kind": "track.declaration_confirmed", "t": 103, "track": "T-0001",
+                                            "declared": "hostile", "confirmed_by": "op-1"}]}
+    s = FakeAgentSession([confirmed], options=[unconfirmed, passing])
+    p = Poller(lambda: s, nomination_every_s=15)
+    run(p.open())
+    assert run(p.nominations(now=100)) == []
+    run(p.poll())
+    assert run(p.nominations(now=104)) == [{"kind": "nomination.possible", "t": 104, "track": "T-0001",
+                                            "platforms": [{"uid": 2, "callsign": "FPV 2"}]}]
+
+
 def test_the_poll_asks_only_about_platforms_that_could_pass():
     """Third review, item 4: the driver's own poll asked about every armed platform, the
     213 557-character dry run at 100 stand-ins, every 15 s per hostile track. Now: armed, link
