@@ -210,6 +210,28 @@ export function shownWeapons(ws: WeaponTrack[], now: number): WeaponTrack[] {
   return ws.filter((w) => w.ended_t == null || now - w.ended_t < SHOWN_MS)
 }
 
+/** The strikes on one vehicle of ours, as the map labels them: once, however many weapons struck it
+ *  (a gun's every burst is a weapon of its own). `newest` is the latest strike's weapon (the label
+ *  sits where it struck), `n` how many of `ws` struck; the label names each class once, in the order
+ *  they first struck: "GUN STRUCK HUNTER 1 ×3", "ATGM + GUN STRUCK HUNTER 1 ×4". */
+export interface StruckGroup {
+  uid: string
+  newest: WeaponTrack
+  n: number
+  label: string
+}
+
+export function struckGroups(ws: WeaponTrack[], nameOf: (uid: string) => string): StruckGroup[] {
+  const by = new Map<string, WeaponTrack[]>()
+  for (const w of ws) if (w.struck) by.set(w.struck.uid, [...(by.get(w.struck.uid) ?? []), w])
+  return [...by].map(([uid, hits]) => {
+    hits.sort((a, b) => a.struck!.t - b.struck!.t)
+    const classes = [...new Set(hits.map((w) => weaponShort(w.class)))].join(' + ')
+    const n = hits.length
+    return { uid, newest: hits[n - 1], n, label: `${classes} STRUCK ${nameOf(uid)}${n > 1 ? ` ×${n}` : ''}` }
+  })
+}
+
 /** the strike flash's progress at the victim, 0 to 1; null outside it */
 export function strikeFlash(w: WeaponTrack, now: number): number | null {
   if (!w.struck) return null

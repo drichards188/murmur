@@ -18,6 +18,7 @@ import {
   stageText,
   STRUCK_BANNER_MS,
   strikeFlash,
+  struckGroups,
   timeline,
   weaponBanner,
   weaponReports,
@@ -179,6 +180,16 @@ check(hit.text === 'launch seen by HUNTER 1 EO/IR · ATGM-class: 250 m/s, from T
 check(weaponBanner([struck], T0 + 84_500 + STRUCK_BANNER_MS, nameOf, at) === null, 'the strike banner goes')
 const blind: WeaponTrack = { ...plot, id: 'W-4', fixes: [], status: 'expended', ended_t: T0 + 84_500, struck: { uid: '1', t: T0 + 84_500 }, first_cue_t: null, warning_s: null }
 check(weaponBanner([blind], T0 + 86_000, nameOf, at)!.text === 'no sensor saw the launch or the weapon · any damage is its own report (Inbox)', 'an unseen strike')
+
+// ---- the strikes on one vehicle are labelled once ------------------------------------------------
+const hmg = (k: number): WeaponTrack => ({ ...struck, id: `W-${10 + k}`, class: 'Gun-class', class_symbol: 'gun', struck: { uid: '1', t: T0 + 90_000 + k * 3000 } })
+const gun = struckGroups([hmg(2), hmg(0), hmg(1)], nameOf)
+check(gun.length === 1 && gun[0].n === 3 && gun[0].newest.id === 'W-12', 'three bursts on HUNTER 1: one group, the newest last')
+check(gun[0].label === 'GUN STRUCK HUNTER 1 ×3', gun[0].label)
+check(struckGroups([struck], nameOf)[0].label === 'ATGM STRUCK HUNTER 1', 'one strike: no count')
+const mixed = struckGroups([hmg(0), struck, { ...struck, id: 'W-20', struck: { uid: '2', t: T0 + 85_000 } }], nameOf)
+check(mixed.length === 2 && mixed.find((g) => g.uid === '1')!.label === 'ATGM + GUN STRUCK HUNTER 1 ×2', 'classes in the order they struck, a group a vehicle')
+check(struckGroups([seen, weapon], nameOf).length === 0, 'nothing struck: no label')
 
 // ---- the timeline ----------------------------------------------------------------------------
 check(clockText(T0 + 80_400, T0) === '1:20.4' && clockText(T0 + 9_000, T0) === '0:09.0', 'the run clock')

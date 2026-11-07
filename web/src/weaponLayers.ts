@@ -10,9 +10,10 @@
 //   weapon-fixes      each fix (and the launch fix) with its 1-sigma circle, solid
 //   weapon            the hostile weapon symbol: kind unknown at the weapon stage, the class's at the
 //                     class stage; dashed (predicted) where its place is an estimate, solid at a fix
-//   weapon-struck     a ring on the victim once it reports the strike
+//   weapon-struck     a ring on the victim once it reports the strike (one a vehicle, at the newest)
 //   weapon-labels     what each stage says: "LAUNCH · 270° from HUNTER 1", "WEAPON? · 243 m/s",
-//                     "ATGM-class: 250 m/s, from T-0004 · 2.1 s", the strike
+//                     "ATGM-class: 250 m/s, from T-0004 · 2.1 s", the strikes on each vehicle once
+//                     ("GUN STRUCK HUNTER 1 ×3": a gun's every burst is a weapon), a launch once
 //
 // MapView builds these on every animation frame while a weapon is in flight or a flash is on, and
 // at the console's tick otherwise; under reduced motion nothing moves or flashes: the lines, the
@@ -21,7 +22,7 @@ import { IconLayer, PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/laye
 import type { MapScreen } from './aloft'
 import { z } from './map3d'
 import { dashesAhead, inFlight, LAUNCH_FLASH_MS, munitionAt, screenAngle, type Munition, type Pt3 } from './munition'
-import { classText, countdownS, estimate, FLY_ALT_M, heading, stageText, strikeFlash, weaponShort, type WeaponTrack } from './weapon'
+import { classText, countdownS, estimate, FLY_ALT_M, heading, stageText, strikeFlash, struckGroups, weaponShort, type WeaponTrack } from './weapon'
 import { weaponIcon, weaponSymbolKind, WEAPON_COLORS, type WeaponSymbolKind } from './weaponSymbols'
 
 type RGBA = [number, number, number, number]
@@ -84,6 +85,9 @@ export function buildWeaponLayers(
   const fixLines: { path: Pt3[]; a: number }[] = []
   const fixes: FixAt[] = []
   const labels: Label[] = []
+  // a launch labelled once a report (a gun's bursts in flight together share their act's)
+  const launchLabels = new Map<string, Label>()
+  const alphaOf = (w: WeaponTrack) => (w.ended_t == null ? 1 : Math.max(0.15, 1 - (nowMs - w.ended_t) / 60_000))
   const angleTo = (from: Pt3, to: Pt3): number => {
     const sa = screen.at(from[0], from[1], from[2])
     const sb = screen.at(to[0], to[1], to[2])
@@ -98,7 +102,7 @@ export function buildWeaponLayers(
   for (const w of ws) {
     if (w.stage === 'plot' && !w.struck) continue // a lone fix is not called a weapon
     // ended ones fade over their last minute
-    const a = w.ended_t == null ? 1 : Math.max(0.15, 1 - (nowMs - w.ended_t) / 60_000)
+    const a = alphaOf(w)
     const flyingNow = w.status === 'in_flight' && !w.struck
     const kind: WeaponSymbolKind = w.stage === 'class' ? weaponSymbolKind(w.class_symbol) : 'unknown'
     const l = w.launch
@@ -109,7 +113,7 @@ export function buildWeaponLayers(
         const p = (nowMs - l.flash_t) / LAUNCH_FLASH_MS
         if (p >= 0 && p < 1) flashes.push({ at: low(l.point), p, ring: true }, { at: low(l.point), p, ring: false })
       }
-      if (w.stage === 'launch' && flyingNow) labels.push({ at: low(l.point), label: `LAUNCH · ${stageText(w, nameOf).replace(/^launch, /, '')}`, a })
+      if (w.stage === 'launch' && flyingNow) launchLabels.set(w.report ?? w.id, { at: low(l.point), label: `LAUNCH · ${stageText(w, nameOf).replace(/^launch, /, '')}`, a })
     }
     // the estimate, only on a basis
     const victim = victimOf(w)
@@ -155,10 +159,18 @@ export function buildWeaponLayers(
       const at = low(victim)
       const p = strikeFlash(w, nowMs)
       if (p != null && !reduced) flashes.push({ at, p, ring: true }, { at, p, ring: false })
-      labels.push({ at, label: `${weaponShort(w.class)} STRUCK ${nameOf(w.struck.uid)}`, a })
     }
   }
-  const struckRings = labels.filter((s) => s.label.includes(' STRUCK '))
+  labels.push(...launchLabels.values())
+  // the strikes on each vehicle, once: its ring and label where the newest struck
+  const struckRings: Label[] = []
+  for (const g of struckGroups(ws, nameOf)) {
+    const victim = victimOf(g.newest)
+    if (!victim) continue
+    const s = { at: low(victim), label: g.label, a: alphaOf(g.newest) }
+    struckRings.push(s)
+    labels.push(s)
+  }
   return [
     new PathLayer<{ path: Pt3[]; a: number }>({
       id: 'weapon-bearing',
