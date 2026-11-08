@@ -35,7 +35,7 @@ misclassification_rate = 0.0     # deterministic identities: the situation is ab
 
 # ---------------------------------------------------------------- the hostile
 # Runs in from the sea at 15 m/s (29 kn), no AIS, and holds mid-strait 1.5 km west of the bridge,
-# inside the engagement zone (sim/areas: ez-gate-west), from about 3:03. At 3:20 it is ordered to
+# inside the engagement zone (sim/areas: ez-gate-west), from about 3:16. At 3:20 it is ordered to
 # open fire on HUNTER 1, patrolling 0.9 to 1.2 km east of it (inside its gun's 2 km), from where
 # it holds: two 6-round bursts five seconds apart (one act, a firing episode), and again a minute
 # later, and again. Each act is observed by whichever of ours see a muzzle flash, so if one is

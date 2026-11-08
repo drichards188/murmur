@@ -72,9 +72,9 @@ director = """
 Truth: a fast inshore attack craft with no AIS (truth affiliation: hostile; four ATGM-class
 missiles and a 12.7 mm machine gun; it looks like a small fast boat to our sensors) runs in from
 the sea at 15 m/s from about 0:08 and holds mid-strait at [-122.4950, 37.8120], 1.5 km west of the
-bridge and inside the engagement zone, from about 3:05. Its contacts file orders it at about 3:25
+bridge and inside the engagement zone, from about 3:16. Its contacts file orders it at 3:20
 to open fire on HUNTER 1, patrolling 0.9 to 1.2 km east of it: two 6-round bursts of its machine
-gun five seconds apart, by its own fire control, and again at about 4:25 and 5:25. Each burst can
+gun five seconds apart, by its own fire control, and again at 4:20 and 5:20. Each burst can
 hit HUNTER 1 (0.25), and a hit can stop it (0.17 of hits) or sink it (0.03); with the contacts'
 seed 17 the first episode's second burst takes HUNTER 1's propulsion (it drifts, still reporting),
 and nothing sinks it. Nothing else is hostile.

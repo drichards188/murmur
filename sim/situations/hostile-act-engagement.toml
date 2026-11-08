@@ -75,15 +75,18 @@ director = """
 Truth: a fast inshore attack craft with no AIS (truth affiliation: hostile; four ATGM-class
 missiles and a 12.7 mm machine gun; it looks like a small fast boat to our sensors) runs in from
 the sea at 15 m/s from about 0:08 and holds mid-strait at [-122.4950, 37.8120], 1.5 km west of the
-bridge and inside the engagement zone, from about 3:05. Its contacts file orders it at about 3:25
+bridge and inside the engagement zone, from about 3:16. Its contacts file orders it at 3:20
 to open fire on HUNTER 1, patrolling 0.9 to 1.2 km east of it: two 6-round bursts of its machine
-gun five seconds apart, by its own fire control, and again at about 4:25 and 5:25 (its missiles
+gun five seconds apart, by its own fire control, and again at 4:20 and 5:20 (its missiles
 are never ordered). Each burst can hit HUNTER 1 (0.25), and a hit can stop it (0.17 of hits) or
 sink it (0.03); with the contacts' seed 17 the first episode's second burst takes HUNTER 1's
 propulsion (it drifts, still reporting), and nothing sinks it. Nothing else is hostile.
 What should happen: our sensors observe the first act (HUNTER 1's EO/IR sees the muzzle flash);
 the engine attributes it to the boat's track at 0.9 or more and declares the track hostile by rule
-(a loose fix is flagged instead, and the next act is another chance); op-auto confirms the
+(a loose fix is flagged instead, and the next act is another chance: with seed 17 the first act
+always is, its launch fix drawn 2.7 sigma off while the track still lags the boat's stop, so A-1
+is flagged at 0.82 and the rule declares on A-2 at 1.00 a minute later, unless someone declares
+the track from the flag first; bd murmur-1t2p); op-auto confirms the
 declaration on autoplay (live: you, in the Review list). The watch officer is woken by the hostile
 declaration (the stronger model) and again when an armed platform passes every nomination check
 (`nomination.possible`); it should nominate REAPER 1 (some 35 s away at 90 m/s; a fixed wing takes
