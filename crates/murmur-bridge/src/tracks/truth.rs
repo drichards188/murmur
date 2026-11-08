@@ -266,6 +266,12 @@ pub struct ImpactTruth {
     pub against_vehicle: Option<u64>,
     #[serde(default)]
     pub against_contact: Option<String>,
+    /// On one of ours, whether it was hit (the damage model's draw): the victim's own report, all
+    /// it can know of a strike, so `false` (a miss, or a wreck struck again) is never reported
+    /// struck (bd murmur-aset). Absent: nothing drawn (a weapon without figures), reported as a
+    /// strike as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hit: Option<bool>,
 }
 
 /// Rules 9: one hostile act as the contacts process scripts it: abstract (a time, an author, a

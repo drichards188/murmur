@@ -1041,6 +1041,11 @@ impl Tracks {
         });
         for i in &msg.impacts {
             let Some(uid) = i.against_vehicle else { continue };
+            // a miss is not the victim's to report: nothing on it tells it rounds went past (bd
+            // murmur-aset); the weapon's track ends as its cues do
+            if i.hit == Some(false) {
+                continue;
+            }
             let w = inner.weapons.struck(uid, i.t + offset);
             let text = match (&w.launch, w.first_cue_t()) {
                 (Some(l), Some(first)) => format!(

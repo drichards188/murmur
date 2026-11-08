@@ -140,11 +140,11 @@ impl WeaponTruth {
     }
 }
 
-/// A weapon's strike (truth): when and where, on whom; the bridge reports it as the victim's
-/// own. With the weapon's figures (the scenario's `effects`, or a node's catalog weapon) the
-/// damage model draws it (`damage`, the evaluation's record: the C2 never reads it); without
-/// them nothing about the victim changes. A node that is its own weapon (a one-way drone, an
-/// explosive boat) strikes with no flight: `weapon` is then `<contact>-self`.
+/// A weapon's strike (truth): when and where, on whom; the bridge reports a hit on one of ours
+/// as the victim's own. With the weapon's figures (the scenario's `effects`, or a node's catalog
+/// weapon) the damage model draws it (`damage`, the evaluation's record: the C2 never reads it);
+/// without them nothing about the victim changes. A node that is its own weapon (a one-way drone,
+/// an explosive boat) strikes with no flight: `weapon` is then `<contact>-self`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImpactTruth {
     pub weapon: String,
@@ -156,6 +156,14 @@ pub struct ImpactTruth {
     pub against_vehicle: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub against_contact: Option<String>,
+    /// On one of ours, whether it was hit: all the victim can know of a strike (it feels a hit;
+    /// nothing on an unmanned vehicle tells it rounds went past), so the bridge reports a strike
+    /// only when this is not `false` (bd murmur-aset). Set by the damage model's draw
+    /// ([`crate::weapon::strike_by`]; a wreck struck again is `false`: it reports nothing) and by
+    /// a mine (only a hit is an impact); absent when nothing was drawn (a weapon without figures:
+    /// the abstract strike, reported as before) and on a contact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hit: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub damage: Option<crate::damage::DamageRecord>,
 }

@@ -424,8 +424,8 @@ fn collateral(m: &MineNotice, v: &Victim, stream: &str, movers: &mut [Mover], ou
     (records, hurt)
 }
 
-/// One of ours struck by a mine, as an opponent weapon's strike is recorded (`impacts`): the
-/// bridge turns it into the vehicle's own struck report.
+/// One of ours struck by a mine (a hit: only a hit is recorded so), as an opponent weapon's
+/// strike is recorded (`impacts`): the bridge turns it into the vehicle's own struck report.
 fn impact(m: &MineNotice, uid: u64, t: f64, lat: f64, lon: f64) -> ImpactTruth {
     ImpactTruth {
         weapon: m.id(),
@@ -435,6 +435,7 @@ fn impact(m: &MineNotice, uid: u64, t: f64, lat: f64, lon: f64) -> ImpactTruth {
         lon,
         against_vehicle: Some(uid),
         against_contact: None,
+        hit: Some(true),
         damage: None,
     }
 }

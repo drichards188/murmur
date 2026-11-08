@@ -478,8 +478,10 @@ meaningful.
   launch (`observe_launch`: cameras; a torpedo's transient a listening sonar), never by radar; a
   gun's episode is one act whose bursts are each a weapon (`rounds`), reported at the first burst
   caught. The weapon's fixes go to the weapon picture (`tracks::weapons`, `W-<n>`, `weapons` on the
-  tracks feed and `GET /api/tracks`), never the track picture; a gun's rounds are never fixed; the
-  strike is the victim's `vehicle.event` `struck` and an inbox alert. The picture knows a weapon by
+  tracks feed and `GET /api/tracks`), never the track picture; a gun's rounds are never fixed; a
+  hit is the victim's `vehicle.event` `struck` and an inbox alert, a miss nothing (the impact's
+  `hit`, the damage draw: the victim can't know rounds went past, bd murmur-aset; absent for a
+  weapon without figures, reported as before), its weapon track ending lost. The picture knows a weapon by
   stages (bd murmur-ju1h, section 14): `launch` (the flash: place, bearing, and its kind when told:
   missile, rocket, muzzle, transient; nothing else), `weapon` (fixes gated together, not by truth
   id, whose measured speed passes `weapons::weapon_speed_mps` for its domain (water by sonar, air by

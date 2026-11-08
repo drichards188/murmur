@@ -124,7 +124,11 @@ dwell would see it, and a camera pulled off the boat would cost the boat's ident
 **4.3 The strike.** The victim knows it was struck. At the first truth tick at or after the
 impact (within a second), the bridge logs it as the victim's own report: a `vehicle.event` of
 kind `struck` in the audit log ("struck at 10:01:24.6Z"), whatever was seen before, and an inbox
-alert. A strike on a contact gives no cue (we know only what our sensors see).
+alert. Only a hit is reported (the impact's `hit`, the damage model's draw; absent for a weapon
+without figures, which strikes as before): nothing on an unmanned vehicle tells it rounds went
+past, so a miss gives no event, no alert and no struck mark, and its weapon track ends lost as
+its cues stop (bd murmur-aset). A wreck struck again reports nothing either. A strike on a
+contact gives no cue (we know only what our sensors see).
 
 **4.4 When we know.** The earliest of: the launch seen (4.1); a weapon track that says whom it is
 coming at (4.2: two fixes, or one with the launch fix, give its line); the strike (4.3). The

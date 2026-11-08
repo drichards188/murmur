@@ -1331,6 +1331,7 @@ impl Node {
                 lon,
                 against_vehicle,
                 against_contact,
+                hit: None,
                 damage: None,
             });
             cx.armory.note(&weapon, Strike { weapon: w.damage(), stream: format!("act:{act}"), out_m: None });

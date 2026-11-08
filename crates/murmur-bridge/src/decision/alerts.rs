@@ -35,8 +35,9 @@ pub struct Alert {
     /// way home crosses land) | identify_holding | identify_lost | identify_timed_out |
     /// identify_held (rules 21) | identify_meanwhile (rules 23: another vehicle identified an
     /// identify order's track, the order going on; informational) | struck (an opponent weapon
-    /// struck one of ours: docs/OPPONENT-WEAPONS.md) | damaged (one of ours reports damage of
-    /// its own after a strike: its propulsion lost, its weapons out of action; rules 25)
+    /// hit one of ours, by its own report; a miss is none: docs/OPPONENT-WEAPONS.md) | damaged
+    /// (one of ours reports damage of its own after a strike: its propulsion lost, its weapons
+    /// out of action; rules 25)
     pub kind: &'static str,
     pub severity: Severity,
     pub uid: Uid,

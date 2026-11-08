@@ -117,7 +117,7 @@ fn run(armed: bool) -> (Tracks, Vec<std::collections::BTreeMap<String, murmur_de
                 m.weapons = vec![f.clone()];
             }
             if s == 24.0 {
-                m.impacts = vec![ImpactTruth { weapon: f.id, act: f.act, t: f.impact_t, lat: f.to[1], lon: f.to[0], against_vehicle: Some(1), against_contact: None }];
+                m.impacts = vec![ImpactTruth { weapon: f.id, act: f.act, t: f.impact_t, lat: f.to[1], lon: f.to[0], against_vehicle: Some(1), against_contact: None, hit: None }];
             }
         }
         tracks.on_truth_with(m, &o, T0 + s).expect("ok");
@@ -196,7 +196,7 @@ fn an_unseen_launch_is_known_at_its_strike() {
             m.weapons = vec![f.clone()];
         }
         if s == 24.0 {
-            m.impacts = vec![ImpactTruth { weapon: f.id.clone(), act: f.act.clone(), t: f.impact_t, lat: f.to[1], lon: f.to[0], against_vehicle: Some(1), against_contact: None }];
+            m.impacts = vec![ImpactTruth { weapon: f.id.clone(), act: f.act.clone(), t: f.impact_t, lat: f.to[1], lon: f.to[0], against_vehicle: Some(1), against_contact: None, hit: None }];
         }
         tracks.on_truth_with(m, std::slice::from_ref(&o), T0 + s).expect("ok");
     }
@@ -205,6 +205,72 @@ fn an_unseen_launch_is_known_at_its_strike() {
     assert_eq!(alerts.len(), 1);
     assert_eq!(alerts[0].severity, crate::decision::alerts::Severity::High);
     assert!(alerts[0].detail.contains("no sensor saw the launch"), "{}", alerts[0].detail);
+}
+
+/// bd murmur-aset: a strike on ours is its victim's own report, and a miss is not one (nothing
+/// on an unmanned vehicle tells it rounds went past). The tutorial's shot, its impact as the
+/// contacts process sends it: with `"hit": false` no struck vehicle event, no alert, and the
+/// weapon track ends lost as its cues stop, with no struck mark; with `"hit": true` all of them,
+/// as before. The launch is the act either way.
+#[test]
+fn a_miss_is_never_reported_struck_and_a_hit_is() {
+    let shot = |hit: bool| {
+        let tracks = Tracks::new(catalog(), settings());
+        let o = [hunter()];
+        let f = flight();
+        for s in 0..40 {
+            let s = f64::from(s);
+            let mut m = msg(s);
+            if s == 20.0 {
+                m.acts = vec![ActTruth {
+                    id: "act-1".into(),
+                    s,
+                    t: T0 + s,
+                    by: "fastboat-raider".into(),
+                    lat: BOAT.0,
+                    lon: BOAT.1,
+                    against_vehicle: Some(1),
+                    against_contact: None,
+                    label: None,
+                    weapon: Some(f.id.clone()),
+                    held: None,
+                }];
+            }
+            if (20.0..=24.0).contains(&s) {
+                m.weapons = vec![f.clone()];
+            }
+            if s == 24.0 {
+                let wire = serde_json::json!({
+                    "weapon": f.id, "act": f.act, "t": f.impact_t, "lat": f.to[1], "lon": f.to[0],
+                    "against_vehicle": 1, "hit": hit,
+                });
+                m.impacts = vec![serde_json::from_value(wire).expect("an impact as murmur-contacts writes it")];
+            }
+            tracks.on_truth_with(m, &o, T0 + s).expect("ok");
+        }
+        let acts = tracks.take_acts();
+        let strikes = std::mem::take(&mut super::super::lock(&tracks.inner).strikes);
+        let alerts = tracks.strike_alerts(&|_| Some("HUNTER 1".into()));
+        let msg: serde_json::Value = serde_json::from_str(&tracks.message(T0 + 39.0)).expect("json");
+        (acts, strikes, alerts, msg["weapons"].clone())
+    };
+
+    let (acts, strikes, alerts, weapons) = shot(false);
+    assert_eq!(acts.len(), 1, "the launch is the act, hit or miss: {acts:?}");
+    assert!(strikes.is_empty(), "no struck vehicle event for a miss: {strikes:?}");
+    assert!(alerts.is_empty(), "no struck alert for a miss: {alerts:?}");
+    let w = &weapons[0];
+    assert!(w["struck"].is_null() && w["warning_s"].is_null(), "{w}");
+    assert_eq!(w["status"], "lost", "{w}");
+
+    let (acts, strikes, alerts, weapons) = shot(true);
+    assert_eq!(acts.len(), 1);
+    assert_eq!(strikes, vec![(1, "struck (W-1): launch seen by 1:eo_ir 4.0 s before".to_string())]);
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts[0].kind, "struck");
+    let w = &weapons[0];
+    assert_eq!(w["struck"]["uid"], "1", "{w}");
+    assert_eq!(w["status"], "expended", "{w}");
 }
 
 // ---- every class (docs/OPPONENT-WEAPONS.md section 15, bd murmur-y85j.3) ----------------------
@@ -296,7 +362,7 @@ fn scene(kind: Option<&str>, secs: u32, observers_at: &dyn Fn(f64) -> Vec<Observ
         m.impacts = ws
             .iter()
             .filter(|w| w.impact_t <= t && w.impact_t > t - 1.0)
-            .map(|w| ImpactTruth { weapon: w.id.clone(), act: w.act.clone(), t: w.impact_t, lat: w.to[1], lon: w.to[0], against_vehicle: Some(1), against_contact: None })
+            .map(|w| ImpactTruth { weapon: w.id.clone(), act: w.act.clone(), t: w.impact_t, lat: w.to[1], lon: w.to[0], against_vehicle: Some(1), against_contact: None, hit: None })
             .collect();
         ticks.push(tracks.on_truth_with(m, &observers_at(s), t).expect("ok"));
         facts.push(tracks.facts(t));

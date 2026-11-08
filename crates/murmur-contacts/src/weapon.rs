@@ -202,6 +202,7 @@ impl Armory {
                 lon: f.to[0],
                 against_vehicle: f.against_vehicle,
                 against_contact: f.against_contact,
+                hit: None,
                 damage: None,
             })
             .collect()
@@ -257,6 +258,7 @@ impl OursLedger {
 /// [`strike`] with each strike's weapon, stream and range from `lookup` (none: not drawn): a
 /// node's from the [`Armory`] ([`Armory::take`]), a scripted act's by [`scripted`]. `ledger`:
 /// ours destroyed so far (never drawn again; each one newly destroyed is added) and ours spared.
+/// A strike on ours also says whether it hit (`ImpactTruth::hit`, what the victim reports).
 pub fn strike_by(
     impacts: &mut [ImpactTruth],
     movers: &mut [Mover],
@@ -275,8 +277,12 @@ pub fn strike_by(
             (Some(uid), _) => {
                 let o = ours.get(&uid);
                 let kind = damage::ours_kind(o.and_then(|o| o.platform.as_deref()), o.and_then(|o| o.domain.as_deref()));
+                // what the victim can report of it (bd murmur-aset): a hit, never a miss; a wreck
+                // nothing; a weapon without figures strikes as before (`hit` absent)
+                let modelled = w.modelled();
                 if ledger.destroyed.contains(&uid) {
                     i.damage = Some(damage::already_destroyed(&format!("ours:{uid}"), kind, &w));
+                    i.hit = Some(false);
                     continue;
                 }
                 let target = Target {
@@ -297,6 +303,7 @@ pub fn strike_by(
                         hurt.push(OursDamaged { uid: uid.to_string(), state: r.state, cause: format!("struck by {} ({})", w.name, i.act) });
                     }
                 }
+                i.hit = modelled.then_some(r.hit);
                 i.damage = Some(r);
             }
             (None, Some(id)) => {
@@ -409,8 +416,9 @@ mod tests {
 
     /// With figures, a strike on one of ours is drawn on the act's stream: a certain hit with a
     /// certain mobility kill hands HUNTER 1 back as stopped; a certain miss hands nothing back.
-    /// A shooter whose weapon a strike put out of action holds its next act's fire. Without
-    /// figures the impact carries no damage (the bytes as before).
+    /// Each says whether it hit, for the victim's report (bd murmur-aset: a miss is never
+    /// reported struck). A shooter whose weapon a strike put out of action holds its next act's
+    /// fire. Without figures the impact carries no damage and no hit (the bytes as before).
     #[test]
     fn a_strike_with_figures_damages_its_victim() {
         let with = |figs: &str| {
@@ -441,15 +449,21 @@ mod tests {
         // the Sea Hunter counts as a fishing boat: figures for small_fast_boat only, so no hit
         let (hits, hurt) = run(&with("{ p_hit = 1.0, p_mobility = 1.0 }"));
         assert!(hurt.is_empty() && hits[0].damage.as_ref().is_some_and(|d| !d.hit && d.figures.is_none()));
+        assert_eq!(hits[0].hit, Some(false), "no figures for its kind: a miss");
         let fishing = |figs: &str| with(figs).replace("small_fast_boat = {", "fishing_vessel = {");
         let (hits, hurt) = run(&fishing("{ p_hit = 1.0, p_mobility = 1.0 }"));
         assert_eq!(hurt, vec![OursDamaged { uid: "1".into(), state: DamageState::Mobility, cause: "struck by ATGM-class missile (a1)".into() }]);
         assert!(hits[0].damage.as_ref().is_some_and(|d| d.hit && d.applied && d.who == "ours:1"));
-        let (_, hurt) = run(&fishing("{ p_hit = 0.0, p_kill = 1.0 }"));
+        assert_eq!(hits[0].hit, Some(true));
+        assert!(serde_json::to_string(&hits[0]).expect("json").contains("\"hit\":true"));
+        let (hits, hurt) = run(&fishing("{ p_hit = 0.0, p_kill = 1.0 }"));
         assert!(hurt.is_empty());
+        assert_eq!(hits[0].hit, Some(false), "a miss says so");
+        assert!(serde_json::to_string(&hits[0]).expect("json").contains("\"hit\":false"));
         let (hits, hurt) = run(ARMED);
-        assert!(hurt.is_empty() && hits[0].damage.is_none());
-        assert!(!serde_json::to_string(&hits[0]).expect("json").contains("damage"));
+        assert!(hurt.is_empty() && hits[0].damage.is_none() && hits[0].hit.is_none());
+        let plain = serde_json::to_string(&hits[0]).expect("json");
+        assert!(!plain.contains("damage") && !plain.contains("hit"), "{plain}");
         // a disarmed shooter holds its fire
         let s = Scenario::from_toml(&format!("{ARMED}{acts}")).expect("parses");
         let mut movers: Vec<Mover> = s.contacts().expect("valid").into_iter().enumerate().map(|(i, c)| Mover::new(c, 1, i as u64)).collect();
@@ -492,6 +506,7 @@ mod tests {
         let again = hits[1].damage.as_ref().expect("recorded");
         assert!(!again.hit && again.u_hit == 1.0 && again.state == DamageState::Destroyed && !again.applied, "{again:?}");
         assert!(again.note.as_deref().is_some_and(|n| n.contains("already destroyed")));
+        assert_eq!((hits[0].hit, hits[1].hit), (Some(true), Some(false)), "a wreck reports nothing");
         assert_eq!(ledger.destroyed, [1].into());
         let mut spared = OursLedger::sparing([1]);
         let (hits, hurt) = run(&mut spared);
@@ -500,6 +515,7 @@ mod tests {
             let d = h.damage.as_ref().expect("drawn");
             assert!(d.hit && d.state == DamageState::Destroyed && !d.applied, "{d:?}");
             assert!(d.note.as_deref().is_some_and(|n| n.contains("spared")));
+            assert_eq!(h.hit, Some(true), "a spared vehicle still knows it was hit");
         }
     }
 }

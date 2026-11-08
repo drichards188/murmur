@@ -371,7 +371,7 @@ fn weapon_pipeline_probe() {
                 m.weapons = vec![w.clone()];
             }
             if s == launch + 4.0 {
-                m.impacts = vec![ImpactTruth { weapon: w.id.clone(), act: "a".into(), t: w.impact_t, lat: hlat, lon: hlon, against_vehicle: Some(1), against_contact: None }];
+                m.impacts = vec![ImpactTruth { weapon: w.id.clone(), act: "a".into(), t: w.impact_t, lat: hlat, lon: hlon, against_vehicle: Some(1), against_contact: None, hit: None }];
             }
             tracks.on_truth_with(m, &[hunter.clone(), reaper], t0 + s).expect("ok");
         }
