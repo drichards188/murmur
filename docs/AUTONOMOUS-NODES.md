@@ -580,7 +580,9 @@ here: the stand-in engine reads the damage file from its start when it starts, a
 empties the file in a stack without a contacts process, so a previous run's records on the same
 HTTP port (a `make goldengate` with `CONTACTS=` that hurt ours, then one without) damage this
 run's stand-ins of the same uids; with a contacts process it is a race the contacts process
-usually wins. The SITL watcher skips such records.
+usually wins. The SITL watcher skips such records. Fixed since (bd murmur-4gnm): the stand-in
+engine skips them as the watcher does, and an evaluation stack's file is its run directory's
+(it had been the default stack's, `damage-8765.jsonl`, for every eval stack).
 
 **Checked live** (`sim/tests/sitl_damage_live.py`: the fleet started by `swarm.py`, the bridge
 talking to the vehicles directly, the records appended by hand; telemetry from each vehicle's

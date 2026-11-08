@@ -397,7 +397,9 @@ meaningful.
   root of the warhead's kg; each draw seeded by the contacts' seed and the strike (`effect:<intent>`,
   `act:<id>`). A weapon without `effects` (or no weapon: the v1/v2 worlds) stays abstract exactly
   as before. Our damaged vehicles: `sim/run/damage-<http port>.jsonl` (`MURMUR_DAMAGE_FILE`,
-  emptied by the contacts process at start) to the stand-ins (`murmur_standins::damage`), which
+  emptied by the contacts process at start; an eval stack's in its run directory; a file not
+  written since the stand-ins or the SITL watcher started is a previous run's, skipped, bd
+  murmur-4gnm) to the stand-ins (`murmur_standins::damage`), which
   step unpowered, go silent, or report `DAMAGE mobility|firepower` STATUSTEXT every 30 s; the
   bridge makes that the `damage` vehicle fact, a `damage` event and a `damaged` alert. SITL
   vehicles act it out too (`sim/sitl_damage.py`, the SITL gotcha above). The engine reads only

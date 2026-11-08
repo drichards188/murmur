@@ -11,6 +11,8 @@ use murmur_standins::link;
 use murmur_standins::vehicle::{self, Vehicle};
 
 fn main() {
+    // when this engine started: a damage file not written since is a previous run's (bd murmur-4gnm)
+    let started = std::time::SystemTime::now();
     let path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "sim/run/standins.json".into());
@@ -31,13 +33,13 @@ fn main() {
             std::process::exit(1);
         }
     };
-    if let Err(e) = rt.block_on(run(&path)) {
+    if let Err(e) = rt.block_on(run(&path, started)) {
         eprintln!("murmur-standins: {e}");
         std::process::exit(1);
     }
 }
 
-async fn run(path: &str) -> Result<(), String> {
+async fn run(path: &str, started: std::time::SystemTime) -> Result<(), String> {
     // a scenario rate needs a scenario start, as in the bridge (murmur-drd)
     conditions::check_scenario_env()?;
     let mut fleet = Fleet::load(path)?;
@@ -75,7 +77,7 @@ async fn run(path: &str) -> Result<(), String> {
     let damage = Arc::new(murmur_standins::damage::Board::default());
     let damage_path = murmur_standins::damage::path();
     println!("damage: following {}", damage_path.display());
-    tokio::spawn(murmur_standins::damage::watch(damage_path, damage.clone()));
+    tokio::spawn(murmur_standins::damage::watch(damage_path, damage.clone(), started));
 
     // fixed source ports (MURMUR_STANDIN_SRC_BASE + index), or ephemeral ones as before
     let src_base = std::env::var("MURMUR_STANDIN_SRC_BASE").ok();

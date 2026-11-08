@@ -249,6 +249,14 @@ class Stack:
         return self.run_dir / "standins.json"
 
     @property
+    def damage_file(self) -> Path:
+        """Where the contacts process writes a strike's damage to ours and the stand-ins read it
+        (`MURMUR_DAMAGE_FILE`): this run's own. Without it both would use the default stack's
+        file (neither is given this block's HTTP port), shared with every other stack (bd
+        murmur-4gnm)."""
+        return self.run_dir / "damage.jsonl"
+
+    @property
     def last_run_pointer(self) -> Path:
         """The bridge's rules-6 restore pointer for this stack's HTTP port, beside the audit
         logs (`Settings::last_run` in crates/murmur-bridge/src/decision/mod.rs:
@@ -521,6 +529,7 @@ class Stack:
             "MURMUR_STANDINS_TRUTH": str(self.run_dir / "standins-truth.jsonl"),
             "MURMUR_STANDINS_STATS": "0",
             "MURMUR_EVENTS": str(self.events_file),
+            "MURMUR_DAMAGE_FILE": str(self.damage_file),
         }
         self.standins_start = time.time()
         self._spawn(
@@ -600,6 +609,7 @@ class Stack:
             self._env(
                 MURMUR_BRIDGE_URL=f"http://127.0.0.1:{self.block.http}",
                 MURMUR_CONTACTS_TRUTH=str(self.run_dir / "contacts-truth.jsonl"),
+                MURMUR_DAMAGE_FILE=str(self.damage_file),
                 MURMUR_CONTACTS_SEED=str(self.seed),
                 MURMUR_CONTACTS_HZ="1",
                 MURMUR_SIM_TOKEN=self.sim_token,

@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
@@ -132,20 +132,62 @@ pub fn read_into(board: &Board, text: &str, from: usize) -> usize {
     at
 }
 
-/// Follow `path` every second into `board`, from its start (a file shorter than what was read
-/// was started again: read from its start).
-pub async fn watch(path: PathBuf, board: std::sync::Arc<Board>) {
-    let mut at = 0usize;
+/// Where a reader of the file is (bd murmur-4gnm). The file outlives its run: nothing empties it
+/// in a stack without a contacts process, and a contacts process empties it only as it starts,
+/// after the stand-ins (scripts/up.sh starts it last, the evaluation's stack at its origin), by
+/// when they have read it. So a file not written since this engine started holds a previous
+/// run's records on this HTTP port, for vehicles that may have this run's uids: they are skipped,
+/// as sim/sitl_damage.py skips them. A file that no longer begins with what was read (emptied by
+/// the contacts process, then written again; or replaced) is read again from its start.
+#[derive(Debug)]
+pub struct Follow {
+    started: SystemTime,
+    /// What has been read of the file (none: not seen yet).
+    read: Option<String>,
+}
+
+impl Follow {
+    /// A reader for an engine that started at `started`.
+    pub fn new(started: SystemTime) -> Follow {
+        Follow { started, read: None }
+    }
+
+    /// Read the file's `text` into `board`; `modified`: when it was last written, as it stood
+    /// before `text` was read. Returns how many bytes of a previous run's it skipped (only on its
+    /// first look at the file).
+    pub fn step(&mut self, board: &Board, text: &str, modified: Option<SystemTime>) -> usize {
+        let at = match &self.read {
+            None if modified.is_some_and(|m| m < self.started) => {
+                self.read = Some(text.to_string());
+                return text.len();
+            }
+            Some(read) if text.starts_with(read.as_str()) => read_into(board, text, read.len()),
+            _ => read_into(board, text, 0),
+        };
+        self.read = Some(text[..at].to_string());
+        0
+    }
+}
+
+/// Follow `path` every second into `board` ([`Follow`]: a previous run's records are skipped).
+/// `started`: when this engine started.
+pub async fn watch(path: PathBuf, board: std::sync::Arc<Board>, started: SystemTime) {
+    let mut follow = Follow::new(started);
     let mut every = tokio::time::interval(Duration::from_secs(1));
     loop {
         every.tick().await;
+        // when it was written, before reading it: a file emptied in between is skipped empty
+        let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
-        if text.len() < at {
-            at = 0;
+        let skipped = follow.step(&board, &text, modified);
+        if skipped > 0 {
+            println!(
+                "damage: {} predates this engine: its {skipped} bytes are a previous run's, skipped",
+                path.display()
+            );
         }
-        at = read_into(&board, &text, at);
     }
 }
 
@@ -168,5 +210,47 @@ mod tests {
         b.put(3, State::Mobility);
         assert_eq!(b.generation(), 3);
         assert_eq!(State::Destroyed.report(), None);
+    }
+
+    /// bd murmur-4gnm: a file last written before this engine started is a previous run's on the
+    /// same HTTP port (a plain `make goldengate` after one with contacts, or the stand-ins reading
+    /// before the contacts process empties it): its records are skipped and hurt no vehicle of
+    /// this run. Emptied and written again, it is read from its start, even when it has grown past
+    /// the old length between two looks. A file written since the start is read whole.
+    #[test]
+    fn a_previous_runs_file_is_skipped_and_this_runs_is_read() {
+        let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let before = Some(started - Duration::from_secs(600));
+        let after = Some(started + Duration::from_secs(5));
+        let old = "{\"uid\":3,\"state\":\"destroyed\"}\n{\"uid\":4,\"state\":\"mobility\"}\n";
+
+        // the old file seen first, then emptied by the contacts process, then this run's record
+        let (b, mut f) = (Board::default(), Follow::new(started));
+        assert_eq!(f.step(&b, old, before), old.len());
+        assert_eq!(f.step(&b, old, before), 0, "said once");
+        assert!(b.of(3).is_empty() && b.of(4).is_empty() && b.generation() == 0);
+        f.step(&b, "", after);
+        let new = "{\"uid\":4,\"state\":\"firepower\"}\n";
+        f.step(&b, new, after);
+        assert_eq!((b.of(3), b.of(4)), (vec![], vec![State::Firepower]));
+        // then appended to
+        let more = format!("{new}{{\"uid\":5,\"state\":\"mobility\"}}\n");
+        f.step(&b, &more, after);
+        assert_eq!((b.of(4), b.of(5)), (vec![State::Firepower], vec![State::Mobility]));
+
+        // emptied and rewritten past the old length between two looks
+        let (b, mut f) = (Board::default(), Follow::new(started));
+        f.step(&b, old, before);
+        let longer = "{\"uid\":7,\"state\":\"mobility\",\"cause\":\"struck by ATGM-class missile (raider-1)\"}\n";
+        assert!(longer.len() > old.len());
+        f.step(&b, longer, after);
+        assert_eq!((b.of(3), b.of(4), b.of(7)), (vec![], vec![], vec![State::Mobility]));
+
+        // a file this run wrote before the first look (or one whose time can't be read) is read
+        for when in [after, None] {
+            let (b, mut f) = (Board::default(), Follow::new(started));
+            assert_eq!(f.step(&b, old, when), 0);
+            assert_eq!((b.of(3), b.of(4)), (vec![State::Destroyed], vec![State::Mobility]));
+        }
     }
 }
