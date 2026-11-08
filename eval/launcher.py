@@ -28,9 +28,10 @@ touches what the open world's runs carry, as from the command line.
 Ending a scenario is `make down`'s, in order: the situation runner first (SIGTERM: it stops the
 AI's process group and the scripted operators and writes its summary), then the stack (SIGTERM
 to up.sh, which stops tidewater, the link emulator, the stand-ins, SITL, the bridge, the
-contacts), then the launcher waits until the stack's ports are free. A situation whose time is
-up leaves its stack up for inspection, as the runner does, until it is ended. A launch that
-fails stops whatever it started and says why, with its log.
+contacts; a situation's up.sh known by the pid the runner says it started, so an End while it
+still builds stops it too), then the launcher waits until the stack's ports are free. A
+situation whose time is up leaves its stack up for inspection, as the runner does, until it is
+ended. A launch that fails stops whatever it started and says why, with its log.
 
 The API, on 127.0.0.1 only (the console reaches it through Vite's proxy under /launcher):
 
@@ -432,6 +433,24 @@ def progress_line(lines: list[str]) -> str:
     return ""
 
 
+# the situation runner's line as it starts its stack (eval/situation_run.py `start_stack`)
+RUNNER_UP = re.compile(r"stack starting with scripts/up\.sh \(pid (\d+);")
+
+
+def runner_named_up(path: Path | None, size: int = 65536) -> int | None:
+    """The pid of the up.sh a situation runner says it started, from the head of its output
+    (the line comes seconds in, before the stack's own); none before it says so."""
+    if path is None:
+        return None
+    try:
+        with path.open("rb") as f:
+            text = f.read(size).decode(errors="replace")
+    except OSError:
+        return None
+    m = RUNNER_UP.search(text)
+    return int(m.group(1)) if m else None
+
+
 # ---- processes --------------------------------------------------------------------------------------
 
 
@@ -556,6 +575,7 @@ class Launch:
         self.run_info: dict[str, Any] | None = None
         self.proc: subprocess.Popen | None = None
         self.up_pid: tuple[int, int] | None = None  # up.sh: (pid, start ticks), once identified
+        self.proc_start: int | None = None  # the command's start, clock ticks since boot
         self.up_log: Path | None = None  # a situation's stack output (its run directory's up.log)
         self.tidewater_reused = False
         # whether a stack came up at all (up.sh identified, or the bridge answered): only then are
@@ -653,16 +673,32 @@ class Launch:
             self.proc = subprocess.Popen(
                 self.argv, cwd=str(REPO), env=self.env, stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True
             )
+        st = proc_stat(self.proc.pid)
+        self.proc_start = st[3] if st is not None else None
         self.launcher.relay.target = self.ports["http"]
         self.launcher.note(f"{self.id}: started {' '.join(self.argv)} (pid {self.proc.pid}; output {rel(self.log)})")
         self.set_stage("starting", "starting the stack")
 
     def note_up_pid(self) -> None:
-        """Identify this launch's up.sh from logs/up.pid (it writes it as it starts): the open
-        world's runs in make's session, a situation's is the runner's child. Only that process
-        is ever signalled."""
+        """Identify this launch's up.sh: a situation's by the runner's own word (the pid it says
+        it started, from the moment it starts it), else from logs/up.pid (up.sh writes it once its
+        build is done): the open world's runs in make's session, a situation's is the runner's
+        child. Only that process is ever signalled."""
         if self.up_pid is not None or self.proc is None:
             return
+        if self.proc_start is None and self.proc.poll() is None:
+            st = proc_stat(self.proc.pid)
+            self.proc_start = st[3] if st is not None else None
+        if self.choice.kind == "situation":
+            # bd murmur-w40n: an End while up.sh still builds found no logs/up.pid, the runner
+            # stopped (leaving its stack up, as it does), and up.sh, its parent gone, was never
+            # identified: it went on to start the whole stack
+            named = runner_named_up(self.log)
+            st = proc_stat(named) if named is not None else None
+            if named is not None and st is not None and st[0] != "Z" and (st[1] == self.proc.pid or self.runner_started(named, st)):
+                self.up_pid = (named, st[3])
+                self.stack_started = True
+                return
         try:
             pid = int((REPO / "logs" / "up.pid").read_text().strip())
         except (OSError, ValueError):
@@ -674,6 +710,19 @@ class Launch:
         if ours:
             self.up_pid = (pid, st[3])
             self.stack_started = True
+
+    def runner_started(self, pid: int, st: tuple[str, int, int, int]) -> bool:
+        """Whether `pid` (`st` its proc_stat), named by the runner, is still the up.sh it started
+        once the runner is gone (the process reparented): it leads a session of its own, as the
+        runner starts it, it started no earlier than the runner (so not an older process that
+        has the number now), and it runs scripts/up.sh."""
+        if st[2] != pid or self.proc_start is None or st[3] < self.proc_start:
+            return False
+        try:
+            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+        except OSError:
+            return False
+        return any(a.endswith(b"up.sh") for a in cmdline)
 
     def up_alive(self) -> bool:
         return self.up_pid is not None and alive(*self.up_pid)

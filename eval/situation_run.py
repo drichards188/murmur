@@ -1170,7 +1170,10 @@ class Runner:
         )
         removed = self.fresh_station()
         say("fresh station: " + ("removed " + "; ".join(removed) if removed else "no restore or resume pointer for this port") + "; MURMUR_RESUME=0")
-        self.start_stack()
+        # asked to stop before the stack started (bd murmur-w40n): start none (the wait below
+        # says interrupted), rather than leave behind a stack nobody asked for
+        if not self.stop.is_set():
+            self.start_stack()
         tasks: list[asyncio.Task] = []
         story_stop = asyncio.Event()
         status = 0

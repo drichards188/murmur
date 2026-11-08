@@ -1,6 +1,7 @@
 """The launcher (`make start`, eval/launcher.py): the menu's scenarios from the situation files, the
 command and environment each choice runs (the command line's own), what a start request may say,
-the origin check, the reasons it reports, and the bridge relay. No stack starts.
+the origin check, the reasons it reports, the bridge relay, and an End during a situation's start
+(a stand-in runner and up.sh). No stack starts.
 
     .venv/bin/python -m pytest eval/tests/test_launcher.py
 """
@@ -8,8 +9,13 @@ the origin check, the reasons it reports, and the bridge relay. No stack starts.
 from __future__ import annotations
 
 import json
+import os
 import socket
+import subprocess
+import sys
 import threading
+import time
+import types
 from email.message import Message
 from pathlib import Path
 
@@ -251,3 +257,69 @@ def test_the_relay_passes_bytes_both_ways_to_the_bridge_it_names():
     finally:
         relay.close()
         upstream.close()
+
+
+# A stand-in for the situation runner: it starts "up.sh" in a session of its own, says so as the
+# runner does, and on SIGTERM stops without touching it (the runner leaves its stack up).
+RUNNER = r"""
+import signal, subprocess, sys, time
+up = subprocess.Popen(["bash", sys.argv[1], sys.argv[2]], start_new_session=True)
+print(f"situation: stack starting with scripts/up.sh (pid {up.pid}; its output: logs/situations/x/up.log)", flush=True)
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(130))
+while True:
+    time.sleep(0.05)
+"""
+# A stand-in for up.sh still building: no logs/up.pid yet; on SIGTERM it notes it and stops.
+UP_SH = "trap 'echo stopped > \"$1\"; exit 0' TERM\nwhile :; do sleep 0.05; done\n"
+
+
+@pytest.mark.parametrize("runner_gone", [False, True])
+def test_an_end_while_a_situation_starts_stops_its_up_sh(tmp_path: Path, monkeypatch, runner_gone: bool):
+    """bd murmur-w40n: End while up.sh still builds (no logs/up.pid yet) stopped the runner and
+    reported stopped, and up.sh, its parent gone, went on to start the stack. The launcher now
+    knows up.sh by the runner's own word, from its start, and stops it; also when the runner has
+    already gone (up.sh reparented: known then as the session leader the runner started, no
+    older than the runner, running up.sh)."""
+    monkeypatch.setattr(L, "REPO", tmp_path)  # no logs/up.pid: the build is not done
+    monkeypatch.setattr(L, "port_problems", lambda *a, **k: [])
+    launcher = types.SimpleNamespace(
+        console_port=5999, lock=threading.RLock(), situations={}, log_dir=tmp_path,
+        relay=types.SimpleNamespace(target=None), current=None, note=lambda text: None,
+    )
+    choice = L.Choice("harbor-watch", "situation", "autoplay", "playbook")
+    launch = L.Launch(launcher, choice, {"title": "Harbor watch", "vehicles": 0, "sitl": 0}, None)  # type: ignore[arg-type]
+    up_sh = tmp_path / "scripts" / "up.sh"
+    up_sh.parent.mkdir()
+    up_sh.write_text(UP_SH)
+    marker = tmp_path / "up-stopped"
+    up_pid = None
+    try:
+        with launch.log.open("w") as f:
+            launch.proc = subprocess.Popen([sys.executable, "-c", RUNNER, str(up_sh), str(marker)], stdout=f, stderr=subprocess.STDOUT, start_new_session=True)
+        st = L.proc_stat(launch.proc.pid)
+        assert st is not None
+        launch.proc_start = st[3]  # as Launch.start records it
+        deadline = time.monotonic() + 10
+        while (up_pid := L.runner_named_up(launch.log)) is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert up_pid is not None, L.tail_lines(launch.log)
+        if runner_gone:
+            assert L.terminate(launch.proc, 10)
+            assert L.alive(up_pid, None), "the runner leaves up.sh running"
+        # what a process the runner did not start is never taken for its up.sh
+        me = L.proc_stat(os.getpid())
+        assert me is not None and not launch.runner_started(os.getpid(), me)
+
+        launch.request_end()
+        launch.stop_all()
+        deadline = time.monotonic() + 5
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert launch.up_pid is not None and launch.up_pid[0] == up_pid
+        assert marker.read_text().strip() == "stopped" and not L.alive(up_pid, None)
+        assert launch.leftovers == [] and launch.proc.poll() is not None
+    finally:
+        if launch.proc is not None and launch.proc.poll() is None:
+            launch.proc.kill()
+        if up_pid is not None and L.alive(up_pid, None):
+            os.kill(up_pid, 9)
