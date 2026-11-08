@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import type { Alert, ApproveExtra, Check, Decisions, Intent } from './decisions'
 import {
   ALERT_LABEL,
@@ -56,6 +56,9 @@ interface Props {
   notice?: Notice | null
   /** bring a review item into view (the strip's or the Situation panel's link), once per `n` */
   focus?: { id: string; n: number } | null
+  /** the map's banners (App.tsx), shown under this drawer's header while it is open over the
+   *  map's right edge, where they would otherwise sit over its top (bd murmur-76gv) */
+  banners?: ReactNode
 }
 
 // ---- top bar button -------------------------------------------------------------------------
@@ -738,7 +741,7 @@ interface Notice {
   tone: 'ok' | 'bad'
 }
 
-export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, onFocus, onClose, onTrack, onReplace, notice, focus, mem, hidden }: Props & { mem: ReturnType<typeof useAlertMemory>; hidden: Set<string> }) {
+export function InboxPanel({ banners, decisions, vehicles, now, tab, setTab, selection, onFocus, onClose, onTrack, onReplace, notice, focus, mem, hidden }: Props & { mem: ReturnType<typeof useAlertMemory>; hidden: Set<string> }) {
   const [notices, setNotices] = useState<Notice[]>(notice ? [notice] : [])
   const [noticeSeen, setNoticeSeen] = useState(notice?.n ?? null)
   if (notice && notice.n !== noticeSeen) {
@@ -808,6 +811,7 @@ export function InboxPanel({ decisions, vehicles, now, tab, setTab, selection, o
           Close
         </button>
       </header>
+      {banners && <div className="ix-banners">{banners}</div>}
       {notices.length > 0 && (
         <div className="ix-notices" role="status">
           {notices.map((n) => (

@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import type { SwarmsFeed } from './swarms'
 import { ROLE_LABEL, ROLE_ORDER, type Swarm, type SwarmAlert, swarmColor, swarmTone, taskLine } from './swarmsModel'
 import './swarms.css'
@@ -16,6 +17,9 @@ interface Props {
   alerts: SwarmAlert[]
   onSelect: (s: Swarm) => void
   onClose: () => void
+  /** the map's banners (App.tsx), shown under this drawer's header while it is open over the
+   *  map's right edge, where they would otherwise sit over its top (bd murmur-76gv) */
+  banners?: ReactNode
 }
 
 export function SwarmsButton({ feed, open, onClick }: { feed: SwarmsFeed; open: boolean; onClick: () => void }) {
@@ -57,7 +61,7 @@ function Row({ s, selected, alerts, onSelect }: { s: Swarm; selected: boolean; a
   )
 }
 
-export function SwarmsPanel({ feed, selected, alerts, onSelect, onClose }: Props) {
+export function SwarmsPanel({ feed, selected, alerts, onSelect, onClose, banners }: Props) {
   const swarms = feed.doc?.swarms ?? []
   const total = swarms.reduce((n, s) => n + s.count, 0)
   const alertsBy = new Map<string, number>()
@@ -72,6 +76,7 @@ export function SwarmsPanel({ feed, selected, alerts, onSelect, onClose }: Props
           ×
         </button>
       </div>
+      {banners && <div className="ix-banners">{banners}</div>}
       <div className="ix-scroll">
         {feed.status === 'missing' && (
           <p className="empty sw-missing" role="status">

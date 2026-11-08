@@ -25,6 +25,10 @@
    strike; the same red, a stronger edge while it flies */
 .act-status.weapon-status.incoming { border-width: 2px; background: rgba(58, 10, 14, .97); }
 .act-status.weapon-status.incoming strong { color: #ffd0d0; letter-spacing: .06em; }
+/* with a right drawer open (Inbox, Queue, Swarms) the banners head it, under its own header, in
+   its column (App.tsx `banners`): centred on the map they sat over its top (bd murmur-76gv) */
+.ix-banners { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px 0; }
+.ix-banners > .act-status, .ix-banners > .impact-status { position: static; transform: none; width: auto; max-width: none; }
 @media (prefers-reduced-motion: reduce) {
   .act-status { animation: none; }
 }

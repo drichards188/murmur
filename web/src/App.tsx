@@ -632,6 +632,55 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   // a credentials run: nothing but the sign-in until an operator has signed in
   if (auth.auth === 'credentials' && !auth.signed_in) return <LoginScreen />
 
+  // the banners over the map's top: our munition in flight or its strike, an opponent weapon, a
+  // hostile act. A right drawer (Inbox, Queue, Swarms: 430 px over the map's right edge) takes
+  // them at its head instead, under its own header: centred on the map they sat over that
+  // header and the Review's, its urgent item included (bd murmur-76gv). The topmost drawer, as
+  // they open over each other in this order.
+  const drawer = showSwarms ? 'swarms' : showQueue ? 'queue' : showInbox ? 'inbox' : null
+  const banners = flyingImpact?.munition || visibleImpact || weaponBan || actBanner ? (
+    <>
+      {flyingImpact?.munition && (
+        <div className="impact-status" role="status" data-tutorial="impact-status">
+          <span><strong>MUNITION IN FLIGHT</strong>
+            {' · '}{flyingImpact.munition.name} from {flyingImpact.platform ?? `ENGAGE i${flyingImpact.intentId}`}{flyingImpact.track ? ` on ${flyingImpact.track}` : ''}{' · '}
+            impact in {secondsToImpact(flyingImpact.munition, impactNowMs)} s</span>
+          <button onClick={() => focusFlight(flyingImpact)}>View flight</button>
+        </div>
+      )}
+      {visibleImpact && (
+        <div className="impact-status" role="status" data-tutorial="impact-status">
+          <span><strong>{visibleImpact.assessment ? `ASSESSMENT: ${visibleImpact.assessment.result.toUpperCase()}` : 'STRIKE · IMPACT'}</strong>
+            {' · '}{visibleImpact.platform ?? `ENGAGE i${visibleImpact.intentId}`}{visibleImpact.track ? ` on ${visibleImpact.track}` : ''}{' · '}
+            {visibleImpact.assessment?.result === 'ceased' ? 'No target detected where expected'
+              : visibleImpact.assessment?.result === 'persists' ? 'Target still detected'
+              : visibleImpact.assessment?.result === 'unknown' ? 'Outcome unknown'
+              : 'Sensor assessment pending'}</span>
+          <button onClick={() => focusImpact(visibleImpact)}>View impact</button>
+        </div>
+      )}
+      {weaponBan && (
+        <div className={`act-status weapon-status ${weaponBan.tone}${flyingImpact?.munition || visibleImpact ? ' below' : ''}`} role="status" data-weapon={weaponBan.w.id} data-tutorial="weapon-status" title={ESTIMATE_NOTE}>
+          <span><strong>{weaponBan.head}</strong>{' · '}{weaponBan.text}</span>
+          <button onClick={() => {
+            const at = weaponVictim(weaponBan.w)
+            const from = weaponBan.w.launch?.point ?? weaponBan.w.fixes[0]?.point ?? at
+            if (from) setFit((f) => ({ points: at ? [from, at, ...circle(from, 300).filter((_, k) => k % 8 === 0)] : [from], n: (f?.n ?? 0) + 1, padRight: drawer ? 430 : 70 }))
+          }}>View</button>
+        </div>
+      )}
+      {actBanner && (
+        <div className={`act-status${flyingImpact?.munition || visibleImpact ? ' below' : ''}`} role="status" data-act={actBanner.d.act}>
+          <span><strong>{actBanner.d.weapon ? 'HOSTILE ACT OBSERVED' : 'HOSTILE ACT REPORTED'}</strong>
+            {' · '}{bannerLine(actBanner.d)}{' · '}act {actBanner.d.act}, {span(impactNowMs - actBanner.d.observedT)} ago
+            {actBanner.others ? ` · ${actBanner.others} more in the last minute` : ''}</span>
+          <button onClick={() => focusAct(actBanner.d)}>View</button>
+          <button className="act-dismiss" onClick={() => setActsDismissedAt(impactNowMs)} title="Take the acts drawn so far off the map (the Inbox's Review keeps them)">Dismiss</button>
+        </div>
+      )}
+    </>
+  ) : null
+
   return (
     <div className={`app${waiting.length ? ' waiting' : ''}`}>
       <PerfMark />
@@ -756,44 +805,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         <ErrorBoundary name="Tutorial" className="floating">
           <Tutorial decisions={decisions} tracks={tracks} now={now} onMenu={onMenu} formChecks={engageChecks} nameOf={nameOf} />
         </ErrorBoundary>
-        {flyingImpact?.munition && (
-          <div className="impact-status" role="status" data-tutorial="impact-status">
-            <span><strong>MUNITION IN FLIGHT</strong>
-              {' · '}{flyingImpact.munition.name} from {flyingImpact.platform ?? `ENGAGE i${flyingImpact.intentId}`}{flyingImpact.track ? ` on ${flyingImpact.track}` : ''}{' · '}
-              impact in {secondsToImpact(flyingImpact.munition, impactNowMs)} s</span>
-            <button onClick={() => focusFlight(flyingImpact)}>View flight</button>
-          </div>
-        )}
-        {visibleImpact && (
-          <div className="impact-status" role="status" data-tutorial="impact-status">
-            <span><strong>{visibleImpact.assessment ? `ASSESSMENT: ${visibleImpact.assessment.result.toUpperCase()}` : 'STRIKE · IMPACT'}</strong>
-              {' · '}{visibleImpact.platform ?? `ENGAGE i${visibleImpact.intentId}`}{visibleImpact.track ? ` on ${visibleImpact.track}` : ''}{' · '}
-              {visibleImpact.assessment?.result === 'ceased' ? 'No target detected where expected'
-                : visibleImpact.assessment?.result === 'persists' ? 'Target still detected'
-                : visibleImpact.assessment?.result === 'unknown' ? 'Outcome unknown'
-                : 'Sensor assessment pending'}</span>
-            <button onClick={() => focusImpact(visibleImpact)}>View impact</button>
-          </div>
-        )}
-        {weaponBan && (
-          <div className={`act-status weapon-status ${weaponBan.tone}${flyingImpact?.munition || visibleImpact ? ' below' : ''}`} role="status" data-weapon={weaponBan.w.id} data-tutorial="weapon-status" title={ESTIMATE_NOTE}>
-            <span><strong>{weaponBan.head}</strong>{' · '}{weaponBan.text}</span>
-            <button onClick={() => {
-              const at = weaponVictim(weaponBan.w)
-              const from = weaponBan.w.launch?.point ?? weaponBan.w.fixes[0]?.point ?? at
-              if (from) setFit((f) => ({ points: at ? [from, at, ...circle(from, 300).filter((_, k) => k % 8 === 0)] : [from], n: (f?.n ?? 0) + 1, padRight: showInbox ? 430 : 70 }))
-            }}>View</button>
-          </div>
-        )}
-        {actBanner && (
-          <div className={`act-status${flyingImpact?.munition || visibleImpact ? ' below' : ''}`} role="status" data-act={actBanner.d.act}>
-            <span><strong>{actBanner.d.weapon ? 'HOSTILE ACT OBSERVED' : 'HOSTILE ACT REPORTED'}</strong>
-              {' · '}{bannerLine(actBanner.d)}{' · '}act {actBanner.d.act}, {span(impactNowMs - actBanner.d.observedT)} ago
-              {actBanner.others ? ` · ${actBanner.others} more in the last minute` : ''}</span>
-            <button onClick={() => focusAct(actBanner.d)}>View</button>
-            <button className="act-dismiss" onClick={() => setActsDismissedAt(impactNowMs)} title="Take the acts drawn so far off the map (the Inbox's Review keeps them)">Dismiss</button>
-          </div>
-        )}
+        {!drawer && banners}
         {showGlobe && (
           <ErrorBoundary name="Globe" className="floating">
           <GlobeInset
@@ -830,6 +842,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         {showInbox && (
           <ErrorBoundary name="Inbox" className="floating">
           <InboxPanel
+            banners={drawer === 'inbox' ? banners : null}
             decisions={decisions}
             vehicles={allVehicles}
             now={now}
@@ -855,6 +868,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         {showQueue && (
           <ErrorBoundary name="Queue" className="floating">
           <QueuePanel
+            banners={drawer === 'queue' ? banners : null}
             decisions={decisions}
             vehicles={vehicles}
             now={now}
@@ -871,6 +885,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         {showSwarms && (
           <ErrorBoundary name="Swarms" className="floating">
           <SwarmsPanel
+            banners={drawer === 'swarms' ? banners : null}
             feed={swarmFeed}
             selected={swarmSel}
             alerts={decisions?.inbox.swarm_alerts ?? []}

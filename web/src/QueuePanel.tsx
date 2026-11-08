@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { type ReactNode, useState } from 'react'
 import { fmtDuration, intentAction, type Decisions, type Intent } from './decisions'
 import type { Vehicle } from './types'
 import { callsign } from './types'
@@ -21,6 +21,9 @@ interface Props {
   /** fly to and highlight these vehicles (bridge uids) */
   onFocus: (uids: number[]) => void
   onClose: () => void
+  /** the map's banners (App.tsx), shown under this drawer's header while it is open over the
+   *  map's right edge, where they would otherwise sit over its top (bd murmur-76gv) */
+  banners?: ReactNode
 }
 
 export function QueueButton({ decisions, open, onClick }: { decisions: Decisions | null; open: boolean; onClick: () => void }) {
@@ -70,7 +73,7 @@ function outcomeOf(i: Intent): { label: string; tone: 'ok' | 'warn' | 'bad'; lin
   return null
 }
 
-export function QueuePanel({ decisions, vehicles, now, onFocus, onClose }: Props) {
+export function QueuePanel({ decisions, vehicles, now, onFocus, onClose, banners }: Props) {
   const queued = decisions?.inbox.queued ?? []
   const [busy, setBusy] = useState<number | null>(null)
   const [notice, setNotice] = useState<{ text: string; tone: 'ok' | 'bad' } | null>(null)
@@ -100,6 +103,7 @@ export function QueuePanel({ decisions, vehicles, now, onFocus, onClose }: Props
           ×
         </button>
       </div>
+      {banners && <div className="ix-banners">{banners}</div>}
       {notice && (
         <div className="ix-notices">
           <p className={notice.tone} onClick={() => setNotice(null)}>
