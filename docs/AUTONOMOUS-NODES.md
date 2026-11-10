@@ -165,6 +165,22 @@ the wrong surface is not taken; the node holds and logs `no_way` (no planner on 
 this pass). A kind may give neutrals a reaction (`on_fire_nearby = "flee" | "continue"`), so a
 fishing boat near a strike leaves on its own.
 
+**Slowing and stopping** (bd murmur-2of4, `crates/murmur-contacts/src/motion.rs`). Every contact,
+node or not, slows at its kind's `decel_mps2` (sim/contacts.toml; figures and sources in
+docs/research/opponent-weapons.md section 6: a fast boat 1.5 m/s², a cargo ship 0.015, a car 3.4)
+and speeds up at 0.5 m/s², as before. It begins slowing in time to stand on the last point of a
+transit, the end of a route it dwells at, or the point a `hold` (`at`) or a closing sends it to,
+so it stops on the point rather than short of it; a plain `hold` runs it on along its course to a
+stop (a fast boat at 15 m/s: some 70 m and 10 s); a mobility kill leaves it coasting down at the
+same rate before it drifts or stands; a strike run (a `self` weapon) runs into its target at
+speed. An aircraft of a kind that `hovers` (helicopter, multicopters, the armed VTOL UAS) stops as
+a boat does; any other aircraft is a fixed wing and never stops: where another would stand
+(holding, at the end of its transit, at a dwell) it circles clockwise at the speed it has on its
+tightest turn. Before this a contact went from its speed to a stop in one step, short of a
+transit's end, and an aircraft hovered; the worlds whose results are on record keep that
+(`[motion] model = "legacy"`, or `MURMUR_MOTION_MODEL=legacy`, which the v1 and v2 headless worlds
+and the evaluation's stacks set beside their legacy sensing pin).
+
 ### 2.3 Fire control (inside the node, every tick)
 
 1. **Target perceived?** (section 2.4). No: close on its last perceived position; unseen for

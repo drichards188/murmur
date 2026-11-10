@@ -44,6 +44,13 @@
 //! optional `speed_mps` and `course_deg`); no constant speed or route is required. It
 //! interpolates only across supported gaps, with one-second bins for isolated/final fixes.
 //!
+//! A top-level `[motion]` table says how the contacts move ([`MotionModel`], bd murmur-2of4):
+//! `model = "physical"` (the default: each slows at its kind's `decel_mps2`, stopping on the end
+//! of its transit rather than short of it, and a fixed-wing aircraft circles where another would
+//! stop; [`crate::motion`]) or `"legacy"` (a stop in one step, any aircraft hovering, as before).
+//! `MURMUR_MOTION_MODEL` overrides it: the v1 and v2 headless worlds and the evaluation's stacks
+//! pin `legacy` that way, not in their contacts files.
+//!
 //! **The old path: scripted acts** (rules 9, docs/OPPONENT-WEAPONS.md, kept for frozen and
 //! diagnostic uses, docs/AUTONOMOUS-NODES.md section 3). An `[[act]]` ([`ActSpec`]) is a second,
 //! an author and a victim; a contact may carry a weapon of its own, `weapon = { name =
@@ -186,6 +193,44 @@ pub enum SensingModel {
     Physical,
 }
 
+/// How the contacts move ([`crate::motion`], bd murmur-2of4): a top-level `[motion] model`, which
+/// `MURMUR_MOTION_MODEL` overrides ([`MotionModel::pinned`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MotionModel {
+    /// The default: a contact slows at its kind's `decel_mps2`, beginning in time to stop on the
+    /// end of its transit or the point it is ordered to, and runs on to a stop when told to hold;
+    /// a fixed-wing aircraft never stops, and holds by circling.
+    #[default]
+    Physical,
+    /// As before bd murmur-2of4: from its speed to a stop in one step, any aircraft hovering. The
+    /// worlds whose results are on record keep it (the v1 and v2 headless worlds and the
+    /// evaluation's stacks set `MURMUR_MOTION_MODEL=legacy` beside their legacy sensing pin).
+    Legacy,
+}
+
+impl MotionModel {
+    /// The model a run's contacts move by: `env` (`MURMUR_MOTION_MODEL`, `legacy` or `physical`)
+    /// when set, else the file's. Anything else is refused: a pin that holds recorded results is
+    /// never dropped for a typo.
+    pub fn pinned(env: Option<&str>, file: MotionModel) -> Result<MotionModel, String> {
+        match env.map(str::trim) {
+            None | Some("") => Ok(file),
+            Some("legacy") => Ok(MotionModel::Legacy),
+            Some("physical") => Ok(MotionModel::Physical),
+            Some(other) => Err(format!("MURMUR_MOTION_MODEL={other}: legacy or physical")),
+        }
+    }
+}
+
+/// `[motion]`: how the contacts move (none: the physical model).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MotionSection {
+    #[serde(default)]
+    pub model: MotionModel,
+}
+
 /// AIS carriage for a contact's signature override.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -278,6 +323,9 @@ pub struct Scenario {
     /// The physical sensing model's conditions (into `sensing.conditions` at load).
     #[serde(default)]
     pub conditions: Option<Conditions>,
+    /// How its contacts move (`[motion]`; every contact of [`Scenario::contacts`] takes it).
+    #[serde(default)]
+    pub motion: MotionSection,
     #[serde(default, rename = "contact")]
     pub contacts: Vec<ContactSpec>,
     /// Rules 9: scripted hostile acts (`[[act]]`), truth only.
@@ -535,12 +583,31 @@ pub struct Contact {
     pub speed_mps: f64,
     pub alt_m: f64,
     pub turn_dps: f64,
+    /// Its kind's deceleration, m/s² (the catalog's `decel_mps2`; by domain for a kind it does
+    /// not list, [`default_decel`]).
+    pub decel_mps2: f64,
+    /// An aircraft that can stand in the air (the catalog's `hovers`).
+    pub hovers: bool,
+    /// How it moves (its scenario's `[motion] model`, set by [`Scenario::contacts`]).
+    pub motion_model: MotionModel,
     pub motion: Motion,
     pub start_s: f64,
     pub end_s: Option<f64>,
     pub on_effect: OnEffect,
     pub strike_outcome: Option<StrikeOutcome>,
     pub weapon: Option<WeaponSpec>,
+}
+
+/// The deceleration of a contact whose kind the catalog does not list, m/s², by its domain [E: a
+/// fixed wing's, a boat's, a submarine's, a truck's; docs/research/opponent-weapons.md section
+/// 6]. Every shipped kind is listed.
+pub fn default_decel(domain: Domain) -> f64 {
+    match domain {
+        Domain::Air => 1.0,
+        Domain::Surface => 0.5,
+        Domain::Subsurface => 0.05,
+        Domain::Ground => 2.5,
+    }
 }
 
 impl Contact {
@@ -694,6 +761,9 @@ impl ContactSpec {
                 .turn_dps
                 .filter(|t| *t > 0.0)
                 .unwrap_or(d.map_or(5.0, |d| d.turn_dps)),
+            decel_mps2: d.map_or(default_decel(self.domain), |d| d.decel_mps2),
+            hovers: d.is_some_and(|d| d.hovers),
+            motion_model: MotionModel::default(),
             motion,
             start_s: self.start_s.max(0.0),
             end_s: self.end_s,
@@ -860,9 +930,19 @@ impl Scenario {
         Scenario::from_toml(&text).map_err(|e| format!("{}: {e}", path.display()))
     }
 
-    /// Every contact validated, in file order.
+    /// Every contact validated, in file order, each moving by the scenario's `[motion] model`.
     pub fn contacts(&self) -> Result<Vec<Contact>, String> {
-        self.contacts.iter().map(ContactSpec::validate).collect()
+        self.contacts
+            .iter()
+            .map(|c| c.validate().map(|c| Contact { motion_model: self.motion.model, ..c }))
+            .collect()
+    }
+
+    /// Pin its motion model by `MURMUR_MOTION_MODEL` (`env`, [`MotionModel::pinned`]), as the
+    /// contacts process and the headless simulator do before they make their movers.
+    pub fn pin_motion(&mut self, env: Option<&str>) -> Result<MotionModel, String> {
+        self.motion.model = MotionModel::pinned(env, self.motion.model)?;
+        Ok(self.motion.model)
     }
 }
 

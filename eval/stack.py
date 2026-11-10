@@ -619,6 +619,8 @@ class Stack:
                 MURMUR_FLEET_MANIFEST=str(self.fleet_json),
                 # the bridge's model, so the API refuses an attack as a file's orders are
                 MURMUR_SENSE_MODEL="legacy",
+                # the evaluation's situations keep the contacts' motion as it was (bd murmur-2of4)
+                MURMUR_MOTION_MODEL="legacy",
             ),
         )
         t0 = time.monotonic()

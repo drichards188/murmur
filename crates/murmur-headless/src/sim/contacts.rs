@@ -221,6 +221,9 @@ impl Contacts {
         let mut scenario = Scenario::load(path)?;
         if let Some(w) = &mut scenario.sensing.weather { w.pin_archive(root)?; }
         let seed = seed.unwrap_or(scenario.seed);
+        // how the contacts move, as the process reads it (bd murmur-2of4): the v1 and v2 worlds
+        // pin the legacy motion by MURMUR_MOTION_MODEL (eval/headless/situations.py)
+        scenario.pin_motion(std::env::var("MURMUR_MOTION_MODEL").ok().as_deref())?;
         let contacts = scenario.contacts()?;
         if contacts.is_empty() {
             return Err(format!("{}: no contacts", path.display()));

@@ -105,8 +105,10 @@ def stack_env(seed: int) -> dict[str, str]:
     env = {**os.environ, **PORTS}
     env.pop("MURMUR_TIDEWATER_URL", None)
     env["MURMUR_LINKEMU_SEED"] = str(emulator_seed(seed))
-    # a G1 copy is a v1 situation: the legacy sensing model's, as its headless episode
+    # a G1 copy is a v1 situation: the legacy sensing model's and the legacy motion's, as its
+    # headless episode
     env["MURMUR_SENSE_MODEL"] = "legacy"
+    env["MURMUR_MOTION_MODEL"] = "legacy"
     return env
 
 

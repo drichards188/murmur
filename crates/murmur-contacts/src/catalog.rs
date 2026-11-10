@@ -225,6 +225,13 @@ pub struct Kind {
     pub alt_m: f64,
     pub cruise_mps: f64,
     pub max_mps: f64,
+    /// How hard it slows when it means to, m/s² (bd murmur-2of4, [`crate::motion`]): to a stop on
+    /// a point, to a lower speed, or holding where it is.
+    pub decel_mps2: f64,
+    /// An aircraft that can stand in the air (a helicopter, a multicopter, a VTOL UAS); any other
+    /// aircraft is a fixed wing and holds by circling. False for every other domain.
+    #[serde(default)]
+    pub hovers: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sensors: Option<Sensors>,
     #[serde(default)]
@@ -284,6 +291,12 @@ impl Catalog {
             if !(k.cruise_mps.is_finite() && k.cruise_mps > 0.0 && k.max_mps.is_finite() && k.max_mps >= k.cruise_mps) {
                 return bad("0 < cruise_mps <= max_mps".into());
             }
+            if !(k.decel_mps2.is_finite() && k.decel_mps2 > 0.0) {
+                return bad("decel_mps2 is above 0".into());
+            }
+            if k.hovers && k.domain != Domain::Air {
+                return bad("hovers is for an aircraft".into());
+            }
             if let Some(look) = &k.looks_like {
                 match self.kinds.get(look) {
                     Some(l) if l.looks_like.is_none() && l.domain == k.domain && look != id => {}
@@ -336,7 +349,7 @@ impl Catalog {
                 Some(Source::Tag(t)) => Some(t),
                 _ => None,
             };
-            for f in ["cruise_mps", "max_mps"].into_iter().chain(k.sensors.is_some().then_some("sensors")) {
+            for f in ["cruise_mps", "max_mps", "decel_mps2"].into_iter().chain(k.sensors.is_some().then_some("sensors")) {
                 tag(format!("{id}: {f}"), kind_tag(f));
             }
             for w in &k.loadout {

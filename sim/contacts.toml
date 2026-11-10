@@ -20,6 +20,13 @@
 # cruise_mps, max_mps
 #              its usual and top speed through the water, over the ground or in the air: what a
 #              node's own steering will read (stage 2: closing on a target, fleeing).
+# decel_mps2   how hard it slows when it means to, m/s² (bd murmur-2of4, crates/murmur-contacts
+#              motion.rs): it begins slowing in time to stop on the end of its transit or the point
+#              it is ordered to, slows at this to a lower speed, runs on to a stop when told to hold,
+#              and coasts down at it when its propulsion is lost. Speeding up is 0.5 m/s² for all.
+# hovers       an aircraft that can stand in the air (true: a helicopter, a multicopter, a VTOL
+#              UAS). Any other aircraft is a fixed wing: it never stops, and holds, ends its transit
+#              or dwells by circling on its tightest turn.
 # sensors      what the node itself sees (decision D2: our vehicles within this reach and above
 #              the radio horizon), m: `eye_m` (lookouts, a sight or a camera), `radar_m`, `sonar_m`.
 #              Given for every armed kind (an attack order needs a target it perceives).
@@ -43,7 +50,7 @@
 #              a light aircraft, other aircraft a small drone, under water a UUV).
 # sources      one tag per figure, as docs/research/opponent-weapons.md gives it: [n] a reference
 #              there, [E] an estimate with its basis there. Keys: `cruise_mps`, `max_mps`,
-#              `sensors`, and per weapon (by name) every figure it lists: `count`, `min_range_m`,
+#              `decel_mps2` (that note's section 6), `sensors`, and per weapon (by name) every figure it lists: `count`, `min_range_m`,
 #              `max_range_m`, `speed_mps`, `guidance`, `warhead`, `effects`, and each of
 #              `burst_rounds`, `rate_rpm`, `burst_interval_s`, `reload_s` it has. A test fails a
 #              figure without one.
@@ -63,7 +70,8 @@ turn_dps = 1.0
 alt_m = 0.0
 cruise_mps = 6.0
 max_mps = 8.0
-sources = { cruise_mps = "[E]", max_mps = "[E]" }
+decel_mps2 = 0.015
+sources = { cruise_mps = "[E]", max_mps = "[E]", decel_mps2 = "[25; E]" }
 
 [tanker]
 name = "Tanker"
@@ -74,7 +82,8 @@ turn_dps = 0.8
 alt_m = 0.0
 cruise_mps = 6.0
 max_mps = 7.5
-sources = { cruise_mps = "[E]", max_mps = "[E]" }
+decel_mps2 = 0.008
+sources = { cruise_mps = "[E]", max_mps = "[E]", decel_mps2 = "[25; E]" }
 
 [ferry]
 name = "Passenger ferry"
@@ -85,7 +94,8 @@ turn_dps = 3.0
 alt_m = 0.0
 cruise_mps = 11.0
 max_mps = 18.0
-sources = { cruise_mps = "[E]", max_mps = "[E]" }
+decel_mps2 = 1.0
+sources = { cruise_mps = "[E]", max_mps = "[E]", decel_mps2 = "[E]" }
 
 [patrol_boat]
 name = "Patrol boat, unarmed (harbour police, pilot, fireboat)"
@@ -96,7 +106,8 @@ turn_dps = 5.0
 alt_m = 0.0
 cruise_mps = 10.0
 max_mps = 15.0
-sources = { cruise_mps = "[E]", max_mps = "[E]" }
+decel_mps2 = 1.0
+sources = { cruise_mps = "[E]", max_mps = "[E]", decel_mps2 = "[E]" }
 
 [fishing_vessel]
 name = "Fishing vessel"
@@ -107,7 +118,8 @@ turn_dps = 4.0
 alt_m = 0.0
 cruise_mps = 4.0
 max_mps = 5.5
-sources = { cruise_mps = "[E]", max_mps = "[E]" }
+decel_mps2 = 0.1
+sources = { cruise_mps = "[E]", max_mps = "[E]", decel_mps2 = "[E]" }
 
 [sailboat]
 name = "Sailboat"
@@ -118,7 +130,8 @@ turn_dps = 6.0
 alt_m = 0.0
 cruise_mps = 3.0
 max_mps = 4.5
-sources = { cruise_mps = "[E]", max_mps = "[E]" }
+decel_mps2 = 0.2
+sources = { cruise_mps = "[E]", max_mps = "[E]", decel_mps2 = "[E]" }
 
 [small_fast_boat]
 name = "Small fast boat, unarmed (a speedboat, a RIB)"
@@ -129,7 +142,8 @@ turn_dps = 12.0
 alt_m = 0.0
 cruise_mps = 12.0
 max_mps = 20.0
-sources = { cruise_mps = "[E]", max_mps = "[E]" }
+decel_mps2 = 1.5
+sources = { cruise_mps = "[E]", max_mps = "[E]", decel_mps2 = "[26, 27; E]" }
 
 [armed_fast_boat]
 name = "Fast inshore attack craft (an ATGM team and a heavy machine gun)"
@@ -141,6 +155,7 @@ turn_dps = 12.0
 alt_m = 0.0
 cruise_mps = 15.0
 max_mps = 23.0
+decel_mps2 = 1.5
 sensors = { eye_m = 5000 }
 armed = true
 loadout = [
@@ -151,6 +166,7 @@ loadout = [
 [armed_fast_boat.sources]
 cruise_mps = "[E]"
 max_mps = "[8]"
+decel_mps2 = "[26, 27; E]"
 sensors = "[E]"
 "ATGM-class missile" = { count = "[E]", min_range_m = "[1]", max_range_m = "[1]", speed_mps = "[1]", guidance = "[1]", warhead = "[1]", reload_s = "[22; E]", effects = "[E]" }
 "12.7 mm HMG (DShK/NSV-class)" = { count = "[2, 3; E]", min_range_m = "[E]", max_range_m = "[2, 3]", speed_mps = "[2, 3]", guidance = "[E]", warhead = "[E]", burst_rounds = "[23; E]", rate_rpm = "[3]", burst_interval_s = "[E]", effects = "[E]" }
@@ -165,6 +181,7 @@ turn_dps = 12.0
 alt_m = 0.0
 cruise_mps = 9.0
 max_mps = 13.0
+decel_mps2 = 1.5
 sensors = { eye_m = 4000 }
 armed = true
 loadout = [
@@ -175,6 +192,7 @@ loadout = [
 [armed_skiff.sources]
 cruise_mps = "[E]"
 max_mps = "[E]"
+decel_mps2 = "[26, 27; E]"
 sensors = "[E]"
 "RPG-7-class grenade launcher (PG-7VL)" = { count = "[E]", min_range_m = "[E]", max_range_m = "[5]", speed_mps = "[5; E]", guidance = "[5]", warhead = "[5]", reload_s = "[E]", effects = "[5; E]" }
 "7.62 mm GPMG (PKM-class)" = { count = "[6; E]", min_range_m = "[E]", max_range_m = "[6]", speed_mps = "[6]", guidance = "[E]", warhead = "[E]", burst_rounds = "[E]", rate_rpm = "[6]", burst_interval_s = "[E]", effects = "[E]" }
@@ -189,6 +207,7 @@ turn_dps = 12.0
 alt_m = 0.0
 cruise_mps = 15.0
 max_mps = 18.0
+decel_mps2 = 1.5
 sensors = { eye_m = 3000 }
 armed = true
 expended_by_effect = true
@@ -199,6 +218,7 @@ loadout = [
 [explosive_boat.sources]
 cruise_mps = "[E]"
 max_mps = "[21]"
+decel_mps2 = "[26, 27; E]"
 sensors = "[E]"
 "WBIED charge (Toofan-1-class)" = { count = "[21]", min_range_m = "[E]", max_range_m = "[E]", speed_mps = "[21]", guidance = "[E]", warhead = "[21]", effects = "[E]" }
 
@@ -212,6 +232,7 @@ turn_dps = 1.0
 alt_m = 0.0
 cruise_mps = 5.0
 max_mps = 6.5
+decel_mps2 = 0.02
 sensors = { eye_m = 10000, radar_m = 12000 }
 armed = true
 loadout = [
@@ -222,6 +243,7 @@ loadout = [
 [armed_coaster.sources]
 cruise_mps = "[E]"
 max_mps = "[E]"
+decel_mps2 = "[25; E]"
 sensors = "[E]"
 "107 mm rocket launcher (Type 63-class, 12 tubes)" = { count = "[7]", min_range_m = "[E]", max_range_m = "[7]", speed_mps = "[7; E]", guidance = "[7]", warhead = "[7]", reload_s = "[E]", effects = "[E]" }
 "23 mm twin cannon (ZU-23-2-class)" = { count = "[16; E]", min_range_m = "[E]", max_range_m = "[16]", speed_mps = "[16]", guidance = "[E]", warhead = "[E]", burst_rounds = "[E]", rate_rpm = "[16]", burst_interval_s = "[E]", effects = "[E]" }
@@ -236,6 +258,7 @@ turn_dps = 0.8
 alt_m = 0.0
 cruise_mps = 5.0
 max_mps = 6.2
+decel_mps2 = 0.015
 sensors = { eye_m = 12000, radar_m = 15000 }
 armed = true
 loadout = [
@@ -245,6 +268,7 @@ loadout = [
 [naval_auxiliary.sources]
 cruise_mps = "[E]"
 max_mps = "[19]"
+decel_mps2 = "[19, 25; E]"
 sensors = "[E]"
 "12.7 mm HMG (Kord-class)" = { count = "[4, 18; E]", min_range_m = "[E]", max_range_m = "[4]", speed_mps = "[4]", guidance = "[18; E]", warhead = "[E]", burst_rounds = "[23; E]", rate_rpm = "[4]", burst_interval_s = "[E]", effects = "[E]" }
 
@@ -258,6 +282,7 @@ turn_dps = 5.0
 alt_m = 0.0
 cruise_mps = 10.0
 max_mps = 13.0
+decel_mps2 = 0.8
 sensors = { eye_m = 8000, radar_m = 12000 }
 armed = true
 loadout = [
@@ -267,6 +292,7 @@ loadout = [
 [cutter.sources]
 cruise_mps = "[E]"
 max_mps = "[13]"
+decel_mps2 = "[13; E]"
 sensors = "[E]"
 "M2 .50 HMG (pintle)" = { count = "[13; E]", min_range_m = "[E]", max_range_m = "[23]", speed_mps = "[23]", guidance = "[E]", warhead = "[23; E]", burst_rounds = "[23]", rate_rpm = "[23]", burst_interval_s = "[E]", effects = "[E]" }
 
@@ -281,7 +307,8 @@ turn_dps = 6.0
 alt_m = 300.0
 cruise_mps = 55.0
 max_mps = 65.0
-sources = { cruise_mps = "[E]", max_mps = "[E]" }
+decel_mps2 = 1.0
+sources = { cruise_mps = "[E]", max_mps = "[E]", decel_mps2 = "[E]" }
 
 [helicopter]
 name = "Helicopter, unarmed (civil, medical, coast guard)"
@@ -292,7 +319,9 @@ turn_dps = 10.0
 alt_m = 200.0
 cruise_mps = 60.0
 max_mps = 75.0
-sources = { cruise_mps = "[E]", max_mps = "[E]" }
+decel_mps2 = 1.25
+hovers = true
+sources = { cruise_mps = "[E]", max_mps = "[E]", decel_mps2 = "[28]" }
 
 [unknown_uas]
 name = "Unmanned aircraft of unknown type, unarmed"
@@ -303,7 +332,8 @@ turn_dps = 20.0
 alt_m = 120.0
 cruise_mps = 25.0
 max_mps = 35.0
-sources = { cruise_mps = "[E]", max_mps = "[E]" }
+decel_mps2 = 1.0
+sources = { cruise_mps = "[E]", max_mps = "[E]", decel_mps2 = "[E]" }
 
 [armed_uas]
 name = "Armed VTOL UAS (two light multirole missiles)"
@@ -315,6 +345,8 @@ turn_dps = 20.0
 alt_m = 120.0
 cruise_mps = 28.0
 max_mps = 45.0
+decel_mps2 = 1.25
+hovers = true
 sensors = { eye_m = 8000 }
 armed = true
 loadout = [
@@ -324,6 +356,7 @@ loadout = [
 [armed_uas.sources]
 cruise_mps = "[E]"
 max_mps = "[E]"
+decel_mps2 = "[12, 28; E]"
 sensors = "[E]"
 "LMM-class light missile" = { count = "[12]", min_range_m = "[12]", max_range_m = "[12]", speed_mps = "[12]", guidance = "[12]", warhead = "[12]", reload_s = "[E]", effects = "[12; E]" }
 
@@ -337,6 +370,7 @@ turn_dps = 20.0
 alt_m = 120.0
 cruise_mps = 45.0
 max_mps = 51.0
+decel_mps2 = 1.0
 sensors = { eye_m = 1000 }
 armed = true
 expended_by_effect = true
@@ -347,6 +381,7 @@ loadout = [
 [oneway_uas.sources]
 cruise_mps = "[E]"
 max_mps = "[11]"
+decel_mps2 = "[11; E]"
 sensors = "[E]"
 "Shahed-136-class warhead" = { count = "[11]", min_range_m = "[E]", max_range_m = "[11]", speed_mps = "[11]", guidance = "[11]", warhead = "[11]", effects = "[E]" }
 
@@ -359,7 +394,9 @@ turn_dps = 30.0
 alt_m = 80.0
 cruise_mps = 15.0
 max_mps = 20.0
-sources = { cruise_mps = "[E]", max_mps = "[E]" }
+decel_mps2 = 2.5
+hovers = true
+sources = { cruise_mps = "[E]", max_mps = "[E]", decel_mps2 = "[28]" }
 
 [oneway_drone]
 name = "One-way FPV attack drone (an RPG warhead)"
@@ -371,6 +408,8 @@ turn_dps = 30.0
 alt_m = 80.0
 cruise_mps = 25.0
 max_mps = 40.0
+decel_mps2 = 2.5
+hovers = true
 sensors = { eye_m = 2000 }
 armed = true
 expended_by_effect = true
@@ -381,6 +420,7 @@ loadout = [
 [oneway_drone.sources]
 cruise_mps = "[24]"
 max_mps = "[24]"
+decel_mps2 = "[28; E]"
 sensors = "[E]"
 "PG-7VL warhead (FPV)" = { count = "[24]", min_range_m = "[E]", max_range_m = "[24]", speed_mps = "[24]", guidance = "[24]", warhead = "[5, 24]", effects = "[24; E]" }
 
@@ -395,6 +435,7 @@ turn_dps = 2.0
 alt_m = -50.0
 cruise_mps = 2.5
 max_mps = 10.0
+decel_mps2 = 0.05
 sensors = { eye_m = 8000, sonar_m = 10000 }
 armed = true
 loadout = [
@@ -404,6 +445,7 @@ loadout = [
 [submarine.sources]
 cruise_mps = "[E]"
 max_mps = "[15]"
+decel_mps2 = "[15, 25; E]"
 sensors = "[E]"
 "533 mm heavyweight torpedo (53-65-class)" = { count = "[15]", min_range_m = "[E]", max_range_m = "[14]", speed_mps = "[14]", guidance = "[14]", warhead = "[14]", reload_s = "[15; E]", effects = "[E]" }
 
@@ -416,7 +458,8 @@ turn_dps = 8.0
 alt_m = -20.0
 cruise_mps = 2.0
 max_mps = 2.5
-sources = { cruise_mps = "[E]", max_mps = "[E]" }
+decel_mps2 = 0.3
+sources = { cruise_mps = "[E]", max_mps = "[E]", decel_mps2 = "[E]" }
 
 # the physical sensing model's kinds (WORLD-V3-PLAN 2.1): a periscope and a diver
 [periscope]
@@ -428,7 +471,8 @@ turn_dps = 2.0
 alt_m = -15.0
 cruise_mps = 2.5
 max_mps = 5.0
-sources = { cruise_mps = "[E]", max_mps = "[E]" }
+decel_mps2 = 0.05
+sources = { cruise_mps = "[E]", max_mps = "[E]", decel_mps2 = "[15, 25; E]" }
 
 [diver]
 name = "Diver"
@@ -439,7 +483,8 @@ turn_dps = 20.0
 alt_m = -5.0
 cruise_mps = 0.5
 max_mps = 1.0
-sources = { cruise_mps = "[E]", max_mps = "[E]" }
+decel_mps2 = 0.5
+sources = { cruise_mps = "[E]", max_mps = "[E]", decel_mps2 = "[E]" }
 
 # ================================================================ ground
 
@@ -452,7 +497,8 @@ turn_dps = 15.0
 alt_m = 0.0
 cruise_mps = 12.0
 max_mps = 30.0
-sources = { cruise_mps = "[E]", max_mps = "[E]" }
+decel_mps2 = 3.4
+sources = { cruise_mps = "[E]", max_mps = "[E]", decel_mps2 = "[29]" }
 
 [truck]
 name = "Truck, unarmed"
@@ -463,7 +509,8 @@ turn_dps = 10.0
 alt_m = 0.0
 cruise_mps = 10.0
 max_mps = 25.0
-sources = { cruise_mps = "[E]", max_mps = "[E]" }
+decel_mps2 = 2.5
+sources = { cruise_mps = "[E]", max_mps = "[E]", decel_mps2 = "[29; E]" }
 
 [technical]
 name = "Technical (a pickup with a heavy machine gun)"
@@ -475,6 +522,7 @@ turn_dps = 10.0
 alt_m = 0.0
 cruise_mps = 12.0
 max_mps = 30.0
+decel_mps2 = 3.4
 sensors = { eye_m = 3000 }
 armed = true
 loadout = [
@@ -484,6 +532,7 @@ loadout = [
 [technical.sources]
 cruise_mps = "[E]"
 max_mps = "[E]"
+decel_mps2 = "[29]"
 sensors = "[E]"
 "12.7 mm HMG (DShK-class)" = { count = "[3; E]", min_range_m = "[E]", max_range_m = "[3]", speed_mps = "[3]", guidance = "[17; E]", warhead = "[E]", burst_rounds = "[23; E]", rate_rpm = "[3]", burst_interval_s = "[E]", effects = "[E]" }
 
@@ -496,4 +545,5 @@ turn_dps = 60.0
 alt_m = 0.0
 cruise_mps = 1.4
 max_mps = 5.0
-sources = { cruise_mps = "[E]", max_mps = "[E]" }
+decel_mps2 = 2.0
+sources = { cruise_mps = "[E]", max_mps = "[E]", decel_mps2 = "[E]" }

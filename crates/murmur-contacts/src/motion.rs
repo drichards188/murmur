@@ -6,16 +6,37 @@
 //! the node sets [`Mover::steer`] (hold, head for a point, a route, an orbit, or back to the
 //! file's motion) and the step drives it with the same turn rate and acceleration. Without one
 //! the file's motion runs exactly as before.
+//!
+//! Slowing and stopping (bd murmur-2of4, the contact's [`MotionModel`]). Under the physical model,
+//! the default, a contact slows at its kind's `decel_mps2` (sim/contacts.toml, sourced in
+//! docs/research/opponent-weapons.md section 6) and speeds up at [`ACCEL_MPS2`]: it begins slowing
+//! in time to stand on the last point of its transit, the end of a route it dwells at, or the
+//! point an order sends it to ([`Mover::stop_speed`]), so it stops on the point rather than short
+//! of it or past it; told to hold, it runs on along its course until it has stopped; its
+//! propulsion lost, it coasts down at the same rate before it drifts or stands. Sent to a point it
+//! cannot stop on in time, it runs through it and comes back round. A strike run (a node that is
+//! its own weapon) runs into its point at speed. An aircraft of a kind that `hovers` stops as a
+//! boat does; any other aircraft is a fixed wing: it never stops, and where another would stand
+//! (holding, the end of its transit, a dwell) it circles clockwise at the speed it has on its
+//! tightest turn (its speed over its turn rate). Under the legacy model (the v1 and v2 headless
+//! worlds' and the evaluation stacks' pin, `MURMUR_MOTION_MODEL=legacy`) a contact goes from its
+//! speed to a stop in one step, within [`WAYPOINT_RADIUS_M`] of a transit's end, and any aircraft
+//! hovers, exactly as before.
 
 use murmur_standins::geo::{Gauss, M_PER_DEG, bearing_deg, distance_m, wrap180};
 
 use crate::damage::DamageState;
-use crate::scenario::{Contact, Domain, Motion};
+use crate::scenario::{Contact, Domain, Motion, MotionModel};
 
 /// Close enough to a waypoint to take the next one.
 const WAYPOINT_RADIUS_M: f64 = 25.0;
-/// Speed-up from a dwell or spawn.
-const ACCEL_MPS2: f64 = 0.5;
+/// Speed-up from a dwell or spawn, every kind's (unsourced; bd murmur-2of4 gave only slowing its
+/// figures).
+pub const ACCEL_MPS2: f64 = 0.5;
+/// Physical motion: a contact stopping on a point stands on it once the point is within its step
+/// and it goes no faster than this many times what its deceleration takes off in a step [E: the
+/// rounding of a variable step]; any faster, it runs through and comes back round.
+const STAND_STEPS: f64 = 2.0;
 /// An orbit steering this far off its circle heads for it first.
 const ORBIT_JOIN_M: f64 = 30.0;
 /// A node slowing to turn onto a point inside its turning circle goes no slower than this [E]
@@ -62,17 +83,49 @@ pub struct Mover {
     pub crippled: bool,
     /// What a node's order makes it do instead of its file's motion (none: the file's motion).
     pub steer: Option<Steer>,
+    /// Physical motion: a fixed wing standing in the air, circling ([`Mover::stand`]).
+    circling: Option<Circle>,
+    /// It circled this step (a circle it did not fly this step is dropped).
+    circled: bool,
+    /// Physical motion: the way it still has of its own after its propulsion was lost (speed,
+    /// course), coasting down at its deceleration.
+    way: Option<(f64, f64)>,
+}
+
+/// A fixed wing's circle where another contact would stand: clockwise round `center` (lat, lon) at
+/// `radius_m`, `phase_deg` its bearing from the centre; `anchor` the point it stands at.
+#[derive(Debug, Clone, PartialEq)]
+struct Circle {
+    anchor: (f64, f64),
+    center: (f64, f64),
+    radius_m: f64,
+    speed_mps: f64,
+    phase_deg: f64,
+}
+
+/// What [`Mover::head`] does at its point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Arrive {
+    /// A point on the way: within the step's reach it has not moved yet (the caller takes the
+    /// next point).
+    Pass,
+    /// Stand on it, stopped (physical: slowing in time; a fixed wing circles there).
+    Stop,
+    /// Physical: a strike run, onto it at speed (legacy: as `Stop`).
+    Into,
 }
 
 /// A node's steering ([`crate::node`]), driven by [`Mover::step`] in place of the file's motion.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Steer {
-    /// Stop where it is and stay there (a boat keeps station against the current: no drift; an
-    /// aircraft hovers, a stated simplification).
+    /// Stop where it is and stay there (a boat keeps station against the current: no drift).
+    /// Physical: it runs on along its course slowing at its deceleration until it has stopped,
+    /// and a fixed wing circles there; legacy: it stops at once and any aircraft hovers.
     Hold,
     /// Head for a point at a speed and stop on it; with `alt_m`, change height in proportion as
-    /// it closes (a dive onto its target).
-    To { lat: f64, lon: f64, speed_mps: f64, alt_m: Option<f64> },
+    /// it closes (a dive onto its target); with `into`, run into it at speed (a strike run: the
+    /// physical model never slows it to stop there).
+    To { lat: f64, lon: f64, speed_mps: f64, alt_m: Option<f64>, into: bool },
     /// Once along the points (`[lon, lat]`) at a speed, then hold at the last (`done`).
     Route { points: Vec<[f64; 2]>, speed_mps: f64, leg: usize, done: bool },
     /// Circle a centre (`[lon, lat]`) clockwise, joining the circle at its nearest point first.
@@ -139,6 +192,9 @@ impl Mover {
             disarmed: false,
             crippled: false,
             steer: None,
+            circling: None,
+            circled: false,
+            way: None,
             contact,
         }
     }
@@ -167,7 +223,8 @@ impl Mover {
     /// The damage model's `state` put on it at scenario time `now` (unix s): destroyed takes it
     /// out of play (as an abstract effect does); its propulsion lost stops it where it is (a boat
     /// or a submerged contact drifts with the water from there, a ground contact stands, an
-    /// aircraft flies on at half its speed [E: slowed, as a damaged engine]); its weapons out of
+    /// aircraft flies on at half its speed [E: slowed, as a damaged engine]; physical motion: a
+    /// boat, a submerged or a ground contact coasts down from its way first); its weapons out of
     /// action silence its acts' launches. A state no worse than one it has changes nothing.
     /// Returns whether it changed anything.
     pub fn damage(&mut self, state: DamageState, now: f64) -> bool {
@@ -202,7 +259,12 @@ impl Mover {
                     Domain::Surface | Domain::Subsurface => self.contact.motion = Motion::Drift { at },
                 }
                 if self.contact.domain != Domain::Air {
-                    self.st.speed_mps = 0.0;
+                    if self.physical() {
+                        // it coasts down from the way it has (Station and Drift carry it)
+                        self.way = (self.st.speed_mps > 0.0).then_some((self.st.speed_mps, self.st.course_deg));
+                    } else {
+                        self.st.speed_mps = 0.0;
+                    }
                     self.holding = false;
                     self.dwell_left = 0.0;
                 }
@@ -281,11 +343,23 @@ impl Mover {
         if !self.st.exists || dt <= 0.0 {
             return self.st.exists;
         }
+        self.circled = false;
         // a node's order steers it instead of its file's motion (crate::node)
         if let Some(steer) = self.steer.take() {
             self.steer = self.drive(steer, dt);
-            return true;
+        } else {
+            self.file_motion(dt, current);
         }
+        // a fixed wing's circle lasts while it stands
+        if !self.circled {
+            self.circling = None;
+        }
+        true
+    }
+
+    /// One step of its file's motion.
+    fn file_motion(&mut self, dt: f64, current: Option<(f64, f64)>) {
+        let c = &self.contact;
         match &c.motion {
             Motion::Recorded { .. } => unreachable!("recorded motion is evaluated by timestamp above"),
             Motion::Route {
@@ -300,7 +374,7 @@ impl Mover {
             Motion::Transit { points } => {
                 let points = points.clone();
                 if self.holding {
-                    self.st.speed_mps = 0.0;
+                    self.stand(dt);
                 } else {
                     self.follow(&points, dt, None);
                 }
@@ -316,13 +390,20 @@ impl Mover {
                 self.st.lat = lat;
                 self.st.lon = lon;
             }
-            Motion::Station { .. } => {
-                self.st.speed_mps = 0.0;
-            }
+            Motion::Station { .. } => match self.coast(dt) {
+                Some((v, course)) => self.run_along(v, course, dt),
+                None => self.stand(dt),
+            },
             Motion::Drift { .. } => {
                 let (ce, cn) = current.unwrap_or((0.0, 0.0));
-                let e = ce + self.rng.sample(0.0, 0.02);
-                let n = cn + self.rng.sample(0.0, 0.02);
+                let mut e = ce + self.rng.sample(0.0, 0.02);
+                let mut n = cn + self.rng.sample(0.0, 0.02);
+                // the way it still has through the water, coasting down (physical motion)
+                if let Some((v, course)) = self.coast(dt) {
+                    let a = course.to_radians();
+                    e += v * a.sin();
+                    n += v * a.cos();
+                }
                 let (lat, lon) = offset(self.st.lat, self.st.lon, e * dt, n * dt);
                 self.st.lat = lat;
                 self.st.lon = lon;
@@ -332,35 +413,141 @@ impl Mover {
                 }
             }
         }
-        true
+    }
+
+    /// The contact's motion model is the physical one (bd murmur-2of4).
+    fn physical(&self) -> bool {
+        self.contact.motion_model == MotionModel::Physical
+    }
+
+    /// Physical motion and a fixed-wing aircraft: it never stops.
+    fn fixed_wing(&self) -> bool {
+        self.physical() && self.contact.domain == Domain::Air && !self.contact.hovers
+    }
+
+    /// Physical motion and anything but a fixed wing: it slows in time to stand on its points.
+    fn brakes(&self) -> bool {
+        self.physical() && !self.fixed_wing()
+    }
+
+    /// The fastest it may go `d` metres short of a point it is to stand on, so that slowing at its
+    /// deceleration a step of `dt` at a time it stops on the point: the speed `v` from which the
+    /// steps at `v`, `v - b dt`, ..., `b dt` cover `d`, v (v + b dt) / 2b = d.
+    pub fn stop_speed(&self, d: f64, dt: f64) -> f64 {
+        let b = self.contact.decel_mps2;
+        let bt = b * dt;
+        0.5 * ((bt * bt + 8.0 * b * d.max(0.0)).sqrt() - bt)
+    }
+
+    /// Its speed a step of `dt` on from `from` toward `to`: up at [`ACCEL_MPS2`], down at its
+    /// deceleration (physical motion).
+    fn approach(&self, from: f64, to: f64, dt: f64) -> f64 {
+        if to >= from {
+            (from + ACCEL_MPS2 * dt).min(to)
+        } else {
+            (from - self.contact.decel_mps2 * dt).max(to)
+        }
+    }
+
+    /// Straight on along `course` at `v` for `dt`.
+    fn run_along(&mut self, v: f64, course: f64, dt: f64) {
+        self.st.speed_mps = v;
+        self.st.course_deg = course;
+        let a = course.to_radians();
+        let (lat, lon) = offset(self.st.lat, self.st.lon, v * a.sin() * dt, v * a.cos() * dt);
+        self.st.lat = lat;
+        self.st.lon = lon;
+    }
+
+    /// The way it still has after its propulsion was lost, this step's (none: none left).
+    fn coast(&mut self, dt: f64) -> Option<(f64, f64)> {
+        let (v, course) = self.way?;
+        let v = (v - self.contact.decel_mps2 * dt).max(0.0);
+        self.way = (v > 0.0).then_some((v, course));
+        self.way
+    }
+
+    /// Where it would stand still: stopped; a fixed wing with way on circles there instead (an
+    /// aircraft with none, one that has struck or never flown, stands).
+    fn stand(&mut self, dt: f64) {
+        if !self.fixed_wing() || (self.circling.is_none() && self.st.speed_mps <= 0.0) {
+            self.st.speed_mps = 0.0;
+            return;
+        }
+        if self.circling.is_none() {
+            self.begin_circle((self.st.lat, self.st.lon));
+        }
+        self.circled = true;
+        let Some(c) = self.circling.clone() else { return };
+        let v = self.approach(self.st.speed_mps, c.speed_mps, dt);
+        let phase = (c.phase_deg + (v / c.radius_m).to_degrees() * dt).rem_euclid(360.0);
+        let a = phase.to_radians();
+        let (lat, lon) = offset(c.center.0, c.center.1, c.radius_m * a.sin(), c.radius_m * a.cos());
+        self.st.lat = lat;
+        self.st.lon = lon;
+        self.st.course_deg = (phase + 90.0).rem_euclid(360.0);
+        self.st.speed_mps = v;
+        self.circling = Some(Circle { phase_deg: phase, ..c });
+    }
+
+    /// A fixed wing's circle from here, standing at `anchor`: clockwise, tangent to its course,
+    /// at its speed on its tightest turn (radius its speed over its turn rate).
+    fn begin_circle(&mut self, anchor: (f64, f64)) {
+        let v = self.st.speed_mps;
+        let r = (v / self.contact.turn_dps.to_radians()).max(1.0);
+        let a = (self.st.course_deg + 90.0).to_radians();
+        let center = offset(self.st.lat, self.st.lon, r * a.sin(), r * a.cos());
+        let phase_deg = (self.st.course_deg - 90.0).rem_euclid(360.0);
+        self.circling = Some(Circle { anchor, center, radius_m: r, speed_mps: v, phase_deg });
+        self.circled = true;
+    }
+
+    /// Hold where it is (physical): on along its course, slowing at its deceleration, to a stop;
+    /// a fixed wing circles.
+    fn hold(&mut self, dt: f64) {
+        if self.fixed_wing() {
+            return self.stand(dt);
+        }
+        let v = (self.st.speed_mps - self.contact.decel_mps2 * dt).max(0.0);
+        if v > 0.0 {
+            self.run_along(v, self.st.course_deg, dt);
+        } else {
+            self.st.speed_mps = 0.0;
+        }
     }
 
     /// One step of a node's steering; what it steers by next (none: back on the file's motion).
     /// Its propulsion damaged (only an aircraft is still steered), at half the speed it is told
     /// ([`Mover::told`]).
     fn drive(&mut self, steer: Steer, dt: f64) -> Option<Steer> {
+        let stop_at = |last: bool| if last { Arrive::Stop } else { Arrive::Pass };
         match steer {
             Steer::Hold => {
-                self.st.speed_mps = 0.0;
+                if self.physical() {
+                    self.hold(dt);
+                } else {
+                    self.st.speed_mps = 0.0;
+                }
                 Some(Steer::Hold)
             }
-            Steer::To { lat, lon, speed_mps, alt_m } => {
-                self.head(lat, lon, speed_mps, alt_m, dt, true);
-                Some(Steer::To { lat, lon, speed_mps, alt_m })
+            Steer::To { lat, lon, speed_mps, alt_m, into } => {
+                let arrive = if into { Arrive::Into } else { Arrive::Stop };
+                self.head(lat, lon, self.told(speed_mps), alt_m, dt, arrive);
+                Some(Steer::To { lat, lon, speed_mps, alt_m, into })
             }
             Steer::Route { points, speed_mps, mut leg, mut done } => {
                 if done {
-                    self.st.speed_mps = 0.0;
+                    self.stand(dt);
                 } else {
                     let last = points.len() - 1;
                     let wp = points[leg];
-                    if self.head(wp[1], wp[0], speed_mps, None, dt, leg == last) {
+                    if self.head(wp[1], wp[0], self.told(speed_mps), None, dt, stop_at(leg == last)) {
                         if leg == last {
                             done = true;
                         } else {
                             leg += 1;
                             let wp = points[leg];
-                            self.head(wp[1], wp[0], speed_mps, None, dt, leg == last);
+                            self.head(wp[1], wp[0], self.told(speed_mps), None, dt, stop_at(leg == last));
                         }
                     }
                 }
@@ -372,7 +559,7 @@ impl Mover {
                 if (d - radius_m).abs() > ORBIT_JOIN_M {
                     let a = b.to_radians();
                     let (lat, lon) = offset(center[1], center[0], radius_m * a.sin(), radius_m * a.cos());
-                    self.head(lat, lon, speed_mps, None, dt, false);
+                    self.head(lat, lon, self.told(speed_mps), None, dt, Arrive::Pass);
                 } else {
                     // clockwise along the circle, as a loiter
                     let v = self.accelerate(self.told(speed_mps), dt);
@@ -386,7 +573,9 @@ impl Mover {
                 Some(Steer::Orbit { center, radius_m, speed_mps })
             }
             Steer::Rejoin { lat, lon, speed_mps, phase_deg } => {
-                if self.head(lat, lon, speed_mps, None, dt, true) {
+                // physical: a loiter's circle is joined at speed, not stopped on
+                let arrive = if phase_deg.is_some() && self.physical() { Arrive::Pass } else { Arrive::Stop };
+                if self.head(lat, lon, self.told(speed_mps), None, dt, arrive) {
                     if let Some(p) = phase_deg {
                         self.phase_deg = p;
                     }
@@ -397,14 +586,20 @@ impl Mover {
         }
     }
 
-    /// Steer for a point with the kind's turn rate at up to `speed`; with `alt`, the height goes
-    /// to it in proportion to the ground covered. Within this step's reach it is there: with
-    /// `stop` it stands on the point, stopped; without, it has not moved yet (the caller takes
-    /// the next point). Returns whether it is there.
-    fn head(&mut self, lat: f64, lon: f64, speed: f64, alt: Option<f64>, dt: f64, stop: bool) -> bool {
+    /// Steer for a point with the kind's turn rate at up to `speed` (what it makes good: a
+    /// steering's speed through [`Mover::told`]); with `alt`, the height goes to it in proportion
+    /// to the ground covered. Returns whether it is there ([`Arrive`]). Physical motion
+    /// ([`Mover::head_physical`]): it slows in time to stand on a point it stops at. Legacy:
+    /// within this step's reach it is there, standing on the point stopped (`Stop`, `Into`) or
+    /// not moved yet (`Pass`).
+    fn head(&mut self, lat: f64, lon: f64, speed: f64, alt: Option<f64>, dt: f64, arrive: Arrive) -> bool {
+        if self.physical() {
+            return self.head_physical(lat, lon, speed, alt, dt, arrive);
+        }
+        let stop = arrive != Arrive::Pass;
         let d = distance_m(self.st.lat, self.st.lon, lat, lon);
         let want = bearing_deg(self.st.lat, self.st.lon, lat, lon);
-        let mut v = (self.st.speed_mps + ACCEL_MPS2 * dt).min(self.told(speed)).max(0.0);
+        let mut v = (self.st.speed_mps + ACCEL_MPS2 * dt).min(speed).max(0.0);
         // bd murmur-9js0: a point inside its turning circle is never reached at speed (it circles
         // it for ever): slow so the circle through here, tangent to its course, that passes through
         // the point (radius d / (2 sin off)) is one its turn rate can fly
@@ -438,23 +633,141 @@ impl Mover {
         false
     }
 
+    /// [`Mover::head`] under the physical model. Its speed goes toward `speed` at
+    /// [`Mover::approach`]'s rates, no faster than the turning circle allows (bd murmur-9js0) and,
+    /// at a point it stops on, than [`Mover::stop_speed`] so that it stands on it. `Stop`: it
+    /// stands on the point once it is within the step and it is slow enough to stop there
+    /// ([`STAND_STEPS`]); faster, it runs through and comes back round; a fixed wing does not slow,
+    /// and over its point circles there ([`Mover::stand`]). `Into`: onto the point at speed (a
+    /// strike run). `Pass`: within the step's reach, not moved yet.
+    fn head_physical(&mut self, lat: f64, lon: f64, speed: f64, alt: Option<f64>, dt: f64, arrive: Arrive) -> bool {
+        let fixed = self.fixed_wing();
+        if arrive == Arrive::Stop
+            && fixed
+            && self.circling.as_ref().is_some_and(|c| distance_m(c.anchor.0, c.anchor.1, lat, lon) < 1.0)
+        {
+            self.stand(dt);
+            return true;
+        }
+        let stops = arrive == Arrive::Stop && !fixed;
+        let d = distance_m(self.st.lat, self.st.lon, lat, lon);
+        let want = bearing_deg(self.st.lat, self.st.lon, lat, lon);
+        let mut cap = speed;
+        let off = wrap180(want - self.st.course_deg).abs().to_radians();
+        if off > 1e-6 {
+            let fits = self.contact.turn_dps.to_radians() * d / (2.0 * off.sin().max(1e-6));
+            cap = cap.min(fits.max(MIN_TURN_MPS));
+        }
+        if stops {
+            cap = cap.min(self.stop_speed(d, dt));
+        }
+        let v = self.approach(self.st.speed_mps, cap, dt).max(0.0);
+        if d <= (v * dt).max(1.0) {
+            match arrive {
+                Arrive::Pass => return true,
+                Arrive::Stop if !fixed => {
+                    if v <= STAND_STEPS * self.contact.decel_mps2 * dt {
+                        self.st.lat = lat;
+                        self.st.lon = lon;
+                        self.st.speed_mps = 0.0;
+                        if let Some(a) = alt {
+                            self.st.alt_m = a;
+                        }
+                        return true;
+                    }
+                    // too fast to stand on it: on through it, slowing, and back round
+                }
+                _ => {
+                    // a strike run into its point, or a fixed wing over it: there, at speed
+                    self.st.lat = lat;
+                    self.st.lon = lon;
+                    self.st.speed_mps = v;
+                    if let Some(a) = alt {
+                        self.st.alt_m = a;
+                    }
+                    if fixed && arrive == Arrive::Stop {
+                        self.begin_circle((lat, lon));
+                    }
+                    return true;
+                }
+            }
+        }
+        let max_turn = self.contact.turn_dps * dt;
+        let delta = wrap180(want - self.st.course_deg).clamp(-max_turn, max_turn);
+        self.st.course_deg = (self.st.course_deg + delta).rem_euclid(360.0);
+        self.st.speed_mps = v;
+        let a = self.st.course_deg.to_radians();
+        let (nlat, nlon) = offset(self.st.lat, self.st.lon, v * a.sin() * dt, v * a.cos() * dt);
+        self.st.lat = nlat;
+        self.st.lon = nlon;
+        if let Some(to) = alt
+            && d > 0.0
+        {
+            self.st.alt_m += (to - self.st.alt_m) * (v * dt / d).min(1.0);
+        }
+        false
+    }
+
     /// The speed a steering's `speed` makes good: half with its propulsion damaged (an aircraft
     /// flies on slowed, as its file's motion does).
     fn told(&self, speed: f64) -> f64 {
         if self.crippled { speed * 0.5 } else { speed }
     }
 
+    /// Its speed toward `target` (physical motion: down at its deceleration; legacy: down at once).
     fn accelerate(&mut self, target: f64, dt: f64) -> f64 {
-        self.st.speed_mps = (self.st.speed_mps + ACCEL_MPS2 * dt).min(target);
+        self.st.speed_mps = if self.physical() {
+            self.approach(self.st.speed_mps, target, dt)
+        } else {
+            (self.st.speed_mps + ACCEL_MPS2 * dt).min(target)
+        };
         self.st.speed_mps
     }
 
+    /// The point it steers for now is one it stands on (physical motion): a transit's last, or the
+    /// end of a route it dwells at.
+    fn stops_at(&self, n: usize, route: Option<(bool, f64)>) -> bool {
+        let last = n - 1;
+        match route {
+            None => self.leg == last,
+            Some((_, dwell_s)) if dwell_s <= 0.0 => false,
+            Some((true, _)) => (self.dir > 0 && self.leg == last) || (self.dir < 0 && self.leg == 0),
+            Some((false, _)) => self.leg == last,
+        }
+    }
+
+    /// Stopped on a point it stands on ([`Mover::stops_at`]): a transit holds there; a route
+    /// dwells and takes its next leg (back the other way, or round to the first).
+    fn reached(&mut self, n: usize, route: Option<(bool, f64)>) {
+        let last = n - 1;
+        match route {
+            None => self.holding = true,
+            Some((reverse, dwell_s)) => {
+                if reverse {
+                    self.dir = -self.dir;
+                    self.leg = (self.leg as i32 + self.dir).clamp(0, last as i32) as usize;
+                } else {
+                    self.leg = (self.leg + 1) % n;
+                }
+                self.dwell_left = dwell_s;
+            }
+        }
+    }
+
     /// Steer for the current waypoint with the kind's turn rate; at the end, loop, bounce
-    /// (after a dwell) or hold.
+    /// (after a dwell) or hold. Physical motion: it slows in time to stand on a point it stops at
+    /// ([`Mover::stops_at`]), and a fixed wing circles where it would stand.
     fn follow(&mut self, points: &[[f64; 2]], dt: f64, route: Option<(bool, f64)>) {
         if self.dwell_left > 0.0 {
             self.dwell_left -= dt;
-            self.st.speed_mps = 0.0;
+            self.stand(dt);
+            return;
+        }
+        if self.brakes() && self.stops_at(points.len(), route) {
+            let wp = points[self.leg];
+            if self.head(wp[1], wp[0], self.contact.speed_mps, None, dt, Arrive::Stop) {
+                self.reached(points.len(), route);
+            }
             return;
         }
         let wp = points[self.leg];
@@ -465,7 +778,7 @@ impl Mover {
                 None => {
                     if self.leg == last {
                         self.holding = true;
-                        self.st.speed_mps = 0.0;
+                        self.stand(dt);
                         return;
                     }
                     self.leg += 1;
@@ -485,7 +798,7 @@ impl Mover {
                         self.leg = (self.leg + 1) % points.len();
                     }
                     if self.dwell_left > 0.0 {
-                        self.st.speed_mps = 0.0;
+                        self.stand(dt);
                         return;
                     }
                 }
@@ -601,6 +914,9 @@ mod tests {
             speed_mps: speed,
             alt_m: 0.0,
             turn_dps: 30.0,
+            decel_mps2: 1.0,
+            hovers: false,
+            motion_model: MotionModel::Physical,
             motion,
             start_s: 0.0,
             end_s: None,
@@ -621,7 +937,7 @@ mod tests {
         m.st.course_deg = 0.0;
         m.st.speed_mps = 4.0;
         let (lat, lon) = offset(at[1], at[0], 88.0, 0.0);
-        m.steer = Some(Steer::To { lat, lon, speed_mps: 4.0, alt_m: None });
+        m.steer = Some(Steer::To { lat, lon, speed_mps: 4.0, alt_m: None, into: false });
         let mut slowest: f64 = 4.0;
         let there = (1..=120).find(|s| {
             m.step(f64::from(*s), 1.0, None);
@@ -635,7 +951,7 @@ mod tests {
         m.contact.turn_dps = 4.0;
         m.st.speed_mps = 4.0;
         let (lat, lon) = offset(at[1], at[0], 200.0, 2000.0);
-        m.steer = Some(Steer::To { lat, lon, speed_mps: 4.0, alt_m: None });
+        m.steer = Some(Steer::To { lat, lon, speed_mps: 4.0, alt_m: None, into: false });
         for s in 1..=10 {
             m.step(f64::from(s), 1.0, None);
             assert_eq!(m.st.speed_mps, 4.0);
@@ -774,5 +1090,247 @@ mod maneuver_tests {
             m.st
         );
         assert_eq!(m.next_maneuver, 1);
+    }
+}
+
+/// Slowing and stopping (bd murmur-2of4): the physical model against the legacy one.
+#[cfg(test)]
+mod stopping_tests {
+    use super::*;
+    use crate::scenario::{Affiliation, Scenario};
+
+    /// A fast boat's figures (sim/contacts.toml `small_fast_boat`).
+    const DECEL: f64 = 1.5;
+    const V: f64 = 15.0;
+    /// 2.2 km due north.
+    const A: [f64; 2] = [-122.45, 37.80];
+    const B: [f64; 2] = [-122.45, 37.82];
+
+    fn boat(motion: Motion, model: MotionModel) -> Mover {
+        Mover::new(
+            Contact {
+                maneuvers: Vec::new(),
+                id: "boat".into(),
+                name: "boat".into(),
+                affiliation: Affiliation::Hostile,
+                domain: Domain::Surface,
+                kind: "small_fast_boat".into(),
+                variant: None,
+                ais: None,
+                emits: false,
+                signature: 1.0,
+                speed_mps: V,
+                alt_m: 0.0,
+                turn_dps: 12.0,
+                decel_mps2: DECEL,
+                hovers: false,
+                motion_model: model,
+                motion,
+                start_s: 0.0,
+                end_s: None,
+                on_effect: crate::scenario::OnEffect::OutOfPlay,
+                strike_outcome: None,
+                weapon: None,
+            },
+            1,
+            0,
+        )
+    }
+
+    /// Metres past B along the way north (negative: short of it).
+    fn past_b(m: &Mover) -> f64 {
+        (m.st.lat - B[1]) * M_PER_DEG
+    }
+
+    /// The transit's end: it slows at its deceleration in time to stand on its last point. No
+    /// step slows it by more than its deceleration (the last, onto the point, by at most
+    /// STAND_STEPS of it), it never passes the point, and the stop takes the time and the distance
+    /// v / b and v² / 2b give (10 s and 75 m), within a step.
+    #[test]
+    fn a_transit_stops_on_its_last_point_at_its_deceleration() {
+        let mut m = boat(Motion::Transit { points: vec![A, B] }, MotionModel::Physical);
+        let (mut prev_v, mut prev_d) = (0.0, f64::INFINITY);
+        let (mut began, mut stopped) = (None, None);
+        for s in 1..=400 {
+            m.step(f64::from(s), 1.0, None);
+            assert!(past_b(&m) <= 1e-6, "past its point at {s} s: {:.2} m", past_b(&m));
+            let slowed = prev_v - m.st.speed_mps;
+            let most = if m.st.speed_mps > 0.0 { DECEL } else { STAND_STEPS * DECEL };
+            assert!(slowed <= most + 1e-9, "slowed {slowed:.2} m/s in a step at {s} s");
+            if began.is_none() && slowed > 1e-9 {
+                began = Some((s - 1, prev_d));
+            }
+            if stopped.is_none() && prev_v > 0.0 && m.st.speed_mps == 0.0 {
+                stopped = Some(s);
+            }
+            prev_v = m.st.speed_mps;
+            prev_d = -past_b(&m);
+        }
+        let ((s0, d0), s1) = (began.expect("it slowed"), stopped.expect("it stopped"));
+        assert!((f64::from(s1 - s0) - V / DECEL).abs() <= 1.5, "{s0} to {s1} s");
+        assert!((d0 - V * V / (2.0 * DECEL)).abs() <= V, "slowing from {d0:.1} m out");
+        assert!(past_b(&m).abs() < 0.01 && m.holding && m.st.speed_mps == 0.0, "{:?}", m.st);
+    }
+
+    /// Told to hold at speed, it runs on along its course slowing at its deceleration, stands
+    /// some v² / 2b on (within a step) after v / b seconds, and stays there.
+    #[test]
+    fn a_hold_at_speed_runs_on_to_a_stop() {
+        let mut m = boat(Motion::Station { at: A }, MotionModel::Physical);
+        m.step(0.0, 1.0, None);
+        (m.st.speed_mps, m.st.course_deg) = (V, 0.0);
+        m.steer = Some(Steer::Hold);
+        let mut s = 0;
+        while m.st.speed_mps > 0.0 {
+            s += 1;
+            m.step(f64::from(s), 1.0, None);
+            assert!(s < 30 && (m.st.course_deg - 0.0).abs() < 1e-9);
+        }
+        let ran = distance_m(A[1], A[0], m.st.lat, m.st.lon);
+        assert!((f64::from(s) - V / DECEL).abs() <= 1.0, "{s} s");
+        assert!((ran - V * V / (2.0 * DECEL)).abs() <= V, "{ran:.1} m");
+        let here = (m.st.lat, m.st.lon);
+        for t in s + 1..s + 20 {
+            m.step(f64::from(t), 1.0, None);
+        }
+        assert_eq!((m.st.lat, m.st.lon, m.st.speed_mps), (here.0, here.1, 0.0));
+    }
+
+    /// The pinned worlds' motion (legacy): the same transit goes from full speed to a stop in
+    /// one step, short of its last point (within the waypoint radius), and a hold stops it where
+    /// it is, as before bd murmur-2of4.
+    #[test]
+    fn the_legacy_model_stops_in_one_step() {
+        let mut m = boat(Motion::Transit { points: vec![A, B] }, MotionModel::Legacy);
+        let mut prev = 0.0;
+        let mut drop = None;
+        for s in 1..=400 {
+            m.step(f64::from(s), 1.0, None);
+            if prev > 0.0 && m.st.speed_mps < prev {
+                drop.get_or_insert((prev, m.st.speed_mps));
+            }
+            prev = m.st.speed_mps;
+        }
+        assert_eq!(drop, Some((V, 0.0)), "one step from its speed to a stop");
+        assert!((-WAYPOINT_RADIUS_M..0.0).contains(&past_b(&m)) && m.holding, "{:.1} m", past_b(&m));
+
+        let mut h = boat(Motion::Station { at: A }, MotionModel::Legacy);
+        h.step(0.0, 1.0, None);
+        h.st.speed_mps = V;
+        h.steer = Some(Steer::Hold);
+        h.step(1.0, 1.0, None);
+        assert_eq!((h.st.lat, h.st.lon, h.st.speed_mps), (A[1], A[0], 0.0));
+    }
+
+    /// Its propulsion lost at speed, it coasts on at its deceleration (some v² / 2b) before it
+    /// drifts; legacy, it stops where it was struck.
+    #[test]
+    fn a_mobility_kill_coasts_down() {
+        for (model, coasts) in [(MotionModel::Physical, true), (MotionModel::Legacy, false)] {
+            let mut m = boat(Motion::Transit { points: vec![A, B] }, model);
+            for s in 1..=60 {
+                m.step(f64::from(s), 1.0, None);
+            }
+            assert_eq!(m.st.speed_mps, V);
+            let at = (m.st.lat, m.st.lon);
+            assert!(m.damage(DamageState::Mobility, 60.0));
+            for s in 61..=90 {
+                m.step(f64::from(s), 1.0, None);
+            }
+            let on = distance_m(at.0, at.1, m.st.lat, m.st.lon);
+            assert!(matches!(m.contact.motion, Motion::Drift { .. }) && m.st.speed_mps < 0.1);
+            if coasts {
+                assert!((on - V * V / (2.0 * DECEL)).abs() <= V, "{model:?}: {on:.1} m");
+            } else {
+                assert!(on < 2.0, "{model:?}: {on:.1} m");
+            }
+        }
+    }
+
+    /// A strike run (`into`) never slows for its point: it is on it at its speed.
+    #[test]
+    fn a_strike_run_runs_into_its_point() {
+        let mut m = boat(Motion::Station { at: A }, MotionModel::Physical);
+        m.step(0.0, 1.0, None);
+        m.st.speed_mps = V;
+        let (lat, lon) = offset(A[1], A[0], 0.0, 200.0);
+        m.steer = Some(Steer::To { lat, lon, speed_mps: V, alt_m: None, into: true });
+        for s in 1..=14 {
+            m.step(f64::from(s), 1.0, None);
+            assert_eq!(m.st.speed_mps, V, "{s} s");
+        }
+        assert!(distance_m(m.st.lat, m.st.lon, lat, lon) < 1e-6);
+    }
+
+    /// A fixed wing never stops: at its transit's end, or told to hold, it circles clockwise at
+    /// its speed on its tightest turn (a light aircraft's 55 m/s at 6 degrees a second: 525 m),
+    /// near where another would stand. A kind that hovers stands on its point as a boat does.
+    #[test]
+    fn a_fixed_wing_circles_where_another_would_stand() {
+        let plane = |hovers: bool, motion: Motion| {
+            let mut m = boat(motion, MotionModel::Physical);
+            m.contact.domain = Domain::Air;
+            m.contact.speed_mps = 55.0;
+            m.contact.turn_dps = 6.0;
+            m.contact.decel_mps2 = 1.0;
+            m.contact.hovers = hovers;
+            m
+        };
+        let r = 55.0 / 6f64.to_radians();
+        let mut m = plane(false, Motion::Transit { points: vec![A, B] });
+        m.step(0.0, 1.0, None);
+        m.st.speed_mps = 55.0;
+        let (mut least, mut far, mut turned) = (f64::INFINITY, 0.0f64, 0.0f64);
+        let mut course = 0.0;
+        for s in 1..=600 {
+            m.step(f64::from(s), 1.0, None);
+            if s > 200 {
+                least = least.min(m.st.speed_mps);
+                far = far.max(distance_m(B[1], B[0], m.st.lat, m.st.lon));
+                turned += wrap180(m.st.course_deg - course);
+            }
+            course = m.st.course_deg;
+        }
+        assert!(m.holding && least > 54.0, "never stops: {least:.1} m/s");
+        assert!(far <= 2.0 * r + 60.0, "circles by its last point: {far:.0} m");
+        assert!(turned > 2.0 * 360.0, "clockwise, round and round: {turned:.0} degrees");
+
+        let mut h = plane(true, Motion::Transit { points: vec![A, B] });
+        for s in 1..=600 {
+            h.step(f64::from(s), 1.0, None);
+        }
+        assert!(h.holding && h.st.speed_mps == 0.0 && distance_m(B[1], B[0], h.st.lat, h.st.lon) < 0.01);
+
+        let mut held = plane(false, Motion::Station { at: A });
+        held.step(0.0, 1.0, None);
+        (held.st.speed_mps, held.st.course_deg) = (55.0, 90.0);
+        held.steer = Some(Steer::Hold);
+        for s in 1..=120 {
+            held.step(f64::from(s), 1.0, None);
+            assert_eq!(held.st.speed_mps, 55.0);
+            assert!(distance_m(A[1], A[0], held.st.lat, held.st.lon) <= 2.0 * r + 1.0);
+        }
+    }
+
+    /// The motion model is the file's `[motion] model` (none: physical), which
+    /// MURMUR_MOTION_MODEL overrides; every contact moves by it; a value that is neither is
+    /// refused rather than dropping a pin.
+    #[test]
+    fn the_motion_model_is_the_files_unless_pinned() {
+        let file = |motion: &str| {
+            format!(
+                "title = \"t\"\n{motion}\n[[contact]]\nid = \"b\"\naffiliation = \"neutral\"\ndomain = \"surface\"\nkind = \"small_fast_boat\"\nmotion = \"station\"\nat = [-122.5, 37.8]\n"
+            )
+        };
+        let mut s = Scenario::from_toml(&file("")).expect("scenario");
+        assert_eq!(s.contacts().expect("contacts")[0].motion_model, MotionModel::Physical);
+        assert_eq!(s.contacts().expect("contacts")[0].decel_mps2, 1.5);
+        assert_eq!(s.pin_motion(Some("legacy")), Ok(MotionModel::Legacy));
+        assert_eq!(s.contacts().expect("contacts")[0].motion_model, MotionModel::Legacy);
+        let mut l = Scenario::from_toml(&file("[motion]\nmodel = \"legacy\"")).expect("scenario");
+        assert_eq!(l.pin_motion(None), Ok(MotionModel::Legacy));
+        assert_eq!(l.pin_motion(Some("physical")), Ok(MotionModel::Physical));
+        assert!(l.pin_motion(Some("braking")).is_err());
+        assert!(Scenario::from_toml(&file("[motion]\nmodel = \"fast\"")).is_err());
     }
 }

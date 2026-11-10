@@ -1272,7 +1272,10 @@ flagged) and the second (A-2), which declared the boat hostile by rule; `op-auto
 The audit log replays, every decision, anchors OK. The same attack as a `red` step at 200 s in
 place of the file's order was accepted (`{id: 1, accepted: true}`), taken at the contacts' same
 tick, and the node did exactly the same (the record's `truth.opponent` equal). The test runs both
-on the physical sensing model (`world = "v3"` in its spec), as the situation runs live.
+on the physical sensing model (`world = "v3"` in its spec), as the situation runs live. Since
+contacts slow at their kind's rate (bd murmur-2of4, 2026-11-10) the boat is still slowing (3.6
+m/s) when it takes the order and stops at 202 s: the first launch is from 962 m (3.8 s of
+flight), A-1 is attributed at 0.86 (still flagged), and the rest is as above.
 
 Not done, or found:
 
@@ -1287,8 +1290,9 @@ Not done, or found:
   the chain's own episodes (end to end, the abort, the miss) run on the physical model (`world =
   "v3"`, `test_engage_space.py` `physical`), as the situation runs live; the review, lost-contact
   and blocker episodes keep the legacy pin their added contacts are timed to, knowingly (on the
-  physical model seed 1's first gun episode is attributed at 0.79 and flagged, and the boat is
-  declared on the second, a minute past those timings).
+  physical model seed 1's first gun episode is attributed at 0.79 and flagged, 0.85 since the
+  contacts' braking of bd murmur-2of4, and the boat is declared on the second, a minute past
+  those timings).
 - An MCP agent still does not see the weapon picture (murmur-mmxk's other half); no tool was
   added.
 - A vehicle of ours that is destroyed is still fired at while its last report lingers in the
@@ -1645,7 +1649,10 @@ Nothing else changes for any other world (the golden and paused digests as befor
 simulator with the shared socket port, the first without it): the same record and the same
 audit log, as the golden digests them (`tests/test_episode.py` `normalized`: no `perf` or
 `provenance`, the build and the hash chain masked): record `fe14803a...`, audit log `e5eb56c5...`,
-149,005 events each.
+149,005 events each. Since contacts slow at their kind's rate (bd murmur-2of4: the swarms slow onto
+their holds, the shooter onto its point) seed 1 gives record `51bfcc7f...` and audit log
+`b5185bb0...` (149,005 events, 2026-11-10, the record as the batch writes it); the same code with
+`MURMUR_MOTION_MODEL=legacy` gives the pair above, so the motion alone moved them.
 
 **Speed and memory** (seed 1, `none`, one episode, the host's load 15 on average, 5 to 37, from
 other agents' work): 900 simulated seconds in 1,695 s, **0.53 times real time** (28 minutes); the first 240 s

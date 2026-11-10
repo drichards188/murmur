@@ -958,7 +958,7 @@ impl Node {
             o.status(&self.id, cx, "held", "no_way", Some(format!("the way crosses {over} at {:.5}, {:.5}", bad.1, bad.0)));
             return false;
         }
-        m.steer = Some(Steer::To { lat: to.0, lon: to.1, speed_mps: speed, alt_m: alt });
+        m.steer = Some(Steer::To { lat: to.0, lon: to.1, speed_mps: speed, alt_m: alt, into: false });
         o.status(&self.id, cx, what, why, None);
         true
     }
@@ -1033,7 +1033,7 @@ impl Node {
                 "moving",
             ),
             Do::Hold => match o.spec.at {
-                Some(at) => (vec![at], Steer::To { lat: at[1], lon: at[0], speed_mps: speed, alt_m: None }, "moving"),
+                Some(at) => (vec![at], Steer::To { lat: at[1], lon: at[0], speed_mps: speed, alt_m: None, into: false }, "moving"),
                 None => (Vec::new(), Steer::Hold, "holding"),
             },
             _ => {
@@ -1352,7 +1352,12 @@ impl Node {
         let max = self.speeds(m).1;
         let (lead, _) = lead3(here, t.at(), (t.ve, t.vn), max);
         let alt = (self.domain == Domain::Air).then_some(t.alt);
-        self.go(&mut o, m, cx, (lead[0], lead[1]), max, alt, "closing", "strike_run");
+        // into its target at speed: it never slows to stop on the point (physical motion)
+        if self.go(&mut o, m, cx, (lead[0], lead[1]), max, alt, "closing", "strike_run")
+            && let Some(Steer::To { into, .. }) = &mut m.steer
+        {
+            *into = true;
+        }
         Some(o)
     }
 

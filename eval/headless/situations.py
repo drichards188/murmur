@@ -419,9 +419,11 @@ def process_spec(e: EpisodeSpec, seed: int, workdir: Path, calib: Calibration,
         "MURMUR_LINKS": str(links),
     }
     if e.world in ("v1", "v2"):
-        # v1 and v2 are the legacy sensing model's worlds (docs/SENSING.md): pinned here, not in
-        # their contacts files, which the v1 generator's digests hold byte for byte
+        # v1 and v2 are the legacy sensing model's worlds (docs/SENSING.md), and the legacy
+        # motion's (contacts stop in one step, bd murmur-2of4): pinned here, not in their contacts
+        # files, which the v1 generator's digests hold byte for byte
         env["MURMUR_SENSE_MODEL"] = "legacy"
+        env["MURMUR_MOTION_MODEL"] = "legacy"
     if not anchors:
         env["MURMUR_ANCHORS"] = "0"
     world_spec(e, w, spec, env)

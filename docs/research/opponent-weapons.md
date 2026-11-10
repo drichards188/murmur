@@ -264,6 +264,55 @@ submarine's periscope 8 km and its sonar 10 km against a ship.
   missile launched from the air, flown in 3D), `gun` (a muzzle flash; no tracked flight) and
   `torpedo` (a launch transient for sonar, or none) need theirs.
 
+## 6. Slowing and stopping (`decel_mps2`, `hovers`), bd murmur-2of4
+
+Until bd murmur-2of4 a contact went from its speed to a stop in one step (the armed fast boat of
+hostile-act-engagement from 15 m/s to 0 in a second at the end of its run in, some 15 m/s²) while
+it sped up at 0.5 m/s² whatever its kind. `decel_mps2` is how hard a kind slows when it means to:
+a contact begins slowing early enough to stop on the last point of its transit, the end of a route
+it dwells at, or the point it is ordered to; it slows at that rate to any lower speed it is given;
+ordered to hold where it is, it runs on along its course until it has stopped; and a mobility kill
+leaves it coasting at that rate before it drifts or stands. The figure is a deliberate stop. Where
+the sources give only a crash stop (ships), that is the figure, the most the kind can do.
+Speeding up stays the shared 0.5 m/s², as before (not sourced here).
+
+`hovers` marks the aircraft that can stand in the air. Every other aircraft is a fixed wing: it
+never slows to a stop and never stops on a point. Told to hold, at the end of its transit or at a
+dwell, it circles clockwise at its speed on its tightest turn (its speed over its turn rate: a
+light aircraft's 55 m/s at 6 degrees a second is a 525 m circle) [E].
+
+| kind | decel, m/s² | basis |
+|---|---|---|
+| cargo ship | 0.015 | IMO's manoeuvrability standard: the track reach in the full astern stopping test should not exceed 15 ship lengths (in no case 20) [25]. A 150 m ship from its 8 m/s top speed in 15 lengths: 8² / (2 × 2,250 m) = 0.014 [25; E: the length] |
+| tanker | 0.008 | as a cargo ship, 250 m long from 7.5 m/s: 0.0075 [25; E] |
+| armed coaster | 0.02 | an 80 m coaster from 6.5 m/s: 0.018 [25; E: the length] |
+| naval auxiliary | 0.015 | the 86 m Project 23630 [19] from 6.2 m/s: 0.015 [19, 25; E] |
+| ferry | 1.0 | a high-speed catamaran, off its throttle nearer a planing boat than a ship [E] |
+| patrol boat | 1.0 | a semi-planing harbour launch [E] |
+| cutter | 0.8 | an 87 ft semi-planing patrol boat [13; E] |
+| fishing vessel | 0.1 | a 20 to 25 m displacement hull from 5 m/s with the engine astern: some 125 m, five lengths [E] |
+| sailboat | 0.2 | a 10 m yacht from 3 m/s, luffing up: some 20 m [E] |
+| small fast boat, armed fast boat, armed skiff, explosive boat | 1.5 | a jet sport boat stops in about 122 m from full speed with the throttle back to idle [26], its full speed about 44 mph (19.6 m/s) [27]: 19.6² / (2 × 122 m) = 1.6 on average. Off the plane the hull's drag falls away, so a boat slows hardest at first and coasts the last metres; one mean figure is a simplification [26, 27; E] |
+| light aircraft, unknown UAS, one-way attack drone (Shahed-class) | 1.0 | fixed wing: power off at a lift-to-drag ratio near 10, its drag is a tenth of its weight, g/10 [E]; an unknown UAS is taken as a fixed wing, as most of Groups 2 and 3 [E] |
+| helicopter | 1.25 | ArduPilot's traditional helicopter brakes at 1.25 m/s² by default when its sticks are released [28] |
+| armed VTOL UAS | 1.25 | a single-rotor VTOL (the Camcopter S-100 [12]), as a helicopter [12, 28; E] |
+| small drone, one-way FPV drone | 2.5 | ArduPilot's multicopter defaults: 2.5 m/s² in waypoint navigation and braking in loiter [28] |
+| submarine, periscope | 0.05 | the Kilo is 72.6 to 73.8 m long [15]; from its 10 m/s in IMO's 15 lengths [25]: 10² / (2 × 1,100 m) = 0.045 [15, 25; E: a merchant ship's standard for a warship] |
+| UUV | 0.3 | a REMUS-class vehicle's drag at 2 m/s [E] |
+| diver | 0.5 | [E] |
+| car, technical | 3.4 | AASHTO's design deceleration for stopping sight distance, which about 90 % of drivers exceed [29] |
+| truck | 2.5 | a laden truck brakes less sharply than a car [29; E] |
+| person | 2.0 | a runner stops in two strides [E] |
+
+Hovering: the helicopter, the armed VTOL UAS (a Camcopter S-100-class airframe [12]), the small
+drone and the one-way FPV drone (quadcopters). The light aircraft, the unknown UAS and the one-way
+attack drone (a delta wing [11]) are fixed wings.
+
+The worlds whose results are on record keep the old motion (one step to a stop, aircraft that
+hover): `[motion] model = "legacy"` in a contacts file, or `MURMUR_MOTION_MODEL=legacy`, which the
+v1 and v2 headless worlds and the evaluation's stacks set beside their legacy sensing pin
+(crates/murmur-contacts `scenario.rs`, CLAUDE.md).
+
 ## Sources
 
 1. Wikipedia, "9M133 Kornet" (Kornet-E 100-5,500 m, > 250 m/s, 4.6 kg tandem HEAT, SACLOS laser beam riding, 27 kg; Kvartet for vehicles and boats). https://en.wikipedia.org/wiki/9M133_Kornet
@@ -290,3 +339,8 @@ submarine's periscope 8 km and its sonar 10 km against a ship.
 22. Army Recognition, IDEX and IQDEX 2025 coverage of the Kornet-EM (2 to 3 rounds a minute), seen in a search summary, 2026-11-06; the primary figure not found. https://armyrecognition.com/news/army-news/2025/russia-attracts-iraqi-special-forces-interest-with-new-typhoon-kornet-em-anti-tank-missile-system-at-iqdex-2025
 23. Wikipedia, "M2 Browning" (450-600 rpm, bursts of 5-7, 1,800 m effective, 890-930 m/s), as docs/research/weapons.md [26]; the R400's 500 rounds a gun is that note's [23]. https://en.wikipedia.org/wiki/M2_Browning
 24. docs/research/weapons.md (this repository): section 6 (the FPV, its sources [34]-[37]) and sections 10.3 to 10.5 (the hit, damage and conditions tables).
+25. IMO Resolution MSC.137(76), "Standards for ship manoeuvrability" (2002; MSC/Circ.1053 its explanatory notes), 5.3.4: "The track reach in the full astern stopping test should not exceed 15 ship lengths", which an administration may relax for ships of large displacement but "should in no case exceed 20 ship lengths"; track reach is measured along the path of the midship point from the full astern order to the ship stopped in the water. The Netherlands government's copy, read 2026-11-07. https://puc.overheid.nl/doc/PUC_1568_14
+26. Yamaha, AR210 owner's/operator's manual, p. 75: "From full speed, the Sport Boat stops in approximately 400 ft (122 m) after the throttle is moved back to idle." (ManualsLib copy, read 2026-11-07). https://www.manualslib.com/manual/659733/Yamaha-Ar210.html?page=75
+27. BoatTest's review of the Yamaha AR210 (twin TR-1 HO engines: 43.8 mph at 7,800 rpm), as quoted on the jetboaters.net forum, owners reporting 43 to 45 mph; seen in a search summary, 2026-11-07, the review itself not read. https://jetboaters.net/goto/post?id=212679
+28. ArduPilot, `libraries/AC_WPNav/AC_WPNav.h` (`WPNAV_ACCELERATION_MS` 2.5, "default horizontal acceleration limit for waypoint navigation (m/s²)") and `libraries/AC_WPNav/AC_Loiter.cpp` (`LOITER_BRAKE_ACCEL_DEFAULT_MSS`, "Default maximum braking acceleration when sticks are released": 1.25 for a traditional helicopter, 2.5 otherwise), at the commit scripts/setup.sh pins (e8de77a), which Murmur's patches leave alone. https://github.com/ArduPilot/ardupilot/tree/master/libraries/AC_WPNav
+29. AASHTO, *A Policy on Geometric Design of Highways and Streets*, 7th edition (2018), as Engineers Edge quotes it: "Approximately 90 percent of all drivers decelerate at rates greater than 11.2 ft/s² [3.4 m/s²]. Therefore, 11.2 ft/s² [3.4 m/s²] (a comfortable deceleration for most drivers) is recommended as the deceleration threshold for determining stopping sight distance." Read 2026-11-07. https://www.engineersedge.com/calculators/stopping_distance_by_sight_calculator_15954.htm

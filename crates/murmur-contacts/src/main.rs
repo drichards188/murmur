@@ -20,6 +20,9 @@
 //!                            a vehicle not in it (unset: a vehicle target is not checked)
 //!   MURMUR_SENSE_MODEL       the bridge's sensing model when set (else the scenario's): under
 //!                            `legacy` the API refuses an attack, as a file's orders are
+//!   MURMUR_MOTION_MODEL      how the contacts move when set (else the scenario's `[motion]`):
+//!                            `physical` or `legacy` (scenario.rs `MotionModel`); anything else
+//!                            stops it
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -75,6 +78,8 @@ async fn run() -> Result<(), String> {
     let seed = env("MURMUR_CONTACTS_SEED")
         .and_then(|s| s.parse().ok())
         .unwrap_or(scenario.seed);
+    // how the contacts move (bd murmur-2of4): MURMUR_MOTION_MODEL, else the file's
+    let motion = scenario.pin_motion(env("MURMUR_MOTION_MODEL").as_deref())?;
     let contacts = scenario.contacts()?;
     if contacts.is_empty() {
         return Err(format!("{}: no contacts", path.display()));
@@ -158,9 +163,10 @@ async fn run() -> Result<(), String> {
     }
 
     println!(
-        "{}: {} contacts, seed {seed}, scenario clock {t0:.0} x{rate}, truth -> {} and {}",
+        "{}: {} contacts, seed {seed}, scenario clock {t0:.0} x{rate}, {:?} motion, truth -> {} and {}",
         scenario.title,
         movers.len(),
+        motion,
         endpoint,
         log_path.display()
     );

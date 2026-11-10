@@ -460,6 +460,11 @@ bathymetry grids, navigation errors, identify orders, a uid named twice) in thre
 orders, and on 1 to 16 threads over 60 ticks at Saturation's size (below).
 `tracks::tests::sense_par` keeps the first check without the copy: one thread against 2, 3 and 8,
 detections and the engine's whole state after (`Engine::state_text`), in three orders.
+Since contacts slow at their kind's rate (bd murmur-2of4: this world's ferries now slow onto their
+piers, its ships onto their transits' ends) the scale watch gives record `8247b39e...` and audit
+`f6a14f3b...` (6,225 events, 2026-11-10); the same code with the contacts' old one-step stops
+(`MURMUR_MOTION_MODEL=legacy`) gives the pair above, so the motion alone moved it. Compare a change
+to the physical step with the new pair.
 
 **Saturation's size, synthetic** (`tracks::tests::sense_par::sense_par_bench`, release: 3,602 of
 ours in Saturation's mix, 1,700 X10s at 100 m, 1,300 Pumas at 800 m, 200 Saildrones, 300

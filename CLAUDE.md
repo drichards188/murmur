@@ -172,6 +172,17 @@ meaningful.
   golden: never drop it. A new world's areas go in their own directory, never in `sim/areas`
   (every Golden Gate stack loads all of it). In a worktree without `sim/space/cache` (untracked)
   the golden episode fails (SATCOM looks differ): symlink the main checkout's.
+- Contacts' motion (bd murmur-2of4, `crates/murmur-contacts/src/motion.rs`): contacts slow at
+  their kind's `decel_mps2` (sim/contacts.toml), stop on a transit's end rather than 25 m short,
+  run on to a stop when held, and a fixed wing circles where others stop. The v1 and v2 headless
+  worlds, a G1 full-stack copy and the eval stacks keep the old one-step stops by
+  `MURMUR_MOTION_MODEL=legacy`, set beside `MURMUR_SENSE_MODEL=legacy` (never in their contacts
+  files): anything new that pins legacy sensing for them pins this too. Any other value than
+  `legacy` or `physical` stops the contacts process. World v3 episodes move with it (the scale
+  watch's digest, docs/load-test.md). A situation in the Golden Gate's own world runs headless as
+  v1 (legacy sensing and motion): to check its notes as live runs it, run it with `world = "v3"`
+  and the contacts' seed as the episode seed (the simulator draws strikes on the episode seed,
+  the live contacts process on its own).
 - Eval stacks own UDP 35000-36999 and HTTP 10600-10699 (`eval/ports.py`, fixed): keep other
   live stacks off them. Each eval run starts as a fresh station (`eval/stack.py` removes the
   bridge's `.last-run-<port>` before and after; `run.json` `restore_carry`, murmur-kvb).
