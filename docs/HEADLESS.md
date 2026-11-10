@@ -1688,6 +1688,35 @@ appends (serializing and hashing the lines: under 0.1 s); after 200 s, 57 ms. Li
 reach the tick over a minute or two as the vehicles answer, which fits the 1.6 to 3.2 s ticks of
 docs/load-test.md.
 
+**Decisions anchored once a tick** (bd murmur-fqid, 2026-11-10; DECISIONS.md "Decision anchors,
+one a batch"). A decision now marks an anchor due, the tick ends with one anchor on the log's head
+for every decision since the last, and the anchor file is synced once a tick (`anchor.rs`). The
+first 300 s of seed 1 with `none` (a copy of the situation ending at 301 s), one episode at a
+time; a temporary span, not committed, logged each tick's real time and the anchor fsyncs since
+the tick before (and, in the last run, their time). Fsyncs are counted per simulated second,
+which the host's load can't change; the tick times move with the load (the host's one-minute
+load average beside them, from other projects):
+
+| run | load | fsyncs 125 to 130 s | ticks at 125 to 129 s | ticks 125 to 200 s, mean | 200 to 300 s: fsyncs, tick mean |
+| --- | --- | --- | --- | --- | --- |
+| before | 17 to 36 | 13,361 (2,672 a second) | 18.4, 8.4, 17.8, 13.9, 6.8 s | 1.35 s | 3.2 a second, 55 ms |
+| before, a quieter host | 10 to 13 | 13,361 | 16.3, 5.9, 12.1, 9.5, 4.9 s | 0.97 s | 3.2 a second, 55 ms |
+| cadence anchors still synced at once (a first version) | 37 | 252 (50 a second) | 0.44, 0.63, 0.62, 0.47, 0.18 s | 62 ms | 0.9 a second, 24 ms |
+| after | 20 to 24 | 5 (one a tick) | 0.46, 0.28, 0.32, 9.2, 0.02 s | 169 ms | 0.8 a second, 17 ms |
+| after, a quieter host | 9 | 5 | 0.34, 0.13, 0.13, 0.22, 0.07 s | 35 ms | 0.8 a second, 18 ms |
+
+Over the 300 s: 18,860 fsyncs and 18,861 anchors before (13,418 of the anchors in the five
+seconds from 125 s were decision anchors), 162 fsyncs and 477 anchors after (248 cadence anchors
+and 5 decision anchors in those five seconds), so `MURMUR_ANCHOR_CMD` would have been run 477
+times, not 18,861. A simulated second from 126 to 129 s took 20.4 s of real time before (13.6 on
+the quieter host) and 1.7 s after (the quieter host). The 9.2 s tick of the second "after" run
+spent 24 ms in `follow_ops` and made one fsync, which that run did not time (this host's fsyncs
+sometimes take seconds, as above); the last run timed every fsync: 4 to 96 ms in the burst, no
+tick over 0.35 s. Every run gave the same audit log and record (`test_episode.digest`: audit
+`abe3d4fc...`, record `043ced06...`, 39,183 events, on a29e190, before contacts braked in
+5e88da3), and `murmur-replay --anchors` passes each
+with its own anchors (18,861 written one a decision, as before, and 477 batched).
+
 **What happens** (seed 1, `none`; a second episode of the same seed read our vehicles' truth
 every 10 s and the bridge's inbox every 30 s to 450 s, where `/api/tracks` outgrew the
 simulator's 16 MB response cap; at every instant both sampled, its 3,602 vehicles were the
@@ -1754,7 +1783,8 @@ would mean anything. Nor more seeds than 1. The timings above come from a shared
 23 GB) and are to be taken again on a quiet one.
 
 **Found besides.** The dry run of a SATCOM swarm takes a minute or two here (link coverage, above)
-and the first ticks after the dispatch tens of seconds (fsynced anchors). `GET /api/tracks` of
+and the first ticks after the dispatch tens of seconds (fsynced anchors; since murmur-fqid
+one fsync a tick, above). `GET /api/tracks` of
 Saturation's picture passes 16 MB by 450 s, the simulator's response cap
 (`sim/mod.rs`, `to_bytes(.., 16 << 20)`): a driver that reads it fails (the MCP tools answer
 through their own path). The episode's audit log is 238 MB: 127,713 of its 149,005 events are

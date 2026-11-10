@@ -247,7 +247,7 @@ in the console (`sim/fleets/contacts-demo.toml` shows coverage gaps at the Gate)
   unconfirmed is only followed where the vehicle runs it, never restarted on its own (a
   human decides), and one no longer in force that a vehicle runs raises an alert; a
   carried-over order needs the same vehicle (fleet identity beside the log) and an anchored
-  log (every decision anchored). Review fixes (10-04, two rounds; see DECISIONS). Console:
+  log (every decision anchored; since murmur-fqid once a decision tick). Review fixes (10-04, two rounds; see DECISIONS). Console:
   a Queue
   drawer (why each waits, time left, cancel, how recent ones left), queued paths dashed with
   QUEUED, sent orders labelled until the vehicle's telemetry confirms them. Not covered: an

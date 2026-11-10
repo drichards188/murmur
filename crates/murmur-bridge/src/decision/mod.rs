@@ -326,8 +326,9 @@ pub struct Settings {
     /// [`terrain`]. Not read with a tidewater URL.
     pub land_water: Option<PathBuf>,
     /// Run-time anchors of the audit log (`logs/anchors/<run-id>.anchors`, or
-    /// `MURMUR_ANCHOR_DIR`; every `MURMUR_ANCHOR_EVERY` events, 100; `MURMUR_ANCHOR_CMD` gets
-    /// each one). `MURMUR_ANCHORS=0` turns them off.
+    /// `MURMUR_ANCHOR_DIR`; every `MURMUR_ANCHOR_EVERY` events, 100, and one for the decisions
+    /// of each tick's batch, at its end: [`Decision::tick`]; `MURMUR_ANCHOR_CMD` gets each
+    /// one). `MURMUR_ANCHORS=0` turns them off.
     pub anchors: Option<AnchorConfig>,
     /// Rules 6: the file naming this station's last audit log (`logs/audit/.last-run-<http
     /// port>`, kept across clean stops too): lost-link values it still owed back are carried
@@ -714,7 +715,24 @@ impl Decision {
         } else if let Some(pointer) = &s.last_run {
             d.carry_restores(pointer);
         }
+        // the start's batch (what was carried over, what is owed back): anchored before the
+        // first tick
+        d.commit_anchors();
         Ok(d)
+    }
+
+    /// The end of a batch (bd murmur-fqid): one anchor for every decision logged since the
+    /// last anchor, one fsync for all of them ([`Anchors::commit`]). The tick commits at its
+    /// end, under the lock; what is logged between ticks (an operator's or an agent's request,
+    /// the task layer's write-ahead of a vehicle start, the queue) is in the next tick's
+    /// batch; the start commits its own, and the shutdown anchor covers the last.
+    fn commit_anchors(&self) {
+        if let Some(a) = self.anchors.get()
+            && let Err(e) = a.commit()
+        {
+            // the events are logged: the anchor stays due, and the next commit tries again
+            eprintln!("anchor {}: {e}", a.path().display());
+        }
     }
 
     /// The anchor file, when the log is anchored.
@@ -2365,6 +2383,8 @@ impl Decision {
         }
     }
 
+    /// The decision loop's step, once a second, under the decision lock; it ends with the
+    /// batch's anchor ([`Self::commit_anchors`]: every decision logged since the last tick).
     pub fn tick(&self) {
         {
             let mut guard = self.lock();
@@ -2392,6 +2412,8 @@ impl Decision {
             crate::perf::time("decision.step_identify", || self.step_identify(core));
             crate::perf::time("decision.write_pointer", || self.write_pointer(core));
             crate::perf::time("decision.write_fleet", || self.write_fleet(core));
+            // the batch's anchor: this tick's decisions and those logged since the last tick
+            crate::perf::time("decision.commit_anchors", || self.commit_anchors());
         }
         self.publish();
     }

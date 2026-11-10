@@ -216,19 +216,9 @@ fn removed_anchors_are_caught() {
     );
 }
 
-#[test]
-fn a_crashed_log_is_anchored_up_to_its_last_decision() {
-    // review 2: every intent transition and op state is anchored as it is written, so a log
-    // whose run crashed (no shutdown anchor) is covered up to its last decision, not only up
-    // to the last cadence anchor
-    let dir = scratch("decisions");
-    let cfg = AnchorConfig {
-        path: dir.join("run.anchors"),
-        every: 100,
-        cmd: None,
-    };
-    let log = MemorySink::new();
-    let anchors = Anchors::open(&cfg, Path::new("memory")).unwrap();
+/// An engine logging to `anchors`' sink, with an orbit for sky-1 dispatched: its decisions
+/// (`intent.state`) logged, nothing committed yet.
+fn dispatched(anchors: &Anchors, log: &MemorySink) -> (Engine, IntentId) {
     let clock = ManualClock::new(T0);
     let mut e = Engine::new(
         policy(),
@@ -244,30 +234,175 @@ fn a_crashed_log_is_anchored_up_to_its_last_decision() {
         .unwrap()
         .id();
     e.dispatch(id, &w).unwrap();
-    e.record_op_state(id, &uid("sky-1"), "sent", "uploading").unwrap();
-    // a crash: no shutdown anchor
-    let text = std::fs::read_to_string(&cfg.path).unwrap();
+    (e, id)
+}
+
+fn decisions(log: &str) -> usize {
+    lines(log)
+        .iter()
+        .filter(|l| l.contains("\"type\":\"intent.state\"") || l.contains("\"type\":\"op.state\""))
+        .count()
+}
+
+fn parsed(text: &str) -> Vec<Anchor> {
+    lines(text).iter().map(|l| serde_json::from_str(l).unwrap()).collect()
+}
+
+#[test]
+fn a_batch_of_decisions_is_anchored_once_and_a_crash_leaves_only_the_last_batch() {
+    // murmur-fqid: a decision marks an anchor due and the batch's commit writes one, on the
+    // newest line, for all of the batch's decisions; a crash before the commit leaves exactly
+    // that batch unanchored, everything before it anchored. (Until then every decision was
+    // anchored as it was written: review 2.)
+    let dir = scratch("decisions");
+    let cfg = AnchorConfig {
+        path: dir.join("run.anchors"),
+        every: 100,
+        cmd: None,
+    };
+    let file = || std::fs::read_to_string(&cfg.path).unwrap();
+    let log = MemorySink::new();
+    let anchors = Anchors::open(&cfg, Path::new("memory")).unwrap();
+    let (mut e, id) = dispatched(&anchors, &log);
+    for n in 0..4 {
+        e.record_op_state(id, &uid("sky-1"), "sent", &format!("uploading {n}")).unwrap();
+    }
+    let batch = decisions(&log.text());
+    assert!(batch >= 6, "{}", log.text());
+    // the batch's decisions wait for its commit: the start anchor alone so far
+    assert_eq!(parsed(&file()).len(), 1, "{}", file());
+    let a = anchors.commit().unwrap().expect("decisions were logged");
+    let first = lines(&log.text()).len();
+    assert_eq!((a.why.as_str(), a.seq), ("decision", first as u64), "on the newest line");
+    assert_eq!(parsed(&file()).len(), 2, "one anchor for {batch} decisions");
+    assert_eq!(anchors.syncs(), 2, "one fsync for them (and the start's)");
+    assert!(anchors.commit().unwrap().is_none(), "nothing due, no anchor");
+    assert_eq!(anchors.syncs(), 2, "and nothing to sync");
+    // the next batch, then a crash before its commit
+    for n in 4..7 {
+        e.record_op_state(id, &uid("sky-1"), "sent", &format!("uploading {n}")).unwrap();
+    }
     let ls = lines(&log.text());
+    let text = file();
     let r = verify(&log.text(), &text);
     assert!(!r.shutdown);
-    assert!(
-        r.problems.iter().all(|p| p.what.starts_with("no shutdown anchor")),
-        "{:?}",
-        r.problems
+    // what a carry-over checks: no problem but the shutdown anchor a crash never wrote
+    assert!(r.problems.iter().all(|p| p.what.starts_with("no shutdown anchor")), "{:?}", r.problems);
+    assert_eq!(r.last_anchored, Some(first as u64), "the first batch, to its last line");
+    assert_eq!(r.after_last, (ls.len() - first) as u64, "exactly the last batch is not");
+    assert_eq!(ls.len() - first, 3);
+    // the accepted cost: that batch cut away can't be told from a run that ended there...
+    let r_cut = verify(&rechain(&ls[..first]), &text);
+    assert!(r_cut.problems.iter().all(|p| p.what.starts_with("no shutdown anchor")), "{:?}", r_cut.problems);
+    // ...but a cut into the anchored batch is caught, and so is a rewritten decision in it
+    let r_short = verify(&rechain(&ls[..first - 1]), &text);
+    assert!(whats(&r_short).iter().any(|w| w.contains("log truncated")), "{:?}", whats(&r_short));
+    let mut forged = ls[..first].to_vec();
+    let at = forged.iter().position(|l| l.contains("uploading 2")).unwrap();
+    forged[at] = forged[at].replacen("uploading 2", "uploading 9", 1);
+    let r_forged = verify(&rechain(&forged), &text);
+    assert!(whats(&r_forged).iter().any(|w| w.contains("the log was rewritten")), "{:?}", whats(&r_forged));
+    // had the batch been committed, it would be anchored too: the gap is that batch alone
+    anchors.commit().unwrap().expect("due");
+    let r_after = verify(&log.text(), &file());
+    assert_eq!((r_after.last_anchored, r_after.after_last), (Some(ls.len() as u64), 0));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_burst_of_decisions_costs_its_cadence_anchors_and_one_commit() {
+    // a batch of many decisions (thousands of vehicles starting at once): the cadence anchors
+    // fall as they did, so fewer than `every` events are ever unanchored, and the commit adds
+    // one and syncs them all at once; the anchor command gets each anchor written, no more
+    let dir = scratch("burst");
+    let posted = dir.join("posted");
+    let cfg = AnchorConfig {
+        path: dir.join("run.anchors"),
+        every: 5,
+        cmd: Some(format!("cat >> '{}'", posted.display())),
+    };
+    let file = || std::fs::read_to_string(&cfg.path).unwrap();
+    let log = MemorySink::new();
+    let anchors = Anchors::open(&cfg, Path::new("memory")).unwrap();
+    let (mut e, id) = dispatched(&anchors, &log);
+    anchors.commit().unwrap();
+    let before = parsed(&file()).len();
+    let synced = anchors.syncs();
+    let from = lines(&log.text()).len() as u64;
+    assert_eq!(parsed(&file()).last().unwrap().seq, from, "the dispatch's batch committed");
+    for n in 0..23 {
+        e.record_op_state(id, &uid("sky-1"), "sent", &format!("uploading {n}")).unwrap();
+        let head = lines(&log.text()).len() as u64;
+        let last = parsed(&file()).last().unwrap().seq;
+        assert!(head - last < 5, "{} events unanchored", head - last);
+    }
+    assert_eq!(anchors.syncs(), synced, "the cadence anchors wait for the commit's fsync");
+    let a = anchors.commit().unwrap().expect("decisions were logged");
+    assert_eq!(anchors.syncs(), synced + 1, "one fsync for the batch");
+    let all = parsed(&file());
+    // 23 decisions: four cadence anchors (every 5 events) and the commit's on the last three
+    assert_eq!(
+        all[before..].iter().map(|a| (a.why.as_str(), a.seq - from)).collect::<Vec<_>>(),
+        vec![
+            ("every 5 events", 5),
+            ("every 5 events", 10),
+            ("every 5 events", 15),
+            ("every 5 events", 20),
+            ("decision", 23)
+        ]
     );
-    assert_eq!(r.last_anchored, Some(ls.len() as u64), "the last event, an op state, is anchored");
-    assert!(lines(&text).iter().any(|a| a.contains("\"why\":\"decision\"")), "{text}");
-    // a decision anchor removed is caught: the cadence anchor after it is no longer where it
-    // belongs, or the next decision anchor too far
+    assert_eq!(a.seq, from + 23);
+    anchors.close().unwrap();
+    anchors.flush_hook();
+    let text = file();
+    let r = verify(&log.text(), &text);
+    assert!(r.ok(), "{:?}", r.problems);
+    assert_eq!(std::fs::read_to_string(&posted).unwrap(), text, "one command a written anchor");
+    // tamper evidence against batched anchors, as against any: a rewritten decision, a cut
+    // tail, a removed commit anchor (the cadence anchor after it no longer where it belongs)
+    let ls = lines(&log.text());
+    let mut forged = ls.clone();
+    let at = forged.iter().position(|l| l.contains("uploading 21")).unwrap();
+    forged[at] = forged[at].replacen("uploading 21", "uploading 99", 1);
+    let r = verify(&rechain(&forged), &text);
+    assert!(whats(&r).iter().any(|w| w.contains("the log was rewritten")), "{:?}", whats(&r));
+    let r = verify(&rechain(&ls[..ls.len() - 2]), &text);
+    assert!(whats(&r).iter().any(|w| w.contains("log truncated")), "{:?}", whats(&r));
     let al = lines(&text);
     let i = al.iter().position(|a| a.contains("\"why\":\"decision\"")).unwrap();
+    assert!(al[i + 1].contains("every 5 events"), "{}", al[i + 1]);
     let mut v = al.clone();
     v.remove(i);
-    let r2 = verify(&log.text(), &v.join("\n"));
-    assert!(r2.problems.len() >= r.problems.len());
-    // the decisions' tail truncated: caught
-    let r3 = verify(&rechain(&ls[..ls.len() - 1]), &text);
-    assert!(whats(&r3).iter().any(|w| w.contains("log truncated")), "{:?}", whats(&r3));
+    let r = verify(&log.text(), &v.join("\n"));
+    assert!(whats(&r).iter().any(|w| w.contains("anchor missing")), "{:?}", whats(&r));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_anchor_file_with_an_anchor_on_every_decision_still_verifies() {
+    // anchor files written before murmur-fqid hold a "decision" anchor on each decision; the
+    // verifier reads them as it did (and the live ones committed: tests/versions.rs)
+    let dir = scratch("old");
+    let cfg = AnchorConfig {
+        path: dir.join("run.anchors"),
+        every: 100,
+        cmd: None,
+    };
+    let log = MemorySink::new();
+    let anchors = Anchors::open(&cfg, Path::new("memory")).unwrap();
+    let (mut e, id) = dispatched(&anchors, &log);
+    anchors.commit().unwrap();
+    for n in 0..4 {
+        e.record_op_state(id, &uid("sky-1"), "sent", &format!("uploading {n}")).unwrap();
+        // what the writer did after every decision
+        anchors.commit().unwrap();
+    }
+    anchors.close().unwrap();
+    let text = std::fs::read_to_string(&cfg.path).unwrap();
+    assert_eq!(parsed(&text).iter().filter(|a| a.why == "decision").count(), 5, "{text}");
+    let r = verify(&log.text(), &text);
+    assert!(r.ok(), "{:?}", r.problems);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// murmur-dup: an anchor is timed by its writer's clock, and the verifier holds the file to

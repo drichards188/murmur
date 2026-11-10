@@ -814,9 +814,11 @@ chain, a recomputed chain caught only by the head.
 
 **Run-time anchors** (`src/anchor.rs`). The bridge wraps its log's sink so that the hash of
 the first line (`run.started`) and the head are written, as the log grows, to a separate
-append-only file: after the first event, every `MURMUR_ANCHOR_EVERY` events (100), after
-every event a restart carries intents over by (`intent.state`, `intent.resumed`,
-`op.state`: "decision"), and at a clean shutdown (`logs/anchors/<run-id>.anchors`, each
+append-only file: after the first event, every `MURMUR_ANCHOR_EVERY` events (100), at the
+end of each batch that logged an event a restart carries intents over by (`intent.state`,
+`intent.resumed`, `op.state`: "decision"; `Anchors::commit`, one anchor on the newest line
+for all of the batch's decisions; the bridge's batch is its decision tick, bd murmur-fqid),
+and at a clean shutdown (`logs/anchors/<run-id>.anchors`, each
 timed on the clock the writer gives, the bridge's own, never earlier than the anchor before:
 the verifier refuses anchors out of order, murmur-dup; and with the wall clock beside it,
 `utc`, so any time in the log maps to UTC;
@@ -831,7 +833,14 @@ at most N after it, a shutdown anchor last, so a removed anchor line shows), and
 nothing may follow the shutdown anchor: the bridge closes the log behind it (later appends
 fail, so nothing is done that isn't logged) and exits with the decision lock held. A run
 that crashed has no shutdown anchor and fails the check: its tail can't be told from a cut
-one, but everything up to its last decision is anchored (a carry-over checks that much).
+one, but everything up to its last committed batch is anchored (a carry-over checks that
+much). The file is synced once a batch, at its commit (cadence anchors are written as they
+fall due and synced with it), and after the start and shutdown anchors. What a process crash
+leaves unanchored is fewer than `MURMUR_ANCHOR_EVERY` events, all logged since the last commit
+(in the bridge, the end of the last decision tick), decisions among them; a host crash may
+also lose the anchors written since that commit, as the log (never synced) may lose its own
+tail. Until murmur-fqid every decision was anchored as it was written, one fsync each, and
+3,600 vehicles starting at once held the decision tick for tens of seconds.
 
 **An anchor is only as strong as the separation between where it is kept and whoever can
 write the log.** The local anchor file sits in the same account as the log: it catches an

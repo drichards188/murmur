@@ -400,7 +400,8 @@ situation's branch). The 36 opening orders went out within about two minutes of 
 ready. Some were refused (one member's navigation status 52 s old refuses its swarm's whole
 100-vehicle order; the runner retries a stale one) and some failed (one member's failsafe RTL
 ends its swarm's order). While they went out the decision tick reached 1.6 to 3.2 s for a minute
-or two, then averaged 120 ms; with the fleet spread over its rings the sensing step averaged 340
+or two (an fsynced anchor on every op state; one a tick since murmur-fqid, measured headless in
+HEADLESS.md 17.6, not live yet), then averaged 120 ms; with the fleet spread over its rings the sensing step averaged 340
 to 490 ms (worst 700) and the truth handler 550 ms (worst 1.2 s). The bridge used 1 to 5 cores:
 the loops above are about one; the rest is the 3,602 links' packets (44,000 a second) and 3,600
 orders' watchers. The shooter's act at 10:00 was observed by about 40 of SURFACE-3's cameras and

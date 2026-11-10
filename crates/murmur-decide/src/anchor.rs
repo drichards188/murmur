@@ -12,11 +12,33 @@
 //! separate trust domain: `MURMUR_ANCHOR_CMD` handing each anchor to a machine, a service or
 //! a timestamping authority that the log's writer can't change.
 //!
-//! An anchor is taken after the first event (`run.started`), every `every` events, after every
-//! event a restart carries intents over by (`intent.state`, `intent.resumed`, `op.state`:
-//! "decision"), and at a clean shutdown. Events after the last anchor are not covered: their
-//! truncation can't be told from a run that ended there (the shutdown anchor tells a clean
-//! end); after a crash, that is at most the vehicle events since the last decision.
+//! An anchor is taken after the first event (`run.started`), every `every` events, when a
+//! batch that logged a decision ends, and at a clean shutdown. A decision is an event a
+//! restart carries intents over by (`intent.state`, `intent.resumed`, `op.state`); a batch is
+//! what the writer commits at once ([`Anchors::commit`]): a decision marks an anchor due, and
+//! the commit writes one ("decision") on the newest line, which covers every line before it
+//! through the hash chain. The bridge commits at the end of each decision tick (once a
+//! second) and of its start, so a decision logged between ticks (an operator's or an agent's
+//! request, the task layer's write-ahead of a vehicle start) is in the next tick's batch.
+//! Every anchor goes into the file as it falls due; the file is synced (`sync_data`) after the
+//! start anchor, at each commit (the cadence anchors written in the batch with it) and after
+//! the shutdown anchor. Thousands of decisions at once (3,600 vehicles starting) cost one
+//! decision anchor and one fsync, besides the cadence anchors their lines reach, not an anchor,
+//! an fsync and a `MURMUR_ANCHOR_CMD` call each (bd murmur-fqid).
+//!
+//! Events after the last anchor are not covered: their truncation can't be told from a run
+//! that ended there (the shutdown anchor tells a clean end). After the process crashes they
+//! are fewer than `every` (the cadence anchor is written as it falls due), all logged since
+//! the last commit: in the bridge, since the end of the last decision tick, so about a
+//! second's worth while the tick keeps its period (a tick that runs long stretches it by its
+//! own length). Any of them may be decisions: the last batch's. After the host crashes (power,
+//! the kernel) the anchors written since the last commit may be lost with the file's unsynced
+//! tail, so everything up to the last commit is anchored, any number of events after it
+//! perhaps not; the audit log itself is never synced, so its own tail is at risk the same way.
+//! Until murmur-fqid each decision was anchored, and synced, as it was written, and only
+//! vehicle events were left after the last anchor. What is anchored is as tamper-evident as
+//! before, and an anchor file reads the same: [`verify`] holds a "decision" anchor, as before,
+//! to at most `every` events after the anchor before it.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -44,7 +66,8 @@ pub struct Anchor {
     /// The last event written when the anchor was taken, and the SHA-256 of its line.
     pub seq: u64,
     pub head: String,
-    /// "start", "every N events", "decision" or "shutdown".
+    /// "start", "every N events", "decision" (a batch that logged a decision, committed) or
+    /// "shutdown".
     pub why: String,
     /// The cadence the writer was set to: an anchor every this many events. The verifier
     /// holds the file to it, so a removed anchor shows.
@@ -91,6 +114,13 @@ struct State {
     seq: u64,
     head: Option<String>,
     since: u64,
+    /// A decision was logged after the last anchor: the batch's commit anchors it.
+    due: bool,
+    /// Anchors were written since the file was last synced (cadence anchors, synced with the
+    /// batch's commit).
+    unsynced: bool,
+    /// The file's syncs so far.
+    syncs: u64,
     /// The shutdown anchor is written: nothing more may be appended.
     closed: bool,
 }
@@ -127,6 +157,9 @@ impl Anchors {
             seq: 0,
             head: None,
             since: 0,
+            due: false,
+            unsynced: false,
+            syncs: 0,
             closed: false,
         }))))
     }
@@ -155,13 +188,36 @@ impl Anchors {
         }
     }
 
+    /// The end of a batch (the bridge's decision tick, its start): an anchor ("decision") on
+    /// the head if a decision was logged after the last anchor, which covers every line up to
+    /// the head, none otherwise; and the file synced once for every anchor written in the
+    /// batch. Until the commit, the batch's decisions are not anchored (a crash leaves them
+    /// out, as the module docs say). An anchor that can't be written stays due: the next
+    /// commit, or any anchor before it, tries again.
+    pub fn commit(&self) -> std::io::Result<Option<Anchor>> {
+        let mut st = self.lock();
+        if st.due {
+            return st.write("decision", true).map(Some);
+        }
+        if st.unsynced {
+            st.sync()?;
+        }
+        Ok(None)
+    }
+
+    /// How many times the anchor file was synced so far (one a batch at most, besides the start
+    /// and the shutdown).
+    pub fn syncs(&self) -> u64 {
+        self.lock().syncs
+    }
+
     /// Anchor the head now (a clean shutdown). None before the first event.
     pub fn anchor_now(&self, why: &str) -> std::io::Result<Option<Anchor>> {
         let mut st = self.lock();
         if st.head.is_none() {
             return Ok(None);
         }
-        st.write(why).map(Some)
+        st.write(why, true).map(Some)
     }
 
     /// The shutdown anchor, and the log closed behind it: every later append fails (the
@@ -172,7 +228,7 @@ impl Anchors {
         if st.head.is_none() {
             return Ok(None);
         }
-        st.write("shutdown").map(Some)
+        st.write("shutdown", true).map(Some)
     }
 
     fn is_closed(&self) -> bool {
@@ -195,22 +251,20 @@ impl Anchors {
         st.seq = line_seq(line).unwrap_or(st.seq + 1);
         let head = sha256_hex(line.as_bytes());
         st.head = Some(head.clone());
+        // a decision waits for its batch's commit (one anchor for all of them), unless an
+        // anchor written before it covers it
+        st.due |= decision_line(line);
+        // the start anchor synced at once; a cadence anchor with its batch's commit
         let why = if st.first.is_none() {
             st.first = Some(head);
             st.since = 0;
-            Some("start".to_string())
+            Some(("start".to_string(), true))
         } else {
             st.since += 1;
-            if st.since >= st.every {
-                Some(format!("every {} events", st.every))
-            } else if decision_line(line) {
-                Some("decision".to_string())
-            } else {
-                None
-            }
+            (st.since >= st.every).then(|| (format!("every {} events", st.every), false))
         };
-        if let Some(why) = why
-            && let Err(e) = st.write(&why)
+        if let Some((why, sync)) = why
+            && let Err(e) = st.write(&why, sync)
         {
             // the event is logged: anchoring failing must not fail it (the engine would
             // then believe it unwritten and write its seq again); the next anchor retries
@@ -220,7 +274,9 @@ impl Anchors {
 }
 
 impl State {
-    fn write(&mut self, why: &str) -> std::io::Result<Anchor> {
+    /// Write an anchor on the head, and sync the file when `sync` says (else the next sync
+    /// covers it).
+    fn write(&mut self, why: &str, sync: bool) -> std::io::Result<Anchor> {
         // never earlier than the anchor before (a wall clock steps back: this host's about
         // 0.65 s every 32 s), or a genuine file fails its order check
         let t = self.clock.now().0.max(self.last_t);
@@ -240,13 +296,27 @@ impl State {
         buf.push(b'\n');
         self.file.write_all(&buf)?;
         self.file.flush()?;
-        self.file.sync_data()?;
+        if sync {
+            self.sync()?;
+        } else {
+            self.unsynced = true;
+        }
         self.since = 0;
+        // the head is anchored: every decision up to it with it
+        self.due = false;
         self.last_t = t;
         if let Some(h) = &self.hook {
             let _ = h.send(HookJob::Run(json));
         }
         Ok(a)
+    }
+
+    /// Sync the file: every anchor written so far is on disk.
+    fn sync(&mut self) -> std::io::Result<()> {
+        self.file.sync_data()?;
+        self.syncs += 1;
+        self.unsynced = false;
+        Ok(())
     }
 }
 
@@ -305,7 +375,8 @@ impl<S: AuditSink> AuditSink for AnchoredSink<S> {
 }
 
 /// An event a restart carries intents over by: an intent's state change, a carried-over
-/// intent, an op's state (whether a vehicle started an order).
+/// intent, an op's state (whether a vehicle started an order). It makes its batch's commit
+/// write an anchor.
 fn decision_line(line: &str) -> bool {
     ["\"type\":\"intent.state\"", "\"type\":\"intent.resumed\"", "\"type\":\"op.state\""]
         .iter()

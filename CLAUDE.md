@@ -141,6 +141,12 @@ meaningful.
 - `murmur-replay` accepts only the current decision-rules version by default: replay older logs with
   `--rules N` / `--min-rules N` (versions and changelog in `crates/murmur-decide/README.md`). The bridge
   writes run-time anchors to `logs/anchors/<run>.anchors`; verify with `murmur-replay <log> --anchors <file>`.
+  Decisions are anchored once a batch (murmur-fqid): the tick commits one anchor, one fsync, for every
+  decision since the last (`Anchors::commit`, `Decision::commit_anchors`; the start commits its own;
+  cadence anchors are written as they fall due and synced with the commit); a process crash leaves
+  unanchored only what was logged since the last tick's end, fewer than `MURMUR_ANCHOR_EVERY` (100)
+  events, decisions among them (a host crash: anything since that commit). Code that appends outside
+  the tick needs no commit of its own: the next tick's covers it.
   Engagements need two distinct signers with engagement authority: in a dev run
   `MURMUR_ENGAGE_OPERATORS` (each also in `MURMUR_OPERATORS`, or the bridge refuses to start; both
   lists are logged as the run's roster); in a credentials run the credential file's engagement flag

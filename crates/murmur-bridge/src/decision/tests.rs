@@ -96,6 +96,17 @@ fn rig_auth(policy: Policy, auth: murmur_decide::AuthMode) -> Rig {
 
 /// [`rig_auth`] with the engine on `engine_clock`.
 fn rig_clocked(policy: Policy, auth: murmur_decide::AuthMode, engine_clock: EngineClock) -> Rig {
+    rig_anchored(policy, auth, engine_clock, None)
+}
+
+/// [`rig_clocked`], its log anchored by `anchors` as `Decision::load` anchors the bridge's
+/// (the tick commits each batch's anchor).
+fn rig_anchored(
+    policy: Policy,
+    auth: murmur_decide::AuthMode,
+    engine_clock: EngineClock,
+    anchors: Option<murmur_decide::Anchors>,
+) -> Rig {
     let root = root();
     let world = World::new(Config {
         base_port: 0,
@@ -131,7 +142,10 @@ fn rig_clocked(policy: Policy, auth: murmur_decide::AuthMode, engine_clock: Engi
             policy,
             catalog: Catalog::load(&root.join("sim/platforms.toml")).expect("catalog"),
             areas: AreaSet::load_dir(&root.join("sim/areas"), clock.now()).expect("areas"),
-            sink: Box::new(log.clone()),
+            sink: match &anchors {
+                Some(a) => Box::new(a.sink(log.clone())),
+                None => Box::new(log.clone()),
+            },
             audit_path: PathBuf::from("memory"),
             clock: engine,
             terrain,
@@ -147,6 +161,9 @@ fn rig_clocked(policy: Policy, auth: murmur_decide::AuthMode, engine_clock: Engi
         },
     )
     .expect("engine");
+    if let Some(a) = anchors {
+        let _ = d.anchors.set(a);
+    }
     Rig {
         world,
         d,

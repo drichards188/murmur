@@ -2846,7 +2846,9 @@ group. Dates are 2026.
   A carried-over order needs the same vehicle, not only the same platform (callsign and
   home within 200 m, from a fleet identity written beside the log), and a log whose anchors
   and fleet identity can be read (or `MURMUR_RESUME_UNVERIFIED=1`); every decision is
-  anchored as it is written, so a crashed log is covered to its last decision. A reboot is
+  anchored as it is written, so a crashed log is covered to its last decision (since
+  2026-11-10, murmur-fqid: to the end of the last decision tick before the crash, "Decision
+  anchors, one a batch" below). A reboot is
   judged at the vehicle clock's own rate (a slow simulator is not a reboot). An agent may
   not replace a human's order that no vehicle has started yet.
 - **A start is logged before it goes out** (10-04, murmur-dma; rules 7, provisional
@@ -3376,3 +3378,58 @@ low battery) into one alert per swarm and cause for the Inbox, marking each fold
 `folded_into`, and `/api/swarms` summarises each swarm about once a second. Neither is logged or
 read by the decision engine; the member alerts and every intent stay what the audit log holds, so
 replay and the engine's checks never depend on how the view groups them.
+
+## 2026-11-10: Decision anchors, one a batch (murmur-fqid)
+
+Every decision line (`intent.state`, `intent.resumed`, `op.state`) had a run-time anchor of its
+own, written with `sync_data`, so a crashed log was anchored up to its last decision. When
+thousands of vehicles start at once their ops log thousands of such lines: in the headless
+Saturation the 36 opening orders to 3,602 vehicles logged 13,400 in five simulated seconds, one
+fsync each (8.7 ms on this host), and the decision ticks after them took 4 to 34 s
+([HEADLESS.md](HEADLESS.md) 17.6). The owner approved a group commit: a decision marks an anchor
+due, and one anchor on the newest line, which covers every line before it through the hash
+chain, is written once per batch.
+
+The batch is the decision tick. The bridge, and the headless simulator with the same code,
+commits at the end of each tick under the decision lock (`Decision::commit_anchors`,
+`Anchors::commit`) and at the end of its start; the shutdown anchor covers the last. What is
+logged between ticks (an operator's or an agent's request, the queue, the task layer's
+write-ahead of each vehicle start) is in the next tick's batch. Not taken: a commit at every
+release of the decision lock (a guard whose drop commits) covers every path as well, but the
+write-ahead takes the lock once per vehicle start, so 3,602 starts would still have cost 3,602
+fsyncs and anchor-command calls; and a background flusher on a timer of its own adds a thread
+and a clock (the headless simulator's clock is simulated and may be read only inside its
+runtime) for what the once-a-second tick already is. The cadence anchor (every
+`MURMUR_ANCHOR_EVERY` events, 100) is still written as it falls due, but synced with its batch's
+commit: the file is synced once a batch (and after the start and the shutdown anchors). A first
+version synced each cadence anchor at once, as before; the burst's ticks then still took 0.2 to
+0.6 s, most of it those fsyncs (248 in its five seconds).
+
+The guarantee now. If the bridge's process crashes, it leaves unanchored only the events after
+the last anchor written: fewer than `MURMUR_ANCHOR_EVERY` events, all logged since the end of
+the last decision tick (about a second's worth while ticks keep their period; a tick that runs
+long stretches it by its own length); any of them may be decisions, where before only vehicle
+events could be. If the host crashes (power, the kernel), the anchors written since the last
+commit may be lost with the file's unsynced tail, so what is anchored is everything up to the
+end of the last tick, and any number of events after it may not be; the audit log is never
+synced, so its own tail is at risk the same way (before, each anchor was synced as it was
+written, and the log was not either). What is anchored is as tamper-evident as before: a
+rewritten or cut log is caught against batched anchors as against any, the file's format is
+unchanged (a "decision" anchor at most N events after the one before, as `verify` always
+allowed), and old anchor files verify as they did. A restart reads such a log as it read one
+with vehicle events after its last anchor: the carry-over (rules 5) and the rules 15 fallback
+refuse a log only for a problem other than the missing shutdown anchor, and an unanchored tail
+is none, so the next start carries the last batch's open intents over (rules 12's own reading
+of the pointer's log checks no anchors).
+`MURMUR_ANCHOR_CMD` is run once per anchor, so decisions now cost it one call a tick with any,
+not one each (cadence anchors are called as before).
+
+Checked: the anchor tests (a batch of decisions writes one anchor and one fsync; a burst writes
+its cadence anchors and one more; a crash before the commit leaves exactly that batch
+unanchored; a rewritten, cut or anchor-stripped log is still caught; a file with an anchor on
+every decision still verifies) and the bridge's (a crash between two ticks leaves the decisions
+since the first unanchored, and the next start carries them over). Measured on the headless
+Saturation's first 300 s (HEADLESS.md 17.6): the five seconds from the dispatch made 13,361
+fsyncs before and 5 after, the ticks there took 5 to 18 s before and 0.02 to 0.46 s after (but
+one of 9.2 s in one run, under a load of 20), with the same audit log and record, and each log
+verified against its anchors.

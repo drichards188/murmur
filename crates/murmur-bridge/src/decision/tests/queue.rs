@@ -1021,3 +1021,70 @@ async fn a_start_logged_ahead_is_not_lost_to_a_crash_right_after_it() {
     .expect("parses");
     assert!(rb.ok(), "{:?}", rb.mismatches);
 }
+
+// ---- anchors: one a batch (murmur-fqid) ----------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn a_crash_inside_a_batch_leaves_its_decisions_unanchored_and_the_next_start_carries_them() {
+    // the tick commits its batch's anchor; a decision logged after it (an operator's order,
+    // the task layer's write-ahead of its start) waits for the next tick's. A crash before
+    // that tick leaves exactly those lines unanchored, everything before them anchored, and
+    // the next start carries the order over as before: an unanchored tail is no mismatch
+    // (as vehicle events after the last decision were not before)
+    let dir = std::env::temp_dir().join(format!("murmur-anchor-batch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let cfg = murmur_decide::AnchorConfig {
+        path: dir.join("a.anchors"),
+        every: 100,
+        cmd: None,
+    };
+    let anchors = murmur_decide::Anchors::open(&cfg, std::path::Path::new("a.jsonl")).expect("anchors");
+    let policy = Policy::load(&root().join("sim/policy.toml")).expect("policy");
+    let r = rig_anchored(policy, murmur_decide::AuthMode::Dev, EngineClock::Manual, Some(anchors));
+    let file = || std::fs::read_to_string(&cfg.path).expect("anchor file");
+    let parsed = |text: &str| -> Vec<murmur_decide::Anchor> {
+        text.lines().map(|l| serde_json::from_str(l).expect("anchor")).collect()
+    };
+    let head = || r.log.text().lines().count() as u64;
+    let (_c1, _w1) = r.watched(47, Firmware::Copter, "x10", (LAT, LON), quick());
+    let (_c2, _w2) = r.watched(48, Firmware::Copter, "x10", (LAT, LON + 0.002), quick());
+    sleep(Duration::from_secs(1)).await;
+    let first = r.d.submit(&op1(), orbit(47)).await.expect("submit");
+    assert_eq!(first.state, State::Dispatched, "{}", r.reason(first.id));
+    sleep(Duration::from_secs(2)).await;
+    // the order's decisions and its start, logged ahead, wait for the tick: the start anchor
+    // alone so far
+    assert!(r.log.text().contains("\"ahead\":true"), "{}", r.log.text());
+    assert_eq!(parsed(&file()).len(), 1, "{}", file());
+    r.d.tick();
+    let anchored = head();
+    let a = parsed(&file());
+    assert_eq!(a.len(), 2, "one anchor for the batch: {}", file());
+    assert_eq!((a[1].why.as_str(), a[1].seq), ("decision", anchored), "on the log's head");
+    // the next batch: a second order between ticks, then the crash
+    let second = r.d.submit(&op1(), orbit(48)).await.expect("submit");
+    assert_eq!(second.state, State::Dispatched, "{}", r.reason(second.id));
+    sleep(Duration::from_secs(2)).await;
+    let crashed = r.log.text();
+    let crashed_anchors = file();
+    let tail: Vec<&str> = crashed.lines().skip(anchored as usize).collect();
+    let second_intent = format!("\"intent\":{}", second.id.0);
+    assert!(
+        tail.iter().any(|l| l.contains("\"type\":\"intent.state\"") && l.contains(&second_intent)),
+        "the second order's decisions are in the unanchored batch: {tail:?}"
+    );
+    let rep = murmur_decide::anchor::verify(&crashed, &crashed_anchors);
+    assert!(rep.problems.iter().all(|p| p.what.starts_with("no shutdown anchor")), "{:?}", rep.problems);
+    assert_eq!(rep.last_anchored, Some(anchored));
+    assert_eq!(rep.after_last, tail.len() as u64, "exactly the batch since the tick");
+    assert_eq!(crate::decision::queue::anchors_refuse(&crashed, &crashed_anchors), None);
+    // the next start carries both orders over, the second from the unanchored batch
+    let (b, _) = restart(&r);
+    let check = CarryCheck {
+        anchors: Some(crashed_anchors),
+        fleet: None,
+    };
+    let carried = b.carry_over("a.jsonl", &crashed, &check).expect("carried");
+    assert!(carried.contains(&second.id) && carried.contains(&first.id), "{carried:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
