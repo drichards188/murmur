@@ -19,6 +19,8 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 toml = "1"
 # the bridge's physical sensing model reads terrain grids (gzip), compiled here with it
 flate2 = "1"
+# and runs each pass's vehicles on a thread pool (bd murmur-9730)
+rayon = "1.12"
 
 [lints]
 workspace = true

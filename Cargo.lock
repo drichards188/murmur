@@ -1513,6 +1513,7 @@ dependencies = [
  "flate2",
  "murmur-decide",
  "murmur-weather",
+ "rayon",
  "serde",
  "serde_json",
  "toml",
