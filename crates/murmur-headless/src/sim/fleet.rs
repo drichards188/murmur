@@ -55,12 +55,26 @@ fn lock(m: &Mutex<Held>) -> MutexGuard<'_, Held> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The loopback port every stand-in socket of this process is bound to ([`idle_socket`]).
+static SHARED_PORT: Mutex<Option<u16>> = Mutex::new(None);
+
 /// A socket for the stand-in's `Link` that is never used for a packet (its frames are
-/// captured): unbound, so it takes no port. Inside a tokio runtime.
-fn unbound() -> Result<UdpSocket, String> {
+/// captured, and its sends fail: it is connected to nothing). A send on an unbound UDP socket
+/// binds it to an ephemeral port first, so each stand-in held one of the host's (Saturation's
+/// 3,602 stand-ins held 3,602 of its 4,096; murmur-lleq): every stand-in socket of the process
+/// is bound to one loopback port instead, shared (`SO_REUSEPORT`), to which nothing is ever
+/// sent. Unbound as before should that fail. Inside a tokio runtime.
+fn idle_socket() -> Result<UdpSocket, String> {
     let raw = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None)
         .map_err(|e| e.to_string())?;
     raw.set_nonblocking(true).map_err(|e| e.to_string())?;
+    {
+        let mut port = SHARED_PORT.lock().unwrap_or_else(|e| e.into_inner());
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port.unwrap_or(0)));
+        if raw.set_reuse_port(true).is_ok() && raw.bind(&addr.into()).is_ok() && port.is_none() {
+            *port = raw.local_addr().ok().and_then(|a| a.as_socket()).map(|a| a.port());
+        }
+    }
     UdpSocket::from_std(raw.into()).map_err(|e| e.to_string())
 }
 
@@ -78,7 +92,7 @@ impl Fleet {
         let mut vehicles = Vec::with_capacity(cfgs.len());
         for cfg in cfgs {
             let uid = cfg.uid();
-            let mut v = Vehicle::seeded(cfg, unbound()?, None, seed)?;
+            let mut v = Vehicle::seeded(cfg, idle_socket()?, None, seed)?;
             v.link.capture();
             if let Some(pct) = battery_pct.get(&uid) {
                 let cap = v.capacity_mah();
@@ -211,7 +225,7 @@ impl Fleet {
         let mut cfg = old.cfg.clone();
         cfg.home = [lat, lon, alt, old.st.heading];
         let seed = self.seed ^ n.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        let mut v = Vehicle::seeded(cfg, unbound()?, old.water.clone(), seed)?;
+        let mut v = Vehicle::seeded(cfg, idle_socket()?, old.water.clone(), seed)?;
         v.link.capture();
         v.params = std::mem::take(&mut old.params);
         v.battery = old.battery.clone();

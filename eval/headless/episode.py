@@ -60,8 +60,8 @@ from pathlib import Path
 from typing import Any
 
 from eval.agent import _mcp_args, _rest_body
-from eval.situation import AUTOPLAY_OPERATOR, SCRIPTED_SETUP, SETUP_AGENT, SETUP_OPERATOR, playbook_json
-from eval.situation_run import dry_run_summary, labelled, submits_itself
+from eval.situation import AUTOPLAY_OPERATOR, SCRIPTED_SETUP, SETUP_AGENT, SETUP_OPERATOR, playbook_json, swarm_uids
+from eval.situation_run import STALE_RETRIES, STALE_RETRY_S, dry_run_summary, labelled, stale_only, submits_itself
 from eval.storyline import select_vehicles
 
 from . import REPO
@@ -191,6 +191,12 @@ class Runner:
         self.ready_t: float | None = None
         self.orders: list[dict[str, Any]] = []
         self.phase = "waiting"
+        # the opening orders still to issue (from `next_order`) and the vehicles read when the
+        # fleet was ready, which every order selects from, as the live runner's one read
+        self.next_order = 0
+        self.vehicles: list[dict[str, Any]] = []
+        self.stale_retries = 0
+        self.first_t: float | None = None
 
     def wake(self, now: float) -> float | None:
         ep = self.ep
@@ -204,20 +210,37 @@ class Runner:
                      if v.get("nav_ready") and v.get("position") and (ep.e.world != "v3" or v.get("home"))}
             if ep.want <= ready or now >= ep.e.ready_timeout_s:
                 self.ready_t = now
-                self.issue_orders(vehicles, now)
-                self.phase = "running"
-                ep.start_operator(now)
-                return None
-            return now + 1.0
+                self.vehicles = vehicles
+                self.phase = "ordering"
+            else:
+                return now + 1.0
+        if self.phase == "ordering":
+            later = self.issue_orders(self.vehicles, now)
+            if later is not None:
+                return later
+            self.phase = "running"
+            ep.start_operator(now)
         return None
 
-    def issue_orders(self, vehicles: list[dict[str, Any]], now: float) -> None:
+    def issue_orders(self, vehicles: list[dict[str, Any]], now: float) -> float | None:
+        """The opening orders from the next one on, in the situation's order, at this instant.
+        A swarm's order (`vehicles = {swarm = ...}`: every member as the fleet plans them, as the
+        live runner's `swarm_uids`) whose dry run fails only on stale facts is asked again
+        `STALE_RETRY_S` later, up to `STALE_RETRIES` times, as live, holding the orders after it:
+        the time to ask again (the runner's next wake), or None when every order is issued. An
+        order to named vehicles is issued at once, as before."""
         ep = self.ep
         setup = HeadlessSession(ep.sim, SETUP_AGENT, "0.1")
-        for o in ep.e.orders:
-            rec: dict[str, Any] = {"id": o.id, "task": o.task, "t": round(now, 3)}
+        while self.next_order < len(ep.e.orders):
+            o = ep.e.orders[self.next_order]
+            if self.first_t is None:
+                self.first_t = now
+            rec: dict[str, Any] = {"id": o.id, "task": o.task, "t": round(self.first_t, 3)}
             try:
-                chosen = select_vehicles(o.vehicles, vehicles)
+                members = swarm_uids(o.vehicles, ep.planned)
+                if members is not None:
+                    rec["swarm"] = o.vehicles["swarm"]
+                chosen = select_vehicles(o.vehicles if members is None else {"uids": members}, vehicles)
                 rec["vehicles"] = [(v.get("identity") or {}).get("callsign") or str(v["uid"]) for v in chosen]
                 req = {"task": o.task, "uids": [v["uid"] for v in chosen], **dict(o.params)}
                 note = o.note or f"opening order of situation {ep.e.name}"
@@ -225,6 +248,13 @@ class Runner:
                 status, preview = ep.sim.api("POST", "/api/intents/preview", body, SETUP_OPERATOR)
                 if status // 100 != 2:
                     raise RuntimeError(f"dry run: {status} {preview}")
+                if members is not None and self.stale_retries < STALE_RETRIES and stale_only(preview):
+                    self.stale_retries += 1
+                    return now + STALE_RETRY_S
+                if members is not None:
+                    rec["t_issued"] = round(now, 3)
+                    if self.stale_retries:
+                        rec["stale_retries"] = self.stale_retries
                 rec["dry_run"] = dry_run_summary(preview)
                 if not submits_itself(preview):
                     out = ep.run_async(setup.propose(labelled(SCRIPTED_SETUP, note), **_mcp_args(req)))
@@ -237,6 +267,10 @@ class Runner:
             except Exception as ex:  # noqa: BLE001 (recorded; the situation goes on)
                 rec["error"] = str(ex)
             self.orders.append(rec)
+            self.next_order += 1
+            self.stale_retries = 0
+            self.first_t = None
+        return None
 
 
 class PlaybookAgent:

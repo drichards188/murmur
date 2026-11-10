@@ -1592,6 +1592,169 @@ docs/load-test.md has them).
     .venv/bin/python -m eval.headless.batch --situation san-diego-watch --seeds 1-3 9 --agent none playbook
     .venv/bin/python -m eval.headless.batch --situation golden-gate-scale-watch --seeds 1-3 --agent none playbook
 
+### 17.6 Saturation (3,602 nodes; bd murmur-lleq, 2026-11-10)
+
+**What the world covers.** Saturation (`sim/situations/swarm-saturation.toml`) as live runs it,
+in a world of its own (`sim/worlds/golden-gate-saturation.toml`):
+
+- **Ours: 3,602 stand-ins in 37 swarms**: 1,700 X10 quadcopters (17 picket rings of 100, EO/IR,
+  mesh radio), 1,300 Pumas (10 search lanes over the inner gulf and 3 relay chains, 100 each,
+  EO/IR, LOS radio), 200 Saildrones (2 rings at sea, EO/IR and AIS, SATCOM), 300 Corsairs (2 rings
+  and a lane in the strait and the bay, EO/IR, AIS and ESM, SATCOM), 100 REMUS AUVs (a ring under
+  the bridge, active sonar, acoustic modem), 2 armed MQ-9Bs (radar, EO/IR, AIS; no order).
+- **Contacts: 507**, 500 in the air (319 `small_drone` and 180 `oneway_drone` in five hostile
+  swarms, and the shooter, an `armed_uas` with two light missiles that its contacts file orders
+  to fire at USV 3201) and 7 on the surface (2 ferries, 2 cargo ships, 2 fishing boats, a
+  sailboat). Nothing under water, nothing on the ground.
+- **The map**: the Golden Gate's baked grids (the surface for the links' line of sight, the
+  land/water grid for the domain rule and our boats' depth, the current field), the situation's
+  widened operating area, the physical sensing model with no terrain grid (line of sight by the
+  earth's curve only), as live (its contacts file names none).
+- **The tasks**: 36 opening orders, one per swarm to all its members (22 orbits, 14 patrols), out
+  by policy from `op-setup`; the jammer over the north approach from 240 to 420 s (three events,
+  mesh, LOS, SATCOM); the shooter's two attack orders; op-auto confirming rule declarations. No AI
+  in the episodes measured here (`none`); the situation has no `[playbook]`.
+- **Shortcuts**, besides the simulator's own (section 12; 17.4's water): the clock stands still
+  while the driver talks to the bridge, so the 36 orders go out at one simulated instant (live
+  they took about two minutes); the tide is the grids' bake (10:00Z) though the situation starts
+  at 17:00Z; the surface grid ends at 122.62 W, so the search lanes west of it see no terrain
+  (open sea). Both live and here, the relay chain relays nothing and the tracker associates by
+  truth id (docs/load-test.md).
+
+Run it:
+
+    .venv/bin/python -m eval.headless.batch --situation swarm-saturation --seeds 1 --agent none --workers 1 --keep-audit
+
+**What it took.** The situation names its own world, which only the headless simulator reads
+(the Golden Gate's own world would pin the legacy sensing model, as for every v1 situation; live
+reads nothing of it but the name, and the loaded situation is otherwise the same, field for
+field). The world takes the Golden Gate's grids, currents, station, points and pinned element
+sets with Saturation's fleet, contacts and areas. The runner (`episode.py` `Runner`) sends an
+order to `{swarm = ...}` to every member as the fleet plans them, as the live runner does
+(`swarm_uids`), and asks a swarm's dry run again `STALE_RETRY_S` later while it fails only on
+stale facts, on the simulated clock (none did here). The bridge's manifest declares the fleet's
+swarms (`spec.swarms`: names and roles, as `sim/swarm.py` writes them live; before, every swarm
+was role `other`). And the stand-ins' sockets: a stand-in's `Link` sends each frame on a socket
+connected to nothing (the frames are captured), and Linux binds such a socket to an ephemeral
+port before it refuses the send, so an episode held one of the host's ports per vehicle: 3,602
+of the 4,096 here, which made `eval/tests/test_situation.py`'s port check fail beside it and
+would leave a second worker none. They now share one loopback port (`fleet.rs` `idle_socket`).
+Nothing else changes for any other world (the golden and paused digests as before).
+
+**Determinism.** Seed 1 with `none`, twice through the command above (the second on the
+simulator with the shared socket port, the first without it): the same record and the same
+audit log, as the golden digests them (`tests/test_episode.py` `normalized`: no `perf` or
+`provenance`, the build and the hash chain masked): record `fe14803a...`, audit log `e5eb56c5...`,
+149,005 events each.
+
+**Speed and memory** (seed 1, `none`, one episode, the host's load 15 on average, 5 to 37, from
+other agents' work): 900 simulated seconds in 1,695 s, **0.53 times real time** (28 minutes); the first 240 s
+alone ran at 0.51. Peak RSS: the simulator 1.34 GB, the driver 1.49 GB (at the end, building the
+record); the host never swapped. Out: the record 114 MB, the audit log 238 MB (149,005 events:
+127,713 `vehicle.event`, 20,999 `op.state`). Where the simulator's time goes (its per-task timer,
+1,659 s serving the driver): the decision loop 400 s, the contacts' truth messages 388 s (the
+bridge's physical sensing step and fold in them: 172 ms a message before the orders), the link
+emulator 386 s, the driver's API requests 210 s (the readiness poll's `/api/state` of 3,602
+vehicles once a simulated second for 125 s, and the orders' dry runs), the emulator's view for
+the console 104 s, the stand-ins 97 s; the pipe and JSON 24 s, the driver itself 5 s.
+
+**The decision tick while the opening orders go out** (a 300 s episode with temporary spans,
+not committed, the host's load about 19; per order of 100 vehicles, mean and worst):
+
+| | under the lock | outside it |
+| --- | --- | --- |
+| dry run | 57 ms (88): the whole fleet's snapshot 45, the engine 12 (inputs 7, route plans 0.2, the legs' 20 m points 0.1, the domain rule 0.3, the geofence 0.6) | prefetch 14 ms (134), route plans again for the map 73 (105), **link coverage 0.14 to 0.25 s for an air swarm, 45 to 127 s for each SATCOM swarm** (SURFACE-1 to -5: 71, 69, 45, 68, 127 s; the AUVs 0.2 s) |
+| submission | 181 ms (436): snapshot 46, the engine 52 (its audit lines 19), the dispatch to the task layer 83 (its audit lines 11) | prefetch 17 ms (159) |
+
+So the route plans (rules 22) and the 20 m points along each surface leg (rules 17) cost
+milliseconds an order (headless the grid answers the prefetch at once; live tidewater's HTTP
+round trips add to the prefetch, outside the lock), and the link coverage, by far the largest
+part of an order (387 of the 393 s the 36 dry runs took), is outside the lock: it delays the
+order, not the tick. A SATCOM swarm's dry run took longer here than the live runner's 60 s
+request timeout (`SWARM_ORDER_TIMEOUT_S`). What holds the tick is the audit log's anchoring: every
+`op.state` and `intent.state` line is a decision line (`anchor.rs` `decision_line`) and gets an
+anchor written with `sync_data`, one fsync each, and the 3,600 members' ops write 13,400 such
+lines in the five seconds after the dispatch (21,130 in the episode). At 8.7 ms an fsync on this
+host (some took seconds), the ticks at 125 to 129 s took 20.2, 10.5, 15.8, 33.5 and 4.2 s,
+those from 120 to 200 s 1.64 s on average, 98 % of it `follow_ops`, 98 % of that the anchored
+appends (serializing and hashing the lines: under 0.1 s); after 200 s, 57 ms. Live the same lines
+reach the tick over a minute or two as the vehicles answer, which fits the 1.6 to 3.2 s ticks of
+docs/load-test.md.
+
+**What happens** (seed 1, `none`; a second episode of the same seed read our vehicles' truth
+every 10 s and the bridge's inbox every 30 s to 450 s, where `/api/tracks` outgrew the
+simulator's 16 MB response cap; at every instant both sampled, its 3,602 vehicles were the
+first episode's, position and mode). Every vehicle was navigation-ready with a home at 125 s; the 36
+opening orders went out then, all `auto_approved` by the default tier, 34 dispatched at once and
+2 (PICKET-14, UNDERSEA-1: a member silent for 3 to 4 s) queued and dispatched 3 s later; no dry
+run failed on a stale fact. The swarms flew to station; the recon swarm, the wave and the decoy
+came in (416 tracks by 120 s, 492 by 270 s, the air tracks `unknown`, one `suspect` by 240 s). The jammer took PICKET-1
+and -8 on their way out of Crissy Field and PICKET-7 on its ring: one inbox card per swarm
+(`PICKET-7 lost_link 100`, then `left_task 100` for -1 and -8), their failsafes took all 300 home,
+and they were still at their launch fields, in RTL, at 900 s (nothing re-tasks them on `none`). At 596 s the
+shooter fired; the launch was seen by 329 of our cameras, the engine declared its track hostile
+by rule in the same tick (597.0 s) and op-auto confirmed it at 611.9 s; the missile destroyed
+USV 3201 (hit drawn at 0.75, `struck` at 603 s); the second, at 656 s (seen by 356 cameras), was
+not drawn, its target already destroyed.
+
+**Where it differs from the live run.** The live run kept for comparison
+(`situation-swarm-saturation-20261101T145856Z`) was interrupted 65 s in: its audit log has one
+line and no order went out, so the comparison is with docs/load-test.md's account, which
+predates rules 24 to 28 and the opponent's weapons. Live, 3,542 to 3,543 of 3,602 were ready (the
+rest behind terrain from the station at their launch fields); here all 3,602. Live, the orders
+went out over about two minutes, some refused for one member's stale fact and asked again; here
+at one instant, none refused (the clock stands still meanwhile). Live, the act was abstract, seen
+by about 40 of SURFACE-3's cameras and declared 0.7 s later; here a missile launch seen by 329
+cameras and declared in the same tick. Live the tick ran 1.6 to 3.2 s while the orders went out;
+here the first five ticks after them 4 to 34 s each (above). The sensing step: live 340 to
+490 ms a truth message with the fleet spread; here 334 ms a message over the first 300 s (431 ms
+for the whole truth message, the contacts' own step included, over the episode). The
+Saildrones get no wind (the situation draws no conditions and its contacts name no weather), so
+they sail at 0.8 to 1.3 m/s, and 33 to 40 of SURFACE-1's raised `not_moving`; live, tidewater's
+wind blows on them. The bridge's memory: live 0.73 to 0.81 GB with two malloc arenas; here the
+whole simulator, stand-ins, emulator and contacts included, 1.34 GB.
+
+**Swarm orders: what misbehaved** (bd murmur-3kqi; reported for the swarm design, murmur-5wxc,
+not changed here):
+
+- **Altitude stacked per member** (the task layer's `caps::mission_alt`: base plus a step per
+  member of the same kind in one tasking). On station each X10 ring spans 100 to 595 m (5 m a
+  member, 51 distinct 10 m levels), each Puma swarm 800 to 2,384 m (16 m a member, 98 to 100
+  levels). The AUVs are ordered ever deeper (2 m a member) and stop on the seabed: at 450 s the
+  deepest was at 70 m and 12 of them were on the bottom (54 to 70 m there).
+- **Every patrol member on the same lane**: at 450 s the members of each search and relay swarm
+  flew one line, a median 120 m off it (90 % within 207 m: their turns), spread along its whole
+  length and separated only by height; SURFACE-5's 100 Corsairs were within 50 m of their lane
+  and bunched in 400 m of it, a convoy rather than a picket line.
+- **One member fails the whole order**: an orbit or patrol intent fails once every op has ended
+  and any one failed. PICKET-6, -11, -13, -14, -15 and -17 failed on one or two members' GCS
+  failsafe RTL (a lost link) while the other 98 or 99 held their rings; PICKET-7 failed at 172 s on
+  one member's mission upload timing out (134 s), before the jam; SEARCH-3 on 11 Pumas that
+  landed after their failsafes. By 900 s 11 of the 36 orders had failed, 2 of them (PICKET-1, -8)
+  the jammer's.
+- **A swarm's failures are silent until the last op ends**: 4 to 11 Pumas a search swarm were in
+  AUTOLAND or RTL by 900 s (their LOS links lost far out over the gulf) while the swarm's intent
+  still read `dispatched`; the inbox showed them as `left_task` swarm cards.
+- **AUV missions over the acoustic modem**: 3 of UNDERSEA-1's 100 uploads were cancelled
+  (`MAV_MISSION_OPERATION_CANCELLED`) and only 58 acknowledged; the intent stays `dispatched`.
+- Not seen here: a stale member refusing a whole order (the runner waits for every vehicle and
+  orders at one instant) and hold orders (none in this situation), so a fixed wing gliding down
+  or a copter left on the ground under a hold was not exercised.
+
+**Not measured yet.** The playbook (`--agent playbook`) on Saturation: its episode was stopped
+two minutes in, with the host's load at 55 to 67 from other projects, and no timing taken then
+would mean anything. Nor more seeds than 1. The timings above come from a shared host (28 cores,
+23 GB) and are to be taken again on a quiet one.
+
+**Found besides.** The dry run of a SATCOM swarm takes a minute or two here (link coverage, above)
+and the first ticks after the dispatch tens of seconds (fsynced anchors). `GET /api/tracks` of
+Saturation's picture passes 16 MB by 450 s, the simulator's response cap
+(`sim/mod.rs`, `to_bytes(.., 16 << 20)`): a driver that reads it fails (the MCP tools answer
+through their own path). The episode's audit log is 238 MB: 127,713 of its 149,005 events are
+`vehicle.event` (the autopilots' status texts, mode changes and failsafes), and each order's
+`check.result`, `policy.decision` and `intent.dispatched` is about 1.7 MB (a hundred vehicles'
+inputs).
+
 ## 18. Scoring v3 (world v3 C1, first part; bd murmur-1z6.6)
 
 Built 2026-10-23 beside scoring v2, which is unchanged (eval/SCORING-V3.md, a draft, says what

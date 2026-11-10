@@ -103,7 +103,9 @@ lane; the relay chain relays nothing (the link emulator links each vehicle to th
 directly).
 """
 
-world = "golden-gate"                         # sim/worlds/golden-gate.toml
+world = "golden-gate-saturation"              # sim/worlds/golden-gate-saturation.toml: the Golden Gate,
+                                              # its own world so the headless simulator runs it as
+                                              # live does (the physical sensing model, its grids)
 fleet = "sim/fleets/swarm-saturation.toml"
 contacts = "sim/scenarios/swarm-saturation.toml"
 events = ["sim/link-events/swarm-saturation.toml"]

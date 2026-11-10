@@ -33,6 +33,10 @@ pub struct Spec {
     pub fleet: Vec<Value>,
     /// `sim/run/standins.json`'s vehicles, as `sim/swarm.py` writes them.
     pub standins: Vec<Value>,
+    /// The fleet's swarms as `sim/swarm.py`'s manifest declares them (`fleet_swarms`: id, name,
+    /// role, color); none: a fleet without swarms, whose manifest is as before.
+    #[serde(default)]
+    pub swarms: Vec<Value>,
     /// The link profiles (`sim/links.toml`, or `MURMUR_LINKS`).
     pub links: PathBuf,
     /// Link `[[event]]`s known at the start (the situation's events files), as JSON objects of

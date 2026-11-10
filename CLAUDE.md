@@ -597,6 +597,10 @@ meaningful.
   without `Options.space_snapshot` the bridge has no space segment. A space episode reads the
   committed snapshot `sim/headless/space/<world>/`, never `sim/space/cache`: a new fetch changes
   nothing headless until `python -m eval.headless.space snapshot` pins it.
+- Headless Saturation (`--situation swarm-saturation`, docs/HEADLESS.md 17.6) takes about 30
+  minutes an episode at half real time, 3 GB (simulator and driver) and 350 MB of output. The
+  simulator caps an API answer at 16 MB (`sim/mod.rs` `to_bytes`): its `/api/tracks` passes that
+  by 450 s, and a driver that reads it fails there.
 
 ## Conventions
 

@@ -547,7 +547,12 @@ async fn assemble(spec: &Spec) -> Result<Parts, String> {
         bridge_fleet.push(v);
     }
     let manifest = spec.workdir.join("bridge-fleet.json");
-    std::fs::write(&manifest, json!({ "vehicles": bridge_fleet }).to_string()).map_err(err("manifest"))?;
+    let mut doc = json!({ "vehicles": bridge_fleet });
+    if !spec.swarms.is_empty() {
+        // a fleet with swarms (Saturation's): declared as swarm.py's manifest declares them
+        doc["swarms"] = json!(spec.swarms);
+    }
+    std::fs::write(&manifest, doc.to_string()).map_err(err("manifest"))?;
 
     // as main.rs: settings, the world, the manifest, the estimate's configuration
     let mut settings = crate::decision::Settings::from_env(&spec.root, &platforms);

@@ -1,0 +1,79 @@
+# Saturation's world (sim/situations/swarm-saturation.toml; docs/HEADLESS.md, "Saturation"; the
+# format in sim/worlds/README.md): the Golden Gate's map, grids, currents, links, ground station,
+# points, mission, conditions and pinned element sets, with Saturation's 3,602 stand-ins in 37
+# swarms (sim/fleets/swarm-saturation.toml), its 507 contacts (500 hostile drones in five swarms,
+# the armed shooter and six of the harbor's ships and boats: sim/scenarios/swarm-saturation.toml)
+# and its operator's areas (sim/areas with the operating area widened over the inner gulf). Live,
+# the situation reads none of this but its name: its fleet, contacts, areas, start and tidewater
+# scenario are its own. Headless, naming a world of its own is what runs it as a world v3
+# situation (eval/headless/situations.py `from_situation`): on the sensing model its contacts name
+# (the physical one, as live; the Golden Gate's own world pins the legacy one), with the world's
+# land/water grid for the domain rule and its current field for our boats, as tidewater gives them
+# live.
+name = "golden-gate-saturation"
+title = "Golden Gate saturation (3,602 nodes)"
+fleet = "sim/fleets/swarm-saturation.toml"
+areas = "sim/situations/areas/swarm-saturation"   # sim/areas with the operating area widened west
+traffic = "sim/scenarios/swarm-saturation.toml"
+space = "golden-gate"                         # sim/headless/space/golden-gate (eval/headless/space.py)
+tidewater = "golden-gate-2026-06"
+at = "2026-06-14T17:00:00Z"                   # 10:00 local, the situation's start
+# The search lanes reach 122.655 W and the threat's way in starts at 122.68 W, west of the Golden
+# Gate's box; the recon swarm holds over Tiburon, 37.94 N.
+operating_box = { lat_min = 37.73, lat_max = 37.95, lon_min = -122.69, lon_max = -122.33 }
+
+# The Golden Gate's grids (eval/headless/bake_world.py golden-gate) and the seabed (golden-gate-v3's
+# bake). The surface grid ends at 122.62 W: the link emulator sees no terrain on the search lanes
+# west of it (open sea there).
+[terrain]
+surface = "sim/headless/terrain/golden-gate.grid.gz"
+land_water = "sim/headless/terrain/golden-gate.water.grid.gz"
+bathymetry = "sim/headless/terrain/golden-gate.bathy.grid.gz"
+box = { lat_min = 37.74, lat_max = 37.90, lon_min = -122.62, lon_max = -122.36 }
+spacing_m = 20.0
+sampled_at = "2026-06-14T10:00:00Z"
+
+[currents]
+field = "sim/headless/terrain/golden-gate.currents.gz"
+box = { lat_min = 37.77, lat_max = 37.88, lon_min = -122.56, lon_max = -122.38 }
+spacing_m = 250.0
+from = "2026-06-13T00:00:00Z"
+to = "2026-06-16T00:00:00Z"
+step_s = 3600.0
+
+[links]
+file = "sim/links.toml"
+
+[[ground_station]]
+name = "Crissy Field"
+lat = 37.8068
+lon = -122.4460
+alt_m = 5.0
+
+# Named reference points, [lon, lat]: the Golden Gate world's, and Saturation's.
+[points]
+bridge = [-122.4783, 37.8199]              # the Golden Gate Bridge, mid-span (the protected point)
+mouth = [-122.5050, 37.8100]               # the strait's mouth, west of the bridge
+bay_axis = [-122.4500, 37.8250]            # east of the bridge, mid-channel
+lime_point = [-122.4680, 37.8240]
+crissy_field = [-122.4460, 37.8068]        # the launch site and the ground station
+fort_baker = [-122.4790, 37.8330]
+point_bonita = [-122.5300, 37.8150]
+shooter_hold = [-122.4950, 37.8120]        # where the armed drone hovers and fires (truth)
+jammer = [-122.4720, 37.8470]              # the jammer's centre (sim/link-events/swarm-saturation.toml)
+
+# The labels' rule, as the Golden Gate world's: unknown, suspect or hostile within 3 km of the
+# bridge needs a look within 60 s.
+[mission]
+center = "bridge"
+radius_m = 3000.0
+grace_s = 60.0
+
+# The Golden Gate world's ranges (sim/worlds/golden-gate.toml says where each comes from). The
+# situation draws none: it runs at its own start in its contacts' conditions.
+[conditions]
+at = ["2026-06-13T00:00:00Z", "2026-06-15T23:00:00Z"]
+utc_offset_h = -7                          # PDT
+visibility_km = [0.2, 30.0]                # [E] advection fog in the strait under 200 m; clear days 30 km and more
+wind_mps = [2.98, 7.76]                    # tidewater's HRRR wind at the bridge, hourly over the window
+sea_state = [0, 5]                         # [E] Douglas; the bar outside the Gate breaks in a big swell

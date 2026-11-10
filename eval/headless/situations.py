@@ -336,6 +336,13 @@ def fleet_plan(fleet: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]
     return vehicles, standins
 
 
+def fleet_swarms(fleet: Path) -> list[dict[str, Any]]:
+    """The fleet's swarms as `sim/swarm.py` writes them into the manifest (`fleet_swarms`): none
+    for a fleet without `[[swarm]]` tables."""
+    swarm = _swarm()
+    return list(swarm.fleet_swarms(swarm.load_fleet(str(fleet))))
+
+
 def space_cache_file(links: Path | None = None) -> Path:
     """Where SATCOM looks are kept between episodes (crates/murmur-headless space_cache.rs):
     one file per set of element sets and link profiles, so a new fetch or new profiles start a
@@ -382,6 +389,11 @@ def process_spec(e: EpisodeSpec, seed: int, workdir: Path, calib: Calibration,
         "bridge_start_s": calib.bridge_start_s,
         "battery_pct": {str(k): v for k, v in e.battery_pct.items()},
     }
+    swarms = fleet_swarms(e.fleet)
+    if swarms:
+        # the fleet's swarms as sim/swarm.py's manifest declares them (id, name, role, color), only
+        # for a fleet with swarms (Saturation's): any other spec is as before
+        spec["swarms"] = swarms
     rid = run_id(e, seed)
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
