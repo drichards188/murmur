@@ -110,6 +110,28 @@ The full table is `intent::next_state`; anything else is a typed `IllegalTransit
    `sha256` = SHA-256 of its canonical serialization (compact `serde_json`, fields in
    declaration order, no maps). Decision inputs carry `areas_sha256` instead of the
    polygons (about 700 bytes saved per decision event).
+   The track picture works the same way (bd murmur-whug): an event that read one carries
+   `tracks_sha256`, the SHA-256 of the picture's canonical serialization
+   (`TrackPicture::content_hash`: compact `serde_json` of `{tracks, track_ais, track_levels}`,
+   each part left out when empty), and the picture itself is logged once in the log, as
+   `tracks.picture {sha256, tracks, track_ais, track_levels}`, right before the first event that
+   reads it, at that log's time (the event before it's, so no event's time moves). The events
+   that read a picture: every decision's `inputs` (`check.result`, `policy.decision`,
+   `picture.issued`, `approval.reset`, `intent.dispatched`, `intent.queued`, `engage.picture`,
+   `engage.observe`, `identify.step` and its `return_inputs`), an act's or a flag's
+   (`ident.act`, `ident.flagged`: tracks only), and a lost contact's claim or confirmation
+   (`lost.claimed`, `track.reacquired`: tracks and AIS identities). A picture is logged only when
+   an event needs one this log does not hold yet: never on a timer, never per tick, and a
+   restarted or resumed run logs again any picture its own events read (a reference never
+   names another log). An empty picture is neither logged nor referenced. The vehicles and every
+   other input stay inline. Why: at Saturation's size (461 tracks, 3,602 vehicles) every
+   decision event carried a 2.15 MB picture (tracks 2.03 MB, levels 0.29 MB, against 0.9 KB for
+   the vehicle the order was for), some 6.5 MB of log per one-vehicle order and 25 GB for 3,600
+   of them, and an `ident.act` 7.5 MB. The engine still evaluates on the whole picture in
+   memory (`WorldSnapshot::subset_for` copies it for each intent: the checks read it and the
+   ledger fills it); only its logged form changed. It hashes a picture once: the last one hashed
+   is kept and an event on the same picture compares rather than serializes again. Logs written
+   before carry the picture inline in each event; replay reads either form.
 
 ## The queue for unreachable vehicles (rules 5)
 
@@ -805,6 +827,10 @@ event's is 64 zeros). `murmur-replay` recomputes the chain over the raw lines an
 that each line is its event's canonical serialization, so it detects deleting, inserting,
 reordering or editing any event that has a successor, including deleting a whole intent's
 events and renumbering `seq` (which otherwise leaves every decision consistent).
+What decisions reference by content hash (the area set in `areas.loaded`, a space answer in
+`space.query`, a track picture in `tracks.picture`) is logged as ordinary events of the chain and
+covered by anchors like any other: an edit to one breaks its content hash, and an edit that
+recomputes the hash and rewrites the references breaks the chain.
 
 What it doesn't protect against: anyone who can write the file can edit it and recompute
 the whole chain, and cutting the tail leaves a valid, shorter chain. Both change the head
@@ -923,7 +949,8 @@ accepted: a log of older rules replays only with `--rules N` (exactly N) or `--m
 
 Re-runs every `check.result` and `policy.decision` from its logged inputs and the logged
 policy (resolving `areas_sha256` to the logged set in force, whose own hash must match its
-content), checks every `intent.state` is legal and backed by its evidence, checks `seq`,
+content, and `tracks_sha256` to the `tracks.picture` of that hash: see below), checks every
+`intent.state` is legal and backed by its evidence, checks `seq`,
 `t`, the hash chain and every `self_approved` flag, checks every at-submission approval
 (the approver is the submitting human, the tier allowed it, never an agent's intent, and no
 intent whose decision let the submitter authorize was sent to the inbox instead), checks
@@ -937,6 +964,25 @@ Determinism: injected clock, integer-millisecond times, `BTreeMap`s, fixed outpu
 fixed-precision detail strings, `serde_json` with `float_roundtrip`, terrain samples keyed at
 1e-7 degree. Replay proves decisions follow from the logged inputs; it can't prove the inputs
 were true of the world.
+
+**Track pictures by reference** (bd murmur-whug). Before recomputing anything, replay finds
+every `tracks.picture` in the log and hashes its content (`world::picture_hash`); one that does
+not hash to its `sha256` is a mismatch, and no reference resolves to it. Then each event that
+references a picture is checked as if it had logged that picture inline: the picture with its
+hash is put in place (`Pictures::resolve` in `src/replay.rs`, through
+`EventBody::pictures_mut`), and every check runs on it exactly as on an older log. A reference to
+a picture the log does not hold is a mismatch (the event is then read with no picture, and its
+recomputation may fail besides); one to a picture logged only after the event is a mismatch too
+(resolved all the same, so its decision is still recomputed on what it names); so are an event
+that logs a picture both inline and by reference (the reference is read), and a picture
+referenced by an act, a flag or a claim with a part that event does not log (AIS identities or
+levels for an act, levels for a claim). References resolve within the log only: an earlier log
+given with `--prev` replays on its own pictures. The picture events are ordinary events of the
+chain, anchored as any other; replay copies a picture into an event only while it checks that
+event (it still keeps each intent's last checked world, picture included, as before). The scenario
+runner's tampers that edit pictures (`declaration_by_another_operator`, `confirm_in_inputs`,
+`drop_first_seen`) edit each `tracks.picture` in place, recompute its hash and rewrite every
+reference to it, so that only recomputation catches them.
 
 **What was executed is what was approved** (sixth review). Recomputing every decision is not
 enough: a forger who re-chains the log can leave every decision intact and change what was
@@ -1098,6 +1144,14 @@ downgrade cases. Gate on a named constant, never a literal (rules 7 is
 `QUEUE_FOLLOWUPS_SINCE`, and `RULES_VERSION` is defined from it): when two branches each
 take the next number, the one that merges second renumbers in one line (its fixtures, whose
 `run.started` names the number, are written again by the merged build).
+
+A change to how inputs are logged that changes no decision is not a rules change when the
+logged form says which it is and replay reads both forms under every version: the track
+picture by reference (bd murmur-whug: `tracks_sha256` and `tracks.picture`, else the picture
+inline) is one. A build logs it the new way whatever rules it decides under, an older log
+replays as it did, and no marker gates it (a log of any version may carry either form; the
+form is no claim about the rules). Replay's resolution of the reference is an audit check, as
+the content hashes of the area set and the space answers are.
 
 Rules versions:
 

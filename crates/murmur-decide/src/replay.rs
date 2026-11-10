@@ -14,6 +14,11 @@
 //!   text) each line is its event's canonical serialization;
 //! - area sets: each logged set's content hash matches its `sha256`, and every decision
 //!   references the set in force;
+//! - track pictures (bd murmur-whug): each `tracks.picture`'s content hash matches its
+//!   `sha256`, and every reference (`tracks_sha256`: a decision's inputs, an act's, a flag's, a
+//!   lost contact's claim) names a picture logged earlier in the same log, of the parts that
+//!   event logs; the event is then checked on that picture as if it had logged it inline (logs
+//!   written before carry it so, and replay as they did);
 //! - `self_approved` on every `approval.granted` matches who proposed the intent;
 //! - every `approval.at_submission` (a human's submission that is itself the approval):
 //!   the intent was just checked and passed, its recomputed policy decision is a human tier
@@ -178,6 +183,9 @@ pub struct ReplayReport {
     pub space_segments: usize,
     /// Space answers logged (`space.query`).
     pub space_queries: usize,
+    /// Track pictures logged (`tracks.picture`, bd murmur-whug), each referenced by hash from
+    /// the events that read it (none in logs that carry their pictures inline).
+    pub track_pictures: usize,
     /// Space queries re-run on the given segment and found equal (or not: see mismatches).
     pub space_recomputed: usize,
     /// The decision rules the log was produced under (`run.started`; 1 when absent), which
@@ -2437,6 +2445,109 @@ type InForce = Option<(String, Option<AreaSet>)>;
 /// Logged space answers whose hash verified, by hash.
 type Answers = BTreeMap<String, SpaceAnswer>;
 
+/// Bd murmur-whug: the track pictures a log holds (`tracks.picture`), found before the replay
+/// loop: each picture event whose content hashes to its `sha256`, by that hash (the first such
+/// event), and each that does not, with what its content hashes to. Pictures are not copied
+/// here; an event that references one gets its own copy while replay checks it.
+struct Pictures {
+    at: BTreeMap<String, usize>,
+    bad: BTreeMap<usize, String>,
+}
+
+impl Pictures {
+    fn scan(events: &[Event]) -> Self {
+        let mut p = Pictures {
+            at: BTreeMap::new(),
+            bad: BTreeMap::new(),
+        };
+        for (i, e) in events.iter().enumerate() {
+            if let EventBody::TracksPicture {
+                sha256,
+                tracks,
+                track_ais,
+                track_levels,
+            } = &e.body
+            {
+                match crate::world::picture_hash(tracks, track_ais, track_levels) {
+                    Ok(h) if h == *sha256 => {
+                        p.at.entry(h).or_insert(i);
+                    }
+                    other => {
+                        p.bad.insert(i, other.unwrap_or_else(|err| format!("<unserializable: {err}>")));
+                    }
+                }
+            }
+        }
+        p
+    }
+
+    /// Event `i` of `events` with every track picture it references put in place, as an event
+    /// that logged it inline reads it (None: it references none, and is read as logged). A
+    /// reference resolves to the picture with that hash whose content verified. Flagged: a
+    /// reference to a picture the log does not hold (or holds only with another content), to one
+    /// it holds only after the event (still resolved, so the decision is recomputed on what it
+    /// names), a picture with a part the event does not log (an act's picture is its tracks
+    /// only), and an event that logs a picture both inline and by reference (the reference
+    /// wins).
+    fn resolve(&self, r: &mut ReplayReport, events: &[Event], i: usize) -> Option<Event> {
+        let e = &events[i];
+        if e.body.picture_refs().is_empty() {
+            return None;
+        }
+        let mut out = e.clone();
+        for slot in out.body.pictures_mut() {
+            let Some(sha256) = slot.sha256.clone() else {
+                continue;
+            };
+            let inline = !slot.tracks.is_empty()
+                || slot.track_ais.as_ref().is_some_and(|m| !m.is_empty())
+                || slot.track_levels.as_ref().is_some_and(|m| !m.is_empty());
+            if inline {
+                bad(r, e, None, "a track picture logged both inline and by reference", sha256.clone(), String::new());
+            }
+            let Some(&j) = self.at.get(&sha256) else {
+                bad(r, e, None, "a reference to a track picture the log does not hold", sha256, String::new());
+                continue;
+            };
+            if j > i {
+                bad(
+                    r,
+                    e,
+                    None,
+                    "a reference to a track picture logged only after it",
+                    sha256.clone(),
+                    format!("tracks.picture at seq {}", events[j].seq),
+                );
+            }
+            let EventBody::TracksPicture {
+                tracks,
+                track_ais,
+                track_levels,
+                ..
+            } = &events[j].body
+            else {
+                continue;
+            };
+            *slot.tracks = tracks.clone();
+            match slot.track_ais {
+                Some(m) => *m = track_ais.clone(),
+                None if !track_ais.is_empty() => {
+                    bad(r, e, None, "a track picture with AIS identities this event does not log", sha256.clone(), String::new());
+                }
+                None => {}
+            }
+            match slot.track_levels {
+                Some(m) => *m = track_levels.clone(),
+                None if !track_levels.is_empty() => {
+                    bad(r, e, None, "a track picture with identity levels this event does not log", sha256.clone(), String::new());
+                }
+                None => {}
+            }
+        }
+        Some(out)
+    }
+}
+
 fn replay_inner<S: AsRef<str>>(
     events: &[Event],
     lines: &[S],
@@ -2510,8 +2621,14 @@ fn replay_inner<S: AsRef<str>>(
         EventBody::RunStarted { track_drop_s, .. } => *track_drop_s,
         _ => None,
     });
+    // bd murmur-whug: the track pictures the log holds, which events reference by hash
+    let pictures = Pictures::scan(events);
 
-    for (i, e) in events.iter().enumerate() {
+    for (i, logged) in events.iter().enumerate() {
+        // an event that references a track picture is checked as one that logged it inline:
+        // the picture put in place (the chain and the lines are the log's own, above)
+        let resolved = pictures.resolve(&mut r, events, i);
+        let e: &Event = resolved.as_ref().unwrap_or(logged);
         let want_prev = if i == 0 {
             GENESIS
         } else {
@@ -2551,7 +2668,7 @@ fn replay_inner<S: AsRef<str>>(
         }
         let before_t = prev.map_or(Time(i64::MIN), |p| p.t);
         let prev_event: Option<&Event> = prev;
-        prev = Some(e);
+        prev = Some(logged);
         // rules 8: an ended session acts no more (a stale or shared session can't sign, decide
         // or be shown a picture after its logout, expiry or credential change)
         if let Some(s) = acting_session(&e.body)
@@ -2746,6 +2863,19 @@ fn replay_inner<S: AsRef<str>>(
                 }
                 if let Some(oracle) = space {
                     recompute_space(&mut r, e, answer, oracle, pinned);
+                }
+            }
+            EventBody::TracksPicture { sha256, .. } => {
+                r.track_pictures += 1;
+                if let Some(recomputed) = pictures.bad.get(&i) {
+                    bad(
+                        &mut r,
+                        e,
+                        None,
+                        "track picture hash does not match its content",
+                        sha256.clone(),
+                        recomputed.clone(),
+                    );
                 }
             }
             EventBody::IntentCreated { intent, session } => {
@@ -5592,6 +5722,7 @@ fn replay_inner<S: AsRef<str>>(
                 track_ais,
                 evidence,
                 blockers,
+                ..
             } => {
                 let Some(pol) = policy.as_ref().filter(|p| p.rules.lost_contacts()) else {
                     continue;
@@ -5626,6 +5757,7 @@ fn replay_inner<S: AsRef<str>>(
                 tracks,
                 track_ais,
                 evidence,
+                ..
             } => {
                 let Some(pol) = policy.as_ref().filter(|p| p.rules.lost_contacts()) else {
                     continue;

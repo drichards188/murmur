@@ -295,10 +295,17 @@ def analyze(result: dict[str, Any], events: list[dict[str, Any]], meta: dict[str
     t0 = events[0]["t"] if events else 0
     acts: dict[str, dict[str, Any]] = {}
     first_act_t = None
+    # bd murmur-whug: an act's picture is logged once as `tracks.picture` and referenced by hash
+    # (`inputs.tracks_sha256`); older logs carry it inline (`inputs.tracks`)
+    pictures: dict[str, dict[str, Any]] = {}
     for e in events:
-        if e.get("type") == "ident.act":
+        if e.get("type") == "tracks.picture":
+            pictures[e.get("sha256")] = e.get("tracks") or {}
+        elif e.get("type") == "ident.act":
             a = e.get("act") or {}
-            acts[a.get("act")] = {"t": e["t"], "candidates": e.get("candidates") or [], "tracks": (e.get("inputs") or {}).get("tracks") or {}, "verdict": e.get("verdict") or {}}
+            inputs = e.get("inputs") or {}
+            tracks = pictures.get(inputs["tracks_sha256"], {}) if inputs.get("tracks_sha256") else inputs.get("tracks") or {}
+            acts[a.get("act")] = {"t": e["t"], "candidates": e.get("candidates") or [], "tracks": tracks, "verdict": e.get("verdict") or {}}
             first_act_t = first_act_t if first_act_t is not None else e["t"]
 
     def shown(act: str | None, track: str) -> bool:

@@ -151,6 +151,12 @@ meaningful.
   `MURMUR_ENGAGE_OPERATORS` (each also in `MURMUR_OPERATORS`, or the bridge refuses to start; both
   lists are logged as the run's roster); in a credentials run the credential file's engagement flag
   (`murmur-auth engage <id> on`). Scenarios: `murmur-scenarios` (`sim/scenarios/engage/`).
+- Decisions reference the track picture by hash (bd murmur-whug; no rules version): `tracks_sha256`
+  in their inputs (an act's, a flag's and a lost contact's claim too), the picture logged once a log
+  as `tracks.picture`, right before the first event that reads it, at the log's time. A new event
+  that logs inputs or a picture goes through the same path (`Engine::log_inputs` /
+  `Engine::log_picture`) and into `EventBody::pictures_mut` and `picture_refs`, which replay and the
+  tampers read; anything that reads the audit log resolves the reference (older logs carry it inline).
 - Stand-ins take an ephemeral UDP port each unless `MURMUR_STANDIN_SRC_BASE` is set (then
   stand-in i sends from base + i; one whose port is taken falls back to an ephemeral one,
   logged). The ephemeral range (`net.ipv4.ip_local_port_range`, ~4,000 here, shared by the whole

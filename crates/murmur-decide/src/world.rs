@@ -608,9 +608,77 @@ pub struct WorldSnapshot {
     pub orders_in_play: BTreeMap<Uid, crate::mines::InPlayOrder>,
 }
 
+/// A track picture as an event read it: the tracks (their identification filled from the
+/// ledger), the AIS identities heard for them and their identity levels, each part as the event
+/// had it (an act's picture has tracks only; a lost contact's claim, tracks and AIS). Logged once
+/// in a log as `tracks.picture`, under its content hash ([`TrackPicture::content_hash`]), and
+/// referenced by that hash from every event that read it (`tracks_sha256` in
+/// [`LoggedInputs`], [`crate::ident::IdentInputs`], `lost.claimed` and `track.reacquired`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TrackPicture {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tracks: BTreeMap<String, TrackFacts>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub track_ais: BTreeMap<String, AisIdentity>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub track_levels: BTreeMap<String, crate::identify::TrackLevel>,
+}
+
+impl TrackPicture {
+    /// Nothing in it: never logged, never referenced (the event logs its empty parts inline,
+    /// which is to say not at all, as before pictures were referenced).
+    pub fn is_empty(&self) -> bool {
+        self.tracks.is_empty() && self.track_ais.is_empty() && self.track_levels.is_empty()
+    }
+
+    /// The SHA-256 of its canonical serialization (compact `serde_json`, each empty part left
+    /// out): the hash it is logged and referenced under.
+    pub fn content_hash(&self) -> Result<String, serde_json::Error> {
+        picture_hash(&self.tracks, &self.track_ais, &self.track_levels)
+    }
+
+    /// Whether it is exactly these parts (the engine's test for a picture it hashed already).
+    pub fn is(
+        &self,
+        tracks: &BTreeMap<String, TrackFacts>,
+        track_ais: &BTreeMap<String, AisIdentity>,
+        track_levels: &BTreeMap<String, crate::identify::TrackLevel>,
+    ) -> bool {
+        self.tracks == *tracks && self.track_ais == *track_ais && self.track_levels == *track_levels
+    }
+}
+
+/// [`TrackPicture::content_hash`] of the picture made of these parts, without copying them: the
+/// same bytes, hashed as they are serialized.
+pub fn picture_hash(
+    tracks: &BTreeMap<String, TrackFacts>,
+    track_ais: &BTreeMap<String, AisIdentity>,
+    track_levels: &BTreeMap<String, crate::identify::TrackLevel>,
+) -> Result<String, serde_json::Error> {
+    fn empty<T>(m: &&BTreeMap<String, T>) -> bool {
+        m.is_empty()
+    }
+    // field for field what `TrackPicture` serializes
+    #[derive(Serialize)]
+    struct View<'a> {
+        #[serde(skip_serializing_if = "empty")]
+        tracks: &'a BTreeMap<String, TrackFacts>,
+        #[serde(skip_serializing_if = "empty")]
+        track_ais: &'a BTreeMap<String, AisIdentity>,
+        #[serde(skip_serializing_if = "empty")]
+        track_levels: &'a BTreeMap<String, crate::identify::TrackLevel>,
+    }
+    crate::hash::sha256_json(&View {
+        tracks,
+        track_ais,
+        track_levels,
+    })
+}
+
 /// A decision's inputs as logged: the [`WorldSnapshot`] with the area set replaced by its
-/// content hash ([`AreaSet::content_hash`]). The set itself is logged once, in
-/// `run.started` or `areas.loaded`, and replay resolves the reference.
+/// content hash ([`AreaSet::content_hash`]), and the track picture by its own
+/// ([`TrackPicture::content_hash`]). The set itself is logged once, in `run.started` or
+/// `areas.loaded`, the picture once, in `tracks.picture`, and replay resolves the references.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct LoggedInputs {
     pub t: Time,
@@ -622,13 +690,20 @@ pub struct LoggedInputs {
     /// Collect and cover only (absent otherwise, so vehicle decisions log as before).
     #[serde(default, skip_serializing_if = "LoggedSpace::is_not_queried")]
     pub space: LoggedSpace,
-    /// The track picture the decision was taken against (absent when empty).
+    /// The track picture the decision was taken against, by its hash: the `tracks.picture`
+    /// event that holds it (logged before the decision, in the same log). With it, `tracks`,
+    /// `track_ais` and `track_levels` below are absent. Absent for an empty picture, and in
+    /// logs written before pictures were referenced, which carry the picture inline below.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracks_sha256: Option<String>,
+    /// The track picture the decision was taken against, inline (logs before `tracks_sha256`;
+    /// absent when empty or referenced).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tracks: BTreeMap<String, TrackFacts>,
-    /// The AIS identities heard for its tracks (rules 16; absent when none).
+    /// The AIS identities heard for its tracks (rules 16; absent when none, or referenced).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub track_ais: BTreeMap<String, AisIdentity>,
-    /// Its tracks' identity levels (rules 21; absent when none).
+    /// Its tracks' identity levels (rules 21; absent when none, or referenced).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub track_levels: BTreeMap<String, crate::identify::TrackLevel>,
     /// Its vehicles' routed legs (rules 22; absent when none).
@@ -683,8 +758,12 @@ pub struct LoggedInputs {
 }
 
 impl LoggedInputs {
-    /// `world` with its area set replaced by `areas_sha256` (the caller hashed it).
-    pub fn from_world(world: &WorldSnapshot, areas_sha256: Option<String>) -> Self {
+    /// `world` with its area set replaced by `areas_sha256` and, when `tracks_sha256` is given,
+    /// its track picture by that reference (the caller hashed both and logged what they name);
+    /// without one, the picture inline.
+    pub fn from_world(world: &WorldSnapshot, areas_sha256: Option<String>, tracks_sha256: Option<String>) -> Self {
+        // a referenced picture is not copied at all
+        let inline = tracks_sha256.is_none();
         LoggedInputs {
             t: world.t,
             vehicles: world.vehicles.clone(),
@@ -702,9 +781,10 @@ impl LoggedInputs {
                     computed_t: *computed_t,
                 },
             },
-            tracks: world.tracks.clone(),
-            track_ais: world.track_ais.clone(),
-            track_levels: world.track_levels.clone(),
+            tracks_sha256,
+            tracks: if inline { world.tracks.clone() } else { BTreeMap::new() },
+            track_ais: if inline { world.track_ais.clone() } else { BTreeMap::new() },
+            track_levels: if inline { world.track_levels.clone() } else { BTreeMap::new() },
             route_plans: world.route_plans.clone(),
             callsigns: world.callsigns.clone(),
             engaged: world.engaged.clone(),
@@ -725,7 +805,8 @@ impl LoggedInputs {
 
     /// The snapshot again, with `areas` the set the reference resolved to. A space answer
     /// reference can't be resolved here and becomes `Unavailable` (replay uses
-    /// [`Self::resolve_with_space`]).
+    /// [`Self::resolve_with_space`]). The track picture is the one inline: replay puts a
+    /// referenced picture in place first (`tracks.picture`).
     pub fn resolve(&self, areas: Option<AreaSet>) -> WorldSnapshot {
         self.resolve_with_space(areas, |_| None)
     }
@@ -791,7 +872,7 @@ impl WorldSnapshot {
 
     /// The part of the world an intent's rules can read: its vehicles (and a track target),
     /// the areas, terrain and the track picture. This is what gets logged (as
-    /// [`LoggedInputs`], the area set replaced by its hash).
+    /// [`LoggedInputs`], the area set and the track picture replaced by their hashes).
     pub fn subset_for(&self, spec: &IntentSpec) -> WorldSnapshot {
         let mut wanted: Vec<&Uid> = spec.uids.iter().collect();
         if let Task::Track { target } = &spec.task {
@@ -814,8 +895,10 @@ impl WorldSnapshot {
             terrain: self.terrain.clone(),
             // Engine-owned: filled from the space oracle for collect and cover.
             space: SpaceInputs::NotQueried,
-            // The whole track picture: few tracks, and an engagement decision (Phase E)
-            // must be replayable against exactly the picture it saw.
+            // The whole track picture: an engagement decision (Phase E) must be replayable
+            // against exactly the picture it saw. Copied for each intent (the checks read and
+            // the ledger fills it); logged once per log by its hash (`tracks.picture`), never
+            // with each decision: at Saturation's size it is some 2 MB.
             tracks: self.tracks.clone(),
             track_ais: self.track_ais.clone(),
             track_levels: self.track_levels.clone(),

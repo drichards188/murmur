@@ -533,6 +533,14 @@ pub struct Engine {
     space: Option<Box<dyn SpaceOracle + Send>>,
     /// Space answers already logged as `space.query`, by hash.
     logged_space: BTreeSet<String>,
+    /// Track pictures already logged in this log as `tracks.picture`, by hash (bd murmur-whug):
+    /// an event that reads one of them references it; any other is logged first. Per log, never
+    /// carried over: a restarted run logs again what its own events read.
+    logged_pictures: BTreeSet<String>,
+    /// The last track picture hashed and its hash: the next event on the same picture (another
+    /// decision on the same world, the claims of one step) compares it rather than serializing
+    /// and hashing it again.
+    picture_cache: Option<(crate::world::TrackPicture, String)>,
     /// A space answer computed outside the lock for the next check ([`PreparedSpace`]).
     prepared_space: Option<PreparedSpace>,
     /// Picture tokens issued and not yet used or expired, by id.
@@ -741,6 +749,8 @@ impl Engine {
             intents: BTreeMap::new(),
             space: None,
             logged_space: BTreeSet::new(),
+            logged_pictures: BTreeSet::new(),
+            picture_cache: None,
             prepared_space: None,
             tokens: BTreeMap::new(),
             next_token: 1,
@@ -2270,12 +2280,16 @@ impl Engine {
             if self.lost.claimed(&c.lost, &c.track) {
                 continue;
             }
+            // bd murmur-whug: the picture by reference (one for every claim on it)
+            let tracks_sha256 = self.log_picture(&tracks, &world.track_ais, &BTreeMap::new())?;
+            let inline = tracks_sha256.is_none();
             self.emit(EventBody::LostClaimed {
                 track: c.lost.clone(),
                 by_track: c.track.clone(),
                 world_t: world.t,
-                tracks: tracks.clone(),
-                track_ais: world.track_ais.clone(),
+                tracks_sha256,
+                tracks: if inline { tracks.clone() } else { BTreeMap::new() },
+                track_ais: if inline { world.track_ais.clone() } else { BTreeMap::new() },
                 evidence: c.evidence.clone(),
                 blockers: c.blockers.clone(),
             })?;
@@ -2342,14 +2356,18 @@ impl Engine {
         if !claim.confirmable() {
             return Err(no(format!("{by_track} may not be confirmed as {track}: {}", claim.blockers.join("; "))));
         }
+        // bd murmur-whug: the picture by reference
+        let tracks_sha256 = self.log_picture(&tracks, &world.track_ais, &BTreeMap::new())?;
+        let inline = tracks_sha256.is_none();
         let t = self.emit(EventBody::TrackReacquired {
             track: track.to_string(),
             by_track: by_track.to_string(),
             by: by.operator().clone(),
             session: by.session(),
             world_t: world.t,
-            tracks,
-            track_ais: world.track_ais.clone(),
+            tracks_sha256,
+            tracks: if inline { tracks } else { BTreeMap::new() },
+            track_ais: if inline { world.track_ais.clone() } else { BTreeMap::new() },
             evidence: claim.evidence.clone(),
         })?;
         self.lost.claim(track, by_track);
@@ -4791,13 +4809,11 @@ impl Engine {
         let candidates = crate::ident::attribute(&report, &tracks, world.t, &cfg);
         let verdict =
             crate::ident::verdict(&report, &candidates, &tracks, &vehicles, &self.ident, world.t, &cfg);
+        // the picture logged before the act (never between it and its verdict's event)
+        let inputs = self.ident_inputs(world.t, tracks, vehicles)?;
         self.emit_ident(EventBody::IdentAct {
             act: report.clone(),
-            inputs: crate::ident::IdentInputs {
-                t: world.t,
-                tracks,
-                vehicles,
-            },
+            inputs,
             candidates: candidates.clone(),
             verdict: verdict.clone(),
         })?;
@@ -5138,6 +5154,11 @@ impl Engine {
                 break;
             };
             let (track, hostile) = (found.track.clone(), found.hostile.clone());
+            let inputs = self.ident_inputs(
+                world.t,
+                crate::ident::escort_inputs(&tracks, &track, &hostile),
+                std::collections::BTreeSet::new(),
+            )?;
             let t = self.now();
             let flag = crate::ident::Flag {
                 id: self.ident.next_flag(),
@@ -5152,11 +5173,7 @@ impl Engine {
                 t,
                 EventBody::IdentFlagged {
                     flag: flag.clone(),
-                    inputs: Some(crate::ident::IdentInputs {
-                        t: world.t,
-                        tracks: crate::ident::escort_inputs(&tracks, &track, &hostile),
-                        vehicles: std::collections::BTreeSet::new(),
-                    }),
+                    inputs: Some(inputs),
                 },
             )?;
             new.push(flag.id);
@@ -6473,6 +6490,12 @@ impl Engine {
     }
 
     fn emit_at(&mut self, t: Time, body: EventBody) -> Result<Time, EngineError> {
+        self.emit_keeping(t, body).map(|(t, _)| t)
+    }
+
+    /// [`Self::emit_at`], handing the body back once it is written (a track picture goes on to
+    /// the engine's cache rather than being copied for it).
+    fn emit_keeping(&mut self, t: Time, body: EventBody) -> Result<(Time, EventBody), EngineError> {
         let t = t.max(self.last_t);
         let event = Event {
             seq: self.seq + 1,
@@ -6485,17 +6508,106 @@ impl Engine {
         self.seq += 1;
         self.last_t = t;
         self.head = sha256_hex(line.as_bytes());
-        Ok(t)
+        Ok((t, event.body))
     }
 
-    /// The decision inputs as logged: the area set and any space answer replaced by their
-    /// hashes. Logs the answer as `space.query`, and the set as `areas.loaded`, first if
-    /// they haven't been logged yet.
+    /// The decision inputs as logged: the area set, any space answer and the track picture
+    /// replaced by their hashes. Logs the answer as `space.query`, the set as `areas.loaded`
+    /// and the picture as `tracks.picture` first, each only if this log does not hold it yet.
     fn log_inputs(&mut self, inputs: &WorldSnapshot) -> Result<LoggedInputs, EngineError> {
         self.log_inputs_at(inputs, None)
     }
 
-    /// [`Self::log_inputs`], its events logged at `at` when given (else at the clock).
+    /// The reference an event logs for the track picture it read, made of these parts (bd
+    /// murmur-whug): none for an empty picture (nothing to log, as before), else its hash
+    /// ([`crate::world::picture_hash`]), the picture logged first as `tracks.picture` when this
+    /// log does not hold it yet. Every event that logs a picture goes through here: a picture is
+    /// logged once a log, never with each event, never on a timer. It is logged at the log's
+    /// time (the last event's), never the clock's, so that it moves no event's time: the events
+    /// after it are logged at exactly the times they were before pictures were referenced (an
+    /// `engage.picture` at its world's time, a re-check at the instant its guard read). Hashing a
+    /// picture serializes it whole (some 2 MB at Saturation's size), so the last one hashed is
+    /// kept, and an event on the same picture compares rather than hashes.
+    fn log_picture(
+        &mut self,
+        tracks: &BTreeMap<String, TrackFacts>,
+        track_ais: &BTreeMap<String, AisIdentity>,
+        track_levels: &BTreeMap<String, crate::identify::TrackLevel>,
+    ) -> Result<Option<String>, EngineError> {
+        if tracks.is_empty() && track_ais.is_empty() && track_levels.is_empty() {
+            return Ok(None);
+        }
+        let cached = match &self.picture_cache {
+            Some((p, h)) if p.is(tracks, track_ais, track_levels) => Some(h.clone()),
+            _ => None,
+        };
+        let sha256 = match &cached {
+            Some(h) => h.clone(),
+            None => crate::world::picture_hash(tracks, track_ais, track_levels)?,
+        };
+        if self.logged_pictures.contains(&sha256) {
+            // logged before (a picture seen again): kept for the events after this one
+            if cached.is_none() {
+                self.picture_cache = Some((
+                    crate::world::TrackPicture {
+                        tracks: tracks.clone(),
+                        track_ais: track_ais.clone(),
+                        track_levels: track_levels.clone(),
+                    },
+                    sha256.clone(),
+                ));
+            }
+            return Ok(Some(sha256));
+        }
+        let t = self.last_t;
+        let (_, body) = self.emit_keeping(
+            t,
+            EventBody::TracksPicture {
+                sha256: sha256.clone(),
+                tracks: tracks.clone(),
+                track_ais: track_ais.clone(),
+                track_levels: track_levels.clone(),
+            },
+        )?;
+        self.logged_pictures.insert(sha256.clone());
+        if let EventBody::TracksPicture {
+            tracks,
+            track_ais,
+            track_levels,
+            ..
+        } = body
+        {
+            self.picture_cache = Some((
+                crate::world::TrackPicture {
+                    tracks,
+                    track_ais,
+                    track_levels,
+                },
+                sha256.clone(),
+            ));
+        }
+        Ok(Some(sha256))
+    }
+
+    /// Rules 9: an identification event's picture as logged: its tracks by reference
+    /// ([`Self::log_picture`]), with the fleet it read.
+    fn ident_inputs(
+        &mut self,
+        t: Time,
+        tracks: BTreeMap<String, TrackFacts>,
+        vehicles: BTreeSet<Uid>,
+    ) -> Result<crate::ident::IdentInputs, EngineError> {
+        let tracks_sha256 = self.log_picture(&tracks, &BTreeMap::new(), &BTreeMap::new())?;
+        Ok(crate::ident::IdentInputs {
+            t,
+            tracks: if tracks_sha256.is_some() { BTreeMap::new() } else { tracks },
+            tracks_sha256,
+            vehicles,
+        })
+    }
+
+    /// [`Self::log_inputs`], its space answer and area set logged at `at` when given (else at the
+    /// clock), its picture at the log's time ([`Self::log_picture`]).
     fn log_inputs_at(&mut self, inputs: &WorldSnapshot, at: Option<Time>) -> Result<LoggedInputs, EngineError> {
         // rules 25: no build of older rules logged a vehicle's damage report (and none of their
         // decisions reads it)
@@ -6523,13 +6635,22 @@ impl Engine {
             )?;
             self.logged_space.insert(sha256.clone());
         }
-        let Some(set) = &inputs.areas else {
-            return Ok(LoggedInputs::from_world(inputs, None));
+        let areas_sha256 = match &inputs.areas {
+            None => None,
+            Some(set) => Some(self.log_areas(set, at)?),
         };
+        // bd murmur-whug: the picture by reference, logged once
+        let tracks_sha256 = self.log_picture(&inputs.tracks, &inputs.track_ais, &inputs.track_levels)?;
+        Ok(LoggedInputs::from_world(inputs, areas_sha256, tracks_sha256))
+    }
+
+    /// The hash a decision references `set` by, the set logged as `areas.loaded` first (at `at`,
+    /// else at the clock) when it is not the one in force.
+    fn log_areas(&mut self, set: &crate::areas::AreaSet, at: Option<Time>) -> Result<String, EngineError> {
         if let Some(cur) = &self.areas
             && cur.areas == *set
         {
-            return Ok(LoggedInputs::from_world(inputs, Some(cur.sha256.clone())));
+            return Ok(cur.sha256.clone());
         }
         let sha256 = set.content_hash()?;
         let t = at.unwrap_or_else(|| self.now());
@@ -6544,7 +6665,7 @@ impl Engine {
             sha256: sha256.clone(),
             areas: set.clone(),
         });
-        Ok(LoggedInputs::from_world(inputs, Some(sha256)))
+        Ok(sha256)
     }
 
     fn transition(

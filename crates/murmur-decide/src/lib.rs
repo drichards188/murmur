@@ -376,5 +376,5 @@ pub use terrain::{NearSample, NoTerrain, PolygonTerrain, Surface, TerrainOracle}
 pub use time::{Clock, ManualClock, SystemClock, Time};
 pub use world::{
     AisIdentity, Affiliation, Circle, CircleSource, Fact, GpsFixFrom, LegSurfaces, LoggedInputs, Manoeuvre, LoggedSpace, SpaceInputs, TerrainInputs, TrackFacts,
-    VehicleDamage, VehicleFacts, WorldSnapshot,
+    TrackPicture, VehicleDamage, VehicleFacts, WorldSnapshot, picture_hash,
 };

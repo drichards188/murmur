@@ -1,5 +1,5 @@
-//! SHA-256 content hashes for the audit log: the area set's content hash and the event
-//! hash chain. Hashes are lowercase hex.
+//! SHA-256 content hashes for the audit log: the area set's and the track picture's content
+//! hashes and the event hash chain. Hashes are lowercase hex.
 
 use sha2::{Digest, Sha256};
 
@@ -7,10 +7,32 @@ use sha2::{Digest, Sha256};
 pub const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
+    hex(Sha256::digest(bytes).as_slice())
+}
+
+/// The SHA-256 (hex) of `value`'s compact `serde_json` serialization, the same bytes
+/// `serde_json::to_string` gives, hashed as they are written (a large value, the track picture,
+/// is never held as one string).
+pub fn sha256_json<T: serde::Serialize + ?Sized>(value: &T) -> Result<String, serde_json::Error> {
+    struct Hashing(Sha256);
+    impl std::io::Write for Hashing {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.update(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut w = Hashing(Sha256::new());
+    serde_json::to_writer(&mut w, value)?;
+    Ok(hex(w.0.finalize().as_slice()))
+}
+
+fn hex(digest: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let digest = Sha256::digest(bytes);
     let mut s = String::with_capacity(64);
-    for b in digest {
+    for &b in digest {
         s.push(char::from(HEX[usize::from(b >> 4)]));
         s.push(char::from(HEX[usize::from(b & 0x0f)]));
     }

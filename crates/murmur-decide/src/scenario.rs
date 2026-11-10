@@ -4317,23 +4317,43 @@ fn decision_inputs(body: &mut EventBody) -> Vec<&mut crate::world::LoggedInputs>
     }
 }
 
-/// Rules 9: every track picture an event logs (a decision's inputs, an act's or a flag's).
-fn picture_tracks(body: &mut EventBody) -> Vec<&mut BTreeMap<String, TrackFacts>> {
-    match body {
-        EventBody::CheckResult { inputs, .. }
-        | EventBody::PolicyDecision { inputs, .. }
-        | EventBody::PictureIssued { inputs, .. }
-        | EventBody::EngagePicture { inputs, .. }
-        | EventBody::EngageObserve { inputs, .. }
-        | EventBody::IntentQueued { inputs, .. } => vec![&mut inputs.tracks],
-        EventBody::ApprovalReset { inputs: Some(i), .. } | EventBody::IntentDispatched { inputs: Some(i), .. } => {
-            vec![&mut i.tracks]
+/// Rules 9: edit every track picture a log holds, as a tamperer who can write the file would:
+/// one logged inline (an older log's) in place, and each `tracks.picture` (bd murmur-whug) with
+/// its hash recomputed and every reference to it rewritten, so that only recomputation can catch
+/// the edit. `edit` changes one picture's tracks and says whether it did; whether any changed.
+fn edit_pictures(
+    events: &mut [crate::audit::Event],
+    mut edit: impl FnMut(&mut BTreeMap<String, TrackFacts>) -> bool,
+) -> Result<bool, String> {
+    let mut renamed: BTreeMap<String, String> = BTreeMap::new();
+    let mut done = false;
+    for e in events.iter_mut() {
+        if let EventBody::TracksPicture {
+            sha256,
+            tracks,
+            track_ais,
+            track_levels,
+        } = &mut e.body
+            && edit(tracks)
+        {
+            let h = crate::world::picture_hash(tracks, track_ais, track_levels).map_err(|err| err.to_string())?;
+            renamed.insert(std::mem::replace(sha256, h.clone()), h);
+            done = true;
         }
-        EventBody::IdentAct { inputs, .. } | EventBody::IdentFlagged { inputs: Some(inputs), .. } => {
-            vec![&mut inputs.tracks]
-        }
-        _ => Vec::new(),
     }
+    for e in events.iter_mut() {
+        for slot in e.body.pictures_mut() {
+            match slot.sha256 {
+                Some(h) => {
+                    if let Some(new) = renamed.get(h.as_str()) {
+                        *h = new.clone();
+                    }
+                }
+                None => done |= edit(slot.tracks),
+            }
+        }
+    }
+    Ok(done)
 }
 
 /// A log attack's result.
@@ -5105,17 +5125,17 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
                 {
                     swap(declaration);
                 }
-                for tracks in picture_tracks(&mut e.body) {
-                    if let Some(t) = tracks.get_mut(&track)
-                        && t.declared_by.as_deref() == Some(from.as_str())
-                    {
-                        t.declared_by = Some(to.to_string());
-                        if let Some(d) = t.declaration.as_mut() {
-                            swap(d);
-                        }
-                    }
-                }
             }
+            edit_pictures(&mut events, |tracks| match tracks.get_mut(&track) {
+                Some(t) if t.declared_by.as_deref() == Some(from.as_str()) => {
+                    t.declared_by = Some(to.to_string());
+                    if let Some(d) = t.declaration.as_mut() {
+                        swap(d);
+                    }
+                    true
+                }
+                _ => false,
+            })?;
         }
         "drop_revocation_stop" => {
             // rules 9: the engagement a revocation stopped made to go on (its stop and the
@@ -5134,23 +5154,22 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
         "confirm_in_inputs" => {
             // rules 9: a rule declaration nobody confirmed shown confirmed in the decisions'
             // pictures (so it is exempt in another engagement's keep-out)
-            let mut done = false;
-            for e in &mut events {
-                for tracks in picture_tracks(&mut e.body) {
-                    for t in tracks.values_mut() {
-                        if let Some(d) = t.declaration.as_mut()
-                            && d.unconfirmed_rule()
-                        {
-                            d.confirmed = Some(crate::ident::Confirmation {
-                                by: OperatorId::new("op-2"),
-                                session: crate::ids::SessionId(2),
-                                t: d.t,
-                            });
-                            done = true;
-                        }
+            let done = edit_pictures(&mut events, |tracks| {
+                let mut changed = false;
+                for t in tracks.values_mut() {
+                    if let Some(d) = t.declaration.as_mut()
+                        && d.unconfirmed_rule()
+                    {
+                        d.confirmed = Some(crate::ident::Confirmation {
+                            by: OperatorId::new("op-2"),
+                            session: crate::ids::SessionId(2),
+                            t: d.t,
+                        });
+                        changed = true;
                     }
                 }
-            }
+                changed
+            })?;
             if !done {
                 return Err("no unconfirmed rule declaration in any picture".into());
             }
@@ -5245,22 +5264,18 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
         }
         "drop_first_seen" => {
             // rules 12: every track made to look as if the tracker had not said when it
-            // started it (a young track's keep-out region would not be there)
-            let mut done = false;
-            for e in &mut events {
-                let inputs = match &mut e.body {
-                    EventBody::CheckResult { inputs, .. }
-                    | EventBody::PolicyDecision { inputs, .. }
-                    | EventBody::EngagePicture { inputs, .. }
-                    | EventBody::EngageObserve { inputs, .. } => Some(inputs),
-                    _ => None,
-                };
-                for t in inputs.into_iter().flat_map(|i| i.tracks.values_mut()) {
+            // started it (a young track's keep-out region would not be there): in every picture
+            // (bd murmur-whug: a picture is shared by every event that read it, the checks among
+            // them)
+            let done = edit_pictures(&mut events, |tracks| {
+                let mut changed = false;
+                for t in tracks.values_mut() {
                     if t.first_seen_t.take().is_some() {
-                        done = true;
+                        changed = true;
                     }
                 }
-            }
+                changed
+            })?;
             if !done {
                 return Err("no track's first detection in any decision's inputs".into());
             }

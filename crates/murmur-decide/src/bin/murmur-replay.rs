@@ -350,6 +350,12 @@ fn main() -> ExitCode {
             report.space_queries
         );
     }
+    if report.track_pictures > 0 {
+        println!(
+            "{} track picture(s) logged, each referenced by hash and resolved for the events that read it",
+            report.track_pictures
+        );
+    }
     earlier.print(&report, args.trust_resumed);
     if let Some(head) = &report.head_sha256 {
         println!("head {head} (compare with an external anchor to detect a rewrite or truncation)");

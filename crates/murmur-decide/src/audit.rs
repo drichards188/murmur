@@ -7,9 +7,14 @@
 //! with its SHA-256 content hash; decision inputs reference the hash. Space answers
 //! (collect, cover) work the same way: each is logged once as `space.query` (query, answer,
 //! `time_map`, segment identity with `cache_meta`) and referenced by hash; the segment in
-//! use is logged as `space.loaded` when the engine is given one. The engine writes an
-//! event before applying the change it records; if the write fails, the change doesn't
-//! happen.
+//! use is logged as `space.loaded` when the engine is given one. The track picture too
+//! (bd murmur-whug): an event that read one (a decision's inputs, an act's, a flag's, a lost
+//! contact's claim) references it by `tracks_sha256`, the SHA-256 of its canonical
+//! serialization, and the picture itself is logged once in the log, as `tracks.picture`, right
+//! before the first event that reads it (at Saturation's size a picture is some 2 MB, and every
+//! decision used to carry its own copy). Logs written before carry the picture inline; replay
+//! reads either. The engine writes an event before applying the change it records; if the write
+//! fails, the change doesn't happen.
 //!
 //! ## Hash chain
 //!
@@ -159,6 +164,25 @@ pub enum EventBody {
     SpaceQuery {
         sha256: String,
         answer: Box<SpaceAnswer>,
+    },
+
+    /// A track picture (`crate::world::TrackPicture`: the tracks with their identification
+    /// filled, the AIS identities heard for them, their identity levels), logged once in a log,
+    /// right before the first event that reads it; that event and every later one that reads
+    /// the same picture reference it by `sha256` (`tracks_sha256`), the SHA-256 of the picture's
+    /// canonical serialization (`TrackPicture::content_hash`). Never on a timer: only when an
+    /// event needs a picture this log does not hold yet, so a restarted or resumed run logs again
+    /// any picture its own events read. Its `t` is the event before it's (it moves no event's
+    /// time). Replay checks the hash and resolves every reference.
+    #[serde(rename = "tracks.picture")]
+    TracksPicture {
+        sha256: String,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        tracks: BTreeMap<String, crate::world::TrackFacts>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        track_ais: BTreeMap<String, crate::world::AisIdentity>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        track_levels: BTreeMap<String, crate::identify::TrackLevel>,
     },
 
     #[serde(rename = "intent.created")]
@@ -759,12 +783,17 @@ pub enum EventBody {
     /// it, raised once for review ([`crate::lost::claims`]), on the picture logged here
     /// (`tracks`, its identification filled, and `track_ais`, at `world_t`), with the evidence
     /// and what keeps it from being confirmed now (`blockers`). It changes nothing: the lost
-    /// contact counts until an operator confirms the claim. Replay recomputes it.
+    /// contact counts until an operator confirms the claim. Replay recomputes it. The picture is
+    /// referenced by its hash (`tracks_sha256`, a `tracks.picture` of its tracks and AIS
+    /// identities), `tracks` and `track_ais` then absent; logs before that carry it inline.
     #[serde(rename = "lost.claimed")]
     LostClaimed {
         track: String,
         by_track: String,
         world_t: Time,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tracks_sha256: Option<String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         tracks: BTreeMap<String, crate::world::TrackFacts>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         track_ais: BTreeMap<String, crate::world::AisIdentity>,
@@ -778,7 +807,8 @@ pub enum EventBody {
     /// its identification filled, and `track_ais`), with the evidence shown
     /// ([`crate::lost::claim_of`]: nothing may contradict it): it is retired from the keep-outs
     /// while `by_track` stands, the live track counting in its place. Replay recomputes the claim
-    /// from this picture and its own ledger, and checks the session.
+    /// from this picture and its own ledger, and checks the session. The picture by its hash
+    /// (`tracks_sha256`) as on `lost.claimed`.
     #[serde(rename = "track.reacquired")]
     TrackReacquired {
         track: String,
@@ -786,6 +816,9 @@ pub enum EventBody {
         by: OperatorId,
         session: SessionId,
         world_t: Time,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tracks_sha256: Option<String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         tracks: BTreeMap<String, crate::world::TrackFacts>,
         /// The AIS identities heard for that picture's tracks.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -1026,6 +1059,107 @@ pub enum EventBody {
         intent: IntentId,
         view: OperatorView,
     },
+}
+
+/// One track picture an event logs ([`EventBody::pictures_mut`]): its reference
+/// (`tracks_sha256`), and its parts as the event carries them inline (`None`: a part this event
+/// does not log: an act's picture is its tracks only, a lost contact's claim its tracks and
+/// AIS identities).
+pub struct PictureSlot<'a> {
+    pub sha256: &'a mut Option<String>,
+    pub tracks: &'a mut BTreeMap<String, crate::world::TrackFacts>,
+    pub track_ais: Option<&'a mut BTreeMap<String, crate::world::AisIdentity>>,
+    pub track_levels: Option<&'a mut BTreeMap<String, crate::identify::TrackLevel>>,
+}
+
+fn inputs_slot(i: &mut LoggedInputs) -> PictureSlot<'_> {
+    PictureSlot {
+        sha256: &mut i.tracks_sha256,
+        tracks: &mut i.tracks,
+        track_ais: Some(&mut i.track_ais),
+        track_levels: Some(&mut i.track_levels),
+    }
+}
+
+fn ident_slot(i: &mut crate::ident::IdentInputs) -> PictureSlot<'_> {
+    PictureSlot {
+        sha256: &mut i.tracks_sha256,
+        tracks: &mut i.tracks,
+        track_ais: None,
+        track_levels: None,
+    }
+}
+
+impl EventBody {
+    /// Every track picture this event logs, inline or by reference: a decision's inputs (an
+    /// identify step's return inputs too), an act's or a flag's picture, a lost contact's claim
+    /// or confirmation. What replay resolves a reference into, and a forger edits. An event that
+    /// logs a track picture belongs here (and in [`Self::picture_refs`]): the engine logs every
+    /// one by reference.
+    pub fn pictures_mut(&mut self) -> Vec<PictureSlot<'_>> {
+        match self {
+            EventBody::CheckResult { inputs, .. }
+            | EventBody::PolicyDecision { inputs, .. }
+            | EventBody::PictureIssued { inputs, .. }
+            | EventBody::EngagePicture { inputs, .. }
+            | EventBody::EngageObserve { inputs, .. }
+            | EventBody::IntentQueued { inputs, .. } => vec![inputs_slot(inputs)],
+            EventBody::ApprovalReset { inputs, .. } | EventBody::IntentDispatched { inputs, .. } => {
+                inputs.iter_mut().map(inputs_slot).collect()
+            }
+            EventBody::IdentifyStep {
+                inputs, return_inputs, ..
+            } => std::iter::once(inputs).chain(return_inputs.iter_mut()).map(inputs_slot).collect(),
+            EventBody::IdentAct { inputs, .. } => vec![ident_slot(inputs)],
+            EventBody::IdentFlagged { inputs, .. } => inputs.iter_mut().map(ident_slot).collect(),
+            EventBody::LostClaimed {
+                tracks_sha256,
+                tracks,
+                track_ais,
+                ..
+            }
+            | EventBody::TrackReacquired {
+                tracks_sha256,
+                tracks,
+                track_ais,
+                ..
+            } => vec![PictureSlot {
+                sha256: tracks_sha256,
+                tracks,
+                track_ais: Some(track_ais),
+                track_levels: None,
+            }],
+            _ => Vec::new(),
+        }
+    }
+
+    /// The track picture references this event makes, in [`Self::pictures_mut`]'s order.
+    pub fn picture_refs(&self) -> Vec<&str> {
+        fn l(i: &LoggedInputs) -> Option<&str> {
+            i.tracks_sha256.as_deref()
+        }
+        let refs: Vec<Option<&str>> = match self {
+            EventBody::CheckResult { inputs, .. }
+            | EventBody::PolicyDecision { inputs, .. }
+            | EventBody::PictureIssued { inputs, .. }
+            | EventBody::EngagePicture { inputs, .. }
+            | EventBody::EngageObserve { inputs, .. }
+            | EventBody::IntentQueued { inputs, .. } => vec![l(inputs)],
+            EventBody::ApprovalReset { inputs, .. } | EventBody::IntentDispatched { inputs, .. } => {
+                inputs.iter().map(l).collect()
+            }
+            EventBody::IdentifyStep {
+                inputs, return_inputs, ..
+            } => std::iter::once(inputs).chain(return_inputs.iter()).map(l).collect(),
+            EventBody::IdentAct { inputs, .. } => vec![inputs.tracks_sha256.as_deref()],
+            EventBody::IdentFlagged { inputs, .. } => inputs.iter().map(|i| i.tracks_sha256.as_deref()).collect(),
+            EventBody::LostClaimed { tracks_sha256, .. } | EventBody::TrackReacquired { tracks_sha256, .. } => {
+                vec![tracks_sha256.as_deref()]
+            }
+            _ => Vec::new(),
+        };
+        refs.into_iter().flatten().collect()
+    }
 }
 
 /// One console display event for a pending intent (see [`EventBody::OperatorView`]).

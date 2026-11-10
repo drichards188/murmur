@@ -2143,8 +2143,18 @@ async fn a_claims_confirmation_takes_its_picture_under_the_decision_lock() {
     let log = e.r.log.text();
     let rep = replay::replay_str(&log).expect("parses");
     assert!(rep.ok(), "{:?}", rep.mismatches);
-    let reacquired = log.lines().find(|l| l.contains("\"type\":\"track.reacquired\"")).expect("confirmed");
-    assert!(reacquired.contains("\"T-0004\":{"), "the confirmation's picture holds the newcomer");
+    let reacquired: serde_json::Value = log
+        .lines()
+        .find(|l| l.contains("\"type\":\"track.reacquired\""))
+        .map(|l| serde_json::from_str(l).expect("json"))
+        .expect("confirmed");
+    // bd murmur-whug: the picture is referenced by hash and logged once as `tracks.picture`
+    let sha256 = reacquired["tracks_sha256"].as_str().expect("the picture by reference");
+    let picture = log
+        .lines()
+        .find(|l| l.contains("\"type\":\"tracks.picture\"") && l.contains(&format!("\"sha256\":\"{sha256}\"")))
+        .expect("the referenced picture is logged");
+    assert!(picture.contains("\"T-0004\":{"), "the confirmation's picture holds the newcomer");
 }
 
 // ---- rules 15 ---------------------------------------------------------------------------

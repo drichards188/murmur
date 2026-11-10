@@ -926,6 +926,11 @@ pub fn escort_inputs(
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct IdentInputs {
     pub t: Time,
+    /// The picture by its hash: the `tracks.picture` that holds it (its tracks only), logged
+    /// before this event in the same log; `tracks` is then absent. Absent for no track, and in
+    /// logs written before pictures were referenced, which carry `tracks` inline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracks_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tracks: BTreeMap<String, TrackFacts>,
     /// An act against a vehicle: our fleet then (the vehicles a victim may be).
