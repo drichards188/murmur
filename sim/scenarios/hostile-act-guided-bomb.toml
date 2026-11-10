@@ -42,11 +42,13 @@ seed = 76818
 misclassification_rate = 0.0     # deterministic identities: the situation is about the chain
 
 # ---------------------------------------------------------------- the hostile
-# A coaster without AIS steams in at 5 m/s from some 630 m west of its holding point mid-strait,
-# 1.5 km west of the bridge inside the engagement zone (sim/areas: ez-gate-west), and anchors there
-# from about 2:10 (a holding target's plan is stable). At 2:35 it is ordered to fire a rocket at
-# HUNTER 1, patrolling 0.9 to 1.2 km east of it, from where it lies, and again every minute: each
-# rocket is another chance for our sensors to observe an act.
+# A coaster without AIS steams in from some 630 m west of its holding point mid-strait, 1.5 km west
+# of the bridge inside the engagement zone (sim/areas: ez-gate-west): up to 4.9 m/s by 0:14, then
+# slowing at its kind's 0.02 m/s² (sim/contacts.toml, bd murmur-2of4) the whole way in, and stops
+# on the point at about 4:18, creeping the last few metres while the nomination is signed (well
+# inside the effect's radius). At 2:35 it is ordered to fire a rocket at HUNTER 1, patrolling 0.9
+# to 1.2 km east of it, from where it is (still coming in at some 2 m/s), and again every minute:
+# each rocket is another chance for our sensors to observe an act.
 [[contact]]
 id = "coaster-raider"
 name = "Coaster without AIS (a small freighter) with a deck-mounted rocket launcher, anchored mid-strait west of the bridge"

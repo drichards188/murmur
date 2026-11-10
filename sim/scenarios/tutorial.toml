@@ -6,8 +6,8 @@
 #
 # What differs from hostile-act-engagement's traffic, and why (the rules, the policy, the
 # platforms, the daylight clock and HUNTER 1's patrol leg are the same, sim/fleets/tutorial.toml):
-# - The fast boat starts 800 m short of its holding point instead of 2.7 km out at sea, and holds
-#   from about 1:00 instead of 3:03.
+# - The fast boat starts 800 m short of its holding point instead of 2.7 km out at sea, and stops
+#   on it at about 1:18 instead of 3:22 (slowing at its kind's 1.5 m/s², bd murmur-2of4).
 # - It is a fast inshore attack craft (sim/contacts.toml `armed_fast_boat`: it looks like a small
 #   fast boat to our sensors until it fires), and it fires what it carries, by its own fire control
 #   (docs/AUTONOMOUS-NODES.md, bd murmur-y85j.6): four ATGM-class missiles (250 m/s, 100 m to 5.5
@@ -58,7 +58,7 @@ spared = [1]                                         # HUNTER 1: struck, drawn, 
 
 # ---------------------------------------------------------------- the hostile
 # A short run in at 15 m/s (29 kn), no AIS, to its holding point mid-strait 1.5 km west of the
-# bridge, inside the engagement zone (sim/areas: ez-gate-west), where it holds from about 1:00;
+# bridge, inside the engagement zone (sim/areas: ez-gate-west), where it stops at about 1:18;
 # HUNTER 1 patrols 0.9 to 1.2 km east of it, inside both its missile's band (100 m to 5.5 km) and
 # its machine gun's (2 km), so it never holds its fire for range (tested:
 # eval/tests/test_situation.py, the tutorial's test).

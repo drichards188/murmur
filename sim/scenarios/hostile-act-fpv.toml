@@ -39,7 +39,8 @@ misclassification_rate = 0.0     # deterministic identities: the situation is ab
 # ---------------------------------------------------------------- the hostile
 # As the tutorial's: a short run in at 15 m/s (29 kn), no AIS, from 800 m west of its holding point
 # mid-strait, 1.5 km west of the bridge inside the engagement zone (sim/areas: ez-gate-west), where
-# it holds from about 1:00. At 1:25 it is ordered to open fire on HUNTER 1, patrolling 0.9 to 1.2 km
+# it stops at about 1:17, slowing from about 1:08 at its kind's 1.5 m/s² (sim/contacts.toml, bd
+# murmur-2of4). At 1:25 it is ordered to open fire on HUNTER 1, patrolling 0.9 to 1.2 km
 # east of it (inside its gun's 2 km), from where it holds, and again every minute: each firing
 # episode is one act, another chance for our sensors to observe it.
 [[contact]]

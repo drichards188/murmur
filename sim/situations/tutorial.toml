@@ -13,8 +13,8 @@
 # and the assessment. About 8 minutes for a person reading at a normal pace.
 #
 # Same platforms, policy, engine and rules as hostile-act-engagement; the timeline is compressed
-# (sim/scenarios/tutorial.toml): the boat starts 800 m short of its holding point and holds from
-# about 1:00. It is an armed kind (a fast inshore attack craft, sim/contacts.toml
+# (sim/scenarios/tutorial.toml): the boat starts 800 m short of its holding point and stops on it
+# at about 1:18 (slowing from 1:08, bd murmur-2of4). It is an armed kind (a fast inshore attack craft, sim/contacts.toml
 # `armed_fast_boat`) and fires by its own fire control what it carries (docs/AUTONOMOUS-NODES.md):
 # its contacts file orders it at 1:15 to attack HUNTER 1 with one missile, and again every 90 s to
 # the end, its four ATGM-class missiles first and then two bursts of its heavy machine gun at a
@@ -78,10 +78,12 @@ harm (a training aid).
 """
 director = """
 Truth: a fast inshore attack craft with no AIS (it looks like a small fast boat; truth affiliation:
-hostile) runs in from 800 m west of its holding point at 15 m/s from about 0:08 and holds
-mid-strait at [-122.4950, 37.8120], 1.5 km west of the bridge and inside the engagement zone, from
-about 1:00. Its contacts file orders it to attack HUNTER 1, patrolling 0.9 to 1.2 km east of it,
-at about 1:20 and every 90 s to the end: one ATGM-class missile (250 m/s, 5.5 km) at a time for
+hostile) runs in from 800 m west of its holding point at 15 m/s from about 0:08, slows from about
+1:08 at its kind's 1.5 m/s² and stops on its holding point mid-strait at [-122.4950, 37.8120],
+1.5 km west of the bridge and inside the engagement zone, at about 1:18. Its contacts file orders
+it to attack HUNTER 1, patrolling 0.9 to 1.2 km east of it, at about 1:15 and every 90 s to the
+end (its first missile at 1:16, the boat still slowing at 2.9 m/s; declared by rule on it at 0.99,
+2026-11-08): one ATGM-class missile (250 m/s, 5.5 km) at a time for
 its first four attacks (to about 6:00), then two 6-round bursts of its 12.7 mm machine gun (2 km)
 five seconds apart. It fires a second or two after each order, once it perceives HUNTER 1. A
 missile strikes HUNTER 1 3.6 to 4.8 s after its launch, a burst a second or two after it fires;

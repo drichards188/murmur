@@ -79,8 +79,9 @@ lane north of Alcatraz from about 5:30; ATTACK-WEST (90) comes low from the sea 
 off Ocean Beach from about 6:00. The two attack swarms are one-way attack drones (an RPG-class
 warhead each, looking like quadcopters to our sensors); no order sends them in, so none of the
 swarms acts. The shooter, an armed VTOL drone with two light missiles (looking like an unknown
-UAS) that flew in with the recon swarm, stops at 40 m over [-122.4950, 37.8120], 1.5 km west of the
-bridge inside the engagement zone, from about 4:30; its contacts file orders it to attack
+UAS) that flew in with the recon swarm, slows from about 6:25 at its kind's 1.25 m/s² (bd
+murmur-2of4) and stops at 40 m over [-122.4950, 37.8120], 1.5 km west of the bridge inside the
+engagement zone, at about 6:44 (headless, 2026-11-10); its contacts file orders it to attack
 SURFACE-3's first USV (uid 3201, on its ring 2 km east) from where it hovers: it fires a missile at
 about 10:00 and its second at about 11:00 (each an act, each strike drawn: the USV can be stopped
 or sunk), then turns for home along its way in, west past Point Bonita. What a good watch catches: the three jammed pickets as

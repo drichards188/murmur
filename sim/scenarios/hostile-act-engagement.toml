@@ -34,13 +34,16 @@ seed = 17
 misclassification_rate = 0.0     # deterministic identities: the situation is about the chain
 
 # ---------------------------------------------------------------- the hostile
-# Runs in from the sea at 15 m/s (29 kn), no AIS, and holds mid-strait 1.5 km west of the bridge,
-# inside the engagement zone (sim/areas: ez-gate-west), from about 3:16. At 3:20 it is ordered to
-# open fire on HUNTER 1, patrolling 0.9 to 1.2 km east of it (inside its gun's 2 km), from where
-# it holds: two 6-round bursts five seconds apart (one act, a firing episode), and again a minute
-# later, and again. Each act is observed by whichever of ours see a muzzle flash, so if one is
-# attributed below the threshold (a loose fix: flagged for review, not declared) the next is
-# another chance; once the boat is declared, the engine only records the rest.
+# Runs in from the sea at 15 m/s (29 kn), no AIS, and stops on its hold point mid-strait 1.5 km
+# west of the bridge, inside the engagement zone (sim/areas: ez-gate-west), at about 3:22: it
+# slows from about 3:12 at its kind's 1.5 m/s² (sim/contacts.toml, bd murmur-2of4). At 3:20 it
+# is ordered to open fire on HUNTER 1, patrolling 0.9 to 1.2 km east of it (inside its gun's
+# 2 km), from where it is: two 6-round bursts five seconds apart (one act, a firing episode; the
+# first at 3:21, at 2 m/s, a second before it stops), and again a minute later, and again. Each
+# act is observed by whichever of ours see a muzzle flash, so if one is attributed below the
+# threshold (a loose fix: flagged for review, not declared) the next is another chance: with
+# seed 17 A-1 is flagged (0.87) and A-2 declares (bd murmur-1t2p). Once the boat is declared,
+# the engine only records the rest.
 [[contact]]
 id = "fastboat-raider"
 name = "Fast inshore attack craft without AIS, in from the sea, holding mid-strait west of the bridge"

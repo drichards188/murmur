@@ -30,7 +30,8 @@ Engagements are not authorized on this watch.
 """
 director = """
 Truth: at about 2:30 a small fast boat with no AIS (truth affiliation: unknown) comes in from
-the west at 15 m/s and holds 1.5 km west of the bridge from about 6:10. Nothing hostile happens.
+the west at 15 m/s, slows from about 6:17 at its kind's 1.5 m/s² (sim/contacts.toml, bd
+murmur-2of4) and holds 1.5 km west of the bridge from about 6:26. Nothing hostile happens.
 What should happen: our sensors pick it up and classify it (suspect: a small fast craft without
 AIS; never hostile), the AI proposes a sensor orbit on it within a minute or so of it coming
 within 3 km of the bridge, the watch policy routes that orbit to the operator, and it goes out
@@ -112,7 +113,7 @@ director = true
 
 [[step]]
 id = "fast-boat-holds"
-at_s = 370
+at_s = 386
 kind = "note"
 text = "The fast boat holds 1.5 km west of the bridge (truth)"
 director = true

@@ -56,10 +56,11 @@ sink it.
 director = """
 Truth: a fast inshore attack craft with no AIS (truth affiliation: hostile; four ATGM-class
 missiles and a 12.7 mm machine gun; it looks like a small fast boat to our sensors) runs in from
-800 m west of its holding point at 15 m/s from about 0:08 and holds mid-strait at [-122.4950,
-37.8120], 1.5 km west of the bridge and inside the engagement zone, from about 1:05. Its contacts
-file orders it at about 1:30 to open fire on HUNTER 1, patrolling 0.9 to 1.2 km east of it: two
-6-round bursts of its machine gun five seconds apart, by its own fire control, and again every
+800 m west of its holding point at 15 m/s from about 0:08, slows from about 1:09 at its kind's
+1.5 m/s² (sim/contacts.toml, bd murmur-2of4) and stops on its holding point mid-strait at
+[-122.4950, 37.8120], 1.5 km west of the bridge and inside the engagement zone, at about 1:18. Its
+contacts file orders it at about 1:30 to open fire on HUNTER 1, patrolling 0.9 to 1.2 km east of it:
+two 6-round bursts of its machine gun five seconds apart, by its own fire control, and again every
 minute to 4:30 (its missiles are never ordered). Each burst can hit HUNTER 1 (0.25), and a hit can
 stop it (0.17 of hits) or sink it (0.03); with the contacts' seed 108504 the first episode's second
 burst takes HUNTER 1's propulsion (it drifts, still reporting), and nothing sinks it. Nothing else

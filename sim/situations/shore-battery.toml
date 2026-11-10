@@ -51,14 +51,16 @@ Ours can be struck too: a hit can stop one of our vessels or sink it.
 """
 director = """
 Truth: two fast inshore attack craft with no AIS (truth affiliation: hostile; each four ATGM-class
-missiles and a 12.7 mm machine gun, looking like small fast boats to our sensors). The first runs
-in from the sea at 15 m/s from about 0:08 and holds mid-strait at [-122.4950, 37.8120] from about
-3:00, 1,740 m from BULL 1, inside the engagement zone. Its contacts file orders it at about 3:20 to
-open fire on HUNTER 1, some 1 km east of it: two 6-round bursts of its machine gun five seconds
-apart, by its own fire control, and again at 4:20 and 5:20 so long as it is afloat. The second
-runs in along the south side of the strait from about 5:05 and holds at [-122.4900, 37.8075], 1,190
-m from BULL 1 and some 900 m from HUNTER 1, from about 7:35, and is ordered to open fire on HUNTER 1
-at about 7:50, 8:50 and 9:50 the same way. Their missiles are never ordered. Each burst can hit
+missiles and a 12.7 mm machine gun, looking like small fast boats to our sensors), each slowing at
+its kind's 1.5 m/s² onto its holding point (sim/contacts.toml, bd murmur-2of4). The first runs in
+from the sea at 15 m/s from about 0:08, slows from about 3:14 and stops mid-strait at [-122.4950,
+37.8120] at about 3:24, 1,740 m from BULL 1, inside the engagement zone. Its contacts file orders
+it at about 3:17 to open fire on HUNTER 1, some 1 km east of it: two 6-round bursts of its machine
+gun five seconds apart, by its own fire control (the first as it slows through some 10 m/s), and
+again at 4:17 and 5:17 so long as it is afloat. The second runs in along the south side of the
+strait from about 5:01, slows from about 7:38 and stops at [-122.4900, 37.8075], 1,190 m from BULL
+1 and some 900 m from HUNTER 1, at about 7:47, and is ordered to open fire on HUNTER 1 at about
+7:47, 8:47 and 9:47 the same way. Their missiles are never ordered. Each burst can hit
 HUNTER 1 (0.25), and a hit can stop it (0.17 of hits) or sink it (0.03); with the contacts' seed
 98921 the first boat's first burst takes HUNTER 1's propulsion (it drifts, still reporting), and
 nothing sinks it. Nothing else is hostile.

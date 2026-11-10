@@ -38,9 +38,11 @@ misclassification_rate = 0.0     # deterministic identities: the situation is ab
 # ---------------------------------------------------------------- the hostiles
 # RAIDER (truth label only; the C2 calls it by its track): runs in from the sea at 15 m/s (29 kn),
 # no AIS, and holds mid-strait 1.5 km west of the bridge, inside the engagement zone
-# (sim/areas: ez-gate-west), from about 3:00, 1,740 m from BULL 1. At 3:15 it is ordered to open
-# fire on HUNTER 1, some 1 km east of it (inside its gun's 2 km), from where it holds, and again a
-# minute later, and again, in case an act is attributed below the threshold.
+# (sim/areas: ez-gate-west), 1,740 m from BULL 1, slowing from about 3:13 at its kind's 1.5 m/s²
+# (sim/contacts.toml, bd murmur-2of4) to stop there at about 3:23. At 3:15 it is ordered to open
+# fire on HUNTER 1, some 1 km east of it (inside its gun's 2 km), from where it is (still slowing:
+# its first burst at some 10 m/s), and again a minute later, and again, in case an act is
+# attributed below the threshold.
 [[contact]]
 id = "fastboat-first"
 name = "First fast inshore attack craft without AIS, holding mid-strait west of the bridge"
@@ -83,8 +85,8 @@ stay = true
 label = "fires on HUNTER 1 a third time"
 
 # The second boat comes in from 5:00 along the south side of the strait and holds 1,190 m from
-# BULL 1, nearer the shore, from about 7:30, some 900 m from HUNTER 1. At 7:45 it is ordered to
-# open fire on HUNTER 1, and again a minute later, and again.
+# BULL 1, nearer the shore, some 900 m from HUNTER 1, slowing from about 7:37 to stop there at
+# about 7:46. At 7:45 it is ordered to open fire on HUNTER 1, and again a minute later, and again.
 [[contact]]
 id = "fastboat-second"
 name = "Second fast inshore attack craft without AIS, holding near the south shore west of the bridge"

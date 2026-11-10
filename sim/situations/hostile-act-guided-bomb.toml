@@ -6,9 +6,10 @@
 #
 # Two of ours at the Golden Gate, by day, one of them armed (REAPER 1, the MQ-9B with four AGM-114R
 # and two GBU-12), and normal traffic. A coaster (a small freighter) without AIS comes in from the
-# sea, anchors mid-strait west of the bridge and fires on HUNTER 1 (an armed kind ordered to attack:
-# it fires rockets from its own launcher by its own fire control, each strike drawn by the damage
-# model, docs/AUTONOMOUS-NODES.md; the brief says ours can be stopped or sunk). Our sensors observe the act;
+# sea, slowing all the way to its anchorage mid-strait west of the bridge, and fires on HUNTER 1
+# before it gets there (an armed kind ordered to attack: it fires rockets from its own launcher by
+# its own fire control, each strike drawn by the damage model, docs/AUTONOMOUS-NODES.md; the brief
+# says ours can be stopped or sunk). Our sensors observe the act;
 # the engine declares the coaster hostile by rule (rules 9); op-auto confirms the declaration
 # (live: you).
 # The timeline nominates REAPER 1 naming the GBU-12 (agent-scripted, a script, saying so) unless a
@@ -66,13 +67,15 @@ which. Ours can be struck too: a hit can stop one of our vessels or sink it.
 director = """
 Truth: a coaster (a small freighter) with no AIS (truth affiliation: hostile; kind armed_coaster, a
 12-tube 107 mm rocket launcher and a 23 mm twin cannon, looking like a cargo ship to our sensors)
-comes in from 630 m west of its holding point at 5 m/s from about 0:08 and anchors mid-strait at
-[-122.4950, 37.8120], 1.5 km west of the bridge and inside the engagement zone, from about 2:15. Its
-contacts file orders it at about 2:40 to fire one rocket at HUNTER 1, patrolling 0.9 to 1.2 km east
-of it, by its own fire control, and again every minute to 5:40, so long as it is afloat (its cannon
-is never ordered). Each rocket can hit HUNTER 1 (0.10), and a hit can stop it (0.35 of hits) or
-sink it (0.05); with the contacts' seed 76818 the coaster's rockets all miss. Nothing else is
-hostile.
+comes in from 630 m west of its holding point from about 0:08, up to 4.9 m/s by about 0:15, and
+slows from there at its kind's 0.02 m/s² (a small freighter takes some 600 m to stop from 5 m/s;
+sim/contacts.toml, bd murmur-2of4) until it stops on its holding point mid-strait at [-122.4950,
+37.8120], 1.5 km west of the bridge and inside the engagement zone, at about 4:19. Its contacts
+file orders it at about 2:40 to fire one rocket at HUNTER 1, patrolling 0.9 to 1.2 km east of it, by
+its own fire control (the coaster still coming in at some 2 m/s), and again every minute to 5:40, so
+long as it is afloat (its cannon is never ordered). Each rocket can hit HUNTER 1 (0.10), and a hit
+can stop it (0.35 of hits) or sink it (0.05); with the contacts' seed 76818 the coaster's rockets
+all miss. Nothing else is hostile.
 What should happen: HUNTER 1's camera identifies the coaster as it comes in and observes the first
 act; the engine attributes it to the coaster's track at 0.9 or more and declares it hostile by rule
 (a loose fix is flagged instead, and the next act is another chance); op-auto confirms the
@@ -82,7 +85,11 @@ plan within seconds; REAPER 1 is dispatched, and the engine releases the bomb on
 its slant range of the point and its fall lands inside the plan's time; the contacts' seed 76818
 makes the strike a hit that sinks the coaster for any intent from 1 to 6 (on the default run the
 nomination is intent 2); the coaster leaves the picture and the assessment reads "ceased" some 15
-s later, our sensors covering the point. REAPER 1 has one GBU-12 left.
+s later, our sensors covering the point. REAPER 1 has one GBU-12 left. (Headless on the physical
+model with the contacts' seed, 2026-11-10: the first rocket at 2:37, the coaster declared by rule
+on it at 1.00 and confirmed at 2:44, nominated at 3:50 and signed at 3:57, the coaster still
+creeping in at 0.6 m/s; it stopped at 4:19; the bomb, released at 4:32, struck 4 m from it at 5:11
+and sank it; "ceased" at 5:27.)
 What should not: a nomination before the declaration is confirmed (refused by target_declared), a
 signature by the proposer or by an agent, or an effect released with a neutral or one of ours
 inside the keep-out (the yacht, the container ship and the trawler from the wharf stay a kilometre

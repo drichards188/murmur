@@ -55,9 +55,11 @@ misclassification_rate = 0.0     # deterministic identities: the situation is ab
 
 # ---------------------------------------------------------------- the hostile
 # The drone comes in from the sea at 300 m and 30 m/s, from 2.7 km west of its station over
-# mid-strait, 1.5 km west of the bridge inside the engagement zone (sim/areas: ez-gate-west), and
-# hovers there from about 1:35. At 1:55 it is ordered to fire a missile at HUNTER 2, on picket 3.5
-# to 3.9 km southwest of it, from where it hovers, and a minute later its second.
+# mid-strait, 1.5 km west of the bridge inside the engagement zone (sim/areas: ez-gate-west): at
+# full speed from about 1:04 (speeding up at 0.5 m/s²), it slows from about 1:52 at its kind's
+# 1.25 m/s² (sim/contacts.toml, bd murmur-2of4) and hovers there from about 2:16. At 1:55 it is
+# ordered to fire a missile at HUNTER 2, on picket 3.5 to 3.9 km southwest of it, from where it is
+# (it fires still slowing, at some 24 m/s), and a minute later its second, hovering.
 [[contact]]
 id = "drone-raider"
 name = "Large armed VTOL drone without a transponder, hovering over mid-strait west of the bridge"

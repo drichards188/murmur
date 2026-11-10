@@ -106,7 +106,8 @@ ais = { mmsi = "366999401", name = "CGC TERN", ship_type = "law_enforcement" }
 
 # ---------------------------------------------------------------- the unknown
 # Comes in from the west at about 2:30 on the situation's clock, at 15 m/s (29 kn), no AIS,
-# no lights, and holds 1.5 km west of the bridge from about 6:10. Nothing hostile happens: the
+# no lights, and holds 1.5 km west of the bridge from about 6:26, slowing from about 6:17 at its
+# kind's 1.5 m/s² (sim/contacts.toml, bd murmur-2of4). Nothing hostile happens: the
 # situation is the detection, the AI's proposal and who decides on it.
 [[contact]]
 id = "fastboat-west"
