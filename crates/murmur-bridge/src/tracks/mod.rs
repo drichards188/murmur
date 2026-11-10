@@ -715,6 +715,9 @@ impl Tracks {
             d.measured_t = Some(msg.t);
         }
         crate::perf::record("sense", sense_start, sense_start.elapsed());
+        // the headless simulator's per-task timer (diagnostics: its record's `perf`)
+        #[cfg(murmur_headless)]
+        crate::sim::perf::add("bridge.sense", sense_start.elapsed());
         let n_contacts = msg.contacts.len();
         let fold_start = std::time::Instant::now();
         let n_tracks = {
@@ -2122,7 +2125,21 @@ async fn sim_contacts(State(api): State<Api>, request: axum::extract::Request) -
     let mines_live = msg.mines_live.clone();
     // autonomous nodes: where ours within their looks are
     let looks = msg.look.clone();
-    match api.tracks.on_truth(msg, &api.world) {
+    // the sensing step and the fold on a blocking thread, the step's own pool doing the sensing
+    // (tracks/physical/par.rs): at Saturation's size they take hundreds of milliseconds, which no
+    // runtime worker may wait out. The headless simulator calls them in line: its one thread
+    // and paused clock are what make an episode the same twice.
+    #[cfg(not(murmur_headless))]
+    let sensed = {
+        let api = api.clone();
+        match tokio::task::spawn_blocking(move || api.tracks.on_truth(msg, &api.world)).await {
+            Ok(r) => r,
+            Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, format!("the sensing step failed: {e}")),
+        }
+    };
+    #[cfg(murmur_headless)]
+    let sensed = api.tracks.on_truth(msg, &api.world);
+    match sensed {
         Ok((contacts, detections, tracks)) => {
             let mut answer = json!({
                 "ok": true,

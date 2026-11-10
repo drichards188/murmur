@@ -22,6 +22,7 @@ mod catalog;
 mod physical;
 mod reach;
 mod reaches;
+mod sense_par;
 mod weapon_probe;
 mod weapons;
 

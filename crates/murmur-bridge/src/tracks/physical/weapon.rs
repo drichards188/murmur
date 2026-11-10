@@ -397,7 +397,7 @@ impl Engine {
         let bore = if fixed {
             Some((o.heading_deg.unwrap_or(0.0).to_radians(), -(5f64.to_radians()), false, false))
         } else {
-            self.gimbals.get(&(o.uid, si)).map(|g| (g.az, g.el, g.narrow, s < g.busy_until))
+            self.own.get(&o.uid).and_then(|own| own.gimbals.get(&si)).map(|g| (g.az, g.el, g.narrow, s < g.busy_until))
         };
         cam.channels
             .iter()

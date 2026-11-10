@@ -414,10 +414,97 @@ thread, which runs on its own, went 6.8 s between rounds; the vehicles' GCS fail
 alerts and the decision tick took 42 s. That is the collapse seen in the situation's own full
 run (load about 60). On a host that does not swap, the numbers above hold real time with the
 sensing step, at about half a core, the largest single-threaded cost; it is the one to
-parallelise next (a shard of state per observer, merged in observer order).
+parallelise next (a shard of state per observer, merged in observer order: done, "The sensing
+step on several threads" below).
 
 **Spurious reboots.** None here. The likely mechanism behind the 3,907 `vehicle.rebooted` of
 the situation's full run, on the same swapping host: a stand-in engine stalled for more than a second skips the ticks it
 missed, so its time since boot fell behind the bridge's clock by every stall, and once that
 passed 30 s the bridge read a reboot (`BOOT_JUMP_S`) and ended the vehicle's order. A stand-in's
 time since boot now counts the skipped ticks.
+
+## The sensing step on several threads (murmur-9730, 2026-11-10)
+
+**What changed.** The physical sensing step (`crates/murmur-bridge/src/tracks/physical/mod.rs`)
+runs each of its two passes (the scanning and listening sensors; then the cameras they cue) over
+every vehicle at once on a pool of threads of its own (`physical/par.rs`, rayon) and takes the
+detections back in observer order. Each vehicle's state across ticks (its lines of sight, and per
+sensor its runs of hits, its sonar evidence, its camera's pointing, looks and history) is its own
+(`Own`, one per uid; a uid named twice is one part, its observers in order): the step moves it out
+of the engine for the vehicle's part and back. What every vehicle reads (the targets, the terrain
+and bathymetry grids, the weather, the cues, the identify orders' contacts) is shared by
+reference, never copied: the prototype (0c275bb, never landed) cloned every cue for every observer
+each tick, about 1.8 million copies at this size. The cues are still written only between the two
+passes, from the detections in observer order; the vehicles' part of forgetting stale state runs
+on the pool too. One thread or sixteen, the step gives the same detections in the same order and
+leaves the same state; the thread count changes the time only.
+
+**Threads.** `MURMUR_SENSE_THREADS`; without it, a quarter of the host's cores, at most 8, in the
+live bridge (7 here) and one in the headless simulator; the bridge says which at start
+(`sensing: the physical step on 7 threads (the default; ...)`). Why those: the bridge is one
+process of a stack that runs the link emulator (0.9 to 4.4 cores at Saturation), the stand-ins and
+its own links' packets on the same host, and the step gains little past 8 below; a headless batch
+runs one simulator per worker (half the cores by default), so threads inside each would
+oversubscribe the host. One episode on a free host can ask for more (`eval/headless/sim.py`
+passes the variable to the simulator). The step's threads are never the async runtime's: the
+live bridge runs the truth handler's sensing and fold on a blocking thread (`spawn_blocking`),
+which hands the pool its vehicles and waits; the simulator calls it in line on its one thread.
+
+**The same, at any count.** The scale watch (golden-gate-scale-watch, agent `none`, seed 1: 100
+of ours, physical model, terrain and bathymetry) gave the same record and audit digests
+(`555c7860...`, `2643f0b2...`, 6,225 audit events, `test_episode.digest`) before the change and
+on 1, 2, 4 and 8 threads. A verbatim copy of the engine before the change, run beside today's
+for the check and not kept, gave the same detections tick by tick as today's on 1, 2, 3 and 8
+threads over 200 ticks of a mixed world (every sensor type, contacts of every domain, terrain and
+bathymetry grids, navigation errors, identify orders, a uid named twice) in three observer
+orders, and on 1 to 16 threads over 60 ticks at Saturation's size (below).
+`tracks::tests::sense_par` keeps the first check without the copy: one thread against 2, 3 and 8,
+detections and the engine's whole state after (`Engine::state_text`), in three orders.
+
+**Saturation's size, synthetic** (`tracks::tests::sense_par::sense_par_bench`, release: 3,602 of
+ours in Saturation's mix, 1,700 X10s at 100 m, 1,300 Pumas at 800 m, 200 Saildrones, 300
+Corsairs, 100 REMUS at 30 m down and 2 armed MQ-9Bs at 7,600 m, four in five on an orbit or a
+patrol; 500 small drones in five swarms and 7 other contacts, all moving; no terrain, as
+Saturation; spread over a 24 km square, 6,560 detections a tick; 20 ticks' warm-up, then 40
+timed). The engine before ran in the same binary, first. Milliseconds a step, mean (median); the
+host's load average (one minute) beside each run, on its 28 logical CPUs (an i7-14700K: 8
+performance cores with two threads each, 12 efficiency cores):
+
+| threads | load 6 to 7 | speedup | load 6 to 8, before the vehicles' forgetting moved to the pool |
+|---|---|---|---|
+| the engine before | 247 (243) | | 202 (205) |
+| 1 | 216 (220) | 1.0 | 207 (208) |
+| 2 | 121 (122) | 1.8 | 112 (115) |
+| 4 | 64 (64) | 3.4 | 59 (59) |
+| 8 | 39 (39) | 5.6 | 39 (38) |
+| 12 | 31 (31) | 7.0 | 32 (32) |
+| 16 | 27 (27) | 8.1 | 30 (30) |
+
+On one thread the step costs what it did, within the runs' noise (at loads of 4 to 14 the engine
+before took 200 to 248 ms a step over five runs, today's on one thread 207 to 216 over four).
+Denser (the same fleet and contacts over a 12 km square, 18,224 detections a tick; load 7 to 9):
+before 211, then 228, 141, 76, 48 and 38 ms on 1, 2, 4, 8 and 16 threads. What stays on one
+thread at this size, about 5 ms a step (timed part by part on 8 threads): moving each vehicle's
+state out and back, the merge in observer order, the cues (6,560 fixes) and the shared part of
+forgetting. Under heavy load the times scatter (load 25: before 311 ms; 236, 128, 161, 64, 45
+and 35 on 1, 2, 4, 8, 12 and 16 threads).
+
+**The scale watch** (one 30-minute episode, the simulator's per-task timer, `bridge.sense` over
+its 1,799 steps; the host loaded to 15 to 29 by other agents' work throughout, which these
+numbers carry: run them again on a quiet host before quoting a speedup):
+
+| | series 1 (load 15 to 23) | series 2, reverse order (load 19 to 29) |
+|---|---|---|
+| before the change | 27.8 s | 20.6 s |
+| 1 thread | 28.2 s | 28.9 s |
+| 2 threads | 9.4 s | 11.7 s |
+| 4 threads | 8.4 s | 13.9 s |
+| 8 threads | 7.7 s | 13.7 s |
+
+**Live** (300 stand-ins of `sim/fleets/scale-300.toml` against `golden-gate-scale-traffic.toml`,
+the physical model with its terrain and bathymetry grids, no link emulator, its own port block,
+the default 7 threads): the bridge said `sensing: the physical step on 7 threads`, 36 tracks
+within two minutes (24 surface, 10 ground, 2 air; an AIS identity contradicted by a camera's
+identification among them), and its minute line `sense 61x mean 7.8 worst 27.5 gap 1004.0 ms`.
+At Saturation the step averaged 99 to 117 ms idle and 340 to 490 spread on one thread; the
+synthetic case above suggests about a fifth of that on the default 7.

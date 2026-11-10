@@ -35,6 +35,10 @@ class Sim:
         binary = Path(binary or os.environ.get("MURMUR_HEADLESS_BIN") or BINARY)
         if not binary.exists():
             raise SimError(f"no {binary}: build it with `cargo build --release -p murmur-headless`")
+        # the physical sensing step's threads (crates/murmur-bridge tracks/physical/par.rs): one
+        # unless the caller's environment asks for more; speed only, the episode is the same
+        if "MURMUR_SENSE_THREADS" in os.environ and "MURMUR_SENSE_THREADS" not in env:
+            env = {**env, "MURMUR_SENSE_THREADS": os.environ["MURMUR_SENSE_THREADS"]}
         r, w = os.pipe()
         out = open(log, "wb") if log else subprocess.DEVNULL
         try:

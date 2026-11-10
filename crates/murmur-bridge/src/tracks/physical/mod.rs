@@ -39,11 +39,15 @@
 //!
 //! Deterministic as the legacy model: every draw is a hash of the seed, a tick or a scan or a
 //! look's start, the vehicle, the contact and the sensor; state (pointing, looks, scans) moves
-//! only with the scenario seconds of the truth messages.
+//! only with the scenario seconds of the truth messages. Each vehicle's state is its own
+//! ([`Own`]): a step runs the vehicles side by side on its threads ([`par`], bd murmur-9730) and
+//! takes their detections back in observer order, so the thread count changes nothing but the
+//! time.
 
 pub mod conditions;
 pub mod eo;
 pub mod geometry;
+pub mod par;
 // the headless simulator serves it to Python (`sense`); the bridge calls `predict` for the
 // reach display (`tracks::reach`), not `ranges`
 #[allow(dead_code)]
@@ -55,7 +59,8 @@ pub mod sonar;
 pub mod spec;
 pub mod weapon;
 
-use std::collections::{BTreeSet, BTreeMap, HashMap};
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeSet, BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -234,6 +239,7 @@ pub fn sight(h_s: f64, t: &Target, p: &Pair, k: f64, terrain_obstruction: Option
 
 /// A cached terrain line of sight: both ends when it was computed, when, and how far the
 /// terrain stood over the ray at k = 7/6 and 4/3.
+#[derive(Debug)]
 struct Los {
     a: (f64, f64, f64),
     b: (f64, f64, f64),
@@ -416,6 +422,62 @@ struct GridSlot {
     grid: Option<Arc<Grid>>,
 }
 
+/// One vehicle's own sensing state across ticks, which only its own sensors read and write: its
+/// lines of sight to the contacts, and by sensor index each scanning sensor's runs of hits, each
+/// sonar's evidence, each camera's pointing, looks and history. A step moves it out of the engine
+/// for the vehicle's part of the step ([`Shard`]) and back.
+#[derive(Default)]
+struct Own {
+    los: HashMap<String, Los>,
+    gimbals: HashMap<usize, Gimbal>,
+    looks: HashMap<usize, HashMap<String, EoLook>>,
+    dwell: HashMap<usize, HashMap<String, Dwell>>,
+    /// each sonar's (and an active sonar's passive mode's: the second key) evidence per contact
+    heard: HashMap<(usize, u8), HashMap<String, Heard>>,
+    /// each camera's own history (a payload manager on its vehicle knows what it did, not what
+    /// another camera did): when it identified each contact, and when it last looked at one in
+    /// vain
+    identified: HashMap<usize, HashMap<String, f64>>,
+    looked: HashMap<usize, HashMap<String, f64>>,
+}
+
+/// One vehicle's part of a step: the observers that are it, by index (one, unless the observers
+/// name a uid twice), in their order, and its own state, moved out of the engine for the step.
+struct Shard {
+    uid: u64,
+    at: Vec<usize>,
+    own: Own,
+}
+
+/// What every vehicle's sensing reads in a pass, by reference and never written meanwhile: the
+/// scenario's weather and grids, the cues so far, and the identify orders' contacts.
+#[derive(Clone, Copy)]
+struct Shared<'a> {
+    weather: &'a murmur_weather::Store,
+    terrain: Option<&'a Grid>,
+    bathymetry: Option<&'a Grid>,
+    cues: &'a HashMap<String, Cue>,
+    firsts: &'a HashMap<u64, BTreeSet<String>>,
+}
+
+impl<'a> Shared<'a> {
+    fn with<'b>(&self, own: &'b mut Own) -> Sense<'b>
+    where
+        'a: 'b,
+    {
+        Sense { terrain: self.terrain, bathymetry: self.bathymetry, cues: self.cues, firsts: self.firsts, own }
+    }
+}
+
+/// One vehicle's sensors at work: what every vehicle reads, and its own state.
+struct Sense<'a> {
+    terrain: Option<&'a Grid>,
+    bathymetry: Option<&'a Grid>,
+    cues: &'a HashMap<String, Cue>,
+    firsts: &'a HashMap<u64, BTreeSet<String>>,
+    own: &'a mut Own,
+}
+
 /// The physical model's state across ticks.
 pub struct Engine {
     pub weather: murmur_weather::Store,
@@ -423,21 +485,14 @@ pub struct Engine {
     terrain: GridSlot,
     bathymetry: GridSlot,
     noticed_no_terrain: bool,
-    los: HashMap<u64, HashMap<String, Los>>,
-    gimbals: HashMap<(u64, usize), Gimbal>,
-    looks: HashMap<(u64, usize), HashMap<String, EoLook>>,
-    dwell: HashMap<(u64, usize), HashMap<String, Dwell>>,
-    /// each sonar's (and an active sonar's passive mode's: the third key) evidence per contact
-    heard: HashMap<(u64, usize, u8), HashMap<String, Heard>>,
+    /// each vehicle's own state, by uid
+    own: HashMap<u64, Own>,
     cues: HashMap<String, Cue>,
-    /// each camera's own history (a payload manager on its vehicle knows what it did, not what
-    /// another camera did): when it identified each contact, and when it last looked at one in
-    /// vain
-    identified: HashMap<(u64, usize), HashMap<String, f64>>,
-    looked: HashMap<(u64, usize), HashMap<String, f64>>,
     /// Rules 21: per vehicle, the contacts behind the track an identify order sends it to,
     /// which its cameras cue first (set before each step, [`Engine::set_firsts`])
     firsts: HashMap<u64, BTreeSet<String>>,
+    /// where a step runs its vehicles ([`par`])
+    pool: par::Pool,
 }
 
 impl Engine {
@@ -449,16 +504,18 @@ impl Engine {
             terrain: GridSlot { path: None, grid: None },
             bathymetry: GridSlot { path: None, grid: None },
             noticed_no_terrain: false,
-            los: HashMap::new(),
-            gimbals: HashMap::new(),
-            looks: HashMap::new(),
-            dwell: HashMap::new(),
-            heard: HashMap::new(),
+            own: HashMap::new(),
             cues: HashMap::new(),
-            identified: HashMap::new(),
-            looked: HashMap::new(),
             firsts: HashMap::new(),
+            pool: par::Pool::shared(),
         }
+    }
+
+    /// This engine's steps on `threads` threads (tests; otherwise the process's count).
+    #[cfg(test)]
+    pub fn with_threads(mut self, threads: usize) -> Engine {
+        self.pool = par::Pool::with_threads(threads);
+        self
     }
 
     /// Rules 21: the contacts each vehicle's cameras cue first from now on (the contacts behind
@@ -501,7 +558,7 @@ impl Engine {
         let before = t.path.clone();
         self.load(&mut t, sensing.terrain.as_deref(), "terrain");
         if t.path != before {
-            self.los.clear();
+            self.forget_lines_of_sight();
         }
         self.terrain = t;
         let mut b = std::mem::replace(&mut self.bathymetry, GridSlot { path: None, grid: None });
@@ -513,18 +570,58 @@ impl Engine {
         }
     }
 
+    /// Every vehicle's cached lines of sight (the terrain changed).
+    fn forget_lines_of_sight(&mut self) {
+        for own in self.own.values_mut() {
+            own.los.clear();
+        }
+    }
+
     /// A terrain grid given directly (tests).
     #[cfg(test)]
     pub fn set_terrain(&mut self, g: Grid) {
         self.terrain = GridSlot { path: Some("test".into()), grid: Some(Arc::new(g)) };
-        self.los.clear();
+        self.forget_lines_of_sight();
+    }
+
+    /// A bathymetry grid given directly (tests).
+    #[cfg(test)]
+    pub fn set_bathymetry(&mut self, g: Grid) {
+        self.bathymetry = GridSlot { path: Some("test".into()), grid: Some(Arc::new(g)) };
+    }
+
+    /// What the engine carries from one tick to the next of its own making (each vehicle's own
+    /// state and the cues), written out in a fixed order: two engines that agree on it, given
+    /// the same grids, weather and inputs, sense the same from then on (tests).
+    #[cfg(test)]
+    pub fn state_text(&self) -> String {
+        fn sorted<K: Ord + std::fmt::Debug, V: std::fmt::Debug>(m: &HashMap<K, V>) -> String {
+            format!("{:?}", m.iter().collect::<BTreeMap<_, _>>())
+        }
+        fn nested<K: Ord + std::fmt::Debug, V: std::fmt::Debug>(m: &HashMap<K, HashMap<String, V>>) -> String {
+            format!("{:?}", m.iter().map(|(k, per)| (k, sorted(per))).collect::<BTreeMap<_, _>>())
+        }
+        let mut out = format!("cues {}\n", sorted(&self.cues));
+        for (uid, own) in self.own.iter().collect::<BTreeMap<_, _>>() {
+            out += &format!(
+                "{uid}: los {} gimbals {} looks {} dwell {} heard {} identified {} looked {}\n",
+                sorted(&own.los),
+                sorted(&own.gimbals),
+                nested(&own.looks),
+                nested(&own.dwell),
+                nested(&own.heard),
+                nested(&own.identified),
+                nested(&own.looked),
+            );
+        }
+        out
     }
 
     /// What camera `si` of `uid` is doing (diagnostics): its azimuth and elevation, radians, its
     /// narrow field, slewing or settling until when, and its mode (`search`, `cue`, `lock`).
     #[cfg(test)]
     pub fn gimbal_of(&self, uid: u64, si: usize) -> Option<(f64, f64, bool, f64, &'static str)> {
-        self.gimbals.get(&(uid, si)).map(|g| {
+        self.own.get(&uid).and_then(|own| own.gimbals.get(&si)).map(|g| {
             let mode = match g.mode {
                 Mode::Search => "search",
                 Mode::Cue(_) => "cue",
@@ -534,50 +631,20 @@ impl Engine {
         })
     }
 
-    /// The terrain's obstruction of the ray from `o` to `t` at k = 7/6 and 4/3, cached per pair
-    /// (refreshed when an end moves [`LOS_MOVE_M`] or after [`LOS_MAX_AGE_S`]); None: no grid.
-    fn terrain_los(&mut self, o: &Observer, h_s: f64, t: &Target, s: f64) -> Option<[f64; 2]> {
-        let grid = self.terrain.grid.clone()?;
-        let a = (o.lat, o.lon, h_s);
-        let b = (t.c.lat, t.c.lon, t.top_msl);
-        let per = self.los.entry(o.uid).or_default();
-        if let Some(e) = per.get(&t.c.id)
-            && s - e.s < LOS_MAX_AGE_S
-            && s >= e.s
-            && moved_m(e.a, a) < LOS_MOVE_M
-            && moved_m(e.b, b) < LOS_MOVE_M
-        {
-            return Some(e.obstruction);
-        }
-        let obstruction = grid.obstruction_m(a, b, [K_OPTICAL, K_RADIO]);
-        per.insert(t.c.id.clone(), Los { a, b, s, obstruction });
-        Some(obstruction)
-    }
-
-    fn context<'a>(&self, st: &'a Step<'a>, o: &Observer, sun: f64) -> Ctx<'a> {
-        Ctx { st, cond: self.conditions_at(st.sensing, o.lat, o.lon, st.t, st.s).0, sun }
-    }
-
     /// The conditions an observer at `lat`, `lon` senses in at scenario clock `t` (`s` seconds
     /// in): the scenario's `[conditions]` with its own weather sample's visibility and mean wind
     /// where the scenario has weather, and that sample (none without weather). The one merge the
     /// running model and the reach display (`tracks::reach`, bd murmur-4tq) both use.
     pub fn conditions_at(&self, sensing: &Sensing, lat: f64, lon: f64, t: f64, s: f64) -> (Conditions, Option<murmur_weather::Sample>) {
-        let mut cond = sensing.conditions.unwrap_or_default().sane();
-        if sensing.weather.is_none() {
-            return (cond, None);
-        }
-        let sample = self.weather.at(lat, lon, t, s);
-        if let Some(v) = sample.values.visibility_m {
-            cond.visibility_m = v;
-        }
-        if let Some(v) = sample.values.wind_mps() {
-            cond.wind_mps = v;
-        }
-        (cond.sane(), Some(sample))
+        conditions_at(&self.weather, sensing, lat, lon, t, s)
     }
 
-    /// One tick: every observer's every sensor against every contact.
+    /// One tick: every observer's every sensor against every contact. The scanning and listening
+    /// sensors first, every vehicle's, their fixes cueing this tick's cameras; then the cameras.
+    /// In each pass a vehicle's sensing reads what every vehicle reads ([`Shared`]) and writes
+    /// only its own state ([`Own`]), so the pass runs the vehicles side by side on the engine's
+    /// threads ([`par`]) and takes their detections back in observer order: one thread or many,
+    /// the same detections in the same order, and the same state after (bd murmur-9730).
     pub fn step(&mut self, st: &Step, observers: &[Observer], contacts: &[ContactTruth]) -> Vec<Detection> {
         let cond = st.sensing.conditions.unwrap_or_default().sane();
         let terrain = self.terrain.grid.clone();
@@ -589,48 +656,70 @@ impl Engine {
             .or_else(|| contacts.first().map(|c| (c.lat, c.lon)))
             .unwrap_or((0.0, 0.0));
         let sun = cond.sun_at(st.t, lat0, lon0);
-        let mut out = Vec::new();
+        let mut shards = self.shards(observers);
         // the scanning and listening sensors first: their fixes cue this tick's cameras
-        for o in observers {
-            let ctx = self.context(st, o, sun);
-            let h_s = sensor_height_m(o);
-            for (si, s) in o.sensors.iter().enumerate() {
-                if o.submerged && s.kind != SensorType::Sonar {
-                    continue; // nothing but sonar works under water
-                }
-                match resolve(s, h_s > 20.0) {
-                    Resolved::Radar(r) => self.radar(&ctx, o, h_s, si, &r, &targets, &mut out),
-                    Resolved::Ais => self.ais(&ctx, o, h_s, si, &targets, &mut out),
-                    Resolved::Sonar(sn) => {
-                        self.sonar(&ctx, o, si, 0, &sn, &targets, &mut out);
-                        // an active sonar whose array also listens: its passive mode
-                        if let Some(p) = sn.passive.as_deref() {
-                            self.sonar(&ctx, o, si, 1, p, &targets, &mut out);
-                        }
-                    }
-                    Resolved::Esm(e) => self.esm(&ctx, o, h_s, si, &e, &targets, &mut out),
-                    Resolved::EoIr(_) => {}
-                }
-            }
-        }
+        let scanned = self.pass(&mut shards, st, sun, observers, &targets, false);
+        let mut out = in_observer_order(observers.len(), &shards, scanned);
         let heights: HashMap<u64, f64> = observers.iter().map(|o| (o.uid, sensor_height_m(o))).collect();
         self.cue_from(&out, st.s, &heights);
         let first_eo = out.len();
-        for o in observers {
-            if o.submerged {
-                continue;
-            }
-            let ctx = self.context(st, o, sun);
-            let h_s = sensor_height_m(o);
-            for (si, s) in o.sensors.iter().enumerate() {
-                if let Resolved::EoIr(eo) = resolve(s, h_s > 20.0) {
-                    self.eo(&ctx, o, h_s, si, s.range_m, &eo, &targets, &mut out);
+        let looked = self.pass(&mut shards, st, sun, observers, &targets, true);
+        out.extend(in_observer_order(observers.len(), &shards, looked));
+        self.cue_from(&out[first_eo..], st.s, &heights);
+        self.forget(st.s, contacts, &mut shards);
+        self.own.extend(shards.into_iter().map(|sh| (sh.uid, sh.own)));
+        out
+    }
+
+    /// Each vehicle's part of a step, in the order of its first observer, its own state moved out
+    /// of the engine (a uid named twice: one part, its observers in their order, as one thread
+    /// would sense them).
+    fn shards(&mut self, observers: &[Observer]) -> Vec<Shard> {
+        let mut index: HashMap<u64, usize> = HashMap::with_capacity(observers.len());
+        let mut shards: Vec<Shard> = Vec::with_capacity(observers.len());
+        for (i, o) in observers.iter().enumerate() {
+            match index.entry(o.uid) {
+                Entry::Occupied(e) => shards[*e.get()].at.push(i),
+                Entry::Vacant(e) => {
+                    e.insert(shards.len());
+                    shards.push(Shard { uid: o.uid, at: vec![i], own: self.own.remove(&o.uid).unwrap_or_default() });
                 }
             }
         }
-        self.cue_from(&out[first_eo..], st.s, &heights);
-        self.forget(st.s, contacts);
-        out
+        shards
+    }
+
+    /// One pass of a step over every vehicle, on the engine's threads: the scanning and listening
+    /// sensors, or (`cameras`) the cameras. Per vehicle, its observers' detections, each in the
+    /// order its own sensors made them.
+    fn pass(&self, shards: &mut [Shard], st: &Step, sun: f64, observers: &[Observer], targets: &[Target], cameras: bool) -> Vec<Vec<Vec<Detection>>> {
+        let shared = Shared {
+            weather: &self.weather,
+            terrain: self.terrain.grid.as_deref(),
+            bathymetry: self.bathymetry.grid.as_deref(),
+            cues: &self.cues,
+            firsts: &self.firsts,
+        };
+        self.pool.map_mut(shards, |sh| {
+            sh.at
+                .iter()
+                .map(|&i| {
+                    let o = &observers[i];
+                    let mut out = Vec::new();
+                    if cameras && o.submerged {
+                        return out;
+                    }
+                    let ctx = Ctx { st, cond: conditions_at(shared.weather, st.sensing, o.lat, o.lon, st.t, st.s).0, sun };
+                    let mut sense = shared.with(&mut sh.own);
+                    if cameras {
+                        sense.cameras(&ctx, o, targets, &mut out);
+                    } else {
+                        sense.scanning(&ctx, o, targets, &mut out);
+                    }
+                    out
+                })
+                .collect()
+        })
     }
 
     /// Track positions to cue cameras to: every fix this tick, the contact's last. An aircraft's
@@ -651,10 +740,23 @@ impl Engine {
         }
     }
 
-    /// What no longer matters: contacts gone, stale cues, cameras unheard of for a minute.
-    fn forget(&mut self, s: f64, contacts: &[ContactTruth]) {
-        let live: std::collections::HashSet<&str> = contacts.iter().map(|c| c.id.as_str()).collect();
+    /// What no longer matters: contacts gone, stale cues, and each vehicle's own (the step's
+    /// vehicles on its threads, `shards`, the rest, out of the engine's reach this tick, here).
+    fn forget(&mut self, s: f64, contacts: &[ContactTruth], shards: &mut [Shard]) {
+        let live: HashSet<&str> = contacts.iter().map(|c| c.id.as_str()).collect();
         self.cues.retain(|k, c| live.contains(k.as_str()) && s - c.s <= 60.0);
+        self.pool.map_mut(shards, |sh| sh.own.forget(s, &live));
+        for own in self.own.values_mut() {
+            own.forget(s, &live);
+        }
+    }
+}
+
+impl Own {
+    /// What this vehicle no longer needs (`live`: the contacts there are): looks at contacts out
+    /// of every field, runs of hits and evidence ended, lines of sight and cameras unheard of
+    /// for a minute, identifications due a revisit, looks in vain an hour old.
+    fn forget(&mut self, s: f64, live: &HashSet<&str>) {
         for per in self.looks.values_mut() {
             per.retain(|_, l| l.seen_s >= s);
         }
@@ -664,9 +766,7 @@ impl Engine {
         for per in self.heard.values_mut() {
             per.retain(|k, h| live.contains(k.as_str()) && s - h.last_s <= DWELL_GAP_S);
         }
-        for per in self.los.values_mut() {
-            per.retain(|k, l| live.contains(k.as_str()) && s - l.s <= 60.0);
-        }
+        self.los.retain(|k, l| live.contains(k.as_str()) && s - l.s <= 60.0);
         self.gimbals.retain(|_, g| s - g.seen_s <= 60.0);
         for per in self.identified.values_mut() {
             per.retain(|k, t| live.contains(k.as_str()) && s - *t <= REVISIT_S);
@@ -677,10 +777,106 @@ impl Engine {
         }
         self.looked.retain(|_, per| !per.is_empty());
     }
+}
 
-    /// A run of hits by sensor `si` of `uid` on `contact`: its dwell now, s.
-    fn hit(&mut self, uid: u64, si: usize, contact: &str, s: f64) -> f64 {
-        let per = self.dwell.entry((uid, si)).or_default();
+/// The detections of a pass in observer order: each vehicle's part's, observer by observer (each
+/// in the order its sensors made them), put back at its observers' places. With no uid named
+/// twice the parts are the observers, in their order.
+fn in_observer_order(n: usize, shards: &[Shard], outs: Vec<Vec<Vec<Detection>>>) -> Vec<Detection> {
+    if shards.len() == n {
+        return outs.into_iter().flatten().flatten().collect();
+    }
+    let mut by: Vec<Vec<Detection>> = (0..n).map(|_| Vec::new()).collect();
+    for (sh, out) in shards.iter().zip(outs) {
+        for (&i, dets) in sh.at.iter().zip(out) {
+            by[i] = dets;
+        }
+    }
+    let mut all = Vec::with_capacity(by.iter().map(Vec::len).sum());
+    for dets in by {
+        all.extend(dets);
+    }
+    all
+}
+
+/// The merge of [`Engine::conditions_at`], of the scenario's conditions and its weather where an
+/// observer is.
+fn conditions_at(weather: &murmur_weather::Store, sensing: &Sensing, lat: f64, lon: f64, t: f64, s: f64) -> (Conditions, Option<murmur_weather::Sample>) {
+    let mut cond = sensing.conditions.unwrap_or_default().sane();
+    if sensing.weather.is_none() {
+        return (cond, None);
+    }
+    let sample = weather.at(lat, lon, t, s);
+    if let Some(v) = sample.values.visibility_m {
+        cond.visibility_m = v;
+    }
+    if let Some(v) = sample.values.wind_mps() {
+        cond.wind_mps = v;
+    }
+    (cond.sane(), Some(sample))
+}
+
+impl Sense<'_> {
+    /// One vehicle's scanning and listening sensors (radar, AIS, sonar, ESM) this tick.
+    fn scanning(&mut self, ctx: &Ctx, o: &Observer, targets: &[Target], out: &mut Vec<Detection>) {
+        let h_s = sensor_height_m(o);
+        for (si, s) in o.sensors.iter().enumerate() {
+            if o.submerged && s.kind != SensorType::Sonar {
+                continue; // nothing but sonar works under water
+            }
+            match resolve(s, h_s > 20.0) {
+                Resolved::Radar(r) => self.radar(ctx, o, h_s, si, &r, targets, out),
+                Resolved::Ais => self.ais(ctx, o, h_s, si, targets, out),
+                Resolved::Sonar(sn) => {
+                    self.sonar(ctx, o, si, 0, &sn, targets, out);
+                    // an active sonar whose array also listens: its passive mode
+                    if let Some(p) = sn.passive.as_deref() {
+                        self.sonar(ctx, o, si, 1, p, targets, out);
+                    }
+                }
+                Resolved::Esm(e) => self.esm(ctx, o, h_s, si, &e, targets, out),
+                Resolved::EoIr(_) => {}
+            }
+        }
+    }
+
+    /// One vehicle's cameras this tick, after every scanning sensor's fixes cued them (nothing
+    /// under water).
+    fn cameras(&mut self, ctx: &Ctx, o: &Observer, targets: &[Target], out: &mut Vec<Detection>) {
+        if o.submerged {
+            return;
+        }
+        let h_s = sensor_height_m(o);
+        for (si, s) in o.sensors.iter().enumerate() {
+            if let Resolved::EoIr(eo) = resolve(s, h_s > 20.0) {
+                self.eo(ctx, o, h_s, si, s.range_m, &eo, targets, out);
+            }
+        }
+    }
+
+    /// The terrain's obstruction of the ray from `o` to `t` at k = 7/6 and 4/3, cached per pair
+    /// (refreshed when an end moves [`LOS_MOVE_M`] or after [`LOS_MAX_AGE_S`]); None: no grid.
+    fn terrain_los(&mut self, o: &Observer, h_s: f64, t: &Target, s: f64) -> Option<[f64; 2]> {
+        let grid = self.terrain?;
+        let a = (o.lat, o.lon, h_s);
+        let b = (t.c.lat, t.c.lon, t.top_msl);
+        let per = &mut self.own.los;
+        if let Some(e) = per.get(&t.c.id)
+            && s - e.s < LOS_MAX_AGE_S
+            && s >= e.s
+            && moved_m(e.a, a) < LOS_MOVE_M
+            && moved_m(e.b, b) < LOS_MOVE_M
+        {
+            return Some(e.obstruction);
+        }
+        let obstruction = grid.obstruction_m(a, b, [K_OPTICAL, K_RADIO]);
+        per.insert(t.c.id.clone(), Los { a, b, s, obstruction });
+        Some(obstruction)
+    }
+
+    /// A run of hits by sensor `si` on `contact`: its dwell now, s.
+    fn hit(&mut self, si: usize, contact: &str, s: f64) -> f64 {
+        let per = self.own.dwell.entry(si).or_default();
         let d = per.entry(contact.to_string()).or_insert(Dwell { first_s: s, last_s: s });
         if s - d.last_s > DWELL_GAP_S {
             d.first_s = s;
@@ -689,14 +885,14 @@ impl Engine {
         s - d.first_s + 1.0
     }
 
-    /// A sonar's detection of `contact` (`key`: the observer, the sensor and its mode): the
-    /// seconds of signal its run has now heard. Each detection counts the draw interval it
-    /// closes (`revisit_s`: a second, or a scanning sonar's turn), no more than the time since
-    /// the last; a run's first counts a second, and a gap of [`DWELL_GAP_S`] ends the run. At
-    /// one detection a draw this is the run's length, as the dwell before it; heard one draw in
-    /// twenty, it grows twenty times slower.
-    fn heard(&mut self, key: (u64, usize, u8), contact: &str, s: f64, revisit_s: f64) -> f64 {
-        let per = self.heard.entry(key).or_default();
+    /// A sonar's detection of `contact` (`key`: the sensor and its mode): the seconds of signal
+    /// its run has now heard. Each detection counts the draw interval it closes (`revisit_s`: a
+    /// second, or a scanning sonar's turn), no more than the time since the last; a run's first
+    /// counts a second, and a gap of [`DWELL_GAP_S`] ends the run. At one detection a draw this
+    /// is the run's length, as the dwell before it; heard one draw in twenty, it grows twenty
+    /// times slower.
+    fn heard(&mut self, key: (usize, u8), contact: &str, s: f64, revisit_s: f64) -> f64 {
+        let per = self.own.heard.entry(key).or_default();
         match per.get_mut(contact) {
             Some(h) if s - h.last_s <= DWELL_GAP_S => {
                 h.signal_s += (s - h.last_s).clamp(0.0, revisit_s);
@@ -742,7 +938,7 @@ impl Engine {
             if pd <= 0.0 || uniform(st.seed, scan, o.uid, &t.c.id, salt(si, SensorType::Radar, 1)) >= pd {
                 continue;
             }
-            let dwell = self.hit(o.uid, si, &t.c.id, st.s);
+            let dwell = self.hit(si, &t.c.id, st.s);
             // 30 m or 1 % of range, and 1 degree in bearing (IMO minimum [19])
             let sig_r = (0.01 * p.slant_m).max(30.0);
             let sig_x = p.slant_m * 1f64.to_radians();
@@ -892,7 +1088,7 @@ impl Engine {
                 continue;
             }
             // the evidence: the seconds of signal this run has heard, not its length
-            let heard = self.heard((o.uid, si, part), &t.c.id, st.s, sn.scan_s.unwrap_or(1.0));
+            let heard = self.heard((si, part), &t.c.id, st.s, sn.scan_s.unwrap_or(1.0));
             // passive classifies over minutes; active localises, and recognises by the track
             let (level, conf, sigma) = match sn.mode {
                 SonarMode::Passive => {
@@ -937,8 +1133,6 @@ impl Engine {
     /// (a grid of surface heights below the sea), else the conditions'.
     fn water_depth_m(&self, o: &Observer, c: &ContactTruth, cond: &Conditions) -> f64 {
         self.bathymetry
-            .grid
-            .as_ref()
             .and_then(|g| g.height(0.5 * (o.lat + c.lat), 0.5 * (o.lon + c.lon)))
             .filter(|h| *h < -1.0)
             .map_or(cond.water_depth_m, |h| -h)
@@ -961,7 +1155,7 @@ impl Engine {
             if prob < 1e-6 || uniform(st.seed, st.tick, o.uid, &t.c.id, salt(si, SensorType::Esm, 1)) >= prob {
                 continue;
             }
-            let dwell = self.hit(o.uid, si, &t.c.id, st.s);
+            let dwell = self.hit(si, &t.c.id, st.s);
             // a bearing: a position along it with the error the bearing implies (as today)
             let sigma = (p.slant_m * e.bearing_deg.to_radians().tan()).max(200.0);
             let (ne, nn) = (
@@ -999,12 +1193,11 @@ impl Engine {
     #[allow(clippy::too_many_arguments)]
     fn eo(&mut self, cx: &Ctx, o: &Observer, h_s: f64, si: usize, reach_m: f64, eo: &EoSensor, targets: &[Target], out: &mut Vec<Detection>) {
         let st = cx.st;
-        let key = (o.uid, si);
         let bore = self.steer(cx, o, h_s, si, reach_m, eo, targets);
         if bore.blind {
             // slewing or zooming: the gimbal sees nothing, but a look in progress survives it
             // (the image tracker keeps its target through a zoom)
-            for l in self.looks.entry(key).or_default().values_mut() {
+            for l in self.own.looks.entry(si).or_default().values_mut() {
                 l.seen_s = st.s;
             }
         }
@@ -1046,7 +1239,7 @@ impl Engine {
             if !in_view {
                 continue;
             }
-            let look = self.looks.entry(key).or_default().entry(t.c.id.clone()).or_insert(EoLook {
+            let look = self.own.looks.entry(si).or_default().entry(t.c.id.clone()).or_insert(EoLook {
                 start_tick: st.tick,
                 detected_s: None,
                 detected_p: 0.0,
@@ -1127,7 +1320,7 @@ impl Engine {
             });
         }
         if !identified_now.is_empty() {
-            let mine = self.identified.entry(key).or_default();
+            let mine = self.own.identified.entry(si).or_default();
             for c in identified_now {
                 mine.insert(c, st.s);
             }
@@ -1162,8 +1355,7 @@ impl Engine {
         }
         let wide = eo.channels.iter().filter(|c| !c.panoramic).map(|c| c.wide_rad).fold(0.0, f64::max);
         let slew = eo.slew_dps.to_radians();
-        let key = (o.uid, si);
-        let mut g = self.gimbals.remove(&key).unwrap_or(Gimbal {
+        let mut g = self.own.gimbals.remove(&si).unwrap_or(Gimbal {
             az: heading,
             el: -(10f64.to_radians()),
             narrow: false,
@@ -1204,9 +1396,9 @@ impl Engine {
                 // held until this camera identifies it, while it stays a candidate the manager
                 // would keep (a cue of a higher class takes the camera at once), and while the
                 // identification keeps getting likelier or did within LOCK_MAX_S
-                let identified = self.identified.get(&key).and_then(|m| m.get(&c)).is_some_and(|ti| *ti >= g.since);
-                let progress = self.looks.get(&key).and_then(|l| l.get(&c)).map_or(g.since, |l| l.id_best_s.max(g.since));
-                let choice = if identified || s - progress >= LOCK_MAX_S { None } else { self.pick_cue(key, o, reach_m, s, Some(&c)) };
+                let identified = self.own.identified.get(&si).and_then(|m| m.get(&c)).is_some_and(|ti| *ti >= g.since);
+                let progress = self.own.looks.get(&si).and_then(|l| l.get(&c)).map_or(g.since, |l| l.id_best_s.max(g.since));
+                let choice = if identified || s - progress >= LOCK_MAX_S { None } else { self.pick_cue(si, o, reach_m, s, Some(&c)) };
                 match target(&c).filter(|_| choice.as_deref() == Some(c.as_str())) {
                     Some(t) => {
                         // the image tracker keeps it centred: the gimbal follows it in closed
@@ -1223,7 +1415,7 @@ impl Engine {
                         // a cue of a higher class (`pick_cue`) takes the camera at once
                         cue_to = choice.filter(|x| *x != c);
                         if !identified {
-                            self.looked.entry(key).or_default().insert(c, s);
+                            self.own.looked.entry(si).or_default().insert(c, s);
                         }
                         g.mode = Mode::Search;
                         g.since = s;
@@ -1233,7 +1425,7 @@ impl Engine {
             }
             Mode::Cue(c) => {
                 let acquired = s >= g.busy_until
-                    && self.looks.get(&key).and_then(|l| l.get(&c)).is_some_and(|l| l.detected_s.is_some());
+                    && self.own.looks.get(&si).and_then(|l| l.get(&c)).is_some_and(|l| l.detected_s.is_some());
                 // the cue's pattern, one aim at the contact or an aircraft's elevation search, is
                 // held while the latest fix keeps the contact within it, and planned again from
                 // that fix only when it does not (a fix from another sensor, a 2D radar's or a
@@ -1270,7 +1462,7 @@ impl Engine {
                     || (!scan && s - began >= CUE_MAX_S)
                     || (bar_over && g.bar + 1 >= g.pattern.len())
                 {
-                    self.looked.entry(key).or_default().insert(c, s);
+                    self.own.looked.entry(si).or_default().insert(c, s);
                     g.mode = Mode::Search;
                     g.since = s;
                     g.step_s = f64::NEG_INFINITY;
@@ -1295,7 +1487,7 @@ impl Engine {
             Mode::Search => {}
         }
         if g.mode == Mode::Search {
-            let pick = cue_to.or_else(|| (s - g.since >= SEARCH_MIN_S).then(|| self.pick_cue(key, o, reach_m, s, None)).flatten());
+            let pick = cue_to.or_else(|| (s - g.since >= SEARCH_MIN_S).then(|| self.pick_cue(si, o, reach_m, s, None)).flatten());
             if let Some(c) = pick {
                 g.pattern = self.cues[&c].aims(o, h_s, wide);
                 g.mode = Mode::Cue(c);
@@ -1318,21 +1510,21 @@ impl Engine {
             }
         }
         let b = Boresight { az: g.az, el: g.el, narrow: g.narrow, blind: s < g.busy_until, fixed: false };
-        self.gimbals.insert(key, g);
+        self.own.gimbals.insert(si, g);
         b
     }
 
-    /// The track camera `key` cues to (WORLD-V3-PLAN 2.4): within its reach and the task area,
-    /// fixed within [`CUE_FRESH_S`], not looked at in vain by it within [`RETRY_S`]; the nearest
-    /// it has not identified within [`REVISIT_S`], else the one it looked at longest ago (beyond
-    /// [`STALE_LOOK_S`]). A locked camera asks it each second, `holding` its contact: it keeps
-    /// the contact while it is a candidate, unless the contact is a revisit and a contact the
-    /// camera has not identified is one (a higher class); a nearer contact of the same class
+    /// The track camera `si` of `o` cues to (WORLD-V3-PLAN 2.4): within its reach and the task
+    /// area, fixed within [`CUE_FRESH_S`], not looked at in vain by it within [`RETRY_S`]; the
+    /// nearest it has not identified within [`REVISIT_S`], else the one it looked at longest ago
+    /// (beyond [`STALE_LOOK_S`]). A locked camera asks it each second, `holding` its contact: it
+    /// keeps the contact while it is a candidate, unless the contact is a revisit and a contact
+    /// the camera has not identified is one (a higher class); a nearer contact of the same class
     /// does not preempt a lock (it would thrash between two contacts and finish neither).
-    fn pick_cue(&self, key: (u64, usize), o: &Observer, reach_m: f64, s: f64, holding: Option<&str>) -> Option<String> {
+    fn pick_cue(&self, si: usize, o: &Observer, reach_m: f64, s: f64, holding: Option<&str>) -> Option<String> {
         let none = HashMap::new();
-        let identified = self.identified.get(&key).unwrap_or(&none);
-        let looked = self.looked.get(&key).unwrap_or(&none);
+        let identified = self.own.identified.get(&si).unwrap_or(&none);
+        let looked = self.own.looked.get(&si).unwrap_or(&none);
         // how far a cue is, as the payload manager reckons it: from where its vehicle believes it is
         let (olat, olon) = o.believed();
         let mut cands: Vec<(&String, f64, f64)> = self
@@ -1350,7 +1542,7 @@ impl Engine {
         let unidentified_ = |c: &str| identified.get(c).is_none_or(|t| s - t > REVISIT_S);
         // rules 21: the track an identify order sends the vehicle to, first, whenever it is a
         // candidate this camera has not identified (ahead of a lock on another contact)
-        if let Some(first) = self.firsts.get(&key.0)
+        if let Some(first) = self.firsts.get(&o.uid)
             && let Some((c, _, _)) = cands
                 .iter()
                 .filter(|(c, _, _)| first.contains(c.as_str()) && unidentified_(c))
@@ -1596,7 +1788,7 @@ mod tests {
             let st = Step { seed: 7, tick: s, s: s as f64, t: 1_781_467_800.0 + s as f64, misclassification_rate: 0.0, sensing: &sensing };
             e.cues.insert("heli".into(), if s % 2 == 0 { radar(s as f64) } else { camera(s as f64) });
             e.step(&st, std::slice::from_ref(&o), std::slice::from_ref(&heli));
-            let g = &e.gimbals[&(5, 0)];
+            let g = &e.own[&5].gimbals[&0];
             match (&g.mode, cued) {
                 (Mode::Cue(_), None) => cued = Some(s),
                 (Mode::Cue(_), Some(_)) => {}

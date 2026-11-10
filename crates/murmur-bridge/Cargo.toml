@@ -29,6 +29,8 @@ http-body-util = "0.1.5"
 # Baked grids, gzip (the format of sim/headless/terrain): the physical sensing model's terrain,
 # and the domain rule's land/water grid without tidewater (decision/terrain.rs).
 flate2 = "1"
+# The physical sensing step's own pool of threads (tracks/physical/par.rs, bd murmur-9730).
+rayon = "1.12"
 
 [lints]
 workspace = true

@@ -1552,6 +1552,17 @@ step 3 s (its snapshot 1.7), the link statistics 3 s, the stand-ins 2.5 s, SATCO
 picture sampler (every track's JSON each second, 16 ms a call) and an agent's `get_tracks` (the
 same JSON, about 50 ms a call with the result's parse) are the most, both `Track::json`'s.
 
+**The sensing step on threads** (murmur-9730, 2026-11-10). The physical sensing step runs its
+vehicles on a pool of its own (`tracks/physical/par.rs`; docs/load-test.md, "The sensing step on
+several threads"), and an episode is the same at any thread count: the scale watch (seed 1,
+`none`) gave the same record and audit digests before the change and on 1, 2, 4 and 8 threads.
+The simulator's default is one thread, since a batch runs one simulator per worker;
+`MURMUR_SENSE_THREADS=N` in the caller's environment (`sim.py` passes it on, the only variable of
+the caller's that reaches the simulator) gives one episode more, and `perf.rust` times the step as
+`bridge.sense`. On the scale watch, with the host loaded to 15 to 29 by other work: 21 to 28 s of
+the step before, 28 to 29 s on one thread, 9 to 12 on two, 8 to 14 on four and eight (two series;
+docs/load-test.md has them).
+
 **Found, or left as it is.**
 
 - Corsair, Magura, FVR-90, the airship and the UGVs had no endurance figure when these worlds

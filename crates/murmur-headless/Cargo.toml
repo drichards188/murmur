@@ -38,6 +38,7 @@ rmcp = { version = "3.5", features = ["transport-streamable-http-server"] }
 schemars = "1"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1.5"
+rayon = "1.12"
 # the simulator's own: the stand-ins, the link emulator and the contacts, as libraries; the
 # paused clock (tokio test-util, on top of the bridge's features)
 murmur-standins = { path = "../murmur-standins" }

@@ -564,6 +564,18 @@ meaningful.
   (`Detection::scan_s`): the tracker time-aligns such bearings and holds a ranging fix 6 s on
   them, while a plot without it (the legacy model's) takes the rules as they were; a test that
   builds a physical radar detection by hand sets it.
+- The physical sensing step runs each pass's vehicles on a pool of its own (bd murmur-9730,
+  `tracks/physical/par.rs`): `MURMUR_SENSE_THREADS`, else a quarter of the cores up to 8 live and
+  1 headless (a batch runs a simulator per worker), said at start (`sensing: the physical step on
+  N threads`). Any count gives the same detections and state: a vehicle's sensing reads `Shared`
+  (grids, weather, cues, identify contacts) and writes only its own `Own`; something one
+  vehicle's sensing writes and another's reads in the same pass breaks that (the cues are written
+  only between the passes, in observer order). `tracks::tests::sense_par` checks it. The headless
+  simulator gets only `PATH`, `HOME` and the spec's variables (`process_spec`): `eval/headless/
+  sim.py` passes the caller's `MURMUR_SENSE_THREADS` on, nothing else. The Harbor watch golden
+  runs the legacy model: check a change to the physical step on the scale watch's digest
+  (`golden-gate-scale-watch`, agent `none`, seed 1; docs/load-test.md). The live bridge runs the
+  truth handler's sensing on a blocking thread (`spawn_blocking`), the simulator in line.
 - This host's wall clock (WSL) stepped back 0.5 to 0.9 s every ~32 s for the first two hours or
   so after boot (monotonic up to 2 % fast against Windows), then stopped. The bridge times
   everything on `clock::wall` (the monotonic rate, steered within ~2 s of the wall clock at
