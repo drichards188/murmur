@@ -86,9 +86,9 @@
 //!     ([`air_calib_physical_held_out_three`]).
 //! 14. Its one run (2026-10-24) did not confirm the manoeuvre model: with it, the all-sensors
 //!     mix missed the weave once 3 s ahead (93 m, 1 of 5,503 samples); the tracker without it
-//!     held every criterion on the same set. The model was not adopted (it stays on the branch
-//!     `worktree-agent-a14a1c3af5ac2d6ac`, commit dc0964a); [`AIR_PHYSICAL_HELD_OUT_THREE_SEEDS`]
-//!     are spent. The tracker's physical calibration is judged again on a fresh set after the
+//!     held every criterion on the same set. The model was not adopted (its branch was deleted
+//!     on 2026-11-10; what it was and what it missed are on bd murmur-6ag);
+//!     [`AIR_PHYSICAL_HELD_OUT_THREE_SEEDS`] are spent. The tracker's physical calibration is judged again on a fresh set after the
 //!     sensing model's next changes.
 //! 15. [`physical_held_out_four_cases`] on [`AIR_PHYSICAL_HELD_OUT_FOUR_SEEDS`] was written then,
 //!     before sensing round 3 (murmur-qlt's airborne radar clutter, and a cued camera holding its
