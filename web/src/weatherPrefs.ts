@@ -22,3 +22,22 @@ export function saveEffects(fx: Effects) {
     // storage unavailable: the toggles still work for this session
   }
 }
+
+// whether the weather legend is folded to its title row, remembered the same way
+const COLLAPSED_KEY = 'murmur.weather.legendCollapsed'
+
+export function savedLegendCollapsed(): boolean {
+  try {
+    return localStorage.getItem(COLLAPSED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function saveLegendCollapsed(collapsed: boolean) {
+  try {
+    localStorage.setItem(COLLAPSED_KEY, collapsed ? '1' : '0')
+  } catch {
+    // storage unavailable: it still folds for this session
+  }
+}

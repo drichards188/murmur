@@ -136,8 +136,9 @@ code { font-family: var(--mono); font-size: 12px; background: var(--panel-2); pa
 .mapwrap { grid-area: map; position: relative; min-width: 0; }
 .mapwrap > .map { position: absolute; inset: 0; }
 .banner { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); background: #2a1416; border: 1px solid var(--bad); color: #ffd6d6; padding: 8px 14px; border-radius: 4px; font-size: 13px; }
+/* bottom right, clear of the weather legend (bottom left, always shown) and the zoom buttons */
 .perf {
-  position: absolute; left: 10px; bottom: 34px; z-index: 4; pointer-events: none;
+  position: absolute; right: 52px; bottom: 34px; z-index: 13; pointer-events: none;
   font: 11px/1.5 var(--mono); color: var(--text); background: rgba(16,22,29,.88); border: 1px solid var(--line);
   padding: 6px 9px; border-radius: 4px;
 }

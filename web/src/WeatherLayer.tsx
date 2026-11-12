@@ -1,8 +1,10 @@
+import { useState } from 'react'
 import { WEATHER_FIELDS, type WeatherField, type WeatherGrid, type WeatherMode } from './weather'
 import { describeField, rampCss, rampTicks, regionsOf } from './weatherField'
 import type { Effects } from './weatherGl'
 import { reducedMotion } from './reveal'
 import { DOMAIN_WORDS, SENSOR_RGB, lightState, sensorColor, sensorShort, type DomainChoice, type ReachAnswer, type ReachDomain, type ReachMode } from './sensorReach'
+import { saveLegendCollapsed, savedLegendCollapsed } from './weatherPrefs'
 import './weather.css'
 
 /** The sensor reach layer's controls (bd murmur-4tq): which vehicles get rings, which domain
@@ -52,17 +54,22 @@ export function WeatherLegend({ mode, onMode, effects, onEffects, grid, error, o
   effects: Effects; onEffects: (fx: Effects) => void; grid: WeatherGrid | null
   error: string | null; onDetails: () => void; reach?: ReachLegendProps
 }) {
+  // collapsed to its title row (which keeps the effect toggles), remembered per viewer
+  const [collapsed, setCollapsed] = useState(savedLegendCollapsed)
   const regions = !error ? regionsOf(grid) : null
   const anyOn = mode !== 'off' || Object.values(effects).some(Boolean)
   const label = mode !== 'off' ? WEATHER_FIELDS[mode] : null
   const reduced = reducedMotion()
   const status = error ?? (!anyOn ? 'Weather off' : grid?.stale ? 'Stale weather; layer hidden' : !regions ? 'Weather unavailable in this view' : null)
-  return <aside className="weather-legend" aria-label="Weather map layer">
+  return <aside className={`weather-legend${collapsed ? ' collapsed' : ''}`} aria-label="Weather map layer">
     <div><span className="weather-title">Weather</span>
       <span className="weather-toggles" role="group" aria-label="Weather effects">{EFFECTS.map(e =>
         <button key={e.key} className={`chip ${effects[e.key] ? 'on' : ''}`} aria-pressed={effects[e.key]}
           onClick={() => onEffects({ ...effects, [e.key]: !effects[e.key] })}>{e.label}</button>)}</span>
-      <button className="ghost" onClick={onDetails}>Details</button></div>
+      <button className="ghost" onClick={onDetails}>Details</button>
+      <button className="ghost close" aria-expanded={!collapsed} aria-label={collapsed ? 'Expand the weather panel' : 'Collapse the weather panel'} title={collapsed ? 'Expand' : 'Collapse'}
+        onClick={() => { setCollapsed(!collapsed); saveLegendCollapsed(!collapsed) }}>{collapsed ? '+' : '–'}</button></div>
+    {collapsed ? null : <>
     {status ? <p>{status}</p> : regions && <>
       <dl className="weather-now">{EFFECTS.filter(e => effects[e.key]).map(e => <div key={e.key}>
         <dt>{e.label}</dt><dd>{describeField(regions, e.field)} <span>· {e.uses}</span></dd></div>)}</dl>
@@ -82,5 +89,6 @@ export function WeatherLegend({ mode, onMode, effects, onEffects, grid, error, o
       Sun {grid.sun_elevation_deg.toFixed(0)}° · <b className={`light-${lightState(grid.sun_elevation_deg)}`}>{lightState(grid.sun_elevation_deg).toUpperCase()}</b>
       {lightState(grid.sun_elevation_deg) !== 'day' ? ' · day cameras lose their light' : ''}</p>}
     {reach && <ReachLegend {...reach} />}
+    </>}
   </aside>
 }
