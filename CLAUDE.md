@@ -547,6 +547,12 @@ meaningful.
   60. A new MCP tool changes the tool lists in the headless golden and paused digests
   (`eval/headless/tests/test_episode.py`, `test_charged_clock.py`): re-take them and check that
   the code without the tool gives the old digests.
+- A track's identity and its console-feed JSON are kept between reads (bd murmur-jvdc): only
+  `Track::update` and `Track::set_mirror` may change what they are made from (looks,
+  classifiers, AIS, velocity; the mirror's declared, review, raised), and both empty them; a test
+  build recomputes them at every read and panics on a stale one. A track's sources and looks are
+  one per observer and never pruned (Saturation's: thousands each), so per-track work is
+  O(observers): time it with `picture_scale` and `tick_scale` (`tracks::saturation`'s picture).
 - The tracker is a two-model IMM; changes must pass `tracks::tests::calib`. Its held-out seeds
   (66-95) are not for tuning: write a new held-out set if you tune on them. Aircraft have their
   own calibration (`tracks::tests::calib_air`: held-out seeds 221-250, run once, its two misses

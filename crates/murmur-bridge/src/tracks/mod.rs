@@ -56,6 +56,8 @@
 pub mod model;
 pub mod physical;
 pub mod reach;
+#[cfg(test)]
+pub(crate) mod saturation;
 pub mod sensing;
 #[cfg(test)]
 mod tests;
@@ -1137,14 +1139,17 @@ impl Tracks {
     /// Rules 9: mirror the decision engine's identification ledger for display: each track's
     /// declaration in force (with its basis), the review flags in force on it, and the one
     /// that raised it to suspect. Decisions never read this mirror (the engine fills the
-    /// picture from its ledger). Republishes if anything changed.
+    /// picture from its ledger). Republishes if anything changed (the decision loop mirrors
+    /// every second, and every track's feed each time was a large share of Saturation's ticks,
+    /// bd murmur-jvdc: the tracker's own second's publish carries the rest).
     pub fn mirror(&self, ledger: &murmur_decide::ident::Ledger) {
         let now = clock::wall();
+        let mut changed = false;
         {
             let mut inner = lock(&self.inner);
             for (id, t) in &mut inner.tracks {
-                t.declared = ledger.declaration(id).map(Declared::from_ledger);
-                t.review = ledger
+                let declared = ledger.declaration(id).map(Declared::from_ledger);
+                let review: Vec<model::ReviewMark> = ledger
                     .flags()
                     .filter(|(f, s)| s.in_force() && f.tracks.iter().any(|x| x == id))
                     .map(|(f, s)| model::ReviewMark {
@@ -1155,16 +1160,19 @@ impl Tracks {
                         evidence: f.evidence.clone(),
                     })
                     .collect();
-                t.raised = ledger.suspect_since(id).and_then(|_| {
+                let raised = ledger.suspect_since(id).and_then(|_| {
                     ledger
                         .flags()
                         .filter(|(f, s)| s.in_force() && f.kind.raises_suspect() && f.tracks.iter().any(|x| x == id))
                         .map(|(f, _)| format!("F-{}: {}", f.id, f.evidence))
                         .next()
                 });
+                changed |= t.set_mirror(declared, review, raised);
             }
         }
-        self.publish(now);
+        if changed {
+            self.publish(now);
+        }
     }
 
     fn fold(&self, inner: &mut Inner, detections: &[Detection], now: f64) {
@@ -1235,12 +1243,24 @@ impl Tracks {
     }
 
     /// Rules 16: show the engine's lost contacts (the console's map and tracks list); each
-    /// entry as [`crate::decision::Decision::lost_json`] builds it. Republishes if they
-    /// changed.
+    /// entry as [`crate::decision::Decision::lost_json`] builds it. Republishes if they changed
+    /// otherwise than by aging: what changes every second as they age (how long out of view, the
+    /// regions growing) goes with the tracker's own second's publish (bd murmur-jvdc: the
+    /// decision loop built every track's feed for it each second).
     pub fn mirror_lost(&self, lost: Vec<Value>) {
+        // the same but for their age
+        fn aged(a: &Value, b: &Value) -> bool {
+            match (a.as_object(), b.as_object()) {
+                (Some(a), Some(b)) => {
+                    a.len() == b.len()
+                        && a.iter().all(|(k, v)| matches!(k.as_str(), "out_of_view_s" | "regions") || b.get(k) == Some(v))
+                }
+                _ => a == b,
+            }
+        }
         let changed = {
             let mut inner = lock(&self.inner);
-            let changed = inner.lost != lost;
+            let changed = inner.lost.len() != lost.len() || !inner.lost.iter().zip(&lost).all(|(a, b)| aged(a, b));
             inner.lost = lost;
             changed
         };
@@ -1270,23 +1290,27 @@ impl Tracks {
         }
     }
 
-    /// Every track as public JSON (perception only).
+    /// Every track as public JSON (perception only). Copied under the store's lock and written
+    /// outside it: at Saturation's scale every track's whole JSON (thousands of sources and looks
+    /// on some) took most of a second, and every reader of the store waited (bd murmur-jvdc).
     pub fn tracks_json(&self, now: f64) -> Vec<Value> {
-        lock(&self.inner)
-            .tracks
-            .values()
-            .map(|t| t.json(now))
-            .collect()
+        let tracks: Vec<Track> = lock(&self.inner).tracks.values().cloned().collect();
+        tracks.iter().map(|t| t.json(now)).collect()
     }
 
-    /// The console feed's tracks: [`Self::tracks_json`] with each track's sources and looks
-    /// capped at [`FEED_SOURCES`] (`Track::json_with`). `/api/tracks` and the agents' tools keep
-    /// them all.
-    fn feed_tracks_json(&self, now: f64) -> Vec<Value> {
+    /// Track `id` as [`Self::tracks_json`] has it, if there is one.
+    pub fn track_json(&self, id: &str, now: f64) -> Option<Value> {
+        lock(&self.inner).tracks.get(id).map(|t| t.json(now))
+    }
+
+    /// The console feed's tracks, as text: [`Self::tracks_json`] with each track's sources and
+    /// looks capped at [`FEED_SOURCES`] (`Track::feed_json`, most kept from the last message).
+    /// `/api/tracks` and the agents' tools keep them all.
+    fn feed_tracks(&self, now: f64) -> Vec<String> {
         lock(&self.inner)
             .tracks
-            .values()
-            .map(|t| t.json_with(now, Some(FEED_SOURCES)))
+            .values_mut()
+            .map(|t| t.feed_json(now, FEED_SOURCES).to_owned())
             .collect()
     }
 
@@ -1490,21 +1514,35 @@ impl Tracks {
         v
     }
 
-    /// The WebSocket message, `{"type": "tracks", ...}`.
+    /// The WebSocket message, `{"type": "tracks", "t", "stale_after_s", "tracks", "lost"}` and,
+    /// when there is a weapon picture, `"weapons"`, written as `serde_json` writes that object
+    /// (`tests::scale` checks it against `json!(..).to_string()`), with the tracks' JSON as each
+    /// was kept (bd murmur-jvdc).
     fn message(&self, now: f64) -> String {
-        let mut msg = json!({
-            "type": "tracks",
-            "t": round(now, 2),
-            "stale_after_s": model::STALE_S,
-            "tracks": self.feed_tracks_json(now),
-            "lost": self.lost_json(),
-        });
+        let tracks = self.feed_tracks(now);
+        let lost = Value::Array(self.lost_json()).to_string();
         // opponent weapons: the weapon picture, when there is one (absent otherwise)
         let weapons = lock(&self.inner).weapons.json();
-        if !weapons.is_empty() {
-            msg["weapons"] = Value::Array(weapons);
+        let mut msg = String::with_capacity(tracks.iter().map(|t| t.len() + 1).sum::<usize>() + lost.len() + 128);
+        msg.push_str("{\"type\":\"tracks\",\"t\":");
+        msg.push_str(&json!(round(now, 2)).to_string());
+        msg.push_str(",\"stale_after_s\":");
+        msg.push_str(&json!(model::STALE_S).to_string());
+        msg.push_str(",\"tracks\":[");
+        for (i, t) in tracks.iter().enumerate() {
+            if i > 0 {
+                msg.push(',');
+            }
+            msg.push_str(t);
         }
-        msg.to_string()
+        msg.push_str("],\"lost\":");
+        msg.push_str(&lost);
+        if !weapons.is_empty() {
+            msg.push_str(",\"weapons\":");
+            msg.push_str(&Value::Array(weapons).to_string());
+        }
+        msg.push('}');
+        msg
     }
 
     /// Push the tracks to WebSocket clients if they changed. Built only while anyone watches,
@@ -1900,7 +1938,7 @@ async fn list(State(api): State<Api>) -> Response {
 
 async fn one(State(api): State<Api>, AxPath(id): AxPath<String>) -> Response {
     let now = clock::wall();
-    match api.tracks.tracks_json(now).into_iter().find(|t| t["id"] == id) {
+    match api.tracks.track_json(&id, now) {
         Some(t) => Json(t).into_response(),
         None => error(StatusCode::NOT_FOUND, format!("unknown track {id}")),
     }
@@ -1966,7 +2004,7 @@ async fn declare(
 /// The track as it stands now, with what the identification call did.
 fn track_answer(api: &Api, id: &str, outcome: Value) -> Value {
     let now = clock::wall();
-    let track = api.tracks.tracks_json(now).into_iter().find(|t| t["id"] == id);
+    let track = api.tracks.track_json(id, now);
     let mut v = track.unwrap_or_else(|| json!({ "id": id }));
     v["identification"] = outcome;
     v

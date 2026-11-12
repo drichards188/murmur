@@ -55,6 +55,7 @@
 //! a new track.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::OnceLock;
 
 use murmur_decide::{Affiliation, Fact, LonLat, Manoeuvre, Time, TrackFacts};
 use serde::Serialize;
@@ -959,6 +960,18 @@ pub struct Track {
     /// evidence), as the engine's ledger has them (display only).
     pub review: Vec<ReviewMark>,
     pub raised: Option<String>,
+    /// [`Self::identity`] as last computed, until a detection changes what it is computed from
+    /// (the looks, the classifiers, the AIS identity, the velocity: only [`Self::update`] and
+    /// [`Self::new`] write them, each through `after_update`, which empties this). A track seen
+    /// by thousands of our sensors has as many looks, and the picture's readers ask for its
+    /// identity several times each (bd murmur-jvdc).
+    identity_memo: OnceLock<Identity>,
+    /// The console feed's JSON of it ([`Self::feed_json`]: whether it was stale then, the cap,
+    /// the text), until a detection or the mirror changes it (`after_update` and
+    /// [`Self::set_mirror`] empty this) or it goes stale, the only part of it that moves with
+    /// the clock: the feed goes out several times a second, its tracks under the store's lock
+    /// (bd murmur-jvdc).
+    feed_memo: Option<(bool, usize, String)>,
 }
 
 /// Speed the position uncertainty grows at while unobserved: at least walking pace, or a
@@ -1087,6 +1100,8 @@ impl Track {
             declared: None,
             review: Vec::new(),
             raised: None,
+            identity_memo: OnceLock::new(),
+            feed_memo: None,
         };
         // the first fix is the estimate: its own update would count it twice
         t.first_fix(d, now);
@@ -1495,6 +1510,9 @@ impl Track {
             self.ais_t = Some(now);
         }
         self.last_seen_t = now;
+        // what the identity and the feed are made from may have changed
+        self.identity_memo = OnceLock::new();
+        self.feed_memo = None;
     }
 
     fn classifier_conf(&self, sensor: SensorType, c: &Classifier) -> f64 {
@@ -1582,6 +1600,20 @@ impl Track {
     }
 
     pub fn identity(&self) -> Identity {
+        let memo = self.identity_memo.get_or_init(|| self.compute_identity());
+        // a test build checks the memo against the identity computed afresh at every read
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            format!("{memo:?}"),
+            format!("{:?}", self.compute_identity()),
+            "{}: the memoized identity is stale",
+            self.id
+        );
+        memo.clone()
+    }
+
+    /// [`Self::identity`] computed afresh.
+    fn compute_identity(&self) -> Identity {
         if !self.looks.is_empty() {
             return self.identity_from_looks();
         }
@@ -1918,6 +1950,32 @@ impl Track {
         self.json_with(now, None)
     }
 
+    /// [`Self::json_with`] at `cap`, as text: made again only when the track changed or went
+    /// stale since the last call ([`Self::feed_memo`]).
+    pub fn feed_json(&mut self, now: f64, cap: usize) -> &str {
+        let stale = self.is_stale(now);
+        if !matches!(&self.feed_memo, Some((s, c, _)) if *s == stale && *c == cap) {
+            self.feed_memo = Some((stale, cap, self.json_with(now, Some(cap)).to_string()));
+        }
+        let text = self.feed_memo.as_ref().map_or("", |m| m.2.as_str());
+        // a test build checks the memo against the JSON made afresh at every read
+        #[cfg(debug_assertions)]
+        assert_eq!(text, self.json_with(now, Some(cap)).to_string(), "{}: the feed's memo is stale", self.id);
+        text
+    }
+
+    /// Rules 9: the identification ledger's mirror for display ([`super::Tracks::mirror`]): its
+    /// declaration in force, the review flags in force on it, the one that raised it to suspect.
+    /// Whether that changed anything.
+    pub fn set_mirror(&mut self, declared: Option<Declared>, review: Vec<ReviewMark>, raised: Option<String>) -> bool {
+        if self.declared == declared && self.review == review && self.raised == raised {
+            return false;
+        }
+        (self.declared, self.review, self.raised) = (declared, review, raised);
+        self.feed_memo = None;
+        true
+    }
+
     /// [`Self::json`], with at most `cap` sources (the latest heard) and `cap` looks (the
     /// surest), each kept in its usual order, and `sources_total` / `identity.looks_total`
     /// saying how many there were when some were left out; `None`, or no more than `cap` of
@@ -1929,7 +1987,11 @@ impl Track {
         fn keep<T>(items: &[T], cap: Option<usize>, key: impl Fn(&T) -> f64) -> Option<Vec<bool>> {
             let cap = cap.filter(|c| items.len() > *c)?;
             let mut order: Vec<usize> = (0..items.len()).collect();
-            order.sort_by(|&a, &b| key(&items[b]).total_cmp(&key(&items[a])).then(a.cmp(&b)));
+            // the first `cap` in that order (a total one: ties go by position), found without
+            // sorting the rest
+            if cap > 0 {
+                order.select_nth_unstable_by(cap - 1, |&a, &b| key(&items[b]).total_cmp(&key(&items[a])).then(a.cmp(&b)));
+            }
             let mut kept = vec![false; items.len()];
             for &i in &order[..cap] {
                 kept[i] = true;
@@ -2005,6 +2067,18 @@ impl Track {
         let id = self.identity();
         let (aff, aff_conf, _) = self.estimate();
         let ms = |s: f64| Time((s * 1000.0).round() as i64);
+        // each source's name made once, for both lists (thousands of them on a track a swarm
+        // of ours sees, bd murmur-jvdc)
+        let names: Vec<String> = self
+            .sources
+            .values()
+            .map(|s| format!("{}:{}", s.uid, s.sensor.as_str()))
+            .collect();
+        let source_t = names
+            .iter()
+            .cloned()
+            .zip(self.sources.values().map(|s| ms(s.last_t)))
+            .collect();
         TrackFacts {
             position: Fact::new(LonLat::new(self.lon, self.lat), ms(self.last_seen_t)),
             alt_m: self.alt_m,
@@ -2017,16 +2091,8 @@ impl Track {
             affiliation_confidence: aff_conf,
             identity: id.kind,
             identity_confidence: id.confidence,
-            sources: self
-                .sources
-                .values()
-                .map(|s| format!("{}:{}", s.uid, s.sensor.as_str()))
-                .collect(),
-            source_t: self
-                .sources
-                .values()
-                .map(|s| (format!("{}:{}", s.uid, s.sensor.as_str()), ms(s.last_t)))
-                .collect(),
+            sources: names,
+            source_t,
             domain: self.domain.decide(),
             last_seen_t: ms(self.last_seen_t),
             // rules 9: the engine fills these from its identification ledger
