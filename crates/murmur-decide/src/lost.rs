@@ -134,6 +134,20 @@ impl LostLedger {
         self.contacts.is_empty() && self.confirmed.is_empty()
     }
 
+    /// Whether a picture whose AIS identities are `track_ais` could void a confirmation or raise
+    /// a claim ([`Self::void_in`], [`claims`]): some contact is confirmed (its claimant may have
+    /// left the picture or turned), or a track carries the MMSI of a lost contact in force under
+    /// another id. Without either, neither finds anything in any such picture (bd murmur-jvdc:
+    /// the bridge then builds none).
+    pub fn reads_picture(&self, track_ais: &BTreeMap<String, AisIdentity>) -> bool {
+        !self.confirmed.is_empty()
+            || self.contacts.iter().any(|(id, l)| {
+                l.ais
+                    .as_ref()
+                    .is_some_and(|ais| track_ais.iter().any(|(tid, a)| tid != id && a.mmsi == ais.mmsi))
+            })
+    }
+
     /// How many are in force.
     pub fn len(&self) -> usize {
         self.contacts.len()

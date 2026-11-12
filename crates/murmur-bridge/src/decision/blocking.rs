@@ -304,7 +304,11 @@ impl Decision {
         every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             every.tick().await;
+            // timed with the loops (bd murmur-jvdc): a snapshot and a dry run on each of the
+            // armed platforms nearest, while anything holds up a nomination
+            let start = std::time::Instant::now();
             self.refresh_blocking().await;
+            crate::perf::record("blocking_look", start, start.elapsed());
         }
     }
 

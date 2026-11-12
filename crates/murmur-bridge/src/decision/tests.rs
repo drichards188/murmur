@@ -760,3 +760,6 @@ mod clock_steps;
 
 /// A situation runner's status through the bridge: display only (`tests/situation.rs`).
 mod situation;
+
+/// The loop's tick against Saturation's picture, timed (`tests/scale.rs`, bd murmur-jvdc).
+mod scale;

@@ -2145,6 +2145,14 @@ impl Decision {
         )
     }
 
+    /// The track picture alone, as [`Self::snapshot`] has it (`t`, `tracks`, `track_ais`; no
+    /// vehicles, areas or identity levels): for the engine steps that read nothing else
+    /// (`Engine::step_lost`, `Engine::lost_claims`, `Engine::step_identification`). Saturation's
+    /// fleet of 3,602 made the whole snapshot a large share of each tick (bd murmur-jvdc).
+    fn track_picture(&self) -> murmur_decide::WorldSnapshot {
+        snapshot::tracks_only(self.clock.now(), self.tracks().as_deref())
+    }
+
     /// Rules 17: while a safety command the domain rule let go with a warning (an rtl whose way
     /// home crosses land, `CheckResult::warning`) runs, an inbox alert says where, so a person
     /// can send a safer order. It clears when the vehicle's op ends or another order replaces it.

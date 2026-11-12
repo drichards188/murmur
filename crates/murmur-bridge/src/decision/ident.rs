@@ -164,7 +164,9 @@ impl Decision {
             self.mirror_identification(core);
             return;
         }
-        let world = self.snapshot();
+        // an act's attribution reads our fleet; the weak-evidence rule alone, the track picture
+        // (bd murmur-jvdc: Saturation's whole snapshot every second for it)
+        let world = if acts.is_empty() { self.track_picture() } else { self.snapshot() };
         for report in acts {
             let id = report.act.clone();
             match core.engine.record_act(report.clone(), &world) {

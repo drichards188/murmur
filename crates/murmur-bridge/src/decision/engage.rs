@@ -2211,8 +2211,13 @@ impl Decision {
                 Err(e) => eprintln!("decision: track drop {id}: {e}"),
             }
         }
-        if !core.engine.lost_contacts().is_empty() || !core.engine.lost_confirmed().is_empty() {
-            let world = self.snapshot();
+        // bd murmur-jvdc: no picture when nothing in one could void a confirmation or claim a
+        // lost contact (the engine's steps then find nothing: no claim, nothing logged); the
+        // steps read the track picture alone
+        let reads = (!core.engine.lost_contacts().is_empty() || !core.engine.lost_confirmed().is_empty())
+            && core.engine.lost_reads_picture(&tracks.ais());
+        if reads {
+            let world = self.track_picture();
             match core.engine.step_lost(&world) {
                 Ok(step) => {
                     for c in step.claimed {
@@ -2232,6 +2237,12 @@ impl Decision {
             }
             core.lost_claims = core.engine.lost_claims(&world).iter().map(claim_json).collect();
         } else {
+            // a test build checks that the picture skipped held no claim
+            #[cfg(debug_assertions)]
+            assert!(
+                core.engine.lost_confirmed().is_empty() && core.engine.lost_claims(&self.track_picture()).is_empty(),
+                "the lost contacts' step skipped a picture it would have read"
+            );
             core.lost_claims.clear();
         }
         tracks.mirror_lost(self.lost_json(core));

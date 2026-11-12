@@ -2375,6 +2375,15 @@ impl Engine {
         Ok(claim)
     }
 
+    /// Rules 16: whether [`Self::step_lost`] or [`Self::lost_claims`] could find anything on a
+    /// picture whose AIS identities are `track_ais` ([`crate::lost::LostLedger::reads_picture`]):
+    /// when not, both find nothing (no event, no change, no claim) whatever else the picture
+    /// holds, so a caller may skip building one. Both read only a world's `t`, `tracks` and
+    /// `track_ais`.
+    pub fn lost_reads_picture(&self, track_ais: &BTreeMap<String, AisIdentity>) -> bool {
+        self.policy.rules.lost_contacts() && self.lost.reads_picture(track_ais)
+    }
+
     /// Rules 16: the claims on the lost contacts in force on `world` now (for review): each live
     /// track carrying a lost contact's MMSI, with the evidence and what keeps it from being
     /// confirmed ([`crate::lost::claims`]).
@@ -5139,26 +5148,34 @@ impl Engine {
     /// track keeping company with a declared hostile ([`crate::ident::escort`]) is flagged
     /// (`ident.flagged`, kind proximity, with the two tracks' facts) and so raised to suspect,
     /// each pair once. Never a declaration. Returns the new flags' numbers. Nothing before
-    /// rules 9 or with rule declaration off.
+    /// rules 9 or with rule declaration off. Reads only `world`'s `t` and `tracks`.
     pub fn step_identification(&mut self, world: &WorldSnapshot) -> Result<Vec<u64>, EngineError> {
         let cfg = self.policy.identification();
         if !self.policy.rules.rule_id() || !cfg.rule_declaration {
             return Ok(Vec::new());
         }
         let mut new = Vec::new();
-        // one at a time: each flag changes the picture the next one reads (a raised suspect)
+        // one at a time: each flag changes the picture the next one reads (a raised suspect).
+        // The rule reads the picture as given: what filling it from the ledger changes it never
+        // reads of a track it can flag (an undeclared one keeps its own affiliation; the
+        // declarations come from the ledger), so only the two tracks a flag rests on are filled,
+        // for its inputs, not a copy of the whole picture each second (bd murmur-jvdc).
         loop {
-            let mut tracks = world.tracks.clone();
-            self.ident.fill(&mut tracks);
-            let Some(found) = crate::ident::escort(&tracks, &self.ident, world.t, &cfg).into_iter().next() else {
+            let escorts = crate::ident::escort(&world.tracks, &self.ident, world.t, &cfg);
+            // a test build checks that against the rule on the whole picture filled
+            #[cfg(debug_assertions)]
+            {
+                let mut filled = world.tracks.clone();
+                self.ident.fill(&mut filled);
+                assert_eq!(escorts, crate::ident::escort(&filled, &self.ident, world.t, &cfg), "the weak-evidence rule read the filling");
+            }
+            let Some(found) = escorts.into_iter().next() else {
                 break;
             };
             let (track, hostile) = (found.track.clone(), found.hostile.clone());
-            let inputs = self.ident_inputs(
-                world.t,
-                crate::ident::escort_inputs(&tracks, &track, &hostile),
-                std::collections::BTreeSet::new(),
-            )?;
+            let mut pair = crate::ident::escort_inputs(&world.tracks, &track, &hostile);
+            self.ident.fill(&mut pair);
+            let inputs = self.ident_inputs(world.t, pair, std::collections::BTreeSet::new())?;
             let t = self.now();
             let flag = crate::ident::Flag {
                 id: self.ident.next_flag(),

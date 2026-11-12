@@ -165,3 +165,14 @@ pub fn build(
     }
     snap
 }
+
+/// [`build`]'s track picture alone, at engine time `t`: `tracks` and `track_ais` as it gives
+/// them, nothing else.
+pub fn tracks_only(t: Time, tracks: Option<&crate::tracks::Tracks>) -> WorldSnapshot {
+    let mut snap = WorldSnapshot::new(t);
+    if let Some(tracks) = tracks {
+        snap.tracks = tracks.facts(t.0 as f64 / 1000.0);
+        snap.track_ais = tracks.ais();
+    }
+    snap
+}
