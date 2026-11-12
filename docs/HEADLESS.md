@@ -1642,12 +1642,12 @@ names its own world (`sim/worlds/bay-region-saturation.toml`: its fleet, contact
 with thirteen ground stations, points and operating box), which has no baked grids, so an episode
 stops at the domain rule's "no baked land/water grid" rather than running it on the Golden Gate's
 (`tests/test_saturation.py`). What it would need: the surface, land/water and bathymetry grids
-baked from tidewater's `bay-region-2026-06` over 163 by 200 km once its terrain is re-fetched
-(bd murmur-cbjn; at 20 m that is about 8,000 by 10,000 cells a grid, so coarser offshore or
-nested), the current field over the same box, the link emulator's terrain over the whole region
-from thirteen stations (each radio link judged against every station within its range), the oracles'
-link maps reading more than the first station, and then a batch's time and memory against the
-packed layout's above.
+baked from tidewater's `bay-region-2026-06` over 163 by 200 km (its terrain re-fetched placed
+right and from the finest DEM, bd murmur-cbjn; at 20 m that is about 8,000 by 10,000 cells a
+grid, so coarser offshore or nested), the current field over the same box, the link emulator's
+terrain over the whole region from thirteen stations (each radio link judged against every
+station within its range), the oracles' link maps reading more than the first station, and then
+a batch's time and memory against the packed layout's above.
 
 **What it took.** The situation names its own world, which only the headless simulator reads
 (the Golden Gate's own world would pin the legacy sensing model, as for every v1 situation; live

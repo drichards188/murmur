@@ -150,9 +150,11 @@ meaningful.
   cached in `tidewater/data/cache/` (untracked). `TIDEWATER_HOME` points the scenarios at
   another tidewater tree. A worktree has neither: make its own `.venv` with `-e ./tidewater`, and
   symlink the main checkout's `tidewater/data/cache`. `tidewater fetch` fetches again a terrain
-  file from before murmur-cbjn (squeezed; no `placement` key). San Diego's whole box and the bay
-  region west of 122.6 W are ETOPO's 450 m cells, not NCEI's coastal DEMs (Point Loma's ridge 69 m
-  for 126; tidewater/README.md "Limits").
+  file from before murmur-cbjn (squeezed; no `placement` key) or from before the finest-DEM
+  fetch (ETOPO's 450 m cells ahead of NCEI's regional DEMs; no `source` key). Each cell comes
+  from the finest NCEI DEM on NAVD 88 (1/9, 1/3, 1 arc-second), ETOPO 2022 only where none has
+  data, raised by the scenario's `[terrain] etopo_to_navd88_m` (the bay region's 0.83 m; a
+  scenario that needs it without one is refused); tidewater/README.md "Terrain sources".
 - `murmur-replay` accepts only the current decision-rules version by default: replay older logs with
   `--rules N` / `--min-rules N` (versions and changelog in `crates/murmur-decide/README.md`). The bridge
   writes run-time anchors to `logs/anchors/<run>.anchors`; verify with `murmur-replay <log> --anchors <file>`.

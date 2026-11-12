@@ -91,8 +91,8 @@ scenario's window (13 to 16 June 2026). Situations name it `tidewater = "bay-reg
 .venv/bin/tidewater fetch tidewater/scenarios/bay-region-2026-06.toml   # about 45 min once
 ```
 
-The fetch downloads about 2.4 GB (SFBOFS's whole mesh 1.3 GB, WCOFS 1.0 GB, the DEM 52 MB, the
-rest a few MB) and keeps 280 MB in `data/cache/bay-region-2026-06/`, plus 180 MB of per-hour
+The fetch downloads about 2.4 GB (SFBOFS's whole mesh 1.3 GB, WCOFS 1.0 GB, the DEM about 80 MB
+in 49 requests, the rest a few MB) and keeps 280 MB in `data/cache/bay-region-2026-06/`, plus 180 MB of per-hour
 files in `sfbofs/` and `wcofs/` that only an interrupted fetch resumes from (they can be deleted).
 
 It needs four things a 16 km scenario doesn't, each a table any scenario may use:
@@ -102,11 +102,17 @@ It needs four things a 16 km scenario doesn't, each a table any scenario may use
   same request and so answers exactly as `golden-gate-2026-06` does there. A point is answered
   from the finest grid that covers it, bilinear as before, so a query costs the same at any
   resolution; what resolution costs is memory and the fetch. The whole region at 15 m would be
-  about 145 million cells (580 MB as float32); these three are 13 million (52 MB). 90 m is about
-  the offshore DEM's own resolution, and inland it is ample for radio line of sight (the link
-  emulator samples its profiles every 50 m): where it is coarse is the open coast, whose
-  shoreline is placed to within about 45 m, and the small harbours there. (West of about
-  122.6 W and north of 38.25 N the mosaic serves a much coarser source, ETOPO: see "Limits".)
+  about 145 million cells (580 MB as float32); these three are 13 million (52 MB). 90 m is ample
+  offshore, and inland for radio line of sight (the link emulator samples its profiles every 50
+  m): where it is coarse is the open coast, whose shoreline is placed to within about 45 m, the
+  small harbours there, and narrow headlands and islands (Point Reyes Head reads 161 m of its
+  186.5, the Farallones' Lighthouse Hill 48 m of 88.6). Each cell comes from the finest DEM
+  that covers it: 1/9 arc-second over the Bay, the peninsula and Monterey Bay (46 % of the 90 m
+  grid, and all of the two finer ones), 1/3 arc-second from Bodega Bay to the Farallones and
+  along the area's north edge (20 %), 1 arc-second offshore (19 %), and ETOPO 2022 for the
+  ocean south of 37.0 N and west of 122.5 W and the Delta north of 38.25 N and east of
+  121.85 W (15 %), raised to NAVD 88 by 0.83 m (`[terrain] etopo_to_navd88_m`; see "Terrain
+  sources" below).
   Where two grids meet the answer steps from one to the other. Large areas are fetched in tiles
   of at most 0.5 degrees (the mosaic merges at most 100 source DEMs a request), each on the whole
   grid's pixels, each placed by its own georeferencing (see "Terrain placement" below).
@@ -220,11 +226,58 @@ geodesy.noaa.gov), sampling the cached grids before and after:
 | Mount Tamalpais East Peak (HT3388, 782.4 m) | bay region, 30 m | 273 m; summit 1.6 km N | 775 m; summit (777 m) 16 m W |
 | Mount Diablo (HS5120, 1,177.7 m) | bay region, 30 m | 451 m; summit 2.8 km N | 1,165 m; summit (1,169 m) 40 m W |
 | Lighthouse Point, Santa Cruz (GU4071) | bay region, 90 m | -38 m (water) | 7 m; water 83 m off |
-| Point Loma, LOMA EAST (AC6092, 126.3 m) | San Diego, 15 m | 48 m | 69 m (ETOPO: see "Limits") |
-| Point Reyes Head (HT3484, 186.5 m) | bay region, 90 m | -59 m (water) | 81 m (ETOPO: see "Limits") |
+| Point Loma, LOMA EAST (AC6092, 126.3 m) | San Diego, 15 m | 48 m | 69 m (ETOPO; 125 m from the finest DEM, below) |
+| Point Reyes Head (HT3484, 186.5 m) | bay region, 90 m | -59 m (water) | 81 m (ETOPO; 161 m from the finest DEM, below) |
 
 "Summit" is the grid's highest point within 300 m of the mark (for "before", of where the old
 placement put the mark); the marks' own heights are of the disk, the grid's of 15 to 90 m cells.
+
+### Terrain sources: the finest DEM first
+
+The mosaic's own order (its catalog's `ZOrder`; it ignores a client's sort) puts ETOPO 2022's 15
+arc-second cells (about 450 m, on EGM2008, near mean sea level) ahead of NCEI's 1/3 arc-second
+regional DEMs and its 2023 1/9 arc-second tiles, so until 12 November 2026 every grid outside the
+2022 1/9 arc-second tiles was ETOPO: all of San Diego's box, and the bay region west of about
+122.6 W and north of 38.25 N. Now `fetch.dem_grid` asks for each tile from each group of NCEI's
+DEMs on NAVD 88 by itself (a `mosaicRule` whose `where` the service honours, with a `noData`
+value), finest first: 1/9 arc-second, then 1/3, then 1 arc-second, each filling only the cells
+the ones before it left without data. The tsunami DEMs on mean high water and the Coastal Relief
+Models on mean sea level are never asked for. ETOPO 2022 fills what is left (the open ocean past
+the regional DEMs, land no NCEI DEM covers), raised by the scenario's `[terrain]
+etopo_to_navd88_m`: a grid that needs it beside NAVD 88 cells without it is refused, and a grid
+all ETOPO is left on EGM2008 (its `datum` says so). A tile the 1/9 arc-second tiles fill is one
+request, as before. Each cached grid keeps `source`, the index of each cell's source in
+`sources`, and `tidewater fetch` fetches again a grid fetched before (it lacks `source`).
+
+The offset is the NAVD 88 height of EGM2008's zero where ETOPO fills. For the bay region it is
+0.80 to 0.86 m over those cells (PROJ 9.8 with NGA's EGM2008 grid, NOAA's GEOID18 and NGS's
+ITRF2008 to NAD83(2011) transformation at epoch 2010.0), so `bay-region-2026-06.toml` gives 0.83 m.
+Two checks agree: CO-OPS puts mean sea level 0.90 to 0.97 m above NAVD 88 at Monterey, Point Reyes
+and San Francisco; and on flat land outside NCEI's 2022 1/9 arc-second tiles NAVD 88 DEMs read
+above ETOPO by a median of 0.81 m north of 38.25 N (33,000 cells), 0.86 m north of 38.5 N and
+0.89 m in the Salinas Valley. Inside those tiles the medians are -0.04 to +0.06 m: ETOPO took
+their NAVD 88 heights as they were, but there the tiles answer themselves.
+
+The Golden Gate's box is all 1/9 arc-second: its grid comes out byte for byte as before (the same
+SHA-256 of the elevations, in `golden-gate-2026-06` and in the bay region's nest). The bay
+region's 30 m grid differs in 2,795 of its 8 million cells, by 1.4 m at most, all on the rows
+and columns where two 1/9 arc-second tiles meet (the mosaic stitches them a little differently
+when asked for those tiles alone); its 90 m grid in 740 cells of its 1/9 arc-second part, nearly
+all on the row at 37.25 N where the 2022 and 2023 tiles meet (14.8 m at most, in the Santa Cruz
+Mountains). Against NGS survey
+marks where ETOPO used to answer (the mark's own height, against the grid's at the mark; "summit"
+as in the table above):
+
+| mark | grid | ETOPO (default order) | the finest DEM |
+| --- | --- | --- | --- |
+| Point Reyes Head (HT3484, 186.5 m) | bay region, 90 m | 80.8 m; summit 117 m | 161.0 m, 1/3 arc-second; summit 167 m 106 m W |
+| Bodega Head (JT2832, 73.7 m) | bay region, 90 m | 41.5 m; summit 52 m | 64.0 m, 1/3 arc-second; summit 73 m 300 m NW |
+| Southeast Farallon, Lighthouse Hill (HT3492, 88.6 m) | bay region, 90 m | 12.0 m; summit 20 m | 47.7 m, 1/3 arc-second; summit 50 m 25 m N |
+| Point Loma, LOMA EAST (AC6092, 126.3 m) | San Diego, 15 m | 68.8 m; summit 91 m | 125.1 m, 1/3 arc-second; summit 128 m 160 m N |
+
+What is left is the 90 m grid's own smoothing of narrow headlands and islands; at 15 m San Diego's
+ridge reads its mark to 1.2 m. `tests/test_dem.py` holds the cached grids to these marks, and
+fails on the ETOPO ones.
 
 ### ArduPilot SITL patch (`SIM_WATER_DEPTH`)
 
@@ -262,17 +315,14 @@ with GPS: an EKF failsafe for the boat, a diverging depth estimate for the sub.
   `0002` (from Murmur) centres the SITL antenna tracker's mount on its start heading and applies
   its limits after the rates; it doesn't touch the water model.
 - **Vertical datums** are assumed consistent (NAVD88 DEM, NAVD tide predictions). True for
-  US coastal DEMs in the NCEI mosaic; verify for new areas. Not true where ETOPO answers (next).
-- **Terrain sources.** The mosaic's default rule serves NCEI's 1/9 arc-second tiles where they
-  exist and, everywhere else, ETOPO 2022 at 15 arc-seconds (about 450 m cells, mean sea level),
-  ahead of NCEI's regional 1/3 arc-second DEMs (NAVD 88) that cover the same ground. That is all
-  of the San Diego scenario, and the bay region west of about 122.6 W (Point Reyes, the
-  Farallones, the open coast and ocean) and north of 38.25 N; the Golden Gate's box is all 1/9
-  arc-second. There a grid is placed right but smooth: Point Loma's ridge at NGS's LOMA EAST
-  (126.3 m) reads 69 m, Point Reyes Head (186.5 m) 81 m. The same requests with a `mosaicRule`
-  of `{"where": "Name NOT LIKE 'ETOPO%' AND VerticalDatum <> 'MHW'"}` read 125.4 and 181.6 m
-  there (the service ignores a client's sort, but honours `where`); not yet used, because past
-  the regional DEMs (the open ocean) only ETOPO answers, so the fetch would need to fill from it.
+  NCEI's DEMs on NAVD 88, the only ones fetched; ETOPO's cells are moved by the scenario's
+  `etopo_to_navd88_m`, one figure for the whole grid (0.80 to 0.86 m across the bay region's).
+  Verify for new areas.
+- **Terrain sources.** Where no NCEI DEM on NAVD 88 has data, ETOPO 2022's 450 m cells still
+  answer (15 % of the bay region's 90 m grid: deep ocean, and the Delta's north-east corner).
+  A scenario's coarsest grid is its own limit: the bay region's 90 m cells put Point Reyes Head
+  25 m low and the Farallones' summit 41 m low (see "Terrain sources" above); a finer nest there
+  would read them.
 - The station layer is predictions, not observations (harmonic forecasts). The only current
   meters nearby are inside the Bay, not at the Gate, so Gate accuracy is inferred.
 

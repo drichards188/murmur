@@ -86,9 +86,11 @@ class B; the rest none).
 **San Diego.** Its tidewater scenario (`san-diego.tidewater.toml`, fetched 2026-10-23):
 west -117.32, south 32.60, east -117.10, north 32.77 at 15 m, 13-16 June 2026; terrain from
 NOAA NCEI's DEM mosaic (topography and bathymetry, NAVD88: -116 to 122 m; flagged 2026-11-12:
-the mosaic serves this whole box from ETOPO 2022's 15 arc-second cells on mean sea level, ahead
-of NCEI's 1/3 arc-second San Diego DEM, and the grid baked here was also squeezed north-south by
-up to 1.5 km, murmur-cbjn; tidewater/README.md "Terrain placement" and "Limits"); the water level
+the grid baked here came from ETOPO 2022's 15 arc-second cells on mean sea level, which the
+mosaic's default order served for this whole box ahead of NCEI's 1/3 arc-second San Diego DEM,
+squeezed north-south by up to 1.5 km, murmur-cbjn; tidewater's cache now holds the San Diego
+DEM's, placed right, not yet baked; tidewater/README.md "Terrain placement" and "Terrain
+sources"); the water level
 observed at CO-OPS 9410170 (San Diego, Quarantine Station), -0.57 to 2.30 m NAVD88; currents
 from CO-OPS harmonic predictions at the bay's 16 current stations with data (Point Loma Light
 to National City; two Pacific stations publish none), blended by inverse distance (no
