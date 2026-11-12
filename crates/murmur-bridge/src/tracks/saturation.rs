@@ -85,4 +85,23 @@ impl Tracks {
             inner.tracks.insert(t.id.clone(), t);
         }
     }
+
+    /// A second of the truth handler's work on the store as Saturation's picture makes it (the
+    /// timing aids' load beside the decision loop): `per_track` detections of each track numbered
+    /// `first..first + 507` folded in under the store's lock at `t` (wall s), each by one of the
+    /// observers that already see it, then the feed published.
+    pub(crate) fn fold_like(&self, first: u64, per_track: u64, t: f64) {
+        {
+            let mut inner = super::lock(&self.inner);
+            for no in first..first + 507 {
+                let Some(tr) = inner.tracks.get_mut(&format!("T-{no:04}")) else { continue };
+                let (domain, label) = if no < first + 7 { (Domain::Surface, "large_surface") } else { (Domain::Air, "small_air") };
+                for k in 0..per_track {
+                    let d = det(&format!("c{no}"), 1 + k % 286, SensorType::EoIr, domain, label, Some(Level::Detect), t);
+                    tr.update(&d, t);
+                }
+            }
+        }
+        self.publish(t);
+    }
 }

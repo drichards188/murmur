@@ -66,6 +66,15 @@ pub fn time<R>(name: &'static str, f: impl FnOnce() -> R) -> R {
     r
 }
 
+/// Tests: every loop's open minute emptied (a timing aid's own window).
+#[cfg(test)]
+pub fn reset() {
+    for l in loops().values_mut() {
+        l.open = Window::default();
+        l.last_start = None;
+    }
+}
+
 /// `/api/stats`'s `loops`: per loop the last closed minute and the open one.
 pub fn json() -> Value {
     let all = loops();
