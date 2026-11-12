@@ -1,7 +1,8 @@
 """Saturation in the headless simulator (docs/HEADLESS.md, "Saturation"; bd murmur-lleq).
 
-- the situation runs in its own world (sim/worlds/golden-gate-saturation.toml) as a world v3
-  situation: its fleet, contacts, link events, areas and opening orders as live, the sensing
+- the packed layout (sim/situations/swarm-saturation-packed.toml, Saturation as it was until bd
+  murmur-mum5, kept for performance work) runs in its own world
+  (sim/worlds/golden-gate-saturation.toml) as a world v3 situation: its fleet, contacts, link events, areas and opening orders as live, the sensing
   model its contacts name (not the Golden Gate world's legacy pin), the fleet's swarms declared in
   the bridge's manifest;
 - the runner sends an order to `{swarm = ...}` to every member as the fleet plans them, and asks a
@@ -21,6 +22,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from eval.headless import REPO
 from eval.headless.episode import Runner
 from eval.headless.situations import Calibration, EpisodeSpec, from_situation, process_spec
@@ -30,7 +33,7 @@ from eval.situation_run import STALE_RETRIES, STALE_RETRY_S
 
 
 def test_saturation_runs_in_its_own_world_as_live():
-    e = from_situation("swarm-saturation")
+    e = from_situation("swarm-saturation-packed")
     assert (e.world, e.map, e.space_snapshot) == ("v3", "golden-gate-saturation", "golden-gate")
     assert e.fleet == REPO / "sim" / "fleets" / "swarm-saturation.toml"
     assert e.contacts == REPO / "sim" / "scenarios" / "swarm-saturation.toml"
@@ -52,6 +55,16 @@ def test_saturation_runs_in_its_own_world_as_live():
     assert env["MURMUR_LAND_WATER_GRID"].endswith("golden-gate.water.grid.gz")
     assert spec["water"]["currents"].endswith("golden-gate.currents.gz")
     assert spec["contacts"]["scenario"] == str(e.contacts)
+
+
+def test_saturation_over_the_region_is_not_headless_yet():
+    """Saturation over the region names its own world, which has no baked grids yet: an episode
+    stops at the domain rule's grid, saying so (sim/worlds/bay-region-saturation.toml says what it
+    would need)."""
+    e = from_situation("swarm-saturation")
+    assert (e.world, e.map) == ("v3", "bay-region-saturation")
+    with tempfile.TemporaryDirectory() as td, pytest.raises(ValueError, match="no baked land/water grid"):
+        process_spec(e, 1, Path(td), Calibration.load())
 
 
 def test_a_fleet_without_swarms_has_no_swarms_in_its_spec():

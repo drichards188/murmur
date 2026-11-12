@@ -1,54 +1,70 @@
-# Saturation: one operator, 3,602 drones in 37 swarms at the Golden Gate (sim/situations/README.md).
+# Saturation: one operator, 3,602 drones in 37 swarms over the region from Bodega Bay to Monterey
+# Bay (sim/situations/README.md; bd murmur-mum5).
 #   make situation NAME=swarm-saturation                          (live, no AI: you have the watch)
 #   make situation NAME=swarm-saturation REVEAL=1                 (the director's view)
+#   make situation NAME=swarm-saturation-packed                   (the same load packed at the Gate,
+#                                                                  kept for performance work)
 #
-# The force (sim/fleets/swarm-saturation.toml): 17 picket rings of X10-class quadcopters over the
-# Gate, the shores and the bay; 10 search swarms of Puma-class fixed wings on lanes over the inner
-# Gulf of the Farallones; a relay chain of Puma-class fixed wings along the Presidio shore and out
-# to sea; five surface swarms (Saildrones at sea, Corsair-class USVs in the strait and the bay); a
-# group of REMUS-class AUVs under the bridge; and two armed MQ-9Bs in reserve. Every opening order
-# goes to a swarm as one intent with all its members (`vehicles = { swarm = ... }`), using today's
-# kinds: an orbit makes a ring picket, a patrol a lane or a relay chain. The reserve gets none: a
-# script may not order an armed platform.
+# The force (sim/fleets/swarm-saturation-bay-region.toml), the same 37 swarms as the packed layout
+# laid out as a planner covering the region would: 17 picket rings of X10-class quadcopters round
+# the harbors and landmarks a drone attack would go for (Bodega Harbor; seven in San Francisco Bay;
+# three at Half Moon Bay; Santa Cruz; Moss Landing; Monterey); 10 search swarms of Puma-class fixed
+# wings on lanes over the sea from Bodega Head to Point Pinos; a relay chain of Pumas from Point
+# Reyes to the Farallones; Saildrones mid-gulf and on Cordell Bank; Corsair-class USVs on the San
+# Francisco Bar, in the central bay and across Monterey Bay; REMUS-class AUVs over the Monterey
+# Canyon head; and two armed MQ-9Bs in reserve over the gulf. Each group's radio reaches one of
+# thirteen ground stations (its own links file, `links`: each radio link through whichever station
+# hears it best; scripts/layout_reach.py checks every group's way against them). Every opening
+# order goes to a swarm as one intent with all its members (`vehicles = { swarm = ... }`), using
+# today's kinds: an orbit makes a ring picket, a patrol a lane or the relay chain. The reserve gets
+# none: a script may not order an armed platform.
 #
-# The timeline, on the situation's clock (the link emulator's start): the stack and the opening
-# orders take the first minute or two; a quiet watch while the swarms reach their stations; RF
-# jamming over the Gate's north approach from 4:00 to 7:00 (sim/link-events/swarm-saturation.toml)
-# takes the links of the three picket rings there (300 X10s), whose lost-link failsafe sends them
-# home; 500 hostile drones in five swarms (sim/scenarios/swarm-saturation.toml, written by
-# scripts/threat_swarms.py; each armed as its kind is, sim/contacts.toml): a recon swarm of
-# quadcopters probing the Gate's rings from about 3:30, a wave of 180 crossing the bridge at about
-# 6:00, a decoy swarm circling over the jammed north approach at the same time, and two swarms of
-# one-way attack drones coming down on our surface groups and holding there (no order sends them
-# in); and from about 10:00 an armed drone that flew in with the recon swarm, hovering west of the
-# bridge, fires a light missile at a USV of SURFACE-3 by its own fire control, its second a minute
-# later, then turns for home (docs/AUTONOMOUS-NODES.md; the contacts file orders it, bd
-# murmur-y85j.6). Each strike is drawn: the USV can be stopped or sunk.
-# The engine declares it hostile by rule when our sensors attribute the act to its track; the
-# person confirms in the Review list and decides whether to nominate an engagement with the
-# reserve, which the keep-out allows only once the other swarms are far enough off (about 11:30).
-# Nothing scripted nominates: that decision is the person's (live), and on autoplay the chain stops
-# at op-auto's confirmation.
+# The timeline, on the situation's clock (the link emulator's start), worked out from the contacts'
+# own motion (crates/murmur-contacts run on this file at 4x in one-second steps, each kind
+# reaching its speed and slowing onto its hold at its own rate; the contacts' clock starts a few
+# seconds after the situation's): the stack and the opening orders take the first minute or two;
+# RF jamming over the coast approach at Half Moon Bay from 4:00 to 7:00
+# (sim/link-events/swarm-saturation-bay-region.toml) takes the links of the three picket rings
+# there (300 X10s), whose lost-link failsafe sends them home; 500 hostile drones in five swarms
+# (sim/scenarios/swarm-saturation-bay-region.toml, written by scripts/threat_swarms.py; each armed
+# as its kind is, sim/contacts.toml): a recon swarm of quadcopters probing the Golden Gate's rings
+# from about 3:30, a wave of 180 crossing the bridge at about 6:00, a decoy swarm circling over the
+# jammed approach at Half Moon Bay, 35 km south, at the same time, and two swarms of one-way attack
+# drones coming down on our USVs in the central bay and our Saildrones mid-gulf and holding there
+# (no order sends them in); and from about 10:00 an armed drone that flew in with the recon swarm,
+# hovering over the bar, fires a light missile at a USV of SURFACE-3 by its own fire control, its
+# second a minute later, then turns for home (docs/AUTONOMOUS-NODES.md; the contacts file orders
+# it, bd murmur-y85j.6). Each strike is drawn: the USV can be stopped or sunk. The engine declares
+# it hostile by rule when our sensors attribute the act to its track; the person confirms in the
+# Review list and decides whether to nominate an engagement with the reserve. Nothing scripted
+# nominates: that decision is the person's (live), and on autoplay the chain stops at op-auto's
+# confirmation.
 #
-# Ports: its own block (`[ports]`), not the other situations' (vehicles UDP 16000+, bridge UDP
-# 29000+, stand-ins' sources UDP 5100+, bridge 9365, link emulator 9366, console 5773, tidewater
-# 9370, SITL from instance 200, though it runs none): 3,602 vehicles fill neither the common
-# block's 1,000-port ranges nor the host's ephemeral range.
+# Ports: its own block (`[ports]`), the packed layout's, not the other situations' (vehicles UDP
+# 16000+, bridge UDP 29000+, stand-ins' sources UDP 5100+, bridge 9365, link emulator 9366, console
+# 5773, tidewater 9370, SITL from instance 200, though it runs none): 3,602 vehicles fill neither
+# the common block's 1,000-port ranges nor the host's ephemeral range.
 title = "Saturation"
 brief = """
-You have the watch at the Golden Gate on a June morning, alone, over 3,602 of our drones in 37
-swarms. The swarms are the units you work with: the Swarms panel lists each one (its role, how many
-are ready, how many have lost their link or are low on battery, what it is doing), a click on a
-swarm selects all its members so the order form sends one order to the whole swarm, and the map
-outlines each swarm where it is.
+You have the watch over the San Francisco Bay region on a June morning, alone, over 3,602 of our
+drones in 37 swarms spread from Bodega Bay to Monterey Bay. The swarms are the units you work with:
+the Swarms panel lists each one (its role, how many are ready, how many have lost their link or
+are low on battery, what it is doing), a click on a swarm selects all its members so the order
+form sends one order to the whole swarm, and the map outlines each swarm where it is.
 
-On station or on the way there: seventeen picket rings of small quadcopters over the bridge, the
-shores and the bay; ten search swarms of small fixed wings on lanes over the inner Gulf of the
-Farallones, west of the Gate; a relay chain of small fixed wings along the Presidio shore and out
-over the sea; two swarms of Saildrones at sea off Ocean Beach and Point Bonita, three of USVs in
-the strait and the bay; a group of AUVs under the bridge; and in reserve two armed long-endurance
-drones loitering high off Lands End, weapons loaded. Traffic is normal: ferries, ships in the lane,
-fishing boats, a yacht.
+On station or on the way there: seventeen picket rings of small quadcopters over the harbors and
+landmarks a drone attack would go for (Bodega Harbor; the Golden Gate, the city front, the Bay
+Bridge, the Port of Oakland, Coast Guard Island and Richardson Bay in the bay; Half Moon Bay;
+Santa Cruz; the Moss Landing power plant and harbor; Monterey); ten search swarms of small fixed
+wings on lanes over the sea from Bodega Head to Point Pinos, two of them either side of the
+Farallones; a relay chain of small fixed wings from Point Reyes to the Farallones; two swarms of
+Saildrones far out, on the western traffic lane mid-gulf and on Cordell Bank; three of USVs, on the
+San Francisco Bar, in the central bay and across Monterey Bay; a group of AUVs over the Monterey
+Canyon head off Moss Landing; and in reserve two armed long-endurance drones loitering high over
+the gulf west of the Golden Gate, weapons loaded. Thirteen ground stations along the coast and in the
+bay carry the quadcopters' and fixed wings' radios, each link through whichever station hears it
+best; the boats and the reserve are on satellite links. Traffic is normal: ferries, ships in the
+lanes, fishing boats, a yacht, a whale-watching boat out of Monterey.
 
 The opening orders come from the setup script (op-setup, not a person), one per swarm, and go out
 by policy. The reserve gets none: every order for an armed platform waits for a person.
@@ -56,64 +72,77 @@ by policy. The reserve gets none: every order for an armed platform waits for a 
 Intelligence warns of electronic attack and of hostile drone swarms. A swarm that loses its links
 falls back on its own lost-link procedure; the Inbox folds the alerts of a swarm's members into one
 card for the swarm. The rules of engagement authorize an effect against a contact declared hostile,
-inside the engagement zone west of the bridge, clear of every no-strike area and of anyone we
-protect. A track is declared hostile by an operator, or by the engine's rule when our sensors
-observe a hostile act against one of ours clearly attributed to it; an operator confirms or revokes
-such a declaration, and until it is confirmed no engagement can be nominated on it. Any engagement
-needs two operators with engagement authority, neither of them its proposer. Any of ours can be
-struck, and a strike can stop or sink a vessel.
+inside an engagement zone (the Golden Gate's approaches in the inner gulf, the strait west of the
+bridge, the open sea west of the Farallones, outer Monterey Bay), clear of every no-strike area and
+of anyone we protect. A track is declared hostile by an operator, or by the engine's rule when our
+sensors observe a hostile act against one of ours clearly attributed to it; an operator confirms or
+revokes such a declaration, and until it is confirmed no engagement can be nominated on it. Any
+engagement needs two operators with engagement authority, neither of them its proposer. Any of ours
+can be struck, and a strike can stop or sink a vessel.
 """
 director = """
-Truth: from 4:00 to 7:00 a jammer over the Gate's north approach (1.8 km round a point off Fort
-Baker) takes every radio link inside it: PICKET-1 (Lime Point), PICKET-7 (Sausalito) and PICKET-8
-(off Yellow Bluff), 300 X10s. Ten seconds after its link goes each one's lost-link failsafe sends
-it home (RTL) to its launch field, and the bridge sees nothing of them until the jam lifts. The
-threat is 500 hostile drones (truth; 20 to 25 m/s, 20 to 120 m up), in five swarms: RECON (60)
-comes in past Point Bonita at about 3:30, probes the Gate's rings (PICKET-9 in the strait, PICKET-1
-over Lime Point) from about 6:00 and holds over Belvedere and Tiburon from about 11:00; the WAVE
-(180) comes in from the sea, crosses the bridge at about 6:00 and runs on to hold over the Bay
-Bridge's west approach from about 11:30; the DECOY (80) circles over the jammed north approach from
-3:30 to 7:30, while our pickets there are blind and the wave crosses the bridge, then holds over
-Richardson Bay's north shore; ATTACK-EAST (90) comes low from the East Bay shore onto SURFACE-5's
-lane north of Alcatraz from about 5:30; ATTACK-WEST (90) comes low from the sea onto the Saildrones
-off Ocean Beach from about 6:00. The two attack swarms are one-way attack drones (an RPG-class
-warhead each, looking like quadcopters to our sensors); no order sends them in, so none of the
-swarms acts. The shooter, an armed VTOL drone with two light missiles (looking like an unknown
-UAS) that flew in with the recon swarm, slows from about 6:25 at its kind's 1.25 m/s² (bd
-murmur-2of4) and stops at 40 m over [-122.4950, 37.8120], 1.5 km west of the bridge inside the
-engagement zone, at about 6:44 (headless, 2026-11-10); its contacts file orders it to attack
-SURFACE-3's first USV (uid 3201, on its ring 2 km east) from where it hovers: it fires a missile at
-about 10:00 and its second at about 11:00 (each an act, each strike drawn: the USV can be stopped
-or sunk), then turns for home along its way in, west past Point Bonita. What a good watch catches: the three jammed pickets as
-three swarm alerts (lost link, then left task), not 300 cards; that they are home, not on station,
-once the jam lifts, and re-tasking each as one order; the decoy over the blind sector as the
-distraction it is while the wave crosses the bridge; the act, the engine's rule declaration (or a
-flag, if a fix was loose) in the Review list, and its confirmation; and whether to nominate the
-reserve (REAPER 1, some 3 km away) on one small air track. The form's keep-out explanation says
-what blocks: every air track not declared hostile by an operator counts anywhere it could reach at
-up to 100 m/s (rules 14), so until about 11:30, when every swarm is 7 km or more from the shooter,
-the swarms themselves block it, and any drone our sensors lose blocks it too (rules 16) until
-accepted in the form. The target-identity check (0.6) may need a closer look first (an identify
-order with one quadcopter of a picket). What should not happen: a swarm sent to orbit the shooter
-(a circling friendly counts anywhere on its disc and blocks the engagement), a nomination before
-the confirmation (refused), or an engagement on a drone that did nothing. Known limits of this
-world: one order to a hundred vehicles runs as a hundred missions, each at its own altitude step
-(the task layer's deconfliction: up to some 500 m for the quadcopters, 1.6 km for the Pumas, and
-the AUVs' depth steps reach past the channel's floor); a patrol sends every member along the same
-lane; the relay chain relays nothing (the link emulator links each vehicle to the ground station
-directly).
+Truth: from 4:00 to 7:00 a jammer over the coast approach at Half Moon Bay (5 km round a point over
+the airport) takes every radio link inside it: PICKET-9 (Montara and Moss Beach), PICKET-10 (Pillar
+Point) and PICKET-11 (the harbor and El Granada), 300 X10s. Ten seconds after its link goes each
+one's lost-link failsafe sends it home (RTL) to Half Moon Bay Airport, inside the jam, and the
+bridge sees nothing of them until it lifts. The threat is 500 hostile drones (truth; 20 to 25 m/s,
+20 to 120 m up), in five swarms, each slowing onto its hold at its kind's rate. RECON (60) appears
+over the inner gulf at about 0:35, reaches the ring over the Gate's mouth (PICKET-3) from about 3:25,
+crosses the Gate's mouth north of the bridge with the wave at about 6:00, runs through the
+Richardson Bay ring (PICKET-2) from about 6:50 and holds over Belvedere and Tiburon from about
+11:00. The WAVE (180) appears 7 km west of the bridge, crosses it at about 6:00, runs on through the
+strait and city front rings (PICKET-4, -5) and holds over the Bay Bridge's west approach from about
+12:15. The DECOY (80) appears off Half Moon Bay, reaches Pillar Point at about 2:30 and circles over
+the airport and the three jammed rings until about 8:00, while their links are down and the wave
+crosses the Golden Gate 35 km north, then holds over the mouth of Pillar Point Harbor from about
+9:15. ATTACK-EAST (90), launched off the Berkeley shore at about 1:00, comes low across the central
+bay onto SURFACE-4's ring and holds over its east side from about 5:50; ATTACK-WEST (90) comes low
+from the sea to the south-west onto the Saildrones mid-gulf (SURFACE-1) and holds over them from
+about 6:10. The two attack swarms are one-way attack drones (an RPG-class warhead each, looking like
+quadcopters to our sensors); no order sends them in, so none of the swarms acts. The shooter, an
+armed VTOL drone with two light missiles (looking like an unknown UAS) that flew in with the recon
+swarm, turns back south off Point Bonita at about 3:15, slows from about 6:20 at its kind's 1.25
+m/s² (bd murmur-2of4) and stops 40 m over the San Francisco Bar, inside the engagement zone of the
+gulf approaches, at about 6:35, 1.6 km outside SURFACE-3's ring; its contacts file orders it to
+attack SURFACE-3's first USV (uid 3201, 1.6 to 5.6 km away wherever it is on its ring) from where
+it hovers: it fires a missile at about 10:00 and its second at about 11:00 (each an act, each strike
+drawn: the USV can be stopped or sunk), then turns for home along its way in, north past Point
+Bonita. What a good watch catches: the three jammed pickets as three swarm alerts (lost link, then
+left task), not 300 cards; that they are home at the airport, not on station, once the jam lifts,
+and re-tasking each as one order; the decoy over the blind sector at Half Moon Bay as the
+distraction it is while the wave crosses the Golden Gate; the attack swarms holding over our USVs
+and Saildrones; the act, the engine's rule declaration (or a flag, if a fix was loose) in the
+Review list, and its confirmation; and whether to nominate the reserve (REAPER 1, some 5 km away
+over the gulf) on one small air track. Every other swarm is 7 km or more from where the shooter
+holds from about 6:25, so by the time it fires they no longer block a strike's keep-out (rules 14
+counts an air track not declared hostile by an operator anywhere it could reach at up to 100 m/s);
+what can still block: any drone our sensors lose (rules 16) until it is accepted in the form, the
+inbound container ship coming over the bar through SURFACE-3's ring, and our own USVs. The
+target-identity check (0.6) may need a closer look first (an identify order with one quadcopter of
+the ring over the Gate's mouth, or one fixed wing of the search lane off the Gate). From rules 24 the
+reserve's loadout (AGM-114R, GBU-12) is for surface and ground targets: a nomination on the air
+track is refused by the weapon check, whatever the keep-out. What should not happen: a swarm sent
+to orbit the shooter (a circling friendly counts anywhere on its disc and blocks the engagement), a
+nomination before the confirmation (refused), or an engagement on a drone that did nothing. Known
+limits of this world: one order to a hundred vehicles runs as a hundred missions, each at its own
+altitude step (the task layer's deconfliction: the quadcopters from 100 m to some 600 m, the Pumas
+from 300 m to some 1.8 km, and the AUVs' depth steps reach past the shelf's floor where their ring
+leaves the canyon); a patrol sends every member along the same lane; the relay chain relays nothing
+(the link emulator links each vehicle to its best station directly); the launch fields' positions
+and heights are known or estimated figures, and tidewater's terrain (line of sight to each station,
+land and water) is the live run's to confirm (bd murmur-cbjn).
 """
 
-world = "golden-gate-saturation"              # sim/worlds/golden-gate-saturation.toml: the Golden Gate,
-                                              # its own world so the headless simulator runs it as
-                                              # live does (the physical sensing model, its grids)
-fleet = "sim/fleets/swarm-saturation.toml"
-contacts = "sim/scenarios/swarm-saturation.toml"
-events = ["sim/link-events/swarm-saturation.toml"]
+world = "bay-region-saturation"               # sim/worlds/bay-region-saturation.toml: the region, so
+                                              # nothing headless runs it on the Golden Gate's grids
+                                              # (headless needs the region's grids baked first)
+fleet = "sim/fleets/swarm-saturation-bay-region.toml"
+contacts = "sim/scenarios/swarm-saturation-bay-region.toml"
+events = ["sim/link-events/swarm-saturation-bay-region.toml"]
+links = "sim/situations/links/swarm-saturation-bay-region.toml"   # its thirteen ground stations
 policy = "sim/situations/policies/watch.toml" # the shipped tiers, an AI's tasking waits for you
-areas = "sim/situations/areas/swarm-saturation"   # sim/areas with the operating area widened over
-                                              # the inner gulf (the search lanes, the Saildrones)
-tidewater = "golden-gate-2026-06"             # real tide, current and terrain (tidewater/)
+areas = "sim/situations/areas/swarm-saturation-bay-region"   # the region's (illustrative boxes)
+tidewater = "bay-region-2026-06"              # real tide, current and terrain over the region
 at = "2026-06-14T17:00:00Z"                   # 10:00 local: by day, as the brief says
 rate = 1
 duration_s = 900                              # 15 minutes of situation time
@@ -125,11 +154,12 @@ cosigner = "scripted"                         # live: a scripted operator adds t
 reveal = false
 seed = 1
 
-# The situation's own port block (README "Ports"): 3,602 vehicles need two UDP ranges that wide,
-# and one for the stand-ins' source ports, all clear of the other situations' block (33000+,
-# 34000+), the evaluation's (35000-36999), the default stack's (14560+, 15560+), a second
-# stack's (24560+, 25560+), a 3,600-node load test's (20000-23599, 25000-28599) and the host's
-# ephemeral range (39160 and up here). Its links run on 127.0.0.2 (`link_host`), off WSL's loopback0.
+# The situation's own port block (README "Ports"), the packed layout's: 3,602 vehicles need two UDP
+# ranges that wide, and one for the stand-ins' source ports, all clear of the other situations'
+# block (33000+, 34000+), the evaluation's (35000-36999), the default stack's (14560+, 15560+), a
+# second stack's (24560+, 25560+), a 3,600-node load test's (20000-23599, 25000-28599) and the
+# host's ephemeral range (39160 and up here). Its links run on 127.0.0.2 (`link_host`), off WSL's
+# loopback0.
 [ports]
 vehicle_base = 16000
 bridge_base = 29000
@@ -143,361 +173,369 @@ sitl_instance_base = 200
 link_host = "127.0.0.2"                        # its links on lo, off WSL's loopback0 (docs/load-test.md)
 
 [summary]
-headline = "Thousands of drones, one operator: work in swarms, catch what matters in the noise, and decide on any engagement yourself."
+headline = "Thousands of drones along a 200 km coast, one operator: work in swarms, catch what matters in the noise, and decide on any engagement yourself."
 bullets = [
-  "37 swarms, 3,602 drones: the Swarms panel and the map's outlines show each swarm; a click selects all its members.",
+  "37 swarms, 3,602 drones from Bodega Bay to Monterey Bay: the Swarms panel and the map's outlines show each swarm; a click selects all its members.",
   "Opening orders go to each swarm by policy; the armed reserve gets none, and every order for it waits for you.",
   "A swarm's member alerts fold into one Inbox card for the swarm.",
   "A track is declared hostile by an operator or by rule on an observed hostile act; you confirm or revoke it in Review.",
-  "An effect needs two operators with engagement authority; it is allowed only in the zone west of the bridge.",
+  "An effect needs two operators with engagement authority; it is allowed only inside an engagement zone.",
 ]
 
 # ---- opening orders, once the fleet is ready: one per swarm, to all its members as one intent
 # (`vehicles = { swarm = ... }`), issued by the setup script (op-setup) under the dry-run rule. The
 # reserve has none (armed: refused at load). Every platform has an endurance figure, every station
-# is inside the operating area, so each goes out by policy (the default tier).
+# is inside the operating area, so each goes out by policy (the default tier). Every ring and lane
+# is within its radio's reach of a station (scripts/layout_reach.py; eval/tests/test_swarm.py).
 
-# picket rings (X10, orbit: the task layer spreads a ring's members round it)
+# picket rings (X10, orbit)
 [[order]]
 id = "picket-1"
 task = "orbit"
 vehicles = { swarm = "PICKET-1" }
-center = [-122.4755, 37.8380]
-radius_m = 400
-note = "Opening order: picket ring, gate north approach (Lime Point)"
+center = [-123.0480, 38.3080]
+radius_m = 1800
+note = "Opening order: picket ring over Bodega Harbor"
 
 [[order]]
 id = "picket-2"
 task = "orbit"
 vehicles = { swarm = "PICKET-2" }
-center = [-122.4650, 37.8080]
-radius_m = 350
-note = "Opening order: picket ring, crissy Field west"
+center = [-122.4750, 37.8620]
+radius_m = 1500
+note = "Opening order: picket ring over Richardson Bay, Sausalito and Belvedere"
 
 [[order]]
 id = "picket-3"
 task = "orbit"
 vehicles = { swarm = "PICKET-3" }
-center = [-122.4450, 37.8090]
-radius_m = 350
-note = "Opening order: picket ring, crissy Field east"
+center = [-122.5000, 37.8150]
+radius_m = 1300
+note = "Opening order: picket ring over the Golden Gate's mouth, west of the bridge"
 
 [[order]]
 id = "picket-4"
 task = "orbit"
 vehicles = { swarm = "PICKET-4" }
-center = [-122.4280, 37.8090]
-radius_m = 350
-note = "Opening order: picket ring, fort Mason"
+center = [-122.4600, 37.8150]
+radius_m = 1300
+note = "Opening order: picket ring over the strait east of the bridge"
 
 [[order]]
 id = "picket-5"
 task = "orbit"
 vehicles = { swarm = "PICKET-5" }
-center = [-122.4400, 37.8290]
-radius_m = 450
-note = "Opening order: picket ring, west of Alcatraz"
+center = [-122.4300, 37.8090]
+radius_m = 1300
+note = "Opening order: picket ring over the city front"
 
 [[order]]
 id = "picket-6"
 task = "orbit"
 vehicles = { swarm = "PICKET-6" }
-center = [-122.4520, 37.8360]
-radius_m = 300
-note = "Opening order: picket ring, mid-strait, east"
+center = [-122.3800, 37.8090]
+radius_m = 1800
+note = "Opening order: picket ring over the Bay Bridge and Treasure Island"
 
 [[order]]
 id = "picket-7"
 task = "orbit"
 vehicles = { swarm = "PICKET-7" }
-center = [-122.4780, 37.8575]
-radius_m = 400
-note = "Opening order: picket ring, sausalito shore"
+center = [-122.3350, 37.8000]
+radius_m = 1800
+note = "Opening order: picket ring over the Port of Oakland"
 
 [[order]]
 id = "picket-8"
 task = "orbit"
 vehicles = { swarm = "PICKET-8" }
-center = [-122.4620, 37.8460]
-radius_m = 350
-note = "Opening order: picket ring, off Yellow Bluff"
+center = [-122.2550, 37.7795]
+radius_m = 1800
+note = "Opening order: picket ring over Coast Guard Island and the Oakland Estuary"
 
 [[order]]
 id = "picket-9"
 task = "orbit"
 vehicles = { swarm = "PICKET-9" }
-center = [-122.4620, 37.8220]
-radius_m = 350
-note = "Opening order: picket ring, strait east of the bridge"
+center = [-122.5150, 37.5250]
+radius_m = 1500
+note = "Opening order: picket ring over Montara and Moss Beach"
 
 [[order]]
 id = "picket-10"
 task = "orbit"
 vehicles = { swarm = "PICKET-10" }
-center = [-122.4385, 37.8405]
-radius_m = 300
-note = "Opening order: picket ring, north of Alcatraz, west"
+center = [-122.5080, 37.4960]
+radius_m = 1500
+note = "Opening order: picket ring over Pillar Point"
 
 [[order]]
 id = "picket-11"
 task = "orbit"
 vehicles = { swarm = "PICKET-11" }
-center = [-122.4370, 37.8480]
-radius_m = 300
-note = "Opening order: picket ring, south of Angel Island"
+center = [-122.4750, 37.5000]
+radius_m = 1400
+note = "Opening order: picket ring over Pillar Point Harbor and El Granada"
 
 [[order]]
 id = "picket-12"
 task = "orbit"
 vehicles = { swarm = "PICKET-12" }
-center = [-122.4150, 37.8100]
-radius_m = 400
-note = "Opening order: picket ring, aquatic Park"
+center = [-122.0050, 36.9600]
+radius_m = 1800
+note = "Opening order: picket ring over Santa Cruz harbor and the Boardwalk"
 
 [[order]]
 id = "picket-13"
 task = "orbit"
 vehicles = { swarm = "PICKET-13" }
-center = [-122.4120, 37.8180]
-radius_m = 300
-note = "Opening order: picket ring, north Beach waterfront"
+center = [-122.0480, 36.9530]
+radius_m = 1800
+note = "Opening order: picket ring over West Cliff and Natural Bridges"
 
 [[order]]
 id = "picket-14"
 task = "orbit"
 vehicles = { swarm = "PICKET-14" }
-center = [-122.3950, 37.8230]
-radius_m = 350
-note = "Opening order: picket ring, toward Treasure Island"
+center = [-121.7800, 36.8080]
+radius_m = 1500
+note = "Opening order: picket ring over the Moss Landing power plant"
 
 [[order]]
 id = "picket-15"
 task = "orbit"
 vehicles = { swarm = "PICKET-15" }
-center = [-122.3880, 37.8380]
-radius_m = 350
-note = "Opening order: picket ring, east of Alcatraz, north"
+center = [-121.8000, 36.7950]
+radius_m = 1500
+note = "Opening order: picket ring over Moss Landing harbor and MBARI"
 
 [[order]]
 id = "picket-16"
 task = "orbit"
 vehicles = { swarm = "PICKET-16" }
-center = [-122.4280, 37.8520]
-radius_m = 300
-note = "Opening order: picket ring, angel Island's south shore"
+center = [-121.9030, 36.6170]
+radius_m = 1500
+note = "Opening order: picket ring over Monterey harbor and Cannery Row"
 
 [[order]]
 id = "picket-17"
 task = "orbit"
 vehicles = { swarm = "PICKET-17" }
-center = [-122.4000, 37.8320]
-radius_m = 300
-note = "Opening order: picket ring, central bay, east"
+center = [-121.9450, 36.6250]
+radius_m = 1500
+note = "Opening order: picket ring over Pacific Grove and Point Pinos"
 
-# search lanes (Puma, patrol: every member flies the lane, north and back)
+# search lanes (Puma, patrol)
 [[order]]
 id = "search-1"
 task = "patrol"
 vehicles = { swarm = "SEARCH-1" }
-route = [[-122.555, 37.790], [-122.555, 37.850]]
-note = "Opening order: search lane 1 over the inner gulf"
+route = [[-123.160, 38.340], [-123.160, 38.200]]
+note = "Opening order: search lane off Bodega Head"
 
 [[order]]
 id = "search-2"
 task = "patrol"
 vehicles = { swarm = "SEARCH-2" }
-route = [[-122.565, 37.790], [-122.565, 37.850]]
-note = "Opening order: search lane 2 over the inner gulf"
+route = [[-123.130, 38.100], [-123.130, 37.930]]
+note = "Opening order: search lane off Point Reyes, on the northern traffic lane"
 
 [[order]]
 id = "search-3"
 task = "patrol"
 vehicles = { swarm = "SEARCH-3" }
-route = [[-122.575, 37.790], [-122.575, 37.850]]
-note = "Opening order: search lane 3 over the inner gulf"
+route = [[-123.130, 37.780], [-123.130, 37.620]]
+note = "Opening order: search lane west of the Farallones"
 
 [[order]]
 id = "search-4"
 task = "patrol"
 vehicles = { swarm = "SEARCH-4" }
-route = [[-122.585, 37.790], [-122.585, 37.850]]
-note = "Opening order: search lane 4 over the inner gulf"
+route = [[-122.880, 37.780], [-122.880, 37.620]]
+note = "Opening order: search lane east of the Farallones, across the western traffic lane"
 
 [[order]]
 id = "search-5"
 task = "patrol"
 vehicles = { swarm = "SEARCH-5" }
-route = [[-122.595, 37.790], [-122.595, 37.850]]
-note = "Opening order: search lane 5 over the inner gulf"
+route = [[-122.625, 37.860], [-122.625, 37.750]]
+note = "Opening order: search lane off the Golden Gate"
 
 [[order]]
 id = "search-6"
 task = "patrol"
 vehicles = { swarm = "SEARCH-6" }
-route = [[-122.605, 37.790], [-122.605, 37.850]]
-note = "Opening order: search lane 6 over the inner gulf"
+route = [[-122.600, 37.600], [-122.600, 37.450]]
+note = "Opening order: search lane on the southern approach, off Pacifica and Montara"
 
 [[order]]
 id = "search-7"
 task = "patrol"
 vehicles = { swarm = "SEARCH-7" }
-route = [[-122.615, 37.790], [-122.615, 37.850]]
-note = "Opening order: search lane 7 over the inner gulf"
+route = [[-122.480, 37.290], [-122.480, 37.140]]
+note = "Opening order: search lane off Pescadero and Pigeon Point"
 
 [[order]]
 id = "search-8"
 task = "patrol"
 vehicles = { swarm = "SEARCH-8" }
-route = [[-122.625, 37.790], [-122.625, 37.850]]
-note = "Opening order: search lane 8 over the inner gulf"
+route = [[-122.120, 36.880], [-121.920, 36.880]]
+note = "Opening order: search lane over northern Monterey Bay"
 
 [[order]]
 id = "search-9"
 task = "patrol"
 vehicles = { swarm = "SEARCH-9" }
-route = [[-122.635, 37.790], [-122.635, 37.850]]
-note = "Opening order: search lane 9 over the inner gulf"
+route = [[-121.880, 36.800], [-121.880, 36.660]]
+note = "Opening order: search lane over southern Monterey Bay"
 
 [[order]]
 id = "search-10"
 task = "patrol"
 vehicles = { swarm = "SEARCH-10" }
-route = [[-122.645, 37.790], [-122.645, 37.850]]
-note = "Opening order: search lane 10 over the inner gulf"
+route = [[-122.020, 36.700], [-122.020, 36.560]]
+note = "Opening order: search lane off Point Pinos and Cypress Point"
 
-# the relay chain (Puma, patrol: the chain flown back and forth)
+# the relay chain (Puma, patrol)
 [[order]]
 id = "relay-1"
 task = "patrol"
 vehicles = { swarm = "RELAY-1" }
-route = [[-122.4560, 37.8040], [-122.5050, 37.7860]]
-note = "Opening order: relay chain along the Presidio shore, flown back and forth"
+route = [[-123.0200, 37.9850], [-123.0143, 37.8930]]
+note = "Opening order: relay chain from Point Reyes, flown back and forth"
 
 [[order]]
 id = "relay-2"
 task = "patrol"
 vehicles = { swarm = "RELAY-2" }
-route = [[-122.5150, 37.7950], [-122.5900, 37.8000]]
-note = "Opening order: relay chain off Ocean Beach, flown back and forth"
+route = [[-123.0143, 37.8930], [-123.0087, 37.8000]]
+note = "Opening order: relay chain, the middle, flown back and forth"
 
 [[order]]
 id = "relay-3"
 task = "patrol"
 vehicles = { swarm = "RELAY-3" }
-route = [[-122.5950, 37.8020], [-122.6550, 37.8100]]
-note = "Opening order: relay chain out toward the search lanes, flown back and forth"
+route = [[-123.0087, 37.8000], [-123.0030, 37.7090]]
+note = "Opening order: relay chain to the Farallones, flown back and forth"
 
 # surface and undersea
 [[order]]
 id = "surface-1"
 task = "orbit"
 vehicles = { swarm = "SURFACE-1" }
-center = [-122.5400, 37.7870]
-radius_m = 700
-note = "Opening order: Saildrone ring off Ocean Beach"
+center = [-122.7800, 37.7600]
+radius_m = 5000
+note = "Opening order: Saildrone ring on the western traffic lane, mid-gulf"
 
 [[order]]
 id = "surface-2"
 task = "orbit"
 vehicles = { swarm = "SURFACE-2" }
-center = [-122.5460, 37.8220]
-radius_m = 450
-note = "Opening order: Saildrone ring off Point Bonita"
+center = [-123.4300, 38.0300]
+radius_m = 5000
+note = "Opening order: Saildrone ring on Cordell Bank"
 
 [[order]]
 id = "surface-3"
 task = "orbit"
 vehicles = { swarm = "SURFACE-3" }
-center = [-122.4660, 37.8180]
-radius_m = 400
-note = "Opening order: USV ring in the strait east of the bridge"
+center = [-122.5850, 37.7750]
+radius_m = 2000
+note = "Opening order: USV ring on the San Francisco Bar"
 
 [[order]]
 id = "surface-4"
 task = "orbit"
 vehicles = { swarm = "SURFACE-4" }
-center = [-122.4430, 37.8190]
-radius_m = 600
+center = [-122.4000, 37.8350]
+radius_m = 1500
 note = "Opening order: USV ring in the central bay"
 
 [[order]]
 id = "surface-5"
 task = "patrol"
 vehicles = { swarm = "SURFACE-5" }
-route = [[-122.4450, 37.8420], [-122.4000, 37.8350]]
-note = "Opening order: USV lane north of Alcatraz"
+route = [[-121.9900, 36.9350], [-121.8300, 36.8150]]
+note = "Opening order: USV lane across Monterey Bay"
 
 [[order]]
 id = "undersea-1"
 task = "orbit"
 vehicles = { swarm = "UNDERSEA-1" }
-center = [-122.4783, 37.8199]
-radius_m = 300
-note = "Opening order: AUV ring under the bridge"
+center = [-121.8250, 36.7980]
+radius_m = 2000
+note = "Opening order: AUV ring over the Monterey Canyon head"
 
 # ---- the timeline: the jammer is the events file's, the swarms and the acts are the contacts'
 # (scripts/threat_swarms.py); these mark them for a revealed run
 [[step]]
+id = "decoy-over-the-blind-sector"
+at_s = 150
+kind = "note"
+text = "A decoy swarm comes in off Half Moon Bay and circles over the airport and Pillar Point until about 8:00 (truth)"
+director = true
+
+[[step]]
 id = "recon-probes"
 at_s = 200
 kind = "note"
-text = "A recon swarm of hostile quadcopters comes in past Point Bonita toward the Gate's rings (truth)"
+text = "A recon swarm of hostile quadcopters comes in over the inner gulf to the Golden Gate's rings (truth)"
 director = true
 
 [[step]]
 id = "jammer-on"
 at_s = 240
 kind = "note"
-text = "RF jamming over the Gate's north approach: PICKET-1, -7 and -8 lose their links (truth)"
+text = "RF jamming over the coast approach at Half Moon Bay: PICKET-9, -10 and -11 lose their links (truth)"
 director = true
 
 [[step]]
-id = "decoy-over-the-blind-sector"
-at_s = 215
+id = "attack-swarms-hold"
+at_s = 350
 kind = "note"
-text = "A decoy swarm circles over the jammed north approach until about 7:30 (truth)"
+text = "The attack swarms hold over SURFACE-4 in the central bay and over the Saildrones mid-gulf (truth)"
 director = true
 
 [[step]]
 id = "wave-at-the-bridge"
 at_s = 360
 kind = "note"
-text = "The wave of 180 crosses the bridge; the attack swarms close on SURFACE-5 and the Saildrones (truth)"
+text = "The wave of 180 crosses the Golden Gate Bridge, the recon swarm just north of it (truth)"
+director = true
+
+[[step]]
+id = "swarms-clear"
+at_s = 390
+kind = "note"
+text = "The armed drone stops over the bar; every hostile swarm is 7 km or more from it from here, so none blocks a strike there (truth)"
 director = true
 
 [[step]]
 id = "jammer-off"
 at_s = 420
 kind = "note"
-text = "The jammer stops: the north approach's links come back"
+text = "The jammer stops: the links at Half Moon Bay come back"
 director = true
 
 [[step]]
 id = "shooter-fires"
 at_s = 600
 kind = "note"
-text = "The armed drone hovering west of the bridge fires a missile at SURFACE-3's first USV (truth; its second at 11:00, then it turns for home)"
-director = true
-
-[[step]]
-id = "swarms-clear"
-at_s = 690
-kind = "note"
-text = "Every swarm is now 7 km or more from where the shooter held: the keep-out can pass (truth; the shooter itself is turning for home)"
+text = "The armed drone hovering over the bar fires a missile at SURFACE-3's first USV (truth; its second at 11:00, then it turns for home)"
 director = true
 
 # ---- what to watch for, shown in the console's Situation panel as each comes due
 [[watch]]
 at_s = 0
-headline = "Stack up: 37 swarms coming on station"
-bullets = ["Swarms panel: role, ready, lost link, low battery, task", "Opening orders: one per swarm, out by policy", "The armed reserve gets no order: it loiters off Lands End"]
-text = "The stack comes up: 3,602 drones in 37 swarms. The setup script sends one opening order per swarm, to all its members as one intent, out by policy. The armed reserve gets none: it loiters high off Lands End, and any order for it waits for you."
+headline = "Stack up: 37 swarms over the region"
+bullets = ["Swarms panel: role, ready, lost link, low battery, task", "Opening orders: one per swarm, out by policy", "The armed reserve gets no order: it loiters over the gulf"]
+text = "The stack comes up: 3,602 drones in 37 swarms from Bodega Bay to Monterey Bay. The setup script sends one opening order per swarm, to all its members as one intent, out by policy. The armed reserve gets none: it loiters high over the gulf west of the Golden Gate, and any order for it waits for you."
 
 [[watch]]
 at_s = 90
 headline = "Work in swarms"
 bullets = ["Click a swarm in the Swarms panel to select all its members", "The order form then sends one order to the whole swarm", "The map outlines each swarm where its members are"]
-text = "Work in swarms: a click on a swarm in the Swarms panel selects all its members, and the order form sends one order to the whole swarm. The map outlines each swarm where its members are; the fleet list groups vehicles by swarm."
+text = "Work in swarms: a click on a swarm in the Swarms panel selects all its members, and the order form sends one order to the whole swarm. The map outlines each swarm where its members are; the fleet list groups vehicles by swarm. Zoom out for the whole coast, in for a ring's members."
 
 [[watch]]
 at_s = 240
@@ -506,22 +544,36 @@ bullets = ["Member alerts fold into one swarm card in the Inbox", "Open the card
 text = "When many members of a swarm raise the same alert, the Inbox shows one card for the swarm, with how many of its members and why; open it to see them. A drone that loses its link runs its own lost-link procedure after a few seconds."
 
 [[watch]]
+at_s = 250
+headline = "Jammer at Half Moon Bay (truth)"
+bullets = ["PICKET-9, -10 and -11 lose their links for three minutes", "Their lost-link failsafe sends them home to the airport"]
+text = "A jammer over the coast approach at Half Moon Bay takes the links of PICKET-9, -10 and -11 (300 X10s) from 4:00 to 7:00; each one's failsafe sends it home to Half Moon Bay Airport after ten seconds."
+director = true
+
+[[watch]]
+at_s = 300
+headline = "Hundreds of unknowns among thousands of ours"
+bullets = ["Tracks: a contact with no transponder is unknown until classified", "Which are new, where are they going, and which group is the distraction?"]
+text = "Hundreds of new contacts among thousands of our own, in more than one place along the coast: the Tracks list shows each as our sensors see it; one with no transponder is unknown until a sensor classifies it. Which are new, where is each group going, and which one draws your eye from the others?"
+
+[[watch]]
 at_s = 450
 headline = "After an outage: where are they now?"
 bullets = ["Links back does not mean on station", "Check the swarm's task and where its outline is", "One order re-tasks the whole swarm"]
 text = "After an outage, a link that is back does not mean a swarm is back on station: look at the swarm's task in the Swarms panel and at its outline on the map. One order re-tasks the whole swarm."
 
 [[watch]]
-at_s = 300
-headline = "Hundreds of unknowns among thousands of ours"
-bullets = ["Tracks: a contact with no transponder is unknown until classified", "Which are new, where are they going, and which group is the distraction?"]
-text = "Hundreds of new contacts among thousands of our own: the Tracks list shows each as our sensors see it; one with no transponder is unknown until a sensor classifies it. Which are new, where is each group going, and which one draws your eye from the others?"
-
-[[watch]]
 at_s = 600
 headline = "Hostile act: the engine may declare by rule"
 bullets = ["Needs an observed act against one of ours, clearly attributed to one track", "The Review list shows it; you confirm or revoke", "Only then can an engagement be nominated"]
 text = "When our sensors observe a hostile act against one of ours, clearly attributed to one track, the engine declares that track hostile by rule; the Review list shows the act, the sensors and the attribution, and you confirm or revoke it. An unsure case is flagged for review, never declared. Nothing can be nominated on a declaration nobody confirmed."
+
+[[watch]]
+at_s = 610
+headline = "The shooter has fired (truth)"
+bullets = ["One armed drone hovering over the bar, a missile at SURFACE-3's first USV", "The swarms are 7 km and more off; a lost track or the weapon check can still block"]
+text = "The armed drone that came in with the recon swarm, hovering over the San Francisco Bar, has fired a missile at SURFACE-3's first USV (truth). From here: the act observed, the rule declaration, your confirmation, and your decision whether to nominate the reserve. Every swarm has been 7 km or more off since about 6:25; any drone our sensors lose still counts anywhere until accepted, and the reserve's weapons are for surface and ground targets."
+director = true
 
 [[watch]]
 at_s = 660
@@ -534,20 +586,6 @@ at_s = 780
 headline = "Two minutes left"
 bullets = ["The audit log holds every order, alert, act, declaration and signature", "The runner prints the replay command at the end"]
 text = "Two minutes left. The audit log holds every order, act, declaration, nomination and signature; the runner prints the replay command at the end."
-
-[[watch]]
-at_s = 250
-headline = "Jammer over the north approach (truth)"
-bullets = ["PICKET-1, -7 and -8 lose their links for three minutes", "Their lost-link failsafe sends them home"]
-text = "A jammer over the Gate's north approach takes the links of PICKET-1, -7 and -8 (300 X10s) from 4:00 to 7:00; each one's failsafe sends it home after ten seconds."
-director = true
-
-[[watch]]
-at_s = 610
-headline = "The shooter has fired (truth)"
-bullets = ["One armed drone hovering west of the bridge, a missile at SURFACE-3's first USV", "The swarms block a strike on it until about 11:30"]
-text = "The armed drone that came in with the recon swarm, hovering west of the bridge, has fired a missile at SURFACE-3's first USV (truth). From here: the act observed, the rule declaration, your confirmation, and your decision whether to nominate the reserve, which the keep-out allows once the swarms are 7 km off (about 11:30)."
-director = true
 
 # ---- the scripted operator on autoplay (eval/proxy.py): it confirms the engine's rule
 # declarations, read first; nothing in this situation nominates, so on autoplay the chain stops

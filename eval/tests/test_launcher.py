@@ -42,9 +42,9 @@ def test_the_open_world_comes_first_then_the_situations(menu):
     files = {p.stem for p in S.SITUATIONS.glob("*.toml")}
     assert {e["id"] for e in entries[1:]} == files
     runnable = [e["id"] for e in entries[1:] if e["runnable"]]
-    assert runnable == ["fog-watch", "hammerhead-line", "harbor-watch", "hostile-act-air-to-air", "hostile-act-engagement", "hostile-act-fpv", "hostile-act-guided-bomb", "hostile-act-loitering-munition", "hostile-act-naval-drone", "morning-harbor-watch", "road-mines", "shore-battery", "swarm-saturation", "tutorial"]
+    assert runnable == ["fog-watch", "hammerhead-line", "harbor-watch", "hostile-act-air-to-air", "hostile-act-engagement", "hostile-act-fpv", "hostile-act-guided-bomb", "hostile-act-loitering-munition", "hostile-act-naval-drone", "morning-harbor-watch", "road-mines", "shore-battery", "swarm-saturation-packed", "swarm-saturation", "tutorial"]
     assert [e["id"] for e in entries if e.get("tutorial")] == ["tutorial"], "one tutorial, which the menu offers apart"
-    assert sorted(loaded) == runnable
+    assert sorted(loaded) == sorted(runnable)
     # every runnable one before the rest, each of the rest saying why not
     kinds = [e["runnable"] for e in entries]
     assert kinds == sorted(kinds, reverse=True)

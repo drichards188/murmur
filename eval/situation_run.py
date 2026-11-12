@@ -811,6 +811,11 @@ class Runner:
         )
         if sit.areas:
             env["MURMUR_AREAS"] = str(sit.areas)
+        if sit.links:
+            # its own link profiles and ground stations, for every process that reads them
+            # (scripts/up.sh passes the variable on: the emulator's --config, the bridge, the
+            # stand-ins, sim/swarm.py)
+            env["MURMUR_LINKS"] = str(sit.links)
         if sit.contacts:
             env["MURMUR_CONTACTS"] = str(sit.contacts)
         if sit.tidewater:

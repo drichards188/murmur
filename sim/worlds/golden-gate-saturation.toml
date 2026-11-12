@@ -1,5 +1,6 @@
-# Saturation's world (sim/situations/swarm-saturation.toml; docs/HEADLESS.md, "Saturation"; the
-# format in sim/worlds/README.md): the Golden Gate's map, grids, currents, links, ground station,
+# Saturation packed's world (sim/situations/swarm-saturation-packed.toml, Saturation as it ran
+# until bd murmur-mum5, kept for performance work; docs/HEADLESS.md, "Saturation"; the format in
+# sim/worlds/README.md): the Golden Gate's map, grids, currents, links, ground station,
 # points, mission, conditions and pinned element sets, with Saturation's 3,602 stand-ins in 37
 # swarms (sim/fleets/swarm-saturation.toml), its 507 contacts (500 hostile drones in five swarms,
 # the armed shooter and six of the harbor's ships and boats: sim/scenarios/swarm-saturation.toml)

@@ -1,0 +1,416 @@
+# Saturation's link profiles (sim/situations/swarm-saturation.toml, `links`): sim/links.toml with
+# its one ground station replaced by thirteen radio sites along the coast from Bodega Bay to
+# Monterey Bay and in San Francisco Bay, networked to the C2 (each radio link through whichever
+# site passes the most packets now; crates/murmur-linkemu station.rs). Everything else is
+# sim/links.toml's, byte for byte: eval/tests/test_swarm.py fails when the two part, so a change
+# to a profile there is copied here. The situation runner hands this file to every process that
+# reads the profiles as MURMUR_LINKS (the emulator, the bridge's coverage and estimates, the
+# stand-ins, sim/swarm.py's lost-link timers).
+#
+# Link profiles for the user-space link emulator (crates/murmur-linkemu, Phase D).
+#
+# A vehicle's profile is chosen in this order:
+#   1. [platform_profile] below, an explicit override for one platform;
+#   2. for `link = "satcom"` platforms, the platform's `space_class` from sim/platforms.toml
+#      (the single source of truth for which constellation it uses), mapped to a profile by
+#      [space_class_profile] below;
+#   3. its platform's `link` class from sim/platforms.toml (los, mesh, satcom, acoustic,
+#      tether).
+# (`space_class_alt` in the catalog is for the bridge's space views; the emulator runs one
+# link per vehicle and uses the primary class.) Numbers are rough, plausible defaults, not measurements. Where a figure comes
+# from a public spec or physics it says so; everything marked GUESS is an invented starting
+# point to be tuned (the 30%-loss study varies loss, not these).
+#
+# Fields (all optional; `extends` inherits from another profile):
+#   loss          long-run average loss, 0..1, from a Gilbert-Elliott chain
+#   burst_len     mean consecutive packets lost per burst (<= 1/(1-loss) means independent)
+#   latency_ms    one-way base latency; jitter_ms is uniform +- around it (no reordering)
+#   bandwidth_bps per-direction cap, 0 = unlimited; queue_bytes is the drop-tail queue
+#   duplicate     chance a delivered packet arrives twice
+#   range_ok_km / range_max_km / range_exp   loss from the ground station position:
+#                 0 up to ok, rising as ((d-ok)/(max-ok))^exp to 1 at max. Also turns on the
+#                 terrain line-of-sight check.
+#   down_when     "submerged" or "surfaced": link is down for vehicles in that state
+#   gated_profile while down_when closes the link, carry the traffic on this profile instead
+#                 (the vehicle's second radio); it may not have down_when or space_class
+#   terrain       "block" (default for profiles with a range), "ramp" or "off": what an
+#                 obstructed path to the ground station does. Needs `--tidewater URL` (or
+#                 MURMUR_TIDEWATER_URL) on the emulator; without it terrain is not checked.
+#                 block: drop everything; ramp: loss rises from 0 at the ray to 1 at
+#                 terrain_ramp_m (default 30) of obstruction.
+#   gs_antenna_m / antenna_m   antenna heights above the ground station altitude and above the
+#                 vehicle's reported altitude (default 0)
+#   k_factor      effective Earth radius factor for the radio horizon (default 4/3)
+#   fresnel_mhz / fresnel_clear   if fresnel_mhz is set, also keep fresnel_clear (default 0.6)
+#                 of the first Fresnel zone clear of terrain
+#   propagation_mps  adds slant range to the ground station / this speed to the latency
+#   space_class   SATCOM profiles only: a murmur-space constellation class (starlink, iridium,
+#                 wgs, ku-geo; see sim/space/constellations.toml). The link then follows real
+#                 satellite visibility for the vehicle's position on the scenario clock: down
+#                 when no satellite is above the mask (cause no_sat), one-way latency from the
+#                 best satellite's slant range plus the class's network latency, handovers
+#                 when the best satellite changes. latency_ms stays as the fallback (no element
+#                 sets, class unusable, no latency model). Needs `murmur-space fetch` once;
+#                 without it the profile uses its static numbers and says so in the log and
+#                 in /stats.
+#   handover_outage_ms   how long the link drops at a handover (default 0: only counted)
+#   lost_link_s   the vehicle's lost-link timer: seconds without a GCS heartbeat before its
+#                 GCS failsafe acts. Not used by the emulator: sim/swarm.py writes it into each
+#                 vehicle's parameters (SITL defaults file and stand-ins alike) under its
+#                 firmware's ArduPilot 4.8 name, FS_LONG_TIMEOUT on Plane (QuadPlane too),
+#                 FS_GCS_TIMEOUT on Copter, Rover, Sub and Blimp (AntennaTracker has no GCS
+#                 failsafe). A vehicle's timer comes from the profile it starts on (a gated
+#                 profile's is not used). What the failsafe does is the firmware's
+#                 (sim/params/*.parm, crates/murmur-standins/src/params.rs): RTL for planes,
+#                 copters and rovers, surface for an AUV, disarm for a tethered ROV; the
+#                 airship's is off on both backends (ArduPilot Blimp 4.8's only disarms), so
+#                 its timer is written but never fires. While
+#                 an engagement is under way (decision rules 6) the bridge sets the
+#                 failsafe's action to the engagement's fallback and shortens the timer to
+#                 the approval's link-gap limit (5 s on a streaming link), then puts both back
+#                 (crates/murmur-decide/README.md, "Lost-link preload").
+#
+# Lost-link timers (murmur-nb1). Real systems set them from the link and the mission:
+# seconds where a lost link means out of range, minutes where outages are part of the link
+# (Hobbs, "Remotely Piloted Aircraft Systems", NASA 2021, NTRS 20210013529: a timer keeps
+# brief interruptions from triggering the lost-link procedure; near the ground station it
+# may need to act after a few seconds, elsewhere the aircraft may continue for an extended
+# period). ArduPilot ships 5 s (FS_LONG_TIMEOUT, FS_GCS_TIMEOUT; documented ranges 1-300 s
+# for Plane, 2-120 s for Copter, Rover and Blimp, not enforced). PX4 ships 10 s
+# (COM_DL_LOSS_T).
+#
+#   profile         lost_link_s  basis
+#   los             5            ArduPilot default; a LOS radio that goes quiet is out of range
+#   mesh            10           GUESS: a relay mesh reroutes in seconds; PX4's default
+#   tether          5            ArduSub default (FS_GCS_TIMEOUT); a cable doesn't fade
+#   satcom (GEO)    120          GUESS: rain fade, beam switches and the antenna masked in a
+#                                bank last tens of seconds; MALE/HALE fly on (Hobbs)
+#   satcom_ku_geo   120          extends satcom
+#   satcom_leo      30           GUESS: Starlink-class outages (handovers, obstructions) are
+#                                seconds long
+#   satcom_iridium  120          GUESS: slow, narrow link; the top of FS_GCS_TIMEOUT's range
+#   acoustic        120          Murmur's choice before this table: an AUV is out of contact
+#                                by design and surfaces after two minutes without its GCS
+#                                (which heartbeats every 5 s to it under water)
+
+seed = 1
+
+# Vehicles at or below this depth (from GLOBAL_POSITION_INT altitude, negative = depth) count
+# as submerged. 1 m matches the stand-ins' own definition.
+submerged_depth_m = 1.0
+
+# Where the operator's radios are: thirteen sites, each where a planner covering the region from
+# Bodega Bay to Monterey Bay would put one (a headland, a lighthouse, a Coast Guard site, the
+# Golden Gate fleets' launch field), spaced so each group's radio reaches a site: the X10s' mesh
+# (5 km clean, 12 at most) from within about 5 km, the Pumas' LOS radio (15 km clean, 25 at most)
+# from within about 15 km. Satellite-linked kinds (Saildrones, Corsairs, the MQ-9Bs) use none; the
+# AUVs' acoustic link counts its propagation from the nearest (Moss Landing, MBARI's shore station,
+# a few kilometres from them). The sites are plausible choices, not a real network: none of them
+# is known to host such a radio. Positions are the named feature's; alt_m = "dem" takes the ground
+# height there from tidewater's terrain (`bay-region-2026-06`) at startup, so a site and the line
+# of sight judged from it come from the same grid; Crissy Field keeps sim/links.toml's figure. A
+# station's `name` is what /stats, /api/links and the console show.
+[[ground_station]]
+name = "Bodega Head"                 # the headland west of Bodega Harbor
+lat = 38.3040
+lon = -123.0650
+alt_m = "dem"
+
+[[ground_station]]
+name = "Point Reyes"                 # the light station on the Point Reyes headland
+lat = 37.9957
+lon = -123.0231
+alt_m = "dem"
+
+[[ground_station]]
+name = "Southeast Farallon Island"   # Lighthouse Hill, beside the island's research station
+lat = 37.6990
+lon = -123.0020
+alt_m = "dem"
+
+[[ground_station]]
+name = "Hawk Hill"                   # the Marin Headlands' old battery site over the Gate, about 280 m
+lat = 37.8285
+lon = -122.4988
+alt_m = "dem"
+
+[[ground_station]]
+name = "Angel Island"                # Mount Livermore, the old Nike radar site over the central bay
+lat = 37.8608
+lon = -122.4325
+alt_m = "dem"
+
+[[ground_station]]
+name = "Crissy Field"                # sim/links.toml's station
+lat = 37.8068
+lon = -122.4460
+alt_m = 5.0
+
+[[ground_station]]
+name = "Yerba Buena Island"          # Coast Guard Sector San Francisco
+lat = 37.8097
+lon = -122.3633
+alt_m = "dem"
+
+[[ground_station]]
+name = "Coast Guard Island"          # Coast Guard Base Alameda, in the Oakland Estuary
+lat = 37.7795
+lon = -122.2490
+alt_m = "dem"
+
+[[ground_station]]
+name = "Pillar Point"                # the Air Force tracking station above Half Moon Bay
+lat = 37.4975
+lon = -122.4990
+alt_m = "dem"
+
+[[ground_station]]
+name = "Pigeon Point"                # the light station on the coast between Half Moon Bay and Santa Cruz
+lat = 37.1818
+lon = -122.3942
+alt_m = "dem"
+
+[[ground_station]]
+name = "Santa Cruz"                  # Lighthouse Point
+lat = 36.9514
+lon = -122.0267
+alt_m = "dem"
+
+[[ground_station]]
+name = "Moss Landing"                # MBARI's shore station on the harbor spit
+lat = 36.8024
+lon = -121.7880
+alt_m = "dem"
+
+[[ground_station]]
+name = "Point Pinos"                 # the light station at the tip of the Monterey Peninsula
+lat = 36.6334
+lon = -121.9336
+alt_m = "dem"
+
+# SATCOM from real satellites (murmur-space). Element sets: `murmur-space fetch` once (cached
+# in sim/space/cache, not in git). Each SATCOM vehicle is refreshed every interval_s scenario
+# seconds (at least min_wall_s wall seconds apart, so a high MURMUR_RATE does not spin) in a
+# background task; the packet path reads the latest answer. The look-ahead for the next
+# outage or pass (/stats/<uid>) covers outlook_s scenario seconds, refreshed every
+# outlook_every_s. `epoch` is murmur-space's epoch mode: public element sets are current but
+# scenarios are dated, so "auto" propagates on the same time of day of the day whose
+# satellites are known (see crates/murmur-space/README.md, "Epoch honesty").
+[space]
+catalog = "sim/space/constellations.toml"
+cache = "sim/space/cache"
+epoch = "auto"
+interval_s = 5.0
+min_wall_s = 0.5
+outlook_s = 1800.0
+outlook_every_s = 60.0
+
+# Terrain line of sight client (tidewater's DEM over HTTP). The packet path never waits for
+# it: each vehicle's position is rounded to a cell_m grid cell and an altitude band, one
+# profile per cell is sampled every interval_s (all cells in few requests) and cached, and
+# until the first answer a link counts as open (counted in /stats as unknown_pkts).
+[terrain]
+interval_s = 1.0
+cell_m = 250
+alt_step_m = 10
+sample_spacing_m = 50      # the DEM is about 15 m
+max_points = 500
+
+# ---- LOS radio (small UAS datalinks: Puma, Switchblade, FVR-90, the small airship)
+# Latency 5-30 ms is typical of digital datalinks (vendor sheets for Microhard, Silvus,
+# Doodle Labs). Range: AeroVironment quotes ~20 km LOS for Puma 3 AE. The rest is GUESS.
+# Not the CCA's: a jet at 230 m/s crosses range_max in two minutes, so it is on SATCOM below
+# (sim/platforms.toml, murmur-3zj).
+[class.los]
+loss = 0.005               # GUESS
+burst_len = 3              # GUESS
+latency_ms = 15
+jitter_ms = 5
+bandwidth_bps = 500000     # GUESS: between a SiK telemetry radio (250 kbps air rate) and a Mbps datalink
+queue_bytes = 16384
+range_ok_km = 15           # GUESS, from the ~20 km figure above
+range_max_km = 25
+range_exp = 2
+gs_antenna_m = 10          # GUESS: a mast on the ground station
+antenna_m = 0
+# Terrain "ramp", not "block": loss rises from 0 at grazing to 1 at 20 m of obstruction. A
+# crude stand-in for diffraction loss (GUESS), and kinder to the check's own coarseness (DEM
+# about 15 m, structures in it, one answer per 250 m cell): vehicles parked next to the ground
+# station read as 1-5 m "behind" terrain. A ridge between (the Marin Headlands seen from
+# Crissy Field: tens of metres) still blocks.
+terrain = "ramp"
+terrain_ramp_m = 20
+lost_link_s = 5            # ArduPilot's default (table above)
+
+# ---- Mesh (relay-dependent: FPV, tactical UGVs). Several hops at ~5-10 ms each; capacity
+# shared across the mesh. All GUESS apart from the per-hop latency.
+[class.mesh]
+loss = 0.02
+burst_len = 4
+latency_ms = 25
+jitter_ms = 15
+bandwidth_bps = 300000
+queue_bytes = 16384
+range_ok_km = 5
+range_max_km = 12
+range_exp = 2
+gs_antenna_m = 10          # GUESS
+antenna_m = 1.5            # GUESS: a whip on a ground vehicle or boat
+terrain = "ramp"           # as for los; a mesh can also route around a shallow obstruction
+terrain_ramp_m = 20
+lost_link_s = 10           # GUESS (table above)
+
+# ---- SATCOM, GEO (default for the satcom class: Global Hawk, Reaper, the CCA). Follows WGS-class
+# military GEO satellites (space_class "wgs"): up while one is above the 5 deg mask, latency
+# from the slant range (about 250-275 ms one way from the Golden Gate, bent pipe, no network
+# allowance known). latency_ms = 300 is the static fallback: ground -> GEO -> vehicle is about
+# 240 ms one way before modem and processing, 300 ms gives the ~600 ms round trip operators
+# quote. Loss from rain fade, GUESS. Bandwidth GUESS (Ku/Ka MALE links reach Mbps; WGS rates
+# are terminal dependent). Down while a subsurface vehicle is submerged. Handover outage 0:
+# a terminal stays on its GEO satellite, so changes of "best" (an aircraft moving between
+# footprints) are only counted.
+[class.satcom]
+space_class = "wgs"
+loss = 0.01
+burst_len = 5
+latency_ms = 300
+jitter_ms = 40
+bandwidth_bps = 256000
+queue_bytes = 16384
+down_when = "submerged"
+lost_link_s = 120          # GUESS (table above); satcom_ku_geo inherits it
+
+# ---- SATCOM, commercial Ku-band GEO (Intelsat-class, "ku-geo" in the space catalog): what
+# RQ-4 and MQ-9B-class aircraft also use. Documented alternative to the WGS mapping: map
+# rq4 / mq9b to it under [platform_profile]. Only the operator's satellites above the mask
+# count, so coverage depends on where its fleet sits (from the Golden Gate about 8 are in
+# view). Latency includes the class's 20 ms gateway allowance (GUESS).
+[class.satcom_ku_geo]
+extends = "satcom"
+space_class = "ku-geo"
+
+# ---- SATCOM, LEO (Starlink-like, "starlink"): 25-60 ms round trip is the commonly published
+# range. Follows the real constellation: one-way latency is the bent pipe (user and gateway
+# legs at the user's range) plus 8 ms (GUESS) per direction, and a short outage at satellite
+# handover (handover_outage_ms, GUESS; operationally a handover comes roughly every 15 s, and
+# "best" here is the highest-elevation satellite, which changes at a similar or higher rate).
+# The handover glitch used to be modelled as bursty loss (loss 0.01, burst 10); with real
+# handovers that would count it twice, so the residual loss is small. Static fallback is
+# therefore a cleaner link than the old profile.
+[class.satcom_leo]
+extends = "satcom"
+space_class = "starlink"
+handover_outage_ms = 100   # GUESS
+loss = 0.003               # GUESS
+burst_len = 3              # GUESS
+latency_ms = 25
+jitter_ms = 5              # GUESS
+bandwidth_bps = 2000000    # GUESS
+queue_bytes = 65536
+lost_link_s = 30           # GUESS (table above)
+
+# ---- SATCOM, Iridium-like ("iridium", SBD / PPP): low rate, ~1 s latency. GUESS throughout.
+# Visibility is real (66 satellites, 8.2 deg mask: always at least one in view at the Golden
+# Gate, so the link seldom drops); the class has no published network latency, so latency_ms
+# = 700 stays as the total (GUESS) and /stats says latency_source = "profile". Handover
+# outage 250 ms is a GUESS (satellites pass in about 9 minutes). The buoy maps here. The
+# bridge asks vehicles on this profile (and on acoustic_surface) for HIGH_LATENCY2 every 5 s
+# instead of its full plan (crates/murmur-bridge/src/telemetry.rs, `LINKS`); the bandwidths
+# and latencies there are copied from this file as fallbacks, keep them in step.
+[class.satcom_iridium]
+extends = "satcom"
+space_class = "iridium"
+handover_outage_ms = 250   # GUESS
+latency_ms = 700
+jitter_ms = 200
+bandwidth_bps = 22000
+queue_bytes = 4096
+lost_link_s = 120          # GUESS (table above)
+
+# ---- Acoustic (AUVs and XLUUVs, JANUS-style). Modems run from tens of bps (JANUS baseline is
+# 80 bps) to a few kbps (WHOI Micro-Modem 80-5400 bps); 300 bps is a GUESS in that band.
+# Sound travels at ~1500 m/s, hence propagation_mps. Only works while submerged.
+[class.acoustic]
+loss = 0.10                # GUESS
+burst_len = 4              # GUESS
+latency_ms = 100           # modem processing and framing, GUESS; propagation is added below
+jitter_ms = 150
+bandwidth_bps = 300
+queue_bytes = 256
+down_when = "surfaced"
+propagation_mps = 1500
+lost_link_s = 120          # surface after two minutes without the GCS (table above)
+# At the surface the modem is useless but the mast is out of the water: survey AUVs (REMUS
+# class) carry Iridium SBD and RF for exactly that, and the catalog says "acoustic modem;
+# SATCOM when surfaced". The surfaced vehicle uses this profile instead of going dark.
+gated_profile = "acoustic_surface"
+
+# ---- An AUV at the surface (the acoustic profile's gated_profile): Iridium-like numbers,
+# static (a gated profile does not follow satellites). GUESS throughout, as satcom_iridium.
+[class.acoustic_surface]
+loss = 0.02
+burst_len = 3
+latency_ms = 700
+jitter_ms = 200
+bandwidth_bps = 22000
+queue_bytes = 4096
+
+# ---- Tether (ROV cable, antenna tracker mast): near perfect. GUESS.
+[class.tether]
+loss = 0.0001
+latency_ms = 1
+jitter_ms = 0.3
+bandwidth_bps = 10000000
+queue_bytes = 65536
+lost_link_s = 5            # ArduSub's default (table above)
+
+# SATCOM class -> profile. The class itself comes from each platform's `space_class` in
+# sim/platforms.toml (buoy iridium; magura, corsair, seahunter, saildrone starlink; rq4, mq9b,
+# cca wgs), so this file and the bridge's space views cannot disagree about it. Each profile must
+# follow the class it is listed under (checked at load).
+[space_class_profile]
+starlink = "satcom_leo"
+iridium = "satcom_iridium"
+wgs = "satcom"
+ku-geo = "satcom_ku_geo"
+
+# Explicit per-platform overrides, taking precedence over the catalog class. Empty by default.
+# Example: put the saildrone on its narrow Iridium link, or the RQ-4 on commercial Ku GEO:
+#   saildrone = "satcom_iridium"
+#   rq4 = "satcom_ku_geo"
+[platform_profile]
+
+# ---- Scripted events. `at_s` is seconds since the emulator started; `at_scenario` is an ISO
+# time on the scenario clock (MURMUR_AT at emulator start, plus elapsed x MURMUR_RATE, as
+# the stand-ins do), with duration_s in scenario seconds or `until_scenario`. Selectors
+# (class, profile, platform, domain, uid, uids, circle) all must match; effects are loss
+# (extra, independent of the profile's loss), cut, extra_latency_ms; dir = both | up | down.
+# More events can live in a separate file passed as --scenario. Events are re-read while
+# running on SIGHUP or when this file or the scenario file changes (profiles are not).
+#
+# [[event]]                  # the 30%-loss study: every LOS link, two minutes
+# name = "30% loss on LOS"
+# at_s = 300
+# duration_s = 120
+# class = "los"
+# loss = 0.30
+#
+# [[event]]                  # one vehicle goes dark for a minute
+# name = "cut uid 7"
+# at_s = 60
+# duration_s = 60
+# uid = 7
+# cut = true
+#
+# [[event]]                  # a jammer: loss 1.0 inside the circle (default for a circle)
+# name = "jammer"
+# at_s = 120
+# duration_s = 300
+# circle = { lat = 37.82, lon = -122.48, radius_m = 3000 }
+#
+# [[event]]                  # the same study, timed on the scenario clock
+# name = "30% loss on LOS at 10:05"
+# at_scenario = "2026-06-14T10:05:00Z"
+# duration_s = 120           # scenario seconds
+# class = "los"
+# loss = 0.30

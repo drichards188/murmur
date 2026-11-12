@@ -1600,8 +1600,11 @@ docs/load-test.md has them).
 
 ### 17.6 Saturation (3,602 nodes; bd murmur-lleq, 2026-11-10)
 
-**What the world covers.** Saturation (`sim/situations/swarm-saturation.toml`) as live runs it,
-in a world of its own (`sim/worlds/golden-gate-saturation.toml`):
+**What the world covers.** Saturation packed (`sim/situations/swarm-saturation-packed.toml`:
+Saturation as it ran until bd murmur-mum5, kept for performance work when Saturation itself spread
+the same force over the region from Bodega Bay to Monterey Bay) as live runs it, in a world of its
+own (`sim/worlds/golden-gate-saturation.toml`). Everything below, measured before the split under
+the name `swarm-saturation`, is this layout's:
 
 - **Ours: 3,602 stand-ins in 37 swarms**: 1,700 X10 quadcopters (17 picket rings of 100, EO/IR,
   mesh radio), 1,300 Pumas (10 search lanes over the inner gulf and 3 relay chains, 100 each,
@@ -1629,7 +1632,19 @@ in a world of its own (`sim/worlds/golden-gate-saturation.toml`):
 
 Run it:
 
-    .venv/bin/python -m eval.headless.batch --situation swarm-saturation --seeds 1 --agent none --workers 1 --keep-audit
+    .venv/bin/python -m eval.headless.batch --situation swarm-saturation-packed --seeds 1 --agent none --workers 1 --keep-audit
+
+**Saturation over the region** (`sim/situations/swarm-saturation.toml`) is not headless yet. It
+names its own world (`sim/worlds/bay-region-saturation.toml`: its fleet, contacts, areas, links file
+with thirteen ground stations, points and operating box), which has no baked grids, so an episode
+stops at the domain rule's "no baked land/water grid" rather than running it on the Golden Gate's
+(`tests/test_saturation.py`). What it would need: the surface, land/water and bathymetry grids
+baked from tidewater's `bay-region-2026-06` over 163 by 200 km once its terrain is re-fetched
+(bd murmur-cbjn; at 20 m that is about 8,000 by 10,000 cells a grid, so coarser offshore or
+nested), the current field over the same box, the link emulator's terrain over the whole region
+from thirteen stations (each radio link judged against every station within its range), the oracles'
+link maps reading more than the first station, and then a batch's time and memory against the
+packed layout's above.
 
 **What it took.** The situation names its own world, which only the headless simulator reads
 (the Golden Gate's own world would pin the legacy sensing model, as for every v1 situation; live

@@ -1,0 +1,45 @@
+# Saturation's world over the region (sim/situations/swarm-saturation.toml; bd murmur-mum5): Bodega
+# Bay to Monterey Bay, the whole of San Francisco Bay and the sea out past the Farallones, with
+# Saturation's 3,602 stand-ins (sim/fleets/swarm-saturation-bay-region.toml), its contacts
+# (sim/scenarios/swarm-saturation-bay-region.toml), its areas and its thirteen ground stations (its
+# links file). Live, the situation reads none of this but its name: its fleet, contacts, areas,
+# links, start and tidewater scenario are its own.
+#
+# Not runnable headless yet: it has no baked grids, so an episode stops at the domain rule's
+# "no baked land/water grid" (eval/headless/situations.py). What it would need (docs/HEADLESS.md
+# 17.6): the surface, land/water and bathymetry grids baked from tidewater's `bay-region-2026-06`
+# over this box (eval/headless/bake_world.py; at the Golden Gate's 20 m that is about 8,000 by
+# 10,000 cells, so a coarser spacing offshore or nested grids), its current field, the link
+# emulator's terrain over 200 km (the surface grid), and a check that the oracles' link maps,
+# which read one station, read the first of thirteen; then the batch's time and memory against the
+# packed layout's (swarm-saturation-packed, sim/worlds/golden-gate-saturation.toml).
+name = "bay-region-saturation"
+title = "Bay region saturation (3,602 nodes, Bodega Bay to Monterey Bay)"
+fleet = "sim/fleets/swarm-saturation-bay-region.toml"
+areas = "sim/situations/areas/swarm-saturation-bay-region"
+traffic = "sim/scenarios/swarm-saturation-bay-region.toml"
+space = "golden-gate"                         # the Golden Gate's pinned element sets: the same satellites
+tidewater = "bay-region-2026-06"
+at = "2026-06-14T17:00:00Z"                   # 10:00 local, the situation's start
+operating_box = { lat_min = 36.55, lat_max = 38.35, lon_min = -123.60, lon_max = -121.75 }
+
+# the links file names the thirteen stations (alt_m "dem" for all but Crissy Field), so no
+# [[ground_station]] here: the world's stations would replace the file's
+[links]
+file = "sim/situations/links/swarm-saturation-bay-region.toml"
+
+# Named reference points, [lon, lat].
+[points]
+bridge = [-122.4783, 37.8199]              # the Golden Gate Bridge, mid-span
+shooter_hold = [-122.5561, 37.7979]        # where the armed drone hovers and fires (truth)
+sf_bar = [-122.5850, 37.7750]              # SURFACE-3's ring, the main ship channel over the bar
+jammer = [-122.4997, 37.5093]              # the jammer's centre (sim/link-events/swarm-saturation-bay-region.toml)
+half_moon_bay_airport = [-122.5012, 37.5134]
+moss_landing = [-121.7880, 36.8024]
+
+# The labels' rule, as the Golden Gate world's: unknown, suspect or hostile within 3 km of the
+# bridge needs a look within 60 s.
+[mission]
+center = "bridge"
+radius_m = 3000.0
+grace_s = 60.0

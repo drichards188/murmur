@@ -143,9 +143,10 @@ def test_a_bad_swarm_is_refused(bad: dict):
         swarm.plan(bad, PLATFORMS)
 
 
-# ---- Saturation's fleet and orders (sim/situations/swarm-saturation.toml) ---------------------------
-# Checked on the Golden Gate's baked grids by world v3's rules (eval/headless/tests/
-# test_worlds_v3.py), and against the geometry its director's notes rely on.
+# ---- Saturation packed: its fleet and orders (sim/situations/swarm-saturation-packed.toml) -------
+# The layout Saturation had until bd murmur-mum5, kept for performance work. Checked on the Golden
+# Gate's baked grids by world v3's rules (eval/headless/tests/test_worlds_v3.py), and against the
+# geometry its director's notes rely on.
 
 STRIKE = (-122.4950, 37.8120)  # where the shooter holds, [lon, lat] (sim/scenarios/swarm-saturation.toml)
 JAM = {"lat": 37.8470, "lon": -122.4720, "radius_m": 1800}  # sim/link-events/swarm-saturation.toml
@@ -157,7 +158,7 @@ def saturation():
     from eval import situation as S
     from eval.headless.tests.test_worlds_v3 import CATALOG, Grid, along, draft_m
 
-    sit = S.load_situation("swarm-saturation")
+    sit = S.load_situation("swarm-saturation-packed")
     terrain = S.REPO / "sim" / "headless" / "terrain"
     return SimpleNamespace(
         sit=sit,
@@ -320,8 +321,230 @@ def test_saturation_threat_is_500_quadcopters_clear_of_the_shooter_by_11_30(satu
 
     out = saturation.sit.contacts.with_name("swarm-saturation.regenerated.toml")
     try:
-        subprocess.run([sys.executable, str(saturation.sit.contacts.parents[2] / "scripts" / "threat_swarms.py"), "-o", str(out)], check=True, capture_output=True)
+        subprocess.run([sys.executable, str(saturation.sit.contacts.parents[2] / "scripts" / "threat_swarms.py"), "--layout", "packed", "-o", str(out)],
+                       check=True, capture_output=True)
         assert out.read_text() == saturation.sit.contacts.read_text()
+    finally:
+        out.unlink(missing_ok=True)
+
+
+# ---- Saturation over the region (sim/situations/swarm-saturation.toml, bd murmur-mum5) ----------
+# The same force, threat and timeline as the packed layout, spread from Bodega Bay to Monterey Bay
+# among thirteen ground stations. Checked against its links file, its areas and the geometry its
+# director's notes rely on. Nothing here reads terrain: tidewater's grids and the baked headless
+# grids are squeezed north-south until bd murmur-cbjn lands, so land and water at launch fields
+# and rings, and the line of sight from each station, are the live run's to confirm.
+
+R_STRIKE = (-122.5561, 37.7979)  # where the shooter holds (scripts/threat_swarms.py REGION_SHOOTER_AT)
+R_JAM = {"lat": 37.5093, "lon": -122.4997, "radius_m": 5000}  # sim/link-events/swarm-saturation-bay-region.toml
+R_JAMMED = {"PICKET-9", "PICKET-10", "PICKET-11"}
+
+
+@pytest.fixture(scope="module")
+def region():
+    import sys
+
+    from eval import situation as S
+
+    sys.path.insert(0, str(S.REPO / "scripts"))
+    import layout_reach
+
+    sit = S.load_situation("swarm-saturation")
+    packed = S.load_situation("swarm-saturation-packed")
+    return SimpleNamespace(sit=sit, packed=packed, vehicles=S._planned_fleet(sit.fleet), packed_vehicles=S._planned_fleet(packed.fleet),
+                           catalog=tomllib.loads((S.REPO / "sim" / "platforms.toml").read_text()), reach=layout_reach, S=S)
+
+
+def r_members(region, sid: str) -> list[dict]:
+    return [v for v in region.vehicles if v["swarm"] == sid]
+
+
+def r_points(region, o) -> list[list[float]]:
+    """Where an opening order puts its swarm, [lon, lat] every 20 m or so (as `order_points`)."""
+    from eval.headless.tests.test_worlds_v3 import along
+
+    p = o.params
+    if "center" in p:
+        lon, lat = p["center"]
+        r = float(p["radius_m"])
+        k = 111_320.0 * math.cos(math.radians(lat))
+        return along([[lon + r / k * math.sin(a), lat + r / 111_320.0 * math.cos(a)] for a in (n * math.pi / 36 for n in range(73))], 20.0)
+    return along([*map(list, p["route"]), list(p["route"][0])], 20.0)
+
+
+def test_saturation_region_is_the_packed_force_spread(region):
+    """The same 37 swarms (platform, count, role, order kind) as the packed layout, SURFACE-3's
+    first USV still uid 3201, the reserve the only armed swarm and without an order."""
+    def shape(vehicles, sit):
+        kinds = {o.vehicles["swarm"]: o.task for o in sit.orders}
+        out = {}
+        for v in vehicles:
+            s = out.setdefault(v["swarm"], {"platform": v["platform"], "n": 0})
+            s["n"] += 1
+        return {sid: (s["platform"], s["n"], kinds.get(sid)) for sid, s in out.items()}
+
+    assert len(region.vehicles) == 3602
+    assert shape(region.vehicles, region.sit) == shape(region.packed_vehicles, region.packed)
+    assert r_members(region, "SURFACE-3")[0]["uid"] == 3201
+    assert not [v["callsign"] for v in region.vehicles if v["swarm"] != "RESERVE" and region.catalog[v["platform"]].get("armed")]
+    assert "RESERVE" not in {o.vehicles["swarm"] for o in region.sit.orders}
+
+
+def test_saturation_region_links_file_is_sim_links_with_its_stations(region):
+    """Its own links file: sim/links.toml table for table but the ground stations (so a profile
+    changed there is changed here too), thirteen stations, the world's links the same file, and
+    the runner hands it on as MURMUR_LINKS."""
+    links = tomllib.loads(region.sit.links.read_text())
+    shipped = tomllib.loads((region.S.REPO / "sim" / "links.toml").read_text())
+    assert {k: v for k, v in links.items() if k != "ground_station"} == {k: v for k, v in shipped.items() if k != "ground_station"}, \
+        "sim/links.toml changed: copy the change into sim/situations/links/swarm-saturation-bay-region.toml"
+    stations = links["ground_station"]
+    assert len(stations) == 13 and len({s["name"] for s in stations}) == 13
+    from eval.world import load_world
+
+    assert load_world(region.sit.world).links == region.sit.links
+    assert region.packed.links is None, "the packed layout keeps sim/links.toml (Crissy Field alone)"
+
+
+def test_saturation_region_every_radio_reaches_a_station(region):
+    """scripts/layout_reach.py: every point each radio-linked vehicle will be at (its launch or
+    spawn, its way out, its ring or lane, its way home) within its class's range_max of a station;
+    within range_ok everywhere but the relay chain's middle (16.5 km from Point Reyes and the
+    Farallones, a few per cent of loss); the AUVs' acoustic delay a few seconds."""
+    r = region.reach.reach(region.sit, quiet=True)
+    rows = {row["group"]: row for row in r["rows"]}
+    assert r["totals"]["beyond_max"] == 0
+    beyond_ok = {g for g, row in rows.items() if row["ok_km"] is not None and row["beyond_ok"]}
+    assert beyond_ok == {"RELAY-2"}, beyond_ok
+    assert rows["RELAY-2"]["loss"] < 0.05
+    assert all(row["worst_km"] <= 5.0 for g, row in rows.items() if g.startswith("PICKET")), "the mesh's clean 5 km"
+    assert rows["UNDERSEA-1"]["acoustic_s"] < 5.0
+    assert {row["profile"] for g, row in rows.items() if g.startswith("SURFACE") or g == "RESERVE"} <= {"satcom", "satcom_leo"}
+
+
+def test_saturation_region_is_spread(region):
+    """Spread as a planner would: on station the median nearest neighbour three times the packed
+    layout's and more, four times the occupied square kilometres, over a region of 10,000 square km
+    and more."""
+    new, old = region.reach.spread(region.sit, quiet=True), region.reach.spread(region.packed, quiet=True)
+    assert new["station"]["nn_median_m"] >= 3 * old["station"]["nn_median_m"]
+    assert new["station"]["km2"] >= 4 * old["station"]["km2"]
+    assert new["box_km2"] >= 10_000
+
+
+def test_saturation_region_orders_keep_clear_of_no_go_and_to_the_reserve(region):
+    """Every ring and lane, and every X10's way from its launch field to its ring and back, 150 m
+    clear of every no-go area and inside the operating area; every X10 order within the reserve
+    rule with a tenth of its budget to spare (rules.rs `reserve`: transit, the lap or 15 minutes,
+    the way home, against endurance less 20 %)."""
+    from eval.headless.tests.test_worlds_v3 import along
+
+    areas = json.loads((region.sit.areas / "bay-region.geojson").read_text())
+    boxes, ops = [], []
+    for f in areas["features"]:
+        g = f["geometry"]
+        for poly in g["coordinates"] if g["type"] == "MultiPolygon" else [g["coordinates"]]:
+            xs, ys = [p[0] for p in poly[0]], [p[1] for p in poly[0]]
+            if f["properties"]["kind"] == "no_go":
+                boxes.append((min(xs), min(ys), max(xs), max(ys)))
+            elif f["properties"]["kind"] == "approved":
+                ops.append((min(xs), min(ys), max(xs), max(ys)))
+    bad = []
+    _, paths = region.reach.plan(region.sit)
+    for o in region.sit.orders:
+        members = r_members(region, o.vehicles["swarm"])
+        points = r_points(region, o)
+        legs = []
+        if members[0]["platform"] == "x10":
+            home = [members[0]["home"][1], members[0]["home"][0]]
+            legs = [p for q in points[::10] for p in along([home, q], 20.0)]
+        for lon, lat in points + legs:
+            if not any(w <= lon <= e and s <= lat <= n for w, s, e, n in ops):
+                bad.append((o.id, "outside the operating area", round(lon, 4), round(lat, 4)))
+            for w, s, e, n in boxes:
+                dx = max(w - lon, 0, lon - e) * 111_320.0 * math.cos(math.radians(lat))
+                dy = max(s - lat, 0, lat - n) * 111_320.0
+                if math.hypot(dx, dy) < 150:
+                    bad.append((o.id, "no_go", round(lon, 4), round(lat, 4)))
+    assert not bad, bad[:10]
+    x10 = region.catalog["x10"]
+    budget = 0.8 * x10["endurance_h"] * 3600
+    for v in region.vehicles:
+        pa = paths[v["uid"]]
+        if v["platform"] != "x10":
+            continue
+        lap = sum(region.reach.metres(a, b) for a, b in zip(pa["task"], pa["task"][1:]))
+        used = (region.reach.metres(*pa["out"]) + region.reach.metres(*pa["back"])) / x10["cruise_mps"] + max(lap / x10["cruise_mps"], 900)
+        assert used <= 0.9 * budget, (v["callsign"], v["swarm"], round(used), round(budget))
+
+
+def test_saturation_region_leaves_the_strike_point_clear_and_jams_three_pickets(region):
+    """Every swarm's ring or lane 1.4 km or more from where the shooter holds, SURFACE-3's whole
+    ring within the missile's band (400 m to 6 km) of it, the hold inside an engagement zone; the
+    jammer's circle takes in PICKET-9, -10 and -11 whole and no other swarm's station."""
+    jam = (R_JAM["lon"], R_JAM["lat"])
+    near, jammed = [], set()
+    for o in region.sit.orders:
+        sid = o.vehicles["swarm"]
+        points = r_points(region, o)
+        d = [m_lonlat(p, R_STRIKE) for p in points]
+        if min(d) < 1400:
+            near.append(sid)
+        if sid == "SURFACE-3":
+            assert 400 < min(d) and max(d) < 6000, (min(d), max(d))
+        inside = [m_lonlat(p, jam) <= R_JAM["radius_m"] for p in points]
+        if all(inside):
+            jammed.add(sid)
+        elif any(inside):
+            jammed.add(f"{sid} (partly)")
+    assert not near, near
+    assert jammed == R_JAMMED, jammed
+    # their launch field is inside it too: the failsafe takes them home into the jam
+    assert all(m_lonlat([v["home"][1], v["home"][0]], jam) < R_JAM["radius_m"] for sid in R_JAMMED for v in r_members(region, sid))
+    events = tomllib.loads(region.sit.events[0].read_text())["event"]
+    assert {(e["at_s"], e["duration_s"], e["circle"]["lat"], e["circle"]["lon"], e["circle"]["radius_m"]) for e in events} == {
+        (240, 180, R_JAM["lat"], R_JAM["lon"], R_JAM["radius_m"])}
+    zones = [f["geometry"]["coordinates"][0] for f in json.loads((region.sit.areas / "bay-region.geojson").read_text())["features"]
+             if f["properties"]["kind"] == "engagement_zone"]
+    assert any(min(p[0] for p in z) < R_STRIKE[0] < max(p[0] for p in z) and min(p[1] for p in z) < R_STRIKE[1] < max(p[1] for p in z)
+               for z in zones)
+
+
+def test_saturation_region_threat_clears_the_shooter_by_11_30_and_regenerates(region):
+    """The region's contacts (scripts/threat_swarms.py --layout region): 500 hostile drones of the
+    packed layout's kinds, the shooter ordered at uid 3201 twice from where it hovers, every other
+    drone 7 km or more from the shooter's hold by 11:30, and the file what the script writes."""
+    raw = tomllib.loads(region.sit.contacts.read_text())
+    drones = [c for c in raw["contact"] if c["domain"] == "air"]
+    assert len(drones) == 500 and all(c["affiliation"] == "hostile" and 15 <= c["speed_mps"] <= 28 for c in drones)
+    kinds = {(c["id"].rsplit("-", 1)[0], c["kind"]) for c in drones if c["id"] != "recon-shooter"}
+    assert kinds == {("recon", "small_drone"), ("wave", "small_drone"), ("decoy", "small_drone"), ("attack-east", "oneway_drone"),
+                     ("attack-west", "oneway_drone")} and "act" not in raw
+    (sc,) = [c for c in drones if c["id"] == "recon-shooter"]
+    assert sc["kind"] == "armed_uas" and m_lonlat(sc["route"][-1], R_STRIKE) < 1.0
+    assert [(o["at_s"], o["target"], o["stay"]) for o in raw["order"]] == [(595, {"vehicle": 3201}, True), (655, {"vehicle": 3201}, True)]
+
+    def at(c: dict, t: float) -> list[float]:
+        left = max(0.0, t - c.get("start_s", 0)) * c["speed_mps"]
+        route = c["route"]
+        for a, b in zip(route, route[1:]):
+            d = m_lonlat(a, b)
+            if left <= d:
+                return [a[0] + (b[0] - a[0]) * left / d, a[1] + (b[1] - a[1]) * left / d]
+            left -= d
+        return route[-1]
+
+    # at 11:30, and a minute either side (the contacts take some 25 s to reach speed)
+    close = [c["id"] for c in drones if c["id"] != "recon-shooter" for t in (630, 690, 750) if m_lonlat(at(c, t), R_STRIKE) < 7000]
+    assert not close, close[:10]
+    import subprocess
+    import sys
+
+    out = region.sit.contacts.with_name("swarm-saturation-bay-region.regenerated.toml")
+    try:
+        subprocess.run([sys.executable, str(region.S.REPO / "scripts" / "threat_swarms.py"), "--layout", "region", "-o", str(out)],
+                       check=True, capture_output=True)
+        assert out.read_text() == region.sit.contacts.read_text()
     finally:
         out.unlink(missing_ok=True)
 

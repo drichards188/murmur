@@ -12,7 +12,9 @@
 # MURMUR_LINKEMU=0 bypasses it (vehicles talk to the bridge on MURMUR_BASE_PORT directly).
 # MURMUR_LINK_EVENTS (or MURMUR_EVENTS)=<file> adds scripted [[event]]s for comms and GNSS
 # (e.g. sim/link-events/golden-gate.toml, sim/events/golden-gate-gnss.toml);
-# MURMUR_LINKS=<file> replaces sim/links.toml (profiles). Emulator log: logs/linkemu.log.
+# MURMUR_LINKS=<file> replaces sim/links.toml (profiles and ground stations; a situation names its
+# own with `links`); every process here that reads the profiles inherits it. Emulator log:
+# logs/linkemu.log.
 # MURMUR_LINKEMU_SEED=<n> overrides the links file's seed (its random draws per vehicle and
 # direction); unset, the file's seed (1) as before. eval/headless/fullstack.py sets it to the
 # situation's seed so a run meets the draws the headless simulator gives that seed.

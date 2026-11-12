@@ -1,0 +1,1013 @@
+{
+  "type": "FeatureCollection",
+  "name": "swarm-saturation-bay-region",
+  "description": "Saturation's areas over the region from Bodega Bay to Monterey Bay (sim/situations/swarm-saturation.toml): the operating area is the whole region; the Golden Gate's example areas (sim/areas/golden-gate.geojson) kept, with engagement zones over open water in the inner gulf, west of the Farallones and in outer Monterey Bay, and no-strike areas over the region's populated shores, harbors and landmarks. Illustrative only: rough boxes, not real airspace, navigation, restricted-area or targeting data. Kinds: approved (operating area), no_go (no route may enter), engagement_zone (an engagement's predicted effect point must be inside one), no_strike (no effect circle may touch one).",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "bay-region-ops",
+        "name": "Bay region operating area, Bodega Bay to Monterey Bay",
+        "kind": "approved"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -123.6,
+              36.55
+            ],
+            [
+              -121.75,
+              36.55
+            ],
+            [
+              -121.75,
+              38.35
+            ],
+            [
+              -123.6,
+              38.35
+            ],
+            [
+              -123.6,
+              36.55
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "alcatraz",
+        "name": "Alcatraz Island",
+        "kind": "no_go"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -122.42698,
+              37.82356
+            ],
+            [
+              -122.41902,
+              37.82356
+            ],
+            [
+              -122.41902,
+              37.82984
+            ],
+            [
+              -122.42698,
+              37.82984
+            ],
+            [
+              -122.42698,
+              37.82356
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "gg-towers",
+        "name": "Golden Gate Bridge towers",
+        "kind": "no_go"
+      },
+      "geometry": {
+        "type": "MultiPolygon",
+        "coordinates": [
+          [
+            [
+              [
+                -122.47818,
+                37.81076
+              ],
+              [
+                -122.47682,
+                37.81076
+              ],
+              [
+                -122.47682,
+                37.81184
+              ],
+              [
+                -122.47818,
+                37.81184
+              ],
+              [
+                -122.47818,
+                37.81076
+              ]
+            ]
+          ],
+          [
+            [
+              [
+                -122.47968,
+                37.82566
+              ],
+              [
+                -122.47832,
+                37.82566
+              ],
+              [
+                -122.47832,
+                37.82674
+              ],
+              [
+                -122.47968,
+                37.82674
+              ],
+              [
+                -122.47968,
+                37.82566
+              ]
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "farallon-se",
+        "name": "Southeast Farallon Island (wildlife refuge; the station's own site)",
+        "kind": "no_go"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -123.013,
+              37.693
+            ],
+            [
+              -122.995,
+              37.693
+            ],
+            [
+              -122.995,
+              37.704
+            ],
+            [
+              -123.013,
+              37.704
+            ],
+            [
+              -123.013,
+              37.693
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ez-gate-west",
+        "name": "Engagement zone: open water west of the Golden Gate Bridge",
+        "kind": "engagement_zone"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -122.53,
+              37.803
+            ],
+            [
+              -122.481,
+              37.803
+            ],
+            [
+              -122.481,
+              37.828
+            ],
+            [
+              -122.53,
+              37.828
+            ],
+            [
+              -122.53,
+              37.803
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ez-gulf-approaches",
+        "name": "Engagement zone: the Golden Gate's approaches in the inner gulf",
+        "kind": "engagement_zone"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -122.62,
+              37.78
+            ],
+            [
+              -122.53,
+              37.78
+            ],
+            [
+              -122.53,
+              37.812
+            ],
+            [
+              -122.62,
+              37.812
+            ],
+            [
+              -122.62,
+              37.78
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ez-outer-farallones",
+        "name": "Engagement zone: open sea west of the Farallones",
+        "kind": "engagement_zone"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -123.4,
+              37.55
+            ],
+            [
+              -123.08,
+              37.55
+            ],
+            [
+              -123.08,
+              37.85
+            ],
+            [
+              -123.4,
+              37.85
+            ],
+            [
+              -123.4,
+              37.55
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ez-outer-monterey",
+        "name": "Engagement zone: outer Monterey Bay",
+        "kind": "engagement_zone"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -122.1,
+              36.7
+            ],
+            [
+              -121.92,
+              36.7
+            ],
+            [
+              -121.92,
+              36.85
+            ],
+            [
+              -122.1,
+              36.85
+            ],
+            [
+              -122.1,
+              36.7
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ns-golden-gate-bridge",
+        "name": "No-strike: Golden Gate Bridge span and approaches",
+        "kind": "no_strike"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -122.479,
+              37.807
+            ],
+            [
+              -122.4762,
+              37.807
+            ],
+            [
+              -122.478,
+              37.8305
+            ],
+            [
+              -122.4808,
+              37.8305
+            ],
+            [
+              -122.479,
+              37.807
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ns-fort-point",
+        "name": "No-strike: Fort Point historic site",
+        "kind": "no_strike"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -122.4785,
+              37.8095
+            ],
+            [
+              -122.4755,
+              37.8095
+            ],
+            [
+              -122.4755,
+              37.8115
+            ],
+            [
+              -122.4785,
+              37.8115
+            ],
+            [
+              -122.4785,
+              37.8095
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ns-kirby-cove",
+        "name": "No-strike: Kirby Cove beach and campground",
+        "kind": "no_strike"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -122.4935,
+              37.8255
+            ],
+            [
+              -122.488,
+              37.8255
+            ],
+            [
+              -122.488,
+              37.829
+            ],
+            [
+              -122.4935,
+              37.829
+            ],
+            [
+              -122.4935,
+              37.8255
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ns-baker-beach",
+        "name": "No-strike: Baker Beach (populated shore)",
+        "kind": "no_strike"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -122.487,
+              37.787
+            ],
+            [
+              -122.481,
+              37.787
+            ],
+            [
+              -122.481,
+              37.799
+            ],
+            [
+              -122.487,
+              37.799
+            ],
+            [
+              -122.487,
+              37.787
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ns-crissy-field",
+        "name": "No-strike: Crissy Field and the Presidio shore (populated)",
+        "kind": "no_strike"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -122.47,
+              37.802
+            ],
+            [
+              -122.442,
+              37.802
+            ],
+            [
+              -122.442,
+              37.8075
+            ],
+            [
+              -122.47,
+              37.8075
+            ],
+            [
+              -122.47,
+              37.802
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ns-sausalito-ferry",
+        "name": "No-strike: Sausalito ferry terminal",
+        "kind": "no_strike"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -122.4805,
+              37.8555
+            ],
+            [
+              -122.477,
+              37.8555
+            ],
+            [
+              -122.477,
+              37.8585
+            ],
+            [
+              -122.4805,
+              37.8585
+            ],
+            [
+              -122.4805,
+              37.8555
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ns-ferry-building",
+        "name": "No-strike: San Francisco Ferry Building",
+        "kind": "no_strike"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -122.396,
+              37.7935
+            ],
+            [
+              -122.391,
+              37.7935
+            ],
+            [
+              -122.391,
+              37.7975
+            ],
+            [
+              -122.396,
+              37.7975
+            ],
+            [
+              -122.396,
+              37.7935
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ns-larkspur-ferry",
+        "name": "No-strike: Larkspur ferry terminal",
+        "kind": "no_strike"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -122.509,
+              37.9425
+            ],
+            [
+              -122.505,
+              37.9425
+            ],
+            [
+              -122.505,
+              37.9455
+            ],
+            [
+              -122.509,
+              37.9455
+            ],
+            [
+              -122.509,
+              37.9425
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ns-point-bonita",
+        "name": "No-strike: Point Bonita light station",
+        "kind": "no_strike"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -122.532,
+              37.815
+            ],
+            [
+              -122.527,
+              37.815
+            ],
+            [
+              -122.527,
+              37.818
+            ],
+            [
+              -122.532,
+              37.818
+            ],
+            [
+              -122.532,
+              37.815
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ns-ocean-beach",
+        "name": "No-strike: Ocean Beach (populated shore)",
+        "kind": "no_strike"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -122.513,
+              37.735
+            ],
+            [
+              -122.505,
+              37.735
+            ],
+            [
+              -122.505,
+              37.78
+            ],
+            [
+              -122.513,
+              37.78
+            ],
+            [
+              -122.513,
+              37.735
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ns-farallon-islands",
+        "name": "No-strike: Farallon Islands National Wildlife Refuge",
+        "kind": "no_strike"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -123.02,
+              37.69
+            ],
+            [
+              -122.99,
+              37.69
+            ],
+            [
+              -122.99,
+              37.708
+            ],
+            [
+              -123.02,
+              37.708
+            ],
+            [
+              -123.02,
+              37.69
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ns-point-reyes-light",
+        "name": "No-strike: Point Reyes light station",
+        "kind": "no_strike"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -123.027,
+              37.9935
+            ],
+            [
+              -123.019,
+              37.9935
+            ],
+            [
+              -123.019,
+              37.998
+            ],
+            [
+              -123.027,
+              37.998
+            ],
+            [
+              -123.027,
+              37.9935
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ns-bodega-bay",
+        "name": "No-strike: Bodega Bay village and harbor",
+        "kind": "no_strike"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -123.06,
+              38.31
+            ],
+            [
+              -123.035,
+              38.31
+            ],
+            [
+              -123.035,
+              38.34
+            ],
+            [
+              -123.06,
+              38.34
+            ],
+            [
+              -123.06,
+              38.31
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ns-pillar-point-harbor",
+        "name": "No-strike: Pillar Point Harbor and Princeton",
+        "kind": "no_strike"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -122.495,
+              37.495
+            ],
+            [
+              -122.475,
+              37.495
+            ],
+            [
+              -122.475,
+              37.505
+            ],
+            [
+              -122.495,
+              37.505
+            ],
+            [
+              -122.495,
+              37.495
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ns-half-moon-bay",
+        "name": "No-strike: Half Moon Bay town and beach",
+        "kind": "no_strike"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -122.46,
+              37.45
+            ],
+            [
+              -122.425,
+              37.45
+            ],
+            [
+              -122.425,
+              37.48
+            ],
+            [
+              -122.46,
+              37.48
+            ],
+            [
+              -122.46,
+              37.45
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ns-santa-cruz",
+        "name": "No-strike: Santa Cruz Boardwalk and wharf",
+        "kind": "no_strike"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -122.028,
+              36.958
+            ],
+            [
+              -122.008,
+              36.958
+            ],
+            [
+              -122.008,
+              36.967
+            ],
+            [
+              -122.028,
+              36.967
+            ],
+            [
+              -122.028,
+              36.958
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ns-moss-landing",
+        "name": "No-strike: Moss Landing harbor and MBARI",
+        "kind": "no_strike"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -121.792,
+              36.798
+            ],
+            [
+              -121.782,
+              36.798
+            ],
+            [
+              -121.782,
+              36.815
+            ],
+            [
+              -121.792,
+              36.815
+            ],
+            [
+              -121.792,
+              36.798
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ns-monterey",
+        "name": "No-strike: Monterey's Fisherman's Wharf and Cannery Row",
+        "kind": "no_strike"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -121.905,
+              36.602
+            ],
+            [
+              -121.89,
+              36.602
+            ],
+            [
+              -121.89,
+              36.62
+            ],
+            [
+              -121.905,
+              36.62
+            ],
+            [
+              -121.905,
+              36.602
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ns-bay-bridge",
+        "name": "No-strike: the San Francisco-Oakland Bay Bridge, west span",
+        "kind": "no_strike"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -122.391,
+              37.7865
+            ],
+            [
+              -122.386,
+              37.786
+            ],
+            [
+              -122.364,
+              37.8075
+            ],
+            [
+              -122.369,
+              37.81
+            ],
+            [
+              -122.391,
+              37.7865
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ns-treasure-island",
+        "name": "No-strike: Treasure Island (populated)",
+        "kind": "no_strike"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -122.378,
+              37.815
+            ],
+            [
+              -122.362,
+              37.815
+            ],
+            [
+              -122.362,
+              37.832
+            ],
+            [
+              -122.378,
+              37.832
+            ],
+            [
+              -122.378,
+              37.815
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+# Saturation's jammer over the region (sim/situations/swarm-saturation.toml): RF jamming over the
+# coast approach at Half Moon Bay for three minutes, from 4:00 to 7:00 on the situation's clock
+# (the link emulator's, `at_s` seconds since it started; format in sim/link-events/golden-gate.toml
+# and sim/links.toml).
+#
+# The circle, 5 km round a point over Half Moon Bay Airport, takes in the three picket rings there
+# whole (PICKET-9 over Montara and Moss Beach, PICKET-10 over Pillar Point, PICKET-11 over the
+# harbor and El Granada: 300 X10s on the mesh radio) and the airport they launched from, so their
+# failsafe takes them home into the jam. No other swarm's station is inside it: the nearest, the
+# southern approach's search lane (SEARCH-6), is 9 km west of its centre (eval/tests/test_swarm.py
+# checks both). A jammer acts on every link of a vehicle inside it, whichever station that link
+# goes through. Radio links only, one event per jammable class, as golden-gate.toml's jammer: a
+# tether or an acoustic modem is not jammed by RF, and a SATCOM terminal looking up loses half (a
+# GUESS), which matters only for a USV passing through.
+#
+# RF only, no GNSS jammer: a GNSS jam takes a stand-in's fix and its EKF failsafe lands a copter
+# for good (sim/events/golden-gate-gnss.toml), while a lost link starts the GCS failsafe (10 s on
+# the mesh profile, then RTL), which the operator can see and undo once the link is back.
+[[event]]
+name = "jammer over the coast approach at Half Moon Bay (mesh)"
+at_s = 240
+duration_s = 180
+class = "mesh"
+circle = { lat = 37.5093, lon = -122.4997, radius_m = 5000 }
+
+[[event]]
+name = "jammer over the coast approach at Half Moon Bay (LOS)"
+at_s = 240
+duration_s = 180
+class = "los"
+circle = { lat = 37.5093, lon = -122.4997, radius_m = 5000 }
+
+[[event]]
+name = "jammer over the coast approach at Half Moon Bay (SATCOM)"
+at_s = 240
+duration_s = 180
+class = "satcom"
+circle = { lat = 37.5093, lon = -122.4997, radius_m = 5000 }
+loss = 0.5

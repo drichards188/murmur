@@ -132,6 +132,7 @@ TOP_KEYS = {
     "title", "brief", "summary", "director", "todo", "world", "fleet", "contacts", "events", "policy", "duration_s",
     "rate", "at", "tidewater", "operator", "ai", "cosigner", "reveal", "seed", "ready_timeout_s", "ai_start_s",
     "order", "step", "watch", "playbook", "storyline", "autoplay", "headless", "tutorial", "areas", "ports",
+    "links",
 }
 # `[headless]`: what the headless simulator takes from the world (docs/HEADLESS.md, worlds); a
 # live run reads tidewater itself and ignores the table. `domain_rule`: "grid", the world's baked
@@ -260,6 +261,12 @@ class Situation:
     policy: Path | None = None
     # the operator's areas, a directory of *.geojson (the bridge's MURMUR_AREAS); None: sim/areas
     areas: Path | None = None
+    # its own link profiles and ground stations, a links file in sim/links.toml's format, which
+    # the runner hands every process that reads them as MURMUR_LINKS (the link emulator, the
+    # bridge's coverage and estimates, the stand-ins, sim/swarm.py's lost-link timers); None:
+    # whatever MURMUR_LINKS the runner was given, else sim/links.toml, as before. Live only: the
+    # headless simulator reads its world's (`[links]` in sim/worlds/<world>.toml).
+    links: Path | None = None
     # its own port block (`[ports]`: up.sh variable -> port), over SITUATION_PORTS
     ports: dict[str, str] = field(default_factory=dict)
     duration_s: float = 600.0
@@ -605,6 +612,28 @@ def headless_steps(sit: Situation) -> list[Step]:
     return [s for s in sit.steps if s.kind in HEADLESS_STEP_KEYS]
 
 
+def _links_file(p: Path, sit: Path) -> None:
+    """`links`: a links file in sim/links.toml's format, read as the link emulator reads it: its
+    profiles (`[class.*]`) and its radio sites, one `[ground_station]` table or several
+    `[[ground_station]]` tables, each with `lat`, `lon` and `alt_m` (metres, or "dem"). The
+    emulator checks the rest when it starts."""
+    try:
+        raw = tomllib.loads(p.read_text())
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        raise SituationError(f"{sit}: links {p}: {e}") from None
+    if not isinstance(raw.get("class"), dict) or not raw["class"]:
+        raise SituationError(f"{sit}: links {p}: no [class.*] profiles (sim/links.toml's format)")
+    gs = raw.get("ground_station")
+    sites = gs if isinstance(gs, list) else [gs] if isinstance(gs, dict) else []
+    if not sites:
+        raise SituationError(f"{sit}: links {p}: no ground station ([ground_station] or [[ground_station]])")
+    for i, g in enumerate(sites):
+        alt = g.get("alt_m") if isinstance(g, dict) else None
+        ok = isinstance(g, dict) and all(isinstance(g.get(k), (int, float)) and not isinstance(g.get(k), bool) for k in ("lat", "lon"))
+        if not ok or not (alt == "dem" or (isinstance(alt, (int, float)) and not isinstance(alt, bool))):
+            raise SituationError(f"{sit}: links {p}: ground station {i + 1} needs lat, lon and alt_m (metres or \"dem\")")
+
+
 def tidewater_scenario(v: Any) -> tuple[str, Path | None]:
     """`tidewater = "<scenario>"` (a name under tidewater/scenarios, or a path: a relative one
     is this repository's, as San Diego's sim/worlds/san-diego.tidewater.toml) or "none": what
@@ -720,6 +749,9 @@ def load_situation(path_or_name: str | Path) -> Situation:
         sit.areas = _path(raw["areas"], base, "areas", path)
         if not sit.areas.is_dir() or not any(sit.areas.glob("*.geojson")):
             raise SituationError(f"{path}: areas is a directory of *.geojson (the bridge's MURMUR_AREAS)")
+    if "links" in raw:
+        sit.links = _path(raw["links"], base, "links", path)
+        _links_file(sit.links, path)
     ports = _table(raw.get("ports"), "[ports]", path)
     if set(ports) - set(PORT_KEYS):
         raise SituationError(f"{path}: [ports] takes {sorted(PORT_KEYS)}, not {sorted(set(ports) - set(PORT_KEYS))}")

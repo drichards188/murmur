@@ -53,7 +53,7 @@ def test_every_situation_loads():
         assert sit.title and sit.brief, p
         # fault-drill and world v3's watches run in the headless simulator only (the faults are the
         # simulator's; so is a world's conditions draw)
-        if p.stem not in ("fog-watch", "harbor-watch", "morning-harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition", *WEAPON_SITUATIONS, "tutorial", "fault-drill", "swarm-saturation", "shore-battery", "road-mines", "hammerhead-line", *WATCHES_V3):
+        if p.stem not in ("fog-watch", "harbor-watch", "morning-harbor-watch", "hostile-act-engagement", "hostile-act-loitering-munition", *WEAPON_SITUATIONS, "tutorial", "fault-drill", "swarm-saturation", "swarm-saturation-packed", "shore-battery", "road-mines", "hammerhead-line", *WATCHES_V3):
             assert sit.todo, f"{p.stem} is a stub until the AI work lands"
     assert S.headless_steps(S.load_situation("fault-drill"))
     for name in WATCHES_V3:
@@ -1146,6 +1146,33 @@ def test_the_runner_makes_a_fresh_station_and_a_dev_roster(tmp_path: Path, monke
     assert "opening order gate-patrol" in text and "by agent-setup" in text and "murmur-replay" in text
     assert "op-auto approve intent 4: dispatched" in text, "the proxy's decisions are op-auto's, never op-1's"
     assert "scripted decisions: 1 (and 2 failed attempts)" in text
+
+
+def test_a_situation_names_its_own_links_file(tmp_path: Path):
+    """`links`: the runner hands the situation's own links file to the stack as MURMUR_LINKS (the
+    emulator, the bridge's coverage and estimates, the stand-ins and sim/swarm.py read it); a
+    situation without one leaves the variable as it found it; a file that is not a links file is
+    refused at load."""
+    from eval import situation_run as R
+
+    sat, hw = S.load_situation("swarm-saturation"), S.load_situation("harbor-watch")
+    assert sat.links == REPO / "sim" / "situations" / "links" / "swarm-saturation-bay-region.toml" and hw.links is None
+
+    async def make(sit: Any, env: dict[str, str]) -> Any:
+        return R.Runner(sit, S.resolve_modes(sit, operator="autoplay", ai="none"), env, {"checked": False}, out_dir=tmp_path / sit.name)
+
+    assert asyncio.run(make(sat, {"PATH": "/bin", "MURMUR_LINKS": "elsewhere.toml"})).stack_env()["MURMUR_LINKS"] == str(sat.links)
+    assert "MURMUR_LINKS" not in asyncio.run(make(hw, {"PATH": "/bin"})).stack_env()
+    assert asyncio.run(make(hw, {"PATH": "/bin", "MURMUR_LINKS": "mine.toml"})).stack_env()["MURMUR_LINKS"] == "mine.toml"
+    raw = (S.SITUATIONS / "harbor-watch.toml").read_text()
+    for bad, why in (('[class.los]\nloss = 0.1\n', "no ground station"), ('[ground_station]\nlat = 37.8\nlon = -122.4\nalt_m = 5\n', "no \\[class"),
+                     ('[class.los]\nloss = 0.1\n[[ground_station]]\nlat = 37.8\nlon = -122.4\nalt_m = "top"\n', "alt_m")):
+        links = tmp_path / "links.toml"
+        links.write_text(bad)
+        sit = tmp_path / "with-links.toml"
+        sit.write_text(f'links = "{links}"\n' + raw)
+        with pytest.raises(S.SituationError, match=why):
+            S.load_situation(sit)
 
 
 class OrderBridge:

@@ -1,0 +1,610 @@
+# Saturation (sim/situations/swarm-saturation.toml): 3,602 stand-ins in 37 swarms over the region
+# from Bodega Bay to Monterey Bay, one operator. Each [[swarm]] table is one swarm and its members
+# (sim/swarm.py, "swarms"): uids follow the swarms in this order, each swarm's members in its
+# layout's order, so SURFACE-3's first USV is uid 3201 as in the packed layout
+# (sim/fleets/swarm-saturation.toml, kept for performance work). Every member is a stand-in
+# (`sim = "standin"`), so the whole force runs in one engine process.
+#
+# The same force as the packed layout, laid out as a planner covering the region would: each
+# group where its own radio reaches one of the situation's thirteen ground stations
+# (sim/situations/links/swarm-saturation-bay-region.toml), guarding something, and launched or
+# spawned close enough to be on station within a few minutes of its order. scripts/
+# layout_reach.py checks every group's way against the stations, and the spacing and area.
+#
+# - PICKET-1 to -17, 1,700 X10-class quadcopters (EO/IR, mesh radio: 5 km clean, 12 km at most;
+#   endurance_h 0.65, 39 min; cruise 12 m/s). Picket rings round the things a drone attack would
+#   go for: Bodega Harbor; seven in San Francisco Bay (the Golden Gate's mouth, the strait, the
+#   city front, the Bay Bridge, the Port of Oakland, Coast Guard Island, Richardson Bay); three
+#   at Half Moon Bay (Montara, Pillar Point, the harbor: the approach the jammer takes); Santa Cruz
+#   (the harbor, West Cliff); Moss Landing (the power plant and its battery store, the harbor and
+#   MBARI); Monterey (Cannery Row, Point Pinos). Each ring is 1.3 to 1.8 km in radius, centred
+#   within about 4 km of a station, so every point of it is within the mesh's 5 km or very near
+#   it. Spacing: an X10's camera finds a small drone at about 1.5 km (the catalog's `range_m`;
+#   its `physical_reach_m`, 15.8 km against the reference 3 m aircraft, scaled by a small drone's
+#   0.35 m: about 1.8 km), so neighbouring rings a few kilometres apart overlap as pickets do.
+#   Inside a ring, 100 members on a 1.3 to 1.8 km radius fly 80 to 115 m apart: one order per
+#   swarm puts all of them on one circle, and the 39 minutes of endurance and the policy's 20 %
+#   reserve keep the circle within a few kilometres of the launch field (transit, 15 minutes on
+#   task and the way home: rules' `reserve`, at most 87 % of what it allows here; the packed
+#   layout's reached 98 %). Copters start on the ground: each launches from a flat field near its
+#   ring (a block 6 or 8 m apart), a known one (an airfield, a park, an old fort's parade ground), its
+#   height a published or estimated figure, marked, which the live run's terrain confirms.
+#   Each flies from 100 m, or higher where its ring passes over high ground (150 to 200 m: Bodega
+#   Head, the Marin cliffs at the Gate's mouth, Sausalito and Belvedere, Pacific Heights, Yerba
+#   Buena Island, the foothills above Montara and El Granada, New Monterey): the task layer
+#   stacks the members upward from there.
+# - SEARCH-1 to -10, 1,000 Puma 3 AE-class fixed wings (EO/IR, LOS radio: 15 km clean, 25 km at
+#   most; endurance_h 2.5). Lanes over the sea within 15 km of a station from end to end, the
+#   approaches a threat from the sea would take: off Bodega Head, off Point Reyes (the northern
+#   traffic lane), west and east of the Farallones (the western lane), off the Golden Gate, the
+#   southern approach off Pacifica and Montara, off Pescadero and Pigeon Point, and three over
+#   Monterey Bay. A Puma's camera finds a 5 m boat at about 14 km (`physical_reach_m` surface,
+#   14.5 km against the reference 5 m surface contact), so lanes 15 to 25 km apart overlap; along
+#   a lane of 13 to 19 km 100 members fly 130 to 190 m apart (one patrol per swarm: every member
+#   on the same lane). They start aloft along their lanes, 700 to 1,000 m up (a stand-in fixed wing
+#   glides until its first order), and fly them from 300 m: most stations stand on headlands that
+#   see the sea, where the packed layout's one station at Crissy Field needed 800 m.
+# - RELAY-1 to -3, 300 more Pumas along a chain from Point Reyes to the Farallones (the island
+#   station's back-up link to the mainland), each swarm a third of it, flown back and forth (a
+#   patrol). A relay in role and place only: the link emulator links every vehicle to the best
+#   station directly and carries no vehicle's traffic through another, so the chain's middle sits
+#   16.5 km from either end's station, a little past the LOS radio's clean 15 km.
+# - SURFACE-1 and -2, 200 Saildrone Explorer-class USVs (wind, 2 m/s, SATCOM: no station). Ocean
+#   pickets far out: a ring on the western traffic lane in the middle of the Gulf of the
+#   Farallones, and a ring on Cordell Bank, the northern lane's offshore approach. Each ring 5 km
+#   in radius (100 members some 310 m apart; a Saildrone's camera finds a 5 m boat at about 6 km).
+#   They start on their rings, each at its own place round it, so they are on station at once.
+# - SURFACE-3 to -5, 300 Corsair-class USVs (EO/IR 8 km, AIS and ESM, 8 m/s, SATCOM). SURFACE-3
+#   rings the San Francisco Bar, where the main ship channel crosses it (2 km radius); SURFACE-4
+#   the central bay between Alcatraz, Angel Island and Treasure Island (1.5 km); SURFACE-5 flies a
+#   lane across Monterey Bay from off Santa Cruz to off Moss Landing. They start on their rings or
+#   along their lane.
+# - UNDERSEA-1, 100 REMUS 600-class AUVs (active sonar, 2 m/s, acoustic modem): a ring of 2 km
+#   radius over the head of the Monterey Canyon off Moss Landing, where MBARI runs its own, 1.3 to
+#   5.3 km from the Moss Landing station (the acoustic link's propagation counts from it: under
+#   4 s). They start at the surface on their ring (members some 125 m apart; the sonar's reach,
+#   about 270 m, overlaps).
+# - RESERVE, the two armed MQ-9Bs (mq9b_armed), loitering at 7,600 m over the gulf west of the
+#   Gate, 5 km or more from where the armed drone holds (sim/situations/swarm-saturation.toml), so
+#   their way to it crosses no no-go area. No script orders them; every task for them waits for a
+#   person. SATCOM: no station.
+#
+# Opening orders (one per swarm but the reserve, to all its members as one intent):
+# sim/situations/swarm-saturation.toml.
+title = "Saturation: 3,602 stand-ins in 37 swarms from Bodega Bay to Monterey Bay"
+
+# ---------------------------------------------------------------- air pickets (X10, rings)
+# Each field: its name and where its height comes from ([E]: estimated, slightly high rather than
+# low, so a copter at rest is not judged from under the ground). Positions and heights are known
+# or estimated figures, not read from a grid: tidewater's terrain grids are squeezed north-south
+# until bd murmur-cbjn is fixed; the live run confirms each field on the re-fetched terrain.
+[[swarm]]
+id = "PICKET-1"
+name = "Bodega Harbor"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 150
+layout = "block"                     # Doran Beach, the harbor's sand spit (a few metres [E])
+center = { lat = 38.31250, lon = -123.04000 }
+columns = 10
+spacing_m = 8
+alt_m = 5
+
+[[swarm]]
+id = "PICKET-2"
+name = "Richardson Bay, Sausalito and Belvedere"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 150
+layout = "block"                     # Tiburon's shoreline park by the ferry (a few metres [E])
+center = { lat = 37.87350, lon = -122.45750 }
+columns = 10
+spacing_m = 6
+alt_m = 5
+
+[[swarm]]
+id = "PICKET-3"
+name = "The Gate's mouth, west of the bridge"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 150
+layout = "block"                     # Kirby Cove, below Hawk Hill (about 10 m [E])
+center = { lat = 37.82700, lon = -122.49050 }
+columns = 10
+spacing_m = 6
+alt_m = 10
+
+[[swarm]]
+id = "PICKET-4"
+name = "The strait (Presidio)"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # Crissy Field, the old airfield (about 5 m)
+center = { lat = 37.80400, lon = -122.46200 }
+columns = 10
+spacing_m = 8
+alt_m = 5
+
+[[swarm]]
+id = "PICKET-5"
+name = "City front (Marina, Fort Mason, Aquatic Park)"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 150
+layout = "block"                     # the Marina Green (a few metres [E])
+center = { lat = 37.80600, lon = -122.44000 }
+columns = 10
+spacing_m = 8
+alt_m = 5
+
+[[swarm]]
+id = "PICKET-6"
+name = "Bay Bridge and Treasure Island"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 150
+layout = "block"                     # Treasure Island, the old naval station's fill (3 to 4 m [E])
+center = { lat = 37.82400, lon = -122.37000 }
+columns = 10
+spacing_m = 8
+alt_m = 5
+
+[[swarm]]
+id = "PICKET-7"
+name = "Port of Oakland"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # Alameda Point, the old air station (3 m [E])
+center = { lat = 37.78600, lon = -122.31800 }
+columns = 10
+spacing_m = 8
+alt_m = 5
+
+[[swarm]]
+id = "PICKET-8"
+name = "Coast Guard Island and the Oakland Estuary"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # Coast Guard Island (about 3 m [E])
+center = { lat = 37.77950, lon = -122.24950 }
+columns = 10
+spacing_m = 8
+alt_m = 5
+
+[[swarm]]
+id = "PICKET-9"
+name = "Montara and Moss Beach"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 200
+layout = "block"                     # Half Moon Bay Airport, north end (field elevation 20 m, FAA)
+center = { lat = 37.51700, lon = -122.50400 }
+columns = 10
+spacing_m = 8
+alt_m = 21
+
+[[swarm]]
+id = "PICKET-10"
+name = "Pillar Point"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # Half Moon Bay Airport, middle
+center = { lat = 37.51340, lon = -122.50120 }
+columns = 10
+spacing_m = 8
+alt_m = 21
+
+[[swarm]]
+id = "PICKET-11"
+name = "Pillar Point Harbor and El Granada"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 150
+layout = "block"                     # Half Moon Bay Airport, south end
+center = { lat = 37.50980, lon = -122.49840 }
+columns = 10
+spacing_m = 8
+alt_m = 21
+
+[[swarm]]
+id = "PICKET-12"
+name = "Santa Cruz harbor and the Boardwalk"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # Lighthouse Field, on the cliff top by the station (12 m [E])
+center = { lat = 36.95420, lon = -122.02350 }
+columns = 10
+spacing_m = 8
+alt_m = 14
+
+[[swarm]]
+id = "PICKET-13"
+name = "West Cliff and Natural Bridges"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # Lighthouse Field, west part
+center = { lat = 36.95420, lon = -122.02550 }
+columns = 10
+spacing_m = 8
+alt_m = 14
+
+[[swarm]]
+id = "PICKET-14"
+name = "Moss Landing power plant"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # the plant's grounds (about 5 m [E])
+center = { lat = 36.80450, lon = -121.77900 }
+columns = 10
+spacing_m = 8
+alt_m = 6
+
+[[swarm]]
+id = "PICKET-15"
+name = "Moss Landing harbor and MBARI"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # the plant's grounds, west part
+center = { lat = 36.80450, lon = -121.78100 }
+columns = 10
+spacing_m = 8
+alt_m = 6
+
+[[swarm]]
+id = "PICKET-16"
+name = "Monterey harbor and Cannery Row"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 200
+layout = "block"                     # Pacific Grove golf links (about 15 m [E])
+center = { lat = 36.63000, lon = -121.93000 }
+columns = 10
+spacing_m = 8
+alt_m = 18
+
+[[swarm]]
+id = "PICKET-17"
+name = "Pacific Grove and Point Pinos"
+role = "picket"
+color = "#7fb8ff"
+platform = "x10"
+count = 100
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"                     # the Pacific Grove golf links, west part
+center = { lat = 36.63150, lon = -121.93150 }
+columns = 10
+spacing_m = 8
+alt_m = 18
+
+# ---------------------------------------------------------------- search (Puma, lanes over the sea)
+# Each swarm starts aloft along its lane, 700 to 1,000 m up over the sea, and flies it from 300 m
+# (the opening order). Every point of each lane is within 15 km of a station (the reach check).
+[[swarm]]
+id = "SEARCH-1"
+name = "Off Bodega Head"
+role = "search"
+color = "#f2c14e"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 300
+layout = "line"
+from = { lat = 38.340, lon = -123.160 }
+to = { lat = 38.200, lon = -123.160 }
+alt_m = [700, 1000]
+
+[[swarm]]
+id = "SEARCH-2"
+name = "Off Point Reyes (the northern lane)"
+role = "search"
+color = "#f2c14e"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 300
+layout = "line"
+from = { lat = 38.100, lon = -123.130 }
+to = { lat = 37.930, lon = -123.130 }
+alt_m = [700, 1000]
+
+[[swarm]]
+id = "SEARCH-3"
+name = "West of the Farallones"
+role = "search"
+color = "#f2c14e"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 300
+layout = "line"
+from = { lat = 37.780, lon = -123.130 }
+to = { lat = 37.620, lon = -123.130 }
+alt_m = [700, 1000]
+
+[[swarm]]
+id = "SEARCH-4"
+name = "East of the Farallones (the western lane)"
+role = "search"
+color = "#f2c14e"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 300
+layout = "line"
+from = { lat = 37.780, lon = -122.880 }
+to = { lat = 37.620, lon = -122.880 }
+alt_m = [700, 1000]
+
+[[swarm]]
+id = "SEARCH-5"
+name = "Off the Golden Gate"
+role = "search"
+color = "#f2c14e"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 300
+layout = "line"
+from = { lat = 37.860, lon = -122.625 }
+to = { lat = 37.750, lon = -122.625 }
+alt_m = [700, 1000]
+
+[[swarm]]
+id = "SEARCH-6"
+name = "The southern approach, off Pacifica and Montara"
+role = "search"
+color = "#f2c14e"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 300
+layout = "line"
+from = { lat = 37.600, lon = -122.600 }
+to = { lat = 37.450, lon = -122.600 }
+alt_m = [700, 1000]
+
+[[swarm]]
+id = "SEARCH-7"
+name = "Off Pescadero and Pigeon Point"
+role = "search"
+color = "#f2c14e"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 300
+layout = "line"
+from = { lat = 37.290, lon = -122.480 }
+to = { lat = 37.140, lon = -122.480 }
+alt_m = [700, 1000]
+
+[[swarm]]
+id = "SEARCH-8"
+name = "Northern Monterey Bay, off Santa Cruz and Capitola"
+role = "search"
+color = "#f2c14e"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 300
+layout = "line"
+from = { lat = 36.880, lon = -122.120 }
+to = { lat = 36.880, lon = -121.920 }
+alt_m = [700, 1000]
+
+[[swarm]]
+id = "SEARCH-9"
+name = "Southern Monterey Bay, off Seaside and Marina"
+role = "search"
+color = "#f2c14e"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 300
+layout = "line"
+from = { lat = 36.800, lon = -121.880 }
+to = { lat = 36.660, lon = -121.880 }
+alt_m = [700, 1000]
+
+[[swarm]]
+id = "SEARCH-10"
+name = "Off Point Pinos and Cypress Point"
+role = "search"
+color = "#f2c14e"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 300
+layout = "line"
+from = { lat = 36.700, lon = -122.020 }
+to = { lat = 36.560, lon = -122.020 }
+alt_m = [700, 1000]
+
+# ---------------------------------------------------------------- relay chain (Puma, to the Farallones)
+[[swarm]]
+id = "RELAY-1"
+name = "Relay chain: off Point Reyes"
+role = "relay"
+color = "#c49bff"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 300
+layout = "line"
+from = { lat = 37.9850, lon = -123.0200 }
+to = { lat = 37.8930, lon = -123.0143 }
+alt_m = [700, 1000]
+
+[[swarm]]
+id = "RELAY-2"
+name = "Relay chain: the middle"
+role = "relay"
+color = "#c49bff"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 300
+layout = "line"
+from = { lat = 37.8930, lon = -123.0143 }
+to = { lat = 37.8000, lon = -123.0087 }
+alt_m = [700, 1000]
+
+[[swarm]]
+id = "RELAY-3"
+name = "Relay chain: to the Farallones"
+role = "relay"
+color = "#c49bff"
+platform = "puma"
+count = 100
+sim = "standin"
+cruise_alt_m = 300
+layout = "line"
+from = { lat = 37.8000, lon = -123.0087 }
+to = { lat = 37.7090, lon = -123.0030 }
+alt_m = [700, 1000]
+
+# ---------------------------------------------------------------- surface (Saildrone, Corsair)
+# Each starts on its ring (evenly round it from north, clockwise, as its orbit spreads the
+# members) or along its lane, at sea.
+[[swarm]]
+id = "SURFACE-1"
+name = "Saildrones on the western lane, mid-gulf"
+role = "surface"
+color = "#4fd1c5"
+platform = "saildrone"
+count = 100
+sim = "standin"
+layout = "ring"
+center = { lat = 37.7600, lon = -122.7800 }
+radius_m = 5000
+
+[[swarm]]
+id = "SURFACE-2"
+name = "Saildrones on Cordell Bank"
+role = "surface"
+color = "#4fd1c5"
+platform = "saildrone"
+count = 100
+sim = "standin"
+layout = "ring"
+center = { lat = 38.0300, lon = -123.4300 }
+radius_m = 5000
+
+[[swarm]]
+id = "SURFACE-3"
+name = "USVs on the San Francisco Bar"
+role = "surface"
+color = "#4fd1c5"
+platform = "corsair"
+count = 100
+sim = "standin"
+layout = "ring"
+center = { lat = 37.7750, lon = -122.5850 }
+radius_m = 2000
+
+[[swarm]]
+id = "SURFACE-4"
+name = "USVs in the central bay"
+role = "surface"
+color = "#4fd1c5"
+platform = "corsair"
+count = 100
+sim = "standin"
+layout = "ring"
+center = { lat = 37.8350, lon = -122.4000 }
+radius_m = 1500
+
+[[swarm]]
+id = "SURFACE-5"
+name = "USVs across Monterey Bay"
+role = "surface"
+color = "#4fd1c5"
+platform = "corsair"
+count = 100
+sim = "standin"
+layout = "line"
+from = { lat = 36.9350, lon = -121.9900 }
+to = { lat = 36.8150, lon = -121.8300 }
+
+# ---------------------------------------------------------------- undersea (REMUS)
+[[swarm]]
+id = "UNDERSEA-1"
+name = "AUVs over the Monterey Canyon head"
+role = "undersea"
+color = "#5b8cff"
+platform = "remus"
+count = 100
+sim = "standin"
+layout = "ring"
+center = { lat = 36.7980, lon = -121.8250 }
+radius_m = 2000
+
+# ---------------------------------------------------------------- the armed reserve (no orders)
+[[swarm]]
+id = "RESERVE"
+name = "Armed reserve"
+role = "reserve"
+color = "#ff6b6b"
+platform = "mq9b_armed"
+count = 2
+sim = "standin"
+layout = "line"
+from = { lat = 37.8250, lon = -122.6000 }
+to = { lat = 37.8150, lon = -122.6400 }
+alt_m = 7600
