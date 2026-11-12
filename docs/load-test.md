@@ -2,7 +2,11 @@
 
 Fleet `scale-100` (deliberately many copies; load testing only): 20 ArduPilot SITL vehicles
 plus 80 stand-ins, Golden Gate scenario with tidewater conditions. Measured with
-`scripts/measure.py --seconds 30` on a 28-core WSL2 machine, 2026-10-02.
+`scripts/measure.py --seconds 30` on a 28-core WSL2 machine, 2026-10-02. (2026-11-12: every live
+run in this file before that date read tidewater's terrain from before bd murmur-cbjn's fix,
+squeezed north-south by about 1.27. Its CPU, memory, throughput and frame figures are not
+expected to move with the terrain; what the terrain decides, which vehicles stand behind it and
+the tracks seen, is flagged where it is quoted.)
 
 | | 30 nodes, before | 30 nodes, after | **100 nodes, after** |
 |---|---|---|---|
@@ -522,4 +526,6 @@ the default 7 threads): the bridge said `sensing: the physical step on 7 threads
 within two minutes (24 surface, 10 ground, 2 air; an AIS identity contradicted by a camera's
 identification among them), and its minute line `sense 61x mean 7.8 worst 27.5 gap 1004.0 ms`.
 At Saturation the step averaged 99 to 117 ms idle and 340 to 490 spread on one thread; the
-synthetic case above suggests about a fifth of that on the default 7.
+synthetic case above suggests about a fifth of that on the default 7. (2026-11-12: a live run on
+tidewater's terrain from before bd murmur-cbjn's fix; its 36 tracks are not to be quoted until
+rerun. The step's times are not expected to move with the terrain.)

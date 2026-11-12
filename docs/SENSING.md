@@ -500,7 +500,10 @@ air, on the surface and on the ground, the physical model; conditions drawn per 
 18 of 20 for F2 and F8), dev seeds 5380-5389, one replicate, approve-all, the paused clock; F8
 (decoys and spoofing) and F2 (drone) with `none` and `oracle-v3-honest`, F15 and F16 (the
 engagement chain, the review load) with `none` and their scripted reviewer; 120 episodes, the
-code before and after. A contact counts in doubt when its track was shown suspect or in an
+code before and after. (2026-11-12: these ran on the baked grids from before bd murmur-cbjn's
+fix, commit 60ac4b4, squeezed north-south by about 1.27; the grids were re-baked and the world
+re-laid on 2026-11-12. Not to be quoted until rerun.) A contact counts in doubt when its track
+was shown suspect or in an
 identity conflict at any second while it was within 4 km of the mission centre.
 
 | | F2 | F8 | F15 | F16 |
@@ -706,7 +709,10 @@ and 11.3; 2026-10-24). Four changes, each physics or bookkeeping, no sensor valu
 
 Need served, pooled over both worlds, on fresh dev seeds 5100-5129 (`none` / `random-valid` /
 the basic oracle; one replicate, 1,080 episodes each side, no harness error; model results only),
-before (the code of murmur-1z6.6) and after:
+before (the code of murmur-1z6.6) and after (2026-11-12: these and the F2 and F3 runs taken apart
+below ran on the baked grids from before bd murmur-cbjn's fix, commit 60ac4b4, squeezed
+north-south by about 1.27, San Diego's on ETOPO 2022's cells of about 450 m; the grids were
+re-baked and the worlds re-laid on 2026-11-12. Not to be quoted until rerun):
 
 | family | before | after |
 |---|---|---|
@@ -838,7 +844,11 @@ The dev check after the round (scoring v3's runner; coverage as SCORING-V3.md se
 worlds, F1 to F6, fresh dev seeds 5130-5159, `none` / `random-valid` / the basic oracle, one
 replicate, 1,080 episodes, no harness error; 187 situations by day, 122 at night, 21 in twilight,
 30 in fog; model results only; records deleted after this summary). Need served, pooled over both
-worlds, beside round 2's on its own fresh seeds (5100-5129, after its fixes):
+worlds, beside round 2's on its own fresh seeds (5100-5129, after its fixes). (2026-11-12: both
+rounds, and the paired batch below, ran on the baked grids from before bd murmur-cbjn's fix,
+commit 60ac4b4, squeezed north-south by about 1.27, San Diego's on ETOPO 2022's cells of about
+450 m; the grids were re-baked and the worlds re-laid on 2026-11-12. Not to be quoted until
+rerun.)
 
 | family | round 2 (5100-5129) | round 3 (5130-5159) |
 |---|---|---|

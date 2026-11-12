@@ -415,6 +415,15 @@ seed's metrics side by side, agent by agent; with the model agent, each group's 
 
 ## 11. Results
 
+**Terrain, 2026-11-12.** Every result in this section ran on the baked grids from before bd
+murmur-cbjn's fix (commit 60ac4b4): tidewater's terrain squeezed north-south by about 1.27,
+features up to about 1.3 km off at the Golden Gate. The Pumas' terrain shadow west of the bridge,
+which decides the early return and every unpaired G1 proposal, was read on that grid, and Harbor
+watch's cargo ship and the families' boats were laid on it; the Crissy Field station's height was
+that grid's 5.0 m (the fixed DEM's is 1.2 m). The calibration (11.1), both G1 runs and the
+early-return rate (11.2) and the families (11.4) are not reproducible and are not to be quoted
+until rerun; G1b's speed (11.3) is not expected to move with the terrain.
+
 ### 11.1 Calibration (in-sample, not a gate)
 
 The first calibration (CRITERIA.md "Calibration") set three start offsets from full-stack runs
@@ -1133,6 +1142,9 @@ from the logged answers; with `--space <root>/sim/space/constellations.toml
 
 ### 16.3 The smoke episodes (seed 1, 2026-10-23)
 
+(2026-11-12: these episodes ran on the grids from before bd murmur-cbjn's fix, squeezed
+north-south; their times and observers are not to be quoted until rerun.)
+
 **Engagement end to end** (`hostile-act-engagement`, the scripted agent, the `scripted`
 signers, `confirm-declarations`, `p_hit` 1; about 1.5 s of computer time for 720 s): the boat's
 first act at 205.8 s, observed by HUNTER 1's radar, EO/IR and sonar and REAPER 1's radar and
@@ -1278,7 +1290,9 @@ tick, and the node did exactly the same (the record's `truth.opponent` equal). T
 on the physical sensing model (`world = "v3"` in its spec), as the situation runs live. Since
 contacts slow at their kind's rate (bd murmur-2of4, 2026-11-10) the boat is still slowing (3.6
 m/s) when it takes the order and stops at 202 s: the first launch is from 962 m (3.8 s of
-flight), A-1 is attributed at 0.86 (still flagged), and the rest is as above.
+flight), A-1 is attributed at 0.86 (still flagged), and the rest is as above. (2026-11-12: on
+the grids from before bd murmur-cbjn's fix; its ranges and times are not to be quoted until
+rerun.)
 
 Not done, or found:
 
@@ -1555,6 +1569,10 @@ boats' masts); San Diego 945 of 3,656 behind terrain (26 %; Point Loma's ridge b
 and the approaches, North Island's buildings), 8 beyond the horizon (the troller 25 km offshore,
 the sportfisher at the Coronado Islands), 44 hull-down; the scale world 6,967 of 23,821 (29 %),
 2 and 240. Seed 1's sun: -12 degrees at the Golden Gate, 4 in San Diego, 50 in the scale world.
+(2026-11-12: this smoke, its counts behind terrain and the real-time factors below ran on the
+grids from before bd murmur-cbjn's fix, squeezed north-south, San Diego's on ETOPO's 450 m
+cells, with the spawns and traffic laid out on them, since re-laid: not to be quoted until
+rerun.)
 
 **Real time** (one episode of 30 minutes at a time, seed 1, this host, 28 cores, other agents'
 work loading it to 6 to 16): Golden Gate v3 104 times real time with `none`, 65 with the
@@ -1658,6 +1676,13 @@ the name `swarm-saturation`, is this layout's:
   at 17:00Z; the surface grid ends at 122.62 W, so the search lanes west of it see no terrain
   (open sea). Both live and here, the relay chain relays nothing and the tracker associates by
   truth id (docs/load-test.md).
+
+**Terrain, 2026-11-12.** Everything below ran on the Golden Gate's grids from before bd
+murmur-cbjn's fix (squeezed north-south by about 1.27) and on the picket launch fields laid out
+on them, re-laid on 2026-11-12 (every one of the 17 blocks had members in the water or off the
+ground's height): the readiness, which swarms the jammer and the link shadows took, the act's
+observers and the digests are not to be quoted until rerun; the speed, memory and anchoring
+figures are not expected to move with the terrain.
 
 Run it:
 

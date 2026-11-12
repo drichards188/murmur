@@ -508,7 +508,10 @@ group. Dates are 2026.
   (2026-10-26, the owner's decision B, option 2 of docs/ENGAGEMENT-IN-TRAFFIC.md; bd murmur-j0x;
   rules 19, `ACCEPT_BEHAVING_SINCE`). In traffic the keep-out refused nearly every engagement
   (scoring v3's F15 at Golden Gate v3: 1,186 of 1,191 attempts, an aircraft among the blockers in
-  97 %), above all for aircraft counted anywhere they could turn or speed up to (rules 14), and
+  97 %; 2026-11-12: run on the baked grids from before bd murmur-cbjn's fix, commit 60ac4b4,
+  squeezed north-south by about 1.27, re-baked and re-laid on 2026-11-12, so not to be quoted
+  until rerun), above all for aircraft counted anywhere they could turn or speed up to (rules
+  14), and
   nothing let a person make the call. Decided, mirroring the lost friendly and the lost contact
   above: an operator with engagement authority may accept one live track that blocks a waiting
   nomination's keep-out, for that engagement only, at the nomination or before a first signature,
@@ -967,8 +970,10 @@ group. Dates are 2026.
   of the time under that radar alone) but fails position honesty on a hairpin road (within two
   sigmas 78 to 81 %, against 83 %): the owner accepted that cost (10-26), a documented limit
   like the air break's lag; keep-outs held in every ground case. F15 smoke: no-velocity ground blockers 66.7 % to 3.0 % of blocked attempts,
-  nominations passed unchanged (4 of 1,191; aircraft block 97 %). Details: docs/SENSING.md,
-  "Ground tracks under coarse fixes". Physical seeds 401-490 are spent.
+  nominations passed unchanged (4 of 1,191; aircraft block 97 %). (2026-11-12: the F15 figures ran
+  on the baked grids from before bd murmur-cbjn's fix, commit 60ac4b4, squeezed north-south by
+  about 1.27, re-baked and re-laid on 2026-11-12; not to be quoted until rerun.) Details:
+  docs/SENSING.md, "Ground tracks under coarse fixes". Physical seeds 401-490 are spent.
 - **Aircraft show the velocities the tracker's two models agree on, up to 20 m/s 1-sigma** (10-26,
   bd murmur-vni, the owner's decision A of 2026-10-26, with decision rules 18 under Engineering).
   Under the physical sensing model an emitting aircraft is fixed by ESM positions and 2D radars'
@@ -997,7 +1002,10 @@ group. Dates are 2026.
   covers it, and agents and the console see the velocity without its error (`get_tracks` carries
   no `velocity_sigma_mps`: a follow-up). Smokes: F15 unchanged (4 of 1,191 nominations passed,
   aircraft blocking 1,152), attempts with a no-velocity aircraft blocker 952 to 893; F2's drone with
-  a velocity by its deadline 20 of 20 (8). Rejected: the reported (consistency-widened) sigma, the
+  a velocity by its deadline 20 of 20 (8); 2026-11-12: these smokes ran on the baked grids from
+  before bd murmur-cbjn's fix, commit 60ac4b4, squeezed north-south by about 1.27, re-baked and
+  re-laid on 2026-11-12, so not to be quoted until rerun. Rejected: the reported
+  (consistency-widened) sigma, the
   manoeuvring probability or the widening as the honesty condition (37 to 45 failures at 8 m/s).
   Ground and surface are unchanged. Air seeds 521-550 are spent. Merged 10-26 with that cost
   stated (the owner approved the change and may revisit the tracker-alone bounds, which were
@@ -1024,7 +1032,9 @@ group. Dates are 2026.
   to 16-20 % of contacts and from 14-20 % to 3-5 % of its seconds; flags and rule declarations
   unchanged (F15 0 true, 6 false, 10 declarations right; F16 5 and 4, 7 right); F8's spoofer in
   conflict 99 % of its seconds as before; the honest ceiling 1 need more in F2 and in F8 of 10.
-  Details: docs/SENSING.md, "Identity fusion".
+  (2026-11-12: this smoke ran on the baked grids from before bd murmur-cbjn's fix, commit
+  60ac4b4, squeezed north-south by about 1.27, re-baked and re-laid on 2026-11-12; not to be
+  quoted until rerun.) Details: docs/SENSING.md, "Identity fusion".
 - **One credible call against an AIS identity may raise suspect, whatever the AIS claims**
   (10-27, the owner, after a coast guard cutter turned suspect in Harbor watch: "yes I think in
   general you can designate any node that you don't control. operators need freedom to operate.

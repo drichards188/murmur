@@ -17,6 +17,20 @@ number comes from records of the run, never from the runner's own memory:
 Times are the bridge's engine clock (milliseconds) for everything in the audit log; reported
 in seconds.
 
+**Terrain, 2026-11-12.** Until bd murmur-cbjn, tidewater's terrain was squeezed north-south by
+about 1.27 toward each grid's middle (features up to about 1.3 km off at the Golden Gate, 1.5 km in
+San Diego's box). Commit 60ac4b4 fixed it; on 2026-11-12 the headless grids were re-baked and the
+worlds re-laid. A storyline run takes its terrain line of sight and domain rule from the batch's
+`tidewater serve` (eval/README.md, "Isolation"), and the live runs this file cites read tidewater
+too, so every such result from before 2026-11-12 used the squeezed terrain: it cannot be
+reproduced and is not to be quoted until it is run again. Here that is the storyline batch of
+10-04 (`docs/eval/`, "What these numbers are not" below), the live engagement demo's air-tracker
+figures ("The air tracker against truth", **Live**), and the live runs cited for context (the 10-06
+run's 77 of 77 blocked nominations, the live stack's velocities for circling boats). The keep-out,
+out-of-view, lost-burden and identification measurements and the tracker calibrations are not
+affected: they run on generated geometry with the probe's or the scenario runner's own box
+terrain (`eval/keepout_probe`, `murmur-scenarios`), never tidewater's grids.
+
 ## One clock
 
 Every clock of a run starts at one origin: the stand-in engine's start plus `origin_s`
@@ -889,7 +903,8 @@ bearings cross it by less than 30 degrees, or not within 10 s of each other); of
 26% had a velocity (the turns, and EO/IR beyond 5 km detecting a 0.6-signature aircraft about
 half the time), as before the fixes (26% of 412). The truth was at most 2.8 sigmas from the
 estimate (3.3 before the fixes). The issue's live figures (24 to 25%, and 16% over 192 s in
-murmur-533) came from other runs; how they were sampled is not recorded.
+murmur-533) came from other runs; how they were sampled is not recorded. (2026-11-12: these live
+figures ran on tidewater's squeezed terrain; not to be quoted until rerun, the note at the top.)
 
 **What these numbers can support** (model results, unreviewed): one 2D radar does not locate an
 aircraft whose height it does not measure beyond its bearing and the slant range, so a keep-out
@@ -933,7 +948,9 @@ the fleet was not ready by the origin, no contact truth arrived), timed out, or 
   jammer or a terrain shadow) the tracks the C2 showed were fresher and more complete than our
   live sensors could have made them; the batch of 10-04 (`docs/eval/`, PLAN.md Phase G) ran
   with it. Its decisions on the cut aircraft's own tasking (voids, approvals inside a cut) do
-  not depend on sensing; what it showed about the tracks near a cut vehicle does.
+  not depend on sensing; what it showed about the tracks near a cut vehicle does. That batch
+  also ran on tidewater's squeezed terrain (2026-11-12, the note at the top): none of its
+  numbers is to be quoted until it is run again.
 - The agent arm's runs are replicates, not scenarios: its proposer ignores the storyline, so
   every scenario sharing a picture gives it the same tracks at the same times. The report
   shows it per situation, with the target's affiliation confidence at proposal and at the

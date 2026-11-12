@@ -151,7 +151,10 @@ Run 101's stand-ins started 20.6 s late because a `cargo build` of the simulator
 while `sim/swarm.py` asked cargo for the stand-in engine; the median leaves it out. From here on no
 build runs beside a full-stack run. With these values the simulator agreed with the three
 calibration runs on 9 of 9 proposals (an agreement of 1.0 by this file's definition); that is
-in-sample, the gate is not.
+in-sample, the gate is not. (2026-11-12: the calibration runs, full stack and headless, ran on
+tidewater's terrain and the baked grid from before bd murmur-cbjn's fix, commit 60ac4b4, squeezed
+north-south by about 1.27; the grids were re-baked and Harbor watch re-laid on 2026-11-12. Not to
+be quoted until rerun.)
 
 ## Fix round 1, 2026-10-10 (written before the second gate run)
 
@@ -163,6 +166,10 @@ each vehicle and direction its own stream of draws, so every full-stack Harbor w
 same draws (PUMA 2 failed safe at 317 s in all ten) and every headless episode other ones. The
 reviewer's diagnostic, a simulator change not run under this file's rules and so not a gate
 result: with the headless emulator on seed 1 as well, seeds 1 to 10 agree 25/26 = 0.962.
+(2026-11-12: both G1 runs, seeds 1 to 10 and 11 to 20, and this diagnostic ran on tidewater's
+terrain and the baked grid from before bd murmur-cbjn's fix, commit 60ac4b4, squeezed north-south
+by about 1.27, which placed the Pumas' terrain shadow west of the bridge; the grids were re-baked
+and Harbor watch re-laid on 2026-11-12. Not to be quoted until rerun.)
 
 **What changed in the simulator and the runner** (all committed before the re-run):
 

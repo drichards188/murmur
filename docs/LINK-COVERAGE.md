@@ -145,7 +145,10 @@ once), F11 (link trouble: an RF jammer, or the AUV made to surface; neither is p
 before), 60 episodes: `none`, `oracle-v3-honest`, and `oracle-v3-honest-linked`, the same honest
 ceiling where its link map would be reading `get_link_coverage` for the orbit it would order (from
 the vehicle's position; it plans only looks whose link holds). Not the San Diego map, not the other
-families, no model agent.
+families, no model agent. (2026-11-12: these 60 episodes ran on the baked grids from before bd
+murmur-cbjn's fix, commit 60ac4b4, squeezed north-south by about 1.27, so the terrain both the
+predictor and the emulator read was off; the grids were re-baked and the world re-laid on
+2026-11-12. Not to be quoted until rerun.)
 
 | family | `none` | honest | honest + predictor | orders ended in a failsafe after a lost link (honest / + predictor) |
 |---|---|---|---|---|

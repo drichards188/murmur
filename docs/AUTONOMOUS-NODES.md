@@ -518,7 +518,10 @@ missile sank HUNTER 1 and the chain stopped. The owner chose to redesign the tar
 
 Measured headless (physical model, world v3 on the situation's map, autoplay with the playbook,
 the scripted signers, the episode seed as the contacts' seed; every audit log replayed with its
-anchors: "every decision reproduced exactly", "ANCHORS OK"):
+anchors: "every decision reproduced exactly", "ANCHORS OK"). (2026-11-12: these episodes ran on
+the baked grids from before bd murmur-cbjn's fix, commit 60ac4b4, squeezed north-south by about
+1.27; the grids were re-baked and the world re-laid on 2026-11-12. Not to be quoted until
+rerun.)
 
 | | the drone at HUNTER 1 (before) | at HUNTER 2 (now) |
 |---|---|---|

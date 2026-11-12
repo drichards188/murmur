@@ -19,6 +19,22 @@ pre-registration and the blind check are D's. **Scoring v2 is
 frozen**: its labels (version 2), its families, its oracle and every v1 and v2 golden and record are
 unchanged; v3 is built beside it (`eval/headless/v3/`), importing v2's code where it is unchanged.
 
+**Terrain, 2026-11-12.** Every result in this file is headless, on golden-gate-v3, san-diego or
+golden-gate-scale, and every one from before 2026-11-12 used tidewater's terrain squeezed
+north-south by about 1.27 toward each box's middle: features up to about 1.3 km off at the Golden
+Gate and 1.5 km in San Diego's box (whose terrain is also ETOPO 2022's 15 arc-second cells, about
+450 m, not a coastal DEM). Commit 60ac4b4 fixed it (bd murmur-cbjn); on 2026-11-12 the grids were
+re-baked and the worlds re-laid (spawns, piers, opening orders and traffic laid out on the squeezed
+grids, the Crissy Field ground station's height). The grids decide the domain rule, depth and
+bathymetry, the physical model's terrain masking, the currents and the link emulator's line of
+sight, so these results are not reproducible and are not to be quoted until they are run again
+(their records were deleted, so nothing can be re-scored). To be rerun before quoting: sections 11
+(dev seeds 5000-5089), 12 (5400-5419, with 12.2's blockers and 12.3's real-time factors), 13.7 (the
+ruler's partial batch, 5160-5194), 14 (5300-5369, with 14.4's smokes), 15 (5370-5379), 15.1
+(5480-5489) and 16 (5470-5474). 17.6's sort is drawn from them and is provisional until they are.
+13.6's figures from the planner's tables are the sensing model's own predictions on open sight
+lines and do not read the terrain.
+
 ## 0. Coverage (the standing rule)
 
 Every v3 report and results file opens with this statement, filled from its own batch.
@@ -673,6 +689,8 @@ episode's end). Model results only.
 
 ### 11.1 Need served, per family and world
 
+(2026-11-12: computed on the squeezed terrain; not to be quoted until rerun, the note at the top.)
+
 | family | world | `none` | `random-valid` | oracle | 10.1 | types able (min) | top cause of the oracle's losses |
 |---|---|---|---|---|---|---|---|
 | F1 fast boat | Golden Gate | 18/30 (60 %) | 18/30 | 23/30 (77 %) | both fail | 7 | `looked:seahunter` 43 % of 7 |
@@ -796,6 +814,9 @@ collect products are judged on their orders (choice 21); effects are abstract; n
 Model results only.
 
 ### 12.1 Needs served or decisions right, per family and world
+
+(2026-11-12: computed on the squeezed terrain, 12.2's blockers too; not to be quoted until rerun,
+the note at the top.)
 
 | family | world | `none` | `random-valid` | oracle | harmful / unwarranted (any agent) | top single cause of the losses |
 |---|---|---|---|---|---|---|
@@ -1144,6 +1165,8 @@ building the ceiling's look model; none was tuned around.
 
 ### 13.7 Dev batch 1, partial (seeds 5160-5194, stopped 2026-10-25)
 
+(2026-11-12: on the squeezed terrain; not to be quoted until rerun, the note at the top.)
+
 **A partial batch: development evidence, not an audit.** The owner stopped the batch on 2026-10-25
 (large runs are for the one final validation); this summarises the 3,984 of its 6,300 episodes on
 disk (63 %), with `oracle-v3` as the ceiling and the rungs built on it (the foreknowledge ceiling
@@ -1207,6 +1230,8 @@ AIS exists only on the surface (choice 31); conditions hold for an episode; a GN
 change what the spoofed vehicle's sensors see (14.4; fixed since this check). Model results only.
 
 ### 14.1 Need served, per family and world
+
+(2026-11-12: computed on the squeezed terrain; not to be quoted until rerun, the note at the top.)
 
 Need served is pooled over each family's eligible needs (F7 three a situation, F10 one or two, the
 others one). "After opening" is the median time to serve of the needs served after they opened (most
@@ -1575,6 +1600,9 @@ result opens with section 0's coverage statement.
    it (a sensing-model change, A1's) before the first practice batch.
 
 ### 17.6 The families sorted (from the dev results above; provisional)
+
+(2026-11-12: every result this sort reads ran on the squeezed terrain; it stands as provisional
+until they are rerun, the note at the top.)
 
 Most room figures were measured against the basic oracle (11, 14) or the foreknowledge ceiling
 (13.7), not the reachable ceiling, which has run only on F2, F3 and F6 (15, 16). The playbook itself

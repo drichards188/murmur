@@ -17,6 +17,25 @@ Scope: **Part A, the headless bench, in full.** Part B, the storyline bench: req
 its metrics a later dated section (decision D3). Every v1 number is superseded as evidence at the
 freeze (section 12).
 
+**Terrain, 2026-11-12.** Every result in this file is headless, on the Golden Gate's baked grids,
+and every one from before 2026-11-12 used tidewater's terrain squeezed north-south by about 1.27
+toward the box's middle (Fort Point's features 335 m off, up to about 1.3 km at the box's edges;
+1.5 km in San Diego's box). Commit 60ac4b4 fixed it (bd murmur-cbjn); on 2026-11-12 the grids were
+re-baked and what was laid out on them re-laid (among it Harbor watch's cargo ship's route, now east
+of Point Blunt, the two-at-once generator, which now rounds Point Bonita for bearings north of about
+268 degrees, and the Crissy Field ground station's height, 5.0 m to the DEM's 1.2 m). The v2 world
+reads that terrain for the link emulator's line of sight (the Pumas' link shadows) and draws the
+families' boats on it, so these results are not reproducible and are not to be quoted until they
+are run again; re-scoring their records re-reads the old terrain and does not make them current.
+To be rerun before quoting: section 0's figures from the 2026-10-21 data; 0.1's world smoke; 0.3's
+world pilot (1000-1099) and the ladder (1100-1199, and the rungs on 2600-2601); 0.4's gjk rescore
+counts; 0.5's blind check and its rescore (the stage 1 model pilot's 67 episodes and the judge),
+the validation on 1500-1599, the world change's figures (1000-1029), the landing check and the dev
+confirmation (1250-1299) and the dev evidence (1200-1249); 0.6's revalidation (2000-2099), its
+truth-step figures on 1100-1199 and 1250-1299, and the block's mechanism (a Puma sent into link
+shadow by the south shore: where that shadow lies, the squeezed grid decided). v2 is retired for
+new work (docs/WORLD-V3-PLAN.md, W5): a rerun is needed only if a v2 result is to be quoted again.
+
 ## 0. Why the world changes first (decision D8)
 
 In today's headless world a look cannot matter. REAPER 1 (MQ-9B-class, EO/IR 40 km nominal,
@@ -65,7 +84,8 @@ any candidate are not consulted.
 
 The world pilot (dev seeds 1000-1099) served, pooled: `none` 4.8 %, `random-valid` 4.9 %, the
 playbook 7.2 %, the oracle 100 %; 10.1 failed in link-cut and stuck-vehicle (random-valid not below
-the playbook). The playbook starts its looks too late and loses Pumas to link shadow (murmur-hei),
+the playbook). (2026-11-12: on the squeezed terrain; not to be quoted until rerun, the note at the
+top.) The playbook starts its looks too late and loses Pumas to link shadow (murmur-hei),
 and setting it up for the mission failed on the drifter off Mile Rock. The owner approved a change
 of approach (2026-10-21): agents are compared with each other on outcomes, and the scorer is
 checked by a ladder of handicapped oracles, not by the playbook. Each rung is the oracle (section
@@ -475,7 +495,8 @@ check of the new code ran on dev seeds 1000-1499.
        `useless_share` (link-cut-mid-look +49.5 [+47.0, +51.7] points, stuck-vehicle +49.0 [+46.4,
        +50.0], elsewhere +89 to +100); fault needs met in low-battery +92.0 [+82.0, +98.0] points
        (none 4 of 50, the oracle 50 of 50).
-     - **The pooled moves** all as predicted, on 341 to 350 situations (50 for fault needs met):
+     - **The pooled moves** all as predicted, on 341 to 350 situations (50 for fault needs met;
+       2026-11-12: on the squeezed terrain, not to be quoted until rerun):
 
        | perturbation | metric | predicted | minus `oracle-honest` [95 % CI] |
        |---|---|---|---|
@@ -621,7 +642,8 @@ requires of a fix. 0.5 stays as pre-registered: `validate.py --section 0.5` and 
      guard** (block 4): no `oracle-honest` move lies wholly the wrong way in any family.
    - **Null fidelity** 900 of 900; **the world's conditions** hold (`none` 0.0 % in six families
      with eligible needs and 23.1 % in two-at-once; the oracle 100 % in every one).
-   - **The pooled moves**, on 692 to 700 situations (100 for fault needs met):
+   - **The pooled moves**, on 692 to 700 situations (100 for fault needs met; 2026-11-12: on the
+     squeezed terrain, not to be quoted until rerun):
 
      | perturbation | metric | predicted | minus `oracle-honest` [95 % CI] |
      |---|---|---|---|

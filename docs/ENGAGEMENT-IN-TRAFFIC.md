@@ -18,6 +18,10 @@ on one of ours. The engine's keep-out refused nearly every attempt:
 - With a munition loitering 700 to 1,000 m off the target (a span of about 57 s), 4 attempts
   passed; none was executed.
 
+(2026-11-12: these figures ran on the baked grids from before bd murmur-cbjn's fix, commit
+60ac4b4, squeezed north-south by about 1.27, San Diego's on ETOPO 2022's cells of about 450 m;
+the grids were re-baked and the worlds re-laid on 2026-11-12. Not to be quoted until rerun.)
+
 The rules are working as designed (fail closed: what might be there counts as there). The
 result is that in a realistic harbour the machine answers "no" to every engagement, and no
 person can make the call. For a testbed built to measure whether human judgment over

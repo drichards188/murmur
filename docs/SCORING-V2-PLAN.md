@@ -11,6 +11,16 @@ trusted, and what has to be decided first. Grounded in two audits of the current
 and a literature review (references at the end; the research agents read each source, marked
 [verify] where only an abstract or a secondary source was read).
 
+**Terrain, 2026-11-12.** This plan quotes no result of its own, but every headless and storyline
+result it refers to (the 2026-10-21 audits' data, the comparisons section 4 item 5 cites), and
+every v2 result produced under it (eval/SCORING-V2.md, 0.1 to 0.6), ran before 2026-11-12 on
+tidewater's terrain squeezed north-south by about 1.27 (up to about 1.3 km off at the Golden Gate,
+1.5 km at San Diego). Commit 60ac4b4 fixed it (bd murmur-cbjn); on 2026-11-12 the grids were
+re-baked and the worlds re-laid. Those results are not reproducible and are not to be quoted until
+rerun. Re-scoring existing records (section 4 item 6, AC11) re-reads the old terrain baked into
+them: it can mark v1 numbers superseded, but it makes none of them current. What to rerun is
+listed in eval/SCORING-V2.md's note of the same date.
+
 ## 0. Bottom line
 
 Every evaluation number produced so far is uninterpretable, for four reasons that recur on both

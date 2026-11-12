@@ -14,6 +14,17 @@ by construction. Its numbers test the harness, the scenarios and what the C2 put
 a decider; they are never human data, and their intervals are Monte Carlo variation of the
 model. Claims about people need participants: study mode, below.
 
+**Terrain, 2026-11-12.** Each batch's `tidewater serve` gives its runs terrain line of sight and
+the domain rule (Isolation, below), and until bd murmur-cbjn that terrain was squeezed north-south
+by about 1.27 toward the box's middle (features up to about 1.3 km off at the Golden Gate, 1.5 km
+at San Diego). Commit 60ac4b4 fixed it; on 2026-11-12 the headless grids were re-baked and the
+worlds re-laid. Every storyline batch and single run before that date, the agent+model arm's
+included, ran on the squeezed terrain, the latest full batch kept in `docs/eval/` (10-04) among
+them: not reproducible, and not to be quoted until rerun. The engagement suite (`eval/engage.py`),
+the identification measurement (`eval/ident.py`) and the keep-out measurement (`eval/keepout.py`)
+are not affected: they run on the scenario runner's and the probe's own box terrain, not
+tidewater's.
+
 ## Quick start
 
 ```
@@ -33,7 +44,8 @@ A batch writes `eval/results/<id>/` (git-ignored): `batch.json`, one directory p
 (`<scenario>/<arm>/seed-<n>/`), `report.html` (self-contained: inline CSS and SVG, no
 scripts, nothing fetched) and `summary.json`. The report is recomputed from the raw logs, so a
 metric fixed later applies to old batches. Nothing is published anywhere. The latest full
-batch's report and summary are kept in `docs/eval/`.
+batch's report and summary are kept in `docs/eval/` (10-04, on the squeezed terrain: the note
+above).
 
 ## One run
 
