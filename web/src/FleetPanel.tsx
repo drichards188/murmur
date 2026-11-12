@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { emuCause } from './linkEmu'
 import { type Reveal, scrollSpanIntoView, useFlash } from './reveal'
 import { symbolSvg } from './symbols'
@@ -51,7 +51,7 @@ interface RowProps {
 }
 
 /** Two controls: the left strip selects the vehicle for tasking; the rest opens its details. */
-function Row({ v, selected, open, flash, onToggle, onDeselect, onDetails, reach }: RowProps) {
+const Row = memo(function Row({ v, selected, open, flash, onToggle, onDeselect, onDetails, reach }: RowProps) {
   const stale = isStale(v)
   const lc = linkClass(v)
   return (
@@ -148,7 +148,7 @@ function Row({ v, selected, open, flash, onToggle, onDeselect, onDetails, reach 
       </button>
     </div>
   )
-}
+})
 
 const GROUPS: { title: string; match: (v: Vehicle) => boolean }[] = [
   { title: 'Air', match: (v) => domainOf(v) === 'air' },
@@ -217,6 +217,18 @@ export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails
     return it && it.kind === 'row' ? String(it.v.uid) : null
   }
   const flash = useFlash(reveal, firstRevealed)
+  // the rows take these, the same functions every render, so that a row whose vehicle did not
+  // change is not rendered again; they call the latest callbacks (murmur-4xq3)
+  const latest = useRef({ onToggle, onDeselect, onDetails })
+  latest.current = { onToggle, onDeselect, onDetails }
+  const act = useMemo(
+    () => ({
+      onToggle: (uid: number) => latest.current.onToggle(uid),
+      onDeselect: (uid: number) => latest.current.onDeselect(uid),
+      onDetails: (uid: number) => latest.current.onDetails(uid),
+    }),
+    [],
+  )
   useEffect(() => {
     const el = list.current
     if (!el || !reveal) return
@@ -285,9 +297,9 @@ export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails
                     selected={selected.has(it.v.uid)}
                     open={detailsUid === it.v.uid}
                     flash={flash === String(it.v.uid)}
-                    onToggle={onToggle}
-                    onDeselect={onDeselect}
-                    onDetails={onDetails}
+                    onToggle={act.onToggle}
+                    onDeselect={act.onDeselect}
+                    onDetails={act.onDetails}
                     reach={reachBadges?.get(it.v.uid)}
                   />
                 </div>

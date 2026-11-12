@@ -254,8 +254,12 @@ export function callsign(v: Pick<Vehicle, 'uid' | 'kind'> & { sysid?: number; id
 
 /** A vehicle's name by its uid as the engine's evidence carries it ("1" -> "HUNTER 1"). */
 export function vehicleNamer(vehicles: Vehicle[]) {
+  // by uid, built on the first call: an act's evidence names a vehicle for each sensor, and a
+  // find over a fleet of thousands for each was most of what the acts cost (murmur-4xq3)
+  let by: Map<string, Vehicle> | null = null
   return (uid: string) => {
-    const v = vehicles.find((x) => String(x.uid) === uid)
+    by ??= new Map(vehicles.map((x) => [String(x.uid), x]))
+    const v = by.get(uid)
     return v ? callsign(v) : `vehicle ${uid}`
   }
 }

@@ -47,10 +47,12 @@ function applyDelta(prev: BridgeState, d: Delta): BridgeState {
  *  bridge's clock (in each message), not this browser's. A lite snapshot says only whether
  *  the link is lost, and when the last packet came once it is. */
 function withAges(s: BridgeState): BridgeState {
-  const vehicles = s.vehicles.map((v) => ({
-    ...v,
-    link: { ...v.link, since_last_ms: v.link.last_rx_t == null ? null : Math.max(0, (s.t - v.link.last_rx_t) * 1000) },
-  }))
+  // a vehicle whose age has not changed (a lite one that is heard from has none) keeps its object,
+  // so what is built from it (a list row) can tell it did not change; the rest get a new one
+  const vehicles = s.vehicles.map((v) => {
+    const since = v.link.last_rx_t == null ? null : Math.max(0, (s.t - v.link.last_rx_t) * 1000)
+    return 'since_last_ms' in v.link && v.link.since_last_ms === since ? v : { ...v, link: { ...v.link, since_last_ms: since } }
+  })
   generations.set(vehicles, generation)
   return { ...s, vehicles }
 }

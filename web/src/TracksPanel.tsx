@@ -23,6 +23,7 @@ import { FLAG_LABEL, resolveFlag } from './ident'
 import { IdentifyForm } from './IdentifyForm'
 import { DeclarationBlock, DeclareControls } from './Declaration'
 import { type Blocking, waited } from './blocking'
+import { Lazy } from './Lazy'
 
 /** The tracks section, pinned above the task panel (Phase C2): every contact our sensors hold, ranked hostile, suspect,
  *  unknown first; click a row for what the estimate rests on (sources, confidence, age,
@@ -69,6 +70,10 @@ export function TrackBadges({ tracks, now }: { tracks: TracksMessage | null; now
     </span>
   )
 }
+
+/** rows to a chunk, and a row's height in px before any has been drawn */
+const CHUNK = 25
+const ROW_EST = 56
 
 function pct(x: number) {
   return `${Math.round(100 * x)}%`
@@ -273,6 +278,7 @@ export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus
   const nowMs = now()
   const staleAfterS = tracks?.stale_after_s ?? 10
   const list = sortTracks(tracks?.tracks ?? [])
+  const chunks = Array.from({ length: Math.ceil(list.length / CHUNK) }, (_, i) => list.slice(i * CHUNK, (i + 1) * CHUNK))
   const stale = list.filter((t) => isTrackStale(t, nowMs, staleAfterS)).length
   const box = useRef<HTMLDivElement>(null)
   const flash = useFlash(reveal, (ids) => ids[0] ?? null)
@@ -309,11 +315,19 @@ export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus
           <p className="tk-note">Symbols fade and their uncertainty ring grows with time since the last detection. Hostile takes a declaration: an operator&apos;s, or the engine&apos;s rule on a hostile act our sensors observed (marked BY RULE until an operator confirms it). Proximity alone never declares. From our sensors only.</p>
         )}
         {!!tracks?.lost?.length && <p className="tk-note">Red rings on the map show the possible area of a lost hostile contact. They remain in engagement keep-out checks after the contact leaves sensor view.</p>}
-        {list.map((t) => (
-          <div key={t.id} data-track-id={t.id} data-tutorial="track-row" className={flash === t.id ? 'tk-flash' : undefined}>
-            <Row t={t} nowMs={nowMs} staleAfterS={staleAfterS} sel={selected === t.id} onClick={() => onSelect(selected === t.id ? null : t.id)} />
-            {selected === t.id && <Detail t={t} nowMs={nowMs} now={now} staleAfterS={staleAfterS} vehicles={vehicles} onFocus={() => onFocus(t)} onEngage={onEngage ? () => onEngage(t.id) : undefined} holding={(blocking ?? []).find((b) => b.track === t.id)} />}
-          </div>
+        {/* the rows go in chunks, each built only near the view (Lazy): a Lazy a row was most of
+            what the list cost to render with hundreds of tracks */}
+        {chunks.map((chunk) => (
+          <Lazy key={chunk[0].id} className="tk-chunk" estimate={chunk.length * (ROW_EST + 4)} force={chunk.some((t) => t.id === selected || t.id === flash || t.id === reveal?.ids[0])}>
+            {() =>
+              chunk.map((t) => (
+                <div key={t.id} data-track-id={t.id} data-tutorial="track-row" className={flash === t.id ? 'tk-flash' : undefined}>
+                  <Row t={t} nowMs={nowMs} staleAfterS={staleAfterS} sel={selected === t.id} onClick={() => onSelect(selected === t.id ? null : t.id)} />
+                  {selected === t.id && <Detail t={t} nowMs={nowMs} now={now} staleAfterS={staleAfterS} vehicles={vehicles} onFocus={() => onFocus(t)} onEngage={onEngage ? () => onEngage(t.id) : undefined} holding={(blocking ?? []).find((b) => b.track === t.id)} />}
+                </div>
+              ))
+            }
+          </Lazy>
         ))}
         {(tracks?.lost ?? []).length > 0 && (
           <section className="tk-lost" aria-label="Lost contacts">

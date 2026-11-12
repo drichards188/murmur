@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { EMPTY_ROUTE, planDrawing, routeDrawing, type LinkRouteDrawing } from './coverage'
 import { DryRun } from './DryRun'
 import { useDryRun } from './useDryRun'
@@ -6,6 +6,7 @@ import type { Draft } from './MapView'
 import type { TaskKind, Tasking, Vehicle } from './types'
 import { callsign, LIFECYCLE, opEnding } from './types'
 import { Bluf, BlufReason } from './Bluf'
+import { Lazy } from './Lazy'
 import { reasonBluf } from './bluf'
 import { TaskResult, type TaskOutcome } from './TaskResult'
 import { tierLabel, type Intent, type SpaceRuns } from './decisions'
@@ -74,6 +75,65 @@ function Lifecycle({ state }: { state: string }) {
   )
 }
 
+interface CardProps {
+  t: Tasking
+  /** what the card's content rests on (see `sigs`): equal signatures, same card */
+  sig: string
+  label: string
+  moved: number
+  ended: string | null
+  authorized: string | null
+  ago: string
+  nameOf: (uid: number) => Vehicle | undefined
+}
+
+/** One command log card: a tasking and each vehicle's op in it. A tasking to a swarm has a
+ *  hundred ops, so it is built only while it is near the log's view (Lazy) and only re-rendered
+ *  when its ops changed or its age text did. */
+const TaskingCard = memo(
+  function TaskingCard({ t, label, moved, ended, authorized, ago, nameOf }: CardProps) {
+    return (
+      <Lazy as="section" className="tcard" estimate={36 + t.ops.length * 26}>
+        {() => (
+        <>
+        <div className="tcard-head">
+          <strong>{label}</strong>
+          <span className="muted">#{t.id}</span>
+          {moved > 0 && <span className="muted">moved {moved}x with it</span>}
+          <span className="muted right">{ago} ago</span>
+        </div>
+        {authorized && <p className="muted">authorized by you ({authorized})</p>}
+        {ended && (
+          <BlufReason
+            className="tcard-ended"
+            text={ended}
+            ctx={{ who: t.ops[0] ? (() => { const v = nameOf(t.ops[0].uid); return v ? callsign(v) : undefined })() : undefined }}
+          />
+        )}
+        {t.ops.map((o) => {
+          const v = nameOf(o.uid)
+          const ending = opEnding(o)
+          const parts = reasonBluf(o.detail, { who: v ? callsign(v) : undefined })
+          if (ending) parts.headline = !parts.headline ? ending : parts.headline.toLowerCase().includes(ending.toLowerCase()) ? parts.headline : `${ending}: ${parts.headline}`
+          if (o.progress && o.progress !== o.detail) parts.bullets = [...parts.bullets, o.progress]
+          return (
+            <div key={o.id} className={`op ${o.state}`}>
+              <span className="op-name" title={v?.identity ? `${v.identity.name} · ${v.identity.role}` : undefined}>
+                {v ? callsign(v) : o.uid}
+              </span>
+              <Lifecycle state={o.state} />
+              <Bluf className="op-detail compact" parts={parts} />
+            </div>
+          )
+        })}
+        </>
+        )}
+      </Lazy>
+    )
+  },
+  (a, b) => a.sig === b.sig && a.label === b.label && a.moved === b.moved && a.ended === b.ended && a.authorized === b.authorized && a.ago === b.ago && a.nameOf === b.nameOf && a.t.id === b.t.id,
+)
+
 export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draft, setDraft, taskings, pendingIds, onInbox, space, now, onLinkRoute, intents }: Props) {
   const runs = space?.runs ?? []
   const scen = now ? scenarioNow(space, now) : null
@@ -100,6 +160,7 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
     if (!e) return t.task.toUpperCase()
     return t.params.look ? `IDENTIFY ${e.track}` : `IDENTIFY ${e.track}, then ${t.task.toUpperCase()}`
   }
+  const shownTaskings = taskings.filter((t) => !identify.has(t.intent_id ?? -1) || identify.get(t.intent_id ?? -1)?.newest === t.id)
   const [kind, setKind] = useState<PanelKind>('orbit')
   // rules 21: what sending an identify order said (sent, or waiting in the Inbox)
   const [idSent, setIdSent] = useState<string | null>(null)
@@ -109,7 +170,19 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
   /** command log notes: tasking id -> the human tier its sender authorized */
   const [authorized, setAuthorized] = useState<Map<number, string>>(new Map())
   const byUid = new Map(vehicles.map((v) => [v.uid, v]))
-  const historyByUid = new Map(historyVehicles.map((v) => [v.uid, v]))
+  // the command log's cards look vehicles up by uid for their names: a lookup that is the same
+  // function every render (so a card is not re-rendered for it), over the latest vehicles, its
+  // map built only when a card is
+  const historyRef = useRef({ vehicles: historyVehicles, by: null as Map<number, Vehicle> | null })
+  if (historyRef.current.vehicles !== historyVehicles) historyRef.current = { vehicles: historyVehicles, by: null }
+  const nameOf = useCallback((uid: number) => {
+    const h = historyRef.current
+    h.by ??= new Map(h.vehicles.map((v) => [v.uid, v]))
+    return h.by.get(uid)
+  }, [])
+  // a card is re-rendered only when what it shows changed: the bridge sends the task list whole
+  // each time, so identity says nothing; `sigs` is each tasking's ops' state and words
+  const sigs = useMemo(() => new Map(taskings.map((t) => [t, t.ops.map((o) => `${o.id}:${o.uid}:${o.state}:${o.detail}:${o.progress}`).join('|')])), [taskings])
   const sel = [...selected].sort((a, b) => a - b)
   const limits = usePlatformLimits()
   const selVehicles = sel.map((s) => byUid.get(s)).filter((v): v is Vehicle => v != null)
@@ -364,40 +437,22 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
         {space &&
           scen != null &&
           runs.map((r) => <SpaceRunCard key={`s${r.intent_id}`} run={r} map={space.clock} scen={scen} onOpen={onInbox} cancellable={space.cancellable ?? false} />)}
-        {taskings.filter((t) => !identify.has(t.intent_id ?? -1) || identify.get(t.intent_id ?? -1)?.newest === t.id).map((t) => (
-          <section key={t.id} className="tcard">
-            <div className="tcard-head">
-              <strong>{identifyLabel(t)}</strong>
-              <span className="muted">#{t.id}</span>
-              {(identify.get(t.intent_id ?? -1)?.moved ?? 0) > 0 && <span className="muted">moved {identify.get(t.intent_id ?? -1)?.moved}x with it</span>}
-              <span className="muted right">{age(t.created, now ? now() : Date.now())} ago</span>
-            </div>
-            {authorized.has(t.id) && <p className="muted">authorized by you ({authorized.get(t.id)})</p>}
-            {identify.get(t.intent_id ?? -1)?.ended && (
-              <BlufReason
-                className="tcard-ended"
-                text={identify.get(t.intent_id ?? -1)?.ended}
-                ctx={{ who: t.ops[0] ? (() => { const v = historyByUid.get(t.ops[0].uid); return v ? callsign(v) : undefined })() : undefined }}
-              />
-            )}
-            {t.ops.map((o) => {
-              const v = historyByUid.get(o.uid)
-              const ending = opEnding(o)
-              const parts = reasonBluf(o.detail, { who: v ? callsign(v) : undefined })
-              if (ending) parts.headline = !parts.headline ? ending : parts.headline.toLowerCase().includes(ending.toLowerCase()) ? parts.headline : `${ending}: ${parts.headline}`
-              if (o.progress && o.progress !== o.detail) parts.bullets = [...parts.bullets, o.progress]
-              return (
-                <div key={o.id} className={`op ${o.state}`}>
-                  <span className="op-name" title={v?.identity ? `${v.identity.name} · ${v.identity.role}` : undefined}>
-                    {v ? callsign(v) : o.uid}
-                  </span>
-                  <Lifecycle state={o.state} />
-                  <Bluf className="op-detail compact" parts={parts} />
-                </div>
-              )
-            })}
-          </section>
-        ))}
+        {shownTaskings.map((t) => {
+          const e = identify.get(t.intent_id ?? -1)
+          return (
+            <TaskingCard
+              key={t.id}
+              t={t}
+              sig={sigs.get(t) ?? ''}
+              label={identifyLabel(t)}
+              moved={e?.moved ?? 0}
+              ended={e?.ended ?? null}
+              authorized={authorized.get(t.id) ?? null}
+              ago={age(t.created, now ? now() : Date.now())}
+              nameOf={nameOf}
+            />
+          )
+        })}
       </div>
     </aside>
   )

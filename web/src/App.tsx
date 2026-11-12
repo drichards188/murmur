@@ -381,7 +381,12 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     weaponVictims.current.set(key, v.position)
     return v.position
   }, [])
-  const nameOf = useCallback((uid: string) => vehicleNamer(victimsRef.current.vehicles)(uid), [])
+  const namer = useRef<{ vehicles: Vehicle[]; name: (uid: string) => string } | null>(null)
+  const nameOf = useCallback((uid: string) => {
+    const vs = victimsRef.current.vehicles
+    if (namer.current?.vehicles !== vs) namer.current = { vehicles: vs, name: vehicleNamer(vs) }
+    return namer.current.name(uid)
+  }, [])
   const actDraws = useMemo<ActDrawing[]>(() => {
     const { vehicles: vs, tracks: ts } = victimsRef.current
     const victimAt = (a: Against, t: number): Victim | null => {
