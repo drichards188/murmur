@@ -1,4 +1,6 @@
 import { PathLayer, TextLayer } from '@deck.gl/layers'
+import type { MapScreen } from './aloft'
+import { ALL_FULL, centred, textWidth, type LabelCandidate, type LabelPlan, type Priority } from './declutter'
 import type { Intent } from './decisions'
 import { fmtDuration } from './decisions'
 import { leadingAt } from './estimate'
@@ -22,7 +24,9 @@ import { isStale } from './types'
  *  - an order whose start went out before the link was lost, unconfirmed, and no longer in
  *    force (voided, queued, in the inbox): "MAY BE RUNNING", its tasking line kept.
  *
- *  Drawn at sea level, over the terrain and the water (never hidden by either). */
+ *  Drawn at sea level, over the terrain and the water (never hidden by either). Their labels go
+ *  through the one label budget (declutter.ts, R2): "ORDERED i16" short, the full line where it
+ *  fits; a MAY BE RUNNING (a human decides) first, the rest as our vehicles with an alert. */
 
 type RGBA = [number, number, number, number]
 const QUEUED: RGBA = [242, 193, 78, 235]
@@ -38,8 +42,13 @@ interface Dash {
 }
 
 interface Label {
+  /** the label budget's key (`o:...`) */
+  key: string
   at: LngLat
   text: string
+  /** the short form ("ORDERED i16") */
+  short: string
+  priority: Priority
   color: RGBA
   /** under a vehicle symbol rather than beside a path */
   badge?: boolean
@@ -146,8 +155,8 @@ export interface OrderInput {
   nowMs: number
 }
 
-export function buildOrderLayers(input: OrderInput) {
-  const onTop = { depthCompare: 'always' as const, depthWriteEnabled: false }
+/** The queued orders' dashed paths and every label, before the budget. */
+function orderShapes(input: OrderInput): { dashed: Dash[]; labels: Label[] } {
   const dashed: Dash[] = []
   const labels: Label[] = []
   const badged = new Set<string>()
@@ -156,18 +165,18 @@ export function buildOrderLayers(input: OrderInput) {
     if (path) for (const d of dashes(path)) dashed.push({ path: d, color: QUEUED })
     const left = i.queue ? fmtDuration((i.queue.expires_t - input.nowMs) / 1000) : '?'
     const at = anchorOf(i, input.vehicles)
-    if (at) labels.push({ ...at, text: `QUEUED i${i.id} ${i.kind} · ${shortReason(i)} · ${left} left`, color: QUEUED })
+    if (at) labels.push({ ...at, key: `o:q:${i.id}`, text: `QUEUED i${i.id} ${i.kind} · ${shortReason(i)} · ${left} left`, short: `QUEUED i${i.id}`, priority: 3, color: QUEUED })
     for (const u of i.uids) badged.add(u)
   }
   for (const v of input.vehicles) {
     const at = badged.has(String(v.uid)) ? shownAt(v, input.nowMs) : null
-    if (at) labels.push({ ...at, text: 'QUEUED', color: QUEUED, badge: true })
+    if (at) labels.push({ ...at, key: `o:b:${v.uid}`, text: 'QUEUED', short: 'QUEUED', priority: 3, color: QUEUED, badge: true })
   }
   // resumed under way after a bridge restart: followed once its vehicles connect
   for (const i of input.intents) {
     if (!i.follow_pending) continue
     const at = anchorOf(i, input.vehicles)
-    if (at) labels.push({ ...at, text: `RESUMED i${i.id} ${i.kind} · waiting for the vehicle; followed, not sent again`, color: ORDERED })
+    if (at) labels.push({ ...at, key: `o:r:${i.id}`, text: `RESUMED i${i.id} ${i.kind} · waiting for the vehicle; followed, not sent again`, short: `RESUMED i${i.id}`, priority: 3, color: ORDERED })
   }
   // sent, not yet confirmed by telemetry: the tasking's ops still sent or acked
   const byId = new Map(input.taskings.map((t) => [t.id, t]))
@@ -183,7 +192,10 @@ export function buildOrderLayers(input: OrderInput) {
     const lost = waiting.some((o) => o.detail.startsWith('link lost'))
     labels.push({
       ...at,
+      key: `o:o:${i.id}`,
       text: `ORDERED i${i.id} ${i.kind} · not yet confirmed (${lost ? 'link lost, waiting' : states})`,
+      short: `ORDERED i${i.id}`,
+      priority: 3,
       color: ORDERED,
     })
   }
@@ -194,8 +206,29 @@ export function buildOrderLayers(input: OrderInput) {
     const t = byId.get(i.tasking_id)
     if (!t || !t.ops.some((o) => o.state === 'unconfirmed' && !o.detail.includes('does not run it now'))) continue
     const at = anchorOf(i, input.vehicles)
-    if (at) labels.push({ ...at, text: `MAY BE RUNNING i${i.id} ${i.kind} · its start went out unconfirmed (${i.state})`, color: MAYBE })
+    if (at) labels.push({ ...at, key: `o:m:${i.id}`, text: `MAY BE RUNNING i${i.id} ${i.kind} · its start went out unconfirmed (${i.state})`, short: `MAY BE RUNNING i${i.id}`, priority: 1, color: MAYBE })
   }
+  return { dashed, labels }
+}
+
+/** A label's box: beside its path (10 px right, 24 px up, its bottom there), or under a vehicle. */
+function boxOf(l: Label, text: string): [number, number, number, number] {
+  if (l.badge) return centred(text, 10, 18)
+  return [10, -24 - 11, 10 + textWidth(text, 11), -24]
+}
+
+/** This layer's labels for the budget, at sea level where they are drawn. */
+export function orderLabelCandidates(input: OrderInput, screen: MapScreen): LabelCandidate[] {
+  return orderShapes(input).labels.map((l) => {
+    const at = l.uid == null ? l.at : (drawnPositionOf(l.uid, l.at) ?? l.at)
+    return { key: l.key, at: screen.at(at[0], at[1], 0), short: boxOf(l, l.short), full: boxOf(l, l.text), priority: l.priority }
+  })
+}
+
+export function buildOrderLayers(input: OrderInput, plan: LabelPlan = ALL_FULL) {
+  const onTop = { depthCompare: 'always' as const, depthWriteEnabled: false }
+  const { dashed, labels: all } = orderShapes(input)
+  const labels = all.filter((l) => plan.level(l.key) !== 'none')
   const tick = Math.floor(input.nowMs / 1000)
   return [
     new PathLayer<Dash>({
@@ -212,7 +245,7 @@ export function buildOrderLayers(input: OrderInput) {
       id: 'order-labels',
       data: labels,
       getPosition: (l) => (l.uid == null ? l.at : (drawnPositionOf(l.uid, l.at) ?? l.at)),
-      getText: (l) => l.text,
+      getText: (l) => (plan.level(l.key) === 'full' ? l.text : l.short),
       getSize: (l) => (l.badge ? 10 : 11),
       getColor: (l) => l.color ?? TEXT,
       getTextAnchor: (l) => (l.badge ? 'middle' : 'start'),

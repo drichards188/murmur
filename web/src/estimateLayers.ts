@@ -18,11 +18,17 @@
 // (not selected, details not open) a silent vehicle shows its leading hypothesis only, its region
 // outlined, not filled; in focus, both, filled, as before. `showAll` (the map legend's Show all)
 // draws every one in full.
+//
+// Their labels go through the one label budget (declutter.ts, R2): "EST SKY 12" short, the full
+// line ("EST on its orbit · silent 47 s") in focus, where it fits, or on hover.
 import { IconLayer, LineLayer, PathLayer, PolygonLayer, TextLayer } from '@deck.gl/layers'
+import type { MapScreen } from './aloft'
+import { ALL_FULL, centred, type LabelCandidate, type LabelPlan } from './declutter'
 import { bandPath, BASIS_LABEL, estimateAt, FAILSAFE_LABEL, failsafeAt, regionRings, type Evaluated } from './estimate'
 import { drawnHeight } from './map3d'
 import { frameIcon } from './symbols'
 import type { LngLat, Vehicle } from './types'
+import { callsign } from './types'
 
 export interface EstimateLayerInput {
   /** silent vehicles with an estimate (estimate.ts `estimated`) */
@@ -35,6 +41,8 @@ export interface EstimateLayerInput {
   inFocus?: ReadonlySet<number>
   /** the map legend's Show all: every silent vehicle as if in focus */
   showAll?: boolean
+  /** the label budget's plan (declutter.ts) */
+  plan?: LabelPlan
 }
 
 type RGBA = [number, number, number, number]
@@ -82,7 +90,41 @@ export function hiddenHypotheses(vehicles: Vehicle[], nowMs: number, inFocus: Re
   return n
 }
 
-export function buildEstimateLayers({ vehicles, nowMs, focus, inFocus = NO_UIDS, showAll = false }: EstimateLayerInput) {
+/** A hypothesis's label key for the budget: `e:<uid>:t` the task model, `e:<uid>:b` the branch. */
+const keyOf = (d: Pick<Drawn, 'v' | 'branch'>) => `e:${d.v.uid}:${d.branch ? 'b' : 't'}`
+
+/** This layer's labels for the budget, where the camera draws them: above the leading
+ *  hypothesis's symbol, under the other's. In focus first (the one whose details are open
+ *  always), a leading one as a vehicle with an alert (3), the other last. */
+export function estimateLabelCandidates(input: EstimateLayerInput, screen: MapScreen): LabelCandidate[] {
+  return hypotheses(input).map((d) => {
+    const halfH = frameIcon(d.v, true).halfH
+    const dy = (d.lead ? -1 : 1) * (halfH + 4)
+    return {
+      key: keyOf(d),
+      at: screen.at(d.at.position[0], d.at.position[1], drawnHeight(d.v)),
+      short: centred(shortLabel(d), 10, dy, 5),
+      full: centred(d.label, 10, dy, 5),
+      priority: d.focus || (input.inFocus?.has(d.v.uid) ?? false) ? 1 : d.lead ? 3 : 4,
+      force: d.focus,
+    }
+  })
+}
+
+/** "EST SKY 12", "EST RTL SKY 12": the short label */
+function shortLabel(d: Drawn) {
+  return d.branch && d.v.estimate?.failsafe ? `EST ${FAILSAFE_LABEL[d.v.estimate.failsafe.action]} ${callsign(d.v)}` : `EST ${callsign(d.v)}`
+}
+
+/** The full block of an estimate under the pointer (MapView's tooltip). */
+export function estimateTooltip(layerId: string, object: unknown): { key: string; text: string } | null {
+  if (layerId !== 'estimate-symbols') return null
+  const d = object as Drawn
+  return { key: keyOf(d), text: `${callsign(d.v)} · ${d.label}` }
+}
+
+/** The hypotheses drawn: in focus both, else the leading one. */
+function hypotheses({ vehicles, nowMs, focus, inFocus = NO_UIDS, showAll = false }: EstimateLayerInput): Drawn[] {
   const drawn: Drawn[] = []
   for (const v of vehicles) {
     const e = v.estimate
@@ -125,6 +167,13 @@ export function buildEstimateLayers({ vehicles, nowMs, focus, inFocus = NO_UIDS,
       })
     }
   }
+  return drawn
+}
+
+export function buildEstimateLayers(input: EstimateLayerInput) {
+  const { nowMs, focus, inFocus = NO_UIDS, showAll = false, plan = ALL_FULL } = input
+  const drawn = hypotheses(input)
+  const level = (d: Drawn) => plan.level(keyOf(d))
   // at the height it last reported (the estimate is a plan position)
   const z = (d: Drawn) => drawnHeight(d.v)
   const at = (d: Drawn): XYZ => [d.at.position[0], d.at.position[1], z(d)]
@@ -175,6 +224,8 @@ export function buildEstimateLayers({ vehicles, nowMs, focus, inFocus = NO_UIDS,
     new IconLayer<Drawn>({
       id: 'estimate-symbols',
       data: drawn,
+      // its full block on hover (estimateTooltip)
+      pickable: true,
       billboard: true,
       getPosition: at,
       getIcon: (d) => frameIcon(d.v, true),
@@ -188,9 +239,9 @@ export function buildEstimateLayers({ vehicles, nowMs, focus, inFocus = NO_UIDS,
     // collide when the estimate is still close to where the vehicle was last seen
     new TextLayer<Drawn>({
       id: 'estimate-labels',
-      data: drawn,
+      data: drawn.filter((d) => level(d) !== 'none'),
       getPosition: at,
-      getText: (d) => d.label,
+      getText: (d) => (level(d) === 'full' ? d.label : shortLabel(d)),
       getSize: 10,
       getColor: (d) => a(TEXT, dim(d)),
       getTextAnchor: 'middle',

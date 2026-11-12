@@ -4,8 +4,10 @@
 // and so rebuilt about once a second when a new one comes, never per frame.
 import { PolygonLayer, TextLayer } from '@deck.gl/layers'
 import { useEffect, useState } from 'react'
+import type { MapScreen } from './aloft'
+import { ALL_FULL, textWidth, type LabelCandidate, type LabelPlan } from './declutter'
 import { ALERT_LABEL } from './decisions'
-import { type Outline, type OutlineLabel, swarmOutlines, type SwarmsDoc } from './swarmsModel'
+import type { Outline, OutlineLabel, SwarmsDoc } from './swarmsModel'
 
 export type SwarmsStatus = 'off' | 'loading' | 'ok' | 'missing' | 'error'
 
@@ -66,9 +68,22 @@ const FONT = 'IBM Plex Mono, ui-monospace, monospace'
 // over the scene: an outline at sea level is never hidden by the terrain or the seabed
 const onTop = { depthCompare: 'always' as const, depthWriteEnabled: false }
 
-/** deck.gl layers for the outlines (MapView's `layers` prop), from one summary: memoise them on it. */
-export function buildSwarmLayers(doc: SwarmsDoc | null, selected: string | null) {
-  const { outlines, labels } = swarmOutlines(doc, selected)
+/** The groups' names for the label budget (declutter.ts, R2): aggregates, priority 2, after what
+ *  is in focus and before our vehicles and the tracks; the selected group's always. Names that
+ *  ran together ("SEARCH-8 SEARCH-7 ... SEARCH-1") now take turns. */
+export function swarmLabelCandidates(outlines: { labels: OutlineLabel[] }, selected: string | null, screen: MapScreen): LabelCandidate[] {
+  return outlines.labels.map((l) => {
+    const w = textWidth(l.text, 11) / 2
+    const box: [number, number, number, number] = [-w, -8, w, 8]
+    return { key: `s:${l.id}`, at: screen.at(l.at[0], l.at[1], 0), short: box, full: box, priority: l.id === selected ? 1 : 2, force: l.id === selected }
+  })
+}
+
+/** deck.gl layers for the outlines (MapView's `layers` prop), from one summary's outlines
+ *  (swarmOutlines: memoise them on it) and the label plan. */
+export function buildSwarmLayers(shapes: { outlines: Outline[]; labels: OutlineLabel[] }, selected: string | null, plan: LabelPlan = ALL_FULL) {
+  const { outlines } = shapes
+  const labels = shapes.labels.filter((l) => plan.level(`s:${l.id}`) !== 'none')
   if (!outlines.length && !labels.length) return []
   return [
     new PolygonLayer<Outline>({

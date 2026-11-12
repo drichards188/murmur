@@ -11,7 +11,7 @@ import { IMPACT_ANIMATION_MS, impactElement, type ImpactEvent } from './impact'
 import { mapScreen, NO_SCREEN, type MapScreen } from './aloft'
 import { BRIDGE_FILTER, bridgeLifter, type LiftedBridge } from './bridges'
 import { bridgeDeckLayer, build3dGlide, build3dStatic, drawnHeight, DEM_TILES, HEIGHT_EXAGGERATION, z } from './map3d'
-import { declutter } from './declutter'
+import { ALL_FULL, planLabels, type LabelCandidate, type LabelLevel, type LabelPlan, type LabelStats, type Priority } from './declutter'
 import { advanceDrawn, drawnAlt, drawnPosition, drawnPositionOf, drawnTick, glidingCount, isGliding, noteAltitudes, observeVehicles, resetDrawn, setSmoothing, snapAllDrawn } from './drawn'
 import { burstShown, LAUNCH_FLASH_MS, munitionShown, type BurstFire, type MunitionFlight } from './munition'
 import { buildMunitionLayers, buildTracerLayers, type Tracer } from './munitionLayers'
@@ -30,9 +30,9 @@ import { EMPTY_OVERLAY } from './space'
 import { spaceFeatures, spaceLinkLayers } from './spaceLayers'
 import { buildPreviewLayers, buildSurfaceLayers, type SurfaceScale } from './surfaceLayers'
 import type { Cluster, Clusters, LngLat, Tasking, Vehicle } from './types'
-import { callsign } from './types'
-import { buildVehicleLayers, heightLabel, VEHICLE_PICK_LAYERS } from './vehicleLayers'
-import { buildClusterLayers, CLUSTER_PICK_LAYERS } from './clusterLayers'
+import { callsign, isStale } from './types'
+import { buildVehicleLayers, heightLabel, VEHICLE_PICK_LAYERS, vehicleLabelCandidates } from './vehicleLayers'
+import { buildClusterLayers, CLUSTER_PICK_LAYERS, clusterRadius, domainLine, hotLine, unknownLine } from './clusterLayers'
 import { WeatherMap, type WeatherView } from './weatherMap'
 import { buildReachLayers } from './reachLayers'
 import { cellAt, cellDetail, type CoverageImage, type LinkRouteDrawing } from './coverage'
@@ -130,9 +130,23 @@ interface Props {
   /** what is under the pointer, from any pickable layer (its id and object), or nothing: called
    *  on every pointer move over the map (a track hovered is drawn in full, focus.ts) */
   onHover?: (layerId: string | null, object: unknown) => void
+  /** The other layers' labels for the one label budget (declutter.ts, docs/research/
+   *  saturation-display.md R2): tracks, lost contacts, estimates, group names, order labels, as
+   *  candidates at this camera. MapView weighs them with our vehicles' and hands the plan to
+   *  `layers`. Memoise it as `layers`. */
+  labels?: (screen: MapScreen) => LabelCandidate[]
+  /** the map legend's Show all for labels: every label in full, none dropped */
+  allLabels?: boolean
+  /** what the budget drew, after each plan (the map legend counts what it left unlabelled) */
+  onLabelStats?: (stats: LabelStats) => void
+  /** the full block of what is under the pointer, by its label key (`t:<id>`...), for a layer
+   *  and object not our vehicles: shown as a tooltip while its label is not drawn in full */
+  tooltip?: (layerId: string, object: unknown) => { key: string; text: string } | null
 }
 
-export type MapLayers = (screen: MapScreen) => LayersList
+/** The extension layers: called with what the camera cannot show (aloft.ts) and the label plan
+ *  (declutter.ts) whose candidates `labels` gave. */
+export type MapLayers = (screen: MapScreen, plan: LabelPlan) => LayersList
 
 /** a transparent pixel: the coverage image source's placeholder while the layer is off */
 const BLANK_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
@@ -324,7 +338,7 @@ function surfacePoint(m: maplibregl.Map, e: maplibregl.MapMouseEvent): LngLat {
   return water ? [water.lng, water.lat] : [ground.lng, ground.lat]
 }
 
-export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, bridgeNow, oneWay, tracers = noTracers, acts = noActs, actsDismissedAt = null, weapons = noWeapons, weaponVictim = noVictim, nameOf = noName, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, weather = null, reach = null, linkRoute = null, onHover: onHoverProp }: Props) {
+export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, bridgeNow, oneWay, tracers = noTracers, acts = noActs, actsDismissedAt = null, weapons = noWeapons, weaponVictim = noVictim, nameOf = noName, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, weather = null, reach = null, linkRoute = null, onHover: onHoverProp, labels = undefined, allLabels = false, onLabelStats, tooltip: tooltipProp }: Props) {
   const vehicles = useMemo(() => hiddenUids?.size ? allVehicles.filter((v) => !hiddenUids.has(v.uid)) : allVehicles, [allVehicles, hiddenUids])
   // the top view (pitch 0, looking straight down) and the pitch to tilt back to from it
   const [top, setTop] = useState(false)
@@ -352,7 +366,18 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     () => (map.current && ready.current ? surfaceScale(map.current) : null),
   )
   const bridges = useRef<LiftedBridge[]>([])
-  const latest = useRef({ vehicles, selected, bare: new Set<number>(), aloft: new Map<number, number>(), clusters, oneWay })
+  const latest = useRef({ vehicles, selected, labels: new Map<number, LabelLevel>() as ReadonlyMap<number, LabelLevel>, badges: new Set<number>() as ReadonlySet<number>, aloft: new Map<number, number>(), clusters, oneWay })
+  // the label budget (declutter.ts): our vehicles' candidates as last seen on screen, the other
+  // layers' source, Show all, the plan last made and its counts
+  const vehicleLabels = useRef<LabelCandidate[]>([])
+  const labelsRef = useRef(labels)
+  const allLabelsRef = useRef(allLabels)
+  const planRef = useRef<LabelPlan>(ALL_FULL)
+  const statsRef = useRef<string>('')
+  const statsCb = useRef(onLabelStats)
+  const tooltipRef = useRef(tooltipProp)
+  statsCb.current = onLabelStats
+  tooltipRef.current = tooltipProp
   // the surface drawings' inputs (surfaceLayers.ts), and what they were last built from
   const taskingsRef = useRef(taskings)
   const draftRef = useRef(draft)
@@ -485,20 +510,76 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     return layers
   }
 
+  /** The one label budget at this camera: our vehicles' candidates, the cluster markers' room,
+   *  the other layers' candidates; our vehicles' levels kept in `latest` (the same map while they
+   *  do not change, so the vehicle layers are not rebuilt for nothing), the counts reported. */
+  const planNow = (screen: MapScreen): LabelPlan => {
+    const m = ready.current ? map.current : null
+    if (!m) return ALL_FULL
+    const t0 = performance.now()
+    const c = m.getCanvas()
+    const cl = latest.current.clusters
+    const obstacles: LabelCandidate[] = (cl?.cells ?? []).map((cell) => {
+      const r = clusterRadius(cell)
+      const lines = [domainLine(cell), hotLine(cell), unknownLine(cell)].filter(Boolean)
+      const w = Math.max(r, ...lines.map((l) => l.length * 3.2))
+      return { key: `c:${cell.x}:${cell.y}`, at: screen.at(cell.c[0], cell.c[1], 0), short: [-w, -r, w, r + 3 + 12 * lines.length], full: [-w, -r, w, r + 3 + 12 * lines.length], priority: 2, obstacle: true }
+    })
+    const others = labelsRef.current?.(screen) ?? []
+    const t1 = performance.now()
+    const plan = planLabels([...obstacles, ...vehicleLabels.current, ...others], {
+      zoom: m.getZoom(),
+      width: c.clientWidth,
+      height: c.clientHeight,
+      all: allLabelsRef.current,
+    })
+    planRef.current = plan
+    if (DEBUG_ON) {
+      // ?perf: the other layers' candidates, then the plan itself
+      const w = window as unknown as { murmurPerf: Record<string, number[]> }
+      w.murmurPerf ??= {}
+      const a = (w.murmurPerf.labelCandidates ??= [])
+      const b = (w.murmurPerf.labelPlan ??= [])
+      a.push(t1 - t0)
+      b.push(performance.now() - t1)
+      if (a.length > 200) a.splice(0, a.length - 200)
+      if (b.length > 200) b.splice(0, b.length - 200)
+    }
+    const levels = new Map<number, LabelLevel>()
+    const badges = new Set<number>()
+    for (const cand of vehicleLabels.current) {
+      const l = plan.level(cand.key)
+      if (l === 'none') continue
+      if (cand.key.startsWith('vl:')) badges.add(Number(cand.key.slice(3)))
+      else levels.set(Number(cand.key.slice(2)), l)
+    }
+    const old = latest.current
+    if (old.labels.size !== levels.size || [...levels].some(([k, l]) => old.labels.get(k) !== l)) old.labels = levels
+    if (old.badges.size !== badges.size || [...badges].some((k) => !old.badges.has(k))) old.badges = badges
+    const key = JSON.stringify(plan.stats)
+    if (key !== statsRef.current) {
+      statsRef.current = key
+      statsCb.current?.(plan.stats)
+    }
+    return plan
+  }
+
   const deckLayers = (frame = false, previewToo = false): LayersList => {
-    const { vehicles: vs, selected: sel, bare, aloft, clusters: cl, oneWay: ow } = latest.current
     const m = ready.current ? map.current : null
     if (!frame || !staticLayers.current) {
+      const screen = screenNow()
+      const plan = planNow(screen)
       staticLayers.current = {
-        three: build3dStatic(vs, bridges.current),
+        three: build3dStatic(latest.current.vehicles, bridges.current),
         surface: surfaceLayers(m),
         preview: m ? buildPreviewLayers(previewData(), surfaceScale(m)) : [],
         link: linkLayers(m),
         space: spaceLinkLayers(spaceRef.current.links),
-        ext: layersRef.current?.(screenNow()) ?? [],
-        clusters: buildClusterLayers(cl),
+        ext: layersRef.current?.(screen, plan) ?? [],
+        clusters: buildClusterLayers(latest.current.clusters),
       }
     } else if (previewToo && m) staticLayers.current.preview = buildPreviewLayers(previewData(), surfaceScale(m))
+    const { vehicles: vs, selected: sel, labels: lv, badges, aloft, oneWay: ow } = latest.current
     const { three, surface, preview: previewLayers, link, space, ext, clusters: clusterLayers } = staticLayers.current
     const tick = drawnTick()
     const glide = build3dGlide(vs)
@@ -525,7 +606,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       // the extension layers that sit at a vehicle follow its glide: re-trigger just those
       ...(frame ? ext.map((l) => (l instanceof Layer && GLIDE_LAYER_IDS.includes(l.id) ? l.clone({ updateTriggers: { ...l.props.updateTriggers, getPosition: tick } } as never) : l)) : ext),
       ...clusterLayers,
-      ...buildVehicleLayers({ vehicles: vs, selected: sel, bare, aloft, oneWay: ow }),
+      ...buildVehicleLayers({ vehicles: vs, selected: sel, labels: lv, badges, aloft, oneWay: ow }),
       // hostile acts our sensors observed: the fire event, then what lingers of it
       ...actLayers(),
       // opponent weapons as our sensors know them: the estimate, the fixes, the strike
@@ -692,16 +773,29 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     // ?perf exposes it in a production build too, so scripts/console_stress.py can drive the camera
     if (DEBUG_ON) (window as unknown as { murmurMap: maplibregl.Map }).murmurMap = m
 
-    // Bare symbols (decluttered) show their callsign on hover; any vehicle shows a pointer.
+    // What is under the pointer: its full block as a tooltip while its label is not drawn in full
+    // (short or none, the label budget's), and a pointer over anything that has one.
     const onHover = (info: PickingInfo) => {
       hoverRef.current?.(info.object != null && info.layer ? info.layer.id : null, info.object ?? null)
       const v = info.layer && VEHICLE_PICK_LAYERS.includes(info.layer.id) ? (info.object as Vehicle | undefined) : undefined
-      m.getCanvas().style.cursor = v ? 'pointer' : cursor.current
+      let tipKey: string | null = null
+      let tipText = ''
+      if (v) {
+        const h = heightLabel(v)
+        tipKey = `v:${v.uid}`
+        tipText = `${callsign(v)}${v.identity?.short ? ` · ${v.identity.short}` : ''}${h ? ` · ${h}` : ''}${isStale(v) ? ` · LOST ${Math.floor((v.link.since_last_ms ?? 0) / 1000)}s` : ''}`
+      } else if (info.layer && info.object != null) {
+        const t = tooltipRef.current?.(info.layer.id, info.object)
+        if (t) {
+          tipKey = t.key
+          tipText = t.text
+        }
+      }
+      m.getCanvas().style.cursor = tipKey ? 'pointer' : cursor.current
       const tip = tooltip.current
       if (!tip) return
-      if (v && latest.current.bare.has(v.uid)) {
-        const h = heightLabel(v)
-        tip.textContent = `${callsign(v)}${v.identity?.short ? ` · ${v.identity.short}` : ''}${h ? ` · ${h}` : ''}`
+      if (tipKey && planRef.current.level(tipKey) !== 'full') {
+        tip.textContent = tipText
         tip.style.transform = `translate(${info.x}px, ${info.y - 14}px) translate(-50%, -100%)`
         tip.hidden = false
       } else tip.hidden = true
@@ -1235,18 +1329,28 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     const screen = screenNow()
     const surface = ready.current ? surfaceScale(m).surfaceZ : () => 0
     const aloft = new Map<number, number>()
-    const seen = drawn.flatMap((v) => {
-      if (!v.position) return []
+    // murmur-02g, R2: where labels bunch up (planes on a runway, a group of a hundred), the label
+    // budget (declutter.ts) keeps one; the rest show the bare symbol and their full block on hover.
+    // Our vehicles' candidates: the selected and the one whose details are open first and always,
+    // one with a lost link before the rest.
+    const cands: LabelCandidate[] = []
+    // only those on screen weigh in (the drawn set reaches a quarter of the view past each edge)
+    const [w, h] = [m.getCanvas().clientWidth, m.getCanvas().clientHeight]
+    for (const v of [...drawn].sort((a, b) => a.uid - b.uid)) {
+      if (!v.position) continue
       const [lon, lat] = v.position
       const z = drawnHeight(v)
       if (screen.aloft(lon, lat, z)) aloft.set(v.uid, surface(v.position))
       const p = screen.at(lon, lat, aloft.has(v.uid) ? 0 : z)
-      return [p ? { uid: v.uid, x: p[0], y: p[1] } : { uid: v.uid, ...m.project(v.position) }]
-    })
-    // murmur-02g: where symbols bunch up (planes on a runway), only one keeps its labels;
-    // the rest show the bare symbol and their callsign on hover
-    const bare = declutter(seen, selected, m.getZoom())
-    latest.current = { vehicles: drawn, selected, bare, aloft, clusters: clustered ? clusters : null, oneWay }
+      const q = p ?? m.project(v.position)
+      const at: [number, number] = Array.isArray(q) ? q : [q.x, q.y]
+      if (at[0] < -40 || at[0] > w + 40 || at[1] < -40 || at[1] > h + 40) continue
+      const mine = selected.has(v.uid) || v.uid === follow
+      const priority: Priority = mine ? 1 : isStale(v) ? 3 : 4
+      cands.push(...vehicleLabelCandidates(v, at, aloft.has(v.uid), priority, mine))
+    }
+    vehicleLabels.current = cands
+    latest.current = { ...latest.current, vehicles: drawn, selected, aloft, clusters: clustered ? clusters : null, oneWay }
     const t1 = performance.now()
     pushLayers()
     wakeGlide()
@@ -1273,7 +1377,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     }
     // pushLayers reads refs; moved re-runs this after a move, styleGen after a (re)load
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vehicles, selected, moved, styleGen, clusters, smooth, oneWay])
+  }, [vehicles, selected, moved, styleGen, clusters, smooth, oneWay, follow])
 
   useEffect(() => {
     spaceRef.current = space
@@ -1320,13 +1424,15 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [linkRoute])
 
-  // extension layers changed (see the `layers` prop)
+  // extension layers changed (see the `layers` prop), their labels, or Show all labels
   useEffect(() => {
-    if (layersRef.current === layers) return
+    if (layersRef.current === layers && labelsRef.current === labels && allLabelsRef.current === allLabels) return
     layersRef.current = layers
+    labelsRef.current = labels
+    allLabelsRef.current = allLabels
     pushLayers()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layers])
+  }, [layers, labels, allLabels])
 
   const vehiclesRef = useRef(vehicles)
   useEffect(() => {

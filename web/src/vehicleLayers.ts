@@ -8,10 +8,11 @@
 //
 //   vehicle-ring*     selection ring around selected vehicles
 //   vehicles          the 2525 frame, one icon per symbol code and stale state (shared atlas)
-//   vehicle-callsigns callsign and height or depth right of the frame, vehicle-types the model
-//                     label left of it: only for the decluttered labelled set (declutter.ts),
-//                     which is bounded by the screen, not the fleet
-//   vehicle-lost      "LOST 12s" under vehicles whose link is stale
+//   vehicle-callsigns the callsign right of the frame, and with the full block its height or
+//                     depth and (vehicle-types) the model label left of it: only for the vehicles
+//                     the label budget placed (declutter.ts), which is bounded by the screen, not
+//                     the fleet; the full block for the selected or while few labels are in view
+//   vehicle-lost      "LOST 12s" under vehicles whose link is stale, where the budget placed it
 //   vehicle-oneway    "ONE-WAY > T-12" ("STRIKING > T-12" from its release) over a platform that is its
 //                     own munition, on its way
 //                     to its engagement's effect (bd murmur-64z)
@@ -21,6 +22,7 @@
 // Picking ('vehicles', 'vehicle-callsigns', 'vehicle-aloft') drives click to select and right
 // click to deselect.
 import { IconLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
+import { besides, centred, type LabelCandidate, type LabelLevel, type Priority, rightOf } from './declutter'
 import { drawnTick, drawnXYZ, lastKnownAlt, smoothing } from './drawn'
 import { drawnHeight, HEIGHT_EXAGGERATION } from './map3d'
 import { frameIcon, typeLabel } from './symbols'
@@ -69,11 +71,34 @@ export function vehicleLabel(v: Vehicle): string {
   return h ? `${callsign(v)} · ${h}` : callsign(v)
 }
 
+/** "LOST 12s": the badge under a vehicle whose link is stale */
+function lostText(v: Vehicle) {
+  return `LOST ${Math.floor((v.link.since_last_ms ?? 0) / 1000)}s`
+}
+
+/** A vehicle's labels as the budget weighs them (declutter.ts): its callsign (`v:<uid>`; the full
+ *  block adds its height and model), and its LOST badge (`vl:<uid>`) while its link is stale, at
+ *  `at` (where it is seen, CSS px), or at its foot when it is drawn above the view. */
+export function vehicleLabelCandidates(v: Vehicle, at: [number, number] | null, aloft: boolean, priority: Priority, force: boolean): LabelCandidate[] {
+  const stale = isStale(v)
+  const icon = frameIcon(v, stale)
+  const out: LabelCandidate[] = aloft
+    ? [{ key: `v:${v.uid}`, at, short: centred(`▲ ${callsign(v)}`, 11, -8, 5), full: centred(`▲ ${vehicleLabel(v)}`, 11, -8, 5), priority, force }]
+    : [{ key: `v:${v.uid}`, at, short: rightOf(icon.halfW, callsign(v), 12), full: besides(icon.halfW, typeLabel(v), 11, vehicleLabel(v), 12), priority, force }]
+  if (stale && !aloft) {
+    const badge = centred(lostText(v), 10, icon.halfH + 4, 5)
+    out.push({ key: `vl:${v.uid}`, at, short: badge, full: badge, priority: priority === 4 ? 3 : priority, force })
+  }
+  return out
+}
+
 export interface VehicleLayerInput {
   vehicles: Vehicle[]
   selected: Set<number>
-  /** drawn without labels (declutter.ts) */
-  bare: Set<number>
+  /** each placed label's level (declutter.ts): absent, none */
+  labels: ReadonlyMap<number, LabelLevel>
+  /** the LOST badges placed */
+  badges: ReadonlySet<number>
   /** drawn above the view (aloft.ts): labelled at the foot of their stem, here the surface's
    *  height under them (rendered metres: the water's 0, the ground's over land) */
   aloft: Map<number, number>
@@ -85,6 +110,8 @@ export interface VehicleLayerInput {
 interface Parts {
   placed: Vehicle[]
   labelled: Vehicle[]
+  /** the full block: the model label left of the frame too */
+  typed: Vehicle[]
   ringed: Vehicle[]
   lost: Vehicle[]
   aloft: Vehicle[]
@@ -96,27 +123,33 @@ interface Parts {
 // The partition is rebuilt only when its inputs change, so that the animation frames of a
 // glide (same vehicles, new drawn positions) hand deck.gl the same data arrays and only
 // getPosition is recomputed, not every attribute.
-let memo: { vehicles: Vehicle[]; selected: Set<number>; bare: Set<number>; aloft: Map<number, number>; oneWay?: ReadonlyMap<number, string>; parts: Parts } | null = null
+let memo: { vehicles: Vehicle[]; selected: Set<number>; labels: ReadonlyMap<number, LabelLevel>; badges: ReadonlySet<number>; aloft: Map<number, number>; oneWay?: ReadonlyMap<number, string>; parts: Parts } | null = null
 
-function partition({ vehicles, selected, bare, aloft, oneWay }: VehicleLayerInput): Parts {
-  if (memo && memo.vehicles === vehicles && memo.selected === selected && memo.bare === bare && memo.aloft === aloft && memo.oneWay === oneWay) return memo.parts
-  const parts: Parts = { placed: [], labelled: [], ringed: [], lost: [], aloft: [], oneWay: [], oneWayTags: oneWay ?? new Map() }
+function partition({ vehicles, selected, labels, badges, aloft, oneWay }: VehicleLayerInput): Parts {
+  if (memo && memo.vehicles === vehicles && memo.selected === selected && memo.labels === labels && memo.badges === badges && memo.aloft === aloft && memo.oneWay === oneWay) return memo.parts
+  const parts: Parts = { placed: [], labelled: [], typed: [], ringed: [], lost: [], aloft: [], oneWay: [], oneWayTags: oneWay ?? new Map() }
   for (const v of vehicles) {
     // no position, nowhere to draw it (the fleet list still shows it); no altitude is no reason
     if (!v.position) continue
     parts.placed.push(v)
-    if (isStale(v)) parts.lost.push(v)
+    if (isStale(v) && badges.has(v.uid)) parts.lost.push(v)
     if (selected.has(v.uid)) parts.ringed.push(v)
-    if (!bare.has(v.uid)) parts.labelled.push(v)
-    if (aloft.has(v.uid)) parts.aloft.push(v)
+    const level = labels.get(v.uid) ?? 'none'
+    if (aloft.has(v.uid)) {
+      if (level !== 'none') parts.aloft.push(v)
+    } else if (level !== 'none') {
+      parts.labelled.push(v)
+      if (level === 'full') parts.typed.push(v)
+    }
     if (oneWay?.has(v.uid)) parts.oneWay.push(v)
   }
-  memo = { vehicles, selected, bare, aloft, oneWay, parts }
+  memo = { vehicles, selected, labels, badges, aloft, oneWay, parts }
   return parts
 }
 
 export function buildVehicleLayers(input: VehicleLayerInput) {
-  const { placed, labelled, ringed, lost, aloft, oneWay, oneWayTags } = partition(input)
+  const { placed, labelled, typed, ringed, lost, aloft, oneWay, oneWayTags } = partition(input)
+  const full = (v: Vehicle) => input.labels.get(v.uid) === 'full'
   // where each vehicle is drawn: its glide (drawn.ts) or, with smoothing off, its report
   const smooth = smoothing()
   const at = smooth
@@ -183,7 +216,7 @@ export function buildVehicleLayers(input: VehicleLayerInput) {
       data: labelled,
       pickable: true,
       getPosition: at,
-      getText: vehicleLabel,
+      getText: (v) => (full(v) ? vehicleLabel(v) : callsign(v)),
       getSize: 12,
       getColor: tint,
       getTextAnchor: 'start',
@@ -200,7 +233,7 @@ export function buildVehicleLayers(input: VehicleLayerInput) {
     }),
     new TextLayer<Vehicle>({
       id: 'vehicle-types',
-      data: labelled,
+      data: typed,
       getPosition: at,
       getText: typeLabel,
       getSize: 11,
@@ -220,7 +253,7 @@ export function buildVehicleLayers(input: VehicleLayerInput) {
       id: 'vehicle-lost',
       data: lost,
       getPosition: at,
-      getText: (v) => `LOST ${Math.floor((v.link.since_last_ms ?? 0) / 1000)}s`,
+      getText: lostText,
       getSize: 10,
       getColor: WHITE,
       getTextAnchor: 'middle',
@@ -261,7 +294,7 @@ export function buildVehicleLayers(input: VehicleLayerInput) {
       data: aloft,
       pickable: true,
       getPosition: foot,
-      getText: (v) => `▲ ${vehicleLabel(v)}`,
+      getText: (v) => `▲ ${full(v) ? vehicleLabel(v) : callsign(v)}`,
       getSize: 11,
       getColor: tint,
       getTextAnchor: 'middle',

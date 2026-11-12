@@ -11,7 +11,7 @@ import { usePoll } from './space'
 import { SpacePanel, type SpaceSelection } from './SpacePanel'
 import { fmtZ } from './decisions'
 import { TaskPanel } from './TaskPanel'
-import { buildTrackLayers } from './trackLayers'
+import { buildTrackLayers, trackLabelCandidates, trackTooltip } from './trackLayers'
 import { TracksPanel } from './TracksPanel'
 import type { Reveal } from './reveal'
 import { isTrackStale, type Track, trackPredicted } from './tracks'
@@ -33,12 +33,12 @@ import { ESTIMATE_NOTE, weaponBanner, weaponReports, type WeaponTrack } from './
 import { secondsToImpact } from './munition'
 import { usePlatformLimits } from './taskDefaults'
 import { estimated } from './estimate'
-import { buildEstimateLayers } from './estimateLayers'
+import { buildEstimateLayers, estimateLabelCandidates, estimateTooltip } from './estimateLayers'
 import { circle } from './geo'
 import { PERF_ON, perfCommitted, perfPassiveBegin, perfRenderBegin, perfUpdateEnd } from './perf'
 import { PerfOverlay } from './PerfOverlay'
 import { QueueButton, QueuePanel } from './QueuePanel'
-import { buildOrderLayers } from './orderLayers'
+import { buildOrderLayers, orderLabelCandidates } from './orderLayers'
 import { noteFocusedIntent, noteTrackViewed } from './operatorView'
 import { refreshAuth, useAuth } from './auth'
 import { EnrollScreen, LoginScreen, OperatorBadge } from './Login'
@@ -58,9 +58,10 @@ import { Tutorial } from './Tutorial'
 import { CoverageControl } from './CoverageControl'
 import { gridImage, type CoverageGrid, type LinkRouteDrawing } from './coverage'
 import { buildStationLayers } from './linkLayers'
-import { buildSwarmLayers, useSwarms } from './swarms'
+import { buildSwarmLayers, swarmLabelCandidates, useSwarms } from './swarms'
 import { engagementTracks, focusMap, reviewTracks } from './focus'
-import { selectedSwarm, swarmOf, unfolded } from './swarmsModel'
+import { selectedSwarm, swarmOf, swarmOutlines, unfolded } from './swarmsModel'
+import type { MapScreen } from './aloft'
 import { SwarmsButton, SwarmsPanel } from './SwarmsPanel'
 
 function useUtcClock() {
@@ -249,7 +250,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const hasSwarms = useMemo(() => allVehicles.some((v) => swarmOf(v) != null), [allVehicles])
   const swarmFeed = useSwarms(hasSwarms || showSwarms)
   const swarmSel = useMemo(() => selectedSwarm(swarmFeed.doc?.swarms, selected), [swarmFeed.doc, selected])
-  const swarmLayers = useMemo(() => buildSwarmLayers(swarmFeed.doc, swarmSel), [swarmFeed.doc, swarmSel])
+  // the groups' outlines and names, from each new summary (their names go through the label budget)
+  const swarmShapes = useMemo(() => swarmOutlines(swarmFeed.doc, swarmSel), [swarmFeed.doc, swarmSel])
   const reachRings = useMemo(() => {
     const fields = minefieldFeatures(minefields.data)
     if (reachMode === 'off' || (reachMode === 'selected' && selected.size === 0)) {
@@ -320,7 +322,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     [tracks, selectedTrack, hoverTrack, pinnedTracks, reviewIds, engageIds],
   )
   const trackLayers = useCallback<MapLayers>(
-    (screen) =>
+    (screen, plan) =>
       buildTrackLayers({
         tracks: tracks?.tracks ?? [],
         lost: tracks?.lost ?? [],
@@ -335,6 +337,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             : null,
         screen,
         focus: trackFocus,
+        plan,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [tracks, selectedTrack, trackTick, onTrackClick, draft.mode, selected, trackFocus],
@@ -517,7 +520,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   // in focus for the estimates: selected, or details open (both hypotheses, filled)
   const vehicleFocus = useMemo(() => (detailsUid == null ? selected : new Set([...selected, detailsUid])), [selected, detailsUid])
   const estimateLayers = useCallback<MapLayers>(
-    () => (silent.length ? buildEstimateLayers({ vehicles: silent, nowMs: now(), focus: detailsUid, inFocus: vehicleFocus }) : []),
+    (_screen, plan) => (silent.length ? buildEstimateLayers({ vehicles: silent, nowMs: now(), focus: detailsUid, inFocus: vehicleFocus, plan }) : []),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [silent, estimateTick, detailsUid, vehicleFocus],
   )
@@ -533,20 +536,35 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engageKeepOuts])
   const mapLayers = useCallback<MapLayers>(
-    (screen) => [
-      ...estimateLayers(screen),
-      ...trackLayers(screen),
+    (screen, plan) => [
+      ...estimateLayers(screen, plan),
+      ...trackLayers(screen, plan),
       ...keepOutLayers,
       ...(engageDrawings.length ? buildEngageLayers(engageDrawings, now()) : []),
-      ...buildOrderLayers({ queued: queuedIntents ?? [], intents: allIntents ?? [], taskings: state?.taskings ?? [], vehicles, nowMs: now() }),
+      ...buildOrderLayers({ queued: queuedIntents ?? [], intents: allIntents ?? [], taskings: state?.taskings ?? [], vehicles, nowMs: now() }, plan),
       ...stationLayers,
       // the swarms' outlines and labels last, over the tracks' uncertainty (hundreds of contacts'
       // rings would hide them) and under the vehicles
-      ...swarmLayers,
+      ...buildSwarmLayers(swarmShapes, swarmSel, plan),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [swarmLayers, estimateLayers, trackLayers, keepOutLayers, stationLayers, engageDrawings, queuedIntents, allIntents, state?.taskings, vehicles, orderTick],
+    [swarmShapes, swarmSel, estimateLayers, trackLayers, keepOutLayers, stationLayers, engageDrawings, queuedIntents, allIntents, state?.taskings, vehicles, orderTick],
   )
+  // every text layer's labels for the one label budget (declutter.ts, docs/research/
+  // saturation-display.md R2), with our vehicles' (MapView's): the same data and ticks as the
+  // layers above, so a new plan comes with them
+  const mapLabels = useCallback(
+    (screen: MapScreen) => [
+      ...(silent.length ? estimateLabelCandidates({ vehicles: silent, nowMs: now(), focus: detailsUid, inFocus: vehicleFocus }, screen) : []),
+      ...trackLabelCandidates({ tracks: tracks?.tracks ?? [], lost: tracks?.lost ?? [], nowMs: now(), staleAfterS: tracks?.stale_after_s ?? 10, screen, focus: trackFocus }),
+      ...orderLabelCandidates({ queued: queuedIntents ?? [], intents: allIntents ?? [], taskings: state?.taskings ?? [], vehicles, nowMs: now() }, screen),
+      ...swarmLabelCandidates(swarmShapes, swarmSel, screen),
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [silent, estimateTick, detailsUid, vehicleFocus, tracks, trackTick, trackFocus, queuedIntents, allIntents, state?.taskings, vehicles, orderTick, swarmShapes, swarmSel],
+  )
+  // the full block of a track, lost contact or estimate under the pointer, while its label is not
+  const mapTooltip = useCallback((layer: string, object: unknown) => trackTooltip(layer, object, now()) ?? estimateTooltip(layer, object), [now])
   const focusTrack = useCallback(
     (t: Track) => setFit((f) => ({ points: [trackPredicted(t, now())], n: (f?.n ?? 0) + 1, padRight: 400 })),
     [now],
@@ -823,6 +841,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           reach={reachRings}
           linkRoute={linkRoute}
           onHover={onMapHover}
+          labels={mapLabels}
+          tooltip={mapTooltip}
         />
         </ErrorBoundary>
         {showCoverage && (
