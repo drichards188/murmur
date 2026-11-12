@@ -197,7 +197,22 @@ impl LostLedger {
     /// The lost contacts in force as a decision reads them: each one's identification filled
     /// from the ledger `ident` (a declaration in force on its id exempts it, as a live track's).
     pub fn filled(&self, ident: &crate::ident::Ledger, rule_id: bool) -> BTreeMap<String, LostContact> {
-        fill(&self.contacts, ident, rule_id)
+        fill(self.contacts.clone(), ident, rule_id)
+    }
+
+    /// [`Self::filled`] with each contact's `sources` and `source_t` left empty, for display
+    /// (bd murmur-jvdc: a contact a swarm of ours saw names hundreds, and the bridge shows the
+    /// lost contacts every second).
+    pub fn filled_without_sources(&self, ident: &crate::ident::Ledger, rule_id: bool) -> BTreeMap<String, LostContact> {
+        let light = self
+            .contacts
+            .iter()
+            .map(|(id, l)| {
+                let c = LostContact { dropped_t: l.dropped_t, facts: l.facts.without_sources(), ais: l.ais.clone() };
+                (id.clone(), c)
+            })
+            .collect();
+        fill(light, ident, rule_id)
     }
 
     /// The lost contacts a decision on `picture` (its identification filled) reads: those in
@@ -215,30 +230,19 @@ impl LostLedger {
                 all.insert(id, c.contact.clone());
             }
         }
-        fill(&all, ident, rule_id)
+        fill(all, ident, rule_id)
     }
 }
 
-fn fill(contacts: &BTreeMap<String, LostContact>, ident: &crate::ident::Ledger, rule_id: bool) -> BTreeMap<String, LostContact> {
-    if !rule_id {
-        return contacts.clone();
+/// `contacts` with each one's identification filled from `ident` (`ident::Ledger::fill`, one
+/// contact at a time, in place: one copy of the ledger's contacts, not two, bd murmur-jvdc).
+fn fill(mut contacts: BTreeMap<String, LostContact>, ident: &crate::ident::Ledger, rule_id: bool) -> BTreeMap<String, LostContact> {
+    if rule_id {
+        for (id, l) in &mut contacts {
+            ident.fill_one(id, &mut l.facts);
+        }
     }
-    let mut facts: BTreeMap<String, TrackFacts> = contacts.iter().map(|(id, l)| (id.clone(), l.facts.clone())).collect();
-    ident.fill(&mut facts);
     contacts
-        .iter()
-        .map(|(id, l)| {
-            let f = facts.remove(id).unwrap_or_else(|| l.facts.clone());
-            (
-                id.clone(),
-                LostContact {
-                    dropped_t: l.dropped_t,
-                    facts: f,
-                    ais: l.ais.clone(),
-                },
-            )
-        })
-        .collect()
 }
 
 /// Why a confirmation as `by_track` is void on `picture` (its identification filled), if it

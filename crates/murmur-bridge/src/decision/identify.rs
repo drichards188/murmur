@@ -165,11 +165,16 @@ impl Decision {
     /// not follow its track, an inbox alert says so. It clears when another order replaces it.
     /// Rules 23: while the order looks, an informational alert for each other vehicle that
     /// identified its track meanwhile ([`meanwhile_alerts`]).
-    pub(super) fn identify_alerts(&self, core: &Core, now_wall: f64) -> Vec<alerts::Alert> {
+    pub(super) fn identify_alerts(
+        &self,
+        core: &Core,
+        ops: &[crate::tasks::OpSnapshot],
+        fleet: &std::collections::BTreeMap<crate::vehicle::Uid, std::sync::Arc<crate::vehicle::VehicleCell>>,
+        now_wall: f64,
+    ) -> Vec<alerts::Alert> {
         if !self.rules.identify() {
             return Vec::new();
         }
-        let fleet = self.fleet();
         let name = |uid: &str| {
             uid.parse::<crate::vehicle::Uid>()
                 .ok()
@@ -177,17 +182,14 @@ impl Decision {
                 .and_then(|c| alerts::callsign(c))
                 .unwrap_or_else(|| format!("vehicle {uid}"))
         };
-        self.world
-            .tasks
-            .current_ops()
-            .into_iter()
+        ops.iter()
             .filter(|op| !matches!(op.state, OpState::Failed | OpState::Superseded))
             .flat_map(|op| {
                 let Some(i) = core.engine.intent(IntentId(op.intent_id)) else { return Vec::new() };
                 let Some(track) = track_of(i.spec()) else { return Vec::new() };
                 let Some(run) = i.identify_run() else { return Vec::new() };
                 // rules 23: while it looks, what other vehicles identified meanwhile
-                let mut out = if run.ended.is_none() { meanwhile_alerts(&op, track, &run.meanwhile, &name, now_wall) } else { Vec::new() };
+                let mut out = if run.ended.is_none() { meanwhile_alerts(op, track, &run.meanwhile, &name, now_wall) } else { Vec::new() };
                 let (kind, severity, detail) = match (&run.ended, &run.held) {
                     (Some((murmur_decide::identify::EndKind::Identified, d)), _) if d.contains("; holding") => {
                         ("identify_holding", alerts::Severity::Medium, format!("identify {track}: {d}"))

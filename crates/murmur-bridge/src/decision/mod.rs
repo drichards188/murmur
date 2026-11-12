@@ -67,6 +67,7 @@ pub mod engage;
 mod failsafe;
 pub mod ident;
 pub mod identify;
+mod message;
 mod mines;
 mod preload;
 pub mod queue;
@@ -511,6 +512,11 @@ pub struct Decision {
     me: std::sync::Weak<Decision>,
     /// What a person alone is holding up, as of the last look ([`blocking`]; display only).
     blocking: Mutex<blocking::Cache>,
+    /// The decisions message's intents as last written ([`message`]; display only).
+    intent_texts: Mutex<message::IntentTexts>,
+    /// A tick's call for the decisions message, which [`Decision::run`]'s publisher answers
+    /// beside the tick (bd murmur-jvdc: the console's message never holds the tick up).
+    publish_due: tokio::sync::Notify,
 }
 
 /// Everything [`Decision::from_parts`] needs (tests pass a memory sink and a manual clock).
@@ -856,6 +862,8 @@ impl Decision {
             pointer: std::sync::OnceLock::new(),
             fleet_file: std::sync::OnceLock::new(),
             blocking: Mutex::new(blocking::Cache::default()),
+            intent_texts: Mutex::new(message::IntentTexts::default()),
+            publish_due: tokio::sync::Notify::new(),
         });
         d.publish();
         Ok(d)
@@ -2156,25 +2164,41 @@ impl Decision {
     /// Rules 17: while a safety command the domain rule let go with a warning (an rtl whose way
     /// home crosses land, `CheckResult::warning`) runs, an inbox alert says where, so a person
     /// can send a safer order. It clears when the vehicle's op ends or another order replaces it.
-    fn route_alerts(&self, core: &Core, now_wall: f64) -> Vec<alerts::Alert> {
+    fn route_alerts(
+        &self,
+        core: &Core,
+        ops: &[crate::tasks::OpSnapshot],
+        fleet: &BTreeMap<Uid, Arc<VehicleCell>>,
+        now_wall: f64,
+    ) -> Vec<alerts::Alert> {
         if !self.rules.route_surface() {
             return Vec::new();
         }
-        let fleet = self.fleet();
-        self.world
-            .tasks
-            .current_ops()
-            .into_iter()
+        // each intent's domain and geofence checks that carry a warning, by vehicle, its first
+        // for each: looked up for each op, not searched for among every check of a hundred
+        // vehicles' order (bd murmur-jvdc)
+        let mut warned: BTreeMap<u64, BTreeMap<DUid, (rules::RuleId, String)>> = BTreeMap::new();
+        ops.iter()
             .filter(|op| !op.state.is_terminal())
             .filter_map(|op| {
-                let i = core.engine.intent(IntentId(op.intent_id))?;
-                let u = duid(op.uid);
+                let by_uid = warned.entry(op.intent_id).or_insert_with(|| {
+                    let mut by_uid = BTreeMap::new();
+                    if let Some(i) = core.engine.intent(IntentId(op.intent_id)) {
+                        for c in i.checks() {
+                            if matches!(c.rule, rules::RuleId::Domain | rules::RuleId::Geofence)
+                                && let (Some(u), Some(w)) = (&c.uid, &c.warning)
+                            {
+                                by_uid.entry(u.clone()).or_insert((c.rule, w.clone()));
+                            }
+                        }
+                    }
+                    by_uid
+                });
+                if by_uid.is_empty() {
+                    return None;
+                }
                 // rules 27: an rtl across one of our minefields (the geofence's warning) too
-                let (rule, warning) = i
-                    .checks()
-                    .iter()
-                    .filter(|c| matches!(c.rule, rules::RuleId::Domain | rules::RuleId::Geofence) && c.uid.as_ref() == Some(&u))
-                    .find_map(|c| Some((c.rule, c.warning.clone()?)))?;
+                let (rule, warning) = by_uid.get(&duid(op.uid)).cloned()?;
                 Some(alerts::Alert {
                     id: if rule == rules::RuleId::Geofence { format!("route:{}:minefield", op.id) } else { format!("route:{}", op.id) },
                     kind: if rule == rules::RuleId::Geofence { "path_crosses_minefield" } else { "path_crosses_land" },
@@ -2331,11 +2355,21 @@ impl Decision {
                 }
             }
         });
+        // the console's decisions message, built after each tick but beside it: at Saturation's
+        // size it took longer than the tick's own work (bd murmur-jvdc)
+        let publisher = self.clone();
+        tokio::spawn(async move {
+            loop {
+                publisher.publish_due.notified().await;
+                publisher.publish();
+            }
+        });
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
-            crate::perf::time("decision_tick", || self.tick());
+            crate::perf::time("decision_tick", || self.step());
+            self.publish_due.notify_one();
         }
     }
 
@@ -2391,9 +2425,18 @@ impl Decision {
         }
     }
 
+    /// The decision loop's step ([`Self::step`]), then the decisions message for the console
+    /// ([`Self::publish`]), for the tests; the loop itself ([`Self::run`]) publishes beside its
+    /// steps.
+    #[cfg(test)]
+    pub fn tick(&self) {
+        self.step();
+        self.publish();
+    }
+
     /// The decision loop's step, once a second, under the decision lock; it ends with the
     /// batch's anchor ([`Self::commit_anchors`]: every decision logged since the last tick).
-    pub fn tick(&self) {
+    fn step(&self) {
         {
             let mut guard = self.lock();
             let core = &mut *guard;
@@ -2423,7 +2466,6 @@ impl Decision {
             // the batch's anchor: this tick's decisions and those logged since the last tick
             crate::perf::time("decision.commit_anchors", || self.commit_anchors());
         }
-        self.publish();
     }
 
     fn log_vehicle_events(&self, core: &mut Core) {
@@ -2735,11 +2777,12 @@ impl Decision {
     /// The inbox's alerts now, most severe first, then oldest first (the inbox and the
     /// agents' change feed read the same list).
     pub fn current_alerts(&self) -> Vec<alerts::Alert> {
-        let mut alerts = alerts::alerts(
-            &self.world.vehicles(),
-            &self.world.tasks.current_ops(),
-            clock::wall(),
-        );
+        // each vehicle's latest op and the fleet, read once for every kind of alert below (bd
+        // murmur-jvdc: Saturation's 3,600 ops were copied three times a message)
+        let ops = self.world.tasks.current_ops();
+        let cells = self.world.vehicles();
+        let fleet: BTreeMap<Uid, Arc<VehicleCell>> = cells.iter().map(|c| (c.uid, c.clone())).collect();
+        let mut alerts = alerts::alerts(&cells, &ops, clock::wall());
         // rules 6: platforms whose own lost-link failsafe has not been confirmed back;
         // rules 11: space tasks a re-check lost or could not judge; rules 12: earlier logs
         // whose carry failed, still owed
@@ -2751,13 +2794,12 @@ impl Decision {
             alerts.extend(self.spent_alerts(&core, clock::wall()));
             alerts.extend(self.space_alerts(&core, clock::wall()));
             // rules 17: an rtl that went as ordered though its way home crosses land
-            alerts.extend(self.route_alerts(&core, clock::wall()));
+            alerts.extend(self.route_alerts(&core, &ops, &fleet, clock::wall()));
             // rules 21: an identify order lost its track, ran out of time, holds, or can't follow
-            alerts.extend(self.identify_alerts(&core, clock::wall()));
+            alerts.extend(self.identify_alerts(&core, &ops, &fleet, clock::wall()));
         }
         // opponent weapons: a strike one of ours reported (high when no sensor saw the launch)
         if let Some(t) = self.tracks() {
-            let fleet = self.fleet();
             alerts.extend(t.strike_alerts(&|uid| fleet.get(&uid).and_then(|c| alerts::callsign(c))));
         }
         alerts.sort_by(|a, b| a.severity.cmp(&b.severity).then(a.since_t.total_cmp(&b.since_t)));
@@ -2770,6 +2812,12 @@ impl Decision {
         // the world only when an engagement waits (its live picture); a snapshot of a large
         // fleet is not free
         let world = self.engagements_in_view().then(|| self.snapshot());
+        self.inbox_json_on(world.as_ref())
+    }
+
+    /// [`Self::inbox_json`] on `world`, the snapshot taken when an engagement is in view (the
+    /// decisions message takes one for both: bd murmur-jvdc).
+    fn inbox_json_on(&self, world: Option<&murmur_decide::WorldSnapshot>) -> Value {
         let pending: Vec<Value> = {
             let core = self.lock();
             core.engine
@@ -2859,7 +2907,10 @@ impl Decision {
     }
 
     fn message(&self) -> String {
-        let inbox = self.inbox_json();
+        // one snapshot for the inbox's engagements and the intents', when one is in view
+        let world = self.engagements_in_view().then(|| self.snapshot());
+        // its parts timed in /api/stats `loops` (bd murmur-jvdc)
+        let inbox = crate::perf::time("decisions_message.inbox", || self.inbox_json_on(world.as_ref()));
         let fleet = self.fleet();
         let spent: Vec<Uid> = self.lock().engine.spent_platforms().into_iter().filter_map(|mark| {
             let uid = bridge_uid(&mark.uid)?;
@@ -2869,40 +2920,57 @@ impl Decision {
             }
             Some(uid)
         }).collect();
-        let world = self.engagements_in_view().then(|| self.snapshot());
-        let intents: Vec<Value> = {
+        let intents_start = std::time::Instant::now();
+        let intents: Vec<Arc<str>> = {
             let core = self.lock();
+            let mut texts = self.intent_texts.lock().unwrap_or_else(|e| e.into_inner());
             let all: Vec<&Intent> = core.engine.intents().collect();
-            all.into_iter()
-                .rev()
-                .take(PUSH_INTENTS)
+            let shown: Vec<&Intent> = all.into_iter().rev().take(PUSH_INTENTS).collect();
+            let out = shown
+                .iter()
                 .map(|i| {
-                    let mut v =
-                        intent_json(i, core.taskings.get(&i.id()).map(|t| t.id), self.tol());
+                    let tasking = core.taskings.get(&i.id()).map(|t| t.id);
                     // resumed under way, waiting for its vehicles to connect to be followed
-                    if core.follow.contains_key(&i.id()) {
+                    let follow = core.follow.contains_key(&i.id());
+                    // an engagement under way shows the world now: never kept
+                    let live = i.state() != State::PendingApproval && world.is_some() && matches!(i.spec().task, Task::Engage { .. });
+                    if !live && let Some(text) = texts.get(i, tasking, follow) {
+                        // a test build writes it afresh
+                        #[cfg(debug_assertions)]
+                        {
+                            let mut v = intent_json(i, tasking, self.tol());
+                            if follow {
+                                v["follow_pending"] = json!(true);
+                            }
+                            assert_eq!(*text, v.to_string(), "{}: the decisions message kept a stale intent", i.id());
+                        }
+                        return text;
+                    }
+                    let mut v = intent_json(i, tasking, self.tol());
+                    if follow {
                         v["follow_pending"] = json!(true);
                     }
-                    if i.state() != State::PendingApproval
+                    if live
                         && let Some(w) = &world
                         && let Some(e) = self.engage_view(&core, i, w)
                     {
                         v["engage"] = e;
                     }
-                    v
+                    let text: Arc<str> = Arc::from(v.to_string());
+                    if !live {
+                        texts.put(i, tasking, follow, text.clone());
+                    }
+                    text
                 })
-                .collect()
+                .collect();
+            texts.keep_only(&shown.iter().map(|i| i.id()).collect());
+            out
         };
+        crate::perf::record("decisions_message.intents", intents_start, intents_start.elapsed());
         let space = self.space_runs_json();
-        json!({
-            "type": "decisions",
-            "inbox": inbox,
-            "intents": intents,
-            "space": space,
-            "operators": self.operators_json(),
-            "spent": spent,
-        })
-        .to_string()
+        // as `json!({"type": "decisions", "inbox", "intents", "space", "operators", "spent"})`
+        // writes it, around the intents' kept texts
+        message::text(&inbox, &intents, &space, &self.operators_json(), &json!(spent))
     }
 
     /// Push the inbox to WebSocket clients if it changed. Built only while anyone watches, as

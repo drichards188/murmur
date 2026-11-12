@@ -81,6 +81,9 @@ pub fn alerts(
     ops: &[OpSnapshot],
     now_wall: f64,
 ) -> Vec<Alert> {
+    // each op's vehicle by uid, not by a search of the fleet for each (bd murmur-jvdc:
+    // Saturation's hundreds of alerts each searched 3,602 vehicles)
+    let by_uid: std::collections::HashMap<Uid, &std::sync::Arc<VehicleCell>> = vehicles.iter().map(|c| (c.uid, c)).collect();
     let mut out = Vec::new();
     for cell in vehicles {
         // rules 25: a vehicle that reported damage of its own, while the run lasts
@@ -123,7 +126,7 @@ pub fn alerts(
     }
     for op in ops {
         if op.state == OpState::Unconfirmed {
-            if let Some(a) = may_be_running(vehicles, op, now_wall) {
+            if let Some(a) = may_be_running(&by_uid, op, now_wall) {
                 out.push(a);
             }
             continue;
@@ -137,10 +140,7 @@ pub fn alerts(
             kind,
             severity,
             uid: op.uid,
-            callsign: vehicles
-                .iter()
-                .find(|c| c.uid == op.uid)
-                .and_then(|c| callsign(c)),
+            callsign: by_uid.get(&op.uid).and_then(|c| callsign(c)),
             detail: op.detail.clone(),
             since_t,
             op_id: Some(op.id),
@@ -160,8 +160,12 @@ pub fn alerts(
 /// order's mode (armed, for a mission) may be running it though nothing confirmed it, and
 /// whatever became of its intent; out of contact, it may be. None when the vehicle is heard
 /// and in another mode.
-fn may_be_running(vehicles: &[std::sync::Arc<VehicleCell>], op: &OpSnapshot, now_wall: f64) -> Option<Alert> {
-    let cell = vehicles.iter().find(|c| c.uid == op.uid)?;
+fn may_be_running(
+    vehicles: &std::collections::HashMap<Uid, &std::sync::Arc<VehicleCell>>,
+    op: &OpSnapshot,
+    now_wall: f64,
+) -> Option<Alert> {
+    let cell = *vehicles.get(&op.uid)?;
     let link = cell.link_snapshot(crate::clock::mono());
     let silent = link
         .last_rx_t

@@ -305,6 +305,38 @@ pub struct TrackFacts {
     pub velocity_sigma_mps: Option<f64>,
 }
 
+impl TrackFacts {
+    /// These facts with `sources` and `source_t` empty, the rest copied: for a reader that
+    /// reads neither (display, the bridge's look at whether the weak-evidence rule flags
+    /// anything), where a track a swarm of ours saw names thousands (bd murmur-jvdc).
+    pub fn without_sources(&self) -> TrackFacts {
+        TrackFacts {
+            position: self.position.clone(),
+            alt_m: self.alt_m,
+            alt_t: self.alt_t,
+            velocity_mps: self.velocity_mps,
+            pos_sigma_m: self.pos_sigma_m,
+            sigma_growth_mps: self.sigma_growth_mps,
+            confidence: self.confidence,
+            affiliation: self.affiliation.clone(),
+            affiliation_confidence: self.affiliation_confidence,
+            identity: self.identity.clone(),
+            identity_confidence: self.identity_confidence,
+            sources: Vec::new(),
+            source_t: BTreeMap::new(),
+            domain: self.domain,
+            last_seen_t: self.last_seen_t,
+            declared_by: self.declared_by.clone(),
+            declaration: self.declaration.clone(),
+            review_flags: self.review_flags.clone(),
+            manoeuvre: self.manoeuvre,
+            mean_velocity_mps: self.mean_velocity_mps,
+            first_seen_t: self.first_seen_t,
+            velocity_sigma_mps: self.velocity_sigma_mps,
+        }
+    }
+}
+
 /// Rules 16: an AIS identity as received (see [`WorldSnapshot::track_ais`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AisIdentity {

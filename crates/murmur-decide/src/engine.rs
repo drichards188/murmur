@@ -2403,6 +2403,12 @@ impl Engine {
         self.lost_filled()
     }
 
+    /// Rules 16: [`Self::lost_contacts`] without each one's sources (`sources`, `source_t`
+    /// empty), for display: the bridge shows them every second (bd murmur-jvdc).
+    pub fn lost_contacts_without_sources(&self) -> BTreeMap<String, crate::lost::LostContact> {
+        self.lost.filled_without_sources(&self.ident, self.policy.rules.rule_id())
+    }
+
     /// Rules 16: the lost contacts an operator confirmed as a live track (retired while it
     /// stands).
     pub fn lost_confirmed(&self) -> &BTreeMap<String, crate::lost::Confirmed> {

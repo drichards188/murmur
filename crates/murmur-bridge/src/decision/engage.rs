@@ -2213,9 +2213,10 @@ impl Decision {
         }
         // bd murmur-jvdc: no picture when nothing in one could void a confirmation or claim a
         // lost contact (the engine's steps then find nothing: no claim, nothing logged); the
-        // steps read the track picture alone
-        let reads = (!core.engine.lost_contacts().is_empty() || !core.engine.lost_confirmed().is_empty())
-            && core.engine.lost_reads_picture(&tracks.ais());
+        // steps read the track picture alone. With no lost contact and no confirmation nothing
+        // reads one (`Engine::lost_reads_picture` says so without a copy of the contacts, each
+        // with its sources, which Saturation's hundreds made tens of milliseconds a tick)
+        let reads = core.engine.lost_reads_picture(&tracks.ais());
         if reads {
             let world = self.track_picture();
             match core.engine.step_lost(&world) {
@@ -2306,8 +2307,9 @@ impl Decision {
     pub(super) fn lost_json(&self, core: &Core) -> Vec<Value> {
         let now = self.clock.now();
         let ec = self.rules.engage_rules();
+        // without their sources, which nothing here shows (bd murmur-jvdc)
         core.engine
-            .lost_contacts()
+            .lost_contacts_without_sources()
             .into_iter()
             .map(|(id, l)| {
                 let f = &l.facts;

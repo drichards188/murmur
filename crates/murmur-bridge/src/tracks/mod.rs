@@ -1243,30 +1243,13 @@ impl Tracks {
     }
 
     /// Rules 16: show the engine's lost contacts (the console's map and tracks list); each
-    /// entry as [`crate::decision::Decision::lost_json`] builds it. Republishes if they changed
-    /// otherwise than by aging: what changes every second as they age (how long out of view, the
-    /// regions growing) goes with the tracker's own second's publish (bd murmur-jvdc: the
-    /// decision loop built every track's feed for it each second).
+    /// entry as [`crate::decision::Decision::lost_json`] builds it. They go out with the
+    /// tracker's own publish, within the second ([`Self::tick`]): the decision loop calls this
+    /// under its lock, and the feed's every track, built there whenever a contact was lost
+    /// (every few seconds in Saturation), held the tick up (bd murmur-jvdc).
     pub fn mirror_lost(&self, lost: Vec<Value>) {
-        // the same but for their age
-        fn aged(a: &Value, b: &Value) -> bool {
-            match (a.as_object(), b.as_object()) {
-                (Some(a), Some(b)) => {
-                    a.len() == b.len()
-                        && a.iter().all(|(k, v)| matches!(k.as_str(), "out_of_view_s" | "regions") || b.get(k) == Some(v))
-                }
-                _ => a == b,
-            }
-        }
-        let changed = {
-            let mut inner = lock(&self.inner);
-            let changed = inner.lost.len() != lost.len() || !inner.lost.iter().zip(&lost).all(|(a, b)| aged(a, b));
-            inner.lost = lost;
-            changed
-        };
-        if changed {
-            self.publish(clock::wall());
-        }
+        // the list it replaces dropped outside the store's lock
+        let _was = std::mem::replace(&mut lock(&self.inner).lost, lost);
     }
 
     /// Once a second: drop forgotten tracks and republish if anything changed (a track
@@ -1595,6 +1578,19 @@ impl Tracks {
             .values()
             .map(|t| (t.id.clone(), t.facts(now)))
             .chain(inner.dropped.iter().map(|(id, (f, _))| (id.clone(), f.clone())))
+            .collect()
+    }
+
+    /// [`Self::facts`] with every track's `sources` and `source_t` left empty (a dropped one's
+    /// too): for the weak-evidence rule's look each second, which reads neither (bd
+    /// murmur-jvdc: Saturation's picture has 172,000 sources, most of the picture's time).
+    pub fn facts_without_sources(&self, now: f64) -> BTreeMap<String, TrackFacts> {
+        let inner = lock(&self.inner);
+        inner
+            .tracks
+            .values()
+            .map(|t| (t.id.clone(), t.facts_with(now, false)))
+            .chain(inner.dropped.iter().map(|(id, (f, _))| (id.clone(), f.without_sources())))
             .collect()
     }
 

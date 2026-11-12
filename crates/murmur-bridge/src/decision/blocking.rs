@@ -337,7 +337,8 @@ impl Decision {
         if cands.is_empty() {
             return Vec::new();
         }
-        let world = self.snapshot();
+        // its parts timed in /api/stats `loops` (bd murmur-jvdc)
+        let world = crate::perf::time("blocking_look.snapshot", || self.snapshot());
         let now = self.clock.now();
         let window = EngageWindow {
             from: None,
@@ -380,18 +381,22 @@ impl Decision {
             for spec in specs {
                 let w = {
                     let core = self.lock();
-                    core.engine.dry_run_inputs(&spec, &world, &self.terrain.oracle())
+                    crate::perf::time("blocking_look.inputs", || core.engine.dry_run_inputs(&spec, &world, &self.terrain.oracle()))
                 };
                 inputs.push((k, spec, w));
             }
         }
         let rules = self.rules.clone();
         let judged = tokio::task::spawn_blocking(move || {
+            // the snapshot and each dry run's inputs dropped here too, off the runtime's
+            // workers: each holds the whole picture (bd murmur-jvdc)
+            drop(world);
             inputs
                 .into_iter()
                 .map(|(k, spec, w)| {
                     let uid = spec.uids[0].clone();
-                    (k, uid, murmur_decide::rules::evaluate(&spec, &w, &rules))
+                    let checks = crate::perf::time("blocking_look.checks", || murmur_decide::rules::evaluate(&spec, &w, &rules));
+                    (k, uid, checks)
                 })
                 .collect::<Vec<_>>()
         })

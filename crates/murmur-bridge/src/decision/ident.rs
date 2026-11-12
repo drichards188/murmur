@@ -20,7 +20,7 @@
 //! API, agents' reads); decisions never read that mirror: the engine fills each decision's
 //! picture from its ledger.
 
-use murmur_decide::{Affiliation, FlagResolution, FlagStatus, IdentOutcome};
+use murmur_decide::{Affiliation, Clock, FlagResolution, FlagStatus, IdentOutcome};
 use serde_json::{Value, json};
 
 use super::{Actor, Core, Decision, DecisionError, engine_err};
@@ -164,9 +164,19 @@ impl Decision {
             self.mirror_identification(core);
             return;
         }
+        // without an act only the weak-evidence rule reads the picture, and it reads no track's
+        // sources: the picture without them says whether it flags anything now, and only then
+        // is the whole picture taken, at the same time (a flag's inputs log its two tracks
+        // whole). Saturation's picture has 172,000 sources: making and dropping them each second
+        // for nothing was most of the step (bd murmur-jvdc).
+        let t = self.clock.now();
+        if acts.is_empty() && !Self::escort_due(core, &tracks, t) {
+            self.mirror_identification(core);
+            return;
+        }
         // an act's attribution reads our fleet; the weak-evidence rule alone, the track picture
         // (bd murmur-jvdc: Saturation's whole snapshot every second for it)
-        let world = if acts.is_empty() { self.track_picture() } else { self.snapshot() };
+        let world = if acts.is_empty() { super::snapshot::tracks_only(t, Some(&tracks)) } else { self.snapshot() };
         for report in acts {
             let id = report.act.clone();
             match core.engine.record_act(report.clone(), &world) {
@@ -200,6 +210,32 @@ impl Decision {
             Err(e) => eprintln!("decision: identification step: {e}"),
         }
         self.mirror_identification(core);
+    }
+
+    /// Whether the weak-evidence rule would flag a track at engine time `t`
+    /// (`murmur_decide::ident::escort`, which `Engine::step_identification` runs), judged on
+    /// the track picture without its sources: the rule reads each track's position, velocity,
+    /// domain and estimate, never its sources. False when the policy has the rule off (the
+    /// engine's step then flags nothing). A test build checks it against the whole picture.
+    fn escort_due(core: &Core, tracks: &crate::tracks::Tracks, t: murmur_decide::Time) -> bool {
+        let policy = core.engine.policy();
+        let cfg = policy.identification();
+        if !policy.rules.rule_id() || !cfg.rule_declaration {
+            return false;
+        }
+        let ledger = core.engine.identification();
+        let light = tracks.facts_without_sources(t.0 as f64 / 1000.0);
+        let due = !murmur_decide::ident::escort(&light, ledger, t, &cfg).is_empty();
+        #[cfg(debug_assertions)]
+        {
+            let whole = super::snapshot::tracks_only(t, Some(tracks));
+            assert_eq!(
+                due,
+                !murmur_decide::ident::escort(&whole.tracks, ledger, t, &cfg).is_empty(),
+                "the weak-evidence rule read a track's sources"
+            );
+        }
+        due
     }
 
     /// The latest observed acts and what the engine made of each (its attribution and

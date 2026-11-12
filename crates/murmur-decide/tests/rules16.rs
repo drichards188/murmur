@@ -140,6 +140,23 @@ fn drop_ferry(e: &mut Engine, clock: &ManualClock, seen: Time, drop: Time, mmsi:
     f
 }
 
+/// bd murmur-jvdc: the lost contacts shown (`lost_contacts_without_sources`) are those the
+/// decisions read, identification filled, less their sources alone.
+#[test]
+fn the_lost_contacts_shown_are_the_decisions_less_their_sources() {
+    let clock = ManualClock::new(T0);
+    let (mut e, _log) = engine_on(&clock, None);
+    drop_ferry(&mut e, &clock, T0, T0.plus_ms(180_000), Some("366000001"));
+    let mut want = e.lost_contacts();
+    for l in want.values_mut() {
+        assert!(!l.facts.sources.is_empty() && !l.facts.source_t.is_empty());
+        l.facts.sources.clear();
+        l.facts.source_t.clear();
+    }
+    assert_eq!(e.lost_contacts_without_sources(), want);
+    assert_eq!(e.lost_contacts()["T-0002"].facts.without_sources(), want["T-0002"].facts);
+}
+
 #[test]
 fn a_dropped_contact_blocks_until_accepted_and_replay_rebuilds_it() {
     let clock = ManualClock::new(T0);

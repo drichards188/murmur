@@ -691,6 +691,11 @@ pub struct Source {
     pub sensor: SensorType,
     pub hits: u64,
     pub last_t: f64,
+    /// How the decision facts name it, `"<uid>:<sensor>"` ([`Track::facts`]), made once: a
+    /// track a swarm of ours sees has thousands, and the picture names them all each time it
+    /// is taken (bd murmur-jvdc).
+    #[serde(skip)]
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1476,11 +1481,12 @@ impl Track {
         let src = self
             .sources
             .entry((d.uid, d.sensor))
-            .or_insert(Source {
+            .or_insert_with(|| Source {
                 uid: d.uid,
                 sensor: d.sensor,
                 hits: 0,
                 last_t: now,
+                name: format!("{}:{}", d.uid, d.sensor.as_str()),
             });
         src.hits += 1;
         src.last_t = now;
@@ -2064,16 +2070,29 @@ impl Track {
     /// estimate only. Rules 9: the engine fills declarations, their basis and suspect raises
     /// from its identification ledger (the record); the mirror kept here is for display.
     pub fn facts(&self, now: f64) -> TrackFacts {
+        self.facts_with(now, true)
+    }
+
+    /// [`Self::facts`] without its sources (`sources` and `source_t` empty), when `sources` is
+    /// false: for a reader that never looks at them (the weak-evidence rule's look,
+    /// `Tracks::facts_without_sources`); a track a swarm of ours sees has thousands.
+    pub fn facts_with(&self, now: f64, sources: bool) -> TrackFacts {
         let id = self.identity();
         let (aff, aff_conf, _) = self.estimate();
         let ms = |s: f64| Time((s * 1000.0).round() as i64);
-        // each source's name made once, for both lists (thousands of them on a track a swarm
-        // of ours sees, bd murmur-jvdc)
-        let names: Vec<String> = self
-            .sources
-            .values()
-            .map(|s| format!("{}:{}", s.uid, s.sensor.as_str()))
-            .collect();
+        // each source's name as it was made when the source was (thousands of them on a track
+        // a swarm of ours sees, bd murmur-jvdc)
+        let names: Vec<String> = if sources {
+            self.sources
+                .values()
+                .map(|s| {
+                    debug_assert_eq!(s.name, format!("{}:{}", s.uid, s.sensor.as_str()), "a source's name");
+                    s.name.clone()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let source_t = names
             .iter()
             .cloned()
