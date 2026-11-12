@@ -33,7 +33,7 @@ import { ESTIMATE_NOTE, weaponBanner, weaponReports, type WeaponTrack } from './
 import { secondsToImpact } from './munition'
 import { usePlatformLimits } from './taskDefaults'
 import { estimated } from './estimate'
-import { buildEstimateLayers, estimateLabelCandidates, estimateTooltip } from './estimateLayers'
+import { buildEstimateLayers, estimateLabelCandidates, estimateTooltip, hiddenHypotheses } from './estimateLayers'
 import { circle } from './geo'
 import { PERF_ON, perfCommitted, perfPassiveBegin, perfRenderBegin, perfUpdateEnd } from './perf'
 import { PerfOverlay } from './PerfOverlay'
@@ -59,7 +59,9 @@ import { CoverageControl } from './CoverageControl'
 import { gridImage, type CoverageGrid, type LinkRouteDrawing } from './coverage'
 import { buildStationLayers } from './linkLayers'
 import { buildSwarmLayers, swarmLabelCandidates, useSwarms } from './swarms'
-import { engagementTracks, focusMap, reviewTracks } from './focus'
+import { CROWD, CROWD_SILENT, engagementTracks, focusMap, reviewTracks } from './focus'
+import { HiddenLegend, type HiddenRow } from './HiddenLegend'
+import type { LabelStats } from './declutter'
 import { selectedSwarm, swarmOf, swarmOutlines, unfolded } from './swarmsModel'
 import type { MapScreen } from './aloft'
 import { SwarmsButton, SwarmsPanel } from './SwarmsPanel'
@@ -120,6 +122,11 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   // be drawn in full (focus.ts; a view setting of this console only)
   const [hoverTrack, setHoverTrack] = useState<string | null>(null)
   const [pinnedTracks, setPinnedTracks] = useState<ReadonlySet<string>>(() => new Set())
+  // the map legend's Show all (HiddenLegend.tsx, R3): each thing drawn dim, unlabelled or folded,
+  // in full while on; and what the label budget drew last
+  const [showAll, setShowAll] = useState({ tracks: false, areas: false, estimates: false, labels: false })
+  const toggleAll = useCallback((k: keyof typeof showAll) => setShowAll((s) => ({ ...s, [k]: !s[k] })), [])
+  const [labelStats, setLabelStats] = useState<LabelStats | null>(null)
   const togglePin = useCallback((id: string) => {
     setPinnedTracks((prev) => {
       const next = new Set(prev)
@@ -321,6 +328,9 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     () => focusMap(tracks?.tracks ?? [], tracks?.lost ?? [], { selected: selectedTrack, hovered: hoverTrack, pinned: pinnedTracks, review: reviewIds, engagement: engageIds }),
     [tracks, selectedTrack, hoverTrack, pinnedTracks, reviewIds, engageIds],
   )
+  // the dim rule holds once the picture is crowded; a few contacts are each drawn in full, as before
+  const crowded = (tracks?.tracks.length ?? 0) + (tracks?.lost?.length ?? 0) > CROWD
+  const trackAll = useMemo(() => ({ tracks: showAll.tracks || !crowded, areas: showAll.areas || !crowded }), [showAll.tracks, showAll.areas, crowded])
   const trackLayers = useCallback<MapLayers>(
     (screen, plan) =>
       buildTrackLayers({
@@ -337,10 +347,11 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             : null,
         screen,
         focus: trackFocus,
+        showAll: trackAll,
         plan,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tracks, selectedTrack, trackTick, onTrackClick, draft.mode, selected, trackFocus],
+    [tracks, selectedTrack, trackTick, onTrackClick, draft.mode, selected, trackFocus, trackAll],
   )
   identifyRef.current = { on: draft.mode === 'identify' && selected.size === 1, tracks: tracks?.tracks ?? [], staleAfterS: tracks?.stale_after_s ?? 10 }
   // rules 21: the identify draft on the map: its orbit's ring on the target where it is now, a
@@ -519,10 +530,12 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const estimateTick = silent.length ? Math.floor(now() / 500) : 0
   // in focus for the estimates: selected, or details open (both hypotheses, filled)
   const vehicleFocus = useMemo(() => (detailsUid == null ? selected : new Set([...selected, detailsUid])), [selected, detailsUid])
+  // a few silent vehicles: both estimates of each, filled, as before
+  const estimateAll = showAll.estimates || silent.length <= CROWD_SILENT
   const estimateLayers = useCallback<MapLayers>(
-    (_screen, plan) => (silent.length ? buildEstimateLayers({ vehicles: silent, nowMs: now(), focus: detailsUid, inFocus: vehicleFocus, plan }) : []),
+    (_screen, plan) => (silent.length ? buildEstimateLayers({ vehicles: silent, nowMs: now(), focus: detailsUid, inFocus: vehicleFocus, showAll: estimateAll, plan }) : []),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [silent, estimateTick, detailsUid, vehicleFocus],
+    [silent, estimateTick, detailsUid, vehicleFocus, estimateAll],
   )
   // ordered versus confirmed (rules 5): queued orders' paths dashed, sent ones not yet
   // confirmed labelled
@@ -555,14 +568,61 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   // layers above, so a new plan comes with them
   const mapLabels = useCallback(
     (screen: MapScreen) => [
-      ...(silent.length ? estimateLabelCandidates({ vehicles: silent, nowMs: now(), focus: detailsUid, inFocus: vehicleFocus }, screen) : []),
+      ...(silent.length ? estimateLabelCandidates({ vehicles: silent, nowMs: now(), focus: detailsUid, inFocus: vehicleFocus, showAll: estimateAll }, screen) : []),
       ...trackLabelCandidates({ tracks: tracks?.tracks ?? [], lost: tracks?.lost ?? [], nowMs: now(), staleAfterS: tracks?.stale_after_s ?? 10, screen, focus: trackFocus }),
       ...orderLabelCandidates({ queued: queuedIntents ?? [], intents: allIntents ?? [], taskings: state?.taskings ?? [], vehicles, nowMs: now() }, screen),
       ...swarmLabelCandidates(swarmShapes, swarmSel, screen),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [silent, estimateTick, detailsUid, vehicleFocus, tracks, trackTick, trackFocus, queuedIntents, allIntents, state?.taskings, vehicles, orderTick, swarmShapes, swarmSel],
+    [silent, estimateTick, detailsUid, vehicleFocus, estimateAll, tracks, trackTick, trackFocus, queuedIntents, allIntents, state?.taskings, vehicles, orderTick, swarmShapes, swarmSel],
   )
+  const onLabelStats = useCallback((s: LabelStats) => setLabelStats(s), [])
+  const n = (x: number) => x.toLocaleString('en-US')
+  // What is hidden, counted (R3): each row only while it hides something or Show all is on
+  const hiddenRows = useMemo<HiddenRow[]>(() => {
+    const rows: HiddenRow[] = []
+    const ts = tracks?.tracks ?? []
+    const lostList = tracks?.lost ?? []
+    if (crowded && ts.length) {
+      const inFocus = ts.filter((t) => trackFocus.has(t.id)).length
+      rows.push({
+        id: 'tracks', what: 'Tracks',
+        count: showAll.tracks ? `all ${n(ts.length)} in full` : `${n(ts.length - inFocus)} of ${n(ts.length)} dimmed`,
+        how: 'A track out of focus has its ring outlined, not filled, a short stem instead of its column, and an unknown one a dimmer symbol. In focus: selected, hovered, pinned, hostile or suspect, declared, flagged, a review item\'s, an engagement\'s target or blocker.',
+        hidden: ts.length - inFocus > 0, all: showAll.tracks, onToggle: () => toggleAll('tracks'),
+      })
+    }
+    if (crowded && lostList.length) {
+      const inFocus = lostList.filter((l) => trackFocus.has(l.id)).length
+      rows.push({
+        id: 'areas', what: 'Lost areas',
+        count: showAll.areas ? `all ${n(lostList.length)} areas in full` : `${n(lostList.length - inFocus)} of ${n(lostList.length)} outlined`,
+        how: "A lost contact out of focus has its possible area (where every engagement keep-out still counts it) drawn as a faint outline, not filled. The keep-out checks count every one either way.",
+        hidden: lostList.length - inFocus > 0, all: showAll.areas, onToggle: () => toggleAll('areas'),
+      })
+    }
+    if (silent.length > CROWD_SILENT) {
+      const hid = hiddenHypotheses(silent, now(), vehicleFocus, showAll.estimates)
+      rows.push({
+        id: 'estimates', what: 'Estimates',
+        count: showAll.estimates ? `all ${silent.length} in full` : `${silent.length} outlined${hid ? `, ${hid} second hidden` : ''}`,
+        how: 'A silent vehicle out of focus (not selected, details closed) shows its leading estimate only, its region outlined. Select it for both, filled.',
+        hidden: true, all: showAll.estimates, onToggle: () => toggleAll('estimates'),
+      })
+    }
+    if (labelStats && (labelStats.none > 0 || labelStats.all)) {
+      const drawn = labelStats.full + labelStats.short
+      rows.push({
+        id: 'labels', what: 'Labels',
+        count: labelStats.all ? `all ${n(labelStats.inView)} in full` : `${n(drawn)} of ${n(labelStats.inView)} labelled`,
+        how: 'Labels never overlap: focus first in full, then group names, then ours with a lost link, then the rest by their short label where it fits. Hover a symbol for its full block.',
+        hidden: labelStats.none > 0, all: labelStats.all, onToggle: () => toggleAll('labels'),
+      })
+    }
+    return rows
+    // now: the hidden estimates are counted at this tick
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tracks, crowded, trackFocus, showAll, silent, estimateTick, vehicleFocus, labelStats, toggleAll])
   // the full block of a track, lost contact or estimate under the pointer, while its label is not
   const mapTooltip = useCallback((layer: string, object: unknown) => trackTooltip(layer, object, now()) ?? estimateTooltip(layer, object), [now])
   const focusTrack = useCallback(
@@ -843,6 +903,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           onHover={onMapHover}
           labels={mapLabels}
           tooltip={mapTooltip}
+          allLabels={showAll.labels}
+          onLabelStats={onLabelStats}
         />
         </ErrorBoundary>
         {showCoverage && (
@@ -871,6 +933,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           <Tutorial decisions={decisions} tracks={tracks} now={now} onMenu={onMenu} formChecks={engageChecks} nameOf={nameOf} />
         </ErrorBoundary>
         {!drawer && banners}
+        <HiddenLegend rows={hiddenRows} drawer={drawer != null} />
         {showGlobe && (
           <ErrorBoundary name="Globe" className="floating">
           <GlobeInset

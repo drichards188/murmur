@@ -17,6 +17,12 @@ import type { Review } from './ident'
 import type { Blocking } from './blocking'
 import type { LostContact, Track } from './tracks'
 
+/** A picture of at most this many tracks and lost contacts is drawn in full, as before (the
+ *  small situations: a handful of contacts, each worth its ring); past it, the dim rule holds. */
+export const CROWD = 40
+/** At most this many silent vehicles: both estimates of each, filled, as before. */
+export const CROWD_SILENT = 10
+
 export type FocusReason = 'selected' | 'pinned' | 'hostile' | 'suspect' | 'declared' | 'flagged' | 'review' | 'engagement' | 'hovered'
 
 /** In words, for a label's or a legend's title: why it is drawn in full. */
