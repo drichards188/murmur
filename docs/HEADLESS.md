@@ -1394,7 +1394,20 @@ alone: with `RULES_VERSION` put back to 25 the code gave the earlier digests (re
 (a missile on a ground or surface platform launched from a firing position, bd murmur-9001) re-took it
 for `run.started` alone: with `RULES_VERSION` put back to 27 the code gave the earlier digests (record
 `40d4fb38...`, audit `329a6d4e...`) byte for byte, and the new audit log with its `rules_version` put
-back to 27 hashes to `329a6d4e...` too; no fleet in the episode carries such a missile.
+back to 27 hashes to `329a6d4e...` too; no fleet in the episode carries such a missile. The track
+picture logged once and referenced (murmur-whug) and the terrain fixed by murmur-cbjn re-took it on
+2026-11-12, in steps (settling murmur-d3cb). This code on main's data from before the terrain work
+gave record `c0a84c72...`, audit `ef7e52ee...`, 152 events: the 145 before and seven
+`tracks.picture` events, the same three proposals and two operator decisions as the golden before
+it, and the log replays with its anchors: the picture's form alone. With the re-baked grids it
+gave `9efbd667...` and `163b102d...`, 176 events: PUMA 1's links to Crissy Field cross terrain the
+squeezed grid had put elsewhere, a stuck-order alert was proposed and queued, and the operator
+approved a third look, dispatched. With the Crissy Field station at the DEM's 1.2 m (the squeezed
+grid's 5.0 m before) it gives the values now held, record `7add5073...`, audit `ee774c4f...`, 149
+events: the same three proposals at the same times, and the operator's approval of the third (at
+290 s) refused at approval because PUMA 1's navigation status was 13 s old behind terrain. The rest
+of the re-lay (Harbor watch's cargo ship east of Point Blunt, a waypoint it does not reach in 720 s)
+changes nothing in it. The paused digests moved in the same steps (test_charged_clock.py).
 
 ### 17.3 The bake tool
 

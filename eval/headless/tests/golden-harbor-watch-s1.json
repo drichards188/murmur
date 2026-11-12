@@ -1,7 +1,7 @@
 {
- "record_sha256": "3a173477f3c84d9025eb40e8ffa39529257e3cec2bfd93a306b26263a77e92dd",
- "audit_sha256": "d3d0a188f10d1b6268fb61980b32a7bb7f9bc46a2b07a1c8eaae02e14fd9d341",
- "audit_events": 145,
+ "record_sha256": "7add5073e70e2e0571b5a1d1cfb5b3ab1b4d9ce246059704f07d682a148dd716",
+ "audit_sha256": "ee774c4ffb682bf0426af1c2d47349b623989e182dacda812675b3ca10f2bee3",
+ "audit_events": 149,
  "calibration": {
   "contacts_start_s": 0.821,
   "standins_start_s": 0.966,
@@ -48,6 +48,12 @@
    5,
    "approve",
    "dispatched"
+  ],
+  [
+   290.091,
+   6,
+   "approve",
+   "error 409: intent i6 failed its checks against the current world at approval and was voided: checks failed at approval: readiness 3: cannot evaluate: navigation status is 13.0 s old (limit 10 s)"
   ]
  ]
 }

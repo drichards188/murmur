@@ -465,8 +465,16 @@ detections and the engine's whole state after (`Engine::state_text`), in three o
 Since contacts slow at their kind's rate (bd murmur-2of4: this world's ferries now slow onto their
 piers, its ships onto their transits' ends) the scale watch gives record `8247b39e...` and audit
 `f6a14f3b...` (6,225 events, 2026-11-10); the same code with the contacts' old one-step stops
-(`MURMUR_MOTION_MODEL=legacy`) gives the pair above, so the motion alone moved it. Compare a change
-to the physical step with the new pair.
+(`MURMUR_MOTION_MODEL=legacy`) gives the pair above, so the motion alone moved it. Since the track
+picture is logged once and referenced (murmur-whug) and the terrain was fixed (murmur-cbjn, both
+re-taken 2026-11-12, settling murmur-d3cb) it gives record `c0df4b83...` and audit `f2fa3497...`
+(6,081 events), the same twice. In steps: this code on main's data from before the terrain work
+gave `aeb1e71b...` and `110edf08...` (6,228 events: the 6,225 and three `tracks.picture`), the
+re-baked grids `cc2f4833...` and `7db52eef...` (5,773), the Crissy Field station at the DEM's 1.2 m
+`96b9fd5b...` and `14e63b06...` (5,775), the fleet, traffic and orders re-laid on the fixed grids
+`8aecd040...` and `7be051d7...` (6,063), and KESTREL 1's orbit moved 600 m south, so its return
+home to the airfield clears the towers' no-go boxes, the pair above. Compare a change to the
+physical step with the new pair.
 
 **Saturation's size, synthetic** (`tracks::tests::sense_par::sense_par_bench`, release: 3,602 of
 ours in Saturation's mix, 1,700 X10s at 100 m, 1,300 Pumas at 800 m, 200 Saildrones, 300

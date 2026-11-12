@@ -401,10 +401,17 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: (0ead6f3f..., 8656883a..., 7ac942f4...) byte for byte, so the only change is the audit log's
 #: `run.started` (`rules_version` 28 for 27). No fleet here carries a missile on a ground or surface
 #: platform, and no tool changed.
+#: Re-taken for the track picture logged once and referenced (murmur-whug, settling murmur-d3cb) and
+#: for the terrain fixed by murmur-cbjn, in steps: this code on main's data before the terrain
+#: work gave 8d8f6730..., f59d6fdc..., adc50eb9... (the picture's form alone: `tracks.picture`
+#: events and `tracks_sha256` references); with the re-baked grids ca2fba01..., 1f734cac...,
+#: c0e9d7ff...; with the Crissy Field station at the DEM's 1.2 m (was 5.0) the values below,
+#: which the rest of the re-lay (Harbor watch's cargo ship east of Point Blunt, a waypoint it
+#: does not reach in 720 s) leaves as they are.
 PAUSED = {
-    "model harbor-watch s1": "09d1987d544fb9cf308782d1c793ceff8eae97e5c2bde9d7417acbbbdc4ea3c1",
-    "playbook v2 fast-unknown 1000": "9eab26cb10ce8abed98f46b92f1229a92c30e175b30bf4cde5b7b760c11120e1",
-    "model v2 fast-unknown 1000": "aa303738c212b8b4473be63f6b7b77fcd50744159e22c4f3b70f0422fdd28d0a",
+    "model harbor-watch s1": "6143ae038186aee6026511e2aaabb82bcf9827fddbe80ba591562fcbb2647e3d",
+    "playbook v2 fast-unknown 1000": "d70841824f5ad7ff5cf4985f3022a387b7152e923fbd08dc277ee98f2588bc6b",
+    "model v2 fast-unknown 1000": "7962359e5be725f3a869a35be4d5a7a7e277af4cc296014a9fe959858a642355",
 }
 
 
