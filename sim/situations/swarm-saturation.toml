@@ -125,12 +125,13 @@ track is refused by the weapon check, whatever the keep-out. What should not hap
 to orbit the shooter (a circling friendly counts anywhere on its disc and blocks the engagement), a
 nomination before the confirmation (refused), or an engagement on a drone that did nothing. Known
 limits of this world: one order to a hundred vehicles runs as a hundred missions, each at its own
-altitude step (the task layer's deconfliction: the quadcopters from 100 m to some 600 m, the Pumas
-from 300 m to some 1.8 km, and the AUVs' depth steps reach past the shelf's floor where their ring
-leaves the canyon); a patrol sends every member along the same lane; the relay chain relays nothing
-(the link emulator links each vehicle to its best station directly); the launch fields' positions
-and heights are known or estimated figures, and tidewater's terrain (line of sight to each station,
-land and water) is the live run's to confirm (bd murmur-cbjn).
+altitude step (the task layer's deconfliction: the quadcopters from 100 m to some 1,000 m, the
+Pumas from 300 m to some 1.8 km, and the AUVs' depth steps reach past the shelf's floor where their
+ring leaves the canyon); a patrol sends every member along the same lane; the relay chain relays
+nothing (the link emulator links each vehicle to its best station directly); the launch fields,
+spawns and stations are checked on tidewater's terrain of the region, the live run's own, whose
+90 m cells outside the Bay smooth narrow headlands and islands, so the stations on Bodega Head,
+Point Reyes and the Farallones take their NGS marks' published heights instead.
 """
 
 world = "bay-region-saturation"               # sim/worlds/bay-region-saturation.toml: the region, so

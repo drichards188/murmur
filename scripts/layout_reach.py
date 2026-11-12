@@ -25,7 +25,12 @@ the Earth's bulge (k 4/3) against the ray between the antennas (each site's heig
 where its alt_m is "dem", plus the profile's mast and the vehicle's antenna): how far the worst
 obstruction reaches past the ray (points obstructed, and the worst). Without --dem it is not
 checked (the live run's emulator does it with tidewater). Use terrain fetched after bd
-murmur-cbjn: grids fetched before it are squeezed north-south about their middle.
+murmur-cbjn and from the finest DEM (a grid with a `source` key): grids fetched before are
+squeezed north-south about their middle, or ETOPO's 450 m cells on the outer coast. The cached
+`bay-region-2026-06`, finest first:
+
+    .venv/bin/python scripts/layout_reach.py --dem tidewater/data/cache/bay-region-2026-06/terrain-golden-gate.npz \\
+        --dem tidewater/data/cache/bay-region-2026-06/terrain-bay.npz --dem tidewater/data/cache/bay-region-2026-06/terrain.npz
 
 Spread. Every vehicle at its spawn and on station (an orbit's member at its own place round the
 ring, as the task layer spreads them; anyone else where it starts): the nearest neighbour's

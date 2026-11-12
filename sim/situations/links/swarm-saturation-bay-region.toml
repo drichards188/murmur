@@ -108,25 +108,28 @@ submerged_depth_m = 1.0
 # a few kilometres from them). The sites are plausible choices, not a real network: none of them
 # is known to host such a radio. Positions are the named feature's; alt_m = "dem" takes the ground
 # height there from tidewater's terrain (`bay-region-2026-06`) at startup, so a site and the line
-# of sight judged from it come from the same grid; Crissy Field keeps sim/links.toml's figure. A
-# station's `name` is what /stats, /api/links and the console show.
+# of sight judged from it come from the same grid. Where that grid's 90 m cells smooth a headland
+# or an island's summit tens of metres below the site (Bodega Head, Point Reyes, the Farallones),
+# the site is an NGS mark (a survey disk, or the light) and alt_m its published height (NAVD 88,
+# the terrain's datum); Crissy Field keeps sim/links.toml's figure. A station's `name` is what
+# /stats, /api/links and the console show.
 [[ground_station]]
-name = "Bodega Head"                 # the headland west of Bodega Harbor
-lat = 38.3040
-lon = -123.0650
-alt_m = "dem"
+name = "Bodega Head"                 # the headland's top, west of Bodega Harbor (NGS JT2832; the grid: 64 m)
+lat = 38.30778
+lon = -123.06339
+alt_m = 73.7
 
 [[ground_station]]
-name = "Point Reyes"                 # the light station on the Point Reyes headland
+name = "Point Reyes"                 # the light station on the Point Reyes headland (NGS HT3489, the light; the grid: 46 m)
 lat = 37.9957
 lon = -123.0231
-alt_m = "dem"
+alt_m = 91.0
 
 [[ground_station]]
-name = "Southeast Farallon Island"   # Lighthouse Hill, beside the island's research station
-lat = 37.6990
-lon = -123.0020
-alt_m = "dem"
+name = "Southeast Farallon Island"   # Lighthouse Hill's summit, over the island's research station (NGS HT3492; the grid: 48 m)
+lat = 37.69923
+lon = -123.00189
+alt_m = 88.6
 
 [[ground_station]]
 name = "Hawk Hill"                   # the Marin Headlands' old battery site over the Gate, about 280 m
@@ -135,9 +138,9 @@ lon = -122.4988
 alt_m = "dem"
 
 [[ground_station]]
-name = "Angel Island"                # Mount Livermore, the old Nike radar site over the central bay
-lat = 37.8608
-lon = -122.4325
+name = "Angel Island"                # Mount Livermore's top, the old Nike radar site over the central bay (the grid's 238 m, 56 m from NGS HT3014)
+lat = 37.86149
+lon = -122.43093
 alt_m = "dem"
 
 [[ground_station]]
@@ -147,21 +150,21 @@ lon = -122.4460
 alt_m = 5.0
 
 [[ground_station]]
-name = "Yerba Buena Island"          # Coast Guard Sector San Francisco
-lat = 37.8097
-lon = -122.3633
+name = "Yerba Buena Island"          # Coast Guard Sector San Francisco's island, the summit's east shoulder (the grid's 98 m, 76 m from NGS HT0817)
+lat = 37.80979
+lon = -122.36533
 alt_m = "dem"
 
 [[ground_station]]
 name = "Coast Guard Island"          # Coast Guard Base Alameda, in the Oakland Estuary
-lat = 37.7795
+lat = 37.7818
 lon = -122.2490
 alt_m = "dem"
 
 [[ground_station]]
-name = "Pillar Point"                # the Air Force tracking station above Half Moon Bay
-lat = 37.4975
-lon = -122.4990
+name = "Pillar Point"                # the Air Force tracking station above Half Moon Bay (NGS HT1438, 55 m)
+lat = 37.49816
+lon = -122.49859
 alt_m = "dem"
 
 [[ground_station]]

@@ -27,11 +27,12 @@
 #   reserve keep the circle within a few kilometres of the launch field (transit, 15 minutes on
 #   task and the way home: rules' `reserve`, at most 87 % of what it allows here; the packed
 #   layout's reached 98 %). Copters start on the ground: each launches from a flat field near its
-#   ring (a block 6 or 8 m apart), a known one (an airfield, a park, an old fort's parade ground), its
-#   height a published or estimated figure, marked, which the live run's terrain confirms.
-#   Each flies from 100 m, or higher where its ring passes over high ground (150 to 200 m: Bodega
-#   Head, the Marin cliffs at the Gate's mouth, Sausalito and Belvedere, Pacific Heights, Yerba
-#   Buena Island, the foothills above Montara and El Granada, New Monterey): the task layer
+#   ring (a block 6 or 8 m apart), a known one (an airfield, a park, a lookout's lot), on land at
+#   the ground's height on tidewater's terrain (eval/tests/test_swarm.py checks every member).
+#   Each flies from 100 m, or higher where its ring passes over high ground (150 to 350 m: Bodega
+#   Head, Hawk Hill's slopes at the Gate's mouth, the hills above Sausalito, Pacific Heights, Yerba
+#   Buena Island, the foothills above Montara and El Granada, New Monterey), at least 25 m over
+#   the highest ground under its ring and its ways out and back on that terrain: the task layer
 #   stacks the members upward from there.
 # - SEARCH-1 to -10, 1,000 Puma 3 AE-class fixed wings (EO/IR, LOS radio: 15 km clean, 25 km at
 #   most; endurance_h 2.5). Lanes over the sea within 15 km of a station from end to end, the
@@ -74,10 +75,11 @@
 title = "Saturation: 3,602 stand-ins in 37 swarms from Bodega Bay to Monterey Bay"
 
 # ---------------------------------------------------------------- air pickets (X10, rings)
-# Each field: its name and where its height comes from ([E]: estimated, slightly high rather than
-# low, so a copter at rest is not judged from under the ground). Positions and heights are known
-# or estimated figures, not read from a grid: tidewater's terrain grids are squeezed north-south
-# until bd murmur-cbjn is fixed; the live run confirms each field on the re-fetched terrain.
+# Each field: its name and its ground on tidewater's terrain (`bay-region-2026-06`, each cell from
+# the finest DEM; its grids are 15 m at the Gate, 30 m in the Bay, 90 m outside it): every cell of
+# the block above the highest water of the scenario's window (2.8 m NAVD 88, Redwood City), alt_m
+# at or above its highest cell, so a copter at rest is never under the ground, and within 3 m of
+# the ground under every member (eval/tests/test_swarm.py, from tidewater's cache).
 [[swarm]]
 id = "PICKET-1"
 name = "Bodega Harbor"
@@ -87,11 +89,11 @@ platform = "x10"
 count = 100
 sim = "standin"
 cruise_alt_m = 150
-layout = "block"                     # Doran Beach, the harbor's sand spit (a few metres [E])
-center = { lat = 38.31250, lon = -123.04000 }
+layout = "block"                     # Doran Beach, the harbor's sand spit, by the park's entrance (2.9 to 3.6 m)
+center = { lat = 38.31430, lon = -123.03720 }
 columns = 10
 spacing_m = 8
-alt_m = 5
+alt_m = 4
 
 [[swarm]]
 id = "PICKET-2"
@@ -101,12 +103,12 @@ color = "#7fb8ff"
 platform = "x10"
 count = 100
 sim = "standin"
-cruise_alt_m = 150
-layout = "block"                     # Tiburon's shoreline park by the ferry (a few metres [E])
-center = { lat = 37.87350, lon = -122.45750 }
+cruise_alt_m = 300                   # the hills above Sausalito (173 m), and Hawk Hill's sight over them
+layout = "block"                     # Tiburon's shoreline park by the ferry (3.1 to 3.5 m)
+center = { lat = 37.87435, lon = -122.45610 }
 columns = 10
 spacing_m = 6
-alt_m = 5
+alt_m = 4
 
 [[swarm]]
 id = "PICKET-3"
@@ -116,12 +118,12 @@ color = "#7fb8ff"
 platform = "x10"
 count = 100
 sim = "standin"
-cruise_alt_m = 150
-layout = "block"                     # Kirby Cove, below Hawk Hill (about 10 m [E])
-center = { lat = 37.82700, lon = -122.49050 }
+cruise_alt_m = 350                   # Hawk Hill's slopes under the ring, up to 273 m
+layout = "block"                     # the Vista Point at the bridge's north end (75.1 to 76.7 m)
+center = { lat = 37.83290, lon = -122.48100 }
 columns = 10
 spacing_m = 6
-alt_m = 10
+alt_m = 77
 
 [[swarm]]
 id = "PICKET-4"
@@ -132,7 +134,7 @@ platform = "x10"
 count = 100
 sim = "standin"
 cruise_alt_m = 100
-layout = "block"                     # Crissy Field, the old airfield (about 5 m)
+layout = "block"                     # Crissy Field, the old airfield (4.0 to 4.7 m)
 center = { lat = 37.80400, lon = -122.46200 }
 columns = 10
 spacing_m = 8
@@ -147,7 +149,7 @@ platform = "x10"
 count = 100
 sim = "standin"
 cruise_alt_m = 150
-layout = "block"                     # the Marina Green (a few metres [E])
+layout = "block"                     # the Marina Green (3.2 to 3.8 m)
 center = { lat = 37.80600, lon = -122.44000 }
 columns = 10
 spacing_m = 8
@@ -162,11 +164,11 @@ platform = "x10"
 count = 100
 sim = "standin"
 cruise_alt_m = 150
-layout = "block"                     # Treasure Island, the old naval station's fill (3 to 4 m [E])
-center = { lat = 37.82400, lon = -122.37000 }
+layout = "block"                     # Treasure Island, the old naval station's fill (3.2 to 3.7 m)
+center = { lat = 37.82520, lon = -122.37050 }
 columns = 10
 spacing_m = 8
-alt_m = 5
+alt_m = 4
 
 [[swarm]]
 id = "PICKET-7"
@@ -177,11 +179,11 @@ platform = "x10"
 count = 100
 sim = "standin"
 cruise_alt_m = 100
-layout = "block"                     # Alameda Point, the old air station (3 m [E])
+layout = "block"                     # Alameda Point, the old air station (4.4 to 5.1 m)
 center = { lat = 37.78600, lon = -122.31800 }
 columns = 10
 spacing_m = 8
-alt_m = 5
+alt_m = 5.5
 
 [[swarm]]
 id = "PICKET-8"
@@ -192,8 +194,8 @@ platform = "x10"
 count = 100
 sim = "standin"
 cruise_alt_m = 100
-layout = "block"                     # Coast Guard Island (about 3 m [E])
-center = { lat = 37.77950, lon = -122.24950 }
+layout = "block"                     # Coast Guard Island, the middle of the base (4.3 to 4.9 m)
+center = { lat = 37.78180, lon = -122.24900 }
 columns = 10
 spacing_m = 8
 alt_m = 5
@@ -207,11 +209,11 @@ platform = "x10"
 count = 100
 sim = "standin"
 cruise_alt_m = 200
-layout = "block"                     # Half Moon Bay Airport, north end (field elevation 20 m, FAA)
+layout = "block"                     # Half Moon Bay Airport, north end (16.2 to 17.4 m; FAA's 20 m is the field's highest)
 center = { lat = 37.51700, lon = -122.50400 }
 columns = 10
 spacing_m = 8
-alt_m = 21
+alt_m = 17.5
 
 [[swarm]]
 id = "PICKET-10"
@@ -222,11 +224,11 @@ platform = "x10"
 count = 100
 sim = "standin"
 cruise_alt_m = 100
-layout = "block"                     # Half Moon Bay Airport, middle
+layout = "block"                     # Half Moon Bay Airport, middle (12.3 to 13.5 m)
 center = { lat = 37.51340, lon = -122.50120 }
 columns = 10
 spacing_m = 8
-alt_m = 21
+alt_m = 13.5
 
 [[swarm]]
 id = "PICKET-11"
@@ -236,12 +238,12 @@ color = "#7fb8ff"
 platform = "x10"
 count = 100
 sim = "standin"
-cruise_alt_m = 150
-layout = "block"                     # Half Moon Bay Airport, south end
+cruise_alt_m = 200                   # the foothills above El Granada, up to 153 m
+layout = "block"                     # Half Moon Bay Airport, south end (9.4 to 10.5 m)
 center = { lat = 37.50980, lon = -122.49840 }
 columns = 10
 spacing_m = 8
-alt_m = 21
+alt_m = 10.5
 
 [[swarm]]
 id = "PICKET-12"
@@ -252,11 +254,11 @@ platform = "x10"
 count = 100
 sim = "standin"
 cruise_alt_m = 100
-layout = "block"                     # Lighthouse Field, on the cliff top by the station (12 m [E])
-center = { lat = 36.95420, lon = -122.02350 }
+layout = "block"                     # Lighthouse Field, on the cliff top by the station (12.0 to 12.8 m)
+center = { lat = 36.95470, lon = -122.02700 }
 columns = 10
 spacing_m = 8
-alt_m = 14
+alt_m = 13
 
 [[swarm]]
 id = "PICKET-13"
@@ -267,11 +269,11 @@ platform = "x10"
 count = 100
 sim = "standin"
 cruise_alt_m = 100
-layout = "block"                     # Lighthouse Field, west part
-center = { lat = 36.95420, lon = -122.02550 }
+layout = "block"                     # Lighthouse Field, west part (12.8 to 13.4 m)
+center = { lat = 36.95490, lon = -122.02840 }
 columns = 10
 spacing_m = 8
-alt_m = 14
+alt_m = 13.5
 
 [[swarm]]
 id = "PICKET-14"
@@ -282,11 +284,11 @@ platform = "x10"
 count = 100
 sim = "standin"
 cruise_alt_m = 100
-layout = "block"                     # the plant's grounds (about 5 m [E])
+layout = "block"                     # the plant's grounds (7.9 to 8.3 m)
 center = { lat = 36.80450, lon = -121.77900 }
 columns = 10
 spacing_m = 8
-alt_m = 6
+alt_m = 8.5
 
 [[swarm]]
 id = "PICKET-15"
@@ -297,11 +299,11 @@ platform = "x10"
 count = 100
 sim = "standin"
 cruise_alt_m = 100
-layout = "block"                     # the plant's grounds, west part
+layout = "block"                     # the plant's grounds, west part (8.3 to 9.0 m)
 center = { lat = 36.80450, lon = -121.78100 }
 columns = 10
 spacing_m = 8
-alt_m = 6
+alt_m = 9
 
 [[swarm]]
 id = "PICKET-16"
@@ -312,11 +314,11 @@ platform = "x10"
 count = 100
 sim = "standin"
 cruise_alt_m = 200
-layout = "block"                     # Pacific Grove golf links (about 15 m [E])
+layout = "block"                     # Pacific Grove golf links (33.2 to 35.9 m)
 center = { lat = 36.63000, lon = -121.93000 }
 columns = 10
 spacing_m = 8
-alt_m = 18
+alt_m = 36
 
 [[swarm]]
 id = "PICKET-17"
@@ -327,11 +329,11 @@ platform = "x10"
 count = 100
 sim = "standin"
 cruise_alt_m = 100
-layout = "block"                     # the Pacific Grove golf links, west part
-center = { lat = 36.63150, lon = -121.93150 }
+layout = "block"                     # the Pacific Grove golf links, west part (21.2 to 23.5 m)
+center = { lat = 36.63220, lon = -121.93210 }
 columns = 10
 spacing_m = 8
-alt_m = 18
+alt_m = 24
 
 # ---------------------------------------------------------------- search (Puma, lanes over the sea)
 # Each swarm starts aloft along its lane, 700 to 1,000 m up over the sea, and flies it from 300 m

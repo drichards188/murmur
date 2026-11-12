@@ -331,9 +331,10 @@ def test_saturation_threat_is_500_quadcopters_clear_of_the_shooter_by_11_30(satu
 # ---- Saturation over the region (sim/situations/swarm-saturation.toml, bd murmur-mum5) ----------
 # The same force, threat and timeline as the packed layout, spread from Bodega Bay to Monterey Bay
 # among thirteen ground stations. Checked against its links file, its areas and the geometry its
-# director's notes rely on. Nothing here reads terrain: tidewater's grids and the baked headless
-# grids are squeezed north-south until bd murmur-cbjn lands, so land and water at launch fields
-# and rings, and the line of sight from each station, are the live run's to confirm.
+# director's notes rely on, and, where tidewater's cache holds the region's terrain fetched from
+# the finest DEM (the live run's own grids; otherwise those tests skip), the spawns and the
+# pickets' height over the ground. The line of sight from each station is scripts/layout_reach.py
+# --dem's to check (0 of 1,004 sampled points obstructed).
 
 R_STRIKE = (-122.5561, 37.7979)  # where the shooter holds (scripts/threat_swarms.py REGION_SHOOTER_AT)
 R_JAM = {"lat": 37.5093, "lon": -122.4997, "radius_m": 5000}  # sim/link-events/swarm-saturation-bay-region.toml
@@ -353,6 +354,26 @@ def region():
     packed = S.load_situation("swarm-saturation-packed")
     return SimpleNamespace(sit=sit, packed=packed, vehicles=S._planned_fleet(sit.fleet), packed_vehicles=S._planned_fleet(packed.fleet),
                            catalog=tomllib.loads((S.REPO / "sim" / "platforms.toml").read_text()), reach=layout_reach, S=S)
+
+
+@pytest.fixture(scope="module")
+def region_terrain(region):
+    """The region's terrain as tidewater serves it to the live run (`bay-region-2026-06`'s grids,
+    finest first) and the lowest and highest water its tide stations saw over the window (NAVD 88,
+    the terrain's datum), from tidewater's cache; skipped unless fetched from the finest DEM."""
+    layers = pytest.importorskip("tidewater.layers")
+    from tidewater import fetch
+    from tidewater.scenario import CACHE_ROOT, Scenario
+
+    sc = Scenario.load(region.S.REPO / "tidewater" / "scenarios" / "bay-region-2026-06.toml")
+    d = CACHE_ROOT / sc.name
+    grids = [d / "terrain.npz"] + [d / f"terrain-{name}.npz" for name, _ in sc.terrain_nests]
+    if not all(g.exists() for g in grids) or not (d / "tides.json").exists():
+        pytest.skip(f"{sc.name} not fetched (tidewater fetch tidewater/scenarios/{sc.name}.toml)")
+    if not all(fetch.terrain_sourced(g) for g in grids):
+        pytest.skip(f"{sc.name}'s terrain predates the finest-DEM fetch: tidewater fetch fetches it again")
+    levels = [v for st in json.loads((d / "tides.json").read_text())["stations"] for _, v in st["series"]]
+    return SimpleNamespace(terrain=layers.NestedTerrain([layers.Terrain.load(g) for g in grids]), low=min(levels), high=max(levels))
 
 
 def r_members(region, sid: str) -> list[dict]:
@@ -420,6 +441,52 @@ def test_saturation_region_every_radio_reaches_a_station(region):
     assert all(row["worst_km"] <= 5.0 for g, row in rows.items() if g.startswith("PICKET")), "the mesh's clean 5 km"
     assert rows["UNDERSEA-1"]["acoustic_s"] < 5.0
     assert {row["profile"] for g, row in rows.items() if g.startswith("SURFACE") or g == "RESERVE"} <= {"satcom", "satcom_leo"}
+
+
+def test_saturation_region_spawns_on_the_region_terrain(region, region_terrain):
+    """On the terrain the live run reads: a boat in water deeper than its draft and an AUV in 1 m or
+    more at the window's lowest water; an aircraft either on the ground at a launch block (land above
+    the window's highest water, its spawn 0 to 3 m above the ground under it: never in it) or aloft
+    100 m or more over the ground or the highest water (a fixed wing always aloft)."""
+    from eval.headless.tests.test_worlds_v3 import draft_m
+
+    t, low, high = region_terrain.terrain, region_terrain.low, region_terrain.high
+    bad = []
+    for v in region.vehicles:
+        lat, lon, alt, _ = v["home"]
+        z = t.elevation(lat, lon)
+        if z is None:
+            bad.append((v["callsign"], "outside the terrain"))
+            continue
+        if v["domain"] in ("surface", "subsurface"):
+            need = draft_m(v["platform"]) if v["domain"] == "surface" else 1.0
+            if low - z < need:
+                bad.append((v["callsign"], "water", round(low - z, 1)))
+            continue
+        aloft = alt - max(z, high) >= 100.0
+        on_ground = z > high and 0.0 <= alt - z <= 3.0
+        if not (aloft or on_ground) or (region.catalog[v["platform"]]["behavior"] == "plane" and not aloft):
+            bad.append((v["callsign"], "launch block or aloft", alt, round(z, 1)))
+    assert not bad, bad[:10]
+
+
+def test_saturation_region_pickets_fly_over_the_high_ground(region, region_terrain):
+    """Each picket's lowest member (its cruise altitude: the task layer stacks the rest upward) 25 m
+    or more over the highest ground under its ring and its ways out and back, every 20 m."""
+    from eval.headless.tests.test_worlds_v3 import along
+
+    low = []
+    for o in region.sit.orders:
+        members = r_members(region, o.vehicles["swarm"])
+        if members[0]["platform"] != "x10":
+            continue
+        points = r_points(region, o)
+        home = [members[0]["home"][1], members[0]["home"][0]]
+        points += [p for q in points[::10] for p in along([home, q], 20.0)]
+        top = max(region_terrain.terrain.elevation_many([p[1] for p in points], [p[0] for p in points]))
+        if members[0]["cruise_alt_m"] - top < 25.0:
+            low.append((o.vehicles["swarm"], members[0]["cruise_alt_m"], round(float(top))))
+    assert not low, low
 
 
 def test_saturation_region_is_spread(region):
