@@ -25,7 +25,16 @@ seconds) and its body is `nt x nlat x nlon` pairs (east, north) in cm/s.
 
 The surface grid was baked on 2026-10-09 (eval/headless/bake_terrain.py, since folded into
 bake_world.py); bake_world.py rebuilt it on 2026-10-23 from the same tidewater commit
-(3a531c9) byte for byte (SHA-256 9153e1a4...), so its provenance file is the original one. To
+(3a531c9) byte for byte (SHA-256 9153e1a4...). Every grid here was baked again on 2026-11-12
+from tidewater's terrain re-fetched after murmur-cbjn: until then NCEI's DEM service had
+widened each request's latitude span to keep its pixels square in degrees and tidewater had
+read the image as the box it asked for, so every earlier grid was squeezed north-south toward
+the scenario box's middle (up to 1.3 km at the Golden Gate box's edges, 1.5 km at San Diego's;
+tidewater/README.md "Terrain placement"). The provenance files are the new bake's: the Golden
+Gate's from tidewater at 60ac4b4 (the finest-DEM fetch since, 0cf0b38, gives its elevations byte
+for byte), whose current field changed only where a point turned from land to water or back; San
+Diego's from tidewater at f81aa73, on NCEI's 1/3 arc-second San Diego DEM, where until then the
+mosaic had served ETOPO 2022's 15 arc-second cells (tidewater/README.md "Terrain sources"). To
 bake a world's grids (a new tidewater DEM, another place or spacing):
 
 ```

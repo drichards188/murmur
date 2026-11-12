@@ -1410,7 +1410,14 @@ world's `wind_mps`. Tidewater was a repository of its own then: 3a531c9, which e
 provenance cites, came into this repository with its history as the `tidewater/` directory,
 tree `d1b2531e9f159e2fe06f90d03a88a81be1876bd8` (a tree hash survives rebases; a commit hash
 does not). A grid baked since records the repository's commit, its `tidewater/` tree and a
-dirty flag (`sim/headless/terrain/README.md`).
+dirty flag (`sim/headless/terrain/README.md`). Every grid was baked again on 2026-11-12 from
+terrain re-fetched after murmur-cbjn (the earlier ones were squeezed north-south): the figures
+in this paragraph are the earlier bake's, and so is every result above that the grids decide.
+The Golden Gate's from tidewater at 60ac4b4 (its `tidewater/` tree 366ae13; 0cf0b38's finest-DEM
+fetch gives the same elevations there, byte for byte): at the 20 m points 9.7 % turned from land
+to water or back, heights by up to 266 m; the current field changed only where a point turned.
+San Diego's from tidewater at f81aa73, on NCEI's 1/3 arc-second San Diego DEM in place of
+ETOPO's 15 arc-second cells (-104 to 130 m; the current field's fastest 1.42 m/s).
 
 ### 17.4 Faults and timelines (H4)
 

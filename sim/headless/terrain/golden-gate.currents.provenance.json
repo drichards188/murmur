@@ -1,12 +1,12 @@
 {
- "baked": "2026-10-23",
+ "baked": "2026-11-12",
  "box": {
   "lat_max": 37.88,
   "lat_min": 37.77,
   "lon_max": -122.38,
   "lon_min": -122.56
  },
- "command": ".venv/bin/python -m eval.headless.bake_world golden-gate --url http://127.0.0.1:9571 --only land_water currents",
+ "command": ".venv/bin/python -m eval.headless.bake_world golden-gate --url http://127.0.0.1:9600 --only surface land_water currents",
  "dims": {
   "nlat": 50,
   "nlon": 65,
@@ -16,11 +16,11 @@
  "from": "2026-06-13T00:00:00Z",
  "max_speed_mps": 2.293,
  "scenario": "golden-gate-2026-06",
- "sha256": "ea69a8452736a8f8a7e75dddb6d62b9e53006df3fba6088122c2bd8298185efe",
+ "sha256": "851bc9789764c6248fa33ad5a303aabaf4c056db999c25628b64de3d5291d5a9",
  "spacing_m": 250.0,
  "step_s": 3600.0,
  "tidewater": {
-  "commit": "3a531c9e90dd5ad288f431ecd48b65e0e06ee2ef",
+  "dirty": false,
   "info": {
    "bounds": {
     "east": -122.38,
@@ -35,8 +35,15 @@
     "start": "2026-06-13T00:00:00+00:00",
     "start_unix": 1781308800.0
    },
-   "title": "Golden Gate, spring tides, 13-16 June 2026"
-  }
+   "title": "Golden Gate, spring tides, 13-16 June 2026",
+   "weather": {
+    "archive": null,
+    "enabled": false,
+    "model": null
+   }
+  },
+  "repo_commit": "60ac4b499e45060c6b9925093b2b6cea07ab1686",
+  "tree": "366ae1364ed6ff5f94257b36676c304d01891b30"
  },
  "to": "2026-06-16T00:00:00Z",
  "what": "surface current (east, north), m/s x 100, tidewater's current_east and current_north",
