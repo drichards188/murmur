@@ -3459,3 +3459,8 @@ in force (the handover, murmur-by3s), one order per vehicle rather than group co
 (murmur-xlca; group command stays shelved, murmur-3kqi), an engine that keeps real time
 throughout (murmur-jvdc), links that do not trip failsafes for nothing (murmur-q94k), an AI
 that can see the scene at this scale, and a display that tells a spectator what is happening.
+The same day the owner settled the demo's story and driver: the hostile act becomes an armed
+boat's, so the reserve (whose weapons take surface and ground targets) can strike it and the
+whole chain plays out by script (declared by rule, nominated, two signatures, the strike, its
+assessment); and the AI watch officer, through the person's own CLI, proposes and reacts, which
+means its tools must cope with about 500 tracks.
