@@ -44,6 +44,7 @@
 # MURMUR_WEB=0 starts no console: the launcher's (`make start`, eval/launcher.py) already serves
 # one on MURMUR_WEB_PORT, whose origin the bridge still accepts. MURMUR_WEB=preview builds the
 # console and serves the production build instead of the dev server (make stress).
+# MURMUR_WEB_MODE=build does the same where the dev server would run (default dev).
 # MURMUR_TIDEWATER_URL overrides the port with any running `tidewater serve`. The scenario
 # clock (MURMUR_AT, MURMUR_RATE) goes to the stand-ins, tidewater drive, the emulator and
 # the contacts process; a MURMUR_RATE other than 1 needs MURMUR_AT (refused otherwise).
@@ -62,6 +63,8 @@ web_port="${MURMUR_WEB_PORT:-5173}"
 export MURMUR_BRIDGE_URL="http://127.0.0.1:$MURMUR_HTTP_PORT"  # vite proxies here
 case "${MURMUR_LINKEMU:-1}" in 0|off|false|no) linkemu=0 ;; *) linkemu=1 ;; esac
 case "${MURMUR_WEB:-1}" in 0|off|false|no) web=0 ;; preview) web=preview ;; *) web=1 ;; esac
+# MURMUR_WEB_MODE=build serves the production build where the dev server would be (dev, the default, is as before)
+if [ "$web" = 1 ] && [ "${MURMUR_WEB_MODE:-dev}" = build ]; then web=preview; fi
 vehicle_base="$MURMUR_BASE_PORT"
 bridge_base="${MURMUR_BRIDGE_BASE_PORT:-$((vehicle_base + 1000))}"
 emu_port="${MURMUR_LINKEMU_PORT:-8766}"

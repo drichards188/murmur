@@ -1,6 +1,6 @@
 import { Bluf } from './Bluf'
 import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, useEffect, useState } from 'react'
-import { type AiMode, endScenario, isActive, type Launch, type LauncherState, type OperatorMode, type Scenario, type Stage, startScenario } from './launcher'
+import { type AiMode, type ConsoleMode, type ConsoleState, endScenario, setConsoleMode, isActive, type Launch, type LauncherState, type OperatorMode, type Scenario, type Stage, startScenario } from './launcher'
 import { SwarmBackdrop, SwarmLegend } from './SwarmBackdrop'
 import { DOMAIN_LABEL, type Domain } from './types'
 import './menu.css'
@@ -201,7 +201,8 @@ export function Menu({ state, received, lost, onUpdate, onReturn }: MenuProps) {
             {scene}
           </span>
         )}
-        {lost && (
+        {state.console && <ConsoleServe c={state.console} busy={isActive(cur)} now={now} onChanged={() => onUpdate(null)} />}
+        {lost && !state.console?.working && (
           <span className="mm-lost" role="status">
             The launcher is not answering: is <code>make start</code> still running?
           </span>
@@ -259,6 +260,47 @@ export function Menu({ state, received, lost, onUpdate, onReturn }: MenuProps) {
         </div>
       </div>
     </div>
+  )
+}
+
+// ---- how the console is served -----------------------------------------------------------------
+
+/** Built (production: the default, much faster at scale) or development (hot reload, for people
+ *  changing the console). A switch builds first when the sources changed, then restarts the server
+ *  this page is on, and the page reloads itself; refused while a scenario is under way. */
+function ConsoleServe({ c, busy, now, onChanged }: { c: ConsoleState; busy: boolean; now: number; onChanged: () => void }) {
+  const [error, setError] = useState<string | null>(null)
+  const choose = async (mode: ConsoleMode) => {
+    setError(null)
+    try {
+      await setConsoleMode(mode)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+    onChanged()
+  }
+  const working = c.working
+  const rebuild = c.mode === 'build' && c.stale && !working
+  let status = ''
+  if (working === 'building') status = c.build.started ? `building the console, ${Math.max(0, Math.round(now - c.build.started))} s` : 'building the console'
+  else if (working === 'restarting') status = 'restarting the server'
+  else if (c.serving === 'build') {
+    status = c.build.seconds != null ? `built in ${c.build.seconds} s` : 'built'
+    if (c.stale) status += ', sources changed since'
+  } else if (c.serving === 'dev') status = 'hot reload'
+  const why = busy ? 'A scenario is starting or running: end it to change how the console is served.' : undefined
+  return (
+    <span className="mm-serve" role="group" aria-label="How the console is served" title={why ?? 'Built: the production console (fast, rebuilt when the sources change). Development: hot reload, for changing the console.'}>
+      <span className="mm-serve-k">Console</span>
+      {(['build', 'dev'] as const).map((m) => (
+        <button key={m} className={`ghost mm-serve-b${c.serving === m ? ' on' : ''}`} aria-pressed={c.serving === m} disabled={busy || !!working || (c.serving === m && !(m === 'build' && c.stale))} onClick={() => choose(m)}>
+          {m === 'build' ? (rebuild ? 'Rebuild' : 'Built') : 'Development'}
+        </button>
+      ))}
+      <span className="mm-serve-s" role="status">
+        {error ?? c.error ?? status}
+      </span>
+    </span>
   )
 }
 

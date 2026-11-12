@@ -83,6 +83,11 @@ html:has(.mm), html:has(.mm) body { overflow: hidden; }
 @media (max-width: 700px) { .mm-scene { display: none; } }
 .mm-utc { display: inline-flex; align-items: baseline; gap: 10px; font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
 .mm-utc b { font-weight: 500; font-size: 13px; color: var(--text); letter-spacing: 0.04em; }
+.mm-serve { display: flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
+.mm-serve-k { color: var(--muted, #8a8f98); text-transform: uppercase; letter-spacing: .08em; font-size: 10.5px; }
+.mm-serve-b { padding: 4px 9px; font-size: 12px; }
+.mm-serve-b.on { color: var(--accent); border-color: #4a3a1f; }
+.mm-serve-s { color: var(--muted, #8a8f98); min-width: 0; overflow: hidden; text-overflow: ellipsis; max-width: 22ch; }
 .mm-return { padding: 6px 12px; font-size: 12.5px; color: var(--accent); border-color: #4a3a1f; }
 .mm-return:hover { background: #2a2214; }
 

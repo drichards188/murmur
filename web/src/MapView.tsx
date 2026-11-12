@@ -21,7 +21,7 @@ import { shownWeapons, type WeaponTrack } from './weapon'
 import { type ActDrawing, animating, visibleActs } from './hostileAct'
 import { GLIDE_LAYER_IDS } from './orderLayers'
 import { buildTrailLayers } from './trailLayers'
-import { PERF_ON, perfWatchDeck } from './perf'
+import { DEBUG_ON, perfWatchDeck } from './perf'
 import { reducedMotion } from './reveal'
 import { drapedWater } from './sea'
 import { vehiclesGeneration } from './useBridge'
@@ -655,7 +655,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     const previewNow = uids.some(isGliding)
     overlay.current.setProps({ layers: deckLayers(true, previewNow || previewGliding.current) })
     previewGliding.current = previewNow
-    if (import.meta.env.DEV) {
+    if (DEBUG_ON) {
       const w = window as unknown as { murmurPerf: Record<string, number[]> }
       w.murmurPerf ??= {}
       const a = (w.murmurPerf.glideFrame ??= [])
@@ -685,7 +685,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       maxPitch: MAX_PITCH,
     })
     // ?perf exposes it in a production build too, so scripts/console_stress.py can drive the camera
-    if (import.meta.env.DEV || PERF_ON) (window as unknown as { murmurMap: maplibregl.Map }).murmurMap = m
+    if (DEBUG_ON) (window as unknown as { murmurMap: maplibregl.Map }).murmurMap = m
 
     // Bare symbols (decluttered) show their callsign on hover; any vehicle shows a pointer.
     const onHover = (info: PickingInfo) => {
@@ -1016,12 +1016,12 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
         const next = lift(m)
         const changed = next !== bridges.current
         bridges.current = next
-        if (import.meta.env.DEV) {
+        if (DEBUG_ON) {
           const w = window as unknown as { murmurPerf: Record<string, number[]> }
           w.murmurPerf ??= {}
           ;(w.murmurPerf.liftBridges ??= []).push(performance.now() - t0)
         }
-        if (import.meta.env.DEV) (window as unknown as { murmurBridges: LiftedBridge[] }).murmurBridges = bridges.current
+        if (DEBUG_ON) (window as unknown as { murmurBridges: LiftedBridge[] }).murmurBridges = bridges.current
         if (demChanged) {
           demChanged = false
           // the surface drawings follow the terrain that came
@@ -1213,7 +1213,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     const newGeneration = gen !== lastGeneration.current
     lastGeneration.current = gen
     if (newGeneration) {
-      if (import.meta.env.DEV) console.debug('[murmur] new data generation', gen, ': vehicles drawn as reported')
+      if (DEBUG_ON) console.debug('[murmur] new data generation', gen, ': vehicles drawn as reported')
     }
     // a vehicle that stops reporting an altitude is drawn at the last one it reported
     noteAltitudes(vehicles)
@@ -1244,7 +1244,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     const t1 = performance.now()
     pushLayers()
     wakeGlide()
-    if (import.meta.env.DEV) {
+    if (DEBUG_ON) {
       const w = window as unknown as { murmurPerf: Record<string, number[]> }
       w.murmurPerf ??= {}
       const a = (w.murmurPerf.vehicleLayers ??= [])

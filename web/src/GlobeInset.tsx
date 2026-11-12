@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { AreaInfo, LinkNow, Positions, Track } from './space'
 import { CLASS_COLOR, getJson, usePoll } from './space'
 import type { LngLat } from './types'
+import { DEBUG_ON } from './perf'
 
 interface Props {
   /** theater map centre; the globe follows it until the operator grabs it */
@@ -72,7 +73,7 @@ export function GlobeInset({ center, area, links, norad, onClose }: Props) {
     m.on('rotatestart', grab)
     m.on('pitchstart', grab)
     m.on('zoomstart', grab)
-    if (import.meta.env.DEV) (window as unknown as { murmurGlobe: maplibregl.Map }).murmurGlobe = m
+    if (DEBUG_ON) (window as unknown as { murmurGlobe: maplibregl.Map }).murmurGlobe = m
     m.on('webglcontextlost', () => {
       setReady(false)
       setLost(true)

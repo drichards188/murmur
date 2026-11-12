@@ -26,7 +26,13 @@ meaningful.
 - `make start` is how a person opens Murmur: the launcher (`eval/launcher.py`, API :8760, bridge
   relay :8761) serves the console at :5173 with a main menu and runs one scenario at a time: the
   open world (`make goldengate` itself, default ports) or a situation (`eval.situation_run`, its
-  own block), each with `MURMUR_WEB=0` (up.sh starts no console); End is `make down`'s.
+  own block), each with `MURMUR_WEB=0` (up.sh starts no console); End is `make down`'s. The
+  console is the production build by default (`eval/webconsole.py`: `vite build` when the sources'
+  stamp differs from `web/dist/.murmur-stamp`, then `vite preview`; about 20x less React render at
+  thousands of vehicles), or the dev server for console work: the menu's Console control, kept in
+  `logs/launcher/console-mode.json` (else `MURMUR_WEB_MODE=build|dev`), refused while a scenario
+  runs. `make goldengate`/`make up` stay on the dev server unless `MURMUR_WEB_MODE=build`. A
+  built console has the debug globals (`murmurMap`, `murmurBridges`, `murmurPerf`) only with `?perf`.
 - `make goldengate` runs the default fleet (one of each of 22 platform types) at the Golden
   Gate with tidewater conditions; `make up FLEET=<name>` for other fleets; `make down` stops.
   `make situation NAME=harbor-watch [OPERATOR=live|autoplay] [AI=claude|codex|playbook|none]`

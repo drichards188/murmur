@@ -4,8 +4,8 @@
     make start                     # then open http://localhost:5173
     .venv/bin/python -m eval.launcher
 
-A small local service. It owns the console's web server for the session (one Vite dev server on
-MURMUR_WEB_PORT, 5173), which shows the menu when nothing runs, and it starts and stops one
+A small local service. It owns the console's web server for the session (one Vite server on
+MURMUR_WEB_PORT, 5173: the production build by default, or the dev server; eval/webconsole.py), which shows the menu when nothing runs, and it starts and stops one
 scenario at a time when the menu asks:
 
 - the open world, the default: what `make goldengate` runs (`make goldengate` itself: the
@@ -40,6 +40,7 @@ The API, on 127.0.0.1 only (the console reaches it through Vite's proxy under /l
                                "autoplay", "ai": "claude" | "codex" | "playbook" | "none",
                                "replace": true (end the running one first)}
     POST /launcher/api/end     end the running scenario
+    POST /launcher/api/console {"mode": "build" | "dev"}: how the console is served (eval/webconsole.py)
 
 A POST must come from the console's origin (`Origin`, as a browser sends it) as JSON, and may
 name only a scenario of the launcher's own list and the fixed options above: nothing a request
@@ -87,6 +88,7 @@ from .situation import (
     tcp_answers,
 )
 from .situation_run import plan_counts
+from .webconsole import WebConsole
 
 OPEN_WORLD = "open-world"
 LAUNCHER_PORT = 8760  # the API (MURMUR_LAUNCHER_PORT); the bridge relay listens on the next port
@@ -868,6 +870,7 @@ class Launcher:
         # whether the AI CLIs are installed (the runner checks the login itself, before anything starts)
         self.ai_cli = {ai: shutil.which(ai) is not None for ai in ("claude", "codex")}
         self.notes = log_dir / "launcher.log"
+        self.web = WebConsole(console_port, api_port, log_dir, lambda: self.current is not None and self.current.active(), self.note)
 
     def note(self, text: str) -> None:
         line = f"{dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')} {text}"
@@ -882,6 +885,7 @@ class Launcher:
         with self.lock:
             return {
                 "launcher": {"console_port": self.console_port, "api_port": self.api_port},
+                "console": self.web.public(),
                 "scenarios": self.entries,
                 "ai_cli": self.ai_cli,
                 "current": self.current.public() if self.current is not None else None,
@@ -941,7 +945,7 @@ class Api(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
-        if path not in ("/launcher/api/start", "/launcher/api/end"):
+        if path not in ("/launcher/api/start", "/launcher/api/end", "/launcher/api/console"):
             return self.reply(404, {"detail": "not found"})
         why = refusal("POST", self.headers, self.launcher.console_port)
         if why:
@@ -957,7 +961,12 @@ class Api(BaseHTTPRequestHandler):
         except ValueError:
             return self.reply(400, {"detail": "the body is not JSON"})
         try:
-            code, out = self.launcher.start(body) if path.endswith("/start") else self.launcher.end()
+            if path.endswith("/console"):
+                code, out = self.launcher.web.request(body.get("mode") if isinstance(body, dict) else None)
+            elif path.endswith("/start"):
+                code, out = self.launcher.start(body)
+            else:
+                code, out = self.launcher.end()
         except BadRequest as e:
             code, out = 400, {"detail": str(e)}
         except Exception as e:  # noqa: BLE001 (said to the menu, and in the launcher's log)
@@ -970,32 +979,6 @@ class Api(BaseHTTPRequestHandler):
 
 
 # ---- main -------------------------------------------------------------------------------------------
-
-
-def start_console(console_port: int, api_port: int, log_dir: Path) -> subprocess.Popen:
-    """The console's Vite dev server for the session, its /api and /ws through the bridge relay
-    and /launcher to this launcher (web/vite.config.ts). In the launcher's process group, so a
-    Ctrl-C in the terminal stops it too."""
-    vite = REPO / "web" / "node_modules" / ".bin" / "vite"
-    if not vite.exists():
-        raise LaunchError(f"no {rel(vite)}: run `make setup` (npm install in web/)")
-    env = {
-        **{k: v for k, v in os.environ.items() if k not in MAKE_VARS},
-        "MURMUR_BRIDGE_URL": f"http://127.0.0.1:{api_port + 1}",
-        "MURMUR_LAUNCHER_URL": f"http://127.0.0.1:{api_port}",
-    }
-    with (log_dir / "web.log").open("w") as f:
-        proc = subprocess.Popen(
-            [str(vite), "--host", "127.0.0.1", "--port", str(console_port), "--strictPort"],
-            cwd=str(REPO / "web"), env=env, stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-        )
-    deadline = time.monotonic() + 60
-    while not tcp_answers(console_port):
-        if proc.poll() is not None or time.monotonic() > deadline:
-            terminate(proc, 5)
-            raise LaunchError(f"the console did not start on :{console_port}; see {rel(log_dir / 'web.log')}")
-        time.sleep(0.3)
-    return proc
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1030,23 +1013,22 @@ def main(argv: list[str] | None = None) -> int:
     threading.Thread(target=launcher.relay.serve, name="relay", daemon=True).start()
     pidfile = REPO / "logs" / "launcher.pid"
     pidfile.write_text(f"{os.getpid()}\n")
-    vite: subprocess.Popen | None = None
     try:
-        vite = start_console(console_port, args.port, log_dir)
+        say(f"serving the console as the {'production build' if launcher.web.mode == 'build' else 'development server'} (built first if the sources changed)")
+        launcher.web.start()
         runnable = [e["title"] for e in launcher.entries if e["runnable"]]
         say(f"{len(runnable)} scenarios: {'; '.join(runnable)}")
         say(f"open http://localhost:{console_port} for the menu (Ctrl-C ends the running scenario and stops the launcher)")
         while not stop.wait(0.5):
-            if vite.poll() is not None:
+            if not launcher.web.alive():
                 say(f"the console's server stopped; see {rel(log_dir / 'web.log')}")
                 break
-    except LaunchError as e:
+    except (LaunchError, RuntimeError) as e:
         print(f"launcher: {e}", file=sys.stderr)
         return 1
     finally:
         launcher.shutdown()
-        if vite is not None:
-            terminate(vite, 10)
+        launcher.web.close()
         api.shutdown()
         launcher.relay.close()
         try:

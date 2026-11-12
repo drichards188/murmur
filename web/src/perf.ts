@@ -171,6 +171,8 @@ export function perfReset() {
 }
 
 export const PERF_ON = typeof location !== 'undefined' && new URLSearchParams(location.search).has('perf')
+/** the dev build, or `?perf` on a production one: the debug globals (window.murmurMap, murmurBridges, murmurPerf, murmurGlobe) and their timings exist only then */
+export const DEBUG_ON = import.meta.env.DEV || PERF_ON
 
 if (typeof window !== 'undefined') {
   const w = window as unknown as { murmurPerfStats: typeof perfStats; murmurPerfReset: typeof perfReset }

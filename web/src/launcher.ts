@@ -82,8 +82,27 @@ export interface Launch {
   stack_up: boolean
 }
 
+/** How the launcher serves this console (eval/webconsole.py): the production build or the dev server. */
+export type ConsoleMode = 'build' | 'dev'
+export interface ConsoleState {
+  /** the choice, kept across restarts */
+  mode: ConsoleMode
+  /** what the running server is (null while it is swapped) */
+  serving: ConsoleMode | null
+  /** a switch under way */
+  working: 'building' | 'restarting' | null
+  /** counts server starts: a page that sees it change reloads itself */
+  generation: number
+  /** the last build: how long it took (s), when it finished (s, epoch), why it failed */
+  build: { state: 'none' | 'building' | 'done' | 'failed'; seconds: number | null; at: number | null; started: number | null; error: string | null }
+  /** the sources changed since the build (null when no build matters) */
+  stale: boolean | null
+  error: string | null
+}
+
 export interface LauncherState {
   launcher: { console_port: number; api_port: number }
+  console?: ConsoleState
   scenarios: Scenario[]
   /** whether the AI CLIs are installed here (the runner checks their login itself) */
   ai_cli: Record<string, boolean>
@@ -137,6 +156,18 @@ async function post(path: 'start' | 'end', body: object): Promise<Launch | null>
 export const startScenario = (req: StartRequest) => post('start', req)
 export const endScenario = () => post('end', {})
 
+/** Choose how the console is served; the launcher refuses while a scenario is under way. */
+export async function setConsoleMode(mode: ConsoleMode): Promise<ConsoleState> {
+  const res = await fetch('/launcher/api/console', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ mode }),
+  })
+  const out = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(out.detail ?? `the launcher answered ${res.status}`)
+  return out.console
+}
+
 /** The launcher's state, polled: every second while a launch comes up or goes down, every 3 s
  *  otherwise. `received` is this browser's clock (ms) when it came; `lost` says the launcher
  *  stopped answering (the last state stays). */
@@ -144,6 +175,8 @@ export function useLauncher(initial: LauncherState) {
   const [state, setState] = useState(initial)
   const [received, setReceived] = useState(() => Date.now())
   const [lost, setLost] = useState(false)
+  // the console server this page came from (a different one later: reload)
+  const [gen0] = useState(initial.console?.generation)
   // bumped to look again at once (after a start or an end)
   const [kick, setKick] = useState(0)
   useEffect(() => {
@@ -153,18 +186,23 @@ export function useLauncher(initial: LauncherState) {
       const s = await probeLauncher()
       if (stop) return
       if (s) {
+        // the console server was swapped (build or dev): this page came from the old one
+        if (s.console && gen0 !== undefined && s.console.generation !== gen0 && !s.console.working) {
+          window.location.reload()
+          return
+        }
         setState(s)
         setReceived(Date.now())
       }
       setLost(!s)
-      timer = window.setTimeout(poll, s && !moving(s.current) ? 3000 : 1000)
+      timer = window.setTimeout(poll, s && !moving(s.current) && !s.console?.working ? 3000 : 1000)
     }
     timer = window.setTimeout(poll, kick ? 0 : 1000)
     return () => {
       stop = true
       window.clearTimeout(timer)
     }
-  }, [kick])
+  }, [kick, gen0])
   /** a launch the launcher just answered with, shown before the next look */
   const update = useCallback((current: Launch | null) => {
     if (current) setState((s) => ({ ...s, current }))
