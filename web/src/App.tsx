@@ -52,8 +52,8 @@ import { saveEffects, savedEffects } from './weatherPrefs'
 import { reachBadge, reachFeatures, type DomainChoice, type ReachAnswer, type ReachMode } from './sensorReach'
 import { minefieldFeatures, type MinefieldsAnswer } from './minefields'
 import { SituationPanel } from './SituationPanel'
-import { waitingItems } from './blocking'
-import { WaitingStrip } from './WaitingStrip'
+import { pendingItems, waitingItems } from './blocking'
+import { PendingStrip, WaitingStrip } from './WaitingStrip'
 import { Tutorial } from './Tutorial'
 import { CoverageControl } from './CoverageControl'
 import { gridImage, type CoverageGrid, type LinkRouteDrawing } from './coverage'
@@ -672,6 +672,9 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   )
   // what a person alone is holding up (blocking.ts): the strip, and the links that open its card
   const waiting = useMemo(() => waitingItems(decisions?.inbox.blocking), [decisions?.inbox.blocking])
+  // every rule declaration awaiting confirmation and open flag that holds nothing up: the calm
+  // pointer under the top bar (R4), which only opens the card
+  const pendingReview = useMemo(() => pendingItems(decisions?.inbox.review, decisions?.inbox.blocking), [decisions?.inbox.review, decisions?.inbox.blocking])
   const [reviewFocus, setReviewFocus] = useState<{ id: string; n: number } | null>(null)
   /** the strip's and the Situation panel's link: the item's card in the Inbox, in view (the person
    *  decides there; nothing here decides) */
@@ -804,7 +807,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   ) : null
 
   return (
-    <div className={`app${waiting.length ? ' waiting' : ''}`}>
+    <div className={`app${waiting.length || pendingReview.length ? ' waiting' : ''}`}>
       <PerfMark />
       <header className={`topbar${onMenu ? ' has-menu' : ''}`}>
         {onMenu && (
@@ -848,7 +851,12 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         <OperatorBadge />
         <span className="clock">{clock}</span>
       </header>
-      {waiting.length > 0 && <WaitingStrip items={waiting} now={now} onOpen={openWaiting} />}
+      {(waiting.length > 0 || pendingReview.length > 0) && (
+        <div className="wait-rows">
+          {waiting.length > 0 && <WaitingStrip items={waiting} now={now} onOpen={openWaiting} />}
+          <PendingStrip items={pendingReview} now={now} onOpen={openWaiting} />
+        </div>
+      )}
       <ErrorBoundary name="Fleet list" className="slot fleet">
       <FleetPanel vehicles={vehicles} selected={selected} onToggle={toggle} reachBadges={reachBadges}
         onDeselect={deselect}

@@ -1,6 +1,6 @@
 // Checks for blocking.ts (no test runner in web/): node web/src/blocking.check.ts, as make check
 // does. Throws on the first failure, prints "blocking: ok" otherwise. Not part of the bundle.
-import { type Blocking, holdingFor, holdingOnTrack, namedBlocking, stripLine, waited, waitingItems } from './blocking.ts'
+import { agoWords, type Blocking, holdingFor, holdingOnTrack, namedBlocking, pendingItems, stripLine, waited, waitingItems } from './blocking.ts'
 
 function eq(a: unknown, b: unknown, what: string) {
   const x = JSON.stringify(a)
@@ -53,5 +53,24 @@ eq(namedBlocking(note('waiting on D-12 and XD-1'), [d1]), [], 'not D-12, not a l
 eq(namedBlocking(note('D-1, then'), [d1]).length, 1, 'at the start')
 eq(namedBlocking(note('No action.', ['F-2']), [d1, f2]).map((b) => b.id), ['F-2'], 'attached by the driver')
 eq(namedBlocking(note('Confirm D-1.', ['D-1']), []), [], 'nothing holds anything up now: not urgent')
+
+// the calm pointer's items (R4): every rule declaration and open flag, oldest first, except what the
+// urgent strip already has; a flag no longer open is not pending
+const review = {
+  declarations: [
+    { id: 'D-3', track: 'T-0011', t: 1200, affiliation: 'hostile' },
+    { id: 'D-1', track: 'T-0008', t: 1000, affiliation: 'hostile' },
+  ],
+  flags: [
+    { id: 'F-4', tracks: ['T-0012', 'T-0013'], t: 1100, flag_kind: 'conflict', status: { status: 'open' } },
+    { id: 'F-5', tracks: ['T-0014'], t: 900, flag_kind: 'attribution', status: { status: 'dismissed' } },
+  ],
+}
+eq(pendingItems(review, []).map((p) => `${p.id}:${p.tracks.join('+')}`), ['D-1:T-0008', 'F-4:T-0012+T-0013', 'D-3:T-0011'], 'pending: oldest first, open flags only')
+eq(pendingItems(review, [d1]).map((p) => p.id), ['F-4', 'D-3'], 'pending: what holds up a nomination is the urgent strip\'s')
+eq(pendingItems(undefined, undefined), [], 'pending: none')
+eq(pendingItems(review, [])[0].affiliation, 'hostile', 'pending: a declaration says its affiliation')
+eq(pendingItems(review, [])[1].flag, 'conflict', "pending: a flag says its kind")
+eq([agoWords(1000, 1_040_000), agoWords(1000, 1_300_000), agoWords(1000, 1_000_000 + 3_900_000)], ['40 s', '5 min', '1 h 05 min'], 'pending: how long ago')
 
 console.log('blocking: ok')

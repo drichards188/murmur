@@ -81,3 +81,50 @@ export function namedBlocking(note: { text: string; blocking?: readonly string[]
   const attached = new Set(note.blocking ?? [])
   return waitingItems(list).filter((b) => attached.has(b.id) || new RegExp(`(^|[^A-Za-z0-9-])${b.id}(?![0-9])`).test(note.text))
 }
+
+// ---- what waits on a person without holding anything up -----------------------------------------
+
+/** A review item waiting on the person that holds nothing up (or not yet): a rule declaration
+ *  awaiting confirmation, an open flag. The calm standing pointer under the top bar
+ *  (docs/research/saturation-display.md R4) shows each, pending, not urgent: it only opens the
+ *  item's card in the Review, where the person decides. */
+export interface Pending {
+  /** the review item: `D-<n>` or `F-<n>` */
+  id: string
+  kind: 'declaration' | 'flag'
+  tracks: string[]
+  /** when it was raised, bridge seconds */
+  t: number
+  /** a declaration's affiliation */
+  affiliation?: string
+  /** a flag's kind (ident.ts FLAG_LABEL words it) */
+  flag?: string
+}
+
+interface ReviewLike {
+  declarations?: readonly { id: string; track: string; t: number; affiliation: string }[]
+  flags?: readonly { id: string; tracks: string[]; t: number; flag_kind: string; status: { status: string } | string }[]
+}
+
+/** The review items waiting on the person, the oldest first: every rule declaration awaiting
+ *  confirmation and every open flag, except those holding up a nomination now (the urgent strip
+ *  has them). */
+export function pendingItems(review: ReviewLike | null | undefined, blocking: readonly Pick<Blocking, 'id'>[] | null | undefined): Pending[] {
+  const urgent = new Set((blocking ?? []).map((b) => b.id))
+  const out: Pending[] = []
+  for (const d of review?.declarations ?? []) if (!urgent.has(d.id)) out.push({ id: d.id, kind: 'declaration', tracks: [d.track], t: d.t, affiliation: d.affiliation })
+  for (const f of review?.flags ?? []) {
+    const status = typeof f.status === 'string' ? f.status : f.status?.status
+    if (status !== 'open' || urgent.has(f.id)) continue
+    out.push({ id: f.id, kind: 'flag', tracks: f.tracks, t: f.t, flag: f.flag_kind })
+  }
+  return out.sort((a, b) => a.t - b.t || a.id.localeCompare(b.id))
+}
+
+/** How long ago, in words for a line: "40 s", "2 min", "1 h 05 min". */
+export function agoWords(t: number, nowMs: number): string {
+  const s = Math.max(0, Math.round(nowMs / 1000 - t))
+  if (s < 90) return `${s} s`
+  const m = Math.floor(s / 60)
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min`
+}
