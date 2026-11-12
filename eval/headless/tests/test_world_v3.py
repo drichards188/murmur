@@ -50,7 +50,7 @@ from eval.world import World, WorldError, load_world
 
 GG = load_world("golden-gate")
 UGV, HUNTER, PUMA, BUOY = 4, 1, 2, 3
-LAND_ROUTE = [[-122.4500, 37.8058], [-122.4440, 37.8062]]   # Crissy Field
+LAND_ROUTE = [[-122.4500, 37.8054], [-122.4440, 37.8048]]   # Crissy Field's airfield, south of the lagoon
 WATER_ROUTE = [[-122.4720, 37.8135], [-122.4720, 37.8250]]  # the channel east of the bridge
 
 

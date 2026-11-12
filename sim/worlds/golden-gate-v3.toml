@@ -38,7 +38,7 @@ file = "sim/links.toml"
 name = "Crissy Field"
 lat = 37.8068
 lon = -122.4460
-alt_m = 5.0
+alt_m = 1.2
 
 # Named reference points, [lon, lat]: the Golden Gate world's, and where world v3's fleet works.
 [points]
@@ -50,8 +50,8 @@ channel_east_north = [-122.4720, 37.8250]
 bay_entrance = [-122.5050, 37.8150]
 lime_point = [-122.4680, 37.8240]
 crissy_field = [-122.4460, 37.8068]        # the launch site and the ground station
-horseshoe_bay = [-122.4760, 37.8305]       # the Coast Guard station's pier at Fort Baker
-fort_baker = [-122.4790, 37.8330]          # the parade ground, a launch point on the north shore
+horseshoe_bay = [-122.4766, 37.8318]       # the Coast Guard station's harbour at Fort Baker, its mouth
+fort_baker = [-122.4790, 37.8351]          # the parade ground, a launch point on the north shore
 point_bonita = [-122.5300, 37.8150]        # the approaches, north side
 mile_rock = [-122.5100, 37.7930]           # the approaches, south side
 far_orbit = [-122.8000, 37.7000]           # HAWK 1's orbit, offshore

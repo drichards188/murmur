@@ -32,9 +32,10 @@ fn a_tool_result_reads_as_the_live_session_reads_it() {
 #[test]
 fn the_grid_has_the_presidio_and_the_strait() {
     let g = Grid::load(&repo().join("sim/headless/terrain/golden-gate.grid.gz")).expect("grid");
-    // tidewater answered 81.1 m at (37.80, -122.47) and the water level (0.44 m) mid-strait
+    // tidewater answered 53.8 m at (37.80, -122.47) and the water level (0.44 m) mid-strait (on
+    // the terrain fixed by murmur-cbjn; the squeezed grid before it gave 81.1 m there)
     let land = g.height(37.80, -122.47).expect("land");
-    assert!((land - 81.1).abs() < 8.0, "{land}");
+    assert!((land - 53.8).abs() < 8.0, "{land}");
     let sea = g.height(37.82, -122.48).expect("sea");
     assert!((sea - 0.44).abs() < 0.2, "{sea}");
     assert_eq!(g.height(37.0, -122.47), None, "outside the grid");

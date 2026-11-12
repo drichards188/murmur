@@ -16,9 +16,11 @@
 #   leg 130 m north of the row, where its sight covers the road the row closes. Its opening order is
 #   clear of the field, so the minefield check passes; later the timeline sends it south across the
 #   road, over the row's east end, and the route planner takes it round the field.
-# Both stand where the mesh radios at Crissy Field see them (sim/links.toml's ground station): the
-# Presidio's hills block the link a few hundred metres further west or south. Each spawns at the
-# ground's altitude (the DEM's): a stand-in UGV follows the terrain from its home's altitude, and the
+# Both stand where the mesh radios at Crissy Field see them (sim/links.toml's ground station), 1 to
+# 2 m clear on the terrain fixed by murmur-cbjn (re-laid 2026-11-12: the squeezed grid had put the
+# Presidio's 89 to 96 m ridge here, which is 29 to 34 m up the slope); the hills cast a shadow on
+# the link a hundred metres or so further west, where FERRET 1's patrol once began. Each spawns at
+# the ground's altitude (the DEM's): a stand-in UGV follows the terrain from its home's altitude, and the
 # link emulator judges its line of sight from the altitude it reports.
 #   make situation NAME=road-mines   (or make up FLEET=road-mines)
 title = "Road mines: the mine-laying UGV and a recon UGV in the Presidio"
@@ -26,9 +28,9 @@ title = "Road mines: the mine-laying UGV and a recon UGV in the Presidio"
 [[unit]]
 platform = "ugv_mines"                 # mine-laying UGV: 20 TM-62M; 5.5 h
 sim = "standin"
-spawn = [37.7985, -122.4600, 96, 270]  # in the Presidio, south-east of the row (the DEM's 96 m)
+spawn = [37.7985, -122.4600, 29, 270]  # in the Presidio, south-east of the row (the DEM's 28.6 m)
 
 [[unit]]
 platform = "ugv_recon"                 # recon UGV: EO/IR mast, unarmed
 sim = "standin"
-spawn = [37.8012, -122.4630, 89, 90]   # in the Presidio, north of the row (the DEM's 89 m)
+spawn = [37.8012, -122.4630, 34, 90]   # in the Presidio, north of the row (the DEM's 33.8 m)

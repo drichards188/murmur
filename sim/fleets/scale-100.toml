@@ -1,6 +1,7 @@
 # LOAD TEST ONLY: deliberately many copies of the same types, to measure the bridge and
 # console at 100 nodes. For the normal one-of-each roster use full-spectrum.
 # make goldengate GG_FLEET=scale-100
+# Spawn altitudes are the DEM's (tidewater's terrain as fixed by murmur-cbjn, 2026-11-12).
 title = "Scale test: 100 nodes"
 
 # ---- full spectrum
@@ -20,49 +21,49 @@ spawn = [37.7000, -122.6500, 11000, 45]
 [[unit]]
 platform = "fvr90"
 count = 1
-spawn = [37.8065, -122.4500, 4, 90]       # Crissy Field
+spawn = [37.8065, -122.4500, 3.5, 90]       # Crissy Field
 [[unit]]
 platform = "puma"
 count = 2
-spawn = [37.8068, -122.4460, 5, 90]
+spawn = [37.8074, -122.4462, 3.7, 90]
 [[unit]]
 platform = "switchblade"
 count = 1
-spawn = [37.8062, -122.4440, 5, 90]
+spawn = [37.8072, -122.4472, 3.6, 90]
 [[unit]]
 platform = "x10"
 count = 2
-spawn = [37.8060, -122.4430, 5, 0]
+spawn = [37.8060, -122.4420, 3.2, 0]
 [[unit]]
 platform = "fpv"
 count = 2
-spawn = [37.8058, -122.4415, 5, 0]
+spawn = [37.8058, -122.4415, 3.2, 0]
 [[unit]]
 platform = "lta"
 count = 1
-spawn = [37.8330, -122.4830, 45, 0]       # Marin Headlands
+spawn = [37.8330, -122.4830, 86, 0]       # on the Marin Headlands, at the ground's height
 
-# ---- ground (Presidio, on land)
+# ---- ground (Crissy Field's airfield, on land)
 [[unit]]
 platform = "ugv_logistics"
 count = 1
-spawn = [37.8035, -122.4540, 14, 90]
+spawn = [37.8035, -122.4540, 3.2, 90]
 [[unit]]
 platform = "ugv_armed"
 count = 1
-spawn = [37.8045, -122.4540, 9, 90]
+spawn = [37.8045, -122.4540, 1.7, 90]
 [[unit]]
 platform = "ugv_mines"
 count = 1
-spawn = [37.8050, -122.4500, 15, 90]
+spawn = [37.8050, -122.4500, 3.2, 90]
 [[unit]]
 platform = "ugv_recon"
 count = 1
-spawn = [37.8055, -122.4480, 7, 90]
+spawn = [37.8055, -122.4480, 3.5, 90]
 [[unit]]
 platform = "tracker"
 count = 1
-spawn = [37.8105, -122.4770, 10, 0]       # Fort Point
+spawn = [37.8105, -122.4770, 5, 0]       # Fort Point
 
 # ---- surface
 [[unit]]
@@ -135,7 +136,7 @@ spacing_m = 400
 [[unit]]
 platform = "remus"
 count = 16
-spawn = [37.8, -122.58, 0, 0]
+spawn = [37.812, -122.58, 0, 0]          # along the strait, in the water (37.80 ran its east end over the Presidio)
 spacing_m = 800
 
 [[unit]]

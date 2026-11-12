@@ -55,7 +55,11 @@ title = "Saturation: 3,602 stand-ins in 37 swarms at the Golden Gate"
 # predicted coverage, /api/links/coverage, every 250 m cell round it up: Crissy Field, the
 # Marina, Fort Mason and a spot on the Sausalito shore; south of the Presidio's hills nothing
 # on the ground reaches the ground station), its ring inside the coverage at 100 m, the way
-# there and back clear of Alcatraz (eval/tests/test_swarm.py).
+# there and back clear of Alcatraz (eval/tests/test_swarm.py). Re-laid on 2026-11-12 on the
+# terrain fixed by murmur-cbjn: every one of the 17 blocks had members in the water or off the
+# ground's height by more than 3 m (1,485 of 1,700), the fields having been chosen on a grid
+# squeezed north-south; each moved to the nearest flat ground (0 to 480 m) where all its members stand on land at one height (+-2.6 m) and in line of
+# sight of the ground station.
 [[swarm]]
 id = "PICKET-1"
 name = "Gate north approach (Lime Point)"
@@ -66,10 +70,10 @@ count = 100
 sim = "standin"
 cruise_alt_m = 100
 layout = "block"                     # Crissy Field, by the beach
-center = { lat = 37.80908, lon = -122.46600 }
+center = { lat = 37.80594, lon = -122.46730 }
 columns = 10
 spacing_m = 8
-alt_m = 4
+alt_m = 2
 
 [[swarm]]
 id = "PICKET-2"
@@ -81,10 +85,10 @@ count = 100
 sim = "standin"
 cruise_alt_m = 100
 layout = "block"                     # Crissy Field, west
-center = { lat = 37.80672, lon = -122.46273 }
+center = { lat = 37.80490, lon = -122.46188 }
 columns = 10
 spacing_m = 8
-alt_m = 27
+alt_m = 3
 
 [[swarm]]
 id = "PICKET-3"
@@ -96,10 +100,10 @@ count = 100
 sim = "standin"
 cruise_alt_m = 100
 layout = "block"                     # Crissy Field, east
-center = { lat = 37.80700, lon = -122.44500 }
+center = { lat = 37.80713, lon = -122.44672 }
 columns = 10
 spacing_m = 8
-alt_m = 5
+alt_m = 3
 
 [[swarm]]
 id = "PICKET-4"
@@ -111,10 +115,10 @@ count = 100
 sim = "standin"
 cruise_alt_m = 100
 layout = "block"                     # Fort Mason
-center = { lat = 37.80656, lon = -122.42850 }
+center = { lat = 37.80660, lon = -122.42858 }
 columns = 10
 spacing_m = 8
-alt_m = 17
+alt_m = 31
 
 [[swarm]]
 id = "PICKET-5"
@@ -126,10 +130,10 @@ count = 100
 sim = "standin"
 cruise_alt_m = 100
 layout = "block"                     # the Marina Green
-center = { lat = 37.80700, lon = -122.43900 }
+center = { lat = 37.80683, lon = -122.43882 }
 columns = 10
 spacing_m = 8
-alt_m = 5
+alt_m = 2
 
 [[swarm]]
 id = "PICKET-6"
@@ -141,10 +145,10 @@ count = 100
 sim = "standin"
 cruise_alt_m = 100
 layout = "block"                     # Crissy Field, middle
-center = { lat = 37.80736, lon = -122.45500 }
+center = { lat = 37.80605, lon = -122.45425 }
 columns = 10
 spacing_m = 8
-alt_m = 10
+alt_m = 3
 
 [[swarm]]
 id = "PICKET-7"
@@ -156,10 +160,10 @@ count = 100
 sim = "standin"
 cruise_alt_m = 100
 layout = "block"                     # the Sausalito shore
-center = { lat = 37.85100, lon = -122.47920 }
+center = { lat = 37.85531, lon = -122.47911 }
 columns = 10
 spacing_m = 8
-alt_m = 2
+alt_m = 4
 
 [[swarm]]
 id = "PICKET-8"
@@ -171,10 +175,10 @@ count = 100
 sim = "standin"
 cruise_alt_m = 100
 layout = "block"                     # Crissy Field, west end
-center = { lat = 37.81040, lon = -122.46900 }
+center = { lat = 37.80779, lon = -122.47029 }
 columns = 10
 spacing_m = 8
-alt_m = 3
+alt_m = 4
 
 [[swarm]]
 id = "PICKET-9"
@@ -186,10 +190,10 @@ count = 100
 sim = "standin"
 cruise_alt_m = 100
 layout = "block"                     # Crissy Field, by the Presidio
-center = { lat = 37.80600, lon = -122.46000 }
+center = { lat = 37.80512, lon = -122.45960 }
 columns = 10
 spacing_m = 8
-alt_m = 22
+alt_m = 3
 
 [[swarm]]
 id = "PICKET-10"
@@ -201,10 +205,10 @@ count = 100
 sim = "standin"
 cruise_alt_m = 100
 layout = "block"                     # the Marina Green, east
-center = { lat = 37.80700, lon = -122.43500 }
+center = { lat = 37.80656, lon = -122.43469 }
 columns = 10
 spacing_m = 8
-alt_m = 9
+alt_m = 3
 
 [[swarm]]
 id = "PICKET-11"
@@ -216,10 +220,10 @@ count = 100
 sim = "standin"
 cruise_alt_m = 100
 layout = "block"                     # the Marina Green, west
-center = { lat = 37.80700, lon = -122.44091 }
+center = { lat = 37.80658, lon = -122.44077 }
 columns = 10
 spacing_m = 8
-alt_m = 5
+alt_m = 3
 
 [[swarm]]
 id = "PICKET-12"
@@ -231,10 +235,10 @@ count = 100
 sim = "standin"
 cruise_alt_m = 100
 layout = "block"                     # Fort Mason, east
-center = { lat = 37.80656, lon = -122.42645 }
+center = { lat = 37.80588, lon = -122.42739 }
 columns = 10
 spacing_m = 8
-alt_m = 22
+alt_m = 29
 
 [[swarm]]
 id = "PICKET-13"
@@ -246,10 +250,10 @@ count = 100
 sim = "standin"
 cruise_alt_m = 100
 layout = "block"                     # Fort Mason, south
-center = { lat = 37.80513, lon = -122.42700 }
+center = { lat = 37.80501, lon = -122.42691 }
 columns = 10
 spacing_m = 8
-alt_m = 19
+alt_m = 27
 
 [[swarm]]
 id = "PICKET-14"
@@ -264,7 +268,7 @@ layout = "block"                     # Crissy Field, middle
 center = { lat = 37.80564, lon = -122.45000 }
 columns = 10
 spacing_m = 8
-alt_m = 10
+alt_m = 4
 
 [[swarm]]
 id = "PICKET-15"
@@ -276,10 +280,10 @@ count = 100
 sim = "standin"
 cruise_alt_m = 100
 layout = "block"                     # Fort Mason, west
-center = { lat = 37.80613, lon = -122.43018 }
+center = { lat = 37.80587, lon = -122.42974 }
 columns = 10
 spacing_m = 8
-alt_m = 15
+alt_m = 21
 
 [[swarm]]
 id = "PICKET-16"
@@ -294,7 +298,7 @@ layout = "block"                     # the Marina, by the harbour
 center = { lat = 37.80556, lon = -122.44000 }
 columns = 10
 spacing_m = 8
-alt_m = 7
+alt_m = 4
 
 [[swarm]]
 id = "PICKET-17"
@@ -306,10 +310,10 @@ count = 100
 sim = "standin"
 cruise_alt_m = 100
 layout = "block"                     # Fort Mason, the Marina side
-center = { lat = 37.80900, lon = -122.43200 }
+center = { lat = 37.80707, lon = -122.43177 }
 columns = 10
 spacing_m = 8
-alt_m = 8
+alt_m = 4
 
 # ---------------------------------------------------------------- search (Puma, lanes in the gulf)
 # Ten lanes from 37.790 to 37.850 north, 0.01 degrees (880 m) apart from -122.555 west; each

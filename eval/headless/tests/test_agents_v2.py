@@ -262,14 +262,15 @@ def test_the_link_blind_oracle_plans_without_the_link_map(monkeypatch: pytest.Mo
     """oracle-linkblind: the oracle without where the link holds. It never consults the link map
     (the emulator's terrain check), reads no truth of a blocked link (every order it saw end says
     none), and reads the rest of truth as the oracle does (privileged). On the same situation its
-    first look goes where the oracle's, kept to the link, does not."""
+    first look goes where the oracle's, kept to the link, does not (fast-unknown 1001: on the terrain
+    fixed by murmur-cbjn, 1000's first looks agree and no order of its ends)."""
     from eval.headless import agents_v2
 
     def no_map(alt_m: float) -> Any:
         raise AssertionError("the link-blind oracle consulted the link map")
 
     monkeypatch.setattr(agents_v2, "link_map", no_map)
-    rec = episode("fast-unknown", 1000, "oracle-linkblind")
+    rec = episode("fast-unknown", 1001, "oracle-linkblind")
     d = rec["agent_detail"]
     assert d["agent"] == "oracle-linkblind" and d["errors"] == 0 and d["proposals"] >= 1
     assert not any(ln["kind"].startswith("error") for ln in rec["agent_log"])
@@ -277,7 +278,7 @@ def test_the_link_blind_oracle_plans_without_the_link_map(monkeypatch: pytest.Mo
     ended = [ln for ln in rec["agent_log"] if ln["kind"] == "order.ended"]
     assert ended and all(ln["link_blocked"] is False for ln in ended)
     monkeypatch.undo()
-    orc = cached("fast-unknown", 1000, "oracle")
+    orc = cached("fast-unknown", 1001, "oracle")
     assert proposals(orc)[0]["request"]["center"] != proposals(rec)[0]["request"]["center"]
 
 
@@ -489,14 +490,15 @@ def test_honest_reserve_blind_sends_no_rtl_and_keeps_its_pumas_in_the_plan():
 
 
 def test_honest_pull_off_takes_a_puma_off_an_open_need_it_was_raising_hits_on():
-    """Its pull-off goes to the station of least dwell, gives the need up, and on two-at-once 1010
-    (dev) leaves fast-1 unserved: harmful (b), which `oracle-honest` does not do there."""
+    """Its pull-off goes to the station of least dwell, gives the need up, and on two-at-once 1023
+    (dev; 1010 until the terrain fixed by murmur-cbjn, where it no longer harms) leaves fast-1
+    unserved: harmful (b), which `oracle-honest` does not do there."""
     po = cached("fast-unknown", 1000, "oracle-honest+pull-off")
     pulls = [ln for ln in po["agent_log"] if ln["kind"] == "perturbation"]
     assert pulls and all(p["hits"][1] > p["hits"][0] for p in pulls)
     assert any(ln["kind"] == "pull-off.stations" for ln in po["agent_log"])
-    hon = cached("two-at-once", 1010, "oracle-honest")
-    harm = cached("two-at-once", 1010, "oracle-honest+pull-off")
+    hon = cached("two-at-once", 1023, "oracle-honest")
+    harm = cached("two-at-once", 1023, "oracle-honest+pull-off")
     assert not any(a["harm"] for a in actions(hon))
     bad = [h for a in actions(harm) for h in a["harm"]]
     assert bad and all(h["kind"] == "b" for h in bad)

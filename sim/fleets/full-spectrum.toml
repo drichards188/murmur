@@ -1,6 +1,10 @@
 # One node of every platform type in sim/platforms.toml, around the Golden Gate and its
 # approaches: 15 ArduPilot SITL vehicles + 7 stand-ins. HALE/MALE/CCA start airborne.
 # Run with tidewater conditions: make goldengate GG_FLEET=full-spectrum
+# Ground spawns sit at the DEM's height (tidewater's terrain as fixed by murmur-cbjn; re-laid
+# 2026-11-12: the squeezed grid had put the Presidio's slope under Crissy Field's UGVs, 7 to 15 m,
+# where the airfield is 2 to 4 m, and the lagoon east of the station's flat strip under the
+# switchblade's old spot).
 title = "Full spectrum: air, ground, surface, subsurface"
 
 # ---- air
@@ -19,49 +23,49 @@ spawn = [37.7000, -122.6500, 11000, 45]
 [[unit]]
 platform = "fvr90"
 count = 1
-spawn = [37.8065, -122.4500, 4, 90]       # Crissy Field
+spawn = [37.8065, -122.4500, 3.5, 90]       # Crissy Field
 [[unit]]
 platform = "puma"
 count = 1
-spawn = [37.8068, -122.4460, 5, 90]
+spawn = [37.8074, -122.4462, 3.7, 90]
 [[unit]]
 platform = "switchblade"
 count = 1
-spawn = [37.8062, -122.4440, 5, 90]
+spawn = [37.8072, -122.4472, 3.6, 90]
 [[unit]]
 platform = "x10"
 count = 1
-spawn = [37.8060, -122.4430, 5, 0]
+spawn = [37.8060, -122.4420, 3.2, 0]
 [[unit]]
 platform = "fpv"
 count = 1
-spawn = [37.8058, -122.4415, 5, 0]
+spawn = [37.8058, -122.4415, 3.2, 0]
 [[unit]]
 platform = "lta"
 count = 1
-spawn = [37.8050, -122.4560, 45, 0]       # over the Presidio, in line of sight of the Crissy Field station (the Headlands ridge hid it)
+spawn = [37.8050, -122.4560, 45, 0]       # aloft over Crissy Field, in line of sight of its station (the Headlands ridge hid it)
 
-# ---- ground (Presidio, on land)
+# ---- ground (Crissy Field's airfield, on land)
 [[unit]]
 platform = "ugv_logistics"
 count = 1
-spawn = [37.8035, -122.4540, 14, 90]
+spawn = [37.8035, -122.4540, 3.2, 90]
 [[unit]]
 platform = "ugv_armed"
 count = 1
-spawn = [37.8045, -122.4540, 9, 90]
+spawn = [37.8045, -122.4540, 1.7, 90]
 [[unit]]
 platform = "ugv_mines"
 count = 1
-spawn = [37.8050, -122.4500, 15, 90]
+spawn = [37.8050, -122.4500, 3.2, 90]
 [[unit]]
 platform = "ugv_recon"
 count = 1
-spawn = [37.8055, -122.4480, 7, 90]
+spawn = [37.8055, -122.4480, 3.5, 90]
 [[unit]]
 platform = "tracker"
 count = 1
-spawn = [37.8105, -122.4770, 10, 0]       # Fort Point
+spawn = [37.8105, -122.4770, 5, 0]       # Fort Point
 
 # ---- surface
 [[unit]]

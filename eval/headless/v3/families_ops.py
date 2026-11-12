@@ -116,8 +116,8 @@ F14_VERSION = 2
 #: ground station's terrain shadow for a vehicle on the ground: its link failed mid-run, and the run
 #: with it, in the first smoke)
 GNSS_RUN = {
-    "golden-gate-v3": ("FERRET 1", "Crissy Field's shore path", ((-122.4600, 37.8085), (-122.4480, 37.8082),
-                                                                 (-122.4400, 37.8070))),
+    "golden-gate-v3": ("FERRET 1", "Crissy Field's shore path", ((-122.4600, 37.8041), (-122.4480, 37.8037),
+                                                                 (-122.4400, 37.8040))),
     "san-diego": ("MULE 1", "North Island's shore road", ((-117.2000, 32.7060), (-117.2100, 32.7020), (-117.2200, 32.6960),
                                                           (-117.2230, 32.6950))),
 }
@@ -127,10 +127,10 @@ GNSS_RUN_S = 900.0
 #: no-strike areas), the bearings it comes in from, and the launch site of the added munitions
 ENGAGE = {
     "golden-gate-v3": {"zone": "ez-gate-west", "hold": (-122.520, -122.492, 37.806, 37.822), "from": (240.0, 290.0),
-                       "launch": [(37.8085, -122.4600, 2, 270), (37.8082, -122.4620, 2, 270)],
+                       "launch": [(37.8041, -122.4600, 4, 270), (37.8037, -122.4620, 4, 270)],
                        "victims": (("HUNTER 1", 0.6), ("ALBATROSS 1", 0.4))},
     "san-diego": {"zone": "ez-approaches", "hold": (-117.290, -117.262, 32.618, 32.650), "from": (200.0, 290.0),
-                  "launch": [(32.6980, -117.2040, 6, 290), (32.6975, -117.2025, 6, 290)],
+                  "launch": [(32.6980, -117.2040, 8, 290), (32.6975, -117.2025, 7, 290)],
                   "victims": (("HUNTER 1", 0.6), ("ALBATROSS 1", 0.4))},
 }
 #: F16: boxes on the water our standing sensors watch, each with the vehicle of ours an act there
@@ -142,7 +142,7 @@ ACT_REGIONS = {
 #: F16's flood: HAWK 1's offshore orbits and FERRET 1's shore patrol (none sees a review item)
 FLOOD = {
     "golden-gate-v3": {"orbit": ("HAWK 1", (-122.86, -122.74, 37.62, 37.74), 15000.0),
-                       "patrol": ("FERRET 1", ((-122.4600, 37.8085), (-122.4480, 37.8082)))},
+                       "patrol": ("FERRET 1", ((-122.4600, 37.8041), (-122.4480, 37.8037)))},
     "san-diego": {"orbit": ("HAWK 1", (-117.62, -117.50, 32.50, 32.60), 15000.0),
                   "patrol": ("FERRET 1", ((-117.2230, 32.6950), (-117.2150, 32.6960)))},
 }

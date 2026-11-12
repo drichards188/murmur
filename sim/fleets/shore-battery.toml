@@ -15,15 +15,18 @@
 #   keep-out there.
 # - BULL 1, the armed UGV (ugv_armed: an EOS R400-class station with an M2 .50 and one FGM-148
 #   Javelin; its sight a 640 px MWIR and a 1,920 px day camera), on the high ground at the bridge's
-#   south end, some 90 m above the water and in line of sight of the radios at Crissy Field (its
+#   south end, some 60 m above the water and in line of sight of the radios at Crissy Field (its
 #   mesh link is down wherever the Presidio's hills stand between: the bluff further west was, on
-#   the first run): 1,740 m from the first boat's holding point and 1,190 m from the second's. Both
+#   the first run; on the terrain fixed by murmur-cbjn the bluff's own edge hid its old place by
+#   1.5 m, so it was re-laid 32 m west-south-west on 2026-11-12, 3 m clear): 1,720 m from the first
+#   boat's holding point and 1,170 m from the second's. Both
 #   are inside the Javelin's band from rules 28 (its 65 m minimum range plus the effect radius, to
 #   its 4,750 m less it), and the second inside the M2's reach less the effect radius (1,750 m), so
 #   each engagement's firing position is where BULL 1 stands: it never moves. A script may not
 #   move an armed platform: it has no opening order. Its spawn altitude is the ground's (the DEM's
-#   93 m): a stand-in UGV follows the terrain from its home's altitude, and the link emulator
-#   judges its line of sight from the altitude it reports (spawned at 0 m it read as under the hill).
+#   60 m; 93 m on the squeezed terrain before murmur-cbjn): a stand-in UGV follows the terrain
+#   from its home's altitude, and the link emulator judges its line of sight from the altitude it
+#   reports (spawned at 0 m it read as under the hill).
 #   make situation NAME=shore-battery   (or make up FLEET=shore-battery)
 title = "Shore battery: a sensor ship and the armed UGV at the Gate"
 
@@ -35,4 +38,4 @@ spawn = [37.8140, -122.4840, 0, 0]     # west of the bridge, mid-channel, at its
 [[unit]]
 platform = "ugv_armed"                 # armed UGV: M2 .50 (500 rounds) and one Javelin; 15 h
 sim = "standin"
-spawn = [37.8065, -122.4765, 93, 280]  # on the high ground at the bridge's south end, 93 m up
+spawn = [37.8064, -122.4768, 60, 280]  # on the high ground at the bridge's south end, 60 m up

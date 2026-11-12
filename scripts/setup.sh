@@ -28,7 +28,9 @@ echo "== tidewater (tidewater/): installed editable into .venv, its scenarios' d
 # sfbofs: h5py, which fetching the Golden Gate's model currents needs (running them does not)
 uv pip install -q --python .venv/bin/python -e './tidewater[sfbofs]'
 for sc in "${TIDEWATER_SCENARIOS[@]}"; do
-  # a layer already in tidewater/data/cache/<scenario>/ is kept, not fetched again
+  # a layer already in tidewater/data/cache/<scenario>/ is kept, not fetched again, except a
+  # terrain file from before murmur-cbjn's fix (squeezed north-south; no `placement` key), which
+  # is fetched again
   .venv/bin/tidewater fetch "$sc"
 done
 

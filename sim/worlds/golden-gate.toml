@@ -36,12 +36,13 @@ file = "sim/links.toml"
 name = "Crissy Field"
 lat = 37.8068
 lon = -122.4460
-alt_m = 5.0
+alt_m = 1.2
 
 # Named reference points, [lon, lat].
 [points]
 bridge = [-122.4783, 37.8199]              # the Golden Gate Bridge, mid-span (the protected point)
 mouth = [-122.5050, 37.8100]               # the strait's mouth, west of the bridge
+bonita_off = [-122.5350, 37.8100]          # off Point Bonita's tip: a fast boat from the north-west rounds it (families.py)
 bay_axis = [-122.4500, 37.8250]            # east of the bridge, mid-channel
 channel_east_south = [-122.4720, 37.8135]  # HUNTER 1's patrol line east of the bridge
 channel_east_north = [-122.4720, 37.8250]

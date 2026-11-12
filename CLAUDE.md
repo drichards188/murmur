@@ -230,12 +230,20 @@ meaningful.
   judges its line of sight to the Crissy Field radios from sea level, under the hill (its mesh
   link down by terrain, its telemetry stale, every check "cannot evaluate"). Heights and shores
   read before murmur-cbjn's fix (2026-11-12) came from a grid squeezed north-south (1.3 km at the
-  Golden Gate box's edges, 335 m at Fort Point; tidewater/README.md "Terrain placement"): road-mines'
-  96 and 89 m are 29 and 34 m, shore-battery's 93 m is 55 m, links.toml's "DEM says 4.8 m" at
-  the station is 1.2 m, and ground spawns off Crissy Field in golden-gate-v3 and golden-gate-scale
-  are in the water; re-read any such figure. On the fixed grid the Presidio's hills hide about
-  half of the bluff tops west of the bridge's south end from the radios (53 % obstructed, 27 % by
-  20 m or more, for a UGV's 1.5 m whip; the squeezed grid had 83 and 65 %).
+  Golden Gate box's edges, 335 m at Fort Point; tidewater/README.md "Terrain placement"); every
+  fleet, contact and order laid out on it was re-laid the same day: road-mines' UGVs at 29 and
+  34 m (were 96 and 89), shore-battery's BULL 1 at 60 m, 32 m west of its old place (93; the
+  bluff's edge hid that one by 1.5 m), the Crissy Field station's `alt_m` 1.2 (the DEM's; was
+  5.0) in sim/links.toml and every Golden Gate world, Crissy Field's units on the airfield,
+  Fort Baker's on the parade ground, Horseshoe Bay's craft inside its breakwater, Saturation
+  packed's picket fields; San Diego (whose grids were ETOPO's 450 m cells too) on its 1/3
+  arc-second DEM: the pier craft off North Island's north face, the mission's centre off Ballast
+  Point (it stood on it), the Point Loma mast at 110 m (91 put it under the ground). A place
+  chosen on the old Golden Gate grid maps to the fixed one by stretching its
+  latitude from the box's middle: lat' = 37.825 + (lat - 37.825) / cos(37.825 deg) (1.265 at
+  the Gate). On the fixed grid the Presidio's hills hide about half of the bluff tops west of
+  the bridge's south end from the radios (53 % obstructed, 27 % by 20 m or more, for a UGV's
+  1.5 m whip; the squeezed grid had 83 and 65 %).
 - Rules 5 queue: an order for a vehicle the link can't carry it to now waits in the Queue
   (console button; `GET /api/inbox` `queued`), it is not an error; one whose link drops
   before the vehicle started it comes back there (`intent.requeued`). A human's approval is

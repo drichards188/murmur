@@ -38,24 +38,24 @@ step_s = 3600.0
 [links]
 file = "sim/links.toml"
 
-# One station covers the world: a mast on the Point Loma ridge (91 m, plus the profiles' 10 m
+# One station covers the world: a mast on the Point Loma ridge (110 m, the DEM's, plus the profiles' 10 m
 # mast) sees the bay, North Island, the entrance and the approaches to the west and south, all
 # within 12 km [E: an approximate site near the Navy's Point Loma facilities].
 [[ground_station]]
 name = "Point Loma"
 lat = 32.6900
 lon = -117.2440
-alt_m = 91.0
+alt_m = 110.3
 
 # Named reference points, [lon, lat] (approximate).
 [points]
-bay_entrance = [-117.2320, 32.6860]        # the entrance channel off Ballast Point (the mission's centre)
+bay_entrance = [-117.2290, 32.6860]        # the entrance channel off Ballast Point (the mission's centre; 19 m)
 channel_mouth = [-117.2330, 32.6650]       # where the entrance channel meets the sea, off Point Loma's tip
 approaches = [-117.2700, 32.6400]          # open water south-west of Point Loma
 sub_base = [-117.2380, 32.6930]            # Naval Base Point Loma's piers
 shelter_island = [-117.2270, 32.7140]
 north_island = [-117.2080, 32.6985]        # NAS North Island: our launch site
-carrier_piers = [-117.1980, 32.7095]       # North Island's carrier piers
+carrier_piers = [-117.1875, 32.7125]       # North Island's carrier piers, the east face
 broadway_pier = [-117.1762, 32.7155]       # the Coronado ferry's San Diego landing
 coronado_landing = [-117.1755, 32.6978]    # the Coronado ferry landing
 coronado_bridge = [-117.1480, 32.6930]

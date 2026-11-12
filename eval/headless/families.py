@@ -21,7 +21,9 @@ stated below (uniform unless stated; distances from the Golden Gate Bridge, bear
 - **two-at-once** (held-out): two fast unknowns, the second 0 to 60 s after the first: from the
   west at least 15 deg apart (bearings 240 to 275 deg; p 0.5) or from inside the bay, 4 to 5 km
   out on a bearing of 75 to 100 deg, holding 0.8 to 2.4 km east of the bridge (p 0.5). One free
-  sensor: PUMA 1 (PUMA 2 stays on its station order).
+  sensor: PUMA 1 (PUMA 2 stays on its station order). A boat from north of about 268 deg rounds
+  Point Bonita by a point off its tip (`BONITA_OFF`; from murmur-cbjn's fixed terrain, where the
+  straight way to the mouth crosses the point).
 - **link-cut-mid-look** (tuning; version 2, 2026-10-10): a fast unknown; both directions of the
   link of the vehicle flying the first look of the playbook's to be dispatched cut 5 to 90 s after
   its dispatch, for 8 to 120 s. If no look is dispatched by `LINK_CUT_DEADLINE_S` (600 s), nothing
@@ -87,6 +89,7 @@ GATE = WORLD.point("bridge")
 #: link-cut-mid-look: no look dispatched by then, no cut (the cut and its window still fit in 720 s)
 LINK_CUT_DEADLINE_S = 600.0
 MOUTH = WORLD.point("mouth")  # the strait's mouth, west of the bridge
+BONITA_OFF = WORLD.point("bonita_off")  # off Point Bonita's tip, where a boat from the north-west rounds it
 BAY_AXIS = WORLD.point("bay_axis")  # east of the bridge, mid-channel
 BASE_CONTACTS = REPO / "sim" / "scenarios" / "harbor-watch.toml"
 BASE_FAST_BOAT = "fastboat-west"
@@ -223,6 +226,12 @@ def _fast_unknown(rng: random.Random, cid: str, start: float | None, bearing: fl
             end = offset(GATE, 75, inside)
             route = [entry, MOUTH, GATE, BAY_AXIS, end]
             how = {"from": "west", "bearing_deg": b, "passes": True, "holds_inside_m": round(inside)}
+        # From north of about 268 deg the straight way to the mouth crosses Point Bonita: the
+        # boat rounds it, by a point off its tip (no draw: every other route is as before). On
+        # the grid squeezed north-south before murmur-cbjn the point lay 200 m further north.
+        if not water().path_wet([entry, MOUTH]) and water().path_wet([entry, BONITA_OFF, MOUTH]):
+            route.insert(1, BONITA_OFF)
+            how["rounds"] = "point_bonita"
     c = {"id": cid, "name": f"Fast boat without AIS ({cid})", "affiliation": "unknown", "domain": "surface",
          "kind": "small_fast_boat", "speed_mps": speed, "motion": "transit", "route": [list(p) for p in route],
          "start_s": start}

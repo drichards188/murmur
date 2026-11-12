@@ -91,7 +91,8 @@ seed = 1
 submerged_depth_m = 1.0
 
 # Where the operator's radios are: Crissy Field, the Golden Gate fleets' launch site. alt_m is
-# the ground height there in metres above MSL (the DEM says 4.8 m at this spot); the antenna
+# the ground height there in metres above MSL (the DEM says 1.2 m at this spot, the lagoon's
+# bank; 4.8 m on the terrain squeezed north-south before murmur-cbjn's fix); the antenna
 # heights in the profiles (gs_antenna_m, the mast) are added to it. With tidewater configured
 # the emulator samples the DEM at the station at startup and warns if alt_m is more than 5 m
 # off; alt_m = "dem" uses the DEM height instead of a number. `name` is what /stats, the
@@ -131,7 +132,7 @@ submerged_depth_m = 1.0
 name = "Crissy Field"
 lat = 37.8068
 lon = -122.4460
-alt_m = 5.0
+alt_m = 1.2
 
 # SATCOM from real satellites (murmur-space). Element sets: `murmur-space fetch` once (cached
 # in sim/space/cache, not in git). Each SATCOM vehicle is refreshed every interval_s scenario

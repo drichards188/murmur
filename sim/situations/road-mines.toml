@@ -95,7 +95,7 @@ bullets = [
 id = "ferret-patrol"
 task = "patrol"
 vehicles = { callsign = "FERRET 1" }
-route = [[-122.4655, 37.8012], [-122.4600, 37.8012]]
+route = [[-122.4640, 37.8012], [-122.4600, 37.8012]]   # its west end clear of the hills' shadow on the link (murmur-cbjn)
 note = "Opening order: patrol the ridge north of the Presidio road"
 
 # ---- the timeline

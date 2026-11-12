@@ -10,9 +10,12 @@
 #   point, just west of the bridge (sim/fleets/tutorial.toml gives the measurements): by day its
 #   panoramic camera identifies the boat well above the nomination's 0.60 before anyone nominates
 #   (bd murmur-9sxm). It stays out of the keep-out (the effect radius plus 200 m) by some 500 m.
-# - WASP 1, the FPV, waits on the ground at a launch site on the Presidio shore at Torpedo Wharf
-#   (3.4 m above the sea on the baked terrain), 2.4 km east of the holding point and 1.9 km west of
-#   the ground station on Crissy Field, with nothing between them. It has 9 minutes of battery
+# - WASP 1, the FPV, waits on the ground at a launch site on the Presidio shore west of Crissy
+#   Field (2.2 m above the datum, where Marine Drive leaves the beach), 2.3 km east of the holding
+#   point and 2.1 km west of the ground station on Crissy Field, with nothing between them (1.8 m
+#   clear). Re-laid on 2026-11-12 (murmur-cbjn): its place at Torpedo Wharf had been chosen on
+#   terrain squeezed north-south and was 7 m under water on the fixed terrain; this is the nearest
+#   flat ground on that shore, 225 m south-west. It has 9 minutes of battery
 #   (endurance 0.15 h), so it waits on the ground for an order rather than hover: the engagement's
 #   dispatch takes it off, up to its 120 m mission altitude (clear of the Fort Point bluff, some
 #   60 m, on the way, and 66 m south of the bridge's south tower box), and along a straight way to
@@ -28,5 +31,5 @@ spawn = [37.8130, -122.4850, 0, 0]     # west of the bridge, mid-channel, at its
 [[unit]]
 platform = "fpv"                       # armed FPV strike quadcopter: its own PG-7VL-class warhead; 0.15 h
 sim = "standin"
-spawn = [37.8090, -122.4675, 3.4, 270] # on the ground at Torpedo Wharf, the Presidio shore, facing west
+spawn = [37.80766, -122.46942, 2.2, 270] # on the ground on the Presidio shore, facing west
 cruise_alt_m = 120                     # its mission altitude: clear of the Fort Point bluff

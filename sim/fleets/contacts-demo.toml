@@ -14,7 +14,7 @@ spawn = [37.8150, -122.4800, 80, 270]  # over the bridge
 platform = "x10"                       # EO/IR, 1.5 km
 sim = "standin"
 count = 1
-spawn = [37.8060, -122.4430, 5, 0]     # Crissy Field
+spawn = [37.8060, -122.4420, 3.2, 0]   # Crissy Field, east of the lagoon, at the DEM's height
 [[unit]]
 platform = "magura"                    # EO/IR 5 km, AIS receiver (no radar)
 sim = "standin"

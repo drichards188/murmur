@@ -69,11 +69,16 @@ ground at Crissy Field and Fort Baker, ZEP 1 (the airship) aloft over the Marin 
 surface HUNTER 1 (Sea Hunter) at a mooring off the Marina, MARLIN 1 (Corsair) and VIPER 1
 (Magura, armed) at the Coast Guard station's pier in Horseshoe Bay, ALBATROSS 1 (Saildrone) at
 sea off Point Bonita; subsurface REMUS 1 at the surface in the channel, EEL 1 (BlueROV) at the
-Horseshoe Bay pier, three buoys in the channel (51 to 112 m of water); ground FERRET 1 (recon
+Horseshoe Bay pier, three buoys in the channel (60 to 105 m of water); ground FERRET 1 (recon
 UGV) on Crissy Field, MULE 1 (logistics UGV) at Fort Baker; TRK 1 beside the ground station.
-(Flagged 2026-11-12: these places were chosen on terrain squeezed north-south, murmur-cbjn. On
-the fixed terrain FERRET 1's spawn lies 125 m off Crissy Field's beach in 10 m of water and
-MULE 1's 25 m off Fort Baker's shore.)
+These places were first chosen on terrain squeezed north-south (murmur-cbjn), which left
+Crissy Field's units 490 m out in the water, SKY 2 on the Headlands' slope, MULE 1 in Horseshoe
+Bay and the moored craft outside its breakwater; on 2026-11-12 each moved to the same feature on
+the fixed grids (lat' = 37.825 + (lat - 37.825) / cos 37.825 deg: the airfield, the parade
+ground, the harbour's mouth and inside it), FERRET 1's and EEL 1's orders with them, and the
+traffic's ground routes, Mason Street and Marine Drive to Fort Point, and the Larkspur and Angel
+Island ferries through Raccoon Strait were drawn again on land and water as the fixed grids show
+them.
 Traffic (34 contacts; sources in the file's header): the Sausalito, Larkspur, Angel Island and
 Tiburon, and Alcatraz ferries and a bay cruise, ships in the main channel and the southern lane,
 a tanker outbound, fishing out of the Wharf and Sausalito, sailing off the Cityfront and Crissy
@@ -85,12 +90,11 @@ class B; the rest none).
 
 **San Diego.** Its tidewater scenario (`san-diego.tidewater.toml`, fetched 2026-10-23):
 west -117.32, south 32.60, east -117.10, north 32.77 at 15 m, 13-16 June 2026; terrain from
-NOAA NCEI's DEM mosaic (topography and bathymetry, NAVD88: -116 to 122 m; flagged 2026-11-12:
-the grid baked here came from ETOPO 2022's 15 arc-second cells on mean sea level, which the
-mosaic's default order served for this whole box ahead of NCEI's 1/3 arc-second San Diego DEM,
-squeezed north-south by up to 1.5 km, murmur-cbjn; tidewater's cache now holds the San Diego
-DEM's, placed right, not yet baked; tidewater/README.md "Terrain placement" and "Terrain
-sources"); the water level
+NOAA NCEI's 1/3 arc-second San Diego DEM (topography and bathymetry, NAVD88: -104 to 130 m;
+until 2026-11-12 the grids baked here came from ETOPO 2022's 15 arc-second cells on mean sea
+level, which the mosaic's default order served for this whole box, squeezed north-south by up
+to 1.5 km, murmur-cbjn; baked again that day from the DEM, placed right; tidewater/README.md
+"Terrain placement" and "Terrain sources"); the water level
 observed at CO-OPS 9410170 (San Diego, Quarantine Station), -0.57 to 2.30 m NAVD88; currents
 from CO-OPS harmonic predictions at the bay's 16 current stations with data (Point Loma Light
 to National City; two Pacific stations publish none), blended by inverse distance (no
@@ -103,7 +107,7 @@ sim/fleets/sandiego.toml's units (four Pumas, two X10s, the FVR-90 and the airsh
 Island; three Corsairs at the North Island carrier piers; the BlueROV) and add REAPER, HAWK, a
 Sea Hunter alongside at Naval Base Point Loma, a Magura off the Naval Amphibious Base, a
 Saildrone, REMUS, three buoys in the entrance channel and two UGVs on North Island. The ground
-station is a mast on the Point Loma ridge (91 m), which sees the bay, the entrance and the
+station is a mast on the Point Loma ridge (110 m, the DEM's; 91 m on the ETOPO cells before 2026-11-12), which sees the bay, the entrance and the
 approaches within 12 km: one station is enough, so the link emulator's single station stays.
 Its areas (`sim/areas/san-diego/san-diego.geojson`, every feature marked `approximate`): the
 operating area over the bay and the approaches; no-go: San Diego International's runway and
@@ -111,7 +115,10 @@ the final approach to runway 27 over downtown, Naval Base Point Loma's submarine
 Base San Diego's piers; an engagement zone in open water south-west of Point Loma; no-strike:
 the Hotel del Coronado and its beach, Cabrillo National Monument, Shelter Island, the Coronado
 ferry landing, the Embarcadero's piers and the USS Midway Museum, the Coronado Bridge, Ocean
-Beach pier. The mission's circle: 3 km around the entrance channel off Ballast Point. Traffic
+Beach pier. The mission's circle: 3 km around the entrance channel off Ballast Point (its centre
+280 m east of where it was until 2026-11-12, when the fixed DEM put Ballast Point's tip under it;
+the Corsairs and the BlueROV moved off the north and east faces of North Island, which the ETOPO
+cells had left afloat at the piers, and the traffic's channel north of the island with them). Traffic
 (39 contacts): the Coronado ferry, a harbor cruise, Navy ships in and out of the channel (AIS
 `military`, signatures a warship's), a car carrier to National City, a tanker at anchor,
 sportfishing to the kelp beds and the Coronado Islands' banks and a commercial boat to Tuna
@@ -135,7 +142,11 @@ buoys across the strait), ten UGVs and two trackers ashore; 54 opening orders. T
 Gate v3's 34 contacts unchanged and 32 more (second boats on the ferry runs, the Oakland and
 Vallejo ferries, more ships, a crab fleet, a yacht race off the Cityfront, powerboats, a Coast
 Guard cutter, more aircraft and helicopters, a news helicopter over the bridge, a second hobby
-drone, more cars and walkers).
+drone, more cars and walkers). Re-laid on 2026-11-12 with Golden Gate v3 (above): Crissy
+Field's units 487 m south onto the airfield and Fort Baker's 228 m north onto the parade ground,
+Fort Mason's onto the Great Meadow's slope (18 to 31 m up), the six craft and two ROVs tied up
+at Horseshoe Bay inside its breakwater (3.3 to 5 m of water), the recon UGVs' and ROVs' orders
+moved with them, and the traffic's routes as Golden Gate v3's.
 
 ## To make a world
 

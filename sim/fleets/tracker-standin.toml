@@ -6,7 +6,7 @@ title = "Tracker stand-in and a target"
 platform = "tracker"
 count = 1
 sim = "standin"                          # the catalog says SITL; force the stand-in
-spawn = [37.8105, -122.4770, 10, 0]      # Fort Point
+spawn = [37.8105, -122.4770, 5, 0]       # Fort Point, at the ground's height
 [[unit]]
 platform = "mq9b_armed"
 count = 1

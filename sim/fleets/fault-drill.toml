@@ -25,4 +25,4 @@ spawn = [37.8150, -122.4900, 0, 0]     # in the Gate: drifts with the tide
 [[unit]]
 platform = "ugv_recon"
 sim = "standin"
-spawn = [37.8055, -122.4480, 7, 90]    # Crissy Field
+spawn = [37.8055, -122.4480, 3.5, 90]  # Crissy Field, at the ground's height (the fixed terrain's, murmur-cbjn)

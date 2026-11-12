@@ -11,6 +11,8 @@
 # Saildrones on their stations, the AUVs on survey lines, the ROVs inspecting their piers, the
 # recon UGVs on patrol; the rest wait (the armed MQ-9Bs on station where they spawn, the armed
 # Maguras tied up: no opening order may move an armed platform).
+# The recon UGVs' patrols and the Horseshoe Bay ROVs' inspections moved with their spawns when
+# the fleet was re-laid on the fixed terrain (2026-11-12, murmur-cbjn).
 title = "Golden Gate scale watch"
 brief = """
 You have the watch at the Golden Gate with a hundred of ours in the air, on and under the water
@@ -207,7 +209,8 @@ note = "Opening order: hold over the shore"
 id = "orbit-kestrel-1"
 task = "orbit"
 vehicles = { callsign = "KESTREL 1" }
-center = [-122.515, 37.82]
+center = [-122.515, 37.815]                   # 600 m south of where it was: its return home to
+                                              # Crissy Field's airfield clears the towers' no-go boxes
 radius_m = 800
 note = "Opening order: orbit over the approaches"
 
@@ -361,14 +364,14 @@ note = "Opening order: survey the channel"
 id = "inspect-eel-1"
 task = "patrol"
 vehicles = { callsign = "EEL 1" }
-route = [[-122.476, 37.83158], [-122.476, 37.83086]]
+route = [[-122.4762, 37.8333], [-122.4762, 37.8326]]
 note = "Opening order: inspect the pier"
 
 [[order]]
 id = "inspect-eel-2"
 task = "patrol"
 vehicles = { callsign = "EEL 2" }
-route = [[-122.47645, 37.83122], [-122.47645, 37.8305]]
+route = [[-122.4756, 37.8333], [-122.4756, 37.8326]]
 note = "Opening order: inspect the pier"
 
 [[order]]
@@ -389,35 +392,35 @@ note = "Opening order: inspect the pier"
 id = "patrol-ferret-1"
 task = "patrol"
 vehicles = { callsign = "FERRET 1" }
-route = [[-122.447, 37.8092], [-122.447, 37.8074]]
+route = [[-122.447, 37.80483], [-122.447, 37.80303]]
 note = "Opening order: patrol the shore"
 
 [[order]]
 id = "patrol-ferret-2"
 task = "patrol"
 vehicles = { callsign = "FERRET 2" }
-route = [[-122.447, 37.80884], [-122.447, 37.80704]]
+route = [[-122.447, 37.80447], [-122.447, 37.80267]]
 note = "Opening order: patrol the shore"
 
 [[order]]
 id = "patrol-ferret-3"
 task = "patrol"
 vehicles = { callsign = "FERRET 3" }
-route = [[-122.478, 37.83432], [-122.478, 37.83252]]
+route = [[-122.478, 37.83637], [-122.478, 37.83457]]
 note = "Opening order: patrol the shore"
 
 [[order]]
 id = "patrol-ferret-4"
 task = "patrol"
 vehicles = { callsign = "FERRET 4" }
-route = [[-122.47823, 37.83306], [-122.47823, 37.83126]]
+route = [[-122.47823, 37.83511], [-122.47823, 37.83331]]
 note = "Opening order: patrol the shore"
 
 [[order]]
 id = "patrol-ferret-5"
 task = "patrol"
 vehicles = { callsign = "FERRET 5" }
-route = [[-122.43232, 37.80846], [-122.43232, 37.80666]]
+route = [[-122.42996, 37.807], [-122.42996, 37.8052]]
 note = "Opening order: patrol the shore"
 
 [playbook]

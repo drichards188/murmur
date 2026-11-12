@@ -106,7 +106,7 @@ note = "Opening order: patrol the outer channel and the approaches"
 id = "channel-patrol"
 task = "patrol"
 vehicles = { callsign = "MARLIN 1" }
-route = [[-117.1960, 32.7140], [-117.2150, 32.7140], [-117.2260, 32.7060], [-117.2300, 32.6960], [-117.2260, 32.7060], [-117.2150, 32.7140]]
+route = [[-117.1960, 32.7158], [-117.2150, 32.7158], [-117.2260, 32.7060], [-117.2300, 32.6960], [-117.2260, 32.7060], [-117.2150, 32.7158]]
 note = "Opening order: patrol the channel past North Island"
 
 [[order]]
@@ -134,7 +134,7 @@ note = "Opening order: survey the entrance channel"
 id = "pier-inspection"
 task = "patrol"
 vehicles = { callsign = "EEL 1" }
-route = [[-117.1995, 32.7116], [-117.1975, 32.7118]]
+route = [[-117.1995, 32.7154], [-117.1975, 32.7155]]
 note = "Opening order: inspect the carrier piers"
 
 [[order]]

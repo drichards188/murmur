@@ -3,7 +3,9 @@
 # runs into the south tower's pier (land at -122.47640, 37.81347 in tidewater's grid), which the
 # domain rule refused under rules 21 though the main span is 1.3 km of open water. Now the transit
 # is routed through the span, clear of the pier and of the towers' no-go boxes, and the patrol goes.
-# `--rules 21` refuses it as the run did.
+# `--rules 21` refuses it as the run did. (That run read tidewater's terrain squeezed north-south
+# before murmur-cbjn's fix: the fixed grid puts the pier 350 m further south, at 37.8104, on the
+# tower; the scenario keeps the land as the run saw it, which is what it reproduces.)
 title = "A patrol west of the bridge is routed through the main span"
 invariant = "domain"
 attack = "a transit straight into the south tower's pier"

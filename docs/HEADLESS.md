@@ -1417,7 +1417,13 @@ The Golden Gate's from tidewater at 60ac4b4 (its `tidewater/` tree 366ae13; 0cf0
 fetch gives the same elevations there, byte for byte): at the 20 m points 9.7 % turned from land
 to water or back, heights by up to 266 m; the current field changed only where a point turned.
 San Diego's from tidewater at f81aa73, on NCEI's 1/3 arc-second San Diego DEM in place of
-ETOPO's 15 arc-second cells (-104 to 130 m; the current field's fastest 1.42 m/s).
+ETOPO's 15 arc-second cells (-104 to 130 m; the current field's fastest 1.42 m/s). The worlds
+were re-laid on them the same day (sim/worlds/README.md, sim/fleets): Crissy Field's units onto
+the airfield, Fort Baker's onto the parade ground, Horseshoe Bay's craft inside the breakwater,
+San Diego's pier craft off North Island's north face, the traffic's routes, the v3 families'
+places (`eval/headless/v3/families.py` PLACES, `families_ops.py`), San Diego's mission centre
+off Ballast Point (it stood on the point) and its Point Loma mast at the DEM's 110 m (91 m on
+the ETOPO cells, under the ground of the fixed DEM).
 
 ### 17.4 Faults and timelines (H4)
 

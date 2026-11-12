@@ -39,7 +39,7 @@ domain = "surface"
 kind = "ferry"
 speed_mps = 6
 motion = "loiter"
-center = [-122.5000, 37.8160]
+center = [-122.5000, 37.8140]   # its circle clear of the Marin shore (murmur-cbjn's fixed terrain)
 radius_m = 500
 ais = { mmsi = "366999104", name = "MV BAY EXPLORER", ship_type = "passenger" }
 on_effect = "persists"

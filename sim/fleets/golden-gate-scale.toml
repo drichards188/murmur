@@ -9,6 +9,11 @@
 # the piers, buoys across the strait in 15 m of water or more; the UGVs and trackers on land.
 # A ground unit's altitude is the surface's height there, rounded. uids follow the unit order
 # (sim/swarm.py). Opening orders: sim/situations/golden-gate-scale-watch.toml.
+# Re-laid on 2026-11-12 on the grids baked after murmur-cbjn's terrain fix (the places had
+# been chosen on a grid squeezed north-south): Crissy Field's units 487 m south onto the
+# airfield and Fort Baker's 228 m north onto the parade ground, the same features the squeezed
+# grid showed; Fort Mason's onto the Great Meadow's slope (18 to 31 m), and the craft tied up
+# at Horseshoe Bay inside its breakwater (3.3 to 5 m of water).
 title = "Golden Gate scale: 100 stand-ins across every domain"
 
 [[unit]]
@@ -44,181 +49,181 @@ spawn = [37.95000, -122.85000, 17000, 0]
 [[unit]]
 platform = "puma"                    # Crissy Field, on the ground
 sim = "standin"
-spawn = [37.80850, -122.45700, 2, 270]
+spawn = [37.80413, -122.45700, 2, 270]
 cruise_alt_m = 150
 
 [[unit]]
 platform = "puma"                    # Crissy Field, on the ground
 sim = "standin"
-spawn = [37.80814, -122.45700, 3, 270]
+spawn = [37.80377, -122.45700, 3, 270]
 cruise_alt_m = 150
 
 [[unit]]
 platform = "puma"                    # Crissy Field, on the ground
 sim = "standin"
-spawn = [37.80886, -122.45700, 1, 270]
+spawn = [37.80449, -122.45700, 1, 270]
 cruise_alt_m = 150
 
 [[unit]]
 platform = "puma"                    # Crissy Field, on the ground
 sim = "standin"
-spawn = [37.80832, -122.45723, 3, 270]
+spawn = [37.80395, -122.45723, 3, 270]
 cruise_alt_m = 150
 
 [[unit]]
 platform = "puma"                    # Crissy Field, on the ground
 sim = "standin"
-spawn = [37.80832, -122.45677, 3, 270]
+spawn = [37.80395, -122.45677, 3, 270]
 cruise_alt_m = 150
 
 [[unit]]
 platform = "puma"                    # Crissy Field, on the ground
 sim = "standin"
-spawn = [37.80868, -122.45723, 1, 270]
+spawn = [37.80431, -122.45723, 1, 270]
 cruise_alt_m = 150
 
 [[unit]]
 platform = "puma"                    # Fort Baker's parade ground, on the ground
 sim = "standin"
-spawn = [37.83270, -122.47800, 5, 270]
+spawn = [37.83475, -122.47800, 5, 270]
 cruise_alt_m = 150
 
 [[unit]]
 platform = "puma"                    # Fort Baker's parade ground, on the ground
 sim = "standin"
-spawn = [37.83234, -122.47800, 4, 270]
+spawn = [37.83439, -122.47800, 4, 270]
 cruise_alt_m = 150
 
 [[unit]]
 platform = "puma"                    # Fort Baker's parade ground, on the ground
 sim = "standin"
-spawn = [37.83306, -122.47800, 5, 270]
+spawn = [37.83511, -122.47800, 5, 270]
 cruise_alt_m = 150
 
 [[unit]]
 platform = "puma"                    # Fort Mason's Great Meadow, on the ground
 sim = "standin"
-spawn = [37.80738, -122.43209, 12, 270]
+spawn = [37.80592, -122.42973, 21, 270]
 cruise_alt_m = 150
 
 [[unit]]
 platform = "puma"                    # Fort Mason's Great Meadow, on the ground
 sim = "standin"
-spawn = [37.80720, -122.43232, 12, 270]
+spawn = [37.80574, -122.42996, 20, 270]
 cruise_alt_m = 150
 
 [[unit]]
 platform = "puma"                    # Fort Mason's Great Meadow, on the ground
 sim = "standin"
-spawn = [37.80702, -122.43255, 12, 270]
+spawn = [37.80556, -122.43019, 19, 270]
 cruise_alt_m = 150
 
 [[unit]]
 platform = "x10"                     # Crissy Field
 sim = "standin"
-spawn = [37.80880, -122.45000, 3, 0]
+spawn = [37.80443, -122.45000, 3, 0]
 cruise_alt_m = 100
 
 [[unit]]
 platform = "x10"                     # Crissy Field
 sim = "standin"
-spawn = [37.80844, -122.45000, 3, 0]
+spawn = [37.80407, -122.45000, 3, 0]
 cruise_alt_m = 100
 
 [[unit]]
 platform = "x10"                     # Crissy Field
 sim = "standin"
-spawn = [37.80916, -122.45000, 3, 0]
+spawn = [37.80479, -122.45000, 3, 0]
 cruise_alt_m = 100
 
 [[unit]]
 platform = "x10"                     # Crissy Field
 sim = "standin"
-spawn = [37.80862, -122.45023, 3, 0]
+spawn = [37.80425, -122.45023, 3, 0]
 cruise_alt_m = 100
 
 [[unit]]
 platform = "x10"                     # Crissy Field
 sim = "standin"
-spawn = [37.80862, -122.44977, 3, 0]
+spawn = [37.80425, -122.44977, 3, 0]
 cruise_alt_m = 100
 
 [[unit]]
 platform = "x10"                     # Fort Baker
 sim = "standin"
-spawn = [37.83252, -122.47823, 5, 0]
+spawn = [37.83457, -122.47823, 5, 0]
 cruise_alt_m = 100
 
 [[unit]]
 platform = "x10"                     # Fort Baker
 sim = "standin"
-spawn = [37.83252, -122.47777, 4, 0]
+spawn = [37.83457, -122.47777, 4, 0]
 cruise_alt_m = 100
 
 [[unit]]
 platform = "x10"                     # Fort Baker
 sim = "standin"
-spawn = [37.83288, -122.47823, 6, 0]
+spawn = [37.83493, -122.47823, 5, 0]
 cruise_alt_m = 100
 
 [[unit]]
 platform = "x10"                     # Fort Baker
 sim = "standin"
-spawn = [37.83288, -122.47777, 5, 0]
+spawn = [37.83493, -122.47777, 4, 0]
 cruise_alt_m = 100
 
 [[unit]]
 platform = "x10"                     # Fort Mason
 sim = "standin"
-spawn = [37.80684, -122.43277, 12, 0]
+spawn = [37.80538, -122.43041, 18, 0]
 cruise_alt_m = 100
 
 [[unit]]
 platform = "x10"                     # Fort Mason
 sim = "standin"
-spawn = [37.80810, -122.43164, 12, 0]
+spawn = [37.80664, -122.42928, 31, 0]
 cruise_alt_m = 100
 
 [[unit]]
 platform = "x10"                     # Fort Mason
 sim = "standin"
-spawn = [37.80774, -122.43209, 12, 0]
+spawn = [37.80628, -122.42973, 22, 0]
 cruise_alt_m = 100
 
 [[unit]]
 platform = "fvr90"                   # Crissy Field
 sim = "standin"
-spawn = [37.80850, -122.46200, 4, 270]
+spawn = [37.80413, -122.46200, 4, 270]
 cruise_alt_m = 150
 
 [[unit]]
 platform = "fvr90"                   # Crissy Field
 sim = "standin"
-spawn = [37.80814, -122.46200, 4, 270]
+spawn = [37.80377, -122.46200, 4, 270]
 cruise_alt_m = 150
 
 [[unit]]
 platform = "fvr90"                   # Crissy Field
 sim = "standin"
-spawn = [37.80886, -122.46200, 5, 270]
+spawn = [37.80449, -122.46200, 5, 270]
 cruise_alt_m = 150
 
 [[unit]]
 platform = "fvr90"                   # Fort Baker
 sim = "standin"
-spawn = [37.83270, -122.47845, 6, 270]
+spawn = [37.83475, -122.47845, 6, 270]
 cruise_alt_m = 150
 
 [[unit]]
 platform = "fvr90"                   # Fort Baker
 sim = "standin"
-spawn = [37.83270, -122.47755, 4, 270]
+spawn = [37.83475, -122.47755, 4, 270]
 cruise_alt_m = 150
 
 [[unit]]
 platform = "fvr90"                   # Fort Baker
 sim = "standin"
-spawn = [37.83198, -122.47800, 4, 270]
+spawn = [37.83403, -122.47800, 4, 270]
 cruise_alt_m = 150
 
 [[unit]]
@@ -272,25 +277,25 @@ moored = true
 [[unit]]
 platform = "corsair"                 # Horseshoe Bay
 sim = "standin"
-spawn = [37.83014, -122.47600, 0, 90]
+spawn = [37.83260, -122.47650, 0, 90]
 moored = true
 
 [[unit]]
 platform = "corsair"                 # Horseshoe Bay
 sim = "standin"
-spawn = [37.83086, -122.47600, 0, 90]
+spawn = [37.83260, -122.47590, 0, 90]
 moored = true
 
 [[unit]]
 platform = "corsair"                 # Horseshoe Bay
 sim = "standin"
-spawn = [37.83050, -122.47645, 0, 90]
+spawn = [37.83260, -122.47530, 0, 90]
 moored = true
 
 [[unit]]
 platform = "corsair"                 # Horseshoe Bay
 sim = "standin"
-spawn = [37.82978, -122.47600, 0, 90]
+spawn = [37.83220, -122.47680, 0, 90]
 moored = true
 
 [[unit]]
@@ -320,13 +325,13 @@ moored = true
 [[unit]]
 platform = "magura"                  # Horseshoe Bay
 sim = "standin"
-spawn = [37.83014, -122.47645, 0, 90]
+spawn = [37.83220, -122.47620, 0, 90]
 moored = true
 
 [[unit]]
 platform = "magura"                  # Horseshoe Bay
 sim = "standin"
-spawn = [37.82996, -122.47555, 0, 90]
+spawn = [37.83190, -122.47650, 0, 90]
 moored = true
 
 [[unit]]
@@ -400,13 +405,13 @@ cruise_alt_m = -15
 [[unit]]
 platform = "bluerov"                 # at the Horseshoe Bay pier
 sim = "standin"
-spawn = [37.83122, -122.47600, 0, 90]
+spawn = [37.83300, -122.47620, 0, 90]
 moored = true
 
 [[unit]]
 platform = "bluerov"                 # at the Horseshoe Bay pier
 sim = "standin"
-spawn = [37.83086, -122.47645, 0, 90]
+spawn = [37.83300, -122.47560, 0, 90]
 moored = true
 
 [[unit]]
@@ -499,52 +504,52 @@ spawn = [37.82249, -122.48955, 0, 0]
 [[unit]]
 platform = "ugv_recon"               # Crissy Field
 sim = "standin"
-spawn = [37.80830, -122.44700, 4, 270]
+spawn = [37.80393, -122.44700, 4, 270]
 
 [[unit]]
 platform = "ugv_recon"               # Crissy Field
 sim = "standin"
-spawn = [37.80794, -122.44700, 4, 270]
+spawn = [37.80357, -122.44700, 4, 270]
 
 [[unit]]
 platform = "ugv_recon"               # Fort Baker
 sim = "standin"
-spawn = [37.83342, -122.47800, 6, 90]
+spawn = [37.83547, -122.47800, 6, 90]
 
 [[unit]]
 platform = "ugv_recon"               # Fort Baker
 sim = "standin"
-spawn = [37.83216, -122.47823, 4, 90]
+spawn = [37.83421, -122.47823, 4, 90]
 
 [[unit]]
 platform = "ugv_recon"               # Fort Mason
 sim = "standin"
-spawn = [37.80756, -122.43232, 11, 90]
+spawn = [37.80610, -122.42996, 21, 90]
 
 [[unit]]
 platform = "ugv_logistics"           # Crissy Field
 sim = "standin"
-spawn = [37.80866, -122.44700, 4, 270]
+spawn = [37.80429, -122.44700, 4, 270]
 
 [[unit]]
 platform = "ugv_logistics"           # Crissy Field
 sim = "standin"
-spawn = [37.80812, -122.44723, 4, 270]
+spawn = [37.80375, -122.44723, 4, 270]
 
 [[unit]]
 platform = "ugv_logistics"           # Fort Baker
 sim = "standin"
-spawn = [37.83216, -122.47777, 4, 90]
+spawn = [37.83421, -122.47777, 4, 90]
 
 [[unit]]
 platform = "ugv_logistics"           # Fort Baker
 sim = "standin"
-spawn = [37.83324, -122.47823, 6, 90]
+spawn = [37.83529, -122.47823, 6, 90]
 
 [[unit]]
 platform = "ugv_logistics"           # Fort Mason
 sim = "standin"
-spawn = [37.80738, -122.43255, 11, 90]
+spawn = [37.80592, -122.43019, 20, 90]
 
 [[unit]]
 platform = "tracker"                 # beside the ground station, Crissy Field
@@ -554,22 +559,22 @@ spawn = [37.80720, -122.44680, 4, 0]
 [[unit]]
 platform = "tracker"                 # Fort Baker
 sim = "standin"
-spawn = [37.83324, -122.47777, 5, 0]
+spawn = [37.83529, -122.47777, 5, 0]
 
 [[unit]]
 platform = "x10"                     # Crissy Field
 sim = "standin"
-spawn = [37.80898, -122.45023, 3, 0]
+spawn = [37.80461, -122.45023, 3, 0]
 cruise_alt_m = 100
 
 [[unit]]
 platform = "x10"                     # Crissy Field
 sim = "standin"
-spawn = [37.80898, -122.44977, 3, 0]
+spawn = [37.80461, -122.44977, 3, 0]
 cruise_alt_m = 100
 
 [[unit]]
 platform = "x10"                     # Crissy Field
 sim = "standin"
-spawn = [37.80880, -122.45045, 3, 0]
+spawn = [37.80443, -122.45045, 3, 0]
 cruise_alt_m = 100

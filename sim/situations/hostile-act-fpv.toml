@@ -31,7 +31,7 @@ brief = """
 You have the watch at the Golden Gate on a June morning. Intelligence warns of a possible attack on
 our vessels by small craft. Two of ours are on station: HUNTER 1, a sensor ship patrolling the
 channel just west of the bridge; and WASP 1, an FPV strike drone waiting on the ground at a launch
-site on the Presidio shore at Torpedo Wharf, east of the bridge. WASP 1 is its own weapon: it
+site on the Presidio shore west of Crissy Field, east of the bridge. WASP 1 is its own weapon: it
 carries an RPG-class (PG-7VL) warhead, flies some 10 km on a nine-minute battery, and is spent by
 its strike. Traffic is normal: ferries, a ship in the lane, fishing boats, a sailing yacht.
 
@@ -70,7 +70,7 @@ the engine attributes it to the boat's track at 0.9 or more and declares it host
 fix is flagged instead, and the next act is another chance); op-auto confirms the declaration on
 autoplay (live: you, in the Review list). At 2:40 the timeline nominates WASP 1 with its PG-7VL
 warhead (agent-scripted), unless a nomination stands; op-2 and op-3 sign the plan within seconds;
-WASP 1 is dispatched, takes off to 120 m, flies the 2.4 km to the point and is released within 150
+WASP 1 is dispatched, takes off to 120 m, flies the 2.3 km to the point and is released within 150
 m of it, some 2 minutes after the dispatch; the contacts' seed 108504 makes the strike a hit that
 destroys the boat for any intent from 1 to 6 (on the default run the nomination is intent 2); the
 boat leaves the picture and the assessment reads "ceased" some 15 s later, HUNTER 1 covering the

@@ -278,22 +278,23 @@ PLACES: dict[str, Place] = {
         bay_entry=((-122.4060, 37.8230), (-122.4100, 37.8320), (-122.4150, 37.8150)),
         bay_via=((-122.4500, 37.8250),),  # the bay's axis, mid-channel
         through=((-122.4500, 37.8250), (-122.4180, 37.8300)),
-        piers=(("the Horseshoe Bay pier", (-122.4760, 37.8305), (140.0, 230.0)),),
+        piers=(("the Horseshoe Bay pier", (-122.4766, 37.8318), (140.0, 230.0)),),  # the harbour's mouth
         # F6 version 2: each road starts 1.5 to 1.7 km of road outside the circle (version 1's: Fort
         # Point's 0.43 km out, the Marin roads' 2.84 km from the centre, inside it): Fort Point's
         # from Marina Boulevard, the Marin roads' from the north-west, about where US-101 comes down
         # from the Waldo Tunnel above Richardson Bay
         roads=(
-            ("Fort Point", ((-122.4320, 37.8060), (-122.4380, 37.8052), (-122.4440, 37.8060), (-122.4600, 37.8070),
-                            (-122.4680, 37.8085), (-122.4740, 37.8095), (-122.4765, 37.8102))),
+            ("Fort Point", ((-122.4320, 37.8050), (-122.4380, 37.8046), (-122.4440, 37.8040), (-122.4520, 37.8036),
+                            (-122.4600, 37.8036), (-122.4680, 37.8060), (-122.4740, 37.8088), (-122.4755, 37.8091),
+                            (-122.4765, 37.8096), (-122.4767, 37.8102))),
             ("the Horseshoe Bay pier", ((-122.5000, 37.8555), (-122.4940, 37.8525), (-122.4880, 37.8495),
                                         (-122.4840, 37.8450), (-122.4800, 37.8380), (-122.4790, 37.8360),
-                                        (-122.4775, 37.8340), (-122.4768, 37.8322))),
+                                        (-122.4775, 37.8350), (-122.4768, 37.8346))),
             ("Battery Spencer", ((-122.5000, 37.8555), (-122.4940, 37.8525), (-122.4880, 37.8495),
                                  (-122.4840, 37.8450), (-122.4800, 37.8380), (-122.4795, 37.8320),
                                  (-122.4825, 37.8285))),
         ),
-        drone_targets=(("the Horseshoe Bay pier", (-122.4760, 37.8305)), ("the bridge", (-122.4783, 37.8199)),
+        drone_targets=(("the Horseshoe Bay pier", (-122.4766, 37.8318)), ("the bridge", (-122.4783, 37.8199)),
                        ("Fort Point", (-122.4765, 37.8102))),
         drone_sectors=((250.0, 275.0), (60.0, 110.0)),  # F2 v3: over the strait or the bay
     ),
@@ -301,8 +302,8 @@ PLACES: dict[str, Place] = {
         sea_entry=(190.0, 235.0, 4500.0, 6500.0),
         sea_via=((-117.2330, 32.6650),),  # where the entrance channel meets the sea
         bay_entry=((-117.1800, 32.7150), (-117.1900, 32.7140), (-117.1850, 32.7120)),
-        bay_via=((-117.2050, 32.7130), (-117.2220, 32.7090), (-117.2290, 32.7000)),
-        through=((-117.2290, 32.7000), (-117.2220, 32.7090), (-117.2050, 32.7130)),
+        bay_via=((-117.1900, 32.7162), (-117.2050, 32.7162), (-117.2150, 32.7158), (-117.2220, 32.7090), (-117.2290, 32.7000)),
+        through=((-117.2290, 32.7000), (-117.2220, 32.7090), (-117.2150, 32.7158), (-117.2050, 32.7162)),
         piers=(("HUNTER 1's berth at Point Loma", (-117.2352, 32.6950), (60.0, 150.0)),
                ("the submarine piers at Point Loma", (-117.2370, 32.6900), (60.0, 140.0))),
         # F6 version 2: the gate's road from farther north on the ridge (version 1's started 2.96 km

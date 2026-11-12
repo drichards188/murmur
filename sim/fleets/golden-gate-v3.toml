@@ -9,8 +9,13 @@
 # the Marin Headlands; boats at the Coast Guard station's pier in Horseshoe Bay (Fort Baker) or
 # at a mooring off the Marina; the Saildrone at sea (it lives there for months); REMUS 1 at the
 # surface in the channel, the BlueROV at the Horseshoe Bay pier, the buoys in the channel's deep
-# water (37 to 112 m); the UGVs and the tracker on land. A spawn's altitude is the surface's
-# height there (the baked grid's, rounded), so the ground units sit on the ground.
+# water (60 to 105 m); the UGVs and the tracker on land. A spawn's altitude is the surface's
+# height there (the baked grid's, rounded), so the ground units sit on the ground. Re-laid on
+# 2026-11-12 on the grids baked after murmur-cbjn's terrain fix: the places had been chosen on a
+# grid squeezed north-south, which put Crissy Field's units 490 m out in the water, Fort Baker's
+# on the hillside or in Horseshoe Bay, and the moored craft outside the breakwater; each moved
+# to the same feature on the fixed grid (Crissy Field's airfield, the parade ground, the
+# harbour), its height and depth read again.
 #
 # uids follow the unit order (sim/swarm.py): 1 REAPER 1, 2 HAWK 1, 3 PUMA 1, 4 PUMA 2, 5 SKY 1,
 # 6 SKY 2, 7 KESTREL 1, 8 ZEP 1, 9 HUNTER 1, 10 MARLIN 1, 11 VIPER 1, 12 ALBATROSS 1, 13 REMUS 1,
@@ -32,31 +37,31 @@ spawn = [37.7000, -122.8000, 18000, 0] # about 30 km west-south-west, airborne a
 [[unit]]
 platform = "puma"                      # hand-launched from Crissy Field; the playbook's sensor in reserve
 sim = "standin"
-spawn = [37.8085, -122.4580, 2, 270]   # Crissy Field, on the ground
+spawn = [37.80407, -122.4580, 1, 270]   # Crissy Field, on the ground
 cruise_alt_m = 150                     # its missions at 150 m (Puma 3 AE: 150 to 300 m above ground)
 
 [[unit]]
 platform = "puma"
 sim = "standin"
-spawn = [37.8085, -122.4560, 3, 270]   # Crissy Field, on the ground
+spawn = [37.80407, -122.4560, 3, 270]   # Crissy Field, on the ground
 cruise_alt_m = 150
 
 [[unit]]
 platform = "x10"                       # quadcopter, Crissy Field
 sim = "standin"
-spawn = [37.8082, -122.4520, 4, 0]
+spawn = [37.80377, -122.4520, 4, 0]
 cruise_alt_m = 100
 
 [[unit]]
 platform = "x10"                       # quadcopter, Fort Baker's parade ground (the north shore)
 sim = "standin"
-spawn = [37.8330, -122.4790, 8, 0]
+spawn = [37.8351, -122.4790, 8, 0]
 cruise_alt_m = 100
 
 [[unit]]
 platform = "fvr90"                     # VTOL, Crissy Field
 sim = "standin"
-spawn = [37.8085, -122.4540, 3, 270]
+spawn = [37.80407, -122.4540, 3, 270]
 cruise_alt_m = 150
 
 [[unit]]
@@ -69,19 +74,19 @@ cruise_alt_m = 250
 [[unit]]
 platform = "seahunter"                 # sensor ship (MUSV), full kit; at a mooring off the Marina
 sim = "standin"
-spawn = [37.8160, -122.4400, 0, 270]   # 22 m of water
+spawn = [37.8160, -122.4400, 0, 270]   # 23 m of water
 moored = true                          # tied up until it first arms (sim/swarm.py)
 
 [[unit]]
 platform = "corsair"                   # at the Coast Guard station's pier, Horseshoe Bay
 sim = "standin"
-spawn = [37.8304, -122.4766, 0, 90]    # 5.9 m of water
+spawn = [37.83184, -122.4766, 0, 90]    # 5.9 m of water, at the harbour's mouth
 moored = true                          # tied up until it first arms (sim/swarm.py)
 
 [[unit]]
 platform = "magura"                    # armed USV, alongside in Horseshoe Bay
 sim = "standin"
-spawn = [37.8302, -122.4742, 0, 90]    # 4.6 m of water
+spawn = [37.8322, -122.4765, 0, 90]    # 4.4 m of water
 moored = true                          # tied up until it first arms (sim/swarm.py)
 
 [[unit]]
@@ -93,40 +98,40 @@ spawn = [37.8040, -122.5200, 0, 0]     # off Point Bonita, inside the operating 
 [[unit]]
 platform = "remus"                     # AUV at the surface in the channel, east of the bridge
 sim = "standin"
-spawn = [37.8190, -122.4600, 0, 270]   # 38 m of water
+spawn = [37.8190, -122.4600, 0, 270]   # 45 m of water
 cruise_alt_m = -15                      # its survey depth
 
 [[unit]]
 platform = "bluerov"                   # tethered ROV at the Horseshoe Bay pier
 sim = "standin"
-spawn = [37.8310, -122.4758, 0, 90]    # 3.8 m of water
+spawn = [37.8326, -122.4758, 0, 90]    # 3.9 m of water
 moored = true                          # tied up until it first arms (sim/swarm.py)
 
 [[unit]]
 platform = "buoy"                      # drifting sensor buoys in the channel
 sim = "standin"
-spawn = [37.8180, -122.4900, 0, 0]     # west of the bridge, 112 m
+spawn = [37.8180, -122.4900, 0, 0]     # west of the bridge, 105 m
 
 [[unit]]
 platform = "buoy"
 sim = "standin"
-spawn = [37.8190, -122.4700, 0, 0]     # east of the bridge, 73 m
+spawn = [37.8190, -122.4700, 0, 0]     # east of the bridge, 62 m
 
 [[unit]]
 platform = "buoy"
 sim = "standin"
-spawn = [37.8100, -122.5050, 0, 0]     # the mouth, 51 m
+spawn = [37.8100, -122.5050, 0, 0]     # the mouth, 60 m
 
 # ---- ground
 [[unit]]
 platform = "ugv_recon"                 # Crissy Field
 sim = "standin"
-spawn = [37.8080, -122.4490, 3, 270]
+spawn = [37.80357, -122.4490, 3, 270]
 
 [[unit]]
 platform = "ugv_logistics"             # Fort Baker, beside the pier
 sim = "standin"
-spawn = [37.8328, -122.4775, 4, 90]
+spawn = [37.8349, -122.4775, 5, 90]
 
 # ---- support
 [[unit]]

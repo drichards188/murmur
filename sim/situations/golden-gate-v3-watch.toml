@@ -70,7 +70,7 @@ note = "Opening order: orbit over the approaches"
 id = "horseshoe-station"
 task = "orbit"
 vehicles = { callsign = "SKY 2" }
-center = [-122.4740, 37.8295]
+center = [-122.4740, 37.8307]
 radius_m = 150
 note = "Opening order: hold over Horseshoe Bay"
 
@@ -114,14 +114,14 @@ note = "Opening order: survey the channel east of the bridge"
 id = "eel-pier"
 task = "patrol"
 vehicles = { callsign = "EEL 1" }
-route = [[-122.4764, 37.8311], [-122.4752, 37.8308]]
+route = [[-122.4764, 37.8327], [-122.4752, 37.8323]]
 note = "Opening order: inspect the Horseshoe Bay pier"
 
 [[order]]
 id = "crissy-patrol"
 task = "patrol"
 vehicles = { callsign = "FERRET 1" }
-route = [[-122.4600, 37.8085], [-122.4480, 37.8082]]
+route = [[-122.4600, 37.8041], [-122.4480, 37.8037]]
 note = "Opening order: patrol Crissy Field"
 
 [playbook]

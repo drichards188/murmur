@@ -11,8 +11,12 @@
 # north of Ballast Point, clear of the sub base's no-go box), the Corsairs at the North Island
 # carrier piers (north face), VIPER 1 off the Naval Amphibious Base in the south bay, the
 # Saildrone at sea off Point Loma; REMUS 1 at the surface in the entrance channel, the BlueROV at
-# the carrier piers, the buoys along the entrance channel (8 to 15 m of water); the UGVs on North
-# Island. Altitudes are the surface's height there, rounded.
+# the carrier piers, the buoys along the entrance channel (8 to 22 m of water); the UGVs on North
+# Island. Altitudes are the surface's height there, rounded. Re-laid on 2026-11-12 on the grids
+# baked from NCEI's 1/3 arc-second DEM (murmur-cbjn; the grids before were ETOPO's 450 m cells,
+# squeezed north-south): the Corsairs and the BlueROV, which those cells had afloat at the piers,
+# stood on North Island, so they moved 300 to 400 m north into the water off its north face
+# (MARLIN 2 to the east face), MARLIN 1's patrol and EEL 1's inspection with them.
 #
 # uids follow the unit order (sim/swarm.py): 1 REAPER 1, 2 HAWK 1, 3-6 PUMA 1-4, 7 SKY 1, 8 SKY 2,
 # 9 KESTREL 1, 10 ZEP 1, 11 HUNTER 1, 12-14 MARLIN 1-3, 15 VIPER 1, 16 ALBATROSS 1, 17 REMUS 1,
@@ -83,25 +87,25 @@ cruise_alt_m = 250
 [[unit]]
 platform = "seahunter"                 # alongside at Naval Base Point Loma
 sim = "standin"
-spawn = [32.6950, -117.2352, 0, 0]     # 15 m of water
+spawn = [32.6950, -117.2352, 0, 0]     # 12 m of water
 moored = true                          # tied up until it first arms (sim/swarm.py)
 
 [[unit]]
 platform = "corsair"                   # the North Island carrier piers, north face
 sim = "standin"
-spawn = [32.7120, -117.1960, 0, 90]    # 7 m
+spawn = [32.7156, -117.1960, 0, 90]    # 10 m
 moored = true                          # tied up until it first arms (sim/swarm.py)
 
 [[unit]]
 platform = "corsair"
 sim = "standin"
-spawn = [32.7125, -117.1900, 0, 90]    # 13 m
+spawn = [32.7125, -117.1875, 0, 90]    # 15 m, the east face
 moored = true                          # tied up until it first arms (sim/swarm.py)
 
 [[unit]]
 platform = "corsair"
 sim = "standin"
-spawn = [32.7118, -117.2010, 0, 90]    # 7 m
+spawn = [32.7156, -117.2010, 0, 90]    # 11 m
 moored = true                          # tied up until it first arms (sim/swarm.py)
 
 [[unit]]
@@ -113,19 +117,19 @@ moored = true                          # tied up until it first arms (sim/swarm.
 [[unit]]
 platform = "saildrone"                 # at sea off Point Loma
 sim = "standin"
-spawn = [32.6600, -117.2700, 0, 0]     # 52 m
+spawn = [32.6600, -117.2700, 0, 0]     # 48 m
 
 # ---- subsurface
 [[unit]]
 platform = "remus"                     # at the surface in the entrance channel off Ballast Point
 sim = "standin"
-spawn = [32.6830, -117.2310, 0, 0]     # 14 m
+spawn = [32.6830, -117.2310, 0, 0]     # 16 m
 cruise_alt_m = -8                      # its survey depth in a 12 to 15 m channel
 
 [[unit]]
 platform = "bluerov"                   # at the carrier piers
 sim = "standin"
-spawn = [32.7116, -117.1985, 0, 90]
+spawn = [32.7153, -117.1985, 0, 90]    # 9 m
 moored = true                          # tied up until it first arms (sim/swarm.py)
 
 [[unit]]
@@ -136,12 +140,12 @@ spawn = [32.6700, -117.2320, 0, 0]     # the channel's mouth, 8 m
 [[unit]]
 platform = "buoy"
 sim = "standin"
-spawn = [32.6850, -117.2310, 0, 0]     # off Ballast Point, 15 m
+spawn = [32.6850, -117.2310, 0, 0]     # off Ballast Point, 22 m
 
 [[unit]]
 platform = "buoy"
 sim = "standin"
-spawn = [32.7020, -117.2270, 0, 0]     # off North Island's west shore, 14 m
+spawn = [32.7020, -117.2270, 0, 0]     # off North Island's west shore, 12 m
 
 # ---- ground
 [[unit]]
