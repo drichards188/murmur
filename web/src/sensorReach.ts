@@ -62,6 +62,27 @@ export interface ReachAnswer {
 
 /** The map layer: rings for the selected vehicles (the default), for every vehicle, or none. */
 export type ReachMode = 'selected' | 'all' | 'off'
+
+/** How far out the view's box is widened (degrees): a small pan or zoom asks nothing new. */
+const VIEW_STEP_DEG = 0.05
+
+/** The `GET /api/sensing/reach` the rings need: none while the layer is off or nothing is
+ *  selected, the selected vehicles' (`uids`), or for every vehicle every one in view (`bbox`,
+ *  the view widened to a 0.05 degree grid). The fleet list's badges come from the same answer.
+ *  bd murmur-jvdc: every vehicle's reach every 3 s took a fifth of the bridge's time at
+ *  Saturation's 3,602 vehicles. */
+export function reachQuery(mode: ReachMode, selected: ReadonlySet<number>, bounds: readonly [number, number, number, number] | null): string | null {
+  if (mode === 'off') return null
+  if (mode === 'selected') {
+    return selected.size ? `/api/sensing/reach?uids=${[...selected].sort((a, b) => a - b).join(',')}` : null
+  }
+  if (!bounds) return null
+  const down = (x: number) => Math.floor(x / VIEW_STEP_DEG) * VIEW_STEP_DEG
+  const up = (x: number) => Math.ceil(x / VIEW_STEP_DEG) * VIEW_STEP_DEG
+  const [w, s, e, n] = bounds
+  const box = [Math.max(-180, down(w)), Math.max(-90, down(s)), Math.min(180, up(e)), Math.min(90, up(n))]
+  return `/api/sensing/reach?bbox=${box.map((x) => x.toFixed(2)).join(',')}`
+}
 /** Which domain's reach the rings show: each sensor's own (`auto`, the bridge's
  *  `primary_domain`), or one for all (a sensor that does not see it draws none). */
 export type DomainChoice = 'auto' | ReachDomain

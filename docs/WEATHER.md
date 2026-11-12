@@ -165,13 +165,17 @@ level over the water and the ground over land, and following it:
 
 Auto shows a sonar's reach under water, a ground vehicle's on the ground and every other sensor's
 at the surface (the harbour's boats). A vehicle whose sensor detects at under half its clear-day
-reach carries a badge in the fleet list, such as `EO 18% · fog`. The legend gives the sun's state
-(day, twilight or night: the sun up, up to 6 degrees down, or lower, as a day camera's light in
-the model), and the Weather panel's **Effect on sensors** gives the sampled vehicle's reaches,
-their share of a clear day and why.
+reach carries a badge in the fleet list, such as `EO 18% · fog`. The console asks only for what
+the rings show, while they show: the selected vehicles, or with All those in view (its view
+widened to a 0.05 degree grid), so the badges are those vehicles' (bd murmur-jvdc: every
+vehicle's every 3 s was a fifth of the bridge's time at Saturation's 3,602). The legend gives
+the sun's state (day, twilight or night: the sun up, up to 6 degrees down, or lower, as a day
+camera's light in the model), and the Weather panel's **Effect on sensors** gives the sampled
+vehicle's reaches, their share of a clear day and why.
 
 Agents read the same with `get_sensor_reach {uid?}`; the console and HTTP clients with
-`GET /api/sensing/reach` (optional `uid`). Each vehicle's answer gives, per sensor and domain,
+`GET /api/sensing/reach` (optional `uid`, `uids` as `1,2,3`, or `bbox` as
+`west,south,east,north`: only those vehicles). Each vehicle's answer gives, per sensor and domain,
 `detect_m`, `recognise_m`, `identify_m`, `clear_day_m` (the catalog's `physical_reach_m`),
 `ratio`, `limited_by`, `factors` and `horizon_limited`, with the conditions it used (visibility,
 sun elevation and light, wind, sea state, and whether the weather is scripted and its source).

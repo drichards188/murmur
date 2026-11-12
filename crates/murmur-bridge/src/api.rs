@@ -38,7 +38,8 @@
 //! carries the order's answer as `link_coverage`.
 //!
 //! Sensor reach now (`crate::tracks::reach`, bd murmur-4tq, information only: never logged,
-//! never a check): `GET /api/sensing/reach` (optional `uid`): each vehicle's radar, EO/IR and
+//! never a check): `GET /api/sensing/reach` (optional `uid`, `uids` as `1,2,3`, or `bbox` as
+//! `west,south,east,north`: only those vehicles, bd murmur-jvdc): each vehicle's radar, EO/IR and
 //! sonar reach per domain against a reference contact in the conditions where it is (weather,
 //! the sun), beside the catalog's clear-day reach, and what keeps it short (`limited_by`).
 
@@ -874,12 +875,46 @@ async fn weather(State(app): State<App>, Query(q): Query<WeatherQuery>) -> Respo
 #[derive(Deserialize)]
 struct ReachQuery {
     uid: Option<u64>,
+    uids: Option<String>,
+    bbox: Option<String>,
+}
+
+impl ReachQuery {
+    /// Which vehicles it asks for: `uid`, else `uids`, else those within `bbox`, else all.
+    fn of(&self) -> Result<crate::tracks::ReachOf, String> {
+        use crate::tracks::ReachOf;
+        if let Some(u) = self.uid {
+            return Ok(ReachOf::uid(u));
+        }
+        if let Some(list) = &self.uids {
+            return list
+                .split(',')
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.trim().parse::<u64>().map_err(|_| format!("uids: {s:?} is not a vehicle uid")))
+                .collect::<Result<_, _>>()
+                .map(ReachOf::Uids);
+        }
+        if let Some(b) = &self.bbox {
+            let v = b.split(',').map(|x| x.trim().parse::<f64>()).collect::<Result<Vec<_>, _>>();
+            return match v.ok().and_then(|v| <[f64; 4]>::try_from(v).ok()) {
+                Some([w, s, e, n]) if murmur_weather::valid_point(s, w) && murmur_weather::valid_point(n, e) && w < e && s < n => {
+                    Ok(ReachOf::Within([w, s, e, n]))
+                }
+                _ => Err("bbox must be west,south,east,north within lat/lon bounds".into()),
+            };
+        }
+        Ok(ReachOf::All)
+    }
 }
 /// bd murmur-4tq: each vehicle's sensor reach now (`Tracks::reach_json`), computed off the
 /// async workers (a vehicle's answer whose cache has lapsed takes a few milliseconds).
 async fn sensing_reach(State(app): State<App>, Query(q): Query<ReachQuery>) -> Response {
+    let of = match q.of() {
+        Ok(of) => of,
+        Err(e) => return error(StatusCode::BAD_REQUEST, e),
+    };
     let (tracks, world) = (app.tracks.clone(), app.world.clone());
-    match tokio::task::spawn_blocking(move || tracks.reach_json(&world, q.uid, clock::wall())).await {
+    match tokio::task::spawn_blocking(move || tracks.reach_json(&world, &of, clock::wall())).await {
         Ok(v) => Json(v).into_response(),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, format!("sensor reach: {e}")),
     }

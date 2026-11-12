@@ -19,12 +19,13 @@ export interface ReachLegendProps {
 
 function ReachLegend({ mode, onMode, domain, onDomain, answer, error, selected }: ReachLegendProps) {
   const types = [...new Set((answer?.vehicles ?? []).flatMap((v) => v.sensors.map((s) => s.type)))].filter((t) => SENSOR_RGB[t])
-  const status = error ? `Sensor reach unavailable: ${error}`
+  // nothing selected: nothing is asked for (App's reachQuery), so no answer to wait for
+  const status = mode === 'selected' && selected === 0 ? 'Select vehicles to see their reach'
+    : error ? `Sensor reach unavailable: ${error}`
     : !answer ? 'Loading sensor reach…'
     : answer.model === 'legacy' ? 'Legacy sensing: weather and light do not change detections; no rings'
     : !answer.available ? answer.note
     : answer.stale ? 'Stale sensing; rings hidden'
-    : mode === 'selected' && selected === 0 ? 'Select vehicles to see their reach'
     : null
   return <div className="reach-legend">
     <div><label>Sensor reach <select aria-label="Sensor reach rings" value={mode} onChange={(e) => onMode(e.target.value as ReachMode)}>

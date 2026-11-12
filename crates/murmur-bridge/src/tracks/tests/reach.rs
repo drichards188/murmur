@@ -189,7 +189,7 @@ fn the_legacy_model_shows_no_reaches() {
     });
     let settings = Settings { seed: Some(1), misclassification_rate: Some(0.0), eval_truth: false, drop_s: 180.0, model: Some(SensingModel::Legacy), sim_token: None };
     let tracks = Tracks::new(catalog(), settings).with_clear_day(PLATFORMS).expect("clear day");
-    let v = tracks.reach_json(&world, None, crate::clock::wall());
+    let v = tracks.reach_json(&world, &super::super::ReachOf::All, crate::clock::wall());
     assert_eq!(v["model"], "legacy");
     assert_eq!(v["vehicles"].as_array().map(Vec::len), Some(0));
 }
@@ -270,9 +270,9 @@ fn the_endpoint_reads_the_weather_where_the_vehicle_is() {
         impacts: Vec::new(), mines_live: Vec::new(), look: Vec::new(),
     };
     let now = crate::clock::wall();
-    assert_eq!(tracks.reach_json(&world, None, now)["available"], false, "before the first sensing step");
+    assert_eq!(tracks.reach_json(&world, &super::super::ReachOf::All, now)["available"], false, "before the first sensing step");
     tracks.on_truth_with(msg(10.0), &[], now).expect("truth");
-    let v = tracks.reach_json(&world, Some(1), now);
+    let v = tracks.reach_json(&world, &super::super::ReachOf::uid(1), now);
     assert_eq!(v["model"], "physical");
     let puma = &v["vehicles"][0];
     assert_eq!(puma["callsign"], "PUMA 1");
@@ -286,13 +286,20 @@ fn the_endpoint_reads_the_weather_where_the_vehicle_is() {
     assert!(surface["ratio"].as_f64().expect("present") < 0.2, "{surface}");
     assert_eq!(surface["limited_by"], "fog");
     assert_eq!(surface["clear_day_m"], 14_470.0);
+    // bd murmur-jvdc: only the vehicles asked for, by uid or within a box
+    let (lat, lon) = (BASE.0, BASE.1);
+    let near = super::super::ReachOf::Within([lon - 0.01, lat - 0.01, lon + 0.01, lat + 0.01]);
+    let far = super::super::ReachOf::Within([lon + 1.0, lat + 1.0, lon + 1.1, lat + 1.1]);
+    assert_eq!(tracks.reach_json(&world, &near, now)["vehicles"].as_array().map(Vec::len), Some(1));
+    assert_eq!(tracks.reach_json(&world, &far, now)["vehicles"].as_array().map(Vec::len), Some(0));
+    assert_eq!(tracks.reach_json(&world, &super::super::ReachOf::uid(2), now)["vehicles"].as_array().map(Vec::len), Some(0));
     // kept while nothing moved
-    let again = tracks.reach_json(&world, Some(1), now + 1.0);
+    let again = tracks.reach_json(&world, &super::super::ReachOf::uid(1), now + 1.0);
     assert_eq!(again["vehicles"][0]["age_s"], 1.0);
     assert_eq!(again["vehicles"][0]["sensors"], puma["sensors"]);
     // the fog clears: computed again at once
     tracks.on_truth_with(msg(120.0), &[], now + 2.0).expect("truth");
-    let clear = tracks.reach_json(&world, None, now + 2.0);
+    let clear = tracks.reach_json(&world, &super::super::ReachOf::All, now + 2.0);
     let c = &clear["vehicles"][0];
     assert_eq!(c["age_s"], 0.0);
     assert_eq!(c["conditions"]["visibility_m"], 20_000.0);
@@ -332,10 +339,10 @@ fn reach_cost_at_100_vehicles() {
     let now = crate::clock::wall();
     tracks.on_truth_with(msg, &[], now).expect("truth");
     let t0 = std::time::Instant::now();
-    let cold = tracks.reach_json(&world, None, now);
+    let cold = tracks.reach_json(&world, &super::super::ReachOf::All, now);
     let cold_ms = t0.elapsed().as_secs_f64() * 1e3;
     let t1 = std::time::Instant::now();
-    let warm = tracks.reach_json(&world, None, now + 1.0);
+    let warm = tracks.reach_json(&world, &super::super::ReachOf::All, now + 1.0);
     let warm_ms = t1.elapsed().as_secs_f64() * 1e3;
     let n = cold["vehicles"].as_array().map_or(0, Vec::len);
     assert_eq!(n, 100, "{n} vehicles answered");

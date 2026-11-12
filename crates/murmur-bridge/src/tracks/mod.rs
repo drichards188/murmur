@@ -314,6 +314,33 @@ fn association_of(inner: &Inner) -> Vec<Value> {
         .collect()
 }
 
+/// Which vehicles a sensor reach answer covers (`GET /api/sensing/reach`): every vehicle, those
+/// named (`uid`, `uids`), or those within a box (`bbox`: west, south, east, north). The console
+/// asks for what its rings show, the selected vehicles or those in view (bd murmur-jvdc: every
+/// vehicle's every 3 s was a fifth of the bridge's time at Saturation's 3,602).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum ReachOf {
+    #[default]
+    All,
+    Uids(std::collections::BTreeSet<u64>),
+    Within([f64; 4]),
+}
+
+impl ReachOf {
+    /// One vehicle's.
+    pub fn uid(uid: u64) -> ReachOf {
+        ReachOf::Uids(std::iter::once(uid).collect())
+    }
+
+    fn takes(&self, o: &Observer) -> bool {
+        match self {
+            ReachOf::All => true,
+            ReachOf::Uids(u) => u.contains(&o.uid),
+            ReachOf::Within([w, s, e, n]) => (*s..=*n).contains(&o.lat) && (*w..=*e).contains(&o.lon),
+        }
+    }
+}
+
 impl Tracks {
     #[cfg(test)]
     pub fn new(catalog: SensorCatalog, settings: Settings) -> Tracks {
@@ -1368,12 +1395,12 @@ impl Tracks {
     /// `GET /api/sensing/reach` (bd murmur-4tq, [`reach`]; information only, never logged): each
     /// vehicle's sensors' reach now against a reference contact, beside the catalog's clear-day
     /// reach, in the conditions the physical model would sense in where it is, and what keeps it
-    /// short. Only `uid`'s if given. Each vehicle's answer is kept and computed again after
-    /// [`REACH_MAX_AGE_S`] or as soon as its height, weather or sun moved enough
-    /// ([`ReachKey::close`]); nothing is locked while it computes (the physical model only while
-    /// the weather samples are read). Under the legacy model there is nothing to show: weather
-    /// and light change no detection there.
-    pub fn reach_json(&self, world: &World, uid: Option<u64>, now: f64) -> Value {
+    /// short. Only the vehicles `of` names, if it names some ([`ReachOf`]). Each vehicle's answer
+    /// is kept and computed again after [`REACH_MAX_AGE_S`] or as soon as its height, weather or
+    /// sun moved enough ([`ReachKey::close`]); nothing is locked while it computes (the physical
+    /// model only while the weather samples are read). Under the legacy model there is nothing
+    /// to show: weather and light change no detection there.
+    pub fn reach_json(&self, world: &World, of: &ReachOf, now: f64) -> Value {
         let model = self.sensing_model();
         if model == SensingModel::Legacy {
             return json!({"available": true, "model": "legacy", "vehicles": [],
@@ -1389,7 +1416,7 @@ impl Tracks {
         let carriers: Vec<(Observer, Carrier)> = self
             .carriers(world)
             .into_iter()
-            .filter(|(o, _)| uid.is_none_or(|u| u == o.uid))
+            .filter(|(o, _)| of.takes(o))
             .collect();
         // each observer's conditions, read under the physical model's lock and nothing more
         let conds: Vec<(physical::conditions::Conditions, Option<murmur_weather::Sample>)> = {
@@ -1416,7 +1443,7 @@ impl Tracks {
             value["age_s"] = json!(round((now - at).max(0.0), 1));
             out.push(value);
         }
-        if uid.is_none() {
+        if matches!(of, ReachOf::All) {
             let live: std::collections::HashSet<u64> = out.iter().filter_map(|v| v["uid"].as_u64()).collect();
             lock(&self.reach_cache).retain(|u, _| live.contains(u));
         }

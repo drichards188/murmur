@@ -49,7 +49,7 @@ import type { WeatherMode } from './weather'
 import { regionsOf } from './weatherField'
 import type { Effects, WeatherView } from './weatherMap'
 import { saveEffects, savedEffects } from './weatherPrefs'
-import { reachBadge, reachFeatures, type DomainChoice, type ReachAnswer, type ReachMode } from './sensorReach'
+import { reachBadge, reachFeatures, reachQuery, type DomainChoice, type ReachAnswer, type ReachMode } from './sensorReach'
 import { minefieldFeatures, type MinefieldsAnswer } from './minefields'
 import { SituationPanel } from './SituationPanel'
 import { pendingItems, waitingItems } from './blocking'
@@ -98,6 +98,9 @@ function readInvite(): { operator: string; code: string } | null {
 
 /** The console. `onMenu`: the launcher's main menu (`make start`), shown over it; absent when
  *  the stack was started without the launcher. */
+/** The sensor reach answer while nothing is asked for (the layer off, nothing selected). */
+const NO_REACH: { data: ReachAnswer | null; error: string | null } = { data: null, error: null }
+
 export default function App({ onMenu }: { onMenu?: () => void }) {
   const { state, status, decisions, tracks, setView } = useBridge()
   // who this console acts for (rules 8): asked once the bridge answers, and again on reconnect
@@ -199,7 +202,12 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   // (or all, or none) and a badge on each vehicle whose reach is under half its clear day's
   const [reachMode, setReachMode] = useState<ReachMode>('selected')
   const [reachDomain, setReachDomain] = useState<DomainChoice>('auto')
-  const reach = usePoll<ReachAnswer>('/api/sensing/reach', 3000)
+  // only what the rings show, while they show (bd murmur-jvdc: the whole fleet's every 3 s was
+  // a fifth of the bridge's time at Saturation's 3,602): the selected vehicles, or those in view
+  const reachUrl = useMemo(() => reachQuery(reachMode, selected, mapView?.bounds ?? null), [reachMode, selected, mapView?.bounds])
+  const reachPoll = usePoll<ReachAnswer>(reachUrl, 3000)
+  // nothing asked for: no answer shown, not the last one asked
+  const reach = reachUrl ? reachPoll : NO_REACH
   // rules 27: our minefields not yet inert (minefields.ts), drawn with the reach rings
   const minefields = usePoll<MinefieldsAnswer>('/api/minefields', 5000)
   const [drawing, setDrawing] = useState<LngLat | 'start' | null>(null)
