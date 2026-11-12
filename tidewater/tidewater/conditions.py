@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
-from .layers import Currents, Terrain, Tide, Wind
+from .layers import Currents, NestedTerrain, Terrain, Tide, Tides, Wind
 from .scenario import Scenario
 from .weather import Weather
 
@@ -70,28 +70,52 @@ class Conditions:
         self.wind = wind
         self.weather = None
 
+    @staticmethod
+    def missing(sc: Scenario):
+        """The cache files the scenario needs and doesn't have yet."""
+        needed = ["terrain.npz", "tide.json", "currents.json", "wind.json"]
+        needed += [f"terrain-{name}.npz" for name, _ in sc.terrain_nests]
+        if sc.tide.get("zones"):
+            needed.append("tides.json")
+        if sc.currents.get("source", "coops-predictions") == "sfbofs":
+            needed.append("sfbofs_currents.npz")
+        if sc.currents.get("outside") == "wcofs":
+            needed.append("wcofs_currents.npz")
+        if sc.weather.get("enabled", False) and not sc.weather.get("archive"):
+            needed.append("weather.json")
+        return [n for n in needed if not (sc.cache_dir / n).exists()]
+
     @classmethod
     def for_scenario(cls, sc: Scenario):
         c = sc.cache_dir
-        needed = ["terrain.npz", "tide.json", "currents.json", "wind.json"]
-        if sc.currents.get("source", "coops-predictions") == "sfbofs":
-            needed.append("sfbofs_currents.npz")
-        if sc.weather.get("enabled", False) and not sc.weather.get("archive"):
-            needed.append("weather.json")
-        missing = [n for n in needed if not (c / n).exists()]
+        nests = sc.terrain_nests
+        missing = cls.missing(sc)
         if missing:
             raise FileNotFoundError(f"scenario data not fetched ({', '.join(missing)}); run: tidewater fetch {sc.path}")
         weather_path = sc.path.parent / sc.weather["archive"] if sc.weather.get("archive") else c / "weather.json"
         weather = Weather.load(weather_path) if sc.weather.get("enabled", False) else None
-        result = cls(Terrain.load(c / "terrain.npz"), Tide.load(c / "tide.json"),
-                     cls._currents(sc), weather or Wind.load(c / "wind.json"))
+        terrain = Terrain.load(c / "terrain.npz")
+        if nests:
+            terrain = NestedTerrain([terrain] + [Terrain.load(c / f"terrain-{name}.npz") for name, _ in nests])
+        result = cls(terrain, cls._tide(sc), cls._currents(sc, terrain=terrain), weather or Wind.load(c / "wind.json"))
         result.weather = weather
         return result
 
     @staticmethod
-    def _currents(sc: Scenario, source=None):
+    def _tide(sc: Scenario):
+        """One station's level everywhere, or with `[[tide.zones]]` each zone's stations blended."""
+        zones = sc.tide.get("zones")
+        if not zones:
+            return Tide.load(sc.cache_dir / "tide.json")
+        return Tides.load(sc.cache_dir / "tides.json", [(z["name"], z["stations"], z.get("polygon")) for z in zones],
+                          reference=sc.tide["station"], nearest=sc.tide.get("nearest", 2))
+
+    @staticmethod
+    def _currents(sc: Scenario, source=None, terrain=None):
         """The scenario's current layer. Station IDW is the default; "sfbofs" uses the model mesh
-        and falls back to the stations outside the mesh and its time span."""
+        and falls back to the stations outside the mesh and its time span. With `outside =
+        "wcofs"`, WCOFS answers outside SFBOFS's mesh (blended across its open boundary, which the
+        terrain helps find) and the stations only past both."""
         stations = Currents.load(sc.cache_dir / "currents.json")
         source = source or sc.currents.get("source", "coops-predictions")
         if source == "coops-predictions":
@@ -103,11 +127,20 @@ class Conditions:
             raise FileNotFoundError(f"SFBOFS currents not fetched; run: tidewater fetch {sc.path}")
         from .sfbofs import SfbofsCurrents
 
-        return SfbofsCurrents.load(path, fallback=stations)
+        outside = sc.currents.get("outside")
+        if outside is None:
+            return SfbofsCurrents.load(path, fallback=stations)
+        if outside != "wcofs":
+            raise ValueError(f"unknown currents outside {outside!r} (use 'wcofs')")
+        from .wcofs import NestedCurrents, WcofsCurrents
+
+        outer = WcofsCurrents.load(sc.cache_dir / "wcofs_currents.npz", fallback=stations)
+        return NestedCurrents(SfbofsCurrents.load(path), outer, terrain,
+                              blend_m=1000.0 * sc.currents.get("blend_km", 10.0))
 
     def at(self, lat, lon, t, depth_m=0.0) -> Sample:
         elev = self.terrain.elevation(lat, lon)
-        level = self.tide.level(t)
+        level = self.tide.level_at(lat, lon, t)
         water_depth = None if elev is None else level - elev
         if water_depth is not None and water_depth > 0:
             ce, cn = self.currents.vector(lat, lon, t, min(depth_m, water_depth))
@@ -126,15 +159,19 @@ class Conditions:
         depth = np.zeros(lat.shape) if depth_m is None else np.broadcast_to(np.asarray(depth_m, dtype=float), lat.shape)
         depth = np.where(np.isnan(depth), 0.0, depth)
         elev = self.terrain.elevation_many(lat, lon)
-        level = self.tide.level(t)
+        level = self.tide.level_many(lat, lon, t)  # one number, or one a point with several stations
         water_depth = level - elev  # NaN where outside the area
         wet = water_depth > 0  # False for NaN
         current = np.zeros((len(lat), 2))
         if wet.any():
             current[wet] = self.currents.vector_many(lat[wet], lon[wet], t, np.minimum(depth[wet], water_depth[wet]))
-        wind = self.wind.vector_many(lat, lon, t)
+        weather = self.weather.at_many(lat, lon, t) if self.weather else None
+        if weather is not None and self.wind is self.weather:
+            wind = self.weather.vector_many(lat, lon, t, weather)
+        else:
+            wind = self.wind.vector_many(lat, lon, t)
         return SampleBatch(lat, lon, elev, level, water_depth, current[:, 0], current[:, 1], wind[:, 0], wind[:, 1],
-                           [self.weather.at(la, lo, t) for la, lo in zip(lat, lon)] if self.weather else None)
+                           weather)
 
 
 @dataclass
@@ -143,7 +180,7 @@ class SampleBatch:
     lat: np.ndarray
     lon: np.ndarray
     elevation_m: np.ndarray
-    water_level_m: float
+    water_level_m: float | np.ndarray  # one number, or one per point (several tide stations)
     water_depth_m: np.ndarray
     current_east: np.ndarray
     current_north: np.ndarray
@@ -154,12 +191,17 @@ class SampleBatch:
     def __len__(self):
         return len(self.lat)
 
+    def _levels(self):
+        if np.ndim(self.water_level_m) == 0:
+            return [self.water_level_m] * len(self)
+        return np.asarray(self.water_level_m, dtype=float).tolist()
+
     def samples(self):
         """List of `Sample`, as `Conditions.at` would return."""
         elev = [None if np.isnan(v) else v for v in self.elevation_m.tolist()]
         wd = [None if np.isnan(v) else v for v in self.water_depth_m.tolist()]
         return [Sample(*row) for row in zip(self.lat.tolist(), self.lon.tolist(), elev,
-                                            [self.water_level_m] * len(self), wd,
+                                            self._levels(), wd,
                                             self.current_east.tolist(), self.current_north.tolist(),
                                             nullable(self.wind_east), nullable(self.wind_north),
                                             self.weather or [None] * len(self))]
@@ -170,7 +212,7 @@ class SampleBatch:
                 "current_east", "current_north", "wind_east", "wind_north", "weather")
         elev = [None if np.isnan(v) else v for v in self.elevation_m.tolist()]
         wd = [None if np.isnan(v) else v for v in self.water_depth_m.tolist()]
-        cols = (self.lat.tolist(), self.lon.tolist(), elev, [self.water_level_m] * len(self), wd,
+        cols = (self.lat.tolist(), self.lon.tolist(), elev, self._levels(), wd,
                 self.current_east.tolist(), self.current_north.tolist(),
                 nullable(self.wind_east), nullable(self.wind_north), self.weather or [None] * len(self))
         rows = [dict(zip(keys, row)) for row in zip(*cols)]

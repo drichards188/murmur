@@ -48,6 +48,7 @@ class Scenario:
     validation: dict = field(default_factory=dict)
     path: Path | None = None
     weather: dict = field(default_factory=dict)
+    terrain: dict = field(default_factory=dict)
 
     @classmethod
     def load(cls, path) -> "Scenario":
@@ -66,7 +67,24 @@ class Scenario:
             validation=raw.get("validation", {}),
             path=path,
             weather=raw.get("weather", {}),
+            terrain=raw.get("terrain", {}),
         )
+
+    @property
+    def terrain_nests(self) -> list[tuple[str, Area]]:
+        """`[[terrain.nest]]`: finer grids inside the area, each (name, Area), as listed. A point is
+        answered from the finest grid that covers it."""
+        out = []
+        for i, n in enumerate(self.terrain.get("nest", [])):
+            name = str(n.get("name", i))
+            if not name.replace("-", "").replace("_", "").isalnum():
+                raise ValueError(f"terrain nest name {name!r}: letters, digits, - and _ only")
+            nest = Area(**{k: n[k] for k in ("west", "south", "east", "north", "resolution_m")})
+            a = self.area
+            if not (a.west <= nest.west < nest.east <= a.east and a.south <= nest.south < nest.north <= a.north):
+                raise ValueError(f"terrain nest {name!r} must lie inside the scenario's area")
+            out.append((name, nest))
+        return out
 
     @property
     def cache_dir(self) -> Path:

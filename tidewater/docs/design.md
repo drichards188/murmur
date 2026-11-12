@@ -10,11 +10,12 @@ adapters translate.
 
 | Layer | Source (v0) | Resolution | Notes |
 |---|---|---|---|
-| terrain | NOAA NCEI DEM mosaic image service | ~15 m in the Golden Gate scenario | One topobathy grid gives both land mask and depth. NAVD88 for US coastal DEMs. |
-| tide | NOAA CO-OPS predictions, one station | 6 min | Datum requested to match the DEM. |
+| terrain | NOAA NCEI DEM mosaic image service | ~15 m in the Golden Gate scenario; 90 m, 30 m and 15 m nested in the bay region | One topobathy grid gives both land mask and depth. NAVD88 for US coastal DEMs. `[[terrain.nest]]`: finer grids inside the area, each point answered from the finest that covers it. Fetched in tiles of at most 0.5 degrees. |
+| tide | NOAA CO-OPS observed water level (predictions fill gaps), one station | 6 min | Datum requested to match the DEM. `[[tide.zones]]`: several stations, each point the inverse-distance blend of its zone's nearest ones. |
 | currents | NOAA CO-OPS current predictions, all stations and depth bins in the area | 6 min (harmonic) or slack/max events (subordinate) | Subordinate events interpolated with a half-cosine. IDW between stations. Stations with no published flood/ebb axis are skipped. |
 | currents (model) | NOAA SFBOFS nowcast (FVCOM mesh, 20 layers), AWS Open Data, subset by range request | hourly, 150 to 260 m cells at the Gate | `[currents] source = "sfbofs"`. Barycentric on the mesh, linear in depth and time; station IDW is the fallback outside the mesh and fetched hours. |
-| wind | Open-Meteo historical forecast API, NOAA HRRR | 3 km, hourly | Reanalysis (~25 km) was tried and badly under-reads the Golden Gate gap wind. |
+| currents (offshore model) | NOAA WCOFS nowcast (ROMS, 40 levels), AWS Open Data, subset by range request | hourly surface, 3-hourly 3D, 4 km cells | `[currents] outside = "wcofs"`: outside SFBOFS's mesh, blended over `blend_km` inside its open boundary. Surface current plus the 3D shear on fixed depth levels. The nearest wet grid point within 6 km between its coastline and the real one; stations past that. |
+| wind | Open-Meteo historical forecast API, NOAA HRRR | 3 km, hourly | Reanalysis (~25 km) was tried and badly under-reads the Golden Gate gap wind. `[[wind.nest]]` adds a denser grid inside the area's; requests go 100 points at a time under Open-Meteo's 600 a minute. |
 
 Everything is cached under `data/cache/<scenario>/` so a scenario runs offline after one
 fetch. `Conditions.at(lat, lon, t, depth)` returns a `Sample` with elevation, water level,

@@ -42,6 +42,84 @@ UA = {"User-Agent": "tidewater/0.1 (simulation research)"}
 # ---------------------------------------------------------------- the layer
 
 
+class TriangleLocator:
+    """Which triangle of a mesh holds a point, and its barycentric weights there. Positions are
+    flat-earth metres about the nodes' mean (fine over a region of a few hundred km)."""
+
+    SEARCH_K = 24
+
+    def __init__(self, lon, lat, tri):
+        self.lon = np.asarray(lon, dtype=float)
+        self.lat = np.asarray(lat, dtype=float)
+        self.tri = np.asarray(tri, dtype=np.intp)
+        self._lat0 = float(self.lat.mean())
+        self._lon0 = float(self.lon.mean())
+        x, y = self.xy(self.lat, self.lon)
+        tx, ty = x[self.tri], y[self.tri]  # (E, 3)
+        self._x0, self._y0 = tx[:, 0], ty[:, 0]
+        a, b = tx[:, 1] - tx[:, 0], tx[:, 2] - tx[:, 0]
+        c, d = ty[:, 1] - ty[:, 0], ty[:, 2] - ty[:, 0]
+        det = a * d - b * c
+        det = np.where(np.abs(det) < 1e-9, np.nan, det)  # degenerate triangles never match
+        # (l1, l2) = inv([[a, b], [c, d]]) @ (px - x0, py - y0)
+        self._inv = (d / det, -b / det, -c / det, a / det)
+        cx, cy = tx.mean(axis=1), ty.mean(axis=1)
+        self._tree = cKDTree(np.column_stack([cx, cy]))
+        # no point farther than this from every centroid is inside a triangle
+        self._reach = float(np.hypot(tx - cx[:, None], ty - cy[:, None]).max()) if len(self.tri) else 0.0
+
+    def xy(self, lat, lon):
+        k = math.cos(math.radians(self._lat0))
+        return (np.asarray(lon, dtype=float) - self._lon0) * EARTH_M_PER_DEG * k, \
+               (np.asarray(lat, dtype=float) - self._lat0) * EARTH_M_PER_DEG
+
+    def latlon(self, x, y):
+        """The inverse of `xy`. -> (lat, lon)."""
+        k = math.cos(math.radians(self._lat0))
+        return self._lat0 + np.asarray(y, dtype=float) / EARTH_M_PER_DEG, \
+            self._lon0 + np.asarray(x, dtype=float) / (EARTH_M_PER_DEG * k)
+
+    def locate(self, lat, lon):
+        """Containing triangle and barycentric weights. -> (elem (n,), weights (n, 3), found (n,));
+        a point in no triangle has weights 0 and its nearest centroid's triangle."""
+        px, py = self.xy(lat, lon)
+        pts = np.column_stack([px, py])
+        d1, nearest = self._tree.query(pts, k=1)
+        near = d1 <= self._reach * (1 + 1e-9) + 1e-6  # the rest is far outside the mesh
+        if not near.all():
+            elem = np.asarray(nearest, dtype=np.intp).reshape(len(px))
+            w = np.zeros((len(px), 3))
+            found = np.zeros(len(px), dtype=bool)
+            if near.any():
+                elem[near], w[near], found[near] = self._locate(px[near], py[near])
+            return elem, w, found
+        return self._locate(px, py)
+
+    def _locate(self, px, py):
+        k = min(self.SEARCH_K, len(self.tri))
+        _, cand = self._tree.query(np.column_stack([px, py]), k=k)
+        cand = cand.reshape(len(px), k)
+        dx, dy = px[:, None] - self._x0[cand], py[:, None] - self._y0[cand]
+        i00, i01, i10, i11 = (m[cand] for m in self._inv)
+        l1 = i00 * dx + i01 * dy
+        l2 = i10 * dx + i11 * dy
+        eps = 1e-9
+        inside = (l1 >= -eps) & (l2 >= -eps) & (l1 + l2 <= 1 + eps)  # NaN (degenerate) is False
+        found = inside.any(axis=1)
+        first = np.argmax(inside, axis=1)
+        rows = np.arange(len(px))
+        l1, l2 = l1[rows, first], l2[rows, first]
+        w = np.stack([1 - l1 - l2, l1, l2], axis=1)
+        return cand[rows, first], np.where(found[:, None], w, 0.0), found
+
+    def boundary_edges(self):
+        """Edges that belong to one triangle only, each (a, b, c): its nodes and the triangle's third."""
+        e = np.concatenate([self.tri[:, [0, 1, 2]], self.tri[:, [1, 2, 0]], self.tri[:, [2, 0, 1]]])
+        key = np.sort(e[:, :2], axis=1)
+        _, inv, count = np.unique(key, axis=0, return_inverse=True, return_counts=True)
+        return e[count[inv.ravel()] == 1]
+
+
 class SfbofsCurrents:
     """`Currents`-compatible layer on the SFBOFS mesh.
 
@@ -71,9 +149,7 @@ class SfbofsCurrents:
         self.scale = VEL_SCALE if self.u.dtype.kind == "i" else 1.0
         self.fallback = fallback
         self.info = info or {}
-        self._lat0 = float(self.lat.mean())
-        self._lon0 = float(self.lon.mean())
-        self._build_locator()
+        self.locator = TriangleLocator(self.lon, self.lat, self.tri)
 
     # -- loading
 
@@ -103,40 +179,11 @@ class SfbofsCurrents:
     # -- geometry
 
     def _xy(self, lat, lon):
-        k = math.cos(math.radians(self._lat0))
-        return (np.asarray(lon, dtype=float) - self._lon0) * EARTH_M_PER_DEG * k, \
-               (np.asarray(lat, dtype=float) - self._lat0) * EARTH_M_PER_DEG
-
-    def _build_locator(self):
-        x, y = self._xy(self.lat, self.lon)
-        tx, ty = x[self.tri], y[self.tri]  # (E, 3)
-        self._x0, self._y0 = tx[:, 0], ty[:, 0]
-        a, b = tx[:, 1] - tx[:, 0], tx[:, 2] - tx[:, 0]
-        c, d = ty[:, 1] - ty[:, 0], ty[:, 2] - ty[:, 0]
-        det = a * d - b * c
-        det = np.where(np.abs(det) < 1e-9, np.nan, det)  # degenerate triangles never match
-        # (l1, l2) = inv([[a, b], [c, d]]) @ (px - x0, py - y0)
-        self._inv = (d / det, -b / det, -c / det, a / det)
-        self._tree = cKDTree(np.column_stack([tx.mean(axis=1), ty.mean(axis=1)]))
+        return self.locator.xy(lat, lon)
 
     def locate(self, lat, lon):
         """Containing triangle and barycentric weights. -> (elem (n,), weights (n, 3), found (n,))."""
-        px, py = self._xy(lat, lon)
-        k = min(self.SEARCH_K, len(self.tri))
-        _, cand = self._tree.query(np.column_stack([px, py]), k=k)
-        cand = cand.reshape(len(px), k)
-        dx, dy = px[:, None] - self._x0[cand], py[:, None] - self._y0[cand]
-        i00, i01, i10, i11 = (m[cand] for m in self._inv)
-        l1 = i00 * dx + i01 * dy
-        l2 = i10 * dx + i11 * dy
-        eps = 1e-9
-        inside = (l1 >= -eps) & (l2 >= -eps) & (l1 + l2 <= 1 + eps)  # NaN (degenerate) is False
-        found = inside.any(axis=1)
-        first = np.argmax(inside, axis=1)
-        rows = np.arange(len(px))
-        l1, l2 = l1[rows, first], l2[rows, first]
-        w = np.stack([1 - l1 - l2, l1, l2], axis=1)
-        return cand[rows, first], np.where(found[:, None], w, 0.0), found
+        return self.locator.locate(lat, lon)
 
     # -- sampling
 
@@ -169,20 +216,31 @@ class SfbofsCurrents:
             return r0
         return r0 * (1 - a) + self._at_record(i1, nodes, w, depth) * a
 
-    def vector_many(self, lat, lon, t, depth_m):
-        """Currents (east, north) m/s for arrays of points at one time. -> (N, 2)."""
+    def sample_found(self, lat, lon, t, depth_m, strict=True):
+        """Currents where the mesh answers: inside it and, when `strict`, inside its hours (else
+        the nearest hour). -> ((N, 2) with zeros elsewhere, answered (N,))."""
         lat = np.asarray(lat, dtype=float)
         lon = np.asarray(lon, dtype=float)
         depth = np.broadcast_to(np.asarray(depth_m, dtype=float), lat.shape)
         out = np.zeros((len(lat), 2))
         if len(lat) == 0:
-            return out
+            return out, np.zeros(0, dtype=bool)
         tt = to_epoch(t)
         elem, w, found = self.locate(lat, lon)
         covered = self.times[0] <= tt <= self.times[-1]
-        use = found & (covered or self.fallback is None)
+        use = found & (covered or not strict)
         if use.any():
             out[use] = self._sample(self.tri[elem[use]], w[use], tt, depth[use])
+        return out, use
+
+    def vector_many(self, lat, lon, t, depth_m):
+        """Currents (east, north) m/s for arrays of points at one time. -> (N, 2)."""
+        lat = np.asarray(lat, dtype=float)
+        lon = np.asarray(lon, dtype=float)
+        depth = np.broadcast_to(np.asarray(depth_m, dtype=float), lat.shape)
+        if len(lat) == 0:
+            return np.zeros((0, 2))
+        out, use = self.sample_found(lat, lon, t, depth, strict=self.fallback is not None)
         rest = ~use
         if rest.any() and self.fallback is not None:
             out[rest] = self.fallback.vector_many(lat[rest], lon[rest], t, depth[rest])

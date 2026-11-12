@@ -1,0 +1,100 @@
+# The San Francisco Bay region, over the same spring-tide days as the Golden Gate's scenario
+# (13-16 June 2026, the 14-15 June new moon): Bodega Bay to Monterey Bay, the whole of San
+# Francisco Bay to Suisun Bay, and the ocean out past the Farallones, about 100 km offshore
+# (about 163 by 200 km). Situations name it as `tidewater = "bay-region-2026-06"`.
+name = "bay-region-2026-06"
+title = "San Francisco Bay region, spring tides, 13-16 June 2026"
+
+# The whole area at 90 m (the offshore DEM is about 90 m anyway; inland it is ample for radio
+# line of sight at the link emulator's 50 m profile spacing), with finer grids nested inside:
+# a point is answered from the finest grid that covers it.
+[area]
+west = -123.60
+south = 36.55
+east = -121.75
+north = 38.35
+resolution_m = 90
+
+# San Francisco Bay, from just outside the Gate to Suisun Bay, from Alviso to the Napa River
+[[terrain.nest]]
+name = "bay"
+west = -122.62
+south = 37.40
+east = -121.75
+north = 38.25
+resolution_m = 30
+
+# The Golden Gate scenario's own grid (golden-gate-2026-06's area at 15 m): the same answers there
+[[terrain.nest]]
+name = "golden-gate"
+west = -122.56
+south = 37.77
+east = -122.38
+north = 37.88
+resolution_m = 15
+
+[time]
+start = "2026-06-13T00:00:00Z"
+end = "2026-06-16T00:00:00Z"
+
+[tide]
+# the reference station (validation, and the one level of a scenario without zones)
+station = "9414290"
+# the terrain's vertical datum (NCEI coastal DEMs are NAVD88); every station below publishes it
+datum = "NAVD"
+source = "observed"
+# each point takes the inverse-distance blend of its zone's 2 nearest stations
+nearest = 2
+
+# Inside the Golden Gate: the tide lags and grows into the South Bay and Suisun Bay (13-16 June
+# 2026, observed: Redwood City 0.46 m rms from San Francisco, Port Chicago 0.72 m). The polygon
+# ([lon, lat]) runs along the bridge and the ridges between the Bay and the ocean coast.
+[[tide.zones]]
+name = "bay"
+stations = ["9414290", "9414750", "9414523", "9414863", "9415102", "9415144"]
+polygon = [[-122.4780, 37.800], [-122.4790, 37.835], [-122.52, 37.86], [-122.60, 37.93],
+           [-122.72, 38.03], [-122.75, 38.40], [-121.70, 38.40], [-121.70, 37.15],
+           [-121.95, 37.15], [-122.10, 37.25], [-122.25, 37.40], [-122.38, 37.55],
+           [-122.45, 37.68], [-122.47, 37.76]]
+
+# The rest of the area: the open coast and Monterey Bay (Point Reyes and Monterey lead San
+# Francisco by 36 and 48 minutes)
+[[tide.zones]]
+name = "coast"
+stations = ["9414290", "9415020", "9413450"]
+
+[currents]
+# SFBOFS inside its mesh (the Bay and the ocean to an arc from Point Reyes to Pacifica, about
+# 45 km off the Gate); NOAA's West Coast OFS (WCOFS, ROMS, about 4 km) outside it, blended
+# across SFBOFS's open boundary over blend_km; station predictions where neither reaches.
+source = "sfbofs"
+outside = "wcofs"
+blend_km = 10
+interval_min = 6  # station predictions
+
+[wind]
+# Archived NOAA HRRR (3 km) via Open-Meteo on an 8 km grid over the area, and the Golden Gate
+# scenario's own 5 by 4 grid nested in it (the wind funnelling through the Gate)
+source = "open-meteo-historical-forecast"
+model = "gfs_hrrr"
+grid = [21, 26]
+
+[[wind.nest]]
+west = -122.56
+south = 37.77
+east = -122.38
+north = 37.88
+grid = [5, 4]
+
+[weather]
+enabled = true
+
+# Suggested start points for simulators (lat, lon, alt_m, heading_deg): the Golden Gate's
+[spawn]
+plane = [37.8068, -122.4460, 5.0, 90.0]     # Crissy Field (former airfield), flat ~4 m strip
+vtol = [37.8065, -122.4500, 4.0, 90.0]
+copter = [37.8060, -122.4430, 5.0, 0.0]
+blimp = [37.8330, -122.4830, 30.0, 0.0]     # Marin Headlands
+tracker = [37.8105, -122.4770, 10.0, 0.0]   # Fort Point
+boat = [37.8280, -122.4700, 0.0, 180.0]     # off Horseshoe Bay, deep enough at low tide
+sub = [37.8300, -122.4690, 0.0, 180.0]

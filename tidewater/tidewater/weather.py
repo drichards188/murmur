@@ -23,31 +23,29 @@ FIELDS = {
 
 
 def fetch_weather(sc, log=print):
-    from .fetch import OPEN_METEO, _get
+    from .fetch import OPEN_METEO, open_meteo, wind_points
     out = sc.cache_dir / 'weather.json'
     if out.exists():
         Weather.load(out)  # don't silently reuse a corrupt or unsupported artifact
         return out
     a = sc.area
-    nx, ny = sc.wind.get('grid', [3, 3])
-    pts = [(float(la), float(lo)) for la in np.linspace(a.south, a.north, ny)
-           for lo in np.linspace(a.west, a.east, nx)]
+    pts = wind_points(sc)
     source = sc.wind.get('source', 'open-meteo-historical-forecast')
     model = sc.wind.get('model', 'gfs_hrrr')
     params = {
-        'latitude': ','.join(f'{p[0]:.4f}' for p in pts),
-        'longitude': ','.join(f'{p[1]:.4f}' for p in pts),
         'start_date': sc.start.strftime('%Y-%m-%d'),
         'end_date': sc.end.strftime('%Y-%m-%d'),
         'hourly': ','.join([*FIELDS, 'wind_speed_10m', 'wind_direction_10m']),
         'wind_speed_unit': 'ms', 'timezone': 'GMT', 'models': model,
     }
     log(f'weather: {len(pts)} points, {model} via Open-Meteo (free noncommercial API; attribution required)')
-    raw = _get(OPEN_METEO[source], params)
-    responses = json.loads(raw)
-    responses = responses if isinstance(responses, list) else [responses]
-    if len(responses) != len(pts):
-        raise ValueError('weather API returned the wrong number of locations')
+    responses, raws = open_meteo(OPEN_METEO[source], params, pts, log)
+    # one request as it always was; several kept as a JSON array of the responses, in order
+    raw = raws[0] if len(raws) == 1 else b'[' + b','.join(raws) + b']'
+    params = {'latitude': ','.join(f'{p[0]:.4f}' for p in pts),
+              'longitude': ','.join(f'{p[1]:.4f}' for p in pts), **params}
+    if len(raws) > 1:
+        params['requests'] = len(raws)
     points = []
     for (lat, lon), data in zip(pts, responses):
         hourly, units = data['hourly'], data['hourly_units']
@@ -114,6 +112,56 @@ class Weather:
         if not (s <= lat <= n and w <= lon <= e and math.isfinite(t)):
             return {}
         p = min(self.points, key=lambda p: (p['lat']-lat)**2 + ((p['lon']-lon)*math.cos(math.radians(lat)))**2)
+        return self._values(p, t)
+
+    def nearest_many(self, lat, lon):
+        """Index of each point's nearest archived point, as `at` picks it (the first of equals);
+        -1 outside the bounds."""
+        lat = np.asarray(lat, dtype=float)
+        lon = np.asarray(lon, dtype=float)
+        if not hasattr(self, '_tree'):
+            from scipy.spatial import cKDTree
+            self._plat = np.array([p['lat'] for p in self.points])
+            self._plon = np.array([p['lon'] for p in self.points])
+            self._k0 = math.cos(math.radians(float(self._plat.mean())))
+            self._tree = cKDTree(np.column_stack([self._plat, self._plon * self._k0]))
+        w, s, e, n = self.data['bounds']
+        out = np.full(lat.shape, -1, dtype=np.intp)
+        inside = np.flatnonzero((s <= lat) & (lat <= n) & (w <= lon) & (lon <= e))
+        if len(inside) == 0:
+            return out
+        la, lo = lat[inside], lon[inside]
+        cos = np.cos(np.radians(la))
+        # candidates from a tree in a fixed longitude scale, chosen by `at`'s own metric
+        k = min(8, len(self.points))
+        tdist, cand = self._tree.query(np.column_stack([la, lo * self._k0]), k=k)
+        tdist, cand = tdist.reshape(len(la), k), np.sort(cand.reshape(len(la), k), axis=1)  # first of equals
+        d = (self._plat[cand] - la[:, None]) ** 2 + ((self._plon[cand] - lo[:, None]) * cos[:, None]) ** 2
+        best = np.argmin(d, axis=1)
+        out[inside] = cand[np.arange(len(la)), best]
+        # a point outside the candidates is at least the k-th's tree distance away, which `at`'s
+        # metric shrinks by at most cos(lat) / k0; where that can't rule it out, compare all
+        sure = np.sqrt(d[np.arange(len(la)), best]) < tdist[:, -1] * np.minimum(1.0, cos / self._k0)
+        if k == len(self.points):
+            sure[:] = True
+        for c in range(0, int((~sure).sum()), 4096):
+            i = inside[~sure][c:c + 4096]
+            kc = np.cos(np.radians(lat[i]))[:, None]
+            dd = (self._plat[None, :] - lat[i, None]) ** 2 + ((self._plon[None, :] - lon[i, None]) * kc) ** 2
+            out[i] = np.argmin(dd, axis=1)
+        return out
+
+    def at_many(self, lat, lon, t):
+        """`at` for arrays of points at one time: each archived point's values are computed once."""
+        t = t.timestamp() if isinstance(t, dt.datetime) else t
+        if not math.isfinite(t):
+            return [{} for _ in range(len(lat))]
+        near = self.nearest_many(lat, lon)
+        values = {int(i): self._values(self.points[i], t) for i in np.unique(near) if i >= 0}
+        return [values[i].copy() if i >= 0 else {} for i in near.tolist()]
+
+    def _values(self, p, t):
+        """One archived point's values at t: linear between its hours, {} where it has none."""
         i = bisect.bisect_right(p['_times'], t)
         if i == 0:
             return {}
@@ -135,8 +183,13 @@ class Weather:
         e, n = v.get('wind_east_mps'), v.get('wind_north_mps')
         return (e, n) if e is not None and n is not None else (None, None)
 
-    def vector_many(self, lat, lon, t):
-        return np.array([self.vector(la, lo, t) for la, lo in zip(lat, lon)], dtype=float).reshape((-1, 2))
+    def vector_many(self, lat, lon, t, values=None):
+        """Wind (east, north) for arrays of points, NaN where there is none. `values`: at_many's
+        answer for the same points and time, when the caller has it."""
+        values = self.at_many(lat, lon, t) if values is None else values
+        return np.array([(v.get('wind_east_mps'), v.get('wind_north_mps'))
+                         if v.get('wind_east_mps') is not None and v.get('wind_north_mps') is not None
+                         else (None, None) for v in values], dtype=float).reshape((-1, 2))
 
 
 def snapshot(source, output, start, end):

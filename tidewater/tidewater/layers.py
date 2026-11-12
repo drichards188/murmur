@@ -91,6 +91,49 @@ class Terrain:
         out[~inside] = np.nan
         return out
 
+    @property
+    def cell_deg(self):
+        """Cell height in degrees of latitude: what orders grids from finest to coarsest."""
+        return (self.north - self.south) / self.h
+
+
+class NestedTerrain:
+    """Several `Terrain` grids, each point answered from the finest grid that covers it. The first
+    grid is the scenario's area (it decides what is inside); the others are finer grids nested in
+    it, so a large area can be coarse where nothing needs more and fine where vehicles work near
+    the shore. Where two grids meet, the answer steps from one to the other."""
+
+    def __init__(self, grids):
+        grids = list(grids)
+        self.base = grids[0]
+        self.grids = sorted(grids, key=lambda g: g.cell_deg)  # finest first; stable for equal cells
+        self.west, self.south, self.east, self.north = self.base.west, self.base.south, self.base.east, self.base.north
+
+    def contains(self, lat, lon):
+        return self.base.contains(lat, lon)
+
+    def elevation(self, lat, lon):
+        if not self.contains(lat, lon):
+            return None
+        for g in self.grids:
+            if g.contains(lat, lon):
+                return g.elevation(lat, lon)
+        return None
+
+    def elevation_many(self, lat, lon):
+        lat = np.asarray(lat, dtype=float)
+        lon = np.asarray(lon, dtype=float)
+        out = np.full(lat.shape, np.nan)
+        todo = (self.south <= lat) & (lat <= self.north) & (self.west <= lon) & (lon <= self.east)
+        for g in self.grids:
+            if not todo.any():
+                break
+            here = todo & (g.south <= lat) & (lat <= g.north) & (g.west <= lon) & (lon <= g.east)
+            if here.any():
+                out[here] = g.elevation_many(lat[here], lon[here])
+                todo &= ~here
+        return out
+
 
 class TimeSeries:
     """Values over time. `cosine=True` is for sparse tidal events (slack, max flood,
@@ -130,6 +173,99 @@ class Tide:
     def level(self, t):
         return self.series.at(t)
 
+    def level_at(self, lat, lon, t):
+        return self.series.at(t)
+
+    def level_many(self, lat, lon, t):
+        """One level for every point: a float, as `level`."""
+        return self.series.at(t)
+
+
+def point_in_polygon(lat, lon, polygon):
+    """Even-odd rule for arrays of points. polygon: [[lon, lat], ...], closed implicitly."""
+    lat = np.asarray(lat, dtype=float)
+    lon = np.asarray(lon, dtype=float)
+    inside = np.zeros(lat.shape, dtype=bool)
+    poly = np.asarray(polygon, dtype=float)
+    x1, y1 = poly[:, 0], poly[:, 1]
+    x2, y2 = np.roll(x1, -1), np.roll(y1, -1)
+    for ax, ay, bx, by in zip(x1, y1, x2, y2):
+        crosses = (ay > lat) != (by > lat)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            x_at = ax + (lat - ay) * (bx - ax) / (by - ay)
+        inside ^= crosses & (lon < x_at)
+    return inside
+
+
+class Tides:
+    """Water level from several stations. The area is split into zones (a polygon each, and one
+    zone without a polygon for the rest); a point takes the inverse-distance blend of the
+    `nearest` stations of its zone. Zones keep a station from reaching across land into another
+    water body: Redwood City's South Bay tide never reaches Half Moon Bay, 25 km away over the
+    hills. Between stations the blend is an approximation (a real tide's lag and range change
+    along the channels, not with straight-line distance)."""
+
+    def __init__(self, stations, zones, reference=None, nearest=2, power=2.0, datum=None):
+        """stations: {id: (lat, lon, TimeSeries)}; zones: [(name, [station ids], polygon or None)],
+        a polygon [[lon, lat], ...]; the first zone whose polygon holds a point is its zone, else
+        the zone without one. reference: the station `level(t)` answers for."""
+        self.stations = stations
+        self.zones = []
+        default = [z for z in zones if z[2] is None]
+        if len(default) != 1:
+            raise ValueError("tide zones: exactly one zone has no polygon (the rest of the area)")
+        for name, ids, polygon in zones:
+            missing = [i for i in ids if i not in stations]
+            if missing or not ids:
+                raise ValueError(f"tide zone {name!r}: no data for stations {missing or ids}")
+            self.zones.append((name, list(ids), polygon))
+        self.reference = reference or next(iter(stations))
+        self.station = self.reference
+        self.nearest = nearest
+        self.power = power
+        self.datum = datum
+
+    @classmethod
+    def load(cls, path, zones, reference=None, nearest=2):
+        d = json.loads(open(path).read())
+        stations = {s["id"]: (s["lat"], s["lon"], TimeSeries(_parse_series_times(s["series"], "%Y-%m-%d %H:%M"),
+                                                                [r[1] for r in s["series"]]))
+                    for s in d["stations"]}
+        return cls(stations, zones, reference, nearest, datum=d.get("datum"))
+
+    def level(self, t):
+        """The reference station's level."""
+        return self.stations[self.reference][2].at(t)
+
+    def zone_of(self, lat, lon):
+        """Index into `zones` for arrays of points."""
+        lat = np.asarray(lat, dtype=float)
+        lon = np.asarray(lon, dtype=float)
+        out = np.full(lat.shape, -1)
+        for i, (_, _, polygon) in enumerate(self.zones):
+            if polygon is not None:
+                out[(out < 0) & point_in_polygon(lat, lon, polygon)] = i
+        out[out < 0] = next(i for i, z in enumerate(self.zones) if z[2] is None)
+        return out
+
+    def level_many(self, lat, lon, t):
+        lat = np.asarray(lat, dtype=float)
+        lon = np.asarray(lon, dtype=float)
+        out = np.zeros(lat.shape)
+        if lat.size == 0:
+            return out
+        zone = self.zone_of(lat, lon)
+        for i, (_, ids, _) in enumerate(self.zones):
+            here = zone == i
+            if here.any():
+                pts = [self.stations[s][:2] for s in ids]
+                vals = [(self.stations[s][2].at(t),) for s in ids]
+                out[here] = idw_many(pts, vals, lat[here], lon[here], k=self.nearest, power=self.power)[:, 0]
+        return out
+
+    def level_at(self, lat, lon, t):
+        return float(self.level_many([lat], [lon], t)[0])
+
 
 
 class CurrentStation:
@@ -165,13 +301,17 @@ def idw_many(points, values, lat, lon, k=4, power=2.0):
     dx = (plon[None, :] - lon[:, None]) * EARTH_M_PER_DEG * kc
     dy = (plat[None, :] - lat[:, None]) * EARTH_M_PER_DEG
     d = np.hypot(dx, dy)  # (N, S)
-    idx = np.argsort(d, axis=1)[:, :min(k, s)]
+    if s > 64:  # hundreds of points (a regional wind grid, 175 current stations): partition, then order the k
+        part = np.argpartition(d, min(k, s) - 1, axis=1)[:, :min(k, s)]
+        idx = np.take_along_axis(part, np.argsort(np.take_along_axis(d, part, axis=1), axis=1), axis=1)
+    else:
+        idx = np.argsort(d, axis=1)[:, :min(k, s)]
     dk = np.take_along_axis(d, idx, axis=1)
     vk = np.take_along_axis(values, idx[:, :, None], axis=1)  # (N, k, C)
-    with np.errstate(divide="ignore"):
+    with np.errstate(divide="ignore", invalid="ignore"):  # a point on a station: replaced below
         w = 1.0 / dk ** power
-    w = w / w.sum(axis=1, keepdims=True)
-    out = (w[:, :, None] * vk).sum(axis=1)
+        w = w / w.sum(axis=1, keepdims=True)
+        out = (w[:, :, None] * vk).sum(axis=1)
     near = dk[:, 0] < 1.0
     out[near] = vk[near, 0]
     return out
