@@ -20,12 +20,21 @@ export type LinkState = 'up' | 'degraded' | 'down'
 export type LinkReason = 'loss' | 'range' | 'terrain' | 'no_sat' | 'submerged' | 'surfaced'
 export type RoutePart = 'transit' | 'task' | 'return' | 'here'
 
+/** A radio site of the links file (`[[ground_station]]`): its ground as [lon, lat, alt]. */
+export interface GroundStation {
+  name: string
+  at: [number, number, number]
+}
+
 export interface CoverageSources {
   links: string
   terrain: string
   terrain_cell_m: number
   terrain_alt_step_m: number
+  /** the one ground station as [lon, lat, alt]; null with none or several */
   ground_station: [number, number, number] | null
+  /** every ground station, in the links file's order */
+  ground_stations?: GroundStation[]
   ground_station_check: string | null
   /** what the SATCOM prediction rests on; null where no satellite was looked at */
   satcom: string | null
@@ -52,6 +61,10 @@ export interface CoverageGrid {
   state: string
   /** one letter a cell: - none, l loss, r range, t terrain, s no satellite, w submerged, a surfaced */
   reason: string
+  /** one character a cell: the ground station the link goes through there, 0-9 then a-z (an
+   *  index into `stations`), - none */
+  station?: string
+  stations?: string[]
   p_loss: number[]
   counts: { up: number; degraded: number; down: number; unknown: number }
   thresholds: { degraded: number; down: number }
@@ -332,12 +345,23 @@ export function gridImage(g: CoverageGrid): CoverageImage | null {
 }
 
 /** The cell under a point, as the hover reads it; null outside the grid. */
-export function cellAt(g: CoverageGrid, lon: number, lat: number): { state: LinkState | 'unknown'; reason: LinkReason | null; p_loss: number } | null {
+export function cellAt(
+  g: CoverageGrid,
+  lon: number,
+  lat: number,
+): { state: LinkState | 'unknown'; reason: LinkReason | null; p_loss: number; station: string | null; stations: number } | null {
   const i = Math.round((lat - g.lat0) / g.dlat)
   const j = Math.round((lon - g.lon0) / g.dlon)
   if (i < 0 || j < 0 || i >= g.nlat || j >= g.nlon) return null
   const k = i * g.nlon + j
-  return { state: STATE_LETTER[g.state[k]] ?? 'unknown', reason: REASON_LETTER[g.reason[k]] ?? null, p_loss: g.p_loss[k] ?? 0 }
+  const ix = g.station ? parseInt(g.station[k] ?? '-', 36) : NaN
+  return {
+    state: STATE_LETTER[g.state[k]] ?? 'unknown',
+    reason: REASON_LETTER[g.reason[k]] ?? null,
+    p_loss: g.p_loss[k] ?? 0,
+    station: Number.isNaN(ix) ? null : (g.stations?.[ix] ?? null),
+    stations: g.stations?.length ?? 0,
+  }
 }
 
 export function pct(p: number): string {
@@ -346,10 +370,12 @@ export function pct(p: number): string {
   return `${Math.round(p * 100)} %`
 }
 
-/** Why a cell is as it is: "behind terrain from the ground station · loss 100 %". */
+/** Why a cell is as it is: "behind terrain from the ground station · loss 100 %", and with
+ *  several ground stations the one the link goes through there: "· via Point Reyes". */
 export function cellDetail(c: NonNullable<ReturnType<typeof cellAt>>): string {
   if (c.state === 'unknown') return 'terrain not answered yet (counted open, as the emulator does)'
-  return `${c.reason ? `${REASON_WORDS[c.reason]} · ` : ''}loss ${pct(c.p_loss)}`
+  const via = c.station && c.stations > 1 ? ` · via ${c.station}` : ''
+  return `${c.reason ? `${REASON_WORDS[c.reason]} · ` : ''}loss ${pct(c.p_loss)}${via}`
 }
 
 // ---- the order's legs on the map ------------------------------------------------------------

@@ -1329,8 +1329,9 @@ the default) and takes its fleet, `at` and tidewater scenario from it unless it 
 
 What the simulator takes from it (`situations.py` `process_spec` and `world_spec`): the surface
 grid for the emulator's terrain; the links file, written into the episode's directory with the
-world's ground station when the file's differs (the link emulator has one station: a world
-naming two is refused); `MURMUR_AREAS` when its areas are not `sim/areas` (a world's own areas
+world's ground stations when the file's differ (several as `[[ground_station]]` tables: the
+emulator networks them, each radio link through the best, crates/murmur-linkemu `station.rs`);
+`MURMUR_AREAS` when its areas are not `sim/areas` (a world's own areas
 go in a directory of their own: every Golden Gate stack loads all of `sim/areas`). Labels read
 the mission from the record's world (`labels.py` `mission_of`; a record without one is the
 Golden Gate's). The families, v2's labels and the oracle read the Golden Gate world's points,
@@ -1465,8 +1466,9 @@ contact steps with no current, as before.
 **What is left out.** The pack's used mAh is carried through a reboot (ArduPilot's monitor
 counts from 0 again and would report a full pack); a cell lost shows as used charge, not as a
 voltage sag; the tide is held at the grids' bake; the current is the surface's at every depth;
-the link emulator has one ground station; the GNSS sky stays `Sky::LEGACY` (no constellation
-geometry in the simulator, as before).
+each world names one ground station (the emulator takes several, `station.rs`, but the oracles'
+link maps read the first); the GNSS sky stays `Sky::LEGACY` (no constellation geometry in the
+simulator, as before).
 
     .venv/bin/python -m eval.headless.batch --situation fault-drill --seeds 1-10 --agent playbook none
     .venv/bin/python -m eval.headless.bake_world golden-gate --url http://127.0.0.1:9570 --out /tmp/rebake

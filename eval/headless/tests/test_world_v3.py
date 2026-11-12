@@ -142,11 +142,14 @@ def test_a_world_with_another_ground_station_gets_its_own_links_file(tmp_path: P
     want = tomllib.loads((REPO / "sim" / "links.toml").read_text())
     assert got["ground_station"] == {**want["ground_station"], "lat": 37.81}
     assert {k: v for k, v in got.items() if k != "ground_station"} == {k: v for k, v in want.items() if k != "ground_station"}
-    # two stations: the emulator has one
+    # two stations: both, as [[ground_station]] tables in place of the file's one (the emulator
+    # networks them), everything else as it was
     two = text + '\n[[ground_station]]\nname = "b"\nlat = 37.8\nlon = -122.4\nalt_m = 1.0\n'
     (tmp_path / "two.toml").write_text(two.replace('name = "elsewhere"', 'name = "two"'))
-    with pytest.raises(ValueError, match="one"):
-        links_for(load_world(tmp_path / "two.toml"), tmp_path)
+    got = tomllib.loads(links_for(load_world(tmp_path / "two.toml"), tmp_path).read_text())
+    assert got["ground_station"] == [{**want["ground_station"], "lat": 37.81},
+                                     {"name": "b", "lat": 37.8, "lon": -122.4, "alt_m": 1.0}]
+    assert {k: v for k, v in got.items() if k != "ground_station"} == {k: v for k, v in want.items() if k != "ground_station"}
     (tmp_path / "bad.toml").write_text(text.replace('name = "elsewhere"', 'name = "bad"').replace("[mission]", "[mission]\nwrong = 1"))
     with pytest.raises(WorldError):
         load_world(tmp_path / "bad.toml")

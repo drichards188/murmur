@@ -13,10 +13,11 @@
 //! variable nothing is polled and `/api/links` answers `enabled: false`.
 //!
 //! A view: the emulator's per-link record (profile, `nominal` numbers, `blocked` cause,
-//! active scripted `events`, `depth_state`, terrain `los`, `satcom`) plus `recent` (each
-//! direction's packets, drops, loss and drops by cause, mean added one-way latency, over the
-//! shortest of 10, 30 or 60 s that saw at least `MIN_PKTS` uplink packets, so a slow acoustic
-//! link still gets a figure), `total` (the same since the emulator started), and
+//! active scripted `events`, `depth_state`, the ground `station` carrying it now with its
+//! `station_range_m` and `station_switches`, terrain `los` to that station, `satcom`) plus
+//! `recent` (each direction's packets, drops, loss and drops by cause, mean added one-way
+//! latency, over the shortest of 10, 30 or 60 s that saw at least `MIN_PKTS` uplink packets, so
+//! a slow acoustic link still gets a figure), `total` (the same since the emulator started), and
 //! `emu_rtt_ms`, the emulator's added delay up plus down: the round trip the link model
 //! imposes, available even when a TIMESYNC answer never comes back.
 
@@ -229,6 +230,9 @@ fn view(raw: &Value, hist: &VecDeque<Sample>) -> (Value, EmuBrief) {
         "blocked",
         "events",
         "depth_state",
+        "station",
+        "station_range_m",
+        "station_switches",
         "los",
         "satcom",
         "nominal",
@@ -462,6 +466,7 @@ mod tests {
             .collect();
         json!({
             "uid": uid, "class": "los", "profile": "los", "blocked": null, "events": [],
+            "station": "Crissy Field", "station_range_m": 3200.0, "station_switches": 2,
             "nominal": {"loss": 0.005, "latency_ms": 15.0},
             "up": {"in_pkts": up_in, "dropped": dropped, "latency_n": lat_n, "latency_ms_mean": lat},
             "down": {"in_pkts": up_in / 2, "dropped": {}, "latency_n": lat_n / 2, "latency_ms_mean": lat},
@@ -494,6 +499,11 @@ mod tests {
         assert_eq!(v["recent"]["up"]["latency_ms"], 15.0);
         assert_eq!(v["total"]["up"]["dropped"], 31);
         assert_eq!(v["emu_rtt_ms"], 30.0);
+        // the station carrying it, as the emulator names it
+        assert_eq!(
+            (&v["station"], &v["station_range_m"], &v["station_switches"]),
+            (&json!("Crissy Field"), &json!(3200.0), &json!(2))
+        );
         let f = &b[&3].1;
         assert_eq!(
             (f.rtt_ms, f.up_pkts, f.up_queue_drops),

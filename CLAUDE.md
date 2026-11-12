@@ -86,7 +86,13 @@ meaningful.
   meets the same draws unless `MURMUR_LINKEMU_SEED=<n>` says otherwise (`up.sh` passes it as
   `--seed`); the headless simulator runs each episode's emulator on its episode seed, and
   `eval/headless/fullstack.py` passes the same seed to the full stack it compares with
-  (`docs/HEADLESS.md`).
+  (`docs/HEADLESS.md`). Several radio sites: `[[ground_station]]` tables (name, lat, lon,
+  alt_m) in place of the one `[ground_station]`; each radio link goes through the best site at
+  each position (range and terrain judged as for one; the most delivered, then the nearest),
+  switching at once with no outage, SATCOM and tethers using none (`station.rs`). The choice
+  draws nothing, so one station gives every result as before; `/stats` and `/api/links` name the
+  `station` in use. Terrain's Earth bulge is the radio horizon: without a terrain source there
+  is neither, only the range curve.
 - Ports: vehicles UDP 14560+i -> linkemu -> bridge UDP 15560+i (`MURMUR_BRIDGE_BASE_PORT`,
   default base + 1000); linkemu stats HTTP :8766 (`MURMUR_LINKEMU_PORT`); bridge :8765; console
   :5173; tidewater serve :8770; the contacts process's API :8767 (`MURMUR_CONTACTS_PORT`, with a
@@ -535,7 +541,8 @@ meaningful.
   Terrain comes from tidewater or a baked grid named by `MURMUR_SURFACE_GRID` (headless: the
   world's); without either it is not checked and the answer says so. It predicts at the
   order's altitude: a vehicle flying lower sits in another 10 m band and can lose its link
-  sooner than predicted.
+  sooner than predicted. With several ground stations it chooses the station as the link does
+  (`station::best`): a point answer names it, a grid gives it per cell.
 - Weather on the map and sensor reach (docs/WEATHER.md, bd murmur-sgok, murmur-4tq,
   murmur-vr17): `GET /api/sensing/reach` and MCP `get_sensor_reach` (read-only, never logged,
   never a check) predict each sensor's reach under the conditions where the vehicle is. They

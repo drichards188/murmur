@@ -2,7 +2,7 @@
 // which strips the types itself (make check does this):
 //   node web/src/coverage.check.ts
 // Throws on the first failure, prints "coverage: ok" otherwise. Not part of the bundle.
-import { cellAt, gridPixels, gridRequest, legPaths, planDrawing, pointIn, routeDrawing, slicePath, cumulative, GRID_BUDGET, type CoverageGrid, type OrderLink, type PlannedLegView } from './coverage.ts'
+import { cellAt, cellDetail, gridPixels, gridRequest, legPaths, planDrawing, pointIn, routeDrawing, slicePath, cumulative, GRID_BUDGET, type CoverageGrid, type OrderLink, type PlannedLegView } from './coverage.ts'
 import { distanceM } from './geo.ts'
 import type { LngLat } from './types.ts'
 
@@ -44,6 +44,13 @@ check(cellAt(g, g.lon0 + 2 * g.dlon, g.lat0)?.reason === 'range', 'cell (0, 2): 
 check(cellAt(g, g.lon0 + 0.4 * g.dlon, g.lat0 + 0.6 * g.dlat)?.reason === 'terrain', 'nearer the north row: (1, 0), terrain')
 check(cellAt(g, g.lon0 + 0.0114, g.lat0 + 0.009)?.state === 'unknown', 'cell (1, 1) not answered')
 check(cellAt(g, g.lon0 - g.dlon, g.lat0) === null && cellAt(g, g.lon0, g.lat0 + 2 * g.dlat) === null, 'outside the grid: nothing')
+check(cellAt(g, g.lon0, g.lat0)?.station === null, 'a grid without stations names none')
+// several ground stations: each cell names the one its link goes through, and the hover says it
+const two: CoverageGrid = { ...g, station: '01-1?0', stations: ['Bodega Head', 'Point Reyes'] }
+check(cellAt(two, g.lon0 + g.dlon, g.lat0)?.station === 'Point Reyes', 'cell (0, 1) through the second station')
+check(cellAt(two, g.lon0 + 2 * g.dlon, g.lat0)?.station === null, "cell (0, 2): '-', none")
+check(cellDetail(cellAt(two, g.lon0 + g.dlon, g.lat0)!).endsWith('· via Point Reyes'), 'the hover names it')
+check(!cellDetail(cellAt({ ...two, stations: ['Crissy Field'], station: '000000' }, g.lon0, g.lat0)!).includes('via'), 'one station: not said')
 const px = gridPixels(g)
 check(px.width === 3 && px.height === 4, `a column a cell, two rows a cell (${px.width} x ${px.height})`)
 const red = (row: number, col: number) => px.data[(row * px.width + col) * 4]

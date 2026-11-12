@@ -84,6 +84,13 @@ pub struct LinkStats {
     /// often it changed (a vehicle that restarts, or something else sending to its port).
     pub vehicle_addr: Mutex<Option<std::net::SocketAddr>>,
     pub vehicle_addr_changes: AtomicU64,
+    /// The ground stations' names (`Env::station_names`), and the one carrying the link now:
+    /// its index + 1, 0 for none (`Link::station`); its slant range (f64 bits, NaN for none);
+    /// how often the link moved from one station to another.
+    pub station_names: Arc<[String]>,
+    pub station: AtomicU64,
+    pub station_range_m: AtomicU64,
+    pub station_switches: AtomicU64,
 }
 
 pub const LOS_NAMES: [&str; 4] = ["off", "unknown", "clear", "obstructed"];
@@ -110,6 +117,24 @@ impl LinkStats {
             on_gated: AtomicU64::new(0),
             vehicle_addr: Mutex::new(None),
             vehicle_addr_changes: AtomicU64::new(0),
+            station_names: Arc::from(Vec::new()),
+            station: AtomicU64::new(0),
+            station_range_m: AtomicU64::new(nan),
+            station_switches: AtomicU64::new(0),
+        }
+    }
+
+    /// The stations' names, for naming the one in use.
+    pub fn with_stations(mut self, names: Arc<[String]>) -> LinkStats {
+        self.station_names = names;
+        self
+    }
+
+    /// The name of the station carrying the link now, if any.
+    pub fn station_name(&self) -> Option<&str> {
+        match self.station.load(Relaxed) {
+            0 => None,
+            n => self.station_names.get(n as usize - 1).map(String::as_str),
         }
     }
 
@@ -164,6 +189,12 @@ impl LinkStats {
             .sum();
         let depth =
             ["unknown", "surfaced", "submerged"][self.depth_state.load(Relaxed).min(2) as usize];
+        let station_range = f64::from_bits(self.station_range_m.load(Relaxed));
+        let station_range = if station_range.is_nan() {
+            Value::Null
+        } else {
+            json!(station_range.round())
+        };
         json!({
             "uid": self.meta.uid,
             "sysid": self.meta.sysid,
@@ -176,6 +207,9 @@ impl LinkStats {
             "vehicle_addr": self.vehicle_addr.lock().unwrap_or_else(|e| e.into_inner()).map(|a| a.to_string()),
             "vehicle_addr_changes": self.vehicle_addr_changes.load(Relaxed),
             "depth_state": depth,
+            "station": self.station_name(),
+            "station_range_m": station_range,
+            "station_switches": self.station_switches.load(Relaxed),
             "los": {
                 "state": LOS_NAMES[self.los_state.load(Relaxed).min(3) as usize],
                 "obstruction_m": if obstruction.is_nan() { Value::Null } else { json!(obstruction) },
@@ -268,8 +302,26 @@ pub fn summary_json(
     for l in links {
         los[l.los_state.load(Relaxed).min(3) as usize] += 1;
     }
+    // links per ground station now (every link holds the same names)
+    let stations: Vec<Value> = links
+        .first()
+        .map(|l| {
+            l.station_names
+                .iter()
+                .enumerate()
+                .map(|(i, name)| {
+                    let n = links
+                        .iter()
+                        .filter(|l| l.station.load(Relaxed) == i as u64 + 1)
+                        .count();
+                    json!({ "name": name, "links": n })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let mut v = json!({
         "uptime_s": uptime_s,
+        "stations": stations,
         "los_links": { "unknown": los[1], "clear": los[2], "obstructed": los[3] },
         "terrain_blocked_pkts": t.by_cause[Cause::Terrain.idx()],
         "terrain_unknown_pkts": links.iter().map(|l| l.terrain_unknown.load(Relaxed)).sum::<u64>(),

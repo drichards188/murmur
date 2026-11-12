@@ -7,7 +7,8 @@
 //! vehicle starts on (`Config::profile_for`), the depth gate and the gated profile that carries
 //! the traffic while it is closed, the range curve ([`range_loss`]), the terrain obstruction from
 //! a [`Terrain`] (with `terrain::TidewaterTerrain`, the emulator's own cells, altitude bands and
-//! profile sampling) and what the profile's terrain mode makes of it ([`terrain_effect`]),
+//! profile sampling) and what the profile's terrain mode makes of it ([`terrain_effect`]), the
+//! ground station that path runs to where there are several (`station::best`, the link's choice),
 //! SATCOM visibility from a `sat::SpaceSource` answer (down while no satellite of the class is
 //! above the mask), and the profile's own long-run loss ([`Params::mean_loss`]). It draws
 //! nothing: the emulator's random draws (each packet's loss) decide what happens; this says what
@@ -37,6 +38,7 @@ use crate::config::{Config, DownWhen, VehicleSpec};
 use crate::geo::{GeoPoint, LosParams, Terrain, haversine_m, slant_m};
 use crate::model::{Params, range_loss, terrain_effect};
 use crate::sat::SatObs;
+use crate::station::{self, Station};
 
 /// Predicted loss at or above this is degraded (the bridge's live badge uses the same).
 pub const DEGRADED_LOSS: f64 = 0.2;
@@ -172,9 +174,15 @@ pub struct Prediction {
     pub terrain_loss: f64,
     /// The emulator would drop every packet there.
     pub blocked: bool,
-    /// Slant range to the ground station, m.
+    /// The ground station the link would go through there (`station::best`, as the emulator's
+    /// link chooses it); none without stations or for a profile that uses none (SATCOM).
+    pub station: Option<String>,
+    /// Its index in the links file's stations.
+    #[serde(skip)]
+    pub station_index: Option<usize>,
+    /// Slant range to that ground station, m.
     pub range_m: Option<f64>,
-    /// How far terrain stands above the ray to the ground station, m (negative: clear by that
+    /// How far terrain stands above the ray to that ground station, m (negative: clear by that
     /// much); none where the profile does no terrain check.
     pub obstruction_m: Option<f64>,
     /// The terrain check had no answer for the point yet: counted open, as the emulator counts
@@ -197,14 +205,14 @@ pub struct Profile {
 /// Every profile of a links file, ready to predict with.
 pub struct Predictor {
     cfg: Config,
-    gs: Option<GeoPoint>,
+    stations: Vec<Station>,
     submerged_depth_m: f64,
     profiles: BTreeMap<String, Profile>,
 }
 
 impl Predictor {
-    /// From a links file's configuration, its ground station altitude already settled
-    /// (`Config::resolve_ground_alt`, as the emulator settles it before building its links).
+    /// From a links file's configuration, its ground stations' altitudes already settled
+    /// (`Config::resolve_ground_alts`, as the emulator settles them before building its links).
     pub fn new(cfg: &Config) -> Result<Predictor, String> {
         let mut profiles = BTreeMap::new();
         for name in cfg.class.keys() {
@@ -232,11 +240,7 @@ impl Predictor {
         }
         Ok(Predictor {
             cfg: cfg.clone(),
-            gs: cfg.ground_station.as_ref().map(|g| GeoPoint {
-                lat: g.lat,
-                lon: g.lon,
-                alt_m: g.alt_m.metres(),
-            }),
+            stations: station::from_config(cfg),
             submerged_depth_m: cfg.submerged_depth_m,
             profiles,
         })
@@ -255,8 +259,9 @@ impl Predictor {
         self.cfg.profile_for(v)
     }
 
-    pub fn ground_station(&self) -> Option<GeoPoint> {
-        self.gs
+    /// The ground stations, in the links file's order.
+    pub fn ground_stations(&self) -> &[Station] {
+        &self.stations
     }
 
     /// Submerged as the emulator reads it: deeper than `submerged_depth_m`.
@@ -285,8 +290,47 @@ impl Predictor {
     /// The line-of-sight parameters the terrain check of `profile` asks with (none: no check),
     /// for a caller that fetches the terrain before predicting.
     pub fn los(&self, profile: &str) -> Option<LosParams> {
-        self.gs?;
+        if self.stations.is_empty() {
+            return None;
+        }
         self.profiles.get(profile)?.params.terrain.map(|t| t.los)
+    }
+
+    /// Each station's slant range from `p`; the terrain's answer for the paths the link would
+    /// ask about (`station::asks_terrain`, with the vehicle's own profile's line of sight, as
+    /// `Link::set_position` asks), `None` where unasked or unanswered; and which were asked and
+    /// had no answer yet. Asking queues what the terrain cache misses.
+    fn paths(
+        &self,
+        own: &Params,
+        p: &GeoPoint,
+        terrain: &dyn Terrain,
+    ) -> (Vec<f64>, Vec<Option<f64>>, Vec<bool>) {
+        let ranges: Vec<f64> = self.stations.iter().map(|s| slant_m(p, &s.at)).collect();
+        let mut obs = vec![None; ranges.len()];
+        let mut unknown = vec![false; ranges.len()];
+        if let Some(t) = &own.terrain
+            && terrain.enabled()
+        {
+            for (i, s) in self.stations.iter().enumerate() {
+                if !station::asks_terrain(own, &ranges, i) {
+                    continue;
+                }
+                match terrain.obstruction_m(p, &s.at, &t.los) {
+                    Some(o) => obs[i] = Some(o),
+                    None => unknown[i] = true,
+                }
+            }
+        }
+        (ranges, obs, unknown)
+    }
+
+    /// Asks the terrain for every path a prediction of `profile` at `p` would read (a caller
+    /// that fetches the terrain before predicting: `terrain::TidewaterTerrain` queues its misses).
+    pub fn ask_terrain(&self, profile: &str, p: &GeoPoint, terrain: &dyn Terrain) {
+        if let Some(prof) = self.profiles.get(profile) {
+            let _ = self.paths(&prof.params, p, terrain);
+        }
     }
 
     /// The link of a vehicle on `profile` at `p` (altitude above mean sea level; negative is
@@ -347,23 +391,19 @@ impl Predictor {
                 }
             });
         }
-        let range_m = self.gs.map(|g| slant_m(p, &g));
+        // the obstruction is asked with the vehicle's own profile's line of sight (as
+        // `Link::set_position` asks it), its effect is the profile carrying the traffic's; the
+        // station is the one the link would choose
+        let (ranges, obs, unknown) = self.paths(own, p, terrain);
+        let pick = station::best(active, &ranges, &obs);
+        let range_m = pick.map(|i| ranges[i]);
+        let obstruction_m = pick.and_then(|i| obs[i]);
+        let terrain_unknown = pick.is_some_and(|i| unknown[i]);
+        let used = pick.filter(|_| station::uses_station(active));
         let rl = match (active.range, range_m) {
             (Some(r), Some(d)) => range_loss(r, d),
             _ => 0.0,
         };
-        // the obstruction is asked with the vehicle's own profile's line of sight (as
-        // `Link::set_position` asks it), its effect is the profile carrying the traffic's
-        let mut obstruction_m = None;
-        let mut terrain_unknown = false;
-        if let (Some(t), Some(g)) = (&own.terrain, self.gs)
-            && terrain.enabled()
-        {
-            match terrain.obstruction_m(p, &g, &t.los) {
-                Some(o) => obstruction_m = Some(o),
-                None => terrain_unknown = true,
-            }
-        }
         let mut tl = 0.0;
         if let (Some(t), Some(o)) = (&active.terrain, obstruction_m) {
             let (b, l) = terrain_effect(t, o);
@@ -396,6 +436,8 @@ impl Predictor {
             range_loss: rl,
             terrain_loss: tl,
             blocked: blocked.is_some(),
+            station: used.map(|i| self.stations[i].name.clone()),
+            station_index: used,
             range_m,
             obstruction_m,
             terrain_unknown,
@@ -1027,9 +1069,8 @@ mod tests {
 
     /// Answers every cell the points need (as the bridge does before it predicts).
     async fn warm(t: &TidewaterTerrain, s: &dyn Sampler, pred: &Predictor, profile: &str, pts: &[GeoPoint]) {
-        let (Some(gs), Some(los)) = (pred.ground_station(), pred.los(profile)) else { return };
         for p in pts {
-            let _ = t.obstruction_m(p, &gs, &los);
+            pred.ask_terrain(profile, p, t);
         }
         while t.sizes().0 > 0 {
             t.tick(s, 0.0).await;
@@ -1103,6 +1144,77 @@ mod tests {
         assert_eq!((far.state, far.reason), (State::Down, Some(Reason::Range)), "{far:?}");
         let blocked = pred.predict("blocky", &on_line(-122.40, 5.0), &mine, None).expect("p");
         assert!(blocked.blocked && blocked.reason == Some(Reason::Terrain), "{blocked:?}");
+    }
+
+    /// With two stations, one each side of the ridge, the prediction chooses the station the
+    /// emulator's link chooses at every sampled point, and agrees with it on the loss: the
+    /// ridge's shadow from the first station is covered from the second.
+    #[tokio::test]
+    async fn agrees_with_the_emulators_link_on_the_station_where_there_are_two() {
+        let text = LINKS.replace(
+            "[ground_station]\n        lat = 37.8068\n        lon = -122.446\n        alt_m = 5.0",
+            "[[ground_station]]\n        name = \"west\"\n        lat = 37.8068\n        lon = -122.446\n        alt_m = 5.0\n\
+             [[ground_station]]\n        name = \"east\"\n        lat = 37.83\n        lon = -122.37\n        alt_m = 5.0",
+        );
+        let c = Config::parse(&text).expect("links");
+        assert_eq!(c.ground_stations.len(), 2, "the replacement took");
+        let pred = Predictor::new(&c).expect("predictor");
+        let ridge = Ridge { lon: -122.43, height: 120.0 };
+        let mine = terrain();
+        let theirs = Arc::new(terrain());
+        let env = Arc::new(Env::new(&c, theirs.clone(), 1).expect("env"));
+        let mut used = std::collections::BTreeSet::new();
+        let mut checked = 0;
+        for profile in ["los", "blocky"] {
+            let params = Params::from_profile(&c.resolve(profile).expect("p")).expect("params");
+            let meta = LinkMeta {
+                uid: 1,
+                sysid: 1,
+                port: 0,
+                class: profile.into(),
+                profile: profile.into(),
+                domain: "air".into(),
+                platform: "x".into(),
+            };
+            let mut link = Link::new(meta, params, env.clone());
+            let mut pts = Vec::new();
+            for lon in [-122.75, -122.50, -122.44, -122.42, -122.40, -122.30, -122.20, -122.10, -121.95] {
+                for alt in [5.0, 60.0, 150.0, 400.0] {
+                    pts.push(on_line(lon, alt));
+                }
+            }
+            warm(&mine, &ridge, &pred, profile, &pts).await;
+            for p in &pts {
+                link.observe_up(&position_frame(0, p.lat, p.lon, p.alt_m));
+            }
+            while theirs.sizes().0 > 0 {
+                theirs.tick(&ridge, 0.0).await;
+            }
+            for p in &pts {
+                link.observe_up(&position_frame(0, p.lat, p.lon, p.alt_m));
+                let cond = link.cond(Dir::Up, 0);
+                let got = pred.predict(profile, p, &mine, None).expect("predict");
+                assert!(!got.terrain_unknown, "{profile} {p:?}");
+                assert_eq!(got.station_index, link.station(), "{profile} {p:?}");
+                assert_eq!(got.blocked, cond.blocked.is_some(), "{profile} {p:?}");
+                assert!((got.range_loss - cond.range_loss).abs() < 1e-12, "{profile} {p:?}");
+                assert!((got.terrain_loss - cond.terrain_loss).abs() < 1e-12, "{profile} {p:?}");
+                used.insert(got.station.clone().expect("a radio profile names its station"));
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 72);
+        assert_eq!(used.into_iter().collect::<Vec<_>>(), ["east", "west"]);
+        // behind the ridge from the west station, low down, and in range of the east one: up
+        let low = pred.predict("los", &on_line(-122.40, 5.0), &mine, None).expect("p");
+        assert_eq!((low.state, low.station.as_deref()), (State::Up, Some("east")), "{low:?}");
+        // the one-station file loses it there to the ridge
+        let one = Predictor::new(&cfg()).expect("one");
+        let alone = one.predict("los", &on_line(-122.40, 5.0), &mine, None).expect("p");
+        assert_eq!((alone.state, alone.station.as_deref()), (State::Down, Some("station 1")));
+        // SATCOM names none
+        let sat = pred.predict("satcom", &on_line(-122.40, 400.0), &mine, None).expect("p");
+        assert_eq!(sat.station, None);
     }
 
     #[test]
@@ -1204,6 +1316,8 @@ mod tests {
                 range_loss: 0.0,
                 terrain_loss: if down { 1.0 } else { 0.0 },
                 blocked: false,
+                station: None,
+                station_index: None,
                 range_m: None,
                 obstruction_m: None,
                 terrain_unknown: false,

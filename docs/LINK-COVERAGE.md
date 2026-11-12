@@ -25,7 +25,8 @@ The link emulator (`crates/murmur-linkemu`) already models every link class Murm
 
 - **Line of sight and mesh:** loss rising with distance from the ground station
   (`range_ok_km`, `range_max_km`, `range_exp`), and terrain obstruction with earth bulge and
-  Fresnel clearance (`terrain.rs`, `path_obstruction_m`: block or ramp).
+  Fresnel clearance (`terrain.rs`, `path_obstruction_m`: block or ramp). With several stations,
+  the best station's path (section 7).
 - **SATCOM:** the best satellite of a constellation class (murmur-space).
 - **Acoustic:** an AUV's modem while submerged.
 
@@ -117,6 +118,19 @@ stays a later decision.
   holds for the orbit first (one `get_link_coverage` call a tick) and says so in its rationale.
 - Not predicted, as section 3 says: scripted events, handover outages, a landed aircraft's at-rest
   check.
+- **Several ground stations** (2026-11-12; `[[ground_station]]`, crates/murmur-linkemu
+  `station.rs`): the emulator's link goes through whichever station gives it the best path at
+  each position (the most packets let through by the range curve and the terrain to that
+  station, then the nearest, then the first listed; a switch immediate and free), and the
+  predictor chooses with the same function (`station::best`) on the same answers, so a point is
+  predicted on the path the emulator would take there. A point answer names its station
+  (`prediction.station`, null for a profile that uses none), a grid gives one character a cell
+  (`station`, an index into `stations`), `sources.ground_stations` lists them (`ground_station`
+  is the one station, null with several); the console's hover says "via <station>" where there
+  are several and the Links layer marks every station. Checked: with one station every answer is
+  as before; with two, the predictor and the emulator's link choose the same station at every
+  sampled point (a ridge between them, and a lattice on the Golden Gate's grid with a second
+  station on Hawk Hill) and agree on the loss to the last bit.
 
 ## 8. The paired comparison (2026-10-26; MODEL RESULTS ONLY)
 

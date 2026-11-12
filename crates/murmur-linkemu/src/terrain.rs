@@ -2,7 +2,7 @@
 //!
 //! The packet path never waits for HTTP. A link asks `Terrain::obstruction_m` with its
 //! vehicle position; the answer comes from a cache keyed by grid cell (about `cell_m`
-//! metres), altitude band and antenna parameters. A miss queues the cell and returns `None`
+//! metres), altitude band, ground station and antenna parameters. A miss queues the cell and returns `None`
 //! ("unknown", treated as open and counted). A background task wakes every `interval_s`,
 //! takes the queued cells, samples the terrain profile between the ground station and each
 //! cell centre, all cells in as few `POST /v1/sample` requests as fit, and fills the cache.
@@ -77,6 +77,8 @@ struct Key {
     /// the altitude band (`alt_step_m`), or for a vehicle at rest its altitude in decimetres
     band: i64,
     at_rest: bool,
+    /// the ground station the path runs to (its position's bits: several stations, one cache)
+    gs: [u64; 3],
     p: [u64; 5],
 }
 
@@ -137,6 +139,7 @@ impl TidewaterTerrain {
             cj: (v.lon / dlon).floor() as i64,
             band: (v.alt_m / step).round() as i64,
             at_rest,
+            gs: [gs.lat.to_bits(), gs.lon.to_bits(), gs.alt_m.to_bits()],
             p: p.key(),
         }
     }
@@ -714,6 +717,36 @@ mod tests {
         let again = veh(-122.40 + 0.0002, 52.0);
         assert_eq!(t.obstruction_m(&again, &gs(), &p), Some(ob));
         assert_eq!(t.sizes(), (0, 3));
+    }
+
+    /// One cache, several stations: the same vehicle cell has an answer to each station (a
+    /// ridge between it and one, open water to the other).
+    #[tokio::test]
+    async fn each_station_has_its_own_answer_for_a_cell() {
+        let t = TidewaterTerrain::new(cfg());
+        let s = RidgeSampler {
+            ridge_lon: -122.43,
+            height: 100.0,
+            fail: Default::default(),
+            calls: Default::default(),
+        };
+        let p = LosParams {
+            gs_antenna_m: 10.0,
+            ..LosParams::default()
+        };
+        let east = GeoPoint {
+            lat: 37.8068,
+            lon: -122.37,
+            alt_m: 5.0,
+        };
+        let v = veh(-122.40, 50.0);
+        assert_eq!(t.obstruction_m(&v, &gs(), &p), None);
+        assert_eq!(t.obstruction_m(&v, &east, &p), None);
+        assert_eq!(t.sizes().0, 2, "a cell a station");
+        assert_eq!(t.tick(&s, 0.0).await, 2);
+        let west = t.obstruction_m(&v, &gs(), &p).expect("answered");
+        let from_east = t.obstruction_m(&v, &east, &p).expect("answered");
+        assert!(west > 40.0 && from_east < 0.0, "{west} {from_east}");
     }
 
     /// A vehicle at rest is judged at its own altitude: down at 3.5 m, behind a 20 m ridge, the

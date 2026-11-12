@@ -138,13 +138,40 @@ impl GsAlt {
     }
 }
 
+/// One of the operator's radio sites (`[ground_station]`, or each `[[ground_station]]`). The
+/// sites are networked to the C2: a vehicle's radio link goes through whichever gives it the best
+/// path at that moment (`crate::station`).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GroundStation {
+    /// What the stats, the bridge and the console call it; default `station <n>`, its place in
+    /// the file counted from 1.
+    #[serde(default)]
+    pub name: Option<String>,
     pub lat: f64,
     pub lon: f64,
     #[serde(default)]
     pub alt_m: GsAlt,
+}
+
+/// `[ground_station]` (one table, the form from before there could be several) or
+/// `[[ground_station]]` (an array of tables), read as a list in file order.
+fn one_or_many<'de, D>(d: D) -> Result<Vec<GroundStation>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let v = toml::Value::deserialize(d)?;
+    match v {
+        toml::Value::Table(_) => GroundStation::deserialize(v)
+            .map(|g| vec![g])
+            .map_err(|e| D::Error::custom(format!("ground_station: {e}"))),
+        toml::Value::Array(_) => Vec::<GroundStation>::deserialize(v)
+            .map_err(|e| D::Error::custom(format!("ground_station: {e}"))),
+        _ => Err(D::Error::custom(
+            "ground_station: a table, or an array of tables, of name, lat, lon and alt_m",
+        )),
+    }
 }
 
 /// The ground station altitude check against the DEM, at startup.
@@ -341,7 +368,10 @@ pub struct Config {
     /// Depth in metres below which a vehicle counts as submerged.
     #[serde(default = "default_submerged_depth")]
     pub submerged_depth_m: f64,
-    pub ground_station: Option<GroundStation>,
+    /// The radio sites, in file order: `[ground_station]` (one) or `[[ground_station]]` (any
+    /// number). Empty: no range model or terrain check has a station to judge from.
+    #[serde(default, rename = "ground_station", deserialize_with = "one_or_many")]
+    pub ground_stations: Vec<GroundStation>,
     #[serde(default)]
     pub class: BTreeMap<String, RawProfile>,
     /// platform id -> profile name, to give one platform a different profile than its class.
@@ -372,35 +402,78 @@ impl Config {
         Ok(cfg)
     }
 
-    /// Settles the ground station altitude against the DEM height at the station (`None`: no
-    /// DEM). With `alt_m = "dem"` the DEM height is used; with a number it is kept and the
-    /// result says whether it agrees within [`GS_ALT_TOLERANCE_M`]. The profiles' antenna
-    /// heights (`gs_antenna_m`, the mast) are added on top of whichever it is.
-    pub fn resolve_ground_alt(&mut self, dem_m: Option<f64>) -> Option<GsAltCheck> {
-        let gs = self.ground_station.as_mut()?;
-        Some(match (gs.alt_m, dem_m) {
-            (GsAlt::Named(_), Some(d)) => {
-                gs.alt_m = GsAlt::Fixed(d);
-                GsAltCheck::UsedDem(d)
-            }
-            (GsAlt::Named(_), None) => {
-                gs.alt_m = GsAlt::Fixed(0.0);
-                GsAltCheck::DemUnavailable
-            }
-            (GsAlt::Fixed(c), Some(d)) if (c - d).abs() > GS_ALT_TOLERANCE_M => {
-                GsAltCheck::Differs {
-                    configured: c,
-                    dem: d,
-                }
-            }
-            (GsAlt::Fixed(c), Some(d)) => GsAltCheck::Agrees {
-                configured: c,
-                dem: d,
-            },
-            (GsAlt::Fixed(_), None) => GsAltCheck::NotChecked,
-        })
+    /// A station's name: its own, else `station <n>` (its place in the file, from 1).
+    pub fn station_name(&self, i: usize) -> String {
+        self.ground_stations
+            .get(i)
+            .and_then(|g| g.name.clone())
+            .unwrap_or_else(|| format!("station {}", i + 1))
     }
 
+    /// Settles each station's altitude against the DEM height there (`dem_m[i]` for station
+    /// `i`; `None` or a short slice: no DEM), as [`resolve_station_alt`] does for one. One check
+    /// a station, in file order, with its name.
+    pub fn resolve_ground_alts(&mut self, dem_m: &[Option<f64>]) -> Vec<(String, GsAltCheck)> {
+        let names: Vec<String> = (0..self.ground_stations.len())
+            .map(|i| self.station_name(i))
+            .collect();
+        self.ground_stations
+            .iter_mut()
+            .zip(names)
+            .enumerate()
+            .map(|(i, (gs, name))| {
+                (
+                    name,
+                    resolve_station_alt(gs, dem_m.get(i).copied().flatten()),
+                )
+            })
+            .collect()
+    }
+
+    /// The log lines for [`Config::resolve_ground_alts`]' checks: (warning, text). With one
+    /// station the text is the check's own; with several each names its station.
+    pub fn ground_alt_messages(checks: &[(String, GsAltCheck)]) -> Vec<(bool, String)> {
+        checks
+            .iter()
+            .map(|(name, c)| {
+                let (warn, msg) = c.message();
+                if checks.len() == 1 {
+                    (warn, msg)
+                } else {
+                    (warn, format!("{name}: {msg}"))
+                }
+            })
+            .collect()
+    }
+}
+
+/// Settles one ground station's altitude against the DEM height at it (`None`: no DEM). With
+/// `alt_m = "dem"` the DEM height is used; with a number it is kept and the result says whether
+/// it agrees within [`GS_ALT_TOLERANCE_M`]. The profiles' antenna heights (`gs_antenna_m`, the
+/// mast) are added on top of whichever it is.
+pub fn resolve_station_alt(gs: &mut GroundStation, dem_m: Option<f64>) -> GsAltCheck {
+    match (gs.alt_m, dem_m) {
+        (GsAlt::Named(_), Some(d)) => {
+            gs.alt_m = GsAlt::Fixed(d);
+            GsAltCheck::UsedDem(d)
+        }
+        (GsAlt::Named(_), None) => {
+            gs.alt_m = GsAlt::Fixed(0.0);
+            GsAltCheck::DemUnavailable
+        }
+        (GsAlt::Fixed(c), Some(d)) if (c - d).abs() > GS_ALT_TOLERANCE_M => GsAltCheck::Differs {
+            configured: c,
+            dem: d,
+        },
+        (GsAlt::Fixed(c), Some(d)) => GsAltCheck::Agrees {
+            configured: c,
+            dem: d,
+        },
+        (GsAlt::Fixed(_), None) => GsAltCheck::NotChecked,
+    }
+}
+
+impl Config {
     /// Adds the events of a separate scenario file.
     pub fn merge_scenario(&mut self, path: &Path) -> Result<(), String> {
         #[derive(Deserialize)]
@@ -426,6 +499,26 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        let mut names = std::collections::BTreeSet::new();
+        for (i, g) in self.ground_stations.iter().enumerate() {
+            let name = self.station_name(i);
+            if !(g.lat.is_finite()
+                && g.lon.is_finite()
+                && (-90.0..=90.0).contains(&g.lat)
+                && (-180.0..=180.0).contains(&g.lon))
+            {
+                return Err(format!(
+                    "ground station {name}: lat {} lon {} is no position",
+                    g.lat, g.lon
+                ));
+            }
+            if g.name.as_deref().is_some_and(|n| n.trim().is_empty()) {
+                return Err(format!("ground station {}: an empty name", i + 1));
+            }
+            if !names.insert(name.clone()) {
+                return Err(format!("two ground stations are called {name:?}"));
+            }
+        }
         for (name, p) in &self.class {
             let r = self.resolve(name)?;
             let _ = p;
@@ -676,33 +769,79 @@ mod tests {
         assert!(Config::parse("[class.a]\nlosss = 1\n").is_err());
         assert!(Config::parse("[class.a]\nextends = \"b\"\n[class.b]\nextends = \"a\"\n").is_err());
     }
+    /// One check of one station (the form most of these tests use).
+    fn resolve_one(c: &mut Config, dem: Option<f64>) -> Option<GsAltCheck> {
+        c.resolve_ground_alts(&[dem]).into_iter().next().map(|(_, c)| c)
+    }
+
+    fn gs0(c: &Config) -> &GroundStation {
+        c.ground_stations.first().expect("gs")
+    }
+
     #[test]
     fn ground_station_altitude_number_or_dem() {
         let num = Config::parse("[ground_station]\nlat = 1\nlon = 2\nalt_m = 5.0\n").expect("num");
-        assert_eq!(num.ground_station.expect("gs").alt_m, GsAlt::Fixed(5.0));
+        assert_eq!(gs0(&num).alt_m, GsAlt::Fixed(5.0));
         let none = Config::parse("[ground_station]\nlat = 1\nlon = 2\n").expect("none");
-        assert_eq!(none.ground_station.expect("gs").alt_m, GsAlt::Fixed(0.0));
+        assert_eq!(gs0(&none).alt_m, GsAlt::Fixed(0.0));
         assert!(Config::parse("[ground_station]\nlat = 1\nlon = 2\nalt_m = \"tall\"\n").is_err());
 
         let toml = "[ground_station]\nlat = 1\nlon = 2\nalt_m = \"dem\"\n";
         let mut dem = Config::parse(toml).expect("dem");
-        assert_eq!(
-            dem.resolve_ground_alt(Some(4.8)),
-            Some(GsAltCheck::UsedDem(4.8))
-        );
-        assert_eq!(dem.ground_station.as_ref().expect("gs").alt_m.metres(), 4.8);
+        assert_eq!(resolve_one(&mut dem, Some(4.8)), Some(GsAltCheck::UsedDem(4.8)));
+        assert_eq!(gs0(&dem).alt_m.metres(), 4.8);
         let mut dem = Config::parse(toml).expect("dem");
-        assert_eq!(
-            dem.resolve_ground_alt(None),
-            Some(GsAltCheck::DemUnavailable)
-        );
-        assert_eq!(dem.ground_station.as_ref().expect("gs").alt_m.metres(), 0.0);
-        assert!(
-            Config::parse("seed = 1\n")
-                .expect("no gs")
-                .resolve_ground_alt(Some(1.0))
-                .is_none()
-        );
+        assert_eq!(resolve_one(&mut dem, None), Some(GsAltCheck::DemUnavailable));
+        assert_eq!(gs0(&dem).alt_m.metres(), 0.0);
+        assert!(resolve_one(&mut Config::parse("seed = 1\n").expect("no gs"), Some(1.0)).is_none());
+    }
+
+    /// `[ground_station]` is one station, `[[ground_station]]` any number, in file order; names
+    /// default to their place; two of one name, a bad position or an empty name are refused.
+    #[test]
+    fn one_station_or_several() {
+        let one = Config::parse("[ground_station]\nlat = 1\nlon = 2\n").expect("one");
+        assert_eq!(one.ground_stations.len(), 1);
+        assert_eq!(one.station_name(0), "station 1");
+        let three = Config::parse(
+            r#"
+            [[ground_station]]
+            name = "Bodega Head"
+            lat = 38.30
+            lon = -123.07
+            alt_m = 60
+            [[ground_station]]
+            lat = 37.81
+            lon = -122.45
+            alt_m = "dem"
+            [[ground_station]]
+            name = "Point Pinos"
+            lat = 36.64
+            lon = -121.93
+            "#,
+        )
+        .expect("three");
+        let names: Vec<String> = (0..3).map(|i| three.station_name(i)).collect();
+        assert_eq!(names, ["Bodega Head", "station 2", "Point Pinos"]);
+        assert_eq!(three.ground_stations[1].alt_m, GsAlt::Named(GsAltName::Dem));
+        let mut c = three.clone();
+        let checks = c.resolve_ground_alts(&[Some(58.0), Some(4.8)]);
+        assert_eq!(checks.len(), 3);
+        assert_eq!(checks[1], ("station 2".into(), GsAltCheck::UsedDem(4.8)));
+        assert_eq!(checks[2].1, GsAltCheck::NotChecked, "no DEM answer for the third");
+        let said = Config::ground_alt_messages(&checks);
+        assert!(said[0].1.starts_with("Bodega Head: "), "{said:?}");
+        // one station: the message as it always was
+        let mut c = one.clone();
+        let said = Config::ground_alt_messages(&c.resolve_ground_alts(&[Some(0.5)]));
+        assert_eq!(said, [(false, "ground station altitude 0.0 m agrees with the DEM (0.5 m)".to_string())]);
+        assert!(Config::parse("seed = 1\n").expect("none").ground_stations.is_empty());
+        let twice = "[[ground_station]]\nname = \"a\"\nlat = 1\nlon = 2\n[[ground_station]]\nname = \"a\"\nlat = 3\nlon = 4\n";
+        assert!(Config::parse(twice).expect_err("two of one name").contains("\"a\""));
+        assert!(Config::parse("[ground_station]\nlat = 100\nlon = 2\n").is_err());
+        assert!(Config::parse("[ground_station]\nname = \" \"\nlat = 1\nlon = 2\n").is_err());
+        assert!(Config::parse("[ground_station]\nlat = 1\nlon = 2\nmast_m = 3\n").is_err());
+        assert!(Config::parse("ground_station = 3\n").is_err());
     }
 
     #[test]
@@ -715,7 +854,7 @@ mod tests {
         };
         // Within 5 m: agrees, no warning, and the configured number is kept.
         let mut c = mk(5.0);
-        let r = c.resolve_ground_alt(Some(4.8)).expect("check");
+        let r = resolve_one(&mut c, Some(4.8)).expect("check");
         assert_eq!(
             r,
             GsAltCheck::Agrees {
@@ -724,14 +863,14 @@ mod tests {
             }
         );
         assert!(!r.message().0);
-        let r = mk(9.5).resolve_ground_alt(Some(4.8)).expect("check");
+        let r = resolve_one(&mut mk(9.5), Some(4.8)).expect("check");
         assert!(
             matches!(r, GsAltCheck::Agrees { .. }),
             "4.7 m apart is fine"
         );
         // More than 5 m: a warning, and the configured number is still what is used.
         let mut c = mk(30.0);
-        let r = c.resolve_ground_alt(Some(4.8)).expect("check");
+        let r = resolve_one(&mut c, Some(4.8)).expect("check");
         assert_eq!(
             r,
             GsAltCheck::Differs {
@@ -740,11 +879,8 @@ mod tests {
             }
         );
         assert!(r.message().0);
-        assert_eq!(c.ground_station.as_ref().expect("gs").alt_m.metres(), 30.0);
-        assert_eq!(
-            mk(30.0).resolve_ground_alt(None),
-            Some(GsAltCheck::NotChecked)
-        );
+        assert_eq!(gs0(&c).alt_m.metres(), 30.0);
+        assert_eq!(resolve_one(&mut mk(30.0), None), Some(GsAltCheck::NotChecked));
     }
 
     #[test]

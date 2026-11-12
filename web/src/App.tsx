@@ -57,6 +57,7 @@ import { WaitingStrip } from './WaitingStrip'
 import { Tutorial } from './Tutorial'
 import { CoverageControl } from './CoverageControl'
 import { gridImage, type CoverageGrid, type LinkRouteDrawing } from './coverage'
+import { buildStationLayers } from './linkLayers'
 import { buildSwarmLayers, useSwarms } from './swarms'
 import { selectedSwarm, swarmOf, unfolded } from './swarmsModel'
 import { SwarmsButton, SwarmsPanel } from './SwarmsPanel'
@@ -145,6 +146,11 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const [showCoverage, setShowCoverage] = useState(false)
   const [coverageGrid, setCoverageGrid] = useState<CoverageGrid | null>(null)
   const coverageImage = useMemo(() => (showCoverage && coverageGrid ? gridImage(coverageGrid) : null), [showCoverage, coverageGrid])
+  // the radio sites the coverage is judged from, marked while the Links layer is on
+  const stationLayers = useMemo(
+    () => (showCoverage ? buildStationLayers(coverageGrid?.sources.ground_stations ?? []) : []),
+    [showCoverage, coverageGrid],
+  )
   const [linkRoute, setLinkRoute] = useState<LinkRouteDrawing | null>(null)
   const [mapView, setMapView] = useState<{ center: LngLat; bounds: [number, number, number, number]; zoom: number } | null>(null)
   // bd murmur-vr17: every animated effect at once by default (each its own toggle), and a colour
@@ -501,12 +507,13 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
       ...keepOutLayers,
       ...(engageDrawings.length ? buildEngageLayers(engageDrawings, now()) : []),
       ...buildOrderLayers({ queued: queuedIntents ?? [], intents: allIntents ?? [], taskings: state?.taskings ?? [], vehicles, nowMs: now() }),
+      ...stationLayers,
       // the swarms' outlines and labels last, over the tracks' uncertainty (hundreds of contacts'
       // rings would hide them) and under the vehicles
       ...swarmLayers,
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [swarmLayers, estimateLayers, trackLayers, keepOutLayers, engageDrawings, queuedIntents, allIntents, state?.taskings, vehicles, orderTick],
+    [swarmLayers, estimateLayers, trackLayers, keepOutLayers, stationLayers, engageDrawings, queuedIntents, allIntents, state?.taskings, vehicles, orderTick],
   )
   const focusTrack = useCallback(
     (t: Track) => setFit((f) => ({ points: [trackPredicted(t, now())], n: (f?.n ?? 0) + 1, padRight: 400 })),

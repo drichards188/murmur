@@ -41,6 +41,12 @@ export interface EmuLink {
   blocked: string | null
   events: string[]
   depth_state: 'unknown' | 'surfaced' | 'submerged'
+  /** the ground station carrying the link now (several are networked: the best path's), its
+   *  slant range and how often the link moved between stations; null where the profile uses
+   *  none (SATCOM, a tether) */
+  station?: string | null
+  station_range_m?: number | null
+  station_switches?: number
   los: { state: 'off' | 'unknown' | 'clear' | 'obstructed'; obstruction_m: number | null } | null
   satcom: EmuSatcom | null
   nominal: {

@@ -162,10 +162,11 @@ fn real_main() -> Result<(), String> {
         .build()
         .map_err(|e| e.to_string())?;
 
-    // The terrain check measures against [ground_station].alt_m, so it has to match the DEM
-    // ground there: compare (or take it from the DEM) before any link is built.
-    if let Some(gs) = cfg.ground_station.clone() {
-        let dem = match &sampler {
+    // The terrain check measures against each [ground_station]'s alt_m, so it has to match the
+    // DEM ground there: compare (or take it from the DEM) before any link is built.
+    let mut dems = Vec::with_capacity(cfg.ground_stations.len());
+    for (i, gs) in cfg.ground_stations.iter().enumerate() {
+        dems.push(match &sampler {
             Some(s) => match rt.block_on(dem_height(
                 s.as_ref(),
                 timeline.scenario_unix(0.0),
@@ -174,16 +175,29 @@ fn real_main() -> Result<(), String> {
             )) {
                 Ok(h) => h,
                 Err(e) => {
-                    eprintln!("linkemu: WARNING cannot read the DEM at the ground station: {e}");
+                    let at = if cfg.ground_stations.len() == 1 {
+                        "the ground station".to_string()
+                    } else {
+                        format!("ground station {}", cfg.station_name(i))
+                    };
+                    eprintln!("linkemu: WARNING cannot read the DEM at {at}: {e}");
                     None
                 }
             },
             None => None,
-        };
-        if let Some(check) = cfg.resolve_ground_alt(dem) {
-            let (warn, msg) = check.message();
-            eprintln!("linkemu: {}{msg}", if warn { "WARNING " } else { "" });
-        }
+        });
+    }
+    let checks = cfg.resolve_ground_alts(&dems);
+    for (warn, msg) in Config::ground_alt_messages(&checks) {
+        eprintln!("linkemu: {}{msg}", if warn { "WARNING " } else { "" });
+    }
+    if cfg.ground_stations.len() > 1 {
+        let names: Vec<String> = (0..cfg.ground_stations.len()).map(|i| cfg.station_name(i)).collect();
+        eprintln!(
+            "linkemu: {} ground stations, networked: each radio link goes through the best ({})",
+            names.len(),
+            names.join(", ")
+        );
     }
 
     let env = Arc::new(Env::with_timeline(&cfg, terrain.clone(), seed, timeline)?);

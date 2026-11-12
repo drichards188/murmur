@@ -29,8 +29,12 @@ fn world() -> Arc<World> {
 }
 
 pub(crate) fn coverage(grid: Option<Arc<Grid>>) -> Coverage {
+    coverage_of(root().join("sim/links.toml"), grid)
+}
+
+fn coverage_of(links: PathBuf, grid: Option<Arc<Grid>>) -> Coverage {
     Coverage::new(Sources {
-        links: root().join("sim/links.toml"),
+        links,
         root: root(),
         terrain: grid.map(|g| {
             let s: Arc<dyn Sampler> = Arc::new(GridSampler(g));
@@ -48,7 +52,23 @@ pub(crate) fn golden_gate_coverage() -> Coverage {
 /// The emulator's own link on one profile, with its own terrain cache (as the headless simulator
 /// builds it from the links file), to compare with.
 fn emulator_link(profile: &str) -> (murmur_linkemu::link::Link, Arc<TidewaterTerrain>) {
-    let cfg = LinksConfig::load(&root().join("sim/links.toml")).expect("links");
+    emulator_link_of(&root().join("sim/links.toml"), profile, None)
+}
+
+/// The same from another links file, its stations' altitudes settled against `grid` as the
+/// headless emulator settles them.
+fn emulator_link_of(
+    links: &std::path::Path,
+    profile: &str,
+    grid: Option<&Grid>,
+) -> (murmur_linkemu::link::Link, Arc<TidewaterTerrain>) {
+    let mut cfg = LinksConfig::load(links).expect("links");
+    let dems: Vec<Option<f64>> = cfg
+        .ground_stations
+        .iter()
+        .map(|g| grid.and_then(|grid| grid.height(g.lat, g.lon)))
+        .collect();
+    cfg.resolve_ground_alts(&dems);
     let terrain = Arc::new(TidewaterTerrain::new(cfg.terrain.clone()));
     let env = Arc::new(murmur_linkemu::link::Env::new(&cfg, terrain.clone(), 1).expect("env"));
     let raw = cfg.resolve(profile).expect("profile");
@@ -224,4 +244,104 @@ async fn refuses_what_it_cannot_answer() {
         p["sources"]["terrain"].as_str().expect("t").starts_with("not checked"),
         "{p}"
     );
+}
+
+/// The shipped links with a second station on the Marin Headlands (Hawk Hill, its ground from
+/// the DEM), written to a file of this test's own.
+fn two_station_links() -> PathBuf {
+    let mut t: toml::Table = std::fs::read_to_string(root().join("sim/links.toml"))
+        .expect("links")
+        .parse()
+        .expect("toml");
+    let crissy = t.remove("ground_station").expect("the shipped station");
+    let mut hawk = toml::Table::new();
+    hawk.insert("name".into(), "Hawk Hill".into());
+    hawk.insert("lat".into(), 37.8268.into());
+    hawk.insert("lon".into(), (-122.4995).into());
+    hawk.insert("alt_m".into(), "dem".into());
+    t.insert("ground_station".into(), toml::Value::Array(vec![crissy, toml::Value::Table(hawk)]));
+    let path = std::env::temp_dir().join(format!("murmur-two-stations-{}.toml", std::process::id()));
+    std::fs::write(&path, toml::to_string(&t).expect("write")).expect("write");
+    path
+}
+
+/// Two stations, Crissy Field and Hawk Hill: the served prediction chooses the station the
+/// emulator's link chooses at every sampled point and agrees with it on the loss; the Headlands'
+/// shadow from Crissy Field is covered from Hawk Hill; a grid says which station serves each
+/// cell, a point answer names it, and the sources list both.
+#[tokio::test]
+async fn two_stations_agree_with_the_emulator_and_name_the_station() {
+    let grid = gg_grid();
+    let sampler = GridSampler(grid.clone());
+    let links = two_station_links();
+    let c = coverage_of(links.clone(), Some(grid.clone()));
+    let ready = c.ready().await.expect("ready");
+    let mut used = std::collections::BTreeSet::new();
+    for profile in ["los", "mesh"] {
+        let (mut link, theirs) = emulator_link_of(&links, profile, Some(&grid));
+        let mut pts = Vec::new();
+        for i in 0..6 {
+            for j in 0..6 {
+                for alt in [5.0, 85.0] {
+                    pts.push((gg(-122.56 + 0.035 * f64::from(j), 37.76 + 0.02 * f64::from(i), alt), 0.0));
+                }
+            }
+        }
+        let (preds, _) = c.predict_all(&ready, profile, &pts).await.expect("predict");
+        for ((p, _), got) in pts.iter().zip(&preds) {
+            let (blocked, range, terrain) = emulator_at(&mut link, &theirs, &sampler, p).await;
+            assert!(!got.terrain_unknown, "{p:?}");
+            assert_eq!(got.station_index, link.station(), "{profile} {p:?}");
+            assert_eq!(got.blocked, blocked, "{profile} {p:?}");
+            assert!((got.range_loss - range).abs() < 1e-12, "{profile} {p:?}");
+            assert!((got.terrain_loss - terrain).abs() < 1e-12, "{profile} {p:?}");
+            used.insert(got.station.clone().expect("a radio link names its station"));
+        }
+    }
+    assert_eq!(used.into_iter().collect::<Vec<_>>(), ["Crissy Field", "Hawk Hill"]);
+    let w = world();
+    // in the Headlands' shadow from Crissy Field at a Puma's 85 m (down by terrain with it
+    // alone), and seen from Hawk Hill: up through it
+    let lattice: Vec<(GeoPoint, f64)> = (0..30)
+        .flat_map(|i| (0..30).map(move |j| (gg(-122.60 + 0.006 * f64::from(j), 37.80 + 0.004 * f64::from(i), 85.0), 0.0)))
+        .collect();
+    let alone = golden_gate_coverage();
+    let alone_ready = alone.ready().await.expect("ready");
+    let (by_one, _) = alone.predict_all(&alone_ready, "los", &lattice).await.expect("one");
+    let (by_two, _) = c.predict_all(&ready, "los", &lattice).await.expect("two");
+    let k = (0..lattice.len())
+        .find(|k| {
+            by_one[*k].reason == Some(Reason::Terrain)
+                && by_one[*k].state == State::Down
+                && by_two[*k].state == State::Up
+        })
+        .expect("a point the second station covers");
+    assert_eq!(by_two[k].station.as_deref(), Some("Hawk Hill"));
+    let at = json!([lattice[k].0.lon, lattice[k].0.lat]);
+    let one = alone
+        .points(&w, &json!({"class": "los", "alt": 85.0, "point": at}))
+        .await
+        .expect("one");
+    assert_eq!(one["points"][0]["state"], "down", "{one}");
+    assert_eq!(one["points"][0]["prediction"]["station"], "Crissy Field");
+    let two = c
+        .points(&w, &json!({"class": "los", "alt": 85.0, "point": at}))
+        .await
+        .expect("two");
+    assert_eq!(two["points"][0]["state"], "up", "{two}");
+    assert_eq!(two["points"][0]["prediction"]["station"], "Hawk Hill");
+    let src = &two["sources"];
+    assert!(src["ground_station"].is_null(), "{src}");
+    assert_eq!(src["ground_stations"][1]["name"], "Hawk Hill");
+    assert!(src["ground_station_check"].as_str().is_some_and(|s| s.contains("Hawk Hill: ")), "{src}");
+    // a grid: one station character a cell, both stations serving some
+    let g = c
+        .grid(&w, &json!({"class": "los", "alt": 85.0, "bbox": [-122.56, 37.76, -122.38, 37.88], "res": 1000}))
+        .await
+        .expect("grid");
+    let st = g["station"].as_str().expect("station");
+    assert_eq!(st.len(), g["state"].as_str().expect("state").len());
+    assert!(st.contains('0') && st.contains('1'), "{st}");
+    assert_eq!(g["stations"], json!(["Crissy Field", "Hawk Hill"]));
+    let _ = std::fs::remove_file(&links);
 }

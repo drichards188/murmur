@@ -155,8 +155,15 @@ function EmuItems({ uid }: { uid: number }) {
           <b className="warn">{l.events.join(', ')}</b>
         </Item>
       )}
+      {l.station && (
+        <Item k="Station" title="The ground station carrying this link now: with several, the one giving the best path (range, terrain), networked to the C2">
+          {l.station}
+          {l.station_range_m != null ? ` · ${fmtM(l.station_range_m)}` : ''}
+          {l.station_switches ? <span className="muted"> · {l.station_switches} switches</span> : null}
+        </Item>
+      )}
       {l.los && l.los.state !== 'off' && (
-        <Item k="Terrain" title="Line of sight to the ground station over tidewater's DEM">
+        <Item k="Terrain" title="Line of sight to the ground station carrying the link, over tidewater's DEM">
           {l.los.state === 'obstructed' ? (
             <b className="bad">blocked by {fmt(l.los.obstruction_m, 0, ' m')} of terrain</b>
           ) : l.los.state === 'clear' ? (

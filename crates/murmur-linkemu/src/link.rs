@@ -6,6 +6,7 @@ use crate::geo::{GeoPoint, Terrain, haversine_m, slant_m};
 use crate::mavpos::scan;
 use crate::model::{Cause, Cond, Dir, DirState, Params, Verdict, range_loss, terrain_effect};
 use crate::sat::SatShared;
+use crate::station::{self, Station};
 use crate::timeline::{Timeline, parse_iso_utc};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -166,7 +167,10 @@ impl Schedule {
 
 pub struct Env {
     pub cfg_submerged_depth_m: f64,
-    pub ground_station: Option<GeoPoint>,
+    /// The radio sites, networked to the C2 (`crate::station`); empty: none.
+    pub stations: Vec<Station>,
+    /// Their names, in the same order, shared with the stats.
+    pub station_names: Arc<[String]>,
     pub terrain: Arc<dyn Terrain>,
     pub timeline: Timeline,
     pub seed: u64,
@@ -187,13 +191,11 @@ impl Env {
         seed: u64,
         timeline: Timeline,
     ) -> Result<Env, String> {
+        let stations = station::from_config(cfg);
         Ok(Env {
             cfg_submerged_depth_m: cfg.submerged_depth_m,
-            ground_station: cfg.ground_station.as_ref().map(|g| GeoPoint {
-                lat: g.lat,
-                lon: g.lon,
-                alt_m: g.alt_m.metres(),
-            }),
+            station_names: stations.iter().map(|s| s.name.clone()).collect(),
+            stations,
             terrain,
             timeline,
             seed,
@@ -244,10 +246,18 @@ pub struct Link {
     events: Vec<usize>,
     dirs: [DirState; 2],
     pos: Option<GeoPoint>,
-    /// Slant range to the ground station at the last known position.
+    /// Slant range to each station at the last known position.
+    ranges: Vec<f64>,
+    /// Each station's latest terrain answer (metres the terrain sticks up above the ray); kept
+    /// while a new cell is being computed.
+    obstructions: Vec<Option<f64>>,
+    /// The station carrying the link (`station::best`), as of the last position.
+    station: Option<usize>,
+    /// Times the link moved from one station to another (only where the profile uses one).
+    pub station_switches: u64,
+    /// Slant range to the station carrying the link at the last known position.
     gs_range_m: Option<f64>,
-    /// Latest terrain answer (metres the terrain sticks up above the ray); kept while a new
-    /// cell is being computed.
+    /// That station's latest terrain answer.
     obstruction_m: Option<f64>,
     /// Packets decided while no terrain answer existed.
     pub los_unknown_pkts: u64,
@@ -283,6 +293,10 @@ impl Link {
             events,
             dirs,
             pos: None,
+            ranges: Vec::new(),
+            obstructions: Vec::new(),
+            station: None,
+            station_switches: 0,
             gs_range_m: None,
             obstruction_m: None,
             los_unknown_pkts: 0,
@@ -329,6 +343,11 @@ impl Link {
         self.pos
     }
 
+    /// The ground stations' names, in `Env::stations` order.
+    pub fn station_names(&self) -> Arc<[String]> {
+        self.env.station_names.clone()
+    }
+
     /// The SATCOM state, for the satellite task and the stats.
     pub fn sat_shared(&self) -> Option<Arc<SatShared>> {
         self.sat.clone()
@@ -348,26 +367,61 @@ impl Link {
         if let Some(s) = &self.sat {
             s.set_position(p);
         }
-        if let Some(gs) = &self.env.ground_station {
-            self.gs_range_m = Some(slant_m(&p, gs));
-            if let Some(t) = &self.params.terrain
-                && self.env.terrain.enabled()
-            {
-                let o = if self.at_rest() {
+        let env = self.env.clone();
+        let stations = &env.stations;
+        if stations.is_empty() {
+            return;
+        }
+        self.ranges.clear();
+        self.ranges.extend(stations.iter().map(|s| slant_m(&p, &s.at)));
+        self.obstructions.resize(stations.len(), None);
+        if let Some(t) = &self.params.terrain
+            && env.terrain.enabled()
+        {
+            let at_rest = self.at_rest();
+            for (i, s) in stations.iter().enumerate() {
+                if !station::asks_terrain(&self.params, &self.ranges, i) {
+                    continue;
+                }
+                let o = if at_rest {
                     let lift = (AT_REST_ANTENNA_M - t.los.antenna_m).max(0.0);
                     let rest = GeoPoint {
                         alt_m: p.alt_m + lift,
                         ..p
                     };
-                    self.env.terrain.obstruction_at_rest_m(&rest, gs, &t.los)
+                    env.terrain.obstruction_at_rest_m(&rest, &s.at, &t.los)
                 } else {
-                    self.env.terrain.obstruction_m(&p, gs, &t.los)
+                    env.terrain.obstruction_m(&p, &s.at, &t.los)
                 };
                 if let Some(o) = o {
-                    self.obstruction_m = Some(o);
+                    self.obstructions[i] = Some(o);
                 }
             }
         }
+        // the station carrying the link now, judged under the profile carrying the traffic
+        let pick = station::best(self.active(), &self.ranges, &self.obstructions);
+        if station::uses_station(self.active())
+            && self.station.is_some()
+            && pick.is_some()
+            && pick != self.station
+        {
+            self.station_switches += 1;
+        }
+        self.station = pick;
+        self.gs_range_m = pick.map(|i| self.ranges[i]);
+        self.obstruction_m = pick.and_then(|i| self.obstructions[i]);
+    }
+
+    /// The station carrying the link now (an index into `Env::stations`): none before the first
+    /// position, without stations, or while the profile carrying the traffic uses none (SATCOM, a
+    /// tether, an AUV's radio at the surface).
+    pub fn station(&self) -> Option<usize> {
+        self.station.filter(|_| station::uses_station(self.active()))
+    }
+
+    /// The slant range to the station carrying the link, m (see [`Link::station`]).
+    pub fn station_range_m(&self) -> Option<f64> {
+        self.station().and(self.gs_range_m)
     }
 
     /// A landed, disarmed aircraft: of the air domain, its last heartbeat disarmed, within
@@ -381,7 +435,7 @@ impl Link {
 
     pub fn los_state(&self) -> LosState {
         if self.params.terrain.is_none()
-            || self.env.ground_station.is_none()
+            || self.env.stations.is_empty()
             || !self.env.terrain.enabled()
         {
             return LosState::Off;
@@ -461,7 +515,7 @@ impl Link {
             c.range_loss = range_loss(r, d);
         }
         if let (Some(t), Some(o)) = (&p.terrain, self.obstruction_m)
-            && self.env.ground_station.is_some()
+            && !self.env.stations.is_empty()
         {
             let (blocked, loss) = terrain_effect(t, o);
             if blocked {
@@ -1060,6 +1114,141 @@ mod tests {
     fn a_profile_without_space_class_has_no_satcom_state() {
         let l = build("[class.los]\n", meta(1, "los", "air"));
         assert!(l.sat_shared().is_none());
+    }
+
+    /// Two stations 0.2 degrees of latitude apart (about 22 km), a LOS profile clean to 10 km
+    /// and lost from 20 km.
+    const TWO: &str = r#"
+        [[ground_station]]
+        name = "south"
+        lat = 37.8
+        lon = -122.4
+        [[ground_station]]
+        name = "north"
+        lat = 38.0
+        lon = -122.4
+        [class.los]
+        range_ok_km = 10
+        range_max_km = 20
+        range_exp = 1
+        [class.satcom]
+        [class.acoustic]
+        propagation_mps = 1500
+    "#;
+
+    #[test]
+    fn the_link_goes_through_the_best_station_and_switches_as_it_moves() {
+        let mut l = build(TWO, meta(1, "los", "air"));
+        assert_eq!(l.station(), None, "no position yet");
+        // 5.6 km from the south station, 16.7 km from the north one: the south, nothing lost
+        l.observe_up(&position_frame(0, 37.85, -122.4, 100.0));
+        assert_eq!(l.station(), Some(0));
+        assert_eq!(lost_fraction(&mut l, Dir::Up, NS, 1000), 0.0);
+        // 14.4 km from the south, 7.8 km from the north: the north, still nothing lost; alone,
+        // the south station would lose 44 % here
+        l.observe_up(&position_frame(1, 37.93, -122.4, 100.0));
+        assert_eq!(l.station(), Some(1));
+        assert_eq!(l.station_switches, 1);
+        assert_eq!(lost_fraction(&mut l, Dir::Up, 2 * NS, 1000), 0.0);
+        let south_alone = "[ground_station]\nname = \"south\"\nlat = 37.8\nlon = -122.4\n\
+                           [class.los]\nrange_ok_km = 10\nrange_max_km = 20\nrange_exp = 1\n";
+        let mut alone = build(south_alone, meta(1, "los", "air"));
+        alone.observe_up(&position_frame(1, 37.93, -122.4, 100.0));
+        assert_eq!(alone.station(), Some(0));
+        let lost = lost_fraction(&mut alone, Dir::Up, 2 * NS, 20_000);
+        assert!((lost - 0.44).abs() < 0.03, "{lost}");
+        // back south: switched again
+        l.observe_up(&position_frame(2, 37.84, -122.4, 100.0));
+        assert_eq!((l.station(), l.station_switches), (Some(0), 2));
+        // beyond both: lost to range, through the nearer
+        l.observe_up(&position_frame(3, 38.25, -122.4, 100.0));
+        assert_eq!(l.station(), Some(1));
+        assert_eq!(l.decide(Dir::Up, 3 * NS, 50, 0), Verdict::Drop(Cause::Range));
+    }
+
+    /// The station is chosen without a draw: a link whose second station is never the best sees
+    /// the very packets fates of the link with the first alone (each direction its own stream).
+    #[test]
+    fn a_second_station_never_chosen_changes_no_draw() {
+        let base = "[class.los]\nloss = 0.2\nburst_len = 3\nlatency_ms = 20\njitter_ms = 5\nrange_ok_km = 10\nrange_max_km = 20\n";
+        let one = format!("[[ground_station]]\nlat = 37.8\nlon = -122.4\n{base}");
+        let two = format!("{one}[[ground_station]]\nlat = 39.8\nlon = -122.4\n");
+        let run = |toml: &str| {
+            let mut l = build(toml, meta(5, "los", "air"));
+            let mut out = Vec::new();
+            for i in 0..2000u64 {
+                // on the range curve of the near station, 200 km from the far one
+                l.observe_up(&position_frame((i % 256) as u8, 37.8 + 0.12 * ((i % 7) as f64 / 7.0), -122.4, 80.0));
+                for dir in [Dir::Up, Dir::Down] {
+                    out.push(l.decide(dir, i * 10_000_000, 60, 0));
+                }
+            }
+            (out, l.station())
+        };
+        let (a, sa) = run(&one);
+        let (b, sb) = run(&two);
+        assert_eq!((sa, sb), (Some(0), Some(0)));
+        assert!(a.iter().any(|v| matches!(v, Verdict::Drop(Cause::Range))));
+        assert_eq!(a, b);
+    }
+
+    /// The terrain to each station: one behind a ridge and nearer, the other clear and farther:
+    /// the clear one carries the link.
+    #[test]
+    fn terrain_to_one_station_sends_the_link_through_another() {
+        // obstructed 40 m from the south station (block mode drops everything), clear from the north
+        struct ByStation;
+        impl Terrain for ByStation {
+            fn obstruction_m(&self, _: &GeoPoint, gs: &GeoPoint, _: &LosParams) -> Option<f64> {
+                Some(if gs.lat < 37.9 { 40.0 } else { -15.0 })
+            }
+        }
+        let cfg = Config::parse(&TWO.replace("range_exp = 1", "range_exp = 1\n        terrain = \"block\""))
+            .expect("cfg");
+        assert!(cfg.resolve("los").expect("los").terrain.is_some());
+        let params = Params::from_profile(&cfg.resolve("los").expect("p")).expect("params");
+        let env = Arc::new(Env::new(&cfg, Arc::new(ByStation), 1).expect("env"));
+        let mut l = Link::new(meta(1, "los", "ground"), params, env);
+        // 3.3 km from the south station, 18.9 km from the north: the north (range loss 89 %)
+        // beats the south (blocked)
+        l.observe_up(&position_frame(0, 37.83, -122.4, 5.0));
+        assert_eq!(l.station(), Some(1));
+        assert_eq!(l.los_state(), LosState::Clear(15.0));
+        let lost = lost_fraction(&mut l, Dir::Up, NS, 20_000);
+        assert!((lost - 0.89).abs() < 0.02, "{lost}");
+    }
+
+    /// A jammer acts on every path of a vehicle inside its circle, whichever station carries it.
+    #[test]
+    fn a_jammer_over_a_vehicle_still_jams_it_with_several_stations() {
+        let toml = format!(
+            "{TWO}\n[[event]]\nname = \"jammer\"\nat_s = 0\ncircle = {{ lat = 37.93, lon = -122.4, radius_m = 2000 }}\n"
+        );
+        let mut l = build(&toml, meta(1, "los", "air"));
+        l.observe_up(&position_frame(0, 37.93, -122.4, 100.0));
+        assert_eq!(l.station(), Some(1));
+        assert_eq!(lost_fraction(&mut l, Dir::Up, NS, 200), 1.0);
+        assert_eq!(l.decide(Dir::Down, NS, 50, 0), Verdict::Drop(Cause::Jam));
+        assert_eq!(l.active_events(NS), ["jammer"]);
+        l.observe_up(&position_frame(1, 37.85, -122.4, 100.0));
+        assert_eq!(lost_fraction(&mut l, Dir::Up, 2 * NS, 200), 0.0, "out of the circle");
+    }
+
+    /// SATCOM uses no station; an acoustic modem's propagation counts from the nearest.
+    #[test]
+    fn satcom_uses_no_station_and_acoustic_counts_from_the_nearest() {
+        let mut s = build(TWO, meta(1, "satcom", "air"));
+        s.observe_up(&position_frame(0, 37.93, -122.4, 100.0));
+        assert_eq!((s.station(), s.station_range_m()), (None, None));
+        let mut a = build(TWO, meta(2, "acoustic", "subsurface"));
+        // 0.0135 degrees (1.5 km) south of the north station: 1 s of propagation
+        a.observe_up(&position_frame(0, 38.0 - 0.0135, -122.4, -1.0));
+        assert_eq!(a.station(), Some(1));
+        let Verdict::Forward { at_ns, .. } = a.decide(Dir::Up, NS, 50, 0) else {
+            panic!("dropped")
+        };
+        let delay_ms = (at_ns - NS) as f64 / 1e6;
+        assert!((delay_ms - 1000.0).abs() < 10.0, "{delay_ms}");
     }
 
     /// Records each question the link asks its terrain: (altitude, at rest).

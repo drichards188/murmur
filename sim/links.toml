@@ -94,8 +94,41 @@ submerged_depth_m = 1.0
 # the ground height there in metres above MSL (the DEM says 4.8 m at this spot); the antenna
 # heights in the profiles (gs_antenna_m, the mast) are added to it. With tidewater configured
 # the emulator samples the DEM at the station at startup and warns if alt_m is more than 5 m
-# off; alt_m = "dem" uses the DEM height instead of a number.
+# off; alt_m = "dem" uses the DEM height instead of a number. `name` is what /stats, the
+# bridge's /api/links and the console call it (default "station 1").
+#
+# Several radio sites: write each as [[ground_station]] (name, lat, lon, alt_m) in place of this
+# one table. The sites are networked to the C2: a radio link (a profile with a range model, a
+# terrain check or a propagation delay) goes through whichever site gives it the best path at
+# that moment, each path judged as one station's is (range_ok_km / range_max_km from that site,
+# the terrain line of sight to it, every site with the profiles' gs_antenna_m): the most packets
+# let through, then the nearest, then the first listed. A switch is immediate and costs nothing
+# (no outage, no hold-down): the sites hear the vehicle together and the C2 takes the best copy,
+# so the predicted coverage, a function of the point alone, matches the emulator. SATCOM and
+# tethered links use no site; an acoustic link's propagation counts from the nearest. Scripted
+# events act on the vehicle as before (a jammer over it jams every path). Terrain is asked for
+# the nearest site and for every site within the profile's range_max (crates/murmur-linkemu
+# station.rs). For example, three sites along a coast:
+#
+#   [[ground_station]]
+#   name = "Bodega Head"
+#   lat = 38.3040
+#   lon = -123.0650
+#   alt_m = "dem"
+#
+#   [[ground_station]]
+#   name = "Crissy Field"
+#   lat = 37.8068
+#   lon = -122.4460
+#   alt_m = 5.0
+#
+#   [[ground_station]]
+#   name = "Point Pinos"
+#   lat = 36.6360
+#   lon = -121.9340
+#   alt_m = "dem"
 [ground_station]
+name = "Crissy Field"
 lat = 37.8068
 lon = -122.4460
 alt_m = 5.0

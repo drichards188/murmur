@@ -6,7 +6,7 @@
 // refused order meets what refuses it. Drawn on the surface like the draft it is about
 // (surfaceLayers.ts), over the scene so neither the terrain nor the seabed hides it.
 import { PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
-import { STATE_RGB, type LinkRouteDrawing, type LinkState, type RouteMark } from './coverage'
+import { STATE_RGB, type GroundStation, type LinkRouteDrawing, type LinkState, type RouteMark } from './coverage'
 import { dashes, lift, type SurfaceScale } from './surfaceLayers'
 import type { LngLat } from './types'
 
@@ -28,6 +28,49 @@ interface Line {
 interface Mark {
   at: XYZ
   mark: RouteMark
+}
+
+/** The ground stations on the Links layer (the coverage grid's `sources.ground_stations`): a ring
+ *  and its name at each radio site, so the coverage reads against where it is judged from. With
+ *  several, a radio link goes through whichever gives it the best path. */
+export function buildStationLayers(stations: GroundStation[]) {
+  if (!stations.length) return []
+  const at = (s: GroundStation): [number, number] => [s.at[0], s.at[1]]
+  return [
+    new ScatterplotLayer<GroundStation>({
+      id: 'link-stations',
+      data: stations,
+      getPosition: at,
+      getRadius: 7,
+      radiusUnits: 'pixels',
+      billboard: true,
+      stroked: true,
+      filled: true,
+      getFillColor: DARK,
+      getLineColor: WHITE,
+      getLineWidth: 2.5,
+      lineWidthUnits: 'pixels',
+      parameters: onTop,
+    }),
+    new TextLayer<GroundStation>({
+      id: 'link-station-names',
+      data: stations,
+      getPosition: at,
+      getText: (s) => s.name,
+      getSize: 12,
+      getColor: WHITE,
+      getTextAnchor: 'start',
+      getAlignmentBaseline: 'center',
+      getPixelOffset: [12, 0],
+      fontFamily: FONT,
+      fontWeight: 600,
+      outlineWidth: 3,
+      outlineColor: [11, 15, 20, 255],
+      fontSettings: { sdf: true, fontSize: 48, buffer: 6 },
+      characterSet: 'auto',
+      parameters: onTop,
+    }),
+  ]
 }
 
 export function buildLinkRouteLayers(d: LinkRouteDrawing, { surfaceZ, mPerPx }: SurfaceScale) {

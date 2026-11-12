@@ -16,7 +16,7 @@ use murmur_linkemu::config::{Config, EventCfg, VehicleSpec};
 use murmur_linkemu::geo::Terrain as _;
 use murmur_linkemu::link::{Env, Link as ELink};
 use murmur_linkemu::model::{Cause, Dir};
-use murmur_linkemu::proxy::{Delay, admit, build_links, gauge};
+use murmur_linkemu::proxy::{Delay, admit, build_links, gauge, link_stats};
 use murmur_linkemu::sat::{RealSpace, SatShared, SpaceInfo, SpaceSource, refresh_round};
 use murmur_linkemu::stats::{LinkStats, summary_json};
 use murmur_linkemu::terrain::TidewaterTerrain;
@@ -90,8 +90,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 impl Emulator {
     /// The emulator as `murmur-linkemu` starts it: the links file and the episode's events,
     /// the fleet (vehicle-side manifest), the seed, the scenario clock from `epoch`, the
-    /// terrain from the baked grid (the ground station's altitude settled against it, as the
-    /// emulator settles it against tidewater's DEM), SATCOM from murmur-space's data.
+    /// terrain from the baked grid (the ground stations' altitudes settled against it, as the
+    /// emulator settles them against tidewater's DEM), SATCOM from murmur-space's data.
     pub fn new(setup: Setup<'_>, start: Instant) -> Result<Arc<Emulator>, String> {
         let Setup { links_file, events, fleet, seed, epoch, grid, space, space_outlook, space_cache, space_root } = setup;
         let mut cfg = Config::load(links_file)?;
@@ -120,12 +120,14 @@ impl Emulator {
                 BakedSampler(g),
             )
         });
-        if let Some(gs) = cfg.ground_station.clone() {
-            let dem = terrain.as_ref().and_then(|(_, s)| s.0.height(gs.lat, gs.lon));
-            if let Some(check) = cfg.resolve_ground_alt(dem) {
-                let (warn, msg) = check.message();
-                eprintln!("linkemu: {}{msg}", if warn { "WARNING " } else { "" });
-            }
+        let dems: Vec<Option<f64>> = cfg
+            .ground_stations
+            .iter()
+            .map(|gs| terrain.as_ref().and_then(|(_, s)| s.0.height(gs.lat, gs.lon)))
+            .collect();
+        let checks = cfg.resolve_ground_alts(&dems);
+        for (warn, msg) in Config::ground_alt_messages(&checks) {
+            eprintln!("linkemu: {}{msg}", if warn { "WARNING " } else { "" });
         }
         let dyn_terrain: Arc<dyn murmur_linkemu::geo::Terrain> = match &terrain {
             Some((t, _)) => t.clone(),
@@ -134,16 +136,7 @@ impl Emulator {
         let env = Arc::new(Env::with_timeline(&cfg, dyn_terrain, seed, timeline)?);
         let links = build_links(fleet, &cfg, &env)?;
         let sats: Vec<Arc<SatShared>> = links.iter().filter_map(ELink::sat_shared).collect();
-        let stats: Vec<Arc<LinkStats>> = links
-            .iter()
-            .map(|l| {
-                Arc::new(
-                    LinkStats::new(l.meta.clone())
-                        .with_sat(l.sat_shared(), l.params().latency_ns as f64 / 1e6)
-                        .with_nominal(l.nominal_json()),
-                )
-            })
-            .collect();
+        let stats: Vec<Arc<LinkStats>> = links.iter().map(|l| Arc::new(link_stats(l))).collect();
         let uids = links.iter().map(|l| l.meta.uid).collect();
         // SATCOM: load the element sets once, check each class at the start (`sat::spawn`)
         let mut cache_handle: Option<Arc<CachedSpace>> = None;

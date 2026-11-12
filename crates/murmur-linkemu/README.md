@@ -66,7 +66,7 @@ Per packet, per direction (the two directions have independent random streams an
    the mean burst length in packets; lost packets still used their airtime. Then scripted
    extra loss, jammer loss, range loss and terrain loss (`terrain = "ramp"`), each independent.
 4. **Delay**: queue wait + `latency_ms` + uniform `+-jitter_ms` + event latency
-   + (slant range to the ground station / `propagation_mps`). Delivery times are made
+   + (slant range to the ground station carrying the link / `propagation_mps`). Delivery times are made
    monotonic unless `reorder = true`, so jitter does not reorder.
 5. **Duplicate**: with probability `duplicate` the packet is delivered twice.
 
@@ -83,7 +83,22 @@ ardupilotmega dialect; frames are walked by length and only those messages are d
 v2 and concatenated frames work).
 
 - **Range**: `range_ok_km`/`range_max_km`/`range_exp` give loss from 0 to 1 as distance from
-  `[ground_station]` grows.
+  the ground station grows.
+- **Several ground stations** (`station.rs`): `[[ground_station]]` tables (name, lat, lon,
+  alt_m) in place of the one `[ground_station]`. The sites are networked to the C2: a radio
+  link (a profile with a range model, a terrain check or a propagation delay) goes through
+  whichever site gives it the best path at each position report, each path judged as the one
+  station's is (range from that site, terrain to it, the profile's `gs_antenna_m` on every
+  site): the largest share of packets let through, then the nearest, then the first listed.
+  A switch is immediate and costs nothing, no outage and no hold-down: the sites hear the
+  vehicle together and the C2 takes the best copy (selection diversity), so a vehicle at the
+  edge that flaps between two sites changes no packet's fate, and the coverage predictor, a
+  function of the point alone, chooses the same site the link does. SATCOM and tethered
+  links use no site; an acoustic link's propagation counts from the nearest. The choice draws
+  nothing: with one station every draw and every result is as before. Terrain is asked for the
+  nearest site and for every site within the profile's `range_max_km` (beyond it the range
+  curve loses every packet whatever the terrain). Scripted events act on the vehicle as before:
+  a jammer circle over it jams every path, whichever site carries it.
 - **Depth gating**: submerged means depth `-alt` exceeds `submerged_depth_m` (altitude is MSL, negative is
   depth, matching the stand-ins). `down_when = "submerged"` for SATCOM, `"surfaced"` for
   acoustic. Before the first position the link is open. With `gated_profile = "<profile>"` a
@@ -93,7 +108,7 @@ v2 and concatenated frames work).
   `/stats` says which profile carries the traffic (`active_profile`).
 - **No fix**: a GLOBAL_POSITION_INT with lat = lon = 0 (ArduPilot before its first fix) is
   not a position and is ignored.
-- **Terrain** (`terrain.rs`, needs `--tidewater URL`): the path from `[ground_station]` to the
+- **Terrain** (`terrain.rs`, needs `--tidewater URL`): the path from a ground station to the
   vehicle is sampled from tidewater's DEM and judged against the straight ray between the
   antennas, with Earth curvature at an effective radius of `k_factor` (default 4/3) Earth
   radii. Antenna heights are per profile (`gs_antenna_m` above the station's `alt_m`,
@@ -103,10 +118,14 @@ v2 and concatenated frames work).
   profiles with a range model) drops everything while it is positive (cause `terrain`);
   `"ramp"` drops a share that rises from 0 at the ray to 1 at `terrain_ramp_m` deep;
   `"off"` ignores it. The surface is the higher of the DEM and the water level, so a
-  vehicle below the sea surface is hidden. Points outside the DEM count as sea level.
+  vehicle below the sea surface is hidden. Points outside the DEM count as sea level. The
+  Earth bulge is what sets the radio horizon (a 10 m mast sees a sea-level target to about
+  15 km at k = 4/3), so the horizon is judged wherever terrain is; without a terrain source
+  neither is, and only the range curve limits a link.
 
   The packet path never waits for HTTP. A link asks a cache keyed by grid cell (`[terrain]
-  cell_m`, 250 m), altitude band (`alt_step_m`, 10 m) and the profile's antenna parameters; the
+  cell_m`, 250 m), altitude band (`alt_step_m`, 10 m), the ground station and the profile's
+  antenna parameters; the
   profile is computed from the cell centre, so every vehicle in a cell gets the same answer. A
   miss queues the cell and the link keeps its previous answer (open, and counted as
   `unknown_pkts`, if it has none yet). Every `interval_s` (1 s) a background task takes the
@@ -215,7 +234,7 @@ corsair, seahunter and saildrone to Starlink-class; rq4 and mq9b to WGS-class GE
 vehicle. To run the alternative, add a `[platform_profile]` override (`saildrone =
 "satcom_iridium"`, `rq4 = "satcom_ku_geo"`).
 
-Ground station altitude: with `--tidewater` the DEM is sampled at `[ground_station]` at
+Ground station altitude: with `--tidewater` the DEM is sampled at each ground station at
 startup; if `alt_m` differs by more than 5 m a warning is logged, and `alt_m = "dem"` uses the
 DEM height (the profiles' `gs_antenna_m` mast height is added on top either way).
 
@@ -232,9 +251,12 @@ queued packets and bytes (gauges), mean and max added latency and the number of 
 averages (`latency_n`, so a reader can difference two polls); per link the profile,
 `active_profile`, `nominal` (the profile's average loss, latency, jitter, bandwidth, queue,
 depth rule and gated profile), `events` (names of the scripted events acting on it now), blocked
-cause, depth state, last position and `los`: `state` (`off`, `unknown`, `clear`, `obstructed`),
+cause, depth state, last position, `station` (the ground station carrying the link now; null
+for a profile that uses none), `station_range_m`, `station_switches`, and `los` to that station:
+`state` (`off`, `unknown`, `clear`, `obstructed`),
 `obstruction_m` (positive: terrain above the ray; negative: clear by that much),
-`unknown_pkts` (decided before any terrain answer) and `blocked_by_terrain_pkts`. `/stats/summary` omits `per_link`; the summary also has `los_links` (links per state),
+`unknown_pkts` (decided before any terrain answer) and `blocked_by_terrain_pkts`. `/stats/summary` omits `per_link`; the summary also has `stations` (each ground station
+and the links it carries now), `los_links` (links per state),
 `terrain_blocked_pkts`, `terrain_unknown_pkts` and `terrain` (the client's cells cached and
 pending, requests, errors, points sampled, last request time and last error); `/stats/<uid>` is one
 link; `/health`. The summary also has the process CPU seconds and RSS. A one-line log prints
@@ -245,7 +267,9 @@ every `--log-interval` seconds (rates and drops by cause since the last line).
 `cargo test -p murmur-linkemu`: loss convergence, burst length, determinism, jitter and
 reordering, bandwidth queuing and tail drop, duplicates, event windows and selectors, jammer
 circle, range loss, depth gating, terrain (ridge, curvature, Fresnel, unknown-then-answered, ramp,
-batching, an HTTP client against a fake server), scenario time and event reload, propagation, MAVLink parsing, and a real
+batching, an HTTP client against a fake server), several ground stations (the best path, a switch,
+no draw changed, terrain to one station, a jammer, coverage agreeing on the station), scenario time
+and event reload, propagation, MAVLink parsing, and a real
 loopback round trip. `src/bin/losprobe.rs` asks a running
 `tidewater serve` whether given positions see a ground station:
 `losprobe --gs 37.8068,-122.4460,5 --gs-antenna 10 37.875,-122.405,30 ...`.
@@ -256,7 +280,7 @@ fake bridge ports, writes its own manifest): `loadgen --vehicles 440 --rate 8 --
 
 The bridge (`crates/murmur-bridge/src/emu.rs`) polls `/stats` every 2 s when
 `MURMUR_LINKEMU_URL` is set, keeps a minute of history per link and serves `/api/links` and
-`/api/links/{uid}`: the per-link record plus `recent` loss, drops by cause and added latency
+`/api/links/{uid}`: the per-link record (with the `station` carrying it) plus `recent` loss, drops by cause and added latency
 per direction over the shortest of 10, 30 or 60 s with at least 5 uplink packets, `total`, and
 `emu_rtt_ms` (added delay up plus down). Each vehicle's pushed `link.emu` is `{state: ok |
 degraded | down, cause}`: down while blocked or with 95% recent loss, degraded at 20% or while
@@ -288,10 +312,11 @@ their own tables in the same scenario file. Example: `sim/link-events/golden-gat
 
 ## Not done
 
-- Terrain is judged to the ground station only (no relays or mesh hops), from a DEM cell
+- Terrain is judged to the ground stations only (no relays or mesh hops), from a DEM cell
   centre rather than the exact position, and the DEM may include structures (the Golden Gate
-  Bridge reads as 60 to 76 m at Fort Point). `[ground_station].alt_m` must match the ground
-  there. No jitter model beyond uniform; no correlated fading
+  Bridge reads as 60 to 76 m at Fort Point). Each station's `alt_m` must match the ground
+  there. A station cannot be cut or jammed by itself (an event acts on vehicles), and an
+  acoustic modem has no gateway of its own (its propagation counts from the nearest station). No jitter model beyond uniform; no correlated fading
   with range or weather; no per-packet-size loss. Loss does not depend on message type.
 - Telemetry priority under low bandwidth (murmur-f6q): the queue is a single FIFO.
 - Position comes from uplink only and lags by the link's own delay. No ICMP, MTU or

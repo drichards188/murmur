@@ -170,15 +170,20 @@ pub async fn start(
         let sock = UdpSocket::bind((opts.listen_host.as_str(), port))
             .await
             .map_err(|e| format!("bind {}:{port}: {e}", opts.listen_host))?;
-        let stats = Arc::new(
-            LinkStats::new(link.meta.clone())
-                .with_sat(link.sat_shared(), link.params().latency_ns as f64 / 1e6)
-                .with_nominal(link.nominal_json()),
-        );
+        let stats = Arc::new(link_stats(&link));
         all.push(stats.clone());
         tokio::spawn(run_link(link, sock, bridge, stats, start));
     }
     Ok(all)
+}
+
+/// A link's stats handle: its identity, SATCOM state, nominal numbers and the stations' names.
+/// Public for the headless simulator's in-memory proxy.
+pub fn link_stats(link: &Link) -> LinkStats {
+    LinkStats::new(link.meta.clone())
+        .with_sat(link.sat_shared(), link.params().latency_ns as f64 / 1e6)
+        .with_nominal(link.nominal_json())
+        .with_stations(link.station_names())
 }
 
 /// Whether a datagram from `from` is the bridge's (its port for this link, from its address
@@ -307,6 +312,16 @@ pub fn gauge(link: &mut Link, stats: &LinkStats, delay: &[Delay; 2], now: u64) {
     stats.los_state.store(los, Relaxed);
     stats.los_obstruction.store(obs.to_bits(), Relaxed);
     stats.terrain_unknown.store(link.los_unknown_pkts, Relaxed);
+    stats
+        .station
+        .store(link.station().map_or(0, |i| i as u64 + 1), Relaxed);
+    stats.station_range_m.store(
+        link.station_range_m().unwrap_or(f64::NAN).to_bits(),
+        Relaxed,
+    );
+    stats
+        .station_switches
+        .store(link.station_switches, Relaxed);
 }
 
 pub fn admit(link: &mut Link, stats: &LinkStats, dl: &mut Delay, dir: Dir, data: &[u8], now: u64) {
@@ -339,6 +354,51 @@ pub fn admit(link: &mut Link, stats: &LinkStats, dl: &mut Delay, dir: Dir, data:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `/stats` names the station carrying each link, its range and the switches, and the
+    /// summary counts the links on each station.
+    #[test]
+    fn the_stats_name_the_station_in_use() {
+        use crate::config::Config;
+        use crate::geo::NoTerrain;
+        use crate::mavpos::position_frame;
+        let cfg = Config::parse(
+            "[[ground_station]]\nname = \"south\"\nlat = 37.8\nlon = -122.4\n\
+             [[ground_station]]\nname = \"north\"\nlat = 38.0\nlon = -122.4\n\
+             [class.los]\nrange_ok_km = 10\nrange_max_km = 20\n[class.satcom]\n",
+        )
+        .expect("cfg");
+        let env = Arc::new(Env::new(&cfg, Arc::new(NoTerrain), 1).expect("env"));
+        let spec = |uid: u32, link: &str| VehicleSpec {
+            uid,
+            sysid: uid,
+            port: 0,
+            link: link.into(),
+            domain: "air".into(),
+            platform: "x".into(),
+            callsign: String::new(),
+            space_class: None,
+        };
+        let mut links = build_links(&[spec(1, "los"), spec(2, "satcom")], &cfg, &env).expect("links");
+        let stats: Vec<Arc<LinkStats>> = links.iter().map(|l| Arc::new(link_stats(l))).collect();
+        let delay: [Delay; 2] = Default::default();
+        for (l, st) in links.iter_mut().zip(&stats) {
+            l.observe_up(&position_frame(0, 37.85, -122.4, 100.0));
+            l.observe_up(&position_frame(1, 37.95, -122.4, 100.0));
+            gauge(l, st, &delay, 0);
+        }
+        let los = stats[0].json();
+        assert_eq!(los["station"], "north");
+        assert_eq!(los["station_range_m"], 5561.0); // 0.05 degrees of latitude
+        assert_eq!(los["station_switches"], 1);
+        let sat = stats[1].json();
+        assert!(sat["station"].is_null() && sat["station_range_m"].is_null(), "{sat}");
+        let sum = crate::stats::summary_json(&stats, 0.0, false, None);
+        assert_eq!(
+            sum["stations"],
+            serde_json::json!([{"name": "south", "links": 0}, {"name": "north", "links": 1}])
+        );
+    }
 
     #[test]
     fn the_bridge_is_told_from_the_vehicle_by_its_port() {

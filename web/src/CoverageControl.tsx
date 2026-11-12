@@ -188,6 +188,12 @@ export function CoverageControl({
           {grid.failsafe_s != null && ` · failsafe ${grid.failsafe_s} s`}
           <br />
           terrain: {grid.sources.terrain}
+          {(grid.sources.ground_stations?.length ?? 0) > 1 && (
+            <>
+              <br />
+              {grid.sources.ground_stations!.length} ground stations: each link through the best ({grid.sources.ground_stations!.map((g) => g.name).join(', ')})
+            </>
+          )}
           {grid.sources.satcom && (
             <>
               <br />
@@ -197,7 +203,7 @@ export function CoverageControl({
         </p>
       )}
       <p className="cov-note">
-        Predicted from the link emulator's own geometry: range from the ground station, terrain, satellites in view, depth. Its random
+        Predicted from the link emulator's own geometry: range from the ground station (the best one where there are several), terrain, satellites in view, depth. Its random
         loss and scripted events (jammers, cuts) are not in it. Hover the map for why.
       </p>
     </section>

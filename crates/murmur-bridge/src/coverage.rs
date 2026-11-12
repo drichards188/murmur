@@ -21,6 +21,11 @@
 //! (`terrain` says so). Terrain does not move, so each 250 m cell's answer is cached for good;
 //! a grid answer for a class without satellites is cached too. The links file is
 //! `MURMUR_LINKS`, else `sim/links.toml`.
+//!
+//! Several ground stations (`[[ground_station]]`): each point is predicted on the path the
+//! emulator's link would take there, the best station's (`murmur_linkemu::station`); a point
+//! answer names it (`prediction.station`), a grid gives one character a cell (`station`, an
+//! index into `stations`), and `sources.ground_stations` lists them.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -55,9 +60,9 @@ const GRID_CACHE: usize = 16;
 
 /// What every answer says about itself.
 pub const NOTE: &str = "predicted from the link emulator's own geometry (range from the ground \
-station, terrain line of sight, SATCOM visibility, the depth gate); information only: no check \
-or rule reads it. Scripted events (jammers, cuts) are not predicted, and the emulator's random \
-draws decide each packet.";
+station, terrain line of sight, the best station's path where there are several, SATCOM \
+visibility, the depth gate); information only: no check or rule reads it. Scripted events \
+(jammers, cuts) are not predicted, and the emulator's random draws decide each packet.";
 
 /// A baked surface grid as a terrain sampler (the emulator's in the headless simulator reads
 /// the same grid the same way).
@@ -124,7 +129,8 @@ struct Ready {
     links: LinksConfig,
     pred: Predictor,
     terrain: TidewaterTerrain,
-    /// The ground station's altitude against the DEM, as the emulator logs it.
+    /// The ground stations' altitudes against the DEM, as the emulator logs them (one line a
+    /// station, joined).
     gs_check: Option<String>,
 }
 
@@ -202,16 +208,21 @@ impl Coverage {
         self.ready
             .get_or_init(|| async {
                 let mut links = LinksConfig::load(&self.src.links)?;
-                // the ground station's altitude settled against the DEM before anything is
-                // predicted from it, as the emulator settles it before building its links
-                let dem = match (&self.src.terrain, &links.ground_station) {
-                    (Some((s, _)), Some(gs)) => dem_height(s.as_ref(), self.now_unix(), gs.lat, gs.lon)
-                        .await
-                        .ok()
-                        .flatten(),
-                    _ => None,
-                };
-                let gs_check = links.resolve_ground_alt(dem).map(|c| c.message().1);
+                // the ground stations' altitudes settled against the DEM before anything is
+                // predicted from them, as the emulator settles them before building its links
+                let mut dems = Vec::with_capacity(links.ground_stations.len());
+                for gs in &links.ground_stations {
+                    dems.push(match &self.src.terrain {
+                        Some((s, _)) => dem_height(s.as_ref(), self.now_unix(), gs.lat, gs.lon)
+                            .await
+                            .ok()
+                            .flatten(),
+                        None => None,
+                    });
+                }
+                let checks = links.resolve_ground_alts(&dems);
+                let said: Vec<String> = LinksConfig::ground_alt_messages(&checks).into_iter().map(|(_, m)| m).collect();
+                let gs_check = (!said.is_empty()).then(|| said.join("; "));
                 let pred = Predictor::new(&links)?;
                 let terrain = TidewaterTerrain::new(links.terrain.clone());
                 Ok(Arc::new(Ready {
@@ -279,14 +290,15 @@ impl Coverage {
         }
     }
 
-    /// Fetches the terrain cells `points` need on `profile` (each cell once, kept for good).
+    /// Fetches the terrain cells `points` need on `profile` (each cell once, kept for good; to
+    /// every station the link would ask about there).
     async fn warm(&self, ready: &Ready, profile: &str, points: &[GeoPoint]) {
         let Some((sampler, _)) = &self.src.terrain else { return };
-        let (Some(gs), Some(los)) = (ready.pred.ground_station(), ready.pred.los(profile)) else {
+        if ready.pred.los(profile).is_none() {
             return;
-        };
+        }
         for p in points {
-            let _ = ready.terrain.obstruction_m(p, &gs, &los);
+            ready.pred.ask_terrain(profile, p, &ready.terrain);
         }
         let t = self.now_unix();
         for _ in 0..WARM_ROUNDS {
@@ -352,12 +364,21 @@ impl Coverage {
     }
 
     fn sources(&self, ready: &Ready, satcom: Option<String>) -> Value {
+        let stations = ready.pred.ground_stations();
         json!({
             "links": self.src.links.display().to_string(),
             "terrain": self.terrain_name(),
             "terrain_cell_m": ready.links.terrain.cell_m,
             "terrain_alt_step_m": ready.links.terrain.alt_step_m,
-            "ground_station": ready.pred.ground_station().map(|g| json!([g.lon, g.lat, g.alt_m])),
+            // the one station as before; with several, `ground_stations` names them all
+            "ground_station": match stations {
+                [g] => json!([g.at.lon, g.at.lat, g.at.alt_m]),
+                _ => Value::Null,
+            },
+            "ground_stations": stations
+                .iter()
+                .map(|g| json!({"name": g.name, "at": [g.at.lon, g.at.lat, g.at.alt_m]}))
+                .collect::<Vec<_>>(),
             "ground_station_check": ready.gs_check,
             "satcom": satcom,
         })
@@ -616,6 +637,7 @@ impl Coverage {
         let (preds, satcom) = self.predict_all(&ready, &profile, &at).await.map_err(|e| (400, e))?;
         let mut state = String::with_capacity(preds.len());
         let mut reason = String::with_capacity(preds.len());
+        let mut station = String::with_capacity(preds.len());
         let mut loss = Vec::with_capacity(preds.len());
         let (mut up, mut deg, mut down, mut unknown) = (0, 0, 0, 0);
         for p in &preds {
@@ -631,6 +653,7 @@ impl Coverage {
                 }
             }
             reason.push(p.reason.map_or('-', |r| r.letter()));
+            station.push(p.station_index.map_or('-', station_letter));
             loss.push(json!(round_to(p.p_loss, 3)));
         }
         let out = json!({
@@ -651,12 +674,15 @@ impl Coverage {
             "order": "rows south to north, each west to east: cell (i, j) is at lat0 + i dlat, lon0 + j dlon",
             "state": state,
             "reason": reason,
+            "station": station,
+            "stations": ready.pred.ground_stations().iter().map(|g| g.name.clone()).collect::<Vec<_>>(),
             "p_loss": loss,
             "counts": {"up": up, "degraded": deg, "down": down, "unknown": unknown},
             "legend": {
                 "state": {"u": "up", "d": "degraded", "x": "down", "?": "terrain not answered yet (counted open, as the emulator does)"},
                 "reason": {"-": "none", "l": "the link's own loss", "r": "range", "t": "terrain", "s": "no satellite",
                            "w": "submerged", "a": "at the surface"},
+                "station": "the ground station the link goes through there: 0-9 then a-z, an index into stations; - none (a profile that uses none)",
             },
             "thresholds": {"degraded": DEGRADED_LOSS, "down": DOWN_LOSS},
             "failsafe_s": ready.pred.profile(&profile).and_then(|p| p.lost_link_s),
@@ -919,6 +945,11 @@ impl Coverage {
     }
 }
 
+/// A grid cell's station: its index as one character, 0-9 then a-z (36 stations; more read `?`).
+pub fn station_letter(i: usize) -> char {
+    char::from_digit(u32::try_from(i).unwrap_or(u32::MAX), 36).unwrap_or('?')
+}
+
 /// Never used: the predictions come one a point.
 fn unreachable_prediction(profile: &str) -> Prediction {
     Prediction {
@@ -930,6 +961,8 @@ fn unreachable_prediction(profile: &str) -> Prediction {
         range_loss: 0.0,
         terrain_loss: 0.0,
         blocked: false,
+        station: None,
+        station_index: None,
         range_m: None,
         obstruction_m: None,
         terrain_unknown: true,

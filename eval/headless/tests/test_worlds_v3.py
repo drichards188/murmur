@@ -107,7 +107,7 @@ def test_the_world_loads_with_its_traffic_space_and_station(world: str):
     w = load_world(world)
     assert w.traffic is not None and w.traffic.exists() and w.space is not None
     assert space.verify(w.space) == [], "the pinned element sets hold"
-    assert len(w.ground_stations) == 1, "the link emulator has one station"
+    assert len(w.ground_stations) == 1, "the v3 link oracle (v3/linkmap.py) reads one station"
     for g in (w.surface_grid, w.land_water_grid, w.bathymetry_grid, w.currents.field if w.currents else None):
         assert g is not None and g.exists(), g
     traffic = tomllib.loads(w.traffic.read_text())

@@ -19,6 +19,7 @@ has none of world v3's keys.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import tomllib
 from dataclasses import dataclass, field
@@ -106,41 +107,72 @@ def links_file() -> Path:
 
 def links_for(w: World, workdir: Path) -> Path:
     """The link profiles of an episode in world `w`: MURMUR_LINKS when set (as `links_file`),
-    else the world's links file, as it is when its `[ground_station]` is the world's (the Golden
-    Gate's: sim/links.toml, byte for byte), else a copy in `workdir` with the world's station in
-    it. The link emulator has one ground station, so a world naming more is refused here."""
+    else the world's links file, as it is when its stations are the world's (the Golden Gate's:
+    sim/links.toml, byte for byte), else a copy in `workdir` with the world's stations in it: one
+    as the file's `[ground_station]` table, several as `[[ground_station]]` tables in their
+    place (the link emulator networks them: each radio link through the best,
+    crates/murmur-linkemu station.rs)."""
     if os.environ.get("MURMUR_LINKS"):
         return links_file()
     base = w.links
     if not w.ground_stations:
         return base
-    if len(w.ground_stations) > 1:
-        raise ValueError(f"{w.path}: {len(w.ground_stations)} ground stations; the link emulator has one "
-                         "(crates/murmur-linkemu: [ground_station])")
-    gs = w.ground_stations[0]
     text = base.read_text()
     cur = tomllib.loads(text).get("ground_station") or {}
-    if (cur.get("lat"), cur.get("lon"), cur.get("alt_m")) == (gs.lat, gs.lon, gs.alt_m):
+    cur_list = cur if isinstance(cur, list) else [cur] if cur else []
+    named = [(g.name, g.lat, g.lon, g.alt_m) for g in w.ground_stations]
+    if [(c.get("name", f"station {i + 1}"), c.get("lat"), c.get("lon"), c.get("alt_m"))
+            for i, c in enumerate(cur_list)] == named:
         return base
-    want = {"lat": gs.lat, "lon": gs.lon, "alt_m": gs.alt_m}
+    if len(w.ground_stations) > 1 or isinstance(cur, list):
+        return _with_stations(w, text, workdir)
+    gs = w.ground_stations[0]
+    want = {"name": gs.name, "lat": gs.lat, "lon": gs.lon, "alt_m": gs.alt_m}
     out, inside, done = [], False, set()
     for line in text.splitlines():
         s = line.strip()
         if s.startswith("["):
             if inside:
-                out += [f"{k} = {v!r}" for k, v in want.items() if k not in done]
+                out += [f"{k} = {_toml(v)}" for k, v in want.items() if k not in done]
             inside = s == "[ground_station]"
         key = s.split("=", 1)[0].strip() if inside and "=" in s and not s.startswith("#") else None
         if key in want:
-            out.append(f"{key} = {want[key]!r}")
+            out.append(f"{key} = {_toml(want[key])}")
             done.add(key)
             continue
         out.append(line)
     if inside:
-        out += [f"{k} = {v!r}" for k, v in want.items() if k not in done]
+        out += [f"{k} = {_toml(v)}" for k, v in want.items() if k not in done]
     if "ground_station" not in tomllib.loads(text):
         # a table at the end (one at the top would take the file's top-level keys into it)
-        out += ["", "[ground_station]", *[f"{k} = {v!r}" for k, v in want.items()]]
+        out += ["", "[ground_station]", *[f"{k} = {_toml(v)}" for k, v in want.items()]]
+    path = workdir / f"links-{w.name}.toml"
+    path.write_text("\n".join(out) + "\n")
+    return path
+
+
+def _toml(v: Any) -> str:
+    """A TOML value: a string quoted (JSON's escapes are TOML's), a number as Python writes it."""
+    return json.dumps(v) if isinstance(v, str) else repr(v)
+
+
+def _with_stations(w: World, text: str, workdir: Path) -> Path:
+    """`links_for`'s copy for several stations: the file's own `[ground_station]` table or
+    `[[ground_station]]` tables taken out (each up to the next header) and the world's appended
+    as `[[ground_station]]` tables, at the end (a table at the top would take the file's
+    top-level keys into it)."""
+    out, inside = [], False
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("["):
+            inside = s in ("[ground_station]", "[[ground_station]]")
+        if not inside:
+            out.append(line)
+    while out and not out[-1].strip():
+        out.pop()
+    for g in w.ground_stations:
+        out += ["", "[[ground_station]]", *[f"{k} = {_toml(v)}" for k, v in
+                                             (("name", g.name), ("lat", g.lat), ("lon", g.lon), ("alt_m", g.alt_m))]]
     path = workdir / f"links-{w.name}.toml"
     path.write_text("\n".join(out) + "\n")
     return path

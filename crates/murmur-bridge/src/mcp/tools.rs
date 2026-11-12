@@ -611,7 +611,10 @@ pub fn tools() -> Vec<Tool> {
             "get_link_coverage",
             "Read the predicted link coverage (read-only, not logged): what the link emulator's \
              own geometry (range from the ground station, terrain between, SATCOM satellites in \
-             view, an AUV's depth) says a datalink would be before a vehicle goes there. For a \
+             view, an AUV's depth) says a datalink would be before a vehicle goes there. Where \
+             the scenario has several ground stations, a radio link is judged on the best \
+             station's path, as the emulator routes it, and a point answer names that station \
+             (a grid gives it per cell). For a \
              vehicle (uid: its own link profile, its position, the altitude its orders use) or a \
              link class (class, with alt_m above sea level or above_surface): at a point or \
              points (up, degraded or down, the share of packets lost, and why: range, terrain, \
