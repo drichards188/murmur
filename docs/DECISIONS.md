@@ -3443,3 +3443,19 @@ Saturation's first 300 s (HEADLESS.md 17.6): the five seconds from the dispatch 
 fsyncs before and 5 after, the ticks there took 5 to 18 s before and 0.02 to 0.46 s after (but
 one of 9.2 s in one run, under a load of 20), with the same audit log and record, and each log
 verified against its anchors.
+
+## 2026-11-12: Saturation is a technical demonstration, AI-driven (murmur-xlca)
+
+Asked what Saturation is for after a review found that its operator had almost nothing effective
+to do (no counter-air weapon, per-track declaration and signing at 500 drones, group orders that
+fail as a whole, the engine losing real time from minute 12), the owner chose: Saturation is a
+technical demonstration that Murmur runs and accepts orders at this scale, readable by a person
+watching it, and driven by the AI watch officer with scripted operators (autoplay), since it is
+too much for one person at the console without much more work. It is not an operator study and
+not, for now, the case that per-track human control breaks under a raid; moving human judgment
+up a level (a raid declared or engaged as one, standing rules) stays undecided, and release
+stays human, per engagement. So the work is: start with every vehicle on station and its order
+in force (the handover, murmur-by3s), one order per vehicle rather than group command
+(murmur-xlca; group command stays shelved, murmur-3kqi), an engine that keeps real time
+throughout (murmur-jvdc), links that do not trip failsafes for nothing (murmur-q94k), an AI
+that can see the scene at this scale, and a display that tells a spectator what is happening.
