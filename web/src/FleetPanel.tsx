@@ -1,10 +1,11 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { type GroupContext, groupView, type GroupView, latestOps, STATE_ORDER, STATE_WORDS } from './exceptions'
 import { emuCause } from './linkEmu'
 import { type Reveal, scrollSpanIntoView, useFlash } from './reveal'
 import { symbolSvg } from './symbols'
 import { type Swarm, swarmColor, swarmGroups } from './swarmsModel'
 import './swarms.css'
-import type { Vehicle } from './types'
+import type { Tasking, Vehicle } from './types'
 import { callsign, domainOf, isStale, staleMs } from './types'
 
 interface Props {
@@ -24,6 +25,16 @@ interface Props {
   /** the bridge's swarm summary (swarmsModel.ts), for the groups' order, names and colours: a fleet
    *  with swarms is listed swarm by swarm */
   swarms?: Pick<Swarm, 'id' | 'name' | 'color' | 'role'>[]
+  /** the orders' ops (a member on its order's active op is on station) */
+  taskings?: Tasking[]
+  /** vehicles with an inbox `damaged` alert, and with an alert of their own (not folded into
+   *  their group's): exceptions, listed on their own */
+  damaged?: ReadonlySet<number>
+  alerted?: ReadonlySet<number>
+  /** the map legend's Show all for lists: every group open */
+  expandAll?: boolean
+  /** how many vehicles the folded groups do not list (the map legend counts them) */
+  onFolded?: (n: { vehicles: number; groups: number }) => void
 }
 
 function linkClass(v: Vehicle) {
@@ -161,23 +172,55 @@ const GROUPS: { title: string; match: (v: Vehicle) => boolean }[] = [
 // them in step), so only the rows in view, plus a margin, are in the DOM, whatever the fleet size.
 export const ROW_H = 84
 export const HEAD_H = 32
+/** a group's row (name, counts by state) and the line under a folded group's listed members */
+export const GROUP_H = 54
+export const MORE_H = 28
 const OVERSCAN_PX = 400
 
-type Item = { kind: 'head'; title: string; count: number; top: number; color?: string } | { kind: 'row'; v: Vehicle; top: number }
+type Item =
+  | { kind: 'head'; title: string; count: number; top: number; color?: string }
+  | { kind: 'group'; id: string; title: string; color: string; members: Vehicle[]; view: GroupView<Vehicle>; expanded: boolean; top: number }
+  | { kind: 'row'; v: Vehicle; top: number }
+  | { kind: 'more'; id: string; text: string; top: number }
 
-/** The rows and headers, top to bottom: by swarm when the fleet has swarms (swarmGroups), else by
- *  domain. */
-function layout(vehicles: Vehicle[], swarms: Props['swarms']): { items: Item[]; height: number } {
+const HEIGHT: Record<Item['kind'], number> = { head: HEAD_H, group: GROUP_H, row: ROW_H, more: MORE_H }
+
+/** The rows and headers, top to bottom. A fleet with groups (swarmGroups) by exception
+ *  (docs/research/saturation-display.md R6): one row per group with its members counted by state
+ *  (on station, moving, returning, idle, lost link, damaged), and under it only its exceptions
+ *  (details open, just revealed, damaged, lost link, an alert of its own, selected; at most
+ *  GROUP_SHOWN) unless the group is open, then every member, exceptions first. A fleet without
+ *  groups by domain, every vehicle, as before. */
+function layout(vehicles: Vehicle[], swarms: Props['swarms'], ctx: GroupContext, open: ReadonlySet<string>, expandAll: boolean): { items: Item[]; height: number } {
   const items: Item[] = []
   let top = 0
   const bySwarm = swarmGroups(vehicles, swarms)
-  const colors = new Map((swarms ?? []).map((s) => [s.id, swarmColor(s)]))
-  const groups = bySwarm
-    ? bySwarm.map((g) => ({ title: g.title, group: g.vehicles, color: g.id ? (colors.get(g.id) ?? '#7d8b9a') : undefined }))
-    : GROUPS.map(({ title, match }) => ({ title, group: vehicles.filter(match), color: undefined }))
-  for (const { title, group, color } of groups) {
+  if (bySwarm) {
+    const colors = new Map((swarms ?? []).map((s) => [s.id, swarmColor(s)]))
+    for (const g of bySwarm) {
+      if (!g.vehicles.length) continue
+      const id = g.id ?? 'none'
+      const expanded = expandAll || open.has(id)
+      const view = groupView(g.vehicles, ctx, expanded)
+      items.push({ kind: 'group', id, title: g.title, color: g.id ? (colors.get(g.id) ?? '#7d8b9a') : '#7d8b9a', members: g.vehicles, view, expanded, top })
+      top += GROUP_H
+      for (const v of view.shown) {
+        items.push({ kind: 'row', v, top })
+        top += ROW_H
+      }
+      // under listed members, the line that opens the rest (the group's row itself opens it too)
+      if (view.folded > 0 && view.shown.length > 0) {
+        const need = view.foldedExceptions ? `, ${view.foldedExceptions} more to look at` : ''
+        items.push({ kind: 'more', id, text: `+${view.folded} more${need} · show all ${g.vehicles.length}`, top })
+        top += MORE_H
+      }
+    }
+    return { items, height: top }
+  }
+  for (const { title, match } of GROUPS) {
+    const group = vehicles.filter(match)
     if (!group.length) continue
-    items.push({ kind: 'head', title, count: group.length, top, color })
+    items.push({ kind: 'head', title, count: group.length, top })
     top += HEAD_H
     for (const v of group) {
       items.push({ kind: 'row', v, top })
@@ -194,17 +237,87 @@ function firstBelow(items: Item[], y: number) {
   while (lo < hi) {
     const mid = (lo + hi) >> 1
     const it = items[mid]
-    if (it.top + (it.kind === 'head' ? HEAD_H : ROW_H) <= y) lo = mid + 1
+    if (it.top + HEIGHT[it.kind] <= y) lo = mid + 1
     else hi = mid
   }
   return lo
 }
 
-export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails, detailsUid, onSelect, reveal = null, reachBadges, swarms }: Props) {
+const NONE: ReadonlySet<number> = new Set()
+
+/** A group's row: its select box (every member, for one order), its name and size, its members
+ *  counted by state (lost link and damaged in the alert colour), and a click to open or fold it. */
+function GroupRow({ it, selected, onSelect, onOpen }: { it: Extract<Item, { kind: 'group' }>; selected: Set<number>; onSelect: (uids: number[]) => void; onOpen: () => void }) {
+  const { view, members } = it
+  const all = view.selected === members.length
+  const some = view.selected > 0 && !all
+  return (
+    <div className={`vgroup${all ? ' sel' : ''}`}>
+      <button
+        className="vrow-select"
+        aria-pressed={all}
+        aria-label={`${all ? 'Deselect' : 'Select'} every member of ${it.title}`}
+        title={all ? 'Every member selected (click to deselect them)' : 'Select every member, for one order to the group'}
+        onClick={() => onSelect(all ? [...selected].filter((u) => !members.some((v) => v.uid === u)) : members.map((v) => v.uid))}
+      >
+        <span className="vrow-box" aria-hidden>
+          {all ? '✓' : some ? '–' : ''}
+        </span>
+      </button>
+      <button className="vgroup-body" aria-expanded={it.expanded} onClick={onOpen} title={it.expanded ? 'Fold: list only its exceptions' : 'Open: list every member, exceptions first'}>
+        <span className="vgroup-name">
+          <i style={{ background: it.color }} aria-hidden />
+          <span className="vgroup-title">{it.title}</span>
+          <b>{members.length}</b>
+          <span className="vgroup-caret" aria-hidden>
+            {it.expanded ? '▾' : '▸'}
+          </span>
+        </span>
+        <span className="vgroup-counts">
+          {STATE_ORDER.filter((s) => view.counts[s] > 0).map((s) => (
+            <span key={s} className={`vg-${s}`}>
+              {view.counts[s]} {STATE_WORDS[s]}
+            </span>
+          ))}
+          {view.selected > 0 && <span className="vg-sel">{view.selected} selected</span>}
+        </span>
+      </button>
+    </div>
+  )
+}
+
+export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails, detailsUid, onSelect, reveal = null, reachBadges, swarms, taskings, damaged = NONE, alerted = NONE, expandAll = false, onFolded }: Props) {
   const ids = (pred: (v: Vehicle) => boolean) => vehicles.filter(pred).map((v) => v.uid)
   const list = useRef<HTMLDivElement>(null)
   const [scroll, setScroll] = useState({ top: 0, height: 800 })
-  const { items, height } = useMemo(() => layout(vehicles, swarms), [vehicles, swarms])
+  // the groups the person opened (a view setting of this console)
+  const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set())
+  const toggleGroup = (id: string) =>
+    setOpen((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  const opStates = useMemo(() => latestOps(taskings ?? []), [taskings])
+  const revealUid = reveal?.ids.length ? Number(reveal.ids[0]) : null
+  const { items, height } = useMemo(
+    () => layout(vehicles, swarms, { latest: opStates, damaged, alerted, selected, open: detailsUid, flash: revealUid }, open, expandAll),
+    [vehicles, swarms, opStates, damaged, alerted, selected, detailsUid, revealUid, open, expandAll],
+  )
+  // what the folded groups do not list, for the map legend
+  let foldedVehicles = 0
+  let foldedGroups = 0
+  for (const it of items) {
+    if (it.kind !== 'group' || it.view.folded === 0) continue
+    foldedVehicles += it.view.folded
+    foldedGroups++
+  }
+  const foldedRef = useRef(onFolded)
+  foldedRef.current = onFolded
+  useEffect(() => {
+    foldedRef.current?.({ vehicles: foldedVehicles, groups: foldedGroups })
+  }, [foldedVehicles, foldedGroups])
   // the list element exists only once there are vehicles
   const hasList = vehicles.length > 0
 
@@ -290,6 +403,14 @@ export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails
                   {it.color && <i style={{ background: it.color }} aria-hidden />}
                   {it.title} <span>{it.count}</span>
                 </h3>
+              ) : it.kind === 'group' ? (
+                <div key={`g:${it.id}`} className="vlist-group" style={{ top: it.top }}>
+                  <GroupRow it={it} selected={selected} onSelect={onSelect} onOpen={() => toggleGroup(it.id)} />
+                </div>
+              ) : it.kind === 'more' ? (
+                <button key={`m:${it.id}`} className="vlist-more" style={{ top: it.top }} onClick={() => toggleGroup(it.id)} disabled={expandAll}>
+                  {it.text}
+                </button>
               ) : (
                 <div key={it.v.uid} className="vlist-item" style={{ top: it.top }}>
                   <Row

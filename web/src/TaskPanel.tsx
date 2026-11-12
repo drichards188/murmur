@@ -16,6 +16,7 @@ import { sendTask, TaskRefused, type TaskRequest } from './useBridge'
 import { availableTasks, orbitRange, usePlatformLimits } from './taskDefaults'
 import { OptionLine } from './IdentifyForm'
 import { sendIdentify, useIdentifyOptions } from './identify'
+import { OPS_FOLD, orderSummary, STUCK_S } from './exceptions'
 
 interface Props {
   vehicles: Vehicle[]
@@ -35,6 +36,10 @@ interface Props {
   onLinkRoute?: (d: LinkRouteDrawing | null) => void
   /** the run's latest intents: how an identify order's look ended (rules 21) */
   intents?: Intent[]
+  /** the map legend's Show all for lists: every order's vehicles listed one by one */
+  expandAll?: boolean
+  /** how many vehicle lines the summarised orders do not list (the map legend counts them) */
+  onFolded?: (n: { lines: number; cards: number }) => void
 }
 
 /** The task buttons' kinds: the task layer's, and (rules 21) identify, one vehicle sent to
@@ -85,20 +90,84 @@ interface CardProps {
   authorized: string | null
   ago: string
   nameOf: (uid: number) => Vehicle | undefined
+  /** an order to more than OPS_FOLD vehicles: summarised unless open */
+  open: boolean
+  onOpen: (id: number) => void
+  /** the bridge clock, s, at the minute (what makes an op stuck) */
+  minute: number
+}
+
+/** an op state counted on a summarised card, in words */
+const COUNT_WORDS: Record<string, string> = {
+  queued: 'waiting for a fix',
+  sent: 'sent',
+  starting: 'starting',
+  acked: 'acked',
+  active: 'active',
+  done: 'done',
+  requeued: 'back to the queue',
+  unconfirmed: 'unconfirmed',
+  superseded: 'superseded',
+  failed: 'failed',
+}
+const ALERT_STATES = new Set(['failed', 'unconfirmed', 'requeued'])
+
+/** A summarised order (R6): its vehicles counted by state, and every exception (failed,
+ *  superseded, may be running, back to the queue, stuck) listed, grouped by reason with the
+ *  vehicles named; "show all" lists them one by one as before. */
+function OrderSummary({ t, nameOf, minute, onOpen }: Pick<CardProps, 't' | 'nameOf' | 'minute' | 'onOpen'>) {
+  const s = orderSummary(t.ops, minute)
+  const name = (uid: number) => {
+    const v = nameOf(uid)
+    return v ? callsign(v) : String(uid)
+  }
+  return (
+    <>
+      <p className="tcard-sum">
+        {s.counts.map(([state, n]) => (
+          <span key={state} className={`ts ts-${state}${ALERT_STATES.has(state) ? ' bad' : ''}`}>
+            {n} {COUNT_WORDS[state] ?? state}
+          </span>
+        ))}
+      </p>
+      {s.exceptions.map((e) => {
+        const ending = e.state === 'stuck' ? `stuck over ${STUCK_S} s` : (opEnding({ state: e.state, detail: e.detail }) ?? e.state)
+        const why = reasonBluf(e.detail, {}).headline || e.detail
+        return (
+          <div key={`${e.state}|${e.detail}`} className={`tcard-exc ${e.state}`}>
+            <span className="tcard-exc-head">
+              <b>{ending.toUpperCase()}</b> <span className="muted">×{e.uids.length}</span> {why}
+            </span>
+            <span className="tcard-names">{e.uids.map(name).join(', ')}</span>
+          </div>
+        )
+      })}
+      <button className="ghost mini tcard-all" onClick={() => onOpen(t.id)}>
+        show all {t.ops.length}
+      </button>
+    </>
+  )
 }
 
 /** One command log card: a tasking and each vehicle's op in it. A tasking to a swarm has a
  *  hundred ops, so it is built only while it is near the log's view (Lazy) and only re-rendered
  *  when its ops changed or its age text did. */
 const TaskingCard = memo(
-  function TaskingCard({ t, label, moved, ended, authorized, ago, nameOf }: CardProps) {
+  function TaskingCard({ t, label, moved, ended, authorized, ago, nameOf, open, onOpen, minute }: CardProps) {
+    const summarised = t.ops.length > OPS_FOLD && !open
     return (
-      <Lazy as="section" className="tcard" estimate={36 + t.ops.length * 26}>
+      <Lazy as="section" className="tcard" estimate={summarised ? 90 : 36 + t.ops.length * 26}>
         {() => (
         <>
         <div className="tcard-head">
           <strong>{label}</strong>
           <span className="muted">#{t.id}</span>
+          {t.ops.length > OPS_FOLD && <span className="muted">{t.ops.length} vehicles</span>}
+          {t.ops.length > OPS_FOLD && open && (
+            <button className="ghost mini tcard-fold" onClick={() => onOpen(t.id)}>
+              summarise
+            </button>
+          )}
           {moved > 0 && <span className="muted">moved {moved}x with it</span>}
           <span className="muted right">{ago} ago</span>
         </div>
@@ -110,7 +179,8 @@ const TaskingCard = memo(
             ctx={{ who: t.ops[0] ? (() => { const v = nameOf(t.ops[0].uid); return v ? callsign(v) : undefined })() : undefined }}
           />
         )}
-        {t.ops.map((o) => {
+        {summarised && <OrderSummary t={t} nameOf={nameOf} minute={minute} onOpen={onOpen} />}
+        {!summarised && t.ops.map((o) => {
           const v = nameOf(o.uid)
           const ending = opEnding(o)
           const parts = reasonBluf(o.detail, { who: v ? callsign(v) : undefined })
@@ -131,10 +201,12 @@ const TaskingCard = memo(
       </Lazy>
     )
   },
-  (a, b) => a.sig === b.sig && a.label === b.label && a.moved === b.moved && a.ended === b.ended && a.authorized === b.authorized && a.ago === b.ago && a.nameOf === b.nameOf && a.t.id === b.t.id,
+  (a, b) =>
+    a.sig === b.sig && a.label === b.label && a.moved === b.moved && a.ended === b.ended && a.authorized === b.authorized && a.ago === b.ago && a.nameOf === b.nameOf && a.t.id === b.t.id &&
+    a.open === b.open && a.onOpen === b.onOpen && a.minute === b.minute,
 )
 
-export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draft, setDraft, taskings, pendingIds, onInbox, space, now, onLinkRoute, intents }: Props) {
+export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draft, setDraft, taskings, pendingIds, onInbox, space, now, onLinkRoute, intents, expandAll = false, onFolded }: Props) {
   const runs = space?.runs ?? []
   const scen = now ? scenarioNow(space, now) : null
   // rules 21: an identify order's taskings (its orbit each time it moved with its track, then the
@@ -161,6 +233,29 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
     return t.params.look ? `IDENTIFY ${e.track}` : `IDENTIFY ${e.track}, then ${t.task.toUpperCase()}`
   }
   const shownTaskings = taskings.filter((t) => !identify.has(t.intent_id ?? -1) || identify.get(t.intent_id ?? -1)?.newest === t.id)
+  // R6: an order to many vehicles is one card with its vehicles counted, exceptions listed; the
+  // person opens one to list its vehicles (a view setting of this console)
+  const [openCards, setOpenCards] = useState<ReadonlySet<number>>(() => new Set())
+  const toggleCard = useCallback(
+    (id: number) =>
+      setOpenCards((prev) => {
+        const next = new Set(prev)
+        if (next.has(id)) next.delete(id)
+        else next.add(id)
+        return next
+      }),
+    [],
+  )
+  const cardOpen = (id: number) => expandAll || openCards.has(id)
+  const foldedLines = shownTaskings.reduce((n, t) => n + (t.ops.length > OPS_FOLD && !cardOpen(t.id) ? t.ops.length : 0), 0)
+  const foldedCards = shownTaskings.filter((t) => t.ops.length > OPS_FOLD && !cardOpen(t.id)).length
+  const foldedRef = useRef(onFolded)
+  foldedRef.current = onFolded
+  useEffect(() => {
+    foldedRef.current?.({ lines: foldedLines, cards: foldedCards })
+  }, [foldedLines, foldedCards])
+  // what makes an op stuck, read at the minute (the cards re-render no more often for it)
+  const minute = Math.floor((now ? now() : Date.now()) / 60_000) * 60
   const [kind, setKind] = useState<PanelKind>('orbit')
   // rules 21: what sending an identify order said (sent, or waiting in the Inbox)
   const [idSent, setIdSent] = useState<string | null>(null)
@@ -450,6 +545,9 @@ export function TaskPanel({ vehicles, historyVehicles = vehicles, selected, draf
               authorized={authorized.get(t.id) ?? null}
               ago={age(t.created, now ? now() : Date.now())}
               nameOf={nameOf}
+              open={cardOpen(t.id)}
+              onOpen={toggleCard}
+              minute={minute}
             />
           )
         })}

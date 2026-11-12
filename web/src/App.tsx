@@ -124,9 +124,13 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const [pinnedTracks, setPinnedTracks] = useState<ReadonlySet<string>>(() => new Set())
   // the map legend's Show all (HiddenLegend.tsx, R3): each thing drawn dim, unlabelled or folded,
   // in full while on; and what the label budget drew last
-  const [showAll, setShowAll] = useState({ tracks: false, areas: false, estimates: false, labels: false })
+  const [showAll, setShowAll] = useState({ tracks: false, areas: false, estimates: false, labels: false, lists: false })
   const toggleAll = useCallback((k: keyof typeof showAll) => setShowAll((s) => ({ ...s, [k]: !s[k] })), [])
   const [labelStats, setLabelStats] = useState<LabelStats | null>(null)
+  // what the lists fold (R6), as each reports it: the legend counts it
+  const [fleetFolds, setFleetFolds] = useState({ vehicles: 0, groups: 0 })
+  const [trackFolds, setTrackFolds] = useState({ tracks: 0, folds: 0 })
+  const [orderFolds, setOrderFolds] = useState({ lines: 0, cards: 0 })
   const togglePin = useCallback((id: string) => {
     setPinnedTracks((prev) => {
       const next = new Set(prev)
@@ -610,6 +614,20 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         hidden: true, all: showAll.estimates, onToggle: () => toggleAll('estimates'),
       })
     }
+    const foldedAny = fleetFolds.vehicles + trackFolds.tracks + orderFolds.lines > 0
+    if (foldedAny || showAll.lists) {
+      const parts = [
+        fleetFolds.vehicles ? `${n(fleetFolds.vehicles)} vehicles` : '',
+        trackFolds.tracks ? `${n(trackFolds.tracks)} tracks` : '',
+        orderFolds.lines ? `${n(orderFolds.lines)} order lines` : '',
+      ].filter(Boolean)
+      rows.push({
+        id: 'lists', what: 'Lists',
+        count: showAll.lists ? 'every fold open' : `${parts.join(', ')} folded`,
+        how: 'The fleet list shows one row per group with its members counted by state and only its exceptions (lost link, damaged, an alert of its own, selected, details open); the track list what is in focus first and the rest folded by affiliation and kind; the command log one card per order with its exceptions listed. Each fold opens with a click.',
+        hidden: foldedAny, all: showAll.lists, onToggle: () => toggleAll('lists'),
+      })
+    }
     if (labelStats && (labelStats.none > 0 || labelStats.all)) {
       const drawn = labelStats.full + labelStats.short
       rows.push({
@@ -622,7 +640,11 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     return rows
     // now: the hidden estimates are counted at this tick
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tracks, crowded, trackFocus, showAll, silent, estimateTick, vehicleFocus, labelStats, toggleAll])
+  }, [tracks, crowded, trackFocus, showAll, silent, estimateTick, vehicleFocus, labelStats, toggleAll, fleetFolds, trackFolds, orderFolds])
+  // the fleet list's exceptions: a damaged vehicle (its inbox alert), one with an alert of its own
+  const listAlerts = decisions?.inbox.alerts
+  const damagedUids = useMemo(() => new Set((listAlerts ?? []).filter((a) => (a.kind as string) === 'damaged').map((a) => a.uid)), [listAlerts])
+  const alertedUids = useMemo(() => new Set(unfolded(listAlerts ?? []).map((a) => a.uid)), [listAlerts])
   // the full block of a track, lost contact or estimate under the pointer, while its label is not
   const mapTooltip = useCallback((layer: string, object: unknown) => trackTooltip(layer, object, now()) ?? estimateTooltip(layer, object), [now])
   const focusTrack = useCallback(
@@ -872,6 +894,11 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         onSelect={(ids) => setSelected(new Set(ids))}
         reveal={revealVeh}
         swarms={swarmFeed.doc?.swarms}
+        taskings={state?.taskings}
+        damaged={damagedUids}
+        alerted={alertedUids}
+        expandAll={showAll.lists}
+        onFolded={setFleetFolds}
       />
       </ErrorBoundary>
       <main className={`mapwrap ${showSpace ? 'space-open' : ''}`}>
@@ -1090,11 +1117,15 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             blocking={decisions?.inbox.blocking}
             pinned={pinnedTracks}
             onPin={togglePin}
+            focus={trackFocus}
+            crowded={crowded}
+            expandAll={showAll.lists}
+            onFolded={setTrackFolds}
           />
           </ErrorBoundary>
         </div>
         <ErrorBoundary name="Task panel" className="slot tasking">
-        <TaskPanel vehicles={vehicles} historyVehicles={allVehicles} selected={selected} draft={draft} setDraft={setDraft} taskings={taskings} pendingIds={pendingIds} onInbox={openIntent} space={spaceRuns} now={now} onLinkRoute={setLinkRoute} intents={allIntents} />
+        <TaskPanel vehicles={vehicles} historyVehicles={allVehicles} selected={selected} draft={draft} setDraft={setDraft} taskings={taskings} pendingIds={pendingIds} onInbox={openIntent} space={spaceRuns} now={now} onLinkRoute={setLinkRoute} intents={allIntents} expandAll={showAll.lists} onFolded={setOrderFolds} />
         </ErrorBoundary>
         {/* the nomination form (Phase E) takes the rail while open: the map keeps its preview and the inbox stays clear */}
         {engageForm && (

@@ -89,3 +89,24 @@
   font-size: 11px;
   color: #9aa6b2;
 }
+
+/* the list by exception (R6): what is in focus first, with why; the rest folded by affiliation and
+   kind into one row each, one click from its tracks */
+.tk-help { margin-left: auto; }
+.tk-help + .close { margin-left: 0; }
+.tk-help[aria-pressed="true"] { color: var(--accent); border-color: #4a3a1f; }
+.tk-sec { margin: 4px 4px 0; font: 600 10.5px var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+.tk-sec span { color: var(--text); margin-left: 4px; }
+.tk-why-tag { font: 500 9.5px var(--mono); color: var(--muted); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; letter-spacing: 0.02em; text-transform: none; }
+.tk-fold-wrap { display: flex; flex-direction: column; gap: 4px; }
+.tk-fold {
+  display: grid; grid-template-columns: 44px 1fr auto; align-items: center; column-gap: 8px; width: 100%; text-align: left;
+  background: #0f151c; border: 1px dashed var(--line); border-radius: 4px; padding: 6px 8px; cursor: pointer; margin-top: 4px;
+}
+.tk-fold:hover { border-color: #33475d; }
+.tk-fold:disabled { cursor: default; }
+.tk-fold-n { font: 600 14px var(--mono); color: var(--text); text-align: right; }
+.tk-fold-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 12.5px; }
+.tk-fold-main b { font-weight: 600; }
+.tk-fold-levels { font: 11px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tk-fold-caret { color: var(--muted); }

@@ -7,6 +7,8 @@ import {
   SENSOR_LABEL,
   type Track,
   type TracksMessage,
+  type LostContact,
+  type Affiliation,
   fmtAge,
   isTrackStale,
   kindLabel,
@@ -24,6 +26,8 @@ import { IdentifyForm } from './IdentifyForm'
 import { DeclarationBlock, DeclareControls } from './Declaration'
 import { type Blocking, waited } from './blocking'
 import { Lazy } from './Lazy'
+import { foldTracks, type TrackFold } from './exceptions'
+import { FOCUS_WORDS, type FocusReason } from './focus'
 
 /** The tracks section, pinned above the task panel (Phase C2): every contact our sensors hold, ranked hostile, suspect,
  *  unknown first; click a row for what the estimate rests on (sources, confidence, age,
@@ -54,6 +58,14 @@ interface Props {
   /** tracks the person pinned to be drawn in full on the map (focus.ts), and the toggle */
   pinned?: ReadonlySet<string>
   onPin?: (id: string) => void
+  /** what is in focus (focus.ts) and why: listed first, the rest folded (R6) */
+  focus?: ReadonlyMap<string, FocusReason>
+  /** the picture is crowded: the list by exception; else every track, as before */
+  crowded?: boolean
+  /** the map legend's Show all for lists: every fold open */
+  expandAll?: boolean
+  /** how many tracks and lost contacts the folds hold (the map legend counts them) */
+  onFolded?: (n: { tracks: number; folds: number }) => void
 }
 
 /** hot, unknown and other counts of the live tracks, as badges */
@@ -82,7 +94,7 @@ function pct(x: number) {
   return `${Math.round(100 * x)}%`
 }
 
-function Row({ t, nowMs, staleAfterS, sel, onClick }: { t: Track; nowMs: number; staleAfterS: number; sel: boolean; onClick: () => void }) {
+function Row({ t, nowMs, staleAfterS, sel, onClick, why }: { t: Track; nowMs: number; staleAfterS: number; sel: boolean; onClick: () => void; why?: string }) {
   const stale = isTrackStale(t, nowMs, staleAfterS)
   const age = trackAge(t, nowMs)
   const conf = trackConfidence(t, nowMs)
@@ -106,6 +118,11 @@ function Row({ t, nowMs, staleAfterS, sel, onClick }: { t: Track; nowMs: number;
           {(t.review?.length ?? 0) > 0 && (
             <span className="vrow-standin tk-review" title={t.review?.map((f) => `F-${f.flag}: ${f.evidence}`).join('\n')}>
               REVIEW
+            </span>
+          )}
+          {why && (
+            <span className="tk-why-tag" title="Why it is listed first and drawn in full on the map">
+              {why}
             </span>
           )}
         </span>
@@ -287,11 +304,45 @@ function Detail({ t, nowMs, now, staleAfterS, vehicles, onFocus, onEngage, holdi
   )
 }
 
-export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus, collapsed, onCollapse, reveal = null, onEngage, blocking, pinned, onPin }: Props) {
+/** "identified 372 · recognised 39": a fold's identity levels, the most specific first */
+function levelLine(f: TrackFold<Track>) {
+  const order: [string, string][] = [['identify', 'identified'], ['recognise', 'recognised'], ['detect', 'detected'], ['', 'no level']]
+  return order.flatMap(([k, w]) => (f.levels[k] ? [`${w} ${f.levels[k]}`] : [])).join(' · ')
+}
+
+export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus, collapsed, onCollapse, reveal = null, onEngage, blocking, pinned, onPin, focus, crowded = false, expandAll = false, onFolded }: Props) {
   const nowMs = now()
   const staleAfterS = tracks?.stale_after_s ?? 10
   const list = sortTracks(tracks?.tracks ?? [])
-  const chunks = Array.from({ length: Math.ceil(list.length / CHUNK) }, (_, i) => list.slice(i * CHUNK, (i + 1) * CHUNK))
+  // R6: what is in focus first (with why), the rest folded by affiliation and kind; few tracks as before
+  const reason = (id: string) => {
+    const r = focus?.get(id)
+    return r && r !== 'hovered' ? r : id === selected ? 'selected' : null
+  }
+  const listing = foldTracks(list, (t) => reason(t.id) != null, crowded)
+  const [openFolds, setOpenFolds] = useState<ReadonlySet<string>>(() => new Set())
+  const toggleFold = (key: string) =>
+    setOpenFolds((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  const foldOpen = (key: string) => expandAll || openFolds.has(key)
+  // the help paragraphs: behind a "?" while the list is by exception, else as before
+  const [help, setHelp] = useState(false)
+  const showHelp = !crowded || help
+  const lost = tracks?.lost ?? []
+  const lostPinned = crowded ? lost.filter((l) => reason(l.id) != null) : lost
+  const lostFolded = crowded ? lost.filter((l) => reason(l.id) == null) : []
+  const lostOpen = foldOpen('lost')
+  const foldedTracks = listing.folds.reduce((n, f) => n + (foldOpen(f.key) ? 0 : f.tracks.length), 0) + (lostOpen ? 0 : lostFolded.length)
+  const foldedRows = listing.folds.filter((f) => !foldOpen(f.key)).length + (lostFolded.length && !lostOpen ? 1 : 0)
+  const foldedRef = useRef(onFolded)
+  foldedRef.current = onFolded
+  useEffect(() => {
+    foldedRef.current?.({ tracks: foldedTracks, folds: foldedRows })
+  }, [foldedTracks, foldedRows])
   const stale = list.filter((t) => isTrackStale(t, nowMs, staleAfterS)).length
   const box = useRef<HTMLDivElement>(null)
   const flash = useFlash(reveal, (ids) => ids[0] ?? null)
@@ -306,6 +357,36 @@ export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus
     scrollSpanIntoView(el, top, Math.min(item.getBoundingClientRect().height, el.clientHeight))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reveal, collapsed])
+  /** Rows in chunks, each built only near the view (Lazy): a Lazy a row was most of what the list
+   *  cost to render with hundreds of tracks. In focus: each says why it is listed first. */
+  const rows = (ts: Track[], first: boolean) =>
+    Array.from({ length: Math.ceil(ts.length / CHUNK) }, (_, i) => ts.slice(i * CHUNK, (i + 1) * CHUNK)).map((chunk) => (
+      <Lazy key={chunk[0].id} className="tk-chunk" estimate={chunk.length * (ROW_EST + 4)} force={first || chunk.some((t) => t.id === selected || t.id === flash || t.id === reveal?.ids[0])}>
+        {() =>
+          chunk.map((t) => {
+            const why = first ? reason(t.id) : null
+            return (
+              <div key={t.id} data-track-id={t.id} data-tutorial="track-row" className={flash === t.id ? 'tk-flash' : undefined}>
+                <Row t={t} nowMs={nowMs} staleAfterS={staleAfterS} sel={selected === t.id} onClick={() => onSelect(selected === t.id ? null : t.id)} why={crowded && why ? FOCUS_WORDS[why] : undefined} />
+                {selected === t.id && <Detail t={t} nowMs={nowMs} now={now} staleAfterS={staleAfterS} vehicles={vehicles} onFocus={() => onFocus(t)} onEngage={onEngage ? () => onEngage(t.id) : undefined} holding={(blocking ?? []).find((b) => b.track === t.id)} pinned={pinned?.has(t.id)} onPin={onPin ? () => onPin(t.id) : undefined} />}
+              </div>
+            )
+          })
+        }
+      </Lazy>
+    ))
+  const lostRow = (l: LostContact) => (
+    <p key={l.id} className="tk-lost-row">
+      <b>{l.id}</b> {kindLabel(l.identity)}, {l.affiliation.replace(/_/g, ' ')}
+      {l.ais ? ` (AIS ${l.ais.name})` : ''}: out of view {fmtAge(l.out_of_view_s)}, counted within {Math.round(Math.max(0, ...l.regions.map((r) => r.radius_m)))} m of where it could be now
+    </p>
+  )
+  /** "130 unknown · kept in every keep-out" */
+  const lostSummary = (ls: LostContact[]) => {
+    const by = new Map<string, number>()
+    for (const l of ls) by.set(l.affiliation, (by.get(l.affiliation) ?? 0) + 1)
+    return `${[...by].map(([a, n]) => `${n} ${a.replace(/_/g, ' ')}`).join(' · ')} · each still in every keep-out`
+  }
   return (
     <aside className={`tk ${collapsed ? 'collapsed' : ''}`} aria-label="Tracks" data-tutorial="tracks">
       <header className="tk-top">
@@ -314,6 +395,11 @@ export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus
         <span className="muted">
           {list.length} held{stale ? `, ${stale} stale` : ''}
         </span>
+        {crowded && (
+          <button className="ghost mini tk-help" aria-pressed={help} onClick={() => setHelp((h) => !h)} title="What the symbols, rings and BY RULE mean">
+            ?
+          </button>
+        )}
         <button className="ghost mini close" onClick={onCollapse} aria-expanded={!collapsed} aria-label={collapsed ? 'Expand tracks' : 'Collapse tracks'} title={collapsed ? 'Expand tracks' : 'Collapse tracks'}>
           {collapsed ? '▾' : '▴'}
         </button>
@@ -325,37 +411,58 @@ export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus
             No tracks. Contacts appear here as our platforms' sensors detect them (radar, EO/IR, AIS, sonar, ESM per <code>sim/platforms.toml</code>); start a scenario with <code>MURMUR_CONTACTS=sim/scenarios/golden-gate.toml</code>.
           </p>
         ) : (
-          <p className="tk-note">Symbols fade and their uncertainty ring grows with time since the last detection. Hostile takes a declaration: an operator&apos;s, or the engine&apos;s rule on a hostile act our sensors observed (marked BY RULE until an operator confirms it). Proximity alone never declares. From our sensors only.</p>
+          showHelp && <p className="tk-note">Symbols fade and their uncertainty ring grows with time since the last detection. Hostile takes a declaration: an operator&apos;s, or the engine&apos;s rule on a hostile act our sensors observed (marked BY RULE until an operator confirms it). Proximity alone never declares. From our sensors only.{crowded ? ' Listed first: what is in focus, and why; the rest folded by affiliation and kind (a count, not a grouping by place), each fold one click from its tracks.' : ''}</p>
         )}
-        {!!tracks?.lost?.length && <p className="tk-note">Red rings on the map show the possible area of a lost hostile contact. They remain in engagement keep-out checks after the contact leaves sensor view.</p>}
-        {/* the rows go in chunks, each built only near the view (Lazy): a Lazy a row was most of
-            what the list cost to render with hundreds of tracks */}
-        {chunks.map((chunk) => (
-          <Lazy key={chunk[0].id} className="tk-chunk" estimate={chunk.length * (ROW_EST + 4)} force={chunk.some((t) => t.id === selected || t.id === flash || t.id === reveal?.ids[0])}>
-            {() =>
-              chunk.map((t) => (
-                <div key={t.id} data-track-id={t.id} data-tutorial="track-row" className={flash === t.id ? 'tk-flash' : undefined}>
-                  <Row t={t} nowMs={nowMs} staleAfterS={staleAfterS} sel={selected === t.id} onClick={() => onSelect(selected === t.id ? null : t.id)} />
-                  {selected === t.id && <Detail t={t} nowMs={nowMs} now={now} staleAfterS={staleAfterS} vehicles={vehicles} onFocus={() => onFocus(t)} onEngage={onEngage ? () => onEngage(t.id) : undefined} holding={(blocking ?? []).find((b) => b.track === t.id)} pinned={pinned?.has(t.id)} onPin={onPin ? () => onPin(t.id) : undefined} />}
-                </div>
-              ))
-            }
-          </Lazy>
+        {showHelp && !!tracks?.lost?.length && <p className="tk-note">Red rings on the map show the possible area of a lost hostile contact. They remain in engagement keep-out checks after the contact leaves sensor view.</p>}
+        {listing.pinned.length > 0 && (
+          <h3 className="tk-sec" title="Selected, pinned, hostile or suspect, declared, flagged, a review item's, an engagement's target or blocker: drawn in full on the map">
+            In focus <span>{listing.pinned.length}</span>
+          </h3>
+        )}
+        {rows(listing.pinned, true)}
+        {listing.folds.map((f) => (
+          <div key={f.key} className="tk-fold-wrap">
+            <button className={`tk-fold ${f.affiliation}`} aria-expanded={foldOpen(f.key)} onClick={() => toggleFold(f.key)} disabled={expandAll} title={foldOpen(f.key) ? 'Fold these tracks back into one row' : `List these ${f.tracks.length} tracks one by one`}>
+              <span className="tk-fold-n">{f.tracks.length}</span>
+              <span className="tk-fold-main">
+                <span>
+                  <span className={`tk-aff ${f.affiliation}`}>{AFFILIATION_LABEL[f.affiliation as Affiliation] ?? f.affiliation}</span> <b>{kindLabel(f.kind)}</b>
+                </span>
+                <span className="tk-fold-levels">{levelLine(f)}</span>
+              </span>
+              <span className="tk-fold-caret" aria-hidden>
+                {foldOpen(f.key) ? '▾' : '▸'}
+              </span>
+            </button>
+            {foldOpen(f.key) && rows(f.tracks, false)}
+          </div>
         ))}
-        {(tracks?.lost ?? []).length > 0 && (
+        {rows(listing.loose, false)}
+        {lost.length > 0 && (
           <section className="tk-lost" aria-label="Lost contacts">
-            <p className="tk-note">
-              Red possible-area rings mark lost contacts: tracks the tracker dropped (no detection for 180 s). Every engagement keep-out still counts each, anywhere it could have reached since its
-              last fix at its domain's top speed, until an operator confirms a track carrying its AIS as it (the Review list) or an operator with engagement authority
-              accepts it for one engagement.
-            </p>
-            {(tracks?.lost ?? []).map((l) => (
-              <p key={l.id} className="tk-lost-row">
-                <b>{l.id}</b> {kindLabel(l.identity)}, {l.affiliation.replace(/_/g, " ")}
-                {l.ais ? ` (AIS ${l.ais.name})` : ""}: out of view {fmtAge(l.out_of_view_s)}, counted within{" "}
-                {Math.round(Math.max(0, ...l.regions.map((r) => r.radius_m)))} m of where it could be now
+            {showHelp && (
+              <p className="tk-note">
+                Red possible-area rings mark lost contacts: tracks the tracker dropped (no detection for 180 s). Every engagement keep-out still counts each, anywhere it could have reached since its
+                last fix at its domain's top speed, until an operator confirms a track carrying its AIS as it (the Review list) or an operator with engagement authority
+                accepts it for one engagement.
               </p>
-            ))}
+            )}
+            {lostPinned.map(lostRow)}
+            {lostFolded.length > 0 && (
+              <button className="tk-fold lost" aria-expanded={lostOpen} onClick={() => toggleFold('lost')} disabled={expandAll} title={lostOpen ? 'Fold the lost contacts back into one row' : 'List every lost contact out of focus'}>
+                <span className="tk-fold-n">{lostFolded.length}</span>
+                <span className="tk-fold-main">
+                  <span>
+                    <b>lost contacts</b> out of focus
+                  </span>
+                  <span className="tk-fold-levels">{lostSummary(lostFolded)}</span>
+                </span>
+                <span className="tk-fold-caret" aria-hidden>
+                  {lostOpen ? '▾' : '▸'}
+                </span>
+              </button>
+            )}
+            {lostOpen && lostFolded.map(lostRow)}
           </section>
         )}
       </div>
