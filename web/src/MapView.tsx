@@ -127,6 +127,9 @@ interface Props {
   reach?: GeoJSON.FeatureCollection | null
   /** the drafted order's legs coloured by predicted link, on the surface like the draft */
   linkRoute?: LinkRouteDrawing | null
+  /** what is under the pointer, from any pickable layer (its id and object), or nothing: called
+   *  on every pointer move over the map (a track hovered is drawn in full, focus.ts) */
+  onHover?: (layerId: string | null, object: unknown) => void
 }
 
 export type MapLayers = (screen: MapScreen) => LayersList
@@ -321,7 +324,7 @@ function surfacePoint(m: maplibregl.Map, e: maplibregl.MapMouseEvent): LngLat {
   return water ? [water.lng, water.lat] : [ground.lng, ground.lat]
 }
 
-export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, bridgeNow, oneWay, tracers = noTracers, acts = noActs, actsDismissedAt = null, weapons = noWeapons, weaponVictim = noVictim, nameOf = noName, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, weather = null, reach = null, linkRoute = null }: Props) {
+export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, bridgeNow, oneWay, tracers = noTracers, acts = noActs, actsDismissedAt = null, weapons = noWeapons, weaponVictim = noVictim, nameOf = noName, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, weather = null, reach = null, linkRoute = null, onHover: onHoverProp }: Props) {
   const vehicles = useMemo(() => hiddenUids?.size ? allVehicles.filter((v) => !hiddenUids.has(v.uid)) : allVehicles, [allVehicles, hiddenUids])
   // the top view (pitch 0, looking straight down) and the pitch to tilt back to from it
   const [top, setTop] = useState(false)
@@ -413,12 +416,14 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
   const clickRef = useRef(onMapClick)
   const toggleRef = useRef(onToggle)
   const deselectRef = useRef(onDeselect)
+  const hoverRef = useRef(onHoverProp)
   useEffect(() => {
     clickRef.current = onMapClick
     toggleRef.current = onToggle
     deselectRef.current = onDeselect
     viewCb.current = onView
-  }, [onMapClick, onToggle, onDeselect, onView])
+    hoverRef.current = onHoverProp
+  }, [onMapClick, onToggle, onDeselect, onView, onHoverProp])
 
   /** what this camera cannot show at its height (aloft.ts): from deck.gl's viewport, what it
    *  draws with */
@@ -689,6 +694,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
 
     // Bare symbols (decluttered) show their callsign on hover; any vehicle shows a pointer.
     const onHover = (info: PickingInfo) => {
+      hoverRef.current?.(info.object != null && info.layer ? info.layer.id : null, info.object ?? null)
       const v = info.layer && VEHICLE_PICK_LAYERS.includes(info.layer.id) ? (info.object as Vehicle | undefined) : undefined
       m.getCanvas().style.cursor = v ? 'pointer' : cursor.current
       const tip = tooltip.current

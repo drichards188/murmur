@@ -12,6 +12,12 @@
 //
 // and, once the platform's lost-link timer has fired, the same in violet for the failsafe
 // branch ("RTL if it lost us too · 12 s"): a second hypothesis, not a second vehicle.
+//
+// Dim, don't paint (docs/research/saturation-display.md R1): a jamming silences hundreds at
+// once, and two filled regions, two symbols and two boxed labels each flood the map. Out of focus
+// (not selected, details not open) a silent vehicle shows its leading hypothesis only, its region
+// outlined, not filled; in focus, both, filled, as before. `showAll` (the map legend's Show all)
+// draws every one in full.
 import { IconLayer, LineLayer, PathLayer, PolygonLayer, TextLayer } from '@deck.gl/layers'
 import { bandPath, BASIS_LABEL, estimateAt, FAILSAFE_LABEL, failsafeAt, regionRings, type Evaluated } from './estimate'
 import { drawnHeight } from './map3d'
@@ -25,6 +31,10 @@ export interface EstimateLayerInput {
   nowMs: number
   /** the vehicle whose details are open: its estimate drawn bolder */
   focus: number | null
+  /** the vehicles in focus (selected, details open): both hypotheses, filled */
+  inFocus?: ReadonlySet<number>
+  /** the map legend's Show all: every silent vehicle as if in focus */
+  showAll?: boolean
 }
 
 type RGBA = [number, number, number, number]
@@ -53,6 +63,8 @@ interface Drawn {
   band: LngLat[] | null
   label: string
   focus: boolean
+  /** drawn in full: in focus, or Show all */
+  full: boolean
 }
 
 function fmtS(s: number) {
@@ -60,18 +72,31 @@ function fmtS(s: number) {
   return n < 60 ? `${n} s` : `${Math.floor(n / 60)} m ${String(n % 60).padStart(2, '0')} s`
 }
 
-export function buildEstimateLayers({ vehicles, nowMs, focus }: EstimateLayerInput) {
+const NO_UIDS: ReadonlySet<number> = new Set()
+
+/** How many second hypotheses a build leaves out (out of focus): for the map legend. */
+export function hiddenHypotheses(vehicles: Vehicle[], nowMs: number, inFocus: ReadonlySet<number> = NO_UIDS, showAll = false): number {
+  if (showAll) return 0
+  let n = 0
+  for (const v of vehicles) if (v.estimate?.failsafe && v.position && !inFocus.has(v.uid) && failsafeAt(v.estimate, nowMs)) n++
+  return n
+}
+
+export function buildEstimateLayers({ vehicles, nowMs, focus, inFocus = NO_UIDS, showAll = false }: EstimateLayerInput) {
   const drawn: Drawn[] = []
   for (const v of vehicles) {
     const e = v.estimate
     if (!e || !v.position) continue
+    const full = showAll || inFocus.has(v.uid) || v.uid === focus
     const silent = (v.link.since_last_ms ?? 0) / 1000
     const at = estimateAt(e, nowMs)
     const fs = failsafeAt(e, nowMs)
     // once the lost-link timer has fired the branch leads: the task model stays, dimmed, as
     // the other hypothesis
     const fired = !!(fs && e.failsafe)
-    drawn.push({
+    // out of focus, the leading hypothesis only
+    if (full || !fired)
+      drawn.push({
       v,
       branch: false,
       lead: !fired,
@@ -81,6 +106,7 @@ export function buildEstimateLayers({ vehicles, nowMs, focus }: EstimateLayerInp
       band: bandPath(at.region),
       label: fired ? `EST ${BASIS_LABEL[e.basis]} if it kept its task · silent ${fmtS(silent)}` : `EST ${BASIS_LABEL[e.basis]} · silent ${fmtS(silent)}`,
       focus: v.uid === focus,
+      full,
     })
     if (fs && e.failsafe) {
       const m = e.failsafe.motion
@@ -95,6 +121,7 @@ export function buildEstimateLayers({ vehicles, nowMs, focus }: EstimateLayerInp
         band: bandPath(fs.region),
         label: `EST ${FAILSAFE_LABEL[e.failsafe.action]} on lost link · ${fmtS(nowMs / 1000 - e.failsafe.fires_t)} · silent ${fmtS(silent)}`,
         focus: v.uid === focus,
+        full,
       })
     }
   }
@@ -104,7 +131,7 @@ export function buildEstimateLayers({ vehicles, nowMs, focus }: EstimateLayerInp
   const color = (d: Drawn) => (d.branch ? BRANCH : OURS)
   const dim = (d: Drawn) => (d.lead ? (d.focus ? 1 : 0.75) : 0.35)
   const tick = Math.floor(nowMs / 500)
-  const triggers = { getPosition: tick, getPolygon: tick, getPath: tick, getSourcePosition: tick, getTargetPosition: tick, getText: tick, getFillColor: focus, getLineColor: focus, getColor: focus, getWidth: focus, getLineWidth: focus }
+  const triggers = { getPosition: tick, getPolygon: tick, getPath: tick, getSourcePosition: tick, getTargetPosition: tick, getText: tick, getFillColor: [focus, inFocus, showAll], getLineColor: [focus, inFocus, showAll], getColor: [focus, inFocus, showAll], getWidth: focus, getLineWidth: focus }
   const onTop = { depthCompare: 'always' as const, depthWriteEnabled: false }
   return [
     new PolygonLayer<Drawn>({
@@ -113,8 +140,9 @@ export function buildEstimateLayers({ vehicles, nowMs, focus }: EstimateLayerInp
       getPolygon: (d) => d.rings,
       stroked: true,
       filled: true,
-      getFillColor: (d) => a(color(d), d.lead ? 0.08 : 0.03),
-      getLineColor: (d) => a(color(d), 0.6 * dim(d)),
+      // filled only in focus (R1)
+      getFillColor: (d) => a(color(d), !d.full ? 0 : d.lead ? 0.08 : 0.03),
+      getLineColor: (d) => a(color(d), (d.full ? 0.6 : 0.4) * dim(d)),
       getLineWidth: (d) => (d.lead ? (d.focus ? 2.5 : 1.5) : 1),
       lineWidthUnits: 'pixels',
       updateTriggers: triggers,
@@ -124,7 +152,7 @@ export function buildEstimateLayers({ vehicles, nowMs, focus }: EstimateLayerInp
       id: 'estimate-bands',
       data: drawn.filter((d) => d.band),
       getPath: (d) => d.band!,
-      getColor: (d) => a(color(d), 0.14),
+      getColor: (d) => a(color(d), d.full ? 0.14 : 0.06),
       getWidth: (d) => (d.at.region.kind === 'band' ? d.at.region.width_m : 0),
       widthUnits: 'meters',
       widthMinPixels: 2,

@@ -1,6 +1,7 @@
 import { IconLayer, LineLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import type { PickingInfo } from '@deck.gl/core'
 import { NO_SCREEN, type MapScreen } from './aloft'
+import type { FocusReason } from './focus'
 import { HEIGHT_EXAGGERATION } from './map3d'
 import type { LostContact, Track, TrackDomain } from './tracks'
 import { isTrackStale, kindShortWithLevel, lostSidc, sidcFrameIcon, trackConfidence, trackFrameIcon, trackOpacity, trackPredicted, trackSigma } from './tracks'
@@ -41,7 +42,16 @@ import type { LngLat } from './types'
  *   lost-regions        where the keep-out counts each now, growing from its last fix (faint)
  *   lost-columns        an air or subsurface one: its column (it carries no altitude)
  *   lost                its last-known symbol, anticipated and faded, at its last fix
- *   lost-labels         "T-0002 LOST 4 min · POSSIBLE AREA": the ring is a keep-out */
+ *   lost-labels         "T-0002 LOST 4 min · POSSIBLE AREA": the ring is a keep-out
+ *
+ *  Dim, don't paint (docs/research/saturation-display.md R1): the filled ring, the full column
+ *  and the full intensity are for the tracks in focus (focus.ts: selected or hovered, pinned,
+ *  hostile or suspect, declared or flagged, a review item's, an engagement's target or blocker).
+ *  The rest get an outline, a short stem up to the symbol and a dimmer unknown symbol; a lost
+ *  contact out of focus a faint outline of its possible area and the stem. Hundreds of filled
+ *  rings add up to a painted map (ten 8 % fills cover about 57 %) that reads as one large unknown
+ *  threat; the outline still shows each one's extent, and hover brings its ring back. `showAll`
+ *  (the map legend's Show all) draws every one in full. */
 
 export interface TrackLayerInput {
   tracks: Track[]
@@ -56,6 +66,10 @@ export interface TrackLayerInput {
   pickable?: Set<string> | null
   /** what the camera cannot show at its height (aloft.ts) */
   screen?: MapScreen
+  /** the tracks and lost contacts in focus (focus.ts focusMap): drawn in full, the rest dim */
+  focus?: ReadonlyMap<string, FocusReason>
+  /** the map legend's Show all: every track (ring, column, intensity) or possible area in full */
+  showAll?: { tracks?: boolean; areas?: boolean }
 }
 
 type RGBA = [number, number, number, number]
@@ -83,6 +97,12 @@ export const UNKNOWN_DRAW_M: Partial<Record<TrackDomain, number>> = { air: 300, 
  *  surface: not a ceiling (an unranged aircraft can be anywhere above), where the drawing stops. */
 const COLUMN_END_M: Partial<Record<TrackDomain, number>> = { air: 3000, subsurface: -300 }
 const DASHES = 15
+/** a track out of focus: its ring's outline and its stem, against the focused one's */
+const DIM_LINE = 0.22
+/** an unknown out of focus: its symbol at this share of its intensity (stale ones fade too) */
+const DIM_SYMBOL = 0.6
+/** a lost contact out of focus: its possible area's outline */
+const DIM_AREA = 0.07
 
 function rgba(c: RGBA, alpha: number): RGBA {
   return [c[0], c[1], c[2], Math.round(c[3] * alpha)]
@@ -125,7 +145,23 @@ function columnDashes(at: LngLat, domain: TrackDomain, color: RGBA, alpha: numbe
   }
 }
 
-export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfterS, onClick, pickable = null, screen = NO_SCREEN }: TrackLayerInput) {
+/** Out of focus, a short "?" stem instead: two dashes under the symbol, pointing down to its
+ *  footprint (the outlined ring on the surface), so the track still never reads as a boat at its
+ *  drawing height, without a fence of columns hundreds of tracks thick. */
+function stemDashes(at: LngLat, domain: TrackDomain, color: RGBA, alpha: number, out: Dash[]) {
+  const end = UNKNOWN_DRAW_M[domain]
+  if (end == null) return
+  const top = end * HEIGHT_EXAGGERATION
+  const step = top * 0.07
+  for (let k = 1; k <= 2; k++) out.push({ from: [at[0], at[1], top - (2 * k - 0.4) * step], to: [at[0], at[1], top - (2 * k - 1.4) * step], color: rgba(color, alpha) })
+}
+
+const NO_FOCUS: ReadonlyMap<string, FocusReason> = new Map()
+
+export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfterS, onClick, pickable = null, screen = NO_SCREEN, focus = NO_FOCUS, showAll = {} }: TrackLayerInput) {
+  /** drawn in full: in focus, or Show all */
+  const full = (t: Track) => !!showAll.tracks || focus.has(t.id)
+  const fullArea = (id: string) => !!showAll.areas || focus.has(id)
   /** the symbol's height, rendered metres: its altitude, else its column's drawing height */
   const symZ = (domain: TrackDomain, alt: number | null) => (alt ?? UNKNOWN_DRAW_M[domain] ?? 0) * HEIGHT_EXAGGERATION
   const z = (t: Track) => symZ(t.domain, t.alt_m)
@@ -134,13 +170,14 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
     return [lon, lat, z(t)]
   }
   const stale = (t: Track) => isTrackStale(t, nowMs, staleAfterS)
-  // the symbol fades with age and with falling existence confidence
-  const alpha = (t: Track) => trackOpacity(t, nowMs) * (0.5 + 0.5 * Math.min(1, trackConfidence(t, nowMs) / 0.6))
+  // the symbol fades with age and with falling existence confidence, an unknown out of focus more
+  const alpha = (t: Track) =>
+    trackOpacity(t, nowMs) * (0.5 + 0.5 * Math.min(1, trackConfidence(t, nowMs) / 0.6)) * (t.affiliation === 'unknown' && !full(t) ? DIM_SYMBOL : 1)
   const tint = (t: Track): RGBA => rgba(TEXT, alpha(t))
   const icon = (t: Track) => trackFrameIcon(t, stale(t))
   // ages advance every clock tick: positions, rings, opacities and the stale state follow
   const tick = Math.floor(nowMs / 500)
-  const triggers = { getPosition: tick, getRadius: tick, getFillColor: tick, getLineColor: tick, getColor: tick, getIcon: tick, getSize: tick, getText: tick, getPixelOffset: tick }
+  const triggers = { getPosition: tick, getRadius: tick, getFillColor: tick, getLineColor: tick, getColor: [tick, focus, showAll.tracks], getIcon: tick, getSize: tick, getText: tick, getPixelOffset: tick }
   // screen-space overlays: never cut by terrain
   const onTop = { depthCompare: 'always' as const, depthWriteEnabled: false }
   const pick = (info: PickingInfo<Track>) => {
@@ -148,8 +185,8 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
     return !!info.object
   }
   // rules 16: each lost contact's regions now, flattened (they come from the bridge each second)
-  type LostRegion = { aff: Track['affiliation']; center: [number, number]; radius_m: number }
-  const lostRegions: LostRegion[] = lost.flatMap((l) => l.regions.map((r) => ({ aff: l.affiliation, center: r.center, radius_m: r.radius_m })))
+  type LostRegion = { aff: Track['affiliation']; center: [number, number]; radius_m: number; full: boolean }
+  const lostRegions: LostRegion[] = lost.flatMap((l) => l.regions.map((r) => ({ aff: l.affiliation, center: r.center, radius_m: r.radius_m, full: fullArea(l.id) })))
   const lostIcon = (l: LostContact) => sidcFrameIcon(lostSidc(l))
   const lostAt = (l: LostContact): XYZ => [l.position[0], l.position[1], symZ(l.domain, null)]
   // columns and stems, rebuilt each tick (the tracks move along their velocity)
@@ -157,7 +194,10 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
   const stems: Dash[] = []
   for (const t of tracks) {
     const p = trackPredicted(t, nowMs)
-    if (unranged(t.domain, t.alt_m)) columnDashes(p, t.domain, RING[t.affiliation], trackOpacity(t, nowMs), columns)
+    if (unranged(t.domain, t.alt_m)) {
+      if (full(t)) columnDashes(p, t.domain, RING[t.affiliation], trackOpacity(t, nowMs), columns)
+      else stemDashes(p, t.domain, RING[t.affiliation], 0.45 * trackOpacity(t, nowMs), columns)
+    }
     else if (t.alt_m != null && (t.domain === 'air' || t.domain === 'subsurface'))
       stems.push({ from: [p[0], p[1], 0], to: [p[0], p[1], z(t)], color: rgba(RING[t.affiliation], 0.6 * trackOpacity(t, nowMs)) })
   }
@@ -167,7 +207,11 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
     return screen.aloft(lon, lat, z(t))
   })
   const lostColumns: Dash[] = []
-  for (const l of lost) if (unranged(l.domain, null)) columnDashes(l.position, l.domain, RING[l.affiliation], 0.45, lostColumns)
+  for (const l of lost) {
+    if (!unranged(l.domain, null)) continue
+    if (fullArea(l.id)) columnDashes(l.position, l.domain, RING[l.affiliation], 0.45, lostColumns)
+    else stemDashes(l.position, l.domain, RING[l.affiliation], 0.3, lostColumns)
+  }
   // a column, a stem: lines in the scene (the terrain and the seabed hide what is behind or below them)
   const lines = (id: string, data: Dash[], width: number) =>
     new LineLayer<Dash>({
@@ -188,8 +232,10 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
       radiusUnits: 'meters',
       stroked: true,
       filled: true,
-      getFillColor: (r) => rgba(RING[r.aff], 0.035),
-      getLineColor: (r) => rgba(RING[r.aff], 0.35),
+      // out of focus: a faint outline, no fill (a hundred possible areas tens of km wide would
+      // paint the whole map)
+      getFillColor: (r) => rgba(RING[r.aff], r.full ? 0.035 : 0),
+      getLineColor: (r) => rgba(RING[r.aff], r.full ? 0.35 : DIM_AREA),
       getLineWidth: 1,
       lineWidthUnits: 'pixels',
       parameters: onTop,
@@ -198,12 +244,19 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
     new IconLayer<LostContact>({
       id: 'lost',
       data: lost,
+      // hovered, drawn in full (focus.ts); a click selects it, as a track's
+      pickable: true,
+      onClick: (info: PickingInfo<LostContact>) => {
+        if (info.object && onClick) onClick(info.object.id)
+        return !!info.object
+      },
       billboard: true,
       getPosition: lostAt,
       getIcon: lostIcon,
       getSize: (l) => lostIcon(l).size,
       sizeUnits: 'pixels',
-      getColor: [255, 255, 255, 110],
+      getColor: (l) => [255, 255, 255, fullArea(l.id) ? 110 : 70],
+      updateTriggers: { getColor: [focus, showAll.areas] },
       parameters: onTop,
     }),
     new TextLayer<LostContact>({
@@ -239,11 +292,12 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
       radiusMinPixels: 6,
       stroked: true,
       filled: true,
-      getFillColor: (t) => rgba(RING[t.affiliation], 0.08 * trackOpacity(t, nowMs)),
-      getLineColor: (t) => rgba(RING[t.affiliation], 0.55 * trackOpacity(t, nowMs)),
+      // filled only in focus (R1): out of it, a dim outline
+      getFillColor: (t) => rgba(RING[t.affiliation], full(t) ? 0.08 * trackOpacity(t, nowMs) : 0),
+      getLineColor: (t) => rgba(RING[t.affiliation], (full(t) ? 0.55 : DIM_LINE) * trackOpacity(t, nowMs)),
       getLineWidth: (t) => (t.id === selected ? 2 : 1),
       lineWidthUnits: 'pixels',
-      updateTriggers: { ...triggers, getLineWidth: selected },
+      updateTriggers: { ...triggers, getFillColor: [tick, focus, showAll.tracks], getLineColor: [tick, focus, showAll.tracks], getLineWidth: selected },
       parameters: onTop,
     }),
     lines('tracks-stems', stems, 1.5),
@@ -253,10 +307,10 @@ export function buildTrackLayers({ tracks, lost = [], nowMs, selected, staleAfte
       data: tracks.filter((t) => stale(t) && t.velocity_mps),
       getSourcePosition: (t) => [t.position[0], t.position[1], z(t)],
       getTargetPosition: at,
-      getColor: (t) => rgba(RING[t.affiliation], 0.5 * trackOpacity(t, nowMs)),
+      getColor: (t) => rgba(RING[t.affiliation], (full(t) ? 0.5 : DIM_LINE) * trackOpacity(t, nowMs)),
       getWidth: 1,
       widthUnits: 'pixels',
-      updateTriggers: { getTargetPosition: tick, getColor: tick },
+      updateTriggers: { getTargetPosition: tick, getColor: [tick, focus, showAll.tracks] },
       parameters: onTop,
     }),
     new ScatterplotLayer<Track>({

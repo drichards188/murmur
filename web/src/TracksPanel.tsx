@@ -51,6 +51,9 @@ interface Props {
   onEngage?: (trackId: string) => void
   /** the review items that alone hold up a nomination (blocking.ts): said on their track's card */
   blocking?: Blocking[]
+  /** tracks the person pinned to be drawn in full on the map (focus.ts), and the toggle */
+  pinned?: ReadonlySet<string>
+  onPin?: (id: string) => void
 }
 
 /** hot, unknown and other counts of the live tracks, as badges */
@@ -132,7 +135,7 @@ function Row({ t, nowMs, staleAfterS, sel, onClick }: { t: Track; nowMs: number;
 /** A track's card: what it is and why it is shown so (its declaration and the evidence first, then
  *  the estimate's), then the acts that fit (Declaration.tsx: confirm or revoke the engine's
  *  declaration, nominate on a declared hostile, declare by hand), then the track's numbers. */
-function Detail({ t, nowMs, now, staleAfterS, vehicles, onFocus, onEngage, holding }: { t: Track; nowMs: number; now: () => number; staleAfterS: number; vehicles: Vehicle[]; onFocus: () => void; onEngage?: () => void; holding?: Blocking }) {
+function Detail({ t, nowMs, now, staleAfterS, vehicles, onFocus, onEngage, holding, pinned, onPin }: { t: Track; nowMs: number; now: () => number; staleAfterS: number; vehicles: Vehicle[]; onFocus: () => void; onEngage?: () => void; holding?: Blocking; pinned?: boolean; onPin?: () => void }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   // rules 21: the form that sends a vehicle to identify it (rules 22: while the track is live)
@@ -238,6 +241,16 @@ function Detail({ t, nowMs, now, staleAfterS, vehicles, onFocus, onEngage, holdi
         <button className="ghost mini" onClick={onFocus}>
           fly to
         </button>
+        {onPin && (
+          <button
+            className={`ghost mini${pinned ? ' on' : ''}`}
+            aria-pressed={!!pinned}
+            onClick={onPin}
+            title={pinned ? 'Stop drawing this track in full on the map' : 'Draw this track in full on the map (its ring filled, its column, its label first) while it is pinned: a view setting of this console only'}
+          >
+            {pinned ? 'unpin' : 'pin on map'}
+          </button>
+        )}
         {/* rules 22: any live track, an identified one for a second look by our own sensors */}
         {live && (
           <button
@@ -274,7 +287,7 @@ function Detail({ t, nowMs, now, staleAfterS, vehicles, onFocus, onEngage, holdi
   )
 }
 
-export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus, collapsed, onCollapse, reveal = null, onEngage, blocking }: Props) {
+export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus, collapsed, onCollapse, reveal = null, onEngage, blocking, pinned, onPin }: Props) {
   const nowMs = now()
   const staleAfterS = tracks?.stale_after_s ?? 10
   const list = sortTracks(tracks?.tracks ?? [])
@@ -323,7 +336,7 @@ export function TracksPanel({ tracks, vehicles, now, selected, onSelect, onFocus
               chunk.map((t) => (
                 <div key={t.id} data-track-id={t.id} data-tutorial="track-row" className={flash === t.id ? 'tk-flash' : undefined}>
                   <Row t={t} nowMs={nowMs} staleAfterS={staleAfterS} sel={selected === t.id} onClick={() => onSelect(selected === t.id ? null : t.id)} />
-                  {selected === t.id && <Detail t={t} nowMs={nowMs} now={now} staleAfterS={staleAfterS} vehicles={vehicles} onFocus={() => onFocus(t)} onEngage={onEngage ? () => onEngage(t.id) : undefined} holding={(blocking ?? []).find((b) => b.track === t.id)} />}
+                  {selected === t.id && <Detail t={t} nowMs={nowMs} now={now} staleAfterS={staleAfterS} vehicles={vehicles} onFocus={() => onFocus(t)} onEngage={onEngage ? () => onEngage(t.id) : undefined} holding={(blocking ?? []).find((b) => b.track === t.id)} pinned={pinned?.has(t.id)} onPin={onPin ? () => onPin(t.id) : undefined} />}
                 </div>
               ))
             }

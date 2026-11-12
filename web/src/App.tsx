@@ -59,6 +59,7 @@ import { CoverageControl } from './CoverageControl'
 import { gridImage, type CoverageGrid, type LinkRouteDrawing } from './coverage'
 import { buildStationLayers } from './linkLayers'
 import { buildSwarmLayers, useSwarms } from './swarms'
+import { engagementTracks, focusMap, reviewTracks } from './focus'
 import { selectedSwarm, swarmOf, unfolded } from './swarmsModel'
 import { SwarmsButton, SwarmsPanel } from './SwarmsPanel'
 
@@ -72,6 +73,9 @@ function useUtcClock() {
 }
 
 const byUidDetails = (vs: Vehicle[], uid: number) => vs.find((v) => v.uid === uid)
+
+/** the map layers whose objects are tracks or lost contacts (their `id`): hovering one draws it in full */
+const TRACK_HOVER_LAYERS = new Set(['tracks', 'tracks-ids', 'tracks-aloft', 'lost'])
 
 /** Renders nothing. Its effect is the first passive effect of the tree on every commit (it
  *  is App's first child and has no children), so it marks where the effects' work begins. */
@@ -111,6 +115,22 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const [revealVeh, setRevealVeh] = useState<Reveal | null>(null)
   const [revealTrack, setRevealTrack] = useState<Reveal | null>(null)
   const [selectedTrack, setSelectedTrack] = useState<string | null>(null)
+  // the track under the pointer (drawn in full while it is), and the tracks the person pinned to
+  // be drawn in full (focus.ts; a view setting of this console only)
+  const [hoverTrack, setHoverTrack] = useState<string | null>(null)
+  const [pinnedTracks, setPinnedTracks] = useState<ReadonlySet<string>>(() => new Set())
+  const togglePin = useCallback((id: string) => {
+    setPinnedTracks((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+  const onMapHover = useCallback((layer: string | null, object: unknown) => {
+    const id = layer && TRACK_HOVER_LAYERS.has(layer) ? ((object as { id?: string } | null)?.id ?? null) : null
+    setHoverTrack((h) => (h === id ? h : id))
+  }, [])
   const [selected, setSelected] = useState<Set<number>>(new Set())
   /** vehicles selected outside the fleet list: scroll the list to the first and mark it */
   const revealVehicles = useCallback((uids: number[]) => {
@@ -290,6 +310,15 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [revealTrackId],
   )
+  // what is drawn in full on the map (focus.ts, docs/research/saturation-display.md R1): the
+  // selected, hovered and pinned tracks, hostile and suspect ones, declared or flagged, a review
+  // item's, an engagement's target or blocker; the rest dim
+  const reviewIds = useMemo(() => reviewTracks(decisions?.inbox.review, decisions?.inbox.blocking), [decisions?.inbox.review, decisions?.inbox.blocking])
+  const engageIds = useMemo(() => engagementTracks(decisions?.intents, engageKeepOuts, engageForm?.track), [decisions?.intents, engageKeepOuts, engageForm?.track])
+  const trackFocus = useMemo(
+    () => focusMap(tracks?.tracks ?? [], tracks?.lost ?? [], { selected: selectedTrack, hovered: hoverTrack, pinned: pinnedTracks, review: reviewIds, engagement: engageIds }),
+    [tracks, selectedTrack, hoverTrack, pinnedTracks, reviewIds, engageIds],
+  )
   const trackLayers = useCallback<MapLayers>(
     (screen) =>
       buildTrackLayers({
@@ -305,9 +334,10 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             ? new Set((tracks?.tracks ?? []).filter((t) => !isTrackStale(t, now(), tracks?.stale_after_s ?? 10)).map((t) => t.id))
             : null,
         screen,
+        focus: trackFocus,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tracks, selectedTrack, trackTick, onTrackClick, draft.mode, selected],
+    [tracks, selectedTrack, trackTick, onTrackClick, draft.mode, selected, trackFocus],
   )
   identifyRef.current = { on: draft.mode === 'identify' && selected.size === 1, tracks: tracks?.tracks ?? [], staleAfterS: tracks?.stale_after_s ?? 10 }
   // rules 21: the identify draft on the map: its orbit's ring on the target where it is now, a
@@ -484,10 +514,12 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   // tick, so the callback changes identity each tick only while something is silent
   const silent = useMemo(() => state ? estimated(vehicles) : [], [vehicles, state])
   const estimateTick = silent.length ? Math.floor(now() / 500) : 0
+  // in focus for the estimates: selected, or details open (both hypotheses, filled)
+  const vehicleFocus = useMemo(() => (detailsUid == null ? selected : new Set([...selected, detailsUid])), [selected, detailsUid])
   const estimateLayers = useCallback<MapLayers>(
-    () => (silent.length ? buildEstimateLayers({ vehicles: silent, nowMs: now(), focus: detailsUid }) : []),
+    () => (silent.length ? buildEstimateLayers({ vehicles: silent, nowMs: now(), focus: detailsUid, inFocus: vehicleFocus }) : []),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [silent, estimateTick, detailsUid],
+    [silent, estimateTick, detailsUid, vehicleFocus],
   )
   // ordered versus confirmed (rules 5): queued orders' paths dashed, sent ones not yet
   // confirmed labelled
@@ -790,6 +822,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           weather={showCoverage ? null : weatherView}
           reach={reachRings}
           linkRoute={linkRoute}
+          onHover={onMapHover}
         />
         </ErrorBoundary>
         {showCoverage && (
@@ -964,6 +997,8 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
             reveal={revealTrack}
             onEngage={(track) => setEngageForm({ track })}
             blocking={decisions?.inbox.blocking}
+            pinned={pinnedTracks}
+            onPin={togglePin}
           />
           </ErrorBoundary>
         </div>
