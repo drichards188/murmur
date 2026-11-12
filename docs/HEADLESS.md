@@ -341,7 +341,9 @@ stand-in engine live, at tidewater's: `surface_m` in its config), and the emulat
 landed, disarmed aircraft at rest: at its own altitude plus a 0.5 m antenna (`AT_REST_ANTENNA_M`,
 murmur-linkemu `link.rs`), not rounded into a band; nothing else changes for any other vehicle.
 Down at 3.0 m, PUMA 1 still has the DEM's structures 13.7 m above its ray to the mast, which
-stays: about 70 % of its packets lost, a whip on the ground behind them. PUMA 2 rests on the water at
+stays: about 70 % of its packets lost, a whip on the ground behind them. (These heights and
+obstructions are the baked grid's from before murmur-cbjn's terrain fix, squeezed north-south
+toward the box's middle, about 440 m at Crissy Field; not re-run on the fixed grid.) PUMA 2 rests on the water at
 0.4 m. On the same seeds: lost-link alerts on a landed Puma 354 to 6 in S5, 218 to 1 in S7, 56
 to 0 in S1, 6 to 0 in S6; no served share and no S5 fault-met share moved. Every plane that
 starts in the air reports its altitude above that home (REAPER 1's over the water, 0.4 m), so the
@@ -530,7 +532,8 @@ Every divergence was the second recentre at about 271 s (9 of 10 headless, 5 of 
 made exactly when PUMA 1 had not gone home on its lost-link failsafe by then. PUMA 1 flies the
 boat's orbit through a terrain shadow west of the bridge. There the emulator's line of sight from
 the ground station clears by 11 m until about 225 s, then is obstructed by 3, 7 and 11 m, losing 17
-to 56 % of packets on the `ramp` model. The Puma's GCS failsafe sends it home after 5 s without a
+to 56 % of packets on the `ramp` model (on the baked grid from before murmur-cbjn's terrain fix,
+squeezed north-south; the shadow's place and depth are not re-checked on the fixed grid). The Puma's GCS failsafe sends it home after 5 s without a
 heartbeat. Early returns came in 5 of 10 full-stack runs and 1 of 10 headless episodes. The
 terrain (the baked grid within 0.15 m of tidewater's own samples on the same profiles), the
 Puma's path, the downlink's packet counts and the loss code were checked to be the same on both

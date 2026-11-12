@@ -105,9 +105,11 @@ It needs four things a 16 km scenario doesn't, each a table any scenario may use
   about 145 million cells (580 MB as float32); these three are 13 million (52 MB). 90 m is about
   the offshore DEM's own resolution, and inland it is ample for radio line of sight (the link
   emulator samples its profiles every 50 m): where it is coarse is the open coast, whose
-  shoreline is placed to within about 45 m, and the small harbours there. Where two grids meet
-  the answer steps from one to the other. Large areas are fetched in tiles of at most 0.5
-  degrees (the mosaic merges at most 100 source DEMs a request), each on the whole grid's pixels.
+  shoreline is placed to within about 45 m, and the small harbours there. (West of about
+  122.6 W and north of 38.25 N the mosaic serves a much coarser source, ETOPO: see "Limits".)
+  Where two grids meet the answer steps from one to the other. Large areas are fetched in tiles
+  of at most 0.5 degrees (the mosaic merges at most 100 source DEMs a request), each on the whole
+  grid's pixels, each placed by its own georeferencing (see "Terrain placement" below).
 - **Tide zones** (`[[tide.zones]]`): one station's water level is a poor fit for the whole
   region. Observed over the window, against San Francisco's: Point Reyes 0.19 m rms (0.35 m at
   most; it leads by 36 minutes), Monterey 0.26 m (0.51 m; 48 minutes ahead), Redwood City 0.46 m
@@ -194,12 +196,44 @@ computed once per request) and tested against `Conditions.at`. About 7 ms for 1,
   direction offset. No current meter operates inside the Golden Gate area, so currents are
   checked at three Bay meters instead (same report): station IDW vs SFBOFS error is there.
 
+### Terrain placement (murmur-cbjn)
+
+A grid's cells are square in metres, so not in degrees (1/cos(latitude) wider than tall). Asked
+for such a box, NCEI's service keeps its pixels square in degrees by widening the box's shorter
+side about its middle, and says so only in the image's georeferencing. Until 12 November 2026
+tidewater read every image as the box it asked for, so each grid was squeezed north-south toward
+its tile's middle: the Golden Gate's and San Diego's features up to 1.3 and 1.5 km at their
+boxes' north and south edges (335 m at Fort Point), the bay region's up to 5.8 km in its
+0.5-degree tiles. Now each request asks for the box as given (`adjustAspectRatio=false`), and a
+tile is placed only if its own GeoTIFF georeferencing puts its edges within 1 % of a cell of
+the grid's; `tidewater fetch` fetches again any terrain file fetched before (it lacks the
+`placement` key). `tests/test_dem.py` answers as the service does.
+
+Checked against NGS survey marks (NAD 83 positions, NAVD 88 heights; datasheets by PID at
+geodesy.noaa.gov), sampling the cached grids before and after:
+
+| mark | grid | before | after |
+| --- | --- | --- | --- |
+| Mount Livermore, Angel Island (HT3014, 239 m) | Golden Gate, 15 m | 59 m at the mark; summit 868 m S | 236 m; summit (238 m) 56 m SW |
+| Fort Point light (HT3036; B 551 beside it 5.7 m) | Golden Gate, 15 m | 52 m (the Presidio's bluff); water 132 m off | 4.8 m; water 51 m off |
+| Yerba Buena Island (HT0817, 104.2 m) | bay region, 30 m | -14 m (water); summit 4.4 km N | 101 m; summit 21 m E |
+| Mount Tamalpais East Peak (HT3388, 782.4 m) | bay region, 30 m | 273 m; summit 1.6 km N | 775 m; summit (777 m) 16 m W |
+| Mount Diablo (HS5120, 1,177.7 m) | bay region, 30 m | 451 m; summit 2.8 km N | 1,165 m; summit (1,169 m) 40 m W |
+| Lighthouse Point, Santa Cruz (GU4071) | bay region, 90 m | -38 m (water) | 7 m; water 83 m off |
+| Point Loma, LOMA EAST (AC6092, 126.3 m) | San Diego, 15 m | 48 m | 69 m (ETOPO: see "Limits") |
+| Point Reyes Head (HT3484, 186.5 m) | bay region, 90 m | -59 m (water) | 81 m (ETOPO: see "Limits") |
+
+"Summit" is the grid's highest point within 300 m of the mark (for "before", of where the old
+placement put the mark); the marks' own heights are of the disk, the grid's of 15 to 90 m cells.
+
 ### ArduPilot SITL patch (`SIM_WATER_DEPTH`)
 
 59 lines in `libraries/SITL`, default off. With it, the driver also sends local water depth:
 
 - **Boats run aground:** a boat sent at 5 m/s toward the Horseshoe Bay beach stopped where
-  tidewater's data says the water runs out (`SIM: aground (water 0.00m, draft 0.30m)`).
+  tidewater's data says the water runs out (`SIM: aground (water 0.00m, draft 0.30m)`). That
+  data was the squeezed terrain (murmur-cbjn, above), whose beach there lay about 170 m south
+  of the real one: the check holds for the plumbing, not for where the beach is.
 - **Subs drift with the current:** an idle sub drifted 1.78 m/s toward 247° vs a predicted
   1.79 m/s toward 248° (stock SITL has no current model for subs).
 - **Subs have a real seabed:** in 3 m of water at full downward thrust a sub holds at
@@ -228,7 +262,17 @@ with GPS: an EKF failsafe for the boat, a diverging depth estimate for the sub.
   `0002` (from Murmur) centres the SITL antenna tracker's mount on its start heading and applies
   its limits after the rates; it doesn't touch the water model.
 - **Vertical datums** are assumed consistent (NAVD88 DEM, NAVD tide predictions). True for
-  US coastal DEMs in the NCEI mosaic; verify for new areas.
+  US coastal DEMs in the NCEI mosaic; verify for new areas. Not true where ETOPO answers (next).
+- **Terrain sources.** The mosaic's default rule serves NCEI's 1/9 arc-second tiles where they
+  exist and, everywhere else, ETOPO 2022 at 15 arc-seconds (about 450 m cells, mean sea level),
+  ahead of NCEI's regional 1/3 arc-second DEMs (NAVD 88) that cover the same ground. That is all
+  of the San Diego scenario, and the bay region west of about 122.6 W (Point Reyes, the
+  Farallones, the open coast and ocean) and north of 38.25 N; the Golden Gate's box is all 1/9
+  arc-second. There a grid is placed right but smooth: Point Loma's ridge at NGS's LOMA EAST
+  (126.3 m) reads 69 m, Point Reyes Head (186.5 m) 81 m. The same requests with a `mosaicRule`
+  of `{"where": "Name NOT LIKE 'ETOPO%' AND VerticalDatum <> 'MHW'"}` read 125.4 and 181.6 m
+  there (the service ignores a client's sort, but honours `where`); not yet used, because past
+  the regional DEMs (the open ocean) only ETOPO answers, so the fetch would need to fill from it.
 - The station layer is predictions, not observations (harmonic forecasts). The only current
   meters nearby are inside the Bay, not at the Gate, so Gate accuracy is inferred.
 

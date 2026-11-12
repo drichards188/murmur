@@ -71,6 +71,9 @@ surface HUNTER 1 (Sea Hunter) at a mooring off the Marina, MARLIN 1 (Corsair) an
 sea off Point Bonita; subsurface REMUS 1 at the surface in the channel, EEL 1 (BlueROV) at the
 Horseshoe Bay pier, three buoys in the channel (51 to 112 m of water); ground FERRET 1 (recon
 UGV) on Crissy Field, MULE 1 (logistics UGV) at Fort Baker; TRK 1 beside the ground station.
+(Flagged 2026-11-12: these places were chosen on terrain squeezed north-south, murmur-cbjn. On
+the fixed terrain FERRET 1's spawn lies 125 m off Crissy Field's beach in 10 m of water and
+MULE 1's 25 m off Fort Baker's shore.)
 Traffic (34 contacts; sources in the file's header): the Sausalito, Larkspur, Angel Island and
 Tiburon, and Alcatraz ferries and a bay cruise, ships in the main channel and the southern lane,
 a tanker outbound, fishing out of the Wharf and Sausalito, sailing off the Cityfront and Crissy
@@ -82,7 +85,10 @@ class B; the rest none).
 
 **San Diego.** Its tidewater scenario (`san-diego.tidewater.toml`, fetched 2026-10-23):
 west -117.32, south 32.60, east -117.10, north 32.77 at 15 m, 13-16 June 2026; terrain from
-NOAA NCEI's DEM mosaic (topography and bathymetry, NAVD88: -116 to 122 m); the water level
+NOAA NCEI's DEM mosaic (topography and bathymetry, NAVD88: -116 to 122 m; flagged 2026-11-12:
+the mosaic serves this whole box from ETOPO 2022's 15 arc-second cells on mean sea level, ahead
+of NCEI's 1/3 arc-second San Diego DEM, and the grid baked here was also squeezed north-south by
+up to 1.5 km, murmur-cbjn; tidewater/README.md "Terrain placement" and "Limits"); the water level
 observed at CO-OPS 9410170 (San Diego, Quarantine Station), -0.57 to 2.30 m NAVD88; currents
 from CO-OPS harmonic predictions at the bay's 16 current stations with data (Point Loma Light
 to National City; two Pacific stations publish none), blended by inverse distance (no

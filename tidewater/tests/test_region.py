@@ -1,5 +1,5 @@
 """What a regional scenario adds: nested terrain grids, tide zones of several stations, weather and
-wind on a grid with nests (paced requests), DEM tiles, and the bay region's own cache."""
+wind on a grid with nests (paced requests), and the bay region's own cache (DEM tiles: test_dem.py)."""
 
 import copy
 import json
@@ -178,41 +178,6 @@ def test_station_currents_skip_bad_answers_and_retry_refusals(tmp_path, monkeypa
     d = json.loads(fetch.fetch_currents(sc, logs.append).read_text())
     assert [s["id"] for s in d["stations"]] == ["A", "B"]
     assert any("skip C" in m for m in logs)
-
-
-def test_dem_tiles_fall_on_the_whole_grid(monkeypatch):
-    """Each tile is asked for exactly its share of the grid: stitched, the tiles are the field
-    sampled at the whole grid's cell centres. A one-tile area is the request it always was."""
-    def field(lat, lon):
-        return np.float32(100 * (lat - 37) + (lon + 122))
-
-    requests = []
-
-    def get(url, params):
-        requests.append(params)
-        w, s, e, n = (float(v) for v in params["bbox"].split(","))
-        cw, ch = (int(v) for v in params["size"].split(","))
-        lon = w + (np.arange(cw) + 0.5) * (e - w) / cw
-        lat = n - (np.arange(ch) + 0.5) * (n - s) / ch
-        import io
-        import tifffile
-        buf = io.BytesIO()
-        tifffile.imwrite(buf, field(lat[:, None], lon[None, :]).astype(np.float32))
-        return buf.getvalue()
-
-    monkeypatch.setattr(fetch, "_get", get)
-    monkeypatch.setattr(fetch, "DEM_TILE_DEG", 0.05)
-    a = Area(-122.6, 37.7, -122.4, 37.83, 400)
-    w, h = a.size_px
-    grid = fetch.dem_grid(a, log=lambda _: None)
-    assert len(requests) > 4
-    lon = a.west + (np.arange(w) + 0.5) * (a.east - a.west) / w
-    lat = a.north - (np.arange(h) + 0.5) * (a.north - a.south) / h
-    assert grid == pytest.approx(field(lat[:, None], lon[None, :]), abs=1e-3)
-    requests.clear()
-    monkeypatch.setattr(fetch, "DEM_TILE_DEG", 0.5)
-    fetch.dem_grid(a, log=lambda _: None)
-    assert [r["bbox"] for r in requests] == [f"{a.west},{a.south},{a.east},{a.north}"]
 
 
 # ---- the bay region's own cache, when fetched

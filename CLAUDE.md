@@ -149,7 +149,10 @@ meaningful.
   `sfbofs` extra); a scenario needs `tidewater fetch` once (setup fetches the Golden Gate's),
   cached in `tidewater/data/cache/` (untracked). `TIDEWATER_HOME` points the scenarios at
   another tidewater tree. A worktree has neither: make its own `.venv` with `-e ./tidewater`, and
-  symlink the main checkout's `tidewater/data/cache`.
+  symlink the main checkout's `tidewater/data/cache`. `tidewater fetch` fetches again a terrain
+  file from before murmur-cbjn (squeezed; no `placement` key). San Diego's whole box and the bay
+  region west of 122.6 W are ETOPO's 450 m cells, not NCEI's coastal DEMs (Point Loma's ridge 69 m
+  for 126; tidewater/README.md "Limits").
 - `murmur-replay` accepts only the current decision-rules version by default: replay older logs with
   `--rules N` / `--min-rules N` (versions and changelog in `crates/murmur-decide/README.md`). The bridge
   writes run-time anchors to `logs/anchors/<run>.anchors`; verify with `murmur-replay <log> --anchors <file>`.
@@ -223,8 +226,14 @@ meaningful.
 - A stand-in UGV's altitude is its fleet `spawn` altitude plus the terrain's rise from there: spawn
   it at the DEM's height (tidewater's `terrain.npz`), or it reports 0 m and the link emulator
   judges its line of sight to the Crissy Field radios from sea level, under the hill (its mesh
-  link down by terrain, its telemetry stale, every check "cannot evaluate"). The Presidio's hills
-  block the radios from most of the bluffs west of the bridge's south end.
+  link down by terrain, its telemetry stale, every check "cannot evaluate"). Heights and shores
+  read before murmur-cbjn's fix (2026-11-12) came from a grid squeezed north-south (1.3 km at the
+  Golden Gate box's edges, 335 m at Fort Point; tidewater/README.md "Terrain placement"): road-mines'
+  96 and 89 m are 29 and 34 m, shore-battery's 93 m is 55 m, links.toml's "DEM says 4.8 m" at
+  the station is 1.2 m, and ground spawns off Crissy Field in golden-gate-v3 and golden-gate-scale
+  are in the water; re-read any such figure. On the fixed grid the Presidio's hills hide about
+  half of the bluff tops west of the bridge's south end from the radios (53 % obstructed, 27 % by
+  20 m or more, for a UGV's 1.5 m whip; the squeezed grid had 83 and 65 %).
 - Rules 5 queue: an order for a vehicle the link can't carry it to now waits in the Queue
   (console button; `GET /api/inbox` `queued`), it is not an error; one whose link drops
   before the vehicle started it comes back there (`intent.requeued`). A human's approval is

@@ -6,7 +6,8 @@ is fetched once and then runs offline.
 Sources (all free, no API key):
   terrain   NOAA NCEI DEM mosaic image service: merged topography + bathymetry, metres.
             Land > 0, water < 0. US coastal DEMs in the mosaic use NAVD88. With
-            `[[terrain.nest]]`, finer grids inside the area too.
+            `[[terrain.nest]]`, finer grids inside the area too. Each tile's own georeferencing
+            is checked against the grid (see dem_grid).
   tide      NOAA CO-OPS water level (observed, or predictions) at one station, metres in the same
             datum; with `[[tide.zones]]`, at every station the zones name.
   currents  NOAA CO-OPS current predictions at every station in the area, every depth bin.
@@ -19,6 +20,7 @@ Sources (all free, no API key):
 
 import io
 import json
+import os
 import time
 import urllib.parse
 import urllib.request
@@ -69,11 +71,39 @@ def _days(sc: Scenario):
 
 DEM_TILE_PX = 2000   # the service allows 20,000 a side, but mosaics at most 100 source DEMs a
 DEM_TILE_DEG = 0.5   # request: keep each request to a few of NCEI's 0.25-degree coastal tiles
+DEM_PLACED_CELLS = 0.01  # how far a tile's edges may lie from the grid's, in cells
+# in a cached grid: its tiles were checked where they lie (grids fetched before carry no such key)
+PLACEMENT = "each tile's GeoTIFF georeferencing checked against the grid's cells (murmur-cbjn)"
+
+
+def dem_tile(raw):
+    """One GeoTIFF from the DEM service -> (elevation, (west, north, cell width, cell height)), its
+    placement in degrees as the file's own georeferencing gives it (GeoTIFF's ModelTiepoint and
+    ModelPixelScale). Anything but pixels as areas in geographic WGS 84 is refused."""
+    with tifffile.TiffFile(io.BytesIO(raw)) as tif:
+        page = tif.pages[0]
+        tie, scale = page.tags.get(33922), page.tags.get(33550)
+        geo = tif.geotiff_metadata or {}
+        z = page.asarray().astype(np.float32)
+    keys = (geo.get("GTModelTypeGeoKey"), geo.get("GTRasterTypeGeoKey"), geo.get("GeographicTypeGeoKey"))
+    if tie is None or scale is None or keys != (2, 1, 4326):  # geographic, PixelIsArea, WGS 84
+        raise RuntimeError(f"DEM service returned a tile without geographic WGS 84 georeferencing ({keys})")
+    i, j, _, x, y, _ = (float(v) for v in tie.value[:6])
+    sx, sy = (float(v) for v in scale.value[:2])
+    return z, (x - i * sx, y + j * sy, sx, sy)
 
 
 def dem_grid(a, log=print):
     """The NCEI mosaic resampled to `a`'s grid (row 0 the north edge), in tiles whose pixels fall
-    exactly on the whole grid's. An area of one tile is one request, as it always was."""
+    exactly on the whole grid's. An area of one tile is one request, as it always was.
+
+    The grid's cells are square in metres, so not in degrees (wider than tall by 1/cos(latitude)).
+    By default the service keeps its pixels square in degrees by widening the box's shorter side
+    about its middle, so the image it returns spans more latitude than was asked for; read as the
+    box asked for, every grid fetched before murmur-cbjn was squeezed north-south toward each
+    tile's middle (335 m at Fort Point, 1.3 km at the Golden Gate box's edges). Each request now
+    asks for the box as given (`adjustAspectRatio=false`, ArcGIS 11.1 and later), and each tile is
+    placed only if its own georeferencing puts its edges within DEM_PLACED_CELLS of the grid's."""
     w, h = a.size_px
     dx = (a.east - a.west) / w
     dy = (a.north - a.south) / h
@@ -89,12 +119,18 @@ def dem_grid(a, log=print):
         south = a.south if r1 == h else a.north - r1 * dy
         raw = _get(DEM, {
             "bbox": f"{west},{south},{east},{north}", "bboxSR": 4326, "imageSR": 4326,
-            "size": f"{c1 - c0},{r1 - r0}", "format": "tiff", "pixelType": "F32",
+            "size": f"{c1 - c0},{r1 - r0}", "adjustAspectRatio": "false", "format": "tiff", "pixelType": "F32",
             "interpolation": "RSP_BilinearInterpolation", "f": "image",
         })
-        tile = tifffile.imread(io.BytesIO(raw)).astype(np.float32)
+        tile, (gw, gn, gdx, gdy) = dem_tile(raw)
         if tile.shape != (r1 - r0, c1 - c0):
             raise RuntimeError(f"DEM service returned {tile.shape}, expected {(r1 - r0, c1 - c0)}")
+        ge, gs = gw + gdx * (c1 - c0), gn - gdy * (r1 - r0)
+        off = max(abs(gw - west) / dx, abs(ge - east) / dx, abs(gn - north) / dy, abs(gs - south) / dy)
+        if off > DEM_PLACED_CELLS:
+            raise RuntimeError(
+                f"DEM service placed tile {i} at west {gw:.6f} south {gs:.6f} east {ge:.6f} north {gn:.6f}, "
+                f"asked for {west:.6f} {south:.6f} {east:.6f} {north:.6f} ({off:.2f} cells off): refused")
         grid[r0:r1, c0:c1] = tile
         if len(tiles) > 1 and (i % 10 == 0 or i == len(tiles)):
             log(f"  {i}/{len(tiles)} tiles")
@@ -104,21 +140,37 @@ def dem_grid(a, log=print):
     return grid
 
 
+def terrain_placed(path):
+    """Whether a cached terrain grid's tiles were checked where they lie. One fetched before
+    (murmur-cbjn: rows squeezed north-south) is fetched again."""
+    try:
+        with np.load(path) as d:
+            return "placement" in d.files
+    except (OSError, ValueError):
+        return False
+
+
 def fetch_terrain(sc: Scenario, log=print):
     """terrain.npz: the scenario's area. With `[[terrain.nest]]`, also terrain-<name>.npz for each
-    finer grid nested in it."""
+    finer grid nested in it. A file is replaced whole (written beside it, then renamed), so a
+    reader never sees half of one."""
     out = sc.cache_dir / "terrain.npz"
     grids = [(out, sc.area)] + [(sc.cache_dir / f"terrain-{name}.npz", a) for name, a in sc.terrain_nests]
     for path, a in grids:
-        if path.exists():
+        if path.exists() and terrain_placed(path):
             continue
+        if path.exists():
+            log(f"terrain: {path.name} was fetched before tidewater checked where the DEM service put its "
+                "pixels (its rows squeezed north-south, murmur-cbjn): fetching it again")
         w, h = a.size_px
         log(f"terrain: {w}x{h} cells (~{a.resolution_m:g} m) from NCEI DEM mosaic"
             + (f" ({path.stem})" if path != out else ""))
         grid = dem_grid(a, log)
+        part = path.with_name(f"{path.stem}.partial.npz")
         # row 0 is the north edge
-        np.savez_compressed(path, elevation=grid, bbox=np.array([a.west, a.south, a.east, a.north]),
-                            datum="NAVD88 (NCEI coastal DEMs; verify per area)")
+        np.savez_compressed(part, elevation=grid, bbox=np.array([a.west, a.south, a.east, a.north]),
+                            datum="NAVD88 (NCEI coastal DEMs; verify per area)", placement=PLACEMENT)
+        os.replace(part, path)
     return out
 
 

@@ -347,7 +347,8 @@ Stand-in sockets bound to 0.0.0.0 lost every reply past about 1,700 of them; bou
 loopback address (what connect's autobind takes) all answer. In the run with no orders, 3,542
 of 3,602 were navigation-ready 24 s after the bridge served and 3,543 at 113 s; the rest stayed behind terrain
 from the ground station (X10s on the ground at their launch fields, low Pumas): the emulator's
-terrain rule, not a fault.
+terrain rule, not a fault. (Run on tidewater's terrain from before murmur-cbjn's fix, squeezed
+north-south toward the box's middle; which vehicles stand behind terrain may differ now.)
 
 **Loopback.** 127.0.0.1 is routed through `loopback0`, a virtual NIC to Windows and back. With
 the stack's links there (and no other stack up), its queues dropped about 87,000 of 7.9 million
