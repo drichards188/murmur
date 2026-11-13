@@ -413,10 +413,14 @@ def test_saturation_region_is_the_packed_force_spread(region):
 
 def test_saturation_region_links_file_is_sim_links_with_its_stations(region):
     """Its own links file: sim/links.toml table for table but the ground stations (so a profile
-    changed there is changed here too), thirteen stations, the world's links the same file, and
-    the runner hands it on as MURMUR_LINKS."""
+    changed there is changed here too) and the line-of-sight class's lost-link timer (60 s here,
+    a GUESS from published practice; sim/links.toml keeps ArduPilot's 5 s, on which the headless
+    worlds' results are pinned), thirteen stations, the world's links the same file, and the
+    runner hands it on as MURMUR_LINKS."""
     links = tomllib.loads(region.sit.links.read_text())
     shipped = tomllib.loads((region.S.REPO / "sim" / "links.toml").read_text())
+    assert links["class"]["los"]["lost_link_s"] == 60 and shipped["class"]["los"]["lost_link_s"] == 5
+    links["class"]["los"]["lost_link_s"] = shipped["class"]["los"]["lost_link_s"]
     assert {k: v for k, v in links.items() if k != "ground_station"} == {k: v for k, v in shipped.items() if k != "ground_station"}, \
         "sim/links.toml changed: copy the change into sim/situations/links/swarm-saturation-bay-region.toml"
     stations = links["ground_station"]

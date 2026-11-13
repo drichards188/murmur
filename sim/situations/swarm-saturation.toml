@@ -541,8 +541,8 @@ text = "Work in swarms: a click on a swarm in the Swarms panel selects all its m
 [[watch]]
 at_s = 240
 headline = "A swarm in trouble is one card"
-bullets = ["Member alerts fold into one swarm card in the Inbox", "Open the card to see its members and the causes", "Lost link: a member's own failsafe acts after a few seconds"]
-text = "When many members of a swarm raise the same alert, the Inbox shows one card for the swarm, with how many of its members and why; open it to see them. A drone that loses its link runs its own lost-link procedure after a few seconds."
+bullets = ["Member alerts fold into one swarm card in the Inbox", "Open the card to see its members and the causes", "Lost link: a member's own failsafe acts after 10 s (an X10) or a minute (a Puma)"]
+text = "When many members of a swarm raise the same alert, the Inbox shows one card for the swarm, with how many of its members and why; open it to see them. A drone that loses its link runs its own lost-link procedure: an X10 after 10 seconds, a Puma after a minute."
 
 [[watch]]
 at_s = 250

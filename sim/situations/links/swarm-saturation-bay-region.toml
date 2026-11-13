@@ -80,7 +80,10 @@
 # (COM_DL_LOSS_T).
 #
 #   profile         lost_link_s  basis
-#   los             5            ArduPilot default; a LOS radio that goes quiet is out of range
+#   los             60           GUESS: published practice notices a lost link in 3 to 7 s and
+#                                holds, and sends the aircraft home only after 30 to 180 s
+#                                (below); 60 s is the middle. Here only: sim/links.toml keeps
+#                                ArduPilot's 5 s, which the headless worlds' results are pinned on
 #   mesh            10           GUESS: a relay mesh reroutes in seconds; PX4's default
 #   tether          5            ArduSub default (FS_GCS_TIMEOUT); a cable doesn't fade
 #   satcom (GEO)    120          GUESS: rain fade, beam switches and the antenna masked in a
@@ -92,6 +95,16 @@
 #   acoustic        120          Murmur's choice before this table: an AUV is out of contact
 #                                by design and surfaces after two minutes without its GCS
 #                                (which heartbeats every 5 s to it under water)
+#
+# The los row's evidence (2026-11-13; no Puma figure is public). Noticing: a proposed ASTM
+# standard counts a lost link from 7 s without command updates (cited in a small RPAS BVLOS
+# best practices discussion draft), the Yamaha RMAX's timer is typically 5 s (Penn State
+# GEOG 892), and police and fire SOPs act at 3 s by holding or climbing to regain the link,
+# not by going home. Going home: 30 to 180 s on NOAA NSSL's fixed-wing setup, 60 s in a DJI Mavic SOP; the
+# Puma's unofficial training cards orbit until a timeout, then land. ArduPilot does not know
+# the link is gone until the timer runs out, so for that minute the vehicle flies on with its
+# order. (Saturation's Pumas also tripped a 5 s timer on the emulator's packet-counted loss
+# bursts, several a minute, bd murmur-q94k: a quiet uplink turns a 6-packet burst into 6 s.)
 
 seed = 1
 
@@ -243,7 +256,7 @@ antenna_m = 0
 # Crissy Field: tens of metres) still blocks.
 terrain = "ramp"
 terrain_ramp_m = 20
-lost_link_s = 5            # ArduPilot's default (table above)
+lost_link_s = 60           # GUESS (table above): about a minute before it goes home
 
 # ---- Mesh (relay-dependent: FPV, tactical UGVs). Several hops at ~5-10 ms each; capacity
 # shared across the mesh. All GUESS apart from the per-hop latency.
