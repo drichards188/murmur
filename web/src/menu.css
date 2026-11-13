@@ -32,6 +32,10 @@
   --mm-edge: #223142;
   --mm-bracket: #4f6680;
   --mm-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  /* the top bar and the scroll area's padding: the left panel's height is the window less these */
+  --mm-top-h: 48px;
+  --mm-pad-t: 26px;
+  --mm-pad-b: 40px;
   position: fixed; inset: 0; z-index: 50; isolation: isolate;
   display: flex; flex-direction: column; background: var(--bg);
 }
@@ -69,7 +73,7 @@ html:has(.mm), html:has(.mm) body { overflow: hidden; }
 .mm-hud::before, .mm-card::before { content: ''; position: absolute; inset: -1px; pointer-events: none; --bk: var(--mm-bracket); --bl: 12px; --bw: 2px; }
 
 /* the top rail */
-.mm-top { position: relative; z-index: 1; flex: none; display: flex; align-items: center; gap: 20px; height: 48px; margin: 0 10px; padding: 0 16px 0 22px; border-bottom: 1px solid var(--mm-edge); }
+.mm-top { position: relative; z-index: 1; flex: none; display: flex; align-items: center; gap: 20px; height: var(--mm-top-h); margin: 0 10px; padding: 0 16px 0 22px; border-bottom: 1px solid var(--mm-edge); }
 .mm-where { display: inline-flex; align-items: center; gap: 10px; font: 600 11px var(--mono); letter-spacing: 0.18em; text-transform: uppercase; color: var(--text); }
 .mm-where::before { content: ''; width: 9px; height: 9px; border: 1.5px solid var(--accent); transform: rotate(45deg); }
 .mm-lost { font-size: 12.5px; color: var(--warn); }
@@ -92,10 +96,13 @@ html:has(.mm), html:has(.mm) body { overflow: hidden; }
 .mm-return:hover { background: #2a2214; }
 
 /* compact and centred: as little of the screen as reads well, the rest left to the backdrop */
-.mm-scroll { position: relative; z-index: 1; flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 26px clamp(16px, 2vw, 32px) 40px; }
+.mm-scroll { position: relative; z-index: 1; flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: var(--mm-pad-t) clamp(16px, 2vw, 32px) var(--mm-pad-b); }
 .mm-grid { display: grid; grid-template-columns: minmax(320px, 420px) minmax(0, 720px); justify-content: center; gap: 20px 28px; align-items: start; }
-/* the name and the list: one opaque panel, like the chosen scenario's */
-.mm-left { display: flex; flex-direction: column; gap: 22px; min-width: 0; padding: 22px 20px 20px; }
+/* the name and the list: one opaque panel, like the chosen scenario's, no taller than the window
+   and scrolling on its own (its brackets on the panel, its scroll inside), so a long list never
+   pushes the chosen scenario out of view; sticky in case the right is the taller */
+.mm-left { position: sticky; top: var(--mm-pad-t); display: flex; flex-direction: column; min-width: 0; max-height: calc(100dvh - var(--mm-top-h) - var(--mm-pad-t) - var(--mm-pad-b)); }
+.mm-left-scroll { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 22px; padding: 22px 20px 20px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--mm-edge) transparent; }
 .mm-right { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 
 /* the name */
@@ -288,7 +295,7 @@ html:has(.mm), html:has(.mm) body { overflow: hidden; }
 
 /* a short screen (a laptop's 800 px): tighter vertical rhythm, so Start stays in view */
 @media (max-height: 860px) and (min-width: 1001px) {
-  .mm-scroll { padding-top: 24px; }
+  .mm { --mm-pad-t: 24px; }
   .mm-detail { padding-top: 20px; padding-bottom: 24px; }
   .mm-title { margin: 8px 0 18px; }
   .mm-spec { gap: 16px; }
@@ -302,7 +309,7 @@ html:has(.mm), html:has(.mm) body { overflow: hidden; }
 /* narrower: one column, the launch before the list */
 @media (max-width: 1000px) {
   .mm-grid { grid-template-columns: minmax(0, 1fr); }
-  .mm-left, .mm-right { display: contents; }
+  .mm-left, .mm-left-scroll, .mm-right { display: contents; }
   .mm-left::before { display: none; }
   .mm-ident, .mm-list { padding: 18px 18px 16px; background: var(--mm-panel); border: 1px solid var(--mm-edge); border-radius: 2px; }
   .mm-ident { order: 0; }

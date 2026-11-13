@@ -224,34 +224,36 @@ export function Menu({ state, received, lost, onUpdate, onReturn }: MenuProps) {
       <div className="mm-scroll">
         <div className="mm-grid">
           <div className="mm-left mm-hud">
-            <div className="mm-ident">
-              <h1 className="mm-word" aria-label="Murmur">
-                {'MURMUR'.split('').map((c, k) => (
-                  <span key={k} aria-hidden="true" style={{ '--i': k } as CSSProperties}>
-                    {c}
-                  </span>
-                ))}
-              </h1>
-              <p className="mm-sub">Multi-domain swarm C2</p>
-              <p className="mm-pitch">One operator over autonomous vehicles in the air, on the ground, on and under the water: built to measure whether human judgment over consequential decisions stays meaningful.</p>
+            <div className="mm-left-scroll">
+              <div className="mm-ident">
+                <h1 className="mm-word" aria-label="Murmur">
+                  {'MURMUR'.split('').map((c, k) => (
+                    <span key={k} aria-hidden="true" style={{ '--i': k } as CSSProperties}>
+                      {c}
+                    </span>
+                  ))}
+                </h1>
+                <p className="mm-sub">Multi-domain swarm C2</p>
+                <p className="mm-pitch">One operator over autonomous vehicles in the air, on the ground, on and under the water: built to measure whether human judgment over consequential decisions stays meaningful.</p>
+              </div>
+              <nav className="mm-list" aria-label="Scenarios" onKeyDown={onListKey}>
+                {tutorial && <TutorialOffer s={tutorial} cur={cur} seen={tutSeen} onStarted={tutStarted} onUpdate={onUpdate} onReturn={onReturn} onDetails={() => setSelId(tutorial.id)} />}
+                <h2 className="mm-h">Open world</h2>
+                <div className="mm-cards">{openWorld.map(card)}</div>
+                <h2 className="mm-h">
+                  Situations <span>{situations.length}</span>
+                </h2>
+                <div className="mm-cards">{situations.map(card)}</div>
+                {others.length > 0 && (
+                  <>
+                    <h2 className="mm-h">
+                      Not started from here <span>{others.length}</span>
+                    </h2>
+                    <div className="mm-cards">{others.map(card)}</div>
+                  </>
+                )}
+              </nav>
             </div>
-            <nav className="mm-list" aria-label="Scenarios" onKeyDown={onListKey}>
-              {tutorial && <TutorialOffer s={tutorial} cur={cur} seen={tutSeen} onStarted={tutStarted} onUpdate={onUpdate} onReturn={onReturn} onDetails={() => setSelId(tutorial.id)} />}
-              <h2 className="mm-h">Open world</h2>
-              <div className="mm-cards">{openWorld.map(card)}</div>
-              <h2 className="mm-h">
-                Situations <span>{situations.length}</span>
-              </h2>
-              <div className="mm-cards">{situations.map(card)}</div>
-              {others.length > 0 && (
-                <>
-                  <h2 className="mm-h">
-                    Not started from here <span>{others.length}</span>
-                  </h2>
-                  <div className="mm-cards">{others.map(card)}</div>
-                </>
-              )}
-            </nav>
           </div>
           <div className="mm-right">
             {cur && <Now key={cur.id} launch={cur} now={now} onUpdate={onUpdate} onReturn={onReturn} />}
