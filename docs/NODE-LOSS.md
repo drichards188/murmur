@@ -14,7 +14,7 @@ What happens today when a hostile sinks HUNTER 1 (hostile-act-air-to-air, the co
 docs/AUTONOMOUS-NODES.md section 8; hostile-act-engagement's default run only takes its propulsion):
 
 - At the impact the bridge logs HUNTER 1's `vehicle.event` `struck` and a one-minute `struck` alert
-  (`crates/murmur-bridge/src/tracks/mod.rs:1042-1061`, `:1066-1121`), straight from the truth side,
+  (`crates/murmur-bridge/src/tracks/mod.rs:1074-1098`, `:1103-1158`), straight from the truth side,
   skipping its link (bd murmur-3nkc); a miss no longer (bd murmur-aset, fixed in 84fdaef). The stand-in goes silent
   (`crates/murmur-standins/src/damage.rs:10`).
 - Every engagement check then finds its position stale (`crates/murmur-decide/src/engage.rs:3083`):
@@ -22,19 +22,19 @@ docs/AUTONOMOUS-NODES.md section 8; hostile-act-engagement's default run only ta
   anywhere its catalog cruise speed reaches since its last report (`:3190-3226`; 6 m/s for
   `seahunter`, `sim/platforms.toml:794`): 360 m a minute of span, from 0.9 km out, against a keep-out
   of the effect radius plus 200 m. Only an operator with engagement authority accepting its unknown
-  position for that one engagement clears it (rules 6, `engine.rs:1766`); no script does, and the
+  position for that one engagement clears it (rules 6, `engine.rs:1776`); no script does, and the
   explanation says "waiting does not clear it" (`keepout.rs:1474`).
-- HUNTER 1's camera held the target: a silent vehicle senses nothing (`tracks/mod.rs:436-450`), so
+- HUNTER 1's camera held the target: a silent vehicle senses nothing (`tracks/mod.rs:465-479`), so
   the drone's identity stays at 0.59 of 0.60 and its fix loosens to 149 m of 37.5 m. FURY 1 never
   passes and the timeline gives up.
-- Its `lost_link` alert stays for good (`decision/alerts.rs:106-121`), queued orders for it wait up
+- Its `lost_link` alert stays for good (`decision/alerts.rs:109-124`), queued orders for it wait up
   to 900 s, and lost-link values an engagement preloaded on it are owed and retried for ever.
 
 ## 2. The states
 
 | state | entered when | the engine logs | who decides | evidence shown | leaves when |
 |---|---|---|---|---|---|
-| **reporting** | its position is fresh (`rules.rs:905` `fresh`, the link-aware age limit) | nothing new | | | its position goes stale |
+| **reporting** | its position is fresh (`rules.rs:965` `fresh`, the link-aware age limit) | nothing new | | | its position goes stale |
 | **silent** | its position is stale | nothing new: derived from the facts every decision logs | the engine | last report, its predicted region (section 3) | reported again (reporting), or evidence (presumed lost), or a person confirms (lost) |
 | **presumed lost** | silent, and strike evidence within `PRESUME_WINDOW_S` (30 s, GUESS) of its last report, or damage it reported before going silent, or spent by its own effect (section 6) | `node.presumed` {uid, since, evidence (each cited by seq), world_t, its facts}; `node.presumption_cleared` when heard again | the engine, from logged inputs only; a flag, it decides nothing | each item with its time and source, the silence, the region | heard again, or a person confirms |
 | **lost** | an operator confirms (section 5); still silent since exactly the report the review showed (`engage::lost_since_report`, `engage.rs:1141`, reused) | `node.lost` {uid, since, by, session, note, evidence, world_t, vehicle, identity, step_up}; then its consequences (section 4) | a person with engagement authority (decision D1); never an agent; in autoplay a scripted signer | as presumed lost, plus what confirming does | revoked: automatically when it is heard again (`node.loss_revoked` {cause: heard}, logged before any decision reads the report), or by any operator with a note (it only restricts) |
@@ -94,17 +94,17 @@ second half: another sensor must take the drone (section 5).
 | line of fire, rules 26 (`engage.rs:5461`) | via the keep-out | left out | counted |
 | keep-out explanation (`keepout.rs:653-669`, `:873`) | an item | no item | an item |
 | picture tokens (`engage.rs:804`, `:4784`) | carry rules 6 acceptances | also carry the lost set; a signature on a token whose set differs is refused | the same refusal |
-| readiness (`rules.rs:984`) | spent refuses every order (`:990-1007`) | refuses every order, hold and rtl included: "confirmed lost" | takes orders |
-| queue, rules 5 (`queue.rs:251`) | waits up to `expire_s` | every pending or queued intent naming it is voided (`Engine::void`, `engine.rs:5181`, reason "vehicle confirmed lost"); a dispatched order's op on it ends `lost`, the intent ends when no vehicle is left on it | nothing comes back: new orders |
-| engagements | link gap stops one within `link_gap_s` (`engage.rs:5083`), fallback from its preload | refused while one holds the platform (as a write-off, `engine.rs:2601`); a released munition flies on (rules 20) | unchanged |
-| owed lost-link values, rules 6, 7, 12 (`engine.rs:2535`, `:2582`) | retried for ever, `restore_pending` alert | closed: `restore.closed`, a new closure `lost` (`audit.rs:1107`) | owed back again, a mission waits for the restore (as an un-spend, `engine.rs:2718`) |
-| spent marks, rules 12 and 15 (`replay.rs:1277`) | separate | unchanged and separate (D6) | unchanged |
+| readiness (`rules.rs:1044`) | spent refuses every order (`:1050-1067`) | refuses every order, hold and rtl included: "confirmed lost" | takes orders |
+| queue, rules 5 (`queue.rs:251`) | waits up to `expire_s` | every pending or queued intent naming it is voided (`Engine::void`, `engine.rs:5222`, reason "vehicle confirmed lost"); a dispatched order's op on it ends `lost`, the intent ends when no vehicle is left on it | nothing comes back: new orders |
+| engagements | link gap stops one within `link_gap_s` (`engage.rs:5083`), fallback from its preload | refused while one holds the platform (as a write-off, `engine.rs:2634`); a released munition flies on (rules 20) | unchanged |
+| owed lost-link values, rules 6, 7, 12 (`engine.rs:2568`, `:2615`) | retried for ever, `restore_pending` alert | closed: `restore.closed`, a new closure `lost` (`audit.rs:1255`) | owed back again, a mission waits for the restore (as an un-spend, `engine.rs:2751`) |
+| spent marks, rules 12 and 15 (`replay.rs:1292`) | separate | unchanged and separate (D6) | unchanged |
 | rounds, rules 24 | ledger | unchanged | unchanged |
 | minefield check's "ours", rules 27 (`mines.rs:692-731`) | its position, home and orders | left out, and out of `orders_in_play` | counted |
 | identify, rules 21 to 23 | runs on | its identify ends with its op (`lost`); the track needs another sensor | |
 | assessment coverage (`engage.rs:5714`) | fresh positions only | unchanged | unchanged |
 | domain rule, geofence, planner, space tasks | read an intent's vehicles; collect and cover name none (`sim/policy.toml:43`) | nothing to read | |
-| carry over a restart, rules 12 and 15 (`replay.rs:1203`) | spent, owed, rounds, fields | `carried_from.lost`, the same vehicle only (platform, callsign, sysid: `VehicleIdentity::same_vehicle`, `engage.rs:1442`) | revoked at its first report in the new run |
+| carry over a restart, rules 12 and 15 (`replay.rs:1218`) | spent, owed, rounds, fields | `carried_from.lost`, the same vehicle only (platform, callsign, sysid: `VehicleIdentity::same_vehicle`, `engage.rs:1442`) | revoked at its first report in the new run |
 | bridge alerts (`decision/alerts.rs`) | `lost_link` for good | `lost_link`, `restore_pending` and `may_be_running` close; a `node_lost` info alert | `node_reported_again`, high |
 | bridge task layer, restore jobs (`decision/engage.rs:1290-1320`) | retry | stop | resume |
 | display estimate (`estimate.rs`) | display only | unchanged; the vehicle shows LOST | |
@@ -114,8 +114,8 @@ second half: another sensor must take the drone (section 5).
 
 | what | shape |
 |---|---|
-| review items | `GET /api/review` (`decision/ident.rs:209`) gains `node_losses` (presumed lost, and silent vehicles anyone flagged by hand) and `nodes_lost` (confirmed), each with uid, callsign, `since`, silent seconds, evidence, region, `actions` |
-| confirm | `POST /api/review/nodes/{uid}/lost` {since, note, password or passkey}: 403 without engagement authority and 409 when the rules refuse (not silent since `since`, an engagement holds it), both before any credential is asked for, then 401 without a valid step-up in a credentials run, as `/api/restores/unspend` (`api.rs:605-635`). Hard-coded like the un-spend's step-up, not an `[approval] step_up_acts` word: no policy schema change |
+| review items | `GET /api/review` (`decision/ident.rs:247`) gains `node_losses` (presumed lost, and silent vehicles anyone flagged by hand) and `nodes_lost` (confirmed), each with uid, callsign, `since`, silent seconds, evidence, region, `actions` |
+| confirm | `POST /api/review/nodes/{uid}/lost` {since, note, password or passkey}: 403 without engagement authority and 409 when the rules refuse (not silent since `since`, an engagement holds it), both before any credential is asked for, then 401 without a valid step-up in a credentials run, as `/api/restores/unspend` (`api.rs:606-636`). Hard-coded like the un-spend's step-up, not an `[approval] step_up_acts` word: no policy schema change |
 | revoke | `POST /api/review/nodes/{uid}/revoke` {note}: any operator, no step-up |
 | console | ReviewSection: a Node losses group, one card each: the evidence with times, the region on the map, what confirming does (leaves keep-outs, ends its orders, closes owed values, undone if it reports), a note, Confirm lost (step-up). Map and VehicleDetails: SILENT (the region drawn as the engine counts it), PRESUMED LOST, LOST |
 | agents (MCP) | read only: `get_fleet` and `get_vehicle` carry `standing` (omitted while reporting, so recorded reads do not change), `get_inbox` carries the review items. No tool confirms or revokes (`mcp/tests.rs:345` extended); the instructions list it with the other human acts (`mcp/mod.rs:97`) |
@@ -157,7 +157,7 @@ already relies on.
   dropped before logging under older rules, as the damage fact is.
 - **New events**: `node.presumed`, `node.presumption_cleared`, `node.lost`, `node.loss_revoked`;
   `restore.closed` closure `lost`; `carried_from.lost`. `Engine::step_nodes` runs on the bridge's
-  tick beside `step_lays` (`engine.rs:6149`).
+  tick beside `step_lays` (`engine.rs:6281`).
 - **Replay** recomputes each region, each presumption (evidence in the log within the window, the
   vehicle silent on its logged facts) and each confirmation (authority, not an agent, the step-up in a
   credentials run, silent since exactly `since`, no engagement holding it); flags a decision that
