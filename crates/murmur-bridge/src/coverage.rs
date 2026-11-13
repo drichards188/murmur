@@ -27,7 +27,7 @@
 //! answer names it (`prediction.station`), a grid gives one character a cell (`station`, an
 //! index into `stations`), and `sources.ground_stations` lists them.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -55,6 +55,12 @@ const WARM_ROUNDS: usize = 200;
 /// Along a route the satellites are looked at this often (s of travel) at most: visibility
 /// changes over minutes.
 const SAT_STEP_S: f64 = 30.0;
+/// The most points one look at a constellation is given ([`sample_grouped`]): each point's
+/// satellites in view are held until the look ends (`Space::links_at`), so a grid's tens of
+/// thousands of cells at one time go in parts, each part one propagation of the class.
+const SAT_BATCH: usize = 2_000;
+/// What SATCOM is predicted from when the satellites answer.
+const SATCOM_SOURCE: &str = "murmur-space: satellites of the class above the terminal's mask";
 /// Grid answers kept.
 const GRID_CACHE: usize = 16;
 
@@ -139,7 +145,7 @@ pub struct Coverage {
     src: Sources,
     clock: crate::space::ScenarioClock,
     ready: tokio::sync::OnceCell<Result<Arc<Ready>, String>>,
-    space: tokio::sync::OnceCell<Result<Arc<RealSpace>, String>>,
+    space: tokio::sync::OnceCell<Result<Arc<dyn SpaceSource>, String>>,
     grids: Mutex<VecDeque<(String, Arc<Value>)>>,
 }
 
@@ -168,6 +174,18 @@ pub struct VehicleRoute {
 type Line = (Part, String, bool, Vec<(f64, f64)>);
 /// A leg sampled: its part, name and loop, its points with how far along each is, its length.
 type Sampled = (Part, String, bool, Vec<(f64, GeoPoint)>, f64);
+/// SATCOM's answer at each point (`None` where the profile has no satellites there), and what
+/// it was predicted from.
+type SatAnswers = (Vec<Option<Result<SatObs, String>>>, Option<String>);
+
+/// One vehicle's legs laid out for its answer ([`Coverage::lay`]): each leg's samples, and
+/// every point in travel order with the time SATCOM is looked at there.
+struct Laid {
+    /// It stays where it is (a hold, a track).
+    here: bool,
+    shaped: Vec<Sampled>,
+    all: Vec<(GeoPoint, f64)>,
+}
 
 /// A query's target: a vehicle's own profile, or a class or profile.
 enum Target {
@@ -197,6 +215,13 @@ impl Coverage {
 
     pub fn from_env(root: &std::path::Path) -> Coverage {
         Coverage::new(Sources::from_env(root))
+    }
+
+    /// Tests: SATCOM from `source` instead of the links file's element sets.
+    #[cfg(test)]
+    fn with_space(self, source: Arc<dyn SpaceSource>) -> Coverage {
+        assert!(self.space.set(Ok(source)).is_ok(), "the SATCOM source set before its first use");
+        self
     }
 
     /// Scenario time now, unix seconds.
@@ -238,7 +263,7 @@ impl Coverage {
 
     /// The SATCOM source, loaded once on first need (as the emulator loads it: the links file's
     /// `[space]`, its time map from the scenario's start).
-    async fn space(&self, ready: &Ready) -> Result<Arc<RealSpace>, String> {
+    async fn space(&self, ready: &Ready) -> Result<Arc<dyn SpaceSource>, String> {
         if !self.src.space {
             return Err("SATCOM prediction off: the profiles' static numbers".into());
         }
@@ -269,7 +294,9 @@ impl Coverage {
                     .at
                     .map(|a| a.timestamp_millis() as f64 / 1000.0)
                     .unwrap_or_else(|| self.now_unix());
-                load_space(cfg, start).await.map(Arc::new)
+                load_space(cfg, start)
+                    .await
+                    .map(|s| Arc::new(s) as Arc<dyn SpaceSource>)
             })
             .await
             .clone()
@@ -327,40 +354,51 @@ impl Coverage {
         out
     }
 
-    /// The constellation's answers at points at one time each (`None` where the profile has no
-    /// satellites there).
-    async fn satellites(
-        &self,
-        ready: &Ready,
-        profile: &str,
-        points: &[(GeoPoint, f64)],
-    ) -> (Vec<Option<Result<SatObs, String>>>, Option<String>) {
-        let classes: Vec<Option<String>> = points
+    /// The constellation's answers for several sets of points, each set on its profile and each
+    /// point at its own time (`None` where the profile has no satellites there), with what each
+    /// set's SATCOM was predicted from (`None`: no point of the set has satellites). Every point
+    /// of every set that shares a class and a time with others is looked at with them, in one
+    /// pass off the runtime ([`sample_grouped`]): the constellation is propagated once a class
+    /// and time, not once a point.
+    async fn satellites_many(&self, ready: &Ready, sets: &[(&str, &[(GeoPoint, f64)])]) -> Vec<SatAnswers> {
+        let classes: Vec<Vec<Option<String>>> = sets
             .iter()
-            .map(|(p, _)| ready.pred.sat_class(profile, p).map(str::to_string))
+            .map(|(profile, points)| {
+                points
+                    .iter()
+                    .map(|(p, _)| ready.pred.sat_class(profile, p).map(str::to_string))
+                    .collect()
+            })
             .collect();
-        if classes.iter().all(Option::is_none) {
-            return (vec![None; points.len()], None);
+        let any = |c: &[Option<String>]| c.iter().any(Option::is_some);
+        if !classes.iter().any(|c| any(c)) {
+            return classes.iter().map(|c| (vec![None; c.len()], None)).collect();
         }
         let space = match self.space(ready).await {
             Ok(s) => s,
             Err(e) => {
-                let out = classes.iter().map(|c| c.as_ref().map(|_| Err(e.clone()))).collect();
-                return (out, Some(e));
+                return classes
+                    .iter()
+                    .map(|c| {
+                        let out = c.iter().map(|c| c.as_ref().map(|_| Err(e.clone()))).collect();
+                        (out, any(c).then(|| e.clone()))
+                    })
+                    .collect();
             }
         };
         let jobs: Vec<(Option<String>, GeoPoint, f64)> = classes
-            .into_iter()
-            .zip(points.iter())
-            .map(|(c, (p, t))| (c, *p, *t))
+            .iter()
+            .zip(sets)
+            .flat_map(|(c, (_, points))| c.iter().cloned().zip(points.iter()).map(|(c, (p, t))| (c, *p, *t)))
             .collect();
-        let out = run_blocking(move || {
-            jobs.iter()
-                .map(|(c, p, t)| c.as_ref().map(|c| space.sample(c, p, *t)))
-                .collect::<Vec<_>>()
-        })
-        .await;
-        (out, Some("murmur-space: satellites of the class above the terminal's mask".into()))
+        let mut out = run_blocking(move || sample_grouped(space.as_ref(), &jobs)).await.into_iter();
+        classes
+            .iter()
+            .map(|c| {
+                let sats: Vec<_> = out.by_ref().take(c.len()).collect();
+                (sats, any(c).then(|| SATCOM_SOURCE.to_string()))
+            })
+            .collect()
     }
 
     fn sources(&self, ready: &Ready, satcom: Option<String>) -> Value {
@@ -482,13 +520,29 @@ impl Coverage {
     ) -> Result<(Vec<Prediction>, Option<String>), String> {
         let geo: Vec<GeoPoint> = points.iter().map(|(p, _)| *p).collect();
         self.warm(ready, profile, &geo).await;
-        let (sats, satcom) = self.satellites(ready, profile, points).await;
+        let (sats, satcom) = self
+            .satellites_many(ready, &[(profile, points)])
+            .await
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| (vec![None; points.len()], None));
+        Ok((self.predict_with(ready, profile, points, &sats)?, satcom))
+    }
+
+    /// Predictions at points on `profile` from their SATCOM answers, the terrain fetched first.
+    fn predict_with(
+        &self,
+        ready: &Ready,
+        profile: &str,
+        points: &[(GeoPoint, f64)],
+        sats: &[Option<Result<SatObs, String>>],
+    ) -> Result<Vec<Prediction>, String> {
         let terrain = self.terrain_of(ready);
         let mut out = Vec::with_capacity(points.len());
-        for ((p, _), s) in points.iter().zip(&sats) {
+        for ((p, _), s) in points.iter().zip(sats) {
             out.push(ready.pred.predict(profile, p, terrain, s.as_ref())?);
         }
-        Ok((out, satcom))
+        Ok(out)
     }
 
     /// Points: one prediction each.
@@ -753,65 +807,80 @@ impl Coverage {
         Ok(v)
     }
 
-    /// The answer for an order: each vehicle's route as the decision engine lays it out.
+    /// The answer for an order: each vehicle's route as the decision engine lays it out, from
+    /// scenario time now.
     pub async fn order_answer(&self, world: &World, routes: Vec<VehicleRoute>) -> Value {
+        self.order_answer_at(world, routes, self.now_unix()).await
+    }
+
+    /// [`Self::order_answer`] from `t0` (scenario unix s). Every vehicle's points take their
+    /// times on one grid from `t0`, so the whole order's SATCOM is looked at in one pass before
+    /// any vehicle is answered, each class and time once however many vehicles share it
+    /// ([`Self::satellites_many`]); then each vehicle's terrain is fetched and its answer made,
+    /// one after the other as before.
+    async fn order_answer_at(&self, world: &World, routes: Vec<VehicleRoute>, t0: f64) -> Value {
         let ready = match self.ready().await {
             Ok(r) => r,
             Err(e) => return json!({ "predicted": false, "error": e, "note": NOTE }),
         };
-        let mut vehicles = Vec::new();
-        let mut satcom = None;
+        /// A vehicle of the order: answered already (it cannot be predicted), or laid out.
+        enum Slot {
+            Said(Value),
+            Laid(Box<Who>, Laid),
+        }
+        let mut slots = Vec::new();
         for vr in routes {
             let Some(uid) = vr.uid else { continue };
             let Some(who) = self.who(world, uid, &ready.pred) else {
-                vehicles.push(json!({ "uid": uid, "error": format!("no vehicle with uid {uid}") }));
+                slots.push(Slot::Said(json!({ "uid": uid, "error": format!("no vehicle with uid {uid}") })));
                 continue;
             };
             if ready.pred.profile(&who.profile).is_none() {
-                vehicles.push(json!({ "uid": uid, "callsign": who.callsign,
-                    "error": format!("no link profile {:?} in the links file", who.profile) }));
+                slots.push(Slot::Said(json!({ "uid": uid, "callsign": who.callsign,
+                    "error": format!("no link profile {:?} in the links file", who.profile) })));
                 continue;
             }
             let route = match vr.route {
                 Ok(r) => r,
                 Err(e) => {
-                    vehicles.push(json!({ "uid": uid, "callsign": who.callsign, "error": e }));
+                    slots.push(Slot::Said(json!({ "uid": uid, "callsign": who.callsign, "error": e })));
                     continue;
                 }
             };
-            let ll = |p: murmur_decide::LonLat| (p.lon, p.lat);
-            let mut legs = Vec::new();
-            if let Some(s) = &route.transit {
-                // rules 22: through the waypoints a plan routes it by
-                let mut pts = vec![ll(s.from)];
-                pts.extend(route.transit_via.iter().copied().map(ll));
-                pts.push(ll(s.to));
-                legs.push((Part::Transit, s.name(), false, pts));
-            }
-            if let Some(path) = &route.task_routed() {
-                let mut pts: Vec<(f64, f64)> = path.points.iter().copied().map(ll).collect();
-                if path.closed
-                    && let Some(f) = pts.first().copied()
-                {
-                    pts.push(f);
+            let Some(legs) = order_legs(&route, &who) else {
+                slots.push(Slot::Said(json!({ "uid": uid, "callsign": who.callsign, "error": "no position" })));
+                continue;
+            };
+            let laid = self.lay(&who, legs, t0).await;
+            slots.push(Slot::Laid(Box::new(who), laid));
+        }
+        // the satellites for every vehicle at once
+        let sats = {
+            let sets: Vec<(&str, &[(GeoPoint, f64)])> = slots
+                .iter()
+                .filter_map(|s| match s {
+                    Slot::Laid(who, laid) => Some((who.profile.as_str(), laid.all.as_slice())),
+                    Slot::Said(_) => None,
+                })
+                .collect();
+            self.satellites_many(&ready, &sets).await
+        };
+        let mut sats = sats.into_iter();
+        let mut vehicles = Vec::with_capacity(slots.len());
+        let mut satcom = None;
+        for slot in slots {
+            let (who, laid) = match slot {
+                Slot::Said(v) => {
+                    vehicles.push(v);
+                    continue;
                 }
-                let name = if path.closed { "task path (one lap)" } else { "task path" };
-                legs.push((Part::Task, name.to_string(), path.closed, pts));
-            }
-            if let Some(s) = &route.ret {
-                legs.push((Part::Return, s.name(), false, vec![ll(s.from), ll(s.to)]));
-            }
-            if legs.is_empty() {
-                // a hold or a track: it stays where it is, at the altitude it is at
-                match who.pos {
-                    Some(p) => legs.push((Part::Here, "where it is".to_string(), false, vec![(p.lon, p.lat)])),
-                    None => {
-                        vehicles.push(json!({ "uid": uid, "callsign": who.callsign, "error": "no position" }));
-                        continue;
-                    }
-                }
-            }
-            let v = self.answer_legs(&ready, &who, legs, self.now_unix()).await;
+                Slot::Laid(who, laid) => (who, laid),
+            };
+            let (s, sc) = sats.next().unwrap_or_else(|| (vec![None; laid.all.len()], None));
+            let geo: Vec<GeoPoint> = laid.all.iter().map(|(p, _)| *p).collect();
+            self.warm(&ready, &who.profile, &geo).await;
+            let predicted = self.predict_with(&ready, &who.profile, &laid.all, &s).map(|p| (p, sc));
+            let v = self.answer(&ready, &who, laid, predicted);
             if let Some(s) = v["sources"]["satcom"].as_str() {
                 satcom = Some(s.to_string());
             }
@@ -838,6 +907,14 @@ impl Coverage {
         legs: Vec<Line>,
         t0: f64,
     ) -> Value {
+        let laid = self.lay(who, legs, t0).await;
+        let predicted = self.predict_all(ready, &who.profile, &laid.all).await;
+        self.answer(ready, who, laid, predicted)
+    }
+
+    /// Legs as polylines of (lon, lat) sampled for one vehicle: each point at its altitude, and
+    /// at its time from `t0` on a grid of [`SAT_STEP_S`].
+    async fn lay(&self, who: &Who, legs: Vec<Line>, t0: f64) -> Laid {
         let here = legs.iter().all(|l| l.0 == Part::Here);
         // every point of every leg, with how far along its leg
         let mut flat: Vec<(f64, f64)> = Vec::new();
@@ -890,7 +967,21 @@ impl Coverage {
             }
             elapsed += len;
         }
-        let (preds, satcom) = match self.predict_all(ready, &who.profile, &all).await {
+        Laid { here, shaped, all }
+    }
+
+    /// One vehicle's answer from its laid-out legs and their predictions (one a point of
+    /// `laid.all`, with what SATCOM was predicted from).
+    fn answer(
+        &self,
+        ready: &Ready,
+        who: &Who,
+        laid: Laid,
+        predicted: Result<(Vec<Prediction>, Option<String>), String>,
+    ) -> Value {
+        let Laid { here, shaped, .. } = laid;
+        let v = who.speed_mps.max(0.5);
+        let (preds, satcom) = match predicted {
             Ok(x) => x,
             Err(e) => return json!({ "uid": who.uid, "callsign": who.callsign, "error": e }),
         };
@@ -943,6 +1034,39 @@ impl Coverage {
         }
         out
     }
+}
+
+/// A vehicle's route for an order as legs: its transit (rules 22: through the waypoints a plan
+/// routes it by), task path (a loop closed for one lap) and return; for a hold or a track, where
+/// it is (`None`: it has no position).
+fn order_legs(route: &murmur_decide::Route, who: &Who) -> Option<Vec<Line>> {
+    let ll = |p: murmur_decide::LonLat| (p.lon, p.lat);
+    let mut legs = Vec::new();
+    if let Some(s) = &route.transit {
+        let mut pts = vec![ll(s.from)];
+        pts.extend(route.transit_via.iter().copied().map(ll));
+        pts.push(ll(s.to));
+        legs.push((Part::Transit, s.name(), false, pts));
+    }
+    if let Some(path) = &route.task_routed() {
+        let mut pts: Vec<(f64, f64)> = path.points.iter().copied().map(ll).collect();
+        if path.closed
+            && let Some(f) = pts.first().copied()
+        {
+            pts.push(f);
+        }
+        let name = if path.closed { "task path (one lap)" } else { "task path" };
+        legs.push((Part::Task, name.to_string(), path.closed, pts));
+    }
+    if let Some(s) = &route.ret {
+        legs.push((Part::Return, s.name(), false, vec![ll(s.from), ll(s.to)]));
+    }
+    if legs.is_empty() {
+        // a hold or a track: it stays where it is, at the altitude it is at
+        let p = who.pos?;
+        legs.push((Part::Here, "where it is".to_string(), false, vec![(p.lon, p.lat)]));
+    }
+    Some(legs)
 }
 
 /// A grid cell's station: its index as one character, 0-9 then a-z (36 stations; more read `?`).
@@ -1043,6 +1167,42 @@ fn lonlats(v: &Value) -> Result<Vec<(f64, f64)>, (u16, String)> {
         return Err(bad("a point outside [-180, 180] x [-90, 90]"));
     }
     Ok(pts)
+}
+
+/// SATCOM answers at points, each given as (class, position, time) (`None` where there is no
+/// class: no satellites there). The points that share a class and a time are looked at together
+/// (`SpaceSource::sample_many`, each answer the one `sample` gives at that point), up to
+/// [`SAT_BATCH`] a look: the constellation is propagated once a class and time rather than once a
+/// point. An order's vehicles take their times on one grid from the order's start, so a hundred
+/// of them on Starlink share each look (bd murmur-7ujq: 11,125 element sets propagated a point
+/// took a Saturation surface order's dry run past a minute).
+fn sample_grouped(
+    space: &dyn SpaceSource,
+    jobs: &[(Option<String>, GeoPoint, f64)],
+) -> Vec<Option<Result<SatObs, String>>> {
+    // by the class and the time's bits: points share a look only at the very same time
+    let mut groups: BTreeMap<(&str, u64), Vec<usize>> = BTreeMap::new();
+    for (i, (class, _, t)) in jobs.iter().enumerate() {
+        if let Some(c) = class {
+            groups.entry((c.as_str(), t.to_bits())).or_default().push(i);
+        }
+    }
+    let mut out = vec![None; jobs.len()];
+    for ((class, t), idx) in groups {
+        let t = f64::from_bits(t);
+        for part in idx.chunks(SAT_BATCH) {
+            let positions: Vec<GeoPoint> = part.iter().map(|&i| jobs[i].1).collect();
+            let mut answers = space.sample_many(class, &positions, t).into_iter();
+            for &i in part {
+                out[i] = Some(
+                    answers
+                        .next()
+                        .unwrap_or_else(|| Err(format!("space class {class:?}: no answer for a point"))),
+                );
+            }
+        }
+    }
+    out
 }
 
 /// Work on the satellites: off the async runtime live; at once in the headless simulator (its

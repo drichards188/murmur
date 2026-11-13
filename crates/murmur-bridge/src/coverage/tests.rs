@@ -345,3 +345,383 @@ async fn two_stations_agree_with_the_emulator_and_name_the_station() {
     assert_eq!(g["stations"], json!(["Crissy Field", "Hawk Hill"]));
     let _ = std::fs::remove_file(&links);
 }
+
+// ---- SATCOM along an order's routes (bd murmur-7ujq) ------------------------------------------
+
+/// A vehicle of `platform` heard just now at `pos` (lat, lon) and `alt_m`, its home where it is.
+fn add_vehicle(world: &World, uid: Uid, platform: &str, pos: (f64, f64), alt_m: f64) {
+    use crate::link::{LinkStats, Transmit};
+    use crate::vehicle::{Identity, VehicleCell};
+    struct NoTx;
+    impl Transmit for NoTx {
+        fn send(&self, _: &crate::mav::MavMessage) {}
+        fn send_raw(&self, _: &[u8]) {}
+        fn port(&self) -> u16 {
+            0
+        }
+    }
+    let mut stats = LinkStats::default();
+    stats.on_packet(0, crate::clock::mono(), crate::clock::wall());
+    let mut m = serde_json::Map::new();
+    m.insert("platform".into(), json!(platform));
+    m.insert("callsign".into(), json!(format!("{platform} {uid}")));
+    let cell = Arc::new(VehicleCell::new(
+        uid,
+        (uid % 250) as u8,
+        Arc::new(NoTx),
+        Arc::new(std::sync::Mutex::new(stats)),
+        Some(Arc::new(Identity::from_manifest(&m))),
+    ));
+    cell.write(|v| {
+        v.pos = Some(pos);
+        v.alt_msl = Some(alt_m);
+        v.home = Some(pos);
+        v.home_alt = Some(alt_m);
+    });
+    world.insert_vehicle(cell);
+}
+
+/// `n` vehicles of `platform` spread round a ring of `radius_m` about `center` (lon, lat), each
+/// ordered to orbit it as the decision engine lays the order out (`route::route_for`: from where
+/// it is to waypoint 1, one lap of the ring's twelve points, back home), uids from `uid0`.
+fn ring_order(
+    world: &World,
+    platform: &str,
+    uid0: Uid,
+    n: usize,
+    center: (f64, f64),
+    radius_m: f64,
+) -> Vec<VehicleRoute> {
+    use murmur_decide::{LegKind, LonLat, Route, Segment};
+    let c = LonLat { lon: center.0, lat: center.1 };
+    let path = murmur_decide::Task::Orbit { center: c, radius_m }.path().expect("an orbit's path");
+    let first = path.points[0];
+    let (_, end) = path.end().expect("its end");
+    let at = murmur_decide::geo::circle_points(c, radius_m, n);
+    at.iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let uid = uid0 + i as Uid;
+            add_vehicle(world, uid, platform, (p.lat, p.lon), 0.0);
+            let route = Route {
+                transit: Some(Segment {
+                    kind: LegKind::Transit,
+                    from: *p,
+                    to: first,
+                    from_label: "position".into(),
+                    to_label: "waypoint 1".into(),
+                    from_vehicle: true,
+                }),
+                task: Some(path.clone()),
+                ret: Some(Segment {
+                    kind: LegKind::Return,
+                    from: end,
+                    to: *p,
+                    from_label: "waypoint 1".into(),
+                    to_label: "home".into(),
+                    from_vehicle: false,
+                }),
+                ..Route::default()
+            };
+            VehicleRoute { uid: Some(uid), route: Ok(route) }
+        })
+        .collect()
+}
+
+/// The Golden Gate's pinned element sets (sim/headless/space/golden-gate, committed; the same
+/// files as a fetch of 2026-10-02 into sim/space/cache), loaded as the predictor loads the links
+/// file's: its time map from `t0`, in the links file's `auto` epoch mode.
+fn pinned_space(t0: f64) -> RealSpace {
+    use std::io::Read;
+    let dir = root().join("sim/headless/space/golden-gate");
+    let catalog = murmur_space::Catalog::parse(&std::fs::read_to_string(dir.join("constellations.toml")).expect("catalog"))
+        .expect("catalog");
+    let sources: Vec<(String, String)> = catalog
+        .queries()
+        .into_iter()
+        .map(|q| {
+            let file = dir.join("cache").join(format!("{}.json.gz", murmur_space::cache::cache_key(&q)));
+            let mut text = String::new();
+            flate2::read::GzDecoder::new(std::fs::File::open(&file).expect("element sets"))
+                .read_to_string(&mut text)
+                .expect("gzip");
+            (q, text)
+        })
+        .collect();
+    let space = murmur_space::Space::from_sources(catalog, &sources).expect("space");
+    let from = chrono::DateTime::from_timestamp(t0 as i64, 0).expect("t0");
+    let tm = space.time_map(murmur_space::EpochMode::Auto, from, from + chrono::Duration::hours(24));
+    RealSpace::new(space, tm)
+}
+
+/// 2026-10-02T18:00:00Z, the pinned element sets' day, as unix seconds.
+const SAT_T0: f64 = 1_790_964_000.0;
+
+/// A position and time as a key, bit for bit.
+type Asked = (String, [u64; 4]);
+
+/// A SATCOM source over another, keeping what it is asked and answers: its `sample` calls, each
+/// `sample_many` look (class, time, how many points), and every point's answer. `per_point`
+/// answers a look one `sample` a point, as the predictor asked before bd murmur-7ujq.
+struct Counting {
+    inner: Arc<dyn SpaceSource>,
+    per_point: bool,
+    samples: std::sync::atomic::AtomicUsize,
+    looks: Mutex<Vec<(String, u64, usize)>>,
+    answers: Mutex<std::collections::BTreeMap<Asked, Result<SatObs, String>>>,
+}
+
+impl Counting {
+    fn new(inner: Arc<dyn SpaceSource>, per_point: bool) -> Arc<Counting> {
+        Arc::new(Counting {
+            inner,
+            per_point,
+            samples: Default::default(),
+            looks: Default::default(),
+            answers: Default::default(),
+        })
+    }
+
+    fn keep(&self, class: &str, p: &GeoPoint, t: f64, a: &Result<SatObs, String>) {
+        let key = (class.to_string(), [p.lat.to_bits(), p.lon.to_bits(), p.alt_m.to_bits(), t.to_bits()]);
+        self.answers.lock().expect("answers").insert(key, a.clone());
+    }
+
+    fn samples(&self) -> usize {
+        self.samples.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn looks(&self) -> Vec<(String, u64, usize)> {
+        self.looks.lock().expect("looks").clone()
+    }
+}
+
+impl SpaceSource for Counting {
+    fn check(&self, class: &str, unix_s: f64) -> Result<(), String> {
+        self.inner.check(class, unix_s)
+    }
+
+    fn sample(&self, class: &str, pos: &GeoPoint, unix_s: f64) -> Result<SatObs, String> {
+        self.samples.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let a = self.inner.sample(class, pos, unix_s);
+        self.keep(class, pos, unix_s, &a);
+        a
+    }
+
+    fn sample_many(&self, class: &str, positions: &[GeoPoint], unix_s: f64) -> Vec<Result<SatObs, String>> {
+        if self.per_point {
+            return positions.iter().map(|p| self.sample(class, p, unix_s)).collect();
+        }
+        self.looks.lock().expect("looks").push((class.to_string(), unix_s.to_bits(), positions.len()));
+        let out = self.inner.sample_many(class, positions, unix_s);
+        for (p, a) in positions.iter().zip(&out) {
+            self.keep(class, p, unix_s, a);
+        }
+        out
+    }
+
+    fn outlook(
+        &self,
+        class: &str,
+        pos: &GeoPoint,
+        unix_s: f64,
+        horizon_s: f64,
+    ) -> Result<murmur_linkemu::sat::Outlook, String> {
+        self.inner.outlook(class, pos, unix_s, horizon_s)
+    }
+}
+
+/// A made-up constellation: each answer a function of its class, point and time, a class
+/// `broken` failing; `sample_many` is the trait's own, one `sample` a point.
+struct Made;
+
+impl SpaceSource for Made {
+    fn check(&self, _: &str, _: f64) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn sample(&self, class: &str, pos: &GeoPoint, unix_s: f64) -> Result<SatObs, String> {
+        if class == "broken" {
+            return Err(format!("{class} at {unix_s}"));
+        }
+        Ok(SatObs {
+            visible: ((pos.lat * 1e4).abs() as usize + unix_s as usize + class.len()) % 9,
+            best: None,
+            latency_ms: Some(pos.lon * 1e3 + unix_s + pos.alt_m),
+        })
+    }
+
+    fn outlook(&self, _: &str, _: &GeoPoint, _: f64, _: f64) -> Result<murmur_linkemu::sat::Outlook, String> {
+        Ok(Default::default())
+    }
+}
+
+/// bd murmur-7ujq: points sharing a class and a time are looked at together, each answer the one
+/// a look at that point alone gives (errors and points without satellites in their places), each
+/// class and time once (in parts of `SAT_BATCH` points), never one `sample` a point.
+#[test]
+fn points_sharing_a_class_and_a_time_are_looked_at_together() {
+    let made: Arc<dyn SpaceSource> = Arc::new(Made);
+    let src = Counting::new(made.clone(), false);
+    let classes = [Some("starlink"), Some("iridium"), None, Some("broken")];
+    let mut jobs: Vec<(Option<String>, GeoPoint, f64)> = (0..3_000)
+        .map(|i| {
+            let class = classes[i % classes.len()].map(str::to_string);
+            let p = GeoPoint { lat: 37.7 + 1e-4 * i as f64, lon: -122.5 - 1e-4 * i as f64, alt_m: (i % 3) as f64 };
+            (class, p, SAT_T0 + SAT_STEP_S * (i % 7) as f64)
+        })
+        .collect();
+    // a grid's worth at one time: more than one look's points
+    jobs.extend((0..SAT_BATCH + 500).map(|i| {
+        (Some("starlink".to_string()), GeoPoint { lat: 36.0 + 1e-5 * i as f64, lon: -121.0, alt_m: 0.0 }, SAT_T0 - 60.0)
+    }));
+    let got = sample_grouped(src.as_ref(), &jobs);
+    let want: Vec<Option<Result<SatObs, String>>> =
+        jobs.iter().map(|(c, p, t)| c.as_ref().map(|c| made.sample(c, p, *t))).collect();
+    assert_eq!(got, want);
+    assert_eq!(src.samples(), 0, "never one point at a time");
+    let looks = src.looks();
+    let mut groups: std::collections::BTreeMap<(String, u64), Vec<usize>> = Default::default();
+    for (c, t, n) in &looks {
+        groups.entry((c.clone(), *t)).or_default().push(*n);
+    }
+    // three classes at seven times, and the big group at its own time in two parts
+    assert_eq!(groups.len(), 3 * 7 + 1, "{looks:?}");
+    assert_eq!(looks.len(), 3 * 7 + 2, "{looks:?}");
+    assert_eq!(groups[&("starlink".to_string(), (SAT_T0 - 60.0).to_bits())], [SAT_BATCH, 500]);
+    let asked: usize = looks.iter().map(|l| l.2).sum();
+    assert_eq!(asked, jobs.iter().filter(|j| j.0.is_some()).count());
+}
+
+/// The predictor with SATCOM from `source` (the shipped links, no terrain).
+fn satcom_coverage(links: PathBuf, source: Arc<dyn SpaceSource>) -> Coverage {
+    Coverage::new(Sources { links, root: root(), terrain: None, space_root: None, space: true }).with_space(source)
+}
+
+/// bd murmur-7ujq: an order of several vehicles on the real element sets (Saildrones and Corsairs
+/// on Starlink, a buoy on Iridium, a Puma on its radio, and a uid with no vehicle) is answered
+/// exactly as when every point is looked at alone: the same answer for the order, and every
+/// point's SATCOM answer the same, bit for bit. Batched, no point is looked at alone and each
+/// class and time once for the whole order: the vehicles share the looks.
+#[tokio::test]
+async fn an_orders_satellites_are_looked_at_once_a_class_and_time() {
+    let w = world();
+    let mut routes = ring_order(&w, "saildrone", 101, 3, (-122.70, 37.76), 500.0);
+    routes.extend(ring_order(&w, "corsair", 201, 2, (-122.60, 37.75), 600.0));
+    routes.extend(ring_order(&w, "buoy", 301, 1, (-122.65, 37.70), 200.0));
+    routes.extend(ring_order(&w, "puma", 401, 1, (-122.45, 37.80), 800.0));
+    routes.push(VehicleRoute { uid: Some(999), route: Err("not a vehicle".into()) });
+    let real: Arc<dyn SpaceSource> = Arc::new(pinned_space(SAT_T0));
+    let mut answers = Vec::new();
+    let mut sources = Vec::new();
+    for per_point in [true, false] {
+        let src = Counting::new(real.clone(), per_point);
+        let c = satcom_coverage(root().join("sim/links.toml"), src.clone());
+        let again: Vec<VehicleRoute> = routes
+            .iter()
+            .map(|r| VehicleRoute { uid: r.uid, route: r.route.clone() })
+            .collect();
+        answers.push(c.order_answer_at(&w, again, SAT_T0).await);
+        sources.push(src);
+    }
+    let (alone, batched) = (&answers[0], &answers[1]);
+    assert_eq!(batched, alone);
+    let vs = batched["vehicles"].as_array().expect("vehicles");
+    let profiles: Vec<&str> = vs.iter().map(|v| v["profile"].as_str().unwrap_or("-")).collect();
+    assert_eq!(profiles, ["satcom_leo"; 5].into_iter().chain(["satcom_iridium", "los", "-"]).collect::<Vec<_>>());
+    assert!(vs[..7].iter().all(|v| v.get("error").is_none()), "{batched}");
+    assert_eq!(batched["sources"]["satcom"], SATCOM_SOURCE);
+    // every point's SATCOM answer the same, the same points and times asked
+    let (alone, batched) = (&sources[0], &sources[1]);
+    let a = alone.answers.lock().expect("answers").clone();
+    let b = batched.answers.lock().expect("answers").clone();
+    assert_eq!(a.keys().collect::<Vec<_>>(), b.keys().collect::<Vec<_>>());
+    for (k, x) in &a {
+        assert_eq!(Some(x), b.get(k), "{k:?}");
+    }
+    // and the answers are the constellation's: satellites in view, more or fewer from point to point
+    let seen: std::collections::BTreeSet<usize> =
+        a.values().filter_map(|x| x.as_ref().ok()).filter(|o| o.best.is_some()).map(|o| o.visible).collect();
+    assert!(seen.len() > 3, "{seen:?}");
+    assert!(a.keys().any(|k| k.0 == "iridium") && a.keys().any(|k| k.0 == "starlink"));
+    // alone: a look a point; batched: none alone, each class and time looked at once
+    let points = alone.samples();
+    assert!(alone.looks().is_empty());
+    assert_eq!(batched.samples(), 0);
+    let looks = batched.looks();
+    let once: std::collections::BTreeSet<(String, u64)> = looks.iter().map(|l| (l.0.clone(), l.1)).collect();
+    assert_eq!(once.len(), looks.len(), "a class and time looked at twice: {looks:?}");
+    assert_eq!(looks.iter().map(|l| l.2).sum::<usize>(), points);
+    let starlink: Vec<_> = looks.iter().filter(|l| l.0 == "starlink").collect();
+    let at: usize = starlink.iter().map(|l| l.2).sum();
+    assert!(starlink.len() * 2 < at, "the Starlink vehicles share their looks: {} looks for {at} points", starlink.len());
+    // each answer back in its point's place: the order's points laid out as the order lays them,
+    // looked at together, each point's answer the one it had alone
+    let c = satcom_coverage(root().join("sim/links.toml"), real.clone());
+    let ready = c.ready().await.expect("ready");
+    let mut laid = Vec::new();
+    for r in &routes {
+        let (Some(uid), Ok(route)) = (r.uid, &r.route) else { continue };
+        let who = c.who(&w, uid, &ready.pred).expect("a vehicle");
+        let legs = order_legs(route, &who).expect("legs");
+        laid.push((who.profile.clone(), c.lay(&who, legs, SAT_T0).await));
+    }
+    let sets: Vec<(&str, &[(GeoPoint, f64)])> = laid.iter().map(|(p, l)| (p.as_str(), l.all.as_slice())).collect();
+    let mut placed = 0;
+    for ((profile, points), (got, satcom)) in sets.iter().zip(c.satellites_many(&ready, &sets).await) {
+        assert_eq!(got.len(), points.len());
+        assert_eq!(satcom.is_some(), *profile != "los", "{profile}");
+        for ((p, t), got) in points.iter().zip(got) {
+            let want = ready.pred.sat_class(profile, p).map(|class| {
+                let key = (class.to_string(), [p.lat.to_bits(), p.lon.to_bits(), p.alt_m.to_bits(), t.to_bits()]);
+                a.get(&key).cloned().expect("asked alone")
+            });
+            assert_eq!(got, want, "{profile} at {p:?} {t}");
+            placed += usize::from(want.is_some());
+        }
+    }
+    assert_eq!(placed, points);
+}
+
+/// Timing aid (bd murmur-7ujq): a Saturation surface group's opening order, 100 Saildrones on
+/// Starlink round a 5 km ring on the western traffic lane (SURFACE-1, sim/situations/
+/// swarm-saturation.toml, on its links file), its dry run's link answer on the real element
+/// sets. `MURMUR_7UJQ_ALONE=1` also answers it a point at a time, as before, and compares. Run in
+/// release: `cargo test --release -p murmur-bridge a_saturation_surface_order -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore = "timing aid: run in release with --nocapture"]
+async fn a_saturation_surface_order_timed() {
+    let w = world();
+    let links = root().join("sim/situations/links/swarm-saturation-bay-region.toml");
+    let real: Arc<dyn SpaceSource> = Arc::new(pinned_space(SAT_T0));
+    let routes = ring_order(&w, "saildrone", 2001, 100, (-122.78, 37.76), 5000.0);
+    let alone = std::env::var("MURMUR_7UJQ_ALONE").is_ok_and(|v| v == "1");
+    let mut answers = Vec::new();
+    for per_point in if alone { vec![false, true] } else { vec![false] } {
+        let src = Counting::new(real.clone(), per_point);
+        let c = satcom_coverage(links.clone(), src.clone());
+        let again: Vec<VehicleRoute> = routes
+            .iter()
+            .map(|r| VehicleRoute { uid: r.uid, route: r.route.clone() })
+            .collect();
+        let started = std::time::Instant::now();
+        let a = c.order_answer_at(&w, again, SAT_T0).await;
+        let took = started.elapsed().as_secs_f64();
+        let vs = a["vehicles"].as_array().expect("vehicles");
+        assert_eq!(vs.len(), 100);
+        assert!(vs.iter().all(|v| v["profile"] == "satcom_leo" && v.get("error").is_none()), "{}", vs[0]);
+        let looks = src.looks();
+        let points = src.samples() + looks.iter().map(|l| l.2).sum::<usize>();
+        eprintln!(
+            "100 Saildrones on Starlink, a 5 km ring, {}: {points} points, {} looks, the order's link answer in {took:.2} s on {} threads",
+            if per_point { "a point at a time" } else { "batched" },
+            if per_point { src.samples() } else { looks.len() },
+            std::thread::available_parallelism().map_or(0, |n| n.get())
+        );
+        answers.push(a);
+    }
+    if let [batched, alone] = &answers[..] {
+        assert_eq!(batched, alone);
+        eprintln!("the two answers are the same");
+    }
+}

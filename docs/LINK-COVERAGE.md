@@ -99,7 +99,10 @@ stays a later decision.
   stretches up, degraded and down, `first_down` and `trip_down` (where, why, how long at its
   cruise speed), `failsafe_s`, `p_failsafe`, `holds` and a sentence. Terrain from tidewater or a
   baked surface grid (`MURMUR_SURFACE_GRID`), cached for good per cell; a grid without satellites
-  cached whole.
+  cached whole. SATCOM along a route is looked at every 30 s of travel, every vehicle of an order
+  on one grid of times from the order's start; the points that share a class and a time (an
+  order's vehicles, a grid's cells) are answered from one propagation of the constellation, not
+  one a point (bd murmur-7ujq).
 - **Agents**: `get_link_coverage` (agents/README.md).
 - **Console** (`web/src/coverage.ts`, `CoverageControl.tsx`, `DryRun.tsx`, `linkLayers.ts`): the
   topbar's Links button (off by default) shows a card, labelled predicted, to pick a link class or
