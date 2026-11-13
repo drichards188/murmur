@@ -181,6 +181,54 @@ vehicle not yet heard its platform, callsign and system id, so a carried loss ho
 instructions add a paragraph under rules 30 only, so the tool lists and the rules 29 instructions do not
 move.
 
+**As built (stage 6, bd murmur-zb1d.6).** Autoplay: `[autoplay] confirm_node_losses = true`
+(`eval/proxy.py`; every situation that sets `confirm_rule_declarations` sets it) reads the review
+once a look, after the declarations, and confirms each `node_losses` item whose `state` is
+`presumed_lost`, once a silence (its uid and `since`), after a `read_s` draw, as op-2
+(`eval/situation.py` `LOSS_CONFIRMER`), with the item's `since` and a note saying it is scripted; a
+silent vehicle flagged by hand asks a judgment and is left alone. The headless operator
+(`eval/headless/operator.py`) mirrors it with the same draws in the same order
+(`tests/test_operator.py`). Without the setting the operator's recorded params are as they were.
+The panel, `situation.jsonl` and the summary tell `node.presumed`, `node.lost`,
+`node.presumption_cleared` and `node.loss_revoked` from the audit log (`EngagementChain`), and the
+start record says the rules asked for (`rules_asked`): `MURMUR_RULES` reaches the bridge from `make
+situation` as it is. Custody is the playbook's `isr.custody`, off by default (the shipped config and
+its hash unchanged) and on in hostile-act-air-to-air: an identify on a track declared or shown
+hostile or suspect whose holding camera or sonar went silent, while the track is in view and no
+sensor of ours holds it (a reporting camera with the identity settled at 0.6; a far camera that
+cannot identify it does not), by the unarmed EO/IR soonest there, which may be on someone else's
+order (the identify gives it back); its premise goes with the track out of view, the holder heard
+again, or custody held again. The watch officer reads `get_inbox`'s review every 5 s
+(`Poller.node_losses`; the change feed has no node items): `node.presumed` and `node.loss_revoked`
+wake it, a presumption cleared and a loss confirmed are notes; under rules 29 it reads once and
+stops. The headless officer (`eval/headless/officer.py`) does not read it yet.
+
+**The check (hostile-act-air-to-air, the contacts' seed 127, `OPERATOR=autoplay AI=playbook`, live,
+2026-11-13; rules 30 by `MURMUR_RULES=30`).** The drone fires at HUNTER 2, not HUNTER 1 (murmur-qese), so HUNTER 1 is never struck;
+HUNTER 2 is sunk by the first missile in both runs. Times on the situation clock (m:ss, from the
+link emulator's start):
+
+| | rules 30 | rules 29 | rules 30, the guard |
+|---|---|---|---|
+| act observed, the drone declared hostile by rule; op-auto confirms | 1:57; 2:02 | 1:57; 2:00 | 1:57; 2:01 |
+| HUNTER 2's struck report | 2:04 | 2:04 | 2:04 |
+| presumed lost (an act against it, its struck report) | 2:14 | (no such state) | 2:14 |
+| confirmed lost by op-2 | 2:17 | (no such state) | 2:17 |
+| nomination (the timeline, FURY 1, AIM-120C) | 3:20 | 3:20 | 3:20 |
+| signed by op-2, op-3; dispatched | 3:24, 3:27 | 3:25, 3:28 | 3:24, 3:27 |
+| released; assessed | 3:36 (12 s of flight); 4:03 ceased | 3:49 (13 s); 4:18 ceased | 3:47 (14 s); 4:16 ceased |
+
+The chain completes under both rules: HUNTER 2 sunk 3.5 km off reaches no keep-out before the strike
+(cruise reach under rules 29, a confirmed loss out of it under rules 30), and HUNTER 1's camera keeps
+the drone, so `isr.custody` stays quiet ("held by HUNTER 1 eo_ir"). The release times differ with
+where FURY 1 is on its loiter when dispatched, not with the rules. All three audit logs replay with
+their anchors, every decision reproduced. The first two runs had the custody play without its guard
+for a track out of view: after the strike destroyed the drone it previewed an identify on the dead
+track five times, which the engine refused each time, proposing nothing; the third, with the guard,
+made no preview ("out of view" until the track dropped). The presumption stood about 3 s before
+op-2's confirmation (its look, then `read_s`), so a person watching the console sees PRESUMED LOST
+only briefly on autoplay.
+
 ## 6. Evidence
 
 | signal | what the C2 gets today | honest? | used |
