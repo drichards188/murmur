@@ -31,6 +31,26 @@
   friend within the orbit's radius of it: an orbit by a free armed platform (its navigation not
   suspect). Score as investigate's.
 
+- `isr.custody` (off unless a situation enables it; docs/NODE-LOSS.md section 5, decision rules
+  21 to 23 and 30): custody of a contact is an identify order (there is no `track` order on a
+  contact). A track declared hostile or suspect, or shown suspect or hostile, that a classifying
+  sensor of ours (EO/IR, sonar) held when its vehicle went silent (its standing silent, presumed
+  lost or lost under rules 30, else its link lost for a gap as `link.cover_gap` reads it; its last
+  sighting of the track within `classifier_fresh_s` of its last report), while it is still in view
+  (not stale: the engine sends an identify only to a contact our sensors see), no sensor of ours
+  holds it (custody is held when a classifying sensor of a vehicle still reporting has had it
+  within `classifier_fresh_s` and its identity is settled, at `classification_settled`: a camera far
+  off that sees the contact but cannot identify it does not hold it), no look of ours is on it and
+  our identify did not already run to its end for that silent vehicle: an identify order on
+  the track by the unarmed vehicle with an EO/IR that can orbit, fit (health, navigation, battery
+  over the free line), not engaging, not recovering, not claimed by a card or order of ours, soonest
+  there at its cruise speed (then most battery, lowest uid). Unlike a look it may take a vehicle off
+  someone else's running order: the engine sends the vehicle back to that order, re-checked, when
+  the identify ends (rules 21). Score 1.0 for a track declared hostile, else 0.75; one card or
+  order of ours per track. Its premise is gone when the track is dropped, out of view, or shown
+  neutral or assumed friend (not declared hostile), the silent vehicle is heard again, a sensor of
+  ours holds the track again, or the sensor sent is no longer fit.
+
 A look's premise is gone (its card is withdrawn, its orbit released) when the track is shown
 neutral or assumed friend at affiliation confidence 0.5 or more, unseen for 60 s, dropped, out
 of the watch (outside every watch area, no closest approach inside 457 m within 10 min), or its
@@ -748,5 +768,215 @@ class ArmedOverwatch(Play):
                 f"{sensor_text(record, 'armed platform')}. Why now: {'; '.join(record['trigger'])}. {R.tail(record)}")
 
 
-for _p in (Investigate(), Recentre(), Release(), ArmedOverwatch()):
+# ---- custody (rules 30) ------------------------------------------------------------------------------
+
+CUSTODY_TARGETS = ("hostile", "suspect")
+# the standings of ours not reporting (rules 30; the compact fleet read's `standing`)
+QUIET = ("silent", "presumed_lost", "lost")
+# an identify of ours that ran to its end: custody was taken once for that silence
+CUSTODY_RAN = ("done", "effected")
+
+
+def quiet(v: Vehicle | None, b: Beliefs) -> str | None:
+    """How one of ours is not reporting, or None: its rules 30 standing, else (older rules) its
+    link lost for a gap (`silent`)."""
+    if v is None:
+        return None
+    if v.standing in QUIET:
+        return v.standing.replace("_", " ")
+    return "silent (link lost)" if silent(v, b) else None
+
+
+def custody_target(tr: Track) -> bool:
+    """A track declared hostile or suspect, or shown so by the estimate."""
+    return tr.declared_affiliation in CUSTODY_TARGETS or tr.affiliation in CUSTODY_TARGETS
+
+
+def custody_holders(tr: Track, b: Beliefs) -> tuple[list[tuple[Vehicle, str, str]], list[tuple[Vehicle, str]]]:
+    """(the silent vehicles of ours whose classifying sensor held the track when they went silent,
+    each with the sensor and how it is silent; the reporting vehicles whose classifying sensor has
+    the track now, within `classifier_fresh_s`, each with the sensor)."""
+    fresh = b.cfg.t["classifier_fresh_s"]
+    gone: dict[int, tuple[Vehicle, str, str]] = {}
+    now: dict[int, tuple[Vehicle, str]] = {}
+    for uid, sensor, last in tr.sources:
+        v = b.vehicles.get(uid)
+        if v is None or sensor not in CLASSIFYING:
+            continue
+        how = quiet(v, b)
+        if how is None:
+            if b.t - last <= fresh:
+                now.setdefault(uid, (v, sensor))
+            continue
+        # it held the track when it went silent: its last sighting within the freshness of its
+        # last report (a report of unknown age: any sighting)
+        if v.position_age_s is None or last >= b.t - v.position_age_s - fresh:
+            gone.setdefault(uid, (v, sensor, how))
+    return [gone[u] for u in sorted(gone)], [now[u] for u in sorted(now)]
+
+
+def custody_held(tr: Track, now: list[tuple[Vehicle, str]], b: Beliefs) -> bool:
+    """Custody is held: a classifying sensor of a vehicle still reporting has the track now and
+    its identity is settled (a camera far off that sees it but cannot identify it does not hold it:
+    the identity stays under the engagement rules' confidence and the fix loosens)."""
+    return bool(now) and tr.kind_conf >= b.cfg.t["classification_settled"]
+
+
+def custody_capable(v: Vehicle) -> bool:
+    """An identify needs an EO/IR on a vehicle that can orbit (the engine flies it as an orbit at
+    the camera's identification standoff); an armed platform is left to the engagement chain."""
+    return v.armed is False and bool(v.imaging_range_m) and "orbit" in v.tasks
+
+
+def custody_unfree(v: Vehicle, b: Beliefs) -> str | None:
+    """Why `v` cannot be sent to take custody, or None: `free_reason`'s, except that someone
+    else's running order does not hold it (the identify sends it back to that order when it ends)."""
+    h = b.health[v.uid]
+    if not h.ok:
+        return "; ".join(h.reasons)
+    if v.uid in b.nav_suspect:
+        return f"navigation suspect ({b.nav_suspect[v.uid]})"
+    if v.battery_pct is not None and v.battery_pct < b.free_battery_pct:
+        return f"battery {v.battery_pct:.0f}% under {b.free_battery_pct:.0f}%"
+    if v.uid in b.claims:
+        return f"claimed by {b.claims[v.uid]}"
+    if v.uid in b.engaging:
+        return f"engagement in play ({b.engaging[v.uid]})"
+    if (v.mode or "").upper() in RECOVERING_MODES:
+        return f"recovering on its own ({v.mode})"
+    return None
+
+
+def custody_ran(tid: str, holder: int, led: Ledger) -> dict[str, Any] | None:
+    """Our identify on this track for this silent vehicle that already ran to its end."""
+    for _, e in sorted(led.entries.items(), key=lambda kv: int(kv[0])):
+        if (e["play"] == Custody.name and e["target"] == tid and (e.get("basis") or {}).get("holder") == holder
+                and e.get("state") in CUSTODY_RAN):
+            return e
+    return None
+
+
+class Custody(Play):
+    name, klass = "isr.custody", P2
+
+    def evaluate(self, b: Beliefs, led: Ledger) -> Result:
+        res = Result()
+        th = b.cfg.t
+        for tid, tr in sorted(b.tracks.items()):
+            if not custody_target(tr) or tr.where is None:
+                continue
+            held = holding((self.name,), tid, b, led)
+            if held is not None:
+                res.active.append(f"{tid} by uid {held.get('uid')} (i{held.get('intent', '-')} {held.get('state', 'would-be')})")
+                continue
+            gone, now = custody_holders(tr, b)
+            if not gone:
+                continue
+            if custody_held(tr, now, b):
+                res.active.append(f"{tid}: held by {', '.join(f'{v.callsign} {s}' for v, s in now)}")
+                continue
+            if tr.stale:
+                res.blocked.append((tid, "out of view: the engine sends an identify only to a contact our sensors see"))
+                continue
+            look = holding(LOOK_PLAYS, tid, b, led)
+            if look is not None:
+                res.active.append(f"{tid}: a look of ours (i{look.get('intent', '-')}) is on it")
+                continue
+            holder, sensor, how = gone[0]
+            ran = custody_ran(tid, holder.uid, led)
+            if ran is not None:
+                res.blocked.append((tid, f"our identify i{ran['intent']} for {holder.callsign}'s silence ran to its end"))
+                continue
+            point = tr.where
+            free, busy = [], []
+            for _, v in sorted(b.vehicles.items()):
+                if not custody_capable(v) or quiet(v, b):
+                    continue
+                why = custody_unfree(v, b)
+                (busy.append((v, why)) if why else free.append(v))
+            free.sort(key=lambda v: (float("inf") if eta_s(v, point) is None else round(eta_s(v, point), 3),
+                                     -(v.battery_pct or 0.0), v.uid))
+            if not free:
+                detail = "; ".join(f"{v.callsign}: {why}" for v, why in busy[:3]) or "none in the fleet"
+                res.blocked.append((tid, f"no vehicle with an EO/IR to take custody ({detail})"))
+                continue
+            hostile = tr.declared_affiliation == "hostile"
+            score = (1.0 if hostile else 0.75) * led.score_factor.get(f"{self.name}|{tid}", 1.0)
+            decl = tr.declared.get("id") if isinstance(tr.declared, dict) else None
+            holder_ref = {"uid": holder.uid, "callsign": holder.callsign, "sensor": sensor, "standing": how,
+                          "position_age_s": R.r1(holder.position_age_s)}
+            for rank, v in enumerate(free[:CHOICES]):
+                task = v.task or {}
+                derived = approach_derived(tr, b)
+                derived.update({"eta_s": R.r0(eta_s(v, point)), "rank": rank, "holder": holder_ref,
+                                "on_order": ({"intent": task.get("intent_id"), "task": task.get("task")}
+                                             if task and task.get("state") not in NOT_RUNNING else None)})
+                res.candidates.append(Candidate(
+                    play=self.name, version=self.version, klass=self.klass, score=score - RANK_STEP * rank,
+                    target=tid, uid=v.uid, task="identify",
+                    request={"task": "identify", "uids": [v.uid], "track_id": tid},
+                    facts=track_facts(tr, b) + vehicle_facts(v) + [
+                        {"ref": f"vehicle:{holder.uid}.standing", "value": how,
+                         "position_age_s": R.r1(holder.position_age_s)}],
+                    derived=derived,
+                    thresholds={k: th[k] for k in ("classifier_fresh_s", "classification_settled", "link_gap_factor",
+                                                   "affiliation_min")},
+                    withdraw_if=[f"{holder.callsign} is heard again",
+                                 f"a classifying sensor of ours that is reporting has {tid} with its identity settled",
+                                 f"{tid} is dropped or out of view, or shown neutral or assumed friend at affiliation "
+                                 f"confidence {th['affiliation_min']:.1f} or more", "the sensor is no longer fit for the task"],
+                    basis={"holder": holder.uid, "affiliation": tr.shown, "declared": decl},
+                    trigger=[f"{holder.callsign}'s {sensor} held {tid} and it is {how}",
+                             (f"{', '.join(f'{x.callsign} {xs}' for x, xs in now)} has it, its identity "
+                              f"{tr.kind_conf:.2f} under {th['classification_settled']:.2f}") if now else
+                             (f"no classifying sensor of ours that is reporting has had {tid} within "
+                              f"{th['classifier_fresh_s']:.0f} s")],
+                    alternatives=[{"uid": a.uid, "callsign": a.callsign, "eta_s": R.r0(eta_s(a, point)),
+                                   "battery_pct": R.r0(a.battery_pct)} for a in free[rank + 1:rank + 4]]
+                    + [{"uid": a.uid, "callsign": a.callsign, "not_free": why} for a, why in busy[:3]],
+                    claims=(v.uid,), vehicle=vehicle_ref(v),
+                ))
+        return res
+
+    def withdraw_reason(self, entry: dict[str, Any], b: Beliefs) -> str | None:
+        tid, th = entry["target"], b.cfg.t
+        tr = b.tracks.get(tid)
+        if tr is None:
+            return f"{tid} was dropped by the tracker"
+        if (tr.shown in PROTECTED and tr.aff_conf >= th["affiliation_min"]
+                and tr.declared_affiliation != "hostile"):
+            return f"{tid} is shown {tr.shown} at {tr.aff_conf:.2f}"
+        if tr.stale:
+            return f"{tid} is out of view"
+        holder = (entry.get("basis") or {}).get("holder")
+        hv = b.vehicles.get(holder) if holder is not None else None
+        if hv is not None and quiet(hv, b) is None:
+            return f"{hv.callsign} is heard again"
+        _, now = custody_holders(tr, b)
+        if custody_held(tr, now, b):
+            return f"{', '.join(f'{v.callsign} {s}' for v, s in now)} holds {tid} again"
+        return sensor_unfit(entry.get("uid"), b)
+
+    def material_change(self, then: dict[str, Any], now: dict[str, Any], b: Beliefs) -> str | None:
+        if then.get("declared") != now.get("declared") and now.get("declared") is not None:
+            return f"a new declaration ({now.get('declared')})"
+        if then.get("affiliation") != now.get("affiliation") and now.get("affiliation") == "hostile":
+            return f"the affiliation shown rose from {then.get('affiliation')} to hostile"
+        return None
+
+    def render(self, record: dict[str, Any]) -> str:
+        d = record["derived"]
+        h = d.get("holder") or {}
+        on = d.get("on_order")
+        back = (f" It leaves its order i{on['intent']} ({on['task']}) for it, and the engine sends it back to that order "
+                f"when the identify ends.") if on else ""
+        return (f"{R.head(record)} Send {record['vehicle']['callsign']} to identify {record['target']} and keep a sensor on "
+                f"it: {h.get('callsign')}'s {h.get('sensor')} held it and {h.get('callsign')} is {h.get('standing')} "
+                f"(its last report {R.mins(h.get('position_age_s'))} ago). {track_text(record)}. "
+                f"{record['vehicle']['callsign']} is the vehicle with an EO/IR soonest there "
+                f"({R.mins(d.get('eta_s'))} away; battery {record['vehicle']['battery_pct']:.0f}%).{back} "
+                f"Why now: {'; '.join(record['trigger'])}. {R.tail(record)}")
+
+
+for _p in (Investigate(), Recentre(), Release(), ArmedOverwatch(), Custody()):
     register(_p)

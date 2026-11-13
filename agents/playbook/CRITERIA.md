@@ -190,3 +190,18 @@ Each item has a test in `agents/tests/test_playbook_review3.py` that failed befo
 | ended cards | each checked by `explain_intent` at every start, never pruned | checked only across a bridge restart (on the same bridge an id cannot have moved); pruned once ended over 10 minutes, no cooldown or back-off in force refers to them, no vehicle flies them, no open card would resume them, and they are not `safety.low_reserve`'s |
 | a budget wait | could end at once (an own card not adopted) or never (a stale state) | ends at most the policy's approval wait plus 30 s after it began; an own card without an evidence record is adopted when the pending counts disagree |
 | a card carried over a bridge restart whose target is a track id | judged against the new tracker's track of that name | its target is unknown: pending, withdrawn ("track ids restarted with the bridge", no cooldown); running, left to end by its own course or a person, never recentred or released |
+
+## Addition, 2026-11-13: custody under the loss of a node (rules 30; the targets above unchanged)
+
+`isr.custody` (docs/NODE-LOSS.md section 5, bd murmur-zb1d.6) is off unless a situation enables it
+(`hostile-act-air-to-air` does), so the shipped defaults and their hash are as they were. It adds no
+threshold: a sensor "holds" a track as `isr.investigate` reads coverage (an EO/IR or sonar of ours
+that detected it within `classifier_fresh_s`, 10 s) and only while the track's identity is settled
+(`classification_settled`, the engagement rules' 0.6: a camera far off that sees the contact but
+cannot identify it is the case docs/NODE-LOSS.md section 1 describes, an identity stuck at 0.59), a
+track out of view (stale) is left alone because the engine sends an identify only to a contact our
+sensors see, a vehicle is silent by its rules 30 standing or,
+under older rules, as `link.cover_gap` reads a gap (`link_gap_factor` x its `lost_after_s`), and a
+track turns neutral at `affiliation_min`. Custody is an identify order (rules 21 to 23: there is no
+`track` order on a contact), so the vehicle sent goes back to the order it left when the identify
+ends, which is why custody, unlike a look, may take a vehicle off someone else's running order.

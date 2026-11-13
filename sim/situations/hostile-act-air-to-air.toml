@@ -222,6 +222,9 @@ director = true
 
 # ---- the playbook engine (AI=playbook, the default, and the shadow beside a model)
 [playbook]
+# custody (docs/NODE-LOSS.md section 5): if the vehicle whose camera held the drone goes silent and
+# no reporting camera of ours has it, an identify by the vehicle with an EO/IR soonest there
+enable = ["isr.custody"]
 
 [[playbook.watch_area]]
 name = "the Golden Gate approaches"

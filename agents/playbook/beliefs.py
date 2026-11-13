@@ -30,6 +30,9 @@ protected points in the config's order). What each belief means:
   playbook gives such a platform no order of any kind (DECISIONS.md, "The playbook engine").
 - **Velocity**: a track whose velocity the tracker does not know (`velocity_mps` null; the
   bridge then sends a speed of 0.0 and no course) has no speed or course here, not zero.
+- **Standing** (decision rules 30, docs/NODE-LOSS.md): one of ours not reporting carries the
+  engine's standing in the compact fleet read (`silent`, `presumed_lost`, `lost`; absent while it
+  reports, and under older rules always): `Vehicle.standing`.
 
 The get_fleet read carries no "failsafe acting" field (its full view has the mode, the recent
 status texts and, for a silent vehicle, a display estimate of what its failsafe would do), so a
@@ -154,6 +157,9 @@ class Vehicle:
     min_turn_m: float | None
     imaging_range_m: float | None
     tasks: tuple[str, ...]
+    # rules 30: silent, presumed_lost or lost while it is not reporting (None: reporting, or rules
+    # before 30)
+    standing: str | None = None
 
     @property
     def pos(self) -> tuple[float, float] | None:
@@ -233,6 +239,7 @@ def vehicles_of(reads: Reads) -> dict[int, Vehicle]:
             cruise_mps=_f(p.get("cruise_mps")), min_turn_m=_f(p.get("min_turn_radius_m")),
             imaging_range_m=max(imaging) if imaging else None,
             tasks=tuple(sorted(str(t) for t in p.get("tasks") or [])),
+            standing=str(v["standing"]) if isinstance(v.get("standing"), str) else None,
         )
     return out
 

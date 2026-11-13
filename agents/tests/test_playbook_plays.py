@@ -436,7 +436,7 @@ def test_withdraw_stale_takes_back_a_card_whose_track_turned_neutral_or_went_uns
 
 
 def test_every_play_of_step_one_is_registered_with_its_class():
-    want = {"isr.investigate": 2, "isr.recentre": 2, "isr.release": 2, "isr.armed_overwatch": 2, "link.cover_gap": 3,
+    want = {"isr.investigate": 2, "isr.recentre": 2, "isr.release": 2, "isr.armed_overwatch": 2, "isr.custody": 2, "link.cover_gap": 3,
             "link.withdraw_pending": 3, "nav.suspect_exclude": 3, "safety.low_reserve": 0, "safety.stuck": 0,
             "hygiene.withdraw_stale": 4}
     # the playbook's own plays: eval/headless/agents_v2.py registers its look-at-ferries perturbation's
@@ -462,3 +462,146 @@ def test_every_play_renders_its_rationale_from_its_record():
     res, b = look(reads(vehicles=[vehicle(3, "PUMA 1", battery_pct=22.0)]), play="safety.low_reserve")
     text, _ = Engine(config()).finish(res.candidates[0], b, None, [])
     assert R.split(text)[0].startswith("[safety.low_reserve v1] Return PUMA 1 home: battery 22%, under 25%")
+
+
+# ---- isr.custody (rules 30) ----------------------------------------------------------------------------
+
+DRONE = offset(-1500, -900)
+
+
+def custody_world(standing="presumed_lost", sighting_age=41.0, others=(), declared="hostile", lost_full=None,
+                  hunter=None, extra=()):
+    """HUNTER 1's camera held the drone T-9 when it was struck 40 s ago (rules 30: presumed lost);
+    PUMA 1 free 1.2 km off, HUNTER 2 on someone else's patrol 3 km off, BLADE 1 armed. `others`:
+    more sources on the drone."""
+    h1 = hunter or vehicle(1, "HUNTER 1", "seahunter", offset(-1000, -100), position_age_s=40.0, link_lost=True,
+                           link_age_s=40.0, standing=standing)
+    fleet = [h1,
+             vehicle(2, "HUNTER 2", "seahunter", offset(-3500, -2000), task={"intent_id": 2, "task": "patrol", "state": "done"}),
+             vehicle(3, "PUMA 1", "puma", offset(-300, -500)),
+             vehicle(5, "BLADE 1", "switchblade", offset(-1400, -700)), *extra]
+    decl = {"id": 1, "affiliation": declared, "by": "rule"} if declared else None
+    drone = track("T-9", "hostile" if declared == "hostile" else "suspect", 0.9, pos=DRONE, vel=(0.0, 0.0), kind="small_drone",
+                  declared=decl, domain="air",
+                  sources=[{"uid": 1, "sensor": "eo_ir", "hits": 30, "last_t": T0 - sighting_age},
+                           {"uid": 1, "sensor": "radar", "hits": 60, "last_t": T0 - sighting_age}, *others])
+    return reads(vehicles=fleet, tracks=[drone], lost_full=lost_full)
+
+
+def custody(r, led=None):
+    return look(r, cfg=config(enable=["isr.custody"]), led=led, play="isr.custody")
+
+
+def test_custody_is_off_unless_enabled():
+    assert "isr.custody" not in config()["plays"]
+    assert "isr.custody" in config(enable=["isr.custody"])["plays"]
+
+
+def test_custody_sends_the_soonest_fit_eo_ir_to_identify_a_hostile_whose_holder_went_silent():
+    """Rules 30: HUNTER 1, whose camera held the declared drone, is presumed lost and nothing of ours
+    still reporting has the drone: an identify on it (custody is an identify order), by PUMA 1, the
+    vehicle with an EO/IR soonest there; HUNTER 2 next though it is on someone else's patrol (the
+    engine sends it back to that order when the identify ends); the armed BLADE 1 never."""
+    res, b = custody(custody_world())
+    assert [(c.target, c.uid, c.task) for c in res.candidates] == [("T-9", 3, "identify"), ("T-9", 2, "identify")]
+    c = res.candidates[0]
+    assert c.request == {"task": "identify", "uids": [3], "track_id": "T-9"} and c.claims == (3,) and not c.armed
+    assert c.score == 1.0 and c.basis == {"holder": 1, "affiliation": "hostile", "declared": 1}
+    assert c.trigger == ["HUNTER 1's eo_ir held T-9 and it is presumed lost",
+                         "no classifying sensor of ours that is reporting has had T-9 within 10 s"]
+    assert res.candidates[1].derived["on_order"] == {"intent": 2, "task": "patrol"}
+    assert 5 not in {c.uid for c in res.candidates}
+    # a suspect (declared or shown) is custody's too, below a hostile
+    res, _ = custody(custody_world(declared="suspect"))
+    assert res.candidates[0].score == 0.75
+    # silent and lost count as presumed lost does
+    for standing in ("silent", "lost"):
+        assert custody(custody_world(standing=standing))[0].candidates
+
+
+@pytest.mark.parametrize("case", ["held by another", "held it long before", "reporting", "neutral", "a radar alone",
+                                  "out of view"])
+def test_custody_stays_silent(case):
+    if case == "held by another":
+        # PUMA 1's camera has the drone now and its identity is settled: custody is held
+        res, _ = custody(custody_world(others=[{"uid": 3, "sensor": "eo_ir", "hits": 5, "last_t": T0 - 2.0}]))
+        assert res.candidates == [] and res.active == ["T-9: held by PUMA 1 eo_ir"]
+        return
+    if case == "out of view":
+        # nothing of ours sees it any more (the engine sends an identify only to a contact in view)
+        r = custody_world()
+        r.tracks["tracks"][0].update(stale=True, state="stale", age_s=40.0)
+        res, _ = custody(r)
+        assert res.candidates == [] and res.blocked == [
+            ("T-9", "out of view: the engine sends an identify only to a contact our sensors see")]
+        return
+    if case == "held it long before":
+        # its last sighting 2 minutes before its last report: it did not hold the drone when it went silent
+        r = custody_world(sighting_age=160.0)
+    elif case == "reporting":
+        r = custody_world(hunter=vehicle(1, "HUNTER 1", "seahunter", offset(-1000, -100)))
+    elif case == "neutral":
+        r = custody_world(declared=None)
+        r.tracks["tracks"][0].update(affiliation="neutral", declared=None)
+    else:
+        r = custody_world()
+        r.tracks["tracks"][0]["sources"] = [s for s in r.tracks["tracks"][0]["sources"] if s["sensor"] == "radar"]
+    assert custody(r)[0].candidates == []
+
+
+def test_a_far_camera_that_cannot_identify_does_not_hold_custody():
+    """docs/NODE-LOSS.md section 1: with the camera that held the drone gone, a camera far off still
+    sees it but its identity stays under the engagement rules' 0.6 (0.59): custody is not held, and
+    another sensor is sent to identify it."""
+    far = [{"uid": 3, "sensor": "eo_ir", "hits": 5, "last_t": T0 - 2.0}]
+    r = custody_world(others=far)
+    r.tracks["tracks"][0]["identity"]["confidence"] = 0.59
+    res, _ = custody(r)
+    assert [c.uid for c in res.candidates] == [3, 2]
+    assert res.candidates[0].trigger[1] == "PUMA 1 eo_ir has it, its identity 0.59 under 0.60"
+
+
+def test_custody_reads_a_lost_link_gap_without_rules_30():
+    """Under rules before 30 there is no standing: a holder whose link has been lost for twice its
+    lost_after_s is silent (link.cover_gap's reading); a shorter loss is a flap."""
+    h1 = vehicle(1, "HUNTER 1", "seahunter", offset(-1000, -100), position_age_s=40.0, link_lost=True, link_age_s=7.0)
+    lf = {1: {"uid": 1, "link": {"lost_after_s": 3.0}}}
+    res, _ = custody(custody_world(hunter=h1, lost_full=lf))
+    assert res.candidates[0].trigger[0] == "HUNTER 1's eo_ir held T-9 and it is silent (link lost)"
+    flap = vehicle(1, "HUNTER 1", "seahunter", offset(-1000, -100), position_age_s=4.0, link_lost=True, link_age_s=4.0)
+    assert custody(custody_world(hunter=flap, lost_full=lf))[0].candidates == []
+
+
+def test_custody_once_per_silence_and_withdrawn_when_its_premise_goes():
+    """One card or order of ours per track; an identify of ours that ran to its end for that silence
+    is not sent again; a waiting card is withdrawn when the holder is heard again or a reporting
+    sensor of ours holds the track again."""
+    led = Ledger()
+    led.entries["31"] = {"intent": 31, "play": "isr.custody", "target": "T-9", "uid": 3, "state": "pending_approval",
+                         "key": "isr.custody|T-9|3", "basis": {"holder": 1}, "request": {"task": "identify"}}
+    res, b = custody(custody_world(), led=led)
+    assert res.candidates == [] and res.active == ["T-9 by uid 3 (i31 pending_approval)"]
+    assert PLAYS["isr.custody"].withdraw_reason(led.entries["31"], b) is None
+    _, b = custody(custody_world(hunter=vehicle(1, "HUNTER 1", "seahunter", offset(-1000, -100))), led=led)
+    assert PLAYS["isr.custody"].withdraw_reason(led.entries["31"], b) == "HUNTER 1 is heard again"
+    _, b = custody(custody_world(others=[{"uid": 2, "sensor": "eo_ir", "hits": 5, "last_t": T0 - 1.0}]), led=led)
+    assert PLAYS["isr.custody"].withdraw_reason(led.entries["31"], b) == "HUNTER 2 eo_ir holds T-9 again"
+    stale = custody_world()
+    stale.tracks["tracks"][0].update(stale=True, state="stale")
+    _, b = custody(stale, led=led)
+    assert PLAYS["isr.custody"].withdraw_reason(led.entries["31"], b) == "T-9 is out of view"
+    led.entries["31"]["state"] = "done"
+    res, _ = custody(custody_world(), led=led)
+    assert res.candidates == [] and res.blocked == [("T-9", "our identify i31 for HUNTER 1's silence ran to its end")]
+
+
+def test_custody_renders_its_rationale_from_its_record():
+    from playbook import rationale as R
+    from playbook.engine import Engine
+
+    res, b = custody(custody_world())
+    text, rec = Engine(config(enable=["isr.custody"])).finish(res.candidates[1], b, None, [])
+    assert text.startswith("[isr.custody v1] Send HUNTER 2 to identify T-9 and keep a sensor on it: HUNTER 1's eo_ir held "
+                           "it and HUNTER 1 is presumed lost (its last report 40 s ago).")
+    assert "It leaves its order i2 (patrol) for it, and the engine sends it back to that order when the identify ends." in text
+    assert R.parse_record(text) == rec
