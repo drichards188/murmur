@@ -1427,7 +1427,21 @@ changes nothing in it. The paused digests moved in the same steps (test_charged_
 alone, to record `a4ed9fa0...`, audit `c954e11f...`: with `RULES_VERSION` put back to 28 the code
 gave the earlier digests (`7add5073...`, `ee774c4f...`) byte for byte, and the new audit log with
 its `rules_version` put back to 28 hashes to `ee774c4f...` too; Harbor watch's fleet has no
-starting task, so nothing is handed over.
+starting task, so nothing is handed over. Rules 30 (losing a node, bd murmur-zb1d) re-took it, to
+record `5b24cdab...`, audit `ab7609a1...`, 152 events: with `RULES_VERSION` put back to 29 the code
+gave `a4ed9fa0...`, `c954e11f...` byte for byte, and with the bridge's lost-link read left out (a
+probe build, not committed) rules 30 gave every byte of rules 29's record but `run.started`'s
+`rules_version`: no vehicle here is silent long enough to be counted by a region, presumed or
+confirmed lost. What moved is the read (docs/NODE-LOSS.md stage 4), which rules 30 makes of every
+vehicle as a ground station would: its parameter reads are packets on each vehicle's emulated
+link, and the emulator's draws, a stream per vehicle and direction in arrival order (section 12),
+then fall on other packets. So fact times move by a few milliseconds, the decisions naming HUNTER
+1, PUMA 1 or PUMA 2 carry each one's `lost_link` fact (HUNTER 1's off, the Pumas' rtl after 5 s,
+their loiter circle 150 m), and the Pumas' GCS failsafes behind terrain fire and clear at other
+times (PUMA 2's 2 s earlier; PUMA 1's link drops at other moments, with one more failsafe flap,
+the three extra events). The same three proposals at the same times and the same operator
+decisions: the third approval is still refused at approval for PUMA 1's navigation status, 11 s
+old where it was 13 s.
 
 ### 17.3 The bake tool
 

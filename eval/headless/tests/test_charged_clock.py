@@ -412,10 +412,21 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: start): with `RULES_VERSION` put back to 28 this code gave the digests before (6143ae03...,
 #: d7084182..., 7962359e...) byte for byte, so the only change is the audit log's `run.started`
 #: (`rules_version` 29 for 28). No fleet here has a starting task, and no tool changed.
+#: Re-taken for decision rules 30 (bd murmur-zb1d, losing a node): with `RULES_VERSION` put back to
+#: 29 this code gave the digests before (40008a70..., c11092f5..., 1ceab470...) byte for byte, and
+#: with the bridge's lost-link read left out (a probe build) rules 30 gave each record of them but
+#: for its audit log's `run.started` (`rules_version` 30 for 29): nothing is silent long enough for
+#: a region, presumption or loss. The read itself moved them: its parameter reads are packets on
+#: each vehicle's emulated link, whose draws then fall on other packets, so fact times move by
+#: milliseconds, the Pumas' GCS failsafes behind terrain fire and clear at other times (PUMA 1's
+#: link lost 2 s earlier in v2, its withdrawal by the playbook 3 s earlier, one preview fewer
+#: after it), our vehicles' truth tracks with them, the model's reads and token counts, and each
+#: decision naming HUNTER 1 or a Puma carries its `lost_link` fact. The operator decisions, the
+#: proposals and every intent's transitions are the same.
 PAUSED = {
-    "model harbor-watch s1": "40008a70fb57a5b43b50ca856baa9cc60d64f315ebfb00162635933f82df2fce",
-    "playbook v2 fast-unknown 1000": "c11092f5c1c822a1c47247d148a5f4ead3aa589242595eaa0e7ccb01168e821e",
-    "model v2 fast-unknown 1000": "1ceab470d35091aadb35425c4a5d1e1651359902a7e8a417d3bfa122946eb21b",
+    "model harbor-watch s1": "3d971c0a862e57dda455ff5a0da377dc69fbcf151977a8ad8a5e7c78e9dc892e",
+    "playbook v2 fast-unknown 1000": "2e88861d778d0e57cdca0abea48a01c77e33c07b26ae96a5f143f0c1eb412491",
+    "model v2 fast-unknown 1000": "de1fb6c3da9d6fbdc9ca94c01f1c3341834f6b0b16d4cd4f59732a02f83ff165",
 }
 
 

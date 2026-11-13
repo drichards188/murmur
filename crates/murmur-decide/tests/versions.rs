@@ -24,7 +24,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 85] = [
+const LOGS: [(&str, u32); 87] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -238,13 +238,19 @@ const LOGS: [(&str, u32); 85] = [
     // orbit handed over at the start, queued while SKY 1 is silent, re-checked and sent once heard)
     ("v29-engagement-scenario-01.jsonl", HANDOVER_SINCE),
     ("v29-handed-over-orbit-goes-when-heard-scenario-134.jsonl", HANDOVER_SINCE),
+    // rules 30 (losing a node; a clean build of b41c8f2 on the branch of bd murmur-zb1d): scenario
+    // 01 (nothing silent: as rules 29 decided it) and 140 (VIPER 1 cut and struck, presumed lost,
+    // confirmed lost by op-2: its queued orbit voided, its owed values closed, a nomination passing
+    // without it)
+    ("v30-engagement-scenario-01.jsonl", NODE_LOSS_SINCE),
+    ("v30-confirmed-lost-ends-its-orders-scenario-140.jsonl", NODE_LOSS_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v29-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v30-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -2164,4 +2170,29 @@ fn a_handed_over_order_is_caught_under_older_rules() {
     let r = with(&rechain(&ls), RulesAccepted::Exactly(HANDOVER_SINCE));
     assert!(r.ok(), "{:?}", r.mismatches);
     assert_eq!((r.handed_over, r.handover_fleet), (1, Some(false)));
+}
+
+/// Rules 30: scenario 140's log relabelled rules 29 carries what no build of rules 29 logged (one
+/// of ours presumed lost, then confirmed lost, the owed values its loss closed, the lost set in
+/// a decision's inputs) and is caught; under its own rules it replays, the loss reported.
+#[test]
+fn a_confirmed_loss_is_caught_under_older_rules() {
+    let ls = lines(&fixture("v30-confirmed-lost-ends-its-orders-scenario-140.jsonl"));
+    let v30 = format!("\"rules_version\":{NODE_LOSS_SINCE},");
+    let mut old = ls.clone();
+    assert!(old[0].contains(&v30));
+    assert!(ls.iter().any(|l| l.contains("\"type\":\"node.lost\"")), "the confirmation is logged");
+    old[0] = old[0].replacen(&v30, &format!("\"rules_version\":{HANDOVER_SINCE},"), 1);
+    let w: Vec<String> = whats(&with(&rechain(&old), RulesAccepted::Exactly(HANDOVER_SINCE))).iter().map(|s| s.to_string()).collect();
+    for what in [
+        "one of ours presumed lost",
+        "one of ours confirmed lost",
+        "owed values closed by a loss",
+        "our vehicles confirmed lost (a decision's fact)",
+    ] {
+        assert!(w.iter().any(|m| m.starts_with(what)), "{what}: {w:?}");
+    }
+    let r = with(&rechain(&ls), RulesAccepted::Exactly(NODE_LOSS_SINCE));
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!((r.nodes_presumed.len(), r.nodes_lost.len()), (1, 1), "{:?} {:?}", r.nodes_presumed, r.nodes_lost);
 }
