@@ -3024,6 +3024,16 @@ pub enum FriendlyKind {
     NoPosition,
     /// No fresh velocity and no cruise speed (or nothing to predict it from).
     Unpredictable,
+    /// Rules 30, silent ([`crate::silent`]): where an order that may be running on it takes it
+    /// (its route, its circle, a hold), or a failsafe stops it on that way.
+    Route,
+    /// Rules 30, silent: if it lost us too, its failsafe's way home from anywhere on its route.
+    FailsafeHome,
+    /// Rules 30, silent: adrift or falling (presumed lost, out of power, its propulsion out, or
+    /// a failsafe that leaves it adrift).
+    Drift,
+    /// Rules 30, silent: nothing known of what it does: anywhere its top speed reaches.
+    TopSpeed,
 }
 
 impl FriendlyKind {
@@ -3035,7 +3045,19 @@ impl FriendlyKind {
             FriendlyKind::Lost => "lost",
             FriendlyKind::NoPosition => "no_position",
             FriendlyKind::Unpredictable => "unpredictable",
+            FriendlyKind::Route => "route",
+            FriendlyKind::FailsafeHome => "failsafe_home",
+            FriendlyKind::Drift => "drift",
+            FriendlyKind::TopSpeed => "top_speed",
         }
+    }
+
+    /// Rules 30: one of a silent vehicle's regions ([`crate::silent`]).
+    pub fn silent(self) -> bool {
+        matches!(
+            self,
+            FriendlyKind::Route | FriendlyKind::FailsafeHome | FriendlyKind::Drift | FriendlyKind::TopSpeed
+        )
     }
 }
 
@@ -3061,6 +3083,9 @@ pub enum FriendlyStanding {
         by_alt: Option<(f64, f64, f64)>,
         /// It reported an altitude (whether or not fresh), for the detail's note.
         alt_known: bool,
+        /// Rules 30, a silent vehicle's region that is not a disc (a corridor, a way home): its
+        /// outline's points, `radius_m` around them (`center` its nearest point). Empty: a disc.
+        outline: Vec<LonLat>,
     },
 }
 
@@ -3096,7 +3121,9 @@ pub fn circle_holding<'v>(
 /// circle holds (rules 3) is anywhere on its disc (or carried at most [`CIRCLE_CARRY_S`]
 /// along its velocity, the nearer counting); without a fresh velocity, as far as its cruise
 /// speed reaches; lost (rules 6), the same from its last report, unless an operator accepted
-/// exactly that loss for this engagement. `words`: with the detail's words (`how`; else
+/// exactly that loss for this engagement; from rules 30, silent (its position not fresh), within
+/// its region ([`crate::silent::standing`]: its orders, its failsafe, a drift or its top speed),
+/// unless an operator accepted that loss. `words`: with the detail's words (`how`; else
 /// empty where they would be formatted).
 #[allow(clippy::too_many_arguments)]
 pub fn friendly_standing(
@@ -3121,6 +3148,11 @@ pub fn friendly_standing(
         return FriendlyStanding::Accepted {
             note: format!("{uid}: {}, accepted by {}", lost_since(v, world), a.by),
         };
+    }
+    // rules 30: silent, it counts within what its orders, its failsafe, a drift or its top speed
+    // could have done since its last report (crate::silent)
+    if cfg.node_loss() && !pos_fresh && v.position.is_some() {
+        return crate::silent::standing(uid, v, point, effect_t, world, cfg, false, words);
     }
     let Some(pos) = &v.position else {
         return FriendlyStanding::Unclearable {
@@ -3294,6 +3326,7 @@ pub fn friendly_standing(
         how,
         by_alt,
         alt_known: v.alt_msl_m.is_some(),
+        outline: Vec::new(),
     }
 }
 

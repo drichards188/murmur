@@ -2439,6 +2439,12 @@ impl Engine {
     /// filled into its inputs (nothing for another kind, or before rules 16): those in force
     /// and those whose confirmation its picture (`w.tracks`, identification filled) voids.
     fn fill_lost(&self, spec: &IntentSpec, w: &mut WorldSnapshot) {
+        // rules 30: what may be running on each of our silent vehicles, which an engagement's
+        // friendly keep-out lays their regions out from (every engagement decision reads it where
+        // it reads its lost contacts)
+        if spec.kind() == TaskKind::Engage && self.policy.rules.node_loss() {
+            w.silent_orders = self.silent_orders(spec.uids.first(), w);
+        }
         // rules 21: an identify order reads its track's loss from them too
         if spec.kind() == TaskKind::Identify && self.policy.rules.identify() && self.policy.rules.lost_contacts() {
             w.lost_contacts = self.lost.in_force_for(&w.tracks, &self.ident, self.policy.rules.rule_id());
@@ -4770,6 +4776,41 @@ impl Engine {
             crate::mines::without_lost(&mut inputs.orders_in_play, &inputs.nodes_lost, &self.policy.rules);
         }
         self.fill_lost(spec, inputs);
+    }
+
+    /// Rules 30: for each of our silent vehicles in `world` but `platform`, the orders this
+    /// engine's record says may be running on it ([`crate::silent::in_force`]).
+    fn silent_orders(&self, platform: Option<&Uid>, world: &WorldSnapshot) -> BTreeMap<Uid, crate::silent::InForce> {
+        let silent = crate::silent::silent_uids(world, &self.policy.rules, platform);
+        if silent.is_empty() {
+            return BTreeMap::new();
+        }
+        let views: Vec<crate::silent::IntentView> = self
+            .intents
+            .values()
+            .filter(|i| i.spec().uids.iter().any(|u| silent.contains(u)))
+            .map(|i| crate::silent::IntentView::of(i, &self.policy.rules))
+            .collect();
+        crate::silent::in_force(world, &self.policy.rules, platform, &views, &self.nodes)
+    }
+
+    /// Rules 30: where each of our silent vehicles in `world` can be at `at`, as an engagement's
+    /// friendly keep-out would count it now ([`crate::silent::region`] on the orders this engine's
+    /// record says may be running on it). Read-only and never logged: for a display, and for the
+    /// headless check of the regions against the truth. Empty under older rules.
+    pub fn silent_regions(&self, world: &WorldSnapshot, at: Time) -> BTreeMap<Uid, crate::silent::Region> {
+        if !self.policy.rules.node_loss() {
+            return BTreeMap::new();
+        }
+        let mut w = world.clone();
+        w.silent_orders = self.silent_orders(None, world);
+        w.silent_orders
+            .keys()
+            .filter_map(|u| {
+                let v = w.vehicles.get(u)?;
+                Some((u.clone(), crate::silent::region(u, v, &w, &self.policy.rules, at, false)?))
+            })
+            .collect()
     }
 
     /// Rules 27: `world` with our live fields a decision on `spec` reads in it (the ledger's,

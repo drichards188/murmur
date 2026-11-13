@@ -1,0 +1,61 @@
+# Rules 30 (docs/NODE-LOSS.md section 3 and the owner's decision 3, bd murmur-zb1d.2): our Magura
+# was under way east at 12 m/s, 1.8 km east of a hostile boat, when it fell silent (lost before
+# the run). No order of ours runs on it, it was neither circling nor still: nothing places it.
+# Until rules 30 it counted anywhere its cruise speed (12 m/s) reached since its last report:
+# 1.2 km by the effect, clear of the keep-out by 330 m. From rules 30 nothing known means its top
+# speed (no catalog max_mps: the surface's 25 m/s, and the water's 2.5 m/s): 2.75 km, over the
+# effect point, and the nomination is refused saying so. `--rules 29` lets it through
+# (tests/rules30_prediction.rs).
+title = "Nothing known of a silent vehicle: its top speed"
+invariant = "keep_out_friendly"
+attack = "one of ours falls silent under way with no order to place it"
+expect = "rejected"
+expect_rule = "keep_out_friendly"
+min_rules = 30
+end_s = 20
+
+[[operator]]
+id = "op-1"
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[vehicle]]
+uid = "magura-1"
+platform = "magura"         # cruise 12 m/s, no max_mps in the catalog
+at = [-122.4745, 37.8120]   # 1.8 km east of the target, where it last reported
+velocity = [12.0, 0.0]
+lost_for_s = 10
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600

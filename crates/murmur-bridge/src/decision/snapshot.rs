@@ -158,7 +158,18 @@ pub fn lost_link_fact(v: &Vehicle, autopilot: Option<AutopilotKind>) -> Option<F
         }
     };
     let (action, timer_s) = plan;
-    Some(Fact::new(LostLinkPlan { action, timer_s, source }, ms(t)))
+    // a fixed wing's own circle, where it holds and arrives home (RTL_RADIUS, else WP_LOITER_RAD,
+    // as ArduPlane flies it), once read: a silent one's region circles at it (murmur_decide::silent)
+    let circle_m = autopilot
+        .is_fixed_wing()
+        .then(|| match (v.rtl_radius_m, v.loiter_radius_m) {
+            (Some(r), _) if r != 0.0 => Some(r.abs()),
+            (_, Some(l)) => Some(l.abs()),
+            _ => None,
+        })
+        .flatten()
+        .filter(|r| *r > 0.0);
+    Some(Fact::new(LostLinkPlan { action, timer_s, source, circle_m }, ms(t)))
 }
 
 /// Every vehicle the bridge knows, at engine time `t`, and the track picture (Phase C2:

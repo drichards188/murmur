@@ -21,6 +21,7 @@ pub mod fleet;
 pub mod perf;
 pub mod sense;
 pub mod server;
+pub mod silent;
 pub mod space_cache;
 pub mod spec;
 pub mod terrain;

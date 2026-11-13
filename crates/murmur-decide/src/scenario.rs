@@ -341,6 +341,11 @@ pub struct VehicleDef {
     /// (`at`), its home `home`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<StartDef>,
+    /// Rules 30: its own lost-link failsafe as the bridge would read it from the vehicle (the
+    /// vehicle fact `lost_link`, stamped at the start): `{ action = "rtl", timer_s = 5, source =
+    /// "read" }`, and for a fixed wing `circle_m`. Absent: not known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lost_link: Option<crate::world::LostLinkPlan>,
 }
 
 /// Rules 29: a vehicle's starting task in a scenario file (`[[vehicle]]`'s `start`).
@@ -2670,7 +2675,8 @@ fn snapshot(
                 platform: p,
                 booted_t: None,
                 damage: v.damage.clone(),
-                lost_link: None,
+                // rules 30: its own lost-link failsafe, read at the start
+                lost_link: v.def.lost_link.clone().map(|l| Fact::new(l, T0)),
             },
         );
         // who it is, as the bridge would say (rules 12: a carried hold; rules 15: an un-spend),
@@ -4442,6 +4448,7 @@ fn dispatch_approved(
             match engine.dispatch_or_queue(id, world) {
                 Ok(Routed::Dispatched(Order::Vehicles(o))) => {
                     supersede_engagements(engine, id, &uids, engaging, failures, s);
+                    report_started(engine, &o, failures, s);
                     fly(vehicles, &o);
                     // rules 27: a lay order's layer (its line done: the order is)
                     if let (Task::Lay { .. }, Some(u)) = (&o.task, o.uids.first()) {
@@ -4546,6 +4553,25 @@ fn supersede_engagements(
     }
 }
 
+/// Rules 30: the runner's vehicles start an order the moment it is dispatched, and say so as the
+/// bridge reports it (a vehicle task's start logged ahead, rules 7, then the vehicle executing
+/// it; a lay order, which rules 7 does not cover, executing alone): what may be running on one
+/// that goes silent reads it ([`crate::silent::in_force`]). Under older rules the runner reports
+/// nothing, as before, so their logs are unchanged.
+fn report_started(engine: &mut Engine, o: &crate::engine::DispatchOrder, failures: &mut Vec<String>, s: u32) {
+    if !engine.policy().rules.node_loss() {
+        return;
+    }
+    let ahead = crate::queue::vehicle_task(o.task.kind());
+    for u in &o.uids {
+        let r = if ahead { engine.record_op_state_ahead(o.intent, u, "starting (the runner's vehicle)") } else { Ok(()) }
+            .and_then(|()| engine.record_op_state(o.intent, u, "active", "executing (the runner's vehicle)"));
+        if let Err(e) = r {
+            failures.push(format!("t={s}: {} on {u}: {e}", o.intent));
+        }
+    }
+}
+
 /// The runner's vehicles fly an order: home for an rtl, around the center for an orbit, held
 /// where they are for a hold.
 fn fly(vehicles: &mut BTreeMap<String, VehicleSim>, o: &crate::engine::DispatchOrder) {
@@ -4607,6 +4633,7 @@ fn follow_queue(
             Ok(crate::engine::Dequeued::Dispatched(Order::Vehicles(o))) => {
                 let uids = o.uids.clone();
                 supersede_engagements(engine, id, &uids, engaging, failures, s);
+                report_started(engine, &o, failures, s);
                 fly(vehicles, &o);
             }
             Ok(crate::engine::Dequeued::Dispatched(_)) => {

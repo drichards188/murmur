@@ -79,6 +79,41 @@ it lost us too, its way home passes 120 m from the effect point"), says that wai
 for C and L and only grows D and F, and adds "or an operator confirming it lost (Review)" to `other`.
 The rules 6 acceptance for one engagement stays as it is.
 
+**As built (stage 2, bd murmur-zb1d.2; `crates/murmur-decide/src/silent.rs`).** What may be running on
+each silent vehicle comes from the engine's record of its intents and their op states
+(`silent::in_force`: newest first, the newest it started runs and nothing older does, a newer one whose
+start is not confirmed may run too, one that failed after it started leaves what it does unknown, F),
+filled into every engagement decision's inputs as `WorldSnapshot.silent_orders` for the silent vehicles
+only, with whether a presumption of its loss is in force (the node ledger: D counts too), logged with the
+decision, and recomputed by replay from its own record. A vehicle confirmed lost is left out of the
+keep-out's explanation as the check leaves it out. The headless check below
+changed some figures: a corridor is also widened by the vehicle's turning circle's diameter (a turn back
+at a waypoint; radius from the catalog's turn rate, else 10 degrees a second, a fixed wing's never under
+the policy's 60 m), a leg on the water by half its length times the current over the vessel's cruise (a
+vessel steering at its next point in a cross current is set off up to 1/e of that), and a vessel no
+faster than the current (or an airship than the wind, 10 m/s) by the current times the span; the
+subsurface drift is the surface's 2.5 m/s (the simulator's water runs the surface current at every
+depth); the reach adds the current or the wind. A plan not known (no `lost_link` yet) counts every action
+its autopilot has. A fixed wing holds and arrives home on its own loiter radius, which the lost-link plan
+now carries (`LostLinkPlan.circle_m`, RTL_RADIUS or else WP_LOITER_RAD, which the bridge's read fills
+once it has them); not known, its reach bounds that circle. Its battery
+failsafe may send it home once its last battery report could fall to 25 % by the effect, and D is added
+past its endurance (or with none known). A drifter is D alone. The explanation's region carries a
+non-disc shape's outline.
+
+**The check (eval/headless/node_loss.py, 2026-11-13).** The 22-type fleet as stand-ins
+(`eval/headless/node_loss.fleet.toml`), on the Golden Gate world's grid and currents, 18 orders running
+(patrols, orbits, holds, an rtl; the rest with none), every link cut at 300 s for 600 s, each silent
+vehicle's region against its stand-in's truth every second, with each vehicle's failsafe as the bridge
+read it (stage 4), as the check maps the stand-in's parameters itself, and not known: cut both ways (the
+failsafes act) and only the vehicles' sending (they run their orders on), 12,936 samples each, none
+outside its region; the worst margin 7.4 m (the drifting buoy 10 s in). The bridge's read and the
+check's own mapping differ for five vehicles, each disarmed or a rover in RTL when last heard, where the
+bridge's mode-aware read says no failsafe acts; the regions hold on either. The first runs found three outside: a SeaHunter circling its home on its 4 degree a
+second turn and set off by the current on its way (105 m), a BlueROV adrift at the surface current's
+speed under water (110 m), the Saildrone unable to make way against the current (371 m); one-way, a
+Switchblade's turn back at a patrol end (180 m).
+
 **HUNTER 1 again.** Its patrol leg runs north from its home at [-122.4850, 37.8130], 0.89 km from the
 drone's station: C and L are the leg itself, about 450 m clear of the keep-out for as long as it is
 silent. A comms loss would never block. Sunk (presumed lost: an act against it observed), D at

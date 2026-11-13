@@ -1,0 +1,124 @@
+# The full-spectrum fleet (sim/fleets/full-spectrum.toml: one of each of the 22 platform types,
+# where that file puts them) as stand-ins only, for rules 30's headless check
+# (eval/headless/node_loss.py; the headless simulator runs stand-ins only). Kept beside the
+# check, not in sim/fleets: nothing else runs it.
+
+title = "Full spectrum, stand-ins only (the node-loss check)"
+
+# ---- air
+[[unit]]
+platform = "rq4"
+sim = "standin"
+count = 1
+spawn = [37.7500, -122.7500, 18000, 0]    # offshore, on station
+[[unit]]
+platform = "mq9b_armed"
+sim = "standin"
+count = 1
+spawn = [37.8800, -122.6000, 7600, 90]    # over Marin
+[[unit]]
+platform = "cca"
+sim = "standin"
+count = 1
+spawn = [37.7000, -122.6500, 11000, 45]
+[[unit]]
+platform = "fvr90"
+sim = "standin"
+count = 1
+spawn = [37.8065, -122.4500, 3.5, 90]       # Crissy Field
+[[unit]]
+platform = "puma"
+sim = "standin"
+count = 1
+spawn = [37.8074, -122.4462, 3.7, 90]
+[[unit]]
+platform = "switchblade"
+sim = "standin"
+count = 1
+spawn = [37.8072, -122.4472, 3.6, 90]
+[[unit]]
+platform = "x10"
+sim = "standin"
+count = 1
+spawn = [37.8060, -122.4420, 3.2, 0]
+[[unit]]
+platform = "fpv"
+sim = "standin"
+count = 1
+spawn = [37.8058, -122.4415, 3.2, 0]
+[[unit]]
+platform = "lta"
+sim = "standin"
+count = 1
+spawn = [37.8050, -122.4560, 45, 0]       # aloft over Crissy Field, in line of sight of its station (the Headlands ridge hid it)
+
+# ---- ground (Crissy Field's airfield, on land)
+[[unit]]
+platform = "ugv_logistics"
+sim = "standin"
+count = 1
+spawn = [37.8035, -122.4540, 3.2, 90]
+[[unit]]
+platform = "ugv_armed"
+sim = "standin"
+count = 1
+spawn = [37.8045, -122.4540, 1.7, 90]
+[[unit]]
+platform = "ugv_mines"
+sim = "standin"
+count = 1
+spawn = [37.8050, -122.4500, 3.2, 90]
+[[unit]]
+platform = "ugv_recon"
+sim = "standin"
+count = 1
+spawn = [37.8055, -122.4480, 3.5, 90]
+[[unit]]
+platform = "tracker"
+sim = "standin"
+count = 1
+spawn = [37.8105, -122.4770, 5, 0]       # Fort Point
+
+# ---- surface
+[[unit]]
+platform = "magura"
+sim = "standin"
+count = 1
+spawn = [37.8280, -122.4700, 0, 180]      # off Horseshoe Bay
+[[unit]]
+platform = "corsair"
+sim = "standin"
+count = 1
+spawn = [37.8265, -122.4650, 0, 180]
+[[unit]]
+platform = "seahunter"
+sim = "standin"
+count = 1
+spawn = [37.8000, -122.5600, 0, 90]       # outside the Gate
+[[unit]]
+platform = "saildrone"
+sim = "standin"
+count = 1
+spawn = [37.8000, -122.5300, 0, 0]        # inside tidewater's area, so it gets wind
+[[unit]]
+platform = "buoy"
+sim = "standin"
+count = 1
+spawn = [37.8150, -122.4900, 0, 0]        # in the Gate: drifts with the tide
+
+# ---- subsurface
+[[unit]]
+platform = "bluerov"
+sim = "standin"
+count = 1
+spawn = [37.8300, -122.4690, 0, 180]
+[[unit]]
+platform = "remus"
+sim = "standin"
+count = 1
+spawn = [37.8250, -122.4400, 0, 90]       # west of Alcatraz
+[[unit]]
+platform = "orca"
+sim = "standin"
+count = 1
+spawn = [37.7800, -122.5500, 0, 0]        # offshore, deeper water

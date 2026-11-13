@@ -96,6 +96,8 @@ fn handle(ep: &mut Episode, req: &Value) -> Result<Value, String> {
         ),
         Some("picture") => ep.picture(req["homes"].as_bool().unwrap_or(false)),
         Some("detections") => Ok(ep.detections()),
+        // rules 30's check: each silent vehicle's region against its truth (evaluation only)
+        Some("silent") => ep.silent(req["plans"].as_str().unwrap_or("none")),
         Some("misclassify") => super::misclassify(req),
         Some("sense") => super::sense::sense(req, &ep.spec.root),
         Some("fault") => ep.fault(req),

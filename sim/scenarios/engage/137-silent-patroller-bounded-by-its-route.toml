@@ -1,0 +1,102 @@
+# Rules 30 (docs/NODE-LOSS.md section 3, bd murmur-zb1d.2): HUNTER 1 patrols a 500 m leg 1.3 km
+# east of a hostile boat, then falls silent (its link cut both ways). Until rules 30 the friendly
+# keep-out counted a silent vehicle anywhere its cruise speed reached since its last report: 6
+# m/s over the three and a half minutes to the effect is 1.24 km, nearly to the effect point, so
+# the nomination is refused however clear of it the patrol runs. From rules 30 it counts where
+# its order takes it (the leg, 139 m either side for its turns and a little more for a cross
+# current to set it off) and, if it lost us too, where its own failsafe takes it (rtl: home is
+# the leg's south end, the way home set off by a cross current too): about 0.9 km clear, and the
+# engagement goes ahead. `--rules 29` shows the refusal (tests/rules30_prediction.rs).
+title = "A silent patroller is counted on its route"
+invariant = "keep_out_friendly"
+attack = "one of ours falls silent on a patrol near the target"
+expect = "done"
+expect_assessment = "ceased"
+min_rules = 30
+end_s = 330
+
+[[operator]]
+id = "op-1"                 # nominates and orders the patrol; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[vehicle]]
+uid = "hunter-1"
+platform = "seahunter"      # cruise 6 m/s, top 13
+at = [-122.4800, 37.8130]   # the leg's south end, its home
+callsign = "HUNTER 1"
+lost_link = { action = "rtl", timer_s = 5, source = "read" }
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 0
+action = "task"
+by = "op-1"
+task = "patrol"
+uids = ["hunter-1"]
+route = [[-122.4800, 37.8175], [-122.4800, 37.8130]]
+
+[[step]]
+at_s = 1
+action = "expect"
+task_state = "dispatched"
+
+# its link is cut (both ways) 3 s into the leg
+[[step]]
+at_s = 3
+action = "vehicle"
+uid = "hunter-1"
+silent = true
+
+[[step]]
+at_s = 120
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 121
+action = "expect"
+state = "pending_approval"
+
+[[step]]
+at_s = 124
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 127
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 128
+action = "expect"
+state = "dispatched"

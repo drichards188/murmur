@@ -94,6 +94,7 @@ replayed with its anchors.
 | `src/sim/contacts.rs` | the contacts loop of `murmur-contacts` on the simulated clock, each contact with the water's current at it (none in still water, section 17), each second the process's own `step::Step` (its nodes' orders and opponent weapons too, section 16.6); with `effects`, each engagement effect's draw and a spent platform's removal (section 16.1) |
 | `src/sim/terrain.rs` | the world's baked surface-height grid (read with the bridge's own `decision::terrain::Grid`) as the emulator's terrain sampler (section 12), and the height of an airborne spawn's home (section 8) |
 | `src/sim/space_cache.rs` | the SATCOM look cache (section 12) |
+| `src/sim/silent.rs` | decision rules 30's check (docs/NODE-LOSS.md stage 2; evaluation only): the `silent` request, each silent vehicle's region as the engine counts it (`Decision::silent_regions`) against its stand-in's truth, with each one's lost-link failsafe read from its parameters (`plans = "standins"`) or not known (`"none"`); `eval/headless/node_loss.py` drives it |
 | `src/sim/perf.rs` | computer time per task and per request kind (diagnostics only) |
 | `tests/pieces.rs` | the grid answers tidewater's heights; a cached SATCOM look equals the look it would have computed; the contacts loop posts the messages the contacts process's step gives (section 16.6) |
 

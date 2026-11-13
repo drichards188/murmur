@@ -344,12 +344,21 @@ async fn the_plan_read_is_the_vehicles_own() {
         let start = w.state();
         let fact = w.fact_within(&rig, 10).await.unwrap_or_else(|| panic!("{}: no fact", c.platform));
         let timer = (!c.timer.is_empty()).then(|| c.timer.iter().map(|n| w.param(n).expect("its parameter")).sum::<f64>());
+        let mut plan = fact.clone();
+        let circle = plan.circle_m.take();
         assert_eq!(
-            fact,
-            LostLinkPlan { action: c.action, timer_s: timer, source: LostLinkSource::Read },
+            plan,
+            LostLinkPlan { action: c.action, timer_s: timer, source: LostLinkSource::Read, circle_m: None },
             "{}: the plan read",
             c.platform
         );
+        // a fixed wing's own circle, once read (RTL_RADIUS, else WP_LOITER_RAD): where it holds
+        // and arrives home, which a silent one's region circles at (murmur_decide::silent)
+        if let Some(r) = circle {
+            let rtl = w.param("RTL_RADIUS").unwrap_or(0.0).abs();
+            let want = if rtl > 0.0 { rtl } else { w.param("WP_LOITER_RAD").unwrap_or(0.0).abs() };
+            assert_eq!(r, want, "{}: its circle", c.platform);
+        }
         assert_eq!(*lock(&w.asked), c.asks, "{}: what the bridge asked", c.platform);
         // the stand-in's own failsafe does what the fact says, after that long
         let (before, after) = w.cut(timer.unwrap_or(5.0)).await;
@@ -397,7 +406,7 @@ async fn configured_only_where_the_link_cannot_carry_a_read() {
     let fact = w.fact_within(&rig, 10).await.expect("configured");
     assert_eq!(
         fact,
-        LostLinkPlan { action: LostLinkAction::Surface, timer_s: Some(120.0), source: LostLinkSource::Configured }
+        LostLinkPlan { action: LostLinkAction::Surface, timer_s: Some(120.0), source: LostLinkSource::Configured, circle_m: None }
     );
     for _ in 0..5 {
         rig.d.tick();
@@ -413,7 +422,7 @@ async fn configured_only_where_the_link_cannot_carry_a_read() {
     }
     assert_eq!(
         w.fact(&rig),
-        Some(LostLinkPlan { action: LostLinkAction::Surface, timer_s: Some(120.0), source: LostLinkSource::Read })
+        Some(LostLinkPlan { action: LostLinkAction::Surface, timer_s: Some(120.0), source: LostLinkSource::Read, circle_m: None })
     );
     assert_eq!(*lock(&w.asked), ["FS_GCS_ENABLE", "FS_GCS_TIMEOUT"]);
 }

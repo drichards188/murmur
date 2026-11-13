@@ -560,7 +560,7 @@ fn the_rules_being_built_decide_and_replay_only_when_asked() {
 /// rules 30, and a log claiming older rules that carries either is caught.
 #[test]
 fn rules_30_inputs_are_dropped_under_older_rules_and_caught_in_their_logs() {
-    let plan = LostLinkPlan { action: LostLinkAction::Rtl, timer_s: Some(30.0), source: LostLinkSource::Read };
+    let plan = LostLinkPlan { action: LostLinkAction::Rtl, timer_s: Some(30.0), source: LostLinkSource::Read, circle_m: None };
     let decide = |version: u32| {
         let clock = ManualClock::new(common::T0);
         let mut policy = common::policy();

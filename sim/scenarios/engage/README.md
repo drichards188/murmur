@@ -74,6 +74,11 @@ The effect is an abstract event: a point, a radius, a time. Nothing here models 
   sign it. Result fields: `ident_reports`
   (one line per identification event), `ident` (each with the truth behind it: the track's
   `truth`, the act's real author), as `eval/ident.py` reads them.
+- Rules 30: a dispatched order's vehicles say they started it, as the bridge's do (`op.state`
+  starting, logged ahead, then active), so that what may be running on one that falls silent
+  (a `vehicle` step's `silent`, or `lost_for_s`) reads it (`murmur_decide::silent`); under older
+  rules the runner reports no op, as before. A `[[vehicle]]`'s `lost_link` is its own failsafe as
+  the bridge would read it.
 - Rules 16: a `drop_track` step is the tracker's drop (as the bridge's after 180 s without a
   detection; the run logs that age, `run.started`'s `track_drop_s`, and on a clock that steps
   back a step that comes sooner by the run's clock waits until it has passed; one still
@@ -225,6 +230,9 @@ lost_link_s = 30                 # its own lost-link timer (default 5): what a p
 lost_for_s = 60                  # lost before the run: silent, last reported this long before
 home = [-122.4660, 37.8200]      # where it goes home to (default: where it starts)
 callsign = "HUNTER 1"            # rules 23: what the bridge would call it (default: its uid)
+lost_link = { action = "rtl", timer_s = 5, source = "read" }   # rules 30, optional: its own
+                                 # lost-link failsafe as the bridge reads it (the vehicle fact
+                                 # lost_link; a fixed wing's circle_m too); absent: not known
 
 [[track]]                        # a perception track (not truth)
 id = "T-0001"
@@ -454,7 +462,10 @@ logged evidence presumed lost.
 | 134-handed-over-orbit-goes-when-heard | handover | rules 29: the fleet's starting task for SKY 1, an orbit over the strait, handed over at the start; SKY 1 silent until 3 s | queued (nothing logged) while unheard, dispatched once heard and its checks pass, the policy asked nothing; replay checks it against the fleet |
 | 135-handed-over-orbit-on-land-voided | handover | rules 29: a USV's starting task an orbit on land | voided at its re-check (domain), never sent, saying which check failed |
 | 136-handed-over-unverified-to-a-person | handover | rules 29: a Puma on dead reckoning, its starting task a patrol | to a person (readiness unverified; the policy asked only who), dispatched once op-1 approves acknowledging it |
+| 137-silent-patroller-bounded-by-its-route | keep_out_friendly | rules 30: HUNTER 1 falls silent on its 500 m patrol leg 1.3 km east of the target, its own failsafe an rtl home to the leg's south end | done (ceased): counted on its leg and its way home (widened for its turns and a cross current), 825 m clear; `--rules 29` rejected (keep_out_friendly: its cruise reach, 1.24 km by the effect) |
+| 138-silent-patrollers-way-home-crosses-the-keep-out | keep_out_friendly | rules 30: the same leg, its home 0.9 km west of the target | rejected (keep_out_friendly): if it lost us too, its rtl failsafe's way home passes over the effect point; the explanation says waiting clears nothing while it is silent |
 | 139-struck-and-silent-presumed-lost | keep_out_friendly | rules 30: HUNTER 1, 1.2 km from the drone's station, reports itself struck and goes silent | presumed lost on its struck report (cited by seq), a flag that decides nothing: a nomination 15 s into its silence passes (rejected by an operator), one 415 s into it is rejected (keep_out_friendly); heard again, the presumption is cleared |
 | 140-confirmed-lost-ends-its-orders | keep_out_friendly | rules 30: VIPER 1, its preload owed after an aborted engagement and an orbit queued for it, cut off and struck; op-1 (no engagement authority) tries to confirm the loss; tamper `lost_by_agent` | refused for op-1; op-2's confirmation cites the struck report: the queued orbit is voided, the values owed close (`restore.closed` lost), the drone's nomination then passes with VIPER 1 left out (`--rules 29`: rejected, keep_out_friendly) and is done; nothing owed at the end; tamper caught |
 | 141-lost-vehicle-reports-again | keep_out_friendly | rules 30: HUNTER 1, silent a minute 900 m off, confirmed lost on a note (nothing presumes it); under way it reports again 130 m from the effect point; tamper `redate_loss` | a confirmation without a note refused; with it the nomination passes and is approved; the report revokes the loss (cause heard) before the picture reads it, and the engagement aborts (keep_out_friendly); tamper caught |
 | 142-loss-carried-to-the-same-vehicle-only | keep_out_friendly | rules 30: an earlier log confirmed HUNTER 1 and the vehicle then under hunter-2 (OTHER 7) lost; this run starts with HUNTER 1 and another vehicle, HUNTER 2, under hunter-2; tamper `hide_loss_revoked` | both carried; HUNTER 1's orbit refused (confirmed lost), HUNTER 2's hold queued as for any silent vehicle; the nomination leaves HUNTER 1 out and counts HUNTER 2 until op-2 accepts its unknown position; HUNTER 1's first report revokes the carried loss; done; replay checks the carry against the earlier log; tamper caught |
+| 143-silent-with-nothing-known-at-top-speed | keep_out_friendly | rules 30: our Magura silent under way at 12 m/s, 1.8 km east of the target, no order of ours on it | rejected (keep_out_friendly): nothing places it, so anywhere its top speed (25 m/s, and the water's 2.5) reaches; `--rules 29` lets it through (its cruise reach 330 m clear) |

@@ -305,6 +305,7 @@ pub mod replay;
 pub mod route;
 pub mod scenario;
 pub mod rules;
+pub mod silent;
 pub mod space;
 pub mod terrain;
 pub mod time;

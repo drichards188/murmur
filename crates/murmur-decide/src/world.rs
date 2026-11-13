@@ -119,6 +119,12 @@ pub struct LostLinkPlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timer_s: Option<f64>,
     pub source: LostLinkSource,
+    /// A fixed wing's circle when it holds or reaches home, m: its loiter radius (ArduPlane's
+    /// `WP_LOITER_RAD`, or `RTL_RADIUS` when that is set), which the bridge reads with the plan. A
+    /// silent fixed wing's region circles at it ([`crate::silent`]). Absent: not known (or not a
+    /// fixed wing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub circle_m: Option<f64>,
 }
 
 /// Rules 30: what a GCS failsafe does ([`LostLinkPlan::action`]), each firmware's parameters mapped
@@ -730,6 +736,12 @@ pub struct WorldSnapshot {
     /// when none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub nodes_lost: BTreeMap<Uid, LostNode>,
+    /// Engine-filled for an engagement's checks (rules 30, [`crate::silent`]): for each of our
+    /// vehicles that is silent (its position not fresh), but the platform, the orders the engine's
+    /// record says may be running on it, which the friendly keep-out lays its region out from
+    /// ([`crate::silent::in_force`]). The bridge never gives them. Absent when none is silent.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub silent_orders: BTreeMap<Uid, crate::silent::InForce>,
 }
 
 /// A track picture as an event read it: the tracks (their identification filled from the
@@ -882,6 +894,9 @@ pub struct LoggedInputs {
     /// Our vehicles confirmed lost (rules 30; absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub nodes_lost: BTreeMap<Uid, LostNode>,
+    /// The orders that may be running on our silent vehicles (rules 30; absent when none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub silent_orders: BTreeMap<Uid, crate::silent::InForce>,
 }
 
 impl LoggedInputs {
@@ -928,6 +943,7 @@ impl LoggedInputs {
             minefields: world.minefields.clone(),
             orders_in_play: world.orders_in_play.clone(),
             nodes_lost: world.nodes_lost.clone(),
+            silent_orders: world.silent_orders.clone(),
         }
     }
 
@@ -987,6 +1003,7 @@ impl LoggedInputs {
             minefields: self.minefields.clone(),
             orders_in_play: self.orders_in_play.clone(),
             nodes_lost: self.nodes_lost.clone(),
+            silent_orders: self.silent_orders.clone(),
         }
     }
 }
@@ -1066,6 +1083,8 @@ impl WorldSnapshot {
             orders_in_play: BTreeMap::new(),
             // engine-owned (rules 30): filled from its ledger of our vehicles confirmed lost
             nodes_lost: BTreeMap::new(),
+            // engine-owned (rules 30): filled from its record of our orders
+            silent_orders: BTreeMap::new(),
         }
     }
 

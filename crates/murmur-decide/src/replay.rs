@@ -3064,6 +3064,7 @@ fn replay_inner<S: AsRef<str>>(
                 check_expended(&mut r, e, *intent, &inputs.expended, &intents, &restores, policy.as_ref());
                 check_spent_carried(&mut r, e, *intent, &inputs.spent_carried, &intents, &restores, policy.as_ref());
                 check_rounds(&mut r, e, *intent, &inputs.rounds, &intents, &restores, policy.as_ref());
+                check_silent_orders(&mut r, e, *intent, inputs, &intents, &nodes, policy.as_ref());
                 check_minefields(&mut r, e, *intent, inputs, &intents, &restores, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(
@@ -3214,6 +3215,7 @@ fn replay_inner<S: AsRef<str>>(
                 check_expended(&mut r, e, *intent, &inputs.expended, &intents, &restores, policy.as_ref());
                 check_spent_carried(&mut r, e, *intent, &inputs.spent_carried, &intents, &restores, policy.as_ref());
                 check_rounds(&mut r, e, *intent, &inputs.rounds, &intents, &restores, policy.as_ref());
+                check_silent_orders(&mut r, e, *intent, inputs, &intents, &nodes, policy.as_ref());
                 check_minefields(&mut r, e, *intent, inputs, &intents, &restores, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(
@@ -4087,6 +4089,7 @@ fn replay_inner<S: AsRef<str>>(
                     check_expended(&mut r, e, *intent, &inputs.expended, &intents, &restores, policy.as_ref());
                     check_spent_carried(&mut r, e, *intent, &inputs.spent_carried, &intents, &restores, policy.as_ref());
                     check_rounds(&mut r, e, *intent, &inputs.rounds, &intents, &restores, policy.as_ref());
+                    check_silent_orders(&mut r, e, *intent, inputs, &intents, &nodes, policy.as_ref());
                     check_ident_inputs(&mut r, e, Some(*intent), &inputs.tracks, &ident, policy.as_ref());
                     check_lost_inputs(&mut r, e, *intent, inputs, &lost, &ident, &intents, &mut pictured, policy.as_ref());
                 }
@@ -4627,6 +4630,7 @@ fn replay_inner<S: AsRef<str>>(
                 }
                 // rules 24: the platform's rounds, as the log's ledger has them
                 check_rounds(&mut r, e, *intent, &inputs.rounds, &intents, &restores, policy.as_ref());
+                check_silent_orders(&mut r, e, *intent, inputs, &intents, &nodes, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
                     bad(
                         &mut r,
@@ -6257,6 +6261,7 @@ fn replay_inner<S: AsRef<str>>(
                 check_expended(&mut r, e, *intent, &inputs.expended, &intents, &restores, policy.as_ref());
                 check_spent_carried(&mut r, e, *intent, &inputs.spent_carried, &intents, &restores, policy.as_ref());
                 check_rounds(&mut r, e, *intent, &inputs.rounds, &intents, &restores, policy.as_ref());
+                check_silent_orders(&mut r, e, *intent, inputs, &intents, &nodes, policy.as_ref());
                 check_ident_inputs(&mut r, e, Some(*intent), &inputs.tracks, &ident, policy.as_ref());
                 check_lost_inputs(&mut r, e, *intent, inputs, &lost, &ident, &intents, &mut pictured, policy.as_ref());
                 let (Some(pol), Some(tr)) = (&policy, intents.get_mut(intent)) else {
@@ -7699,6 +7704,63 @@ fn check_minefields(
         if inputs.orders_in_play != want {
             bad(r, e, Some(id), "the orders in play a lay order read differ from the log's (rules 27)", json(&inputs.orders_in_play), json(&want));
         }
+    }
+}
+
+/// Rules 30: an engagement decision's `silent_orders` (what may be running on each of our
+/// silent vehicles, which its friendly keep-out lays their regions out from) against what
+/// replay's own record of the intents gives on the same vehicles ([`crate::silent::in_force`]).
+fn check_silent_orders(
+    r: &mut ReplayReport,
+    e: &Event,
+    id: IntentId,
+    inputs: &LoggedInputs,
+    intents: &BTreeMap<IntentId, Tracked>,
+    nodes: &crate::nodes::NodeLedger,
+    policy: Option<&Policy>,
+) {
+    let (Some(tr), Some(pol)) = (intents.get(&id), policy) else { return };
+    let engage = tr.spec.kind() == TaskKind::Engage && pol.rules.node_loss();
+    if !engage && inputs.silent_orders.is_empty() {
+        return;
+    }
+    let mut world = WorldSnapshot::new(inputs.t);
+    world.vehicles = inputs.vehicles.clone();
+    let silent = crate::silent::silent_uids(&world, &pol.rules, tr.spec.uids.first());
+    let want = if engage && !silent.is_empty() {
+        let views: Vec<crate::silent::IntentView> = intents
+            .values()
+            .filter(|t| t.spec.uids.iter().any(|u| silent.contains(u)))
+            .map(|t| crate::silent::IntentView {
+                id: t.spec.id,
+                spec: &t.spec,
+                state: t.play_state(),
+                ops: &t.ops,
+                committed: &t.committed,
+                maybe_started: &t.maybe_started,
+                order: order_for(
+                    &t.spec,
+                    None,
+                    t.snapshot.as_deref(),
+                    t.loiter_radius_m,
+                    t.preload.as_ref(),
+                    t.identify_plan.as_ref(),
+                    &t.route_plans,
+                    &pol.rules,
+                )
+                .ok(),
+                orbit_now: t.identify_run.as_ref().map(|run| crate::silent::OrderCircle {
+                    center: run.plan.center,
+                    radius_m: run.plan.radius_m,
+                }),
+            })
+            .collect();
+        crate::silent::in_force(&world, &pol.rules, tr.spec.uids.first(), &views, nodes)
+    } else {
+        BTreeMap::new()
+    };
+    if inputs.silent_orders != want {
+        bad(r, e, Some(id), "the orders that may be running on our silent vehicles differ from replay's record (rules 30)", json(&inputs.silent_orders), json(&want));
     }
 }
 

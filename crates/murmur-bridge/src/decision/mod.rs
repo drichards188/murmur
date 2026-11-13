@@ -2200,6 +2200,23 @@ impl Decision {
         )
     }
 
+    /// Rules 30 (docs/NODE-LOSS.md section 3): where each of our silent vehicles can be now, as
+    /// an engagement's friendly keep-out would count it (`Engine::silent_regions`), on the world
+    /// a decision reads, changed first by `adjust` (the headless check of the regions against the
+    /// truth fills in each vehicle's own lost-link failsafe there, which this bridge does not read
+    /// yet). Read-only and never logged; empty under older rules. Only the headless check reads it
+    /// so far (the console's SILENT region, docs/NODE-LOSS.md stage 5, is to).
+    #[cfg_attr(not(murmur_headless), allow(dead_code))]
+    pub fn silent_regions(
+        &self,
+        adjust: impl FnOnce(&mut murmur_decide::WorldSnapshot),
+    ) -> BTreeMap<DUid, murmur_decide::silent::Region> {
+        let mut w = self.snapshot();
+        adjust(&mut w);
+        let at = w.t;
+        self.lock().engine.silent_regions(&w, at)
+    }
+
     /// The track picture alone, as [`Self::snapshot`] has it (`t`, `tracks`, `track_ais`; no
     /// vehicles, areas or identity levels): for the engine steps that read nothing else
     /// (`Engine::step_lost`, `Engine::lost_claims`, `Engine::step_identification`). Saturation's

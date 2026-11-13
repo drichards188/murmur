@@ -1,0 +1,179 @@
+# Rules 30's headless check (docs/NODE-LOSS.md section 8, stage 2; eval/headless/node_loss.py):
+# the 22-type fleet (sim/fleets/full-spectrum.toml, one of each platform type) at the Golden Gate,
+# on the world's land/water grid and currents, each vehicle given an order of a kind it can run
+# (patrols, orbits, holds, an rtl) or none, then every link cut, both ways, for ten minutes. The
+# driver reads each silent vehicle's region every second as the engine counts it and where its
+# stand-in really is. Not a situation for the menu or the live runner: it lives here, not in
+# sim/situations/.
+title = "Node loss: the fleet's links cut"
+brief = """
+Every one of our 22 platform types at the Golden Gate, each on an order of its own or none, then
+every link cut for ten minutes: where can each of them be?
+"""
+
+world = "golden-gate"                         # its land/water grid and its currents
+fleet = "eval/headless/node_loss.fleet.toml"   # sim/fleets/full-spectrum.toml as stand-ins
+events = []
+policy = "sim/policy.toml"
+at = "2026-06-14T10:00:00Z"
+duration_s = 930
+ai_start_s = 900
+operator = "autoplay"
+ai = "none"
+seed = 1
+ready_timeout_s = 150
+
+[headless]
+domain_rule = "grid"
+currents = "world"
+
+# ---- air
+[[order]]
+id = "vtol-patrol"
+task = "patrol"
+vehicles = { platform = "fvr90" }
+route = [[-122.4600, 37.8200], [-122.4400, 37.8300]]
+
+[[order]]
+id = "puma-orbit"
+task = "orbit"
+vehicles = { platform = "puma" }
+center = [-122.4950, 37.8180]                 # mid-strait west of the bridge, clear of its towers
+radius_m = 400
+
+[[order]]
+id = "x10-orbit"
+task = "orbit"
+vehicles = { platform = "x10" }
+center = [-122.4500, 37.8120]
+radius_m = 150
+
+[[order]]
+id = "lta-hold"
+task = "hold"
+vehicles = { platform = "lta" }
+
+# ---- ground
+[[order]]
+id = "logistics-patrol"
+task = "patrol"
+vehicles = { platform = "ugv_logistics" }
+route = [[-122.4520, 37.8040], [-122.4470, 37.8042]]
+
+[[order]]
+id = "recon-patrol"
+task = "patrol"
+vehicles = { platform = "ugv_recon" }
+route = [[-122.4500, 37.8054], [-122.4440, 37.8048]]
+
+# ---- surface
+[[order]]
+id = "corsair-patrol"
+task = "patrol"
+vehicles = { platform = "corsair" }
+route = [[-122.4650, 37.8250], [-122.4550, 37.8220]]
+
+[[order]]
+id = "hunter-patrol"
+task = "patrol"
+vehicles = { platform = "seahunter" }
+route = [[-122.5500, 37.8050], [-122.5300, 37.8100]]
+
+[[order]]
+id = "saildrone-patrol"
+task = "patrol"
+vehicles = { platform = "saildrone" }
+route = [[-122.5300, 37.8050], [-122.5200, 37.8000]]
+
+# ---- subsurface
+[[order]]
+id = "rov-hold"
+task = "hold"
+vehicles = { platform = "bluerov" }
+
+[[order]]
+id = "remus-patrol"
+task = "patrol"
+vehicles = { platform = "remus" }
+route = [[-122.4400, 37.8250], [-122.4300, 37.8280]]
+
+
+# the rq4, the armed UGV, the tracker and the buoy have no order
+
+# armed platforms: an opening order is a script's and never theirs, so the timeline proposes
+# their orders (agent-scripted) and the autoplay operator grants them
+
+[[step]]
+id = "reaper-patrol"
+at_s = 40
+kind = "propose"
+task = "patrol"
+vehicles = { platform = "mq9b_armed" }
+route = [[-122.6200, 37.8600], [-122.5500, 37.8600]]
+rationale = "node-loss check: reaper-patrol"
+retry_s = 120
+
+[[step]]
+id = "fury-orbit"
+at_s = 42
+kind = "propose"
+task = "orbit"
+vehicles = { platform = "cca" }
+center = [-122.6500, 37.7200]
+radius_m = 6000
+rationale = "node-loss check: fury-orbit"
+retry_s = 120
+
+[[step]]
+id = "blade-patrol"
+at_s = 44
+kind = "propose"
+task = "patrol"
+vehicles = { platform = "switchblade" }
+route = [[-122.4700, 37.8120], [-122.4500, 37.8150]]
+rationale = "node-loss check: blade-patrol"
+retry_s = 120
+
+[[step]]
+id = "fpv-hold"
+at_s = 46
+kind = "propose"
+task = "hold"
+vehicles = { platform = "fpv" }                # nine minutes of battery: a patrol fails its reserves
+rationale = "node-loss check: fpv-hold"
+retry_s = 120
+
+[[step]]
+id = "mines-rtl"
+at_s = 48
+kind = "propose"
+task = "rtl"
+vehicles = { platform = "ugv_mines" }
+rationale = "node-loss check: mines-rtl"
+retry_s = 120
+
+[[step]]
+id = "magura-orbit"
+at_s = 50
+kind = "propose"
+task = "orbit"
+vehicles = { platform = "magura" }
+center = [-122.4700, 37.8220]
+radius_m = 300
+rationale = "node-loss check: magura-orbit"
+retry_s = 120
+
+[[step]]
+id = "orca-orbit"
+at_s = 52
+kind = "propose"
+task = "orbit"
+vehicles = { platform = "orca" }
+center = [-122.5500, 37.7850]
+radius_m = 600
+rationale = "node-loss check: orca-orbit"
+retry_s = 120
+
+[autoplay]
+preset = "default"
+grant_agents = ["agent-setup", "agent-scripted"]

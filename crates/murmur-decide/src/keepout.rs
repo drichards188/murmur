@@ -315,9 +315,13 @@ pub struct BehavingInfo {
 #[derive(Clone, Debug, Serialize)]
 pub struct Region {
     /// velocity, mean_velocity, manoeuvre, young, aircraft, no_velocity (a track); velocity,
-    /// circling, cruise_reach, lost (one of ours).
+    /// circling, cruise_reach, lost (one of ours); rules 30, one of ours silent: route,
+    /// failsafe_home, drift, top_speed.
     pub kind: &'static str,
+    /// Its centre; for one that is not a disc (`outline`), its outline's point nearest the
+    /// effect point.
     pub center: LonLat,
+    /// Its radius; for one that is not a disc, how far around its outline it reaches.
     pub radius_m: f64,
     /// Its edge from the effect point (negative inside), m.
     pub edge_m: f64,
@@ -325,6 +329,10 @@ pub struct Region {
     pub inside: bool,
     /// The check's own words for it.
     pub how: String,
+    /// Rules 30, a silent vehicle's region that is not a disc (a corridor along its route, its
+    /// way home): its outline's points, `radius_m` around them. Absent for a disc.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub outline: Vec<LonLat>,
 }
 
 /// A nomination time and its effect time: see [`Item::wait`].
@@ -388,6 +396,25 @@ fn ms(s: f64) -> i64 {
 }
 
 /// A distance for a sentence: metres below a kilometre, else kilometres.
+/// Rules 30: how far a silent vehicle's region passes from the effect point: "passes 120 m from
+/// the effect point", "reaches over the effect point".
+fn passes(edge: f64) -> String {
+    if edge > 0.0 {
+        format!("passes {} from the effect point", dist(edge))
+    } else {
+        "reaches over the effect point".to_string()
+    }
+}
+
+/// Rules 30: "within 120 m of the effect point", "over the effect point".
+fn reaches(edge: f64) -> String {
+    if edge > 0.0 {
+        format!("within {} of the effect point", dist(edge))
+    } else {
+        "over the effect point".to_string()
+    }
+}
+
 fn dist(m: f64) -> String {
     if m.abs() >= 1000.0 {
         format!("{:.2} km", m / 1000.0)
@@ -688,6 +715,10 @@ fn scan_speed_mps(ctx: &Ctx, probes: &[Probe]) -> f64 {
         .iter()
         .map(|p| match p {
             Probe::Track(_, t, _) | Probe::Lost(_, t) => track(t),
+            // rules 30: a silent one's region grows no faster than its reach (crate::silent)
+            Probe::Vehicle(_, v) if ctx.cfg.node_loss() && fresh(&v.position, v, "position", ctx.world, ctx.cfg).is_err() => {
+                crate::silent::top_speed(v) + crate::silent::carried_mps(v)
+            }
             Probe::Vehicle(_, v) => {
                 let speed = v.velocity_mps.as_ref().map_or(0.0, |f| f.value[0].hypot(f.value[1]));
                 let cruise = v.platform.as_ref().and_then(|p| p.cruise_mps).unwrap_or(0.0);
@@ -867,7 +898,8 @@ pub fn explain(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig, opts
         }
     }
     for (uid, v) in &world.vehicles {
-        if Some(uid) == ctx.platform {
+        // rules 30: one confirmed lost is left out of the keep-out, as the check leaves it out
+        if Some(uid) == ctx.platform || engage::confirmed_lost(uid, v, world, cfg).is_some() {
             continue;
         }
         let st = engage::friendly_standing(uid, v, point, effect_t, clearance, world, cfg, alt, true);
@@ -951,11 +983,15 @@ fn agrees(ctx: &Ctx, checks: &[CheckResult], items: &[(Item, Probe)], alt: Optio
         }
     }
     for (uid, v) in &world.vehicles {
-        if Some(uid) == ctx.platform {
+        if Some(uid) == ctx.platform || engage::confirmed_lost(uid, v, world, cfg).is_some() {
             continue;
         }
         let mut alone = WorldSnapshot::new(world.t);
         alone.unknown_accepted = world.unknown_accepted.clone();
+        // rules 30: a silent one with what may be running on it, as the check reads it
+        if let Some(f) = world.silent_orders.get(uid) {
+            alone.silent_orders.insert(uid.clone(), f.clone());
+        }
         alone.vehicles.insert(uid.clone(), v.clone());
         let fails = engage::keep_out_friendly(point, effect_t, clearance, ctx.platform, &alone, cfg, alt).outcome != Outcome::Pass;
         if fails != listed(Subject::Vehicle, &uid.to_string()) {
@@ -1037,6 +1073,7 @@ fn track_item(
                 edge_m: edge,
                 inside: edge < clearance,
                 how: r.how.clone(),
+                outline: Vec::new(),
             }
         })
         .collect();
@@ -1213,6 +1250,7 @@ fn behaving_info(
                 edge_m: edge,
                 inside: edge < clearance,
                 how: r.how.clone(),
+                outline: Vec::new(),
             }
         })
     });
@@ -1403,6 +1441,7 @@ fn vehicle_item(ctx: &Ctx, uid: &Uid, v: &VehicleFacts, st: FriendlyStanding, al
             how,
             by_alt,
             alt_known,
+            outline,
         } => {
             let blocks = d < clearance && by_alt.is_none();
             if !blocks && d >= NEAR_FACTOR * clearance {
@@ -1431,6 +1470,15 @@ fn vehicle_item(ctx: &Ctx, uid: &Uid, v: &VehicleFacts, st: FriendlyStanding, al
                     dist(radius_m)
                 ),
                 FriendlyKind::NoPosition | FriendlyKind::Unpredictable => "Ours.".to_string(),
+                // rules 30: silent (crate::silent), the hypothesis whose region comes nearest
+                FriendlyKind::Route => format!("Ours, {how}; that region {}.", passes(edge)),
+                FriendlyKind::FailsafeHome => format!("Ours, {how}; its way home {}.", passes(edge)),
+                FriendlyKind::Drift => format!("Ours, {how}; that reaches {}.", reaches(edge)),
+                FriendlyKind::TopSpeed => format!(
+                    "Ours, {how}; that is within {} of its last report, {}.",
+                    dist(radius_m),
+                    reaches(edge)
+                ),
             };
             let clear_by_altitude = by_alt.map(|(a, c, m)| {
                 format!("Clear by altitude: at {a:.0} m it stays {c:.0} m outside the vertical keep-out, with {m:.0} m of altitude uncertainty.")
@@ -1453,6 +1501,7 @@ fn vehicle_item(ctx: &Ctx, uid: &Uid, v: &VehicleFacts, st: FriendlyStanding, al
                 None => format!("{what} {}", verdict(blocks, edge, clearance)),
             };
             let lost = kind == FriendlyKind::Lost;
+            let silent = kind.silent();
             let region = Region {
                 kind: kind.as_str(),
                 center,
@@ -1460,6 +1509,29 @@ fn vehicle_item(ctx: &Ctx, uid: &Uid, v: &VehicleFacts, st: FriendlyStanding, al
                 edge_m: edge,
                 inside: d < clearance,
                 how: how.into_owned(),
+                outline,
+            };
+            let not_by_waiting = match kind {
+                _ if !blocks => None,
+                FriendlyKind::Lost => Some("Waiting does not clear it: while it is lost its reach only grows.".to_string()),
+                // rules 30: no one can retask a silent vehicle (its orders wait in the queue)
+                FriendlyKind::Route | FriendlyKind::FailsafeHome => Some(
+                    "Waiting does not clear it: while it is silent no one can retask it, so its route and its way home stay where they are.".to_string(),
+                ),
+                FriendlyKind::Drift | FriendlyKind::TopSpeed => {
+                    Some("Waiting does not clear it: while it is silent this region only grows.".to_string())
+                }
+                _ => None,
+            };
+            let other = match () {
+                _ if !blocks => None,
+                _ if lost => Some(
+                    "A fresh report from it would; so would an operator with engagement authority accepting its unknown position for this engagement (logged, at the nomination).".to_string(),
+                ),
+                _ if silent => Some(
+                    "A fresh report from it would; so would an operator with engagement authority accepting its unknown position for this engagement (logged, at the nomination), or an operator confirming it lost (Review).".to_string(),
+                ),
+                _ => None,
             };
             Some(Item {
                 blocks,
@@ -1470,11 +1542,8 @@ fn vehicle_item(ctx: &Ctx, uid: &Uid, v: &VehicleFacts, st: FriendlyStanding, al
                 altitude,
                 clear_by_altitude,
                 reason,
-                not_by_waiting: (lost && blocks)
-                    .then(|| "Waiting does not clear it: while it is lost its reach only grows.".to_string()),
-                other: (lost && blocks).then(|| {
-                    "A fresh report from it would; so would an operator with engagement authority accepting its unknown position for this engagement (logged, at the nomination).".to_string()
-                }),
+                not_by_waiting,
+                other,
                 ..base
             })
         }
@@ -1496,7 +1565,7 @@ fn same_picture(ctx: &Ctx, items: &mut [(Item, Probe)], more_blocking: bool) -> 
             world
                 .vehicles
                 .iter()
-                .filter(|(u, _)| Some(*u) != ctx.platform)
+                .filter(|(u, v)| Some(*u) != ctx.platform && engage::confirmed_lost(u, v, world, cfg).is_none())
                 .map(|(u, v)| Probe::Vehicle(u, v)),
         )
         .chain(judged_lost(world, ctx.track_id, ec).into_iter().map(|(id, l)| Probe::Lost(id, &l.facts)))
@@ -1769,7 +1838,7 @@ fn carried_forward(ctx: &Ctx, items: &mut [(Item, Probe)], shown: usize) -> (Opt
     let mut vehicles: Vec<V> = world
         .vehicles
         .iter()
-        .filter(|(u, _)| Some(*u) != ctx.platform)
+        .filter(|(u, v)| Some(*u) != ctx.platform && engage::confirmed_lost(u, v, world, cfg).is_none())
         .map(|(u, v)| {
             let (rep, vel, circle) = reporting(v, world, cfg);
             V {
