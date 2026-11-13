@@ -6,7 +6,11 @@ is declared hostile, `get_nomination_options` now and then to see whether a nomi
 become possible (a `nomination.possible` change), for the armed platforms that could pass
 only and asking only whether each passes. Around each wake the live driver reads `get_inbox`'s
 `blocking` (`Poller.blocking`: the review items that alone hold up a nomination, which only a
-person can decide), tells the model of them in the update and ties its note to them. Nothing it
+person can decide), tells the model of them in the update and ties its note to them. Under
+decision rules 30 the live driver also reads `get_inbox`'s review every `review_every_s` for the
+standing of ours (`Poller.node_losses`): one presumed lost (`node.presumed`, which wakes the
+model), its presumption cleared, confirmed lost, its loss revoked; the change feed carries none
+of these. Under older rules the first read finds no node items and it reads no more. Nothing it
 reads is logged by the bridge.
 """
 
@@ -73,8 +77,15 @@ def candidates(vehicles: list[dict], track: dict, cruise: dict, transit_s: float
 class Poller:
     """The change feed for one agent session, reconnecting when the bridge goes away."""
 
-    def __init__(self, connect: Callable[[], Any], nomination_every_s: float = 15.0):
+    def __init__(self, connect: Callable[[], Any], nomination_every_s: float = 15.0, review_every_s: float = 5.0):
         self.connect = connect  # () -> an AgentSession (not yet entered)
+        # rules 30: the review's node items, read this often (`node_losses`); None until the first
+        # read says whether the bridge has them, False once it said it has not (older rules)
+        self.review_every_s = review_every_s
+        self.review_checked = 0.0
+        self.node_rules: bool | None = None
+        self.presumed: dict[str, Any] = {}  # uid -> the report it is presumed lost since
+        self.lost: dict[str, Any] = {}  # uid -> the report it was confirmed lost since
         self.session = None
         self.cursor: str | int | None = None  # the feed's cursor, "<feed>:<n>"
         self.run: str | None = None
@@ -106,6 +117,9 @@ class Poller:
         self.run = first.get("run")
         tracks = await s.tracks(affiliation="hostile")
         self.hostile = {t["id"] for t in tracks if t.get("declared")}
+        if reset:
+            # another bridge: its review is read afresh (what this one presumed is news again)
+            self.node_rules, self.presumed, self.lost, self.review_checked = None, {}, {}, 0.0
         return {"cursor": self.cursor, "run": self.run, "tools": list(s.tools), "reset": reset}
 
     async def close(self) -> None:
@@ -190,6 +204,30 @@ class Poller:
             return [{"kind": "nomination.closed", "t": now, "track": track}]
         return []
 
+    async def node_losses(self, now: float | None = None) -> list[dict]:
+        """Rules 30: the standing of ours as `get_inbox`'s review has it, every `review_every_s`, as
+        changes: `node.presumed` (one of ours the engine presumes lost, on its evidence),
+        `node.presumption_cleared` (heard again), `node.lost` (an operator with engagement
+        authority confirmed it), `node.loss_revoked` (heard again, or an operator revoked it).
+        Read-only, never logged; a bridge under older rules has no node items, and after its first
+        answer says so this reads nothing more."""
+        now = time.time() if now is None else now
+        if self.node_rules is False or now - self.review_checked < self.review_every_s:
+            return []
+        self.review_checked = now
+        try:
+            inbox = await self.session.call("get_inbox")
+        except Exception:  # noqa: BLE001 (the next poll tries again)
+            return []
+        review = inbox.get("review") if isinstance(inbox, dict) else None
+        if not isinstance(review, dict):
+            return []
+        if "node_losses" not in review and "nodes_lost" not in review:
+            self.node_rules = False
+            return []
+        self.node_rules = True
+        return node_changes(review, self.presumed, self.lost, now)
+
     async def mine(self) -> list[dict]:
         return await self.session.intents(mine=True)
 
@@ -203,6 +241,42 @@ class Poller:
             return []
         items = inbox.get("blocking") if isinstance(inbox, dict) else None
         return [b for b in items or [] if isinstance(b, dict) and isinstance(b.get("id"), str)]
+
+
+def _node_who(n: dict) -> dict:
+    return {k: n.get(k) for k in ("uid", "callsign", "platform") if n.get(k) is not None}
+
+
+def node_changes(review: dict, presumed: dict[str, Any], lost: dict[str, Any], now: float) -> list[dict]:
+    """The changes in the standing of ours between the last review read (`presumed`, `lost`: uid
+    -> since, updated in place) and this one (pure, for tests)."""
+    out: list[dict] = []
+    now_presumed = {str(n.get("uid")): n for n in review.get("node_losses") or []
+                    if isinstance(n, dict) and n.get("state") == "presumed_lost" and n.get("uid") is not None}
+    now_lost = {str(n.get("uid")): n for n in review.get("nodes_lost") or [] if isinstance(n, dict) and n.get("uid") is not None}
+    for uid, n in sorted(now_presumed.items()):
+        if uid in presumed and presumed[uid] == n.get("since"):
+            continue
+        out.append({"kind": "node.presumed", "t": now, **_node_who(n), "since": n.get("since"), "since_t": n.get("since_t"),
+                    "silent_s": n.get("silent_s"), "last_position": n.get("last_position"),
+                    "evidence": [str(e.get("detail") or e.get("kind") or "") for e in n.get("evidence") or [] if isinstance(e, dict)],
+                    "would_end": n.get("would_end") or [], "would_void": n.get("would_void") or []})
+    for uid in sorted(set(presumed) - set(now_presumed)):
+        if uid not in now_lost:
+            out.append({"kind": "node.presumption_cleared", "t": now, "uid": int(uid) if uid.isdigit() else uid,
+                        "since": presumed[uid]})
+    for uid, n in sorted(now_lost.items()):
+        if uid in lost and lost[uid] == n.get("since"):
+            continue
+        out.append({"kind": "node.lost", "t": now, **_node_who(n), "since": n.get("since"), "by": n.get("by"),
+                    "confirmed_t": n.get("t")})
+    for uid in sorted(set(lost) - set(now_lost)):
+        out.append({"kind": "node.loss_revoked", "t": now, "uid": int(uid) if uid.isdigit() else uid, "since": lost[uid]})
+    presumed.clear()
+    presumed.update({u: n.get("since") for u, n in now_presumed.items()})
+    lost.clear()
+    lost.update({u: n.get("since") for u, n in now_lost.items()})
+    return out
 
 
 def _content(result) -> dict:
@@ -354,6 +428,21 @@ def render(c: dict) -> str:
         return f"{t} track {tr}: armed platforms that pass every nomination check now: {ps}"
     if k == "nomination.closed":
         return f"{t} track {tr}: no armed platform passes every nomination check any more"
+    if k == "node.presumed":
+        ev = "; ".join(quote(e, 100) for e in c.get("evidence") or []) or "none listed"
+        silent = c.get("silent_s")
+        ago = f" {silent:.0f} s ago" if isinstance(silent, (int, float)) else ""
+        return (f"{t} {_who(c)} of ours is presumed lost by the engine: silent since its last report{ago} at "
+                f"{_pos(c.get('last_position'))}, the engine's evidence {ev}. It still counts in every engagement "
+                "keep-out where it could be; only an operator with engagement authority can confirm it lost (no tool "
+                "does). If its sensors held a contact, another sensor may need to take it (identify)")
+    if k == "node.presumption_cleared":
+        return f"{t} {_who(c)} of ours was heard again: no longer presumed lost"
+    if k == "node.lost":
+        return (f"{t} {_who(c)} of ours was confirmed lost by {c.get('by')}: it is out of every keep-out and takes no "
+                "order; its orders ended")
+    if k == "node.loss_revoked":
+        return f"{t} {_who(c)} of ours: its loss was revoked (heard again, or an operator revoked it): it counts in every keep-out again"
     if k == "feed.reset":
         return f"{t} the bridge restarted (run {c.get('run')}): read the picture again"
     if k == "feed.truncated":

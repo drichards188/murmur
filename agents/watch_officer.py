@@ -212,6 +212,8 @@ class Officer:
             try:
                 changes = await self.poller.poll()
                 changes += await self.poller.nominations()
+                # rules 30: the standing of ours (get_inbox's review; nothing under older rules)
+                changes += await self.poller.node_losses()
                 self.poll_errors = 0
                 if any(isinstance(c, dict) and c.get("kind") == "feed.reset" for c in changes):
                     self.bridge_restarted = True

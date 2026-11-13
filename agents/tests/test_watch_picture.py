@@ -241,3 +241,46 @@ def test_the_blocking_read_is_the_inboxs_and_never_fails_the_update():
     assert "name it by its id (for example D-1)" in told and "you cannot" in told
     part = next(x for x in told.split("\n\n") if x.startswith("Waiting on the operator"))
     assert told.replace("\n\n" + part, "") == plain, "one part added, nothing else changed"
+
+
+def test_the_standing_of_ours_from_the_inboxs_review():
+    """Rules 30 (`Poller.node_losses`): get_inbox's review read at most every `review_every_s`, its
+    presumed losses, clearances, confirmations and revocations as changes, each once; a bridge
+    under older rules (no node items) read once, then never again."""
+    from watch.picture import node_changes
+
+    item = {"uid": 1, "callsign": "HUNTER 1", "platform": "seahunter", "state": "presumed_lost", "since": 125000,
+            "since_t": 125.0, "silent_s": 41.0, "last_position": [-122.485, 37.813],
+            "evidence": [{"kind": "act", "detail": "act A-1 against it"}, {"kind": "struck", "detail": "its struck report"}]}
+    flagged = {**item, "uid": 2, "callsign": "HUNTER 2", "state": "silent"}
+    answers = [
+        {"review": {"node_losses": [item, flagged], "nodes_lost": []}},
+        {"review": {"node_losses": [], "nodes_lost": [{"uid": 1, "callsign": "HUNTER 1", "since": 125000, "by": "op-2", "t": 170.0}]}},
+        {"review": {"node_losses": [], "nodes_lost": []}},
+    ]
+    s = FakeAgentSession(answers)
+    p = Poller(lambda: s, review_every_s=5.0)
+    p.session = s
+    got = run(p.node_losses(now=100.0))
+    assert [(c["kind"], c["uid"]) for c in got] == [("node.presumed", 1)], "the flagged one asks a judgment: not a change"
+    assert got[0]["evidence"] == ["act A-1 against it", "its struck report"] and got[0]["since"] == 125000
+    assert run(p.node_losses(now=103.0)) == [], "not read again within review_every_s"
+    got = run(p.node_losses(now=106.0))
+    assert [(c["kind"], c.get("by")) for c in got] == [("node.lost", "op-2")], "confirmed: not a clearance"
+    got = run(p.node_losses(now=112.0))
+    assert [c["kind"] for c in got] == ["node.loss_revoked"]
+    assert [n for n, _ in s.calls] == ["get_inbox"] * 3
+    # a presumption gone without a confirmation: heard again
+    pres, lost = {}, {}
+    node_changes({"node_losses": [item]}, pres, lost, 1.0)
+    assert [c["kind"] for c in node_changes({"node_losses": []}, pres, lost, 2.0)] == ["node.presumption_cleared"]
+    # silent anew after it was heard: a new presumption
+    node_changes({"node_losses": [item]}, pres, lost, 3.0)
+    again = node_changes({"node_losses": [{**item, "since": 300000}]}, pres, lost, 4.0)
+    assert [(c["kind"], c["since"]) for c in again] == [("node.presumed", 300000)]
+    # older rules: the review has no node items; read once, never again
+    s = FakeAgentSession([{"review": {"declarations": []}}])
+    p = Poller(lambda: s)
+    p.session = s
+    assert run(p.node_losses(now=100.0)) == [] and p.node_rules is False
+    assert run(p.node_losses(now=200.0)) == [] and [n for n, _ in s.calls] == ["get_inbox"]

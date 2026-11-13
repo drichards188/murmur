@@ -531,7 +531,11 @@ area) run without a human.
 
 ### When it wakes
 
-The driver polls `get_changes` every 2 s. While a track is declared hostile it also reads
+The driver polls `get_changes` every 2 s. Under decision rules 30 it also reads `get_inbox`'s
+review every 5 s for the standing of ours (the change feed has none of it: `Poller.node_losses`):
+one presumed lost, its presumption cleared, confirmed lost (by whom), its loss revoked; a bridge
+under older rules has no node items, and after its first answer the driver reads no more. While a
+track is declared hostile it also reads
 `get_nomination_options` for one track per poll, each track every 15 s (the bridge allows an
 agent one such dry run a second, shared with the model), for the armed platforms that could
 pass only and asking only whether each passes (`passed_only`): armed, link up, navigation
@@ -555,6 +559,7 @@ characters. The table is `TRIGGERS` in `agents/watch/wake.py`:
 | navigation not ready, or off GNSS on anything but a submarine | yes | |
 | a failsafe; a high-severity alert, or an alert that became one | yes | |
 | one of its own proposals approved, rejected, voided, expired, failed, aborted, queued, dispatched or effected (also when it was decided before the driver saw it pending) | yes | |
+| rules 30: one of ours presumed lost by the engine (`node.presumed`), or a loss revoked (`node.loss_revoked`) | yes | |
 | the bridge restarted (the CLI is restarted too, and its tools checked again) | yes | |
 
 Anything else is a note that rides along with the next update (a task of its own that ended

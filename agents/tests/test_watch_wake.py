@@ -33,6 +33,12 @@ def test_the_table_wakes_and_escalates_as_documented():
         ({"kind": "vehicle.event", "event_kind": "mode"}, (False, False)),
         ({"kind": "vehicle.joined"}, (False, False)),
         ({"kind": "feed.reset"}, (True, False)),
+        # rules 30 (get_inbox's review): a presumed loss of one of ours wakes; a loss revoked wakes;
+        # a presumption cleared and a loss confirmed are notes
+        ({"kind": "node.presumed", "uid": 1, "since": 125000}, (True, False)),
+        ({"kind": "node.presumption_cleared", "uid": 1, "since": 125000}, (False, False)),
+        ({"kind": "node.lost", "uid": 1, "by": "op-2"}, (False, False)),
+        ({"kind": "node.loss_revoked", "uid": 1}, (True, False)),
     ]
     for change, want in cases:
         wakes, escalates, why = classify(change)
@@ -148,8 +154,11 @@ EVERY_KIND = [
      "operator_note": {"by": "op-1", "note": "not now"}},
     {"kind": "intent.new", "intent": 13, "mine": True, "state": "rejected"},
     {"kind": "feed.reset", "run": "run-b"},
+    {"kind": "node.presumed", "uid": 10, "since": 125000, "evidence": ["act A-1 against it"], "last_position": [-122.4, 37.8]},
+    {"kind": "node.loss_revoked", "uid": 11, "since": 90000},
 ]
 NOTES = [{"kind": "vehicle.joined", "uid": 30}, {"kind": "track.stale", "track": "T-9"},
+         {"kind": "node.lost", "uid": 12, "since": 1000, "by": "op-2"}, {"kind": "node.presumption_cleared", "uid": 13, "since": 5},
          {"kind": "vehicle.events_truncated", "shown": 100}, {"kind": "something.new", "x": {"y": [1, 2]}}]
 
 
@@ -781,3 +790,33 @@ def test_bounding_the_notes_drops_a_condition_that_came_and_went_whole():
     kinds = [c["kind"] for c in w.pending]
     assert "vehicle.link_lost" not in kinds and "vehicle.link_restored" not in kinds, "both went"
     assert w.notes_dropped == 2 and len(w.pending) == MAX_PENDING - 1
+
+
+def test_a_presumed_loss_wakes_once_and_one_that_came_and_went_is_a_note():
+    """Rules 30: one of ours presumed lost wakes the watch officer, saying so; a presumption that was
+    raised and cleared again within a batch (heard again) is a note; one silence wakes once."""
+    w = Waker(quiet())
+    w.due(0)
+    w.add([{"kind": "node.presumed", "t": 20, "uid": 1, "callsign": "HUNTER 1", "since": 125000}], 20)
+    wake = w.due(30)
+    assert wake is not None and wake.why == ["one of ours is presumed lost"] and not wake.escalate
+    w.add([{"kind": "node.presumed", "t": 40, "uid": 1, "callsign": "HUNTER 1", "since": 125000}], 40)
+    assert w.due(60) is None, "the same silence again is a repeat, held back"
+    w = Waker(quiet())
+    w.due(0)
+    w.add([{"kind": "node.presumed", "t": 20, "uid": 2, "since": 7}, {"kind": "node.presumption_cleared", "t": 21, "uid": 2,
+                                                                      "since": 7}], 21)
+    assert w.due(40) is None, "came and went: a note"
+
+
+def test_the_standing_of_ours_reads_as_data():
+    """The update's lines for rules 30's changes: the evidence quoted (the engine's words), that only
+    an operator with engagement authority confirms, and what a loss means."""
+    line = render({"kind": "node.presumed", "t": 0, "uid": 1, "callsign": "HUNTER 1", "platform": "seahunter", "silent_s": 41.2,
+                   "last_position": [-122.485, 37.813], "evidence": ['act A-1 against it, "seen" by HUNTER 2']})
+    assert line.startswith("00:00:00Z uid 1 HUNTER 1 (seahunter) of ours is presumed lost by the engine: silent since its last "
+                           "report 41 s ago at -122.4850,37.8130, the engine's evidence \"act A-1 against it, 'seen' by HUNTER 2\"")
+    assert "only an operator with engagement authority can confirm it lost (no tool does)" in line and "identify" in line
+    assert "confirmed lost by op-2" in render({"kind": "node.lost", "t": 0, "uid": 1, "by": "op-2"})
+    assert "heard again" in render({"kind": "node.presumption_cleared", "t": 0, "uid": 1})
+    assert "counts in every keep-out again" in render({"kind": "node.loss_revoked", "t": 0, "uid": 1})

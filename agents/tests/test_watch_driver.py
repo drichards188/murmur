@@ -98,6 +98,9 @@ class ScriptedPoller:
     async def nominations(self):
         return []
 
+    async def node_losses(self):
+        return []
+
     async def blocking(self):
         # what waits for a person alone, from `blocking_from` on (s after the start)
         return self.waiting if self.blocking_from is not None and time.time() - self.t0 >= self.blocking_from else []

@@ -154,6 +154,13 @@ TRIGGERS: tuple[Row, ...] = (
         "one of your proposals changed state"),
     Row("intent.new", lambda c: _mine(c) and c.get("state") in DECIDED, never,
         "one of your proposals changed state"),
+    # rules 30, from get_inbox's review (agents/watch/picture.py `Poller.node_losses`): one of ours
+    # presumed lost on evidence of a strike (custody of what its sensors held may need another
+    # sensor; only a person confirms the loss), and a loss revoked (it counts in every keep-out
+    # again; an engagement that left it out stops). A presumption cleared or a loss confirmed is a
+    # note.
+    Row("node.presumed", always, never, "one of ours is presumed lost"),
+    Row("node.loss_revoked", always, never, "one of ours confirmed lost was heard again or its loss revoked"),
     # the bridge restarted under us (a cursor from an earlier bridge)
     Row("feed.reset", always, never, "the bridge restarted: read the picture again"),
 )
@@ -199,6 +206,9 @@ def subject(c: Change) -> tuple:
         instance = _h(c.get("to"))
     elif k == "condition.flapping":
         instance = _h(c.get("condition"))
+    elif str(k).startswith("node."):
+        # rules 30: one silence of one of ours (the report it is silent since)
+        instance = _h(c.get("since"))
     return (k, *item, instance)
 
 
@@ -217,6 +227,8 @@ def _pair(c: Change) -> tuple[tuple, bool] | None:
         return ("identity_conflict", _h(c.get("track"))), k == "track.identity_conflict"
     if k in ("track.declared", "track.declaration_revoked"):
         return ("declaration", _h(c.get("track"))), k == "track.declared"
+    if k in ("node.presumed", "node.presumption_cleared"):
+        return ("node", _h(c.get("uid"))), k == "node.presumed"
     return None
 
 
