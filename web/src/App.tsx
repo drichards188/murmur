@@ -58,6 +58,9 @@ import { Tutorial } from './Tutorial'
 import { CoverageControl } from './CoverageControl'
 import { gridImage, type CoverageGrid, type LinkRouteDrawing } from './coverage'
 import { buildStationLayers } from './linkLayers'
+import { nodeLossView } from './nodeLoss'
+import { buildNodeRegionLayers } from './nodeLossLayers'
+import { useNodes } from './useNodes'
 import { buildSwarmLayers, swarmLabelCandidates, useSwarms } from './swarms'
 import { CROWD, CROWD_SILENT, engagementTracks, focusMap, reviewTracks } from './focus'
 import { HiddenLegend, type HiddenRow } from './HiddenLegend'
@@ -262,6 +265,11 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
   const onView = useCallback((center: LngLat, bounds: [number, number, number, number], zoom: number) => setMapView({ center, bounds, zoom }), [])
 
   const allVehicles = useMemo(() => state?.vehicles ?? [], [state?.vehicles])
+  // rules 30: our vehicles silent, presumed lost, confirmed lost (the review's lists, only in a
+  // run under rules 30), and where the keep-out counts each silent one (polled while any is)
+  const nodeLoss = useMemo(() => nodeLossView(decisions?.inbox.review), [decisions?.inbox.review])
+  const anyStale = useMemo(() => allVehicles.some(isStale), [allVehicles])
+  const nodeRows = useNodes(nodeLoss.on && (anyStale || nodeLoss.lost.size > 0 || nodeLoss.review.size > 0))
   const spent = useMemo(() => new Set(decisions?.spent ?? []), [decisions?.spent])
   const vehicles = useMemo(() => spent.size ? allVehicles.filter((v) => !spent.has(v.uid)) : allVehicles, [allVehicles, spent])
   // the swarm summary (GET /api/swarms, about once a second) while the fleet has swarms or the
@@ -537,8 +545,9 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftKey])
   // silent vehicles' estimates (murmur-4y9): the bridge's motion models evaluated every clock
-  // tick, so the callback changes identity each tick only while something is silent
-  const silent = useMemo(() => state ? estimated(vehicles) : [], [vehicles, state])
+  // tick, so the callback changes identity each tick only while something is silent; none for a
+  // vehicle an operator confirmed lost (rules 30: what it last reported is not where it went)
+  const silent = useMemo(() => (state ? estimated(vehicles).filter((v) => !nodeLoss.lost.has(v.uid)) : []), [vehicles, state, nodeLoss])
   const estimateTick = silent.length ? Math.floor(now() / 500) : 0
   // in focus for the estimates: selected, or details open (both hypotheses, filled)
   const vehicleFocus = useMemo(() => (detailsUid == null ? selected : new Set([...selected, detailsUid])), [selected, detailsUid])
@@ -560,8 +569,11 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
     return buildKeepOutLayers(engageKeepOuts, v ? callsign(v) : `vehicle ${engageKeepOuts.platform ?? ''}`)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engageKeepOuts])
+  // rules 30: where each silent vehicle can be as the keep-out counts it, under the estimates
+  const nodeRegionLayers = useMemo(() => (nodeRows.size ? buildNodeRegionLayers(nodeRows.values(), vehicleFocus) : []), [nodeRows, vehicleFocus])
   const mapLayers = useCallback<MapLayers>(
     (screen, plan) => [
+      ...nodeRegionLayers,
       ...estimateLayers(screen, plan),
       ...trackLayers(screen, plan),
       ...keepOutLayers,
@@ -573,7 +585,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
       ...buildSwarmLayers(swarmShapes, swarmSel, plan),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [swarmShapes, swarmSel, estimateLayers, trackLayers, keepOutLayers, stationLayers, engageDrawings, queuedIntents, allIntents, state?.taskings, vehicles, orderTick],
+    [swarmShapes, swarmSel, nodeRegionLayers, estimateLayers, trackLayers, keepOutLayers, stationLayers, engageDrawings, queuedIntents, allIntents, state?.taskings, vehicles, orderTick],
   )
   // every text layer's labels for the one label budget (declutter.ts, docs/research/
   // saturation-display.md R2), with our vehicles' (MapView's): the same data and ticks as the
@@ -905,6 +917,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
         taskings={state?.taskings}
         damaged={damagedUids}
         alerted={alertedUids}
+        lost={nodeLoss.lost}
         expandAll={showAll.lists}
         onFolded={setFleetFolds}
       />
@@ -918,6 +931,7 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
           impactNowMs={impactNowMs}
           bridgeNow={now}
           oneWay={oneWay}
+          nodes={nodeLoss}
           tracers={tracers}
           acts={actDraws}
           actsDismissedAt={actsDismissedAt}
@@ -1086,6 +1100,10 @@ export default function App({ onMenu }: { onMenu?: () => void }) {
               setFocus((f) => ({ uid: detailsUid, n: (f?.n ?? 0) + 1 }))
             }}
             onEngage={() => setEngageForm({ uid: detailsUid })}
+            nodeLoss={nodeLoss}
+            nodeRow={nodeRows.get(detailsUid)}
+            onReview={openWaiting}
+            nameOf={nameOf}
           />
           </ErrorBoundary>
         )}

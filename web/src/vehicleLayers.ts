@@ -12,7 +12,9 @@
 //                     depth and (vehicle-types) the model label left of it: only for the vehicles
 //                     the label budget placed (declutter.ts), which is bounded by the screen, not
 //                     the fleet; the full block for the selected or while few labels are in view
-//   vehicle-lost      "LOST 12s" under vehicles whose link is stale, where the budget placed it
+//   vehicle-lost      "LOST 12s" under vehicles whose link is stale, where the budget placed it;
+//                     in a run under rules 30 its standing instead (nodeLoss.ts): "SILENT 12s",
+//                     "PRESUMED LOST 12s", or "LOST" once an operator confirmed it, grey
 //   vehicle-oneway    "ONE-WAY > T-12" ("STRIKING > T-12" from its release) over a platform that is its
 //                     own munition, on its way
 //                     to its engagement's effect (bd murmur-64z)
@@ -25,6 +27,7 @@ import { IconLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import { besides, centred, type LabelCandidate, type LabelLevel, type Priority, rightOf } from './declutter'
 import { drawnTick, drawnXYZ, lastKnownAlt, smoothing } from './drawn'
 import { drawnHeight, HEIGHT_EXAGGERATION } from './map3d'
+import { NO_NODE_LOSS, type NodeLossView, staleBadge, standingOf } from './nodeLoss'
 import { frameIcon, typeLabel } from './symbols'
 import type { Vehicle } from './types'
 import { callsign, domainOf, isStale } from './types'
@@ -40,6 +43,8 @@ const OUTLINE: RGBA = [11, 15, 20, 255]
 const ACCENT: RGBA = [255, 179, 71, 255]
 const ACCENT_HALO: RGBA = [255, 179, 71, 46]
 const BAD: RGBA = [255, 93, 93, 255]
+/** rules 30: a loss an operator confirmed (settled: no longer an alarm) */
+const SETTLED: RGBA = [92, 102, 114, 255]
 /** a platform that is its own munition is ours: the friendly blue (weaponSymbols.ts), deep enough
  *  for white text */
 const MUNITION: RGBA = [11, 100, 140, 240]
@@ -71,22 +76,23 @@ export function vehicleLabel(v: Vehicle): string {
   return h ? `${callsign(v)} · ${h}` : callsign(v)
 }
 
-/** "LOST 12s": the badge under a vehicle whose link is stale */
-function lostText(v: Vehicle) {
-  return `LOST ${Math.floor((v.link.since_last_ms ?? 0) / 1000)}s`
+/** "LOST 12s": the badge under a vehicle whose link is stale; under rules 30 its standing
+ *  ("SILENT 12s", "PRESUMED LOST 12s", "LOST" once confirmed) */
+function lostText(v: Vehicle, nodes: NodeLossView = NO_NODE_LOSS) {
+  return staleBadge(standingOf(nodes, v.uid, true), (v.link.since_last_ms ?? 0) / 1000)
 }
 
 /** A vehicle's labels as the budget weighs them (declutter.ts): its callsign (`v:<uid>`; the full
  *  block adds its height and model), and its LOST badge (`vl:<uid>`) while its link is stale, at
  *  `at` (where it is seen, CSS px), or at its foot when it is drawn above the view. */
-export function vehicleLabelCandidates(v: Vehicle, at: [number, number] | null, aloft: boolean, priority: Priority, force: boolean): LabelCandidate[] {
+export function vehicleLabelCandidates(v: Vehicle, at: [number, number] | null, aloft: boolean, priority: Priority, force: boolean, nodes?: NodeLossView): LabelCandidate[] {
   const stale = isStale(v)
   const icon = frameIcon(v, stale)
   const out: LabelCandidate[] = aloft
     ? [{ key: `v:${v.uid}`, at, short: centred(`▲ ${callsign(v)}`, 11, -8, 5), full: centred(`▲ ${vehicleLabel(v)}`, 11, -8, 5), priority, force }]
     : [{ key: `v:${v.uid}`, at, short: rightOf(icon.halfW, callsign(v), 12), full: besides(icon.halfW, typeLabel(v), 11, vehicleLabel(v), 12), priority, force }]
   if (stale && !aloft) {
-    const badge = centred(lostText(v), 10, icon.halfH + 4, 5)
+    const badge = centred(lostText(v, nodes), 10, icon.halfH + 4, 5)
     out.push({ key: `vl:${v.uid}`, at, short: badge, full: badge, priority: priority === 4 ? 3 : priority, force })
   }
   return out
@@ -105,6 +111,8 @@ export interface VehicleLayerInput {
   /** platforms that are their own munition (catalog `expended_by_effect`) and whose engagement is
    *  dispatched: tagged, so the operator sees what is on the way */
   oneWay?: ReadonlyMap<number, string>
+  /** rules 30: our vehicles' standing (the review's), for the stale badge */
+  nodes?: NodeLossView
 }
 
 interface Parts {
@@ -253,7 +261,7 @@ export function buildVehicleLayers(input: VehicleLayerInput) {
       id: 'vehicle-lost',
       data: lost,
       getPosition: at,
-      getText: lostText,
+      getText: (v) => lostText(v, input.nodes),
       getSize: 10,
       getColor: WHITE,
       getTextAnchor: 'middle',
@@ -262,11 +270,11 @@ export function buildVehicleLayers(input: VehicleLayerInput) {
       fontFamily: FONT,
       fontWeight: 600,
       background: true,
-      getBackgroundColor: BAD,
+      getBackgroundColor: (v) => (input.nodes?.lost.has(v.uid) ? SETTLED : BAD),
       backgroundPadding: [5, 3, 5, 3],
       fontSettings: FONT_SETTINGS,
       characterSet: 'auto',
-      updateTriggers: posTrigger,
+      updateTriggers: { ...posTrigger, getText: input.nodes, getBackgroundColor: input.nodes },
       parameters: onTop,
     }),
     new TextLayer<Vehicle>({

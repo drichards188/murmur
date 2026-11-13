@@ -416,8 +416,25 @@ export interface KeepOutExplanation {
   note: string
 }
 
-/** `accepted` (rules 19): along the path an operator accepted for a live track as behaving now */
-export type KeepOutKind = 'velocity' | 'mean_velocity' | 'manoeuvre' | 'young' | 'no_velocity' | 'aircraft' | 'out_of_view' | 'circling' | 'cruise_reach' | 'lost' | 'accepted'
+/** `accepted` (rules 19): along the path an operator accepted for a live track as behaving now;
+ *  rules 30, one of ours silent (where the engine counts it): `route` (an order that may be
+ *  running), `failsafe_home` (its failsafe's way home, if it lost us too), `drift`, `top_speed` */
+export type KeepOutKind =
+  | 'velocity'
+  | 'mean_velocity'
+  | 'manoeuvre'
+  | 'young'
+  | 'no_velocity'
+  | 'aircraft'
+  | 'out_of_view'
+  | 'circling'
+  | 'cruise_reach'
+  | 'lost'
+  | 'accepted'
+  | 'route'
+  | 'failsafe_home'
+  | 'drift'
+  | 'top_speed'
 
 export interface KeepOutRegion {
   kind: KeepOutKind
@@ -429,6 +446,9 @@ export interface KeepOutRegion {
   inside: boolean
   /** the check's own words */
   how: string
+  /** rules 30, a silent vehicle's region that is not a disc (a corridor along its route, its way
+   *  home): its outline's points, `radius_m` around them (absent for a disc) */
+  outline?: LngLat[]
 }
 
 export interface KeepOutWait {
@@ -517,6 +537,10 @@ export const KEEP_OUT_KIND_LABEL: Record<KeepOutKind, string> = {
   cruise_reach: 'cruise reach',
   lost: 'lost: cruise reach',
   accepted: 'accepted as behaving now',
+  route: 'silent: on its orders',
+  failsafe_home: 'silent: its way home if it lost us',
+  drift: 'silent: adrift',
+  top_speed: 'silent: top speed',
 }
 
 /** A distance for the form: metres below a kilometre, else kilometres. */

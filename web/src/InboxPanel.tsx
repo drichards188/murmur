@@ -788,6 +788,7 @@ export function InboxPanel({ banners, decisions, vehicles, now, tab, setTab, sel
       onTrack={onTrack}
       blocking={blocking}
       focus={focus}
+      nameOf={(uid) => nameOf(vehicles, uid)}
       onDone={(text, tone) => setNotices((ns) => [...ns, { n: Date.now() + Math.random(), text, tone }])}
     />
   )

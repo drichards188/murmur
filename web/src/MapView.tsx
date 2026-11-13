@@ -26,6 +26,7 @@ import { reducedMotion } from './reveal'
 import { drapedWater } from './sea'
 import { vehiclesGeneration } from './useBridge'
 import type { SpaceOverlay } from './space'
+import type { NodeLossView } from './nodeLoss'
 import { EMPTY_OVERLAY } from './space'
 import { spaceFeatures, spaceLinkLayers } from './spaceLayers'
 import { buildPreviewLayers, buildSurfaceLayers, type SurfaceScale } from './surfaceLayers'
@@ -71,6 +72,9 @@ interface Props {
   bridgeNow?: () => number
   /** platforms that are their own munition, on their way, each with its tag (vehicleLayers.ts) */
   oneWay?: ReadonlyMap<number, string>
+  /** rules 30: our vehicles' standing (nodeLoss.ts): a stale one's badge says SILENT, PRESUMED
+   *  LOST or LOST instead of the link's LOST (a run before rules 30: as always) */
+  nodes?: NodeLossView
   /** gun bursts the bridge reported (rules 26), drawn as tracers on the clock of `bridgeNow` */
   tracers?: TracerSpec[]
   /** hostile acts our sensors observed (hostileAct.ts), drawn as fire events on the clock of
@@ -338,7 +342,7 @@ function surfacePoint(m: maplibregl.Map, e: maplibregl.MapMouseEvent): LngLat {
   return water ? [water.lng, water.lat] : [ground.lng, ground.lat]
 }
 
-export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, bridgeNow, oneWay, tracers = noTracers, acts = noActs, actsDismissedAt = null, weapons = noWeapons, weaponVictim = noVictim, nameOf = noName, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, weather = null, reach = null, linkRoute = null, onHover: onHoverProp, labels = undefined, allLabels = false, onLabelStats, tooltip: tooltipProp }: Props) {
+export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts, impactNowMs = 0, bridgeNow, oneWay, nodes, tracers = noTracers, acts = noActs, actsDismissedAt = null, weapons = noWeapons, weaponVictim = noVictim, nameOf = noName, taskings, selected, draft, focus, follow = null, onFollowing, preview = empty, fit, onToggle, onDeselect, onMapClick, space = EMPTY_OVERLAY, onView, layers, clusters = null, coverage = null, weather = null, reach = null, linkRoute = null, onHover: onHoverProp, labels = undefined, allLabels = false, onLabelStats, tooltip: tooltipProp }: Props) {
   const vehicles = useMemo(() => hiddenUids?.size ? allVehicles.filter((v) => !hiddenUids.has(v.uid)) : allVehicles, [allVehicles, hiddenUids])
   // the top view (pitch 0, looking straight down) and the pitch to tilt back to from it
   const [top, setTop] = useState(false)
@@ -366,7 +370,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     () => (map.current && ready.current ? surfaceScale(map.current) : null),
   )
   const bridges = useRef<LiftedBridge[]>([])
-  const latest = useRef({ vehicles, selected, labels: new Map<number, LabelLevel>() as ReadonlyMap<number, LabelLevel>, badges: new Set<number>() as ReadonlySet<number>, aloft: new Map<number, number>(), clusters, oneWay })
+  const latest = useRef({ vehicles, selected, labels: new Map<number, LabelLevel>() as ReadonlyMap<number, LabelLevel>, badges: new Set<number>() as ReadonlySet<number>, aloft: new Map<number, number>(), clusters, oneWay, nodes })
   // the label budget (declutter.ts): our vehicles' candidates as last seen on screen, the other
   // layers' source, Show all, the plan last made and its counts
   const vehicleLabels = useRef<LabelCandidate[]>([])
@@ -579,7 +583,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
         clusters: buildClusterLayers(latest.current.clusters),
       }
     } else if (previewToo && m) staticLayers.current.preview = buildPreviewLayers(previewData(), surfaceScale(m))
-    const { vehicles: vs, selected: sel, labels: lv, badges, aloft, oneWay: ow } = latest.current
+    const { vehicles: vs, selected: sel, labels: lv, badges, aloft, oneWay: ow, nodes: nl } = latest.current
     const { three, surface, preview: previewLayers, link, space, ext, clusters: clusterLayers } = staticLayers.current
     const tick = drawnTick()
     const glide = build3dGlide(vs)
@@ -606,7 +610,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       // the extension layers that sit at a vehicle follow its glide: re-trigger just those
       ...(frame ? ext.map((l) => (l instanceof Layer && GLIDE_LAYER_IDS.includes(l.id) ? l.clone({ updateTriggers: { ...l.props.updateTriggers, getPosition: tick } } as never) : l)) : ext),
       ...clusterLayers,
-      ...buildVehicleLayers({ vehicles: vs, selected: sel, labels: lv, badges, aloft, oneWay: ow }),
+      ...buildVehicleLayers({ vehicles: vs, selected: sel, labels: lv, badges, aloft, oneWay: ow, nodes: nl }),
       // hostile acts our sensors observed: the fire event, then what lingers of it
       ...actLayers(),
       // opponent weapons as our sensors know them: the estimate, the fixes, the strike
@@ -1347,10 +1351,10 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
       if (at[0] < -40 || at[0] > w + 40 || at[1] < -40 || at[1] > h + 40) continue
       const mine = selected.has(v.uid) || v.uid === follow
       const priority: Priority = mine ? 1 : isStale(v) ? 3 : 4
-      cands.push(...vehicleLabelCandidates(v, at, aloft.has(v.uid), priority, mine))
+      cands.push(...vehicleLabelCandidates(v, at, aloft.has(v.uid), priority, mine, nodes))
     }
     vehicleLabels.current = cands
-    latest.current = { ...latest.current, vehicles: drawn, selected, aloft, clusters: clustered ? clusters : null, oneWay }
+    latest.current = { ...latest.current, vehicles: drawn, selected, aloft, clusters: clustered ? clusters : null, oneWay, nodes }
     const t1 = performance.now()
     pushLayers()
     wakeGlide()
@@ -1377,7 +1381,7 @@ export function MapView({ vehicles: allVehicles, hiddenUids, impacts = noImpacts
     }
     // pushLayers reads refs; moved re-runs this after a move, styleGen after a (re)load
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vehicles, selected, moved, styleGen, clusters, smooth, oneWay, follow])
+  }, [vehicles, selected, moved, styleGen, clusters, smooth, oneWay, nodes, follow])
 
   useEffect(() => {
     spaceRef.current = space

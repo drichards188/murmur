@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
-import { stepsUpAct } from './auth'
+import { stepsUpAct, useAuth } from './auth'
 import { type Blocking, holdingFor, waited } from './blocking'
-import { fmtDuration, StepUpNeeded, useOperator } from './decisions'
+import { fmtDuration, StepUpNeeded, stepsUp, useOperator, useOperators } from './decisions'
 import { Bluf, BlufReason } from './Bluf'
 import { flagParts } from './bluf'
 import { FLASH_MS, focusInView } from './reveal'
 import { StepUpField } from './StepUp'
 import { stepUpProof, stepUpReady, useStepUp } from './stepUpState'
-import { type Against, type ObservedAct, type Review, type ReviewDeclaration, type ReviewFlag, type ReviewLostClaim, FLAG_LABEL, confirmDeclaration, confirmLostClaim, resolveFlag, revokeDeclaration } from './ident'
+import { type Against, type ObservedAct, type Review, type ReviewDeclaration, type ReviewFlag, type ReviewLostClaim, FLAG_LABEL, confirmDeclaration, confirmLostClaim, confirmNodeLost, dismissNodeFlag, resolveFlag, revokeDeclaration, revokeNodeLoss } from './ident'
+import { confirmEffects, evidenceLine, regionLines, type ReviewNodeLoss, type ReviewNodeLost } from './nodeLoss'
+import './nodeLoss.css'
 
 /** The inbox's Review (rules 9): what the identification asks of a human, none of it stopping
  *  anything in play. A rule declaration is the engine's (an observed hostile act attributed to the
@@ -39,6 +41,8 @@ interface Props {
   blocking?: Blocking[]
   /** bring this item into view and focus it (the strip's or the Situation panel's link) */
   focus?: { id: string; n: number } | null
+  /** one of ours by its uid as a person names it (its callsign): the node-loss evidence's sensors */
+  nameOf?: (uid: string) => string
 }
 
 /** What an item holds up, how long, and what the person's act does: information beside the
@@ -365,6 +369,224 @@ function FlagItem({
   )
 }
 
+/** Rules 30 (docs/NODE-LOSS.md section 5, decisions D1 and D2): one of ours presumed lost by
+ *  the engine, or silent and flagged by hand. The card shows the evidence with its times, the
+ *  silence, where the keep-outs count it now, and what confirming would do; only an operator
+ *  with engagement authority confirms it (the bridge refuses anyone else, and every agent), on
+ *  exactly the silence shown, saying why where nothing presumes it lost, with the credential
+ *  again in a credentials run. A hand flag can be dismissed; a presumption is the engine's and
+ *  goes when the vehicle is heard again or is confirmed lost. Confirming is never the easy
+ *  act: it opens what it does first. */
+function NodeLossItem({ n, now, onDone, focusN, nameOf }: { n: ReviewNodeLoss; now: () => number; onDone: Props['onDone']; focusN?: number; nameOf?: Props['nameOf'] }) {
+  const { ref, flash } = useFocused(focusN)
+  const [open, setOpen] = useState<'none' | 'confirm' | 'dismiss'>('none')
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [operator] = useOperator()
+  const auth = useAuth()
+  const ops = useOperators()
+  // decision D1: only an operator with engagement authority confirms (the bridge enforces it)
+  const authority = auth.auth === 'credentials' ? auth.engage === true : ops.engage.includes(operator)
+  // removing a friendly-fire protection: the credential again in a credentials run (as an un-spend)
+  const stepUp = stepsUp()
+  const [step, setStep] = useStepUp()
+  const [stepErr, setStepErr] = useState(false)
+  const who = n.callsign ?? `vehicle ${n.uid}`
+  const ago = (t: number) => `${fmtDuration(Math.max(0, now() / 1000 - t))} ago`
+  const noteOk = !n.needs_note || note.trim().length > 0
+  const confirm = async () => {
+    if (stepUp && !stepUpReady(step)) {
+      setStepErr(false)
+      return
+    }
+    setBusy(true)
+    setStepErr(false)
+    try {
+      const proof = stepUp ? await stepUpProof(step, { act: 'node_lost', uid: n.uid, since: n.since }) : {}
+      await confirmNodeLost(n.uid, n.since, note, proof)
+      onDone(`${who} confirmed lost: out of every keep-out, its orders ended`, 'ok')
+      setOpen('none')
+    } catch (e) {
+      setStepErr(e instanceof StepUpNeeded)
+      onDone(`${who}: confirming the loss refused: ${(e as Error).message}`, 'bad')
+    } finally {
+      setBusy(false)
+      setStep({ password: '' })
+    }
+  }
+  const dismiss = async () => {
+    setBusy(true)
+    try {
+      await dismissNodeFlag(n.uid, note)
+      onDone(`${who}: the hand flag dismissed`, 'ok')
+    } catch (e) {
+      onDone(`${who}: dismiss refused: ${(e as Error).message}`, 'bad')
+    } finally {
+      setBusy(false)
+    }
+  }
+  const where = regionLines(n.region?.parts ?? [])
+  return (
+    <article
+      ref={ref}
+      tabIndex={-1}
+      className={`ix-card rv-card nl-card${flash ? ' rv-flash' : ''}`}
+      aria-label={`${n.state === 'presumed_lost' ? 'Presumed lost' : 'Flagged as possibly lost'}: ${who}`}
+      data-review-id={n.id}
+    >
+      <header>
+        <b>{who}</b> <span className={`nl-tag${n.state === 'silent' ? ' silent' : ''}`}>{n.state === 'presumed_lost' ? 'PRESUMED LOST' : 'SILENT, FLAGGED'}</span>
+        <span className="muted">
+          {' '}
+          silent {n.silent_s == null ? 'since it started (no position reported)' : fmtDuration(n.silent_s)}
+        </span>
+      </header>
+      <ul className="nl-lines" aria-label="Evidence">
+        {n.evidence.map((e, i) => (
+          <li key={i}>{evidenceLine(e, ago(e.t), nameOf)}</li>
+        ))}
+        {n.since_t != null && <li>Its last report, {ago(n.since_t)}{n.last_position ? ` at ${n.last_position[1].toFixed(5)}, ${n.last_position[0].toFixed(5)}` : ''}.</li>}
+      </ul>
+      {where.length > 0 && (
+        <>
+          <p className="muted rv-hint">Until then every engagement keep-out counts it where it could be (drawn on the map):</p>
+          <ul className="nl-lines" aria-label="Where the keep-outs count it">
+            {where.map((l) => (
+              <li key={l}>{l}</li>
+            ))}
+          </ul>
+        </>
+      )}
+      {n.refused && <p className="eg-alarm">Not confirmable now: {n.refused}.</p>}
+      {open === 'none' && (
+        <div className="rv-actions">
+          {n.actions.includes('confirm') && (
+            <button className="ghost mini" disabled={busy} onClick={() => setOpen('confirm')} title="Read what confirming does, then confirm if the evidence holds (an operator with engagement authority)">
+              what confirming does, then confirm...
+            </button>
+          )}
+          {n.actions.includes('dismiss') && (
+            <button className="ghost mini" disabled={busy} onClick={() => setOpen('dismiss')} title="Take the hand flag off the list (any operator)">
+              dismiss the flag...
+            </button>
+          )}
+        </div>
+      )}
+      {open === 'confirm' && (
+        <div className="rv-evidence">
+          <ul className="nl-lines" aria-label="What confirming does">
+            {confirmEffects(n).map((l, i) => (
+              <li key={i}>{l}</li>
+            ))}
+          </ul>
+          {!authority && <p className="eg-alarm">Only an operator with engagement authority confirms one of ours lost: the bridge will refuse you.</p>}
+          <div className="rv-actions">
+            <input
+              className="ix-note"
+              value={note}
+              maxLength={300}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder={n.needs_note ? 'Why it is lost: nothing presumes it (required, logged)' : 'Note (optional, logged)'}
+              aria-label="Why it is confirmed lost"
+              disabled={busy}
+            />
+            <button className="ghost mini rv-danger" disabled={busy || !noteOk || (stepUp && !stepUpReady(step))} onClick={() => void confirm()}>
+              confirm {who} lost
+            </button>
+            <button className="ghost mini" disabled={busy} onClick={() => setOpen('none')}>
+              cancel
+            </button>
+          </div>
+          {stepUp && (
+            <div className="tk-stepup">
+              <StepUpField
+                passwordLabel="Consequential: your password to confirm the loss"
+                purpose={`to confirm ${who} lost`}
+                ariaLabel="Your password, to confirm this loss"
+                value={step}
+                onChange={setStep}
+                busy={busy}
+                bad={stepErr}
+                onEnter={() => noteOk && void confirm()}
+              />
+            </div>
+          )}
+        </div>
+      )}
+      {open === 'dismiss' && (
+        <div className="rv-actions">
+          <input className="ix-note" value={note} maxLength={300} onChange={(e) => setNote(e.target.value)} placeholder="Why (optional, logged)" aria-label="Note for the dismissal" disabled={busy} />
+          <button className="ghost mini" disabled={busy} onClick={() => void dismiss()}>
+            dismiss
+          </button>
+          <button className="ghost mini" disabled={busy} onClick={() => setOpen('none')}>
+            cancel
+          </button>
+        </div>
+      )}
+    </article>
+  )
+}
+
+/** Rules 30: one of ours confirmed lost: who confirmed it, when, on what silence, and what it
+ *  closed. Any operator revokes it, saying why (it only restricts: it counts in every keep-out
+ *  again at once); a report from it revokes it on its own. */
+function NodeLostItem({ n, now, onDone, focusN }: { n: ReviewNodeLost; now: () => number; onDone: Props['onDone']; focusN?: number }) {
+  const { ref, flash } = useFocused(focusN)
+  const [revoking, setRevoking] = useState(false)
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const who = n.callsign ?? `vehicle ${n.uid}`
+  const revoke = async () => {
+    setBusy(true)
+    try {
+      await revokeNodeLoss(n.uid, note)
+      onDone(`${who}: the loss revoked: it counts in every keep-out again`, 'ok')
+      setRevoking(false)
+    } catch (e) {
+      onDone(`${who}: revoking the loss refused: ${(e as Error).message}`, 'bad')
+    } finally {
+      setBusy(false)
+    }
+  }
+  const closed = Object.keys(n.closed)
+  return (
+    <article ref={ref} tabIndex={-1} className={`ix-card rv-card nl-card nl-settled${flash ? ' rv-flash' : ''}`} aria-label={`Confirmed lost: ${who}`} data-review-id={n.id}>
+      <header>
+        <b>{who}</b> <span className="nl-tag lost">LOST</span>
+        <span className="muted">
+          {' '}
+          confirmed by {n.by} {fmtDuration(Math.max(0, now() / 1000 - n.t))} ago
+        </span>
+      </header>
+      <p className="muted rv-hint">
+        {n.note ? `"${n.note}". ` : ''}Silent {n.since_t == null ? 'since it started' : `since its report ${fmtDuration(Math.max(0, now() / 1000 - n.since_t))} ago`}. Out of every keep-out; it takes no order.
+        {closed.length ? ` Its owed lost-link values (${closed.join(', ')}) closed.` : ''}
+        {n.from ? ` Carried over from ${n.from}.` : ''}
+        {n.not_held ? ` It holds no vehicle now: ${n.not_held}.` : ''} Any report from it revokes the loss.
+      </p>
+      {!revoking ? (
+        <div className="rv-actions">
+          <button className="ghost mini rv-danger" disabled={busy} onClick={() => setRevoking(true)} title="Revoke the loss: it counts in every keep-out again at once and takes orders (any operator)">
+            revoke...
+          </button>
+        </div>
+      ) : (
+        <div className="rv-actions">
+          <span className="rv-warn">Revoke the loss of {who}? It counts in every keep-out again at once, and an engagement whose picture left it out stops.</span>
+          <input className="ix-note" value={note} maxLength={300} onChange={(e) => setNote(e.target.value)} placeholder="Why (required, logged)" aria-label="Why the loss is revoked" disabled={busy} />
+          <button className="ghost mini rv-danger" disabled={busy || !note.trim()} onClick={() => void revoke()}>
+            revoke the loss
+          </button>
+          <button className="ghost mini" disabled={busy} onClick={() => setRevoking(false)}>
+            cancel
+          </button>
+        </div>
+      )}
+    </article>
+  )
+}
+
 function verdictText(a: ObservedAct) {
   const v = a.verdict
   if (v.verdict === 'declare') return `declared ${v.track} hostile by rule (${a.declaration ?? ''}, attribution ${v.attribution.toFixed(2)})`
@@ -372,16 +594,19 @@ function verdictText(a: ObservedAct) {
   return `recorded: ${v.why}`
 }
 
-export function ReviewSection({ review, acts, now, onDone, onTrack, blocking, focus }: Props) {
+export function ReviewSection({ review, acts, now, onDone, onTrack, blocking, focus, nameOf }: Props) {
   const [showActs, setShowActs] = useState(false)
   const [operator] = useOperator()
   const decls = review?.declarations ?? []
   const flags = review?.flags ?? []
   // rules 16: claims on lost contacts
   const claims = review?.lost_claims ?? []
+  // rules 30: our vehicles presumed lost or flagged by hand, and those confirmed lost
+  const nodeLosses = review?.node_losses ?? []
+  const nodesLost = review?.nodes_lost ?? []
   // a declarer's notice: their declaration revoked by someone else
   const notices = (review?.revocations ?? []).filter((r) => r.notify && r.notify === operator).slice(0, 5)
-  const n = decls.length + flags.length + claims.length
+  const n = decls.length + flags.length + claims.length + nodeLosses.length
   const holding = new Set((blocking ?? []).map((b) => b.id))
   const focusN = (id: string) => (focus && focus.id === id ? focus.n : undefined)
   // what holds up a nomination first (declarations, then flags), then the rest as sent
@@ -419,6 +644,17 @@ export function ReviewSection({ review, acts, now, onDone, onTrack, blocking, fo
       )}
       {claims.map((c) => (
         <LostClaimItem key={c.id} c={c} onDone={onDone} onTrack={onTrack} />
+      ))}
+      {(nodeLosses.length > 0 || nodesLost.length > 0) && (
+        <h4 className="nl-h" aria-label="Node losses">
+          Node losses <small className="muted">one of ours silent: only an operator with engagement authority confirms it lost</small>
+        </h4>
+      )}
+      {nodeLosses.map((x) => (
+        <NodeLossItem key={x.id} n={x} now={now} onDone={onDone} focusN={focusN(x.id)} nameOf={nameOf} />
+      ))}
+      {nodesLost.map((x) => (
+        <NodeLostItem key={x.id} n={x} now={now} onDone={onDone} focusN={focusN(x.id)} />
       ))}
       {(acts?.length ?? 0) > 0 && (
         <>

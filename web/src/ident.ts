@@ -1,5 +1,6 @@
 import { operatorFetch, operatorHeaders } from './auth'
 import { getOperator, StepUpNeeded } from './decisions'
+import type { ReviewNodeLoss, ReviewNodeLost } from './nodeLoss'
 
 /** Rule-based identification with human review (rules 9). The engine declares a track
  *  hostile by rule when one of our sensors observed a hostile act against ours (or a track
@@ -120,7 +121,11 @@ export interface Review {
   /** rules 16: claims on lost contacts, and the lost contacts confirmed as a live track */
   lost_claims?: ReviewLostClaim[]
   lost_confirmed?: { lost: string; track: string; by: string; t: number }[]
-  counts: { declarations: number; flags: number; lost_claims?: number }
+  /** rules 30 (only in a run deciding under them): our vehicles presumed lost or flagged by
+   *  hand, for an operator with engagement authority to confirm; and those confirmed lost */
+  node_losses?: ReviewNodeLoss[]
+  nodes_lost?: ReviewNodeLost[]
+  counts: { declarations: number; flags: number; lost_claims?: number; node_losses?: number }
 }
 
 export interface Candidate {
@@ -204,6 +209,31 @@ export function revokeDeclaration(track: string, note?: string) {
  *  identity; any operator, logged under their session). Refused while anything contradicts it. */
 export function confirmLostClaim(lost: string, byTrack: string) {
   return post(`/api/review/lost/${encodeURIComponent(lost)}/confirm`, { by_track: byTrack })
+}
+
+/** Rules 30 (decision D1): confirm one of ours lost, on the silence the review showed (`since`:
+ *  its last report, the engine's ms, as the item names it), saying why where nothing presumes it
+ *  lost. Only an operator with engagement authority (403 otherwise); in a credentials run `proof`
+ *  carries the step-up (the password again, or a passkey made for this act). Throws
+ *  [`StepUpNeeded`] when the step-up is missing or wrong. */
+export function confirmNodeLost(uid: number, since: number | null, note: string, proof: { password?: string; passkey?: Record<string, unknown> } = {}) {
+  return post(`/api/review/nodes/${uid}/lost`, { since, note: note.trim(), ...proof })
+}
+
+/** Rules 30: revoke the loss of one of ours (any operator, saying why: it only restricts). */
+export function revokeNodeLoss(uid: number, note: string) {
+  return post(`/api/review/nodes/${uid}/revoke`, { note: note.trim() })
+}
+
+/** Rules 30 (decision D2): put a silent vehicle on the review list by hand, saying why (any
+ *  operator; it decides nothing). */
+export function flagNode(uid: number, note: string) {
+  return post(`/api/review/nodes/${uid}/flag`, { note: note.trim() })
+}
+
+/** Rules 30: take a hand flag off the review list (any operator). */
+export function dismissNodeFlag(uid: number, note?: string) {
+  return post(`/api/review/nodes/${uid}/dismiss`, { note: note?.trim() ?? '' })
 }
 
 /** Confirm (the concern stands) or dismiss a review flag. */

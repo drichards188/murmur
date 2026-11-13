@@ -198,6 +198,8 @@ const ALERT_HEADLINE: Record<string, string> = {
   identify_timed_out: 'Identify order ended: out of time, not identified',
   identify_held: "Its orbit can't follow the track: look at it",
   identify_meanwhile: 'For information: another vehicle identified its track, and its own look goes on',
+  node_lost: 'For information: confirmed lost; it is out of the keep-outs and takes no order',
+  node_reported_again: 'Confirmed lost, but it reported again: the loss is revoked, it counts again',
 }
 
 /** An alert as headline (what it asks), the bridge's detail as up to three bullets, and the

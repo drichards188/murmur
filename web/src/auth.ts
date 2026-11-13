@@ -186,6 +186,8 @@ export type StepUpAct =
    *  live tracks as behaving now, each `{track}` (the same act and step-up) */
   | { act: 'accept_unknown'; intent: number | null; accept_lost?: { track: string; since: number }[]; accept_behaving?: { track: string }[] }
   | { act: 'unspend'; uid: number }
+  /** rules 30: confirming one of ours lost on its silence since its report at `since` (engine ms) */
+  | { act: 'node_lost'; uid: number; since: number | null }
 
 async function postJson(path: string, body: unknown): Promise<Record<string, unknown>> {
   const res = await operatorFetch(path, {

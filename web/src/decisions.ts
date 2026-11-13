@@ -193,6 +193,9 @@ export interface Alert {
     | 'identify_timed_out'
     | 'identify_held'
     | 'identify_meanwhile'
+    // rules 30: one of ours confirmed lost (information), and one reported again after it
+    | 'node_lost'
+    | 'node_reported_again'
   severity: Severity
   uid: number
   callsign: string | null
@@ -388,6 +391,8 @@ export const ALERT_LABEL: Record<Alert['kind'], string> = {
   identify_timed_out: 'IDENTIFY: OUT OF TIME',
   identify_held: 'IDENTIFY: CAN\'T FOLLOW',
   identify_meanwhile: 'IDENTIFIED MEANWHILE',
+  node_lost: 'CONFIRMED LOST',
+  node_reported_again: 'LOST, REPORTING AGAIN',
 }
 
 // ---- operator ------------------------------------------------------------------------------

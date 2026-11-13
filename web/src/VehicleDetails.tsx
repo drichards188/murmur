@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react'
 import { LINKS, PROTOCOLS, type Protocol } from './catalogLabels'
 import { BASIS_LABEL, estimateAt, failsafeAt, flatBearing, flatDistance, regionText } from './estimate'
+import { flagNode } from './ident'
+import { evidenceLine, NO_NODE_LOSS, type NodeLossView, regionLines, STANDING_LABEL, standingOf } from './nodeLoss'
+import './nodeLoss.css'
+import type { NodeRow } from './useNodes'
 import { type EmuDir, emuCause, fmtBps, fmtDuration, useEmuLink } from './linkEmu'
 import { symbolSvg } from './symbols'
 import { orbitRange, usePlatformLimits } from './taskDefaults'
@@ -20,6 +24,14 @@ interface Props {
   onFollow: () => void
   /** armed platforms: open the engagement nomination form with this platform (Phase E) */
   onEngage?: () => void
+  /** rules 30: our vehicles' standing (the review's; a run before rules 30 has none) and this
+   *  vehicle's row of `GET /api/nodes` (its region as the keep-out counts it) */
+  nodeLoss?: NodeLossView
+  nodeRow?: NodeRow
+  /** open the Review at this vehicle's card (`N-<uid>` presumed or flagged, `L-<uid>` lost) */
+  onReview?: (id: string) => void
+  /** one of ours by its uid as a person names it (its callsign): the evidence's sensors */
+  nameOf?: (uid: string) => string
 }
 
 function fmt(n: number | null | undefined, digits = 0, unit = '') {
@@ -259,12 +271,119 @@ function EstimateItems({ v, e, nowMs }: { v: Vehicle; e: Estimate; nowMs: number
   )
 }
 
+/** Rules 30 (docs/NODE-LOSS.md section 5): the vehicle's standing while it is not reporting.
+ *  SILENT: where every engagement keep-out counts it (its region's parts, in the engine's words),
+ *  and a way to put it on the Review by hand, saying why (any operator; it decides nothing).
+ *  PRESUMED LOST: the engine's evidence; LOST: who confirmed it and what that did. Confirming and
+ *  revoking are the Review card's (an operator with engagement authority confirms), never here. */
+function StandingSection({ v, nodes, row, now, onReview, nameOf }: { v: Vehicle; nodes: NodeLossView; row?: NodeRow; now: () => number; onReview?: (id: string) => void; nameOf?: (uid: string) => string }) {
+  const standing = standingOf(nodes, v.uid, isStale(v))
+  const [note, setNote] = useState('')
+  const [flagging, setFlagging] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  if (!standing) return null
+  const loss = nodes.review.get(v.uid)
+  const lost = nodes.lost.get(v.uid)
+  const ago = (t: number) => `${fmtDuration(Math.max(0, now() / 1000 - t))} ago`
+  const silentFor = (v.link.since_last_ms ?? 0) / 1000
+  const where = regionLines(row?.region?.parts ?? [])
+  const flag = async () => {
+    setBusy(true)
+    setErr(null)
+    try {
+      await flagNode(v.uid, note)
+      setFlagging(false)
+      setNote('')
+    } catch (e) {
+      setErr((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <section className="vd-standing" aria-label={`Standing: ${STANDING_LABEL[standing]}`}>
+      <h4>Standing</h4>
+      <p>
+        <span className={`nl-tag ${standing === 'silent' ? 'silent' : standing === 'lost' ? 'lost' : ''}`}>{STANDING_LABEL[standing]}</span>{' '}
+        {standing === 'lost' && lost ? (
+          <>
+            confirmed by {lost.by} {ago(lost.t)}
+            {lost.note ? `: ${lost.note}` : ''}
+          </>
+        ) : (
+          <span className="muted">silent for {fmtDuration(silentFor)}</span>
+        )}
+      </p>
+      {standing === 'lost' ? (
+        <p className="muted">
+          Out of every engagement keep-out and the line of fire; it takes no order, its orders ended and its owed lost-link values closed.
+          {lost?.from ? ` Carried over from ${lost.from}.` : ''}
+          {lost?.not_held ? ` It does not hold the vehicle under this uid now: ${lost.not_held}.` : ''} Any report from it revokes the loss; any operator may revoke it in the Review.
+        </p>
+      ) : (
+        <>
+          {loss && loss.evidence.length > 0 && (
+            <ul className="nl-lines" aria-label="Evidence">
+              {loss.evidence.map((e, i) => (
+                <li key={i}>{evidenceLine(e, ago(e.t), nameOf)}</li>
+              ))}
+            </ul>
+          )}
+          <p className="muted">
+            {standing === 'presumed_lost'
+              ? 'Presumed lost by the engine: a flag that decides nothing. It counts in every engagement keep-out until an operator with engagement authority confirms it lost in the Review.'
+              : 'Silence alone presumes nothing. Every engagement keep-out counts it where it could be:'}
+          </p>
+          {where.length > 0 ? (
+            <ul className="nl-lines" aria-label="Where the keep-outs count it">
+              {where.map((l) => (
+                <li key={l}>{l}</li>
+              ))}
+            </ul>
+          ) : (
+            row && <p className="muted">Its region is not placed (no position reported).</p>
+          )}
+          {row?.region && <p className="muted">Drawn on the map, as of {Math.round(row.region.span_s)} s after its last report.</p>}
+        </>
+      )}
+      <div className="nl-actions">
+        {(loss || lost) && onReview && (
+          <button className="ghost mini" onClick={() => onReview(lost ? `L-${v.uid}` : `N-${v.uid}`)}>
+            {lost ? 'Review: revoke...' : 'Review: confirm or not...'}
+          </button>
+        )}
+        {standing === 'silent' && !loss && !flagging && (
+          <button className="ghost mini" onClick={() => setFlagging(true)} title="Put it on the Review list for an operator with engagement authority to confirm it lost or not (any operator; it decides nothing)">
+            Flag as possibly lost...
+          </button>
+        )}
+        {flagging && (
+          <>
+            <input className="ix-note" value={note} maxLength={300} onChange={(e) => setNote(e.target.value)} placeholder="Why: a crew's report, a picture from outside" aria-label="Why it may be lost" disabled={busy} />
+            <button className="ghost mini" disabled={busy || !note.trim()} onClick={() => void flag()}>
+              Flag
+            </button>
+            <button className="ghost mini" disabled={busy} onClick={() => setFlagging(false)}>
+              Back
+            </button>
+          </>
+        )}
+        {err && <span className="bad">{err}</span>}
+      </div>
+    </section>
+  )
+}
+
 /** Everything known about one vehicle: identity, live state, link, platform limits and its
  *  current task. Opened by clicking a fleet row; selecting for tasking is a separate control. */
-export function VehicleDetails({ v, taskings, now, selected, onToggleSelect, onClose, following, onFollow, onEngage }: Props) {
+export function VehicleDetails({ v, taskings, now, selected, onToggleSelect, onClose, following, onFollow, onEngage, nodeLoss = NO_NODE_LOSS, nodeRow, onReview, nameOf }: Props) {
   const limits = usePlatformLimits()
   const p = v.identity ? limits?.get(v.identity.platform) : undefined
   const stale = isStale(v)
+  // rules 30: confirmed lost by an operator: out of every keep-out, it takes no order, and what
+  // it last reported is no longer where it is (no estimate of where it went, no tasking)
+  const lost = nodeLoss.lost.has(v.uid)
   const domain = domainOf(v)
   const orbit = orbitRange([v], limits)
   const op = taskings.flatMap((t) => t.ops.filter((o) => o.uid === v.uid).map((o) => ({ o, t }))).sort((a, b) => b.t.created - a.t.created)[0]
@@ -303,17 +422,26 @@ export function VehicleDetails({ v, taskings, now, selected, onToggleSelect, onC
         </button>
       </header>
 
-      {v.identity?.armed && onEngage && (
+      {v.identity?.armed && onEngage && !lost && (
         <button className="vd-select eg-engage-btn" onClick={onEngage} title="Nominate an engagement with this armed platform on a declared-hostile track (two operators with engagement authority decide)">
           Engage...
         </button>
       )}
-      <button className={`vd-select ${selected ? 'on' : ''}`} onClick={onToggleSelect}>
-        {selected ? '✓ Selected for tasking' : 'Select for tasking'}
-      </button>
+      {!lost && (
+        <button className={`vd-select ${selected ? 'on' : ''}`} onClick={onToggleSelect}>
+          {selected ? '✓ Selected for tasking' : 'Select for tasking'}
+        </button>
+      )}
 
-      <section>
-        <h4>Now</h4>
+      <StandingSection key={v.uid} v={v} nodes={nodeLoss} row={nodeRow} now={now} onReview={onReview} nameOf={nameOf} />
+
+      <section className={lost ? 'vd-last-report' : undefined}>
+        <h4>{lost ? 'Last report' : 'Now'}</h4>
+        {lost && (
+          <p className="muted">
+            What it reported last, {fmtDuration((v.link.since_last_ms ?? 0) / 1000)} ago, before it was confirmed lost: none of it is current.
+          </p>
+        )}
         <dl>
           <Item k="Mode">
             {v.mode ?? '–'}
@@ -343,7 +471,7 @@ export function VehicleDetails({ v, taskings, now, selected, onToggleSelect, onC
         </dl>
       </section>
 
-      {stale && v.estimate && (
+      {stale && v.estimate && !lost && (
         <section>
           <h4>Estimate</h4>
           <EstimateItems v={v} e={v.estimate} nowMs={now()} />

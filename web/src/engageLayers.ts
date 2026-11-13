@@ -1,6 +1,7 @@
 import { PathLayer, PolygonLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
-import { ellipseRing, fmtDist, fmtRel, KEEP_OUT_KIND_LABEL, type EngagePreview, type KeepOutExplanation } from './engage'
+import { ellipseRing, fmtDist, fmtRel, KEEP_OUT_KIND_LABEL, type EngagePreview, type KeepOutExplanation, type KeepOutRegion } from './engage'
 import { circle, distanceM } from './geo'
+import { paddedRing } from './nodeLoss'
 import type { LngLat } from './types'
 
 /** Engagement previews on the map (Phase E), through MapView's `layers` prop: for each
@@ -145,10 +146,20 @@ const BEHAVING: RGBA = [110, 222, 196, 235]
 
 /** A ring as dashes (deck.gl's PathLayer draws no dashes without an extension). */
 function dashedRing(center: LngLat, radiusM: number, dashes = 48): LngLat[][] {
-  const ring = circle(center, radiusM, dashes * 2)
+  return dashed(circle(center, radiusM, dashes * 2))
+}
+
+/** A closed ring as dashes, every other step of it. */
+function dashed(ring: LngLat[]): LngLat[][] {
   const out: LngLat[][] = []
   for (let k = 0; k + 1 < ring.length; k += 2) out.push([ring[k], ring[k + 1]])
   return out
+}
+
+/** A keep-out region's ring: its disc, or (rules 30, a silent vehicle's corridor or way home)
+ *  its outline padded by its radius, as the check reads it. */
+function regionRing(r: KeepOutRegion, steps = 96): LngLat[] {
+  return r.outline?.length ? paddedRing(r.outline, r.radius_m, steps) : circle(r.center, r.radius_m, steps)
 }
 
 interface Label {
@@ -178,12 +189,12 @@ export function buildKeepOutLayers(ex: KeepOutExplanation, platformName: string)
     const color = i.blocks ? KEEP : NEAR
     const r = i.region
     if (r) {
-      for (const d of dashedRing(r.center, r.radius_m)) paths.push({ path: d, color, width: i.blocks ? 2 : 1.2 })
-      if (i.blocks) fills.push({ ring: circle(r.center, r.radius_m), color: a(KEEP, 0.05) })
+      for (const d of dashed(regionRing(r))) paths.push({ path: d, color, width: i.blocks ? 2 : 1.2 })
+      if (i.blocks) fills.push({ ring: regionRing(r, 64), color: a(KEEP, 0.05) })
       // its other regions that reach into the clearance too, fainter
       for (const o of i.regions) {
         if (o === r || !o.inside || (o.center[0] === r.center[0] && o.center[1] === r.center[1] && o.radius_m === r.radius_m)) continue
-        for (const d of dashedRing(o.center, o.radius_m, 36)) paths.push({ path: d, color: a(color, 0.45), width: 1 })
+        for (const d of dashed(regionRing(o, 72))) paths.push({ path: d, color: a(color, 0.45), width: 1 })
       }
       if (i.now && distanceM(i.now, r.center) > 30) paths.push({ path: [i.now, r.center], color: a(color, 0.7), width: 1 })
     }

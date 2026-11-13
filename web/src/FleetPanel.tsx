@@ -4,6 +4,7 @@ import { emuCause } from './linkEmu'
 import { type Reveal, scrollSpanIntoView, useFlash } from './reveal'
 import { symbolSvg } from './symbols'
 import { type Swarm, swarmColor, swarmGroups } from './swarmsModel'
+import './nodeLoss.css'
 import './swarms.css'
 import type { Tasking, Vehicle } from './types'
 import { callsign, domainOf, isStale, staleMs } from './types'
@@ -31,6 +32,8 @@ interface Props {
    *  their group's): exceptions, listed on their own */
   damaged?: ReadonlySet<number>
   alerted?: ReadonlySet<number>
+  /** rules 30: our vehicles an operator confirmed lost (nodeLoss.ts), by uid: tagged LOST, not EST */
+  lost?: ReadonlyMap<number, unknown>
   /** the map legend's Show all for lists: every group open */
   expandAll?: boolean
   /** how many vehicles the folded groups do not list (the map legend counts them) */
@@ -59,10 +62,12 @@ interface RowProps {
   onDeselect: Props['onDeselect']
   onDetails: Props['onDetails']
   reach?: { text: string; title: string }
+  /** rules 30: confirmed lost by an operator */
+  lost?: boolean
 }
 
 /** Two controls: the left strip selects the vehicle for tasking; the rest opens its details. */
-const Row = memo(function Row({ v, selected, open, flash, onToggle, onDeselect, onDetails, reach }: RowProps) {
+const Row = memo(function Row({ v, selected, open, flash, onToggle, onDeselect, onDetails, reach, lost = false }: RowProps) {
   const stale = isStale(v)
   const lc = linkClass(v)
   return (
@@ -105,10 +110,17 @@ const Row = memo(function Row({ v, selected, open, flash, onToggle, onDeselect, 
               DR
             </span>
           )}
-          {stale && v.estimate && (
-            <span className="vrow-standin" title={`Silent: the map shows where it probably is (${v.estimate.detail})`}>
-              EST
+          {stale && lost ? (
+            <span className="vrow-standin vrow-lost" title="Confirmed lost by an operator: out of every engagement keep-out, it takes no order (Review)">
+              LOST
             </span>
+          ) : (
+            stale &&
+            v.estimate && (
+              <span className="vrow-standin" title={`Silent: the map shows where it probably is (${v.estimate.detail})`}>
+                EST
+              </span>
+            )
           )}
         </span>
         {v.identity && (
@@ -286,7 +298,7 @@ function GroupRow({ it, selected, onSelect, onOpen }: { it: Extract<Item, { kind
   )
 }
 
-export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails, detailsUid, onSelect, reveal = null, reachBadges, swarms, taskings, damaged = NONE, alerted = NONE, expandAll = false, onFolded }: Props) {
+export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails, detailsUid, onSelect, reveal = null, reachBadges, swarms, taskings, damaged = NONE, alerted = NONE, lost, expandAll = false, onFolded }: Props) {
   const ids = (pred: (v: Vehicle) => boolean) => vehicles.filter(pred).map((v) => v.uid)
   const list = useRef<HTMLDivElement>(null)
   const [scroll, setScroll] = useState({ top: 0, height: 800 })
@@ -422,6 +434,7 @@ export function FleetPanel({ vehicles, selected, onToggle, onDeselect, onDetails
                     onDeselect={act.onDeselect}
                     onDetails={act.onDetails}
                     reach={reachBadges?.get(it.v.uid)}
+                    lost={lost?.has(it.v.uid)}
                   />
                 </div>
               ),
