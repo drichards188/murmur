@@ -22,7 +22,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 83] = [
+const LOGS: [(&str, u32); 85] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -231,13 +231,18 @@ const LOGS: [(&str, u32); 83] = [
     // 131 (the armed UGV's Javelin launched from the shore at a boat 1,450 m off, where it stands)
     ("v28-engagement-scenario-01.jsonl", MISSILE_STANDOFF_SINCE),
     ("v28-missile-from-the-shore-scenario-131.jsonl", MISSILE_STANDOFF_SINCE),
+    // rules 29 (a fleet's starting tasks handed over at the start; a clean build of fbd9ce9 on the
+    // branch of bd murmur-by3s): scenario 01 (no handover: as rules 28 decided it) and 134 (SKY 1's
+    // orbit handed over at the start, queued while SKY 1 is silent, re-checked and sent once heard)
+    ("v29-engagement-scenario-01.jsonl", HANDOVER_SINCE),
+    ("v29-handed-over-orbit-goes-when-heard-scenario-134.jsonl", HANDOVER_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v28-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v29-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -2050,4 +2055,25 @@ fn a_missiles_firing_position_is_caught_under_older_rules() {
     old[0] = old[0].replacen(&v28, &format!("\"rules_version\":{MINE_SINCE},"), 1);
     assert!(!with(&rechain(&old), RulesAccepted::Exactly(MINE_SINCE)).ok());
     assert!(with(&rechain(&ls), RulesAccepted::Exactly(MISSILE_STANDOFF_SINCE)).ok());
+}
+
+/// Rules 29: scenario 134's log relabelled rules 28 carries what no build of rules 28 logged (an
+/// order the fleet handed over at the start, its source the fleet file) and is caught; under its
+/// own rules it replays, its handover counted and, with no fleet file beside it, not checked
+/// against one.
+#[test]
+fn a_handed_over_order_is_caught_under_older_rules() {
+    let ls = lines(&fixture("v29-handed-over-orbit-goes-when-heard-scenario-134.jsonl"));
+    let v29 = format!("\"rules_version\":{HANDOVER_SINCE},");
+    let mut old = ls.clone();
+    assert!(old[0].contains(&v29));
+    assert!(ls.iter().any(|l| l.contains("\"type\":\"intent.handed_over\"")), "the handover is logged");
+    old[0] = old[0].replacen(&v29, &format!("\"rules_version\":{MISSILE_STANDOFF_SINCE},"), 1);
+    let w: Vec<String> = whats(&with(&rechain(&old), RulesAccepted::Exactly(MISSILE_STANDOFF_SINCE))).iter().map(|s| s.to_string()).collect();
+    for what in ["an order the fleet file handed over at the start", "the fleet's handover as an order's source", "an order handed over by the fleet"] {
+        assert!(w.iter().any(|m| m.starts_with(what)), "{what}: {w:?}");
+    }
+    let r = with(&rechain(&ls), RulesAccepted::Exactly(HANDOVER_SINCE));
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!((r.handed_over, r.handover_fleet), (1, Some(false)));
 }

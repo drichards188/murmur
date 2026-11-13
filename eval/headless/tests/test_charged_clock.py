@@ -408,10 +408,14 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: c0e9d7ff...; with the Crissy Field station at the DEM's 1.2 m (was 5.0) the values below,
 #: which the rest of the re-lay (Harbor watch's cargo ship east of Point Blunt, a waypoint it
 #: does not reach in 720 s) leaves as they are.
+#: Re-taken for decision rules 29 (bd murmur-by3s, a fleet's starting tasks handed over at the
+#: start): with `RULES_VERSION` put back to 28 this code gave the digests before (6143ae03...,
+#: d7084182..., 7962359e...) byte for byte, so the only change is the audit log's `run.started`
+#: (`rules_version` 29 for 28). No fleet here has a starting task, and no tool changed.
 PAUSED = {
-    "model harbor-watch s1": "6143ae038186aee6026511e2aaabb82bcf9827fddbe80ba591562fcbb2647e3d",
-    "playbook v2 fast-unknown 1000": "d70841824f5ad7ff5cf4985f3022a387b7152e923fbd08dc277ee98f2588bc6b",
-    "model v2 fast-unknown 1000": "7962359e5be725f3a869a35be4d5a7a7e277af4cc296014a9fe959858a642355",
+    "model harbor-watch s1": "40008a70fb57a5b43b50ca856baa9cc60d64f315ebfb00162635933f82df2fce",
+    "playbook v2 fast-unknown 1000": "c11092f5c1c822a1c47247d148a5f4ead3aa589242595eaa0e7ccb01168e821e",
+    "model v2 fast-unknown 1000": "1ceab470d35091aadb35425c4a5d1e1651359902a7e8a417d3bfa122946eb21b",
 }
 
 

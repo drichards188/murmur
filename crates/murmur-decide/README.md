@@ -2333,6 +2333,10 @@ Rules versions:
   check). The bridge reads the starts from the fleet manifest (`sim/swarm.py`: each vehicle's
   `start`, the file's `fleet`) at its start, after any carry-over (`Decision::hand_over_starts`;
   bridge test `the_fleets_starting_tasks_are_handed_over_and_go_once_each_vehicle_is_heard`).
+  Fixtures (a clean build of the branch, fbd9ce9):
+  `tests/data/audit/v29-engagement-scenario-01.jsonl` (no handover: as rules 28 decided it),
+  `v29-handed-over-orbit-goes-when-heard-scenario-134.jsonl` (relabelled rules 28, its handover
+  is caught).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

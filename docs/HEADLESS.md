@@ -1421,7 +1421,12 @@ grid's 5.0 m before) it gives the values now held, record `7add5073...`, audit `
 events: the same three proposals at the same times, and the operator's approval of the third (at
 290 s) refused at approval because PUMA 1's navigation status was 13 s old behind terrain. The rest
 of the re-lay (Harbor watch's cargo ship east of Point Blunt, a waypoint it does not reach in 720 s)
-changes nothing in it. The paused digests moved in the same steps (test_charged_clock.py).
+changes nothing in it. The paused digests moved in the same steps (test_charged_clock.py). Rules 29
+(a fleet's starting tasks handed over at the start, bd murmur-by3s) re-took it for `run.started`
+alone, to record `a4ed9fa0...`, audit `c954e11f...`: with `RULES_VERSION` put back to 28 the code
+gave the earlier digests (`7add5073...`, `ee774c4f...`) byte for byte, and the new audit log with
+its `rules_version` put back to 28 hashes to `ee774c4f...` too; Harbor watch's fleet has no
+starting task, so nothing is handed over.
 
 ### 17.3 The bake tool
 
