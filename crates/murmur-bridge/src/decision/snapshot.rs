@@ -3,8 +3,8 @@
 //! engine reads too), unknown left `None`.
 
 use murmur_decide::{
-    AreaSet, AutopilotKind, Catalog, Circle, CircleSource, Fact, GpsFixFrom, LonLat, Time,
-    Uid as DUid, VehicleFacts, WorldSnapshot,
+    AreaSet, AutopilotKind, Catalog, Circle, CircleSource, Fact, GpsFixFrom, LonLat, LostLinkPlan,
+    LostLinkSource, Time, Uid as DUid, VehicleFacts, WorldSnapshot,
 };
 
 use crate::clock;
@@ -124,30 +124,70 @@ pub fn vehicle_facts(
                 ms(d.last),
             )
         }),
-        // rules 30: its own lost-link failsafe, read or configured (not yet filled)
+        // rules 30: its own lost-link failsafe, read or configured: [`lost_link_fact`], filled
+        // by [`build`] for a run under rules 30
         lost_link: None,
         platform,
     }
+}
+
+/// Rules 30: a vehicle's own lost-link failsafe as the fact `lost_link`, for its autopilot
+/// `autopilot` (the fact, a drifting buoy told from a boat): read, once the vehicle has
+/// reported every GCS failsafe parameter of its firmware (in any boot: a reboot asks again,
+/// and the last reports stand meanwhile), stamped with the oldest of those reports (or its
+/// last heartbeat, if older: the action follows the mode and armed state it was last heard
+/// in, `preload::lost_link_plan`); else configured, where the link could not carry a read
+/// (`preload::read_lost_link`), stamped when the bridge configured it; else none.
+pub fn lost_link_fact(v: &Vehicle, autopilot: Option<AutopilotKind>) -> Option<Fact<LostLinkPlan>> {
+    let autopilot = autopilot?;
+    let heard = v.seen.heartbeat?;
+    let p = &v.lost_link;
+    let names = super::preload::lost_link_names(autopilot);
+    let read = |name: &str| p.reported.get(name).map(|r| r.value);
+    let (plan, source, t) = match super::preload::lost_link_plan(autopilot, v.mode.as_deref(), v.armed, read) {
+        Some(plan) => {
+            let t = names.iter().filter_map(|n| p.reported.get(n)).map(|r| r.t).fold(heard, f64::min);
+            (plan, LostLinkSource::Read, t)
+        }
+        // every parameter reported, and still no plan: not known (no fallback over a read)
+        None if names.iter().all(|n| p.reported.contains_key(n)) => return None,
+        None => {
+            let (params, t) = p.configured.as_ref()?;
+            let plan = super::preload::lost_link_plan(autopilot, v.mode.as_deref(), v.armed, |n| params.get(n).copied())?;
+            (plan, LostLinkSource::Configured, t.min(heard))
+        }
+    };
+    let (action, timer_s) = plan;
+    Some(Fact::new(LostLinkPlan { action, timer_s, source }, ms(t)))
 }
 
 /// Every vehicle the bridge knows, at engine time `t`, and the track picture (Phase C2:
 /// contacts that are not ours, as our sensors see them; absent before `tracks::init`).
 /// A vehicle the fleet manifest names that has never been heard from is in it too, with its
 /// platform and no facts: an engagement's friendly keep-out can't clear a vehicle it knows
-/// nothing about (fail closed).
+/// nothing about (fail closed). With `node_loss` (rules 30, the decision loop's
+/// `RulesConfig::node_loss`) each vehicle's facts carry its own lost-link failsafe
+/// ([`lost_link_fact`]); without it that fact stays out, as before.
 pub fn build(
     world: &World,
     catalog: &Catalog,
     areas: &AreaSet,
     t: Time,
     tracks: Option<&crate::tracks::Tracks>,
+    node_loss: bool,
 ) -> WorldSnapshot {
     let now = clock::mono();
     let mut snap = WorldSnapshot::new(t);
     for cell in world.vehicles() {
         let interval = cell.link_snapshot(now).expected_interval_ms;
         let orbit = world.tasks.orbit_of(&cell);
-        let facts = cell.read(|v| vehicle_facts(v, catalog, now, interval, orbit));
+        let facts = cell.read(|v| {
+            let mut f = vehicle_facts(v, catalog, now, interval, orbit);
+            if node_loss {
+                f.lost_link = lost_link_fact(v, f.autopilot.as_ref().map(|a| a.value));
+            }
+            f
+        });
         snap.vehicles.insert(duid(cell.uid), facts);
         // rules 12: who it is (a carried restore holds a mission only for the vehicle preloaded)
         snap.identities.insert(duid(cell.uid), super::engage::identity_of(&cell));

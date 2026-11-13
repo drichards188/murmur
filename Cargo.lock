@@ -1430,6 +1430,7 @@ dependencies = [
  "murmur-decide",
  "murmur-linkemu",
  "murmur-space",
+ "murmur-standins",
  "murmur-weather",
  "quick-xml 0.42.0",
  "rayon",

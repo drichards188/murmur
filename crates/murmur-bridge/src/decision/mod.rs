@@ -2195,6 +2195,8 @@ impl Decision {
             &self.areas,
             self.clock.now(),
             self.tracks().as_deref(),
+            // rules 30: each vehicle's own lost-link failsafe
+            self.rules.node_loss(),
         )
     }
 
@@ -2525,6 +2527,11 @@ impl Decision {
             crate::perf::time("decision.write_fleet", || self.write_fleet(core));
             // the batch's anchor: this tick's decisions and those logged since the last tick
             crate::perf::time("decision.commit_anchors", || self.commit_anchors());
+        }
+        // rules 30: each vehicle's own lost-link failsafe read from it (outside the lock: it
+        // only asks the vehicles)
+        if self.rules.node_loss() {
+            crate::perf::time("decision.read_lost_link", || preload::read_lost_link(&self.world));
         }
     }
 

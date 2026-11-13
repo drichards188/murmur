@@ -39,3 +39,6 @@ workspace = true
 tokio = { version = "1.53.1", features = ["test-util", "macros", "rt-multi-thread"] }
 # Rules 10: the software authenticator the passkey tests register and sign with.
 murmur-decide = { path = "../murmur-decide", features = ["soft-authenticator"] }
+# Rules 30: the stand-ins' own autopilots, whose lost-link failsafe the bridge reads
+# (decision/tests/lost_link.rs).
+murmur-standins = { path = "../murmur-standins" }

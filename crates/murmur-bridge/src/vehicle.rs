@@ -1,6 +1,7 @@
 //! Vehicle state decoded from its MAVLink link, and the cell that shares it.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 pub use murmur_decide::world::NavSource;
@@ -47,6 +48,63 @@ const BOOT_DELAY_S: f64 = 3.0;
 const BOOT_DRIFT_PER_S: f64 = 0.02;
 /// Allowed per second of silence while the rate is not known yet.
 const BOOT_DRIFT_UNKNOWN_PER_S: f64 = 0.15;
+
+/// Rules 30 (docs/NODE-LOSS.md section 7): the GCS failsafe parameters of every firmware
+/// (ArduPilot 4.8), kept as the vehicle reports them ([`LostLinkParams`]). Which firmware has
+/// which, and what they make the vehicle do, is `decision/preload.rs`'s.
+pub const LOST_LINK_PARAMS: &[&str] = &[
+    "FS_ACTION",
+    "FS_GCS_ENABL",
+    "FS_GCS_ENABLE",
+    "FS_GCS_TIMEOUT",
+    "FS_LONG_ACTN",
+    "FS_LONG_TIMEOUT",
+    "FS_OPTIONS",
+    "FS_TIMEOUT",
+    "Q_OPTIONS",
+];
+
+/// Rules 30: one GCS failsafe parameter as the vehicle last reported it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParamReport {
+    /// Its value; None: the vehicle said it has no such parameter (PARAM_ERROR, does not exist).
+    pub value: Option<f64>,
+    /// When the report arrived (the bridge's clock, `clock::wall`, s).
+    pub t: f64,
+    /// In which of the vehicle's boots the bridge took it ([`Vehicle::boot_epoch`]).
+    pub epoch: u32,
+}
+
+/// Rules 30: what the bridge knows of a vehicle's own lost-link failsafe (decision D4: read
+/// from the vehicle, configured only where the link cannot carry a read). Every report of one
+/// of [`LOST_LINK_PARAMS`] lands here, whoever asked: the lost-link read
+/// (`decision/preload.rs`), an engagement's preload and its read-backs, a restore, a write's
+/// echo; so what it holds is what the vehicle last said it holds. Kept in every run; only a
+/// run under rules 30 reads it or asks for more.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LostLinkParams {
+    /// Each parameter as the vehicle last reported it.
+    pub reported: BTreeMap<&'static str, ParamReport>,
+    /// A read is under way: no other starts.
+    pub reading: bool,
+    /// Reads in a row that did not finish, and when the next may start (monotonic s).
+    pub failures: u32,
+    pub next_try: f64,
+    /// Configured instead, because the link could not carry a read and none had finished: the
+    /// parameters Murmur gives the vehicle's firmware and link profile, and when the bridge
+    /// configured them (the bridge's clock, s). A read that finishes takes over.
+    pub configured: Option<(BTreeMap<&'static str, Option<f64>>, f64)>,
+}
+
+impl LostLinkParams {
+    /// A report of `name` (its value, or None: the vehicle has no such parameter) in boot
+    /// `epoch`; anything not a GCS failsafe parameter is not kept.
+    fn report(&mut self, name: &str, value: Option<f64>, epoch: u32) {
+        if let Some(name) = LOST_LINK_PARAMS.iter().find(|n| **n == name) {
+            self.reported.insert(name, ParamReport { value, t: clock::wall(), epoch });
+        }
+    }
+}
 
 /// The vehicle clock's rate against ours from (monotonic s, time since boot s) samples, and
 /// the drift to allow per second of silence for it: estimated over the samples' span once it
@@ -228,6 +286,9 @@ pub struct Vehicle {
     /// side's damage model did to it; bd murmur-lbw8.2). Never healed in a run. None: none
     /// reported.
     pub damage: Option<DamageReport>,
+    /// Rules 30: its own lost-link failsafe's parameters as it reported them, and the read's
+    /// progress (`decision/preload.rs`).
+    pub lost_link: LostLinkParams,
     system_status: Option<apm::MavState>,
     /// When anything was last heard from it (monotonic s, the tokio clock): the task layer
     /// tells a lost link mid-exchange from a vehicle that refuses.
@@ -455,8 +516,14 @@ impl Vehicle {
                 }
                 "WP_LOITER_RAD" => self.loiter_radius_m = Some(f64::from(m.param_value)),
                 "RTL_RADIUS" => self.rtl_radius_m = Some(f64::from(m.param_value)),
-                _ => {}
+                // rules 30: its GCS failsafe's, whoever asked
+                name => self.lost_link.report(name, Some(f64::from(m.param_value)), self.boot_epoch),
             },
+            MavMessage::PARAM_ERROR(e) if e.error == apm::MavParamError::MAV_PARAM_ERROR_DOES_NOT_EXIST => {
+                // rules 30: a failsafe parameter its firmware does not have
+                let name = mav::chars_to_string(&e.param_id);
+                self.lost_link.report(&name, None, self.boot_epoch);
+            }
             MavMessage::NAV_CONTROLLER_OUTPUT(m) => {
                 self.nav_bearing = Some(m.nav_bearing);
                 self.target_dist = Some(m.wp_dist);
@@ -902,6 +969,19 @@ pub struct VehicleCell {
     state: Mutex<Vehicle>,
     /// every message from the vehicle, for the task layer waiting on ACKs and mission requests
     events: broadcast::Sender<Arc<MavMessage>>,
+    /// Rules 6: an engagement's lost-link parameter jobs running on this link
+    /// (`decision/preload.rs`; one at a time): rules 30's read of the failsafe waits for them.
+    param_jobs: AtomicU32,
+}
+
+/// An engagement's lost-link parameter job on a vehicle's link, while it runs
+/// ([`VehicleCell::param_job`]).
+pub struct ParamJob(Arc<VehicleCell>);
+
+impl Drop for ParamJob {
+    fn drop(&mut self) {
+        self.0.param_jobs.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl VehicleCell {
@@ -923,7 +1003,20 @@ impl VehicleCell {
             stats,
             state: Mutex::new(state),
             events: broadcast::channel(256).0,
+            param_jobs: AtomicU32::new(0),
         }
+    }
+
+    /// Rules 6: an engagement's lost-link parameter job starts on this link; it counts until
+    /// the guard is dropped (the job's end).
+    pub fn param_job(self: &Arc<Self>) -> ParamJob {
+        self.param_jobs.fetch_add(1, Ordering::SeqCst);
+        ParamJob(self.clone())
+    }
+
+    /// Whether an engagement's lost-link parameter job runs on this link now.
+    pub fn param_job_running(&self) -> bool {
+        self.param_jobs.load(Ordering::SeqCst) > 0
     }
 
     fn lock(&self) -> MutexGuard<'_, Vehicle> {
@@ -1030,6 +1123,46 @@ mod tests {
             hdg: 9000,
             ..Default::default()
         })
+    }
+
+    /// Rules 30: every report of a GCS failsafe parameter is kept, whoever asked, with its boot:
+    /// a value, or that the vehicle has no such parameter; other parameters are not.
+    #[test]
+    fn failsafe_parameters_are_kept_as_reported() {
+        let value = |name: &str, v: f32| {
+            MavMessage::PARAM_VALUE(apm::PARAM_VALUE_DATA {
+                param_id: mav::char_array(name),
+                param_value: v,
+                ..Default::default()
+            })
+        };
+        let mut v = Vehicle::default();
+        v.apply(&value("FS_LONG_TIMEOUT", 60.0), &[], 0.0);
+        v.apply(&value("WP_LOITER_RAD", 150.0), &[], 0.0);
+        v.boot_epoch = 2;
+        v.apply(
+            &MavMessage::PARAM_ERROR(apm::PARAM_ERROR_DATA {
+                param_id: mav::char_array("Q_OPTIONS"),
+                error: apm::MavParamError::MAV_PARAM_ERROR_DOES_NOT_EXIST,
+                ..Default::default()
+            }),
+            &[],
+            0.0,
+        );
+        v.apply(
+            &MavMessage::PARAM_ERROR(apm::PARAM_ERROR_DATA {
+                param_id: mav::char_array("FS_LONG_ACTN"),
+                error: apm::MavParamError::MAV_PARAM_ERROR_PERMISSION_DENIED,
+                ..Default::default()
+            }),
+            &[],
+            0.0,
+        );
+        let r = &v.lost_link.reported;
+        assert_eq!(r.keys().copied().collect::<Vec<_>>(), ["FS_LONG_TIMEOUT", "Q_OPTIONS"]);
+        assert_eq!((r["FS_LONG_TIMEOUT"].value, r["FS_LONG_TIMEOUT"].epoch), (Some(60.0), 0));
+        assert_eq!((r["Q_OPTIONS"].value, r["Q_OPTIONS"].epoch), (None, 2));
+        assert_eq!(v.loiter_radius_m, Some(150.0));
     }
 
     /// Rules 25: a vehicle's own damage report (a stand-in's STATUSTEXT) becomes its damage fact

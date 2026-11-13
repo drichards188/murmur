@@ -801,3 +801,6 @@ mod situation;
 
 /// The loop's tick against Saturation's picture, timed (`tests/scale.rs`, bd murmur-jvdc).
 mod scale;
+
+/// Rules 30's lost-link fact read from the stand-ins' own autopilots (`tests/lost_link.rs`).
+mod lost_link;

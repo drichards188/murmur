@@ -700,6 +700,7 @@ async fn a_fleet_vehicle_never_heard_from_is_not_clear_of_the_keep_out() {
         &AreaSet::empty("test", e.r.clock.now()),
         e.r.clock.now(),
         None,
+        false,
     );
     let v2 = snap.vehicles.get(&murmur_decide::Uid::new("2")).expect("in the world model");
     assert!(v2.position.is_none() && v2.platform.is_some(), "{v2:?}");

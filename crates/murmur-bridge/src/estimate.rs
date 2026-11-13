@@ -732,6 +732,18 @@ fn config(world: &World) -> &'static Config {
     })
 }
 
+/// The lost-link timer `sim/links.toml` gives a vehicle (`lost_link_s` of the profile it starts
+/// on, what `sim/swarm.py` writes into its parameters) and the profile, as the failsafe branch
+/// reads it: rules 30's configured plan (`decision/preload.rs`) reads the same.
+pub fn lost_link_timer(
+    world: &World,
+    platform: Option<&str>,
+    link_class: Option<&str>,
+    space_class: Option<&str>,
+) -> Option<(String, f64)> {
+    config(world).lost_link.for_vehicle(platform, link_class, space_class)
+}
+
 /// A platform's figures from the catalog (cruise speed, domain, link and SATCOM class), or its
 /// kind's defaults when the catalog does not know it, as the estimate reads them.
 pub fn platform_limits(world: &World, platform: Option<&str>, kind: Option<Kind>) -> PlatformLimits {
