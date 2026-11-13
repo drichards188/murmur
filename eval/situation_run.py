@@ -202,6 +202,70 @@ STALE_RETRY_S = 5.0
 SWARM_ORDER_TIMEOUT_S = 60.0
 
 
+class HandoverWatch:
+    """Decision rules 29 (bd murmur-by3s): the fleet's starting tasks as the audit log shows them.
+    Each `intent.handed_over` is one vehicle's order, queued until its vehicle is heard; its first
+    way out of the queue is its outcome (sent, voided, to a person, expired), and a sent one is in
+    force once its vehicle runs it (its op `active`, or `done`: an orbit or a hold is done once
+    established). Read only from the log: nothing here asks the bridge."""
+
+    OUTCOME = {"dispatched": "sent", "voided": "voided", "pending_approval": "to_person", "expired": "expired"}
+
+    def __init__(self) -> None:
+        self.outcome: dict[int, str] = {}  # intent id -> queued, sent, voided, to_person, expired
+        self.running: dict[int, float] = {}  # sent intent id -> when its vehicle first ran it
+        self.failed: set[int] = set()  # sent, its op failed before it ran
+        self.first_t: float | None = None
+        self.left_t: dict[int, float] = {}  # when each left the queue
+
+    def feed(self, events: list[dict[str, Any]]) -> None:
+        for e in events:
+            kind, t = e.get("type"), e.get("t")
+            t_s = t / 1000.0 if isinstance(t, (int, float)) else None
+            if kind == "intent.handed_over":
+                iid = (e.get("intent") or {}).get("id")
+                if isinstance(iid, int):
+                    self.outcome[iid] = "queued"
+                    if self.first_t is None:
+                        self.first_t = t_s
+            elif kind == "intent.state" and self.outcome.get(e.get("intent")) == "queued":
+                to = self.OUTCOME.get(str(e.get("to")))
+                if to is not None:
+                    self.outcome[e["intent"]] = to
+                    if t_s is not None:
+                        self.left_t[e["intent"]] = t_s
+            elif kind == "op.state" and self.outcome.get(e.get("intent")) == "sent" and e["intent"] not in self.running:
+                state = str(e.get("state"))
+                if state in ("active", "done") and t_s is not None:
+                    self.running[e["intent"]] = t_s
+                elif state == "failed":
+                    self.failed.add(e["intent"])
+
+    def counts(self) -> dict[str, int]:
+        out = {k: 0 for k in ("handed_over", "queued", "sent", "running", "failed", "voided", "to_person", "expired")}
+        out["handed_over"] = len(self.outcome)
+        for o in self.outcome.values():
+            out[o] += 1
+        out["running"] = len(self.running)
+        out["failed"] = len(self.failed - set(self.running))
+        return out
+
+    def settled(self, want: int) -> bool:
+        """Every starting task handed over, out of the queue, and every one sent run or failed."""
+        c = self.counts()
+        return c["handed_over"] >= want and c["queued"] == 0 and c["running"] + c["failed"] >= c["sent"]
+
+    def summary(self) -> dict[str, Any]:
+        """The counts, and (engine time, unix s) when the first was handed over, the last left the
+        queue, and the last sent one ran."""
+        return {
+            **self.counts(),
+            "handed_over_t": self.first_t,
+            "last_left_queue_t": max(self.left_t.values()) if self.left_t else None,
+            "last_running_t": max(self.running.values()) if self.running else None,
+        }
+
+
 def submits_itself(preview: dict[str, Any]) -> bool:
     """Whether a scripted operator id may submit this itself: only where its submission can't
     be the approval, now or a moment later. The policy sends it out (`auto_approved`), or it
@@ -575,6 +639,9 @@ class Runner:
         planned, _ = plan_counts(sit.fleet) if sit.fleet else ([], 0)
         self.planned = planned
         self.chain = EngagementChain({str(v["uid"]): v["callsign"] for v in planned})
+        # rules 29: the starting tasks the fleet hands over (no opening order for them)
+        self.handover = HandoverWatch()
+        self.handover_want = sum(1 for v in planned if "start" in v)
         self.publish_errors = 0
         self.stop = asyncio.Event()
         self.interrupted = False
@@ -694,6 +761,8 @@ class Runner:
         own notes, the scripted operators' decisions, the AI process."""
         # the AI's own actions only (no AI, none: the storyline's agent is not the AI)
         events = self.audit_tail.read()
+        if self.handover_want:
+            self.handover.feed(events)
         new = agent_activity(events, self.modes["agent"]) if self.modes["agent"] else []
         for a in new:
             # on the situation's clock, for the panel
@@ -880,6 +949,35 @@ class Runner:
             self.entry("phase", f"not every vehicle is ready after {self.sit.ready_timeout_s:.0f} s: {', '.join(waiting)}; going on")
             say(f"warning: not ready after {self.sit.ready_timeout_s:.0f} s: {', '.join(waiting)}; going on with the rest")
         self.record("ready", **self.ready)
+
+    async def wait_handover(self) -> None:
+        """Decision rules 29: a fleet whose vehicles have starting tasks has the bridge hand them
+        over at its start; the situation starts with them in force: every one out of the queue
+        (sent, voided or to a person) and every one sent run by its vehicle, or after
+        ready_timeout_s. What became of them goes to situation.jsonl and the timeline."""
+        want = self.handover_want
+        if not want:
+            return
+        self.set_phase("starting", f"waiting for the {want} orders the fleet hands over to be in force")
+        settled = True
+        try:
+            await self.wait_for("the handed-over orders", lambda: self.handover.settled(want), self.sit.ready_timeout_s)
+        except SituationError as e:
+            if "interrupted" in str(e) or not self.stack_alive():
+                raise
+            settled = False
+        s = self.handover.summary()
+        rel_t = {k: (round(s[k] - self.zero, 1) if s.get(k) is not None and self.zero is not None else None)
+                 for k in ("handed_over_t", "last_left_queue_t", "last_running_t")}
+        self.record("handover", settled=settled, want=want, **s, **{f"{k}_s": v for k, v in rel_t.items()})
+        parts = [f"{s['running']} of {s['handed_over']} running on their vehicles"]
+        parts += [f"{s[k]} {what}" for k, what in (("failed", "failed before they ran"), ("voided", "voided at their re-check"),
+                                                    ("to_person", "sent to a person"), ("expired", "expired"),
+                                                    ("queued", "still queued")) if s[k]]
+        when = f" (the last ran at T+{rel_t['last_running_t']:.0f} s)" if rel_t["last_running_t"] is not None else ""
+        lead = "orders in force" if settled else f"not every handed-over order in force after {self.sit.ready_timeout_s:.0f} s; going on"
+        self.entry("phase", f"{lead}: {', '.join(parts)}{when}")
+        say(f"handed over: {', '.join(parts)}{when}")
 
     async def issue_order(self, o: Any, vehicles: list[dict[str, Any]], setup_agent: FreshAgentProposer) -> dict[str, Any]:
         """One opening order under the scripted setup id: an operator's dry run first. op-setup
@@ -1188,6 +1286,7 @@ class Runner:
             await self.wait_for("the bridge", self.bridge.alive, 600)
             self.entry("phase", "stack up")
             await self.wait_ready(vehicles)
+            await self.wait_handover()
             await self.issue_orders()
             self.set_phase("running", "the situation runs")
             scripted = self.scripted()
@@ -1265,7 +1364,8 @@ class Runner:
     def summary(self) -> None:
         events = AuditTail(self.audit).read() if self.audit.exists() else []
         intents = {i["id"]: i for i in ((self.bridge.try_get("/api/intents") or {}).get("intents", []))}
-        created = [e for e in events if e.get("type") == "intent.created"]
+        # rules 29: an order the fleet handed over is created by its handover, not a request
+        created = [e for e in events if e.get("type") in ("intent.created", "intent.handed_over")]
         by_source: dict[str, list[int]] = {}
         for e in created:
             i = e.get("intent") or {}
@@ -1297,6 +1397,14 @@ class Runner:
             # a swarm's order by its swarm, not a hundred callsigns
             names = f"swarm {o['swarm']} ({len(o.get('vehicles') or [])} vehicles)" if o.get("swarm") else ", ".join(o.get("vehicles") or ["?"])
             lines.append(f"  opening order {o['id']} ({o['task']} for {names}){by}: intent {o.get('intent_id')} {now or o.get('state') or o.get('error')}{routed}")
+        if self.handover_want:
+            # rules 29: the fleet's starting tasks, from the whole log (not only what the run saw)
+            w = HandoverWatch()
+            w.feed(events)
+            c = w.counts()
+            lines.append(f"  starting tasks handed over by the fleet (decision rules 29): {c['handed_over']} of {self.handover_want}; "
+                         f"sent {c['sent']} (running {c['running']}, failed before running {c['failed']}), voided {c['voided']}, "
+                         f"to a person {c['to_person']}, expired {c['expired']}, still queued {c['queued']}")
         lines.append(
             "  decisions in the audit log by: "
             + (", ".join(f"{k} {n}" for k, n in sorted(decided.items())) or "nobody")
@@ -1322,6 +1430,16 @@ class Runner:
         # everything else: the storyline's proposals, an operator's own orders at the console
         known = {o.get("intent_id") for o in self.orders} | {i["id"] for i in mine}
         others = [i for i in intents.values() if i["id"] not in known]
+        # rules 29: the fleet's starting tasks are the handover line above (thousands of them in
+        # Saturation), by their states only
+        handed = [i for i in others if (i.get("source") or {}).get("kind") == "handover"]
+        if handed:
+            states: dict[str, int] = {}
+            for i in handed:
+                states[str(i.get("state"))] = states.get(str(i.get("state")), 0) + 1
+            lines.append("    their intents now: " + ", ".join(f"{n} {s}" for s, n in sorted(states.items(), key=lambda x: -x[1])))
+        handed_ids = {i["id"] for i in handed}
+        others = [i for i in others if i["id"] not in handed_ids]
         for i in sorted(others, key=lambda i: i["id"]):
             src = i.get("source") or {}
             lines.append(f"  intent {i['id']} {i.get('kind')} for vehicles {','.join(str(u) for u in i.get('uids') or [])} from {src.get('kind')} {src.get('id')}: {i.get('state')}")

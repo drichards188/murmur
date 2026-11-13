@@ -2128,3 +2128,31 @@ def test_the_runner_shows_the_chain_confirmations_and_grants(tmp_path: Path):
     assert "op-auto confirm D-1 on T-0003: confirmed" not in text and "op-auto confirm D-1 on T-0008: confirmed" in text
     assert "scripted decisions: 2" in text
     assert "step fallback-nomination at" in text and "stands: intent 10 by agent agent-watch" in text
+
+
+def test_the_handover_watch_follows_each_starting_task_out_of_the_queue():
+    """Decision rules 29: the runner reads the fleet's handed-over orders from the audit log alone,
+    each one's first way out of the queue its outcome, a sent one in force once its vehicle runs
+    it (an op `active` or `done`)."""
+    from eval.situation_run import HandoverWatch
+
+    w = HandoverWatch()
+    ho = [{"type": "intent.handed_over", "t": 1000, "intent": {"id": i}} for i in (1, 2, 3, 4)]
+    w.feed(ho)
+    assert not w.settled(4) and w.counts()["queued"] == 4
+    w.feed([
+        {"type": "intent.state", "t": 5000, "intent": 1, "from": "queued", "to": "dispatched"},
+        {"type": "intent.state", "t": 5000, "intent": 2, "from": "queued", "to": "voided"},
+        {"type": "intent.state", "t": 6000, "intent": 3, "from": "queued", "to": "pending_approval"},
+        {"type": "intent.state", "t": 7000, "intent": 4, "from": "queued", "to": "dispatched"},
+        {"type": "op.state", "t": 8000, "intent": 1, "uid": "1", "state": "active"},
+        # a person approves 3 later: not the handover's outcome
+        {"type": "intent.state", "t": 9000, "intent": 3, "from": "pending_approval", "to": "approved"},
+    ])
+    assert not w.settled(4), "4 is sent but not run yet"
+    w.feed([{"type": "op.state", "t": 12000, "intent": 4, "uid": "4", "state": "failed"}])
+    assert w.settled(4)
+    s = w.summary()
+    assert {k: s[k] for k in ("handed_over", "sent", "running", "failed", "voided", "to_person", "queued")} == {
+        "handed_over": 4, "sent": 2, "running": 1, "failed": 1, "voided": 1, "to_person": 1, "queued": 0}
+    assert (s["handed_over_t"], s["last_left_queue_t"], s["last_running_t"]) == (1.0, 7.0, 8.0)

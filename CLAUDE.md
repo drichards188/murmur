@@ -529,9 +529,11 @@ meaningful.
   to a person on an unverified one; never approved again otherwise; the policy is asked nothing
   but who, for the last). A run that carries orders over from an earlier log hands none over;
   replay checks them against `<log stem>.fleet.json` (each vehicle's `start`). Scenarios 134-136
-  (a `[[vehicle]]`'s `start`; `tests/handover.rs`). Saturation's region fleet uses it (bd
-  murmur-xlca: one order per vehicle, each its own geometry); its packed variant keeps the 36
-  group opening orders.
+  (a `[[vehicle]]`'s `start`; `tests/handover.rs`). A situation with starting tasks needs no
+  opening orders: the runner waits until every one is out of the queue and every one sent runs
+  (`wait_handover`, situation.jsonl's `handover`, the summary's counts). Saturation's region
+  fleet uses it (bd murmur-xlca: one order per vehicle, each its own geometry); its packed
+  variant keeps the 36 group opening orders.
 - Opponent weapons (docs/OPPONENT-WEAPONS.md, bd murmur-wcvp; no rules version): a node fires its
   catalog kind's loadout (`sim/contacts.toml`) by its own fire control at an `[[order]]` (the
   contacts file, the contacts process's `POST /orders`, a situation's `red` step;
