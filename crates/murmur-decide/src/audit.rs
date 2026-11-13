@@ -929,6 +929,75 @@ pub enum EventBody {
         step_up: Option<StepUpRef>,
     },
 
+    /// Rules 30 ([`crate::rules::NODE_LOSS_SINCE`], docs/NODE-LOSS.md): one of ours is presumed
+    /// lost: silent on its facts at `world_t` (`vehicle`; its last report at `since`, none: it
+    /// never reported a position), with logged evidence of a strike ([`crate::nodes::Evidence`],
+    /// each cited by the seq of the event it is in: an observed act against it or its struck
+    /// report within [`crate::nodes::PRESUME_WINDOW_S`] of that report, damage it reported, spent
+    /// by its own effect). A flag for a person's review: it decides nothing. Replay recomputes it.
+    #[serde(rename = "node.presumed")]
+    NodePresumed {
+        uid: Uid,
+        #[serde(default)]
+        since: Option<Time>,
+        evidence: Vec<crate::nodes::Evidence>,
+        world_t: Time,
+        vehicle: Box<crate::world::VehicleFacts>,
+    },
+
+    /// Rules 30: a presumption of loss withdrawn: the vehicle was heard again since the report it
+    /// was made on (its facts at `world_t`; `detail` says how). Replay recomputes it.
+    #[serde(rename = "node.presumption_cleared")]
+    NodePresumptionCleared {
+        uid: Uid,
+        #[serde(default)]
+        since: Option<Time>,
+        world_t: Time,
+        vehicle: Box<crate::world::VehicleFacts>,
+        detail: String,
+    },
+
+    /// Rules 30: an operator with engagement authority (`by`, under `session`; never an agent)
+    /// confirmed one of ours lost, on the silence they saw: silent since exactly its report at
+    /// `since` on its facts at `world_t` (`vehicle`), no engagement holding it, with the evidence
+    /// of the presumption in force (empty: none presumed it, and `note` says why: decision D2),
+    /// the vehicle as the bridge knew it (`identity`: a later run's carry holds only it) and, in a
+    /// credentials run, the step-up made for it. From here on it leaves the friendly keep-outs,
+    /// the line of fire and the minefield check, takes no order, and its orders and owed
+    /// lost-link values end next (voids, `op.state` lost, `restore.closed` lost). Replay
+    /// recomputes every condition.
+    #[serde(rename = "node.lost")]
+    NodeLost {
+        uid: Uid,
+        #[serde(default)]
+        since: Option<Time>,
+        by: OperatorId,
+        session: SessionId,
+        note: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        evidence: Vec<crate::nodes::Evidence>,
+        world_t: Time,
+        vehicle: Box<crate::world::VehicleFacts>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        identity: Option<crate::engage::VehicleIdentity>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step_up: Option<StepUpRef>,
+    },
+
+    /// Rules 30: a loss revoked (`cause`): automatically when the vehicle is heard again, logged
+    /// before any decision reads the report, or by any operator with a note. Its protection is
+    /// back at once and the values its confirmation closed are owed back again. `from`: the
+    /// earlier log a loss carried over was confirmed in.
+    #[serde(rename = "node.loss_revoked")]
+    NodeLossRevoked {
+        uid: Uid,
+        #[serde(default)]
+        since: Option<Time>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
+        cause: crate::nodes::Revocation,
+    },
+
     /// Engage, rules 6: the platform's own lost-link values read and logged before anything is
     /// written (`intent`, the write-ahead: owed back from here on, with the vehicle's
     /// identity), the platform's own lost-link action set as the engagement's fallback
@@ -1264,6 +1333,10 @@ pub enum RestoreClosure {
         session: SessionId,
         note: String,
     },
+    /// Rules 30: the platform was confirmed lost (`node.lost`, right before, by this operator
+    /// under this session): there is nothing to put its values back on. Owed back again if it is
+    /// heard (`node.loss_revoked`).
+    Lost { operator: OperatorId, session: SessionId },
 }
 
 impl RestoreClosure {
@@ -1271,6 +1344,31 @@ impl RestoreClosure {
         match self {
             RestoreClosure::Expended { .. } => "expended",
             RestoreClosure::WrittenOff { .. } => "written_off",
+            RestoreClosure::Lost { .. } => "lost",
+        }
+    }
+}
+
+impl EventBody {
+    /// Rules 30: the decision inputs this event logs (a decision's, an identify step's return
+    /// inputs too), as [`Self::pictures_mut`] lists them: their vehicles' facts are the reports a
+    /// loss is revoked on before the event is logged, and their `nodes_lost` replay compares with
+    /// its ledger.
+    pub fn decision_inputs(&self) -> Vec<&LoggedInputs> {
+        match self {
+            EventBody::CheckResult { inputs, .. }
+            | EventBody::PolicyDecision { inputs, .. }
+            | EventBody::PictureIssued { inputs, .. }
+            | EventBody::EngagePicture { inputs, .. }
+            | EventBody::EngageObserve { inputs, .. }
+            | EventBody::IntentQueued { inputs, .. } => vec![inputs],
+            EventBody::ApprovalReset { inputs, .. } | EventBody::IntentDispatched { inputs, .. } => {
+                inputs.iter().collect()
+            }
+            EventBody::IdentifyStep {
+                inputs, return_inputs, ..
+            } => std::iter::once(inputs).chain(return_inputs.iter()).collect(),
+            _ => Vec::new(),
         }
     }
 }

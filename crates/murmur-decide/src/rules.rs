@@ -1064,6 +1064,17 @@ pub fn readiness(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) ->
         {
             return res(Outcome::Fail, s.detail());
         }
+        // rules 30: one an operator confirmed lost takes no order, a hold or rtl included (no
+        // one can command it, and a lost vehicle is out of the keep-outs); a report from it
+        // revokes the loss before this reads it
+        if cfg.node_loss()
+            && let Some(l) = world.nodes_lost.get(uid).filter(|l| l.holds())
+        {
+            return res(
+                Outcome::Fail,
+                format!("{}: a vehicle confirmed lost takes no order (a report from it revokes the loss)", l.describe()),
+            );
+        }
         if is_safety_command(kind) {
             return res(Outcome::Pass, format!("not required for {}", kind.as_str()));
         }

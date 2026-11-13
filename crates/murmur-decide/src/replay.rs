@@ -222,6 +222,17 @@ pub struct ReplayReport {
     pub restores_closed: Vec<String>,
     /// Rules 15: platforms an operator un-spent (`platform.unspent`), each saying who and why.
     pub unspent: Vec<String>,
+    /// Rules 30: our vehicles presumed lost (`node.presumed`), each with its evidence, as replay
+    /// recomputed them; and presumptions cleared (heard again).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub nodes_presumed: Vec<String>,
+    /// Rules 30: our vehicles confirmed lost (`node.lost`), each saying by whom, since when and on
+    /// what.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub nodes_lost: Vec<String>,
+    /// Rules 30: losses revoked (`node.loss_revoked`), each saying how (heard, or by an operator).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub losses_revoked: Vec<String>,
     /// Rules 5: intents queued for unreachable vehicles, queue re-checks recomputed (and
     /// how many dispatched, went back to the inbox, voided), queue expiries, intents carried
     /// over from a previous run, and vehicle reboots.
@@ -421,6 +432,11 @@ pub(crate) struct Restores {
     /// Rules 27: our minefields laid in earlier runs, carried over at the start (`run.started`'s
     /// `carried_from`, `fields`; `from`: the log that laid them), until logged inert.
     fields_carried: Vec<crate::mines::Minefield>,
+    /// Rules 30: the values each platform confirmed lost was owed when its loss closed them
+    /// (`restore.closed` lost; carried over with a loss from an earlier run): owed back again if
+    /// the loss is revoked (`node.loss_revoked`), as the engagement's preload may still be its
+    /// lost-link action.
+    lost_closed: BTreeMap<Uid, Owed>,
 }
 
 /// Rules 12: a platform spent by its own effect in this run: the engagement whose release spent
@@ -617,6 +633,15 @@ impl Restores {
                     self.rounds_carried.push(rs);
                 }
             }
+            // rules 30: the values the losses it carried had closed (owed back if one is heard)
+            for m in c.nodes_lost.iter().filter(|m| !m.values.is_empty()) {
+                self.lost_closed.entry(m.uid.clone()).or_insert_with(|| Owed {
+                    values: m.values.clone(),
+                    by: Vec::new(),
+                    vehicle: m.vehicle.clone(),
+                    from: Some(m.from.clone().unwrap_or_else(|| c.log.clone())),
+                });
+            }
             // rules 27: the minefields it had laid and that were not inert yet (its own, or
             // carried into it)
             for f in &c.fields {
@@ -692,6 +717,22 @@ impl Restores {
         }
         if let Some(l) = log {
             self.pending.remove(l);
+        }
+    }
+
+    /// Rules 30: `uid` was confirmed lost: the values owed back to it close (`restore.closed`
+    /// lost), kept to be owed back again if the loss is revoked.
+    pub(crate) fn close_lost(&mut self, uid: &Uid) {
+        if let Some(o) = self.owed.remove(uid) {
+            self.lost_closed.insert(uid.clone(), o);
+        }
+    }
+
+    /// Rules 30: `uid`'s loss was revoked (it was heard, or an operator revoked it): the values
+    /// its confirmation closed are owed back again, as before it (an un-spend's reopening).
+    pub(crate) fn reopen_lost(&mut self, uid: &Uid) {
+        if let Some(o) = self.lost_closed.remove(uid).filter(|o| !o.values.is_empty()) {
+            self.owed.insert(uid.clone(), o);
         }
     }
 
@@ -1127,15 +1168,22 @@ impl Restores {
                 }
             }
             EventBody::RunStarted { carried_from, .. } => self.carry(carried_from),
+            EventBody::RestoreClosed {
+                uid: Some(u),
+                closed_by: crate::audit::RestoreClosure::Lost { .. },
+                ..
+            } => self.close_lost(u),
             EventBody::RestoreClosed { uid, log, closed_by, .. } => self.close(
                 uid.as_ref(),
                 log.as_deref(),
                 match closed_by {
                     crate::audit::RestoreClosure::Expended { intent } => Some(*intent),
-                    crate::audit::RestoreClosure::WrittenOff { .. } => None,
+                    crate::audit::RestoreClosure::WrittenOff { .. } | crate::audit::RestoreClosure::Lost { .. } => None,
                 },
                 None,
             ),
+            // rules 30: a loss revoked: what it closed is owed back again
+            EventBody::NodeLossRevoked { uid, .. } => self.reopen_lost(uid),
             EventBody::PlatformUnspent { uid, .. } => self.unspend(uid),
             EventBody::EngageEffect {
                 uid, weapon: Some(w), ..
@@ -1262,6 +1310,12 @@ pub struct CarriedFrom {
     /// it) that it had not logged inert: live in this run until their period is over.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<crate::mines::Minefield>,
+    /// Rules 30: our vehicles confirmed lost in it and not revoked (its own, `from` none, and
+    /// those carried into it): lost in this run on the same vehicle only (platform, callsign and
+    /// system id), until it is heard. Named `nodes_lost` (not `lost`, which rules 16's events
+    /// already log), so replay tells the rules a log claims by its keys.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nodes_lost: Vec<crate::nodes::LostMark>,
 }
 
 /// Rules 12: what a log still owes when it ends: the platforms' own lost-link values never
@@ -1281,6 +1335,8 @@ pub struct Debts {
     pub rounds: Vec<crate::loadout::RoundsSpent>,
     /// Rules 27: the minefields it laid and those carried into it, not logged inert.
     pub fields: Vec<crate::mines::Minefield>,
+    /// Rules 30: our vehicles confirmed lost in it and those carried into it, not revoked.
+    pub nodes_lost: Vec<crate::nodes::LostMark>,
 }
 
 /// Rules 15 ([`crate::rules::CARRY_FOLLOWUPS_SINCE`], murmur-zq3): a platform spent by its own
@@ -1479,9 +1535,11 @@ pub fn owed_restores(text: &str) -> Vec<OwedRestore> {
 /// Rules 12: [`owed_restores`], and the earlier logs `text` still owed for (pending).
 pub fn owed_debts(text: &str) -> Debts {
     let mut restores = Restores::default();
+    let mut nodes = crate::nodes::NodeLedger::default();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         if let Ok(e) = serde_json::from_str::<Event>(line) {
             restores.step(&e);
+            nodes.step(e.seq, e.t, &e.body);
         }
     }
     Debts {
@@ -1495,6 +1553,7 @@ pub fn owed_debts(text: &str) -> Debts {
         spent: restores.spent(),
         rounds: restores.rounds_spent(),
         fields: restores.all_fields(),
+        nodes_lost: nodes.marks(),
         owed: restores
             .owed
             .into_iter()
@@ -2215,6 +2274,12 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (rules::HANDOVER_SINCE, "\"kind\":\"handover\"", "the fleet's handover as an order's source"),
     (rules::NODE_LOSS_SINCE, "\"lost_link\":{\"value\":", "a vehicle's own lost-link failsafe (a decision's fact)"),
     (rules::NODE_LOSS_SINCE, "\"nodes_lost\":{", "our vehicles confirmed lost (a decision's fact)"),
+    (rules::NODE_LOSS_SINCE, "\"nodes_lost\":[", "our vehicles confirmed lost, carried over at the start"),
+    (rules::NODE_LOSS_SINCE, "\"type\":\"node.presumed\"", "one of ours presumed lost"),
+    (rules::NODE_LOSS_SINCE, "\"type\":\"node.presumption_cleared\"", "a presumption of loss cleared"),
+    (rules::NODE_LOSS_SINCE, "\"type\":\"node.lost\"", "one of ours confirmed lost"),
+    (rules::NODE_LOSS_SINCE, "\"type\":\"node.loss_revoked\"", "a loss revoked"),
+    (rules::NODE_LOSS_SINCE, "\"closed_by\":{\"kind\":\"lost\"", "owed values closed by a loss"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -2647,8 +2712,15 @@ fn replay_inner<S: AsRef<str>>(
     });
     // bd murmur-whug: the track pictures the log holds, which events reference by hash
     let pictures = Pictures::scan(events);
+    // rules 30: our vehicles' standing as the log builds it (stepped with each event before the
+    // next is read), and what a confirmed loss ends next
+    let mut nodes = crate::nodes::NodeLedger::default();
+    let mut loss_due: Option<LossDue> = None;
 
     for (i, logged) in events.iter().enumerate() {
+        if let Some(p) = i.checked_sub(1).and_then(|j| events.get(j)) {
+            nodes.step(p.seq, p.t, &p.body);
+        }
         // an event that references a track picture is checked as one that logged it inline:
         // the picture put in place (the chain and the lines are the log's own, above)
         let resolved = pictures.resolve(&mut r, events, i);
@@ -2699,6 +2771,18 @@ fn replay_inner<S: AsRef<str>>(
             && closed.contains(&s)
         {
             bad(&mut r, e, None, "an act under a session that had ended (session.closed)", s.0.to_string(), String::new());
+        }
+        // rules 30: every decision reads our vehicles confirmed lost as the log holds them, a
+        // report among its facts revoking a loss first; and a confirmed loss's consequences
+        // follow it at once
+        check_nodes_read(&mut r, e, &nodes, &intents, policy.as_ref());
+        if let Some(due) = loss_due.as_mut() {
+            if let Err(why) = due.step(&e.body) {
+                bad(&mut r, e, None, &why, event_type(&e.body), json(&due.remaining()));
+                loss_due = None;
+            } else if due.done() {
+                loss_due = None;
+            }
         }
         // rules 9: an act's verdict is carried out by the very next event, and a revocation's
         // engagements are stopped next, before anything else
@@ -5891,12 +5975,126 @@ fn replay_inner<S: AsRef<str>>(
                     &sessions,
                     policy.as_ref(),
                     prev_event,
+                    &nodes,
                 );
-                let expended = match closed_by {
-                    crate::audit::RestoreClosure::Expended { intent } => Some(*intent),
-                    crate::audit::RestoreClosure::WrittenOff { .. } => None,
+                match (closed_by, uid) {
+                    // rules 30: kept to be owed back again if the loss is revoked
+                    (crate::audit::RestoreClosure::Lost { .. }, Some(u)) => restores.close_lost(u),
+                    (crate::audit::RestoreClosure::Expended { intent }, _) => {
+                        restores.close(uid.as_ref(), log.as_deref(), Some(*intent), Some(e.t))
+                    }
+                    _ => restores.close(uid.as_ref(), log.as_deref(), None, Some(e.t)),
+                }
+            }
+            EventBody::NodePresumed {
+                uid,
+                since,
+                evidence,
+                world_t,
+                vehicle,
+            } => {
+                let Some(pol) = policy.as_ref().filter(|p| p.rules.node_loss()) else {
+                    // the marker check flags it under older rules
+                    continue;
                 };
-                restores.close(uid.as_ref(), log.as_deref(), expended, Some(e.t));
+                let cfg = &pol.rules;
+                if nodes.lost_mark(uid).is_some() || nodes.presumption(uid).is_some() {
+                    bad(&mut r, e, None, "a vehicle presumed lost that is presumed or confirmed lost already", uid.to_string(), String::new());
+                }
+                if *since != vehicle.position.as_ref().map(|p| p.t) {
+                    bad(&mut r, e, None, "a presumption's last report is not its facts' position", json(since), json(&vehicle.position.as_ref().map(|p| p.t)));
+                }
+                if !crate::nodes::silent(vehicle, *world_t, cfg) {
+                    bad(&mut r, e, None, "a vehicle presumed lost that is not silent on its facts", uid.to_string(), String::new());
+                }
+                if (e.t.0 - world_t.0).abs() > engage::ACCEPT_WORLD_SKEW_MS {
+                    bad(&mut r, e, None, "a presumption's world is not the one at the event", json(world_t), json(&e.t));
+                }
+                let want = nodes.evidence(uid, vehicle);
+                if want.is_empty() || *evidence != want {
+                    bad(
+                        &mut r,
+                        e,
+                        None,
+                        "a presumption's evidence differs from the strikes, damage and spent marks the log holds within the window of its last report (silence alone presumes nothing)",
+                        json(evidence),
+                        json(&want),
+                    );
+                }
+                let kinds: Vec<&str> = evidence.iter().map(|ev| ev.kind.as_str()).collect();
+                r.nodes_presumed.push(format!("vehicle {uid}: presumed lost ({})", kinds.join(", ")));
+            }
+            EventBody::NodePresumptionCleared {
+                uid,
+                since,
+                world_t,
+                vehicle,
+                detail,
+            } => {
+                let Some(pol) = policy.as_ref().filter(|p| p.rules.node_loss()) else {
+                    continue;
+                };
+                match nodes.presumption(uid) {
+                    None => bad(&mut r, e, None, "a presumption cleared that is not in force", uid.to_string(), String::new()),
+                    Some(p) => {
+                        let want = crate::nodes::heard_since(vehicle, p.since, p.heard, *world_t, &pol.rules);
+                        if p.since != *since || want.as_ref() != Some(detail) {
+                            bad(
+                                &mut r,
+                                e,
+                                None,
+                                "a presumption cleared that its facts do not show heard since its report",
+                                json(&(since, detail)),
+                                json(&(p.since, want)),
+                            );
+                        }
+                    }
+                }
+                r.nodes_presumed.push(format!("vehicle {uid}: presumption cleared ({detail})"));
+            }
+            EventBody::NodeLost {
+                uid,
+                since,
+                by,
+                session,
+                note,
+                evidence,
+                world_t,
+                vehicle,
+                identity: _,
+                step_up,
+            } => {
+                // a credentials run's confirmation quotes a step-up made for it
+                check_step_up(
+                    &mut r,
+                    e,
+                    None,
+                    true,
+                    by,
+                    *session,
+                    *step_up,
+                    &mut step_ups,
+                    StepUse::NodeLost,
+                    &Expected::Is(crate::passkey::StepUpFor::NodeLost {
+                        uid: uid.clone(),
+                        since: *since,
+                    }),
+                    policy.as_ref(),
+                );
+                node_lost(
+                    &mut r,
+                    e,
+                    (uid, *since, by, *session, note, evidence, *world_t, vehicle),
+                    &nodes,
+                    &intents,
+                    &sessions,
+                    policy.as_ref(),
+                );
+                loss_due = Some(LossDue::new(uid, &intents, &restores, &nodes));
+            }
+            EventBody::NodeLossRevoked { uid, since, from, cause } => {
+                node_loss_revoked(&mut r, e, (uid, *since, from.as_deref(), cause), &nodes, &sessions, policy.as_ref());
+                restores.reopen_lost(uid);
             }
             EventBody::PlatformUnspent {
                 uid,
@@ -7490,11 +7688,14 @@ fn check_minefields(
         }
     }
     if tr.spec.kind() == TaskKind::Lay || !inputs.orders_in_play.is_empty() {
-        let want = if pol.rules.mines() {
+        let mut want = if pol.rules.mines() {
             crate::mines::orders_in_play(intents.iter().map(|(i, t)| (*i, &t.spec, t.play_state())), &tr.spec)
         } else {
             BTreeMap::new()
         };
+        // rules 30: a vehicle confirmed lost (the decision's own `nodes_lost`, checked against the
+        // ledger) has no order in play
+        crate::mines::without_lost(&mut want, &inputs.nodes_lost, &pol.rules);
         if inputs.orders_in_play != want {
             bad(r, e, Some(id), "the orders in play a lay order read differ from the log's (rules 27)", json(&inputs.orders_in_play), json(&want));
         }
@@ -7595,6 +7796,340 @@ fn platform_unspent(
     ));
 }
 
+/// Rules 30: what an event's decisions read of our vehicles confirmed lost, against the ledger: no
+/// report among their facts from a vehicle whose loss is in force (the engine revokes the loss
+/// before the decision that reads the report is logged), every decision's `nodes_lost` exactly the
+/// losses in force on its vehicles (a carried one with the vehicle under the uid now, as the
+/// bridge said it), and no order dispatched to a vehicle confirmed lost.
+fn check_nodes_read(
+    r: &mut ReplayReport,
+    e: &Event,
+    nodes: &crate::nodes::NodeLedger,
+    intents: &BTreeMap<IntentId, Tracked>,
+    policy: Option<&Policy>,
+) {
+    let Some(pol) = policy.filter(|p| p.rules.node_loss()) else {
+        return;
+    };
+    let cfg = &pol.rules;
+    for inputs in e.body.decision_inputs() {
+        for m in nodes.marks() {
+            if let Some(v) = inputs.vehicles.get(&m.uid)
+                && let Some(why) = crate::nodes::heard_since(v, m.since, m.heard, inputs.t, cfg)
+            {
+                bad(
+                    r,
+                    e,
+                    None,
+                    "a decision read a report from a vehicle confirmed lost, its loss not revoked before it (node.loss_revoked)",
+                    format!("{}: {why}", m.uid),
+                    String::new(),
+                );
+            }
+        }
+        let now: BTreeMap<Uid, engage::VehicleIdentity> = inputs
+            .nodes_lost
+            .iter()
+            .filter_map(|(u, l)| Some((u.clone(), l.now.clone()?)))
+            .collect();
+        let want = nodes.lost_for(&inputs.vehicles, &now, inputs.t, cfg);
+        if inputs.nodes_lost != want {
+            bad(
+                r,
+                e,
+                None,
+                "a decision's vehicles confirmed lost differ from the losses the log holds (node.lost, less node.loss_revoked)",
+                json(&inputs.nodes_lost),
+                json(&want),
+            );
+        }
+    }
+    if let EventBody::IntentDispatched { intent, inputs, .. } = &e.body
+        && let Some(tr) = intents.get(intent)
+    {
+        for u in &tr.spec.uids {
+            if inputs.iter().any(|i| i.nodes_lost.get(u).is_some_and(crate::world::LostNode::holds)) {
+                bad(r, e, Some(*intent), "an order dispatched to a vehicle confirmed lost", u.to_string(), String::new());
+            }
+        }
+    }
+}
+
+/// Rules 30: a `node.lost`: under these rules, by an operator with engagement authority under
+/// their own session (never an agent), on a vehicle silent since exactly `since` on the facts it
+/// logs at `world_t` (the event's), not lost already, no engagement under way holding it, with the
+/// evidence of the presumption in force (or none, and a note saying why).
+#[allow(clippy::type_complexity)]
+fn node_lost(
+    r: &mut ReplayReport,
+    e: &Event,
+    (uid, since, by, session, note, evidence, world_t, vehicle): (
+        &Uid,
+        Option<Time>,
+        &OperatorId,
+        SessionId,
+        &str,
+        &[crate::nodes::Evidence],
+        Time,
+        &crate::world::VehicleFacts,
+    ),
+    nodes: &crate::nodes::NodeLedger,
+    intents: &BTreeMap<IntentId, Tracked>,
+    sessions: &BTreeMap<SessionId, (OperatorId, Grants)>,
+    policy: Option<&Policy>,
+) {
+    let Some(pol) = policy.filter(|p| p.rules.node_loss()) else {
+        // the marker check flags it under older rules
+        return;
+    };
+    match sessions.get(&session) {
+        Some((op, g)) if op == by && g.engage => {}
+        Some((op, _)) if op == by => bad(
+            r,
+            e,
+            None,
+            "a loss confirmed without engagement authority",
+            by.to_string(),
+            "a session opened with grants.engage".into(),
+        ),
+        other => bad(
+            r,
+            e,
+            None,
+            "a loss confirmed under a session that is not the operator's (an agent's, or another's)",
+            by.to_string(),
+            json(&other.map(|o| &o.0)),
+        ),
+    }
+    if nodes.lost_mark(uid).is_some() {
+        bad(r, e, None, "a vehicle confirmed lost that is lost already", uid.to_string(), String::new());
+    }
+    if let Err(why) = engage::lost_since_report(Some(vehicle), since, world_t, &pol.rules) {
+        bad(r, e, None, "a loss confirmed on a vehicle not silent since the report it names", why, json(&since));
+    }
+    if (e.t.0 - world_t.0).abs() > engage::ACCEPT_WORLD_SKEW_MS {
+        bad(r, e, None, "a confirmation's world is not the one at the confirmation", json(&world_t), json(&e.t));
+    }
+    if let Some(other) = holding(intents, uid, None) {
+        bad(r, e, Some(other), "a loss confirmed while an engagement under way holds the vehicle", uid.to_string(), String::new());
+    }
+    let want: Vec<crate::nodes::Evidence> = nodes
+        .presumption(uid)
+        .filter(|p| p.since == since)
+        .map(|p| p.evidence.clone())
+        .unwrap_or_default();
+    if evidence != want.as_slice() {
+        bad(r, e, None, "a confirmation's evidence differs from the presumption in force", json(&evidence), json(&want));
+    }
+    if want.is_empty() && note.trim().is_empty() {
+        bad(r, e, None, "a loss confirmed with nothing presuming it and no note saying why", uid.to_string(), "a note".into());
+    }
+    let kinds: Vec<&str> = evidence.iter().map(|ev| ev.kind.as_str()).collect();
+    let on = if kinds.is_empty() { "the operator's own".to_string() } else { kinds.join(", ") };
+    r.nodes_lost.push(format!(
+        "vehicle {uid}: confirmed lost by {by} (silent since {}; evidence: {on}){}",
+        since.map_or("never".to_string(), |t| format!("{} ms", t.0)),
+        if note.trim().is_empty() { String::new() } else { format!(": {}", note.trim()) }
+    ));
+}
+
+/// Rules 30: a `node.loss_revoked`: of the loss in force on the vehicle (this log's or carried
+/// over, named as it is); as heard, only when its facts show it heard since that report; by an
+/// operator, under their own session with a note.
+#[allow(clippy::type_complexity)]
+fn node_loss_revoked(
+    r: &mut ReplayReport,
+    e: &Event,
+    (uid, since, from, cause): (&Uid, Option<Time>, Option<&str>, &crate::nodes::Revocation),
+    nodes: &crate::nodes::NodeLedger,
+    sessions: &BTreeMap<SessionId, (OperatorId, Grants)>,
+    policy: Option<&Policy>,
+) {
+    let Some(pol) = policy.filter(|p| p.rules.node_loss()) else {
+        return;
+    };
+    let Some(m) = nodes.lost_mark(uid) else {
+        bad(r, e, None, "a loss revoked that is not in force", uid.to_string(), String::new());
+        return;
+    };
+    if m.since != since || m.from.as_deref() != from {
+        bad(r, e, None, "a revocation that does not name the loss in force (its report, its log)", json(&(since, from)), json(&(m.since, &m.from)));
+    }
+    match cause {
+        crate::nodes::Revocation::Heard { world_t, vehicle, detail } => {
+            let want = crate::nodes::heard_since(vehicle, m.since, m.heard, *world_t, &pol.rules);
+            if want.as_ref() != Some(detail) {
+                bad(r, e, None, "a loss revoked as heard that its facts do not show heard since its report", detail.clone(), json(&want));
+            }
+            r.losses_revoked.push(format!("vehicle {uid}: loss revoked, heard again ({detail})"));
+        }
+        crate::nodes::Revocation::Operator { operator, session, note } => {
+            match sessions.get(session) {
+                Some((op, _)) if op == operator => {}
+                other => bad(r, e, None, "a loss revoked under a session that is not the operator's", operator.to_string(), json(&other.map(|o| &o.0))),
+            }
+            if note.trim().is_empty() {
+                bad(r, e, None, "a loss revoked by an operator without a note saying why", uid.to_string(), "a note".into());
+            }
+            r.losses_revoked.push(format!("vehicle {uid}: loss revoked by {operator}: {note}"));
+        }
+    }
+}
+
+/// Rules 30: what a confirmed loss ends, next and in this order, before anything else is logged
+/// ([`crate::Engine::confirm_lost`]): every intent naming the vehicle that waits for it (pending,
+/// approved, queued: an approved engagement stopped, then voided), each in intent order; every
+/// dispatched order it runs, its op on it ended `lost`, and the order failed with it when no
+/// vehicle is left on it; the lost-link values owed back to it, closed (`restore.closed` lost).
+struct LossDue {
+    uid: Uid,
+    voids: Vec<(IntentId, bool)>,
+    stopping: Option<IntentId>,
+    ops: Vec<(IntentId, bool)>,
+    failing: Option<IntentId>,
+    close: Option<BTreeMap<String, f64>>,
+}
+
+impl LossDue {
+    fn new(uid: &Uid, intents: &BTreeMap<IntentId, Tracked>, restores: &Restores, nodes: &crate::nodes::NodeLedger) -> LossDue {
+        let names = |spec: &IntentSpec| spec.uids.contains(uid) || matches!(&spec.task, Task::Track { target } if target == uid);
+        let voids = intents
+            .iter()
+            .filter(|(_, t)| {
+                names(&t.spec) && matches!(t.state, State::PendingApproval | State::AutoApproved | State::Approved | State::Queued)
+            })
+            .map(|(id, t)| (*id, t.spec.kind() == TaskKind::Engage && t.state == State::Approved))
+            .collect();
+        let ops = intents
+            .iter()
+            .filter(|(_, t)| {
+                t.state == State::Dispatched
+                    && t.spec.kind() != TaskKind::Engage
+                    && t.spec.uids.contains(uid)
+                    && !t.ops.get(uid).is_some_and(|o| queue::ended_op(o))
+            })
+            .map(|(id, t)| {
+                let left = t
+                    .spec
+                    .uids
+                    .iter()
+                    .filter(|u| *u != uid)
+                    .any(|u| nodes.lost_mark(u).is_none() && !t.ops.get(u).is_some_and(|o| queue::ended_op(o)));
+                (*id, !left)
+            })
+            .collect();
+        LossDue {
+            uid: uid.clone(),
+            voids,
+            stopping: None,
+            ops,
+            failing: None,
+            close: restores.values_owed(uid).cloned(),
+        }
+    }
+
+    fn done(&self) -> bool {
+        self.voids.is_empty() && self.stopping.is_none() && self.ops.is_empty() && self.failing.is_none() && self.close.is_none()
+    }
+
+    fn remaining(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        out.extend(self.stopping.map(|id| format!("{id}'s void after its stop")));
+        out.extend(self.failing.map(|id| format!("{id}'s failure")));
+        out.extend(self.voids.iter().map(|(id, _)| format!("{id} voided")));
+        out.extend(self.ops.iter().map(|(id, _)| format!("{id}'s op ended lost")));
+        out.extend(self.close.as_ref().map(|v| format!("values {} closed", json(v))));
+        out
+    }
+
+    /// The next event: `Ok` when it is the next consequence due (or nothing is due), `Err` when it
+    /// is anything else.
+    fn step(&mut self, body: &EventBody) -> Result<(), String> {
+        let prefix = format!("system: vehicle {} lost: ", self.uid);
+        let other = |what: String| Err(format!("a confirmed loss's consequences do not follow it at once (next due: {what})"));
+        if let Some(id) = self.stopping {
+            return match body {
+                EventBody::IntentState {
+                    intent,
+                    transition: Transition::Void,
+                    ..
+                } if *intent == id => {
+                    self.stopping = None;
+                    Ok(())
+                }
+                _ => other(format!("{id}'s void after its stop")),
+            };
+        }
+        if let Some(id) = self.failing {
+            return match body {
+                EventBody::IntentState {
+                    intent,
+                    transition: Transition::Fail,
+                    reason,
+                    ..
+                } if *intent == id && reason.starts_with(&prefix) => {
+                    self.failing = None;
+                    Ok(())
+                }
+                _ => other(format!("{id}'s failure")),
+            };
+        }
+        if let Some(&(id, engagement)) = self.voids.first() {
+            return match body {
+                EventBody::IntentState {
+                    intent,
+                    transition: Transition::Void,
+                    reason,
+                    ..
+                } if *intent == id && !engagement && reason.starts_with(&prefix) => {
+                    self.voids.remove(0);
+                    Ok(())
+                }
+                EventBody::EngageStopped {
+                    intent,
+                    cause: StopCause::System,
+                    reason,
+                    fallback: None,
+                } if *intent == id && engagement && reason.starts_with(&prefix) => {
+                    self.voids.remove(0);
+                    self.stopping = Some(id);
+                    Ok(())
+                }
+                _ => other(format!("{id} voided")),
+            };
+        }
+        if let Some(&(id, ends)) = self.ops.first() {
+            return match body {
+                EventBody::OpState { intent, uid, state, .. }
+                    if *intent == id && *uid == self.uid && state == crate::nodes::LOST_OP =>
+                {
+                    self.ops.remove(0);
+                    if ends {
+                        self.failing = Some(id);
+                    }
+                    Ok(())
+                }
+                _ => other(format!("{id}'s op ended lost")),
+            };
+        }
+        if let Some(values) = &self.close {
+            return match body {
+                EventBody::RestoreClosed {
+                    uid: Some(u),
+                    values: v,
+                    closed_by: crate::audit::RestoreClosure::Lost { .. },
+                    ..
+                } if *u == self.uid && v == values => {
+                    self.close = None;
+                    Ok(())
+                }
+                _ => other(format!("values {} closed", json(values))),
+            };
+        }
+        Ok(())
+    }
+}
+
 /// Rules 12: the identities of the vehicles a decision's `restore_owed` fact names for values
 /// carried over (the bridge's input; replay recomputes the hold from them and the ledger).
 fn carried_identities(owed: &BTreeMap<Uid, queue::RestoreOwed>) -> BTreeMap<Uid, engage::VehicleIdentity> {
@@ -7619,6 +8154,7 @@ fn restore_closed(
     sessions: &BTreeMap<SessionId, (OperatorId, Grants)>,
     policy: Option<&Policy>,
     before: Option<&Event>,
+    nodes: &crate::nodes::NodeLedger,
 ) {
     if !policy.is_some_and(|p| p.rules.followups()) {
         bad(r, e, None, "a restore closed under rules that close none (rules 12)", String::new(), String::new());
@@ -7635,6 +8171,9 @@ fn restore_closed(
         crate::audit::RestoreClosure::WrittenOff { operator, note, .. } => {
             format!("{what}: written off by {operator}: {note}")
         }
+        crate::audit::RestoreClosure::Lost { operator, .. } => {
+            format!("{what}: no longer owed, the platform was confirmed lost by {operator}")
+        }
     });
     match (uid, log) {
         (Some(u), None) => {
@@ -7643,7 +8182,7 @@ fn restore_closed(
             let owed = restores.values_owed(u);
             let fits = match closed_by {
                 crate::audit::RestoreClosure::Expended { .. } => owed.cloned().unwrap_or_default() == *values,
-                crate::audit::RestoreClosure::WrittenOff { .. } => owed == Some(values),
+                crate::audit::RestoreClosure::WrittenOff { .. } | crate::audit::RestoreClosure::Lost { .. } => owed == Some(values),
             };
             if !fits {
                 bad(r, e, None, "a restore closed for values not owed back to the platform", json(values), json(&owed));
@@ -7706,6 +8245,18 @@ fn restore_closed(
                     u.to_string(),
                     String::new(),
                 );
+            }
+        }
+        // rules 30: only right after the platform's confirmed loss (its consequences, checked by
+        // what the loss ends next), under the confirming operator's session
+        crate::audit::RestoreClosure::Lost { operator, session } => {
+            let lost_by = uid.and_then(|u| nodes.lost_mark(u)).filter(|m| m.from.is_none()).map(|m| m.by.clone());
+            if !policy.is_some_and(|p| p.rules.node_loss()) || lost_by.as_ref() != Some(operator) || log.is_some() {
+                bad(r, e, None, "a restore closed as lost for a platform not confirmed lost by that operator (rules 30)", json(&(uid, operator)), json(&lost_by));
+            }
+            match sessions.get(session) {
+                Some((op, _)) if op == operator => {}
+                other => bad(r, e, None, "a restore closed as lost under a session that is not the operator's", operator.to_string(), json(&other.map(|o| &o.0))),
             }
         }
     }
@@ -7864,6 +8415,7 @@ fn check_carried_from(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptio
     // carry read, and a fallback from a pointer that could not be read
     let rules15 = rules_version.unwrap_or(1) >= rules::CARRY_FOLLOWUPS_SINCE;
     let rules24 = rules_version.unwrap_or(1) >= rules::LOADOUT_SINCE;
+    let rules30 = rules_version.unwrap_or(1) >= rules::NODE_LOSS_SINCE;
     let mut named: Vec<&str> = Vec::new();
     for (i, c) in carried_from.iter().enumerate() {
         if !is_log_file_name(&c.log) {
@@ -7895,6 +8447,7 @@ fn check_carried_from(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptio
                 || !c.pending.is_empty()
                 || !c.spent.is_empty()
                 || !c.rounds.is_empty()
+                || !c.nodes_lost.is_empty()
                 || (c.pointer_failed.is_some() && !rules15))
         {
             bad(r, first, None, "a carried-over log that could not be read carries what it owed", c.log.clone(), String::new());
@@ -8023,7 +8576,12 @@ fn check_carried_from(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptio
             }
             let readable = text
                 .and_then(|t| parse_log(t).ok().filter(|ev| !ev.is_empty()).map(|_| owed_debts(t)))
-                .filter(|d| !d.is_empty() || (rules15 && !d.spent.is_empty()) || (rules24 && !d.rounds.is_empty()));
+                .filter(|d| {
+                    !d.is_empty()
+                        || (rules15 && !d.spent.is_empty())
+                        || (rules24 && !d.rounds.is_empty())
+                        || (rules30 && !d.nodes_lost.is_empty())
+                });
             if let Some(d) = readable
                 && !opts.trust_resumed
                 && !refused_fallback
@@ -8068,7 +8626,11 @@ fn check_carried_from(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptio
                 spent: c.spent.iter().map(|sp| sp.uid.to_string()).collect(),
             });
             if !opts.trust_resumed
-                && (!c.owed.is_empty() || !c.pending.is_empty() || !c.spent.is_empty() || !c.rounds.is_empty())
+                && (!c.owed.is_empty()
+                    || !c.pending.is_empty()
+                    || !c.spent.is_empty()
+                    || !c.rounds.is_empty()
+                    || !c.nodes_lost.is_empty())
             {
                 bad(
                     r,
@@ -8148,6 +8710,18 @@ fn check_carried_from(r: &mut ReplayReport, events: &[Event], opts: &ReplayOptio
                 "the platforms carried as spent differ from the ones the log had spent (rules 15)",
                 json(&c.spent),
                 json(&debts.spent),
+            );
+        }
+        // rules 30: our vehicles it had confirmed lost and not revoked (and had carried in), every
+        // one of them
+        if rules30 && debts.nodes_lost != c.nodes_lost {
+            bad(
+                r,
+                first,
+                None,
+                "the vehicles carried as lost differ from the ones the log had confirmed lost and not revoked (rules 30)",
+                json(&c.nodes_lost),
+                json(&debts.nodes_lost),
             );
         }
         // rules 24: the rounds it had released (and had carried in), every one of them
@@ -8652,6 +9226,12 @@ fn acting_session(body: &EventBody) -> Option<SessionId> {
         | EventBody::IdentFlagResolved { session, .. } => Some(*session),
         // rules 16: a lost contact confirmed as a live track
         EventBody::TrackReacquired { session, .. } => Some(*session),
+        // rules 30: a loss confirmed, or revoked by an operator
+        EventBody::NodeLost { session, .. } => Some(*session),
+        EventBody::NodeLossRevoked {
+            cause: crate::nodes::Revocation::Operator { session, .. },
+            ..
+        } => Some(*session),
         EventBody::IdentDeclared { declaration } => match &declaration.by {
             crate::ident::Declarer::Operator { session, .. } => Some(*session),
             crate::ident::Declarer::Rule { .. } => None,
@@ -8685,6 +9265,8 @@ enum StepUse {
     Registration,
     /// Rules 15: an un-spend of a platform spent by its own effect.
     Unspend,
+    /// Rules 30: a confirmation of one of ours lost.
+    NodeLost,
 }
 
 impl StepUse {
@@ -8695,6 +9277,7 @@ impl StepUse {
             StepUse::Acceptances { .. } => "an acceptance of a lost vehicle",
             StepUse::Registration => "a passkey registration",
             StepUse::Unspend => "an un-spend",
+            StepUse::NodeLost => "a confirmation of a loss",
         }
     }
 }
@@ -10083,6 +10666,21 @@ fn check_signed(
             json(&tr.accepted_behaving.keys().collect::<Vec<_>>()),
         );
     }
+    // rules 30: and our vehicles confirmed lost (a loss confirmed, or revoked by a report, since):
+    // the token's are the ones its signature's re-check read
+    if pol.rules.node_loss() {
+        let now = tr.last_inputs.as_deref().map(|w| &w.nodes_lost);
+        if Some(&tok.nodes_lost) != now {
+            bad(
+                r,
+                e,
+                Some(id),
+                "signature on a picture token whose vehicles confirmed lost have changed since",
+                json(&tok.nodes_lost.keys().collect::<Vec<_>>()),
+                json(&now.map(|n| n.keys().collect::<Vec<_>>())),
+            );
+        }
+    }
     if tok.intent != id || tok.by != *by || tok.session != session {
         bad(
             r,
@@ -10255,6 +10853,17 @@ fn check_issued(
     let track = w.tracks.get(&tok.track.id).map(|t| TrackIdentity::of(&tok.track.id, t));
     if track.as_ref() != Some(&tok.track) {
         bad(r, e, Some(id), "picture token's track differs from the world it was issued on", json(&tok.track), json(&track));
+    }
+    // rules 30: every signer is shown our vehicles confirmed lost, as the picture read them
+    if tok.nodes_lost != inputs.nodes_lost {
+        bad(
+            r,
+            e,
+            Some(id),
+            "picture token's vehicles confirmed lost differ from the world it was issued on",
+            json(&tok.nodes_lost.keys().collect::<Vec<_>>()),
+            json(&inputs.nodes_lost.keys().collect::<Vec<_>>()),
+        );
     }
     // rules 6: every signer is shown the lost vehicles accepted for it
     if tok.unknown_accepted != tr.accepted {

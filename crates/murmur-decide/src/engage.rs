@@ -813,6 +813,11 @@ pub struct PictureToken {
     /// refused).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub behaving_accepted: BTreeMap<String, AcceptedBehaving>,
+    /// Rules 30: our vehicles confirmed lost when it was shown (the picture's `nodes_lost`: they
+    /// were left out of its keep-outs); a signature quoting a token whose set differs from the
+    /// one now (a loss confirmed, or revoked, since) is refused.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub nodes_lost: BTreeMap<Uid, crate::world::LostNode>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -2914,8 +2919,14 @@ pub fn keep_out_friendly(
     // rules 6: lost vehicles an operator accepted, and vehicles clear by altitude
     let mut accepted: Vec<String> = Vec::new();
     let mut by_alt: Vec<String> = Vec::new();
+    // rules 30: our vehicles confirmed lost, left out
+    let mut lost: Vec<String> = Vec::new();
     for (uid, v) in &world.vehicles {
         if Some(uid) == platform {
+            continue;
+        }
+        if let Some(note) = confirmed_lost(uid, v, world, cfg) {
+            lost.push(note);
             continue;
         }
         let (d, how, clear_by_alt, alt_known) =
@@ -2968,12 +2979,32 @@ pub fn keep_out_friendly(
     if !accepted.is_empty() {
         tail.push_str(&format!("; position accepted as unknown: {}", accepted.join(", ")));
     }
+    if !lost.is_empty() {
+        tail.push_str(&format!("; left out, confirmed lost: {}", lost.join(", ")));
+    }
     check(
         r,
         None,
         Outcome::Pass,
         format!("{count} vehicle(s) of ours clear of the {keep_out_m:.0} m keep-out at the effect time{near}{tail}"),
     )
+}
+
+/// Rules 30 ([`crate::rules::NODE_LOSS_SINCE`]): when the friendly keep-out (and so the line of
+/// fire) leaves one of our vehicles out as confirmed lost, the pass detail's note for it: an
+/// operator confirmed it lost (`world.nodes_lost`, the engine's ledger), the loss holds the vehicle
+/// under the uid now (a loss carried over from an earlier run holds only the vehicle lost), and
+/// its position is still not fresh (the engine revokes a loss its report shows heard before any
+/// decision reads it; a fresh position here counts the vehicle, fail closed). None: it counts.
+pub fn confirmed_lost(uid: &Uid, v: &crate::world::VehicleFacts, world: &WorldSnapshot, cfg: &RulesConfig) -> Option<String> {
+    if !cfg.node_loss() {
+        return None;
+    }
+    let l = world.nodes_lost.get(uid).filter(|l| l.holds())?;
+    if fresh(&v.position, v, "position", world, cfg).is_ok() {
+        return None;
+    }
+    Some(format!("{uid} ({})", l.describe()))
 }
 
 /// Which region of one of our vehicles the friendly keep-out counts ([`friendly_standing`]).
@@ -4754,6 +4785,7 @@ pub fn check_token(
     accepted: &BTreeMap<Uid, AcceptedUnknown>,
     lost_accepted: &BTreeMap<String, AcceptedUnknown>,
     behaving_accepted: &BTreeMap<String, AcceptedBehaving>,
+    nodes_lost: &BTreeMap<Uid, crate::world::LostNode>,
 ) -> Result<(), String> {
     if token.intent != intent || token.by != *by || token.session != session {
         return Err(format!(
@@ -4793,6 +4825,10 @@ pub fn check_token(
     // rules 19: and the live tracks accepted as behaving now (one given, revoked or lapsed)
     if token.behaving_accepted != *behaving_accepted {
         return Err("the tracks accepted for it as behaving now changed since you looked: look again".into());
+    }
+    // rules 30: and our vehicles confirmed lost (a loss confirmed, or revoked by a report, since)
+    if token.nodes_lost != *nodes_lost {
+        return Err("our vehicles confirmed lost changed since you looked (a loss confirmed, or revoked by a report): look again".into());
     }
     let Some(t) = track_now else {
         return Err(format!("{} is no longer in the picture", token.track.id));

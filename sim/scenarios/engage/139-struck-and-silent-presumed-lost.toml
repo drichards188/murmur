@@ -1,0 +1,105 @@
+# Rules 30 (docs/NODE-LOSS.md sections 2 and 6, bd murmur-zb1d.3): one of ours that reports itself
+# struck and then goes silent is presumed lost (`node.presumed`, its struck report cited by seq),
+# and the presumption is a flag that decides nothing: while it is silent the friendly keep-out
+# still counts it, its region growing with the silence (stage 3 alone counts its cruise reach; stage
+# 2's drift bound for a surface vehicle presumed lost blocks at the same second here). HUNTER 1
+# (a 6 m/s surface vehicle) holds 1.2 km east of the drone's station, reports struck at second 5 and
+# is not heard after. A nomination 15 s into its silence passes (its region still clear of the
+# keep-out) and is rejected by an operator; one 415 s into it is rejected by the keep-out. Then
+# HUNTER 1 reports again: the presumption is cleared (`node.presumption_cleared`).
+title = "A vehicle struck and silent is presumed lost, and still counts until a person decides"
+invariant = "keep_out_friendly"
+attack = "a vehicle of ours struck and silent near the effect point: nothing but a person removes its protection"
+expect = "rejected"
+expect_rule = "keep_out_friendly"
+expect_presumed = ["vehicle hunter-1: presumed lost (struck)", "vehicle hunter-1: presumption cleared"]
+min_rules = 30
+end_s = 440
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[vehicle]]
+uid = "hunter-1"
+platform = "seahunter"      # a surface vehicle, 6 m/s cruise
+at = [-122.4814, 37.8120]   # 1.2 km east of the drone's station, holding
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 5                    # its own report: struck (a hit), then nothing more from it
+action = "struck"
+uid = "hunter-1"
+text = "struck (W-1): launch seen by blade-1:eo_ir 6.2 s before"
+
+[[step]]
+at_s = 5
+action = "vehicle"
+uid = "hunter-1"
+silent = true
+
+[[step]]
+at_s = 20                   # 15 s into its silence: its region is clear of the keep-out
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 21
+action = "expect"
+state = "pending_approval"
+
+[[step]]
+at_s = 25
+action = "reject"
+by = "op-2"
+
+[[step]]
+at_s = 420                  # 415 s into its silence: its region reaches the keep-out
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 421
+action = "expect"
+state = "rejected"
+rule = "keep_out_friendly"
+
+[[step]]
+at_s = 425                  # it reports again: the presumption is cleared
+action = "vehicle"
+uid = "hunter-1"
+silent = false

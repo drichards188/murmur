@@ -571,7 +571,14 @@ fn rules_30_inputs_are_dropped_under_older_rules_and_caught_in_their_logs() {
         let mut w = common::world();
         w.vehicles.get_mut(&common::uid("sky-1")).unwrap().lost_link = Some(Fact::new(plan.clone(), common::T0));
         // engine-filled: what a caller gives is never logged under older rules
-        let loss = LostNode { since: Some(common::T0), by: OperatorId::new("op-1"), t: common::T0 };
+        let loss = LostNode {
+            since: Some(common::T0),
+            by: OperatorId::new("op-1"),
+            t: common::T0,
+            from: None,
+            lost_on: None,
+            now: None,
+        };
         w.nodes_lost.insert(common::uid("sky-1"), loss);
         e.submit(s.authority(), common::hold(&["sky-1"]), &w, &common::terrain()).unwrap();
         log.text()

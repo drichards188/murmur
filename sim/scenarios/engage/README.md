@@ -124,7 +124,11 @@ tamper = "suppress_void"         # optional log attack replay must catch: propos
                                  # and rules 24: edit_rounds (rules 26: a gun's bursts too),
                                  # and rules 25: drop_damage,
                                  # and rules 26: burst_after_stop,
-                                 # and rules 27: move_mine, hide_lay_signature
+                                 # and rules 27: move_mine, hide_lay_signature,
+                                 # and rules 30: lost_by_agent (a confirmed loss credited to
+                                 # an agent), hide_loss_revoked (every revocation of a loss
+                                 # cut), redate_loss (a confirmation's report moved 20 s
+                                 # later, everywhere the loss appears)
                                  # (one with nothing to edit in a run's log reports "not
                                  # applicable")
 end_s = 120                      # seconds to run (default: the last step + 10)
@@ -157,6 +161,14 @@ expect_closed = ["expended by its own effect"]   # rules 12, optional: debts clo
 expect_nothing_owed = true       # rules 12, optional: nothing owed back when the log ends
 expect_unspent = ["un-spent by op-2"]   # rules 15, optional: platforms un-spent that replay
                                  # lists (`unspent`), in order
+expect_presumed = ["vehicle hunter-1: presumed lost (struck)"]   # rules 30, optional:
+                                 # presumptions of loss and presumptions cleared that replay
+                                 # lists (`nodes_presumed`), in order
+expect_lost = ["vehicle hunter-1: confirmed lost by op-2"]   # rules 30, optional: confirmed
+                                 # losses replay lists (`nodes_lost`: by whom, since when, on
+                                 # what evidence, the note), in order
+expect_revoked = ["vehicle hunter-1: loss revoked, heard again"]   # rules 30, optional:
+                                 # revocations replay lists (`losses_revoked`), in order
 expect_reacquired = ["T-0002 is T-0005 again"]   # rules 16, optional: lost contacts an
                                  # operator confirmed as a live track, in order
                                  # (expect_none_reacquired = true: none)
@@ -184,6 +196,15 @@ log = "20261006T120000Z-4242.jsonl"   # the start (run.started's carried_from), 
 error = "Permission denied (os error 13)"   # and the vehicles (of this file) its fleet named:
 may_owe = ["viper-1"]            # their missions wait and their nominations are refused
                                  # until it is written off
+
+[[carried]]                      # rules 30, optional: an earlier log that was read (no
+log = "20261112T120000Z-4242.jsonl"   # error) in which our vehicles were confirmed lost: the
+lost = [                         # runner writes it with the engine (each vehicle's loss
+    { uid = "hunter-1", by = "op-2" },   # confirmed by `by` on its silence since its last
+    { uid = "hunter-2", by = "op-2", callsign = "OTHER 7" },   # report, `lost_for_s` before
+]                                # the start, as the vehicle `platform` and `callsign` name,
+                                 # default the file's own), carries it over as the bridge does
+                                 # and hands it to replay
 
 [[operator]]                     # an operator session; engage = engagement authority
 id = "op-2"
@@ -276,6 +297,9 @@ Actions (each `[[step]]` has `at_s` and `action`):
 | `track` | `id` and any of `at`, `velocity`, `affiliation`, `declared_by`, `undeclare`, `identity`, `identity_confidence`, `sigma_m`, `domain`, `silent`, `velocity_error`, `alt_m`, `tracked_s`, `ais` (rules 16), `velocity_sigma_mps` (rules 18), `level` and `level_by` (rules 21), `level_conflict` (rules 22) | a track changes (or appears); `velocity` is how the contact really moves, `velocity_error` how far the tracker's estimate is off it; `tracked_s` (rules 12) when one this step makes was started (0: a new track); `velocity_sigma_mps` the velocity's 1-sigma error the tracker now reports; `level` (`detect`, `recognise`, `identify`) how specific its identity now is and `level_by` the sensors whose looks identified it (an identify order ends on it; from rules 22 only on one of our own sensors, not `ais`, after the order went out; from rules 23 only on the vehicle sent's own, its uid before the colon), `level_conflict` the tracker's identity conflict on it then |
 | `write_off` | `by`, `uid` or `log`, `note` | rules 12: an operator writes off the lost-link values owed back to one of our vehicles, saying why (`restore.closed`); rules 15: or an earlier log whose carry failed (`log`) |
 | `unspend` | `by`, `uid`, `note` | rules 15: an operator with engagement authority un-spends a platform spent by its own effect, saying why (`platform.unspent`), once the engagement that spent it ended and it was heard after that and is not silent; without engagement authority it is refused (a scenario has no credentials: no step-up) |
+| `struck` | `uid`, `text` (optional) | rules 30: one of ours reports itself struck (`vehicle.event` struck, as the bridge logs a hit): evidence that presumes it lost once it is silent, within 30 s of its last report |
+| `confirm_lost` | `by`, `uid`, `since_s` (optional), `note` (optional) | rules 30: an operator with engagement authority confirms one of ours lost on its silence since its last report (or since `since_s`, scenario seconds: the engine refuses another), with a note when nothing presumes it lost (`node.lost`); its waiting orders are voided, its dispatched ones end, the values owed it close; without engagement authority it is refused (a scenario has no credentials: no step-up) |
+| `revoke_lost` | `by`, `uid`, `note` | rules 30: any operator revokes the loss of one of ours, saying why (`node.loss_revoked`, cause operator) |
 | `vehicle` | `uid` and any of `at`, `velocity`, `silent`, `report_interval_ms`, `nav` (`gnss`, `dead_reckoning`), `gps_fix` (3: a 3D fix), `gps_glitch`, `circling`, `reported_circle`, `alt_m`, `damage` (rules 25: `{ mobility = true }`, `{ firepower = true }`) | one of ours changes; `silent` cuts its link (both ways: it hears no GCS either); `damage` is a damage report of its own (never healed) |
 | `expect` | `state`, `rule`, `concurrences`, `task_state`, `task_reason` | check the last nomination now (`task_state`: the last `task` step's intent; `task_reason`: a substring of why it is in that state) |
 
@@ -285,7 +309,10 @@ calls `Engine::step_engagements` (hold the picture, release, observe, assess) an
 look ended, and the order sent afterwards taken at once, so the order ends then). A file with
 no nomination ends on its last `task` (`expect`), and `expect_identify` lists what its identify
 orders did, in order (substrings of `t=<s> <id> recentred to [lon, lat]`, `<id> held: ...`,
-rules 23 `<id> meanwhile: ...`, `<id> ended done: ...`).
+rules 23 `<id> meanwhile: ...`, `<id> ended done: ...`). From rules 30 the runner also calls
+`Engine::step_nodes` every second, before the engagements' step, as the bridge's tick does: a
+loss whose vehicle is heard again is revoked, a presumption cleared, a silent vehicle with
+logged evidence presumed lost.
 
 ## The set
 
@@ -427,3 +454,7 @@ rules 23 `<id> meanwhile: ...`, `<id> ended done: ...`).
 | 134-handed-over-orbit-goes-when-heard | handover | rules 29: the fleet's starting task for SKY 1, an orbit over the strait, handed over at the start; SKY 1 silent until 3 s | queued (nothing logged) while unheard, dispatched once heard and its checks pass, the policy asked nothing; replay checks it against the fleet |
 | 135-handed-over-orbit-on-land-voided | handover | rules 29: a USV's starting task an orbit on land | voided at its re-check (domain), never sent, saying which check failed |
 | 136-handed-over-unverified-to-a-person | handover | rules 29: a Puma on dead reckoning, its starting task a patrol | to a person (readiness unverified; the policy asked only who), dispatched once op-1 approves acknowledging it |
+| 139-struck-and-silent-presumed-lost | keep_out_friendly | rules 30: HUNTER 1, 1.2 km from the drone's station, reports itself struck and goes silent | presumed lost on its struck report (cited by seq), a flag that decides nothing: a nomination 15 s into its silence passes (rejected by an operator), one 415 s into it is rejected (keep_out_friendly); heard again, the presumption is cleared |
+| 140-confirmed-lost-ends-its-orders | keep_out_friendly | rules 30: VIPER 1, its preload owed after an aborted engagement and an orbit queued for it, cut off and struck; op-1 (no engagement authority) tries to confirm the loss; tamper `lost_by_agent` | refused for op-1; op-2's confirmation cites the struck report: the queued orbit is voided, the values owed close (`restore.closed` lost), the drone's nomination then passes with VIPER 1 left out (`--rules 29`: rejected, keep_out_friendly) and is done; nothing owed at the end; tamper caught |
+| 141-lost-vehicle-reports-again | keep_out_friendly | rules 30: HUNTER 1, silent a minute 900 m off, confirmed lost on a note (nothing presumes it); under way it reports again 130 m from the effect point; tamper `redate_loss` | a confirmation without a note refused; with it the nomination passes and is approved; the report revokes the loss (cause heard) before the picture reads it, and the engagement aborts (keep_out_friendly); tamper caught |
+| 142-loss-carried-to-the-same-vehicle-only | keep_out_friendly | rules 30: an earlier log confirmed HUNTER 1 and the vehicle then under hunter-2 (OTHER 7) lost; this run starts with HUNTER 1 and another vehicle, HUNTER 2, under hunter-2; tamper `hide_loss_revoked` | both carried; HUNTER 1's orbit refused (confirmed lost), HUNTER 2's hold queued as for any silent vehicle; the nomination leaves HUNTER 1 out and counts HUNTER 2 until op-2 accepts its unknown position; HUNTER 1's first report revokes the carried loss; done; replay checks the carry against the earlier log; tamper caught |

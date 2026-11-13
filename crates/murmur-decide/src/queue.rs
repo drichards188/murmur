@@ -825,11 +825,12 @@ pub fn committed_op(state: &str) -> bool {
     matches!(state, "acked" | "active" | "done")
 }
 
-/// Op states an op ends in.
+/// Op states an op ends in (rules 30: `lost`, the engine's own report on a vehicle confirmed
+/// lost, [`crate::nodes::LOST_OP`]).
 pub fn ended_op(state: &str) -> bool {
     matches!(
         state,
-        "done" | "failed" | "superseded" | REQUEUED_OP | UNCONFIRMED_OP
+        "done" | "failed" | "superseded" | REQUEUED_OP | UNCONFIRMED_OP | crate::nodes::LOST_OP
     )
 }
 

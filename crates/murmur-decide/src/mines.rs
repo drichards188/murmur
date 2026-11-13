@@ -410,6 +410,19 @@ pub struct InPlayOrder {
 /// Rules 27: for a lay order (`spec`), the orders in play on our other vehicles (`intents`: every
 /// intent with its spec and the state it plays as): each vehicle's newest dispatched order with a
 /// task path. Empty for any other kind. Pure: the engine and replay call it on their intents.
+/// Rules 30: `orders` without those of our vehicles confirmed lost (`nodes_lost`, a decision's
+/// fact; a loss carried over only on the vehicle lost): the minefield check leaves such a vehicle
+/// out, its orders with it. Nothing before rules 30.
+pub fn without_lost(
+    orders: &mut BTreeMap<Uid, InPlayOrder>,
+    nodes_lost: &BTreeMap<Uid, crate::world::LostNode>,
+    cfg: &RulesConfig,
+) {
+    if cfg.node_loss() {
+        orders.retain(|u, _| !nodes_lost.get(u).is_some_and(crate::world::LostNode::holds));
+    }
+}
+
 pub fn orders_in_play<'a>(
     intents: impl Iterator<Item = (IntentId, &'a IntentSpec, State)>,
     spec: &IntentSpec,
@@ -689,11 +702,17 @@ fn hazard_check(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
             ));
         }
     }
-    // ours of those domains: where they are, their homes, the orders they are on
+    // ours of those domains: where they are, their homes, the orders they are on (rules 30: but
+    // one confirmed lost, left out with its orders)
     let mut judged_ours = 0usize;
+    let mut lost_ours: Vec<String> = Vec::new();
     for (u, ov) in world.vehicles.iter().filter(|(u, _)| Some(*u) != uid) {
         let Some(op) = &ov.platform else { continue };
         if !field.sets_off(op.domain) {
+            continue;
+        }
+        if let Some(note) = crate::engage::confirmed_lost(u, ov, world, cfg) {
+            lost_ours.push(note);
             continue;
         }
         judged_ours += 1;
@@ -792,10 +811,16 @@ fn hazard_check(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> 
         .filter(|d| !field.sets_off(*d))
         .map(Domain::as_str)
         .collect();
+    // rules 30: ours confirmed lost were left out
+    let lost_note = if lost_ours.is_empty() {
+        String::new()
+    } else {
+        format!("; left out, confirmed lost: {}", lost_ours.join(", "))
+    };
     res(
         Outcome::Pass,
         format!(
-            "{} clear of {judged_tracks} protected track(s) of {} now and on their course for {TRACK_HORIZON_S:.0} s, of {judged_ours} of ours there, their homes and orders{layer_note}, and of the no-strike areas; {} traffic can't set it off; not judged: recorded lanes and roads (none loaded) and any course beyond {TRACK_HORIZON_S:.0} s",
+            "{} clear of {judged_tracks} protected track(s) of {} now and on their course for {TRACK_HORIZON_S:.0} s, of {judged_ours} of ours there, their homes and orders{layer_note}, and of the no-strike areas; {} traffic can't set it off; not judged: recorded lanes and roads (none loaded) and any course beyond {TRACK_HORIZON_S:.0} s{lost_note}",
             field_words(&field),
             domains(&field.targets),
             others.join(", ")

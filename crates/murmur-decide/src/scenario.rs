@@ -143,7 +143,9 @@ pub struct Scenario {
     /// credited to an agent's session), and for rules 20 `edit_munition` (the released munition's
     /// impact moved 10 s later), and for rules 26 `burst_after_stop` (a gun's last burst logged
     /// again after its fire was stopped), and for rules 24 `edit_rounds` (every release logged with one
-    /// more round left than it spent).
+    /// more round left than it spent), and for rules 30 `lost_by_agent` (a confirmed loss credited
+    /// to an agent), `hide_loss_revoked` (every revocation of a loss cut) and `redate_loss` (a
+    /// confirmation's report moved 20 s later, everywhere the loss appears).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tamper: Option<String>,
     /// Seconds to run (default: the last step plus 10).
@@ -227,17 +229,53 @@ pub struct Scenario {
     /// its `unspent`: `un-spent by op-2`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expect_unspent: Vec<String>,
+    /// Rules 30: presumptions of loss (and presumptions cleared) replay must list, in order
+    /// (substrings of its `nodes_presumed`: `vehicle hunter-1: presumed lost (struck)`,
+    /// `vehicle hunter-1: presumption cleared`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect_presumed: Vec<String>,
+    /// Rules 30: confirmed losses replay must list, in order (substrings of its `nodes_lost`:
+    /// `vehicle hunter-1: confirmed lost by op-2`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect_lost: Vec<String>,
+    /// Rules 30: revoked losses replay must list, in order (substrings of its `losses_revoked`:
+    /// `vehicle hunter-1: loss revoked, heard again`, `loss revoked by op-1`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect_revoked: Vec<String>,
 }
 
 /// Rules 15: an earlier log whose carry failed at the start: its file name, why it could not be
 /// read, and the vehicles (of the file's) it may owe values to, each as the vehicle it is now.
+/// Rules 30: or an earlier log that was read (no `error`) in which operators had confirmed our
+/// vehicles lost (`lost`): the runner writes that log with the engine (each loss confirmed on the
+/// vehicle's silence since its last report, `lost_for_s` before the start), carries it over as the
+/// bridge does, and hands it to replay to check the carry against.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CarriedDef {
     pub log: String,
-    pub error: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
     #[serde(default)]
     pub may_owe: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lost: Vec<CarriedLostDef>,
+}
+
+/// Rules 30: one of ours an earlier run confirmed lost (`[[carried]]`'s `lost`): the scenario's
+/// vehicle under that uid (silent from the start: its `lost_for_s` is the silence the loss was
+/// confirmed on), the operator with engagement authority who confirmed it, and the vehicle it was
+/// (its platform and callsign, as the bridge knew them; default the scenario vehicle's own: the
+/// same vehicle, else another one under the uid now).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CarriedLostDef {
+    pub uid: String,
+    pub by: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callsign: Option<String>,
 }
 
 fn out_of_play() -> String {
@@ -760,6 +798,27 @@ pub enum Action {
     /// Rules 15: an operator with engagement authority un-spends a platform spent by its own
     /// effect, saying why (it survived); without engagement authority it is refused.
     Unspend { by: String, uid: String, note: String },
+    /// Rules 30: one of ours reports itself struck (the bridge's `vehicle.event` struck, from the
+    /// truth side's impact: a hit), with the text the bridge would log.
+    Struck {
+        uid: String,
+        #[serde(default)]
+        text: Option<String>,
+    },
+    /// Rules 30: an operator with engagement authority confirms one of ours lost, on its silence
+    /// since its last report (or since `since_s`, scenario seconds, to name another report: the
+    /// engine refuses it), with a note (needed when nothing presumes it lost); without engagement
+    /// authority it is refused.
+    ConfirmLost {
+        by: String,
+        uid: String,
+        #[serde(default)]
+        since_s: Option<f64>,
+        #[serde(default)]
+        note: Option<String>,
+    },
+    /// Rules 30: any operator revokes the loss of one of ours, saying why.
+    RevokeLost { by: String, uid: String, note: String },
     /// Check the last nomination now.
     Expect {
         #[serde(default)]
@@ -1343,6 +1402,13 @@ pub fn run(
             .collect(),
     )
     .map_err(setup)?;
+    // rules 30: earlier logs that were read, in which our vehicles were confirmed lost: written by
+    // the engine here, carried as the bridge carries them, and given to replay
+    let mut earlier: Vec<(String, String)> = Vec::new();
+    for c in sc.carried.iter().filter(|c| c.error.is_none()) {
+        let text = earlier_log(sc, c, &policy, &catalog, &areas).map_err(|e| setup(format!("carried {}: {e}", c.log)))?;
+        earlier.push((c.log.clone(), text));
+    }
     // rules 15: earlier logs whose carry failed, as the bridge records them at its start (rules
     // before 12 record none: their bridge only said so in the inbox)
     let carried: Vec<crate::replay::CarriedFrom> = sc
@@ -1350,6 +1416,22 @@ pub fn run(
         .iter()
         .filter(|_| policy.rules.followups())
         .map(|c| {
+            if let Some((_, text)) = earlier.iter().find(|(l, _)| *l == c.log) {
+                let (head, seq) = replay::log_head(text).unzip();
+                let d = replay::owed_debts(text);
+                return crate::replay::CarriedFrom {
+                    log: c.log.clone(),
+                    head,
+                    last_seq: seq,
+                    owed: d.owed,
+                    pending: d.pending,
+                    spent: d.spent,
+                    rounds: d.rounds,
+                    fields: d.fields,
+                    nodes_lost: d.nodes_lost,
+                    ..Default::default()
+                };
+            }
             let may_owe = c
                 .may_owe
                 .iter()
@@ -1379,7 +1461,7 @@ pub fn run(
             crate::replay::CarriedFrom {
                 log: c.log.clone(),
                 may_owe,
-                error: Some(c.error.clone()),
+                error: c.error.clone(),
                 fleet_read: Some(crate::replay::FleetRead {
                     sha256: crate::hash::sha256_hex(&serde_json::to_vec(&fleet).unwrap_or_default()),
                     armed,
@@ -1686,6 +1768,10 @@ pub fn run(
         // release / observe
         let _ = engine.expire_due();
         let world = snapshot(&vehicles, &tracks, &catalog, &areas, now);
+        // rules 30: our vehicles' standing (a loss revoked, a presumption raised or cleared)
+        if let Err(e) = engine.step_nodes(&world) {
+            failures.push(format!("t={s}: step_nodes: {e}"));
+        }
         if rule_id {
             match engine.step_identification(&world) {
                 Ok(new) => {
@@ -2069,10 +2155,13 @@ pub fn run(
         }
     }
     // replayed with the rules it was decided under (the current ones unless asked otherwise)
+    let earlier_logs: Vec<(&str, &str)> = earlier.iter().map(|(l, t)| (l.as_str(), t.as_str())).collect();
     let replay_opts = replay::ReplayOptions {
         rules: opts.rules_version.map_or_else(replay::RulesAccepted::default, replay::RulesAccepted::Exactly),
         // rules 29: the fleet the run handed its starting tasks over from, as the bridge logs it
         own_fleet: own_fleet.as_deref(),
+        // rules 30: the earlier logs it carried our lost vehicles over from
+        carried_logs: &earlier_logs,
         ..replay::ReplayOptions::default()
     };
     let report = replay::replay_str_with(&text, &replay_opts).map_err(|e| setup(e.to_string()))?;
@@ -2115,6 +2204,20 @@ pub fn run(
                 sc.expect_unspent, report.unspent
             ));
             break;
+        }
+    }
+    // rules 30: presumptions, confirmed losses and revocations, as replay recomputed them
+    for (want, got, what) in [
+        (&sc.expect_presumed, &report.nodes_presumed, "presumptions of loss"),
+        (&sc.expect_lost, &report.nodes_lost, "confirmed losses"),
+        (&sc.expect_revoked, &report.losses_revoked, "losses revoked"),
+    ] {
+        let mut it = got.iter();
+        for w in want {
+            if !it.any(|g| g.contains(w.as_str())) {
+                failures.push(format!("expected {what} {want:?} in order, replay lists {got:?}"));
+                break;
+            }
         }
     }
     let mut tamper_not_applicable = None;
@@ -2440,6 +2543,84 @@ fn own_looks(
     before
 }
 
+/// Rules 30: an earlier run's log in which operators confirmed our vehicles lost (`[[carried]]`
+/// with `lost`), written by the engine on the scenario's policy and roster: each vehicle silent
+/// since its last report, `lost_for_s` before the scenario's start, as the vehicle the def names
+/// (its platform and callsign), confirmed lost on that silence by the def's operator with a note,
+/// the earlier run's clock half way through the shortest of those silences.
+fn earlier_log(sc: &Scenario, c: &CarriedDef, policy: &Policy, catalog: &Catalog, areas: &AreaSet) -> Result<String, String> {
+    let roster = Roster::new(
+        sc.operators.iter().map(|o| OperatorId::new(&o.id)).collect(),
+        sc.operators.iter().filter(|o| o.engage).map(|o| OperatorId::new(&o.id)).collect(),
+    )?;
+    let mut losses = Vec::new();
+    for l in &c.lost {
+        let v = sc
+            .vehicles
+            .iter()
+            .find(|v| v.uid == l.uid)
+            .ok_or_else(|| format!("{} is not a vehicle of the file", l.uid))?;
+        let silent_s = v.lost_for_s.ok_or_else(|| format!("vehicle {} carried as lost needs its lost_for_s (the silence it was lost on)", l.uid))?;
+        losses.push((l, v, silent_s));
+    }
+    let shortest = losses.iter().map(|(_, _, s)| *s).min().ok_or("a carried log that was read names the vehicles it lost (lost)")?;
+    let at = T0.plus_ms(-i64::from(shortest) * 500);
+    let clock = ManualClock::new(at);
+    let sink = MemorySink::new();
+    let mut engine = Engine::start(
+        policy.clone(),
+        Some(areas.clone()),
+        roster,
+        crate::engine::StartCarry {
+            pointer: None,
+            from: Vec::new(),
+            track_drop_s: Some(TRACK_DROP_S),
+        },
+        Box::new(clock),
+        Box::new(sink.clone()),
+    )
+    .map_err(|e| e.to_string())?;
+    for (l, v, silent_s) in losses {
+        let sess = engine
+            .open_operator_session_with(OperatorId::new(&l.by), Grants { engage: true })
+            .map_err(|e| e.to_string())?;
+        let auth = sess.engagement_authority().ok_or_else(|| format!("{} has no engagement authority", l.by))?;
+        let last = T0.plus_ms(-i64::from(silent_s) * 1000);
+        let platform = l.platform.clone().unwrap_or_else(|| v.platform.clone());
+        let p = catalog.get(&platform).cloned();
+        let at_pos = LonLat::new(v.at[0], v.at[1]);
+        let home = v.home.map_or(at_pos, |h| LonLat::new(h[0], h[1]));
+        let mut w = WorldSnapshot::new(at);
+        w.vehicles.insert(
+            Uid::new(&l.uid),
+            VehicleFacts {
+                autopilot: p.as_ref().and_then(|p| p.autopilot).map(|a| Fact::new(a, last)),
+                nav_ready: Some(Fact::new(true, last)),
+                position: Some(Fact::new(at_pos, last)),
+                home: Some(Fact::new(home, T0)),
+                battery_pct: Some(Fact::new(v.battery, last)),
+                report_interval_ms: Some(v.report_interval_ms),
+                velocity_mps: Some(Fact::new(v.velocity, last)),
+                platform: p,
+                ..VehicleFacts::default()
+            },
+        );
+        w.identities.insert(
+            Uid::new(&l.uid),
+            crate::engage::VehicleIdentity {
+                platform: Some(platform),
+                callsign: Some(l.callsign.clone().or_else(|| v.callsign.clone()).unwrap_or_else(|| l.uid.clone())),
+                sysid: None,
+                home: Some(home),
+            },
+        );
+        engine
+            .confirm_lost(auth, Uid::new(&l.uid), Some(last), "seen to go down by a crew ashore; it never answered again", &w, None)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(sink.text())
+}
+
 fn state_str(s: State) -> String {
     serde_json::to_value(s)
         .ok()
@@ -2717,6 +2898,46 @@ fn act(
                 _ => return failures.push(format!("t={s}: write_off names one vehicle (uid) or one log")),
             };
             if let Err(e) = engine.write_off_restore(sess.authority(), what, note) {
+                refusals.push(e.to_string());
+            }
+        }
+        Action::Struck { uid, text } => {
+            if !vehicles.contains_key(uid) {
+                return failures.push(format!("t={s}: unknown vehicle {uid}"));
+            }
+            let text = text.clone().unwrap_or_else(|| "struck (W-1): launch seen".into());
+            if let Err(e) = engine.record_vehicle_event(&Uid::new(uid), crate::nodes::STRUCK_EVENT, &text) {
+                failures.push(format!("t={s}: struck {uid}: {e}"));
+            }
+        }
+        Action::ConfirmLost { by, uid, since_s, note } => {
+            let Some(sess) = session(by) else {
+                return failures.push(format!("t={s}: unknown operator {by}"));
+            };
+            // only engagement authority confirms a loss (the bridge answers 403 otherwise)
+            let Some(auth) = sess.engagement_authority() else {
+                return refusals.push(format!("{by}: confirming one of ours lost needs engagement authority"));
+            };
+            let w = world(tracks, vehicles);
+            let since = match since_s {
+                Some(x) => Some(T0.plus_ms((x * 1000.0).round() as i64)),
+                None => w.vehicles.get(&Uid::new(uid)).and_then(|v| v.position.as_ref().map(|p| p.t)),
+            };
+            match engine.confirm_lost(auth, Uid::new(uid), since, note.as_deref().unwrap_or(""), &w, None) {
+                Ok(out) => extra.losses.push(format!(
+                    "t={s} {uid} lost: voided {:?}, ended {:?}, closed {}",
+                    out.voided.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                    out.ended.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                    out.closed.is_some()
+                )),
+                Err(e) => refusals.push(e.to_string()),
+            }
+        }
+        Action::RevokeLost { by, uid, note } => {
+            let Some(sess) = session(by) else {
+                return failures.push(format!("t={s}: unknown operator {by}"));
+            };
+            if let Err(e) = engine.revoke_lost(sess.authority(), &Uid::new(uid), note) {
                 refusals.push(e.to_string());
             }
         }
@@ -3517,6 +3738,8 @@ fn act(
 struct Extra {
     /// No engagement step before this second.
     stall_until: u32,
+    /// Rules 30: what each confirmed loss ended (`t=<s> <uid> lost: voided [...], ...`).
+    losses: Vec<String>,
     /// Rules 26: a gun's bursts as they went out (`t=<s> burst <n>: <rounds> rounds`).
     bursts: Vec<String>,
     /// The last `task` step's intent.
@@ -4398,6 +4621,77 @@ fn follow_queue(
 // ---- log attacks ------------------------------------------------------------------------
 
 /// Rules 16: every decision's inputs an event logs.
+/// Rules 30: the attacks on a confirmed loss (none for another `kind`): `lost_by_agent` (a
+/// confirmation credited to an agent, under the confirming operator's session), `hide_loss_revoked`
+/// (every revocation of a loss cut, as if the vehicle had never been heard: the decisions after it
+/// that counted it again stay as logged), `redate_loss` (a confirmation's `since` moved 20 s later,
+/// to a report the vehicle never made, everywhere the loss appears: the decisions' `nodes_lost`,
+/// the revocation, the picture tokens).
+fn forge_loss(events: &mut Vec<crate::audit::Event>, kind: &str) -> Option<Result<String, String>> {
+    let mut done = false;
+    match kind {
+        "lost_by_agent" => {
+            for e in events.iter_mut() {
+                if let EventBody::NodeLost { by, .. } = &mut e.body {
+                    *by = OperatorId::new("agent-planner");
+                    done = true;
+                }
+            }
+            if !done {
+                return Some(Err("no node.lost to credit".into()));
+            }
+        }
+        "hide_loss_revoked" => {
+            let before = events.len();
+            events.retain(|e| !matches!(e.body, EventBody::NodeLossRevoked { .. }));
+            if events.len() == before {
+                return Some(Err("no node.loss_revoked to cut".into()));
+            }
+        }
+        "redate_loss" => {
+            let mut moved: BTreeMap<Uid, Option<Time>> = BTreeMap::new();
+            for e in events.iter_mut() {
+                if let EventBody::NodeLost { uid, since, .. } = &mut e.body {
+                    let to = since.map(|t| t.plus_ms(20_000));
+                    moved.insert(uid.clone(), to);
+                    *since = to;
+                }
+            }
+            if moved.is_empty() {
+                return Some(Err("no node.lost to re-date".into()));
+            }
+            for e in events.iter_mut() {
+                match &mut e.body {
+                    EventBody::NodeLossRevoked { uid, since, .. } => {
+                        if let Some(to) = moved.get(uid) {
+                            *since = *to;
+                        }
+                    }
+                    EventBody::PictureIssued { token, .. }
+                    | EventBody::ApprovalGranted { token: Some(token), .. }
+                    | EventBody::ApprovalConcurred { token: Some(token), .. } => {
+                        for (u, l) in token.nodes_lost.iter_mut() {
+                            if let Some(to) = moved.get(u) {
+                                l.since = *to;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                for i in decision_inputs(&mut e.body) {
+                    for (u, l) in i.nodes_lost.iter_mut() {
+                        if let Some(to) = moved.get(u) {
+                            l.since = *to;
+                        }
+                    }
+                }
+            }
+        }
+        _ => return None,
+    }
+    Some(rechained(events))
+}
+
 fn decision_inputs(body: &mut EventBody) -> Vec<&mut crate::world::LoggedInputs> {
     match body {
         EventBody::CheckResult { inputs, .. }
@@ -4510,6 +4804,10 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
             return Err("no concurrence on the lay order to drop".into());
         }
         return rechained(&mut events);
+    }
+    // rules 30: a confirmed loss forged (no engagement needed)
+    if let Some(forged) = forge_loss(&mut events, kind) {
+        return forged;
     }
     let engage_intent = events.iter().find_map(|e| match &e.body {
         EventBody::IntentCreated { intent, .. } if matches!(intent.task, Task::Engage { .. }) => {

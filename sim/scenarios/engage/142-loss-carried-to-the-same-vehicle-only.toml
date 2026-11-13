@@ -1,0 +1,130 @@
+# Rules 30 (docs/NODE-LOSS.md section 4, bd murmur-zb1d.3): a loss carries over a restart to the same
+# vehicle only. The earlier run (written here by the engine, carried over as the bridge carries it
+# and given to replay) confirmed two of ours lost, each silent 300 s before this run starts:
+# HUNTER 1, and the vehicle that was under hunter-2 then (OTHER 7). This run's start carries both
+# (`carried_from`'s `nodes_lost`). HUNTER 1 is the same vehicle (platform and callsign): it is still
+# lost, so an orbit for it is refused and the drone's nomination leaves it out of the keep-out.
+# Under hunter-2 now is another vehicle (HUNTER 2): the loss does not hold it, so an orbit for it is
+# not refused as for a lost vehicle (it waits for its link) and the nomination counts it, until op-2
+# accepts its unknown position for this engagement (rules 6). Under way, HUNTER 1 reports again: the
+# carried loss is revoked at its first report. Then the log is forged to cut that revocation;
+# replay must catch the decisions that read HUNTER 1's report with its loss still in force.
+title = "A loss carries over a restart to the same vehicle only, and its first report revokes it"
+invariant = "keep_out_friendly"
+attack = "a loss carried to another vehicle under the uid; a carried loss's revocation cut"
+expect = "done"
+expect_revoked = ["vehicle hunter-1: loss revoked, heard again"]
+tamper = "hide_loss_revoked"
+min_rules = 30
+end_s = 200
+
+[[carried]]
+log = "20261112T120000Z-4242.jsonl"
+lost = [
+    { uid = "hunter-1", by = "op-2" },
+    { uid = "hunter-2", by = "op-2", callsign = "OTHER 7" },
+]
+
+[[operator]]
+id = "op-1"                 # orders; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+[[operator]]
+id = "op-4"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[vehicle]]
+uid = "hunter-1"
+platform = "seahunter"
+at = [-122.4870, 37.8120]   # 700 m east of the drone's station, where it last reported
+lost_for_s = 300
+
+[[vehicle]]
+uid = "hunter-2"
+platform = "seahunter"
+callsign = "HUNTER 2"
+at = [-122.4870, 37.8150]   # 750 m north-east of it
+lost_for_s = 300
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1                    # the same vehicle, still lost: refused
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["hunter-1"]
+center = [-122.4870, 37.8120]
+radius_m = 150
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "rejected"
+task_reason = "confirmed lost"
+
+[[step]]
+at_s = 3                    # another vehicle under the uid: not lost (only its silence counts)
+action = "task"
+by = "op-1"
+task = "hold"
+uids = ["hunter-2"]
+
+[[step]]
+at_s = 4
+action = "expect"
+task_state = "queued"
+
+[[step]]
+at_s = 5                    # HUNTER 1 left out as lost; HUNTER 2 accepted as unknown for this one
+action = "nominate"
+by = "op-2"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+accept = ["hunter-2"]
+
+[[step]]
+at_s = 8
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 11
+action = "approve"
+by = "op-4"
+
+[[step]]
+at_s = 12
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 30                   # HUNTER 1's first report in this run: the carried loss is revoked
+action = "vehicle"
+uid = "hunter-1"
+silent = false

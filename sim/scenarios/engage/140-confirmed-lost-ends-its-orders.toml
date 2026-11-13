@@ -1,0 +1,162 @@
+# Rules 30 (docs/NODE-LOSS.md sections 2 and 4, decisions D1 and D6, bd murmur-zb1d.3): an operator
+# with engagement authority confirms one of ours lost, on the silence they saw and the evidence the
+# engine presumed it lost on. VIPER 1, an armed USV 1.1 km east of the drone's station, is sent
+# against it; its preload confirms (its own lost-link values owed back from then on) and op-1 aborts
+# the engagement. An orbit for it waits in the queue for those values to be back. Then its link is
+# cut, it reports itself struck and is presumed lost. op-1, without engagement authority, can't
+# confirm the loss; op-2 confirms it: `node.lost` with the struck evidence, then the queued orbit is
+# voided and the values owed back to it close (`restore.closed` lost), so nothing is owed for ever.
+# A nomination with the drone then passes: VIPER 1 is left out of the keep-out (its silence alone
+# would have blocked it). Then the log is forged to credit the confirmation to an agent; replay
+# must catch it.
+title = "A vehicle confirmed lost leaves the keep-out; its queued order and owed values end"
+invariant = "keep_out_friendly"
+attack = "an operator without engagement authority confirms a loss; a confirmation credited to an agent"
+expect = "done"
+expect_preload = ["set confirmed"]
+expect_presumed = ["vehicle viper-1: presumed lost (struck)"]
+expect_lost = ["vehicle viper-1: confirmed lost by op-2 (silent since"]
+expect_closed = ["confirmed lost by op-2", "expended by its own effect"]
+expect_refusals = ["confirming one of ours lost needs engagement authority"]
+expect_nothing_owed = true
+restore_after_s = 1000      # the USV never answers the restore of its own values in this run
+tamper = "lost_by_agent"
+min_rules = 30
+end_s = 260
+
+[[operator]]
+id = "op-1"                 # nominates and orders; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+[[operator]]
+id = "op-4"
+engage = true
+
+[[vehicle]]
+uid = "viper-1"
+platform = "magura_pre_loadout" # armed USV, surviving its effect; 12 m/s cruise; a 30 s lost-link timer
+at = [-122.4824, 37.8120]   # 1.1 km east of the drone's station
+lost_link_s = 30
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1
+action = "nominate"
+by = "op-1"
+platform = "viper-1"
+track = "T-0001"
+radius_m = 75
+fallback = "loiter"
+window_s = 600
+
+[[step]]
+at_s = 3
+action = "approve"
+by = "op-2"
+
+[[step]]
+at_s = 5
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 6
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 10                   # stopped by an operator: its fallback, its own values still owed
+action = "abort"
+by = "op-1"
+
+[[step]]
+at_s = 12                   # an orbit for it waits in the queue for its own values to be back
+action = "task"
+by = "op-1"
+task = "orbit"
+uids = ["viper-1"]
+center = [-122.4824, 37.8120]
+radius_m = 150
+
+[[step]]
+at_s = 13
+action = "expect"
+task_state = "queued"
+task_reason = "lost-link failsafe"
+
+[[step]]
+at_s = 20                   # its link is cut
+action = "vehicle"
+uid = "viper-1"
+silent = true
+
+[[step]]
+at_s = 21                   # its own last word: struck
+action = "struck"
+uid = "viper-1"
+
+[[step]]
+at_s = 40                   # no engagement authority: refused
+action = "confirm_lost"
+by = "op-1"
+uid = "viper-1"
+
+[[step]]
+at_s = 41
+action = "confirm_lost"
+by = "op-2"
+uid = "viper-1"
+
+[[step]]
+at_s = 42
+action = "expect"
+task_state = "voided"
+task_reason = "confirmed lost"
+
+[[step]]
+at_s = 45                   # VIPER 1 left out: the nomination passes
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 48
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 51
+action = "approve"
+by = "op-4"
+
+[[step]]
+at_s = 52
+action = "expect"
+state = "dispatched"

@@ -296,6 +296,7 @@ pub mod keepout;
 pub mod loadout;
 pub mod mines;
 pub mod lost;
+pub mod nodes;
 pub mod plan;
 pub mod passkey;
 pub mod policy;
@@ -373,6 +374,8 @@ pub use space::{
     SegmentId, SpaceAnswer, SpaceArea, SpaceOracle, SpaceOrder, SpaceQuery, SpaceRules,
     SpaceSegment, Window,
 };
+pub use nodes::{Evidence, EvidenceKind, LostMark, NodeLedger, Presumption, Revocation};
+pub use engine::{LossOutcome, NodeStep};
 pub use terrain::{NearSample, NoTerrain, PolygonTerrain, Surface, TerrainOracle};
 pub use time::{Clock, ManualClock, SystemClock, Time};
 pub use world::{

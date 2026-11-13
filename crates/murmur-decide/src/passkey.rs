@@ -155,6 +155,13 @@ pub enum StepUpFor {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from: Option<String>,
     },
+    /// Rules 30: confirming one of ours lost, on its silence since its report at `since` (none:
+    /// it never reported a position).
+    NodeLost {
+        uid: Uid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<Time>,
+    },
 }
 
 impl StepUpFor {
@@ -235,6 +242,7 @@ impl StepUpFor {
                 format!("confirming declaration {declaration} of {track}")
             }
             StepUpFor::Unspend { uid, spent_by, .. } => format!("un-spending vehicle {uid} (spent by {spent_by})"),
+            StepUpFor::NodeLost { uid, .. } => format!("confirming vehicle {uid} lost"),
         }
     }
 }

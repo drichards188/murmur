@@ -166,13 +166,22 @@ pub enum LostLinkSource {
 
 /// Rules 30: one of ours an operator confirmed lost and no report has revoked since (`node.lost`),
 /// as [`WorldSnapshot::nodes_lost`] carries it: lost since its report at `since` (the last position
-/// the confirmation was made on; none: it never reported one), confirmed by `by` at `t`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// the confirmation was made on; none: it never reported one), confirmed by `by` at `t`. One carried
+/// over from an earlier run's log (`from`) names the vehicle it was confirmed on (`lost_on`) and the
+/// one under the uid now as the bridge says (`now`): it holds only that very vehicle
+/// ([`LostNode::holds`], `crate::nodes`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LostNode {
     pub since: Option<Time>,
     pub by: OperatorId,
     pub t: Time,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lost_on: Option<crate::engage::VehicleIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub now: Option<crate::engage::VehicleIdentity>,
 }
 
 /// Rules 25: what a vehicle reported damaged in itself ([`VehicleFacts::damage`]). `mobility`: its
@@ -1035,12 +1044,16 @@ impl WorldSnapshot {
             // engine-owned (rules 24): filled from its ledger of rounds
             rounds: BTreeMap::new(),
             // rules 12: the bridge's identities of the intent's vehicles (a carried restore's
-            // hold reads them)
-            identities: spec
-                .uids
-                .iter()
-                .filter_map(|u| self.identities.get(u).map(|i| (u.clone(), i.clone())))
-                .collect(),
+            // hold reads them); rules 30: of every vehicle an engagement's keep-out or a lay
+            // order's field judges (a loss carried over holds only the vehicle lost)
+            identities: if matches!(spec.task, Task::Engage { .. } | Task::Lay { .. }) {
+                self.identities.clone()
+            } else {
+                spec.uids
+                    .iter()
+                    .filter_map(|u| self.identities.get(u).map(|i| (u.clone(), i.clone())))
+                    .collect()
+            },
             // engine-owned (rules 23): filled for an identify order's steps
             callsigns: BTreeMap::new(),
             // engine-owned (rules 16): filled from its ledger of lost contacts

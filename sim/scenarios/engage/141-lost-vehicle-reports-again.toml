@@ -1,0 +1,103 @@
+# Rules 30 (docs/NODE-LOSS.md sections 2 and 4, decision D2, bd murmur-zb1d.3): a loss is undone by
+# any report from the vehicle, before any decision reads that report. HUNTER 1, silent a minute
+# 900 m east of the drone's station, is confirmed lost by op-2 with nothing presuming it (a note
+# says why: its crew's last call). The drone's nomination passes with HUNTER 1 left out and is
+# approved. Under way, HUNTER 1 reports again, 130 m from the effect point: the loss is revoked
+# (`node.loss_revoked`, cause heard) before the engagement's picture reads that report, the picture
+# counts HUNTER 1 again, and the engagement stops with its fallback before any release. Then the
+# log is forged to move the confirmation's report 20 s later (a report HUNTER 1 never made),
+# everywhere the loss appears; replay must catch it.
+title = "A vehicle confirmed lost reports again: the loss is revoked and it stops the engagement"
+invariant = "keep_out_friendly"
+attack = "a vehicle confirmed lost turns up inside the keep-out while the engagement is under way"
+expect = "aborted"
+expect_rule = "keep_out_friendly"
+expect_lost = ["evidence: the operator's own): its crew's last call"]
+expect_revoked = ["vehicle hunter-1: loss revoked, heard again"]
+expect_refusals = ["nothing presumes it lost: say why it is"]
+tamper = "redate_loss"
+min_rules = 30
+end_s = 60
+
+[[operator]]
+id = "op-1"                 # nominates; no engagement authority
+[[operator]]
+id = "op-2"
+engage = true
+[[operator]]
+id = "op-3"
+engage = true
+[[operator]]
+id = "op-4"
+engage = true
+
+[[vehicle]]
+uid = "blade-1"
+platform = "switchblade"
+at = [-122.4700, 37.8160]
+
+[[vehicle]]
+uid = "hunter-1"
+platform = "seahunter"
+at = [-122.4848, 37.8120]   # 900 m east of the drone's station, where it last reported
+lost_for_s = 60
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding west of the bridge, inside ez-gate-west
+affiliation = "suspect"
+identity = "small_fast_boat"
+identity_confidence = 0.9
+sources = ["3:radar", "1:eo_ir"]
+
+[[step]]
+at_s = 0
+action = "declare"
+track = "T-0001"
+affiliation = "hostile"
+by = "op-1"
+
+[[step]]
+at_s = 1                    # nothing presumes it lost, and no note: refused
+action = "confirm_lost"
+by = "op-2"
+uid = "hunter-1"
+
+[[step]]
+at_s = 2
+action = "confirm_lost"
+by = "op-2"
+uid = "hunter-1"
+note = "its crew's last call said it was taking water fast; nothing heard from it since"
+
+[[step]]
+at_s = 3
+action = "nominate"
+by = "op-1"
+platform = "blade-1"
+track = "T-0001"
+radius_m = 75
+fallback = "return"
+window_s = 600
+
+[[step]]
+at_s = 6
+action = "approve"
+by = "op-3"
+
+[[step]]
+at_s = 9
+action = "approve"
+by = "op-4"
+
+[[step]]
+at_s = 10
+action = "expect"
+state = "dispatched"
+
+[[step]]
+at_s = 20                   # it reports again, 130 m from the effect point
+action = "vehicle"
+uid = "hunter-1"
+at = [-122.4935, 37.8120]
+silent = false

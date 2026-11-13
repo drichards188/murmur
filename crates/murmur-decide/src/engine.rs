@@ -138,6 +138,11 @@ pub enum EngineError {
     /// the one loaded first): nothing was logged.
     #[error("space segment: {0}")]
     SpaceSegment(String),
+    /// Rules 30: a confirmation or revocation of a loss the engine can't take (not silent since
+    /// that report, an engagement holding it, no note where one is needed, not lost, rules before
+    /// 30): nothing was logged.
+    #[error("node loss: {0}")]
+    NodeLoss(String),
 }
 
 /// Rules 12: what a start carries over from earlier runs' logs ([`Engine::start`]): the entries of
@@ -586,6 +591,10 @@ pub struct Engine {
     /// Rules 16: the contacts the tracker dropped that the engine holds as lost
     /// (`track.dropped`, less `track.reacquired`): every engagement's keep-out counts them.
     lost: crate::lost::LostLedger,
+    /// Rules 30: our vehicles' standing as the log has it (the strikes seen against each, the
+    /// spent marks, the presumptions and the losses in force), stepped with every event written,
+    /// as replay steps it with every event read ([`crate::nodes`]).
+    nodes: crate::nodes::NodeLedger,
 }
 
 /// Rules 10: a passkey as the engine follows it: whose, its public key, the last counter
@@ -675,6 +684,12 @@ impl Engine {
         if !policy.rules.mines() {
             for c in &mut carried_from {
                 c.fields.clear();
+            }
+        }
+        // rules 30: our vehicles earlier runs confirmed lost (no build of older rules logged one)
+        if !policy.rules.node_loss() {
+            for c in &mut carried_from {
+                c.nodes_lost.clear();
             }
         }
         if let Some(p) = &pointer
@@ -769,6 +784,7 @@ impl Engine {
             passkeys: BTreeMap::new(),
             used_nonces: BTreeSet::new(),
             lost: crate::lost::LostLedger::default(),
+            nodes: crate::nodes::NodeLedger::default(),
         };
         let policy = e.policy.clone();
         let keys = roster.passkeys.as_ref().map(|p| p.keys.clone()).unwrap_or_default();
@@ -2770,6 +2786,11 @@ impl Engine {
         if let Some(why) = self.unspend_refusal(&uid, world.vehicles.get(&uid), world.identities.get(&uid), world.t) {
             return refuse(format!("vehicle {uid}: {why}"));
         }
+        // rules 30: an un-spend reads a report from the platform: a loss it revokes goes first
+        if let Some(v) = world.vehicles.get(&uid) {
+            let one: BTreeMap<Uid, crate::world::VehicleFacts> = [(uid.clone(), v.clone())].into();
+            self.revoke_heard(&one, world.t, None)?;
+        }
         // rules 15: a credentials run re-enters the credential for it (a passkey's made for it)
         let needed = self.auth == Some(AuthMode::Credentials);
         let step_up = match step {
@@ -3028,6 +3049,8 @@ impl Engine {
             unknown_accepted: self.accepted_for(id),
             lost_accepted: self.accepted_lost_for(id),
             behaving_accepted: self.accepted_behaving_for(id),
+            // rules 30: the losses its keep-outs leave out (filled with the identification)
+            nodes_lost: inputs.nodes_lost.clone(),
         };
         let logged = self.log_inputs(&inputs)?;
         self.emit(EventBody::PictureIssued {
@@ -3335,6 +3358,7 @@ impl Engine {
             &accepted,
             &accepted_lost,
             &accepted_behaving,
+            &world.nodes_lost,
         ) {
             self.refuse(by, session, id, &why)?;
             return Err(EngineError::StalePicture { id, why });
@@ -4608,6 +4632,20 @@ impl Engine {
             self.ident.fill(&mut w.tracks);
         }
         self.drop_later_facts(w);
+        self.fill_nodes(w);
+    }
+
+    /// Rules 30: our vehicles confirmed lost that a decision on `w` reads (its `nodes_lost` fact,
+    /// from the ledger, never the caller's): each in force on a vehicle of `w` not heard since on
+    /// `w`'s facts (one heard is revoked before the decision is logged, [`Self::log_inputs_at`]),
+    /// a carried one with the vehicle under the uid now. Every decision's inputs are filled so
+    /// (they all pass through [`Self::identify`]); nothing before rules 30.
+    fn fill_nodes(&self, w: &mut WorldSnapshot) {
+        w.nodes_lost = if self.policy.rules.node_loss() {
+            self.nodes.lost_for(&w.vehicles, &w.identities, w.t, &self.policy.rules)
+        } else {
+            BTreeMap::new()
+        };
     }
 
     /// Rules 12: when the tracker started a track (`first_seen_t`) is a fact only rules 12
@@ -4727,6 +4765,9 @@ impl Engine {
                 self.intents.values().map(|i| (i.id(), i.spec(), i.play_state())),
                 spec,
             );
+            // rules 30: none for a vehicle confirmed lost (its `nodes_lost`, filled with the
+            // identification)
+            crate::mines::without_lost(&mut inputs.orders_in_play, &inputs.nodes_lost, &self.policy.rules);
         }
         self.fill_lost(spec, inputs);
     }
@@ -6623,6 +6664,8 @@ impl Engine {
         self.seq += 1;
         self.last_t = t;
         self.head = sha256_hex(line.as_bytes());
+        // rules 30: our vehicles' standing follows the log (replay steps it the same way)
+        self.nodes.step(event.seq, t, &event.body);
         Ok((t, event.body))
     }
 
@@ -6724,6 +6767,9 @@ impl Engine {
     /// [`Self::log_inputs`], its space answer and area set logged at `at` when given (else at the
     /// clock), its picture at the log's time ([`Self::log_picture`]).
     fn log_inputs_at(&mut self, inputs: &WorldSnapshot, at: Option<Time>) -> Result<LoggedInputs, EngineError> {
+        // rules 30: a loss whose vehicle these facts show heard again is revoked before the
+        // decision that reads the report is logged
+        self.revoke_heard(&inputs.vehicles, inputs.t, None)?;
         // rules 25: no build of older rules logged a vehicle's damage report (and none of their
         // decisions reads it); rules 30: nor its lost-link failsafe, nor our vehicles confirmed lost
         let drop_damage = !self.policy.rules.damage() && inputs.vehicles.values().any(|v| v.damage.is_some());
@@ -7503,6 +7549,340 @@ pub(crate) fn op_state_owner(spec: &IntentSpec, uid: &Uid) -> Result<(), String>
     }
 }
 
+/// Rules 30 ([`crate::rules::NODE_LOSS_SINCE`]): what [`Engine::step_nodes`] did on one tick: our
+/// vehicles presumed lost, the presumptions cleared and the losses revoked (each heard again), by
+/// uid.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NodeStep {
+    pub presumed: Vec<Uid>,
+    pub cleared: Vec<Uid>,
+    pub revoked: Vec<Uid>,
+}
+
+/// Rules 30: what a confirmation of a loss ended ([`Engine::confirm_lost`]): the intents naming
+/// the vehicle that waited (pending, approved, queued; a nomination of it among them), voided; the
+/// dispatched orders whose op on it ended `lost`, and of those the ones it ended (no vehicle left
+/// on them); the lost-link values owed back to it, closed (`restore.closed` lost). The bridge
+/// stops its restore jobs for it and closes its alerts.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LossOutcome {
+    pub voided: Vec<IntentId>,
+    pub ended: Vec<IntentId>,
+    pub finished: Vec<IntentId>,
+    pub closed: Option<BTreeMap<String, f64>>,
+}
+
+impl Engine {
+    /// Rules 30 ([`crate::rules::NODE_LOSS_SINCE`], docs/NODE-LOSS.md section 2): one step of our
+    /// vehicles' standing on `world` (the bridge's picture now), on its tick beside
+    /// [`Engine::step_lays`]: a loss whose vehicle is heard again is revoked (`node.loss_revoked`,
+    /// cause heard; the values its confirmation closed owed back again); a presumption whose
+    /// vehicle is heard again is cleared (`node.presumption_cleared`); a silent vehicle with logged
+    /// evidence of a strike ([`crate::nodes::NodeLedger::evidence`]) is presumed lost
+    /// (`node.presumed`, a flag for a person's review that decides nothing). Silence alone presumes
+    /// nothing. Nothing before rules 30.
+    pub fn step_nodes(&mut self, world: &WorldSnapshot) -> Result<NodeStep, EngineError> {
+        let mut out = NodeStep::default();
+        if !self.policy.rules.node_loss() {
+            return Ok(out);
+        }
+        let now = self.now();
+        out.revoked = self.revoke_heard(&world.vehicles, world.t, Some(now))?;
+        let cfg = self.policy.rules.clone();
+        for (uid, v) in &world.vehicles {
+            if self.nodes.lost_mark(uid).is_some() {
+                continue;
+            }
+            if let Some(p) = self.nodes.presumption(uid) {
+                if let Some(detail) = crate::nodes::heard_since(v, p.since, p.heard, world.t, &cfg) {
+                    let since = p.since;
+                    self.emit(EventBody::NodePresumptionCleared {
+                        uid: uid.clone(),
+                        since,
+                        world_t: world.t,
+                        vehicle: self.vehicle_as_logged(Some(v)),
+                        detail,
+                    })?;
+                    out.cleared.push(uid.clone());
+                }
+                continue;
+            }
+            if !crate::nodes::silent(v, world.t, &cfg) {
+                continue;
+            }
+            let evidence = self.nodes.evidence(uid, v);
+            if evidence.is_empty() {
+                continue;
+            }
+            self.emit(EventBody::NodePresumed {
+                uid: uid.clone(),
+                since: v.position.as_ref().map(|p| p.t),
+                evidence,
+                world_t: world.t,
+                vehicle: self.vehicle_as_logged(Some(v)),
+            })?;
+            out.presumed.push(uid.clone());
+        }
+        Ok(out)
+    }
+
+    /// Rules 30: revoke every loss in force whose vehicle `vehicles` (facts read at `t`) shows
+    /// heard again (`node.loss_revoked`, cause heard, with its facts), logged at `at` or else at
+    /// the log's time (before the decision that reads the report, so no event's time moves): its
+    /// protection is back, and the values its confirmation closed are owed back again. The uids
+    /// revoked. Nothing before rules 30.
+    fn revoke_heard(
+        &mut self,
+        vehicles: &BTreeMap<Uid, crate::world::VehicleFacts>,
+        t: Time,
+        at: Option<Time>,
+    ) -> Result<Vec<Uid>, EngineError> {
+        if !self.policy.rules.node_loss() {
+            return Ok(Vec::new());
+        }
+        let heard: Vec<(crate::nodes::LostMark, String)> = self
+            .nodes
+            .marks()
+            .into_iter()
+            .filter_map(|m| {
+                let v = vehicles.get(&m.uid)?;
+                let why = crate::nodes::heard_since(v, m.since, m.heard, t, &self.policy.rules)?;
+                Some((m, why))
+            })
+            .collect();
+        let mut out = Vec::new();
+        for (m, detail) in heard {
+            let body = EventBody::NodeLossRevoked {
+                uid: m.uid.clone(),
+                since: m.since,
+                from: m.from.clone(),
+                cause: crate::nodes::Revocation::Heard {
+                    world_t: t,
+                    vehicle: self.vehicle_as_logged(vehicles.get(&m.uid)),
+                    detail,
+                },
+            };
+            let at = at.unwrap_or(self.last_t);
+            self.emit_at(at, body.clone())?;
+            self.restores.step_body(&body);
+            out.push(m.uid);
+        }
+        Ok(out)
+    }
+
+    /// Rules 30: why `uid` can't be confirmed lost now, on `world` (its facts and time) with
+    /// `note`, if it can't: these rules have no loss; it is lost already; it is not silent since
+    /// exactly its report at `since` (the one the review showed: [`engage::lost_since_report`],
+    /// reused from rules 6); an engagement under way holds it (stop it first: its fallback is the
+    /// platform's own lost-link action); nothing presumes it lost and there is no note saying why
+    /// (decision D2). None: [`Engine::confirm_lost`] would take it (what the bridge asks before it
+    /// asks for a credential).
+    pub fn confirm_lost_refusal(&self, uid: &Uid, since: Option<Time>, note: &str, world: &WorldSnapshot) -> Option<String> {
+        if !self.policy.rules.node_loss() {
+            return Some("these decision rules have no loss of a node (rules 30)".into());
+        }
+        if let Some(m) = self.nodes.lost_mark(uid) {
+            return Some(format!("it is {} already", m.node(None).describe()));
+        }
+        if let Err(why) = engage::lost_since_report(world.vehicles.get(uid), since, world.t, &self.policy.rules) {
+            return Some(why);
+        }
+        if let Some(id) = self.engagement_holding(uid, None) {
+            return Some(format!(
+                "engagement {id} is under way on it: stop it first (its fallback is the platform's own lost-link action)"
+            ));
+        }
+        if note.trim().is_empty() && self.nodes.presumption(uid).is_none_or(|p| p.since != since) {
+            return Some("nothing presumes it lost: say why it is (a note: a crew's report, a picture from outside)".into());
+        }
+        None
+    }
+
+    /// Rules 30: what a passkey step-up for confirming `uid` lost on its silence since `since` is
+    /// for (its challenge binds both).
+    pub fn confirm_lost_purpose(&self, uid: &Uid, since: Option<Time>) -> crate::passkey::StepUpFor {
+        crate::passkey::StepUpFor::NodeLost { uid: uid.clone(), since }
+    }
+
+    /// Rules 30 (docs/NODE-LOSS.md sections 2 and 4, decisions D1 and D2): an operator with
+    /// engagement authority confirms one of ours lost, on the silence they saw (since its report
+    /// at `since`), under their own session: with the evidence of the presumption in force, or
+    /// none with a note saying why. Refused, nothing logged, as [`Engine::confirm_lost_refusal`]
+    /// says, and without the step-up a credentials run asks for (password or passkey per the
+    /// policy's `step_up_factor`; a passkey's made for this act, [`Engine::confirm_lost_purpose`]):
+    /// it removes a friendly-fire protection. Logged as `node.lost` with the vehicle's facts and
+    /// the bridge's identity of it (a later run's carry holds only that vehicle); then its
+    /// consequences, in this order: every intent naming it that waits (pending, approved, queued)
+    /// is voided, every dispatched order it runs has its op ended `lost` (the order ends when no
+    /// vehicle is left on it; an identify's look ends with it), and the lost-link values owed back
+    /// to it close (`restore.closed` lost). From then on it leaves the friendly keep-outs, the line
+    /// of fire and the minefield check, and takes no order, until a report from it revokes the
+    /// loss. An agent can't ([`AgentPort`] has no such method).
+    pub fn confirm_lost(
+        &mut self,
+        by: &EngagementAuthority,
+        uid: Uid,
+        since: Option<Time>,
+        note: &str,
+        world: &WorldSnapshot,
+        step: Option<StepUp>,
+    ) -> Result<LossOutcome, EngineError> {
+        if let Some(why) = self.confirm_lost_refusal(&uid, since, note, world) {
+            return Err(EngineError::NodeLoss(format!("vehicle {uid}: {why}")));
+        }
+        let purpose = self.confirm_lost_purpose(&uid, since);
+        let step_up = match step {
+            None if self.auth == Some(AuthMode::Credentials) => {
+                return Err(EngineError::NotAuthenticated {
+                    operator: by.operator().clone(),
+                    why: "confirming one of ours lost removes a friendly-fire protection: re-enter your credential (a step-up)".into(),
+                });
+            }
+            None => None,
+            Some(s) => Some(
+                self.valid_step(by.operator(), by.session(), &s, Some(&purpose))
+                    .map_err(|why| EngineError::NotAuthenticated {
+                        operator: by.operator().clone(),
+                        why,
+                    })?,
+            ),
+        };
+        let evidence = self
+            .nodes
+            .presumption(&uid)
+            .filter(|p| p.since == since)
+            .map(|p| p.evidence.clone())
+            .unwrap_or_default();
+        self.emit(EventBody::NodeLost {
+            uid: uid.clone(),
+            since,
+            by: by.operator().clone(),
+            session: by.session(),
+            note: note.trim().to_string(),
+            evidence,
+            world_t: world.t,
+            vehicle: self.vehicle_as_logged(world.vehicles.get(&uid)),
+            identity: world.identities.get(&uid).cloned(),
+            step_up,
+        })?;
+        self.end_for_loss(&uid, by.operator(), by.session())
+    }
+
+    /// Rules 30: what a confirmed loss of `uid` ends, right after its `node.lost`
+    /// ([`Engine::confirm_lost`], [`LossOutcome`]).
+    fn end_for_loss(&mut self, uid: &Uid, operator: &OperatorId, session: SessionId) -> Result<LossOutcome, EngineError> {
+        let mut out = LossOutcome::default();
+        let reason = format!("vehicle {uid} lost: {} by {operator}", crate::nodes::LOST_REASON);
+        let names = |spec: &IntentSpec| spec.uids.contains(uid) || matches!(&spec.task, Task::Track { target } if target == uid);
+        let waiting: Vec<(IntentId, bool)> = self
+            .intents
+            .values()
+            .filter(|i| {
+                names(i.spec())
+                    && matches!(i.state(), State::PendingApproval | State::AutoApproved | State::Approved | State::Queued)
+            })
+            .map(|i| (i.id(), i.spec().kind() == TaskKind::Engage && i.state() == State::Approved))
+            .collect();
+        for (id, approved_engagement) in waiting {
+            if approved_engagement {
+                // an approved engagement is stopped as one (its stop logged, nothing commanded)
+                self.stop_engagement(id, StopCause::System, format!("system: {reason}"), false)?;
+            } else {
+                self.void(id, &reason)?;
+            }
+            out.voided.push(id);
+        }
+        let running: Vec<IntentId> = self
+            .intents
+            .values()
+            .filter(|i| {
+                i.state() == State::Dispatched
+                    && i.spec().kind() != TaskKind::Engage
+                    && i.spec().uids.contains(uid)
+                    && !i.ops().get(uid).is_some_and(|o| queue::ended_op(o))
+            })
+            .map(Intent::id)
+            .collect();
+        for id in running {
+            self.op_state(id, uid, crate::nodes::LOST_OP, &reason, OpReport::Engine, None)?;
+            out.ended.push(id);
+            let i = self.get(id)?;
+            let left = i
+                .spec()
+                .uids
+                .iter()
+                .any(|u| self.nodes.lost_mark(u).is_none() && !i.ops().get(u).is_some_and(|o| queue::ended_op(o)));
+            if !left {
+                self.transition(id, Transition::Fail, format!("system: {reason}"))?;
+                out.finished.push(id);
+            }
+        }
+        if let Some(values) = self.restores.values_owed(uid).cloned() {
+            let body = EventBody::RestoreClosed {
+                uid: Some(uid.clone()),
+                values: values.clone(),
+                log: None,
+                closed_by: crate::audit::RestoreClosure::Lost {
+                    operator: operator.clone(),
+                    session,
+                },
+            };
+            self.emit(body.clone())?;
+            self.restores.step_body(&body);
+            out.closed = Some(values);
+        }
+        Ok(out)
+    }
+
+    /// Rules 30: any operator revokes the loss of `uid` in force (this run's or carried over),
+    /// under their own session, saying why (it only restricts: the vehicle counts again in every
+    /// keep-out at once and takes orders, and the values its confirmation closed are owed back
+    /// again). Logged as `node.loss_revoked`, cause operator. Refused, nothing logged, before rules
+    /// 30, without a note, and for a vehicle not lost. An agent can't ([`AgentPort`] has no such
+    /// method).
+    pub fn revoke_lost(&mut self, by: &HumanAuthority, uid: &Uid, note: &str) -> Result<(), EngineError> {
+        if !self.policy.rules.node_loss() {
+            return Err(EngineError::NodeLoss("these decision rules have no loss of a node (rules 30)".into()));
+        }
+        let note = note.trim();
+        if note.is_empty() {
+            return Err(EngineError::NodeLoss("say why the loss is revoked (a note)".into()));
+        }
+        let Some(m) = self.nodes.lost_mark(uid).cloned() else {
+            return Err(EngineError::NodeLoss(format!("vehicle {uid} is not confirmed lost")));
+        };
+        let body = EventBody::NodeLossRevoked {
+            uid: uid.clone(),
+            since: m.since,
+            from: m.from,
+            cause: crate::nodes::Revocation::Operator {
+                operator: by.operator().clone(),
+                session: by.session(),
+                note: note.to_string(),
+            },
+        };
+        self.emit(body.clone())?;
+        self.restores.step_body(&body);
+        Ok(())
+    }
+
+    /// Rules 30: the loss in force on `uid` (this run's, or carried over), if any: for the
+    /// bridge's review list and alerts.
+    pub fn node_lost(&self, uid: &Uid) -> Option<&crate::nodes::LostMark> {
+        self.nodes.lost_mark(uid)
+    }
+
+    /// Rules 30: every loss in force (this run's, `from` none, and those carried over).
+    pub fn nodes_lost(&self) -> Vec<crate::nodes::LostMark> {
+        self.nodes.marks()
+    }
+
+    /// Rules 30: every presumption of loss in force, by uid (what the review lists for a person).
+    pub fn nodes_presumed(&self) -> &BTreeMap<Uid, crate::nodes::Presumption> {
+        self.nodes.presumptions()
+    }
+}
+
 /// Rules 6: who accepts lost vehicles at a nomination, and which.
 /// Rules 16: what [`Engine::step_lost`] did: the claims it raised and the confirmations it
 /// voided (lost contact, claimant, why).
@@ -7658,7 +8038,7 @@ pub(crate) fn preload_verdict(
 
 /// The op states the task layer ends an op with: after a newer order took the vehicle, an
 /// older one's op can only be reported in one of these (it was replaced, or had ended).
-const TERMINAL_OPS: [&str; 3] = ["done", "failed", "superseded"];
+const TERMINAL_OPS: [&str; 4] = ["done", "failed", "superseded", crate::nodes::LOST_OP];
 
 /// Rules 7: what an op state report says about a vehicle start logged ahead of sending it,
 /// and what its intent's delivery needs ([`op_state_mismatch`]).
