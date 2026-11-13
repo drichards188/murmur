@@ -45,6 +45,7 @@ fn config(spec: Spec, port: u16, alt: f64) -> VehicleConfig {
         params: Default::default(),
         surface_m: None,
         moored: false,
+        start_at: None,
     }
 }
 

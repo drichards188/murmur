@@ -56,6 +56,8 @@ fn every_adversarial_scenario_ends_as_designed_and_replays() {
         "platform_free",
         "engagement_in_play",
         "picture_gap",
+        // rules 29: an order the run did not decide, handed over at the start
+        "handover",
     ] {
         assert!(invariants.iter().any(|i| i == want), "no scenario attacks {want}");
     }

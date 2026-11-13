@@ -426,6 +426,10 @@ def process_spec(e: EpisodeSpec, seed: int, workdir: Path, calib: Calibration,
         # the fleet's swarms as sim/swarm.py's manifest declares them (id, name, role, color), only
         # for a fleet with swarms (Saturation's): any other spec is as before
         spec["swarms"] = swarms
+    if any("start" in v for v in vehicles):
+        # decision rules 29: the fleet file its starting tasks come from, as sim/swarm.py's
+        # manifest names it, only for a fleet with starting tasks: any other spec is as before
+        spec["fleet_source"] = _swarm().fleet_source(str(e.fleet))
     rid = run_id(e, seed)
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),

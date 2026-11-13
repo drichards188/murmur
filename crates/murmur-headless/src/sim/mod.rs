@@ -552,6 +552,10 @@ async fn assemble(spec: &Spec) -> Result<Parts, String> {
         // a fleet with swarms (Saturation's): declared as swarm.py's manifest declares them
         doc["swarms"] = json!(spec.swarms);
     }
+    if let Some(f) = &spec.fleet_source {
+        // rules 29: a fleet with starting tasks names its file, which the bridge hands them over from
+        doc["fleet"] = f.clone();
+    }
     std::fs::write(&manifest, doc.to_string()).map_err(err("manifest"))?;
 
     // as main.rs: settings, the world, the manifest, the estimate's configuration

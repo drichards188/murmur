@@ -52,6 +52,7 @@ function what(i: Intent) {
 }
 
 function who(i: Intent) {
+  if (i.handed_over) return `the previous watch: handed over at the start by ${i.handed_over.fleet}`
   const a = i.approval
   if (!a) return i.source.kind === 'agent' ? `auto (policy), proposed by agent ${i.source.id}` : 'auto (policy)'
   return a.at_submission ? `authorized by ${a.by} at submission` : `approved by ${a.by}`
@@ -128,6 +129,11 @@ export function QueuePanel({ decisions, vehicles, now, onFocus, onClose, banners
                 <span className="ix-kind">{what(i).toUpperCase()}</span>
                 <span className="ix-id">i{i.id}</span>
                 <span className="ix-tag q-tag">queued</span>
+                {i.handed_over && (
+                  <span className="ix-tag" title={`the previous watch's order, handed over at the start by ${i.handed_over.fleet}`}>
+                    handed over
+                  </span>
+                )}
                 {i.resumed && (
                   <span className="ix-tag warn" title={`carried over from ${i.resumed.from.log} (${i.resumed.from.was})`}>
                     after restart

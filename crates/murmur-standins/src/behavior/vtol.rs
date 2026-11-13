@@ -741,6 +741,16 @@ impl Behavior for Vtol {
         st.mode = "FBWA";
     }
 
+    /// On station wing-borne, armed, circling it in LOITER (the bridge's hold for a quadplane).
+    fn start_on_station(&mut self, spec: &Spec, st: &mut State) {
+        self.landed = false;
+        self.hovering = false;
+        st.speed = spec.cruise_mps;
+        st.armed = true;
+        st.mode = "LOITER";
+        st.hold_point = (st.lat, st.lon);
+    }
+
     fn airborne(&self, _st: &State) -> bool {
         !self.landed
     }

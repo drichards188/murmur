@@ -107,12 +107,24 @@ fn rig_anchored(
     engine_clock: EngineClock,
     anchors: Option<murmur_decide::Anchors>,
 ) -> Rig {
+    rig_in(policy, auth, engine_clock, anchors, root().join("sim/run/no-such-manifest.json"))
+}
+
+/// [`rig_anchored`] on the fleet manifest `manifest` (rules 29: a fleet's starting tasks are
+/// handed over from it).
+fn rig_in(
+    policy: Policy,
+    auth: murmur_decide::AuthMode,
+    engine_clock: EngineClock,
+    anchors: Option<murmur_decide::Anchors>,
+    manifest: PathBuf,
+) -> Rig {
     let root = root();
     let world = World::new(Config {
         base_port: 0,
         http_port: 0,
         default_ports: 0,
-        manifest: root.join("sim/run/no-such-manifest.json"),
+        manifest,
         platforms: root.join("sim/platforms.toml"),
         root: root.clone(),
     });

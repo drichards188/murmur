@@ -320,7 +320,7 @@ impl Decision {
                     source: serde_json::to_value(&spec.source).unwrap_or(Value::Null),
                     agent: match &spec.source {
                         murmur_decide::Source::Agent { id } => Some(id.as_str().to_string()),
-                        murmur_decide::Source::Human { .. } => None,
+                        murmur_decide::Source::Human { .. } | murmur_decide::Source::Handover { .. } => None,
                     },
                     task: spec.kind().as_str(),
                     uids: serde_json::to_value(&spec.uids).unwrap_or(Value::Null),
@@ -546,6 +546,8 @@ fn explain(i: &Intent) -> String {
     let who = match &spec.source {
         murmur_decide::Source::Human { id } => format!("human operator {id}"),
         murmur_decide::Source::Agent { id } => format!("agent {id}"),
+        // rules 29: the previous watch's order, handed over at the start
+        murmur_decide::Source::Handover { id } => format!("the previous watch (handed over at the start by the fleet file {id})"),
     };
     let mut s = format!(
         "Intent {} is {}: {} {}, proposed by {}.",

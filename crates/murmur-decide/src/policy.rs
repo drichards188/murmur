@@ -758,6 +758,9 @@ fn decide_by_file(spec: &IntentSpec, world: &WorldSnapshot, policy: &Policy) -> 
         source: match spec.source {
             Source::Human { .. } => SourceKind::Human,
             Source::Agent { .. } => SourceKind::Agent,
+            // rules 29: the previous watch's order, never decided by the policy (a dequeue asks
+            // none); a person's, should anything ask
+            Source::Handover { .. } => SourceKind::Human,
         },
         armed,
         leaves_approved_area: leaves,

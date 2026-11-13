@@ -693,6 +693,15 @@ impl Behavior for Copter {
         st.mode = "STABILIZE"; // ArduCopter boots in STABILIZE
     }
 
+    /// On station in the air, armed, in BRAKE (the bridge's hold: it keeps the altitude it has
+    /// with no RC; LOITER would descend), entered on the first step.
+    fn start_on_station(&mut self, _spec: &Spec, st: &mut State) {
+        self.landed = false;
+        st.armed = true;
+        st.mode = "BRAKE";
+        st.hold_point = (st.lat, st.lon);
+    }
+
     fn airborne(&self, _st: &State) -> bool {
         !self.landed
     }

@@ -516,6 +516,21 @@ impl Behavior for Plane {
         }
     }
 
+    /// Flying on station, armed, circling it in LOITER (as a plane spawned high does), its
+    /// home where its unit spawned it: on the surface below that point when the unit spawned it
+    /// aloft (as [`Behavior::spawn`] puts a plane spawned high; Vehicle::seeded puts it at the
+    /// surface's height there when the launcher knows it).
+    fn start_on_station(&mut self, spec: &Spec, st: &mut State) {
+        if st.home.2 > 50.0 {
+            st.home.2 = 0.0;
+        }
+        st.speed = spec.cruise_mps;
+        st.armed = true;
+        st.mode = self.hold_mode();
+        st.hold_point = (st.lat, st.lon);
+        self.flown = true;
+    }
+
     fn airborne(&self, st: &State) -> bool {
         st.alt - st.home.2 > AIRBORNE_M
     }

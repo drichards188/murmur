@@ -50,7 +50,8 @@ use std::time::Duration;
 use murmur_decide::queue::{self as dq, Reach};
 use murmur_decide::replay::{ReplayOptions, RulesAccepted, replay_str_with};
 use murmur_decide::{
-    Dequeued, DispatchOrder, Intent, IntentId, Order, ResumedFrom, Routed, State, TaskKind as DKind,
+    Dequeued, DispatchOrder, HandedOverFrom, Intent, IntentId, LonLat, Order, Proposal, Rationale, ResumedFrom,
+    Routed, State, Task, TaskKind as DKind,
 };
 use serde_json::{Value, json};
 
@@ -97,6 +98,12 @@ pub struct VehicleIdentity {
     pub callsign: Option<String>,
     /// Its home, [lat, lon]: the manifest's spawn point, or where it reported its home.
     pub home: Option<[f64; 2]>,
+    /// Rules 29: the starting task its fleet gave it (the manifest's `start`), as the engine
+    /// task handed over at the start: what replay checks each `intent.handed_over` against.
+    /// Absent for a vehicle without one, so a fleet without starting tasks writes the file it
+    /// always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<Task>,
 }
 
 /// The fleet a run had, by uid.
@@ -473,6 +480,59 @@ impl Decision {
         Ok(carried)
     }
 
+    /// Rules 29: hand over the fleet's starting tasks (the manifest's `start` per vehicle, from
+    /// the fleet file its `fleet` names), each one vehicle's order carried in queued
+    /// ([`murmur_decide::Engine::hand_over`]): the queue re-checks it on the world when the
+    /// vehicle can be reached and dispatches it ([`Decision::follow_queue`]). Returns how many
+    /// were handed over; a start the engine refuses is said, never fatal.
+    pub fn hand_over_starts(&self) -> Result<usize, String> {
+        let manifest = &self.world.cfg.manifest;
+        let Some(doc) = std::fs::read(manifest)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        else {
+            return Ok(0);
+        };
+        let Some((from, starts)) =
+            manifest_starts(&doc).map_err(|e| format!("{}: {e}", manifest.display()))?
+        else {
+            return Ok(0);
+        };
+        let mut handed = 0;
+        let mut refused: Vec<String> = Vec::new();
+        {
+            let mut core = self.lock();
+            for (uid, task) in starts {
+                let task = match task {
+                    Ok(t) => t,
+                    Err(e) => {
+                        refused.push(format!("vehicle {uid}: {e}"));
+                        continue;
+                    }
+                };
+                let mut proposal = Proposal::new(task, vec![duid(uid)]);
+                proposal.rationale = Rationale::new(format!(
+                    "starting task from the fleet file {}: the previous watch's order",
+                    from.fleet
+                ))
+                .ok();
+                match core.engine.hand_over(proposal, from.clone()) {
+                    Ok(_) => handed += 1,
+                    Err(e) => refused.push(format!("vehicle {uid}: {e}")),
+                }
+            }
+        }
+        if !refused.is_empty() {
+            eprintln!(
+                "decision: {} starting task(s) not handed over (first: {})",
+                refused.len(),
+                refused[..refused.len().min(3)].join("; ")
+            );
+        }
+        self.publish();
+        Ok(handed)
+    }
+
     /// The platform under each uid in this run's fleet: the manifest file's, or the
     /// identity of a vehicle already connected (which wins).
     fn fleet_platforms(&self) -> BTreeMap<murmur_decide::Uid, String> {
@@ -742,6 +802,8 @@ fn identity_of(i: &crate::vehicle::Identity, reported: Option<(f64, f64)>) -> Ve
         platform: i.str("platform").map(str::to_string),
         callsign: i.str("callsign").map(str::to_string),
         home: spawn.or(reported.map(|(la, lo)| [la, lo])),
+        // a connected vehicle's own identity has none: the manifest's entry gives it
+        start: None,
     }
 }
 
@@ -774,10 +836,78 @@ pub fn manifest_identities(data: &Value) -> FleetIdentity {
                 platform: v.get("platform").and_then(Value::as_str).map(str::to_string),
                 callsign: v.get("callsign").and_then(Value::as_str).map(str::to_string),
                 home,
+                start: v.get("start").and_then(|s| start_task(s).ok()),
             },
         );
     }
     out
+}
+
+/// Rules 29: the fleet file a manifest's starting tasks come from, and each vehicle's task (or
+/// why it is not one).
+pub type ManifestStarts = (HandedOverFrom, Vec<(u64, Result<Task, String>)>);
+
+/// Rules 29: a manifest's starting tasks (sim/swarm.py: each vehicle's `start`) and the fleet
+/// file they come from (its `fleet`: `name` and `sha256`), each task as the engine takes it or
+/// why not; `None` when no vehicle has one. Starting tasks without the fleet file are refused.
+pub fn manifest_starts(doc: &Value) -> Result<Option<ManifestStarts>, String> {
+    let starts: Vec<(u64, Result<Task, String>)> = doc
+        .get("vehicles")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|v| Some((v.get("uid")?.as_u64()?, start_task(v.get("start")?))))
+        .collect();
+    if starts.is_empty() {
+        return Ok(None);
+    }
+    let from = doc
+        .get("fleet")
+        .and_then(|f| {
+            Some(HandedOverFrom {
+                fleet: f.get("name")?.as_str()?.to_string(),
+                sha256: f.get("sha256")?.as_str()?.to_string(),
+            })
+        })
+        .ok_or_else(|| {
+            format!(
+                "{} starting task(s) without the fleet file they come from (`fleet`: name and sha256): none handed over",
+                starts.len()
+            )
+        })?;
+    Ok(Some((from, starts)))
+}
+
+/// Rules 29: a manifest entry's starting task (`start`, sim/swarm.py: `task` orbit with
+/// `center` [lon, lat] and `radius_m`, patrol with `route`, or hold) as the engine task handed
+/// over for it.
+pub fn start_task(v: &Value) -> Result<Task, String> {
+    let point = |p: &Value| -> Option<LonLat> {
+        let a = p.as_array()?;
+        Some(LonLat::new(a.first()?.as_f64()?, a.get(1)?.as_f64()?))
+    };
+    match v.get("task").and_then(Value::as_str) {
+        Some("orbit") => Ok(Task::Orbit {
+            center: v.get("center").and_then(point).ok_or("an orbit needs center [lon, lat]")?,
+            radius_m: v
+                .get("radius_m")
+                .and_then(Value::as_f64)
+                .unwrap_or(super::DEFAULT_ORBIT_RADIUS_M),
+        }),
+        Some("patrol") => {
+            let route: Option<Vec<LonLat>> = v
+                .get("route")
+                .and_then(Value::as_array)
+                .map(|r| r.iter().map(point).collect())
+                .and_then(|r: Option<Vec<LonLat>>| r);
+            Ok(Task::Patrol {
+                route: route.ok_or("a patrol needs a route of [lon, lat] points")?,
+            })
+        }
+        Some("hold") => Ok(Task::Hold {}),
+        Some(other) => Err(format!("a starting task is an orbit, a patrol or a hold, not {other}")),
+        None => Err("a starting task names its task".into()),
+    }
 }
 
 fn identity_of_opt(
@@ -790,6 +920,7 @@ fn identity_of_opt(
             platform: None,
             callsign: None,
             home: reported.map(|(la, lo)| [la, lo]),
+            start: None,
         },
     }
 }
@@ -907,4 +1038,41 @@ pub(super) fn bridge_via(via: &std::collections::BTreeMap<murmur_decide::Uid, Ve
         .filter_map(|(u, v)| Some((bridge_uid(u)?, v.iter().map(|p| [p.lon, p.lat]).collect())))
         .collect();
     (!out.is_empty()).then_some(out)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod handover_tests {
+    use super::*;
+
+    /// What sim/swarm.py writes for a fleet with starting tasks (`manifest_doc`, `fleet_source`).
+    #[test]
+    fn a_manifests_starting_tasks_and_their_fleet_file_are_read_as_swarm_py_writes_them() {
+        let doc = json!({
+            "vehicles": [
+                {"uid": 1, "callsign": "QUAD 1", "start": {"task": "orbit", "center": [-122.47, 37.82], "radius_m": 80.0}},
+                {"uid": 2, "callsign": "PUMA 1", "start": {"task": "patrol", "route": [[-122.5, 37.8], [-122.5, 37.81]]}},
+                {"uid": 3, "callsign": "USV 1", "start": {"task": "hold"}},
+                {"uid": 4, "callsign": "MQ9 1"},
+                {"uid": 5, "callsign": "UGV 1", "start": {"task": "engage"}},
+            ],
+            "fleet": {"name": "sim/fleets/x.toml", "sha256": "ab"},
+        });
+        let (from, starts) = manifest_starts(&doc).unwrap().unwrap();
+        assert_eq!(from, HandedOverFrom { fleet: "sim/fleets/x.toml".into(), sha256: "ab".into() });
+        assert_eq!(starts.iter().map(|(u, _)| *u).collect::<Vec<_>>(), [1, 2, 3, 5]);
+        assert_eq!(starts[0].1, Ok(Task::Orbit { center: LonLat::new(-122.47, 37.82), radius_m: 80.0 }));
+        assert!(matches!(&starts[1].1, Ok(Task::Patrol { route }) if route.len() == 2));
+        assert_eq!(starts[2].1, Ok(Task::Hold {}));
+        assert!(starts[3].1.as_ref().unwrap_err().contains("not engage"));
+        // the fleet identity beside the log carries each vehicle's start, as replay reads it
+        let ids = manifest_identities(&doc);
+        assert_eq!(ids[&3].start, Some(Task::Hold {}));
+        assert_eq!(ids[&4].start, None);
+        // starting tasks without the fleet file they come from are refused; none at all: nothing
+        let mut bare = doc.clone();
+        bare.as_object_mut().unwrap().remove("fleet");
+        assert!(manifest_starts(&bare).unwrap_err().contains("without the fleet file"));
+        assert!(manifest_starts(&json!({"vehicles": [{"uid": 1}]})).unwrap().is_none());
+    }
 }

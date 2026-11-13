@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::catalog::AutopilotKind;
 use crate::ids::{IntentId, OperatorId, SessionId, Uid};
-use crate::intent::{IntentSpec, State, TaskKind};
+use crate::intent::{IntentSpec, Source, State, TaskKind};
 use crate::policy::{PolicyDecision, Tier};
 use crate::rules::{CheckResult, Outcome, QUEUE_FOLLOWUPS_SINCE, RulesConfig};
 use crate::time::Time;
@@ -307,6 +307,25 @@ pub fn reach(
                     }
                 }
             }
+            // rules 29: a handed-over order (the previous watch's, carried in at the start) waits
+            // for its vehicle's first full report, whatever its kind: its checks would otherwise
+            // fail it on facts a vehicle just heard has not reported yet
+            if matches!(spec.source, Source::Handover { .. }) {
+                let missing = if !v.nav_ready.as_ref().is_some_and(|f| f.value) {
+                    Some("its navigation to be ready")
+                } else if v.position.is_none() {
+                    Some("its position")
+                } else if v.home.is_none() {
+                    Some("its home position")
+                } else if v.battery_pct.is_none() {
+                    Some("its battery level")
+                } else {
+                    None
+                };
+                if let Some(what) = missing {
+                    return out(false, format!("handed over at the start: waiting for {what} (its first full report)"));
+                }
+            }
             // rules 7: an engagement preloaded its own lost-link action as its fallback and
             // it is not confirmed back yet; a mission waits for the restore (a hold or rtl, the
             // safety commands, goes: the restore runs beside it)
@@ -534,6 +553,16 @@ pub struct Since<'a> {
     /// When each vehicle was last logged rebooting in this run (`vehicle.rebooted`): one
     /// logged after the approval rebooted after the facts it rested on.
     pub rebooted: &'a BTreeMap<Uid, Time>,
+    /// Rules 29: handed over by the fleet file (`intent.handed_over`): its basis is the previous
+    /// watch's approval, which neither the policy nor a person of this run decides again; it
+    /// goes when its checks pass, and is voided when one fails.
+    pub handed_over: bool,
+}
+
+/// Rules 29: a handed-over order's dequeue check holds a result nobody could verify: it goes to
+/// a person, and the policy is asked who (the only re-check of one that asks it).
+pub fn handover_unverified(results: &[CheckResult]) -> bool {
+    results.iter().any(|r| r.outcome == Outcome::Unverified)
 }
 
 /// The re-check verdict for an intent queued on `since.basis`, given the checks and policy
@@ -548,6 +577,26 @@ pub fn assess(
 ) -> Recheck {
     let basis = since.basis;
     let mut changes: Vec<String> = Vec::new();
+    // rules 29: the previous watch's order (no basis of checks, no policy decision of this
+    // run): the checks on the world now decide. A failing one voids it, saying why; one nobody
+    // could verify sends it to a person, as the policy routes any order with one
+    if since.handed_over {
+        for r in results.iter().filter(|r| r.outcome == Outcome::Fail) {
+            let who = r.uid.as_ref().map(|u| format!(" {u}")).unwrap_or_default();
+            changes.push(format!("{}{who} fails: {}", r.rule.as_str(), r.detail));
+        }
+        let verdict = if !passed {
+            Verdict::Void
+        } else if handover_unverified(results) {
+            for u in crate::rules::unverified(results) {
+                changes.push(format!("{u} (could not be verified: a person judges it)"));
+            }
+            Verdict::Inbox
+        } else {
+            Verdict::Dispatch
+        };
+        return Recheck { verdict, changes };
+    }
     // a human's look from before a bridge restart: another run, perhaps another picture
     if since.carried && basis.by_human {
         changes.push("approved before a bridge restart: a human looks again".into());
@@ -700,6 +749,16 @@ pub struct ResumedFrom {
     /// run, nor the reverse; replay checks it against the previous log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<crate::authority::AuthMode>,
+}
+
+/// Rules 29: where a handed-over intent comes from (`intent.handed_over`): the fleet file that
+/// gave its vehicle a starting task, by its name (as the manifest gives it: its path in the
+/// repository, or its file name) and the SHA-256 of its content. Its order is the previous
+/// watch's: no person or policy of this run approved it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandedOverFrom {
+    pub fleet: String,
+    pub sha256: String,
 }
 
 /// An intent a log leaves open for the next run (replay's [`crate::ReplayReport::open`]): a

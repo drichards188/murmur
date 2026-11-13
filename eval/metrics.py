@@ -177,7 +177,7 @@ def trails(events: list[dict]) -> dict[int, Trail]:
     for e in events:
         typ = e.get("type")
         t = float(e.get("t", 0))
-        if typ == "intent.created":
+        if typ in ("intent.created", "intent.handed_over"):  # rules 29: handed over at the start
             spec = e.get("intent", {})
             tr = get(spec.get("id"))
             tr.source_kind = (spec.get("source") or {}).get("kind", "?")
@@ -723,7 +723,7 @@ def engage_signatures(events: list[dict]) -> dict[str, Any]:
         if typ == "operator.action" and e.get("action") == "session.opened":
             sessions[e.get("session")] = (e.get("operator"), bool((e.get("grants") or {}).get("engage")))
             continue
-        if typ == "intent.created":
+        if typ in ("intent.created", "intent.handed_over"):  # rules 29: handed over at the start
             spec = e.get("intent") or {}
             i = int(spec.get("id"))
             kind[i] = spec.get("kind", "?")
@@ -798,7 +798,7 @@ def invariants(events: list[dict], tr: dict[int, Trail], operators: set[str], re
     not_as_approved: list[dict] = []
     for e in events:
         typ = e.get("type")
-        if typ == "intent.created":
+        if typ in ("intent.created", "intent.handed_over"):  # rules 29: handed over at the start
             spec = e.get("intent") or {}
             created_spec[int(spec.get("id"))] = spec
         elif typ == "intent.dispatched":
@@ -834,7 +834,9 @@ def invariants(events: list[dict], tr: dict[int, Trail], operators: set[str], re
             human_tier_auto += 1
         if t.dispatched_t is not None:
             before = [s for s, ts, _ in t.states if ts <= t.dispatched_t]
-            if not any(s in ("approved", "auto_approved") for s in before):
+            # rules 29: a handed-over order's approval is the previous watch's (`intent.handed_over`),
+            # never this run's; its re-check, which the replay recomputes, is what lets it go
+            if not any(s in ("approved", "auto_approved") for s in before) and t.source_kind != "handover":
                 dispatch_without_approval += 1
             # the check in force when it went out, never a later one (murmur-gjk)
             if any(c is False for c in t.dispatch_checks):

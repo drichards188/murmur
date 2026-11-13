@@ -664,7 +664,8 @@ impl Decision {
         }
         let _ = d.fleet_file.set(queue::fleet_file(&s.audit));
         // the previous run's open intents (queued, approved, under way), carried over
-        if let Some(prev) = queue::previous_log(&s.resume, s.pointer.as_deref(), &s.audit) {
+        let previous = queue::previous_log(&s.resume, s.pointer.as_deref(), &s.audit);
+        if let Some(prev) = &previous {
             let name = prev
                 .file_name()
                 .map_or_else(|| prev.display().to_string(), |n| n.to_string_lossy().into_owned());
@@ -676,7 +677,7 @@ impl Decision {
                 let file = cfg.path.parent()?.join(format!("{stem}.anchors"));
                 std::fs::read_to_string(file).ok()
             });
-            let fleet = std::fs::read(queue::fleet_file(&prev))
+            let fleet = std::fs::read(queue::fleet_file(prev))
                 .ok()
                 .and_then(|b| serde_json::from_slice::<queue::FleetIdentity>(&b).ok());
             let unverified = std::env::var("MURMUR_RESUME_UNVERIFIED").as_deref() == Ok("1");
@@ -695,7 +696,7 @@ impl Decision {
                         missing.join(" or ")
                     );
                 }
-                std::fs::read_to_string(&prev)
+                std::fs::read_to_string(prev)
                     .map_err(|e| format!("{}: {e}", prev.display()))
                     .and_then(|text| d.carry_over(&name, &text, &check))
             } else {
@@ -712,6 +713,25 @@ impl Decision {
                     ids.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
                 ),
                 Err(e) => eprintln!("decision: nothing carried over: {e}"),
+            }
+        }
+        // rules 29: the fleet's starting tasks, the previous watch's orders, handed over at the
+        // start; none when this run carries on from an earlier log (its vehicles are that
+        // run's, past their start)
+        if let Some(prev) = &previous {
+            println!(
+                "decision: this run carries on from {}: the fleet's starting tasks are not handed over",
+                prev.display()
+            );
+        } else {
+            let t0 = std::time::Instant::now();
+            match d.hand_over_starts() {
+                Ok(0) => {}
+                Ok(n) => println!(
+                    "decision: handed over {n} starting task(s) from the fleet file in {:.0} ms (queued until each vehicle can be reached)",
+                    t0.elapsed().as_secs_f64() * 1000.0
+                ),
+                Err(e) => eprintln!("decision: {e}"),
             }
         }
         // rules 6: lost-link values the last run on this port still owed back (rules 12: the
@@ -2218,7 +2238,8 @@ impl Decision {
     /// land (the engine's oracle then answers from the cache); rules 17: and the points along
     /// each leg of their routes, from where they are now.
     async fn prefetch(&self, task: &Task, uids: &[DUid]) {
-        if !self.terrain.configured() {
+        // nothing to fetch with no tidewater (the baked grid answers under the lock as it is)
+        if !self.terrain.fetches() {
             return;
         }
         if matches!(task, Task::Engage { .. }) {
@@ -2228,8 +2249,17 @@ impl Decision {
         if !self.needs_surface(uids) {
             return;
         }
+        self.prefetch_in(&self.snapshot(), task, uids).await;
+    }
+
+    /// [`Self::prefetch`] of a vehicle task on a world snapshot already taken (the queued
+    /// intents' prefetch takes one for all of them).
+    async fn prefetch_in(&self, world: &murmur_decide::WorldSnapshot, task: &Task, uids: &[DUid]) {
+        if !self.needs_surface(uids) {
+            return;
+        }
         let spec = Self::prefetch_spec(self.clock.now(), task, uids);
-        let mut world = self.snapshot().subset_for(&spec);
+        let mut world = world.subset_for(&spec);
         // rules 27: our live fields, which the planner routes round as the decision will
         world.minefields = self.lock().engine.minefields_for(&spec, &world);
         // rules 21: an identify order's waypoints are its orbit's, laid out round its track
@@ -2347,10 +2377,15 @@ impl Decision {
             loop {
                 interval.tick().await;
                 prefetcher.prefetch_engagements().await;
-                // queued intents' waypoints: their dequeue re-check reads them from the cache
-                if !prefetcher.terrain.backing_off() {
-                    for (task, uids) in prefetcher.queued_paths() {
-                        prefetcher.prefetch(&task, &uids).await;
+                // queued intents' waypoints: their dequeue re-check reads them from the cache (one
+                // world snapshot for all of them: rules 29 queues a fleet's thousands at the start)
+                if prefetcher.terrain.fetches() && !prefetcher.terrain.backing_off() {
+                    let queued = prefetcher.queued_paths();
+                    if !queued.is_empty() {
+                        let world = prefetcher.snapshot();
+                        for (task, uids) in queued {
+                            prefetcher.prefetch_in(&world, &task, &uids).await;
+                        }
                     }
                 }
             }
@@ -3041,6 +3076,8 @@ fn why_human(i: &Intent) -> Vec<String> {
             let who = match &i.spec().source {
                 murmur_decide::Source::Human { id } => format!("not the proposer ({id})"),
                 murmur_decide::Source::Agent { id } => format!("proposed by agent {id}"),
+                // never an engagement (rules 29: a starting task is an orbit, a patrol or a hold)
+                murmur_decide::Source::Handover { id } => format!("handed over by the fleet file {id}"),
             };
             why.push(format!(
                 "engagement: {} distinct approver(s) with engagement authority, {who}",

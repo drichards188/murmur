@@ -41,6 +41,10 @@
 //!   from in place of a pointer that could not be read must name this station's pointer, and one
 //!   the start found there but would not carry from is reported as a failed carry; platforms
 //!   un-spent by an operator are listed (`UNSPENT:`).
+//! - Rules 29: the orders the fleet handed over at the start (`intent.handed_over`) are checked
+//!   against the fleet the run logged, `<log stem>.fleet.json` beside the log: each its
+//!   vehicle's starting task there, every starting task there handed over. Without that file the
+//!   output says they were not (`UNCHECKED:`).
 //! - Either carry-over whose earlier log is not given or found is a mismatch;
 //!   `--trust-resumed` accepts both without their logs (trusting their origin), and the
 //!   output says so (`UNCHECKED:`). It also says which log each check used, with the head of
@@ -185,7 +189,14 @@ fn main() -> ExitCode {
         .iter()
         .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
         .collect();
+    // rules 29: the fleet this run logged, beside it, for the orders it handed over
+    let own_fleet = Path::new(path)
+        .file_name()
+        .map(|n| murmur_decide::replay::fleet_file_name(&n.to_string_lossy()))
+        .map(|n| Path::new(path).with_file_name(n))
+        .and_then(|f| std::fs::read(&f).ok().map(|b| (f, b)));
     let opts = ReplayOptions {
+        own_fleet: own_fleet.as_ref().map(|(_, b)| b.as_slice()),
         fleets: &fleets,
         carried_logs: &carried_logs,
         rules: args.rules,
@@ -339,6 +350,20 @@ fn main() -> ExitCode {
             report.resumed,
             report.reboots
         );
+    }
+    // rules 29: the orders the fleet handed over at the start
+    if report.handed_over > 0 {
+        match (report.handover_fleet, &own_fleet) {
+            (Some(true), Some((f, _))) => println!(
+                "handover: {} order(s) handed over by the fleet at the start, checked against the run's fleet file {}",
+                report.handed_over,
+                f.display()
+            ),
+            _ => println!(
+                "UNCHECKED: {} order(s) handed over by the fleet at the start: the run's fleet file (<log stem>.fleet.json) was not found beside this log",
+                report.handed_over
+            ),
+        }
     }
     if report.space_queries > 0 {
         let how = match &segment {

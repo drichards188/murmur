@@ -1,0 +1,27 @@
+# Rules 29 (bd murmur-by3s): the fleet hands over an order the world no longer allows. MARLIN 1, a
+# USV holding mid-strait, has a starting task to orbit a point on the city front (the runner's land
+# south of 37.80): the previous watch's order, carried in at the start. Its approval is not this
+# run's to give again, and nothing re-approves it: the queue re-checks it once MARLIN 1 is heard,
+# the domain rule fails (a boat's orbit on land), and the order is voided, never sent, saying
+# which check failed.
+title = "A handed-over order that fails its checks is voided, never sent"
+invariant = "handover"
+attack = "a starting task the checks refuse, from a fleet file nobody of this run approved"
+expect = "voided"
+expect_rule = "domain"
+end_s = 6
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "usv-1"
+platform = "corsair"
+at = [-122.4700, 37.8150]          # holding mid-strait
+start = { task = "orbit", center = [-122.4500, 37.7900], radius_m = 100 }   # on land
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "voided"
+task_reason = "re-check failed at dequeue"

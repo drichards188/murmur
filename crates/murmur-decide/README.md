@@ -207,6 +207,22 @@ link to fail, nor sent twice, nor sent stale.
   sends it again; any other resumes `queued` and is re-checked before it goes (a human's
   approval goes back to the inbox: `basis_carried`), and, if it was dispatched before,
   checked against what the vehicle holds first.
+- **Handover** (rules 29, `HANDOVER_SINCE`; `Engine::hand_over`): a fleet file may give each
+  vehicle one starting task (`start` on a unit or a swarm, `sim/swarm.py`): the previous watch's
+  order, an orbit, a patrol or a hold, never an engagement, a lay, an identify, a collect or a
+  cover. The vehicle spawns on that task's station, holding there, and the bridge carries each
+  order in at the start as `intent.handed_over`, as a restart carries an open intent: its spec
+  (one vehicle, its source `handover`, the fleet file), where it comes from (`HandedOverFrom`:
+  the fleet file's name and the SHA-256 of its content, not a previous log), and its deadline
+  (`[queue] expire_s` from the start, whatever its kind). It enters `queued` with the previous
+  watch's approval as its basis (`by_human` false, no checks, no policy decision): neither the
+  policy nor a person of this run approves it again. Its dequeue re-check (`queue::Since`'s
+  `handed_over`) judges the checks on the world then: all pass, **dispatch**; one fails,
+  **void**, never sent (the Queue's recent outcomes show it with the failing check); one nobody
+  could verify, **inbox**, a person judges it, the policy asked only who (the one re-check of a
+  handed-over order that logs a decision). A link that can't carry it leaves it waiting in the
+  queue as any order. Only at the start, before any other order, one per vehicle; a run that
+  carries orders over from an earlier log hands none over (its vehicles are that run's).
 - **Reboots**: `Engine::record_reboot` logs `vehicle.rebooted` (the time since boot before
   and after, the new boot instant and, when the time since boot did not go back, the one
   before: a jump of more than 30 s); the bridge ends a running op on a rebooted vehicle.
@@ -297,7 +313,14 @@ default the file it names beside the log): that log is the one named (head, last
 replays, and leaves the intent open exactly as carried; without it a resumed intent is a
 mismatch unless trusted (`--trust-resumed`). One generation: replay each log with its own
 predecessor (the lost-link values a run carries can come from another log: see the
-lost-link preload below).
+lost-link preload below). `intent.handed_over` (rules 29) must come before any other order,
+one per vehicle, an orbit, patrol or hold from the one fleet file every handover names, its
+deadline from the policy; its re-check asks the policy only when a check could not be
+verified. It is checked against the fleet the run logged (`ReplayOptions::own_fleet`,
+`<log stem>.fleet.json`, which `murmur-replay` reads beside the log): each handed-over order
+is its vehicle's `start` there, and every `start` there was handed over (unless the run
+carried orders over from an earlier log); without that file the report says it was not
+checked (`ReplayReport::handover_fleet`).
 
 ## Engagements (Phase E)
 
@@ -2280,6 +2303,36 @@ Rules versions:
   positions and launch points; rules 27 logs replay unchanged). Fixtures (a clean build of the
   branch, f2d66fa): `tests/data/audit/v28-engagement-scenario-01.jsonl`,
   `v28-missile-from-the-shore-scenario-131.jsonl` (relabelled rules 27, its plan is caught).
+
+- **29** (`HANDOVER_SINCE`, the owner's decision of 2026-11-10: a watch officer takes over from
+  one who has already been there; no policy schema change): a fleet's starting tasks handed over
+  at the start (see "Handover" under the queue). A fleet file may give each vehicle one routine
+  starting task (orbit, patrol, hold); the vehicle spawns on its station, holding there, and the
+  engine carries the order in when the run starts (`intent.handed_over`: its spec, its source
+  `handover` naming the fleet file, `HandedOverFrom` with the file's name and SHA-256, its
+  deadline `[queue] expire_s` from the start) queued, with the previous watch's approval as its
+  basis. Its dequeue re-check dispatches it when its checks pass, voids it when one fails, and
+  sends it to a person when one could not be verified (only then is the policy asked, for who);
+  it is never approved again otherwise. Only at the start, before any other order, one per
+  vehicle; none in a run that carries orders over from an earlier log. Gated in
+  `Engine::hand_over`; the dequeue's verdict for a handed-over intent (`queue::assess` with
+  `Since::handed_over`) applies only to intents rules 29 created. Markers (a log claiming rules
+  28 or older can't carry them): `intent.handed_over`, a `handover` source. Replay recomputes
+  each re-check as the engine made it and checks the handovers against the run's fleet file
+  (`<log stem>.fleet.json`, its vehicles' `start`) when given it. A handed-over order waits in
+  the queue, before any check, until its vehicle has made its first full report (navigation
+  ready, position, home, battery: `queue::reach`), whatever its kind, so a vehicle just heard is
+  not failed on a fact still to come. `tests/handover.rs` (orders handed over, one dispatched,
+  one voided for its domain rule, one sent to a person for its unverified reserves; the log
+  replays and matches its fleet file, and another fleet file is caught; the refusals; a rules 29
+  log relabelled 28 is caught). The scenario runner hands over a `[[vehicle]]`'s `start` (its own
+  vehicles, by their hash, as the fleet) before the first step and replays against them:
+  scenarios 134 (an orbit queued, nothing logged, while its quadcopter is silent, sent once it is
+  heard), 135 (a USV's orbit on land, voided at its re-check: domain) and 136 (a Puma on dead
+  reckoning: readiness unverified, to a person, sent once op-1 approves it acknowledging the
+  check). The bridge reads the starts from the fleet manifest (`sim/swarm.py`: each vehicle's
+  `start`, the file's `fleet`) at its start, after any carry-over (`Decision::hand_over_starts`;
+  bridge test `the_fleets_starting_tasks_are_handed_over_and_go_once_each_vehicle_is_heard`).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

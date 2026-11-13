@@ -96,7 +96,8 @@ export type IntentParams = {
 export interface Intent {
   id: number
   created_t: number
-  source: { kind: 'human' | 'agent'; id: string }
+  /** rules 29: `handover`, the previous watch's order the fleet file handed over at the start (id: that file) */
+  source: { kind: 'human' | 'agent' | 'handover'; id: string }
   kind: string
   params: IntentParams
   uids: string[]
@@ -122,6 +123,8 @@ export interface Intent {
   /** rules 5: held for an unreachable vehicle (or once was): since, until, why, and the last
    *  re-check's verdict when its vehicles could be reached again */
   queue?: QueueInfo
+  /** rules 29: the previous watch's order, handed over at the start by the fleet file */
+  handed_over?: { fleet: string; sha256: string }
   /** rules 5: carried over from the previous run after a bridge restart */
   resumed?: { from: { log: string; head: string; seq: number; was: IntentState }; ops?: Record<string, string> }
   /** rules 5: the vehicles that ever started it (followed, never sent it again) */

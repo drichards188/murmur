@@ -477,6 +477,20 @@ pub enum EventBody {
         maybe_started: Vec<Uid>,
     },
 
+    /// Rules 29: an order the fleet file hands over at the start (`start` on a unit or a swarm,
+    /// sim/swarm.py): one vehicle's starting task, the previous watch's order, which its
+    /// vehicle spawned on station for. It enters queued (re-checked on the world before it goes,
+    /// delivered once) until `expires_t` (`[queue] expire_s` from now, whatever its kind); its
+    /// source is the fleet file (`from`: its name and content hash) and its basis the previous
+    /// watch's approval, which no person or policy of this run decides again. Replay checks it
+    /// against the fleet the run logged (`<log stem>.fleet.json`) when given it.
+    #[serde(rename = "intent.handed_over")]
+    IntentHandedOver {
+        intent: IntentSpec,
+        from: crate::queue::HandedOverFrom,
+        expires_t: Time,
+    },
+
     /// Rules 5: a vehicle rebooted, and lost the mode and armed state (and, on a stand-in,
     /// the mission) its orders had set: its time since boot went back, or (an outage longer
     /// than its uptime before) the boot instant it implies jumped later than the one before

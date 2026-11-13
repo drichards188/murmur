@@ -1,0 +1,43 @@
+# Rules 29 (bd murmur-by3s): the fleet hands over an order whose checks a machine cannot settle.
+# PUMA 1, a fixed wing on its patrol lane west of the bridge, has lost its GNSS fix and flies on
+# dead reckoning: the readiness check cannot verify its position, and a human must judge it. A
+# handed-over order is never approved again by the policy, but one with a check nobody could
+# verify goes to a person (the policy asked only who, as it routes any order with one): it waits
+# in the Inbox, and op-1 approves it, acknowledging the unverified check, and it goes out.
+title = "A handed-over order with an unverified check goes to a person"
+invariant = "handover"
+attack = "a starting task whose checks no machine can settle"
+expect = "dispatched"
+end_s = 8
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "puma-1"
+platform = "puma"
+at = [-122.5200, 37.8150]          # on its lane west of the bridge, circling
+alt_m = 300
+start = { task = "patrol", route = [[-122.5200, 37.8150], [-122.5200, 37.8250]] }
+
+[[step]]
+at_s = 0
+action = "vehicle"
+uid = "puma-1"
+nav = "dead_reckoning"
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "pending_approval"
+
+[[step]]
+at_s = 3
+action = "approve_task"
+by = "op-1"
+acknowledge = true
+
+[[step]]
+at_s = 4
+action = "expect"
+task_state = "dispatched"

@@ -52,6 +52,14 @@ impl Behavior for Boat {
         "HOLD"
     }
 
+    /// Holding station on the water, armed, in LOITER (the bridge's hold for a boat: HOLD only
+    /// stops the motors, and the current would carry it off).
+    fn start_on_station(&mut self, _spec: &Spec, st: &mut State) {
+        st.armed = true;
+        st.mode = "LOITER";
+        st.hold_point = (st.lat, st.lon);
+    }
+
     fn accepts_mode(&self, name: &str) -> bool {
         rover::accepts_mode(name)
     }

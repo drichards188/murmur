@@ -1088,3 +1088,68 @@ async fn a_crash_inside_a_batch_leaves_its_decisions_unanchored_and_the_next_sta
     assert!(carried.contains(&second.id) && carried.contains(&first.id), "{carried:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Rules 29 (bd murmur-by3s): the fleet's starting tasks are handed over at the start (the
+/// manifest's `start`, from the fleet file its `fleet` names), queued until each vehicle has made
+/// its first full report, then re-checked on the world: sent when every check passes, voided,
+/// never sent, when one fails; the policy decides neither. The log replays against the fleet
+/// identity the bridge keeps beside it, starting tasks included.
+#[tokio::test(start_paused = true)]
+async fn the_fleets_starting_tasks_are_handed_over_and_go_once_each_vehicle_is_heard() {
+    let dir = std::env::temp_dir().join(format!("murmur-handover-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let manifest = dir.join("fleet.json");
+    let sky = (37.82, -122.45);
+    std::fs::write(
+        &manifest,
+        json!({
+            "vehicles": [
+                {"uid": 61, "platform": "x10", "callsign": "SKY 1", "home": [sky.0, sky.1, 0.0, 0.0],
+                 "start": {"task": "orbit", "center": [sky.1, sky.0], "radius_m": 150.0}},
+                // a boat's starting orbit on the Presidio shore: its domain rule fails
+                {"uid": 62, "platform": "seahunter", "callsign": "HUNTER 1", "home": [SEA.0, SEA.1, 0.0, 0.0],
+                 "start": {"task": "orbit", "center": [-122.46, 37.80], "radius_m": 100.0}},
+                {"uid": 63, "platform": "x10", "callsign": "SKY 2", "home": [sky.0, sky.1, 0.0, 0.0]},
+            ],
+            "fleet": {"name": "sim/fleets/test-watch.toml", "sha256": "cd".repeat(32)},
+        })
+        .to_string(),
+    )
+    .expect("manifest");
+    let policy = Policy::load(&root().join("sim/policy.toml")).expect("policy");
+    let r = rig_in(policy, murmur_decide::AuthMode::Dev, EngineClock::Manual, None, manifest);
+    assert_eq!(r.d.hand_over_starts(), Ok(2));
+    let ids: Vec<IntentId> = r.d.lock().engine.intents().map(Intent::id).collect();
+    assert_eq!(ids.len(), 2);
+    assert!(ids.iter().all(|id| r.state(*id) == State::Queued));
+    // not heard yet: they wait, nothing logged
+    let lines = r.log.lines().len();
+    r.d.tick();
+    assert_eq!(r.log.lines().len(), lines, "nothing logged for a vehicle not heard");
+    let (_a, wa) = r.watched(61, Firmware::Copter, "x10", sky, quick());
+    let (_b, _wb) = r.watched(62, Firmware::Rover, "seahunter", SEA, quick());
+    sleep(Duration::from_secs(1)).await;
+    assert_eq!(tick_until_dequeued(&r, ids[0], 10).await, State::Dispatched, "{}", r.reason(ids[0]));
+    assert_eq!(tick_until_dequeued(&r, ids[1], 10).await, State::Voided, "{}", r.reason(ids[1]));
+    assert!(r.reason(ids[1]).contains("re-check failed at dequeue"), "{}", r.reason(ids[1]));
+    assert_eq!(r.events("intent.handed_over"), 2);
+    assert_eq!(r.events("policy.decision"), 0, "the policy decides neither");
+    assert_eq!(r.run_until_finished(ids[0], 300).await, State::Done, "{}", r.reason(ids[0]));
+    assert_eq!(wa.count("MISSION_COUNT"), 1, "sent once");
+    // a second call hands nothing over again: only at the start, before any other order
+    assert!(r.d.hand_over_starts().is_ok());
+    assert_eq!(r.events("intent.handed_over"), 2);
+    // replay: every re-check recomputed, each handover checked against the run's fleet
+    let fleet = serde_json::to_vec(&r.d.fleet_identity()).expect("fleet");
+    let rep = replay_str_with(
+        &r.log.text(),
+        &ReplayOptions {
+            own_fleet: Some(&fleet),
+            ..ReplayOptions::default()
+        },
+    )
+    .expect("parses");
+    assert!(rep.ok(), "{:?}", rep.mismatches);
+    assert_eq!((rep.handed_over, rep.handover_fleet, rep.recheck_dispatched, rep.recheck_voided), (2, Some(true), 1, 1));
+    let _ = std::fs::remove_dir_all(&dir);
+}

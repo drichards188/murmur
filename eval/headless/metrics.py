@@ -70,7 +70,7 @@ def audit_intents(rec: dict[str, Any], to_s: Any) -> dict[int, dict[str, Any]]:
             continue
         typ = e.get("type")
         t = to_s(e["t"] / 1000.0) if isinstance(e.get("t"), (int, float)) else None
-        if typ == "intent.created":
+        if typ in ("intent.created", "intent.handed_over"):  # rules 29: handed over at the start
             i = e.get("intent") or {}
             out[int(i["id"])] = {"source": i.get("source"), "kind": i.get("kind"), "uids": i.get("uids"),
                                  "created": t, "states": {}, "by": None, "note": None}

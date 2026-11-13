@@ -35,6 +35,7 @@ fn boat(moored: bool, port: u16) -> VehicleConfig {
         params: Default::default(),
         surface_m: None,
         moored,
+        start_at: None,
     }
 }
 

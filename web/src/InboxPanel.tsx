@@ -291,7 +291,16 @@ function ApprovalCard({ intent: i, vehicles, now, selected, onFocus, onDone, eng
             {scriptedBadge(i.source.id)} {i.source.id}
           </span>
         ) : (
-          <span className={`ix-src ${i.source.kind}`} title={i.source.kind === 'agent' ? 'proposed by an AI agent' : 'proposed by a human operator'}>
+          <span
+            className={`ix-src ${i.source.kind}`}
+            title={
+              i.source.kind === 'agent'
+                ? 'proposed by an AI agent'
+                : i.source.kind === 'handover'
+                  ? "the previous watch's order, handed over at the start by this fleet file"
+                  : 'proposed by a human operator'
+            }
+          >
             {i.source.kind} {i.source.id}
           </span>
         )}

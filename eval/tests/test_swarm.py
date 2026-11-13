@@ -143,6 +143,71 @@ def test_a_bad_swarm_is_refused(bad: dict):
         swarm.plan(bad, PLATFORMS)
 
 
+# ---- starting tasks (decision rules 29) -----------------------------------------------------------
+
+
+def test_a_swarms_start_moves_with_each_member_and_starts_it_on_station():
+    """A ring whose start orbits its centre: each member orbits its own place, starting there in the
+    air at its cruise altitude, its home its place in the ring; a unit's patrol moves with each of its
+    count as its line abreast does; the manifest names the fleet file only then."""
+    fleet = tomllib.loads("""
+[[swarm]]
+id = "R"
+platform = "x10"
+count = 4
+sim = "standin"
+cruise_alt_m = 100
+layout = "ring"
+center = { lat = 37.82, lon = -122.47 }
+radius_m = 300
+start = { task = "orbit", center = [-122.47, 37.82], radius_m = 80 }
+
+[[unit]]
+platform = "corsair"
+sim = "standin"
+count = 2
+spacing_m = 200
+spawn = [37.83, -122.48, 0, 0]
+start = { task = "patrol", route = [[-122.48, 37.83], [-122.48, 37.84]] }
+""")
+    vs = swarm.plan(fleet, PLATFORMS)
+    boats, ring = vs[:2], vs[2:]
+    for v in ring:
+        lat, lon, alt, _ = v["home"]
+        assert v["start"]["task"] == "orbit" and v["start"]["radius_m"] == 80
+        assert math.dist(v["start"]["center"], [lon, lat]) < 1e-6
+        assert v["start_at"][:3] == [round(lat, 7), round(lon, 7), 100.0]
+    # the second boat's lane is its first's, 200 m east (line abreast of a heading of 0)
+    (a0, a1), (b0, b1) = boats[0]["start"]["route"], boats[1]["start"]["route"]
+    assert a0 == [-122.48, 37.83] and abs((b0[0] - a0[0]) * 111_320 * math.cos(math.radians(37.83)) - 200) < 0.5
+    assert b0[1] == a0[1] and b1[1] == a1[1]
+    assert boats[1]["start_at"] == [b0[1], b0[0], 0.0, 0.0]
+    doc = swarm.manifest_doc(vs, swarm.fleet_swarms(fleet), {"name": "f.toml", "sha256": "0" * 64})
+    assert doc["fleet"] == {"name": "f.toml", "sha256": "0" * 64}
+    assert "fleet" not in swarm.manifest_doc(swarm.plan(swarm.load_fleet("hostile-act-engagement"), PLATFORMS), (), doc["fleet"])
+
+
+@pytest.mark.parametrize(
+    "start, unit",
+    [
+        ({"task": "engage", "track": "T1"}, {}),
+        ({"task": "lay", "route": [[-122.47, 37.82]]}, {}),
+        ({"task": "identify", "track": "T1"}, {}),
+        ({"task": "collect"}, {}),
+        ({"task": "cover"}, {}),
+        ({"task": "orbit", "center": [-122.47, 37.82], "alt_m": 120}, {}),
+        ({"task": "patrol", "route": [[-122.47, 37.82]]}, {}),
+        ({"task": "hold"}, {"sim": "sitl"}),
+        ({"task": "hold"}, {"platform": "ugv_logistics"}),
+        ({"task": "hold"}, {"platform": "seahunter", "moored": True}),
+    ],
+)
+def test_a_bad_start_is_refused(start: dict, unit: dict):
+    u = {"platform": "x10", "sim": "standin", "spawn": [37.82, -122.47, 0, 0], "start": start, **unit}
+    with pytest.raises(SystemExit):
+        swarm.plan({"unit": [u]}, PLATFORMS)
+
+
 # ---- Saturation packed: its fleet and orders (sim/situations/swarm-saturation-packed.toml) -------
 # The layout Saturation had until bd murmur-mum5, kept for performance work. Checked on the Golden
 # Gate's baked grids by world v3's rules (eval/headless/tests/test_worlds_v3.py), and against the

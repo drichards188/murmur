@@ -233,6 +233,13 @@ pub struct ReplayReport {
     pub queue_expired: usize,
     pub resumed: usize,
     pub reboots: usize,
+    /// Rules 29: the orders the fleet file handed over at the start (`intent.handed_over`).
+    pub handed_over: usize,
+    /// Rules 29: whether the handed-over orders were checked against the fleet the run logged
+    /// (`<log stem>.fleet.json`, [`ReplayOptions::own_fleet`]): `Some(true)` checked (every
+    /// starting task it names handed over exactly, nothing else), `Some(false)` some were
+    /// handed over and that file was not given, `None` nothing to check.
+    pub handover_fleet: Option<bool>,
     /// Rules 5: dispatched intents sent back to the queue (their link lost before the start).
     pub requeued: usize,
     /// Rules 11: space tasks cancelled after dispatch, re-checked against a later answer and
@@ -1807,6 +1814,8 @@ struct Tracked {
     dispatched_before: bool,
     /// Its basis is from the run before a bridge restart.
     basis_carried: bool,
+    /// Rules 29: handed over at the start by the fleet file (`intent.handed_over`).
+    handed_over: bool,
     /// Each vehicle's platform as its last check saw it (or as carried over).
     platforms: BTreeMap<Uid, String>,
     /// The vehicles that may have started it (an op `starting` or `unconfirmed`), and those
@@ -1905,6 +1914,7 @@ impl Tracked {
             committed: BTreeSet::new(),
             dispatched_before: false,
             basis_carried: false,
+            handed_over: false,
             platforms: BTreeMap::new(),
             maybe_started: BTreeSet::new(),
             confirming: BTreeSet::new(),
@@ -2007,6 +2017,12 @@ pub struct ReplayOptions<'a> {
     /// (their file name, their bytes): each must be the one the start read (its SHA-256), and
     /// the platforms the failed carry may owe values to exactly that fleet's armed ones.
     pub fleets: &'a [(&'a str, &'a [u8])],
+    /// Rules 29: the fleet this run logged (`<log stem>.fleet.json`, as the bridge writes it:
+    /// each vehicle's identity and, when its fleet gave it one, its starting task), against
+    /// which every `intent.handed_over` is checked: each one its vehicle's starting task there,
+    /// and every starting task there handed over (unless the run carried orders over from an
+    /// earlier log, when none is).
+    pub own_fleet: Option<&'a [u8]>,
 }
 
 /// Replay a JSONL log. The chain is checked over the lines exactly as they are in the
@@ -2195,6 +2211,8 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (rules::MINE_SINCE, "\"orders_in_play\":{", "the orders in play a lay order's field is judged against"),
     (rules::MINE_SINCE, "\"fields\":[", "the minefields an earlier log had laid, carried over"),
     (rules::MINE_SINCE, "\"rule\":\"minefield\"", "a lay order's minefield check"),
+    (rules::HANDOVER_SINCE, "\"type\":\"intent.handed_over\"", "an order the fleet file handed over at the start"),
+    (rules::HANDOVER_SINCE, "\"kind\":\"handover\"", "the fleet's handover as an order's source"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -2598,6 +2616,10 @@ fn replay_inner<S: AsRef<str>>(
     let mut newest_on: BTreeMap<Uid, IntentId> = BTreeMap::new();
     // intents carried over from a previous run, checked against it after the loop
     let mut resumed: Vec<ResumedEvent> = Vec::new();
+    // rules 29: the orders the fleet handed over (seq, vehicle, task) and the fleet file they
+    // name, checked against the run's fleet file after the loop
+    let mut handovers: Vec<(u64, Option<Uid>, Task)> = Vec::new();
+    let mut handover_from: Option<crate::queue::HandedOverFrom> = None;
     // when each vehicle was last logged rebooting
     let mut rebooted: BTreeMap<Uid, Time> = BTreeMap::new();
     // rules 9: the identification ledger as the log builds it, what an act's verdict makes
@@ -2919,6 +2941,15 @@ fn replay_inner<S: AsRef<str>>(
                         Some(intent.id),
                         "an agent's intent under an operator session",
                         id.to_string(),
+                        String::new(),
+                    ),
+                    // rules 29: the fleet's orders are handed over at the start, never requested
+                    (Source::Handover { id }, _) => bad(
+                        &mut r,
+                        e,
+                        Some(intent.id),
+                        "an intent created with the fleet's handover as its source (a handed-over order is never requested)",
+                        id.clone(),
                         String::new(),
                     ),
                     _ => {}
@@ -3492,6 +3523,18 @@ fn replay_inner<S: AsRef<str>>(
                         false
                     }
                     Source::Human { .. } => true,
+                    // rules 29: never submitted, so never approved at submission
+                    Source::Handover { id } => {
+                        bad(
+                            &mut r,
+                            e,
+                            Some(*intent),
+                            "a handed-over order approved at submission",
+                            by.to_string(),
+                            id.clone(),
+                        );
+                        false
+                    }
                 };
                 if !*self_approved {
                     bad(
@@ -6142,7 +6185,10 @@ fn replay_inner<S: AsRef<str>>(
                     );
                 }
                 let passed = tr.last_check_passed == Some(true);
-                let d = passed.then(|| policy::decide(&tr.spec, &w, pol));
+                // rules 29: a handed-over order's re-check asks the policy only who judges a check
+                // nobody could verify
+                let ask = passed && (!tr.handed_over || queue::handover_unverified(&tr.last_results));
+                let d = ask.then(|| policy::decide(&tr.spec, &w, pol));
                 if d.as_ref() != decision.as_ref() {
                     bad(&mut r, e, Some(*intent), "re-check policy decision differs", json(decision), json(&d));
                 }
@@ -6154,6 +6200,7 @@ fn replay_inner<S: AsRef<str>>(
                     basis: &basis,
                     carried: tr.basis_carried,
                     rebooted: &rebooted,
+                    handed_over: tr.handed_over,
                 };
                 let rc = queue::assess(&tr.spec, &since, &tr.last_results, passed, d.as_ref(), &w);
                 if (rc.verdict, &rc.changes) != (*verdict, changes) {
@@ -6397,6 +6444,78 @@ fn replay_inner<S: AsRef<str>>(
                     }
                 }
                 resumed.push((e.seq, from.clone(), open, *state));
+                intents.insert(spec.id, tr);
+            }
+            EventBody::IntentHandedOver {
+                intent: spec,
+                from,
+                expires_t,
+            } => {
+                r.handed_over += 1;
+                let Some(pol) = &policy else {
+                    bad(&mut r, e, Some(spec.id), "an order handed over without run.started", String::new(), String::new());
+                    continue;
+                };
+                if intents.contains_key(&spec.id) {
+                    bad(&mut r, e, Some(spec.id), "intent created twice", String::new(), String::new());
+                    continue;
+                }
+                if !pol.rules.handover() {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(spec.id),
+                        "an order handed over by the fleet: only builds of rules 29 or later do",
+                        json(&pol.rules.rules_version),
+                        json(&crate::rules::HANDOVER_SINCE),
+                    );
+                }
+                // at the start only: before any other order of the run, one per vehicle
+                if let Some(other) = intents.values().find(|t| !t.handed_over) {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(spec.id),
+                        "an order handed over after another order (the fleet's are handed over at the start)",
+                        json(&other.spec.id),
+                        String::new(),
+                    );
+                }
+                if let Some(other) = intents.values().find(|t| t.spec.uids == spec.uids) {
+                    bad(&mut r, e, Some(spec.id), "a vehicle handed over two starting tasks", json(&other.spec.id), json(&spec.uids));
+                }
+                let source_ok = matches!(&spec.source, Source::Handover { id } if *id == from.fleet);
+                if !matches!(spec.kind(), TaskKind::Orbit | TaskKind::Patrol | TaskKind::Hold)
+                    || spec.uids.len() != 1
+                    || !source_ok
+                    || spec.created_t != e.t
+                {
+                    bad(
+                        &mut r,
+                        e,
+                        Some(spec.id),
+                        "a handed-over order that is not one vehicle's orbit, patrol or hold from the fleet file, created as it was handed over",
+                        json(&(spec.kind(), &spec.uids, &spec.source, spec.created_t)),
+                        json(&(&from.fleet, e.t)),
+                    );
+                }
+                let want = e.t.plus_ms(i64::from(pol.queue().expire_s) * 1000);
+                if *expires_t != want {
+                    bad(&mut r, e, Some(spec.id), "handover deadline differs from policy ([queue] expire_s)", json(expires_t), json(&want));
+                }
+                match &handover_from {
+                    Some(was) if was != from => {
+                        bad(&mut r, e, Some(spec.id), "orders handed over from two fleet files", json(was), json(from));
+                    }
+                    Some(_) => {}
+                    None => handover_from = Some(from.clone()),
+                }
+                let mut tr = Tracked::new(spec.clone(), State::Queued);
+                tr.basis = Some(crate::engine::handover_basis(e.t));
+                tr.handed_over = true;
+                tr.queue_expires = Some(*expires_t);
+                tr.queue_inbox = false;
+                handovers.push((e.seq, spec.uids.first().cloned(), spec.task.clone()));
                 intents.insert(spec.id, tr);
             }
             EventBody::VehicleRebooted {
@@ -7218,10 +7337,73 @@ fn replay_inner<S: AsRef<str>>(
     if !resumed.is_empty() {
         check_resumed(&mut r, &resumed, opts);
     }
+    check_handovers(&mut r, &handovers, opts);
     check_carried_restores(&mut r, events, opts);
     check_carried_from(&mut r, events, opts);
     r.unrestored = restores.report();
     r
+}
+
+/// Rules 29: the starting tasks a run's fleet file names (`<log stem>.fleet.json`: uid ->
+/// `start`, the engine task its fleet gave the vehicle), or why it can't be read.
+pub fn fleet_starts(bytes: &[u8]) -> Result<BTreeMap<String, Task>, String> {
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        #[serde(default)]
+        start: Option<Task>,
+    }
+    let fleet: BTreeMap<String, Entry> = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    Ok(fleet.into_iter().filter_map(|(uid, e)| Some((uid, e.start?))).collect())
+}
+
+/// Rules 29: the orders handed over at the start against the fleet the run logged, when given:
+/// each its vehicle's starting task there, and every starting task there handed over. A run
+/// that carried orders over from an earlier log hands none over (its vehicles are that run's).
+fn check_handovers(r: &mut ReplayReport, handovers: &[(u64, Option<Uid>, Task)], opts: &ReplayOptions<'_>) {
+    let Some(bytes) = opts.own_fleet else {
+        r.handover_fleet = (!handovers.is_empty()).then_some(false);
+        return;
+    };
+    let mut miss = |seq: u64, what: String, logged: String, recomputed: String| {
+        r.mismatches.push(Mismatch {
+            seq,
+            intent: None,
+            what,
+            logged,
+            recomputed,
+        });
+    };
+    let starts = match fleet_starts(bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            miss(0, "the run's fleet file can't be read for its starting tasks".into(), e, String::new());
+            r.handover_fleet = Some(false);
+            return;
+        }
+    };
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for (seq, uid, task) in handovers {
+        match uid.as_ref().and_then(|u| starts.get_key_value(u.as_str())) {
+            Some((n, t)) if t == task => {
+                seen.insert(n.as_str());
+            }
+            Some((_, t)) => miss(*seq, "a handed-over order differs from its vehicle's starting task in the run's fleet file".into(), json(task), json(t)),
+            None => miss(*seq, "an order handed over for a vehicle the run's fleet file gives no starting task".into(), json(uid), String::new()),
+        }
+    }
+    // a run that carried orders over hands none over, whatever its fleet says
+    if r.resumed == 0 {
+        let missing: Vec<&str> = starts.keys().map(String::as_str).filter(|u| !seen.contains(u)).collect();
+        if !missing.is_empty() {
+            miss(
+                0,
+                "starting tasks in the run's fleet file never handed over".into(),
+                json(&missing.iter().take(10).collect::<Vec<_>>()),
+                format!("{} of {}", missing.len(), starts.len()),
+            );
+        }
+    }
+    r.handover_fleet = (!handovers.is_empty() || !starts.is_empty()).then_some(true);
 }
 
 /// Rules 12: a decision's logged `expended` fact (the intent's vehicles spent by their own

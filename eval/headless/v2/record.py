@@ -450,7 +450,7 @@ def digest_audit(text: str, epoch: float) -> dict[str, Any]:
             continue
         typ = e.get("type")
         t = sit_s(e["t"] / 1000.0, epoch) if isinstance(e.get("t"), (int, float)) else None
-        if typ == "intent.created":
+        if typ in ("intent.created", "intent.handed_over"):  # rules 29: handed over at the start
             i = e.get("intent") or {}
             src = i.get("source") or {}
             intents[int(i["id"])] = {

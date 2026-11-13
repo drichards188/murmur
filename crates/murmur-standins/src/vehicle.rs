@@ -105,6 +105,7 @@ impl Vehicle {
     ) -> Result<Vehicle, String> {
         let behavior = behavior::create(&cfg.spec.behavior)
             .ok_or_else(|| format!("{}: unknown behavior {:?}", cfg.callsign, cfg.spec.behavior))?;
+        let mut behavior = behavior;
         let [lat, lon, alt, hdg] = cfg.home;
         let passive = if behavior.mode_number("MANUAL").is_some() {
             "MANUAL"
@@ -127,7 +128,15 @@ impl Vehicle {
             aground: false,
             demand: 0.0,
         };
-        behavior.spawn(&cfg.spec, &mut st);
+        match cfg.start_at {
+            // a starting task (decision rules 29): on its station, holding there, its home where
+            // the unit spawns it
+            Some([slat, slon, salt, shdg]) => {
+                (st.lat, st.lon, st.alt, st.heading) = (slat, slon, salt, shdg);
+                behavior.start_on_station(&cfg.spec, &mut st);
+            }
+            None => behavior.spawn(&cfg.spec, &mut st),
+        }
         // a vehicle that starts in the air (its behavior put its home below it) has its home
         // on the surface there: at the surface's height when the launcher knows it, else 0 m
         if st.home.2 < alt
@@ -151,7 +160,7 @@ impl Vehicle {
         }
         let fix = behavior.gps(&st).0 as u8
             >= mavlink::dialects::ardupilotmega::GpsFixType::GPS_FIX_TYPE_3D_FIX as u8;
-        let nav = Nav::new(&mut rng, (lat, lon, alt), Aid::for_firmware(firmware), fix);
+        let nav = Nav::new(&mut rng, (st.lat, st.lon, st.alt), Aid::for_firmware(firmware), fix);
         let rx = if fix {
             gnss::receive(gnss::Sky::LEGACY, true, 0.0, true)
         } else {
@@ -160,7 +169,8 @@ impl Vehicle {
         let link = Link::new(sock, cfg.sysid());
         let mut mission = Mission::default();
         mission.cfg.firmware = firmware;
-        let moored = cfg.moored;
+        // a starting task casts it off: it holds its station armed
+        let moored = cfg.moored && cfg.start_at.is_none();
         Ok(Vehicle {
             cfg,
             behavior,

@@ -2374,7 +2374,7 @@ impl Decision {
         let p = i.policy();
         let proposer = match &i.spec().source {
             murmur_decide::Source::Human { id } => Some(id.clone()),
-            murmur_decide::Source::Agent { .. } => None,
+            murmur_decide::Source::Agent { .. } | murmur_decide::Source::Handover { .. } => None,
         };
         let signed: Vec<String> = i
             .concurrences()

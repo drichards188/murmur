@@ -3873,6 +3873,7 @@ impl Engine {
         let who = match &source {
             Source::Human { id } => format!("human {id}"),
             Source::Agent { id } => format!("agent {id}"),
+            Source::Handover { id } => format!("the fleet file {id} (handed over)"),
         };
         let how = match other.state() {
             State::Queued => " (queued until its vehicles can be reached)",
@@ -5618,7 +5619,11 @@ impl Engine {
         if deadline.is_some_and(|d| now >= d) {
             return self.expire_queued(id);
         }
-        let decision = passed.then(|| policy::decide(&spec, &inputs, &self.policy));
+        // rules 29: a handed-over order is the previous watch's: the policy decides nothing,
+        // unless a check could not be verified and a person must judge it (who: the policy's)
+        let handed_over = self.get(id)?.handed_over().is_some();
+        let ask = passed && (!handed_over || queue::handover_unverified(&results));
+        let decision = ask.then(|| policy::decide(&spec, &inputs, &self.policy));
         // without a basis (none was recorded), a human decides: nothing to compare with
         let intent = self.get(id)?;
         let carried = intent.basis_carried();
@@ -5630,6 +5635,7 @@ impl Engine {
             basis: &basis,
             carried,
             rebooted: &self.rebooted,
+            handed_over,
         };
         let recheck = queue::assess(&spec, &since, &results, passed, decision.as_ref(), &inputs);
         let t = self.emit_at(now, EventBody::QueueRecheck {
@@ -6002,6 +6008,92 @@ impl Engine {
         }
         self.intents.insert(id, intent);
         self.next_intent = self.next_intent.max(id.0 + 1);
+        Ok(id)
+    }
+
+    /// Rules 29 ([`rules::HANDOVER_SINCE`]): carry in an order the fleet file hands over at the
+    /// start (`intent.handed_over`): one vehicle's starting task, the previous watch's order, its
+    /// vehicle already on that task's station. It enters queued, with the previous watch's
+    /// approval as its basis (nothing for a person or the policy of this run to approve again),
+    /// until `[queue] expire_s` from now whatever its kind; [`Engine::dequeue`] re-checks it on
+    /// the world when its vehicle can be reached and dispatches it if its checks pass, voids it
+    /// if one fails, and sends it to a person if one could not be verified. An orbit, a patrol or a hold for one vehicle only, and only at the start:
+    /// refused once the run has any other intent (one created, or carried over a restart).
+    pub fn hand_over(
+        &mut self,
+        proposal: Proposal,
+        from: queue::HandedOverFrom,
+    ) -> Result<IntentId, EngineError> {
+        let id = IntentId(self.next_intent);
+        let refuse = |why: String| EngineError::NotDispatchable { id, why };
+        if !self.policy.rules.handover() {
+            return Err(refuse(format!(
+                "orders are handed over by the fleet from rules {}",
+                rules::HANDOVER_SINCE
+            )));
+        }
+        if !matches!(proposal.task.kind(), TaskKind::Orbit | TaskKind::Patrol | TaskKind::Hold) {
+            return Err(refuse(format!(
+                "a starting task is an orbit, a patrol or a hold, not {}",
+                proposal.task.kind().as_str()
+            )));
+        }
+        if proposal.uids.len() != 1 {
+            return Err(refuse("a starting task is one vehicle's".into()));
+        }
+        proposal.validate()?;
+        if let Some(other) = self.intents.values().find(|i| i.handed_over().is_none()) {
+            return Err(refuse(format!(
+                "handed over only at the start, before any other order ({} is one)",
+                other.id()
+            )));
+        }
+        if let Some(other) = self.intents.values().find(|i| i.spec().uids == proposal.uids) {
+            return Err(refuse(format!(
+                "vehicle {} has a starting task already ({})",
+                proposal.uids[0],
+                other.id()
+            )));
+        }
+        let t = self.now().max(self.last_t);
+        let spec = IntentSpec {
+            id,
+            created_t: t,
+            source: Source::Handover {
+                id: from.fleet.clone(),
+            },
+            task: self.normalized(proposal.task, t),
+            uids: proposal.uids,
+            constraints: proposal.constraints,
+            rationale: proposal.rationale,
+        };
+        let expires_t = t.plus_ms(i64::from(self.policy.queue().expire_s) * 1000);
+        self.emit_at(t, EventBody::IntentHandedOver {
+            intent: spec.clone(),
+            from: from.clone(),
+            expires_t,
+        })?;
+        self.next_intent += 1;
+        let mut intent = Intent::new(spec);
+        intent.set_basis(handover_basis(t));
+        intent.set_handed_over(from.clone());
+        intent.set_queue(Some(QueueState {
+            t,
+            expires_t,
+            inbox: false,
+            reach: Vec::new(),
+            recheck: None,
+        }));
+        intent.resume_in(
+            State::Queued,
+            t,
+            format!(
+                "handed over at the start by the fleet file {} (sha256 {}): the previous watch's order, re-checked on the world before it is sent",
+                from.fleet,
+                from.sha256.get(..12).unwrap_or(&from.sha256)
+            ),
+        );
+        self.intents.insert(id, intent);
         Ok(id)
     }
 
@@ -7648,6 +7740,19 @@ pub(crate) fn no_basis(t: Time) -> Basis {
     Basis {
         t,
         by_human: true,
+        checks: Vec::new(),
+        policy: None,
+        engaged: BTreeMap::new(),
+    }
+}
+
+/// Rules 29: the basis of a handed-over intent: the previous watch's approval, which this run
+/// does not see (no checks, no policy decision of its own): its dequeue judges the checks alone
+/// ([`queue::Since::handed_over`]).
+pub(crate) fn handover_basis(t: Time) -> Basis {
+    Basis {
+        t,
+        by_human: false,
         checks: Vec::new(),
         policy: None,
         engaged: BTreeMap::new(),

@@ -47,6 +47,14 @@ pub struct VehicleConfig {
     /// its motors stopped. Off by default: every other vehicle drifts as before.
     #[serde(default)]
     pub moored: bool,
+    /// Where it starts when its fleet gave it a starting task (sim/swarm.py `start_at`: the
+    /// task's station, [lat, lon, alt_m, heading_deg]; the bridge hands the order over at the
+    /// start, decision rules 29): it starts there, holding as the bridge's hold would (an
+    /// aircraft in the air at the order's altitude, a boat on the water, a sub at the surface),
+    /// armed, until the order reaches it. Its home stays `home`. None: it starts at `home`, as
+    /// before.
+    #[serde(default)]
+    pub start_at: Option<[f64; 4]>,
 }
 
 /// What a stand-in simulates for a platform with no `endurance_h` in `sim/platforms.toml`. The

@@ -37,6 +37,11 @@ pub struct Spec {
     /// role, color); none: a fleet without swarms, whose manifest is as before.
     #[serde(default)]
     pub swarms: Vec<Value>,
+    /// Decision rules 29: the fleet file a fleet's starting tasks come from, as `sim/swarm.py`'s
+    /// manifest names it (`fleet`: name and sha256); none: a fleet without starting tasks,
+    /// whose manifest is as before.
+    #[serde(default)]
+    pub fleet_source: Option<Value>,
     /// The link profiles (`sim/links.toml`, or `MURMUR_LINKS`).
     pub links: PathBuf,
     /// Link `[[event]]`s known at the start (the situation's events files), as JSON objects of

@@ -457,6 +457,9 @@ impl From<Rationale> for String {
 pub enum Source {
     Human { id: OperatorId },
     Agent { id: AgentId },
+    /// Rules 29: the previous watch, through the fleet file that handed the order over at the
+    /// start (`intent.handed_over`; `id` names that file): no operator or agent of this run.
+    Handover { id: String },
 }
 
 impl Source {
@@ -830,6 +833,9 @@ pub struct Intent {
     /// Rules 5: carried over from the previous run after a bridge restart.
     #[serde(skip_serializing_if = "Option::is_none")]
     resumed: Option<Box<Resumed>>,
+    /// Rules 29: handed over at the start by the fleet file (the previous watch's order).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    handed_over: Option<Box<crate::queue::HandedOverFrom>>,
     /// Rules 5: the vehicles that ever accepted and started it (an op `acked`, `active` or
     /// `done`, in this run or one before): never sent it again.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
@@ -911,6 +917,7 @@ impl Intent {
             queue: None,
             basis: None,
             resumed: None,
+            handed_over: None,
             committed: BTreeSet::new(),
             dispatched_before: false,
             basis_carried: false,
@@ -983,6 +990,10 @@ impl Intent {
     /// Carried over from the previous run after a bridge restart.
     pub fn resumed(&self) -> Option<&Resumed> {
         self.resumed.as_deref()
+    }
+    /// Rules 29: handed over at the start by the fleet file (the previous watch's order).
+    pub fn handed_over(&self) -> Option<&crate::queue::HandedOverFrom> {
+        self.handed_over.as_deref()
     }
     /// The vehicles that ever accepted and started it (this run or one before).
     pub fn committed(&self) -> &BTreeSet<Uid> {
@@ -1172,6 +1183,9 @@ impl Intent {
     }
     pub(crate) fn set_resumed(&mut self, r: Resumed) {
         self.resumed = Some(Box::new(r));
+    }
+    pub(crate) fn set_handed_over(&mut self, from: crate::queue::HandedOverFrom) {
+        self.handed_over = Some(Box::new(from));
     }
     /// A resumed intent enters this run in `state` (queued or dispatched) directly: its
     /// approval was logged in the previous run.

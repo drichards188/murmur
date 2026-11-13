@@ -271,8 +271,27 @@ pub enum UnknownEndurance {
 /// the record the law asks for, live for the period the nomination sets, and a keep-out for our
 /// own vehicles while it is. Version 28 ([`MISSILE_STANDOFF_SINCE`]): a missile on a ground or
 /// surface platform is launched from a firing position within its range band of the target, not
-/// from the effect point.
-pub const RULES_VERSION: u32 = MISSILE_STANDOFF_SINCE;
+/// from the effect point. Version 29 ([`HANDOVER_SINCE`]): a fleet file may give a vehicle one
+/// starting task, the previous watch's order, which the engine carries in at the start
+/// (`intent.handed_over`) and re-checks before it goes.
+pub const RULES_VERSION: u32 = HANDOVER_SINCE;
+
+/// The rules version from which an order is handed over at the start (the owner's decision of
+/// 2026-11-10: a watch officer takes over from one who has already been there). A fleet file may
+/// give each vehicle one starting task (`start` on a unit or a swarm, sim/swarm.py): an orbit, a
+/// patrol or a hold, never an engagement, a lay, an identify, a collect or a cover. The vehicle
+/// spawns on that task's station, holding there, and the engine carries the order in when the run
+/// starts (`intent.handed_over`, [`crate::Engine::hand_over`]) as rules 5 carries an open intent
+/// over a restart: queued, its source the fleet file (its name and the SHA-256 of its content),
+/// its basis the previous watch's approval, never approved again by the policy or a person. It is
+/// re-checked on the world when its vehicle can be reached and has made its first full report
+/// (navigation ready, position, home, battery: [`crate::queue::reach`]; `check.result` phase `dequeue`,
+/// `queue.recheck` with no policy decision): it goes when its checks pass and is voided, never
+/// sent, when one fails; one nobody could verify goes to a person, the policy asked only who
+/// (as it routes any order with one); it waits `[queue] expire_s` at most, whatever its kind. A run that
+/// carries orders over from an earlier log hands none over. Every gate reads this constant,
+/// never a literal.
+pub const HANDOVER_SINCE: u32 = 29;
 
 /// The rules version from which a missile on a ground or surface platform is launched from a
 /// firing position (bd murmur-9001, the owner's direction of 2026-11-03: "make scenarios so that
@@ -687,6 +706,11 @@ impl RulesConfig {
     /// Rules 10: logins and step-ups may be passkeys' ([`crate::passkey`]).
     pub fn passkeys(&self) -> bool {
         self.rules_version >= PASSKEY_SINCE
+    }
+
+    /// Rules 29 ([`HANDOVER_SINCE`]): a fleet's starting tasks are handed over at the start.
+    pub fn handover(&self) -> bool {
+        self.rules_version >= HANDOVER_SINCE
     }
 
     /// Rules 12 ([`REVIEW_FOLLOWUPS_SINCE`]): the follow-ups of the reviews of rules 6 to 10.

@@ -129,6 +129,16 @@ pub trait Behavior: Send {
     /// Called once at spawn, after the common defaults (home = spawn point, disarmed, MANUAL).
     fn spawn(&self, _spec: &Spec, _st: &mut State) {}
 
+    /// Called once at spawn instead of [`Behavior::spawn`] when the fleet gave the vehicle a
+    /// starting task (`VehicleConfig::start_at`): `st` is already on the task's station (its
+    /// home is the spawn point). It holds there as the bridge's hold would, armed, until the
+    /// order reaches it. The default: armed in [`Behavior::hold_mode`] at that point.
+    fn start_on_station(&mut self, _spec: &Spec, st: &mut State) {
+        st.armed = true;
+        st.mode = self.hold_mode();
+        st.hold_point = (st.lat, st.lon);
+    }
+
     fn airborne(&self, _st: &State) -> bool {
         false
     }

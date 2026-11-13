@@ -196,6 +196,12 @@ impl Terrain {
         self.client.is_some() || self.grid.is_some()
     }
 
+    /// Whether a prefetch can fetch anything: tidewater is asked (the baked grid answers under
+    /// the lock as it is, with nothing to fetch first).
+    pub fn fetches(&self) -> bool {
+        self.client.is_some()
+    }
+
     /// The baked grid answers (no tidewater): which, for the startup line.
     pub fn grid_source(&self) -> Option<String> {
         self.grid.as_ref().map(|g| g.source.clone())

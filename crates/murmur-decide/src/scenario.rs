@@ -290,6 +290,45 @@ pub struct VehicleDef {
     /// before it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lost_for_s: Option<u32>,
+    /// Rules 29: its starting task, as a fleet file's `start` gives it (sim/swarm.py: an orbit
+    /// with `center` and `radius_m`, a patrol with `route`, or a hold): the previous watch's
+    /// order, handed over at the start (`Engine::hand_over`, before the timeline's first step)
+    /// and re-checked by the queue once the vehicle is reached. The vehicle starts on its station
+    /// (`at`), its home `home`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<StartDef>,
+}
+
+/// Rules 29: a vehicle's starting task in a scenario file (`[[vehicle]]`'s `start`).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartDef {
+    pub task: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub center: Option<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radius_m: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<Vec<[f64; 2]>>,
+}
+
+impl StartDef {
+    /// The engine task it hands over (what the bridge's `start_task` reads from a manifest).
+    fn task(&self) -> Result<Task, String> {
+        match (self.task.as_str(), self.center, &self.route) {
+            ("orbit", Some(c), _) => Ok(Task::Orbit {
+                center: LonLat::new(c[0], c[1]),
+                radius_m: self.radius_m.unwrap_or(200.0),
+            }),
+            ("patrol", _, Some(r)) => Ok(Task::Patrol {
+                route: r.iter().map(|p| LonLat::new(p[0], p[1])).collect(),
+            }),
+            ("hold", _, _) => Ok(Task::Hold {}),
+            (other, _, _) => Err(format!(
+                "a starting task is an orbit with a center, a patrol with a route or a hold, not {other}"
+            )),
+        }
+    }
 }
 
 fn battery() -> f64 {
@@ -1448,6 +1487,34 @@ pub fn run(
         clock_step: opts.clock_step,
         ..Extra::default()
     };
+    // rules 29: the vehicles' starting tasks, handed over from the scenario's own fleet (its
+    // vehicles, by their hash) before the timeline starts, as the bridge hands a fleet file's over
+    let mut handed: Vec<IntentId> = Vec::new();
+    let mut own_fleet = serde_json::Map::new();
+    if sc.vehicles.iter().any(|v| v.start.is_some()) {
+        let from = crate::queue::HandedOverFrom {
+            fleet: file.to_string(),
+            sha256: crate::hash::sha256_json(&sc.vehicles).map_err(|e| setup(e.to_string()))?,
+        };
+        for v in &sc.vehicles {
+            let start = match &v.start {
+                Some(st) => Some(st.task().map_err(|e| setup(format!("vehicle {}: {e}", v.uid)))?),
+                None => None,
+            };
+            let home = v.home.unwrap_or(v.at);
+            own_fleet.insert(
+                v.uid.clone(),
+                serde_json::json!({ "platform": v.platform, "callsign": v.callsign, "home": [home[1], home[0]], "start": start }),
+            );
+            let Some(task) = start else { continue };
+            match engine.hand_over(Proposal::new(task, vec![Uid::new(&v.uid)]), from.clone()) {
+                Ok(id) => handed.push(id),
+                Err(e) => refusals.push(e.to_string()),
+            }
+        }
+    }
+    let own_fleet = (!own_fleet.is_empty()).then(|| serde_json::to_vec(&own_fleet).unwrap_or_default());
+    extra.last_task = handed.last().copied();
 
     for s in 0..=end_s {
         let now = stepped(i64::from(s) * 1000, opts.clock_step);
@@ -1988,9 +2055,19 @@ pub fn run(
     // replayed with the rules it was decided under (the current ones unless asked otherwise)
     let replay_opts = replay::ReplayOptions {
         rules: opts.rules_version.map_or_else(replay::RulesAccepted::default, replay::RulesAccepted::Exactly),
+        // rules 29: the fleet the run handed its starting tasks over from, as the bridge logs it
+        own_fleet: own_fleet.as_deref(),
         ..replay::ReplayOptions::default()
     };
     let report = replay::replay_str_with(&text, &replay_opts).map_err(|e| setup(e.to_string()))?;
+    if report.handed_over != handed.len() || (!handed.is_empty() && report.handover_fleet != Some(true)) {
+        failures.push(format!(
+            "replay: {} order(s) handed over and {} replayed, checked against the fleet: {:?}",
+            handed.len(),
+            report.handed_over,
+            report.handover_fleet
+        ));
+    }
     let replay_mismatches: Vec<String> = report
         .mismatches
         .iter()

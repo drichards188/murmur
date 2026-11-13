@@ -330,6 +330,15 @@ vehicles = { callsign = "HUNTER 1" }          # {callsign}, {platform (, index, 
 route = [[-122.4720, 37.8135], [-122.4720, 37.8250]]   # orbit: center = [lon, lat], radius_m
 note = "Patrol the channel east of the bridge"          # the order's rationale in the log
 
+                                              # Or no opening order at all: the fleet's starting
+                                              # tasks (a unit's or a [[swarm]]'s `start`, the same
+                                              # task fields; sim/swarm.py, "starting tasks"): the
+                                              # previous watch's routine orders (orbit, patrol,
+                                              # hold), each stand-in spawned on its station, which
+                                              # the bridge hands over at the start (decision rules
+                                              # 29) and sends once each vehicle is heard and its
+                                              # checks pass
+
 [[step]]                                      # the timeline: eval/storyline.py's step kinds
 id = "fast-boat-enters"
 at_s = 150

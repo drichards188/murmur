@@ -1,0 +1,40 @@
+# Rules 29 (bd murmur-by3s): a watch officer takes over from one who has been there. The fleet gives
+# SKY 1, a quadcopter, one starting task (its `start`): an orbit over the strait east of the bridge,
+# the previous watch's order, which it is already flying on station. The engine hands it over at the
+# start (`intent.handed_over`): queued, its basis the previous watch's approval, never approved
+# again by the policy or a person of this run. SKY 1 is not heard for the first seconds (its link
+# comes up late), so the order waits in the queue, nothing logged; once SKY 1 reports, the queue
+# re-checks it on the world then, every check passes, and it goes out at once.
+title = "A handed-over orbit goes out once its vehicle is heard"
+invariant = "handover"
+attack = "an order the run did not decide, carried in at the start"
+expect = "dispatched"
+end_s = 8
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "sky-1"
+platform = "x10"
+at = [-122.4700, 37.8150]          # on its station over the strait, holding
+home = [-122.4460, 37.8068]        # its launch field at Crissy Field
+alt_m = 100
+lost_for_s = 60                    # silent from the start (heard a minute before): its link comes up at 3 s
+start = { task = "orbit", center = [-122.4700, 37.8150], radius_m = 150 }
+
+[[step]]
+at_s = 1
+action = "expect"
+task_state = "queued"
+
+[[step]]
+at_s = 3
+action = "vehicle"
+uid = "sky-1"
+silent = false
+
+[[step]]
+at_s = 5
+action = "expect"
+task_state = "dispatched"

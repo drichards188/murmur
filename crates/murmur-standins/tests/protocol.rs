@@ -95,6 +95,7 @@ async fn start(behavior: &str, alt: f64) -> Gcs {
         params: Default::default(),
         surface_m: None,
         moored: false,
+        start_at: None,
     };
     tokio::spawn(vehicle::run(
         Vehicle::new(cfg, sock, None).expect("vehicle"),

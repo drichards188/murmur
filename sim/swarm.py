@@ -5,7 +5,9 @@ A fleet file (sim/fleets/*.toml) lists units: a platform from sim/platforms.toml
 and a start point (and, for a stand-in boat or ROV at a pier, `moored = true`: the current
 leaves it where it is until it first arms), and may group them into swarms (`[[swarm]]`
 tables, "swarms" below: a swarm's members laid out as a block, a ring or a line, each vehicle's
-manifest entry naming its swarm). Platforms ArduPilot can fly run as real SITL processes; the rest
+manifest entry naming its swarm), and a unit or a swarm may give its stand-ins one starting task
+(`start`, "starting tasks" below: the previous watch's order, which they start on station for and
+the bridge hands over at the start). Platforms ArduPilot can fly run as real SITL processes; the rest
 (HALE/MALE aircraft, AUVs, large ships, drifters) run as MAVLink-speaking stand-ins in
 one process: the Rust engine, crates/murmur-standins (target/release/murmur-standins, built
 here if cargo is around; MURMUR_STANDINS_BIN overrides the binary). It reads tidewater
@@ -28,6 +30,7 @@ destroyed one's process stopped (silent; continued at shutdown so it can exit).
 """
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -84,13 +87,29 @@ def load_platforms():
     return tomllib.loads((ROOT / "platforms.toml").read_text())
 
 
-def load_fleet(name_or_path):
+def fleet_path(name_or_path):
+    """The fleet file: a name in sim/fleets/ or a path to a fleet .toml."""
     p = Path(name_or_path).expanduser()
     if not p.suffix:
         p = ROOT / "fleets" / f"{name_or_path}.toml"
     if not p.exists():
         sys.exit(f"no fleet {p}; available: {', '.join(f.stem for f in (ROOT / 'fleets').glob('*.toml'))}")
-    return tomllib.loads(p.read_text())
+    return p
+
+
+def load_fleet(name_or_path):
+    return tomllib.loads(fleet_path(name_or_path).read_text())
+
+
+def fleet_source(name_or_path):
+    """Where a fleet's starting tasks come from (the manifest's `fleet`, decision rules 29): the
+    file's path in the repository (else its name) and the SHA-256 of its content."""
+    p = fleet_path(name_or_path).resolve()
+    try:
+        name = str(p.relative_to(REPO))
+    except ValueError:
+        name = p.name
+    return {"name": name, "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
 
 
 # ---- swarms -------------------------------------------------------------------------------
@@ -112,12 +131,15 @@ def load_fleet(name_or_path):
 #   cruise_alt_m = 100               # as a unit's: optional
 #   moored = true                    # as a unit's: optional (boats tied up until they first arm)
 #   layout = "block"                 # where the members start (below)
+#   start = { task = "orbit", center = [lon, lat], radius_m = 100 }   # optional: each member's
+#                                    # starting task, moved with it ("starting tasks" below)
 #
 # Layouts, every point an inline table `{ lat, lon }` and every altitude in metres above MSL
 # (`alt_m`: one number, or `[low, high]`, a band the members spread across in order):
 #   block  `center`, `columns`, `spacing_m`, `heading_deg` (default 0): rows of `columns`
 #          members `spacing_m` apart, centred on `center`, rows across `heading_deg`; for a
-#          launch site on the ground or a mooring field. Members face `heading_deg`.
+#          launch site on the ground or a mooring field. Members face `heading_deg`. The rows
+#          are `row_spacing_m` apart when it is given (else `spacing_m`).
 #   ring   `center`, `radius_m`: evenly round the circle from north, clockwise, each facing
 #          along it (clockwise).
 #   line   `from`, `to`: evenly from one end to the other, facing along it.
@@ -127,7 +149,7 @@ SWARM_ROLES = ("picket", "search", "relay", "surface", "undersea", "reserve", "o
 SWARM_LAYOUTS = ("block", "ring", "line")
 SWARM_KEYS = {
     "id", "name", "role", "color", "platform", "mix", "count", "sim", "cruise_alt_m", "moored", "layout",
-    "center", "columns", "spacing_m", "heading_deg", "radius_m", "from", "to", "alt_m",
+    "center", "columns", "spacing_m", "row_spacing_m", "heading_deg", "radius_m", "from", "to", "alt_m", "start",
 }
 # what a swarm passes on to each member unit
 SWARM_UNIT_KEYS = ("sim", "cruise_alt_m", "moored")
@@ -168,15 +190,16 @@ def swarm_spawns(sw, n):
         lat0, lon0 = _swarm_point(sw, "center")
         cols = int(sw.get("columns", 10))
         step = float(sw.get("spacing_m", 10.0))
+        row_step = float(sw.get("row_spacing_m", step))
         hdg = float(sw.get("heading_deg", 0.0))
-        if cols < 1 or step <= 0:
-            sys.exit(f"swarm {sw['id']!r}: a block needs columns >= 1 and spacing_m > 0")
+        if cols < 1 or step <= 0 or row_step <= 0:
+            sys.exit(f"swarm {sw['id']!r}: a block needs columns >= 1 and spacing_m (and row_spacing_m) > 0")
         rows = math.ceil(n / cols)
         h = math.radians(hdg)
         for k in range(n):
             r, c = divmod(k, cols)
             across = (c - (cols - 1) / 2) * step  # along the row, to the right of the heading
-            ahead = ((rows - 1) / 2 - r) * step  # rows from the front back
+            ahead = ((rows - 1) / 2 - r) * row_step  # rows from the front back
             north = ahead * math.cos(h) - across * math.sin(h)
             east = ahead * math.sin(h) + across * math.cos(h)
             lat, lon = offset(lat0, lon0, north, east)
@@ -224,6 +247,108 @@ def fleet_swarms(fleet):
     return out
 
 
+# ---- starting tasks (decision rules 29) ------------------------------------------------------
+# A unit or a `[[swarm]]` may carry one `start` table: the previous watch's order its vehicles are
+# on when the run starts (a watch officer taking over from one who has been there). It takes an
+# order's task fields, as a situation's `[[order]]` does (points are [lon, lat]):
+#
+#   start = { task = "orbit", center = [lon, lat], radius_m = 150 }
+#   start = { task = "patrol", route = [[lon, lat], [lon, lat]] }
+#   start = { task = "hold" }
+#
+# Routine kinds only: never an engagement, a lay, an identify, a collect or a cover. A swarm's
+# start (or a unit's with a count) is laid out with its members, as the layout lays out their
+# positions: each member's is moved by that member's offset from the layout's centre (a block's
+# or a ring's `center`, a line's midpoint, a unit's spawn), so a ring whose start orbits the
+# ring's centre gives each member an orbit round its own place on the ring, and a block whose
+# start patrols one lane through its centre gives each member that lane through its own place.
+# The unit's spawn stays each vehicle's home (launch site, return point); the vehicle starts on
+# its task's station instead (an orbit's centre, a patrol's first point, a hold where it spawns),
+# holding there (an aircraft in the air at the altitude its order will fly, a boat on the water,
+# a sub at the surface) until the bridge hands the order over at the start and sends it. Stand-ins
+# only (a SITL vehicle starts on its pad) of aircraft, boats and subs. The manifest gives each such
+# vehicle its `start` (the order) and `start_at` ([lat, lon, alt, heading], where it starts), and
+# names the fleet file (`fleet`: name and sha256). Without `start`, everything is as before.
+START_TASKS = ("orbit", "patrol", "hold")
+START_KEYS = {"orbit": {"task", "center", "radius_m"}, "patrol": {"task", "route"}, "hold": {"task"}}
+# the altitude above home an aircraft's order flies at when its cruise altitude is 50 m or less
+# (crates/murmur-bridge tasks/caps.rs `Caps::alt` and `mission_alt`, for one vehicle)
+START_AIR_ALT = {"plane": 80.0, "vtol": 70.0, "copter": 30.0, "blimp": 20.0}
+START_WATER = ("boat", "sailboat", "sub")
+
+
+def _start_point(p, what, where):
+    if not (isinstance(p, list) and len(p) == 2 and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in p)):
+        sys.exit(f"{where}: start {what} is [lon, lat]")
+    return [float(p[0]), float(p[1])]
+
+
+def check_start(start, where):
+    """A `start` table, checked and normalized to the order the manifest gives: its task and that
+    task's fields, points as [lon, lat]."""
+    if not isinstance(start, dict):
+        sys.exit(f"{where}: start is a table, {{ task = ..., ... }}")
+    task = start.get("task")
+    if task not in START_TASKS:
+        sys.exit(f"{where}: a starting task is the previous watch's routine order: orbit, patrol or hold, "
+                 f"never {task!r} (an engagement, a lay, an identify, a collect or a cover is decided in the run)")
+    unknown = set(start) - START_KEYS[task]
+    if unknown:
+        extra = " (an order carries no altitude: it flies at its vehicle's cruise_alt_m)" if "alt_m" in unknown else ""
+        sys.exit(f"{where}: a starting {task} takes {sorted(START_KEYS[task])}, not {sorted(unknown)}{extra}")
+    out = {"task": task}
+    if task == "orbit":
+        out["center"] = _start_point(start.get("center"), "center", where)
+        if "radius_m" in start:
+            r = start["radius_m"]
+            if not (isinstance(r, (int, float)) and not isinstance(r, bool) and r > 0):
+                sys.exit(f"{where}: start radius_m is a number of metres above 0")
+            out["radius_m"] = float(r)
+    elif task == "patrol":
+        route = start.get("route")
+        if not (isinstance(route, list) and len(route) >= 2):
+            sys.exit(f"{where}: a starting patrol's route is [[lon, lat], ...], at least two points")
+        out["route"] = [_start_point(q, "route point", where) for q in route]
+    return out
+
+
+def moved_start(start, north_m, east_m):
+    """A start table moved `north_m` and `east_m` (a member's offset from its layout's centre)."""
+    if north_m == 0 and east_m == 0:
+        return dict(start)
+
+    def move(q):
+        lat, lon = offset(q[1], q[0], north_m, east_m)
+        return [round(lon, 7), round(lat, 7)]
+
+    out = dict(start)
+    if "center" in out:
+        out["center"] = move(out["center"])
+    if "route" in out:
+        out["route"] = [move(q) for q in out["route"]]
+    return out
+
+
+def start_at(v, start, spec):
+    """Where a vehicle with a starting task starts ([lat, lon, alt, heading]): on the task's
+    station (an orbit's centre, a patrol's first point, a hold where it spawns); an aircraft at
+    the altitude its order flies (its cruise altitude above MSL when over 50 m, else the task
+    layer's altitude above its home), a boat or a sub at the surface."""
+    lat, lon, alt, hdg = v["home"]
+    if start["task"] == "orbit":
+        lon, lat = start["center"]
+    elif start["task"] == "patrol":
+        (lon, lat), (lon1, lat1) = start["route"][0], start["route"][1]
+        hdg = round(_bearing((lat, lon), (lat1, lon1)), 1)
+    behavior = spec.get("behavior")
+    if behavior in START_AIR_ALT:
+        cruise = v.get("cruise_alt_m")
+        at = float(cruise) if cruise is not None and (cruise > 50 or cruise < 0) else alt + START_AIR_ALT[behavior]
+    else:
+        at = 0.0
+    return [round(lat, 7), round(lon, 7), round(at, 1), hdg]
+
+
 def swarm_units(fleet):
     """The fleet's units: its `[[unit]]` tables, then one unit per member of each swarm that
     has a count (its platform, or its mix in order, laid out by its layout)."""
@@ -248,9 +373,21 @@ def swarm_units(fleet):
             continue  # a declaration only: its members are [[unit]] tables naming it
         if not members:
             continue
+        start = check_start(sw["start"], f"swarm {sw['id']!r}") if "start" in sw else None
+        if start is not None:
+            # the layout's centre, which each member's start is moved from as its place is
+            if sw.get("layout") == "line":
+                (lat_a, lon_a), (lat_b, lon_b) = _swarm_point(sw, "from"), _swarm_point(sw, "to")
+                ref = ((lat_a + lat_b) / 2, (lon_a + lon_b) / 2)
+            else:
+                ref = _swarm_point(sw, "center")
         for pid, spawn in zip(members, swarm_spawns(sw, len(members))):
             unit = {"platform": pid, "spawn": spawn, "swarm": sw["id"]}
             unit.update({k: sw[k] for k in SWARM_UNIT_KEYS if k in sw})
+            if start is not None:
+                north = (spawn[0] - ref[0]) * 111_320.0
+                east = (spawn[1] - ref[1]) * 111_320.0 * math.cos(math.radians(ref[0]))
+                unit["start"] = moved_start(start, north, east)
             units.append(unit)
     return units
 
@@ -270,6 +407,17 @@ def plan(fleet, platforms):
         lat0, lon0, alt, hdg = unit["spawn"]
         spacing = unit.get("spacing_m", VEHICLES[spec["vehicle"]][2] if sim == "sitl" else STANDIN_SPACING_M)
         beam = math.radians(hdg + 90)  # line abreast, perpendicular to heading
+        where = f"unit of {pid}" + (f" (swarm {unit['swarm']})" if unit.get("swarm") else "")
+        start = check_start(unit["start"], where) if "start" in unit else None
+        if start is not None:
+            if sim != "standin":
+                sys.exit(f"{where}: a starting task is for stand-ins (a SITL vehicle starts on its pad): "
+                         f'set sim = "standin", or leave the start out and order it in the run')
+            if spec.get("behavior") not in (*START_AIR_ALT, *START_WATER):
+                sys.exit(f"{where}: a starting task is for aircraft, boats and subs, not a {spec.get('behavior')} "
+                         "(spawn it where its task starts and order it in the run)")
+            if unit.get("moored"):
+                sys.exit(f"{where}: moored and a starting task: a vehicle on its station is not tied up")
         for i in range(unit.get("count", 1)):
             lat, lon = offset(lat0, lon0, spacing * i * math.cos(beam), spacing * i * math.sin(beam))
             prefix = spec["callsign"]
@@ -297,6 +445,12 @@ def plan(fleet, platforms):
                 # the swarm it belongs to (fleet_swarms): only when it has one, so a fleet without
                 # swarms writes the manifest it always did
                 vehicles[-1]["swarm"] = unit["swarm"]
+            if start is not None:
+                # its starting task (decision rules 29), moved with it as its place is, and where
+                # it starts: only when it has one, so every other entry is as before
+                own = moved_start(start, spacing * i * math.cos(beam), spacing * i * math.sin(beam))
+                vehicles[-1]["start"] = own
+                vehicles[-1]["start_at"] = start_at(vehicles[-1], own, spec)
     return vehicles
 
 
@@ -400,16 +554,19 @@ def sitl_command(v, spec, args, workdir):
     return cmd
 
 
-def manifest_doc(vehicles, swarms=()):
-    """The manifest: the vehicles, and the fleet's swarms (`fleet_swarms`) when it has any (a
-    fleet without swarms writes exactly what it always did)."""
+def manifest_doc(vehicles, swarms=(), source=None):
+    """The manifest: the vehicles, the fleet's swarms (`fleet_swarms`) when it has any, and the
+    fleet file (`fleet_source`) when a vehicle has a starting task (a fleet without either writes
+    exactly what it always did)."""
     doc = {"vehicles": vehicles}
     if swarms:
         doc["swarms"] = list(swarms)
+    if source is not None and any("start" in v for v in vehicles):
+        doc["fleet"] = dict(source)
     return doc
 
 
-def write_manifest(vehicles, replace, swarms=()):
+def write_manifest(vehicles, replace, swarms=(), source=None):
     """sim/run/fleet.json, replaced in one step (the bridge re-reads it whenever its mtime
     changes and must never see half of it). `replace`: write it even when it already says
     the same, so its mtime says it is this run's (`--manifest-only`, which up.sh and the
@@ -417,7 +574,7 @@ def write_manifest(vehicles, replace, swarms=()):
     older than a minute as a previous run's); the full launch after it leaves an identical
     file alone, so the bridge doesn't re-read it."""
     manifest = RUN / "fleet.json"
-    text = json.dumps(manifest_doc(vehicles, swarms), indent=1)
+    text = json.dumps(manifest_doc(vehicles, swarms, source), indent=1)
     if not replace and manifest.exists() and manifest.read_text() == text:
         return
     tmp = manifest.with_name("fleet.json.tmp")
@@ -487,7 +644,7 @@ def main():
         return
 
     RUN.mkdir(exist_ok=True)
-    write_manifest(vehicles, replace=args.manifest_only, swarms=swarms)
+    write_manifest(vehicles, replace=args.manifest_only, swarms=swarms, source=fleet_source(args.location or args.fleet))
     if args.manifest_only:
         return
 
