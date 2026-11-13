@@ -124,6 +124,8 @@ pub fn vehicle_facts(
                 ms(d.last),
             )
         }),
+        // rules 30: its own lost-link failsafe, read or configured (not yet filled)
+        lost_link: None,
         platform,
     }
 }

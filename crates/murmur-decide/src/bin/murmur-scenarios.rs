@@ -9,7 +9,8 @@
 //! table. `--seed`/`--noise` add seeded Gaussian noise (metres, 1-sigma) to the track
 //! position estimates, `--vnoise` (m/s, 1-sigma, correlated over about 10 s) to their
 //! velocity estimates. `--rules N` decides under older decision rules (what they did with
-//! the same timeline; the designed ends are the current rules'). Rules 9: `--ident on|off`
+//! the same timeline; the designed ends are the current rules'), or under the rules being built
+//! (`RULES_NEWEST`, which a scenario's `min_rules` also asks for). Rules 9: `--ident on|off`
 //! sets the policy's `[identification] rule_declaration` (the evaluation's rule-versus-manual
 //! comparison on the same seeds), `--threshold X` its attribution threshold and
 //! `--nominate-unconfirmed` its nomination setting (the file's other keys stay);

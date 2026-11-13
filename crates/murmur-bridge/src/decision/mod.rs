@@ -547,6 +547,24 @@ pub struct Parts {
     pub pointer: Option<String>,
 }
 
+/// The decision rules a run is asked to decide under (`MURMUR_RULES`): none (unset or empty) for
+/// the default, [`rules::RULES_VERSION`]; the default or the rules being built
+/// ([`rules::RULES_NEWEST`], docs/NODE-LOSS.md section 8) by number; anything else is an error that
+/// stops the bridge.
+pub(crate) fn rules_asked(v: Option<&str>) -> Result<Option<u32>, String> {
+    let Some(v) = v.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Ok(None);
+    };
+    match v.parse::<u32>() {
+        Ok(n) if n == rules::RULES_VERSION || n == rules::RULES_NEWEST => Ok(Some(n)),
+        _ => Err(format!(
+            "MURMUR_RULES={v}: this build decides under rules {} (the default) or {} only",
+            rules::RULES_VERSION,
+            rules::RULES_NEWEST
+        )),
+    }
+}
+
 /// Remove `path` if it is an empty file (a start that failed before writing to it).
 fn remove_if_empty(path: &Path) {
     if std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() == 0) {
@@ -559,6 +577,13 @@ impl Decision {
     /// stops the bridge: without the decision layer nothing may reach a vehicle.
     pub fn load(world: Arc<World>, s: &Settings) -> Result<Arc<Decision>, String> {
         let mut policy = Policy::load(&s.policy).map_err(|e| e.to_string())?;
+        // the decision rules being built, only when asked for by number
+        if let Some(n) = rules_asked(std::env::var("MURMUR_RULES").ok().as_deref())? {
+            if n != policy.rules.rules_version {
+                println!("rules: deciding under decision rules {n} (MURMUR_RULES), not yet the default {}", rules::RULES_VERSION);
+            }
+            policy.rules.rules_version = n;
+        }
         // rules 10: a study requires its participant's passkey at every step-up, whatever the
         // policy file says, unless the explicit override allows a password (logged; never
         // evidence)

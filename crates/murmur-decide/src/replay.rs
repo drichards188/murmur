@@ -2213,6 +2213,8 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (rules::MINE_SINCE, "\"rule\":\"minefield\"", "a lay order's minefield check"),
     (rules::HANDOVER_SINCE, "\"type\":\"intent.handed_over\"", "an order the fleet file handed over at the start"),
     (rules::HANDOVER_SINCE, "\"kind\":\"handover\"", "the fleet's handover as an order's source"),
+    (rules::NODE_LOSS_SINCE, "\"lost_link\":{\"value\":", "a vehicle's own lost-link failsafe (a decision's fact)"),
+    (rules::NODE_LOSS_SINCE, "\"nodes_lost\":{", "our vehicles confirmed lost (a decision's fact)"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.
@@ -2761,14 +2763,16 @@ fn replay_inner<S: AsRef<str>>(
                     );
                 }
                 let version = rules_version.unwrap_or(1);
-                if version > crate::rules::RULES_VERSION {
+                // the newest rules this build decides under (the default's, but on a branch that
+                // builds the next version)
+                if version > crate::rules::RULES_NEWEST {
                     bad(
                         &mut r,
                         e,
                         None,
                         "log written under newer decision rules than this replay knows",
                         version.to_string(),
-                        crate::rules::RULES_VERSION.to_string(),
+                        crate::rules::RULES_NEWEST.to_string(),
                     );
                 }
                 r.rules_version = version;

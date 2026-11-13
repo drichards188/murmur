@@ -142,8 +142,9 @@ already relies on.
 
 ## 7. Rules 30
 
-- **Gate**: `pub const NODE_LOSS_SINCE: u32 = 30;` in `rules.rs` (beside `:292`), `RULES_VERSION =
-  NODE_LOSS_SINCE`, read through `RulesConfig::node_loss()`, never a literal.
+- **Gate**: `pub const NODE_LOSS_SINCE: u32 = 30;` in `rules.rs` (`:307`, beside `HANDOVER_SINCE`),
+  `RULES_VERSION = NODE_LOSS_SINCE` from stage 7 (until then `RULES_NEWEST`, section 8), read through
+  `RulesConfig::node_loss()`, never a literal.
 - **Decisions that change**: a silent vehicle's region (section 3); a lost vehicle leaves the friendly
   keep-out, the line of fire and the minefield check; readiness refuses a lost vehicle; pending,
   queued and dispatched orders on it end at the confirmation; its owed values close; picture tokens
@@ -151,8 +152,9 @@ already relies on.
 - **New inputs**: the vehicle fact `lost_link` {action, timer_s, source: read or configured} (the
   bridge reads the firmware's failsafe parameters at first contact and after a reboot, with the job
   `decision/preload.rs` already runs; configured from `sim/links.toml` where the link cannot carry a
-  read, as `estimate.rs` does); `WorldSnapshot.lost`, engine-filled. Both dropped before logging
-  under older rules, as the damage fact is.
+  read, as `estimate.rs` does); `WorldSnapshot.nodes_lost`, engine-filled (not `lost`: rules 16's
+  `engage.accepted` already logs a `lost` key, and replay tells a log's rules by its keys). Both
+  dropped before logging under older rules, as the damage fact is.
 - **New events**: `node.presumed`, `node.presumption_cleared`, `node.lost`, `node.loss_revoked`;
   `restore.closed` closure `lost`; `carried_from.lost`. `Engine::step_nodes` runs on the bridge's
   tick beside `step_lays` (`engine.rs:6149`).
@@ -181,7 +183,7 @@ already relies on.
 | stage | size | files | the claim, and what checks it | after | parallel |
 |---|---|---|---|---|---|
 | 0. Struck only on a hit (murmur-aset): done, 84fdaef | S | `murmur-bridge/src/tracks/mod.rs`, its truth types | "a miss is never reported as struck": one unit test | | yes |
-| 1. Seed | S | `rules.rs` (the gate), `world.rs` (`lost_link`, `WorldSnapshot.lost`) | none: types only | | first |
+| 1. Seed | S | `rules.rs` (the gate), `world.rs` (`lost_link`, `WorldSnapshot.nodes_lost`) | none: types only | | first |
 | 2. Prediction | L | `engage.rs` `friendly_standing` only, a new `silent.rs`, `keepout.rs` | "a silent vehicle's true position stays inside its region": headless, the 22-type fleet's links cut for 10 minutes with world currents on, every second checked against the stand-ins' truth (their failsafes as the firmware runs them, `standins/src/failsafe.rs`); scenarios 137, 138, 143 | 1 | with 3, 4 |
 | 3. States and consequences | L | `engine.rs`, `replay.rs`, `audit.rs`, `rules.rs` readiness, `mines.rs`, `queue.rs`; in `engage.rs` only the keep-out loop and the token check | "only a person confirms, on the silence they saw; a report undoes it before any decision; it carries to the same vehicle only": scenarios 139 to 142, the three tampers; rules 29 logs replay as before (the existing `tests/versions.rs`) | 1 | with 2, 4 |
 | 4. The lost-link fact | M | `decision/preload.rs`, `decision/snapshot.rs`, `vehicle.rs` | "the plan read is the vehicle's": one stand-in test per firmware | 1 | with 2, 3 |
@@ -192,6 +194,24 @@ already relies on.
 Stages 0, 2, 3 and 4 run as parallel agents in their own worktrees once stage 1 lands: their files are
 disjoint but for `engage.rs`, where 2 owns `friendly_standing` and 3 touches only the keep-out loop and
 the token check.
+
+**Building rules 30 before it is the default.** Until stage 7, `RULES_VERSION` stays 29 and
+`RULES_NEWEST` (`rules.rs`, beside it) is 30, so every run, fixture and digest stays on rules 29 and
+`make check` passes on the branch at every stage; rules 30 is decided only when asked for. A scenario
+designed for it says `min_rules = 30` (the runner decides under the newer of it and the current rules
+unless `--rules N` says otherwise, so the suite's sweeps run 137 to 143 under 30 and the rest under
+29); a test sets `policy.rules.rules_version = NODE_LOSS_SINCE` (a bridge rig: `rig_with`) or
+`RunOptions::rules_version`; a live or headless stack takes `MURMUR_RULES=30` (the bridge refuses any
+number but 29 and 30, and `eval/headless/sim.py` passes it on from the caller's environment). Replay
+accepts a log of any version up to `RULES_NEWEST`, by default too, and flags a newer one; its markers
+catch a log claiming 29 that carries `lost_link` or `nodes_lost`. Gate every change on
+`RulesConfig::node_loss()`, never on `RULES_VERSION`, and gate on it too what the bridge itself adds
+(the lost-link read, alerts, review items), so that a rules 29 run, the golden and paused episodes
+among them, stays byte for byte: no stage before 7 adds a v30 fixture or re-takes a digest, and a
+digest that moves on the branch is a bug. What rules 29 did with a timeline is `--rules 29`
+(`RunOptions::rules_version: Some(HANDOVER_SINCE)`). Stage 7 sets `RULES_VERSION = NODE_LOSS_SINCE`
+and `RULES_NEWEST = RULES_VERSION`, adds the v30 fixtures and re-takes the digests; `min_rules` and
+`MURMUR_RULES` then stay, inert until the next version is built the same way.
 
 ## 9. Decisions for the owner
 

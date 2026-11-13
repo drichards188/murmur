@@ -79,6 +79,7 @@ pub fn vehicle(platform: &str, at: LonLat) -> VehicleFacts {
         alt_msl_m: None,
         booted_t: None,
         damage: None,
+        lost_link: None,
     }
 }
 

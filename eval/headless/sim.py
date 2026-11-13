@@ -39,6 +39,10 @@ class Sim:
         # unless the caller's environment asks for more; speed only, the episode is the same
         if "MURMUR_SENSE_THREADS" in os.environ and "MURMUR_SENSE_THREADS" not in env:
             env = {**env, "MURMUR_SENSE_THREADS": os.environ["MURMUR_SENSE_THREADS"]}
+        # the decision rules being built (crates/murmur-decide rules.rs RULES_NEWEST), only when the
+        # caller's environment asks for them: without it the episode decides under the default
+        if "MURMUR_RULES" in os.environ and "MURMUR_RULES" not in env:
+            env = {**env, "MURMUR_RULES": os.environ["MURMUR_RULES"]}
         r, w = os.pipe()
         out = open(log, "wb") if log else subprocess.DEVNULL
         try:

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::areas::AreaSet;
 use crate::catalog::{AutopilotKind, PlatformFacts};
 use crate::geo::LonLat;
-use crate::ids::{IntentId, Uid};
+use crate::ids::{IntentId, OperatorId, Uid};
 use crate::intent::{IntentSpec, Task};
 use crate::rules::{RulesConfig, needs_terrain};
 use crate::space::SpaceAnswer;
@@ -96,6 +96,83 @@ pub struct VehicleFacts {
     /// drops it before logging under older rules. Absent: none reported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub damage: Option<Fact<VehicleDamage>>,
+    /// Rules 30 ([`crate::rules::NODE_LOSS_SINCE`]): what the vehicle's autopilot does on its own
+    /// when it loses its ground station (its GCS failsafe), stamped with when the bridge read it
+    /// from the vehicle's parameters (at first contact and after a reboot) or, where the link
+    /// cannot carry a read, configured it ([`LostLinkPlan::source`]). A silent vehicle's predicted
+    /// region reads it (docs/NODE-LOSS.md section 3). The engine drops it before logging under
+    /// older rules. Absent: not known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lost_link: Option<Fact<LostLinkPlan>>,
+}
+
+/// Rules 30: a vehicle's own lost-link failsafe ([`VehicleFacts::lost_link`]): what it does when
+/// its ground station has been silent for `timer_s`, and where the bridge has that from. An
+/// engagement's confirmed preload ([`crate::engage::LostLinkPreload`]) stands in for it on the
+/// platform the engagement holds.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LostLinkPlan {
+    pub action: LostLinkAction,
+    /// How long the link must be silent before the failsafe acts, s (the firmware's GCS failsafe
+    /// timeout). Absent: not known, or nothing to time (`off`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timer_s: Option<f64>,
+    pub source: LostLinkSource,
+}
+
+/// Rules 30: what a GCS failsafe does ([`LostLinkPlan::action`]), each firmware's parameters mapped
+/// onto one of these by the bridge (docs/NODE-LOSS.md section 7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LostLinkAction {
+    /// The failsafe is off or only warns: nothing changes.
+    Off,
+    /// It carries on with its mission.
+    Continue,
+    /// It returns home (or to a rally point).
+    Rtl,
+    /// It retraces its own way home (SmartRTL), or returns home where it cannot.
+    SmartRtl,
+    /// It holds where it is (a rover's or a boat's hold).
+    Hold,
+    /// It circles or loiters where it is.
+    Loiter,
+    /// It stops where it is (a copter's brake).
+    Brake,
+    /// It lands where it is.
+    Land,
+    /// It glides down, its motor off (a fixed wing).
+    Glide,
+    /// It holds its depth (a submarine).
+    DepthHold,
+    /// It surfaces (a submarine).
+    Surface,
+    /// It disarms: on the water it drifts.
+    Disarm,
+}
+
+/// Rules 30: where a vehicle's [`LostLinkPlan`] comes from (decision D4: read where the link can
+/// carry a read).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LostLinkSource {
+    /// Read from the vehicle's own parameters, as a ground station reads them.
+    Read,
+    /// Configured (the link profile's lost-link timer and the platform's kind, sim/links.toml),
+    /// where the link cannot carry a read.
+    Configured,
+}
+
+/// Rules 30: one of ours an operator confirmed lost and no report has revoked since (`node.lost`),
+/// as [`WorldSnapshot::nodes_lost`] carries it: lost since its report at `since` (the last position
+/// the confirmation was made on; none: it never reported one), confirmed by `by` at `t`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LostNode {
+    pub since: Option<Time>,
+    pub by: OperatorId,
+    pub t: Time,
 }
 
 /// Rules 25: what a vehicle reported damaged in itself ([`VehicleFacts::damage`]). `mobility`: its
@@ -638,6 +715,12 @@ pub struct WorldSnapshot {
     /// vehicles, which its field must not catch. Absent when none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub orders_in_play: BTreeMap<Uid, crate::mines::InPlayOrder>,
+    /// Engine-filled (rules 30, [`crate::rules::NODE_LOSS_SINCE`]): our vehicles an operator
+    /// confirmed lost and no report has revoked since, from the engine's ledger (`node.lost`). The
+    /// bridge never gives them; the engine drops them before logging under older rules. Absent
+    /// when none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub nodes_lost: BTreeMap<Uid, LostNode>,
 }
 
 /// A track picture as an event read it: the tracks (their identification filled from the
@@ -787,6 +870,9 @@ pub struct LoggedInputs {
     /// A lay order's view of the orders in play on our other vehicles (rules 27; absent when none).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub orders_in_play: BTreeMap<Uid, crate::mines::InPlayOrder>,
+    /// Our vehicles confirmed lost (rules 30; absent when none).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub nodes_lost: BTreeMap<Uid, LostNode>,
 }
 
 impl LoggedInputs {
@@ -832,6 +918,7 @@ impl LoggedInputs {
             behaving_accepted: world.behaving_accepted.clone(),
             minefields: world.minefields.clone(),
             orders_in_play: world.orders_in_play.clone(),
+            nodes_lost: world.nodes_lost.clone(),
         }
     }
 
@@ -890,6 +977,7 @@ impl LoggedInputs {
             behaving_accepted: self.behaving_accepted.clone(),
             minefields: self.minefields.clone(),
             orders_in_play: self.orders_in_play.clone(),
+            nodes_lost: self.nodes_lost.clone(),
         }
     }
 }
@@ -963,6 +1051,8 @@ impl WorldSnapshot {
             // engine-owned (rules 27): our live fields, set before the route plans read them
             minefields: self.minefields.clone(),
             orders_in_play: BTreeMap::new(),
+            // engine-owned (rules 30): filled from its ledger of our vehicles confirmed lost
+            nodes_lost: BTreeMap::new(),
         }
     }
 

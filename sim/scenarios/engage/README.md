@@ -173,6 +173,10 @@ land = [[[-122.49, 37.81], [-122.48, 37.81], [-122.48, 37.82]]]   # rules 22, op
                                  # land as polygons of [lon, lat], in place of the runner's two
                                  # boxes (San Francisco south of 37.800, Marin north of 37.832 west
                                  # of -122.46); the rest of its coverage is water 20 m deep
+min_rules = 30                   # optional: the oldest decision rules it is designed for: it
+                                 # runs under them when they are newer than the current ones
+                                 # (rules being built, docs/NODE-LOSS.md section 8), else under
+                                 # the current ones; murmur-scenarios --rules N overrides it
 # policy, catalog, areas = "path"  # optional, relative to the repo (defaults: sim/...)
 
 [[carried]]                      # rules 15, optional: an earlier log whose carry failed at

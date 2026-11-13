@@ -273,8 +273,38 @@ pub enum UnknownEndurance {
 /// surface platform is launched from a firing position within its range band of the target, not
 /// from the effect point. Version 29 ([`HANDOVER_SINCE`]): a fleet file may give a vehicle one
 /// starting task, the previous watch's order, which the engine carries in at the start
-/// (`intent.handed_over`) and re-checks before it goes.
+/// (`intent.handed_over`) and re-checks before it goes. Version 30 ([`NODE_LOSS_SINCE`]), losing a
+/// node, is being built and is not yet the default: see [`RULES_NEWEST`].
 pub const RULES_VERSION: u32 = HANDOVER_SINCE;
+
+/// The newest decision rules this build can decide under and replay: [`RULES_VERSION`] itself,
+/// except on a branch that builds the next version in stages before making it the default
+/// (docs/NODE-LOSS.md section 8). There a run still decides under [`RULES_VERSION`], so its logs,
+/// fixtures and digests stay as they were, and decides under this version only when asked: a
+/// scenario's `min_rules`, the scenario runner's `--rules N`, a test's `policy.rules.rules_version`,
+/// the bridge's `MURMUR_RULES`. Replay accepts a log of any version up to this one and flags one
+/// newer. The branch's last stage sets [`RULES_VERSION`] to its version, and this to
+/// [`RULES_VERSION`] again.
+pub const RULES_NEWEST: u32 = NODE_LOSS_SINCE;
+
+/// The rules version from which one of ours that stops reporting is silent, presumed lost, or lost
+/// (bd murmur-zb1d, the owner's question of 2026-11-06 and its spec, docs/NODE-LOSS.md, approved on
+/// 2026-11-13 with its six defaults: DECISIONS.md "Losing a node"). From the C2's seat a destroyed
+/// vehicle and a cut link look the same at first, and declaring one of ours lost removes a
+/// friendly-fire protection, so it is a person's decision on evidence. A vehicle whose position is
+/// stale is silent: the friendly keep-out counts it where its order, its lost-link plan, a drift
+/// or, with nothing known, its top speed could have taken it since its last report. It is presumed
+/// lost on logged evidence (an observed act against it, its own struck or damage report, spent by
+/// its own effect: `node.presumed`, a flag that decides nothing), and lost only when an operator
+/// with engagement authority confirms it, on the silence they saw (`node.lost`; never an agent). A
+/// lost vehicle leaves the friendly keep-outs, the line of fire and the minefield check, takes no
+/// order, its orders end and the lost-link values it is owed close; any report from it revokes the
+/// loss (`node.loss_revoked`) before a decision reads that report. Its new inputs are the vehicle
+/// fact [`crate::world::VehicleFacts::lost_link`] (its own lost-link failsafe, read from it or
+/// configured) and [`crate::world::WorldSnapshot::nodes_lost`] (engine-filled); the engine drops
+/// both before logging under older rules. Every gate of that change reads this constant, never a
+/// literal.
+pub const NODE_LOSS_SINCE: u32 = 30;
 
 /// The rules version from which an order is handed over at the start (the owner's decision of
 /// 2026-11-10: a watch officer takes over from one who has already been there). A fleet file may
@@ -806,6 +836,12 @@ impl RulesConfig {
     /// from a firing position within its range band of the target.
     pub fn missile_standoff(&self) -> bool {
         self.rules_version >= MISSILE_STANDOFF_SINCE
+    }
+
+    /// Rules 30 ([`NODE_LOSS_SINCE`]): one of ours that stops reporting is silent, presumed lost
+    /// or, confirmed by a person, lost.
+    pub fn node_loss(&self) -> bool {
+        self.rules_version >= NODE_LOSS_SINCE
     }
 
     /// `[rules.engage]`, or its defaults.

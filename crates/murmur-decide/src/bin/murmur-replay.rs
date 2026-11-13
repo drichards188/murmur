@@ -3,9 +3,9 @@
 //! an audit log from its logged inputs and report any mismatch.
 //!
 //! - A log is recomputed with the decision rules it records, but only rules accepted: by
-//!   default the current ones. `--rules N` accepts exactly version N, `--min-rules N` version
-//!   N or later: an older log is replayed with its own rules only when asked for, so a log
-//!   can't pass by claiming older, looser rules.
+//!   default the current ones (or the rules being built, `RULES_NEWEST`). `--rules N` accepts
+//!   exactly version N, `--min-rules N` version N or later: an older log is replayed with its
+//!   own rules only when asked for, so a log can't pass by claiming older, looser rules.
 //! - `--anchors <file>` checks the log against its run-time anchors (`logs/anchors/`): its
 //!   first line and every anchored head must hash as anchored, and the log must reach the
 //!   last anchor. A rewritten log replays as well as the original: a credentials

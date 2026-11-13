@@ -254,6 +254,7 @@
 //!     alt_msl_m: None,
 //!     booted_t: None,
 //!     damage: None,
+//!     lost_link: None,
 //! });
 //!
 //! // An agent proposes; policy sends it to the inbox.
@@ -363,8 +364,8 @@ pub use queue::{
 };
 pub use route::{LegKind, Route, RouteLeg, Segment};
 pub use rules::{
-    ACCEPT_BEHAVING_SINCE, AIRCRAFT_REACH_SINCE, CARRY_FOLLOWUPS_SINCE, CheckResult, DAMAGE_SINCE, GUN_SINCE, HANDOVER_SINCE, MINE_SINCE, MISSILE_STANDOFF_SINCE, IDENTIFY_OWN_LOOK_SINCE, IDENTIFY_SECOND_LOOK_SINCE, IDENTIFY_SINCE, LOADOUT_SINCE, LOST_CONTACT_SINCE, MUNITION_FLIGHT_SINCE, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
-    QUEUE_FOLLOWUPS_SINCE, REVIEW_FOLLOWUPS_SINCE, ROUTE_PLAN_SINCE, ROUTE_SURFACE_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_VERSION,
+    ACCEPT_BEHAVING_SINCE, AIRCRAFT_REACH_SINCE, CARRY_FOLLOWUPS_SINCE, CheckResult, DAMAGE_SINCE, GUN_SINCE, HANDOVER_SINCE, MINE_SINCE, MISSILE_STANDOFF_SINCE, IDENTIFY_OWN_LOOK_SINCE, IDENTIFY_SECOND_LOOK_SINCE, IDENTIFY_SINCE, LOADOUT_SINCE, LOST_CONTACT_SINCE, MUNITION_FLIGHT_SINCE, NODE_LOSS_SINCE, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
+    QUEUE_FOLLOWUPS_SINCE, REVIEW_FOLLOWUPS_SINCE, ROUTE_PLAN_SINCE, ROUTE_SURFACE_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_NEWEST, RULES_VERSION,
     RuleId, RulesConfig, SPACE_FOLLOWUPS_SINCE, SPACE_REPLAY_SINCE, STEP_UP_SCHEMA_SINCE, UnknownEndurance, VELOCITY_SIGMA_SINCE,
 };
 pub use space::{
@@ -375,6 +376,6 @@ pub use space::{
 pub use terrain::{NearSample, NoTerrain, PolygonTerrain, Surface, TerrainOracle};
 pub use time::{Clock, ManualClock, SystemClock, Time};
 pub use world::{
-    AisIdentity, Affiliation, Circle, CircleSource, Fact, GpsFixFrom, LegSurfaces, LoggedInputs, Manoeuvre, LoggedSpace, SpaceInputs, TerrainInputs, TrackFacts,
+    AisIdentity, Affiliation, Circle, CircleSource, Fact, GpsFixFrom, LegSurfaces, LoggedInputs, LostLinkAction, LostLinkPlan, LostLinkSource, LostNode, Manoeuvre, LoggedSpace, SpaceInputs, TerrainInputs, TrackFacts,
     TrackPicture, VehicleDamage, VehicleFacts, WorldSnapshot, picture_hash,
 };

@@ -363,6 +363,32 @@ async fn auto_path_dispatches_and_finishes() {
     assert_eq!(report.approvals, 0); // policy, not a human
 }
 
+/// The rules being built (docs/NODE-LOSS.md section 8): `MURMUR_RULES` names the default or them
+/// by number, anything else stops the bridge; a bridge on a policy of those rules decides under
+/// them, and its log says so and replays.
+#[tokio::test(start_paused = true)]
+async fn a_bridge_decides_under_the_rules_being_built_only_when_asked() {
+    use murmur_decide::{RULES_NEWEST, RULES_VERSION};
+    assert_eq!(rules_asked(None), Ok(None));
+    assert_eq!(rules_asked(Some(" ")), Ok(None));
+    assert_eq!(rules_asked(Some(&RULES_VERSION.to_string())), Ok(Some(RULES_VERSION)));
+    assert_eq!(rules_asked(Some(&format!(" {RULES_NEWEST} "))), Ok(Some(RULES_NEWEST)));
+    for bad in ["7".to_string(), "next".into(), (RULES_NEWEST + 1).to_string()] {
+        assert!(rules_asked(Some(&bad)).is_err(), "{bad}");
+    }
+    let mut p = Policy::load(&root().join("sim/policy.toml")).expect("policy");
+    p.rules.rules_version = RULES_NEWEST;
+    let r = rig_with(p);
+    r.vehicle(1, Firmware::Copter, "x10", (LAT, LON));
+    sleep(Duration::from_millis(500)).await;
+    let out = r.d.submit(&op1(), orbit(1)).await.expect("submit");
+    assert_eq!(out.state, State::Dispatched, "{}", r.reason(out.id));
+    assert_eq!(r.run_until_finished(out.id, 300).await, State::Done);
+    let first = r.log.lines().first().cloned().unwrap_or_default();
+    assert!(first.contains(&format!("\"rules_version\":{RULES_NEWEST},")), "{first}");
+    assert_eq!(r.replays().rules_version, RULES_NEWEST);
+}
+
 #[tokio::test(start_paused = true)]
 async fn human_path_waits_then_runs_once_approved() {
     let r = waiting_rig();

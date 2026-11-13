@@ -6,6 +6,8 @@
 //! the change on it, and adds a log of the new version here.
 #![allow(clippy::unwrap_used)]
 
+mod common;
+
 use std::path::PathBuf;
 
 use murmur_decide::audit::{EventBody, parse_log};
@@ -510,7 +512,7 @@ fn a_log_from_newer_rules_is_flagged() {
     let mut events = parse_log(&fixture(CURRENT)).unwrap();
     for e in &mut events {
         if let EventBody::RunStarted { rules_version, .. } = &mut e.body {
-            *rules_version = Some(RULES_VERSION + 1);
+            *rules_version = Some(RULES_NEWEST + 1);
         }
     }
     let r = replay(&events);
@@ -519,6 +521,85 @@ fn a_log_from_newer_rules_is_flagged() {
         "{:?}",
         whats(&r)
     );
+}
+
+/// The rules being built (`RULES_NEWEST`, ahead of `RULES_VERSION` on a branch that builds them,
+/// docs/NODE-LOSS.md section 8): a run decides under them only when asked (the runner's
+/// `rules_version`, a scenario's `min_rules`), and replay takes their logs, by default as by name.
+/// A run that asks for nothing decides under `RULES_VERSION`, an older version asked by name wins
+/// over a scenario's, and a scenario cannot ask for rules this build does not know.
+#[test]
+fn the_rules_being_built_decide_and_replay_only_when_asked() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let file = root.join("sim/scenarios/engage/01-nominal.toml");
+    let claims = |log: &str, v: u32| log.lines().next().unwrap().contains(&format!("\"rules_version\":{v},"));
+    let asking = |v: u32| scenario::RunOptions { rules_version: Some(v), ..scenario::RunOptions::default() };
+    let plain = scenario::run_file(&file, &root, &scenario::RunOptions::default()).unwrap();
+    assert!(plain.ok && plain.replay_ok, "{:?} {:?}", plain.failures, plain.replay_mismatches);
+    assert!(claims(&plain.log, RULES_VERSION));
+    let asked = scenario::run_file(&file, &root, &asking(RULES_NEWEST)).unwrap();
+    assert!(asked.ok && asked.replay_ok, "{:?} {:?}", asked.failures, asked.replay_mismatches);
+    assert!(claims(&asked.log, RULES_NEWEST));
+    let r = replay_str(&asked.log).unwrap();
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert_eq!(r.rules_version, RULES_NEWEST);
+    let mut sc = scenario::load(&file).unwrap();
+    sc.min_rules = Some(RULES_NEWEST);
+    let designed = scenario::run(&sc, "01", &root, &scenario::RunOptions::default()).unwrap();
+    assert!(designed.ok && designed.replay_ok, "{:?} {:?}", designed.failures, designed.replay_mismatches);
+    assert!(claims(&designed.log, RULES_NEWEST));
+    let older = scenario::run(&sc, "01", &root, &asking(RULES_VERSION)).unwrap();
+    assert!(older.ok && older.replay_ok, "{:?} {:?}", older.failures, older.replay_mismatches);
+    assert!(claims(&older.log, RULES_VERSION));
+    sc.min_rules = Some(RULES_NEWEST + 1);
+    assert!(scenario::run(&sc, "01", &root, &scenario::RunOptions::default()).is_err());
+}
+
+/// Rules 30's new inputs, a vehicle's own lost-link failsafe and our vehicles confirmed lost: the
+/// engine drops them before logging under older rules (as rules 25's damage report), logs them under
+/// rules 30, and a log claiming older rules that carries either is caught.
+#[test]
+fn rules_30_inputs_are_dropped_under_older_rules_and_caught_in_their_logs() {
+    let plan = LostLinkPlan { action: LostLinkAction::Rtl, timer_s: Some(30.0), source: LostLinkSource::Read };
+    let decide = |version: u32| {
+        let clock = ManualClock::new(common::T0);
+        let mut policy = common::policy();
+        policy.rules.rules_version = version;
+        let log = MemorySink::new();
+        let mut e = Engine::new(policy, common::roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+        let s = e.open_operator_session(OperatorId::new("op-1")).unwrap();
+        let mut w = common::world();
+        w.vehicles.get_mut(&common::uid("sky-1")).unwrap().lost_link = Some(Fact::new(plan.clone(), common::T0));
+        // engine-filled: what a caller gives is never logged under older rules
+        let loss = LostNode { since: Some(common::T0), by: OperatorId::new("op-1"), t: common::T0 };
+        w.nodes_lost.insert(common::uid("sky-1"), loss);
+        e.submit(s.authority(), common::hold(&["sky-1"]), &w, &common::terrain()).unwrap();
+        log.text()
+    };
+    let old = decide(HANDOVER_SINCE);
+    assert!(!old.contains("\"lost_link\":") && !old.contains("\"nodes_lost\":"), "{old}");
+    let r = with(&old, RulesAccepted::Exactly(HANDOVER_SINCE));
+    assert!(r.ok(), "{:?}", r.mismatches);
+    let new = decide(NODE_LOSS_SINCE);
+    assert!(new.contains("\"lost_link\":{\"value\":{\"action\":\"rtl\",\"timer_s\":30.0,\"source\":\"read\"}"), "{new}");
+    let r = with(&new, RulesAccepted::Exactly(NODE_LOSS_SINCE));
+    assert!(r.ok(), "{:?}", r.mismatches);
+    // relabelled rules 29, the failsafe gives it away
+    let (v29, v30) = (format!("\"rules_version\":{HANDOVER_SINCE},"), format!("\"rules_version\":{NODE_LOSS_SINCE},"));
+    let mut ls = lines(&new);
+    ls[0] = ls[0].replacen(&v30, &v29, 1);
+    let w: Vec<String> = whats(&with(&rechain(&ls), RulesAccepted::Exactly(HANDOVER_SINCE))).iter().map(|s| s.to_string()).collect();
+    assert!(w.iter().any(|m| m.starts_with("a vehicle's own lost-link failsafe")), "{w:?}");
+    // and a set of our vehicles confirmed lost in a rules 29 decision's inputs
+    let mut ls = lines(&old);
+    let at = ls.iter().position(|l| l.contains("\"inputs\":{\"t\":")).unwrap();
+    ls[at] = ls[at].replacen(
+        "\"inputs\":{\"t\":",
+        "\"inputs\":{\"nodes_lost\":{\"sky-1\":{\"since\":1781000000000,\"by\":\"op-1\",\"t\":1781000000000}},\"t\":",
+        1,
+    );
+    let w: Vec<String> = whats(&with(&rechain(&ls), RulesAccepted::Exactly(HANDOVER_SINCE))).iter().map(|s| s.to_string()).collect();
+    assert!(w.iter().any(|m| m.starts_with("our vehicles confirmed lost")), "{w:?}");
 }
 
 #[test]

@@ -194,6 +194,12 @@ pub struct Scenario {
     /// scenario second on (default: as soon as the engagement ended and it can hear us).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restore_after_s: Option<u32>,
+    /// The oldest decision rules the scenario is designed for: it decides under these when they
+    /// are newer than [`crate::rules::RULES_VERSION`] (rules being built, up to
+    /// [`crate::rules::RULES_NEWEST`]), else under the current ones; `RunOptions::rules_version`
+    /// overrides it either way. Absent: the current rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_rules: Option<u32>,
     /// Paths relative to the repo root (defaults: sim/policy.toml, sim/platforms.toml,
     /// sim/areas).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1282,6 +1288,16 @@ pub fn run(
     let setup = |e: String| ScenarioError::Setup(file.to_string(), e);
     let rel = |p: &Option<String>, d: &str| root.join(p.as_deref().unwrap_or(d));
     let mut policy = Policy::load(&rel(&sc.policy, "sim/policy.toml")).map_err(|e| setup(e.to_string()))?;
+    // the rules being built, when the scenario is designed for them (and nothing asks otherwise)
+    if let Some(v) = sc.min_rules.filter(|_| opts.rules_version.is_none()) {
+        if v > crate::rules::RULES_NEWEST {
+            return Err(setup(format!(
+                "min_rules {v}: this build knows decision rules {} at most",
+                crate::rules::RULES_NEWEST
+            )));
+        }
+        policy.rules.rules_version = policy.rules.rules_version.max(v);
+    }
     if let Some(v) = opts.rules_version {
         policy.rules.rules_version = v;
         // older rules have no [identification]: no build of theirs logged one
@@ -2473,6 +2489,7 @@ fn snapshot(
                 platform: p,
                 booted_t: None,
                 damage: v.damage.clone(),
+                lost_link: None,
             },
         );
         // who it is, as the bridge would say (rules 12: a carried hold; rules 15: an un-spend),

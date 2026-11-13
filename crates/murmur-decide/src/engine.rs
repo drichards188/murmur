@@ -1827,7 +1827,7 @@ impl Engine {
         self.acceptable(&uid, since, world)?;
         let expected = crate::passkey::StepUpFor::accepting(Some(id), &[(uid.clone(), since)]);
         let step_up = self.act_step_up(policy::StepUpAct::AcceptUnknown, by.operator(), by.session(), step, &expected)?;
-        let vehicle = Box::new(world.vehicles.get(&uid).cloned().unwrap_or_default());
+        let vehicle = self.vehicle_as_logged(world.vehicles.get(&uid));
         self.emit(EventBody::EngageAccepted {
             intent: id,
             uid: Some(uid.clone()),
@@ -2797,7 +2797,7 @@ impl Engine {
             session: by.session(),
             note: note.to_string(),
             world_t: world.t,
-            vehicle: Box::new(world.vehicles.get(&uid).cloned().unwrap_or_default()),
+            vehicle: self.vehicle_as_logged(world.vehicles.get(&uid)),
             identity: world.identities.get(&uid).cloned(),
             step_up,
         };
@@ -6725,12 +6725,23 @@ impl Engine {
     /// clock), its picture at the log's time ([`Self::log_picture`]).
     fn log_inputs_at(&mut self, inputs: &WorldSnapshot, at: Option<Time>) -> Result<LoggedInputs, EngineError> {
         // rules 25: no build of older rules logged a vehicle's damage report (and none of their
-        // decisions reads it)
+        // decisions reads it); rules 30: nor its lost-link failsafe, nor our vehicles confirmed lost
+        let drop_damage = !self.policy.rules.damage() && inputs.vehicles.values().any(|v| v.damage.is_some());
+        let drop_loss = !self.policy.rules.node_loss()
+            && (!inputs.nodes_lost.is_empty() || inputs.vehicles.values().any(|v| v.lost_link.is_some()));
         let stripped;
-        let inputs = if !self.policy.rules.damage() && inputs.vehicles.values().any(|v| v.damage.is_some()) {
+        let inputs = if drop_damage || drop_loss {
             let mut w = inputs.clone();
             for v in w.vehicles.values_mut() {
-                v.damage = None;
+                if drop_damage {
+                    v.damage = None;
+                }
+                if drop_loss {
+                    v.lost_link = None;
+                }
+            }
+            if drop_loss {
+                w.nodes_lost.clear();
             }
             stripped = w;
             &stripped
@@ -6757,6 +6768,16 @@ impl Engine {
         // bd murmur-whug: the picture by reference, logged once
         let tracks_sha256 = self.log_picture(&inputs.tracks, &inputs.track_ais, &inputs.track_levels)?;
         Ok(LoggedInputs::from_world(inputs, areas_sha256, tracks_sha256))
+    }
+
+    /// One of ours as an event logs its facts (`engage.accepted`, `platform.unspent`): rules 30's
+    /// lost-link failsafe dropped under older rules, as [`Self::log_inputs_at`] drops it.
+    fn vehicle_as_logged(&self, v: Option<&crate::world::VehicleFacts>) -> Box<crate::world::VehicleFacts> {
+        let mut v = v.cloned().unwrap_or_default();
+        if !self.policy.rules.node_loss() {
+            v.lost_link = None;
+        }
+        Box::new(v)
     }
 
     /// The hash a decision references `set` by, the set logged as `areas.loaded` first (at `at`,
@@ -7102,7 +7123,7 @@ impl Engine {
                     by: a.by.clone(),
                     session: a.session,
                     world_t: world.t,
-                    vehicle: Some(Box::new(world.vehicles.get(uid).cloned().unwrap_or_default())),
+                    vehicle: Some(self.vehicle_as_logged(world.vehicles.get(uid))),
                     lost: None,
                     behaving: None,
                     step_up: a.step_up,
