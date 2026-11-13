@@ -649,10 +649,12 @@ fn every_claim_of_the_explanation_holds_in_a_dry_run() {
     let mut n = Counts::default();
     // MURMUR_KO_SEED and MURMUR_KO_WORLDS run it longer or on other pictures (400: under rules
     // 14 an aircraft's lag closed the one later-only window the first 240 had; 700: under rules
-    // 18 the tracks' own velocity errors closed the first 600's)
+    // 18 the tracks' own velocity errors closed the first 600's; 1,500: under rules 30 a silent
+    // vehicle of ours with nothing to place it counts at its top speed, which closed the first
+    // 1,200's)
     let env = |k: &str| std::env::var(k).ok().and_then(|s| s.parse::<u64>().ok());
     let mut rng = Rng(env("MURMUR_KO_SEED").unwrap_or(0x6b6f_2d31_3265));
-    for _ in 0..env("MURMUR_KO_WORLDS").unwrap_or(700) {
+    for _ in 0..env("MURMUR_KO_WORLDS").unwrap_or(1500) {
         n.worlds += 1;
         let (w, spec) = random_world(&mut rng);
         let before = w.clone();
@@ -757,6 +759,10 @@ fn a_young_track_clears_once_the_tracker_has_followed_it_long_enough() {
     check_claims(&spec, &w, &ex, &mut Rng(11), &mut n);
 }
 
+/// One of ours silent two minutes, nothing known to place it (no order of ours on it, neither
+/// circling nor still when last heard): from rules 30 it counts anywhere its top speed reaches
+/// (rules 6 to 29: its cruise reach, "lost"), which waiting only grows; the explanation says a
+/// report, an acceptance of its unknown position or a confirmation of its loss would clear it.
 #[test]
 fn a_lost_friendly_does_not_clear_by_waiting_and_the_explanation_says_what_would() {
     let mut w = WorldSnapshot::new(T0);
@@ -770,9 +776,10 @@ fn a_lost_friendly_does_not_clear_by_waiting_and_the_explanation_says_what_would
     let ex = keepout::explain(&spec, &w, &cfg(), &opts()).unwrap();
     let item = ex.items.iter().find(|i| i.id == "hunter-1").unwrap();
     assert!(item.blocks && item.subject == Subject::Vehicle);
-    assert_eq!(item.region.as_ref().unwrap().kind, "lost");
-    assert!(item.wait.is_none() && item.not_by_waiting.as_deref().unwrap().contains("lost"));
-    assert!(item.other.as_deref().unwrap().contains("accepting its unknown position"), "{:?}", item.other);
+    assert_eq!(item.region.as_ref().unwrap().kind, "top_speed");
+    assert!(item.wait.is_none() && item.not_by_waiting.as_deref().unwrap().contains("only grows"), "{:?}", item.not_by_waiting);
+    let other = item.other.as_deref().unwrap();
+    assert!(other.contains("accepting its unknown position") && other.contains("confirming it lost"), "{other}");
     assert!(ex.wait.is_none() && ex.wait_none.as_deref().unwrap().contains("hunter-1"), "{:?}", ex.wait_none);
     let mut n = Counts::default();
     check_claims(&spec, &w, &ex, &mut Rng(13), &mut n);

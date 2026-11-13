@@ -89,6 +89,22 @@ fn rules(version: u32) -> RulesConfig {
     r
 }
 
+/// The policy under rules 29, the last rules that counted a lost friendly at its cruise reach,
+/// what the rules 6 acceptance of a lost friendly was written against. From rules 30 a silent
+/// quadcopter that was still when last heard counts holding where it was, and one nothing
+/// places at its top speed (tests/rules30_prediction.rs, scenarios 53 to 60).
+fn policy29() -> Policy {
+    let mut p = policy();
+    p.rules.rules_version = HANDOVER_SINCE;
+    p
+}
+
+/// Replay a log of [`policy29`]'s engine, under its own rules.
+fn replay29(text: &str) -> replay::ReplayReport {
+    let opts = replay::ReplayOptions { rules: replay::RulesAccepted::Exactly(HANDOVER_SINCE), ..Default::default() };
+    replay::replay_str_with(text, &opts).unwrap()
+}
+
 // ---- der.2: the fallback as the platform's own lost-link action ------------------------------
 
 #[test]
@@ -1027,7 +1043,7 @@ fn only_a_ranged_altitude_counts_and_a_ground_target_stays_2d() {
 fn only_an_operator_accepts_a_lost_friendly_and_only_the_loss_it_names() {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
-    let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let mut e = Engine::with_areas(policy29(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
     declare_shown(&mut e, &world(clock.now()));
     let op1 = e.open_operator_session_with(OperatorId::new("op-1"), Grants { engage: true }).unwrap();
     let a1 = op1.engagement_authority().unwrap();
@@ -1095,7 +1111,7 @@ fn only_an_operator_accepts_a_lost_friendly_and_only_the_loss_it_names() {
     e.approve_engagement(id, auth, None, token, &w2, &terrain()).unwrap();
     let err = e.accept_unknown_friendly(id, a1, Uid::new("drone-1"), Some(T0), &w2).unwrap_err();
     assert!(matches!(err, EngineError::NotAccepted { .. }), "{err}");
-    let rep = replay::replay_str(&log.text()).unwrap();
+    let rep = replay29(&log.text());
     assert!(rep.ok(), "{:?}", rep.mismatches);
     // the acceptance as logged: replay checks the vehicle really was lost since then
     let text = log.text();
@@ -1131,7 +1147,7 @@ fn engage_nomination() -> Proposal {
 fn every_signer_sees_the_acceptances_and_a_token_from_before_one_is_refused() {
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
-    let mut e = Engine::with_areas(policy(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
+    let mut e = Engine::with_areas(policy29(), Some(areas()), roster(), Box::new(clock.clone()), Box::new(log.clone())).unwrap();
     declare_shown(&mut e, &world(clock.now()));
     let op1 = e.open_operator_session(OperatorId::new("op-1")).unwrap();
     let op2 = e.open_operator_session_with(OperatorId::new("op-2"), Grants { engage: true }).unwrap();
@@ -1169,7 +1185,7 @@ fn every_signer_sees_the_acceptances_and_a_token_from_before_one_is_refused() {
     assert!(out.errors.is_empty(), "{:?}", out.errors);
     let i = e.intent(id).unwrap();
     assert!(matches!(i.state(), State::Voided | State::Aborted), "{:?}", i.state());
-    let rep = replay::replay_str(&log.text()).unwrap();
+    let rep = replay29(&log.text());
     assert!(rep.ok(), "{:?}", rep.mismatches);
     // a forged token without the acceptance, or an acceptance under a session without
     // engagement authority, is caught by replay
@@ -1185,7 +1201,7 @@ fn every_signer_sees_the_acceptances_and_a_token_from_before_one_is_refused() {
             }
         })
         .collect();
-    let w = whats(&rechain(&forged));
+    let w: Vec<String> = replay29(&rechain(&forged)).mismatches.into_iter().map(|m| m.what).collect();
     assert!(w.iter().any(|m| m.contains("without engagement authority")), "{w:?}");
 }
 

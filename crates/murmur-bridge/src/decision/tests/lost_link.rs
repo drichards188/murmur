@@ -382,11 +382,11 @@ async fn saturations_puma_reads_its_minute() {
     assert_eq!(fact.source, LostLinkSource::Read);
 }
 
-/// A run under the default rules (29) asks its vehicles for nothing it did not ask before and
-/// has no such fact.
+/// A run under rules 29 asks its vehicles for nothing it did not ask before and has no such
+/// fact.
 #[tokio::test(start_paused = true)]
-async fn the_default_rules_ask_for_nothing_new() {
-    let rig = rig_rules(murmur_decide::RULES_VERSION);
+async fn rules_29_asks_for_nothing_new() {
+    let rig = rig_rules(murmur_decide::HANDOVER_SINCE);
     assert!(!rig.d.rules.node_loss());
     let w = wire(&rig, 411, "puma", SATURATION_LINKS, station(AIR)).await;
     assert!(w.fact_within(&rig, 10).await.is_none());

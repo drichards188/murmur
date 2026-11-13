@@ -365,7 +365,9 @@ async fn a_loss_closes_the_values_owed_and_stops_their_restore() {
 /// opened or logged), no node items in the review, no step on the tick.
 #[tokio::test(start_paused = true)]
 async fn a_rules_29_bridge_has_none_of_it() {
-    let e = super::engagement::engage_rig_auth(None, PathBuf::from("memory"), murmur_decide::AuthMode::Dev);
+    let e = super::engagement::engage_rig_auth_policy(None, PathBuf::from("memory"), murmur_decide::AuthMode::Dev, |p| {
+        p.rules.rules_version = murmur_decide::HANDOVER_SINCE
+    });
     let (_cell, w) = e.r.watched(5, Firmware::Copter, "x10", (LAT, LON), quick());
     sleep(Duration::from_secs(1)).await;
     let api = api(&e);
@@ -385,7 +387,9 @@ async fn a_rules_29_bridge_has_none_of_it() {
     assert!(r.get("node_losses").is_none() && r.get("nodes_lost").is_none(), "{r}");
     assert!(r["counts"].get("node_losses").is_none(), "{r}");
     assert!(!e.r.log.text().contains("\"type\":\"node."));
-    replays(&e);
+    let opts = replay::ReplayOptions { rules: replay::RulesAccepted::Exactly(murmur_decide::HANDOVER_SINCE), ..Default::default() };
+    let r = replay::replay_str_with(&e.r.log.text(), &opts).expect("parses");
+    assert!(r.ok(), "{:?}", r.mismatches);
 }
 
 /// Rules 30: a vehicle the fleet manifest names that has never been heard is in the snapshot

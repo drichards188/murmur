@@ -32,6 +32,7 @@ at = [-122.4700, 37.8160]
 uid = "drone-1"
 platform = "x10"
 at = [-122.4950, 37.8228]   # 1.2 km north of the target; its link is cut at s=2
+velocity = [0.0, 2.0]       # drifting north (rules 30: not still when last heard, so nothing places it)
 
 [[track]]
 id = "T-0001"

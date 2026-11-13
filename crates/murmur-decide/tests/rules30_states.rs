@@ -99,7 +99,9 @@ fn only_engagement_authority_confirms_on_the_silence_it_saw() {
 
     // rules 29 has no loss of a node: refused, and nothing in the ledger fills a decision
     let clock = ManualClock::new(T0.plus_ms(60_000));
-    let (mut e29, _) = common::engine(&clock);
+    let mut p29 = common::policy();
+    p29.rules.rules_version = HANDOVER_SINCE;
+    let mut e29 = Engine::with_areas(p29, Some(common::areas()), common::roster(), Box::new(clock.clone()), Box::new(MemorySink::new())).unwrap();
     let s = e29.open_operator_session_with(OperatorId::new("op-2"), Grants { engage: true }).unwrap();
     let why = refuse(e29.confirm_lost(s.engagement_authority().unwrap(), uid("boat-1"), Some(T0), "sunk", &w, None));
     assert!(why.contains("rules 30"), "{why}");

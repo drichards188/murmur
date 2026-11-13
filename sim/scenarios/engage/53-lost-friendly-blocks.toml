@@ -1,8 +1,11 @@
 # Fail closed: one of our quadcopters went silent 2 km from the target a minute before the
-# nomination. Without a position since, it could be anywhere it reaches at cruise speed by
-# the effect time, which covers the effect point: the nomination is rejected
-# (keep_out_friendly), and the detail says since when its position is unknown, which an
-# operator may accept.
+# nomination, drifting west with no order of ours on it. Without a position since, it could be
+# anywhere it reaches by the effect time (its cruise speed until rules 30; from rules 30, with
+# nothing to place it, neither circling nor still, its top speed), which covers the effect
+# point: the nomination is rejected (keep_out_friendly), and the detail says since when its
+# position is unknown, which an operator may accept. (Still when last heard, rules 30 would
+# count it holding there, 2 km off: the drift keeps this scenario's lost friendly unplaced, as
+# in 55, 57, 59 and 60.)
 title = "A lost friendly's reach blocks the nomination"
 invariant = "keep_out_friendly"
 attack = "nominate a minute after one of our vehicles went silent 2 km away"
@@ -28,6 +31,7 @@ at = [-122.4700, 37.8160]
 uid = "drone-1"
 platform = "x10"            # one of ours, 12 m/s cruise
 at = [-122.4723, 37.8120]   # 2 km east of the target, where it last reported
+velocity = [-2.0, 0.0]      # drifting west when last heard (rules 30: not still, so nothing places it)
 lost_for_s = 60             # its link was cut a minute before: lost
 
 [[track]]

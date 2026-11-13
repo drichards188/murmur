@@ -31,6 +31,7 @@ at = [-122.4700, 37.8160]
 uid = "drone-1"
 platform = "x10"
 at = [-122.4723, 37.8120]   # 2 km east of the target, where it last reported
+velocity = [-2.0, 0.0]      # drifting west when last heard (rules 30: not still, so nothing places it)
 lost_for_s = 60
 
 [[track]]

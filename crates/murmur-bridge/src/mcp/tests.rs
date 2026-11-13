@@ -484,14 +484,15 @@ async fn agents_read_a_loss_but_no_tool_confirms_or_revokes_one() {
     // what the model is told at initialize says so, under these rules only
     let told = instructions(r.d.rules());
     assert!(told.contains("no tool does any of it") && !told.contains('\u{2014}'), "{told}");
-    assert_eq!(instructions(&murmur_decide::RulesConfig::default()), INSTRUCTIONS);
+    let rules_29 = murmur_decide::RulesConfig { rules_version: murmur_decide::HANDOVER_SINCE, ..murmur_decide::RulesConfig::default() };
+    assert_eq!(instructions(&rules_29), INSTRUCTIONS);
     r.replays();
 }
 
 /// Rules 29: a silent vehicle reads as it always did (no `standing`, no review node items).
 #[tokio::test(start_paused = true)]
 async fn under_rules_29_a_silent_vehicle_reads_as_before() {
-    let r = rig();
+    let r = rig_policy(|p| p.rules.rules_version = murmur_decide::HANDOVER_SINCE);
     r.vehicle(3, Firmware::Copter, "x10", (LAT, LON));
     sleep(Duration::from_millis(500)).await;
     r.clock.advance_ms(30_000);

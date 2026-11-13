@@ -57,6 +57,12 @@ fn cfg30() -> RulesConfig {
     c
 }
 
+fn cfg29() -> RulesConfig {
+    let mut c = policy().rules;
+    c.rules_version = HANDOVER_SINCE;
+    c
+}
+
 /// One of ours, every fact reported at `t`, reporting every second.
 fn ours(platform: &str, at: LonLat, t: Time) -> VehicleFacts {
     let mut v = vehicle(platform, at);
@@ -343,7 +349,7 @@ fn a_fresh_vehicle_and_rules_29_are_judged_as_before() {
     let w = world_138(LEG_S);
     let mut fresh = w.clone();
     fresh.vehicles.insert(uid("hunter-1"), ours("seahunter", LEG_S, T0));
-    for (world, rules) in [(&fresh, cfg30()), (&w, policy().rules)] {
+    for (world, rules) in [(&fresh, cfg30()), (&w, cfg29())] {
         let st = engage::friendly_standing(
             &uid("hunter-1"),
             &world.vehicles[&uid("hunter-1")],

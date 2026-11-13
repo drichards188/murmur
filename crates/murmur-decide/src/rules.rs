@@ -273,19 +273,21 @@ pub enum UnknownEndurance {
 /// surface platform is launched from a firing position within its range band of the target, not
 /// from the effect point. Version 29 ([`HANDOVER_SINCE`]): a fleet file may give a vehicle one
 /// starting task, the previous watch's order, which the engine carries in at the start
-/// (`intent.handed_over`) and re-checks before it goes. Version 30 ([`NODE_LOSS_SINCE`]), losing a
-/// node, is being built and is not yet the default: see [`RULES_NEWEST`].
-pub const RULES_VERSION: u32 = HANDOVER_SINCE;
+/// (`intent.handed_over`) and re-checks before it goes. Version 30 ([`NODE_LOSS_SINCE`]): one of
+/// ours that stops reporting is silent, presumed lost on evidence, or lost once an operator with
+/// engagement authority confirms it; a silent vehicle counts in the keep-outs where its orders and
+/// its own lost-link failsafe could take it, and a lost one in none.
+pub const RULES_VERSION: u32 = NODE_LOSS_SINCE;
 
 /// The newest decision rules this build can decide under and replay: [`RULES_VERSION`] itself,
 /// except on a branch that builds the next version in stages before making it the default
-/// (docs/NODE-LOSS.md section 8). There a run still decides under [`RULES_VERSION`], so its logs,
-/// fixtures and digests stay as they were, and decides under this version only when asked: a
-/// scenario's `min_rules`, the scenario runner's `--rules N`, a test's `policy.rules.rules_version`,
-/// the bridge's `MURMUR_RULES`. Replay accepts a log of any version up to this one and flags one
-/// newer. The branch's last stage sets [`RULES_VERSION`] to its version, and this to
-/// [`RULES_VERSION`] again.
-pub const RULES_NEWEST: u32 = NODE_LOSS_SINCE;
+/// (docs/NODE-LOSS.md section 8, as rules 30 was built). There a run still decides under
+/// [`RULES_VERSION`], so its logs, fixtures and digests stay as they were, and decides under this
+/// version only when asked: a scenario's `min_rules`, the scenario runner's `--rules N`, a test's
+/// `policy.rules.rules_version`, the bridge's `MURMUR_RULES`. Replay accepts a log of any version up
+/// to this one and flags one newer. The branch's last stage sets [`RULES_VERSION`] to its version,
+/// and this to [`RULES_VERSION`] again.
+pub const RULES_NEWEST: u32 = RULES_VERSION;
 
 /// The rules version from which one of ours that stops reporting is silent, presumed lost, or lost
 /// (bd murmur-zb1d, the owner's question of 2026-11-06 and its spec, docs/NODE-LOSS.md, approved on

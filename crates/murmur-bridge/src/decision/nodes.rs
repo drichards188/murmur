@@ -48,7 +48,7 @@ pub(super) const REPORTED_AGAIN_ALERT_S: f64 = 300.0;
 
 /// What a route answers under rules before 30.
 pub const NOT_THESE_RULES: &str =
-    "these decision rules have no loss of a node: rules 30 decide it (MURMUR_RULES=30 while it is being built)";
+    "these decision rules have no loss of a node: rules 30 decide it";
 
 /// A silent vehicle an operator put on the review list by hand (display only; the act is logged
 /// as `operator.action` `node.flagged`): who, why, when (wall s), and the report it was silent

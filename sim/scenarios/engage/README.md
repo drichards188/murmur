@@ -378,7 +378,7 @@ logged evidence presumed lost.
 | 50-friend-altitude-unknown | keep_out_friendly | the MALE aircraft without its altitude reported | rejected (2D) |
 | 51-target-altitude-unknown | keep_out_friendly | the MALE aircraft at 7,000 m over a target whose altitude is unknown | rejected (2D) |
 | 52-high-aircraft-track-above | keep_out_tracks | a neutral airliner passes over the effect point at 3,000 m | done (clear by altitude) |
-| 53-lost-friendly-blocks | keep_out_friendly | nominate a minute after one of ours went silent 2 km away | rejected; the detail says since when |
+| 53-lost-friendly-blocks | keep_out_friendly | nominate a minute after one of ours went silent 2 km away, drifting with no order of ours on it (rules 30: nothing places it, so its top speed; still, it would count holding there) | rejected; the detail says since when |
 | 54-lost-friendly-accepted | keep_out_friendly | the operator accepts the lost quadcopter; the acceptance cut from the log | done (ceased); tamper caught |
 | 55-agent-cannot-accept | keep_out_friendly | an agent nominates and tries to accept the lost quadcopter | refusals; rejected |
 | 56-lost-friendly-reappears | keep_out_friendly | the accepted quadcopter reports again 150 m from the point; the acceptance credited to an agent in the log | aborted (keep_out_friendly); tamper caught |
