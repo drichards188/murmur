@@ -3464,3 +3464,21 @@ boat's, so the reserve (whose weapons take surface and ground targets) can strik
 whole chain plays out by script (declared by rule, nominated, two signatures, the strike, its
 assessment); and the AI watch officer, through the person's own CLI, proposes and reacts, which
 means its tools must cope with about 500 tracks.
+
+## 2026-11-10: A fleet's starting tasks are the last watch's orders, handed over (rules 29, murmur-by3s)
+
+The owner: a fleet file may give each vehicle one starting task, standing for a watch officer
+taking over from one who has already been on watch. Routine kinds only (orbit, patrol, hold; never
+engage, lay, identify, collect or cover). The vehicle starts on its station, and the bridge hands
+the order over at the start (`intent.handed_over`): queued until the vehicle's first full report,
+then re-checked and sent, voided on a failing check, or put to a person on an unverified one. It
+is never approved again, and the policy is asked nothing but who decides that last case.
+
+2026-11-13, asked whether a handed-over order on an armed platform should still go to a person
+(the policy's armed tier is never asked): no. Starting orders are the outgoing watch's, so they
+are presumed to have followed every rule when they were issued; taking them over is not a new
+approval, armed platforms included. The re-check at the start guards against a world that has
+changed since (a failing check voids the order, an unverified one goes to a person), not against
+the order itself. Landed as rules 29 (fbd9ce9, fixtures 4467f38); Saturation's region fleet hands
+over one order per vehicle (71f1299, murmur-xlca), and a situation starts once they are in force
+(efbdf45).
