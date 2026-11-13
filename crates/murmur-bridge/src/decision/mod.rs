@@ -69,6 +69,8 @@ pub mod ident;
 pub mod identify;
 mod message;
 mod mines;
+/// Rules 30: one of ours silent, presumed lost, confirmed lost (docs/NODE-LOSS.md).
+pub mod nodes;
 mod preload;
 pub mod queue;
 pub mod snapshot;
@@ -77,7 +79,7 @@ pub(crate) mod terrain;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -271,7 +273,9 @@ fn engine_err(e: EngineError) -> DecisionError {
         | EngineError::NotAcceptedContact { .. }
         | EngineError::NotAcceptedTrack { .. }
         | EngineError::NotWrittenOff(_)
-        | EngineError::NotUnspent(_) => 409,
+        | EngineError::NotUnspent(_)
+        // rules 30: a confirmation or revocation of a loss the engine refused
+        | EngineError::NodeLoss(_) => 409,
         EngineError::EngagementNeedsAuthority(_)
         | EngineError::ProposerCannotApprove { .. }
         | EngineError::NotOnRoster { .. } => 403,
@@ -431,6 +435,9 @@ struct Running {
     /// rules 21: an identify order still looking: its op done (the orbit established) does
     /// not end it, the engine's step does
     look: bool,
+    /// rules 30: its ops on vehicles confirmed lost (the engine ended them `lost`): never
+    /// reported again, and no part of how the order ended
+    lost: HashSet<u64>,
 }
 
 struct Core {
@@ -466,6 +473,8 @@ struct Core {
     lost_claims: Vec<Value>,
     /// rules 27: the fields carried over from the last run went to the truth side again
     mines_resent: bool,
+    /// rules 30: the bridge's side of our vehicles' standing (hand flags, notices; display)
+    nodes: nodes::NodeView,
 }
 
 /// `operator.view` events an operator may log: a burst of this many, refilled at
@@ -898,6 +907,7 @@ impl Decision {
                 acts: Vec::new(),
                 lost_claims: Vec::new(),
                 mines_resent: false,
+                nodes: nodes::NodeView::default(),
             }),
             updates: watch::channel(Arc::new(String::new())).0,
             recent: agent::RecentEvents::default(),
@@ -2527,6 +2537,12 @@ impl Decision {
             }
             crate::perf::time("decision.log_reboots", || self.log_reboots(core));
             crate::perf::time("decision.log_vehicle_events", || self.log_vehicle_events(core));
+            // rules 30: our vehicles' standing (a loss a report revoked, a presumption raised or
+            // cleared) before this tick's decisions, its struck reports among the evidence (timed
+            // only then: an older run's /api/stats reads as before)
+            if self.rules.node_loss() {
+                crate::perf::time("decision.step_nodes", || self.step_nodes(core));
+            }
             crate::perf::time("decision.void_lost", || self.void_lost(core));
             crate::perf::time("decision.follow_queue", || self.follow_queue(core));
             crate::perf::time("decision.follow_resumed", || self.follow_resumed(core));
@@ -2684,7 +2700,8 @@ impl Decision {
             let snap = run.tasking.snapshot();
             for op in &snap.ops {
                 let key = (op.state, op.detail.starts_with("NOT MOVING"));
-                if run.reported.get(&op.id) == Some(&key) {
+                // rules 30: an op on a vehicle confirmed lost was ended by the engine
+                if run.reported.get(&op.id) == Some(&key) || run.lost.contains(&op.id) {
                     continue;
                 }
                 // rules 7: a start is logged by the op itself, ahead of sending it
@@ -2719,7 +2736,7 @@ impl Decision {
                 let bad: Vec<String> = snap
                     .ops
                     .iter()
-                    .filter(|o| o.state != OpState::Done)
+                    .filter(|o| o.state != OpState::Done && !run.lost.contains(&o.id))
                     .map(|o| {
                         let s = serde_json::to_value(o.state).unwrap_or(Value::Null);
                         format!(
@@ -2881,6 +2898,16 @@ impl Decision {
             alerts.extend(self.route_alerts(&core, &ops, &fleet, clock::wall()));
             // rules 21: an identify order lost its track, ran out of time, holds, or can't follow
             alerts.extend(self.identify_alerts(&core, &ops, &fleet, clock::wall()));
+            // rules 30: a vehicle confirmed lost has its lost link, its owed values and an order
+            // that may be running closed behind a notice of the loss; one that reported again
+            // after it, an alert
+            let lost = self.lost_uids(&core);
+            if !lost.is_empty() {
+                alerts.retain(|a| {
+                    !(lost.contains(&a.uid) && matches!(a.kind, "lost_link" | "may_be_running" | "restore_pending"))
+                });
+            }
+            alerts.extend(self.node_alerts(&core, clock::wall()));
         }
         // opponent weapons: a strike one of ours reported (high when no sensor saw the launch)
         if let Some(t) = self.tracks() {
@@ -2936,6 +2963,8 @@ impl Decision {
             review["counts"]["lost_claims"] = json!(claims.len());
             review["lost_claims"] = json!(claims);
             review["lost_confirmed"] = json!(confirmed);
+            // rules 30: our vehicles presumed lost or flagged by hand (confirm), and those lost
+            self.add_node_review(&core, &mut review);
             // what a person alone is holding up (display only; `blocking`)
             let blocking = self.blocking_now(&core);
             blocking::add_to(&mut review, &blocking);
@@ -2943,7 +2972,8 @@ impl Decision {
         };
         let n_review = review["counts"]["declarations"].as_u64().unwrap_or(0)
             + review["counts"]["flags"].as_u64().unwrap_or(0)
-            + review["counts"]["lost_claims"].as_u64().unwrap_or(0);
+            + review["counts"]["lost_claims"].as_u64().unwrap_or(0)
+            + review["counts"]["node_losses"].as_u64().unwrap_or(0);
         let n_alerts = alerts.len();
         // swarms (murmur-z07i): many members' alerts of one kind fold into one card, a view
         // only (each member's alert stays, marked `folded_into`); a manifest without swarms

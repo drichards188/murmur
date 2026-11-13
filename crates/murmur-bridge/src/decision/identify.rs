@@ -156,6 +156,7 @@ impl Decision {
                 tasking,
                 reported: HashMap::new(),
                 look,
+                lost: Default::default(),
             },
         );
     }

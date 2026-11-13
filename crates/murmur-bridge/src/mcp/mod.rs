@@ -107,6 +107,26 @@ human. get_changes answers what changed since a cursor (new tracks, affiliations
 declarations, lost links, navigation and GPS glitch flags, alerts, intents' states): read \
 the full picture with the other tools before you act on it.";
 
+/// Rules 30: what [`INSTRUCTIONS`] adds under rules that know the loss of one of ours.
+pub const NODE_LOSS_INSTRUCTIONS: &str = " One of ours that falls silent counts in every \
+engagement keep-out where it could be. The engine presumes it lost on evidence (an observed \
+hostile act against it, its own struck or damage report, spent by its own effect): get_inbox \
+lists those, and silent vehicles an operator flagged, under review.node_losses, and the \
+confirmed losses under review.nodes_lost; get_fleet and get_vehicle carry a vehicle's standing \
+(silent, presumed_lost, lost, with the region every keep-out counts it in) while it is not \
+reporting. Only an operator with engagement authority confirms one of ours lost, and only an \
+operator revokes a loss or flags a silent vehicle: no tool does any of it.";
+
+/// What the model is told at `initialize` under `rules`: [`INSTRUCTIONS`], and from rules 30
+/// [`NODE_LOSS_INSTRUCTIONS`] (an older run's are as they always were).
+pub fn instructions(rules: &murmur_decide::RulesConfig) -> String {
+    if rules.node_loss() {
+        format!("{INSTRUCTIONS}{NODE_LOSS_INSTRUCTIONS}")
+    } else {
+        INSTRUCTIONS.to_string()
+    }
+}
+
 /// Who may connect (see `main.rs`): a credentials run checks each agent's key (`keys`); a
 /// dev run believes the ids `MURMUR_AGENTS` lists.
 pub struct Settings {
@@ -629,7 +649,7 @@ impl ServerHandler for Handler {
                 .build(),
         );
         info.server_info = Implementation::new("murmur-bridge", env!("CARGO_PKG_VERSION"));
-        info.instructions = Some(INSTRUCTIONS.into());
+        info.instructions = Some(instructions(self.0.decision.rules()));
         info
     }
 

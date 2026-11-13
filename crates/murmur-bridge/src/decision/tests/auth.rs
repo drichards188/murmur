@@ -1201,3 +1201,67 @@ async fn an_unspend_steps_up_through_the_api() {
     assert_eq!((r.stepped_acts, r.unspent.len()), (1, 1));
     h.no_secret_logged(&[&op1, &op2]);
 }
+
+/// Rules 30 (decision D1): confirming one of ours lost removes a friendly-fire protection from
+/// every engagement, so in a credentials run it re-enters the credential, as an un-spend does.
+/// The x10 under uid 4 is silent, flagged by op-1 (any operator may: it decides nothing). In
+/// order: an agent's key is refused (403), op-1 (no engagement authority) is refused (403), a
+/// confirmation on a silence the review did not show answers 409, all before any credential is
+/// asked for or checked; op-2 without the password and with a wrong one gets a 401 that asks for
+/// the step-up, nothing confirmed; with their own password it is confirmed, the step-up quoted in
+/// `node.lost`, and the log replays authenticated. Revoking takes no step-up (it only restricts).
+#[tokio::test]
+async fn a_loss_is_confirmed_with_a_step_up_asked_for_last() {
+    let h = harness_with(Duration::from_secs(1800), &[], |p| p.rules.rules_version = murmur_decide::NODE_LOSS_SINCE);
+    let (cell, w) = h.e.r.watched(4, Firmware::Copter, "x10", (super::LAT, super::LON), quick());
+    for _ in 0..3 {
+        h.e.r.clock.advance_ms(1000);
+        sleep(Duration::from_millis(500)).await;
+    }
+    // its last packet now, then silent past the policy's 10 s
+    cell.link_on_packet(0, clock::wall());
+    w.set_cut(true);
+    for _ in 0..15 {
+        h.e.r.clock.advance_ms(1000);
+        h.e.r.d.tick();
+        sleep(Duration::from_millis(500)).await;
+    }
+    let op1 = h.login("op-1", PW1).await;
+    let op2 = h.login("op-2", PW2).await;
+    let (s, v) = h.post(&op1, "/api/review/nodes/4/flag", json!({ "note": "its crew saw it capsize" })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (_, _, review) = h.call("GET", "/api/review", None, &[]).await;
+    let since = review["node_losses"][0]["since"].as_i64().expect("the silence the review shows");
+    let path = "/api/review/nodes/4/lost";
+    let note = "its crew saw it capsize";
+    let body = |since: i64, pw: Option<&str>| json!({ "since": since, "note": note, "password": pw });
+    let bearer = format!("Bearer {}", h.key);
+    let (s, _, v) = h.call("POST", path, Some(body(since, None)), &[("authorization", bearer.as_str())]).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "an agent's key: {v}");
+    let (s, v) = h.post(&op1, path, body(since, Some(PW1))).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    let (s, v) = h.post(&op2, path, body(since - 1000, Some("not op two's password"))).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["step_up"].is_null(), "{v}");
+    assert!(!h.log().contains("confirm vehicle 4 lost"), "no step-up asked for or refused");
+    let (s, v) = h.post(&op2, path, body(since, None)).await;
+    assert_eq!((s, v["step_up"].clone()), (StatusCode::UNAUTHORIZED, json!(true)), "{v}");
+    let (s, v) = h.post(&op2, path, body(since, Some("not op two's password"))).await;
+    assert_eq!((s, v["step_up"].clone()), (StatusCode::UNAUTHORIZED, json!(true)), "{v}");
+    assert!(!h.log().contains("\"type\":\"node.lost\""), "refused: nothing confirmed");
+    let (s, v) = h.post(&op2, path, body(since, Some(PW2))).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["lost"]["uid"], 4, "{v}");
+    let log = h.log();
+    assert!(log.contains("\"action\":\"step_up.refused\",\"detail\":\"confirm vehicle 4 lost: no password given\""), "{log}");
+    assert!(log.contains("\"action\":\"step_up.refused\",\"detail\":\"confirm vehicle 4 lost: wrong password\""), "{log}");
+    let lost = log.lines().find(|l| l.contains("\"type\":\"node.lost\"")).expect("confirmed");
+    assert!(lost.contains("\"step_up\":{\"seq\":"), "{lost}");
+    // any operator revokes it, saying why, with no step-up
+    let (s, v) = h.post(&op1, "/api/review/nodes/4/revoke", json!({ "note": "it was only out of range" })).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let r = replay::replay_str(&h.log()).expect("parses");
+    assert!(r.ok(), "{:?}", r.mismatches);
+    assert!(r.authenticated());
+    h.no_secret_logged(&[&op1, &op2]);
+}

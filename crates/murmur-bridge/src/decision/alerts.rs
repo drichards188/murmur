@@ -20,8 +20,8 @@ use crate::vehicle::{Uid, VehicleCell};
 pub enum Severity {
     High,
     Medium,
-    /// Something the operator may want to know that asks nothing of them (`identify_meanwhile`):
-    /// listed after the rest, never counted as a warning.
+    /// Something the operator may want to know that asks nothing of them (`identify_meanwhile`,
+    /// `node_lost`): listed after the rest, never counted as a warning.
     Info,
 }
 
@@ -37,7 +37,9 @@ pub struct Alert {
     /// identify order's track, the order going on; informational) | struck (an opponent weapon
     /// hit one of ours, by its own report; a miss is none: docs/OPPONENT-WEAPONS.md) | damaged
     /// (one of ours reports damage of its own after a strike: its propulsion lost, its weapons
-    /// out of action; rules 25)
+    /// out of action; rules 25) | node_lost (rules 30: one of ours confirmed lost, for
+    /// information; its lost_link, restore_pending and may_be_running alerts close behind it) |
+    /// node_reported_again (rules 30: one confirmed lost reported again, the loss revoked)
     pub kind: &'static str,
     pub severity: Severity,
     pub uid: Uid,

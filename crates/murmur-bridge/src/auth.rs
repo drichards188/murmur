@@ -1448,8 +1448,9 @@ async fn login_passkey_options(State(auth): State<Arc<Auth>>, body: Bytes) -> Re
 /// "declare_hostile", "track": id}`, `{"act": "confirm_declaration", "track": id}`, `{"act":
 /// "accept_unknown", "intent": n or null, "accept_unknown": [{"uid", "since"}], "accept_lost":
 /// [{"track", "since"}], "accept_behaving": [{"track"}]}` (lost contacts, rules 16; live tracks
-/// as behaving now, rules 19), `{"act": "unspend", "uid": n}` (rules 15).
-/// The act's request then carries the assertion as `"passkey"`.
+/// as behaving now, rules 19), `{"act": "unspend", "uid": n}` (rules 15), `{"act": "node_lost",
+/// "uid": n, "since": ms or null}` (rules 30: confirming one of ours lost on its silence since
+/// that report). The act's request then carries the assertion as `"passkey"`.
 async fn step_up_options(State(auth): State<Arc<Auth>>, headers: HeaderMap, body: Bytes) -> Response {
     #[derive(Deserialize)]
     struct B {
@@ -1470,6 +1471,9 @@ async fn step_up_options(State(auth): State<Arc<Auth>>, headers: HeaderMap, body
         accept_behaving: Vec<crate::decision::engage::AcceptBehaving>,
         #[serde(default)]
         uid: Option<crate::vehicle::Uid>,
+        /// rules 30: the report a vehicle confirmed lost has been silent since (engine ms)
+        #[serde(default)]
+        since: Option<i64>,
     }
     let actor = match auth.actor(&headers, false) {
         Ok(a) => a,
@@ -1497,9 +1501,13 @@ async fn step_up_options(State(auth): State<Arc<Auth>>, headers: HeaderMap, body
             Some(u) => auth.decision.unspend_purpose(u),
             None => Err(DecisionError::new(422, "an un-spend names its vehicle (uid)")),
         },
+        "node_lost" => match b.uid {
+            Some(u) => auth.decision.node_lost_purpose(u, b.since.map(murmur_decide::Time)),
+            None => Err(DecisionError::new(422, "confirming a loss names its vehicle (uid) and the report it is silent since (since)")),
+        },
         other => Err(DecisionError::new(
             422,
-            format!("act {other:?}: sign, declare_hostile, confirm_declaration, accept_unknown (with its vehicles or contacts) or unspend (with its uid)"),
+            format!("act {other:?}: sign, declare_hostile, confirm_declaration, accept_unknown (with its vehicles or contacts), unspend (with its uid) or node_lost (with its uid and since)"),
         )),
     };
     match purpose.and_then(|p| auth.issue(actor.operator(), Some(session), p)) {

@@ -421,6 +421,9 @@ fn carry_chain(
                 entry.rounds = debts.rounds;
                 // rules 27: its live minefields stay live (the engine drops them under older rules)
                 entry.fields = debts.fields;
+                // rules 30: our vehicles it had confirmed lost stay lost, on the same vehicle
+                // only, until heard (the engine drops them under older rules)
+                entry.nodes_lost = debts.nodes_lost;
             }
         }
         out.push(entry);
@@ -1320,6 +1323,17 @@ impl Decision {
                 }
                 Some(_) => {}
             }
+        }
+    }
+
+    /// Rules 15 and 30: the platform's own lost-link values owed back again (an un-spend, a
+    /// loss revoked): put back on its lane, restored when it answers, to the vehicle they were
+    /// preloaded on; a mission waits for that restore. Nothing when nothing is owed.
+    pub(super) fn owe_back(&self, core: &mut Core, uid: crate::vehicle::Uid) {
+        if let Some(o) = core.engine.owed_to(&duid(uid)) {
+            println!("vehicle {uid}: its own lost-link values are owed back again: restoring");
+            let lane = core.params.entry(uid).or_default();
+            lane.owed = Some(Owed::carried(o.values, o.vehicle));
         }
     }
 

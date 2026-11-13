@@ -1945,6 +1945,12 @@ pub fn router<S: Clone + Send + Sync + 'static>(
         .route("/api/review", get(review))
         .route("/api/review/{flag}/resolve", post(resolve))
         .route("/api/review/lost/{track}/confirm", post(confirm_lost))
+        // rules 30: one of ours confirmed lost, its loss revoked, a silent one flagged by hand
+        .route("/api/review/nodes/{uid}/lost", post(node_lost))
+        .route("/api/review/nodes/{uid}/revoke", post(node_revoke))
+        .route("/api/review/nodes/{uid}/flag", post(node_flag))
+        .route("/api/review/nodes/{uid}/dismiss", post(node_dismiss))
+        .route("/api/nodes", get(nodes))
         .route("/api/sim/contacts", post(sim_contacts))
         .route("/api/sim/truth", get(sim_truth))
         .with_state(Api {
@@ -2154,9 +2160,179 @@ async fn confirm_lost(
 }
 
 /// Rules 9: `GET /api/review`: the identification review items (rule declarations awaiting
-/// an operator, flags in force, the latest resolved).
+/// an operator, flags in force, the latest resolved). Rules 30: and our vehicles presumed lost
+/// or flagged by hand (`node_losses`), and those confirmed lost (`nodes_lost`).
 async fn review(State(api): State<Api>) -> Response {
     Json(api.decision.review_json()).into_response()
+}
+
+// ---- rules 30: losing one of ours ---------------------------------------------------------
+
+/// Rules 30: what the node routes answer first: 404 under older rules (nothing is read, opened
+/// or logged), then 403 for a request that comes as an agent (its id header, or a key): an agent
+/// never confirms, revokes, flags or dismisses a loss (decision D1; nor has its MCP port a tool
+/// for any of them). None: an operator's request, to be read on.
+fn node_route_refusal(api: &Api, headers: &HeaderMap) -> Option<Response> {
+    if !api.decision.rules().node_loss() {
+        return Some(error(StatusCode::NOT_FOUND, crate::decision::nodes::NOT_THESE_RULES));
+    }
+    if headers.contains_key(crate::mcp::AGENT_HEADER) || headers.contains_key(axum::http::header::AUTHORIZATION) {
+        return Some(error(
+            StatusCode::FORBIDDEN,
+            "an agent never confirms, revokes or flags the loss of one of ours: an operator decides it, at the console (only one with engagement authority confirms one)",
+        ));
+    }
+    None
+}
+
+fn decision_refusal(e: crate::decision::DecisionError) -> Response {
+    error(StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), e.detail)
+}
+
+/// Rules 30: `POST /api/review/nodes/{uid}/lost` `{since, note, password | passkey}`: an
+/// operator with engagement authority confirms one of ours lost on the silence the review showed
+/// (`since`: the engine's milliseconds of its last position report, as the review item gives it;
+/// null: it never reported one), saying why where nothing presumes it lost (decision D2). In that
+/// order: 403 for an agent or an operator without engagement authority, 409 where the rules refuse
+/// it now (not silent since exactly that report, an engagement holding it, lost already, a note
+/// missing), both before any credential is asked for, then in a credentials run 401 without a
+/// valid step-up (the password again, or a passkey made for this act: `/api/auth/step_up {"act":
+/// "node_lost", "uid": n, "since": ms}`), checked and dropped here, never logged or echoed.
+/// Logged as `node.lost`, then what it ends (the answer lists them).
+async fn node_lost(State(api): State<Api>, AxPath(uid): AxPath<u64>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
+    #[derive(Deserialize)]
+    struct NodeLost {
+        #[serde(default)]
+        since: Option<i64>,
+        #[serde(default)]
+        note: String,
+        #[serde(default)]
+        password: Option<String>,
+        #[serde(default)]
+        passkey: Option<Value>,
+    }
+    if let Some(r) = node_route_refusal(&api, &headers) {
+        return r;
+    }
+    let req = match serde_json::from_slice::<NodeLost>(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("lost wants {{\"since\": ms or null, \"note\": \"why\"}}: {e}"),
+            );
+        }
+    };
+    let op = match api.auth.actor(&headers, false) {
+        Ok(op) => op,
+        Err(e) => return decision_refusal(e),
+    };
+    let since = req.since.map(Time);
+    // only engagement authority confirms, and only what the rules take now: both said before
+    // any credential is asked for (a refused confirmation never takes, nor counts, a password)
+    if let Err(e) = api.decision.node_lost_check(&op, uid, since, &req.note) {
+        return decision_refusal(e);
+    }
+    let proof = crate::auth::Proof {
+        password: req.password,
+        passkey: req.passkey.filter(|p| !p.is_null()),
+    };
+    let step = match api.auth.step_up(&op, &format!("confirm vehicle {uid} lost"), proof, true).await {
+        Ok(s) => s,
+        Err(r) => return *r,
+    };
+    match api.decision.confirm_node_lost(&op, uid, since, &req.note, step) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => decision_refusal(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct NodeNote {
+    #[serde(default)]
+    note: String,
+}
+
+/// Rules 30: `GET /api/nodes`: each of ours not reporting (silent, presumed lost, lost) with the
+/// region the engagement keep-out counts it in (read-only, never logged; 404 before rules 30).
+async fn nodes(State(api): State<Api>) -> Response {
+    match api.decision.nodes_json() {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => decision_refusal(e),
+    }
+}
+
+/// A node route's note (an empty body: none), or its 422.
+fn node_note(body: &[u8], what: &str) -> Result<String, Box<Response>> {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(String::new());
+    }
+    serde_json::from_slice::<NodeNote>(body)
+        .map(|b| b.note)
+        .map_err(|e| Box::new(error(StatusCode::UNPROCESSABLE_ENTITY, format!("{what} wants {{\"note\": \"why\"}}: {e}"))))
+}
+
+/// Rules 30: `POST /api/review/nodes/{uid}/revoke` `{note}`: any operator revokes the loss of one
+/// of ours, saying why (it only restricts: the vehicle counts in every keep-out again at once and
+/// takes orders). No step-up. 409 without a note or for a vehicle not lost.
+async fn node_revoke(State(api): State<Api>, AxPath(uid): AxPath<u64>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
+    if let Some(r) = node_route_refusal(&api, &headers) {
+        return r;
+    }
+    let note = match node_note(&body, "revoke") {
+        Ok(n) => n,
+        Err(r) => return *r,
+    };
+    let op = match api.auth.actor(&headers, false) {
+        Ok(op) => op,
+        Err(e) => return decision_refusal(e),
+    };
+    match api.decision.revoke_node_lost(&op, uid, &note) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => decision_refusal(e),
+    }
+}
+
+/// Rules 30 (decision D2): `POST /api/review/nodes/{uid}/flag` `{note}`: any operator puts a
+/// silent vehicle on the review list by hand, saying why, for an operator with engagement
+/// authority to confirm or not; it decides nothing. 409 for a vehicle that is reporting or lost.
+async fn node_flag(State(api): State<Api>, AxPath(uid): AxPath<u64>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
+    if let Some(r) = node_route_refusal(&api, &headers) {
+        return r;
+    }
+    let note = match node_note(&body, "flag") {
+        Ok(n) => n,
+        Err(r) => return *r,
+    };
+    let op = match api.auth.actor(&headers, false) {
+        Ok(op) => op,
+        Err(e) => return decision_refusal(e),
+    };
+    match api.decision.flag_node(&op, uid, &note) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => decision_refusal(e),
+    }
+}
+
+/// Rules 30: `POST /api/review/nodes/{uid}/dismiss` `{note}`: any operator takes a hand flag off
+/// the review list (a presumption is the engine's and stays until the vehicle is heard again or
+/// confirmed lost).
+async fn node_dismiss(State(api): State<Api>, AxPath(uid): AxPath<u64>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
+    if let Some(r) = node_route_refusal(&api, &headers) {
+        return r;
+    }
+    let note = match node_note(&body, "dismiss") {
+        Ok(n) => n,
+        Err(r) => return *r,
+    };
+    let op = match api.auth.actor(&headers, false) {
+        Ok(op) => op,
+        Err(e) => return decision_refusal(e),
+    };
+    match api.decision.dismiss_node_flag(&op, uid, &note) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => decision_refusal(e),
+    }
 }
 
 /// The largest truth message the simulation channel reads, bytes (axum's default for a JSON

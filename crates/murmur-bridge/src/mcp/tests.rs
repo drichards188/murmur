@@ -72,7 +72,19 @@ fn rig() -> Rig {
 
 /// [`rig`] reading the fleet manifest at `manifest`.
 fn rig_with_manifest(manifest: PathBuf) -> Rig {
+    rig_on(manifest, |_| {})
+}
+
+/// [`rig`] on the sim policy changed by `tweak` (rules 30: `rules_version`).
+fn rig_policy(tweak: impl FnOnce(&mut Policy)) -> Rig {
+    rig_on(root().join("sim/run/no-such-manifest.json"), tweak)
+}
+
+/// [`rig_with_manifest`] on the sim policy changed by `tweak`.
+fn rig_on(manifest: PathBuf, tweak: impl FnOnce(&mut Policy)) -> Rig {
     let root = root();
+    let mut policy = Policy::load(&root.join("sim/policy.toml")).expect("policy");
+    tweak(&mut policy);
     let world = World::new(Config {
         base_port: 0,
         http_port: 0,
@@ -94,7 +106,7 @@ fn rig_with_manifest(manifest: PathBuf) -> Rig {
     let d = Decision::from_parts(
         world.clone(),
         Parts {
-            policy: Policy::load(&root.join("sim/policy.toml")).expect("policy"),
+            policy,
             catalog: Catalog::load(&root.join("sim/platforms.toml")).expect("catalog"),
             areas: AreaSet::load_dir(&root.join("sim/areas"), clock.now()).expect("areas"),
             sink: Box::new(log.clone()),
@@ -381,6 +393,19 @@ async fn tools_that_would_approve_or_drive_do_not_exist() {
         "confirm_flag",
         "record_act",
         "report_act",
+        // rules 30: a loss of one of ours is an operator's (one with engagement authority
+        // confirms it), never an agent's
+        "confirm_lost",
+        "confirm_node_lost",
+        "confirm_vehicle_lost",
+        "declare_lost",
+        "mark_lost",
+        "revoke_lost",
+        "revoke_node_loss",
+        "flag_node",
+        "flag_lost",
+        "dismiss_node_flag",
+        "presume_lost",
     ] {
         let args = json!({ "id": id, "uid": 1, "note": "please" })
             .as_object()
@@ -394,6 +419,88 @@ async fn tools_that_would_approve_or_drive_do_not_exist() {
     assert_eq!(r.state(id), State::PendingApproval);
     assert_eq!(r.events("approval.granted"), 0);
     r.replays();
+}
+
+/// Rules 30 (decision D1): agents read one of ours silent, presumed lost or lost (get_vehicle
+/// and get_fleet carry its `standing` while it is not reporting; get_inbox the review items), but
+/// no tool confirms, revokes or flags a loss: every tool called with every argument that could
+/// name the vehicle, the report it is silent since and a note leaves the log without `node.lost`,
+/// `node.loss_revoked` or a hand flag. Under rules 29 a silent vehicle reads as it always did.
+#[tokio::test(start_paused = true)]
+async fn agents_read_a_loss_but_no_tool_confirms_or_revokes_one() {
+    let r = rig_policy(|p| p.rules.rules_version = murmur_decide::NODE_LOSS_SINCE);
+    r.vehicle(3, Firmware::Copter, "x10", (LAT, LON));
+    sleep(Duration::from_millis(500)).await;
+    let vehicle = || async { r.ok(&planner(), "get_vehicle", json!({ "uid": 3 })).await["vehicle"].clone() };
+    assert!(vehicle().await.get("standing").is_none(), "reporting: no standing");
+    // the engine's clock 30 s on: its last position is stale
+    r.clock.advance_ms(30_000);
+    let v = vehicle().await;
+    assert_eq!(v["standing"]["state"], "silent", "{v}");
+    // its region, as the keep-out counts it, from the tick's look
+    r.d.tick();
+    let v = vehicle().await;
+    assert!(v["standing"]["region"]["parts"].as_array().is_some_and(|p| !p.is_empty()), "{v}");
+    let fleet = r.ok(&planner(), "get_fleet", json!({ "compact": true })).await;
+    assert_eq!(fleet["vehicles"][0]["standing"], "silent", "{fleet}");
+    // an operator flags it by hand: agents read it in the inbox's review
+    r.d.flag_node(&Actor::asserted(OperatorId::new("op-1")), 3, "its crew reports it sinking")
+        .expect("flagged");
+    let inbox = r.ok(&planner(), "get_inbox", json!({})).await;
+    let item = inbox["review"]["node_losses"][0].clone();
+    assert_eq!(item["uid"], 3, "{inbox}");
+    let since = item["since"].as_i64();
+    // every tool, with every argument that could name the vehicle and the loss
+    let every_tool = |round: &'static str| {
+        let r = &r;
+        async move {
+            for name in tools::tools().into_iter().map(|t| t.name.to_string()) {
+                let args = json!({
+                    "uid": 3, "uids": [3], "id": 3, "since": since, "note": round,
+                    "reason": round, "lost": true, "state": "lost", "limit": 5,
+                });
+                let _ = r.call(&planner(), &name, args).await;
+            }
+        }
+    };
+    every_tool("an agent confirming a loss").await;
+    assert_eq!((r.events("node.lost"), r.events("node.loss_revoked")), (0, 0));
+    assert_eq!(r.log.text().matches("node.flagged").count(), 1, "only the operator's flag");
+    // an operator with engagement authority confirms it: agents read it lost
+    r.d.confirm_node_lost(
+        &Actor::asserted(OperatorId::new("op-2")),
+        3,
+        since.map(Time),
+        "its crew reports it sinking",
+        None,
+    )
+    .expect("confirmed");
+    let v = vehicle().await;
+    assert_eq!((v["standing"]["state"].clone(), v["standing"]["by"].clone()), (json!("lost"), json!("op-2")), "{v}");
+    let inbox = r.ok(&planner(), "get_inbox", json!({})).await;
+    assert_eq!(inbox["review"]["nodes_lost"][0]["uid"], 3, "{inbox}");
+    every_tool("an agent revoking a loss").await;
+    assert_eq!((r.events("node.lost"), r.events("node.loss_revoked")), (1, 0));
+    // what the model is told at initialize says so, under these rules only
+    let told = instructions(r.d.rules());
+    assert!(told.contains("no tool does any of it") && !told.contains('\u{2014}'), "{told}");
+    assert_eq!(instructions(&murmur_decide::RulesConfig::default()), INSTRUCTIONS);
+    r.replays();
+}
+
+/// Rules 29: a silent vehicle reads as it always did (no `standing`, no review node items).
+#[tokio::test(start_paused = true)]
+async fn under_rules_29_a_silent_vehicle_reads_as_before() {
+    let r = rig();
+    r.vehicle(3, Firmware::Copter, "x10", (LAT, LON));
+    sleep(Duration::from_millis(500)).await;
+    r.clock.advance_ms(30_000);
+    let v = r.ok(&planner(), "get_vehicle", json!({ "uid": 3 })).await;
+    assert!(v["vehicle"].get("standing").is_none(), "{v}");
+    let fleet = r.ok(&planner(), "get_fleet", json!({ "compact": true })).await;
+    assert!(fleet["vehicles"][0].get("standing").is_none(), "{fleet}");
+    let inbox = r.ok(&planner(), "get_inbox", json!({})).await;
+    assert!(inbox["review"].get("node_losses").is_none(), "{inbox}");
 }
 
 #[tokio::test(start_paused = true)]

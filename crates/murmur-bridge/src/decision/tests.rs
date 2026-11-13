@@ -804,3 +804,7 @@ mod scale;
 
 /// Rules 30's lost-link fact read from the stand-ins' own autopilots (`tests/lost_link.rs`).
 mod lost_link;
+
+/// Rules 30 through the bridge: the review, confirming and revoking a loss, what it ends and
+/// closes, its alerts (`tests/node_loss.rs`).
+mod node_loss;

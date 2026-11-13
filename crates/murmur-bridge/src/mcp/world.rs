@@ -60,6 +60,7 @@ fn vehicle_json(
     t: Time,
     now_wall: f64,
     op: Option<&OpSnapshot>,
+    standing: Option<Value>,
 ) -> Value {
     let rules = mcp.decision.rules();
     let (limit_ms, _) = rules.fact_age_limit_ms(Some(v.link.expected_interval_ms));
@@ -174,6 +175,11 @@ fn vehicle_json(
     if let Some(l) = loadout {
         out["platform"]["loadout"] = l["weapons"].clone();
     }
+    // rules 30: silent, presumed lost or confirmed lost (only while it is not reporting, so a
+    // reporting fleet reads as it always did)
+    if let Some(s) = standing {
+        out["standing"] = s;
+    }
     out
 }
 
@@ -199,6 +205,8 @@ fn vehicles(mcp: &Mcp, only: Option<&[u64]>) -> (f64, Vec<Value>) {
         .collect();
     let links: Vec<_> = cells.iter().map(|c| c.link_snapshot(now_mono)).collect();
     let estimates = crate::estimate::FrameContext::new(&mcp.world, now_wall, &links);
+    // rules 30: our vehicles' standing (none before rules 30)
+    let standings = mcp.decision.node_standings();
     for (cell, link) in cells.iter().zip(links) {
         let v = cell.read(|v| {
             let mut s = v.snapshot(cell.uid, cell.sysid, link, now_mono);
@@ -206,6 +214,7 @@ fn vehicles(mcp: &Mcp, only: Option<&[u64]>) -> (f64, Vec<Value>) {
             s
         });
         let facts = snap.vehicles.get(&duid(cell.uid));
+        let standing = standings.as_ref().and_then(|s| s.of(&duid(cell.uid), facts, snap.t));
         out.push(vehicle_json(
             mcp,
             &v,
@@ -213,6 +222,7 @@ fn vehicles(mcp: &Mcp, only: Option<&[u64]>) -> (f64, Vec<Value>) {
             snap.t,
             now_wall,
             ops.get(&cell.uid),
+            standing,
         ));
     }
     (now_wall, out)
@@ -237,7 +247,7 @@ fn compact_vehicle(v: &Value) -> Value {
         stale.push("gps_glitch");
     }
     let op = &v["current_op"];
-    json!({
+    let mut out = json!({
         "uid": v["uid"],
         "callsign": v["callsign"],
         "platform": v["platform"]["id"],
@@ -260,7 +270,12 @@ fn compact_vehicle(v: &Value) -> Value {
             json!({ "intent_id": op["intent_id"], "task": op["task"], "state": op["state"] })
         },
         "stale": stale,
-    })
+    });
+    // rules 30: silent, presumed_lost or lost, only while it is not reporting
+    if let Some(state) = v["standing"]["state"].as_str() {
+        out["standing"] = json!(state);
+    }
+    out
 }
 
 /// `get_fleet`: every vehicle's full view, or with `compact` one short entry each.

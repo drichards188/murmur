@@ -203,12 +203,33 @@ pub fn build(
         // rules 12: who it is (a carried restore holds a mission only for the vehicle preloaded)
         snap.identities.insert(duid(cell.uid), super::engage::identity_of(&cell));
     }
-    for (uid, ident) in &world.manifest().identities {
+    let manifest = world.manifest();
+    // rules 30: each manifest vehicle's system id, looked up once (not a search of every port
+    // for each of a large fleet)
+    let sysids: std::collections::HashMap<Uid, u8> = if node_loss {
+        manifest.ports.values().copied().collect()
+    } else {
+        std::collections::HashMap::new()
+    };
+    for (uid, ident) in &manifest.identities {
         snap.vehicles.entry(duid(*uid)).or_insert_with(|| VehicleFacts {
             platform: ident.str("platform").and_then(|p| catalog.get(p)).cloned(),
             ..VehicleFacts::default()
         });
+        // rules 30: who it is before its first report, as the manifest names it, so a loss an
+        // earlier run confirmed on it holds from the start (it holds only the vehicle it was
+        // confirmed on: without an identity it held nothing until the vehicle was heard)
+        if node_loss {
+            snap.identities.entry(duid(*uid)).or_insert_with(|| murmur_decide::VehicleIdentity {
+                platform: ident.str("platform").map(str::to_string),
+                callsign: ident.str("callsign").map(str::to_string),
+                sysid: sysids.get(uid).copied(),
+                // never judged for the same vehicle (an arming sets it again)
+                home: None,
+            });
+        }
     }
+    drop(manifest);
     snap.areas = Some(areas.clone());
     if let Some(tracks) = tracks {
         snap.tracks = tracks.facts(t.0 as f64 / 1000.0);

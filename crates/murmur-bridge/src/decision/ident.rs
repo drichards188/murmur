@@ -257,8 +257,22 @@ impl Decision {
         review["counts"]["lost_claims"] = json!(claims.len());
         review["lost_claims"] = json!(claims);
         review["lost_confirmed"] = json!(confirmed);
+        // rules 30: our vehicles presumed lost or flagged by hand, and those confirmed lost
+        self.add_node_review(&core, &mut review);
         super::blocking::add_to(&mut review, &self.blocking_now(&core));
         review
+    }
+
+    /// Rules 30: the review's node items (`node_losses`: presumed lost or flagged by hand, for
+    /// an operator with engagement authority to confirm; `nodes_lost`: the losses in force, any
+    /// operator may revoke one) and their count; nothing before rules 30, so the review of an
+    /// older run reads as it always did.
+    pub(super) fn add_node_review(&self, core: &super::Core, review: &mut Value) {
+        if let Some((losses, lost)) = self.node_review(core) {
+            review["counts"]["node_losses"] = json!(losses.len());
+            review["node_losses"] = json!(losses);
+            review["nodes_lost"] = json!(lost);
+        }
     }
 }
 

@@ -250,6 +250,7 @@ impl Decision {
                 tasking,
                 reported: HashMap::new(),
                 look: look.is_some(),
+                lost: Default::default(),
             },
         );
         self.supersede(core, id, &released.uids);

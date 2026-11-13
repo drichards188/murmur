@@ -1059,6 +1059,16 @@ impl VehicleCell {
             .on_message(msg, clock::mono());
     }
 
+    /// Test hook: a packet from the autopilot counted by the link statistics at bridge time
+    /// `wall` (the receive loop counts every packet so; the task layer's fakes count none).
+    #[cfg(test)]
+    pub(crate) fn link_on_packet(&self, seq: u8, wall: f64) {
+        self.stats
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .on_packet(seq, clock::mono(), wall);
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<Arc<MavMessage>> {
         self.events.subscribe()
     }

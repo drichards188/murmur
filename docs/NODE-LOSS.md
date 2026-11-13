@@ -157,6 +157,30 @@ second half: another sensor must take the drone (section 5).
 | autoplay | `[autoplay] confirm_node_losses = true` beside `confirm_rule_declarations` (`eval/proxy.py:44-48`, `:339-370`): reads each presumed loss (`read_s`), confirms it, the note saying scripted. With D1 the confirmer is op-2, a scripted signer with engagement authority; op-auto has none (`eval/situation.py:66-67`) |
 | custody | no `track` order on a contact exists (`Task::Track` points an antenna tracker at one of ours, `intent.rs:116`): custody is an `identify` order (rules 21 to 23, any live track from rules 22). The playbook gains a play: when the vehicle that held a declared or suspect track goes silent, propose an identify by the nearest capable sensor; the watch officer wakes on `node.presumed` |
 
+**As built (stage 5, bd murmur-zb1d.5; `crates/murmur-bridge/src/decision/nodes.rs`).** All of it only
+under rules 30: a rules 29 bridge answers the node routes 404 (nothing opened or logged) and its review,
+inbox, alerts and agents' reads are as before. `Engine::step_nodes` runs on the tick after the vehicle
+events are logged (a struck report is evidence that tick) and before its decisions; the same tick takes
+each silent vehicle's region (stage 2's `Engine::silent_regions`, a vehicle confirmed lost left out) and
+keeps it until the next, for display only. A review item's `since` is the engine's milliseconds of the
+vehicle's last position report, what the confirmation sends back; it also carries `since_t`, `silent_s`,
+`last_position`, `needs_note` (nothing presumes it), `would_void`, `would_end` and `would_close` (what
+confirming would end now), `refused` (why the engine would refuse it now) and `flagged`. Two routes the
+table above implies: `POST /api/review/nodes/{uid}/flag` {note} puts a silent vehicle on the list by hand
+and `.../dismiss` takes it off (any operator, logged as `operator.action`, deciding nothing), and
+`GET /api/nodes` lists each of ours not reporting with its standing and region (the map's SILENT regions,
+polled while any is). A request that comes as an agent (its `X-Murmur-Agent` header or a key) is refused
+403 on every node route, whatever operator it names. The passkey act is `{"act": "node_lost", "uid",
+"since"}`. A confirmation stops the vehicle's op in the task layer (shown superseded, never reported to
+the engine after it ended it `lost`), stops the restore of its closed values, and closes its `lost_link`,
+`restore_pending` and `may_be_running` alerts behind a `node_lost` notice; a loss revoked by a report
+raises `node_reported_again` for five minutes and owes its closed values back (restored when it
+answers), an operator's revocation the same without the alert. The bridge's snapshot gives a manifest
+vehicle not yet heard its platform, callsign and system id, so a carried loss holds from the start.
+`standing` on `get_fleet` (compact: its state) and `get_vehicle` carries the region too; the
+instructions add a paragraph under rules 30 only, so the tool lists and the rules 29 instructions do not
+move.
+
 ## 6. Evidence
 
 | signal | what the C2 gets today | honest? | used |
