@@ -1774,6 +1774,85 @@ def test_the_proxy_grants_every_request_of_the_named_agents():
     assert proxy.describe()["params"]["grant_agents"] == ["agent-watch"]
 
 
+def test_autoplay_confirms_a_presumed_loss_as_op_2_once_a_silence():
+    """Rules 30 (docs/NODE-LOSS.md, decision D1): `[autoplay] confirm_node_losses` confirms each one
+    of ours the engine presumes lost, after reading it, once a silence, as the loss confirmer (op-2,
+    a scripted signer with engagement authority; never op-auto, which has none, and never as an
+    agent), on the `since` the review showed (engine ms), the note saying it is scripted; a silent
+    vehicle flagged by hand asks a judgment and is left alone."""
+    from eval.proxy import proxy_params
+
+    assert S.LOSS_CONFIRMER == "op-2" and S.LOSS_CONFIRMER in S.ENGAGE_OPERATORS
+    assert S.AUTOPLAY_OPERATOR not in S.ENGAGE_OPERATORS, "op-auto has no engagement authority"
+    item = {"kind": "node_loss", "id": "N-1", "uid": 1, "callsign": "HUNTER 1", "state": "presumed_lost", "since": 1794588573117,
+            "since_t": 1794588573.117, "actions": ["confirm"],
+            "evidence": [{"kind": "act", "seq": 40, "t": 124.9, "detail": "act A-1 against it, observed by HUNTER 2's eo_ir"}]}
+    flagged = {**item, "id": "N-2", "uid": 2, "callsign": "HUNTER 2", "state": "silent", "actions": ["confirm", "dismiss"]}
+
+    class LossBridge(GrantBridge):
+        def post(self, path, body=None, operator=None, ok=(200,)):
+            self.calls.append(("post", path, operator, body))
+            return {"lost": {"uid": 1, "since": body["since"], "voided": [], "ended": [1], "finished": [1], "closed": None}}
+
+    b = LossBridge({"declarations": [], "node_losses": [item, flagged], "nodes_lost": []})
+    log: list[dict[str, Any]] = []
+    proxy = ProxyOperator(  # type: ignore[arg-type]
+        b, proxy_params({"read_s": 0.0, "confirm_node_losses": True}), seed=1, log=log, operator="op-auto",
+        note_prefix="scripted (situation x, autoplay): op-auto (not a person)", loss_confirmer=S.LOSS_CONFIRMER,
+        loss_note_prefix="scripted (situation x, autoplay): op-2 (not a person)",
+    )
+    stop = asyncio.Event()
+    asyncio.run(proxy._review(stop))
+    asyncio.run(proxy._review(stop))
+    posts = [c for c in b.calls if c[0] == "post"]
+    assert [(c[1], c[2], c[3]["since"]) for c in posts] == [("/api/review/nodes/1/lost", "op-2", 1794588573117)], "once, as op-2"
+    note = posts[0][3]["note"]
+    assert note.startswith("scripted (situation x, autoplay): op-2 (not a person): confirms every presumed loss of one of ours "
+                           "(confirm_node_losses), a script, not a judgment: HUNTER 1 (uid 1) silent since its report at 16:49:33.117Z")
+    assert "observed by HUNTER 2's eo_ir" in note
+    assert {k: log[0][k] for k in ("action", "by", "uid", "since", "result", "intent_id")} == {
+        "action": "confirm_lost", "by": "op-2", "uid": 1, "since": 1794588573117, "result": "confirmed lost (ended [1])", "intent_id": None}
+    assert S.decision_text(log[0]) == "op-2 confirm lost HUNTER 1 (uid 1): confirmed lost (ended [1])"
+    assert proxy.describe()["loss_confirmer"] == "op-2" and proxy.describe()["params"]["confirm_node_losses"] is True
+    # silent anew after it was heard (a new since): confirmed again
+    b.review["node_losses"] = [{**item, "since": 300000}]
+    asyncio.run(proxy._review(stop))
+    assert [c[3]["since"] for c in b.calls if c[0] == "post"] == [1794588573117, 300000]
+    # under rules 29 the review has no node items: nothing read into, nothing posted
+    b = LossBridge({"declarations": []})
+    q = ProxyOperator(b, proxy_params({"read_s": 0.0, "confirm_node_losses": True}), seed=1, operator="op-auto",  # type: ignore[arg-type]
+                      loss_confirmer="op-2")
+    asyncio.run(q._review(stop))
+    assert b.calls == [] and q.decisions == []
+    # the situations whose autoplay reviews confirm losses too (nothing under rules 29)
+    for name in ("hostile-act-air-to-air", "hostile-act-engagement"):
+        sit = S.load_situation(name)
+        assert proxy_params(sit.autoplay).confirm_node_losses, name
+
+
+def test_the_chain_reads_the_standing_of_ours_from_the_audit_log():
+    """Rules 30: a presumed loss with its evidence, the confirmation and who made it, and a
+    revocation, as the panel and the summary show them (the audit log's own words)."""
+    chain = S.EngagementChain({"1": "HUNTER 1", "2": "HUNTER 2"})
+    lines = chain.feed([
+        {"type": "node.presumed", "t": _ms(130), "uid": "2", "since": 125431, "world_t": 130000,
+         "evidence": [{"kind": "act", "seq": 40, "t": 124900, "detail": "act A-1 against it"},
+                      {"kind": "struck", "seq": 41, "t": 125100, "detail": "its struck report"}]},
+        {"type": "node.lost", "t": _ms(140), "uid": "2", "since": 125431, "by": "op-2", "session": "s-1", "note": "scripted"},
+        {"type": "node.presumed", "t": _ms(200), "uid": "1", "since": 190000, "evidence": [{"kind": "damage", "t": 1, "detail": "mobility"}]},
+        {"type": "node.presumption_cleared", "t": _ms(210), "uid": "1", "since": 190000, "detail": "a position report at 205 s"},
+        {"type": "node.loss_revoked", "t": _ms(300), "uid": "2", "since": 125431, "cause": {"kind": "heard", "detail": "x"}},
+    ])
+    assert [x["what"] for x in lines] == ["presumed", "lost", "presumed", "cleared", "revoked"]
+    assert lines[0]["text"].startswith("the engine presumes HUNTER 2 (uid 2) lost (silent, act A-1 against it; its struck report)")
+    assert lines[1]["text"].startswith("op-2 confirmed HUNTER 2 (uid 2) lost: it leaves every keep-out")
+    assert "heard again" in lines[3]["text"] and "it reported again" in lines[4]["text"]
+    summary = chain.summary_lines()
+    assert "  HUNTER 1 (uid 1): heard again (presumed lost on mobility)" in summary
+    assert ("  HUNTER 2 (uid 2): loss revoked (presumed lost on act A-1 against it; its struck report; confirmed lost by op-2; "
+            "it reported again)") in summary
+
+
 def test_the_proxy_confirms_each_rule_declaration_once():
     from eval.proxy import proxy_params
 

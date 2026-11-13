@@ -72,6 +72,7 @@ from .situation import (
     CONSOLE_OPERATOR,
     COSIGNERS,
     ENGAGE_OPERATORS,
+    LOSS_CONFIRMER,
     OPERATORS,
     SCRIPTED_SETUP,
     SCRIPTED_SIGNERS,
@@ -717,7 +718,7 @@ class Runner:
                 "decisions": [
                     {
                         **{k: d.get(k) for k in ("t", "intent_id", "action", "by", "reason", "result")},
-                        **{k: d[k] for k in ("declaration", "track", "granted") if k in d},
+                        **{k: d[k] for k in ("declaration", "track", "granted", "uid", "callsign") if k in d},
                     }
                     for d in self.autoplay_log[-10:]
                 ],
@@ -803,11 +804,18 @@ class Runner:
             if failed:
                 # the bridge's status code only; its words and the reason are in situation.jsonl
                 code = str(d.get("result") or "").split(":", 1)[0] if str(d.get("result") or "").startswith("error") else "an error"
-                what = f"{d.get('declaration')} on {d.get('track')}" if d.get("action") == "confirm" else f"intent {d.get('intent_id')}"
+                if d.get("action") == "confirm":
+                    what = f"{d.get('declaration')} on {d.get('track')}"
+                elif d.get("action") == "confirm_lost":
+                    what = f"the loss of {d.get('callsign') or 'vehicle'} (uid {d.get('uid')})"
+                else:
+                    what = f"intent {d.get('intent_id')}"
                 self.problem(f"{d.get('by')} (scripted): {d.get('action')} on {what} failed ({code}); see situation.jsonl")
                 continue
             verb = {"approve": "approved", "reject": "rejected", "sign": "signed", "confirm": "confirmed"}.get(str(d.get("action")))
-            if verb == "confirmed":
+            if d.get("action") == "confirm_lost":
+                self.entry("autoplay", f"{d.get('by')} (scripted) confirmed {d.get('callsign') or 'vehicle'} (uid {d.get('uid')}) lost: {d.get('result')}")
+            elif verb == "confirmed":
                 self.entry("autoplay", f"{d.get('by')} (scripted) confirmed the rule declaration {d.get('declaration')} on {d.get('track')}: {d.get('result')}")
             elif verb:
                 grant = " (it grants every request of the AI)" if d.get("granted") else ""
@@ -1199,6 +1207,10 @@ class Runner:
                 operator=AUTOPLAY_OPERATOR,
                 signers=signers,
                 note_prefix=f"{label}: {AUTOPLAY_OPERATOR} (not a person)",
+                # rules 30: a presumed loss of one of ours is confirmed by an operator with
+                # engagement authority (decision D1): op-2, a scripted signer, never op-auto
+                loss_confirmer=LOSS_CONFIRMER,
+                loss_note_prefix=f"{label}: {LOSS_CONFIRMER} (not a person)",
             )
             self.record("autoplay_start", describe=proxy.describe())
             return proxy
@@ -1268,6 +1280,9 @@ class Runner:
             preflight=self.preflight,
             ports=self.ports,
             run_id=self.run_id,
+            # the decision rules asked for (MURMUR_RULES, passed on to the bridge; the audit log's
+            # run.started says what it decided under), none: the build's default
+            rules_asked=(self.env.get("MURMUR_RULES") or "").strip() or None,
             fleet=[{"uid": v["uid"], "callsign": v["callsign"], "platform": v["platform"]} for v in vehicles],
             evidence_note=self.modes.get("evidence_note"),
         )
@@ -1420,7 +1435,7 @@ class Runner:
             if i.get("rationale"):
                 lines.append(f"      rationale: {str(i['rationale'])[:220]}")
         if self.modes["operator"] == "autoplay" or self.modes["cosigner"] in LIVE_SIGNERS_MODE:
-            acts = ("approve", "reject", "sign", "confirm")
+            acts = ("approve", "reject", "sign", "confirm", "confirm_lost")
             ok = [d for d in self.autoplay_log if d.get("action") in acts and not str(d.get("result") or "").startswith("error")]
             failed = [d for d in self.autoplay_log if d not in ok and d.get("action") in (*acts, "sign_failed", "error")]
             lines.append(f"  scripted decisions: {len(ok)}" + (f" (and {len(failed)} failed attempts)" if failed else ""))

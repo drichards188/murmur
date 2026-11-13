@@ -52,7 +52,9 @@ STORYLINE_PROPOSERS = ("agent", "operator")
 # mode, and never a script. Every scripted id is its own: op-setup issues the opening orders,
 # op-auto decides in autoplay (the proxy model), op-2 and op-3 sign engagements (autoplay, or
 # cosign live), op-planner is the timeline's second station. op-1, op-2 and op-3 hold
-# engagement authority. The AI is agent-watch (Claude or Codex) or agent-playbook (the
+# engagement authority, so in autoplay op-2 also confirms the loss of one of ours the engine
+# presumes (rules 30, `[autoplay] confirm_node_losses`: only an operator with engagement
+# authority confirms one, decision D1 of docs/NODE-LOSS.md; op-auto has none). The AI is agent-watch (Claude or Codex) or agent-playbook (the
 # playbook engine); the timeline's MCP proposals come from agent-scripted, and an opening order that
 # would be authorized by its own submission is proposed by agent-setup so a person (or op-auto)
 # decides it. agent-planner is the person's own agent (the harness they opened in the checkout,
@@ -62,6 +64,8 @@ CONSOLE_OPERATOR = "op-1"
 SETUP_OPERATOR = "op-setup"
 AUTOPLAY_OPERATOR = "op-auto"
 SCRIPTED_SIGNERS = ["op-2", "op-3"]
+# who confirms a presumed loss of one of ours on autoplay (rules 30, decision D1)
+LOSS_CONFIRMER = SCRIPTED_SIGNERS[0]
 STORYLINE_OPERATOR = "op-planner"
 OPERATORS = [CONSOLE_OPERATOR, *SCRIPTED_SIGNERS, AUTOPLAY_OPERATOR, SETUP_OPERATOR, STORYLINE_OPERATOR]
 ENGAGE_OPERATORS = [CONSOLE_OPERATOR, *SCRIPTED_SIGNERS]
@@ -1480,8 +1484,10 @@ class EngagementChain:
     timeline, `situation.jsonl` and the summary: the hostile acts our sensors observed, what the
     engine made of each (a rule declaration, or a flag for review), who confirmed a rule
     declaration, every engagement nomination and who made it, each signature, the dispatch, the
-    released effect, the assessment, and any stop, reset or refusal. Only what the C2 itself
-    logged: nothing of the truth. `callsigns` names our vehicles by uid (strings)."""
+    released effect, the assessment, and any stop, reset or refusal; from rules 30 the standing
+    of ours struck on the way (presumed lost on its evidence, confirmed lost and by whom, heard
+    again). Only what the C2 itself logged: nothing of the truth. `callsigns` names our vehicles
+    by uid (strings)."""
 
     def __init__(self, callsigns: dict[str, str] | None = None):
         self.callsigns = {str(k): v for k, v in (callsigns or {}).items()}
@@ -1489,6 +1495,11 @@ class EngagementChain:
         self.engagements: dict[int, dict[str, Any]] = {}
         # declaration id -> {track, by, confirmed_by}
         self.declarations: dict[int, dict[str, Any]] = {}
+        # rules 30: uid -> one of ours presumed or confirmed lost (when, on what, by whom)
+        self.nodes: dict[str, dict[str, Any]] = {}
+
+    def _node(self, uid: Any) -> dict[str, Any]:
+        return self.nodes.setdefault(str(uid), {"uid": str(uid)})
 
     def _who(self, uid: Any) -> str:
         cs = self.callsigns.get(str(uid))
@@ -1661,6 +1672,34 @@ class EngagementChain:
                 rec["state"] = e.get("to")
                 if e.get("to") in ("rejected", "expired", "voided", "failed"):
                     line(e, "ended", f"intent {e.get('intent')} {e.get('to')}: {str(e.get('reason', ''))[:240]}", intent=e.get("intent"))
+            elif kind == "node.presumed":
+                # rules 30: one of ours silent, with evidence of a strike: a flag, deciding nothing
+                n = self._node(e.get("uid"))
+                ev = "; ".join(str(x.get("detail") or x.get("kind") or "") for x in e.get("evidence") or [])
+                n.update({"presumed_t": round(float(e.get("t", 0)) / 1000.0, 3), "evidence": ev[:300], "state": "presumed lost"})
+                line(
+                    e, "presumed",
+                    f"the engine presumes {self._who(e.get('uid'))} lost (silent, {ev[:240]}): it still counts in every keep-out "
+                    "until an operator with engagement authority confirms it lost",
+                )
+            elif kind == "node.presumption_cleared":
+                n = self._node(e.get("uid"))
+                n["state"] = "heard again"
+                line(e, "cleared", f"{self._who(e.get('uid'))} heard again: no longer presumed lost ({str(e.get('detail', ''))[:200]})")
+            elif kind == "node.lost":
+                n = self._node(e.get("uid"))
+                n.update({"lost_t": round(float(e.get("t", 0)) / 1000.0, 3), "by": e.get("by"), "state": "lost"})
+                line(
+                    e, "lost",
+                    f"{e.get('by')} confirmed {self._who(e.get('uid'))} lost: it leaves every keep-out and takes no order, "
+                    "its orders end and its owed lost-link values close",
+                )
+            elif kind == "node.loss_revoked":
+                n = self._node(e.get("uid"))
+                cause = e.get("cause") or {}
+                why = "it reported again" if cause.get("kind") == "heard" else f"{cause.get('operator')} revoked it ({str(cause.get('note', ''))[:160]})"
+                n.update({"state": "loss revoked", "revoked": why})
+                line(e, "revoked", f"the loss of {self._who(e.get('uid'))} is revoked: {why}; it counts in every keep-out again")
         return out
 
     def summary_lines(self) -> list[str]:
@@ -1672,6 +1711,11 @@ class EngagementChain:
             how = f"by rule ({_rule_basis(by)})" if by.get("kind") == "rule" else f"by {by.get('operator')}"
             conf = f", confirmed by {d['confirmed_by']}" if d.get("confirmed_by") else (", not confirmed" if by.get("kind") == "rule" else "")
             lines.append(f"  declared {d['track']} {d['affiliation']} {how}{conf}")
+        for uid, n in sorted(self.nodes.items()):
+            # rules 30: ours struck on the way, and what became of their standing
+            bits = [f"presumed lost on {n['evidence']}" if n.get("evidence") else None,
+                    f"confirmed lost by {n['by']}" if n.get("by") else None, n.get("revoked")]
+            lines.append(f"  {self._who(uid)}: {n.get('state')}" + (f" ({'; '.join(b for b in bits if b)})" if any(bits) else ""))
         for iid, r in sorted(self.engagements.items()):
             if r.get("lay"):
                 lines.append(f"  lay order intent {iid}: proposed by {r['by']} ({r['platform']}, {r['count']} x {r.get('weapon') or 'mine'}, live {r['live_h']} h): {r['state']}")
@@ -1716,10 +1760,12 @@ def weapon_text(weapon: dict[str, Any], munition: dict[str, Any]) -> str:
 
 
 def decision_text(d: dict[str, Any]) -> str:
-    """One scripted decision in words: an intent's approval, rejection or signature, or a rule
-    declaration's confirmation."""
+    """One scripted decision in words: an intent's approval, rejection or signature, a rule
+    declaration's confirmation, or a presumed loss of one of ours confirmed (rules 30)."""
     if d.get("action") == "confirm":
         return f"{d.get('by')} confirm {d.get('declaration')} on {d.get('track')}: {d.get('result')}"
+    if d.get("action") == "confirm_lost":
+        return f"{d.get('by')} confirm lost {d.get('callsign') or 'vehicle'} (uid {d.get('uid')}): {d.get('result')}"
     return f"{d.get('by')} {d.get('action')} intent {d.get('intent_id')}: {d.get('result')}"
 
 

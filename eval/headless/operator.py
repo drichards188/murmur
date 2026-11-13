@@ -23,7 +23,10 @@ Modes:
   reads them: `grant_agents` (every card from one of those agent ids read, never skimmed and
   without the draw, and approved whatever the rule book alone finds; the note and the decision
   say so) and `confirm_rule_declarations` (after each look's cards, the review list read once
-  and every rule declaration no one has confirmed confirmed, each read first: a `read_s` draw).
+  and every rule declaration no one has confirmed confirmed, each read first: a `read_s` draw);
+  and rules 30's `confirm_node_losses` (from the same read, after the declarations, each one of
+  ours presumed lost confirmed once, read first, as the loss confirmer: op-2 in a situation,
+  an operator with engagement authority, never op-auto).
 - `approve-all`, `reject-all`: eval/proxy.py's `AutoApprover`, a look every second.
 - `never`: answers nothing; every human-tier card expires (the shadow's absent operator).
 - `rates`: a fixed operator: each new card is approved with probability `approve`, rejected
@@ -38,7 +41,8 @@ import random
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from eval.proxy import PRESETS, Judgment, ProxyParams, granted, judge, proxy_params, shown_on
+from eval.proxy import (PRESETS, Judgment, ProxyParams, granted, judge, loss_note, loss_record, loss_result,
+                        presumed_loss, proxy_params, shown_on)
 
 MODES = ("proxy", "approve-all", "reject-all", "never", "rates")
 
@@ -90,7 +94,9 @@ class Operator:
     API (`sim.api`), as the full stack's runner does."""
 
     def __init__(self, sim: Any, model: OperatorModel, seed: int, operator: str, note_prefix: str,
-                 epoch: float):
+                 epoch: float, loss_confirmer: str | None = None, loss_note_prefix: str | None = None):
+        if model.mode == "proxy" and model.params.confirm_node_losses and not loss_confirmer:
+            raise ValueError("confirm_node_losses needs a loss_confirmer: an operator with engagement authority (op-2)")
         self.sim = sim
         self.m = model
         self.p = model.params
@@ -113,6 +119,13 @@ class Operator:
         self.handled_reviews: set[str] = set()
         self._decls: list[dict[str, Any]] | None = None
         self._reading: dict[str, Any] | None = None
+        # `confirm_node_losses` (rules 30): who confirms and how its notes begin, the losses
+        # confirmed (or tried) by (uid, since), this look's still to read, and the one being read
+        self.loss_confirmer = loss_confirmer
+        self.loss_note_prefix = loss_note_prefix or f"{note_prefix} as {loss_confirmer}"
+        self.handled_losses: set[tuple[int, Any]] = set()
+        self._losses: list[dict[str, Any]] = []
+        self._reading_loss: dict[str, Any] | None = None
 
     def describe(self) -> dict[str, Any]:
         return {"operator": self.operator, **self.m.as_dict(), "proxy": self.m.mode == "proxy"}
@@ -212,6 +225,9 @@ class Operator:
         if self._reading is not None:
             self._confirm(now)
             return self._next_review(now)
+        if self._reading_loss is not None:
+            self._confirm_lost(now)
+            return self._next_review(now)
         # a look: the inbox, soonest expiry first, engagement nominations left to the signers
         pending = sorted(self._inbox(), key=lambda i: i.get("expires_t") or 0)
         pending = [i for i in pending if i.get("kind") != "engage"]
@@ -278,14 +294,17 @@ class Operator:
     # ---- eval/proxy.py's `confirm_rule_declarations` -------------------------------------------
 
     def _next_review(self, now: float) -> float:
-        """After a look's cards: with `confirm_rule_declarations`, the review list read once and
-        each rule declaration in force that no one has confirmed read (`read_s`, a draw) and
-        confirmed in turn (`_confirm`), as eval/proxy.py's `_review`; then the next look. A
-        script, not a judgment: it never revokes, and flags are left alone."""
-        if self.p.confirm_rule_declarations:
+        """After a look's cards: with `confirm_rule_declarations` or `confirm_node_losses`, the
+        review list read once; each rule declaration in force that no one has confirmed read
+        (`read_s`, a draw) and confirmed in turn (`_confirm`), then each presumed loss of one of
+        ours (`_confirm_lost`), as eval/proxy.py's `_review`; then the next look. A script, not a
+        judgment: it never revokes, and flags are left alone."""
+        if self.p.confirm_rule_declarations or self.p.confirm_node_losses:
             if self._decls is None:
                 status, review = self.sim.api("GET", "/api/review")
-                self._decls = list(((review or {}) if status == 200 else {}).get("declarations") or [])
+                review = (review or {}) if status == 200 else {}
+                self._decls = list(review.get("declarations") or []) if self.p.confirm_rule_declarations else []
+                self._losses = list(review.get("node_losses") or []) if self.p.confirm_node_losses else []
             while self._decls:
                 d = self._decls.pop(0)
                 key = str(d.get("id"))
@@ -294,7 +313,18 @@ class Operator:
                 self.handled_reviews.add(key)
                 self._reading = d
                 return now + self._lognormal(self.p.read_s, self.p.read_sigma)
+            while self._losses:
+                n = self._losses.pop(0)
+                if not presumed_loss(n):
+                    continue
+                lkey = (int(n["uid"]), n.get("since"))
+                if lkey in self.handled_losses:
+                    continue
+                self.handled_losses.add(lkey)
+                self._reading_loss = n
+                return now + self._lognormal(self.p.read_s, self.p.read_sigma)
         self._decls = None
+        self._losses = []
         return now + self._lognormal(self.p.attend_s, self.p.attend_sigma)
 
     def _confirm(self, now: float) -> None:
@@ -312,6 +342,24 @@ class Operator:
                       f"{d.get('basis') or d.get('declared_by') or ''}"[:400],
             "result": result,
         })
+
+
+    # ---- eval/proxy.py's `confirm_node_losses` (rules 30) -------------------------------------
+
+    def _confirm_lost(self, now: float) -> None:
+        """One presumed loss, read: confirmed as the loss confirmer on the silence the item showed
+        (its `since`), with the live operator's note; the engine refuses it if the vehicle was heard
+        since."""
+        n, self._reading_loss = self._reading_loss, None
+        assert n is not None
+        note = loss_note(self.loss_note_prefix, n)
+        status, out = self.sim.api("POST", f"/api/review/nodes/{int(n['uid'])}/lost", {"since": n.get("since"), "note": note},
+                                   self.loss_confirmer)
+        if status // 100 == 2:
+            result = loss_result(out)
+        else:
+            result = f"error {status}: {out.get('detail') if isinstance(out, dict) else out}"
+        self.decisions.append({"t": round(now, 3), **loss_record(n, self.loss_confirmer, note, result)})
 
 
 __all__ = ["MODES", "OperatorModel", "Operator", "operator_model", "PRESETS", "asdict"]

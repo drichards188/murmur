@@ -133,7 +133,13 @@ about the AI (truth was served on the bridge)" in `situation.jsonl`, the panel a
   9) in the review list, read first. Neither touches the engine: the checks run first, the
   policy's tiers are the shipped ones, an approval the engine refuses stays refused, an engagement
   is only ever op-2's and op-3's to sign, and flags are left alone. `hostile-act-engagement` sets
-  both.
+  both. A third, for decision rules 30 (docs/NODE-LOSS.md): `confirm_node_losses = true` has
+  op-2 confirm each one of ours the engine presumes lost (the review list's `node_losses`), read
+  first, on the silence the item shows, its note saying it is scripted. Only an operator with
+  engagement authority confirms a loss (decision D1), so the confirmer is op-2, a scripted signer,
+  never op-auto; a silent vehicle no one presumes lost (flagged by hand) is left alone. Under rules
+  29 the review has no node items and the setting does nothing. Every situation that sets
+  `confirm_rule_declarations` sets it too.
 
 Who is who in a situation's run:
 
@@ -143,7 +149,7 @@ Who is who in a situation's run:
 | `op-setup` | the setup script: issues the opening orders |
 | `agent-setup` | the setup script as an agent: proposes an opening order that would otherwise be authorized by op-setup's own submission (below) |
 | `op-auto` | the autoplay operator (autoplay only): decides the inbox, and where the file says so confirms the engine's rule declarations |
-| `op-2`, `op-3` | the scripted engagement signers (autoplay), the scripted cosigner (live, `cosigner = "scripted"`), or the scripted pair that signs your nomination (live, `cosigner = "scripted-pair"`); they sign a lay order (rules 27) the same way, without a picture token |
+| `op-2`, `op-3` | the scripted engagement signers (autoplay), the scripted cosigner (live, `cosigner = "scripted"`), or the scripted pair that signs your nomination (live, `cosigner = "scripted-pair"`); they sign a lay order (rules 27) the same way, without a picture token; on autoplay op-2 also confirms a presumed loss of one of ours where the file says so (rules 30, `confirm_node_losses`) |
 | `op-planner` | the timeline's second station (`declare` steps, autoplay only; proposals with `[storyline] proposer = "operator"`) |
 | `agent-scripted` | the timeline's proposals (MCP) |
 | `agent-watch`, `agent-playbook` | the AI: Claude or Codex, or the playbook engine |

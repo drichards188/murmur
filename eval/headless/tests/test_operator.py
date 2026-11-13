@@ -39,24 +39,55 @@ DECLARATIONS = [
 ]
 
 
+#: rules 30's review items (`node_losses`): HUNTER 1 presumed lost (confirmed), a vehicle silent and
+#: flagged by hand (left alone: it asks a judgment), one presumed lost later (confirmed), and HUNTER 1
+#: again after it was heard and fell silent anew (a new `since`: confirmed again)
+NODE_LOSSES = [
+    {"uid": 1, "callsign": "HUNTER 1", "state": "presumed_lost", "since": 125_000, "since_t": 125.0, "t_in": 50.0,
+     "actions": ["confirm"], "evidence": [{"kind": "act", "detail": "act A-1 against it, seen by HUNTER 2's eo_ir"},
+                                          {"kind": "struck", "detail": "its struck report"}]},
+    {"uid": 2, "callsign": "HUNTER 2", "state": "silent", "since": 130_000, "t_in": 60.0, "actions": ["confirm", "dismiss"],
+     "evidence": [{"kind": "operator", "detail": "flagged by op-1"}]},
+    {"uid": 4, "callsign": "SKY 1", "state": "presumed_lost", "since": None, "t_in": 210.0, "actions": ["confirm"],
+     "evidence": [{"kind": "act", "detail": "act A-3 against it"}]},
+    {"uid": 1, "callsign": "HUNTER 1", "state": "presumed_lost", "since": 300_000, "since_t": 300.0, "t_in": 320.0,
+     "actions": ["confirm"], "evidence": [{"kind": "damage", "detail": "mobility"}]},
+]
+
+
 class World:
     """The inbox over (fake) time: a card is pending from its `t_in` until decided; a rule
-    declaration is in the review list from its `t_in` until confirmed."""
+    declaration is in the review list from its `t_in` until confirmed; a presumed loss (rules 30)
+    from its `t_in` until confirmed on its `since`."""
 
-    def __init__(self, cards: list[dict] | None = None, declarations: list[dict] | None = None):
+    def __init__(self, cards: list[dict] | None = None, declarations: list[dict] | None = None,
+                 losses: list[dict] | None = None):
         self.now = 0.0
         self.cards = CARDS if cards is None else cards
         self.declarations = declarations or []
+        self.losses = losses or []
         self.decided: dict[int, str] = {}
         self.confirmed: set[str] = set()
+        self.lost: set[tuple] = set()
         self.calls: list[tuple] = []
 
     def pending(self) -> list[dict]:
         return [c for c in self.cards if c["t_in"] <= self.now and c["id"] not in self.decided]
 
     def review(self) -> dict:
-        return {"declarations": [d for d in self.declarations
-                                 if d["t_in"] <= self.now and d["track"] not in self.confirmed]}
+        out: dict = {"declarations": [d for d in self.declarations
+                                      if d["t_in"] <= self.now and d["track"] not in self.confirmed]}
+        if self.losses:
+            # the newest silence of each vehicle, until it is confirmed lost on it
+            now = {n["uid"]: n for n in self.losses if n["t_in"] <= self.now}
+            out["node_losses"] = [n for n in now.values() if (n["uid"], n["since"]) not in self.lost]
+        return out
+
+    def lose(self, uid: int, body: dict, operator: str) -> dict:
+        assert operator == "op-2" and set(body) == {"since", "note"}, (operator, body)
+        self.calls.append(("lost", round(self.now, 6), uid, body["since"], body["note"]))
+        self.lost.add((uid, body["since"]))
+        return {"lost": {"uid": uid, "since": body["since"], "voided": [], "ended": [7] if uid == 1 else [], "closed": None}}
 
     def confirm(self, track: str) -> dict:
         self.calls.append(("confirm", round(self.now, 6), track))
@@ -81,6 +112,9 @@ class FakeBridge:
         return {"pending": self.w.pending()}
 
     def post(self, path: str, body, operator):
+        m = re.match(r"/api/review/nodes/(\d+)/lost$", path)
+        if m:
+            return self.w.lose(int(m.group(1)), body, operator)
         m = re.match(r"/api/tracks/([^/]+)/confirm$", path)
         assert m and body == {} and operator == "op-auto", (path, body, operator)
         return self.w.confirm(m.group(1))
@@ -116,6 +150,10 @@ class FakeSim:
         if path == "/api/operator/view":
             self.w.calls.append(("view", round(self.w.now, 6), body["intent_id"], body["event"], body.get("action")))
             return 200, {}
+        m = re.match(r"/api/review/nodes/(\d+)/lost$", path)
+        if m:
+            assert method == "POST"
+            return 200, self.w.lose(int(m.group(1)), body, operator)
         m = re.match(r"/api/tracks/([^/]+)/confirm$", path)
         if m:
             assert method == "POST" and body == {} and operator == "op-auto", (method, body, operator)
@@ -131,7 +169,8 @@ def run_proxy(seed: int, preset: str, end: float, extra: dict | None = None, wor
               decisions: list | None = None) -> list[tuple]:
     w = world or World()
     params = proxy.proxy_params({"preset": preset, **(extra or {})})
-    op = proxy.ProxyOperator(FakeBridge(w), params, seed, operator="op-auto", note_prefix="np")
+    op = proxy.ProxyOperator(FakeBridge(w), params, seed, operator="op-auto", note_prefix="np",
+                             loss_confirmer="op-2", loss_note_prefix="np2")
 
     async def fake_sleep(seconds: float) -> None:
         w.now += max(0.0, seconds)
@@ -161,7 +200,8 @@ def run_proxy(seed: int, preset: str, end: float, extra: dict | None = None, wor
 def run_headless(seed: int, preset: str, end: float, extra: dict | None = None, world: World | None = None,
                  decisions: list | None = None) -> list[tuple]:
     w = world or World()
-    op = Operator(FakeSim(w), operator_model({"preset": preset, **(extra or {})}), seed, "op-auto", "np", 0.0)
+    op = Operator(FakeSim(w), operator_model({"preset": preset, **(extra or {})}), seed, "op-auto", "np", 0.0,
+                  loss_confirmer="op-2", loss_note_prefix="np2")
     t = op.start(0.0)
     while t is not None and t <= end:
         w.now = t
@@ -214,6 +254,50 @@ def test_grant_agents_and_confirm_rule_declarations_as_the_live_operator(seed: i
                for d in db if d["action"] == "confirm")
     d1 = next(c for c in confirms if c[2] == "T-0003")
     assert d1[1] > 40.0, "read after it came into the list"
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3, 7, 101])
+@pytest.mark.parametrize("preset", ["default", "rubber-stamp"])
+def test_confirm_node_losses_as_the_live_operator(seed: int, preset: str):
+    """Rules 30: `[autoplay] confirm_node_losses` confirms each presumed loss of one of ours once a
+    silence, read first, after the look's declarations, as the loss confirmer (op-2), never op-auto,
+    on the `since` the item showed, with a note saying it is scripted; a silent vehicle flagged by
+    hand is left alone. The same calls after the same delays, and the same records, live and
+    headless."""
+    extra = {**GRANT, "confirm_node_losses": True}
+    da: list[dict] = []
+    db: list[dict] = []
+    a = run_proxy(seed, preset, 400.0, extra, World(GRANT_CARDS, DECLARATIONS, NODE_LOSSES), da)
+    b = run_headless(seed, preset, 400.0, extra, World(GRANT_CARDS, DECLARATIONS, NODE_LOSSES), db)
+    assert a == b
+    assert _comparable(da) == _comparable(db)
+    lost = [c for c in b if c[0] == "lost"]
+    assert [(c[2], c[3]) for c in lost] == [(1, 125_000), (4, None), (1, 300_000)]
+    assert lost[0][1] > 50.0, "read after it came into the list"
+    assert all("np2: confirms every presumed loss" in c[4] and "a script, not a judgment" in c[4] for c in lost)
+    assert "HUNTER 1 (uid 1) silent since its report at 125.0" in lost[0][4] and "its struck report" in lost[0][4]
+    assert "SKY 1 (uid 4) silent since it never reported a position" in lost[1][4]
+    recs = [d for d in db if d["action"] == "confirm_lost"]
+    assert [d["by"] for d in recs] == ["op-2"] * 3
+    assert recs[0]["result"] == "confirmed lost (ended [7])" and recs[1]["result"] == "confirmed lost"
+    # every declaration still confirmed (op-auto), and the declarations before the losses in a look
+    assert [d["declaration"] for d in db if d["action"] == "confirm"] == ["D-1", "D-2", "D-5"]
+
+
+def test_confirm_node_losses_needs_a_confirmer_and_reads_as_before_without_it():
+    """A proxy told to confirm losses names who confirms (an operator with engagement authority);
+    without the setting the operator's params read as they always did (the headless golden and
+    paused digests hold them), and no loss is confirmed."""
+    params = proxy.proxy_params({"confirm_node_losses": True})
+    with pytest.raises(ValueError, match="loss_confirmer"):
+        proxy.ProxyOperator(FakeBridge(World()), params, 1, operator="op-auto")
+    with pytest.raises(ValueError, match="loss_confirmer"):
+        Operator(FakeSim(World()), operator_model({"confirm_node_losses": True}), 1, "op-auto", "np", 0.0)
+    assert "confirm_node_losses" not in proxy.proxy_params({}).as_dict()
+    assert proxy.proxy_params({"confirm_node_losses": True}).as_dict()["confirm_node_losses"] is True
+    w = World(GRANT_CARDS, DECLARATIONS, NODE_LOSSES)
+    run_headless(1, "default", 400.0, GRANT, w, [])
+    assert not [c for c in w.calls if c[0] == "lost"]
 
 
 def test_without_the_settings_nothing_changes():

@@ -60,7 +60,8 @@ from pathlib import Path
 from typing import Any
 
 from eval.agent import _mcp_args, _rest_body
-from eval.situation import AUTOPLAY_OPERATOR, SCRIPTED_SETUP, SETUP_AGENT, SETUP_OPERATOR, playbook_json, swarm_uids
+from eval.situation import (AUTOPLAY_OPERATOR, LOSS_CONFIRMER, SCRIPTED_SETUP, SETUP_AGENT, SETUP_OPERATOR, playbook_json,
+                            swarm_uids)
 from eval.situation_run import STALE_RETRIES, STALE_RETRY_S, dry_run_summary, labelled, stale_only, submits_itself
 from eval.storyline import select_vehicles
 
@@ -504,7 +505,8 @@ class Episode:
                                                   else self.e.autoplay)
             self.operator = Operator(sim, model, self.e.seed, AUTOPLAY_OPERATOR,
                                      self.e.operator_note(AUTOPLAY_OPERATOR),
-                                     spec["epoch"])
+                                     spec["epoch"], loss_confirmer=LOSS_CONFIRMER,
+                                     loss_note_prefix=self.e.operator_note(LOSS_CONFIRMER))
             self.loop.handlers["operator"] = self.operator.wake
             if self.opts.signers is not None:
                 from .signers import Signers, signer_policy

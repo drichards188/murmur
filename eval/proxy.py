@@ -45,6 +45,15 @@ evaluation's arms):
   (`GET /api/review`) and confirms every rule declaration (rules 9) in force that no one has
   confirmed yet, reading it first (`read_s`): a script, not a judgment, for a situation's
   autoplay, where it is the only operator who reviews. Flags are left alone.
+- `confirm_node_losses = true` (decision rules 30, docs/NODE-LOSS.md): at each look the proxy
+  also reads the review list's `node_losses` and confirms each one of ours the engine presumes
+  lost (`state` presumed_lost), reading it first (`read_s`), on the silence the item shows (its
+  `since`, the engine's milliseconds of the last report). Only an operator with engagement
+  authority confirms a loss (decision D1), so the proxy confirms as its `loss_confirmer` (op-2
+  in a situation's autoplay, a scripted signer), never as itself (op-auto has none), and never
+  as an agent; the note says it is scripted. A silent vehicle no one presumes lost (flagged by
+  hand, `state` silent) is left alone: that one asks a judgment. Under rules before 30 the
+  review has no node items, and the setting does nothing.
 
 So, by construction, the proxy catches a wrong card exactly when it reads it and the C2
 shows something against it: its catch rate on such cards is P(read), a parameter, and on
@@ -83,6 +92,7 @@ import asyncio
 import math
 import random
 import time
+from datetime import datetime, timezone
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -126,9 +136,17 @@ class ProxyParams:
     grant_agents: tuple[str, ...] = ()
     # confirm every unconfirmed rule declaration at each look (see the module docstring)
     confirm_rule_declarations: bool = False
+    # confirm every presumed loss of one of ours at each look, as the loss confirmer (rules 30;
+    # see the module docstring)
+    confirm_node_losses: bool = False
 
     def as_dict(self) -> dict[str, Any]:
-        return {**asdict(self), "grant_agents": list(self.grant_agents), "rulebook": RULEBOOK_VERSION}
+        out = {**asdict(self), "grant_agents": list(self.grant_agents), "rulebook": RULEBOOK_VERSION}
+        if not self.confirm_node_losses:
+            # rules 30's setting, only where a situation sets it: a record without it reads as
+            # it always did (the headless golden and paused digests hold the operator's params)
+            del out["confirm_node_losses"]
+        return out
 
 
 PRESETS: dict[str, dict[str, Any]] = {
@@ -162,6 +180,46 @@ def proxy_params(spec_proxy: dict[str, Any], preset: str | None = None) -> Proxy
         else:
             setattr(p, k, float(v) if isinstance(cur, float) else v)
     return p
+
+
+def presumed_loss(n: dict[str, Any]) -> bool:
+    """A review item (`node_losses`, rules 30) that `confirm_node_losses` confirms: one of ours the
+    engine presumes lost, confirmable. A silent vehicle flagged by hand (`state` silent) asks a
+    judgment and is left alone."""
+    return n.get("state") == "presumed_lost" and "confirm" in (n.get("actions") or []) and n.get("uid") is not None
+
+
+def loss_note(prefix: str, n: dict[str, Any]) -> str:
+    """The note of a scripted loss confirmation: who confirms (`prefix`, saying scripted), that it
+    is a script, and what the review item showed (the silence and the evidence)."""
+    evidence = "; ".join(str(e.get("detail") or e.get("kind") or "") for e in n.get("evidence") or [])
+    who = f"{n.get('callsign') or 'vehicle'} (uid {n.get('uid')})"
+    at = n.get("since_t")
+    if isinstance(at, (int, float)) and not isinstance(at, bool) and at > 1e9:
+        # the bridge's clock, in seconds of the epoch: as a time of day (UTC), to the millisecond
+        at = datetime.fromtimestamp(float(at), timezone.utc).strftime("%H:%M:%S.%f")[:-3] + "Z"
+    since = f"its report at {at}" if at is not None else "it never reported a position"
+    return (
+        f"{prefix}: confirms every presumed loss of one of ours (confirm_node_losses), a script, not a judgment: "
+        f"{who} silent since {since}, presumed lost on: {evidence}"
+    )[:600]
+
+
+def loss_result(out: Any) -> str:
+    """A confirmation's answer in words: confirmed lost, and what it ended."""
+    lost = out.get("lost") if isinstance(out, dict) else None
+    if not isinstance(lost, dict):
+        return str(out)
+    ended = [f"{k} {lost.get(k)}" for k in ("voided", "ended") if lost.get(k)]
+    if lost.get("closed"):
+        ended.append("its owed lost-link values closed")
+    return "confirmed lost" + (f" ({'; '.join(ended)})" if ended else "")
+
+
+def loss_record(n: dict[str, Any], by: str | None, note: str, result: str) -> dict[str, Any]:
+    """A loss confirmation's decision record (`t` is the caller's)."""
+    return {"intent_id": None, "action": "confirm_lost", "by": by, "uid": int(n["uid"]), "callsign": n.get("callsign"),
+            "since": n.get("since"), "reason": note[:400], "result": result}
 
 
 def granted(intent: dict, p: ProxyParams) -> str | None:
@@ -276,7 +334,11 @@ class ProxyOperator(Supervisor):
         operator: str | None = None,
         signers: "EngagementSigners | None" = None,
         note_prefix: str = "proxy",
+        loss_confirmer: str | None = None,
+        loss_note_prefix: str | None = None,
     ):
+        if params.confirm_node_losses and not loss_confirmer:
+            raise ValueError("confirm_node_losses needs a loss_confirmer: an operator with engagement authority (op-2)")
         self.bridge = bridge
         self.p = params
         self.rng = random.Random(seed * 7919 + 17)
@@ -284,8 +346,15 @@ class ProxyOperator(Supervisor):
         self.handled: set[int] = set()
         # rule declarations already confirmed (or tried), by their review id ("D-1")
         self.handled_reviews: set[str] = set()
+        # presumed losses already confirmed (or tried), by (uid, the report it is silent since)
+        self.handled_losses: set[tuple[int, Any]] = set()
         if operator:
             self.operator = operator
+        # who confirms a presumed loss (`confirm_node_losses`): an operator with engagement
+        # authority (decision D1), never the proxy's own id unless it has one; and how its notes
+        # begin
+        self.loss_confirmer = loss_confirmer
+        self.loss_note_prefix = loss_note_prefix or f"{note_prefix} as {loss_confirmer}"
         # engagement nominations go to these scripted signers (two distinct operators with
         # engagement authority, picture tokens); without them the proxy decides only
         # ordinary cards, as before
@@ -298,6 +367,8 @@ class ProxyOperator(Supervisor):
         out = {"name": self.name, "operator": self.operator, "params": self.p.as_dict(), "proxy": True}
         if self.signers is not None:
             out["engagement_signers"] = self.signers.describe()
+        if self.p.confirm_node_losses:
+            out["loss_confirmer"] = self.loss_confirmer
         return out
 
     def _lognormal(self, median: float, sigma: float) -> float:
@@ -336,15 +407,22 @@ class ProxyOperator(Supervisor):
                     continue
                 await self._decide(i, queue)
                 self.handled.add(i["id"])
-            if self.p.confirm_rule_declarations and not stop.is_set():
+            if (self.p.confirm_rule_declarations or self.p.confirm_node_losses) and not stop.is_set():
                 await self._review(stop)
 
     async def _review(self, stop: asyncio.Event) -> None:
-        """`confirm_rule_declarations`: confirm every rule declaration in force that no one has
-        confirmed yet (the review list's `declarations`), each read first. A script, not a
-        judgment: it never revokes, and flags are left alone."""
+        """The review list, read once a look: `confirm_rule_declarations` confirms every rule
+        declaration in force that no one has confirmed yet (its `declarations`), and
+        `confirm_node_losses` every presumed loss of one of ours (its `node_losses`), each read
+        first. A script, not a judgment: it never revokes, and flags are left alone."""
         review = await asyncio.to_thread(self.bridge.try_get, "/api/review")
-        for d in (review or {}).get("declarations", []):
+        if self.p.confirm_rule_declarations:
+            await self._declarations(review or {}, stop)
+        if self.p.confirm_node_losses and not stop.is_set():
+            await self._node_losses(review or {}, stop)
+
+    async def _declarations(self, review: dict[str, Any], stop: asyncio.Event) -> None:
+        for d in review.get("declarations", []):
             key = str(d.get("id"))
             if stop.is_set():
                 return
@@ -369,6 +447,35 @@ class ProxyOperator(Supervisor):
                     "result": result,
                 }
             )
+
+    async def _node_losses(self, review: dict[str, Any], stop: asyncio.Event) -> None:
+        """`confirm_node_losses` (rules 30): confirm each one of ours the engine presumes lost
+        (`node_losses` with `state` presumed_lost), once per silence, as the loss confirmer, after
+        reading it (`read_s`), on the report the item shows it silent since (`since`, engine ms;
+        the engine refuses it if the vehicle was heard since). No agent header: a request as an
+        agent is refused on every node route."""
+        for n in review.get("node_losses", []) or []:
+            if stop.is_set():
+                return
+            if not presumed_loss(n):
+                continue
+            uid = int(n["uid"])
+            key = (uid, n.get("since"))
+            if key in self.handled_losses:
+                continue
+            self.handled_losses.add(key)
+            await asyncio.sleep(self._lognormal(self.p.read_s, self.p.read_sigma))
+            note = loss_note(self.loss_note_prefix, n)
+            try:
+                out = await asyncio.to_thread(
+                    self.bridge.post, f"/api/review/nodes/{uid}/lost", {"since": n.get("since"), "note": note}, self.loss_confirmer
+                )
+                result = loss_result(out)
+            except BridgeError as e:
+                result = f"error {e.status}: {e.body.get('detail') if isinstance(e.body, dict) else e.body}"
+            except OSError as e:
+                result = f"error: {e}"
+            self.decisions.append({"t": time.time(), **loss_record(n, self.loss_confirmer, note, result)})
 
     async def _decide(self, intent: dict, queue: int) -> None:
         p = self.p

@@ -231,3 +231,6 @@ read_s = 3.0
 read_per_check_s = 0.3
 grant_agents = ["agent-watch", "agent-playbook"]
 confirm_rule_declarations = true
+# rules 30: op-2 (scripted, engagement authority) confirms each one of ours the engine presumes
+# lost, read first (eval/proxy.py); nothing under rules 29
+confirm_node_losses = true
