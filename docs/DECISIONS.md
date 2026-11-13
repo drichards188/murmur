@@ -3482,3 +3482,29 @@ changed since (a failing check voids the order, an unverified one goes to a pers
 the order itself. Landed as rules 29 (fbd9ce9, fixtures 4467f38); Saturation's region fleet hands
 over one order per vehicle (71f1299, murmur-xlca), and a situation starts once they are in force
 (efbdf45).
+
+## 2026-11-13: Losing a node: silent, presumed lost, lost (rules 30, murmur-zb1d)
+
+The owner approved docs/NODE-LOSS.md as written, with the default of each of its six decisions.
+One of ours that stops reporting is silent (the engine predicts where it can be), presumed lost on
+evidence (a flag that decides nothing), and lost only when a person confirms it on the silence
+they saw; a report from it undoes the loss before any decision reads that report. A lost vehicle
+leaves the friendly keep-outs, its orders end and its owed values close. The six defaults:
+
+1. Who confirms: an operator with engagement authority, re-entering the credential in a
+   credentials run, because a loss removes a friendly-fire protection; never an agent; on
+   autoplay the confirmer is op-2, not op-auto.
+2. A loss with no presumption is allowed, with a note saying why (a crew's report, a picture from
+   outside).
+3. When nothing is known of a silent vehicle it counts at its top speed (catalog `max_mps`, else
+   its domain's), stricter than today's cruise.
+4. Its lost-link plan is read from the vehicle (as a GCS reads its vehicles' parameters),
+   configured only where the link cannot carry a read, and the source is logged.
+5. Drift is a fixed bound per domain for now; tidewater's current at the last position is a
+   follow-up. `struck` counts as evidence, now that a miss is never reported as one (murmur-aset,
+   84fdaef).
+6. Spent and lost stay separate: a spent platform that goes silent is presumed lost with "spent
+   by its own effect" as evidence.
+
+Written as rules 29; renumbered 30 (scenarios 137 to 143) because the watch handover took 29.
+Built in the spec's eight stages (stage 0 done; murmur-zb1d.1 to .7).

@@ -1,0 +1,221 @@
+# Losing a node: silent, presumed lost, lost
+
+A spec, approved by the owner on 2026-11-13 with section 9's defaults (bd murmur-zb1d, the owner's
+question and agreed direction of 2026-11-06). It adds decision rules 30 (it was written as 29, which
+the watch handover took first). Nothing here is built yet.
+
+## 1. The problem
+
+From the C2's seat a destroyed vehicle and a cut link look the same at first: silence. The
+difference is evidence, and declaring one of ours lost removes a friendly-fire protection, so it is
+a person's decision on evidence, as a hostile declaration is. Today the engine has no such state.
+
+What happens today when a hostile sinks HUNTER 1 (hostile-act-air-to-air, the contacts' seed 127,
+docs/AUTONOMOUS-NODES.md section 8; hostile-act-engagement's default run only takes its propulsion):
+
+- At the impact the bridge logs HUNTER 1's `vehicle.event` `struck` and a one-minute `struck` alert
+  (`crates/murmur-bridge/src/tracks/mod.rs:1042-1061`, `:1066-1121`), straight from the truth side,
+  skipping its link (bd murmur-3nkc); a miss no longer (bd murmur-aset, fixed in 84fdaef). The stand-in goes silent
+  (`crates/murmur-standins/src/damage.rs:10`).
+- Every engagement check then finds its position stale (`crates/murmur-decide/src/engage.rs:3083`):
+  no velocity (`:3112`), no circle (a circle holds only a fresh position, `:3050-3056`), so it counts
+  anywhere its catalog cruise speed reaches since its last report (`:3190-3226`; 6 m/s for
+  `seahunter`, `sim/platforms.toml:794`): 360 m a minute of span, from 0.9 km out, against a keep-out
+  of the effect radius plus 200 m. Only an operator with engagement authority accepting its unknown
+  position for that one engagement clears it (rules 6, `engine.rs:1766`); no script does, and the
+  explanation says "waiting does not clear it" (`keepout.rs:1474`).
+- HUNTER 1's camera held the target: a silent vehicle senses nothing (`tracks/mod.rs:436-450`), so
+  the drone's identity stays at 0.59 of 0.60 and its fix loosens to 149 m of 37.5 m. FURY 1 never
+  passes and the timeline gives up.
+- Its `lost_link` alert stays for good (`decision/alerts.rs:106-121`), queued orders for it wait up
+  to 900 s, and lost-link values an engagement preloaded on it are owed and retried for ever.
+
+## 2. The states
+
+| state | entered when | the engine logs | who decides | evidence shown | leaves when |
+|---|---|---|---|---|---|
+| **reporting** | its position is fresh (`rules.rs:905` `fresh`, the link-aware age limit) | nothing new | | | its position goes stale |
+| **silent** | its position is stale | nothing new: derived from the facts every decision logs | the engine | last report, its predicted region (section 3) | reported again (reporting), or evidence (presumed lost), or a person confirms (lost) |
+| **presumed lost** | silent, and strike evidence within `PRESUME_WINDOW_S` (30 s, GUESS) of its last report, or damage it reported before going silent, or spent by its own effect (section 6) | `node.presumed` {uid, since, evidence (each cited by seq), world_t, its facts}; `node.presumption_cleared` when heard again | the engine, from logged inputs only; a flag, it decides nothing | each item with its time and source, the silence, the region | heard again, or a person confirms |
+| **lost** | an operator confirms (section 5); still silent since exactly the report the review showed (`engage::lost_since_report`, `engage.rs:1141`, reused) | `node.lost` {uid, since, by, session, note, evidence, world_t, vehicle, identity, step_up}; then its consequences (section 4) | a person with engagement authority (decision D1); never an agent; in autoplay a scripted signer | as presumed lost, plus what confirming does | revoked: automatically when it is heard again (`node.loss_revoked` {cause: heard}, logged before any decision reads the report), or by any operator with a note (it only restricts) |
+
+A person may also confirm a silent vehicle with no presumption, saying why (decision D2). Revocation
+checks nothing of the vehicle's identity: any report under the uid restores its protection (fail
+closed); the alert says if the identity differs. Murmur's nodes are uncrewed: a crewed platform would
+need a catalog flag that keeps it in the keep-outs (survivors). None exists.
+
+## 3. Where a silent node can be
+
+The engine replaces the cruise-reach rule for a silent vehicle (`engage.rs:3190-3226`) with a union
+of hypotheses, each a pure function of logged facts and the engine's own record, so replay recomputes
+it. Shapes are discs and corridors (a polyline with a half-width); the keep-out reads the nearest edge
+of any shape, as it reads the disc today.
+
+**Inputs.** Its last position `p0` at `t0`; its velocity and circle at that report; its home; the
+orders that may be running (the order in force whose op was active at `t0`, and any whose start went
+out unconfirmed, rules 5); its lost-link plan (the confirmed preload of an engagement holding it,
+`LostLinkPreload`, `engage.rs:1481`; else its own GCS failsafe action and timer, a new vehicle fact,
+section 7); its `damage` fact (`world.rs:98`); presumption evidence.
+
+| hypothesis | applies | region |
+|---|---|---|
+| **C**, it runs its order (the link may be cut one way) | an order may be running, or it was circling or still | patrol: the route's corridor (it loops, so no along-track bound); transit or task path: the rest of the route from `p0`, then the end point's hold; orbit or loiter (its circle at `t0`): the disc, for the whole span (today `CIRCLE_CARRY_S` applies to fresh vehicles only); hold: the hold point's disc; rtl: the corridor `p0` to home, then home's hold; no order: its circle, or a hold at `p0` if it was under `holding_speed_mps` (1.5) |
+| **L**, its lost-link failsafe fired (it lost us too) | the plan is known and acts | rtl: the convex hull of C and home (a sound bound for "anywhere on C, then straight home", ignoring the timer); hold, loiter, brake, land, depth hold: C's shapes; surface or disarm on the water: C then drift |
+| **D**, it may be adrift or falling | presumed lost, or a `mobility` damage report (then D alone: it cannot run its order) | surface: a disc from `p0` growing at 2.5 m/s (the Gate's spring current, GUESS); subsurface 1.0 m/s; ground: 10 m; fixed wing: its glide footprint, altitude x 10 (GUESS); rotary: altitude x 1 (GUESS) |
+| **F**, nothing about its plan is known | no order, circle or stillness to go on, or no position history | anywhere within its top speed since `t0`: catalog `max_mps`, else the domain's (`engage.rs:3298`: air 100, ground 30, surface 25, subsurface 15 m/s) (decision D3) |
+
+**Figures.** Corridor half-width `PATH_TOLERANCE_M` 50 m (the `CIRCLE_SLACK_M` figure, `engage.rs:2890`:
+waypoint radius, GNSS 2 sigma, cross-track error; GUESS) plus where in its report interval it was
+(last speed x interval / 2); hold discs 10 m plus drift on the water. Corridors and holds do not grow
+with time: no one can retask a silent vehicle. Every shape is capped by the reach disc `p0` + top
+speed x span (the larger of the two distances counts, which never overstates the clearance), and past
+the endurance its last battery report leaves, D is added. Constants in code, as `CIRCLE_SLACK_M` and
+`LINE_OF_FIRE_M` are: no policy schema change.
+
+**Keep-outs and the explanation.** `friendly_standing` returns the nearest shape and names its
+hypothesis in `how`; `FriendlyKind` gains `route`, `failsafe_home`, `drift` and `top_speed` beside
+today's kinds. The explanation (murmur-12e, `keepout.rs:1384-1470`) says which hypothesis blocks ("if
+it lost us too, its way home passes 120 m from the effect point"), says that waiting clears nothing
+for C and L and only grows D and F, and adds "or an operator confirming it lost (Review)" to `other`.
+The rules 6 acceptance for one engagement stays as it is.
+
+**HUNTER 1 again.** Its patrol leg runs north from its home at [-122.4850, 37.8130], 0.89 km from the
+drone's station: C and L are the leg itself, about 450 m clear of the keep-out for as long as it is
+silent. A comms loss would never block. Sunk (presumed lost: an act against it observed), D at
+2.5 m/s reaches the keep-out about three minutes after its last report, so the timeline's nomination
+at 3:20 would pass or fail on that margin; a confirmed loss clears it either way. Custody is the
+second half: another sensor must take the drone (section 5).
+
+## 4. What "lost" changes, reader by reader
+
+| reader | today | lost | reported again |
+|---|---|---|---|
+| friendly keep-out, every engagement check (`engage.rs:2901`; nomination `:2532`, plans `:4527`, picture `:4946`, release `:5412`) | counted, cruise reach | left out; the pass detail lists it ("confirmed lost by op-2 at ...") | counted from its fresh report at once |
+| line of fire, rules 26 (`engage.rs:5461`) | via the keep-out | left out | counted |
+| keep-out explanation (`keepout.rs:653-669`, `:873`) | an item | no item | an item |
+| picture tokens (`engage.rs:804`, `:4784`) | carry rules 6 acceptances | also carry the lost set; a signature on a token whose set differs is refused | the same refusal |
+| readiness (`rules.rs:984`) | spent refuses every order (`:990-1007`) | refuses every order, hold and rtl included: "confirmed lost" | takes orders |
+| queue, rules 5 (`queue.rs:251`) | waits up to `expire_s` | every pending or queued intent naming it is voided (`Engine::void`, `engine.rs:5181`, reason "vehicle confirmed lost"); a dispatched order's op on it ends `lost`, the intent ends when no vehicle is left on it | nothing comes back: new orders |
+| engagements | link gap stops one within `link_gap_s` (`engage.rs:5083`), fallback from its preload | refused while one holds the platform (as a write-off, `engine.rs:2601`); a released munition flies on (rules 20) | unchanged |
+| owed lost-link values, rules 6, 7, 12 (`engine.rs:2535`, `:2582`) | retried for ever, `restore_pending` alert | closed: `restore.closed`, a new closure `lost` (`audit.rs:1107`) | owed back again, a mission waits for the restore (as an un-spend, `engine.rs:2718`) |
+| spent marks, rules 12 and 15 (`replay.rs:1277`) | separate | unchanged and separate (D6) | unchanged |
+| rounds, rules 24 | ledger | unchanged | unchanged |
+| minefield check's "ours", rules 27 (`mines.rs:692-731`) | its position, home and orders | left out, and out of `orders_in_play` | counted |
+| identify, rules 21 to 23 | runs on | its identify ends with its op (`lost`); the track needs another sensor | |
+| assessment coverage (`engage.rs:5714`) | fresh positions only | unchanged | unchanged |
+| domain rule, geofence, planner, space tasks | read an intent's vehicles; collect and cover name none (`sim/policy.toml:43`) | nothing to read | |
+| carry over a restart, rules 12 and 15 (`replay.rs:1203`) | spent, owed, rounds, fields | `carried_from.lost`, the same vehicle only (platform, callsign, sysid: `VehicleIdentity::same_vehicle`, `engage.rs:1442`) | revoked at its first report in the new run |
+| bridge alerts (`decision/alerts.rs`) | `lost_link` for good | `lost_link`, `restore_pending` and `may_be_running` close; a `node_lost` info alert | `node_reported_again`, high |
+| bridge task layer, restore jobs (`decision/engage.rs:1290-1320`) | retry | stop | resume |
+| display estimate (`estimate.rs`) | display only | unchanged; the vehicle shows LOST | |
+| truth side | | never reads it | |
+
+## 5. Interfaces
+
+| what | shape |
+|---|---|
+| review items | `GET /api/review` (`decision/ident.rs:209`) gains `node_losses` (presumed lost, and silent vehicles anyone flagged by hand) and `nodes_lost` (confirmed), each with uid, callsign, `since`, silent seconds, evidence, region, `actions` |
+| confirm | `POST /api/review/nodes/{uid}/lost` {since, note, password or passkey}: 403 without engagement authority and 409 when the rules refuse (not silent since `since`, an engagement holds it), both before any credential is asked for, then 401 without a valid step-up in a credentials run, as `/api/restores/unspend` (`api.rs:605-635`). Hard-coded like the un-spend's step-up, not an `[approval] step_up_acts` word: no policy schema change |
+| revoke | `POST /api/review/nodes/{uid}/revoke` {note}: any operator, no step-up |
+| console | ReviewSection: a Node losses group, one card each: the evidence with times, the region on the map, what confirming does (leaves keep-outs, ends its orders, closes owed values, undone if it reports), a note, Confirm lost (step-up). Map and VehicleDetails: SILENT (the region drawn as the engine counts it), PRESUMED LOST, LOST |
+| agents (MCP) | read only: `get_fleet` and `get_vehicle` carry `standing` (omitted while reporting, so recorded reads do not change), `get_inbox` carries the review items. No tool confirms or revokes (`mcp/tests.rs:345` extended); the instructions list it with the other human acts (`mcp/mod.rs:97`) |
+| autoplay | `[autoplay] confirm_node_losses = true` beside `confirm_rule_declarations` (`eval/proxy.py:44-48`, `:339-370`): reads each presumed loss (`read_s`), confirms it, the note saying scripted. With D1 the confirmer is op-2, a scripted signer with engagement authority; op-auto has none (`eval/situation.py:66-67`) |
+| custody | no `track` order on a contact exists (`Task::Track` points an antenna tracker at one of ours, `intent.rs:116`): custody is an `identify` order (rules 21 to 23, any live track from rules 22). The playbook gains a play: when the vehicle that held a declared or suspect track goes silent, propose an identify by the nearest capable sensor; the watch officer wakes on `node.presumed` |
+
+## 6. Evidence
+
+| signal | what the C2 gets today | honest? | used |
+|---|---|---|---|
+| silence | its reports stop | yes, and ambiguous | the silent state only, never a presumption |
+| `ident.act` against it (`Against::Vehicle`, `ident.rs:205`) | an observed act naming it as the victim | the act is observed; its victim is the truth's at the launch (by-construction shortcut, AUTONOMOUS-NODES 2.7 item 2) | evidence, the shortcut stated |
+| its `struck` report | at the truth tick of the impact, off its link (3nkc); a hit only since 84fdaef (aset) | no, until 3nkc is fixed | evidence now that aset is fixed (decision D5) |
+| its damage report (`DAMAGE mobility|firepower` STATUSTEXT, rules 25) | over its own link, repeated every 30 s | yes | evidence, and D alone when `mobility` |
+| spent by its own effect (`restore.closed` expended) | the engine's record | yes | evidence |
+| a weapon track aimed at it (`tracks/weapons.rs`) | display only, never a decision input | yes | not used: the act covers the observed launches |
+| another sensor seeing the wreck or the blast | nothing (bd murmur-s7hs) | | a follow-up |
+| SITL vehicles | ignore damage: struck, they keep reporting (AUTONOMOUS-NODES 2.6) | | never presumed lost until murmur-y85j stage 8 |
+
+murmur-aset is fixed (84fdaef, 2026-11-07): the confirmation rests on what the person is shown, and
+a miss shown as "struck" was false evidence. Leave 3nkc: once fixed, a destroyed
+vehicle sends no struck report at all, and the observed act remains the evidence, which this spec
+already relies on.
+
+## 7. Rules 30
+
+- **Gate**: `pub const NODE_LOSS_SINCE: u32 = 30;` in `rules.rs` (beside `:292`), `RULES_VERSION =
+  NODE_LOSS_SINCE`, read through `RulesConfig::node_loss()`, never a literal.
+- **Decisions that change**: a silent vehicle's region (section 3); a lost vehicle leaves the friendly
+  keep-out, the line of fire and the minefield check; readiness refuses a lost vehicle; pending,
+  queued and dispatched orders on it end at the confirmation; its owed values close; picture tokens
+  carry the lost set.
+- **New inputs**: the vehicle fact `lost_link` {action, timer_s, source: read or configured} (the
+  bridge reads the firmware's failsafe parameters at first contact and after a reboot, with the job
+  `decision/preload.rs` already runs; configured from `sim/links.toml` where the link cannot carry a
+  read, as `estimate.rs` does); `WorldSnapshot.lost`, engine-filled. Both dropped before logging
+  under older rules, as the damage fact is.
+- **New events**: `node.presumed`, `node.presumption_cleared`, `node.lost`, `node.loss_revoked`;
+  `restore.closed` closure `lost`; `carried_from.lost`. `Engine::step_nodes` runs on the bridge's
+  tick beside `step_lays` (`engine.rs:6149`).
+- **Replay** recomputes each region, each presumption (evidence in the log within the window, the
+  vehicle silent on its logged facts) and each confirmation (authority, not an agent, the step-up in a
+  credentials run, silent since exactly `since`, no engagement holding it); flags a decision that
+  counts a lost vehicle, one that leaves out a vehicle heard after its loss without a revocation
+  logged first, an order dispatched to a lost vehicle, and a carried mark that its earlier log does not
+  owe.
+- **Scenarios** (`sim/scenarios/engage/`, `tests/rules30.rs`): 137 a silent patroller bounded by its
+  route (refused under rules 29, passes); 138 its way home crosses the keep-out (refused, the
+  explanation says why); 139 struck and silent: presumed lost, D grows until it blocks; 140 confirmed
+  lost: the nomination passes, its queued order is voided, its owed values close; 141 it reports again:
+  revoked, it blocks, the picture stops an approved engagement; 142 carried over a restart, and not to
+  another vehicle under the uid; 143 nothing known: top speed. Runner keys `confirm_lost`,
+  `expect_presumed`, `expect_lost`, `expect_revoked`.
+- **Tampers**: `lost_by_agent` (a confirmation credited to an agent's session), `hide_loss_revoked`
+  (the revocation cut), `redate_loss` (the confirmation's `since` moved to a later report).
+- **Digests**: the golden and paused digests (`eval/headless/tests/test_episode.py`,
+  `test_charged_clock.py`) are re-taken for `rules_version` 30 for 29, checking that with that number
+  put back each gives the digest before it. No new MCP tool, and `standing` is omitted while reporting,
+  so tool lists and recorded reads do not move.
+
+## 8. Stages
+
+| stage | size | files | the claim, and what checks it | after | parallel |
+|---|---|---|---|---|---|
+| 0. Struck only on a hit (murmur-aset): done, 84fdaef | S | `murmur-bridge/src/tracks/mod.rs`, its truth types | "a miss is never reported as struck": one unit test | | yes |
+| 1. Seed | S | `rules.rs` (the gate), `world.rs` (`lost_link`, `WorldSnapshot.lost`) | none: types only | | first |
+| 2. Prediction | L | `engage.rs` `friendly_standing` only, a new `silent.rs`, `keepout.rs` | "a silent vehicle's true position stays inside its region": headless, the 22-type fleet's links cut for 10 minutes with world currents on, every second checked against the stand-ins' truth (their failsafes as the firmware runs them, `standins/src/failsafe.rs`); scenarios 137, 138, 143 | 1 | with 3, 4 |
+| 3. States and consequences | L | `engine.rs`, `replay.rs`, `audit.rs`, `rules.rs` readiness, `mines.rs`, `queue.rs`; in `engage.rs` only the keep-out loop and the token check | "only a person confirms, on the silence they saw; a report undoes it before any decision; it carries to the same vehicle only": scenarios 139 to 142, the three tampers; rules 29 logs replay as before (the existing `tests/versions.rs`) | 1 | with 2, 4 |
+| 4. The lost-link fact | M | `decision/preload.rs`, `decision/snapshot.rs`, `vehicle.rs` | "the plan read is the vehicle's": one stand-in test per firmware | 1 | with 2, 3 |
+| 5. Bridge, console, MCP | M | `api.rs`, `decision/{ident,engage,alerts}.rs`, `tracks/mod.rs` routes, `mcp/`, `web/src/{ReviewSection,VehicleDetails,MapView}.tsx` | "agents cannot confirm": the MCP no-such-tool test, REST 403 for an agent | 3 | |
+| 6. Situations and custody | S | `eval/proxy.py`, `eval/situation.py`, `agents/playbook/plays/isr.py`, `agents/watch/wake.py` | none new: re-measure hostile-act-air-to-air's default run (seed 127) on autoplay and report whether the chain completes | 5, 0 | |
+| 7. Notebook and digests | S | CLAUDE.md (rules 30), `crates/murmur-decide/README.md`, DECISIONS.md, the digests | | all | |
+
+Stages 0, 2, 3 and 4 run as parallel agents in their own worktrees once stage 1 lands: their files are
+disjoint but for `engage.rs`, where 2 owns `friendly_standing` and 3 touches only the keep-out loop and
+the token check.
+
+## 9. Decisions for the owner
+
+Approved 2026-11-13: the default of each of the six below.
+
+1. **Who confirms a loss.** Default: an operator with engagement authority, re-entering the credential
+   in a credentials run (as an un-spend), because it removes a friendly-fire protection from every
+   engagement. Then autoplay's confirmer is op-2, not op-auto. The alternative is any operator, as a
+   write-off.
+2. **A loss with no presumption.** Default: allowed, with a note saying why (a crew's report, a
+   picture from outside); the evidence reads "the operator's own". The alternative allows a
+   confirmation only on the engine's presumption.
+3. **The speed when nothing is known.** Default: top speed (catalog `max_mps`, else the domain's), as
+   the direction says. It is stricter than today's cruise speed, and rarely reached, since an order, a
+   circle or stillness gives C. The alternative keeps cruise.
+4. **Where the lost-link plan comes from.** Default: read from the vehicle (a GCS reads its vehicles'
+   parameters), configured only where the link cannot carry a read, the source logged. The alternative
+   is configured everywhere, as the display estimate does: cheaper, but it trusts that the vehicle is
+   set up as configured.
+5. **Drift, and the struck report.** Default: a fixed bound per domain in code now, and tidewater's
+   current sampled at the last position and logged per decision as a follow-up; fix murmur-aset before
+   stage 3 and count `struck` as evidence only after it. The alternatives: sampled currents from the
+   start (honest, larger), and counting `struck` as it is.
+6. **Spent and lost.** Default: kept separate. Spent governs tasking after a platform's own effect;
+   a spent platform that is silent is presumed lost with "spent by its own effect" as evidence. The
+   alternative makes spent imply lost, which would drop an un-spendable platform from the keep-outs
+   without a person.
