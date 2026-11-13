@@ -22,56 +22,72 @@
 #   it. Spacing: an X10's camera finds a small drone at about 1.5 km (the catalog's `range_m`;
 #   its `physical_reach_m`, 15.8 km against the reference 3 m aircraft, scaled by a small drone's
 #   0.35 m: about 1.8 km), so neighbouring rings a few kilometres apart overlap as pickets do.
-#   Inside a ring, 100 members on a 1.3 to 1.8 km radius fly 80 to 115 m apart: one order per
-#   swarm puts all of them on one circle, and the 39 minutes of endurance and the policy's 20 %
-#   reserve keep the circle within a few kilometres of the launch field (transit, 15 minutes on
-#   task and the way home: rules' `reserve`, at most 87 % of what it allows here; the packed
-#   layout's reached 98 %). Copters start on the ground: each launches from a flat field near its
-#   ring (a block 6 or 8 m apart), a known one (an airfield, a park, a lookout's lot), on land at
-#   the ground's height on tidewater's terrain (eval/tests/test_swarm.py checks every member).
-#   Each flies from 100 m, or higher where its ring passes over high ground (150 to 350 m: Bodega
-#   Head, Hawk Hill's slopes at the Gate's mouth, the hills above Sausalito, Pacific Heights, Yerba
-#   Buena Island, the foothills above Montara and El Granada, New Monterey), at least 25 m over
-#   the highest ground under its ring and its ways out and back on that terrain: the task layer
-#   stacks the members upward from there.
+#   Each member has a slot of its own (`slots`): the 100 slots evenly round the circle 150 m
+#   inside the ring, 72 to 104 m apart, each member orbiting its own at 150 m, so the ring's
+#   orbits fill the band out to its radius; and the 39 minutes of endurance and the policy's 20 %
+#   reserve keep the ring within a few kilometres of the launch field (transit, 15 minutes on
+#   task and the way home: rules' `reserve`). The launch fields are each member's home, where a
+#   lost link's failsafe brings it: a flat field near its ring (a block 6 or 8 m apart), a known
+#   one (an airfield, a park, a lookout's lot), on land at the ground's height on tidewater's
+#   terrain (eval/tests/test_swarm.py checks every member). Each ring's floor is 100 m, or higher
+#   where it passes over high ground (150 to 350 m: Bodega Head, Hawk Hill's slopes at the Gate's
+#   mouth, the hills above Sausalito, Pacific Heights, Yerba Buena Island, the foothills above
+#   Montara and El Granada, New Monterey), at least 25 m over the highest ground under each
+#   member's own orbit and its way home on that terrain; its members fly five levels 15 m apart
+#   from it, slot k at level k mod 5, so orbits that overlap (a slot's next four on each side)
+#   never share a height. Where two rings cross (PICKET-14 and -15 at Moss Landing) the second's
+#   floor clears the first's top level.
 # - SEARCH-1 to -10, 1,000 Puma 3 AE-class fixed wings (EO/IR, LOS radio: 15 km clean, 25 km at
 #   most; endurance_h 2.5). Lanes over the sea within 15 km of a station from end to end, the
 #   approaches a threat from the sea would take: off Bodega Head, off Point Reyes (the northern
 #   traffic lane), west and east of the Farallones (the western lane), off the Golden Gate, the
 #   southern approach off Pacifica and Montara, off Pescadero and Pigeon Point, and three over
 #   Monterey Bay. A Puma's camera finds a 5 m boat at about 14 km (`physical_reach_m` surface,
-#   14.5 km against the reference 5 m surface contact), so lanes 15 to 25 km apart overlap; along
-#   a lane of 13 to 19 km 100 members fly 130 to 190 m apart (one patrol per swarm: every member
-#   on the same lane). They start aloft along their lanes, 700 to 1,000 m up (a stand-in fixed wing
-#   glides until its first order), and fly them from 300 m: most stations stand on headlands that
-#   see the sea, where the packed layout's one station at Crissy Field needed 800 m.
+#   14.5 km against the reference 5 m surface contact), so lanes 15 to 25 km apart overlap. Each
+#   member has a stretch of its own (`lanes`): the group's lane cut into 10 stretches along it and
+#   10 lanes across it 60 m apart (600 m in all), member k patrolling stretch k // 10, lane k % 10,
+#   less a tenth of the stretch at each end, at one of four levels 30 m apart from 300 m (lane k %
+#   10 at level (k % 10) mod 4), so side by side lanes never share a height. Each starts on its
+#   stretch's first point at its level (sim/swarm.py `start_at`); its home is its place on the
+#   group's line 700 to 1,000 m up, which a stand-in plane keeps on the sea's surface below it.
+#   300 m and up: most stations stand on headlands that see the sea, where the packed layout's one
+#   station at Crissy Field needed 800 m; every stretch is within 15 km of a station.
 # - RELAY-1 to -3, 300 more Pumas along a chain from Point Reyes to the Farallones (the island
-#   station's back-up link to the mainland), each swarm a third of it, flown back and forth (a
-#   patrol). A relay in role and place only: the link emulator links every vehicle to the best
-#   station directly and carries no vehicle's traffic through another, so the chain's middle sits
-#   16.5 km from either end's station, a little past the LOS radio's clean 15 km.
+#   station's back-up link to the mainland), each swarm a third of it, flown back and forth in the
+#   same stretches (`lanes`). A relay in role and place only: the link emulator links every
+#   vehicle to the best station directly and carries no vehicle's traffic through another, so the
+#   chain's middle sits 16.5 km from either end's station, a little past the LOS radio's clean
+#   15 km.
 # - SURFACE-1 and -2, 200 Saildrone Explorer-class USVs (wind, 2 m/s, SATCOM: no station). Ocean
 #   pickets far out: a ring on the western traffic lane in the middle of the Gulf of the
 #   Farallones, and a ring on Cordell Bank, the northern lane's offshore approach. Each ring 5 km
 #   in radius (100 members some 310 m apart; a Saildrone's camera finds a 5 m boat at about 6 km).
-#   They start on their rings, each at its own place round it, so they are on station at once.
+#   Each holds its own place round its ring (a hold: station keeping where it spawns).
 # - SURFACE-3 to -5, 300 Corsair-class USVs (EO/IR 8 km, AIS and ESM, 8 m/s, SATCOM). SURFACE-3
 #   rings the San Francisco Bar, where the main ship channel crosses it (2 km radius); SURFACE-4
-#   the central bay between Alcatraz, Angel Island and Treasure Island (1.5 km); SURFACE-5 flies a
-#   lane across Monterey Bay from off Santa Cruz to off Moss Landing. They start on their rings or
-#   along their lane.
-# - UNDERSEA-1, 100 REMUS 600-class AUVs (active sonar, 2 m/s, acoustic modem): a ring of 2 km
-#   radius over the head of the Monterey Canyon off Moss Landing, where MBARI runs its own, 1.3 to
-#   5.3 km from the Moss Landing station (the acoustic link's propagation counts from it: under
-#   4 s). They start at the surface on their ring (members some 125 m apart; the sonar's reach,
-#   about 270 m, overlaps).
+#   the central bay between Alcatraz, Angel Island and Treasure Island (1.5 km); SURFACE-5 a lane
+#   across Monterey Bay from off Santa Cruz to off Moss Landing. Each holds its own place on its
+#   ring (94 to 126 m apart: too close for boats' own orbits, which share the surface) or along
+#   its lane (200 m apart).
+# - UNDERSEA-1, 100 REMUS 600-class AUVs (active sonar, 2 m/s, acoustic modem): a ring of 1.5 km
+#   radius over the head of the Monterey Canyon 3.5 km west of Moss Landing, 3.8 to 6.8 km from
+#   the Moss Landing station (the acoustic link's propagation counts from it: under 5 s). Each
+#   orbits its own slot (`slots`, 50 m round it, the slots some 91 m apart) at its 40 m depth,
+#   with 50 m of water or more under every one at the window's lowest tide; the 2 km ring east of
+#   it, which one order to all of them flew, had half its members over the shelf in 13 to 40 m.
+#   They start at the surface on their slots, where the modem gives way to the mast's radio and
+#   the order comes in before they dive (the sonar's reach, about 270 m, overlaps).
 # - RESERVE, the two armed MQ-9Bs (mq9b_armed), loitering at 7,600 m over the gulf west of the
 #   Gate, 5 km or more from where the armed drone holds (sim/situations/swarm-saturation.toml), so
-#   their way to it crosses no no-go area. No script orders them; every task for them waits for a
-#   person. SATCOM: no station.
+#   their way to it crosses no no-go area. No starting task: no script orders them, and every task
+#   for them waits for a person. SATCOM: no station.
 #
-# Opening orders (one per swarm but the reserve, to all its members as one intent):
-# sim/situations/swarm-saturation.toml.
+# Starting tasks (decision rules 29, bd murmur-by3s; one order per vehicle, each with its own
+# geometry, bd murmur-xlca): each group's `start` is its area as Saturation's group orders had it
+# (a picket ring, a lane, the relay chain, the AUVs' ring), shared out so that every member has a
+# station of its own (`slots`, `lanes`; sim/swarm.py "starting tasks"), or a hold where each
+# boat spawns. Every vehicle starts on its station and the bridge hands its order over at the
+# start. The groups are for display only (the Swarms panel, the fleet list, the Inbox's fold).
 title = "Saturation: 3,602 stand-ins in 37 swarms from Bodega Bay to Monterey Bay"
 
 # ---------------------------------------------------------------- air pickets (X10, rings)
@@ -94,6 +110,8 @@ center = { lat = 38.31430, lon = -123.03720 }
 columns = 10
 spacing_m = 8
 alt_m = 4
+start = { task = "orbit", center = [-123.0480, 38.3080], radius_m = 1800 }   # picket ring over Bodega Harbor
+slots = { radius_m = 150, levels = 5, level_step_m = 15 }
 
 [[swarm]]
 id = "PICKET-2"
@@ -109,6 +127,8 @@ center = { lat = 37.87435, lon = -122.45610 }
 columns = 10
 spacing_m = 6
 alt_m = 4
+start = { task = "orbit", center = [-122.4750, 37.8620], radius_m = 1500 }   # picket ring over Richardson Bay, Sausalito and Belvedere
+slots = { radius_m = 150, levels = 5, level_step_m = 15 }
 
 [[swarm]]
 id = "PICKET-3"
@@ -124,6 +144,8 @@ center = { lat = 37.83290, lon = -122.48100 }
 columns = 10
 spacing_m = 6
 alt_m = 77
+start = { task = "orbit", center = [-122.5000, 37.8150], radius_m = 1300 }   # picket ring over the Golden Gate's mouth, west of the bridge
+slots = { radius_m = 150, levels = 5, level_step_m = 15 }
 
 [[swarm]]
 id = "PICKET-4"
@@ -139,6 +161,8 @@ center = { lat = 37.80400, lon = -122.46200 }
 columns = 10
 spacing_m = 8
 alt_m = 5
+start = { task = "orbit", center = [-122.4600, 37.8150], radius_m = 1300 }   # picket ring over the strait east of the bridge
+slots = { radius_m = 150, levels = 5, level_step_m = 15 }
 
 [[swarm]]
 id = "PICKET-5"
@@ -154,6 +178,8 @@ center = { lat = 37.80600, lon = -122.44000 }
 columns = 10
 spacing_m = 8
 alt_m = 5
+start = { task = "orbit", center = [-122.4300, 37.8090], radius_m = 1300 }   # picket ring over the city front
+slots = { radius_m = 150, levels = 5, level_step_m = 15 }
 
 [[swarm]]
 id = "PICKET-6"
@@ -169,6 +195,8 @@ center = { lat = 37.82520, lon = -122.37050 }
 columns = 10
 spacing_m = 8
 alt_m = 4
+start = { task = "orbit", center = [-122.3800, 37.8090], radius_m = 1800 }   # picket ring over the Bay Bridge and Treasure Island
+slots = { radius_m = 150, levels = 5, level_step_m = 15 }
 
 [[swarm]]
 id = "PICKET-7"
@@ -184,6 +212,8 @@ center = { lat = 37.78600, lon = -122.31800 }
 columns = 10
 spacing_m = 8
 alt_m = 5.5
+start = { task = "orbit", center = [-122.3350, 37.8000], radius_m = 1800 }   # picket ring over the Port of Oakland
+slots = { radius_m = 150, levels = 5, level_step_m = 15 }
 
 [[swarm]]
 id = "PICKET-8"
@@ -199,6 +229,8 @@ center = { lat = 37.78180, lon = -122.24900 }
 columns = 10
 spacing_m = 8
 alt_m = 5
+start = { task = "orbit", center = [-122.2550, 37.7795], radius_m = 1800 }   # picket ring over Coast Guard Island and the Oakland Estuary
+slots = { radius_m = 150, levels = 5, level_step_m = 15 }
 
 [[swarm]]
 id = "PICKET-9"
@@ -214,6 +246,8 @@ center = { lat = 37.51700, lon = -122.50400 }
 columns = 10
 spacing_m = 8
 alt_m = 17.5
+start = { task = "orbit", center = [-122.5150, 37.5250], radius_m = 1500 }   # picket ring over Montara and Moss Beach
+slots = { radius_m = 150, levels = 5, level_step_m = 15 }
 
 [[swarm]]
 id = "PICKET-10"
@@ -229,6 +263,8 @@ center = { lat = 37.51340, lon = -122.50120 }
 columns = 10
 spacing_m = 8
 alt_m = 13.5
+start = { task = "orbit", center = [-122.5080, 37.4960], radius_m = 1500 }   # picket ring over Pillar Point
+slots = { radius_m = 150, levels = 5, level_step_m = 15 }
 
 [[swarm]]
 id = "PICKET-11"
@@ -244,6 +280,8 @@ center = { lat = 37.50980, lon = -122.49840 }
 columns = 10
 spacing_m = 8
 alt_m = 10.5
+start = { task = "orbit", center = [-122.4750, 37.5000], radius_m = 1400 }   # picket ring over Pillar Point Harbor and El Granada
+slots = { radius_m = 150, levels = 5, level_step_m = 15 }
 
 [[swarm]]
 id = "PICKET-12"
@@ -259,6 +297,8 @@ center = { lat = 36.95470, lon = -122.02700 }
 columns = 10
 spacing_m = 8
 alt_m = 13
+start = { task = "orbit", center = [-122.0050, 36.9600], radius_m = 1800 }   # picket ring over Santa Cruz harbor and the Boardwalk
+slots = { radius_m = 150, levels = 5, level_step_m = 15 }
 
 [[swarm]]
 id = "PICKET-13"
@@ -274,6 +314,8 @@ center = { lat = 36.95490, lon = -122.02840 }
 columns = 10
 spacing_m = 8
 alt_m = 13.5
+start = { task = "orbit", center = [-122.0480, 36.9530], radius_m = 1800 }   # picket ring over West Cliff and Natural Bridges
+slots = { radius_m = 150, levels = 5, level_step_m = 15 }
 
 [[swarm]]
 id = "PICKET-14"
@@ -289,6 +331,8 @@ center = { lat = 36.80450, lon = -121.77900 }
 columns = 10
 spacing_m = 8
 alt_m = 8.5
+start = { task = "orbit", center = [-121.7800, 36.8080], radius_m = 1500 }   # picket ring over the Moss Landing power plant
+slots = { radius_m = 150, levels = 5, level_step_m = 15 }
 
 [[swarm]]
 id = "PICKET-15"
@@ -298,12 +342,14 @@ color = "#7fb8ff"
 platform = "x10"
 count = 100
 sim = "standin"
-cruise_alt_m = 100
+cruise_alt_m = 180                   # above PICKET-14's levels (100 to 160 m): the two rings cross
 layout = "block"                     # the plant's grounds, west part (8.3 to 9.0 m)
 center = { lat = 36.80450, lon = -121.78100 }
 columns = 10
 spacing_m = 8
 alt_m = 9
+start = { task = "orbit", center = [-121.8000, 36.7950], radius_m = 1500 }   # picket ring over Moss Landing harbor and MBARI
+slots = { radius_m = 150, levels = 5, level_step_m = 15 }
 
 [[swarm]]
 id = "PICKET-16"
@@ -319,6 +365,8 @@ center = { lat = 36.63000, lon = -121.93000 }
 columns = 10
 spacing_m = 8
 alt_m = 36
+start = { task = "orbit", center = [-121.9030, 36.6170], radius_m = 1500 }   # picket ring over Monterey harbor and Cannery Row
+slots = { radius_m = 150, levels = 5, level_step_m = 15 }
 
 [[swarm]]
 id = "PICKET-17"
@@ -334,6 +382,8 @@ center = { lat = 36.63220, lon = -121.93210 }
 columns = 10
 spacing_m = 8
 alt_m = 24
+start = { task = "orbit", center = [-121.9450, 36.6250], radius_m = 1500 }   # picket ring over Pacific Grove and Point Pinos
+slots = { radius_m = 150, levels = 5, level_step_m = 15 }
 
 # ---------------------------------------------------------------- search (Puma, lanes over the sea)
 # Each swarm starts aloft along its lane, 700 to 1,000 m up over the sea, and flies it from 300 m
@@ -351,6 +401,8 @@ layout = "line"
 from = { lat = 38.340, lon = -123.160 }
 to = { lat = 38.200, lon = -123.160 }
 alt_m = [700, 1000]
+start = { task = "patrol", route = [[-123.160, 38.340], [-123.160, 38.200]] }   # search lane off Bodega Head
+lanes = { rows = 10, columns = 10, width_m = 600, levels = 4, level_step_m = 30 }
 
 [[swarm]]
 id = "SEARCH-2"
@@ -365,6 +417,8 @@ layout = "line"
 from = { lat = 38.100, lon = -123.130 }
 to = { lat = 37.930, lon = -123.130 }
 alt_m = [700, 1000]
+start = { task = "patrol", route = [[-123.130, 38.100], [-123.130, 37.930]] }   # search lane off Point Reyes, on the northern traffic lane
+lanes = { rows = 10, columns = 10, width_m = 600, levels = 4, level_step_m = 30 }
 
 [[swarm]]
 id = "SEARCH-3"
@@ -379,6 +433,8 @@ layout = "line"
 from = { lat = 37.780, lon = -123.130 }
 to = { lat = 37.620, lon = -123.130 }
 alt_m = [700, 1000]
+start = { task = "patrol", route = [[-123.130, 37.780], [-123.130, 37.620]] }   # search lane west of the Farallones
+lanes = { rows = 10, columns = 10, width_m = 600, levels = 4, level_step_m = 30 }
 
 [[swarm]]
 id = "SEARCH-4"
@@ -393,6 +449,8 @@ layout = "line"
 from = { lat = 37.780, lon = -122.880 }
 to = { lat = 37.620, lon = -122.880 }
 alt_m = [700, 1000]
+start = { task = "patrol", route = [[-122.880, 37.780], [-122.880, 37.620]] }   # search lane east of the Farallones, across the western traffic lane
+lanes = { rows = 10, columns = 10, width_m = 600, levels = 4, level_step_m = 30 }
 
 [[swarm]]
 id = "SEARCH-5"
@@ -407,6 +465,8 @@ layout = "line"
 from = { lat = 37.860, lon = -122.625 }
 to = { lat = 37.750, lon = -122.625 }
 alt_m = [700, 1000]
+start = { task = "patrol", route = [[-122.625, 37.860], [-122.625, 37.750]] }   # search lane off the Golden Gate
+lanes = { rows = 10, columns = 10, width_m = 600, levels = 4, level_step_m = 30 }
 
 [[swarm]]
 id = "SEARCH-6"
@@ -421,6 +481,8 @@ layout = "line"
 from = { lat = 37.600, lon = -122.600 }
 to = { lat = 37.450, lon = -122.600 }
 alt_m = [700, 1000]
+start = { task = "patrol", route = [[-122.600, 37.600], [-122.600, 37.450]] }   # search lane on the southern approach, off Pacifica and Montara
+lanes = { rows = 10, columns = 10, width_m = 600, levels = 4, level_step_m = 30 }
 
 [[swarm]]
 id = "SEARCH-7"
@@ -435,6 +497,8 @@ layout = "line"
 from = { lat = 37.290, lon = -122.480 }
 to = { lat = 37.140, lon = -122.480 }
 alt_m = [700, 1000]
+start = { task = "patrol", route = [[-122.480, 37.290], [-122.480, 37.140]] }   # search lane off Pescadero and Pigeon Point
+lanes = { rows = 10, columns = 10, width_m = 600, levels = 4, level_step_m = 30 }
 
 [[swarm]]
 id = "SEARCH-8"
@@ -449,6 +513,8 @@ layout = "line"
 from = { lat = 36.880, lon = -122.120 }
 to = { lat = 36.880, lon = -121.920 }
 alt_m = [700, 1000]
+start = { task = "patrol", route = [[-122.120, 36.880], [-121.920, 36.880]] }   # search lane over northern Monterey Bay
+lanes = { rows = 10, columns = 10, width_m = 600, levels = 4, level_step_m = 30 }
 
 [[swarm]]
 id = "SEARCH-9"
@@ -463,6 +529,8 @@ layout = "line"
 from = { lat = 36.800, lon = -121.880 }
 to = { lat = 36.660, lon = -121.880 }
 alt_m = [700, 1000]
+start = { task = "patrol", route = [[-121.880, 36.800], [-121.880, 36.660]] }   # search lane over southern Monterey Bay
+lanes = { rows = 10, columns = 10, width_m = 600, levels = 4, level_step_m = 30 }
 
 [[swarm]]
 id = "SEARCH-10"
@@ -477,6 +545,8 @@ layout = "line"
 from = { lat = 36.700, lon = -122.020 }
 to = { lat = 36.560, lon = -122.020 }
 alt_m = [700, 1000]
+start = { task = "patrol", route = [[-122.020, 36.700], [-122.020, 36.560]] }   # search lane off Point Pinos and Cypress Point
+lanes = { rows = 10, columns = 10, width_m = 600, levels = 4, level_step_m = 30 }
 
 # ---------------------------------------------------------------- relay chain (Puma, to the Farallones)
 [[swarm]]
@@ -492,6 +562,8 @@ layout = "line"
 from = { lat = 37.9850, lon = -123.0200 }
 to = { lat = 37.8930, lon = -123.0143 }
 alt_m = [700, 1000]
+start = { task = "patrol", route = [[-123.0200, 37.9850], [-123.0143, 37.8930]] }   # relay chain from Point Reyes, flown back and forth
+lanes = { rows = 10, columns = 10, width_m = 600, levels = 4, level_step_m = 30 }
 
 [[swarm]]
 id = "RELAY-2"
@@ -506,6 +578,8 @@ layout = "line"
 from = { lat = 37.8930, lon = -123.0143 }
 to = { lat = 37.8000, lon = -123.0087 }
 alt_m = [700, 1000]
+start = { task = "patrol", route = [[-123.0143, 37.8930], [-123.0087, 37.8000]] }   # relay chain, the middle, flown back and forth
+lanes = { rows = 10, columns = 10, width_m = 600, levels = 4, level_step_m = 30 }
 
 [[swarm]]
 id = "RELAY-3"
@@ -520,6 +594,8 @@ layout = "line"
 from = { lat = 37.8000, lon = -123.0087 }
 to = { lat = 37.7090, lon = -123.0030 }
 alt_m = [700, 1000]
+start = { task = "patrol", route = [[-123.0087, 37.8000], [-123.0030, 37.7090]] }   # relay chain to the Farallones, flown back and forth
+lanes = { rows = 10, columns = 10, width_m = 600, levels = 4, level_step_m = 30 }
 
 # ---------------------------------------------------------------- surface (Saildrone, Corsair)
 # Each starts on its ring (evenly round it from north, clockwise, as its orbit spreads the
@@ -535,6 +611,7 @@ sim = "standin"
 layout = "ring"
 center = { lat = 37.7600, lon = -122.7800 }
 radius_m = 5000
+start = { task = "hold" }   # Saildrone ring on the western traffic lane, mid-gulf: each member holds its own place in the layout
 
 [[swarm]]
 id = "SURFACE-2"
@@ -547,6 +624,7 @@ sim = "standin"
 layout = "ring"
 center = { lat = 38.0300, lon = -123.4300 }
 radius_m = 5000
+start = { task = "hold" }   # Saildrone ring on Cordell Bank: each member holds its own place in the layout
 
 [[swarm]]
 id = "SURFACE-3"
@@ -559,6 +637,7 @@ sim = "standin"
 layout = "ring"
 center = { lat = 37.7750, lon = -122.5850 }
 radius_m = 2000
+start = { task = "hold" }   # USV ring on the San Francisco Bar: each member holds its own place in the layout
 
 [[swarm]]
 id = "SURFACE-4"
@@ -571,6 +650,7 @@ sim = "standin"
 layout = "ring"
 center = { lat = 37.8350, lon = -122.4000 }
 radius_m = 1500
+start = { task = "hold" }   # USV ring in the central bay: each member holds its own place in the layout
 
 [[swarm]]
 id = "SURFACE-5"
@@ -583,6 +663,7 @@ sim = "standin"
 layout = "line"
 from = { lat = 36.9350, lon = -121.9900 }
 to = { lat = 36.8150, lon = -121.8300 }
+start = { task = "hold" }   # USV lane across Monterey Bay: each member holds its own place in the layout
 
 # ---------------------------------------------------------------- undersea (REMUS)
 [[swarm]]
@@ -594,8 +675,10 @@ platform = "remus"
 count = 100
 sim = "standin"
 layout = "ring"
-center = { lat = 36.7980, lon = -121.8250 }
-radius_m = 2000
+center = { lat = 36.7980, lon = -121.8470 }   # over the canyon, 2 km west of where the group order put it
+radius_m = 1500
+start = { task = "orbit", center = [-121.8470, 36.7980], radius_m = 1500 }   # AUV ring over the Monterey Canyon head
+slots = { radius_m = 50 }
 
 # ---------------------------------------------------------------- the armed reserve (no orders)
 [[swarm]]

@@ -208,6 +208,78 @@ def test_a_bad_start_is_refused(start: dict, unit: dict):
         swarm.plan({"unit": [u]}, PLATFORMS)
 
 
+def test_a_swarms_start_shared_out_gives_each_member_its_own_station():
+    """`slots`: a ring's orbit shared out, member k round its own slot k (from north, clockwise)
+    inside the ring, at its level; `lanes`: a patrol's lane cut into rows along it and columns
+    across it, member k its own stretch; whatever the layout (here a launch block)."""
+    fleet = tomllib.loads("""
+[[swarm]]
+id = "R"
+platform = "x10"
+count = 8
+sim = "standin"
+cruise_alt_m = 100
+layout = "block"
+center = { lat = 37.80, lon = -122.46 }
+columns = 4
+spacing_m = 8
+start = { task = "orbit", center = [-122.47, 37.82], radius_m = 500 }
+slots = { radius_m = 100, levels = 3, level_step_m = 15 }
+
+[[swarm]]
+id = "L"
+platform = "puma"
+count = 4
+sim = "standin"
+cruise_alt_m = 300
+layout = "line"
+from = { lat = 37.70, lon = -122.60 }
+to = { lat = 37.75, lon = -122.60 }
+alt_m = 700
+start = { task = "patrol", route = [[-122.60, 37.70], [-122.60, 37.72]] }
+lanes = { rows = 2, columns = 2, width_m = 200, gap = 0.25, levels = 2, level_step_m = 30 }
+""")
+    vs = swarm.plan(fleet, PLATFORMS)
+    ring, lanes = vs[:8], vs[8:]
+    for k, v in enumerate(ring):
+        o = v["start"]
+        assert o["task"] == "orbit" and o["radius_m"] == 100.0
+        lon, lat = o["center"]
+        north, east = (lat - 37.82) * 111_320.0, (lon + 122.47) * 111_320.0 * math.cos(math.radians(37.82))
+        assert abs(math.hypot(north, east) - 400) < 0.5
+        assert abs((math.degrees(math.atan2(east, north)) - 45 * k + 180) % 360 - 180) < 0.1
+        assert v["cruise_alt_m"] == 100 + 15 * (k % 3)
+        assert v["start_at"][:3] == [lat, lon, v["cruise_alt_m"]]
+        assert v["home"][2] == 0  # its home its launch field
+    length = 0.02 * 111_320.0
+    for k, v in enumerate(lanes):
+        r, c = divmod(k, 2)
+        (lon_a, lat_a), (lon_b, lat_b) = v["start"]["route"]
+        assert lon_a == lon_b and abs((lon_a + 122.60) * 111_320.0 * math.cos(math.radians(37.70)) - (50 if c else -50)) < 0.5
+        assert abs((lat_a - 37.70) * 111_320.0 - (r + 0.25) * length / 2) < 0.5
+        assert abs((lat_b - 37.70) * 111_320.0 - (r + 0.75) * length / 2) < 0.5
+        assert v["cruise_alt_m"] == 300 + 30 * c
+    for bad in ({"slots": {"radius_m": 600}}, {"slots": {"radius_m": 100, "rows": 2}}, {"lanes": {"rows": 2, "columns": 2}},
+                {"slots": {"radius_m": 100}, "lanes": {"rows": 2, "columns": 4}}):
+        f = tomllib.loads(tomllib_dump_swarm(fleet["swarm"][0], bad))
+        with pytest.raises(SystemExit):
+            swarm.plan(f, PLATFORMS)
+
+
+def tomllib_dump_swarm(sw: dict, override: dict) -> str:
+    """A one-swarm fleet file: `sw` without its slots or lanes, with `override`'s."""
+    t = {k: v for k, v in sw.items() if k not in ("slots", "lanes")} | override
+
+    def val(x):
+        if isinstance(x, dict):
+            return "{ " + ", ".join(f"{k} = {val(y)}" for k, y in x.items()) + " }"
+        if isinstance(x, list):
+            return "[" + ", ".join(val(y) for y in x) + "]"
+        return json.dumps(x)
+
+    return "[[swarm]]\n" + "\n".join(f"{k} = {val(v)}" for k, v in t.items()) + "\n"
+
+
 # ---- Saturation packed: its fleet and orders (sim/situations/swarm-saturation-packed.toml) -------
 # The layout Saturation had until bd murmur-mum5, kept for performance work. Checked on the Golden
 # Gate's baked grids by world v3's rules (eval/headless/tests/test_worlds_v3.py), and against the
@@ -445,35 +517,135 @@ def r_members(region, sid: str) -> list[dict]:
     return [v for v in region.vehicles if v["swarm"] == sid]
 
 
-def r_points(region, o) -> list[list[float]]:
-    """Where an opening order puts its swarm, [lon, lat] every 20 m or so (as `order_points`)."""
+def r_points(v: dict) -> list[list[float]]:
+    """Where a vehicle's own starting task keeps it, [lon, lat] every 20 m or so: its orbit's
+    circle, its lane there and back, or (a hold) where it starts."""
     from eval.headless.tests.test_worlds_v3 import along
 
-    p = o.params
-    if "center" in p:
+    p = v["start"]
+    if p["task"] == "orbit":
         lon, lat = p["center"]
         r = float(p["radius_m"])
         k = 111_320.0 * math.cos(math.radians(lat))
         return along([[lon + r / k * math.sin(a), lat + r / 111_320.0 * math.cos(a)] for a in (n * math.pi / 36 for n in range(73))], 20.0)
-    return along([*map(list, p["route"]), list(p["route"][0])], 20.0)
+    if p["task"] == "patrol":
+        return along([*map(list, p["route"]), list(p["route"][0])], 20.0)
+    return [[v["start_at"][1], v["start_at"][0]]]
+
+
+def r_ways(v: dict) -> list[list[float]]:
+    """A vehicle's ways from where it starts to its task and from its task home, every 20 m."""
+    from eval.headless.tests.test_worlds_v3 import along
+
+    task = r_points(v)
+    at, home = [v["start_at"][1], v["start_at"][0]], [v["home"][1], v["home"][0]]
+    return along([at, list(task[0])], 20.0) + along([list(task[-1]), home], 20.0)
 
 
 def test_saturation_region_is_the_packed_force_spread(region):
-    """The same 37 swarms (platform, count, role, order kind) as the packed layout, SURFACE-3's
-    first USV still uid 3201, the reserve the only armed swarm and without an order."""
-    def shape(vehicles, sit):
-        kinds = {o.vehicles["swarm"]: o.task for o in sit.orders}
+    """The same 37 swarms (platform, count) as the packed layout, SURFACE-3's first USV still uid
+    3201; the order kinds the packed layout's (orbits for the rings, patrols for the lanes) as each
+    vehicle's own starting task, the surface groups' a hold where each member stands on its ring
+    or lane; the reserve the only armed swarm and without one; no opening order (decision rules 29
+    hands the fleet's starting tasks over, bd murmur-by3s)."""
+    def shape(vehicles):
         out = {}
         for v in vehicles:
             s = out.setdefault(v["swarm"], {"platform": v["platform"], "n": 0})
             s["n"] += 1
-        return {sid: (s["platform"], s["n"], kinds.get(sid)) for sid, s in out.items()}
+        return {sid: (s["platform"], s["n"]) for sid, s in out.items()}
 
     assert len(region.vehicles) == 3602
-    assert shape(region.vehicles, region.sit) == shape(region.packed_vehicles, region.packed)
+    assert shape(region.vehicles) == shape(region.packed_vehicles)
     assert r_members(region, "SURFACE-3")[0]["uid"] == 3201
     assert not [v["callsign"] for v in region.vehicles if v["swarm"] != "RESERVE" and region.catalog[v["platform"]].get("armed")]
-    assert "RESERVE" not in {o.vehicles["swarm"] for o in region.sit.orders}
+    assert not region.sit.orders
+    packed = {o.vehicles["swarm"]: o.task for o in region.packed.orders}
+    kinds: dict[str, set[str]] = {}
+    for v in region.vehicles:
+        kinds.setdefault(v["swarm"], set()).add(v["start"]["task"] if "start" in v else "none")
+    assert kinds.pop("RESERVE") == {"none"} and "RESERVE" not in packed
+    assert kinds == {sid: {"hold" if sid.startswith("SURFACE") else packed[sid]} for sid in packed}
+
+
+def test_saturation_region_gives_each_vehicle_its_own_station(region):
+    """One order per vehicle, each with its own geometry (bd murmur-xlca): no two vehicles share a
+    station; a picket orbits its own slot round its ring, inside it; a Puma patrols its own short
+    lane in its group's lane; every vehicle starts on its station (an aircraft in the air at the
+    altitude its order flies, a boat or an AUV at the surface), its home its launch field or its
+    place in the layout."""
+    stations = set()
+    for v in region.vehicles:
+        if "start" not in v:
+            continue
+        o = v["start"]
+        if o["task"] != "hold":
+            key = json.dumps(o, sort_keys=True)
+            assert key not in stations, v["callsign"]
+            stations.add(key)
+        lat, lon, alt, _ = v["start_at"]
+        if v["domain"] == "air":
+            assert alt == v["cruise_alt_m"], v["callsign"]
+        else:
+            assert alt == 0.0, v["callsign"]
+        if o["task"] == "orbit":
+            assert (lon, lat) == tuple(o["center"]), v["callsign"]
+        elif o["task"] == "patrol":
+            assert [lon, lat] == o["route"][0], v["callsign"]
+        else:
+            assert (lat, lon) == tuple(v["home"][:2]), v["callsign"]
+    assert len(stations) == 3600 - 500  # every orbit and lane its own; the 500 boats hold where they are
+    # pickets: inside their group's ring, each round its own slot
+    fleet = {s["id"]: s for s in tomllib.loads(region.sit.fleet.read_text())["swarm"]}
+    for sid, sw in fleet.items():
+        if "slots" not in sw:
+            continue
+        lon0, lat0 = sw["start"]["center"]
+        for v in r_members(region, sid):
+            d = m_lonlat(v["start"]["center"], [lon0, lat0])
+            assert abs(d + v["start"]["radius_m"] - sw["start"]["radius_m"]) < 1.0, (v["callsign"], d)
+
+
+def test_saturation_region_neighbouring_orbits_and_lanes_never_share_an_altitude(region):
+    """With an order each, nothing stacks the members upward (the task layer's per-order steps):
+    the fleet spreads them over a few levels instead, so that any two aircraft whose orbits come
+    within 50 m of each other (a picket ring's neighbours, two rings that cross), or whose lanes
+    within 100 m (side by side, where a fixed wing turns at its lane's end), fly 10 m or more apart
+    in height."""
+    shapes = []
+    for v in region.vehicles:
+        if v["domain"] != "air" or "start" not in v:
+            continue
+        pts = r_points(v)[::3]
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        shapes.append((v, pts, (min(xs), min(ys), max(xs), max(ys))))
+    cell = 0.02
+    grid: dict[tuple[int, int], list[int]] = {}
+    for i, (_, _, (w, s, e, n)) in enumerate(shapes):
+        for gx in range(int(w // cell), int(e // cell) + 1):
+            for gy in range(int(s // cell), int(n // cell) + 1):
+                grid.setdefault((gx, gy), []).append(i)
+    close = 0
+    bad = []
+    seen = set()
+    for members in grid.values():
+        for a in members:
+            for b in members:
+                if b <= a or (a, b) in seen:
+                    continue
+                seen.add((a, b))
+                (va, pa, ba), (vb, pb, bb) = shapes[a], shapes[b]
+                if ba[0] > bb[2] + 0.001 or bb[0] > ba[2] + 0.001 or ba[1] > bb[3] + 0.001 or bb[1] > ba[3] + 0.001:
+                    continue
+                limit = 100.0 if "route" in va["start"] or "route" in vb["start"] else 50.0
+                if min(m_lonlat(p, q) for p in pa for q in pb) > limit:
+                    continue
+                close += 1
+                if abs(va["cruise_alt_m"] - vb["cruise_alt_m"]) < 10.0:
+                    bad.append((va["callsign"], vb["callsign"], va["cruise_alt_m"], vb["cruise_alt_m"]))
+    assert close > 1000, "the check found no neighbours: it is not looking"
+    assert not bad, bad[:10]
 
 
 def test_saturation_region_links_file_is_sim_links_with_its_stations(region):
@@ -540,41 +712,40 @@ def test_saturation_region_spawns_on_the_region_terrain(region, region_terrain):
 
 
 def test_saturation_region_pickets_fly_over_the_high_ground(region, region_terrain):
-    """Each picket's lowest member (its cruise altitude: the task layer stacks the rest upward) 25 m
-    or more over the highest ground under its ring and its ways out and back, every 20 m."""
-    from eval.headless.tests.test_worlds_v3 import along
-
+    """Each picket (at its own level: one order each, nothing stacks it) 25 m or more over the
+    highest ground under its own orbit and its ways from where it starts and home, every 20 m; each
+    AUV's own orbit over 45 m of water or more at the window's lowest (it dives to 40 m)."""
     low = []
-    for o in region.sit.orders:
-        members = r_members(region, o.vehicles["swarm"])
-        if members[0]["platform"] != "x10":
+    for v in region.vehicles:
+        if v["platform"] not in ("x10", "remus"):
             continue
-        points = r_points(region, o)
-        home = [members[0]["home"][1], members[0]["home"][0]]
-        points += [p for q in points[::10] for p in along([home, q], 20.0)]
-        top = max(region_terrain.terrain.elevation_many([p[1] for p in points], [p[0] for p in points]))
-        if members[0]["cruise_alt_m"] - top < 25.0:
-            low.append((o.vehicles["swarm"], members[0]["cruise_alt_m"], round(float(top))))
-    assert not low, low
+        points = r_points(v) + (r_ways(v) if v["platform"] == "x10" else [])
+        zs = region_terrain.terrain.elevation_many([p[1] for p in points], [p[0] for p in points])
+        if v["platform"] == "x10":
+            top = max(zs)
+            if v["cruise_alt_m"] - top < 25.0:
+                low.append((v["callsign"], v["swarm"], v["cruise_alt_m"], round(float(top))))
+        elif region_terrain.low - max(zs) < 45.0:
+            low.append((v["callsign"], v["swarm"], round(float(region_terrain.low - max(zs)), 1)))
+    assert not low, low[:10]
 
 
 def test_saturation_region_is_spread(region):
     """Spread as a planner would: on station the median nearest neighbour three times the packed
-    layout's and more, four times the occupied square kilometres, over a region of 10,000 square km
-    and more."""
+    layout's and more, nearly four times the occupied square kilometres (each picket's station its
+    own orbit's centre, inside its ring: 512 squares against the group orders' 538 on the rings
+    themselves), over a region of 10,000 square km and more."""
     new, old = region.reach.spread(region.sit, quiet=True), region.reach.spread(region.packed, quiet=True)
     assert new["station"]["nn_median_m"] >= 3 * old["station"]["nn_median_m"]
-    assert new["station"]["km2"] >= 4 * old["station"]["km2"]
+    assert new["station"]["km2"] >= 3.5 * old["station"]["km2"]
     assert new["box_km2"] >= 10_000
 
 
 def test_saturation_region_orders_keep_clear_of_no_go_and_to_the_reserve(region):
-    """Every ring and lane, and every X10's way from its launch field to its ring and back, 150 m
-    clear of every no-go area and inside the operating area; every X10 order within the reserve
-    rule with a tenth of its budget to spare (rules.rs `reserve`: transit, the lap or 15 minutes,
-    the way home, against endurance less 20 %)."""
-    from eval.headless.tests.test_worlds_v3 import along
-
+    """Every vehicle's own orbit, lane or hold, and every X10's ways from where it starts to its orbit
+    and from there home to its launch field, 150 m clear of every no-go area and inside the
+    operating area; every X10's order within the reserve rule with a tenth of its budget to spare
+    (rules.rs `reserve`: transit, the lap or 15 minutes, the way home, against endurance less 20 %)."""
     areas = json.loads((region.sit.areas / "bay-region.geojson").read_text())
     boxes, ops = [], []
     for f in areas["features"]:
@@ -587,21 +758,18 @@ def test_saturation_region_orders_keep_clear_of_no_go_and_to_the_reserve(region)
                 ops.append((min(xs), min(ys), max(xs), max(ys)))
     bad = []
     _, paths = region.reach.plan(region.sit)
-    for o in region.sit.orders:
-        members = r_members(region, o.vehicles["swarm"])
-        points = r_points(region, o)
-        legs = []
-        if members[0]["platform"] == "x10":
-            home = [members[0]["home"][1], members[0]["home"][0]]
-            legs = [p for q in points[::10] for p in along([home, q], 20.0)]
-        for lon, lat in points + legs:
+    for v in region.vehicles:
+        if "start" not in v:
+            continue
+        points = r_points(v) + (r_ways(v) if v["platform"] == "x10" else [])
+        for lon, lat in points:
             if not any(w <= lon <= e and s <= lat <= n for w, s, e, n in ops):
-                bad.append((o.id, "outside the operating area", round(lon, 4), round(lat, 4)))
+                bad.append((v["callsign"], "outside the operating area", round(lon, 4), round(lat, 4)))
             for w, s, e, n in boxes:
                 dx = max(w - lon, 0, lon - e) * 111_320.0 * math.cos(math.radians(lat))
                 dy = max(s - lat, 0, lat - n) * 111_320.0
                 if math.hypot(dx, dy) < 150:
-                    bad.append((o.id, "no_go", round(lon, 4), round(lat, 4)))
+                    bad.append((v["callsign"], "no_go", round(lon, 4), round(lat, 4)))
     assert not bad, bad[:10]
     x10 = region.catalog["x10"]
     budget = 0.8 * x10["endurance_h"] * 3600
@@ -615,25 +783,24 @@ def test_saturation_region_orders_keep_clear_of_no_go_and_to_the_reserve(region)
 
 
 def test_saturation_region_leaves_the_strike_point_clear_and_jams_three_pickets(region):
-    """Every swarm's ring or lane 1.4 km or more from where the shooter holds, SURFACE-3's whole
-    ring within the missile's band (400 m to 6 km) of it, the hold inside an engagement zone; the
-    jammer's circle takes in PICKET-9, -10 and -11 whole and no other swarm's station."""
+    """Every vehicle's own station 1.4 km or more from where the shooter holds, all of SURFACE-3
+    within the missile's band (400 m to 6 km) of it, the hold inside an engagement zone; the
+    jammer's circle takes in PICKET-9, -10 and -11 whole and no other swarm's stations."""
     jam = (R_JAM["lon"], R_JAM["lat"])
-    near, jammed = [], set()
-    for o in region.sit.orders:
-        sid = o.vehicles["swarm"]
-        points = r_points(region, o)
+    near, inside = set(), {}
+    for v in region.vehicles:
+        if "start" not in v:
+            continue
+        sid = v["swarm"]
+        points = r_points(v)
         d = [m_lonlat(p, R_STRIKE) for p in points]
         if min(d) < 1400:
-            near.append(sid)
+            near.add(sid)
         if sid == "SURFACE-3":
-            assert 400 < min(d) and max(d) < 6000, (min(d), max(d))
-        inside = [m_lonlat(p, jam) <= R_JAM["radius_m"] for p in points]
-        if all(inside):
-            jammed.add(sid)
-        elif any(inside):
-            jammed.add(f"{sid} (partly)")
+            assert 400 < min(d) and max(d) < 6000, (v["callsign"], min(d), max(d))
+        inside.setdefault(sid, []).extend(m_lonlat(p, jam) <= R_JAM["radius_m"] for p in points)
     assert not near, near
+    jammed = {sid for sid, ins in inside.items() if all(ins)} | {f"{sid} (partly)" for sid, ins in inside.items() if any(ins) and not all(ins)}
     assert jammed == R_JAMMED, jammed
     # their launch field is inside it too: the failsafe takes them home into the jam
     assert all(m_lonlat([v["home"][1], v["home"][0]], jam) < R_JAM["radius_m"] for sid in R_JAMMED for v in r_members(region, sid))

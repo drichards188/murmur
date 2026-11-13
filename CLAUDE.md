@@ -520,14 +520,18 @@ meaningful.
   keep-outs at the strike), so a UGV on land launches at a boat on the water. Aircraft and other
   kinds unchanged. Scenarios 131-133 (`tests/rules28.rs`).
 - Rules 29 (`HANDOVER_SINCE`, bd murmur-by3s): a fleet's `start` (on a unit or a `[[swarm]]`,
-  moved with each member as its layout places it; orbit, patrol or hold; stand-in aircraft, boats
-  and subs only, `sim/swarm.py` "starting tasks") spawns the vehicle on its station, holding, its
-  home its spawn (a plane spawned aloft: the surface below it), and the bridge hands the order
-  over at the start (`intent.handed_over`, queued until the vehicle's first full report, then
-  re-checked: sent, voided on a failing check, to a person on an unverified one; never approved
-  again otherwise; the policy is asked nothing but who, for the last). A run that carries orders
-  over from an earlier log hands none over; replay checks them against `<log stem>.fleet.json`
-  (each vehicle's `start`). Scenarios 134-136 (a `[[vehicle]]`'s `start`; `tests/handover.rs`).
+  moved with each member as its layout places it, or shared out by `slots` (an orbit's ring, a
+  slot each) or `lanes` (a patrol's lane, a stretch each), with `levels` spreading altitudes;
+  orbit, patrol or hold; stand-in aircraft, boats and subs only, `sim/swarm.py` "starting tasks")
+  spawns the vehicle on its station, holding, its home its spawn (a plane spawned aloft: the
+  surface below it), and the bridge hands the order over at the start (`intent.handed_over`,
+  queued until the vehicle's first full report, then re-checked: sent, voided on a failing check,
+  to a person on an unverified one; never approved again otherwise; the policy is asked nothing
+  but who, for the last). A run that carries orders over from an earlier log hands none over;
+  replay checks them against `<log stem>.fleet.json` (each vehicle's `start`). Scenarios 134-136
+  (a `[[vehicle]]`'s `start`; `tests/handover.rs`). Saturation's region fleet uses it (bd
+  murmur-xlca: one order per vehicle, each its own geometry); its packed variant keeps the 36
+  group opening orders.
 - Opponent weapons (docs/OPPONENT-WEAPONS.md, bd murmur-wcvp; no rules version): a node fires its
   catalog kind's loadout (`sim/contacts.toml`) by its own fire control at an `[[order]]` (the
   contacts file, the contacts process's `POST /orders`, a situation's `red` step;

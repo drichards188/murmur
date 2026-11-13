@@ -165,12 +165,33 @@ class Dem:
 # ---- where each vehicle will be -------------------------------------------------------------
 
 
+def start_path(v: dict[str, Any]) -> dict[str, Any]:
+    """A vehicle's own starting task (the fleet's `start`, decision rules 29) as `plan` gives an
+    order's: from where it starts (`start_at`, on its station) to its orbit or lane, round it, and
+    home; its place on station (an orbit's centre, a patrol's first point, a hold where it is)."""
+    st = v["start"]
+    home = (v["home"][0], v["home"][1])
+    at = (v["start_at"][0], v["start_at"][1])
+    if st["task"] == "orbit":
+        lon, lat = st["center"]
+        ring = circle(lat, lon, float(st.get("radius_m", 100.0)), 12)
+        task, station = ring + [ring[0]], (lat, lon)
+    elif st["task"] == "patrol":
+        task = [(lat, lon) for lon, lat in st["route"]]
+        task, station = task + [task[0]], task[0]
+    else:
+        task, station = [at], at
+    return {"out": [at, task[0]], "task": task, "back": [task[-1], home], "station": station,
+            "alt": v.get("cruise_alt_m"), "order": "start"}
+
+
 def plan(sit: Any) -> tuple[list[dict[str, Any]], dict[int, dict[str, Any]]]:
-    """The fleet as sim/swarm.py plans it, and each vehicle's opening order's geometry: its way
-    out, its ring or lane, its way home, its place on station, the order's lowest altitude."""
+    """The fleet as sim/swarm.py plans it, and each vehicle's starting task's (its own, the
+    fleet's `start`) or opening order's geometry: its way out, its ring or lane, its way home, its
+    place on station, the order's lowest altitude."""
     vehicles = S._planned_fleet(sit.fleet)
     by_uid = {v["uid"]: v for v in vehicles}
-    paths: dict[int, dict[str, Any]] = {}
+    paths: dict[int, dict[str, Any]] = {v["uid"]: start_path(v) for v in vehicles if "start" in v}
     for o in sit.orders:
         chosen = S._select_planned(o.vehicles, vehicles)
         p = o.params
@@ -222,7 +243,9 @@ def reach(sit: Any, dem: Dem | None = None, quiet: bool = False) -> dict[str, An
         exp = links.field(prof, "range_exp") or 1.0
         prop = links.field(prof, "propagation_mps")
         worst_d, worst_name, beyond_ok, beyond_max = 0.0, "", 0, 0
-        centre = paths[v0["uid"]]["task"]
+        # the group's middle: its members' places on station (every member's ring or lane is the
+        # first's when they share an order)
+        centre = [paths[v["uid"]]["station"] for v in members]
         mid = (sum(p[0] for p in centre) / len(centre), sum(p[1] for p in centre) / len(centre))
         near_name, near_d, _ = links.nearest(mid)
         los = None
@@ -286,16 +309,20 @@ def sit_swarm_name(sit: Any, gid: str) -> str | None:
 
 
 def los_check(links: Links, prof: str, members: list[dict[str, Any]], paths: dict[int, dict[str, Any]], dem: Dem) -> dict[str, Any]:
-    """The first member's ring or lane (every member shares it), every 500 m, at the order's
-    lowest altitude, to its nearest station."""
-    pa = paths[members[0]["uid"]]
-    pts = along(pa["task"], 500.0)
+    """The group's rings or lanes every 500 m, at the lowest altitude each is flown (a group order's
+    is the first member's, every member sharing it; with starting tasks, every member's own), to
+    its nearest station."""
+    shared = all(paths[v["uid"]]["order"] != "start" for v in members)
+    pts_alt: list[tuple[tuple[float, float], float]] = []
+    for v in members[:1] if shared else members:
+        pa = paths[v["uid"]]
+        alt = pa["alt"] if pa["alt"] is not None else v["home"][2]
+        pts_alt += [(p, float(alt)) for p in along(pa["task"], 500.0)]
     gs_ant = links.field(prof, "gs_antenna_m") or 0.0
     ant = links.field(prof, "antenna_m") or 0.0
-    alt = pa["alt"] if pa["alt"] is not None else members[0]["home"][2]
     checked = blocked = 0
     worst = None
-    for p in pts:
+    for p, alt in pts_alt:
         _, _, (slat, slon, salt) = links.nearest(p)
         h_site = dem.at(slat, slon) if salt == "dem" else float(salt)
         if h_site is None:

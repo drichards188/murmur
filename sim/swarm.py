@@ -133,6 +133,8 @@ def fleet_source(name_or_path):
 #   layout = "block"                 # where the members start (below)
 #   start = { task = "orbit", center = [lon, lat], radius_m = 100 }   # optional: each member's
 #                                    # starting task, moved with it ("starting tasks" below)
+#   slots = { radius_m = 150 }       # optional, or `lanes`: the start shared out instead, a
+#                                    # station of its own for each member ("starting tasks")
 #
 # Layouts, every point an inline table `{ lat, lon }` and every altitude in metres above MSL
 # (`alt_m`: one number, or `[low, high]`, a band the members spread across in order):
@@ -150,6 +152,7 @@ SWARM_LAYOUTS = ("block", "ring", "line")
 SWARM_KEYS = {
     "id", "name", "role", "color", "platform", "mix", "count", "sim", "cruise_alt_m", "moored", "layout",
     "center", "columns", "spacing_m", "row_spacing_m", "heading_deg", "radius_m", "from", "to", "alt_m", "start",
+    "slots", "lanes",
 }
 # what a swarm passes on to each member unit
 SWARM_UNIT_KEYS = ("sim", "cruise_alt_m", "moored")
@@ -269,6 +272,23 @@ def fleet_swarms(fleet):
 # only (a SITL vehicle starts on its pad) of aircraft, boats and subs. The manifest gives each such
 # vehicle its `start` (the order) and `start_at` ([lat, lon, alt, heading], where it starts), and
 # names the fleet file (`fleet`: name and sha256). Without `start`, everything is as before.
+#
+# A swarm's start may instead be the group's area, shared out so that every member has a station
+# of its own whatever its layout (one order per vehicle, each with its own geometry; bd
+# murmur-xlca), with one of:
+#
+#   slots = { radius_m = 150, levels = 4, level_step_m = 15 }      # with an orbit's start
+#   lanes = { rows = 10, columns = 10, width_m = 800, levels = 4, level_step_m = 30 }   # a patrol's
+#
+# `slots`: the orbit's ring (`center`, `radius_m`) holds n slots evenly round it from north,
+# clockwise, on the circle `radius_m - slots.radius_m` from the centre; member k orbits its own
+# slot k at `slots.radius_m`, so the group's orbits fill the band out to the ring and no further.
+# `lanes`: the patrol's lane (its route's two points) is cut into `rows` equal stretches along it
+# and `columns` lanes across it, `width_m / columns` apart, centred on it; member k patrols row
+# k // columns, column k % columns, its own lane less `gap` (default 0.1) of the stretch at each
+# end. `levels` (default 1) spreads the members' altitudes so that neighbouring orbits or lanes
+# never share one: member k flies `level_step_m` times (its slot, or for lanes its column, mod
+# `levels`) above the swarm's `cruise_alt_m` (each member's own cruise_alt_m in the manifest).
 START_TASKS = ("orbit", "patrol", "hold")
 START_KEYS = {"orbit": {"task", "center", "radius_m"}, "patrol": {"task", "route"}, "hold": {"task"}}
 # the altitude above home an aircraft's order flies at when its cruise altitude is 50 m or less
@@ -329,6 +349,78 @@ def moved_start(start, north_m, east_m):
     return out
 
 
+SPREAD_KEYS = {
+    "slots": {"radius_m", "levels", "level_step_m"},
+    "lanes": {"rows", "columns", "width_m", "gap", "levels", "level_step_m"},
+}
+
+
+def _spread_num(t, key, where, default=None, whole=False, low=0.0, low_ok=False):
+    v = t.get(key, default)
+    if v is None or isinstance(v, bool) or not isinstance(v, (int, float)) or (whole and v != int(v)):
+        sys.exit(f"{where}: {key} is a {'whole ' if whole else ''}number")
+    if v < low or (v == low and not low_ok):
+        sys.exit(f"{where}: {key} is {'at least' if low_ok else 'above'} {low:g}")
+    return int(v) if whole else float(v)
+
+
+def spread_starts(sw, start, n):
+    """A swarm's start shared out among its n members (`slots` or `lanes`, "starting tasks"
+    above): each member's own start, and how far above the swarm's cruise_alt_m it flies."""
+    kind = "slots" if "slots" in sw else "lanes"
+    where = f"swarm {sw['id']!r}"
+    if "slots" in sw and "lanes" in sw:
+        sys.exit(f"{where}: slots or lanes, not both")
+    t = sw[kind]
+    if not isinstance(t, dict) or set(t) - SPREAD_KEYS[kind]:
+        sys.exit(f"{where}: {kind} takes {sorted(SPREAD_KEYS[kind])}")
+    levels = _spread_num(t, "levels", where, 1, whole=True, low=1, low_ok=True)
+    step = _spread_num(t, "level_step_m", where, 0.0, low=0.0, low_ok=True)
+    out = []
+    if kind == "slots":
+        if start["task"] != "orbit" or "radius_m" not in start:
+            sys.exit(f"{where}: slots share out an orbit's ring: start = {{ task = \"orbit\", center = ..., radius_m = ... }}")
+        r = _spread_num(t, "radius_m", where)
+        ring = start["radius_m"] - r
+        if ring <= 0:
+            sys.exit(f"{where}: a slot's orbit ({r:g} m) is not inside the ring ({start['radius_m']:g} m)")
+        lon0, lat0 = start["center"]
+        for k in range(n):
+            a = 2 * math.pi * k / n
+            lat, lon = offset(lat0, lon0, ring * math.cos(a), ring * math.sin(a))
+            out.append(({"task": "orbit", "center": [round(lon, 7), round(lat, 7)], "radius_m": r}, (k % levels) * step))
+        return out
+    if start["task"] != "patrol" or len(start["route"]) != 2:
+        sys.exit(f"{where}: lanes share out a patrol's lane: start = {{ task = \"patrol\", route = [a, b] }}")
+    rows = _spread_num(t, "rows", where, whole=True, low=1, low_ok=True)
+    cols = _spread_num(t, "columns", where, whole=True, low=1, low_ok=True)
+    width = _spread_num(t, "width_m", where, 0.0, low=0.0, low_ok=cols == 1)
+    gap = _spread_num(t, "gap", where, 0.1, low=0.0, low_ok=True)
+    if gap >= 0.5:
+        sys.exit(f"{where}: lanes' gap is a share of a stretch below 0.5")
+    if rows * cols != n:
+        sys.exit(f"{where}: lanes for {rows} x {cols} members, not {n}")
+    (lon_a, lat_a), (lon_b, lat_b) = start["route"]
+    north = (lat_b - lat_a) * 111_320.0
+    east = (lon_b - lon_a) * 111_320.0 * math.cos(math.radians(lat_a))
+    length = math.hypot(north, east)
+    if length <= 0:
+        sys.exit(f"{where}: lanes need a lane of two different points")
+    un, ue = north / length, east / length  # along the lane
+    rn, re_ = -ue, un  # across it, to the right of travel
+    spacing = width / cols
+    for k in range(n):
+        r, c = divmod(k, cols)
+        across = (c - (cols - 1) / 2) * spacing
+        ends = []
+        for f in ((r + gap) / rows, (r + 1 - gap) / rows):
+            d = f * length
+            lat, lon = offset(lat_a, lon_a, un * d + rn * across, ue * d + re_ * across)
+            ends.append([round(lon, 7), round(lat, 7)])
+        out.append(({"task": "patrol", "route": ends}, (c % levels) * step))
+    return out
+
+
 def start_at(v, start, spec):
     """Where a vehicle with a starting task starts ([lat, lon, alt, heading]): on the task's
     station (an orbit's centre, a patrol's first point, a hold where it spawns); an aircraft at
@@ -374,17 +466,29 @@ def swarm_units(fleet):
         if not members:
             continue
         start = check_start(sw["start"], f"swarm {sw['id']!r}") if "start" in sw else None
-        if start is not None:
+        spread = None
+        if ("slots" in sw or "lanes" in sw) and start is None:
+            sys.exit(f"swarm {sw['id']!r}: slots and lanes share out a start: give the swarm one")
+        if start is not None and ("slots" in sw or "lanes" in sw):
+            # the group's area shared out: each member its own station, whatever its layout
+            spread = spread_starts(sw, start, len(members))
+            if any(up for _, up in spread) and not isinstance(sw.get("cruise_alt_m"), (int, float)):
+                sys.exit(f"swarm {sw['id']!r}: levels spread the members above the swarm's cruise_alt_m: give it one")
+        elif start is not None:
             # the layout's centre, which each member's start is moved from as its place is
             if sw.get("layout") == "line":
                 (lat_a, lon_a), (lat_b, lon_b) = _swarm_point(sw, "from"), _swarm_point(sw, "to")
                 ref = ((lat_a + lat_b) / 2, (lon_a + lon_b) / 2)
             else:
                 ref = _swarm_point(sw, "center")
-        for pid, spawn in zip(members, swarm_spawns(sw, len(members))):
+        for k, (pid, spawn) in enumerate(zip(members, swarm_spawns(sw, len(members)))):
             unit = {"platform": pid, "spawn": spawn, "swarm": sw["id"]}
-            unit.update({k: sw[k] for k in SWARM_UNIT_KEYS if k in sw})
-            if start is not None:
+            unit.update({k_: sw[k_] for k_ in SWARM_UNIT_KEYS if k_ in sw})
+            if spread is not None:
+                unit["start"], up = spread[k]
+                if up:
+                    unit["cruise_alt_m"] = round(float(sw["cruise_alt_m"]) + up, 1)
+            elif start is not None:
                 north = (spawn[0] - ref[0]) * 111_320.0
                 east = (spawn[1] - ref[1]) * 111_320.0 * math.cos(math.radians(ref[0]))
                 unit["start"] = moved_start(start, north, east)
