@@ -122,6 +122,10 @@ meaningful.
 - Foreground `sleep` is blocked: wait with `until <check>; do sleep 2; done`.
 - Global git `core.autocrlf=true` (WSL): repos rely on `.gitattributes` (LF). A fresh ArduPilot
   clone needs `-c core.autocrlf=false` or its python shebangs break.
+- A checkout whose directory looks like a headless run's name, `<name>-s<digits>` (a worktree
+  `nl-s4`), fails three `eval/headless/tests/test_v2_leakage.py` tests: the scanner's run-name
+  pattern (`eval/headless/v2/leakage.py`) matches the path where an episode shows it. Name
+  worktrees otherwise.
 - The Playwright browser renders WebGL in **software** (SwiftShader): 3D fps there is
   meaningless (use `?perf` on a real GPU). After many reloads it loses the WebGL context:
   `browser_close` and reopen. A full-screen shader (the weather layer) runs at 1 to 8 fps
@@ -333,8 +337,9 @@ meaningful.
   "if it keeps behaving as now"; scanned on a 0.25 s grid); agents read it with
   `get_nomination_options` (one call a second). It shares the checks' own per-item judgement
   (`engage::track_standing`, `friendly_standing`, `circle_holding`): changing those changes
-  decisions. The dry run fills what the engine fills (`Engine::dry_run_inputs`). More
-  pictures: `MURMUR_KO_SEED=N MURMUR_KO_WORLDS=1500 cargo test -p murmur-decide --test keepout`.
+  decisions. The dry run fills what the engine fills (`Engine::dry_run_inputs`). More pictures
+  than its 1,500 (since rules 30): `MURMUR_KO_SEED=N MURMUR_KO_WORLDS=3000 cargo test -p
+  murmur-decide --test keepout`.
 - What a person alone holds up (`decision/blocking.rs`; display only, never logged, no rules
   change): the live bridge (`main.rs`; the headless simulator does not look) looks every 2 s,
   only while a rule declaration nobody confirmed or a flag on an act against ours is in force,
@@ -534,6 +539,58 @@ meaningful.
   (`wait_handover`, situation.jsonl's `handover`, the summary's counts). Saturation's region
   fleet uses it (bd murmur-xlca: one order per vehicle, each its own geometry); its packed
   variant keeps the 36 group opening orders.
+- Rules 30 (`NODE_LOSS_SINCE`, bd murmur-zb1d, docs/NODE-LOSS.md, DECISIONS.md "2026-11-13:
+  Losing a node"): one of ours whose position goes stale is silent (derived from the facts every
+  decision logs; nothing new logged), presumed lost on logged evidence within `PRESUME_WINDOW_S`
+  (30 s) of its last report (an observed act against it, its own struck or damage report, spent by
+  its own effect: `node.presumed`, a flag that decides nothing; `node.presumption_cleared` once
+  heard), and lost only when an operator with engagement authority confirms it (`node.lost`, on
+  exactly the silence the review showed, `since` the engine's ms of its last report; a note where
+  nothing presumes it; never an agent). Any report from it revokes the loss (`node.loss_revoked`,
+  logged before any decision reads the report), as may any operator with a note. The snapshot's
+  set is `nodes_lost`, not `lost`: rules 16's `engage.accepted` already logs `"lost":{`, and replay
+  tells a log's rules by its keys. A silent vehicle counts in the friendly keep-out where its
+  orders and failsafe could take it (`murmur_decide::silent`: its orders that may be running, laid
+  out as the bridge flies them, filled into every engagement decision as `silent_orders`, silent
+  vehicles only; its lost-link failsafe; a drift once presumed lost or reporting mobility damage;
+  its top speed when nothing places it; each capped by its reach), not at its cruise reach. The
+  failsafe is the vehicle fact `lost_link`, read from the vehicle's own GCS failsafe parameters
+  (`decision/preload.rs` `read_lost_link`: once its autopilot is known and after each reboot,
+  never into a silent link) and configured from the links file only where the link cannot carry a
+  read (an AUV under water), the source logged. A lost vehicle leaves every keep-out, the line of
+  fire and the minefield check, takes no order (hold and rtl included), its waiting orders are
+  voided and its ops end `lost`, its owed values close (`restore.closed` `lost`, owed back if it
+  is revoked), picture tokens carry the lost set, and the loss carries over a restart to the same
+  vehicle only (`carried_from`'s `nodes_lost`). Routes: `POST /api/review/nodes/{uid}/lost`
+  {since, note, password or passkey}: 403 for an agent (header or key, whatever operator it names)
+  or an operator without engagement authority, 409 where the rules refuse (not silent since
+  `since`, an engagement holds it), both before any credential is asked for, then 401 without the
+  step-up in a credentials run (passkey act `node_lost`); `.../revoke` {note}, any operator, no
+  step-up; `.../flag` and `.../dismiss`, any operator, put a silent vehicle on the review by hand
+  or take it off (`operator.action`, deciding nothing); `GET /api/nodes` (each of ours not
+  reporting, its standing and region: the console's map); `GET /api/review`'s `node_losses` and
+  `nodes_lost`. Agents read `standing` on `get_fleet` and `get_vehicle` (only while not reporting)
+  and the review items on `get_inbox`; no tool confirms, revokes or flags. `Engine::step_nodes`
+  runs on the bridge's tick after the vehicle events are logged (a struck report is evidence that
+  tick) and before its decisions, and keeps each silent vehicle's region for display. Alerts:
+  `node_lost` (info; it closes the vehicle's `lost_link`, `restore_pending` and `may_be_running`)
+  and `node_reported_again` (high, five minutes). Autoplay: `[autoplay] confirm_node_losses = true`
+  (every situation that confirms rule declarations) has op-2 (`LOSS_CONFIRMER`, a scripted signer)
+  confirm each presumed loss after a `read_s` draw, its note saying it is scripted; a hand flag is
+  left to a person. Custody: the playbook's `isr.custody` (off unless a situation enables it, as
+  hostile-act-air-to-air does) proposes an identify by the nearest unarmed EO/IR when the vehicle
+  whose sensor held a declared or suspect track falls silent. Scenarios 137-143
+  (`tests/rules30_prediction.rs`, `tests/rules30_states.rs`); tampers `lost_by_agent`,
+  `hide_loss_revoked`, `redate_loss`; runner actions `struck`, `confirm_lost`, `revoke_lost`, keys
+  `expect_presumed`, `expect_lost`, `expect_revoked`. Headless, the bridge reads the stand-ins'
+  failsafe parameters too: that traffic moved the golden (docs/HEADLESS.md 17.2).
+- A rules version built in stages before it is the default (as rules 30 was, docs/NODE-LOSS.md
+  section 8): `RULES_NEWEST` (rules.rs) one ahead of `RULES_VERSION` while it is built; a run
+  decides under it only when asked (a scenario's `min_rules`, `murmur-scenarios --rules N`, a
+  test's `policy.rules.rules_version`, the bridge's `MURMUR_RULES`, which `eval/headless/sim.py`
+  passes on), so no fixture or digest moves until the last stage sets `RULES_VERSION` to it and
+  `RULES_NEWEST = RULES_VERSION`, adds the fixtures and re-takes the digests. Gate on the
+  `RulesConfig` method, never on `RULES_VERSION`, what the bridge itself adds too.
 - Opponent weapons (docs/OPPONENT-WEAPONS.md, bd murmur-wcvp; no rules version): a node fires its
   catalog kind's loadout (`sim/contacts.toml`) by its own fire control at an `[[order]]` (the
   contacts file, the contacts process's `POST /orders`, a situation's `red` step;

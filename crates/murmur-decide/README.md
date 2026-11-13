@@ -2338,6 +2338,75 @@ Rules versions:
   `v29-handed-over-orbit-goes-when-heard-scenario-134.jsonl` (relabelled rules 28, its handover
   is caught).
 
+- **30** (`NODE_LOSS_SINCE`, bd murmur-zb1d, docs/NODE-LOSS.md, approved by the owner on
+  2026-11-13 with its six decisions, DECISIONS.md "2026-11-13: Losing a node"; no policy schema
+  change, schema 7): *losing a node*. From the C2's seat a destroyed vehicle and a cut link look
+  the same at first: silence. Up to rules 29 one of ours whose position went stale counted in
+  every friendly keep-out anywhere its cruise speed reached since its last report, growing without
+  bound (only a rules 6 acceptance for one engagement cleared it), its queued orders waited out
+  their deadlines and the lost-link values an engagement preloaded on it were owed for ever. From
+  rules 30:
+  - *Silent* (its position not fresh; nothing logged, it is derived from the facts every decision
+    logs): it counts within its region (`silent.rs`), the union of what its orders that may be
+    running do as the bridge flies them (`silent::in_force`, from the engine's own record of its
+    intents and op states, filled into every engagement decision as `silent_orders`, silent
+    vehicles only, and recomputed by replay), what its own lost-link failsafe does (the new vehicle
+    fact `lost_link`, read from its GCS failsafe parameters or configured where the link cannot
+    carry a read, the source logged; not known, every action its autopilot has), a drift (once
+    presumed lost, or with its own mobility damage report) and, when nothing places it (no order
+    of ours known to run on it, neither circling nor still), its top speed (decision D3); each
+    capped by its reach at top speed plus the current or the wind. `friendly_standing` hands a
+    silent vehicle to it (the rules 6 acceptance still comes first); `FriendlyKind` gains `route`,
+    `failsafe_home`, `drift` and `top_speed`, and the keep-out explanation says which hypothesis
+    blocks, that waiting clears nothing for a route and only grows a drift or a reach, and that a
+    confirmation of its loss would clear it.
+  - *Presumed lost* (`node.presumed`, a flag that decides nothing but the drift): silent, and an
+    observed act against it or its own struck report within `PRESUME_WINDOW_S` (30 s) of its last
+    report, a damage report before it went silent, or spent by its own effect, each cited by its
+    seq (`nodes.rs`, the `NodeLedger` the engine and replay build from the log);
+    `node.presumption_cleared` when it is heard again. `Engine::step_nodes` runs on the bridge's
+    tick, after the vehicle events and before its decisions.
+  - *Lost* (`node.lost`): only an operator with engagement authority confirms it
+    (`Engine::confirm_lost`, an `EngagementAuthority`, never an agent: decision D1), on a vehicle
+    silent since exactly the report the review showed (`since`), with no engagement holding it, a
+    note where nothing presumes it lost (D2), the step-up in a credentials run
+    (`StepUpFor::NodeLost`). At once its waiting orders are voided, its dispatched ops end `lost`
+    (an order fails when no vehicle is left on it) and its owed values close (`restore.closed`,
+    closure `lost`). A lost vehicle leaves every friendly keep-out, so the line of fire, and the
+    minefield check and `orders_in_play`; readiness refuses it every order, hold and rtl included;
+    picture tokens carry the lost set (`nodes_lost` in a decision's inputs, engine-filled; not
+    `lost`, which rules 16's `engage.accepted` already logs), and a signature on a token whose set
+    changed is refused. Spent and lost stay separate (D6).
+  - *Revoked* (`node.loss_revoked`): by any report from it (cause `heard`), logged before any
+    decision reads that report, or by any operator with a note (`Engine::revoke_lost`); its closed
+    values are owed back again.
+  - The carry: `run.started`'s `carried_from` carries an earlier log's losses as `nodes_lost`,
+    held only by the vehicle they were confirmed on (`VehicleIdentity::same_vehicle`) and revoked
+    at its first report.
+  Markers (a log claiming rules 29 or older can't carry them): the `lost_link` fact, `nodes_lost`
+  (a decision's or carried), the four `node.*` events and the `lost` closure. Replay recomputes
+  every region, presumption, confirmation and revocation; flags a decision that read a report
+  from a vehicle still lost, an order dispatched to one, a confirmation whose consequences do not
+  follow it at once, and a carried loss its earlier log does not hold. Scenarios 137 (a silent
+  patroller counted on its route: done; `--rules 29` rejected), 138 (its failsafe's way home
+  crosses the keep-out: rejected), 139 (struck and silent: presumed lost, still counted), 140
+  (confirmed lost: its queued orbit voided, its owed values closed, a nomination passes without
+  it), 141 (it reports again: revoked, counted, the picture stops an approved engagement), 142
+  (carried over a restart, and not to another vehicle under the uid) and 143 (nothing known: its
+  top speed; `--rules 29` let through); tampers `lost_by_agent`, `hide_loss_revoked`,
+  `redate_loss`; runner actions `struck`, `confirm_lost`, `revoke_lost`, keys `expect_presumed`,
+  `expect_lost`, `expect_revoked`, a vehicle's `lost_link`, a `[[carried]]` entry's `lost`.
+  `tests/rules30_prediction.rs` (the hypotheses one by one, the explanation, replay's check of
+  `silent_orders`) and `tests/rules30_states.rs` (who confirms and on what, revocation before the
+  decision, presumptions, the consequences, the carry, the tampers). Rules 30 was built in stages
+  behind `RULES_NEWEST` (docs/NODE-LOSS.md section 8) and made the default last; scenarios 53, 55,
+  57, 59 and 60, written for rules 6, give their lost quadcopter a drift when last heard, so
+  nothing places it and it blocks at its top speed as it blocked at its cruise reach before (still,
+  rules 30 would count it holding where it was). Fixtures (a clean build of the branch, b41c8f2):
+  `tests/data/audit/v30-engagement-scenario-01.jsonl` (nothing silent: as rules 29 decided it),
+  `v30-confirmed-lost-ends-its-orders-scenario-140.jsonl` (relabelled rules 29, its presumption,
+  loss, closure and lost set are caught).
+
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
 `seen_max_age_s`, an unreleased build's name for it, is still read; **3** adds `[queue]`
@@ -2514,6 +2583,13 @@ on the scenario clock.
   only seeing it again, or its drop and then an acceptance, lets a nomination through. With no
   cap, the lost contacts of a run pile up and every nomination needs each accepted
   (`eval/lost_burden.py`, `eval/METRICS.md` "Out of view").
+- Losing a node (rules 30): a drift is a fixed bound per domain (2.5 m/s on the water, the
+  Gate's spring current), not tidewater's current at the last position (decision D5's follow-up);
+  only the vehicle's own reports, observed acts against it and its own spent effect presume a
+  loss (another sensor seeing the wreck or the blast is bd murmur-s7hs); a revocation reads no
+  identity (any report under the uid restores the protection; the alert says when the vehicle
+  may be another); no catalog flag keeps a crewed platform in the keep-outs as survivors (all of
+  Murmur's nodes are uncrewed).
 - Satellite tasking: no cloud model (optical options note it), no sensitive-area or
   cost/priority tiers yet (every collect needs a human), no competing demand or agility
   model, one collect per intent. A cover samples the centroid and the boundary (the interior

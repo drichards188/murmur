@@ -2,7 +2,15 @@
 
 A spec, approved by the owner on 2026-11-13 with section 9's defaults (bd murmur-zb1d, the owner's
 question and agreed direction of 2026-11-06). It adds decision rules 30 (it was written as 29, which
-the watch handover took first). Nothing here is built yet.
+the watch handover took first). Built the same day in section 8's seven stages and the default
+decision rules from stage 7; the design below is kept as approved, and the "As built" notes say
+where the build differs or adds to it: section 3 (stage 2, the region and the figures its headless
+check set), section 4 (the console's display of a vehicle confirmed lost), section 5 (stages 5 and 6:
+the bridge's routes and items, autoplay, custody, the watch officer, and the live runs) and section 8
+(stage 7: the flip, the fixtures, the digests). Two names changed in the build: the carried key is
+`carried_from.nodes_lost` (not `lost`, for the reason section 7 gives), and the tests are
+`crates/murmur-decide/tests/rules30_prediction.rs` and `rules30_states.rs`, with the bridge's
+`decision/tests/node_loss.rs` and `lost_link.rs`.
 
 ## 1. The problem
 
@@ -144,6 +152,15 @@ second half: another sensor must take the drone (section 5).
 | bridge task layer, restore jobs (`decision/engage.rs:1290-1320`) | retry | stop | resume |
 | display estimate (`estimate.rs`) | display only | unchanged; the vehicle shows LOST | |
 | truth side | | never reads it | |
+
+**As built (the console, stages 5 and 7).** The display estimate is unchanged at the bridge, but the
+console no longer draws it once a vehicle is confirmed lost: no ghost, ellipse or label on the map
+and no Estimate section in its details, whose Now section reads as its last report (dimmed, with its
+age), with neither Select for tasking nor Engage; the fleet list tags it LOST where a silent vehicle
+is tagged EST (stage 7, the owner's direction after stage 6's live run: what it last reported is not
+where it went). The Review card names our sensors in the evidence by callsign and lists the region
+one line for each distinct part, with the number of shapes it covers. A run before rules 30 shows
+what it always did.
 
 ## 5. Interfaces
 
@@ -319,6 +336,19 @@ digest that moves on the branch is a bug. What rules 29 did with a timeline is `
 (`RunOptions::rules_version: Some(HANDOVER_SINCE)`). Stage 7 sets `RULES_VERSION = NODE_LOSS_SINCE`
 and `RULES_NEWEST = RULES_VERSION`, adds the v30 fixtures and re-takes the digests; `min_rules` and
 `MURMUR_RULES` then stay, inert until the next version is built the same way.
+
+**As built (stage 7, bd murmur-zb1d.7).** The flip moved what rules 30 decides differently: scenarios
+53, 55, 57, 59 and 60 (rules 6's lost quadcopter, hovering still when its link went) no longer
+blocked, since rules 30 counts a silent vehicle that was still holding where it was; each now drifts
+at 2 m/s when last heard, so nothing places it and it blocks at its top speed as it blocked at its
+cruise reach, ending as designed under rules 30 and `--rules 29`. Tests written against rules 29's
+cruise reach name `HANDOVER_SINCE`. The scenario runner's start reports (stage 2) followed rules 7: a
+lay order's start is not logged ahead (scenario 128 found it). The v30 fixtures are scenario 01 (as
+rules 29 decided it) and 140 (a confirmed loss, caught relabelled rules 29). The golden and paused
+digests moved by more than the version number, all of it from stage 4's read: with the read left out
+rules 30 gives every record of rules 29's but `run.started`'s `rules_version`, and the read's
+parameter packets move the emulator's draws on each link, so the Pumas' failsafes behind terrain
+fire at other times (docs/HEADLESS.md 17.2).
 
 ## 9. Decisions for the owner
 
