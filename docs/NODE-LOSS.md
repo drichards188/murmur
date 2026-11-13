@@ -348,7 +348,15 @@ rules 29 decided it) and 140 (a confirmed loss, caught relabelled rules 29). The
 digests moved by more than the version number, all of it from stage 4's read: with the read left out
 rules 30 gives every record of rules 29's but `run.started`'s `rules_version`, and the read's
 parameter packets move the emulator's draws on each link, so the Pumas' failsafes behind terrain
-fire at other times (docs/HEADLESS.md 17.2).
+fire at other times (docs/HEADLESS.md 17.2). Of the nine situations whose autoplay now confirms a
+presumed loss (`confirm_node_losses`), two lose one of ours in their default run, re-run headless
+on the physical model under rules 30: hostile-act-air-to-air (HUNTER 2 presumed lost at 2:14,
+confirmed by op-2 at 2:17, as live) and swarm-saturation-packed (MARLIN 1 sunk by the shooter's
+first missile, presumed lost at 10:12, confirmed at 10:40; its default operator is live, so there
+the person confirms); their notes say so. Six keep every vehicle of ours reporting (HUNTER 1 struck
+and stopped but still reporting in four, every strike a miss or harmless in two), nothing presumed.
+Saturation over the region was not re-run: it has no headless world yet, and a live run of its
+3,602 stand-ins beside another stack was not made.
 
 ## 9. Decisions for the owner
 

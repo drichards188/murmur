@@ -10,11 +10,12 @@
 # and fires on HUNTER 2, the picket off Lands End, as it slows there (an armed kind ordered to
 # attack: it fires its own two light missiles by its own fire control, each strike drawn by the
 # damage model, docs/AUTONOMOUS-NODES.md). Its target is HUNTER 2, not HUNTER 1, the sensor ship 1
-# km from it (bd murmur-qese): a lost HUNTER 1 would stop the chain (its last report counts in the
-# keep-out and its camera holds the drone's identity), while HUNTER 2 is 3.5 km from where the
-# keep-out falls, so the chain goes on whatever the missiles do to it; on the default run the first
-# sinks it. Our sensors observe the act; the engine declares the drone hostile by rule (rules 9);
-# op-auto confirms the declaration (live: you). The timeline nominates FURY 1 naming
+# km from it (bd murmur-qese): a lost HUNTER 1 would stop the chain (its camera holds the drone's
+# identity; until rules 30 its last report also counted in the keep-out for good), while HUNTER 2
+# is 3.5 km from where the keep-out falls, so the chain goes on whatever the missiles do to it; on
+# the default run the first sinks it, the engine presumes it lost and op-2 confirms the loss
+# (rules 30; live: you, with engagement authority). Our sensors observe the act; the engine
+# declares the drone hostile by rule (rules 9); op-auto confirms the declaration (live: you). The timeline nominates FURY 1 naming
 # the AIM-120C (agent-scripted, a script, saying so) unless a nomination already stands; op-2 and
 # op-3 sign (live: you, and a scripted cosigner); the engine releases the missile once FURY 1 is
 # within its 1 to 90 km of slant range and its flight lands inside the plan's time, the picture
@@ -72,18 +73,24 @@ its second at about 3:00; out of missiles it turns for home along its way in.
 Each missile can hit HUNTER 2 (0.90), and a hit can stop it (0.45 of hits) or sink it (0.20).
 Nothing else is hostile, and nothing else flies but ours.
 Why HUNTER 2 (bd murmur-qese): the chain needs HUNTER 1, 1 km from the drone, whose camera holds
-its identity and fix; sunk, HUNTER 1 would also stay in the keep-out (its last report counts
-anywhere it could have gone until an operator accepts it as lost, which no script does), and the
-chain would stop after the declaration (when the drone fired at HUNTER 1 it did whenever a missile
-sank it: 7 of seeds 1 to 20 headless, and seed 127). HUNTER 2, sunk 3.5 km from the effect point,
-reaches it at its 6 m/s cruise only some nine minutes later, after the strike; stopped, it still
-reports where it is.
-The default run (the contacts' seed 127, measured headless 2026-11-06, and on 2026-11-10 with the
-drone slowing to its hover, each time below within a second): the first missile hits and sinks
-HUNTER 2 some 7 s after its launch (its second strikes the wreck: recorded, never drawn
-again). HUNTER 1's camera saw the launch (and HUNTER 2's): the engine attributes the act to the
-drone's track at 0.99, declares it hostile by rule at about 1:57, and op-auto confirms within
-seconds (live: you, in the Review list). HUNTER 1's panoramic camera holds the drone, and FURY 1's
+its identity and fix. Under rules 29 a sunk HUNTER 1 also stayed in the keep-out (its last report
+counted anywhere its cruise speed reached until an operator accepted it for one engagement, which
+no script did), and when the drone fired at HUNTER 1 the chain stopped after the declaration
+whenever a missile sank it (7 of seeds 1 to 20 headless, and seed 127); from rules 30 the engine
+presumes a sunk vessel lost and op-2 confirms it on autoplay, out of every keep-out, but its camera
+is gone all the same. HUNTER 2, sunk 3.5 km from the effect point, is presumed lost on the act
+against it and its struck report and, on autoplay, confirmed lost by op-2 within seconds (live:
+until you confirm it in the Review list it counts where its picket, its failsafe's way home or a
+drift at 2.5 m/s could take it, under 300 m of drift by the strike); stopped, it still reports
+where it is.
+The default run (the contacts' seed 127, measured headless 2026-11-06, on 2026-11-10 with the
+drone slowing to its hover, and on 2026-11-13 under rules 30, each time below within a second): the
+first missile hits and sinks HUNTER 2 some 7 s after its launch (its second strikes the wreck:
+recorded, never drawn again). HUNTER 1's camera saw the launch (and HUNTER 2's): the engine
+attributes the act to the drone's track at 0.99, declares it hostile by rule at about 1:57, and
+op-auto confirms within seconds (live: you, in the Review list). The engine presumes HUNTER 2 lost
+at about 2:14 (the act against it and its struck report) and op-2 confirms the loss at about 2:17
+(`confirm_node_losses`; live: you, an operator with engagement authority, in the Review list). HUNTER 1's panoramic camera holds the drone, and FURY 1's
 camera from far off. At 3:20 the timeline nominates FURY 1 with the AIM-120C AMRAAM
 (agent-scripted), unless a nomination stands; op-2 and op-3 sign the plan within seconds; FURY 1
 is dispatched, and the engine releases the missile at about 3:48 once FURY 1 is within its slant
