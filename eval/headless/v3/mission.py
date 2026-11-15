@@ -80,9 +80,12 @@ def mission_text(world: str) -> str:
     m = load_world(world).mission
     place = PLACES.get(world, "the protected point")
     km = m.radius_m / 1000.0
+    # the circle's centre as a point (the owner's decision of 2026-11-15, bd murmur-isxg): the words
+    # alone left an agent guessing where "the bay entrance" is by a kilometre or two
+    lon, lat = m.center
     return (
-        f"Identify every contact of unknown, suspect or hostile affiliation that comes within {km:g} km of {place}, "
-        f"in time: one on the surface within {SURFACE_GRACE_S:.0f} seconds of its coming within {km:g} km, one in the "
+        f"Identify every contact of unknown, suspect or hostile affiliation that comes within {km:g} km of {place} "
+        f"(the circle's centre is [{lon:.4f}, {lat:.4f}], longitude then latitude), in time: one on the surface within {SURFACE_GRACE_S:.0f} seconds of its coming within {km:g} km, one in the "
         f"air within {AIR_GRACE_S:.0f} seconds, one on the ground within {GROUND_GRACE_S:.0f} seconds, and one under the "
         f"water within {SUBSURFACE_GRACE_S:.0f} seconds. A contact counts as identified when the picture shows its "
         f"kind at a confidence of {RESOLVE_CONF:g} or more without an identity conflict: from EO/IR, or its own true "

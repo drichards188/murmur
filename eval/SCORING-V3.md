@@ -70,14 +70,23 @@ Every agent receives the mission of its world as its situation brief, verbatim (
 mission.py `mission_text`; its SHA-256 is in each situation's stated truth). For San Diego:
 
 > Identify every contact of unknown, suspect or hostile affiliation that comes within 3 km of the bay
-> entrance off Ballast Point, in time: one on the surface within 60 seconds of its coming within 3 km,
+> entrance off Ballast Point (the circle's centre is [-117.2290, 32.6860], longitude then latitude), in
+> time: one on the surface within 60 seconds of its coming within 3 km,
 > one in the air within 30 seconds, one on the ground within 60 seconds, and one under the water
 > within 300 seconds. A contact counts as identified when the picture shows its kind at a confidence of
 > 0.6 or more without an identity conflict: from EO/IR, or its own true AIS, for a contact on the
 > surface; from EO/IR for one in the air or on the ground; from sonar for one under the water, where
 > its class (submerged, or a person in the water) is enough. Keep every vehicle above its reserve.
 
-The Golden Gate's names the Golden Gate Bridge. Labels derive from it.
+The Golden Gate's names the Golden Gate Bridge and its centre [-122.4783, 37.8199]. Labels derive from it.
+The centre as a point is the owner's decision of 2026-11-15 (bd murmur-isxg): before it the brief named the
+place in words only, and in the model pilot (17.11) the model put San Diego's drone "2 to 4 km from
+Ballast Point depending on where you put the bay entrance". It changed the text and its SHA-256, so a
+model record from before it (the smoke, the cost check, the pilot) was briefed without the point; the
+free agents do not read the brief. The same day San Diego's playbook watch circle and protected point
+moved onto the mission's centre (sim/situations/san-diego-watch.toml, bd murmur-4h2z): they stood at
+lon -117.2320, 280 m west, so the playbook and the watch officer's stakes judge drew another circle
+than the scorer's.
 
 ## 2. Instruments
 
