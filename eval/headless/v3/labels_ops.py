@@ -68,10 +68,12 @@ NOMINATION_LABELS = ("refused", "harmful", "effective", "unexecuted", "unwarrant
 COVER_SHARE = 1.0
 INSTRUMENTS = {"nomination": "v3.nomination", "review": "v3.review_decision", "collect": "v3.collect",
                "cover": "v3.cover", "gap_need": "v3.gap_need", "cover_need": "v3.cover_need",
-               "engagement": "v3.engagement", "review_item": "v3.review_item"}
+               "engagement": "v3.engagement", "review_item": "v3.review_item", "tasked_hold": "v3.tasked_hold"}
 #: version 4 since 2026-11-15 (choice 40): a collect or a cover that served no need is `justified` or
-#: `not_justified` (2.10's `useless` until then)
-INSTRUMENT_VERSIONS = {"collect": "4", "cover": "4"}
+#: `not_justified` (2.10's `useless` until then); `tasked_hold` is new (choice 41)
+INSTRUMENT_VERSIONS = {"collect": "4", "cover": "4", "tasked_hold": "4"}
+#: the kinds that take a vehicle off its run (v2's recovery kinds)
+OFF_RUN_KINDS = V2.RECOVERY_KINDS
 
 
 def instrument(name: str) -> dict[str, str]:
@@ -552,6 +554,28 @@ def cover_need_of(area: dict[str, Any], needs: list[dict[str, Any]]) -> dict[str
         if r is not None and r[0] <= c[1]:
             return n
     return None
+
+
+def tasked_hold(a: dict[str, Any], rec: dict[str, Any]) -> dict[str, Any]:
+    """Whether the stated tasking supported a hold or an rtl (choice 41): it named a stated cover
+    need's vehicle (F14's run: the brief's tasking paragraph names the run, its vehicle and its GNSS
+    requirement) and came before that run's scheduled end with a predicted outage of the run still to
+    come (`outage_samples`: what a cover over its area, or the order form's dry run of one, shows).
+    Taking the vehicle off its run ahead of the outage is what the tasking asks; the label is
+    `justified`, by `tasking`, when the order served no need."""
+    out: dict[str, Any] = {"tasked": False, "need": None, "instrument": instrument("tasked_hold")}
+    if a.get("kind") not in OFF_RUN_KINDS or a.get("created") is None:
+        return out
+    t = float(a["created"])
+    uids = {str(u) for u in a.get("uids") or []}
+    for n in stated(rec).get("cover_needs") or []:
+        if str(n["uid"]) not in uids or t > float(n["end_s"]):
+            continue
+        ahead = [s for s in outage_samples(rec, n) if s > t]
+        if ahead:
+            out.update(tasked=True, need=n["id"], outage_s=ahead[0])
+            return out
+    return out
 
 
 def cover_label(a: dict[str, Any], rec: dict[str, Any]) -> dict[str, Any]:

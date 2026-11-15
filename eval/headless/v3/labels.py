@@ -32,9 +32,11 @@ their runs, fault needs, the reserve, the precedence); what changes is written h
   with no velocity taken to come straight in at the air threat speed, the honest ceiling's rule) or
   it did something useful (`cleared_doubt`: its vehicle's own sensor of the aimed contact's domain
   raised its hits on the contact's track while it flew the order, and the track, in doubt when the
-  order was made, reached the mission's level by the order's end); **not_justified** otherwise. A
-  collect or a cover is split as labels_ops.py `space_label` says, on the context the agent could
-  see (a stated need's area, a predicted outage).
+  order was made, reached the mission's level by the order's end), or, for a hold or an rtl of F14's
+  stated run's vehicle ahead of the run's predicted outage, the stated tasking supported it
+  (labels_ops.py `tasked_hold`, choice 41); **not_justified** otherwise. A collect or a cover is
+  split as labels_ops.py `space_label` says, on the context the agent could see (a stated need's
+  area, a predicted outage).
 - **Nominations** (`engage`, 2.8) and **review decisions** (2.9), judged against truth: their own
   labels (`nomination_labels`, `review_labels`), and **collect** and **cover** (2.10): built in
   labels_ops.py with F14-F16's own needs (`ops` in the labels, where a situation states them).
@@ -106,8 +108,9 @@ INSTRUMENTS = {
 #: `cleared_doubt` is new
 INSTRUMENT_VERSIONS = {"action": "4", "supported": "4", "cleared": "4"}
 #: the labels of an order that served no need (2.5 item 6), and why one is justified (`justified_by`):
-#: the picture supported it (`supported_on_picture`), it cleared a doubt (`cleared_doubt`), or, for a
-#: collect or a cover, the stated tasking supported it (labels_ops.py `no_need`)
+#: the picture supported it (`supported_on_picture`), it cleared a doubt (`cleared_doubt`), or the
+#: stated tasking supported it (a collect or a cover, labels_ops.py `no_need`; a hold or an rtl of
+#: F14's run's vehicle ahead of its predicted outage, `tasked_hold`, choice 41)
 NO_NEED_LABELS = ("justified", "not_justified")
 JUSTIFIED_BY = ("picture", "cleared", "tasking")
 
@@ -666,10 +669,14 @@ def label_actions(rec: dict[str, Any], pic: Picture, truth: Truth, needs_list: l
                     lab["redundant_because"] = "served" if was_served else "credited"
                 else:
                     # it served no need (choice 40): justified when the picture supported it or it
-                    # cleared a doubt the picture had, not justified when neither
+                    # cleared a doubt the picture had, or (a hold or an rtl of F14's stated run's
+                    # vehicle ahead of its predicted outage) the stated tasking supported it (choice
+                    # 41); not justified when none
                     lab["cleared"] = cleared_doubt(a, aim, pic, truth)
+                    lab["tasked"] = OPS.tasked_hold(a, rec)
                     by = [w for w, ok in (("picture", lab["supported"]["supported"]),
-                                          ("cleared", lab["cleared"]["cleared"])) if ok]
+                                          ("cleared", lab["cleared"]["cleared"]),
+                                          ("tasking", lab["tasked"]["tasked"])) if ok]
                     label = "justified" if by else "not_justified"
                     lab["justified_by"] = by
         lab["label"] = label

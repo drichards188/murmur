@@ -204,6 +204,20 @@ def test_a_cover_is_useful_when_the_predicted_outage_was_avoided():
     assert not late["served"] and late["cause"] == "not_asked", "asked after the run began"
 
 
+def test_a_hold_of_the_stated_run_s_vehicle_ahead_of_its_outage_is_justified():
+    """A hold or an rtl that served no need is justified by the stated tasking when it names F14's run
+    vehicle before the run's end with a predicted outage of the run still to come (choice 41): taking
+    the vehicle off its run ahead of the outage is what the tasking asks. After the outage, or with no
+    stated run, it is judged on the picture alone (here none: not justified)."""
+    a = by_intent(cover_world("fail", held_at=550.0))[32]
+    assert a["label"] == "justified" and a["justified_by"] == ["tasking"], (a["label"], a.get("tasked"))
+    assert a["tasked"] == {"tasked": True, "need": "gnss-1", "outage_s": 600.0,
+                           "instrument": {"name": "v3.tasked_hold", "version": "4"}}
+    assert by_intent(cover_world("fail", held_at=650.0))[32]["label"] == "not_justified", "after the outage"
+    assert by_intent(cover_world("fail", held_at=550.0, stated=False))[32]["label"] == "not_justified"
+    assert by_intent(cover_world("fail", held_at=550.0, end_s=500.0, outage_at=480.0))[32]["label"] == "not_justified"
+
+
 def box(west: float, east: float, south: float = 37.806, north: float = 37.81) -> dict[str, Any]:
     return {"kind": "polygon", "ring": [[west, south], [east, south], [east, north], [west, north]]}
 

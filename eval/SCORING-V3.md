@@ -230,6 +230,11 @@ Orbit, patrol, hold and rtl (the movers' tasks), `track` (the antenna tracker's)
      order's end; an identify's, its look's end), and the run's vehicle's own sensor of the contact's
      domain (2.2's support, as a contribution counts it) raised its hits on the track from the run's
      start to that sample.
+   - **The stated tasking supported it** (choice 41; labels_ops.py `tasked_hold`): a hold or an rtl
+     of a stated cover need's vehicle (F14's run: the brief's tasking paragraph names the run, its
+     vehicle and its GNSS requirement) made before the run's scheduled end with a predicted outage
+     of the run still to come (what a cover over its area, or the order form's dry run of one,
+     shows).
    - A collect or a cover is split on the context the agent could see (2.10).
 
    The judgment measure is not_justified per situation-hour; the burden is reported apart (3.4b).
@@ -723,6 +728,24 @@ support it and it did nothing useful." Built as 2.5 item 6, 2.10 and 3 say; reco
     not justified together; 17.9 and 17.10 stand as registered and recorded. *Alternative*: keep
     one label for an order that served no need and report the picture's support beside it (v2's two
     counts, the former reading). Made by the owner.
+
+Choice 41 came with building choice 40 (2026-11-15), for the owner; built as recommended.
+
+41. **A hold or an rtl of F14's run vehicle ahead of its predicted outage is justified by the
+    stated tasking** (2.5 item 6): it names a stated cover need's vehicle, before the run's
+    scheduled end, with an outage of the run predicted still to come. Choice 40's two tests read the
+    picture's contacts, and a hold that keeps a run out of a GNSS outage aims at none, so it was not
+    justified, though the tasking supported it and it did something useful. In the model pilot the
+    model held the run's vehicle twice in each of 4 F14 situations (8 holds), each after a dry run
+    of a cover that predicted the shortfall ("Hold FERRET 1 through the predicted GNSS shortfall at
+    the start of its run"); the second hold each time took the vehicle off the run before the
+    outage. The basic oracle's 6 holds, how it serves the cover need, are the same case. No
+    playbook order is. *Alternative*: the moving kinds judged on the picture alone (those 14
+    not justified), or a hold credited only when the run was in fact kept out of the outage after
+    it (the model's first holds, before the run's start, were overridden when the scripted run
+    started).
+    **Recommend** as built: the label judges what the agent could see when it ordered, as choice 40
+    does, and the cover need (2.10) still credits only a cover that was asked.
 
 ## 10. Gates (dev)
 
