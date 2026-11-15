@@ -135,6 +135,14 @@
 //!     steady class's velocity honest, no altitude; keep-outs missed three cases by 9 to 13 m 3 s
 //!     ahead and the break without cameras by up to 185 m (3 s) and 36 m (10 s); the tracker alone
 //!     failed five times, all in hard turns (docs/SENSING.md, "Aircraft velocity, the change").
+//! 20. [`physical_held_out_seven_cases`] on [`AIR_PHYSICAL_HELD_OUT_SEVEN_SEEDS`] (551-580) was
+//!     written before murmur-m4fc's change (the owner's decision of 2026-11-15: a 2D radar's
+//!     bearing segment bounded by the radar's own height and the band of heights aircraft fly in),
+//!     with two more mixes (Golden Gate's fleet with the MQ-9B at 3,000 m, as golden-gate-v3 spawns
+//!     it, with and without its cameras: [`SEVEN_MIXES`]) and a class no earlier set has (aircraft
+//!     at 5,500 and 7,000 m). The change is developed on the tuning sets (101-220, and the world
+//!     tuning set on 101-130) only, and the new set is run once, after it
+//!     ([`air_calib_physical_held_out_seven`]).
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
@@ -186,6 +194,12 @@ pub const AIR_PHYSICAL_HELD_OUT_FIVE_SEEDS: RangeInclusive<u64> = 401..=430;
 /// the fresh sets started at 521. Spent: the next air check needs a fresh set from 551 (551-580
 /// and 581-610 are earmarked for the surface and the ground).
 pub const AIR_PHYSICAL_HELD_OUT_SIX_SEEDS: RangeInclusive<u64> = 521..=550;
+/// The physical sensing model's seventh air held-out set's seeds
+/// ([`physical_held_out_seven_cases`]): written before murmur-m4fc's tracker change (a 2D radar's
+/// bearing segment bounded by the radar's own height and the band aircraft fly in), run once after
+/// it. 221-550 were spent; the air took the first fresh set, so the surface's and the ground's next
+/// sets start at 581 (581-610, 611-640).
+pub const AIR_PHYSICAL_HELD_OUT_SEVEN_SEEDS: RangeInclusive<u64> = 551..=580;
 /// The rules the tracker before this calibration was judged under (the keep-out's regions).
 const BEFORE_RULES: u32 = 12;
 
@@ -296,11 +310,21 @@ pub enum Mix {
     /// ESM receivers' fixes alone (a third of the F15 dev check's no-velocity aircraft blockers
     /// had no camera's fix in the 10 s before).
     WorldNoCameras,
+    /// Golden Gate's fleet as golden-gate-v3 spawns it: the MQ-9B at 3,000 m (where world v3's
+    /// episodes meet it: the F2 pilot's REAPER 1, whose radar's bearings left a drone's track
+    /// kilometres short, eval/SCORING-V3.md 17.14), the rest as [`Mix::World`].
+    World3k,
+    /// The same without its cameras.
+    World3kNoCameras,
 }
 
 pub const MIXES: [Mix; 3] = [Mix::Radar, Mix::RadarEoIr, Mix::All];
 /// The mixes of [`physical_held_out_six_cases`]: [`MIXES`] and Golden Gate's own.
 pub const WORLD_MIXES: [Mix; 5] = [Mix::Radar, Mix::RadarEoIr, Mix::All, Mix::World, Mix::WorldNoCameras];
+/// The mixes of [`physical_held_out_seven_cases`]: [`WORLD_MIXES`] and Golden Gate's with the MQ-9B
+/// at 3,000 m.
+pub const SEVEN_MIXES: [Mix; 7] =
+    [Mix::Radar, Mix::RadarEoIr, Mix::All, Mix::World, Mix::WorldNoCameras, Mix::World3k, Mix::World3kNoCameras];
 
 impl Mix {
     pub fn name(self) -> &'static str {
@@ -310,6 +334,8 @@ impl Mix {
             Mix::All => "all sensors",
             Mix::World => "Golden Gate",
             Mix::WorldNoCameras => "GG no cameras",
+            Mix::World3k => "GG MQ-9B 3 km",
+            Mix::World3kNoCameras => "GG 3 km no cams",
         }
     }
 
@@ -325,9 +351,9 @@ impl Mix {
         };
         let placed = |uid: u64, e: f64, n: f64, alt: f64, mast: f64, sensors: Vec<(SensorType, f64)>| Obs { uid, e, n, alt, mast, sensors, specs: None };
         // golden-gate-v3's fleet (sim/fleets/golden-gate-v3.toml), metres from the bridge
-        let world = || {
+        let world_at = |mq9b_alt: f64| {
             vec![
-                Obs::platform(11, "mq9b", -5300.0, -1700.0, 7600.0),
+                Obs::platform(11, "mq9b", -5300.0, -1700.0, mq9b_alt),
                 Obs::platform(12, "rq4", -28100.0, -13400.0, 18000.0),
                 Obs::platform(13, "seahunter", 3500.0, -450.0, 0.0),
                 Obs::platform(14, "corsair", 300.0, 1160.0, 0.0),
@@ -343,8 +369,10 @@ impl Mix {
                 placed(4, -1500.0, 2000.0, 300.0, 0.0, vec![(SensorType::EoIr, 3_000.0)]),
                 placed(5, 1200.0, 600.0, 60.0, 0.0, vec![(SensorType::EoIr, 1_500.0)]),
             ],
-            Mix::World => world(),
-            Mix::WorldNoCameras => world().into_iter().map(|o| o.without(SensorType::EoIr)).collect(),
+            Mix::World => world_at(7600.0),
+            Mix::WorldNoCameras => world_at(7600.0).into_iter().map(|o| o.without(SensorType::EoIr)).collect(),
+            Mix::World3k => world_at(3000.0),
+            Mix::World3kNoCameras => world_at(3000.0).into_iter().map(|o| o.without(SensorType::EoIr)).collect(),
         }
     }
 }
@@ -948,6 +976,94 @@ pub fn physical_held_out_six_cases() -> Vec<AirCase> {
             |_, len| fly(len, (-9000.0, 2000.0, 90.0, 72.0), 8.0, 3.0, |t, _, _, _| if t < 110.0 { (90.0, 72.0) } else { (320.0, 86.0) }),
         ),
         air("a far transit at 88 m/s east, 15 to 22 km south of the USV, 2900 m", "far transit", "light_aircraft", 2900.0, straight(-10000.0, -18000.0, 90.0, 88.0)),
+    ]
+}
+
+/// The physical sensing model's seventh air held-out set (murmur-m4fc: a 2D radar's bearing segment
+/// bounded by the radar's own height and the band of heights aircraft fly in; see the module doc):
+/// written before any change to the tracker for it, the classes of [`physical_held_out_six_cases`]
+/// in yet other variants, F2's drones as the MQ-9B's radar meets them (a hobby drone loitering
+/// without an emitter 5 and 9 km from it, a small drone inbound silent and one with its datalink
+/// on), and a class no earlier set has: aircraft high in the band (5,500 and 7,000 m), whose
+/// segment's near end the band moves off the radar. Run once, on
+/// [`AIR_PHYSICAL_HELD_OUT_SEVEN_SEEDS`] and [`SEVEN_MIXES`], when the change is done, never tuned
+/// on.
+pub fn physical_held_out_seven_cases() -> Vec<AirCase> {
+    vec![
+        air("straight 58 m/s east-north-east, 2 km north of the USV, 1100 m", "straight", "light_aircraft", 1100.0, straight(-6000.0, -1000.0, 70.0, 58.0)),
+        air("straight 70 m/s south, 6 km east of the USV, 3400 m", "straight", "light_aircraft", 3400.0, straight(6000.0, 7000.0, 180.0, 70.0)),
+        air("loitering 750 m at 47 m/s, 950 m", "loitering", "light_aircraft", 950.0, circle(2000.0, 2500.0, 750.0, 47.0, true)),
+        air("loitering 1100 m at 36 m/s anticlockwise, 1300 m", "loitering", "light_aircraft", 1300.0, circle(-1500.0, -500.0, 1100.0, 36.0, false)),
+        air("small UAS circling 180 m at 14 m/s, 80 m", "loitering", "unknown_uas", 80.0, circle(1500.0, -2200.0, 180.0, 14.0, true)),
+        air("a hobby drone loitering 70 m at 5 m/s, 110 m, no emitter, 5 km from the MQ-9B", "loitering", "small_drone", 110.0, circle(-1800.0, 2300.0, 70.0, 5.0, false))
+            .emitting(false),
+        air("a hobby drone loitering 90 m at 6 m/s, 75 m, no emitter, 9 km from the MQ-9B", "loitering", "small_drone", 75.0, circle(3000.0, -4000.0, 90.0, 6.0, true))
+            .emitting(false),
+        air(
+            "a sightseeing loop at 52 m/s, turns at 6 deg/s, 550 m",
+            "route",
+            "light_aircraft",
+            550.0,
+            route(vec![(-5000.0, 3000.0), (1500.0, 4500.0), (3500.0, 500.0), (-2000.0, -500.0)], 52.0, 6.0),
+        ),
+        air(
+            "a tour helicopter's route at 40 m/s, turns at 10 deg/s, 250 m, transponder on",
+            "route",
+            "helicopter",
+            250.0,
+            route(vec![(-3000.0, 1500.0), (0.0, 2500.0), (2500.0, 1500.0), (1500.0, -1000.0), (-1500.0, -1500.0)], 40.0, 10.0),
+        )
+        .emitting(true),
+        air(
+            "160 s straight at 55 m/s, then 100 degrees right at 6 deg/s, 900 m",
+            "one turn",
+            "light_aircraft",
+            900.0,
+            one_turn(-6000.0, 4000.0, 120.0, 55.0, 160.0, 100.0, 6.0),
+        ),
+        air("weave 54 m/s, 30 degrees either way over 45 s, 1200 m", "weave", "light_aircraft", 1200.0, weave(5000.0, 3000.0, 250.0, 54.0, 30.0, 45.0)),
+        air(
+            "random turns at 44 m/s, 40 to 130 degrees at 6 deg/s every 20 to 50 s, 800 m",
+            "random turns",
+            "light_aircraft",
+            800.0,
+            random_turns(1500.0, -500.0, 44.0, (20.0, 50.0), (40.0, 130.0), 6.0, 0x6F),
+        ),
+        air("42 to 68 m/s at 80 s, then 45 at 200 s, at 2 m/s^2, straight, 1400 m", "speed change", "light_aircraft", 1400.0, |_, len| {
+            fly(len, (-7000.0, 500.0, 80.0, 42.0), 0.0, 2.0, |t, _, _, _| (80.0, if t < 80.0 { 42.0 } else if t < 200.0 { 68.0 } else { 45.0 }))
+        }),
+        air("helicopter at 30 m/s west, hovers 60 s from 2.5 m/s^2, then 38 m/s south, 200 m, transponder on", "hover and go", "helicopter", 200.0, |_, len| {
+            fly(len, (3000.0, 2500.0, 270.0, 30.0), 25.0, 2.5, |t, _, _, _| {
+                if t < 90.0 { (270.0, 30.0) } else if t < 150.0 { (270.0, 0.0) } else { (180.0, 38.0) }
+            })
+        })
+        .emitting(true),
+        air(
+            "a small drone inbound at 20 m/s from 5.5 km, then hovering, 90 m, datalink on",
+            "drone inbound",
+            "small_drone",
+            90.0,
+            |_, len| fly(len, (-2000.0, 5500.0, 165.0, 20.0), 30.0, 2.0, |t, _, _, _| (165.0, if t < 240.0 { 20.0 } else { 0.0 })),
+        )
+        .emitting(true),
+        air(
+            "a small drone inbound at 16 m/s from 4.5 km, then hovering, 120 m, no emitter",
+            "drone inbound",
+            "small_drone",
+            120.0,
+            |_, len| fly(len, (4200.0, 1500.0, 245.0, 16.0), 30.0, 2.0, |t, _, _, _| (245.0, if t < 260.0 { 16.0 } else { 0.0 })),
+        )
+        .emitting(false),
+        air(
+            "an approach south at 70 m/s, then a break 140 degrees left at 8 deg/s to 84 m/s at 3 m/s^2, 800 m",
+            "approach and break",
+            "light_aircraft",
+            800.0,
+            |_, len| fly(len, (-1000.0, 9000.0, 180.0, 70.0), 8.0, 3.0, |t, _, _, _| if t < 100.0 { (180.0, 70.0) } else { (40.0, 84.0) }),
+        ),
+        air("a far transit at 86 m/s north, 14 km east of the USV, 3100 m", "far transit", "light_aircraft", 3100.0, straight(14000.0, -15000.0, 0.0, 86.0)),
+        air("a high transit at 90 m/s west, 5 km north of the USV, 5500 m", "high", "light_aircraft", 5500.0, straight(9000.0, 2000.0, 270.0, 90.0)),
+        air("high, loitering 2000 m at 80 m/s, 7000 m", "high", "light_aircraft", 7000.0, circle(-1000.0, 4000.0, 2000.0, 80.0, true)),
     ]
 }
 
@@ -1695,6 +1811,23 @@ fn air_calib_physical_held_out_six() {
     eprintln!("--- the criteria on the physical model: {}", if bad.is_empty() { "all hold".to_string() } else { format!("\n{}", bad.join("\n")) });
 }
 
+/// The physical sensing model's seventh air held-out set (murmur-m4fc, a 2D radar's bearing segment
+/// bounded by the radar's height and the band aircraft fly in): [`physical_held_out_seven_cases`] on
+/// [`AIR_PHYSICAL_HELD_OUT_SEVEN_SEEDS`] and [`SEVEN_MIXES`], written before the tracker change, run
+/// once after it, the criteria of [`failures_on`] reported on every mix, and per class and mix the
+/// velocity share and error (`cargo test -p murmur-bridge --release -- --ignored --exact
+/// tracks::tests::calib_air::air_calib_physical_held_out_seven --nocapture`). A record, not a
+/// target: a later change is judged on a set written for it.
+#[test]
+#[ignore]
+fn air_calib_physical_held_out_seven() {
+    let (mut table, mut summary) = (Vec::new(), Vec::new());
+    let bad = failures_with_summary(&physical_held_out_seven_cases(), AIR_PHYSICAL_HELD_OUT_SEVEN_SEEDS, &mut table, true, &SEVEN_MIXES, &mut summary);
+    eprintln!("{}", table.join("\n"));
+    eprintln!("--- velocity per class and mix (share of samples with one; its mean normalized error, expected 2)\n{}", summary.join("\n"));
+    eprintln!("--- the criteria on the physical model: {}", if bad.is_empty() { "all hold".to_string() } else { format!("\n{}", bad.join("\n")) });
+}
+
 /// The same criteria on the tuning sets (what the air constants were chosen on).
 #[test]
 fn on_the_air_tuning_sets_the_tracker_is_honest_and_a_keep_out_holds() {
@@ -1882,14 +2015,19 @@ fn air_calib_table() {
 /// The air tracker on the physical sensing model's detections of the tuning sets (a tuning aid
 /// for the physical model, murmur-7vp: `cargo test -p murmur-bridge --release
 /// air_calib_physical_tuning -- --ignored --nocapture`; `AIR_SET=tuning|one|two|three|world`
-/// for one set; `AIR_MIXES=world` on [`WORLD_MIXES`]): the same table and criteria, reported, and
+/// for one set; `AIR_MIXES=world` on [`WORLD_MIXES`], `seven` on [`SEVEN_MIXES`]): the same table
+/// and criteria, reported, and
 /// each class's velocity share and error.
 #[test]
 #[ignore]
 fn air_calib_physical_tuning() {
     let (mut table, mut summary) = (Vec::new(), Vec::new());
     let mut bad = Vec::new();
-    let mixes: &[Mix] = if std::env::var("AIR_MIXES").is_ok_and(|m| m == "world") { &WORLD_MIXES } else { &MIXES };
+    let mixes: &[Mix] = match std::env::var("AIR_MIXES").as_deref() {
+        Ok("world") => &WORLD_MIXES,
+        Ok("seven") => &SEVEN_MIXES,
+        _ => &MIXES,
+    };
     for (cases, seeds) in tuning_sets() {
         bad.extend(failures_with_summary(&cases, seeds, &mut table, true, mixes, &mut summary));
     }
@@ -2409,6 +2547,7 @@ fn the_air_seed_sets_are_disjoint_from_each_other_and_the_surface_sets() {
         AIR_PHYSICAL_HELD_OUT_FOUR_SEEDS,
         AIR_PHYSICAL_HELD_OUT_FIVE_SEEDS,
         AIR_PHYSICAL_HELD_OUT_SIX_SEEDS,
+        AIR_PHYSICAL_HELD_OUT_SEVEN_SEEDS,
     ];
     for (i, a) in sets.iter().enumerate() {
         for b in &sets[i + 1..] {
