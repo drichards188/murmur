@@ -2447,6 +2447,64 @@ Rules versions:
   it), `v31-identify-a-small-drone-close-in-scenario-144.jsonl` (relabelled rules 30, its reaches
   by class and its plan's class are caught, and with them taken out its plan).
 
+- **32** (`REACH_NOW_SINCE`, bd murmur-ahss, the owner's "I want those scored" of 2026-11-15 for
+  scoring v3's F9 night and fog; no policy schema change, schema 7; a v32 log carries every rules
+  31 behaviour too): *a sensor's reach is judged under the conditions where its vehicle is now*.
+  Up to rules 31, on the physical sensing model, the engine read each sensor's catalog
+  `physical_reach_m`, a clear day's (20 km of visibility, the sun 45 degrees up, sea state 2) at
+  the platform's operating height: in fog of 50 m visibility a Puma's camera reaches a boat about
+  77 m along the ground where the catalog says 14,470 m, and a camera with a visible channel only
+  reaches nothing at night, yet an identify order was flown at a clear day's standoff and an
+  assessment counted the effect point covered. From rules 32, for a sensor whose facts carry a
+  physical reach, the engine reads its reach now: the vehicle fact `reach_now`
+  (`reach::ReachNow`, stamped when computed, judged fresh as any fact), each sensor's detection
+  reach by domain along the ground and an EO/IR's identification reach by domain and by size
+  class (each class's smallest member) as slant range, with the visibility, the sun's elevation
+  and the height it is for, and whether the camera has a thermal channel. The bridge computes it
+  outside the engine's lock before each tick, from the physical model's prediction where the
+  vehicle is in the conditions the running model senses in there (`tracks::reach`, the reach
+  display's computation, its inputs rounded so vehicles alike share one; `GET /api/sensing/reach`
+  shows the same figures).
+  - `identify::plan` takes the smaller of rules 31's planning reach (an eighth of the camera's
+    clear-day detection reach, `IDENTIFY_PX_SHARE`) and the camera's identification reach now (the
+    model's own figure): the conditions only take reach away (DECISIONS.md "Rules 32: reach under
+    the conditions now"); the standoff is still 70 % of it as slant range. It refuses where the
+    camera identifies nothing from where the vehicle is, or only nearer than its height or tightest
+    orbit keeps it, saying the conditions and the reach when the conditions shortened it ("in fog
+    of 50 m visibility PUMA 1's camera identifies a small_air contact only within about 160 m: its
+    tightest orbit, 66 m, keeps it beyond that"; "at night MAGURA 1's camera identifies no
+    small_surface contact from where it is now: it has no thermal channel"; the words from
+    `ReachNow::conditions`: night below 6 degrees down, twilight, the sun under 10 degrees up, fog
+    under 1 km, a visibility under 10 km), and records them on the plan (`Plan::conditions`, in
+    `intent.dispatched`'s `identify`) and in its pass detail. Without a fresh fact it cannot be
+    evaluated (never a clear day's reach in its place). The refusals name the vehicle by its
+    callsign, which the engine copies into the decision's logged `callsigns`. On a clear day it
+    plans as rules 31 did (a Puma's orbit on a small drone from 150 m up 788 m, an X10's from
+    100 m 420 m), but the MQ-9B from 7,600 m identifies no small drone at all (rules 31 refused it
+    for its height); a Puma's LWIR at night keeps its clear-day standoff on a small boat, and is
+    refused for a small drone (its reach of one about 202 m).
+  - `engage::covering_sensor` (the assessment) counts a sensor covering the effect point only
+    within its detection reach now, and none while that is not known.
+  The engine logs the fact only where a decision reads it (an identify order's decisions, an
+  assessment's `engage.observe` steps; `WorldSnapshot::subset_for` drops it elsewhere), drops it
+  and the callsigns it words under older rules. The legacy model's facts carry no physical reach,
+  so a run on it decides as before (v1, v2, the Harbor watch golden). Marker (a log claiming rules
+  31 or older can't carry it): `reach_now`. Replay reads the logged reaches and recomputes every
+  plan and observation from them. Scenarios 146 (PUMA 1 refused in fog, sent once it thins to 1.2
+  km: an orbit of 599 m; `--rules 31` sends it at once at 788 m), 147 (a Magura refused at night,
+  no thermal channel; PUMA 1 sent at the clear day's orbit, its LWIR reaching farther) and 148
+  (scenario 131's Javelin in fog: no cover, assessed unknown; `--rules 31` ceased), and 144 and
+  145 given a clear day's reach now (144 as before; 145's MQ-9B refused for identifying no small
+  drone from 7,600 m up); tamper `edit_reach` (every reach now a hundred times as long: caught at the refusal, and at
+  the observations); the scenario file's `reach_now` (a vehicle's and a `vehicle` step's).
+  `tests/rules32.rs`; the bridge's `tracks::tests::reach` holds the fact to the display's figures
+  and the catalog's on a clear day, its decision tests the tick's preparation. Rules 32 was built
+  in stages behind `RULES_NEWEST` and made the default last; tests written for rules 31 on the
+  physical reaches decide under it by name. Fixtures (a clean build of the branch):
+  `tests/data/audit/v32-engagement-scenario-01.jsonl` (no reach now: as rules 31 decided it),
+  `v32-identify-in-fog-refused-until-it-lifts-scenario-146.jsonl` (relabelled rules 31, its reach
+  now is caught, and with it taken out its refusal).
+
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
 `seen_max_age_s`, an unreleased build's name for it, is still read; **3** adds `[queue]`

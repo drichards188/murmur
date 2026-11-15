@@ -3686,3 +3686,51 @@ and an identify orbit centred there circled short of it.
   hundred metres) would close most of what is left (a drone under REAPER 1 still sits a median 0.9
   km short), on a radar's size call made at low confidence; and the picture showing the segment
   itself (murmur-xj6) is unchanged. Both are the owner's call.
+
+## 2026-11-15: Rules 32: reach under the conditions now (murmur-ahss)
+
+The owner's "I want those scored" for scoring v3's F9 night and fog. The decision engine judged a
+sensor's reach by the catalog's clear-day `physical_reach_m`, so in fog of 50 m visibility, or at
+night with a visible-only camera, an identify order was flown at a clear day's standoff and an
+assessment counted the effect point covered by a camera that saw nothing. From decision rules 32
+the engine reads each sensor's reach under the conditions where its vehicle is now (the vehicle
+fact `reach_now`), computed by the bridge from the physical model, the reach display's own
+computation. Chosen in building it:
+
+- **The conditions only take reach away.** An identify order's reach is the smaller of rules 31's
+  planning reach (an eighth of the camera's clear-day detection reach of the class,
+  `IDENTIFY_PX_SHARE`) and the camera's identification reach now (the model's own figure). Using
+  the model's figure alone was built first and measured: on F9's situations it grew the median
+  standoff of options passing both by day 2.4 times (a Puma's of a small fast boat from 1.25 km to
+  7.5 km: the model identifies a 3.5 m boat about 10.7 km out through its 1.2 degree zoom), but the
+  running model's payload manager cues a camera only to a track within the catalog's `range_m` (a
+  Puma's 4 km), so such an orbit is flown where the camera never looks at the track. Capped, a
+  clear day plans as rules 31 did, and the display's reach can be longer than the decision's,
+  never shorter. Raising the cap to what the payload manager cues (or making the payload manager
+  cue to the model's reach) would let day standoffs grow; that is the owner's call, not this
+  change's.
+- **What is logged, and where.** Each sensor's detection reach by domain along the ground and an
+  EO/IR's identification reach by domain and size class as slant range, rounded to the metre,
+  with the visibility, the sun and the height they are for and whether the camera has a thermal
+  channel, in the decision's inputs: replay reads the reaches the engine read and needs no model.
+  Only where a decision reads it (an identify order's decisions and an assessment's observation
+  steps), so other logs stay their size (a camera's fact is about 400 bytes).
+- **Shared inputs.** The bridge rounds the inputs (the height to 1 m below 100 m, 10 m below 1 km,
+  100 m above; the visibility to two significant figures; the sun to half a degree; the wind and
+  sea to a half) and keeps one computation per inputs, so a fleet of thousands of one platform in
+  a few weather samples computes a few dozen, and the display and the decisions show the same
+  figures for the same inputs. It prepares the facts at the start of each decision tick, outside
+  the engine's lock; a vehicle that does not sense at a tick keeps its last, which ages.
+- **Not known is not a clear day.** A sensor with a physical reach and no fresh reach now covers
+  nothing for an assessment, and an identify order on it cannot be evaluated; the legacy model has
+  no conditions-dependent reach and decides as before.
+- **Night.** A camera without a thermal channel reaches nothing more than 6 degrees after sunset
+  (the model's light), and its refusal says so; one with a thermal channel uses that channel's
+  reach (a Puma's LWIR: a small fast boat about 2 km at night, which takes nothing from a clear
+  day's planning reach of 1.8 km; a small drone about 200 m, so refused).
+- **What it did to F9** (dev seeds 5000-5009, both worlds): nothing for the free agents, which
+  order orbits only (served the same before and after for `none`, the playbook, the honest
+  ceiling and the ceiling). Asked of every candidate every 5 s by a probe agent, the identify
+  options under rules 32 refuse a camera at night without a thermal channel, or one that
+  identifies nothing from where it is in fog, where rules 31 offered them at a clear day's
+  standoff. Model agents, which do send identify orders, are what F9 now scores fairly.

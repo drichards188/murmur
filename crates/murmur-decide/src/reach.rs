@@ -14,8 +14,9 @@
 //! is logged with each decision that reads it (an identify order's, an engagement's assessment),
 //! so replay reads the reaches the engine read and needs no model.
 //!
-//! What reads it: an identify order's standoff, from the camera's identification reach now
-//! ([`identify_now`], [`crate::identify::plan`]), and an engagement's assessment, a sensor covering
+//! What reads it: an identify order's standoff, from the camera's identification reach now where
+//! that is less than a clear day's planning reach ([`identify_now`], [`crate::identify::plan`]:
+//! the conditions only take reach away), and an engagement's assessment, a sensor covering
 //! the effect point within its detection reach now ([`crate::engage::covering_sensor`]). A sensor
 //! whose facts carry no physical reach (the legacy model's facts, a sensor the catalog derives
 //! none for) is read as before, and so is every sensor under older rules.

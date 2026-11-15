@@ -119,10 +119,10 @@ fn a_small_air_track_is_planned_for_a_small_drone() {
     }
     // a Puma's camera identifies a small drone within about 1 km by day (SCORING-V3.md 13.6): the
     // orbit's slant range from 150 m up is inside it
-    let p = identify::plan(&spec(), &drone("puma", 150.0), &RulesConfig::default()).unwrap();
+    let p = identify::plan(&spec(), &drone("puma", 150.0), &rules(IDENTIFY_CLASS_SINCE)).unwrap();
     assert!(p.radius_m.hypot(150.0) < 1_000.0);
     // the check says what the reach is for
-    let checks = rules::evaluate(&spec(), &drone("puma", 150.0), &RulesConfig::default());
+    let checks = rules::evaluate(&spec(), &drone("puma", 150.0), &rules(IDENTIFY_CLASS_SINCE));
     let c = checks.iter().find(|c| c.rule == RuleId::Identify).unwrap();
     assert_eq!(c.outcome, Outcome::Pass);
     assert!(c.detail.contains("an orbit of 788 m, inside its EO/IR's identification reach of about 1145 m for a small_air contact"), "{}", c.detail);
@@ -134,15 +134,15 @@ fn a_small_air_track_is_planned_for_a_small_drone() {
 #[test]
 fn the_mq9b_from_its_operating_height_is_refused_for_a_small_drone() {
     let w = drone("mq9b", 7_600.0);
-    let why = identify::plan(&spec(), &w, &RulesConfig::default()).unwrap_err();
+    let why = identify::plan(&spec(), &w, &rules(IDENTIFY_CLASS_SINCE)).unwrap_err();
     assert_eq!(why, "its height over the contact, 7600 m, is beyond its camera's identification reach of about 4068 m for a small_air contact");
-    let checks = rules::evaluate(&spec(), &w, &RulesConfig::default());
+    let checks = rules::evaluate(&spec(), &w, &rules(IDENTIFY_CLASS_SINCE));
     let c = checks.iter().find(|c| c.rule == RuleId::Identify).unwrap();
     assert_eq!(c.outcome, Outcome::Fail);
     assert!(!rules::passed(&checks, TaskKind::Identify));
     assert_eq!(identify::plan(&spec(), &w, &rules(NODE_LOSS_SINCE)).unwrap().radius_m, 5_593.0);
     let aircraft = scene("mq9b", 7_600.0, Some("large_air"), Some(Level::Detect), Reaches::Physical);
-    let p = identify::plan(&spec(), &aircraft, &RulesConfig::default()).unwrap();
+    let p = identify::plan(&spec(), &aircraft, &rules(IDENTIFY_CLASS_SINCE)).unwrap();
     assert_eq!(p.size_class, Some(SizeClass::LargeAir));
     assert!(p.radius_m.hypot(7_600.0) <= p.reach_m);
 }
@@ -185,12 +185,12 @@ fn a_track_that_shows_no_size_keeps_its_domains_reach() {
         scene("puma", 150.0, Some("aircraft"), Some(Level::Detect), Reaches::Physical),
         scene("puma", 150.0, None, None, Reaches::Physical),
     ] {
-        let p = identify::plan(&spec(), &w, &RulesConfig::default()).unwrap();
+        let p = identify::plan(&spec(), &w, &rules(IDENTIFY_CLASS_SINCE)).unwrap();
         assert_eq!((p.size_class, p.reach_m), (None, (air * IDENTIFY_PX_SHARE).round()));
         assert_eq!(p, identify::plan(&spec(), &w, &rules(NODE_LOSS_SINCE)).unwrap());
     }
     let legacy = scene("puma", 150.0, Some("small_air"), Some(Level::Detect), Reaches::Legacy);
-    let p = identify::plan(&spec(), &legacy, &RulesConfig::default()).unwrap();
+    let p = identify::plan(&spec(), &legacy, &rules(IDENTIFY_CLASS_SINCE)).unwrap();
     assert_eq!((p.size_class, p.reach_m), (None, 500.0), "range_m 4,000 m, an eighth of it");
     assert_eq!(p, identify::plan(&spec(), &legacy, &rules(NODE_LOSS_SINCE)).unwrap());
 }
@@ -200,7 +200,7 @@ fn a_track_that_shows_no_size_keeps_its_domains_reach() {
 #[test]
 fn a_camera_that_reaches_no_contact_of_the_class_is_refused() {
     let w = drone("fpv", 50.0);
-    let why = identify::plan(&spec(), &w, &RulesConfig::default()).unwrap_err();
+    let why = identify::plan(&spec(), &w, &rules(IDENTIFY_CLASS_SINCE)).unwrap_err();
     assert_eq!(why, "fpv carries no EO/IR that reaches a contact the picture shows as small_air");
 }
 
@@ -215,7 +215,7 @@ fn root() -> PathBuf {
 #[test]
 fn older_rules_log_no_reach_by_class() {
     let f = root().join("sim/scenarios/engage/144-identify-a-small-drone-close-in.toml");
-    let now = scenario::run_file(&f, &root(), &RunOptions::default()).unwrap();
+    let now = scenario::run_file(&f, &root(), &RunOptions { rules_version: Some(IDENTIFY_CLASS_SINCE), ..RunOptions::default() }).unwrap();
     assert!(now.ok, "{:?}", now.failures);
     assert!(now.replay_ok, "{:?}", now.replay_mismatches);
     assert!(now.log.contains("\"size_class\":{\"small_air\":9160.0"), "the reaches by class logged");

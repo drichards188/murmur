@@ -1,10 +1,13 @@
 # Rules 31 (bd murmur-8vj8, eval/SCORING-V3.md 17.11): the same kind of track, a radar's `small_air`
-# with no altitude. The MQ-9B at its catalog operating height, 7,600 m, is sent first: refused, its
-# height over the contact being beyond its camera's identification reach of a small drone (the
-# physical reach by class, 32,540 m; an eighth of it, about 4,068 m). SKY 1, an X10 quadcopter 100
-# m up, is sent instead: an orbit of 420 m (its camera's small-drone reach, 4,930 m; an eighth,
-# 616 m; 70 % of that as slant range), dispatched. Rules 30 (`--rules 30`) took the MQ-9B's reach of
-# the domain's reference aircraft (107,840 m, an eighth 13,480 m) and planned it an orbit 5.6 km out
+# with no altitude. The MQ-9B at its catalog operating height, 7,600 m, is sent first: refused.
+# Rules 32 (bd murmur-ahss): its camera's identification reach of a small drone now, on a clear
+# day, as the bridge computes it from 7,600 m up (`reach_now`), is nothing: from there it
+# identifies one nowhere, not even directly below. SKY 1, an X10 quadcopter 100 m up, is sent
+# instead: an orbit of 420 m (its camera's small-drone reach, 4,930 m; an eighth, 616 m; 70 % of
+# that as slant range; its reach now, 617 m, takes nothing away), dispatched. Rules 31
+# (`--rules 31`) refused the MQ-9B for its height over the contact, beyond that eighth of its
+# catalog reach (32,540 m; about 4,068 m); rules 30 (`--rules 30`) took the MQ-9B's reach of the
+# domain's reference aircraft (107,840 m, an eighth 13,480 m) and planned it an orbit 5.6 km out
 # from 7,600 m up, and SKY 1 one of 1,380 m. On the physical reaches.
 title = "An identify order on a small drone refused from too high, sent from close in"
 invariant = "identify"
@@ -18,15 +21,21 @@ id = "op-1"
 
 [[vehicle]]
 uid = "reaper-1"
-platform = "mq9b"           # EO/IR: a small drone detected out to 32,540 m from 7,600 m up
+platform = "mq9b"
+callsign = "REAPER 1"           # EO/IR: a small drone detected out to 32,540 m from 7,600 m up
 at = [-122.5050, 37.8150]
 alt_m = 7600
+# rules 32: its reach now on a clear day (the bridge's figures for an MQ-9B at 7,600 m)
+reach_now = { alt_m = 7600, visibility_m = 20000, sun_elevation_deg = 45, sensors = [{ type = "radar", detect_m = { air = 29131, ground = 94670, surface = 0 } }, { type = "eo_ir", detect_m = { air = 107836, ground = 87240, surface = 87795 }, identify_m = { air = 35688, ground = 27366, surface = 57012, size_class = { small_air = 0, large_air = 47423, small_surface = 41401, large_surface = 75509, small_ground = 8929, large_ground = 27366 } }, thermal = true }] }
 
 [[vehicle]]
 uid = "sky-1"
-platform = "x10"            # EO/IR: a small drone detected out to 4,930 m
+platform = "x10"
+callsign = "SKY 1"            # EO/IR: a small drone detected out to 4,930 m
 at = [-122.4900, 37.8150]
 alt_m = 100
+# rules 32: its reach now on a clear day (the bridge's figures for an X10 at 100 m)
+reach_now = { alt_m = 100, visibility_m = 20000, sun_elevation_deg = 45, sensors = [{ type = "eo_ir", detect_m = { air = 16282, ground = 14315, surface = 14464 }, identify_m = { air = 5285, ground = 4054, surface = 8590, size_class = { small_air = 617, large_air = 7026, small_surface = 6149, large_surface = 11837, small_ground = 1322, large_ground = 4054 } }, thermal = true }] }
 
 [[track]]
 id = "T-0001"
@@ -50,7 +59,7 @@ track = "T-0001"
 at_s = 1
 action = "expect"
 task_state = "rejected"
-task_reason = "its height over the contact, 7600 m, is beyond its camera's identification reach of about 4068 m for a small_air contact"
+task_reason = "REAPER 1's camera identifies no small_air contact from where it is now, 7600 m up"
 
 [[step]]
 at_s = 2

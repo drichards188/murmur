@@ -1418,8 +1418,10 @@ impl Tracks {
     /// Rules 32 (bd murmur-ahss): each vehicle's sensors' reach now, prepared for the decision
     /// layer outside its lock (its tick calls this before it takes it): under the physical model,
     /// every vehicle that senses, from the last sensing step's conditions where it is
-    /// ([`reach`]'s computation, which `GET /api/sensing/reach` shows), kept until the next call;
-    /// nothing under the legacy model or before the first sensing step.
+    /// ([`reach`]'s computation, which `GET /api/sensing/reach` shows), stamped with that step; a
+    /// vehicle that does not sense now (its link quiet a moment) keeps its last, whose stamp ages
+    /// (the engine judges it fresh as any fact). Nothing under the legacy model or before the first
+    /// sensing step.
     pub fn prepare_reach(&self, world: &World) {
         let stamp = (self.sensing_model() == SensingModel::Physical).then(|| self.last_sensing()).flatten();
         let Some((rx, t, s, sensing)) = stamp else {
@@ -1428,12 +1430,15 @@ impl Tracks {
         };
         let carriers = self.carriers(world);
         let inputs = self.reach_inputs(&carriers, &sensing, t, s);
-        let prepared: HashMap<u64, PreparedReach> = carriers
+        let fresh: Vec<(u64, PreparedReach)> = carriers
             .iter()
             .zip(inputs)
             .map(|((o, c), (inputs, _))| (o.uid, PreparedReach { sensed_at: rx, reach: self.reach_for(&inputs, o, c, t) }))
             .collect();
-        *lock(&self.reach_now) = prepared;
+        let known: std::collections::HashSet<u64> = world.vehicles().iter().map(|c| c.uid).collect();
+        let mut prepared = lock(&self.reach_now);
+        prepared.retain(|u, _| known.contains(u));
+        prepared.extend(fresh);
     }
 
     /// Rules 32: each vehicle's reach now as last prepared ([`Self::prepare_reach`]), handed to

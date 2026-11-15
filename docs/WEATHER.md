@@ -207,20 +207,28 @@ How it is computed:
   and a boat still blocks it in the simulation. The sonar's water is the scenario's stated depth,
   not the bathymetry.
 
-It is information only, with the posture of predicted link coverage: never logged, never a
-check, and nothing that decides reads it. **The decision engine's assessment still reads the
-catalog's clear-day `physical_reach_m`** (no rules change here), so in fog or at night the reach
-shown can be much shorter than the one the engine assumes when it judges an engagement's
-assessment or a sensor's coverage (bd murmur-ahss). Under the legacy sensing model the
-answer is `model: "legacy"` with no reaches: weather and light change no detection there. No
-contact truth and no future weather are in it.
+The answer itself is never logged. **From decision rules 32 the decision engine judges by the same
+computation** (bd murmur-ahss; crates/murmur-decide/README.md, rules 32): each vehicle's reaches
+go into its decision facts as `reach_now`, prepared at the start of each decision tick, and an
+identify order's standoff and refusal read its camera's identification reach now (where that is
+less than a clear day's planning reach: the conditions only take reach away), an engagement's
+assessment each sensor's detection reach now; every decision that reads them logs them. Each EO/IR's
+entry also gives `identify_by_class_m`, its identification reach of each size class's smallest
+member (a small drone, a light aircraft, a small fast boat, a patrol boat, a person, a vehicle),
+and `thermal`. Before rules 32 the engine read the catalog's clear-day `physical_reach_m`, so in
+fog or at night the reach shown could be much shorter than the one it assumed. Under the legacy
+sensing model the answer is `model: "legacy"` with no reaches: weather and light change no
+detection there. No contact truth and no future weather are in it.
 
-Cost: each vehicle's answer is kept and computed again after 5 s, or at once when its height
-moves 10 m (or 5 %), its visibility 5 %, its wind 0.5 m/s or the sun half a degree. It is
-computed off the bridge's async workers, holding no lock but its own cache's (the physical
-model's only to read the weather samples). At 100 vehicles (125 sensors, in fog, rough sea and
-twilight so that every comparison is computed) a call that computes every answer took 29 ms and
-one from the cache 1.4 ms (release build, this machine;
+Cost: each reach is a function of its inputs rounded (the height to 1 m below 100 m, 10 m below 1
+km, 100 m above; the visibility and the water's depth to two significant figures; the sun to half
+a degree; the wind and the sea state to a half; the shipping to a twentieth), computed once for
+them and kept, so a fleet of thousands of one platform in a few weather samples computes a few
+dozen; the conditions shown are those it was computed for, and `age_s` how long a vehicle's
+inputs have stood. It is computed off the bridge's async workers, holding no lock but its own
+memo's (the physical model's only to read the weather samples). At 100 vehicles (124 sensors, in
+fog, rough sea and twilight so that every comparison is computed) a call that computes every
+answer took 10 ms and one from the memo 2.2 ms (release build, this machine;
 `cargo test --release -p murmur-bridge --bin murmur-bridge reach_cost -- --ignored --nocapture`).
 
 In Fog watch, select PUMA 1: before the fog its camera's surface ring is the clear-day ring

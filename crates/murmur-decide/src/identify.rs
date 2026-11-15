@@ -22,15 +22,20 @@
 //! identify the reference aircraft from nearly 10 km).
 //!
 //! Rules 32 ([`crate::rules::REACH_NOW_SINCE`], bd murmur-ahss): where the cameras' facts carry
-//! physical reaches, the reach is the camera's identification reach under the conditions where the
-//! vehicle is now (its `reach_now` fact, [`crate::reach`]: the physical model's own figure, slant
-//! range, of the class's smallest member or the domain's reference contact), not an eighth of its
-//! clear-day detection reach: in fog of 50 m visibility a Puma identifies a small drone only within
-//! about 160 m, and a camera with only a visible channel identifies nothing at night. The order is
-//! refused where that reach is nothing, or nearer than the vehicle's height or its tightest orbit
-//! keeps it, and the refusal says the conditions and the reach in them ("in fog of 50 m visibility
-//! PUMA 1's camera identifies a small_air contact only within about 160 m: its tightest orbit, 66
-//! m, keeps it beyond that"); without a fresh reach now it cannot be evaluated.
+//! physical reaches, the reach is never more than that eighth, and the camera's identification
+//! reach under the conditions where the vehicle is now where that is less (its `reach_now` fact,
+//! [`crate::reach`]: the physical model's own figure, slant range, of the class's smallest member
+//! or the domain's reference contact): the conditions only take reach away. In fog of 50 m
+//! visibility a Puma identifies a small drone only within about 160 m, and a camera with only a
+//! visible channel identifies nothing at night. The order is refused where that reach is nothing,
+//! or nearer than the vehicle's height or its tightest orbit keeps it, and the refusal says the
+//! conditions and the reach in them ("in fog of 50 m visibility PUMA 1's camera identifies a
+//! small_air contact only within about 160 m: its tightest orbit, 66 m, keeps it beyond that");
+//! the plan records the conditions that shortened it ([`Plan::conditions`]). Without a fresh reach
+//! now it cannot be evaluated. Why the cap: on a clear day the model's own identification reach of a
+//! boat is several times the eighth (a Puma's of a small fast boat about 10.7 km), but the camera's
+//! payload manager cues a track only within the catalog's `range_m` (4 km for a Puma), so an orbit
+//! planned at the model's figure would be flown where the camera never looks at the track.
 //!
 //! Rules 23 ([`crate::rules::IDENTIFY_OWN_LOOK_SINCE`], the owner's Harbor watch run of
 //! 2026-10-27 17:11Z, whose identify orders another vehicle's camera ended): the look ends identified
@@ -141,6 +146,11 @@ pub struct Plan {
     /// for a contact of the track's domain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_class: Option<SizeClass>,
+    /// Rules 32: the conditions where the vehicle is that the reach is for, in words, when they
+    /// shorten it (the camera's identification reach now is less than a clear day's planning
+    /// reach): "in fog of 50 m visibility", "at night". None: a clear day's reach.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conditions: Option<String>,
     /// The standoff came from the order (an operator's), not from the reach.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub set_by_order: bool,
@@ -430,28 +440,30 @@ pub fn plan(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Resu
             None => format!("{platform} carries no EO/IR that reaches a contact in the {} domain", track.domain.as_str()),
         }
     };
-    // rules 32: the cameras' identification reach under the conditions where the vehicle is now,
-    // where their facts carry physical reaches; else an eighth of the catalog's detection reach
+    // an eighth of the cameras' clear-day detection reach of the class (else of the domain)
+    let clear = match class {
+        Some(c) => camera_reach(v, |s| s.reach_for_class(c).flatten()),
+        None => camera_reach(v, |s| s.reach_for(track.domain)),
+    }
+    .ok_or_else(no_camera)?
+        * IDENTIFY_PX_SHARE;
+    // rules 32: never more than that, and the cameras' identification reach under the conditions
+    // where the vehicle is now where that is less (the conditions only take reach away), where
+    // their facts carry physical reaches; `limited`: the reach now, which limits it
     let now = if reach_now(v, cfg) { Some(crate::reach::fresh(v, world, cfg)?) } else { None };
-    let reach = match now {
+    let (reach, limited) = match now {
         Some(rn) => {
             let cam = crate::reach::identify_now(v, rn, class, track.domain).ok_or_else(no_camera)?;
             if cam.reach_m <= 0.0 {
                 return Err(nowhere(world, uid, rn, class, track.domain, cam.thermal));
             }
-            cam.reach_m
+            if cam.reach_m < clear { (cam.reach_m, Some(rn)) } else { (clear, None) }
         }
-        None => {
-            let eo = match class {
-                Some(c) => camera_reach(v, |s| s.reach_for_class(c).flatten()),
-                None => camera_reach(v, |s| s.reach_for(track.domain)),
-            };
-            eo.ok_or_else(no_camera)? * IDENTIFY_PX_SHARE
-        }
+        None => (clear, None),
     };
     let of_class = class.map(|c| format!(" for a {} contact", c.as_str())).unwrap_or_default();
-    // rules 32: a refusal says the conditions and the camera's reach in them first
-    let refuse = |why: String| match now {
+    // rules 32: a refusal the conditions caused says them and the camera's reach in them first
+    let refuse = |why: String| match limited {
         Some(rn) => format!("{}: {why}", only_within(world, uid, rn, class, track.domain, reach)),
         None => why,
     };
@@ -462,7 +474,7 @@ pub fn plan(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Resu
         _ => 0.0,
     };
     if height >= reach {
-        return Err(refuse(match now {
+        return Err(refuse(match limited {
             Some(_) => format!("its height over the contact, {height:.0} m, is beyond that"),
             None => format!(
                 "its height over the contact, {height:.0} m, is beyond its camera's identification reach of about {reach:.0} m{of_class}"
@@ -476,7 +488,7 @@ pub fn plan(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Resu
         None => ground(reach * STANDOFF_SHARE).max(tightest).max(1.0).ceil(),
     };
     if standoff.is_none() && radius.hypot(height) > reach {
-        return Err(refuse(match now {
+        return Err(refuse(match limited {
             Some(_) => format!("its tightest orbit, {tightest:.0} m, keeps it beyond that"),
             None => format!(
                 "its tightest orbit, {tightest:.0} m, keeps its camera beyond its identification reach of about {reach:.0} m{of_class}"
@@ -498,6 +510,7 @@ pub fn plan(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Resu
         radius_m: radius,
         reach_m: reach.round(),
         size_class: class,
+        conditions: limited.and_then(|rn| rn.conditions()),
         set_by_order: standoff.is_some(),
         transit_s,
     })
@@ -540,14 +553,8 @@ pub fn check(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Che
                 .track_levels
                 .get(&p.track)
                 .map_or("not classified".to_string(), |l| l.level.as_str().to_string());
-            // rules 32: the conditions the camera's reach is for, when not a clear day's
-            let conditions = uid
-                .and_then(|u| world.vehicles.get(u))
-                .filter(|v| reach_now(v, cfg))
-                .and_then(|v| v.reach_now.as_ref())
-                .and_then(|rn| rn.value.conditions())
-                .map(|c| format!(" {c}"))
-                .unwrap_or_default();
+            // rules 32: the conditions the camera's reach is for, when they shorten it
+            let conditions = p.conditions.as_deref().map(|c| format!(" {c}")).unwrap_or_default();
             let standoff = if p.set_by_order {
                 format!("an orbit of {:.0} m set by the order", p.radius_m)
             } else {

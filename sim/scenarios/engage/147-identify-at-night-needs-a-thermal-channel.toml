@@ -3,10 +3,11 @@
 # only, is sent to identify it first: its reach now (the vehicle fact `reach_now`, as the bridge
 # computes it from the physical model) is nothing in the dark, and the order is refused, saying
 # the night and that the camera has no thermal channel. PUMA 1, 150 m up, is sent instead: its
-# camera's LWIR channel identifies a small fast boat within about 2,018 m at night (a clear day's
-# 10,710 m), and the order is dispatched to an orbit sized by that. Rules 31 (`--rules 31`) read
-# the catalog's clear-day reach and sent the Magura, whose camera sees nothing at night, and
-# PUMA 1 to an orbit of 1,246 m, sized by its day channel's reach.
+# camera's LWIR channel identifies a small fast boat within about 2,018 m at night, more than a
+# clear day's planning reach (an eighth of its detection reach of one, 1,793 m), so the night takes
+# nothing away and the order is dispatched to the clear day's orbit, 1,246 m. Rules 31
+# (`--rules 31`) read the catalog's clear-day reach and sent the Magura too, whose camera sees
+# nothing at night.
 title = "An identify order at night needs a camera with a thermal channel"
 invariant = "identify"
 attack = "none: an order a day camera could not carry out at night"
@@ -71,4 +72,4 @@ track = "T-0001"
 at_s = 3
 action = "expect"
 task_state = "dispatched"
-identify = "an orbit of 1405 m, inside its EO/IR's identification reach of about 2018 m for a small_surface contact at night"
+identify = "an orbit of 1246 m, inside its EO/IR's identification reach of about 1793 m for a small_surface contact,"

@@ -118,9 +118,11 @@ fn rules(version: u32) -> RulesConfig {
 
 /// In fog of 50 m PUMA 1's camera identifies a small drone only within about 160 m of slant range:
 /// its tightest orbit at 150 m keeps it beyond that, and the order is refused saying the fog and the
-/// reach; rules 31 planned it the clear day's 788 m orbit from the catalog. On a clear day the
-/// standoff is 70 % of the camera's identification reach now (1,167 m), not of an eighth of its
-/// detection reach (1,145 m).
+/// reach; rules 31 planned it the clear day's 788 m orbit from the catalog. In 1.2 km of visibility
+/// the reach now (882 m) sizes the orbit and the detail says the visibility. The conditions only
+/// take reach away: on a clear day, where the camera's identification reach now (1,167 m) is more
+/// than rules 31's eighth of its detection reach (1,145 m), and at night, where its LWIR's reach of
+/// a small fast boat (2,018 m) is more than that (1,793 m), the plan is rules 31's.
 #[test]
 fn the_identify_plan_reads_the_cameras_reach_now() {
     let w = scene(Reaches::Physical, Some(fog()), "small_air", Domain::Air);
@@ -132,19 +134,28 @@ fn the_identify_plan_reads_the_cameras_reach_now() {
     assert_eq!(identify::plan(&spec(), &w, &rules(IDENTIFY_CLASS_SINCE)).unwrap().radius_m, 788.0);
     let checks = rules::evaluate(&spec(), &w, &rules(REACH_NOW_SINCE));
     assert!(!rules::passed(&checks, TaskKind::Identify));
-    // a clear day: the camera's own identification reach of a small drone
-    let w = scene(Reaches::Physical, Some(clear()), "small_air", Domain::Air);
+    // thinning fog: the reach now sizes the orbit
+    let mut thin = fog();
+    thin.visibility_m = 1_200.0;
+    thin.sensors[0].identify_m.as_mut().unwrap().size_class.as_mut().unwrap().small_air = Some(882.0);
+    let w = scene(Reaches::Physical, Some(thin), "small_air", Domain::Air);
     let p = identify::plan(&spec(), &w, &rules(REACH_NOW_SINCE)).unwrap();
-    assert_eq!((p.reach_m, p.size_class), (1_167.0, Some(SizeClass::SmallAir)));
-    assert_eq!(p.radius_m, ((identify::STANDOFF_SHARE * 1_167.0).powi(2) - 150.0f64.powi(2)).sqrt().ceil());
+    assert_eq!((p.reach_m, p.conditions.as_deref()), (882.0, Some("in 1.2 km visibility")));
+    assert_eq!(p.radius_m, ((identify::STANDOFF_SHARE * 882.0).powi(2) - 150.0f64.powi(2)).sqrt().ceil());
     let c = rules::evaluate(&spec(), &w, &rules(REACH_NOW_SINCE)).into_iter().find(|c| c.rule == RuleId::Identify).unwrap();
     assert_eq!(c.outcome, Outcome::Pass);
-    assert!(c.detail.contains(&format!("an orbit of {:.0} m, inside its EO/IR's identification reach of about 1167 m for a small_air contact,", p.radius_m)), "{}", c.detail);
-    // a boat at night: the LWIR channel's reach, and the detail says the night
-    let w = scene(Reaches::Physical, Some(night()), "small_surface", Domain::Surface);
-    let c = rules::evaluate(&spec(), &w, &rules(REACH_NOW_SINCE)).into_iter().find(|c| c.rule == RuleId::Identify).unwrap();
-    assert_eq!(c.outcome, Outcome::Pass, "{}", c.detail);
-    assert!(c.detail.contains("an orbit of 1405 m, inside its EO/IR's identification reach of about 2018 m for a small_surface contact at night,"), "{}", c.detail);
+    assert!(
+        c.detail.contains(&format!("an orbit of {:.0} m, inside its EO/IR's identification reach of about 882 m for a small_air contact in 1.2 km visibility,", p.radius_m)),
+        "{}",
+        c.detail
+    );
+    // a clear day, and a boat at night on the LWIR: rules 31's plan
+    for (now, identity, domain) in [(clear(), "small_air", Domain::Air), (night(), "small_surface", Domain::Surface)] {
+        let w = scene(Reaches::Physical, Some(now), identity, domain);
+        let p = identify::plan(&spec(), &w, &rules(REACH_NOW_SINCE)).unwrap();
+        assert_eq!(p, identify::plan(&spec(), &w, &rules(IDENTIFY_CLASS_SINCE)).unwrap(), "{identity}");
+        assert_eq!(p.conditions, None);
+    }
 }
 
 /// A camera without a thermal channel identifies nothing at night: refused, saying so. One that

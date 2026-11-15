@@ -278,8 +278,11 @@ pub enum UnknownEndurance {
 /// engagement authority confirms it; a silent vehicle counts in the keep-outs where its orders and
 /// its own lost-link failsafe could take it, and a lost one in none. Version 31
 /// ([`IDENTIFY_CLASS_SINCE`]): an identify order's standoff is sized by the camera's reach of a
-/// contact of the size class the picture shows the track as, not of its domain alone.
-pub const RULES_VERSION: u32 = IDENTIFY_CLASS_SINCE;
+/// contact of the size class the picture shows the track as, not of its domain alone. Version 32
+/// ([`REACH_NOW_SINCE`]): a sensor's reach is judged under the conditions where its vehicle is
+/// now (the visibility, the light, its height), as the physical sensing model predicts it, not on
+/// a clear day: an identify order's standoff and its refusal, and an engagement's assessment.
+pub const RULES_VERSION: u32 = REACH_NOW_SINCE;
 
 /// The newest decision rules this build can decide under and replay: [`RULES_VERSION`] itself,
 /// except on a branch that builds the next version in stages before making it the default
@@ -289,7 +292,7 @@ pub const RULES_VERSION: u32 = IDENTIFY_CLASS_SINCE;
 /// `policy.rules.rules_version`, the bridge's `MURMUR_RULES`. Replay accepts a log of any version up
 /// to this one and flags one newer. The branch's last stage sets [`RULES_VERSION`] to its version,
 /// and this to [`RULES_VERSION`] again.
-pub const RULES_NEWEST: u32 = REACH_NOW_SINCE;
+pub const RULES_NEWEST: u32 = RULES_VERSION;
 
 /// The rules version from which a sensor's reach is judged under the conditions where its vehicle
 /// is now (bd murmur-ahss; the owner's "I want those scored" of 2026-11-15 for scoring v3's F9 night
@@ -304,10 +307,11 @@ pub const RULES_NEWEST: u32 = REACH_NOW_SINCE;
 /// identification reach by domain and size class, as the physical model predicts them where the
 /// vehicle is, at its height, in the conditions there (the bridge's `tracks::reach`, the reach
 /// display's own computation), stamped when computed and judged fresh as any fact. An identify
-/// order's standoff is taken from the camera's identification reach now ([`crate::identify::plan`];
-/// before, an eighth of its clear-day detection reach) and refused, saying the conditions, where the
-/// camera identifies nothing or only nearer than the vehicle can fly; an assessment counts a sensor
-/// covering the effect point only within its detection reach now ([`crate::engage::covering_sensor`]).
+/// order's reach is the smaller of rules 31's (an eighth of the camera's clear-day detection reach)
+/// and the camera's identification reach now ([`crate::identify::plan`]: the conditions only take
+/// reach away), and the order is refused, saying the conditions, where the camera identifies
+/// nothing or only nearer than the vehicle can fly; an assessment counts a sensor covering the
+/// effect point only within its detection reach now ([`crate::engage::covering_sensor`]).
 /// The legacy sensing model's facts carry no physical reaches, and so no reach now: its runs decide
 /// as before. The engine drops the fact before logging under older rules, and from every decision
 /// that does not read it (all but an identify order's and an assessment's). Every gate of that

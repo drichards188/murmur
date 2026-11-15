@@ -4,9 +4,11 @@
 # member (the catalog's physical reach by class, 9,160 m; an eighth of it to identify, 1,145 m; 70 %
 # of that as slant range from 150 m up): an orbit of 788 m around it, within the about 1 km inside
 # which a Puma identifies a small drone by day. A look identifies it at 30 s and the order ends
-# done. Rules 30 (`--rules 30`) sized it by the domain's reference aircraft, 3 m across (16,210 m,
-# an eighth 2,026 m): an orbit of 1,411 m, from which the Puma's camera does not identify a drone.
-# On the physical reaches (a camera's reaches by size class are the physical model's).
+# done. Rules 32 (bd murmur-ahss): its reach now (`reach_now`, a clear day's: its camera identifies
+# a small drone within about 1,167 m) takes nothing away, so the orbit is the same. Rules 30
+# (`--rules 30`) sized it by the domain's reference aircraft, 3 m across (16,210 m, an eighth 2,026
+# m): an orbit of 1,411 m, from which the Puma's camera does not identify a drone. On the physical
+# reaches (a camera's reaches by size class are the physical model's).
 title = "An identify order on a small drone orbits within its camera's reach of one"
 invariant = "identify"
 attack = "none: the order as designed"
@@ -23,6 +25,9 @@ uid = "puma-1"
 platform = "puma"           # EO/IR: a small drone detected out to 9,160 m on the physical model
 at = [-122.4930, 37.8210]   # west of the bridge, mid-strait
 alt_m = 150
+# rules 32: its reach now on a clear day, the sun 45 degrees up (the bridge's figures for a Puma at
+# 150 m)
+reach_now = { alt_m = 150, visibility_m = 20000, sun_elevation_deg = 45, sensors = [{ type = "eo_ir", detect_m = { air = 16707, ground = 14755, surface = 14763 }, identify_m = { air = 9767, ground = 7584, surface = 12849, size_class = { small_air = 1167, large_air = 12200, small_surface = 10710, large_surface = 14357, small_ground = 2500, large_ground = 7584 } }, thermal = true }] }
 
 [[track]]
 id = "T-0001"

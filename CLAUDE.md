@@ -599,6 +599,30 @@ meaningful.
   reads (`SizeClass::of_label`) must match `signature::size_class_of`: a new kind or family goes in
   both (a bridge test checks every kind the contact catalog shows). Scenarios 144-145 (the
   scenario key `reaches = "physical"`, the `expect` step's `identify`); `tests/rules31.rs`.
+- Rules 32 (`REACH_NOW_SINCE`, bd murmur-ahss): a sensor whose facts carry a physical reach is read
+  at its reach under the conditions where its vehicle is now, the vehicle fact `reach_now`
+  (`murmur_decide::reach`: each sensor's detection reach by domain along the ground, an EO/IR's
+  identification reach by domain and size class as slant range, the visibility, sun and height it
+  is for, `thermal`), never the catalog's clear day alone: an identify order's reach is the smaller
+  of rules 31's (an eighth of the clear-day detection reach) and the camera's identification reach
+  now (the conditions only take reach away: the payload manager cues only within the catalog's
+  `range_m`), the standoff 70 % of it, refused, saying the conditions, where it is nothing or
+  nearer than its height or tightest orbit keeps it ("in fog
+  of 50 m visibility PUMA 1's camera identifies a small_air contact only within about 160 m: ...";
+  "at night MAGURA 1's camera identifies no ...: it has no thermal channel"); an assessment's cover
+  (`engage::covering_sensor`) is the detection reach now; a missing or stale fact cannot be
+  evaluated (never a clear day's in its place). The bridge prepares it outside the lock at each
+  tick's start (`Tracks::prepare_reach`, `snapshot::fill_reach`) from `tracks::reach`, the reach
+  display's computation, memoised by rounded inputs (`reach::Inputs`: height, visibility to two
+  figures, sun to half a degree), so the display, the decisions and the running model's conditions
+  agree; the fact is stamped with the sensing step. The engine logs it only in an identify order's
+  decisions (with the vehicle's callsign in `callsigns`) and an assessment's `engage.observe`
+  (`subset_for` drops it elsewhere) and drops it under older rules; the legacy model has none (v1,
+  v2, the golden decide as before). A scenario on the physical reaches states each vehicle's
+  `reach_now` (`[[vehicle]]` and `vehicle` steps; figures from the bridge's ignored test
+  `scenario_reach_figures`); without it an identify cannot be evaluated, so `--reaches physical`
+  on scenarios that state none needs `--rules 31`. Scenarios 146-148 (and 144-145 re-taken), tamper
+  `edit_reach`; `tests/rules32.rs`.
 - A rules version built in stages before it is the default (as rules 30 was, docs/NODE-LOSS.md
   section 8): `RULES_NEWEST` (rules.rs) one ahead of `RULES_VERSION` while it is built; a run
   decides under it only when asked (a scenario's `min_rules`, `murmur-scenarios --rules N`, a
@@ -650,13 +674,13 @@ meaningful.
   sooner than predicted. With several ground stations it chooses the station as the link does
   (`station::best`): a point answer names it, a grid gives it per cell.
 - Weather on the map and sensor reach (docs/WEATHER.md, bd murmur-sgok, murmur-4tq,
-  murmur-vr17): `GET /api/sensing/reach` and MCP `get_sensor_reach` (read-only, never logged,
-  never a check) predict each sensor's reach under the conditions where the vehicle is. They
+  murmur-vr17): `GET /api/sensing/reach` and MCP `get_sensor_reach` (read-only, never logged)
+  predict each sensor's reach under the conditions where the vehicle is. They
   and the running model share one merge of scenario conditions and weather
   (`physical::Engine::conditions_at`), and the reach display and the catalog's
   `physical_reach_m` generator share one reference contact (`tracks::reach`): change either
-  in one place. The decision engine still reads the clear-day `physical_reach_m` (bd
-  murmur-ahss), so in fog the display shows less reach than the checks assume. The map draws
+  in one place. From rules 32 the decisions read the same computation (`reach_now`, the Rules 32
+  bullet): a change to `tracks::reach` moves decisions. The map draws
   each archived model point's region flat (the samplers' nearest-point rule, from
   `/api/weather/grid` `regions`), never a spatial interpolation; `regions.scripted` names the
   fields the timeline sets. Draw anything on the water with deck.gl at the surface: a MapLibre

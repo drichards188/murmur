@@ -93,7 +93,9 @@ fn the_assessment_reads_the_reach_of_the_run_s_sensing_model() {
     let cover = |c: &Catalog, platform: &str, domain: Domain, d: f64| {
         let v = VehicleFacts { platform: c.get(platform).cloned(), ..VehicleFacts::default() };
         let world = WorldSnapshot::new(T0);
-        engage::covering_sensor(&v, domain, d, &world, &RulesConfig::default()).map(|s| s.kind.clone())
+        // rules 31: the catalog's reaches (from rules 32 the reach now: tests/rules32.rs)
+        let v31 = RulesConfig { rules_version: IDENTIFY_CLASS_SINCE, ..RulesConfig::default() };
+        engage::covering_sensor(&v, domain, d, &world, &v31).map(|s| s.kind.clone())
     };
     // the buoy's passive sonar: range_m 3 km; the physical model hears the reference contact
     // under water only a few hundred metres out
@@ -119,8 +121,11 @@ fn the_assessment_reads_the_reach_of_the_run_s_sensing_model() {
 #[test]
 fn a_run_on_the_physical_reaches_logs_them_and_replays() {
     let f = root().join("sim/scenarios/engage/48-high-friend-above.toml");
-    let legacy = scenario::run_file(&f, &root(), &RunOptions::default()).unwrap();
-    let physical = scenario::run_file(&f, &root(), &RunOptions { reaches: Reaches::Physical, ..RunOptions::default() }).unwrap();
+    // rules 31: the physical reaches as the catalog gives them (from rules 32 a scenario states
+    // each vehicle's reach now: tests/rules32.rs)
+    let v31 = RunOptions { rules_version: Some(IDENTIFY_CLASS_SINCE), ..RunOptions::default() };
+    let legacy = scenario::run_file(&f, &root(), &v31).unwrap();
+    let physical = scenario::run_file(&f, &root(), &RunOptions { reaches: Reaches::Physical, ..v31.clone() }).unwrap();
     for r in [&legacy, &physical] {
         assert!(r.ok, "{:?}", r.failures);
         assert!(r.replay_ok, "{:?}", r.replay_mismatches);
@@ -131,7 +136,8 @@ fn a_run_on_the_physical_reaches_logs_them_and_replays() {
     let reason = |r: &scenario::ScenarioResult| r.final_reason.clone().unwrap_or_default();
     assert!(reason(&legacy).contains("reaper-1:radar"), "{}", reason(&legacy));
     assert!(reason(&physical).contains("reaper-1:eo_ir"), "{}", reason(&physical));
-    let rep = replay::replay_str(&physical.log).unwrap();
+    let opts = replay::ReplayOptions { rules: replay::RulesAccepted::Exactly(IDENTIFY_CLASS_SINCE), ..replay::ReplayOptions::default() };
+    let rep = replay::replay_str_with(&physical.log, &opts).unwrap();
     assert!(rep.ok(), "{:?}", rep.mismatches);
     assert_eq!(rep.assessments, 1);
 }

@@ -563,10 +563,13 @@ pub fn tools() -> Vec<Tool> {
              the catalog gives (clear_day_m, and the ratio). limited_by says what keeps it short \
              (fog, haze, night, twilight, low sun, sea clutter, sea noise, shallow water, \
              horizon, submerged), found by computing it again with that input at its clear-day \
-             value. Information only: never logged and never a check, and the decision engine's \
-             own checks still assume the clear-day reach. No terrain (each reach is a disc), no \
-             contact truth, no future weather. Under the legacy sensing model there are no \
-             reaches (weather changes no detection there).".into(),
+             value; an EO/IR's identify_by_class_m gives its identification reach of each size \
+             class's smallest member. Never logged. The decision engine judges by the same \
+             figures: an identify order's standoff and refusal by the camera's identification \
+             reach now, an engagement's assessment by each sensor's detection reach now. No \
+             terrain (each reach is a disc), no contact truth, no future weather. Under the \
+             legacy sensing model there are no reaches (weather changes no detection there)."
+                .into(),
             true,
         ),
         tool::<TracksParams>(
@@ -766,9 +769,10 @@ pub fn tools() -> Vec<Tool> {
                 "Rank the vehicles that could be sent to identify a track (read-only: nothing is \
                  created or logged): each vehicle with an EO/IR, whether an identify order for \
                  it passes its checks now (and the failing ones in words), its orbit's standoff \
-                 (from its camera's identification reach), the camera's reach, the time to get \
-                 there and, for one that passes, its predicted link along the way. Passing first, \
-                 soonest there first. Propose one with propose_intent (task identify, uids [its \
+                 (from its camera's identification reach under the conditions where it is now, \
+                 never more than a clear day's; conditions names those that shorten it), the \
+                 camera's reach, the time to get there and, for one that passes, its predicted \
+                 link along the way. Passing first, soonest there first. Propose one with propose_intent (task identify, uids [its \
                  uid], track_id). At most one call a second per agent. {STALE_NOTE}"
             ),
             true,

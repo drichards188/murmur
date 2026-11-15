@@ -144,8 +144,10 @@ observers are Sea Hunters; the Magura engages).
 
 ## The decision engine's reaches (bd murmur-1u4)
 
-**Where the engine reads a reach.** In one place: an engagement's assessment
-(`engage::observe`, `engage::covering_sensor`). After the effect, a vehicle of ours with a fresh
+**Where the engine reads a reach.** In two places: an engagement's assessment
+(`engage::observe`, `engage::covering_sensor`), and from rules 21 an identify order's standoff
+(`identify::plan`, by size class from rules 31; under the conditions now from rules 32, below).
+After the effect, a vehicle of ours with a fresh
 position covers the effect point when one of its sensors that confirms presence or absence in
 the target's domain (`engage::sees`: radar and EO/IR for air, ground and surface; sonar for
 surface and subsurface; never AIS, cooperative, nor ESM, emitters only) reaches the point;
@@ -280,10 +282,22 @@ and an observer within 1.5 km, so they exercise little of the change. The keep-o
 evaluation does not read a reach (the nomination's checks only, on tracks from the legacy model):
 its numbers cannot move with them.
 
-**Limits.** A reach is a pointed sensor's in clear daylight: a fixed camera's field, where the
-payload manager points, night, haze and terrain are not in it, and the engine does not know the
-conditions. `sees` still leaves radar and EO/IR out of a subsurface target's coverage, though the
-physical model lets them see a periscope's mast (a type rule: changing it is a rules change).
+**Limits.** A catalog reach is a pointed sensor's in clear daylight: a fixed camera's field,
+where the payload manager points, night, haze and terrain are not in it. `sees` still leaves radar
+and EO/IR out of a subsurface target's coverage, though the physical model lets them see a
+periscope's mast (a type rule: changing it is a rules change).
+
+**Under the conditions now (rules 32, bd murmur-ahss).** From decision rules 32 the engine no
+longer reads the catalog's reach for a sensor that carries one: it reads the vehicle fact
+`reach_now`, the same prediction against the same reference contacts (by domain, and an EO/IR's
+identification reach by size class) from where the vehicle is, at its height, in the conditions
+the running model senses in there (the scenario's `[conditions]` with its weather sample, the sun
+from the clock: docs/WEATHER.md, "Seeing the effect on sensors", whose display shows the same
+figures). The assessment's cover is the detection reach now; an identify order's reach is the
+smaller of rules 31's planning reach (an eighth of the catalog's detection reach of the class) and
+the camera's identification reach now, so the conditions only take reach away: a clear day plans
+as before, fog and night shorten it or refuse the order, saying why. Terrain and the payload
+manager's pointing are still not in it.
 
 ## The model
 
