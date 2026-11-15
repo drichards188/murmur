@@ -1857,3 +1857,55 @@ ledger's, shared):
     v3-f18-quiet-gg/sd with `--agent model playbook oracle-v3-shown`)
     .venv/bin/python -m eval.headless.v3.run report eval/results/headless/v3-model-pilot-2026-11-14
     .venv/bin/python -m eval.headless.v3.report_ops eval/results/headless/v3-model-pilot-2026-11-14
+
+### 17.10 The pilot's result (2026-11-15)
+
+**Coverage.** golden-gate-v3 (20 of ours) and san-diego (24): air, ground, surface and subsurface
+vehicles; AIS, EO/IR, ESM, radar and sonar; contacts in the air, on the ground and on the surface.
+F2 drone, F14 space and F18 quiet on the model pilot's seeds as 17.9 registered them, 36 situations,
+each once, drawn by day (34) and in twilight (2): **no night situation came up**. The paused clock,
+the approve-all operator (every card of the model's approved), Claude Sonnet 5.5 alone at medium
+effort (no consult). Run 2026-11-15 03:41-04:20Z on 34b159d and 0cdce3a (a report-only change
+between; no episode code changed), 144 episodes (model, `none`, `playbook`, `oracle-v3-shown` on F2
+and F18, `oracle-v3-basic` on F14), no harness error; the model's 36 episodes all scored: no budget
+stop, API error, refusal or leakage hit. Records kept in
+`eval/results/headless/v3-model-pilot-2026-11-14`. **Model results only**, about one model in
+simulated situations, never people; a pilot, not a finding to quote.
+
+| measure | model | playbook | `none` | ceiling |
+|---|---|---|---|---|
+| F2 drone needs served (20) | 1 | 2 | 3 | 11 (`oracle-v3-shown`) |
+| F14 imagery collects served (gap, 10) | **10** | 0 | 0 | 10 (`oracle-v3-basic`) |
+| F14 GNSS covers served (10) | 2 | 0 | 0 | 10 (`oracle-v3-basic`) |
+| useless orders per hour, F18 (not justified on the picture) | 21.3 (2.6) | 90.7 (51.4) | 0 | 0 |
+| useless orders per hour, pooled over the three (not justified) | 18.6 (3.7) | 75.3 (34.4) | 0 | 18.9 (13.8), F2 and F18 |
+| harmful orders | 0 | 0 | 0 | 0 |
+| orders naming more than one vehicle | 0 | 0 | 0 | 0 |
+
+Paired by situation against the playbook: F14's collects, model only 10, playbook only 0 (exact
+McNemar p = 0.002); its covers 2 and 0 (p = 0.5); F2's drones, model only 0, playbook only 1 (p = 1).
+Cost: US$31.85, US$0.89 an episode (at most US$1.48): F2 US$0.98 at the Golden Gate and US$0.60 in
+San Diego, F14 US$1.31 and US$0.92, F18 US$1.06 and US$0.58.
+
+**By 17.9's rule: go, by (a) alone.** The false-alarm condition holds (useless orders per hour 21.3
+against 90.7 on F18 and 18.6 against 75.3 pooled; harmful 0 against 0), and the model served 10 of
+10 imagery collects where at least 3 were needed. (b) fails: on drones the model served 1 of 20, the
+playbook 2.
+
+**What it does not say.**
+- F14's needs are stated in the brief as tasking (choices 14 and 15): the model carried out written
+  tasking that no free play covers, 10 of 10 for imagery, 2 of 10 for the GNSS cover (the rest
+  `not_asked`: it did not ask for one). It did not find a gap nobody named.
+- Drones: the model aimed an order at the drone in 8 of 20 situations, in 5 a look before the need
+  began (none identified it by the deadline, 30 s after the need) and in 4 one after the deadline
+  (one situation had both). The ceiling, which places two vehicles where the drone will be, served 11.
+- Quiet watch at the Golden Gate alone: the model's useless orders were 34.7 an hour against the
+  playbook's 32.0 (3 situations), all justified on the picture; the rule reads F18 over both worlds.
+- A cheaper variant of the officer (no Opus consult), on day and twilight only, one replicate, 36
+  situations; the labels with choices 37 to 39 as built; the known defect murmur-galh in every arm.
+- Spend of the owner's US$45: the smoke US$4.76, the cost check US$2.19, the pilot US$31.85: US$38.80.
+
+**What a go asks for** (a new approval): a larger paid run, on the questions the pilot leaves open:
+why the model misses drones (with the consult's case file and stakes gate, bd murmur-5xaf, and the
+focused track read, murmur-8mu3), the families left out for the budget (F1, F6, F8, F12, F13), night
+situations, and consults on against off.
