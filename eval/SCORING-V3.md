@@ -1445,7 +1445,12 @@ owner on foreknowledge in the ceiling (the shown rung, 32 of 60, is what an agen
 (f), F6's timing; then the room test and the perturbations with the fixed honest ceiling.
 **Decided 2026-10-26** (9): the shown rung is the ceiling (10.1, 13), the foreknowledge ceiling
 reported; (g) and (h) are fixed by F3 and F6 version 2 (6); (a), (d) and (f) stand. Section 16 is
-their smoke.
+their smoke. **Later the same day** the owner unfroze the sensor model for (a), (c) and (d), fixed
+in e95ab26 (docs/DECISIONS.md, "Identity fusion by specificity and weight of evidence"): a dissent
+is a conflict only until the agreeing looks outweigh it two to one in weight of evidence. On
+golden-gate-v3, dev seeds 5380-5389, neutral traffic shown in doubt within 4 km fell from 27-31 %
+to 16-20 % of contacts and from 14-20 % to 3-5 % of their seconds (on the squeezed terrain: to be
+measured again). (f) stands.
 
 ### 15.1 F3 version 2: the honest ceiling under `none`, and its harm (b), checked (seeds 5480-5489)
 
@@ -1594,10 +1599,13 @@ result opens with section 0's coverage statement.
    and the research, never from Harbor watch". *Either* keep that, and improve only by adding or fixing
    plays, *or* allow tuning to this score with a dated note there. **Recommend** keeping it: a
    threshold tuned to the simulator's cameras would not transfer.
-3. **Reopen 15 (d)?** One wrong look holds a track in conflict for good; 32 % of neutral contacts within
-   4 km were shown suspect or in conflict (15). Left standing on 2026-10-26; for tuning a playbook it
-   matters, since a playbook scored against that picture learns to ignore doubt. **Recommend** fixing
-   it (a sensing-model change, A1's) before the first practice batch.
+3. **15 (d) is already fixed** (corrected 2026-11-14: this item, written on 2026-11-02, proposed
+   reopening it). e95ab26 fixed it on 2026-10-26 (section 15's last paragraph): one stray wrong call
+   among agreeing looks now clears, while one call against one, or against the AIS identity alone,
+   stays a conflict. What remains is measuring, not deciding: how much neutral traffic the picture
+   shows in doubt on the fixed terrain, taken from the first practice batch. 17.2 already keeps that
+   doubt from counting as a false alarm (a look at a contact shown in doubt is justified on the
+   picture); what it costs an agent is vehicle time, which the catch line shows.
 
 ### 17.6 The families sorted (from the dev results above; provisional)
 
