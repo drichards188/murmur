@@ -16,12 +16,15 @@ MCP tools an agent has. In every other family it does exactly what `OracleV3` do
   its link holds (`preposition`: a short span keeps the keep-out's reach regions small); every
   `ENGAGE_TICK_S`, once the hostile's track (by the
   tracker's association) shows declared hostile and no nomination on it stands, it reads the
-  nomination form's dry run for the armed platforms (each attempt logged, `engage.attempt`), sends
-  any vehicle of ours the form names inside a keep-out 2.5 km off (`make_room`), and nominates the
-  first that passes, with an
+  nomination form's dry run for the armed platforms (each attempt logged, `engage.attempt`, with
+  what an operator could accept of each blocker), sends any vehicle of ours that takes an orbit and
+  that the form names inside a keep-out 2.5 km off (`make_room`), and nominates the first that
+  passes, with an
   effect radius of 75 m, or 40 m when a contact that is not hostile by truth is within 175 m of
   the target; it waits while one is within 140 m (3D), and never nominates a track whose contact
-  is not hostile by truth (restraint by truth), at most three times.
+  is not hostile by truth (restraint by truth), at most three times. Where the episode's reviewer
+  adopts refused nominations (F15 version 2) and none passes, it proposes the one the form says
+  acceptances alone would let pass, for a person to take up (`ask`; the engine refuses it).
 - **F16** (the stated `review_items`): each item's contacts become needs for an EO/IR look (the
   evidence the reviewer reads), opened 20 s before the item and due 200 s after: the basic
   oracle's plan sends two vehicles to each, as for an identification.
@@ -54,6 +57,10 @@ CLEAR_3D_M = 140.0
 SMALL_RADIUS_NEAR_M = 175.0
 REVIEW_LEAD_S = 20.0
 REVIEW_DUE_S = 200.0
+#: F15 with an adopting reviewer (`ask`): how often, and how many times a target, the oracle proposes
+#: a nomination only acceptances would let pass
+ASK_EVERY_S = 20.0
+MAX_ASKS = 10
 
 
 def iso(unix_s: float) -> str:
@@ -71,21 +78,38 @@ def unix(t: Any) -> float | None:
     return None
 
 
+def accept_view(it: dict[str, Any]) -> dict[str, Any] | None:
+    """What an operator with engagement authority could accept of one blocking keep-out item (the
+    explanation's own words, keepout.rs): a lost contact (rules 16: `since`, its last fix), or a
+    live track as behaving now (rules 19: `acceptable` and `clears`); None for anything else."""
+    if it.get("lost"):
+        return {"lost": True, "since": (it["lost"] or {}).get("since")}
+    b = it.get("behaving")
+    if b:
+        return {"acceptable": bool(b.get("acceptable")), "clears": bool(b.get("clears"))}
+    return None
+
+
 def attempt_row(o: dict[str, Any]) -> dict[str, Any]:
     """One platform's line of a nomination form: passed, span (s from the preview's time to its
     effect time), failing checks, and each blocking keep-out item [id, subject, region kind,
-    domain, shortfall m]."""
+    domain, shortfall m, what an operator could accept of it (`accept_view`)]."""
     pv = o.get("preview") or {}
     span = None
     t, et = unix(pv.get("t")), unix(pv.get("effect_t"))
     if t is not None and et is not None:
         span = round(et - t, 1)
     items = [[it.get("id"), it.get("subject"), (it.get("region") or {}).get("kind"), it.get("domain"),
-              None if it.get("short_m") is None else round(float(it["short_m"]))]
+              None if it.get("short_m") is None else round(float(it["short_m"])), accept_view(it)]
              for it in (o.get("keep_outs") or {}).get("items") or [] if it.get("blocks")]
-    return {"uid": o.get("uid"), "callsign": o.get("callsign"), "passed": bool(o.get("passed")), "span_s": span,
-            "failing": sorted({str(c.get("rule")) for c in o.get("checks") or [] if c.get("outcome") != "pass"}),
-            "blocking": items}
+    ko = o.get("keep_outs") or {}
+    row = {"uid": o.get("uid"), "callsign": o.get("callsign"), "passed": bool(o.get("passed")), "span_s": span,
+           "failing": sorted({str(c.get("rule")) for c in o.get("checks") or [] if c.get("outcome") != "pass"}),
+           "blocking": items}
+    # the explanation lists at most 12 items, the largest shortfall first: how many block in all
+    if isinstance(ko.get("blocking"), int) and ko["blocking"] > len(items):
+        row["blocking_n"] = ko["blocking"]
+    return row
 
 
 class OracleOps(OracleV3):
@@ -105,6 +129,20 @@ class OracleOps(OracleV3):
         self.prepositioned: set[int] = set()
         self.moved: dict[int, float] = {}
         self.engager: int | None = None
+        # F15: every vehicle of ours that takes an orbit and is neither one of the plan's units nor
+        # armed for the engagement (the MQ-9B and the RQ-4 on station, sensorless ones), for
+        # `make_room` only
+        self.movers: dict[int, Any] = {}
+        # F15: the episode's reviewer when it adopts refused nominations (`ask`), else None
+        self.adopting: Any = None
+        rv = getattr(ep.opts, "review", None)
+        if rv is not None and self.st.get("engagement"):
+            from ..review import review_policy
+
+            pol = review_policy(rv)
+            self.adopting = pol if pol.adopt != "leave" else None
+        self.asked_t = -1e9
+        self.asks: dict[str, int] = {}
 
     # ---- setup: F16's review looks -----------------------------------------------------------------
 
@@ -113,6 +151,8 @@ class OracleOps(OracleV3):
         # F15: the armed platforms are kept for the engagement (none of them is sent to look)
         armed = {int(u) for u in (self.st.get("armed") or {}).values()} if self.st.get("engagement") else set()
         self.armed_units = {u: self.units.pop(u) for u in sorted(armed) if u in self.units}
+        if self.st.get("engagement"):
+            self.movers = self.orbiters()
         path = self.ep.contacts_path or self.ep.e.contacts
         if path:
             self.contacts = {str(c["id"]): c for c in tomllib.loads(Path(path).read_text()).get("contact") or []}
@@ -291,9 +331,35 @@ class OracleOps(OracleV3):
                 self.engager = uid
                 return
 
+    def orbiters(self) -> dict[int, Any]:
+        """Every vehicle of ours that takes an orbit and is not already a unit of the plan or armed
+        for the engagement, as a `Unit` (its catalog altitude and orbit radius, as `setup` sizes
+        them), for `make_room`."""
+        from ..situations import fleet_plan
+        from .oracle import Unit
+
+        catalog = {str(x["id"]): x for x in self.call("get_platforms").get("platforms") or []}
+        _, standins = fleet_plan(self.ep.e.fleet)
+        out: dict[int, Any] = {}
+        for s in standins:
+            uid, spec = int(s["uid"]), s["spec"]
+            cat = catalog.get(s["platform"]) or {}
+            if uid in self.units or uid in self.armed_units or "orbit" not in (cat.get("tasks") or []):
+                continue
+            alt = float(s.get("cruise_alt_m") or spec.get("alt_m") or spec.get("typical_alt_m") or 0.0)
+            turn = cat.get("min_turn_radius_m")
+            orbit = max(1.15 * float(turn), 60.0) if turn else self.ORBIT_DEFAULT.get(str(spec.get("behavior") or ""), 150.0)
+            out[uid] = Unit(uid, s["callsign"], s["platform"], spec, alt, float(spec.get("cruise_mps") or 5.0),
+                            math.ceil(orbit / 10.0) * 10.0, [], str(spec.get("link") or ""))
+        return out
+
     def make_room(self, now: float, opts: list[dict[str, Any]], truth: dict[str, Any]) -> None:
         """Our vehicles the form names inside a keep-out (`keep_out_friendly`) are sent to orbit 2.5
-        km off the holding point, each at most once every 120 s (deconfliction before an effect)."""
+        km off the holding point (beyond the orbit's own radius), each at most once every 120 s
+        (deconfliction before an effect): any of ours that takes an orbit (`movers` too: before bd
+        murmur-e3b only the plan's units and the armed ones, so REAPER 1, loitering at 3,000 m west
+        of the Golden Gate on no order, blocked the friendly keep-out in 526 of the dev seeds' 1,299
+        blocked attempts there, in 7 of the 8 situations with attempts, and was never moved)."""
         e = self.st["engagement"]
         hold = (float(e["hold"][0]), float(e["hold"][1]))
         ours = {int(o["uid"]): o for o in truth.get("ours") or []}
@@ -303,13 +369,13 @@ class OracleOps(OracleV3):
         for uid in names:
             if uid == engager or now - self.moved.get(uid, -1e9) < 120.0 or uid not in ours:
                 continue
-            u = self.units.get(uid) or self.armed_units.get(uid)
+            u = self.units.get(uid) or self.armed_units.get(uid) or self.movers.get(uid)
             if u is None:
                 continue
             self.moved[uid] = now
             o = ours[uid]
-            self.orbit_off(uid, u, (float(o["lon"]), float(o["lat"])), hold, (2500.0, 3000.0),
-                           f"Take {u.callsign} clear of the engagement's keep-out")
+            self.orbit_off(uid, u, (float(o["lon"]), float(o["lat"])), hold,
+                           (2500.0 + u.orbit_m, 3000.0 + u.orbit_m), f"Take {u.callsign} clear of the engagement's keep-out")
 
     def engage(self, now: float) -> None:
         e = self.st["engagement"]
@@ -358,6 +424,7 @@ class OracleOps(OracleV3):
         if pick is None:
             self.write("engage.none_passes", track=tid, blocking=keep_out_blockers(opts))
             self.make_room(now, opts, truth)
+            self.ask(now, tid, target, radius, opts)
             return
         req = {"task": "engage", "uids": [int(pick["uid"])], "extra": {
             "track_id": tid, "effect_radius_m": radius, "window_s": 600, "fallback": "return"}}
@@ -366,8 +433,37 @@ class OracleOps(OracleV3):
         if out is not None:
             self.noms[target] = self.noms.get(target, 0) + 1
 
+    def ask(self, now: float, tid: str, target: str, radius: float, opts: list[dict[str, Any]]) -> None:
+        """Only in an episode whose reviewer adopts (review.py `adopt`; privileged: the oracle reads
+        the episode's operators): when no platform passes but the form says one would with blockers
+        an operator with engagement authority may accept (review.py `adoption`: the keep-outs alone
+        fail, each blocker a lost contact or a live track that accepting as behaving now clears), it
+        proposes that platform's nomination anyway, for a person to take up: the engine refuses it
+        (an agent's nomination carries no acceptance) and the adopter may nominate it as their own.
+        At most once every `ASK_EVERY_S`, `MAX_ASKS` times a target; not counted with the three
+        nominations."""
+        if self.adopting is None or now - self.asked_t < ASK_EVERY_S or self.asks.get(target, 0) >= MAX_ASKS:
+            return
+        from ..review import adoption
+
+        for o in sorted(opts, key=lambda o: unix((o.get("preview") or {}).get("effect_t")) or 1e18):
+            accepted, why = adoption(self.adopting, o)
+            if accepted is None:
+                continue
+            self.asked_t = now
+            self.asks[target] = self.asks.get(target, 0) + 1
+            req = {"task": "engage", "uids": [int(o["uid"])], "extra": {
+                "track_id": tid, "effect_radius_m": radius, "window_s": 600, "fallback": "return"}}
+            self.propose(f"{tid} is declared hostile and its contact is hostile by truth; {o.get('callsign')} is kept "
+                         f"from passing only by blockers an operator with engagement authority may accept ({why}): "
+                         f"for a person to take up (a scoring anchor placed from truth).", req, target=target,
+                         radius_m=radius, ask=True)
+            return
+
     def describe(self) -> dict[str, Any]:
         out = super().describe()
+        if self.asks:
+            out["asks"] = self.asks
         if self.space_options:
             out["space_options"] = self.space_options
         if self.holds["outages"] is not None:

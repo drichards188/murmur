@@ -267,6 +267,75 @@ def test_a_live_blocker_is_accepted_as_behaving_now_only_when_that_clears_it():
         rv.review_policy({"live_blockers": "accept"})
 
 
+def form_option(uid: int = 21, passed: bool = False, failing: tuple[str, ...] = ("keep_out_tracks",),
+                items: list[dict[str, Any]] | None = None, blocking: int | None = None) -> dict[str, Any]:
+    items = list(items or [])
+    return {"uid": uid, "callsign": "BLADE 1", "passed": passed,
+            "checks": [{"rule": r, "outcome": "fail"} for r in failing] + [{"rule": "reach", "outcome": "pass"}],
+            "keep_outs": {"items": items, "blocking": len([i for i in items if i.get("blocks")]) if blocking is None else blocking}}
+
+
+def test_a_refused_nomination_is_adopted_only_when_acceptances_clear_it():
+    """Adoption (bd murmur-e3b): the adopter (op-4, never a signer) takes up an agent's engagement
+    nomination the engine refused in the last 15 s, and nominates it as its own with every blocker
+    accepted, only when the keep-outs alone fail, every blocker is listed, none is one of ours, and
+    each is a lost contact or a live track that accepting as behaving now clears."""
+    p = rv.review_policy({"preset": "accept-behaving", "adopt": "accept_clearing"})
+    assert p.as_dict()["adopter"] == "op-4" and "adopt" not in rv.review_policy({"preset": "accept-behaving"}).as_dict()
+    with pytest.raises(ValueError):
+        rv.review_policy({"adopt": "accept_clearing", "adopter": "op-2"})
+    now = 1_000_000.0
+    refused = {"id": 16, "kind": "engage", "source": {"kind": "agent", "id": "agent-watch"}, "state": "rejected",
+               "created_t": now - 4000.0, "uids": [21],
+               "params": {"track": "T-0024", "effect_radius_m": 75.0, "fallback": "return", "window": {"until": now + 5e5}}}
+    acts = rv.adopt_acts(p, [refused, {**refused, "id": 15, "created_t": now - 16000.0},
+                             {**refused, "id": 14, "state": "pending_approval"},
+                             {**refused, "id": 13, "source": {"kind": "human", "id": "op-4"}}], now)
+    assert [(a["item"], a["track"], a["uid"], a["by"]) for a in acts] == [(16, "T-0024", 21, "op-4")]
+    assert rv.adopt_acts(rv.review_policy({"preset": "accept-behaving"}), [refused], now) == []
+    lost = {"id": "T-0028", "subject": "lost_contact", "blocks": True, "lost": {"track": "T-0028", "since": 1781489159821}}
+    plane = {"id": "T-0010", "subject": "track", "blocks": True, "domain": "air",
+             "behaving": {"track": "T-0010", "domain": "air", "acceptable": True, "clears": True}}
+    boat = {"id": "T-0034", "subject": "track", "blocks": True, "domain": "surface",
+            "behaving": {"track": "T-0034", "domain": "surface", "acceptable": True, "clears": True}}
+    acc, why = rv.adoption(p, form_option(items=[lost, plane, boat]))
+    assert acc == {"accept_lost": [{"track": "T-0028", "since": 1781489159821}],
+                   "accept_behaving": [{"track": "T-0010"}, {"track": "T-0034"}]}, why
+    assert rv.adoption(rv.review_policy({"adopt": "accept_aircraft"}), form_option(items=[plane, boat]))[0] is None
+    noveloc = {"id": "T-0031", "subject": "track", "blocks": True, "domain": "air", "label": "T-0031",
+               "behaving": {"track": "T-0031", "domain": "air", "acceptable": False, "clears": False,
+                            "why_not": "T-0031 has no velocity estimate: there is no course to accept"}}
+    assert rv.adoption(p, form_option(items=[lost, noveloc]))[1].endswith("there is no course to accept")
+    ours = {"id": "17", "subject": "vehicle", "blocks": True, "label": "DRIFT 3"}
+    for bad in (form_option(items=[ours]), form_option(items=[lost], blocking=13),
+                form_option(failing=("keep_out_tracks", "geofence"), items=[lost]),
+                form_option(items=[{**plane, "behaving": {**plane["behaving"], "clears": False}}])):
+        assert rv.adoption(p, bad)[0] is None
+    assert rv.adoption(p, None)[0] is None
+
+    def handler(method: str, path: str, body: Any, op: Any) -> tuple[int, Any]:
+        if path == "/api/review":
+            return 200, {"declarations": [], "flags": [], "lost_claims": []}
+        if path == "/api/inbox":
+            return 200, {"pending": [], "alerts": []}
+        if path == "/api/intents" and method == "GET":
+            return 200, {"intents": [refused]}
+        if path == "/api/engage/options":
+            return 200, {"options": [form_option(items=[lost, plane])]}
+        if path == "/api/intents":
+            return 201, {"intent": {"id": 18, "state": "pending_approval"}}
+        return 200, {}
+
+    r = rv.Reviewer(FakeSim(handler), p, seed=1, epoch=(now - 3000.0) / 1000.0)
+    drive(r, 3.0, 12.0)
+    (d,) = [x for x in r.decisions if x["kind"] == "adopt"]
+    assert (d["item"], d["intent"], d["by"], d["result"]) == (16, 18, "op-4", "done")
+    post = [c for c in r.sim.calls if c[0] == "POST" and c[1] == "/api/intents"][0]
+    assert post[3] == "op-4" and post[2]["accept_lost"] == [{"track": "T-0028", "since": 1781489159821}]
+    assert post[2]["accept_behaving"] == [{"track": "T-0010"}] and post[2]["uids"] == [21] and post[2]["track"] == "T-0024"
+    assert "not a person" in post[2]["rationale"]
+
+
 def test_the_reviewer_reads_then_acts_once_per_item():
     review = {"declarations": [{"id": "D-1", "track": "T-0008", "actions": ["confirm", "revoke"]}],
               "open": [{"id": "F-1", "flag": 1, "tracks": ["T-0004"], "actions": ["confirm", "dismiss", "declare"]}],

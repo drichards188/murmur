@@ -204,7 +204,8 @@ def nomination_label(a: dict[str, Any], rec: dict[str, Any], pic: Picture, truth
 
 def review_labels(rec: dict[str, Any], pic: Picture, truth: Truth) -> list[dict[str, Any]]:
     """Every decision of the reviewer against truth (SCORING-V3.md 2.9; choices 9, 18-20): `right`,
-    `wrong`, `no_effect` (the bridge refused it) or `unjudged`."""
+    `wrong`, `no_effect` (the bridge refused it) or `unjudged`; an adoption is not one (F15's
+    engagement need judges it)."""
     out = []
     effects = (rec.get("effects") or {}).get("applied") or []
     whole = (rec.get("truth") or {}).get("association") or {}
@@ -219,6 +220,9 @@ def review_labels(rec: dict[str, Any], pic: Picture, truth: Truth) -> list[dict[
 
     for d in ((rec.get("review") or {}).get("decisions") or []):
         kind, action = d.get("kind"), d.get("action")
+        if kind == "adopt":
+            # an adopted nomination is judged as a nomination (`adopted_nominations`), not a review item
+            continue
         k = pic.index(d.get("t"))
         c = contact(d.get("track"), k)
         verdict, why = "unjudged", "no truth for it"
@@ -344,6 +348,59 @@ def digest_space(text: str, epoch: float) -> dict[str, Any] | None:
 
 def space_digest(rec: dict[str, Any]) -> dict[int, dict[str, Any]]:
     return {int(i["id"]): i for i in (((rec.get("v3") or {}).get("space") or {}).get("intents") or [])}
+
+
+#: the engagement events F15's report reads (bd murmur-e3b: how often an acceptance lapses in
+#: traffic, and whether a lapse came too late)
+ENGAGE_EVENTS = ("engage.accepted", "engage.acceptance_revoked", "engage.acceptance_lapsed", "engage.effect",
+                 "engage.stopped", "engage.assessed")
+
+
+def digest_engage(text: str, epoch: float) -> dict[str, Any] | None:
+    """Every engagement nomination of the audit log with its source and the checks that failed at
+    its last check (a refused one's reasons), and every acceptance, revocation and lapse of its
+    blockers, release, stop and assessment, in situation seconds. None when the log holds no
+    nomination (a record without one is as before)."""
+    noms: dict[int, dict[str, Any]] = {}
+    out: dict[str, list[dict[str, Any]]] = {k: [] for k in ("accepted", "revoked", "lapsed", "effects", "stopped",
+                                                             "assessed")}
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        typ = e.get("type")
+        t = round(e["t"] / 1000.0 - epoch, 3) if isinstance(e.get("t"), (int, float)) else None
+        if typ == "intent.created":
+            i = e.get("intent") or {}
+            if i.get("kind") == "engage":
+                noms[int(i["id"])] = {"id": int(i["id"]), "source": i.get("source"), "created": t, "failing": []}
+            continue
+        iv = e.get("intent")
+        if not isinstance(iv, int) or iv not in noms:
+            continue
+        row: dict[str, Any] = {"t": t, "intent": iv}
+        if typ == "check.result":
+            noms[iv]["failing"] = [{"rule": r.get("rule"), "outcome": r.get("outcome"), "detail": str(r.get("detail") or "")[:300]}
+                                   for r in e.get("results") or [] if r.get("outcome") != "pass"]
+            noms[iv]["phase"] = e.get("phase")
+        elif typ == "engage.accepted":
+            what = "track" if e.get("track") else ("contact" if e.get("contact") else "vehicle")
+            out["accepted"].append({**row, "what": what, "id": e.get("track") or e.get("contact") or e.get("uid"),
+                                    "by": e.get("by")})
+        elif typ == "engage.acceptance_revoked":
+            out["revoked"].append({**row, "id": e.get("track") or e.get("contact") or e.get("uid"), "by": e.get("by")})
+        elif typ == "engage.acceptance_lapsed":
+            out["lapsed"].append({**row, "id": e.get("track"), "kind": e.get("kind"), "detail": str(e.get("detail") or "")[:300]})
+        elif typ == "engage.effect":
+            out["effects"].append({**row, "uid": e.get("uid"), "point": e.get("point"), "radius_m": e.get("radius_m")})
+        elif typ == "engage.stopped":
+            out["stopped"].append({**row, "cause": e.get("cause"), "reason": str(e.get("reason") or "")[:300]})
+        elif typ == "engage.assessed":
+            out["assessed"].append({**row, "result": e.get("result"), "evidence": str(e.get("evidence") or "")[:200]})
+    return {"nominations": [noms[i] for i in sorted(noms)], **out} if noms else None
 
 
 # ---- covered by ours: an imaging sensor of ours in range of an area's centre ---------------------
@@ -677,10 +734,37 @@ def cover_needs(rec: dict[str, Any], actions: list[dict[str, Any]]) -> list[dict
     return out
 
 
-def engagement_needs(rec: dict[str, Any], actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def adopted_nominations(rec: dict[str, Any], pic: Picture, truth: Truth) -> list[dict[str, Any]]:
+    """F15 with an adopting reviewer (review.py `adopt`, bd murmur-e3b): each nomination the adopter
+    made of an agent's refused one (the review decision's `intent`; `adopts`, the agent's), labelled
+    as an agent's nomination is (`nomination_label`), with what it accepted at the nomination. Empty
+    for a record without one."""
+    made = {int(d["intent"]): d for d in ((rec.get("review") or {}).get("decisions") or [])
+            if d.get("kind") == "adopt" and d.get("result") == "done" and d.get("intent") is not None}
+    if not made:
+        return []
+    intents = {int(i["id"]): i for i in (((rec.get("v3") or {}).get("audit") or {}).get("intents") or [])}
+    out = []
+    for iid, d in sorted(made.items()):
+        i = intents.get(iid)
+        if i is None:
+            continue
+        states = [s[1] for s in i.get("states") or []]
+        lab = nomination_label({"intent": iid, "params": i.get("params") or {}, "created": i.get("created")},
+                               rec, pic, truth)
+        out.append({"intent": iid, "adopts": d.get("item"), "kind": "engage", "final": states[-1] if states else None,
+                    "accepted": d.get("accepted"), **lab})
+    return out
+
+
+def engagement_needs(rec: dict[str, Any], actions: list[dict[str, Any]],
+                     adopted: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """F15: the hostile the situation states should be engaged: right when an effect of an agent's
     nomination on it was applied (`effective`, or `missed` by the effect's draw, which is not the
-    agent's: choice 26) and none of the agent's nominations was harmful or unwarranted."""
+    agent's: choice 26) and none of the agent's nominations was harmful or unwarranted. A refused
+    nomination is none on the target: when every one was refused the cause says `refused`. With an
+    adopting reviewer (`adopted`: `adopted_nominations`), the same reading over the agent's
+    nominations and the adopter's of them is `right_with_adopted`; `right` stays the agent's own."""
     e = stated(rec).get("engagement")
     if not e:
         return []
@@ -693,18 +777,32 @@ def engagement_needs(rec: dict[str, Any], actions: list[dict[str, Any]]) -> list
     if not executed:
         if not noms:
             cause = "no_nomination"
+        elif all(a["label"] == "refused" for a in noms):
+            cause = "refused"
         elif not on_target:
             cause = "nominated_another"
         else:
             last = on_target[-1]
             cause = f"{last['label']}:{last.get('final') or ''}"
-    return [{"need": "engage:" + e["target"], "kind": "engagement", "target": e["target"],
-             "should_engage": bool(e.get("should_engage", True)), "effective": bool(effective),
-             "executed": bool(executed), "nominations": len(noms),
-             "harmful": sum(1 for a in noms if a["label"] == "harmful"),
-             "unwarranted": sum(1 for a in noms if a["label"] == "unwarranted"),
-             "right": bool(executed) and not bad, "restraint_ok": not bad, "cause": cause,
-             "instrument": instrument("engagement")}]
+    out = {"need": "engage:" + e["target"], "kind": "engagement", "target": e["target"],
+           "should_engage": bool(e.get("should_engage", True)), "effective": bool(effective),
+           "executed": bool(executed), "nominations": len(noms),
+           "harmful": sum(1 for a in noms if a["label"] == "harmful"),
+           "unwarranted": sum(1 for a in noms if a["label"] == "unwarranted"),
+           "right": bool(executed) and not bad, "restraint_ok": not bad, "cause": cause,
+           "instrument": instrument("engagement")}
+    if adopted:
+        a_on = [a for a in adopted if (a.get("nomination") or {}).get("target") == e["target"]]
+        a_exec = [a for a in a_on if a["label"] in ("effective", "missed")]
+        a_bad = [a for a in adopted if a["label"] in ("harmful", "unwarranted")]
+        out.update(adopted=len(adopted), adopted_executed=len(a_exec),
+                   adopted_effective=sum(1 for a in a_on if a["label"] == "effective"),
+                   adopted_harmful=sum(1 for a in adopted if a["label"] == "harmful"),
+                   adopted_unwarranted=sum(1 for a in adopted if a["label"] == "unwarranted"),
+                   adopted_finals=[a.get("final") for a in adopted],
+                   right_with_adopted=bool(executed or a_exec) and not (bad or a_bad),
+                   restraint_ok_with_adopted=not (bad or a_bad))
+    return [out]
 
 
 def review_items(rec: dict[str, Any], reviews: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -726,7 +824,7 @@ def ops_needs(rec: dict[str, Any], pic: Picture, actions: list[dict[str, Any]], 
     if st.get("cover_needs"):
         out["cover"] = cover_needs(rec, actions)
     if st.get("engagement"):
-        out["engagement"] = engagement_needs(rec, actions)
+        out["engagement"] = engagement_needs(rec, actions, adopted_nominations(rec, pic, Truth(rec)))
     if st.get("review_items"):
         out["review"] = review_items(rec, reviews)
     return out

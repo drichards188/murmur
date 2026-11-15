@@ -719,11 +719,21 @@ class Episode:
 
     def section16(self, spec: dict[str, Any], env: dict[str, str]) -> None:
         """The simulator's side of docs/HEADLESS.md section 16, only where an option asks: the
-        effects (`spec["effects"]`), and the pinned element sets unpacked once and given to the
-        bridge's space loader (`MURMUR_ROOT`) and the emulator's SATCOM (`space_root`, its own
-        look cache)."""
+        effects (`spec["effects"]`), the adopting operator in the bridge's rosters (a reviewer that
+        adopts), and the pinned element sets unpacked once and given to the bridge's space loader
+        (`MURMUR_ROOT`) and the emulator's SATCOM (`space_root`, its own look cache)."""
         if self.opts.effects is not None:
             spec["effects"] = dict(self.opts.effects)
+        if self.opts.review is not None:
+            from .review import review_policy
+
+            rp = review_policy(self.opts.review)
+            if rp.adopt != "leave":
+                # the adopting operator (review.py, bd murmur-e3b): an operator with engagement
+                # authority beside the two signers, only in an episode whose reviewer adopts
+                for k in ("MURMUR_OPERATORS", "MURMUR_ENGAGE_OPERATORS"):
+                    ids = [x for x in env.get(k, "").split(",") if x]
+                    env[k] = ",".join(ids + ([rp.adopter] if rp.adopter not in ids else []))
         snapshot = self.space_snapshot
         if snapshot is not None:
             from . import space
@@ -794,11 +804,16 @@ class Episode:
         if scoring == "v3":
             # scoring v3's 2.10 (v3/labels_ops.py): each collect and cover with its checks, its space
             # answer and its order, only when the log holds one (a record without is as before)
-            from .v3.labels_ops import digest_space
+            from .v3.labels_ops import digest_engage, digest_space
 
             space = digest_space(audit_text, self.sim_epoch)
             if space is not None:
                 v2["space"] = space
+            # F15's report (report_ops.py): the nominations, the acceptances of their blockers and
+            # the lapses, only when the log holds a nomination
+            engage = digest_engage(audit_text, self.sim_epoch)
+            if engage is not None:
+                v2["engage"] = engage
         return {
             "scoring": scoring,
             "episode_class": cls,

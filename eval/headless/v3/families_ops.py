@@ -36,7 +36,12 @@ scale world (golden-gate-scale) only. Every route keeps to its medium on the wor
   uncontradicted AIS claims), the nomination (the agent's), two scripted signers, the effect (hit
   p 0.85; a munition is spent by it), the assessment and what is owed back. The fleet gains a
   Switchblade (BLADE 1) and an FPV (WASP 1) at the world's launch site, beside the armed Magura
-  (VIPER 1): three armed types. Drawn independently:
+  (VIPER 1): three armed types. **Version 2** (bd murmur-e3b, 2026-11-15): the reviewer also accepts
+  a live aircraft blocking a waiting nomination as behaving now (rules 19) and adopts an agent's
+  nomination the keep-out refused, nominating it as its own operator (op-4, engagement authority,
+  never a signer) with every blocker accepted where the form says that clears it (review.py
+  `adopt`; the labels keep it apart: `right` is the agent's own, `right_with_adopted` counts the
+  adopter's too); San Diego's Switchblade cruises at 150 m (`ENGAGE`). Drawn independently:
   - *an escort* (p 0.35): a second boat that runs and holds with the hostile 40 to 150 m off it,
     truth neutral (a fishing boat, p 0.5) or suspect (a small fast boat without AIS); the engine
     flags it (proximity) and the reviewer declares it hostile, so it can be nominated: the right
@@ -92,7 +97,15 @@ SCALE = "golden-gate-scale"
 DURATION_S = 1200.0
 #: the scripted operators of each family (docs/HEADLESS.md 16), as `Options` takes them
 F15_SIGNERS = {"preset": "scripted"}
-F15_REVIEW = {"preset": "accept-all", "flags": "declare"}
+#: F15 version 2 (bd murmur-e3b, 2026-11-15): accept-all's yes to the review list; (rules 19) a live
+#: aircraft blocking a waiting nomination accepted as behaving now when the explanation says that
+#: clears it; and an agent's nomination the keep-out refused nominated by the adopting operator with
+#: its blockers accepted (review.py `adopt`: lost contacts and any live blocker whose acceptance
+#: clears it). Version 1's `accept-all` predates rules 19, and since an agent's nomination carries no
+#: acceptance and a blocked one is refused when proposed, no acceptance ever reached a nomination
+#: in its runs (0 in the dev seeds 5400-5409, both worlds, before and after rules 19's preset).
+F15_REVIEW = {"preset": "accept-behaving", "flags": "declare", "adopt": "accept_clearing"}
+F15_VERSION = 2
 F15_EFFECTS = {"p_hit": 0.85, "spend_expended": True, "survives_miss": False}
 F16_REVIEW = {"preset": "evidence"}
 #: F14: places 70 to 160 km out a satellite collect can image and no standing sensor of ours
@@ -124,13 +137,20 @@ GNSS_RUN = {
 GNSS_LEVELS = ((9, 0.6), (10, 0.4))
 GNSS_RUN_S = 900.0
 #: F15: the engagement zone (sim/areas), a box inside it where the hostile holds (clear of the
-#: no-strike areas), the bearings it comes in from, and the launch site of the added munitions
+#: no-strike areas), the bearings it comes in from, the launch site of the added munitions and
+#: their cruise altitudes (None: the catalog's)
+#: (version 2, bd murmur-e3b: San Diego's Switchblade cruises at 150 m. On the re-baked DEM
+#: (bd murmur-cbjn) Point Loma's ridge stands across every straight line from North Island to the
+#: approaches, 20 to 36 m into a line-of-sight link at the catalog's 80 m (the oracle's link map,
+#: whose transit limit is 15 m): no orbit off the holding point kept its link, so the oracle never
+#: brought the munition there in any San Diego situation of the dev seeds, and every nomination's
+#: span stayed 320 to 420 s. At 150 m the line clears the ridge from anywhere in the holding box.)
 ENGAGE = {
     "golden-gate-v3": {"zone": "ez-gate-west", "hold": (-122.520, -122.492, 37.806, 37.822), "from": (240.0, 290.0),
-                       "launch": [(37.8041, -122.4600, 4, 270), (37.8037, -122.4620, 4, 270)],
+                       "launch": [(37.8041, -122.4600, 4, 270), (37.8037, -122.4620, 4, 270)], "alt": (None, None),
                        "victims": (("HUNTER 1", 0.6), ("ALBATROSS 1", 0.4))},
     "san-diego": {"zone": "ez-approaches", "hold": (-117.290, -117.262, 32.618, 32.650), "from": (200.0, 290.0),
-                  "launch": [(32.6980, -117.2040, 8, 290), (32.6975, -117.2025, 7, 290)],
+                  "launch": [(32.6980, -117.2040, 8, 290), (32.6975, -117.2025, 7, 290)], "alt": (150.0, None),
                   "victims": (("HUNTER 1", 0.6), ("ALBATROSS 1", 0.4))},
 }
 #: F16: boxes on the water our standing sensors watch, each with the vehicle of ours an act there
@@ -374,7 +394,8 @@ def _f15_engage(d: Any) -> None:
     d.stated["restraint"] = restraint
     d.stated["contact_alt_m"] = alts
     d.stated["same_vessel"] = same
-    d.stated["element"] = {"contact": "hostile-1", "kind": "small_fast_boat", "domain": "surface", **drawn}
+    d.stated["element"] = {"contact": "hostile-1", "kind": "small_fast_boat", "domain": "surface", **drawn,
+                           "version": F15_VERSION}
 
     def post(e: EpisodeSpec, workdir: Path) -> None:
         u = uids(e.fleet)
@@ -382,7 +403,7 @@ def _f15_engage(d: Any) -> None:
             a["against_vehicle"] = u[victim]
         e.contacts = append_acts(Path(e.contacts), acts) if e.contacts else e.contacts
         e.fleet = fleet_with(e.fleet, workdir, f"f15-{d.world}-{d.seed}",
-                             [("switchblade", E["launch"][0], None), ("fpv", E["launch"][1], None)])
+                             [("switchblade", E["launch"][0], E["alt"][0]), ("fpv", E["launch"][1], E["alt"][1])])
         added = uids(e.fleet)
         d.stated["armed"] = {k: added[k] for k in ("VIPER 1", "BLADE 1", "WASP 1") if k in added}
         d.stated["acts"] = acts

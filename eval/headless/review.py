@@ -14,6 +14,15 @@ of item is its policy (`ReviewPolicy`, presets in `PRESETS`, a batch's `Options.
 | a live track that blocks a waiting nomination's keep-out (rules 19) | `GET /api/inbox`, a nomination's `engage.behaving` (while `behaving_acceptable_now`) | accept it as behaving now for that engagement (engagement authority) when the explanation says that clears it (`acceptable` and `clears`); `live_blockers = "accept_aircraft"` only an aircraft, `"accept_clearing"` any | `POST /api/intents/{id}/accept_behaving` `{track}` |
 | a live track carrying a lost contact's AIS (rules 16) | `GET /api/review` `lost_claims` | confirm it, only when nothing contradicts it | `POST /api/review/lost/{track}/confirm` `{by_track}` |
 | a platform spent by its own effect but still heard (rules 15) | `GET /api/inbox` alerts of kind `spent` | un-spend it (engagement authority) | `POST /api/restores/unspend` `{uid, note}` |
+| an agent's engagement nomination the engine refused (`adopt`, off by default) | `GET /api/intents` (rejected, from an agent, in the last `ADOPT_WITHIN_S`) | nominate it as the adopting operator's own (`ADOPTER`, engagement authority, never a signer), the same track, platform, radius, fallback and window, with every blocker accepted at the nomination (rules 16 and 19), only when the form (`POST /api/engage/options`) says the keep-outs alone fail and every blocker is a lost contact or a live track that accepting as behaving now clears (`"accept_aircraft"`: only aircraft among the live ones) | `POST /api/intents` task engage with `accept_lost`, `accept_behaving` |
+
+**Adoption** (bd murmur-e3b): an agent's nomination can never carry an acceptance, and one the
+keep-out blocks is refused when proposed, so without it a person's acceptance reaches only a
+nomination that waits (a blocker that came after it). The console's person reads the refused
+nomination's form and nominates it themselves with the blockers accepted; `adopt` is that act,
+scripted. Its nominations are the adopter's (the bridge logs them under its session); each
+decision names the agent's refused nomination (`item`) and the adopter's own (`intent`), and the
+labels keep them apart from the agent's (v3/labels_ops.py `adopted_nominations`).
 
 Each item is acted on once (the engine refuses what is no longer open, and that answer is
 recorded). The operator looks every `attend_s` (lognormal, `attend_sigma`; 0 for a fixed
@@ -59,6 +68,13 @@ CLAIMS = ("confirm", "leave", "evidence")
 UNSPEND = ("unspend", "leave")
 #: rules 19: what the reviewer does with a live track blocking a waiting nomination's keep-out
 LIVE = ("accept_aircraft", "accept_clearing", "leave")
+#: adoption (module doc): which live blockers an adopted nomination may accept (lost contacts always)
+ADOPT = ("accept_aircraft", "accept_clearing", "leave")
+#: the adopting operator: a scripted operator with engagement authority, never one of the signers
+#: (an engagement's proposer never signs it); in the bridge's rosters only when a policy adopts
+ADOPTER = "op-4"
+#: a refusal older than this (situation s) is not adopted: the picture it was refused on has moved
+ADOPT_WITHIN_S = 15.0
 #: rules 19: a live blocker still blocking this much later (by its estimates) is a new item
 RETRY_S = 30.0
 #: the evidence reviewer: what it calls a civil kind (a camera's identification of one contradicts
@@ -89,6 +105,9 @@ class ReviewPolicy:
     unspend: str = "leave"
     # rules 19: accept a live blocker as behaving now when the explanation says that clears it
     live_blockers: str = "leave"
+    # an agent's refused nomination nominated as the adopter's own, its blockers accepted (module doc)
+    adopt: str = "leave"
+    adopter: str = ADOPTER
     label: str = "scripted"
     preset: str = "confirm-declarations"
     # the evidence reviewer (module doc): read only when an item's policy is "evidence"
@@ -102,6 +121,10 @@ class ReviewPolicy:
         if self.live_blockers == "leave":
             # a policy that accepts no live blocker records as it did before rules 19
             out.pop("live_blockers")
+        if self.adopt == "leave":
+            # nor one that adopts nothing as before adoption
+            out.pop("adopt")
+            out.pop("adopter")
         if not self.uses_evidence():
             # a policy that reads no evidence records as it did before the evidence reviewer
             for k in EVIDENCE_KEYS:
@@ -148,11 +171,13 @@ def review_policy(spec: dict[str, Any] | None = None) -> ReviewPolicy:
             raise ValueError(f"unknown review parameter {k!r}")
         setattr(p, k, float(v) if isinstance(getattr(p, k), float) else v)
     for k, allowed in (("declarations", DECLARATIONS), ("flags", FLAGS), ("lost_contacts", LOST),
-                       ("ais_claims", CLAIMS), ("unspend", UNSPEND), ("live_blockers", LIVE)):
+                       ("ais_claims", CLAIMS), ("unspend", UNSPEND), ("live_blockers", LIVE), ("adopt", ADOPT)):
         if getattr(p, k) not in allowed:
             raise ValueError(f"review {k}: {getattr(p, k)!r} is not one of {', '.join(allowed)}")
     if p.attend_s <= 0 or p.read_s < 0:
         raise ValueError("attend_s is positive and read_s not negative")
+    if p.adopt != "leave" and p.adopter in SCRIPTED_SIGNERS:
+        raise ValueError(f"the adopter {p.adopter!r} is a signer: an engagement's proposer never signs it")
     if not (0.0 <= p.diligence <= 1.0) or p.fatigue_load <= 0 or p.load_window_s <= 0 or p.max_wait_s < 0:
         raise ValueError("diligence is a probability; fatigue_load and load_window_s positive; max_wait_s not negative")
     return p
@@ -319,6 +344,66 @@ def behaving_acts(p: ReviewPolicy, card: dict[str, Any]) -> list[dict[str, Any]]
     return out
 
 
+def adopt_acts(p: ReviewPolicy, intents: list[dict[str, Any]], now_ms: float) -> list[dict[str, Any]]:
+    """Adoption (module doc): each engagement nomination from an agent the engine refused in the
+    last `ADOPT_WITHIN_S` (`GET /api/intents`), to be read and, when its form allows, nominated by
+    the adopter with its blockers accepted."""
+    if p.adopt == "leave":
+        return []
+    out = []
+    for i in intents:
+        src = i.get("source") or {}
+        if i.get("kind") != "engage" or src.get("kind") != "agent" or i.get("state") != "rejected":
+            continue
+        if now_ms - float(i.get("created_t") or 0.0) > ADOPT_WITHIN_S * 1000.0:
+            continue
+        prm = i.get("params") or {}
+        uids = [int(u) for u in i.get("uids") or [] if str(u).isdigit()]
+        if not prm.get("track") or len(uids) != 1:
+            continue
+        until = (prm.get("window") or {}).get("until")
+        out.append({"key": f"adopt:{i.get('id')}", "kind": "adopt", "action": "adopt", "item": int(i["id"]),
+                    "track": str(prm["track"]), "uid": uids[0], "by": p.adopter, "agent": src.get("id"),
+                    "radius_m": float(prm.get("effect_radius_m") or 75.0), "fallback": prm.get("fallback") or "return",
+                    "until_ms": float(until) if isinstance(until, (int, float)) else None})
+    return out
+
+
+def adoption(p: ReviewPolicy, option: dict[str, Any] | None) -> tuple[dict[str, list[dict[str, Any]]] | None, str]:
+    """What the adopter would accept to nominate a refused nomination on its platform's form
+    (`POST /api/engage/options`, the option for that platform), or None and why not: only the
+    keep-outs fail, every blocker is listed (the form lists 12 at most), none is one of ours, and
+    each is a lost contact (rules 16, accepted since its last fix) or a live track that accepting
+    as behaving now clears (rules 19; `accept_aircraft`: an aircraft only)."""
+    if option is None:
+        return None, "the form has no option for the platform"
+    failing = {str(c.get("rule")) for c in option.get("checks") or [] if c.get("outcome") != "pass"}
+    if option.get("passed"):
+        return {"accept_lost": [], "accept_behaving": []}, "it passes now"
+    if not failing or failing - {"keep_out_tracks", "keep_out_friendly"}:
+        return None, "checks other than the keep-outs fail: " + ", ".join(sorted(failing - {"keep_out_tracks", "keep_out_friendly"}))
+    ko = option.get("keep_outs") or {}
+    items = [it for it in ko.get("items") or [] if it.get("blocks")]
+    if isinstance(ko.get("blocking"), int) and ko["blocking"] > len(items):
+        return None, f"{ko['blocking']} block, the form lists {len(items)}"
+    lost: list[dict[str, Any]] = []
+    behaving: list[dict[str, Any]] = []
+    for it in items:
+        if it.get("subject") == "vehicle":
+            return None, f"one of ours blocks ({it.get('label') or it.get('id')})"
+        if it.get("lost"):
+            lost.append({"track": str(it["lost"].get("track") or it.get("id")), "since": int(it["lost"]["since"])})
+            continue
+        b = it.get("behaving") or {}
+        if not (b.get("acceptable") and b.get("clears")):
+            why = b.get("why_not") or ("accepting it would not clear it" if b else "it cannot be accepted")
+            return None, f"{it.get('label') or it.get('id')}: {why}"[:240]
+        if p.adopt == "accept_aircraft" and b.get("domain") != "air":
+            return None, f"{it.get('label') or it.get('id')}: a live blocker not in the air"
+        behaving.append({"track": str(b.get("track") or it.get("id"))})
+    return {"accept_lost": lost, "accept_behaving": behaving}, f"accepting {len(lost)} lost and {len(behaving)} live"
+
+
 def unspend_acts(p: ReviewPolicy, alerts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Platforms spent by their own effect but still heard (inbox alerts of kind `spent`)."""
     if p.unspend != "unspend":
@@ -364,7 +449,7 @@ class Reviewer:
     def _idle(self) -> bool:
         p = self.policy
         return all(getattr(p, k) == "leave"
-                   for k in ("declarations", "flags", "lost_contacts", "ais_claims", "unspend", "live_blockers"))
+                   for k in ("declarations", "flags", "lost_contacts", "ais_claims", "unspend", "live_blockers", "adopt"))
 
     def start(self, now: float) -> float | None:
         return None if self._idle() else now
@@ -394,6 +479,10 @@ class Reviewer:
                     acts += lost_acts(self.policy, card)
                     acts += behaving_acts(self.policy, card)
                 acts += unspend_acts(self.policy, inbox.get("alerts") or [])
+        if self.policy.adopt != "leave" and now is not None and self.epoch is not None:
+            status, body = self.sim.api("GET", "/api/intents")
+            if status == 200 and body:
+                acts += adopt_acts(self.policy, body.get("intents") or [], (self.epoch + now) * 1000.0)
         seen: set[str] = set()
         out = []
         for a in acts:
@@ -421,6 +510,9 @@ class Reviewer:
             act = self._judged(now, act)
             if act is None:
                 return
+        if act.get("kind") == "adopt":
+            act = self._adopted(now, act)
+        out: Any = None
         if act.get("path") is None:
             result = NO_REQUEST
         else:
@@ -430,10 +522,38 @@ class Reviewer:
             else:
                 result = f"error {status}: {(out or {}).get('detail') if isinstance(out, dict) else out}"[:400]
         rec = {k: act[k] for k in ("kind", "action", "item", "by") if k in act}
-        for k in ("track", "tracks", "by_track", "uid", "domain", "why", "diligent", "load"):
+        for k in ("track", "tracks", "by_track", "uid", "domain", "why", "diligent", "load", "agent", "accepted"):
             if k in act:
                 rec[k] = act[k]
+        if act.get("kind") == "adopt" and result == "done":
+            # the adopter's own nomination, and the agent's refused one it adopts (`item`)
+            made = out.get("intent") if isinstance(out, dict) else None
+            rec["intent"] = made.get("id") if isinstance(made, dict) else None
         self.decisions.append({"t": round(now, 3), "read_from_t": round(act["opened_t"], 3), **rec, "result": result})
+
+    # ---- adoption ----------------------------------------------------------------------------
+
+    def _adopted(self, now: float, act: dict[str, Any]) -> dict[str, Any]:
+        """An agent's refused nomination read: its platform's form asked now, and the adopter's
+        nomination with every blocker accepted when `adoption` allows it, else a decision with no
+        request saying why not."""
+        p = self.policy
+        window_s = 600
+        if act.get("until_ms") is not None and self.epoch is not None:
+            window_s = int(max(0.0, (act["until_ms"] - (self.epoch + now) * 1000.0) / 1000.0))
+        form = {"track": act["track"], "effect_radius_m": act["radius_m"], "window_s": window_s,
+                "fallback": act["fallback"], "uids": [act["uid"]]}
+        status, body = self.sim.api("POST", "/api/engage/options", form, p.adopter)
+        opts = (body or {}).get("options") or [] if status == 200 else []
+        option = next((o for o in opts if int(o.get("uid") or -1) == int(act["uid"])), None)
+        accepted, why = adoption(p, option) if window_s > 0 else (None, "its window has closed")
+        if accepted is None:
+            return {**act, "action": "leave", "why": why, "path": None, "body": None}
+        note = (f"{p.label} operator (not a person): adopts {act.get('agent')}'s refused nomination i{act['item']} "
+                f"on {act['track']}, {why}")[:400]
+        req = {"task": "engage", "uids": [act["uid"]], "track": act["track"], "effect_radius_m": act["radius_m"],
+               "window_s": window_s, "fallback": act["fallback"], "rationale": note, **accepted}
+        return {**act, "why": why, "accepted": accepted, "path": "/api/intents", "body": req}
 
     # ---- the evidence reviewer ---------------------------------------------------------------
 

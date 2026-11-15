@@ -22,7 +22,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from ..labels import Truth
+from ..labels import Truth, dist_m
 from ..v2.record import load
 from .causes import cause_of, light, single_cause
 from .families import parse
@@ -91,7 +91,7 @@ def blockers(rec: dict[str, Any], pic: Any) -> dict[str, Any]:
             continue
         keepout_blocked += 1
         here = set()
-        for tid, subject, kind, domain, _short in ref.get("blocking") or []:
+        for tid, subject, kind, domain, _short in (it[:5] for it in ref.get("blocking") or []):
             if subject == "lost_contact" or kind in ("out_of_view", "lost"):
                 c = "lost_or_out_of_view"
             elif subject == "vehicle":
@@ -126,6 +126,57 @@ def blockers(rec: dict[str, Any], pic: Any) -> dict[str, Any]:
             "span_best": spans_best, "span_pass": spans_pass}
 
 
+def engage_account(rec: dict[str, Any]) -> dict[str, Any]:
+    """F15 (bd murmur-e3b): what became of the nominations and their acceptances, from the record's
+    engagement digest (labels_ops.py `digest_engage`): nominations by source and final state, the
+    adopter's reads (review.py `adopt`), acceptances by kind, lapses by kind and whether the
+    engagement was under way (dispatched), stops before and after dispatch, and the too-late check:
+    each contact whose track was accepted for an engagement whose effect was applied, its truth
+    distance from the effect point then (`inside`: within the effect radius in 2D, a lapse too late
+    or an acceptance that should not have been given). Empty without a nomination."""
+    eng = (rec.get("v3") or {}).get("engage") or {}
+    if not eng:
+        return {}
+    intents = {int(i["id"]): i for i in ((rec.get("v3") or {}).get("audit") or {}).get("intents") or []}
+    disp = {iid: i.get("dispatched") for iid, i in intents.items()}
+
+    def final(iid: int) -> str:
+        st = [s[1] for s in (intents.get(iid) or {}).get("states") or []]
+        return st[-1] if st else "?"
+
+    def under_way(iid: Any, t: Any) -> str:
+        dt = disp.get(int(iid))
+        return "under_way" if dt is not None and t is not None and float(t) >= float(dt) else "waiting"
+
+    noms = Counter(f"{(n.get('source') or {}).get('kind')}:{final(int(n['id']))}" for n in eng.get("nominations") or [])
+    adopts = [d for d in (rec.get("review") or {}).get("decisions") or [] if d.get("kind") == "adopt"]
+    acc = eng.get("accepted") or []
+    stops = Counter()
+    for s in eng.get("stopped") or []:
+        c = s.get("cause")
+        stops[f"{c.get('kind') if isinstance(c, dict) else c}:{under_way(s['intent'], s['t'])}"] += 1
+    assoc = (rec.get("truth") or {}).get("association") or {}
+    samples = (rec.get("truth") or {}).get("samples") or []
+    at_effect = []
+    for ap in (rec.get("effects") or {}).get("applied") or []:
+        a2 = ap.get("applied") or {}
+        pt, iid = a2.get("point"), int(ap.get("intent") or -1)
+        s = min(samples, key=lambda s: abs(float(s["t"]) - float(ap.get("s") or 0.0))) if samples else None
+        for a in acc:
+            if int(a["intent"]) != iid or a["what"] not in ("track", "contact"):
+                continue
+            cid = assoc.get(str(a["id"]))
+            c = next((c for c in (s or {}).get("contacts") or [] if c[0] == cid and (len(c) < 5 or c[4])), None)
+            dm = round(dist_m((c[1], c[2]), (pt[0], pt[1]))) if c is not None and pt else None
+            at_effect.append({"intent": iid, "track": a["id"], "contact": cid, "what": a["what"], "distance_m": dm,
+                              "inside": dm is not None and dm <= float(a2.get("radius_m") or 0.0)})
+    return {"nominations": dict(noms), "adopt_reads": len(adopts),
+            "adopted": sum(1 for d in adopts if d.get("result") == "done"),
+            "accepted": dict(Counter(a["what"] for a in acc)),
+            "lapsed": dict(Counter(f"{lp.get('kind')}:{under_way(lp['intent'], lp['t'])}" for lp in eng.get("lapsed") or [])),
+            "stopped": dict(stops), "accepted_at_effect": at_effect}
+
+
 def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]:
     meta, none_meta = args
     rec = load(meta["path"])
@@ -156,7 +207,8 @@ def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]
            "fleet": len(pic.fleet), "contacts": len(truth.meta), "items": st.get("review_items"),
            "element": st.get("element"), "space_options": detail.get("space_options"),
            "effects": [{"hit": e.get("hit"), "removed": e.get("platform_removed")}
-                       for e in ((rec.get("effects") or {}).get("applied") or [])]}
+                       for e in ((rec.get("effects") or {}).get("applied") or [])],
+           "engage": engage_account(rec)}
     if meta["agent"] in ORACLES:
         # the vehicle types the sensing model says could answer each need (the oracle's ranges,
         # at least 150 m for a camera, 35 m for a sonar: report.py's rule)
@@ -263,6 +315,29 @@ def summarize(scored: list[dict[str, Any]]) -> dict[str, Any]:
                                    "executed": sum(1 for e in engs if e.get("executed")),
                                    "restraint_ok": sum(1 for e in engs if e["restraint_ok"]), "of": len(engs),
                                    "causes": single_cause([e["cause"] for e in engs if not e.get("executed") and e.get("cause")])}
+                if any("adopted" in e for e in engs):
+                    # an adopting reviewer (review.py `adopt`): the reading over the agent's nominations and
+                    # the adopter's of them
+                    x["engagement"].update(
+                        right_with_adopted=sum(1 for e in engs if e.get("right_with_adopted", e["right"])),
+                        adopted=sum(e.get("adopted", 0) for e in engs),
+                        adopted_executed=sum(e.get("adopted_executed", 0) for e in engs),
+                        adopted_harmful=sum(e.get("adopted_harmful", 0) for e in engs),
+                        adopted_unwarranted=sum(e.get("adopted_unwarranted", 0) for e in engs))
+            acct = [s["engage"] for s in ag if s.get("engage")]
+            if acct:
+                agg_e: dict[str, Any] = {"adopt_reads": sum(a["adopt_reads"] for a in acct),
+                                         "adopted": sum(a["adopted"] for a in acct)}
+                for key in ("nominations", "accepted", "lapsed", "stopped"):
+                    c2: Counter = Counter()
+                    for a in acct:
+                        c2.update(a[key])
+                    agg_e[key] = dict(sorted(c2.items()))
+                at = [r for a in acct for r in a["accepted_at_effect"]]
+                agg_e["accepted_at_effect"] = len(at)
+                agg_e["inside_at_effect"] = sum(1 for r in at if r["inside"])
+                agg_e["nearest_at_effect_m"] = min((r["distance_m"] for r in at if r["distance_m"] is not None), default=None)
+                x["engage"] = agg_e
             if noms or engs:
                 x["nominations"] = dict(Counter(a["label"] for a in noms))
                 x["harmful"] = sum(1 for a in noms if a["label"] == "harmful")
@@ -341,6 +416,10 @@ def markdown(summary: dict[str, Any], d: Path, pairs: dict[str, Any] | None = No
             if "engagement" in x:
                 e = x["engagement"]
                 parts.append(f"engagement right {pct(e['right'], e['of'])}, executed {e['executed']}, effective {e['effective']}, restraint ok {e['restraint_ok']}")
+                if "right_with_adopted" in e:
+                    parts.append(f"with the adopter's nominations right {pct(e['right_with_adopted'], e['of'])} "
+                                 f"(adopted {e['adopted']}, executed {e['adopted_executed']}, harmful {e['adopted_harmful']}, "
+                                 f"unwarranted {e['adopted_unwarranted']})")
             if "nominations" in x:
                 parts.append(f"nominations {x['nominations']} harmful {x['harmful']} unwarranted {x['unwarranted']}")
             if "review" in x:
@@ -366,6 +445,12 @@ def markdown(summary: dict[str, Any], d: Path, pairs: dict[str, Any] | None = No
                          f"span median {bl['span_best_median']} s (passing {bl['span_pass_median']} s)")
                 L.append(f"  - blocker categories {bl['categories']}; only one {bl['only_category']}")
                 L.append(f"  - no-velocity ground blockers {bl['no_velocity_ground']} (tracks {bl['no_velocity_tracks']})")
+            if "engage" in x:
+                g = x["engage"]
+                L.append(f"  - nominations {g['nominations']}; adopter read {g['adopt_reads']}, adopted {g['adopted']}; "
+                         f"accepted {g['accepted']}; lapsed {g['lapsed']}; stopped {g['stopped']}; accepted contacts at an "
+                         f"applied effect {g['accepted_at_effect']}, inside its radius {g['inside_at_effect']} "
+                         f"(nearest {g['nearest_at_effect_m']} m)")
             if "space_options" in x:
                 L.append(f"  - space options {x['space_options']}")
             if "capable_types" in x:

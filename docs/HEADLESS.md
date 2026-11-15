@@ -1071,6 +1071,17 @@ item `read_s` (3 s) and acts once per item:
 | a lost contact a waiting nomination counts (`engage.lost_open`) | `accept-all` accepts it for that engagement (again after a reset of the signatures) | `POST /api/intents/{id}/accept_unknown` `{track, since}` |
 | a live track carrying a lost contact's AIS | `accept-all` confirms it, only when the engine names no blocker | `POST /api/review/lost/{track}/confirm` `{by_track}` |
 | a platform spent but still heard | `unspend = "unspend"` | `POST /api/restores/unspend` |
+| a live track blocking a waiting nomination (rules 19) | `accept-behaving` accepts an aircraft as behaving now when the card says that clears it (`live_blockers = "accept_clearing"`: any) | `POST /api/intents/{id}/accept_behaving` `{track}` |
+| an agent's nomination the engine refused (in the last 15 s) | `adopt = "accept_clearing"` (or `"accept_aircraft"`; scoring v3's F15 from version 2) nominates it as `op-4`'s own, the same track, platform, radius, fallback and window, with every blocker accepted at the nomination, only when the form says the keep-outs alone fail and each blocker is a lost contact or a live track that accepting as behaving now clears | `POST /api/engage/options`, then `POST /api/intents` with `accept_lost`, `accept_behaving` |
+
+**Adoption** (bd murmur-e3b, 2026-11-15). An agent's nomination carries no acceptance, and one the
+keep-out blocks is refused when proposed, so without adoption a person's acceptance reaches only a
+nomination that passed and was blocked later: in F15 on the dev seeds no acceptance was ever given.
+`op-4` is the console's person reading the refused nomination's form and nominating it themselves:
+a scripted operator with engagement authority, never one of the two signers (a proposer never
+signs), in the bridge's operator rosters only in an episode whose reviewer adopts. Its decisions
+name the agent's refused nomination (`item`) and its own (`intent`); scoring v3 judges the
+adopter's nominations apart from the agent's (eval/SCORING-V3.md 12.5).
 
 `absent` reviews nothing. Situations' `[autoplay] confirm_rule_declarations` and `grant_agents`
 (eval/proxy.py) are the headless operator's too (section 7; murmur-pk8, 2026-10-26: before, it

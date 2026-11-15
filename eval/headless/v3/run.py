@@ -70,6 +70,9 @@ def _episode(job: dict[str, Any], wd: Path) -> dict[str, Any]:
     spec.replicate = int(job["r"])
     # a family's own scripted operators and effects (F15, F16: families_ops.py `set_options`)
     extra = dict(getattr(spec, "options", None) or {})
+    if job.get("review") and extra.get("review") is not None:
+        # `--review`: overrides of the family's own reviewer (a family without one is left as it is)
+        extra["review"] = {**extra["review"], **job["review"]}
     opts = Options(agent=job["agent"], operator=job.get("operator"), calibration=Calibration(**job["calibration"]),
                    scoring="v3", replicate={"r": job["r"], "seed": job["seed"], "situation_seed": job["situation_seed"]},
                    model=job.get("model"), **extra)
@@ -120,7 +123,7 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
 
 
 def jobs_for(families: list[str], seeds: list[int], agents: list[str], out: Path, order_seed: int = 0,
-             model: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+             model: dict[str, Any] | None = None, review: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     calib = Calibration.load().as_dict()
     jobs = []
     for fam in families:
@@ -131,6 +134,8 @@ def jobs_for(families: list[str], seeds: list[int], agents: list[str], out: Path
                              "calibration": calib, "out": str(out)})
                 if a == "model":
                     jobs[-1]["model"] = model
+                if review:
+                    jobs[-1]["review"] = dict(review)
     random.Random(order_seed).shuffle(jobs)
     return jobs
 
@@ -176,7 +181,10 @@ def cmd_batch(args: argparse.Namespace) -> int:
     if not args.no_build:
         build()
     out.mkdir(parents=True, exist_ok=True)
-    jobs = jobs_for(fams, seeds, agents, out, args.order_seed, model)
+    review = json.loads(args.review) if args.review else None
+    if review is not None and not isinstance(review, dict):
+        raise SystemExit("--review must be a JSON object (review.py ReviewPolicy's names)")
+    jobs = jobs_for(fams, seeds, agents, out, args.order_seed, model, review)
     t0 = time.time()
     if args.workers <= 1:
         metas = [run_job(j) for j in jobs]
@@ -228,6 +236,9 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--model-config", default=None,
                    help="--agent model: overrides as JSON (officer.ModelConfig: model, effort, strong_model, strong_effort, "
                         "max_tokens, max_usd per episode, escalation)")
+    b.add_argument("--review", default=None,
+                   help="overrides of each family's own scripted reviewer as JSON (review.py ReviewPolicy's names; F15 "
+                        "and F16 have one), e.g. '{\"adopt\": \"accept_clearing\"}'")
     r = sub.add_parser("report")
     r.add_argument("dir", type=Path)
     r.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) // 2))

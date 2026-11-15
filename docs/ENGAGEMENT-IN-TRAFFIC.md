@@ -124,3 +124,12 @@ may accept a live blocker as it is behaving now"), the engine scenarios and repl
   whether any lapse comes too late. An agent's nomination that the keep-out blocks is still
   rejected when proposed, so in the headless runs the acceptance reaches only a nomination that
   waits (a blocker that came after it) unless a scripted operator nominates.
+- **Measured 2026-11-15** (bd murmur-e3b; eval/SCORING-V3.md 12.5, dev seeds 5400-5409 on the
+  fixed terrain): the `accept-behaving` reviewer alone gave no acceptance in 20 situations, as
+  foreseen. With a scripted operator who nominates an agent's refused nomination with its blockers
+  accepted (the adopter, op-4: docs/HEADLESS.md 16.1), the honest oracle's engagements were right
+  in 3 of 10 situations at the Gate and 4 of 10 in San Diego (1 and 0 without), none harmful; 17
+  of 30 live acceptances lapsed (3 under way), and no lapse came too late (no accepted contact in
+  the world within 1.9 km of an applied effect). What no acceptance clears is now mostly an aircraft
+  without a velocity, which counts at the air top speed (a 5 m/s hobby drone tracked by radar
+  alone, kilometres off): rules 19 accepts only a track with a velocity.

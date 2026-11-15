@@ -220,7 +220,8 @@ meaningful.
   live stacks off them. Each eval run starts as a fresh station (`eval/stack.py` removes the
   bridge's `.last-run-<port>` before and after; `run.json` `restore_carry`, murmur-kvb).
 - Situations (`sim/situations/README.md`): `op-1` is the person, never a script; scripted ids
-  are `op-setup`, `op-auto`, `op-2`, `op-3`, `op-planner`, `agent-setup`, `agent-scripted`.
+  are `op-setup`, `op-auto`, `op-2`, `op-3`, `op-planner`, `agent-setup`, `agent-scripted`;
+  headless, `op-4` is the reviewer's adopter (never a signer; docs/HEADLESS.md 16.1).
   op-setup submits only what its dry run (`POST /api/intents/preview`) says is auto or waits for
   someone else; the rest goes through agent-setup to the inbox. The AI starts in an empty temp
   dir, MCP tools only. A timeline `propose` step may be a lay order (`task = "lay"`, `count`,

@@ -89,6 +89,10 @@ FIELDS = (
     # SCORING-V3.md 17.12); the boundaries take their compounds (`not_justified_share`)
     "not_justified", "served_no_need", "justified_by", "supported_on_picture", "cleared_doubt",
     "tasked_hold",
+    # F15 version 2's adopted nominations, judged apart from the agent's (labels_ops.py; bd
+    # murmur-e3b, SCORING-V3.md 12.5); `restraint_ok` already takes `restraint_ok_with_adopted`
+    "right_with_adopted", "adopted_nominations", "adopted_executed", "adopted_effective",
+    "adopted_harmful", "adopted_unwarranted", "adopted_finals",
 )
 #: scorer field names that are ordinary words: tokens only as a field name is written
 WORD_FIELDS = ("eligible", "contributed")
