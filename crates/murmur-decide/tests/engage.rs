@@ -91,7 +91,9 @@ fn the_assessment_reads_the_reach_of_the_run_s_sensing_model() {
     let legacy = catalog();
     let physical = legacy.reaching(Reaches::Physical);
     let cover = |c: &Catalog, platform: &str, domain: Domain, d: f64| {
-        engage::covering_sensor(c.get(platform).unwrap(), domain, d).map(|s| s.kind.clone())
+        let v = VehicleFacts { platform: c.get(platform).cloned(), ..VehicleFacts::default() };
+        let world = WorldSnapshot::new(T0);
+        engage::covering_sensor(&v, domain, d, &world, &RulesConfig::default()).map(|s| s.kind.clone())
     };
     // the buoy's passive sonar: range_m 3 km; the physical model hears the reference contact
     // under water only a few hundred metres out

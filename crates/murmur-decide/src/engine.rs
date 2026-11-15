@@ -4104,6 +4104,12 @@ impl Engine {
             let firing = engage::firing(&eng);
             let effect = engage::observed_from(&effect, eng.munition.as_ref(), eng.fire.as_ref());
             let prev = eng.last_observe;
+            // rules 32: the assessment reads each sensor's reach now (logged with its step)
+            if self.policy.rules.reach_now() {
+                for (u, v) in inputs.vehicles.iter_mut() {
+                    v.reach_now = world.vehicles.get(u).and_then(|w| w.reach_now.clone());
+                }
+            }
             let step = engage::observe(&snap, &effect, &inputs, &self.policy.rules);
             let covered = !step.covered_by.is_empty();
             let logged = self.log_inputs(&inputs)?;
@@ -4639,6 +4645,24 @@ impl Engine {
         }
         self.drop_later_facts(w);
         self.fill_nodes(w);
+        self.fill_reach_names(w);
+    }
+
+    /// Rules 32: the callsigns of the vehicles whose sensors' reach now a decision on `w` reads (an
+    /// identify order's: its refusal names the vehicle whose camera it judged), from the bridge's
+    /// identities into the logged `callsigns`, so replay words it the same. Nothing before rules 32.
+    fn fill_reach_names(&self, w: &mut WorldSnapshot) {
+        if !self.policy.rules.reach_now() {
+            return;
+        }
+        for (u, v) in &w.vehicles {
+            if v.reach_now.is_none() || w.callsigns.contains_key(u) {
+                continue;
+            }
+            if let Some(c) = w.identities.get(u).and_then(|i| i.callsign.clone()) {
+                w.callsigns.insert(u.clone(), c);
+            }
+        }
     }
 
     /// Rules 30: our vehicles confirmed lost that a decision on `w` reads (its `nodes_lost` fact,
@@ -4687,6 +4711,12 @@ impl Engine {
         if !self.policy.rules.identify_own_look() {
             for l in w.track_levels.values_mut() {
                 l.own.clear();
+            }
+        }
+        // rules 32: a vehicle's sensors' reach now, a fact only rules 32 read
+        if !self.policy.rules.reach_now() {
+            for v in w.vehicles.values_mut() {
+                v.reach_now = None;
             }
         }
     }
@@ -6818,8 +6848,10 @@ impl Engine {
             && (!inputs.nodes_lost.is_empty() || inputs.vehicles.values().any(|v| v.lost_link.is_some()));
         // rules 31: nor a camera's reaches by size class
         let drop_class = !self.policy.rules.identify_by_class() && inputs.vehicles.values().any(carries_class_reach);
+        // rules 32: nor a vehicle's sensors' reach now
+        let drop_reach = !self.policy.rules.reach_now() && inputs.vehicles.values().any(|v| v.reach_now.is_some());
         let stripped;
-        let inputs = if drop_damage || drop_loss || drop_class {
+        let inputs = if drop_damage || drop_loss || drop_class || drop_reach {
             let mut w = inputs.clone();
             for v in w.vehicles.values_mut() {
                 if drop_damage {
@@ -6830,6 +6862,9 @@ impl Engine {
                 }
                 if drop_class {
                     drop_class_reach(v);
+                }
+                if drop_reach {
+                    v.reach_now = None;
                 }
             }
             if drop_loss {
@@ -6864,9 +6899,10 @@ impl Engine {
 
     /// One of ours as an event logs its facts (`engage.accepted`, `platform.unspent`): rules 30's
     /// lost-link failsafe and rules 31's reaches by size class dropped under older rules, as
-    /// [`Self::log_inputs_at`] drops them.
+    /// [`Self::log_inputs_at`] drops them; rules 32's reach now always (no such event reads it).
     fn vehicle_as_logged(&self, v: Option<&crate::world::VehicleFacts>) -> Box<crate::world::VehicleFacts> {
         let mut v = v.cloned().unwrap_or_default();
+        v.reach_now = None;
         if !self.policy.rules.node_loss() {
             v.lost_link = None;
         }

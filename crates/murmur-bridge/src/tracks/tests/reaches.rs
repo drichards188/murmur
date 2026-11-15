@@ -40,35 +40,12 @@ const PLATFORMS: &str = include_str!("../../../../../sim/platforms.toml");
 const KEY: &str = "physical_reach_m";
 
 // The reference contact (its kind and each domain's height) and the reference conditions are the
-// reach display's (`tracks::reach`, bd murmur-4tq), so the two answer for the same contact.
-use super::super::reach::{DOMAINS, REFERENCE_KIND, domain_name as name, reference_conditions as conditions};
-
-/// Rules 31 (bd murmur-8vj8): each size class a detection names (`signature::size_class`) that a
-/// camera sees (`murmur_decide::engage::sees`: none under water), the reference contact an EO/IR's
-/// reach by class is derived for, and its height: the class's smallest member among the kinds
-/// the physical model knows (`signature::kind_signature`, by critical dimension), so that a reach
-/// by class is a camera's for the hardest of the class to make out, at the height `DOMAINS`
-/// gives the domain. The members (`signature::size_class_of`): small drone and unknown UAS (0.35
-/// m); light aircraft (4 m) and helicopter (5 m); small fast boat (3.5 m) and sailboat (5 m);
-/// patrol boat (8 m), fishing vessel (11 m), ferry (27 m), cargo ship and tanker (84 m); person
-/// (0.75 m); vehicle (2.3 m) and truck (3 m). The headless planner's honest ceiling reads a size
-/// class as the same kinds (eval/headless/v3/planner.py `SIZE_KIND`) but for `large_surface`, a
-/// cargo ship there. `the_default_standoff_identifies_every_member_of_the_class` holds the
-/// identify order's default standoff from each inside the camera's identification reach of every
-/// member.
-const CLASS_KINDS: [(SizeClass, Domain, &str); 6] = [
-    (SizeClass::SmallAir, Domain::Air, "small_drone"),
-    (SizeClass::LargeAir, Domain::Air, "light_aircraft"),
-    (SizeClass::SmallSurface, Domain::Surface, "small_fast_boat"),
-    (SizeClass::LargeSurface, Domain::Surface, "patrol_boat"),
-    (SizeClass::SmallGround, Domain::Ground, "person"),
-    (SizeClass::LargeGround, Domain::Ground, "vehicle"),
-];
-
-/// The reference height of a contact in `domain`, m (`DOMAINS`).
-fn reference_height_m(domain: Domain) -> f64 {
-    DOMAINS.iter().find(|(d, _, _)| *d == domain).map_or(0.0, |(_, _, h)| *h)
-}
+// reach display's (`tracks::reach`, bd murmur-4tq), so the two answer for the same contact; rules
+// 31's reference contact of each size class (`CLASS_KINDS`: its smallest member, at the height
+// `DOMAINS` gives its domain) is too, which rules 32's identification reach by class now reads
+// (bd murmur-ahss). `the_default_standoff_identifies_every_member_of_the_class` holds the identify
+// order's default standoff from each inside the camera's identification reach of every member.
+use super::super::reach::{CLASS_KINDS, DOMAINS, REFERENCE_KIND, domain_name as name, reference_conditions as conditions, reference_height_m};
 
 /// The scenario clock the predictions are asked at (the sun is the conditions' own).
 const T: f64 = 1_781_467_800.0;

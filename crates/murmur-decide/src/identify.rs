@@ -21,6 +21,17 @@
 //! camera identifies one only from much nearer (a Puma about 1.1 km out by day, where it would
 //! identify the reference aircraft from nearly 10 km).
 //!
+//! Rules 32 ([`crate::rules::REACH_NOW_SINCE`], bd murmur-ahss): where the cameras' facts carry
+//! physical reaches, the reach is the camera's identification reach under the conditions where the
+//! vehicle is now (its `reach_now` fact, [`crate::reach`]: the physical model's own figure, slant
+//! range, of the class's smallest member or the domain's reference contact), not an eighth of its
+//! clear-day detection reach: in fog of 50 m visibility a Puma identifies a small drone only within
+//! about 160 m, and a camera with only a visible channel identifies nothing at night. The order is
+//! refused where that reach is nothing, or nearer than the vehicle's height or its tightest orbit
+//! keeps it, and the refusal says the conditions and the reach in them ("in fog of 50 m visibility
+//! PUMA 1's camera identifies a small_air contact only within about 160 m: its tightest orbit, 66
+//! m, keeps it beyond that"); without a fresh reach now it cannot be evaluated.
+//!
 //! Rules 23 ([`crate::rules::IDENTIFY_OWN_LOOK_SINCE`], the owner's Harbor watch run of
 //! 2026-10-27 17:11Z, whose identify orders another vehicle's camera ended): the look ends identified
 //! only on an identification by the vehicle sent, with its own sensors, made after the order went
@@ -281,6 +292,66 @@ fn min_radius(v: &VehicleFacts, cfg: &RulesConfig) -> Option<f64> {
     Some((min * cfg.orbit_radius_margin).ceil())
 }
 
+/// Rules 32: whether `v`'s identify plan reads its cameras' reach now ([`crate::reach`]): under
+/// rules 32, with a camera whose facts carry a physical reach.
+fn reach_now(v: &VehicleFacts, cfg: &RulesConfig) -> bool {
+    cfg.reach_now() && cameras(v).any(|s| s.reach_m.is_some())
+}
+
+/// Rules 32: what a contact is called in a camera's reach: "a small_air contact", "a contact in the
+/// surface domain".
+fn contact_words(class: Option<SizeClass>, domain: crate::catalog::Domain) -> String {
+    match class {
+        Some(c) => format!("a {} contact", c.as_str()),
+        None => format!("a contact in the {} domain", domain.as_str()),
+    }
+}
+
+/// Rules 32: the conditions in words, then the vehicle: "in fog of 50 m visibility PUMA 1's
+/// camera", "PUMA 1's camera" on a clear day.
+fn camera_words(world: &WorldSnapshot, uid: &Uid, rn: &crate::reach::ReachNow) -> String {
+    let who = name(world, uid.as_str());
+    match rn.conditions() {
+        Some(c) => format!("{c} {who}'s camera"),
+        None => format!("{who}'s camera"),
+    }
+}
+
+/// Rules 32: a camera's identification reach now in words: "in fog of 50 m visibility PUMA 1's
+/// camera identifies a small_air contact only within about 140 m".
+fn only_within(
+    world: &WorldSnapshot,
+    uid: &Uid,
+    rn: &crate::reach::ReachNow,
+    class: Option<SizeClass>,
+    domain: crate::catalog::Domain,
+    reach: f64,
+) -> String {
+    format!("{} identifies {} only within about {reach:.0} m", camera_words(world, uid, rn), contact_words(class, domain))
+}
+
+/// Rules 32: why a camera that identifies nothing now is refused: "at night MAGURA 1's camera
+/// identifies no contact in the surface domain from where it is now: it has no thermal channel",
+/// "MQ-9B 1's camera identifies no small_air contact from where it is now, 7600 m up".
+fn nowhere(
+    world: &WorldSnapshot,
+    uid: &Uid,
+    rn: &crate::reach::ReachNow,
+    class: Option<SizeClass>,
+    domain: crate::catalog::Domain,
+    thermal: bool,
+) -> String {
+    let what = contact_words(class, domain);
+    let what = what.strip_prefix("a ").unwrap_or(&what);
+    let dark = !thermal && rn.sun_elevation_deg < crate::reach::NIGHT_DEG;
+    let up = if rn.alt_m >= 1.0 { format!(", {:.0} m up", rn.alt_m) } else { String::new() };
+    format!(
+        "{} identifies no {what} from where it is now{up}{}",
+        camera_words(world, uid, rn),
+        if dark { ": it has no thermal channel" } else { "" }
+    )
+}
+
 /// The vehicle's EO/IR reach by `reach`, m: the longest of its cameras'.
 fn camera_reach(v: &VehicleFacts, reach: impl Fn(&SensorFact) -> Option<f64>) -> Option<f64> {
     cameras(v)
@@ -352,19 +423,38 @@ pub fn plan(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Resu
         .then(|| shown_class(track, world.track_levels.get(track_id).map(|l| l.level)))
         .flatten()
         .filter(|c| cameras(v).any(|s| s.reach_for_class(*c).is_some()));
-    let eo = match class {
-        Some(c) => camera_reach(v, |s| s.reach_for_class(c).flatten()),
-        None => camera_reach(v, |s| s.reach_for(track.domain)),
-    };
-    let Some(eo) = eo else {
+    let no_camera = || {
         let platform = v.platform.as_ref().map_or("its platform", |p| p.id.as_str());
-        return Err(match class {
+        match class {
             Some(c) => format!("{platform} carries no EO/IR that reaches a contact the picture shows as {}", c.as_str()),
             None => format!("{platform} carries no EO/IR that reaches a contact in the {} domain", track.domain.as_str()),
-        });
+        }
     };
-    let reach = eo * IDENTIFY_PX_SHARE;
+    // rules 32: the cameras' identification reach under the conditions where the vehicle is now,
+    // where their facts carry physical reaches; else an eighth of the catalog's detection reach
+    let now = if reach_now(v, cfg) { Some(crate::reach::fresh(v, world, cfg)?) } else { None };
+    let reach = match now {
+        Some(rn) => {
+            let cam = crate::reach::identify_now(v, rn, class, track.domain).ok_or_else(no_camera)?;
+            if cam.reach_m <= 0.0 {
+                return Err(nowhere(world, uid, rn, class, track.domain, cam.thermal));
+            }
+            cam.reach_m
+        }
+        None => {
+            let eo = match class {
+                Some(c) => camera_reach(v, |s| s.reach_for_class(c).flatten()),
+                None => camera_reach(v, |s| s.reach_for(track.domain)),
+            };
+            eo.ok_or_else(no_camera)? * IDENTIFY_PX_SHARE
+        }
+    };
     let of_class = class.map(|c| format!(" for a {} contact", c.as_str())).unwrap_or_default();
+    // rules 32: a refusal says the conditions and the camera's reach in them first
+    let refuse = |why: String| match now {
+        Some(rn) => format!("{}: {why}", only_within(world, uid, rn, class, track.domain, reach)),
+        None => why,
+    };
     // the camera's slant range: the vehicle's height over the contact counts
     let height = match (&v.alt_msl_m, track.alt_m) {
         (Some(a), Some(t)) => (a.value - t).abs(),
@@ -372,9 +462,12 @@ pub fn plan(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Resu
         _ => 0.0,
     };
     if height >= reach {
-        return Err(format!(
-            "its height over the contact, {height:.0} m, is beyond its camera's identification reach of about {reach:.0} m{of_class}"
-        ));
+        return Err(refuse(match now {
+            Some(_) => format!("its height over the contact, {height:.0} m, is beyond that"),
+            None => format!(
+                "its height over the contact, {height:.0} m, is beyond its camera's identification reach of about {reach:.0} m{of_class}"
+            ),
+        }));
     }
     let tightest = min_radius(v, cfg).unwrap_or(0.0);
     let ground = |slant: f64| (slant * slant - height * height).max(0.0).sqrt();
@@ -383,9 +476,12 @@ pub fn plan(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Resu
         None => ground(reach * STANDOFF_SHARE).max(tightest).max(1.0).ceil(),
     };
     if standoff.is_none() && radius.hypot(height) > reach {
-        return Err(format!(
-            "its tightest orbit, {tightest:.0} m, keeps its camera beyond its identification reach of about {reach:.0} m{of_class}"
-        ));
+        return Err(refuse(match now {
+            Some(_) => format!("its tightest orbit, {tightest:.0} m, keeps it beyond that"),
+            None => format!(
+                "its tightest orbit, {tightest:.0} m, keeps its camera beyond its identification reach of about {reach:.0} m{of_class}"
+            ),
+        }));
     }
     let center = crate::engage::target_at(track, world.t, &cfg.engage_rules());
     let pos = v.position.as_ref().map(|p| p.value).ok_or("cannot evaluate: no position reported")?;
@@ -444,11 +540,19 @@ pub fn check(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Che
                 .track_levels
                 .get(&p.track)
                 .map_or("not classified".to_string(), |l| l.level.as_str().to_string());
+            // rules 32: the conditions the camera's reach is for, when not a clear day's
+            let conditions = uid
+                .and_then(|u| world.vehicles.get(u))
+                .filter(|v| reach_now(v, cfg))
+                .and_then(|v| v.reach_now.as_ref())
+                .and_then(|rn| rn.value.conditions())
+                .map(|c| format!(" {c}"))
+                .unwrap_or_default();
             let standoff = if p.set_by_order {
                 format!("an orbit of {:.0} m set by the order", p.radius_m)
             } else {
                 format!(
-                    "an orbit of {:.0} m, inside its EO/IR's identification reach of about {:.0} m{}",
+                    "an orbit of {:.0} m, inside its EO/IR's identification reach of about {:.0} m{}{conditions}",
                     p.radius_m,
                     p.reach_m,
                     p.size_class.map(|c| format!(" for a {} contact", c.as_str())).unwrap_or_default()

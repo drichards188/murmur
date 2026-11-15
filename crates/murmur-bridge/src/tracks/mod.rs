@@ -219,47 +219,27 @@ struct Carrier {
     domain: String,
 }
 
-/// A vehicle's reach answer is computed again at least this often, s.
-pub const REACH_MAX_AGE_S: f64 = 5.0;
+/// Rules 32: the reaches kept for the inputs they were computed for, at most (cleared when full:
+/// a fleet of thousands of one platform in a few weather samples needs a few dozen).
+const REACH_MEMO_MAX: usize = 4_096;
 
 /// The console feed's sources and looks per track, at most (`Track::json_with`): the latest
 /// heard sources and the surest looks, with the totals beside them.
 pub const FEED_SOURCES: usize = 16;
 
-/// What a vehicle's reach answer was computed from.
-#[derive(Debug, Clone, PartialEq)]
-struct ReachKey {
-    platform: String,
-    alt_m: f64,
-    submerged: bool,
-    /// the conditions, the sun stated
-    cond: physical::conditions::Conditions,
-}
-
-impl ReachKey {
-    /// Close enough that the answer stands: the same platform and medium, the height within 10 m
-    /// or 5 %, the visibility within 5 %, the wind within 0.5 m/s, the sun within half a degree,
-    /// the rest unchanged.
-    fn close(&self, o: &ReachKey) -> bool {
-        let (a, b) = (&self.cond, &o.cond);
-        let sun = |c: &physical::conditions::Conditions| c.sun_elevation_deg.unwrap_or(f64::NAN);
-        self.platform == o.platform
-            && self.submerged == o.submerged
-            && (self.alt_m - o.alt_m).abs() <= 10.0f64.max(0.05 * self.alt_m.abs())
-            && (a.visibility_m - b.visibility_m).abs() <= 0.05 * a.visibility_m
-            && (a.wind_mps - b.wind_mps).abs() <= 0.5
-            && (sun(a) - sun(b)).abs() <= 0.5
-            && a.sea_state == b.sea_state
-            && a.shipping == b.shipping
-            && a.water_depth_m == b.water_depth_m
-    }
-}
-
-/// A vehicle's reach answer as last computed (bridge wall clock).
+/// A vehicle's reach inputs as last seen, and since when they have stood (bridge wall clock): the
+/// display's `age_s`.
 struct ReachEntry {
     at: f64,
-    key: ReachKey,
-    value: Value,
+    inputs: reach::Inputs,
+}
+
+/// Rules 32: a vehicle's reach now as the decision layer last prepared it (`Tracks::prepare_reach`):
+/// the reaches, and the bridge wall clock of the sensing step whose conditions they are for.
+#[derive(Clone)]
+pub struct PreparedReach {
+    pub sensed_at: f64,
+    pub reach: Arc<reach::VehicleReach>,
 }
 
 /// An observer of the last sensing step: its uid, where it sensed from (lat, lon), its
@@ -278,9 +258,14 @@ pub struct Tracks {
     /// The sensing model the last message ran on (said when it changes).
     last_model: Mutex<Option<SensingModel>>,
     /// bd murmur-4tq: each platform's clear-day reach by sensor type (the catalog's
-    /// `physical_reach_m`), and each vehicle's reach now as last computed (`reach_json`).
+    /// `physical_reach_m`), and each vehicle's reach inputs as last seen (`reach_json`).
     clear_day: HashMap<String, HashMap<String, murmur_decide::SensorReach>>,
     reach_cache: Mutex<HashMap<u64, ReachEntry>>,
+    /// Rules 32: every reach computed, by its inputs (`reach::Inputs`): the display and the
+    /// decisions read the same computation for the same inputs.
+    reach_memo: Mutex<HashMap<reach::Inputs, Arc<reach::VehicleReach>>>,
+    /// Rules 32: each vehicle's reach now as last prepared for the decisions.
+    reach_now: Mutex<HashMap<u64, PreparedReach>>,
     /// The headless simulator's word that a vehicle has left the world (a platform spent by
     /// its own effect): it senses nothing from then on, whatever its link's age.
     #[cfg(murmur_headless)]
@@ -357,6 +342,8 @@ impl Tracks {
             last_model: Mutex::new(None),
             clear_day: HashMap::new(),
             reach_cache: Mutex::new(HashMap::new()),
+            reach_memo: Mutex::new(HashMap::new()),
+            reach_now: Mutex::new(HashMap::new()),
             #[cfg(murmur_headless)]
             gone: OnceLock::new(),
             #[cfg(murmur_headless)]
@@ -1392,25 +1379,85 @@ impl Tracks {
             "note": "Current surface-weather model. Nearest archived grid point; uniform scripted weather. Current values only; no contact data."})
     }
 
-    /// `GET /api/sensing/reach` (bd murmur-4tq, [`reach`]; information only, never logged): each
-    /// vehicle's sensors' reach now against a reference contact, beside the catalog's clear-day
-    /// reach, in the conditions the physical model would sense in where it is, and what keeps it
-    /// short. Only the vehicles `of` names, if it names some ([`ReachOf`]). Each vehicle's answer
-    /// is kept and computed again after [`REACH_MAX_AGE_S`] or as soon as its height, weather or
-    /// sun moved enough ([`ReachKey::close`]); nothing is locked while it computes (the physical
-    /// model only while the weather samples are read). Under the legacy model there is nothing
-    /// to show: weather and light change no detection there.
+    /// The last sensing step's stamp (bridge wall clock), scenario clock and second, and its
+    /// sensing settings, if there was one.
+    fn last_sensing(&self) -> Option<(f64, f64, f64, truth::Sensing)> {
+        let inner = lock(&self.inner);
+        inner.truth.as_ref().map(|(rx, m)| (*rx, m.t, m.s, m.sensing.clone()))
+    }
+
+    /// Rules 32: each carrier's reach inputs (`reach::Inputs`: its height and the conditions the
+    /// running model would sense in where it is, the sun from the scenario clock), with its weather
+    /// sample, read under the physical model's lock and nothing more.
+    fn reach_inputs(&self, carriers: &[(Observer, Carrier)], sensing: &truth::Sensing, t: f64, s: f64) -> Vec<(reach::Inputs, Option<murmur_weather::Sample>)> {
+        let engine = lock(&self.physical);
+        carriers
+            .iter()
+            .map(|(o, c)| {
+                let (cond, sample) = engine.conditions_at(sensing, o.lat, o.lon, t, s);
+                let sun = cond.sun_at(t, o.lat, o.lon);
+                (reach::Inputs::of(&c.platform, o.alt_msl, o.submerged, &cond, sun), sample)
+            })
+            .collect()
+    }
+
+    /// Rules 32: the reach for `inputs` of a carrier like `o`, from the memo or computed (nothing
+    /// is locked while it computes).
+    fn reach_for(&self, inputs: &reach::Inputs, o: &Observer, c: &Carrier, t: f64) -> Arc<reach::VehicleReach> {
+        if let Some(hit) = lock(&self.reach_memo).get(inputs) {
+            return hit.clone();
+        }
+        let computed = Arc::new(reach::vehicle_reach(inputs, &o.sensors, o.mast_m, &c.domain, self.clear_day.get(&c.platform), t));
+        let mut memo = lock(&self.reach_memo);
+        if memo.len() >= REACH_MEMO_MAX {
+            memo.clear();
+        }
+        memo.entry(inputs.clone()).or_insert(computed).clone()
+    }
+
+    /// Rules 32 (bd murmur-ahss): each vehicle's sensors' reach now, prepared for the decision
+    /// layer outside its lock (its tick calls this before it takes it): under the physical model,
+    /// every vehicle that senses, from the last sensing step's conditions where it is
+    /// ([`reach`]'s computation, which `GET /api/sensing/reach` shows), kept until the next call;
+    /// nothing under the legacy model or before the first sensing step.
+    pub fn prepare_reach(&self, world: &World) {
+        let stamp = (self.sensing_model() == SensingModel::Physical).then(|| self.last_sensing()).flatten();
+        let Some((rx, t, s, sensing)) = stamp else {
+            lock(&self.reach_now).clear();
+            return;
+        };
+        let carriers = self.carriers(world);
+        let inputs = self.reach_inputs(&carriers, &sensing, t, s);
+        let prepared: HashMap<u64, PreparedReach> = carriers
+            .iter()
+            .zip(inputs)
+            .map(|((o, c), (inputs, _))| (o.uid, PreparedReach { sensed_at: rx, reach: self.reach_for(&inputs, o, c, t) }))
+            .collect();
+        *lock(&self.reach_now) = prepared;
+    }
+
+    /// Rules 32: each vehicle's reach now as last prepared ([`Self::prepare_reach`]), handed to
+    /// `f` under the map's lock.
+    pub fn with_prepared_reach<R>(&self, f: impl FnOnce(&HashMap<u64, PreparedReach>) -> R) -> R {
+        f(&lock(&self.reach_now))
+    }
+
+    /// `GET /api/sensing/reach` (bd murmur-4tq, [`reach`]; never logged): each vehicle's sensors'
+    /// reach now against a reference contact, beside the catalog's clear-day reach, in the
+    /// conditions the physical model would sense in where it is, and what keeps it short. Only the
+    /// vehicles `of` names, if it names some ([`ReachOf`]). Each reach is a function of its rounded
+    /// inputs (`reach::Inputs`), computed once for them and kept (the decision layer's reach facts,
+    /// rules 32, are the same computation); `age_s` is how long a vehicle's inputs have stood.
+    /// Nothing is locked while it computes (the physical model only while the weather samples are
+    /// read). Under the legacy model there is nothing to show: weather and light change no
+    /// detection there.
     pub fn reach_json(&self, world: &World, of: &ReachOf, now: f64) -> Value {
         let model = self.sensing_model();
         if model == SensingModel::Legacy {
             return json!({"available": true, "model": "legacy", "vehicles": [],
                 "note": "Legacy sensing: weather and light change no detection; each sensor reaches its catalog range_m."});
         }
-        let stamp = {
-            let inner = lock(&self.inner);
-            inner.truth.as_ref().map(|(rx, m)| (*rx, m.t, m.s, m.sensing.clone()))
-        };
-        let Some((rx, t, s, sensing)) = stamp else {
+        let Some((rx, t, s, sensing)) = self.last_sensing() else {
             return json!({"available": false, "model": model.as_str(), "vehicles": [], "note": "Waiting for the first sensing step"});
         };
         let carriers: Vec<(Observer, Carrier)> = self
@@ -1418,28 +1465,19 @@ impl Tracks {
             .into_iter()
             .filter(|(o, _)| of.takes(o))
             .collect();
-        // each observer's conditions, read under the physical model's lock and nothing more
-        let conds: Vec<(physical::conditions::Conditions, Option<murmur_weather::Sample>)> = {
-            let engine = lock(&self.physical);
-            carriers.iter().map(|(o, _)| engine.conditions_at(&sensing, o.lat, o.lon, t, s)).collect()
-        };
+        let inputs = self.reach_inputs(&carriers, &sensing, t, s);
         let mut out = Vec::with_capacity(carriers.len());
-        for ((o, c), (mut cond, sample)) in carriers.into_iter().zip(conds) {
-            let sun = cond.sun_at(t, o.lat, o.lon);
-            cond.sun_elevation_deg = Some(sun);
-            let key = ReachKey { platform: c.platform.clone(), alt_m: o.alt_msl, submerged: o.submerged, cond };
-            let cached = lock(&self.reach_cache)
-                .get(&o.uid)
-                .filter(|e| now >= e.at && now - e.at < REACH_MAX_AGE_S && e.key.close(&key))
-                .map(|e| (e.at, e.value.clone()));
-            let (at, mut value) = match cached {
-                Some(hit) => hit,
-                None => {
-                    let value = self.reach_vehicle(&o, &c, &cond, t, sample.as_ref());
-                    lock(&self.reach_cache).insert(o.uid, ReachEntry { at: now, key, value: value.clone() });
-                    (now, value)
+        for ((o, c), (inputs, sample)) in carriers.iter().zip(inputs) {
+            let vr = self.reach_for(&inputs, o, c, t);
+            let at = {
+                let mut cache = lock(&self.reach_cache);
+                let e = cache.entry(o.uid).or_insert_with(|| ReachEntry { at: now, inputs: inputs.clone() });
+                if e.inputs != inputs || now < e.at {
+                    *e = ReachEntry { at: now, inputs: inputs.clone() };
                 }
+                e.at
             };
+            let mut value = self.reach_vehicle(o, c, &vr, sample.as_ref());
             value["age_s"] = json!(round((now - at).max(0.0), 1));
             out.push(value);
         }
@@ -1450,16 +1488,14 @@ impl Tracks {
         json!({"available": true, "model": model.as_str(), "t": t, "age_s": round((now - rx).max(0.0), 1), "stale": now - rx > 10.0,
             "reference": {"kind": reach::REFERENCE_KIND, "air_alt_m": 300, "subsurface_depth_m": 30},
             "vehicles": out,
-            "note": "Information only: never logged and never a check; the decision engine still assumes each sensor's clear-day reach (the catalog's physical_reach_m). Each reach is a disc against a reference contact of no known kind (an aircraft 300 m up, a submarine 30 m down, else at the surface) with the sensor pointed at it: no terrain, the sonar's water the scenario's stated depth. limited_by names the input whose clear-day value gives back the most reach (docs/WEATHER.md)."})
+            "note": "Never logged. From decision rules 32 the decision engine judges by these reaches (each decision that reads them logs them as the vehicle's reach_now): an identify order's standoff by its camera's identification reach (identify_m, and identify_by_class_m for a contact the picture shows by its size class), an engagement's assessment by each sensor's detection reach; under older rules it assumed each sensor's clear-day reach (the catalog's physical_reach_m). Each reach is a disc against a reference contact of no known kind (an aircraft 300 m up, a submarine 30 m down, else at the surface; by class, the class's smallest member) with the sensor pointed at it: no terrain, the sonar's water the scenario's stated depth. The conditions are those it was computed for (rounded: the visibility to two figures, the sun to half a degree). limited_by names the input whose clear-day value gives back the most reach (docs/WEATHER.md)."})
     }
 
-    /// One vehicle's reach answer.
-    fn reach_vehicle(&self, o: &Observer, c: &Carrier, cond: &physical::conditions::Conditions, t: f64, sample: Option<&murmur_weather::Sample>) -> Value {
-        let clear = self.clear_day.get(&c.platform);
-        let sensors: Vec<Value> = o
+    /// One vehicle's reach answer, from its reach now `vr`.
+    fn reach_vehicle(&self, o: &Observer, c: &Carrier, vr: &reach::VehicleReach, sample: Option<&murmur_weather::Sample>) -> Value {
+        let sensors: Vec<Value> = vr
             .sensors
             .iter()
-            .filter_map(|spec| reach::sensor_now(spec, o, cond, t, clear.and_then(|m| m.get(spec.kind.as_str())), &c.domain))
             .map(|sn| {
                 let domains: Vec<Value> = sn
                     .domains
@@ -1478,10 +1514,17 @@ impl Tracks {
                         })
                     })
                     .collect();
-                json!({"type": sn.kind, "primary_domain": reach::domain_name(sn.primary), "domains": domains})
+                let mut v = json!({"type": sn.kind, "primary_domain": reach::domain_name(sn.primary), "domains": domains});
+                // rules 32: a camera's identification reach by size class (its smallest member)
+                if !sn.classes.is_empty() {
+                    v["identify_by_class_m"] = sn.classes.iter().map(|k| (k.class.as_str().to_string(), json!(round(k.identify_m, 0)))).collect::<serde_json::Map<_, _>>().into();
+                    v["thermal"] = json!(sn.thermal);
+                }
+                v
             })
             .collect();
-        let sun = cond.sun_elevation_deg.unwrap_or(45.0);
+        let cond = vr.inputs.conditions();
+        let sun = vr.inputs.sun_deg();
         json!({
             "uid": o.uid,
             "callsign": c.callsign,

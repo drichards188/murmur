@@ -80,6 +80,7 @@ pub fn vehicle(platform: &str, at: LonLat) -> VehicleFacts {
         booted_t: None,
         damage: None,
         lost_link: None,
+        reach_now: None,
     }
 }
 

@@ -2199,15 +2199,34 @@ impl Decision {
     }
 
     fn snapshot(&self) -> murmur_decide::WorldSnapshot {
-        snapshot::build(
+        let tracks = self.tracks();
+        let mut w = snapshot::build(
             &self.world,
             self.facts_catalog(),
             &self.areas,
             self.clock.now(),
-            self.tracks().as_deref(),
+            tracks.as_deref(),
             // rules 30: each vehicle's own lost-link failsafe
             self.rules.node_loss(),
-        )
+        );
+        // rules 32: each vehicle's sensors' reach now, as the tick last prepared it
+        if self.rules.reach_now()
+            && let Some(t) = tracks.as_deref()
+        {
+            snapshot::fill_reach(&mut w, t);
+        }
+        w
+    }
+
+    /// Rules 32 (bd murmur-ahss): each vehicle's sensors' reach under the conditions where it is
+    /// now, computed outside the decision lock before each tick takes it (`Tracks::prepare_reach`),
+    /// for the snapshots until the next ([`Self::snapshot`]). Nothing under older rules.
+    fn prepare_reach(&self) {
+        if self.rules.reach_now()
+            && let Some(t) = self.tracks()
+        {
+            t.prepare_reach(&self.world);
+        }
     }
 
     /// Rules 30 (docs/NODE-LOSS.md section 3): where each of our silent vehicles can be now, as
@@ -2526,6 +2545,11 @@ impl Decision {
     /// The decision loop's step, once a second, under the decision lock; it ends with the
     /// batch's anchor ([`Self::commit_anchors`]: every decision logged since the last tick).
     fn step(&self) {
+        // rules 32: the sensors' reach now, before the lock is taken (timed only then: an older
+        // run's /api/stats reads as before)
+        if self.rules.reach_now() {
+            crate::perf::time("decision.prepare_reach", || self.prepare_reach());
+        }
         {
             let mut guard = self.lock();
             let core = &mut *guard;

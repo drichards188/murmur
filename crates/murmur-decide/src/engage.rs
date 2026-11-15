@@ -5754,16 +5754,33 @@ pub fn sees(sensor: &str, domain: Domain) -> bool {
     }
 }
 
-/// The sensor of platform `p` that covers a contact in `domain` `d` metres away, for the
+/// The sensor of vehicle `v` that covers a contact in `domain` `d` metres away, for the
 /// assessment: of the types that see the domain ([`sees`]), the one reaching farthest there, if
 /// that is at least `d`. A sensor's reach is `range_m`, or in a run on the physical sensing
 /// model the reach by domain the catalog derives from that model, which the facts then carry
-/// (logged with the decision; [`crate::SensorFact::reach_for`]).
-pub fn covering_sensor(p: &crate::PlatformFacts, domain: Domain, d: f64) -> Option<&SensorFact> {
+/// (logged with the decision; [`crate::SensorFact::reach_for`]). Rules 32
+/// ([`crate::rules::REACH_NOW_SINCE`]): a sensor whose facts carry that physical reach reaches
+/// what the vehicle's reach-now fact says it does under the conditions there now
+/// ([`crate::reach::detect_now`]), and nothing while that is not known.
+pub fn covering_sensor<'v>(
+    v: &'v crate::world::VehicleFacts,
+    domain: Domain,
+    d: f64,
+    world: &WorldSnapshot,
+    cfg: &RulesConfig,
+) -> Option<&'v SensorFact> {
+    let p = v.platform.as_ref()?;
     p.sensors
         .iter()
-        .filter(|s| sees(&s.kind, domain))
-        .filter_map(|s| s.reach_for(domain).map(|r| (s, r)))
+        .enumerate()
+        .filter(|(_, s)| sees(&s.kind, domain))
+        .filter_map(|(i, s)| {
+            let r = match crate::reach::detect_now(v, i, domain, world, cfg) {
+                Some(now) => now,
+                None => s.reach_for(domain),
+            };
+            r.map(|r| (s, r))
+        })
         .filter(|(_, r)| *r >= d)
         .max_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(s, _)| s)
@@ -5783,9 +5800,11 @@ pub fn observe(
         let Ok(pos) = fresh(&v.position, v, "position", world, cfg) else {
             continue;
         };
-        let Some(p) = &v.platform else { continue };
+        if v.platform.is_none() {
+            continue;
+        }
         let d = haversine_m(*pos, effect.point);
-        if let Some(s) = covering_sensor(p, domain, d) {
+        if let Some(s) = covering_sensor(v, domain, d, world, cfg) {
             covered_by.push(format!("{uid}:{} {:.0} m", s.kind, d));
         }
     }

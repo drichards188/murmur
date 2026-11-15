@@ -127,6 +127,9 @@ pub fn vehicle_facts(
         // rules 30: its own lost-link failsafe, read or configured: [`lost_link_fact`], filled
         // by [`build`] for a run under rules 30
         lost_link: None,
+        // rules 32: its sensors' reach now, from the tracks' last sensing step: filled by
+        // [`build`] for a run under rules 32 on the physical model
+        reach_now: None,
         platform,
     }
 }
@@ -238,6 +241,20 @@ pub fn build(
         snap.track_levels = tracks.levels();
     }
     snap
+}
+
+/// Rules 32 (`murmur_decide::rules::REACH_NOW_SINCE`): each vehicle's sensors' reach now, as the
+/// tracks last prepared it (`Tracks::prepare_reach`, outside the decision lock), into its facts
+/// (`reach_now`), stamped with the sensing step whose conditions it is for. A vehicle without one
+/// (not sensing, the legacy model, before the first step) gets none.
+pub fn fill_reach(snap: &mut WorldSnapshot, tracks: &crate::tracks::Tracks) {
+    tracks.with_prepared_reach(|prepared| {
+        for (uid, f) in snap.vehicles.iter_mut() {
+            f.reach_now = bridge_uid(uid)
+                .and_then(|u| prepared.get(&u))
+                .map(|p| Fact::new(p.reach.fact.clone(), ms(p.sensed_at)));
+        }
+    });
 }
 
 /// [`build`]'s track picture alone, at engine time `t`: `tracks` and `track_ais` as it gives

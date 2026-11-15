@@ -104,6 +104,16 @@ pub struct VehicleFacts {
     /// older rules. Absent: not known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lost_link: Option<Fact<LostLinkPlan>>,
+    /// Rules 32 ([`crate::rules::REACH_NOW_SINCE`]): its sensors' reach under the conditions where
+    /// it is now, as the physical sensing model predicts it (the bridge's `tracks::reach`, the
+    /// reach display's computation; [`crate::reach`]), stamped with when the bridge computed it. An
+    /// identify order's standoff and an engagement's assessment read it in place of the catalog's
+    /// clear-day reach for every sensor whose facts carry one. The bridge fills it in a run on the
+    /// physical model only; the engine drops it before logging under older rules and from every
+    /// decision that does not read it. Absent: not known (the legacy model has no reach that
+    /// changes with the conditions).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reach_now: Option<Fact<crate::reach::ReachNow>>,
 }
 
 /// Rules 30: a vehicle's own lost-link failsafe ([`VehicleFacts::lost_link`]): what it does when
@@ -1018,15 +1028,22 @@ impl WorldSnapshot {
 
     /// The part of the world an intent's rules can read: its vehicles (and a track target),
     /// the areas, terrain and the track picture. This is what gets logged (as
-    /// [`LoggedInputs`], the area set and the track picture replaced by their hashes).
+    /// [`LoggedInputs`], the area set and the track picture replaced by their hashes). Rules 32:
+    /// its vehicles' sensors' reach now only for an identify order, the one intent whose checks
+    /// read it.
     pub fn subset_for(&self, spec: &IntentSpec) -> WorldSnapshot {
+        self.subset_reaching(spec, spec.kind() == crate::intent::TaskKind::Identify)
+    }
+
+    /// [`Self::subset_for`], its vehicles' sensors' reach now kept only with `reach_now` (rules 32).
+    fn subset_reaching(&self, spec: &IntentSpec, reach_now: bool) -> WorldSnapshot {
         let mut wanted: Vec<&Uid> = spec.uids.iter().collect();
         if let Task::Track { target } = &spec.task {
             wanted.push(target);
         }
         // an engagement's keep-out reads every vehicle of ours (rules 27: a lay order's field
         // judges them too)
-        let vehicles = if matches!(spec.task, Task::Engage { .. } | Task::Lay { .. }) {
+        let mut vehicles: BTreeMap<Uid, VehicleFacts> = if matches!(spec.task, Task::Engage { .. } | Task::Lay { .. }) {
             self.vehicles.clone()
         } else {
             wanted
@@ -1034,6 +1051,13 @@ impl WorldSnapshot {
                 .filter_map(|u| self.vehicles.get(u).map(|v| (u.clone(), v.clone())))
                 .collect()
         };
+        // rules 32: the sensors' reach now is read by an identify order's plan alone among an
+        // intent's checks (an engagement's assessment puts it back for its observation steps)
+        if !reach_now {
+            for v in vehicles.values_mut() {
+                v.reach_now = None;
+            }
+        }
         WorldSnapshot {
             t: self.t,
             vehicles,
@@ -1116,10 +1140,12 @@ impl WorldSnapshot {
         cfg: &RulesConfig,
         plan: Option<&crate::engage::FrozenPlan>,
     ) -> WorldSnapshot {
-        // rules 21: an identify order's terrain is its orbit's (laid out around the track)
+        // rules 21: an identify order's terrain is its orbit's (laid out around the track); rules
+        // 32: its vehicle's sensors' reach now is the identify order's
+        let identify = spec.kind() == crate::intent::TaskKind::Identify;
         let orbit = crate::identify::orbit_view(spec, self, cfg);
         let spec = orbit.as_ref();
-        let mut w = self.subset_for(spec);
+        let mut w = self.subset_reaching(spec, identify);
         w.plan = plan.map(|p| Box::new(p.clone()));
         if matches!(spec.task, Task::Engage { .. }) {
             w.terrain = match crate::engage::terrain_point(spec, &w, cfg) {

@@ -351,6 +351,13 @@ pub struct VehicleDef {
     /// "read" }`, and for a fixed wing `circle_m`. Absent: not known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lost_link: Option<crate::world::LostLinkPlan>,
+    /// Rules 32: its sensors' reach under the conditions where it is, as the bridge would compute
+    /// it from the physical model (the vehicle fact `reach_now`, stamped with each report):
+    /// `{ alt_m = 150, visibility_m = 50, sun_elevation_deg = 30, sensors = [{ type = "eo_ir",
+    /// detect_m = { surface = 140 }, identify_m = { surface = 130, size_class = { small_air = 60
+    /// } }, thermal = true }] }`. Absent: not known (a vehicle step's `reach_now` sets it later).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reach_now: Option<crate::reach::ReachNow>,
 }
 
 /// Rules 29: a vehicle's starting task in a scenario file (`[[vehicle]]`'s `start`).
@@ -749,6 +756,10 @@ pub enum Action {
         /// the bridge's `damage` fact, stamped now; it never heals.
         #[serde(default)]
         damage: Option<crate::world::VehicleDamage>,
+        /// Rules 32: its sensors' reach under the conditions now changes (the fog comes in, the
+        /// sun sets): [`VehicleDef::reach_now`]'s shape, replacing it.
+        #[serde(default)]
+        reach_now: Option<crate::reach::ReachNow>,
     },
     /// Rules 9: an abstract hostile act (no weapon of any kind: a time, a victim and where its
     /// author appeared to be). The contact behind track `by_track` (or an untracked contact at
@@ -1285,6 +1296,8 @@ struct VehicleSim {
     damage: Option<Fact<crate::world::VehicleDamage>>,
     /// rules 27: the waypoints after its goal, in order (a lay order's line)
     route: Vec<LonLat>,
+    /// rules 32: its sensors' reach under the conditions now, as the bridge computes it
+    reach_now: Option<crate::reach::ReachNow>,
 }
 
 struct TrackSim {
@@ -1547,6 +1560,7 @@ pub fn run(
                 silent_since: v.lost_for_s.map(|_| 0),
                 damage: None,
                 route: Vec::new(),
+                reach_now: v.reach_now.clone(),
             },
         );
     }
@@ -2693,6 +2707,8 @@ fn snapshot(
                 damage: v.damage.clone(),
                 // rules 30: its own lost-link failsafe, read at the start
                 lost_link: v.def.lost_link.clone().map(|l| Fact::new(l, T0)),
+                // rules 32: its sensors' reach now, computed with its last report
+                reach_now: v.reach_now.clone().map(|r| Fact::new(r, t)),
             },
         );
         // who it is, as the bridge would say (rules 12: a carried hold; rules 15: an un-spend),
@@ -3616,10 +3632,14 @@ fn act(
             reported_circle,
             alt_m,
             damage,
+            reach_now,
         } => {
             let Some(v) = vehicles.get_mut(uid) else {
                 return failures.push(format!("t={s}: unknown vehicle {uid}"));
             };
+            if let Some(r) = reach_now {
+                v.reach_now = Some(r.clone());
+            }
             if let Some(a) = alt_m {
                 v.alt = Some(*a);
             }
@@ -4862,6 +4882,58 @@ fn forge(text: &str, kind: &str) -> Result<String, String> {
         });
         if events.len() == before {
             return Err("no concurrence on the lay order to drop".into());
+        }
+        return rechained(&mut events);
+    }
+    // rules 32: the reaches a decision read under the conditions made a clear day's (no
+    // engagement needed)
+    if kind == "edit_reach" {
+        // every sensor's reach now a decision logged made a hundred times as long, as if the fog
+        // had lifted (and a camera that reached nothing, 10 km)
+        let mut done = false;
+        for e in &mut events {
+            let inputs: Vec<&mut crate::world::LoggedInputs> = match &mut e.body {
+                EventBody::CheckResult { inputs, .. }
+                | EventBody::PolicyDecision { inputs, .. }
+                | EventBody::PictureIssued { inputs, .. }
+                | EventBody::EngagePicture { inputs, .. }
+                | EventBody::EngageObserve { inputs, .. }
+                | EventBody::IntentQueued { inputs, .. } => vec![inputs],
+                EventBody::ApprovalReset { inputs, .. } | EventBody::IntentDispatched { inputs, .. } => inputs.iter_mut().collect(),
+                EventBody::IdentifyStep { inputs, return_inputs, .. } => std::iter::once(inputs).chain(return_inputs.iter_mut()).collect(),
+                _ => Vec::new(),
+            };
+            for v in inputs.into_iter().flat_map(|i| i.vehicles.values_mut()) {
+                let Some(r) = v.reach_now.as_mut() else { continue };
+                let longer = |m: &mut Option<f64>| {
+                    if let Some(m) = m.as_mut() {
+                        *m = if *m > 0.0 { *m * 100.0 } else { 10_000.0 };
+                    }
+                };
+                for s in &mut r.value.sensors {
+                    for reach in std::iter::once(&mut s.detect_m).chain(s.identify_m.as_mut()) {
+                        for m in [&mut reach.air, &mut reach.ground, &mut reach.surface, &mut reach.subsurface] {
+                            longer(m);
+                        }
+                        if let Some(c) = reach.size_class.as_mut() {
+                            for m in [
+                                &mut c.small_air,
+                                &mut c.large_air,
+                                &mut c.small_surface,
+                                &mut c.large_surface,
+                                &mut c.small_ground,
+                                &mut c.large_ground,
+                            ] {
+                                longer(m);
+                            }
+                        }
+                    }
+                }
+                done = true;
+            }
+        }
+        if !done {
+            return Err("no sensor reach under the conditions in any decision's inputs".into());
         }
         return rechained(&mut events);
     }

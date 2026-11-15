@@ -2832,6 +2832,83 @@ async fn the_decision_facts_carry_the_reaches_of_the_sensing_model_in_force() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Rules 32 (bd murmur-ahss): each vehicle's facts carry its sensors' reach now, prepared by the
+/// decision tick outside its lock from the last sensing step's conditions where it is: in fog its
+/// camera's reach shrinks, the figures are the ones the reach display shows for the same inputs,
+/// and they are stamped with that sensing step. Under rules 31, and before any sensing step, none;
+/// on the legacy model none either.
+#[tokio::test(start_paused = true)]
+async fn the_decision_facts_carry_each_vehicles_reach_now_from_rules_32() {
+    use crate::tracks::physical::conditions::Conditions;
+    let truth = |e: &Erig, model: SensingModel, visibility_m: f64| {
+        let conditions = Conditions { visibility_m, sun_elevation_deg: Some(30.0), ..Conditions::default() };
+        let msg = TruthMessage {
+            t: e.now_s(),
+            s: e.now_s(),
+            seq: 0,
+            scenario: "test".into(),
+            seed: 1,
+            sensing: Sensing { misclassification_rate: 0.0, model: Some(model), conditions: Some(conditions), ..Default::default() },
+            contacts: Vec::new(),
+            acts: Vec::new(),
+            aim_at: Vec::new(),
+            weapons: Vec::new(),
+            impacts: Vec::new(),
+            mines_live: Vec::new(),
+            look: Vec::new(),
+        };
+        e.tracks.on_truth_with(msg, &[], e.now_s()).expect("sensing");
+    };
+    let reach_now = |e: &Erig| e.r.d.snapshot().vehicles.get(&murmur_decide::Uid::new("1")).and_then(|v| v.reach_now.clone());
+    // heard just now (the fake's packets reach no link statistics): a vehicle that senses
+    let heard = |e: &Erig| {
+        for c in e.r.world.vehicles() {
+            c.link_on_packet(0, clock::wall());
+        }
+    };
+    for version in [murmur_decide::IDENTIFY_CLASS_SINCE, murmur_decide::REACH_NOW_SINCE] {
+        let e = engage_rig_policy(None, PathBuf::from("memory"), |p| p.rules.rules_version = version);
+        e.r.vehicle(1, Firmware::Copter, "x10", (LAT, LON));
+        sleep(Duration::from_millis(500)).await;
+        e.r.d.tick();
+        assert_eq!(reach_now(&e), None, "rules {version}: before the first sensing step");
+        heard(&e);
+        truth(&e, SensingModel::Physical, 50.0);
+        let sensed = e.now_s();
+        e.r.d.tick();
+        let Some(fact) = reach_now(&e) else {
+            assert_eq!(version, murmur_decide::IDENTIFY_CLASS_SINCE, "rules 32 carries it");
+            continue;
+        };
+        assert_eq!(version, murmur_decide::REACH_NOW_SINCE, "rules 31 carries none");
+        assert_eq!(fact.t, snapshot::ms(sensed), "stamped with the sensing step");
+        let rn = &fact.value;
+        assert_eq!((rn.visibility_m, rn.sun_elevation_deg), (50.0, 30.0));
+        let eo = rn.sensors.iter().find(|s| s.kind == "eo_ir").expect("its camera");
+        assert!(eo.thermal, "the X10's LWIR");
+        let surface = eo.detect_m.surface.expect("a surface reach");
+        assert!(surface < 0.05 * 14_050.0, "in fog: {surface} m of a clear day's 14,050");
+        assert!(eo.identify_m.as_ref().and_then(|r| r.size_class.as_ref()).is_some(), "reaches by class");
+        // the reach display's own figures for the same inputs
+        let shown = e.tracks.reach_json(&e.r.world, &crate::tracks::ReachOf::uid(1), e.now_s());
+        let domains = shown["vehicles"][0]["sensors"][0]["domains"].as_array().cloned().unwrap_or_default();
+        let d = domains.iter().find(|d| d["domain"] == "surface").expect("surface");
+        assert_eq!(d["detect_m"].as_f64(), Some(surface), "{d}");
+        assert_eq!(shown["vehicles"][0]["conditions"]["visibility_m"], 50.0);
+        // the fog lifts: the next tick's facts follow the next sensing step
+        heard(&e);
+        truth(&e, SensingModel::Physical, 20_000.0);
+        e.r.d.tick();
+        let clear = reach_now(&e).expect("a reach now");
+        let eo = clear.value.sensors.iter().find(|s| s.kind == "eo_ir").expect("its camera");
+        assert!(eo.detect_m.surface.expect("surface") > 0.9 * 14_050.0, "{:?}", eo.detect_m);
+        // the legacy model: no reach changes with the conditions
+        truth(&e, SensingModel::Legacy, 50.0);
+        e.r.d.tick();
+        assert_eq!(reach_now(&e), None, "the legacy model");
+    }
+}
+
 /// Rules 19 (bd murmur-j0x): a live boat whose reach blocks the keep-out (young: tracked 20 s,
 /// so it may still manoeuvre) is accepted as behaving now by an operator with engagement
 /// authority, never by an agent or an operator without it; the card and every signer's picture

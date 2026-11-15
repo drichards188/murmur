@@ -349,3 +349,101 @@ fn reach_cost_at_100_vehicles() {
     let sensors: usize = cold["vehicles"].as_array().expect("present").iter().map(|v| v["sensors"].as_array().map_or(0, Vec::len)).sum();
     eprintln!("reach at {n} vehicles ({sensors} sensors): {cold_ms:.1} ms computing every answer, {warm_ms:.2} ms from the cache ({} bytes)", warm.to_string().len());
 }
+
+/// Rules 32 (bd murmur-ahss): the decision fact `reach_now` is the display's computation for the
+/// same inputs, rounded so that vehicles alike share it: each detection reach the display's along
+/// the ground, an EO/IR's identification reach by domain and by size class as slant range (never
+/// nearer than the ground's), and on the reference day at the operating height the catalog's
+/// detection reach; in fog it shrinks, and a camera without a thermal channel reaches nothing at
+/// night where one with it does.
+#[test]
+fn the_decision_fact_is_the_displays_computation() {
+    // the inputs, rounded
+    let c = Conditions { visibility_m: 16_345.0, wind_mps: 5.3, ..reference_conditions() };
+    let i = reach::Inputs::of("puma", 147.2, false, &c, 12.26);
+    let rc = i.conditions();
+    assert_eq!((i.alt_m(), rc.visibility_m, rc.wind_mps, rc.sun_elevation_deg), (150.0, 16_000.0, 5.5, Some(12.5)));
+    assert_eq!(reach::Inputs::of("puma", 7_640.0, false, &c, 45.0).alt_m(), 7_600.0);
+    assert_eq!(reach::Inputs::of("ugv_armed", 29.4, false, &c, 45.0).alt_m(), 29.0);
+    assert_eq!(reach::Inputs::of("puma", 150.4, false, &c, 12.3), reach::Inputs::of("puma", 149.8, false, &c, 12.4), "one computation");
+    let cat = catalog();
+    let clear = clear_day();
+    let mut checked = 0;
+    for (platform, by_kind) in &clear {
+        let (o, own) = at_operating(platform, &cat);
+        let inputs = reach::Inputs::of(platform, o.alt_msl, o.submerged, &reference_conditions(), 45.0);
+        let vr = reach::vehicle_reach(&inputs, &o.sensors, o.mast_m, &own, Some(by_kind), T);
+        assert_eq!(vr.fact.sensors.len(), vr.sensors.len(), "{platform}");
+        for (f, s) in vr.fact.sensors.iter().zip(&vr.sensors) {
+            assert_eq!(f.kind, s.kind);
+            for d in &s.domains {
+                assert_eq!(f.detect_m.get(d.domain), Some(d.detect_m.round()), "{platform} {} {:?}", s.kind, d.domain);
+                if inputs.alt_m() == o.alt_msl
+                    && let Some(want) = d.clear_day_m
+                {
+                    // within the catalog's 10 m (at hundreds of kilometres the place's own
+                    // geometry moves it a few hundredths of a percent)
+                    let near = 10.0f64.max(1e-4 * want);
+                    assert!((d.detect_m - want).abs() <= near, "{platform} {} {:?}: {} m, the catalog {want} m", s.kind, d.domain, d.detect_m);
+                }
+                if s.kind == "eo_ir" {
+                    let slant = f.identify_m.as_ref().and_then(|r| r.get(d.domain)).expect("an identification reach");
+                    // the model's own slant range (its geometry measures the line a tenth of a
+                    // percent shorter than the offset it was laid out by)
+                    assert!(slant >= 0.998 * d.identify_m - 1.0, "{platform} {:?}: slant {slant} m, ground {} m", d.domain, d.identify_m);
+                    checked += 1;
+                }
+            }
+            assert_eq!(f.identify_m.is_some(), s.kind == "eo_ir", "{platform} {}", s.kind);
+            if s.kind == "eo_ir" {
+                let by = f.identify_m.as_ref().and_then(|r| r.size_class.as_ref()).expect("reaches by class");
+                for k in &s.classes {
+                    assert_eq!(by.get(k.class), Some(k.identify_slant_m.round()), "{platform} {:?}", k.class);
+                }
+            }
+        }
+    }
+    assert!(checked > 30, "{checked} camera domains");
+    // fog shrinks a camera; at night a visible channel alone reaches nothing, a thermal one does
+    let fact = |platform: &str, alt: f64, cond: Conditions, sun: f64| {
+        let (o, own) = at_operating(platform, &cat);
+        let inputs = reach::Inputs::of(platform, alt, false, &cond, sun);
+        reach::vehicle_reach(&inputs, &o.sensors, o.mast_m, &own, clear.get(platform), T).fact
+    };
+    let eo = |f: &murmur_decide::ReachNow| f.sensors.iter().find(|s| s.kind == "eo_ir").cloned().expect("a camera");
+    let foggy = eo(&fact("puma", 150.0, Conditions { visibility_m: 50.0, ..reference_conditions() }, 30.0));
+    assert!(foggy.detect_m.surface.expect("surface") < 0.05 * 14_470.0, "{:?}", foggy.detect_m);
+    let magura = eo(&fact("magura", 0.0, reference_conditions(), -20.0));
+    assert!(!magura.thermal);
+    assert_eq!(magura.detect_m.surface, Some(0.0));
+    assert_eq!(magura.identify_m.as_ref().and_then(|r| r.size_class.as_ref()).and_then(|c| c.small_surface), Some(0.0));
+    let puma = eo(&fact("puma", 150.0, reference_conditions(), -20.0));
+    assert!(puma.thermal);
+    assert!(puma.identify_m.as_ref().and_then(|r| r.size_class.as_ref()).and_then(|c| c.small_surface).expect("present") > 1_000.0);
+}
+
+/// The figures the engage scenarios that run on rules 32 give their vehicles' reach now (146 to
+/// 148's `reach_now`, and 144 and 145's), as the bridge computes them for the same inputs:
+/// `cargo test --release -p murmur-bridge --bin murmur-bridge scenario_reach_figures -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn scenario_reach_figures() {
+    let cat = catalog();
+    let clear = clear_day();
+    for (platform, alt, visibility_m, sun) in [
+        ("puma", 150.0, 50.0, 30.0),
+        ("puma", 150.0, 1_200.0, 30.0),
+        ("puma", 150.0, 20_000.0, -20.0),
+        ("puma", 150.0, 20_000.0, 45.0),
+        ("magura", 0.0, 20_000.0, -20.0),
+        ("ugv_armed", 20.0, 50.0, 30.0),
+        ("x10", 100.0, 20_000.0, 45.0),
+        ("mq9b", 7_600.0, 20_000.0, 45.0),
+    ] {
+        let (o, own) = at_operating(platform, &cat);
+        let cond = Conditions { visibility_m, ..reference_conditions() };
+        let inputs = reach::Inputs::of(platform, alt, false, &cond, sun);
+        let vr = reach::vehicle_reach(&inputs, &o.sensors, o.mast_m, &own, clear.get(platform), T);
+        eprintln!("{platform} {alt} m, {visibility_m} m visibility, the sun {sun} degrees: {}", serde_json::to_string(&vr.fact).expect("json"));
+    }
+}

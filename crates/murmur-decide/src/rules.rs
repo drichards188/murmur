@@ -289,7 +289,30 @@ pub const RULES_VERSION: u32 = IDENTIFY_CLASS_SINCE;
 /// `policy.rules.rules_version`, the bridge's `MURMUR_RULES`. Replay accepts a log of any version up
 /// to this one and flags one newer. The branch's last stage sets [`RULES_VERSION`] to its version,
 /// and this to [`RULES_VERSION`] again.
-pub const RULES_NEWEST: u32 = RULES_VERSION;
+pub const RULES_NEWEST: u32 = REACH_NOW_SINCE;
+
+/// The rules version from which a sensor's reach is judged under the conditions where its vehicle
+/// is now (bd murmur-ahss; the owner's "I want those scored" of 2026-11-15 for scoring v3's F9 night
+/// and fog). Up to rules 31, in a run on the physical sensing model the engine read each sensor's
+/// catalog `physical_reach_m`, derived for a clear day (20 km of visibility, the sun 45 degrees up,
+/// sea state 2) at the platform's operating height: in fog of 50 m visibility a Puma's camera reaches
+/// a boat about 140 m out, where the catalog says 14.5 km, and a camera with only a visible channel
+/// reaches nothing at night, yet an identify order was flown at a clear day's standoff and an
+/// engagement's assessment counted the effect point covered. From this version, where a sensor's
+/// facts carry physical reaches, the engine reads its reach now instead: the vehicle fact
+/// [`crate::world::VehicleFacts::reach_now`], each sensor's detection reach by domain and an EO/IR's
+/// identification reach by domain and size class, as the physical model predicts them where the
+/// vehicle is, at its height, in the conditions there (the bridge's `tracks::reach`, the reach
+/// display's own computation), stamped when computed and judged fresh as any fact. An identify
+/// order's standoff is taken from the camera's identification reach now ([`crate::identify::plan`];
+/// before, an eighth of its clear-day detection reach) and refused, saying the conditions, where the
+/// camera identifies nothing or only nearer than the vehicle can fly; an assessment counts a sensor
+/// covering the effect point only within its detection reach now ([`crate::engage::covering_sensor`]).
+/// The legacy sensing model's facts carry no physical reaches, and so no reach now: its runs decide
+/// as before. The engine drops the fact before logging under older rules, and from every decision
+/// that does not read it (all but an identify order's and an assessment's). Every gate of that
+/// change reads this constant, never a literal.
+pub const REACH_NOW_SINCE: u32 = 32;
 
 /// The rules version from which an identify order's standoff is sized by what the picture shows of
 /// the track (bd murmur-8vj8, approved by the owner on 2026-11-15; eval/SCORING-V3.md 17.11, cause 1).
@@ -866,6 +889,12 @@ impl RulesConfig {
     /// reach of the track's shown size class.
     pub fn identify_by_class(&self) -> bool {
         self.rules_version >= IDENTIFY_CLASS_SINCE
+    }
+
+    /// Rules 32 ([`REACH_NOW_SINCE`]): a sensor's reach is judged under the conditions where its
+    /// vehicle is now.
+    pub fn reach_now(&self) -> bool {
+        self.rules_version >= REACH_NOW_SINCE
     }
 
     /// `[rules.engage]`, or its defaults.

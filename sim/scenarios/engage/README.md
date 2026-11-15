@@ -21,7 +21,14 @@ every designed end's) unless `--reaches physical` (`RunOptions::reaches`) gives 
 catalog's `physical_reach_m`, as the bridge's facts carry them in a run on the physical model
 (bd murmur-1u4, docs/SENSING.md "The decision engine's reaches"). A scenario written for the
 physical reaches says so itself (`reaches = "physical"`, rules 31's identify scenarios: a camera's
-reaches by size class are the physical model's), whatever the option.
+reaches by size class are the physical model's), whatever the option. From rules 32 (bd
+murmur-ahss) the engine reads a sensor with a physical reach at its reach under the conditions now,
+the vehicle fact `reach_now` the bridge computes from the physical model where the vehicle is: a
+scenario on the physical reaches states it for its vehicles (`[[vehicle]]`'s `reach_now`, a
+`vehicle` step's to change it; the figures from `cargo test --release -p murmur-bridge --bin
+murmur-bridge scenario_reach_figures -- --ignored --nocapture`). Without one the engine knows no
+such reach (an identify order cannot be evaluated, an assessment counts no cover from it), so
+`--reaches physical` on scenarios that state none shows the clear-day reaches with `--rules 31`.
 
 Exit status 0 when every scenario ended as designed (and replayed, and any tamper was
 caught), 1 otherwise, 2 on a load error. `cargo test -p murmur-decide --test engage` runs
@@ -135,7 +142,9 @@ tamper = "suppress_void"         # optional log attack replay must catch: propos
                                  # and rules 30: lost_by_agent (a confirmed loss credited to
                                  # an agent), hide_loss_revoked (every revocation of a loss
                                  # cut), redate_loss (a confirmation's report moved 20 s
-                                 # later, everywhere the loss appears)
+                                 # later, everywhere the loss appears),
+                                 # and rules 32: edit_reach (every sensor's reach now in the
+                                 # decisions' inputs made a hundred times as long)
                                  # (one with nothing to edit in a run's log reports "not
                                  # applicable")
 end_s = 120                      # seconds to run (default: the last step + 10)
@@ -237,6 +246,13 @@ callsign = "HUNTER 1"            # rules 23: what the bridge would call it (defa
 lost_link = { action = "rtl", timer_s = 5, source = "read" }   # rules 30, optional: its own
                                  # lost-link failsafe as the bridge reads it (the vehicle fact
                                  # lost_link; a fixed wing's circle_m too); absent: not known
+reach_now = { alt_m = 150, visibility_m = 50, sun_elevation_deg = 30, sensors = [
+    { type = "eo_ir", detect_m = { surface = 77 }, identify_m = { surface = 166,
+      size_class = { small_air = 160 } }, thermal = true }] }
+                                 # rules 32, optional: its sensors' reach under the conditions
+                                 # where it is, as the bridge computes it (the vehicle fact
+                                 # reach_now, stamped with each report; a vehicle step's
+                                 # reach_now replaces it); absent: not known
 
 [[track]]                        # a perception track (not truth)
 id = "T-0001"
@@ -475,3 +491,6 @@ logged evidence presumed lost.
 | 143-silent-with-nothing-known-at-top-speed | keep_out_friendly | rules 30: our Magura silent under way at 12 m/s, 1.8 km east of the target, no order of ours on it | rejected (keep_out_friendly): nothing places it, so anywhere its top speed (25 m/s, and the water's 2.5) reaches; `--rules 29` lets it through (its cruise reach 330 m clear) |
 | 144-identify-a-small-drone-close-in | identify | rules 31: PUMA 1, 150 m up, sent to identify a track the picture shows only as `small_air` (a radar's size class, no altitude); on the physical reaches | dispatched to an orbit of 788 m, its camera's reach of a small drone (9,160 m; an eighth, 1,145 m), done once its camera identifies it; `--rules 30` an orbit of 1,411 m, sized by the domain's 3 m reference aircraft |
 | 145-identify-a-drone-refused-from-too-high | identify | rules 31: the MQ-9B at its catalog height, 7,600 m, sent to the same kind of track, then SKY 1 (an X10, 100 m up); on the physical reaches | the MQ-9B rejected (identify: its height over the contact beyond its camera's identification reach of a small drone, about 4,068 m), SKY 1 dispatched to an orbit of 420 m; `--rules 30` sends both (the MQ-9B 5.6 km out, SKY 1 at 1,380 m) |
+| 146-identify-in-fog-refused-until-it-lifts | identify | rules 32: PUMA 1, 150 m up, sent to identify a `small_air` track in fog of 50 m visibility (its reach now, the vehicle fact `reach_now`), then again once the fog thins to 1.2 km; on the physical reaches; tamper `edit_reach` | rejected (identify: in fog of 50 m visibility PUMA 1's camera identifies a small_air contact only within about 160 m, its tightest orbit keeping it beyond that), then dispatched to an orbit of 599 m (its reach in 1.2 km visibility, 882 m); `--rules 31` sends it at once to the clear day's 788 m; tamper caught |
+| 147-identify-at-night-needs-a-thermal-channel | identify | rules 32: at night, MAGURA 1 (a visible channel only) then PUMA 1 (day and LWIR) sent to identify a `small_surface` boat; on the physical reaches | MAGURA 1 rejected (identify: at night its camera identifies nothing, having no thermal channel), PUMA 1 dispatched to an orbit of 1,405 m (its LWIR's 2,018 m); `--rules 31` sends both at the clear day's standoff |
+| 148-assessment-in-fog-sees-nothing | assessment | rules 32: scenario 131's Javelin launch in fog of 50 m visibility, the UGV's sight reaching about 156 m (its `reach_now`); on the physical reaches; tamper `edit_reach` | done (unknown): no sensor of ours covers the effect point 1,450 m off; `--rules 31` assesses it ceased on the clear day's reach; only the observation steps log the reach now; tamper caught |

@@ -1,0 +1,76 @@
+# Rules 32 (bd murmur-ahss): PUMA 1, 150 m up, is sent to identify a drone the picture shows as
+# `small_air` (a radar's size class, no altitude) in fog of 50 m visibility. Its reach now, as the
+# bridge computes it from the physical model where it is (the vehicle fact `reach_now`, the reach
+# display's own figures): its camera identifies a small drone only within about 160 m of slant
+# range, nearer than its tightest orbit at its height keeps it, so the order is refused, saying the
+# fog and that reach. At 10 s the fog has thinned to 1.2 km where PUMA 1 is: its camera identifies
+# a small drone within about 882 m, and the same order is dispatched to an orbit sized by it.
+# Rules 31 (`--rules 31`) read the catalog's clear-day reach (a small drone detected 9,160 m out,
+# an eighth of it to identify) and sent PUMA 1 at once to an orbit of 788 m, from which its camera
+# identifies nothing in that fog. The tamper makes every reach now in the log a hundred times
+# as long, as if the fog had lifted: replay recomputes the refusal from the edited facts and
+# catches it.
+title = "An identify order in fog is refused until the fog lifts"
+invariant = "identify"
+attack = "none: an order the camera could not carry out in fog"
+expect = "dispatched"
+reaches = "physical"
+min_rules = 32
+tamper = "edit_reach"
+end_s = 20
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "puma-1"
+platform = "puma"
+callsign = "PUMA 1"
+at = [-122.4930, 37.8210]   # west of the bridge, mid-strait
+alt_m = 150
+# in fog of 50 m visibility, the sun 30 degrees up (the bridge's figures for a Puma at 150 m)
+reach_now = { alt_m = 150, visibility_m = 50, sun_elevation_deg = 30, sensors = [{ type = "eo_ir", detect_m = { air = 113, ground = 75, surface = 77 }, identify_m = { air = 188, ground = 166, surface = 166, size_class = { small_air = 160, large_air = 188, small_surface = 166, large_surface = 166, small_ground = 165, large_ground = 166 } }, thermal = true }] }
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding over the water about 1 km south of the Puma
+domain = "air"
+affiliation = "unknown"
+identity = "small_air"      # a detection's size class, at the radar's confidence
+identity_confidence = 0.99
+sources = ["3:radar"]
+level = "detect"
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "identify"
+uids = ["puma-1"]
+track = "T-0001"
+
+[[step]]
+at_s = 1
+action = "expect"
+task_state = "rejected"
+task_reason = "in fog of 50 m visibility PUMA 1's camera identifies a small_air contact only within about 160 m"
+
+[[step]]
+at_s = 10                   # the fog thins to 1.2 km where PUMA 1 is
+action = "vehicle"
+uid = "puma-1"
+reach_now = { alt_m = 150, visibility_m = 1200, sun_elevation_deg = 30, sensors = [{ type = "eo_ir", detect_m = { air = 4502, ground = 3967, surface = 3983 }, identify_m = { air = 1726, ground = 1325, surface = 2718, size_class = { small_air = 882, large_air = 2283, small_surface = 1999, large_surface = 3503, small_ground = 882, large_ground = 1325 } }, thermal = true }] }
+
+[[step]]
+at_s = 11
+action = "task"
+by = "op-1"
+task = "identify"
+uids = ["puma-1"]
+track = "T-0001"
+
+[[step]]
+at_s = 12
+action = "expect"
+task_state = "dispatched"
+identify = "inside its EO/IR's identification reach of about 882 m for a small_air contact in 1.2 km visibility"

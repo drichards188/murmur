@@ -229,9 +229,10 @@ impl Decision {
     /// without a camera hears why it can't go), with the checks an identify order
     /// for it would get now (`passed`, the failing ones in words), its plan (`standoff_m`, the
     /// camera's `reach_m`, rules 31 `reach_for`: the size class that reach is for, when the plan
-    /// sized it by the track's, `transit_s`) and, for one that passes, its predicted link along the
-    /// way (`link`: `holds`, `p_failsafe`, its sentence). Passing first, soonest there first.
-    /// Read-only, never logged.
+    /// sized it by the track's, `transit_s`; rules 32 `conditions`: the conditions where it is that
+    /// its camera's reach is judged in, when not a clear day's) and, for one that passes, its
+    /// predicted link along the way (`link`: `holds`, `p_failsafe`, its sentence). Passing first,
+    /// soonest there first. Read-only, never logged.
     pub async fn identify_options(&self, req: OptionsRequest) -> Result<Value, DecisionError> {
         if !self.rules.identify() {
             return Err(DecisionError::new(422, "these decision rules take no identify order"));
@@ -313,6 +314,16 @@ impl Decision {
             // rules 31: the size class the camera's reach is for, when it is the track's
             if let Some(c) = plan.as_ref().and_then(|p| p.size_class) {
                 option["reach_for"] = json!(c.as_str());
+            }
+            // rules 32: the conditions where the vehicle is that its camera's reach is judged in,
+            // when not a clear day's
+            if let Some(c) = inputs
+                .vehicles
+                .get(&duid(uid))
+                .and_then(|v| v.reach_now.as_ref())
+                .and_then(|r| r.value.conditions())
+            {
+                option["conditions"] = json!(c);
             }
             out.push(option);
         }

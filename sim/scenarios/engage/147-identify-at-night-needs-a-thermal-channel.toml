@@ -1,0 +1,74 @@
+# Rules 32 (bd murmur-ahss): at night (the sun 20 degrees below the horizon) a boat the picture
+# shows as `small_surface` holds west of the bridge. MAGURA 1, whose camera has a visible channel
+# only, is sent to identify it first: its reach now (the vehicle fact `reach_now`, as the bridge
+# computes it from the physical model) is nothing in the dark, and the order is refused, saying
+# the night and that the camera has no thermal channel. PUMA 1, 150 m up, is sent instead: its
+# camera's LWIR channel identifies a small fast boat within about 2,018 m at night (a clear day's
+# 10,710 m), and the order is dispatched to an orbit sized by that. Rules 31 (`--rules 31`) read
+# the catalog's clear-day reach and sent the Magura, whose camera sees nothing at night, and
+# PUMA 1 to an orbit of 1,246 m, sized by its day channel's reach.
+title = "An identify order at night needs a camera with a thermal channel"
+invariant = "identify"
+attack = "none: an order a day camera could not carry out at night"
+expect = "dispatched"
+reaches = "physical"
+min_rules = 32
+end_s = 10
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "magura-1"
+platform = "magura"         # a visible channel only
+callsign = "MAGURA 1"
+at = [-122.4900, 37.8100]   # on the water east of the boat
+# at night: its camera reaches nothing (the bridge's figures)
+reach_now = { alt_m = 0, visibility_m = 20000, sun_elevation_deg = -20, sensors = [{ type = "eo_ir", detect_m = { air = 0, ground = 0, surface = 0 }, identify_m = { air = 0, ground = 0, surface = 0, size_class = { small_air = 0, large_air = 0, small_surface = 0, large_surface = 0, small_ground = 0, large_ground = 0 } } }] }
+
+[[vehicle]]
+uid = "puma-1"
+platform = "puma"           # day and LWIR channels
+callsign = "PUMA 1"
+at = [-122.4930, 37.8210]
+alt_m = 150
+# at night: its LWIR channel's reach (the bridge's figures for a Puma at 150 m)
+reach_now = { alt_m = 150, visibility_m = 20000, sun_elevation_deg = -20, sensors = [{ type = "eo_ir", detect_m = { air = 13429, ground = 10153, surface = 14668 }, identify_m = { air = 1730, ground = 1326, surface = 2883, size_class = { small_air = 202, large_air = 2306, small_surface = 2018, large_surface = 4612, small_ground = 432, large_ground = 1326 } }, thermal = true }] }
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # on the water west of the bridge
+domain = "surface"
+affiliation = "unknown"
+identity = "small_surface"  # a detection's size class, at the radar's confidence
+identity_confidence = 0.99
+sources = ["3:radar"]
+level = "detect"
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "identify"
+uids = ["magura-1"]
+track = "T-0001"
+
+[[step]]
+at_s = 1
+action = "expect"
+task_state = "rejected"
+task_reason = "at night MAGURA 1's camera identifies no small_surface contact from where it is now: it has no thermal channel"
+
+[[step]]
+at_s = 2
+action = "task"
+by = "op-1"
+task = "identify"
+uids = ["puma-1"]
+track = "T-0001"
+
+[[step]]
+at_s = 3
+action = "expect"
+task_state = "dispatched"
+identify = "an orbit of 1405 m, inside its EO/IR's identification reach of about 2018 m for a small_surface contact at night"

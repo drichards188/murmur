@@ -255,6 +255,7 @@
 //!     booted_t: None,
 //!     damage: None,
 //!     lost_link: None,
+//!     reach_now: None,
 //! });
 //!
 //! // An agent proposes; policy sends it to the inbox.
@@ -301,6 +302,7 @@ pub mod plan;
 pub mod passkey;
 pub mod policy;
 pub mod queue;
+pub mod reach;
 pub mod replay;
 pub mod route;
 pub mod scenario;
@@ -364,10 +366,11 @@ pub use queue::{
     Basis, CarriedApproval, CarriedHold, CarriedSpent, HandedOverFrom, KindQueue, OpenIntent, QueueConfig, QueueState, Reach,
     Recheck, RecheckRecord, RestoreOwed, ResumedFrom, Verdict,
 };
+pub use reach::{ReachNow, SensorNow};
 pub use route::{LegKind, Route, RouteLeg, Segment};
 pub use rules::{
     ACCEPT_BEHAVING_SINCE, AIRCRAFT_REACH_SINCE, CARRY_FOLLOWUPS_SINCE, CheckResult, DAMAGE_SINCE, GUN_SINCE, HANDOVER_SINCE, IDENTIFY_CLASS_SINCE, MINE_SINCE, MISSILE_STANDOFF_SINCE, IDENTIFY_OWN_LOOK_SINCE, IDENTIFY_SECOND_LOOK_SINCE, IDENTIFY_SINCE, LOADOUT_SINCE, LOST_CONTACT_SINCE, MUNITION_FLIGHT_SINCE, NODE_LOSS_SINCE, OPERATOR_AUTH_SINCE, Outcome, PASSKEY_SCHEMA_SINCE, PASSKEY_SINCE, POLICY_SCHEMA,
-    QUEUE_FOLLOWUPS_SINCE, REVIEW_FOLLOWUPS_SINCE, ROUTE_PLAN_SINCE, ROUTE_SURFACE_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_NEWEST, RULES_VERSION,
+    QUEUE_FOLLOWUPS_SINCE, REACH_NOW_SINCE, REVIEW_FOLLOWUPS_SINCE, ROUTE_PLAN_SINCE, ROUTE_SURFACE_SINCE, RULE_ID_SCHEMA_SINCE, RULE_ID_SINCE, RULES_NEWEST, RULES_VERSION,
     RuleId, RulesConfig, SPACE_FOLLOWUPS_SINCE, SPACE_REPLAY_SINCE, STEP_UP_SCHEMA_SINCE, UnknownEndurance, VELOCITY_SIGMA_SINCE,
 };
 pub use space::{
