@@ -361,6 +361,131 @@ def test_the_engagement_digest_and_the_form_s_acceptances():
     assert row["blocking_n"] == 14 and row["blocking"][0][:5] == ["T-0028", "lost_contact", "aircraft", "air", 900]
 
 
+# ---- F15 version 3 (bd murmur-yu6s): our drifters, the escort's departure, the oracle's restraint ----
+
+def field_file(path: Path, steps: list[list[tuple[int, int]]], nodata: int = -32768) -> Path:
+    """A 2 x 2 current field in bake_world.py's format over [0, 0.01] degrees of latitude and
+    longitude, one step an hour from t 0; each step's four (east, north) pairs in cm/s, row by row
+    from the south-west."""
+    import gzip
+    import struct
+
+    h = {"lat0": 0.0, "lon0": 0.0, "dlat": 0.01, "dlon": 0.01, "nlat": 2, "nlon": 2, "scale": 0.01, "nodata": nodata,
+         "t0": 0.0, "dt": 3600.0, "nt": len(steps)}
+    body = b"".join(struct.pack("<2h", e, n) for step in steps for e, n in step)
+    path.write_bytes(gzip.compress(json.dumps(h).encode() + b"\n" + body))
+    return path
+
+
+def test_the_current_field_is_read_as_the_simulator_reads_it(tmp_path: Path):
+    """families_ops `CurrentField` (crates/murmur-headless sim/water.rs): bilinear in space, linear in
+    time between steps, held at the first and last step, None outside the box or next to a point
+    without data."""
+    f = FO.CurrentField(field_file(tmp_path / "c.gz", [[(100, 0), (100, 0), (100, 0), (300, 0)],
+                                                       [(0, 200), (0, 200), (0, 200), (0, 200)]]))
+    e, n = f.at(0.005, 0.005, 0.0)
+    assert e == pytest.approx(1.5) and n == pytest.approx(0.0)
+    e, n = f.at(0.005, 0.005, 1800.0)
+    assert e == pytest.approx(0.75) and n == pytest.approx(1.0)
+    assert f.at(0.005, 0.005, -500.0) == f.at(0.005, 0.005, 0.0) and f.at(0.0, 0.0, 9000.0) == pytest.approx((0.0, 2.0))
+    assert f.at(0.02, 0.005, 0.0) is None and f.at(-0.001, 0.005, 0.0) is None
+    holed = FO.CurrentField(field_file(tmp_path / "h.gz", [[(100, 0), (100, 0), (100, 0), (-32768, -32768)]]))
+    assert holed.at(0.005, 0.005, 0.0) is None
+
+
+def test_a_drifter_goes_with_the_current_from_its_first_sample_and_stays_aground():
+    """families_ops `drift_path` (crates/murmur-standins behavior/drifter.rs): still until its first
+    water sample, a second after the stand-ins start; then the current where it is; once the water
+    under it is no deeper than its draft it moves no more; outside the field it is still."""
+    class East:
+        def at(self, lat: float, lon: float, t: float) -> tuple[float, float] | None:
+            return (0.5, 0.0) if lon < 0.01 else None
+
+    shore = 30.0 / 111_320.0  # land 30 m east of the start
+    p = FO.drift_path("golden-gate-v3", (0.0, 0.0), 0.0, 100.0, start_s=1.0, field=East(), depth=lambda la, lo: 10.0)
+    assert p[2, 1] == 0.0 and p[3, 1] > 0.0  # its first move is at 2 s
+    assert p[100, 1] * 111_320.0 == pytest.approx(0.5 * 98, abs=1e-6)
+    g = FO.drift_path("golden-gate-v3", (0.0, 0.0), 0.0, 100.0, start_s=1.0, field=East(),
+                      depth=lambda la, lo: 10.0 if lo <= shore else 0.3)
+    assert g[100, 1] * 111_320.0 == pytest.approx(30.5, abs=1e-6) and g[100, 1] == g[80, 1]
+    out = FO.drift_path("golden-gate-v3", (0.02, 0.0), 0.0, 100.0, start_s=1.0, field=East(), depth=lambda la, lo: 10.0)
+    assert out[100, 1] == 0.02
+
+
+@pytest.mark.parametrize("name", ["v3-f15-engage-gg", "v3-f15-engage-sd"])
+def test_f15_holds_clear_of_our_drifters_and_the_escort_peels_away(name: str, tmp_path: Path):
+    """F15 version 3: no drifter of ours comes within `DRIFT_CLEAR_M` of the holding point at any
+    second of the episode, on its predicted drift; an escort leaves 30 to 110 s after the first act,
+    before the third, on water, within 105 degrees of straight away from the hostile, 1.5 to 3 km, at
+    its kind's speed."""
+    _, world = F.parse(name)
+    escorts = 0
+    for seed in SEEDS:
+        e, path = F.generate(name, seed, tmp_path)
+        el, eng, acts = e.truth["element"], e.truth["engagement"], e.truth["acts"]
+        assert el["version"] == FO.F15_VERSION == 3 and eng["should_engage"]
+        hold = tuple(eng["hold"])
+        near = FO.nearest_drifter(hold, FO.drifter_paths(world, e.at, FO.DURATION_S))
+        assert near[0] > FO.DRIFT_CLEAR_M and el["drifters"]["nearest_m"] == round(near[0]), (seed, near)
+        cs, _ = contacts(path)
+        esc = next((c for c in cs if c["id"] == "escort-1"), None)
+        if esc is None:
+            assert "escort" not in el
+            continue
+        escorts += 1
+        (m,) = esc["maneuver"]
+        here, far = tuple(esc["route"][-1]), tuple(m["route"][-1])
+        assert acts[0]["at_s"] + 30.0 <= m["at_s"] <= acts[0]["at_s"] + 110.0 < acts[-1]["at_s"], seed
+        lo, hi = FO.ESCORT_SPEED_MPS[esc["kind"]]
+        assert lo <= m["speed_mps"] <= hi and F.wet(world, [here, far], 3.0)
+        assert 1500.0 - 1.0 <= F.dist_m(here, far) <= 3000.0 + 1.0
+        off = abs((F.bearing(hold, here) - F.bearing(here, far) + 180.0) % 360.0 - 180.0)
+        assert off <= FO.ESCORT_AWAY_DEG[1] + 0.5, (seed, off)
+        assert el["escort"]["leaves_s"] == m["at_s"] and m["at_s"] < el["escort"]["clear_s"] < FO.DURATION_S - 300.0
+    assert escorts, "the seeds draw at least one escort"
+
+
+def test_the_oracle_spares_a_contact_by_the_labels_geometry():
+    """oracle_ops `unspared` (F15 version 3): a plan spares a contact not hostile by truth when it
+    stays beyond the radius plus twice the track's 1-sigma from the plan's point while the effect
+    may come (along its course, between braking at once at its kind's deceleration and keeping its
+    speed to `LATE_S` after the effect time), or more than the radius above or below the target."""
+    from eval.headless.v3.oracle_ops import unspared
+
+    p = (-122.5, 37.81)
+    t0 = dt.datetime(2026, 6, 14, 10, 0, tzinfo=dt.timezone.utc)
+    stamp = lambda s: (t0 + dt.timedelta(seconds=s)).strftime("%Y-%m-%dT%H:%M:%SZ")  # noqa: E731
+    opt = {"uid": 21, "preview": {"t": stamp(0), "effect_t": stamp(60), "effect_point": list(p), "track_sigma_m": 5.0}}
+
+    def boat(bearing: float, dist: float, aff: str = "neutral", kind: str = "fishing_vessel", speed: float = 0.0,
+             course: float = 0.0, alt: float = 0.0, domain: str = "surface") -> dict[str, Any]:
+        q = F.offset(p, bearing, dist)
+        return {"lon": q[0], "lat": q[1], "alt_m": alt, "affiliation": aff, "kind": kind, "domain": domain,
+                "speed_mps": speed, "course_deg": course}
+
+    def worst(r: float, c: dict[str, Any]) -> dict[str, Any] | None:
+        return unspared(opt, r, {"hostile-1": boat(0.0, 0.0, aff="hostile"), "c": c}, "hostile-1")
+
+    holding = boat(0.0, 60.0)  # an escort holding 60 m off the point
+    w = worst(75.0, holding)
+    assert w is not None and w["contact"] == "c" and w["clear_m"] == 85.0 and w["distance_m"] == pytest.approx(60.0, abs=0.5)
+    assert worst(40.0, holding) is None, "a 40 m effect spares it: 60 m > 40 + 2 x 5"
+    assert worst(75.0, boat(0.0, 60.0, aff="hostile")) is None and worst(75.0, boat(0.0, 60.0, aff="suspect")) is not None
+    # in the air: more than the radius (and 10 m) above it is clear, as the labels judge
+    assert worst(75.0, boat(0.0, 20.0, kind="light_aircraft", alt=120.0, domain="air")) is None
+    assert worst(75.0, boat(0.0, 20.0, kind="light_aircraft", alt=50.0, domain="air")) is not None
+    # a sailboat 300 m south: heading for the point it crosses it within 120 s; heading away it never comes near
+    assert worst(40.0, boat(180.0, 300.0, kind="sailboat", speed=4.0, course=0.0)) is not None
+    assert worst(40.0, boat(180.0, 300.0, kind="sailboat", speed=4.0, course=180.0)) is None
+    # a fast boat 30 m north running off north at 10 m/s: braking at once (1.5 m/s^2) it is still 63 m off
+    off = boat(0.0, 30.0, kind="small_fast_boat", speed=10.0, course=0.0)
+    assert worst(40.0, off) is None and worst(75.0, off)["distance_m"] == pytest.approx(63.3, abs=0.5)
+    # a fishing boat 133 m south slowing to its station (0.1 m/s^2 from 3.7 m/s: 68 m on) may stop at
+    # the point: version 3's first smoke carried it on at its speed and judged it 89 m off
+    assert worst(75.0, boat(180.0, 133.0, speed=3.7, course=0.0))["distance_m"] == pytest.approx(0.0, abs=0.5)
+    assert unspared({"uid": 21, "preview": None}, 75.0, {"c": holding}, "hostile-1") is None
+
+
 # ---- the evidence reviewer (review.py) ---------------------------------------------------------------
 
 def track(tid: str, kind: str | None, conf: float = 0.9, sb: tuple[str, ...] = ("eo_ir",), conflict: Any = None,
