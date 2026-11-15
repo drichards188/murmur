@@ -742,9 +742,9 @@ officer's own pieces, imported, not copied:
 | piece | from |
 |---|---|
 | when to wake, escalate, coalesce, hold back repeats; the budgets | `watch.wake.Waker`, with the `Budgets` the driver builds from `watch_officer.parse_args([])` (60 wakes an hour, 12 tool turns a wake, 6 escalations, a 60 s heartbeat doubling to 300 s while quiet, 3 s coalescing, 10 s between wakes) |
-| what it reads between wakes | `watch.picture.Poller`: `get_changes` on its cursor every `poll_s` (2 s) and the nomination check while a track is declared hostile, through the session adapter |
-| what it is told | `compose` (the update), `render_mine` (its own proposals), `Officer.budget_line`, `CONSULT_HEAD` and the consult note `Officer.do_wake` writes for the routine model's next update |
-| the system prompt | `build_prompt`: `agents/watch/prompt.md` and the situation's brief (`eval/situation.py` `brief_text`, the title and the operator's brief, never the director's notes; a family keeps Harbor watch's) |
+| what it reads between wakes | `watch.picture.Poller`: `get_changes` on its cursor every `poll_s` (2 s), the nomination check while a track is declared hostile, and under decision rules 30 the standing of ours from `get_inbox`'s review every 5 s (`node_losses`: one of ours presumed lost wakes the model), through the session adapter |
+| what it is told | `compose` (the update), `render_mine` (its own proposals), `Officer.budget_line`, the review items that alone hold up a nomination (`Poller.blocking`, read around each wake; the simulator computes none, so headless updates carry none), `CONSULT_HEAD` and the consult note `Officer.do_wake` writes for the routine model's next update |
+| the system prompt | `build_prompt`: `agents/watch/prompt.md` and the situation's brief (`eval/situation.py` `brief_text`, the title and the operator's brief, never the director's notes; a family keeps Harbor watch's; a v2 or v3 situation's is its world's mission, verbatim) |
 | models and efforts | `watch_officer.DEFAULTS["claude"]`: routine `sonnet` at `medium`, consult `opus` at `high`, as the API ids `claude-sonnet-5-5` and `claude-opus-5-5` (`API_MODELS`); a wake goes to the consult when the `Waker` escalates it and that lane is not backing off, as `Officer.do_wake` decides |
 | a failed turn | `Officer.failed`: the lane backs off (30 s doubling to 900 s), the wake's changes are given back |
 | the model's turn | new: `ApiBackend`, a Messages API tool-use loop in place of `watch/claude.py` (below) |
@@ -780,19 +780,21 @@ default; the **charged** clock (section 14.1.1) makes a turn cost simulated time
 | tools named `mcp__murmur__<tool>`; whether the CLI adds the bridge's MCP server instructions (`mcp::INSTRUCTIONS`) under `--system-prompt-file` is not checked | the bare tool names (the prompt names them so); the server instructions not sent | |
 | `--max-turns 12` (the CLI's count) | at most 12 model calls a wake | a long wake may end at another point |
 | usage limits (`watch/limits.py`): wait for the reset or stop | none; an API error after the SDK's two retries is a failed turn (`stop: error`) | the lane backs off on the simulated clock |
-| the CLI's handling of a refusal | no server-side fallback by default (`MURMUR_EVAL_WATCH_FALLBACKS=1` turns it on): a refusal ends the wake, recorded `stop: refusal` | |
+| the CLI's handling of a refusal | never a fallback (an evaluation of one model is never answered by another; `fallbacks` on is refused): a refusal ends the wake, recorded `stop: refusal` with its `stop_details` category, and its answer, empty or cut off, is left out of the conversation | |
 | `--shadow-playbook` in situation runs | not run: the playbook is its own arm on the same seed | |
 | `--max-budget-usd`, the CLI's estimate | the cost guard (below) | |
 
 **The cost guard** is eval/model_agent.py's `CostGuard` and `Ledger` (`WatchGuard`): before each
 call, the worst case of that call (its request at 2 characters a token and its whole
-`max_tokens`, at the list price of the model it goes to; with fallbacks on, at the dearest model,
-twice) is checked against the episode's cap (`MURMUR_EVAL_MAX_USD`, default 3.00) and reserved
-in the batch's ledger (`MURMUR_EVAL_BATCH_MAX_USD`, default 20.00; the batch puts
-`model-ledger.json` in its directory and every worker settles into it under its file lock);
-after it, what it billed at list prices is settled. Unlike the storyline arm, which prices
-every cache read as fresh input, this arm settles cache reads ($0.20 a million tokens on both
-models) and cache writes (1.25 times input) at their own rates: its conversation is cached on
+`max_tokens`, at the list price of the model it goes to for a prompt that long) is checked
+against the episode's cap (`MURMUR_EVAL_MAX_USD`, default 3.00) and reserved in the batch's
+ledger (`MURMUR_EVAL_BATCH_MAX_USD`, default 20.00; the batch puts `model-ledger.json` in its
+directory and every worker settles into it under its file lock); after it, what it billed at
+list prices is settled. Unlike the storyline arm, which
+prices every cache read as fresh input, this arm settles cache reads (a tenth of input: $0.20 a
+million tokens on Opus 5.5, $0.10 on Sonnet 5.5, since murmur-ynsw; $0.20 on both before) and
+cache writes (1.25 times input) at their own rates, and a Haiku 5.5 call whose prompt passes
+100K tokens at its second card ($0.50 / $2.50, cache reads $0.05): its conversation is cached on
 purpose, and pricing it as fresh would stop a batch at a fraction of its real spend. Every model
 the officer can use must have a price row (an unknown one is refused before the episode starts).
 **A call the guard refuses ends its wake as `cost_guard`, the officer stops (every later call
@@ -813,10 +815,12 @@ counts it for the storyline arm.
 
 **The record** (section 10): `model` holds the configuration, the budgets, the guard's summary,
 the totals (wakes, consults, model and tool calls, proposals, tokens: fresh input, cache write,
-cache read, output; US dollars, wall seconds, stops, `budget_stopped`) and every wake: its
+cache read, output; US dollars, wall seconds, stops, `budget_stopped`; `refusal_categories`
+only when the model declined) and every wake: its
 simulated time and clock check, reason, why, lane (`routine` or `consult`), model, effort, the
 update it was given, every tool call (name, arguments, an excerpt of the answer, error), every
-model call (request characters, tokens, cost, served model, wall seconds, stop reason), the
+model call (request characters, tokens, cost, served model, wall seconds, stop reason and, for
+a refusal, its `stop_details`), the
 final text (2,000 characters), the stop. Its proposals are `agent_log` lines (`source` model)
 with the play category each maps to and what the picture showed of its target, read by the
 driver as `agent-watch` at the instant before the proposal went in (`get_tracks`, `get_fleet`

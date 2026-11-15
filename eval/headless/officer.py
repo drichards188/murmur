@@ -18,12 +18,15 @@ that can be imported is:
   from its own argument defaults (`watch_officer.parse_args([])`: 60 wakes an hour, 12 tool
   turns a wake, 6 escalations, a 60 s heartbeat, 3 s coalescing, 10 s between wakes);
 - **what it reads**: agents/watch/picture.py's `Poller` (the change feed on its cursor every
-  `poll_s`, 2 s, and the nomination check while a track is declared hostile) over the session
-  adapter, as agent `agent-watch`, the live officer's id;
+  `poll_s`, 2 s, the nomination check while a track is declared hostile, and under decision
+  rules 30 the standing of ours from get_inbox's review every 5 s, so one of ours presumed lost
+  wakes it) over the session adapter, as agent `agent-watch`, the live officer's id;
 - **what it is told**: `compose` (the update), `render_mine` (its own proposals), the
-  officer's own budget line (`Officer.budget_line`), `CONSULT_HEAD` for a consult and the note
-  the routine model gets about it afterwards, under `build_prompt` (agents/watch/prompt.md
-  and the situation's brief); a failed turn backs its lane off by `Officer.failed`;
+  officer's own budget line (`Officer.budget_line`), the review items that alone hold up a
+  nomination (`Poller.blocking`; the headless simulator computes none, so its updates have
+  none), `CONSULT_HEAD` for a consult and the note the routine model gets about it afterwards,
+  under `build_prompt` (agents/watch/prompt.md and the situation's brief, a v2 or v3 world's
+  mission verbatim); a failed turn backs its lane off by `Officer.failed`;
 - **which model**: the `claude` row of `watch_officer.DEFAULTS` (routine `sonnet` at
   `medium`, consult `opus` at `high`) as API ids (`API_MODELS`), overridable by the episode's
   options and the environment (`ModelConfig.resolve`); a wake goes to the stronger model when
@@ -33,7 +36,10 @@ that can be imported is:
   an MCP client hands its model), at most `max_turns_per_wake` model calls a wake. The routine
   model's conversation carries over from wake to wake, as the CLI's long-lived session does
   (append-only, prompt-cached); a consult is a fresh conversation (the system prompt and its
-  update), as the CLI's consult process is.
+  update), as the CLI's consult process is. Each request sends its effort explicitly and no
+  `thinking`, `tool_choice` or sampling parameter (adaptive thinking, the models' default), and
+  never a refusal fallback: a refusal is recorded as one, with its `stop_details` category, and
+  its answer is left out of the conversation.
 
 **Simulated time.** The officer is the episode's `agent` process: it polls every `poll_s` of
 simulated time. On the **paused** clock (the default) a wake runs between two simulator steps:
@@ -75,7 +81,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from eval.model_agent import PRICES, WORST_PRICE, CostGuard, CostGuardExceeded, Ledger, _n, price_of, tool_defs
+from eval.model_agent import PRICES, CostGuard, CostGuardExceeded, Ledger, _n, price_of, tool_defs
 
 from . import REPO
 from .labels import AMBIGUOUS, AMBIGUOUS_RATIO, ASSOC_M, dist_m
@@ -96,12 +102,19 @@ CLIENT_VERSION = "headless-model"
 #: `watch_officer.DEFAULTS["claude"]` names the CLI's aliases; the API takes model ids (the
 #: current generation, which the aliases resolve to)
 API_MODELS = {"sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}
-#: a cache read's list price, US dollars per million tokens; a cache write (5-minute TTL) is
-#: 1.25 times the input price
-CACHE_READ_PRICE = {"claude-opus-5-5": 0.20, "claude-sonnet-5-5": 0.20, "claude-haiku-5-5": 0.01}
+#: a cache read's list price, US dollars per million tokens (0.05 times input on Opus and Sonnet 5.5, 0.1 on Haiku 5.5); a
+#: cache write (5-minute TTL) is 1.25 times the input price
+CACHE_READ_PRICE = {"claude-opus-5-5": 0.20, "claude-sonnet-5-5": 0.10, "claude-haiku-5-5": 0.01}
 CACHE_WRITE_FACTOR = 1.25
+#: a model with a second rate card for long prompts: a call whose prompt (fresh input, cache
+#: writes and cache reads) is over the line is billed whole at the second card's (input, output,
+#: cache read) prices. Claude Haiku 5.5: $0.10 / $0.50 up to 100K prompt tokens, $0.50 / $2.50
+#: (cache reads $0.05) beyond.
+LONG_PROMPT = {"claude-haiku-5-5": (100_000, (0.50, 2.50, 0.05))}
 DEFAULT_MAX_TOKENS = 16000
 DEFAULT_MAX_USD = "3.00"
+#: the server-side refusal fallback's beta: the blind judge's option (v2/judge.py `--fallbacks`);
+#: the officer never sends it
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 #: the bridge's `anthropic/maxResultSizeChars` (mcp::tools::RESULT_MAX_CHARS): the CLI hands
 #: an answer up to this long to its model whole
@@ -148,9 +161,10 @@ class ModelConfig:
         max_usd                      MURMUR_EVAL_MAX_USD (per episode; default 3.00)
         batch_max_usd, ledger        MURMUR_EVAL_BATCH_MAX_USD (default 20.00), MURMUR_EVAL_LEDGER
                                      (the batch sets it: one ledger for all its workers)
-        fallbacks                    MURMUR_EVAL_WATCH_FALLBACKS (default off: a refusal is
-                                     recorded as one; on, the guard prices every call at the
-                                     dearest model, twice)
+        fallbacks                    always off: a refusal is recorded as one (its
+                                     `stop_details` category in the wake and the totals); on
+                                     is refused, since an evaluation of one model must never
+                                     be answered by another
         escalation                   options only (default on: the consult lane is used)
     """
 
@@ -189,6 +203,9 @@ class ModelConfig:
             if m not in PRICES:
                 raise ModelArmError(f"no list price for {m}: add its row to eval/model_agent.py PRICES first "
                                     "(the cost guard must price every model it lets through)")
+        if cfg.fallbacks:
+            raise ModelArmError("refusal fallbacks are off by design: an evaluation of one model must never be "
+                                "answered by another (a refusal is recorded as one)")
         return cfg
 
     def as_dict(self) -> dict[str, Any]:
@@ -201,11 +218,26 @@ class ModelConfig:
 # ---- the cost guard ------------------------------------------------------------------------
 
 
-def cache_read_price(model: str) -> float:
-    for name, p in CACHE_READ_PRICE.items():
+def _row(table: dict[str, Any], model: str) -> Any:
+    for name, v in table.items():
         if model == name or model.startswith(name + "-"):
-            return p
-    return price_of(model)[0]  # unknown: as fresh input, as eval/model_agent.py prices every read
+            return v
+    return None
+
+
+def cache_read_price(model: str) -> float:
+    p = _row(CACHE_READ_PRICE, model)
+    return p if p is not None else price_of(model)[0]  # unknown: as fresh input, as eval/model_agent.py prices every read
+
+
+def rates(model: str, prompt_tokens: float) -> tuple[float, float, float]:
+    """(input, output, cache read) list prices per million tokens of one call to `model` whose
+    prompt is `prompt_tokens` long: the second card past a long-prompt line (`LONG_PROMPT`)."""
+    long = _row(LONG_PROMPT, model)
+    if long is not None and prompt_tokens > long[0]:
+        return long[1]
+    pin, pout = price_of(model)
+    return pin, pout, cache_read_price(model)
 
 
 def usage_parts(usage: Any, model: str) -> list[tuple[str, int, int, int, int]]:
@@ -226,28 +258,28 @@ def usage_parts(usage: Any, model: str) -> list[tuple[str, int, int, int, int]]:
 class WatchGuard(CostGuard):
     """eval/model_agent.py's guard for an officer with two models: before a call, the worst
     case of that call at the model it goes to (its input at 2 characters a token, its whole
-    `max_tokens`, at the dearest list price twice with fallbacks on), refused if it would take
-    the episode past its cap or the batch past its ledger's; after it, what the call billed at
-    list prices, settled in the ledger. Unlike the storyline arm, which prices every cache read
-    as fresh input, this arm's conversation is cached on purpose, so cache reads and writes are
-    settled at their own list rates (`CACHE_READ_PRICE`, `CACHE_WRITE_FACTOR`); the worst-case
-    check before each call still counts the whole request as fresh input."""
+    `max_tokens`, at that model's list prices for a prompt that long: `rates`), refused if it
+    would take the episode past its cap or the batch past its ledger's; after it, what the call
+    billed at list prices, settled in the ledger. Unlike the storyline arm, which prices every
+    cache read as fresh input, this arm's conversation is cached on purpose, so cache reads and
+    writes are settled at their own list rates (`CACHE_READ_PRICE`, `CACHE_WRITE_FACTOR`, the
+    long-prompt card of `LONG_PROMPT`); the worst-case check before each call still counts the
+    whole request as fresh input."""
 
     fresh_input_tokens: int = 0
     cache_write_tokens: int = 0
     cache_read_tokens: int = 0
 
     def estimate_for(self, model: str, request_chars: int, max_tokens: int) -> float:
-        pin, pout = WORST_PRICE if self.fallbacks else price_of(model)
-        attempts = 2 if self.fallbacks else 1
-        return attempts * ((request_chars / 2.0) * pin + max_tokens * pout) / 1e6
+        pin, pout, _ = rates(model, request_chars / 2.0)
+        return ((request_chars / 2.0) * pin + max_tokens * pout) / 1e6
 
     def add(self, usage: Any, served_by: str | None = None) -> float:
         cost = 0.0
         models = []
         for m, fresh, write, read, out in usage_parts(usage, served_by or self.model):
-            pin, pout = price_of(m)
-            cost += (fresh * pin + write * pin * CACHE_WRITE_FACTOR + read * cache_read_price(m) + out * pout) / 1e6
+            pin, pout, pread = rates(m, fresh + write + read)
+            cost += (fresh * pin + write * pin * CACHE_WRITE_FACTOR + read * pread + out * pout) / 1e6
             self.input_tokens += fresh + write + read
             self.fresh_input_tokens += fresh
             self.cache_write_tokens += write
@@ -428,10 +460,7 @@ class ApiBackend:
         }
         t0 = time.perf_counter()
         try:
-            if self.cfg.fallbacks:
-                r = await self.client.beta.messages.create(betas=[FALLBACK_BETA], fallbacks="default", **kwargs)
-            else:
-                r = await self.client.messages.create(**kwargs)
+            r = await self.client.messages.create(**kwargs)
         except Exception:
             self.guard.failed()  # what it billed is unknown: its worst case counts as spent
             raise
@@ -513,22 +542,30 @@ class TurnRun:
             return
         self.calls.append(meta)
         content = _blocks(r)
-        self.conv.append({"role": "assistant", "content": content})
+        reason = meta["stop_reason"]
         texts = [str(_get(b, "text")) for b in content if _type(b) == "text" and _get(b, "text")]
-        if texts:
-            turn.text = "\n".join(texts).strip()
         uses = [b for b in content if _type(b) == "tool_use"]
         if self.b.on_said is not None:  # the model's own words, before any tool call runs
             thinking = [str(_get(b, "thinking")) for b in content if _type(b) == "thinking" and _get(b, "thinking")]
             self.b.on_said(texts + thinking, uses)
-        reason = meta["stop_reason"]
-        if reason == "refusal" or (reason == "max_tokens" and uses):
-            if uses:  # the history stays valid: every tool_use answered
-                self.conv.append({"role": "user", "content": [_not_run(b, f"the response ended ({reason})") for b in uses]})
-            self.stop = "refusal" if reason == "refusal" else "max_tokens"
+        if reason == "refusal":
+            # declined (a safety classifier's or the model's own): recorded with its category, and
+            # the answer, empty or cut off, left out of the conversation (an empty assistant turn
+            # would make every later request a 400) and of the record's text; nothing retries it
+            # on another model
             details = getattr(r, "stop_details", None)
-            if reason == "refusal":
-                turn.error = f"refusal: {_plain(details) if details is not None else 'no details'}"
+            meta["stop_details"] = _plain(details) if details is not None else None
+            self.stop = "refusal"
+            turn.error = f"refusal: {meta['stop_details'] if details is not None else 'no details'}"
+            return
+        if content:  # an empty answer is not sent back (the API refuses an empty assistant turn)
+            self.conv.append({"role": "assistant", "content": content})
+        if texts:
+            turn.text = "\n".join(texts).strip()
+        if reason == "max_tokens" and uses:
+            # the history stays valid: every tool_use answered
+            self.conv.append({"role": "user", "content": [_not_run(b, f"the response ended ({reason})") for b in uses]})
+            self.stop = "max_tokens"
             return
         if not uses:
             self.stop = "success" if reason in (None, "end_turn", "stop_sequence") else str(reason)
@@ -814,7 +851,7 @@ class WatchOfficer:
                                                 input_schema=d.get("inputSchema")) for d in defs])
         self.tool_names = {t["name"] for t in self.tools}
         ledger = Ledger(Path(cfg.ledger), cfg.batch_max_usd) if cfg.ledger else None
-        self.guard = WatchGuard(cfg.model, cfg.max_usd, ledger, fallbacks=cfg.fallbacks)
+        self.guard = WatchGuard(cfg.model, cfg.max_usd, ledger)
         self.client = client if client is not None else make_client()
         self.backend = ApiBackend(cfg, self.client, self.system, self.tools, self.guard, self.execute,
                                   self.budgets.max_turns_per_wake)
@@ -919,10 +956,13 @@ class WatchOfficer:
         return None
 
     def poll(self, bnow: float) -> None:
-        """Officer.poll_loop's body: the changes since the cursor and the nomination check."""
+        """Officer.poll_loop's body: the changes since the cursor, the nomination check and,
+        under decision rules 30, the standing of ours (get_inbox's review every
+        `review_every_s`: one presumed lost wakes the model)."""
         try:
             changes = self.run(self.poller.poll())
             changes += self.run(self.poller.nominations(now=bnow))
+            changes += self.run(self.poller.node_losses(now=bnow))
             self.poll_errors = 0
             if changes:
                 self.waker.add(changes, bnow)
@@ -960,7 +1000,10 @@ class WatchOfficer:
         except Exception:  # noqa: BLE001 (the update goes out without the list)
             mine = ["(could not read your intents: use get_intents with mine)"]
         notes = [] if escalate else list(self.consult_notes)
-        text = compose(wake, mine, self.budget_line(wake), notes, bnow, first=wake.reason == "start")
+        # what waits for a person alone (get_inbox's `blocking`), told as the live driver tells it;
+        # the headless simulator does not compute it, so its updates go out without it
+        text = compose(wake, mine, self.budget_line(wake), notes, bnow, first=wake.reason == "start",
+                       blocking=self.blocking())
         if escalate:
             text = WO.CONSULT_HEAD.format(why="; ".join(wake.escalate_why), agent=AGENT) + text
         model = self.cfg.strong_model if escalate else self.cfg.model
@@ -1074,6 +1117,9 @@ class WatchOfficer:
         the lane off from the start and gives the changes back at the end, as live."""
         bnow, bend = self.bnow(t0), self.bnow(t1)
         rec = self.wake_record(wake, t0, turn, calls, escalate, lane, model, effort, text, clock, o)
+        held = [b["id"] for b in self.blocking()]
+        if held:  # what still waits for a person alone as the turn ends (the live driver's turn line)
+            rec["blocking"] = held
         ids, served = rec["proposed"], rec["served"]
         if turn.stop == "leakage":
             # an input the model would have received carries an evaluation token: never sent
@@ -1128,6 +1174,14 @@ class WatchOfficer:
             if not is_error and isinstance(body, dict):
                 out[key] = list(body.get(field_) or [])
         return out
+
+    def blocking(self) -> list[dict[str, Any]]:
+        """Officer.blocking: the review items that alone hold up a nomination now (get_inbox's
+        `blocking`), or none when the read fails."""
+        try:
+            return self.run(self.poller.blocking())
+        except Exception:  # noqa: BLE001 (the update goes out without them)
+            return []
 
     def execute(self, name: str, args: Any) -> tuple[str, bool]:
         """One tool call of the model's, at the current instant (on the charged clock, its
@@ -1228,6 +1282,14 @@ class WatchOfficer:
         }
         if self.latency is not None:  # charged only: the simulated time the turns took
             out["charge_s"] = round(self.charge_s, 6)
+        cats: dict[str, int] = {}
+        for w in self.wakes:
+            for c in w["api_calls"]:
+                if c.get("stop_reason") == "refusal":
+                    k = str((c.get("stop_details") or {}).get("category") or "unspecified")
+                    cats[k] = cats.get(k, 0) + 1
+        if cats:  # only when the model declined: each refusal's `stop_details` category
+            out["refusal_categories"] = dict(sorted(cats.items()))
         return out
 
     def describe(self) -> dict[str, Any]:

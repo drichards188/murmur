@@ -423,10 +423,15 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: after it), our vehicles' truth tracks with them, the model's reads and token counts, and each
 #: decision naming HUNTER 1 or a Puma carries its `lost_link` fact. The operator decisions, the
 #: proposals and every intent's transitions are the same.
+#: The two model digests re-taken for the officer's v3 arm (bd murmur-ynsw): Claude Sonnet 5.5's
+#: cache reads are priced at their list $0.10 per million tokens (they were $0.20); with that
+#: price put back this code gave the digests before (3d971c0a..., de1fb6c3...) byte for byte, so
+#: the only change is the model's dollars (each call's, each wake's, the totals and the guard's);
+#: the officer's new reads (rules 30's review, the `blocking` items) moved nothing.
 PAUSED = {
-    "model harbor-watch s1": "3d971c0a862e57dda455ff5a0da377dc69fbcf151977a8ad8a5e7c78e9dc892e",
+    "model harbor-watch s1": "b4afb70d63b5acaa60be93333c6a8bb4e44f116cea6c54824e3ae5aa522089f1",
     "playbook v2 fast-unknown 1000": "2e88861d778d0e57cdca0abea48a01c77e33c07b26ae96a5f143f0c1eb412491",
-    "model v2 fast-unknown 1000": "de1fb6c3da9d6fbdc9ca94c01f1c3341834f6b0b16d4cd4f59732a02f83ff165",
+    "model v2 fast-unknown 1000": "a8cf28390f3e3821ee927d38dbe22b512bbc0dcde58e3ca4a5b09c2f0cf0d2c0",
 }
 
 

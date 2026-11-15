@@ -6,8 +6,9 @@ Anthropic client (fake_anthropic.py): no network, no key, nothing billed.
   to `isr.investigate` and judged by metrics.py as a playbook look is;
 - the simulated clock does not move across a wake (and a slow wake's wall time is recorded);
 - a model that does nothing; a wake the cost guard refuses (`cost_guard`, `budget_stopped`,
-  nothing sent), a spend past the cap mid-wake, the batch ledger shared, the aggregate keeping
-  budget-stopped episodes out of the metrics;
+  nothing sent), a spend past the cap mid-wake, the batch ledger shared, the list prices
+  (Haiku 5.5's long-prompt card), the aggregate keeping budget-stopped episodes out of the
+  metrics; a refusal recorded with its category and left out of the conversation;
 - the mapping of intents to play categories; the configuration and the permission it needs.
 """
 
@@ -19,6 +20,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -209,6 +211,39 @@ def test_a_transient_api_error_backs_the_lane_off_and_the_update_is_told_again()
     assert any(ln["kind"] == "backoff" and ln["wait_s"] == 30.0 for ln in rec["agent_log"])
 
 
+def test_a_refusal_is_recorded_with_its_category_and_left_out_of_the_conversation():
+    """A decline before any output (empty content): its category in the call, the wake and the
+    totals; no other model asked; the empty answer never sent back (an empty assistant turn would
+    make every later request a 400), so the watch goes on."""
+    calls = {"n": 0}
+    empty_turns: list[int] = []
+    look = LookScript()
+
+    def script(req: dict[str, Any]):
+        calls["n"] += 1
+        empty_turns.extend(i for i, m in enumerate(req["messages"]) if not m.get("content"))
+        return ([], "refusal") if calls["n"] == 1 else look(req)
+
+    client = FakeAnthropic(script)
+    answer = client.answer
+
+    def with_details(req: dict[str, Any]):
+        r = answer(req)
+        if r.stop_reason == "refusal":
+            r.stop_details = SimpleNamespace(type="refusal", category="cyber", explanation=None)
+        return r
+
+    client.answer = with_details  # type: ignore[method-assign]
+    rec = episode(client)
+    w0 = rec["model"]["wakes"][0]
+    assert w0["stop"] == "refusal" and w0["text"] == "" and "cyber" in w0["error"]
+    assert w0["api_calls"][0]["stop_details"] == {"type": "refusal", "category": "cyber", "explanation": None}
+    t = rec["model"]["totals"]
+    assert t["refusals"] == 1 and t["refusal_categories"] == {"cyber": 1} and t["proposals"] == 1
+    assert not t["model_failed"] and empty_turns == []
+    assert {r["model"] for r in client.requests} <= {API_MODELS["sonnet"], API_MODELS["opus"]}
+
+
 def test_a_request_the_api_refuses_as_such_stops_the_officer():
     def script(req: dict[str, Any]):
         raise BadRequest("invalid_request_error: bad parameter")
@@ -231,12 +266,19 @@ def test_the_batch_ledger_caps_every_worker(tmp_path: Path):
         b.check(0.3)
     # a settles at what it billed: 10,000 fresh, 100,000 cache read, 1,000 output tokens
     usd = a.add({"input_tokens": 10_000, "cache_read_input_tokens": 100_000, "output_tokens": 1_000})
-    assert usd == pytest.approx((10_000 * 2.0 + 100_000 * 0.20 + 1_000 * 10.0) / 1e6)
+    assert usd == pytest.approx((10_000 * 2.0 + 100_000 * 0.10 + 1_000 * 10.0) / 1e6)
     state = json.loads(path.read_text())
     assert state["usd"] == pytest.approx(usd) and state["reserved"] == 0
     c = WatchGuard("claude-opus-5-5", 5.0, Ledger(path, 0.5))
     c.check(0.3)  # the batch can afford it now
     assert c.estimate_for("claude-opus-5-5", 20_000, 1_000) == pytest.approx((10_000 * 4.0 + 1_000 * 20.0) / 1e6)
+    # Claude Haiku 5.5's second rate card: a prompt over 100K tokens is billed whole at $0.50 / $2.50
+    h = WatchGuard("claude-haiku-5-5", 5.0)
+    assert h.add({"input_tokens": 1_000, "cache_read_input_tokens": 99_000, "output_tokens": 1_000}) == pytest.approx(
+        (1_000 * 0.10 + 99_000 * 0.01 + 1_000 * 0.50) / 1e6)
+    assert h.add({"input_tokens": 1_000, "cache_read_input_tokens": 100_000, "output_tokens": 1_000}) == pytest.approx(
+        (1_000 * 0.50 + 100_000 * 0.05 + 1_000 * 2.50) / 1e6)
+    assert h.estimate_for("claude-haiku-5-5", 400_000, 1_000) == pytest.approx((200_000 * 0.50 + 1_000 * 2.50) / 1e6)
 
 
 def _result(name: str, seed: int, agent: str, covered: bool, stopped: bool = False) -> dict[str, Any]:
@@ -362,6 +404,8 @@ def test_the_models_are_the_watch_officers_and_can_be_overridden(monkeypatch):
     assert ModelConfig.resolve({"effort": "high"}).effort == "high"  # the options beat the environment
     with pytest.raises(ModelArmError, match="no list price"):
         ModelConfig.resolve({"model": "claude-unknown-9"})
+    with pytest.raises(ModelArmError, match="never be answered by another"):  # no refusal fallback
+        ModelConfig.resolve({"fallbacks": True})
 
 
 def test_the_model_agent_needs_permission_to_call_the_api(monkeypatch):

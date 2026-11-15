@@ -474,7 +474,7 @@ def main(argv: list[str] | None = None) -> int:
                          "once per agent")
     ap.add_argument("--model-config", default=None,
                     help="model agent overrides as JSON (officer.ModelConfig: model, effort, strong_model, "
-                         "strong_effort, max_tokens, max_usd, fallbacks, escalation)")
+                         "strong_effort, max_tokens, max_usd, escalation; never a refusal fallback)")
     ap.add_argument("--seeds", nargs="+", default=["1-10"])
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) // 2))
     ap.add_argument("--operator", default=None, help="operator model as JSON (operator.py); default the situation's")
