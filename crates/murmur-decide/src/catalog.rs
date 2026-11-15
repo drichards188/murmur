@@ -524,6 +524,14 @@ impl SensorFact {
             None => Some(self.range_m),
         }
     }
+
+    /// Rules 31: how far this sensor reaches a contact of size class `class`, m, when its facts
+    /// carry reaches by class (`Some(None)`: it does not reach one of that class at all); none
+    /// when they carry none (the legacy model's facts, a sensor the catalog derives none for, a
+    /// log of older rules): the caller reads [`Self::reach_for`] the class's domain then.
+    pub fn reach_for_class(&self, class: SizeClass) -> Option<Option<f64>> {
+        self.reach_m.as_ref()?.size_class.as_ref().map(|c| c.get(class))
+    }
 }
 
 /// A sensor's reach by the domain of the contact, m (none: it does not reach one there).
@@ -538,6 +546,11 @@ pub struct SensorReach {
     pub surface: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subsurface: Option<f64>,
+    /// Rules 31 ([`crate::rules::IDENTIFY_CLASS_SINCE`]): an EO/IR's reach by the size class of
+    /// the contact ([`ClassReach`]), which an identify order's plan reads; absent for every other
+    /// sensor, and dropped from the facts the engine logs under older rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_class: Option<ClassReach>,
 }
 
 impl SensorReach {
@@ -547,6 +560,139 @@ impl SensorReach {
             Domain::Ground => self.ground,
             Domain::Surface => self.surface,
             Domain::Subsurface => self.subsurface,
+        }
+    }
+}
+
+/// Rules 31: the size class of a contact as the physical model's detections name it (the bridge's
+/// `tracks::physical::signature::size_class`: a contact's domain and whether its critical
+/// dimension or radar cross-section passes the class's line).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SizeClass {
+    SmallAir,
+    LargeAir,
+    SmallSurface,
+    LargeSurface,
+    SmallGround,
+    LargeGround,
+    Subsurface,
+}
+
+impl SizeClass {
+    pub const ALL: [SizeClass; 7] = [
+        SizeClass::SmallAir,
+        SizeClass::LargeAir,
+        SizeClass::SmallSurface,
+        SizeClass::LargeSurface,
+        SizeClass::SmallGround,
+        SizeClass::LargeGround,
+        SizeClass::Subsurface,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SizeClass::SmallAir => "small_air",
+            SizeClass::LargeAir => "large_air",
+            SizeClass::SmallSurface => "small_surface",
+            SizeClass::LargeSurface => "large_surface",
+            SizeClass::SmallGround => "small_ground",
+            SizeClass::LargeGround => "large_ground",
+            SizeClass::Subsurface => "subsurface",
+        }
+    }
+
+    pub fn domain(self) -> Domain {
+        match self {
+            SizeClass::SmallAir | SizeClass::LargeAir => Domain::Air,
+            SizeClass::SmallSurface | SizeClass::LargeSurface => Domain::Surface,
+            SizeClass::SmallGround | SizeClass::LargeGround => Domain::Ground,
+            SizeClass::Subsurface => Domain::Subsurface,
+        }
+    }
+
+    /// The size class a size class's own name says.
+    pub fn named(label: &str) -> Option<SizeClass> {
+        SizeClass::ALL.into_iter().find(|c| c.as_str() == label)
+    }
+
+    /// The size class a label of the picture's puts a contact in: a size class's own name, a
+    /// family's (the bridge's `tracks::sensing::family`) or a kind's (the class of its signature
+    /// in the physical model's table, `signature::size_class_of`); none for a label that names no
+    /// size (`unknown`, ESM's `vessel`) or one this table does not know. A test in the bridge
+    /// holds it to `size_class_of` for every kind, family and class the model knows. ESM names a
+    /// contact's domain with `aircraft`, `ground_vehicle` and `submerged` too, the families' words:
+    /// read here as the family; [`crate::identify::shown_class`] tells them apart by the level.
+    pub fn of_label(label: &str) -> Option<SizeClass> {
+        use SizeClass::*;
+        if let Some(c) = SizeClass::named(label) {
+            return Some(c);
+        }
+        Some(match label {
+            // families
+            "large_vessel" => LargeSurface,
+            "small_craft" => SmallSurface,
+            "aircraft" => LargeAir,
+            "small_uas" => SmallAir,
+            "ground_vehicle" => LargeGround,
+            "person" => SmallGround,
+            "submerged" => Subsurface,
+            // kinds
+            "cargo_ship" | "tanker" | "ferry" | "patrol_boat" | "fishing_vessel" => LargeSurface,
+            "sailboat" | "small_fast_boat" => SmallSurface,
+            "light_aircraft" | "helicopter" => LargeAir,
+            "unknown_uas" | "small_drone" => SmallAir,
+            "vehicle" | "truck" => LargeGround,
+            "submarine" | "uuv" | "periscope" | "diver" => Subsurface,
+            _ => return None,
+        })
+    }
+}
+
+/// Rules 31 ([`crate::rules::IDENTIFY_CLASS_SINCE`], bd murmur-8vj8): an EO/IR's reach by the size
+/// class of the contact, m (none: it does not reach one of that class), generated as the domain
+/// reaches are (the catalog's `physical_reach_m`, its `size_class`; docs/SENSING.md, "The decision
+/// engine's reaches") against each class's reference contact: its smallest member, by critical
+/// dimension, among the kinds the physical model knows, at its domain's reference height (the
+/// bridge's generator, `tracks::tests::reaches`, whose test holds an identify order's default
+/// standoff from it inside the camera's identification reach of every member of the class):
+///
+/// - `small_air`: a small drone (0.35 m across, as an unknown UAS);
+/// - `large_air`: a light aircraft (4 m; a helicopter 5 m);
+/// - `small_surface`: a small fast boat (3.5 m; a sailboat 5 m);
+/// - `large_surface`: a patrol boat (8 m; a fishing vessel 11 m, a ferry 27 m, a cargo ship or
+///   tanker 84 m);
+/// - `small_ground`: a person (0.75 m);
+/// - `large_ground`: a vehicle (2.3 m; a truck 3 m).
+///
+/// No `subsurface`: no camera sees under water (`engage::sees`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClassReach {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub small_air: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub large_air: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub small_surface: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub large_surface: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub small_ground: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub large_ground: Option<f64>,
+}
+
+impl ClassReach {
+    pub fn get(&self, class: SizeClass) -> Option<f64> {
+        match class {
+            SizeClass::SmallAir => self.small_air,
+            SizeClass::LargeAir => self.large_air,
+            SizeClass::SmallSurface => self.small_surface,
+            SizeClass::LargeSurface => self.large_surface,
+            SizeClass::SmallGround => self.small_ground,
+            SizeClass::LargeGround => self.large_ground,
+            SizeClass::Subsurface => None,
         }
     }
 }
@@ -634,6 +780,24 @@ impl Catalog {
                             "[{id}] physical_reach_m.{kind}.{}: {m} m (a reach is above 0; leave out a domain it does not reach)",
                             format!("{d:?}").to_lowercase()
                         )));
+                    }
+                }
+                // rules 31: a camera's reaches by size class, the same way
+                if let Some(c) = &reach.size_class {
+                    if kind != "eo_ir" {
+                        return Err(CatalogError::Invalid(format!(
+                            "[{id}] physical_reach_m.{kind}.size_class: only an eo_ir carries reaches by size class"
+                        )));
+                    }
+                    for class in SizeClass::ALL {
+                        if let Some(m) = c.get(class)
+                            && !(m.is_finite() && m > 0.0)
+                        {
+                            return Err(CatalogError::Invalid(format!(
+                                "[{id}] physical_reach_m.{kind}.size_class.{}: {m} m (a reach is above 0; leave out a class it does not reach)",
+                                class.as_str()
+                            )));
+                        }
                     }
                 }
             }
@@ -807,6 +971,71 @@ physical_reach_m = { radar = { air = 7530, surface = 9770 }, sonar = {} }
             );
             let e = Catalog::from_toml(&text).unwrap_err().to_string();
             assert!(e.contains(why), "{bad}: {e}");
+        }
+    }
+
+    /// Rules 31: a camera's reaches by size class are read with its domain reaches, logged as
+    /// written, and refused for another sensor, at 0 or for a misspelt class; a class left out is
+    /// one it does not reach, and facts without them say so.
+    #[test]
+    fn a_cameras_reaches_by_size_class() {
+        let text = r#"
+[uav]
+domain = "air"
+sim = "standin"
+behavior = "plane"
+sensors = [{ type = "eo_ir", range_m = 4000 }, { type = "radar", range_m = 9000 }]
+physical_reach_m = { eo_ir = { air = 16210, surface = 14470, size_class = { small_air = 9160, large_surface = 17160 } }, radar = { air = 7000 } }
+"#;
+        let c = Catalog::from_toml(text).unwrap().reaching(Reaches::Physical);
+        let s = &c.get("uav").unwrap().sensors;
+        assert_eq!(s[0].reach_for_class(SizeClass::SmallAir), Some(Some(9_160.0)));
+        assert_eq!(s[0].reach_for_class(SizeClass::LargeAir), Some(None));
+        assert_eq!(s[0].reach_for(Domain::Air), Some(16_210.0));
+        assert_eq!(s[1].reach_for_class(SizeClass::SmallAir), None);
+        let json = serde_json::to_string(&s[0]).unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"eo_ir","range_m":4000.0,"reach_m":{"air":16210.0,"surface":14470.0,"size_class":{"small_air":9160.0,"large_surface":17160.0}}}"#
+        );
+        assert_eq!(serde_json::from_str::<SensorFact>(&json).unwrap(), s[0]);
+        // the legacy facts carry none
+        let legacy = Catalog::from_toml(text).unwrap();
+        assert_eq!(legacy.get("uav").unwrap().sensors[0].reach_for_class(SizeClass::SmallAir), None);
+        for (bad, why) in [
+            ("small_air = 0", "a reach is above 0"),
+            ("small_aer = 10", "small_aer"),
+        ] {
+            let e = Catalog::from_toml(&text.replace("small_air = 9160", bad)).unwrap_err().to_string();
+            assert!(e.contains(why), "{bad}: {e}");
+        }
+        let radar = text.replace("radar = { air = 7000 }", "radar = { air = 7000, size_class = { small_air = 10 } }");
+        assert!(Catalog::from_toml(&radar).unwrap_err().to_string().contains("only an eo_ir"));
+    }
+
+    /// Rules 31: a label's size class: a class's name, a family's, a kind's; none for one that
+    /// names no size.
+    #[test]
+    fn a_labels_size_class() {
+        for (label, want) in [
+            ("small_air", Some(SizeClass::SmallAir)),
+            ("small_uas", Some(SizeClass::SmallAir)),
+            ("small_drone", Some(SizeClass::SmallAir)),
+            ("unknown_uas", Some(SizeClass::SmallAir)),
+            ("light_aircraft", Some(SizeClass::LargeAir)),
+            ("small_craft", Some(SizeClass::SmallSurface)),
+            ("patrol_boat", Some(SizeClass::LargeSurface)),
+            ("person", Some(SizeClass::SmallGround)),
+            ("truck", Some(SizeClass::LargeGround)),
+            ("diver", Some(SizeClass::Subsurface)),
+            ("vessel", None),
+            ("unknown", None),
+        ] {
+            assert_eq!(SizeClass::of_label(label), want, "{label}");
+        }
+        for c in SizeClass::ALL {
+            assert_eq!(SizeClass::named(c.as_str()), Some(c));
+            assert_eq!(serde_json::to_string(&c).unwrap(), format!("\"{}\"", c.as_str()));
         }
     }
 }

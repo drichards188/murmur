@@ -584,6 +584,20 @@ meaningful.
   `hide_loss_revoked`, `redate_loss`; runner actions `struck`, `confirm_lost`, `revoke_lost`, keys
   `expect_presumed`, `expect_lost`, `expect_revoked`. Headless, the bridge reads the stand-ins'
   failsafe parameters too: that traffic moved the golden (docs/HEADLESS.md 17.2).
+- Rules 31 (`IDENTIFY_CLASS_SINCE`, bd murmur-8vj8): an identify order's standoff is sized by the
+  camera's reach of the track's shown size class (`identify::shown_class`: a detection's size
+  class, a recognition's family, an identification's kind; ESM's `aircraft`, `vessel`,
+  `ground_vehicle`, `submerged` at detection say no size), else of its domain as before. The
+  reaches by class are an EO/IR's `size_class` in the generated `physical_reach_m` (each class's
+  smallest member: small drone, light aircraft, small fast boat, patrol boat, person, vehicle;
+  `write_physical_reaches` writes them, `tracks::tests::reaches` holds them and the default
+  standoff inside every member's identification reach); the legacy facts carry none, so v1/v2
+  and the golden decide as before. A Puma's orbit on a `small_air` track is 788 m from 150 m (was
+  1,411), the MQ-9B's from 3,000 m its tightest, 1,891 m (was 8,947); from 7,600 m it is refused.
+  The engine drops the reaches by class from logs of older rules. A label the decision layer
+  reads (`SizeClass::of_label`) must match `signature::size_class_of`: a new kind or family goes in
+  both (a bridge test checks every kind the contact catalog shows). Scenarios 144-145 (the
+  scenario key `reaches = "physical"`, the `expect` step's `identify`); `tests/rules31.rs`.
 - A rules version built in stages before it is the default (as rules 30 was, docs/NODE-LOSS.md
   section 8): `RULES_NEWEST` (rules.rs) one ahead of `RULES_VERSION` while it is built; a run
   decides under it only when asked (a scenario's `min_rules`, `murmur-scenarios --rules N`, a

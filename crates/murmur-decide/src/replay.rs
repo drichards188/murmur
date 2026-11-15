@@ -2280,6 +2280,8 @@ const RULES_MARKERS: &[(u32, &str, &str)] = &[
     (rules::NODE_LOSS_SINCE, "\"type\":\"node.lost\"", "one of ours confirmed lost"),
     (rules::NODE_LOSS_SINCE, "\"type\":\"node.loss_revoked\"", "a loss revoked"),
     (rules::NODE_LOSS_SINCE, "\"closed_by\":{\"kind\":\"lost\"", "owed values closed by a loss"),
+    (rules::IDENTIFY_CLASS_SINCE, "\"size_class\":{", "a camera's reach by size class (a decision's fact)"),
+    (rules::IDENTIFY_CLASS_SINCE, "\"size_class\":\"", "the size class an identify order's standoff was sized for"),
 ];
 
 /// The first `run.started`'s claims, and everything in the log that contradicts them.

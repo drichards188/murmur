@@ -276,8 +276,10 @@ pub enum UnknownEndurance {
 /// (`intent.handed_over`) and re-checks before it goes. Version 30 ([`NODE_LOSS_SINCE`]): one of
 /// ours that stops reporting is silent, presumed lost on evidence, or lost once an operator with
 /// engagement authority confirms it; a silent vehicle counts in the keep-outs where its orders and
-/// its own lost-link failsafe could take it, and a lost one in none.
-pub const RULES_VERSION: u32 = NODE_LOSS_SINCE;
+/// its own lost-link failsafe could take it, and a lost one in none. Version 31
+/// ([`IDENTIFY_CLASS_SINCE`]): an identify order's standoff is sized by the camera's reach of a
+/// contact of the size class the picture shows the track as, not of its domain alone.
+pub const RULES_VERSION: u32 = IDENTIFY_CLASS_SINCE;
 
 /// The newest decision rules this build can decide under and replay: [`RULES_VERSION`] itself,
 /// except on a branch that builds the next version in stages before making it the default
@@ -288,6 +290,20 @@ pub const RULES_VERSION: u32 = NODE_LOSS_SINCE;
 /// to this one and flags one newer. The branch's last stage sets [`RULES_VERSION`] to its version,
 /// and this to [`RULES_VERSION`] again.
 pub const RULES_NEWEST: u32 = RULES_VERSION;
+
+/// The rules version from which an identify order's standoff is sized by what the picture shows of
+/// the track (bd murmur-8vj8, approved by the owner on 2026-11-15; eval/SCORING-V3.md 17.11, cause 1).
+/// Up to rules 30 the plan took the camera's reach of a contact of the track's domain, the catalog's
+/// reference contact of no known kind (an aircraft 3 m across), so a track the picture shows as a
+/// small drone (`small_air`, 0.35 m) was given an orbit the camera could not identify it from: a
+/// Puma's 1.4 km, the MQ-9B's 8.9 km. From this version the plan reads the camera's reach of the
+/// track's size class (its shown identity: a detection's size class, a recognition's family, an
+/// identification's kind; [`crate::identify::shown_class`]) where the facts carry one (the
+/// catalog's generated `physical_reach_m` `size_class`, each class's smallest member:
+/// [`crate::catalog::ClassReach`]), else its domain's as before. Its new input is that reach on
+/// each EO/IR's facts, which the engine drops before logging under older rules. Every gate of that
+/// change reads this constant, never a literal.
+pub const IDENTIFY_CLASS_SINCE: u32 = 31;
 
 /// The rules version from which one of ours that stops reporting is silent, presumed lost, or lost
 /// (bd murmur-zb1d, the owner's question of 2026-11-06 and its spec, docs/NODE-LOSS.md, approved on
@@ -844,6 +860,12 @@ impl RulesConfig {
     /// or, confirmed by a person, lost.
     pub fn node_loss(&self) -> bool {
         self.rules_version >= NODE_LOSS_SINCE
+    }
+
+    /// Rules 31 ([`IDENTIFY_CLASS_SINCE`]): an identify order's standoff is sized by the camera's
+    /// reach of the track's shown size class.
+    pub fn identify_by_class(&self) -> bool {
+        self.rules_version >= IDENTIFY_CLASS_SINCE
     }
 
     /// `[rules.engage]`, or its defaults.

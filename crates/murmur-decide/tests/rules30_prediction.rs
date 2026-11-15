@@ -200,7 +200,8 @@ fn scenarios_137_138_143_end_as_designed_under_rules_30() {
         "138-silent-patrollers-way-home-crosses-the-keep-out.toml",
         "143-silent-with-nothing-known-at-top-speed.toml",
     ] {
-        let r = scenario(f, None);
+        // rules 30 named: the default moved on (rules 31 sizes identify orders, which these have none of)
+        let r = scenario(f, Some(NODE_LOSS_SINCE));
         assert!(r.ok && r.replay_ok, "{f}: {:?} {:?}", r.failures, r.replay_mismatches);
         assert!(r.log.lines().next().unwrap().contains(&format!("\"rules_version\":{NODE_LOSS_SINCE},")), "{f}");
     }

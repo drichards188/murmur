@@ -51,8 +51,11 @@ fn world_at(t: Time, silent: &[&str]) -> WorldSnapshot {
     w
 }
 
+/// Replayed under the rules it was written under (rules 30, as these engines decide; the default
+/// moved on to rules 31, which changes nothing here).
 fn replayed(text: &str) -> replay::ReplayReport {
-    replay::replay_str(text).unwrap()
+    let opts = replay::ReplayOptions { rules: replay::RulesAccepted::AtLeast(NODE_LOSS_SINCE), ..replay::ReplayOptions::default() };
+    replay::replay_str_with(text, &opts).unwrap()
 }
 
 fn whats(r: &replay::ReplayReport) -> Vec<String> {
@@ -261,6 +264,7 @@ fn owed_values_close_with_the_loss_and_come_back_with_its_revocation() {
     assert!(e.restore_owed_to(&uid("boat-1")), "owed back again");
     let opts = replay::ReplayOptions {
         trust_resumed: true,
+        rules: replay::RulesAccepted::AtLeast(NODE_LOSS_SINCE),
         ..replay::ReplayOptions::default()
     };
     let r = replay::replay_str_with(&log.text(), &opts).unwrap();
@@ -499,6 +503,7 @@ fn a_spent_platform_that_goes_silent_is_presumed_lost_not_lost() {
     assert_eq!(e.spent_platforms().len(), 1);
     let opts = replay::ReplayOptions {
         trust_resumed: true,
+        rules: replay::RulesAccepted::AtLeast(NODE_LOSS_SINCE),
         ..replay::ReplayOptions::default()
     };
     let r = replay::replay_str_with(&log.text(), &opts).unwrap();

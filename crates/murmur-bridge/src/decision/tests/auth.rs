@@ -1260,7 +1260,9 @@ async fn a_loss_is_confirmed_with_a_step_up_asked_for_last() {
     // any operator revokes it, saying why, with no step-up
     let (s, v) = h.post(&op1, "/api/review/nodes/4/revoke", json!({ "note": "it was only out of range" })).await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    let r = replay::replay_str(&h.log()).expect("parses");
+    // under the rules it decided under (rules 30)
+    let opts = replay::ReplayOptions { rules: replay::RulesAccepted::AtLeast(murmur_decide::NODE_LOSS_SINCE), ..replay::ReplayOptions::default() };
+    let r = replay::replay_str_with(&h.log(), &opts).expect("parses");
     assert!(r.ok(), "{:?}", r.mismatches);
     assert!(r.authenticated());
     h.no_secret_logged(&[&op1, &op2]);

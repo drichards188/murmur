@@ -192,6 +192,27 @@ write_physical_reaches -- --ignored --nocapture` writes the line after each plat
 fails while a committed value is not the generator's (after a change to the physical model or to
 a sensor's figures that moves one).
 
+**By size class (rules 31, bd murmur-8vj8).** An EO/IR's line also carries `size_class`: the same
+reach against each size class a detection names (`signature::size_class`) that a camera sees,
+its reference contact the class's smallest member by critical dimension among the kinds the
+model knows, at its domain's reference height: a small drone (`small_air`, 0.35 m), a light
+aircraft (`large_air`, 4 m), a small fast boat (`small_surface`, 3.5 m), a patrol boat
+(`large_surface`, 8 m), a person (`small_ground`, 0.75 m), a vehicle (`large_ground`, 2.3 m). One
+place reads it: an identify order's plan, for a track the picture shows as of that class
+(`identify::shown_class`), its standoff 70 % of an eighth of it (`IDENTIFY_PX_SHARE`,
+`STANDOFF_SHARE`). The eighth is the pixels' share (1.5 to detect, 12 to identify), right where
+the pixels alone limit both: a small drone, which every camera detects only as far as its pixels
+allow, is identified in the model out to 0.11 to 0.16 of the detection reach, so 70 % of an
+eighth (0.0875) is inside it; for the other classes the share runs from under a tenth (the
+logistics UGV's camera against a light aircraft overhead) to 0.82 (a Puma's against a patrol
+boat, whose detection the air limits first).
+`tracks::tests::reaches::the_default_standoff_identifies_every_member_of_the_class` holds the
+default standoff inside the camera's identification reach of every member of each class (its
+chance at least one half on the reference day), or the plan's height check refusing it. A
+Puma detects a small drone out to 9.16 km (identifies one at about 1.15 km), an X10 4.93 km, an
+FVR-90 10.7 km, the airship 13.0 km, the MQ-9B 32.5 km from 7,600 m (about 4.07 km slant to
+identify: never from that height, within its tightest orbit from 3,000 m).
+
 | Sensor | `range_m` | Air | Ground | Surface | Subsurface | Small fast boat, small drone (80 m) |
 |---|---|---|---|---|---|---|
 | RQ-4 radar (18,000 m) | 200 | 9.32 | 60.7 | none (not seen holding still) | | 0, 0 |

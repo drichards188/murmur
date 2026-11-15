@@ -15,11 +15,18 @@
 //! (and prints the table SENSING.md quotes), and `physical_reaches_are_the_generators` holds the
 //! committed catalog to this generator: a change to the physical model or to a sensor's figures
 //! that moves a reach fails it until the line above is run again and the catalog committed.
+//!
+//! Rules 31 (bd murmur-8vj8): each EO/IR's line also carries its reach by size class
+//! (`size_class`), the same way against each class's reference contact ([`CLASS_KINDS`], its
+//! smallest member), which an identify order's plan reads; and
+//! `the_default_standoff_identifies_every_member_of_the_class` holds that plan's default standoff
+//! from it inside the camera's identification reach of every kind the class holds.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use murmur_decide::Domain as DDomain;
+use murmur_decide::SizeClass;
 
 use super::super::physical::predict::{self, Ask};
 use super::super::physical::radar;
@@ -35,6 +42,33 @@ const KEY: &str = "physical_reach_m";
 // The reference contact (its kind and each domain's height) and the reference conditions are the
 // reach display's (`tracks::reach`, bd murmur-4tq), so the two answer for the same contact.
 use super::super::reach::{DOMAINS, REFERENCE_KIND, domain_name as name, reference_conditions as conditions};
+
+/// Rules 31 (bd murmur-8vj8): each size class a detection names (`signature::size_class`) that a
+/// camera sees (`murmur_decide::engage::sees`: none under water), the reference contact an EO/IR's
+/// reach by class is derived for, and its height: the class's smallest member among the kinds
+/// the physical model knows (`signature::kind_signature`, by critical dimension), so that a reach
+/// by class is a camera's for the hardest of the class to make out, at the height `DOMAINS`
+/// gives the domain. The members (`signature::size_class_of`): small drone and unknown UAS (0.35
+/// m); light aircraft (4 m) and helicopter (5 m); small fast boat (3.5 m) and sailboat (5 m);
+/// patrol boat (8 m), fishing vessel (11 m), ferry (27 m), cargo ship and tanker (84 m); person
+/// (0.75 m); vehicle (2.3 m) and truck (3 m). The headless planner's honest ceiling reads a size
+/// class as the same kinds (eval/headless/v3/planner.py `SIZE_KIND`) but for `large_surface`, a
+/// cargo ship there. `the_default_standoff_identifies_every_member_of_the_class` holds the
+/// identify order's default standoff from each inside the camera's identification reach of every
+/// member.
+const CLASS_KINDS: [(SizeClass, Domain, &str); 6] = [
+    (SizeClass::SmallAir, Domain::Air, "small_drone"),
+    (SizeClass::LargeAir, Domain::Air, "light_aircraft"),
+    (SizeClass::SmallSurface, Domain::Surface, "small_fast_boat"),
+    (SizeClass::LargeSurface, Domain::Surface, "patrol_boat"),
+    (SizeClass::SmallGround, Domain::Ground, "person"),
+    (SizeClass::LargeGround, Domain::Ground, "vehicle"),
+];
+
+/// The reference height of a contact in `domain`, m (`DOMAINS`).
+fn reference_height_m(domain: Domain) -> f64 {
+    DOMAINS.iter().find(|(d, _, _)| *d == domain).map_or(0.0, |(_, _, h)| *h)
+}
 
 /// The scenario clock the predictions are asked at (the sun is the conditions' own).
 const T: f64 = 1_781_467_800.0;
@@ -189,10 +223,23 @@ fn inner_edge(start: f64, p: impl Fn(f64) -> f64) -> f64 {
     1.0e6
 }
 
+/// One sensor's reaches: its type, its reach per domain and, an EO/IR's (rules 31), per size
+/// class, m rounded to 10 (a domain or class it does not reach, under 5 m, left out).
+#[derive(Debug)]
+struct SensorReaches {
+    kind: String,
+    domains: Vec<(DDomain, i64)>,
+    classes: Option<Vec<(SizeClass, i64)>>,
+}
+
 /// A platform's reaches, in its catalog's sensor order: each sensor type the engine assesses
-/// with and its reach per domain, m rounded to 10 (a domain it does not reach, under 5 m, left
-/// out).
-type Reaches = Vec<(String, Vec<(DDomain, i64)>)>;
+/// with.
+type Reaches = Vec<SensorReaches>;
+
+/// A reach rounded to 10 m.
+fn tens(m: f64) -> i64 {
+    ((m / 10.0).round() as i64) * 10
+}
 
 /// Every platform's reaches (none for a platform with no sensor the engine assesses with).
 fn derive(cat: &SensorCatalog, table: &toml::Table) -> BTreeMap<String, Reaches> {
@@ -206,13 +253,22 @@ fn derive(cat: &SensorCatalog, table: &toml::Table) -> BTreeMap<String, Reaches>
             if domains.is_empty() {
                 continue;
             }
-            assert!(!reaches.iter().any(|(k, _)| k == kind), "[{id}] carries two {kind} sensors: the reaches are by sensor type");
+            assert!(!reaches.iter().any(|r| r.kind == kind), "[{id}] carries two {kind} sensors: the reaches are by sensor type");
             let by_domain = domains
                 .iter()
-                .map(|(td, dd, h)| (*dd, ((Line::new(cat, table, id, s, REFERENCE_KIND, *td, *h).reach_m() / 10.0).round() as i64) * 10))
+                .map(|(td, dd, h)| (*dd, tens(Line::new(cat, table, id, s, REFERENCE_KIND, *td, *h).reach_m())))
                 .filter(|(_, m)| *m > 0)
                 .collect();
-            reaches.push((kind.to_string(), by_domain));
+            // rules 31: a camera's reach by size class, against each class's smallest member
+            let classes = (s.kind == SensorType::EoIr).then(|| {
+                CLASS_KINDS
+                    .iter()
+                    .filter(|(c, _, _)| murmur_decide::engage::sees(kind, c.domain()))
+                    .map(|(c, td, k)| (*c, tens(Line::new(cat, table, id, s, k, *td, reference_height_m(*td)).reach_m())))
+                    .filter(|(_, m)| *m > 0)
+                    .collect()
+            });
+            reaches.push(SensorReaches { kind: kind.to_string(), domains: by_domain, classes });
         }
         if !reaches.is_empty() {
             out.insert(id.clone(), reaches);
@@ -225,9 +281,13 @@ fn derive(cat: &SensorCatalog, table: &toml::Table) -> BTreeMap<String, Reaches>
 fn line(reaches: &Reaches) -> String {
     let sensors: Vec<String> = reaches
         .iter()
-        .map(|(kind, ds)| {
-            let ds: Vec<String> = ds.iter().map(|(d, m)| format!("{} = {m}", name(*d))).collect();
-            if ds.is_empty() { format!("{kind} = {{}}") } else { format!("{kind} = {{ {} }}", ds.join(", ")) }
+        .map(|r| {
+            let mut ds: Vec<String> = r.domains.iter().map(|(d, m)| format!("{} = {m}", name(*d))).collect();
+            if let Some(cs) = &r.classes {
+                let cs: Vec<String> = cs.iter().map(|(c, m)| format!("{} = {m}", c.as_str())).collect();
+                ds.push(if cs.is_empty() { "size_class = {}".to_string() } else { format!("size_class = {{ {} }}", cs.join(", ")) });
+            }
+            if ds.is_empty() { format!("{} = {{}}", r.kind) } else { format!("{} = {{ {} }}", r.kind, ds.join(", ")) }
         })
         .collect();
     format!("{KEY} = {{ {} }}", sensors.join(", "))
@@ -321,13 +381,19 @@ fn physical_reaches_are_the_generators() {
     let derived = derive(&catalog(), &table);
     for (id, p) in &decide.platforms {
         for s in &p.sensors {
-            let want = derived.get(id).and_then(|r| r.iter().find(|(k, _)| *k == s.kind));
+            let want = derived.get(id).and_then(|r| r.iter().find(|x| x.kind == s.kind));
             match (want, &s.reach_m) {
                 (None, None) => {}
-                (Some((_, ds)), Some(r)) => {
+                (Some(w), Some(r)) => {
                     for (_, d, _) in DOMAINS {
-                        let w = ds.iter().find(|(x, _)| *x == d).map(|(_, m)| *m as f64);
-                        assert_eq!(r.get(d), w, "[{id}] {}: {} reach", s.kind, name(d));
+                        let m = w.domains.iter().find(|(x, _)| *x == d).map(|(_, m)| *m as f64);
+                        assert_eq!(r.get(d), m, "[{id}] {}: {} reach", s.kind, name(d));
+                    }
+                    // rules 31: and a camera's by size class
+                    assert_eq!(r.size_class.is_some(), w.classes.is_some(), "[{id}] {}: reaches by size class", s.kind);
+                    for c in SizeClass::ALL {
+                        let m = w.classes.iter().flatten().find(|(x, _)| *x == c).map(|(_, m)| *m as f64);
+                        assert_eq!(s.reach_for_class(c).flatten(), m, "[{id}] {}: {} reach", s.kind, c.as_str());
                     }
                 }
                 other => panic!("[{id}] {}: {other:?}", s.kind),
@@ -350,7 +416,7 @@ fn table(text: &str) {
     eprintln!("platform:sensor          range_m km    air km    ground km   surface km  subsurface km   (fast boat, small drone km)");
     for (id, reaches) in &derived {
         let ps = cat.get(id).expect(id);
-        for (kind, ds) in reaches {
+        for SensorReaches { kind, domains: ds, .. } in reaches {
             let s = ps.sensors.iter().find(|s| s.kind.as_str() == kind).expect("sensor");
             let col = |d: DDomain| -> String {
                 if !murmur_decide::engage::sees(kind, d) {
@@ -436,4 +502,114 @@ fn the_rewrite_places_the_line_after_the_sensors() {
     let want = "[a]\nsensors = [\n  { type = \"radar\", range_m = 1 },  # [1]\n]\nphysical_reach_m = { radar = {} }\nmast_m = 3\n\n[b]\nsensors = [{ type = \"eo_ir\", range_m = 2, channels = [{ band = \"day\", wide_deg = 1, px = 2 }] }]\nphysical_reach_m = { eo_ir = { air = 10 } }\nx = 1\n\n[c]\nsensors = []\n";
     assert_eq!(rewrite(text, &lines), want);
     assert_eq!(rewrite(want, &lines), want, "a second run changes nothing");
+}
+
+/// The kinds the physical model knows by name (`signature::kind_signature`'s table).
+const MODEL_KINDS: [&str; 18] = [
+    "cargo_ship",
+    "tanker",
+    "ferry",
+    "patrol_boat",
+    "fishing_vessel",
+    "sailboat",
+    "small_fast_boat",
+    "light_aircraft",
+    "helicopter",
+    "unknown_uas",
+    "small_drone",
+    "submarine",
+    "periscope",
+    "uuv",
+    "diver",
+    "vehicle",
+    "truck",
+    "person",
+];
+
+/// The families its recognitions name (`sensing::family`).
+const FAMILIES: [&str; 7] = ["large_vessel", "small_craft", "aircraft", "small_uas", "ground_vehicle", "person", "submerged"];
+
+/// Rules 31: the decision layer reads a label's size class (`murmur_decide::SizeClass::of_label`,
+/// which an identify order's plan reads the track's shown identity by) as the physical model
+/// makes it (`signature::size_class_of`), for every kind it knows, every kind a contact of the
+/// contact catalog is seen as, every family and every class; and each class's reference contact
+/// for a camera's reach by class is of the class and its smallest member.
+#[test]
+fn the_decision_layers_size_classes_are_the_models() {
+    use super::super::physical::signature::{kind_signature, size_class_of};
+    let contacts: toml::Table = include_str!("../../../../../sim/contacts.toml").parse().expect("contacts.toml");
+    let seen: Vec<String> = contacts
+        .iter()
+        .filter_map(|(k, v)| v.as_table().map(|t| t.get("looks_like").and_then(|l| l.as_str()).unwrap_or(k).to_string()))
+        .collect();
+    assert!(seen.len() > 20, "{} contact kinds", seen.len());
+    let classes = SizeClass::ALL.map(SizeClass::as_str);
+    for label in MODEL_KINDS
+        .into_iter()
+        .chain(FAMILIES)
+        .chain(classes)
+        .chain(seen.iter().map(String::as_str))
+        .chain(["unknown", "vessel"])
+    {
+        let decide = SizeClass::of_label(label).map_or("unknown", SizeClass::as_str);
+        assert_eq!(decide, size_class_of(label), "{label}");
+    }
+    for (class, domain, kind) in CLASS_KINDS {
+        assert_eq!(size_class_of(kind), class.as_str(), "{kind}");
+        assert_eq!(domain.decide(), class.domain(), "{kind}");
+        let dc = |k: &str| kind_signature(k, domain).dc_m;
+        for member in MODEL_KINDS.iter().filter(|m| size_class_of(m) == class.as_str()) {
+            assert!(dc(kind) <= dc(member), "{}: {kind} ({} m) is not its smallest member, {member} ({} m)", class.as_str(), dc(kind), dc(member));
+        }
+    }
+    // every class a camera sees has its reference, and only those
+    for class in SizeClass::ALL {
+        let has = CLASS_KINDS.iter().any(|(c, _, _)| *c == class);
+        assert_eq!(has, murmur_decide::engage::sees("eo_ir", class.domain()), "{}", class.as_str());
+    }
+}
+
+/// Rules 31: an identify order's default standoff from each camera's reach by size class (the
+/// plan's: an eighth of the reach, `IDENTIFY_PX_SHARE`, then `STANDOFF_SHARE` of that as slant
+/// range, the vehicle at its catalog operating height over the class's reference height) is
+/// inside the camera's identification reach of every kind the class holds, its identification
+/// chance there at least one half on the reference day; where the vehicle's height over the
+/// contact is beyond that eighth, the plan refuses it from there and there is nothing to hold.
+#[test]
+fn the_default_standoff_identifies_every_member_of_the_class() {
+    use super::super::physical::signature::size_class_of;
+    use murmur_decide::identify::{IDENTIFY_PX_SHARE, STANDOFF_SHARE};
+    let table: toml::Table = PLATFORMS.parse().expect("platforms.toml");
+    let cat = catalog();
+    let derived = derive(&cat, &table);
+    let (mut checked, mut refused) = (0, 0);
+    for (id, reaches) in &derived {
+        let Some(classes) = reaches.iter().find(|r| r.kind == "eo_ir").and_then(|r| r.classes.as_ref()) else { continue };
+        let s = cat.get(id).expect(id).sensors.iter().find(|s| s.kind == SensorType::EoIr).expect("eo_ir");
+        let (alt, _) = operating(&table, id);
+        for (class, m) in classes {
+            let (_, domain, _) = CLASS_KINDS.iter().find(|(c, _, _)| c == class).expect("a reference");
+            let h = reference_height_m(*domain);
+            let reach = *m as f64 * IDENTIFY_PX_SHARE;
+            let height = (alt - h).abs();
+            if height >= reach {
+                refused += 1;
+                continue;
+            }
+            let slant = (reach * STANDOFF_SHARE).max(height);
+            let ground = (slant * slant - height * height).max(0.0).sqrt().max(1.0);
+            for kind in MODEL_KINDS.iter().filter(|k| size_class_of(k) == class.as_str()) {
+                let line = Line::new(&cat, &table, id, s, kind, *domain, h);
+                let t = line.target(ground);
+                let p = predict::predict(&line.ask(&t)).p_identify;
+                assert!(
+                    p >= 0.5,
+                    "[{id}] a {kind} ({}) at the default standoff, {ground:.0} m out and {height:.0} m away in height: identified at {p:.2}",
+                    class.as_str()
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 100 && refused > 5, "{checked} checked, {refused} refused from the operating height");
 }

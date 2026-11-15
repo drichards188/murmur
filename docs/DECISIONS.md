@@ -3603,3 +3603,41 @@ backend"):
   an orbit centred within its radius or 500 m of it) or its camera saw it within the playbook's
   `classifier_fresh_s` (10 s). All of it from what the agent sees: `get_fleet` compact for the
   candidates and a whole-picture `get_tracks` the driver reads, which the model never receives.
+
+## 2026-11-15: An identify order is sized by the size class the picture shows (rules 31, murmur-8vj8)
+
+The owner approved the fix of eval/SCORING-V3.md 17.11's first cause. An identify order's orbit
+was sized by the camera's reach of a contact of the track's domain, the catalog's reference
+contact of no known kind, which for the air is 3 m across: so a track the picture shows as a
+small drone (`small_air`, 0.35 m across) was given an orbit its camera could not identify it from
+(a Puma's 1.4 km, the MQ-9B's 8.9 km from 3 km up), and `get_identify_options` offered every
+one as passing. In the paid pilot's records five orders sent at a drone within seconds of its
+first track came no nearer than 670 m to 9.4 km, and none identified it.
+
+From decision rules 31 the plan reads the size class the picture shows (a detection's size
+class, a recognition's family, an identification's kind), and takes the camera's reach of that
+class where the vehicle's facts carry one, else of the domain as before. Chosen in building it:
+
+- **Which reach for a class.** Its smallest member by critical dimension among the kinds the
+  physical model knows, at its domain's reference height (a small drone, a light aircraft, a
+  small fast boat, a patrol boat, a person, a vehicle), as the headless honest ceiling plans a
+  size class (eval/headless/v3/planner.py `SIZE_KIND`), except `large_surface`, which the ceiling
+  reads as a cargo ship: the smaller patrol boat is the conservative member. A kind or family
+  is read as its whole class, not as itself: one reach per class keeps the facts each decision
+  logs small (six figures a camera), and the class is what a detection gives at first sight.
+- **Where it comes from.** The catalog's generated `physical_reach_m`, the same generator as the
+  domain reaches (decision W3: derived, never tuned), an EO/IR's `size_class`; the legacy model
+  carries none, so v1, v2 and every Phase G stack decide as before. The sensing model and the
+  catalog's figures are unchanged (the owner's decision of 2026-10-25).
+- **The shares.** `IDENTIFY_PX_SHARE` (an eighth) and `STANDOFF_SHARE` (70 %) are kept: for a
+  small drone the model identifies out to 0.11 to 0.16 of its detection reach with every camera
+  (both limited by the pixels), so 70 % of an eighth is inside it, and a bridge test holds the
+  default standoff inside the identification reach of every member of every class.
+- **What the MQ-9B gets.** From its catalog height, 7,600 m, it is refused for a small drone (its
+  height over the contact is beyond its camera's identification reach of one, about 4.07 km
+  slant). From the 3,000 m the v3 fleets fly it, it is offered its tightest orbit, 1.9 km out,
+  3.5 km slant: the model gives its camera about a two-in-three chance to identify a small drone
+  there (its narrow day channel, 1,920 pixels across 0.2 degrees), so refusing it would contradict
+  the model.
+- **ESM's words** (`aircraft`, `vessel`, `ground_vehicle`, `submerged` at detection) say no
+  size, and keep the domain's reach.

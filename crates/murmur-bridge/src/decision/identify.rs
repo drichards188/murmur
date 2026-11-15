@@ -228,7 +228,8 @@ impl Decision {
     /// (one with an EO/IR whose autopilot takes the order; every vehicle `req.uids` names, so one
     /// without a camera hears why it can't go), with the checks an identify order
     /// for it would get now (`passed`, the failing ones in words), its plan (`standoff_m`, the
-    /// camera's `reach_m`, `transit_s`) and, for one that passes, its predicted link along the
+    /// camera's `reach_m`, rules 31 `reach_for`: the size class that reach is for, when the plan
+    /// sized it by the track's, `transit_s`) and, for one that passes, its predicted link along the
     /// way (`link`: `holds`, `p_failsafe`, its sentence). Passing first, soonest there first.
     /// Read-only, never logged.
     pub async fn identify_options(&self, req: OptionsRequest) -> Result<Value, DecisionError> {
@@ -293,7 +294,7 @@ impl Decision {
             } else {
                 None
             };
-            out.push(json!({
+            let mut option = json!({
                 "uid": uid,
                 "callsign": callsign,
                 "platform": platform,
@@ -308,7 +309,12 @@ impl Decision {
                 "transit_s": plan.as_ref().map(|p| p.transit_s),
                 "center": plan.as_ref().map(|p| [p.center.lon, p.center.lat]),
                 "link": link,
-            }));
+            });
+            // rules 31: the size class the camera's reach is for, when it is the track's
+            if let Some(c) = plan.as_ref().and_then(|p| p.size_class) {
+                option["reach_for"] = json!(c.as_str());
+            }
+            out.push(option);
         }
         out.sort_by(|a, b| {
             let key = |v: &Value| (!v["passed"].as_bool().unwrap_or(false), v["transit_s"].as_f64().unwrap_or(f64::INFINITY));

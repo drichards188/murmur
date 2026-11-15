@@ -6816,8 +6816,10 @@ impl Engine {
         let drop_damage = !self.policy.rules.damage() && inputs.vehicles.values().any(|v| v.damage.is_some());
         let drop_loss = !self.policy.rules.node_loss()
             && (!inputs.nodes_lost.is_empty() || inputs.vehicles.values().any(|v| v.lost_link.is_some()));
+        // rules 31: nor a camera's reaches by size class
+        let drop_class = !self.policy.rules.identify_by_class() && inputs.vehicles.values().any(carries_class_reach);
         let stripped;
-        let inputs = if drop_damage || drop_loss {
+        let inputs = if drop_damage || drop_loss || drop_class {
             let mut w = inputs.clone();
             for v in w.vehicles.values_mut() {
                 if drop_damage {
@@ -6825,6 +6827,9 @@ impl Engine {
                 }
                 if drop_loss {
                     v.lost_link = None;
+                }
+                if drop_class {
+                    drop_class_reach(v);
                 }
             }
             if drop_loss {
@@ -6858,11 +6863,15 @@ impl Engine {
     }
 
     /// One of ours as an event logs its facts (`engage.accepted`, `platform.unspent`): rules 30's
-    /// lost-link failsafe dropped under older rules, as [`Self::log_inputs_at`] drops it.
+    /// lost-link failsafe and rules 31's reaches by size class dropped under older rules, as
+    /// [`Self::log_inputs_at`] drops them.
     fn vehicle_as_logged(&self, v: Option<&crate::world::VehicleFacts>) -> Box<crate::world::VehicleFacts> {
         let mut v = v.cloned().unwrap_or_default();
         if !self.policy.rules.node_loss() {
             v.lost_link = None;
+        }
+        if !self.policy.rules.identify_by_class() {
+            drop_class_reach(&mut v);
         }
         Box::new(v)
     }
@@ -7478,6 +7487,25 @@ pub(crate) fn order_for(
             via,
         }),
     })
+}
+
+/// Rules 31: whether one of ours carries a camera's reaches by size class in its facts.
+fn carries_class_reach(v: &crate::world::VehicleFacts) -> bool {
+    v.platform
+        .as_ref()
+        .is_some_and(|p| p.sensors.iter().any(|s| s.reach_m.as_ref().is_some_and(|r| r.size_class.is_some())))
+}
+
+/// Rules 31: one of ours' facts without its cameras' reaches by size class (no build of older
+/// rules logged them, and none of their decisions reads them).
+fn drop_class_reach(v: &mut crate::world::VehicleFacts) {
+    if let Some(p) = v.platform.as_mut() {
+        for s in &mut p.sensors {
+            if let Some(r) = s.reach_m.as_mut() {
+                r.size_class = None;
+            }
+        }
+    }
 }
 
 /// The `intent.dispatched` event for `order`: the approved task and vehicles, and the space

@@ -241,6 +241,14 @@ impl Rig {
         report
     }
 
+    /// [`Self::replays`] for a rig that decided under rules `since` or newer.
+    fn replays_since(&self, since: u32) -> replay::ReplayReport {
+        let opts = replay::ReplayOptions { rules: replay::RulesAccepted::AtLeast(since), ..replay::ReplayOptions::default() };
+        let report = replay::replay_str_with(&self.log.text(), &opts).expect("log parses");
+        assert!(report.ok(), "replay mismatches: {:?}", report.mismatches);
+        report
+    }
+
     fn events(&self, kind: &str) -> usize {
         self.log
             .lines()
@@ -486,7 +494,7 @@ async fn agents_read_a_loss_but_no_tool_confirms_or_revokes_one() {
     assert!(told.contains("no tool does any of it") && !told.contains('\u{2014}'), "{told}");
     let rules_29 = murmur_decide::RulesConfig { rules_version: murmur_decide::HANDOVER_SINCE, ..murmur_decide::RulesConfig::default() };
     assert_eq!(instructions(&rules_29), INSTRUCTIONS);
-    r.replays();
+    r.replays_since(murmur_decide::NODE_LOSS_SINCE);
 }
 
 /// Rules 29: a silent vehicle reads as it always did (no `standing`, no review node items).

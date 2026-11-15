@@ -1,0 +1,67 @@
+# Rules 31 (bd murmur-8vj8, eval/SCORING-V3.md 17.11): the same kind of track, a radar's `small_air`
+# with no altitude. The MQ-9B at its catalog operating height, 7,600 m, is sent first: refused, its
+# height over the contact being beyond its camera's identification reach of a small drone (the
+# physical reach by class, 32,540 m; an eighth of it, about 4,068 m). SKY 1, an X10 quadcopter 100
+# m up, is sent instead: an orbit of 420 m (its camera's small-drone reach, 4,930 m; an eighth,
+# 616 m; 70 % of that as slant range), dispatched. Rules 30 (`--rules 30`) took the MQ-9B's reach of
+# the domain's reference aircraft (107,840 m, an eighth 13,480 m) and planned it an orbit 5.6 km out
+# from 7,600 m up, and SKY 1 one of 1,380 m. On the physical reaches.
+title = "An identify order on a small drone refused from too high, sent from close in"
+invariant = "identify"
+attack = "none: an order the camera could not carry out"
+expect = "dispatched"
+reaches = "physical"
+end_s = 10
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "reaper-1"
+platform = "mq9b"           # EO/IR: a small drone detected out to 32,540 m from 7,600 m up
+at = [-122.5050, 37.8150]
+alt_m = 7600
+
+[[vehicle]]
+uid = "sky-1"
+platform = "x10"            # EO/IR: a small drone detected out to 4,930 m
+at = [-122.4900, 37.8150]
+alt_m = 100
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding over the water west of the bridge
+domain = "air"
+affiliation = "unknown"
+identity = "small_air"
+identity_confidence = 0.99
+sources = ["3:radar"]
+level = "detect"
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "identify"
+uids = ["reaper-1"]
+track = "T-0001"
+
+[[step]]
+at_s = 1
+action = "expect"
+task_state = "rejected"
+task_reason = "its height over the contact, 7600 m, is beyond its camera's identification reach of about 4068 m for a small_air contact"
+
+[[step]]
+at_s = 2
+action = "task"
+by = "op-1"
+task = "identify"
+uids = ["sky-1"]
+track = "T-0001"
+
+[[step]]
+at_s = 3
+action = "expect"
+task_state = "dispatched"
+identify = "an orbit of 420 m, inside its EO/IR's identification reach of about 616 m for a small_air contact"

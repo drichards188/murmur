@@ -106,8 +106,11 @@ fn has_alert(e: &Erig, kind: &str, uid: Uid) -> bool {
     alerts(e).iter().any(|(k, _, u)| k == kind && *u == uid.to_string())
 }
 
+/// Replayed under the rules the rig decided under (rules 30; the default moved on to rules 31,
+/// which changes nothing here).
 fn replays(e: &Erig) {
-    let r = replay::replay_str(&e.r.log.text()).expect("parses");
+    let opts = replay::ReplayOptions { rules: replay::RulesAccepted::AtLeast(NODE_LOSS_SINCE), ..replay::ReplayOptions::default() };
+    let r = replay::replay_str_with(&e.r.log.text(), &opts).expect("parses");
     assert!(r.ok(), "{:?}", r.mismatches);
 }
 
@@ -354,6 +357,7 @@ async fn a_loss_closes_the_values_owed_and_stops_their_restore() {
         &e.r.log.text(),
         &replay::ReplayOptions {
             carried_logs: &logs,
+            rules: replay::RulesAccepted::AtLeast(NODE_LOSS_SINCE),
             ..replay::ReplayOptions::default()
         },
     )

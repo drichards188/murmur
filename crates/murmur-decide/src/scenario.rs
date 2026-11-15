@@ -202,6 +202,11 @@ pub struct Scenario {
     /// overrides it either way. Absent: the current rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_rules: Option<u32>,
+    /// The sensing model's reaches the scenario is designed for (bd murmur-1u4): `physical`, the
+    /// catalog's `physical_reach_m` (rules 31: a camera's reaches by size class among them),
+    /// whatever [`RunOptions::reaches`] says; `legacy`, `range_m` alone. Absent: the runner's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reaches: Option<String>,
     /// Paths relative to the repo root (defaults: sim/policy.toml, sim/platforms.toml,
     /// sim/areas).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -842,6 +847,10 @@ pub enum Action {
         /// its last picture's), passed or failed.
         #[serde(default)]
         weapon: Option<String>,
+        /// Rules 21: a substring of the last `task` step's `identify` check detail (its checks),
+        /// passed or failed.
+        #[serde(default)]
+        identify: Option<String>,
     },
 }
 
@@ -1389,10 +1398,17 @@ pub fn run(
         policy.identification = Some(i);
         policy.sync();
     }
-    // its sensors' reaches as a run on the chosen sensing model's facts carry them
+    // its sensors' reaches as a run on the chosen sensing model's facts carry them (the file's
+    // choice first)
+    let reaches = match sc.reaches.as_deref() {
+        None => opts.reaches,
+        Some("physical") => Reaches::Physical,
+        Some("legacy") => Reaches::Legacy,
+        Some(other) => return Err(setup(format!("reaches {other:?}: legacy or physical"))),
+    };
     let catalog = Catalog::load(&rel(&sc.catalog, "sim/platforms.toml"))
         .map_err(|e| setup(e.to_string()))?
-        .reaching(opts.reaches);
+        .reaching(reaches);
     let areas = AreaSet::load_dir(&rel(&sc.areas, "sim/areas"), T0).map_err(|e| setup(e.to_string()))?;
     let clock = ManualClock::new(T0);
     let log = MemorySink::new();
@@ -3658,7 +3674,24 @@ fn act(
             task_state,
             task_reason,
             weapon,
+            identify,
         } => {
+            if let Some(want) = identify {
+                let details: Vec<String> = extra
+                    .last_task
+                    .and_then(|id| engine.intent(id))
+                    .map(|i| {
+                        i.checks()
+                            .iter()
+                            .filter(|c| c.rule == crate::rules::RuleId::Identify)
+                            .map(|c| format!("{:?}: {}", c.outcome, c.detail))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !details.iter().any(|d| d.contains(want.as_str())) {
+                    failures.push(format!("t={s}: expected the identify check to say {want:?}, it says {details:?}"));
+                }
+            }
             if let Some(want) = weapon {
                 let i = last.and_then(|id| engine.intent(id));
                 let details: Vec<String> = i

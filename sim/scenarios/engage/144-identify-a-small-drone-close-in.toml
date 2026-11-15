@@ -1,0 +1,58 @@
+# Rules 31 (bd murmur-8vj8, eval/SCORING-V3.md 17.11): an operator sends PUMA 1, 150 m up, to
+# identify a track the picture shows only as `small_air`: a radar's detection, a size class, no
+# altitude. The engine sizes the orbit by its camera's reach of a small drone, the class's smallest
+# member (the catalog's physical reach by class, 9,160 m; an eighth of it to identify, 1,145 m; 70 %
+# of that as slant range from 150 m up): an orbit of 788 m around it, within the about 1 km inside
+# which a Puma identifies a small drone by day. A look identifies it at 30 s and the order ends
+# done. Rules 30 (`--rules 30`) sized it by the domain's reference aircraft, 3 m across (16,210 m,
+# an eighth 2,026 m): an orbit of 1,411 m, from which the Puma's camera does not identify a drone.
+# On the physical reaches (a camera's reaches by size class are the physical model's).
+title = "An identify order on a small drone orbits within its camera's reach of one"
+invariant = "identify"
+attack = "none: the order as designed"
+expect = "done"
+reaches = "physical"
+expect_identify = ["ended done: track T-0001 identified as small_drone by puma-1's eo_ir; it was small_air (detect) before; holding: no order to go back to"]
+end_s = 40
+
+[[operator]]
+id = "op-1"
+
+[[vehicle]]
+uid = "puma-1"
+platform = "puma"           # EO/IR: a small drone detected out to 9,160 m on the physical model
+at = [-122.4930, 37.8210]   # west of the bridge, mid-strait
+alt_m = 150
+
+[[track]]
+id = "T-0001"
+at = [-122.4950, 37.8120]   # holding over the water about 1 km south of the Puma
+domain = "air"
+affiliation = "unknown"
+identity = "small_air"      # a detection's size class, at the radar's confidence
+identity_confidence = 0.99
+sources = ["3:radar"]
+level = "detect"
+
+[[step]]
+at_s = 1
+action = "task"
+by = "op-1"
+task = "identify"
+uids = ["puma-1"]
+track = "T-0001"
+
+[[step]]
+at_s = 2
+action = "expect"
+task_state = "dispatched"
+identify = "an orbit of 788 m, inside its EO/IR's identification reach of about 1145 m for a small_air contact"
+
+[[step]]
+at_s = 30                   # PUMA 1's camera identifies it
+action = "track"
+id = "T-0001"
+identity = "small_drone"
+identity_confidence = 0.8
+level = "identify"
+level_by = ["puma-1:eo_ir"]

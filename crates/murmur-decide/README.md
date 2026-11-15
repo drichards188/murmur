@@ -2407,6 +2407,43 @@ Rules versions:
   `v30-confirmed-lost-ends-its-orders-scenario-140.jsonl` (relabelled rules 29, its presumption,
   loss, closure and lost set are caught).
 
+- **31** (`IDENTIFY_CLASS_SINCE`, bd murmur-8vj8, approved by the owner on 2026-11-15;
+  eval/SCORING-V3.md 17.11, cause 1; no policy schema change, schema 7; a v31 log carries every
+  rules 30 behaviour too): *an identify order's standoff is sized by what the picture shows of
+  the track*. Up to rules 30 `identify::plan` took the camera's reach of a contact of the track's
+  domain, the catalog's reference contact of no known kind (an aircraft 3 m across), so a track
+  the picture shows as a small drone (`small_air`, 0.35 m) was planned an orbit its camera could
+  not identify it from: a Puma's 1,411 m from 150 m up, the MQ-9B's 8,947 m from 3,000 m, where a
+  Puma identifies a small drone only within about 1 km by day. From rules 31 the plan reads the
+  track's size class (`identify::shown_class`: its shown identity at its level, a detection's
+  size class, a recognition's family, an identification's kind, `SizeClass::of_label`; ESM's
+  words for a domain, `aircraft`, `vessel`, `ground_vehicle`, `submerged`, say no size at
+  detection) and, where the vehicle's cameras carry reaches by class, takes the camera's reach of
+  that class (`SensorFact::reach_for_class`), else its domain's as before; an eighth of it is the
+  identification reach (`IDENTIFY_PX_SHARE`) and the standoff 70 % of that (`STANDOFF_SHARE`),
+  both unchanged. The reaches by class are the catalog's generated `physical_reach_m`, an EO/IR's
+  `size_class` (`catalog::ClassReach`), derived as the domain reaches are against each class's
+  smallest member (a small drone, a light aircraft, a small fast boat, a patrol boat, a person, a
+  vehicle) at its domain's reference height; the legacy model's facts carry none, so a run on it
+  decides as before. A camera with reaches by class that reaches none of the track's is refused
+  ("carries no EO/IR that reaches a contact the picture shows as small_air"); the plan records the
+  class (`Plan::size_class`, in `intent.dispatched`'s `identify`) and the check's detail says it
+  ("for a small_air contact"); `POST /api/identify/options` and MCP `get_identify_options` give
+  it as `reach_for`. On a `small_air` track: a Puma from 150 m 788 m (was 1,411), an FVR-90 from
+  150 m 921 m (1,684), an X10 from 100 m 420 m (1,380), the airship from 250 m 1,110 m (1,800),
+  the MQ-9B from 3,000 m its tightest orbit, 1,891 m (8,947), within its camera's reach of a
+  small drone (about 4,070 m slant); from its catalog height, 7,600 m, the MQ-9B is refused (its
+  height over the contact beyond that reach). The engine drops the reaches by class from every
+  fact it logs under older rules. Markers (a log claiming rules 30 or older can't carry them):
+  a camera's `size_class` reaches, a plan's `size_class`. Replay recomputes the plan, so a v31 log
+  relabelled rules 30 is caught at its first identify check. Scenarios 144 (PUMA 1 sent to a
+  `small_air` track: an orbit of 788 m, identified; `--rules 30` 1,411 m) and 145 (the MQ-9B at
+  7,600 m refused for it, SKY 1 sent at 420 m; `--rules 30` sends both), each on the physical
+  reaches (the scenario file's new `reaches` key) with the runner's new `identify` expectation;
+  `tests/rules31.rs`; the bridge's `tracks::tests::reaches` holds the decision layer's label
+  table to the physical model's and the default standoff inside the camera's identification
+  reach of every member of the class.
+
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that
 `seen_max_age_s`, an unreleased build's name for it, is still read; **3** adds `[queue]`

@@ -99,7 +99,11 @@ fn the_physical_reach_gives_the_standoff_on_that_model() {
     let mut w = scene("puma");
     let cat = catalog().reaching(Reaches::Physical);
     w.vehicles.get_mut(&uid("puma-1")).unwrap().platform = cat.get("puma").cloned();
-    let p = identify::plan(&spec(None), &w, &cfg()).unwrap();
+    // the domain's reach, as rules 21 to 30 read it (rules 31 reads the small craft's class:
+    // tests/rules31.rs)
+    let mut v30 = cfg();
+    v30.rules_version = NODE_LOSS_SINCE;
+    let p = identify::plan(&spec(None), &w, &v30).unwrap();
     let surface = cat.get("puma").unwrap().sensors[0].reach_m.as_ref().unwrap().surface.unwrap();
     assert_eq!(p.reach_m, (surface * identify::IDENTIFY_PX_SHARE).round());
     assert!(p.radius_m > 1_000.0, "{}", p.radius_m);

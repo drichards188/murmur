@@ -13,6 +13,14 @@
 //! "Pointing"). Every step is logged with the picture it read (`identify.step`), so replay
 //! recomputes it.
 //!
+//! Rules 31 ([`crate::rules::IDENTIFY_CLASS_SINCE`], bd murmur-8vj8): the standoff is taken from
+//! the camera's reach of a contact of the size class the picture shows the track as
+//! ([`shown_class`]: a detection's size class, a recognition's family, an identification's kind),
+//! where the vehicle's facts carry reaches by class (the physical model's), else of its domain as
+//! before: a small drone is 0.35 m across where the domain's reference aircraft is 3 m, so a
+//! camera identifies one only from much nearer (a Puma about 1.1 km out by day, where it would
+//! identify the reference aircraft from nearly 10 km).
+//!
 //! Rules 23 ([`crate::rules::IDENTIFY_OWN_LOOK_SINCE`], the owner's Harbor watch run of
 //! 2026-10-27 17:11Z, whose identify orders another vehicle's camera ended): the look ends identified
 //! only on an identification by the vehicle sent, with its own sensors, made after the order went
@@ -24,7 +32,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::catalog::Domain;
+use crate::catalog::{SensorFact, SizeClass};
 use crate::geo::{LonLat, haversine_m};
 use crate::ids::{IntentId, Uid};
 use crate::intent::{IntentSpec, Task, TaskKind};
@@ -118,6 +126,10 @@ pub struct Plan {
     pub radius_m: f64,
     /// The camera's identification reach the standoff was taken from, slant metres.
     pub reach_m: f64,
+    /// Rules 31: the size class that reach is for (the track's as the picture shows it); none:
+    /// for a contact of the track's domain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_class: Option<SizeClass>,
     /// The standoff came from the order (an operator's), not from the reach.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub set_by_order: bool,
@@ -269,15 +281,37 @@ fn min_radius(v: &VehicleFacts, cfg: &RulesConfig) -> Option<f64> {
     Some((min * cfg.orbit_radius_margin).ceil())
 }
 
-/// The vehicle's EO/IR reach for a contact in `domain`, m: the longest of its cameras'.
-fn camera_reach(v: &VehicleFacts, domain: Domain) -> Option<f64> {
-    v.platform
-        .as_ref()?
-        .sensors
-        .iter()
-        .filter(|s| s.kind == "eo_ir")
-        .filter_map(|s| s.reach_for(domain))
+/// The vehicle's EO/IR reach by `reach`, m: the longest of its cameras'.
+fn camera_reach(v: &VehicleFacts, reach: impl Fn(&SensorFact) -> Option<f64>) -> Option<f64> {
+    cameras(v)
+        .filter_map(reach)
         .fold(None, |best: Option<f64>, r| Some(best.map_or(r, |b| b.max(r))))
+}
+
+fn cameras(v: &VehicleFacts) -> impl Iterator<Item = &SensorFact> {
+    v.platform.iter().flat_map(|p| p.sensors.iter()).filter(|s| s.kind == "eo_ir")
+}
+
+/// The words ESM's detections name a contact's domain with (the bridge's `tracks::model`
+/// `domain_label`), three of them a family's too.
+const ESM_DOMAIN_WORDS: [&str; 4] = ["aircraft", "vessel", "ground_vehicle", "submerged"];
+
+/// Rules 31: the size class the picture shows `track` as, from its shown identity read at its
+/// level (`level`, the tracker's [`TrackLevel`]): at detection a size class's name, ESM's words
+/// for a domain (`aircraft`, `vessel`, `ground_vehicle`, `submerged`) saying no size; at
+/// recognition a family's class, at identification a kind's ([`SizeClass::of_label`]); with no
+/// level given, any label but ESM's words. None when the identity names no size, or a class of
+/// another domain than the track's. A kind or family is read as its whole class, not as itself:
+/// the class's reach is its smallest member's ([`crate::catalog::ClassReach`]).
+pub fn shown_class(track: &TrackFacts, level: Option<Level>) -> Option<SizeClass> {
+    let label = track.identity.as_deref()?;
+    let class = match level {
+        Some(Level::Detect) => SizeClass::named(label),
+        Some(_) => SizeClass::of_label(label),
+        None if ESM_DOMAIN_WORDS.contains(&label) => None,
+        None => SizeClass::of_label(label),
+    }?;
+    (class.domain() == track.domain).then_some(class)
 }
 
 /// The orbit an identify order is flown as on `world`, or why there is none.
@@ -311,14 +345,26 @@ pub fn plan(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Resu
             track.identity.as_deref().unwrap_or("its kind")
         ));
     }
-    let Some(eo) = camera_reach(v, track.domain) else {
+    // rules 31: the reach of a contact of the track's shown size class, where the cameras' facts
+    // carry reaches by class
+    let class = cfg
+        .identify_by_class()
+        .then(|| shown_class(track, world.track_levels.get(track_id).map(|l| l.level)))
+        .flatten()
+        .filter(|c| cameras(v).any(|s| s.reach_for_class(*c).is_some()));
+    let eo = match class {
+        Some(c) => camera_reach(v, |s| s.reach_for_class(c).flatten()),
+        None => camera_reach(v, |s| s.reach_for(track.domain)),
+    };
+    let Some(eo) = eo else {
         let platform = v.platform.as_ref().map_or("its platform", |p| p.id.as_str());
-        return Err(format!(
-            "{platform} carries no EO/IR that reaches a contact in the {} domain",
-            track.domain.as_str()
-        ));
+        return Err(match class {
+            Some(c) => format!("{platform} carries no EO/IR that reaches a contact the picture shows as {}", c.as_str()),
+            None => format!("{platform} carries no EO/IR that reaches a contact in the {} domain", track.domain.as_str()),
+        });
     };
     let reach = eo * IDENTIFY_PX_SHARE;
+    let of_class = class.map(|c| format!(" for a {} contact", c.as_str())).unwrap_or_default();
     // the camera's slant range: the vehicle's height over the contact counts
     let height = match (&v.alt_msl_m, track.alt_m) {
         (Some(a), Some(t)) => (a.value - t).abs(),
@@ -327,7 +373,7 @@ pub fn plan(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Resu
     };
     if height >= reach {
         return Err(format!(
-            "its height over the contact, {height:.0} m, is beyond its camera's identification reach of about {reach:.0} m"
+            "its height over the contact, {height:.0} m, is beyond its camera's identification reach of about {reach:.0} m{of_class}"
         ));
     }
     let tightest = min_radius(v, cfg).unwrap_or(0.0);
@@ -338,7 +384,7 @@ pub fn plan(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Resu
     };
     if standoff.is_none() && radius.hypot(height) > reach {
         return Err(format!(
-            "its tightest orbit, {tightest:.0} m, keeps its camera beyond its identification reach of about {reach:.0} m"
+            "its tightest orbit, {tightest:.0} m, keeps its camera beyond its identification reach of about {reach:.0} m{of_class}"
         ));
     }
     let center = crate::engage::target_at(track, world.t, &cfg.engage_rules());
@@ -355,6 +401,7 @@ pub fn plan(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Resu
         center,
         radius_m: radius,
         reach_m: reach.round(),
+        size_class: class,
         set_by_order: standoff.is_some(),
         transit_s,
     })
@@ -401,8 +448,10 @@ pub fn check(spec: &IntentSpec, world: &WorldSnapshot, cfg: &RulesConfig) -> Che
                 format!("an orbit of {:.0} m set by the order", p.radius_m)
             } else {
                 format!(
-                    "an orbit of {:.0} m, inside its EO/IR's identification reach of about {:.0} m",
-                    p.radius_m, p.reach_m
+                    "an orbit of {:.0} m, inside its EO/IR's identification reach of about {:.0} m{}",
+                    p.radius_m,
+                    p.reach_m,
+                    p.size_class.map(|c| format!(" for a {} contact", c.as_str())).unwrap_or_default()
                 )
             };
             CheckResult::new(

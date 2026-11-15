@@ -19,7 +19,9 @@ cargo run -p murmur-decide --bin murmur-scenarios -- --reaches physical sim/scen
 The assessment's coverage reads each sensor's `range_m` (the legacy sensing model's reach, and
 every designed end's) unless `--reaches physical` (`RunOptions::reaches`) gives the facts the
 catalog's `physical_reach_m`, as the bridge's facts carry them in a run on the physical model
-(bd murmur-1u4, docs/SENSING.md "The decision engine's reaches").
+(bd murmur-1u4, docs/SENSING.md "The decision engine's reaches"). A scenario written for the
+physical reaches says so itself (`reaches = "physical"`, rules 31's identify scenarios: a camera's
+reaches by size class are the physical model's), whatever the option.
 
 Exit status 0 when every scenario ended as designed (and replayed, and any tamper was
 caught), 1 otherwise, 2 on a load error. `cargo test -p murmur-decide --test engage` runs
@@ -194,6 +196,8 @@ min_rules = 30                   # optional: the oldest decision rules it is des
                                  # runs under them when they are newer than the current ones
                                  # (rules being built, docs/NODE-LOSS.md section 8), else under
                                  # the current ones; murmur-scenarios --rules N overrides it
+reaches = "physical"             # optional: the sensing model's reaches it is designed for
+                                 # (`physical` or `legacy`), whatever --reaches says
 # policy, catalog, areas = "path"  # optional, relative to the repo (defaults: sim/...)
 
 [[carried]]                      # rules 15, optional: an earlier log whose carry failed at
@@ -309,7 +313,7 @@ Actions (each `[[step]]` has `at_s` and `action`):
 | `confirm_lost` | `by`, `uid`, `since_s` (optional), `note` (optional) | rules 30: an operator with engagement authority confirms one of ours lost on its silence since its last report (or since `since_s`, scenario seconds: the engine refuses another), with a note when nothing presumes it lost (`node.lost`); its waiting orders are voided, its dispatched ones end, the values owed it close; without engagement authority it is refused (a scenario has no credentials: no step-up) |
 | `revoke_lost` | `by`, `uid`, `note` | rules 30: any operator revokes the loss of one of ours, saying why (`node.loss_revoked`, cause operator) |
 | `vehicle` | `uid` and any of `at`, `velocity`, `silent`, `report_interval_ms`, `nav` (`gnss`, `dead_reckoning`), `gps_fix` (3: a 3D fix), `gps_glitch`, `circling`, `reported_circle`, `alt_m`, `damage` (rules 25: `{ mobility = true }`, `{ firepower = true }`) | one of ours changes; `silent` cuts its link (both ways: it hears no GCS either); `damage` is a damage report of its own (never healed) |
-| `expect` | `state`, `rule`, `concurrences`, `task_state`, `task_reason` | check the last nomination now (`task_state`: the last `task` step's intent; `task_reason`: a substring of why it is in that state) |
+| `expect` | `state`, `rule`, `concurrences`, `task_state`, `task_reason`, `weapon`, `identify` | check the last nomination now (`task_state`: the last `task` step's intent; `task_reason`: a substring of why it is in that state; `weapon`: of the last nomination's weapon check; `identify`: of the last `task` step's identify check, passed or failed) |
 
 Approved engagements are dispatched at once (as the bridge does). Every second the runner
 calls `Engine::step_engagements` (hold the picture, release, observe, assess) and, from rules
@@ -469,3 +473,5 @@ logged evidence presumed lost.
 | 141-lost-vehicle-reports-again | keep_out_friendly | rules 30: HUNTER 1, silent a minute 900 m off, confirmed lost on a note (nothing presumes it); under way it reports again 130 m from the effect point; tamper `redate_loss` | a confirmation without a note refused; with it the nomination passes and is approved; the report revokes the loss (cause heard) before the picture reads it, and the engagement aborts (keep_out_friendly); tamper caught |
 | 142-loss-carried-to-the-same-vehicle-only | keep_out_friendly | rules 30: an earlier log confirmed HUNTER 1 and the vehicle then under hunter-2 (OTHER 7) lost; this run starts with HUNTER 1 and another vehicle, HUNTER 2, under hunter-2; tamper `hide_loss_revoked` | both carried; HUNTER 1's orbit refused (confirmed lost), HUNTER 2's hold queued as for any silent vehicle; the nomination leaves HUNTER 1 out and counts HUNTER 2 until op-2 accepts its unknown position; HUNTER 1's first report revokes the carried loss; done; replay checks the carry against the earlier log; tamper caught |
 | 143-silent-with-nothing-known-at-top-speed | keep_out_friendly | rules 30: our Magura silent under way at 12 m/s, 1.8 km east of the target, no order of ours on it | rejected (keep_out_friendly): nothing places it, so anywhere its top speed (25 m/s, and the water's 2.5) reaches; `--rules 29` lets it through (its cruise reach 330 m clear) |
+| 144-identify-a-small-drone-close-in | identify | rules 31: PUMA 1, 150 m up, sent to identify a track the picture shows only as `small_air` (a radar's size class, no altitude); on the physical reaches | dispatched to an orbit of 788 m, its camera's reach of a small drone (9,160 m; an eighth, 1,145 m), done once its camera identifies it; `--rules 30` an orbit of 1,411 m, sized by the domain's 3 m reference aircraft |
+| 145-identify-a-drone-refused-from-too-high | identify | rules 31: the MQ-9B at its catalog height, 7,600 m, sent to the same kind of track, then SKY 1 (an X10, 100 m up); on the physical reaches | the MQ-9B rejected (identify: its height over the contact beyond its camera's identification reach of a small drone, about 4,068 m), SKY 1 dispatched to an orbit of 420 m; `--rules 30` sends both (the MQ-9B 5.6 km out, SKY 1 at 1,380 m) |
