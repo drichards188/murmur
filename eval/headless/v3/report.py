@@ -6,12 +6,17 @@ that did, and the share of the needs `none` and the oracle lost that one cause e
 The oracle of these columns is the ceiling, `oracle-v3-shown` since 2026-10-26 (the owner's
 decision, SCORING-V3.md 9); the foreknowledge ceiling `oracle-v3` is reported beside it, never
 judged. A batch with the model watch officer (run.py's model arm) gets its own section
-(`model_arm`): need served beside `none`, and the cost column. MODEL RESULTS ONLY.
+(`model_arm`): need served beside `none`, the cost column, and the needs paired by situation against
+the playbook and `none` with the exact McNemar test (`paired`; an episode not scored serves nothing
+there). The restraint table shows the playbook's and the model's columns beside the free agents',
+and the orders naming more than one vehicle (group orders, bd murmur-3kqi). The episodes are
+summarized in name order, so a report is the same whatever its workers. MODEL RESULTS ONLY.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import multiprocessing as mp
 import statistics
 import tomllib
@@ -100,6 +105,8 @@ def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]
                                and decoy_only(pointed_at(a, a.get("aim") or {}, pic, truth, Params()), decoys,
                                               {n["contact"] for n in lab["needs"]})),
             "decoys": len(decoys),
+            # one order to several vehicles (a group order: its known faults are bd murmur-3kqi's)
+            "group_orders": sum(1 for a in lab["actions"] if len(a.get("uids") or []) > 1),
             "per_hour": {k: met["per_hour"].get(k) for k in ("useless", "useless_justified", "useless_unjustified",
                                                               "harmful", "fault_response", "fault_actions")}}
 
@@ -117,13 +124,83 @@ def scored_meta(m: dict[str, Any]) -> bool:
 
 
 def score_batch(d: Path, workers: int = 8) -> list[dict[str, Any]]:
+    """Every scored episode of the batch, in name order (the index's), whatever order its workers
+    finish in: a tie between causes then names the same one in every report."""
     metas = [m for m in json.loads((d / "episodes_v3.json").read_text()) if scored_meta(m)]
     nones = {(m["family"], m["situation_seed"], m["r"]): m for m in metas if m["agent"] == "none"}
     jobs = [(m, nones.get((m["family"], m["situation_seed"], m["r"]))) for m in metas]
     if workers <= 1:
-        return [_score(j) for j in jobs]
-    with mp.get_context("spawn").Pool(workers) as pool:
-        return list(pool.imap_unordered(_score, jobs, chunksize=2))
+        out = [_score(j) for j in jobs]
+    else:
+        with mp.get_context("spawn").Pool(workers) as pool:
+            out = list(pool.imap_unordered(_score, jobs, chunksize=2))
+    return sorted(out, key=lambda s: s["name"])
+
+
+def situation(m: dict[str, Any]) -> tuple[str, int, int]:
+    """An index entry's situation: its family, situation seed and replicate."""
+    return (str(m["family"]), int(m["situation_seed"]), int(m["r"]))
+
+
+def mcnemar_exact(b: int, c: int) -> float:
+    """The exact two-sided McNemar test on `b` and `c` discordant pairs: twice the binomial tail at
+    one half of the smaller count, at most 1 (1 without a discordant pair)."""
+    n = b + c
+    if n == 0:
+        return 1.0
+    tail = sum(math.comb(n, i) for i in range(min(b, c) + 1)) / 2 ** n
+    return round(min(1.0, 2.0 * tail), 6)
+
+
+def paired(model: dict[Any, dict[str, bool] | None], other: dict[Any, dict[str, bool]]) -> dict[str, Any]:
+    """Needs paired by situation (the pilot's registration, SCORING-V3.md 17.9): `other` maps each
+    situation the other agent ran to its needs (need: served), `model` each situation the model ran
+    to its own, or to None for an episode not scored (the cost guard stopped it, the API refused its
+    call as such, its input hit the leakage scan), which serves none of the other's needs: no
+    exclusion. A pair is a need of both episodes, served by both, the model only, the other only or
+    neither; the exact two-sided McNemar p reads the discordant pairs."""
+    n = {"both": 0, "model_only": 0, "other_only": 0, "neither": 0}
+    sits = 0
+    for key, theirs in sorted(other.items()):
+        if key not in model:
+            continue
+        sits += 1
+        mine = model[key]
+        for need, served in sorted(theirs.items()):
+            if mine is not None and need not in mine:
+                continue  # not a need of the model's episode
+            m = bool(mine and mine[need])
+            n["both" if m and served else "model_only" if m else "other_only" if served else "neither"] += 1
+    return {"situations": sits, "pairs": sum(n.values()), **n, "mcnemar_p": mcnemar_exact(n["model_only"], n["other_only"])}
+
+
+#: the agents the model is judged against (the registration's comparator, and the floor)
+AGAINST = ("playbook", "none")
+
+
+def paired_arm(metas: list[dict[str, Any]], scored: list[dict[str, Any]],
+               units: Any) -> dict[str, Any]:
+    """`paired` for the model against each of `AGAINST`, per family and pooled over the batch's:
+    `units(row)` gives a scored episode's needs (need: served). `metas` is the whole index, so a
+    model episode not scored is counted, as serving nothing, and named."""
+    index = {m["name"]: m for m in metas}
+    rows = {s["name"]: s for s in scored}
+    mine = {situation(m): (units(rows[m["name"]]) if scored_meta(m) and m["name"] in rows else None)
+            for m in metas if m.get("agent") == "model"}
+    out: dict[str, Any] = {"against": {}, "unscored": sorted(m["name"] for m in metas if m.get("agent") == "model"
+                                                            and not (scored_meta(m) and m["name"] in rows))}
+    for agent in AGAINST:
+        theirs = {situation(index[s["name"]]): units(s) for s in scored if s["agent"] == agent and s["name"] in index}
+        fams = {}
+        for f in sorted({k[0] for k in mine}):
+            fams[f] = paired({k: v for k, v in mine.items() if k[0] == f}, {k: v for k, v in theirs.items() if k[0] == f})
+        out["against"][agent] = {"families": fams, "pooled": paired(mine, theirs)}
+    return out
+
+
+def contact_units(s: dict[str, Any]) -> dict[str, bool]:
+    """A scored episode's eligible contact needs: served or not."""
+    return {n["contact"]: bool(n["served"]) for n in s["needs"] if n["eligible"]}
 
 
 def platform_domains() -> dict[str, str]:
@@ -261,6 +338,7 @@ def fault_summary(ag: list[dict[str, Any]]) -> dict[str, Any]:
                             "met_share": round(st["met"] / judged, 3) if judged else None},
             "decoy_looks": sum(int(s.get("decoy_looks") or 0) for s in ag),
             "decoy_situations_looked": sum(1 for s in ag if s.get("decoy_looks")),
+            "group_orders": sum(int(s.get("group_orders") or 0) for s in ag),
             "lost_vehicles": sum(lost.values()), "lost_by": dict(lost.most_common()),
             "per_hour": {k: mean(k) for k in ("useless", "useless_justified", "harmful", "fault_response")}}
 
@@ -279,8 +357,10 @@ def model_arm(d: Path, scored: list[dict[str, Any]]) -> dict[str, Any] | None:
     scored and why the rest were not (the cost guard, a call the API refused as such, the leakage
     scan), need served beside `none` on the same situations, and what they cost (US dollars at list
     prices, from the officer's totals in the index), wakes, calls, errors and refusals by their
-    `stop_details` category. None for a batch without the model."""
-    metas = [m for m in json.loads((d / "episodes_v3.json").read_text()) if m.get("agent") == "model"]
+    `stop_details` category; and the needs paired by situation against the playbook and `none`
+    (`paired_arm`). None for a batch without the model."""
+    index = json.loads((d / "episodes_v3.json").read_text())
+    metas = [m for m in index if m.get("agent") == "model"]
     if not metas:
         return None
 
@@ -316,6 +396,7 @@ def model_arm(d: Path, scored: list[dict[str, Any]]) -> dict[str, Any] | None:
         (ms_, me), (ns_, ne) = _served(mine), _served(floor)
         out["families"][f] = {"family": fam, "world": world, **costs(ms),
                               "served": {"model": [ms_, me], "none": [ns_, ne]}}
+    out["paired"] = paired_arm(index, scored, contact_units)
     first = next((m for m in metas if m.get("path")), None)
     if first is not None:
         prov = (load(first["path"]).get("provenance") or {}).get("model") or {}
@@ -323,6 +404,29 @@ def model_arm(d: Path, scored: list[dict[str, Any]]) -> dict[str, Any] | None:
     ledger = d / "model-ledger.json"
     if ledger.exists() and ledger.read_text().strip():
         out["ledger"] = json.loads(ledger.read_text())
+    return out
+
+
+PAIRED_NOTE = ("Each {what} of a situation (its family, seed and replicate) that the model and the other agent "
+               "both ran, served by both, by the model only, by the other only or by neither; McNemar p is the exact "
+               "two-sided test on the discordant pairs. A model episode the cost guard stopped, whose call the API "
+               "refused as such or whose input hit the leakage scan serves none of its situation's needs here (no "
+               "exclusion).")
+PAIRED_HEAD = ["family", "world", "against", "situations", "needs", "both", "model only", "other only", "neither",
+               "McNemar p"]
+
+
+def paired_rows(arm: dict[str, Any], lead: list[str] | None = None) -> list[str]:
+    """Markdown table rows of `paired_arm`'s counts: for each agent the model is judged against, its
+    families and worlds, then pooled over the batch's families (`lead`: cells before them)."""
+    out = []
+    for agent, x in arm["against"].items():
+        for f, r in list(x["families"].items()) + [("pooled", x["pooled"])]:
+            fam, world = ("pooled", "all") if f == "pooled" else parse(f)
+            p = f"{r['mcnemar_p']:.4g}" if r["pairs"] else "n/a"
+            cells = (lead or []) + [fam, world, agent] + [str(r[k]) for k in ("situations", "pairs", "both", "model_only",
+                                                                              "other_only", "neither")] + [p]
+            out.append("| " + " | ".join(cells) + " |")
     return out
 
 
@@ -359,6 +463,10 @@ def model_markdown(arm: dict[str, Any]) -> list[str]:
     if arm.get("ledger"):
         lg = arm["ledger"]
         lines.append(f"The batch's ledger: US${float(lg.get('usd') or 0):.2f} spent of its US${float(lg.get('max_usd') or 0):.2f} cap.")
+    pa = arm["paired"]
+    lines += ["", "### Needs served, paired by situation", "", PAIRED_NOTE.format(what="eligible contact need"), "",
+              "| " + " | ".join(PAIRED_HEAD) + " |", "|" + "---|" * len(PAIRED_HEAD), *paired_rows(pa), "",
+              f"Model episodes not scored, counted as serving nothing: {', '.join(pa['unscored']) or 'none'}."]
     return lines
 
 
@@ -409,11 +517,15 @@ def markdown(summary: dict[str, Any], d: Path) -> str:
         lines.append(f"| {fam} | {c2('none')} | {c2('random-valid')} | {c2(ORACLE)} | {c2(FORESIGHT)} |")
     lines += ["", "## Faults and restraint, per family and world", "",
               "Fault needs met (low reserve, met over judged; censored apart), vehicles lost by the end (a diagnostic), "
-              "useless orders per situation-hour (justified on the picture among them).", "",
+              "useless orders per situation-hour (justified on the picture among them), and orders naming more than one "
+              "vehicle (group orders: their known faults are bd murmur-3kqi's). The model's columns are its scored "
+              "episodes'.", "",
               "| family | world | fault needs met: none / random-valid / oracle | vehicles lost: none / random-valid / oracle | "
-              "useless per hour (justified): random-valid / oracle | harmful per hour: random-valid / oracle | "
-              "orders at a look-alike: random-valid / oracle |",
-              "|---|---|---|---|---|---|---|"]
+              "useless per hour (justified): random-valid / oracle / playbook / model | harmful per hour: random-valid / "
+              "oracle / playbook / model | orders at a look-alike: random-valid / oracle / playbook / model | "
+              "orders naming more than one vehicle: random-valid / oracle / playbook / model |",
+              "|---|---|---|---|---|---|---|---|"]
+    shown = ("random-valid", ORACLE, "playbook", "model")
     for f, b in summary["families"].items():
         a = b["agents"]
 
@@ -428,12 +540,24 @@ def markdown(summary: dict[str, Any], d: Path) -> str:
         def ph(agent: str, k: str) -> str:
             return str(((a.get(agent) or {}).get("per_hour") or {}).get(k))
 
+        def each(cell: Any) -> str:
+            return " / ".join(cell(x) for x in shown)
+
+        def useless(agent: str) -> str:
+            return f"{ph(agent, 'useless')} ({ph(agent, 'useless_justified')})"
+
+        def harmful(agent: str) -> str:
+            return ph(agent, "harmful")
+
+        def looks(agent: str) -> str:
+            return str((a.get(agent) or {}).get("decoy_looks", "n/a"))
+
+        def groups(agent: str) -> str:
+            return str((a.get(agent) or {}).get("group_orders", "n/a"))
+
         lines.append(f"| {b['family']} | {b['world']} | {fn('none')} / {fn('random-valid')} / {fn(ORACLE)} | "
                      f"{lost('none')} / {lost('random-valid')} / {lost(ORACLE)} | "
-                     f"{ph('random-valid', 'useless')} ({ph('random-valid', 'useless_justified')}) / "
-                     f"{ph(ORACLE, 'useless')} ({ph(ORACLE, 'useless_justified')}) | "
-                     f"{ph('random-valid', 'harmful')} / {ph(ORACLE, 'harmful')} | "
-                     f"{(a.get('random-valid') or {}).get('decoy_looks', 'n/a')} / {(a.get(ORACLE) or {}).get('decoy_looks', 'n/a')} |")
+                     f"{each(useless)} | {each(harmful)} | {each(looks)} | {each(groups)} |")
     if summary.get("model"):
         lines += model_markdown(summary["model"])
     return "\n".join(lines) + "\n"

@@ -2,7 +2,11 @@
 those families labelled against its `none` replicate (labels.py, labels_ops.py), and per family and
 world: the coverage, each family's needs served or decisions right per agent, harm and unwarranted
 counts, the share of losses one cause explains, and for F15 what blocks a nomination (the basic
-oracle's attempts) and for F17 the simulator's real-time factor. MODEL RESULTS ONLY.
+oracle's attempts) and for F17 the simulator's real-time factor. A batch with the model watch officer
+gets F14's gap and cover needs paired by situation, the model against the playbook and `none`
+(report.py `paired_arm`, `model_pairs`). The episodes are summarized in name order, so a report is the
+same whatever its workers; a model episode not scored is left out of its agent's rows, as report.py
+leaves it, and counted as serving nothing in the paired counts. MODEL RESULTS ONLY.
 
     .venv/bin/python -m eval.headless.v3.report_ops <batch dir>
 """
@@ -23,6 +27,7 @@ from ..v2.record import load
 from .causes import cause_of, light, single_cause
 from .families import parse
 from .labels import episode_labels, picture, sensing_errors
+from .report import PAIRED_HEAD, PAIRED_NOTE, paired_arm, paired_rows, scored_meta
 
 #: the basic oracle with its F14-F16 additions (oracle_ops.py), whose attempts this report reads: agent
 #: `oracle-v3-basic`, run as `oracle-v3` in section 12's dev check (that name is the ceiling since
@@ -174,13 +179,43 @@ def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]
 
 
 def score_batch(d: Path, workers: int = 8) -> list[dict[str, Any]]:
-    metas = [m for m in json.loads((d / "episodes_v3.json").read_text()) if m.get("path")]
+    """Every scored episode (report.py `scored_meta`), in name order whatever order its workers finish
+    in."""
+    metas = [m for m in json.loads((d / "episodes_v3.json").read_text()) if scored_meta(m)]
     nones = {(m["family"], m["situation_seed"], m["r"]): m for m in metas if m["agent"] == "none"}
     jobs = [(m, nones.get((m["family"], m["situation_seed"], m["r"]))) for m in metas]
     if workers <= 1:
-        return [_score(j) for j in jobs]
-    with mp.get_context("spawn").Pool(workers) as pool:
-        return list(pool.imap_unordered(_score, jobs, chunksize=1))
+        out = [_score(j) for j in jobs]
+    else:
+        with mp.get_context("spawn").Pool(workers) as pool:
+            out = list(pool.imap_unordered(_score, jobs, chunksize=1))
+    return sorted(out, key=lambda s: s["name"])
+
+
+def gap_units(s: dict[str, Any]) -> dict[str, bool]:
+    """A scored episode's F14 gap needs: served or not."""
+    return {str(g["need"]): bool(g["served"]) for g in s["ops"].get("gap") or []}
+
+
+def cover_units(s: dict[str, Any]) -> dict[str, bool]:
+    """A scored episode's F14 cover needs that can be judged (`evaluable`, as `summarize` counts them)."""
+    return {str(c["need"]): bool(c["served"]) for c in s["ops"].get("cover") or [] if c.get("evaluable")}
+
+
+def model_pairs(d: Path, scored: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """F14's gap and cover needs, the model against the playbook and `none`, paired by situation
+    (report.py `paired_arm`), over the families whose episodes have such needs; None for a batch
+    without the model."""
+    index = json.loads((d / "episodes_v3.json").read_text())
+    if not any(m.get("agent") == "model" for m in index):
+        return None
+    out = {}
+    for kind, units in (("gap", gap_units), ("cover", cover_units)):
+        fams = {s["family"] for s in scored if units(s)}
+        out[kind] = paired_arm([m for m in index if m["family"] in fams], [s for s in scored if s["family"] in fams],
+                               units)
+    out["unscored"] = sorted(m["name"] for m in index if m.get("agent") == "model" and not scored_meta(m))
+    return out
 
 
 def pct(a: int, b: int) -> str:
@@ -277,8 +312,23 @@ def summarize(scored: list[dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
-def markdown(summary: dict[str, Any], d: Path) -> str:
-    L = [f"# F14-F17 dev check (`{d.name}`)", "", "MODEL RESULTS ONLY: free deterministic agents, scripted operators, "
+def model_markdown(pairs: dict[str, Any]) -> list[str]:
+    """The model's gap and cover needs paired by situation (`model_pairs`), each kind a batch has."""
+    L = ["## The model watch officer: gap and cover needs, paired by situation", ""]
+    kinds = [k for k in ("gap", "cover") if any(x["families"] for x in pairs[k]["against"].values())]
+    if not kinds:
+        return L + ["No episode of the batch has a gap or a cover need.", ""]
+    L += [PAIRED_NOTE.format(what="gap need, and each cover need that can be judged,"), "",
+          "| need | " + " | ".join(PAIRED_HEAD) + " |", "|" + "---|" * (len(PAIRED_HEAD) + 1)]
+    for kind in kinds:
+        L += paired_rows(pairs[kind], lead=[kind])
+    L += ["", f"Model episodes not scored, counted as serving nothing: {', '.join(pairs['unscored']) or 'none'}.", ""]
+    return L
+
+
+def markdown(summary: dict[str, Any], d: Path, pairs: dict[str, Any] | None = None) -> str:
+    who = "free deterministic agents and the model watch officer" if pairs is not None else "free deterministic agents"
+    L = [f"# F14-F17 dev check (`{d.name}`)", "", f"MODEL RESULTS ONLY: {who}, scripted operators, "
          "the paused clock; never human data.", ""]
     for f, b in summary.items():
         L += [f"## {b['family']} on {b['world']} ({b['situations']} situations)", ""]
@@ -321,16 +371,22 @@ def markdown(summary: dict[str, Any], d: Path) -> str:
             if "capable_types" in x:
                 L.append(f"  - capable types per need {x['capable_types']}")
         L.append("")
+    if pairs is not None:
+        L += model_markdown(pairs)
     return "\n".join(L) + "\n"
 
 
 def write(d: Path, workers: int = 8) -> tuple[Path, Path]:
     scored = score_batch(d, workers)
     summary = summarize(scored)
+    pairs = model_pairs(d, scored)
+    doc: dict[str, Any] = {"summary": summary, "episodes": scored}
+    if pairs is not None:  # a batch with the model only: a free batch's files are as they were
+        doc["model"] = pairs
     j = d / "dev_ops.json"
-    j.write_text(json.dumps({"summary": summary, "episodes": scored}, indent=1, sort_keys=True, default=str))
+    j.write_text(json.dumps(doc, indent=1, sort_keys=True, default=str))
     md = d / "dev_ops.md"
-    md.write_text(markdown(summary, d))
+    md.write_text(markdown(summary, d, pairs))
     return j, md
 
 

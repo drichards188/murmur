@@ -185,5 +185,18 @@ def test_the_cap_on_the_command_line_is_every_episodes_guard(tmp_path: Path, mon
     assert b.tripped and b.calls == 0
 
 
+def test_paired_needs_count_a_model_episode_not_scored_as_serving_nothing():
+    """The report's paired comparison (report.py `paired`): a pair is a need of both episodes of a
+    situation, a model episode not scored (None) serves none of the other's needs, a situation the
+    model did not run is no pair, and the McNemar p is the exact two-sided one."""
+    from eval.headless.v3.report import mcnemar_exact, paired
+
+    other = {("f", 1, 0): {"a": True, "b": False}, ("f", 2, 0): {"a": True}, ("f", 3, 0): {"a": True}}
+    model = {("f", 1, 0): {"a": True, "b": True}, ("f", 2, 0): None}
+    r = paired(model, other)
+    assert [r[k] for k in ("situations", "pairs", "both", "model_only", "other_only", "neither")] == [2, 3, 1, 1, 1, 0]
+    assert mcnemar_exact(0, 6) == 0.03125 and mcnemar_exact(1, 9) == round(22 / 1024, 6) and mcnemar_exact(3, 3) == 1.0
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

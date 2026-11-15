@@ -1752,7 +1752,14 @@ tested with a fake client only.
 - **What is left out**: an episode the guard stopped (`budget_stop`), whose call the API refused as
   such (`model_failed`) or whose input hit the scan is listed in the report's model section, with
   its cost, and left out of every metric. The section gives need served beside `none` on the same
-  situations, cost, wakes, API errors and refusals per family and world.
+  situations, cost, wakes, API errors and refusals per family and world, and (2026-11-14, bd
+  murmur-1zcp) the needs paired by situation against the playbook and `none` (both served, the
+  model's only, the other's only, neither; the exact two-sided McNemar p), per family and world and
+  pooled, where an episode left out of the metrics serves none of its situation's needs, by name.
+  The restraint table gives the playbook's and the model's columns, and the orders naming more
+  than one vehicle (bd murmur-3kqi); report_ops.py pairs F14's gap and cover needs the same way.
+  Both reports summarize their episodes in name order, so a report is the same whatever its
+  workers.
 - **Its orders** (2026-11-14, bd murmur-1zcp): the watch officer looks with `identify` (decision
   rules 21) where the playbook and the oracle send orbits, and 2.5 labels it (choices 37 to 39), so
   useless orders per hour, justified on the picture, harm and the false-alarm line (17.2) read the
