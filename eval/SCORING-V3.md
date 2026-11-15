@@ -1183,7 +1183,77 @@ the honest oracle gets 7 of 20 right (3 and 4), with no harmful or unwarranted n
 the adopter's engagements count as the agent's is the owner's (choice 26's reading); the rest of
 the losses are the rules' (an aircraft without a velocity counts at 100 m/s; the picture's
 after-approval stops) or the family's (4 of 20 situations an escort makes engagement wrong by truth,
-2 of 10 at the Gate our own buoy does, though `should_engage` says true in each).
+2 of 10 at the Gate our own buoy does, though `should_engage` says true in each). Version 3 removes
+the family's two (12.6).
+
+### 12.6 F15 version 3: the escort peels away, our drifters stay clear (2026-11-15, bd murmur-yu6s)
+
+**Coverage**: golden-gate-v3 (22 of ours with F15's Switchblade BLADE 1 and FPV WASP 1) and
+san-diego (26), each with its world's traffic, on the re-baked grids and the world's current field;
+the physical sensing model; the hostile on the surface, the traffic in the air, on the ground and
+on the water; tasks orbit, the nomination form, engage; operators: approve-all for cards, the
+scripted signers, F15's reviewer and adopter; the paused clock, one replicate; dev seeds 5400-5433
+(30, and 5430-5433 so that San Diego has 8 escort situations; the Gate has 11); agents `none` and
+the basic oracle, 136 episodes; a draw-only check of seeds 5000-5499 in both worlds (no episodes).
+Decision rules 32, as on main at 09152e2. **Shortcuts, named**: as 12.5's (the oracle is
+privileged; the reviewer, adopter and signers are scripts; `random-valid` and the playbook were not
+run). Model results only. Records in the main checkout's logs/yu6s/, not kept with the repository.
+
+**The changes** (families_ops.py's module doc, oracle_ops.py's; choice 24):
+(1) **the escort peels away**: it holds alongside until 30 to 110 s after the first act (past the
+declaration, before the third act), then leaves on a course within 75 degrees of straight away from
+the hostile (105 where the water gives no such run: 3 of the 500 Gate draws), 1.5 to 3 km, at its
+kind's speed (a fishing boat 3 to 5.5 m/s, a fast boat 8 to 16). Drawn after every other element,
+so the rest of a situation is version 2's draw for draw. In the 500-seed draw every escort leaves
+at least 10 s before the third act and is 200 m off its holding point by 797 s at the latest; in
+the episodes every escort left. The test is now to wait until it is clear or to strike tightly
+enough to spare it, and never to nominate it.
+(2) **the holding point is drawn clear of our drifters**: redrawn until no drifter of ours comes
+within 555 m of it at any second of the episode, on the drift the headless simulator gives it (the
+world's baked current field, grounding at 0.5 m of water; within 2.4 m of every drift recorded in
+the dev episodes over 1,200 s). The 555 m is the friendly keep-out of a 75 m effect (275 m), one of
+ours' uncertainty over a 120 s span (240 m) and 40 m for the hostile's stop and track error. It
+redraws 329 of the Gate's 500 holding points (version 2's came within 275 m of a drifter in 139)
+and none of San Diego's (its drifters stay 3.5 km and more off).
+(3) **the oracle spares by the labels' geometry**: a plan spares a contact not hostile by truth
+when the contact, anywhere along its true course between braking at once and holding its speed,
+stays farther than the radius plus twice the track's 1-sigma from the form's effect point from the
+effect time to 60 s after it, or is more than the radius and 10 m above or below the target (the
+truth side's blast lies inside the smallest radius). It asks 75 m, then 40 m, and waits only where
+neither spares everything. Version 2 waited while anything not hostile by truth was within 140 m,
+so it never attempted while an escort held 40 to 150 m off.
+
+| | GG v2, 5400-09 | GG v3, 5400-09 | GG v3, 5400-33 | SD v2, 5400-09 | SD v3, 5400-09 | SD v3, 5400-33 |
+|---|---|---|---|---|---|---|
+| situations (with an escort) | 10 (2) | 10 (4) | 34 (11) | 10 (2) | 10 (2) | 34 (8) |
+| engagement right, the agent's own | 1/10 | 0/10 | 4/34 | 0/10 | 0/10 | 0/34 |
+| right with the adopter's | 3/10 | 4/10 | 15/34 | 4/10 | 4/10 | 17/34 |
+| harmful / unwarranted / doubtful collateral | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| escort situations right with the adopter's | 0/2 | 0/4 | 2/11 | 0/2 | 1/2 | 6/8 |
+| the oracle's attempts (passed) | 1,026 (1) | 996 (3) | 3,163 (7) | 674 (0) | 917 (0) | 2,996 (0) |
+| attempts a drifter blocked | 425 | 0 | 5 | 0 | 0 | 0 |
+| waits (no plan spares) | 378 | 4 | 11 | 400 | 34 | 173 |
+
+`none` was right in none. The Gate's one version 2 `right` (5409) had its holding point redrawn, so
+it is another situation now (still right with the adopter); San Diego 5408 is the same situation in
+both versions and went from right to not right (the oracle's ask came 8 s later and the adopted
+nomination met an aircraft's keep-out): expect about one in ten of such noise. In the 8 escort
+situations right with the adopter's, every effect came after the escort had left, 215 to 2,551 m
+from the point. The escort situations not right failed as the others do: aircraft keep-outs, BLADE
+1's link at the Gate (stops after dispatch), or the asks not adopted. In three San Diego escort
+situations (5416, 5427, 5432; escorts 44 to 83 m off) the declaration was confirmed only after the
+escort had left (not traced; likely the rule's single-track attribution with a boat that close).
+San Diego's 173 waits are mostly the crossing sailboat, which the engine's keep-out blocks anyway.
+
+**Reading.** The family no longer draws situations where engaging rightly is impossible: an
+escort now leaves, and no drifter of ours reaches the keep-out (5 of the Gate's 3,163 attempts, at
+555 m). Version 3's honest oracle is right in 32 of 68 situations with the adopter's nominations
+and 4 of 68 on its own, none harmful. What remains is version 2's: aircraft and lost contacts in
+the keep-outs (17.18: not the speed bound), BLADE 1's link at the Gate, and stops after dispatch.
+**Open, the owner's**: the 555 m clearance over the whole episode redraws two thirds of the Gate's
+holding points (a clearance from the hostile's arrival only, or over a 60 s span, about 435 m,
+would move fewer); the oracle's motion model lets a contact slow or stop but not turn or speed up;
+choice 26 (whether the adopter's engagements count as the agent's) is unchanged.
 
 ## 13. The ruler: the ceiling, its ladder and the honest ceiling's perturbations (C2)
 
@@ -2367,8 +2437,8 @@ a nomination), and F15 version 2's adopter (op-4) takes up an agent's refused no
 blockers accepted where the form says that clears them. The honest oracle is right in 1 of 20
 situations on its own nominations, 7 of 20 with the adopter's, none harmful. F15 is not yet
 scoreable: whether the adopter's engagements count as the agent's (choice 26), aircraft without a
-velocity in the keep-out (bd murmur-u2k0, the owner's), situations where engaging is wrong by truth
-(bd murmur-yu6s) and more seeds come first. Rules 32 (17.17) came after these runs: an engagement's
+velocity in the keep-out (bd murmur-u2k0, the owner's; 17.18), situations where engaging is wrong by
+truth (bd murmur-yu6s; removed in version 3, 12.6) and more seeds come first. Rules 32 (17.17) came after these runs: an engagement's
 assessment in fog or at night now counts only the reach under the conditions, which F15's figures
 do not include.
 
@@ -2407,3 +2477,50 @@ in fog and at night are now judged on what its cameras can do there. The honest 
 day standoffs may grow past rules 31's (that needs the camera to cue farther than the catalog's
 `range_m`); whether the honest ceiling should read the visibility `get_sensor_reach` shows; the
 per-tick reach pass at Saturation's 3,602 vehicles is not measured.
+
+### 17.18 An aircraft's reach by its shown size class: decision rules 33, built and not adopted (2026-11-15, bd murmur-u2k0)
+
+**Coverage.** Both worlds (golden-gate-v3, san-diego), the physical sensing model, each world's
+traffic and the families' added contacts (surface, air, ground). Two dev sets of 140 episodes: F15
+version 2 on 5400-5409 (`none`, the basic oracle) with F2 drone, F3 low aircraft, F8 decoys, F9
+night and fog and F18 quiet on 5000-5009 (`none`); and the same on 5410-5419 and 5010-5019,
+written before the first was read and run once. The paused clock, one replicate, the scripted
+operators; no held-out calibration seed, nothing tuned; free. Records in the main checkout's
+logs/u2k0/, not in git; the build is the local branch `rules33-class-reach` (800d809), not on main.
+
+**What was built** (the owner's option 1 for murmur-u2k0, staged as rules 33 behind
+`RULES_NEWEST`): a live, in-view aircraft track without a velocity counts in the engagement
+keep-outs at the top speed of the fastest kind in its shown size class (rules 31's
+`identify::shown_class`) instead of the air domain's 100 m/s: small_air 51 m/s (the one-way
+attack drone), large_air 75 (the helicopter). No class is faster than its domain. A safety probe
+compared each such track-second's region with where the contact truly was 5 to 300 s on.
+
+**Result.** The rule as built is less safe than rules 32:
+- The cameras showed 1.3 % of these track-seconds the wrong class, nearly all light aircraft or
+  helicopters recognised or identified as a small drone; never at detection.
+- Misses (the truth outside the region at the horizon): rules 32 none past 5 s on either set;
+  rules 33 19 to 179 at each horizon from 10 to 300 s, in 38 and 48 of the 140 episodes, worst
+  1,306 m. Two causes: light aircraft at 55 to 70 m/s shown as small drones and counted at 51; and,
+  at the right class, 5 to 10 s track error that the 100 m/s had covered.
+- A variant with the class taken only at detection had no new miss on either set and cut the
+  mean 60 s region from 6,590 to 5,496 m; it rests on the model never drawing a detection's class
+  wrong.
+- F15 version 2 did not change at all (right 1/20, with the adopter's 7/20, none harmful). Of
+  1,019 small_air blocker instances, 380 would not clear at any speed: the radar-only track's
+  2-sigma and the 110 m lag already reach the clearance; every attempt had other blockers too.
+
+**Reading.** The speed bound is not what keeps F15's honest oracle from engaging; the radar-only
+drone's position error is (REAPER 1's radar has no height, so its fixes jump along the line of
+sight). Rules 33 stays off main. Also found: San Diego scripts its airliners as `light_aircraft` at
+75 and 90 m/s against the kind's 65 (bd murmur-odn3); and rules 14 lets a track with a velocity
+reach the domain's 100 m/s, so under rules 33 a drone's region would grow when it gained a velocity.
+**Open, the owner's**: drop rules 33, or take the detection-only variant to unused seeds.
+
+### 17.19 F15 version 3 (2026-11-15, bd murmur-yu6s)
+
+Set out in 12.6 (coverage there: both worlds, dev seeds 5400-5433, `none` and the basic oracle;
+rules 32). The escort now peels away 30 to 110 s after the first act, the holding point is drawn
+clear of our drifters, and the oracle spares by the labels' geometry. The honest oracle is right in
+4 of 68 situations on its own nominations and 32 of 68 with the adopter's, none harmful, 8 of 19
+escort situations among them. F15 is still not scoreable: choice 26, the aircraft in the keep-outs
+(17.18), BLADE 1's link at the Gate and more seeds come first.

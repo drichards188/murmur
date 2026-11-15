@@ -133,3 +133,11 @@ may accept a live blocker as it is behaving now"), the engine scenarios and repl
   the world within 1.9 km of an applied effect). What no acceptance clears is now mostly an aircraft
   without a velocity, which counts at the air top speed (a 5 m/s hobby drone tracked by radar
   alone, kilometres off): rules 19 accepts only a track with a velocity.
+- **Since 2026-11-15** (bd murmur-u2k0, murmur-yu6s; eval/SCORING-V3.md 17.18 and 12.6): counting
+  such an aircraft at its shown size class's top speed (rules 33, built, not adopted) made the
+  keep-out miss real aircraft (a light aircraft shown as a small drone) and cleared no F15
+  attempt: the drone's radar-only position error, not the speed bound, keeps its region over the
+  clearance. F15 version 3 removed the family's own impossibilities (an escort alongside for the
+  whole episode, a drifting buoy of ours at the holding point): the honest oracle was right in 32
+  of 68 situations with the adopter, 4 on its own, none harmful. The engagement losses left are
+  the keep-out's (aircraft, lost contacts) and BLADE 1's link at the Gate.
