@@ -2142,3 +2142,46 @@ labels its reading is not justified per hour, and it holds by more: 2.0 against 
 against 31.0 pooled, harmful 0 against 0, with the burden lower too (22.7 orders an hour against
 90.7 on F18, 20.4 against 76.4 pooled). (a) holds on imagery collects, 10 of 10, and now on GNSS
 covers as well, 3 of 10 where 3 are needed; (b) still fails. **The verdict holds: go, by (a).**
+
+### 17.13 One paid check of the drone fixes (2026-11-15)
+
+**Coverage.** san-diego (24 of ours: air, ground, surface and subsurface vehicles; AIS, EO/IR, ESM,
+radar and sonar; its traffic in the air, on the ground and on the surface): one situation, F2's drone
+on the model pilot's seed 6605 (local 13:55, by day), the one 17.11 chose for the slowest drone (12.6
+m/s) and the longest lead (138 s from its first track to the line), where no free play brought a
+camera near it. Run once each on f5890e6 (decision rules 31, the officer's wake before the line, "no
+velocity yet", the brief's centre as a point, San Diego's watch circle on the mission's): the model
+(17.9's agent, Claude Sonnet 5.5 alone at medium effort), `none`, `playbook` and `oracle-v3-shown`.
+The paused clock, the approve-all operator. US$0.81 (the owner's US$45 now US$39.61 spent). Records
+in `eval/results/headless/v3-model-drone-check-2026-11-15`. **Model results only**; one episode, a
+check of the fixes end to end, not a measure.
+
+**Result: not served** by the model, `none` or the playbook; the ceiling served it at 358 s, 102 s
+before the need, with KESTREL 1 (FVR-90) 107 m from the drone, as in the pilot.
+
+**What happened.**
+- 312 s: the model sent KESTREL 1, its nearest camera, to identify T-0029, a small air contact seen
+  by radar only, in truth a neutral hobby drone hovering over Coronado Beach (justified on the
+  picture).
+- 324 s, 2 s after the drone's first track: the new wake fired with the right facts: "T-0030 (air) is
+  1580 m outside the San Diego Bay entrance and predicted to come inside in 63 s (no velocity yet: at
+  25 m/s straight in); identity small_air (detect, confidence 0.01) ... position uncertainty 1473 m".
+  The model called no tool and answered: "T-0030 is another weak radar-only air blip ... KESTREL 1 is
+  busy with T-0029. I'll wait for a firmer track or EO/IR cue before proposing another sensor look."
+  PUMA 2 was then on a Navy truck that many sensors had identified, as the model itself said later.
+- 483 s, the wake for the drone inside (the picture showed it 116 m past the edge; truth crossed at
+  460 s): the model sent PUMA 2, 156 s away, saying the deadline would be missed; KESTREL 1, 39 s
+  away, it kept on the hobby drone. Deadline 490 s.
+- KESTREL 1's look at the hobby drone (rules 31's orbit, 921 m for a `small_air` track, where rules
+  30 gave 1,684) never came within 3.0 km of it: the drone's radar-only track sat 2.1 to 5.3 km from
+  it for five minutes, always on the radar's side (REAPER 1's range to the track 53 to 76 % of its
+  range to the drone), and the look ended unidentified at 649 s.
+
+**What it shows.** The wake and the update now carry what the model needs, and the identify orbit is
+sized for a drone. What binds now, in order: the model's judgment (told of a contact due inside in
+63 s, it waited on the track's weakness, without asking which other camera could go); a look-alike
+(a neutral hobby drone 10 s earlier took the camera the ceiling served this drone with); and the
+picture's position of a radar-only small drone, kilometres off for minutes, which no orbit centred on
+it can overcome (bd murmur-jehg, a free investigation; the sensing model is the fixed world, so its
+cause is reported before anything changes). The first two are the model's to show at scale; the
+third limits every agent that reads the picture and should be understood before a paid batch.
