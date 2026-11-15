@@ -411,6 +411,15 @@ def _why(c: dict) -> str:
     return out
 
 
+def _motion(c: dict) -> str:
+    """Speed and course, or that the tracker has no velocity yet (the feed's speed is 0.0 then,
+    which is not a contact standing still; bd murmur-jhgn)."""
+    sp, co = c.get("speed_mps"), c.get("course_deg")
+    if not isinstance(sp, (int, float)) or not isinstance(co, (int, float)):
+        return "no velocity yet"
+    return f"{sp:.1f} m/s course {co:.0f}"
+
+
 def render(c: dict) -> str:
     """One line for one change."""
     k = c.get("kind", "?")
@@ -429,7 +438,7 @@ def render(c: dict) -> str:
         conf_s = f" {conf:.2f}" if isinstance(conf, (int, float)) else ""
         return (f"{t} new track {tr}: {c.get('domain')} {c.get('identity') or 'unclassified'}, "
                 f"estimated {c.get('affiliation')}{conf_s}, at {_pos(c.get('position'))}, "
-                f"{c.get('speed_mps')} m/s course {c.get('course_deg')}, seen by {src or '?'}{_ais(c)}")
+                f"{_motion(c)}, seen by {src or '?'}{_ais(c)}")
     if k == "track.affiliation":
         return f"{t} track {tr} affiliation estimate {c.get('from')} -> {c.get('to')}"
     if k == "track.declared":
