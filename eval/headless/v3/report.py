@@ -5,7 +5,8 @@ conditions on 2026-10-25), the vehicle types the sensing model says could answer
 that did, and the share of the needs `none` and the oracle lost that one cause explains (causes.py).
 The oracle of these columns is the ceiling, `oracle-v3-shown` since 2026-10-26 (the owner's
 decision, SCORING-V3.md 9); the foreknowledge ceiling `oracle-v3` is reported beside it, never
-judged. MODEL RESULTS ONLY.
+judged. A batch with the model watch officer (run.py's model arm) gets its own section
+(`model_arm`): need served beside `none`, and the cost column. MODEL RESULTS ONLY.
 """
 
 from __future__ import annotations
@@ -108,8 +109,15 @@ def decoy_only(pointed: set[str], decoys: set[str], needs: set[str]) -> bool:
     return bool(pointed & decoys) and not (pointed & needs)
 
 
+def scored_meta(m: dict[str, Any]) -> bool:
+    """An index entry the metrics read: one with a record, and for the model only a `scored` one (a
+    model episode the cost guard stopped, whose call the API refused as such or whose input hit the
+    leakage scan is not the model's run to judge: `model_arm` lists it apart)."""
+    return bool(m.get("path")) and (m.get("agent") != "model" or m.get("class") == "scored")
+
+
 def score_batch(d: Path, workers: int = 8) -> list[dict[str, Any]]:
-    metas = [m for m in json.loads((d / "episodes_v3.json").read_text()) if m.get("path")]
+    metas = [m for m in json.loads((d / "episodes_v3.json").read_text()) if scored_meta(m)]
     nones = {(m["family"], m["situation_seed"], m["r"]): m for m in metas if m["agent"] == "none"}
     jobs = [(m, nones.get((m["family"], m["situation_seed"], m["r"]))) for m in metas]
     if workers <= 1:
@@ -261,9 +269,104 @@ def pct(x: float | None) -> str:
     return "n/a" if x is None else f"{100 * x:.0f} %"
 
 
+def _served(rows: list[dict[str, Any]]) -> tuple[int, int]:
+    needs = [n for s in rows for n in s["needs"] if n["eligible"]]
+    return sum(1 for n in needs if n["served"]), len(needs)
+
+
+def model_arm(d: Path, scored: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The model watch officer's episodes (run.py's model arm), per family and world: how many were
+    scored and why the rest were not (the cost guard, a call the API refused as such, the leakage
+    scan), need served beside `none` on the same situations, and what they cost (US dollars at list
+    prices, from the officer's totals in the index), wakes, calls, errors and refusals by their
+    `stop_details` category. None for a batch without the model."""
+    metas = [m for m in json.loads((d / "episodes_v3.json").read_text()) if m.get("agent") == "model"]
+    if not metas:
+        return None
+
+    def mean(xs: list[float]) -> float | None:
+        return round(statistics.fmean(xs), 4) if xs else None
+
+    def costs(ms: list[dict[str, Any]]) -> dict[str, Any]:
+        tot = [m.get("model") or {} for m in ms]
+        usd = [float(t.get("usd") or 0.0) for t in tot]
+        cats: Counter = Counter()
+        for t in tot:
+            cats.update(t.get("refusal_categories") or {})
+        return {"episodes": len(ms), "usd_total": round(sum(usd), 4), "usd_per_episode": mean(usd),
+                "usd_max": round(max(usd), 4) if usd else None,
+                "wakes_per_episode": mean([float(t.get("wakes") or 0) for t in tot]),
+                "api_calls_per_episode": mean([float(t.get("api_calls") or 0) for t in tot]),
+                "tokens": {k: sum(int((t.get("tokens") or {}).get(k) or 0) for t in tot)
+                           for k in ("input", "cache_write", "cache_read", "output")},
+                "errors": sum(int(t.get("errors") or 0) for t in tot),
+                "refusals": sum(int(t.get("refusals") or 0) for t in tot), "refusal_categories": dict(sorted(cats.items())),
+                "scored": sum(1 for m in ms if m.get("class") == "scored"),
+                "budget_stopped": sorted(m["name"] for m in ms if m.get("class") == "budget_stop"),
+                "model_failed": sorted(m["name"] for m in ms if m.get("class") == "model_failed"),
+                "harness_error": sorted(m["name"] for m in ms if m.get("class") == "harness_error")}
+
+    out: dict[str, Any] = {"all": costs(metas), "families": {}}
+    for f in sorted({m["family"] for m in metas}):
+        ms = [m for m in metas if m["family"] == f]
+        mine = [s for s in scored if s["family"] == f and s["agent"] == "model"]
+        seeds = {s["seed"] for s in mine}
+        floor = [s for s in scored if s["family"] == f and s["agent"] == "none" and s["seed"] in seeds]
+        fam, world = parse(f)
+        (ms_, me), (ns_, ne) = _served(mine), _served(floor)
+        out["families"][f] = {"family": fam, "world": world, **costs(ms),
+                              "served": {"model": [ms_, me], "none": [ns_, ne]}}
+    first = next((m for m in metas if m.get("path")), None)
+    if first is not None:
+        prov = (load(first["path"]).get("provenance") or {}).get("model") or {}
+        out["config"] = {k: prov.get(k) for k in ("routine", "consult", "max_tokens", "fallbacks")}
+    ledger = d / "model-ledger.json"
+    if ledger.exists() and ledger.read_text().strip():
+        out["ledger"] = json.loads(ledger.read_text())
+    return out
+
+
+def model_markdown(arm: dict[str, Any]) -> list[str]:
+    a = arm["all"]
+    cfg = arm.get("config") or {}
+
+    def lane(k: str) -> str:
+        x = cfg.get(k) or {}
+        return f"{x.get('model')} at {x.get('effort')}" if x else "?"
+
+    def frac(p: list[int]) -> str:
+        return f"{p[0]}/{p[1]} ({pct(p[0] / p[1])})" if p[1] else "no needs"
+
+    cats = ", ".join(f"{k} {v}" for k, v in a["refusal_categories"].items())
+    lines = ["", "## The model watch officer", "",
+             f"The watch officer's design through the API (eval/headless/officer.py): routine {lane('routine')}, "
+             f"consulted {lane('consult')}; no refusal fallback. These results describe the model as an agent in "
+             "simulated situations, never people. An episode the cost guard stopped, whose call the API refused as "
+             "such, or whose input hit the leakage scan is listed here and left out of every metric above.", "",
+             "| family | world | scored / episodes | need served: model / none (same situations) | cost (US$) | "
+             "per episode | wakes per episode | API errors | refusals | not scored |",
+             "|---|---|---|---|---|---|---|---|---|---|"]
+    for f, b in arm["families"].items():
+        cut = [f"{k.replace('_', ' ')} {len(b[k])}" for k in ("budget_stopped", "model_failed", "harness_error") if b[k]]
+        lines.append(f"| {b['family']} | {b['world']} | {b['scored']}/{b['episodes']} | {frac(b['served']['model'])} / "
+                     f"{frac(b['served']['none'])} | {b['usd_total']:.2f} | {b['usd_per_episode']:.3f} | "
+                     f"{b['wakes_per_episode']} | {b['errors']} | {b['refusals']} | {', '.join(cut) or 'none'} |")
+    lines += ["", f"In all: {a['episodes']} model episodes, US${a['usd_total']:.2f} at list prices (US${a['usd_per_episode']:.3f} "
+              f"an episode, at most US${a['usd_max']:.3f}); tokens: {a['tokens']['input']:,} fresh input, "
+              f"{a['tokens']['cache_read']:,} cache reads, {a['tokens']['cache_write']:,} cache writes, "
+              f"{a['tokens']['output']:,} output; {a['errors']} API errors; {a['refusals']} refusals"
+              + (f" ({cats})" if cats else "") + "."]
+    if arm.get("ledger"):
+        lg = arm["ledger"]
+        lines.append(f"The batch's ledger: US${float(lg.get('usd') or 0):.2f} spent of its US${float(lg.get('max_usd') or 0):.2f} cap.")
+    return lines
+
+
 def markdown(summary: dict[str, Any], d: Path) -> str:
     cov = summary["coverage"]
-    lines = ["# Scoring v3 dev check", "", f"Batch `{d.name}`. MODEL RESULTS ONLY: free deterministic agents on generated "
+    who = ("free deterministic agents and the model watch officer" if summary.get("model")
+           else "free deterministic agents")
+    lines = ["# Scoring v3 dev check", "", f"Batch `{d.name}`. MODEL RESULTS ONLY: {who} on generated "
              "situations, the approve-all operator, the paused clock; never human data.", "", "## Coverage", ""]
     for w, x in cov["worlds"].items():
         lines.append(f"- **{w}**: {x['vehicles']} vehicles ({', '.join(f'{k} {v}' for k, v in x['by_domain'].items())}); "
@@ -331,12 +434,17 @@ def markdown(summary: dict[str, Any], d: Path) -> str:
                      f"{ph(ORACLE, 'useless')} ({ph(ORACLE, 'useless_justified')}) | "
                      f"{ph('random-valid', 'harmful')} / {ph(ORACLE, 'harmful')} | "
                      f"{(a.get('random-valid') or {}).get('decoy_looks', 'n/a')} / {(a.get(ORACLE) or {}).get('decoy_looks', 'n/a')} |")
+    if summary.get("model"):
+        lines += model_markdown(summary["model"])
     return "\n".join(lines) + "\n"
 
 
 def write(d: Path, workers: int = 8) -> tuple[Path, Path]:
     scored = score_batch(d, workers)
     summary = summarize(scored)
+    arm = model_arm(d, scored)
+    if arm is not None:  # a batch with the model only: a free batch's files are as they were
+        summary["model"] = arm
     j = d / "dev_v3.json"
     j.write_text(json.dumps({"summary": summary, "episodes": scored}, indent=1, sort_keys=True, default=str))
     md = d / "dev_v3.md"

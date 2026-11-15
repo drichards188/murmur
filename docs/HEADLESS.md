@@ -788,9 +788,9 @@ default; the **charged** clock (section 14.1.1) makes a turn cost simulated time
 call, the worst case of that call (its request at 2 characters a token and its whole
 `max_tokens`, at the list price of the model it goes to for a prompt that long) is checked
 against the episode's cap (`MURMUR_EVAL_MAX_USD`, default 3.00) and reserved in the batch's
-ledger (`MURMUR_EVAL_BATCH_MAX_USD`, default 20.00; the batch puts `model-ledger.json` in its
-directory and every worker settles into it under its file lock); after it, what it billed at
-list prices is settled. Unlike the storyline arm, which
+ledger (`MURMUR_EVAL_BATCH_MAX_USD`, default 20.00; scoring v3's runner takes it from `--max-usd`;
+the batch puts `model-ledger.json` in its directory and every worker settles into it under its
+file lock); after it, what it billed at list prices is settled. Unlike the storyline arm, which
 prices every cache read as fresh input, this arm settles cache reads (a tenth of input: $0.20 a
 million tokens on Opus 5.5, $0.10 on Sonnet 5.5, since murmur-ynsw; $0.20 on both before) and
 cache writes (1.25 times input) at their own rates, and a Haiku 5.5 call whose prompt passes
@@ -913,11 +913,12 @@ answers (the fake client, tested) a charged episode repeats exactly. Each wake r
 calls' times, charges and answer times (`api_calls[].t`, `charge_s`, `t_answer`), when each tool
 call ran (`tool_calls[].t`), the turn's end (`t_end`) and its total charge.
 
-**The leakage scan** (SCORING-V2.md 4.4 and 7; `eval/headless/v2/leakage.py`), scoring v2 only:
-the system prompt, the tool definitions, every update and every tool result are scanned for
-family names, run names, seeds in names and the scorer's field names before the model can
-receive them; a hit stops the officer before that input is sent (`stop: leakage`) and the
-episode is a `harness_error` (`v2.leakage` holds the hits). The model's own words are scanned as
+**The leakage scan** (SCORING-V2.md 4.4 and 7; `eval/headless/v2/leakage.py`), scoring v2 and v3
+(scanner version 2 adds v3's family and field names): the system prompt, the tool definitions,
+every update and every tool result are scanned for family names, run names, seeds in names and
+the scorer's field names before the model can receive them; a hit stops the officer before that
+input is sent (`stop: leakage`) and the episode is a `harness_error` (`v2.leakage`, or
+`v3.leakage`, holds the hits). The model's own words are scanned as
 diagnostics only; the bridge echoing them back (a rationale) is recorded as an echo, not a hit.
 
 ## 15. How to run

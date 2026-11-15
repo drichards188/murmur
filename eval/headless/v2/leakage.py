@@ -14,7 +14,10 @@ words coming back (the bridge echoes a proposal's rationale) and is kept apart a
   (`fast-unknown`, `two_at_once`); Harbor watch's title (`harbor watch`); every `v2-` form
   (`v2-decoy`, `v2_fast_unknown`); and any family name followed by a number (`decoy-1000`, a
   situation's name). The one-word families (`decoy`, `quiet`, `conflict`) are ordinary words:
-  alone they are not tokens (a tool result may well say "conflict").
+  alone they are not tokens (a tool result may well say "conflict"). Scoring v3's families
+  (`families_v3`, eval/headless/v3/families.py) as written without their world tag
+  (`f1-fast-boat`, `f8_decoys`) and in their `v3-` form (`v3-f8-decoys-gg`); their words alone
+  are not tokens (`fast_boat` is a kind the tracker names, `sea_state` a condition).
 - **run names** other than the opaque `ep-<12 hex>` id: a v1 run id (`headless-<situation>-s<seed>`),
   a batch job's name (`<family>-<agent>-s<seed>-r<r>`), any lowercase hyphenated name ending in
   `-s<digits>` (`hw-model-s1`), and the episode's own situation name (`v2-fast-unknown-1000`).
@@ -22,8 +25,9 @@ words coming back (the bridge echoes a proposal's rationale) and is kept apart a
   `_s<seed>` or `seed<seed>` (`seed 1000`, `seed=1000`, `seed-1000`). A bare number is a value
   (an altitude, a count), not a name, and a seed the bridge serves as a JSON value
   (`"seed":1000`) is a world value, exempt.
-- **scorer field names** (`FIELDS`): the v2 labels', metrics' and record's names and v1's labels'
-  and metrics', as identifiers (case as written, `_`-joined compounds included: `pre_served`
+- **scorer field names** (`FIELDS`): the v2 labels', metrics' and record's names, v1's labels'
+  and metrics', and v3's own (its labels', causes', metrics' and report's), as identifiers
+  (case as written, `_`-joined compounds included: `pre_served`
   finds `pre_served_share`): `t_need`, `pre_served`, `look_by`, `episode_class` and the rest of
   `FIELDS`. Two of them are ordinary words (`WORD_FIELDS`: `eligible`, `contributed`):
   those are tokens only in a field name's form (a JSON key, `name=`, a `_`-joined compound),
@@ -45,7 +49,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterator
 
-VERSION = "1"
+#: "2": scoring v3's family names and field names added to the tokens
+VERSION = "2"
 EXCERPT = 40
 MAX_KEPT = 50
 
@@ -71,6 +76,15 @@ FIELDS = (
     "look_by", "must_look", "needs_look", "look_covered", "time_to_look", "false_looks",
     "first_within_s", "truth_target", "tracker_target", "look_in_progress_cut", "no_look_to_cut",
     "human_cards", "reproposals_after_rejection",
+    # v3 labels, causes, metrics and report (eval/headless/v3/: labels.py, labels_ops.py,
+    # causes.py, metrics.py, report.py) and the families' stated truth (not `grace_s`: the
+    # policy serves `assess_grace_s`, which a compound match would find)
+    "wrong_observers", "wrong_kind", "wrong_family", "wrong_call", "ais_spoofed",
+    "identified_with", "sensing_errors", "single_cause", "top_coarse", "share_coarse",
+    "unjudged_actions", "unjudged_because", "harmful_kinds", "fault_met_share", "useless_share",
+    "decoy_looks", "decoy_situations_looked", "capable_types", "gap_need", "cover_need",
+    "should_engage", "nomination_label", "review_labels", "restraint_ok", "run_during_outage",
+    "contribution_instrument", "mission_sha256",
 )
 #: scorer field names that are ordinary words: tokens only as a field name is written
 WORD_FIELDS = ("eligible", "contributed")
@@ -83,6 +97,13 @@ def families() -> tuple[str, ...]:
     from ..families import FAMILIES, SITUATIONS_V2
 
     return tuple(sorted(set(FAMILIES) | set(SITUATIONS_V2)))
+
+
+def families_v3() -> tuple[str, ...]:
+    """Every scoring v3 family without its world tag (`v3-f1-fast-boat-gg` is `f1-fast-boat`)."""
+    from ..v3.families import PREFIX, all_names
+
+    return tuple(sorted({n[len(PREFIX):].rpartition("-")[0] for n in all_names()}))
 
 
 @dataclass(frozen=True)
@@ -123,6 +144,11 @@ def patterns(ctx: Context | None = None) -> list[tuple[str, str, re.Pattern[str]
     alts = "|".join(_joined(f) for f in sorted(fams, key=len, reverse=True))
     out.append(("family", "v2-<family>", re.compile(_W + r"v2[-_](?:" + alts + ")" + _E, re.I)))
     out.append(("family", "<family>-<number>", re.compile(_W + r"(?:" + alts + r")[-_:]\d+" + _E, re.I)))
+    v3 = families_v3()
+    for f in v3:  # each begins `f<n>-`: distinctive as written
+        out.append(("family", f, re.compile(_W + _joined(f) + _E, re.I)))
+    alts3 = "|".join(_joined(f) for f in sorted(v3, key=len, reverse=True))
+    out.append(("family", "v3-<family>", re.compile(_W + r"v3[-_](?:" + alts3 + ")" + _E, re.I)))
     out.append(("run", "headless-<situation>-s<seed>", re.compile(_W + r"headless-[a-z0-9-]+-s\d+" + _E)))
     out.append(("run", "<name>-s<seed>[-r<r>]",
                 re.compile(r"(?<![A-Za-z0-9_-])[a-z][a-z0-9]*(?:-[a-z0-9]+)*-s\d+(?:-r\d+)?" + _E)))

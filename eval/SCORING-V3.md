@@ -1653,3 +1653,45 @@ the predicted-coverage check that makes an element must act (17.1); the paired l
 kind as a field of each family and situation; the time share and the per-hour false-alarm line in the
 report; the practice and exam sets (17.3); a playbook run beside the anchors in every family it can
 reach (today only F13 has one).
+
+### 17.8 The model arm (2026-11-14, bd murmur-ynsw)
+
+The real-model watch officer runs in v3's runner. **Its results describe the model, as an agent in
+simulated situations, never people.** Nothing here has been run against the API yet: built and
+tested with a fake client only.
+
+    MURMUR_EVAL_MODEL=1 .venv/bin/python -m eval.headless.v3.run batch --families v3-f1-fast-boat-gg \
+        v3-f2-drone-sd --seeds 6600-6609 --agent model --max-usd <cap> --workers 2 --out <dir>
+    .venv/bin/python -m eval.headless.v3.run report <dir>
+
+- **The agent** is the shipped watch officer's design through the API (eval/headless/officer.py,
+  agents/README.md): Claude Sonnet 5.5 at medium effort for routine wakes, Claude Opus 5.5 at high
+  for the consults the trigger table escalates; agents/watch/prompt.md with the world's mission as
+  its brief, verbatim (section 1), and nothing else about the evaluation; the bridge's MCP tools as
+  it lists them; the live driver's wake triggers, including one of ours presumed lost (decision
+  rules 30). `--model-config` overrides the models, efforts and per-episode cap (officer.ModelConfig).
+- **The gate**: no model episode without `MURMUR_EVAL_MODEL=1` and `--max-usd`, and only on dev
+  seeds (5000-5499, for a smoke) and the model pilot's (6600-6699): the runner refuses
+  dev-validate, test and v2's seeds (0.1).
+- **The clock**: the paused clock, v2's primary condition (section 4; SCORING-V2.md 4.1). v2's
+  latency-charged clock is not offered here: its constants are still placeholders, never fitted.
+- **The guard**: before each call, its worst case (the whole request as fresh input, at 2
+  characters a token, and its whole `max_tokens`, at the model's list price for a prompt that long)
+  must fit the episode's cap (`max_usd`, default US$3.00) and the batch's (`--max-usd`, kept in the
+  batch directory's `model-ledger.json`, shared by its workers and by a later batch into the same
+  directory). Spend is settled at list prices: Sonnet 5.5 $2 / $10 a million tokens (cache reads
+  $0.10), Opus 5.5 $4 / $20 ($0.20), Haiku 5.5 $0.10 / $0.50 up to 100K prompt tokens and $0.50 /
+  $2.50 beyond; cache writes 1.25 times input. The worst case grows with the routine conversation,
+  which carries every answer the model read: a fake reader of the fleet and every track at each
+  wake reached 2.7 to 3.6 million characters in a 900 s episode, where one call's worst case is
+  US$1 to 2 on Sonnet, so a cap under about US$5 an episode stops such a reader early.
+- **No refusal fallback**: an evaluation of one model is never answered by another. A refusal ends
+  its wake, its `stop_details` category is recorded and counted, and its answer is left out of the
+  conversation.
+- **Leakage**: every input is scanned (v2/leakage.py, with v3's family and field names); a hit is a
+  `harness_error` after one rerun. A fake model calling every read tool on ten families across both
+  worlds and the scale world received no token.
+- **What is left out**: an episode the guard stopped (`budget_stop`), whose call the API refused as
+  such (`model_failed`) or whose input hit the scan is listed in the report's model section, with
+  its cost, and left out of every metric. The section gives need served beside `none` on the same
+  situations, cost, wakes, API errors and refusals per family and world.

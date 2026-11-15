@@ -56,7 +56,7 @@ calls is due. Meanwhile the operator, the script, the samplers and the officer's
 as scheduled; no new wake starts until the turn ends. The charge depends only on the tokens the
 API reports and the tool calls in the answer, never on wall time.
 
-**Leakage** (scoring v2 only, v2/leakage.py, SCORING-V2.md 4.4 and 7): the system prompt, the
+**Leakage** (scoring v2 and v3, v2/leakage.py, SCORING-V2.md 4.4 and 7): the system prompt, the
 tool definitions, every update and every tool result are scanned before they can be sent; a hit
 stops the officer before that input reaches the model (`stop: leakage`) and the episode is a
 `harness_error`. The model's own text is scanned as a diagnostic only.
@@ -862,10 +862,11 @@ class WatchOfficer:
         self.latency: Any = getattr(ep, "latency", None)
         self.open: OpenTurn | None = None  # the charged turn in progress
         self.charge_s = 0.0
-        # scoring v2's leakage scan (v2/leakage.py) of everything the model receives; a hit
-        # stops the officer before that input is sent, and the episode is a harness error
+        # scoring v2's leakage scan (v2/leakage.py) of everything the model receives, in v2 and
+        # v3 episodes; a hit stops the officer before that input is sent, and the episode is a
+        # harness error
         self.scan: Any = None
-        if getattr(getattr(ep, "opts", None), "scoring", "v1") == "v2":
+        if getattr(getattr(ep, "opts", None), "scoring", "v1") in ("v2", "v3"):
             from .v2.leakage import Scanner, context_of
 
             self.scan = Scanner(context_of(ep))
