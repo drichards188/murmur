@@ -1,7 +1,8 @@
 """Scoring v3's labels on small synthetic records (eval/SCORING-V3.md section 2): each domain's sensor,
 level and grace, the world's own mission circle, contributions and harm by the need's own sensors,
-a `track` order's aim, collect and cover left unjudged, nominations and review decisions judged
-against truth, the physical model's wrong-call draw and sensing errors, and the metrics per domain.
+a `track` order's aim and an identify's label, collect and cover left unjudged, nominations and
+review decisions judged against truth, the physical model's wrong-call draw and sensing errors, and
+the metrics per domain.
 No simulator: the records are v2's synthetic ones (tests/test_v2_labels.py `Synth`) moved under
 `v3` with a world."""
 
@@ -163,6 +164,28 @@ def test_a_track_order_is_pointed_at_the_contact_its_track_names():
              op={20: [(111.0, "acked"), (112.0, "active")]})
     a = by_intent(labels(s, none_served={"c": False}))[10]
     assert a["aim"]["by"] == "track" and a["aim"]["primary"] == "c" and a["aimed_need"] == "c"
+
+
+@pytest.mark.parametrize("ended_at, want", [(None, "useful"), (100.0, "useless")])
+def test_an_identify_is_labelled_by_its_vehicle_s_look_at_its_track(ended_at: float | None, want: str):
+    """An identify (decision rules 21) is aimed at the contact its track names. Its op says `done` once
+    on station, which does not end it: its vehicle's EO/IR raising its hits on the need while it looks
+    is a contribution. Once its look ended (the bridge's end alert on the order), the vehicle flies the
+    order it replaced, under the identify's id, and hits then are not the identify's (choice 38)."""
+    s = one("small_fast_boat", "surface", ("small_fast_boat", 0.9, None, ["eo_ir"]), 130.0)
+    s.tracks["T-0001"]["hits"] = rising("3:eo_ir", 105.0, 135.0)
+    s.vehicle(3, lambda t: {})
+    s.intent(10, "identify", [3], 95.0, {"track": "T-0001"},
+             states=[(95.0, "checked", "check"), (95.0, "dispatched", "dispatch")],
+             op={3: [(96.0, "starting"), (97.0, "done")]})
+    if ended_at is not None:
+        s.alerts.append(("identify:10", "identify_timed_out", 3, ended_at, ended_at, 300.0))
+    rec = v3_record(s)
+    for x in rec["v3"]["picture"]["alerts"].values():
+        x["intent"] = 10  # the bridge's alert names its order (Synth's do not)
+    a = by_intent(L.episode_labels(rec, none_labels={"needs": [{"contact": "c", "served": False}]}))[10]
+    assert a["label"] == want, (a["label"], a["runs"], a["contributed"])
+    assert a["aim"]["by"] == "track" and a["aimed_need"] == "c"
 
 
 def test_collect_and_cover_are_left_unjudged():

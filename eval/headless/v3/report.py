@@ -94,9 +94,9 @@ def _score(args: tuple[dict[str, Any], dict[str, Any] | None]) -> dict[str, Any]
             "lost": lost_vehicles(rec, pic),
             # F8's restraint: the agent's orders that send a vehicle at a look-alike the situation added
             # and at no need (v2's "pointed at": truth positions over the next 300 s within 1 km of
-            # the order's geometry, labels.py `pointed_at`)
+            # the order's geometry; an identify's, the contact its track names: labels.py `pointed_at`)
             "decoy_looks": sum(1 for a in lab["actions"] if decoys and a.get("label") != "refused"
-                               and a.get("kind") in ("orbit", "patrol")
+                               and a.get("kind") in ("orbit", "patrol", "identify")
                                and decoy_only(pointed_at(a, a.get("aim") or {}, pic, truth, Params()), decoys,
                                               {n["contact"] for n in lab["needs"]})),
             "decoys": len(decoys),

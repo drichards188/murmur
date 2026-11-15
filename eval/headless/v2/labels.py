@@ -455,9 +455,11 @@ def is_agent(i: dict[str, Any]) -> bool:
     return src.get("kind") == "agent" and src.get("id") not in SCRIPTED_AGENTS
 
 
-def agent_actions(rec: dict[str, Any], pic: Picture) -> list[dict[str, Any]]:
+def agent_actions(rec: dict[str, Any], pic: Picture,
+                  continuing: tuple[str, ...] = CONTINUING_KINDS) -> list[dict[str, Any]]:
     """Every action of the agent under test: its intents (the audit log) and its refused
-    proposals that created none (its own record), with when each started and ended."""
+    proposals that created none (its own record), with when each started and ended.
+    `continuing`: the kinds an op `done` does not end (v2's own; scoring v3 adds its identify)."""
     intents = list(((rec.get("v2") or {}).get("audit") or {}).get("intents") or [])
     end = _end_s(rec)
     # v2: an order ends its vehicle's earlier one only when it flew, from its own run's start
@@ -481,7 +483,7 @@ def agent_actions(rec: dict[str, Any], pic: Picture) -> list[dict[str, Any]]:
             for r in (i.get("op") or {}).get(uid) or []:
                 if r[0] < t0:
                     continue
-                if r[1] in END_STATES or (r[1] == "done" and kind not in CONTINUING_KINDS):
+                if r[1] in END_STATES or (r[1] == "done" and kind not in continuing):
                     t1, why = r[0], r[1]
                     break
             nxt = min((t for t, iid in flown_on.get(uid, []) if iid != int(i["id"]) and t > t0), default=None)

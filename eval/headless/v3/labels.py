@@ -18,10 +18,14 @@ their runs, fault needs, the reserve, the precedence); what changes is written h
 - **Contribution** (2.3): v2's rule, with the need's domain's sensors in place of EO/IR and sonar: the
   action's vehicle raised its hits on the need's track with a sensor that supports the domain, while
   its vehicle flew that order, before the need was identified.
-- **Action labels** (2.5) for the moving kinds (orbit, patrol, track, hold, rtl): v2's precedence and
-  rules (credit for effect only; none after the need was identified; `duplicate` when the `none`
-  replicate also served the need; harm by geometry), with the world's centre, the domain's sensors,
-  and a `track` order pointed at the contact its track names.
+- **Action labels** (2.5) for the moving kinds (orbit, patrol, track, identify, hold, rtl): v2's
+  precedence and rules (credit for effect only; none after the need was identified; `duplicate` when
+  the `none` replicate also served the need; harm by geometry), with the world's centre, the domain's
+  sensors, and a `track` order pointed at the contact its track names. An **identify** (decision
+  rules 21; choices 37 to 39) is aimed at the contact its track names, judged on the picture by that
+  track, run only while it looks (to the look's end as the record shows it, `look_end`: the vehicle
+  then goes back to the order it replaced, under the identify's id), and judged for harm (a) at its
+  track's shown position.
 - **Nominations** (`engage`, 2.8) and **review decisions** (2.9), judged against truth: their own
   labels (`nomination_labels`, `review_labels`), and **collect** and **cover** (2.10): built in
   labels_ops.py with F14-F16's own needs (`ops` in the labels, where a situation states them).
@@ -64,6 +68,20 @@ FAMILY = {"cargo_ship": "large_vessel", "tanker": "large_vessel", "ferry": "larg
 LEVEL_INDEX = {"detect": 0, "recognise": 1, "identify": 2}
 SENSOR_INDEX = {"radar": 0, "eo_ir": 1, "ais": 2, "sonar": 3, "esm": 4}
 FRIENDLY_OR_NEUTRAL = ("neutral", "friend", "assumed_friend", "assumed friend")
+#: the kinds whose order names one track (`params.track`, or `track_id`): the antenna tracker's
+#: `track`, and an identify (decision rules 21: one vehicle sent to identify one track)
+NAMED_KINDS = ("track", "identify")
+#: the kinds an op `done` does not end: v2's (an orbit, a patrol or a track is done once established
+#: and flies on), and an identify, whose look only the engine's step ends (rules 21)
+CONTINUING_KINDS = V2.CONTINUING_KINDS + ("identify",)
+#: the kinds harm (a) judges: v2's orbit and patrol, and an identify, flown as an orbit round its track
+SENDING_KINDS = V2.MOVE_KINDS + ("identify",)
+#: the bridge's alerts on an identify order whose look ended unidentified (out of time, its track
+#: lost) or identified with nothing to go back to (crates/murmur-bridge/src/decision/identify.rs
+#: `identify_alerts`): each dated from the op then in force, the one sent at the look's end
+IDENTIFY_END_ALERTS = ("identify_timed_out", "identify_lost", "identify_holding")
+#: an intent's terminal states once dispatched (crates/murmur-decide/src/intent.rs `is_terminal`)
+INTENT_ENDS = ("done", "failed", "aborted", "voided")
 INSTRUMENTS = {
     "contact_need": "v3.contact_need", "sensing_error": "v3.sensing_error", "identity_resolved": "v3.identity_resolved",
     "contribution": "v3.contribution", "fault_need": "v2.fault_need", "action": "v3.action_label", "aim": "v3.aim",
@@ -271,17 +289,65 @@ def need_sensors(n: dict[str, Any]) -> tuple[str, ...]:
     return tuple(r.sensors) + (("ais",) if r.ais_counts and n.get("ais") else ())
 
 
-def track_target(a: dict[str, Any], pic: Picture) -> str | None:
-    """The contact a `track` order's track names at its creation (the tracker's association)."""
+def named_track(a: dict[str, Any]) -> str | None:
+    """The track a `track` or `identify` order names (`params.track_id`, or `track`)."""
     tid = (a.get("params") or {}).get("track_id") or (a.get("params") or {}).get("track")
+    return str(tid) if tid else None
+
+
+def track_target(a: dict[str, Any], pic: Picture) -> str | None:
+    """The contact a `track` or `identify` order's track names at its creation (the tracker's
+    association)."""
+    tid = named_track(a)
     if not tid or a.get("created") is None:
         return None
-    return pic.contact_of(str(tid), pic.index(a["created"]))
+    return pic.contact_of(tid, pic.index(a["created"]))
+
+
+def look_end(a: dict[str, Any], uid: str, pic: Picture) -> float | None:
+    """When an identify order's look on vehicle `uid` ended, as the record shows it (choice 38: the
+    audit digest keeps no `identify.step`): the earliest of the bridge's end alert on the order
+    (`IDENTIFY_END_ALERTS`, dated from the op sent at the look's end), the first picture sample after
+    the order went out at which a look of the vehicle sent on its track holds identification (rules
+    23: the look ends on its own identification, at any confidence, any sensor but AIS), and the
+    intent's end (it comes once the vehicle has gone back, after the look). None when none shows."""
+    t0 = (a["runs"].get(uid) or {}).get("start")
+    if t0 is None:
+        return None
+    ends = [float(x["since_s"]) for x in (pic.enc.get("alerts") or {}).values()
+            if x.get("kind") in IDENTIFY_END_ALERTS and x.get("intent") == a["intent"] and str(x.get("uid")) == uid
+            and x.get("since_s") is not None and float(x["since_s"]) >= t0]
+    tid = named_track(a)
+    looks = ((pic.tracks.get(tid) or {}).get("looks") or {}) if tid else {}
+    for key, rows in looks.items():
+        u, sensor, level = key.split(":")
+        if u == uid and level == "identify" and sensor != "ais":
+            k = next((r[0] for r in rows if pic.time(r[0]) > t0), None)
+            if k is not None:
+                ends.append(pic.time(k))
+    st = a.get("states") or {}
+    ends += [float(st[s]) for s in INTENT_ENDS if st.get(s) is not None and float(st[s]) >= t0]
+    return min(ends) if ends else None
+
+
+def identify_geometry(a: dict[str, Any], pic: Picture) -> dict[str, Any] | None:
+    """Where an identify sends its vehicle, for harm (a) (choice 39): its track's shown position when
+    it was ordered, the centre of the orbit the engine lays out round it (the standoff is not in the
+    record)."""
+    tid = named_track(a)
+    at = pic.predicted(tid, a["created"]) if tid and a.get("created") is not None else None
+    return {"kind": "polyline", "points": [at]} if at is not None else None
 
 
 def aim_of(a: dict[str, Any], pic: Picture, truth: Truth, needs: dict[str, dict[str, Any]], p: Params) -> dict[str, Any]:
     """v2's aim (by hits of any classifying sensor while the order ran, else by geometry), and for a
-    `track` order without hits, the contact its track names."""
+    `track` order without hits, the contact its track names. An identify is aimed at the contact its
+    track names first (choice 37), and by v2's aim only when its track names none."""
+    if a.get("kind") == "identify":
+        c = track_target(a, pic)
+        if c is not None:
+            return {"by": "track", "contacts": [c], "primary": c, "ambiguous": False, "distance_m": None,
+                    "instrument": instrument("aim")}
     out = V2.aim_of(a, pic, truth, needs, p)
     if out["by"] == "none" and a.get("kind") == "track":
         c = track_target(a, pic)
@@ -312,7 +378,8 @@ def contributed(a: dict[str, Any], pic: Picture, needs: dict[str, dict[str, Any]
 
 def justified(a: dict[str, Any], aim: dict[str, Any], pic: Picture, truth: Truth, p: Params,
               center: tuple[float, float], radius_m: float) -> dict[str, Any]:
-    """v2's justification on the picture, about the world's own centre."""
+    """v2's justification on the picture, about the world's own centre; an identify is judged on the
+    track it names, when the picture showed it then (choice 37)."""
     t_a = a["created"]
     k = pic.index(t_a)
     out: dict[str, Any] = {"justified": False, "track": None, "instrument": instrument("justified"),
@@ -323,8 +390,11 @@ def justified(a: dict[str, Any], aim: dict[str, Any], pic: Picture, truth: Truth
     if not tracks:
         return out
     tid = None
+    named = named_track(a) if a.get("kind") == "identify" else None
+    if named is not None and pic.present(named, k):
+        tid = named
     target = aim.get("primary") or aim.get("nearest")
-    if target is not None:
+    if tid is None and target is not None:
         tid = pic.track_of(target, k)
         if tid is None:
             at = truth.at(target, t_a)
@@ -355,9 +425,9 @@ def justified(a: dict[str, Any], aim: dict[str, Any], pic: Picture, truth: Truth
 
 
 def pointed_at(a: dict[str, Any], aim: dict[str, Any], pic: Picture, truth: Truth, p: Params) -> set[str]:
-    """v2's harm (b) spares (where the order sends its vehicle), and for a `track` order the contact
-    its track names."""
-    if a.get("kind") == "track":
+    """v2's harm (b) spares (where the order sends its vehicle), and for a `track` or an `identify`
+    order the contact its track names."""
+    if a.get("kind") in NAMED_KINDS:
         c = track_target(a, pic)
         return {c} if c else set(aim.get("contacts") or [])
     return V2.pointed_at(a, geometry(a["kind"], a["params"]), aim, truth, p)
@@ -365,17 +435,18 @@ def pointed_at(a: dict[str, Any], aim: dict[str, Any], pic: Picture, truth: Trut
 
 def harmful(a: dict[str, Any], aim: dict[str, Any], pic: Picture, needs: dict[str, dict[str, Any]], truth: Truth,
             p: Params) -> list[dict[str, Any]]:
-    """v2's harm (a) and (b), with each need's own domain sensors for (b); (c), an engagement of a
-    neutral or friend, is the nominations' (`nomination_labels`)."""
+    """v2's harm (a) and (b), with each need's own domain sensors for (b), and (a) for an identify
+    too, at its track's shown position (choice 39); (c), an engagement of a neutral or friend, is the
+    nominations' (`nomination_labels`)."""
     out = []
     if not a["runs"]:
         return out
-    g = geometry(a["kind"], a["params"])
+    g = identify_geometry(a, pic) if a["kind"] == "identify" else geometry(a["kind"], a["params"])
     spared: set[str] | None = None
     for uid, run in a["runs"].items():
         t_d = run["start"]
         v = pic.vehicle(uid, pic.index(t_d))
-        if a["kind"] in V2.MOVE_KINDS and v and v.get("battery_pct") is not None and v["battery_pct"] < V2.RESERVE_PCT \
+        if a["kind"] in SENDING_KINDS and v and v.get("battery_pct") is not None and v["battery_pct"] < V2.RESERVE_PCT \
                 and g is not None and v.get("home") and v["home"][0] is not None \
                 and V2.geometry_dist_home((v["home"][0], v["home"][1]), g) > V2.HOME_M:
             out.append({"kind": "a", "uid": uid, "battery_pct": v["battery_pct"]})
@@ -390,8 +461,9 @@ def harmful(a: dict[str, Any], aim: dict[str, Any], pic: Picture, needs: dict[st
     return out
 
 
-#: the kinds labelled as v2 labels its orders (moving a vehicle, or holding or recalling it)
-MOVING_KINDS = ("orbit", "patrol", "track", "hold", "rtl")
+#: the kinds labelled as v2 labels its orders (moving a vehicle, or holding or recalling it), and an
+#: identify (2026-11-14, bd murmur-1zcp)
+MOVING_KINDS = ("orbit", "patrol", "track", "identify", "hold", "rtl")
 #: SCORING-V3.md 2.10 (labels_ops.py `space_label`)
 SPACE_KINDS = ("collect", "cover")
 
@@ -400,13 +472,22 @@ def label_actions(rec: dict[str, Any], pic: Picture, truth: Truth, needs_list: l
                   fneeds: list[dict[str, Any]], none_served: dict[str, bool] | None, p: Params,
                   none_cover: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Every action of the agent under test: the moving kinds by v2's precedence and rules (v3's
-    domain sensors, centre and `track` aim), nominations by `nomination_label`, collect and cover
-    by 2.10 (labels_ops.py `space_label`; `none_cover`: the paired `none` replicate's coverage of
-    the stated gap needs)."""
+    domain sensors, centre and `track` aim, and an identify's own aim and run), nominations by
+    `nomination_label`, collect and cover by 2.10 (labels_ops.py `space_label`; `none_cover`: the
+    paired `none` replicate's coverage of the stated gap needs)."""
     w = load_world(world_of(rec))
     center, radius = w.mission.center, w.mission.radius_m
     needs = {n["contact"]: n for n in needs_list}
-    acts = V2.agent_actions(as_v2(rec), pic)
+    acts = V2.agent_actions(as_v2(rec), pic, continuing=CONTINUING_KINDS)
+    for a in acts:
+        # choice 38: an identify runs while it looks; after the look its vehicle flies the order the
+        # identify replaced (or holds), under the identify's id, and that is not the identify's doing
+        if a["kind"] != "identify":
+            continue
+        for uid, run in a["runs"].items():
+            t = look_end(a, uid, pic)
+            if t is not None and t < run["end"]:
+                run["end"], run["end_why"] = t, "its look ended"
     credited: dict[str, tuple[int | None, float]] = {}
     credited_fault: set[int] = set()
     out = []
