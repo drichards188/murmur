@@ -524,7 +524,9 @@ class Episode:
             if self.opts.agent == "model":
                 from .officer import ModelConfig, WatchOfficer
 
-                self.agent = WatchOfficer(self, ModelConfig.resolve(self.opts.model), client=self.opts.model_client)
+                # the situation's watch areas and protected points: the stakes gate's (bd murmur-5xaf)
+                self.agent = WatchOfficer(self, ModelConfig.resolve(self.opts.model), client=self.opts.model_client,
+                                          watch=cfg)
             elif self.opts.agent == "playbook":
                 self.agent = PlaybookAgent(self, cfg)
             elif self.opts.agent in V2_AGENTS:

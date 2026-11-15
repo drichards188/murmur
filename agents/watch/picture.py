@@ -10,8 +10,11 @@ person can decide), tells the model of them in the update and ties its note to t
 decision rules 30 the live driver also reads `get_inbox`'s review every `review_every_s` for the
 standing of ours (`Poller.node_losses`): one presumed lost (`node.presumed`, which wakes the
 model), its presumption cleared, confirmed lost, its loss revoked; the change feed carries none
-of these. Under older rules the first read finds no node items and it reads no more. Nothing it
-reads is logged by the bridge.
+of these. Under older rules the first read finds no node items and it reads no more. A contact
+whose identity conflict the stakes gate kept from the stronger model (bd murmur-5xaf) is read by
+id every `stakes_every_s` until it matters to the watch (`Poller.stakes`: a
+`track.conflict_matters` change) or its conflict clears. Nothing it reads is logged by the
+bridge.
 """
 
 from __future__ import annotations
@@ -36,6 +39,8 @@ class NoChangesTool(RuntimeError):
 # platform with no cruise figure in the catalog is asked about within FALLBACK_REACH_M.
 TRANSIT_S = 900.0
 FALLBACK_REACH_M = 30_000.0
+# contacts the stakes gate kept routine that the driver keeps reading (`Poller.stakes`)
+MAX_GATED = 50
 
 
 def max_transit_s(policy: dict) -> float:
@@ -77,8 +82,14 @@ def candidates(vehicles: list[dict], track: dict, cruise: dict, transit_s: float
 class Poller:
     """The change feed for one agent session, reconnecting when the bridge goes away."""
 
-    def __init__(self, connect: Callable[[], Any], nomination_every_s: float = 15.0, review_every_s: float = 5.0):
+    def __init__(self, connect: Callable[[], Any], nomination_every_s: float = 15.0, review_every_s: float = 5.0,
+                 stakes_every_s: float = 10.0):
         self.connect = connect  # () -> an AgentSession (not yet entered)
+        # bd murmur-5xaf: contacts whose identity conflict the stakes gate kept from the stronger
+        # model (track id -> when), read by id this often until they matter (`stakes`)
+        self.gated: dict[str, float] = {}
+        self.stakes_every_s = stakes_every_s
+        self.stakes_checked = 0.0
         # rules 30: the review's node items, read this often (`node_losses`); None until the first
         # read says whether the bridge has them, False once it said it has not (older rules)
         self.review_every_s = review_every_s
@@ -156,6 +167,53 @@ class Poller:
                     k == "track.declared" and c.get("declared") != "hostile"):
                 self.hostile.discard(c.get("track"))
                 self.passing.pop(c.get("track"), None)
+            if k in ("track.identity_cleared", "track.dropped"):
+                self.gated.pop(c.get("track"), None)  # nothing left to come in with
+        return out
+
+    def watch_gated(self, tracks: list[str], now: float) -> None:
+        """Contacts the stakes gate kept routine (`Wake.gated_tracks`): read again by `stakes`."""
+        for t in tracks:
+            self.gated.setdefault(str(t), now)
+        while len(self.gated) > MAX_GATED:  # the oldest go first
+            self.gated.pop(min(self.gated, key=lambda k: (self.gated[k], k)))
+
+    async def stakes(self, watch: Any, now: float | None = None) -> list[dict]:
+        """bd murmur-5xaf: a contact whose identity conflict the stakes gate kept from the
+        stronger model, read by id every `stakes_every_s`: once it matters to the watch (inside
+        a watch area, closing on a protected point, coming into one within the horizon) with its
+        conflict still in force, a `track.conflict_matters` change, and it is let go; one whose
+        conflict cleared, or that left the picture, is let go too. The gate judges a change once,
+        when it arrives: without this, a conflict raised far out would never reach the stronger
+        model when its contact came in. A read-only driver read, not logged by the bridge."""
+        now = time.time() if now is None else now
+        if watch is None or not self.gated or now - self.stakes_checked < self.stakes_every_s:
+            return []
+        self.stakes_checked = now
+        ids = sorted(self.gated)
+        try:
+            r = await self.session.call("get_tracks", track_id=ids)
+        except Exception:  # noqa: BLE001 (the next poll tries again)
+            return []
+        by_id = {str(t.get("id")): t for t in r.get("tracks") or [] if isinstance(t, dict)}
+        out: list[dict] = []
+        for tid in ids:
+            t = by_id.get(tid)
+            conflict = ((t or {}).get("identity") or {}).get("conflict") if isinstance(t, dict) else None
+            if t is None or not conflict:
+                self.gated.pop(tid, None)
+                continue
+            s = watch.of_track(t)
+            if s is None or not s.matters:
+                continue
+            self.gated.pop(tid, None)
+            ident = t.get("identity") or {}
+            out.append({"kind": "track.conflict_matters", "t": now, "track": tid, "domain": t.get("domain"),
+                        "identity": ident.get("kind"), "identity_level": ident.get("level"), "ais": ident.get("ais"),
+                        "affiliation": t.get("affiliation"), "affiliation_confidence": t.get("affiliation_confidence"),
+                        "position": t.get("position"), "speed_mps": t.get("speed_mps"),
+                        "course_deg": t.get("course_deg"), "as_of": t.get("last_seen_t"), "conflict": conflict,
+                        "standing": s.why})
         return out
 
     async def nominations(self, now: float | None = None) -> list[dict]:
@@ -386,6 +444,10 @@ def render(c: dict) -> str:
                 f"broadcasts, unverified) {quote(c.get('conflict', ''))}")
     if k == "track.identity_cleared":
         return f"{t} track {tr}: its identity conflict cleared"
+    if k == "track.conflict_matters":
+        return (f"{t} track {tr}: its identity conflict still stands and it now matters to the watch "
+                f"({c.get('standing')}); the tracker's note (it quotes what the contact broadcasts, unverified) "
+                f"{quote(c.get('conflict', ''))}")
     if k in ("track.stale", "track.active"):
         return f"{t} track {tr} is {k.split('.')[1]}"
     if k == "track.dropped":

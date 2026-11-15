@@ -433,10 +433,17 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: schema and the sentence put back, this code gave the digests before (b4afb70d..., a8cf2839...)
 #: byte for byte, so the only change is the longer get_tracks definition in the model's tool list
 #: (its prompt sizes and token estimates); the playbook's and the golden did not move.
+#: The two model digests re-taken for the stakes gate on identity conflicts (bd murmur-5xaf): with
+#: the officer given no watch config this code gave the digests before (e9d7fde4..., a8772dea...)
+#: byte for byte. With the situation's watch area, each record's `run.start` line names it
+#: (`watch`); Harbor watch's consult at 63 s on T-0007 (the cutter whose sonar call disagrees with
+#: its AIS, 1.3 km outside the 3 km circle and not closing) is a routine wake, its `gated` line
+#: saying why, and at 544 s, once T-0007 matters with its conflict standing, a
+#: `track.conflict_matters` wake goes to the consult; v2 fast-unknown has no conflict to gate.
 PAUSED = {
-    "model harbor-watch s1": "e9d7fde40cfdf95f39264144cae7acd478229557ff512b5882201b3d13bd0203",
+    "model harbor-watch s1": "5227728669e9f53021a4ea2890eb19b5cbcab9bdd9f7f8be86403fe00b3e0581",
     "playbook v2 fast-unknown 1000": "2e88861d778d0e57cdca0abea48a01c77e33c07b26ae96a5f143f0c1eb412491",
-    "model v2 fast-unknown 1000": "a8772dea79eeeddbe401f2e81d6b4d8da79ab055702f0f2d924509faeac378bc",
+    "model v2 fast-unknown 1000": "8dedcac649971f485bb9e3580ed70488a206105cbc58d3fb236430d28d68919f",
 }
 
 

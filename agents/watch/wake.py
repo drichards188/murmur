@@ -44,6 +44,12 @@ note: it rides along with the next update.
   an engagement in play), and one subject escalates at most `max_escalations_per_subject`
   times a run, so spoof and link triggers (slow cyclers included) cannot spend the budget a
   hostile declaration needs.
+- Stakes (bd murmur-5xaf, agents/watch/stakes.py): with a `stakes` judge (the situation's
+  watch areas and protected points), an identity conflict, and a conflict coming and going,
+  escalates only when its contact is inside a watch area, closing on a protected point, or
+  coming into a watch area within the playbook's 10-minute horizon; otherwise it wakes the
+  routine model, exactly as it would have without the stronger model, and the wake says why
+  (`Wake.gated`). Without a judge, or for a change without a position, nothing changes.
 - The heartbeat backs off (doubling up to `heartbeat_max_s`) while nothing new arrives:
   autopilot chatter, vehicles joining and repeats of a subject just reported are not news.
   Heartbeats never take the last quarter of the hour's wakes: those are kept for triggers.
@@ -126,8 +132,13 @@ TRIGGERS: tuple[Row, ...] = (
     Row("track.affiliation",
         lambda c: c.get("to") in SUSPICIOUS or c.get("from") in ("hostile", "suspect"),
         never, "a contact's affiliation estimate changed"),
-    # an AIS identity that does not fit what our sensors saw: a possible spoof
+    # an AIS identity that does not fit what our sensors saw: a possible spoof (with a stakes
+    # judge, escalating only where it matters to the watch: agents/watch/stakes.py)
     Row("track.identity_conflict", always, always, "an identity conflict (possible AIS spoof)"),
+    # one the stakes judge kept from the stronger model that has since come to matter, its
+    # conflict still standing (agents/watch/picture.py `Poller.stakes`)
+    Row("track.conflict_matters", always, always,
+        "an identity conflict on a contact that now matters to the watch (possible AIS spoof)"),
     Row("review.flag", always, never, "the engine flagged something for review"),
     # our own vehicles: link and navigation
     Row("vehicle.link_lost", always, _armed, "a vehicle lost its link"),
@@ -310,6 +321,10 @@ class Wake:
     notes_dropped: int = 0
     # it escalated for triggers outside the engagement chain only (the shared part of the budget)
     side: bool = False
+    # escalations the stakes judge kept routine (bd murmur-5xaf): why, one line each, and the
+    # tracks they were about (the driver reads those again until they matter)
+    gated: list[str] = field(default_factory=list)
+    gated_tracks: list[str] = field(default_factory=list)
 
 
 def item_of(c: Change) -> tuple:
@@ -362,6 +377,7 @@ class Judged:
     why: str | None
     since: float  # since when it may wake (NEVER: at once)
     held: bool  # a waking kind held back as a repeat (not yet eligible)
+    gated: str | None = None  # why the stakes judge kept an escalation routine
 
 
 @dataclass
@@ -370,6 +386,9 @@ class Waker:
 
     budgets: Budgets
     escalation: bool = True  # False: never use the stronger model
+    # (change, now) -> (escalates, why not): the stakes judge of an escalation the table makes
+    # (agents/watch/stakes.py `Watch.gate`); None: every escalation as the table says
+    stakes: Callable[[Change, float], tuple[bool, str | None]] | None = None
     pending: list[Change] = field(default_factory=list)
     arrived: list[float] = field(default_factory=list)  # when each pending change came
     first_wake_t: float | None = None  # when the first waking change may wake
@@ -413,7 +432,15 @@ class Waker:
         esc_now = (esc and now - self.escalated.get(subj, NEVER) >= b.escalate_cooldown_s
                    and self.escalated_runs.get(subj, 0) < b.max_escalations_per_subject
                    and (chain(c) or self.side_escalations < b.max_escalations - b.escalation_reserve))
-        return Judged(True, esc_now, why, since, False)
+        gated = None
+        if esc_now and self.stakes is not None and not chain(c):
+            try:
+                esc_now, gated = self.stakes(c, now)
+            except Exception:  # noqa: BLE001 (the judge fails toward escalating)
+                esc_now, gated = True, None
+            esc_now = bool(esc_now)
+            gated = None if esc_now else gated
+        return Judged(True, esc_now, why, since, False, gated)
 
     def wakes_now(self, c: Change, now: float) -> bool:
         return self.judge(c, now).wakes
@@ -474,6 +501,12 @@ class Waker:
         self.flapped[key] = now
         keep = {k: first.get(k) for k in ("uid", "callsign", "platform", "armed", "track", "alert",
                                           "alert_kind", "severity") if first.get(k) is not None}
+        if key[0] == "identity_conflict":
+            # where the contact is (the clear's track summary, the newest; else the raise's), for
+            # the stakes judge
+            src = c if c.get("position") is not None else first
+            keep.update({k: src.get(k) for k in ("position", "speed_mps", "course_deg", "as_of")
+                         if src.get(k) is not None})
         return [{"kind": "condition.flapping", "t": c.get("t", now), "condition": key[0],
                  "cycles": len(q), "window_s": window, **keep}]
 
@@ -670,6 +703,11 @@ class Waker:
             if j is None or not j.held:
                 told[item_of(c)] = max(at, told.get(item_of(c), NEVER))
         on_chain = False
+        # the escalations the stakes judge kept routine, said only while the stronger model
+        # could have taken them (escalation on, the run's escalations not spent)
+        can_escalate = self.escalation and self.escalations < self.budgets.max_escalations
+        gated: list[str] = []
+        gated_tracks: list[str] = []
         notes_of_told: list[Change] = []  # waking kinds told as notes (superseded)
         for at, c, j in items:
             if j is None:
@@ -699,6 +737,11 @@ class Waker:
                 on_chain = on_chain or chain(c)
                 if j.why and j.why not in esc_why:
                     esc_why.append(j.why)
+            elif can_escalate and j.gated:
+                if j.gated not in gated:
+                    gated.append(j.gated)
+                if c.get("track") is not None and str(c["track"]) not in gated_tracks:
+                    gated_tracks.append(str(c["track"]))
             self.woke[subj] = now
             woke_s.append(subj)
         # a superseded repeat told as a note beside a trigger of its item: told too (its next
@@ -725,7 +768,7 @@ class Waker:
             self.side_escalations += side
         dropped, self.notes_dropped = self.notes_dropped, 0
         return Wake(self.wakes, reason, deliver, why, escalates, esc_why, now, held, woke_s, esc_s, dropped,
-                    side)
+                    side, gated, gated_tracks)
 
     def give_back(self, wake: Wake, now: float) -> None:
         """A wake whose turn failed: its changes come back (to be told again), its subjects

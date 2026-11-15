@@ -1752,7 +1752,8 @@ group. Dates are 2026.
   every feature that runs commands or model-written code or reads files, confirms them off
   with `codex features list` before any turn and refuses to start otherwise, because a
   read-only sandbox does not stop reads and a breach seen in the event stream comes after
-  the command ran.
+  the command ran. Refined 2026-11-14 (its own entry, at the end): an identity conflict
+  escalates on its contact's stakes, and the consult is briefed with a case file.
 - **The playbook's fix round 3: an error is not an answer** (10-09, murmur-t8m third review;
   `agents/playbook/CRITERIA.md` "Fix round 3", tests in `agents/tests/test_playbook_review3.py`).
   (1) Checking the ledger against the bridge drops a card only on an answer about it: the bridge
@@ -3508,3 +3509,57 @@ leaves the friendly keep-outs, its orders end and its owed values close. The six
 
 Written as rules 29; renumbered 30 (scenarios 137 to 143) because the watch handover took 29.
 Built in the spec's eight stages (stage 0 done; murmur-zb1d.1 to .7).
+
+## 2026-11-14: The watch officer escalates a spoof on its stakes (murmur-5xaf, murmur-8mu3)
+
+This refines, and does not replace, the 10-08 decision under Engineering ("The watch officer
+runs the user's own model CLI, woken by a table, with the stronger model as a fresh consult"):
+the driver's table still decides when to wake and which moments are consequential, and a
+consult is still a fresh short process on the stronger model.
+
+The evidence is the paid world v3 smoke of 2026-11-14
+(eval/results/headless/v3-model-smoke-2026-11-14: F1 fast boat at the Gate and F2 drone at San
+Diego, seed 5000, eight consults on Opus). Six of the eight escalations were "an identity
+conflict (possible AIS spoof)", most of them one sonar call (about 0.63) against a ship's AIS;
+at least four were about contacts 18 to 30 km out and not closing; two of those ended "no
+action" (US$0.30 to 0.42 each) and two sent HAWK 1, the one camera drone in reach, far out.
+Every consult opened by reading the whole picture, 26 to 32 tracks and 76 000 to 100 000
+characters, for a decision about one track: 58 and 64 % of each episode's tool output. The
+consults were about 70 % of each episode's cost. The owner approved three changes that day,
+for the shipped officer, live and headless alike:
+
+1. **Escalate on stakes.** An identity conflict, and a conflict coming and going, goes to the
+   stronger model only when its contact matters to the watch: inside a watch area, closing on a
+   protected point (the playbook's own relevance rule, `isr.investigate`: closest approach
+   within 457 m inside 10 minutes, or already within 457 m, on the playbook's code and
+   thresholds), or coming into a watch area within the same 10 minutes on its course.
+   Otherwise the change wakes the routine model exactly as it would have without the stronger
+   model; the wake line says why (`gated`) and no escalation is spent. The engagement chain
+   (a hostile declaration, a nomination becoming possible, an armed platform's lost link with an
+   engagement in play) and every other escalating trigger are unchanged.
+
+Chosen in building it (agents/watch/stakes.py, agents/README.md "When it wakes"):
+
+- **Where the watch is**: the situation's `[playbook]` watch areas and protected points, which
+  the situation runner already writes into the AI's directory (`playbook.json`, now also passed
+  as `--watch-config`) and from which a headless episode already builds its playbook's config.
+  It is the one source both have: the bridge's `get_areas` carries approved, no-go, engagement
+  and no-strike areas but no protected area, and a brief is free text. A run without it, or a
+  table with neither (approval-flood, fog-watch, the tutorial, Saturation), escalates as before.
+- **The look ahead**: the playbook re-judges every track each tick and sees one once it is in;
+  the gate judges a change once, when it arrives, so it adds coming into a watch area within the
+  playbook's 10-minute horizon. For the same reason the driver reads a contact it gated again
+  by id every 10 s (`get_tracks` `track_id`), and once it matters with its conflict still
+  standing a `track.conflict_matters` change wakes the model and escalates: the change feed says
+  a conflict only when it appears or changes, so without that a spoof raised far out would never
+  reach the stronger model when it came in (Harbor watch's paused model episode: the cutter
+  whose sonar call disagrees with its AIS is gated 4.3 km out at 63 s and consulted on at 544 s).
+- **The contact's position** is the change's own track summary (its last fix, speed, course and
+  `as_of`), carried along its course to the moment the wake is judged, so the waker stays pure
+  and reads nothing. A change without a position escalates as before (failing toward the
+  consult), and so does a contact the gate cannot judge.
+- **Not judged**: our own vehicles' flapping (a GPS glitch, an armed platform's link), which is
+  about ours, not a contact's stakes, and stays as unflapped glitches and links are; and "near
+  one of our vehicles", since every conflicted contact is within a sensor's reach of one of ours
+  (that is how it was seen: T-0016, 18 km out, was called a patrol boat by a buoy's sonar), so
+  it would need a threat distance of its own and a fleet read per judgment.

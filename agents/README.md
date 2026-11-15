@@ -393,7 +393,7 @@ on without an AI and the panel says so.
 .venv/bin/python agents/watch_officer.py --backend claude|codex --url <bridge>/mcp \
     --agent agent-watch --brief <brief file> --situation-log <path> --until <unix time> \
     --shadow-playbook --shadow-config <playbook.json> --shadow-config-name <situation> \
-    [--codex-home <dir>]
+    --watch-config <playbook.json> [--codex-home <dir>]
 ```
 
 | argument | what |
@@ -405,6 +405,7 @@ on without an AI and the panel says so.
 | `--situation-log` | the watch officer's own JSON-lines log ("The situation log", below): every line has `t` (unix s), `kind` and `text`, one short line for a person. The runner tails it (read-only) and shows the lines meant for a person in the panel as the AI's notes: the model's note after each turn (`turn`, shown as "note"), why it was woken (`wake`, "woken"), and its errors, waits and stop; the plumbing (`bridge.connected`, `backend.start` and the like) stays in the file, which the runner keeps with the run |
 | `--until` | unix time at which to stop on its own (the situation's end) |
 | `--shadow-*` | run the playbook engine beside the model on the situation's `[playbook]` table (`playbook.json` in the AI's directory), reading only, and log what it would have proposed and withdrawn (`shadow`, `shadow.withdraw`, `shadow.lapsed`, `shadow.status` lines; not shown in the panel) |
+| `--watch-config` | where the watch is: the same `playbook.json`, whose watch areas and protected points the stakes gate reads (an identity conflict goes to the stronger model only when its contact is inside a watch area, closing on a protected point or coming into a watch area within 10 minutes: "When it wakes"); a situation without them escalates as before. Logged in `run.start` as `watch` |
 | `--codex-home` | passed only when the user's environment sets `MURMUR_CODEX_HOME` (Setup, Codex step 3), since the runner strips every `MURMUR_*` variable from the AI's environment |
 
 The runner starts it in an empty directory of its own for this run, outside the repository and
@@ -554,10 +555,11 @@ characters. The table is `TRIGGERS` in `agents/watch/wake.py`:
 | a declaration revoked; a review flag raised | yes | |
 | a new track that is suspect, unknown or hostile | yes | |
 | an affiliation estimate moving to (or from) suspicion | yes | |
-| an identity conflict appearing (an AIS identity that does not fit what was seen) | yes | yes |
+| an identity conflict appearing (an AIS identity that does not fit what was seen) | yes | when its contact matters to the watch (below) |
+| a conflict kept from the stronger model whose contact has since come to matter, the conflict still standing (`track.conflict_matters`) | yes | yes |
 | a vehicle's link lost | yes | on an armed platform |
 | a GPS glitch flagged by a vehicle's navigation filter | yes | yes |
-| a condition coming and going twice within 5 minutes (flapping) | yes | for a GPS glitch, a conflict, an armed platform's link |
+| a condition coming and going twice within 5 minutes (flapping) | yes | for a GPS glitch, an armed platform's link; a conflict when its contact matters to the watch |
 | navigation not ready, or off GNSS on anything but a submarine | yes | |
 | a failsafe; a high-severity alert, or an alert that became one | yes | |
 | one of its own proposals approved, rejected, voided, expired, failed, aborted, queued, dispatched or effected (also when it was decided before the driver saw it pending) | yes | |
@@ -594,6 +596,32 @@ heartbeat wakes it every 60 s without a trigger, doubling up to 300 s while noth
 arrives (autopilot chatter, vehicles joining and repeats are not news), and never takes the
 last quarter of the hour's wakes, which stay for triggers; a heartbeat that finds a waking
 change still coalescing wakes for that change, escalated if it escalates.
+
+**Stakes** (bd murmur-5xaf, `agents/watch/stakes.py`; DECISIONS.md 2026-11-14). An identity
+conflict, and a conflict coming and going, goes to the stronger model only when its contact
+matters to the watch: inside a watch area, closing on a protected point (its closest approach
+within 457 m inside 10 minutes, or already within 457 m: the playbook's own relevance rule,
+`isr.investigate`, on the playbook's thresholds and code), or coming into a watch area within
+the same 10 minutes on its course (the playbook re-judges each track every tick and sees it
+once it is in; the driver judges a change once, so it looks ahead). Otherwise the change wakes
+the routine model exactly as it would have without the stronger model, and the `wake` line
+says why under `gated` ("track T-0016: 15.0 km outside the Golden Gate approaches, ...: a
+routine wake, not the senior consult"); no escalation is spent. The driver then reads that
+contact by id every 10 s (`get_tracks` `track_id`, `Poller.stakes`): once it matters with its
+conflict still standing, a `track.conflict_matters` change wakes the model and escalates (the
+feed says a conflict only when it appears or changes, so without this one raised far out
+would never reach the stronger model when its contact came in); a conflict that clears, or a
+contact that leaves the picture, is let go. The watch areas and protected points are the situation's `[playbook]` table
+(`--watch-config`, which the situation runner passes; the headless officer gets the config its
+playbook would run on): the bridge's `get_areas` carries no protected area and a brief is free
+text, so it is the one source both have. The contact's position is the change's own track
+summary (last fix, speed, course, `as_of`), carried along its course to the moment the wake is
+judged, so the gate reads nothing from the bridge. A change without a position, a run without
+a watch config, or a table with neither a watch area nor a protected point escalates as before.
+The engagement chain, a GPS glitch and an armed platform's lost link (flapping or not: they
+are about our own vehicles) are unchanged. Not judged: "near one of our vehicles" (every
+conflicted contact is within a sensor's reach of one of ours, which is how it was seen, so it
+would need a threat distance of its own and a fleet read per judgment).
 
 ### Budgets and limits
 
@@ -635,7 +663,8 @@ woken, errors, waits, limits, its start and stop). `agents/watch/situation.py` l
 kinds. The ones to read:
 
 - `wake`: `n`, `reason` (start, changes, heartbeat), `why`, `escalated`, `model`, `update`
-  (exactly what the model was told) and `changes` (the records behind it);
+  (exactly what the model was told) and `changes` (the records behind it); `gated` when the
+  stakes gate kept an identity conflict from the stronger model, why;
 - `turn`: `n`, `model`, `tool_calls` (name, input, a result excerpt, `is_error`), `text`
   (its note for the operator), `proposed` (intent ids), `usage`, `cost_usd`, `duration_s`,
   `stop` (success, max_turns, timeout, limit, budget, error, lockdown), `context_tokens`

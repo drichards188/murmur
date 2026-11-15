@@ -1234,6 +1234,9 @@ def ai_command(
         ]
         if playbook_file is not None:
             cmd += ["--shadow-config", str(playbook_file), "--shadow-config-name", sit.name]
+            # where the watch is, for the stakes gate on identity conflicts (bd murmur-5xaf): the
+            # same table's watch areas and protected points
+            cmd += ["--watch-config", str(playbook_file)]
         if ai == "codex" and codex_home:
             cmd += ["--codex-home", codex_home]
         return cmd

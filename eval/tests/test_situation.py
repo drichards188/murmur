@@ -524,6 +524,8 @@ def test_the_ai_launch_contract():
             backend, "http://127.0.0.1:9/mcp", "agent-watch", Path("/b.md"), Path("/a.jsonl"), 1234.0)
         # the playbook engine beside the model, reading only, on the situation's [playbook] table
         assert a.shadow_playbook and a.shadow_config == Path("/p.json") and a.shadow_config_name == "harbor-watch"
+        # where the watch is, for the stakes gate (bd murmur-5xaf): the same table
+        assert a.watch_config == Path("/p.json")
         assert "--codex-home" not in cmd
     # MURMUR_CODEX_HOME is stripped from the AI's environment: the runner passes it as a flag
     cx = S.ai_command("codex", hw, codex_home="/home/u/.codex-murmur", **kw)

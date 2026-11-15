@@ -8,7 +8,8 @@ server, on the user's own Claude Code (`claude -p`, the default) or Codex CLI (`
 It reads the picture as agent `--agent` (its key from --key or MURMUR_AGENT_KEY in a
 credentials run), wakes the model when something worth a look changed (the trigger table in
 agents/watch/wake.py) or on a slow heartbeat, gives the stronger model the consequential
-moments (engagement chain, a lost link on an armed platform, a suspected spoof), enforces
+moments (engagement chain, a lost link on an armed platform, a suspected spoof where the watch
+is: `--watch-config`, agents/watch/stakes.py), enforces
 budgets, and writes every turn to the situation log (JSONL; agents/watch/situation.py lists
 its lines). The model proposes through the same tools as any agent: it cannot approve or
 sign anything, and humans sign every effect.
@@ -140,8 +141,9 @@ def make_run_dir(given: Path | None) -> Path:
 
 class Officer:
     def __init__(self, args, backend, log: SituationLog, waker: Waker, poller: Poller, shadow,
-                 until: float):
+                 until: float, watch=None):
         self.args = args
+        self.watch = watch  # agents/watch/stakes.py `Watch`, or None (no watch area known)
         self.backend = backend
         self.log = log
         self.waker = waker
@@ -214,6 +216,9 @@ class Officer:
                 changes += await self.poller.nominations()
                 # rules 30: the standing of ours (get_inbox's review; nothing under older rules)
                 changes += await self.poller.node_losses()
+                if self.watch is not None:
+                    # a conflict the stakes gate kept routine whose contact now matters
+                    changes += await self.poller.stakes(self.watch)
                 self.poll_errors = 0
                 if any(isinstance(c, dict) and c.get("kind") == "feed.reset" for c in changes):
                     self.bridge_restarted = True
@@ -352,6 +357,8 @@ class Officer:
             info = await self.backend.restart()
             self.init_logged = False
             self.log.write("backend.restart", why="the bridge restarted", resume=info.get("resume"))
+        if wake.gated_tracks:
+            self.poller.watch_gated(wake.gated_tracks, now)  # read again until they matter
         escalate = wake.escalate and now >= self.strong_blocked_until and now >= self.lanes["consult"].until
         if wake.escalate and not escalate:
             # the stronger model is limited, or waits after failed consults: the routine one
@@ -373,7 +380,8 @@ class Officer:
         effort = cfg.strong_effort if escalate else cfg.effort
         self.log.write("wake", n=wake.n, reason=wake.reason, why=wake.why, escalated=escalate,
                        escalate_why=wake.escalate_why if escalate else [], model=model, effort=effort,
-                       update=text, changes=wake.changes, cursor=self.poller.cursor)
+                       update=text, changes=wake.changes, cursor=self.poller.cursor,
+                       **({"gated": wake.gated} if wake.gated else {}))
         deadline = min(now + self.args.turn_timeout_s, self.until)
         try:
             if escalate:
@@ -575,7 +583,19 @@ async def main_async(args) -> int:
     budgets = Budgets(max_wakes_per_hour=args.max_wakes_per_hour, max_turns_per_wake=args.max_turns_per_wake,
                       max_escalations=args.max_escalations, max_wakes=args.max_wakes,
                       heartbeat_s=args.heartbeat_s, coalesce_s=args.coalesce_s, min_gap_s=args.min_gap_s)
-    waker = Waker(budgets, escalation=not args.no_escalation)
+    # where the watch is (bd murmur-5xaf): the situation's [playbook] watch areas and protected
+    # points, for the stakes gate on identity conflicts; none known, every escalation as before
+    watch = None
+    if args.watch_config:
+        from playbook.config import ConfigError, load_file
+        from watch.stakes import watch_of
+
+        try:
+            watch = watch_of(load_file(args.watch_config, "watch"), source=str(args.watch_config))
+        except (ConfigError, OSError) as e:
+            log.write("error", error=f"the watch config: {e}")
+            return 2
+    waker = Waker(budgets, escalation=not args.no_escalation, stakes=watch.gate if watch else None)
     key = args.key or os.environ.get("MURMUR_AGENT_KEY") or None
 
     def connect():
@@ -604,8 +624,9 @@ async def main_async(args) -> int:
               brief=str(args.brief) if args.brief else None, brief_sha256=sha256(brief) if brief else None,
               prompt_sha256=sha256(prompt_text), escalation=not args.no_escalation,
               on_limit=args.on_limit, shadow=shadow.name if shadow else None,
-              shadow_config=shadow_cfg.label if shadow_cfg else None)
-    officer = Officer(args, backend, log, waker, poller, shadow, until)
+              shadow_config=shadow_cfg.label if shadow_cfg else None,
+              watch=watch.describe() if watch else None)
+    officer = Officer(args, backend, log, waker, poller, shadow, until, watch=watch)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, officer.signal, sig.name)
@@ -685,6 +706,12 @@ def parse_args(argv: list[str] | None = None):
     s.add_argument("--shadow-config", type=Path,
                    help="the playbook's config: a situation's [playbook] table as JSON or TOML (default: the shipped defaults)")
     s.add_argument("--shadow-config-name", help="the config's name in its label (default: the file's stem)")
+    ap.add_argument("--watch-config", type=Path,
+                    help="where the watch is: a situation's [playbook] table as JSON or TOML (its watch_area and "
+                         "protected; a situation's runner passes its playbook.json). An identity conflict then goes "
+                         "to the stronger model only when its contact is inside a watch area, closing on a protected "
+                         "point or coming into a watch area within 10 minutes (agents/watch/stakes.py); without it, "
+                         "or with neither in the table, as before")
     ap.add_argument("--quiet", action="store_true", help="no lines on stderr")
     return ap.parse_args(argv)
 

@@ -16,11 +16,15 @@ that can be imported is:
 
 - **when to wake**: agents/watch/wake.py's `Waker`, with the `Budgets` the live driver builds
   from its own argument defaults (`watch_officer.parse_args([])`: 60 wakes an hour, 12 tool
-  turns a wake, 6 escalations, a 60 s heartbeat, 3 s coalescing, 10 s between wakes);
+  turns a wake, 6 escalations, a 60 s heartbeat, 3 s coalescing, 10 s between wakes), and the
+  stakes gate on identity conflicts (agents/watch/stakes.py, bd murmur-5xaf) on the situation's
+  `[playbook]` watch areas and protected points, the config the episode's playbook would run on
+  (`watch`), as the live runner hands the officer its `playbook.json`;
 - **what it reads**: agents/watch/picture.py's `Poller` (the change feed on its cursor every
   `poll_s`, 2 s, the nomination check while a track is declared hostile, and under decision
   rules 30 the standing of ours from get_inbox's review every 5 s, so one of ours presumed lost
-  wakes it) over the session adapter, as agent `agent-watch`, the live officer's id;
+  wakes it, and every 10 s a contact the stakes gate kept routine, by id, until it matters)
+  over the session adapter, as agent `agent-watch`, the live officer's id;
 - **what it is told**: `compose` (the update), `render_mine` (its own proposals), the
   officer's own budget line (`Officer.budget_line`), the review items that alone hold up a
   nomination (`Poller.blocking`; the headless simulator computes none, so its updates have
@@ -94,6 +98,7 @@ from playbook.beliefs import NOT_RUNNING, RECOVERING_MODES  # noqa: E402
 from playbook.plays.safety import STUCK_KINDS  # noqa: E402
 from watch.backend import ToolCall, Turn, excerpt  # noqa: E402
 from watch.picture import NoChangesTool, Poller, compose, render_mine  # noqa: E402
+from watch.stakes import watch_of  # noqa: E402
 from watch.wake import Budgets, Wake, Waker  # noqa: E402
 
 #: the live officer's agent id (eval/situation.py WATCH_AGENT)
@@ -811,7 +816,7 @@ class WatchOfficer:
     `agent` process). On the charged clock (`ep.latency`, SCORING-V2.md 4.2) a wake is an
     `OpenTurn` the episode's loop resumes at each answer's charged time."""
 
-    def __init__(self, ep: Any, cfg: ModelConfig, client: Any = None):
+    def __init__(self, ep: Any, cfg: ModelConfig, client: Any = None, watch: Any = None):
         self.ep = ep
         self.sim: Sim = ep.sim
         self.cfg = cfg
@@ -821,7 +826,13 @@ class WatchOfficer:
         self.budgets = Budgets(max_wakes_per_hour=a.max_wakes_per_hour, max_turns_per_wake=a.max_turns_per_wake,
                                max_escalations=a.max_escalations, max_wakes=a.max_wakes,
                                heartbeat_s=a.heartbeat_s, coalesce_s=a.coalesce_s, min_gap_s=a.min_gap_s)
-        self.waker = Waker(self.budgets, escalation=cfg.escalation and not a.no_escalation)
+        # where the watch is (bd murmur-5xaf): the situation's [playbook] watch areas and protected
+        # points, the config its playbook would run on (`watch`: a playbook Config), as the live
+        # runner hands the officer its playbook.json; none known, every escalation as before
+        self.watch = watch_of(watch, source="the situation's [playbook] table")
+        escalation = cfg.escalation and not a.no_escalation
+        self.waker = Waker(self.budgets, escalation=escalation,
+                           stakes=self.watch.gate if self.watch is not None else None)
         self.poll_s = float(a.poll_s)
         self.lines: list[dict[str, Any]] = []
         self.log = _Log(self)
@@ -857,7 +868,9 @@ class WatchOfficer:
                                   self.budgets.max_turns_per_wake)
         self.log.write("run.start", models=cfg.as_dict(), budgets=dict(vars(self.budgets)), agent=AGENT,
                        prompt_chars=len(self.system), tools=sorted(self.tool_names),
-                       tools_chars=self.backend.tools_chars)
+                       tools_chars=self.backend.tools_chars,
+                       # the stakes gate's areas, only where a consult could be gated
+                       **({"watch": self.watch.describe()} if escalation and self.watch is not None else {}))
         # the latency-charged clock (SCORING-V2.md 4.2): None is the paused clock
         self.latency: Any = getattr(ep, "latency", None)
         self.open: OpenTurn | None = None  # the charged turn in progress
@@ -964,6 +977,9 @@ class WatchOfficer:
             changes = self.run(self.poller.poll())
             changes += self.run(self.poller.nominations(now=bnow))
             changes += self.run(self.poller.node_losses(now=bnow))
+            if self.watch is not None:
+                # a conflict the stakes gate kept routine whose contact now matters (bd murmur-5xaf)
+                changes += self.run(self.poller.stakes(self.watch, now=bnow))
             self.poll_errors = 0
             if changes:
                 self.waker.add(changes, bnow)
@@ -993,6 +1009,8 @@ class WatchOfficer:
 
     def do_wake(self, wake: Wake, now_s: float) -> str | None:
         bnow = self.bnow(now_s)
+        if wake.gated_tracks:
+            self.poller.watch_gated(wake.gated_tracks, bnow)  # read again until they matter
         escalate = wake.escalate and bnow >= self.lanes["consult"].until
         if wake.escalate and not escalate:
             self.waker.unescalate(wake)  # the stronger model waits after failed consults
@@ -1084,7 +1102,8 @@ class WatchOfficer:
         rec = {
             "n": wake.n, "t": round(t0, 3), "clock": clock, "reason": wake.reason, "why": wake.why,
             "lane": lane, "escalate_why": wake.escalate_why if escalate else [], "model": model, "effort": effort,
-            "served": served, "changes": len(wake.changes), "update": text, "stop": turn.stop, "error": turn.error,
+            "served": served, "changes": len(wake.changes), **({"gated": wake.gated} if wake.gated else {}),
+            "update": text, "stop": turn.stop, "error": turn.error,
             "text": (turn.text or "")[:TEXT_MAX],
             "tool_calls": [{"name": c.name, "input": c.input, "is_error": c.is_error, "result": c.result}
                            for c in turn.tool_calls],
