@@ -368,16 +368,55 @@ def _circle(area: Any) -> tuple[tuple[float, float], float] | None:
     return None
 
 
-def gap_need_of(area: dict[str, Any], gaps: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """The stated gap need a collect's area overlaps (the nearest), or None."""
+def _ring(area: Any) -> list[tuple[float, float]] | None:
+    """A polygon area's ring (`{"kind": "polygon", "ring": [[lon, lat], ...]}`, the decision engine's
+    other area, crates/murmur-decide space.rs), or None."""
+    if isinstance(area, dict) and area.get("kind") == "polygon" and len(area.get("ring") or []) >= 3:
+        return [(float(p[0]), float(p[1])) for p in area["ring"]]
+    return None
+
+
+def _inside(p: tuple[float, float], ring: list[tuple[float, float]]) -> bool:
+    """Whether a point is inside a ring (even-odd, in degrees: the areas are a few km across)."""
+    x, y = p
+    n = len(ring)
+    inside = False
+    for i in range(n):
+        (x1, y1), (x2, y2) = ring[i], ring[(i + 1) % n]
+        if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
+            inside = not inside
+    return inside
+
+
+def area_reach(area: Any, center: tuple[float, float]) -> tuple[float, float] | None:
+    """How far a point lies outside an order's area and from the area's middle (m): for a circle its
+    centre's distance less its radius, and that distance; for a polygon 0 inside, else its nearest
+    edge's distance, and its vertex mean's (the point a collect points at, space.rs). None for an
+    area of another kind. A stated need's circle overlaps the area when the first is at most its
+    radius."""
     circ = _circle(area)
-    if circ is None:
+    if circ is not None:
+        d = dist_m(circ[0], center)
+        return d - circ[1], d
+    ring = _ring(area)
+    if ring is None:
         return None
+    mid = (sum(p[0] for p in ring) / len(ring), sum(p[1] for p in ring) / len(ring))
+    pts = ring + [ring[0]]
+    out = 0.0 if _inside(center, ring) else min(V2._seg_dist(center, a, b) for a, b in zip(pts, pts[1:]))
+    return out, dist_m(mid, center)
+
+
+def gap_need_of(area: dict[str, Any], gaps: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The stated gap need a collect's area overlaps (the nearest to the area's middle), or None. A
+    polygon area overlaps as a circle does (until 2026-11-15 only a circle was matched)."""
     best = None
     for g in gaps:
-        d = dist_m(circ[0], tuple(g["center"]))
-        if d <= float(g["radius_m"]) + circ[1] and (best is None or d < best[0]):
-            best = (d, g)
+        r = area_reach(area, (float(g["center"][0]), float(g["center"][1])))
+        if r is None:
+            return None
+        if r[0] <= float(g["radius_m"]) and (best is None or r[1] < best[0]):
+            best = (r[1], g)
     return None if best is None else best[1]
 
 
@@ -485,12 +524,14 @@ def on_route(rec: dict[str, Any], need: dict[str, Any]) -> list[tuple[float, flo
 
 
 def cover_need_of(area: dict[str, Any], needs: list[dict[str, Any]]) -> dict[str, Any] | None:
-    circ = _circle(area)
-    if circ is None:
-        return None
+    """The first stated cover need whose circle a cover's area overlaps (a circle or a polygon), or
+    None."""
     for n in needs:
         c = _circle(n["area"])
-        if c is not None and dist_m(circ[0], c[0]) <= circ[1] + c[1]:
+        if c is None:
+            continue
+        r = area_reach(area, c[0])
+        if r is not None and r[0] <= c[1]:
             return n
     return None
 

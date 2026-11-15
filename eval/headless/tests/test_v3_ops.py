@@ -156,10 +156,10 @@ NEED = {"id": "gnss-1", "uid": 18, "callsign": "FERRET 1", "route": [[-122.46, 3
 
 
 def cover_world(coverage: str, held_at: float | None, outage_at: float = 600.0, other_fail: bool = False,
-                stated: bool = True, created: float = 100.0) -> dict[str, Any]:
+                stated: bool = True, created: float = 100.0, area: dict[str, Any] | None = None) -> dict[str, Any]:
     s = Synth(900)
     s.contact("c", aff="neutral", path=inbound())
-    s.intent(30, "cover", [], created, {"area": NEED["area"], "service": NEED["service"], "min_level": 10.0},
+    s.intent(30, "cover", [], created, {"area": area or NEED["area"], "service": NEED["service"], "min_level": 10.0},
              states=[(created, "checked", "check"), (created, "rejected" if coverage == "fail" else "dispatched", "x")])
     s.intent(31, "patrol", [18], 400.0, {"route": NEED["route"]}, source="agent-scripted",
              states=[(400.0, "dispatched", "x")], op={18: [(401.0, "acked"), (402.0, "active")]})
@@ -187,6 +187,26 @@ def test_a_cover_is_useful_when_the_predicted_outage_was_avoided():
     assert by_intent(cover_world("fail", held_at=None, other_fail=True))[30]["label"] == "refused"
     late = cover_world("fail", held_at=550.0, created=450.0)["ops"]["cover"][0]
     assert not late["served"] and late["cause"] == "not_asked", "asked after the run began"
+
+
+def box(west: float, east: float, south: float = 37.806, north: float = 37.81) -> dict[str, Any]:
+    return {"kind": "polygon", "ring": [[west, south], [east, south], [east, north], [west, north]]}
+
+
+def test_a_polygon_area_answers_the_stated_need_its_circle_overlaps():
+    """A cover or a collect over a polygon (the decision engine's other kind of area) answers the
+    stated need whose circle it overlaps, as a circle does (2.10). Until 2026-11-15 only a circle was
+    matched, so the model pilot's one polygon cover (F14 at the Golden Gate, seed 6601, the run's
+    route boxed) counted as no need's and its need as not asked."""
+    assert O.cover_need_of(box(-122.46, -122.448), [NEED]) is NEED, "the need's centre inside"
+    assert O.cover_need_of(box(-122.446, -122.44), [NEED]) is NEED, "an edge 700 m from its centre, within 800"
+    assert O.cover_need_of(box(-122.443, -122.44), [NEED]) is None, "960 m off"
+    assert O.cover_need_of({"kind": "polygon", "ring": [[-122.45, 37.8]]}, [NEED]) is None, "not a ring"
+    g = GAP["center"]
+    assert O.gap_need_of(box(g[0] - 0.01, g[0] + 0.01, g[1] - 0.01, g[1] + 0.01), [GAP]) is GAP
+    lab = cover_world("fail", held_at=550.0, area=box(-122.46, -122.448))
+    assert by_intent(lab)[30]["space"]["need"] == "gnss-1" and by_intent(lab)[30]["label"] == "useful"
+    assert lab["ops"]["cover"][0]["served"] and lab["ops"]["cover"][0]["asked"] == [30]
 
 
 def test_an_outage_at_the_run_s_own_start_is_the_scheduler_s():

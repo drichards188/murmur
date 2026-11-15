@@ -298,7 +298,11 @@ check is coverage answered its question and is labelled here, not `refused`, and
 outage no stated need names is `unjudged` (choice 22). "Covered by ours": an EO/IR sensor of ours
 had the area's centre within its catalog range at a picture sample. A record without the digest
 (before 2.10 was built) leaves collect and cover `unjudged`, counted apart and out of every rate of
-quality.
+quality. An order's area is a circle or a polygon (the decision engine's two kinds, space.rs); it is
+asked for the stated need whose circle it overlaps, a polygon as a circle (`area_reach`: the need's
+centre inside the polygon or within its radius of an edge). Until 2026-11-15 only a circle was
+matched, so a polygon was asked for no need: the model pilot's one polygon, a GNSS cover boxing the
+run's route (F14 at the Golden Gate, seed 6601), left its cover need `not_asked`.
 
 ## 3. Metrics
 
