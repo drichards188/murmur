@@ -2227,3 +2227,40 @@ than 1 km off for 9 to 100 % of its seconds before a camera's first look. 665 se
 Each moves the honest ceiling in every family with radar-only aircraft and the v3 digests; 1 and 2 the
 air tracker's calibration too (`tracks::tests::calib_air`), 3 a rules version. Until one lands, a paid
 F2 batch measures this as much as the model. The owner's call.
+
+### 17.15 The radar's height in the bearing segment (2026-11-15, bd murmur-m4fc)
+
+**Coverage.** The pilot's 20 F2 situations (golden-gate and san-diego, seeds 6600-6609; the only
+radars HUNTER 1's on the surface and REAPER 1's at 3,000 m), `none` and `oracle-v3-honest`, before
+(e4ad278) and after (69a3f5a) the change; free. Records kept locally in `logs/m4fc/`, not in git.
+
+**The change** (the owner's decision: "we need to use radar height"; 17.14's option 1): the physical
+model's 2D radar plot of an aircraft carries the radar's height, and the tracker's bearing segment is
+the ground ranges an aircraft between 10 and 8,000 m can be at, the band the cameras' search already
+assumed (`AIR_FLOOR_M`, `AIR_CEILING_M`, now one pair in tracks/sensing.rs). Legacy plots carry no
+height and are read as before (the golden and paused digests did not move). Two tests guard the
+band: no contact in any world flies outside it. DECISIONS.md records the revision.
+
+**Result.**
+
+| | before | after |
+|---|---|---|
+| Honest ceiling, drone needs served | 4 of 20 | 8 of 20 (5 gained, san-diego 6606 lost) |
+| Drone track error before a camera's first look, 90th percentile (2,271 paired seconds) | 2,241 m | 1,126 m |
+| Seconds more than 1 km off | 676 | 290 |
+| The 730 seconds over 0.5 km off along REAPER 1's line before: median | 2,004 m | 874 m |
+
+The median of all seconds is 163 m both times: most seconds were already ranged by a second sensor.
+The paid check's situation (san-diego 6605) is still not served by the honest ceiling, and why 6606
+was lost was not looked into.
+
+**The air tracker's calibration.** Tuning sets (with the MQ-9B at 3,000 m as the v3 worlds fly it):
+every class and mix honest before and after, the same failures and keep-out misses. A fresh
+held-out set (551-580, written before the change, run once): honest but for six cautious class and
+mix pairs (far and high transits under a surface radar, NEES 0.16 to 0.41, truth within two sigmas
+99 to 100 %); the old tracker on the same set gave the same keep-out misses line for line.
+
+**What remains.** Under REAPER 1 a low drone still sits a median 0.9 km short (the band reaches
+8,000 m and the slant range is widened two sigmas), and nothing changed along the surface radar's
+line. 17.14's option 2, a ceiling by the shown size class, would close most of it: the owner's call.
+Saturation's dated digests (docs/HEADLESS.md 17.6) were not re-taken and will move on a new run.
