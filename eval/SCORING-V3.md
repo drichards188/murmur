@@ -1757,3 +1757,96 @@ tested with a fake client only.
   rules 21) where the playbook and the oracle send orbits, and 2.5 labels it (choices 37 to 39), so
   useless orders per hour, justified on the picture, harm and the false-alarm line (17.2) read the
   model's orders. In the smoke of 2026-11-14 the report had left 13 of its 14 orders `unjudged`.
+
+### 17.9 The model pilot, registered before it ran (2026-11-14)
+
+Written and committed before any pilot episode; what follows is not changed after the first one.
+It is a pilot: it decides only whether a larger paid run of the model is worth asking for. Its
+numbers describe one model as an agent in simulated situations, never people, and are not findings
+to quote (Murmur is a working draft).
+
+**The question.** Does the model watch officer, Claude Sonnet 5.5 alone, reach the needs no free play
+reaches (a drone to identify, an imagery collect and a GNSS cover to ask for) without more useless
+orders than the playbook?
+
+**The agent.** 17.8's officer with `"escalation": false`: Sonnet 5.5 at medium effort takes every
+wake, and Opus 5.5 is never consulted (the owner's choice, 2026-11-14). In the smoke
+(`v3-model-smoke-2026-11-14`, dev seed 5000, F1 at the Golden Gate and F2 at San Diego) the shipped
+design cost US$2.38 an episode, about 70 % of it the four Opus consults an episode (each a fresh
+conversation written to the cache), the routine wakes US$0.60 to 0.82. This pilot therefore tests a
+cheaper variant, not the shipped two-model design; a no-go leaves the consults untested.
+
+**The build.** The commit each record's provenance names, from f78e234 (the `identify` label, bd
+murmur-1zcp; before it the labeller left `identify` unjudged). Nothing that changes an episode (the
+officer, the bridge, its tools, the simulator, a world) lands between the first episode and the
+last; a change to the labels or the report may, since the records are rescored, not rerun. The
+labels are 2.5's with choices 37 to 39 as built (the owner's to change: a rescore). An identify's
+look end is read from the record, not logged (choice 38; on the smoke it matched the op log within
+0.03 s).
+
+**The situations.** The model pilot's seeds (0.1), each situation once (one replicate; the owner's
+instruction):
+
+| family | seeds, each world | model episodes |
+|---|---|---|
+| F2 drone | 6600-6609 | 20 |
+| F14 space | 6600-6604 | 10 |
+| F18 quiet | 6600-6602 | 6 |
+
+The same situations, free: `none`, `playbook`, the ceiling `oracle-v3-shown` (F2, F18) and the basic
+oracle `oracle-v3-basic` (F14's attempts; the ceiling makes none). The paused clock, the approve-all
+operator.
+
+**Left out, and why.** F9 night and fog: the decision engine reads clear-day reach in fog (bd
+murmur-ahss), and its fix would move the family. F15 engagements: blocked (bd murmur-e3b). F1, F6,
+F8, F12 and F13, and more situations per family: the budget; the free baseline (2026-11-14, dev
+seeds 5000-5009) shows room there too. **Known defect, kept**: EEL 1 runs aground in about 3 Golden
+Gate situations of 10 under every agent (bd murmur-galh: the 250 m current field gives the Horseshoe
+Bay basin the channel's ebb); it is the same in every arm and serves no need of these families.
+
+**What the free baseline showed** (dev seeds, both worlds pooled): F2 `none` 0/20, the playbook 1/20,
+the ceiling 11/20; F14 every free play 0/20 collects and 0/20 covers, the basic oracle 20/20 and
+20/20 (`v3-f14-basic-2026-11-14`); F18 the playbook 12 to 30 useless orders an episode, the ceiling
+none.
+
+**The measures.**
+1. F2: needs served, the model against the playbook, paired by situation (20 pairs): the exact
+   McNemar test, two-sided, on the discordant pairs; against `none` reported beside it.
+2. F14: gap and cover needs served (report_ops.py), the model against the playbook.
+3. Useless orders per situation-hour (justified on the picture apart) and harmful orders, the model
+   against the playbook, on F18 and pooled over the three families; orders to several vehicles at
+   once counted apart (group orders have known faults, bd murmur-3kqi).
+4. A model episode the guard stopped, whose call failed or whose input hit the leakage scan counts
+   as serving nothing (no exclusion), and is listed.
+
+**Go** (a larger paid run is worth asking for): the false-alarm condition holds (the model's useless
+orders per hour, and its harmful orders per hour, no more than the playbook's, on F18 and pooled
+over the three families), and at least one of: (a) F14: the model serves at least 3 of 10 gap needs
+or 3 of 10 cover needs; (b) F2: the model serves more than the playbook at p < 0.05 (the smallest
+such result: 6 discordant pairs, all its way). **No-go**: otherwise. Either way the report gives the
+numbers, the cost and the causes of the losses.
+
+**Midway.** The pilot runs in two halves into one directory under one cap (first F2 6600-6604, F14
+6600-6602 and F18 6600-6601, 20 episodes; then F2 6605-6609, F14 6603-6604 and F18 6602, 16). If
+after the first half the model has served no F2 need and no F14 need, it stops there and reports.
+If the first half's spend puts the whole past the cap, the second half drops F18's situation first,
+then F14's last seed in each world, never F2's.
+
+**Budget.** The batch's hard cap is US$37, kept in the directory's ledger: with the smoke's US$4.76
+and the cost check's US$2.19 the whole stays within the owner's US$45. The cost check
+(`v3-model-costcheck-2026-11-14`, dev seed 5001 at the Golden Gate, consults off) measured US$0.82
+for an F2 episode and US$1.37 for an F14 one (1,200 s), so about US$35 expected; F1, F6, F8, F12
+and F13 and more situations wait for a go. Every record is kept, so a change to the labels or the
+scoring is a free rescore, not a rerun.
+
+**The commands**, each half three batches into one directory (`<seeds>` as above; the cap is the
+ledger's, shared):
+
+    MURMUR_EVAL_MODEL=1 .venv/bin/python -m eval.headless.v3.run batch --families v3-f2-drone-gg \
+        v3-f2-drone-sd --seeds <seeds> --agent model playbook oracle-v3-shown \
+        --model-config '{"escalation": false, "max_usd": 3}' --max-usd 37 --workers 4 \
+        --out eval/results/headless/v3-model-pilot-2026-11-14
+    (the same for v3-f14-space-gg/sd with `--agent model playbook oracle-v3-basic`, and for
+    v3-f18-quiet-gg/sd with `--agent model playbook oracle-v3-shown`)
+    .venv/bin/python -m eval.headless.v3.run report eval/results/headless/v3-model-pilot-2026-11-14
+    .venv/bin/python -m eval.headless.v3.report_ops eval/results/headless/v3-model-pilot-2026-11-14
