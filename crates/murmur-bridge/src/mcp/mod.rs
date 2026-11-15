@@ -812,7 +812,7 @@ async fn read(mcp: &Mcp, agent: &AgentId, uri: &str) -> Result<Value, ErrorData>
         "intents" => world::intents(mcp, agent, None, false, usize::MAX),
         "inbox" => world::inbox(mcp),
         "events" => world::events(mcp, None, 100),
-        "tracks" => world::tracks(mcp, None, None, true).await.map_err(api_err)?,
+        "tracks" => world::tracks(mcp, &world::TrackFilter::all()).await.map_err(api_err)?,
         "space/passes" => mcp
             .api(Method::GET, "/api/space/passes", None)
             .await
@@ -826,7 +826,7 @@ async fn read(mcp: &Mcp, agent: &AgentId, uri: &str) -> Result<Value, ErrorData>
                 let id: u64 = id.parse().map_err(|_| not_found())?;
                 mcp.decision.explain_json(id).ok_or_else(not_found)?
             } else if let Some(id) = path.strip_prefix("tracks/") {
-                let all = world::tracks(mcp, None, None, true).await.map_err(api_err)?;
+                let all = world::tracks(mcp, &world::TrackFilter::all()).await.map_err(api_err)?;
                 let t = all["t"].clone();
                 let track = all["tracks"]
                     .as_array()

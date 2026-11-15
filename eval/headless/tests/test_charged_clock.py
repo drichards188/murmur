@@ -428,10 +428,15 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: price put back this code gave the digests before (3d971c0a..., de1fb6c3...) byte for byte, so
 #: the only change is the model's dollars (each call's, each wake's, the totals and the guard's);
 #: the officer's new reads (rules 30's review, the `blocking` items) moved nothing.
+#: The two model digests re-taken for get_tracks' focused read (bd murmur-8mu3: `track_id`, `near`
+#: and `radius_m`, and the sentence on them in its description): with the three left out of the
+#: schema and the sentence put back, this code gave the digests before (b4afb70d..., a8cf2839...)
+#: byte for byte, so the only change is the longer get_tracks definition in the model's tool list
+#: (its prompt sizes and token estimates); the playbook's and the golden did not move.
 PAUSED = {
-    "model harbor-watch s1": "b4afb70d63b5acaa60be93333c6a8bb4e44f116cea6c54824e3ae5aa522089f1",
+    "model harbor-watch s1": "e9d7fde40cfdf95f39264144cae7acd478229557ff512b5882201b3d13bd0203",
     "playbook v2 fast-unknown 1000": "2e88861d778d0e57cdca0abea48a01c77e33c07b26ae96a5f143f0c1eb412491",
-    "model v2 fast-unknown 1000": "a8cf28390f3e3821ee927d38dbe22b512bbc0dcde58e3ca4a5b09c2f0cf0d2c0",
+    "model v2 fast-unknown 1000": "a8772dea79eeeddbe401f2e81d6b4d8da79ab055702f0f2d924509faeac378bc",
 }
 
 

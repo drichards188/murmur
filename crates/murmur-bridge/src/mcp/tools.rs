@@ -95,6 +95,45 @@ pub struct TracksParams {
     /// Also return tracks nobody has detected for longer than stale_after_s (default true;
     /// they are flagged stale and their uncertainty has grown).
     pub include_stale: Option<bool>,
+    /// Only these tracks, by id: always a list (["T-0016"] for one). An id the answer does
+    /// not carry (no such track or lost contact, or left out by another filter) is listed
+    /// under missing, not an error.
+    pub track_id: Option<Vec<String>>,
+    /// Only tracks within radius_m of this point, [lon, lat], judged at the position carried
+    /// to now (predicted), and lost contacts at their last fix. Needs radius_m.
+    pub near: Option<[f64; 2]>,
+    /// With near: the radius in metres.
+    pub radius_m: Option<f64>,
+}
+
+impl TracksParams {
+    /// The filter these arguments ask for, or why they make no sense (bd murmur-8mu3).
+    fn filter(&self) -> Result<world::TrackFilter<'_>, String> {
+        if self.track_id.as_ref().is_some_and(Vec::is_empty) {
+            return Err("track_id: give at least one track id (a list: [\"T-0016\"])".into());
+        }
+        let near = match (self.near, self.radius_m) {
+            (None, None) => None,
+            (Some(_), None) => return Err("near needs radius_m (metres)".into()),
+            (None, Some(_)) => return Err("radius_m goes with near = [lon, lat]".into()),
+            (Some([lon, lat]), Some(r)) => {
+                if !(lon.is_finite() && lat.is_finite() && (-180.0..=180.0).contains(&lon) && (-90.0..=90.0).contains(&lat)) {
+                    return Err(format!("near must be [lon, lat] in degrees, not [{lon}, {lat}]"));
+                }
+                if !(r.is_finite() && r > 0.0) {
+                    return Err(format!("radius_m must be a positive number of metres, not {r}"));
+                }
+                Some(([lon, lat], r))
+            }
+        };
+        Ok(world::TrackFilter {
+            affiliation: self.affiliation.as_deref(),
+            domain: self.domain.as_deref(),
+            include_stale: self.include_stale.unwrap_or(true),
+            ids: self.track_id.as_deref(),
+            near,
+        })
+    }
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -553,7 +592,10 @@ pub fn tools() -> Vec<Tool> {
                  with its confidence and reason, the sources behind it (which of our \
                  vehicles, which sensor, how many detections), and last_seen as as_of. \
                  {STALE_NOTE} A stale or low-confidence track cannot support a consequential \
-                 proposal: say so."
+                 proposal: say so. The whole picture is large (a few thousand characters a \
+                 track): for the few you need, pass track_id (a list of ids) or near = [lon, \
+                 lat] with radius_m; the filters combine, and an id not in the answer is \
+                 listed under missing."
             ),
             true,
         ),
@@ -930,13 +972,10 @@ pub async fn call(
         }
         "get_tracks" => {
             let p = params!(TracksParams);
-            world::tracks(
-                mcp,
-                p.affiliation.as_deref(),
-                p.domain.as_deref(),
-                p.include_stale.unwrap_or(true),
-            )
-            .await
+            match p.filter() {
+                Ok(f) => world::tracks(mcp, &f).await,
+                Err(e) => return Ok(CallToolResult::structured_error(json!({ "error": e }))),
+            }
         }
         "get_satellite_passes" => {
             let p = params!(PassesParams);

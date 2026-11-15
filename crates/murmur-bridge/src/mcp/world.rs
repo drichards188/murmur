@@ -499,16 +499,47 @@ pub fn inbox(mcp: &Mcp) -> Value {
     v
 }
 
+/// What `get_tracks` narrows the picture to. `ids` and `near` (bd murmur-8mu3: an agent's read
+/// of one track or one place, not the whole picture) narrow the lost contacts too; the
+/// affiliation, domain and staleness filters, as before, only the tracks.
+pub struct TrackFilter<'a> {
+    pub affiliation: Option<&'a str>,
+    pub domain: Option<&'a str>,
+    pub include_stale: bool,
+    /// Only these track ids; one the answer does not carry is listed under `missing`.
+    pub ids: Option<&'a [String]>,
+    /// Only tracks whose position carried to now (`predicted`) is within this many metres of
+    /// this `[lon, lat]`, and lost contacts whose last fix is.
+    pub near: Option<([f64; 2], f64)>,
+}
+
+impl TrackFilter<'_> {
+    /// The whole picture (the resources' read).
+    pub fn all() -> Self {
+        TrackFilter { affiliation: None, domain: None, include_stale: true, ids: None, near: None }
+    }
+
+    fn wants_id(&self, id: &Value) -> bool {
+        self.ids.is_none_or(|ids| id.as_str().is_some_and(|id| ids.iter().any(|x| x == id)))
+    }
+
+    fn wants_place(&self, at: &Value) -> bool {
+        let Some(([lon, lat], r)) = self.near else {
+            return true;
+        };
+        match at.as_array().map(|p| (p.first().and_then(Value::as_f64), p.get(1).and_then(Value::as_f64))) {
+            Some((Some(x), Some(y))) => crate::geo::haversine_m(lat, lon, y, x) <= r,
+            _ => false, // no position: not near anything
+        }
+    }
+}
+
 /// `get_tracks`: contacts that are not ours, as the bridge's own sensors see them (Phase
 /// C2). The same JSON as `/api/tracks` (perception only: that endpoint never carries
 /// truth), each track with `as_of`, `age_s` and `stale`, and the estimate carried to now
-/// (`pos_sigma_now_m`, `confidence_now`, `predicted`).
-pub async fn tracks(
-    mcp: &Mcp,
-    affiliation: Option<&str>,
-    domain: Option<&str>,
-    include_stale: bool,
-) -> Result<Value, DecisionError> {
+/// (`pos_sigma_now_m`, `confidence_now`, `predicted`), narrowed by `filter`.
+pub async fn tracks(mcp: &Mcp, filter: &TrackFilter<'_>) -> Result<Value, DecisionError> {
+    let (affiliation, domain, include_stale) = (filter.affiliation, filter.domain, filter.include_stale);
     // `GET /api/tracks`'s answer: the store's own (the route's handler) when there is one, not
     // serialized for the router and parsed back (a large picture's tracks, murmur-4yj)
     let v = match mcp.decision.tracks() {
@@ -522,6 +553,7 @@ pub async fn tracks(
         .cloned()
         .unwrap_or_default()
         .into_iter()
+        .filter(|t| filter.wants_id(&t["id"]))
         .filter(|t| affiliation.is_none_or(|a| t["affiliation"].as_str() == Some(a)))
         .filter(|t| domain.is_none_or(|d| t["domain"].as_str() == Some(d)))
         .map(|mut t| {
@@ -552,8 +584,45 @@ pub async fn tracks(
             t
         })
         .filter(|t| include_stale || t["stale"] != json!(true))
+        .filter(|t| filter.wants_place(&t["predicted"]))
         .collect();
-    Ok(json!({
+    let lost: Value = if filter.ids.is_none() && filter.near.is_none() {
+        v["lost"].clone()
+    } else {
+        Value::Array(
+            v["lost"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|l| filter.wants_id(&l["id"]) && filter.wants_place(&l["position"]))
+                .cloned()
+                .collect(),
+        )
+    };
+    // an id asked for that the answer does not carry: said, not an error
+    let missing: Option<Vec<Value>> = filter.ids.map(|ids| {
+        let carried = |id: &str| {
+            tracks.iter().chain(lost.as_array().into_iter().flatten()).any(|t| t["id"].as_str() == Some(id))
+        };
+        let known = |id: &str| {
+            v["tracks"].as_array().into_iter().flatten().chain(v["lost"].as_array().into_iter().flatten())
+                .any(|t| t["id"].as_str() == Some(id))
+        };
+        let mut out = Vec::new();
+        for id in ids {
+            if carried(id) || out.iter().any(|m: &Value| m["id"].as_str() == Some(id.as_str())) {
+                continue;
+            }
+            let why = if known(id) {
+                "left out by the other filters (affiliation, domain, include_stale, near)"
+            } else {
+                "no such track or lost contact in the picture"
+            };
+            out.push(json!({ "id": id, "why": why }));
+        }
+        out
+    });
+    let mut out = json!({
         "t": now,
         "count": tracks.len(),
         "stale_after_s": stale_after,
@@ -586,8 +655,12 @@ pub async fn tracks(
                  accept one for an engagement.",
         "tracks": tracks,
         // rules 16: read-only, as the console shows them
-        "lost": v["lost"].clone(),
-    }))
+        "lost": lost,
+    });
+    if let Some(missing) = missing {
+        out["missing"] = Value::Array(missing);
+    }
+    Ok(out)
 }
 
 /// `get_recent_events`: newest first.

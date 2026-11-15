@@ -2126,6 +2126,75 @@ async fn agents_read_lost_contacts_and_no_tool_accepts_one() {
     assert_eq!(rep.lost_contacts, 1);
 }
 
+/// bd murmur-8mu3: `get_tracks` reads one track, a few, or one place, not only the whole
+/// picture: `track_id` (always a list), `near` = [lon, lat] with `radius_m`; the lost contacts
+/// are narrowed alike; an id the answer does not carry is listed under `missing`, saying why,
+/// never an error; arguments that make no sense are refused, saying why; reading logs nothing.
+#[tokio::test(start_paused = true)]
+async fn get_tracks_reads_one_track_a_few_or_one_place() {
+    let r = rig();
+    sleep(Duration::from_millis(500)).await;
+    r.clock.set(snapshot::ms(crate::clock::wall()));
+    lost_alongside(&r); // T-0001 a fast boat in the picture, T-0002 a fishing boat lost 200 m north
+    let lines = r.log.lines().len();
+    let ids = |v: &Value, k: &str| -> Vec<String> {
+        v[k].as_array().into_iter().flatten().filter_map(|t| t["id"].as_str().map(str::to_string)).collect()
+    };
+    let all = r.ok(&watch(), "get_tracks", json!({})).await;
+    assert_eq!((ids(&all, "tracks"), ids(&all, "lost")), (vec!["T-0001".to_string()], vec!["T-0002".to_string()]), "{all}");
+    assert!(all.get("missing").is_none(), "no ids asked for, none missing: {all}");
+    // one by id: the same entry as in the whole picture
+    let one = r.ok(&watch(), "get_tracks", json!({ "track_id": ["T-0001"] })).await;
+    assert_eq!(one["count"], 1, "{one}");
+    assert_eq!(one["tracks"][0]["position"], all["tracks"][0]["position"]);
+    assert_eq!(one["tracks"][0]["identity"], all["tracks"][0]["identity"]);
+    assert_eq!((ids(&one, "lost"), one["missing"].clone()), (vec![], json!([])), "{one}");
+    // several: a track, a lost contact, an id never seen (said, not an error), one twice
+    let few = r.ok(&watch(), "get_tracks", json!({ "track_id": ["T-0001", "T-0002", "T-0099", "T-0099"] })).await;
+    assert_eq!((ids(&few, "tracks"), ids(&few, "lost")), (vec!["T-0001".to_string()], vec!["T-0002".to_string()]));
+    assert_eq!(few["missing"], json!([{ "id": "T-0099", "why": "no such track or lost contact in the picture" }]));
+    // in the picture but left out by another filter
+    let air = r.ok(&watch(), "get_tracks", json!({ "track_id": ["T-0001"], "domain": "air" })).await;
+    assert_eq!(air["count"], 0);
+    assert!(air["missing"][0]["why"].as_str().unwrap_or("").contains("other filters"), "{air}");
+    // one place: around the fast boat as the picture carries it to now, its 50 m holds it and not
+    // the lost boat's last fix 200 m north; 1 km holds both; a place 8 km off holds neither
+    let at = all["tracks"][0]["predicted"].clone();
+    let near = r.ok(&watch(), "get_tracks", json!({ "near": at, "radius_m": 50.0 })).await;
+    assert_eq!((ids(&near, "tracks"), ids(&near, "lost")), (vec!["T-0001".to_string()], vec![]), "{near}");
+    assert!(near.get("missing").is_none());
+    let wide = r.ok(&watch(), "get_tracks", json!({ "near": at, "radius_m": 1000.0 })).await;
+    assert_eq!((ids(&wide, "tracks"), ids(&wide, "lost")), (vec!["T-0001".to_string()], vec!["T-0002".to_string()]));
+    let far = r.ok(&watch(), "get_tracks", json!({ "near": [-122.40, 37.80], "radius_m": 1000.0 })).await;
+    assert_eq!((far["count"].clone(), ids(&far, "lost")), (json!(0), vec![]), "{far}");
+    // the filters combine
+    let both = r.ok(&watch(), "get_tracks", json!({ "track_id": ["T-0001"], "near": [-122.40, 37.80], "radius_m": 1000.0 })).await;
+    assert_eq!(both["count"], 0);
+    assert!(both["missing"][0]["why"].as_str().unwrap_or("").contains("other filters"), "{both}");
+    // arguments that make no sense: refused, saying why
+    for (args, why) in [
+        (json!({ "near": [-122.49, 37.81] }), "near needs radius_m"),
+        (json!({ "radius_m": 100.0 }), "radius_m goes with near"),
+        (json!({ "track_id": [] }), "at least one track id"),
+        (json!({ "near": [200.0, 37.81], "radius_m": 100.0 }), "[lon, lat]"),
+        (json!({ "near": [-122.49, 37.81], "radius_m": 0.0 }), "positive"),
+    ] {
+        let (err, v) = r.call(&watch(), "get_tracks", args.clone()).await;
+        assert!(err && v["error"].as_str().unwrap_or("").contains(why), "{args}: {v}");
+    }
+    // one shape: a list, never a bare string
+    let (err, v) = r.call(&watch(), "get_tracks", json!({ "track_id": "T-0001" })).await;
+    assert!(err && v["error"].as_str().unwrap_or("").contains("bad arguments"), "{v}");
+    // the schema offers them, and the description says to use them
+    let t = tools::tools().into_iter().find(|t| t.name == "get_tracks").expect("get_tracks");
+    let schema = serde_json::to_string(&t.input_schema).expect("schema");
+    for k in ["track_id", "near", "radius_m"] {
+        assert!(schema.contains(k), "{k}: {schema}");
+    }
+    assert!(t.description.as_deref().unwrap_or("").contains("pass track_id"));
+    assert_eq!(r.log.lines().len(), lines, "reading logs nothing");
+}
+
 /// Murmur-12e: an agent reads why a keep-out blocks a nomination it might make (the same dry
 /// run as the console's form): which track, why, by how much, what would clear it. Reading
 /// it logs nothing and moves nothing.
