@@ -992,6 +992,8 @@ class WatchOfficer:
             if self.watch is not None:
                 # a conflict the stakes gate kept routine whose contact now matters (bd murmur-5xaf)
                 changes += self.run(self.poller.stakes(self.watch, now=bnow))
+                # a contact in doubt about to come into a watch area, or inside one (bd murmur-1h2r)
+                changes += self.run(self.poller.approach(self.watch, now=bnow))
             self.poll_errors = 0
             if changes:
                 self.waker.add(changes, bnow)

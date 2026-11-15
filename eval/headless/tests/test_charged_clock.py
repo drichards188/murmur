@@ -447,10 +447,18 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: Re-taken for the case file's opportunity cost (what each vehicle that could identify the contact
 #: would be taken from): without that part this code gave the digest before (bc88fc7c...) byte for
 #: byte; the case file is 4 354 characters with it, and nothing else in the record moved.
+#: The two model digests re-taken for the watch wake before a contact in doubt enters the watch
+#: area (bd murmur-1h2r) and the "no velocity yet" line (murmur-jhgn): with neither, this code gave
+#: the digests before (dbc5743a..., 8dedcac6...) byte for byte; the line alone gave a41ef7c1... and
+#: 6e7bfa2e... (each `track.new` without a velocity says so instead of "0.0 m/s course None");
+#: the wake moves them to the values below: the driver's reads of the contacts it follows, and
+#: wakes for them, each told once a stage for the run: Harbor watch's T-0008 approaching at 183 s
+#: and T-0007 (its conflict standing) at 639 s; v2's T-0008 approaching at 135 s and inside at
+#: 243 s. The playbook's did not move.
 PAUSED = {
-    "model harbor-watch s1": "dbc5743a577744e2dd57064ef9352430b97dd454aae6d07da2231699b0c3c3fd",
+    "model harbor-watch s1": "2bb5177fa30cb17323a3a728d578ce4d0e276149ff1344c01deb94f58bd105e5",
     "playbook v2 fast-unknown 1000": "2e88861d778d0e57cdca0abea48a01c77e33c07b26ae96a5f143f0c1eb412491",
-    "model v2 fast-unknown 1000": "8dedcac649971f485bb9e3580ed70488a206105cbc58d3fb236430d28d68919f",
+    "model v2 fast-unknown 1000": "e6b8237575c01932a447937c616cc6f7b4fa49ae3b21f52c5c7bcb49f4189a38",
 }
 
 

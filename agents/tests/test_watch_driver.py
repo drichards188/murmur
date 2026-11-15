@@ -111,6 +111,9 @@ class ScriptedPoller:
     async def stakes(self, watch, now=None):
         return []  # Poller.stakes has its own tests (test_watch_stakes.py)
 
+    async def approach(self, watch, now=None):
+        return []  # Poller.approach has its own tests (test_watch_stakes.py)
+
     def watch_gated(self, tracks, now):
         self.gated = getattr(self, "gated", []) + list(tracks)
 

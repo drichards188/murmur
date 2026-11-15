@@ -138,6 +138,8 @@ EVERY_KIND = [
     {"kind": "track.declared", "track": "T-1", "declared": "hostile", "declaration": "D-1", "from": None},
     {"kind": "nomination.possible", "track": "T-1", "platforms": [{"uid": 2, "callsign": "FPV 2"}]},
     {"kind": "track.declaration_revoked", "track": "T-2", "was": "hostile"},
+    {"kind": "track.approaching", "track": "T-5", "area": "the Gate", "enters_s": 60, "to_edge_m": 1500},
+    {"kind": "track.in_watch", "track": "T-6", "area": "the Gate", "to_edge_m": -100},
     {"kind": "track.new", "track": "T-3", "affiliation": "suspect", "position": [-122.4, 37.8],
      "sources": [{"uid": 7, "sensor": "radar"}], "ais": {"name": "X", "ship_type": "cargo"}},
     {"kind": "track.affiliation", "track": "T-4", "from": "unknown", "to": "suspect"},

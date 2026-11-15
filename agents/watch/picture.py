@@ -39,6 +39,14 @@ class NoChangesTool(RuntimeError):
 # platform with no cruise figure in the catalog is asked about within FALLBACK_REACH_M.
 TRANSIT_S = 900.0
 FALLBACK_REACH_M = 30_000.0
+# contacts in doubt the driver follows to the watch areas (`Poller.approach`), the newest kept
+MAX_APPROACH = 200
+# contacts remembered as told for the run (`Poller.told`), the oldest forgotten past this
+MAX_TOLD = 5000
+#: an identity below this confidence is in doubt (the mission's resolve line,
+#: eval/headless/v3/mission.py RESOLVE_CONF)
+RESOLVE_CONF = 0.6
+CLEAR = ("friendly", "neutral")
 # contacts the stakes gate kept routine that the driver keeps reading (`Poller.stakes`)
 MAX_GATED = 50
 
@@ -83,13 +91,21 @@ class Poller:
     """The change feed for one agent session, reconnecting when the bridge goes away."""
 
     def __init__(self, connect: Callable[[], Any], nomination_every_s: float = 15.0, review_every_s: float = 5.0,
-                 stakes_every_s: float = 10.0):
+                 stakes_every_s: float = 10.0, approach_every_s: float = 5.0):
         self.connect = connect  # () -> an AgentSession (not yet entered)
         # bd murmur-5xaf: contacts whose identity conflict the stakes gate kept from the stronger
         # model (track id -> when), read by id this often until they matter (`stakes`)
         self.gated: dict[str, float] = {}
         self.stakes_every_s = stakes_every_s
         self.stakes_checked = 0.0
+        # bd murmur-1h2r: contacts that are or became not known friendly or neutral (track id ->
+        # the stage told: None, "approaching"), read by id every `approach_every_s` (`approach`)
+        self.following: dict[str, str | None] = {}
+        # the stage each contact was told at, for the run: a contact let go and followed again (an
+        # affiliation or conflict change after it was inside) is never told a stage twice
+        self.told: dict[str, str] = {}
+        self.approach_every_s = approach_every_s
+        self.approach_checked = float("-inf")
         # rules 30: the review's node items, read this often (`node_losses`); None until the first
         # read says whether the bridge has them, False once it said it has not (older rules)
         self.review_every_s = review_every_s
@@ -131,6 +147,7 @@ class Poller:
         if reset:
             # another bridge: its review is read afresh (what this one presumed is news again)
             self.node_rules, self.presumed, self.lost, self.review_checked = None, {}, {}, 0.0
+            self.following, self.told = {}, {}
         return {"cursor": self.cursor, "run": self.run, "tools": list(s.tools), "reset": reset}
 
     async def close(self) -> None:
@@ -167,6 +184,16 @@ class Poller:
                     k == "track.declared" and c.get("declared") != "hostile"):
                 self.hostile.discard(c.get("track"))
                 self.passing.pop(c.get("track"), None)
+            if k in ("track.new", "track.affiliation", "track.identity_conflict") and c.get("track") is not None:
+                aff = c.get("to") if k == "track.affiliation" else c.get("affiliation")
+                if k == "track.identity_conflict" or aff not in CLEAR + (None,):
+                    self.following.setdefault(str(c["track"]), None)
+                    while len(self.following) > MAX_APPROACH:  # the oldest go first
+                        self.following.pop(next(iter(self.following)))
+                elif aff in CLEAR:
+                    self.following.pop(str(c["track"]), None)
+            if k == "track.dropped":
+                self.following.pop(str(c.get("track")), None)
             if k in ("track.identity_cleared", "track.dropped"):
                 self.gated.pop(c.get("track"), None)  # nothing left to come in with
         return out
@@ -214,6 +241,66 @@ class Poller:
                         "position": t.get("position"), "speed_mps": t.get("speed_mps"),
                         "course_deg": t.get("course_deg"), "as_of": t.get("last_seen_t"), "conflict": conflict,
                         "standing": s.why})
+        return out
+
+    async def approach(self, watch: Any, now: float | None = None) -> list[dict]:
+        """bd murmur-1h2r: each contact in doubt (not known friendly or neutral, its identity below
+        the resolve line or in conflict), read by id every `approach_every_s`: one predicted to come
+        inside a watch area within the horizon is a `track.approaching` change, once, and one
+        inside a `track.in_watch`, once (then it is let go). A contact identified, declared
+        friendly or neutral, or gone from the picture is let go. A read-only driver read, not
+        logged by the bridge; without a watch area nothing is read."""
+        now = time.time() if now is None else now
+        if watch is None or not self.following or now - self.approach_checked < self.approach_every_s:
+            return []
+        self.approach_checked = now
+        ids = sorted(self.following)
+        try:
+            r = await self.session.call("get_tracks", track_id=ids)
+        except Exception:  # noqa: BLE001 (the next poll tries again)
+            return []
+        by_id = {str(t.get("id")): t for t in r.get("tracks") or [] if isinstance(t, dict)}
+        out: list[dict] = []
+        for tid in ids:
+            t = by_id.get(tid)
+            if t is None:
+                self.following.pop(tid, None)
+                continue
+            ident = t.get("identity") or {}
+            conf = ident.get("confidence")
+            doubt = t.get("affiliation") not in CLEAR and (
+                bool(ident.get("conflict")) or not isinstance(conf, (int, float)) or conf < RESOLVE_CONF)
+            if not doubt:
+                self.following.pop(tid, None)
+                continue
+            try:
+                e = watch.entry_of_track(t)
+            except Exception:  # noqa: BLE001 (one bad track never stops the watch)
+                continue
+            if e is None:
+                continue
+            told = self.told.get(tid)
+            if told == "inside" or (told == "approaching" and e.stage == "approaching"):
+                if told == "inside":
+                    self.following.pop(tid, None)
+                continue
+            out.append({"kind": "track.in_watch" if e.stage == "inside" else "track.approaching", "t": now,
+                        "track": tid, "domain": t.get("domain"), "identity": ident.get("kind"),
+                        "identity_level": ident.get("level"), "identity_confidence": conf,
+                        "conflict": ident.get("conflict"), "affiliation": t.get("affiliation"),
+                        "affiliation_confidence": t.get("affiliation_confidence"),
+                        "position": t.get("predicted") or t.get("position"), "speed_mps": t.get("speed_mps"),
+                        "course_deg": t.get("course_deg"), "velocity_mps": t.get("velocity_mps"),
+                        "as_of": t.get("last_seen_t"), "pos_sigma_m": t.get("pos_sigma_now_m"),
+                        "area": e.area, "to_edge_m": round(e.to_edge_m),
+                        "enters_s": None if e.enters_s is None else round(e.enters_s), "basis": e.basis})
+            self.told[tid] = e.stage
+            while len(self.told) > MAX_TOLD:  # the oldest go first
+                self.told.pop(next(iter(self.told)))
+            if e.stage == "inside":
+                self.following.pop(tid, None)
+            else:
+                self.following[tid] = "approaching"
         return out
 
     async def nominations(self, now: float | None = None) -> list[dict]:
@@ -420,6 +507,27 @@ def _motion(c: dict) -> str:
     return f"{sp:.1f} m/s course {co:.0f}"
 
 
+def _watch_line(c: dict, t: str, tr: Any) -> str:
+    """A contact in doubt at a watch area (`Poller.approach`): where it is against the area, when it
+    is predicted in and on what, and what is known of its identity."""
+    d = abs(c.get("to_edge_m") or 0)
+    conf = c.get("identity_confidence")
+    aconf = c.get("affiliation_confidence")
+    ident = (f"identity {c.get('identity') or 'unclassified'} ({c.get('identity_level')}"
+             f"{f', confidence {conf:.2f}' if isinstance(conf, (int, float)) else ''}), "
+             f"estimated {c.get('affiliation')}{f' {aconf:.2f}' if isinstance(aconf, (int, float)) else ''}")
+    if c.get("conflict"):
+        ident += f", identity conflict {quote(c['conflict'])}"
+    sig = c.get("pos_sigma_m")
+    where = f"at {_pos(c.get('position'))}, {_motion(c)}" + (
+        f", position uncertainty {sig:.0f} m" if isinstance(sig, (int, float)) else "")
+    if c.get("kind") == "track.in_watch":
+        return (f"{t} track {tr} ({c.get('domain')}) is inside {c.get('area')}, {d:.0f} m past its edge; "
+                f"{ident}; {where}")
+    return (f"{t} track {tr} ({c.get('domain')}) is {d:.0f} m outside {c.get('area')} and predicted to come "
+            f"inside in {c.get('enters_s')} s ({c.get('basis')}); {ident}; {where}")
+
+
 def render(c: dict) -> str:
     """One line for one change."""
     k = c.get("kind", "?")
@@ -432,6 +540,8 @@ def render(c: dict) -> str:
         whose = "yours" if c.get("mine") else (c.get("source") or {}).get("id", "?")
         return (f"{t} intent #{c.get('intent')} {c.get('task')} on {c.get('uids')} ({whose}): "
                 f"{c.get('from')} -> {c.get('to')}{_why(c)}")
+    if k in ("track.approaching", "track.in_watch"):
+        return _watch_line(c, t, tr)
     if k == "track.new":
         src = ", ".join(f"uid {s.get('uid')} {s.get('sensor')}" for s in c.get("sources") or [])
         conf = c.get("affiliation_confidence")

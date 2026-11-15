@@ -45,6 +45,17 @@ from playbook.beliefs import M_PER_DEG, closing_alert, enu, haversine_m, in_poly
 #: to matter since: agents/watch/picture.py `Poller.stakes`), and a conflict coming and going
 GATED = ("track.identity_conflict", "track.conflict_matters")
 GATED_FLAPPING = ("identity_conflict",)
+#: how far ahead a contact in doubt is looked for coming into a watch area (the routine wake, bd
+#: murmur-1h2r; `Watch.entry`). A drone first seen 4 to 5 km out came inside the 3 km circle 61 to 162 s
+#: later (median 108) and its identification had a 30 s air deadline after that: the wake has to
+#: leave the time to launch and fly a camera, so it comes this long before the line. Far enough that
+#: a drone at first sight (1 to 2 km outside the line, 40 to 80 s at its speed) is already inside the
+#: horizon; short enough that a ferry kilometres off, or one passing the area, wakes nothing.
+APPROACH_HORIZON_S = 180.0
+#: a track with no velocity yet in the air is taken to come straight in at this speed (the
+#: evaluation's honest-ceiling rule for a small drone: the threat's own speed, not the tracker's
+#: unknown). Other domains with no velocity are judged where they are.
+AIR_NO_VELOCITY_MPS = 25.0
 #: a polygon area's way in is looked for along the course every this many seconds
 STEP_S = 5.0
 
@@ -132,6 +143,18 @@ class Standing:
             "protected": [{"point": a.name, "distance_m": round(a.distance_m), "cpa_m": round(a.cpa_m),
                            "tcpa_s": None if a.tcpa_s is None else round(a.tcpa_s)} for a in self.approaches],
         }
+
+
+@dataclass
+class Entry:
+    """A contact against the watch areas: `stage` inside or approaching, the area, metres to its
+    edge (negative inside), seconds to entry, and what the prediction rests on."""
+
+    stage: str
+    area: str
+    to_edge_m: float
+    enters_s: float | None
+    basis: str
 
 
 def km(m: float) -> str:
@@ -242,6 +265,48 @@ class Watch:
         vel = velocity_of(c.get("speed_mps"), c.get("course_deg"))
         as_of = _num(c.get("as_of"))
         return self.standing(carried(p, vel, (now - as_of) if as_of is not None else 0.0), vel)
+
+    def entry(self, where: tuple[float, float], vel: tuple[float, float] | None, domain: Any,
+              horizon_s: float = APPROACH_HORIZON_S) -> Entry | None:
+        """A contact in doubt against the watch areas alone (bd murmur-1h2r): inside one now, or
+        coming into one within `horizon_s` (the earliest), else None. No velocity in the air is
+        taken straight in at `AIR_NO_VELOCITY_MPS` (towards the area's centre); no velocity in
+        another domain is judged where it is."""
+        best: Entry | None = None
+        for a in self.cfg["watch_area"]:
+            v, basis = vel, "its velocity"
+            if v is None and domain == "air":
+                if "polygon" in a:
+                    ring = a["polygon"]
+                    tgt = (sum(float(q[0]) for q in ring) / len(ring), sum(float(q[1]) for q in ring) / len(ring))
+                else:
+                    tgt = (float(a["center"][0]), float(a["center"][1]))
+                x, y = enu(tgt, where)
+                n = math.hypot(x, y)
+                v = (AIR_NO_VELOCITY_MPS * x / n, AIR_NO_VELOCITY_MPS * y / n) if n > 0 else None
+                basis = f"no velocity yet: at {AIR_NO_VELOCITY_MPS:.0f} m/s straight in"
+            elif v is None:
+                basis = "no velocity yet: judged where it is"
+            ln = self._line(a, where, v, horizon_s)
+            if ln.inside:
+                e = Entry("inside", ln.name, ln.to_edge_m, 0.0, basis)
+            elif ln.enters_s is not None:
+                e = Entry("approaching", ln.name, ln.to_edge_m, ln.enters_s, basis)
+            else:
+                continue
+            if best is None or (e.stage == "inside" and best.stage != "inside") or (
+                    e.stage == best.stage and (e.enters_s or 0.0) < (best.enters_s or 0.0)):
+                best = e
+        return best
+
+    def entry_of_track(self, t: dict[str, Any]) -> Entry | None:
+        """`entry` for a `get_tracks` entry (its position carried to now), None without a position."""
+        where = _point(t.get("predicted")) or _point(t.get("position"))
+        if where is None:
+            return None
+        v = t.get("velocity_mps")
+        vel = (float(v[0]), float(v[1])) if _point(v) is not None else velocity_of(t.get("speed_mps"), t.get("course_deg"))
+        return self.entry(where, vel, t.get("domain"))
 
     def gate(self, c: dict[str, Any], now: float) -> tuple[bool, str | None]:
         """(escalates, why) for a change the table escalates: True for a change the gate does

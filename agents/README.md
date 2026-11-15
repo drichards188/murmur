@@ -586,6 +586,7 @@ characters. The table is `TRIGGERS` in `agents/watch/wake.py`:
 | an affiliation estimate moving to (or from) suspicion | yes | |
 | an identity conflict appearing (an AIS identity that does not fit what was seen) | yes | when its contact matters to the watch (below) |
 | a conflict kept from the stronger model whose contact has since come to matter, the conflict still standing (`track.conflict_matters`) | yes | yes |
+| a contact in doubt predicted to come into a watch area within 180 s (`track.approaching`), and one that has (`track.in_watch`), once each per track | yes | never (below) |
 | a vehicle's link lost | yes | on an armed platform |
 | a GPS glitch flagged by a vehicle's navigation filter | yes | yes |
 | a condition coming and going twice within 5 minutes (flapping) | yes | for a GPS glitch, an armed platform's link; a conflict when its contact matters to the watch |
@@ -647,6 +648,24 @@ text, so it is the one source both have. The contact's position is the change's 
 summary (last fix, speed, course, `as_of`), carried along its course to the moment the wake is
 judged, so the gate reads nothing from the bridge. A change without a position, a run without
 a watch config, or a table with neither a watch area nor a protected point escalates as before.
+A contact in doubt at the watch (bd murmur-1h2r; `Poller.approach`, `Watch.entry`): the driver
+follows each contact that is new or newly suspect (anything but friendly or neutral) and reads
+it by id every 5 s while its identity is unresolved (confidence under the mission's 0.6, or a
+conflict). One predicted to come inside a watch area within 180 s (`APPROACH_HORIZON_S`: the
+small drone of the paid pilot was seen 61 to 162 s, median 108, before it crossed the 3 km line
+and had 30 s after that to be identified, so the model must be woken in time to launch and fly a
+camera, while a ferry kilometres off or passing by wakes nothing) wakes it as `track.approaching`,
+and one inside as `track.in_watch`, each once per track (it is let go after the second; the
+subject limits of the table hold too). They are routine wakes and never escalate, whether or not
+escalation is on, and need only the watch config (a run without one changes nothing). The
+prediction uses the track's velocity; a track in the air with none yet is taken straight in at
+25 m/s (the evaluation's ceiling for a small drone); other domains with none are judged where
+they are. The line says the track, its distance outside (or past the edge of) the area, the
+predicted entry and its basis ("no velocity yet: at 25 m/s straight in"), its identity and
+confidence and its position uncertainty. A track with no velocity is shown as "no velocity yet"
+everywhere (the feed's speed is 0.0 then, which is not standing still); the change feed does
+not carry `pos_sigma_m`, so a `track.new` line has no uncertainty, only the lines the driver
+builds from `get_tracks` do.
 The engagement chain, a GPS glitch and an armed platform's lost link (flapping or not: they
 are about our own vehicles) are unchanged. Not judged: "near one of our vehicles" (every
 conflicted contact is within a sensor's reach of one of ours, which is how it was seen, so it

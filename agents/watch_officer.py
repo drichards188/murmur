@@ -236,6 +236,8 @@ class Officer:
                 if self.watch is not None:
                     # a conflict the stakes gate kept routine whose contact now matters
                     changes += await self.poller.stakes(self.watch)
+                    # a contact in doubt about to come into a watch area, or inside one (bd murmur-1h2r)
+                    changes += await self.poller.approach(self.watch)
                 self.poll_errors = 0
                 if any(isinstance(c, dict) and c.get("kind") == "feed.reset" for c in changes):
                     self.bridge_restarted = True

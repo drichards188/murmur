@@ -50,6 +50,12 @@ note: it rides along with the next update.
   coming into a watch area within the playbook's 10-minute horizon; otherwise it wakes the
   routine model, exactly as it would have without the stronger model, and the wake says why
   (`Wake.gated`). Without a judge, or for a change without a position, nothing changes.
+- Contacts in doubt at the watch (bd murmur-1h2r, agents/watch/stakes.py `Watch.entry`): the
+  driver reads each contact not known friendly or neutral whose identity is unresolved (below the
+  mission's 0.6, or in conflict) and wakes the model once when it is predicted to come inside a
+  watch area within `APPROACH_HORIZON_S` (`track.approaching`) and once when it is inside
+  (`track.in_watch`). Routine wakes only, never the stronger model, whether or not escalation is
+  on; each track once per stage (the driver lets it go after, and the subject limits above hold).
 - The heartbeat backs off (doubling up to `heartbeat_max_s`) while nothing new arrives:
   autopilot chatter, vehicles joining and repeats of a subject just reported are not news.
   Heartbeats never take the last quarter of the hour's wakes: those are kept for triggers.
@@ -139,6 +145,10 @@ TRIGGERS: tuple[Row, ...] = (
     # conflict still standing (agents/watch/picture.py `Poller.stakes`)
     Row("track.conflict_matters", always, always,
         "an identity conflict on a contact that now matters to the watch (possible AIS spoof)"),
+    # a contact in doubt about to cross into a watch area, and one that has (the driver reads them,
+    # agents/watch/picture.py `Poller.approach`; once a track each, never the stronger model)
+    Row("track.approaching", always, never, "a contact in doubt is about to come into a watch area"),
+    Row("track.in_watch", always, never, "a contact in doubt came into a watch area"),
     Row("review.flag", always, never, "the engine flagged something for review"),
     # our own vehicles: link and navigation
     Row("vehicle.link_lost", always, _armed, "a vehicle lost its link"),

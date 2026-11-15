@@ -6,6 +6,7 @@ watch area known, every escalation goes through as before. On a made-up clock, n
 
 from __future__ import annotations
 
+import asyncio
 import math
 
 from playbook.config import make
@@ -235,3 +236,159 @@ def test_a_gated_contact_that_comes_in_escalates_then():
     p.session = Feed()
     asyncio.run(p.poll())
     assert p.gated == {}
+
+
+# ---- a contact in doubt at the watch (bd murmur-1h2r, murmur-jhgn) ---------------------------------
+
+
+def air(track: str, east_m: float, north_m: float, velocity=None, affiliation: str = "unknown",
+        confidence: float | None = 0.3, conflict: str | None = None) -> dict:
+    """A `get_tracks` entry of a small drone as the tracker gives it before it has a velocity
+    (`velocity_mps` and `course_deg` null; the feed's speed is 0.0 then)."""
+    e = entry(track, east_m, north_m, conflict=conflict)
+    e.update({"domain": "air", "affiliation": affiliation, "velocity_mps": velocity, "pos_sigma_now_m": 60.0,
+              "speed_mps": 0.0 if velocity is None else math.hypot(*velocity),
+              "course_deg": None if velocity is None else 90.0})
+    e["identity"] = {"kind": "drone", "level": "detect", "confidence": confidence, "conflict": conflict}
+    return e
+
+
+def follow(p, *tracks: str, affiliation: str = "unknown"):
+    p.cursor, p.run = "f:1", "r"
+
+    class Feed:
+        async def call(self, name, **args):
+            return {"changes": [{"kind": "track.new", "track": t, "affiliation": affiliation} for t in tracks],
+                    "cursor": "f:2", "more": False}
+
+    p.session = Feed()
+    asyncio.run(p.poll())
+
+
+def test_an_air_track_with_no_velocity_wakes_once_approaching_then_once_inside():
+    from watch.picture import Poller, render
+
+    w = watch()
+    p = Poller(lambda: None)
+    follow(p, "T-1")
+    p.session = Session({"T-1": air("T-1", -4500, 0)})  # first sight, 1.5 km outside the 3 km circle
+    (c,) = asyncio.run(p.approach(w, now=0.0))
+    assert c["kind"] == "track.approaching" and c["track"] == "T-1"
+    assert c["enters_s"] == 60 and abs(c["to_edge_m"] - 1500) < 20
+    assert c["basis"] == "no velocity yet: at 25 m/s straight in"
+    line = render(c)
+    assert "track T-1 (air) is 1495 m outside the Golden Gate approaches and predicted to come inside in 60 s " \
+           "(no velocity yet: at 25 m/s straight in)" in line
+    assert "identity drone (detect, confidence 0.30), estimated unknown" in line
+    assert "no velocity yet, position uncertainty 60 m" in line and "0.0 m/s" not in line
+    # once: still outside, still approaching, read again: nothing
+    assert asyncio.run(p.approach(w, now=10.0)) == []
+    p.session.tracks["T-1"] = air("T-1", -3500, 0)
+    assert asyncio.run(p.approach(w, now=20.0)) == []
+    # inside: once, then it is let go
+    p.session.tracks["T-1"] = air("T-1", -2000, 0)
+    (d,) = asyncio.run(p.approach(w, now=30.0))
+    assert d["kind"] == "track.in_watch" and "is inside the Golden Gate approaches, 1002 m past its edge" in render(d)
+    assert p.following == {}
+    assert asyncio.run(p.approach(w, now=40.0)) == []
+    # the Waker wakes the routine model for each, never the stronger one
+    for ch in (c, d):
+        wk = Waker(quiet())
+        wk.due(0)
+        wk.add([ch], 20.0)
+        x = wk.due(24.0)
+        assert x is not None and not x.escalate
+
+
+def test_a_track_straight_inside_wakes_inside_only():
+    from watch.picture import Poller
+
+    p = Poller(lambda: None)
+    follow(p, "T-1")
+    p.session = Session({"T-1": air("T-1", -1000, 0)})
+    (c,) = asyncio.run(p.approach(watch(), now=0.0))
+    assert c["kind"] == "track.in_watch" and p.following == {}
+
+
+def test_a_neutral_or_identified_contact_does_not_wake():
+    from watch.picture import Poller
+
+    w = watch()
+    p = Poller(lambda: None)
+    follow(p, "T-1", "T-2", "T-3")
+    p.session = Session({"T-1": air("T-1", -4500, 0, affiliation="neutral"),
+                         "T-2": air("T-2", -4500, 0, confidence=0.9),
+                         "T-3": air("T-3", -4500, 0, confidence=0.9, conflict="AIS says cargo")})
+    out = asyncio.run(p.approach(w, now=0.0))
+    assert [c["track"] for c in out] == ["T-3"], "a conflict is in doubt whatever the confidence"
+    follow(p, "T-4", affiliation="friendly")
+    assert "T-4" not in p.following and "T-1" not in p.following and "T-2" not in p.following
+
+
+def test_a_ferry_far_off_and_moving_away_does_not_wake():
+    from watch.picture import Poller
+
+    w = watch()
+    p = Poller(lambda: None)
+    follow(p, "T-1", "T-2", "T-3")
+    ferry = entry("T-1", -8000, 0, ve=-6.0, vn=0.0)  # 8 km out, going away
+    ferry["identity"]["confidence"] = 0.3
+    still = entry("T-2", -8000, 0)  # surface, no velocity: judged where it is
+    still["velocity_mps"], still["course_deg"], still["identity"]["confidence"] = None, None, 0.3
+    far_drone = air("T-3", -8000, 0)  # in the air, no velocity, 8 km: 5000 m at 25 m/s is 200 s, past 180
+    p.session = Session({"T-1": ferry, "T-2": still, "T-3": far_drone})
+    assert asyncio.run(p.approach(w, now=0.0)) == []
+    assert set(p.following) == {"T-1", "T-2", "T-3"}, "still followed"
+    p.session.tracks["T-3"] = air("T-3", -7000, 0)  # 4000 m past the edge is 160 s: within the horizon
+    (c,) = asyncio.run(p.approach(w, now=10.0))
+    assert c["track"] == "T-3" and c["enters_s"] == 160
+
+
+def test_a_moving_track_is_predicted_on_its_velocity_and_nothing_without_a_watch_area():
+    from watch.picture import Poller, render
+
+    w = watch()
+    p = Poller(lambda: None)
+    follow(p, "T-1")
+    p.session = Session({"T-1": air("T-1", -5000, 0, velocity=[20.0, 0.0])})
+    (c,) = asyncio.run(p.approach(w, now=0.0))
+    assert c["enters_s"] == 100 and c["basis"] == "its velocity"
+    assert "20.0 m/s course 90" in render(c)
+    q = Poller(lambda: None)
+    follow(q, "T-1")
+    q.session = Session({"T-1": air("T-1", -1000, 0)})
+    assert asyncio.run(q.approach(None, now=0.0)) == [] and q.session.calls == []
+
+
+def test_a_contact_inside_is_not_told_again_when_an_affiliation_change_follows_it_anew():
+    """T-0008 of the paused v2 record was told `track.in_watch` at 243 s and again at 546 s: it was
+    let go once inside, an affiliation change followed it again, and the next read told it again."""
+    from watch.picture import Poller
+
+    w = watch()
+    p = Poller(lambda: None)
+    follow(p, "T-1")
+    p.session = Session({"T-1": air("T-1", -2000, 0)})
+    (c,) = asyncio.run(p.approach(w, now=0.0))
+    assert c["kind"] == "track.in_watch" and p.following == {}
+    # an affiliation change follows it again
+    p.session = Session({"T-1": air("T-1", -1500, 0)})
+    p.cursor, p.run = "f:2", "r"
+    poll_session = p.session
+
+    class Feed:
+        async def call(self, name, **args):
+            return {"changes": [{"kind": "track.affiliation", "track": "T-1", "from": "unknown", "to": "suspect"}],
+                    "cursor": "f:3", "more": False}
+
+    p.session = Feed()
+    asyncio.run(p.poll())
+    assert "T-1" in p.following
+    p.session = poll_session
+    assert asyncio.run(p.approach(w, now=100.0)) == [] and p.following == {}
+    # and one told approaching is not told it again after being followed anew
+    follow(p, "T-2")
+    p.session = Session({"T-2": air("T-2", -4500, 0)})
+    assert [x["kind"] for x in asyncio.run(p.approach(w, now=200.0))] == ["track.approaching"]
+    follow(p, "T-2")
+    assert asyncio.run(p.approach(w, now=300.0)) == []
