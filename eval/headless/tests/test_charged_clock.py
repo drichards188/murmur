@@ -455,10 +455,15 @@ def test_the_playbook_acts_its_tick_charge_after_it_read():
 #: wakes for them, each told once a stage for the run: Harbor watch's T-0008 approaching at 183 s
 #: and T-0007 (its conflict standing) at 639 s; v2's T-0008 approaching at 135 s and inside at
 #: 243 s. The playbook's did not move.
+#: Re-taken for decision rules 31 (bd murmur-8vj8, an identify order sized by the track's shown
+#: size class): with `RULES_VERSION` put back to 30 this code gave the digests before (2bb5177f...,
+#: 2e88861d..., e6b82375...) byte for byte, and each new record with its audit log's `run.started`
+#: `rules_version` put back to 30 gives them too, so that is the only change. These worlds run the
+#: legacy sensing model, whose facts carry no reaches by size class, so no identify plan moved.
 PAUSED = {
-    "model harbor-watch s1": "2bb5177fa30cb17323a3a728d578ce4d0e276149ff1344c01deb94f58bd105e5",
-    "playbook v2 fast-unknown 1000": "2e88861d778d0e57cdca0abea48a01c77e33c07b26ae96a5f143f0c1eb412491",
-    "model v2 fast-unknown 1000": "e6b8237575c01932a447937c616cc6f7b4fa49ae3b21f52c5c7bcb49f4189a38",
+    "model harbor-watch s1": "baa79be04dd189b17ecaa92a8aff776e7928436dc33c09359501c7d8d8b495b3",
+    "playbook v2 fast-unknown 1000": "946853d81f5d48b3f5fa8c62858c42c4aca7397a9e2d4b8a6e06b425584fae42",
+    "model v2 fast-unknown 1000": "d436a1b722ddb4bcf4f6dda83a3f4a7c65a3a1f17de1330d25592b97889e0221",
 }
 
 

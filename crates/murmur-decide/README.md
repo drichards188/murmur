@@ -2442,7 +2442,10 @@ Rules versions:
   reaches (the scenario file's new `reaches` key) with the runner's new `identify` expectation;
   `tests/rules31.rs`; the bridge's `tracks::tests::reaches` holds the decision layer's label
   table to the physical model's and the default standoff inside the camera's identification
-  reach of every member of the class.
+  reach of every member of the class. Fixtures (a clean build of the branch, da22281):
+  `tests/data/audit/v31-engagement-scenario-01.jsonl` (no identify order: as rules 30 decided
+  it), `v31-identify-a-small-drone-close-in-scenario-144.jsonl` (relabelled rules 30, its reaches
+  by class and its plan's class are caught, and with them taken out its plan).
 
 Policy schemas: **1** up to `977854f`; **2** adds `plan_drift_max_m`, `holding_speed_mps`,
 `friendly_growth_mps` (optional) and makes `token_ttl_s` optional (default 15) so that

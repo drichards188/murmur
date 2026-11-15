@@ -24,7 +24,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// (file, the rules version it was written under).
-const LOGS: [(&str, u32); 87] = [
+const LOGS: [(&str, u32); 89] = [
     // master before Phase E: no engagement
     ("v1-pre-engagement-live-c7.jsonl", 1),
     // master 977854f: an engagement, the first frozen-plan rules
@@ -244,13 +244,19 @@ const LOGS: [(&str, u32); 87] = [
     // without it)
     ("v30-engagement-scenario-01.jsonl", NODE_LOSS_SINCE),
     ("v30-confirmed-lost-ends-its-orders-scenario-140.jsonl", NODE_LOSS_SINCE),
+    // rules 31 (an identify order sized by the track's shown size class; a clean build of da22281
+    // on the branch of bd murmur-8vj8): scenario 01 (no identify order: as rules 30 decided it)
+    // and 144 (PUMA 1 sent to a track the picture shows as small_air, on the physical reaches: an
+    // orbit of 788 m, its camera's reach of a small drone, identified)
+    ("v31-engagement-scenario-01.jsonl", IDENTIFY_CLASS_SINCE),
+    ("v31-identify-a-small-drone-close-in-scenario-144.jsonl", IDENTIFY_CLASS_SINCE),
 ];
 
 /// The committed log of scenario 66 under rules 6, written by master's murmur-scenarios.
 const V6_AIRSHIP: &str = "v6-airship-nomination-scenario-66.jsonl";
 
 /// The committed log of the current rules.
-const CURRENT: &str = "v30-engagement-scenario-01.jsonl";
+const CURRENT: &str = "v31-engagement-scenario-01.jsonl";
 
 /// The committed scenario log of rules 6 (the lost-link preload).
 const V6_SCENARIO: &str = "v6-engagement-scenario-01.jsonl";
@@ -2195,4 +2201,45 @@ fn a_confirmed_loss_is_caught_under_older_rules() {
     let r = with(&rechain(&ls), RulesAccepted::Exactly(NODE_LOSS_SINCE));
     assert!(r.ok(), "{:?}", r.mismatches);
     assert_eq!((r.nodes_presumed.len(), r.nodes_lost.len()), (1, 1), "{:?} {:?}", r.nodes_presumed, r.nodes_lost);
+}
+
+/// Rules 31: scenario 144's log relabelled rules 30 carries what no build of rules 30 logged (a
+/// camera's reaches by size class, the class an identify order's orbit was sized for) and is
+/// caught; with both taken out, its plan (an orbit of 788 m, where rules 30 sizes it 1,411 m by
+/// the domain) still gives it away; under its own rules it replays.
+#[test]
+fn a_class_sized_identify_order_is_caught_under_older_rules() {
+    let ls = lines(&fixture("v31-identify-a-small-drone-close-in-scenario-144.jsonl"));
+    let v31 = format!("\"rules_version\":{IDENTIFY_CLASS_SINCE},");
+    let mut old = ls.clone();
+    assert!(old[0].contains(&v31));
+    assert!(
+        ls.iter().any(|l| l.contains("\"size_class\":\"small_air\"") && l.contains("\"radius_m\":788.0")),
+        "the plan's class is logged"
+    );
+    old[0] = old[0].replacen(&v31, &format!("\"rules_version\":{NODE_LOSS_SINCE},"), 1);
+    let w: Vec<String> = whats(&with(&rechain(&old), RulesAccepted::Exactly(NODE_LOSS_SINCE))).iter().map(|s| s.to_string()).collect();
+    for what in ["a camera's reach by size class", "the size class an identify order's standoff was sized for"] {
+        assert!(w.iter().any(|m| m.starts_with(what)), "{what}: {w:?}");
+    }
+    let stripped: Vec<String> = old.iter().map(|l| without_class(l)).collect();
+    assert!(!stripped.iter().any(|l| l.contains("size_class")));
+    let w: Vec<String> = whats(&with(&rechain(&stripped), RulesAccepted::Exactly(NODE_LOSS_SINCE))).iter().map(|s| s.to_string()).collect();
+    for what in ["check results differ", "an identify order's dispatch differs from its plan"] {
+        assert!(w.iter().any(|m| m.starts_with(what)), "{what}: {w:?}");
+    }
+    let r = with(&rechain(&ls), RulesAccepted::Exactly(IDENTIFY_CLASS_SINCE));
+    assert!(r.ok(), "{:?}", r.mismatches);
+}
+
+/// A log line without rules 31's keys: each camera's `size_class` reaches (a flat object) and a
+/// plan's `size_class`.
+fn without_class(line: &str) -> String {
+    const OBJECT: &str = ",\"size_class\":{";
+    let mut out = line.replace(",\"size_class\":\"small_air\"", "");
+    while let Some(i) = out.find(OBJECT) {
+        let close = i + OBJECT.len() + out[i + OBJECT.len()..].find('}').unwrap() + 1;
+        out.replace_range(i..close, "");
+    }
+    out
 }

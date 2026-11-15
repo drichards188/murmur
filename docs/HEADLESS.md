@@ -1446,7 +1446,11 @@ their loiter circle 150 m), and the Pumas' GCS failsafes behind terrain fire and
 times (PUMA 2's 2 s earlier; PUMA 1's link drops at other moments, with one more failsafe flap,
 the three extra events). The same three proposals at the same times and the same operator
 decisions: the third approval is still refused at approval for PUMA 1's navigation status, 11 s
-old where it was 13 s.
+old where it was 13 s. Rules 31 (an identify order sized by the track's shown size class, bd
+murmur-8vj8) re-took it for `run.started` alone, to record `c93ac2ac...`, audit `0c4e58e1...`, 152
+events: with `RULES_VERSION` put back to 30 the code gave `5b24cdab...`, `ab7609a1...` byte for
+byte, and the new audit log with its `rules_version` put back to 30 hashes to `ab7609a1...` too;
+Harbor watch runs the legacy sensing model, whose facts carry no reaches by size class.
 
 ### 17.3 The bake tool
 
