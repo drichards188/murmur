@@ -2514,7 +2514,11 @@ drone's position error is (REAPER 1's radar has no height, so its fixes jump alo
 sight). Rules 33 stays off main. Also found: San Diego scripts its airliners as `light_aircraft` at
 75 and 90 m/s against the kind's 65 (bd murmur-odn3); and rules 14 lets a track with a velocity
 reach the domain's 100 m/s, so under rules 33 a drone's region would grow when it gained a velocity.
-**Open, the owner's**: drop rules 33, or take the detection-only variant to unused seeds.
+**Open, the owner's**: drop rules 33, or take the detection-only variant to unused seeds. **Future
+work** (bd murmur-3ohg, not scheduled): first an oracle that cues a camera onto a radar-only aircraft
+the form names as a blocker (a look ranges it and gives it a velocity), then, only if that is not
+enough, the tracker (a height ceiling by the detection's size class, or the whole bearing segment in
+the picture: 17.14's options 2 and 3, murmur-xj6).
 
 ### 17.19 F15 version 3 (2026-11-15, bd murmur-yu6s)
 
