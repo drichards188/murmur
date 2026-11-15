@@ -85,6 +85,10 @@ FIELDS = (
     "decoy_looks", "decoy_situations_looked", "capable_types", "gap_need", "cover_need",
     "should_engage", "nomination_label", "review_labels", "restraint_ok", "run_during_outage",
     "contribution_instrument", "mission_sha256",
+    # v3's judgement of orders that served no need (labels.py, metrics.py; bd murmur-k205,
+    # SCORING-V3.md 17.12); the boundaries take their compounds (`not_justified_share`)
+    "not_justified", "served_no_need", "justified_by", "supported_on_picture", "cleared_doubt",
+    "tasked_hold",
 )
 #: scorer field names that are ordinary words: tokens only as a field name is written
 WORD_FIELDS = ("eligible", "contributed")
