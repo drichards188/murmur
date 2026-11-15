@@ -2185,3 +2185,45 @@ picture's position of a radar-only small drone, kilometres off for minutes, whic
 it can overcome (bd murmur-jehg, a free investigation; the sensing model is the fixed world, so its
 cause is reported before anything changes). The first two are the model's to show at scale; the
 third limits every agent that reads the picture and should be understood before a paid batch.
+
+### 17.14 Why radar-only drone tracks sit kilometres off (2026-11-15, bd murmur-jehg)
+
+**Coverage.** 17.13's records (san-diego, seed 6605, `none`) and `none`'s records of the pilot's 20
+F2 situations (`eval/results/headless/v3-model-pilot-2026-11-14`, golden-gate and san-diego, 10 seeds
+each), whose only radars are HUNTER 1's on the surface and REAPER 1's, an MQ-9B's, at 3,000 m. Free:
+read from the records' pictures and truth; nothing run.
+
+**Cause: the tracker, by design; not the sensing model.** A 2D radar measures bearing and slant range,
+not height. The tracker takes its plot of an aircraft as the bearing line, no farther out than the
+slant range, and while nothing ranges it (a position fix, or another radar's or ESM's bearing crossing
+by 30 degrees or more within 6 s) puts the track at the middle of that segment, its 1-sigma a third of
+the length (tracks/model.rs `reset_to_segment`, `SEGMENT_SIGMAS`; DECISIONS.md: "no height bound is
+assumed: one would be an invented altitude"; bd murmur-xj6, open). A drone 70 to 100 m up is at the
+far end, so the track shows it at about half its range from the radar. In 17.13 the hobby drone's
+track was short along REAPER 1's line of sight by 1.6 to 5.7 km (across it mostly under 0.5 km), at 51
+to 62 % of the true range, and nearer (0.2 to 0.4 km) only for the seconds after HUNTER 1's radar,
+whose bearing crosses REAPER's by about 40 degrees, plotted it; the drone's own track was 1.0 to 2.3 km
+short along REAPER's line until ESM and a camera ranged it at 460 s. An identify order's orbit is
+centred on the track (`engage::target_at`), so KESTREL 1 circled up to 5 km short of the hobby drone.
+The camera's search already allows for the height (it scans the slant arc from 10 to 8,000 m, from the
+radar's own height: tracks/physical/mod.rs `Cue::at_height`, `AIR_CEILING_M`); the tracker's segment
+uses neither the radar's height nor a ceiling.
+
+**How common.** In 13 of the 20 (8 of San Diego's, 5 of the Golden Gate's) the drone's track was more
+than 1 km off for 9 to 100 % of its seconds before a camera's first look. 665 seconds lay more than
+0.5 km off along REAPER 1's line (median 2.0 km), 76 along HUNTER 1's (median 1.8 km).
+
+**What would change it** (from the geometry, the drone at 100 m, plot noise ignored; not run):
+1. The segment bounded by the radar's own height and the camera's 8,000 m ceiling: REAPER 1's 665
+   seconds from a median 2.0 km off to 0.6 km (90th percentile 1.3 km), inside a drone orbit's 0.8 to
+   0.9 km; nothing on the surface radar's line (its slant ranges are below the ceiling). It assumes a
+   ceiling, which the decision above declined, and an airliner's 12 km gives back most of the gain.
+2. A ceiling by the shown size class (500 m for a small drone, say): both radars' lines to about
+   0.1 km, but on a radar's size call made at confidence 0.01 to 0.09.
+3. The tracker as it is, and the picture and the identify plan using the line (murmur-xj6's first
+   option): `get_tracks` shows the bearing segment, an identify order on a radar-only air track aims
+   along it where its size class flies, and the keep-outs keep the whole segment.
+
+Each moves the honest ceiling in every family with radar-only aircraft and the v3 digests; 1 and 2 the
+air tracker's calibration too (`tracks::tests::calib_air`), 3 a rules version. Until one lands, a paid
+F2 batch measures this as much as the model. The owner's call.
